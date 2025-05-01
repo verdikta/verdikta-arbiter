@@ -1,0 +1,6 @@
+{
+    "query": "Analyze the following smart contract code for potential security vulnerabilities:\n\npragma solidity ^0.8.0;\ncontract Test {\n  function transfer(address to) public {\n    to.call{value: 100}(\"\");\n  }\n}",
+    "references": ["None"]
+  }
+
+

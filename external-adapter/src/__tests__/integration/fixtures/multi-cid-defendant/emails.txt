@@ -1,0 +1,39 @@
+From: defendant@example.com
+To: plaintiff@example.com
+Subject: ETH Purchase Agreement
+Date: February 15, 2025
+
+Dear Client X,
+
+Following our earlier discussions, I'm writing to confirm our agreement. I will sell you 10 ETH on March 1, 2025, at the market price on that date. Please confirm that this meets your requirements.
+
+Best regards,
+Vendor Y
+
+---
+
+From: plaintiff@example.com
+To: defendant@example.com
+Subject: Re: ETH Purchase Agreement
+Date: February 16, 2025
+
+Hello Vendor Y,
+
+Thank you for your email. I am looking forward to completing this transaction. I'll be ready to proceed on March 1st.
+
+Regards,
+Client X
+
+---
+
+From: defendant@example.com
+To: plaintiff@example.com
+Subject: Re: ETH Purchase Agreement - Confirmation
+Date: February 17, 2025
+
+Dear Client X,
+
+Great! I'll prepare the 10 ETH for transfer on March 1st at market price. I've reserved the ETH for you, so the transaction is now binding.
+
+Best regards,
+Vendor Y 

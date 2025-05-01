@@ -1,0 +1,8 @@
+Plaintiff: I'm interested in buying some Ethereum from you.
+Defendant: Great, I have 10 ETH available. I can sell it to you for the market price.
+Plaintiff: Let's set some conditions. I will buy your 10 ETH if the price falls below $2000 by March 1st, 2025.
+Defendant: Well, I'd prefer to just sell at market price, but I can hold it for you.
+Plaintiff: No, I'm only willing to buy if it drops below $2000. That's my offer.
+Defendant: Alright, I'll keep in touch and we can talk more about the details later.
+Plaintiff: So we're clear - I'll only buy if it goes below $2000 by March 1st, 2025.
+Defendant: I understand you want a good price. Let's talk soon about finalizing this. 

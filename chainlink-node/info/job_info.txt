@@ -1,0 +1,17 @@
+Verdikta Chainlink Node Job Information
+======================================
+
+Bridge Name: verdikta-ai
+Bridge URL: http://198.7.118.168:8080/evaluate
+Job ID: 7184582d-8872-4f0c-96a2-47f435fab20d
+Job ID (no hyphens): 7184582d88724f0c96a247f435fab20d
+
+The job is configured to use the External Adapter at:
+http://198.7.118.168:8080/evaluate
+
+To test the job:
+1. Go to the Chainlink node UI at http://localhost:6688
+2. Navigate to the 'Jobs' tab and find job with ID: 7184582d-8872-4f0c-96a2-47f435fab20d
+3. Click on 'Run' to test the job
+
+Your Verdikta Validator Node is now fully configured!

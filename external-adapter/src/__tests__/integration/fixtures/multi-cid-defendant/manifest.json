@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "name": "defendantRebuttal",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "additional": [
+    {
+      "name": "email-correspondence",
+      "type": "UTF8",
+      "filename": "emails.txt"
+    }
+  ]
+} 

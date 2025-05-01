@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "name": "plaintiffComplaint",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "additional": [
+    {
+      "name": "agreement-transcript",
+      "type": "UTF8",
+      "filename": "transcript.txt"
+    }
+  ]
+} 

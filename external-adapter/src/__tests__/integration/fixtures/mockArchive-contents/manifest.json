@@ -1,0 +1,24 @@
+{
+  "version": "1.0",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      {
+        "AI_MODEL": "gpt-4",
+        "AI_PROVIDER": "OpenAI",
+        "NO_COUNTS": 2,
+        "WEIGHT": 0.7
+      },
+      {
+        "AI_MODEL": "claude-3-sonnet-20240229",
+        "AI_PROVIDER": "Anthropic",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.3
+      }
+    ],
+    "ITERATIONS": 1
+  }
+}

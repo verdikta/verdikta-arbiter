@@ -1,0 +1,3 @@
+mkdir chainlink-ai-adapter
+cd chainlink-ai-adapter
+npm init -y 

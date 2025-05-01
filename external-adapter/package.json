@@ -1,0 +1,56 @@
+{
+  "name": "chainlink-ai-adapter",
+  "version": "1.0.0",
+  "description": "Chainlink External Adapter for AI-based dispute resolution",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "jest",
+    "test:watch": "jest --watch",
+    "test:coverage": "jest --coverage",
+    "lint": "eslint src/**/*.js",
+    "test:integration": "jest --detectOpenHandles --testPathPattern=integration"
+  },
+  "dependencies": {
+    "@helia/http": "^1.0.11",
+    "adm-zip": "^0.5.10",
+    "axios": "^1.6.7",
+    "body-parser": "^1.20.2",
+    "dotenv": "^16.4.1",
+    "express": "^4.18.2",
+    "form-data": "^4.0.1",
+    "helmet": "^7.1.0",
+    "joi": "^17.13.3",
+    "node-7z": "^3.0.0",
+    "node-fetch": "^2.7.0",
+    "retry": "^0.13.1",
+    "tar": "^6.2.0",
+    "tar-fs": "^3.0.6",
+    "unzipper": "^0.12.3",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.26.0",
+    "@babel/plugin-transform-modules-commonjs": "^7.25.9",
+    "@babel/preset-env": "^7.26.0",
+    "@chainsafe/libp2p-noise": "^16.0.0",
+    "@chainsafe/libp2p-yamux": "^7.0.1",
+    "@eslint/config-array": "^0.19.0",
+    "@eslint/object-schema": "^2.1.4",
+    "@libp2p/bootstrap": "^11.0.10",
+    "@libp2p/tcp": "^10.0.11",
+    "babel-jest": "^29.7.0",
+    "eslint": "^8.57.0",
+    "glob": "^10.0.0",
+    "jest": "^29.7.0",
+    "nock": "^13.5.1",
+    "rimraf": "^5.0.0",
+    "supertest": "^7.0.0"
+  },
+  "overrides": {
+    "glob": "^10.0.0",
+    "rimraf": "^5.0.0",
+    "@eslint/config-array": "^0.19.0",
+    "@eslint/object-schema": "^2.1.4"
+  }
+}

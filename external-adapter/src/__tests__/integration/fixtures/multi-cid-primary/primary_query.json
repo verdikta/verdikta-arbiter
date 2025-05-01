@@ -1,0 +1,5 @@
+{
+  "query": "There are two parties in a dispute. The plaintiff (client X) will make a case, then the defendant (vendor Y). You must choose which party is correct after weighing all of the data.",
+  "references": [],
+  "outcomes": ["Plaintiff", "Defendant"]
+} 

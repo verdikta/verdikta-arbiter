@@ -1,0 +1,10 @@
+Verdikta Smart Contract Deployment Information
+=============================================
+
+Operator Contract Address: 0xc1f36B0769b899a0C9aB2290Cf34EdaaAc981FFD
+Chainlink Node Address: 0xfd09a1b19B27C1609e5e006d37986f3B754aED93
+Job ID: bccd2af0-bccd-bccd-bccd2af0-bccd-bccd2af0-bccd2af0c023144d7a7d1ad7d4b8e834
+Job ID (no hyphens): bccd2af0bccdbccdbccd2af0bccdbccd2af0bccd2af0c023144d7a7d1ad7d4b8e834
+
+For detailed instructions, see the documentation at:
+/root/verdikta-arbiter-node/docs/README.md

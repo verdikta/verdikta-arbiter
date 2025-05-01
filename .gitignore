@@ -1,0 +1,41 @@
+# Node dependencies
+node_modules/
+
+# Build artifacts
+build/
+coverage/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.pid
+*.pid.lock
+
+# Environment variables / Secrets
+.env
+.env.*
+*.env
+.api_keys
+.contracts
+.chainlink
+.postgres
+
+# Installer generated/temp files
+installer/temp_client_build/
+installer/.env
+installer/.api_keys
+installer/.contracts
+installer/.chainlink
+installer/.postgres
+installer/*.backup
+installer/info/
+installer/*-arbiter.sh # Exclude copied scripts
+installer/*-status.sh # Exclude copied scripts
+tmp/
+
+# OS generated files
+.DS_Store
+Thumbs.db

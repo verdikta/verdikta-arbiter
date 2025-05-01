@@ -1,0 +1,65 @@
+diff --git a/src/services/aiClient.js b/src/services/aiClient.js
+index fbbe8951..cccf1848 100644
+--- a/src/services/aiClient.js
++++ b/src/services/aiClient.js
+@@ -15,46 +15,37 @@ class AIClient {
+       }
+     });
+     
++    this.retryOptions = config.retry;
+     logger.info(`AI Client configured with URL: ${config.ai.nodeUrl}`);
+   }
+ 
+   async evaluate(query, extractedPath) {
+-    const operation = retry.operation(config.retry);
+-    
+     return new Promise((resolve, reject) => {
++      const operation = retry.operation(this.retryOptions);
++      
+       operation.attempt(async (currentAttempt) => {
+         try {
+           logger.info(`Sending evaluation request to AI Node, attempt ${currentAttempt}`);
+           
+-          // Read manifest to get file references
+-          const manifestPath = path.join(extractedPath, 'manifest.json');
+-          const manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+-          
+-          // Prepare payload
++          let manifest;
++          if (extractedPath) {
++            // Read manifest if path provided
++            const manifestPath = path.join(extractedPath, 'manifest.json');
++            manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
++          }
++
+           const payload = {
+-            prompt: query.prompt,
+-            models: query.models,
+-            iterations: query.iterations,
+-            attachments: []
++            ...query,
++            attachments: manifest?.additional?.map(f => f.content) || []
+           };
+-
+-          // Handle additional files if they exist in manifest
+-          if (manifest.additional && manifest.additional.length > 0) {
+-            for (const file of manifest.additional) {
+-              const filePath = path.join(extractedPath, file.filename);
+-              const fileData = await fs.readFile(filePath);
+-              const base64Data = `data:${file.type};base64,${fileData.toString('base64')}`;
+-              payload.attachments.push(base64Data);
+-            }
+-          }
+           
+           logger.info('Sending request with payload structure:', {
+             prompt: payload.prompt,
+             modelsCount: payload.models.length,
+             attachmentsCount: payload.attachments.length,
+-            attachmentTypes: manifest.additional?.map(f => f.type) || []
++            attachmentTypes: manifest?.additional?.map(f => f.type) || []
+           });
+-          
++
+           const response = await this.client.post('/api/rank-and-justify', payload);
+           logger.info(`Response received: ${JSON.stringify(response.data, null, 2)}`);
+           resolve(response.data);
