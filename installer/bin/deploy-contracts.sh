@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Verdikta Validator Node - Smart Contracts Deployment Script
+# Verdikta Arbiter Node - Smart Contracts Deployment Script
 # Deploys the necessary smart contracts to Base Sepolia network
 
 set -e  # Exit on any error
@@ -9,7 +9,7 @@ set -e  # Exit on any error
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_DIR="$INSTALLER_DIR/config"
-COMPATIBLE_OPERATOR_DIR="$INSTALLER_DIR/compatible-operator"
+# COMPATIBLE_OPERATOR_DIR="$INSTALLER_DIR/compatible-operator" # Ensure this line is removed or commented
 
 # Color definitions
 GREEN='\033[0;32m'
@@ -18,7 +18,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Deploying Smart Contracts for Verdikta Validator Node...${NC}"
+echo -e "${BLUE}Deploying Smart Contracts for Verdikta Arbiter Node...${NC}"
 
 # Load environment variables
 if [ -f "$INSTALLER_DIR/.env" ]; then
@@ -56,42 +56,10 @@ ask_yes_no() {
     done
 }
 
-# Setup contracts directory
-CONTRACTS_DIR="$INSTALL_DIR/contracts"
-echo -e "${BLUE}Setting up contracts directory at $CONTRACTS_DIR...${NC}"
-mkdir -p "$CONTRACTS_DIR"
+# --- ALL COMPATIBLE-OPERATOR AND TRUFFLE LOGIC REMOVED FROM HERE --- 
+# --- UNTIL THE "Instructions for getting the Chainlink node address" SECTION ---
 
-# Check if the compatible-operator directory exists
-if [ ! -d "$COMPATIBLE_OPERATOR_DIR" ]; then
-    echo -e "${RED}Error: Compatible operator directory not found at $COMPATIBLE_OPERATOR_DIR${NC}"
-    exit 1
-fi
-
-# Copy basicJobSpec from local chainlink-node directory
-LOCAL_CHAINLINK_NODE_DIR="$(dirname "$INSTALLER_DIR")/chainlink-node"
-if [ ! -f "$CONTRACTS_DIR/basicJobSpec" ]; then
-    echo -e "${BLUE}Getting basicJobSpec template...${NC}"
-    if [ -f "$LOCAL_CHAINLINK_NODE_DIR/basicJobSpec" ]; then
-        cp "$LOCAL_CHAINLINK_NODE_DIR/basicJobSpec" "$CONTRACTS_DIR/basicJobSpec"
-        echo -e "${GREEN}Copied basicJobSpec from $LOCAL_CHAINLINK_NODE_DIR${NC}"
-    else
-        echo -e "${RED}Error: basicJobSpec not found in $LOCAL_CHAINLINK_NODE_DIR${NC}"
-        exit 1
-    fi
-fi
-
-# Copy the compatible operator files to the contracts directory
-OPERATOR_PROJECT_DIR="$CONTRACTS_DIR/compatible-operator"
-echo -e "${BLUE}Setting up compatible operator at $OPERATOR_PROJECT_DIR...${NC}"
-
-# Create directory if it doesn't exist
-mkdir -p "$OPERATOR_PROJECT_DIR"
-
-# Copy all files from the compatible-operator directory
-echo -e "${BLUE}Copying compatible operator files...${NC}"
-cp -r "$COMPATIBLE_OPERATOR_DIR"/* "$OPERATOR_PROJECT_DIR/"
-
-# Instructions for getting the Chainlink node address
+# Instructions for getting the Chainlink node address (This section will be kept and used)
 echo
 echo -e "${YELLOW}You need your Chainlink node address for contract authorization:${NC}"
 echo -e "${YELLOW}1. Go to the Chainlink node UI at http://localhost:6688${NC}"
@@ -108,7 +76,7 @@ if [[ ! "$NODE_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
     exit 1
 fi
 
-# Check if private key exists in environment variables
+# Check if private key exists in environment variables (This section will be kept and used)
 if [ -z "$PRIVATE_KEY" ]; then
     echo
     echo -e "${YELLOW}To deploy the operator contract, a wallet private key is needed.${NC}"
@@ -136,79 +104,124 @@ else
     echo -e "${GREEN}Using private key from environment configuration.${NC}"
 fi
 
-# Setup .env file for the compatible operator project
-cat > "$OPERATOR_PROJECT_DIR/.env" << EOL
-# Private key without 0x prefix
-PRIVATE_KEY=$PRIVATE_KEY
-
-# Base Sepolia RPC URL
-BASE_SEPOLIA_RPC_URL=https://sepolia.base.org
-
-# Node Address (Chainlink node)
-NODE_ADDRESS=$NODE_ADDRESS
-EOL
-
-# Navigate to the compatible operator directory and deploy
-echo -e "${BLUE}Deploying compatible operator contract...${NC}"
-cd "$OPERATOR_PROJECT_DIR"
-
-# Install npm dependencies
-echo -e "${BLUE}Installing npm dependencies...${NC}"
-npm install
-
-# Run deployment script
-echo -e "${BLUE}Running deployment script...${NC}"
-bash ./deploy.sh
-
-# Get the contract address from the build artifacts - FIXING THE EXTRACTION PATTERN
-# The original pattern was looking for "contract address:" which doesn't match
+# Placeholder for CONTRACT_ADDRESS which will be set by Hardhat deployment
 CONTRACT_ADDRESS=""
 
-# First try to get address from deployment output directly
-if [ -f "build/contracts/CompatibleOperator.json" ]; then
-    # Use a more robust pattern for JSON parsing
-    CONTRACT_ADDRESS=$(grep -o '"address": "[^"]*"' build/contracts/CompatibleOperator.json | head -1 | cut -d'"' -f4)
-    
-    # If that fails, try alternate patterns
-    if [ -z "$CONTRACT_ADDRESS" ]; then
-        # Try a more flexible grep approach
-        CONTRACT_ADDRESS=$(grep -A 2 "networks" build/contracts/CompatibleOperator.json | grep -o '0x[a-fA-F0-9]\{40\}' | head -1)
-    fi
+# --- NEW HARDHAT DEPLOYMENT LOGIC ---
+
+echo -e "${BLUE}Setting up ArbiterOperator deployment using Hardhat...${NC}"
+
+ARBITER_OPERATOR_SRC_DIR="$(dirname "$INSTALLER_DIR")/arbiter-operator"
+OPERATOR_BUILD_DIR="$INSTALL_DIR/contracts/arbiter-operator-build"
+
+if [ ! -d "$ARBITER_OPERATOR_SRC_DIR" ]; then
+    echo -e "${RED}Error: ArbiterOperator source directory not found at $ARBITER_OPERATOR_SRC_DIR${NC}"
+    exit 1
 fi
 
-# If still not found, ask the user to provide it from the visible deployment output
-if [ -z "$CONTRACT_ADDRESS" ]; then
-    echo -e "${YELLOW}Unable to automatically extract the contract address from build artifacts.${NC}"
-    echo -e "${YELLOW}However, the contract appears to have been deployed successfully.${NC}"
-    echo -e "${YELLOW}Please copy the contract address from the deployment output above.${NC}"
-    
-    read -p "Enter the deployed contract address (0x...): " CONTRACT_ADDRESS
-    
-    # Validate the address format
-    if [[ ! "$CONTRACT_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
-        echo -e "${RED}Error: Invalid Ethereum address format. Please enter a valid address starting with '0x'.${NC}"
-        exit 1
-    fi
+echo -e "${BLUE}Creating temporary build directory for ArbiterOperator: $OPERATOR_BUILD_DIR${NC}"
+rm -rf "$OPERATOR_BUILD_DIR"
+mkdir -p "$OPERATOR_BUILD_DIR/scripts" # Ensure scripts subdirectory exists
+
+echo -e "${BLUE}Copying ArbiterOperator files to build directory...${NC}"
+cp -r "$ARBITER_OPERATOR_SRC_DIR/contracts" "$OPERATOR_BUILD_DIR/"
+cp "$ARBITER_OPERATOR_SRC_DIR/hardhat.config.js" "$OPERATOR_BUILD_DIR/"
+cp "$ARBITER_OPERATOR_SRC_DIR/package.json" "$OPERATOR_BUILD_DIR/"
+if [ -f "$ARBITER_OPERATOR_SRC_DIR/package-lock.json" ]; then
+    cp "$ARBITER_OPERATOR_SRC_DIR/package-lock.json" "$OPERATOR_BUILD_DIR/"
+fi
+# Copy the Hardhat-deploy 'deploy' scripts folder if it exists (standard for hardhat-deploy)
+if [ -d "$ARBITER_OPERATOR_SRC_DIR/deploy" ]; then
+    cp -r "$ARBITER_OPERATOR_SRC_DIR/deploy" "$OPERATOR_BUILD_DIR/"
+fi
+# Copy our custom scripts folder (scripts/deploy.js, scripts/setAuthorizedSenders.js)
+cp -r "$ARBITER_OPERATOR_SRC_DIR/scripts" "$OPERATOR_BUILD_DIR/"
+# Copy the lib directory
+if [ -d "$ARBITER_OPERATOR_SRC_DIR/lib" ]; then
+    cp -r "$ARBITER_OPERATOR_SRC_DIR/lib" "$OPERATOR_BUILD_DIR/"
+else
+    echo -e "${YELLOW}Warning: lib directory not found in $ARBITER_OPERATOR_SRC_DIR, but might be needed by contracts.${NC}"
+fi
+# Copy deployment-addresses.json
+if [ -f "$ARBITER_OPERATOR_SRC_DIR/deployment-addresses.json" ]; then
+    cp "$ARBITER_OPERATOR_SRC_DIR/deployment-addresses.json" "$OPERATOR_BUILD_DIR/"
+else
+    echo -e "${RED}Error: deployment-addresses.json not found in $ARBITER_OPERATOR_SRC_DIR${NC}"
+    exit 1
 fi
 
-# Save the contract address
+cd "$OPERATOR_BUILD_DIR"
+
+echo -e "${BLUE}Installing ArbiterOperator dependencies...${NC}"
+npm install
+
+echo -e "${BLUE}Creating .env file for Hardhat deployment...${NC}"
+# Ensure PRIVATE_KEY has 0x prefix for Hardhat/ethers
+HH_PRIVATE_KEY=$PRIVATE_KEY
+if [[ ! "$HH_PRIVATE_KEY" =~ ^0x ]]; then
+    HH_PRIVATE_KEY="0x$HH_PRIVATE_KEY"
+fi
+cat > .env << EOL
+PRIVATE_KEY=$HH_PRIVATE_KEY
+INFURA_API_KEY=$INFURA_API_KEY
+NODE_ADDRESS=$NODE_ADDRESS
+EOL
+# Note: NODE_ADDRESS is added here for setAuthorizedSenders.js to potentially pick up if needed
+
+echo -e "${BLUE}Deploying ArbiterOperator contract via Hardhat...${NC}"
+# Run the custom deploy script and capture its output
+DEPLOY_OUTPUT_FILE="deploy_output.log"
+if npx hardhat run scripts/deploy.js --network base_sepolia > "$DEPLOY_OUTPUT_FILE" 2>&1; then
+    echo -e "${GREEN}ArbiterOperator deployment script executed. Output in $DEPLOY_OUTPUT_FILE${NC}"
+    cat "$DEPLOY_OUTPUT_FILE" # Display output for user
+else
+    echo -e "${RED}ArbiterOperator deployment script failed. Output in $DEPLOY_OUTPUT_FILE${NC}"
+    cat "$DEPLOY_OUTPUT_FILE" # Display error output for user
+    exit 1
+fi
+
+echo -e "${BLUE}Extracting deployed ArbiterOperator address from script output...${NC}"
+CONTRACT_ADDRESS=$(grep 'ArbiterOperator deployed to' "$DEPLOY_OUTPUT_FILE" | awk '{print $NF}')
+
+if [[ ! "$CONTRACT_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+    echo -e "${RED}Failed to extract contract address from deployment script output.${NC}"
+    echo -e "${YELLOW}Output was:${NC}"
+    cat "$DEPLOY_OUTPUT_FILE"
+    read -p "Please enter the deployed ArbiterOperator contract address manually: " CONTRACT_ADDRESS
+fi
+
+if [[ ! "$CONTRACT_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+    echo -e "${RED}Invalid or empty contract address obtained for ArbiterOperator: '$CONTRACT_ADDRESS'${NC}"
+    exit 1
+fi
+echo -e "${GREEN}ArbiterOperator deployed at: $CONTRACT_ADDRESS${NC}"
+
+# Save the contract address (This will be updated after Hardhat deployment)
+# The OPERATOR_ADDRESS will be the $CONTRACT_ADDRESS from Hardhat
 echo "OPERATOR_ADDRESS=\"$CONTRACT_ADDRESS\"" > "$INSTALLER_DIR/.contracts"
 echo "NODE_ADDRESS=\"$NODE_ADDRESS\"" >> "$INSTALLER_DIR/.contracts"
 echo -e "${GREEN}Operator contract address saved to $INSTALLER_DIR/.contracts: $CONTRACT_ADDRESS${NC}"
 echo -e "${GREEN}Node address saved to $INSTALLER_DIR/.contracts: $NODE_ADDRESS${NC}"
 
-# Authorize the Chainlink node with the operator contract
-echo -e "${BLUE}Authorizing the Chainlink node with the operator contract...${NC}"
-cd "$OPERATOR_PROJECT_DIR"
-# Run the authorization script
-echo -e "${BLUE}Running node authorization script...${NC}"
-npx truffle exec scripts/authorize_node.js --network baseSepolia
+# --- NODE AUTHORIZATION LOGIC USING HARDHAT ---
 
-# Verify the node authorization
-echo -e "${BLUE}Verifying node authorization...${NC}"
-npx truffle exec scripts/verify_operator.js --network baseSepolia
+echo -e "${BLUE}Authorizing Chainlink node with ArbiterOperator contract...${NC}"
+# The NODE_ADDRESS is already in the .env file in OPERATOR_BUILD_DIR
+# The setAuthorizedSenders.js script should read CONTRACT_ADDRESS (as OPERATOR) from env or accept as param
+# For now, let's assume setAuthorizedSenders.js uses process.env.OPERATOR_ADDRESS and process.env.NODE_ADDRESS
+# We need to set OPERATOR_ADDRESS in the environment for the script
+# We are already in $OPERATOR_BUILD_DIR
+echo -e "${BLUE}Running Hardhat script to authorize node...${NC}"
+if env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESS" npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia; then
+    echo -e "${GREEN}Chainlink node authorization script executed successfully.${NC}"
+else
+    echo -e "${RED}Chainlink node authorization script failed.${NC}"
+    # It's not critical to exit here, user can do it manually later if needed
+    echo -e "${YELLOW}You may need to authorize the node manually using Hardhat tasks or scripts in $OPERATOR_BUILD_DIR/scripts.${NC}"
+fi
+# --- END NODE AUTHORIZATION LOGIC ---
 
-# Generate a random job ID
+# Generate a random job ID (This section can be kept)
 JOB_ID=$(openssl rand -hex 16 | sed 's/\(..\)\(..\)\(..\)\(..\)-\(..\)\(..\)-\(..\)\(..\)-\(..\)\(..\)-\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1\2\3\4-\5\6-\7\8-\9\10-\11\12\13\14\15\16/' | sed 's/.\{8\}/&-&/;s/.\{13\}/&-&/;s/.\{18\}/&-&/')
 JOB_ID_NO_HYPHENS=$(echo "$JOB_ID" | tr -d '-')
 
@@ -229,7 +242,7 @@ cat > "$DEPLOYMENT_INFO_DIR/deployment.txt" << EOL
 Verdikta Smart Contract Deployment Information
 =============================================
 
-Operator Contract Address: $CONTRACT_ADDRESS
+Operator Contract Address: $CONTRACT_ADDRESS # This will be the new Hardhat deployed address
 Chainlink Node Address: $NODE_ADDRESS
 Job ID: $JOB_ID
 Job ID (no hyphens): $JOB_ID_NO_HYPHENS

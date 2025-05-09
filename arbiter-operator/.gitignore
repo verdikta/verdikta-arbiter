@@ -1,0 +1,34 @@
+# Misc
+temp.txt
+deployment-addresses.json
+
+# Hardhat files
+/artifacts/
+/cache/
+/typechain/
+/typechain-types/
+/deployments/
+
+# Dependencies
+/node_modules/
+/lib/
+
+# Environment and configuration files
+.env
+.env.*
+!.env.example
+
+# Testing artifacts
+/coverage
+/coverage.json
+
+# Logs
+logs
+*.log
+npm-debug.log*
+
+# Editor and OS files
+*.swp
+*.swo
+
+
