@@ -51,6 +51,7 @@ check_service() {
 # Variables to track checks
 FAIL=0
 WARNINGS=0
+INFO=0
 
 # Verify AI Node
 echo -e "${BLUE}Verifying AI Node...${NC}"
@@ -154,11 +155,12 @@ fi
 echo -e "${BLUE}Verifying Smart Contracts...${NC}"
 if [ -f "$INSTALLER_DIR/.contracts" ]; then
     source "$INSTALLER_DIR/.contracts"
-    if [ -n "$OPERATOR_ADDRESS" ] && [ -n "$NODE_ADDRESS" ] && [ -n "$JOB_ID" ]; then
+    if [ -n "$OPERATOR_ADDRESS" ] && [ -n "$NODE_ADDRESS" ] && [ -n "$JOB_ID" ] && [ -n "$JOB_ID_NO_HYPHENS" ]; then
         echo -e "${GREEN}✓ Contract information found${NC}"
         echo -e "${GREEN}  Operator Contract: $OPERATOR_ADDRESS${NC}"
         echo -e "${GREEN}  Node Address: $NODE_ADDRESS${NC}"
         echo -e "${GREEN}  Job ID: $JOB_ID${NC}"
+        echo -e "${GREEN}  Job ID (no hyphens): $JOB_ID_NO_HYPHENS${NC}"
     else
         echo -e "${YELLOW}WARNING: Contract information appears incomplete.${NC}"
         WARNINGS=$((WARNINGS+1))
@@ -172,77 +174,42 @@ fi
 # Verify network connectivity between components
 echo -e "${BLUE}Verifying network connectivity between components...${NC}"
 
-# Check AI Node to External Adapter connectivity
+# Check if both services are running before testing connectivity
 if [ $AI_NODE_RUNNING -eq 0 ] && [ $ADAPTER_RUNNING -eq 0 ]; then
-    # Test using curl from external adapter to AI node
-    if docker exec cl-postgres curl -s http://localhost:3000/health > /dev/null; then
-        echo -e "${GREEN}✓ AI Node is accessible from Docker network${NC}"
+    # Test connectivity using curl directly from the host
+    if curl -s http://localhost:3000/health > /dev/null; then
+        echo -e "${GREEN}✓ AI Node is accessible from host${NC}"
+        if curl -s http://localhost:8080/health > /dev/null; then
+            echo -e "${GREEN}✓ External Adapter is accessible from host${NC}"
+            echo -e "${GREEN}✓ Network connectivity between components is working${NC}"
+        else
+            echo -e "${YELLOW}WARNING: External Adapter is not accessible from host.${NC}"
+            WARNINGS=$((WARNINGS+1))
+        fi
     else
-        echo -e "${YELLOW}WARNING: AI Node may not be accessible from Docker network.${NC}"
-        echo -e "${YELLOW}This may cause issues with the External Adapter connecting to the AI Node.${NC}"
+        echo -e "${YELLOW}WARNING: AI Node is not accessible from host.${NC}"
         WARNINGS=$((WARNINGS+1))
     fi
 else
-    echo -e "${YELLOW}WARNING: Cannot verify network connectivity because some services are not running.${NC}"
-    WARNINGS=$((WARNINGS+1))
+    echo -e "${YELLOW}INFO: Cannot verify network connectivity because some services are not running.${NC}"
+    INFO=$((INFO+1))
 fi
 
-# Verify client contract setup
-echo -e "${BLUE}Verifying client contract setup...${NC}"
-CLIENT_CONTRACT_VERIFIED=true
-
-# Check if client contract address exists in .contracts file
+# Verify Oracle Registration (Optional)
+echo -e "${BLUE}Verifying Oracle Registration...${NC}"
 if [ -f "$INSTALLER_DIR/.contracts" ]; then
     source "$INSTALLER_DIR/.contracts"
-    if [ -z "$CLIENT_ADDRESS" ]; then
-        echo -e "${YELLOW}Warning: Client contract address not found in .contracts file.${NC}"
-        echo -e "${YELLOW}This may indicate the client contract was not deployed or configured properly.${NC}"
-        CLIENT_CONTRACT_VERIFIED=false
+    if [ -n "$AGGREGATOR_ADDRESS" ]; then
+        echo -e "${GREEN}✓ Oracle is registered with aggregator: $AGGREGATOR_ADDRESS${NC}"
     else
-        echo -e "${GREEN}Client contract address found: $CLIENT_ADDRESS${NC}"
+        echo -e "${BLUE}INFO: Oracle is not registered with an aggregator.${NC}"
+        echo -e "${BLUE}This is optional. To register:${NC}"
+        echo -e "${BLUE}bash $INSTALLER_DIR/bin/register-oracle-dispatcher.sh${NC}"
+        INFO=$((INFO+1))
     fi
 else
-    echo -e "${YELLOW}Warning: Contract information file not found.${NC}"
-    CLIENT_CONTRACT_VERIFIED=false
-fi
-
-# Check if client contract directory exists
-CLIENT_DIR="$(dirname "$INSTALLER_DIR")/demo-client"
-if [ ! -d "$CLIENT_DIR" ]; then
-    echo -e "${YELLOW}Warning: Client contract directory not found at $CLIENT_DIR.${NC}"
-    CLIENT_CONTRACT_VERIFIED=false
-else
-    echo -e "${GREEN}Client contract directory exists.${NC}"
-    
-    # Check for migration file
-    if [ -f "$CLIENT_DIR/migrations/2_deploy_contract.js" ]; then
-        echo -e "${GREEN}Migration file exists.${NC}"
-        
-        # Check if migration file has been configured
-        if grep -q "const oracleAddress = \"$OPERATOR_ADDRESS\"" "$CLIENT_DIR/migrations/2_deploy_contract.js" && \
-           grep -q "const jobId = \"$JOB_ID_NO_HYPHENS\"" "$CLIENT_DIR/migrations/2_deploy_contract.js"; then
-            echo -e "${GREEN}Migration file is properly configured.${NC}"
-        else
-            echo -e "${YELLOW}Warning: Migration file may not be properly configured.${NC}"
-            CLIENT_CONTRACT_VERIFIED=false
-        fi
-    else
-        echo -e "${YELLOW}Warning: Migration file not found.${NC}"
-        CLIENT_CONTRACT_VERIFIED=false
-    fi
-    
-    # Check for build artifacts
-    if [ -d "$CLIENT_DIR/build" ]; then
-        echo -e "${GREEN}Build artifacts directory exists, indicating contract was compiled.${NC}"
-    else
-        echo -e "${YELLOW}Warning: Build artifacts directory not found. Contract may not have been compiled.${NC}"
-        CLIENT_CONTRACT_VERIFIED=false
-    fi
-fi
-
-# Update the verification summary to include client contract status
-if [ "$CLIENT_CONTRACT_VERIFIED" = false ]; then
-    VERIFICATION_FAILED=true
+    echo -e "${YELLOW}WARNING: Contract information not found.${NC}"
+    WARNINGS=$((WARNINGS+1))
 fi
 
 # Summary
@@ -250,13 +217,22 @@ echo -e "\n${BLUE}=== Verification Summary ===${NC}"
 if [ $FAIL -eq 0 ]; then
     if [ $WARNINGS -eq 0 ]; then
         echo -e "${GREEN}✓ All checks passed! Your Verdikta Arbiter Node is properly installed and configured.${NC}"
+        if [ $INFO -gt 0 ]; then
+            echo -e "${BLUE}Note: $INFO informational message(s) above.${NC}"
+        fi
     else
         echo -e "${YELLOW}⚠ Verification completed with $WARNINGS warning(s).${NC}"
         echo -e "${YELLOW}Your installation may be complete, but some components need attention.${NC}"
+        if [ $INFO -gt 0 ]; then
+            echo -e "${BLUE}Note: $INFO informational message(s) above.${NC}"
+        fi
     fi
     exit 0
 else
     echo -e "${RED}✗ Verification failed with errors.${NC}"
     echo -e "${RED}Please address the issues above before using your Verdikta Arbiter Node.${NC}"
+    if [ $INFO -gt 0 ]; then
+        echo -e "${BLUE}Note: $INFO informational message(s) above.${NC}"
+    fi
     exit 1
 fi 

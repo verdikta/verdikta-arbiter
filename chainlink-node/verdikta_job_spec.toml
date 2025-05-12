@@ -1,7 +1,7 @@
 type = "directrequest"
 schemaVersion = 1
 name = "Verdikta AI Evaluation"
-contractAddress = "0x2b8C873134aE95268cb80c65f258EB9f43542AB1"
+contractAddress = "0x91A5fe7FC3A729BD38602d4bD5a7F9b6aCA6C7A9"
 maxTaskDuration = "0s"
 evmChainID = "84532"
 observationSource = """
@@ -31,7 +31,7 @@ encode_data  [type="ethabiencode"
 
 
     submit_tx [type="ethtx" 
-          to="0x2b8C873134aE95268cb80c65f258EB9f43542AB1" 
+          to="0x91A5fe7FC3A729BD38602d4bD5a7F9b6aCA6C7A9" 
           data="$(encode_tx)" 
           gasLimit="1500000"
           minConfirmations="2"

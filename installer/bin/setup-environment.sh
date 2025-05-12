@@ -374,7 +374,18 @@ EOL
         
         # Set restrictive permissions on .env file
         chmod 600 "$INSTALLER_DIR/.env"
-        echo -e "${GREEN}Private key saved securely.${NC}"
+        echo -e "${GREEN}Private key saved securely to .env.${NC}"
+    fi
+
+    # Save Infura API Key to .env file as well for general use by scripts
+    if [ -n "$INFURA_API_KEY" ]; then
+        if grep -q "INFURA_API_KEY=" "$INSTALLER_DIR/.env" 2>/dev/null; then
+            sed -i "s/INFURA_API_KEY=.*/INFURA_API_KEY=\"$INFURA_API_KEY\"/" "$INSTALLER_DIR/.env"
+        else
+            echo "INFURA_API_KEY=\"$INFURA_API_KEY\"" >> "$INSTALLER_DIR/.env"
+        fi
+        chmod 600 "$INSTALLER_DIR/.env" # Ensure permissions are set if file was newly created or only had PRIVATE_KEY
+        echo -e "${GREEN}Infura API Key saved to .env.${NC}"
     fi
     
     echo -e "${GREEN}API keys configured and saved.${NC}"

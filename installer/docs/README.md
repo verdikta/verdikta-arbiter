@@ -10,10 +10,10 @@ The installer copies and configures the following components into a target direc
 2.  **External Adapter**: Copies the code from `verdikta-arbiter/external-adapter/`. This adapter connects the Chainlink node to the AI Node.
 3.  **Docker and PostgreSQL**: Installs Docker (if not present) and sets up a PostgreSQL container for the Chainlink node database.
 4.  **Chainlink Node**: Installs and configures the Chainlink node software itself (usually via Docker). Configuration files are copied from `verdikta-arbiter/chainlink-node/`.
-5.  **Smart Contracts (Optional Deployment)**: Scripts are included to deploy required contracts (like the Operator) to a target network (e.g., Base Sepolia). Contract source might be from `verdikta-arbiter/chainlink-node/` or `installer/compatible-operator/`.
-    - Includes deployment for a compatible operator contract suitable for various client contract versions.
+5.  **Smart Contracts**: Deploys the Operator contract to a target network (e.g., Base Sepolia). Contract source is from `installer/compatible-operator/` or `verdikta-arbiter/arbiter-operator/`.
+    - The deployed operator contract is automatically authorized to interact with your Chainlink node.
 6.  **Bridges and Jobs**: Configures the bridge connection to the External Adapter and sets up the core job specification (e.g., `verdikta_job_spec.toml` from `verdikta-arbiter/chainlink-node/`) within the Chainlink node.
-7.  **Demo Client (Optional Setup)**: Copies the code from `verdikta-arbiter/demo-client/` and provides scripts to set it up for testing interactions with the arbiter.
+7.  **Oracle Registration (Optional)**: Registers the deployed oracle (operator) contract with an aggregator/dispatcher contract for reputation management.
 
 ## Prerequisites
 
@@ -26,8 +26,8 @@ The installer copies and configures the following components into a target direc
   - Anthropic (Claude access recommended)
   - Infura (or other Web3 provider for your target network, e.g., Base Sepolia)
   - IPFS Service (e.g., Pinata, Infura IPFS - for External Adapter)
-- Testnet funds (e.g., Base Sepolia ETH and LINK) for the target network if deploying contracts.
-- Wallet private key with testnet funds if deploying contracts.
+- Testnet funds (e.g., Base Sepolia ETH and LINK) for the target network for deploying contracts.
+- Wallet private key with testnet funds for deploying contracts.
 
 ## Quick Start
 
@@ -58,10 +58,10 @@ The `install.sh` script orchestrates the following steps, often calling other sc
 4.  **Install External Adapter**: Copies `external-adapter` files to the target directory and installs dependencies (`bin/install-adapter.sh`).
 5.  **Setup Docker and PostgreSQL**: Ensures Docker is running and sets up the PostgreSQL container (`bin/setup-docker.sh`).
 6.  **Setup Chainlink Node**: Installs the Chainlink node (usually via Docker) and applies necessary configurations (`bin/setup-chainlink.sh`).
-7.  **Deploy Smart Contracts (Optional)**: May prompt the user to deploy necessary contracts like the Operator contract (`bin/deploy-contracts.sh` or `bin/deploy-contracts-automated.sh`).
-    - Automatically authorizes the Chainlink node with the deployed contract if applicable.
+7.  **Deploy Smart Contracts**: Deploys the Operator contract (`bin/deploy-contracts.sh` or `bin/deploy-contracts-automated.sh`).
+    - Automatically authorizes the Chainlink node with the deployed contract.
 8.  **Configure Node Jobs and Bridges**: Sets up the bridge connection and the primary job specification within the Chainlink node (`bin/configure-node.sh`).
-9.  **Setup Demo Client (Optional)**: Copies `demo-client` files and may run setup scripts (`bin/setup-client-contract.sh`).
+9.  **Register Oracle with Aggregator (Optional)**: Optionally registers the operator contract with an aggregator contract (`bin/register-oracle-dispatcher.sh`).
 
 After these steps, the installer:
 - Verifies the installation where possible (`util/verify-installation.sh`).
@@ -102,7 +102,7 @@ If you prefer to run the installation steps individually (execute from within th
     bash bin/setup-chainlink.sh
     ```
 
-7.  Deploy Smart Contracts (choose one if needed):
+7.  Deploy Smart Contracts (choose one):
     ```bash
     bash bin/deploy-contracts.sh # Interactive deployment
     # OR
@@ -114,24 +114,27 @@ If you prefer to run the installation steps individually (execute from within th
     bash bin/configure-node.sh
     ```
 
-9.  Setup Demo Client (choose one if needed):
+9.  Register Oracle with Aggregator (optional):
     ```bash
-    bash bin/setup-client-contract.sh # Sets up client within the main install dir
-    # OR
-    bash bin/setup-client-contract-standalone.sh # Sets up client in a separate location
+    bash bin/register-oracle-dispatcher.sh
     ```
 
 10. Verify your installation (optional):
 ```bash
-./util/verify-installation.sh
+bash util/verify-installation.sh
 ```
 
-## Compatible Operator Contract
+## Oracle Registration with Aggregator
 
-The installer includes scripts (`deploy-contracts.sh`, `deploy-contracts-automated.sh`) to deploy a compatible operator contract. This contract:
+The installer includes a script (`register-oracle-dispatcher.sh`) to register your deployed operator contract with an aggregator/dispatcher contract. This is optional but recommended for integrating with the Verdikta reputation system:
 
-- Is designed to work seamlessly with the Verdikta External Adapter.
-- Aims to support various client contract versions (e.g., those expecting Chainlink v0.4.1 interfaces).
+- **Purpose**: Registers your oracle with a reputation management system
+- **Prerequisites**: You need the address of a deployed aggregator contract
+- **Process**: The script will:
+  - Create a `.env` file in the arbiter-operator directory
+  - Prompt you for the aggregator contract address
+  - Register your operator with the specified aggregator using the job ID from configuration
+  - Save the aggregator address to your `.contracts` file for verification
 
 ## Managing Your Arbiter
 
@@ -200,8 +203,7 @@ installer/
 │   ├── deploy-contracts.sh  # Interactive contract deployment script
 │   ├── deploy-contracts-automated.sh # Automated contract deployment script
 │   ├── configure-node.sh    # Job and bridge configuration script
-│   ├── setup-client-contract.sh # Demo client setup script
-│   └── setup-client-contract-standalone.sh # Standalone demo client setup
+│   └── register-oracle-dispatcher.sh # Oracle registration script (optional)
 ├── compatible-operator/     # Compatible operator contract files (may be used by deploy scripts)
 │   ├── contracts/           # Smart contract source code
 │   ├── migrations/          # Truffle deployment scripts
@@ -214,7 +216,7 @@ installer/
 │   └── contracts/           # Contract-related config templates
 ├── util/                    # Utility scripts (check prerequisites, verify, backup)
 │   ├── check-prerequisites.sh # Checks system requirements
-│   ├── verify-installation.sh # Verifies successful installation (may need update)
+│   ├── verify-installation.sh # Verifies successful installation
 │   └── backup-restore.sh    # Backup and restore utilities (may need update)
 └── docs/                    # Documentation for the installer
     ├── README.md            # This file
@@ -234,5 +236,4 @@ Contributions are welcome! Please see our [Contributing Guide](CONTRIBUTING.md) 
 
 - The Chainlink team for their excellent oracle technology
 - OpenAI and Anthropic for their AI models
-- The broader Verdikta community
-- The Verdikta community 
+- The broader Verdikta community 

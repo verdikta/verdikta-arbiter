@@ -150,6 +150,20 @@ else
     exit 1
 fi
 
+# Extract LINK token address for base_sepolia from deployment-addresses.json
+LINK_TOKEN_ADDRESS_BASE_SEPOLIA=""
+if command -v jq >/dev/null 2>&1; then
+    LINK_TOKEN_ADDRESS_BASE_SEPOLIA=$(jq -r '.base_sepolia.linkTokenAddress' "$OPERATOR_BUILD_DIR/deployment-addresses.json")
+    if [ -z "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ] || [ "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" == "null" ]; then
+        echo -e "${YELLOW}Warning: Could not automatically extract LINK token address for base_sepolia from deployment-addresses.json using jq.${NC}"
+        LINK_TOKEN_ADDRESS_BASE_SEPOLIA="" # Reset if not found or null
+    else
+        echo -e "${GREEN}Extracted LINK token address for Base Sepolia: $LINK_TOKEN_ADDRESS_BASE_SEPOLIA${NC}"
+    fi
+else
+    echo -e "${YELLOW}Warning: jq is not installed. Cannot automatically extract LINK token address. This might be needed by later scripts.${NC}"
+fi
+
 cd "$OPERATOR_BUILD_DIR"
 
 echo -e "${BLUE}Installing ArbiterOperator dependencies...${NC}"
@@ -200,8 +214,14 @@ echo -e "${GREEN}ArbiterOperator deployed at: $CONTRACT_ADDRESS${NC}"
 # The OPERATOR_ADDRESS will be the $CONTRACT_ADDRESS from Hardhat
 echo "OPERATOR_ADDRESS=\"$CONTRACT_ADDRESS\"" > "$INSTALLER_DIR/.contracts"
 echo "NODE_ADDRESS=\"$NODE_ADDRESS\"" >> "$INSTALLER_DIR/.contracts"
+if [ -n "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
+    echo "LINK_TOKEN_ADDRESS_BASE_SEPOLIA=\"$LINK_TOKEN_ADDRESS_BASE_SEPOLIA\"" >> "$INSTALLER_DIR/.contracts"
+fi
 echo -e "${GREEN}Operator contract address saved to $INSTALLER_DIR/.contracts: $CONTRACT_ADDRESS${NC}"
 echo -e "${GREEN}Node address saved to $INSTALLER_DIR/.contracts: $NODE_ADDRESS${NC}"
+if [ -n "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
+    echo -e "${GREEN}Base Sepolia LINK token address saved to $INSTALLER_DIR/.contracts: $LINK_TOKEN_ADDRESS_BASE_SEPOLIA${NC}"
+fi
 
 # --- NODE AUTHORIZATION LOGIC USING HARDHAT ---
 

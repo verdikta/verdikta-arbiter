@@ -157,19 +157,23 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}Node Jobs and Bridges configuration completed.${NC}"
 
-# Setup Client Contract
-echo -e "${YELLOW}[9/9]${NC} Setting up Client Contract..."
-if [ ! -f "$SCRIPT_DIR/setup-client-contract.sh" ]; then
-    echo -e "${RED}Error: setup-client-contract.sh not found in $SCRIPT_DIR${NC}"
-    exit 1
+# Register Oracle with Dispatcher (Optional)
+echo -e "${YELLOW}[9/9]${NC} Registering Oracle with Dispatcher (Optional)..."
+if [ ! -f "$SCRIPT_DIR/register-oracle-dispatcher.sh" ]; then
+    echo -e "${RED}Error: register-oracle-dispatcher.sh not found in $SCRIPT_DIR${NC}"
+    # Decide if this should be a fatal error or just a warning if the script is optional.
+    # For now, let's make it non-fatal for the main install if script is missing,
+    # but the new script itself will handle its own errors.
+    echo -e "${YELLOW}Skipping optional Oracle registration as script is missing.${NC}"
+else
+    bash "$SCRIPT_DIR/register-oracle-dispatcher.sh"
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}Oracle registration step finished with errors or was skipped. Please check the logs for details.${NC}"
+        # Not exiting install.sh, as this step is optional or might have its own non-fatal outcomes.
+    else
+        echo -e "${GREEN}Oracle registration step completed.${NC}"
+    fi
 fi
-
-bash "$SCRIPT_DIR/setup-client-contract.sh"
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Client Contract setup failed. Please check the logs for details.${NC}"
-    exit 1
-fi
-echo -e "${GREEN}Client Contract setup completed.${NC}"
 
 # Verify installation
 echo -e "${YELLOW}Verifying installation...${NC}"
