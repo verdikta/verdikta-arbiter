@@ -2,7 +2,7 @@
 pragma solidity ^0.8.19;
 
 // import "https://raw.githubusercontent.com/smartcontractkit/chainlink/master/contracts/src/v0.8/operatorforwarder/Operator.sol";
-import "../lib/chainlink/src/v0.8/operatorforwarder/Operator.sol";
+import "@chainlink/contracts/src/v0.8/operatorforwarder/Operator.sol";
 
 contract ArbiterOperator is Operator {
     /*──────────────────────  CONFIG  ──────────────────────*/

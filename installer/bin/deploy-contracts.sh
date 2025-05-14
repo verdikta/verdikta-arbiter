@@ -136,12 +136,6 @@ if [ -d "$ARBITER_OPERATOR_SRC_DIR/deploy" ]; then
 fi
 # Copy our custom scripts folder (scripts/deploy.js, scripts/setAuthorizedSenders.js)
 cp -r "$ARBITER_OPERATOR_SRC_DIR/scripts" "$OPERATOR_BUILD_DIR/"
-# Copy the lib directory
-if [ -d "$ARBITER_OPERATOR_SRC_DIR/lib" ]; then
-    cp -r "$ARBITER_OPERATOR_SRC_DIR/lib" "$OPERATOR_BUILD_DIR/"
-else
-    echo -e "${YELLOW}Warning: lib directory not found in $ARBITER_OPERATOR_SRC_DIR, but might be needed by contracts.${NC}"
-fi
 # Copy deployment-addresses.json
 if [ -f "$ARBITER_OPERATOR_SRC_DIR/deployment-addresses.json" ]; then
     cp "$ARBITER_OPERATOR_SRC_DIR/deployment-addresses.json" "$OPERATOR_BUILD_DIR/"

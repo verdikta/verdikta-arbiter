@@ -20,6 +20,7 @@
     "hardhat-deploy": "^1.0.2"
   },
   "dependencies": {
+    "@chainlink/contracts": "^1.4.0",
     "yargs": "^17.7.2"
   }
 }
