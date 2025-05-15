@@ -257,7 +257,7 @@ if command_exists ollama; then
     INSTALLED_MODELS=$(ollama list)
     
     # Define recommended models
-    RECOMMENDED_MODELS=("phi3" "llama3.1" "llama3.2" "llava" "deepseek")
+    RECOMMENDED_MODELS=("phi3" "llama3.1" "llama3.2" "llava" "deepseek-r1:8b")
     
     for model in "${RECOMMENDED_MODELS[@]}"; do
         if echo "$INSTALLED_MODELS" | grep -q "$model"; then
