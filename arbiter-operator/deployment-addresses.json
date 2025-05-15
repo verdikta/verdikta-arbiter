@@ -1,0 +1,8 @@
+{
+  "base_sepolia": {
+    "linkTokenAddress": "0xE4aB69C077896252FAFBD49EFD26B5D171A32410"
+  },
+  "sepolia": {
+    "linkTokenAddress": "0x779877A7B0D9E8603169DdbD7836e478b4624789" 
+  }
+}
