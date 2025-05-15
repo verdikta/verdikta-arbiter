@@ -149,13 +149,16 @@ LINK_TOKEN_ADDRESS_BASE_SEPOLIA=""
 if command -v jq >/dev/null 2>&1; then
     LINK_TOKEN_ADDRESS_BASE_SEPOLIA=$(jq -r '.base_sepolia.linkTokenAddress' "$OPERATOR_BUILD_DIR/deployment-addresses.json")
     if [ -z "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ] || [ "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" == "null" ]; then
-        echo -e "${YELLOW}Warning: Could not automatically extract LINK token address for base_sepolia from deployment-addresses.json using jq.${NC}"
-        LINK_TOKEN_ADDRESS_BASE_SEPOLIA="" # Reset if not found or null
+        echo -e "${RED}Error: Could not extract LINK token address for base_sepolia from deployment-addresses.json using jq.${NC}"
+        echo -e "${YELLOW}Please ensure deployment-addresses.json is correctly formatted and contains the required key.${NC}"
+        exit 1 # Exit if critical info is missing
     else
         echo -e "${GREEN}Extracted LINK token address for Base Sepolia: $LINK_TOKEN_ADDRESS_BASE_SEPOLIA${NC}"
     fi
 else
-    echo -e "${YELLOW}Warning: jq is not installed. Cannot automatically extract LINK token address. This might be needed by later scripts.${NC}"
+    echo -e "${RED}Error: jq is not installed. This is required to parse deployment-addresses.json.${NC}"
+    echo -e "${YELLOW}Please install jq (e.g., sudo apt-get install jq) and try again.${NC}"
+    exit 1 # Exit if jq is missing
 fi
 
 cd "$OPERATOR_BUILD_DIR"
