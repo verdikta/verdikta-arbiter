@@ -201,6 +201,54 @@ else
     FAIL=1
 fi
 
+# Check for jq (JSON processor)
+echo -e "${BLUE}Checking for jq...${NC}"
+if ! command_exists jq; then
+    echo -e "${YELLOW}jq (JSON processor) is not installed.${NC}"
+    if [ "$OS_ID" = "ubuntu" ] || [ "$OS_ID" = "debian" ]; then
+        echo -e "${BLUE}Attempting to install jq using apt-get...${NC}"
+        sudo apt-get update > /dev/null 2>&1
+        if sudo apt-get install -y jq > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ jq successfully installed.${NC}"
+        else
+            echo -e "${RED}ERROR: Failed to automatically install jq using apt-get.${NC}"
+            FAIL=1 # Mark as failure if auto-install fails
+        fi
+    elif [ "$OS_ID" = "macos" ] && command_exists brew; then
+        echo -e "${BLUE}Attempting to install jq using Homebrew...${NC}"
+        if brew install jq > /dev/null 2>&1; then
+            echo -e "${GREEN}✓ jq successfully installed.${NC}"
+        else
+            echo -e "${RED}ERROR: Failed to automatically install jq using Homebrew.${NC}"
+            FAIL=1 # Mark as failure if auto-install fails
+        fi
+    elif [ "$OS_ID" = "fedora" ] || [ "$OS_ID" = "centos" ] || [ "$OS_ID" = "rhel" ]; then # Basic check for yum/dnf systems
+        echo -e "${BLUE}Attempting to install jq using yum or dnf...${NC}"
+        if sudo yum install -y jq > /dev/null 2>&1 || sudo dnf install -y jq > /dev/null 2>&1; then
+             echo -e "${GREEN}✓ jq successfully installed.${NC}"
+        else
+            echo -e "${RED}ERROR: Failed to automatically install jq using yum/dnf.${NC}"
+            FAIL=1
+        fi
+    else
+        # If not a recognized OS for auto-install, or auto-install failed, mark as failure.
+        FAIL=1 
+    fi
+
+    # If still not found after attempting install (or if OS wasn't right for auto-install)
+    if ! command_exists jq; then
+        echo -e "${RED}ERROR: jq is still not installed after attempting automatic installation.${NC}"
+        echo -e "${YELLOW}Please install jq manually. Examples:${NC}"
+        echo -e "${YELLOW}  On Debian/Ubuntu: sudo apt-get update && sudo apt-get install -y jq${NC}"
+        echo -e "${YELLOW}  On macOS (with Homebrew): brew install jq${NC}"
+        echo -e "${YELLOW}  On Fedora/CentOS/RHEL: sudo yum install jq || sudo dnf install jq${NC}"
+        # FAIL is already set to 1 if we reach here and jq isn't installed
+    fi
+else
+    JQ_VERSION=$(jq --version 2>/dev/null || echo "unknown") 
+    echo -e "${GREEN}✓ jq version $JQ_VERSION detected.${NC}"
+fi
+
 # Summary
 echo -e "\n${BLUE}=== Prerequisite Check Summary ===${NC}"
 if [ $FAIL -eq 0 ]; then
