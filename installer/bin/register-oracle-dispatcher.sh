@@ -65,6 +65,42 @@ EOL
 chmod 600 "$ARBITER_OPERATOR_DIR/.env"
 echo -e "${GREEN}.env file created in arbiter-operator directory${NC}"
 
+# Ensure dependencies are installed in arbiter-operator
+echo -e "${BLUE}Checking dependencies for arbiter-operator...${NC}"
+if [ ! -d "$ARBITER_OPERATOR_DIR/node_modules" ]; then
+    echo -e "${YELLOW}node_modules not found in $ARBITER_OPERATOR_DIR. Running npm install...${NC}"
+    cd "$ARBITER_OPERATOR_DIR"
+    
+    # Load nvm if it exists, and set Node version
+    if [ -d "$HOME/.nvm" ]; then
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"
+        [ -s "$NVM_DIR/bash_completion" ] && \\. "$NVM_DIR/bash_completion"
+        
+        echo -e "${BLUE}Using Node.js v20.18.1 for arbiter-operator dependency installation...${NC}"
+        nvm_output=$(nvm use 20.18.1 2>&1)
+        if [[ $nvm_output == *"N/A"* ]]; then
+            echo -e "${YELLOW}Node.js v20.18.1 not installed via NVM. Installing...${NC}"
+            nvm install 20.18.1
+            nvm use 20.18.1
+        fi
+        echo -e "${GREEN}Node.js version set: $(node --version)${NC}"
+    else
+        echo -e "${YELLOW}NVM not found. Assuming Node.js v20.18.1 is available in PATH.${NC}"
+    fi
+
+    npm install
+    if [ $? -ne 0 ]; then
+        echo -e "${RED}Failed to install dependencies in $ARBITER_OPERATOR_DIR${NC}"
+        exit 1
+    fi
+    echo -e "${GREEN}Dependencies installed for arbiter-operator.${NC}"
+else
+    echo -e "${GREEN}node_modules found in $ARBITER_OPERATOR_DIR.${NC}"
+fi
+# Return to the original SCRIPT_DIR or ensure subsequent cd is explicit
+cd "$SCRIPT_DIR" 
+
 # Define the correct wrapped VDKA address
 WRAPPED_VERDIKTA_ADDRESS="0x2F1d1aF9d5C25A48C29f56f57c7BAFFa7cc910a3"  # Correct wrapped VDKA address
 
