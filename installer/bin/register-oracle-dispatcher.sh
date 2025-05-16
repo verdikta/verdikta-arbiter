@@ -74,8 +74,8 @@ if [ ! -d "$ARBITER_OPERATOR_DIR/node_modules" ]; then
     # Load nvm if it exists, and set Node version
     if [ -d "$HOME/.nvm" ]; then
         export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \\. "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && \\. "$NVM_DIR/bash_completion"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
         
         echo -e "${BLUE}Using Node.js v20.18.1 for arbiter-operator dependency installation...${NC}"
         nvm_output=$(nvm use 20.18.1 2>&1)
