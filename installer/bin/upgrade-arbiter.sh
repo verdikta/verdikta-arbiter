@@ -90,7 +90,7 @@ validate_installation() {
         echo -e "${RED}Error: $dir does not appear to be a valid Verdikta arbiter installation.${NC}"
         echo -e "${RED}Missing one or more of the required management scripts: start-arbiter.sh, stop-arbiter.sh, arbiter-status.sh${NC}"
         return 1
-    }
+    fi
     
     return 0
 }
