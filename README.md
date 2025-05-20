@@ -57,6 +57,7 @@ verdikta-arbiter/
 - **Purpose**: Contains scripts to automate the setup and management of a Verdikta arbiter instance. It copies the necessary components (`ai-node`, `external-adapter`, `chainlink-node`) into a target directory (default: `~/verdikta-arbiter-node`) and provides management scripts.
 - **Key Scripts**:
     - `installer/bin/install.sh`: Main installation script.
+    - `installer/bin/upgrade-arbiter.sh`: Upgrades an existing arbiter installation with the latest code.
     - `installer/bin/register-oracle-dispatcher.sh`: Registers the operator with an aggregator contract (optional).
     - `~/verdikta-arbiter-node/start-arbiter.sh`: Starts all arbiter components.
     - `~/verdikta-arbiter-node/stop-arbiter.sh`: Stops all arbiter components.
@@ -113,6 +114,23 @@ Before running the installer, ensure you have:
     - Start: `~/verdikta-arbiter-node/start-arbiter.sh`
     - Stop: `~/verdikta-arbiter-node/stop-arbiter.sh`
     - Status: `~/verdikta-arbiter-node/arbiter-status.sh`
+
+### Upgrading
+
+When new versions of the Verdikta arbiter components are released, you can upgrade your installation using the upgrade script:
+
+```bash
+cd verdikta-arbiter/installer
+bash bin/upgrade-arbiter.sh
+```
+
+The upgrade script will:
+1. Ask for your installation directory (defaulting to the same location used during installation)
+2. Check for changes between your installed version and the current repository
+3. Create a backup of your current installation
+4. Stop the arbiter if it's running
+5. Upgrade the components while preserving your configuration
+6. Restart the arbiter if it was running before the upgrade
 
 ## Development & Testing
 

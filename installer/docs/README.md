@@ -155,6 +155,17 @@ After installation, navigate to your chosen installation directory (e.g., `~/ver
   ./arbiter-status.sh
   ```
 
+## Upgrading Your Arbiter
+
+When new versions of the Verdikta arbiter components are released, you can upgrade your installation:
+
+```bash
+cd verdikta-arbiter/installer
+bash bin/upgrade-arbiter.sh
+```
+
+For detailed instructions and troubleshooting information, see [Upgrading the Verdikta Arbiter Node](upgrading.md).
+
 ## Accessing Your Services
 
 After installation, you can access your services at:
@@ -195,6 +206,7 @@ For production deployments, please review our [Security Best Practices](SECURITY
 installer/
 ├── bin/                     # Executable scripts called by install.sh or manually
 │   ├── install.sh           # Main installation script
+│   ├── upgrade-arbiter.sh   # Upgrade script for existing installations
 │   ├── setup-environment.sh # Environment setup script
 │   ├── install-ai-node.sh   # AI node installation script
 │   ├── install-adapter.sh   # External adapter installation script
@@ -220,6 +232,7 @@ installer/
 │   └── backup-restore.sh    # Backup and restore utilities (may need update)
 └── docs/                    # Documentation for the installer
     ├── README.md            # This file
+    ├── upgrading.md         # Guide for upgrading the arbiter
     ├── TROUBLESHOOTING.md   # Troubleshooting guide (may need update)
     └── SECURITY.md          # Security best practices (may need update)
 ```
