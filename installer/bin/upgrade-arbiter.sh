@@ -32,6 +32,7 @@ cleanup_on_error() {
         if [ -n "$BACKUP_DIR" ] && [ -d "$BACKUP_DIR" ]; then
             echo -e "${YELLOW}A backup of your installation was created at: $BACKUP_DIR${NC}"
             echo -e "${YELLOW}You can restore from this backup if needed.${NC}"
+            echo -e "${YELLOW}To restore: rm -rf $TARGET_DIR && cp -r $BACKUP_DIR $TARGET_DIR${NC}"
         fi
         
         if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
@@ -78,10 +79,9 @@ ask_yes_no() {
 validate_installation() {
     local dir="$1"
     
-    # Check for key directories
-    if [ ! -d "$dir/ai-node" ] || [ ! -d "$dir/external-adapter" ] || [ ! -d "$dir/chainlink-node" ]; then
-        echo -e "${RED}Error: $dir does not appear to be a valid Verdikta arbiter installation.${NC}"
-        echo -e "${RED}Missing one or more of the required directories: ai-node, external-adapter, chainlink-node${NC}"
+    # Check if the directory exists
+    if [ ! -d "$dir" ]; then
+        echo -e "${RED}Error: Directory $dir does not exist.${NC}"
         return 1
     fi
     
@@ -95,80 +95,74 @@ validate_installation() {
     return 0
 }
 
-# Function to compare directories and detect changes
-compare_directories() {
-    local src="$1"
-    local dst="$2"
-    local component="$3"
-    local changes=0
-    
-    echo -e "${BLUE}Checking for changes in $component...${NC}"
-    
-    # Use rsync dry-run to identify changes
-    rsync_output=$(rsync -rcn --delete --exclude="node_modules" --exclude=".env*" --exclude="*.log" --exclude=".git*" "$src/" "$dst/" 2>&1)
-    
-    # Count changes based on rsync output
-    deleted_count=$(echo "$rsync_output" | grep "^deleting " | wc -l)
-    new_files=$(echo "$rsync_output" | grep -v "^deleting " | grep -v "^$" | grep -v "sending incremental" | grep -v "bytes/sec" | grep -v "total size" | wc -l)
-    
-    total_changes=$((deleted_count + new_files))
-    
-    if [ $total_changes -gt 0 ]; then
-        echo -e "${YELLOW}Found $total_changes changes in $component:${NC}"
-        echo -e "${YELLOW}- $new_files new or modified files${NC}"
-        echo -e "${YELLOW}- $deleted_count files to be removed${NC}"
-        changes=1
+# Function to check if a process is running on a port
+check_port() {
+    if lsof -i:$1 >/dev/null 2>&1; then
+        return 0
     else
-        echo -e "${GREEN}No changes detected in $component.${NC}"
+        return 1
     fi
-    
-    return $changes
 }
 
-# Function to backup a directory
-backup_directory() {
+# Function to create a backup of the target directory
+create_backup() {
     local dir="$1"
-    local backup_name="$2"
     local timestamp=$(date +"%Y%m%d-%H%M%S")
     local backup_dir="${dir}_backup_${timestamp}"
     
-    echo -e "${BLUE}Creating backup of $backup_name...${NC}"
+    echo -e "${BLUE}Creating backup of current installation...${NC}"
     cp -r "$dir" "$backup_dir"
     
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}Backup created at: $backup_dir${NC}"
+        BACKUP_DIR="$backup_dir"
         return 0
     else
-        echo -e "${RED}Failed to create backup of $backup_name!${NC}"
+        echo -e "${RED}Failed to create backup! Aborting upgrade.${NC}"
         return 1
     fi
 }
 
-# Function to upgrade a component
+# Function to upgrade a component using full replacement
 upgrade_component() {
     local src="$1"
     local dst="$2"
     local component="$3"
-    local exclude_patterns="$4"
+    local preserve_patterns="$4"
     
     echo -e "${BLUE}Upgrading $component...${NC}"
     
-    # Prepare rsync exclude options
-    local exclude_opts=""
-    for pattern in $exclude_patterns; do
-        exclude_opts="$exclude_opts --exclude=$pattern"
+    # Create component directory if it doesn't exist
+    mkdir -p "$dst"
+    
+    # Save files that should be preserved
+    local temp_dir=$(mktemp -d)
+    for pattern in $preserve_patterns; do
+        if ls "$dst"/$pattern 1> /dev/null 2>&1; then
+            echo -e "${BLUE}Preserving $pattern files...${NC}"
+            cp -r "$dst"/$pattern "$temp_dir"/ 2>/dev/null || true
+        fi
     done
     
-    # Perform the sync
-    rsync -rc --delete $exclude_opts "$src/" "$dst/"
+    # Remove the old directory contents
+    rm -rf "$dst"/*
     
-    if [ $? -eq 0 ]; then
-        echo -e "${GREEN}Successfully upgraded $component.${NC}"
-        return 0
-    else
-        echo -e "${RED}Failed to upgrade $component!${NC}"
-        return 1
-    fi
+    # Copy all files from source
+    cp -r "$src"/* "$dst"/ 2>/dev/null || true
+    
+    # Restore preserved files
+    for pattern in $preserve_patterns; do
+        if ls "$temp_dir"/$pattern 1> /dev/null 2>&1; then
+            echo -e "${BLUE}Restoring $pattern files...${NC}"
+            cp -r "$temp_dir"/$pattern "$dst"/ 2>/dev/null || true
+        fi
+    done
+    
+    # Clean up temporary directory
+    rm -rf "$temp_dir"
+    
+    echo -e "${GREEN}Successfully upgraded $component.${NC}"
+    return 0
 }
 
 # Main script execution starts here
@@ -186,12 +180,6 @@ fi
 
 read -p "Enter the target installation directory [$DEFAULT_INSTALL_DIR]: " TARGET_DIR
 TARGET_DIR=${TARGET_DIR:-$DEFAULT_INSTALL_DIR}
-
-# Validate that the directory exists
-if [ ! -d "$TARGET_DIR" ]; then
-    echo -e "${RED}Error: Directory $TARGET_DIR does not exist.${NC}"
-    exit 1
-fi
 
 # Validate that it's a Verdikta arbiter installation
 validate_installation "$TARGET_DIR"
@@ -212,109 +200,53 @@ TARGET_EXTERNAL_ADAPTER="$TARGET_DIR/external-adapter"
 TARGET_CHAINLINK_NODE="$TARGET_DIR/chainlink-node"
 TARGET_OPERATOR="$TARGET_DIR/contracts"
 
-# Check for changes in each component
-CHANGES_DETECTED=0
+# Check which components are running
+echo -e "${BLUE}Checking arbiter status...${NC}"
+NODE_RUNNING=0
+ADAPTER_RUNNING=0
+CHAINLINK_RUNNING=0
+ARBITER_RUNNING=0
 
-compare_directories "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node"
-if [ $? -eq 1 ]; then
-    CHANGES_DETECTED=1
-    UPGRADE_AI_NODE=1
+if check_port 3000; then
+    NODE_RUNNING=1
+    ARBITER_RUNNING=1
+    echo -e "${BLUE}AI Node is running.${NC}"
 else
-    UPGRADE_AI_NODE=0
+    echo -e "${BLUE}AI Node is not running.${NC}"
 fi
 
-compare_directories "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External Adapter"
-if [ $? -eq 1 ]; then
-    CHANGES_DETECTED=1
-    UPGRADE_ADAPTER=1
+if check_port 8080; then
+    ADAPTER_RUNNING=1
+    ARBITER_RUNNING=1
+    echo -e "${BLUE}External Adapter is running.${NC}"
 else
-    UPGRADE_ADAPTER=0
+    echo -e "${BLUE}External Adapter is not running.${NC}"
 fi
 
-compare_directories "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node"
-if [ $? -eq 1 ]; then
-    CHANGES_DETECTED=1
-    UPGRADE_CHAINLINK=1
+if check_port 6688; then
+    CHAINLINK_RUNNING=1
+    ARBITER_RUNNING=1
+    echo -e "${BLUE}Chainlink Node is running.${NC}"
 else
-    UPGRADE_CHAINLINK=0
+    echo -e "${BLUE}Chainlink Node is not running.${NC}"
 fi
 
-compare_directories "$REPO_OPERATOR" "$TARGET_OPERATOR" "Operator Contracts"
-if [ $? -eq 1 ]; then
-    CHANGES_DETECTED=1
-    UPGRADE_OPERATOR=1
-else
-    UPGRADE_OPERATOR=0
-fi
-
-# Check for changes in management scripts
-UTIL_FILES=("start-arbiter.sh" "stop-arbiter.sh" "arbiter-status.sh")
-UPGRADE_SCRIPTS=0
-
-for script in "${UTIL_FILES[@]}"; do
-    repo_script="$UTIL_DIR/$script"
-    target_script="$TARGET_DIR/$script"
-    
-    if [ -f "$repo_script" ] && [ -f "$target_script" ]; then
-        if ! diff -q "$repo_script" "$target_script" > /dev/null; then
-            echo -e "${YELLOW}Found changes in $script${NC}"
-            CHANGES_DETECTED=1
-            UPGRADE_SCRIPTS=1
-        fi
-    elif [ -f "$repo_script" ] && [ ! -f "$target_script" ]; then
-        echo -e "${YELLOW}New script found: $script${NC}"
-        CHANGES_DETECTED=1
-        UPGRADE_SCRIPTS=1
-    fi
-done
-
-# If no changes detected, exit early
-if [ $CHANGES_DETECTED -eq 0 ]; then
-    echo -e "${GREEN}No changes detected. Your arbiter installation is up-to-date.${NC}"
-    exit 0
-fi
+# Track if arbiter was running
+ARBITER_WAS_RUNNING=$ARBITER_RUNNING
 
 # Ask for confirmation before upgrading
 echo
-echo -e "${YELLOW}Changes were detected in the following components:${NC}"
-[ $UPGRADE_AI_NODE -eq 1 ] && echo -e "- AI Node"
-[ $UPGRADE_ADAPTER -eq 1 ] && echo -e "- External Adapter"
-[ $UPGRADE_CHAINLINK -eq 1 ] && echo -e "- Chainlink Node"
-[ $UPGRADE_OPERATOR -eq 1 ] && echo -e "- Operator Contracts"
-[ $UPGRADE_SCRIPTS -eq 1 ] && echo -e "- Management Scripts"
+echo -e "${YELLOW}The following components will be upgraded:${NC}"
+echo -e "- AI Node"
+echo -e "- External Adapter"
+echo -e "- Chainlink Node configuration files"
+echo -e "- Management Scripts"
 echo
 
 if ! ask_yes_no "Do you want to proceed with the upgrade?"; then
     echo -e "${YELLOW}Upgrade cancelled by user.${NC}"
     exit 0
 fi
-
-# Check if arbiter is running
-echo -e "${BLUE}Checking if arbiter is running...${NC}"
-ARBITER_RUNNING=0
-
-# Check if we need to stop the arbiter
-NODE_RUNNING=0
-ADAPTER_RUNNING=0
-CHAINLINK_RUNNING=0
-
-if lsof -i:3000 >/dev/null 2>&1; then
-    NODE_RUNNING=1
-    ARBITER_RUNNING=1
-fi
-
-if lsof -i:8080 >/dev/null 2>&1; then
-    ADAPTER_RUNNING=1
-    ARBITER_RUNNING=1
-fi
-
-if lsof -i:6688 >/dev/null 2>&1; then
-    CHAINLINK_RUNNING=1
-    ARBITER_RUNNING=1
-fi
-
-# Track if arbiter was running
-ARBITER_WAS_RUNNING=$ARBITER_RUNNING
 
 # If arbiter is running, stop it
 if [ $ARBITER_RUNNING -eq 1 ]; then
@@ -332,16 +264,10 @@ else
 fi
 
 # Create backup
-echo -e "${BLUE}Creating backup of current installation...${NC}"
-TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
-BACKUP_DIR="${TARGET_DIR}_backup_${TIMESTAMP}"
-
-cp -r "$TARGET_DIR" "$BACKUP_DIR"
+create_backup "$TARGET_DIR"
 if [ $? -ne 0 ]; then
-    echo -e "${RED}Failed to create backup! Aborting upgrade.${NC}"
     exit 1
 fi
-echo -e "${GREEN}Backup created at: $BACKUP_DIR${NC}"
 
 # Mark that upgrade is in progress
 UPGRADE_IN_PROGRESS=1
@@ -349,46 +275,45 @@ UPGRADE_IN_PROGRESS=1
 # Perform the upgrades
 echo -e "${BLUE}Starting upgrade process...${NC}"
 
-# Upgrade AI Node if needed
-if [ $UPGRADE_AI_NODE -eq 1 ]; then
-    echo -e "${BLUE}Upgrading AI Node...${NC}"
-    # Exclude files that should be preserved
-    upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" "node_modules .env.local logs"
-fi
+# Upgrade AI Node
+echo -e "${BLUE}Upgrading AI Node...${NC}"
+upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local logs node_modules"
 
-# Upgrade External Adapter if needed
-if [ $UPGRADE_ADAPTER -eq 1 ]; then
-    echo -e "${BLUE}Upgrading External Adapter...${NC}"
-    # Exclude files that should be preserved
-    upgrade_component "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External Adapter" "node_modules .env logs"
-fi
+# Upgrade External Adapter
+echo -e "${BLUE}Upgrading External Adapter...${NC}"
+upgrade_component "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External Adapter" ".env logs node_modules"
 
-# Upgrade Chainlink Node if needed
-if [ $UPGRADE_CHAINLINK -eq 1 ]; then
-    echo -e "${BLUE}Upgrading Chainlink Node...${NC}"
-    # Exclude configuration files
-    upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs"
-fi
+# Upgrade Chainlink Node configurations
+echo -e "${BLUE}Upgrading Chainlink Node configurations...${NC}"
+upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs"
 
 # Upgrade Operator Contracts if needed
-if [ $UPGRADE_OPERATOR -eq 1 ]; then
-    echo -e "${BLUE}Upgrading Operator Contracts...${NC}"
-    upgrade_component "$REPO_OPERATOR" "$TARGET_OPERATOR" "Operator Contracts" "build"
+echo -e "${BLUE}Upgrading Operator Contracts...${NC}"
+upgrade_component "$REPO_OPERATOR" "$TARGET_OPERATOR" "Operator Contracts" "build"
+
+# Update management scripts
+echo -e "${BLUE}Updating management scripts...${NC}"
+cp "$UTIL_DIR/start-arbiter.sh" "$TARGET_DIR/start-arbiter.sh"
+cp "$UTIL_DIR/stop-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh"
+cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
+chmod +x "$TARGET_DIR/start-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh" "$TARGET_DIR/arbiter-status.sh"
+echo -e "${GREEN}Management scripts updated.${NC}"
+
+# Install node dependencies if needed
+echo -e "${BLUE}Checking for new Node.js dependencies...${NC}"
+
+# AI Node dependencies
+if [ -f "$TARGET_AI_NODE/package.json" ]; then
+    echo -e "${BLUE}Installing AI Node dependencies...${NC}"
+    cd "$TARGET_AI_NODE" && npm install
+    echo -e "${GREEN}AI Node dependencies installed.${NC}"
 fi
 
-# Upgrade management scripts if needed
-if [ $UPGRADE_SCRIPTS -eq 1 ]; then
-    echo -e "${BLUE}Upgrading management scripts...${NC}"
-    for script in "${UTIL_FILES[@]}"; do
-        repo_script="$UTIL_DIR/$script"
-        target_script="$TARGET_DIR/$script"
-        
-        if [ -f "$repo_script" ]; then
-            cp "$repo_script" "$target_script"
-            chmod +x "$target_script"
-            echo -e "${GREEN}Updated $script${NC}"
-        fi
-    done
+# External Adapter dependencies
+if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
+    echo -e "${BLUE}Installing External Adapter dependencies...${NC}"
+    cd "$TARGET_EXTERNAL_ADAPTER" && npm install
+    echo -e "${GREEN}External Adapter dependencies installed.${NC}"
 fi
 
 echo -e "${GREEN}Upgrade completed successfully!${NC}"
@@ -403,19 +328,20 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
         "$TARGET_DIR/start-arbiter.sh"
         
         # Verify restart
+        sleep 10
         RESTART_SUCCESS=1
         
-        if [ $NODE_RUNNING -eq 1 ] && ! lsof -i:3000 >/dev/null 2>&1; then
+        if [ $NODE_RUNNING -eq 1 ] && ! check_port 3000; then
             echo -e "${RED}Warning: AI Node failed to restart.${NC}"
             RESTART_SUCCESS=0
         fi
         
-        if [ $ADAPTER_RUNNING -eq 1 ] && ! lsof -i:8080 >/dev/null 2>&1; then
+        if [ $ADAPTER_RUNNING -eq 1 ] && ! check_port 8080; then
             echo -e "${RED}Warning: External Adapter failed to restart.${NC}"
             RESTART_SUCCESS=0
         fi
         
-        if [ $CHAINLINK_RUNNING -eq 1 ] && ! lsof -i:6688 >/dev/null 2>&1; then
+        if [ $CHAINLINK_RUNNING -eq 1 ] && ! check_port 6688; then
             echo -e "${RED}Warning: Chainlink Node failed to restart.${NC}"
             RESTART_SUCCESS=0
         fi
