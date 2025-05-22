@@ -1,9 +1,0 @@
-Chainlink Node Information
-=========================
-
-UI: http://localhost:6688
-Login Email: nmt@verdikta.com
-Login Password: VgzEWK7RI4nsdG8B051q
-
-Configuration Directory: /root/.chainlink-sepolia
-Keystore Password: sRad4mk4StzCrskvQEhV
