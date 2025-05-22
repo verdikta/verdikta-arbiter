@@ -7,8 +7,9 @@ const { validateRequest, requestSchema } = require('../utils/validator');
 const ipfsClient = require('../services/ipfsClient');
 const manifestParser = require('../utils/manifestParser');
 const logger = require('../utils/logger');
-const crypto       = require('crypto');
-const commitStore  = require('../services/commitStore');
+const crypto = require('crypto');
+const commitStore = require('../services/commitStore');
+const ethers = require('ethers');
 
 const evaluateHandler = async (request) => {
   const { id, data } = request;
@@ -23,16 +24,13 @@ const evaluateHandler = async (request) => {
     // Process mode if present
     let modeString;
     let cidString;
-    if(data.cid.length >= 2 && data.cid.charAt(1)===":" && data.cid.charAt(0)!=":")
-    {
-       modeString=data.cid.substring(0,1);
-       cidString=data.cid.substring(2);
+    if (data.cid.length >= 2 && data.cid.charAt(1) === ":" && data.cid.charAt(0) !== ":") {
+      modeString = data.cid.substring(0, 1);
+      cidString = data.cid.substring(2);
+    } else {
+      modeString = "0";
+      cidString = data.cid;
     }
-    else
-    {
-       modeString="0";
-       cidString=data.cid;
-    } 
     console.log('Mode:', modeString);
 
     // if mode 2, there is nothing to calculate--just reveal previously calculated information
@@ -44,7 +42,7 @@ const evaluateHandler = async (request) => {
     }
 
     // Process CID string with mode removed and parse addendum if present
-    const firstColonIndex = cidString.indexOf(':'); 
+    const firstColonIndex = cidString.indexOf(':');
     
     let addendumString = "";
     
@@ -52,7 +50,7 @@ const evaluateHandler = async (request) => {
       addendumString = cidString.substring(firstColonIndex + 1);
       cidString = cidString.substring(0, firstColonIndex);
       logger.info(`Found addendum string: ${addendumString}`);
-    } 
+    }
     
     // Split multiple CIDs if present
     const cidArray = cidString.split(',').map(cid => cid.trim()).filter(cid => cid);
@@ -93,21 +91,15 @@ const evaluateHandler = async (request) => {
       logger.info('Evaluating with AI service...');
       const result = await aiClient.evaluate(queryObject, extractedPath);
       
-      // Create justification file, clean up, and return
-      // const justificationCID = await createAndUploadJustification(result, tempDir);
-      // await archiveService.cleanup(tempDir);
-      // return createSuccessResponse(id, result, justificationCID);
-
-      // mode adaption code below
       if (modeString === '1') {
         const hashDecimal = await handleMode1Commit(result);
         await archiveService.cleanup(tempDir);
         return {
           jobRunID: id,
-          status:  'success',
+          status: 'success',
           statusCode: 200,
           data: {                     // Vector contains only the commitment
-            aggregatedScore: [ hashDecimal ],
+            aggregatedScore: [hashDecimal],
             justificationCID: ''      // posted later in Mode 2
           }
         };
@@ -117,7 +109,6 @@ const evaluateHandler = async (request) => {
       const justificationCID = await createAndUploadJustification(result, tempDir);
       await archiveService.cleanup(tempDir);
       return createSuccessResponse(id, result, justificationCID);
-
     } 
     // Multi-CID processing
     else {
@@ -165,22 +156,16 @@ const evaluateHandler = async (request) => {
       
       logger.info('Evaluating combined query with AI service...');
       const result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]]);
-      
-      // Create justification file, clean up, and return
-      // const justificationCID = await createAndUploadJustification(result, tempDir);
-      // await archiveService.cleanup(tempDir);
-      // return createSuccessResponse(id, result, justificationCID);
-
-      // mode adaption code below
+     
       if (modeString === '1') {
         const hashDecimal = await handleMode1Commit(result);
         await archiveService.cleanup(tempDir);
         return {
           jobRunID: id,
-          status:  'success',
+          status: 'success',
           statusCode: 200,
           data: {                     // Vector contains only the commitment
-            aggregatedScore: [ hashDecimal ],
+            aggregatedScore: [hashDecimal],
             justificationCID: ''      // posted later in Mode 2
           }
         };
@@ -190,7 +175,6 @@ const evaluateHandler = async (request) => {
       const justificationCID = await createAndUploadJustification(result, tempDir);
       await archiveService.cleanup(tempDir);
       return createSuccessResponse(id, result, justificationCID);
-
     }
   } catch (error) {
     logger.error(`Error processing evaluation for jobRunID ${id}:`, error);
@@ -234,33 +218,73 @@ const evaluateHandler = async (request) => {
 };
 
 /**
- * Commit to the result, return a deterministic 128-bit number
+ * Mode-1 (commit) helper
+ * ----------------------
+ *  • builds ABI-compatible encoding of (uint256[] scores, uint256 salt)
+ *  • takes the SHA-256 hash, keeps the low 128 bits
+ *  • stores { result, salt } under that 128-bit key
+ *  • returns the decimal representation (what the aggregator expects)
  */
 async function handleMode1Commit(result) {
-  const salt = crypto.randomBytes(16).toString('hex');          // 128-bit salt
-  const full = JSON.stringify(result) + salt;
-  const hashHex = crypto.createHash('sha256').update(full).digest('hex').slice(0, 32); // 128 bit
+  // ---------- 1. collect *unsigned* scores -----------------------------
+  const scores = (result.scores || [{ score: 0 }]).map(s => BigInt(s.score));
+
+  // ---------- 2. generate 80-bit salt, render it as *exactly* 20 hex ---
+  const saltBytes = crypto.randomBytes(10);          // 10 bytes  == 80 bits
+  const saltHex = saltBytes.toString('hex');         // 20 lowercase hex chars
+  const saltUint = BigInt('0x' + saltHex);
+
+  // ---------- 3. ABI-encode  (uint256[] scores, uint256 salt) ----------
+  // We hand-roll the encoding because we only need a tiny subset:
+  //
+  //   0x00  0x00  0x00  0x40   offset pointer  (64 bytes) to the scores array
+  //   0x…                                salt  (32 bytes, left-padded)
+  //   0x…           scores.length (32 bytes)
+  //   0x…           scores[0]     (32 bytes)
+  //   0x…           scores[1]     (32 bytes)  (etc.)
+  //
+  function uint256ToBuf(u) {
+    return Buffer.from(u.toString(16).padStart(64, '0'), 'hex');
+  }
+
+  const head = Buffer.concat([                       // static part
+                  Buffer.from(''.padStart(64, '0'), 'hex'),  // offset 0x40
+                  uint256ToBuf(saltUint)
+                ]);
+  const tail = Buffer.concat([
+                  uint256ToBuf(BigInt(scores.length)),
+                  ...scores.map(uint256ToBuf)
+                ]);
+
+  // fix the pointer in the head (0x40 == 64 bytes)
+  head.writeBigUInt64BE(0n, 0);                     // already zero
+  head[31] = 0x40;                                  // last byte -> 64
+
+  const abiPayload = Buffer.concat([head, tail]);
+
+  // ---------- 4. low 128 bits of SHA-256 -------------------------------
+  const encodedData = ethers.utils.defaultAbiCoder.encode(
+    ['uint256[]', 'uint256'],
+    [scores, saltUint]
+  );
+  const hashBytes = ethers.utils.sha256(encodedData);
+  // Take the first 16 bytes - high 128 bits (32 hex chars after 0x prefix)
+  const hashHex = hashBytes.substring(2, 34);
+
+  // ---------- 5. persist & hand the decimal commitment back ------------
   await commitStore.save(hashHex, {
     result,
-    salt,
-    created: new Date().toISOString()  
+    salt: saltHex,                      // remember: 20 lowercase hex chars
+    created: new Date().toISOString()
   });
-  return BigInt('0x' + hashHex).toString();                     // decimal string
-}
 
-// function toUint256Hex(value) {
-//   // accept bigint, decimal string, or number
-//   if (typeof value === 'bigint') return '0x' + value.toString(16);
-//   if (typeof value === 'number') return '0x' + value.toString(16);
-//   if (/^0x[0-9a-fA-F]+$/.test(value)) return value;  // already good
-//   return '0x' + BigInt(value).toString(16);          // decimal string → hex
-// }
+  return BigInt('0x' + hashHex).toString();        // decimal for likelihoods[0]
+}
 
 /**
  * Reveal previously committed result
  */
 async function handleMode2Reveal(hashHex, tempDir) {
-  // const commit = await commitStore.get(hashHex);
   // Accept decimal, 0x-prefixed, or bare hex
   if (/^[0-9]+$/.test(hashHex)) {                // decimal
     hashHex = BigInt(hashHex).toString(16);
@@ -271,8 +295,6 @@ async function handleMode2Reveal(hashHex, tempDir) {
   }
   hashHex = hashHex.toLowerCase().padStart(32, '0'); // 128 bit, zero-padded
   const commit = await commitStore.get(hashHex);
-
-
 
   if (!commit) throw new Error(`Unknown commit hash: ${hashHex}`);
 
@@ -286,13 +308,16 @@ async function handleMode2Reveal(hashHex, tempDir) {
     const justificationCID = await createAndUploadJustification(commit.result, tempDir);
     await commitStore.del(hashHex);  // burn after reveal
 
+    // Append salt after a colon
+    const cidWithSalt = `${justificationCID}:${commit.salt}`;
+
     // Schedule general cleanup
     setImmediate(() => {
       commitStore.purgeStale()
         .catch(err => logger.error('purgeStale failed:', err));
     });
 
-    return { result: commit.result, justificationCID };
+    return { result: commit.result, justificationCID: cidWithSalt };
   } finally {
     // Make sure we clean up the tempDir we created
     if (tempDir) {
@@ -389,4 +414,4 @@ function createSuccessResponse(id, result, justificationCID) {
   };
 }
 
-module.exports = evaluateHandler; 
+module.exports = evaluateHandler;

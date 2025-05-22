@@ -119,6 +119,82 @@ The upgrade process preserves:
   - Configuration files (`.toml` files)
   - Log files
   - Database data
+  - `.api` file with login credentials
+
+- **Contract Information**:
+  - `.contracts` file with deployment addresses and configuration
+
+## Important Configuration Files and Their Locations
+
+After installation or upgrade, important configuration and data files are stored in these locations:
+
+### Contract Information
+- **Path**: `~/verdikta-arbiter-node/installer/.contracts`
+- **Contains**: 
+  - Operator contract address
+  - Node address
+  - LINK token address
+  - Job ID (with and without hyphens)
+  - Aggregator address
+  - Classes ID (when registered with an aggregator)
+
+### Chainlink Node Credentials
+- **Path**: `~/verdikta-arbiter-node/chainlink-node/info.txt`
+- **Contains**: 
+  - UI login email
+  - UI login password
+  - Keystore password
+  - Configuration directory location
+
+### Environment Variables
+- **AI Node**: `~/verdikta-arbiter-node/ai-node/.env.local`
+- **External Adapter**: `~/verdikta-arbiter-node/external-adapter/.env`
+- **Chainlink Node**: `~/.chainlink-sepolia/.api` (for UI credentials)
+
+## Querying Oracle Contract Information
+
+The installer includes a script to query information about registered oracles:
+
+### Using query-oracle-classes.js
+
+This script allows you to verify if your oracle is registered with an aggregator and check its class ID:
+
+1. Navigate to the arbiter-operator directory:
+   ```bash
+   cd ~/verdikta-arbiter/arbiter-operator
+   ```
+
+2. Run the query script with your contract addresses:
+   ```bash
+   HARDHAT_NETWORK=base_sepolia node scripts/query-oracle-classes.js \
+     --aggregator YOUR_AGGREGATOR_ADDRESS \
+     --oracle YOUR_OPERATOR_ADDRESS \
+     --jobid YOUR_JOB_ID_WITHOUT_HYPHENS
+   ```
+
+3. You can get these values from your `.contracts` file:
+   ```bash
+   cat ~/verdikta-arbiter-node/installer/.contracts
+   ```
+
+4. Example output:
+   ```
+   ReputationKeeper: 0x6def65a003F9d9d80Cb9f6216dBF0282c8563a27
+
+   Querying information for Oracle: 0x91A5fe7FC3A729BD38602d4bD5a7F9b6aCA6C7A9
+   JobID: 517f743acd75461c840ea0a93164285c → 0x3531376637343361636437353436316338343065613061393331363432383563
+
+   Oracle Status:
+     Active: true
+     Reputation: 0
+     Min Reputation: 0
+     Fee: 0.0 LINK
+     Staked Amount: 0.0 wVDKA
+
+   Registered Class ID: 128
+   ```
+
+This information is useful for verifying your oracle's registration status and configuration when integrating with client applications.
 
 ## Troubleshooting
 

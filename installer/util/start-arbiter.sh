@@ -37,11 +37,14 @@ else
         # Ensure the directory exists before trying to cd into it
         if [ -d "$AI_NODE_DIR" ]; then
         cd "$AI_NODE_DIR" && ./start.sh &
-        sleep 5
+        echo -e "${YELLOW}AI Node is starting up. This may take a few minutes...${NC}"
+        sleep 10  # Increased from 5 to 10 seconds to give AI Node more time to start
         if check_port 3000; then
             echo -e "${GREEN}AI Node started successfully.${NC}"
         else
-                echo -e "${RED}Failed to start AI Node. Check the logs at $AI_NODE_DIR/logs/ai-node_*.log${NC}" # Updated log path based on install-ai-node.sh
+                echo -e "${YELLOW}AI Node is still initializing. It may take a few minutes to fully start.${NC}"
+                echo -e "${YELLOW}You can check its status later with arbiter-status.sh${NC}"
+                echo -e "${YELLOW}If it fails to start, check the logs at $AI_NODE_DIR/logs/ai-node_*.log${NC}"
             fi
         else
              echo -e "${RED}AI Node directory not found at $AI_NODE_DIR${NC}"

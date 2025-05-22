@@ -169,6 +169,16 @@ if [ $? -eq 0 ]; then
         echo "AGGREGATOR_ADDRESS=\"$AGGREGATOR_ADDRESS\"" >> "$INSTALLER_DIR/.contracts"
     fi
     echo -e "${GREEN}Aggregator address saved to .contracts file: $AGGREGATOR_ADDRESS${NC}"
+    
+    # Save the classes ID to .contracts file
+    if grep -q "CLASSES_ID=" "$INSTALLER_DIR/.contracts" 2>/dev/null; then
+        # Update existing classes ID entry
+        sed -i "s/CLASSES_ID=.*/CLASSES_ID=\"$CLASSES_ID\"/" "$INSTALLER_DIR/.contracts"
+    else
+        # Append new classes ID entry
+        echo "CLASSES_ID=\"$CLASSES_ID\"" >> "$INSTALLER_DIR/.contracts"
+    fi
+    echo -e "${GREEN}Classes ID saved to .contracts file: $CLASSES_ID${NC}"
 else
     echo -e "${RED}Oracle registration script failed. Please check the output above for errors.${NC}"
     exit 1

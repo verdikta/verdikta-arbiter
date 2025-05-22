@@ -155,6 +155,72 @@ After installation, navigate to your chosen installation directory (e.g., `~/ver
   ./arbiter-status.sh
   ```
 
+## Important Configuration Files
+
+After installation, important information is stored in these locations:
+
+### Contract Information
+- **Path**: `~/verdikta-arbiter-node/installer/.contracts`
+- **Contains**: Operator address, Node address, LINK token address, Job ID, Aggregator address, Classes ID
+- **Purpose**: Reference for contract addresses and configuration needed for client integration
+
+### Chainlink Node Credentials
+- **Path**: `~/verdikta-arbiter-node/chainlink-node/info.txt`
+- **Contains**: UI login credentials, keystore password, and configuration paths
+- **Purpose**: Required for accessing the Chainlink UI at http://localhost:6688
+
+### Environment Variables
+- **AI Node**: `~/verdikta-arbiter-node/ai-node/.env.local`
+- **External Adapter**: `~/verdikta-arbiter-node/external-adapter/.env`
+- **Chainlink Node**: `~/.chainlink-sepolia/.api` (UI credentials) and `~/.chainlink-sepolia/config.toml`
+
+For detailed information on locating and using these files, see [Upgrading the Verdikta Arbiter Node](upgrading.md#important-configuration-files-and-their-locations).
+
+## Querying Oracle Status
+
+You can verify your oracle's registration with an aggregator contract using the included query script:
+
+```bash
+cd ~/verdikta-arbiter/arbiter-operator
+HARDHAT_NETWORK=base_sepolia node scripts/query-oracle-classes.js \
+  --aggregator YOUR_AGGREGATOR_ADDRESS \
+  --oracle YOUR_OPERATOR_ADDRESS \
+  --jobid YOUR_JOB_ID_WITHOUT_HYPHENS
+```
+
+### Required Parameters
+
+- `--aggregator` (or `-a`): The address of the aggregator contract your oracle is registered with
+- `--oracle` (or `-o`): Your oracle/operator contract address 
+- `--jobid` (or `-j`): Your job ID without hyphens
+
+Get these values from your `.contracts` file at `~/verdikta-arbiter-node/installer/.contracts`.
+
+### Example Usage
+
+```bash
+# Navigate to the arbiter-operator directory
+cd ~/verdikta-arbiter/arbiter-operator
+
+# Using values from your .contracts file
+HARDHAT_NETWORK=base_sepolia node scripts/query-oracle-classes.js \
+  --aggregator 0xE75426Ed0491a8290fC55CAA71ab5e1d95F4BaF6 \
+  --oracle 0x91A5fe7FC3A729BD38602d4bD5a7F9b6aCA6C7A9 \
+  --jobid 517f743acd75461c840ea0a93164285c
+```
+
+### Expected Output
+
+The script will display:
+- Registration status (active or not)
+- Oracle reputation information
+- Fee and stake amounts
+- Class ID if registered (typically 128 by default)
+
+This information is critical for client integration and verifying your node is correctly configured on the blockchain.
+
+See [Querying Oracle Contract Information](upgrading.md#querying-oracle-contract-information) for more details.
+
 ## Upgrading Your Arbiter
 
 When new versions of the Verdikta arbiter components are released, you can upgrade your installation:

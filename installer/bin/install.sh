@@ -212,6 +212,14 @@ chmod +x "$INSTALL_DIR/start-arbiter.sh"
 chmod +x "$INSTALL_DIR/stop-arbiter.sh"
 chmod +x "$INSTALL_DIR/arbiter-status.sh"
 
+# Copy contracts information
+echo -e "${BLUE}Copying contract information...${NC}"
+if [ -f "$INSTALLER_DIR/.contracts" ]; then
+    mkdir -p "$INSTALL_DIR/installer"
+    cp "$INSTALLER_DIR/.contracts" "$INSTALL_DIR/installer/.contracts"
+    echo -e "${GREEN}Contract information copied to $INSTALL_DIR/installer/.contracts${NC}"
+fi
+
 echo -e "${GREEN}Arbiter management scripts created:${NC}"
 echo -e "  - To start all services: $INSTALL_DIR/start-arbiter.sh"
 echo -e "  - To stop all services:  $INSTALL_DIR/stop-arbiter.sh"

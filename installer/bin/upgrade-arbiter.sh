@@ -285,7 +285,7 @@ upgrade_component "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External 
 
 # Upgrade Chainlink Node configurations
 echo -e "${BLUE}Upgrading Chainlink Node configurations...${NC}"
-upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs"
+upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs .api"
 
 # Upgrade Operator Contracts if needed
 echo -e "${BLUE}Upgrading Operator Contracts...${NC}"
@@ -298,6 +298,16 @@ cp "$UTIL_DIR/stop-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh"
 cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
 chmod +x "$TARGET_DIR/start-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh" "$TARGET_DIR/arbiter-status.sh"
 echo -e "${GREEN}Management scripts updated.${NC}"
+
+# Copy contracts information
+echo -e "${BLUE}Copying contract information...${NC}"
+if [ -f "$INSTALLER_DIR/.contracts" ]; then
+    mkdir -p "$TARGET_DIR/installer"
+    cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
+    echo -e "${GREEN}Contract information copied to $TARGET_DIR/installer/.contracts${NC}"
+else
+    echo -e "${YELLOW}Contract information file not found at $INSTALLER_DIR/.contracts${NC}"
+fi
 
 # Install node dependencies if needed
 echo -e "${BLUE}Checking for new Node.js dependencies...${NC}"
@@ -328,11 +338,14 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
         "$TARGET_DIR/start-arbiter.sh"
         
         # Verify restart
-        sleep 10
+        echo -e "${BLUE}Waiting for services to fully start...${NC}"
+        # Increase delay to give AI Node more time to start
+        sleep 20  # Increased from 10 to 20 seconds
         RESTART_SUCCESS=1
         
         if [ $NODE_RUNNING -eq 1 ] && ! check_port 3000; then
             echo -e "${RED}Warning: AI Node failed to restart.${NC}"
+            echo -e "${YELLOW}AI Node may still be starting up. Please check status again after a few minutes.${NC}"
             RESTART_SUCCESS=0
         fi
         
@@ -350,8 +363,8 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
             echo -e "${GREEN}Arbiter restarted successfully.${NC}"
         else
             echo -e "${YELLOW}Some arbiter components did not restart properly.${NC}"
-            echo -e "${YELLOW}Please check the logs and restart manually if needed:${NC}"
-            echo -e "${YELLOW}  - $TARGET_DIR/start-arbiter.sh${NC}"
+            echo -e "${YELLOW}The AI Node may still be starting up and could take a few minutes to fully initialize.${NC}"
+            echo -e "${YELLOW}Run the status script after a few minutes to verify: $TARGET_DIR/arbiter-status.sh${NC}"
         fi
     else
         echo -e "${YELLOW}Please restart the arbiter manually when ready:${NC}"
