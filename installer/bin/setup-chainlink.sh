@@ -186,7 +186,7 @@ docker run --platform linux/x86_64/v8 \
     -p 6688:6688 \
     --add-host=host.docker.internal:host-gateway \
     --network verdikta-network \
-    smartcontract/chainlink:2.13.0 \
+    smartcontract/chainlink:2.23.0 \
     node \
     -config /chainlink/config.toml \
     -secrets /chainlink/secrets.toml \

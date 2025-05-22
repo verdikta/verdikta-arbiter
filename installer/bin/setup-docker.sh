@@ -166,7 +166,7 @@ version: '3.8'
 
 services:
   chainlink:
-    image: smartcontract/chainlink:2.13.0
+    image: smartcontract/chainlink:2.23.0
     platform: linux/x86_64/v8
     container_name: chainlink
     depends_on:

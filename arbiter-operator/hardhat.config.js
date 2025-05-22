@@ -15,6 +15,9 @@ const keepAliveAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 60_000
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
+    // NOTE: We want to use 0.8.30 for our contracts in the future, but
+    // we're currently limited by Chainlink contracts pinned to 0.8.19.
+    // When Chainlink contracts support 0.8.30, we'll update both.
     compilers: [
       {
         version: "0.8.19",
@@ -50,7 +53,7 @@ module.exports = {
     },
   },
 
-  // hardhat-deploy “named accounts”
+  // hardhat-deploy "named accounts"
   namedAccounts: {
     deployer: 0,   // signer[0]  → PRIVATE_KEY   (operator/keeper owner)
     owner:    0,   // optional friendly alias
