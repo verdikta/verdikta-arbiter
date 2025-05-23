@@ -326,6 +326,75 @@ if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
     echo -e "${GREEN}External Adapter dependencies installed.${NC}"
 fi
 
+# Check and optionally regenerate Chainlink configuration
+echo -e "${BLUE}Checking Chainlink configuration...${NC}"
+
+# Function to check and regenerate Chainlink config if needed
+check_chainlink_config() {
+    local chainlink_dir="$HOME/.chainlink-sepolia"
+    local current_config="$chainlink_dir/config.toml"
+    local template_file="$TARGET_CHAINLINK_NODE/config_template.toml"
+    
+    # Check if current config exists
+    if [ ! -f "$current_config" ]; then
+        echo -e "${YELLOW}No existing Chainlink config found. Skipping config check.${NC}"
+        return 0
+    fi
+    
+    # Check if template exists
+    if [ ! -f "$template_file" ]; then
+        echo -e "${YELLOW}No config template found. Skipping config regeneration.${NC}"
+        return 0
+    fi
+    
+    # Try to load Infura API key from installation
+    local infura_key=""
+    if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
+        source "$TARGET_DIR/installer/.api_keys"
+        infura_key="$INFURA_API_KEY"
+    elif [ -f "$INSTALLER_DIR/.api_keys" ]; then
+        source "$INSTALLER_DIR/.api_keys"
+        infura_key="$INFURA_API_KEY"
+    fi
+    
+    if [ -z "$infura_key" ]; then
+        echo -e "${YELLOW}Could not find Infura API key. Skipping config regeneration.${NC}"
+        return 0
+    fi
+    
+    # Generate what the new config would look like
+    local temp_config=$(mktemp)
+    sed "s/<KEY>/$infura_key/g" "$template_file" > "$temp_config"
+    
+    # Compare current config with what template would generate
+    if ! diff -q "$current_config" "$temp_config" > /dev/null 2>&1; then
+        echo -e "${YELLOW}Your current Chainlink configuration differs from the updated template.${NC}"
+        echo -e "${YELLOW}This may include new optimization settings or configuration improvements.${NC}"
+        
+        if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)"; then
+            # Create backup of current config
+            local config_backup="${current_config}.backup.$(date +%Y%m%d-%H%M%S)"
+            cp "$current_config" "$config_backup"
+            echo -e "${BLUE}Current config backed up to: $config_backup${NC}"
+            
+            # Replace with new config
+            cp "$temp_config" "$current_config"
+            echo -e "${GREEN}Chainlink configuration regenerated from template.${NC}"
+            echo -e "${YELLOW}Note: You may need to restart the Chainlink node for changes to take effect.${NC}"
+        else
+            echo -e "${BLUE}Keeping existing Chainlink configuration.${NC}"
+        fi
+    else
+        echo -e "${GREEN}Chainlink configuration is up to date with template.${NC}"
+    fi
+    
+    # Clean up temp file
+    rm -f "$temp_config"
+}
+
+# Call the config check function
+check_chainlink_config
+
 echo -e "${GREEN}Upgrade completed successfully!${NC}"
 
 # Clear the upgrade in progress flag

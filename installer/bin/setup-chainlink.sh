@@ -111,26 +111,20 @@ echo -e "${YELLOW}Important: Keep this password safe, it will be needed for acce
 # Create Chainlink Node configuration
 echo -e "${BLUE}Creating Chainlink Node configuration...${NC}"
 
-# Create config.toml
-cat > "$CHAINLINK_DIR/config.toml" << EOL
-[Log]
-Level = 'warn'
+# Path to the config template file
+TEMPLATE_FILE="$(dirname "$INSTALLER_DIR")/chainlink-node/config_template.toml"
 
-[WebServer]
-AllowOrigins = '*'
-SecureCookies = false
+# Check if template file exists
+if [ ! -f "$TEMPLATE_FILE" ]; then
+    echo -e "${RED}Error: Config template file not found at $TEMPLATE_FILE${NC}"
+    exit 1
+fi
 
-[WebServer.TLS]
-HTTPSPort = 0
+# Create config.toml from template, replacing <KEY> with actual Infura API key
+echo -e "${BLUE}Using config template from $TEMPLATE_FILE...${NC}"
+sed "s/<KEY>/$INFURA_API_KEY/g" "$TEMPLATE_FILE" > "$CHAINLINK_DIR/config.toml"
 
-[[EVM]]
-ChainID = '84532'  # Base Sepolia
-
-[[EVM.Nodes]]
-Name = 'Base-Sepolia'
-WSURL = 'wss://base-sepolia.infura.io/ws/v3/$INFURA_API_KEY'
-HTTPURL = 'https://base-sepolia.infura.io/v3/$INFURA_API_KEY'
-EOL
+echo -e "${GREEN}Config file created from template with Infura API key substituted.${NC}"
 
 # Create secrets.toml
 cat > "$CHAINLINK_DIR/secrets.toml" << EOL

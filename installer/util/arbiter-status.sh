@@ -41,8 +41,9 @@ check_nextjs() {
 # Function to check HTTP endpoint health
 check_health() {
     local url=$1
+    local endpoint=$2
     local timeout=5
-    if curl -s -m $timeout "$url/health" >/dev/null 2>&1; then
+    if curl -s -m $timeout "$url$endpoint" >/dev/null 2>&1; then
         return 0
     else
         return 1
@@ -75,7 +76,7 @@ if [ "$AI_NODE_RUNNING" = true ]; then
         UPTIME=$(ps -p "$AI_NODE_PID" -o etime=)
     fi
 
-    if check_health "http://localhost:3000"; then
+    if check_health "http://localhost:3000" "/api/health"; then
         echo -e "  Status: ${GREEN}Running${NC}"
         echo -e "  Health: ${GREEN}Healthy${NC}"
         echo -e "  Port:   3000"
@@ -121,7 +122,7 @@ echo ""
 # Check External Adapter
 echo -e "${BLUE}External Adapter Status:${NC}"
 if check_port 8080; then
-    if check_health "http://localhost:8080"; then
+    if check_health "http://localhost:8080" "/health"; then
         echo -e "  Status: ${GREEN}Running${NC}"
         echo -e "  Health: ${GREEN}Healthy${NC}"
         echo -e "  Port:   8080"

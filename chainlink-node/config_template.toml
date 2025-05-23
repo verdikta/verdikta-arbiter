@@ -1,0 +1,38 @@
+[Log]
+Level="warn"
+
+[WebServer]
+AllowOrigins="*"
+SecureCookies=false
+
+[WebServer.TLS]
+HTTPSPort=0
+
+[[EVM]]
+ChainID=84532
+Enabled=true
+FinalityDepth=10
+MinContractPayment=0
+
+[EVM.GasEstimator]
+Mode = "FeeHistory"
+TipCapDefault = "2 gwei"
+TipCapMin     = "30000000"       # 0.03 gwei
+FeeCapDefault = "30 gwei"
+
+[EVM.HeadTracker]
+SamplingInterval = "10s"            # coalesce heads
+HistoryDepth = 50
+
+[EVM.NodePool]
+PollInterval   = "40s"              # optimization: each RPC is ping-checked less often
+NewHeadsPollInterval = "15s"
+
+[EVM.Transactions]
+ReaperInterval = "30m"              # Less frequent cleanup
+ReaperThreshold = "168h"            # Keep txns longer before cleanup
+
+[[EVM.Nodes]]
+Name="Base-Sepolia"
+WSURL="wss://base-sepolia.infura.io/ws/v3/<KEY>"
+HTTPURL="https://base-sepolia.infura.io/v3/<KEY>"
