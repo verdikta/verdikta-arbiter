@@ -1,6 +1,6 @@
 [Log]
 Level="warn"
-
+ 
 [WebServer]
 AllowOrigins="*"
 SecureCookies=false
@@ -11,7 +11,7 @@ HTTPSPort=0
 [[EVM]]
 ChainID=84532
 Enabled=true
-FinalityDepth=10
+FinalityDepth=5
 MinContractPayment=0
 
 [EVM.GasEstimator]
@@ -19,15 +19,18 @@ Mode = "FeeHistory"
 TipCapDefault = "2 gwei"
 TipCapMin     = "30000000"       # 0.03 gwei
 FeeCapDefault = "30 gwei"
+# EstimateLimit = true
 
 [EVM.HeadTracker]
-SamplingInterval = "10s"            # coalesce heads
-HistoryDepth = 50
+SamplingInterval = "30s"            # coalesce heads
+HistoryDepth = 25
 
 [EVM.NodePool]
-PollInterval   = "40s"              # optimization: each RPC is ping-checked less often
-NewHeadsPollInterval = "15s"
+PollInterval   = "80s"
+NewHeadsPollInterval = "30s"
+SyncThreshold = 10
 
+ 
 [EVM.Transactions]
 ReaperInterval = "30m"              # Less frequent cleanup
 ReaperThreshold = "168h"            # Keep txns longer before cleanup

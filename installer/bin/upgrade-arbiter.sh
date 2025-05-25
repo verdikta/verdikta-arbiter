@@ -333,7 +333,9 @@ echo -e "${BLUE}Checking Chainlink configuration...${NC}"
 check_chainlink_config() {
     local chainlink_dir="$HOME/.chainlink-sepolia"
     local current_config="$chainlink_dir/config.toml"
-    local template_file="$TARGET_CHAINLINK_NODE/config_template.toml"
+    local template_file="$REPO_CHAINLINK_NODE/config_template.toml"
+    
+    echo -e "${BLUE}Checking Chainlink configuration...${NC}"
     
     # Check if current config exists
     if [ ! -f "$current_config" ]; then
@@ -366,10 +368,23 @@ check_chainlink_config() {
     local temp_config=$(mktemp)
     sed "s/<KEY>/$infura_key/g" "$template_file" > "$temp_config"
     
-    # Compare current config with what template would generate
-    if ! diff -q "$current_config" "$temp_config" > /dev/null 2>&1; then
+    # Create filtered versions for comparison (excluding WSURL and HTTPURL lines)
+    local current_filtered=$(mktemp)
+    local temp_filtered=$(mktemp)
+    
+    # Filter out WSURL and HTTPURL lines from both files for comparison
+    grep -v "WSURL=" "$current_config" | grep -v "HTTPURL=" > "$current_filtered"
+    grep -v "WSURL=" "$temp_config" | grep -v "HTTPURL=" > "$temp_filtered"
+    
+    # Compare filtered configs (excluding WSURL/HTTPURL lines which always differ)
+    if ! diff -q "$current_filtered" "$temp_filtered" > /dev/null 2>&1; then
         echo -e "${YELLOW}Your current Chainlink configuration differs from the updated template.${NC}"
         echo -e "${YELLOW}This may include new optimization settings or configuration improvements.${NC}"
+        
+        # Show the actual differences (excluding WSURL/HTTPURL)
+        echo -e "${BLUE}Differences found:${NC}"
+        diff "$current_filtered" "$temp_filtered" || true
+        echo
         
         if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)"; then
             # Create backup of current config
@@ -388,8 +403,8 @@ check_chainlink_config() {
         echo -e "${GREEN}Chainlink configuration is up to date with template.${NC}"
     fi
     
-    # Clean up temp file
-    rm -f "$temp_config"
+    # Clean up temp files
+    rm -f "$temp_config" "$current_filtered" "$temp_filtered"
 }
 
 # Call the config check function
@@ -438,6 +453,45 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
     else
         echo -e "${YELLOW}Please restart the arbiter manually when ready:${NC}"
         echo -e "${YELLOW}  - $TARGET_DIR/start-arbiter.sh${NC}"
+    fi
+else
+    # Arbiter was not running before upgrade - ask if user wants to start it now
+    if ask_yes_no "The arbiter was not running before the upgrade. Would you like to start it now?"; then
+        echo -e "${BLUE}Starting arbiter...${NC}"
+        "$TARGET_DIR/start-arbiter.sh"
+        
+        # Verify startup
+        echo -e "${BLUE}Waiting for services to fully start...${NC}"
+        sleep 20  # Give services time to start
+        
+        # Check if services started successfully
+        STARTUP_SUCCESS=1
+        
+        if ! check_port 3000; then
+            echo -e "${RED}Warning: AI Node failed to start.${NC}"
+            echo -e "${YELLOW}AI Node may still be starting up. Please check status again after a few minutes.${NC}"
+            STARTUP_SUCCESS=0
+        fi
+        
+        if ! check_port 8080; then
+            echo -e "${RED}Warning: External Adapter failed to start.${NC}"
+            STARTUP_SUCCESS=0
+        fi
+        
+        if ! check_port 6688; then
+            echo -e "${RED}Warning: Chainlink Node failed to start.${NC}"
+            STARTUP_SUCCESS=0
+        fi
+        
+        if [ $STARTUP_SUCCESS -eq 1 ]; then
+            echo -e "${GREEN}Arbiter started successfully.${NC}"
+        else
+            echo -e "${YELLOW}Some arbiter components did not start properly.${NC}"
+            echo -e "${YELLOW}The AI Node may still be starting up and could take a few minutes to fully initialize.${NC}"
+            echo -e "${YELLOW}Run the status script after a few minutes to verify: $TARGET_DIR/arbiter-status.sh${NC}"
+        fi
+    else
+        echo -e "${BLUE}You can start the arbiter later using: $TARGET_DIR/start-arbiter.sh${NC}"
     fi
 fi
 
