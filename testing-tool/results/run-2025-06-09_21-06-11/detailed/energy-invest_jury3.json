@@ -1,0 +1,9 @@
+{
+  "scenario_id": "energy-invest",
+  "jury_id": 3,
+  "scores": [],
+  "justification": "",
+  "execution_time_ms": 7135,
+  "timestamp": "2025-06-09T21:06:18.703Z",
+  "error": "AI node error: 400 Bad Request - {\"error\":\"OpenAI or Azure OpenAI API key or Token Provider not found\",\"scores\":[],\"justification\":\"\"}"
+}

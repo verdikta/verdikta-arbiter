@@ -1,0 +1,4 @@
+scenario_id,prompt,outcomes,attachment_archive,expected_winner,tags,notes
+energy-invest,"Should we invest in renewable energy infrastructure?","Invest,Wait,Reject",energy-invest.zip,Invest,"energy,investment","Q3 strategic decision example"
+product-launch,"Launch new product line in emerging markets?","Launch,Delay,Cancel",product-launch.zip,Launch,"product,strategy","New market entry decision"
+merger-decision,"Should we proceed with the proposed merger?","Proceed,Negotiate,Reject",merger-decision.zip,,"merger,finance","Board-level strategic decision"

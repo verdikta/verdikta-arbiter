@@ -1,0 +1,25 @@
+{
+  "summary": {
+    "3": {
+      "total_tests": 1,
+      "successful_tests": 0,
+      "failed_tests": 1,
+      "average_execution_time": 7135,
+      "total_execution_time": 7135,
+      "success_rate": "0.00"
+    }
+  },
+  "details": {
+    "3": [
+      {
+        "scenario_id": "energy-invest",
+        "jury_id": 3,
+        "scores": [],
+        "justification": "",
+        "execution_time_ms": 7135,
+        "timestamp": "2025-06-09T21:06:18.703Z",
+        "error": "AI node error: 400 Bad Request - {\"error\":\"OpenAI or Azure OpenAI API key or Token Provider not found\",\"scores\":[],\"justification\":\"\"}"
+      }
+    ]
+  }
+}

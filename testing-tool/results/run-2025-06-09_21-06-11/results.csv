@@ -1,0 +1,2 @@
+Scenario ID,Jury ID,Outcome,Score,Rank,Execution Time (ms),Timestamp,Error,Justification Preview
+energy-invest,3,ERROR,0,0,7135,2025-06-09T21:06:18.703Z,"AI node error: 400 Bad Request - {""error"":""OpenAI or Azure OpenAI API key or Token Provider not found"",""scores"":[],""justification"":""""}",

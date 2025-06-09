@@ -1,0 +1,6 @@
+{
+  "aiNodeUrl": "http://localhost:3000",
+  "timeoutMs": 60000,
+  "maxRetries": 3,
+  "logLevel": "info"
+}

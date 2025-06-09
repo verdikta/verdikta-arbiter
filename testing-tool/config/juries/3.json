@@ -1,0 +1,13 @@
+{
+  "id": 3,
+  "name": "Single OpenAI GPT-4",
+  "models": [
+    {
+      "AI_PROVIDER": "OpenAI",
+      "AI_MODEL": "gpt-4",
+      "WEIGHT": 1,
+      "NO_COUNTS": 1
+    }
+  ],
+  "iterations": 1
+}

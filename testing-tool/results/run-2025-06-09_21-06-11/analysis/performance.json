@@ -1,0 +1,25 @@
+{
+  "total_tests": 1,
+  "successful_tests": 0,
+  "failed_tests": 1,
+  "success_rate": "0.00",
+  "execution_times": {
+    "min": 7135,
+    "max": 7135,
+    "average": 7135,
+    "median": 7135
+  },
+  "errors": {
+    "by_type": {
+      "Provider": 1
+    },
+    "total_failures": 1,
+    "examples": [
+      {
+        "scenario_id": "energy-invest",
+        "jury_id": 3,
+        "error": "AI node error: 400 Bad Request - {\"error\":\"OpenAI or Azure OpenAI API key or Token Provider not found\",\"scores\":[],\"justification\":\"\"}"
+      }
+    ]
+  }
+}

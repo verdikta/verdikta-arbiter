@@ -1,0 +1,19 @@
+{
+  "id": 1,
+  "name": "Conservative Financial Panel",
+  "models": [
+    {
+      "AI_PROVIDER": "OpenAI",
+      "AI_MODEL": "gpt-4",
+      "WEIGHT": 0.5,
+      "NO_COUNTS": 1
+    },
+    {
+      "AI_PROVIDER": "Anthropic",
+      "AI_MODEL": "claude-3-sonnet-20240229",
+      "WEIGHT": 0.5,
+      "NO_COUNTS": 1
+    }
+  ],
+  "iterations": 1
+}
