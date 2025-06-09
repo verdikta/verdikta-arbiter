@@ -55,24 +55,22 @@ The Verdikta Arbiter Node consists of several integrated components:
 
 ```mermaid
 graph TB
-    A[Client Request] --> B[Chainlink Node]
-    B --> C[External Adapter]
+    A[Client Request] <--> F[Smart Contracts]
+    A <--> I[IPFS Storage]
+    B[Chainlink Node] --> C[External Adapter]
     C --> D[AI Node]
     D --> E[LLM Models]
     E --> D
     D --> C
     C --> B
-    B --> F[Smart Contract]
-    F --> G[Blockchain Response]
-    
-    H[PostgreSQL] --> B
-    I[IPFS Storage] --> D
+    B --> F
+    F --> G[Blockchain]
+    I <--> C
     
     subgraph "Verdikta Arbiter Node"
         B
         C
         D
-        H
     end
     
     subgraph "External Services"

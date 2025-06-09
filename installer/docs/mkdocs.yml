@@ -34,20 +34,20 @@ theme:
     - toc.integrate
   palette:
     - scheme: default
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-7
         name: Switch to dark mode
     - scheme: slate
-      primary: indigo
-      accent: indigo
+      primary: custom
+      accent: custom
       toggle:
         icon: material/brightness-4
         name: Switch to light mode
   font:
-    text: Roboto
-    code: Roboto Mono
+    text: Inter
+    code: JetBrains Mono
   favicon: assets/favicon.png
   logo: assets/logo.png
 
@@ -70,6 +70,10 @@ extra:
       link: https://github.com/verdikta
     - icon: fontawesome/brands/twitter
       link: https://twitter.com/verdikta
+
+# Custom CSS
+extra_css:
+  - assets/stylesheets/verdikta.css
 
 # Extensions
 markdown_extensions:
@@ -130,6 +134,7 @@ nav:
     - Quick Start: quick-start.md
   - Installation:
     - installation/index.md
+    - Prompts Guide: installation/prompts-guide.md
     - Automated Installation: installation/automated.md
     - Manual Installation: installation/manual.md
     - Environment Setup: installation/environment.md

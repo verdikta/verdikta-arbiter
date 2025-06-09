@@ -8,6 +8,16 @@ Choose the installation approach that best fits your needs and experience level:
 
 <div class="grid cards" markdown>
 
+-   :fontawesome-solid-question-circle:{ .lg .middle } **Prompts Guide**
+
+    ---
+
+    Understand every installer prompt and learn how to obtain required information.
+
+    **Best for**: First-time users, API key setup, troubleshooting prompts
+
+    [:octicons-arrow-right-24: Prompts Guide](prompts-guide.md)
+
 -   :fontawesome-solid-magic:{ .lg .middle } **Automated Installation**
 
     ---
