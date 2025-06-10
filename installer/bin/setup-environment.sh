@@ -257,10 +257,7 @@ create_installation_directory() {
     # Save installation directory to config file
     echo "INSTALL_DIR=\"$INSTALL_DIR\"" > "$INSTALLER_DIR/.env"
     
-    # Create subdirectories
-    mkdir -p "$INSTALL_DIR/ai-node"
-    mkdir -p "$INSTALL_DIR/external-adapter"
-    mkdir -p "$INSTALL_DIR/chainlink-node"
+    # Create subdirectories (components will be copied later during installation)
     mkdir -p "$INSTALL_DIR/contracts"
     mkdir -p "$INSTALL_DIR/data"
     mkdir -p "$INSTALL_DIR/logs"

@@ -15,7 +15,7 @@
       "NO_COUNTS": 1
     },
     {
-      "AI_PROVIDER": "Ollama",
+      "AI_PROVIDER": "Open-source",
       "AI_MODEL": "phi3",
       "WEIGHT": 0.2,
       "NO_COUNTS": 1

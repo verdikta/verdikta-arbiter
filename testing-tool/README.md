@@ -55,7 +55,31 @@ Edit `config/tool-config.json` to point to your AI node:
 }
 ```
 
-### 4. Run Tests
+### 4. Start AI Node
+
+The testing tool requires only the AI node component to be running. Start it using:
+
+```bash
+cd ~/verdikta-arbiter-node/ai-node
+./start.sh
+```
+
+This will:
+- Start the AI node on port 3000
+- Run in background mode with logging
+- Create a PID file for process management
+
+Verify the AI node is running:
+```bash
+# Check AI node health
+curl http://localhost:3000/api/health
+
+# Or use the testing tool status check
+cd testing-tool
+npm start status
+```
+
+### 5. Run Tests
 
 ```bash
 # Run all scenarios against all juries
@@ -270,9 +294,10 @@ npm test
 ### Common Issues
 
 **"Cannot connect to AI node"**
-- Ensure AI node is running on the configured URL
-- Check `config/tool-config.json` settings
-- Verify API keys are configured in the AI node
+- Ensure AI node is started: `cd ~/verdikta-arbiter-node/ai-node && ./start.sh`
+- Verify AI node is responding: `curl http://localhost:3000/api/health`
+- Check `config/tool-config.json` settings match the AI node URL
+- Verify API keys are configured in the AI node's `.env.local` file in the installation directory (`~/verdikta-arbiter-node/ai-node/.env.local`)
 
 **"Archive not found"**
 - Ensure ZIP files exist in `scenarios/attachments/`

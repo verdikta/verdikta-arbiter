@@ -137,24 +137,44 @@ upgrade_component() {
     
     # Save files that should be preserved
     local temp_dir=$(mktemp -d)
+    local preserved_files=""
+    
     for pattern in $preserve_patterns; do
         if ls "$dst"/$pattern 1> /dev/null 2>&1; then
-            echo -e "${BLUE}Preserving $pattern files...${NC}"
+            echo -e "${BLUE}Preserving existing $pattern files...${NC}"
             cp -r "$dst"/$pattern "$temp_dir"/ 2>/dev/null || true
+            preserved_files="$preserved_files $pattern"
         fi
     done
     
-    # Remove the old directory contents
-    rm -rf "$dst"/*
+    # Remove the old directory contents (including hidden files)
+    rm -rf "$dst"/* "$dst"/.[^.]* "$dst"/..?* 2>/dev/null || true
     
-    # Copy all files from source
+    # Copy all files from source (including hidden files)
+    # Enable dotglob to include hidden files in glob patterns
+    shopt -s dotglob
     cp -r "$src"/* "$dst"/ 2>/dev/null || true
+    shopt -u dotglob
     
-    # Restore preserved files
-    for pattern in $preserve_patterns; do
+    # Restore preserved files, but only if they actually existed in target
+    for pattern in $preserved_files; do
         if ls "$temp_dir"/$pattern 1> /dev/null 2>&1; then
-            echo -e "${BLUE}Restoring $pattern files...${NC}"
+            echo -e "${BLUE}Restoring preserved $pattern files...${NC}"
             cp -r "$temp_dir"/$pattern "$dst"/ 2>/dev/null || true
+        fi
+    done
+    
+    # For files that didn't exist in target but might exist in source, 
+    # check if they were copied and report
+    for pattern in $preserve_patterns; do
+        # Skip if this pattern was already preserved and restored
+        if echo "$preserved_files" | grep -q "$pattern"; then
+            continue
+        fi
+        
+        # Check if the pattern now exists in the destination (copied from source)
+        if ls "$dst"/$pattern 1> /dev/null 2>&1; then
+            echo -e "${GREEN}Using $pattern from source (no existing file to preserve)${NC}"
         fi
     done
     
@@ -277,36 +297,88 @@ echo -e "${BLUE}Starting upgrade process...${NC}"
 
 # Upgrade AI Node
 echo -e "${BLUE}Upgrading AI Node...${NC}"
-upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local logs node_modules"
+upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local .env logs node_modules *.pid"
 
 # Upgrade External Adapter
 echo -e "${BLUE}Upgrading External Adapter...${NC}"
-upgrade_component "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External Adapter" ".env logs node_modules"
+upgrade_component "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External Adapter" ".env .env.local logs node_modules *.pid"
 
 # Upgrade Chainlink Node configurations
 echo -e "${BLUE}Upgrading Chainlink Node configurations...${NC}"
 upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs .api"
 
-# Upgrade Operator Contracts if needed
+# Upgrade Operator Contracts
 echo -e "${BLUE}Upgrading Operator Contracts...${NC}"
 upgrade_component "$REPO_OPERATOR" "$TARGET_OPERATOR" "Operator Contracts" "build"
+
+# Also copy arbiter-operator to the root for standalone registration
+echo -e "${BLUE}Updating arbiter-operator for standalone registration...${NC}"
+if [ -d "$REPO_OPERATOR" ]; then
+    # Preserve any .env file and node_modules
+    TEMP_DIR=$(mktemp -d)
+    if [ -f "$TARGET_DIR/arbiter-operator/.env" ]; then
+        cp "$TARGET_DIR/arbiter-operator/.env" "$TEMP_DIR/"
+    fi
+    if [ -d "$TARGET_DIR/arbiter-operator/node_modules" ]; then
+        cp -r "$TARGET_DIR/arbiter-operator/node_modules" "$TEMP_DIR/"
+    fi
+    
+    # Copy the updated arbiter-operator
+    rm -rf "$TARGET_DIR/arbiter-operator"
+    # Enable dotglob for consistency (ensures any hidden config files are copied)
+    shopt -s dotglob
+    cp -r "$REPO_OPERATOR" "$TARGET_DIR/arbiter-operator"
+    shopt -u dotglob
+    
+    # Restore preserved files
+    if [ -f "$TEMP_DIR/.env" ]; then
+        cp "$TEMP_DIR/.env" "$TARGET_DIR/arbiter-operator/"
+    fi
+    if [ -d "$TEMP_DIR/node_modules" ]; then
+        cp -r "$TEMP_DIR/node_modules" "$TARGET_DIR/arbiter-operator/"
+    fi
+    
+    rm -rf "$TEMP_DIR"
+    echo -e "${GREEN}Arbiter-operator updated for standalone registration.${NC}"
+else
+    echo -e "${YELLOW}Warning: arbiter-operator source directory not found at $REPO_OPERATOR${NC}"
+fi
 
 # Update management scripts
 echo -e "${BLUE}Updating management scripts...${NC}"
 cp "$UTIL_DIR/start-arbiter.sh" "$TARGET_DIR/start-arbiter.sh"
 cp "$UTIL_DIR/stop-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh"
 cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
+
+# Copy the standalone registration script (if it exists)
+if [ -f "$UTIL_DIR/register-oracle.sh" ]; then
+    cp "$UTIL_DIR/register-oracle.sh" "$TARGET_DIR/register-oracle.sh"
+    chmod +x "$TARGET_DIR/register-oracle.sh"
+    echo -e "${GREEN}Standalone registration script updated.${NC}"
+else
+    echo -e "${YELLOW}Warning: Standalone registration script not found at $UTIL_DIR/register-oracle.sh${NC}"
+fi
+
 chmod +x "$TARGET_DIR/start-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh" "$TARGET_DIR/arbiter-status.sh"
 echo -e "${GREEN}Management scripts updated.${NC}"
 
-# Copy contracts information
-echo -e "${BLUE}Copying contract information...${NC}"
+# Copy contracts and environment information
+echo -e "${BLUE}Copying contract and environment information...${NC}"
+mkdir -p "$TARGET_DIR/installer"
+
 if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    mkdir -p "$TARGET_DIR/installer"
     cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
     echo -e "${GREEN}Contract information copied to $TARGET_DIR/installer/.contracts${NC}"
 else
     echo -e "${YELLOW}Contract information file not found at $INSTALLER_DIR/.contracts${NC}"
+fi
+
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    cp "$INSTALLER_DIR/.env" "$TARGET_DIR/installer/.env"
+    chmod 600 "$TARGET_DIR/installer/.env"
+    echo -e "${GREEN}Environment information copied to $TARGET_DIR/installer/.env${NC}"
+else
+    echo -e "${YELLOW}Environment file not found at $INSTALLER_DIR/.env${NC}"
 fi
 
 # Install node dependencies if needed

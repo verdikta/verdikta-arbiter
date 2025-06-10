@@ -212,18 +212,106 @@ chmod +x "$INSTALL_DIR/start-arbiter.sh"
 chmod +x "$INSTALL_DIR/stop-arbiter.sh"
 chmod +x "$INSTALL_DIR/arbiter-status.sh"
 
-# Copy contracts information
-echo -e "${BLUE}Copying contract information...${NC}"
+# Copy configured components to target installation directory
+echo -e "${BLUE}Copying configured components to installation directory...${NC}"
+
+# Define source component directories
+AI_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
+EXTERNAL_ADAPTER_SRC_DIR="$(dirname "$INSTALLER_DIR")/external-adapter"
+CHAINLINK_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/chainlink-node"
+
+# Copy AI Node (including .env.local and other configurations)
+if [ -d "$AI_NODE_SRC_DIR" ]; then
+    echo -e "${BLUE}Copying configured AI Node...${NC}"
+    # Enable dotglob to ensure hidden files like .env.local are copied
+    shopt -s dotglob
+    cp -r "$AI_NODE_SRC_DIR" "$INSTALL_DIR/ai-node"
+    shopt -u dotglob
+    echo -e "${GREEN}AI Node copied to $INSTALL_DIR/ai-node${NC}"
+    
+    # Verify .env.local was copied
+    if [ -f "$INSTALL_DIR/ai-node/.env.local" ]; then
+        echo -e "${GREEN}AI Node .env.local file successfully copied${NC}"
+    else
+        echo -e "${YELLOW}Warning: .env.local file not found in copied AI Node${NC}"
+    fi
+else
+    echo -e "${YELLOW}Warning: AI Node source directory not found at $AI_NODE_SRC_DIR${NC}"
+fi
+
+# Copy External Adapter (including .env and other configurations)
+if [ -d "$EXTERNAL_ADAPTER_SRC_DIR" ]; then
+    echo -e "${BLUE}Copying configured External Adapter...${NC}"
+    # Enable dotglob to ensure hidden files like .env are copied
+    shopt -s dotglob
+    cp -r "$EXTERNAL_ADAPTER_SRC_DIR" "$INSTALL_DIR/external-adapter"
+    shopt -u dotglob
+    echo -e "${GREEN}External Adapter copied to $INSTALL_DIR/external-adapter${NC}"
+    
+    # Verify .env was copied
+    if [ -f "$INSTALL_DIR/external-adapter/.env" ]; then
+        echo -e "${GREEN}External Adapter .env file successfully copied${NC}"
+    else
+        echo -e "${YELLOW}Warning: .env file not found in copied External Adapter${NC}"
+    fi
+else
+    echo -e "${YELLOW}Warning: External Adapter source directory not found at $EXTERNAL_ADAPTER_SRC_DIR${NC}"
+fi
+
+# Copy Chainlink Node configurations
+if [ -d "$CHAINLINK_NODE_SRC_DIR" ]; then
+    echo -e "${BLUE}Copying Chainlink Node configurations...${NC}"
+    # Enable dotglob for consistency (ensures any hidden config files are copied)
+    shopt -s dotglob
+    cp -r "$CHAINLINK_NODE_SRC_DIR" "$INSTALL_DIR/chainlink-node"
+    shopt -u dotglob
+    echo -e "${GREEN}Chainlink Node copied to $INSTALL_DIR/chainlink-node${NC}"
+else
+    echo -e "${YELLOW}Warning: Chainlink Node source directory not found at $CHAINLINK_NODE_SRC_DIR${NC}"
+fi
+
+# Copy contracts and environment information
+echo -e "${BLUE}Copying contract and environment information...${NC}"
+mkdir -p "$INSTALL_DIR/installer"
+
 if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    mkdir -p "$INSTALL_DIR/installer"
     cp "$INSTALLER_DIR/.contracts" "$INSTALL_DIR/installer/.contracts"
     echo -e "${GREEN}Contract information copied to $INSTALL_DIR/installer/.contracts${NC}"
+fi
+
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    cp "$INSTALLER_DIR/.env" "$INSTALL_DIR/installer/.env"
+    chmod 600 "$INSTALL_DIR/installer/.env"
+    echo -e "${GREEN}Environment information copied to $INSTALL_DIR/installer/.env${NC}"
+fi
+
+# Copy arbiter-operator to target directory for standalone registration
+echo -e "${BLUE}Copying arbiter-operator for standalone registration...${NC}"
+ARBITER_OPERATOR_SRC_DIR="$(dirname "$INSTALLER_DIR")/arbiter-operator"
+if [ -d "$ARBITER_OPERATOR_SRC_DIR" ]; then
+    # Enable dotglob for consistency (ensures any hidden config files are copied)
+    shopt -s dotglob
+    cp -r "$ARBITER_OPERATOR_SRC_DIR" "$INSTALL_DIR/arbiter-operator"
+    shopt -u dotglob
+    echo -e "${GREEN}Arbiter-operator copied to $INSTALL_DIR/arbiter-operator${NC}"
+else
+    echo -e "${YELLOW}Warning: arbiter-operator directory not found at $ARBITER_OPERATOR_SRC_DIR${NC}"
+fi
+
+# Copy the standalone registration script
+if [ -f "$UTIL_DIR/register-oracle.sh" ]; then
+    cp "$UTIL_DIR/register-oracle.sh" "$INSTALL_DIR/register-oracle.sh"
+    chmod +x "$INSTALL_DIR/register-oracle.sh"
+    echo -e "${GREEN}Standalone registration script copied to $INSTALL_DIR/register-oracle.sh${NC}"
+else
+    echo -e "${YELLOW}Warning: Standalone registration script not found at $UTIL_DIR/register-oracle.sh${NC}"
 fi
 
 echo -e "${GREEN}Arbiter management scripts created:${NC}"
 echo -e "  - To start all services: $INSTALL_DIR/start-arbiter.sh"
 echo -e "  - To stop all services:  $INSTALL_DIR/stop-arbiter.sh"
 echo -e "  - To check status:       $INSTALL_DIR/arbiter-status.sh"
+echo -e "  - To register with dispatcher: $INSTALL_DIR/register-oracle.sh"
 
 # Success!
 echo -e "${GREEN}"

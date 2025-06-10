@@ -58,10 +58,11 @@ verdikta-arbiter/
 - **Key Scripts**:
     - `installer/bin/install.sh`: Main installation script.
     - `installer/bin/upgrade-arbiter.sh`: Upgrades an existing arbiter installation with the latest code.
-    - `installer/bin/register-oracle-dispatcher.sh`: Registers the operator with an aggregator contract (optional).
+    - `installer/bin/register-oracle-dispatcher.sh`: Registers the operator with an aggregator contract during installation (optional).
     - `~/verdikta-arbiter-node/start-arbiter.sh`: Starts all arbiter components.
     - `~/verdikta-arbiter-node/stop-arbiter.sh`: Stops all arbiter components.
     - `~/verdikta-arbiter-node/arbiter-status.sh`: Checks the status of components.
+    - `~/verdikta-arbiter-node/register-oracle.sh`: Standalone script to register with dispatcher contracts (can be run multiple times).
 - **Note**: The documentation within `installer/docs/` provides more detail on the installation process.
 
 ## Getting Started (Installation)
@@ -101,19 +102,28 @@ Before running the installer, ensure you have:
     - **External Adapter**: Edit `~/verdikta-arbiter-node/external-adapter/.env` for IPFS credentials, AI Node URL, etc.
     - **Chainlink Node**: Configuration is typically managed via environment variables set for the Docker container (often defined in a `.env` file used by Docker Compose within the installation directory) and through the Chainlink node's UI/API after startup.
 
-4.  **Register with Aggregator (Optional)**:
-    After installation, you can optionally register your oracle with an aggregator contract:
+4.  **Register with Dispatcher (Optional)**:
+    After installation, you can register your oracle with dispatcher (aggregator) contracts. This can be done during installation or anytime afterward:
+    
+    **During Installation:**
+    The installer will offer the option to register with a dispatcher contract.
+    
+    **After Installation:**
+    Use the standalone registration script from your installation directory:
     ```bash
-    cd ~/verdikta-arbiter-node/installer
-    bash bin/register-oracle-dispatcher.sh
+    cd ~/verdikta-arbiter-node
+    ./register-oracle.sh
     ```
-    You will need the address of a deployed aggregator contract for this step.
+    
+    **Multiple Registrations:**
+    You can run the registration script multiple times to register with different dispatcher contracts. Each run will register with a new aggregator while preserving previous registrations.
 
 5.  **Manage the Arbiter**:
     Navigate to your installation directory (e.g., `~/verdikta-arbiter-node`) and use the management scripts:
     - Start: `~/verdikta-arbiter-node/start-arbiter.sh`
     - Stop: `~/verdikta-arbiter-node/stop-arbiter.sh`
     - Status: `~/verdikta-arbiter-node/arbiter-status.sh`
+    - Register with dispatcher: `~/verdikta-arbiter-node/register-oracle.sh`
 
 ### Upgrading
 
