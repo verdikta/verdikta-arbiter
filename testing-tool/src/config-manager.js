@@ -65,15 +65,37 @@ class ConfigManager {
    */
   async getJuryConfig(juryId) {
     try {
-      const juryPath = path.join(this.juriesDir, `${juryId}.json`);
-      if (!await fs.pathExists(juryPath)) {
-        throw new Error(`Jury configuration ${juryId} not found`);
+      // First try the traditional naming convention
+      const traditionalPath = path.join(this.juriesDir, `${juryId}.json`);
+      if (await fs.pathExists(traditionalPath)) {
+        const config = await fs.readJson(traditionalPath);
+        logger.debug(`Loaded jury config ${juryId}: ${config.name} (traditional naming)`);
+        return config;
       }
       
-      const config = await fs.readJson(juryPath);
-      logger.debug(`Loaded jury config ${juryId}: ${config.name}`);
-      return config;
+      // If not found, search all JSON files for matching ID
+      const files = await fs.readdir(this.juriesDir);
+      const jsonFiles = files.filter(file => file.endsWith('.json'));
+      
+      for (const file of jsonFiles) {
+        const filePath = path.join(this.juriesDir, file);
+        try {
+          const config = await fs.readJson(filePath);
+          if (config.id === juryId) {
+            logger.debug(`Loaded jury config ${juryId}: ${config.name} (from ${file})`);
+            return config;
+          }
+        } catch (error) {
+          logger.warn(`Skipping invalid JSON file: ${file}`, error.message);
+          continue;
+        }
+      }
+      
+      throw new Error(`Jury configuration ${juryId} not found`);
     } catch (error) {
+      if (error.message.includes('not found')) {
+        throw error;
+      }
       logger.error(`Failed to load jury configuration ${juryId}:`, error);
       throw error;
     }
@@ -86,13 +108,36 @@ class ConfigManager {
   async getAllJuries() {
     try {
       const files = await fs.readdir(this.juriesDir);
-      const juryFiles = files.filter(file => file.endsWith('.json') && /^\d+\.json$/.test(file));
+      const jsonFiles = files.filter(file => file.endsWith('.json'));
       
       const juries = [];
-      for (const file of juryFiles) {
-        const juryId = parseInt(path.basename(file, '.json'));
-        const jury = await this.getJuryConfig(juryId);
-        juries.push(jury);
+      const processedIds = new Set();
+      
+      for (const file of jsonFiles) {
+        const filePath = path.join(this.juriesDir, file);
+        try {
+          const jury = await fs.readJson(filePath);
+          
+          // Validate that jury has required fields
+          if (!jury.id || typeof jury.id !== 'number') {
+            logger.warn(`Skipping ${file}: missing or invalid ID`);
+            continue;
+          }
+          
+          // Check for duplicate IDs
+          if (processedIds.has(jury.id)) {
+            logger.warn(`Skipping ${file}: duplicate ID ${jury.id}`);
+            continue;
+          }
+          
+          processedIds.add(jury.id);
+          juries.push(jury);
+          logger.debug(`Loaded jury ${jury.id}: ${jury.name} from ${file}`);
+          
+        } catch (error) {
+          logger.warn(`Skipping invalid JSON file: ${file}`, error.message);
+          continue;
+        }
       }
       
       return juries.sort((a, b) => a.id - b.id);

@@ -31,32 +31,59 @@ program
       
       await configManager.initialize();
       
-      // Create example scenarios CSV
+      // Create example scenarios CSV only if it doesn't exist
       const scenariosPath = path.join(__dirname, '../scenarios/scenarios.csv');
-      await scenarioLoader.createExampleCsv(scenariosPath);
+      const scenariosTemplatePath = path.join(__dirname, '../scenarios/scenarios.csv.template');
       
-      // Create example archives
+      // Always create/update template
+      await scenarioLoader.createExampleCsv(scenariosTemplatePath);
+      
+      // Only create actual file if it doesn't exist
+      if (!await require('fs-extra').pathExists(scenariosPath)) {
+        await scenarioLoader.createExampleCsv(scenariosPath);
+        console.log(chalk.green('✅ Created scenarios.csv from template'));
+      } else {
+        console.log(chalk.yellow('⚠️  scenarios.csv already exists - preserved existing file'));
+        console.log(chalk.cyan('💡 Updated template available at scenarios.csv.template'));
+      }
+      
+      // Create example archives directory
       const attachmentsDir = path.join(__dirname, '../scenarios/attachments');
       await require('fs-extra').ensureDir(attachmentsDir);
       
       const exampleArchives = ['energy-invest.zip', 'product-launch.zip', 'merger-decision.zip'];
+      let archivesCreated = 0;
+      let archivesSkipped = 0;
+      
       for (const archive of exampleArchives) {
-        const scenarioId = archive.replace('.zip', '');
-        await attachmentHandler.createExampleArchive(
-          scenarioId, 
-          path.join(attachmentsDir, archive)
-        );
+        const archivePath = path.join(attachmentsDir, archive);
+        if (!await require('fs-extra').pathExists(archivePath)) {
+          const scenarioId = archive.replace('.zip', '');
+          await attachmentHandler.createExampleArchive(scenarioId, archivePath);
+          archivesCreated++;
+        } else {
+          archivesSkipped++;
+        }
+      }
+      
+      if (archivesCreated > 0) {
+        console.log(chalk.green(`✅ Created ${archivesCreated} example archives`));
+      }
+      if (archivesSkipped > 0) {
+        console.log(chalk.yellow(`⚠️  Preserved ${archivesSkipped} existing archives`));
       }
       
       console.log(chalk.green('✅ Initialization complete!'));
-      console.log(chalk.yellow('📁 Configuration files created in: config/'));
-      console.log(chalk.yellow('📋 Example scenarios created in: scenarios/scenarios.csv'));
-      console.log(chalk.yellow('📦 Example archives created in: scenarios/attachments/'));
+      console.log(chalk.yellow('📁 Configuration files ready in: config/'));
+      console.log(chalk.yellow('📋 Scenarios file: scenarios/scenarios.csv'));
+      console.log(chalk.yellow('📦 Archives directory: scenarios/attachments/'));
+      console.log(chalk.gray('📄 Templates available: scenarios.csv.template'));
       console.log(chalk.cyan('\n🔧 Next steps:'));
       console.log(chalk.cyan('  1. Edit config/tool-config.json to set your AI node URL'));
       console.log(chalk.cyan('  2. Configure jury panels in config/juries/'));
       console.log(chalk.cyan('  3. Edit scenarios/scenarios.csv with your test scenarios'));
       console.log(chalk.cyan('  4. Run "npm start test" to execute tests'));
+      console.log(chalk.gray('\n💡 Tip: Running init again will not overwrite your existing configurations'));
       
     } catch (error) {
       console.error(chalk.red('❌ Initialization failed:'), error.message);
@@ -74,6 +101,8 @@ program
   .option('--tags <tags>', 'Comma-separated tags to filter scenarios')
   .option('--dry-run', 'Validate setup without executing tests')
   .action(async (options) => {
+    // Debug: log the parsed options
+    logger.debug('Parsed command options:', options);
     try {
       console.log(chalk.blue('🧪 Starting Verdikta Testing Tool...'));
       
@@ -88,9 +117,11 @@ program
       
       if (options.scenarioIds) {
         loadOptions.scenarioIds = options.scenarioIds.split(',').map(s => s.trim());
+        console.log(chalk.gray(`🔍 Filtering by scenario IDs: ${loadOptions.scenarioIds.join(', ')}`));
       }
       if (options.tags) {
         loadOptions.tags = options.tags.split(',').map(t => t.trim());
+        console.log(chalk.gray(`🏷️  Filtering by tags: ${loadOptions.tags.join(', ')}`));
       }
       
       const scenarios = await scenarioLoader.loadScenarios(scenariosPath, loadOptions);

@@ -1,10 +1,10 @@
 {
   "id": 3,
-  "name": "Single OpenAI GPT-4",
+  "name": "Open Source Deepseek R1 8B",
   "models": [
     {
-      "AI_PROVIDER": "OpenAI",
-      "AI_MODEL": "gpt-4",
+      "AI_PROVIDER": "Open-source",
+      "AI_MODEL": "deepseek-r1:7b",
       "WEIGHT": 1,
       "NO_COUNTS": 1
     }

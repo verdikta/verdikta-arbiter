@@ -6,7 +6,12 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "jest",
-    "dev": "nodemon src/index.js"
+    "dev": "nodemon src/index.js",
+        "tool": "node src/index.js",
+    "run-tests": "node src/index.js test",
+    "juries": "node src/index.js juries",
+    "status": "node src/index.js status",
+    "results": "node src/index.js results"
   },
   "dependencies": {
     "adm-zip": "^0.5.10",

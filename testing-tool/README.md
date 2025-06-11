@@ -81,21 +81,44 @@ npm start status
 
 ### 5. Run Tests
 
+**Note**: When using npm scripts, use `--` to pass arguments correctly:
+
 ```bash
 # Run all scenarios against all juries
-npm start test
+npm start -- test
 
 # Run specific scenarios
-npm start test --scenario-ids "energy-invest,product-launch"
+npm start -- test --scenario-ids "energy-invest,product-launch"
 
-# Run against specific juries
-npm start test --juries "1,2"
+# Run against specific juries  
+npm start -- test --juries "1,2"
 
 # Filter by tags
-npm start test --tags "energy,investment"
+npm start -- test --tags "energy,investment"
 
 # Dry run (validate without executing)
-npm start test --dry-run
+npm start -- test --dry-run
+```
+
+**Alternative: Use new convenience scripts:**
+```bash
+# Run all tests
+npm run run-tests
+
+# Check status
+npm run status
+
+# List juries
+npm run juries
+
+# View results
+npm run results
+```
+
+**Or run directly:**
+```bash
+# Run node directly (no -- needed)
+node src/index.js test --scenario-ids "energy-invest"
 ```
 
 ## Directory Structure
@@ -210,34 +233,44 @@ Define AI juries in `config/juries/N.json`:
 
 ```bash
 # Initialize tool with examples
-npm start init
+npm start -- init
 
-# Run tests
-npm start test [options]
+# Run tests (note the -- for arguments)
+npm start -- test [options]
 
 # Check status
-npm start status
+npm run status
 
-# List jury configurations
-npm start juries
+# List jury configurations  
+npm run juries
 
 # View results
-npm start results [--run <id>]
+npm run results
 ```
 
 ### Test Options
 
 ```bash
 # Scenario filtering
-npm start test --scenario-ids "id1,id2"
-npm start test --tags "energy,finance"
-npm start test --scenarios custom-scenarios.csv
+npm start -- test --scenario-ids "id1,id2"
+npm start -- test --tags "energy,finance"
+npm start -- test --scenarios custom-scenarios.csv
 
 # Jury filtering
-npm start test --juries "1,3"
+npm start -- test --juries "1,3"
 
 # Validation
-npm start test --dry-run
+npm start -- test --dry-run
+```
+
+### Direct Node Commands (No `--` needed)
+
+```bash
+# Run directly with node
+node src/index.js test --scenario-ids "energy-invest"
+node src/index.js test --juries "1,2" --dry-run
+node src/index.js juries
+node src/index.js status
 ```
 
 ## Analysis Reports

@@ -1,6 +1,6 @@
 {
   "id": 2,
-  "name": "Tech Innovation Panel",
+  "name": "API+Open-source 2 iterations",
   "models": [
     {
       "AI_PROVIDER": "OpenAI",
@@ -16,7 +16,7 @@
     },
     {
       "AI_PROVIDER": "Open-source",
-      "AI_MODEL": "phi3",
+      "AI_MODEL": "deepseek-r1:7b",
       "WEIGHT": 0.2,
       "NO_COUNTS": 1
     }
