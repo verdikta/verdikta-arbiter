@@ -1,6 +1,6 @@
 {
   "id": 3,
-  "name": "Open Source Deepseek R1 8B",
+  "name": "Open Source ReasoningDeepseek R1 8B",
   "models": [
     {
       "AI_PROVIDER": "Open-source",

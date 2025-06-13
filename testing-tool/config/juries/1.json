@@ -1,6 +1,6 @@
 {
   "id": 1,
-  "name": "Frontier Panel",
+  "name": "Frontier Multi-modal Panel",
   "models": [
     {
       "AI_PROVIDER": "OpenAI",
