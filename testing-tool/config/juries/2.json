@@ -1,25 +1,19 @@
 {
   "id": 2,
-  "name": "API+Open-source 2 iterations",
+  "name": "Cost-effective API",
   "models": [
     {
       "AI_PROVIDER": "OpenAI",
-      "AI_MODEL": "gpt-4o",
-      "WEIGHT": 0.4,
+      "AI_MODEL": "gpt-4.1-mini",
+      "WEIGHT": 0.5,
       "NO_COUNTS": 1
     },
     {
       "AI_PROVIDER": "Anthropic",
-      "AI_MODEL": "claude-3-sonnet-20240229",
-      "WEIGHT": 0.4,
-      "NO_COUNTS": 1
-    },
-    {
-      "AI_PROVIDER": "Open-source",
-      "AI_MODEL": "deepseek-r1:7b",
-      "WEIGHT": 0.2,
+      "AI_MODEL": "claude-3-5-haiku-20241022",
+      "WEIGHT": 0.5,
       "NO_COUNTS": 1
     }
   ],
-  "iterations": 2
+  "iterations": 1
 }

@@ -1,16 +1,16 @@
 {
   "id": 1,
-  "name": "Dual-API Panel",
+  "name": "Frontier Panel",
   "models": [
     {
       "AI_PROVIDER": "OpenAI",
-      "AI_MODEL": "gpt-4",
+      "AI_MODEL": "gpt-4.1",
       "WEIGHT": 0.5,
       "NO_COUNTS": 1
     },
     {
       "AI_PROVIDER": "Anthropic",
-      "AI_MODEL": "claude-3-sonnet-20240229",
+      "AI_MODEL": "claude-sonnet-4-20250514",
       "WEIGHT": 0.5,
       "NO_COUNTS": 1
     }

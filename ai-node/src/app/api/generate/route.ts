@@ -1,6 +1,7 @@
 import { NextResponse } from 'next/server';
 import { LLMFactory } from '../../../lib/llm/llm-factory';
-import { fileToBase64 } from '../../../utils/fileUtils'; 
+import { fileToBase64 } from '../../../utils/fileUtils';
+import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor'; 
 
 
 // Define the list of supported LLM providers
@@ -78,8 +79,8 @@ export async function POST(request: Request) {
 
     console.log('Request details:', { prompt, providerName, modelName });
 
-    // Process attachments
-    const attachments: Array<{ type: string; content: string; mediaType: string }> = [];
+    // Process attachments using the new text extraction system
+    const rawAttachments: Array<{ type: string; content: string; mediaType: string; filename?: string }> = [];
 
     // Process each form entry
     for (const [key, value] of Array.from(formData.entries())) {
@@ -98,29 +99,40 @@ export async function POST(request: Request) {
         // Read the file content
         const arrayBuffer = await value.arrayBuffer();
         const base64Data = Buffer.from(arrayBuffer).toString('base64');
-        const dataUri = `data:${value.type};base64,${base64Data}`;
         
-        console.log('Image processed successfully:', {
-          key,
-          dataLength: dataUri.length
-        });
-
-        attachments.push({
-          type: 'image',
+        rawAttachments.push({
+          type: value.type.startsWith('image/') ? 'image' : 'document',
           content: base64Data,
-          mediaType: value.type
+          mediaType: value.type,
+          filename: fileDetails.name
         });
 
-        console.log('Added image attachment');
+        console.log('Added attachment for processing');
       }
     }
 
-    console.log('Total attachments:', attachments.length);
-    console.log('Processed attachments:', attachments.map(att => ({
-      type: att.type,
-      contentLength: att.content.length,
-      mediaType: att.mediaType
-    })));
+    // Process attachments with text extraction
+    let attachments: Array<{ type: string; content: string; mediaType: string }> = [];
+    if (rawAttachments.length > 0) {
+      console.log('Processing attachments with text extraction...');
+      try {
+        const { results: processedAttachments, skippedCount, skippedReasons } = await processAttachments(
+          rawAttachments, 
+          providerName, 
+          modelName
+        );
+        attachments = convertToLLMFormat(processedAttachments);
+        logAttachmentSummary(processedAttachments);
+        
+        if (skippedCount > 0) {
+          console.warn(`Skipped ${skippedCount} attachment(s):`, skippedReasons);
+        }
+      } catch (error) {
+        console.error('Error processing attachments:', error);
+        // Continue without attachments rather than failing
+        attachments = [];
+      }
+    }
 
     // Get the provider
     const provider = await LLMFactory.getProvider(providerName);

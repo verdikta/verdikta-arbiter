@@ -11,7 +11,8 @@ This application extends beyond traditional AI chatbots by introducing a unique 
 - **Weighted Voting System**: Assign different weights to various models based on their reliability or expertise
 - **Outcome Ranking**: Vote on and rank possible outcomes for a given prompt
 - **Detailed Justifications**: Generate comprehensive explanations for collective decisions
-- **Support for Attachments**: Process both text and image inputs for richer context
+- **Support for Attachments**: Process images, documents (RTF, PDF, Word, Markdown), and text inputs for richer context
+- **Text Extraction**: Automatically extracts plain text from various document formats to optimize token usage
 - **Interaction Logging**: Track and analyze all LLM interactions
 
 The application's standout feature is its ability to aggregate insights from multiple AI models, creating a more balanced and nuanced response than any single model could provide alone.
@@ -229,6 +230,67 @@ A complete list of the models available can be found at the Ollama Library (http
    Then, update the `LLMFactory` in `src/lib/llm/llm-factory.ts` to handle the new provider.
 
 Remember to restart your development server after making these changes for them to take effect.
+
+## Text Extraction and Document Processing
+
+The application includes a comprehensive text extraction system that automatically processes various document formats to optimize them for LLM consumption. This system solves token limit issues by extracting plain text from rich document formats.
+
+### Supported Document Formats
+
+- **RTF (Rich Text Format)**: `.rtf` files - Removes formatting markup and extracts plain text
+- **PDF**: `.pdf` files - Extracts text content using hybrid approach (pdf-parse with textract fallback)
+- **Microsoft Word**: `.doc` and `.docx` files - Extracts text from Word documents
+- **Markdown**: `.md` files - Converts markdown to plain text
+- **HTML**: `.html` files - Strips HTML tags and extracts text content
+- **Plain Text**: `.txt` files - Passed through unchanged
+- **Images**: `.jpg`, `.png`, `.gif`, `.webp` - Processed as visual content (no text extraction)
+
+### Text Extraction Features
+
+- **Automatic Format Detection**: Identifies document format based on MIME type
+- **Size Limits**: Configurable file size limits (default: 50MB)
+- **Content Limits**: Configurable extracted text limits (default: 100k characters)  
+- **Timeout Protection**: Prevents hanging on problematic documents (default: 60s)
+- **Fallback Handling**: Graceful degradation if extraction fails
+- **Performance Monitoring**: Tracks extraction time and success rates
+
+### Configuration
+
+The text extraction system can be configured via environment variables or programmatically:
+
+```typescript
+// Default configuration
+{
+  maxFileSize: 50 * 1024 * 1024,     // 50MB (increased for larger PDFs)
+  maxExtractedLength: 100000,        // 100k characters (increased for longer documents)
+  enableFallback: true,              // Use original content if extraction fails
+  extractionTimeout: 60000,          // 60 seconds (increased for larger files)
+  enableLogging: true                // Log extraction details in development
+}
+```
+
+### Troubleshooting Text Extraction
+
+**File Size Issues:**
+- Files larger than 50MB will be skipped with a warning
+- Large PDFs may take longer to process (up to 60 seconds)
+- Consider compressing or splitting very large documents
+
+**Extraction Failures:**
+- Binary files that can't be processed are automatically skipped
+- Corrupted or password-protected files will fail extraction
+- Scanned PDFs (images) may not extract text properly
+- PDF processing uses hybrid approach: attempts pdf-parse first, falls back to textract if needed
+
+**Performance Tips:**
+- Text-based formats (RTF, TXT, MD) process fastest
+- PDF processing depends on document complexity
+- Multiple attachments are processed sequentially
+
+**Expected Behavior:**
+- Successfully processed attachments are sent to the LLM
+- Failed/unsupported attachments are skipped with console warnings
+- Image attachments bypass text extraction and are sent directly
 
 ## Additional Environment Variables
 

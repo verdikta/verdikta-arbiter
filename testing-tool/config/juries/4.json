@@ -1,0 +1,13 @@
+{
+  "id": 4,
+  "name": "Open Source Multi-modal Llava",
+  "models": [
+    {
+      "AI_PROVIDER": "Open-source",
+      "AI_MODEL": "llava",
+      "WEIGHT": 1,
+      "NO_COUNTS": 1
+    }
+  ],
+  "iterations": 1
+}

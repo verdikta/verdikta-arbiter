@@ -1,4 +1,4 @@
 scenario_id,prompt,outcomes,attachment_archive,expected_winner,tags,notes
-energy-invest,"Should we invest in renewable energy infrastructure?","Invest,Wait,Reject",energy-invest.zip,Invest,"energy,investment","Q3 strategic decision example"
-sports-betting,"The Boston Celtics defeated the New York Knicks on 12 May 2025 REF: https://www.espn.com/nba/game/_/gameId/401769749/celtics-knicks","True,False",celtics-game.zip,False,"sports,betting","Confirm game score"
-art-authentication,"The image is of an authentic Monet painting.","True,False",art-image.zip,,"art,curation","Validation of art"
+energy-invest,"Should we invest in renewable energy infrastructure?","Invest,Wait,Reject",,Invest,"energy,investment","Q3 strategic decision example"
+sports-betting,"Review the link and determine True/False: The Boston Celtics defeated the New York Knicks on 12 May 2025 REF: https://www.espn.com/nba/game/_/gameId/401769749/celtics-knicks","True,False",,False,"sports,betting","Confirm game score"
+social-post-verification,"The post shown in the image should be removed from the social medial platform per the terms of service document.","True,False",social-post.zip,False,"social media,moderation","Validation of art"

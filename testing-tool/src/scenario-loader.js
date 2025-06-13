@@ -69,9 +69,9 @@ class ScenarioLoader {
    * @returns {import('./types').ScenarioRecord}
    */
   parseScenarioRow(row) {
-    // Validate required fields
-    if (!row.scenario_id || !row.prompt || !row.outcomes || !row.attachment_archive) {
-      throw new Error('Missing required fields: scenario_id, prompt, outcomes, attachment_archive');
+    // Validate required fields (attachment_archive is now optional)
+    if (!row.scenario_id || !row.prompt || !row.outcomes) {
+      throw new Error('Missing required fields: scenario_id, prompt, outcomes');
     }
 
     // Parse outcomes
@@ -87,7 +87,7 @@ class ScenarioLoader {
       scenario_id: row.scenario_id.trim(),
       prompt: row.prompt.trim(),
       outcomes: row.outcomes.trim(),
-      attachment_archive: row.attachment_archive.trim(),
+      attachment_archive: row.attachment_archive ? row.attachment_archive.trim() : undefined,
       expected_winner: row.expected_winner ? row.expected_winner.trim() : undefined,
       tags: row.tags ? row.tags.trim() : undefined,
       notes: row.notes ? row.notes.trim() : undefined,
@@ -126,12 +126,27 @@ class ScenarioLoader {
     const results = [];
     
     for (const scenario of scenarios) {
+      // Skip validation for scenarios without attachments
+      if (!scenario.attachment_archive) {
+        const result = {
+          scenario_id: scenario.scenario_id,
+          attachment_archive: null,
+          exists: true, // Mark as valid since no attachment is expected
+          error: null,
+          noAttachments: true
+        };
+        logger.debug(`Scenario ${scenario.scenario_id} has no attachments - skipping validation`);
+        results.push(result);
+        continue;
+      }
+
       const attachmentPath = path.join(this.attachmentsDir, scenario.attachment_archive);
       const result = {
         scenario_id: scenario.scenario_id,
         attachment_archive: scenario.attachment_archive,
         exists: false,
-        error: null
+        error: null,
+        noAttachments: false
       };
       
       try {
@@ -167,9 +182,11 @@ class ScenarioLoader {
    */
   async createExampleCsv(outputPath) {
     const exampleContent = `scenario_id,prompt,outcomes,attachment_archive,expected_winner,tags,notes
-energy-invest,"Should we invest in renewable energy infrastructure?","Invest,Wait,Reject",energy-invest.zip,Invest,"energy,investment","Q3 strategic decision example"
+energy-invest,"Should we invest in renewable energy infrastructure?","Invest,Wait,Reject",energy-invest.zip,Invest,"energy,investment","Q3 strategic decision with attachments"
 product-launch,"Launch new product line in emerging markets?","Launch,Delay,Cancel",product-launch.zip,Launch,"product,strategy","New market entry decision"
-merger-decision,"Should we proceed with the proposed merger?","Proceed,Negotiate,Reject",merger-decision.zip,,"merger,finance","Board-level strategic decision"`;
+merger-decision,"Should we proceed with the proposed merger?","Proceed,Negotiate,Reject",merger-decision.zip,,"merger,finance","Board-level strategic decision"
+simple-decision,"Should we approve the budget increase for marketing?","Approve,Reject,Modify",,Approve,"budget,simple","Simple text-only decision"
+policy-change,"Should we implement remote work policy?","Implement,Delay,Reject",,Implement,"policy,hr","HR policy decision without attachments"`;
 
     await fs.writeFile(outputPath, exampleContent);
     logger.info(`Created example scenarios CSV: ${outputPath}`);

@@ -1,7 +1,5 @@
-import '@anthropic-ai/sdk/shims/node';
 import { AnthropicProvider } from '../../../lib/llm/anthropic-provider';
 import { ChatAnthropic } from "@langchain/anthropic";
-import { HumanMessage } from '@langchain/core/messages';
 import { modelConfig } from '../../../config/models';
 
 jest.mock("@langchain/anthropic", () => ({
@@ -75,17 +73,16 @@ describe('AnthropicProvider', () => {
       anthropicApiKey: 'test-anthropic-api-key',
       modelName: 'claude-3-sonnet-20240229',
     });
-    expect(mockInvoke).toHaveBeenCalledWith([
-      new HumanMessage({
-        content: [
-          { type: "text", text: 'Describe this image' },
-          {
-            type: "image_url",
-            image_url: { url: 'data:image/jpeg;base64,base64EncodedImageString' }
-          }
-        ],
-      }),
-    ]);
+    expect(mockInvoke).toHaveBeenCalledWith([{
+      role: "user",
+      content: [
+        { type: "text", text: 'Describe this image' },
+        {
+          type: "image_url",
+          image_url: { url: 'data:image/jpeg;base64,base64EncodedImageString' }
+        }
+      ]
+    }]);
   });
 
   test('generateResponseWithImage throws error when model does not support images', async () => {
@@ -126,18 +123,17 @@ describe('AnthropicProvider', () => {
       anthropicApiKey: 'test-anthropic-api-key',
       modelName: 'claude-3-5-sonnet-20241022',
     });
-    expect(mockInvoke).toHaveBeenCalledWith([
-      new HumanMessage({
-        content: [
-          { type: "text", text: 'Process these attachments' },
-          {
-            type: "image_url",
-            image_url: { url: 'data:image/jpeg;base64,base64EncodedImage1' }
-          },
-          { type: "text", text: 'Some text attachment' }
-        ],
-      }),
-    ]);
+    expect(mockInvoke).toHaveBeenCalledWith([{
+      role: "user",
+      content: [
+        { type: "text", text: 'Process these attachments' },
+        {
+          type: "image_url",
+          image_url: { url: 'data:image/jpeg;base64,base64EncodedImage1' }
+        },
+        { type: "text", text: 'Some text attachment' }
+      ]
+    }]);
   });
 
   test('generateResponseWithAttachments throws error when model does not support attachments', async () => {

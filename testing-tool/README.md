@@ -2,6 +2,12 @@
 
 A standalone testing tool for systematically evaluating Verdikta AI arbiters across multiple scenarios and jury configurations.
 
+## Model Limitations
+
+- **o3** does not support native PDF processing.
+- **Claude models** do not support native internet searches if fed URLs.
+- **Open source models** do not support PDF processing or internet searches.
+
 ## Overview
 
 The Verdikta Testing Tool allows you to:
@@ -148,31 +154,92 @@ The scenarios CSV file defines your test cases:
 ```csv
 scenario_id,prompt,outcomes,attachment_archive,expected_winner,tags,notes
 energy-invest,"Should we invest in renewable energy?","Invest,Wait,Reject",energy-invest.zip,Invest,"energy,investment","Q3 strategic decision"
-product-launch,"Launch new product line?","Launch,Delay,Cancel",product-launch.zip,Launch,"product,strategy","Market entry decision"
+simple-decision,"Should we approve the budget increase?","Approve,Reject,Modify",,Approve,"budget,simple","Simple text-only decision"
 ```
 
 **Required fields:**
 - `scenario_id` - Unique identifier
 - `prompt` - The decision prompt
 - `outcomes` - Comma-separated possible outcomes
-- `attachment_archive` - ZIP file with scenario data
 
 **Optional fields:**
+- `attachment_archive` - ZIP file with scenario data (⭐ **NEW: Can be empty for text-only scenarios**)
 - `expected_winner` - Expected outcome for validation
 - `tags` - Comma-separated tags for filtering
 - `notes` - Additional notes
 
+### 🆕 Text-Only Scenarios (No Attachments)
+
+You can now create scenarios that don't need supporting files! Just leave the `attachment_archive` field empty:
+
+```csv
+scenario_id,prompt,outcomes,attachment_archive,expected_winner,tags,notes
+policy-decision,"Should we implement remote work policy?","Implement,Delay,Reject",,Implement,"policy,hr","Pure text decision"
+budget-approval,"Approve Q4 marketing budget increase?","Approve,Reject,Modify",,,"budget,finance","Simple yes/no decision"
+```
+
+**Benefits:**
+- ✅ Perfect for policy decisions, strategic choices, and text-based scenarios
+- ✅ Faster testing (no archive processing needed)
+- ✅ Simpler setup for basic decision scenarios
+- ✅ Mixed scenarios - some with attachments, some without
+
 ## Attachment Archives
 
-Each scenario requires a ZIP archive containing:
+The testing tool supports two archive formats:
 
-### manifest.json
+### 🆕 SIMPLIFIED FORMAT (Recommended)
+
+Just include your attachment files with an optional simple manifest:
+
+**Files in ZIP:**
+- `supporting-document.txt`
+- `chart.png`  
+- `manifest.json` (optional)
+
+**Optional manifest.json:**
+```json
+{
+  "format": "simplified",
+  "name": "Energy Investment Attachments",
+  "attachments": [
+    {
+      "filename": "supporting-document.txt",
+      "name": "Supporting Document", 
+      "type": "text/plain"
+    },
+    {
+      "filename": "chart.png",
+      "name": "Analysis Chart",
+      "type": "image/png"
+    }
+  ]
+}
+```
+
+**Benefits:**
+- ✅ No dummy data required
+- ✅ All query/jury configuration comes from CSV + jury config files
+- ✅ Focus only on the actual attachments
+- ✅ Auto-detection if no manifest provided
+
+### LEGACY FORMAT (Backward Compatibility)
+
+**⚠️ Contains dummy data that gets replaced**
+
+Full manifest with jury parameters and primary query:
+
+**manifest.json:**
 ```json
 {
   "version": "1.0",
   "name": "Energy Investment Decision",
   "primary": {
     "filename": "primary.json"
+  },
+  "juryParameters": {
+    "AI_NODES": [...],  // ❌ Gets replaced by jury config files
+    "ITERATIONS": 1
   },
   "additional": [
     {
@@ -184,22 +251,47 @@ Each scenario requires a ZIP archive containing:
 }
 ```
 
-### primary.json
+**primary.json:**
 ```json
 {
-  "query": "Detailed scenario description and context...",
-  "outcomes": ["Invest", "Wait", "Reject"],
-  "references": [
-    "Market research indicates...",
-    "Financial projections show..."
-  ]
+  "query": "...",        // ❌ Gets replaced by scenarios.csv prompt
+  "outcomes": [...],     // ❌ Gets replaced by scenarios.csv outcomes
+  "references": [...]
 }
 ```
 
-### Supporting Files
-- Images (JPG, PNG, WebP)
-- Documents (PDF, TXT)
+### Supporting Files (Both Formats)
+- Images (JPG, PNG, WebP, GIF)
+- Documents (PDF, TXT, RTF, DOC, DOCX)
 - Data files (CSV, JSON)
+
+## How Configuration Works
+
+The testing tool uses a **three-layer configuration approach** that eliminates confusion:
+
+### 📋 Layer 1: Scenarios CSV
+**Defines the test cases and core query data**
+- `prompt` - The main decision query sent to AI
+- `outcomes` - Available decision options  
+- `scenario_id`, `tags` - For organization and filtering
+
+### 👥 Layer 2: Jury Configuration Files  
+**Defines AI model panels and weightings**
+- `models` - Which AI providers/models to use
+- `iterations` - How many decision rounds
+- Stored in `config/juries/N.json`
+
+### 📎 Layer 3: Attachment Archives
+**Contains only the supporting files**
+- Images, documents, data files
+- NO dummy query or jury data needed
+- Focused purely on supplemental content
+
+**✅ This approach means:**
+- No conflicting configurations  
+- No dummy data that gets ignored
+- Clear separation of concerns
+- Easy to maintain and understand
 
 ## Jury Configurations
 
@@ -335,12 +427,25 @@ npm test
 **"Archive not found"**
 - Ensure ZIP files exist in `scenarios/attachments/`
 - Check that archive filenames match those in scenarios CSV
-- Verify ZIP files contain valid manifest.json
+- For simplified format: just include attachment files (manifest.json optional)
+- For legacy format: ensure manifest.json and primary.json exist
 
 **"Jury configuration invalid"**
 - Check that model weights sum to 1.0
 - Verify AI provider and model names are correct
 - Ensure jury JSON files are valid
+
+**"Archive format confusion"**
+- For simple decisions: Use TEXT-ONLY (leave attachment_archive empty)
+- For scenarios with files: Use SIMPLIFIED format (just attachments + optional manifest)
+- Legacy format is for backward compatibility only
+- The tool auto-detects format - no manual specification needed
+- All query/jury data comes from CSV and jury config files, not archives
+
+**"Do I need attachments for every scenario?"**
+- No! Many scenarios work great as text-only (policy decisions, budget approvals, etc.)
+- Only use attachments when you need supporting documents, images, or data files
+- You can mix text-only and attachment scenarios in the same test run
 
 ### Logging
 

@@ -51,15 +51,20 @@ program
       const attachmentsDir = path.join(__dirname, '../scenarios/attachments');
       await require('fs-extra').ensureDir(attachmentsDir);
       
-      const exampleArchives = ['energy-invest.zip', 'product-launch.zip', 'merger-decision.zip'];
+      // Create example archives - mix of simplified and legacy formats
+      const exampleArchives = [
+        { name: 'energy-invest.zip', format: 'simplified' },
+        { name: 'product-launch.zip', format: 'simplified' },
+        { name: 'merger-decision.zip', format: 'legacy' }  // Keep one legacy example for comparison
+      ];
       let archivesCreated = 0;
       let archivesSkipped = 0;
       
-      for (const archive of exampleArchives) {
-        const archivePath = path.join(attachmentsDir, archive);
+      for (const { name, format } of exampleArchives) {
+        const archivePath = path.join(attachmentsDir, name);
         if (!await require('fs-extra').pathExists(archivePath)) {
-          const scenarioId = archive.replace('.zip', '');
-          await attachmentHandler.createExampleArchive(scenarioId, archivePath);
+          const scenarioId = name.replace('.zip', '');
+          await attachmentHandler.createExampleArchive(scenarioId, archivePath, format);
           archivesCreated++;
         } else {
           archivesSkipped++;
@@ -78,12 +83,21 @@ program
       console.log(chalk.yellow('📋 Scenarios file: scenarios/scenarios.csv'));
       console.log(chalk.yellow('📦 Archives directory: scenarios/attachments/'));
       console.log(chalk.gray('📄 Templates available: scenarios.csv.template'));
+      console.log(chalk.cyan('\n🆕 Configuration Options:'));
+      console.log(chalk.cyan('  • TEXT-ONLY SCENARIOS: Leave attachment_archive empty (fastest setup)'));
+      console.log(chalk.cyan('  • SIMPLIFIED ARCHIVES: Just attachments + optional manifest (recommended)'));
+      console.log(chalk.cyan('  • LEGACY ARCHIVES: Full manifest with dummy jury/query data (backward compatibility)'));
+      console.log(chalk.gray('     Examples: simple-decision, policy-change (text-only)'));
+      console.log(chalk.gray('     Examples: energy-invest.zip, product-launch.zip (simplified)'));
+      console.log(chalk.gray('     Examples: merger-decision.zip (legacy format)'));
       console.log(chalk.cyan('\n🔧 Next steps:'));
       console.log(chalk.cyan('  1. Edit config/tool-config.json to set your AI node URL'));
       console.log(chalk.cyan('  2. Configure jury panels in config/juries/'));
       console.log(chalk.cyan('  3. Edit scenarios/scenarios.csv with your test scenarios'));
-      console.log(chalk.cyan('  4. Run "npm start test" to execute tests'));
-      console.log(chalk.gray('\n💡 Tip: Running init again will not overwrite your existing configurations'));
+      console.log(chalk.cyan('  4. For scenarios needing attachments: create archives (use simplified format)'));
+      console.log(chalk.cyan('  5. For text-only scenarios: just leave attachment_archive empty!'));
+      console.log(chalk.cyan('  6. Run "npm start test" to execute tests'));
+      console.log(chalk.gray('\n💡 Tip: Mix text-only and attachment scenarios in the same test run!'));
       
     } catch (error) {
       console.error(chalk.red('❌ Initialization failed:'), error.message);
@@ -326,6 +340,48 @@ program
       }
     } catch (error) {
       console.error(chalk.red('❌ Failed to load results:'), error.message);
+      process.exit(1);
+    }
+  });
+
+// Create archive command
+program
+  .command('create-archive')
+  .description('Create a new attachment archive')
+  .option('-n, --name <name>', 'Archive name (without .zip extension)')
+  .option('-f, --format <format>', 'Archive format: simplified or legacy', 'simplified')
+  .option('-d, --directory <dir>', 'Directory containing attachment files to include')
+  .action(async (options) => {
+    try {
+      if (!options.name) {
+        console.error(chalk.red('❌ Archive name is required. Use --name <archive-name>'));
+        process.exit(1);
+      }
+
+      const archiveName = options.name.endsWith('.zip') ? options.name : `${options.name}.zip`;
+      const archivePath = path.join(__dirname, '../scenarios/attachments', archiveName);
+
+      console.log(chalk.blue(`📦 Creating ${options.format} archive: ${archiveName}`));
+
+      if (options.directory) {
+        // TODO: Implement directory-based archive creation
+        console.log(chalk.yellow('⚠️  Directory-based archive creation not yet implemented'));
+        console.log(chalk.cyan('💡 For now, use the init command to create example archives, then modify them'));
+        return;
+      }
+
+      // Create example archive
+      const scenarioId = options.name.replace('.zip', '');
+      await attachmentHandler.createExampleArchive(scenarioId, archivePath, options.format);
+      
+      console.log(chalk.green(`✅ Created ${options.format} archive: ${archivePath}`));
+      console.log(chalk.cyan('📝 Next steps:'));
+      console.log(chalk.cyan('  1. Replace example files with your actual attachments'));
+      console.log(chalk.cyan('  2. Update manifest.json if using simplified format (optional)'));
+      console.log(chalk.cyan('  3. Add corresponding entry to scenarios.csv'));
+
+    } catch (error) {
+      console.error(chalk.red('❌ Failed to create archive:'), error.message);
       process.exit(1);
     }
   });

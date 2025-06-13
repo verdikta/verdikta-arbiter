@@ -1,5 +1,3 @@
-import 'openai/shims/node';  
-
 import { OpenAIProvider } from '../../../lib/llm/openai-provider';
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from '@langchain/core/messages';
@@ -56,7 +54,7 @@ describe('OpenAIProvider', () => {
 
   test('generateResponse returns expected response', async () => {
     const mockInvoke = jest.fn().mockResolvedValue({ content: 'Mocked response' });
-    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
+    (ChatOpenAI as unknown as jest.Mock).mockImplementation(() => ({
       invoke: mockInvoke
     }));
 
@@ -72,7 +70,7 @@ describe('OpenAIProvider', () => {
 
   test('generateResponseWithImage returns expected response', async () => {
     const mockInvoke = jest.fn().mockResolvedValue({ content: 'Mocked image response' });
-    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
+    (ChatOpenAI as unknown as jest.Mock).mockImplementation(() => ({
       invoke: mockInvoke
     }));
 

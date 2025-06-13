@@ -30,20 +30,29 @@ class TestRunner {
     try {
       logger.info(`Executing scenario ${scenario.scenario_id} with jury ${jury.id} (${jury.name})`);
 
-      // Process archive and attachments
-      const { requestData, tempDir: archiveTempDir } = await attachmentHandler.processArchive(
-        scenario.attachment_archive,
-        jury
-      );
-      tempDir = archiveTempDir;
-
-      // Override outcomes from scenario CSV if provided
-      if (scenario._parsedOutcomes) {
-        requestData.outcomes = scenario._parsedOutcomes;
+      let requestData, archiveTempDir;
+      
+      if (scenario.attachment_archive) {
+        // Process archive and attachments with scenario data from CSV
+        const result = await attachmentHandler.processArchive(
+          scenario.attachment_archive,
+          jury,
+          scenario.prompt,
+          scenario._parsedOutcomes
+        );
+        requestData = result.requestData;
+        tempDir = result.tempDir;
+      } else {
+        // Create request data directly for scenarios without attachments
+        logger.debug(`Scenario ${scenario.scenario_id} has no attachments - creating request without archive processing`);
+        requestData = {
+          prompt: scenario.prompt,
+          outcomes: scenario._parsedOutcomes,
+          models: this.convertJuryConfigToRequestFormat(jury),
+          iterations: jury.iterations || 1,
+          attachments: [] // Empty attachments array
+        };
       }
-
-      // Override prompt from scenario CSV (primary file is used as base, scenario CSV prompt is primary)
-      requestData.prompt = scenario.prompt;
 
       logger.debug(`Request data for ${scenario.scenario_id}:`, {
         prompt: requestData.prompt.substring(0, 100) + '...',
@@ -207,39 +216,20 @@ class TestRunner {
   async testConnection() {
     try {
       logger.info(`Testing connection to AI node at ${this.config.aiNodeUrl}`);
-      
-      // Try to reach a simple endpoint (we'll use the rank-and-justify endpoint with minimal data)
-      const testRequest = {
-        prompt: "Test connection",
-        outcomes: ["yes", "no"],
-        models: [{
-          provider: "OpenAI",
-          model: "gpt-4",
-          weight: 1.0
-        }],
-        iterations: 1
-      };
-
-      const response = await this.client.post('/api/rank-and-justify', testRequest);
-      
-      if (response.status === 200) {
-        logger.info('AI node connection test successful');
+      const response = await this.client.get('/api/health');
+      logger.debug('AI node /api/health response:', response.data);
+      if (response.status === 200 && response.data && response.data.status === 'ok') {
+        logger.info('AI node health check successful');
         return true;
       } else {
-        logger.warn(`AI node connection test returned status ${response.status}`);
+        logger.warn(`AI node health check returned status ${response.status} with data: ${JSON.stringify(response.data)}`);
         return false;
       }
-
     } catch (error) {
       if (error.response) {
-        // If we get a response but it's an error, the connection is working
-        if (error.response.status >= 400 && error.response.status < 500) {
-          logger.info('AI node connection test successful (received expected error response)');
-          return true;
-        }
-        logger.error(`AI node connection test failed with status ${error.response.status}`);
+        logger.error(`AI node health check failed with status ${error.response.status}`);
       } else {
-        logger.error('AI node connection test failed:', error.message);
+        logger.error('AI node health check failed:', error.message);
       }
       return false;
     }
@@ -282,6 +272,20 @@ class TestRunner {
       logger.error('Failed to get AI node health info:', error);
       return null;
     }
+  }
+
+  /**
+   * Convert jury configuration to AI node request format
+   * @param {import('./types').JuryConfig} jury - Jury configuration
+   * @returns {Array} Models in AI node format
+   */
+  convertJuryConfigToRequestFormat(jury) {
+    return jury.models.map(model => ({
+      provider: model.AI_PROVIDER,
+      model: model.AI_MODEL,
+      weight: model.WEIGHT,
+      count: model.NO_COUNTS || 1
+    }));
   }
 
   /**

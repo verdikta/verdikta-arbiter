@@ -6,6 +6,10 @@ const logger = require('./logger');
 
 /**
  * Attachment handler for processing ZIP archives containing manifests and attachments
+ * 
+ * Supports two archive formats:
+ * 1. LEGACY FORMAT: Full manifest with jury parameters and primary.json (backward compatibility)
+ * 2. SIMPLIFIED FORMAT: Attachment-only archives with minimal manifest
  */
 class AttachmentHandler {
   constructor() {
@@ -16,9 +20,11 @@ class AttachmentHandler {
    * Process a ZIP archive for a scenario
    * @param {string} archiveFilename - Name of the ZIP file in attachments directory
    * @param {import('./types').JuryConfig} juryConfig - Jury configuration to inject
+   * @param {string} scenarioPrompt - Main query from scenarios CSV
+   * @param {Array<string>} scenarioOutcomes - Parsed outcomes from scenarios CSV
    * @returns {Object} Processed archive data ready for AI node
    */
-  async processArchive(archiveFilename, juryConfig) {
+  async processArchive(archiveFilename, juryConfig, scenarioPrompt, scenarioOutcomes) {
     const archivePath = path.join(this.attachmentsDir, archiveFilename);
     
     if (!await fs.pathExists(archivePath)) {
@@ -34,33 +40,29 @@ class AttachmentHandler {
       const zip = new AdmZip(archivePath);
       zip.extractAllTo(tempDir, true);
 
-      // Read and parse manifest
-      const manifestPath = path.join(tempDir, 'manifest.json');
-      if (!await fs.pathExists(manifestPath)) {
-        throw new Error(`Manifest not found in archive: ${archiveFilename}`);
+      // Detect archive format and process accordingly
+      const archiveFormat = await this.detectArchiveFormat(tempDir);
+      logger.debug(`Detected archive format: ${archiveFormat} for ${archiveFilename}`);
+
+      let attachments;
+      if (archiveFormat === 'simplified') {
+        attachments = await this.processSimplifiedArchive(tempDir);
+      } else {
+        // Legacy format - process as before but ignore dummy data
+        attachments = await this.processLegacyArchive(tempDir);
       }
 
-      const manifest = await this.readManifest(manifestPath);
-      
-      // Override jury parameters with provided jury config
-      manifest.juryParameters = this.convertJuryConfigToManifestFormat(juryConfig);
-      
-      // Process primary file
-      const primaryData = await this.processPrimaryFile(tempDir, manifest.primary);
-      
-      // Process attachments
-      const attachments = await this.processAttachments(tempDir, manifest);
-      
-      // Build final request object for AI node
+      // Build final request object for AI node using ONLY CSV and jury config data
       const requestData = {
-        prompt: primaryData.query,
-        outcomes: primaryData.outcomes,
-        models: this.convertModelsToAINodeFormat(manifest.juryParameters.AI_NODES),
-        iterations: manifest.juryParameters.ITERATIONS || 1,
+        prompt: scenarioPrompt,
+        outcomes: scenarioOutcomes,
+        models: this.convertModelsToAINodeFormat(this.convertJuryConfigToManifestFormat(juryConfig).AI_NODES),
+        iterations: juryConfig.iterations || 1,
         attachments: attachments
       };
 
       logger.debug(`Processed archive for ${archiveFilename}:`, {
+        format: archiveFormat,
         prompt: requestData.prompt.substring(0, 100) + '...',
         outcomes: requestData.outcomes,
         models: requestData.models.length,
@@ -70,7 +72,7 @@ class AttachmentHandler {
       return {
         requestData,
         tempDir,
-        manifest
+        archiveFormat
       };
 
     } catch (error) {
@@ -78,6 +80,136 @@ class AttachmentHandler {
       await this.cleanup(tempDir);
       throw error;
     }
+  }
+
+  /**
+   * Detect whether archive uses simplified or legacy format
+   * @param {string} tempDir - Extracted archive directory
+   * @returns {string} 'simplified' | 'legacy'
+   */
+  async detectArchiveFormat(tempDir) {
+    const manifestPath = path.join(tempDir, 'manifest.json');
+    const primaryPath = path.join(tempDir, 'primary.json');
+    
+    // If no manifest.json, assume simplified format
+    if (!await fs.pathExists(manifestPath)) {
+      return 'simplified';
+    }
+
+    try {
+      const manifest = await fs.readJson(manifestPath);
+      
+      // Check for simplified format indicators
+      if (manifest.format === 'simplified' || 
+          (manifest.attachments && !manifest.primary && !manifest.juryParameters)) {
+        return 'simplified';
+      }
+
+      // Check if it has dummy/legacy fields
+      if (manifest.primary || manifest.juryParameters) {
+        return 'legacy';
+      }
+
+      // Default to simplified if unclear
+      return 'simplified';
+    } catch (error) {
+      logger.warn(`Error reading manifest, assuming simplified format: ${error.message}`);
+      return 'simplified';
+    }
+  }
+
+  /**
+   * Process simplified archive format (attachments only)
+   * @param {string} tempDir - Extracted archive directory
+   * @returns {Array} Attachment data for AI node
+   */
+  async processSimplifiedArchive(tempDir) {
+    const manifestPath = path.join(tempDir, 'manifest.json');
+    let attachmentList = [];
+
+    if (await fs.pathExists(manifestPath)) {
+      try {
+        const manifest = await fs.readJson(manifestPath);
+        
+        // Use attachments list from manifest if provided
+        if (manifest.attachments && Array.isArray(manifest.attachments)) {
+          attachmentList = manifest.attachments;
+        }
+      } catch (error) {
+        logger.warn(`Error reading simplified manifest: ${error.message}`);
+      }
+    }
+
+    // If no manifest or attachment list, scan directory for common file types
+    if (attachmentList.length === 0) {
+      attachmentList = await this.scanDirectoryForAttachments(tempDir);
+    }
+
+    // Process each attachment
+    const attachments = [];
+    for (const fileInfo of attachmentList) {
+      const filename = typeof fileInfo === 'string' ? fileInfo : fileInfo.filename;
+      const filePath = path.join(tempDir, filename);
+      
+      if (await fs.pathExists(filePath)) {
+        const attachment = await this.createAttachmentFromFile(filePath, fileInfo);
+        if (attachment) {
+          attachments.push(attachment);
+        }
+      } else {
+        logger.warn(`Attachment file not found: ${filename}`);
+      }
+    }
+
+    logger.info(`Processed ${attachments.length} attachments from simplified archive`);
+    return attachments;
+  }
+
+  /**
+   * Process legacy archive format (backward compatibility)
+   * @param {string} tempDir - Extracted archive directory  
+   * @returns {Array} Attachment data for AI node
+   */
+  async processLegacyArchive(tempDir) {
+    const manifestPath = path.join(tempDir, 'manifest.json');
+    if (!await fs.pathExists(manifestPath)) {
+      throw new Error(`Legacy archive missing required manifest.json`);
+    }
+
+    const manifest = await this.readManifest(manifestPath);
+    logger.debug('Processing legacy archive - ignoring dummy jury parameters and primary query');
+    
+    return await this.processAttachments(tempDir, manifest);
+  }
+
+  /**
+   * Scan directory for attachment files when no manifest provided
+   * @param {string} tempDir - Directory to scan
+   * @returns {Array} List of attachment file info
+   */
+  async scanDirectoryForAttachments(tempDir) {
+    const files = await fs.readdir(tempDir);
+    const attachmentExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.txt', '.csv', '.json', '.rtf', '.doc', '.docx'];
+    
+    const attachments = [];
+    for (const file of files) {
+      // Skip manifest.json and primary.json
+      if (file === 'manifest.json' || file === 'primary.json') {
+        continue;
+      }
+
+      const ext = path.extname(file).toLowerCase();
+      if (attachmentExtensions.includes(ext)) {
+        attachments.push({
+          filename: file,
+          name: path.basename(file, ext),
+          type: this.getMimeType(file)
+        });
+      }
+    }
+
+    logger.debug(`Auto-detected ${attachments.length} attachments: ${attachments.map(a => a.filename).join(', ')}`);
+    return attachments;
   }
 
   /**
@@ -299,53 +431,17 @@ class AttachmentHandler {
    * Create example archive for testing
    * @param {string} scenarioId - Scenario identifier
    * @param {string} outputPath - Where to create the archive
+   * @param {string} format - 'simplified' | 'legacy'
    */
-  async createExampleArchive(scenarioId, outputPath) {
+  async createExampleArchive(scenarioId, outputPath, format = 'simplified') {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'verdikta-example-'));
     
     try {
-      // Create manifest
-      const manifest = {
-        version: "1.0",
-        name: `Example scenario: ${scenarioId}`,
-        primary: {
-          filename: "primary.json"
-        },
-        juryParameters: {
-          AI_NODES: [
-            {
-              AI_PROVIDER: "OpenAI",
-              AI_MODEL: "gpt-4",
-              WEIGHT: 1.0,
-              NO_COUNTS: 1
-            }
-          ],
-          ITERATIONS: 1,
-          NUMBER_OF_OUTCOMES: 3
-        },
-        additional: [
-          {
-            name: "Example Image",
-            filename: "example.txt",
-            type: "text/plain"
-          }
-        ]
-      };
-
-      // Create primary file
-      const primary = {
-        query: `This is an example decision scenario for ${scenarioId}. Please evaluate the situation and provide your recommendation.`,
-        outcomes: ["Option A", "Option B", "Option C"],
-        references: [
-          "Example reference 1",
-          "Example reference 2"
-        ]
-      };
-
-      // Write files
-      await fs.writeJson(path.join(tempDir, 'manifest.json'), manifest, { spaces: 2 });
-      await fs.writeJson(path.join(tempDir, 'primary.json'), primary, { spaces: 2 });
-      await fs.writeFile(path.join(tempDir, 'example.txt'), 'This is example attachment content.');
+      if (format === 'simplified') {
+        await this.createSimplifiedExample(tempDir, scenarioId);
+      } else {
+        await this.createLegacyExample(tempDir, scenarioId);
+      }
 
       // Create ZIP archive
       const zip = new AdmZip();
@@ -356,11 +452,95 @@ class AttachmentHandler {
       }
       
       zip.writeZip(outputPath);
-      logger.info(`Created example archive: ${outputPath}`);
+      logger.info(`Created ${format} example archive: ${outputPath}`);
 
     } finally {
       await this.cleanup(tempDir);
     }
+  }
+
+  /**
+   * Create simplified format example
+   * @param {string} tempDir - Temporary directory
+   * @param {string} scenarioId - Scenario ID
+   */
+  async createSimplifiedExample(tempDir, scenarioId) {
+    // Create simplified manifest (optional - can be auto-detected)
+    const manifest = {
+      format: "simplified",
+      name: `${scenarioId} attachments`,
+      attachments: [
+        {
+          filename: "supporting-document.txt",
+          name: "Supporting Document",
+          type: "text/plain"
+        },
+        {
+          filename: "chart.png", 
+          name: "Analysis Chart",
+          type: "image/png"
+        }
+      ]
+    };
+
+    // Write minimal files
+    await fs.writeJson(path.join(tempDir, 'manifest.json'), manifest, { spaces: 2 });
+    await fs.writeFile(path.join(tempDir, 'supporting-document.txt'), 
+      `This is supporting documentation for ${scenarioId}.\n\nKey points:\n- Point 1\n- Point 2\n- Point 3`);
+    
+    // Create a small placeholder image (you could replace with actual image)
+    await fs.writeFile(path.join(tempDir, 'chart.png'), 
+      'PNG placeholder - replace with actual image file');
+  }
+
+  /**
+   * Create legacy format example (for backward compatibility)
+   * @param {string} tempDir - Temporary directory
+   * @param {string} scenarioId - Scenario ID
+   */
+  async createLegacyExample(tempDir, scenarioId) {
+    // Create manifest
+    const manifest = {
+      version: "1.0",
+      name: `Example scenario: ${scenarioId}`,
+      primary: {
+        filename: "primary.json"
+      },
+      juryParameters: {
+        AI_NODES: [
+          {
+            AI_PROVIDER: "OpenAI",
+            AI_MODEL: "gpt-4",
+            WEIGHT: 1.0,
+            NO_COUNTS: 1
+          }
+        ],
+        ITERATIONS: 1,
+        NUMBER_OF_OUTCOMES: 3
+      },
+      additional: [
+        {
+          name: "Example Document",
+          filename: "example.txt",
+          type: "text/plain"
+        }
+      ]
+    };
+
+    // Create primary file
+    const primary = {
+      query: `This is an example decision scenario for ${scenarioId}. Please evaluate the situation and provide your recommendation.`,
+      outcomes: ["Option A", "Option B", "Option C"],
+      references: [
+        "Example reference 1",
+        "Example reference 2"
+      ]
+    };
+
+    // Write files
+    await fs.writeJson(path.join(tempDir, 'manifest.json'), manifest, { spaces: 2 });
+    await fs.writeJson(path.join(tempDir, 'primary.json'), primary, { spaces: 2 });
+    await fs.writeFile(path.join(tempDir, 'example.txt'), 'This is example attachment content.');
   }
 }
 

@@ -3,6 +3,7 @@ import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { prePromptConfig } from '../../../config/prePromptConfig';
 import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
+import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor';
 import fs from 'fs';
 import path from 'path';
 
@@ -87,60 +88,97 @@ export async function POST(request: Request) {
     const iterations = body.iterations || 1;
     const models = body.models;
 
-    // Process attachments if they exist
-    if (body.attachments?.length) {
-      console.log('Processing attachments...');
-      body.attachments.forEach((content, index) => {
-        console.log(`Attachment ${index + 1}:`);
-        console.log('- Content type:', typeof content);
-        if (typeof content === 'string') {
-          console.log('- Starts with:', content.substring(0, 50) + '...');
-          if (content.startsWith('data:')) {
-            const mediaTypeMatch = content.match(/^data:([^;]+);base64,/);
-            console.log('- Media type:', mediaTypeMatch ? mediaTypeMatch[1] : 'unknown');
-          } else {
-            console.log('- WARNING: Attachment does not start with data: URI scheme');
-          }
-        } else {
-          console.log('- WARNING: Attachment is not a string');
-        }
-      });
-    }
-
-    const attachments = body.attachments?.map((content, index) => {
-      if (content.startsWith('data:image')) {
-        const mediaTypeMatch = content.match(/^data:([^;]+);base64,/);
-        const mediaType = mediaTypeMatch ? mediaTypeMatch[1] : 'image/jpeg';
-        console.log(`Processing image attachment ${index + 1}:`, {
-          mediaType,
-          contentLength: content.length,
-          isBase64: content.includes(';base64,')
-        });
-        
-        const base64Data = content.replace(/^data:image\/[^;]+;base64,/, '');
-        return {
-          type: 'image',
-          content: base64Data,
-          mediaType: mediaType
-        };
+    // Add this before the check
+    console.log('DEBUG: Checking native PDF support for each model:');
+    body.models.forEach(modelInfo => {
+      if (modelInfo.provider === 'OpenAI') {
+        const supported = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel =>
+          modelInfo.model.toLowerCase().includes(supportedModel.toLowerCase())
+        );
+        console.log(`[OpenAI] Model: ${modelInfo.model}, Supported: ${supported}`);
+      } else if (modelInfo.provider === 'Anthropic') {
+        const pdfCapableModels = [
+          'claude-opus-4', 'claude-sonnet-4', 'claude-4-sonnet', 'claude-4-opus',
+          'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
+          'claude-sonnet-4-20250514'
+        ];
+        const supported = pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
+        console.log(`[Anthropic] Model: ${modelInfo.model}, Supported: ${supported}`);
+      } else {
+        console.log(`[Other] Provider: ${modelInfo.provider}, Model: ${modelInfo.model}, Supported: false`);
       }
-      console.log(`Processing non-image attachment ${index + 1}:`, {
-        type: 'text',
-        contentLength: content.length
-      });
-      return {
-        type: 'text',
-        content: content,
-        mediaType: 'text/plain'
-      };
-    }) || [];
+    });
 
-    // Log processed attachments summary
-    console.log('Processed attachments summary:', attachments.map(att => ({
-      type: att.type,
-      mediaType: att.mediaType,
-      contentLength: att.content.length
-    })));
+    const allModelsSupportNativePDF = body.models.every(modelInfo => {
+      if (modelInfo.provider === 'OpenAI') {
+        return ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
+          modelInfo.model.toLowerCase().includes(supportedModel.toLowerCase())
+        );
+      } else if (modelInfo.provider === 'Anthropic') {
+        const pdfCapableModels = [
+          'claude-opus-4', 'claude-sonnet-4', 'claude-4-sonnet', 'claude-4-opus',
+          'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
+          'claude-sonnet-4-20250514'
+        ];
+        return pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
+      }
+      return false;
+    });
+
+    console.log('DEBUG: allModelsSupportNativePDF:', allModelsSupportNativePDF);
+
+    // Process attachments
+    let attachments: Array<{ type: string; content: string; mediaType: string }> = [];
+    if (body.attachments?.length) {
+      if (allModelsSupportNativePDF) {
+        console.log('All models support native PDF processing - passing attachments directly...');
+        // Convert base64 attachments to LLM format without text extraction
+        attachments = body.attachments.map(attachment => {
+          if (attachment.startsWith('data:')) {
+            const [header, base64Data] = attachment.split(',');
+            const mediaType = header.split(';')[0].replace('data:', '');
+            return {
+              type: mediaType.startsWith('image/') ? 'image' : 'document',
+              content: base64Data,
+              mediaType: mediaType
+            };
+          } else {
+            // Assume it's already base64 encoded (fallback)
+            return {
+              type: 'document',
+              content: attachment,
+              mediaType: 'application/octet-stream'
+            };
+          }
+        });
+        console.log(`Prepared ${attachments.length} attachments for native processing:`, 
+          attachments.map(att => ({ type: att.type, mediaType: att.mediaType, size: att.content.length }))
+        );
+      } else {
+        console.log('Some models do not support native PDF processing - using text extraction...');
+        try {
+          const primaryModel = body.models?.[0];
+          const providerName = primaryModel?.provider;
+          const modelName = primaryModel?.model;
+          
+          const { results: processedAttachments, skippedCount, skippedReasons } = await processAttachments(
+            body.attachments,
+            providerName,
+            modelName
+          );
+          attachments = convertToLLMFormat(processedAttachments);
+          logAttachmentSummary(processedAttachments);
+          
+          if (skippedCount > 0) {
+            console.warn(`Skipped ${skippedCount} attachment(s):`, skippedReasons);
+          }
+        } catch (error) {
+          console.error('Error processing attachments:', error);
+          // Continue without attachments rather than failing
+          attachments = [];
+        }
+      }
+    }
 
     // Initialize data structures
     const previousIterationResponses: string[] = [];
@@ -263,6 +301,13 @@ export async function POST(request: Request) {
             let { decisionVector, justification, scores } = parseModelResponse(responseText, body.outcomes);
             let effectiveJustification = justification; // Store potentially modified justification
             
+            // DEBUG: Log what each model actually returned
+            console.log(`🔍 DEBUG - Model ${modelInfo.provider}/${modelInfo.model} returned:`, {
+              decisionVector,
+              outcomes: body.outcomes,
+              mappedScores: body.outcomes ? body.outcomes.map((outcome, idx) => `${outcome}: ${decisionVector?.[idx] || 'N/A'}`) : 'No outcomes provided'
+            });
+            
             if (!decisionVector) {
               console.warn(`Failed to parse decision vector from model ${modelInfo.model}. Response: ${responseText}. Applying fallback.`);
               const numOutcomes = body.outcomes?.length || 2; // Default to 2 if outcomes not specified
@@ -316,6 +361,13 @@ export async function POST(request: Request) {
 
       // Compute weighted average for this iteration
       finalAggregatedScore = computeAverageVectors(iterationOutputs, iterationWeights);
+      
+      // DEBUG: Log the aggregated scores
+      console.log(`🔍 DEBUG - Final aggregated scores for iteration ${i + 1}:`, {
+        finalAggregatedScore,
+        outcomes: body.outcomes,
+        mappedAggregatedScores: body.outcomes ? body.outcomes.map((outcome, idx) => `${outcome}: ${finalAggregatedScore[idx] || 'N/A'}`) : 'No outcomes provided'
+      });
 
       // Generate justification only on the final iteration
       if (i === iterations - 1) {
@@ -380,6 +432,12 @@ async function generateJustification(
   justifierProvider: any,
   justifierModel: string
 ): Promise<string> {
+  // DEBUG: Log what's being sent to the justifier
+  console.log(`🔍 DEBUG - Sending to justifier:`, {
+    aggregatedVector: V_total,
+    individualJustifications: allJustifications
+  });
+  
   const prompt = `Using the aggregated decision vector ${JSON.stringify(
     V_total
   )}, and considering the following justifications from individual models:\n\n${allJustifications.join(

@@ -6,7 +6,7 @@
  * and generating responses to prompts.
  */
 
-import 'openai/shims/node';
+
 import { LLMProvider } from './llm-provider-interface';
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from '@langchain/core/messages';
@@ -120,6 +120,22 @@ export class OpenAIProvider implements LLMProvider {
   }
 
   async generateResponseWithAttachments(prompt: string, model: string, attachments: Array<{ type: string, content: string, mediaType: string }>): Promise<string> {
+    // Check if this model supports native PDF processing
+    const supportsNativePDF = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
+      model.toLowerCase().includes(supportedModel.toLowerCase())
+    );
+
+    // Separate PDFs from other attachments
+    const pdfAttachments = attachments.filter(att => att.mediaType === 'application/pdf');
+    const otherAttachments = attachments.filter(att => att.mediaType !== 'application/pdf');
+
+    // Use native PDF support for supported models
+    if (supportsNativePDF && pdfAttachments.length > 0) {
+      console.log(`[${this.providerName}] Using native PDF support for ${pdfAttachments.length} PDF(s)`);
+      return this.generateResponseWithNativePDFSupport(prompt, model, pdfAttachments, otherAttachments);
+    }
+
+    // Fall back to original implementation for non-PDF or non-supporting models
     const openai = new ChatOpenAI({
       openAIApiKey: this.apiKey,
       modelName: model,
@@ -127,7 +143,7 @@ export class OpenAIProvider implements LLMProvider {
     });
 
     // Validate image attachments
-    for (const attachment of attachments) {
+    for (const attachment of otherAttachments) {
       if (attachment.type === 'image') {
         if (!this.supportsImages(model)) {
           throw new Error(`[${this.providerName}] Model ${model} does not support image inputs.`);
@@ -144,7 +160,7 @@ export class OpenAIProvider implements LLMProvider {
 
     const messageContent = [
       { type: "text", text: prompt },
-      ...attachments.map(attachment => {
+      ...otherAttachments.map(attachment => {
         if (attachment.type === "image") {
           return {
             type: "image_url",
@@ -169,5 +185,105 @@ export class OpenAIProvider implements LLMProvider {
       throw new Error('Unexpected response format from OpenAI');
     }
     return response.content;
+  }
+
+  /**
+   * Generate response using OpenAI's native PDF support
+   */
+  private async generateResponseWithNativePDFSupport(
+    prompt: string, 
+    model: string, 
+    pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
+    otherAttachments: Array<{ type: string, content: string, mediaType: string }>
+  ): Promise<string> {
+    try {
+      // Use OpenAI's direct client for native PDF support
+      const { OpenAI } = await import('openai');
+      const client = new OpenAI({ apiKey: this.apiKey });
+
+      // Build message content with native PDF support
+      const messageContent: any[] = [
+        { type: "text", text: prompt }
+      ];
+
+      // Add PDF attachments using base64 method (as per OpenAI docs)
+      for (const pdfAttachment of pdfAttachments) {
+        // Validate PDF size (OpenAI limit: 32MB, 100 pages)
+        const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4; // Approximate base64 to bytes conversion
+        if (pdfSizeBytes > 32 * 1024 * 1024) {
+          throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds OpenAI's 32MB limit`);
+        }
+
+        // Use the correct file content block for PDFs
+        messageContent.push({
+          type: "file",
+          file: {
+            file_data: `data:application/pdf;base64,${pdfAttachment.content}`,
+            filename: "document.pdf"
+          }
+        });
+      }
+
+      // Add other attachments (images, etc.)
+      for (const attachment of otherAttachments) {
+        if (attachment.type === "image") {
+          if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
+            throw new Error(`Unsupported image format: ${attachment.mediaType}`);
+          }
+          messageContent.push({
+            type: "image_url",
+            image_url: {
+              url: `data:${attachment.mediaType};base64,${attachment.content}`,
+              detail: "auto"
+            }
+          });
+        } else {
+          // Handle text content
+          messageContent.push({ type: "text", text: attachment.content });
+        }
+      }
+
+      // Make the API call with native PDF support
+      const response = await client.chat.completions.create({
+        model: model,
+        messages: [
+          {
+            role: "user",
+            content: messageContent
+          }
+        ],
+        max_tokens: 1000
+      }, {
+        headers: {
+          'OpenAI-Beta': 'pdf-files-v1'
+        }
+      });
+
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        throw new Error('No content in OpenAI response');
+      }
+
+      console.log(`[${this.providerName}] Native PDF processing successful, response length: ${content.length}`);
+      return content;
+
+    } catch (error: any) {
+      console.error(`[${this.providerName}] Native PDF processing failed:`, error.message);
+      
+      // Provide helpful error messages based on common issues
+      if (error.message?.includes('32MB') || error.message?.includes('file size')) {
+        throw new Error(`PDF too large for OpenAI (max 32MB). Consider splitting the document.`);
+      } else if (error.message?.includes('pages') || error.message?.includes('100')) {
+        throw new Error(`PDF has too many pages for OpenAI (max 100 pages).`);
+      } else if (error.message?.includes('Invalid MIME type') || error.message?.includes('Only image types')) {
+        throw new Error(`PDF processing error - ensure you have OpenAI PDF beta access enabled.`);
+      } else if (error.message?.includes('Missing required parameter') || error.message?.includes('filename')) {
+        throw new Error(`PDF processing error - missing required filename parameter.`);
+      } else if (error.message?.includes('model')) {
+        throw new Error(`Model ${model} does not support PDF processing. Use gpt-4o, gpt-4o-mini, or o1.`);
+      } else {
+        throw new Error(`OpenAI PDF processing failed: ${error.message}`);
+      }
+    }
   }
 }
