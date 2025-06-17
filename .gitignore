@@ -14,6 +14,10 @@ yarn-error.log*
 *.pid
 *.pid.lock
 
+# Testing tool outputs
+testing-tool/results/
+testing-tool/logs/
+
 # Environment variables / Secrets
 .env
 .env.*
