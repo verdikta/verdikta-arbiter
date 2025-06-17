@@ -14,6 +14,9 @@
     "ignore": "^7.0.5",
     "@langchain/core": "^0.3.0"
   },
+  "resolutions": {
+    "@langchain/core": "^0.3.0"
+  },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.27.2",
     "@langchain/anthropic": "^0.3.0",
