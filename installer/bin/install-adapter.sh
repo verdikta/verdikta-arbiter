@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Verdikta Validator Node - External Adapter Installation Script
-# Clones and configures the External Adapter component
+# Installs and configures the External Adapter component with Verdikta Common Library
 
 set -e  # Exit on any error
 
@@ -79,6 +79,54 @@ cd "$ADAPTER_DIR" # Change into the existing local directory
 # Install dependencies
 echo -e "${BLUE}Installing External Adapter dependencies...${NC}"
 npm install
+
+# Install Verdikta Common Library
+# Check for version preference (default to beta for integration testing)
+# To use a different version, set VERDIKTA_COMMON_VERSION environment variable
+# Available versions: 'beta' (recommended for testing), 'latest' (stable)
+VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-beta}"
+echo -e "${BLUE}Installing Verdikta Common Library (@verdikta/common@$VERDIKTA_COMMON_VERSION)...${NC}"
+
+if ! npm install @verdikta/common@$VERDIKTA_COMMON_VERSION; then
+    echo -e "${RED}❌ Failed to install @verdikta/common@$VERDIKTA_COMMON_VERSION${NC}"
+    echo -e "${YELLOW}Trying to install latest stable version as fallback...${NC}"
+    if npm install @verdikta/common@latest; then
+        echo -e "${GREEN}✅ Installed @verdikta/common@latest as fallback${NC}"
+        VERDIKTA_COMMON_VERSION="latest"
+    else
+        echo -e "${RED}❌ Failed to install any version of @verdikta/common${NC}"
+        echo -e "${YELLOW}This is required for the External Adapter to function properly.${NC}"
+        exit 1
+    fi
+fi
+
+# Verify Verdikta Common installation
+if npm list @verdikta/common > /dev/null 2>&1; then
+    VERDIKTA_VERSION=$(npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}')
+    echo -e "${GREEN}✅ Verdikta Common Library installed successfully (version: $VERDIKTA_VERSION)${NC}"
+else
+    echo -e "${RED}❌ Failed to install Verdikta Common Library${NC}"
+    echo -e "${YELLOW}This is required for the External Adapter to function properly.${NC}"
+    exit 1
+fi
+
+# Test Verdikta Common imports
+echo -e "${BLUE}Testing Verdikta Common Library imports...${NC}"
+if node -e "
+try {
+  const { manifestParser, validateRequest, createClient } = require('@verdikta/common');
+  console.log('✅ All imports successful');
+  process.exit(0);
+} catch (error) {
+  console.log('❌ Import error:', error.message);
+  process.exit(1);
+}
+" 2>/dev/null; then
+    echo -e "${GREEN}✅ Verdikta Common Library imports working correctly${NC}"
+else
+    echo -e "${YELLOW}⚠️  Warning: Verdikta Common Library imports failed${NC}"
+    echo -e "${YELLOW}The External Adapter may not function correctly${NC}"
+fi
 
 # Configure environment
 echo -e "${BLUE}Configuring External Adapter environment...${NC}"
@@ -212,6 +260,7 @@ EOL
 chmod +x "$ADAPTER_DIR/stop.sh"
 
 echo -e "${GREEN}External Adapter installation completed!${NC}"
+echo -e "${GREEN}✅ Verdikta Common Library (@verdikta/common) successfully integrated${NC}"
 
 # Function to prompt for Yes/No question
 ask_yes_no() {

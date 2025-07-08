@@ -323,7 +323,7 @@ echo "Congratulations! Your Verdikta Arbiter Node has been successfully installe
 echo 
 echo "Access your services at:"
 echo "  - AI Node:         http://localhost:3000"
-echo "  - External Adapter: http://localhost:8080"
+echo "  - External Adapter: http://localhost:8080 (with Verdikta Common Library)"
 echo "  - Chainlink Node:   http://localhost:6688"
 echo
 echo "For troubleshooting, consult the documentation in the installer/docs directory."

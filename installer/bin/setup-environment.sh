@@ -385,6 +385,25 @@ EOL
         echo -e "${GREEN}Infura API Key saved to .env.${NC}"
     fi
     
+    # Configure Verdikta Common Library version
+    echo -e "${BLUE}Verdikta Common Library Configuration${NC}"
+    echo -e "${YELLOW}The External Adapter uses the Verdikta Common Library for shared utilities.${NC}"
+    echo -e "${YELLOW}Available versions: 'beta' (recommended for testing) or 'latest' (stable)${NC}"
+    
+    VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-beta}"
+    read -p "Verdikta Common Library version [beta]: " user_version
+    if [ -n "$user_version" ]; then
+        VERDIKTA_COMMON_VERSION="$user_version"
+    fi
+    
+    # Save Verdikta Common version preference
+    if grep -q "VERDIKTA_COMMON_VERSION=" "$INSTALLER_DIR/.env" 2>/dev/null; then
+        sed -i "s/VERDIKTA_COMMON_VERSION=.*/VERDIKTA_COMMON_VERSION=\"$VERDIKTA_COMMON_VERSION\"/" "$INSTALLER_DIR/.env"
+    else
+        echo "VERDIKTA_COMMON_VERSION=\"$VERDIKTA_COMMON_VERSION\"" >> "$INSTALLER_DIR/.env"
+    fi
+    echo -e "${GREEN}Verdikta Common Library version ($VERDIKTA_COMMON_VERSION) saved to configuration.${NC}"
+    
     echo -e "${GREEN}API keys configured and saved.${NC}"
 }
 
