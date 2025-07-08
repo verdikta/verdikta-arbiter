@@ -13,7 +13,7 @@
   },
   "dependencies": {
     "@helia/http": "^1.0.11",
-    "@verdikta/common": "^1.0.0",
+    "@verdikta/common": "^1.0.1",
     "adm-zip": "^0.5.10",
     "axios": "^1.6.7",
     "body-parser": "^1.20.2",
