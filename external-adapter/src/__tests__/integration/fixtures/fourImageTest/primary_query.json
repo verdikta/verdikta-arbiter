@@ -1,0 +1,9 @@
+{
+  "query": "The images are primary focussed on 1) Sheep, or 2) Humans.  You can only pick one. ",
+  "references": [
+    "supportingFile1",
+    "supportingFile2",
+    "supportingFile3",
+    "supportingFile4"
+  ]
+}

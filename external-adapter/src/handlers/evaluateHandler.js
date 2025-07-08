@@ -1,15 +1,28 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const archiveService = require('../services/archiveService');
+const { createClient } = require('@verdikta/common');
 const aiClient = require('../services/aiClient');
-const { validateRequest, requestSchema } = require('../utils/validator');
-const ipfsClient = require('../services/ipfsClient');
-const manifestParser = require('../utils/manifestParser');
-const logger = require('../utils/logger');
 const crypto = require('crypto');
 const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
+
+// Initialize verdikta-common client with configuration
+const verdikta = createClient({
+  ipfs: {
+    pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
+    pinningKey: process.env.IPFS_PINNING_KEY,
+    timeout: 30000
+  },
+  logging: {
+    level: process.env.LOG_LEVEL || 'info',
+    console: true,
+    file: false
+  }
+});
+
+const { manifestParser, archiveService, validator, logger, ipfsClient } = verdikta;
+const { validateRequest, requestSchema } = validator;
 
 const evaluateHandler = async (request) => {
   const { id, data } = request;
@@ -128,20 +141,60 @@ const evaluateHandler = async (request) => {
       logger.info(`Parsed primary manifest and ${bCIDManifests.length} bCID manifests`);
       
       // Construct combined query
-      const combinedQueryData = manifestParser.constructCombinedQuery(
+      let combinedQueryData = await manifestParser.constructCombinedQuery(
         primaryManifest,
         bCIDManifests,
         addendumString
       );
       
+
+      
+      // Fallback implementation if constructCombinedQuery returns invalid result
+      if (!combinedQueryData || !combinedQueryData.prompt) {
+        logger.warn('constructCombinedQuery returned invalid result, using fallback implementation');
+        
+        // Build combined query manually
+        let combinedPrompt = primaryManifest.prompt || primaryManifest.query || '';
+        let combinedReferences = primaryManifest.references || [];
+        
+        // Add bCID content
+        for (const bCIDItem of bCIDManifests) {
+          if (bCIDItem && bCIDItem.manifest) {
+            const manifest = bCIDItem.manifest;
+            if (manifest.prompt || manifest.query) {
+              combinedPrompt += '\n\n' + (manifest.prompt || manifest.query);
+            }
+            if (manifest.references && Array.isArray(manifest.references)) {
+              combinedReferences = [...combinedReferences, ...manifest.references];
+            }
+          }
+        }
+        
+        // Add addendum if present
+        if (addendumString && primaryManifest.addendum) {
+          const sanitizedAddendum = addendumString.replace(/[<>{}]/g, '');
+          combinedPrompt += `\n\nAddendum: \n${primaryManifest.addendum}: ${sanitizedAddendum}`;
+        }
+        
+        combinedQueryData = {
+          prompt: combinedPrompt,
+          references: combinedReferences,
+          outcomes: primaryManifest.outcomes || ['outcome1', 'outcome2'],
+          models: primaryManifest.models || [],
+          iterations: primaryManifest.iterations || 1
+        };
+        
+        logger.info('Created fallback combined query with length:', combinedQueryData.prompt.length);
+      }
+      
       logger.info('Constructed combined query with length: ' + combinedQueryData.prompt.length);
       
       // Collect all attachments
       let allAttachments = primaryManifest.additional || [];
-      for (const { manifest } of bCIDManifests) {
-        if (manifest.additional && manifest.additional.length > 0) {
-          logger.info(`Adding ${manifest.additional.length} attachments from ${manifest.name || 'unnamed manifest'}`);
-          allAttachments = [...allAttachments, ...manifest.additional];
+      for (const bCIDItem of bCIDManifests) {
+        if (bCIDItem && bCIDItem.manifest && bCIDItem.manifest.additional && bCIDItem.manifest.additional.length > 0) {
+          logger.info(`Adding ${bCIDItem.manifest.additional.length} attachments from ${bCIDItem.manifest.name || 'unnamed manifest'}`);
+          allAttachments = [...allAttachments, ...bCIDItem.manifest.additional];
         }
       }
       

@@ -5,7 +5,7 @@ const evaluateHandler = require('../../handlers/evaluateHandler');
 const PRIMARY_CID = 'Qmc4ZQoShjPJHh6UGCoMSYC2BaHVXcWCZJ5VqEdsz7jZZq';
 const PLAINTIFF_CID = 'QmNkkkb4LMDKWCjz5jdAZLKHNgUJsyWzvNEKuqSTJ8EZ52';
 const DEFENDANT_CID = 'Qme7Hpfz5UScy5eLx88VvwZL5ga2K8k3NonzogzmE3ejhQ';
-const STANDALONE_CID = 'QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS';
+const STANDALONE_CID = 'QmbZmai8YhJD2zoRASMs9hBTtH78YFz8NmSPqWSroHhPiX';
 
 describe('Multi-CID Integration Tests', () => {
   const originalTestMode = process.env.TEST_MODE;

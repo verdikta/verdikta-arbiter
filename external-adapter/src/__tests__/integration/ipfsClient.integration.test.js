@@ -1,6 +1,17 @@
-const ipfsClient = require('../../services/ipfsClient');
+const { createClient } = require('@verdikta/common');
 const path = require('path');
 const config = require('../../config');
+
+// Create test client
+const testClient = createClient({
+  ipfs: {
+    pinningService: config.ipfs.pinningService,
+    pinningKey: config.ipfs.pinningKey,
+    gateway: config.ipfs.gateway
+  },
+  logging: { level: 'error' }
+});
+const { ipfsClient } = testClient;
 
 
 
@@ -8,15 +19,16 @@ describe('IPFS Client Integration', () => {
   jest.setTimeout(60000);
 
   afterEach(() => {
-    ipfsClient.gateway = config.ipfs.gateway;
-    ipfsClient.pinningService = config.ipfs.pinningService;
-    ipfsClient.pinningKey = config.ipfs.pinningKey;
-    ipfsClient.cleanup();
-
+    // Note: With @verdikta/common, ipfsClient configuration is handled internally
+    if (ipfsClient.cleanup) {
+      ipfsClient.cleanup();
+    }
   });
 
   afterAll(() => {
-    ipfsClient.cleanup();
+    if (ipfsClient.cleanup) {
+      ipfsClient.cleanup();
+    }
   });
 
   it('should fetch content from IPFS gateway', async () => {
@@ -37,14 +49,17 @@ describe('IPFS Client Integration', () => {
   });
 
   it('should handle network errors', async () => {
-    const originalGateway = ipfsClient.gateway;
-    ipfsClient.gateway = 'http://invalid.gateway';
+    // Create a client with invalid gateway for this test
+    const invalidClient = createClient({
+      ipfs: {
+        gateway: 'http://invalid.gateway'
+      },
+      logging: { level: 'error' }
+    });
     
     await expect(
-      ipfsClient.fetchFromIPFS('QmTestHash')
+      invalidClient.ipfsClient.fetchFromIPFS('QmTestHash')
     ).rejects.toThrow('Failed to fetch from IPFS');
-    
-    ipfsClient.gateway = originalGateway;
   });
 
   it('should upload file to IPFS', async () => {

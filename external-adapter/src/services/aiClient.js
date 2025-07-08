@@ -1,9 +1,19 @@
 const axios = require('axios');
 const retry = require('retry');
 const config = require('../config');
-const logger = require('../utils/logger');
+const { createClient } = require('@verdikta/common');
 const fs = require('fs').promises;
 const path = require('path');
+
+// Initialize verdikta-common client for logging
+const verdikta = createClient({
+  logging: {
+    level: process.env.LOG_LEVEL || 'info',
+    console: true,
+    file: false
+  }
+});
+const { logger } = verdikta;
 
 function detectMimeType(buffer) {
   // Check for WEBP signature

@@ -1,7 +1,13 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const archiveService = require('../../services/archiveService');
+const { createClient } = require('@verdikta/common');
+
+// Create test client
+const testClient = createClient({
+  logging: { level: 'error' } // Suppress logs during tests
+});
+const { archiveService } = testClient;
 
 describe('ArchiveService', () => {
   let tempDir;

@@ -101,10 +101,10 @@ describe('Adapter Integration', () => {
       jobRunID: '1',
       status: 'errored',
       statusCode: 500,
-      error: 'Unable to fetch archive from IPFS.',
+      error: 'Invalid request: must be a valid IPFS CID format',
       data: {
         aggregatedScore: [0],
-        error: 'Unable to fetch archive from IPFS.',
+        error: 'Invalid request: must be a valid IPFS CID format',
         justification: ''
       }
     });

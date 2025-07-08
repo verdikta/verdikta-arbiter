@@ -14,8 +14,7 @@ jest.mock('fs', () => ({
   }
 }));
 
-// Remove the archiveService mock entirely
-jest.unmock('../../services/archiveService');
+// archiveService is now from @verdikta/common (no longer needs unmocking)
 
 describe('EvaluateHandler Integration', () => {
   const originalTestMode = process.env.TEST_MODE;
@@ -25,10 +24,7 @@ describe('EvaluateHandler Integration', () => {
     // Force TEST_MODE to false for this specific integration test
     jest.resetModules(); // Clear module cache
     process.env.TEST_MODE = 'false';
-    // Re-require the services after changing TEST_MODE
-    jest.isolateModules(() => {
-      require('../../services/archiveService');
-    });
+    // archiveService is now from @verdikta/common (no longer needs local re-require)
   });
 
   afterEach(() => {
@@ -54,7 +50,7 @@ describe('EvaluateHandler Integration', () => {
   it('should process an archive with a local image file', async () => {
     const request = {
       id: 'test-local-image',
-      data: { cid: 'Qmbxg5YrawsYunnxi6b7vrCHg82DTLt39cVwkqyaXTVzMn' }
+      data: { cid: 'QmXYCQeM9vfFxV5dobNN7krbhDzwwx3Vj7ETuKUsrzPwWA' }
     };
 
     const result = await evaluateHandler(request);
@@ -69,7 +65,7 @@ describe('EvaluateHandler Integration', () => {
   it('should process an archive with multiple images', async () => {
     const request = {
       id: 'test-multiple-images',
-      data: { cid: 'QmTeBQqXb8qnrioj25W2WoWAwCE1KVeYFgNumKLSzivh8J' }
+      data: { cid: 'QmY8Lg9C1Sz5peUFfR56awP6ZH5WrWAyy8zPkvodcBqbjn' }
     };
 
     const result = await evaluateHandler(request);

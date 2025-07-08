@@ -1,14 +1,38 @@
 // src/__tests__/handlers/evaluateHandler.test.js
 
-// Mock all external dependencies
-jest.mock('../../services/archiveService');
+// Mock external dependencies
 jest.mock('../../services/aiClient');
-jest.mock('../../services/ipfsClient');
-jest.mock('../../utils/manifestParser');
-jest.mock('../../utils/logger', () => ({
-  info: jest.fn(),
-  error: jest.fn(),
-  warn: jest.fn()
+
+// Create shared mock services
+const mockServices = {
+  archiveService: {
+    getArchive: jest.fn(),
+    extractArchive: jest.fn(),
+    validateManifest: jest.fn(),
+    processMultipleCIDs: jest.fn(),
+    cleanup: jest.fn()
+  },
+  ipfsClient: {
+    uploadToIPFS: jest.fn()
+  },
+  manifestParser: {
+    parse: jest.fn(),
+    parseMultipleManifests: jest.fn(),
+    constructCombinedQuery: jest.fn()
+  },
+  validator: {
+    validateRequest: jest.fn()
+  },
+  logger: {
+    info: jest.fn(),
+    error: jest.fn(),
+    warn: jest.fn()
+  }
+};
+
+// Mock @verdikta/common package
+jest.mock('@verdikta/common', () => ({
+  createClient: jest.fn(() => mockServices)
 }));
 jest.mock('unzipper', () => ({
   Open: {
@@ -35,15 +59,22 @@ jest.mock('fs', () => ({
 }));
 
 const evaluateHandler = require('../../handlers/evaluateHandler');
-const archiveService = require('../../services/archiveService');
+const { createClient } = require('@verdikta/common');
 const aiClient = require('../../services/aiClient');
-const ipfsClient = require('../../services/ipfsClient');
-const manifestParser = require('../../utils/manifestParser');
 const fs = require('fs').promises;
+
+// Get the mocked services from the shared mock
+const { archiveService, ipfsClient, manifestParser, validator, logger } = mockServices;
 
 describe('evaluateHandler', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    
+    // Mock successful validation by default
+    validator.validateRequest.mockResolvedValue(true);
+    
+    // Mock cleanup by default
+    archiveService.cleanup.mockResolvedValue(true);
   });
 
   it('should handle errors appropriately', async () => {
@@ -54,6 +85,7 @@ describe('evaluateHandler', () => {
 
     // Mock the error
     archiveService.getArchive.mockRejectedValue(new Error('Test error'));
+    archiveService.cleanup.mockResolvedValue(true);
 
     const result = await evaluateHandler(request);
 
@@ -80,6 +112,7 @@ describe('evaluateHandler', () => {
     archiveService.getArchive.mockResolvedValue(Buffer.from('test'));
     archiveService.extractArchive.mockResolvedValue('/tmp/test');
     archiveService.validateManifest.mockResolvedValue(true);
+    archiveService.cleanup.mockResolvedValue(true);
 
     // Mock successful manifest parsing with outcomes
     manifestParser.parse.mockResolvedValue({
@@ -131,6 +164,7 @@ describe('evaluateHandler', () => {
     archiveService.getArchive.mockResolvedValue(Buffer.from('test'));
     archiveService.extractArchive.mockResolvedValue('/tmp/test');
     archiveService.validateManifest.mockResolvedValue(true);
+    archiveService.cleanup.mockResolvedValue(true);
 
     // Mock successful manifest parsing with outcomes
     manifestParser.parse.mockResolvedValue({
@@ -197,6 +231,7 @@ describe('evaluateHandler', () => {
     archiveService.getArchive.mockResolvedValue(Buffer.from('test'));
     archiveService.extractArchive.mockResolvedValue('/tmp/test');
     archiveService.validateManifest.mockResolvedValue(true);
+    archiveService.cleanup.mockResolvedValue(true);
 
     // Mock successful manifest parsing
     manifestParser.parse.mockResolvedValue({
