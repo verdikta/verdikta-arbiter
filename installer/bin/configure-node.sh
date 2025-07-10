@@ -45,7 +45,7 @@ if [ ! -f "$JOB_SPEC_FILE" ]; then
 fi
 echo -e "${GREEN}Using job spec template from: $JOB_SPEC_FILE${NC}"
 
-# Load Chainlink node API credentials
+# Load Chainlink node API credentials (used for both bridge and job creation)
 if [ -f "$HOME/.chainlink-sepolia/.api" ]; then
     API_CREDENTIALS=( $(cat "$HOME/.chainlink-sepolia/.api") )
     API_EMAIL="${API_CREDENTIALS[0]}"
@@ -75,7 +75,7 @@ ask_yes_no() {
     done
 }
 
-# Function to login to Chainlink node API and get session cookie
+# Function to login to Chainlink node API and get session cookie (for bridge creation)
 login_to_chainlink() {
     # Get CSRF token
     CSRF_TOKEN=$(curl -sS -c /tmp/chainlink_cookies.txt "http://localhost:6688/login" | grep csrf | sed -E 's/.*content="([^"]+)".*/\1/')
@@ -152,7 +152,7 @@ else
     echo -e "${GREEN}Bridge created successfully.${NC}"
 fi
 
-# Create job
+# Create job automatically
 echo -e "${BLUE}Preparing job specification...${NC}"
 
 # Load and customize job spec
@@ -161,7 +161,7 @@ echo -e "${BLUE}Loaded job spec from $JOB_SPEC_FILE${NC}"
 
 # Format the contract address properly
 # Use the address format from the user's input - this is the one that worked in Remix
-EIP55_ADDRESS="$OPERATOR_ADDRESS"
+EIP55_ADDRESS="$OPERATOR_ADDR"
 ORIGINAL_CONTRACT_ADDRESS="0xD67D6508D4E5611cd6a463Dd0969Fa153Be91101"
 
 # Update the contract address in the job spec
@@ -178,57 +178,77 @@ if [ -n "$ORIGINAL_CONTRACT_ADDRESS" ]; then
     fi
 fi
 
-# Save the prepared job spec to a file for manual creation
-MANUAL_JOB_SPEC_FILE="$LOCAL_CHAINLINK_NODE_DIR/verdikta_job_spec.toml"
-mkdir -p "$(dirname "$MANUAL_JOB_SPEC_FILE")"
-echo "$JOB_SPEC" > "$MANUAL_JOB_SPEC_FILE"
-echo -e "${GREEN}Job specification prepared and saved to: $MANUAL_JOB_SPEC_FILE${NC}"
+# Save the prepared job spec to a file for automated creation
+AUTOMATED_JOB_SPEC_FILE="$LOCAL_CHAINLINK_NODE_DIR/verdikta_job_spec.toml"
+mkdir -p "$(dirname "$AUTOMATED_JOB_SPEC_FILE")"
+echo "$JOB_SPEC" > "$AUTOMATED_JOB_SPEC_FILE"
+echo -e "${GREEN}Job specification prepared and saved to: $AUTOMATED_JOB_SPEC_FILE${NC}"
 
 # Clear any existing session cookies
 rm -f /tmp/chainlink_cookies.txt
 
-# Show manual job creation instructions
-echo
-echo -e "${YELLOW}============================================================${NC}"
-echo -e "${YELLOW}                MANUAL JOB CREATION REQUIRED               ${NC}"
-echo -e "${YELLOW}============================================================${NC}"
-echo
-echo -e "${BLUE}Please follow these steps to create the Chainlink job:${NC}"
-echo -e "${BLUE}1. Open the Chainlink Operator UI in your browser:${NC}"
-echo -e "   ${GREEN}http://localhost:6688${NC}"
-echo -e "${BLUE}2. Log in with:${NC}"
-echo -e "   ${GREEN}Email:    $API_EMAIL${NC}"
-echo -e "   ${GREEN}Password: $API_PASSWORD${NC}"
-echo -e "${BLUE}3. Navigate to the 'Jobs' section in the sidebar${NC}"
-echo -e "${BLUE}4. Click '+ New Job' button${NC}"
-echo -e "${BLUE}5. Select 'TOML' format${NC}"
-echo -e "${BLUE}6. Copy and paste the entire content from this file:${NC}"
-echo -e "   ${GREEN}$MANUAL_JOB_SPEC_FILE${NC}"
-echo -e "${BLUE}7. Click 'Create Job'${NC}"
-echo
-echo -e "${BLUE}You can cat the file and copy its contents:${NC}"
-echo -e "${GREEN}cat $MANUAL_JOB_SPEC_FILE${NC}"
-echo
+# Create job automatically using our automation script
+echo -e "${BLUE}Creating Chainlink job automatically...${NC}"
 
-# Prompt the user to continue after they've created the job
-read -p "Have you created the job in the Chainlink UI? (y/n): " job_created
-if [[ "$job_created" != "y" && "$job_created" != "Y" ]]; then
-    echo -e "${YELLOW}Please create the job before continuing.${NC}"
-    echo -e "${YELLOW}You can run this script again after creating the job.${NC}"
-    exit 1
+# Call the automated job creation script
+JOB_OUTPUT_FILE="/tmp/configure_node_job_id.txt"
+if "$SCRIPT_DIR/create-chainlink-job.sh" -f "$AUTOMATED_JOB_SPEC_FILE" -o "$JOB_OUTPUT_FILE"; then
+    # Job creation successful - read the job ID
+    if [ -f "$JOB_OUTPUT_FILE" ]; then
+        NEW_JOB_ID=$(cat "$JOB_OUTPUT_FILE")
+        echo -e "${GREEN}Job created successfully with ID: $NEW_JOB_ID${NC}"
+        
+        # Clean up temporary file
+        rm -f "$JOB_OUTPUT_FILE"
+    else
+        echo -e "${RED}Error: Job creation succeeded but job ID file not found.${NC}"
+        exit 1
+    fi
+else
+    echo -e "${RED}Error: Automated job creation failed.${NC}"
+    echo -e "${YELLOW}Falling back to manual job creation instructions...${NC}"
+    echo
+    echo -e "${YELLOW}============================================================${NC}"
+    echo -e "${YELLOW}                MANUAL JOB CREATION REQUIRED               ${NC}"
+    echo -e "${YELLOW}============================================================${NC}"
+    echo
+    echo -e "${BLUE}Please follow these steps to create the Chainlink job:${NC}"
+    echo -e "${BLUE}1. Open the Chainlink Operator UI in your browser:${NC}"
+    echo -e "   ${GREEN}http://localhost:6688${NC}"
+    echo -e "${BLUE}2. Log in with:${NC}"
+    echo -e "   ${GREEN}Email:    $API_EMAIL${NC}"
+    echo -e "   ${GREEN}Password: $API_PASSWORD${NC}"
+    echo -e "${BLUE}3. Navigate to the 'Jobs' section in the sidebar${NC}"
+    echo -e "${BLUE}4. Click '+ New Job' button${NC}"
+    echo -e "${BLUE}5. Select 'TOML' format${NC}"
+    echo -e "${BLUE}6. Copy and paste the entire content from this file:${NC}"
+    echo -e "   ${GREEN}$AUTOMATED_JOB_SPEC_FILE${NC}"
+    echo -e "${BLUE}7. Click 'Create Job'${NC}"
+    echo
+    echo -e "${BLUE}You can cat the file and copy its contents:${NC}"
+    echo -e "${GREEN}cat $AUTOMATED_JOB_SPEC_FILE${NC}"
+    echo
+
+    # Prompt the user to continue after they've created the job manually
+    read -p "Have you created the job in the Chainlink UI? (y/n): " job_created
+    if [[ "$job_created" != "y" && "$job_created" != "Y" ]]; then
+        echo -e "${YELLOW}Please create the job before continuing.${NC}"
+        echo -e "${YELLOW}You can run this script again after creating the job.${NC}"
+        exit 1
+    fi
+
+    # Ask user for the job ID from the UI
+    echo -e "${BLUE}After creating the job, you'll see the job details page.${NC}"
+    echo -e "${BLUE}The job ID is shown at the top of the page (typically in a UUID format like: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)${NC}"
+    read -p "Please enter the job ID from the UI: " NEW_JOB_ID
+
+    if [ -z "$NEW_JOB_ID" ]; then
+        echo -e "${RED}Error: No job ID provided.${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Job ID entered: $NEW_JOB_ID${NC}"
 fi
-
-# Ask user for the job ID from the UI
-echo -e "${BLUE}After creating the job, you'll see the job details page.${NC}"
-echo -e "${BLUE}The job ID is shown at the top of the page (typically in a UUID format like: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)${NC}"
-read -p "Please enter the job ID from the UI: " NEW_JOB_ID
-
-if [ -z "$NEW_JOB_ID" ]; then
-    echo -e "${RED}Error: No job ID provided.${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}Job ID entered: $NEW_JOB_ID${NC}"
 
 # Update the contracts file with the new job ID
 if [ -f "$INSTALLER_DIR/.contracts" ]; then
@@ -297,5 +317,10 @@ echo -e "${GREEN}Your Verdikta Validator Node is now fully configured and ready 
 echo -e "${BLUE}Job ID: $NEW_JOB_ID${NC}"
 echo -e "${BLUE}Bridge Name: $BRIDGE_NAME${NC}"
 echo -e "${BLUE}Bridge URL: $BRIDGE_URL${NC}"
+echo
+echo -e "${BLUE}Automation Summary:${NC}"
+echo -e "${GREEN}✓ Bridge created/updated automatically${NC}"
+echo -e "${GREEN}✓ Job created automatically via API${NC}"
+echo -e "${GREEN}✓ All configuration files updated${NC}"
 
 exit 0 
