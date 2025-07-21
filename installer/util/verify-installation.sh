@@ -132,7 +132,7 @@ fi
 
 # Verify Chainlink Node
 echo -e "${BLUE}Verifying Chainlink Node...${NC}"
-CHAINLINK_DIR="$HOME/.chainlink-sepolia"
+CHAINLINK_DIR="$HOME/.chainlink-${NETWORK_TYPE}"
 if [ -d "$CHAINLINK_DIR" ] && [ -f "$CHAINLINK_DIR/config.toml" ] && [ -f "$CHAINLINK_DIR/secrets.toml" ]; then
     echo -e "${GREEN}✓ Chainlink Node configuration found at $CHAINLINK_DIR${NC}"
     

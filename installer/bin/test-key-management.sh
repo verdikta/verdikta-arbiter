@@ -13,7 +13,16 @@ NC='\033[0m' # No Color
 
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
 KEY_MGMT_SCRIPT="$SCRIPT_DIR/key-management.sh"
+
+# Load environment variables for network type
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    source "$INSTALLER_DIR/.env"
+else
+    echo -e "${YELLOW}Warning: Environment file not found. Defaulting to testnet.${NC}"
+    NETWORK_TYPE="testnet"
+fi
 
 echo -e "${BLUE}Testing CLI-based Key Management Functions${NC}"
 echo "========================================"
@@ -24,8 +33,8 @@ if [ ! -f "$KEY_MGMT_SCRIPT" ]; then
     exit 1
 fi
 
-# Get credentials from chainlink info file
-CHAINLINK_INFO_FILE="$HOME/.chainlink-sepolia/../chainlink-node/info.txt"
+# Get credentials from chainlink info file  
+CHAINLINK_INFO_FILE="$HOME/.chainlink-${NETWORK_TYPE}/../chainlink-node/info.txt"
 if [ ! -f "$CHAINLINK_INFO_FILE" ]; then
     CHAINLINK_INFO_FILE="$(dirname "$SCRIPT_DIR")/../chainlink-node/info.txt"
 fi

@@ -63,7 +63,7 @@ ask_yes_no() {
 echo -e "${BLUE}Automatically retrieving Chainlink node addresses...${NC}"
 
 # Get API credentials from Chainlink configuration
-CHAINLINK_DIR="$HOME/.chainlink-sepolia"
+CHAINLINK_DIR="$HOME/.chainlink-${NETWORK_TYPE}"
 if [ ! -f "$CHAINLINK_DIR/.api" ]; then
     echo -e "${RED}Error: Chainlink API credentials not found at $CHAINLINK_DIR/.api${NC}"
     echo -e "${RED}Please ensure the Chainlink node is properly configured.${NC}"

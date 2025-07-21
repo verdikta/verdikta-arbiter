@@ -187,7 +187,7 @@ services:
     ports:
       - "6688:6688"
     volumes:
-      - ~/.chainlink-sepolia:/chainlink
+      - ~/.chainlink-${NETWORK_TYPE}:/chainlink
     command: ["node", "-config", "/chainlink/config.toml", "-secrets", "/chainlink/secrets.toml", "start", "-a", "/chainlink/.api"]
     restart: unless-stopped
     networks:

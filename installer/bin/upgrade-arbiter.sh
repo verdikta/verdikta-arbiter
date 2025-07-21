@@ -502,7 +502,7 @@ echo -e "${BLUE}Checking Chainlink configuration...${NC}"
 
 # Function to check and regenerate Chainlink config if needed
 check_chainlink_config() {
-    local chainlink_dir="$HOME/.chainlink-sepolia"
+    local chainlink_dir="$HOME/.chainlink-${NETWORK_TYPE}"
     local current_config="$chainlink_dir/config.toml"
     local template_file="$REPO_CHAINLINK_NODE/config_template.toml"
     

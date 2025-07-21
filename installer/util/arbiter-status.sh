@@ -16,7 +16,19 @@ INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
 # Define component directories relative to $INSTALL_DIR
 AI_NODE_DIR="$INSTALL_DIR/ai-node"
 ADAPTER_DIR="$INSTALL_DIR/external-adapter"
-CHAINLINK_DIR="$HOME/.chainlink-sepolia" # Chainlink config is typically in HOME
+
+# Auto-detect chainlink directory
+CHAINLINK_DIR=""
+for dir in "$HOME/.chainlink-testnet" "$HOME/.chainlink-mainnet" "$HOME/.chainlink-sepolia"; do
+    if [ -d "$dir" ]; then
+        CHAINLINK_DIR="$dir"
+        break
+    fi
+done
+
+if [ -z "$CHAINLINK_DIR" ]; then
+    CHAINLINK_DIR="$HOME/.chainlink-testnet" # Default fallback
+fi
 
 echo -e "${BLUE}Checking Verdikta Arbiter Status (Installation: $INSTALL_DIR)...${NC}\n"
 

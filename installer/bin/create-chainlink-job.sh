@@ -33,7 +33,7 @@ usage() {
     echo "  $0 -f job_spec.toml -e admin@example.com -p mypassword"
     echo ""
     echo "Note: If email/password are not provided, the script will attempt to"
-    echo "      read them from ~/.chainlink-sepolia/.api"
+    echo "      read them from ~/.chainlink-testnet/.api or ~/.chainlink-mainnet/.api"
 }
 
 # Default values
@@ -104,19 +104,27 @@ fi
 
 # Auto-detect API credentials if not provided
 if [ -z "$API_EMAIL" ] || [ -z "$API_PASSWORD" ]; then
-    log_verbose "Attempting to auto-detect API credentials from ~/.chainlink-sepolia/.api"
+    # Try to detect the correct chainlink directory
+    CHAINLINK_API_FILE=""
+    for dir in "$HOME/.chainlink-testnet" "$HOME/.chainlink-mainnet" "$HOME/.chainlink-sepolia"; do
+        if [ -f "$dir/.api" ]; then
+            CHAINLINK_API_FILE="$dir/.api"
+            log_verbose "Found API credentials at $CHAINLINK_API_FILE"
+            break
+        fi
+    done
     
-    if [ -f "$HOME/.chainlink-sepolia/.api" ]; then
-        API_CREDENTIALS=( $(cat "$HOME/.chainlink-sepolia/.api") )
+    if [ -n "$CHAINLINK_API_FILE" ]; then
+        API_CREDENTIALS=( $(cat "$CHAINLINK_API_FILE") )
         if [ -z "$API_EMAIL" ]; then
             API_EMAIL="${API_CREDENTIALS[0]}"
         fi
         if [ -z "$API_PASSWORD" ]; then
             API_PASSWORD="${API_CREDENTIALS[1]}"
         fi
-        log_verbose "API credentials loaded from ~/.chainlink-sepolia/.api"
+        log_verbose "API credentials loaded from $CHAINLINK_API_FILE"
     else
-        echo -e "${RED}Error: API credentials not found. Please provide -e and -p options or ensure ~/.chainlink-sepolia/.api exists.${NC}"
+        echo -e "${RED}Error: API credentials not found. Please provide -e and -p options or ensure a .chainlink-*/\.api file exists.${NC}"
         exit 1
     fi
 fi
