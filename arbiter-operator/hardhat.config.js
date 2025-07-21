@@ -51,6 +51,16 @@ module.exports = {
       gasPrice: 2_000_000_000,
       accounts: ACCOUNTS,
     },
+
+    base_mainnet: {
+      url: `https://base-mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      httpAgent: keepAliveAgent,
+      httpsAgent: keepAliveAgent,
+      chainId: 8453,
+      gas: 10_000_000,
+      gasPrice: 1_000_000_000, // 1 gwei - lower than testnet
+      accounts: ACCOUNTS,
+    },
   },
 
   // hardhat-deploy "named accounts"
@@ -63,6 +73,7 @@ module.exports = {
     apiKey: {
       sepolia:      process.env.ETHERSCAN_API_KEY,
       base_sepolia: process.env.BASESCAN_API_KEY,
+      base_mainnet: process.env.BASESCAN_API_KEY,
     },
     customChains: [
       {
@@ -71,6 +82,14 @@ module.exports = {
         urls: {
           apiURL:     "https://api-sepolia.basescan.org/api",
           browserURL: "https://sepolia.basescan.org",
+        },
+      },
+      {
+        network:  "base_mainnet",
+        chainId:  8453,
+        urls: {
+          apiURL:     "https://api.basescan.org/api",
+          browserURL: "https://basescan.org",
         },
       },
     ],

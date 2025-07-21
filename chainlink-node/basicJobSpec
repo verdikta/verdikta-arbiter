@@ -4,7 +4,7 @@ name = "{JOB_NAME}"
 fromAddress = "{FROM_ADDRESS}"
 contractAddress = "{CONTRACT_ADDRESS}"
 maxTaskDuration = "0s"
-evmChainID = "84532"
+evmChainID = "<CHAIN_ID>"
 observationSource = """
     decode_log   [type="ethabidecodelog" \
                  abi="OracleRequest(bytes32 indexed specId, address requester, bytes32 requestId, uint256 payment, address callbackAddr, bytes4 callbackFunctionId, uint256 cancelExpiration, uint256 dataVersion, bytes data)" \
@@ -36,8 +36,8 @@ encode_data  [type="ethabiencode"
           data="$(encode_tx)" 
           gasLimit="2500000"
           minConfirmations="2"
-          gasPriceWei="10000000000"
-          evmChainID="84532"]
+          gasPriceWei="<GAS_PRICE_WEI>"
+          evmChainID="<CHAIN_ID>"]
 
     decode_log -> decode_cbor -> fetch -> parse_scores -> parse_cid -> encode_data -> encode_tx -> submit_tx
     fetch -> encode_data

@@ -41,8 +41,12 @@ if [ -z "$OPERATOR_ADDR" ]; then
     exit 1
 fi
 
-if [ -z "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
-    echo -e "${RED}Error: LINK token address not found in .contracts file${NC}"
+# Construct LINK token address variable name based on selected network
+LINK_TOKEN_VAR="LINK_TOKEN_ADDRESS_${DEPLOYMENT_NETWORK^^}"
+LINK_TOKEN_ADDRESS=$(eval echo \$$LINK_TOKEN_VAR)
+
+if [ -z "$LINK_TOKEN_ADDRESS" ]; then
+    echo -e "${RED}Error: LINK token address for $NETWORK_NAME not found in .contracts file (looking for $LINK_TOKEN_VAR)${NC}"
     exit 1
 fi
 
@@ -175,9 +179,9 @@ if ! [[ "$CLASSES_ID" =~ ^[0-9]+$ ]]; then
 fi
 
 # Construct the registration command with ALL job IDs
-REGISTER_CMD="HARDHAT_NETWORK=base_sepolia node scripts/register-oracle-cl.js \
+REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-cl.js \
   --aggregator $AGGREGATOR_ADDRESS \
-  --link $LINK_TOKEN_ADDRESS_BASE_SEPOLIA \
+  --link $LINK_TOKEN_ADDRESS \
   --oracle $OPERATOR_ADDR \
   --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
   --jobids $REGISTRATION_JOB_IDS \

@@ -97,9 +97,17 @@ if [ -z "$INFURA_API_KEY" ]; then
     sed -i.bak "s/^INFURA_API_KEY=.*/INFURA_API_KEY=\"$INFURA_API_KEY\"/" "$INSTALLER_DIR/.api_keys"
 fi
 
-# Setup Chainlink Node directory
-CHAINLINK_DIR="$HOME/.chainlink-sepolia"
-echo -e "${BLUE}Creating Chainlink Node directory at $CHAINLINK_DIR...${NC}"
+# Load environment variables
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    source "$INSTALLER_DIR/.env"
+else
+    echo -e "${RED}Error: Environment file not found. Please run setup-environment.sh first.${NC}"
+    exit 1
+fi
+
+# Setup Chainlink Node directory - use network type in directory name
+CHAINLINK_DIR="$HOME/.chainlink-${NETWORK_TYPE}"
+echo -e "${BLUE}Creating Chainlink Node directory at $CHAINLINK_DIR for $NETWORK_NAME...${NC}"
 mkdir -p "$CHAINLINK_DIR"
 
 # Generate Chainlink Node keystore password
@@ -120,11 +128,35 @@ if [ ! -f "$TEMPLATE_FILE" ]; then
     exit 1
 fi
 
-# Create config.toml from template, replacing <KEY> with actual Infura API key
-echo -e "${BLUE}Using config template from $TEMPLATE_FILE...${NC}"
-sed "s/<KEY>/$INFURA_API_KEY/g" "$TEMPLATE_FILE" > "$CHAINLINK_DIR/config.toml"
+# Set network-specific configuration values
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    CHAIN_ID="8453"
+    TIP_CAP_DEFAULT="1 gwei"
+    FEE_CAP_DEFAULT="10 gwei"
+    NETWORK_NAME_CONFIG="Base-Mainnet"
+    WS_URL="wss://base-mainnet.infura.io/ws/v3/$INFURA_API_KEY"
+    HTTP_URL="https://base-mainnet.infura.io/v3/$INFURA_API_KEY"
+else
+    # Default to Base Sepolia
+    CHAIN_ID="84532"
+    TIP_CAP_DEFAULT="2 gwei"
+    FEE_CAP_DEFAULT="30 gwei"
+    NETWORK_NAME_CONFIG="Base-Sepolia"
+    WS_URL="wss://base-sepolia.infura.io/ws/v3/$INFURA_API_KEY"
+    HTTP_URL="https://base-sepolia.infura.io/v3/$INFURA_API_KEY"
+fi
 
-echo -e "${GREEN}Config file created from template with Infura API key substituted.${NC}"
+# Create config.toml from template, replacing all placeholders
+echo -e "${BLUE}Using config template from $TEMPLATE_FILE for $NETWORK_NAME...${NC}"
+sed -e "s/<CHAIN_ID>/$CHAIN_ID/g" \
+    -e "s/<TIP_CAP_DEFAULT>/$TIP_CAP_DEFAULT/g" \
+    -e "s/<FEE_CAP_DEFAULT>/$FEE_CAP_DEFAULT/g" \
+    -e "s/<NETWORK_NAME>/$NETWORK_NAME_CONFIG/g" \
+    -e "s|<WS_URL>|$WS_URL|g" \
+    -e "s|<HTTP_URL>|$HTTP_URL|g" \
+    "$TEMPLATE_FILE" > "$CHAINLINK_DIR/config.toml"
+
+echo -e "${GREEN}Config file created from template for $NETWORK_NAME with all network-specific values substituted.${NC}"
 
 # Create secrets.toml
 cat > "$CHAINLINK_DIR/secrets.toml" << EOL

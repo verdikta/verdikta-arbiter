@@ -9,16 +9,16 @@ SecureCookies=false
 HTTPSPort=0
 
 [[EVM]]
-ChainID=84532
+ChainID=<CHAIN_ID>
 Enabled=true
 FinalityDepth=5
 MinContractPayment="0"
 
 [EVM.GasEstimator]
 Mode = "FeeHistory"
-TipCapDefault = "2 gwei"
+TipCapDefault = "<TIP_CAP_DEFAULT>"
 TipCapMin     = "30000000"       # 0.03 gwei
-FeeCapDefault = "30 gwei"
+FeeCapDefault = "<FEE_CAP_DEFAULT>"
 # EstimateLimit = true
 
 [EVM.HeadTracker]
@@ -38,6 +38,6 @@ MaxInFlight = 32
 MaxQueued = 64
 
 [[EVM.Nodes]]
-Name="Base-Sepolia"
-WSURL="wss://base-sepolia.infura.io/ws/v3/<KEY>"
-HTTPURL="https://base-sepolia.infura.io/v3/<KEY>"
+Name="<NETWORK_NAME>"
+WSURL="<WS_URL>"
+HTTPURL="<HTTP_URL>"

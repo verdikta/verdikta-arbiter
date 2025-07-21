@@ -275,6 +275,11 @@ configure_api_keys() {
         source "$CONFIG_FILE"
     fi
     
+    # Load existing environment configuration if it exists
+    if [ -f "$INSTALLER_DIR/.env" ]; then
+        source "$INSTALLER_DIR/.env"
+    fi
+    
     # OpenAI API Key
     if [ -z "$OPENAI_API_KEY" ]; then
         read -p "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
@@ -315,7 +320,70 @@ configure_api_keys() {
         fi
     fi
     
-    echo -e "${YELLOW}Note: You need to provide a private key for a wallet with Base Sepolia ETH for contract deployment.${NC}"
+    # Network Selection
+    echo -e "${BLUE}Blockchain Network Configuration${NC}"
+    echo -e "${YELLOW}Choose which Base network to deploy to:${NC}"
+    echo -e "  1) Base Sepolia (Testnet) - Recommended for testing"
+    echo -e "  2) Base Mainnet (Production) - Real ETH required"
+    
+    # Load existing network selection if available
+    if [ -n "$DEPLOYMENT_NETWORK" ]; then
+        if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ]; then
+            echo -e "${GREEN}Current selection: Base Sepolia (Testnet)${NC}"
+        elif [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+            echo -e "${GREEN}Current selection: Base Mainnet${NC}"
+        fi
+    fi
+    
+    while true; do
+        read -p "Select network (1 for Base Sepolia, 2 for Base Mainnet) [1]: " network_choice
+        
+        # Default to option 1 if empty
+        if [ -z "$network_choice" ]; then
+            network_choice=1
+        fi
+        
+        case "$network_choice" in
+            1)
+                DEPLOYMENT_NETWORK="base_sepolia"
+                NETWORK_NAME="Base Sepolia"
+                NETWORK_CHAIN_ID="84532"
+                NETWORK_TYPE="testnet"
+                echo -e "${GREEN}Selected: Base Sepolia (Testnet)${NC}"
+                break
+                ;;
+            2)
+                DEPLOYMENT_NETWORK="base_mainnet"
+                NETWORK_NAME="Base Mainnet"
+                NETWORK_CHAIN_ID="8453"
+                NETWORK_TYPE="mainnet"
+                echo -e "${GREEN}Selected: Base Mainnet${NC}"
+                
+                # Warning for mainnet
+                echo -e "${RED}WARNING: You selected Base Mainnet (production network)${NC}"
+                echo -e "${RED}This will require real ETH for gas fees and contract deployment.${NC}"
+                echo -e "${RED}Make sure you understand the costs involved.${NC}"
+                
+                if ! ask_yes_no "Are you sure you want to use Base Mainnet?"; then
+                    echo -e "${YELLOW}Switching back to network selection...${NC}"
+                    continue
+                fi
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+                ;;
+        esac
+    done
+    
+    # Display network-specific requirements
+    if [ "$NETWORK_TYPE" = "testnet" ]; then
+        echo -e "${YELLOW}Note: You need to provide a private key for a wallet with Base Sepolia ETH for contract deployment.${NC}"
+        echo -e "${YELLOW}You can get Base Sepolia ETH from: https://www.alchemy.com/faucets/base-sepolia${NC}"
+    else
+        echo -e "${YELLOW}Note: You need to provide a private key for a wallet with Base Mainnet ETH for contract deployment.${NC}"
+        echo -e "${YELLOW}Estimated gas costs: ~0.01-0.05 ETH for full deployment${NC}"
+    fi
     echo -e "${YELLOW}IMPORTANT: Never use your main wallet key. Use a testing wallet with minimal funds.${NC}"
     echo -e "${YELLOW}NOTE: Do NOT include the '0x' prefix - Truffle does not expect it.${NC}"
     
@@ -383,6 +451,21 @@ EOL
         fi
         chmod 600 "$INSTALLER_DIR/.env" # Ensure permissions are set if file was newly created or only had PRIVATE_KEY
         echo -e "${GREEN}Infura API Key saved to .env.${NC}"
+    fi
+    
+    # Save network configuration to .env file
+    if [ -n "$DEPLOYMENT_NETWORK" ]; then
+        # Update or add each network configuration variable
+        for var in DEPLOYMENT_NETWORK NETWORK_NAME NETWORK_CHAIN_ID NETWORK_TYPE; do
+            var_value=$(eval echo \$$var)
+            if grep -q "^$var=" "$INSTALLER_DIR/.env" 2>/dev/null; then
+                sed -i "s/^$var=.*/$var=\"$var_value\"/" "$INSTALLER_DIR/.env"
+            else
+                echo "$var=\"$var_value\"" >> "$INSTALLER_DIR/.env"
+            fi
+        done
+        chmod 600 "$INSTALLER_DIR/.env"
+        echo -e "${GREEN}Network configuration saved to .env (Network: $NETWORK_NAME).${NC}"
     fi
     
     # Configure Verdikta Common Library version

@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# Verdikta Validator Node - Multi-Arbiter Configuration Script
-# Sets up bridges and jobs for 1-10 arbiters in the Chainlink node
+# Verdikta Validator Node - Node Jobs and Bridges Configuration Script
+# Sets up bridges and jobs in the Chainlink node
 
 set -e  # Exit on any error
 
@@ -9,7 +9,6 @@ set -e  # Exit on any error
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_DIR="$INSTALLER_DIR/config"
-KEY_MGMT_SCRIPT="$SCRIPT_DIR/key-management.sh"
 
 # Color definitions
 GREEN='\033[0;32m'
@@ -18,7 +17,7 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}Configuring Multi-Arbiter Node Jobs and Bridges for Verdikta Validator Node...${NC}"
+echo -e "${BLUE}Configuring Node Jobs and Bridges for Verdikta Validator Node...${NC}"
 
 # Load environment variables
 if [ -f "$INSTALLER_DIR/.env" ]; then
@@ -36,16 +35,6 @@ else
     exit 1
 fi
 
-# Load API keys for re-authorization
-if [ -f "$INSTALLER_DIR/.api_keys" ]; then
-    source "$INSTALLER_DIR/.api_keys"
-else
-    echo -e "${YELLOW}Warning: API keys file not found. Re-authorization may not work.${NC}"
-fi
-
-# Clear any cached ARBITER_COUNT to ensure fresh user input
-unset ARBITER_COUNT
-
 # Define the path to the local chainlink-node directory
 LOCAL_CHAINLINK_NODE_DIR="$(dirname "$INSTALLER_DIR")/chainlink-node"
 JOB_SPEC_FILE="$LOCAL_CHAINLINK_NODE_DIR/basicJobSpec"
@@ -56,19 +45,14 @@ if [ ! -f "$JOB_SPEC_FILE" ]; then
 fi
 echo -e "${GREEN}Using job spec template from: $JOB_SPEC_FILE${NC}"
 
-# Check if key management script exists
-if [ ! -f "$KEY_MGMT_SCRIPT" ]; then
-    echo -e "${RED}Error: Key management script not found at $KEY_MGMT_SCRIPT${NC}"
-    exit 1
-fi
-
-# Load Chainlink node API credentials
-if [ -f "$HOME/.chainlink-sepolia/.api" ]; then
-    API_CREDENTIALS=( $(cat "$HOME/.chainlink-sepolia/.api") )
+# Load Chainlink node API credentials (used for both bridge and job creation)
+CHAINLINK_DIR="$HOME/.chainlink-${NETWORK_TYPE}"
+if [ -f "$CHAINLINK_DIR/.api" ]; then
+    API_CREDENTIALS=( $(cat "$CHAINLINK_DIR/.api") )
     API_EMAIL="${API_CREDENTIALS[0]}"
     API_PASSWORD="${API_CREDENTIALS[1]}"
 else
-    echo -e "${RED}Error: Chainlink node API credentials not found. Please run setup-chainlink.sh first.${NC}"
+    echo -e "${RED}Error: Chainlink node API credentials not found at $CHAINLINK_DIR/.api. Please run setup-chainlink.sh first.${NC}"
     exit 1
 fi
 
@@ -110,63 +94,6 @@ login_to_chainlink() {
     return 0
 }
 
-# Prompt for number of arbiters
-echo -e "${BLUE}Multi-Arbiter Configuration${NC}"
-echo "How many arbiters would you like to configure? (1-10)"
-while true; do
-    read -p "Enter number of arbiters [1]: " ARBITER_COUNT
-    
-    # Default to 1 if empty
-    if [ -z "$ARBITER_COUNT" ]; then
-        ARBITER_COUNT=1
-    fi
-    
-    # Validate input
-    if [[ "$ARBITER_COUNT" =~ ^[1-9]$|^10$ ]]; then
-        break
-    else
-        echo -e "${RED}Please enter a number between 1 and 10.${NC}"
-    fi
-done
-
-echo -e "${GREEN}Configuring $ARBITER_COUNT arbiter(s)...${NC}"
-
-# Install expect if needed for key management
-echo -e "${BLUE}Ensuring key management dependencies are installed...${NC}"
-if ! bash "$KEY_MGMT_SCRIPT" install_expect; then
-    echo -e "${RED}Error: Failed to install key management dependencies.${NC}"
-    exit 1
-fi
-
-# Ensure we have sufficient keys for all arbiters
-echo -e "${BLUE}Setting up Ethereum keys for $ARBITER_COUNT arbiters...${NC}"
-KEYS_LIST=$(bash "$KEY_MGMT_SCRIPT" ensure_keys_exist "$ARBITER_COUNT" "$API_EMAIL" "$API_PASSWORD")
-if [ $? -ne 0 ]; then
-    echo -e "${RED}Error: Failed to ensure sufficient keys exist.${NC}"
-    exit 1
-fi
-
-echo -e "${GREEN}Successfully configured keys for $ARBITER_COUNT arbiters${NC}"
-echo -e "${BLUE}Keys: $KEYS_LIST${NC}"
-
-# Update contracts file with key information
-echo -e "${BLUE}Updating contracts file with key information...${NC}"
-if bash "$KEY_MGMT_SCRIPT" update_contracts_with_keys "$INSTALLER_DIR/.contracts" "$KEYS_LIST" "$ARBITER_COUNT"; then
-    echo -e "${GREEN}Contracts file updated with key information${NC}"
-else
-    echo -e "${RED}Error: Failed to update contracts file with keys${NC}"
-    exit 1
-fi
-
-# Save user input before reloading contracts file
-USER_ARBITER_COUNT="$ARBITER_COUNT"
-
-# Reload contracts file to get the key information
-source "$INSTALLER_DIR/.contracts"
-
-# Restore user input (don't let cached value override user choice)
-ARBITER_COUNT="$USER_ARBITER_COUNT"
-
 # Check if Chainlink node is running
 echo -e "${BLUE}Checking if Chainlink node is running...${NC}"
 if ! curl -s http://localhost:6688/health > /dev/null; then
@@ -195,11 +122,7 @@ if ! login_to_chainlink; then
     exit 1
 fi
 
-# Brief delay after login to ensure session is established
-echo -e "${BLUE}Login successful, preparing for API operations...${NC}"
-sleep 1
-
-# Create bridge (only one bridge needed for all arbiters)
+# Create bridge
 echo -e "${BLUE}Creating bridge to External Adapter...${NC}"
 BRIDGE_NAME="verdikta-ai"
 BRIDGE_URL="http://$HOST_IP:8080/evaluate"
@@ -210,16 +133,12 @@ CSRF_TOKEN=$(grep -i "csrf" /tmp/chainlink_cookies.txt | cut -f 7)
 # Create bridge
 BRIDGE_RESPONSE=$(curl -sS -b /tmp/chainlink_cookies.txt -X POST -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF_TOKEN" -d "{\"name\":\"$BRIDGE_NAME\",\"url\":\"$BRIDGE_URL\",\"confirmations\":0,\"minimumContractPayment\":\"0\"}" "http://localhost:6688/v2/bridge_types")
 
-# Brief delay after bridge creation to avoid rate limits
-echo -e "${BLUE}Waiting briefly to avoid rate limits...${NC}"
-sleep 2
-
 # Check if bridge creation was successful
-if echo "$BRIDGE_RESPONSE" | grep -q "errors"; then
-    if echo "$BRIDGE_RESPONSE" | grep -q "already exists"; then
+if echo "$BRIDGE_RESPONSE" | grep -q "error"; then
+    if echo "$BRIDGE_RESPONSE" | grep -q "bridge type already exists"; then
         echo -e "${YELLOW}Bridge '$BRIDGE_NAME' already exists. Updating...${NC}"
         BRIDGE_RESPONSE=$(curl -sS -b /tmp/chainlink_cookies.txt -X PATCH -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF_TOKEN" -d "{\"name\":\"$BRIDGE_NAME\",\"url\":\"$BRIDGE_URL\",\"confirmations\":0,\"minimumContractPayment\":\"0\"}" "http://localhost:6688/v2/bridge_types/$BRIDGE_NAME")
-        if echo "$BRIDGE_RESPONSE" | grep -q "errors"; then
+        if echo "$BRIDGE_RESPONSE" | grep -q "error"; then
             echo -e "${RED}Error: Failed to update bridge. Response: $BRIDGE_RESPONSE${NC}"
             rm -f /tmp/chainlink_cookies.txt
             exit 1
@@ -234,295 +153,127 @@ else
     echo -e "${GREEN}Bridge created successfully.${NC}"
 fi
 
-# Keep session alive for job creation
-echo -e "${GREEN}Session established, creating jobs using same session...${NC}"
+# Create job automatically
+echo -e "${BLUE}Preparing job specification...${NC}"
 
-# Function to properly escape TOML content for JSON
-escape_toml_for_json() {
-    local toml_file="$1"
-    local output_file="$2"
-    
-    # Read the TOML file and escape it properly for JSON
-    python3 -c "
-import json
-import sys
+# Load and customize job spec
+JOB_SPEC=$(cat "$JOB_SPEC_FILE")
+echo -e "${BLUE}Loaded job spec from $JOB_SPEC_FILE${NC}"
 
-try:
-    with open('$toml_file', 'r') as f:
-        toml_content = f.read()
-    
-    # Create JSON payload with escaped TOML content
-    payload = {'toml': toml_content}
-    print(json.dumps(payload))
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-" > "$output_file"
-    
-    return $?
-}
-
-# Function to create a job via API using existing session
-create_chainlink_job_direct() {
-    local job_spec_file="$1"
-    local job_name="$2"
-    
-    # Escape TOML content for JSON
-    local temp_json="/tmp/job_spec_escaped_$$.json"
-    if ! escape_toml_for_json "$job_spec_file" "$temp_json"; then
-        echo -e "${RED}Error: Failed to escape TOML content for JSON.${NC}"
-        rm -f "$temp_json"
-        return 1
-    fi
-    
-    # Create job using existing session cookies
-    local job_response=$(curl -sS -b /tmp/chainlink_cookies.txt \
-        -X POST \
-        -H "Content-Type: application/json" \
-        -d @"$temp_json" \
-        "http://localhost:6688/v2/jobs")
-    
-    # Clean up temp file
-    rm -f "$temp_json"
-    
-    # Check if job creation failed
-    if ! echo "$job_response" | python3 -c "
-import json
-import sys
-try:
-    data = json.load(sys.stdin)
-    
-    # Check for top-level errors array with actual error content
-    if 'errors' in data and isinstance(data['errors'], list) and len(data['errors']) > 0:
-        # Check if any error has actual content
-        has_real_errors = False
-        for error in data['errors']:
-            if isinstance(error, dict) and ('detail' in error or 'message' in error):
-                has_real_errors = True
-                break
-        if has_real_errors:
-            sys.exit(1)  # Has actual errors
-    
-    # Check for successful job creation response
-    if 'data' in data and isinstance(data['data'], dict):
-        # Look for job type and external job ID to confirm success
-        if (data['data'].get('type') == 'jobs' and 
-            'attributes' in data['data'] and 
-            'externalJobID' in data['data']['attributes']):
-            sys.exit(0)  # Successful job creation
-    
-    # If we get here, it's an unexpected response format
-    sys.exit(1)
-except Exception as e:
-    # JSON parsing error or other exception
-    sys.exit(1)
-"; then
-        # Check if it's a duplicate job error
-        if echo "$job_response" | grep -q "duplicate key value violates unique constraint"; then
-            echo -e "${YELLOW}Warning: A job with the name '$job_name' already exists.${NC}"
-            
-            # Try to find the existing job ID
-            local existing_job_id=$(curl -sS -b /tmp/chainlink_cookies.txt "http://localhost:6688/v2/jobs" | python3 -c "
-import json
-import sys
-try:
-    data = json.load(sys.stdin)
-    if 'data' in data:
-        for job in data['data']:
-            if 'attributes' in job and 'name' in job['attributes']:
-                if job['attributes']['name'] == '$job_name':
-                    if 'externalJobID' in job['attributes']:
-                        print(job['attributes']['externalJobID'])
-                        sys.exit(0)
-    print('Job not found', file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-")
-            
-            if [ -n "$existing_job_id" ]; then
-                echo -e "${BLUE}Found existing job with ID: $existing_job_id${NC}"
-                echo "$existing_job_id"
-                return 0
-            else
-                echo -e "${RED}Error: Could not find existing job ID.${NC}"
-                echo "$job_response" | python3 -m json.tool 2>/dev/null || echo "$job_response"
-                return 1
-            fi
-        else
-            echo -e "${RED}Error: Failed to create job '$job_name'. Response:${NC}"
-            echo "$job_response" | python3 -m json.tool 2>/dev/null || echo "$job_response"
-            return 1
-        fi
-    else
-        # Extract job ID from successful creation response
-        local job_id=$(echo "$job_response" | python3 -c "
-import json
-import sys
-import re
-
-try:
-    data = json.load(sys.stdin)
-    if 'data' in data and 'attributes' in data['data'] and 'externalJobID' in data['data']['attributes']:
-        print(data['data']['attributes']['externalJobID'])
-    elif 'data' in data and 'id' in data['data']:
-        print(data['data']['id'])
-    elif 'id' in data:
-        print(data['id'])
-    else:
-        print('Job ID not found in response', file=sys.stderr)
-        sys.exit(1)
-except Exception as e:
-    print(f'Error parsing response: {e}', file=sys.stderr)
-    sys.exit(1)
-")
-        
-        if [ -z "$job_id" ]; then
-            echo -e "${RED}Error: Could not extract job ID from response.${NC}"
-            echo "Response: $job_response"
-            return 1
-        fi
-        
-        # Only output the job ID for capture - success message will be displayed by caller
-        echo "$job_id"
-        return 0
-    fi
-}
-
-# Create jobs for each arbiter
-echo -e "${BLUE}Creating jobs for $ARBITER_COUNT arbiters...${NC}"
-
-# Initialize job tracking variables
-JOB_IDS=()
-JOB_IDS_NO_HYPHENS=()
-CREATED_JOBS=0
-FAILED_JOBS=0
-
-# Create jobs directory for specifications
-JOBS_DIR="$LOCAL_CHAINLINK_NODE_DIR/jobs"
-mkdir -p "$JOBS_DIR"
-
-# Create each job
-for ((i=1; i<=ARBITER_COUNT; i++)); do
-    echo -e "\n${BLUE}Creating job $i of $ARBITER_COUNT: Verdikta AI Arbiter $i${NC}"
-    
-    # Get the appropriate key address for this job
-    JOB_KEY_ADDRESS=$(bash "$KEY_MGMT_SCRIPT" get_key_address_for_job "$i" "$KEYS_LIST")
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Error: Failed to get key address for job $i${NC}"
-        FAILED_JOBS=$((FAILED_JOBS + 1))
-        continue
-    fi
-    
-    # Validate that we got a valid key address
-    if [ -z "$JOB_KEY_ADDRESS" ]; then
-        echo -e "${RED}Error: Empty key address returned for job $i${NC}"
-        FAILED_JOBS=$((FAILED_JOBS + 1))
-        continue
-    fi
-    
-    # Validate key address format
-    if [[ ! "$JOB_KEY_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
-        echo -e "${RED}Error: Invalid key address format for job $i: $JOB_KEY_ADDRESS${NC}"
-        FAILED_JOBS=$((FAILED_JOBS + 1))
-        continue
-    fi
-    
-    echo -e "${BLUE}Job $i will use key: $JOB_KEY_ADDRESS${NC}"
-    
-    # Load and customize job spec for this arbiter
-    JOB_SPEC=$(cat "$JOB_SPEC_FILE")
-    
-    # Debug: Show original template before substitution
-    echo -e "${BLUE}Debug: Template contains fromAddress line: $(echo "$JOB_SPEC" | grep 'fromAddress')${NC}"
-    
-    # Replace template variables using a different sed delimiter to avoid issues with special characters
-    JOB_SPEC=$(echo "$JOB_SPEC" | sed "s|{JOB_NAME}|Verdikta AI Arbiter $i|g")
-    JOB_SPEC=$(echo "$JOB_SPEC" | sed "s|{FROM_ADDRESS}|$JOB_KEY_ADDRESS|g")
-    JOB_SPEC=$(echo "$JOB_SPEC" | sed "s|{CONTRACT_ADDRESS}|$OPERATOR_ADDR|g")
-    
-    # Debug: Show result after substitution
-    echo -e "${BLUE}Debug: After substitution fromAddress line: $(echo "$JOB_SPEC" | grep 'fromAddress')${NC}"
-    
-    # Save the job spec for this arbiter
-    JOB_SPEC_FILE_ARBITER="$JOBS_DIR/verdikta_job_spec_arbiter_$i.toml"
-    echo "$JOB_SPEC" > "$JOB_SPEC_FILE_ARBITER"
-    echo -e "${GREEN}Job specification for Arbiter $i saved to: $JOB_SPEC_FILE_ARBITER${NC}"
-    
-    # Debug: Show the fromAddress line in the saved file
-    echo -e "${BLUE}Debug: Saved file fromAddress line: $(grep 'fromAddress' "$JOB_SPEC_FILE_ARBITER")${NC}"
-    
-    # Debug: Show first few lines of the saved file to verify content
-    echo -e "${BLUE}Debug: First 10 lines of saved job spec:${NC}"
-    head -10 "$JOB_SPEC_FILE_ARBITER" | while read line; do
-        echo -e "${BLUE}  $line${NC}"
-    done
-    
-    # Create job directly using existing session
-    echo -e "${BLUE}Creating Chainlink job for Arbiter $i...${NC}"
-    
-    # Create job using direct API call with existing session
-    JOB_NAME="Verdikta AI Arbiter $i"
-    NEW_JOB_ID=$(create_chainlink_job_direct "$JOB_SPEC_FILE_ARBITER" "$JOB_NAME")
-    
-    if [ $? -eq 0 ] && [ -n "$NEW_JOB_ID" ]; then
-        # Validate that NEW_JOB_ID looks like a valid UUID (with or without hyphens)
-        if [[ "$NEW_JOB_ID" =~ ^[a-f0-9-]{36}$|^[a-f0-9]{32}$ ]]; then
-            echo -e "${GREEN}Job $i created successfully with ID: $NEW_JOB_ID${NC}"
-            
-            # Store job IDs
-            JOB_IDS+=("$NEW_JOB_ID")
-            JOB_IDS_NO_HYPHENS+=("$(echo "$NEW_JOB_ID" | tr -d '-')")
-            CREATED_JOBS=$((CREATED_JOBS + 1))
-        else
-            echo -e "${RED}Error: Invalid job ID format received: $NEW_JOB_ID${NC}"
-            FAILED_JOBS=$((FAILED_JOBS + 1))
-        fi
-    else
-        echo -e "${RED}Error: Failed to create job for Arbiter $i.${NC}"
-        FAILED_JOBS=$((FAILED_JOBS + 1))
-    fi
-    
-    # Brief delay between job creations (much shorter since no authentication needed)
-    if [ "$i" -lt "$ARBITER_COUNT" ]; then
-        echo -e "${BLUE}Waiting 2 seconds before creating next job...${NC}"
-        sleep 2
-    fi
-done
-
-# Report job creation results
-echo -e "\n${BLUE}Job Creation Summary:${NC}"
-echo -e "${GREEN}Successfully created: $CREATED_JOBS jobs${NC}"
-if [ "$FAILED_JOBS" -gt 0 ]; then
-    echo -e "${RED}Failed to create: $FAILED_JOBS jobs${NC}"
+# Set network-specific configuration values for job spec
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    CHAIN_ID="8453"
+    GAS_PRICE_WEI="1000000000"  # 1 gwei for mainnet
+else
+    # Default to Base Sepolia
+    CHAIN_ID="84532"
+    GAS_PRICE_WEI="10000000000"  # 10 gwei for testnet
 fi
 
-# Update the contracts file with all job IDs
-if [ ${#JOB_IDS[@]} -gt 0 ]; then
-    echo -e "${BLUE}Updating contracts file with job IDs...${NC}"
-    
-    # Remove existing job ID entries
-    sed -i '/^JOB_ID.*=/d' "$INSTALLER_DIR/.contracts"
-    
-    # Add new job ID entries
-    for ((i=0; i<${#JOB_IDS[@]}; i++)); do
-        arbiter_num=$((i + 1))
-        job_id="${JOB_IDS[$i]}"
-        job_id_no_hyphens="${JOB_IDS_NO_HYPHENS[$i]}"
+# Format the contract address properly
+EIP55_ADDRESS="$OPERATOR_ADDR"
+
+# Update all placeholders in the job spec
+echo -e "${BLUE}Updating job spec with network-specific values for $NETWORK_NAME...${NC}"
+JOB_SPEC=$(echo "$JOB_SPEC" | sed "s/<OPERATOR_ADDRESS>/$EIP55_ADDRESS/g")
+JOB_SPEC=$(echo "$JOB_SPEC" | sed "s/<CHAIN_ID>/$CHAIN_ID/g")
+JOB_SPEC=$(echo "$JOB_SPEC" | sed "s/<GAS_PRICE_WEI>/$GAS_PRICE_WEI/g")
+
+# Check if the replacement was successful
+if echo "$JOB_SPEC" | grep -q "$EIP55_ADDRESS" && echo "$JOB_SPEC" | grep -q "$CHAIN_ID"; then
+    echo -e "${GREEN}Successfully updated job spec with network-specific values.${NC}"
+else
+    echo -e "${YELLOW}Warning: Failed to update some values in job spec. Please check manually.${NC}"
+fi
+
+# Save the prepared job spec to a file for automated creation
+AUTOMATED_JOB_SPEC_FILE="$LOCAL_CHAINLINK_NODE_DIR/verdikta_job_spec.toml"
+mkdir -p "$(dirname "$AUTOMATED_JOB_SPEC_FILE")"
+echo "$JOB_SPEC" > "$AUTOMATED_JOB_SPEC_FILE"
+echo -e "${GREEN}Job specification prepared and saved to: $AUTOMATED_JOB_SPEC_FILE${NC}"
+
+# Clear any existing session cookies
+rm -f /tmp/chainlink_cookies.txt
+
+# Create job automatically using our automation script
+echo -e "${BLUE}Creating Chainlink job automatically...${NC}"
+
+# Call the automated job creation script
+JOB_OUTPUT_FILE="/tmp/configure_node_job_id.txt"
+if "$SCRIPT_DIR/create-chainlink-job.sh" -f "$AUTOMATED_JOB_SPEC_FILE" -o "$JOB_OUTPUT_FILE"; then
+    # Job creation successful - read the job ID
+    if [ -f "$JOB_OUTPUT_FILE" ]; then
+        NEW_JOB_ID=$(cat "$JOB_OUTPUT_FILE")
+        echo -e "${GREEN}Job created successfully with ID: $NEW_JOB_ID${NC}"
         
-        echo "JOB_ID_$arbiter_num=\"$job_id\"" >> "$INSTALLER_DIR/.contracts"
-        echo "JOB_ID_${arbiter_num}_NO_HYPHENS=\"$job_id_no_hyphens\"" >> "$INSTALLER_DIR/.contracts"
-    done
-    
-    # Add primary job ID (first one) for backward compatibility
-    echo "JOB_ID=\"${JOB_IDS[0]}\"" >> "$INSTALLER_DIR/.contracts"
-    echo "JOB_ID_NO_HYPHENS=\"${JOB_IDS_NO_HYPHENS[0]}\"" >> "$INSTALLER_DIR/.contracts"
-    
-    # Add arbiter count
-    echo "ARBITER_COUNT=\"$ARBITER_COUNT\"" >> "$INSTALLER_DIR/.contracts"
-    
-    echo -e "${GREEN}Updated contracts file with $CREATED_JOBS job IDs${NC}"
+        # Clean up temporary file
+        rm -f "$JOB_OUTPUT_FILE"
+    else
+        echo -e "${RED}Error: Job creation succeeded but job ID file not found.${NC}"
+        exit 1
+    fi
+else
+    echo -e "${RED}Error: Automated job creation failed.${NC}"
+    echo -e "${YELLOW}Falling back to manual job creation instructions...${NC}"
+    echo
+    echo -e "${YELLOW}============================================================${NC}"
+    echo -e "${YELLOW}                MANUAL JOB CREATION REQUIRED               ${NC}"
+    echo -e "${YELLOW}============================================================${NC}"
+    echo
+    echo -e "${BLUE}Please follow these steps to create the Chainlink job:${NC}"
+    echo -e "${BLUE}1. Open the Chainlink Operator UI in your browser:${NC}"
+    echo -e "   ${GREEN}http://localhost:6688${NC}"
+    echo -e "${BLUE}2. Log in with:${NC}"
+    echo -e "   ${GREEN}Email:    $API_EMAIL${NC}"
+    echo -e "   ${GREEN}Password: $API_PASSWORD${NC}"
+    echo -e "${BLUE}3. Navigate to the 'Jobs' section in the sidebar${NC}"
+    echo -e "${BLUE}4. Click '+ New Job' button${NC}"
+    echo -e "${BLUE}5. Select 'TOML' format${NC}"
+    echo -e "${BLUE}6. Copy and paste the entire content from this file:${NC}"
+    echo -e "   ${GREEN}$AUTOMATED_JOB_SPEC_FILE${NC}"
+    echo -e "${BLUE}7. Click 'Create Job'${NC}"
+    echo
+    echo -e "${BLUE}You can cat the file and copy its contents:${NC}"
+    echo -e "${GREEN}cat $AUTOMATED_JOB_SPEC_FILE${NC}"
+    echo
+
+    # Prompt the user to continue after they've created the job manually
+    read -p "Have you created the job in the Chainlink UI? (y/n): " job_created
+    if [[ "$job_created" != "y" && "$job_created" != "Y" ]]; then
+        echo -e "${YELLOW}Please create the job before continuing.${NC}"
+        echo -e "${YELLOW}You can run this script again after creating the job.${NC}"
+        exit 1
+    fi
+
+    # Ask user for the job ID from the UI
+    echo -e "${BLUE}After creating the job, you'll see the job details page.${NC}"
+    echo -e "${BLUE}The job ID is shown at the top of the page (typically in a UUID format like: xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx)${NC}"
+    read -p "Please enter the job ID from the UI: " NEW_JOB_ID
+
+    if [ -z "$NEW_JOB_ID" ]; then
+        echo -e "${RED}Error: No job ID provided.${NC}"
+        exit 1
+    fi
+
+    echo -e "${GREEN}Job ID entered: $NEW_JOB_ID${NC}"
+fi
+
+# Update the contracts file with the new job ID
+if [ -f "$INSTALLER_DIR/.contracts" ]; then
+    # Check if job IDs already exist in .contracts file
+    if grep -q "^JOB_ID=" "$INSTALLER_DIR/.contracts"; then
+        # Replace existing job ID entries
+        sed -i "s/^JOB_ID=.*/JOB_ID=\"$NEW_JOB_ID\"/" "$INSTALLER_DIR/.contracts"
+        # Remove hyphens for the no-hyphens version
+        NEW_JOB_ID_NO_HYPHENS=$(echo "$NEW_JOB_ID" | tr -d '-')
+        sed -i "s/^JOB_ID_NO_HYPHENS=.*/JOB_ID_NO_HYPHENS=\"$NEW_JOB_ID_NO_HYPHENS\"/" "$INSTALLER_DIR/.contracts"
+    else
+        # Add new job ID entries
+        echo "JOB_ID=\"$NEW_JOB_ID\"" >> "$INSTALLER_DIR/.contracts"
+        NEW_JOB_ID_NO_HYPHENS=$(echo "$NEW_JOB_ID" | tr -d '-')
+        echo "JOB_ID_NO_HYPHENS=\"$NEW_JOB_ID_NO_HYPHENS\"" >> "$INSTALLER_DIR/.contracts"
+    fi
+    echo -e "${GREEN}Updated job IDs in $INSTALLER_DIR/.contracts${NC}"
     
     # Remove job placeholder file if it exists
     if [ -f "$INSTALLER_DIR/.job_placeholder" ]; then
@@ -530,182 +281,54 @@ if [ ${#JOB_IDS[@]} -gt 0 ]; then
         rm -f "$INSTALLER_DIR/.job_placeholder"
     fi
 else
-    echo -e "${RED}Error: No jobs were created successfully.${NC}"
-    exit 1
+    echo -e "${RED}Warning: Could not update job IDs in $INSTALLER_DIR/.contracts${NC}"
+    echo -e "${YELLOW}Creating new .contracts file with job IDs...${NC}"
+    
+    # Create new .contracts file or append to it
+    echo "JOB_ID=\"$NEW_JOB_ID\"" >> "$INSTALLER_DIR/.contracts"
+    NEW_JOB_ID_NO_HYPHENS=$(echo "$NEW_JOB_ID" | tr -d '-')
+    echo "JOB_ID_NO_HYPHENS=\"$NEW_JOB_ID_NO_HYPHENS\"" >> "$INSTALLER_DIR/.contracts"
+    echo -e "${GREEN}Created .contracts file with job IDs${NC}"
 fi
 
 # Save job information
 echo -e "${BLUE}Saving job information...${NC}"
 JOB_INFO_DIR="$LOCAL_CHAINLINK_NODE_DIR/info"
 mkdir -p "$JOB_INFO_DIR"
+cat > "$JOB_INFO_DIR/job_info.txt" << EOL
+Verdikta Chainlink Node Job Information
+======================================
 
-# Create comprehensive job info file
-cat > "$JOB_INFO_DIR/multi_arbiter_job_info.txt" << EOL
-Verdikta Multi-Arbiter Chainlink Node Configuration
-==================================================
+Bridge Name: $BRIDGE_NAME
+Bridge URL: $BRIDGE_URL
+Job ID: $NEW_JOB_ID
+Job ID (no hyphens): $NEW_JOB_ID_NO_HYPHENS
 
-Configuration Date: $(date)
-Number of Arbiters: $ARBITER_COUNT
-Jobs Created: $CREATED_JOBS
-Jobs Failed: $FAILED_JOBS
+The job is configured to use the External Adapter at:
+http://$HOST_IP:8080/evaluate
 
-Bridge Configuration:
-- Bridge Name: $BRIDGE_NAME
-- Bridge URL: $BRIDGE_URL
-- External Adapter: http://$HOST_IP:8080/evaluate
-
-Job Details:
-EOL
-
-# Add details for each successful job
-for ((i=0; i<${#JOB_IDS[@]}; i++)); do
-    arbiter_num=$((i + 1))
-    job_id="${JOB_IDS[$i]}"
-    job_id_no_hyphens="${JOB_IDS_NO_HYPHENS[$i]}"
-    
-    # Get the key address for this job
-    job_key_address=$(bash "$KEY_MGMT_SCRIPT" get_key_address_for_job "$arbiter_num" "$KEYS_LIST")
-    
-    cat >> "$JOB_INFO_DIR/multi_arbiter_job_info.txt" << EOL
-
-Arbiter $arbiter_num:
-- Job Name: Verdikta AI Arbiter $arbiter_num
-- Job ID: $job_id
-- Job ID (no hyphens): $job_id_no_hyphens
-- From Address: $job_key_address
-- Contract Address: $OPERATOR_ADDR
-- Spec File: $JOBS_DIR/verdikta_job_spec_arbiter_$arbiter_num.toml
-EOL
-done
-
-cat >> "$JOB_INFO_DIR/multi_arbiter_job_info.txt" << EOL
-
-Key Management:
-- Total Keys: $(echo "$KEYS_LIST" | tr '|' '\n' | wc -l)
-- Keys Assignment: 2 jobs per key (Jobs 1-2 use Key 1, Jobs 3-4 use Key 2, etc.)
-
-Testing:
+To test the job:
 1. Go to the Chainlink node UI at http://localhost:6688
-2. Navigate to the 'Jobs' tab
-3. Find each job by its ID and test individual jobs
-4. All jobs use the same bridge and external adapter
+2. Navigate to the 'Jobs' tab and find job with ID: $NEW_JOB_ID
+3. Click on 'Run' to test the job
 
-Your Verdikta Multi-Arbiter Validator Node is now fully configured!
+Your Verdikta Validator Node is now fully configured!
 EOL
-
-echo -e "${GREEN}Job information saved to: $JOB_INFO_DIR/multi_arbiter_job_info.txt${NC}"
 
 # Final cleanup
 rm -f /tmp/chainlink_cookies.txt
-rm -f /tmp/job_spec_escaped_*.json
-echo -e "${BLUE}Multi-arbiter configuration process completed.${NC}"
+echo -e "${BLUE}Job configuration process completed.${NC}"
 
-# Re-authorize all keys with operator contract if keys were created
-echo -e "${BLUE}Ensuring all keys are authorized with operator contract...${NC}"
-
-# Get all current keys
-CURRENT_KEYS_LIST=$(bash "$KEY_MGMT_SCRIPT" list_existing_keys "$API_EMAIL" "$API_PASSWORD")
-if [ $? -ne 0 ] || [ -z "$CURRENT_KEYS_LIST" ]; then
-    echo -e "${YELLOW}Warning: Could not retrieve current keys for re-authorization${NC}"
-else
-    # Extract all key addresses
-    CURRENT_NODE_ADDRESSES=$(echo "$CURRENT_KEYS_LIST" | tr '|' '\n' | cut -d':' -f2 | tr '\n' ',' | sed 's/,$//')
-    CURRENT_KEY_COUNT=$(echo "$CURRENT_KEYS_LIST" | tr '|' '\n' | wc -l)
-    
-    if [ -n "$CURRENT_NODE_ADDRESSES" ]; then
-        echo -e "${BLUE}Found $CURRENT_KEY_COUNT keys to authorize with operator contract${NC}"
-        echo -e "${BLUE}Keys: $CURRENT_NODE_ADDRESSES${NC}"
-        
-        # Check if we have the necessary contract information
-        if [ -n "$OPERATOR_ADDR" ] && [ -n "$PRIVATE_KEY" ] && [ -n "$INFURA_API_KEY" ]; then
-            echo -e "${BLUE}Re-authorizing all keys with operator contract...${NC}"
-            
-            # Create temporary directory for re-authorization
-            TEMP_REAUTH_DIR="/tmp/reauth_keys_$$"
-            mkdir -p "$TEMP_REAUTH_DIR/scripts"
-            
-            # Copy necessary files for re-authorization
-            ARBITER_OPERATOR_SRC_DIR="$(dirname "$INSTALLER_DIR")/arbiter-operator"
-            if [ -d "$ARBITER_OPERATOR_SRC_DIR" ]; then
-                # Copy the setAuthorizedSenders script and dependencies
-                cp "$ARBITER_OPERATOR_SRC_DIR/scripts/setAuthorizedSenders.js" "$TEMP_REAUTH_DIR/scripts/"
-                cp "$ARBITER_OPERATOR_SRC_DIR/hardhat.config.js" "$TEMP_REAUTH_DIR/"
-                cp "$ARBITER_OPERATOR_SRC_DIR/package.json" "$TEMP_REAUTH_DIR/"
-                
-                # Copy deployment addresses
-                if [ -f "$ARBITER_OPERATOR_SRC_DIR/deployment-addresses.json" ]; then
-                    cp "$ARBITER_OPERATOR_SRC_DIR/deployment-addresses.json" "$TEMP_REAUTH_DIR/"
-                fi
-                
-                # Create .env file for re-authorization
-                # Ensure PRIVATE_KEY has 0x prefix for Hardhat
-                REAUTH_PRIVATE_KEY="$PRIVATE_KEY"
-                if [[ ! "$REAUTH_PRIVATE_KEY" =~ ^0x ]]; then
-                    REAUTH_PRIVATE_KEY="0x$REAUTH_PRIVATE_KEY"
-                fi
-                
-                cat > "$TEMP_REAUTH_DIR/.env" << EOL
-PRIVATE_KEY=$REAUTH_PRIVATE_KEY
-INFURA_API_KEY=$INFURA_API_KEY
-EOL
-                
-                # Install minimal dependencies for hardhat
-                cd "$TEMP_REAUTH_DIR"
-                if npm install --silent > /dev/null 2>&1; then
-                    echo -e "${BLUE}Running re-authorization script...${NC}"
-                    
-                    # Run the re-authorization
-                    if env OPERATOR="$OPERATOR_ADDR" NODES="$CURRENT_NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia 2>/dev/null; then
-                        echo -e "${GREEN}✓ All keys successfully re-authorized with operator contract${NC}"
-                        echo -e "${GREEN}✓ Authorized keys: $CURRENT_NODE_ADDRESSES${NC}"
-                    else
-                        echo -e "${YELLOW}Warning: Re-authorization may have failed${NC}"
-                        echo -e "${YELLOW}Your keys may still work, but you can manually re-authorize if needed${NC}"
-                    fi
-                else
-                    echo -e "${YELLOW}Warning: Could not install dependencies for re-authorization${NC}"
-                fi
-                
-                # Clean up temporary directory
-                cd "$SCRIPT_DIR"
-                rm -rf "$TEMP_REAUTH_DIR"
-            else
-                echo -e "${YELLOW}Warning: Could not find arbiter-operator source for re-authorization${NC}"
-            fi
-        else
-            echo -e "${YELLOW}Warning: Missing contract information for re-authorization${NC}"
-            echo -e "${YELLOW}OPERATOR_ADDR: ${OPERATOR_ADDR:-'not set'}${NC}"
-            echo -e "${YELLOW}PRIVATE_KEY: ${PRIVATE_KEY:+'set'}${PRIVATE_KEY:-'not set'}${NC}"
-            echo -e "${YELLOW}INFURA_API_KEY: ${INFURA_API_KEY:+'set'}${INFURA_API_KEY:-'not set'}${NC}"
-        fi
-    else
-        echo -e "${YELLOW}Warning: No valid keys found for re-authorization${NC}"
-    fi
-fi
-
-echo -e "${BLUE}Multi-arbiter configuration process completed.${NC}"
-
-# Display final summary
-echo -e "\n${GREEN}============================================================${NC}"
-echo -e "${GREEN}    MULTI-ARBITER CONFIGURATION COMPLETED SUCCESSFULLY     ${NC}"
-echo -e "${GREEN}============================================================${NC}"
-echo -e "${BLUE}Configuration Summary:${NC}"
-echo -e "${GREEN}✓ Bridge created/updated: $BRIDGE_NAME${NC}"
-echo -e "${GREEN}✓ Arbiters configured: $ARBITER_COUNT${NC}"
-echo -e "${GREEN}✓ Jobs created: $CREATED_JOBS${NC}"
-echo -e "${GREEN}✓ Keys configured: $(echo "$KEYS_LIST" | tr '|' '\n' | wc -l)${NC}"
-echo -e "${GREEN}✓ Configuration files updated${NC}"
-
-if [ "$FAILED_JOBS" -gt 0 ]; then
-    echo -e "${YELLOW}⚠ Some jobs failed to create: $FAILED_JOBS${NC}"
-    echo -e "${YELLOW}  Please check the logs and retry if needed${NC}"
-fi
-
-echo -e "\n${BLUE}Access your services:${NC}"
-echo -e "- Chainlink Node UI: http://localhost:6688"
-echo -e "- External Adapter: http://$HOST_IP:8080"
-echo -e "- Job Details: $JOB_INFO_DIR/multi_arbiter_job_info.txt"
-
-echo -e "\n${GREEN}Your Verdikta Multi-Arbiter Validator Node is ready!${NC}"
+# Save bridge and job information
+echo -e "${GREEN}Node Jobs and Bridges configuration completed!${NC}"
+echo -e "${GREEN}Your Verdikta Validator Node is now fully configured and ready to use.${NC}"
+echo -e "${BLUE}Job ID: $NEW_JOB_ID${NC}"
+echo -e "${BLUE}Bridge Name: $BRIDGE_NAME${NC}"
+echo -e "${BLUE}Bridge URL: $BRIDGE_URL${NC}"
+echo
+echo -e "${BLUE}Automation Summary:${NC}"
+echo -e "${GREEN}✓ Bridge created/updated automatically${NC}"
+echo -e "${GREEN}✓ Job created automatically via API${NC}"
+echo -e "${GREEN}✓ All configuration files updated${NC}"
 
 exit 0 

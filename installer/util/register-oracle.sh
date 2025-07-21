@@ -44,8 +44,12 @@ if [ -z "$OPERATOR_ADDRESS" ]; then
     exit 1
 fi
 
-if [ -z "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
-    echo -e "${RED}Error: LINK token address not found in contracts file${NC}"
+# Construct LINK token address variable name based on selected network
+LINK_TOKEN_VAR="LINK_TOKEN_ADDRESS_${DEPLOYMENT_NETWORK^^}"
+LINK_TOKEN_ADDRESS=$(eval echo \$$LINK_TOKEN_VAR)
+
+if [ -z "$LINK_TOKEN_ADDRESS" ]; then
+    echo -e "${RED}Error: LINK token address for $NETWORK_NAME not found in contracts file (looking for $LINK_TOKEN_VAR)${NC}"
     exit 1
 fi
 
@@ -84,7 +88,7 @@ echo -e "${BLUE}Current Oracle Information:${NC}"
 echo -e "  Operator Address: $OPERATOR_ADDRESS"
 echo -e "  Node Address:     $NODE_ADDRESS"
 echo -e "  Job ID:           $JOB_ID_NO_HYPHENS"
-echo -e "  LINK Token:       $LINK_TOKEN_ADDRESS_BASE_SEPOLIA"
+echo -e "  LINK Token:       $LINK_TOKEN_ADDRESS"
 echo ""
 
 # List existing registrations if any
@@ -188,9 +192,9 @@ if ! [[ "$NEW_CLASSES_ID" =~ ^[0-9]+$ ]]; then
 fi
 
 # Construct the registration command
-REGISTER_CMD="HARDHAT_NETWORK=base_sepolia node scripts/register-oracle-cl.js \
+REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-cl.js \
   --aggregator $NEW_AGGREGATOR_ADDRESS \
-  --link $LINK_TOKEN_ADDRESS_BASE_SEPOLIA \
+  --link $LINK_TOKEN_ADDRESS \
   --oracle $OPERATOR_ADDRESS \
   --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
   --jobids \"$JOB_ID_NO_HYPHENS\" \
@@ -202,7 +206,7 @@ echo -e "${BLUE}Registration Summary:${NC}"
 echo -e "  Aggregator Address: $NEW_AGGREGATOR_ADDRESS"
 echo -e "  Classes ID:         $NEW_CLASSES_ID"
 echo -e "  Oracle Address:     $OPERATOR_ADDRESS"
-echo -e "  LINK Token:         $LINK_TOKEN_ADDRESS_BASE_SEPOLIA"
+echo -e "  LINK Token:         $LINK_TOKEN_ADDRESS"
 echo ""
 echo -e "${BLUE}The following command will be executed:${NC}"
 echo "$REGISTER_CMD"

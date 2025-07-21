@@ -273,16 +273,16 @@ else
     exit 1
 fi
 
-# Extract LINK token address for base_sepolia from deployment-addresses.json
-LINK_TOKEN_ADDRESS_BASE_SEPOLIA=""
+# Extract LINK token address for the selected network from deployment-addresses.json
+LINK_TOKEN_ADDRESS=""
 if command -v jq >/dev/null 2>&1; then
-    LINK_TOKEN_ADDRESS_BASE_SEPOLIA=$(jq -r '.base_sepolia.linkTokenAddress' "$OPERATOR_BUILD_DIR/deployment-addresses.json")
-    if [ -z "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ] || [ "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" == "null" ]; then
-        echo -e "${RED}Error: Could not extract LINK token address for base_sepolia from deployment-addresses.json using jq.${NC}"
+    LINK_TOKEN_ADDRESS=$(jq -r ".$DEPLOYMENT_NETWORK.linkTokenAddress" "$OPERATOR_BUILD_DIR/deployment-addresses.json")
+    if [ -z "$LINK_TOKEN_ADDRESS" ] || [ "$LINK_TOKEN_ADDRESS" == "null" ]; then
+        echo -e "${RED}Error: Could not extract LINK token address for $DEPLOYMENT_NETWORK from deployment-addresses.json using jq.${NC}"
         echo -e "${YELLOW}Please ensure deployment-addresses.json is correctly formatted and contains the required key.${NC}"
         exit 1 # Exit if critical info is missing
     else
-        echo -e "${GREEN}Extracted LINK token address for Base Sepolia: $LINK_TOKEN_ADDRESS_BASE_SEPOLIA${NC}"
+        echo -e "${GREEN}Extracted LINK token address for $NETWORK_NAME: $LINK_TOKEN_ADDRESS${NC}"
     fi
 else
     echo -e "${RED}Error: jq is not installed. This is required to parse deployment-addresses.json.${NC}"
@@ -308,10 +308,10 @@ NODE_ADDRESS=$NODE_ADDRESS
 EOL
 # Note: NODE_ADDRESS is added here for setAuthorizedSenders.js to potentially pick up if needed
 
-echo -e "${BLUE}Deploying ArbiterOperator contract via Hardhat...${NC}"
+echo -e "${BLUE}Deploying ArbiterOperator contract via Hardhat to $NETWORK_NAME...${NC}"
 # Run the custom deploy script and capture its output
 DEPLOY_OUTPUT_FILE="deploy_output.log"
-if npx hardhat run scripts/deploy.js --network base_sepolia > "$DEPLOY_OUTPUT_FILE" 2>&1; then
+if npx hardhat run scripts/deploy.js --network $DEPLOYMENT_NETWORK > "$DEPLOY_OUTPUT_FILE" 2>&1; then
     echo -e "${GREEN}ArbiterOperator deployment script executed. Output in $DEPLOY_OUTPUT_FILE${NC}"
     cat "$DEPLOY_OUTPUT_FILE" # Display output for user
 else
@@ -340,13 +340,13 @@ echo -e "${GREEN}ArbiterOperator deployed at: $CONTRACT_ADDRESS${NC}"
 # Use OPERATOR_ADDR for consistency with the External Adapter code
 echo "OPERATOR_ADDR=\"$CONTRACT_ADDRESS\"" > "$INSTALLER_DIR/.contracts"
 echo "NODE_ADDRESS=\"$NODE_ADDRESS\"" >> "$INSTALLER_DIR/.contracts"
-if [ -n "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
-    echo "LINK_TOKEN_ADDRESS_BASE_SEPOLIA=\"$LINK_TOKEN_ADDRESS_BASE_SEPOLIA\"" >> "$INSTALLER_DIR/.contracts"
+if [ -n "$LINK_TOKEN_ADDRESS" ]; then
+    echo "LINK_TOKEN_ADDRESS_${DEPLOYMENT_NETWORK^^}=\"$LINK_TOKEN_ADDRESS\"" >> "$INSTALLER_DIR/.contracts"
 fi
 echo -e "${GREEN}Operator contract address saved to $INSTALLER_DIR/.contracts: $CONTRACT_ADDRESS${NC}"
 echo -e "${GREEN}Node address saved to $INSTALLER_DIR/.contracts: $NODE_ADDRESS${NC}"
-if [ -n "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
-    echo -e "${GREEN}Base Sepolia LINK token address saved to $INSTALLER_DIR/.contracts: $LINK_TOKEN_ADDRESS_BASE_SEPOLIA${NC}"
+if [ -n "$LINK_TOKEN_ADDRESS" ]; then
+    echo -e "${GREEN}$NETWORK_NAME LINK token address saved to $INSTALLER_DIR/.contracts: $LINK_TOKEN_ADDRESS${NC}"
 fi
 
 # Update External Adapter .env file with the real operator address
@@ -395,8 +395,8 @@ echo -e "${BLUE}Authorizing Chainlink node with ArbiterOperator contract...${NC}
 # For now, let's assume setAuthorizedSenders.js uses process.env.OPERATOR_ADDRESS and process.env.NODE_ADDRESS
 # We need to set OPERATOR_ADDRESS in the environment for the script
 # We are already in $OPERATOR_BUILD_DIR
-echo -e "${BLUE}Running Hardhat script to authorize node...${NC}"
-if env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia; then
+echo -e "${BLUE}Running Hardhat script to authorize node on $NETWORK_NAME...${NC}"
+if env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network $DEPLOYMENT_NETWORK; then
     echo -e "${GREEN}Chainlink node authorization script executed successfully.${NC}"
 else
     echo -e "${RED}Chainlink node authorization script failed.${NC}"
