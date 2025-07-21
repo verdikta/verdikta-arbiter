@@ -28,12 +28,22 @@ The Verdikta Arbiter Node supports the following operating systems:
 
 ### Hardware Requirements
 
-| Component | Minimum | Recommended | Notes |
-|-----------|---------|-------------|-------|
-| **CPU** | 2 cores | 4+ cores | Multi-core improves AI processing performance |
-| **RAM** | 6 GB | 8+ GB | Additional RAM helps with concurrent request processing |
-| **Storage** | 100 GB | 200+ GB | SSD recommended for better database performance |
-| **Network** | Stable internet | High-speed broadband | Required for blockchain and IPFS operations |
+| Component | Minimum | Recommended | Multi-Arbiter (5-10) | Notes |
+|-----------|---------|-------------|---------------------|-------|
+| **CPU** | 2 cores | 4+ cores | 6+ cores | Multi-core improves AI processing and multi-arbiter performance |
+| **RAM** | 8 GB | 12+ GB | 16+ GB | Additional RAM needed for multiple arbiter jobs and key management |
+| **Storage** | 200 GB | 300+ GB | 500+ GB | SSD recommended for better database performance with multiple arbiters |
+| **Network** | Stable internet | High-speed broadband | High-speed broadband | Required for blockchain, IPFS, and concurrent multi-arbiter operations |
+
+!!! tip "Multi-Arbiter Scaling"
+    
+    **Resource planning for multi-arbiter setups**:
+    
+    - **1-2 Arbiters**: Use minimum requirements
+    - **3-5 Arbiters**: Use recommended requirements  
+    - **6-10 Arbiters**: Use multi-arbiter requirements
+    
+    Each additional arbiter adds ~1GB RAM and ~20GB storage overhead.
 
 ### Software Dependencies
 
@@ -68,23 +78,25 @@ You'll need API keys from the following services:
 
 #### :simple-ethereum: Web3 Provider
 
-Choose one of the following providers for Base Sepolia network access:
+Choose one of the following providers for Base network access (both testnet and mainnet):
 
 === "Infura"
 
-    - **Service**: Base Sepolia RPC endpoint
+    - **Service**: Base Sepolia (testnet) and Base Mainnet RPC endpoints
     - **Sign up**: [Infura](https://infura.io/)
     - **Free tier**: Available with rate limits
+    - **Recommended**: Good for development and testing
 
 === "Alchemy"
 
-    - **Service**: Base Sepolia RPC endpoint  
+    - **Service**: Base Sepolia (testnet) and Base Mainnet RPC endpoints
     - **Sign up**: [Alchemy](https://alchemy.com/)
     - **Free tier**: Available with generous limits
+    - **Recommended**: Excellent for production deployments
 
 === "QuickNode"
 
-    - **Service**: Base Sepolia RPC endpoint
+    - **Service**: Base Sepolia (testnet) and Base Mainnet RPC endpoints
     - **Sign up**: [QuickNode](https://quicknode.com/)
     - **Free tier**: Limited endpoints available
 
@@ -105,26 +117,48 @@ For document storage and retrieval:
     - **Sign up**: [Infura](https://infura.io/)
     - **Free tier**: Available with rate limits
 
-### Testnet Funds
+### Network Funds
 
-You'll need testnet tokens for contract deployment and operations:
+You'll need tokens for contract deployment and operations. Choose your deployment network:
 
-#### Base Sepolia ETH
+#### Base Sepolia (Testnet) - Recommended for Testing
 
-- **Purpose**: Gas fees for contract deployment and transactions
-- **Amount needed**: ~0.1 ETH (covers deployment and initial operations)
+**Advantages**: Free tokens, risk-free learning environment, fast iterations
+
+**Requirements**:
+
+- **Base Sepolia ETH**: ~0.1 ETH for gas fees and contract deployment
+- **Base Sepolia LINK**: ~10 LINK tokens for oracle operations
 - **Faucets**:
-  - [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet)
-  - [Alchemy Faucet](https://sepoliafaucet.com/)
+  - [Base Sepolia ETH Faucet](https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet)
+  - [Chainlink LINK Faucet](https://faucets.chain.link/)
+  - [Alchemy Base Sepolia Faucet](https://sepoliafaucet.com/)
 
-#### Base Sepolia LINK
+!!! success "Free & Risk-Free"
+    Perfect for learning, development, and testing. No real money required.
 
-- **Purpose**: Oracle payment token
-- **Amount needed**: ~10 LINK tokens
-- **Faucet**: [Chainlink Faucet](https://faucets.chain.link/)
+#### Base Mainnet - Production Ready
 
-!!! warning "Testnet Only"
-    These are testnet tokens with no real value. Never use mainnet funds during testing.
+**Advantages**: Real network, actual value, production-ready
+
+**Requirements**:
+
+- **Base Mainnet ETH**: $50-100 USD worth for deployment and operations
+- **Base Mainnet LINK**: ~10 LINK tokens (~$50-150 depending on price)
+- **Purchase**: Buy ETH and LINK on exchanges, transfer to your deployment wallet
+
+**Cost Breakdown**:
+- Contract deployment: ~$5-15 in gas fees
+- Initial LINK funding: ~$50-150 for oracle operations  
+- Reserve funds: ~$30-50 for ongoing operations
+
+!!! warning "Production Deployment"
+    **Use only dedicated wallets with minimal funds**. Never use your main wallet for deployment.
+    
+    **Recommended approach**: 
+    1. Test thoroughly on Base Sepolia first
+    2. Start with 1-2 arbiters on mainnet
+    3. Scale up gradually as you gain confidence
 
 ## Pre-Installation Checklist
 
@@ -133,22 +167,36 @@ Before starting the installation, verify you have:
 ### :material-check-circle: System Preparation
 
 - [ ] Supported operating system (Ubuntu 20.04+, macOS 11+, or WSL2)
-- [ ] Minimum 6GB RAM and 100GB storage available
-- [ ] Stable internet connection
+- [ ] Adequate hardware resources (see table above for your planned arbiter count)
+- [ ] Stable internet connection with sufficient bandwidth
 - [ ] Administrative/sudo access for software installation
 
 ### :material-key: API Keys and Credentials
 
-- [ ] OpenAI API key with GPT-4 access
-- [ ] Anthropic API key for Claude access
-- [ ] Web3 provider API key (Infura/Alchemy/QuickNode)
+- [ ] OpenAI API key with GPT-4 access and funded account
+- [ ] Anthropic API key for Claude access (optional but recommended)
+- [ ] Web3 provider API key (Infura/Alchemy/QuickNode) supporting Base network
 - [ ] IPFS service credentials (Pinata/Infura IPFS)
 
-### :material-wallet: Blockchain Resources
+### :material-wallet: Network Selection & Blockchain Resources
 
-- [ ] Wallet private key with testnet funds
-- [ ] Base Sepolia ETH (~0.1 ETH minimum)
-- [ ] Base Sepolia LINK tokens (~10 LINK minimum)
+Choose one deployment option:
+
+#### For Testnet Deployment (Recommended First)
+- [ ] Wallet private key for a dedicated test wallet
+- [ ] Base Sepolia ETH (~0.1 ETH from faucets)
+- [ ] Base Sepolia LINK tokens (~10 LINK from faucets)
+
+#### For Mainnet Deployment (Production)
+- [ ] Wallet private key for a dedicated deployment wallet  
+- [ ] Base Mainnet ETH ($50-100 worth for deployment and operations)
+- [ ] Base Mainnet LINK (~10 LINK tokens, $50-150 depending on price)
+
+### :material-settings: Multi-Arbiter Planning
+
+- [ ] Decided on number of arbiters (1-10)
+- [ ] Understood resource scaling (each arbiter adds ~1GB RAM, ~20GB storage)
+- [ ] Planned for automatic key management (1 key per 2 arbiters)
 
 ### :material-file-document: Documentation Access
 

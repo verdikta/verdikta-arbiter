@@ -8,7 +8,7 @@ Get your Verdikta Arbiter Node up and running in under 30 minutes with our autom
     
     - **OpenAI API Key** (for AI arbitration)
     - **Infura API Key** (for blockchain access) 
-    - **Base Sepolia ETH** (~0.01 ETH for contract deployment)
+    - **Network Funds**: Base Sepolia ETH (free testnet) OR Base Mainnet ETH (~$50-100 for production)
     - **Test Wallet Private Key** (never use your main wallet!)
     
     📋 Full checklist: [Prerequisites Guide](prerequisites.md)
@@ -30,7 +30,7 @@ Start the installation process:
 bash bin/install.sh
 ```
 
-The installer will guide you through 7 main steps. Here's what to expect at each stage:
+The installer will guide you through **9 main steps**. Here's what to expect at each stage:
 
 ---
 
@@ -40,7 +40,7 @@ The installer first verifies your system meets all requirements.
 
 ### What It Checks
 - **Operating System**: Ubuntu 20.04+, macOS 11+, or WSL2
-- **Hardware**: Minimum 6GB RAM, 100GB storage
+- **Hardware**: Minimum 8GB RAM, 200GB storage
 - **Software**: Node.js, Docker, Git
 - **Network**: Internet connectivity
 
@@ -58,7 +58,7 @@ Would you like to install Docker? (y/n): y
 
 ## Step 4: Environment Setup
 
-Configure your installation directory and API keys.
+Configure your installation directory, network selection, and API keys.
 
 ### Installation Directory
 
@@ -67,6 +67,24 @@ Configure your installation directory and API keys.
 **What to do**: 
 - Press **Enter** for the default location
 - Or type a custom path like `/opt/verdikta-arbiter`
+
+### Network Selection ⭐ NEW FEATURE
+
+**Prompt**: `Select deployment network:`
+```
+1) Base Sepolia (Testnet) - Recommended for testing
+2) Base Mainnet - Production (requires real ETH)
+```
+
+**What to choose**:
+- **Option 1**: Base Sepolia testnet (free, recommended for learning)
+- **Option 2**: Base Mainnet (production, requires real ETH and LINK)
+
+!!! tip "Network Recommendations"
+    
+    **First time users**: Choose **Base Sepolia** (testnet) to learn the system without spending real money.
+    
+    **Production deployments**: Choose **Base Mainnet** only after testing thoroughly on testnet.
 
 ### API Keys Configuration
 
@@ -140,9 +158,9 @@ Configure your installation directory and API keys.
 
 1. **Create a NEW test wallet** in MetaMask (never use your main wallet)
 
-2. **Get Base Sepolia ETH**:
-   - Go to [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia)
-   - Connect your test wallet and request ETH
+2. **Get Network Funds**:
+   - **Base Sepolia**: Go to [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia) for free ETH
+   - **Base Mainnet**: Purchase ETH and transfer to your test wallet (~$50-100 recommended)
 
 3. **Export the private key**:
    - MetaMask → Account menu (3 dots) → **Account Details**
@@ -154,7 +172,8 @@ Configure your installation directory and API keys.
 
 !!! danger "Security Warning"
     - **Never use your main wallet with real funds**
-    - Only fund test wallet with Base Sepolia ETH
+    - For testnet: Only fund test wallet with Base Sepolia ETH
+    - For mainnet: Use a dedicated wallet with minimal funds for contract deployment
     - Private key should be exactly 64 characters without `0x`
 
 ---
@@ -229,15 +248,66 @@ The installer will:
 4. Save all contract addresses for later use
 
 If deployment fails, check:
-- Your test wallet has sufficient Base Sepolia ETH
+- Your test wallet has sufficient network funds (ETH)
 - Your private key is correctly formatted (64 chars, no `0x`)
 - Network connectivity is stable
 
 ---
 
-## Step 7: Node Configuration
+## Step 8: Multi-Arbiter Configuration ⭐ NEW FEATURE
 
-Set up bridges and jobs in the Chainlink node.
+Configure the number of arbiters for your node with automatic key management.
+
+### Arbiter Count Selection
+
+**Prompt**: `How many arbiters would you like to configure? (1-10)`
+
+**What to choose**:
+- **1 arbiter**: Simple setup, good for getting started
+- **2-4 arbiters**: Balanced load distribution
+- **5-10 arbiters**: Maximum throughput for high-demand scenarios
+
+!!! tip "Arbiter Recommendations"
+    
+    **First time setup**: Start with **1 arbiter** to understand the system
+    
+    **Production use**: Consider **2-4 arbiters** for optimal performance vs complexity
+    
+    **High volume**: Use **5-10 arbiters** if you expect heavy request volume
+
+### Automatic Key Management
+
+The installer automatically:
+
+1. **Calculates required keys**: Creates 1 key for every 2 arbiters
+   - 1-2 arbiters → 1 key
+   - 3-4 arbiters → 2 keys  
+   - 5-6 arbiters → 3 keys
+   - etc.
+
+2. **Generates keys**: Creates new Ethereum keys in your Chainlink node
+
+3. **Assigns jobs**: Maps arbiters to keys following the pattern:
+   - Arbiters 1-2 → Key 1
+   - Arbiters 3-4 → Key 2
+   - Arbiters 5-6 → Key 3
+
+4. **Authorizes keys**: All keys are automatically authorized with your operator contract
+
+**Sample Output**:
+```bash
+Creating jobs for 4 arbiters...
+✓ Job 1 created successfully with ID: 12345678-1234-1234-1234-123456789012
+✓ Job 2 created successfully with ID: 23456789-2345-2345-2345-234567890123
+✓ Job 3 created successfully with ID: 34567890-3456-3456-3456-345678901234
+✓ Job 4 created successfully with ID: 45678901-4567-4567-4567-456789012345
+```
+
+---
+
+## Step 9: Final Bridge Configuration
+
+Complete the External Adapter bridge setup for communication between Chainlink and your AI node.
 
 ### Host IP Configuration
 
@@ -248,44 +318,56 @@ Set up bridges and jobs in the Chainlink node.
 - **Remote access**: Enter your server's public IP or domain name
 - **Docker/container setup**: Use `host.docker.internal`
 
-### Manual Job Creation
+!!! success "Automated Job Creation"
+    
+    🎉 **Jobs are now created automatically!** The installer creates all arbiter jobs for you using the API. No more manual job creation required.
+    
+    - Bridge created automatically
+    - All arbiter jobs created via API
+    - Job IDs saved to configuration files
+    - Keys authorized with operator contract
 
-The installer will prepare a job specification file and guide you through manual creation:
+### Verification
 
-1. **Job file location**: The installer shows the path to the job spec file
+After bridge configuration, the installer will:
 
-2. **Copy the contents**: You'll need to copy the entire TOML specification
-
-3. **Create in Chainlink UI**:
-   - Go to [http://localhost:6688](http://localhost:6688)
-   - Navigate to **Jobs** → **New Job**
-   - Select **TOML** format
-   - Paste the job specification
-   - Click **Create Job**
-
-**Prompt**: `Have you created the job in the Chainlink UI? (y/n):`
-
-**What to do**: Type `y` after successfully creating the job
-
-**Prompt**: `Please enter the job ID from the UI:`
-
-**How to find it**: 
-
-1. After creating the job, the job details page shows the Job ID
-
-2. Copy the full UUID (format: `12345678-1234-1234-1234-123456789012`)
+1. **Create External Adapter bridge** automatically
+2. **Generate job specifications** for each arbiter
+3. **Create all jobs via API** without manual intervention
+4. **Update configuration files** with all job IDs and addresses
 
 ---
 
-## Step 8: Oracle Registration (Optional)
+## Installation Complete! 🎉
 
-Register your oracle with the Verdikta dispatcher to participate in the network.
+Upon successful completion, you'll see:
+
+```bash
+============================================================
+    MULTI-ARBITER CONFIGURATION COMPLETED SUCCESSFULLY     
+============================================================
+Configuration Summary:
+✓ Bridge created/updated: verdikta-ai
+✓ Arbiters configured: [Your selected number]
+✓ Jobs created: [Number of successful jobs]
+✓ Keys configured: [Number of keys]
+✓ Configuration files updated
+
+Access your services:
+- Chainlink Node UI: http://localhost:6688
+- External Adapter: http://[your-ip]:8080
+- AI Node: http://localhost:3000
+```
+
+## Optional: Oracle Registration
+
+The installer offers optional registration with the Verdikta dispatcher network.
 
 **Prompt**: `Register with dispatcher? (y/n):`
 
 **What to choose**:
-- **`y`**: Register to participate in live arbitration requests
-- **`n`**: Skip for local testing only
+- **`y`**: Register to participate in live arbitration requests from the network
+- **`n`**: Skip for local testing and development only
 
 If registering, you may be prompted for:
 - **Aggregator address**: Provided by the Verdikta team
@@ -293,9 +375,9 @@ If registering, you may be prompted for:
 
 ---
 
-## Step 9: Installation Complete!
+## Final Installation Summary
 
-Upon successful completion, you'll see:
+Upon successful completion, you'll see the final summary:
 
 ```bash
 ====================================================
@@ -337,36 +419,85 @@ curl http://localhost:3000/health
 }
 ```
 
-#### 3. Verify Chainlink Job
+#### 3. Verify Chainlink Jobs (Multi-Arbiter)
 
 1. Open [http://localhost:6688](http://localhost:6688)
 
 2. Log in with saved credentials
 
-3. Go to **Jobs** → Find your job → Verify it's **Active**
+3. Go to **Jobs** → Verify all your arbiter jobs are **Active**
+   - Look for jobs named "Verdikta AI Arbiter 1", "Verdikta AI Arbiter 2", etc.
+   - Each job should show as **Active** with unique job IDs
+
+4. Check **Key Management** → **EVM Chain Accounts**
+   - Verify all generated keys are present and funded
+   - Each key should have the correct `fromAddress` assignments
 
 ## Important Files & Credentials
 
 After installation, save these critical files:
 
-### Contract Information
+### Multi-Arbiter Contract Information
 **File**: `~/verdikta-arbiter-node/installer/.contracts`
 ```ini
-OPERATOR_ADDRESS=0x1234...
+# Network Configuration
+DEPLOYMENT_NETWORK=base_sepolia
+NETWORK_TYPE=testnet
+
+# Contract Information  
+OPERATOR_ADDR=0x1234...
 NODE_ADDRESS=0x5678...
-JOB_ID=abcd1234-5678-90ef-ghij-klmnopqrstuv
+
+# Multi-Arbiter Job IDs
+ARBITER_COUNT=4
+JOB_ID_1=abcd1234-5678-90ef-ghij-klmnopqrstuv
+JOB_ID_2=bcde2345-6789-01fe-ghij-klmnopqrstuv
+JOB_ID_3=cdef3456-7890-12fe-ghij-klmnopqrstuv
+JOB_ID_4=defa4567-8901-23fe-ghij-klmnopqrstuv
+
+# Key Management
+KEYS_LIST=key1:0xabc...|key2:0xdef...
 ```
 
 ### Chainlink Credentials  
-**File**: `~/verdikta-arbiter-node/chainlink-node/info.txt`
+**File Network-Specific Location**: 
+- **Testnet**: `~/.chainlink-testnet/.api`
+- **Mainnet**: `~/.chainlink-mainnet/.api`
+
+**Contents**:
 ```
-Chainlink UI: http://localhost:6688
-Email: admin@verdikta.local
-Password: [your-generated-password]
+admin@verdikta.local
+[your-generated-password]
 ```
 
-!!! warning "Backup These Files"
-    Keep these files secure and backed up - they contain critical information for node operation.
+### Multi-Arbiter Job Information
+**File**: `~/verdikta-arbiter-node/chainlink-node/info/multi_arbiter_job_info.txt`
+```
+Verdikta Multi-Arbiter Chainlink Node Configuration
+==================================================
+
+Configuration Date: [timestamp]
+Number of Arbiters: 4
+Jobs Created: 4
+
+Bridge Configuration:
+- Bridge Name: verdikta-ai
+- Bridge URL: http://[your-ip]:8080/evaluate
+
+Job Details:
+Arbiter 1: Job ID abc..., Key 0x123...
+Arbiter 2: Job ID def..., Key 0x123...
+Arbiter 3: Job ID ghi..., Key 0x456...
+Arbiter 4: Job ID jkl..., Key 0x456...
+```
+
+!!! warning "Critical Backup Files"
+    **Essential files to backup**:
+    - `~/verdikta-arbiter-node/installer/.contracts` (contract addresses and job IDs)
+    - `~/.chainlink-[network]/.api` (login credentials)
+    - `~/verdikta-arbiter-node/chainlink-node/info/` (job information)
+    
+    **Without these files**, you'll lose access to your node and be unable to manage your arbiters.
 
 ## Management Commands
 
@@ -398,6 +529,42 @@ cd ~/verdikta-arbiter-node
     sudo kill -9 [PID]
     ```
 
+=== "Multi-Arbiter Job Creation Failed"
+    ```bash
+    # Check key management logs
+    cd ~/verdikta-arbiter-node
+    docker logs chainlink
+    
+    # Retry specific job creation
+    cd verdikta-arbiter/installer
+    bash bin/configure-node.sh
+    ```
+
+=== "Network Directory Issues"
+    ```bash
+    # Check which network directory exists
+    ls ~/.chainlink-*
+    
+    # For testnet issues
+    ls ~/.chainlink-testnet/
+    
+    # For mainnet issues  
+    ls ~/.chainlink-mainnet/
+    ```
+
+=== "Insufficient Network Funds"
+    **Base Sepolia (Testnet)**:
+    ```bash
+    # Get free testnet ETH
+    # Visit: https://www.alchemy.com/faucets/base-sepolia
+    ```
+    
+    **Base Mainnet**:
+    ```bash
+    # Check your wallet balance
+    # Ensure you have ~$50-100 worth of ETH for setup
+    ```
+
 === "Docker Not Running"
     ```bash
     # Start Docker service
@@ -407,45 +574,66 @@ cd ~/verdikta-arbiter-node
     bash bin/install.sh
     ```
 
-=== "Insufficient Base Sepolia ETH"
+=== "Insufficient Network Funds - Legacy"
+    **Base Sepolia (Testnet)**:
     1. Visit [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia)
-
     2. Request more test ETH for your wallet
-
     3. Retry contract deployment: `bash bin/deploy-contracts.sh`
+    
+    **Base Mainnet**:
+    1. Add more ETH to your deployment wallet
+    2. Ensure you have sufficient funds for gas fees
+    3. Monitor transaction fees during deployment
 
-=== "API Key Errors"
-    ```bash
-    # Reconfigure API keys
-    bash bin/setup-environment.sh
-    ```
+---
 
-=== "Job Creation Failed"
-    1. Check Chainlink node is running: `docker ps | grep chainlink`
+## Next Steps & Scaling
 
-    2. Verify UI access: [http://localhost:6688](http://localhost:6688)
+### 🎯 Getting Started (New Users)
 
-    3. Retry job configuration: `bash bin/configure-node.sh`
+1. **Test with 1 Arbiter**: Understand the system basics
+2. **Submit Test Requests**: Use the testing tools to validate functionality  
+3. **Monitor Performance**: Check logs and metrics
+4. **Scale Gradually**: Add more arbiters as you gain confidence
+
+### 📈 Scaling Your Multi-Arbiter Setup
+
+#### Performance Considerations
+- **1-2 Arbiters**: Good for learning and light workloads
+- **3-5 Arbiters**: Balanced performance for medium workloads
+- **6-10 Arbiters**: High-performance setup for heavy workloads
+
+#### Resource Planning
+- **RAM**: Add ~1GB per additional arbiter
+- **Storage**: Add ~20GB per additional arbiter
+- **CPU**: Monitor utilization and scale accordingly
+
+### 🛠️ Advanced Configuration
+
+For advanced configurations, see:
+- [Multi-Arbiter Design Guide](MULTI_ARBITER_DESIGN.md)
+- [Management & Monitoring](management/index.md)
+- [Troubleshooting Guide](troubleshooting/index.md)
+
+### 💡 Production Deployment Tips
+
+1. **Start on Testnet**: Always test thoroughly before mainnet
+2. **Monitor Costs**: Track gas fees and optimize if needed
+3. **Backup Critical Files**: Regularly backup configuration and keys
+4. **Monitor Health**: Set up alerts for service availability
+5. **Scale Incrementally**: Add arbiters gradually based on demand
+
+---
+
+🎉 **Congratulations!** Your Verdikta Multi-Arbiter Node is now running. Welcome to the future of decentralized dispute resolution!
 
 ### Getting Help
 
 - **Complete Troubleshooting**: [Troubleshooting Guide](troubleshooting/index.md)
-- **GitHub Issues**: Report problems or ask questions
+- **GitHub Issues**: Report problems or ask questions  
 - **Discord**: Get community help in real-time
 - **Email**: Contact support for urgent issues
 
-## Next Steps
-
-With your node running successfully:
-
-1. **🔍 Monitor Operations**: [Status Monitoring Guide](management/status.md)
-
-2. **🔧 Learn Management**: [Service Management Guide](management/index.md)  
-
-3. **🌐 Join Network**: [Oracle Registration Guide](oracle/dispatcher.md)
-
-4. **💾 Setup Backups**: [Backup Procedures](maintenance/backup.md)
-
 !!! success "You're Ready!"
     
-    Your Verdikta Arbiter Node is operational and ready to process arbitration requests. Welcome to the decentralized dispute resolution network! 
+    Your Verdikta Multi-Arbiter Node is operational and ready to process arbitration requests. Welcome to the decentralized dispute resolution network! 
