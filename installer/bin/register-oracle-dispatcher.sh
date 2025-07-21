@@ -36,7 +36,7 @@ else
 fi
 
 # Verify required variables
-if [ -z "$OPERATOR_ADDRESS" ]; then
+if [ -z "$OPERATOR_ADDR" ]; then
     echo -e "${RED}Error: Operator contract address not found in .contracts file${NC}"
     exit 1
 fi
@@ -51,10 +51,51 @@ if [ -z "$NODE_ADDRESS" ]; then
     exit 1
 fi
 
-if [ -z "$JOB_ID_NO_HYPHENS" ]; then
-    echo -e "${RED}Error: Job ID (no hyphens) not found in .contracts file${NC}"
+# Handle multi-arbiter job IDs
+echo -e "${BLUE}Detecting job configuration...${NC}"
+
+# Check if we have multiple arbiters
+ARBITER_COUNT=${ARBITER_COUNT:-1}
+JOB_IDS_AVAILABLE=()
+
+# Collect all available job IDs
+for ((i=1; i<=10; i++)); do
+    eval job_var="JOB_ID_${i}_NO_HYPHENS"
+    if [ -n "${!job_var}" ]; then
+        # Clean the job ID to extract only the UUID part
+        clean_job_id=$(echo "${!job_var}" | grep -oE '[a-f0-9]{32}' | head -1)
+        if [ -n "$clean_job_id" ]; then
+            JOB_IDS_AVAILABLE+=("$clean_job_id")
+            echo -e "${GREEN}Found job $i: $clean_job_id${NC}"
+        fi
+    fi
+done
+
+# If no multi-arbiter job IDs found, try the legacy single job ID
+if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ] && [ -n "$JOB_ID_NO_HYPHENS" ]; then
+    clean_job_id=$(echo "$JOB_ID_NO_HYPHENS" | grep -oE '[a-f0-9]{32}' | head -1)
+    if [ -n "$clean_job_id" ]; then
+        JOB_IDS_AVAILABLE+=("$clean_job_id")
+        echo -e "${GREEN}Found legacy job: $clean_job_id${NC}"
+    fi
+fi
+
+# Validate we have at least one job ID
+if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ]; then
+    echo -e "${RED}Error: No valid job IDs found in .contracts file${NC}"
+    echo -e "${RED}Please ensure jobs have been created successfully${NC}"
     exit 1
 fi
+
+# Use ALL job IDs for registration (space-separated)
+REGISTRATION_JOB_IDS=$(printf '"%s" ' "${JOB_IDS_AVAILABLE[@]}")
+REGISTRATION_JOB_IDS=${REGISTRATION_JOB_IDS% }  # Remove trailing space
+echo -e "${BLUE}Using ALL job IDs for registration:${NC}"
+for i in "${!JOB_IDS_AVAILABLE[@]}"; do
+    echo -e "${GREEN}  Job $((i+1)): ${JOB_IDS_AVAILABLE[i]}${NC}"
+done
+echo -e "${BLUE}Registration job IDs (space-separated): $REGISTRATION_JOB_IDS${NC}"
+echo -e "${BLUE}Total jobs to register: ${#JOB_IDS_AVAILABLE[@]}${NC}"
 
 # Create .env file in arbiter-operator directory
 echo -e "${BLUE}Creating .env file in arbiter-operator directory...${NC}"
@@ -133,13 +174,13 @@ if ! [[ "$CLASSES_ID" =~ ^[0-9]+$ ]]; then
     exit 1
 fi
 
-# Construct the registration command
+# Construct the registration command with ALL job IDs
 REGISTER_CMD="HARDHAT_NETWORK=base_sepolia node scripts/register-oracle-cl.js \
   --aggregator $AGGREGATOR_ADDRESS \
   --link $LINK_TOKEN_ADDRESS_BASE_SEPOLIA \
-  --oracle $OPERATOR_ADDRESS \
+  --oracle $OPERATOR_ADDR \
   --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
-  --jobids \"$JOB_ID_NO_HYPHENS\" \
+  --jobids $REGISTRATION_JOB_IDS \
   --classes $CLASSES_ID"
 
 # Display the command and ask for confirmation

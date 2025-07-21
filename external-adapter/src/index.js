@@ -1,9 +1,17 @@
+// Load environment variables from .env file
+require('dotenv').config();
+
 const express = require('express');
 const bodyParser = require('body-parser');
 const evaluateHandler = require('./handlers/evaluateHandler');
 
 const app = express();
 app.use(bodyParser.json());
+
+// Create HTTP server to set connection limits
+const server = require('http').createServer(app);
+server.maxConnections = 1000;        // Handle more concurrent connections
+server.timeout = 30000;              // 30 second timeout
 
 // Update the route handler
 app.post('/evaluate', async (req, res) => {
@@ -32,6 +40,6 @@ app.use((err, req, res, next) => {
 });
 
 const port = process.env.PORT || 8080;
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`Server is running on port ${port}`);
 }); 

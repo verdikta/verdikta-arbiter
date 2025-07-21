@@ -5,16 +5,17 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "jest",
+    "test": "jest --forceExit",
     "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage",
+    "test:coverage": "jest --coverage --forceExit",
     "lint": "eslint src/**/*.js",
-    "test:integration": "jest --detectOpenHandles --testPathPattern=integration"
+    "test:integration": "jest --detectOpenHandles --testPathPattern=integration --forceExit"
   },
   "dependencies": {
     "@helia/http": "^1.0.11",
     "@verdikta/common": "^1.0.1",
     "adm-zip": "^0.5.10",
+    "async-mutex": "^0.5.0",
     "axios": "^1.6.7",
     "body-parser": "^1.20.2",
     "dotenv": "^16.4.1",

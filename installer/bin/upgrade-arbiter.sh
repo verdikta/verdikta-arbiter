@@ -303,6 +303,37 @@ upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local .env l
 echo -e "${BLUE}Upgrading External Adapter...${NC}"
 upgrade_component "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External Adapter" ".env .env.local logs node_modules *.pid"
 
+# Update External Adapter with current operator address if available
+echo -e "${BLUE}Checking for operator address configuration...${NC}"
+if [ -f "$TARGET_DIR/installer/.contracts" ]; then
+    source "$TARGET_DIR/installer/.contracts"
+    # Check for new naming convention first, then fallback to old
+    CURRENT_OPERATOR_ADDR=""
+    if [ -n "$OPERATOR_ADDR" ]; then
+        CURRENT_OPERATOR_ADDR="$OPERATOR_ADDR"
+    elif [ -n "$OPERATOR_ADDRESS" ]; then
+        CURRENT_OPERATOR_ADDR="$OPERATOR_ADDRESS"
+    fi
+    
+    if [ -n "$CURRENT_OPERATOR_ADDR" ]; then
+        echo -e "${BLUE}Updating External Adapter with operator address: $CURRENT_OPERATOR_ADDR${NC}"
+        if [ -f "$TARGET_EXTERNAL_ADAPTER/.env" ]; then
+            if grep -q "^OPERATOR_ADDR=" "$TARGET_EXTERNAL_ADAPTER/.env"; then
+                sed -i.bak "s|^OPERATOR_ADDR=.*|OPERATOR_ADDR=$CURRENT_OPERATOR_ADDR|" "$TARGET_EXTERNAL_ADAPTER/.env"
+            else
+                echo "OPERATOR_ADDR=$CURRENT_OPERATOR_ADDR" >> "$TARGET_EXTERNAL_ADAPTER/.env"
+            fi
+            echo -e "${GREEN}External Adapter updated with operator address.${NC}"
+        else
+            echo -e "${YELLOW}Warning: External Adapter .env file not found.${NC}"
+        fi
+    else
+        echo -e "${YELLOW}No operator address found in contracts file.${NC}"
+    fi
+else
+    echo -e "${YELLOW}No contracts file found - operator address not available.${NC}"
+fi
+
 # Upgrade Chainlink Node configurations
 echo -e "${BLUE}Upgrading Chainlink Node configurations...${NC}"
 upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs .api"
@@ -396,6 +427,74 @@ if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
     echo -e "${BLUE}Installing External Adapter dependencies...${NC}"
     cd "$TARGET_EXTERNAL_ADAPTER" && npm install
     echo -e "${GREEN}External Adapter dependencies installed.${NC}"
+fi
+
+# Check current arbiter configuration
+echo -e "${BLUE}Checking current arbiter configuration...${NC}"
+if [ -f "$TARGET_DIR/installer/.contracts" ]; then
+    source "$TARGET_DIR/installer/.contracts"
+    if [ -n "$ARBITER_COUNT" ]; then
+        echo -e "${GREEN}Current configuration: $ARBITER_COUNT arbiter(s)${NC}"
+        
+        # Show job IDs if they exist
+        JOB_COUNT=0
+        for ((i=1; i<=10; i++)); do
+            eval job_var="JOB_ID_$i"
+            if [ -n "${!job_var}" ]; then
+                JOB_COUNT=$((JOB_COUNT + 1))
+            fi
+        done
+        
+        if [ $JOB_COUNT -gt 0 ]; then
+            echo -e "${GREEN}Found $JOB_COUNT existing job(s) in configuration${NC}"
+        fi
+    else
+        echo -e "${YELLOW}No multi-arbiter configuration found (legacy single-arbiter setup)${NC}"
+    fi
+else
+    echo -e "${YELLOW}No contracts configuration file found${NC}"
+fi
+
+# Optional job/key reconfiguration
+echo -e "${BLUE}Job and Key Configuration Options:${NC}"
+echo "During upgrades, your existing jobs and keys are preserved by default."
+echo "However, you can optionally reconfigure them if needed (e.g., to add more arbiters)."
+echo
+if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This will recreate all jobs)"; then
+    echo -e "${BLUE}Starting job and key reconfiguration...${NC}"
+    
+    # Check if configure-node.sh exists in the source
+    if [ -f "$SCRIPT_DIR/configure-node.sh" ]; then
+        echo -e "${YELLOW}WARNING: This will recreate all your Chainlink jobs and may create additional keys.${NC}"
+        echo -e "${YELLOW}Your existing jobs will remain in the Chainlink node but may become orphaned.${NC}"
+        echo -e "${YELLOW}You should manually delete old jobs from the Chainlink UI after reconfiguration.${NC}"
+        echo
+        
+        if ask_yes_no "Are you sure you want to proceed with job reconfiguration?"; then
+            # Run the multi-arbiter configuration
+            cd "$SCRIPT_DIR"
+            bash "$SCRIPT_DIR/configure-node.sh"
+            
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}Job and key reconfiguration completed successfully!${NC}"
+                
+                # Update the target installation with the new contracts file
+                if [ -f "$INSTALLER_DIR/.contracts" ]; then
+                    cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
+                    echo -e "${GREEN}Updated contracts configuration copied to target installation${NC}"
+                fi
+            else
+                echo -e "${RED}Job and key reconfiguration failed!${NC}"
+                echo -e "${YELLOW}Your existing configuration has been preserved.${NC}"
+            fi
+        else
+            echo -e "${BLUE}Job reconfiguration cancelled. Existing configuration preserved.${NC}"
+        fi
+    else
+        echo -e "${RED}Error: configure-node.sh not found. Job reconfiguration not available.${NC}"
+    fi
+else
+    echo -e "${BLUE}Keeping existing job and key configuration.${NC}"
 fi
 
 # Check and optionally regenerate Chainlink configuration
@@ -565,6 +664,38 @@ else
     else
         echo -e "${BLUE}You can start the arbiter later using: $TARGET_DIR/start-arbiter.sh${NC}"
     fi
+fi
+
+# Show final configuration summary
+echo -e "${BLUE}Final Configuration Summary:${NC}"
+if [ -f "$TARGET_DIR/installer/.contracts" ]; then
+    source "$TARGET_DIR/installer/.contracts"
+    if [ -n "$ARBITER_COUNT" ]; then
+        echo -e "${GREEN}✓ Multi-Arbiter Configuration: $ARBITER_COUNT arbiter(s)${NC}"
+        
+        # Count actual jobs configured
+        CONFIGURED_JOBS=0
+        for ((i=1; i<=10; i++)); do
+            eval job_var="JOB_ID_$i"
+            if [ -n "${!job_var}" ]; then
+                CONFIGURED_JOBS=$((CONFIGURED_JOBS + 1))
+            fi
+        done
+        
+        if [ $CONFIGURED_JOBS -gt 0 ]; then
+            echo -e "${GREEN}✓ Chainlink Jobs: $CONFIGURED_JOBS job(s) configured${NC}"
+        fi
+        
+        # Show key information if available
+        if [ -n "$KEY_COUNT" ]; then
+            echo -e "${GREEN}✓ Ethereum Keys: $KEY_COUNT key(s) configured${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ Legacy single-arbiter configuration detected${NC}"
+        echo -e "${YELLOW}  Consider reconfiguring for multi-arbiter support${NC}"
+    fi
+else
+    echo -e "${RED}⚠ No configuration file found${NC}"
 fi
 
 # Success!

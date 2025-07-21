@@ -7,6 +7,18 @@ const crypto = require('crypto');
 const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
 
+const OPERATOR_ADDRESS = (() => {
+  const addr = process.env.OPERATOR_ADDR;
+  if (!addr) {
+    throw new Error('OPERATOR_ADDR missing – set it in .env or the shell');
+  }
+  try {
+    return ethers.utils.getAddress(addr);    // checksums & validates
+  } catch (e) {
+    throw new Error(`OPERATOR_ADDR is not a valid address: ${addr}`);
+  }
+})();
+
 // Initialize verdikta-common client with configuration
 const verdikta = createClient({
   ipfs: {
@@ -15,7 +27,7 @@ const verdikta = createClient({
     timeout: 30000
   },
   logging: {
-    level: process.env.LOG_LEVEL || 'info',
+    level: process.env.LOG_LEVEL || 'warn',
     console: true,
     file: false
   }
@@ -26,13 +38,15 @@ const { validateRequest, requestSchema } = validator;
 
 const evaluateHandler = async (request) => {
   const { id, data } = request;
+  const t0 = Date.now();   
+  let   runTag;            
   let tempDir; // Declare here so we can reuse if provider error happens
 
   try {
-    console.log('Validating request:', request);
+    // console.log('Validating request:', request);
     await validateRequest(request);
 
-    console.log('Processing CID string:', data.cid);
+    // console.log('Processing CID string:', data.cid);
 
     // Process mode if present
     let modeString;
@@ -44,7 +58,8 @@ const evaluateHandler = async (request) => {
       modeString = "0";
       cidString = data.cid;
     }
-    console.log('Mode:', modeString);
+    logger.debug(`Mode: ${modeString}`);
+    runTag = `[EA ${id} ${modeString}]`;
 
     // if mode 2, there is nothing to calculate--just reveal previously calculated information
     // (input in this case is 2:<hash>)
@@ -67,14 +82,15 @@ const evaluateHandler = async (request) => {
     
     // Split multiple CIDs if present
     const cidArray = cidString.split(',').map(cid => cid.trim()).filter(cid => cid);
-    logger.info(`Processing ${cidArray.length} CIDs:`, cidArray);
+    // logger.info(`Processing ${cidArray.length} CIDs:`, cidArray);
+    logger.debug(`CID list count = ${cidArray.length}`);
     
     // Create temp directory
     tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verdikta-extract-'));
     
     // For backward compatibility, if only one CID, process as before
     if (cidArray.length === 1) {
-      logger.info('Processing single CID using standard flow');
+      logger.info('Single-CID flow start');
       const archiveData = await archiveService.getArchive(cidArray[0]);
       const extractedPath = await archiveService.extractArchive(
         archiveData,
@@ -101,12 +117,13 @@ const evaluateHandler = async (request) => {
         queryObject.prompt += `\n\nAddendum: \n${parsedManifest.addendum}: ${sanitizedAddendum}`;
       }
       
-      logger.info('Evaluating with AI service...');
+      logger.debug('AI service call…');
       const result = await aiClient.evaluate(queryObject, extractedPath);
       
       if (modeString === '1') {
         const hashDecimal = await handleMode1Commit(result);
         await archiveService.cleanup(tempDir);
+        logger.info(`${runTag} RETURN commit (empty CID)`);
         return {
           jobRunID: id,
           status: 'success',
@@ -125,7 +142,7 @@ const evaluateHandler = async (request) => {
     } 
     // Multi-CID processing
     else {
-      logger.info('Processing multiple CIDs');
+      logger.info(`Multi-CID (${cidArray.length}) start`);
       // Process all CIDs
       const extractedPaths = await archiveService.processMultipleCIDs(cidArray, tempDir);
       
@@ -213,6 +230,7 @@ const evaluateHandler = async (request) => {
       if (modeString === '1') {
         const hashDecimal = await handleMode1Commit(result);
         await archiveService.cleanup(tempDir);
+        logger.info(`${runTag} RETURN commit (empty CID)`);
         return {
           jobRunID: id,
           status: 'success',
@@ -237,6 +255,7 @@ const evaluateHandler = async (request) => {
       const providerMessage = error.message.replace('PROVIDER_ERROR:', '').trim();
       const justificationCID = await handleProviderError(providerMessage, tempDir);
       
+      logger.info(`${runTag} RETURN provider-error cid=${justificationCID}`);
       return {
         jobRunID: id,
         statusCode: 200,
@@ -244,7 +263,7 @@ const evaluateHandler = async (request) => {
           aggregatedScore: [0],
           justification: '',
           error: providerMessage,
-          justificationCID
+          justificationCID: justificationCID
         }
       };
     }
@@ -317,19 +336,22 @@ async function handleMode1Commit(result) {
 
   // ---------- 4. low 128 bits of SHA-256 -------------------------------
   const encodedData = ethers.utils.defaultAbiCoder.encode(
-    ['uint256[]', 'uint256'],
-    [scores, saltUint]
+    ['address', 'uint256[]', 'uint256'],
+    [OPERATOR_ADDRESS, scores, saltUint]
   );
   const hashBytes = ethers.utils.sha256(encodedData);
   // Take the first 16 bytes - high 128 bits (32 hex chars after 0x prefix)
   const hashHex = hashBytes.substring(2, 34);
 
   // ---------- 5. persist & hand the decimal commitment back ------------
+  logger.info(`EA commit → hash=${hashHex}`);
+
   await commitStore.save(hashHex, {
     result,
     salt: saltHex,                      // remember: 20 lowercase hex chars
     created: new Date().toISOString()
   });
+  logger.info(`COMMIT saved hash=${hashHex} salt=${saltHex}`);
 
   return BigInt('0x' + hashHex).toString();        // decimal for likelihoods[0]
 }
@@ -347,9 +369,16 @@ async function handleMode2Reveal(hashHex, tempDir) {
     hashHex = hashHex;
   }
   hashHex = hashHex.toLowerCase().padStart(32, '0'); // 128 bit, zero-padded
+  logger.info(`REVEAL lookup hash=${hashHex}`);
   const commit = await commitStore.get(hashHex);
 
-  if (!commit) throw new Error(`Unknown commit hash: ${hashHex}`);
+  // if (!commit) throw new Error(`Unknown commit hash: ${hashHex}`);
+  if (!commit) {
+    logger.warn(`REVEAL miss`);
+    throw new Error(`Unknown commit hash: ${hashHex}`);
+  } else {
+    logger.info(`REVEAL hit salt=${commit.salt}`);
+  }
 
   // Create a temporary directory if one wasn't provided
   if (!tempDir) {
@@ -360,6 +389,7 @@ async function handleMode2Reveal(hashHex, tempDir) {
     // Build and publish justification *now*
     const justificationCID = await createAndUploadJustification(commit.result, tempDir);
     await commitStore.del(hashHex);  // burn after reveal
+    logger.debug(`COMMIT deleted hash=${hashHex}`);
 
     // Append salt after a colon
     const cidWithSalt = `${justificationCID}:${commit.salt}`;
@@ -456,13 +486,17 @@ async function handleProviderError(providerMessage, tempDir) {
  * @returns {Object} The success response object
  */
 function createSuccessResponse(id, result, justificationCID) {
+  logger.info(`RETURN`, {
+    aggScore: (result.scores || []).map(s => s.score),
+    cid: justificationCID
+  });
   return {
     jobRunID: id,
     statusCode: 200,
     status: 'success',
     data: { 
       aggregatedScore: (result.scores || [{score: 0}]).map(s => s.score),
-      justificationCID
+      justificationCID: justificationCID
     },
   };
 }

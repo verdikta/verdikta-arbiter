@@ -17,6 +17,39 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Default values
+SKIP_TESTS=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --skip-tests|-s)
+            SKIP_TESTS=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo "Options:"
+            echo "  --skip-tests, -s    Skip unit tests during installation"
+            echo "  --help, -h          Show this help message"
+            echo ""
+            echo "Environment Variables:"
+            echo "  SKIP_TESTS=true     Skip unit tests (alternative to --skip-tests)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Check environment variable as well
+if [ "$SKIP_TESTS" = "true" ]; then
+    SKIP_TESTS=true
+fi
+
 # Function to check if a command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -45,6 +78,9 @@ load_nvm() {
 }
 
 echo -e "${BLUE}Installing AI Node for Verdikta Validator Node...${NC}"
+if [ "$SKIP_TESTS" = "true" ]; then
+    echo -e "${YELLOW}Note: Unit tests will be skipped during installation${NC}"
+fi
 
 # Load NVM and Node.js
 load_nvm || exit 1
@@ -115,12 +151,16 @@ npm install next@14.2.5
 # Then install remaining dependencies
 npm install
 
-# Run test suite
-echo -e "${BLUE}Running AI Node test suite...${NC}"
-npm test || {
-    echo -e "${YELLOW}WARNING: Some tests failed. This might be due to missing API keys or services not running.${NC}"
-    echo -e "${YELLOW}You can still proceed with the installation, but some features might not work correctly.${NC}"
-}
+# Run test suite (optional)
+if [ "$SKIP_TESTS" = "true" ]; then
+    echo -e "${YELLOW}Skipping AI Node test suite (--skip-tests flag provided)${NC}"
+else
+    echo -e "${BLUE}Running AI Node test suite...${NC}"
+    npm test || {
+        echo -e "${YELLOW}WARNING: Some tests failed. This might be due to missing API keys or services not running.${NC}"
+        echo -e "${YELLOW}You can still proceed with the installation, but some features might not work correctly.${NC}"
+    }
+fi
 
 # Configure environment
 echo -e "${BLUE}Configuring AI Node environment...${NC}"

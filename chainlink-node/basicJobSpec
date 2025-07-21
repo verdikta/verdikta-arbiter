@@ -1,7 +1,8 @@
 type = "directrequest"
 schemaVersion = 1
-name = "Verdikta AI Evaluation"
-contractAddress = "0xD67D6508D4E5611cd6a463Dd0969Fa153Be91101"
+name = "{JOB_NAME}"
+fromAddress = "{FROM_ADDRESS}"
+contractAddress = "{CONTRACT_ADDRESS}"
 maxTaskDuration = "0s"
 evmChainID = "84532"
 observationSource = """
@@ -19,21 +20,21 @@ observationSource = """
     
 
 parse_scores [type="jsonparse" path="data,aggregatedScore" data="$(fetch)"]
-parse_cid    [type="jsonparse" path="data,justificationCID" data="$(fetch)"]
+parse_cid    [type="jsonparse" path="data,justificationCid" data="$(fetch)"]
 encode_data  [type="ethabiencode" 
             abi="(bytes32 requestId, uint256[] value, string cid)" 
             data="{ \\"requestId\\": $(decode_log.requestId), \\"value\\": $(parse_scores), \\"cid\\": $(parse_cid) }"]
 
     encode_tx    [type="ethabiencode" \
-             abi="fulfillOracleRequest3(bytes32 requestId, uint256 payment, address callbackAddress, bytes4 callbackFunctionId, uint256 expiration, bytes data)" \
+             abi="fulfillOracleRequestV(bytes32 requestId, uint256 payment, address callbackAddress, bytes4 callbackFunctionId, uint256 expiration, bytes data)" \
              data="{\\"requestId\\": $(decode_log.requestId), \\"payment\\": $(decode_log.payment), \\"callbackAddress\\": $(decode_log.callbackAddr), \\"callbackFunctionId\\": $(decode_log.callbackFunctionId), \\"expiration\\": $(decode_log.cancelExpiration), \\"data\\": $(encode_data)}"]
 
 
 
     submit_tx [type="ethtx" 
-          to="0xD67D6508D4E5611cd6a463Dd0969Fa153Be91101" 
+          to="{CONTRACT_ADDRESS}" 
           data="$(encode_tx)" 
-          gasLimit="1500000"
+          gasLimit="2500000"
           minConfirmations="2"
           gasPriceWei="10000000000"
           evmChainID="84532"]

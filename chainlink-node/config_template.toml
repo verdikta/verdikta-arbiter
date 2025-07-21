@@ -12,7 +12,7 @@ HTTPSPort=0
 ChainID=84532
 Enabled=true
 FinalityDepth=5
-MinContractPayment=0
+MinContractPayment="0"
 
 [EVM.GasEstimator]
 Mode = "FeeHistory"
@@ -34,6 +34,8 @@ SyncThreshold = 10
 [EVM.Transactions]
 ReaperInterval = "30m"              # Less frequent cleanup
 ReaperThreshold = "168h"            # Keep txns longer before cleanup
+MaxInFlight = 32
+MaxQueued = 64
 
 [[EVM.Nodes]]
 Name="Base-Sepolia"

@@ -158,9 +158,22 @@ else
     echo -e "${GREEN}PostgreSQL container is already connected to the network.${NC}"
 fi
 
+# Store container information for later use
+echo -e "${BLUE}Storing container information...${NC}"
+mkdir -p "$INSTALL_DIR/docker"
+cat > "$INSTALL_DIR/docker/container-info.txt" << EOL
+# Container Information
+# Generated on $(date)
+
+POSTGRES_CONTAINER_ID=$(docker ps -q --filter "name=cl-postgres")
+POSTGRES_CONTAINER_NAME="cl-postgres"
+CHAINLINK_CONTAINER_NAME="chainlink"
+
+# Note: Chainlink container ID will be available after setup-chainlink.sh runs
+EOL
+
 # Create Docker Compose file
 echo -e "${BLUE}Creating Docker Compose file...${NC}"
-mkdir -p "$INSTALL_DIR/docker"
 cat > "$INSTALL_DIR/docker/docker-compose.yml" << EOL
 version: '3.8'
 

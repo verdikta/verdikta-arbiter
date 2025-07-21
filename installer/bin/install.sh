@@ -18,12 +18,72 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Default values
+SKIP_TESTS=false
+INSTALL_FLAGS=""
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --skip-tests|-s)
+            SKIP_TESTS=true
+            INSTALL_FLAGS="$INSTALL_FLAGS --skip-tests"
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo "Main installation script for Verdikta Arbiter Node"
+            echo ""
+            echo "Options:"
+            echo "  --skip-tests, -s    Skip unit tests during installation"
+            echo "  --help, -h          Show this help message"
+            echo ""
+            echo "Environment Variables:"
+            echo "  SKIP_TESTS=true     Skip unit tests (alternative to --skip-tests)"
+            echo ""
+            echo "This script orchestrates the complete installation process including:"
+            echo "  1. Prerequisites check"
+            echo "  2. Environment setup"
+            echo "  3. AI Node installation"
+            echo "  4. External Adapter installation"
+            echo "  5. Docker and PostgreSQL setup"
+            echo "  6. Chainlink Node setup"
+            echo "  7. Smart Contract deployment"
+            echo "  8. Node Jobs and Bridges configuration"
+            echo "  9. Oracle registration (optional)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Check environment variable as well
+if [ "$SKIP_TESTS" = "true" ]; then
+    SKIP_TESTS=true
+    INSTALL_FLAGS="$INSTALL_FLAGS --skip-tests"
+fi
+
 # Banner
 echo -e "${BLUE}"
 echo "===================================================="
 echo "  Verdikta Arbiter Node Installation"
 echo "===================================================="
 echo -e "${NC}"
+
+if [ "$SKIP_TESTS" = "true" ]; then
+    echo -e "${YELLOW}Note: Unit tests will be skipped during installation${NC}"
+    echo ""
+fi
+
+# Clean up any existing contract information for fresh install
+if [ -f "$INSTALLER_DIR/.contracts" ]; then
+    echo -e "${BLUE}Removing existing contract information for fresh installation...${NC}"
+    rm -f "$INSTALLER_DIR/.contracts"
+fi
 
 # Function to check if a command exists
 command_exists() {
@@ -80,7 +140,7 @@ if [ ! -f "$SCRIPT_DIR/install-ai-node.sh" ]; then
     exit 1
 fi
 
-bash "$SCRIPT_DIR/install-ai-node.sh"
+bash "$SCRIPT_DIR/install-ai-node.sh" $INSTALL_FLAGS
 if [ $? -ne 0 ]; then
     echo -e "${RED}AI Node installation failed. Please check the logs for details.${NC}"
     exit 1
@@ -94,7 +154,7 @@ if [ ! -f "$SCRIPT_DIR/install-adapter.sh" ]; then
     exit 1
 fi
 
-bash "$SCRIPT_DIR/install-adapter.sh"
+bash "$SCRIPT_DIR/install-adapter.sh" $INSTALL_FLAGS
 if [ $? -ne 0 ]; then
     echo -e "${RED}External Adapter installation failed. Please check the logs for details.${NC}"
     exit 1
@@ -128,6 +188,10 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 echo -e "${GREEN}Chainlink Node setup completed.${NC}"
+
+# Brief delay to ensure Chainlink node is fully operational before contract deployment
+echo -e "${BLUE}Allowing Chainlink node to fully initialize...${NC}"
+sleep 5
 
 # Deploy Smart Contracts
 echo -e "${YELLOW}[7/9]${NC} Deploying Smart Contracts..."

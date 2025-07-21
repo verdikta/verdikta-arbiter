@@ -155,9 +155,9 @@ fi
 echo -e "${BLUE}Verifying Smart Contracts...${NC}"
 if [ -f "$INSTALLER_DIR/.contracts" ]; then
     source "$INSTALLER_DIR/.contracts"
-    if [ -n "$OPERATOR_ADDRESS" ] && [ -n "$NODE_ADDRESS" ] && [ -n "$JOB_ID" ] && [ -n "$JOB_ID_NO_HYPHENS" ]; then
+    if [ -n "$OPERATOR_ADDR" ] && [ -n "$NODE_ADDRESS" ] && [ -n "$JOB_ID" ] && [ -n "$JOB_ID_NO_HYPHENS" ]; then
         echo -e "${GREEN}✓ Contract information found${NC}"
-        echo -e "${GREEN}  Operator Contract: $OPERATOR_ADDRESS${NC}"
+        echo -e "${GREEN}  Operator Contract: $OPERATOR_ADDR${NC}"
         echo -e "${GREEN}  Node Address: $NODE_ADDRESS${NC}"
         echo -e "${GREEN}  Job ID: $JOB_ID${NC}"
         echo -e "${GREEN}  Job ID (no hyphens): $JOB_ID_NO_HYPHENS${NC}"

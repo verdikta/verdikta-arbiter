@@ -1,77 +1,78 @@
+#!/usr/bin/env node
 // SPDX-License-Identifier: MIT
 //
-// Set the Chainlink node addresses that are allowed to call fulfillOracleRequest
+// Adds Chainlink node wallets to ArbiterOperator.setAuthorizedSenders
 //
-// ──────────────── USAGE ─────────────────────────────────────────────────────────
-// NODES=<comma-separated EOA addresses> \          # REQUIRED
-// OPERATOR=<operatorAddr> \                        # optional (auto-detects if omitted)
-// npx hardhat run scripts/setAuthorizedSenders.js --network <networkName>
+// NODES   – comma-separated list (required unless --nodes flag)
+// OPERATOR – operator address (optional; auto-detected if omitted)
 //
 // Example:
-// NODES=0xA2944d1Dd73DB724d9bA31a80Ea240B5dF922498 \
+// NODES=0xNodeWallet \
 // npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia
-// ────────────────────────────────────────────────────────────────────────────────
+//
 
 const hre   = require("hardhat");
 const fs    = require("fs");
 const path  = require("path");
+const yargs = require("yargs/yargs");
+const { hideBin } = require("yargs/helpers");
 
 async function main() {
-  /*── read env-vars ───────────────────────────────────────────────────────────*/
-  const nodeAddrs = (process.env.NODES || "")
-    .split(",")
-    .map((a) => a.trim())
-    .filter((a) => a !== "");
+  /*──────── CLI + env────────*/
+  const argv = yargs(hideBin(process.argv))
+    .option("nodes",    { type: "string", describe: "comma-separated wallets" })
+    .option("operator", { type: "string", describe: "operator contract address" })
+    .argv;
+
+  const nodeAddrs = (argv.nodes || process.env.NODES || "")
+    .split(",").map((a) => a.trim()).filter(Boolean);
 
   if (nodeAddrs.length === 0) {
-    throw new Error(
-      "Set env-var NODES with a comma-separated list of Chainlink node addresses"
-    );
+    throw new Error("Provide node wallets via --nodes or NODES env-var.");
   }
 
-  let operatorAddr = process.env.OPERATOR; // optional override
-
-  /*── if OPERATOR not provided, read from deployments file ────────────────────*/
+  let operatorAddr = argv.operator || process.env.OPERATOR;
   if (!operatorAddr) {
     const depPath = path.join(
-      __dirname,
-      "..",
-      "deployments",
-      hre.network.name,
-      "ArbiterOperator.json"
+      __dirname, "..", "deployments", hre.network.name, "ArbiterOperator.json"
     );
-
     if (!fs.existsSync(depPath)) {
       throw new Error(
-        `Can't find ${depPath}. Provide OPERATOR env-var with the contract address.`
+        `Cannot find ${depPath}. Pass --operator <addr> or set OPERATOR env-var.`
       );
     }
-    operatorAddr = JSON.parse(fs.readFileSync(depPath, "utf8")).address;
+    operatorAddr = JSON.parse(fs.readFileSync(depPath)).address;
   }
 
-  /*── summary ─────────────────────────────────────────────────────────────────*/
-  console.log("Network:          ", hre.network.name);
-  console.log("Operator address: ", operatorAddr);
-  console.log("New sender(s):    ", nodeAddrs.join(", "));
+  /*──────── status ────────*/
+  console.log("Network         :", hre.network.name);
+  console.log("Operator        :", operatorAddr);
+  console.log("New node wallet(s):", nodeAddrs.join(", "));
 
-  /*── signer + contract ───────────────────────────────────────────────────────*/
-  const [deployer] = await hre.ethers.getSigners();
-  console.log("Tx signer:        ", deployer.address);
+  const [signer] = await hre.ethers.getSigners();
+  const abi = [
+    "function getAuthorizedSenders() view returns (address[])",
+    "function setAuthorizedSenders(address[])"
+  ];
+  const op = await hre.ethers.getContractAt(abi, operatorAddr, signer);
 
-  const Operator = await hre.ethers.getContractAt("ArbiterOperator", operatorAddr);
+  /*──────── merge instead of overwrite ───*/
+  const existing = (await op.getAuthorizedSenders()).map((a) => a.toLowerCase());
+  const merged   = Array.from(new Set([...existing, ...nodeAddrs.map((n) => n.toLowerCase())]));
 
-  /*── send tx ─────────────────────────────────────────────────────────────────*/
-  const tx = await Operator.setAuthorizedSenders(nodeAddrs);
-  console.log("Submitted tx:     ", tx.hash);
-  await tx.wait(2); // 2 confirmations
+  if (merged.length === existing.length) {
+    console.log("Nothing new to add – all nodes already authorised.");
+    return;
+  }
 
-  /*── verify ─────────────────────────────────────────────────────────────────*/
-  const updated = await Operator.getAuthorizedSenders();
-  console.log("Authorized senders now:", updated);
+  const tx = await op.setAuthorizedSenders(merged);
+  console.log("Tx submitted :", tx.hash);
+  await tx.wait(2);
+  console.log("✓ Authorised senders updated.");
 }
 
-main().catch((err) => {
-  console.error(err);
+main().catch((e) => {
+  console.error(e);
   process.exitCode = 1;
 });
 

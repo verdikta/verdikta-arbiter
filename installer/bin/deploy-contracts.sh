@@ -59,22 +59,143 @@ ask_yes_no() {
 # --- ALL COMPATIBLE-OPERATOR AND TRUFFLE LOGIC REMOVED FROM HERE --- 
 # --- UNTIL THE "Instructions for getting the Chainlink node address" SECTION ---
 
-# Instructions for getting the Chainlink node address (This section will be kept and used)
-echo
-echo -e "${YELLOW}You need your Chainlink node address for contract authorization:${NC}"
-echo -e "${YELLOW}1. Go to the Chainlink node UI at http://localhost:6688${NC}"
-echo -e "${YELLOW}2. Navigate to 'Key Management' -> 'EVM Chain Accounts'${NC}"
-echo -e "${YELLOW}3. Copy the Node Address (starts with 0x)${NC}"
+# Automatically get Chainlink node addresses using key management API
+echo -e "${BLUE}Automatically retrieving Chainlink node addresses...${NC}"
 
-# Ask for the Chainlink node address
-echo
-read -p "Enter the Chainlink node address (0x...): " NODE_ADDRESS
-
-# Validate the address
-if [[ ! "$NODE_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
-    echo -e "${RED}Error: Invalid Ethereum address format. Please enter a valid address starting with '0x'.${NC}"
+# Get API credentials from Chainlink configuration
+CHAINLINK_DIR="$HOME/.chainlink-sepolia"
+if [ ! -f "$CHAINLINK_DIR/.api" ]; then
+    echo -e "${RED}Error: Chainlink API credentials not found at $CHAINLINK_DIR/.api${NC}"
+    echo -e "${RED}Please ensure the Chainlink node is properly configured.${NC}"
     exit 1
 fi
+
+# Read API credentials
+API_EMAIL=$(head -n 1 "$CHAINLINK_DIR/.api")
+API_PASSWORD=$(tail -n 1 "$CHAINLINK_DIR/.api")
+
+if [ -z "$API_EMAIL" ] || [ -z "$API_PASSWORD" ]; then
+    echo -e "${RED}Error: Could not read API credentials from $CHAINLINK_DIR/.api${NC}"
+    exit 1
+fi
+
+echo -e "${BLUE}Found API credentials: $API_EMAIL${NC}"
+
+# Wait for Chainlink node to be fully ready for CLI operations
+echo -e "${BLUE}Waiting for Chainlink node to be fully ready for CLI operations...${NC}"
+for i in {1..30}; do
+    if curl -s http://localhost:6688/health > /dev/null; then
+        echo -e "${BLUE}Attempt $i: HTTP endpoint ready, testing CLI access...${NC}"
+        # Test if CLI is ready by attempting a simple operation
+        if timeout 10 bash -c "docker exec chainlink chainlink admin login --file /chainlink/.api > /dev/null 2>&1"; then
+            echo -e "${GREEN}Chainlink CLI is ready for operations${NC}"
+            break
+        else
+            echo -e "${YELLOW}CLI not ready yet, waiting 3 more seconds...${NC}"
+            sleep 3
+        fi
+    else
+        echo -e "${YELLOW}HTTP endpoint not ready, waiting 2 seconds...${NC}"
+        sleep 2
+    fi
+    
+    if [ $i -eq 30 ]; then
+        echo -e "${YELLOW}Warning: Chainlink CLI readiness check took longer than expected${NC}"
+        echo -e "${YELLOW}Proceeding anyway, but key retrieval might fail${NC}"
+    fi
+done
+
+# Use key management to get all existing keys
+echo -e "${BLUE}Retrieving all Chainlink keys for authorization...${NC}"
+
+# Check if key management script exists
+KEY_MGMT_SCRIPT="$SCRIPT_DIR/key-management.sh"
+if [ ! -f "$KEY_MGMT_SCRIPT" ]; then
+    echo -e "${RED}Error: Key management script not found at $KEY_MGMT_SCRIPT${NC}"
+    exit 1
+fi
+
+# Ensure expect is installed for key management
+echo -e "${BLUE}Ensuring key management dependencies are installed...${NC}"
+bash "$KEY_MGMT_SCRIPT" install_expect
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Error: Failed to install expect dependency${NC}"
+    exit 1
+fi
+
+# Get all existing keys with retry logic
+echo -e "${BLUE}Retrieving Chainlink keys (with retry logic)...${NC}"
+KEYS_LIST=""
+KEY_RETRIEVAL_SUCCESS=false
+
+for retry in {1..5}; do
+    echo -e "${BLUE}Key retrieval attempt $retry of 5...${NC}"
+    KEYS_LIST=$(bash "$KEY_MGMT_SCRIPT" list_existing_keys "$API_EMAIL" "$API_PASSWORD" 2>&1)
+    
+    if [ $? -eq 0 ] && [ -n "$KEYS_LIST" ] && [[ "$KEYS_LIST" =~ ^[0-9]+: ]]; then
+        echo -e "${GREEN}✓ Successfully retrieved keys on attempt $retry${NC}"
+        KEY_RETRIEVAL_SUCCESS=true
+        break
+    else
+        echo -e "${YELLOW}Attempt $retry failed. Keys response: ${KEYS_LIST:-'empty'}${NC}"
+        if [ $retry -lt 5 ]; then
+            echo -e "${BLUE}Waiting 5 seconds before retry...${NC}"
+            sleep 5
+        fi
+    fi
+done
+
+if [ "$KEY_RETRIEVAL_SUCCESS" != "true" ]; then
+    echo -e "${RED}Error: Failed to retrieve Chainlink keys after 5 attempts${NC}"
+    echo -e "${RED}Last response: $KEYS_LIST${NC}"
+    echo -e "${RED}Please ensure the Chainlink node is running and has keys configured${NC}"
+    exit 1
+fi
+
+# Extract all key addresses from the keys list (format: "1:address1|2:address2|...")
+NODE_ADDRESSES=""
+KEY_COUNT=0
+
+echo "$KEYS_LIST" | tr '|' '\n' | while IFS=':' read key_index key_address; do
+    if [ -n "$key_address" ]; then
+        if [ -z "$NODE_ADDRESSES" ]; then
+            NODE_ADDRESSES="$key_address"
+        else
+            NODE_ADDRESSES="$NODE_ADDRESSES,$key_address"
+        fi
+        KEY_COUNT=$((KEY_COUNT + 1))
+        echo -e "${GREEN}Found key $key_index: $key_address${NC}"
+    fi
+done
+
+# Use a different approach to extract addresses since the while loop runs in a subshell
+NODE_ADDRESSES=$(echo "$KEYS_LIST" | tr '|' '\n' | cut -d':' -f2 | tr '\n' ',' | sed 's/,$//')
+KEY_COUNT=$(echo "$KEYS_LIST" | tr '|' '\n' | wc -l)
+
+if [ -z "$NODE_ADDRESSES" ]; then
+    echo -e "${RED}Error: No valid node addresses found${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}Found $KEY_COUNT Chainlink keys to authorize:${NC}"
+echo -e "${GREEN}Addresses: $NODE_ADDRESSES${NC}"
+
+# Validate all addresses
+OLD_IFS="$IFS"
+IFS=','
+for addr in $NODE_ADDRESSES; do
+    if [[ ! "$addr" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
+        echo -e "${RED}Error: Invalid Ethereum address format: $addr${NC}"
+        exit 1
+    fi
+done
+IFS="$OLD_IFS"
+
+# For backward compatibility, also set NODE_ADDRESS to the first key
+FIRST_NODE_ADDRESS=$(echo "$NODE_ADDRESSES" | cut -d',' -f1)
+NODE_ADDRESS="$FIRST_NODE_ADDRESS"
+
+echo -e "${GREEN}Using first key as primary node address: $NODE_ADDRESS${NC}"
 
 # Check if private key exists in environment variables (This section will be kept and used)
 if [ -z "$PRIVATE_KEY" ]; then
@@ -129,6 +250,14 @@ cp "$ARBITER_OPERATOR_SRC_DIR/hardhat.config.js" "$OPERATOR_BUILD_DIR/"
 cp "$ARBITER_OPERATOR_SRC_DIR/package.json" "$OPERATOR_BUILD_DIR/"
 if [ -f "$ARBITER_OPERATOR_SRC_DIR/package-lock.json" ]; then
     cp "$ARBITER_OPERATOR_SRC_DIR/package-lock.json" "$OPERATOR_BUILD_DIR/"
+fi
+# Copy the lib directory (contains OperatorMod.sol and other dependencies)
+if [ -d "$ARBITER_OPERATOR_SRC_DIR/lib" ]; then
+    cp -r "$ARBITER_OPERATOR_SRC_DIR/lib" "$OPERATOR_BUILD_DIR/"
+    echo -e "${GREEN}Copied lib directory with OperatorMod.sol and dependencies${NC}"
+else
+    echo -e "${RED}Error: lib directory not found in $ARBITER_OPERATOR_SRC_DIR${NC}"
+    exit 1
 fi
 # Copy the Hardhat-deploy 'deploy' scripts folder if it exists (standard for hardhat-deploy)
 if [ -d "$ARBITER_OPERATOR_SRC_DIR/deploy" ]; then
@@ -208,8 +337,8 @@ fi
 echo -e "${GREEN}ArbiterOperator deployed at: $CONTRACT_ADDRESS${NC}"
 
 # Save the contract address (This will be updated after Hardhat deployment)
-# The OPERATOR_ADDRESS will be the $CONTRACT_ADDRESS from Hardhat
-echo "OPERATOR_ADDRESS=\"$CONTRACT_ADDRESS\"" > "$INSTALLER_DIR/.contracts"
+# Use OPERATOR_ADDR for consistency with the External Adapter code
+echo "OPERATOR_ADDR=\"$CONTRACT_ADDRESS\"" > "$INSTALLER_DIR/.contracts"
 echo "NODE_ADDRESS=\"$NODE_ADDRESS\"" >> "$INSTALLER_DIR/.contracts"
 if [ -n "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
     echo "LINK_TOKEN_ADDRESS_BASE_SEPOLIA=\"$LINK_TOKEN_ADDRESS_BASE_SEPOLIA\"" >> "$INSTALLER_DIR/.contracts"
@@ -218,6 +347,44 @@ echo -e "${GREEN}Operator contract address saved to $INSTALLER_DIR/.contracts: $
 echo -e "${GREEN}Node address saved to $INSTALLER_DIR/.contracts: $NODE_ADDRESS${NC}"
 if [ -n "$LINK_TOKEN_ADDRESS_BASE_SEPOLIA" ]; then
     echo -e "${GREEN}Base Sepolia LINK token address saved to $INSTALLER_DIR/.contracts: $LINK_TOKEN_ADDRESS_BASE_SEPOLIA${NC}"
+fi
+
+# Update External Adapter .env file with the real operator address
+echo -e "${BLUE}Updating External Adapter with deployed operator address...${NC}"
+
+# Update function to handle updating .env files
+update_external_adapter_env() {
+    local adapter_dir="$1"
+    local label="$2"
+    
+    if [ -f "$adapter_dir/.env" ]; then
+        # Update the OPERATOR_ADDR in the External Adapter's .env file
+        if grep -q "^OPERATOR_ADDR=" "$adapter_dir/.env"; then
+            sed -i.bak "s|^OPERATOR_ADDR=.*|OPERATOR_ADDR=$CONTRACT_ADDRESS|" "$adapter_dir/.env"
+        else
+            echo "OPERATOR_ADDR=$CONTRACT_ADDRESS" >> "$adapter_dir/.env"
+        fi
+        echo -e "${GREEN}$label updated with operator address: $CONTRACT_ADDRESS${NC}"
+        return 0
+    else
+        echo -e "${YELLOW}Warning: $label .env file not found at $adapter_dir/.env${NC}"
+        return 1
+    fi
+}
+
+# Update source External Adapter (for new installations)
+EXTERNAL_ADAPTER_DIR="$(dirname "$INSTALLER_DIR")/external-adapter"
+update_external_adapter_env "$EXTERNAL_ADAPTER_DIR" "Source External Adapter"
+
+# Update installed External Adapter (only if it already exists - for upgrades)
+if [ -n "$INSTALL_DIR" ]; then
+    INSTALLED_ADAPTER_DIR="$INSTALL_DIR/external-adapter"
+    if [ -f "$INSTALLED_ADAPTER_DIR/.env" ]; then
+        update_external_adapter_env "$INSTALLED_ADAPTER_DIR" "Installed External Adapter"
+    else
+        echo -e "${BLUE}Installed External Adapter not found yet at $INSTALLED_ADAPTER_DIR${NC}"
+        echo -e "${BLUE}The real OPERATOR_ADDR will be copied when installation completes.${NC}"
+    fi
 fi
 
 # --- NODE AUTHORIZATION LOGIC USING HARDHAT ---
@@ -229,7 +396,7 @@ echo -e "${BLUE}Authorizing Chainlink node with ArbiterOperator contract...${NC}
 # We need to set OPERATOR_ADDRESS in the environment for the script
 # We are already in $OPERATOR_BUILD_DIR
 echo -e "${BLUE}Running Hardhat script to authorize node...${NC}"
-if env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESS" npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia; then
+if env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia; then
     echo -e "${GREEN}Chainlink node authorization script executed successfully.${NC}"
 else
     echo -e "${RED}Chainlink node authorization script failed.${NC}"

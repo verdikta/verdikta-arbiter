@@ -1,51 +1,76 @@
 // services/commitStore.js
-const fs   = require('fs').promises;
-const path = require('path');
-const DB   = path.join(__dirname, '..', '.commit-db.json');
+const { Mutex } = require('async-mutex');
+const fs       = require('fs').promises;
+const path     = require('path');
 
-async function _load() {
-  try { return JSON.parse(await fs.readFile(DB, 'utf8')); }
-  catch { return {}; }          // first run – file doesn’t exist yet
-}
-async function _save(db) { await fs.writeFile(DB, JSON.stringify(db, null, 2)); }
+///////////////////////////////////////////////////////////////////////////////
+// Flip this to switch between modes
+//   true  → original behaviour (every call touches the JSON file)
+//   false → RAM-only (never touches the JSON file)
+//
+// No other differences.
+///////////////////////////////////////////////////////////////////////////////
+const USE_FILE = false;           // ← change to false for memory-only tests
 
-exports.save = async (hash, obj) => {
-  const db = await _load();
-  db[hash] = obj;
-  await _save(db);
-};
+const DB_FILE  = path.join(__dirname, '..', '.commit-db.json');
+const mtx      = new Mutex();
 
-exports.get  = async (hash) => (await _load())[hash];
-exports.del  = async (hash) => {
-  const db = await _load();
-  delete db[hash];
-  await _save(db);
-};
-
-/**
- * Purge commitments older than `maxAgeMs`.
- * 
- * @param {number} [maxAgeMs]  Retention window in milliseconds.
- *                             Default = 3 days.
- * @returns {number}           How many entries were deleted.
- *
- * Usage example:
- *   const removed = await commitStore.purgeStale();          // 3-day default
- *   const removed = await commitStore.purgeStale(7*24*60*60*1000); // 7 days
- */
-exports.purgeStale = async function purgeStale(maxAgeMs = 3 * 24 * 60 * 60 * 1000) {
-  const db      = await _load();
-  const cutoff  = Date.now() - maxAgeMs;
-  let   removed = 0;
-
-  for (const [hash, entry] of Object.entries(db)) {
-    const createdMs = Date.parse(entry.created);   // ISO-8601 → ms
-    if (!isNaN(createdMs) && createdMs < cutoff) {
-      delete db[hash];
-      removed++;
-    }
+/* ------------------------------------------------------------------------ */
+/* Helpers                                                                  */
+/* ------------------------------------------------------------------------ */
+async function _load () {
+  if (!USE_FILE) {                              // RAM-only
+    return _load._mem || (_load._mem = {});     // singleton in-process store
   }
 
+  // file mode – read & parse on **every call**, exactly like the original
+  try {
+    return JSON.parse(await fs.readFile(DB_FILE, 'utf8'));
+  } catch {
+    return {};                                 // first run or corrupt file
+  }
+}
+
+async function _save (obj) {
+  if (!USE_FILE) {               // RAM-only
+    _load._mem = obj;            // keep in-memory copy current
+    return;
+  }
+
+  // file mode – rewrite the whole file atomically (unchanged)
+  const tmp = DB_FILE + '.tmp';
+  await fs.writeFile(tmp, JSON.stringify(obj, null, 2));
+  await fs.rename(tmp, DB_FILE);
+}
+
+/* ------------------------------------------------------------------------ */
+/* Public API – unchanged                                                   */
+/* ------------------------------------------------------------------------ */
+exports.save = async (hash, entry) =>
+  mtx.runExclusive(async () => {
+    const db = await _load();
+    db[hash] = entry;
+    await _save(db);
+  });
+
+exports.get  = async (hash) =>
+  mtx.runExclusive(async () => (await _load())[hash]);
+
+exports.del  = async (hash) =>
+  mtx.runExclusive(async () => {
+    const db = await _load();
+    delete db[hash];
+    await _save(db);
+  });
+
+exports.purgeStale = async function purgeStale (maxAgeMs = 3 * 24 * 60 * 60 * 1000) {
+  const cutoff = Date.now() - maxAgeMs;
+  const db     = await _load();
+  let   removed = 0;
+
+  for (const [h, e] of Object.entries(db)) {
+    if (Date.parse(e.created) < cutoff) { delete db[h]; removed++; }
+  }
   if (removed) await _save(db);
   return removed;
 };

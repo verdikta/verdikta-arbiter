@@ -17,6 +17,39 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Default values
+SKIP_TESTS=false
+
+# Parse command line arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --skip-tests|-s)
+            SKIP_TESTS=true
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo "Options:"
+            echo "  --skip-tests, -s    Skip unit tests during installation"
+            echo "  --help, -h          Show this help message"
+            echo ""
+            echo "Environment Variables:"
+            echo "  SKIP_TESTS=true     Skip unit tests (alternative to --skip-tests)"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+
+# Check environment variable as well
+if [ "$SKIP_TESTS" = "true" ]; then
+    SKIP_TESTS=true
+fi
+
 # Function to check if a command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
@@ -45,6 +78,9 @@ load_nvm() {
 }
 
 echo -e "${BLUE}Installing External Adapter for Verdikta Validator Node...${NC}"
+if [ "$SKIP_TESTS" = "true" ]; then
+    echo -e "${YELLOW}Note: Unit tests will be skipped during installation${NC}"
+fi
 
 # Load NVM and Node.js
 load_nvm || exit 1
@@ -167,6 +203,35 @@ else
     echo "AI_NODE_URL=http://localhost:3000" >> "$ADAPTER_DIR/.env"
 fi
 
+# Set OPERATOR_ADDR (required for commit hash security)
+# Check if operator address is available from previous deployment
+OPERATOR_ADDR=""
+if [ -f "$INSTALLER_DIR/.contracts" ]; then
+    source "$INSTALLER_DIR/.contracts"
+    # Check for new naming convention first, then fallback to old
+    if [ -n "$OPERATOR_ADDR" ]; then
+        echo -e "${GREEN}Using existing operator address: $OPERATOR_ADDR${NC}"
+    elif [ -n "$OPERATOR_ADDRESS" ]; then
+        OPERATOR_ADDR="$OPERATOR_ADDRESS"
+        echo -e "${GREEN}Using existing operator address (legacy): $OPERATOR_ADDR${NC}"
+    fi
+fi
+
+# If no operator address available, set a placeholder for testing
+if [ -z "$OPERATOR_ADDR" ]; then
+    # Use a placeholder address for initial setup - will be updated after contract deployment
+    OPERATOR_ADDR="0x0000000000000000000000000000000000000000"
+    echo -e "${YELLOW}No operator address available yet. Using placeholder address.${NC}"
+    echo -e "${YELLOW}This will be updated after smart contract deployment.${NC}"
+fi
+
+# Set OPERATOR_ADDR in .env file
+if grep -q "^OPERATOR_ADDR=" "$ADAPTER_DIR/.env"; then
+    sed -i.bak "s|^OPERATOR_ADDR=.*|OPERATOR_ADDR=$OPERATOR_ADDR|" "$ADAPTER_DIR/.env"
+else
+    echo "OPERATOR_ADDR=$OPERATOR_ADDR" >> "$ADAPTER_DIR/.env"
+fi
+
 # Set IPFS configuration if Pinata API key is provided
 if [ -n "$PINATA_API_KEY" ]; then
     # Set IPFS_PINNING_SERVICE
@@ -188,14 +253,25 @@ else
     echo -e "${YELLOW}WARNING: Pinata JWT not provided. IPFS functionality will be limited.${NC}"
 fi
 
-# Test External Adapter
-echo -e "${BLUE}Testing External Adapter installation...${NC}"
+# Test External Adapter (optional)
+if [ "$SKIP_TESTS" = "true" ]; then
+    echo -e "${YELLOW}Skipping External Adapter test suite (--skip-tests flag provided)${NC}"
+else
+    echo -e "${BLUE}Testing External Adapter installation...${NC}"
 
-# Run a basic test with forceExit to handle any hanging async operations
-npm test -- --forceExit || {
-    echo -e "${YELLOW}WARNING: Some tests failed. This might be due to missing API keys or services not running.${NC}"
-    echo -e "${YELLOW}You can still proceed with the installation, but some features might not work correctly.${NC}"
-}
+    # Check if we're using a placeholder operator address
+    if [ "$OPERATOR_ADDR" = "0x0000000000000000000000000000000000000000" ]; then
+        echo -e "${YELLOW}Using placeholder operator address - some tests may fail but this is expected.${NC}"
+        echo -e "${YELLOW}Tests will be fully functional after smart contract deployment.${NC}"
+    fi
+
+    # Run a basic test with forceExit to handle any hanging async operations
+    npm test -- --forceExit || {
+        echo -e "${YELLOW}WARNING: Some tests failed. This might be due to missing API keys, services not running,${NC}"
+        echo -e "${YELLOW}or placeholder operator address. You can still proceed with the installation.${NC}"
+        echo -e "${YELLOW}Tests will be fully functional after smart contract deployment.${NC}"
+    }
+fi
 
 # Create a start script
 echo -e "${BLUE}Creating External Adapter service...${NC}"

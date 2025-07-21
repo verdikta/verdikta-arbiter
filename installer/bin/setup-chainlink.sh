@@ -202,6 +202,23 @@ for i in {1..30}; do
     sleep 2
 done
 
+# Store Chainlink container ID for later use
+echo -e "${BLUE}Storing Chainlink container information...${NC}"
+CHAINLINK_CONTAINER_ID=$(docker ps -q --filter "name=chainlink")
+if [ -n "$CHAINLINK_CONTAINER_ID" ]; then
+    # Update container info file if it exists
+    CONTAINER_INFO_FILE="$INSTALLER_DIR/../docker/container-info.txt"
+    if [ -f "$CONTAINER_INFO_FILE" ]; then
+        echo "CHAINLINK_CONTAINER_ID=$CHAINLINK_CONTAINER_ID" >> "$CONTAINER_INFO_FILE"
+    fi
+    
+    # Also save to chainlink-specific file
+    echo "CHAINLINK_CONTAINER_ID=$CHAINLINK_CONTAINER_ID" > "$CHAINLINK_DIR/container-id.txt"
+    echo -e "${GREEN}Chainlink container ID saved: $CHAINLINK_CONTAINER_ID${NC}"
+else
+    echo -e "${YELLOW}Warning: Could not determine Chainlink container ID${NC}"
+fi
+
 # Save Chainlink Node information
 echo -e "${BLUE}Saving Chainlink Node information...${NC}"
 INFO_DIR="$(dirname "$INSTALLER_DIR")/chainlink-node"
