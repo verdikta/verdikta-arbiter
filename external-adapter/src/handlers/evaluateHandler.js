@@ -65,8 +65,8 @@ const evaluateHandler = async (request) => {
     // (input in this case is 2:<hash>)
     if (modeString === '2') {
       const hashHex = cidString.toLowerCase();
-      const { result, justificationCID } = await handleMode2Reveal(hashHex, tempDir);
-      return createSuccessResponse(id, result, justificationCID);
+      const { result, justificationCid } = await handleMode2Reveal(hashHex, tempDir);
+      return createSuccessResponse(id, result, justificationCid);
     }
 
     // Process CID string with mode removed and parse addendum if present
@@ -130,15 +130,15 @@ const evaluateHandler = async (request) => {
           statusCode: 200,
           data: {                     // Vector contains only the commitment
             aggregatedScore: [hashDecimal],
-            justificationCID: ''      // posted later in Mode 2
+            justificationCid: ''      // posted later in Mode 2
           }
         };
       }
  
       // MODE 0 (standard flow) 
-      const justificationCID = await createAndUploadJustification(result, tempDir);
+      const justificationCid = await createAndUploadJustification(result, tempDir);
       await archiveService.cleanup(tempDir);
-      return createSuccessResponse(id, result, justificationCID);
+      return createSuccessResponse(id, result, justificationCid);
     } 
     // Multi-CID processing
     else {
@@ -237,15 +237,15 @@ const evaluateHandler = async (request) => {
           statusCode: 200,
           data: {                     // Vector contains only the commitment
             aggregatedScore: [hashDecimal],
-            justificationCID: ''      // posted later in Mode 2
+            justificationCid: ''      // posted later in Mode 2
           }
         };
       }
 
       // MODE 0 (standard flow)
-      const justificationCID = await createAndUploadJustification(result, tempDir);
+      const justificationCid = await createAndUploadJustification(result, tempDir);
       await archiveService.cleanup(tempDir);
-      return createSuccessResponse(id, result, justificationCID);
+      return createSuccessResponse(id, result, justificationCid);
     }
   } catch (error) {
     logger.error(`Error processing evaluation for jobRunID ${id}:`, error);
@@ -253,9 +253,9 @@ const evaluateHandler = async (request) => {
     // If we detect the custom PROVIDER_ERROR prefix, handle that differently
     if (error.message && error.message.startsWith('PROVIDER_ERROR:')) {
       const providerMessage = error.message.replace('PROVIDER_ERROR:', '').trim();
-      const justificationCID = await handleProviderError(providerMessage, tempDir);
+      const justificationCid = await handleProviderError(providerMessage, tempDir);
       
-      logger.info(`${runTag} RETURN provider-error cid=${justificationCID}`);
+      logger.info(`${runTag} RETURN provider-error cid=${justificationCid}`);
       return {
         jobRunID: id,
         statusCode: 200,
@@ -263,7 +263,7 @@ const evaluateHandler = async (request) => {
           aggregatedScore: [0],
           justification: '',
           error: providerMessage,
-          justificationCID: justificationCID
+          justificationCid
         }
       };
     }
@@ -387,12 +387,12 @@ async function handleMode2Reveal(hashHex, tempDir) {
 
   try {
     // Build and publish justification *now*
-    const justificationCID = await createAndUploadJustification(commit.result, tempDir);
+    const justificationCid = await createAndUploadJustification(commit.result, tempDir);
     await commitStore.del(hashHex);  // burn after reveal
     logger.debug(`COMMIT deleted hash=${hashHex}`);
 
     // Append salt after a colon
-    const cidWithSalt = `${justificationCID}:${commit.salt}`;
+    const cidWithSalt = `${justificationCid}:${commit.salt}`;
 
     // Schedule general cleanup
     setImmediate(() => {
@@ -400,7 +400,7 @@ async function handleMode2Reveal(hashHex, tempDir) {
         .catch(err => logger.error('purgeStale failed:', err));
     });
 
-    return { result: commit.result, justificationCID: cidWithSalt };
+    return { result: commit.result, justificationCid: cidWithSalt };
   } finally {
     // Make sure we clean up the tempDir we created
     if (tempDir) {
@@ -434,10 +434,10 @@ async function createAndUploadJustification(result, tempDir) {
 
   // Upload justification to IPFS
   logger.info('Uploading justification to IPFS...');
-  const justificationCID = await ipfsClient.uploadToIPFS(justificationPath);
-  logger.info(`Justification uploaded with CID: ${justificationCID}`);
+  const justificationCid = await ipfsClient.uploadToIPFS(justificationPath);
+  logger.info(`Justification uploaded with CID: ${justificationCid}`);
   
-  return justificationCID;
+  return justificationCid;
 }
 
 /**
@@ -447,7 +447,7 @@ async function createAndUploadJustification(result, tempDir) {
  * @returns {string|null} The CID of the uploaded error justification or null
  */
 async function handleProviderError(providerMessage, tempDir) {
-  let justificationCID = null;
+  let justificationCid = null;
   if (tempDir) {
     try {
       const justificationPath = path.join(tempDir, 'justification.json');
@@ -462,8 +462,8 @@ async function handleProviderError(providerMessage, tempDir) {
         JSON.stringify(justificationContent, null, 2)
       );
 
-      justificationCID = await ipfsClient.uploadToIPFS(justificationPath);
-      logger.info(`Error justification uploaded with CID: ${justificationCID}`);
+      justificationCid = await ipfsClient.uploadToIPFS(justificationPath);
+      logger.info(`Error justification uploaded with CID: ${justificationCid}`);
 
       // Clean up after uploading error justification
       logger.info('Cleaning up temporary directory after provider error...');
@@ -475,20 +475,20 @@ async function handleProviderError(providerMessage, tempDir) {
     }
   }
   
-  return justificationCID;
+  return justificationCid;
 }
 
 /**
  * Creates a success response object
  * @param {string} id - The job run ID
  * @param {Object} result - The AI evaluation result
- * @param {string} justificationCID - The CID of the uploaded justification
+ * @param {string} justificationCid - The CID of the uploaded justification
  * @returns {Object} The success response object
  */
-function createSuccessResponse(id, result, justificationCID) {
+function createSuccessResponse(id, result, justificationCid) {
   logger.info(`RETURN`, {
     aggScore: (result.scores || []).map(s => s.score),
-    cid: justificationCID
+    cid: justificationCid
   });
   return {
     jobRunID: id,
@@ -496,7 +496,7 @@ function createSuccessResponse(id, result, justificationCID) {
     status: 'success',
     data: { 
       aggregatedScore: (result.scores || [{score: 0}]).map(s => s.score),
-      justificationCID: justificationCID
+      justificationCid
     },
   };
 }
