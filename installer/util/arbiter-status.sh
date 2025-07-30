@@ -138,13 +138,34 @@ if check_port 8080; then
         echo -e "  Status: ${GREEN}Running${NC}"
         echo -e "  Health: ${GREEN}Healthy${NC}"
         echo -e "  Port:   8080"
+        
+        # Check log file
+        LATEST_LOG=$(ls -t "$ADAPTER_DIR/logs/"*.log 2>/dev/null | head -n1)
+        if [ -n "$LATEST_LOG" ]; then
+            echo -e "  Log:    $LATEST_LOG"
+        fi
     else
         echo -e "  Status: ${YELLOW}Running but not responding${NC}"
         echo -e "  Health: ${RED}Unhealthy${NC}"
         echo -e "  Port:   8080"
+        
+        # Check for recent errors in log
+        LATEST_LOG=$(ls -t "$ADAPTER_DIR/logs/"*.log 2>/dev/null | head -n1)
+        if [ -n "$LATEST_LOG" ]; then
+            echo -e "  Log:    $LATEST_LOG"
+            echo -e "  Recent Errors:"
+            tail -n 10 "$LATEST_LOG" | grep -i "error" | sed 's/^/    /'
+        fi
     fi
 else
     echo -e "  Status: ${RED}Not Running${NC}"
+    # Check for crash logs
+    LATEST_LOG=$(ls -t "$ADAPTER_DIR/logs/"*.log 2>/dev/null | head -n1)
+    if [ -n "$LATEST_LOG" ]; then
+        echo -e "  Last Log: $LATEST_LOG"
+        echo -e "  Last Error:"
+        tail -n 5 "$LATEST_LOG" | grep -i "error" | sed 's/^/    /'
+    fi
 fi
 echo ""
 
@@ -174,6 +195,10 @@ if check_port 6688; then
         if [ ! -z "$UPTIME" ]; then
             echo -e "  Uptime: $UPTIME"
         fi
+        
+        # Show docker log commands since chainlink runs in container
+        echo -e "  Logs:   Use 'docker logs -f chainlink' to view live logs"
+        echo -e "          Use 'docker logs --tail 20 chainlink' to view recent logs"
     else
         echo -e "  Status: ${YELLOW}Port active but container not found${NC}"
     fi
