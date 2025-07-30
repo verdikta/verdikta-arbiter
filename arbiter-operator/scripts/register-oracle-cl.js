@@ -91,7 +91,7 @@ const toBytes32 = (id) => {
     const classes    = argv.classes.map(Number);
 
     /* Fees & stake ---------------------------------------------------- */
-    const LINK_FEE   = ethers.parseUnits("0.05", 18);  // 0.05 LINK
+    const LINK_FEE   = ethers.parseUnits("0.006", 18);  // 0.05 LINK
     const VDKA_STAKE = ethers.parseUnits("100", 18);   // 100 wVDKA
     const totalStake = VDKA_STAKE * BigInt(argv.jobids.length);
 
