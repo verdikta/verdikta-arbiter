@@ -338,31 +338,7 @@ chmod +x "$ADAPTER_DIR/stop.sh"
 echo -e "${GREEN}External Adapter installation completed!${NC}"
 echo -e "${GREEN}✅ Verdikta Common Library (@verdikta/common) successfully integrated${NC}"
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
-
-# Ask user if they want to start the External Adapter now
-echo -e "${YELLOW}Would you like to start the External Adapter service now?${NC}"
-if ask_yes_no "Start External Adapter?"; then
-    echo -e "${BLUE}Starting External Adapter service...${NC}"
-    cd "$ADAPTER_DIR" && ./start.sh &
-    echo -e "${GREEN}External Adapter service started in the background.${NC}"
-else
-    echo -e "${BLUE}External Adapter service is not running. You can start it later with:${NC}"
-    echo -e "  cd $ADAPTER_DIR && ./start.sh"
-fi
+echo -e "${BLUE}Note: External Adapter will be available to start after the full installation completes.${NC}"
 
 echo -e "${BLUE}To start the External Adapter manually, run:${NC}"
 echo -e "  cd $ADAPTER_DIR && ./start.sh"

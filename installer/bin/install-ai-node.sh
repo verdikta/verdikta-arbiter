@@ -618,15 +618,7 @@ echo -e "${BLUE}Service scripts created:${NC}"
 echo -e "  To start: cd $AI_NODE_DIR && ./start.sh"
 echo -e "  To stop:  cd $AI_NODE_DIR && ./stop.sh"
 echo
-echo -e "${YELLOW}Would you like to start the AI Node service now?${NC}"
-if ask_yes_no "Start AI Node?"; then
-    echo -e "${BLUE}Starting AI Node service...${NC}"
-    cd "$AI_NODE_DIR" && ./start.sh &
-    echo -e "${GREEN}AI Node service started in the background.${NC}"
-else
-    echo -e "${BLUE}AI Node service is not running. You can start it later with:${NC}"
-    echo -e "  cd $AI_NODE_DIR && ./start.sh"
-fi
+echo -e "${BLUE}Note: AI Node will be available to start after the full installation completes.${NC}"
 
 # Remove the cleanup trap before exiting
 trap - EXIT

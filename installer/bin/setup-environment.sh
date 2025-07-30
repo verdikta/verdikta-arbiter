@@ -233,26 +233,114 @@ install_docker() {
     fi
 }
 
+# Function to ask for Yes/No question
+ask_yes_no() {
+    local prompt="$1"
+    local response
+    
+    while true; do
+        read -p "$prompt (y/n): " response
+        case "$response" in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) echo "Please answer yes (y) or no (n).";;
+        esac
+    done
+}
+
+# Function to check if a directory contains a Verdikta arbiter installation
+is_arbiter_installation() {
+    local dir="$1"
+    
+    # Check for management scripts that indicate an existing installation
+    if [ -f "$dir/start-arbiter.sh" ] && [ -f "$dir/stop-arbiter.sh" ] && [ -f "$dir/arbiter-status.sh" ]; then
+        return 0
+    fi
+    
+    # Check for component directories that indicate a partial installation
+    if [ -d "$dir/ai-node" ] || [ -d "$dir/external-adapter" ] || [ -d "$dir/chainlink-node" ] || [ -d "$dir/arbiter-operator" ]; then
+        return 0
+    fi
+    
+    return 1
+}
+
 # Function to create installation directory
 create_installation_directory() {
-    echo -e "${BLUE}Creating installation directory...${NC}"
+    echo -e "${BLUE}Setting up installation directory...${NC}"
     
-    # Default installation directory
-    INSTALL_DIR="$HOME/verdikta-arbiter-node"
-    
-    # Ask for custom installation directory
-    read -p "Installation directory [$INSTALL_DIR]: " custom_dir
-    if [ -n "$custom_dir" ]; then
-        INSTALL_DIR="$custom_dir"
-    fi
-    
-    # Create directory if it doesn't exist
-    if [ ! -d "$INSTALL_DIR" ]; then
-        mkdir -p "$INSTALL_DIR"
-        echo -e "${GREEN}Created installation directory: $INSTALL_DIR${NC}"
-    else
-        echo -e "${GREEN}Using existing installation directory: $INSTALL_DIR${NC}"
-    fi
+    while true; do
+        # Default installation directory
+        INSTALL_DIR="$HOME/verdikta-arbiter-node"
+        
+        # Ask for custom installation directory
+        read -p "Installation directory [$INSTALL_DIR]: " custom_dir
+        if [ -n "$custom_dir" ]; then
+            INSTALL_DIR="$custom_dir"
+        fi
+        
+        # Check if directory exists and what it contains
+        if [ -d "$INSTALL_DIR" ]; then
+            # Check if it's empty
+            if [ -z "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]; then
+                echo -e "${GREEN}Using empty directory: $INSTALL_DIR${NC}"
+                break
+            # Check if it contains an existing Verdikta arbiter installation
+            elif is_arbiter_installation "$INSTALL_DIR"; then
+                echo -e "${YELLOW}Directory $INSTALL_DIR contains an existing Verdikta arbiter installation.${NC}"
+                echo -e "${YELLOW}This appears to be a fresh installation rather than an upgrade.${NC}"
+                echo
+                echo "Options:"
+                echo "  1. Overwrite existing installation (all data will be lost)"
+                echo "  2. Choose a different directory"
+                echo "  3. Cancel installation"
+                echo
+                read -p "Please choose an option [1-3]: " choice
+                
+                case "$choice" in
+                    1)
+                        if ask_yes_no "Are you sure you want to delete $INSTALL_DIR and all its contents?"; then
+                            echo -e "${YELLOW}Removing existing installation...${NC}"
+                            rm -rf "$INSTALL_DIR"
+                            mkdir -p "$INSTALL_DIR"
+                            echo -e "${GREEN}Created fresh installation directory: $INSTALL_DIR${NC}"
+                            break
+                        else
+                            echo -e "${BLUE}Cancelled overwrite. Please choose a different option.${NC}"
+                            continue
+                        fi
+                        ;;
+                    2)
+                        echo -e "${BLUE}Please choose a different directory.${NC}"
+                        continue
+                        ;;
+                    3)
+                        echo -e "${YELLOW}Installation cancelled by user.${NC}"
+                        exit 0
+                        ;;
+                    *)
+                        echo -e "${RED}Invalid choice. Please enter 1, 2, or 3.${NC}"
+                        continue
+                        ;;
+                esac
+            # Directory exists but doesn't appear to be a Verdikta installation
+            else
+                echo -e "${YELLOW}Directory $INSTALL_DIR exists and contains other files.${NC}"
+                if ask_yes_no "Do you want to use this directory anyway? (Existing files may conflict with the installation)"; then
+                    echo -e "${GREEN}Using existing directory: $INSTALL_DIR${NC}"
+                    break
+                else
+                    echo -e "${BLUE}Please choose a different directory.${NC}"
+                    continue
+                fi
+            fi
+        else
+            # Directory doesn't exist, create it
+            mkdir -p "$INSTALL_DIR"
+            echo -e "${GREEN}Created installation directory: $INSTALL_DIR${NC}"
+            break
+        fi
+    done
     
     # Save installation directory to config file
     echo "INSTALL_DIR=\"$INSTALL_DIR\"" > "$INSTALLER_DIR/.env"

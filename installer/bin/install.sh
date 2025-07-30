@@ -90,20 +90,7 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no function is now defined in setup-environment.sh
 
 # Check prerequisites
 echo -e "${YELLOW}[1/9]${NC} Checking prerequisites..."
@@ -376,6 +363,42 @@ echo -e "  - To start all services: $INSTALL_DIR/start-arbiter.sh"
 echo -e "  - To stop all services:  $INSTALL_DIR/stop-arbiter.sh"
 echo -e "  - To check status:       $INSTALL_DIR/arbiter-status.sh"
 echo -e "  - To register with dispatcher: $INSTALL_DIR/register-oracle.sh"
+
+# Ask if user wants to start services now
+echo
+echo -e "${YELLOW}Installation complete! Your services are now ready to start.${NC}"
+echo -e "${BLUE}Would you like to start the Verdikta Arbiter services now?${NC}"
+echo -e "${BLUE}This will start the AI Node, External Adapter, and Chainlink Node.${NC}"
+echo
+
+# Source the ask_yes_no function from setup-environment.sh since it's not directly available here
+ask_yes_no() {
+    local prompt="$1"
+    local response
+    
+    while true; do
+        read -p "$prompt (y/n): " response
+        case "$response" in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) echo "Please answer yes (y) or no (n).";;
+        esac
+    done
+}
+
+if ask_yes_no "Start Verdikta Arbiter services?"; then
+    echo -e "${BLUE}Starting Verdikta Arbiter services...${NC}"
+    echo -e "${BLUE}This may take a few minutes for all services to fully initialize.${NC}"
+    
+    # Start all services using the management script from target directory
+    "$INSTALL_DIR/start-arbiter.sh"
+    
+    echo -e "${GREEN}Verdikta Arbiter services have been started!${NC}"
+    echo -e "${BLUE}You can check the status with: $INSTALL_DIR/arbiter-status.sh${NC}"
+else
+    echo -e "${BLUE}Services are not running. You can start them later with:${NC}"
+    echo -e "  $INSTALL_DIR/start-arbiter.sh"
+fi
 
 # Success!
 echo -e "${GREEN}"

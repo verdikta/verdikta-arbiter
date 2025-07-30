@@ -483,6 +483,42 @@ if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This
                     cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
                     echo -e "${GREEN}Updated contracts configuration copied to target installation${NC}"
                 fi
+                
+                # Authorize the newly configured keys
+                echo -e "\n${BLUE}Authorizing reconfigured keys on operator contract...${NC}"
+                if [ -f "$INSTALLER_DIR/.contracts" ]; then
+                    source "$INSTALLER_DIR/.contracts"
+                    
+                    # Build the list of all key addresses
+                    ALL_KEYS=""
+                    for i in $(seq 1 $KEY_COUNT); do
+                        KEY_VAR="KEY_${i}_ADDRESS"
+                        KEY_ADDR="${!KEY_VAR}"
+                        if [ -n "$KEY_ADDR" ]; then
+                            if [ -z "$ALL_KEYS" ]; then
+                                ALL_KEYS="$KEY_ADDR"
+                            else
+                                ALL_KEYS="$ALL_KEYS,$KEY_ADDR"
+                            fi
+                        fi
+                    done
+                    
+                    if [ -n "$ALL_KEYS" ] && [ -n "$OPERATOR_ADDR" ]; then
+                        echo -e "${BLUE}Authorizing keys: $ALL_KEYS${NC}"
+                        echo -e "${BLUE}On operator contract: $OPERATOR_ADDR${NC}"
+                        
+                        # Check if setAuthorizedSenders script exists
+                        OPERATOR_SCRIPT_DIR="$REPO_ROOT/arbiter-operator"
+                        if [ -f "$OPERATOR_SCRIPT_DIR/scripts/setAuthorizedSenders.js" ]; then
+                            cd "$OPERATOR_SCRIPT_DIR"
+                            if env NODES="$ALL_KEYS" OPERATOR="$OPERATOR_ADDR" HARDHAT_NETWORK=base_sepolia npx hardhat run scripts/setAuthorizedSenders.js; then
+                                echo -e "${GREEN}✓ All keys successfully authorized on operator contract${NC}"
+                            else
+                                echo -e "${YELLOW}⚠ Failed to authorize keys automatically after reconfiguration${NC}"
+                            fi
+                        fi
+                    fi
+                fi
             else
                 echo -e "${RED}Job and key reconfiguration failed!${NC}"
                 echo -e "${YELLOW}Your existing configuration has been preserved.${NC}"

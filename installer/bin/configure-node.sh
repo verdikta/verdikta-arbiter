@@ -702,6 +702,52 @@ fi
 
 echo -e "${BLUE}Multi-arbiter configuration process completed.${NC}"
 
+# Authorize all keys on the operator contract
+echo -e "\n${BLUE}Authorizing all Chainlink keys on the operator contract...${NC}"
+if [ -f "$INSTALLER_DIR/.contracts" ]; then
+    source "$INSTALLER_DIR/.contracts"
+    
+    # Build the list of all key addresses
+    ALL_KEYS=""
+    for i in $(seq 1 $KEY_COUNT); do
+        KEY_VAR="KEY_${i}_ADDRESS"
+        KEY_ADDR="${!KEY_VAR}"
+        if [ -n "$KEY_ADDR" ]; then
+            if [ -z "$ALL_KEYS" ]; then
+                ALL_KEYS="$KEY_ADDR"
+            else
+                ALL_KEYS="$ALL_KEYS,$KEY_ADDR"
+            fi
+        fi
+    done
+    
+    if [ -n "$ALL_KEYS" ] && [ -n "$OPERATOR_ADDR" ]; then
+        echo -e "${BLUE}Authorizing keys: $ALL_KEYS${NC}"
+        echo -e "${BLUE}On operator contract: $OPERATOR_ADDR${NC}"
+        
+        # Check if setAuthorizedSenders script exists
+        OPERATOR_SCRIPT_DIR="$INSTALLER_DIR/../arbiter-operator"
+        if [ -f "$OPERATOR_SCRIPT_DIR/scripts/setAuthorizedSenders.js" ]; then
+            cd "$OPERATOR_SCRIPT_DIR"
+            if env NODES="$ALL_KEYS" OPERATOR="$OPERATOR_ADDR" HARDHAT_NETWORK=base_sepolia npx hardhat run scripts/setAuthorizedSenders.js; then
+                echo -e "${GREEN}✓ All keys successfully authorized on operator contract${NC}"
+            else
+                echo -e "${YELLOW}⚠ Failed to authorize keys automatically. You may need to run this manually:${NC}"
+                echo -e "${YELLOW}  cd $OPERATOR_SCRIPT_DIR${NC}"
+                echo -e "${YELLOW}  NODES=\"$ALL_KEYS\" OPERATOR=\"$OPERATOR_ADDR\" HARDHAT_NETWORK=base_sepolia npx hardhat run scripts/setAuthorizedSenders.js${NC}"
+            fi
+        else
+            echo -e "${YELLOW}⚠ setAuthorizedSenders script not found. Please authorize keys manually:${NC}"
+            echo -e "${YELLOW}  Keys to authorize: $ALL_KEYS${NC}"
+            echo -e "${YELLOW}  Operator contract: $OPERATOR_ADDR${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ Missing key addresses or operator address. Skipping authorization.${NC}"
+    fi
+else
+    echo -e "${YELLOW}⚠ Contracts file not found. Skipping key authorization.${NC}"
+fi
+
 # Display final summary
 echo -e "\n${GREEN}============================================================${NC}"
 echo -e "${GREEN}    MULTI-ARBITER CONFIGURATION COMPLETED SUCCESSFULLY     ${NC}"
