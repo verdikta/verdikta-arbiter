@@ -197,8 +197,14 @@ fi
 # Return to the original directory
 cd "$INSTALL_DIR"
 
-# Define the correct wrapped VDKA address
-WRAPPED_VERDIKTA_ADDRESS="0x2F1d1aF9d5C25A48C29f56f57c7BAFFa7cc910a3"  # Correct wrapped VDKA address
+# Define network-specific wrapped VDKA addresses
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    WRAPPED_VERDIKTA_ADDRESS="0x1EA68D018a11236E07D5647175DAA8ca1C3D0280"  # Base Mainnet wrapped VDKA address
+else
+    WRAPPED_VERDIKTA_ADDRESS="0x94e3c031fe9403c80E14DaFbCb73f191C683c2B1"  # Base Sepolia wrapped VDKA address
+fi
+
+echo -e "${GREEN}Using wrapped VDKA address for $NETWORK_NAME: $WRAPPED_VERDIKTA_ADDRESS${NC}"
 
 # Ask if user wants to register with a new dispatcher
 echo -e "${YELLOW}Would you like to register the oracle with a dispatcher (aggregator) contract?${NC}"
