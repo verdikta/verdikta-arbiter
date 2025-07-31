@@ -232,6 +232,9 @@ else
     echo "OPERATOR_ADDR=$OPERATOR_ADDR" >> "$ADAPTER_DIR/.env"
 fi
 
+# Export OPERATOR_ADDR for the current shell session (required for external-adapter service)
+export OPERATOR_ADDR
+
 # Set IPFS configuration if Pinata API key is provided
 if [ -n "$PINATA_API_KEY" ]; then
     # Set IPFS_PINNING_SERVICE
@@ -265,12 +268,61 @@ else
         echo -e "${YELLOW}Tests will be fully functional after smart contract deployment.${NC}"
     fi
 
-    # Run a basic test with forceExit to handle any hanging async operations
+    # Define AI Node directory for testing
+    AI_NODE_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
+    AI_NODE_STARTED=false
+
+    # Check if AI Node is available and start it temporarily for testing
+    if [ -d "$AI_NODE_DIR" ] && [ -f "$AI_NODE_DIR/start.sh" ]; then
+        echo -e "${BLUE}Starting AI Node temporarily for testing...${NC}"
+        
+        # Check if AI Node is already running (check if port 3000 is in use)
+        if ! (command -v curl >/dev/null 2>&1 && curl -s http://localhost:3000 > /dev/null 2>&1) && ! (command -v nc >/dev/null 2>&1 && nc -z localhost 3000 > /dev/null 2>&1) && ! lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1; then
+            # Start AI Node in background
+            cd "$AI_NODE_DIR"
+            ./start.sh > /dev/null 2>&1
+            AI_NODE_STARTED=true
+            
+            # Wait for AI Node to be ready (max 30 seconds)
+            echo -e "${BLUE}Waiting for AI Node to be ready...${NC}"
+            for i in {1..30}; do
+                # Check if port 3000 is listening using multiple methods
+                if (command -v curl >/dev/null 2>&1 && curl -s http://localhost:3000 > /dev/null 2>&1) || \
+                   (command -v nc >/dev/null 2>&1 && nc -z localhost 3000 > /dev/null 2>&1) || \
+                   lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1; then
+                    echo -e "${GREEN}AI Node is ready for testing${NC}"
+                    break
+                fi
+                sleep 1
+                if [ $i -eq 30 ]; then
+                    echo -e "${YELLOW}AI Node startup timeout - continuing with tests anyway${NC}"
+                fi
+            done
+            
+            # Return to adapter directory
+            cd "$ADAPTER_DIR"
+        else
+            echo -e "${GREEN}AI Node is already running${NC}"
+        fi
+    else
+        echo -e "${YELLOW}AI Node not found or not properly installed - some tests may fail${NC}"
+    fi
+
+    # Run tests with forceExit to handle any hanging async operations
     npm test -- --forceExit || {
         echo -e "${YELLOW}WARNING: Some tests failed. This might be due to missing API keys, services not running,${NC}"
         echo -e "${YELLOW}or placeholder operator address. You can still proceed with the installation.${NC}"
         echo -e "${YELLOW}Tests will be fully functional after smart contract deployment.${NC}"
     }
+
+    # Stop AI Node if we started it temporarily
+    if [ "$AI_NODE_STARTED" = "true" ] && [ -f "$AI_NODE_DIR/stop.sh" ]; then
+        echo -e "${BLUE}Stopping AI Node after testing...${NC}"
+        cd "$AI_NODE_DIR"
+        ./stop.sh > /dev/null 2>&1
+        cd "$ADAPTER_DIR"
+        echo -e "${GREEN}AI Node stopped${NC}"
+    fi
 fi
 
 # Create a start script
