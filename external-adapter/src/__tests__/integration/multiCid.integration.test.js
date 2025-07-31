@@ -39,7 +39,7 @@ describe('Multi-CID Integration Tests', () => {
     expect(result).toHaveProperty('statusCode', 200);
     expect(result.data).toHaveProperty('aggregatedScore');
     expect(Array.isArray(result.data.aggregatedScore)).toBe(true);
-    expect(result.data).toHaveProperty('justificationCID');
+    expect(result.data).toHaveProperty('justificationCid');
   }, 120000); // Extend timeout to 2 minutes
 
   it('should process single CID for backward compatibility', async () => {
@@ -57,6 +57,6 @@ describe('Multi-CID Integration Tests', () => {
     expect(result).toHaveProperty('statusCode', 200);
     expect(result.data).toHaveProperty('aggregatedScore');
     expect(Array.isArray(result.data.aggregatedScore)).toBe(true);
-    expect(result.data).toHaveProperty('justificationCID');
+    expect(result.data).toHaveProperty('justificationCid');
   }, 60000); // Extend timeout to 1 minute
 }); 

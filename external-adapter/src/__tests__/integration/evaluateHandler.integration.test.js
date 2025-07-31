@@ -59,7 +59,7 @@ describe('EvaluateHandler Integration', () => {
     expect(result).toHaveProperty('statusCode', 200);
     expect(result.data).toHaveProperty('aggregatedScore');
     expect(Array.isArray(result.data.aggregatedScore)).toBe(true);
-    expect(result.data.justificationCID).toBeDefined();
+    expect(result.data.justificationCid).toBeDefined();
   }, 60000); // Increased timeout to 60s
 
   it('should process an archive with multiple images', async () => {
@@ -74,7 +74,7 @@ describe('EvaluateHandler Integration', () => {
     expect(result).toHaveProperty('statusCode', 200);
     expect(result.data).toHaveProperty('aggregatedScore');
     expect(Array.isArray(result.data.aggregatedScore)).toBe(true);
-    expect(result.data.justificationCID).toBeDefined();
+    expect(result.data.justificationCid).toBeDefined();
   }, 60000); // Increased timeout for multiple images
 
   it('should process an archive with IPFS file references', async () => {

@@ -56,12 +56,12 @@ describe('Adapter Integration', () => {
       status: 'success',
       data: {
         aggregatedScore: [0.8],
-        justificationCID: expect.any(String)
+        justificationCid: expect.any(String)
       }
     });
 
     // Verify the CID format if needed
-    expect(response.body.data.justificationCID).toMatch(/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/);
+    expect(response.body.data.justificationCid).toMatch(/^Qm[1-9A-HJ-NP-Za-km-z]{44}$/);
   });
 
   it('should handle invalid requests', async () => {
@@ -101,10 +101,10 @@ describe('Adapter Integration', () => {
       jobRunID: '1',
       status: 'errored',
       statusCode: 500,
-      error: 'Invalid request: must be a valid IPFS CID format',
+      error: 'Invalid request: contains invalid IPFS CID: invalid-cid',
       data: {
         aggregatedScore: [0],
-        error: 'Invalid request: must be a valid IPFS CID format',
+        error: 'Invalid request: contains invalid IPFS CID: invalid-cid',
         justification: ''
       }
     });

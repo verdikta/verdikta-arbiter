@@ -201,7 +201,7 @@ describe('evaluateHandler', () => {
       statusCode: 200,
       data: {
         aggregatedScore: mockScores.map(s => s.score),
-        justificationCID: 'QmTestJustification'
+        justificationCid: 'QmTestJustification'
       }
     });
 
@@ -262,7 +262,7 @@ describe('evaluateHandler', () => {
         aggregatedScore: [0],
         justification: '',
         error: 'Model not available',
-        justificationCID: 'QmTestErrorJustification'
+        justificationCid: 'QmTestErrorJustification'
       }
     });
 
