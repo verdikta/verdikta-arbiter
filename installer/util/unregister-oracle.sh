@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# Verdikta Arbiter Node - Standalone Oracle Registration Script
-# Registers the oracle with dispatcher (aggregator) contracts
-# This script can be run multiple times to register with different dispatchers
+# Verdikta Arbiter Node - Standalone Oracle Unregistration Script
+# Unregisters the oracle from dispatcher (aggregator) contracts
+# This script can be run multiple times to unregister from different dispatchers
 
 set -e  # Exit on any error
 
@@ -18,7 +18,7 @@ INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
 ARBITER_OPERATOR_DIR="$INSTALL_DIR/arbiter-operator"
 CONTRACTS_FILE="$INSTALL_DIR/installer/.contracts"
 
-echo -e "${BLUE}Verdikta Arbiter - Oracle Registration with Dispatcher${NC}"
+echo -e "${BLUE}Verdikta Arbiter - Oracle Unregistration from Dispatcher${NC}"
 echo -e "${BLUE}Installation Directory: $INSTALL_DIR${NC}"
 echo ""
 
@@ -57,17 +57,6 @@ fi
 if [ -z "$DEPLOYMENT_NETWORK" ]; then
     echo -e "${RED}Error: DEPLOYMENT_NETWORK not found in environment file${NC}"
     echo -e "${YELLOW}Expected DEPLOYMENT_NETWORK in .env file${NC}"
-    exit 1
-fi
-
-# Construct LINK token address variable name based on selected network
-LINK_TOKEN_VAR="LINK_TOKEN_ADDRESS_${DEPLOYMENT_NETWORK^^}"
-LINK_TOKEN_ADDRESS=$(eval echo \$$LINK_TOKEN_VAR)
-
-if [ -z "$LINK_TOKEN_ADDRESS" ]; then
-    echo -e "${RED}Error: LINK token address for $NETWORK_NAME not found in contracts file (looking for $LINK_TOKEN_VAR)${NC}"
-    echo -e "${YELLOW}Available LINK token variables in contracts file:${NC}"
-    grep "LINK_TOKEN_ADDRESS" "$CONTRACTS_FILE" || echo "  None found"
     exit 1
 fi
 
@@ -112,9 +101,9 @@ if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ]; then
     exit 1
 fi
 
-# Use ALL job IDs for registration (space-separated)
-REGISTRATION_JOB_IDS=$(printf '"%s" ' "${JOB_IDS_AVAILABLE[@]}")
-REGISTRATION_JOB_IDS=${REGISTRATION_JOB_IDS% }  # Remove trailing space
+# Use ALL job IDs for unregistration (space-separated)
+UNREGISTRATION_JOB_IDS=$(printf '"%s" ' "${JOB_IDS_AVAILABLE[@]}")
+UNREGISTRATION_JOB_IDS=${UNREGISTRATION_JOB_IDS% }  # Remove trailing space
 
 # Verify required environment variables
 if [ -z "$PRIVATE_KEY" ]; then
@@ -127,18 +116,17 @@ if [ -z "$INFURA_API_KEY" ]; then
     exit 1
 fi
 
-# Display current registration information
+# Display current unregistration information
 echo -e "${BLUE}Current Oracle Information:${NC}"
 echo -e "  Operator Address: $OPERATOR_ADDR"
 echo -e "  Node Address:     $NODE_ADDRESS"
-echo -e "  LINK Token:       $LINK_TOKEN_ADDRESS"
 echo ""
-echo -e "${BLUE}Available Jobs for Registration:${NC}"
+echo -e "${BLUE}Available Jobs for Unregistration:${NC}"
 for i in "${!JOB_IDS_AVAILABLE[@]}"; do
     echo -e "${GREEN}  Job $((i+1)): ${JOB_IDS_AVAILABLE[i]}${NC}"
 done
-echo -e "${BLUE}Registration job IDs (space-separated): $REGISTRATION_JOB_IDS${NC}"
-echo -e "${BLUE}Total jobs to register: ${#JOB_IDS_AVAILABLE[@]}${NC}"
+echo -e "${BLUE}Unregistration job IDs (space-separated): $UNREGISTRATION_JOB_IDS${NC}"
+echo -e "${BLUE}Total jobs to unregister: ${#JOB_IDS_AVAILABLE[@]}${NC}"
 echo ""
 
 # List existing registrations if any
@@ -200,11 +188,11 @@ cd "$INSTALL_DIR"
 # Define the correct wrapped VDKA address
 WRAPPED_VERDIKTA_ADDRESS="0x2F1d1aF9d5C25A48C29f56f57c7BAFFa7cc910a3"  # Correct wrapped VDKA address
 
-# Ask if user wants to register with a new dispatcher
-echo -e "${YELLOW}Would you like to register the oracle with a dispatcher (aggregator) contract?${NC}"
-read -p "Register with dispatcher? (y/n): " register_response
-if [[ ! "$register_response" =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Oracle registration cancelled.${NC}"
+# Ask if user wants to unregister from a dispatcher
+echo -e "${YELLOW}Would you like to unregister the oracle from a dispatcher (aggregator) contract?${NC}"
+read -p "Unregister from dispatcher? (y/n): " unregister_response
+if [[ ! "$unregister_response" =~ ^[Yy]$ ]]; then
+    echo -e "${YELLOW}Oracle unregistration cancelled.${NC}"
     exit 0
 fi
 
@@ -219,92 +207,44 @@ if [[ ! "$NEW_AGGREGATOR_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
     exit 1
 fi
 
-# Check if already registered with this aggregator
-if [ "$NEW_AGGREGATOR_ADDRESS" = "$AGGREGATOR_ADDRESS" ]; then
-    echo -e "${YELLOW}Warning: Oracle is already registered with this aggregator address.${NC}"
-    read -p "Do you want to continue anyway? (y/n): " continue_response
-    if [[ ! "$continue_response" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Registration cancelled.${NC}"
-        exit 0
-    fi
-fi
-
-# Ask for classes ID with default
-echo ""
-echo -e "${YELLOW}Please enter the classes ID (default: 128):${NC}"
-read -p "Classes ID [128]: " NEW_CLASSES_ID
-NEW_CLASSES_ID=${NEW_CLASSES_ID:-128}  # Use 128 as default if no input
-
-# Validate classes ID is a number
-if ! [[ "$NEW_CLASSES_ID" =~ ^[0-9]+$ ]]; then
-    echo -e "${RED}Error: Classes ID must be a number.${NC}"
-    exit 1
-fi
-
-# Construct the registration command with ALL job IDs
-REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-cl.js \
+# Construct the unregistration command with ALL job IDs
+UNREGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/unregister-oracle-cl.js \
   --aggregator $NEW_AGGREGATOR_ADDRESS \
-  --link $LINK_TOKEN_ADDRESS \
   --oracle $OPERATOR_ADDR \
   --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
-  --jobids $REGISTRATION_JOB_IDS \
-  --classes $NEW_CLASSES_ID"
+  --jobids $UNREGISTRATION_JOB_IDS"
 
 # Display the command and ask for confirmation
 echo ""
-echo -e "${BLUE}Registration Summary:${NC}"
+echo -e "${BLUE}Unregistration Summary:${NC}"
 echo -e "  Aggregator Address: $NEW_AGGREGATOR_ADDRESS"
-echo -e "  Classes ID:         $NEW_CLASSES_ID"
 echo -e "  Oracle Address:     $OPERATOR_ADDR"
-echo -e "  LINK Token:         $LINK_TOKEN_ADDRESS"
 echo -e "  Total Jobs:         ${#JOB_IDS_AVAILABLE[@]}"
 echo ""
 echo -e "${BLUE}The following command will be executed:${NC}"
-echo "$REGISTER_CMD"
+echo "$UNREGISTER_CMD"
 echo ""
-read -p "Proceed with registration? (y/n): " response
+read -p "Proceed with unregistration? (y/n): " response
 if [[ ! "$response" =~ ^[Yy]$ ]]; then
-    echo -e "${YELLOW}Oracle registration cancelled.${NC}"
+    echo -e "${YELLOW}Oracle unregistration cancelled.${NC}"
     exit 0
 fi
 
-# Execute the registration command
-echo -e "${BLUE}Executing oracle registration...${NC}"
+# Execute the unregistration command
+echo -e "${BLUE}Executing oracle unregistration...${NC}"
 cd "$ARBITER_OPERATOR_DIR"
-eval "$REGISTER_CMD"
+eval "$UNREGISTER_CMD"
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}Oracle registration completed successfully!${NC}"
-    
-    # Update the contracts file with the new aggregator information
-    # For multiple registrations, we'll store the most recent one
-    if grep -q "AGGREGATOR_ADDRESS=" "$CONTRACTS_FILE" 2>/dev/null; then
-        # Update existing aggregator address entry
-        sed -i "s/AGGREGATOR_ADDRESS=.*/AGGREGATOR_ADDRESS=\"$NEW_AGGREGATOR_ADDRESS\"/" "$CONTRACTS_FILE"
-    else
-        # Append new aggregator address entry
-        echo "AGGREGATOR_ADDRESS=\"$NEW_AGGREGATOR_ADDRESS\"" >> "$CONTRACTS_FILE"
-    fi
-    echo -e "${GREEN}Latest aggregator address saved: $NEW_AGGREGATOR_ADDRESS${NC}"
-    
-    # Update classes ID
-    if grep -q "CLASSES_ID=" "$CONTRACTS_FILE" 2>/dev/null; then
-        # Update existing classes ID entry
-        sed -i "s/CLASSES_ID=.*/CLASSES_ID=\"$NEW_CLASSES_ID\"/" "$CONTRACTS_FILE"
-    else
-        # Append new classes ID entry
-        echo "CLASSES_ID=\"$NEW_CLASSES_ID\"" >> "$CONTRACTS_FILE"
-    fi
-    echo -e "${GREEN}Latest classes ID saved: $NEW_CLASSES_ID${NC}"
-    
+    echo -e "${GREEN}Oracle unregistration completed successfully!${NC}"
     echo ""
-    echo -e "${BLUE}Registration Complete!${NC}"
-    echo -e "Your oracle is now registered with the dispatcher contract."
-    echo -e "You can run this script again to register with additional dispatchers."
+    echo -e "${BLUE}Unregistration Complete!${NC}"
+    echo -e "Your oracle has been unregistered from the dispatcher contract."
+    echo -e "You can run this script again to unregister from additional dispatchers."
     
 else
-    echo -e "${RED}Oracle registration failed. Please check the output above for errors.${NC}"
+    echo -e "${RED}Oracle unregistration failed. Please check the output above for errors.${NC}"
     exit 1
 fi
 
-exit 0 
+exit 0

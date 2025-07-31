@@ -358,11 +358,21 @@ else
     echo -e "${YELLOW}Warning: Standalone registration script not found at $UTIL_DIR/register-oracle.sh${NC}"
 fi
 
+# Copy the standalone unregistration script
+if [ -f "$UTIL_DIR/unregister-oracle.sh" ]; then
+    cp "$UTIL_DIR/unregister-oracle.sh" "$INSTALL_DIR/unregister-oracle.sh"
+    chmod +x "$INSTALL_DIR/unregister-oracle.sh"
+    echo -e "${GREEN}Standalone unregistration script copied to $INSTALL_DIR/unregister-oracle.sh${NC}"
+else
+    echo -e "${YELLOW}Warning: Standalone unregistration script not found at $UTIL_DIR/unregister-oracle.sh${NC}"
+fi
+
 echo -e "${GREEN}Arbiter management scripts created:${NC}"
 echo -e "  - To start all services: $INSTALL_DIR/start-arbiter.sh"
 echo -e "  - To stop all services:  $INSTALL_DIR/stop-arbiter.sh"
 echo -e "  - To check status:       $INSTALL_DIR/arbiter-status.sh"
 echo -e "  - To register with dispatcher: $INSTALL_DIR/register-oracle.sh"
+echo -e "  - To unregister from dispatcher: $INSTALL_DIR/unregister-oracle.sh"
 
 # Ask if user wants to start services now
 echo
