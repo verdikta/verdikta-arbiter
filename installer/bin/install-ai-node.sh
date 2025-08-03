@@ -236,6 +236,14 @@ else
     fi
 fi
 
+# Set default log level
+if ! grep -q "^LOG_LEVEL=" "$AI_NODE_DIR/.env.local"; then
+    echo "LOG_LEVEL=info" >> "$AI_NODE_DIR/.env.local"
+    echo -e "${GREEN}Default log level set to: info${NC}"
+else
+    echo -e "${GREEN}Log level already configured in .env.local${NC}"
+fi
+
 # Install Ollama
 echo -e "${BLUE}Checking for Ollama...${NC}"
 if command_exists ollama; then

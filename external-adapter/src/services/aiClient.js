@@ -118,6 +118,7 @@ class AIClient {
   }
 
   async evaluate(query, extractedPath) {
+    const requestStartTime = Date.now();
     return new Promise((resolve, reject) => {
       const operation = retry.operation(this.retryOptions);
       
@@ -130,8 +131,10 @@ class AIClient {
           
           if (extractedPath) {
             // Read manifest if path provided
+            const manifestReadStart = Date.now();
             const manifestPath = path.join(extractedPath, 'manifest.json');
             manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+            logger.info(`Manifest read took ${Date.now() - manifestReadStart}ms`);
             logger.info('Processing manifest for attachments:', {
               hasAdditional: !!query.additional,
               hasSupport: !!manifest.support,
@@ -141,6 +144,7 @@ class AIClient {
 
             // Load attachments from additional files if they exist
             if (query.additional && query.additional.length > 0) {
+              const additionalFilesStart = Date.now();
               for (const file of query.additional) {
                 try {
                   let fileData;
@@ -159,10 +163,12 @@ class AIClient {
                   continue;
                 }
               }
+              logger.info(`Additional files processing took ${Date.now() - additionalFilesStart}ms`);
             }
 
             // Load attachments from support files if they exist
             if (manifest.support && manifest.support.length > 0) {
+              const supportFilesStart = Date.now();
               for (const file of manifest.support) {
                 try {
                   if (file.path) {
@@ -180,6 +186,7 @@ class AIClient {
                   continue;
                 }
               }
+              logger.info(`Support files processing took ${Date.now() - supportFilesStart}ms`);
             }
           }
 
@@ -206,7 +213,9 @@ class AIClient {
           // Log the full payload for debugging
           logger.info('Full payload:', JSON.stringify(payload, null, 2));
 
+          const httpRequestStart = Date.now();
           const response = await this.client.post('/api/rank-and-justify', payload);
+          logger.info(`HTTP request to AI service took ${Date.now() - httpRequestStart}ms`);
           
           // Transform response if needed
           if (response.data.score && Array.isArray(response.data.score) && query.outcomes) {
@@ -224,6 +233,7 @@ class AIClient {
             rawResponse: response.data // Log the raw response for debugging
           });
           
+          logger.info(`Total AI client evaluate took ${Date.now() - requestStartTime}ms`);
           resolve(response.data);
         } catch (error) {
           logger.error('AI Node error:', {

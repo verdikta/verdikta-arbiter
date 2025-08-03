@@ -65,7 +65,10 @@ const evaluateHandler = async (request) => {
     // (input in this case is 2:<hash>)
     if (modeString === '2') {
       const hashHex = cidString.toLowerCase();
+      const t_mode2 = Date.now();
       const { result, justificationCid } = await handleMode2Reveal(hashHex, tempDir);
+      logger.info(`${runTag} Mode 2 reveal took ${Date.now() - t_mode2}ms`);
+      logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
       return createSuccessResponse(id, result, justificationCid);
     }
 
@@ -91,15 +94,26 @@ const evaluateHandler = async (request) => {
     // For backward compatibility, if only one CID, process as before
     if (cidArray.length === 1) {
       logger.info('Single-CID flow start');
+      
+      const t1 = Date.now();
       const archiveData = await archiveService.getArchive(cidArray[0]);
+      logger.info(`${runTag} IPFS getArchive took ${Date.now() - t1}ms`);
+      
+      const t2 = Date.now();
       const extractedPath = await archiveService.extractArchive(
         archiveData,
         'archive.zip',
         tempDir
       );
+      logger.info(`${runTag} extractArchive took ${Date.now() - t2}ms`);
       
+      const t3 = Date.now();
       await archiveService.validateManifest(extractedPath);
+      logger.info(`${runTag} validateManifest took ${Date.now() - t3}ms`);
+      
+      const t4 = Date.now();
       const parsedManifest = await manifestParser.parse(extractedPath);
+      logger.info(`${runTag} manifestParser.parse took ${Date.now() - t4}ms`);
       
       // Construct query object
       const queryObject = {
@@ -118,11 +132,14 @@ const evaluateHandler = async (request) => {
       }
       
       logger.debug('AI service call…');
+      const t5 = Date.now();
       const result = await aiClient.evaluate(queryObject, extractedPath);
+      logger.info(`${runTag} aiClient.evaluate took ${Date.now() - t5}ms`);
       
       if (modeString === '1') {
         const hashDecimal = await handleMode1Commit(result);
         await archiveService.cleanup(tempDir);
+        logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
         logger.info(`${runTag} RETURN commit (empty CID)`);
         return {
           jobRunID: id,
@@ -136,33 +153,45 @@ const evaluateHandler = async (request) => {
       }
  
       // MODE 0 (standard flow) 
+      const t6 = Date.now();
       const justificationCid = await createAndUploadJustification(result, tempDir);
+      logger.info(`${runTag} createAndUploadJustification took ${Date.now() - t6}ms`);
       await archiveService.cleanup(tempDir);
+      logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
       return createSuccessResponse(id, result, justificationCid);
     } 
     // Multi-CID processing
     else {
       logger.info(`Multi-CID (${cidArray.length}) start`);
+      
       // Process all CIDs
+      const t7 = Date.now();
       const extractedPaths = await archiveService.processMultipleCIDs(cidArray, tempDir);
+      logger.info(`${runTag} processMultipleCIDs took ${Date.now() - t7}ms`);
       
       // Validate all manifests
+      const t8 = Date.now();
       for (const cid of cidArray) {
         await archiveService.validateManifest(extractedPaths[cid]);
       }
+      logger.info(`${runTag} validateManifest (all) took ${Date.now() - t8}ms`);
       
       // Parse all manifests
+      const t9 = Date.now();
       const { primaryManifest, bCIDManifests } = 
         await manifestParser.parseMultipleManifests(extractedPaths, cidArray);
+      logger.info(`${runTag} parseMultipleManifests took ${Date.now() - t9}ms`);
       
       logger.info(`Parsed primary manifest and ${bCIDManifests.length} bCID manifests`);
       
       // Construct combined query
+      const t10 = Date.now();
       let combinedQueryData = await manifestParser.constructCombinedQuery(
         primaryManifest,
         bCIDManifests,
         addendumString
       );
+      logger.info(`${runTag} constructCombinedQuery took ${Date.now() - t10}ms`);
       
 
       
@@ -225,11 +254,14 @@ const evaluateHandler = async (request) => {
       };
       
       logger.info('Evaluating combined query with AI service...');
+      const t11 = Date.now();
       const result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]]);
+      logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
      
       if (modeString === '1') {
         const hashDecimal = await handleMode1Commit(result);
         await archiveService.cleanup(tempDir);
+        logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
         logger.info(`${runTag} RETURN commit (empty CID)`);
         return {
           jobRunID: id,
@@ -243,8 +275,11 @@ const evaluateHandler = async (request) => {
       }
 
       // MODE 0 (standard flow)
+      const t12 = Date.now();
       const justificationCid = await createAndUploadJustification(result, tempDir);
+      logger.info(`${runTag} createAndUploadJustification (multi-CID) took ${Date.now() - t12}ms`);
       await archiveService.cleanup(tempDir);
+      logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
       return createSuccessResponse(id, result, justificationCid);
     }
   } catch (error) {
@@ -387,7 +422,9 @@ async function handleMode2Reveal(hashHex, tempDir) {
 
   try {
     // Build and publish justification *now*
+    const revealUploadStart = Date.now();
     const justificationCid = await createAndUploadJustification(commit.result, tempDir);
+    logger.info(`Mode 2 reveal justification upload took ${Date.now() - revealUploadStart}ms`);
     await commitStore.del(hashHex);  // burn after reveal
     logger.debug(`COMMIT deleted hash=${hashHex}`);
 
@@ -434,7 +471,9 @@ async function createAndUploadJustification(result, tempDir) {
 
   // Upload justification to IPFS
   logger.info('Uploading justification to IPFS...');
+  const ipfsUploadStart = Date.now();
   const justificationCid = await ipfsClient.uploadToIPFS(justificationPath);
+  logger.info(`IPFS justification upload took ${Date.now() - ipfsUploadStart}ms`);
   logger.info(`Justification uploaded with CID: ${justificationCid}`);
   
   return justificationCid;
@@ -462,7 +501,9 @@ async function handleProviderError(providerMessage, tempDir) {
         JSON.stringify(justificationContent, null, 2)
       );
 
+      const ipfsErrorUploadStart = Date.now();
       justificationCid = await ipfsClient.uploadToIPFS(justificationPath);
+      logger.info(`IPFS error justification upload took ${Date.now() - ipfsErrorUploadStart}ms`);
       logger.info(`Error justification uploaded with CID: ${justificationCid}`);
 
       // Clean up after uploading error justification

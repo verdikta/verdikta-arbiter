@@ -389,6 +389,64 @@ echo -e "  - To check status:       $INSTALL_DIR/arbiter-status.sh"
 echo -e "  - To register with dispatcher: $INSTALL_DIR/register-oracle.sh"
 echo -e "  - To unregister from dispatcher: $INSTALL_DIR/unregister-oracle.sh"
 
+# Configure logging level
+echo -e "${YELLOW}Configuring logging level...${NC}"
+echo -e "${BLUE}Choose a logging level for your Verdikta Arbiter services:${NC}"
+echo -e "  1) error   - Only error messages"
+echo -e "  2) warn    - Warnings and errors (recommended for production)"
+echo -e "  3) info    - General information, warnings, and errors (recommended for monitoring)"
+echo -e "  4) debug   - Detailed debugging information (recommended for troubleshooting)"
+echo
+
+# Function to get log level choice
+get_log_level() {
+    local log_level="info"  # Default
+    
+    while true; do
+        read -p "Enter your choice (1-4) [3 for info]: " choice
+        case "$choice" in
+            1) log_level="error"; break;;
+            2) log_level="warn"; break;;
+            3|"") log_level="info"; break;;
+            4) log_level="debug"; break;;
+            *) echo "Please enter a number between 1-4.";;
+        esac
+    done
+    
+    echo "$log_level"
+}
+
+LOG_LEVEL=$(get_log_level)
+echo -e "${GREEN}Selected log level: $LOG_LEVEL${NC}"
+
+# Update AI Node .env.local file
+AI_NODE_ENV_FILE="$INSTALL_DIR/ai-node/.env.local"
+if [ -f "$AI_NODE_ENV_FILE" ]; then
+    echo -e "${BLUE}Updating AI Node logging configuration...${NC}"
+    if grep -q "^LOG_LEVEL=" "$AI_NODE_ENV_FILE"; then
+        sed -i.bak "s/^LOG_LEVEL=.*/LOG_LEVEL=$LOG_LEVEL/" "$AI_NODE_ENV_FILE"
+    else
+        echo "LOG_LEVEL=$LOG_LEVEL" >> "$AI_NODE_ENV_FILE"
+    fi
+    echo -e "${GREEN}AI Node log level set to: $LOG_LEVEL${NC}"
+else
+    echo -e "${YELLOW}Warning: AI Node .env.local file not found at $AI_NODE_ENV_FILE${NC}"
+fi
+
+# Update External Adapter .env file
+ADAPTER_ENV_FILE="$INSTALL_DIR/external-adapter/.env"
+if [ -f "$ADAPTER_ENV_FILE" ]; then
+    echo -e "${BLUE}Updating External Adapter logging configuration...${NC}"
+    if grep -q "^LOG_LEVEL=" "$ADAPTER_ENV_FILE"; then
+        sed -i.bak "s/^LOG_LEVEL=.*/LOG_LEVEL=$LOG_LEVEL/" "$ADAPTER_ENV_FILE"
+    else
+        echo "LOG_LEVEL=$LOG_LEVEL" >> "$ADAPTER_ENV_FILE"
+    fi
+    echo -e "${GREEN}External Adapter log level set to: $LOG_LEVEL${NC}"
+else
+    echo -e "${YELLOW}Warning: External Adapter .env file not found at $ADAPTER_ENV_FILE${NC}"
+fi
+
 # Ask if user wants to start services now
 echo
 echo -e "${YELLOW}Installation complete! Your services are now ready to start.${NC}"

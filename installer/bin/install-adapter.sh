@@ -256,6 +256,14 @@ else
     echo -e "${YELLOW}WARNING: Pinata JWT not provided. IPFS functionality will be limited.${NC}"
 fi
 
+# Set default log level
+if ! grep -q "^LOG_LEVEL=" "$ADAPTER_DIR/.env"; then
+    echo "LOG_LEVEL=info" >> "$ADAPTER_DIR/.env"
+    echo -e "${GREEN}Default log level set to: info${NC}"
+else
+    echo -e "${GREEN}Log level already configured in .env${NC}"
+fi
+
 # Test External Adapter (optional)
 if [ "$SKIP_TESTS" = "true" ]; then
     echo -e "${YELLOW}Skipping External Adapter test suite (--skip-tests flag provided)${NC}"
