@@ -336,6 +336,21 @@ if [ -f "$INSTALLER_DIR/.env" ]; then
     echo -e "${GREEN}Environment information copied to $INSTALL_DIR/installer/.env${NC}"
 fi
 
+# Copy all utility scripts to installer directory
+echo -e "${BLUE}Copying all utility scripts...${NC}"
+if [ -d "$UTIL_DIR" ]; then
+    mkdir -p "$INSTALL_DIR/installer/util"
+    # Enable dotglob to ensure all files including hidden ones are copied
+    shopt -s dotglob
+    cp -r "$UTIL_DIR"/* "$INSTALL_DIR/installer/util/"
+    shopt -u dotglob
+    # Make all shell scripts executable
+    find "$INSTALL_DIR/installer/util" -name "*.sh" -type f -exec chmod +x {} \;
+    echo -e "${GREEN}All utility scripts copied to $INSTALL_DIR/installer/util${NC}"
+else
+    echo -e "${YELLOW}Warning: Utility directory not found at $UTIL_DIR${NC}"
+fi
+
 # Copy arbiter-operator to target directory for standalone registration
 echo -e "${BLUE}Copying arbiter-operator for standalone registration...${NC}"
 ARBITER_OPERATOR_SRC_DIR="$(dirname "$INSTALLER_DIR")/arbiter-operator"
@@ -423,7 +438,8 @@ echo "  - AI Node:         http://localhost:3000"
 echo "  - External Adapter: http://localhost:8080 (with Verdikta Common Library)"
 echo "  - Chainlink Node:   http://localhost:6688"
 echo
+echo "All utility scripts are available in: $INSTALL_DIR/installer/util/"
 echo "For troubleshooting, consult the documentation in the installer/docs directory."
-echo "To back up your installation, run: bash $UTIL_DIR/backup-restore.sh backup"
+echo "To back up your installation, run: bash $INSTALL_DIR/installer/util/backup-restore.sh backup"
 echo
 echo "Thank you for using Verdikta Arbiter Node!" 
