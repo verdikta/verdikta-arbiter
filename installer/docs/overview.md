@@ -259,6 +259,34 @@ function fulfill(
 - **IPFS Storage**: Minimal costs for document storage
 - **Infrastructure**: Hosting and maintenance expenses
 
+## Performance Optimizations
+
+The Verdikta Arbiter installer includes comprehensive performance optimizations to ensure reliable job processing and minimal latency:
+
+### Database Optimizations
+
+- **Memory Configuration**: Optimized PostgreSQL settings for improved query performance
+  - `work_mem`: 16MB (4x default) for faster query processing
+  - `shared_buffers`: 128MB for enhanced caching
+  - `effective_cache_size`: 1GB for better query planning
+- **Write Performance**: Dedicated WAL buffers (16MB) for faster transaction logging
+- **Connection Management**: Stable connection pooling with 100 max connections
+
+### Chainlink Node Optimizations
+
+- **Transaction Processing**: Faster cleanup intervals (15min vs 30min default)
+- **Block Detection**: Improved head tracking (20s vs 30s) for faster job initiation
+- **Enhanced Logging**: Info-level logging for better troubleshooting visibility
+- **Network Efficiency**: Optimized sampling intervals for reduced latency
+
+### Job Processing Performance
+
+- **Completion Times**: Jobs typically complete within 2-3 minutes
+- **Error Handling**: Robust error recovery with minimal false positives
+- **Resource Management**: Optimized memory usage across all components
+
+These optimizations are automatically applied during installation, ensuring your arbiter node operates at peak performance from day one.
+
 ## Future Roadmap
 
 ### Network Expansion

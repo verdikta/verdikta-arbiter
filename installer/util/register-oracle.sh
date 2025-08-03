@@ -146,7 +146,7 @@ if [ -n "$AGGREGATOR_ADDRESS" ]; then
     echo -e "${BLUE}Previously Registered Dispatchers:${NC}"
     echo -e "  Aggregator: $AGGREGATOR_ADDRESS"
     if [ -n "$CLASSES_ID" ]; then
-        echo -e "  Classes ID: $CLASSES_ID"
+        echo -e "  Classes IDs: [$CLASSES_ID]"
     fi
     echo ""
 fi
@@ -235,17 +235,43 @@ if [ "$NEW_AGGREGATOR_ADDRESS" = "$AGGREGATOR_ADDRESS" ]; then
     fi
 fi
 
-# Ask for classes ID with default
+# Ask for classes IDs with default
 echo ""
-echo -e "${YELLOW}Please enter the classes ID (default: 128):${NC}"
-read -p "Classes ID [128]: " NEW_CLASSES_ID
-NEW_CLASSES_ID=${NEW_CLASSES_ID:-128}  # Use 128 as default if no input
+echo -e "${YELLOW}Please enter the classes IDs (space-separated, default: 128):${NC}"
+echo -e "${BLUE}Examples: 128, or 128 129, or 128 129 130${NC}"
+read -p "Classes IDs [128]: " NEW_CLASSES_INPUT
+NEW_CLASSES_INPUT=${NEW_CLASSES_INPUT:-128}  # Use 128 as default if no input
 
-# Validate classes ID is a number
-if ! [[ "$NEW_CLASSES_ID" =~ ^[0-9]+$ ]]; then
-    echo -e "${RED}Error: Classes ID must be a number.${NC}"
+# Parse and validate classes IDs
+IFS=' ' read -ra NEW_CLASSES_ARRAY <<< "$NEW_CLASSES_INPUT"
+VALIDATED_CLASSES=()
+
+for class_id in "${NEW_CLASSES_ARRAY[@]}"; do
+    # Remove any extra whitespace
+    class_id=$(echo "$class_id" | xargs)
+    
+    # Skip empty strings
+    if [ -z "$class_id" ]; then
+        continue
+    fi
+    
+    # Validate each class ID is a number
+    if ! [[ "$class_id" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Error: Classes ID '$class_id' must be a number.${NC}"
+        exit 1
+    fi
+    
+    VALIDATED_CLASSES+=("$class_id")
+done
+
+# Ensure we have at least one valid class ID
+if [ ${#VALIDATED_CLASSES[@]} -eq 0 ]; then
+    echo -e "${RED}Error: At least one valid classes ID is required.${NC}"
     exit 1
 fi
+
+# Create space-separated string for command
+NEW_CLASSES_STR="${VALIDATED_CLASSES[*]}"
 
 # Construct the registration command with ALL job IDs
 REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-cl.js \
@@ -254,13 +280,14 @@ REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-c
   --oracle $OPERATOR_ADDR \
   --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
   --jobids $REGISTRATION_JOB_IDS \
-  --classes $NEW_CLASSES_ID"
+  --classes $NEW_CLASSES_STR"
 
 # Display the command and ask for confirmation
 echo ""
 echo -e "${BLUE}Registration Summary:${NC}"
 echo -e "  Aggregator Address: $NEW_AGGREGATOR_ADDRESS"
-echo -e "  Classes ID:         $NEW_CLASSES_ID"
+echo -e "  Classes IDs:        [${VALIDATED_CLASSES[*]}]"
+echo -e "  Total Classes:      ${#VALIDATED_CLASSES[@]}"
 echo -e "  Oracle Address:     $OPERATOR_ADDR"
 echo -e "  LINK Token:         $LINK_TOKEN_ADDRESS"
 echo -e "  Total Jobs:         ${#JOB_IDS_AVAILABLE[@]}"
@@ -293,15 +320,15 @@ if [ $? -eq 0 ]; then
     fi
     echo -e "${GREEN}Latest aggregator address saved: $NEW_AGGREGATOR_ADDRESS${NC}"
     
-    # Update classes ID
+    # Update classes IDs
     if grep -q "CLASSES_ID=" "$CONTRACTS_FILE" 2>/dev/null; then
         # Update existing classes ID entry
-        sed -i "s/CLASSES_ID=.*/CLASSES_ID=\"$NEW_CLASSES_ID\"/" "$CONTRACTS_FILE"
+        sed -i "s/CLASSES_ID=.*/CLASSES_ID=\"$NEW_CLASSES_STR\"/" "$CONTRACTS_FILE"
     else
         # Append new classes ID entry
-        echo "CLASSES_ID=\"$NEW_CLASSES_ID\"" >> "$CONTRACTS_FILE"
+        echo "CLASSES_ID=\"$NEW_CLASSES_STR\"" >> "$CONTRACTS_FILE"
     fi
-    echo -e "${GREEN}Latest classes ID saved: $NEW_CLASSES_ID${NC}"
+    echo -e "${GREEN}Latest classes IDs saved: [$NEW_CLASSES_STR]${NC}"
     
     echo ""
     echo -e "${BLUE}Registration Complete!${NC}"
