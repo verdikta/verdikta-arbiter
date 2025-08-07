@@ -67,8 +67,27 @@ async function main() {
 
   const tx = await op.setAuthorizedSenders(merged);
   console.log("Tx submitted :", tx.hash);
-  await tx.wait(2);
-  console.log("✓ Authorised senders updated.");
+  console.log("⏳ Waiting for transaction confirmation (timeout: 5 minutes)...");
+  
+  try {
+    // Add timeout to prevent infinite hanging
+    const receipt = await Promise.race([
+      tx.wait(2), // Wait for 2 block confirmations
+      new Promise((_, reject) => 
+        setTimeout(() => reject(new Error('Transaction timeout after 5 minutes')), 300000)
+      )
+    ]);
+    console.log("✓ Authorised senders updated.");
+  } catch (error) {
+    if (error.message.includes('timeout')) {
+      console.log("⚠ Transaction timed out but may still be mining.");
+      console.log("  Check transaction status at: https://sepolia.basescan.org/tx/" + tx.hash);
+      console.log("  If successful, authorization is complete. If failed, you may need to retry with higher gas.");
+      process.exitCode = 0; // Don't fail the script for timeouts
+    } else {
+      throw error; // Re-throw other errors
+    }
+  }
 }
 
 main().catch((e) => {
