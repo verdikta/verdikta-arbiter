@@ -174,13 +174,15 @@ if [[ ! "$AGGREGATOR_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
 fi
 
 # Ask for classes ID with default
-echo -e "${YELLOW}Please enter the classes ID (default: 128):${NC}"
-read -p "Classes ID [128]: " CLASSES_ID
+echo -e "${YELLOW}Please enter the classes ID(s) - space-separated for multiple (default: 128):${NC}"
+echo -e "${BLUE}Example: 128 or 128 888 999${NC}"
+read -p "Classes ID(s) [128]: " CLASSES_ID
 CLASSES_ID=${CLASSES_ID:-128}  # Use 128 as default if no input
 
-# Validate classes ID is a number
-if ! [[ "$CLASSES_ID" =~ ^[0-9]+$ ]]; then
-    echo -e "${RED}Error: Classes ID must be a number.${NC}"
+# Validate classes ID(s) - allow multiple space-separated numbers
+if ! [[ "$CLASSES_ID" =~ ^[0-9]+([[:space:]]+[0-9]+)*$ ]]; then
+    echo -e "${RED}Error: Classes ID must be one or more numbers separated by spaces.${NC}"
+    echo -e "${RED}Examples: 128 or 128 888 999${NC}"
     exit 1
 fi
 
