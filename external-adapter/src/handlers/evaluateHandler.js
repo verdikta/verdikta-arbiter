@@ -29,7 +29,9 @@ const verdikta = createClient({
   logging: {
     level: process.env.LOG_LEVEL || 'warn',
     console: true,
-    file: false
+    file: false,
+    // Disable colors when output is not a TTY or when explicitly disabled
+    colors: process.env.DISABLE_COLORS === 'true' ? false : process.stdout.isTTY
   }
 });
 
@@ -131,9 +133,9 @@ const evaluateHandler = async (request) => {
         queryObject.prompt += `\n\nAddendum: \n${parsedManifest.addendum}: ${sanitizedAddendum}`;
       }
       
-      logger.debug('AI service call…');
+      logger.debug(`${runTag} AI service call…`);
       const t5 = Date.now();
-      const result = await aiClient.evaluate(queryObject, extractedPath);
+      const result = await aiClient.evaluate(queryObject, extractedPath, runTag);
       logger.info(`${runTag} aiClient.evaluate took ${Date.now() - t5}ms`);
       
       if (modeString === '1') {
@@ -253,9 +255,9 @@ const evaluateHandler = async (request) => {
         outcomes: primaryManifest.outcomes
       };
       
-      logger.info('Evaluating combined query with AI service...');
+      logger.info(`${runTag} Evaluating combined query with AI service...`);
       const t11 = Date.now();
-      const result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]]);
+      const result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag);
       logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
      
       if (modeString === '1') {

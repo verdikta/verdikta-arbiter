@@ -66,9 +66,21 @@ function logInteraction(message: string) {
 }
 
 export async function POST(request: Request) {
+  const requestStartTime = Date.now();
+  const timingLog: { [key: string]: number } = {};
+  
+  function logTiming(operation: string, startTime: number, details?: any) {
+    const duration = Date.now() - startTime;
+    timingLog[operation] = duration;
+    const detailsStr = details ? ` | ${JSON.stringify(details)}` : '';
+    console.log(`⏱️ TIMING [${operation}]: ${duration}ms${detailsStr}`);
+  }
+
   try {
     console.log('POST request received at /api/rank-and-justify');
+    const parseStartTime = Date.now();
     const body: RankAndJustifyInput = await request.json();
+    logTiming('request_parsing', parseStartTime);
     console.log('Request body:', {
       prompt: body.prompt,
       models: body.models,
@@ -128,6 +140,7 @@ export async function POST(request: Request) {
     console.log('DEBUG: allModelsSupportNativePDF:', allModelsSupportNativePDF);
 
     // Process attachments
+    const attachmentStartTime = Date.now();
     let attachments: Array<{ type: string; content: string; mediaType: string }> = [];
     if (body.attachments?.length) {
       if (allModelsSupportNativePDF) {
@@ -154,6 +167,10 @@ export async function POST(request: Request) {
         console.log(`Prepared ${attachments.length} attachments for native processing:`, 
           attachments.map(att => ({ type: att.type, mediaType: att.mediaType, size: att.content.length }))
         );
+        logTiming('attachment_native_processing', attachmentStartTime, { 
+          count: attachments.length, 
+          type: 'native' 
+        });
       } else {
         console.log('Some models do not support native PDF processing - using text extraction...');
         try {
@@ -172,12 +189,26 @@ export async function POST(request: Request) {
           if (skippedCount > 0) {
             console.warn(`Skipped ${skippedCount} attachment(s):`, skippedReasons);
           }
+          logTiming('attachment_text_extraction', attachmentStartTime, { 
+            count: attachments.length, 
+            skipped: skippedCount,
+            type: 'text_extraction' 
+          });
         } catch (error) {
           console.error('Error processing attachments:', error);
           // Continue without attachments rather than failing
           attachments = [];
+          logTiming('attachment_error_fallback', attachmentStartTime, { 
+            error: error instanceof Error ? error.message : 'Unknown error',
+            type: 'error' 
+          });
         }
       }
+    } else {
+      logTiming('attachment_skip_none', attachmentStartTime, { 
+        count: 0, 
+        type: 'none' 
+      });
     }
 
     // Initialize data structures
@@ -203,6 +234,7 @@ export async function POST(request: Request) {
 
     // Model Invocation
     for (let i = 0; i < iterations; i++) {
+      const iterationStartTime = Date.now();
       console.log(`Starting iteration ${i + 1}`);
       
       const iterationOutputs: number[][] = [];
@@ -211,6 +243,7 @@ export async function POST(request: Request) {
 
       // Process each model for this iteration
       for (let j = 0; j < models.length; j++) {
+        const modelStartTime = Date.now();
         const modelInfo = models[j];
         const count = modelInfo.count || 1;
         const weight = modelInfo.weight;
@@ -254,6 +287,7 @@ export async function POST(request: Request) {
           }
 
           for (let c = 0; c < count; c++) {
+            const callStartTime = Date.now();
             let responseText: string;
             if (attachments.length > 0 && llmProvider.supportsAttachments(modelInfo.model)) {
               logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model} with attachments:\n${iterationPrompt}\n`);
@@ -264,6 +298,12 @@ export async function POST(request: Request) {
                   attachments
                 );
                 logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
+                logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_with_attachments_${c+1}`, callStartTime, {
+                  provider: modelInfo.provider,
+                  model: modelInfo.model,
+                  hasAttachments: true,
+                  callNumber: c + 1
+                });
               } catch (providerError: any) {
                 console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
                   error: providerError.message,
@@ -284,6 +324,12 @@ export async function POST(request: Request) {
                   modelInfo.model
                 );
                 logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
+                logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_${c+1}`, callStartTime, {
+                  provider: modelInfo.provider,
+                  model: modelInfo.model,
+                  hasAttachments: false,
+                  callNumber: c + 1
+                });
               } catch (providerError: any) {
                 console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
                   error: providerError.message,
@@ -343,6 +389,13 @@ export async function POST(request: Request) {
 
           iterationOutputs.push(modelAverage);
           iterationWeights.push(weight);
+          
+          logTiming(`model_total_${modelInfo.provider}_${modelInfo.model}`, modelStartTime, {
+            provider: modelInfo.provider,
+            model: modelInfo.model,
+            count: count,
+            weight: weight
+          });
         } catch (error: any) {
           // If we get here, an error occurred trying to get the provider or during model setup.
           console.error(`Critical error processing model ${modelInfo.provider} - ${modelInfo.model} (iteration ${i+1}):`, error);
@@ -369,8 +422,14 @@ export async function POST(request: Request) {
         mappedAggregatedScores: body.outcomes ? body.outcomes.map((outcome, idx) => `${outcome}: ${finalAggregatedScore[idx] || 'N/A'}`) : 'No outcomes provided'
       });
 
+      logTiming(`iteration_${i + 1}`, iterationStartTime, {
+        iteration: i + 1,
+        modelsProcessed: models.length
+      });
+
       // Generate justification only on the final iteration
       if (i === iterations - 1) {
+        const justificationStartTime = Date.now();
         try {
           const justifierProvider = await LLMFactory.getProvider(justifierProviderName);
           logInteraction(`Prompt to Justifier:
@@ -383,9 +442,18 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
           );
           logInteraction(`Response from Justifier:
 ${finalJustification}\n`);
+          logTiming('justification_generation', justificationStartTime, {
+            provider: justifierProviderName,
+            model: justifierModelName
+          });
         } catch (error: any) {
           console.error('Error generating final justification in iteration:', error);
           finalJustification = 'Error generating final justification.'; // Handle error gracefully
+          logTiming('justification_generation_error', justificationStartTime, {
+            provider: justifierProviderName,
+            model: justifierModelName,
+            error: error.message
+          });
         }
       }
 
@@ -407,16 +475,48 @@ ${finalJustification}\n`);
        justification: finalJustification
      };
 
+    // Calculate total request time and log comprehensive timing summary
+    const totalRequestTime = Date.now() - requestStartTime;
+    timingLog.total_request = totalRequestTime;
+    
+    // Log extractable timing summary
+    console.log('🎯 TIMING_SUMMARY', JSON.stringify({
+      timestamp: new Date().toISOString(),
+      total_duration_ms: totalRequestTime,
+      components: timingLog,
+      summary: {
+        request_id: `req_${requestStartTime}`,
+        models_count: body.models.length,
+        iterations: iterations,
+        has_attachments: (body.attachments?.length || 0) > 0,
+        attachment_count: body.attachments?.length || 0,
+        outcomes_count: body.outcomes?.length || 0
+      }
+    }));
+
     console.log('Sending final response:', responseBody);
     return NextResponse.json(responseBody);
 
   } catch (error: any) {
     // General error handling for the entire POST request
+    const totalRequestTime = Date.now() - requestStartTime;
+    timingLog.total_request_error = totalRequestTime;
+    
     console.error('Error in POST /api/rank-and-justify:', {
       error: error.message,
       stack: error.stack,
       type: error.constructor.name
     });
+    
+    // Log timing summary even for errors
+    console.log('🎯 TIMING_SUMMARY_ERROR', JSON.stringify({
+      timestamp: new Date().toISOString(),
+      total_duration_ms: totalRequestTime,
+      components: timingLog,
+      error: error.message,
+      error_type: error.constructor.name
+    }));
+    
     return NextResponse.json({
       error: error.message || 'An error occurred while processing the request.',
       scores: [] as ScoreOutcome[],

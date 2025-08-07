@@ -44,6 +44,15 @@ fi
 
 # 2. Check Job Status
 echo -e "\n${BLUE}2. Job Status Check:${NC}"
+
+# Prompt for starting run ID (optional)
+echo -e "  ${YELLOW}Optional: Enter starting run ID for statistics (press Enter to analyze all runs):${NC}"
+read -p "  Starting run ID: " START_RUN_ID
+
+# Prompt for detailed run inspection (optional)
+echo -e "  ${YELLOW}Optional: Enter a specific run ID to inspect its full details (press Enter to skip):${NC}"
+read -p "  Inspect run ID: " INSPECT_RUN_ID
+
 if check_chainlink_api; then
     # Get Chainlink credentials
     CHAINLINK_DIR=""
@@ -80,15 +89,65 @@ if check_chainlink_api; then
                 RUNS_RESPONSE=$(curl -s -b "$COOKIE_JAR" http://localhost:6688/v2/pipeline/runs)
                 
                 if [ $? -eq 0 ]; then
-                    echo -e "  Recent runs:"
-                    echo "$RUNS_RESPONSE" | jq -r '.data[0:10][] | "    ID: \(.id) | Status: \(if .attributes.finishedAt then "completed" else "running" end) | Created: \(.attributes.createdAt[0:19])"' 2>/dev/null || echo "    Unable to parse runs data"
+                    # Filter runs based on starting run ID if provided
+                    if [ -n "$START_RUN_ID" ] && [ "$START_RUN_ID" -gt 0 ] 2>/dev/null; then
+                        # Convert run ID to number and filter - handle both string and numeric IDs
+                        FILTERED_RUNS=$(echo "$RUNS_RESPONSE" | jq --argjson start_id "$START_RUN_ID" '.data | map(select((.id | tonumber) >= $start_id))')
+                        TOTAL_RUNS=$(echo "$RUNS_RESPONSE" | jq -r '.data | length')
+                        FILTERED_COUNT=$(echo "$FILTERED_RUNS" | jq -r 'length')
+                        
+                        # Calculate the range info
+                        MAX_RUN_ID=$(echo "$RUNS_RESPONSE" | jq -r '.data | map(.id | tonumber) | max')
+                        
+                        echo -e "  Analyzing runs from ID $START_RUN_ID onwards (${FILTERED_COUNT} of ${TOTAL_RUNS} total runs)"
+                        echo -e "  Range: ID $START_RUN_ID to $MAX_RUN_ID"
+                        
+                        # Show recent filtered runs
+                        echo -e "  Recent runs in range:"
+                        echo "$FILTERED_RUNS" | jq -r '.[0:10][] | "    Run: \(.id) | Status: \(if .attributes.finishedAt then "completed" else "running" end) | Created: \(.attributes.createdAt[0:19])"' 2>/dev/null || echo "    Unable to parse runs data"
+                        
+                        # Count by status for filtered runs
+                        echo -e "  Run status summary (ID >= $START_RUN_ID):"
+                        echo "$FILTERED_RUNS" | jq -r '.[] | 
+                            if .attributes.finishedAt then
+                                if (.attributes.fatalErrors and (.attributes.fatalErrors | map(select(. != null)) | length) > 0) or (.attributes.allErrors and .attributes.allErrors != null) then "errored" else "completed" end
+                            else "running" end' 2>/dev/null | sort | uniq -c | awk '{print "    " $2 ": " $1}' || echo "    Unable to parse status summary"
+                    else
+                        # Show all runs (original behavior)
+                        echo -e "  Recent runs:"
+                        echo "$RUNS_RESPONSE" | jq -r '.data[0:10][] | "    Run: \(.id) | Status: \(if .attributes.finishedAt then "completed" else "running" end) | Created: \(.attributes.createdAt[0:19])"' 2>/dev/null || echo "    Unable to parse runs data"
+                        
+                        # Count by status for all runs
+                        echo -e "  Run status summary (all runs):"
+                        echo "$RUNS_RESPONSE" | jq -r '.data[] | 
+                            if .attributes.finishedAt then
+                                if (.attributes.fatalErrors and (.attributes.fatalErrors | map(select(. != null)) | length) > 0) or (.attributes.allErrors and .attributes.allErrors != null) then "errored" else "completed" end
+                            else "running" end' 2>/dev/null | sort | uniq -c | awk '{print "    " $2 ": " $1}' || echo "    Unable to parse status summary"
+                    fi
+                fi
+            fi
+            
+            # Detailed run inspection if requested
+            if [ -n "$INSPECT_RUN_ID" ]; then
+                echo -e "\n  ${BLUE}Detailed Run Inspection for ID: $INSPECT_RUN_ID${NC}"
+                SPECIFIC_RUN=$(echo "$RUNS_RESPONSE" | jq --arg run_id "$INSPECT_RUN_ID" '.data[] | select(.id == $run_id or (.id | tostring) == $run_id)')
+                
+                if [ -n "$SPECIFIC_RUN" ] && [ "$SPECIFIC_RUN" != "null" ]; then
+                    echo -e "  ${GREEN}Found run details:${NC}"
+                    echo "$SPECIFIC_RUN" | jq -r '
+                        "    Internal ID: \(.id)",
+                        "    Created: \(.attributes.createdAt)",
+                        "    Started: \(.attributes.pipelineRun.createdAt // "N/A")",
+                        "    Finished: \(.attributes.finishedAt // "Running")",
+                        "    Job ID: \(.relationships.pipelineRun.data.id // "N/A")",
+                        "    Errors: \(if .attributes.allErrors then (.attributes.allErrors | length) else 0 end)"
+                    ' 2>/dev/null || echo "    Unable to parse run details"
                     
-                    # Count by status  
-                    echo -e "  Run status summary:"
-                    echo "$RUNS_RESPONSE" | jq -r '.data[] | 
-                        if .attributes.finishedAt then
-                            if (.attributes.fatalErrors and (.attributes.fatalErrors | map(select(. != null)) | length) > 0) or (.attributes.allErrors and .attributes.allErrors != null) then "errored" else "completed" end
-                        else "running" end' 2>/dev/null | sort | uniq -c | awk '{print "    " $2 ": " $1}' || echo "    Unable to parse status summary"
+                    # Show correlation info
+                    echo -e "\n  ${YELLOW}For log correlation:${NC}"
+                    echo "    Search external adapter logs for: [EA $INSPECT_RUN_ID"
+                else
+                    echo -e "  ${RED}Run ID $INSPECT_RUN_ID not found${NC}"
                 fi
             fi
         else
@@ -201,3 +260,5 @@ echo -e "2. Review container logs: docker logs -f chainlink"
 echo -e "3. Monitor database performance: docker exec cl-postgres psql -U postgres -c \"SELECT * FROM pg_stat_activity;\""
 echo -e "4. If jobs are stuck, consider restarting Chainlink: docker restart chainlink"
 echo -e "5. For persistent issues, check network connectivity and RPC endpoint health"
+echo -e "6. Re-run this script with a specific run ID to analyze recent job performance trends"
+echo -e "7. Use the run inspection feature to correlate Chainlink UI run numbers with log entries"
