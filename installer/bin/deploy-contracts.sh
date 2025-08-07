@@ -389,17 +389,19 @@ fi
 
 # --- NODE AUTHORIZATION LOGIC USING HARDHAT ---
 
-echo -e "${BLUE}Authorizing Chainlink node with ArbiterOperator contract...${NC}"
-# The NODE_ADDRESS is already in the .env file in OPERATOR_BUILD_DIR
-# The setAuthorizedSenders.js script should read CONTRACT_ADDRESS (as OPERATOR) from env or accept as param
-# For now, let's assume setAuthorizedSenders.js uses process.env.OPERATOR_ADDRESS and process.env.NODE_ADDRESS
-# We need to set OPERATOR_ADDRESS in the environment for the script
-# We are already in $OPERATOR_BUILD_DIR
-echo -e "${BLUE}Running Hardhat script to authorize node on $NETWORK_NAME...${NC}"
-if env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network $DEPLOYMENT_NETWORK; then
+echo -e "${BLUE}🔐 Authorizing Chainlink node with ArbiterOperator contract...${NC}"
+echo -e "${BLUE}   Expected time: 1-3 minutes (depending on network conditions)${NC}"
+echo -e "${BLUE}⏳ Running Hardhat script to authorize node on $NETWORK_NAME (timeout: 10 minutes)...${NC}"
+if timeout 600 env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network $DEPLOYMENT_NETWORK; then
     echo -e "${GREEN}Chainlink node authorization script executed successfully.${NC}"
 else
-    echo -e "${RED}Chainlink node authorization script failed.${NC}"
+    local exit_code=$?
+    if [ $exit_code -eq 124 ]; then
+        echo -e "${YELLOW}⚠ Authorization timed out after 10 minutes${NC}"
+        echo -e "${YELLOW}  The transaction may still be processing. Check BaseScan for transaction status.${NC}"
+    else
+        echo -e "${RED}Chainlink node authorization script failed (exit code: $exit_code).${NC}"
+    fi
     # It's not critical to exit here, user can do it manually later if needed
     echo -e "${YELLOW}You may need to authorize the node manually using Hardhat tasks or scripts in $OPERATOR_BUILD_DIR/scripts.${NC}"
 fi
