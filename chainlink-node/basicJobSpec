@@ -15,7 +15,7 @@ observationSource = """
     
     fetch        [type="bridge" 
                      name="verdikta-ai"
-                     timeout="150s"
+                     timeout="150s" # increase timeout to 150s
                      requestData="{\\"id\\": $(jobSpec.externalJobID), \\"data\\": {\\"cid\\": $(decode_cbor.cid)}}"]
     
 
