@@ -111,15 +111,63 @@ login_to_chainlink() {
     return 0
 }
 
-# Prompt for number of arbiters
+# Detect existing arbiter count from contracts file or jobs
+DETECTED_ARBITER_COUNT=1
+DEFAULT_COUNT_SOURCE="default"
+
+# Try to detect from existing contracts file first
+if [ -f "$INSTALLER_DIR/.contracts" ]; then
+    source "$INSTALLER_DIR/.contracts"
+    if [ -n "$ARBITER_COUNT" ] && [[ "$ARBITER_COUNT" =~ ^[1-9]$|^10$ ]]; then
+        DETECTED_ARBITER_COUNT="$ARBITER_COUNT"
+        DEFAULT_COUNT_SOURCE="contracts file"
+    fi
+fi
+
+# If not found in contracts, try to detect from existing jobs in Chainlink node
+if [ "$DETECTED_ARBITER_COUNT" -eq 1 ] && [ "$DEFAULT_COUNT_SOURCE" = "default" ]; then
+    echo -e "${BLUE}Detecting existing arbiter configuration...${NC}"
+    
+    # Get list of existing Verdikta AI Arbiter jobs
+    jobs_response=$(curl -sS -b /tmp/chainlink_cookies.txt "http://localhost:6688/v2/jobs" 2>/dev/null)
+    
+    if [ $? -eq 0 ] && [ -n "$jobs_response" ]; then
+        existing_count=$(echo "$jobs_response" | python3 -c "
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+    count = 0
+    if 'data' in data:
+        for job in data['data']:
+            if 'attributes' in job and 'name' in job['attributes']:
+                job_name = job['attributes']['name']
+                if 'Verdikta AI Arbiter' in job_name:
+                    count += 1
+    print(count)
+except:
+    print(0)
+" 2>/dev/null)
+        
+        if [ -n "$existing_count" ] && [ "$existing_count" -gt 0 ] && [ "$existing_count" -le 10 ]; then
+            DETECTED_ARBITER_COUNT="$existing_count"
+            DEFAULT_COUNT_SOURCE="existing jobs"
+        fi
+    fi
+fi
+
+# Prompt for number of arbiters with detected default
 echo -e "${BLUE}Multi-Arbiter Configuration${NC}"
+if [ "$DEFAULT_COUNT_SOURCE" != "default" ]; then
+    echo -e "${GREEN}Detected existing configuration: $DETECTED_ARBITER_COUNT arbiter(s) (from $DEFAULT_COUNT_SOURCE)${NC}"
+fi
 echo "How many arbiters would you like to configure? (1-10)"
 while true; do
-    read -p "Enter number of arbiters [1]: " ARBITER_COUNT
+    read -p "Enter number of arbiters [$DETECTED_ARBITER_COUNT]: " ARBITER_COUNT
     
-    # Default to 1 if empty
+    # Default to detected count if empty
     if [ -z "$ARBITER_COUNT" ]; then
-        ARBITER_COUNT=1
+        ARBITER_COUNT="$DETECTED_ARBITER_COUNT"
     fi
     
     # Validate input
@@ -403,8 +451,67 @@ fi
 
 echo -e "${BLUE}Using network configuration: Chain ID $CHAIN_ID, Gas Price $GAS_PRICE_WEI wei${NC}"
 
+# Function to delete existing jobs by name pattern
+delete_existing_jobs() {
+    echo -e "${BLUE}Checking for existing Verdikta AI Arbiter jobs to remove...${NC}"
+    
+    # Get list of all jobs from Chainlink node
+    local jobs_response=$(curl -sS -b /tmp/chainlink_cookies.txt "http://localhost:6688/v2/jobs")
+    
+    if [ $? -ne 0 ]; then
+        echo -e "${YELLOW}Warning: Could not retrieve job list for cleanup. Continuing...${NC}"
+        return 0
+    fi
+    
+    # Extract job IDs for jobs with "Verdikta AI Arbiter" in the name
+    local jobs_to_delete=$(echo "$jobs_response" | python3 -c "
+import json
+import sys
+try:
+    data = json.load(sys.stdin)
+    if 'data' in data:
+        for job in data['data']:
+            if 'attributes' in job and 'name' in job['attributes']:
+                job_name = job['attributes']['name']
+                if 'Verdikta AI Arbiter' in job_name:
+                    if 'id' in job:
+                        print(f\"{job['id']}:{job_name}\")
+except Exception as e:
+    pass
+")
+    
+    if [ -n "$jobs_to_delete" ]; then
+        echo -e "${YELLOW}Found existing Verdikta AI Arbiter jobs to delete:${NC}"
+        echo "$jobs_to_delete" | while IFS=':' read -r job_id job_name; do
+            if [ -n "$job_id" ]; then
+                echo -e "${YELLOW}  Deleting: $job_name (ID: $job_id)${NC}"
+                
+                # Delete the job
+                local delete_response=$(curl -sS -b /tmp/chainlink_cookies.txt \
+                    -X DELETE \
+                    "http://localhost:6688/v2/jobs/$job_id")
+                
+                if [ $? -eq 0 ]; then
+                    echo -e "${GREEN}    ✓ Deleted successfully${NC}"
+                else
+                    echo -e "${YELLOW}    ⚠ Delete may have failed${NC}"
+                fi
+                
+                # Small delay between deletions
+                sleep 1
+            fi
+        done
+        echo -e "${GREEN}Existing job cleanup completed.${NC}"
+    else
+        echo -e "${GREEN}No existing Verdikta AI Arbiter jobs found.${NC}"
+    fi
+}
+
 # Create jobs for each arbiter
 echo -e "${BLUE}Creating jobs for $ARBITER_COUNT arbiters...${NC}"
+
+# Delete any existing Verdikta AI Arbiter jobs first
+delete_existing_jobs
 
 # Initialize job tracking variables
 JOB_IDS=()

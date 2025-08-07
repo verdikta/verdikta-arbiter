@@ -19,6 +19,9 @@ RED='\033[0;31m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
+# Flag to track if jobs have been regenerated during this upgrade
+JOBS_ALREADY_REGENERATED=0
+
 # Variables to track state for error recovery
 UPGRADE_IN_PROGRESS=0
 BACKUP_DIR=""
@@ -292,6 +295,199 @@ fi
 # Mark that upgrade is in progress
 UPGRADE_IN_PROGRESS=1
 
+# Check for job specification template changes BEFORE component upgrades
+echo -e "${BLUE}Checking for job specification template changes...${NC}"
+
+# Function to check and regenerate job specs if needed (following the pattern of check_chainlink_config)
+check_job_spec_template() {
+    local repo_job_spec="$REPO_CHAINLINK_NODE/basicJobSpec"
+    local target_job_spec="$TARGET_CHAINLINK_NODE/basicJobSpec"
+    local target_jobs_dir="$TARGET_CHAINLINK_NODE/jobs"
+    
+    echo -e "${BLUE}Checking job specification template...${NC}"
+    
+    # Check if current repo template exists
+    if [ ! -f "$repo_job_spec" ]; then
+        echo -e "${YELLOW}No basicJobSpec template found in source repository. Skipping job spec template check.${NC}"
+        return 0
+    fi
+    
+    # Check if target template exists (from previous install)
+    if [ ! -f "$target_job_spec" ]; then
+        echo -e "${YELLOW}No existing basicJobSpec template found in target installation. Skipping job spec template check.${NC}"
+        return 0
+    fi
+    
+    echo -e "${BLUE}Comparing job specification templates:${NC}"
+    echo -e "${BLUE}  Current repo template: $repo_job_spec${NC}"
+    echo -e "${BLUE}  Previous install template: $target_job_spec${NC}"
+    
+    # Compare the templates directly (no normalization needed since both are templates)
+    if ! diff -q "$repo_job_spec" "$target_job_spec" > /dev/null 2>&1; then
+        echo -e "${YELLOW}The job specification template has been updated since your last installation.${NC}"
+        echo -e "${YELLOW}This may include timeout changes, new tasks, or other job improvements.${NC}"
+        
+        # Show the actual differences
+        echo -e "${BLUE}Template differences found:${NC}"
+        diff "$target_job_spec" "$repo_job_spec" || true
+        echo
+        
+        if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)"; then
+            # Handle the job spec regeneration with proper aggregator management
+            regenerate_job_specs
+            # Set flag to indicate jobs have been regenerated
+            JOBS_ALREADY_REGENERATED=1
+        else
+            echo -e "${BLUE}Keeping existing job specifications.${NC}"
+        fi
+    else
+        echo -e "${GREEN}Job specification template is up to date.${NC}"
+    fi
+}
+
+# Function to regenerate job specs (similar to how chainlink config is regenerated)
+regenerate_job_specs() {
+    echo -e "${BLUE}Regenerating job specifications from template...${NC}"
+    
+    # Check if we have aggregator registration information
+    local need_reregister=0
+    local aggregator_addr=""
+    local classes_id="128"
+    
+    if [ -f "$TARGET_DIR/installer/.contracts" ]; then
+        source "$TARGET_DIR/installer/.contracts"
+        
+        if [ -n "$AGGREGATOR_ADDRESS" ]; then
+            aggregator_addr="$AGGREGATOR_ADDRESS"
+            classes_id="${CLASSES_ID:-128}"
+            need_reregister=1
+            
+            echo -e "${YELLOW}Found existing aggregator registration: $aggregator_addr${NC}"
+            echo -e "${YELLOW}Classes: [$classes_id]${NC}"
+            echo
+            echo -e "${YELLOW}Since job specifications are changing, the oracle will be:${NC}"
+            echo -e "${YELLOW}1. Unregistered from the aggregator${NC}"
+            echo -e "${YELLOW}2. Job specifications regenerated with new job IDs${NC}"
+            echo -e "${YELLOW}3. Re-registered with the aggregator using new job IDs${NC}"
+        else
+            echo -e "${YELLOW}No aggregator registration found. Jobs will be regenerated without aggregator handling.${NC}"
+        fi
+    fi
+    
+    # Step 1: Unregister if needed
+    if [ $need_reregister -eq 1 ]; then
+        echo -e "${BLUE}Step 1: Unregistering from aggregator...${NC}"
+        if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
+            cd "$TARGET_DIR"
+            # Use the existing unregister script non-interactively
+            echo -e "y\n$aggregator_addr\ny" | bash unregister-oracle.sh
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}Successfully unregistered from aggregator${NC}"
+            else
+                echo -e "${YELLOW}Warning: Unregistration may have failed, but continuing...${NC}"
+            fi
+        else
+            echo -e "${YELLOW}Warning: unregister-oracle.sh not found. Continuing with job regeneration...${NC}"
+        fi
+    fi
+    
+    # Step 2: Regenerate job specifications (requires Chainlink node to be running)
+    echo -e "${BLUE}Step 2: Regenerating job specifications...${NC}"
+    echo -e "${YELLOW}Note: The Chainlink node needs to be running for job regeneration.${NC}"
+    
+    # Check if Chainlink node is running
+    if ! docker ps | grep -q "chainlink"; then
+        echo -e "${BLUE}Starting Chainlink node temporarily for job regeneration...${NC}"
+        cd "$TARGET_DIR"
+        if [ -f "$TARGET_DIR/start-arbiter.sh" ]; then
+            # Start just the Chainlink node (not the full arbiter)
+            if docker ps -a | grep -q "chainlink"; then
+                docker start chainlink
+            else
+                echo -e "${YELLOW}Warning: Chainlink container not found. Starting full arbiter...${NC}"
+                bash "$TARGET_DIR/start-arbiter.sh"
+            fi
+            
+            # Wait for Chainlink node to be ready
+            echo -e "${BLUE}Waiting for Chainlink node to be ready...${NC}"
+            for i in {1..30}; do
+                if curl -s http://localhost:6688/health > /dev/null; then
+                    echo -e "${GREEN}Chainlink node is ready!${NC}"
+                    break
+                fi
+                if [ $i -eq 30 ]; then
+                    echo -e "${RED}Error: Chainlink node failed to start within 60 seconds${NC}"
+                    return 1
+                fi
+                sleep 2
+            done
+        else
+            echo -e "${RED}Error: start-arbiter.sh not found at $TARGET_DIR${NC}"
+            return 1
+        fi
+    else
+        echo -e "${GREEN}Chainlink node is already running.${NC}"
+    fi
+    
+    # Now run the job configuration
+    cd "$SCRIPT_DIR"
+    bash "$SCRIPT_DIR/configure-node.sh"
+    
+    if [ $? -eq 0 ]; then
+        echo -e "${GREEN}Job specifications regenerated successfully!${NC}"
+        
+        # Update the target installation with the new contracts file
+        if [ -f "$INSTALLER_DIR/.contracts" ]; then
+            cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
+            echo -e "${GREEN}Updated contracts configuration copied to target installation${NC}"
+        fi
+        
+        # Step 3: Re-register if needed
+        if [ $need_reregister -eq 1 ]; then
+            echo -e "${BLUE}Step 3: Re-registering with aggregator using new job IDs...${NC}"
+            if [ -f "$TARGET_DIR/register-oracle.sh" ]; then
+                cd "$TARGET_DIR"
+                # Use the existing register script non-interactively
+                # Input sequence: y (register?), aggregator_addr, y (continue if already registered?), classes_id, y (confirm registration?)
+                echo -e "y\n$aggregator_addr\ny\n$classes_id\ny" | bash register-oracle.sh
+                if [ $? -eq 0 ]; then
+                    echo -e "${GREEN}Successfully re-registered with aggregator using new job IDs!${NC}"
+                    echo -e "${GREEN}Job specification regeneration completed successfully!${NC}"
+                else
+                    echo -e "${RED}Warning: Re-registration failed. You may need to manually register.${NC}"
+                    echo -e "${YELLOW}You can run: $TARGET_DIR/register-oracle.sh${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Warning: register-oracle.sh not found.${NC}"
+                echo -e "${YELLOW}You may need to manually re-register with the aggregator.${NC}"
+            fi
+        fi
+        
+        # Stop the arbiter again since the upgrade script will handle restart later
+        echo -e "${BLUE}Stopping arbiter to continue with upgrade process...${NC}"
+        cd "$TARGET_DIR"
+        if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
+            bash "$TARGET_DIR/stop-arbiter.sh"
+            echo -e "${GREEN}Arbiter stopped. Upgrade will continue.${NC}"
+        else
+            echo -e "${YELLOW}Warning: stop-arbiter.sh not found. You may need to manually stop services.${NC}"
+        fi
+    else
+        echo -e "${RED}Error: Job specification regeneration failed!${NC}"
+        
+        # If job regeneration failed, still try to stop the arbiter
+        echo -e "${BLUE}Stopping arbiter after failed job regeneration...${NC}"
+        cd "$TARGET_DIR"
+        if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
+            bash "$TARGET_DIR/stop-arbiter.sh"
+        fi
+        return 1
+    fi
+}
+
+# Call the job spec template check function (before component upgrades)
+check_job_spec_template
+
 # Perform the upgrades
 echo -e "${BLUE}Starting upgrade process...${NC}"
 
@@ -455,12 +651,18 @@ else
     echo -e "${YELLOW}No contracts configuration file found${NC}"
 fi
 
-# Optional job/key reconfiguration
-echo -e "${BLUE}Job and Key Configuration Options:${NC}"
-echo "During upgrades, your existing jobs and keys are preserved by default."
-echo "However, you can optionally reconfigure them if needed (e.g., to add more arbiters)."
-echo
-if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This will recreate all jobs)"; then
+
+
+# Optional job/key reconfiguration (skip if jobs were already regenerated)
+if [ "$JOBS_ALREADY_REGENERATED" -eq 1 ]; then
+    echo -e "${GREEN}Job specifications were already regenerated from updated template during this upgrade.${NC}"
+    echo -e "${BLUE}Skipping optional job reconfiguration.${NC}"
+else
+    echo -e "${BLUE}Job and Key Configuration Options:${NC}"
+    echo "During upgrades, your existing jobs and keys are preserved by default."
+    echo "However, you can optionally reconfigure them if needed (e.g., to add more arbiters)."
+    echo
+    if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This will recreate all jobs)"; then
     echo -e "${BLUE}Starting job and key reconfiguration...${NC}"
     
     # Check if configure-node.sh exists in the source
@@ -531,6 +733,7 @@ if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This
     fi
 else
     echo -e "${BLUE}Keeping existing job and key configuration.${NC}"
+fi
 fi
 
 # Check and optionally regenerate Chainlink configuration
