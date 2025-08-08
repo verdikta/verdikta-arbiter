@@ -6,6 +6,7 @@ const aiClient = require('../services/aiClient');
 const crypto = require('crypto');
 const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
+const { validateRequest, requestSchema } = require('../utils/validator');
 
 const OPERATOR_ADDRESS = (() => {
   const addr = process.env.OPERATOR_ADDR;
@@ -35,11 +36,11 @@ const verdikta = createClient({
   }
 });
 
-const { manifestParser, archiveService, validator, logger, ipfsClient } = verdikta;
-const { validateRequest, requestSchema } = validator;
+const { manifestParser, archiveService, logger, ipfsClient } = verdikta;
 
 const evaluateHandler = async (request) => {
   const { id, data } = request;
+  const aggId = (data.aggId || data.aggid || '').toLowerCase();
   const t0 = Date.now();   
   let   runTag;            
   let tempDir; // Declare here so we can reuse if provider error happens
@@ -61,14 +62,14 @@ const evaluateHandler = async (request) => {
       cidString = data.cid;
     }
     logger.debug(`Mode: ${modeString}`);
-    runTag = `[EA ${id} ${modeString}]`;
+    runTag = `[EA ${id} agg=${aggId} mode=${modeString}]`;
 
     // if mode 2, there is nothing to calculate--just reveal previously calculated information
     // (input in this case is 2:<hash>)
     if (modeString === '2') {
       const hashHex = cidString.toLowerCase();
       const t_mode2 = Date.now();
-      const { result, justificationCid } = await handleMode2Reveal(hashHex, tempDir);
+      const { result, justificationCid } = await handleMode2Reveal(hashHex, tempDir, runTag);
       logger.info(`${runTag} Mode 2 reveal took ${Date.now() - t_mode2}ms`);
       logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
       return createSuccessResponse(id, result, justificationCid);
@@ -139,7 +140,7 @@ const evaluateHandler = async (request) => {
       logger.info(`${runTag} aiClient.evaluate took ${Date.now() - t5}ms`);
       
       if (modeString === '1') {
-        const hashDecimal = await handleMode1Commit(result);
+        const hashDecimal = await handleMode1Commit(result, aggId, runTag);
         await archiveService.cleanup(tempDir);
         logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
         logger.info(`${runTag} RETURN commit (empty CID)`);
@@ -261,7 +262,7 @@ const evaluateHandler = async (request) => {
       logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
      
       if (modeString === '1') {
-        const hashDecimal = await handleMode1Commit(result);
+        const hashDecimal = await handleMode1Commit(result, aggId, runTag);
         await archiveService.cleanup(tempDir);
         logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
         logger.info(`${runTag} RETURN commit (empty CID)`);
@@ -334,7 +335,7 @@ const evaluateHandler = async (request) => {
  *  • stores { result, salt } under that 128-bit key
  *  • returns the decimal representation (what the aggregator expects)
  */
-async function handleMode1Commit(result) {
+async function handleMode1Commit(result, aggId, runTag) {
   // ---------- 1. collect *unsigned* scores -----------------------------
   const scores = (result.scores || [{ score: 0 }]).map(s => BigInt(s.score));
 
@@ -386,9 +387,10 @@ async function handleMode1Commit(result) {
   await commitStore.save(hashHex, {
     result,
     salt: saltHex,                      // remember: 20 lowercase hex chars
+    aggId,
     created: new Date().toISOString()
   });
-  logger.info(`COMMIT saved hash=${hashHex} salt=${saltHex}`);
+  logger.info(`${runTag} COMMIT saved hash=${hashHex}`);
 
   return BigInt('0x' + hashHex).toString();        // decimal for likelihoods[0]
 }
@@ -396,7 +398,7 @@ async function handleMode1Commit(result) {
 /**
  * Reveal previously committed result
  */
-async function handleMode2Reveal(hashHex, tempDir) {
+async function handleMode2Reveal(hashHex, tempDir, runTag) {
   // Accept decimal, 0x-prefixed, or bare hex
   if (/^[0-9]+$/.test(hashHex)) {                // decimal
     hashHex = BigInt(hashHex).toString(16);
@@ -406,15 +408,15 @@ async function handleMode2Reveal(hashHex, tempDir) {
     hashHex = hashHex;
   }
   hashHex = hashHex.toLowerCase().padStart(32, '0'); // 128 bit, zero-padded
-  logger.info(`REVEAL lookup hash=${hashHex}`);
+  logger.info(`${runTag} REVEAL lookup hash=${hashHex}`);
   const commit = await commitStore.get(hashHex);
 
   // if (!commit) throw new Error(`Unknown commit hash: ${hashHex}`);
   if (!commit) {
-    logger.warn(`REVEAL miss`);
+    logger.warn(`${runTag} REVEAL miss`);
     throw new Error(`Unknown commit hash: ${hashHex}`);
   } else {
-    logger.info(`REVEAL hit salt=${commit.salt}`);
+    logger.info(`${runTag} REVEAL hit salt=${commit.salt}`);
   }
 
   // Create a temporary directory if one wasn't provided
@@ -426,7 +428,7 @@ async function handleMode2Reveal(hashHex, tempDir) {
     // Build and publish justification *now*
     const revealUploadStart = Date.now();
     const justificationCid = await createAndUploadJustification(commit.result, tempDir);
-    logger.info(`Mode 2 reveal justification upload took ${Date.now() - revealUploadStart}ms`);
+    logger.info(`${runTag} Mode 2 reveal justification upload took ${Date.now() - revealUploadStart}ms`);
     await commitStore.del(hashHex);  // burn after reveal
     logger.debug(`COMMIT deleted hash=${hashHex}`);
 

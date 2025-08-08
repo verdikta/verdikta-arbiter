@@ -35,6 +35,9 @@ const mockServices = {
 jest.mock('@verdikta/common', () => ({
   createClient: jest.fn(() => mockServices)
 }));
+// Mock local validator used by handler (replace verdikta-common validator)
+const localValidatorMock = { validateRequest: jest.fn().mockResolvedValue(true), requestSchema: {} };
+jest.mock('../../utils/validator', () => localValidatorMock);
 jest.mock('unzipper', () => ({
   Open: {
     file: jest.fn()
@@ -72,7 +75,7 @@ describe('evaluateHandler', () => {
     jest.clearAllMocks();
     
     // Mock successful validation by default
-    validator.validateRequest.mockResolvedValue(true);
+    localValidatorMock.validateRequest.mockResolvedValue(true);
     
     // Mock cleanup by default
     archiveService.cleanup.mockResolvedValue(true);
@@ -81,7 +84,7 @@ describe('evaluateHandler', () => {
   it('should handle errors appropriately', async () => {
     const request = {
       id: '1',
-      data: { cid: 'QmTest' }
+      data: { cid: 'QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
     };
 
     // Mock the error
@@ -106,7 +109,7 @@ describe('evaluateHandler', () => {
   it('should handle IPFS upload errors', async () => {
     const request = {
       id: '1',
-      data: { cid: 'QmTest' }
+      data: { cid: 'QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
     };
 
     // Mock successful archive retrieval and extraction
@@ -158,7 +161,7 @@ describe('evaluateHandler', () => {
   it('should handle successful evaluation with outcomes', async () => {
     const request = {
       id: '1',
-      data: { cid: 'QmTest' }
+      data: { cid: 'QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
     };
 
     // Mock successful archive retrieval and extraction
@@ -225,7 +228,7 @@ describe('evaluateHandler', () => {
   it('should handle provider errors with new scores format', async () => {
     const request = {
       id: '1',
-      data: { cid: 'QmTest' }
+      data: { cid: 'QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' }
     };
 
     // Mock successful archive retrieval and extraction

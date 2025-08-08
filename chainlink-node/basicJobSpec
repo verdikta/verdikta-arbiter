@@ -16,7 +16,7 @@ observationSource = """
     fetch        [type="bridge" 
                      name="verdikta-ai"
                      timeout="150s" # increase timeout to 150s
-                     requestData="{\\"id\\": $(jobSpec.externalJobID), \\"data\\": {\\"cid\\": $(decode_cbor.cid)}}"]
+                     requestData="{\\"id\\": $(jobSpec.externalJobID), \\"data\\": {\\"cid\\": $(decode_cbor.cid), \\"aggId\\": $(decode_cbor.aggId)}}"]
     
 
 parse_scores [type="jsonparse" path="data,aggregatedScore" data="$(fetch)"]
