@@ -286,6 +286,28 @@ fi
 
 cd "$OPERATOR_BUILD_DIR"
 
+# Ensure Node.js and npm are available (load nvm if installed)
+NODE_VERSION="20.18.1"
+if ! command_exists npm; then
+    if [ -d "$HOME/.nvm" ]; then
+        echo -e "${BLUE}Loading nvm and selecting Node.js v$NODE_VERSION...${NC}"
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+        # Try to use the desired version; if not installed, install it
+        nvm use "$NODE_VERSION" >/dev/null 2>&1 || {
+            echo -e "${BLUE}Installing Node.js v$NODE_VERSION via nvm...${NC}"
+            nvm install "$NODE_VERSION"
+            nvm use "$NODE_VERSION"
+        }
+    fi
+fi
+
+if ! command_exists npm; then
+    echo -e "${RED}Error: npm not found. Please ensure Node.js/npm are installed (nvm recommended) and re-run this step.${NC}"
+    echo -e "${YELLOW}Tip: Install nvm and run: nvm install $NODE_VERSION && nvm use $NODE_VERSION${NC}"
+    exit 1
+fi
+
 echo -e "${BLUE}Installing ArbiterOperator dependencies...${NC}"
 npm install
 
