@@ -5,7 +5,7 @@ pragma solidity ^0.8.19;
 /*  Imports                                                      */
 /* ────────────────────────────────────────────────────────────── */
 
-import "../lib/chainlink/src/v0.8/operatorforwarder/OperatorMod.sol";
+import "@chainlink/contracts/src/v0.8/operatorforwarder/OperatorMod.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 

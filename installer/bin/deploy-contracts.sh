@@ -251,14 +251,8 @@ cp "$ARBITER_OPERATOR_SRC_DIR/package.json" "$OPERATOR_BUILD_DIR/"
 if [ -f "$ARBITER_OPERATOR_SRC_DIR/package-lock.json" ]; then
     cp "$ARBITER_OPERATOR_SRC_DIR/package-lock.json" "$OPERATOR_BUILD_DIR/"
 fi
-# Copy the lib directory (contains OperatorMod.sol and other dependencies)
-if [ -d "$ARBITER_OPERATOR_SRC_DIR/lib" ]; then
-    cp -r "$ARBITER_OPERATOR_SRC_DIR/lib" "$OPERATOR_BUILD_DIR/"
-    echo -e "${GREEN}Copied lib directory with OperatorMod.sol and dependencies${NC}"
-else
-    echo -e "${RED}Error: lib directory not found in $ARBITER_OPERATOR_SRC_DIR${NC}"
-    exit 1
-fi
+# The operator now imports Chainlink contracts from the npm package.
+# We no longer require or copy a local lib directory.
 # Copy the Hardhat-deploy 'deploy' scripts folder if it exists (standard for hardhat-deploy)
 if [ -d "$ARBITER_OPERATOR_SRC_DIR/deploy" ]; then
     cp -r "$ARBITER_OPERATOR_SRC_DIR/deploy" "$OPERATOR_BUILD_DIR/"
