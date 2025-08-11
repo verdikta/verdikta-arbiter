@@ -1,12 +1,12 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { createClient } = require('@verdikta/common');
+const { createClient, validateRequest, requestSchema } = require('@verdikta/common');
 const aiClient = require('../services/aiClient');
 const crypto = require('crypto');
 const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
-const { validateRequest, requestSchema } = require('../utils/validator');
+// Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
   const addr = process.env.OPERATOR_ADDR;

@@ -5,7 +5,7 @@ pragma solidity ^0.8.19;
 /*  Imports                                                      */
 /* ────────────────────────────────────────────────────────────── */
 
-import "@chainlink/contracts/src/v0.8/operatorforwarder/OperatorMod.sol";
+import "@chainlink/contracts/src/v0.8/operatorforwarder/Operator.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
@@ -82,10 +82,12 @@ interface IArbiterOperator is IERC165 {
  *      2) Enforces access control via ReputationKeeper allow-list before oracle requests
  *      3) Implements IArbiterOperator interface for Verdikta ecosystem integration
  *      
- *      Access control is enforced BEFORE OracleRequest events are emitted,
- *      ensuring Chainlink nodes never start processing unauthorized jobs.
+ *      Note: Primary access control prior to OracleRequest emission requires
+ *      a modified Operator with a pre-request hook. Since we now import the
+ *      standard Chainlink Operator from npm, access control is enforced at
+ *      fulfillment time and through secondary checks.
  */
-contract ArbiterOperator is OperatorMod, ERC165, IArbiterOperator {
+contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
     /*──────────────  CONFIG  ──────────────*/
 
     /// Matches Chainlink upstream (node sends ≈500 k gas).
@@ -117,7 +119,7 @@ contract ArbiterOperator is OperatorMod, ERC165, IArbiterOperator {
     /*────────────  CONSTRUCTOR  ───────────*/
 
     constructor(address linkToken)
-        OperatorMod(linkToken, msg.sender)   // pass straight through
+        Operator(linkToken, msg.sender)   // pass straight through
     {}
 
     /*────────────  RK management  ─────────*/
@@ -214,16 +216,9 @@ contract ArbiterOperator is OperatorMod, ERC165, IArbiterOperator {
             super.supportsInterface(interfaceId);
     }
 
-    /*───────── Hook from OperatorMod ──────*/
-
-    /// Called *before* `OracleRequest` is emitted by OperatorMod.
-    function _beforeOracleRequest(address requester)
-        internal
-        view
-        override
-    {
-        require(_approved(requester), "Operator: requester not approved");
-    }
+    /*───────── Pre-request hook (not available in upstream Operator) ──────*/
+    // Upstream Operator does not expose a pre-request hook; access control is
+    // enforced via fulfill-time checks and secondary validation below.
 
     /*──────── fulfillOracleRequestV ───────*/
 

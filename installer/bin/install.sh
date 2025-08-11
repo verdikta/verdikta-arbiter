@@ -336,13 +336,24 @@ if [ -f "$INSTALLER_DIR/.env" ]; then
     echo -e "${GREEN}Environment information copied to $INSTALL_DIR/installer/.env${NC}"
 fi
 
-# Copy all utility scripts to installer directory
+# Copy all utility scripts to installer directory (excluding management scripts which are placed at install root)
 echo -e "${BLUE}Copying all utility scripts...${NC}"
 if [ -d "$UTIL_DIR" ]; then
     mkdir -p "$INSTALL_DIR/installer/util"
     # Enable dotglob to ensure all files including hidden ones are copied
     shopt -s dotglob
-    cp -r "$UTIL_DIR"/* "$INSTALL_DIR/installer/util/"
+    for item in "$UTIL_DIR"/*; do
+        base_name="$(basename "$item")"
+        case "$base_name" in
+            start-arbiter.sh|stop-arbiter.sh|arbiter-status.sh)
+                # Skip management scripts; they are copied to install root separately
+                continue
+                ;;
+            *)
+                cp -r "$item" "$INSTALL_DIR/installer/util/"
+                ;;
+        esac
+    done
     shopt -u dotglob
     # Make all shell scripts executable
     find "$INSTALL_DIR/installer/util" -name "*.sh" -type f -exec chmod +x {} \;

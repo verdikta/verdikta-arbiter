@@ -30,6 +30,10 @@ case "$OS" in
     Linux)
         if [ -f /etc/os-release ]; then
             . /etc/os-release
+            # Normalize variables used throughout the script
+            OS_ID="$ID"
+            OS_VERSION="$VERSION_ID"
+            OS_NAME="$PRETTY_NAME"
             if [ "$ID" = "ubuntu" ]; then
                 if [ "${VERSION_ID%.*}" -lt 20 ]; then
                     echo -e "${YELLOW}WARNING: Ubuntu version $VERSION_ID detected. Recommended: Ubuntu 20.04 or newer.${NC}"
@@ -44,6 +48,9 @@ case "$OS" in
             fi
         else
             echo -e "${YELLOW}WARNING: Unable to determine Linux distribution. Proceeding with caution.${NC}"
+            OS_ID="unknown"
+            OS_VERSION="unknown"
+            OS_NAME="Unknown Linux"
             WARNINGS=$((WARNINGS+1))
         fi
         ;;
@@ -51,6 +58,9 @@ case "$OS" in
         sw_vers_output=$(sw_vers)
         osx_version=$(echo "$sw_vers_output" | grep 'ProductVersion' | cut -d':' -f2 | tr -d ' \t')
         osx_major=$(echo "$osx_version" | cut -d'.' -f1)
+        OS_ID="macos"
+        OS_VERSION="$osx_version"
+        OS_NAME="macOS $osx_version"
         if [ "$osx_major" -lt 11 ]; then
             echo -e "${YELLOW}WARNING: macOS version $osx_version detected. Recommended: macOS 11.0 (Big Sur) or newer.${NC}"
             WARNINGS=$((WARNINGS+1))
@@ -59,11 +69,17 @@ case "$OS" in
         fi
         ;;
     MINGW*|MSYS*|CYGWIN*)
+        OS_ID="windows"
+        OS_VERSION="unknown"
+        OS_NAME="Windows"
         echo -e "${YELLOW}WARNING: Windows detected. WSL2 (Windows Subsystem for Linux 2) is required.${NC}"
         echo -e "${YELLOW}Please ensure you are running this script inside WSL2 with Ubuntu 20.04 or newer.${NC}"
         WARNINGS=$((WARNINGS+1))
         ;;
     *)
+        OS_ID="unknown"
+        OS_VERSION="unknown"
+        OS_NAME="Unknown OS"
         echo -e "${RED}ERROR: Unsupported operating system: $OS${NC}"
         FAIL=1
         ;;
@@ -205,10 +221,18 @@ fi
 echo -e "${BLUE}Checking for jq...${NC}"
 if ! command_exists jq; then
     echo -e "${YELLOW}jq (JSON processor) is not installed.${NC}"
+    # Ensure OS_ID is populated if possible
+    if [ -z "$OS_ID" ] && [ -f /etc/os-release ]; then
+        . /etc/os-release
+        OS_ID="$ID"
+    fi
     if [ "$OS_ID" = "ubuntu" ] || [ "$OS_ID" = "debian" ]; then
         echo -e "${BLUE}Attempting to install jq using apt-get...${NC}"
-        sudo apt-get update > /dev/null 2>&1
-        if sudo apt-get install -y jq > /dev/null 2>&1; then
+        # Choose sudo only if available; allow running as root
+        if command_exists sudo; then SUDO="sudo"; else SUDO=""; fi
+        # Avoid aborting the script on update failures due to set -e
+        $SUDO apt-get update -y > /dev/null 2>&1 || true
+        if DEBIAN_FRONTEND=noninteractive $SUDO apt-get install -y jq > /dev/null 2>&1; then
             echo -e "${GREEN}✓ jq successfully installed.${NC}"
         else
             echo -e "${RED}ERROR: Failed to automatically install jq using apt-get.${NC}"
@@ -224,7 +248,9 @@ if ! command_exists jq; then
         fi
     elif [ "$OS_ID" = "fedora" ] || [ "$OS_ID" = "centos" ] || [ "$OS_ID" = "rhel" ]; then # Basic check for yum/dnf systems
         echo -e "${BLUE}Attempting to install jq using yum or dnf...${NC}"
-        if sudo yum install -y jq > /dev/null 2>&1 || sudo dnf install -y jq > /dev/null 2>&1; then
+        if (command_exists sudo && (sudo yum install -y jq > /dev/null 2>&1 || sudo dnf install -y jq > /dev/null 2>&1)) || \
+           (command_exists yum && yum install -y jq > /dev/null 2>&1) || \
+           (command_exists dnf && dnf install -y jq > /dev/null 2>&1); then
              echo -e "${GREEN}✓ jq successfully installed.${NC}"
         else
             echo -e "${RED}ERROR: Failed to automatically install jq using yum/dnf.${NC}"

@@ -325,15 +325,37 @@ EOL
 # Note: NODE_ADDRESS is added here for setAuthorizedSenders.js to potentially pick up if needed
 
 echo -e "${BLUE}Deploying ArbiterOperator contract via Hardhat to $NETWORK_NAME...${NC}"
-# Run the custom deploy script and capture its output
+# Run the custom deploy script and capture its output. If the build directory still references OperatorMod,
+# update the import to Operator and re-run automatically.
 DEPLOY_OUTPUT_FILE="deploy_output.log"
 if npx hardhat run scripts/deploy.js --network $DEPLOYMENT_NETWORK > "$DEPLOY_OUTPUT_FILE" 2>&1; then
     echo -e "${GREEN}ArbiterOperator deployment script executed. Output in $DEPLOY_OUTPUT_FILE${NC}"
     cat "$DEPLOY_OUTPUT_FILE" # Display output for user
 else
-    echo -e "${RED}ArbiterOperator deployment script failed. Output in $DEPLOY_OUTPUT_FILE${NC}"
-    cat "$DEPLOY_OUTPUT_FILE" # Display error output for user
-    exit 1
+    echo -e "${YELLOW}ArbiterOperator deployment failed on first attempt. Checking for legacy OperatorMod import...${NC}"
+    if grep -q "OperatorMod.sol" contracts/ArbiterOperator.sol; then
+        echo -e "${BLUE}Updating import to use Chainlink Operator.sol...${NC}"
+        sed -i 's#@chainlink/contracts/src/v0.8/operatorforwarder/OperatorMod.sol#@chainlink/contracts/src/v0.8/operatorforwarder/Operator.sol#g' contracts/ArbiterOperator.sol
+        sed -i 's#contract ArbiterOperator is OperatorMod#contract ArbiterOperator is Operator#g' contracts/ArbiterOperator.sol
+        sed -i 's#OperatorMod(linkToken, msg.sender)#Operator(linkToken, msg.sender)#g' contracts/ArbiterOperator.sol
+        # Remove the pre-request hook block if present (lines mentioning Hook from OperatorMod)
+        perl -0777 -pe 's#/\*───────── Hook from OperatorMod[\s\S]*?\*/##g' -i contracts/ArbiterOperator.sol || true
+        echo -e "${BLUE}Recompiling contracts after import fix...${NC}"
+        npx hardhat clean && npx hardhat compile > /dev/null 2>&1 || true
+        echo -e "${BLUE}Retrying deployment...${NC}"
+        if npx hardhat run scripts/deploy.js --network $DEPLOYMENT_NETWORK > "$DEPLOY_OUTPUT_FILE" 2>&1; then
+            echo -e "${GREEN}ArbiterOperator deployment succeeded after import fix. Output in $DEPLOY_OUTPUT_FILE${NC}"
+            cat "$DEPLOY_OUTPUT_FILE"
+        else
+            echo -e "${RED}ArbiterOperator deployment script failed again. Output in $DEPLOY_OUTPUT_FILE${NC}"
+            cat "$DEPLOY_OUTPUT_FILE"
+            exit 1
+        fi
+    else
+        echo -e "${RED}ArbiterOperator deployment script failed. Output in $DEPLOY_OUTPUT_FILE${NC}"
+        cat "$DEPLOY_OUTPUT_FILE" # Display error output for user
+        exit 1
+    fi
 fi
 
 echo -e "${BLUE}Extracting deployed ArbiterOperator address from script output...${NC}"

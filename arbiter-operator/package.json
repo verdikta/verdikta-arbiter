@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@chainlink/contracts": "^1.4.0",
+    "@openzeppelin/contracts": "^4.9.6",
     "yargs": "^17.7.2"
   }
 }
