@@ -133,32 +133,46 @@ echo ""
 
 # Check External Adapter
 echo -e "${BLUE}External Adapter Status:${NC}"
-if check_port 8080; then
+ADAPTER_RUNNING=false
+ADAPTER_PID=""
+
+# Prefer PID file to identify adapter we manage from this install dir
+if [ -f "$ADAPTER_DIR/adapter.pid" ]; then
+    ADAPTER_PID=$(cat "$ADAPTER_DIR/adapter.pid")
+    if ps -p "$ADAPTER_PID" >/dev/null 2>&1; then
+        ADAPTER_RUNNING=true
+    fi
+fi
+
+if [ "$ADAPTER_RUNNING" = true ]; then
+    # Health + details
     if check_health "http://localhost:8080" "/health"; then
         echo -e "  Status: ${GREEN}Running${NC}"
         echo -e "  Health: ${GREEN}Healthy${NC}"
-        echo -e "  Port:   8080"
-        
-        # Check log file
-        LATEST_LOG=$(ls -t "$ADAPTER_DIR/logs/"*.log 2>/dev/null | head -n1)
-        if [ -n "$LATEST_LOG" ]; then
-            echo -e "  Log:    $LATEST_LOG"
-        fi
     else
         echo -e "  Status: ${YELLOW}Running but not responding${NC}"
         echo -e "  Health: ${RED}Unhealthy${NC}"
-        echo -e "  Port:   8080"
-        
-        # Check for recent errors in log
-        LATEST_LOG=$(ls -t "$ADAPTER_DIR/logs/"*.log 2>/dev/null | head -n1)
-        if [ -n "$LATEST_LOG" ]; then
-            echo -e "  Log:    $LATEST_LOG"
-            echo -e "  Recent Errors:"
-            tail -n 10 "$LATEST_LOG" | grep -i "error" | sed 's/^/    /'
-        fi
+    fi
+    echo -e "  Port:   8080"
+    echo -e "  PID:    $ADAPTER_PID"
+
+    # Check log file
+    LATEST_LOG=$(ls -t "$ADAPTER_DIR/logs/"*.log 2>/dev/null | head -n1)
+    if [ -n "$LATEST_LOG" ]; then
+        echo -e "  Log:    $LATEST_LOG"
     fi
 else
     echo -e "  Status: ${RED}Not Running${NC}"
+    # If port is taken, warn that something else is listening on 8080
+    if check_port 8080; then
+        echo -e "  Warning: ${YELLOW}Port 8080 is in use by another process${NC}"
+        # Show who owns the port (best-effort)
+        LSOF_OUT=$(lsof -nP -i:8080 -sTCP:LISTEN 2>/dev/null | awk 'NR>1{print "    PID: "$2", Command: "$1", Name: "$9}')
+        if [ -n "$LSOF_OUT" ]; then
+            echo -e "  Listener(s):\n$LSOF_OUT"
+        fi
+    fi
+
     # Check for crash logs
     LATEST_LOG=$(ls -t "$ADAPTER_DIR/logs/"*.log 2>/dev/null | head -n1)
     if [ -n "$LATEST_LOG" ]; then
@@ -251,8 +265,8 @@ if [ "$AI_NODE_RUNNING" = true ]; then
     ((RUNNING++))
 fi
 
-# External Adapter check
-if check_port 8080; then
+# External Adapter check (only count if our managed PID is running)
+if [ "$ADAPTER_RUNNING" = true ]; then
     ((RUNNING++))
 fi
 
