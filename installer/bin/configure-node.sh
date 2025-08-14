@@ -783,11 +783,12 @@ EOL
                     
                     # Run the re-authorization with timeout to prevent hanging
                     echo -e "${BLUE}⏳ Running key re-authorization (timeout: 10 minutes)...${NC}"
-                    if timeout 600 env OPERATOR="$OPERATOR_ADDR" NODES="$CURRENT_NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia; then
+                    # Use kill-after to ensure we don't hang indefinitely
+                    if timeout -k 15s 600s env OPERATOR="$OPERATOR_ADDR" NODES="$CURRENT_NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network base_sepolia; then
                         echo -e "${GREEN}✓ All keys successfully re-authorized with operator contract${NC}"
                         echo -e "${GREEN}✓ Authorized keys: $CURRENT_NODE_ADDRESSES${NC}"
                     else
-                        local exit_code=$?
+                        exit_code=$?
                         if [ $exit_code -eq 124 ]; then
                             echo -e "${YELLOW}⚠ Re-authorization timed out after 10 minutes${NC}"
                             echo -e "${YELLOW}  The transaction may still be processing. Check BaseScan for transaction status.${NC}"

@@ -56,8 +56,23 @@ async function main() {
   ];
   const op = await hre.ethers.getContractAt(abi, operatorAddr, signer);
 
+  /*──────── guarded read: prevent RPC hang ───*/
+  const readWithTimeout = (promise, ms, label = "read") =>
+    Promise.race([
+      promise,
+      new Promise((_, reject) => setTimeout(() => reject(new Error(`${label} timeout after ${ms}ms`)), ms)),
+    ]);
+
+  let existing;
+  try {
+    existing = (await readWithTimeout(op.getAuthorizedSenders(), 60_000, "getAuthorizedSenders")).map((a) => a.toLowerCase());
+  } catch (err) {
+    console.log("⚠ Could not read current authorized senders:", err.message);
+    console.log("  Proceeding to submit a transaction anyway (will merge client-provided addresses)." );
+    existing = [];
+  }
+
   /*──────── merge instead of overwrite ───*/
-  const existing = (await op.getAuthorizedSenders()).map((a) => a.toLowerCase());
   const merged   = Array.from(new Set([...existing, ...nodeAddrs.map((n) => n.toLowerCase())]));
 
   if (merged.length === existing.length) {
@@ -65,7 +80,34 @@ async function main() {
     return;
   }
 
-  const tx = await op.setAuthorizedSenders(merged);
+  /*──────── fee strategy (EIP-1559 preferred) ───*/
+  let overrides = {};
+  try {
+    const feeData = await signer.provider.getFeeData();
+    const fmt = (v) => (v ? Number(hre.ethers.formatUnits(v, 'gwei')).toFixed(2) + ' gwei' : null);
+    console.log("Fee data:", {
+      maxFeePerGas: fmt(feeData.maxFeePerGas),
+      maxPriorityFeePerGas: fmt(feeData.maxPriorityFeePerGas),
+      gasPrice: fmt(feeData.gasPrice),
+    });
+
+    if (feeData.maxFeePerGas && feeData.maxPriorityFeePerGas) {
+      overrides = {
+        maxFeePerGas: feeData.maxFeePerGas,
+        maxPriorityFeePerGas: feeData.maxPriorityFeePerGas,
+      };
+      console.log("Using EIP-1559 overrides (type-2).");
+    } else if (feeData.gasPrice) {
+      overrides = { gasPrice: feeData.gasPrice };
+      console.log("Using legacy gasPrice override.");
+    } else {
+      console.log("No fee data available from provider; sending without explicit overrides.");
+    }
+  } catch (e) {
+    console.log("⚠ Failed to fetch fee data:", e.message);
+  }
+
+  const tx = await op.setAuthorizedSenders(merged, overrides);
   console.log("Tx submitted :", tx.hash);
   console.log("⏳ Waiting for transaction confirmation (timeout: 5 minutes)...");
   

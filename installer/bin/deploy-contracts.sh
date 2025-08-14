@@ -430,10 +430,11 @@ fi
 echo -e "${BLUE}🔐 Authorizing Chainlink node with ArbiterOperator contract...${NC}"
 echo -e "${BLUE}   Expected time: 1-3 minutes (depending on network conditions)${NC}"
 echo -e "${BLUE}⏳ Running Hardhat script to authorize node on $NETWORK_NAME (timeout: 10 minutes)...${NC}"
-if timeout 600 env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network $DEPLOYMENT_NETWORK; then
+# Use a hard timeout with kill-after to avoid hangs if the child ignores SIGTERM
+if timeout -k 15s 600s env OPERATOR="$CONTRACT_ADDRESS" NODES="$NODE_ADDRESSES" npx hardhat run scripts/setAuthorizedSenders.js --network $DEPLOYMENT_NETWORK; then
     echo -e "${GREEN}Chainlink node authorization script executed successfully.${NC}"
 else
-    local exit_code=$?
+    exit_code=$?
     if [ $exit_code -eq 124 ]; then
         echo -e "${YELLOW}⚠ Authorization timed out after 10 minutes${NC}"
         echo -e "${YELLOW}  The transaction may still be processing. Check BaseScan for transaction status.${NC}"
