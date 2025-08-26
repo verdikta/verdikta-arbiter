@@ -77,7 +77,7 @@ async function main() {
 
   if (merged.length === existing.length) {
     console.log("Nothing new to add – all nodes already authorised.");
-    return;
+    process.exit(0);  // Explicitly exit to close provider connections
   }
 
   /*──────── fee strategy (EIP-1559 preferred) ───*/
@@ -136,6 +136,7 @@ async function main() {
       )
     ]);
     console.log("✓ Authorised senders updated.");
+    process.exit(0);  // Explicitly exit on success to close provider connections
   } catch (error) {
     if (error.message.includes('timeout')) {
       console.log("⚠ Transaction timed out but may still be mining.");
@@ -153,6 +154,6 @@ async function main() {
 
 main().catch((e) => {
   console.error(e);
-  process.exitCode = 1;
+  process.exit(1);  // Explicitly exit with error code
 });
 
