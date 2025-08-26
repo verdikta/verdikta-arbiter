@@ -107,8 +107,24 @@ async function main() {
     console.log("⚠ Failed to fetch fee data:", e.message);
   }
 
-  const tx = await op.setAuthorizedSenders(merged, overrides);
-  console.log("Tx submitted :", tx.hash);
+  // Add timeout protection for transaction submission
+  console.log("Submitting transaction...");
+  let tx;
+  try {
+    const txPromise = op.setAuthorizedSenders(merged, overrides);
+    const timeoutPromise = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Transaction submission timeout after 60 seconds')), 60000)
+    );
+    tx = await Promise.race([txPromise, timeoutPromise]);
+    console.log("Tx submitted :", tx.hash);
+  } catch (error) {
+    if (error.message.includes('Transaction submission timeout')) {
+      console.error("⚠ Transaction submission timed out after 60 seconds.");
+      console.error("  The RPC endpoint may be unresponsive. Please try again later.");
+      process.exit(1);
+    }
+    throw error; // Re-throw other errors
+  }
   console.log("⏳ Waiting for transaction confirmation (timeout: 5 minutes)...");
   
   try {
@@ -126,6 +142,9 @@ async function main() {
       console.log("  Check transaction status at: https://sepolia.basescan.org/tx/" + tx.hash);
       console.log("  If successful, authorization is complete. If failed, you may need to retry with higher gas.");
       process.exitCode = 0; // Don't fail the script for timeouts
+      // Force exit to prevent hanging
+      setTimeout(() => process.exit(0), 100); // Small delay to ensure logs are flushed
+      return; // Exit the function
     } else {
       throw error; // Re-throw other errors
     }
