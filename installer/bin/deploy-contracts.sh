@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # Verdikta Arbiter Node - Smart Contracts Deployment Script
-# Deploys the necessary smart contracts to Base Sepolia network
+# Deploys the necessary smart contracts to the selected Base network
 
 set -e  # Exit on any error
 
@@ -201,7 +201,7 @@ echo -e "${GREEN}Using first key as primary node address: $NODE_ADDRESS${NC}"
 if [ -z "$PRIVATE_KEY" ]; then
     echo
     echo -e "${YELLOW}To deploy the operator contract, a wallet private key is needed.${NC}"
-    echo -e "${YELLOW}This key will be used only for deployment and should have Base Sepolia ETH.${NC}"
+    echo -e "${YELLOW}This key will be used only for deployment and should have $NETWORK_NAME ETH.${NC}"
     read -p "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
 
     # Validate private key format (basic check)

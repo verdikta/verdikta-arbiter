@@ -713,7 +713,7 @@ else
                         OPERATOR_SCRIPT_DIR="$REPO_ROOT/arbiter-operator"
                         if [ -f "$OPERATOR_SCRIPT_DIR/scripts/setAuthorizedSenders.js" ]; then
                             cd "$OPERATOR_SCRIPT_DIR"
-                            if env NODES="$ALL_KEYS" OPERATOR="$OPERATOR_ADDR" HARDHAT_NETWORK=base_sepolia npx hardhat run scripts/setAuthorizedSenders.js; then
+                            if env NODES="$ALL_KEYS" OPERATOR="$OPERATOR_ADDR" npx hardhat run scripts/setAuthorizedSenders.js --network $DEPLOYMENT_NETWORK; then
                                 echo -e "${GREEN}✓ All keys successfully authorized on operator contract${NC}"
                             else
                                 echo -e "${YELLOW}⚠ Failed to authorize keys automatically after reconfiguration${NC}"

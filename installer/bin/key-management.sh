@@ -14,7 +14,19 @@ NC='\033[0m' # No Color
 
 # Configuration
 CHAINLINK_CONTAINER_NAME="chainlink"
-CHAIN_ID="84532"  # Base Sepolia
+
+# Load environment variables to get network configuration
+INSTALLER_DIR="$(dirname "$(dirname "$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )")")"
+if [ -f "$INSTALLER_DIR/installer/.env" ]; then
+    source "$INSTALLER_DIR/installer/.env" 2>/dev/null || true
+fi
+
+# Set chain ID based on deployment network
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    CHAIN_ID="8453"  # Base Mainnet
+else
+    CHAIN_ID="84532"  # Base Sepolia (default)
+fi
 
 # Function to log verbose messages
 log_verbose() {

@@ -394,7 +394,22 @@ echo -e "${GREEN}Created MyOperator.sol with fixed fulfillOracleRequest3 functio
 
 # Create Truffle configuration
 echo -e "${BLUE}Creating Truffle configuration...${NC}"
-cat > "$OPERATOR_DIR/truffle-config.js" << 'EOL'
+
+# Set network-specific values based on DEPLOYMENT_NETWORK
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    TRUFFLE_NETWORK_NAME="baseMainnet"
+    TRUFFLE_CHAIN_ID="8453"
+    INFURA_ENDPOINT="https://base-mainnet.infura.io/v3/"
+    PUBLIC_RPC_ENDPOINTS='"https://mainnet.base.org", "https://base-rpc.publicnode.com", "https://base.blockpi.network/v1/rpc/public"'
+else
+    # Default to Base Sepolia
+    TRUFFLE_NETWORK_NAME="baseSepolia"
+    TRUFFLE_CHAIN_ID="84532"
+    INFURA_ENDPOINT="https://base-sepolia.infura.io/v3/"
+    PUBLIC_RPC_ENDPOINTS='"https://sepolia.base.org", "https://base-sepolia-rpc.publicnode.com", "https://base-sepolia.blockpi.network/v1/rpc/public"'
+fi
+
+cat > "$OPERATOR_DIR/truffle-config.js" << EOL
 const HDWalletProvider = require('@truffle/hdwallet-provider');
 require('dotenv').config();
 
@@ -402,15 +417,13 @@ require('dotenv').config();
 const getProvider = (privateKey) => {
   // Primary endpoint with Infura
   const endpoints = [
-    `https://base-sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
+    \`${INFURA_ENDPOINT}\${process.env.INFURA_API_KEY}\`,
   ];
   
   // Add public RPC endpoints as fallbacks
   if (process.env.USE_PUBLIC_RPC === 'true') {
     endpoints.push(
-      "https://sepolia.base.org",
-      "https://base-sepolia-rpc.publicnode.com",
-      "https://base-sepolia.blockpi.network/v1/rpc/public"
+      ${PUBLIC_RPC_ENDPOINTS}
     );
   }
   
@@ -425,9 +438,9 @@ const getProvider = (privateKey) => {
 
 module.exports = {
   networks: {
-    baseSepolia: {
+    ${TRUFFLE_NETWORK_NAME}: {
       provider: getProvider(process.env.PRIVATE_KEY),
-      network_id: 84532,
+      network_id: ${TRUFFLE_CHAIN_ID},
       confirmations: 2,
       timeoutBlocks: 200,
       skipDryRun: true,
@@ -457,10 +470,8 @@ require('dotenv').config();
 
 async function testRpcConnection() {
   const endpoints = [
-    `https://base-sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
-    "https://sepolia.base.org",
-    "https://base-sepolia-rpc.publicnode.com",
-    "https://base-sepolia.blockpi.network/v1/rpc/public"
+    \`${INFURA_ENDPOINT}\${process.env.INFURA_API_KEY}\`,
+    ${PUBLIC_RPC_ENDPOINTS}
   ];
   
   let successfulEndpoints = [];
@@ -534,8 +545,8 @@ cat > "$OPERATOR_DIR/migrations/2_deploy_operator.js" << 'EOL'
 const MyOperator = artifacts.require("MyOperator");
 
 module.exports = function(deployer, network) {
-  // Base Sepolia LINK token address
-  const linkTokenAddress = "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
+  // Get LINK token address based on network
+  const linkTokenAddress = process.env.LINK_TOKEN_ADDRESS || "0xE4aB69C077896252FAFBD49EFD26B5D171A32410";
   
   deployer.deploy(MyOperator, linkTokenAddress)
     .then(async (operatorInstance) => {
@@ -619,25 +630,39 @@ if ! ask_yes_no "Are you sure you want to proceed?"; then
     exit 1
 fi
 
+# Get LINK token address for the network
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    LINK_TOKEN_ADDRESS="0x88Fb150BDc53A65fe94Dea0c9BA0a6dAf8C6e196"
+else
+    # Base Sepolia
+    LINK_TOKEN_ADDRESS="0xE4aB69C077896252FAFBD49EFD26B5D171A32410"
+fi
+
 # Create .env file for Truffle deployment
 echo -e "${BLUE}Creating .env file for Truffle deployment...${NC}"
 cat > "$OPERATOR_DIR/.env" << EOL
 PRIVATE_KEY=$PRIVATE_KEY
 INFURA_API_KEY=$INFURA_API_KEY
+LINK_TOKEN_ADDRESS=$LINK_TOKEN_ADDRESS
 EOL
 chmod 600 "$OPERATOR_DIR/.env"
 echo -e "${GREEN}.env file created with deployment credentials.${NC}"
 
 # Deploy Operator contract
-echo -e "${BLUE}Deploying Operator contract to Base Sepolia...${NC}"
-echo -e "${YELLOW}WARNING: This will deploy the contract to the Base Sepolia testnet.${NC}"
-echo -e "${YELLOW}Make sure your wallet has enough Base Sepolia ETH for gas fees.${NC}"
+echo -e "${BLUE}Deploying Operator contract to $NETWORK_NAME...${NC}"
+if [ "$NETWORK_TYPE" = "testnet" ]; then
+    echo -e "${YELLOW}WARNING: This will deploy the contract to the $NETWORK_NAME testnet.${NC}"
+    echo -e "${YELLOW}Make sure your wallet has enough $NETWORK_NAME ETH for gas fees.${NC}"
+else
+    echo -e "${RED}WARNING: This will deploy the contract to $NETWORK_NAME (PRODUCTION).${NC}"
+    echo -e "${RED}This will use real ETH for gas fees. Make sure you want to proceed.${NC}"
+fi
 
 if ask_yes_no "Do you want to deploy the contract now?"; then
     cd "$OPERATOR_DIR"
     
     echo -e "${BLUE}Starting deployment with retry logic...${NC}"
-    if retry_with_backoff 3 "npx truffle migrate --network baseSepolia"; then
+    if retry_with_backoff 3 "npx truffle migrate --network $TRUFFLE_NETWORK_NAME"; then
         echo -e "${GREEN}Contract deployed successfully!${NC}"
     else
         echo -e "${YELLOW}Initial deployment failed. This may be due to RPC rate limiting or import path issues.${NC}"
@@ -796,7 +821,7 @@ EOL
         
         # Try deployment again with the simplified contract and extended retry time
         echo -e "${BLUE}Attempting deployment with simplified contract...${NC}"
-        if retry_with_backoff 5 "npx truffle migrate --network baseSepolia"; then
+        if retry_with_backoff 5 "npx truffle migrate --network $TRUFFLE_NETWORK_NAME"; then
             echo -e "${GREEN}Deployment with simplified contract successful!${NC}"
         else
             echo -e "${RED}Deployment failed after multiple attempts.${NC}"
@@ -857,7 +882,7 @@ cd "$OPERATOR_DIR"
 export NODE_ADDRESS="$NODE_ADDRESS"
 
 # Use retry logic for node authorization
-if retry_with_backoff 3 "npx truffle exec scripts/authorize-node.js --network baseSepolia"; then
+if retry_with_backoff 3 "npx truffle exec scripts/authorize-node.js --network $TRUFFLE_NETWORK_NAME"; then
     echo -e "${GREEN}Node authorization successful!${NC}"
 else
     echo -e "${RED}Node authorization failed after multiple attempts.${NC}"
@@ -870,7 +895,7 @@ else
     sed -i.bak 's/pollingInterval: [0-9]\+/pollingInterval: 30000/' "$OPERATOR_DIR/truffle-config.js"
     sed -i.bak 's/networkCheckTimeout: [0-9]\+/networkCheckTimeout: 240000/' "$OPERATOR_DIR/truffle-config.js"
     
-    if retry_with_backoff 5 "npx truffle exec scripts/authorize-node.js --network baseSepolia"; then
+    if retry_with_backoff 5 "npx truffle exec scripts/authorize-node.js --network $TRUFFLE_NETWORK_NAME"; then
         echo -e "${GREEN}Node authorization succeeded with extended timeouts!${NC}"
     else
         echo -e "${RED}Node authorization failed. Please check the logs for more information.${NC}"
