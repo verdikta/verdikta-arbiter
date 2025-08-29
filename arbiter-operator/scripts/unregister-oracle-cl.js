@@ -108,9 +108,27 @@ const toBytes32 = (id) => {
       }
 
       console.log("Calling deregisterOracle…");
-      const tx = await keeper.deregisterOracle(argv.oracle, jobId);
-      await tx.wait();
-      console.log("✓ Deregistered (tx:", tx.hash, ")");
+      
+      try {
+        // Try to estimate gas first
+        const gasEstimate = await keeper.deregisterOracle.estimateGas(argv.oracle, jobId);
+        const gasLimit = Math.ceil(Number(gasEstimate) * 1.2); // 20% buffer
+        console.log(`  Gas estimate: ${gasEstimate}, using limit: ${gasLimit}`);
+        
+        const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit });
+        await tx.wait();
+        console.log("✓ Deregistered (tx:", tx.hash, ")");
+      } catch (error) {
+        console.error("Gas estimation failed, trying with fallback gas limit...");
+        
+        // Fallback with reasonable gas limit
+        const fallbackGasLimit = 300000;
+        console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
+        
+        const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit: fallbackGasLimit });
+        await tx.wait();
+        console.log("✓ Deregistered with fallback gas (tx:", tx.hash, ")");
+      }
     }
 
     /* wVDKA balance after -------------------------------------------- */
