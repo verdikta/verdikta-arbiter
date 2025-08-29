@@ -91,8 +91,8 @@ const toBytes32 = (id) => {
     const classes    = argv.classes.map(Number);
 
     /* Fees & stake ---------------------------------------------------- */
-    const LINK_FEE   = ethers.parseUnits("0.006", 18);  // 0.05 LINK
-    const VDKA_STAKE = ethers.parseUnits("100", 18);   // 100 wVDKA
+    const LINK_FEE   = ethers.parseUnits("0.002", 18); 
+    const VDKA_STAKE = ethers.parseUnits("100", 18);   
     const totalStake = VDKA_STAKE * BigInt(argv.jobids.length);
 
     /* Debug: Check balances ------------------------------------------ */
@@ -104,12 +104,6 @@ const toBytes32 = (id) => {
     console.log(`Required wVDKA stake: ${ethers.formatEther(totalStake)}`);
     console.log(`Required LINK fee per job: ${ethers.formatEther(LINK_FEE)}`);
     
-    /*
-    if (linkBal < LINK_FEE) {
-      throw new Error(`Insufficient LINK balance. Need ${ethers.formatEther(LINK_FEE)}, have ${ethers.formatEther(linkBal)}`);
-    }
-    */
-
     /* Debug: Validate parameters ------------------------------------- */
     console.log("\n=== Parameter Validation ===");
     console.log(`Oracle address: ${oracleAddr}`);
@@ -117,51 +111,6 @@ const toBytes32 = (id) => {
     console.log(`Classes array type: ${classes.map(c => typeof c).join(', ')}`);
     console.log(`Keeper address: ${keeperAddr}`);
     console.log(`Job IDs to register: ${argv.jobids.length}`);
-
-    /* Debug: Check contract state ------------------------------------ */
-    console.log("\n=== Contract State Checks ===");
-    
-    try {
-      // Check if keeper contract has specific requirements
-      try {
-        const keeperOwner = await keeper.owner();
-        console.log(`Keeper owner: ${keeperOwner}`);
-      } catch (e) {
-        console.log("Keeper owner check failed (method may not exist)");
-      }
-      
-      try {
-        const isAuthorized = await keeper.isAuthorized(owner);
-        console.log(`Is caller authorized: ${isAuthorized}`);
-      } catch (e) {
-        console.log("Authorization check failed (method may not exist)");
-      }
-      
-      try {
-        const minStake = await keeper.minimumStake();
-        console.log(`Minimum stake required: ${ethers.formatEther(minStake)}`);
-      } catch (e) {
-        console.log("Minimum stake check failed (method may not exist)");
-      }
-      
-      try {
-        const regFee = await keeper.registrationFee();
-        console.log(`Registration fee: ${ethers.formatEther(regFee)}`);
-      } catch (e) {
-        console.log("Registration fee check failed (method may not exist)");
-      }
-      
-      // Check if oracle is already authorized for this aggregator
-      try {
-        const isOracleAuthorized = await keeper.isAuthorized(oracleAddr);
-        console.log(`Is oracle authorized: ${isOracleAuthorized}`);
-      } catch (e) {
-        console.log("Oracle authorization check failed (method may not exist)");
-      }
-      
-    } catch (stateError) {
-      console.log("Contract state checks failed:", stateError.message);
-    }
 
     /* wVDKA allowance (one approval covers every job) ----------------- */
     const bal = await verdikta.balanceOf(owner);
