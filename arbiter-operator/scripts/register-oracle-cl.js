@@ -104,9 +104,11 @@ const toBytes32 = (id) => {
     console.log(`Required wVDKA stake: ${ethers.formatEther(totalStake)}`);
     console.log(`Required LINK fee per job: ${ethers.formatEther(LINK_FEE)}`);
     
+    /*
     if (linkBal < LINK_FEE) {
       throw new Error(`Insufficient LINK balance. Need ${ethers.formatEther(LINK_FEE)}, have ${ethers.formatEther(linkBal)}`);
     }
+    */
 
     /* Debug: Validate parameters ------------------------------------- */
     console.log("\n=== Parameter Validation ===");
