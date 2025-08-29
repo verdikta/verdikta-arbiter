@@ -442,11 +442,9 @@ except Exception as e:
 # Set network-specific configuration values for job specs
 if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
     CHAIN_ID="8453"
-    GAS_PRICE_WEI="1000000000"  # 1 gwei for mainnet
 else
     # Default to Base Sepolia
     CHAIN_ID="84532"
-    GAS_PRICE_WEI="10000000000"  # 10 gwei for testnet
 fi
 
 echo -e "${BLUE}Using network configuration: Chain ID $CHAIN_ID, Gas Price $GAS_PRICE_WEI wei${NC}"
