@@ -72,8 +72,29 @@ load_nvm() {
             return 1
         fi
     else
-        echo -e "${RED}NVM directory not found. Please run setup-environment.sh first.${NC}"
-        return 1
+        echo -e "${YELLOW}NVM directory not found. Attempting to install NVM...${NC}"
+        # Try to install NVM if it's missing
+        if command_exists curl; then
+            echo -e "${BLUE}Installing NVM...${NC}"
+            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+            
+            # Source nvm immediately after installation
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+            
+            if [ -d "$HOME/.nvm" ] && command_exists nvm; then
+                echo -e "${GREEN}NVM installed successfully.${NC}"
+                return 1  # Return 1 to indicate Node.js still needs to be installed
+            else
+                echo -e "${RED}Failed to install NVM. Please install Node.js v20.18.1 manually or run setup-environment.sh.${NC}"
+                return 1
+            fi
+        else
+            echo -e "${RED}curl not found. Cannot install NVM automatically.${NC}"
+            echo -e "${RED}Please run setup-environment.sh first or install Node.js v20.18.1 manually.${NC}"
+            return 1
+        fi
     fi
 }
 

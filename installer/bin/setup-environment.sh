@@ -114,7 +114,7 @@ install_node() {
         
         # Make sure nvm command is available
         if ! command_exists nvm; then
-            echo -e "${RED}Failed to install nvm. Please install Node.js v20.18.0 manually.${NC}"
+            echo -e "${RED}Failed to install nvm. Please install Node.js v20.18.1 manually.${NC}"
             return 1
         fi
     else
@@ -126,11 +126,11 @@ install_node() {
         fi
     fi
     
-    # Install Node.js 20.18
-    echo -e "${BLUE}Installing Node.js v20.18.0...${NC}"
-    nvm install 20.18
-    nvm use 20.18
-    nvm alias default 20.18
+    # Install Node.js 20.18.1
+    echo -e "${BLUE}Installing Node.js v20.18.1...${NC}"
+    nvm install 20.18.1
+    nvm use 20.18.1
+    nvm alias default 20.18.1
     
     # Verify installation
     if command_exists node; then
