@@ -144,11 +144,31 @@ const toBytes32 = (id) => {
         const gasEstimate = await keeper.registerOracle.estimateGas(oracleAddr, jobId, LINK_FEE, classes);
         console.log(`  Gas estimate: ${gasEstimate.toString()}`);
         
-        const tx = await keeper.registerOracle(oracleAddr, jobId, LINK_FEE, classes);
+        // Add buffer to gas estimate for safety (20% buffer)
+        const gasLimit = Math.ceil(Number(gasEstimate) * 1.2);
+        console.log(`  Using gas limit: ${gasLimit}`);
+        
+        const tx = await keeper.registerOracle(oracleAddr, jobId, LINK_FEE, classes, { gasLimit });
         await tx.wait();
       console.log("✓ Registered");
       } catch (estimateError) {
-        console.error("Gas estimation failed, trying to get more details...");
+        console.error("Gas estimation failed, trying with fallback gas limit...");
+        
+        // Try with a reasonable fallback gas limit for mainnet
+        const fallbackGasLimit = 500000; // 500k gas as fallback
+        console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
+        
+        try {
+          const tx = await keeper.registerOracle(oracleAddr, jobId, LINK_FEE, classes, { gasLimit: fallbackGasLimit });
+          await tx.wait();
+          console.log("✓ Registered with fallback gas limit");
+          continue; // Skip the error handling below and move to next job
+        } catch (fallbackError) {
+          console.error("Fallback transaction also failed:", fallbackError.message);
+        }
+        
+        // If fallback also fails, try to get more details
+        console.error("Both gas estimation and fallback failed, getting more details...");
         
         // Try to call the function statically to get a better error message
         try {

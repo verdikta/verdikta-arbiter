@@ -34,9 +34,7 @@ encode_data  [type="ethabiencode"
     submit_tx [type="ethtx" 
           to="{CONTRACT_ADDRESS}" 
           data="$(encode_tx)" 
-          gasLimit="4000000"
           minConfirmations="2"
-          gasPriceWei="<GAS_PRICE_WEI>"
           evmChainID="<CHAIN_ID>"]
 
     decode_log -> decode_cbor -> fetch -> parse_scores -> parse_cid -> encode_data -> encode_tx -> submit_tx

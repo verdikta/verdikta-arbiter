@@ -103,6 +103,20 @@ async function main() {
     } else {
       console.log("No fee data available from provider; sending without explicit overrides.");
     }
+    
+    // Add gas estimation
+    try {
+      console.log("Estimating gas for setAuthorizedSenders...");
+      const gasEstimate = await op.setAuthorizedSenders.estimateGas(merged);
+      const gasLimit = Math.ceil(Number(gasEstimate) * 1.2); // 20% buffer
+      overrides.gasLimit = gasLimit;
+      console.log(`Gas estimate: ${gasEstimate.toString()}, using limit: ${gasLimit}`);
+    } catch (gasError) {
+      console.log("Gas estimation failed, using fallback gas limit...");
+      console.log("Gas error:", gasError.message);
+      overrides.gasLimit = 500000; // 500k fallback for setAuthorizedSenders
+      console.log(`Using fallback gas limit: ${overrides.gasLimit}`);
+    }
   } catch (e) {
     console.log("⚠ Failed to fetch fee data:", e.message);
   }
