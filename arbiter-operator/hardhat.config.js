@@ -57,8 +57,9 @@ module.exports = {
       httpAgent: keepAliveAgent,
       httpsAgent: keepAliveAgent,
       chainId: 8453,
-      gas: 10_000_000,
-      gasPrice: 20_000_000, // 0.02 gwei - lower than testnet
+      // Remove hardcoded gas limit to let ethers estimate it
+      // gas: 10_000_000,  
+      gasPrice: 1_000_000_000, // 1 gwei
       accounts: ACCOUNTS,
     },
   },
