@@ -133,21 +133,8 @@ nav:
   - Home: index.md
   - Getting Started:
     - overview.md
-    - Prerequisites: prerequisites.md
-    - Quick Start: quick-start.md
-  - Installation:
-    - installation/index.md
+    - Installation Guide: quick-start.md
     - Prompts Guide: installation/prompts-guide.md
-    - Automated Installation: installation/automated.md
-    - Manual Installation: installation/manual.md
-    - Environment Setup: installation/environment.md
-    - Component Installation:
-      - AI Node: installation/components/ai-node.md
-      - External Adapter: installation/components/external-adapter.md
-      - Docker & PostgreSQL: installation/components/docker-postgres.md
-      - Chainlink Node: installation/components/chainlink.md
-      - Smart Contracts: installation/components/smart-contracts.md
-      - Configuration: installation/components/configuration.md
   - Management:
     - management/index.md
     - Starting Services: management/starting.md
@@ -174,4 +161,6 @@ nav:
     - Script Reference: reference/scripts.md
     - Configuration Reference: reference/configuration.md
     - API Endpoints: reference/api.md
-    - File Locations: reference/files.md 
+    - File Locations: reference/files.md
+    - Design Documents:
+      - Multi-Arbiter Design: reference/design/multi-arbiter.md 

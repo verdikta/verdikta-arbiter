@@ -2,16 +2,38 @@
 
 Get your Verdikta Arbiter Node up and running in under 30 minutes with our automated installer. This comprehensive guide walks you through every step with all the information you need in one place.
 
-!!! info "What You'll Need"
-    
-    Before starting, gather these required items:
-    
-    - **OpenAI API Key** (for AI arbitration)
-    - **Infura API Key** (for blockchain access) 
-    - **Network Funds**: Base Sepolia ETH (free testnet) OR Base Mainnet ETH (~$50-100 for production)
-    - **Test Wallet Private Key** (never use your main wallet!)
-    
-    📋 Full checklist: [Prerequisites Guide](prerequisites.md)
+## Prerequisites
+
+Before starting, ensure you have:
+
+### System Requirements
+- **OS**: Ubuntu 20.04+, macOS 11+, or Windows WSL2
+- **Hardware**: 8GB+ RAM, 200GB+ storage, 2+ CPU cores
+- **Software**: Git, Docker, Node.js (auto-installed if missing)
+
+### Required API Keys
+- **OpenAI API Key**: For AI-powered arbitration ([Get API Key](https://platform.openai.com/))
+- **Web3 Provider**: Choose Infura, Alchemy, or QuickNode ([Infura](https://infura.io/), [Alchemy](https://alchemy.com/))
+- **IPFS Service**: For document storage ([Pinata](https://pinata.cloud/) recommended)
+- **Optional**: Anthropic API Key for Claude AI ([Anthropic Console](https://console.anthropic.com/))
+
+### Network Funds
+
+**For Testing (Recommended)**:
+- Base Sepolia ETH (free from [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet))
+- Base Sepolia LINK (free from [Chainlink Faucet](https://faucets.chain.link/))
+
+**For Production**:
+- Base Mainnet ETH (~$50-100 USD)
+- Base Mainnet LINK (~10 LINK tokens)
+
+### Wallet Setup
+- Create a **separate test wallet** (never use your main wallet!)
+- Export the private key (remove 0x prefix)
+- Fund with testnet tokens for safe testing
+
+!!! danger "Security Warning"
+    Always use a separate test wallet for oracle deployment. Never use your main wallet's private key.
 
 ## Step 1: Clone Repository
 
@@ -27,7 +49,7 @@ cd verdikta-arbiter/installer
 Start the installation process:
 
 ```bash
-bash bin/install.sh
+./bin/install.sh -s
 ```
 
 The installer will guide you through **9 main steps**. Here's what to expect at each stage:
