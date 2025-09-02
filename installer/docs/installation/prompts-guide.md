@@ -1,22 +1,22 @@
 # Installer Prompts Guide
 
-This guide explains every prompt you'll encounter during the Verdikta Arbiter Node installation process and provides detailed instructions on how to obtain the required information.
+This guide explains every prompt you'll encounter during the automated Verdikta Arbiter Node installation and provides detailed instructions on how to obtain the required information.
 
-## Environment Setup Prompts
+## Installation Prompts
 
 ### 1. Installation Directory
 
-**Prompt:** `Installation directory [/home/user/verdikta-arbiter-node]:`
+**Prompt:** `Installation directory [~/verdikta-arbiter-node]:`
 
-**What it means:** The installer asks where you want to install the Verdikta Arbiter Node files.
+**What it means:** Where to install your Verdikta Arbiter Node files.
 
 **How to respond:**
-- Press **Enter** to use the default directory
-- Or type a custom path like `/opt/verdikta-arbiter` or `/home/myuser/verdikta-node`
+- Press **Enter** to use the default directory (`~/verdikta-arbiter-node`)
+- Or type a custom path like `/opt/verdikta-arbiter`
 
 **Example:**
 ```bash
-Installation directory [/home/user/verdikta-arbiter-node]: /opt/verdikta-arbiter
+Installation directory [~/verdikta-arbiter-node]: /opt/verdikta-arbiter
 ```
 
 ### 2. API Keys Configuration
@@ -25,18 +25,14 @@ Installation directory [/home/user/verdikta-arbiter-node]: /opt/verdikta-arbiter
 
 **Prompt:** `Enter your OpenAI API Key (leave blank to skip):`
 
-**What it means:** The AI node requires an OpenAI API key to use GPT models for arbitration decisions.
+**What it means:** Required for AI processing using GPT models.
 
 **How to obtain:**
 1. Go to [OpenAI Platform](https://platform.openai.com/)
-2. Sign up or log in to your account
-3. Navigate to **API Keys** in the left sidebar
+2. Sign up or log in
+3. Navigate to **API Keys**
 4. Click **"+ Create new secret key"**
-5. Give it a name like "Verdikta Arbiter"
-6. Copy the key (starts with `sk-...`)
-
-!!! warning "Important"
-    Keep your OpenAI API key secure and never share it publicly. You'll need to fund your OpenAI account for the API to work.
+5. Copy the key (starts with `sk-...`)
 
 **Example:**
 ```bash
@@ -47,7 +43,7 @@ Enter your OpenAI API Key (leave blank to skip): sk-1234567890abcdef...
 
 **Prompt:** `Enter your Anthropic API Key (leave blank to skip):`
 
-**What it means:** Alternative AI provider for arbitration decisions using Claude models.
+**What it means:** Alternative AI provider using Claude models.
 
 **How to obtain:**
 1. Go to [Anthropic Console](https://console.anthropic.com/)
@@ -63,292 +59,147 @@ Enter your Anthropic API Key (leave blank to skip): sk-ant-...
 
 #### Infura API Key
 
-**Prompt:** `Enter your Infura API Key:`
+**Prompt:** `Enter your Infura API Key (leave blank to skip):`
 
-**What it means:** Infura provides Ethereum node access. This is required for the Chainlink node to connect to Base Sepolia blockchain.
+**What it means:** Web3 provider for blockchain connectivity.
 
 **How to obtain:**
 1. Go to [Infura.io](https://infura.io/)
-2. Sign up for a free account
-3. Create a new project
-4. Select **Ethereum** as the network
-5. Go to your project dashboard
-6. Copy the **Project ID** (this is your API key)
-
-!!! tip "Free Tier"
-    Infura's free tier provides 100,000 requests per day, which is sufficient for testing and development.
+2. Create a free account and new project
+3. Copy the **Project ID**
 
 **Example:**
 ```bash
-Enter your Infura API Key: 1234567890abcdef1234567890abcdef
+Enter your Infura API Key (leave blank to skip): 1234567890abcdef...
 ```
 
 #### Pinata JWT Token
 
 **Prompt:** `Enter your Pinata JWT (leave blank to skip):`
 
-**What it means:** Pinata provides IPFS storage services for decentralized file storage.
+**What it means:** IPFS storage service for decentralized file storage.
 
 **How to obtain:**
 1. Go to [Pinata.cloud](https://pinata.cloud/)
-2. Sign up for an account
-3. Navigate to **API Keys** in the dashboard
-4. Click **"New Key"**
-5. Give it admin permissions
-6. Copy the JWT token
+2. Sign up and navigate to **API Keys**
+3. Create a new key with admin permissions
+4. Copy the JWT token
 
 **Example:**
 ```bash
 Enter your Pinata JWT (leave blank to skip): eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
 ```
 
-#### Wallet Private Key
+### 3. Network Selection
+
+**Prompt:** `Select network (1 for Base Sepolia, 2 for Base Mainnet) [1]:`
+
+**What it means:** Choose which blockchain network to deploy contracts on.
+
+**How to respond:**
+- Press **Enter** or type `1` for Base Sepolia (testnet - recommended)
+- Type `2` for Base Mainnet (production - requires real ETH)
+
+**Example:**
+```bash
+Select network (1 for Base Sepolia, 2 for Base Mainnet) [1]: 1
+```
+
+### 4. Wallet Private Key
 
 **Prompt:** `Enter your wallet private key for contract deployment (without 0x prefix):`
 
-**What it means:** A private key from a wallet with Base Sepolia ETH is needed to deploy smart contracts.
-
-**How to obtain from MetaMask:**
-1. Open MetaMask extension
-2. Click the account menu (three dots)
-3. Select **Account Details**
-4. Click **Export Private Key**
-5. Enter your MetaMask password
-6. Copy the private key **without the 0x prefix**
-
-!!! danger "Security Warning"
-    - **Never use your main wallet** with real funds
-    - Create a separate test wallet for this purpose
-    - Only fund it with Base Sepolia test ETH
-    - The private key should be exactly 64 hexadecimal characters
-    - Remove the `0x` prefix if present
-
-**How to get Base Sepolia ETH:**
-1. Go to [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia)
-2. Connect your test wallet
-3. Request test ETH (you need about 0.01 ETH for deployment)
-
-**Example:**
-```bash
-Enter your wallet private key (without 0x prefix): a1b2c3d4e5f6789012345678901234567890abcdef1234567890abcdef123456
-```
-
-## Docker Setup Prompts
-
-### PostgreSQL Password
-
-**Prompt:** `Please enter the existing PostgreSQL password (leave blank to generate a new one):`
-
-**What it means:** The system needs a password for the PostgreSQL database that stores Chainlink node data.
-
-**How to respond:**
-- Press **Enter** to generate a secure random password (recommended)
-- Or enter a custom password (must be strong)
-
-**Example:**
-```bash
-Please enter the existing PostgreSQL password (leave blank to generate a new one): [ENTER]
-```
-
-## Chainlink Node Setup Prompts
-
-### Chainlink UI Login Email
-
-**Prompt:** `Enter email for Chainlink node login [admin@example.com]:`
-
-**What it means:** Email address for logging into the Chainlink node web interface.
-
-**How to respond:**
-- Press **Enter** to use the default email
-- Or enter your preferred email address
-
-**Example:**
-```bash
-Enter email for Chainlink node login [admin@example.com]: myemail@example.com
-```
-
-## Contract Deployment Prompts
-
-### Chainlink Node Address
-
-**Prompt:** `Enter the Chainlink node address (0x...):`
-
-**What it means:** The Ethereum address of your Chainlink node, needed for contract authorization.
+**What it means:** Private key from a wallet with Base Sepolia ETH for deploying smart contracts.
 
 **How to obtain:**
-1. Open Chainlink node UI at `http://localhost:6688`
-2. Log in with your credentials
-3. Navigate to **Key Management** → **EVM Chain Accounts**
-4. Copy the **Node Address** (starts with 0x)
+1. Create a wallet using MetaMask, Trust Wallet, or similar
+2. Export the private key (remove the `0x` prefix)
+3. Fund it with Base Sepolia ETH from a faucet
+4. Also add Base Sepolia LINK tokens
 
-!!! note "Format"
-    The address must be exactly 42 characters: `0x` followed by 40 hexadecimal characters.
-
-**Example:**
-```bash
-Enter the Chainlink node address (0x...): 0x1234567890abcdef1234567890abcdef12345678
-```
-
-### Manual Contract Address Entry
-
-**Prompt:** `Please enter the deployed ArbiterOperator contract address manually:`
-
-**What it means:** If automatic contract deployment detection fails, you need to provide the contract address manually.
-
-**How to respond:**
-- Check the deployment logs for the contract address
-- Look for a line like "ArbiterOperator deployed to: 0x..."
-- Copy the address from the deployment output
+!!! danger "Security Warning"
+    **TESTNET ONLY**: Never use mainnet private keys. Keep private keys secure and never share them.
 
 **Example:**
 ```bash
-Please enter the deployed ArbiterOperator contract address manually: 0xabcdef1234567890abcdef1234567890abcdef12
+Enter your wallet private key (without 0x prefix): 1234567890abcdef1234567890abcdef...
 ```
 
-## Node Configuration Prompts
+### 5. Logging Level
 
-### Host IP Address
+**Prompt:** `Enter your choice (1-4) [3 for info]:`
 
-**Prompt:** `Enter your machine's IP address or hostname [192.168.1.100]:`
+**What it means:** Choose the logging verbosity for your services.
 
-**What it means:** The IP address where the External Adapter will be accessible to the Chainlink node.
-
-**How to determine:**
-- For local testing: use `localhost` or `127.0.0.1`
-- For network access: use your machine's local IP (shown in brackets)
-- For production: use your server's public IP or domain name
-
-**Finding your IP:**
-```bash
-# Linux/macOS
-hostname -I | awk '{print $1}'
-
-# Or check network settings in your OS
-```
+**Options:**
+- `1` - error: Only error messages
+- `2` - warn: Warnings and errors  
+- `3` - info: General information (recommended)
+- `4` - debug: Detailed debugging information
 
 **Example:**
 ```bash
-Enter your machine's IP address or hostname [192.168.1.100]: 192.168.1.100
+Choose a logging level:
+1) error   2) warn   3) info (recommended)   4) debug
+Enter your choice (1-4) [3 for info]: 3
 ```
 
-### Job Creation Confirmation
+### 6. Service Startup
 
-**Prompt:** `Have you created the job in the Chainlink UI? (y/n):`
+**Prompt:** `Start Verdikta Arbiter services? (y/n):`
 
-**What it means:** The installer needs confirmation that you've manually created the Chainlink job through the web interface.
+**What it means:** Whether to start all services immediately after installation.
 
-**What to do:**
-1. Go to `http://localhost:6688`
-2. Navigate to **Jobs** → **New Job**
-3. Select **TOML** format
-4. Copy the job specification from the file shown in the instructions
-5. Paste it and click **Create Job**
-6. Return to terminal and type `y`
+**How to respond:**
+- Type `y` to start services now
+- Type `n` to start them manually later
 
 **Example:**
 ```bash
-Have you created the job in the Chainlink UI? (y/n): y
+Start Verdikta Arbiter services? (y/n): y
 ```
 
-### Job ID Entry
+## Getting Testnet Funds
 
-**Prompt:** `Please enter the job ID from the UI:`
+You'll need Base Sepolia ETH and LINK tokens:
 
-**What it means:** After creating the job, you need to provide its UUID for configuration.
+### Base Sepolia ETH
+- [Base Sepolia Faucet](https://faucet.quicknode.com/base/sepolia)
+- [Coinbase Wallet Faucet](https://coinbase.com/faucets/base-ethereum-sepolia-faucet)
 
-**How to find:**
-1. After creating the job, you'll see the job details page
-2. The Job ID is displayed at the top (UUID format)
-3. Copy the entire UUID including hyphens
+### Base Sepolia LINK  
+- [Chainlink Faucet](https://faucets.chain.link/base-sepolia)
 
-**Example:**
-```bash
-Please enter the job ID from the UI: 12345678-1234-1234-1234-123456789012
-```
+## Installation Flow
 
-## Oracle Registration Prompts
+The installer will prompt for these items in order:
 
-### Dispatcher Registration
+1. **Installation directory** - Where to install files
+2. **OpenAI API key** - For AI processing  
+3. **Anthropic API key** - Alternative AI provider
+4. **Infura API key** - Web3 provider
+5. **Pinata JWT** - IPFS storage
+6. **Network selection** - Base Sepolia (recommended)
+7. **Wallet private key** - For contract deployment
+8. **Logging level** - Service verbosity
+9. **Start services** - Whether to start immediately
 
-**Prompt:** `Register with dispatcher? (y/n):`
+After these prompts, the installer runs automatically through all 9 installation steps.
 
-**What it means:** Whether to register your oracle with the Verdikta dispatcher for receiving arbitration requests.
+## Tips for Success
 
-**How to respond:**
-- Type `y` if you want to participate in the network
-- Type `n` if you're just testing locally
+1. **Prepare API Keys**: Have all API keys ready before starting
+2. **Use Test Wallet**: Create a separate wallet for testnet only
+3. **Fund Test Wallet**: Get Base Sepolia ETH and LINK from faucets
+4. **Secure Storage**: Save all credentials securely
+5. **Default Values**: Press Enter to accept recommended defaults
 
-### Aggregator Address
-
-**Prompt:** `Aggregator address:`
-
-**What it means:** The address of the price aggregator contract (if applicable).
-
-**How to respond:**
-- This is typically provided by the Verdikta team
-- Check the documentation or Discord for current addresses
-
-### Classes ID
-
-**Prompt:** `Classes ID [128]:`
-
-**What it means:** The classification ID for your oracle's capabilities.
-
-**How to respond:**
-- Press **Enter** to use the default value (128)
-- Or enter a specific class ID if provided by the team
-
-## Upgrade Prompts
-
-### Installation Directory for Upgrade
-
-**Prompt:** `Enter the target installation directory [/home/user/verdikta-arbiter-node]:`
-
-**What it means:** Where to install the upgraded version.
-
-**How to respond:**
-- Press **Enter** to use the existing installation directory
-- Or specify a different location for the upgrade
-
-## General Yes/No Prompts
-
-Throughout the installation, you'll see various confirmation prompts:
-
-**Common prompts:**
-- `Would you like to install Node.js v20.18.0 using nvm? (y/n):`
-- `Would you like to install Docker? (y/n):`
-- `Proceed with executing this command? (y/n):`
-
-**How to respond:**
-- Type `y` and press **Enter** to proceed
-- Type `n` and press **Enter** to skip
-- The installer will repeat the question if you enter anything else
-
-## Tips for Smooth Installation
-
-1. **Prepare API Keys in Advance**: Have all your API keys ready before starting
-2. **Use a Test Wallet**: Never use your main wallet's private key
-3. **Fund Your Test Wallet**: Ensure you have Base Sepolia ETH for deployment
-4. **Keep Credentials Safe**: Save all generated passwords and credentials securely
-5. **Follow the Order**: Run installation scripts in the recommended sequence
-6. **Check Logs**: If prompts fail, check the logs for specific error messages
-
-## Troubleshooting Prompts
+## Need Help?
 
 If you encounter issues with prompts:
 
-1. **Invalid Format Errors**: Ensure addresses are properly formatted (0x + 40 hex characters)
-2. **API Key Errors**: Verify your keys are correct and accounts are funded
-3. **Network Errors**: Check your internet connection and firewall settings
-4. **Permission Errors**: Ensure you have proper permissions for installation directories
+- **API Key Errors**: Verify keys are correct and accounts are funded
+- **Network Errors**: Check internet connection and firewall settings
+- **Format Errors**: Ensure addresses are properly formatted (0x + 40 hex characters)
 
-## Next Steps
-
-After completing all prompts successfully:
-
-1. Verify all services are running
-2. Check the Chainlink node UI is accessible
-3. Test your oracle registration
-4. Monitor logs for any issues
-
-For additional help, refer to the [Troubleshooting Guide](../troubleshooting/index.md) or the [Support](../troubleshooting/support.md) section. 
+For additional help, refer to the [Troubleshooting Guide](../troubleshooting/index.md). 
