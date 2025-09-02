@@ -16,29 +16,21 @@ Verdikta Arbiter is a decentralized oracle system that provides AI-powered dispu
 
 <div class="grid cards" markdown>
 
--   :fontawesome-solid-rocket:{ .lg .middle } **Quick Start**
+-   :fontawesome-solid-gear:{ .lg .middle } **Installation Guide**
 
     ---
 
-    Get your arbiter node running in minutes with our automated installer
+    Get your arbiter node running in minutes with our automated installer and complete setup guide
 
-    [:octicons-arrow-right-24: Quick Start Guide](quick-start.md)
+    [:octicons-arrow-right-24: Installation Guide](quick-start.md)
 
--   :fontawesome-solid-list-check:{ .lg .middle } **Prerequisites**
-
-    ---
-
-    Check system requirements and prepare your environment
-
-    [:octicons-arrow-right-24: View Prerequisites](prerequisites.md)
-
--   :fontawesome-solid-gear:{ .lg .middle } **Installation**
+-   :fontawesome-solid-question-circle:{ .lg .middle } **Prompts Guide**
 
     ---
 
-    Step-by-step installation guides for automated and manual setup
+    Detailed explanation of installer prompts and how to obtain API keys
 
-    [:octicons-arrow-right-24: Installation Guide](installation/index.md)
+    [:octicons-arrow-right-24: Prompts Guide](installation/prompts-guide.md)
 
 -   :fontawesome-solid-chart-line:{ .lg .middle } **Management**
 
@@ -47,14 +39,6 @@ Verdikta Arbiter is a decentralized oracle system that provides AI-powered dispu
     Learn how to manage, monitor, and maintain your arbiter node
 
     [:octicons-arrow-right-24: Management Guide](management/index.md)
-
--   :fontawesome-solid-users:{ .lg .middle } **Multi-Arbiter Setup**
-
-    ---
-
-    Configure multiple arbiters with automatic key management
-
-    [:octicons-arrow-right-24: Multi-Arbiter Guide](MULTI_ARBITER_DESIGN.md)
 
 </div>
 
@@ -117,7 +101,7 @@ Perfect for most users who want a quick, hassle-free setup with multi-arbiter su
 
 ```bash
 cd verdikta-arbiter/installer
-bash bin/install.sh
+./bin/install.sh -s
 ```
 
 **Features:**
