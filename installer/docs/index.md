@@ -24,7 +24,7 @@ Verdikta Arbiter is a decentralized oracle system that provides AI-powered dispu
 
     [:octicons-arrow-right-24: Installation Guide](quick-start.md)
 
--   :fontawesome-solid-question-circle:{ .lg .middle } **Prompts Guide**
+-   :material-help-circle:{ .lg .middle } **Prompts Guide**
 
     ---
 
