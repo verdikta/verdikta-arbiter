@@ -1,6 +1,6 @@
-# Quick Start
+# Installation Guide
 
-Get your Verdikta Arbiter Node up and running in under 30 minutes with our automated installer. This comprehensive guide walks you through every step with all the information you need in one place.
+Get your Verdikta Arbiter Node up and running with our automated installer. This comprehensive guide walks you through every step, from prerequisites to final configuration.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ Before starting, ensure you have:
 - **Software**: Git, Docker, Node.js (auto-installed if missing)
 
 ### Required API Keys
-- **OpenAI API Key**: For AI-powered arbitration ([Get API Key](https://platform.openai.com/))
+- **OpenAI API Key**: For AI-powered arbitration ([Get API Key](.  https://platform.openai.com/))
 - **Web3 Provider**: Choose Infura, Alchemy, or QuickNode ([Infura](https://infura.io/), [Alchemy](https://alchemy.com/))
 - **IPFS Service**: For document storage ([Pinata](https://pinata.cloud/) recommended)
 - **Optional**: Anthropic API Key for Claude AI ([Anthropic Console](https://console.anthropic.com/))
@@ -35,7 +35,9 @@ Before starting, ensure you have:
 !!! danger "Security Warning"
     Always use a separate test wallet for oracle deployment. Never use your main wallet's private key.
 
-## Step 1: Clone Repository
+## Preliminary Steps
+
+### Step A: Clone Repository
 
 Clone the Verdikta Arbiter repository and navigate to the installer:
 
@@ -44,7 +46,7 @@ git clone https://github.com/verdikta/verdikta-arbiter.git
 cd verdikta-arbiter/installer
 ```
 
-## Step 2: Run the Automated Installer
+### Step B: Run the Automated Installer
 
 Start the installation process:
 
@@ -52,11 +54,13 @@ Start the installation process:
 ./bin/install.sh -s
 ```
 
-The installer will guide you through **9 main steps**. Here's what to expect at each stage:
+The installer will guide you through **9 main steps**. Here's what happens in each step:
 
 ---
 
-## Step 3: System Prerequisites Check
+## The 9 Main Installation Steps
+
+## Step 1: System Prerequisites Check
 
 The installer first verifies your system meets all requirements.
 
@@ -78,7 +82,7 @@ Would you like to install Docker? (y/n): y
 
 ---
 
-## Step 4: Environment Setup
+## Step 2: Environment Setup
 
 Configure your installation directory, network selection, and API keys.
 
@@ -90,7 +94,7 @@ Configure your installation directory, network selection, and API keys.
 - Press **Enter** for the default location
 - Or type a custom path like `/opt/verdikta-arbiter`
 
-### Network Selection ⭐ NEW FEATURE
+### Network Selection
 
 **Prompt**: `Select deployment network:`
 ```
@@ -200,31 +204,41 @@ Configure your installation directory, network selection, and API keys.
 
 ---
 
-## Step 5: Component Installation
+## Step 3: AI Node Installation
 
-The installer automatically installs and configures all required components.
-
-### AI Node Installation
-- Downloads and sets up the AI arbitration service
+The installer downloads and sets up the AI arbitration service:
 - Configures with your API keys
+- Sets up AI model connections
 - **Duration**: ~5 minutes
 
-### External Adapter Installation  
-- Sets up the blockchain-AI bridge service
+---
+
+## Step 4: External Adapter Installation
+
+Sets up the blockchain-AI bridge service:
 - Configures communication endpoints
+- Sets up bridge for Chainlink integration
 - **Duration**: ~4 minutes
 
-### Docker & PostgreSQL Setup
-- Installs Docker containers
+---
+
+## Step 5: Docker & PostgreSQL Setup
+
+Installs Docker containers and database:
 - Sets up PostgreSQL database for Chainlink
+- Configures container networking
 
 **Prompt**: `Please enter the existing PostgreSQL password (leave blank to generate a new one):`
 
 **What to do**: Press **Enter** to auto-generate a secure password (recommended)
 
-### Chainlink Node Setup
-- Downloads and configures Chainlink node
-- Sets up blockchain connectivity with your Infura key
+---
+
+## Step 6: Chainlink Node Setup
+
+Downloads and configures Chainlink node:
+- Sets up blockchain connectivity with your Web3 provider
+- Generates node credentials
 
 **Prompt**: `Enter email for Chainlink node login [admin@example.com]:`
 
@@ -234,7 +248,7 @@ The installer automatically installs and configures all required components.
 
 ---
 
-## Step 6: Smart Contract Deployment
+## Step 7: Smart Contract Deployment
 
 Deploy the oracle contracts to Base Sepolia blockchain.
 
@@ -276,7 +290,7 @@ If deployment fails, check:
 
 ---
 
-## Step 8: Multi-Arbiter Configuration ⭐ NEW FEATURE
+## Step 8: Job Configuration
 
 Configure the number of arbiters for your node with automatic key management.
 
@@ -327,36 +341,98 @@ Creating jobs for 4 arbiters...
 
 ---
 
-## Step 9: Final Bridge Configuration
+## Step 9: Oracle Registration
 
-Complete the External Adapter bridge setup for communication between Chainlink and your AI node.
+Register your oracle with the Verdikta dispatcher network to receive arbitration requests.
 
-### Host IP Configuration
+### Registration Process
 
-**Prompt**: `Enter your machine's IP address or hostname [192.168.1.100]:`
+**Prompt**: `Register with dispatcher? (y/n):`
 
 **What to choose**:
-- **Local testing**: Press **Enter** to use the detected IP
-- **Remote access**: Enter your server's public IP or domain name
-- **Docker/container setup**: Use `host.docker.internal`
+- **`y`**: Register to participate in live arbitration requests from the network
+- **`n`**: Skip for local testing and development only
 
-!!! success "Automated Job Creation"
+### Aggregator Address Configuration
+
+If registering, you'll be prompted for:
+
+**Prompt**: `Enter aggregator address:`
+
+**What to provide**: The dispatcher contract address provided by the Verdikta team
+- **Base Sepolia**: `0xE75426Ed0491a8290fC55CAA71ab5e1d95F4BaF6` (example)
+- **Base Mainnet**: Contact Verdikta team for current address
+
+### Class IDs Configuration
+
+**Prompt**: `Enter class IDs (comma-separated) [128]:`
+
+**What to provide**: Arbitration categories your oracle can handle
+
+**Common Class IDs**:
+- `128` - General arbitration (default)
+- `129` - Financial disputes  
+- `130` - Contract disputes
+- `131` - Content moderation
+
+**Examples**:
+- Single class: `128`
+- Multiple classes: `128,129,130`
+- All supported: `128,129,130,131`
+
+### Registration Verification
+
+After registration, the installer will:
+1. **Submit registration** to the dispatcher contract
+2. **Verify oracle capabilities** with provided class IDs
+3. **Confirm network connectivity** 
+4. **Save registration details** to configuration files
+
+---
+
+## Post-Installation: Fund Chainlink Keys
+
+**⚠️ CRITICAL STEP**: Your Chainlink node keys must be funded with LINK tokens to process arbitration requests.
+
+### Why Funding is Required
+
+- Chainlink jobs require LINK tokens to pay for oracle services
+- Each arbitration request consumes LINK tokens
+- Without funding, your oracle cannot process requests
+
+### How to Fund Your Keys
+
+1. **Get your key addresses** from the installation summary or:
+   ```bash
+   # View your key addresses
+   cat ~/verdikta-arbiter-node/installer/.contracts
+   ```
+
+2. **Transfer LINK tokens** to each key address:
+   
+   **For Base Sepolia (Testing)**:
+   - Get free LINK from [Chainlink Faucet](https://faucets.chain.link/base-sepolia)
+   - Send ~10 LINK to each key address
+   
+   **For Base Mainnet (Production)**:
+   - Purchase LINK tokens from an exchange
+   - Send 10-50 LINK to each key address (depending on expected usage)
+
+3. **Verify funding** in Chainlink UI:
+   - Open [http://localhost:6688](http://localhost:6688)
+   - Go to **Key Management** → **EVM Chain Accounts**
+   - Check LINK balance for each key
+
+### Recommended Funding Amounts
+
+| Network | Per Key | Total (4 arbiters) | Purpose |
+|---------|---------|-------------------|---------|
+| **Base Sepolia** | 10 LINK | 40 LINK | Testing & development |
+| **Base Mainnet** | 25 LINK | 100 LINK | Production deployment |
+
+!!! warning "Required for Operation"
     
-    🎉 **Jobs are now created automatically!** The installer creates all arbiter jobs for you using the API. No more manual job creation required.
-    
-    - Bridge created automatically
-    - All arbiter jobs created via API
-    - Job IDs saved to configuration files
-    - Keys authorized with operator contract
-
-### Verification
-
-After bridge configuration, the installer will:
-
-1. **Create External Adapter bridge** automatically
-2. **Generate job specifications** for each arbiter
-3. **Create all jobs via API** without manual intervention
-4. **Update configuration files** with all job IDs and addresses
+    Your oracle **will not process arbitration requests** until the Chainlink keys are funded with LINK tokens. This is a blockchain requirement, not a Verdikta limitation.
 
 ---
 
@@ -381,21 +457,7 @@ Access your services:
 - AI Node: http://localhost:3000
 ```
 
-## Optional: Oracle Registration
 
-The installer offers optional registration with the Verdikta dispatcher network.
-
-**Prompt**: `Register with dispatcher? (y/n):`
-
-**What to choose**:
-- **`y`**: Register to participate in live arbitration requests from the network
-- **`n`**: Skip for local testing and development only
-
-If registering, you may be prompted for:
-- **Aggregator address**: Provided by the Verdikta team
-- **Classes ID**: Use default `128` or specific ID from team
-
----
 
 ## Final Installation Summary
 
