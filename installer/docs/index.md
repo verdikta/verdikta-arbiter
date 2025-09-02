@@ -28,7 +28,7 @@ Verdikta Arbiter is a decentralized oracle system that provides AI-powered dispu
 
     ---
 
-    Detailed explanation of installer prompts and how to obtain API keys
+    Understand installer prompts and learn how to obtain required API keys
 
     [:octicons-arrow-right-24: Prompts Guide](installation/prompts-guide.md)
 
