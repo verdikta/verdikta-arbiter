@@ -19,13 +19,13 @@ Before starting, ensure you have:
 
 ### Network Funds
 
-**For Testing (Recommended)**:
+**For Testing**:
 - Base Sepolia ETH (free from [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet))
-- Base Sepolia LINK (free from [Chainlink Faucet](https://faucets.chain.link/))
+- Queries are paid for with Base Sepolia LINK (free from [Chainlink Faucet](https://faucets.chain.link/))
 
 **For Production**:
 - Base Mainnet ETH (~$50-100 USD)
-- Base Mainnet LINK (~10 LINK tokens)
+- Queries are paid for with Base Mainnet LINK (Users can purchase on exchanges--querries cost ~$1 of LINK)
 
 ### Wallet Setup
 - Create a **separate test wallet** (never use your main wallet!)
@@ -104,11 +104,11 @@ Configure your installation directory, network selection, and API keys.
 
 **What to choose**:
 - **Option 1**: Base Sepolia testnet (free, recommended for learning)
-- **Option 2**: Base Mainnet (production, requires real ETH and LINK)
+- **Option 2**: Base Mainnet (production, requires real ETH, payments to node made in LINK)
 
 !!! tip "Network Recommendations"
     
-    **First time users**: Choose **Base Sepolia** (testnet) to learn the system without spending real money.
+    **For development or testing**: Choose **Base Sepolia** (testnet) to learn the system without spending real money.
     
     **Production deployments**: Choose **Base Mainnet** only after testing thoroughly on testnet.
 
@@ -278,7 +278,7 @@ The installer automatically handles the complete deployment process:
 ### If Deployment Fails
 
 Check these common issues:
-- **Insufficient funds**: Your test wallet needs Base Sepolia ETH
+- **Insufficient funds**: Your node needs Base Sepolia ETH (Testnet) or Base ETH (Mainnet)
 - **Invalid private key**: Should be 64 characters without `0x` prefix
 - **Network connectivity**: Ensure stable internet connection
 - **RPC endpoint**: Verify your Web3 provider is working
@@ -365,8 +365,8 @@ If registering, you'll be prompted for:
 **What to provide**: Arbitration categories your oracle can handle
 
 **Common Class IDs**:
-- `128` - General arbitration (default)
-- `129` - TBD  
+- `128` - General arbitration (default) - Uses OpenAI and Anthropic providers
+- `129` - OS Arbitration - Uses open-source models installed during installation process (no paid providers required)  
 - `130` - TBD
 - `131` - TBD
 
