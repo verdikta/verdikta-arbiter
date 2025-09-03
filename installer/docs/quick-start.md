@@ -360,20 +360,20 @@ If registering, you'll be prompted for:
 
 ### Class IDs Configuration
 
-**Prompt**: `Enter class IDs (comma-separated) [128]:`
+**Prompt**: `Enter class IDs (comma-separated or space-separated) [128]:`
 
 **What to provide**: Arbitration categories your oracle can handle
 
 **Common Class IDs**:
 - `128` - General arbitration (default)
-- `129` - Financial disputes  
-- `130` - Contract disputes
-- `131` - Content moderation
+- `129` - TBD  
+- `130` - TBD
+- `131` - TBD
 
 **Examples**:
 - Single class: `128`
 - Multiple classes: `128,129,130`
-- All supported: `128,129,130,131`
+- Multiple classes (space-separated)): `128 129 130 131`
 
 ### Registration Verification
 
@@ -387,13 +387,13 @@ After registration, the installer will:
 
 ## Post-Installation: Fund Chainlink Keys
 
-**⚠️ CRITICAL STEP**: Your Chainlink node keys must be funded with LINK tokens to process arbitration requests.
+**⚠️ CRITICAL STEP**: Your Chainlink node keys must be funded with Base on ETH (or Base on ETH Sepolia for testnet) tokens to process arbitration requests.
 
 ### Why Funding is Required
 
-- Chainlink jobs require LINK tokens to pay for oracle services
-- Each arbitration request consumes LINK tokens
-- Without funding, your oracle cannot process requests
+- Chainlink jobs require native tokens for oracle services gas fees
+- Without native token funding for gas , your oracle cannot process requests.
+- Each arbitration request consumes LINK tokens.  LINK will be acculated by the arbiter node as query requests are made, but the node need not hold any LINK initially to operate.  
 
 ### How to Fund Your Keys
 
@@ -403,15 +403,15 @@ After registration, the installer will:
    cat ~/verdikta-arbiter-node/installer/.contracts
    ```
 
-2. **Transfer LINK tokens** to each key address:
+2. **Transfer Base on ETH tokens** to each key address:
    
    **For Base Sepolia (Testing)**:
-   - Get free LINK from [Chainlink Faucet](https://faucets.chain.link/base-sepolia)
+   - Get free Base Sepolia from [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia)
    - Send ~10 LINK to each key address
    
    **For Base Mainnet (Production)**:
-   - Purchase LINK tokens from an exchange
-   - Send 10-50 LINK to each key address (depending on expected usage)
+   - Purchase Base on ETH tokens from an exchange
+   - Send $50-$100 of Base to each key address (depending on expected usage)
 
 3. **Verify funding** in Chainlink UI:
    - Open [http://localhost:6688](http://localhost:6688)
@@ -422,12 +422,12 @@ After registration, the installer will:
 
 | Network | Per Key | Total (4 arbiters) | Purpose |
 |---------|---------|-------------------|---------|
-| **Base Sepolia** | 10 LINK | 40 LINK | Testing & development |
-| **Base Mainnet** | 25 LINK | 100 LINK | Production deployment |
+| **Base Sepolia** | 0.005 | 0.010 Base Sepolia ETH | Testing & development |
+| **Base Mainnet** | 0.002 | 0.005 Base ETH | Production deployment |
 
 !!! warning "Required for Operation"
     
-    Your oracle **will not process arbitration requests** until the Chainlink keys are funded with LINK tokens. This is a blockchain requirement, not a Verdikta limitation.
+    Your oracle **will not process arbitration requests** until the Chainlink keys are funded with native tokens. This is a blockchain requirement, not a Verdikta limitation.
 
 ---
 
