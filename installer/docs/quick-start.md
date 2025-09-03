@@ -250,43 +250,38 @@ Downloads and configures Chainlink node:
 
 ## Step 7: Smart Contract Deployment
 
-Deploy the oracle contracts to Base Sepolia blockchain.
+Deploy the oracle contracts to your selected blockchain network.
 
-### Chainlink Node Address
+### Automated Contract Deployment
 
-**Prompt**: `Enter the Chainlink node address (0x...):`
+The installer automatically handles the complete deployment process:
 
-**How to get it**:
+1. **Retrieves Chainlink node addresses** automatically using the key management system
+2. **Compiles** the ArbiterOperator smart contract
+3. **Deploys** it to your selected network using your private key
+4. **Authorizes** all Chainlink keys to interact with the contract
+5. **Saves** all contract addresses and key information
 
-1. Wait for Chainlink node to start (installer will show when ready)
+### What You'll See
 
-2. Open [http://localhost:6688](http://localhost:6688) in your browser
+```
+[7/9] Deploying Smart Contracts...
+✓ Automatically retrieving Chainlink node addresses
+✓ Found 2 Chainlink keys to authorize
+✓ Compiling contracts
+✓ Deploying to Base Sepolia
+✓ Contract deployed at: 0x1234567890abcdef...
+✓ Authorizing all keys with operator contract
+✓ Smart Contract deployment completed
+```
 
-3. Log in with the credentials shown by the installer
+### If Deployment Fails
 
-4. Navigate to **Key Management** → **EVM Chain Accounts**
-
-5. Copy the **Node Address** (starts with `0x`)
-
-**Format**: `0x` + 40 hexadecimal characters  
-**Example**: `0x1234567890abcdef1234567890abcdef12345678`
-
-### Contract Deployment Process
-
-The installer will:
-
-1. Compile the ArbiterOperator smart contract
-
-2. Deploy it to Base Sepolia using your private key
-
-3. Authorize your Chainlink node to interact with the contract
-
-4. Save all contract addresses for later use
-
-If deployment fails, check:
-- Your test wallet has sufficient network funds (ETH)
-- Your private key is correctly formatted (64 chars, no `0x`)
-- Network connectivity is stable
+Check these common issues:
+- **Insufficient funds**: Your test wallet needs Base Sepolia ETH
+- **Invalid private key**: Should be 64 characters without `0x` prefix
+- **Network connectivity**: Ensure stable internet connection
+- **RPC endpoint**: Verify your Web3 provider is working
 
 ---
 
