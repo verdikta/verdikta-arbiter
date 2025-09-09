@@ -103,12 +103,22 @@ if [ "$RESUME_REGISTRATION" = "true" ]; then
         exit 1
     fi
     
+    # Detect if this is recovery from old installer (missing post-installation artifacts)
+    if [ ! -d "$INSTALL_DIR" ] || [ ! -f "$INSTALL_DIR/start-arbiter.sh" ]; then
+        echo -e "${BLUE}Detected incomplete installation from previous installer version.${NC}"
+        echo -e "${BLUE}Will complete all missing post-installation steps after registration.${NC}"
+        NEED_POST_INSTALLATION=true
+    else
+        echo -e "${BLUE}Post-installation artifacts found - will skip redundant steps.${NC}"
+        NEED_POST_INSTALLATION=false
+    fi
+    
     # Skip to registration section
     echo -e "${BLUE}Resuming from oracle registration step...${NC}"
-    # Jump to registration section (we'll add a label there)
     SKIP_TO_REGISTRATION=true
 else
     SKIP_TO_REGISTRATION=false
+    NEED_POST_INSTALLATION=true  # Always need post-installation for fresh installs
     
     # Clean up any existing contract information for fresh install
     if [ -f "$INSTALLER_DIR/.contracts" ]; then
@@ -282,8 +292,8 @@ else
     fi
 fi
 
-# Skip post-installation steps if resuming registration
-if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
+# Run post-installation steps if needed
+if [ "$NEED_POST_INSTALLATION" = "true" ]; then
 
 # Verify installation
 echo -e "${YELLOW}Verifying installation...${NC}"
@@ -517,7 +527,7 @@ else
     echo -e "${YELLOW}Warning: External Adapter .env file not found at $ADAPTER_ENV_FILE${NC}"
 fi
 
-fi  # End of SKIP_TO_REGISTRATION conditional block for post-installation steps
+fi  # End of NEED_POST_INSTALLATION conditional block
 
 # Ask if user wants to start services now (this should happen in both normal and resume modes)
 echo
