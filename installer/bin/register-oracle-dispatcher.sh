@@ -3,7 +3,7 @@
 # Verdikta Arbiter Node - Oracle Registration Script
 # Registers the oracle with the dispatcher contract
 
-set -e  # Exit on any error
+# Note: Removed 'set -e' to handle errors gracefully and provide better user guidance
 
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
@@ -209,8 +209,9 @@ fi
 echo -e "${BLUE}Executing oracle registration script...${NC}"
 cd "$ARBITER_OPERATOR_DIR"
 eval "$REGISTER_CMD"
+REGISTRATION_RESULT=$?
 
-if [ $? -eq 0 ]; then
+if [ $REGISTRATION_RESULT -eq 0 ]; then
     echo -e "${GREEN}Oracle registration completed successfully!${NC}"
     
     # Save the aggregator address to .contracts file
@@ -233,8 +234,22 @@ if [ $? -eq 0 ]; then
     fi
     echo -e "${GREEN}Classes ID saved to .contracts file: $CLASSES_ID${NC}"
 else
-    echo -e "${RED}Oracle registration script failed. Please check the output above for errors.${NC}"
-    exit 1
+    echo -e "${RED}Oracle registration failed with exit code: $REGISTRATION_RESULT${NC}"
+    echo -e "${YELLOW}Common causes of registration failure:${NC}"
+    echo -e "${YELLOW}  - Insufficient wVDKA tokens in wallet${NC}"
+    echo -e "${YELLOW}  - Network connectivity issues${NC}"
+    echo -e "${YELLOW}  - Invalid aggregator contract address${NC}"
+    echo -e "${YELLOW}  - Gas estimation failures${NC}"
+    echo ""
+    echo -e "${BLUE}Troubleshooting steps:${NC}"
+    echo -e "${BLUE}1. Verify you have sufficient wVDKA tokens${NC}"
+    echo -e "${BLUE}2. Check your network connection${NC}"
+    echo -e "${BLUE}3. Verify the aggregator contract address is correct${NC}"
+    echo -e "${BLUE}4. Try running the registration again${NC}"
+    echo ""
+    
+    # Return the error code to the calling script
+    exit $REGISTRATION_RESULT
 fi
 
 exit 0 

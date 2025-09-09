@@ -20,6 +20,7 @@ NC='\033[0m' # No Color
 
 # Default values
 SKIP_TESTS=false
+RESUME_REGISTRATION=false
 INSTALL_FLAGS=""
 
 # Parse command line arguments
@@ -30,13 +31,18 @@ while [[ $# -gt 0 ]]; do
             INSTALL_FLAGS="$INSTALL_FLAGS --skip-tests"
             shift
             ;;
+        --resume-registration|-r)
+            RESUME_REGISTRATION=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo "Main installation script for Verdikta Arbiter Node"
             echo ""
             echo "Options:"
-            echo "  --skip-tests, -s    Skip unit tests during installation"
-            echo "  --help, -h          Show this help message"
+            echo "  --skip-tests, -s           Skip unit tests during installation"
+            echo "  --resume-registration, -r  Skip all installation steps and resume from oracle registration"
+            echo "  --help, -h                 Show this help message"
             echo ""
             echo "Environment Variables:"
             echo "  SKIP_TESTS=true     Skip unit tests (alternative to --skip-tests)"
@@ -51,6 +57,11 @@ while [[ $# -gt 0 ]]; do
             echo "  7. Smart Contract deployment"
             echo "  8. Node Jobs and Bridges configuration"
             echo "  9. Oracle registration (optional)"
+            echo ""
+            echo "Recovery Options:"
+            echo "  If oracle registration failed due to insufficient wVDKA tokens:"
+            echo "  1. Acquire sufficient wVDKA tokens in your wallet"
+            echo "  2. Run: $0 --resume-registration"
             exit 0
             ;;
         *)
@@ -79,10 +90,31 @@ if [ "$SKIP_TESTS" = "true" ]; then
     echo ""
 fi
 
-# Clean up any existing contract information for fresh install
-if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    echo -e "${BLUE}Removing existing contract information for fresh installation...${NC}"
-    rm -f "$INSTALLER_DIR/.contracts"
+# Handle resume registration mode
+if [ "$RESUME_REGISTRATION" = "true" ]; then
+    echo -e "${YELLOW}Resume Registration Mode: Skipping to oracle registration step...${NC}"
+    echo ""
+    
+    # Verify that installation was previously completed
+    if [ ! -f "$INSTALLER_DIR/.env" ] || [ ! -f "$INSTALLER_DIR/.contracts" ]; then
+        echo -e "${RED}Error: Cannot resume registration - installation appears incomplete.${NC}"
+        echo -e "${RED}Missing required files: .env and/or .contracts${NC}"
+        echo -e "${YELLOW}Please run the full installation first without --resume-registration flag.${NC}"
+        exit 1
+    fi
+    
+    # Skip to registration section
+    echo -e "${BLUE}Resuming from oracle registration step...${NC}"
+    # Jump to registration section (we'll add a label there)
+    SKIP_TO_REGISTRATION=true
+else
+    SKIP_TO_REGISTRATION=false
+    
+    # Clean up any existing contract information for fresh install
+    if [ -f "$INSTALLER_DIR/.contracts" ]; then
+        echo -e "${BLUE}Removing existing contract information for fresh installation...${NC}"
+        rm -f "$INSTALLER_DIR/.contracts"
+    fi
 fi
 
 # Function to check if a command exists
@@ -91,6 +123,9 @@ command_exists() {
 }
 
 # ask_yes_no function is now defined in setup-environment.sh
+
+# Skip installation steps if resuming registration
+if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
 
 # Check prerequisites
 echo -e "${YELLOW}[1/9]${NC} Checking prerequisites..."
@@ -208,6 +243,8 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}Node Jobs and Bridges configuration completed.${NC}"
 
+fi  # End of SKIP_TO_REGISTRATION conditional block
+
 # Register Oracle with Dispatcher (Optional)
 echo -e "${YELLOW}[9/9]${NC} Registering Oracle with Dispatcher (Optional)..."
 if [ ! -f "$SCRIPT_DIR/register-oracle-dispatcher.sh" ]; then
@@ -217,14 +254,36 @@ if [ ! -f "$SCRIPT_DIR/register-oracle-dispatcher.sh" ]; then
     # but the new script itself will handle its own errors.
     echo -e "${YELLOW}Skipping optional Oracle registration as script is missing.${NC}"
 else
+    # Save registration attempt state
+    echo "REGISTRATION_ATTEMPTED=true" > "$INSTALLER_DIR/.registration_state"
+    
     bash "$SCRIPT_DIR/register-oracle-dispatcher.sh"
-    if [ $? -ne 0 ]; then
-        echo -e "${YELLOW}Oracle registration step finished with errors or was skipped. Please check the logs for details.${NC}"
-        # Not exiting install.sh, as this step is optional or might have its own non-fatal outcomes.
+    REGISTRATION_EXIT_CODE=$?
+    
+    if [ $REGISTRATION_EXIT_CODE -ne 0 ]; then
+        echo -e "${RED}Oracle registration failed with exit code: $REGISTRATION_EXIT_CODE${NC}"
+        echo -e "${YELLOW}This is commonly due to insufficient wVDKA tokens in your wallet.${NC}"
+        echo ""
+        echo -e "${BLUE}To recover from this error:${NC}"
+        echo -e "${BLUE}1. Ensure you have sufficient wVDKA tokens in your wallet${NC}"
+        echo -e "${BLUE}2. Run the following command to resume registration:${NC}"
+        echo -e "${GREEN}   $0 --resume-registration${NC}"
+        echo ""
+        echo -e "${BLUE}Alternatively, you can register later using the standalone script:${NC}"
+        echo -e "${GREEN}   $INSTALL_DIR/register-oracle.sh${NC}"
+        echo ""
+        
+        # Mark registration as failed but don't exit - continue with installation
+        echo "REGISTRATION_FAILED=true" >> "$INSTALLER_DIR/.registration_state"
+        echo -e "${YELLOW}Installation will continue, but oracle registration is incomplete.${NC}"
     else
         echo -e "${GREEN}Oracle registration step completed.${NC}"
+        echo "REGISTRATION_SUCCESS=true" >> "$INSTALLER_DIR/.registration_state"
     fi
 fi
+
+# Skip post-installation steps if resuming registration
+if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
 
 # Verify installation
 echo -e "${YELLOW}Verifying installation...${NC}"
@@ -458,9 +517,24 @@ else
     echo -e "${YELLOW}Warning: External Adapter .env file not found at $ADAPTER_ENV_FILE${NC}"
 fi
 
-# Ask if user wants to start services now
+fi  # End of SKIP_TO_REGISTRATION conditional block for post-installation steps
+
+# Ask if user wants to start services now (this should happen in both normal and resume modes)
 echo
-echo -e "${YELLOW}Installation complete! Your services are now ready to start.${NC}"
+if [ "$SKIP_TO_REGISTRATION" = "true" ]; then
+    # Check registration status for resume mode
+    if [ -f "$INSTALLER_DIR/.registration_state" ]; then
+        source "$INSTALLER_DIR/.registration_state"
+        if [ "$REGISTRATION_SUCCESS" = "true" ]; then
+            echo -e "${GREEN}Registration completed successfully!${NC}"
+        else
+            echo -e "${YELLOW}Registration step completed. Check the output above for status.${NC}"
+        fi
+    fi
+    echo -e "${BLUE}Your Verdikta Arbiter services are ready.${NC}"
+else
+    echo -e "${YELLOW}Installation complete! Your services are now ready to start.${NC}"
+fi
 echo -e "${BLUE}Would you like to start the Verdikta Arbiter services now?${NC}"
 echo -e "${BLUE}This will start the AI Node, External Adapter, and Chainlink Node.${NC}"
 echo
@@ -497,10 +571,28 @@ fi
 # Success!
 echo -e "${GREEN}"
 echo "===================================================="
-echo "  Verdikta Arbiter Node Installation Complete!"
+if [ "$SKIP_TO_REGISTRATION" = "true" ]; then
+    echo "  Verdikta Arbiter Oracle Registration Complete!"
+else
+    echo "  Verdikta Arbiter Node Installation Complete!"
+fi
 echo "===================================================="
 echo -e "${NC}"
-echo "Congratulations! Your Verdikta Arbiter Node has been successfully installed."
+if [ "$SKIP_TO_REGISTRATION" = "true" ]; then
+    echo "Oracle registration process completed."
+    
+    # Check final registration status
+    if [ -f "$INSTALLER_DIR/.registration_state" ]; then
+        source "$INSTALLER_DIR/.registration_state"
+        if [ "$REGISTRATION_SUCCESS" = "true" ]; then
+            echo -e "${GREEN}Your oracle has been successfully registered with the dispatcher!${NC}"
+        else
+            echo -e "${YELLOW}Registration may have encountered issues. Please check the output above.${NC}"
+        fi
+    fi
+else
+    echo "Congratulations! Your Verdikta Arbiter Node has been successfully installed."
+fi
 echo 
 echo "Access your services at:"
 echo "  - AI Node:         http://localhost:3000"
