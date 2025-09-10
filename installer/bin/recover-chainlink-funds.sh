@@ -163,7 +163,7 @@ if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
 else
     CHAIN_ID="84532"
     NETWORK_NAME="Base Sepolia"
-    RPC_URL="https://base-sepolia.infura.io/v3/$INFURA_API_URL"
+    RPC_URL="https://base-sepolia.infura.io/v3/$INFURA_API_KEY"
     CURRENCY_NAME="Base Sepolia ETH"
     NETWORK_TYPE="testnet"
     # Base Sepolia LINK token address
