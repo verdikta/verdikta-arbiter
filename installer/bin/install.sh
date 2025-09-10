@@ -57,6 +57,7 @@ while [[ $# -gt 0 ]]; do
             echo "  7. Smart Contract deployment"
             echo "  8. Node Jobs and Bridges configuration"
             echo "  9. Oracle registration (optional)"
+            echo "  10. Automatic Chainlink key funding (optional)"
             echo ""
             echo "Recovery Options:"
             echo "  If oracle registration failed due to insufficient wVDKA tokens:"
@@ -462,12 +463,32 @@ else
     echo -e "${YELLOW}Warning: Standalone unregistration script not found at $UTIL_DIR/unregister-oracle.sh${NC}"
 fi
 
+# Copy the automatic funding script
+if [ -f "$SCRIPT_DIR/fund-chainlink-keys.sh" ]; then
+    cp "$SCRIPT_DIR/fund-chainlink-keys.sh" "$INSTALL_DIR/fund-chainlink-keys.sh"
+    chmod +x "$INSTALL_DIR/fund-chainlink-keys.sh"
+    echo -e "${GREEN}Automatic funding script copied to $INSTALL_DIR/fund-chainlink-keys.sh${NC}"
+else
+    echo -e "${YELLOW}Warning: Automatic funding script not found at $SCRIPT_DIR/fund-chainlink-keys.sh${NC}"
+fi
+
+# Copy the fund recovery script
+if [ -f "$SCRIPT_DIR/recover-chainlink-funds.sh" ]; then
+    cp "$SCRIPT_DIR/recover-chainlink-funds.sh" "$INSTALL_DIR/recover-chainlink-funds.sh"
+    chmod +x "$INSTALL_DIR/recover-chainlink-funds.sh"
+    echo -e "${GREEN}Fund recovery script copied to $INSTALL_DIR/recover-chainlink-funds.sh${NC}"
+else
+    echo -e "${YELLOW}Warning: Fund recovery script not found at $SCRIPT_DIR/recover-chainlink-funds.sh${NC}"
+fi
+
 echo -e "${GREEN}Arbiter management scripts created:${NC}"
 echo -e "  - To start all services: $INSTALL_DIR/start-arbiter.sh"
 echo -e "  - To stop all services:  $INSTALL_DIR/stop-arbiter.sh"
 echo -e "  - To check status:       $INSTALL_DIR/arbiter-status.sh"
 echo -e "  - To register with dispatcher: $INSTALL_DIR/register-oracle.sh"
 echo -e "  - To unregister from dispatcher: $INSTALL_DIR/unregister-oracle.sh"
+echo -e "  - To fund Chainlink keys: $INSTALL_DIR/fund-chainlink-keys.sh"
+echo -e "  - To recover funds from keys: $INSTALL_DIR/recover-chainlink-funds.sh"
 
 # Configure logging level
 echo -e "${YELLOW}Configuring logging level...${NC}"
@@ -528,6 +549,136 @@ else
 fi
 
 fi  # End of NEED_POST_INSTALLATION conditional block
+
+# Optional: Fund Chainlink keys automatically
+if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
+    # Only offer funding during fresh installation, not during registration resume
+    echo
+    echo -e "${BLUE}============================================================${NC}"
+    echo -e "${BLUE}  Optional: Automatic Chainlink Key Funding${NC}"
+    echo -e "${BLUE}============================================================${NC}"
+    echo
+    echo -e "${BLUE}Your Chainlink keys need native ETH to pay for gas fees.${NC}"
+    echo -e "${BLUE}Without funding, your oracle cannot process arbitration requests.${NC}"
+    echo
+    
+    # Determine recommended amount based on network
+    if [ "$NETWORK_TYPE" = "testnet" ]; then
+        RECOMMENDED_AMOUNT="0.005"
+        CURRENCY_NAME="Base Sepolia ETH"
+        FUNDING_INFO="This is free testnet currency from faucets."
+    else
+        RECOMMENDED_AMOUNT="0.002"
+        CURRENCY_NAME="Base ETH"
+        FUNDING_INFO="This will use real ETH from your wallet."
+    fi
+    
+    echo -e "${BLUE}Recommended funding: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
+    echo -e "${BLUE}Your installation has keys that need funding.${NC}"
+    echo -e "${YELLOW}Note: $FUNDING_INFO${NC}"
+    echo
+    
+    if ask_yes_no "Would you like to automatically fund your Chainlink keys now?"; then
+        echo
+        echo -e "${BLUE}Automatic Funding Configuration${NC}"
+        echo -e "${BLUE}Recommended amount: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
+        echo -e "${BLUE}This amount provides approximately 50 arbitration queries worth of gas.${NC}"
+        echo
+        
+        # Ask if user wants to use recommended amount or custom amount
+        echo -e "${BLUE}Funding options:${NC}"
+        echo -e "${BLUE}  1) Use recommended amount ($RECOMMENDED_AMOUNT $CURRENCY_NAME per key)${NC}"
+        echo -e "${BLUE}  2) Specify custom amount${NC}"
+        echo -e "${BLUE}  3) Skip automatic funding${NC}"
+        echo
+        
+        while true; do
+            read -p "Choose option (1-3) [1]: " funding_choice
+            
+            # Default to option 1 if empty
+            if [ -z "$funding_choice" ]; then
+                funding_choice=1
+            fi
+            
+            case "$funding_choice" in
+                1)
+                    FUNDING_AMOUNT="$RECOMMENDED_AMOUNT"
+                    echo -e "${GREEN}Using recommended amount: $FUNDING_AMOUNT $CURRENCY_NAME per key${NC}"
+                    break
+                    ;;
+                2)
+                    while true; do
+                        read -p "Enter custom amount per key (in $CURRENCY_NAME): " custom_amount
+                        
+                        if [[ "$custom_amount" =~ ^[0-9]+\.?[0-9]*$ ]] && (( $(echo "$custom_amount > 0" | bc -l) )); then
+                            FUNDING_AMOUNT="$custom_amount"
+                            echo -e "${GREEN}Using custom amount: $FUNDING_AMOUNT $CURRENCY_NAME per key${NC}"
+                            break 2
+                        else
+                            echo -e "${RED}Please enter a valid positive number${NC}"
+                        fi
+                    done
+                    ;;
+                3)
+                    echo -e "${BLUE}Skipping automatic funding.${NC}"
+                    FUNDING_AMOUNT=""
+                    break
+                    ;;
+                *)
+                    echo -e "${RED}Invalid choice. Please enter 1, 2, or 3.${NC}"
+                    ;;
+            esac
+        done
+        
+        if [ -n "$FUNDING_AMOUNT" ]; then
+            echo
+            echo -e "${YELLOW}⚠ IMPORTANT: This will transfer $CURRENCY_NAME from your deployment wallet.${NC}"
+            echo -e "${YELLOW}⚠ Your wallet will be charged for both the funding amount and gas fees.${NC}"
+            echo
+            
+            if ask_yes_no "Proceed with automatic funding?"; then
+                echo -e "${BLUE}Starting automatic funding process...${NC}"
+                echo
+                
+                # Run the funding script
+                if bash "$SCRIPT_DIR/fund-chainlink-keys.sh" --amount "$FUNDING_AMOUNT" --force; then
+                    echo
+                    echo -e "${GREEN}✓ Automatic funding completed successfully!${NC}"
+                    echo -e "${GREEN}✓ Your Chainlink keys are now funded and ready for operation.${NC}"
+                    KEYS_FUNDED=true
+                else
+                    echo
+                    echo -e "${YELLOW}⚠ Automatic funding encountered issues.${NC}"
+                    echo -e "${BLUE}You can retry funding later using:${NC}"
+                    echo -e "${GREEN}  $INSTALL_DIR/fund-chainlink-keys.sh${NC}"
+                    KEYS_FUNDED=false
+                fi
+            else
+                echo -e "${BLUE}Automatic funding cancelled.${NC}"
+                KEYS_FUNDED=false
+            fi
+        else
+            KEYS_FUNDED=false
+        fi
+    else
+        echo -e "${BLUE}Skipping automatic funding.${NC}"
+        KEYS_FUNDED=false
+    fi
+    
+    if [ "$KEYS_FUNDED" = "false" ]; then
+        echo
+        echo -e "${YELLOW}📌 IMPORTANT: Manual Funding Required${NC}"
+        echo -e "${YELLOW}Your Chainlink keys need $CURRENCY_NAME to operate.${NC}"
+        echo
+        echo -e "${BLUE}You can fund your keys later using:${NC}"
+        echo -e "${GREEN}  $INSTALL_DIR/fund-chainlink-keys.sh${NC}"
+        echo
+        echo -e "${BLUE}Or manually send $CURRENCY_NAME to each key address listed in:${NC}"
+        echo -e "${GREEN}  $INSTALL_DIR/installer/.contracts${NC}"
+        echo
+        echo -e "${BLUE}Recommended amount: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
+    fi
+fi
 
 # Ask if user wants to start services now (this should happen in both normal and resume modes)
 echo
@@ -612,5 +763,11 @@ echo
 echo "All utility scripts are available in: $INSTALL_DIR/installer/util/"
 echo "For troubleshooting, consult the documentation in the installer/docs directory."
 echo "To back up your installation, run: bash $INSTALL_DIR/installer/util/backup-restore.sh backup"
-echo
+echo ""
+if [ "$KEYS_FUNDED" != "true" ]; then
+    echo "NEXT STEPS:"
+    echo "  1. Fund your Chainlink keys: $INSTALL_DIR/fund-chainlink-keys.sh"
+    echo "  2. Start your services: $INSTALL_DIR/start-arbiter.sh"
+    echo ""
+fi
 echo "Thank you for using Verdikta Arbiter Node!" 

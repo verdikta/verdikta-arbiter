@@ -2,6 +2,17 @@
 
 Get your Verdikta Arbiter Node up and running with our automated installer. This comprehensive guide walks you through every step, from prerequisites to final configuration.
 
+## 🆕 What's New: Automated Fund Management
+
+The installer now includes **automatic Chainlink key funding** and **fund recovery** features:
+
+- **Zero Manual Transfers**: Automatically fund your Chainlink keys during installation
+- **Smart Recovery**: Easily recover excess ETH and accumulated LINK tokens
+- **Error-Proof Setup**: Built-in validation and retry mechanisms
+- **Post-Installation Tools**: Manage oracle finances throughout the lifecycle
+
+These new features eliminate the most error-prone manual steps and make oracle management significantly easier!
+
 ## Prerequisites
 
 Before starting, ensure you have:
@@ -54,11 +65,11 @@ Start the installation process:
 ./bin/install.sh -s
 ```
 
-The installer will guide you through **9 main steps**. Here's what happens in each step:
+The installer will guide you through **10 main steps**. Here's what happens in each step:
 
 ---
 
-## The 9 Main Installation Steps
+## The 10 Main Installation Steps
 
 ## Step 1: System Prerequisites Check
 
@@ -385,49 +396,105 @@ After registration, the installer will:
 
 ---
 
-## Post-Installation: Fund Chainlink Keys
+## Step 10: Automatic Chainlink Key Funding (Optional)
 
-**⚠️ CRITICAL STEP**: Your Chainlink node keys must be funded with Base on ETH (or Base on ETH Sepolia for testnet) tokens to process arbitration requests.
+**NEW FEATURE**: The installer now offers automatic funding of your Chainlink keys! This optional step eliminates the need for manual token transfers.
 
-### Why Funding is Required
+### What This Step Does
 
-- Chainlink jobs require native tokens for oracle services gas fees
-- Without native token funding for gas , your oracle cannot process requests.
-- Each arbitration request consumes LINK tokens.  LINK will be acculated by the arbiter node as query requests are made, but the node need not hold any LINK initially to operate.  
+The installer can automatically fund your Chainlink keys with the optimal amount of ETH for gas fees using funds from your deployment wallet.
 
-### How to Fund Your Keys
+### The Funding Process
 
-1. **Get your key addresses** from the installation summary or:
+**Prompt**: `Would you like to automatically fund your Chainlink keys now? (y/n):`
+
+**What to choose**:
+- **`y`**: Proceed with automatic funding (recommended)
+- **`n`**: Skip automatic funding and fund manually later
+
+### Funding Options
+
+If you choose automatic funding, you'll see:
+
+```
+Funding options:
+  1) Use recommended amount (0.005 Base Sepolia ETH per key)
+  2) Specify custom amount
+  3) Skip automatic funding
+
+Choose option (1-3) [1]:
+```
+
+**Recommended Amounts**:
+- **Base Sepolia**: 0.005 ETH per key (~50 queries worth of gas)
+- **Base Mainnet**: 0.002 ETH per key (~50 queries worth of gas)
+
+### Safety Features
+
+- **Balance Verification**: Checks your deployment wallet has sufficient funds
+- **Cost Calculation**: Shows total cost including gas fees before proceeding
+- **Transaction Monitoring**: Waits for blockchain confirmation
+- **Error Recovery**: Provides retry options if funding fails
+
+### Example Output
+
+```bash
+============================================================
+  Optional: Automatic Chainlink Key Funding
+============================================================
+
+Your Chainlink keys need native ETH to pay for gas fees.
+Recommended funding: 0.005 Base Sepolia ETH per key
+
+Funding Summary:
+  Keys to fund: 2
+  Amount per key: 0.005 Base Sepolia ETH
+  Total funding: 0.010 Base Sepolia ETH
+  Estimated gas cost: 0.000084 Base Sepolia ETH
+  Total cost: 0.010084 Base Sepolia ETH
+
+✓ Automatic funding completed successfully!
+✓ Your Chainlink keys are now funded and ready for operation.
+```
+
+### If Automatic Funding Fails
+
+Common causes and solutions:
+
+- **Insufficient Balance**: Add more ETH to your deployment wallet
+- **Network Issues**: Retry when network is stable
+- **Gas Price Spike**: Wait for lower gas prices or increase funding amount
+
+### Manual Funding Alternative
+
+If you skip automatic funding or it fails, you can:
+
+1. **Use the standalone script**:
    ```bash
-   # View your key addresses
-   cat ~/verdikta-arbiter-node/installer/.contracts
+   ~/verdikta-arbiter-node/fund-chainlink-keys.sh
    ```
 
-2. **Transfer Base on ETH tokens** to each key address:
-   
-   **For Base Sepolia (Testing)**:
-   - Get free Base Sepolia from [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia)
-   - Send ~10 LINK to each key address
-   
-   **For Base Mainnet (Production)**:
-   - Purchase Base on ETH tokens from an exchange
-   - Send $50-$100 of Base to each key address (depending on expected usage)
-
-3. **Verify funding** in Chainlink UI:
-   - Open [http://localhost:6688](http://localhost:6688)
-   - Go to **Key Management** → **EVM Chain Accounts**
-   - Check LINK balance for each key
+2. **Manual transfer** (traditional method):
+   - Get key addresses: `cat ~/verdikta-arbiter-node/installer/.contracts`
+   - Send ETH to each address using your wallet
 
 ### Recommended Funding Amounts
 
 | Network | Per Key | Total (4 arbiters) | Purpose |
 |---------|---------|-------------------|---------|
-| **Base Sepolia** | 0.005 | 0.010 Base Sepolia ETH | Testing & development |
-| **Base Mainnet** | 0.002 | 0.005 Base ETH | Production deployment |
+| **Base Sepolia** | 0.005 | 0.020 Base Sepolia ETH | Testing & development |
+| **Base Mainnet** | 0.002 | 0.008 Base ETH | Production deployment |
 
-!!! warning "Required for Operation"
+!!! tip "Automatic Funding Benefits"
     
-    Your oracle **will not process arbitration requests** until the Chainlink keys are funded with native tokens. This is a blockchain requirement, not a Verdikta limitation.
+    - **Faster Setup**: No manual wallet transactions needed
+    - **Optimal Amounts**: Uses network-specific recommended amounts
+    - **Error Prevention**: Validates balances and calculates costs
+    - **Transaction Tracking**: Monitors completion automatically
+
+!!! warning "Still Required for Operation"
+    
+    Whether automatic or manual, your oracle **will not process arbitration requests** until the Chainlink keys are funded with native tokens. This is a blockchain requirement, not a Verdikta limitation.
 
 ---
 
@@ -593,7 +660,55 @@ cd ~/verdikta-arbiter-node
 
 # Check status
 ./arbiter-status.sh
+
+# Fund Chainlink keys (post-installation)
+./fund-chainlink-keys.sh
+
+# Recover funds from Chainlink keys
+./recover-chainlink-funds.sh
 ```
+
+### Fund Management Commands
+
+#### Funding Chainlink Keys
+```bash
+# Interactive funding with recommended amounts
+./fund-chainlink-keys.sh
+
+# Fund with custom amount
+./fund-chainlink-keys.sh --amount 0.01
+
+# Preview funding without executing
+./fund-chainlink-keys.sh --dry-run
+
+# Automated funding (no prompts)
+./fund-chainlink-keys.sh --amount 0.005 --force
+```
+
+#### Recovering Funds from Keys
+```bash
+# Interactive recovery (choose what to recover)
+./recover-chainlink-funds.sh
+
+# Recover excess ETH only
+./recover-chainlink-funds.sh --eth-only
+
+# Recover accumulated LINK tokens only
+./recover-chainlink-funds.sh --link-only
+
+# Recover both ETH and LINK
+./recover-chainlink-funds.sh --both
+
+# Preview recovery without executing
+./recover-chainlink-funds.sh --dry-run --both
+```
+
+!!! tip "Fund Management Best Practices"
+    
+    - **Regular Monitoring**: Check key balances monthly
+    - **Optimal Funding**: Keep keys funded but not over-funded
+    - **Reward Collection**: Regularly recover accumulated LINK tokens
+    - **Emergency Recovery**: Use recovery script before node decommissioning
 
 ## Troubleshooting Quick Fixes
 
@@ -653,6 +768,50 @@ cd ~/verdikta-arbiter-node
     bash bin/install.sh
     ```
 
+=== "Automatic Funding Failed"
+    ```bash
+    # Check deployment wallet balance
+    curl -X POST -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["YOUR_WALLET","latest"],"id":1}' \
+      https://base-sepolia.infura.io/v3/YOUR_INFURA_KEY
+    
+    # Retry funding with custom amount
+    ./fund-chainlink-keys.sh --amount 0.003
+    
+    # Use dry run to check what would happen
+    ./fund-chainlink-keys.sh --dry-run
+    ```
+
+=== "Key Recovery Issues"
+    ```bash
+    # Check current key balances
+    ./recover-chainlink-funds.sh --dry-run --both
+    
+    # Recover specific asset type
+    ./recover-chainlink-funds.sh --eth-only --dry-run
+    
+    # Check Chainlink node status
+    curl http://localhost:6688/health
+    
+    # Verify Chainlink container is running
+    docker ps | grep chainlink
+    ```
+
+=== "Fund Management Problems"
+    ```bash
+    # Check all key addresses and balances
+    cat ~/verdikta-arbiter-node/installer/.contracts | grep KEY_.*_ADDRESS
+    
+    # Monitor specific key balance
+    # (Replace KEY_ADDRESS with actual key)
+    curl -X POST -H "Content-Type: application/json" \
+      -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["KEY_ADDRESS","latest"],"id":1}' \
+      https://base-sepolia.infura.io/v3/YOUR_INFURA_KEY
+    
+    # Force re-funding if needed
+    ./fund-chainlink-keys.sh --force --amount 0.005
+    ```
+
 === "Insufficient Network Funds - Legacy"
     **Base Sepolia (Testnet)**:
     1. Visit [Base Sepolia Faucet](https://www.alchemy.com/faucets/base-sepolia)
@@ -704,15 +863,41 @@ For advanced configurations, see:
 
 ---
 
-🎉 **Congratulations!** Your Verdikta Multi-Arbiter Node is now running. Welcome to the future of decentralized dispute resolution!
+🎉 **Congratulations!** Your Verdikta Multi-Arbiter Node is now running with automated fund management! Welcome to the future of decentralized dispute resolution!
+
+### New Fund Management Features
+
+Your installation now includes powerful fund management tools:
+
+- **Automatic Key Funding**: Eliminates manual ETH transfers during setup
+- **Fund Recovery**: Easily recover excess ETH and accumulated LINK tokens
+- **Balance Monitoring**: Built-in tools to check and manage key finances
+- **Error Recovery**: Robust handling of funding failures and network issues
+
+### Key Commands to Remember
+
+```bash
+cd ~/verdikta-arbiter-node
+
+# Core operations
+./start-arbiter.sh          # Start all services
+./stop-arbiter.sh           # Stop all services  
+./arbiter-status.sh         # Check status
+
+# Fund management
+./fund-chainlink-keys.sh    # Add ETH to keys
+./recover-chainlink-funds.sh # Recover ETH and LINK from keys
+```
 
 ### Getting Help
 
 - **Complete Troubleshooting**: [Troubleshooting Guide](troubleshooting/index.md)
+- **Fund Management Guide**: `~/verdikta-arbiter-node/installer/util/README-funding.md`
+- **Recovery Guide**: `~/verdikta-arbiter-node/installer/util/README-fund-recovery.md`
 - **GitHub Issues**: Report problems or ask questions  
 - **Discord**: Get community help in real-time
 - **Email**: Contact support for urgent issues
 
 !!! success "You're Ready!"
     
-    Your Verdikta Multi-Arbiter Node is operational and ready to process arbitration requests. Welcome to the decentralized dispute resolution network! 
+    Your Verdikta Multi-Arbiter Node is operational with automated fund management and ready to process arbitration requests. The new funding features make oracle maintenance easier than ever. Welcome to the decentralized dispute resolution network! 

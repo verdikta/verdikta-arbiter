@@ -427,6 +427,113 @@ update_contracts_with_keys() {
     return 0
 }
 
+# Export private key for a specific Chainlink key address
+export_chainlink_private_key() {
+    local key_address="$1"
+    local api_email="$2"
+    local api_password="$3"
+    
+    if [ -z "$key_address" ] || [ -z "$api_email" ] || [ -z "$api_password" ]; then
+        log_error "Missing required parameters: key_address, api_email, api_password"
+        return 1
+    fi
+    
+    # Check if container is running
+    if ! check_chainlink_container; then
+        return 1
+    fi
+    
+    local container_id=$(get_chainlink_container_id)
+    
+    # Login to CLI
+    if ! login_to_chainlink_cli "$api_email" "$api_password"; then
+        return 1
+    fi
+    
+    log_verbose "Exporting private key for address: $key_address"
+    
+    # Create temporary expect script to handle password prompt
+    local expect_script=$(mktemp)
+    cat > "$expect_script" << EOF
+#!/usr/bin/expect -f
+set timeout 30
+spawn docker exec -it $container_id chainlink keys eth export $key_address
+expect {
+    "Enter password:" {
+        send "\r"
+        exp_continue
+    }
+    "Enter Password:" {
+        send "\r"
+        exp_continue
+    }
+    eof
+}
+catch wait result
+exit [lindex \$result 3]
+EOF
+    
+    chmod +x "$expect_script"
+    
+    # Run the expect script and capture output
+    local export_output=$("$expect_script" 2>/dev/null)
+    local exit_code=$?
+    
+    rm -f "$expect_script"
+    
+    if [ $exit_code -ne 0 ]; then
+        log_error "Failed to export key $key_address"
+        return 1
+    fi
+    
+    # Parse the exported key JSON to get private key
+    local private_key=$(echo "$export_output" | python3 -c "
+import json
+import sys
+try:
+    # Read all lines and find JSON
+    lines = sys.stdin.read().strip().split('\n')
+    json_line = None
+    for line in lines:
+        line = line.strip()
+        if line.startswith('{') and 'privateKey' in line:
+            json_line = line
+            break
+    
+    if not json_line:
+        print('ERROR: No valid JSON found in export output')
+        sys.exit(1)
+    
+    data = json.loads(json_line)
+    if 'privateKey' in data:
+        # Remove 0x prefix if present
+        private_key = data['privateKey']
+        if private_key.startswith('0x'):
+            private_key = private_key[2:]
+        print(private_key)
+    else:
+        print('ERROR: No privateKey field found in JSON')
+        sys.exit(1)
+except Exception as e:
+    print('ERROR: ' + str(e))
+    sys.exit(1)
+" 2>/dev/null)
+    
+    if [[ "$private_key" == ERROR:* ]]; then
+        log_error "Failed to parse exported key: $private_key"
+        return 1
+    fi
+    
+    if [ -z "$private_key" ]; then
+        log_error "Empty private key returned for $key_address"
+        return 1
+    fi
+    
+    log_success "Successfully exported private key for $key_address"
+    echo "$private_key"
+    return 0
+}
+
 # Install expect if not available
 install_expect() {
     if ! command -v expect >/dev/null 2>&1; then
@@ -469,6 +576,7 @@ usage() {
     echo "  ensure_keys_exist <job_count> <api_email> <api_password>"
     echo "  get_key_address_for_job <job_number> <keys_list>"
     echo "  update_contracts_with_keys <contracts_file> <keys_list> <job_count>"
+    echo "  export_chainlink_private_key <key_address> <api_email> <api_password>"
     echo "  install_expect"
     echo ""
     echo "Examples:"
@@ -510,6 +618,9 @@ case "$FUNCTION_NAME" in
         ;;
     update_contracts_with_keys)
         update_contracts_with_keys "$@"
+        ;;
+    export_chainlink_private_key)
+        export_chainlink_private_key "$@"
         ;;
     install_expect)
         install_expect
