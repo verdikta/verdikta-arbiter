@@ -8,7 +8,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "integrate-classid": "node src/scripts/classid-integration.js",
+    "test-classid": "node src/scripts/test-classid-integration.js"
   },
   "overrides": {
     "ignore": "^7.0.5",
@@ -24,6 +26,7 @@
     "@langchain/ollama": "^0.1.0",
     "@langchain/openai": "^0.5.13",
     "@tailwindcss/forms": "^0.5.7",
+    "@verdikta/common": "^1.1.0",
     "form-data-encoder": "^4.0.2",
     "formdata-node": "^6.0.3",
     "mammoth": "^1.9.1",

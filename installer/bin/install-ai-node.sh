@@ -183,6 +183,181 @@ else
     }
 fi
 
+# Integrate ClassID Model Pools
+echo -e "${BLUE}Configuring ClassID Model Pools...${NC}"
+if [ -f "$AI_NODE_DIR/src/scripts/classid-integration.js" ]; then
+    echo -e "${BLUE}Found ClassID integration script. Configuring model pools...${NC}"
+    
+    # Check if @verdikta/common is installed
+    if npm list @verdikta/common >/dev/null 2>&1; then
+        echo -e "${GREEN}@verdikta/common is already installed.${NC}"
+    else
+        echo -e "${YELLOW}@verdikta/common not found. Installing...${NC}"
+        npm install @verdikta/common
+    fi
+    
+    # Run the ClassID integration script in non-interactive mode for installer
+    echo -e "${BLUE}Integrating ClassID model pools automatically...${NC}"
+    echo -e "${YELLOW}The installer will configure all available ClassID model pools.${NC}"
+    echo -e "${YELLOW}You can reconfigure later using: npm run integrate-classid${NC}"
+    
+    # Create a non-interactive version for the installer
+    cat > "$AI_NODE_DIR/classid-auto-integration.js" << 'EOCI'
+const { classMap } = require('@verdikta/common');
+const fs = require('fs');
+const path = require('path');
+
+console.log('🔧 Auto-configuring ClassID Model Pools...');
+
+try {
+    // Get all active classes
+    const availableClasses = classMap.listClasses().filter(classItem => {
+        const cls = classMap.getClass(classItem.id);
+        return cls && cls.status === 'ACTIVE' && cls.models && cls.models.length > 0;
+    });
+    
+    if (availableClasses.length === 0) {
+        console.log('❌ No active classes with models found.');
+        process.exit(0);
+    }
+    
+    console.log(`✅ Found ${availableClasses.length} active ClassID model pools`);
+    
+    // Read current models.ts
+    const modelsPath = path.join(__dirname, 'src/config/models.ts');
+    const currentContent = fs.readFileSync(modelsPath, 'utf8');
+    
+    // Parse existing models
+    const openaiMatch = currentContent.match(/openai:\s*\[([\s\S]*?)\]/);
+    const anthropicMatch = currentContent.match(/anthropic:\s*\[([\s\S]*?)\]/);
+    const ollamaMatch = currentContent.match(/ollama:\s*\[([\s\S]*?)\]/);
+    
+    const parseModels = (match) => {
+        if (!match) return [];
+        return match[1]
+            .split('\n')
+            .map(line => line.trim())
+            .filter(line => line.startsWith('{'))
+            .map(line => {
+                const nameMatch = line.match(/name:\s*['"`]([^'"`]+)['"`]/);
+                return nameMatch ? nameMatch[1] : null;
+            })
+            .filter(Boolean);
+    };
+    
+    const existingModels = {
+        openai: new Set(parseModels(openaiMatch)),
+        anthropic: new Set(parseModels(anthropicMatch)),
+        ollama: new Set(parseModels(ollamaMatch))
+    };
+    
+    // Add models from ClassID pools
+    availableClasses.forEach(classItem => {
+        const cls = classMap.getClass(classItem.id);
+        console.log(`📋 Processing ClassID ${cls.id}: ${cls.name}`);
+        
+        if (cls && cls.models) {
+            cls.models.forEach(model => {
+                if (model.provider === 'openai' || model.provider === 'anthropic') {
+                    existingModels[model.provider].add(model.model);
+                    console.log(`   + Added ${model.provider}/${model.model}`);
+                } else if (model.provider === 'ollama') {
+                    existingModels.ollama.add(model.model);
+                    console.log(`   + Added ${model.provider}/${model.model}`);
+                }
+            });
+        }
+    });
+    
+    // Generate model configuration with capability detection
+    const modelSupportsImages = (modelName, provider) => {
+        if (provider === 'openai') {
+            return modelName.includes('gpt-4') || 
+                   modelName.includes('gpt-5') || 
+                   modelName.includes('o3') || 
+                   modelName === 'gpt-4o';
+        } else if (provider === 'anthropic') {
+            return modelName.includes('claude-3') || 
+                   modelName.includes('claude-sonnet-4') ||
+                   modelName.includes('claude-4');
+        } else if (provider === 'ollama') {
+            return modelName.includes('llava') || 
+                   modelName.includes('vision') ||
+                   modelName.includes('minicpm');
+        }
+        return false;
+    };
+    
+    const modelSupportsAttachments = (modelName, provider) => {
+        if (provider === 'openai') {
+            return !modelName.includes('3.5-turbo') || 
+                   modelName.includes('gpt-4') || 
+                   modelName.includes('gpt-5') ||
+                   modelName.includes('o3');
+        } else if (provider === 'anthropic') {
+            return modelName.includes('claude-3') || 
+                   modelName.includes('claude-sonnet-4') ||
+                   modelName.includes('claude-4');
+        } else if (provider === 'ollama') {
+            return true;
+        }
+        return false;
+    };
+    
+    const generateModelEntries = (models, provider) => {
+        return Array.from(models).map(model => {
+            const supportsImages = modelSupportsImages(model, provider);
+            const supportsAttachments = modelSupportsAttachments(model, provider);
+            return `    { name: '${model}', supportsImages: ${supportsImages}, supportsAttachments: ${supportsAttachments} },`;
+        }).join('\n');
+    };
+    
+    const newContent = `export const modelConfig = {
+  openai: [
+${generateModelEntries(existingModels.openai, 'openai')}
+  ],
+  anthropic: [
+${generateModelEntries(existingModels.anthropic, 'anthropic')}
+  ],
+  ollama: [
+${generateModelEntries(existingModels.ollama, 'ollama')}
+  ],
+};
+`;
+    
+    // Backup and write new configuration
+    fs.copyFileSync(modelsPath, modelsPath + '.backup');
+    fs.writeFileSync(modelsPath, newContent);
+    
+    console.log('✅ ClassID model pools integrated successfully!');
+    console.log('📋 Configuration updated with models from all active ClassID pools');
+    
+    // List Ollama models that need to be pulled
+    const ollamaModels = Array.from(existingModels.ollama);
+    if (ollamaModels.length > 0) {
+        console.log('🐋 Ollama models configured:', ollamaModels.join(', '));
+        console.log('   These will be pulled during Ollama installation if selected.');
+    }
+    
+} catch (error) {
+    console.error('❌ ClassID integration failed:', error.message);
+    process.exit(1);
+}
+EOCI
+    
+    # Run the auto-integration script
+    node classid-auto-integration.js
+    
+    # Clean up temporary script
+    rm -f classid-auto-integration.js
+    
+    echo -e "${GREEN}ClassID Model Pools configured successfully!${NC}"
+    echo -e "${BLUE}You can reconfigure later using: npm run integrate-classid${NC}"
+else
+    echo -e "${YELLOW}ClassID integration script not found. Skipping ClassID configuration.${NC}"
+    echo -e "${YELLOW}You can configure ClassID model pools later if the script becomes available.${NC}"
+fi
+
 # Configure environment
 echo -e "${BLUE}Configuring AI Node environment...${NC}"
 if [ -f "$AI_NODE_DIR/.env.local" ]; then
@@ -312,9 +487,9 @@ if command_exists ollama; then
     fi
 fi
 
-# Pull recommended Ollama models
+# Pull Ollama models from ClassID configuration
 if command_exists ollama; then
-    echo -e "${BLUE}Checking Ollama models...${NC}"
+    echo -e "${BLUE}Checking Ollama models from ClassID configuration...${NC}"
     
     # Verify Ollama is responding
     if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
@@ -325,18 +500,41 @@ if command_exists ollama; then
     # Get list of installed models
     INSTALLED_MODELS=$(ollama list)
     
-    # Define recommended models
-    RECOMMENDED_MODELS=("gpt-oss:latest" "llama3.2" "llava" "deepseek-r1:8b", "qwen3:8b", )
+    # Extract Ollama models from the updated models.ts configuration
+    OLLAMA_MODELS=()
+    if [ -f "$AI_NODE_DIR/src/config/models.ts" ]; then
+        # Parse Ollama models from the configuration file
+        while IFS= read -r line; do
+            if echo "$line" | grep -q "name:.*'" && echo "$line" | grep -v "//"; then
+                model_name=$(echo "$line" | sed "s/.*name: *['\"]\\([^'\"]*\\)['\"].*/\\1/")
+                if [ -n "$model_name" ] && [ "$model_name" != "$line" ]; then
+                    OLLAMA_MODELS+=("$model_name")
+                fi
+            fi
+        done < <(sed -n '/ollama: \[/,/\]/p' "$AI_NODE_DIR/src/config/models.ts")
+    fi
     
-    for model in "${RECOMMENDED_MODELS[@]}"; do
+    # Add fallback models if no models found in configuration
+    if [ ${#OLLAMA_MODELS[@]} -eq 0 ]; then
+        echo -e "${YELLOW}No Ollama models found in ClassID configuration. Using fallback models.${NC}"
+        OLLAMA_MODELS=("llama3.1:8b" "llava:7b" "deepseek-r1:8b" "qwen3:8b")
+    fi
+    
+    echo -e "${BLUE}Found ${#OLLAMA_MODELS[@]} Ollama models from configuration${NC}"
+    
+    for model in "${OLLAMA_MODELS[@]}"; do
         if echo "$INSTALLED_MODELS" | grep -q "$model"; then
             echo -e "${GREEN}Ollama model '$model' is already installed.${NC}"
         else
             echo -e "${YELLOW}Ollama model '$model' is not installed.${NC}"
-            if ask_yes_no "Would you like to install Ollama model '$model'?"; then
+            if ask_yes_no "Would you like to install Ollama model '$model' from ClassID configuration?"; then
                 echo -e "${BLUE}Pulling Ollama model '$model'...${NC}"
                 ollama pull "$model"
-                echo -e "${GREEN}Ollama model '$model' installed.${NC}"
+                if [ $? -eq 0 ]; then
+                    echo -e "${GREEN}Ollama model '$model' installed successfully.${NC}"
+                else
+                    echo -e "${RED}Failed to install Ollama model '$model'. You can install it later with: ollama pull $model${NC}"
+                fi
             else
                 echo -e "${YELLOW}Skipping installation of Ollama model '$model'.${NC}"
             fi

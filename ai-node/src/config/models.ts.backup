@@ -6,8 +6,8 @@ export const modelConfig = {
     { name: 'o3', supportsImages: true, supportsAttachments: true },
     { name: 'gpt-4.1', supportsImages: true, supportsAttachments: true },
     { name: 'gpt-4.1-mini', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5-mini', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5', supportsImages: false, supportsAttachments: true },
+    { name: 'gpt-5-mini', supportsImages: false, supportsAttachments: true },
   ],
   anthropic: [
     { name: 'claude-2.1', supportsImages: false, supportsAttachments: false },
@@ -17,7 +17,6 @@ export const modelConfig = {
     { name: 'claude-3-5-haiku-20241022', supportsImages: true, supportsAttachments: true },
     { name: 'claude-3-7-sonnet-20250219', supportsImages: true, supportsAttachments: true },
     { name: 'claude-sonnet-4-20250514', supportsImages: true, supportsAttachments: true },
-    { name: 'claude-sonnet-4', supportsImages: true, supportsAttachments: true },
   ],
   ollama: [
     { name: 'llama3.1:8b', supportsImages: false, supportsAttachments: true },
