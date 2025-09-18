@@ -19,9 +19,28 @@ NC='\033[0m' # No Color
 
 echo -e "${BLUE}Verifying Verdikta Arbiter Node Installation...${NC}"
 
+# Find environment files - check multiple possible locations
+ENV_FILE=""
+
+# Possible locations for environment files
+POSSIBLE_LOCATIONS=(
+    "$INSTALLER_DIR"                    # Original installer directory
+    "$(dirname "$SCRIPT_DIR")/installer"  # Target installation: ../installer/
+    "$SCRIPT_DIR/../installer"          # Alternative path
+    "$(pwd)/installer"                  # Current directory + installer
+)
+
+# Find .env file
+for location in "${POSSIBLE_LOCATIONS[@]}"; do
+    if [ -f "$location/.env" ]; then
+        ENV_FILE="$location/.env"
+        break
+    fi
+done
+
 # Load environment variables
-if [ -f "$INSTALLER_DIR/.env" ]; then
-    source "$INSTALLER_DIR/.env"
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    source "$ENV_FILE"
 else
     echo -e "${RED}Error: Environment file not found. Installation may be incomplete.${NC}"
     exit 1
@@ -153,8 +172,11 @@ fi
 
 # Verify Smart Contracts
 echo -e "${BLUE}Verifying Smart Contracts...${NC}"
-if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    source "$INSTALLER_DIR/.contracts"
+if [ -f "$ENV_FILE" ]; then
+    CONTRACTS_FILE="$(dirname "$ENV_FILE")/.contracts"
+    if [ -f "$CONTRACTS_FILE" ]; then
+        source "$CONTRACTS_FILE"
+    fi
     if [ -n "$OPERATOR_ADDR" ] && [ -n "$NODE_ADDRESS" ] && [ -n "$JOB_ID" ] && [ -n "$JOB_ID_NO_HYPHENS" ]; then
         echo -e "${GREEN}✓ Contract information found${NC}"
         echo -e "${GREEN}  Operator Contract: $OPERATOR_ADDR${NC}"
@@ -197,8 +219,11 @@ fi
 
 # Verify Oracle Registration (Optional)
 echo -e "${BLUE}Verifying Oracle Registration...${NC}"
-if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    source "$INSTALLER_DIR/.contracts"
+if [ -f "$ENV_FILE" ]; then
+    CONTRACTS_FILE="$(dirname "$ENV_FILE")/.contracts"
+    if [ -f "$CONTRACTS_FILE" ]; then
+        source "$CONTRACTS_FILE"
+    fi
     if [ -n "$AGGREGATOR_ADDRESS" ]; then
         echo -e "${GREEN}✓ Oracle is registered with aggregator: $AGGREGATOR_ADDRESS${NC}"
     else

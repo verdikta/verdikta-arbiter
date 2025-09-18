@@ -88,19 +88,57 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Find environment files - check multiple possible locations
+ENV_FILE=""
+CONTRACTS_FILE=""
+
+# Possible locations for environment files
+POSSIBLE_LOCATIONS=(
+    "$INSTALLER_DIR"                    # Original installer directory
+    "$(dirname "$SCRIPT_DIR")/installer"  # Target installation: ../installer/
+    "$SCRIPT_DIR/../installer"          # Alternative path
+    "$(pwd)/installer"                  # Current directory + installer
+)
+
+# Find .env file
+for location in "${POSSIBLE_LOCATIONS[@]}"; do
+    if [ -f "$location/.env" ]; then
+        ENV_FILE="$location/.env"
+        break
+    fi
+done
+
+# Find .contracts file
+for location in "${POSSIBLE_LOCATIONS[@]}"; do
+    if [ -f "$location/.contracts" ]; then
+        CONTRACTS_FILE="$location/.contracts"
+        break
+    fi
+done
+
 # Load environment variables
-if [ -f "$INSTALLER_DIR/.env" ]; then
-    source "$INSTALLER_DIR/.env"
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    source "$ENV_FILE"
+    echo -e "${GREEN}Found environment file: $ENV_FILE${NC}"
 else
-    echo -e "${RED}Error: Environment file not found. Please run the installer first.${NC}"
+    echo -e "${RED}Error: Environment file (.env) not found in any of these locations:${NC}"
+    for location in "${POSSIBLE_LOCATIONS[@]}"; do
+        echo -e "${RED}  - $location/.env${NC}"
+    done
+    echo -e "${RED}Please run the installer first.${NC}"
     exit 1
 fi
 
 # Load contract information (includes key addresses)
-if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    source "$INSTALLER_DIR/.contracts"
+if [ -n "$CONTRACTS_FILE" ] && [ -f "$CONTRACTS_FILE" ]; then
+    source "$CONTRACTS_FILE"
+    echo -e "${GREEN}Found contracts file: $CONTRACTS_FILE${NC}"
 else
-    echo -e "${RED}Error: Contract information file not found. Please run the installer first.${NC}"
+    echo -e "${RED}Error: Contract information file (.contracts) not found in any of these locations:${NC}"
+    for location in "${POSSIBLE_LOCATIONS[@]}"; do
+        echo -e "${RED}  - $location/.contracts${NC}"
+    done
+    echo -e "${RED}Please run the installer first.${NC}"
     exit 1
 fi
 
@@ -419,11 +457,24 @@ send_eth_transaction() {
     fi
     
     # Use Python to create and send transaction
-    local tx_hash=$(python3 -c "
+    local tx_hash=$(timeout 60 python3 -c "
 try:
     from eth_account import Account
     from web3 import Web3
     import sys
+    import requests
+    
+    # Try to import geth_poa_middleware (different location in different web3 versions)
+    try:
+        from web3.middleware import geth_poa_middleware
+        POA_MIDDLEWARE_AVAILABLE = True
+    except ImportError:
+        try:
+            from web3 import middleware
+            geth_poa_middleware = middleware.geth_poa_middleware
+            POA_MIDDLEWARE_AVAILABLE = True
+        except (ImportError, AttributeError):
+            POA_MIDDLEWARE_AVAILABLE = False
     
     # Setup
     private_key = '$from_private_key'
@@ -435,9 +486,28 @@ try:
     chain_id = $CHAIN_ID
     rpc_url = '$rpc_url'
     
-    # Create account and web3 instance
+    # Connection info
+    print(f'Connecting to {rpc_url}...', file=sys.stderr)
+    
+    # Create account and web3 instance with timeout
+    session = requests.Session()
+    session.timeout = 30
+    w3 = Web3(Web3.HTTPProvider(rpc_url, session=session))
+    
+    # Add middleware for Base (which is a PoA chain) if available
+    if POA_MIDDLEWARE_AVAILABLE:
+        w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+    
+    # Check connection
+    try:
+        latest_block = w3.eth.get_block('latest')
+        print(f'Connected to network (block {latest_block.number})', file=sys.stderr)
+    except Exception as e:
+        print(f'ERROR: Failed to connect to RPC endpoint: {e}')
+        sys.exit(1)
+    
+    # Create account
     account = Account.from_key(private_key)
-    w3 = Web3(Web3.HTTPProvider(rpc_url))
     
     # Build transaction
     transaction = {
@@ -452,9 +522,39 @@ try:
     # Sign transaction
     signed_txn = account.sign_transaction(transaction)
     
-    # Send transaction
-    tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
-    print(tx_hash.hex())
+    # Send transaction with timeout using direct RPC call
+    
+    # Handle different attribute names in different eth-account versions
+    if hasattr(signed_txn, 'rawTransaction'):
+        raw_tx_hex = signed_txn.rawTransaction.hex()
+    elif hasattr(signed_txn, 'raw_transaction'):
+        raw_tx_hex = signed_txn.raw_transaction.hex()
+    else:
+        raw_tx_hex = signed_txn.hex()
+    
+    # Ensure hex string has 0x prefix
+    if not raw_tx_hex.startswith('0x'):
+        raw_tx_hex = '0x' + raw_tx_hex
+    
+    # Use direct RPC call instead of Web3.py
+    import json
+    rpc_payload = {
+        'jsonrpc': '2.0',
+        'method': 'eth_sendRawTransaction',
+        'params': [raw_tx_hex],
+        'id': 1
+    }
+    
+    response = requests.post(rpc_url, json=rpc_payload, timeout=30)
+    response.raise_for_status()
+    
+    result = response.json()
+    
+    if 'error' in result:
+        raise Exception(f'RPC error: {result[\"error\"]}')
+    
+    tx_hash_hex = result['result']
+    print(tx_hash_hex)
     
 except ImportError as e:
     print('ERROR: Missing required packages. Please install: pip3 install eth-account web3')
@@ -462,7 +562,7 @@ except ImportError as e:
 except Exception as e:
     print('ERROR: ' + str(e))
     sys.exit(1)
-" 2>/dev/null)
+")
     
     if [[ "$tx_hash" == ERROR:* ]]; then
         echo "$tx_hash"
@@ -550,7 +650,7 @@ collect_chainlink_keys() {
                 key_count=$((key_count + 1))
             fi
         fi
-    done < "$INSTALLER_DIR/.contracts"
+    done < "$CONTRACTS_FILE"
     
     if [ $key_count -eq 0 ]; then
         echo "ERROR: No Chainlink keys found in contracts file"
@@ -560,20 +660,84 @@ collect_chainlink_keys() {
     echo "$keys_list"
 }
 
+# Function to install pip if missing
+install_pip_if_missing() {
+    if ! command_exists pip3 && ! command_exists pip; then
+        echo -e "${YELLOW}pip/pip3 not found. Installing pip...${NC}"
+        
+        # Try different methods to install pip
+        if command_exists apt-get; then
+            # Ubuntu/Debian
+            if command_exists sudo; then
+                sudo apt-get update >/dev/null 2>&1 && sudo apt-get install -y python3-pip >/dev/null 2>&1
+            else
+                apt-get update >/dev/null 2>&1 && apt-get install -y python3-pip >/dev/null 2>&1
+            fi
+        elif command_exists yum; then
+            # CentOS/RHEL
+            if command_exists sudo; then
+                sudo yum install -y python3-pip >/dev/null 2>&1
+            else
+                yum install -y python3-pip >/dev/null 2>&1
+            fi
+        elif command_exists dnf; then
+            # Fedora
+            if command_exists sudo; then
+                sudo dnf install -y python3-pip >/dev/null 2>&1
+            else
+                dnf install -y python3-pip >/dev/null 2>&1
+            fi
+        elif command_exists brew; then
+            # macOS
+            brew install python3 >/dev/null 2>&1
+        else
+            # Try to install using get-pip.py
+            echo -e "${BLUE}Attempting to install pip using get-pip.py...${NC}"
+            if command_exists curl; then
+                curl -sS https://bootstrap.pypa.io/get-pip.py | python3 >/dev/null 2>&1
+            elif command_exists wget; then
+                wget -qO- https://bootstrap.pypa.io/get-pip.py | python3 >/dev/null 2>&1
+            else
+                echo -e "${RED}Error: Cannot install pip automatically. Please install manually:${NC}"
+                echo -e "${RED}  On Ubuntu/Debian: sudo apt-get install python3-pip${NC}"
+                echo -e "${RED}  On CentOS/RHEL: sudo yum install python3-pip${NC}"
+                echo -e "${RED}  On Fedora: sudo dnf install python3-pip${NC}"
+                echo -e "${RED}  On macOS: brew install python3${NC}"
+                exit 1
+            fi
+        fi
+        
+        # Verify pip installation
+        if ! command_exists pip3 && ! command_exists pip; then
+            echo -e "${RED}Error: Failed to install pip. Please install manually:${NC}"
+            echo -e "${RED}  On Ubuntu/Debian: sudo apt-get install python3-pip${NC}"
+            echo -e "${RED}  On CentOS/RHEL: sudo yum install python3-pip${NC}"
+            echo -e "${RED}  On Fedora: sudo dnf install python3-pip${NC}"
+            echo -e "${RED}  On macOS: brew install python3${NC}"
+            exit 1
+        fi
+        
+        echo -e "${GREEN}✓ pip successfully installed${NC}"
+    fi
+}
+
 # Check if required Python packages are installed
 check_python_dependencies() {
     echo -e "${BLUE}Checking Python dependencies...${NC}"
     
+    # First ensure pip is available
+    install_pip_if_missing
+    
     if ! python3 -c "import eth_account, web3" 2>/dev/null; then
         echo -e "${YELLOW}Installing required Python packages...${NC}"
         
-        # Try to install using pip3
+        # Try to install using pip3 first, then pip
         if command_exists pip3; then
             pip3 install eth-account web3 >/dev/null 2>&1
         elif command_exists pip; then
             pip install eth-account web3 >/dev/null 2>&1
         else
-            echo -e "${RED}Error: pip/pip3 not found. Please install manually:${NC}"
+            echo -e "${RED}Error: pip/pip3 not found after installation attempt. Please install manually:${NC}"
             echo -e "${RED}  pip3 install eth-account web3${NC}"
             exit 1
         fi
@@ -753,9 +917,6 @@ echo -e "${BLUE}Starting funding process...${NC}"
 SUCCESSFUL_FUNDING=0
 FAILED_FUNDING=0
 
-# Get initial nonce
-CURRENT_NONCE=$(get_nonce "$FUNDING_WALLET" "$RPC_URL")
-
 for i in "${!KEY_ADDRESSES[@]}"; do
     KEY_ADDRESS="${KEY_ADDRESSES[$i]}"
     KEY_NUMBER=$((i+1))
@@ -782,6 +943,11 @@ for i in "${!KEY_ADDRESSES[@]}"; do
     
     # Send transaction
     if [ "$DRY_RUN" = "false" ]; then
+        # Get fresh nonce for each transaction
+        echo -e "${BLUE}  Getting current nonce...${NC}"
+        CURRENT_NONCE=$(get_nonce "$FUNDING_WALLET" "$RPC_URL")
+        echo -e "${BLUE}  Using nonce: $CURRENT_NONCE${NC}"
+        
         echo -e "${BLUE}  Sending $FUNDING_AMOUNT $CURRENCY_NAME...${NC}"
         TX_HASH=$(send_eth_transaction "$PRIVATE_KEY" "$KEY_ADDRESS" "$FUNDING_AMOUNT_WEI" "$GAS_LIMIT" "$GAS_PRICE" "$CURRENT_NONCE" "$RPC_URL")
         
@@ -800,8 +966,7 @@ for i in "${!KEY_ADDRESSES[@]}"; do
                 echo -e "${RED}  ✗ Transaction may have failed${NC}"
             fi
             
-            # Increment nonce for next transaction
-            CURRENT_NONCE=$((CURRENT_NONCE + 1))
+            # Nonce will be fetched fresh for next transaction
             
             # Brief delay between transactions
             if [ $KEY_NUMBER -lt $KEY_COUNT ]; then

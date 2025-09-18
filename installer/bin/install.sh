@@ -133,7 +133,20 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# ask_yes_no function is now defined in setup-environment.sh
+# Function to prompt for Yes/No question
+ask_yes_no() {
+    local prompt="$1"
+    local response
+    
+    while true; do
+        read -p "$prompt (y/n): " response
+        case "$response" in
+            [Yy]* ) return 0;;
+            [Nn]* ) return 1;;
+            * ) echo "Please answer yes (y) or no (n).";;
+        esac
+    done
+}
 
 # Skip installation steps if resuming registration
 if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
@@ -700,20 +713,7 @@ echo -e "${BLUE}Would you like to start the Verdikta Arbiter services now?${NC}"
 echo -e "${BLUE}This will start the AI Node, External Adapter, and Chainlink Node.${NC}"
 echo
 
-# Source the ask_yes_no function from setup-environment.sh since it's not directly available here
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no function is now defined at the top of this script
 
 if ask_yes_no "Start Verdikta Arbiter services?"; then
     echo -e "${BLUE}Starting Verdikta Arbiter services...${NC}"
