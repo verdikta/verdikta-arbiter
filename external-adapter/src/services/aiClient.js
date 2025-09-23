@@ -116,7 +116,8 @@ class AIClient {
     });
     
     this.retryOptions = config.retry;
-    logger.info(`AI Client configured with URL: ${config.ai.nodeUrl}`);
+    logger.info(`AI Client configured`, { url: config.ai.nodeUrl, timeoutMs: config.ai.timeout });
+
   }
 
   async evaluate(query, extractedPath, runTag = '') {

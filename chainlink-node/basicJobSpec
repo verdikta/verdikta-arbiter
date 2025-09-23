@@ -34,7 +34,7 @@ encode_data  [type="ethabiencode"
     submit_tx [type="ethtx" 
           to="{CONTRACT_ADDRESS}" 
           data="$(encode_tx)" 
-          gasLimit="4000000"
+          gasLimit="6000000"
           minConfirmations="2"
           evmChainID="<CHAIN_ID>"]
 

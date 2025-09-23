@@ -65,6 +65,19 @@ function logInteraction(message: string) {
   }
 }
 
+function stripThinkingBlocks(response: string): string {
+  // Remove <think>...</think> blocks (case insensitive, multiline)
+  const thinkRegex = /<think>[\s\S]*?<\/think>/gi;
+  const cleaned = response.replace(thinkRegex, '').trim();
+  
+  // Log if thinking blocks were found and removed
+  if (cleaned !== response.trim()) {
+    console.log('Stripped <think> blocks from model response');
+  }
+  
+  return cleaned;
+}
+
 export async function POST(request: Request) {
   const requestStartTime = Date.now();
   const timingLog: { [key: string]: number } = {};
@@ -286,7 +299,7 @@ export async function POST(request: Request) {
             );
           }
 
-          for (let c = 0; c < count; c++) {
+            for (let c = 0; c < count; c++) {
             const callStartTime = Date.now();
             let responseText: string;
             if (attachments.length > 0 && llmProvider.supportsAttachments(modelInfo.model)) {
@@ -297,6 +310,8 @@ export async function POST(request: Request) {
                   modelInfo.model,
                   attachments
                 );
+                // Strip thinking blocks from the response
+                responseText = stripThinkingBlocks(responseText);
                 logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
                 logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_with_attachments_${c+1}`, callStartTime, {
                   provider: modelInfo.provider,
@@ -323,6 +338,8 @@ export async function POST(request: Request) {
                   iterationPrompt,
                   modelInfo.model
                 );
+                // Strip thinking blocks from the response
+                responseText = stripThinkingBlocks(responseText);
                 logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
                 logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_${c+1}`, callStartTime, {
                   provider: modelInfo.provider,
@@ -440,6 +457,8 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
             justifierProvider,
             justifierModelName
           );
+          // Strip thinking blocks from justifier response
+          finalJustification = stripThinkingBlocks(finalJustification);
           logInteraction(`Response from Justifier:
 ${finalJustification}\n`);
           logTiming('justification_generation', justificationStartTime, {

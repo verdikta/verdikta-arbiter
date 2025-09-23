@@ -519,6 +519,15 @@ if [ -f "$TARGET_DIR/installer/.contracts" ]; then
             else
                 echo "OPERATOR_ADDR=$CURRENT_OPERATOR_ADDR" >> "$TARGET_EXTERNAL_ADAPTER/.env"
             fi
+            
+            # Ensure AI_TIMEOUT is set (default: 150000ms = 150 seconds)
+            if grep -q "^AI_TIMEOUT=" "$TARGET_EXTERNAL_ADAPTER/.env"; then
+                echo -e "${GREEN}AI_TIMEOUT already configured in External Adapter${NC}"
+            else
+                echo "AI_TIMEOUT=150000" >> "$TARGET_EXTERNAL_ADAPTER/.env"
+                echo -e "${GREEN}AI_TIMEOUT added to External Adapter (150 seconds)${NC}"
+            fi
+            
             echo -e "${GREEN}External Adapter updated with operator address.${NC}"
         else
             echo -e "${YELLOW}Warning: External Adapter .env file not found.${NC}"

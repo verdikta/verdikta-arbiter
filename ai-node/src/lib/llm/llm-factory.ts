@@ -8,12 +8,16 @@ export class LLMFactory {
     let llmProvider: LLMProvider;
     switch (provider) {
       case 'OpenAI':
+      case 'openai':
         llmProvider = new OpenAIProvider();
         break;
       case 'Anthropic':
+      case 'anthropic':
         llmProvider = new AnthropicProvider();
         break;
       case 'Open-source':
+      case 'ollama':
+      case 'Ollama':
         llmProvider = new OllamaProvider();
         break;
       default:
