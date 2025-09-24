@@ -152,3 +152,6 @@ echo "  2. Or run the installer again from the beginning"
 echo ""
 echo -e "${YELLOW}Note: If you open a new terminal, NVM will be automatically available.${NC}"
 echo -e "${YELLOW}In the current terminal, you may need to run: source ~/.bashrc${NC}"
+
+
+

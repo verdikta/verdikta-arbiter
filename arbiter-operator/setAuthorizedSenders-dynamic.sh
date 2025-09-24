@@ -121,3 +121,7 @@ fi
 # Run the authorization
 echo -e "${BLUE}Running setAuthorizedSenders with detected addresses...${NC}"
 env OPERATOR="$OPERATOR_ADDR" NODES="$NODE_LIST" npx hardhat run scripts/setAuthorizedSenders.js --network $DEPLOYMENT_NETWORK
+
+
+
+
