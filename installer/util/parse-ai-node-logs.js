@@ -41,6 +41,7 @@ const outputFile = options.output;
 const showDetailed = options.detailed;
 const showSlowRequests = options['slow-requests'];
 const showModelAnalysis = options['model-analysis'];
+const showParallelAnalysis = options['parallel-analysis'];
 const timeoutThreshold = options['timeout-threshold'] ? parseInt(options['timeout-threshold']) : 50000; // 50 seconds default
 
 class AINodeLogParser {
@@ -64,10 +65,17 @@ class AINodeLogParser {
     const lines = content.split('\n');
 
     let parsedCount = 0;
+    let currentRequest = null;
+    
     for (const line of lines) {
+      // Parse timing summary (main request data)
       if (this.parseTimingSummaryLine(line)) {
         parsedCount++;
+        continue;
       }
+      
+      // Parse new instrumentation messages
+      this.parseInstrumentationLine(line, currentRequest);
     }
 
     if (format !== 'json') {
@@ -106,6 +114,11 @@ class AINodeLogParser {
 
       // Determine performance category
       request.performanceCategory = this.categorizePerformance(request.totalDuration);
+      
+      // Extract parallel processing analysis if available
+      if (timingData.performance_analysis) {
+        request.parallelAnalysis = timingData.performance_analysis;
+      }
 
       this.requests.push(request);
       this.updateStats(request);
@@ -115,6 +128,24 @@ class AINodeLogParser {
       console.warn(`Failed to parse timing summary: ${error.message}`);
       return false;
     }
+  }
+
+  parseInstrumentationLine(line, currentRequest) {
+    // Parse new debug instrumentation messages
+    const patterns = {
+      parallelStart: /🚀 PARALLEL_START: Starting (\d+) models in parallel for iteration (\d+)/,
+      parallelComplete: /✅ PARALLEL_COMPLETE: All (\d+) models completed in (\d+)ms/,
+      apiCall: /📞 API_CALL: Call (\d+)\/(\d+) to ([^-]+)-(.+) starting\.\.\./,
+      apiResponse: /✅ API_RESPONSE: Call (\d+)\/(\d+) to ([^-]+)-(.+) completed in (\d+)ms/,
+      justifierStart: /🎯 JUSTIFIER_START: Starting justification generation with ([^-]+)-(.+)/,
+      justifierComplete: /🎯 JUSTIFIER_COMPLETE: Total justification generation took (\d+)ms/,
+      modelStart: /🔄 MODEL_START: Processing model ([^-]+)-(.+) \(iteration (\d+)\)/,
+      providerSetup: /✅ PROVIDER_READY: (.+) provider ready in (\d+)ms/
+    };
+
+    // Store instrumentation data for potential future analysis
+    // For now, we'll focus on the timing summary data which contains the key metrics
+    return null;
   }
 
   extractModelTimings(components) {
@@ -271,6 +302,11 @@ class AINodeLogParser {
 
     if (showModelAnalysis) {
       this.printModelAnalysis();
+      return;
+    }
+
+    if (showParallelAnalysis) {
+      this.printParallelProcessingAnalysis(requests);
       return;
     }
 
@@ -453,6 +489,50 @@ class AINodeLogParser {
     return insights;
   }
 
+  printParallelProcessingAnalysis(requests) {
+    const parallelRequests = requests.filter(req => req.parallelAnalysis && req.modelsCount > 1);
+    
+    if (parallelRequests.length === 0) {
+      return;
+    }
+
+    console.log('\n🚀 PARALLEL PROCESSING ANALYSIS');
+    console.log('='.repeat(60));
+    
+    const avgEfficiency = parallelRequests.reduce((sum, req) => sum + req.parallelAnalysis.parallel_efficiency, 0) / parallelRequests.length;
+    console.log(`Parallel requests analyzed: ${parallelRequests.length}/${requests.length}`);
+    console.log(`Average parallel efficiency: ${(avgEfficiency * 100).toFixed(1)}%`);
+    
+    // Analyze justification bottlenecks
+    const justificationTimes = requests.map(req => req.components.justification_generation || 0).filter(t => t > 0);
+    if (justificationTimes.length > 0) {
+      const avgJustification = Math.round(justificationTimes.reduce((sum, t) => sum + t, 0) / justificationTimes.length);
+      const maxJustification = Math.max(...justificationTimes);
+      const slowJustifications = justificationTimes.filter(t => t > 20000).length;
+      
+      console.log(`\n🎯 JUSTIFICATION PERFORMANCE:`);
+      console.log(`  Average justification time: ${avgJustification}ms`);
+      console.log(`  Maximum justification time: ${maxJustification}ms`);
+      console.log(`  Slow justifications (>20s): ${slowJustifications}/${justificationTimes.length} (${((slowJustifications/justificationTimes.length)*100).toFixed(1)}%)`);
+    }
+
+    // Show efficiency breakdown
+    console.log(`\n📊 EFFICIENCY BREAKDOWN:`);
+    const efficiencyRanges = {
+      'Excellent (>90%)': parallelRequests.filter(req => req.parallelAnalysis.parallel_efficiency > 0.9).length,
+      'Good (70-90%)': parallelRequests.filter(req => req.parallelAnalysis.parallel_efficiency > 0.7 && req.parallelAnalysis.parallel_efficiency <= 0.9).length,
+      'Fair (50-70%)': parallelRequests.filter(req => req.parallelAnalysis.parallel_efficiency > 0.5 && req.parallelAnalysis.parallel_efficiency <= 0.7).length,
+      'Poor (<50%)': parallelRequests.filter(req => req.parallelAnalysis.parallel_efficiency <= 0.5).length
+    };
+
+    for (const [range, count] of Object.entries(efficiencyRanges)) {
+      if (count > 0) {
+        const percentage = ((count / parallelRequests.length) * 100).toFixed(1);
+        console.log(`  ${range}: ${count} requests (${percentage}%)`);
+      }
+    }
+  }
+
   printDetailedRequest(request) {
     console.log(`\n📋 Request ${request.requestId} - ${request.totalDuration}ms`);
     console.log('─'.repeat(50));
@@ -573,6 +653,7 @@ Options:
   --detailed                Show detailed breakdown of timing components
   --slow-requests           Analyze requests taking longer than 20 seconds
   --model-analysis          Show model-specific performance analysis
+  --parallel-analysis       Show parallel processing efficiency analysis
   --timeout-threshold=<ms>  Set custom timeout threshold (default: 50000ms)
   --help, -h                Show this help message
 
@@ -585,6 +666,9 @@ Examples:
 
   # Show model performance analysis
   node parse-ai-node-logs.js --model-analysis
+
+  # Show parallel processing analysis
+  node parse-ai-node-logs.js --parallel-analysis
 
   # Show requests taking longer than 30 seconds
   node parse-ai-node-logs.js --min-time=30000 --detailed
