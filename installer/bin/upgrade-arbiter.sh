@@ -520,12 +520,19 @@ if [ -f "$TARGET_DIR/installer/.contracts" ]; then
                 echo "OPERATOR_ADDR=$CURRENT_OPERATOR_ADDR" >> "$TARGET_EXTERNAL_ADAPTER/.env"
             fi
             
-            # Ensure AI_TIMEOUT is set (default: 150000ms = 150 seconds)
+            # Ensure AI_TIMEOUT is set (updated: 300000ms = 300 seconds for slow model compatibility)
             if grep -q "^AI_TIMEOUT=" "$TARGET_EXTERNAL_ADAPTER/.env"; then
-                echo -e "${GREEN}AI_TIMEOUT already configured in External Adapter${NC}"
+                # Update existing timeout to the new value
+                current_timeout=$(grep "^AI_TIMEOUT=" "$TARGET_EXTERNAL_ADAPTER/.env" | cut -d'=' -f2)
+                if [ -n "$current_timeout" ] && [ "$current_timeout" -lt 300000 ]; then
+                    sed -i.bak "s/^AI_TIMEOUT=.*/AI_TIMEOUT=300000/" "$TARGET_EXTERNAL_ADAPTER/.env"
+                    echo -e "${GREEN}AI_TIMEOUT updated from ${current_timeout}ms to 300000ms (5 minutes)${NC}"
+                else
+                    echo -e "${GREEN}AI_TIMEOUT already configured appropriately: ${current_timeout}ms${NC}"
+                fi
             else
-                echo "AI_TIMEOUT=150000" >> "$TARGET_EXTERNAL_ADAPTER/.env"
-                echo -e "${GREEN}AI_TIMEOUT added to External Adapter (150 seconds)${NC}"
+                echo "AI_TIMEOUT=300000" >> "$TARGET_EXTERNAL_ADAPTER/.env"
+                echo -e "${GREEN}AI_TIMEOUT added to External Adapter (300 seconds)${NC}"
             fi
             
             echo -e "${GREEN}External Adapter updated with operator address.${NC}"

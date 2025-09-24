@@ -41,3 +41,7 @@ MaxQueued = 64
 Name="<NETWORK_NAME>"
 WSURL="<WS_URL>"
 HTTPURL="<HTTP_URL>"
+
+[JobPipeline.HTTPRequest]
+DefaultTimeout = "300s"
+

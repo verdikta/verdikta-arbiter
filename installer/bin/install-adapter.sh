@@ -203,6 +203,13 @@ else
     echo "AI_NODE_URL=http://localhost:3000" >> "$ADAPTER_DIR/.env"
 fi
 
+# Set AI_TIMEOUT (updated: 300000ms = 300 seconds for slow model compatibility)
+if grep -q "^AI_TIMEOUT=" "$ADAPTER_DIR/.env"; then
+    sed -i.bak "s/^AI_TIMEOUT=.*/AI_TIMEOUT=300000/" "$ADAPTER_DIR/.env"
+else
+    echo "AI_TIMEOUT=300000" >> "$ADAPTER_DIR/.env"
+fi
+
 # Set OPERATOR_ADDR (required for commit hash security)
 # Check if operator address is available from previous deployment
 OPERATOR_ADDR=""

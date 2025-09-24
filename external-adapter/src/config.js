@@ -25,7 +25,7 @@ const config = {
   },
   ai: {
     nodeUrl: process.env.AI_NODE_URL || 'http://localhost:3000',
-    timeout: parseInt(process.env.AI_TIMEOUT) || 150000,
+    timeout: parseInt(process.env.AI_TIMEOUT) || 300000,
   },
   retry: {
     attempts: 3,

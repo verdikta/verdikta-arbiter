@@ -11,7 +11,7 @@ app.use(bodyParser.json());
 // Create HTTP server to set connection limits
 const server = require('http').createServer(app);
 server.maxConnections = 1000;        // Handle more concurrent connections
-server.timeout = 30000;              // 30 second timeout
+server.timeout = parseInt(process.env.SERVER_TIMEOUT) || 300000;  // 5 minute timeout (configurable)
 
 // Update the route handler
 app.post('/evaluate', async (req, res) => {

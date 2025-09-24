@@ -3,7 +3,7 @@ schemaVersion = 1
 name = "{JOB_NAME}"
 fromAddress = "{FROM_ADDRESS}"
 contractAddress = "{CONTRACT_ADDRESS}"
-maxTaskDuration = "0s"
+maxTaskDuration = "300s"
 evmChainID = "<CHAIN_ID>"
 observationSource = """
     decode_log   [type="ethabidecodelog" \
@@ -15,7 +15,7 @@ observationSource = """
     
     fetch        [type="bridge" 
                      name="verdikta-ai"
-                     timeout="150s" # increase timeout to 150s
+                     timeout="300s" # increase timeout to 300s
                      requestData="{\\"id\\": $(jobSpec.externalJobID), \\"data\\": {\\"cid\\": $(decode_cbor.cid), \\"aggId\\": $(decode_cbor.aggId)}}"]
     
 
