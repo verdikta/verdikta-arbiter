@@ -117,7 +117,7 @@ export async function POST(request: Request) {
     console.log('DEBUG: Checking native PDF support for each model:');
     body.models.forEach(modelInfo => {
       if (modelInfo.provider === 'OpenAI') {
-        const supported = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel =>
+        const supported = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini'].some(supportedModel =>
           modelInfo.model.toLowerCase().includes(supportedModel.toLowerCase())
         );
         console.log(`[OpenAI] Model: ${modelInfo.model}, Supported: ${supported}`);
@@ -254,178 +254,85 @@ export async function POST(request: Request) {
       const iterationWeights: number[] = [];
       const iterationJustifications: string[] = [];
 
-      // Process each model for this iteration
-      for (let j = 0; j < models.length; j++) {
-        const modelStartTime = Date.now();
-        const modelInfo = models[j];
-        const count = modelInfo.count || 1;
-        const weight = modelInfo.weight;
-        const allOutputs: number[][] = [];
+      // Construct the full prompt based on iteration (shared across all models)
+      let iterationPrompt = `${prePromptConfig.getPrompt(body.outcomes)}\n\n${prompt}`;
+      
+      if (i > 0 && previousIterationResponses.length > 0) {
+        const previousResponsesText = previousIterationResponses.join('\n\n');
+        iterationPrompt = `${iterationPrompt}\n\n${postPromptConfig.prompt.replace('{{previousResponses}}', previousResponsesText)}`;
+      }
 
-        console.log(`Processing model: ${modelInfo.provider} - ${modelInfo.model}`);
-
-        if (!modelInfo.provider || !modelInfo.model || weight < 0 || weight > 1) {
-          return NextResponse.json(
-            { error: 'Invalid model input. Check provider, model, and weight.' },
-            { status: 400 }
+      // Process all models in parallel for this iteration
+      try {
+        console.log(`🚀 PARALLEL_START: Starting ${models.length} models in parallel for iteration ${i + 1}`);
+        const parallelStartTime = Date.now();
+        
+        const modelPromises = models.map((modelInfo, modelIndex) => {
+          console.log(`📋 PARALLEL_QUEUE: Model ${modelIndex + 1}/${models.length}: ${modelInfo.provider}-${modelInfo.model} (weight: ${modelInfo.weight}, count: ${modelInfo.count || 1})`);
+          return processModelForIteration(
+            modelInfo,
+            modelIndex,
+            iterationPrompt,
+            attachments,
+            i + 1,
+            body.outcomes,
+            logTiming
           );
-        }
+        });
 
-        try {
-          // Cast to unknown first to avoid type mismatch
-          const llmProvider = await LLMFactory.getProvider(modelInfo.provider) as unknown as LLMProvider;
-          if (!llmProvider) {
-            return NextResponse.json(
-              { error: `Unsupported provider: ${modelInfo.provider}` },
-              { status: 400 }
-            );
-          }
+        console.log(`⏳ PARALLEL_WAIT: Waiting for ${models.length} models to complete...`);
+        // Wait for all models to complete in parallel
+        const modelResults = await Promise.all(modelPromises);
+        
+        const parallelDuration = Date.now() - parallelStartTime;
+        console.log(`✅ PARALLEL_COMPLETE: All ${models.length} models completed in ${parallelDuration}ms`);
+        logTiming(`parallel_execution_iteration_${i + 1}`, parallelStartTime, {
+          modelsCount: models.length,
+          parallelDuration: parallelDuration,
+          modelBreakdown: modelResults.map((result, idx) => ({
+            provider: models[idx].provider,
+            model: models[idx].model,
+            // Individual timing will be logged by processModelForIteration
+          }))
+        });
 
-          // Construct the full prompt based on iteration
-          let iterationPrompt = `${prePromptConfig.getPrompt(body.outcomes)}\n\n${prompt}`;
+        // Extract results in the same order as the input models
+        for (let j = 0; j < modelResults.length; j++) {
+          const result = modelResults[j];
+          const modelInfo = models[j];
           
-          if (i > 0 && previousIterationResponses.length > 0) {
-            const previousResponsesText = previousIterationResponses.join('\n\n');
-            iterationPrompt = `${iterationPrompt}\n\n${postPromptConfig.prompt.replace('{{previousResponses}}', previousResponsesText)}`;
-          }
-
-          if (attachments.length > 0) {
-            console.log(`Sending ${attachments.length} attachments to ${modelInfo.provider}:`, 
-              attachments.map(att => ({
-                type: att.type,
-                mediaType: att.mediaType,
-                contentLength: att.content.length
-              }))
-            );
-          }
-
-            for (let c = 0; c < count; c++) {
-            const callStartTime = Date.now();
-            let responseText: string;
-            if (attachments.length > 0 && llmProvider.supportsAttachments(modelInfo.model)) {
-              logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model} with attachments:\n${iterationPrompt}\n`);
-              try {
-                responseText = await llmProvider.generateResponseWithAttachments!(
-                  iterationPrompt,
-                  modelInfo.model,
-                  attachments
-                );
-                // Strip thinking blocks from the response
-                responseText = stripThinkingBlocks(responseText);
-                logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
-                logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_with_attachments_${c+1}`, callStartTime, {
-                  provider: modelInfo.provider,
-                  model: modelInfo.model,
-                  hasAttachments: true,
-                  callNumber: c + 1
-                });
-              } catch (providerError: any) {
-                console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
-                  error: providerError.message,
-                  stack: providerError.stack,
-                  attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
-                });
-                return NextResponse.json({
-                  error: providerError.message,
-                  scores: [] as ScoreOutcome[],
-                  justification: ''
-                }, { status: 400 });
-              }
-            } else {
-              logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model}:\n${iterationPrompt}\n`);
-              try {
-                responseText = await llmProvider.generateResponse(
-                  iterationPrompt,
-                  modelInfo.model
-                );
-                // Strip thinking blocks from the response
-                responseText = stripThinkingBlocks(responseText);
-                logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
-                logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_${c+1}`, callStartTime, {
-                  provider: modelInfo.provider,
-                  model: modelInfo.model,
-                  hasAttachments: false,
-                  callNumber: c + 1
-                });
-              } catch (providerError: any) {
-                console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
-                  error: providerError.message,
-                  stack: providerError.stack,
-                  attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
-                });
-                return NextResponse.json({
-                  error: providerError.message,
-                  scores: [] as ScoreOutcome[],
-                  justification: ''
-                }, { status: 400 });
-              }
-            }
-
-            let { decisionVector, justification, scores } = parseModelResponse(responseText, body.outcomes);
-            let effectiveJustification = justification; // Store potentially modified justification
-            
-            // DEBUG: Log what each model actually returned
-            console.log(`🔍 DEBUG - Model ${modelInfo.provider}/${modelInfo.model} returned:`, {
-              decisionVector,
-              outcomes: body.outcomes,
-              mappedScores: body.outcomes ? body.outcomes.map((outcome, idx) => `${outcome}: ${decisionVector?.[idx] || 'N/A'}`) : 'No outcomes provided'
-            });
-            
-            if (!decisionVector) {
-              console.warn(`Failed to parse decision vector from model ${modelInfo.model}. Response: ${responseText}. Applying fallback.`);
-              const numOutcomes = body.outcomes?.length || 2; // Default to 2 if outcomes not specified
-              const baseScore = Math.floor(1000000 / numOutcomes);
-              const fallbackDecisionVector = Array(numOutcomes).fill(baseScore);
-              // Distribute remainder to ensure sum is exactly 1,000,000
-              fallbackDecisionVector[0] += 1000000 - (baseScore * numOutcomes);
-              
-              decisionVector = fallbackDecisionVector; // Use fallback vector
-
-              if (!justification) {
-                effectiveJustification = `LLM_ERROR: ${responseText}`; // Create fallback justification
-              }
-              // No need to return an error, proceed with fallback values
-            }
-
-            allOutputs.push(decisionVector);
-            
-            if (effectiveJustification) { // Use the potentially modified justification
-              const formattedResponse = `From ${modelInfo.provider} - ${modelInfo.model}:\nScore: ${decisionVector}\nJustification: ${effectiveJustification}`;
-              iterationJustifications.push(`From model ${modelInfo.model}:\n${effectiveJustification}`);
-              
-              if (i < iterations - 1) {
-                previousIterationResponses.push(formattedResponse);
-              }
-            }
-          }
-
-          // Average the outputs for this model if count > 1
-          const modelAverage = count > 1 
-            ? averageVectors(allOutputs)
-            : allOutputs[0];
-
-          iterationOutputs.push(modelAverage);
-          iterationWeights.push(weight);
+          iterationOutputs.push(result.modelAverage);
+          iterationWeights.push(result.weight);
           
-          logTiming(`model_total_${modelInfo.provider}_${modelInfo.model}`, modelStartTime, {
-            provider: modelInfo.provider,
-            model: modelInfo.model,
-            count: count,
-            weight: weight
+          // Add justifications from this model
+          result.justifications.forEach(justification => {
+            iterationJustifications.push(justification);
+            
+            // Format for previous iteration responses if not the last iteration
+            if (i < iterations - 1) {
+              const formattedResponse = `From ${modelInfo.provider} - ${modelInfo.model}:\nScore: ${result.modelAverage}\nJustification: ${justification.replace(`From model ${modelInfo.model}:\n`, '')}`;
+              previousIterationResponses.push(formattedResponse);
+            }
           });
-        } catch (error: any) {
-          // If we get here, an error occurred trying to get the provider or during model setup.
-          console.error(`Critical error processing model ${modelInfo.provider} - ${modelInfo.model} (iteration ${i+1}):`, error);
-          
-          // === ADD THIS: Return 400 immediately on provider setup error ===
+        }
+      } catch (error: any) {
+        // If any model fails, Promise.all will reject immediately
+        console.error(`Critical error processing models in parallel (iteration ${i+1}):`, error);
+        
+        // Determine the specific error message and return appropriate response
+        if (error.message?.includes('Invalid model input') || error.message?.includes('Unsupported provider')) {
           return NextResponse.json({
-            error: `Failed to process model configuration: ${modelInfo.provider} - ${modelInfo.model}. Reason: ${error.message}`,
+            error: error.message,
             scores: [] as ScoreOutcome[],
             justification: ''
           }, { status: 400 });
-          // === END ADDITION ===
-
-          // Optionally, add a placeholder or skip this model's contribution (Original behavior - now replaced by the return above)
+        } else {
+          // Provider errors (API failures, network issues, etc.)
+          return NextResponse.json({
+            error: error.message,
+            scores: [] as ScoreOutcome[],
+            justification: ''
+          }, { status: 400 });
         }
       }
 
@@ -447,31 +354,55 @@ export async function POST(request: Request) {
       // Generate justification only on the final iteration
       if (i === iterations - 1) {
         const justificationStartTime = Date.now();
+        console.log(`🎯 JUSTIFIER_START: Starting justification generation with ${justifierProviderName}-${justifierModelName}`);
+        console.log(`📝 JUSTIFIER_INPUT: Aggregated scores: ${JSON.stringify(finalAggregatedScore)}, Individual justifications: ${iterationJustifications.length} items`);
+        
         try {
+          console.log(`🏭 JUSTIFIER_PROVIDER: Getting provider for ${justifierProviderName}...`);
+          const justifierProviderSetupStart = Date.now();
           const justifierProvider = await LLMFactory.getProvider(justifierProviderName);
+          const justifierProviderSetupTime = Date.now() - justifierProviderSetupStart;
+          console.log(`✅ JUSTIFIER_PROVIDER_READY: ${justifierProviderName} provider ready in ${justifierProviderSetupTime}ms`);
+          
           logInteraction(`Prompt to Justifier:
 ${prompt}\n`); // Assuming base prompt is sufficient context
+          
+          console.log(`📞 JUSTIFIER_API_CALL: Calling ${justifierProviderName}-${justifierModelName} for justification...`);
+          const justifierCallStart = Date.now();
           finalJustification = await generateJustification(
             finalAggregatedScore,
             iterationJustifications, // Pass justifications from this iteration
             justifierProvider,
             justifierModelName
           );
+          const justifierCallTime = Date.now() - justifierCallStart;
+          console.log(`✅ JUSTIFIER_API_RESPONSE: ${justifierProviderName}-${justifierModelName} responded in ${justifierCallTime}ms`);
+          
           // Strip thinking blocks from justifier response
           finalJustification = stripThinkingBlocks(finalJustification);
           logInteraction(`Response from Justifier:
 ${finalJustification}\n`);
+          
+          const totalJustificationTime = Date.now() - justificationStartTime;
+          console.log(`🎯 JUSTIFIER_COMPLETE: Total justification generation took ${totalJustificationTime}ms`);
+          
           logTiming('justification_generation', justificationStartTime, {
             provider: justifierProviderName,
-            model: justifierModelName
+            model: justifierModelName,
+            providerSetupTime: justifierProviderSetupTime,
+            apiCallTime: justifierCallTime,
+            totalTime: totalJustificationTime,
+            responseLength: finalJustification.length
           });
         } catch (error: any) {
-          console.error('Error generating final justification in iteration:', error);
+          const errorTime = Date.now() - justificationStartTime;
+          console.error(`❌ JUSTIFIER_ERROR: Error generating final justification after ${errorTime}ms:`, error);
           finalJustification = 'Error generating final justification.'; // Handle error gracefully
           logTiming('justification_generation_error', justificationStartTime, {
             provider: justifierProviderName,
             model: justifierModelName,
-            error: error.message
+            error: error.message,
+            errorTime: errorTime
           });
         }
       }
@@ -498,11 +429,26 @@ ${finalJustification}\n`);
     const totalRequestTime = Date.now() - requestStartTime;
     timingLog.total_request = totalRequestTime;
     
+    console.log(`🏁 REQUEST_COMPLETE: Total request completed in ${totalRequestTime}ms`);
+    console.log(`📈 PERFORMANCE_BREAKDOWN: Models: ${body.models.length}, Iterations: ${iterations}, Attachments: ${body.attachments?.length || 0}, Outcomes: ${body.outcomes?.length || 0}`);
+    
+    // Analyze timing components for performance insights
+    const modelTimes = Object.entries(timingLog).filter(([key]) => key.startsWith('model_total_')).map(([key, time]) => ({ model: key.replace('model_total_', ''), time }));
+    const slowestModel = modelTimes.reduce((prev, current) => (prev.time > current.time) ? prev : current, { model: 'none', time: 0 });
+    const fastestModel = modelTimes.reduce((prev, current) => (prev.time < current.time) ? prev : current, { model: 'none', time: Infinity });
+    
+    console.log(`⚡ PERFORMANCE_ANALYSIS: Slowest model: ${slowestModel.model} (${slowestModel.time}ms), Fastest model: ${fastestModel.model} (${fastestModel.time}ms)`);
+    
     // Log extractable timing summary
     console.log('🎯 TIMING_SUMMARY', JSON.stringify({
       timestamp: new Date().toISOString(),
       total_duration_ms: totalRequestTime,
       components: timingLog,
+      performance_analysis: {
+        slowest_model: slowestModel,
+        fastest_model: fastestModel,
+        parallel_efficiency: modelTimes.length > 1 ? (slowestModel.time / modelTimes.reduce((sum, m) => sum + m.time, 0)) : 1
+      },
       summary: {
         request_id: `req_${requestStartTime}`,
         models_count: body.models.length,
@@ -542,6 +488,176 @@ ${finalJustification}\n`);
       justification: ''
     }, { status: 500 });
   }
+}
+
+// Helper function for processing a single model in parallel - NOT exported
+async function processModelForIteration(
+  modelInfo: ModelInput,
+  modelIndex: number,
+  iterationPrompt: string,
+  attachments: Array<{ type: string; content: string; mediaType: string }>,
+  iterationNumber: number,
+  outcomes: string[] | undefined,
+  logTiming: (operation: string, startTime: number, details?: any) => void
+): Promise<{
+  modelAverage: number[];
+  weight: number;
+  justifications: string[];
+  timingData: any;
+}> {
+  const modelStartTime = Date.now();
+  const count = modelInfo.count || 1;
+  const weight = modelInfo.weight;
+  const allOutputs: number[][] = [];
+  const justifications: string[] = [];
+
+  console.log(`🔄 MODEL_START: Processing model ${modelInfo.provider}-${modelInfo.model} (iteration ${iterationNumber})`);
+  console.log(`📊 MODEL_CONFIG: Provider=${modelInfo.provider}, Model=${modelInfo.model}, Weight=${weight}, Count=${count}`);
+
+  if (!modelInfo.provider || !modelInfo.model || weight < 0 || weight > 1) {
+    console.error(`❌ MODEL_ERROR: Invalid model configuration - Provider: ${modelInfo.provider}, Model: ${modelInfo.model}, Weight: ${weight}`);
+    throw new Error('Invalid model input. Check provider, model, and weight.');
+  }
+
+  // Cast to unknown first to avoid type mismatch
+  console.log(`🏭 PROVIDER_SETUP: Getting provider for ${modelInfo.provider}...`);
+  const providerStartTime = Date.now();
+  const llmProvider = await LLMFactory.getProvider(modelInfo.provider) as unknown as LLMProvider;
+  const providerSetupTime = Date.now() - providerStartTime;
+  console.log(`✅ PROVIDER_READY: ${modelInfo.provider} provider ready in ${providerSetupTime}ms`);
+  
+  if (!llmProvider) {
+    console.error(`❌ PROVIDER_ERROR: Unsupported provider: ${modelInfo.provider}`);
+    throw new Error(`Unsupported provider: ${modelInfo.provider}`);
+  }
+
+  if (attachments.length > 0) {
+    console.log(`Sending ${attachments.length} attachments to ${modelInfo.provider}:`, 
+      attachments.map(att => ({
+        type: att.type,
+        mediaType: att.mediaType,
+        contentLength: att.content.length
+      }))
+    );
+  }
+
+  // Inner loop - process multiple calls for this model (kept serial as requested)
+  console.log(`🔁 CALLS_START: Making ${count} call(s) to ${modelInfo.provider}-${modelInfo.model}`);
+  for (let c = 0; c < count; c++) {
+    const callStartTime = Date.now();
+    console.log(`📞 API_CALL: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} starting...`);
+    let responseText: string;
+    
+    if (attachments.length > 0 && llmProvider.supportsAttachments(modelInfo.model)) {
+      logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model} with attachments:\n${iterationPrompt}\n`);
+      try {
+        responseText = await llmProvider.generateResponseWithAttachments!(
+          iterationPrompt,
+          modelInfo.model,
+          attachments
+        );
+        // Strip thinking blocks from the response
+        responseText = stripThinkingBlocks(responseText);
+        const callDuration = Date.now() - callStartTime;
+        console.log(`✅ API_RESPONSE: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} completed in ${callDuration}ms (with attachments)`);
+        logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
+        logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_with_attachments_${c+1}`, callStartTime, {
+          provider: modelInfo.provider,
+          model: modelInfo.model,
+          hasAttachments: true,
+          callNumber: c + 1,
+          responseLength: responseText.length
+        });
+      } catch (providerError: any) {
+        console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
+          error: providerError.message,
+          stack: providerError.stack,
+          attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
+        });
+        throw providerError; // Re-throw to be caught by Promise.all()
+      }
+    } else {
+      logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model}:\n${iterationPrompt}\n`);
+      try {
+        responseText = await llmProvider.generateResponse(
+          iterationPrompt,
+          modelInfo.model
+        );
+        // Strip thinking blocks from the response
+        responseText = stripThinkingBlocks(responseText);
+        const callDuration = Date.now() - callStartTime;
+        console.log(`✅ API_RESPONSE: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} completed in ${callDuration}ms (no attachments)`);
+        logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
+        logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_${c+1}`, callStartTime, {
+          provider: modelInfo.provider,
+          model: modelInfo.model,
+          hasAttachments: false,
+          callNumber: c + 1,
+          responseLength: responseText.length
+        });
+      } catch (providerError: any) {
+        console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
+          error: providerError.message,
+          stack: providerError.stack,
+          attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
+        });
+        throw providerError; // Re-throw to be caught by Promise.all()
+      }
+    }
+
+    let { decisionVector, justification, scores } = parseModelResponse(responseText, outcomes);
+    let effectiveJustification = justification; // Store potentially modified justification
+    
+    // DEBUG: Log what each model actually returned
+    console.log(`🔍 DEBUG - Model ${modelInfo.provider}/${modelInfo.model} returned:`, {
+      decisionVector,
+      outcomes: outcomes,
+      mappedScores: outcomes ? outcomes.map((outcome, idx) => `${outcome}: ${decisionVector?.[idx] || 'N/A'}`) : 'No outcomes provided'
+    });
+    
+    if (!decisionVector) {
+      console.warn(`Failed to parse decision vector from model ${modelInfo.model}. Response: ${responseText}. Applying fallback.`);
+      const numOutcomes = outcomes?.length || 2; // Default to 2 if outcomes not specified
+      const baseScore = Math.floor(1000000 / numOutcomes);
+      const fallbackDecisionVector = Array(numOutcomes).fill(baseScore);
+      // Distribute remainder to ensure sum is exactly 1,000,000
+      fallbackDecisionVector[0] += 1000000 - (baseScore * numOutcomes);
+      
+      decisionVector = fallbackDecisionVector; // Use fallback vector
+
+      if (!justification) {
+        effectiveJustification = `LLM_ERROR: ${responseText}`; // Create fallback justification
+      }
+      // No need to return an error, proceed with fallback values
+    }
+
+    allOutputs.push(decisionVector);
+    
+    if (effectiveJustification) { // Use the potentially modified justification
+      justifications.push(`From model ${modelInfo.model}:\n${effectiveJustification}`);
+    }
+  }
+
+  // Average the outputs for this model if count > 1
+  const modelAverage = count > 1 
+    ? averageVectors(allOutputs)
+    : allOutputs[0];
+
+  const timingData = {
+    provider: modelInfo.provider,
+    model: modelInfo.model,
+    count: count,
+    weight: weight
+  };
+
+  logTiming(`model_total_${modelInfo.provider}_${modelInfo.model}`, modelStartTime, timingData);
+
+  return {
+    modelAverage,
+    weight,
+    justifications,
+    timingData
+  };
 }
 
 // Helper function - NOT exported

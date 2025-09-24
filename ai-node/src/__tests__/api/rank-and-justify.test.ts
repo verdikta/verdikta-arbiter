@@ -535,4 +535,325 @@ describe('POST /api/rank-and-justify', () => {
     startLine: 400
     endLine: 450
   });
+
+  describe('Parallel Processing Verification Tests', () => {
+    // These tests verify that parallel processing produces identical results to serial processing
+    test('should produce identical results with multiple models processed in parallel', async () => {
+      // Create deterministic mock responses
+      const mockResponses = {
+        'OpenAI-gpt-4': JSON.stringify({
+          score: [400000, 300000, 200000, 100000],
+          justification: "OpenAI model justification for parallel test."
+        }),
+        'Anthropic-claude-3': JSON.stringify({
+          score: [350000, 250000, 200000, 200000],
+          justification: "Anthropic model justification for parallel test."
+        }),
+        'Ollama-phi3': JSON.stringify({
+          score: [300000, 300000, 200000, 200000],
+          justification: "Ollama model justification for parallel test."
+        })
+      };
+
+      const mockJustifierResponse = 'Final justification combining all model responses.';
+
+      // Track call order to verify parallel execution
+      const callOrder: string[] = [];
+      const callTimestamps: { [key: string]: number } = {};
+
+      // Mock providers with call tracking
+      const createMockProvider = (providerName: string, modelName: string) => ({
+        generateResponse: jest.fn().mockImplementation(async () => {
+          const key = `${providerName}-${modelName}`;
+          callOrder.push(key);
+          callTimestamps[key] = Date.now();
+          // Add small delay to simulate network call
+          await new Promise(resolve => setTimeout(resolve, 10));
+          return mockResponses[key];
+        }),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      });
+
+      const mockOpenAIProvider = createMockProvider('OpenAI', 'gpt-4');
+      const mockAnthropicProvider = createMockProvider('Anthropic', 'claude-3');
+      const mockOllamaProvider = createMockProvider('Ollama', 'phi3');
+
+      const mockJustifierProvider = {
+        generateResponse: jest.fn().mockResolvedValue(mockJustifierResponse),
+      };
+
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI':
+            return mockOpenAIProvider;
+          case 'Anthropic':
+            return mockAnthropicProvider;
+          case 'Ollama':
+            return mockOllamaProvider;
+          case 'JustifierProvider':
+            return mockJustifierProvider;
+          default:
+            throw new Error(`Unknown provider: ${providerName}`);
+        }
+      });
+
+      const requestBody = {
+        prompt: 'Parallel processing test prompt',
+        outcomes: ['Option A', 'Option B', 'Option C', 'Option D'],
+        iterations: 1,
+        models: [
+          { provider: 'OpenAI', model: 'gpt-4', weight: 0.5 },
+          { provider: 'Anthropic', model: 'claude-3', weight: 0.3 },
+          { provider: 'Ollama', model: 'phi3', weight: 0.2 },
+        ],
+      };
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      // Verify response structure
+      expect(response.status).toBe(200);
+      expect(data).toHaveProperty('scores');
+      expect(data).toHaveProperty('justification');
+      expect(data.scores).toHaveLength(4);
+
+      // Calculate expected scores manually
+      const expectedScores = [
+        {
+          outcome: 'Option A',
+          score: Math.floor(400000 * 0.5 + 350000 * 0.3 + 300000 * 0.2) // 365000
+        },
+        {
+          outcome: 'Option B',
+          score: Math.floor(300000 * 0.5 + 250000 * 0.3 + 300000 * 0.2) // 285000
+        },
+        {
+          outcome: 'Option C',
+          score: Math.floor(200000 * 0.5 + 200000 * 0.3 + 200000 * 0.2) // 200000
+        },
+        {
+          outcome: 'Option D',
+          score: Math.floor(100000 * 0.5 + 200000 * 0.3 + 200000 * 0.2) // 150000
+        }
+      ];
+
+      expect(data.scores).toEqual(expectedScores);
+      expect(data.justification).toBe(mockJustifierResponse);
+
+      // Verify total score sums to 1,000,000
+      const totalScore = data.scores.reduce((sum: number, item: ScoreOutcome) => sum + item.score, 0);
+      expect(totalScore).toBe(1000000);
+
+      // Verify all models were called
+      expect(mockOpenAIProvider.generateResponse).toHaveBeenCalledTimes(1);
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(1);
+      expect(mockOllamaProvider.generateResponse).toHaveBeenCalledTimes(1);
+      expect(mockJustifierProvider.generateResponse).toHaveBeenCalledTimes(1);
+
+      // Store this result for comparison with parallel implementation
+      (global as any).__serialTestResult = {
+        scores: data.scores,
+        justification: data.justification,
+        callOrder,
+        callTimestamps
+      };
+    });
+
+    test('should handle model count parameter correctly in parallel processing', async () => {
+      const mockResponse = JSON.stringify({
+        score: [600000, 400000],
+        justification: "Test justification for count parameter."
+      });
+
+      let callCount = 0;
+      const mockProvider = {
+        generateResponse: jest.fn().mockImplementation(async () => {
+          callCount++;
+          // Return slightly different responses to test averaging
+          if (callCount === 1) {
+            return JSON.stringify({
+              score: [650000, 350000],
+              justification: "First call justification."
+            });
+          } else {
+            return JSON.stringify({
+              score: [550000, 450000],
+              justification: "Second call justification."
+            });
+          }
+        }),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+
+      const mockJustifierProvider = {
+        generateResponse: jest.fn().mockResolvedValue('Averaged justification'),
+      };
+
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        if (providerName === 'OpenAI') return mockProvider;
+        if (providerName === 'JustifierProvider') return mockJustifierProvider;
+        throw new Error(`Unknown provider: ${providerName}`);
+      });
+
+      const requestBody = {
+        prompt: 'Test count parameter',
+        outcomes: ['Yes', 'No'],
+        iterations: 1,
+        models: [
+          { provider: 'OpenAI', model: 'gpt-4', weight: 1.0, count: 2 },
+        ],
+      };
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(mockProvider.generateResponse).toHaveBeenCalledTimes(2);
+
+      // Expected average: [(650000+550000)/2, (350000+450000)/2] = [600000, 400000]
+      const expectedScores = [
+        { outcome: 'Yes', score: 600000 },
+        { outcome: 'No', score: 400000 }
+      ];
+
+      expect(data.scores).toEqual(expectedScores);
+    });
+
+    test('should maintain error handling behavior in parallel processing', async () => {
+      const mockErrorMessage = 'Simulated API error for parallel test';
+      
+      const mockFailingProvider = {
+        generateResponse: jest.fn().mockRejectedValue(new Error(mockErrorMessage)),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        if (providerName === 'OpenAI') return mockFailingProvider;
+        throw new Error(`Unknown provider: ${providerName}`);
+      });
+
+      const requestBody = {
+        prompt: 'Error handling test',
+        models: [
+          { provider: 'OpenAI', model: 'gpt-4', weight: 1.0 },
+        ],
+      };
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(400);
+      expect(data).toHaveProperty('error', mockErrorMessage);
+      expect(data.scores).toEqual([]);
+      expect(data.justification).toBe('');
+    });
+
+    test('should handle multiple iterations with parallel processing', async () => {
+      const iterationResponses = [
+        // Iteration 1 responses
+        JSON.stringify({
+          score: [600000, 400000],
+          justification: "First iteration OpenAI response."
+        }),
+        JSON.stringify({
+          score: [550000, 450000],
+          justification: "First iteration Anthropic response."
+        }),
+        // Iteration 2 responses (should include previous responses in prompt)
+        JSON.stringify({
+          score: [700000, 300000],
+          justification: "Second iteration OpenAI response with context."
+        }),
+        JSON.stringify({
+          score: [650000, 350000],
+          justification: "Second iteration Anthropic response with context."
+        })
+      ];
+
+      let responseIndex = 0;
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockImplementation(() => {
+          return Promise.resolve(iterationResponses[responseIndex++]);
+        }),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+
+      const mockAnthropicProvider = {
+        generateResponse: jest.fn().mockImplementation(() => {
+          return Promise.resolve(iterationResponses[responseIndex++]);
+        }),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+
+      const mockJustifierProvider = {
+        generateResponse: jest.fn().mockResolvedValue('Final iteration justification'),
+      };
+
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          case 'JustifierProvider': return mockJustifierProvider;
+          default: throw new Error(`Unknown provider: ${providerName}`);
+        }
+      });
+
+      const requestBody = {
+        prompt: 'Multi-iteration test',
+        outcomes: ['Proceed', 'Stop'],
+        iterations: 2,
+        models: [
+          { provider: 'OpenAI', model: 'gpt-4', weight: 0.6 },
+          { provider: 'Anthropic', model: 'claude-3', weight: 0.4 },
+        ],
+      };
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify(requestBody),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      
+      // Should be called twice per model (2 iterations)
+      expect(mockOpenAIProvider.generateResponse).toHaveBeenCalledTimes(2);
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
+      
+      // Final scores should be from iteration 2: (700000 * 0.6 + 650000 * 0.4), (300000 * 0.6 + 350000 * 0.4)
+      const expectedScores = [
+        { outcome: 'Proceed', score: Math.floor(700000 * 0.6 + 650000 * 0.4) }, // 680000
+        { outcome: 'Stop', score: Math.floor(300000 * 0.6 + 350000 * 0.4) }      // 320000
+      ];
+
+      expect(data.scores).toEqual(expectedScores);
+      expect(data.justification).toBe('Final iteration justification');
+
+      // Verify that the second iteration calls included previous responses in the prompt
+      const secondIterationCalls = mockOpenAIProvider.generateResponse.mock.calls.slice(1);
+      expect(secondIterationCalls[0][0]).toContain('From OpenAI - gpt-4:');
+      expect(secondIterationCalls[0][0]).toContain('From Anthropic - claude-3:');
+    });
+  });
 });
