@@ -48,4 +48,9 @@ Thumbs.db
 # Instance-specific Chainlink files
 chainlink-node/info.txt
 chainlink-node/info/job_info.txt
+chainlink-node/info/multi_arbiter_job_info.txt
+chainlink-node/jobs/
 chainlink-node/verdikta_job_spec.toml
+
+# Installer state files
+installer/.registration_state
