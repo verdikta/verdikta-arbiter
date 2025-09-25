@@ -353,9 +353,38 @@ create_installation_directory() {
     echo -e "${GREEN}Installation directory structure created.${NC}"
 }
 
+# Function to display ClassID information and help users understand API key requirements
+display_classid_info() {
+    echo -e "${BLUE}Displaying available ClassID Model Pools...${NC}"
+    
+    # Check if we can access the ClassID information
+    if command_exists node; then
+        # Try to display ClassID information
+        if node "$INSTALLER_DIR/util/display-classids.js" 2>/dev/null; then
+            echo -e "${GREEN}ClassID information displayed successfully.${NC}"
+            return 0
+        else
+            echo -e "${YELLOW}Note: ClassID information not available yet (will be available after AI Node installation).${NC}"
+            echo -e "${YELLOW}For now, you can configure API keys based on your intended usage:${NC}"
+            echo -e "${YELLOW}• OpenAI API Key: For GPT-4, GPT-4o, and other OpenAI models${NC}"
+            echo -e "${YELLOW}• Anthropic API Key: For Claude models${NC}"
+            echo -e "${YELLOW}• Leave keys blank if you only plan to use open-source models${NC}"
+            return 1
+        fi
+    else
+        echo -e "${YELLOW}Node.js not available yet. ClassID information will be shown after Node.js installation.${NC}"
+        return 1
+    fi
+}
+
 # Function to configure API keys
 configure_api_keys() {
     echo -e "${BLUE}Configuring API keys...${NC}"
+    
+    # Display ClassID information to help users understand what they need
+    echo ""
+    display_classid_info
+    echo ""
     
     # Load existing keys if they exist
     CONFIG_FILE="$INSTALLER_DIR/.api_keys"
@@ -574,6 +603,130 @@ EOL
         echo "VERDIKTA_COMMON_VERSION=\"$VERDIKTA_COMMON_VERSION\"" >> "$INSTALLER_DIR/.env"
     fi
     echo -e "${GREEN}Verdikta Common Library version ($VERDIKTA_COMMON_VERSION) saved to configuration.${NC}"
+    
+    # Configure Justification Model
+    echo ""
+    echo -e "${BLUE}Justification Model Configuration${NC}"
+    echo -e "${YELLOW}Choose which AI model to use for generating final justifications:${NC}"
+    echo -e "${YELLOW}This model combines individual model responses into a coherent explanation.${NC}"
+    echo ""
+    
+    # Display available justification models with updated options
+    echo -e "${BLUE}Available Justification Models:${NC}"
+    echo -e "  1) gpt-5-nano-2025-08-07 (OpenAI) - Recommended default (requires OpenAI API key)"
+    echo -e "  2) gpt-5-mini-2025-08-07 (OpenAI) - Balanced performance (requires OpenAI API key)"
+    echo -e "  3) gpt-5-2025-08-07 (OpenAI) - Highest quality (requires OpenAI API key)"
+    echo -e "  4) claude-sonnet-4-20250514 (Anthropic) - Excellent reasoning (requires Anthropic API key)"
+    echo -e "  5) claude-3-7-sonnet-20250219 (Anthropic) - Strong performance (requires Anthropic API key)"
+    echo -e "  6) gemma3n:e4b (Ollama) - Recommended for open source (no API key required)"
+    echo -e "  7) deepseek-r1:8b (Ollama) - Good reasoning, free (no API key required)"
+    echo -e "  8) llama3.1:8b (Ollama) - Reliable, free (no API key required)"
+    echo ""
+    
+    # Provide intelligent recommendations based on API keys
+    echo -e "${BLUE}💡 Recommendations based on your configuration:${NC}"
+    if [ -n "$OPENAI_API_KEY" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
+        echo -e "${GREEN}   • You have both OpenAI and Anthropic keys - Option 1 (gpt-5-nano) recommended${NC}"
+        DEFAULT_CHOICE=1
+    elif [ -n "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+        echo -e "${YELLOW}   • You have OpenAI key only - Option 1 (gpt-5-nano) recommended${NC}"
+        DEFAULT_CHOICE=1
+    elif [ -z "$OPENAI_API_KEY" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
+        echo -e "${YELLOW}   • You have Anthropic key only - Option 4 (claude-sonnet-4) recommended${NC}"
+        DEFAULT_CHOICE=4
+    else
+        echo -e "${CYAN}   • No API keys provided - Option 6 (gemma3n:e4b) recommended for open source${NC}"
+        DEFAULT_CHOICE=6
+    fi
+    echo ""
+    
+    # Load existing justification model if available
+    if [ -n "$JUSTIFICATION_MODEL_PROVIDER" ] && [ -n "$JUSTIFICATION_MODEL_NAME" ]; then
+        echo -e "${GREEN}Current selection: ${JUSTIFICATION_MODEL_PROVIDER} - ${JUSTIFICATION_MODEL_NAME}${NC}"
+    fi
+    
+    while true; do
+        read -p "Select justification model (1-8) [${DEFAULT_CHOICE}]: " justification_choice
+        
+        # Default to recommended choice if empty
+        if [ -z "$justification_choice" ]; then
+            justification_choice=$DEFAULT_CHOICE
+        fi
+        
+        case "$justification_choice" in
+            1)
+                JUSTIFICATION_MODEL_PROVIDER="OpenAI"
+                JUSTIFICATION_MODEL_NAME="gpt-5-nano-2025-08-07"
+                echo -e "${GREEN}Selected: OpenAI GPT-5 Nano${NC}"
+                break
+                ;;
+            2)
+                JUSTIFICATION_MODEL_PROVIDER="OpenAI"
+                JUSTIFICATION_MODEL_NAME="gpt-5-mini-2025-08-07"
+                echo -e "${GREEN}Selected: OpenAI GPT-5 Mini${NC}"
+                break
+                ;;
+            3)
+                JUSTIFICATION_MODEL_PROVIDER="OpenAI"
+                JUSTIFICATION_MODEL_NAME="gpt-5-2025-08-07"
+                echo -e "${GREEN}Selected: OpenAI GPT-5${NC}"
+                break
+                ;;
+            4)
+                JUSTIFICATION_MODEL_PROVIDER="Anthropic"
+                JUSTIFICATION_MODEL_NAME="claude-sonnet-4-20250514"
+                echo -e "${GREEN}Selected: Anthropic Claude Sonnet 4${NC}"
+                break
+                ;;
+            5)
+                JUSTIFICATION_MODEL_PROVIDER="Anthropic"
+                JUSTIFICATION_MODEL_NAME="claude-3-7-sonnet-20250219"
+                echo -e "${GREEN}Selected: Anthropic Claude 3.7 Sonnet${NC}"
+                break
+                ;;
+            6)
+                JUSTIFICATION_MODEL_PROVIDER="Ollama"
+                JUSTIFICATION_MODEL_NAME="gemma3n:e4b"
+                echo -e "${GREEN}Selected: Ollama Gemma 3N${NC}"
+                break
+                ;;
+            7)
+                JUSTIFICATION_MODEL_PROVIDER="Ollama"
+                JUSTIFICATION_MODEL_NAME="deepseek-r1:8b"
+                echo -e "${GREEN}Selected: Ollama DeepSeek R1${NC}"
+                break
+                ;;
+            8)
+                JUSTIFICATION_MODEL_PROVIDER="Ollama"
+                JUSTIFICATION_MODEL_NAME="llama3.1:8b"
+                echo -e "${GREEN}Selected: Ollama Llama 3.1 8B${NC}"
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid choice. Please enter 1-8.${NC}"
+                ;;
+        esac
+    done
+    
+    # Validate that the user has the required API key for their selection
+    if [ "$JUSTIFICATION_MODEL_PROVIDER" = "OpenAI" ] && [ -z "$OPENAI_API_KEY" ]; then
+        echo -e "${YELLOW}Warning: You selected an OpenAI model but no OpenAI API key was provided.${NC}"
+        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+    elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Anthropic" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+        echo -e "${YELLOW}Warning: You selected an Anthropic model but no Anthropic API key was provided.${NC}"
+        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+    fi
+    
+    # Save justification model configuration
+    for var in JUSTIFICATION_MODEL_PROVIDER JUSTIFICATION_MODEL_NAME; do
+        var_value=$(eval echo \$$var)
+        if grep -q "^$var=" "$INSTALLER_DIR/.env" 2>/dev/null; then
+            sed -i "s/^$var=.*/$var=\"$var_value\"/" "$INSTALLER_DIR/.env"
+        else
+            echo "$var=\"$var_value\"" >> "$INSTALLER_DIR/.env"
+        fi
+    done
+    echo -e "${GREEN}Justification model configuration saved: ${JUSTIFICATION_MODEL_PROVIDER} - ${JUSTIFICATION_MODEL_NAME}${NC}"
     
     echo -e "${GREEN}API keys configured and saved.${NC}"
 }

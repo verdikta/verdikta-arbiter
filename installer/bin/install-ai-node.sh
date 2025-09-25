@@ -404,32 +404,23 @@ else
     echo -e "${YELLOW}WARNING: Anthropic API Key not provided. Some AI Node features may not work.${NC}"
 fi
 
-# Set default justifier model
-if ! grep -q "^JUSTIFIER_MODEL=" "$AI_NODE_DIR/.env.local"; then
-    echo -e "${YELLOW}Please configure the justifier model.${NC}"
-    echo -e "${BLUE}Format: Provider:Model (e.g., OpenAI:gpt-4o)${NC}"
-    read -p "Enter justifier model configuration [OpenAI:gpt-4o]: " justifier_model
-    if [ -n "$justifier_model" ]; then
-        echo "JUSTIFIER_MODEL=$justifier_model" >> "$AI_NODE_DIR/.env.local"
-        echo -e "${GREEN}Justifier model set to: $justifier_model${NC}"
-    else
-        echo "JUSTIFIER_MODEL=OpenAI:gpt-4o" >> "$AI_NODE_DIR/.env.local"
-        echo -e "${GREEN}Using default justifier model: OpenAI:gpt-4o${NC}"
-    fi
+# Set justifier model from environment configuration
+if [ -n "$JUSTIFICATION_MODEL_PROVIDER" ] && [ -n "$JUSTIFICATION_MODEL_NAME" ]; then
+    JUSTIFIER_MODEL="$JUSTIFICATION_MODEL_PROVIDER:$JUSTIFICATION_MODEL_NAME"
+    echo -e "${BLUE}Using configured justification model: $JUSTIFIER_MODEL${NC}"
 else
-    # Update existing justifier model if it's the placeholder
-    if grep -q "^JUSTIFIER_MODEL={Provider:Model}" "$AI_NODE_DIR/.env.local"; then
-        echo -e "${YELLOW}Current justifier model is a placeholder.${NC}"
-        echo -e "${BLUE}Format: Provider:Model (e.g., OpenAI:gpt-4o)${NC}"
-        read -p "Enter justifier model configuration [OpenAI:gpt-4o]: " justifier_model
-        if [ -n "$justifier_model" ]; then
-            sed -i.bak "s/^JUSTIFIER_MODEL=.*/JUSTIFIER_MODEL=$justifier_model/" "$AI_NODE_DIR/.env.local"
-            echo -e "${GREEN}Justifier model updated to: $justifier_model${NC}"
-        else
-            sed -i.bak "s/^JUSTIFIER_MODEL=.*/JUSTIFIER_MODEL=OpenAI:gpt-4o/" "$AI_NODE_DIR/.env.local"
-            echo -e "${GREEN}Justifier model updated to default: OpenAI:gpt-4o${NC}"
-        fi
-    fi
+    # Fallback to new default if not configured
+    JUSTIFIER_MODEL="OpenAI:gpt-5-nano-2025-08-07"
+    echo -e "${YELLOW}No justification model configured, using default: $JUSTIFIER_MODEL${NC}"
+fi
+
+# Update or add justifier model to AI Node configuration
+if grep -q "^JUSTIFIER_MODEL=" "$AI_NODE_DIR/.env.local"; then
+    sed -i.bak "s/^JUSTIFIER_MODEL=.*/JUSTIFIER_MODEL=$JUSTIFIER_MODEL/" "$AI_NODE_DIR/.env.local"
+    echo -e "${GREEN}Justifier model updated to: $JUSTIFIER_MODEL${NC}"
+else
+    echo "JUSTIFIER_MODEL=$JUSTIFIER_MODEL" >> "$AI_NODE_DIR/.env.local"
+    echo -e "${GREEN}Justifier model set to: $JUSTIFIER_MODEL${NC}"
 fi
 
 # Set default log level

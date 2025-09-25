@@ -193,6 +193,49 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}AI Node installation completed.${NC}"
 
+# Update @verdikta/common library and display ClassID information
+echo -e "${BLUE}Updating @verdikta/common library for latest ClassID model pools...${NC}"
+AI_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
+
+# Load environment to get Verdikta Common version preference
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    source "$INSTALLER_DIR/.env"
+fi
+VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-beta}"
+
+if [ -f "$UTIL_DIR/update-verdikta-common.js" ] && [ -d "$AI_NODE_SRC_DIR" ]; then
+    echo -e "${BLUE}Checking for @verdikta/common updates (version: $VERDIKTA_VERSION)...${NC}"
+    if node "$UTIL_DIR/update-verdikta-common.js" "$AI_NODE_SRC_DIR" "$VERDIKTA_VERSION"; then
+        echo -e "${GREEN}@verdikta/common library update check completed.${NC}"
+    else
+        echo -e "${YELLOW}Warning: Could not update @verdikta/common library.${NC}"
+        echo -e "${YELLOW}Proceeding with existing version...${NC}"
+    fi
+    echo ""
+fi
+
+# Display detailed ClassID information now that @verdikta/common is up to date
+echo -e "${BLUE}Displaying detailed ClassID Model Pool information...${NC}"
+if [ -f "$UTIL_DIR/display-classids.js" ]; then
+    if [ -d "$AI_NODE_SRC_DIR" ]; then
+        cd "$AI_NODE_SRC_DIR"
+        if node "$UTIL_DIR/display-classids.js" 2>/dev/null; then
+            echo -e "${GREEN}ClassID information displayed successfully.${NC}"
+            echo -e "${BLUE}💡 Based on this information, you can now make informed decisions about:${NC}"
+            echo -e "${BLUE}   • Which ClassIDs to support in your deployment${NC}"
+            echo -e "${BLUE}   • Whether your API key configuration matches your intended usage${NC}"
+            echo -e "${BLUE}   • Model availability for your chosen providers${NC}"
+            echo -e "${BLUE}   • All active ClassIDs are automatically detected and displayed${NC}"
+            echo ""
+        else
+            echo -e "${YELLOW}ClassID information could not be displayed at this time.${NC}"
+        fi
+        cd - > /dev/null
+    fi
+else
+    echo -e "${YELLOW}ClassID display utility not found.${NC}"
+fi
+
 # Install External Adapter
 echo -e "${YELLOW}[4/9]${NC} Installing External Adapter..."
 if [ ! -f "$SCRIPT_DIR/install-adapter.sh" ]; then
