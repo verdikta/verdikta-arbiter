@@ -8,6 +8,9 @@ export const modelConfig = {
     { name: 'gpt-4.1-mini', supportsImages: true, supportsAttachments: true },
     { name: 'gpt-5', supportsImages: true, supportsAttachments: true },
     { name: 'gpt-5-mini', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5-2025-08-07', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5-mini-2025-08-07', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5-nano-2025-08-07', supportsImages: true, supportsAttachments: true },
   ],
   anthropic: [
     { name: 'claude-2.1', supportsImages: false, supportsAttachments: false },
@@ -24,5 +27,6 @@ export const modelConfig = {
     { name: 'llava:7b', supportsImages: true, supportsAttachments: true },
     { name: 'deepseek-r1:8b', supportsImages: false, supportsAttachments: true },
     { name: 'qwen3:8b', supportsImages: false, supportsAttachments: true },
+    { name: 'gemma3n:e4b', supportsImages: false, supportsAttachments: true },
   ],
 };

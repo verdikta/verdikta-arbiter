@@ -26,7 +26,7 @@
     "@langchain/ollama": "^0.1.0",
     "@langchain/openai": "^0.5.13",
     "@tailwindcss/forms": "^0.5.7",
-    "@verdikta/common": "^1.1.0",
+    "@verdikta/common": "^1.0.2-beta.4",
     "form-data-encoder": "^4.0.2",
     "formdata-node": "^6.0.3",
     "mammoth": "^1.9.1",
