@@ -11,6 +11,10 @@ import path from 'path';
 const JUSTIFIER_MODEL = process.env.JUSTIFIER_MODEL || 'default-justifier-model';
 const [justifierProviderName, justifierModelName] = process.env.JUSTIFIER_MODEL?.split(':') || ['JustifierProvider', 'default-model'];
 
+// Timeout configuration (optimized for 300s total budget)
+const MODEL_TIMEOUT_MS = parseInt(process.env.MODEL_TIMEOUT_MS || '120000'); // 120 seconds default
+const REQUEST_TIMEOUT_MS = parseInt(process.env.REQUEST_TIMEOUT_MS || '240000'); // 240 seconds default
+
 interface ModelInput {
   provider: string;
   model: string;
@@ -369,21 +373,57 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
           
           console.log(`📞 JUSTIFIER_API_CALL: Calling ${justifierProviderName}-${justifierModelName} for justification...`);
           const justifierCallStart = Date.now();
-          finalJustification = await generateJustification(
-            finalAggregatedScore,
-            iterationJustifications, // Pass justifications from this iteration
-            justifierProvider,
-            justifierModelName
-          );
-          const justifierCallTime = Date.now() - justifierCallStart;
-          console.log(`✅ JUSTIFIER_API_RESPONSE: ${justifierProviderName}-${justifierModelName} responded in ${justifierCallTime}ms`);
           
-          // Strip thinking blocks from justifier response
+          // Apply timeout wrapper to justification generation
+          const JUSTIFICATION_TIMEOUT_MS = parseInt(process.env.JUSTIFICATION_TIMEOUT_MS || '45000'); // 45 seconds default
+          
+          try {
+            finalJustification = await Promise.race([
+              generateJustification(
+                finalAggregatedScore,
+                iterationJustifications, // Pass justifications from this iteration
+                justifierProvider,
+                justifierModelName
+              ),
+              new Promise<string>((_, reject) => {
+                setTimeout(() => {
+                  reject(new Error(`Justification generation timed out after ${JUSTIFICATION_TIMEOUT_MS}ms`));
+                }, JUSTIFICATION_TIMEOUT_MS);
+              })
+            ]);
+            
+            const justifierCallTime = Date.now() - justifierCallStart;
+            console.log(`✅ JUSTIFIER_API_RESPONSE: ${justifierProviderName}-${justifierModelName} responded in ${justifierCallTime}ms`);
+          } catch (timeoutError: any) {
+            const justifierCallTime = Date.now() - justifierCallStart;
+            if (timeoutError.message.includes('timed out')) {
+              console.warn(`⏰ JUSTIFIER_TIMEOUT: Justification generation timed out after ${justifierCallTime}ms (limit: ${JUSTIFICATION_TIMEOUT_MS}ms)`);
+              console.log(`📝 FALLBACK_JUSTIFICATION: Using individual model responses as justification`);
+              
+              // Fallback to individual model responses
+              if (iterationJustifications && iterationJustifications.length > 0) {
+                finalJustification = `Justification generation timed out after ${(JUSTIFICATION_TIMEOUT_MS/1000).toFixed(1)} seconds. Below are the individual responses from each model:\n\n${iterationJustifications.join('\n\n')}`;
+              } else {
+                finalJustification = `Justification generation timed out after ${(JUSTIFICATION_TIMEOUT_MS/1000).toFixed(1)} seconds. The aggregated scores above represent the collective decision of ${models.length} AI model(s).`;
+              }
+            } else {
+              console.error(`❌ JUSTIFIER_ERROR: Unexpected error during justification: ${timeoutError.message}`);
+              // Also fallback to individual responses on error
+              if (iterationJustifications && iterationJustifications.length > 0) {
+                finalJustification = `Error generating consolidated justification: ${timeoutError.message}\n\nIndividual model responses:\n\n${iterationJustifications.join('\n\n')}`;
+              } else {
+                finalJustification = `Error generating justification: ${timeoutError.message}`;
+              }
+            }
+          }
+          
+          // Strip thinking blocks from justifier response (handles both success and timeout cases)
           finalJustification = stripThinkingBlocks(finalJustification);
           logInteraction(`Response from Justifier:
 ${finalJustification}\n`);
           
           const totalJustificationTime = Date.now() - justificationStartTime;
+          const justifierCallTime = Date.now() - justifierCallStart;
           console.log(`🎯 JUSTIFIER_COMPLETE: Total justification generation took ${totalJustificationTime}ms`);
           
           logTiming('justification_generation', justificationStartTime, {
@@ -392,7 +432,9 @@ ${finalJustification}\n`);
             providerSetupTime: justifierProviderSetupTime,
             apiCallTime: justifierCallTime,
             totalTime: totalJustificationTime,
-            responseLength: finalJustification.length
+            responseLength: finalJustification.length,
+            timedOut: finalJustification.includes('timed out'),
+            timeoutThreshold: JUSTIFICATION_TIMEOUT_MS
           });
         } catch (error: any) {
           const errorTime = Date.now() - justificationStartTime;
