@@ -201,7 +201,7 @@ AI_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
 if [ -f "$INSTALLER_DIR/.env" ]; then
     source "$INSTALLER_DIR/.env"
 fi
-VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-beta}"
+VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
 
 if [ -f "$UTIL_DIR/update-verdikta-common.js" ] && [ -d "$AI_NODE_SRC_DIR" ]; then
     echo -e "${BLUE}Checking for @verdikta/common updates (version: $VERDIKTA_VERSION)...${NC}"

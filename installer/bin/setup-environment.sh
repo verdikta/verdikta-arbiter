@@ -588,10 +588,10 @@ EOL
     # Configure Verdikta Common Library version
     echo -e "${BLUE}Verdikta Common Library Configuration${NC}"
     echo -e "${YELLOW}The External Adapter uses the Verdikta Common Library for shared utilities.${NC}"
-    echo -e "${YELLOW}Available versions: 'beta' (recommended for testing) or 'latest' (stable)${NC}"
+    echo -e "${YELLOW}Available versions: 'latest' (stable, recommended) or 'beta' (testing)${NC}"
     
-    VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-beta}"
-    read -p "Verdikta Common Library version [beta]: " user_version
+    VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
+    read -p "Verdikta Common Library version [latest]: " user_version
     if [ -n "$user_version" ]; then
         VERDIKTA_COMMON_VERSION="$user_version"
     fi

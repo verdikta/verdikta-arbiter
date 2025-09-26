@@ -36,6 +36,9 @@ cleanup_on_error() {
             echo -e "${YELLOW}A backup of your installation was created at: $BACKUP_DIR${NC}"
             echo -e "${YELLOW}You can restore from this backup if needed.${NC}"
             echo -e "${YELLOW}To restore: rm -rf $TARGET_DIR && cp -r $BACKUP_DIR $TARGET_DIR${NC}"
+        else
+            echo -e "${RED}No backup was created. Your installation may be in an inconsistent state.${NC}"
+            echo -e "${YELLOW}You may need to run a fresh installation or manually fix any issues.${NC}"
         fi
         
         if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
@@ -98,13 +101,37 @@ validate_installation() {
     return 0
 }
 
-# Function to check if a process is running on a port
+# Function to check if a process is running on a port (with fallback methods)
 check_port() {
-    if lsof -i:$1 >/dev/null 2>&1; then
+    local port=$1
+    
+    # Method 1: Try lsof first
+    if lsof -i:$port >/dev/null 2>&1; then
         return 0
-    else
-        return 1
     fi
+    
+    # Method 2: Try netstat as fallback
+    if command_exists netstat; then
+        if netstat -ln 2>/dev/null | grep -q ":$port "; then
+            return 0
+        fi
+    fi
+    
+    # Method 3: Try ss as another fallback
+    if command_exists ss; then
+        if ss -ln 2>/dev/null | grep -q ":$port "; then
+            return 0
+        fi
+    fi
+    
+    # Method 4: Try curl for HTTP ports as final check
+    if [ "$port" = "3000" ] || [ "$port" = "8080" ] || [ "$port" = "6688" ]; then
+        if curl -s --connect-timeout 2 "http://localhost:$port" >/dev/null 2>&1; then
+            return 0
+        fi
+    fi
+    
+    return 1
 }
 
 # Function to create a backup of the target directory
@@ -223,35 +250,74 @@ TARGET_EXTERNAL_ADAPTER="$TARGET_DIR/external-adapter"
 TARGET_CHAINLINK_NODE="$TARGET_DIR/chainlink-node"
 TARGET_OPERATOR="$TARGET_DIR/contracts"
 
-# Check which components are running
+# Function to comprehensively check if a service is running (like arbiter-status.sh)
+check_service_status() {
+    local service_name="$1"
+    local port="$2"
+    local pid_file="$3"
+    local target_dir="$4"
+    
+    # Check PID file first if provided
+    if [ -n "$pid_file" ] && [ -f "$target_dir/$pid_file" ]; then
+        local pid=$(cat "$target_dir/$pid_file" 2>/dev/null)
+        if [ -n "$pid" ] && ps -p "$pid" >/dev/null 2>&1; then
+            echo -e "${GREEN}$service_name is running (PID: $pid).${NC}"
+            return 0
+        fi
+    fi
+    
+    # Check port as secondary method
+    if check_port "$port"; then
+        echo -e "${GREEN}$service_name is running (port $port active).${NC}"
+        return 0
+    fi
+    
+    # Check for process by name as tertiary method
+    case "$service_name" in
+        "AI Node")
+            if pgrep -f "npm.*start" >/dev/null 2>&1 && pgrep -f "ai-node" >/dev/null 2>&1; then
+                echo -e "${YELLOW}$service_name appears to be running (process detected).${NC}"
+                return 0
+            fi
+            ;;
+        "External Adapter")
+            if pgrep -f "external-adapter" >/dev/null 2>&1 || pgrep -f "adapter.*start" >/dev/null 2>&1; then
+                echo -e "${YELLOW}$service_name appears to be running (process detected).${NC}"
+                return 0
+            fi
+            ;;
+        "Chainlink Node")
+            if docker ps --filter "name=chainlink" --format "table {{.Names}}" | grep -q "chainlink"; then
+                echo -e "${GREEN}$service_name is running (Docker container active).${NC}"
+                return 0
+            fi
+            ;;
+    esac
+    
+    echo -e "${BLUE}$service_name is not running.${NC}"
+    return 1
+}
+
+# Check which components are running using comprehensive method
 echo -e "${BLUE}Checking arbiter status...${NC}"
 NODE_RUNNING=0
 ADAPTER_RUNNING=0
 CHAINLINK_RUNNING=0
 ARBITER_RUNNING=0
 
-if check_port 3000; then
+if check_service_status "AI Node" 3000 "ai-node/ai-node.pid" "$TARGET_DIR"; then
     NODE_RUNNING=1
     ARBITER_RUNNING=1
-    echo -e "${BLUE}AI Node is running.${NC}"
-else
-    echo -e "${BLUE}AI Node is not running.${NC}"
 fi
 
-if check_port 8080; then
+if check_service_status "External Adapter" 8080 "external-adapter/adapter.pid" "$TARGET_DIR"; then
     ADAPTER_RUNNING=1
     ARBITER_RUNNING=1
-    echo -e "${BLUE}External Adapter is running.${NC}"
-else
-    echo -e "${BLUE}External Adapter is not running.${NC}"
 fi
 
-if check_port 6688; then
+if check_service_status "Chainlink Node" 6688 "" "$TARGET_DIR"; then
     CHAINLINK_RUNNING=1
     ARBITER_RUNNING=1
-    echo -e "${BLUE}Chainlink Node is running.${NC}"
-else
-    echo -e "${BLUE}Chainlink Node is not running.${NC}"
 fi
 
 # Track if arbiter was running
@@ -286,10 +352,25 @@ else
     echo -e "${GREEN}Arbiter is not running. Proceeding with upgrade...${NC}"
 fi
 
-# Create backup
-create_backup "$TARGET_DIR"
-if [ $? -ne 0 ]; then
-    exit 1
+# Ask if user wants to create a backup
+echo -e "${BLUE}Backup Creation${NC}"
+echo -e "${YELLOW}A backup of your current installation can be created before upgrading.${NC}"
+echo -e "${YELLOW}This allows you to restore if something goes wrong, but takes time and disk space.${NC}"
+echo ""
+
+if ask_yes_no "Would you like to create a backup before upgrading? (Recommended for production)"; then
+    create_backup "$TARGET_DIR"
+    if [ $? -ne 0 ]; then
+        exit 1
+    fi
+else
+    echo -e "${YELLOW}Skipping backup creation. Proceeding with upgrade...${NC}"
+    echo -e "${RED}WARNING: No backup will be available if the upgrade fails!${NC}"
+    if ! ask_yes_no "Are you sure you want to continue without a backup?"; then
+        echo -e "${YELLOW}Upgrade cancelled by user.${NC}"
+        exit 0
+    fi
+    BACKUP_DIR=""  # Clear backup directory since no backup was created
 fi
 
 # Mark that upgrade is in progress
@@ -632,6 +713,40 @@ if [ -f "$TARGET_AI_NODE/package.json" ]; then
     echo -e "${BLUE}Installing AI Node dependencies...${NC}"
     cd "$TARGET_AI_NODE" && npm install
     echo -e "${GREEN}AI Node dependencies installed.${NC}"
+    
+    # Update @verdikta/common library to get latest ClassID data
+    echo -e "${BLUE}Updating @verdikta/common library for latest ClassID model pools...${NC}"
+    if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
+        # Load environment to get Verdikta Common version preference
+        VERDIKTA_VERSION="latest"
+        if [ -f "$TARGET_DIR/installer/.env" ]; then
+            source "$TARGET_DIR/installer/.env"
+            # Check if user has an old beta configuration and offer to update
+            if [ "$VERDIKTA_COMMON_VERSION" = "beta" ]; then
+                echo -e "${YELLOW}Your installation is configured to use @verdikta/common@beta.${NC}"
+                echo -e "${BLUE}The recommended version is now 'latest' for better stability.${NC}"
+                if ask_yes_no "Would you like to switch to @verdikta/common@latest?"; then
+                    VERDIKTA_VERSION="latest"
+                    # Update the .env file with the new preference
+                    sed -i.bak "s/VERDIKTA_COMMON_VERSION=\"beta\"/VERDIKTA_COMMON_VERSION=\"latest\"/" "$TARGET_DIR/installer/.env"
+                    echo -e "${GREEN}Updated configuration to use @verdikta/common@latest${NC}"
+                else
+                    VERDIKTA_VERSION="beta"
+                    echo -e "${BLUE}Keeping @verdikta/common@beta as requested${NC}"
+                fi
+            else
+                VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
+            fi
+        fi
+        
+        if node "$UTIL_DIR/update-verdikta-common.js" "$TARGET_AI_NODE" "$VERDIKTA_VERSION"; then
+            echo -e "${GREEN}@verdikta/common library updated successfully.${NC}"
+        else
+            echo -e "${YELLOW}Warning: Could not update @verdikta/common library. Continuing with existing version.${NC}"
+        fi
+    else
+        echo -e "${YELLOW}@verdikta/common update utility not found, skipping library update.${NC}"
+    fi
 fi
 
 # External Adapter dependencies
@@ -640,6 +755,155 @@ if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
     cd "$TARGET_EXTERNAL_ADAPTER" && npm install
     echo -e "${GREEN}External Adapter dependencies installed.${NC}"
 fi
+
+# Synchronize ClassID model pools with models.ts
+echo -e "${BLUE}Synchronizing ClassID model pools with AI Node configuration...${NC}"
+if [ -f "$TARGET_AI_NODE/src/scripts/classid-integration.js" ]; then
+    cd "$TARGET_AI_NODE"
+    
+    # Display current ClassID information
+    echo -e "${BLUE}Displaying latest ClassID model pool information...${NC}"
+    if [ -f "$UTIL_DIR/display-classids.js" ]; then
+        if node "$UTIL_DIR/display-classids.js"; then
+            echo -e "${GREEN}ClassID information displayed successfully.${NC}"
+        else
+            echo -e "${YELLOW}Could not display ClassID information.${NC}"
+        fi
+    fi
+    
+    echo -e "${BLUE}Checking for new models in ClassID pools...${NC}"
+    echo -e "${BLUE}This will check ALL ClassIDs for new models from ANY provider:${NC}"
+    echo -e "${BLUE}  • OpenAI models (GPT-4, GPT-5, GPT-6, etc.)${NC}"
+    echo -e "${BLUE}  • Anthropic models (Claude-3, Claude-4, Claude-5, etc.)${NC}"
+    echo -e "${BLUE}  • Ollama models (Llama, Mistral, Gemma, etc.)${NC}"
+    echo -e "${BLUE}  • Any future providers and models${NC}"
+    echo ""
+    
+    if ask_yes_no "Would you like to automatically integrate any new models from all ClassID pools into your AI Node configuration?"; then
+        echo -e "${BLUE}Running ClassID integration to sync models.ts with latest ClassID data...${NC}"
+        echo -e "${BLUE}This will add new models from ALL ClassIDs (128, 129, 130, etc.) and ALL providers.${NC}"
+        
+        # Run the ClassID integration script non-interactively (select all available classes)
+        echo "2" | node src/scripts/classid-integration.js
+        
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}ClassID model pools synchronized successfully!${NC}"
+            echo -e "${GREEN}Your models.ts file has been updated with models from all ClassID pools.${NC}"
+            echo -e "${GREEN}This includes OpenAI, Anthropic, Ollama, and any other provider models.${NC}"
+            MODELS_UPDATED=true
+        else
+            echo -e "${YELLOW}ClassID integration completed with warnings. Please check the output above.${NC}"
+            MODELS_UPDATED=false
+        fi
+    else
+        echo -e "${BLUE}Skipping automatic ClassID model pool integration.${NC}"
+        echo -e "${YELLOW}You can run this manually later with: cd $TARGET_AI_NODE && npm run integrate-classid${NC}"
+        MODELS_UPDATED=false
+    fi
+else
+    echo -e "${YELLOW}ClassID integration script not found, skipping model pool synchronization.${NC}"
+fi
+
+# Check for missing Ollama models (only needed for local downloads)
+if [ "$MODELS_UPDATED" = true ]; then
+    echo -e "${BLUE}Checking for missing Ollama models that need local download...${NC}"
+    echo -e "${BLUE}Note: OpenAI and Anthropic models are accessed via API (no download needed).${NC}"
+    echo -e "${BLUE}Only Ollama models need to be downloaded locally for offline use.${NC}"
+    echo ""
+else
+    echo -e "${BLUE}Checking for missing Ollama models...${NC}"
+fi
+
+check_ollama_models() {
+    # Check if Ollama is available
+    if ! command_exists ollama; then
+        echo -e "${YELLOW}Ollama not found. Skipping Ollama model check.${NC}"
+        echo -e "${BLUE}If you plan to use Ollama models, please install Ollama first.${NC}"
+        return 0
+    fi
+    
+    # Get list of currently installed Ollama models
+    local installed_models=$(ollama list 2>/dev/null | tail -n +2 | awk '{print $1}' | grep -v '^$' || true)
+    
+    # Dynamically get Ollama models from ClassID data
+    local recommended_models=""
+    echo -e "${BLUE}Extracting Ollama models from ClassID pools...${NC}"
+    
+    # Use Node.js to extract Ollama models from @verdikta/common
+    if [ -f "$TARGET_AI_NODE/package.json" ]; then
+        cd "$TARGET_AI_NODE"
+        recommended_models=$(node -e "
+            try {
+                const { classMap } = require('@verdikta/common');
+                const allClasses = classMap.listClasses();
+                const ollamaModels = new Set();
+                
+                allClasses.forEach(classItem => {
+                    const cls = classMap.getClass(classItem.id);
+                    if (cls && cls.status === 'ACTIVE' && cls.models) {
+                        cls.models.forEach(model => {
+                            if (model.provider === 'ollama') {
+                                ollamaModels.add(model.model);
+                            }
+                        });
+                    }
+                });
+                
+                console.log(Array.from(ollamaModels).join(' '));
+            } catch (error) {
+                // Fallback to hardcoded list if @verdikta/common is not available
+                console.log('llama3.1:8b llava:7b deepseek-r1:8b qwen3:8b gemma3n:e4b');
+            }
+        " 2>/dev/null || echo "llama3.1:8b llava:7b deepseek-r1:8b qwen3:8b gemma3n:e4b")
+    else
+        # Fallback if AI Node not available
+        recommended_models="llama3.1:8b llava:7b deepseek-r1:8b qwen3:8b gemma3n:e4b"
+    fi
+    
+    local missing_models=""
+    echo -e "${BLUE}Checking for recommended Ollama models from ClassID pools...${NC}"
+    echo -e "${BLUE}Models to check: $recommended_models${NC}"
+    
+    for model in $recommended_models; do
+        if ! echo "$installed_models" | grep -q "^${model}"; then
+            if [ -z "$missing_models" ]; then
+                missing_models="$model"
+            else
+                missing_models="$missing_models $model"
+            fi
+        fi
+    done
+    
+    if [ -n "$missing_models" ]; then
+        echo -e "${YELLOW}Missing Ollama models found: $missing_models${NC}"
+        echo -e "${BLUE}These models are from your ClassID pools and need to be downloaded locally.${NC}"
+        echo -e "${BLUE}(OpenAI and Anthropic models from your ClassID pools are already available via API)${NC}"
+        echo
+        
+        if ask_yes_no "Would you like to download the missing Ollama models now? (This may take several minutes)"; then
+            for model in $missing_models; do
+                echo -e "${BLUE}Downloading $model...${NC}"
+                if ollama pull "$model"; then
+                    echo -e "${GREEN}✓ Successfully downloaded $model${NC}"
+                else
+                    echo -e "${RED}✗ Failed to download $model${NC}"
+                fi
+            done
+            echo -e "${GREEN}Ollama model download process completed.${NC}"
+        else
+            echo -e "${BLUE}Skipping Ollama model downloads.${NC}"
+            echo -e "${YELLOW}You can download models manually later using:${NC}"
+            for model in $missing_models; do
+                echo -e "${YELLOW}  ollama pull $model${NC}"
+            done
+        fi
+    else
+        echo -e "${GREEN}All recommended Ollama models are already installed.${NC}"
+    fi
+}
+
+# Call the Ollama model check function
+check_ollama_models
 
 # Check current arbiter configuration
 echo -e "${BLUE}Checking current arbiter configuration...${NC}"
@@ -790,25 +1054,69 @@ check_chainlink_config() {
         return 0
     fi
     
-    # Generate what the new config would look like
-    local temp_config=$(mktemp)
-    sed "s/<KEY>/$infura_key/g" "$template_file" > "$temp_config"
+    # Load network configuration to populate template placeholders
+    local chain_id=""
+    local network_name=""
+    local tip_cap_default=""
+    local fee_cap_default=""
+    local ws_url=""
+    local http_url=""
     
-    # Create filtered versions for comparison (excluding WSURL and HTTPURL lines)
+    # Load environment variables from target installation
+    if [ -f "$TARGET_DIR/installer/.env" ]; then
+        source "$TARGET_DIR/installer/.env"
+        chain_id="$NETWORK_CHAIN_ID"
+        network_name="$NETWORK_NAME"
+        
+        # Set default gas values based on network type
+        if [ "$NETWORK_TYPE" = "testnet" ]; then
+            tip_cap_default="2 gwei"
+            fee_cap_default="30 gwei"
+            ws_url="wss://base-sepolia.infura.io/ws/v3/$infura_key"
+            http_url="https://base-sepolia.infura.io/v3/$infura_key"
+        else
+            tip_cap_default="1 gwei"
+            fee_cap_default="20 gwei"
+            ws_url="wss://base-mainnet.infura.io/ws/v3/$infura_key"
+            http_url="https://base-mainnet.infura.io/v3/$infura_key"
+        fi
+    fi
+    
+    # Generate what the new config would look like with ALL placeholders populated
+    local temp_config=$(mktemp)
+    sed -e "s/<KEY>/$infura_key/g" \
+        -e "s/<CHAIN_ID>/$chain_id/g" \
+        -e "s/<NETWORK_NAME>/$network_name/g" \
+        -e "s/<TIP_CAP_DEFAULT>/$tip_cap_default/g" \
+        -e "s/<FEE_CAP_DEFAULT>/$fee_cap_default/g" \
+        -e "s|<WS_URL>|$ws_url|g" \
+        -e "s|<HTTP_URL>|$http_url|g" \
+        "$template_file" > "$temp_config"
+    
+    # Create filtered versions for comparison (excluding dynamic/environment-specific lines)
     local current_filtered=$(mktemp)
     local temp_filtered=$(mktemp)
     
-    # Filter out WSURL and HTTPURL lines from both files for comparison
-    grep -v "WSURL=" "$current_config" | grep -v "HTTPURL=" > "$current_filtered"
-    grep -v "WSURL=" "$temp_config" | grep -v "HTTPURL=" > "$temp_filtered"
+    # Filter out lines that are environment-specific and should not be compared
+    # These include URLs (which contain API keys) and other dynamic values
+    grep -v "WSURL=" "$current_config" | \
+    grep -v "HTTPURL=" | \
+    grep -v "ChainID=" | \
+    grep -v "Name=" > "$current_filtered"
     
-    # Compare filtered configs (excluding WSURL/HTTPURL lines which always differ)
+    grep -v "WSURL=" "$temp_config" | \
+    grep -v "HTTPURL=" | \
+    grep -v "ChainID=" | \
+    grep -v "Name=" > "$temp_filtered"
+    
+    # Compare filtered configs (excluding environment-specific lines)
     if ! diff -q "$current_filtered" "$temp_filtered" > /dev/null 2>&1; then
-        echo -e "${YELLOW}Your current Chainlink configuration differs from the updated template.${NC}"
-        echo -e "${YELLOW}This may include new optimization settings or configuration improvements.${NC}"
+        echo -e "${YELLOW}Your current Chainlink configuration has differences from the updated template.${NC}"
+        echo -e "${YELLOW}This may include new optimization settings, timeout values, or configuration improvements.${NC}"
+        echo -e "${BLUE}(Environment-specific values like ChainID, URLs, and network names are excluded from this comparison)${NC}"
         
-        # Show the actual differences (excluding WSURL/HTTPURL)
-        echo -e "${BLUE}Differences found:${NC}"
+        # Show the actual differences (excluding environment-specific values)
+        echo -e "${BLUE}Configuration differences found:${NC}"
         diff "$current_filtered" "$temp_filtered" || true
         echo
         
