@@ -724,7 +724,8 @@ if [ -f "$TARGET_AI_NODE/package.json" ]; then
             # Check if user has an old beta configuration and offer to update
             if [ "$VERDIKTA_COMMON_VERSION" = "beta" ]; then
                 echo -e "${YELLOW}Your installation is configured to use @verdikta/common@beta.${NC}"
-                echo -e "${BLUE}The recommended version is now 'latest' for better stability.${NC}"
+                echo -e "${BLUE}The recommended version is now 'latest' for better stability and ClassID support.${NC}"
+                echo -e "${BLUE}Note: ClassID model pool integration requires @verdikta/common@latest (v1.3.0+).${NC}"
                 if ask_yes_no "Would you like to switch to @verdikta/common@latest?"; then
                     VERDIKTA_VERSION="latest"
                     # Update the .env file with the new preference
@@ -732,7 +733,8 @@ if [ -f "$TARGET_AI_NODE/package.json" ]; then
                     echo -e "${GREEN}Updated configuration to use @verdikta/common@latest${NC}"
                 else
                     VERDIKTA_VERSION="beta"
-                    echo -e "${BLUE}Keeping @verdikta/common@beta as requested${NC}"
+                    echo -e "${YELLOW}Keeping @verdikta/common@beta as requested${NC}"
+                    echo -e "${YELLOW}Warning: ClassID integration may not work with beta versions${NC}"
                 fi
             else
                 VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
@@ -783,16 +785,24 @@ if [ -f "$TARGET_AI_NODE/src/scripts/classid-integration.js" ]; then
         echo -e "${BLUE}Running ClassID integration to sync models.ts with latest ClassID data...${NC}"
         echo -e "${BLUE}This will add new models from ALL ClassIDs (128, 129, 130, etc.) and ALL providers.${NC}"
         
-        # Run the ClassID integration script non-interactively (select all available classes)
-        echo "2" | node src/scripts/classid-integration.js
-        
-        if [ $? -eq 0 ]; then
-            echo -e "${GREEN}ClassID model pools synchronized successfully!${NC}"
-            echo -e "${GREEN}Your models.ts file has been updated with models from all ClassID pools.${NC}"
-            echo -e "${GREEN}This includes OpenAI, Anthropic, Ollama, and any other provider models.${NC}"
-            MODELS_UPDATED=true
+        # Check if @verdikta/common supports classMap before running integration
+        if node -e "const { classMap } = require('@verdikta/common'); console.log('ClassMap available:', typeof classMap?.listClasses === 'function');" 2>/dev/null | grep -q "true"; then
+            # Run the ClassID integration script non-interactively (select all available classes)
+            echo "2" | node src/scripts/classid-integration.js
+            
+            if [ $? -eq 0 ]; then
+                echo -e "${GREEN}ClassID model pools synchronized successfully!${NC}"
+                echo -e "${GREEN}Your models.ts file has been updated with models from all ClassID pools.${NC}"
+                echo -e "${GREEN}This includes OpenAI, Anthropic, Ollama, and any other provider models.${NC}"
+                MODELS_UPDATED=true
+            else
+                echo -e "${YELLOW}ClassID integration completed with warnings. Please check the output above.${NC}"
+                MODELS_UPDATED=false
+            fi
         else
-            echo -e "${YELLOW}ClassID integration completed with warnings. Please check the output above.${NC}"
+            echo -e "${RED}ClassID integration not available: @verdikta/common version does not support classMap${NC}"
+            echo -e "${YELLOW}Please ensure @verdikta/common@latest (v1.3.0+) is installed for ClassID support.${NC}"
+            echo -e "${YELLOW}You can update manually with: cd $TARGET_AI_NODE && npm install @verdikta/common@latest${NC}"
             MODELS_UPDATED=false
         fi
     else

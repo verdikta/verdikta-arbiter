@@ -28,5 +28,8 @@ export const modelConfig = {
     { name: 'deepseek-r1:8b', supportsImages: false, supportsAttachments: true },
     { name: 'qwen3:8b', supportsImages: false, supportsAttachments: true },
     { name: 'gemma3n:e4b', supportsImages: false, supportsAttachments: true },
+    { name: 'qwen3:4b', supportsImages: false, supportsAttachments: true },
+    { name: 'qwen3:1.7b', supportsImages: false, supportsAttachments: true },
+    { name: 'gemma3n:e2b', supportsImages: false, supportsAttachments: true },
   ],
 };

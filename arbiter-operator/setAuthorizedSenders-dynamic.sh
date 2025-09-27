@@ -126,3 +126,4 @@ env OPERATOR="$OPERATOR_ADDR" NODES="$NODE_LIST" npx hardhat run scripts/setAuth
 
 
 
+

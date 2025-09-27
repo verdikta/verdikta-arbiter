@@ -93,7 +93,17 @@ export async function POST(request: Request) {
     console.log(`⏱️ TIMING [${operation}]: ${duration}ms${detailsStr}`);
   }
 
-  try {
+  // Apply request-level timeout wrapper to ensure total response within budget
+  const requestTimeoutPromise = new Promise<never>((_, reject) => {
+    setTimeout(() => {
+      const elapsed = Date.now() - requestStartTime;
+      console.error(`🚨 REQUEST_TIMEOUT: Request exceeded ${REQUEST_TIMEOUT_MS}ms limit (elapsed: ${elapsed}ms)`);
+      reject(new Error(`Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit`));
+    }, REQUEST_TIMEOUT_MS);
+  });
+
+  const requestProcessingPromise = (async () => {
+    try {
     console.log('POST request received at /api/rank-and-justify');
     const parseStartTime = Date.now();
     const body: RankAndJustifyInput = await request.json();
@@ -273,30 +283,96 @@ export async function POST(request: Request) {
         
         const modelPromises = models.map((modelInfo, modelIndex) => {
           console.log(`📋 PARALLEL_QUEUE: Model ${modelIndex + 1}/${models.length}: ${modelInfo.provider}-${modelInfo.model} (weight: ${modelInfo.weight}, count: ${modelInfo.count || 1})`);
-          return processModelForIteration(
-            modelInfo,
-            modelIndex,
-            iterationPrompt,
-            attachments,
-            i + 1,
-            body.outcomes,
-            logTiming
-          );
+          
+          // Apply model-level timeout wrapper to prevent individual model hangs
+          return Promise.race([
+            processModelForIteration(
+              modelInfo,
+              modelIndex,
+              iterationPrompt,
+              attachments,
+              i + 1,
+              body.outcomes,
+              logTiming
+            ),
+            new Promise<never>((_, reject) => {
+              setTimeout(() => {
+                console.warn(`⏰ MODEL_TIMEOUT: Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`);
+                reject(new Error(`Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`));
+              }, MODEL_TIMEOUT_MS);
+            })
+          ]);
         });
 
         console.log(`⏳ PARALLEL_WAIT: Waiting for ${models.length} models to complete...`);
-        // Wait for all models to complete in parallel
-        const modelResults = await Promise.all(modelPromises);
+        // Use Promise.allSettled to continue with successful models even if some fail/timeout
+        const modelSettledResults = await Promise.allSettled(modelPromises);
+        
+        // Extract successful results and handle failures gracefully
+        const modelResults: any[] = [];
+        const failedModels: string[] = [];
+        
+        modelSettledResults.forEach((result, index) => {
+          const modelInfo = models[index];
+          const modelKey = `${modelInfo.provider}-${modelInfo.model}`;
+          
+          if (result.status === 'fulfilled') {
+            modelResults.push(result.value);
+            console.log(`✅ MODEL_SUCCESS: ${modelKey} completed successfully`);
+          } else {
+            console.warn(`❌ MODEL_FAILED: ${modelKey} failed: ${result.reason.message}`);
+            failedModels.push(modelKey);
+            
+            // Create fallback result for failed model
+            const numOutcomes = body.outcomes?.length || 2;
+            const baseScore = Math.floor(1000000 / numOutcomes);
+            const fallbackDecisionVector = Array(numOutcomes).fill(baseScore);
+            fallbackDecisionVector[0] += 1000000 - (baseScore * numOutcomes);
+            
+            const fallbackResult = {
+              modelAverage: fallbackDecisionVector,
+              weight: modelInfo.weight,
+              justifications: [`From model ${modelInfo.model}:\nModel timed out or failed: ${result.reason.message}`],
+              timingData: {
+                provider: modelInfo.provider,
+                model: modelInfo.model,
+                count: modelInfo.count || 1,
+                weight: modelInfo.weight,
+                failed: true,
+                failureReason: result.reason.message
+              }
+            };
+            modelResults.push(fallbackResult);
+          }
+        });
         
         const parallelDuration = Date.now() - parallelStartTime;
-        console.log(`✅ PARALLEL_COMPLETE: All ${models.length} models completed in ${parallelDuration}ms`);
+        const successfulModels = models.length - failedModels.length;
+        console.log(`✅ PARALLEL_COMPLETE: ${successfulModels}/${models.length} models completed in ${parallelDuration}ms`);
+        
+        if (failedModels.length > 0) {
+          console.warn(`⚠️ FAILED_MODELS: ${failedModels.length} models failed/timed out: ${failedModels.join(', ')}`);
+        }
+        
+        // Check if we have enough successful models to continue
+        const MIN_SUCCESSFUL_MODELS_PERCENT = parseFloat(process.env.MIN_SUCCESSFUL_MODELS_PERCENT || '0.5');
+        const minSuccessfulModels = Math.ceil(models.length * MIN_SUCCESSFUL_MODELS_PERCENT);
+        
+        if (successfulModels < minSuccessfulModels) {
+          console.error(`❌ INSUFFICIENT_MODELS: Only ${successfulModels}/${models.length} models succeeded (minimum: ${minSuccessfulModels})`);
+          throw new Error(`Insufficient successful models: ${successfulModels}/${models.length} (minimum required: ${minSuccessfulModels})`);
+        }
+        
         logTiming(`parallel_execution_iteration_${i + 1}`, parallelStartTime, {
           modelsCount: models.length,
+          successfulModels: successfulModels,
+          failedModels: failedModels.length,
+          failedModelsList: failedModels,
           parallelDuration: parallelDuration,
           modelBreakdown: modelResults.map((result, idx) => ({
             provider: models[idx].provider,
             model: models[idx].model,
-            // Individual timing will be logged by processModelForIteration
+            failed: result.timingData?.failed || false
           }))
         });
 
@@ -309,7 +385,7 @@ export async function POST(request: Request) {
           iterationWeights.push(result.weight);
           
           // Add justifications from this model
-          result.justifications.forEach(justification => {
+          result.justifications.forEach((justification: string) => {
             iterationJustifications.push(justification);
             
             // Format for previous iteration responses if not the last iteration
@@ -529,6 +605,29 @@ ${finalJustification}\n`);
       scores: [] as ScoreOutcome[],
       justification: ''
     }, { status: 500 });
+  }
+  })();
+
+  // Race between request processing and timeout
+  try {
+    return await Promise.race([requestProcessingPromise, requestTimeoutPromise]);
+  } catch (timeoutError: any) {
+    const totalRequestTime = Date.now() - requestStartTime;
+    
+    if (timeoutError.message.includes('Request timeout')) {
+      console.error(`🚨 REQUEST_TIMEOUT_FINAL: Request timed out after ${totalRequestTime}ms`);
+      return NextResponse.json({
+        error: `Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit (actual: ${totalRequestTime}ms)`,
+        scores: [] as ScoreOutcome[],
+        justification: '',
+        timeout: true,
+        actualDuration: totalRequestTime,
+        timeoutLimit: REQUEST_TIMEOUT_MS
+      }, { status: 408 }); // 408 Request Timeout
+    } else {
+      // Re-throw non-timeout errors
+      throw timeoutError;
+    }
   }
 }
 
