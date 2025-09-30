@@ -2,7 +2,7 @@ import { LLMProvider } from './llm-provider-interface';
 import { ChatAnthropic } from "@langchain/anthropic";
 import { modelConfig } from '../../config/models';
 
-const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png'];
+const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
 export class AnthropicProvider implements LLMProvider {
   private apiKey: string;
@@ -52,7 +52,7 @@ export class AnthropicProvider implements LLMProvider {
       throw new Error(`[${this.providerName}] ANTHROPIC_API_KEY is not set`);
     }
     if (!SUPPORTED_IMAGE_FORMATS.includes(mediaType)) {
-      throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${mediaType}. Only JPEG and PNG formats are supported.`);
+      throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${mediaType}. Supported formats are: JPEG, PNG, WEBP, and GIF.`);
     }
 
     const anthropic = new ChatAnthropic({
@@ -108,7 +108,7 @@ export class AnthropicProvider implements LLMProvider {
     // Fall back to original implementation for non-PDF or non-supporting models
     for (const attachment of otherAttachments) {
       if (attachment.type === 'image' && !SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
-        throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${attachment.mediaType}. Only JPEG and PNG formats are supported.`);
+        throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${attachment.mediaType}. Supported formats are: JPEG, PNG, WEBP, and GIF.`);
       }
     }
 

@@ -94,11 +94,17 @@ export async function POST(request: Request) {
   }
 
   // Apply request-level timeout wrapper to ensure total response within budget
+  let requestTimeoutId: NodeJS.Timeout | null = null;
+  let requestCompleted = false;
+  
   const requestTimeoutPromise = new Promise<never>((_, reject) => {
-    setTimeout(() => {
-      const elapsed = Date.now() - requestStartTime;
-      console.error(`🚨 REQUEST_TIMEOUT: Request exceeded ${REQUEST_TIMEOUT_MS}ms limit (elapsed: ${elapsed}ms)`);
-      reject(new Error(`Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit`));
+    requestTimeoutId = setTimeout(() => {
+      if (!requestCompleted) {
+        const elapsed = Date.now() - requestStartTime;
+        console.error(`🚨 REQUEST_TIMEOUT: Request exceeded ${REQUEST_TIMEOUT_MS}ms limit (elapsed: ${elapsed}ms)`);
+        requestCompleted = true;
+        reject(new Error(`Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit`));
+      }
     }, REQUEST_TIMEOUT_MS);
   });
 
@@ -284,8 +290,29 @@ export async function POST(request: Request) {
         const modelPromises = models.map((modelInfo, modelIndex) => {
           console.log(`📋 PARALLEL_QUEUE: Model ${modelIndex + 1}/${models.length}: ${modelInfo.provider}-${modelInfo.model} (weight: ${modelInfo.weight}, count: ${modelInfo.count || 1})`);
           
-          // Apply model-level timeout wrapper to prevent individual model hangs
-          return Promise.race([
+          // Apply model-level timeout wrapper with proper cleanup to prevent memory leaks
+          return new Promise((resolve, reject) => {
+            let timeoutId: NodeJS.Timeout | null = null;
+            let completed = false;
+            
+            const cleanup = () => {
+              if (timeoutId && !completed) {
+                clearTimeout(timeoutId);
+                timeoutId = null;
+              }
+              completed = true;
+            };
+            
+            // Start the timeout timer
+            timeoutId = setTimeout(() => {
+              if (!completed) {
+                console.warn(`⏰ MODEL_TIMEOUT: Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`);
+                completed = true;
+                reject(new Error(`Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`));
+              }
+            }, MODEL_TIMEOUT_MS);
+            
+            // Start the model processing
             processModelForIteration(
               modelInfo,
               modelIndex,
@@ -294,14 +321,16 @@ export async function POST(request: Request) {
               i + 1,
               body.outcomes,
               logTiming
-            ),
-            new Promise<never>((_, reject) => {
-              setTimeout(() => {
-                console.warn(`⏰ MODEL_TIMEOUT: Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`);
-                reject(new Error(`Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`));
-              }, MODEL_TIMEOUT_MS);
+            )
+            .then(result => {
+              cleanup();
+              resolve(result);
             })
-          ]);
+            .catch(error => {
+              cleanup();
+              reject(error);
+            });
+          });
         });
 
         console.log(`⏳ PARALLEL_WAIT: Waiting for ${models.length} models to complete...`);
@@ -450,23 +479,42 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
           console.log(`📞 JUSTIFIER_API_CALL: Calling ${justifierProviderName}-${justifierModelName} for justification...`);
           const justifierCallStart = Date.now();
           
-          // Apply timeout wrapper to justification generation
+          // Apply timeout wrapper to justification generation with proper cleanup
           const JUSTIFICATION_TIMEOUT_MS = parseInt(process.env.JUSTIFICATION_TIMEOUT_MS || '45000'); // 45 seconds default
           
+          let justificationTimeoutId: NodeJS.Timeout | null = null;
+          let justificationCompleted = false;
+          
           try {
-            finalJustification = await Promise.race([
+            finalJustification = await new Promise<string>((resolve, reject) => {
+              justificationTimeoutId = setTimeout(() => {
+                if (!justificationCompleted) {
+                  justificationCompleted = true;
+                  reject(new Error(`Justification generation timed out after ${JUSTIFICATION_TIMEOUT_MS}ms`));
+                }
+              }, JUSTIFICATION_TIMEOUT_MS);
+              
               generateJustification(
                 finalAggregatedScore,
-                iterationJustifications, // Pass justifications from this iteration
+                iterationJustifications,
                 justifierProvider,
                 justifierModelName
-              ),
-              new Promise<string>((_, reject) => {
-                setTimeout(() => {
-                  reject(new Error(`Justification generation timed out after ${JUSTIFICATION_TIMEOUT_MS}ms`));
-                }, JUSTIFICATION_TIMEOUT_MS);
+              )
+              .then(result => {
+                if (justificationTimeoutId && !justificationCompleted) {
+                  clearTimeout(justificationTimeoutId);
+                  justificationCompleted = true;
+                }
+                resolve(result);
               })
-            ]);
+              .catch(error => {
+                if (justificationTimeoutId && !justificationCompleted) {
+                  clearTimeout(justificationTimeoutId);
+                  justificationCompleted = true;
+                }
+                reject(error);
+              });
+            });
             
             const justifierCallTime = Date.now() - justifierCallStart;
             console.log(`✅ JUSTIFIER_API_RESPONSE: ${justifierProviderName}-${justifierModelName} responded in ${justifierCallTime}ms`);
@@ -608,11 +656,25 @@ ${finalJustification}\n`);
   }
   })();
 
-  // Race between request processing and timeout
+  // Race between request processing and timeout with proper cleanup
   try {
-    return await Promise.race([requestProcessingPromise, requestTimeoutPromise]);
+    const result = await Promise.race([requestProcessingPromise, requestTimeoutPromise]);
+    
+    // Clear the request timeout if the request completed successfully
+    if (requestTimeoutId && !requestCompleted) {
+      clearTimeout(requestTimeoutId);
+      requestCompleted = true;
+    }
+    
+    return result;
   } catch (timeoutError: any) {
     const totalRequestTime = Date.now() - requestStartTime;
+    
+    // Clear the timeout in error case too
+    if (requestTimeoutId && !requestCompleted) {
+      clearTimeout(requestTimeoutId);
+      requestCompleted = true;
+    }
     
     if (timeoutError.message.includes('Request timeout')) {
       console.error(`🚨 REQUEST_TIMEOUT_FINAL: Request timed out after ${totalRequestTime}ms`);
@@ -820,7 +882,16 @@ async function generateJustification(
     '\n\n'
   )}\n\nProvide a comprehensive justification for the result.`;
 
-  const response = await justifierProvider.generateResponse(prompt, justifierModel);
+  // For reasoning models, use low effort and low verbosity for faster justification generation
+  const isReasoningModel = justifierModel.toLowerCase().includes('o1') || 
+                          justifierModel.toLowerCase().includes('o3') || 
+                          justifierModel.toLowerCase().includes('nano');
+  
+  const options = isReasoningModel 
+    ? { reasoning: { effort: 'low' as const }, verbosity: 'low' as const }
+    : undefined;
+
+  const response = await justifierProvider.generateResponse(prompt, justifierModel, options);
   return response;
 }
 

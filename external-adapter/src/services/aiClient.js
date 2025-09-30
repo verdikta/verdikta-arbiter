@@ -154,18 +154,33 @@ class AIClient {
               for (const file of query.additional) {
                 try {
                   let fileData;
+                  let filePath;
+                  
+                  // Use file.path if available, otherwise construct from extractedPath and filename
                   if (file.path) {
-                    const tFileStart = Date.now();
-                    // For both IPFS downloaded files and local files
-                    fileData = await fs.readFile(file.path);
-                    const mimeType = file.type === 'UTF8' ? 'text/plain' : (file.type || 'application/octet-stream');
-                    
-                    // Use the same encodeAttachment function for consistent formatting
-                    const attachment = encodeAttachment(fileData, mimeType);
-                    attachments.push(attachment);
-                    const fileProcessTime = Date.now() - tFileStart;
-                    logger.info(`${runTag} Added file from path to attachments: ${file.path}, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${fileProcessTime}ms`);
+                    filePath = file.path;
+                  } else if (file.filename) {
+                    filePath = path.join(extractedPath, file.filename);
+                  } else {
+                    logger.warn(`${runTag} File has neither path nor filename:`, file);
+                    continue;
                   }
+                  
+                  const tFileStart = Date.now();
+                  fileData = await fs.readFile(filePath);
+                  
+                  // Detect MIME type from file content if not provided or if it's a generic type
+                  let mimeType = file.type;
+                  if (!mimeType || mimeType === 'UTF8' || mimeType === 'application/octet-stream') {
+                    mimeType = detectMimeType(fileData);
+                    logger.info(`${runTag} Detected MIME type for additional file: ${mimeType}`);
+                  }
+                  
+                  // Use the same encodeAttachment function for consistent formatting
+                  const attachment = encodeAttachment(fileData, mimeType);
+                  attachments.push(attachment);
+                  const fileProcessTime = Date.now() - tFileStart;
+                  logger.info(`${runTag} Added file to attachments: ${filePath}, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${fileProcessTime}ms`);
                 } catch (fileError) {
                   logger.warn(`${runTag} Failed to read file:`, fileError.message);
                   continue;
@@ -182,18 +197,28 @@ class AIClient {
             if (manifest.support && manifest.support.length > 0) {
               for (const file of manifest.support) {
                 try {
+                  let filePath;
+                  
+                  // Use file.path if available, otherwise construct from extractedPath and filename
                   if (file.path) {
-                    const tSupportFileStart = Date.now();
-                    const fileData = await fs.readFile(file.path);
-                    // Detect MIME type from file content
-                    const mimeType = detectMimeType(fileData);
-                    logger.info(`${runTag} Detected MIME type for support file: ${mimeType}`);
-                    
-                    const attachment = encodeAttachment(fileData, mimeType);
-                    attachments.push(attachment);
-                    const supportFileTime = Date.now() - tSupportFileStart;
-                    logger.info(`${runTag} Added support file to attachments: ${file.name || file.path}, size: ${fileData.length} bytes, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${supportFileTime}ms`);
+                    filePath = file.path;
+                  } else if (file.filename) {
+                    filePath = path.join(extractedPath, file.filename);
+                  } else {
+                    logger.warn(`${runTag} Support file has neither path nor filename:`, file);
+                    continue;
                   }
+                  
+                  const tSupportFileStart = Date.now();
+                  const fileData = await fs.readFile(filePath);
+                  // Detect MIME type from file content
+                  const mimeType = detectMimeType(fileData);
+                  logger.info(`${runTag} Detected MIME type for support file: ${mimeType}`);
+                  
+                  const attachment = encodeAttachment(fileData, mimeType);
+                  attachments.push(attachment);
+                  const supportFileTime = Date.now() - tSupportFileStart;
+                  logger.info(`${runTag} Added support file to attachments: ${file.name || filePath}, size: ${fileData.length} bytes, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${supportFileTime}ms`);
                 } catch (fileError) {
                   logger.error(`${runTag} Failed to read support file:`, fileError);
                   continue;

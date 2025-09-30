@@ -71,16 +71,65 @@ export class OpenAIProvider implements LLMProvider {
    * @returns A promise that resolves to a string containing the generated response.
    * @throws Will throw an error if the model invocation fails or if the response is not a string.
    */
-  async generateResponse(prompt: string, model: string): Promise<string> {
+  async generateResponse(
+    prompt: string, 
+    model: string, 
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+  ): Promise<string> {
+    // Check if this is a reasoning model (o1, o3, gpt-5-nano, etc.)
+    const isReasoningModel = model.toLowerCase().includes('o1') || 
+                            model.toLowerCase().includes('o3') || 
+                            model.toLowerCase().includes('nano');
+    
     const openai = new ChatOpenAI({
       openAIApiKey: this.apiKey,
       modelName: model,
+      // Reasoning models need much higher token limits as they use tokens for internal reasoning
+      maxTokens: isReasoningModel ? 10000 : 1000,
+      // Apply reasoning effort and verbosity if provided
+      ...(options?.reasoning && { reasoning: options.reasoning }),
+      ...(options?.verbosity && { verbosity: options.verbosity }),
     });
     const response = await openai.invoke(prompt);
-    if (typeof response.content !== 'string') {
-      throw new Error('Unexpected response format from OpenAI');
+    
+    // Debug: Log the full response structure to understand what we're getting
+    console.log(`[${this.providerName}] Full response:`, {
+      content: response.content,
+      contentType: typeof response.content,
+      additionalKwargs: response.additional_kwargs,
+      responseType: response.response_type,
+      allKeys: Object.keys(response)
+    });
+    
+    // Handle different response formats
+    let textContent = '';
+    
+    if (typeof response.content === 'string') {
+      textContent = response.content;
+    } else if (Array.isArray(response.content)) {
+      // Handle array content (newer OpenAI models may return structured content)
+      textContent = response.content
+        .map((item: any) => {
+          if (typeof item === 'string') return item;
+          if (item.type === 'text') return item.text;
+          return JSON.stringify(item);
+        })
+        .join('');
+    } else if (response.additional_kwargs?.reasoning_content) {
+      // Check for reasoning content in additional_kwargs
+      textContent = response.additional_kwargs.reasoning_content;
     }
-    return response.content;
+    
+    console.log(`[${this.providerName}] Extracted text content:`, {
+      length: textContent.length,
+      preview: textContent.substring(0, 200)
+    });
+    
+    if (!textContent) {
+      throw new Error(`No content in OpenAI response. Full response: ${JSON.stringify(response)}`);
+    }
+    
+    return textContent;
   }
 
   async generateResponseWithImage(prompt: string, model: string, base64Image: string, mediaType: string = 'image/jpeg'): Promise<string> {
@@ -99,6 +148,7 @@ export class OpenAIProvider implements LLMProvider {
     const openai = new ChatOpenAI({
       openAIApiKey: this.apiKey,
       modelName: model,
+      maxTokens: 1000,
     });
 
     const response = await openai.invoke([
