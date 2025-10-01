@@ -27,33 +27,55 @@ function log(message, color = colors.reset) {
 }
 
 class VerdiktaCommonUpdater {
-    constructor(aiNodePath) {
+    constructor(aiNodePath, externalAdapterPath = null) {
         this.aiNodePath = aiNodePath || process.cwd();
+        this.externalAdapterPath = externalAdapterPath;
         this.packageJsonPath = path.join(this.aiNodePath, 'package.json');
+        this.externalAdapterPackageJsonPath = externalAdapterPath ? 
+            path.join(externalAdapterPath, 'package.json') : null;
     }
 
-    async checkCurrentVersion() {
+    async checkCurrentVersion(directoryPath = null) {
         try {
-            if (!fs.existsSync(this.packageJsonPath)) {
-                log('❌ package.json not found in AI Node directory', colors.red);
+            const targetPath = directoryPath || this.aiNodePath;
+            const packageJsonPath = directoryPath ? 
+                path.join(directoryPath, 'package.json') : 
+                this.packageJsonPath;
+                
+            if (!fs.existsSync(packageJsonPath)) {
+                log(`❌ package.json not found in ${path.basename(targetPath)} directory`, colors.red);
                 return null;
             }
 
-            const packageJson = JSON.parse(fs.readFileSync(this.packageJsonPath, 'utf8'));
+            const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
             const currentVersion = packageJson.dependencies?.['@verdikta/common'] || 
                                  packageJson.devDependencies?.['@verdikta/common'];
 
             if (!currentVersion) {
-                log('ℹ️  @verdikta/common not currently installed', colors.yellow);
+                log(`ℹ️  @verdikta/common not currently installed in ${path.basename(targetPath)}`, colors.yellow);
                 return null;
             }
 
-            log(`📦 Current @verdikta/common version: ${currentVersion}`, colors.blue);
+            log(`📦 Current @verdikta/common version in ${path.basename(targetPath)}: ${currentVersion}`, colors.blue);
             return currentVersion;
         } catch (error) {
-            log(`❌ Error reading package.json: ${error.message}`, colors.red);
+            log(`❌ Error reading package.json in ${path.basename(directoryPath || this.aiNodePath)}: ${error.message}`, colors.red);
             return null;
         }
+    }
+
+    async checkAllCurrentVersions() {
+        const versions = {};
+        
+        // Check AI Node version
+        versions.aiNode = await this.checkCurrentVersion(this.aiNodePath);
+        
+        // Check External Adapter version if path provided
+        if (this.externalAdapterPath) {
+            versions.externalAdapter = await this.checkCurrentVersion(this.externalAdapterPath);
+        }
+        
+        return versions;
     }
 
     async getLatestVersion(versionTag = 'beta') {
@@ -97,10 +119,11 @@ class VerdiktaCommonUpdater {
         });
     }
 
-    async installOrUpdate(versionTag = 'beta', force = false) {
+    async installOrUpdate(versionTag = 'beta', force = false, directoryPath = null) {
         return new Promise((resolve, reject) => {
+            const targetPath = directoryPath || this.aiNodePath;
             const action = force ? 'Installing' : 'Updating';
-            log(`📦 ${action} @verdikta/common@${versionTag}...`, colors.blue);
+            log(`📦 ${action} @verdikta/common@${versionTag} in ${path.basename(targetPath)}...`, colors.blue);
             
             const args = ['install', `@verdikta/common@${versionTag}`];
             if (force) {
@@ -109,7 +132,7 @@ class VerdiktaCommonUpdater {
 
             const process = spawn('npm', args, {
                 stdio: ['inherit', 'pipe', 'pipe'],
-                cwd: this.aiNodePath
+                cwd: targetPath
             });
 
             let output = '';
@@ -131,10 +154,10 @@ class VerdiktaCommonUpdater {
 
             process.on('close', (code) => {
                 if (code === 0) {
-                    log(`✅ Successfully ${force ? 'installed' : 'updated'} @verdikta/common`, colors.green);
+                    log(`✅ Successfully ${force ? 'installed' : 'updated'} @verdikta/common in ${path.basename(targetPath)}`, colors.green);
                     resolve(true);
                 } else {
-                    log(`❌ Failed to ${force ? 'install' : 'update'} @verdikta/common`, colors.red);
+                    log(`❌ Failed to ${force ? 'install' : 'update'} @verdikta/common in ${path.basename(targetPath)}`, colors.red);
                     reject(new Error(error || `Process exited with code ${code}`));
                 }
             });
@@ -147,6 +170,27 @@ class VerdiktaCommonUpdater {
                 }
             });
         });
+    }
+
+    async installOrUpdateAll(versionTag = 'beta', force = false) {
+        const results = {};
+        
+        try {
+            // Update AI Node
+            log(`\n🔄 Updating AI Node...`, colors.cyan);
+            results.aiNode = await this.installOrUpdate(versionTag, force, this.aiNodePath);
+            
+            // Update External Adapter if path provided
+            if (this.externalAdapterPath) {
+                log(`\n🔄 Updating External Adapter...`, colors.cyan);
+                results.externalAdapter = await this.installOrUpdate(versionTag, force, this.externalAdapterPath);
+            }
+            
+            return results;
+        } catch (error) {
+            log(`❌ Error updating components: ${error.message}`, colors.red);
+            throw error;
+        }
     }
 
     compareVersions(current, latest) {
@@ -184,29 +228,52 @@ class VerdiktaCommonUpdater {
         try {
             log('\n🔄 Checking @verdikta/common library status...', colors.bright + colors.cyan);
             
-            const currentVersion = await this.checkCurrentVersion();
+            // Check current versions in all directories
+            const currentVersions = await this.checkAllCurrentVersions();
             
-            if (!currentVersion || force) {
-                log('📦 Installing @verdikta/common...', colors.yellow);
-                await this.installOrUpdate(versionTag, true);
-                return { updated: true, action: 'installed' };
+            // Determine if we need to update
+            let needsUpdate = force;
+            let latestVersion = null;
+            
+            if (!force) {
+                try {
+                    latestVersion = await this.getLatestVersion(versionTag);
+                    
+                    // Check if any component needs updating
+                    for (const [component, version] of Object.entries(currentVersions)) {
+                        if (!version) {
+                            needsUpdate = true;
+                            log(`📦 ${component} needs @verdikta/common installation`, colors.yellow);
+                        } else if (this.compareVersions(version, latestVersion)) {
+                            needsUpdate = true;
+                            log(`🔄 ${component} needs update (${version} → ${latestVersion})`, colors.yellow);
+                        }
+                    }
+                } catch (versionCheckError) {
+                    log('⚠️  Could not check for updates, using current versions', colors.yellow);
+                    log(`   Error: ${versionCheckError.message}`, colors.dim);
+                    return { updated: false, action: 'error' };
+                }
             }
             
-            try {
-                const latestVersion = await this.getLatestVersion(versionTag);
+            if (needsUpdate) {
+                log('🔄 Updating @verdikta/common in all components...', colors.yellow);
+                await this.installOrUpdateAll(versionTag, force);
                 
-                if (this.compareVersions(currentVersion, latestVersion)) {
-                    log('🔄 Update available! Installing latest version...', colors.yellow);
-                    await this.installOrUpdate(versionTag, false);
-                    return { updated: true, action: 'updated' };
+                // Verify all components have the same version
+                const updatedVersions = await this.checkAllCurrentVersions();
+                const uniqueVersions = [...new Set(Object.values(updatedVersions).filter(v => v))];
+                
+                if (uniqueVersions.length === 1) {
+                    log(`✅ All components updated to @verdikta/common@${uniqueVersions[0]}`, colors.green);
+                    return { updated: true, action: 'updated', version: uniqueVersions[0] };
                 } else {
-                    log('✅ @verdikta/common is up to date', colors.green);
-                    return { updated: false, action: 'current' };
+                    log(`⚠️  Components have different versions: ${Object.entries(updatedVersions).map(([k,v]) => `${k}:${v}`).join(', ')}`, colors.yellow);
+                    return { updated: true, action: 'updated_mixed', versions: updatedVersions };
                 }
-            } catch (versionCheckError) {
-                log('⚠️  Could not check for updates, using current version', colors.yellow);
-                log(`   Error: ${versionCheckError.message}`, colors.dim);
-                return { updated: false, action: 'error' };
+            } else {
+                log('✅ All components are up to date', colors.green);
+                return { updated: false, action: 'current', versions: currentVersions };
             }
             
         } catch (error) {
@@ -222,15 +289,28 @@ module.exports = VerdiktaCommonUpdater;
 // Run directly if called as script
 if (require.main === module) {
     const aiNodePath = process.argv[2] || process.cwd();
-    const versionTag = process.argv[3] || 'beta';
+    const externalAdapterPath = process.argv[3] || null;
+    const versionTag = process.argv[4] || 'latest';
     const force = process.argv.includes('--force');
     
-    const updater = new VerdiktaCommonUpdater(aiNodePath);
+    const updater = new VerdiktaCommonUpdater(aiNodePath, externalAdapterPath);
     updater.updateIfNeeded(versionTag, force)
         .then((result) => {
             if (result.updated) {
-                log(`\n🎉 @verdikta/common library ${result.action} successfully!`, colors.green);
+                if (result.action === 'updated') {
+                    log(`\n🎉 @verdikta/common library updated successfully to v${result.version}!`, colors.green);
+                } else if (result.action === 'updated_mixed') {
+                    log(`\n⚠️  @verdikta/common library updated but components have different versions`, colors.yellow);
+                    log(`   Versions: ${Object.entries(result.versions).map(([k,v]) => `${k}:${v}`).join(', ')}`, colors.dim);
+                } else {
+                    log(`\n🎉 @verdikta/common library ${result.action} successfully!`, colors.green);
+                }
                 log('   Latest ClassID model pool data is now available.', colors.dim);
+            } else {
+                log(`\n✅ @verdikta/common library is up to date`, colors.green);
+                if (result.versions) {
+                    log(`   Current versions: ${Object.entries(result.versions).map(([k,v]) => `${k}:${v}`).join(', ')}`, colors.dim);
+                }
             }
             process.exit(0);
         })

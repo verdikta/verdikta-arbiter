@@ -188,12 +188,19 @@ echo -e "${BLUE}Configuring ClassID Model Pools...${NC}"
 if [ -f "$AI_NODE_DIR/src/scripts/classid-integration.js" ]; then
     echo -e "${BLUE}Found ClassID integration script. Configuring model pools...${NC}"
     
-    # Check if @verdikta/common is installed
+    # Check if @verdikta/common is installed with correct version
+    # Load environment to get consistent version preference
+    if [ -f "$INSTALLER_DIR/.env" ]; then
+        source "$INSTALLER_DIR/.env"
+    fi
+    VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
+    
     if npm list @verdikta/common >/dev/null 2>&1; then
-        echo -e "${GREEN}@verdikta/common is already installed.${NC}"
+        CURRENT_VERSION=$(npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}')
+        echo -e "${GREEN}@verdikta/common is already installed (version: $CURRENT_VERSION).${NC}"
+        echo -e "${BLUE}Will be updated to latest version during installation process.${NC}"
     else
-        echo -e "${YELLOW}@verdikta/common not found. Installing...${NC}"
-        npm install @verdikta/common
+        echo -e "${YELLOW}@verdikta/common not found. Will be installed during installation process.${NC}"
     fi
     
     # Run the ClassID integration script in non-interactive mode for installer

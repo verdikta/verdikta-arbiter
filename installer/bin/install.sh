@@ -193,48 +193,7 @@ if [ $? -ne 0 ]; then
 fi
 echo -e "${GREEN}AI Node installation completed.${NC}"
 
-# Update @verdikta/common library and display ClassID information
-echo -e "${BLUE}Updating @verdikta/common library for latest ClassID model pools...${NC}"
-AI_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
-
-# Load environment to get Verdikta Common version preference
-if [ -f "$INSTALLER_DIR/.env" ]; then
-    source "$INSTALLER_DIR/.env"
-fi
-VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
-
-if [ -f "$UTIL_DIR/update-verdikta-common.js" ] && [ -d "$AI_NODE_SRC_DIR" ]; then
-    echo -e "${BLUE}Checking for @verdikta/common updates (version: $VERDIKTA_VERSION)...${NC}"
-    if node "$UTIL_DIR/update-verdikta-common.js" "$AI_NODE_SRC_DIR" "$VERDIKTA_VERSION"; then
-        echo -e "${GREEN}@verdikta/common library update check completed.${NC}"
-    else
-        echo -e "${YELLOW}Warning: Could not update @verdikta/common library.${NC}"
-        echo -e "${YELLOW}Proceeding with existing version...${NC}"
-    fi
-    echo ""
-fi
-
-# Display detailed ClassID information now that @verdikta/common is up to date
-echo -e "${BLUE}Displaying detailed ClassID Model Pool information...${NC}"
-if [ -f "$UTIL_DIR/display-classids.js" ]; then
-    if [ -d "$AI_NODE_SRC_DIR" ]; then
-        cd "$AI_NODE_SRC_DIR"
-        if node "$UTIL_DIR/display-classids.js" 2>/dev/null; then
-            echo -e "${GREEN}ClassID information displayed successfully.${NC}"
-            echo -e "${BLUE}💡 Based on this information, you can now make informed decisions about:${NC}"
-            echo -e "${BLUE}   • Which ClassIDs to support in your deployment${NC}"
-            echo -e "${BLUE}   • Whether your API key configuration matches your intended usage${NC}"
-            echo -e "${BLUE}   • Model availability for your chosen providers${NC}"
-            echo -e "${BLUE}   • All active ClassIDs are automatically detected and displayed${NC}"
-            echo ""
-        else
-            echo -e "${YELLOW}ClassID information could not be displayed at this time.${NC}"
-        fi
-        cd - > /dev/null
-    fi
-else
-    echo -e "${YELLOW}ClassID display utility not found.${NC}"
-fi
+# Note: @verdikta/common library updates will be handled after both AI Node and External Adapter are installed
 
 # Install External Adapter
 echo -e "${YELLOW}[4/9]${NC} Installing External Adapter..."
@@ -249,6 +208,80 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 echo -e "${GREEN}External Adapter installation completed.${NC}"
+
+# Update @verdikta/common library and display ClassID information
+echo -e "${BLUE}Updating @verdikta/common library for latest ClassID model pools...${NC}"
+AI_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
+EXTERNAL_ADAPTER_SRC_DIR="$(dirname "$INSTALLER_DIR")/external-adapter"
+
+# Load environment to get Verdikta Common version preference
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    source "$INSTALLER_DIR/.env"
+fi
+VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
+
+if [ -f "$UTIL_DIR/update-verdikta-common.js" ] && [ -d "$AI_NODE_SRC_DIR" ] && [ -d "$EXTERNAL_ADAPTER_SRC_DIR" ]; then
+    echo -e "${BLUE}Checking for @verdikta/common updates (version: $VERDIKTA_VERSION)...${NC}"
+    echo -e "${BLUE}This will ensure both AI Node and External Adapter have the latest ClassID model pool data.${NC}"
+    
+    if node "$UTIL_DIR/update-verdikta-common.js" "$AI_NODE_SRC_DIR" "$EXTERNAL_ADAPTER_SRC_DIR" "$VERDIKTA_VERSION"; then
+        echo -e "${GREEN}@verdikta/common library update completed successfully.${NC}"
+        
+        # Verify both components have the same version
+        echo -e "${BLUE}Verifying @verdikta/common versions across components...${NC}"
+        AI_NODE_VERSION=""
+        ADAPTER_VERSION=""
+        
+        if [ -d "$AI_NODE_SRC_DIR" ]; then
+            AI_NODE_VERSION=$(cd "$AI_NODE_SRC_DIR" && npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}' || echo "not found")
+        fi
+        
+        if [ -d "$EXTERNAL_ADAPTER_SRC_DIR" ]; then
+            ADAPTER_VERSION=$(cd "$EXTERNAL_ADAPTER_SRC_DIR" && npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}' || echo "not found")
+        fi
+        
+        echo -e "${BLUE}AI Node @verdikta/common version: $AI_NODE_VERSION${NC}"
+        echo -e "${BLUE}External Adapter @verdikta/common version: $ADAPTER_VERSION${NC}"
+        
+        if [ "$AI_NODE_VERSION" = "$ADAPTER_VERSION" ] && [ "$AI_NODE_VERSION" != "not found" ]; then
+            echo -e "${GREEN}✅ Both components have matching @verdikta/common versions ($AI_NODE_VERSION)${NC}"
+        else
+            echo -e "${YELLOW}⚠️  Version mismatch detected between components${NC}"
+            echo -e "${YELLOW}   This may cause compatibility issues. Consider running the update again.${NC}"
+        fi
+    else
+        echo -e "${YELLOW}Warning: Could not update @verdikta/common library.${NC}"
+        echo -e "${YELLOW}Proceeding with existing versions...${NC}"
+    fi
+    echo ""
+    
+    # Display detailed ClassID information now that @verdikta/common is up to date
+    echo -e "${BLUE}Displaying detailed ClassID Model Pool information...${NC}"
+    if [ -f "$UTIL_DIR/display-classids.js" ]; then
+        if [ -d "$AI_NODE_SRC_DIR" ]; then
+            cd "$AI_NODE_SRC_DIR"
+            if node "$UTIL_DIR/display-classids.js" 2>/dev/null; then
+                echo -e "${GREEN}ClassID information displayed successfully.${NC}"
+                echo -e "${BLUE}💡 Based on this information, you can now make informed decisions about:${NC}"
+                echo -e "${BLUE}   • Which ClassIDs to support in your deployment${NC}"
+                echo -e "${BLUE}   • Whether your API key configuration matches your intended usage${NC}"
+                echo -e "${BLUE}   • Model availability for your chosen providers${NC}"
+                echo -e "${BLUE}   • All active ClassIDs are automatically detected and displayed${NC}"
+                echo ""
+            else
+                echo -e "${YELLOW}ClassID information could not be displayed at this time.${NC}"
+            fi
+            cd - > /dev/null
+        fi
+    else
+        echo -e "${YELLOW}ClassID display utility not found.${NC}"
+    fi
+else
+    echo -e "${YELLOW}Warning: @verdikta/common update utility or required directories not found.${NC}"
+    echo -e "${YELLOW}AI Node: $AI_NODE_SRC_DIR${NC}"
+    echo -e "${YELLOW}External Adapter: $EXTERNAL_ADAPTER_SRC_DIR${NC}"
+    echo -e "${YELLOW}Update utility: $UTIL_DIR/update-verdikta-common.js${NC}"
+fi
 
 # Setup Docker and PostgreSQL
 echo -e "${YELLOW}[5/9]${NC} Setting up Docker and PostgreSQL..."
@@ -602,6 +635,32 @@ if [ -f "$ADAPTER_ENV_FILE" ]; then
     echo -e "${GREEN}External Adapter log level set to: $LOG_LEVEL${NC}"
 else
     echo -e "${YELLOW}Warning: External Adapter .env file not found at $ADAPTER_ENV_FILE${NC}"
+fi
+
+# Final verification of @verdikta/common versions in installed components
+echo -e "${BLUE}Final verification of @verdikta/common versions in installed components...${NC}"
+INSTALLED_AI_NODE_VERSION=""
+INSTALLED_ADAPTER_VERSION=""
+
+if [ -d "$INSTALL_DIR/ai-node" ]; then
+    INSTALLED_AI_NODE_VERSION=$(cd "$INSTALL_DIR/ai-node" && npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}' || echo "not found")
+fi
+
+if [ -d "$INSTALL_DIR/external-adapter" ]; then
+    INSTALLED_ADAPTER_VERSION=$(cd "$INSTALL_DIR/external-adapter" && npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}' || echo "not found")
+fi
+
+echo -e "${BLUE}Installed AI Node @verdikta/common version: $INSTALLED_AI_NODE_VERSION${NC}"
+echo -e "${BLUE}Installed External Adapter @verdikta/common version: $INSTALLED_ADAPTER_VERSION${NC}"
+
+if [ "$INSTALLED_AI_NODE_VERSION" = "$INSTALLED_ADAPTER_VERSION" ] && [ "$INSTALLED_AI_NODE_VERSION" != "not found" ]; then
+    echo -e "${GREEN}✅ Installation verification passed: Both components have matching @verdikta/common versions ($INSTALLED_AI_NODE_VERSION)${NC}"
+    echo -e "${GREEN}✅ Latest ClassID model pool data is available in both components${NC}"
+else
+    echo -e "${YELLOW}⚠️  Installation verification warning: Version mismatch detected${NC}"
+    echo -e "${YELLOW}   AI Node: $INSTALLED_AI_NODE_VERSION${NC}"
+    echo -e "${YELLOW}   External Adapter: $INSTALLED_ADAPTER_VERSION${NC}"
+    echo -e "${YELLOW}   This may cause compatibility issues. Consider running the update utility manually.${NC}"
 fi
 
 fi  # End of NEED_POST_INSTALLATION conditional block

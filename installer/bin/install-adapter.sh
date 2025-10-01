@@ -117,10 +117,12 @@ echo -e "${BLUE}Installing External Adapter dependencies...${NC}"
 npm install
 
 # Install Verdikta Common Library
-# Check for version preference (default to beta for integration testing)
-# To use a different version, set VERDIKTA_COMMON_VERSION environment variable
-# Available versions: 'beta' (recommended for testing), 'latest' (stable)
-VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-beta}"
+# Check for version preference from environment setup
+# Load environment to get consistent version preference
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    source "$INSTALLER_DIR/.env"
+fi
+VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
 echo -e "${BLUE}Installing Verdikta Common Library (@verdikta/common@$VERDIKTA_COMMON_VERSION)...${NC}"
 
 if ! npm install @verdikta/common@$VERDIKTA_COMMON_VERSION; then
