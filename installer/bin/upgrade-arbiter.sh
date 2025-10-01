@@ -323,6 +323,131 @@ fi
 # Track if arbiter was running
 ARBITER_WAS_RUNNING=$ARBITER_RUNNING
 
+# Offer to update API keys before upgrading
+echo
+echo -e "${BLUE}API Key Configuration${NC}"
+echo -e "${YELLOW}Before upgrading, you can add or update your AI provider API keys.${NC}"
+echo -e "${YELLOW}This is useful if you want to enable new providers (like Hyperbolic) or update existing keys.${NC}"
+echo
+
+if ask_yes_no "Would you like to review and update your API keys?"; then
+    # Load existing keys
+    if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
+        source "$TARGET_DIR/installer/.api_keys"
+        echo -e "${GREEN}Loaded existing API key configuration.${NC}"
+    fi
+    
+    # Load environment for network info
+    if [ -f "$TARGET_DIR/installer/.env" ]; then
+        source "$TARGET_DIR/installer/.env"
+    fi
+    
+    echo ""
+    echo -e "${BLUE}Current API Key Status:${NC}"
+    [ -n "$OPENAI_API_KEY" ] && echo -e "  ✓ OpenAI API Key: Configured" || echo -e "  ✗ OpenAI API Key: Not configured"
+    [ -n "$ANTHROPIC_API_KEY" ] && echo -e "  ✓ Anthropic API Key: Configured" || echo -e "  ✗ Anthropic API Key: Not configured"
+    [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "  ✓ Hyperbolic API Key: Configured" || echo -e "  ✗ Hyperbolic API Key: Not configured"
+    [ -n "$INFURA_API_KEY" ] && echo -e "  ✓ Infura API Key: Configured" || echo -e "  ✗ Infura API Key: Configured"
+    [ -n "$PINATA_API_KEY" ] && echo -e "  ✓ Pinata JWT: Configured" || echo -e "  ✗ Pinata JWT: Not configured"
+    echo ""
+    
+    # OpenAI API Key
+    if [ -n "$OPENAI_API_KEY" ]; then
+        if ask_yes_no "Update OpenAI API Key? (currently configured)"; then
+            read -p "Enter new OpenAI API Key: " new_key
+            if [ -n "$new_key" ]; then
+                OPENAI_API_KEY="$new_key"
+                echo -e "${GREEN}OpenAI API Key updated.${NC}"
+            fi
+        fi
+    else
+        read -p "Enter OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
+        [ -n "$OPENAI_API_KEY" ] && echo -e "${GREEN}OpenAI API Key added.${NC}"
+    fi
+    
+    # Anthropic API Key
+    if [ -n "$ANTHROPIC_API_KEY" ]; then
+        if ask_yes_no "Update Anthropic API Key? (currently configured)"; then
+            read -p "Enter new Anthropic API Key: " new_key
+            if [ -n "$new_key" ]; then
+                ANTHROPIC_API_KEY="$new_key"
+                echo -e "${GREEN}Anthropic API Key updated.${NC}"
+            fi
+        fi
+    else
+        read -p "Enter Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
+        [ -n "$ANTHROPIC_API_KEY" ] && echo -e "${GREEN}Anthropic API Key added.${NC}"
+    fi
+    
+    # Hyperbolic API Key (NEW!)
+    if [ -n "$HYPERBOLIC_API_KEY" ]; then
+        if ask_yes_no "Update Hyperbolic API Key? (currently configured)"; then
+            read -p "Enter new Hyperbolic API Key: " new_key
+            if [ -n "$new_key" ]; then
+                HYPERBOLIC_API_KEY="$new_key"
+                echo -e "${GREEN}Hyperbolic API Key updated.${NC}"
+            fi
+        fi
+    else
+        echo -e "${BLUE}Hyperbolic provides cost-effective serverless inference for open-source models.${NC}"
+        echo -e "${BLUE}Get your key at: https://app.hyperbolic.xyz${NC}"
+        read -p "Enter Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
+        [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "${GREEN}Hyperbolic API Key added.${NC}"
+    fi
+    
+    # Infura API Key
+    if [ -n "$INFURA_API_KEY" ]; then
+        if ask_yes_no "Update Infura API Key? (currently configured)"; then
+            read -p "Enter new Infura API Key: " new_key
+            if [ -n "$new_key" ]; then
+                INFURA_API_KEY="$new_key"
+                echo -e "${GREEN}Infura API Key updated.${NC}"
+            fi
+        fi
+    else
+        read -p "Enter Infura API Key (leave blank to skip): " INFURA_API_KEY
+        [ -n "$INFURA_API_KEY" ] && echo -e "${GREEN}Infura API Key added.${NC}"
+    fi
+    
+    # Pinata JWT
+    if [ -n "$PINATA_API_KEY" ]; then
+        if ask_yes_no "Update Pinata JWT? (currently configured)"; then
+            read -p "Enter new Pinata JWT: " new_key
+            if [ -n "$new_key" ]; then
+                PINATA_API_KEY="$new_key"
+                echo -e "${GREEN}Pinata JWT updated.${NC}"
+            fi
+        fi
+    else
+        read -p "Enter Pinata JWT (leave blank to skip): " PINATA_API_KEY
+        [ -n "$PINATA_API_KEY" ] && echo -e "${GREEN}Pinata JWT added.${NC}"
+    fi
+    
+    # Save updated keys
+    mkdir -p "$TARGET_DIR/installer"
+    cat > "$TARGET_DIR/installer/.api_keys" << EOL
+OPENAI_API_KEY="$OPENAI_API_KEY"
+ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"
+INFURA_API_KEY="$INFURA_API_KEY"
+PINATA_API_KEY="$PINATA_API_KEY"
+EOL
+    
+    # Also update the source installer directory for future upgrades
+    cat > "$INSTALLER_DIR/.api_keys" << EOL
+OPENAI_API_KEY="$OPENAI_API_KEY"
+ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"
+INFURA_API_KEY="$INFURA_API_KEY"
+PINATA_API_KEY="$PINATA_API_KEY"
+EOL
+    
+    echo -e "${GREEN}API keys saved successfully.${NC}"
+    echo -e "${BLUE}Keys will be applied to AI Node during upgrade process.${NC}"
+else
+    echo -e "${BLUE}Skipping API key configuration. Existing keys will be preserved.${NC}"
+fi
+
 # Ask for confirmation before upgrading
 echo
 echo -e "${YELLOW}The following components will be upgraded:${NC}"
@@ -575,6 +700,46 @@ echo -e "${BLUE}Starting upgrade process...${NC}"
 # Upgrade AI Node
 echo -e "${BLUE}Upgrading AI Node...${NC}"
 upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local .env logs node_modules *.pid"
+
+# Update AI Node API keys in .env.local if they were configured
+echo -e "${BLUE}Updating AI Node API keys...${NC}"
+if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
+    source "$TARGET_DIR/installer/.api_keys"
+    
+    # Update OpenAI key
+    if [ -n "$OPENAI_API_KEY" ]; then
+        if grep -q "^OPENAI_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
+            sed -i.bak "s/^OPENAI_API_KEY=.*/OPENAI_API_KEY=$OPENAI_API_KEY/" "$TARGET_AI_NODE/.env.local"
+        else
+            echo "OPENAI_API_KEY=$OPENAI_API_KEY" >> "$TARGET_AI_NODE/.env.local"
+        fi
+        echo -e "${GREEN}✓ OpenAI API Key updated in AI Node${NC}"
+    fi
+    
+    # Update Anthropic key
+    if [ -n "$ANTHROPIC_API_KEY" ]; then
+        if grep -q "^ANTHROPIC_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
+            sed -i.bak "s/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY/" "$TARGET_AI_NODE/.env.local"
+        else
+            echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> "$TARGET_AI_NODE/.env.local"
+        fi
+        echo -e "${GREEN}✓ Anthropic API Key updated in AI Node${NC}"
+    fi
+    
+    # Update Hyperbolic key (NEW!)
+    if [ -n "$HYPERBOLIC_API_KEY" ]; then
+        if grep -q "^HYPERBOLIC_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
+            sed -i.bak "s/^HYPERBOLIC_API_KEY=.*/HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY/" "$TARGET_AI_NODE/.env.local"
+        else
+            echo "HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY" >> "$TARGET_AI_NODE/.env.local"
+        fi
+        echo -e "${GREEN}✓ Hyperbolic API Key updated in AI Node${NC}"
+    fi
+    
+    echo -e "${GREEN}AI Node API keys updated successfully.${NC}"
+else
+    echo -e "${YELLOW}No API keys configuration found. Preserving existing AI Node configuration.${NC}"
+fi
 
 # Upgrade External Adapter
 echo -e "${BLUE}Upgrading External Adapter...${NC}"
