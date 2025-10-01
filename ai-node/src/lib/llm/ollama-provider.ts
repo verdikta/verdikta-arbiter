@@ -103,11 +103,52 @@ export class OllamaProvider implements LLMProvider {
         baseUrl: this.baseUrl,
         model: model,
       });
-      const response = await ollama.invoke(prompt);
+      
+      // Apply our own timeout wrapper to ensure clean timeout handling with proper cleanup
+      const MODEL_TIMEOUT_MS = parseInt(process.env.MODEL_TIMEOUT_MS || '120000');
+      const OLLAMA_TIMEOUT_MS = MODEL_TIMEOUT_MS - 5000; // 115 seconds to ensure we timeout before the model timeout
+      
+      console.log(`🕐 OLLAMA_TIMEOUT: Setting ${OLLAMA_TIMEOUT_MS}ms timeout for ${model}`);
+      
+      let timeoutId: NodeJS.Timeout | null = null;
+      let completed = false;
+      
+      const response = await new Promise<any>((resolve, reject) => {
+        timeoutId = setTimeout(() => {
+          if (!completed) {
+            console.warn(`⏰ OLLAMA_PROVIDER_TIMEOUT: ${model} timed out after ${OLLAMA_TIMEOUT_MS}ms`);
+            completed = true;
+            reject(new Error(`Ollama provider timeout: ${model} exceeded ${OLLAMA_TIMEOUT_MS}ms limit`));
+          }
+        }, OLLAMA_TIMEOUT_MS);
+        
+        ollama.invoke(prompt)
+          .then(result => {
+            if (timeoutId && !completed) {
+              clearTimeout(timeoutId);
+              completed = true;
+            }
+            resolve(result);
+          })
+          .catch(error => {
+            if (timeoutId && !completed) {
+              clearTimeout(timeoutId);
+              completed = true;
+            }
+            reject(error);
+          });
+      });
+      
       return response.content as string;
     } catch (error: any) {
-      console.error('Error in OllamaProvider.generateResponse:', error);
-      throw new Error(`Failed to generate response: ${error.message}`);
+      // Check if this is our timeout error or an Ollama error
+      if (error.message.includes('Ollama provider timeout')) {
+        console.error(`🚨 OLLAMA_TIMEOUT_CONFIRMED: ${model} timed out at provider level`);
+        throw error; // Re-throw our clean timeout error
+      } else {
+        console.error('Error in OllamaProvider.generateResponse:', error);
+        throw new Error(`Failed to generate response: ${error.message}`);
+      }
     }
   }
 
