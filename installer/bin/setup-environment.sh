@@ -366,9 +366,10 @@ display_classid_info() {
         else
             echo -e "${YELLOW}Note: ClassID information not available yet (will be available after AI Node installation).${NC}"
             echo -e "${YELLOW}For now, you can configure API keys based on your intended usage:${NC}"
-            echo -e "${YELLOW}• OpenAI API Key: For GPT-4, GPT-4o, and other OpenAI models${NC}"
+            echo -e "${YELLOW}• OpenAI API Key: For GPT-4, GPT-5, and other OpenAI models${NC}"
             echo -e "${YELLOW}• Anthropic API Key: For Claude models${NC}"
-            echo -e "${YELLOW}• Leave keys blank if you only plan to use open-source models${NC}"
+            echo -e "${YELLOW}• Hyperbolic API Key: For cost-effective open-source models (Qwen, DeepSeek, Kimi)${NC}"
+            echo -e "${YELLOW}• Leave keys blank if you only plan to use local Ollama models${NC}"
             return 1
         fi
     else
@@ -414,6 +415,16 @@ configure_api_keys() {
         read -p "Enter your Anthropic API Key (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
             ANTHROPIC_API_KEY="$new_key"
+        fi
+    fi
+    
+    # Hyperbolic API Key
+    if [ -z "$HYPERBOLIC_API_KEY" ]; then
+        read -p "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
+    else
+        read -p "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
+        if [ -n "$new_key" ]; then
+            HYPERBOLIC_API_KEY="$new_key"
         fi
     fi
     
@@ -539,6 +550,7 @@ configure_api_keys() {
 # GITHUB_TOKEN="$GITHUB_TOKEN" # Removed
 OPENAI_API_KEY="$OPENAI_API_KEY"
 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
+HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"
 INFURA_API_KEY="$INFURA_API_KEY"
 PINATA_API_KEY="$PINATA_API_KEY"
 EOL
@@ -618,15 +630,16 @@ EOL
     echo -e "  3) gpt-5-2025-08-07 (OpenAI) - Highest quality (requires OpenAI API key)"
     echo -e "  4) claude-sonnet-4-20250514 (Anthropic) - Excellent reasoning (requires Anthropic API key)"
     echo -e "  5) claude-3-7-sonnet-20250219 (Anthropic) - Strong performance (requires Anthropic API key)"
-    echo -e "  6) gemma3n:e4b (Ollama) - Recommended for open source (no API key required)"
-    echo -e "  7) deepseek-r1:8b (Ollama) - Good reasoning, free (no API key required)"
-    echo -e "  8) llama3.1:8b (Ollama) - Reliable, free (no API key required)"
+    echo -e "  6) moonshotai/Kimi-K2-Instruct (Hyperbolic) - Fast, cost-effective (requires Hyperbolic API key)"
+    echo -e "  7) gemma3n:e4b (Ollama) - Recommended for open source (no API key required)"
+    echo -e "  8) deepseek-r1:8b (Ollama) - Good reasoning, free (no API key required)"
+    echo -e "  9) llama3.1:8b (Ollama) - Reliable, free (no API key required)"
     echo ""
     
     # Provide intelligent recommendations based on API keys
     echo -e "${BLUE}💡 Recommendations based on your configuration:${NC}"
     if [ -n "$OPENAI_API_KEY" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${GREEN}   • You have both OpenAI and Anthropic keys - Option 1 (gpt-5-nano) recommended${NC}"
+        echo -e "${GREEN}   • You have OpenAI and Anthropic keys - Option 1 (gpt-5-nano) recommended${NC}"
         DEFAULT_CHOICE=1
     elif [ -n "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
         echo -e "${YELLOW}   • You have OpenAI key only - Option 1 (gpt-5-nano) recommended${NC}"
@@ -634,9 +647,12 @@ EOL
     elif [ -z "$OPENAI_API_KEY" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
         echo -e "${YELLOW}   • You have Anthropic key only - Option 4 (claude-sonnet-4) recommended${NC}"
         DEFAULT_CHOICE=4
-    else
-        echo -e "${CYAN}   • No API keys provided - Option 6 (gemma3n:e4b) recommended for open source${NC}"
+    elif [ -n "$HYPERBOLIC_API_KEY" ]; then
+        echo -e "${YELLOW}   • You have Hyperbolic key - Option 6 (Kimi-K2) recommended for cost-effective performance${NC}"
         DEFAULT_CHOICE=6
+    else
+        echo -e "${CYAN}   • No API keys provided - Option 7 (gemma3n:e4b) recommended for open source${NC}"
+        DEFAULT_CHOICE=7
     fi
     echo ""
     
@@ -646,7 +662,7 @@ EOL
     fi
     
     while true; do
-        read -p "Select justification model (1-8) [${DEFAULT_CHOICE}]: " justification_choice
+        read -p "Select justification model (1-9) [${DEFAULT_CHOICE}]: " justification_choice
         
         # Default to recommended choice if empty
         if [ -z "$justification_choice" ]; then
@@ -685,25 +701,31 @@ EOL
                 break
                 ;;
             6)
+                JUSTIFICATION_MODEL_PROVIDER="Hyperbolic"
+                JUSTIFICATION_MODEL_NAME="moonshotai/Kimi-K2-Instruct"
+                echo -e "${GREEN}Selected: Hyperbolic Kimi-K2 (Fast & Cost-Effective)${NC}"
+                break
+                ;;
+            7)
                 JUSTIFICATION_MODEL_PROVIDER="Ollama"
                 JUSTIFICATION_MODEL_NAME="gemma3n:e4b"
                 echo -e "${GREEN}Selected: Ollama Gemma 3N${NC}"
                 break
                 ;;
-            7)
+            8)
                 JUSTIFICATION_MODEL_PROVIDER="Ollama"
                 JUSTIFICATION_MODEL_NAME="deepseek-r1:8b"
                 echo -e "${GREEN}Selected: Ollama DeepSeek R1${NC}"
                 break
                 ;;
-            8)
+            9)
                 JUSTIFICATION_MODEL_PROVIDER="Ollama"
                 JUSTIFICATION_MODEL_NAME="llama3.1:8b"
                 echo -e "${GREEN}Selected: Ollama Llama 3.1 8B${NC}"
                 break
                 ;;
             *)
-                echo -e "${RED}Invalid choice. Please enter 1-8.${NC}"
+                echo -e "${RED}Invalid choice. Please enter 1-9.${NC}"
                 ;;
         esac
     done
@@ -714,6 +736,9 @@ EOL
         echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
     elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Anthropic" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
         echo -e "${YELLOW}Warning: You selected an Anthropic model but no Anthropic API key was provided.${NC}"
+        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+    elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Hyperbolic" ] && [ -z "$HYPERBOLIC_API_KEY" ]; then
+        echo -e "${YELLOW}Warning: You selected a Hyperbolic model but no Hyperbolic API key was provided.${NC}"
         echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
     fi
     

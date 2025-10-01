@@ -404,6 +404,20 @@ else
     echo -e "${YELLOW}WARNING: Anthropic API Key not provided. Some AI Node features may not work.${NC}"
 fi
 
+if [ -n "$HYPERBOLIC_API_KEY" ]; then
+    # Check if key already exists in file
+    if grep -q "^HYPERBOLIC_API_KEY=" "$AI_NODE_DIR/.env.local"; then
+        # Update existing key
+        sed -i.bak "s/^HYPERBOLIC_API_KEY=.*/HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY/" "$AI_NODE_DIR/.env.local"
+    else
+        # Add new key
+        echo "HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY" >> "$AI_NODE_DIR/.env.local"
+    fi
+    echo -e "${GREEN}Hyperbolic API Key configured.${NC}"
+else
+    echo -e "${YELLOW}Note: Hyperbolic API Key not provided. Hyperbolic models will not be available.${NC}"
+fi
+
 # Set justifier model from environment configuration
 if [ -n "$JUSTIFICATION_MODEL_PROVIDER" ] && [ -n "$JUSTIFICATION_MODEL_NAME" ]; then
     JUSTIFIER_MODEL="$JUSTIFICATION_MODEL_PROVIDER:$JUSTIFICATION_MODEL_NAME"

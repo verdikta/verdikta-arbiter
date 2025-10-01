@@ -32,4 +32,12 @@ export const modelConfig = {
     { name: 'qwen3:1.7b', supportsImages: false, supportsAttachments: true },
     { name: 'gemma3n:e2b', supportsImages: false, supportsAttachments: true },
   ],
+  hyperbolic: [
+    // High-performance reasoning model (235B parameters)
+    { name: 'Qwen/Qwen3-235B-A22B-Instruct-2507', supportsImages: false, supportsAttachments: true },
+    // Deep reasoning model with chain-of-thought capabilities
+    { name: 'deepseek-ai/DeepSeek-R1', supportsImages: false, supportsAttachments: true },
+    // Long-context model (200K+ tokens)
+    { name: 'moonshotai/Kimi-K2-Instruct', supportsImages: false, supportsAttachments: true },
+  ],
 };

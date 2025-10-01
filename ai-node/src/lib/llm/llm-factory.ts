@@ -2,6 +2,7 @@ import { LLMProvider } from './llm-provider-interface';
 import { OllamaProvider } from './ollama-provider';
 import { OpenAIProvider } from './openai-provider';
 import { AnthropicProvider } from './anthropic-provider';
+import { HyperbolicProvider } from './hyperbolic-provider';
 
 export class LLMFactory {
   static async getProvider(provider: string): Promise<LLMProvider> {
@@ -19,6 +20,10 @@ export class LLMFactory {
       case 'ollama':
       case 'Ollama':
         llmProvider = new OllamaProvider();
+        break;
+      case 'Hyperbolic':
+      case 'hyperbolic':
+        llmProvider = new HyperbolicProvider();
         break;
       default:
         throw new Error(`Unknown provider: ${provider}`);
