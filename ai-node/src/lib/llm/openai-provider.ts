@@ -76,16 +76,21 @@ export class OpenAIProvider implements LLMProvider {
     model: string, 
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
-    // Check if this is a reasoning model (o1, o3, gpt-5-nano, etc.)
+    // Check if this is a reasoning model (o1, o3, gpt-4.1, gpt-5, nano, etc.)
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
+                            model.toLowerCase().includes('gpt-5') ||
+                            model.toLowerCase().includes('gpt-4.1') ||
                             model.toLowerCase().includes('nano');
     
     const openai = new ChatOpenAI({
       openAIApiKey: this.apiKey,
       modelName: model,
       // Reasoning models need much higher token limits as they use tokens for internal reasoning
-      maxTokens: isReasoningModel ? 10000 : 1000,
+      // Configurable via environment variable, defaults to 16000 for reasoning models, 1000 for others
+      maxTokens: isReasoningModel 
+        ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
+        : 1000,
       // Apply reasoning effort and verbosity if provided
       ...(options?.reasoning && { reasoning: options.reasoning }),
       ...(options?.verbosity && { verbosity: options.verbosity }),

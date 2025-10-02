@@ -744,6 +744,20 @@ async function processModelForIteration(
     );
   }
 
+  // Detect reasoning models to apply appropriate options for token efficiency
+  // For main model calls (not justifier), use effort: medium, verbosity: low
+  const isReasoningModel = modelInfo.model.toLowerCase().includes('o1') || 
+                          modelInfo.model.toLowerCase().includes('o3') ||
+                          modelInfo.model.toLowerCase().includes('gpt-5') ||
+                          modelInfo.model.toLowerCase().includes('gpt-4.1') ||
+                          modelInfo.model.toLowerCase().includes('nano');
+  
+  const modelOptions = isReasoningModel 
+    ? { reasoning: { effort: 'medium' as const }, verbosity: 'low' as const }
+    : undefined;
+
+  console.log(`🔧 MODEL_CONFIG: ${modelInfo.provider}-${modelInfo.model}, isReasoning: ${isReasoningModel}, options: ${JSON.stringify(modelOptions)}`);
+
   // Inner loop - process multiple calls for this model (kept serial as requested)
   console.log(`🔁 CALLS_START: Making ${count} call(s) to ${modelInfo.provider}-${modelInfo.model}`);
   for (let c = 0; c < count; c++) {
@@ -784,7 +798,8 @@ async function processModelForIteration(
       try {
         responseText = await llmProvider.generateResponse(
           iterationPrompt,
-          modelInfo.model
+          modelInfo.model,
+          modelOptions
         );
         // Strip thinking blocks from the response
         responseText = stripThinkingBlocks(responseText);
