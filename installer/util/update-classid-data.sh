@@ -64,9 +64,9 @@ echo ""
 
 # Display ClassID information
 echo -e "${YELLOW}Displaying latest ClassID Model Pool information...${NC}"
-if [ -f "$SCRIPT_DIR/display-classids.js" ]; then
+if [ -f "$AI_NODE_DIR/src/scripts/display-classids.js" ]; then
     cd "$AI_NODE_DIR"
-    if node "$SCRIPT_DIR/display-classids.js"; then
+    if node "src/scripts/display-classids.js"; then
         echo ""
         echo -e "${GREEN}ClassID information displayed successfully!${NC}"
         echo ""
