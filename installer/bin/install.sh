@@ -501,6 +501,12 @@ if [ -f "$INSTALLER_DIR/.env" ]; then
     echo -e "${GREEN}Environment information copied to $INSTALL_DIR/installer/.env${NC}"
 fi
 
+if [ -f "$INSTALLER_DIR/.api_keys" ]; then
+    cp "$INSTALLER_DIR/.api_keys" "$INSTALL_DIR/installer/.api_keys"
+    chmod 600 "$INSTALL_DIR/installer/.api_keys"
+    echo -e "${GREEN}API keys copied to $INSTALL_DIR/installer/.api_keys${NC}"
+fi
+
 # Copy all utility scripts to installer directory (excluding management scripts which are placed at install root)
 echo -e "${BLUE}Copying all utility scripts...${NC}"
 if [ -d "$UTIL_DIR" ]; then
