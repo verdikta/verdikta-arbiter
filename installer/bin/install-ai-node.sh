@@ -495,7 +495,7 @@ esac
 # Check and update Ollama if needed
 echo -e "${BLUE}Checking Ollama installation and version...${NC}"
 if command_exists ollama; then
-    CURRENT_VERSION=$(ollama --version 2>/dev/null | awk '{print $2}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+    CURRENT_VERSION=$(ollama --version 2>/dev/null | awk '{print $4}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
     if [ -n "$CURRENT_VERSION" ]; then
         echo -e "${GREEN}Ollama is installed (version: $CURRENT_VERSION).${NC}"
     else
@@ -561,7 +561,7 @@ if command_exists ollama; then
                 
                 # Verify update
                 if command_exists ollama; then
-                    NEW_VERSION=$(ollama --version 2>/dev/null | awk '{print $2}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+                    NEW_VERSION=$(ollama --version 2>/dev/null | awk '{print $4}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
                     if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" = "$LATEST_VERSION" ]; then
                         echo -e "${GREEN}Successfully updated Ollama to version $NEW_VERSION${NC}"
                     elif [ -n "$NEW_VERSION" ]; then
@@ -604,7 +604,7 @@ else
         
         # Verify installation
         if command_exists ollama; then
-            INSTALLED_VERSION=$(ollama --version 2>/dev/null | awk '{print $2}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+            INSTALLED_VERSION=$(ollama --version 2>/dev/null | awk '{print $4}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
             if [ -n "$INSTALLED_VERSION" ]; then
                 echo -e "${GREEN}Successfully installed Ollama version $INSTALLED_VERSION${NC}"
             else

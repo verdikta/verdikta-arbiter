@@ -873,47 +873,48 @@ fi
 # Install node dependencies if needed
 echo -e "${BLUE}Checking for new Node.js dependencies...${NC}"
 
+# Update @verdikta/common library to get latest ClassID data for both components
+echo -e "${BLUE}Updating @verdikta/common library for latest ClassID model pools...${NC}"
+if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
+    # Load environment to get Verdikta Common version preference
+    VERDIKTA_VERSION="latest"
+    if [ -f "$TARGET_DIR/installer/.env" ]; then
+        source "$TARGET_DIR/installer/.env"
+        # Check if user has an old beta configuration and offer to update
+        if [ "$VERDIKTA_COMMON_VERSION" = "beta" ]; then
+            echo -e "${YELLOW}Your installation is configured to use @verdikta/common@beta.${NC}"
+            echo -e "${BLUE}The recommended version is now 'latest' for better stability and ClassID support.${NC}"
+            echo -e "${BLUE}Note: ClassID model pool integration requires @verdikta/common@latest (v1.3.0+).${NC}"
+            if ask_yes_no "Would you like to switch to @verdikta/common@latest?"; then
+                VERDIKTA_VERSION="latest"
+                # Update the .env file with the new preference
+                sed -i.bak "s/VERDIKTA_COMMON_VERSION=\"beta\"/VERDIKTA_COMMON_VERSION=\"latest\"/" "$TARGET_DIR/installer/.env"
+                echo -e "${GREEN}Updated configuration to use @verdikta/common@latest${NC}"
+            else
+                VERDIKTA_VERSION="beta"
+                echo -e "${YELLOW}Keeping @verdikta/common@beta as requested${NC}"
+                echo -e "${YELLOW}Warning: ClassID integration may not work with beta versions${NC}"
+            fi
+        else
+            VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
+        fi
+    fi
+    
+    # Update both AI Node and External Adapter (matching install.sh pattern)
+    if node "$UTIL_DIR/update-verdikta-common.js" "$TARGET_AI_NODE" "$TARGET_EXTERNAL_ADAPTER" "$VERDIKTA_VERSION"; then
+        echo -e "${GREEN}@verdikta/common library updated successfully in both components.${NC}"
+    else
+        echo -e "${YELLOW}Warning: Could not update @verdikta/common library. Continuing with existing version.${NC}"
+    fi
+else
+    echo -e "${YELLOW}@verdikta/common update utility not found, skipping library update.${NC}"
+fi
+
 # AI Node dependencies
 if [ -f "$TARGET_AI_NODE/package.json" ]; then
     echo -e "${BLUE}Installing AI Node dependencies...${NC}"
     cd "$TARGET_AI_NODE" && npm install
     echo -e "${GREEN}AI Node dependencies installed.${NC}"
-    
-    # Update @verdikta/common library to get latest ClassID data
-    echo -e "${BLUE}Updating @verdikta/common library for latest ClassID model pools...${NC}"
-    if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
-        # Load environment to get Verdikta Common version preference
-        VERDIKTA_VERSION="latest"
-        if [ -f "$TARGET_DIR/installer/.env" ]; then
-            source "$TARGET_DIR/installer/.env"
-            # Check if user has an old beta configuration and offer to update
-            if [ "$VERDIKTA_COMMON_VERSION" = "beta" ]; then
-                echo -e "${YELLOW}Your installation is configured to use @verdikta/common@beta.${NC}"
-                echo -e "${BLUE}The recommended version is now 'latest' for better stability and ClassID support.${NC}"
-                echo -e "${BLUE}Note: ClassID model pool integration requires @verdikta/common@latest (v1.3.0+).${NC}"
-                if ask_yes_no "Would you like to switch to @verdikta/common@latest?"; then
-                    VERDIKTA_VERSION="latest"
-                    # Update the .env file with the new preference
-                    sed -i.bak "s/VERDIKTA_COMMON_VERSION=\"beta\"/VERDIKTA_COMMON_VERSION=\"latest\"/" "$TARGET_DIR/installer/.env"
-                    echo -e "${GREEN}Updated configuration to use @verdikta/common@latest${NC}"
-                else
-                    VERDIKTA_VERSION="beta"
-                    echo -e "${YELLOW}Keeping @verdikta/common@beta as requested${NC}"
-                    echo -e "${YELLOW}Warning: ClassID integration may not work with beta versions${NC}"
-                fi
-            else
-                VERDIKTA_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
-            fi
-        fi
-        
-        if node "$UTIL_DIR/update-verdikta-common.js" "$TARGET_AI_NODE" "$VERDIKTA_VERSION"; then
-            echo -e "${GREEN}@verdikta/common library updated successfully.${NC}"
-        else
-            echo -e "${YELLOW}Warning: Could not update @verdikta/common library. Continuing with existing version.${NC}"
-        fi
-    else
-        echo -e "${YELLOW}@verdikta/common update utility not found, skipping library update.${NC}"
-    fi
 fi
 
 # External Adapter dependencies
@@ -930,12 +931,14 @@ if [ -f "$TARGET_AI_NODE/src/scripts/classid-integration.js" ]; then
     
     # Display current ClassID information
     echo -e "${BLUE}Displaying latest ClassID model pool information...${NC}"
-    if [ -f "$UTIL_DIR/display-classids.js" ]; then
-        if node "$UTIL_DIR/display-classids.js"; then
+    if [ -f "src/scripts/display-classids.js" ]; then
+        if node "src/scripts/display-classids.js"; then
             echo -e "${GREEN}ClassID information displayed successfully.${NC}"
         else
             echo -e "${YELLOW}Could not display ClassID information.${NC}"
         fi
+    else
+        echo -e "${YELLOW}ClassID display utility not found. Skipping detailed information.${NC}"
     fi
     
     echo -e "${BLUE}Checking for new models in ClassID pools...${NC}"

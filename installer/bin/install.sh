@@ -257,10 +257,10 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ] && [ -d "$AI_NODE_SRC_DIR" ] && 
     
     # Show actual ClassID information now that @verdikta/common is available
     echo -e "${BLUE}Displaying actual ClassID Model Pool information...${NC}"
-    if [ -f "$UTIL_DIR/display-classids.js" ]; then
-        if [ -d "$AI_NODE_SRC_DIR" ]; then
-            cd "$AI_NODE_SRC_DIR"
-            if node "$UTIL_DIR/display-classids.js" 2>/dev/null; then
+    if [ -d "$AI_NODE_SRC_DIR" ]; then
+        cd "$AI_NODE_SRC_DIR"
+        if [ -f "src/scripts/display-classids.js" ]; then
+            if node "src/scripts/display-classids.js" 2>/dev/null; then
                 echo -e "${GREEN}ClassID information displayed successfully.${NC}"
                 echo ""
                 echo -e "${BLUE}💡 Based on this information, you can now make informed decisions about:${NC}"
@@ -274,13 +274,12 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ] && [ -d "$AI_NODE_SRC_DIR" ] && 
                 echo -e "${GREEN}✅ All active ClassID model pools have been integrated into your AI Node configuration.${NC}"
                 echo -e "${BLUE}📋 Models are now available for use in arbitration and justification generation.${NC}"
             fi
-            cd - > /dev/null
         else
-            echo -e "${YELLOW}AI Node directory not found. Skipping ClassID display.${NC}"
+            echo -e "${YELLOW}ClassID display utility not found. Skipping detailed information.${NC}"
         fi
+        cd - > /dev/null
     else
-        echo -e "${YELLOW}ClassID display utility not found. Skipping detailed information.${NC}"
-        echo -e "${GREEN}✅ All active ClassID model pools have been integrated into your AI Node configuration.${NC}"
+        echo -e "${YELLOW}AI Node directory not found. Skipping ClassID display.${NC}"
     fi
 else
     echo -e "${YELLOW}Warning: @verdikta/common update utility or required directories not found.${NC}"
