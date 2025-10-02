@@ -238,6 +238,7 @@ try {
     const openaiMatch = currentContent.match(/openai:\s*\[([\s\S]*?)\]/);
     const anthropicMatch = currentContent.match(/anthropic:\s*\[([\s\S]*?)\]/);
     const ollamaMatch = currentContent.match(/ollama:\s*\[([\s\S]*?)\]/);
+    const hyperbolicMatch = currentContent.match(/hyperbolic:\s*\[([\s\S]*?)\]/);
     
     const parseModels = (match) => {
         if (!match) return [];
@@ -255,7 +256,8 @@ try {
     const existingModels = {
         openai: new Set(parseModels(openaiMatch)),
         anthropic: new Set(parseModels(anthropicMatch)),
-        ollama: new Set(parseModels(ollamaMatch))
+        ollama: new Set(parseModels(ollamaMatch)),
+        hyperbolic: new Set(parseModels(hyperbolicMatch))
     };
     
     // Add models from ClassID pools
@@ -270,6 +272,9 @@ try {
                     console.log(`   + Added ${model.provider}/${model.model}`);
                 } else if (model.provider === 'ollama') {
                     existingModels.ollama.add(model.model);
+                    console.log(`   + Added ${model.provider}/${model.model}`);
+                } else if (model.provider === 'hyperbolic') {
+                    existingModels.hyperbolic.add(model.model);
                     console.log(`   + Added ${model.provider}/${model.model}`);
                 }
             });
@@ -291,6 +296,9 @@ try {
             return modelName.includes('llava') || 
                    modelName.includes('vision') ||
                    modelName.includes('minicpm');
+        } else if (provider === 'hyperbolic') {
+            // Hyperbolic models typically support images
+            return true;
         }
         return false;
     };
@@ -306,6 +314,9 @@ try {
                    modelName.includes('claude-sonnet-4') ||
                    modelName.includes('claude-4');
         } else if (provider === 'ollama') {
+            return true;
+        } else if (provider === 'hyperbolic') {
+            // Hyperbolic models typically support attachments
             return true;
         }
         return false;
@@ -329,6 +340,9 @@ ${generateModelEntries(existingModels.anthropic, 'anthropic')}
   ollama: [
 ${generateModelEntries(existingModels.ollama, 'ollama')}
   ],
+  hyperbolic: [
+${generateModelEntries(existingModels.hyperbolic, 'hyperbolic')}
+  ],
 };
 `;
     
@@ -339,11 +353,18 @@ ${generateModelEntries(existingModels.ollama, 'ollama')}
     console.log('✅ ClassID model pools integrated successfully!');
     console.log('📋 Configuration updated with models from all active ClassID pools');
     
-    // List Ollama models that need to be pulled
+    // List models by provider
     const ollamaModels = Array.from(existingModels.ollama);
+    const hyperbolicModels = Array.from(existingModels.hyperbolic);
+    
     if (ollamaModels.length > 0) {
         console.log('🐋 Ollama models configured:', ollamaModels.join(', '));
         console.log('   These will be pulled during Ollama installation if selected.');
+    }
+    
+    if (hyperbolicModels.length > 0) {
+        console.log('🌐 Hyperbolic models configured:', hyperbolicModels.join(', '));
+        console.log('   These require Hyperbolic API key configuration.');
     }
     
 } catch (error) {
@@ -452,23 +473,149 @@ else
     echo -e "${GREEN}Log level already configured in .env.local${NC}"
 fi
 
-# Install Ollama
-echo -e "${BLUE}Checking for Ollama...${NC}"
+# Detect OS for Ollama installation
+OS="$(uname -s)"
+case "$OS" in
+    Linux)
+        if [ -f /etc/os-release ]; then
+            . /etc/os-release
+            OS_ID="$ID"
+        else
+            OS_ID="linux"
+        fi
+        ;;
+    Darwin)
+        OS_ID="macos"
+        ;;
+    *)
+        OS_ID="unknown"
+        ;;
+esac
+
+# Check and update Ollama if needed
+echo -e "${BLUE}Checking Ollama installation and version...${NC}"
 if command_exists ollama; then
-    echo -e "${GREEN}Ollama is already installed.${NC}"
+    CURRENT_VERSION=$(ollama --version 2>/dev/null | awk '{print $2}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+    if [ -n "$CURRENT_VERSION" ]; then
+        echo -e "${GREEN}Ollama is installed (version: $CURRENT_VERSION).${NC}"
+    else
+        echo -e "${YELLOW}Ollama is installed but version could not be determined.${NC}"
+        CURRENT_VERSION="unknown"
+    fi
+    
+    # Check for latest version
+    echo -e "${BLUE}Checking for latest Ollama version...${NC}"
+    LATEST_VERSION=""
+    
+    # Try to get latest version from GitHub API
+    if command_exists curl; then
+        LATEST_VERSION=$(curl -s https://api.github.com/repos/ollama/ollama/releases/latest | grep -o '"tag_name": "[^"]*' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+    fi
+    
+    if [ -z "$LATEST_VERSION" ]; then
+        echo -e "${YELLOW}Could not check for latest version. Proceeding with current installation.${NC}"
+    else
+        echo -e "${BLUE}Latest available version: $LATEST_VERSION${NC}"
+        
+        # Compare versions (simple numeric comparison)
+        if [ "$CURRENT_VERSION" = "unknown" ]; then
+            echo -e "${YELLOW}Ollama version could not be determined. Updating to latest version.${NC}"
+            echo -e "${YELLOW}Some newer models (like deepseek-r1:8b) require the latest Ollama version.${NC}"
+            UPDATE_NEEDED=true
+        elif [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
+            echo -e "${GREEN}Ollama is up to date.${NC}"
+            UPDATE_NEEDED=false
+        else
+            echo -e "${YELLOW}Ollama version $CURRENT_VERSION is outdated. Latest version is $LATEST_VERSION.${NC}"
+            echo -e "${YELLOW}Some newer models (like deepseek-r1:8b) require the latest Ollama version.${NC}"
+            UPDATE_NEEDED=true
+        fi
+        
+        if [ "$UPDATE_NEEDED" = "true" ]; then
+            
+            if ask_yes_no "Would you like to update Ollama to the latest version?"; then
+                echo -e "${BLUE}Updating Ollama to version $LATEST_VERSION...${NC}"
+                
+                # Stop Ollama service if running
+                if pgrep -f "ollama serve" > /dev/null; then
+                    echo -e "${BLUE}Stopping Ollama service...${NC}"
+                    pkill -f "ollama serve" || true
+                    sleep 2
+                fi
+                
+                # Download and install latest version
+                case "$OS_ID" in
+                    ubuntu|debian|linux)
+                        echo -e "${BLUE}Installing latest Ollama on Linux...${NC}"
+                        curl -fsSL https://ollama.com/install.sh | sh
+                        ;;
+                    macos)
+                        echo -e "${BLUE}Installing latest Ollama on macOS...${NC}"
+                        curl -fsSL https://ollama.com/install.sh | sh
+                        ;;
+                    *)
+                        echo -e "${YELLOW}Automatic update not supported for this OS.${NC}"
+                        echo -e "${YELLOW}Please download the latest version from: https://ollama.com/download${NC}"
+                        ;;
+                esac
+                
+                # Verify update
+                if command_exists ollama; then
+                    NEW_VERSION=$(ollama --version 2>/dev/null | awk '{print $2}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+                    if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" = "$LATEST_VERSION" ]; then
+                        echo -e "${GREEN}Successfully updated Ollama to version $NEW_VERSION${NC}"
+                    elif [ -n "$NEW_VERSION" ]; then
+                        echo -e "${YELLOW}Ollama was updated to version $NEW_VERSION (expected $LATEST_VERSION)${NC}"
+                    else
+                        echo -e "${YELLOW}Ollama was updated but version could not be determined${NC}"
+                    fi
+                else
+                    echo -e "${RED}Failed to update Ollama. Please install manually.${NC}"
+                fi
+            else
+                echo -e "${YELLOW}Skipping Ollama update. Some newer models may not work.${NC}"
+            fi
+        else
+            echo -e "${GREEN}Ollama is up to date, no update needed.${NC}"
+        fi
+    fi
 else
     echo -e "${YELLOW}Ollama is not installed.${NC}"
+    echo -e "${BLUE}Ollama is required for running local AI models (Ollama-based ClassIDs).${NC}"
+    echo -e "${BLUE}This includes models like: deepseek-r1:8b, gemma3n:e4b, llama3.1:8b${NC}"
+    
     if ask_yes_no "Would you like to install Ollama?"; then
-        echo -e "${BLUE}Installing Ollama...${NC}"
-        curl -fsSL https://ollama.com/install.sh | sh
+        echo -e "${BLUE}Installing latest Ollama...${NC}"
         
-        if ! command_exists ollama; then
-            echo -e "${RED}Failed to install Ollama. Please install manually.${NC}"
+        case "$OS_ID" in
+            ubuntu|debian|linux)
+                echo -e "${BLUE}Installing Ollama on Linux...${NC}"
+                curl -fsSL https://ollama.com/install.sh | sh
+                ;;
+            macos)
+                echo -e "${BLUE}Installing Ollama on macOS...${NC}"
+                curl -fsSL https://ollama.com/install.sh | sh
+                ;;
+            *)
+                echo -e "${RED}Unsupported OS for automatic Ollama installation.${NC}"
+                echo -e "${YELLOW}Please install Ollama manually from: https://ollama.com/download${NC}"
+                ;;
+        esac
+        
+        # Verify installation
+        if command_exists ollama; then
+            INSTALLED_VERSION=$(ollama --version 2>/dev/null | awk '{print $2}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
+            if [ -n "$INSTALLED_VERSION" ]; then
+                echo -e "${GREEN}Successfully installed Ollama version $INSTALLED_VERSION${NC}"
+            else
+                echo -e "${GREEN}Successfully installed Ollama (version could not be determined)${NC}"
+            fi
         else
-            echo -e "${GREEN}Ollama installed successfully.${NC}"
+            echo -e "${RED}Failed to install Ollama. Please install manually.${NC}"
         fi
     else
-        echo -e "${YELLOW}Skipping Ollama installation. Some AI Node features may not work.${NC}"
+        echo -e "${YELLOW}Skipping Ollama installation. Ollama-based models will not be available.${NC}"
+        echo -e "${YELLOW}You can install Ollama later and the system will detect it automatically.${NC}"
     fi
 fi
 

@@ -233,6 +233,7 @@ install_docker() {
     fi
 }
 
+
 # Function to ask for Yes/No question
 ask_yes_no() {
     local prompt="$1"
@@ -355,27 +356,35 @@ create_installation_directory() {
 
 # Function to display ClassID information and help users understand API key requirements
 display_classid_info() {
-    echo -e "${BLUE}Displaying available ClassID Model Pools...${NC}"
+    echo -e "${BLUE}Understanding ClassID Model Pools and API Key Requirements...${NC}"
+    echo -e "${BLUE}ClassID Model Pools provide curated AI models for arbitration.${NC}"
+    echo -e "${BLUE}Each ClassID requires specific API keys to function.${NC}"
+    echo ""
     
-    # Check if we can access the ClassID information
-    if command_exists node; then
-        # Try to display ClassID information
-        if node "$INSTALLER_DIR/util/display-classids.js" 2>/dev/null; then
-            echo -e "${GREEN}ClassID information displayed successfully.${NC}"
-            return 0
-        else
-            echo -e "${YELLOW}Note: ClassID information not available yet (will be available after AI Node installation).${NC}"
-            echo -e "${YELLOW}For now, you can configure API keys based on your intended usage:${NC}"
-            echo -e "${YELLOW}• OpenAI API Key: For GPT-4, GPT-5, and other OpenAI models${NC}"
-            echo -e "${YELLOW}• Anthropic API Key: For Claude models${NC}"
-            echo -e "${YELLOW}• Hyperbolic API Key: For cost-effective open-source models (Qwen, DeepSeek, Kimi)${NC}"
-            echo -e "${YELLOW}• Leave keys blank if you only plan to use local Ollama models${NC}"
-            return 1
-        fi
-    else
-        echo -e "${YELLOW}Node.js not available yet. ClassID information will be shown after Node.js installation.${NC}"
-        return 1
-    fi
+    echo -e "${YELLOW}📋 ClassID Overview:${NC}"
+    echo -e "${GREEN}• ClassID 128: Commercial Models (OpenAI + Anthropic)${NC}"
+    echo -e "${BLUE}  - Requires: OpenAI API Key + Anthropic API Key${NC}"
+    echo -e "${BLUE}  - Models: GPT-5, Claude Sonnet 4, and other premium models${NC}"
+    echo ""
+    echo -e "${GREEN}• ClassID 129: Open-Source Local (Ollama)${NC}"
+    echo -e "${BLUE}  - Requires: No API keys (runs locally)${NC}"
+    echo -e "${BLUE}  - Models: Llama, DeepSeek, Qwen, Gemma (downloaded locally)${NC}"
+    echo ""
+    echo -e "${GREEN}• ClassID 130: Open-Source via Hyperbolic API${NC}"
+    echo -e "${BLUE}  - Requires: Hyperbolic API Key${NC}"
+    echo -e "${BLUE}  - Models: Cost-effective access to open-source models${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}💡 Recommendations:${NC}"
+    echo -e "${BLUE}• For open source only: Use ClassID 129 (no API keys needed)${NC}"
+    echo -e "${BLUE}• For commercial models: Use ClassID 128 (requires OpenAI + Anthropic keys)${NC}"
+    echo -e "${BLUE}• For Hyperbolic API: Use ClassID 130 (requires Hyperbolic API key)${NC}"
+    echo -e "${BLUE}• For mixed usage: Multiple ClassIDs (requires respective API keys)${NC}"
+    echo -e "${BLUE}• Leave API keys blank if you don't plan to use those providers${NC}"
+    echo ""
+    
+    echo -e "${YELLOW}Note: Detailed model information will be shown after AI Node installation.${NC}"
+    echo -e "${YELLOW}For now, configure API keys based on your intended usage above.${NC}"
 }
 
 # Function to configure API keys

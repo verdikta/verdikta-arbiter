@@ -108,8 +108,9 @@ function displayClassIDInfo() {
     log('Choose classes based on your preferred models and available API keys.\n', colors.dim);
     
     if (useFallback) {
-        log('ℹ️  Note: Showing common ClassID examples. Full data will be available after installation.', colors.yellow);
-        log('', colors.reset);
+        log('❌ Error: Cannot access @verdikta/common library for ClassID data.', colors.red);
+        log('Make sure @verdikta/common is properly installed and the AI Node is set up.', colors.dim);
+        return { hasActiveClasses: false, providers: new Set() };
     }
 
     try {
@@ -181,6 +182,7 @@ function displayClassIDInfo() {
                     const providerColor = provider === 'openai' ? colors.green :
                                         provider === 'anthropic' ? colors.magenta :
                                         provider === 'ollama' ? colors.yellow :
+                                        provider === 'hyperbolic' ? colors.cyan :
                                         colors.reset;
                     
                     log(`     ${provider.toUpperCase()} (${models.length} models):`, providerColor);
@@ -274,6 +276,7 @@ function displayClassIDInfo() {
         log('-'.repeat(20), colors.dim);
         log('• For open source only: Use ClassID 129 (no API keys needed)', colors.green);
         log('• For commercial models: Use ClassID 128 (requires OpenAI + Anthropic keys)', colors.yellow);
+        log('• For Hyperbolic API: Use ClassID 130 (requires Hyperbolic API key)', colors.cyan);
         log('• For mixed usage: Multiple ClassIDs (requires respective API keys)', colors.blue);
         log('• Leave API keys blank if you don\'t plan to use those providers\n', colors.dim);
 
