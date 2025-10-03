@@ -1131,6 +1131,46 @@ else
         echo
         
         if ask_yes_no "Are you sure you want to proceed with job reconfiguration?"; then
+            # Start Chainlink node temporarily for job reconfiguration
+            echo -e "${BLUE}Starting Chainlink node temporarily for job reconfiguration...${NC}"
+            echo -e "${YELLOW}Note: The Chainlink node needs to be running for job and key management.${NC}"
+            
+            # Check if Chainlink node is running
+            if ! docker ps | grep -q "chainlink"; then
+                echo -e "${BLUE}Starting Chainlink node...${NC}"
+                cd "$TARGET_DIR"
+                if [ -f "$TARGET_DIR/start-arbiter.sh" ]; then
+                    # Start just the Chainlink node (not the full arbiter)
+                    if docker ps -a | grep -q "chainlink"; then
+                        docker start chainlink
+                    else
+                        echo -e "${YELLOW}Warning: Chainlink container not found. Starting full arbiter...${NC}"
+                        bash "$TARGET_DIR/start-arbiter.sh"
+                    fi
+                    
+                    # Wait for Chainlink node to be ready
+                    echo -e "${BLUE}Waiting for Chainlink node to be ready...${NC}"
+                    for i in {1..30}; do
+                        if curl -s http://localhost:6688/health > /dev/null; then
+                            echo -e "${GREEN}Chainlink node is ready!${NC}"
+                            break
+                        fi
+                        if [ $i -eq 30 ]; then
+                            echo -e "${RED}Error: Chainlink node failed to start within 60 seconds${NC}"
+                            echo -e "${YELLOW}Job reconfiguration cancelled. You can try again later.${NC}"
+                            return 1
+                        fi
+                        sleep 2
+                    done
+                else
+                    echo -e "${RED}Error: start-arbiter.sh not found at $TARGET_DIR${NC}"
+                    echo -e "${YELLOW}Job reconfiguration cancelled.${NC}"
+                    return 1
+                fi
+            else
+                echo -e "${GREEN}Chainlink node is already running.${NC}"
+            fi
+            
             # Run the multi-arbiter configuration
             cd "$SCRIPT_DIR"
             bash "$SCRIPT_DIR/configure-node.sh"
@@ -1142,6 +1182,16 @@ else
                 if [ -f "$INSTALLER_DIR/.contracts" ]; then
                     cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
                     echo -e "${GREEN}Updated contracts configuration copied to target installation${NC}"
+                fi
+                
+                # Stop the Chainlink node again since it was started temporarily for reconfiguration
+                echo -e "${BLUE}Stopping Chainlink node after job reconfiguration...${NC}"
+                cd "$TARGET_DIR"
+                if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
+                    bash "$TARGET_DIR/stop-arbiter.sh"
+                    echo -e "${GREEN}Chainlink node stopped. Upgrade will continue.${NC}"
+                else
+                    echo -e "${YELLOW}Warning: stop-arbiter.sh not found. You may need to manually stop services.${NC}"
                 fi
                 
                 # Authorize the newly configured keys
@@ -1182,6 +1232,16 @@ else
             else
                 echo -e "${RED}Job and key reconfiguration failed!${NC}"
                 echo -e "${YELLOW}Your existing configuration has been preserved.${NC}"
+                
+                # Stop the Chainlink node after failed reconfiguration
+                echo -e "${BLUE}Stopping Chainlink node after failed job reconfiguration...${NC}"
+                cd "$TARGET_DIR"
+                if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
+                    bash "$TARGET_DIR/stop-arbiter.sh"
+                    echo -e "${GREEN}Chainlink node stopped.${NC}"
+                else
+                    echo -e "${YELLOW}Warning: stop-arbiter.sh not found. You may need to manually stop services.${NC}"
+                fi
             fi
         else
             echo -e "${BLUE}Job reconfiguration cancelled. Existing configuration preserved.${NC}"
