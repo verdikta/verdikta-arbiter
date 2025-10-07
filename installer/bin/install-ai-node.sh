@@ -492,159 +492,20 @@ case "$OS" in
         ;;
 esac
 
-# Check and update Ollama if needed
-echo -e "${BLUE}Checking Ollama installation and version...${NC}"
-if command_exists ollama; then
-    CURRENT_VERSION=$(ollama --version 2>/dev/null | awk '{print $4}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
-    if [ -n "$CURRENT_VERSION" ]; then
-        echo -e "${GREEN}Ollama is installed (version: $CURRENT_VERSION).${NC}"
-    else
-        echo -e "${YELLOW}Ollama is installed but version could not be determined.${NC}"
-        CURRENT_VERSION="unknown"
-    fi
+# Check and update Ollama if needed using shared utility
+echo -e "${BLUE}Managing Ollama installation and version...${NC}"
+if [ -f "$UTIL_DIR/ollama-manager.sh" ]; then
+    source "$UTIL_DIR/ollama-manager.sh"
+    check_and_update_ollama "install-ai-node" "false"
     
-    # Check for latest version
-    echo -e "${BLUE}Checking for latest Ollama version...${NC}"
-    LATEST_VERSION=""
-    
-    # Try to get latest version from GitHub API
-    if command_exists curl; then
-        LATEST_VERSION=$(curl -s https://api.github.com/repos/ollama/ollama/releases/latest | grep -o '"tag_name": "[^"]*' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
-    fi
-    
-    if [ -z "$LATEST_VERSION" ]; then
-        echo -e "${YELLOW}Could not check for latest version. Proceeding with current installation.${NC}"
-    else
-        echo -e "${BLUE}Latest available version: $LATEST_VERSION${NC}"
-        
-        # Compare versions (simple numeric comparison)
-        if [ "$CURRENT_VERSION" = "unknown" ]; then
-            echo -e "${YELLOW}Ollama version could not be determined. Updating to latest version.${NC}"
-            echo -e "${YELLOW}Some newer models (like deepseek-r1:8b) require the latest Ollama version.${NC}"
-            UPDATE_NEEDED=true
-        elif [ "$CURRENT_VERSION" = "$LATEST_VERSION" ]; then
-            echo -e "${GREEN}Ollama is up to date.${NC}"
-            UPDATE_NEEDED=false
-        else
-            echo -e "${YELLOW}Ollama version $CURRENT_VERSION is outdated. Latest version is $LATEST_VERSION.${NC}"
-            echo -e "${YELLOW}Some newer models (like deepseek-r1:8b) require the latest Ollama version.${NC}"
-            UPDATE_NEEDED=true
-        fi
-        
-        if [ "$UPDATE_NEEDED" = "true" ]; then
-            
-            if ask_yes_no "Would you like to update Ollama to the latest version?"; then
-                echo -e "${BLUE}Updating Ollama to version $LATEST_VERSION...${NC}"
-                
-                # Stop Ollama service if running
-                if pgrep -f "ollama serve" > /dev/null; then
-                    echo -e "${BLUE}Stopping Ollama service...${NC}"
-                    pkill -f "ollama serve" || true
-                    sleep 2
-                fi
-                
-                # Download and install latest version
-                case "$OS_ID" in
-                    ubuntu|debian|linux)
-                        echo -e "${BLUE}Installing latest Ollama on Linux...${NC}"
-                        curl -fsSL https://ollama.com/install.sh | sh
-                        ;;
-                    macos)
-                        echo -e "${BLUE}Installing latest Ollama on macOS...${NC}"
-                        curl -fsSL https://ollama.com/install.sh | sh
-                        ;;
-                    *)
-                        echo -e "${YELLOW}Automatic update not supported for this OS.${NC}"
-                        echo -e "${YELLOW}Please download the latest version from: https://ollama.com/download${NC}"
-                        ;;
-                esac
-                
-                # Verify update
-                if command_exists ollama; then
-                    NEW_VERSION=$(ollama --version 2>/dev/null | awk '{print $4}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
-                    if [ -n "$NEW_VERSION" ] && [ "$NEW_VERSION" = "$LATEST_VERSION" ]; then
-                        echo -e "${GREEN}Successfully updated Ollama to version $NEW_VERSION${NC}"
-                    elif [ -n "$NEW_VERSION" ]; then
-                        echo -e "${YELLOW}Ollama was updated to version $NEW_VERSION (expected $LATEST_VERSION)${NC}"
-                    else
-                        echo -e "${YELLOW}Ollama was updated but version could not be determined${NC}"
-                    fi
-                else
-                    echo -e "${RED}Failed to update Ollama. Please install manually.${NC}"
-                fi
-            else
-                echo -e "${YELLOW}Skipping Ollama update. Some newer models may not work.${NC}"
-            fi
-        else
-            echo -e "${GREEN}Ollama is up to date, no update needed.${NC}"
-        fi
-    fi
+    # Start Ollama service
+    start_ollama_service
 else
-    echo -e "${YELLOW}Ollama is not installed.${NC}"
-    echo -e "${BLUE}Ollama is required for running local AI models (Ollama-based ClassIDs).${NC}"
-    echo -e "${BLUE}This includes models like: deepseek-r1:8b, gemma3n:e4b, llama3.1:8b${NC}"
-    
-    if ask_yes_no "Would you like to install Ollama?"; then
-        echo -e "${BLUE}Installing latest Ollama...${NC}"
-        
-        case "$OS_ID" in
-            ubuntu|debian|linux)
-                echo -e "${BLUE}Installing Ollama on Linux...${NC}"
-                curl -fsSL https://ollama.com/install.sh | sh
-                ;;
-            macos)
-                echo -e "${BLUE}Installing Ollama on macOS...${NC}"
-                curl -fsSL https://ollama.com/install.sh | sh
-                ;;
-            *)
-                echo -e "${RED}Unsupported OS for automatic Ollama installation.${NC}"
-                echo -e "${YELLOW}Please install Ollama manually from: https://ollama.com/download${NC}"
-                ;;
-        esac
-        
-        # Verify installation
-        if command_exists ollama; then
-            INSTALLED_VERSION=$(ollama --version 2>/dev/null | awk '{print $4}' | sed 's/v//' | grep -o '[0-9]\+\.[0-9]\+\.[0-9]\+' | head -1)
-            if [ -n "$INSTALLED_VERSION" ]; then
-                echo -e "${GREEN}Successfully installed Ollama version $INSTALLED_VERSION${NC}"
-            else
-                echo -e "${GREEN}Successfully installed Ollama (version could not be determined)${NC}"
-            fi
-        else
-            echo -e "${RED}Failed to install Ollama. Please install manually.${NC}"
-        fi
-    else
-        echo -e "${YELLOW}Skipping Ollama installation. Ollama-based models will not be available.${NC}"
-        echo -e "${YELLOW}You can install Ollama later and the system will detect it automatically.${NC}"
-    fi
+    echo -e "${YELLOW}Ollama manager utility not found. Skipping Ollama management.${NC}"
+    echo -e "${YELLOW}Ollama-based models may not be available.${NC}"
 fi
 
-# Start Ollama service
-echo -e "${BLUE}Starting Ollama service...${NC}"
-if command_exists ollama; then
-    # Check if Ollama is already running
-    if ! curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-        # Start Ollama in the background
-        ollama serve > /dev/null 2>&1 &
-        OLLAMA_PID=$!
-        
-        # Wait for Ollama to start (up to 30 seconds)
-        echo -e "${BLUE}Waiting for Ollama service to start...${NC}"
-        for i in {1..30}; do
-            if curl -s http://localhost:11434/api/tags >/dev/null 2>&1; then
-                echo -e "${GREEN}Ollama service is running.${NC}"
-                break
-            fi
-            if [ $i -eq 30 ]; then
-                echo -e "${RED}Timed out waiting for Ollama service to start.${NC}"
-                echo -e "${YELLOW}Please start Ollama manually with 'ollama serve'${NC}"
-            fi
-            sleep 1
-        done
-    else
-        echo -e "${GREEN}Ollama service is already running.${NC}"
-    fi
-fi
+# Ollama service management is now handled by the shared utility above
 
 # Pull Ollama models from ClassID configuration
 if command_exists ollama; then

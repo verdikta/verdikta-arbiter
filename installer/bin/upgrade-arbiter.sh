@@ -982,6 +982,18 @@ else
     echo -e "${YELLOW}ClassID integration script not found, skipping model pool synchronization.${NC}"
 fi
 
+# Check and update Ollama version before checking models
+echo -e "${BLUE}Checking Ollama version before model management...${NC}"
+if [ -f "$UTIL_DIR/ollama-manager.sh" ]; then
+    source "$UTIL_DIR/ollama-manager.sh"
+    check_and_update_ollama "upgrade-arbiter" "false"
+    
+    # Start Ollama service if it was updated
+    start_ollama_service
+else
+    echo -e "${YELLOW}Ollama manager utility not found. Proceeding with basic model check.${NC}"
+fi
+
 # Check for missing Ollama models (only needed for local downloads)
 if [ "$MODELS_UPDATED" = true ]; then
     echo -e "${BLUE}Checking for missing Ollama models that need local download...${NC}"

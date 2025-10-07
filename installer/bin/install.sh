@@ -440,7 +440,9 @@ if [ -d "$AI_NODE_SRC_DIR" ]; then
     echo -e "${BLUE}Copying configured AI Node...${NC}"
     # Enable dotglob to ensure hidden files like .env.local are copied
     shopt -s dotglob
-    cp -r "$AI_NODE_SRC_DIR" "$INSTALL_DIR/ai-node"
+    # Copy contents of source directory, not the directory itself (fixes double nesting)
+    mkdir -p "$INSTALL_DIR/ai-node"
+    cp -r "$AI_NODE_SRC_DIR/." "$INSTALL_DIR/ai-node/"
     shopt -u dotglob
     echo -e "${GREEN}AI Node copied to $INSTALL_DIR/ai-node${NC}"
     
