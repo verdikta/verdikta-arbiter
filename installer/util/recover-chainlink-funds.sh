@@ -130,6 +130,7 @@ CONTRACTS_FILE=""
 
 # Possible locations for environment files
 POSSIBLE_LOCATIONS=(
+    "$SCRIPT_DIR/installer"             # Target installation: ./installer/ (most common)
     "$INSTALLER_DIR"                    # Original installer directory
     "$(dirname "$SCRIPT_DIR")/installer"  # Target installation: ../installer/
     "$SCRIPT_DIR/../installer"          # Alternative path
