@@ -1394,6 +1394,148 @@ check_chainlink_config() {
 # Call the config check function
 check_chainlink_config
 
+# Optional: Fund or top-off Chainlink keys
+echo
+echo -e "${BLUE}============================================================${NC}"
+echo -e "${BLUE}  Optional: Chainlink Key Funding${NC}"
+echo -e "${BLUE}============================================================${NC}"
+echo
+echo -e "${BLUE}After an upgrade, you may want to check or top off your Chainlink key balances.${NC}"
+echo -e "${BLUE}Your keys need native ETH to pay for gas fees during oracle operations.${NC}"
+echo
+
+# Load environment variables to determine network type
+if [ -f "$TARGET_DIR/installer/.env" ]; then
+    source "$TARGET_DIR/installer/.env"
+fi
+
+# Determine recommended amount based on network
+if [ "$NETWORK_TYPE" = "testnet" ]; then
+    RECOMMENDED_AMOUNT="0.005"
+    CURRENCY_NAME="Base Sepolia ETH"
+    FUNDING_INFO="This is free testnet currency from faucets."
+else
+    RECOMMENDED_AMOUNT="0.002"
+    CURRENCY_NAME="Base ETH"
+    FUNDING_INFO="This will use real ETH from your wallet."
+fi
+
+echo -e "${BLUE}Recommended funding per key: $RECOMMENDED_AMOUNT $CURRENCY_NAME${NC}"
+echo -e "${YELLOW}Note: $FUNDING_INFO${NC}"
+echo
+
+if ask_yes_no "Would you like to fund or top off your Chainlink keys now?"; then
+    echo
+    echo -e "${BLUE}Automatic Funding Configuration${NC}"
+    echo -e "${BLUE}Recommended amount: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
+    echo -e "${BLUE}This amount provides approximately 50 arbitration queries worth of gas.${NC}"
+    echo
+    
+    # Ask if user wants to use recommended amount or custom amount
+    echo -e "${BLUE}Funding options:${NC}"
+    echo -e "${BLUE}  1) Use recommended amount ($RECOMMENDED_AMOUNT $CURRENCY_NAME per key)${NC}"
+    echo -e "${BLUE}  2) Specify custom amount${NC}"
+    echo -e "${BLUE}  3) Skip automatic funding${NC}"
+    echo
+    
+    while true; do
+        read -p "Choose option (1-3) [1]: " funding_choice
+        
+        # Default to option 1 if empty
+        if [ -z "$funding_choice" ]; then
+            funding_choice=1
+        fi
+        
+        case "$funding_choice" in
+            1)
+                FUNDING_AMOUNT="$RECOMMENDED_AMOUNT"
+                echo -e "${GREEN}Using recommended amount: $FUNDING_AMOUNT $CURRENCY_NAME per key${NC}"
+                break
+                ;;
+            2)
+                while true; do
+                    read -p "Enter custom amount per key (in $CURRENCY_NAME): " custom_amount
+                    
+                    if [[ "$custom_amount" =~ ^[0-9]+\.?[0-9]*$ ]] && (( $(echo "$custom_amount > 0" | bc -l) )); then
+                        FUNDING_AMOUNT="$custom_amount"
+                        echo -e "${GREEN}Using custom amount: $FUNDING_AMOUNT $CURRENCY_NAME per key${NC}"
+                        break 2
+                    else
+                        echo -e "${RED}Please enter a valid positive number${NC}"
+                    fi
+                done
+                ;;
+            3)
+                echo -e "${BLUE}Skipping automatic funding.${NC}"
+                FUNDING_AMOUNT=""
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid choice. Please enter 1, 2, or 3.${NC}"
+                ;;
+        esac
+    done
+    
+    if [ -n "$FUNDING_AMOUNT" ]; then
+        echo
+        echo -e "${YELLOW}⚠ IMPORTANT: This will transfer $CURRENCY_NAME from your deployment wallet.${NC}"
+        echo -e "${YELLOW}⚠ Your wallet will be charged for both the funding amount and gas fees.${NC}"
+        echo
+        
+        if ask_yes_no "Proceed with automatic funding?"; then
+            echo -e "${BLUE}Starting automatic funding process...${NC}"
+            echo
+            
+            # Check if funding script exists in source or target
+            FUNDING_SCRIPT=""
+            if [ -f "$SCRIPT_DIR/fund-chainlink-keys.sh" ]; then
+                FUNDING_SCRIPT="$SCRIPT_DIR/fund-chainlink-keys.sh"
+            elif [ -f "$TARGET_DIR/fund-chainlink-keys.sh" ]; then
+                FUNDING_SCRIPT="$TARGET_DIR/fund-chainlink-keys.sh"
+            fi
+            
+            if [ -n "$FUNDING_SCRIPT" ]; then
+                # Run the funding script
+                if bash "$FUNDING_SCRIPT" --amount "$FUNDING_AMOUNT" --force; then
+                    echo
+                    echo -e "${GREEN}✓ Automatic funding completed successfully!${NC}"
+                    echo -e "${GREEN}✓ Your Chainlink keys have been funded/topped off and are ready for operation.${NC}"
+                    KEYS_FUNDED=true
+                else
+                    echo
+                    echo -e "${YELLOW}⚠ Automatic funding encountered issues.${NC}"
+                    echo -e "${BLUE}You can retry funding later using:${NC}"
+                    echo -e "${GREEN}  $TARGET_DIR/fund-chainlink-keys.sh${NC}"
+                    KEYS_FUNDED=false
+                fi
+            else
+                echo -e "${RED}Error: Funding script not found.${NC}"
+                echo -e "${YELLOW}Please run funding manually after upgrade.${NC}"
+                KEYS_FUNDED=false
+            fi
+        else
+            echo -e "${BLUE}Automatic funding cancelled.${NC}"
+            KEYS_FUNDED=false
+        fi
+    else
+        KEYS_FUNDED=false
+    fi
+else
+    echo -e "${BLUE}Skipping key funding.${NC}"
+    KEYS_FUNDED=false
+fi
+
+if [ "$KEYS_FUNDED" = "false" ]; then
+    echo
+    echo -e "${YELLOW}💡 Reminder: Check your key balances regularly${NC}"
+    echo -e "${BLUE}You can fund your keys anytime using:${NC}"
+    echo -e "${GREEN}  $TARGET_DIR/fund-chainlink-keys.sh${NC}"
+    echo
+    echo -e "${BLUE}Or check key addresses in:${NC}"
+    echo -e "${GREEN}  $TARGET_DIR/installer/.contracts${NC}"
+    echo
+fi
+
 echo -e "${GREEN}Upgrade completed successfully!${NC}"
 
 # Clear the upgrade in progress flag
