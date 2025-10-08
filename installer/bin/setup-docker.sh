@@ -59,6 +59,190 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
+# Check for existing Chainlink containers and offer cleanup
+echo -e "${BLUE}Checking for existing Chainlink installations...${NC}"
+
+POSTGRES_CONTAINER="cl-postgres"
+CHAINLINK_CONTAINER="chainlink"
+EXISTING_POSTGRES=$(docker ps -a --filter "name=^${POSTGRES_CONTAINER}$" --format "{{.Names}}" 2>/dev/null)
+EXISTING_CHAINLINK=$(docker ps -a --filter "name=^${CHAINLINK_CONTAINER}$" --format "{{.Names}}" 2>/dev/null)
+
+if [ -n "$EXISTING_POSTGRES" ] || [ -n "$EXISTING_CHAINLINK" ]; then
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}  WARNING: Existing Chainlink Installation Detected${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo
+    echo -e "${BLUE}Found existing Docker containers:${NC}"
+    
+    if [ -n "$EXISTING_POSTGRES" ]; then
+        POSTGRES_STATUS=$(docker ps --filter "name=^${POSTGRES_CONTAINER}$" --format "{{.Status}}" 2>/dev/null)
+        if [ -n "$POSTGRES_STATUS" ]; then
+            echo -e "${GREEN}  ✓ $POSTGRES_CONTAINER (Running: $POSTGRES_STATUS)${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ $POSTGRES_CONTAINER (Stopped)${NC}"
+        fi
+    fi
+    
+    if [ -n "$EXISTING_CHAINLINK" ]; then
+        CHAINLINK_STATUS=$(docker ps --filter "name=^${CHAINLINK_CONTAINER}$" --format "{{.Status}}" 2>/dev/null)
+        if [ -n "$CHAINLINK_STATUS" ]; then
+            echo -e "${GREEN}  ✓ $CHAINLINK_CONTAINER (Running: $CHAINLINK_STATUS)${NC}"
+        else
+            echo -e "${YELLOW}  ⚠ $CHAINLINK_CONTAINER (Stopped)${NC}"
+        fi
+    fi
+    
+    echo
+    echo -e "${YELLOW}For a clean installation, the installer must remove these existing containers${NC}"
+    echo -e "${YELLOW}and start from scratch. This prevents conflicts and installation errors.${NC}"
+    echo
+    echo -e "${BLUE}What will be removed:${NC}"
+    echo -e "  • Existing Chainlink and PostgreSQL containers"
+    echo -e "  • Container data and configuration"
+    echo -e "  • Database volumes (unless backed up)"
+    echo
+    
+    # Offer database backup before cleanup
+    DATABASE_BACKUP_FILE=""
+    if [ -n "$EXISTING_POSTGRES" ]; then
+        # Check if PostgreSQL container is running
+        if docker ps --filter "name=^${POSTGRES_CONTAINER}$" --format "{{.Names}}" | grep -q "$POSTGRES_CONTAINER"; then
+            POSTGRES_RUNNING=true
+        else
+            POSTGRES_RUNNING=false
+        fi
+        
+        echo -e "${BLUE}Database Backup Option:${NC}"
+        if [ "$POSTGRES_RUNNING" = "true" ]; then
+            echo -e "${BLUE}The PostgreSQL database is currently running and can be backed up.${NC}"
+            echo
+            
+            if ask_yes_no "Would you like to back up the existing PostgreSQL database before cleanup?"; then
+                BACKUP_DIR="$HOME/verdikta-backups"
+                mkdir -p "$BACKUP_DIR"
+                BACKUP_TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
+                DATABASE_BACKUP_FILE="$BACKUP_DIR/chainlink-db-backup-${BACKUP_TIMESTAMP}.sql"
+                
+                echo -e "${BLUE}Creating database backup...${NC}"
+                echo -e "${BLUE}Backup location: $DATABASE_BACKUP_FILE${NC}"
+                
+                # Get PostgreSQL password if available
+                POSTGRES_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{if eq (index (split . "=") 0) "POSTGRES_PASSWORD"}}{{index (split . "=") 1}}{{end}}{{end}}' "$POSTGRES_CONTAINER" 2>/dev/null)
+                
+                if docker exec "$POSTGRES_CONTAINER" pg_dumpall -U postgres > "$DATABASE_BACKUP_FILE" 2>/dev/null; then
+                    echo -e "${GREEN}✓ Database backup created successfully!${NC}"
+                    echo -e "${GREEN}✓ Location: $DATABASE_BACKUP_FILE${NC}"
+                    
+                    # Create a backup info file
+                    cat > "$BACKUP_DIR/backup-info-${BACKUP_TIMESTAMP}.txt" << EOL
+# Verdikta Chainlink Database Backup Information
+# Created: $(date)
+
+Backup File: $DATABASE_BACKUP_FILE
+PostgreSQL Container: $POSTGRES_CONTAINER
+Chainlink Container: $CHAINLINK_CONTAINER
+
+To restore this backup:
+1. Ensure PostgreSQL container is running
+2. Run: docker exec -i cl-postgres psql -U postgres < $DATABASE_BACKUP_FILE
+
+Note: This backup was created before a clean installation.
+EOL
+                    echo -e "${BLUE}Backup information saved to: $BACKUP_DIR/backup-info-${BACKUP_TIMESTAMP}.txt${NC}"
+                else
+                    echo -e "${RED}✗ Failed to create database backup${NC}"
+                    echo -e "${YELLOW}Attempting alternative backup method...${NC}"
+                    
+                    # Try backup using pg_dump for individual databases
+                    if docker exec "$POSTGRES_CONTAINER" pg_dump -U postgres postgres > "$DATABASE_BACKUP_FILE" 2>/dev/null; then
+                        echo -e "${GREEN}✓ Database backup created (postgres database only)${NC}"
+                    else
+                        echo -e "${RED}✗ Backup failed. Proceeding without backup.${NC}"
+                        DATABASE_BACKUP_FILE=""
+                    fi
+                fi
+                echo
+            else
+                echo -e "${YELLOW}Skipping database backup.${NC}"
+                echo
+            fi
+        else
+            echo -e "${YELLOW}The PostgreSQL container is stopped. Cannot create backup while stopped.${NC}"
+            echo -e "${YELLOW}If you need to back up the database, please:${NC}"
+            echo -e "${YELLOW}  1. Cancel this installation (Ctrl+C)${NC}"
+            echo -e "${YELLOW}  2. Start the PostgreSQL container: docker start $POSTGRES_CONTAINER${NC}"
+            echo -e "${YELLOW}  3. Create a manual backup${NC}"
+            echo -e "${YELLOW}  4. Re-run the installer${NC}"
+            echo
+            
+            if ! ask_yes_no "Continue installation without backup?"; then
+                echo -e "${BLUE}Installation cancelled by user.${NC}"
+                exit 0
+            fi
+            echo
+        fi
+    fi
+    
+    # Final confirmation before cleanup
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${YELLOW}  FINAL CONFIRMATION${NC}"
+    echo -e "${YELLOW}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo
+    echo -e "${RED}This will permanently remove:${NC}"
+    [ -n "$EXISTING_POSTGRES" ] && echo -e "${RED}  • PostgreSQL container: $POSTGRES_CONTAINER${NC}"
+    [ -n "$EXISTING_CHAINLINK" ] && echo -e "${RED}  • Chainlink container: $CHAINLINK_CONTAINER${NC}"
+    echo -e "${RED}  • All container data and volumes${NC}"
+    echo
+    if [ -n "$DATABASE_BACKUP_FILE" ] && [ -f "$DATABASE_BACKUP_FILE" ]; then
+        echo -e "${GREEN}Database backup saved at: $DATABASE_BACKUP_FILE${NC}"
+        echo
+    fi
+    
+    if ! ask_yes_no "Proceed with removing existing containers and starting clean installation?"; then
+        echo -e "${BLUE}Installation cancelled by user.${NC}"
+        echo -e "${YELLOW}To perform a manual cleanup, run:${NC}"
+        [ -n "$EXISTING_CHAINLINK" ] && echo -e "${YELLOW}  docker rm -f $CHAINLINK_CONTAINER${NC}"
+        [ -n "$EXISTING_POSTGRES" ] && echo -e "${YELLOW}  docker rm -f $POSTGRES_CONTAINER${NC}"
+        echo -e "${YELLOW}  docker volume prune${NC}"
+        exit 0
+    fi
+    
+    echo
+    echo -e "${BLUE}Starting cleanup of existing installation...${NC}"
+    
+    # Stop and remove Chainlink container
+    if [ -n "$EXISTING_CHAINLINK" ]; then
+        echo -e "${BLUE}Removing Chainlink container...${NC}"
+        docker rm -f "$CHAINLINK_CONTAINER" 2>/dev/null || true
+        echo -e "${GREEN}✓ Chainlink container removed${NC}"
+    fi
+    
+    # Stop and remove PostgreSQL container
+    if [ -n "$EXISTING_POSTGRES" ]; then
+        echo -e "${BLUE}Removing PostgreSQL container...${NC}"
+        docker rm -f "$POSTGRES_CONTAINER" 2>/dev/null || true
+        echo -e "${GREEN}✓ PostgreSQL container removed${NC}"
+    fi
+    
+    # Remove associated volumes
+    echo -e "${BLUE}Cleaning up Docker volumes...${NC}"
+    docker volume ls -q | grep -E "(postgres|chainlink)" | xargs -r docker volume rm 2>/dev/null || true
+    echo -e "${GREEN}✓ Docker volumes cleaned up${NC}"
+    
+    # Brief delay to ensure cleanup is complete
+    sleep 2
+    
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  Cleanup completed successfully!${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo
+    echo -e "${BLUE}Proceeding with fresh installation...${NC}"
+    echo
+else
+    echo -e "${GREEN}No existing Chainlink containers found. Proceeding with fresh installation.${NC}"
+    echo
+fi
+
 # Function to generate a secure random password
 generate_password() {
     # Generate a random 20-character password
@@ -73,56 +257,23 @@ generate_password() {
 # PostgreSQL configuration
 echo -e "${BLUE}Configuring PostgreSQL...${NC}"
 
-# Check if PostgreSQL container already exists
-POSTGRES_CONTAINER="cl-postgres"
-if docker ps -a | grep -q "$POSTGRES_CONTAINER"; then
-    echo -e "${YELLOW}PostgreSQL container '$POSTGRES_CONTAINER' already exists.${NC}"
-    if ask_yes_no "Would you like to remove the existing container and create a new one?"; then
-        echo -e "${BLUE}Removing existing PostgreSQL container...${NC}"
-        docker rm -f "$POSTGRES_CONTAINER"
-    else
-        echo -e "${GREEN}Using existing PostgreSQL container.${NC}"
-        # Get the password from the existing container
-        POSTGRES_PASSWORD=$(docker inspect --format='{{range .Config.Env}}{{if eq (index (split . "=") 0) "POSTGRES_PASSWORD"}}{{index (split . "=") 1}}{{end}}{{end}}' "$POSTGRES_CONTAINER")
-        if [ -z "$POSTGRES_PASSWORD" ]; then
-            echo -e "${YELLOW}Could not retrieve PostgreSQL password from existing container.${NC}"
-            read -p "Please enter the existing PostgreSQL password (leave blank to generate a new one): " input_password
-            if [ -n "$input_password" ]; then
-                POSTGRES_PASSWORD="$input_password"
-            else
-                POSTGRES_PASSWORD=$(generate_password)
-                echo -e "${YELLOW}Generated a new password for PostgreSQL. Please note this down.${NC}"
-            fi
-        fi
-    fi
-else
-    # Generate a secure password
-    POSTGRES_PASSWORD=$(generate_password)
-    echo -e "${BLUE}Generated a secure password for PostgreSQL.${NC}"
-fi
+# Generate a secure password (existing containers were already cleaned up)
+POSTGRES_PASSWORD=$(generate_password)
+echo -e "${BLUE}Generated a secure password for PostgreSQL.${NC}"
 
 # Save PostgreSQL password to config
 echo "POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"" > "$INSTALLER_DIR/.postgres"
 echo -e "${GREEN}PostgreSQL password saved to $INSTALLER_DIR/.postgres${NC}"
 echo -e "${YELLOW}Important: Keep this password safe, it will be needed for Chainlink node configuration.${NC}"
 
-# Create PostgreSQL container if it doesn't exist
-if ! docker ps -a | grep -q "$POSTGRES_CONTAINER"; then
-    echo -e "${BLUE}Creating PostgreSQL container...${NC}"
-    docker run --name "$POSTGRES_CONTAINER" \
-        -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-        -p 5432:5432 \
-        -d postgres:14
-    
-    echo -e "${GREEN}PostgreSQL container created successfully.${NC}"
-else
-    # Check if container is running
-    if ! docker ps | grep -q "$POSTGRES_CONTAINER"; then
-        echo -e "${BLUE}Starting PostgreSQL container...${NC}"
-        docker start "$POSTGRES_CONTAINER"
-    fi
-    echo -e "${GREEN}PostgreSQL container is running.${NC}"
-fi
+# Create PostgreSQL container
+echo -e "${BLUE}Creating PostgreSQL container...${NC}"
+docker run --name "$POSTGRES_CONTAINER" \
+    -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
+    -p 5432:5432 \
+    -d postgres:14
+
+echo -e "${GREEN}PostgreSQL container created successfully.${NC}"
 
 # Wait for PostgreSQL to start
 echo -e "${BLUE}Waiting for PostgreSQL to start...${NC}"
