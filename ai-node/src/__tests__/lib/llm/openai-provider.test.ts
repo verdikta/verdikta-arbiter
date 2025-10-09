@@ -64,6 +64,7 @@ describe('OpenAIProvider', () => {
     expect(ChatOpenAI).toHaveBeenCalledWith({
       openAIApiKey: 'test-api-key',
       modelName: 'gpt-3.5-turbo',
+      maxTokens: 1000,
     });
     expect(mockInvoke).toHaveBeenCalledWith('Test prompt');
   });
@@ -84,6 +85,7 @@ describe('OpenAIProvider', () => {
     expect(ChatOpenAI).toHaveBeenCalledWith({
       openAIApiKey: 'test-api-key',
       modelName: 'gpt-4o',
+      maxTokens: 1000,
     });
     expect(mockInvoke).toHaveBeenCalledWith([
       new HumanMessage({

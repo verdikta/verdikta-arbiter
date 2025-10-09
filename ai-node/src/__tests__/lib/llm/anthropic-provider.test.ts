@@ -149,8 +149,8 @@ describe('AnthropicProvider', () => {
       'Describe this image',
       'claude-3-sonnet-20240229',
       'base64EncodedImageString',
-      'image/webp'
-    )).rejects.toThrow('Unsupported image format: image/webp. Only JPEG and PNG formats are supported.');
+      'image/bmp'
+    )).rejects.toThrow('Unsupported image format: image/bmp. Supported formats are: JPEG, PNG, WEBP, and GIF.');
   });
 
   test('generateResponseWithImage accepts valid image formats', async () => {
@@ -183,7 +183,7 @@ describe('AnthropicProvider', () => {
       { 
         type: 'image', 
         content: 'base64EncodedImage1',
-        mediaType: 'image/webp'
+        mediaType: 'image/tiff'
       }
     ];
 
@@ -191,7 +191,7 @@ describe('AnthropicProvider', () => {
       'Process these attachments',
       'claude-3-5-sonnet-20241022',
       attachments
-    )).rejects.toThrow('Unsupported image format: image/webp. Only JPEG and PNG formats are supported.');
+    )).rejects.toThrow('Unsupported image format: image/tiff. Supported formats are: JPEG, PNG, WEBP, and GIF.');
   });
 
   test('generateResponseWithAttachments accepts valid image formats', async () => {
