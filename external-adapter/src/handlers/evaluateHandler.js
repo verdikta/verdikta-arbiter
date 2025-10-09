@@ -286,7 +286,12 @@ const evaluateHandler = async (request) => {
       return createSuccessResponse(id, result, justificationCid);
     }
   } catch (error) {
-    logger.error(`Error processing evaluation for jobRunID ${id}:`, error);
+    logger.error(`Error processing evaluation for jobRunID ${id}:`, {
+      message: error.message,
+      stack: error.stack,
+      name: error.name,
+      code: error.code
+    });
 
     // If we detect the custom PROVIDER_ERROR prefix, handle that differently
     if (error.message && error.message.startsWith('PROVIDER_ERROR:')) {
