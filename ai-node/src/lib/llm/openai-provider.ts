@@ -174,7 +174,12 @@ export class OpenAIProvider implements LLMProvider {
     return response.content;
   }
 
-  async generateResponseWithAttachments(prompt: string, model: string, attachments: Array<{ type: string, content: string, mediaType: string }>): Promise<string> {
+  async generateResponseWithAttachments(
+    prompt: string, 
+    model: string, 
+    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+  ): Promise<string> {
     // Check if this model supports native PDF processing
     const supportsNativePDF = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
       model.toLowerCase().includes(supportedModel.toLowerCase())
@@ -187,14 +192,27 @@ export class OpenAIProvider implements LLMProvider {
     // Use native PDF support for supported models
     if (supportsNativePDF && pdfAttachments.length > 0) {
       console.log(`[${this.providerName}] Using native PDF support for ${pdfAttachments.length} PDF(s)`);
-      return this.generateResponseWithNativePDFSupport(prompt, model, pdfAttachments, otherAttachments);
+      return this.generateResponseWithNativePDFSupport(prompt, model, pdfAttachments, otherAttachments, options);
     }
+
+    // Check if this is a reasoning model
+    const isReasoningModel = model.toLowerCase().includes('o1') || 
+                            model.toLowerCase().includes('o3') || 
+                            model.toLowerCase().includes('gpt-5') ||
+                            model.toLowerCase().includes('gpt-4.1') ||
+                            model.toLowerCase().includes('nano');
 
     // Fall back to original implementation for non-PDF or non-supporting models
     const openai = new ChatOpenAI({
       openAIApiKey: this.apiKey,
       modelName: model,
-      maxTokens: 1000,
+      // Reasoning models need much higher token limits
+      maxTokens: isReasoningModel 
+        ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
+        : 1000,
+      // Apply reasoning effort and verbosity ONLY for reasoning models
+      ...(isReasoningModel && options?.reasoning && { reasoning: options.reasoning }),
+      ...(isReasoningModel && options?.verbosity && { verbosity: options.verbosity }),
     });
 
     // Validate image attachments
@@ -249,7 +267,8 @@ export class OpenAIProvider implements LLMProvider {
     prompt: string, 
     model: string, 
     pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
-    otherAttachments: Array<{ type: string, content: string, mediaType: string }>
+    otherAttachments: Array<{ type: string, content: string, mediaType: string }>,
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
     try {
       // Use OpenAI's direct client for native PDF support
@@ -298,6 +317,13 @@ export class OpenAIProvider implements LLMProvider {
         }
       }
 
+      // Check if this is a reasoning model
+      const isReasoningModel = model.toLowerCase().includes('o1') || 
+                              model.toLowerCase().includes('o3') || 
+                              model.toLowerCase().includes('gpt-5') ||
+                              model.toLowerCase().includes('gpt-4.1') ||
+                              model.toLowerCase().includes('nano');
+
       // Make the API call with native PDF support
       const response = await client.chat.completions.create({
         model: model,
@@ -307,7 +333,13 @@ export class OpenAIProvider implements LLMProvider {
             content: messageContent
           }
         ],
-        max_tokens: 1000
+        // Reasoning models need much higher token limits
+        max_tokens: isReasoningModel 
+          ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
+          : 1000,
+        // Apply reasoning effort and verbosity ONLY for reasoning models
+        ...(isReasoningModel && options?.reasoning && { reasoning: options.reasoning }),
+        ...(isReasoningModel && options?.verbosity && { verbosity: options.verbosity }),
       }, {
         headers: {
           'OpenAI-Beta': 'pdf-files-v1'

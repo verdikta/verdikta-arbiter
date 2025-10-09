@@ -25,7 +25,7 @@ export interface LLMProvider {
 
   generateResponseWithImage(prompt: string, model: string, base64Image: string): Promise<string>;
 
-  generateResponseWithAttachments(prompt: string, model: string, attachments: Array<{ type: string, content: string }>): Promise<string>;
+  generateResponseWithAttachments(prompt: string, model: string, attachments: Array<{ type: string, content: string }>, options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }): Promise<string>;
 
   supportsImages(model: string): boolean;
 

@@ -231,7 +231,12 @@ export class OllamaProvider implements LLMProvider {
     }
   }
 
-  async generateResponseWithAttachments(prompt: string, model: string, attachments: Array<{ type: string, content: string, mediaType: string }>): Promise<string> {
+  async generateResponseWithAttachments(
+    prompt: string, 
+    model: string, 
+    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+  ): Promise<string> {
     const imageAttachments = attachments.filter(att => att.type === 'image');
     if (imageAttachments.length > 1) {
       throw new Error(`[${this.providerName}] Model ${model} only supports a single image input`);

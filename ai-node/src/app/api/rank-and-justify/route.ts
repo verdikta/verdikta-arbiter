@@ -41,8 +41,8 @@ interface RankAndJustifyOutput {
 }
 
 interface LLMProvider {
-  generateResponse: (prompt: string, model: string) => Promise<string>;
-  generateResponseWithAttachments?: (prompt: string, model: string, attachments: any[]) => Promise<string>;
+  generateResponse: (prompt: string, model: string, options?: any) => Promise<string>;
+  generateResponseWithAttachments?: (prompt: string, model: string, attachments: any[], options?: any) => Promise<string>;
   supportsAttachments: (model: string) => boolean;
 }
 
@@ -798,7 +798,8 @@ async function processModelForIteration(
         responseText = await llmProvider.generateResponseWithAttachments!(
           iterationPrompt,
           modelInfo.model,
-          attachments
+          attachments,
+          modelOptions
         );
         // Strip thinking blocks from the response
         responseText = stripThinkingBlocks(responseText);

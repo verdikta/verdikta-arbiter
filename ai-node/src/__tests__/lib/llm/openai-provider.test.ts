@@ -305,4 +305,150 @@ describe('OpenAIProvider', () => {
       })
     ]);
   });
+
+  // New tests for reasoning model support with attachments
+  test('generateResponse with reasoning model uses higher maxTokens and reasoning options', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Reasoning model response' });
+    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke
+    }));
+
+    const response = await provider.generateResponse(
+      'Analyze this complex problem',
+      'gpt-5-mini',
+      { reasoning: { effort: 'medium' }, verbosity: 'low' }
+    );
+
+    expect(response).toBe('Reasoning model response');
+    expect(ChatOpenAI).toHaveBeenCalledWith({
+      openAIApiKey: 'test-api-key',
+      modelName: 'gpt-5-mini',
+      maxTokens: 16000,
+      reasoning: { effort: 'medium' },
+      verbosity: 'low',
+    });
+    expect(mockInvoke).toHaveBeenCalledWith('Analyze this complex problem');
+  });
+
+  test('generateResponseWithAttachments with reasoning model uses higher maxTokens', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Reasoning model with attachments' });
+    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke
+    }));
+
+    const attachments = [
+      { 
+        type: 'text', 
+        content: 'Smart contract code to analyze',
+        mediaType: 'text/plain'
+      }
+    ];
+
+    const response = await provider.generateResponseWithAttachments(
+      'Evaluate this smart contract for vulnerabilities',
+      'gpt-5-mini-2025-08-07',
+      attachments,
+      { reasoning: { effort: 'medium' }, verbosity: 'low' }
+    );
+
+    expect(response).toBe('Reasoning model with attachments');
+    expect(ChatOpenAI).toHaveBeenCalledWith({
+      openAIApiKey: 'test-api-key',
+      modelName: 'gpt-5-mini-2025-08-07',
+      maxTokens: 16000,
+      reasoning: { effort: 'medium' },
+      verbosity: 'low',
+    });
+    expect(mockInvoke).toHaveBeenCalled();
+  });
+
+  test('generateResponseWithAttachments with non-reasoning model uses default maxTokens', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Standard model response' });
+    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke
+    }));
+
+    const attachments = [
+      { 
+        type: 'text', 
+        content: 'Some text content',
+        mediaType: 'text/plain'
+      }
+    ];
+
+    const response = await provider.generateResponseWithAttachments(
+      'Process this text',
+      'gpt-4o',
+      attachments,
+      { reasoning: { effort: 'medium' }, verbosity: 'low' }
+    );
+
+    expect(response).toBe('Standard model response');
+    // Non-reasoning model should NOT use 16000 maxTokens or reasoning options
+    expect(ChatOpenAI).toHaveBeenCalledWith({
+      openAIApiKey: 'test-api-key',
+      modelName: 'gpt-4o',
+      maxTokens: 1000,
+    });
+  });
+
+  test('generateResponseWithAttachments with o1 model uses reasoning options', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'O1 model response' });
+    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke
+    }));
+
+    const attachments = [
+      { 
+        type: 'text', 
+        content: 'Complex problem',
+        mediaType: 'text/plain'
+      }
+    ];
+
+    const response = await provider.generateResponseWithAttachments(
+      'Solve this problem',
+      'o1-preview',
+      attachments,
+      { reasoning: { effort: 'high' }, verbosity: 'medium' }
+    );
+
+    expect(response).toBe('O1 model response');
+    expect(ChatOpenAI).toHaveBeenCalledWith({
+      openAIApiKey: 'test-api-key',
+      modelName: 'o1-preview',
+      maxTokens: 16000,
+      reasoning: { effort: 'high' },
+      verbosity: 'medium',
+    });
+  });
+
+  test('generateResponseWithAttachments without options works correctly', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Response without options' });
+    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke
+    }));
+
+    const attachments = [
+      { 
+        type: 'text', 
+        content: 'Some content',
+        mediaType: 'text/plain'
+      }
+    ];
+
+    const response = await provider.generateResponseWithAttachments(
+      'Process this',
+      'gpt-4o',
+      attachments
+      // No options parameter
+    );
+
+    expect(response).toBe('Response without options');
+    expect(ChatOpenAI).toHaveBeenCalledWith({
+      openAIApiKey: 'test-api-key',
+      modelName: 'gpt-4o',
+      maxTokens: 1000,
+    });
+  });
 });

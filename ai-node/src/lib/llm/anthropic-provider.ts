@@ -84,7 +84,12 @@ export class AnthropicProvider implements LLMProvider {
     return Promise.resolve();
   }
 
-  async generateResponseWithAttachments(prompt: string, model: string, attachments: Array<{ type: string, content: string, mediaType: string }>): Promise<string> {
+  async generateResponseWithAttachments(
+    prompt: string, 
+    model: string, 
+    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+  ): Promise<string> {
     if (!this.supportsAttachments(model)) {
       throw new Error(`[${this.providerName}] Model ${model} does not support attachments.`);
     }
