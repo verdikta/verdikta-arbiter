@@ -33,11 +33,10 @@ const mockServices = {
 
 // Mock @verdikta/common package
 jest.mock('@verdikta/common', () => ({
-  createClient: jest.fn(() => mockServices)
+  createClient: jest.fn(() => mockServices),
+  validateRequest: jest.fn().mockResolvedValue(true),
+  requestSchema: {}
 }));
-// Mock local validator used by handler (replace verdikta-common validator)
-const localValidatorMock = { validateRequest: jest.fn().mockResolvedValue(true), requestSchema: {} };
-jest.mock('../../utils/validator', () => localValidatorMock);
 jest.mock('unzipper', () => ({
   Open: {
     file: jest.fn()
@@ -63,7 +62,7 @@ jest.mock('fs', () => ({
 }));
 
 const evaluateHandler = require('../../handlers/evaluateHandler');
-const { createClient } = require('@verdikta/common');
+const { createClient, validateRequest } = require('@verdikta/common');
 const aiClient = require('../../services/aiClient');
 const fs = require('fs').promises;
 
@@ -75,7 +74,7 @@ describe('evaluateHandler', () => {
     jest.clearAllMocks();
     
     // Mock successful validation by default
-    localValidatorMock.validateRequest.mockResolvedValue(true);
+    validateRequest.mockResolvedValue(true);
     
     // Mock cleanup by default
     archiveService.cleanup.mockResolvedValue(true);
