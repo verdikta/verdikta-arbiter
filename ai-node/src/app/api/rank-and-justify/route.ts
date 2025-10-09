@@ -340,6 +340,7 @@ export async function POST(request: Request) {
         // Extract successful results and handle failures gracefully
         const modelResults: any[] = [];
         const failedModels: string[] = [];
+        const failureDetails: Array<{ model: string; reason: string }> = [];
         
         modelSettledResults.forEach((result, index) => {
           const modelInfo = models[index];
@@ -347,10 +348,22 @@ export async function POST(request: Request) {
           
           if (result.status === 'fulfilled') {
             modelResults.push(result.value);
-            console.log(`✅ MODEL_SUCCESS: ${modelKey} completed successfully`);
+            
+            // Check if the fulfilled result actually used fallback (parsing error)
+            if (result.value.timingData?.failed === true) {
+              console.warn(`❌ MODEL_FAILED: ${modelKey} failed (parsing error): ${result.value.timingData.failureReason || 'Unable to parse response'}`);
+              failedModels.push(modelKey);
+              failureDetails.push({ 
+                model: modelKey, 
+                reason: result.value.timingData.failureReason || 'Unable to parse response' 
+              });
+            } else {
+              console.log(`✅ MODEL_SUCCESS: ${modelKey} completed successfully`);
+            }
           } else {
             console.warn(`❌ MODEL_FAILED: ${modelKey} failed: ${result.reason.message}`);
             failedModels.push(modelKey);
+            failureDetails.push({ model: modelKey, reason: result.reason.message });
             
             // Create fallback result for failed model
             const numOutcomes = body.outcomes?.length || 2;
@@ -389,7 +402,13 @@ export async function POST(request: Request) {
         
         if (successfulModels < minSuccessfulModels) {
           console.error(`❌ INSUFFICIENT_MODELS: Only ${successfulModels}/${models.length} models succeeded (minimum: ${minSuccessfulModels})`);
-          throw new Error(`Insufficient successful models: ${successfulModels}/${models.length} (minimum required: ${minSuccessfulModels})`);
+          
+          // Build detailed error message including failure reasons
+          const failureDetailStr = failureDetails.length > 0
+            ? ` Failures: ${failureDetails.map(f => `${f.model} (${f.reason})`).join('; ')}`
+            : '';
+          
+          throw new Error(`Insufficient successful models: ${successfulModels}/${models.length} (minimum required: ${minSuccessfulModels}).${failureDetailStr}`);
         }
         
         logTiming(`parallel_execution_iteration_${i + 1}`, parallelStartTime, {
@@ -410,10 +429,16 @@ export async function POST(request: Request) {
           const result = modelResults[j];
           const modelInfo = models[j];
           
-          iterationOutputs.push(result.modelAverage);
-          iterationWeights.push(result.weight);
+          // Only include successful models in the score aggregation
+          // Failed models contribute their error justifications but not their fallback scores
+          if (result.timingData?.failed !== true) {
+            iterationOutputs.push(result.modelAverage);
+            iterationWeights.push(result.weight);
+          } else {
+            console.log(`⚠️ EXCLUDING_FAILED_MODEL: ${modelInfo.provider}-${modelInfo.model} will not contribute to score aggregation (failed)`);
+          }
           
-          // Add justifications from this model
+          // Add justifications from ALL models (including failed ones for transparency)
           result.justifications.forEach((justification: string) => {
             iterationJustifications.push(justification);
             
@@ -713,6 +738,8 @@ async function processModelForIteration(
   const weight = modelInfo.weight;
   const allOutputs: number[][] = [];
   const justifications: string[] = [];
+  let usedFallback = false; // Track if this model had to use fallback scores
+  let failureReason = ''; // Track the reason for failure if fallback was used
 
   console.log(`🔄 MODEL_START: Processing model ${modelInfo.provider}-${modelInfo.model} (iteration ${iterationNumber})`);
   console.log(`📊 MODEL_CONFIG: Provider=${modelInfo.provider}, Model=${modelInfo.model}, Weight=${weight}, Count=${count}`);
@@ -842,6 +869,10 @@ async function processModelForIteration(
       fallbackDecisionVector[0] += 1000000 - (baseScore * numOutcomes);
       
       decisionVector = fallbackDecisionVector; // Use fallback vector
+      usedFallback = true; // Mark that this model used fallback scores
+      failureReason = responseText.length > 100 
+        ? `Unable to parse response: ${responseText.substring(0, 100)}...` 
+        : `Unable to parse response: ${responseText}`;
 
       if (!justification) {
         effectiveJustification = `LLM_ERROR: ${responseText}`; // Create fallback justification
@@ -865,7 +896,9 @@ async function processModelForIteration(
     provider: modelInfo.provider,
     model: modelInfo.model,
     count: count,
-    weight: weight
+    weight: weight,
+    failed: usedFallback, // Mark as failed if fallback scores were used
+    ...(usedFallback && { failureReason: failureReason }) // Include failure reason if fallback was used
   };
 
   logTiming(`model_total_${modelInfo.provider}_${modelInfo.model}`, modelStartTime, timingData);

@@ -458,17 +458,18 @@ describe('POST /api/rank-and-justify', () => {
       expect(data).toHaveProperty('scores');
       expect(data).toHaveProperty('justification');
 
-      // Anthropic failed, should use fallback [500000, 500000]
+      // Anthropic failed and is excluded from score aggregation
+      // Only OpenAI's scores are used (fallback not included in calculation)
       const expectedScores = [
         {
           outcome: 'Yes',
-          // OpenAI (700000 * 0.6) + Anthropic Fallback (500000 * 0.4)
-          score: Math.floor(700000 * 0.6 + 500000 * 0.4)
+          // Only OpenAI contributed: (700000 * 0.6) / 0.6 = 700000
+          score: 700000
         },
         {
           outcome: 'No',
-          // OpenAI (300000 * 0.6) + Anthropic Fallback (500000 * 0.4)
-          score: Math.floor(300000 * 0.6 + 500000 * 0.4)
+          // Only OpenAI contributed: (300000 * 0.6) / 0.6 = 300000
+          score: 300000
         }
       ];
 
@@ -482,7 +483,8 @@ describe('POST /api/rank-and-justify', () => {
       // Verify the justifier received the fallback justification
       expect(mockJustifierProvider.generateResponse).toHaveBeenCalledWith(
         expect.stringContaining('LLM_ERROR: I am unable to provide a score in the requested format.'),
-        expect.any(String) // The specific justifier model name
+        expect.any(String), // The specific justifier model name
+        undefined // The options parameter (undefined for non-reasoning models)
       );
       expect(data.justification).toBe(mockJustifierResponse);
     });
@@ -524,9 +526,11 @@ describe('POST /api/rank-and-justify', () => {
       const data = await response.json();
 
       // Provider errors (network issues, API errors) should still result in a 400 
-      // as the fallback is only for response *parsing* errors.
+      // The error message now includes failure details for better diagnostics
       expect(response.status).toBe(400);
-      expect(data).toHaveProperty('error', mockErrorResponse);
+      expect(data.error).toContain('Insufficient successful models: 0/1');
+      expect(data.error).toContain('OpenAI-gpt-4');
+      expect(data.error).toContain(mockErrorResponse);
     });
   });
 
@@ -761,7 +765,9 @@ describe('POST /api/rank-and-justify', () => {
       const data = await response.json();
 
       expect(response.status).toBe(400);
-      expect(data).toHaveProperty('error', mockErrorMessage);
+      expect(data.error).toContain('Insufficient successful models: 0/1');
+      expect(data.error).toContain('OpenAI-gpt-4');
+      expect(data.error).toContain(mockErrorMessage);
       expect(data.scores).toEqual([]);
       expect(data.justification).toBe('');
     });
