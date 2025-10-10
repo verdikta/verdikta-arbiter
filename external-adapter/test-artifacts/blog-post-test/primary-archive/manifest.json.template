@@ -1,0 +1,38 @@
+{
+  "version": "1.0",
+  "name": "Blog Post Evaluation for Payment Release",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      {
+        "AI_MODEL": "gpt-5-2025-08-07",
+        "AI_PROVIDER": "OpenAI",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      },
+      {
+        "AI_MODEL": "claude-sonnet-4-20250514",
+        "AI_PROVIDER": "Anthropic",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      }
+    ],
+    "ITERATIONS": 1,
+    "THRESHOLD": 90
+  },
+  "additional": [
+    {
+      "name": "gradingRubric",
+      "type": "ipfs/cid",
+      "hash": "QmUPGQpJakBMBpY4AihKPJRFiQtTxyMLMr6tSEuPqgApAz",
+      "description": "Blog post grading rubric with evaluation criteria"
+    }
+  ],
+  "bCIDs": {
+    "submittedWork": "REPLACE_WITH_WORK_PRODUCT_CID"
+  }
+}
+

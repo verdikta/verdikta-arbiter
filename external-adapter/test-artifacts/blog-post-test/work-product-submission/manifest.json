@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "name": "hunterSubmission",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "additional": [
+    {
+      "name": "submitted-blogpost",
+      "type": "text/plain",
+      "filename": "BlogPostSubmission.rtf"
+    }
+  ]
+}
+

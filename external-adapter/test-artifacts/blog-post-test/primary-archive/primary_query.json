@@ -1,0 +1,6 @@
+{
+  "query": "EVALUATION REQUEST FOR ESCROW RELEASE\n\nYou are evaluating a blog post submission for payment release from escrow. The freelance writer has submitted a blog post for the Verdikta.org blog about the 'cravemakeover' project.\n\nTASK REQUIREMENTS:\nWrite a compelling, informative blog post for Verdikta.org about the cravemakeover project. The post should be engaging, well-structured, accurate, and suitable for publication on a professional technology blog.\n\nEVALUATION INSTRUCTIONS:\nThe grading rubric is provided as an attachment (gradingRubric). Please evaluate the submitted work product against all criteria in the rubric.\n\nIMPORTANT - FUNDING DECISION:\n- If the submission scores 90% or above based on the rubric criteria, vote FUND to release payment from escrow\n- If the submission scores below 90%, vote DONT_FUND to withhold payment\n\nProvide a detailed justification explaining your evaluation of each criterion and your final funding decision.\n\nThe submitted work product will be provided in the next section.",
+  "references": ["gradingRubric"],
+  "outcomes": ["DONT_FUND", "FUND"]
+}
+
