@@ -17,20 +17,20 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 # Check if blog post file exists
-if [ ! -f "work-product-submission/BlogPostSubmission.rtf" ]; then
-    echo -e "${RED}ERROR: Blog post file not found at work-product-submission/BlogPostSubmission.rtf${NC}"
+if [ ! -f "work-product-submission/submission/BlogPostSubmission.rtf" ]; then
+    echo -e "${RED}ERROR: Blog post file not found at work-product-submission/submission/BlogPostSubmission.rtf${NC}"
     echo "Please ensure the file exists and contains your blog post content."
     exit 1
 fi
 
 # Check if file is not empty
-if [ ! -s "work-product-submission/BlogPostSubmission.rtf" ]; then
+if [ ! -s "work-product-submission/submission/BlogPostSubmission.rtf" ]; then
     echo -e "${RED}ERROR: BlogPostSubmission.rtf is empty${NC}"
-    echo "Please add your blog post content to work-product-submission/BlogPostSubmission.rtf"
+    echo "Please add your blog post content to work-product-submission/submission/BlogPostSubmission.rtf"
     exit 1
 fi
 
-echo -e "${GREEN}✓${NC} Blog post content found ($(wc -c < work-product-submission/BlogPostSubmission.rtf) bytes)"
+echo -e "${GREEN}✓${NC} Blog post content found ($(wc -c < work-product-submission/submission/BlogPostSubmission.rtf) bytes)"
 echo ""
 
 # Step 1: Create work product archive
@@ -77,11 +77,18 @@ echo ""
 # Step 2: Update primary manifest with work product CID
 echo "Step 2: Creating primary archive with CID reference..."
 cd primary-archive
-cp manifest.json.template manifest.json
-# Replace placeholder with actual CID
-sed -i "s/REPLACE_WITH_WORK_PRODUCT_CID/$WORK_PRODUCT_CID/g" manifest.json
+
+# Create a temporary manifest with the CID inserted
+sed "s/REPLACE_WITH_WORK_PRODUCT_CID/$WORK_PRODUCT_CID/g" manifest.json > manifest_temp.json
+mv manifest_temp.json manifest.json
+
 rm -f ../blogPostEvaluation.zip
-zip -r ../blogPostEvaluation.zip . -x "*.template" -x "*.DS_Store" -x "__MACOSX*"
+zip -r ../blogPostEvaluation.zip . -x "*.DS_Store" -x "__MACOSX*"
+
+# Restore the placeholder for future use
+sed "s/$WORK_PRODUCT_CID/REPLACE_WITH_WORK_PRODUCT_CID/g" manifest.json > manifest_temp.json
+mv manifest_temp.json manifest.json
+
 cd ..
 echo -e "${GREEN}✓${NC} Created blogPostEvaluation.zip"
 echo ""
@@ -124,7 +131,7 @@ echo "Archive Creation Complete!"
 echo "==========================================="
 echo ""
 echo "Your CIDs:"
-echo "  Rubric CID:        QmUPGQpJakBMBpY4AihKPJRFiQtTxyMLMr6tSEuPqgApAz"
+echo "  Rubric CID:        QmV2qYpWoWBmcMpMEVHzv8wH9Gc8oUZdpagkKkcVqt7u4j"
 echo "  Work Product CID:  $WORK_PRODUCT_CID"
 echo "  Primary CID:       $PRIMARY_CID"
 echo ""

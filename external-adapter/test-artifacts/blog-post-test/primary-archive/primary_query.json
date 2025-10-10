@@ -1,6 +1,13 @@
 {
-  "query": "EVALUATION REQUEST FOR ESCROW RELEASE\n\nYou are evaluating a blog post submission for payment release from escrow. The freelance writer has submitted a blog post for the Verdikta.org blog about the 'cravemakeover' project.\n\nTASK REQUIREMENTS:\nWrite a compelling, informative blog post for Verdikta.org about the cravemakeover project. The post should be engaging, well-structured, accurate, and suitable for publication on a professional technology blog.\n\nEVALUATION INSTRUCTIONS:\nThe grading rubric is provided as an attachment (gradingRubric). Please evaluate the submitted work product against all criteria in the rubric.\n\nIMPORTANT - FUNDING DECISION:\n- If the submission scores 90% or above based on the rubric criteria, vote FUND to release payment from escrow\n- If the submission scores below 90%, vote DONT_FUND to withhold payment\n\nProvide a detailed justification explaining your evaluation of each criterion and your final funding decision.\n\nThe submitted work product will be provided in the next section.",
-  "references": ["gradingRubric"],
-  "outcomes": ["DONT_FUND", "FUND"]
+  "query": "WORK PRODUCT EVALUATION REQUEST\n\nYou are evaluating a work product submission to determine whether it meets the required quality standards for payment release from escrow.\n\n=== TASK DESCRIPTION ===\nWork Product Type: Blog Post\nTask Title: Blog Post for Verdikta.org\nTask Description: Write a compelling, informative blog post for Verdikta.org about 'The use of AI in dispute resolution'. The post should be engaging, well-structured, accurate, and suitable for publication on a professional technology blog.\n\n=== EVALUATION INSTRUCTIONS ===\nA detailed grading rubric is provided as an attachment (gradingRubric). You must thoroughly evaluate the submitted work product against ALL criteria specified in the rubric.\n\nFor each evaluation criterion in the rubric:\n1. Assess how well the work product meets the requirement\n2. Note specific strengths and weaknesses\n3. Consider the overall quality and completeness\n\n=== YOUR TASK ===\nEvaluate the quality of the submitted work product and provide scores for two outcomes:\n- DONT_FUND: The work product does not meet standards\n- FUND: The work product meets standards\n\nBase your scoring on the overall assessment from the rubric criteria. Higher quality work should receive higher FUND scores, while lower quality work should receive higher DONT_FUND scores.\n\nIn your justification, explain your evaluation of each rubric criterion and how the work product performs against the stated requirements.\n\nThe submitted work product will be provided in the next section.",
+  
+  "references": [
+    "gradingRubric"
+  ],
+  
+  "outcomes": [
+    "DONT_FUND",
+    "FUND"
+  ]
 }
 

@@ -27,12 +27,12 @@
     {
       "name": "gradingRubric",
       "type": "ipfs/cid",
-      "hash": "QmUPGQpJakBMBpY4AihKPJRFiQtTxyMLMr6tSEuPqgApAz",
+      "hash": "QmV2qYpWoWBmcMpMEVHzv8wH9Gc8oUZdpagkKkcVqt7u4j",
       "description": "Blog post grading rubric with evaluation criteria"
     }
   ],
   "bCIDs": {
-    "submittedWork": "REPLACE_WITH_WORK_PRODUCT_CID"
+    "submittedWork": "QmSQrjqfMYfJCXLMcjB2hyJstr3h647omHG4gn1yDk2Y81"
   }
 }
 
