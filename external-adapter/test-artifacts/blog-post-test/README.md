@@ -133,8 +133,7 @@ Create a file named `manifest.json` with this content:
         "WEIGHT": 0.5
       }
     ],
-    "ITERATIONS": 1,
-    "THRESHOLD": 90
+    "ITERATIONS": 1
   },
   "additional": [
     {
@@ -153,7 +152,7 @@ Create a file named `manifest.json` with this content:
 ### Step 3: Create primary_query.json
 Create a file named `primary_query.json` with this content:
 
-**Note:** This query format is designed to be generic and reusable. The AI node will prepend additional instructions about response format. The query should focus on describing the evaluation task without specifying thresholds (those are handled in the manifest's `juryParameters.THRESHOLD`).
+**Note:** This query format is designed to be generic and reusable. The AI node will prepend additional instructions about response format. The query should focus on describing the evaluation task without specifying thresholds (those are handled by the escrow smart contract).
 
 ```json
 {
@@ -175,10 +174,10 @@ Create a file named `primary_query.json` with this content:
    - Score must be an array of integers summing to 1,000,000
    - Each outcome (DONT_FUND, FUND) receives a score
 3. The AI evaluates quality and assigns scores (e.g., [300000, 700000] for FUND)
-4. The system compares scores against the THRESHOLD (90) in the manifest
-5. If FUND score ≥ threshold, payment is released
+4. The evaluation result is returned to the caller
+5. **The escrow smart contract** determines if payment should be released based on its own threshold rules
 
-**Important:** The query should NOT mention specific thresholds. Let the AI focus on quality evaluation, and let the system handle threshold logic.
+**Important:** The query should NOT mention specific thresholds. Let the AI focus on quality evaluation, and let the smart contract handle funding decisions.
 
 ### Step 4: Create ZIP Archive
 ```bash
