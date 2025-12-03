@@ -204,7 +204,7 @@ fi
 
 # Start chainlink container
 echo -e "${BLUE}Creating and starting Chainlink container...${NC}"
-docker run --platform linux/x86_64/v8 \
+docker run --platform linux/amd64 \
     --name chainlink \
     -v "$CHAINLINK_DIR:/chainlink" \
     -it \
