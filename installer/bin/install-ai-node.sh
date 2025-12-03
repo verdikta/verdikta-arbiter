@@ -9,6 +9,7 @@ set -e  # Exit on any error
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_DIR="$INSTALLER_DIR/config"
+UTIL_DIR="$INSTALLER_DIR/util"
 
 # Color definitions
 GREEN='\033[0;32m'
