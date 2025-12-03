@@ -34,6 +34,32 @@ Start the automated installation:
 ./bin/install.sh
 ```
 
+#### Command Line Options
+
+The installer supports the following options:
+
+| Option | Description |
+|--------|-------------|
+| `--run-tests`, `-t` | Run unit tests during installation (skipped by default) |
+| `--resume-registration`, `-r` | Skip installation steps and resume from oracle registration |
+| `--help`, `-h` | Show help message with all options |
+
+**Examples:**
+
+```bash
+# Standard installation (tests skipped by default)
+./bin/install.sh
+
+# Installation with unit tests
+./bin/install.sh --run-tests
+
+# Resume oracle registration after a failed attempt
+./bin/install.sh --resume-registration
+```
+
+!!! tip "Running Tests"
+    Unit tests are skipped by default to speed up installation. Use `--run-tests` if you want to verify the installation with tests, particularly when contributing to development.
+
 The installer displays a welcome banner and begins the 9-step process:
 
 ```
