@@ -187,7 +187,7 @@ npm run test:classid-validation
 #### Manual Testing
 ```bash
 # Test installer (in clean environment)
-./installer/bin/install.sh --skip-tests
+./installer/bin/install.sh
 
 # Test ClassID integration
 cd ai-node

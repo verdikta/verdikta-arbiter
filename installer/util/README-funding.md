@@ -21,7 +21,7 @@ During Verdikta Arbiter installation, multiple Chainlink keys are created to han
 ### Basic Usage (Interactive)
 ```bash
 # During installation - automatically prompted
-./installer/bin/install.sh -s
+./installer/bin/install.sh
 
 # Post-installation from installed directory
 ~/verdikta-arbiter-node/fund-chainlink-keys.sh

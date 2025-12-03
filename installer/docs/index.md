@@ -101,7 +101,7 @@ Perfect for most users who want a quick, hassle-free setup with multi-arbiter su
 
 ```bash
 cd verdikta-arbiter/installer
-./bin/install.sh -s
+./bin/install.sh
 ```
 
 **Features:**

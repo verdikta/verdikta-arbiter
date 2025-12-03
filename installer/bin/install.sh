@@ -19,16 +19,16 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Default values
-SKIP_TESTS=false
+SKIP_TESTS=true
 RESUME_REGISTRATION=false
-INSTALL_FLAGS=""
+INSTALL_FLAGS="--skip-tests"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
     case $1 in
-        --skip-tests|-s)
-            SKIP_TESTS=true
-            INSTALL_FLAGS="$INSTALL_FLAGS --skip-tests"
+        --run-tests|-t)
+            SKIP_TESTS=false
+            INSTALL_FLAGS=""
             shift
             ;;
         --resume-registration|-r)
@@ -40,12 +40,12 @@ while [[ $# -gt 0 ]]; do
             echo "Main installation script for Verdikta Arbiter Node"
             echo ""
             echo "Options:"
-            echo "  --skip-tests, -s           Skip unit tests during installation"
+            echo "  --run-tests, -t            Run unit tests during installation (skipped by default)"
             echo "  --resume-registration, -r  Skip all installation steps and resume from oracle registration"
             echo "  --help, -h                 Show this help message"
             echo ""
             echo "Environment Variables:"
-            echo "  SKIP_TESTS=true     Skip unit tests (alternative to --skip-tests)"
+            echo "  RUN_TESTS=true      Run unit tests (alternative to --run-tests)"
             echo ""
             echo "This script orchestrates the complete installation process including:"
             echo "  1. Prerequisites check"
@@ -74,9 +74,9 @@ while [[ $# -gt 0 ]]; do
 done
 
 # Check environment variable as well
-if [ "$SKIP_TESTS" = "true" ]; then
-    SKIP_TESTS=true
-    INSTALL_FLAGS="$INSTALL_FLAGS --skip-tests"
+if [ "$RUN_TESTS" = "true" ]; then
+    SKIP_TESTS=false
+    INSTALL_FLAGS=""
 fi
 
 # Banner
@@ -86,8 +86,8 @@ echo "  Verdikta Arbiter Node Installation"
 echo "===================================================="
 echo -e "${NC}"
 
-if [ "$SKIP_TESTS" = "true" ]; then
-    echo -e "${YELLOW}Note: Unit tests will be skipped during installation${NC}"
+if [ "$SKIP_TESTS" = "false" ]; then
+    echo -e "${YELLOW}Note: Unit tests will be run during installation${NC}"
     echo ""
 fi
 

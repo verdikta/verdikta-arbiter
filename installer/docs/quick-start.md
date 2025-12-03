@@ -62,7 +62,7 @@ cd verdikta-arbiter/installer
 Start the installation process:
 
 ```bash
-./bin/install.sh -s
+./bin/install.sh
 ```
 
 The installer will guide you through **10 main steps**. Here's what happens in each step:

@@ -117,7 +117,7 @@ cd testing-tool
 npm run test:integration
 
 # Test installer changes (use clean VM/container)
-./installer/bin/install.sh --skip-tests
+./installer/bin/install.sh
 ```
 
 ## Development Tools

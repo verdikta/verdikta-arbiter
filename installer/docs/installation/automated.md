@@ -31,7 +31,7 @@ cd verdikta-arbiter/installer
 Start the automated installation:
 
 ```bash
-./bin/install.sh -s
+./bin/install.sh
 ```
 
 The installer displays a welcome banner and begins the 9-step process:
