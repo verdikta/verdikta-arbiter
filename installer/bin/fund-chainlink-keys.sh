@@ -767,10 +767,12 @@ check_python_dependencies() {
         echo -e "${BLUE}Using pip command: $PIP_CMD${NC}"
         
         # Install required packages
-        if ! $PIP_CMD install eth-account web3 2>&1; then
+        # Use --ignore-installed to avoid conflicts with system packages
+        if ! $PIP_CMD install --ignore-installed eth-account web3 2>&1; then
             echo -e "${YELLOW}First install attempt failed, retrying with --break-system-packages...${NC}"
-            # Some newer systems require --break-system-packages flag
-            $PIP_CMD install --break-system-packages eth-account web3 2>&1 || true
+            # Some newer systems (Debian 12+, Ubuntu 23.04+) require --break-system-packages flag
+            # Also use --ignore-installed to avoid conflicts with system-managed packages like typing-extensions
+            $PIP_CMD install --break-system-packages --ignore-installed eth-account web3 2>&1 || true
         fi
         
         # Verify installation
