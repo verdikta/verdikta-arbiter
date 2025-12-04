@@ -66,6 +66,35 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Function to load NVM and Node.js
+load_nvm() {
+    # Check if node is already available
+    if command_exists node; then
+        echo -e "${GREEN}Node.js $(node --version) already available${NC}"
+        return 0
+    fi
+    
+    # Load nvm if it exists
+    if [ -d "$HOME/.nvm" ]; then
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+        
+        # Verify node is available
+        if command_exists node; then
+            echo -e "${GREEN}Node.js $(node --version) loaded via NVM${NC}"
+            return 0
+        else
+            echo -e "${RED}Failed to load Node.js from NVM${NC}"
+            return 1
+        fi
+    else
+        echo -e "${RED}NVM directory not found and Node.js not available.${NC}"
+        echo -e "${RED}Please ensure Node.js is installed or run the original installer.${NC}"
+        return 1
+    fi
+}
+
 # Function to prompt for Yes/No question
 ask_yes_no() {
     local prompt="$1"
@@ -216,6 +245,13 @@ upgrade_component() {
 }
 
 # Main script execution starts here
+
+# Load NVM and Node.js first (required for npm operations)
+echo -e "${BLUE}Loading Node.js environment...${NC}"
+if ! load_nvm; then
+    echo -e "${RED}Error: Could not load Node.js. Please ensure NVM and Node.js are installed.${NC}"
+    exit 1
+fi
 
 # Get the target installation directory
 DEFAULT_INSTALL_DIR="$HOME/verdikta-arbiter-node"
