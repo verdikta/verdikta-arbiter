@@ -707,14 +707,24 @@ install_pip_if_missing() {
             fi
         fi
         
-        # Verify pip installation
+        # Clear shell command cache so newly installed pip can be found
+        hash -r
+        
+        # Verify pip installation using direct path check as fallback
         if ! command_exists pip3 && ! command_exists pip; then
-            echo -e "${RED}Error: Failed to install pip. Please install manually:${NC}"
-            echo -e "${RED}  On Ubuntu/Debian: sudo apt-get install python3-pip${NC}"
-            echo -e "${RED}  On CentOS/RHEL: sudo yum install python3-pip${NC}"
-            echo -e "${RED}  On Fedora: sudo dnf install python3-pip${NC}"
-            echo -e "${RED}  On macOS: brew install python3${NC}"
-            exit 1
+            # Try common installation paths directly
+            if [ -x "/usr/bin/pip3" ]; then
+                echo -e "${GREEN}✓ pip3 found at /usr/bin/pip3${NC}"
+            elif [ -x "/usr/local/bin/pip3" ]; then
+                echo -e "${GREEN}✓ pip3 found at /usr/local/bin/pip3${NC}"
+            else
+                echo -e "${RED}Error: Failed to install pip. Please install manually:${NC}"
+                echo -e "${RED}  On Ubuntu/Debian: sudo apt-get install python3-pip${NC}"
+                echo -e "${RED}  On CentOS/RHEL: sudo yum install python3-pip${NC}"
+                echo -e "${RED}  On Fedora: sudo dnf install python3-pip${NC}"
+                echo -e "${RED}  On macOS: brew install python3${NC}"
+                exit 1
+            fi
         fi
         
         echo -e "${GREEN}✓ pip successfully installed${NC}"
@@ -728,24 +738,46 @@ check_python_dependencies() {
     # First ensure pip is available
     install_pip_if_missing
     
+    # Clear shell command cache to ensure we find newly installed commands
+    hash -r
+    
     if ! python3 -c "import eth_account, web3" 2>/dev/null; then
         echo -e "${YELLOW}Installing required Python packages...${NC}"
         
-        # Try to install using pip3 first, then pip
+        # Determine which pip command to use (check command_exists first, then direct paths)
+        PIP_CMD=""
         if command_exists pip3; then
-            pip3 install eth-account web3 >/dev/null 2>&1
+            PIP_CMD="pip3"
         elif command_exists pip; then
-            pip install eth-account web3 >/dev/null 2>&1
-        else
+            PIP_CMD="pip"
+        elif [ -x "/usr/bin/pip3" ]; then
+            PIP_CMD="/usr/bin/pip3"
+        elif [ -x "/usr/local/bin/pip3" ]; then
+            PIP_CMD="/usr/local/bin/pip3"
+        elif [ -x "/usr/bin/pip" ]; then
+            PIP_CMD="/usr/bin/pip"
+        fi
+        
+        if [ -z "$PIP_CMD" ]; then
             echo -e "${RED}Error: pip/pip3 not found after installation attempt. Please install manually:${NC}"
             echo -e "${RED}  pip3 install eth-account web3${NC}"
             exit 1
+        fi
+        
+        echo -e "${BLUE}Using pip command: $PIP_CMD${NC}"
+        
+        # Install required packages
+        if ! $PIP_CMD install eth-account web3 2>&1; then
+            echo -e "${YELLOW}First install attempt failed, retrying with --break-system-packages...${NC}"
+            # Some newer systems require --break-system-packages flag
+            $PIP_CMD install --break-system-packages eth-account web3 2>&1 || true
         fi
         
         # Verify installation
         if ! python3 -c "import eth_account, web3" 2>/dev/null; then
             echo -e "${RED}Error: Failed to install required packages. Please install manually:${NC}"
             echo -e "${RED}  pip3 install eth-account web3${NC}"
+            echo -e "${RED}  (On newer systems, you may need: pip3 install --break-system-packages eth-account web3)${NC}"
             exit 1
         fi
         
