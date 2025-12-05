@@ -124,19 +124,56 @@ elif [ "$RECOVER_ETH" = "false" ] && [ "$RECOVER_LINK" = "false" ]; then
     INTERACTIVE_MODE_SELECTION=true
 fi
 
+# Find environment files - check multiple possible locations
+ENV_FILE=""
+CONTRACTS_FILE=""
+
+# Possible locations for environment files
+POSSIBLE_LOCATIONS=(
+    "$SCRIPT_DIR/installer"             # Target installation: ./installer/ (most common)
+    "$INSTALLER_DIR"                    # Original installer directory
+    "$(dirname "$SCRIPT_DIR")/installer"  # Target installation: ../installer/
+    "$SCRIPT_DIR/../installer"          # Alternative path
+    "$(pwd)/installer"                  # Current directory + installer
+)
+
+# Find .env file
+for location in "${POSSIBLE_LOCATIONS[@]}"; do
+    if [ -f "$location/.env" ]; then
+        ENV_FILE="$location/.env"
+        break
+    fi
+done
+
+# Find .contracts file
+for location in "${POSSIBLE_LOCATIONS[@]}"; do
+    if [ -f "$location/.contracts" ]; then
+        CONTRACTS_FILE="$location/.contracts"
+        break
+    fi
+done
+
 # Load environment variables
-if [ -f "$INSTALLER_DIR/.env" ]; then
-    source "$INSTALLER_DIR/.env"
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    source "$ENV_FILE"
 else
-    echo -e "${RED}Error: Environment file not found. Please run the installer first.${NC}"
+    echo -e "${RED}Error: Environment file (.env) not found in any of these locations:${NC}"
+    for location in "${POSSIBLE_LOCATIONS[@]}"; do
+        echo -e "${RED}  - $location/.env${NC}"
+    done
+    echo -e "${RED}Please run the installer first.${NC}"
     exit 1
 fi
 
 # Load contract information (includes key addresses)
-if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    source "$INSTALLER_DIR/.contracts"
+if [ -n "$CONTRACTS_FILE" ] && [ -f "$CONTRACTS_FILE" ]; then
+    source "$CONTRACTS_FILE"
 else
-    echo -e "${RED}Error: Contract information file not found. Please run the installer first.${NC}"
+    echo -e "${RED}Error: Contract information file (.contracts) not found in any of these locations:${NC}"
+    for location in "${POSSIBLE_LOCATIONS[@]}"; do
+        echo -e "${RED}  - $location/.contracts${NC}"
+    done
+    echo -e "${RED}Please run the installer first.${NC}"
     exit 1
 fi
 
@@ -727,7 +764,7 @@ collect_chainlink_keys() {
                 key_count=$((key_count + 1))
             fi
         fi
-    done < "$INSTALLER_DIR/.contracts"
+    done < "$CONTRACTS_FILE"
     
     if [ $key_count -eq 0 ]; then
         echo "ERROR: No Chainlink keys found in contracts file"
