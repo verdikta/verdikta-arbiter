@@ -26,11 +26,13 @@ async function main() {
   
   // Get current gas price from the network
   const feeData = await hre.ethers.provider.getFeeData();
-  console.log(`Current gas price: ${hre.ethers.formatUnits(feeData.gasPrice, "gwei")} gwei`);
+  const gp = feeData.gasPrice || feeData.maxFeePerGas;
+  if (!gp) throw new Error("Could not fetch gas price/maxFeePerGas");
+  console.log(`Current gas price: ${hre.ethers.utils.formatUnits(gp, "gwei")} gwei`);
   
-  // Deploy with a small buffer on gas price to ensure it goes through
-  const gasPrice = (feeData.gasPrice * 120n) / 100n; // 20% buffer
-  console.log(`Using gas price: ${hre.ethers.formatUnits(gasPrice, "gwei")} gwei`);
+  // Deploy with a small buffer on gas price to ensure it goes through (v5 BigNumber math)
+  const gasPrice = gp.mul(120).div(100); // 20% buffer
+  console.log(`Using gas price: ${hre.ethers.utils.formatUnits(gasPrice, "gwei")} gwei`);
   
   const op = await ArbiterOperator.deploy(LINK, {
     gasPrice: gasPrice,
