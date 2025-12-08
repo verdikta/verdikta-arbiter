@@ -1,6 +1,6 @@
 require("dotenv").config();
 const https = require("https");
-require("@nomicfoundation/hardhat-toolbox");
+require("@nomicfoundation/hardhat-ethers");
 require("hardhat-deploy");
 
 // ──────────────────────────────────────────────────────────────────────────
