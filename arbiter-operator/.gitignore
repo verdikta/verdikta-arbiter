@@ -11,6 +11,7 @@ temp.txt
 # Dependencies
 /node_modules/
 /lib/
+package-lock.json
 
 # Environment and configuration files
 .env
