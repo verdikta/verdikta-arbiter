@@ -21,32 +21,32 @@ async function main() {
 
   const ArbiterOperator = await hre.ethers.getContractFactory("ArbiterOperator");
   
-  // Deploy with proper gas settings for Base mainnet
-  console.log("Deploying contract...");
+  let op;
+  try {
+    // Estimate gas for deployment
+    console.log("Estimating deployment gas...");
+    const deployTx = await ArbiterOperator.getDeployTransaction(LINK);
+    const gasEstimate = await hre.ethers.provider.estimateGas(deployTx);
+    
+    // Add buffer to gas estimate for safety (50% buffer for contract deployment)
+    const gasLimit = Math.ceil(Number(gasEstimate) * 1.5);
+    console.log(`Gas estimate: ${gasEstimate.toString()}, using limit: ${gasLimit}`);
+    
+    op = await ArbiterOperator.deploy(LINK, { gasLimit });
+  } catch (estimateError) {
+    console.log("Gas estimation failed, using fallback gas limit...");
+    console.log("Estimate error:", estimateError.message);
+    
+    // Use a reasonable fallback gas limit for contract deployment on mainnet
+    const fallbackGasLimit = 2000000; // 2M gas for contract deployment
+    console.log(`Using fallback gas limit: ${fallbackGasLimit}`);
+    
+    op = await ArbiterOperator.deploy(LINK, { gasLimit: fallbackGasLimit });
+  }
   
-  // Get current gas price from the network
-  const feeData = await hre.ethers.provider.getFeeData();
-  const gp = feeData.gasPrice || feeData.maxFeePerGas;
-  if (!gp) throw new Error("Could not fetch gas price/maxFeePerGas");
-  console.log(`Current gas price: ${hre.ethers.utils.formatUnits(gp, "gwei")} gwei`);
-  
-  // Deploy with a small buffer on gas price to ensure it goes through (v5 BigNumber math)
-  const gasPrice = gp.mul(120).div(100); // 20% buffer
-  console.log(`Using gas price: ${hre.ethers.utils.formatUnits(gasPrice, "gwei")} gwei`);
-  
-  const op = await ArbiterOperator.deploy(LINK, {
-    gasPrice: gasPrice,
-    gasLimit: 3500000 // 3.5M gas should be sufficient
-  });
-  
-  console.log("Transaction sent, waiting for confirmation...");
-  console.log("Transaction hash:", op.deploymentTransaction().hash);
-  
-  await op.waitForDeployment();
+  await op.deployed();
 
-  console.log("ArbiterOperator deployed to", await op.getAddress());
+  console.log("ArbiterOperator deployed to", op.address);
 }
 
 main().catch((err) => { console.error(err); process.exitCode = 1; });
-
-
