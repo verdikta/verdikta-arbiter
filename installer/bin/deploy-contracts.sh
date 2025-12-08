@@ -309,7 +309,7 @@ if ! command_exists npm; then
 fi
 
 echo -e "${BLUE}Installing ArbiterOperator dependencies...${NC}"
-npm install
+npm install --legacy-peer-deps
 
 echo -e "${BLUE}Creating .env file for Hardhat deployment...${NC}"
 # Ensure PRIVATE_KEY has 0x prefix for Hardhat/ethers

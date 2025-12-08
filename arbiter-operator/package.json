@@ -14,7 +14,7 @@
   "type": "commonjs",
   "description": "",
   "devDependencies": {
-    "@nomicfoundation/hardhat-toolbox": "^2.0.2",
+    "@nomicfoundation/hardhat-toolbox": "^5.0.0",
     "dotenv": "^16.5.0",
     "hardhat": "^2.23.0",
     "hardhat-deploy": "^1.0.2"
@@ -22,7 +22,6 @@
   "dependencies": {
     "@chainlink/contracts": "^1.4.0",
     "@openzeppelin/contracts": "^4.9.6",
-    "ethers": "^5.7.2",
     "yargs": "^17.7.2"
   }
 }

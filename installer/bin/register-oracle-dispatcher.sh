@@ -134,7 +134,7 @@ if [ ! -d "$ARBITER_OPERATOR_DIR/node_modules" ]; then
         echo -e "${YELLOW}NVM not found. Assuming Node.js v20.18.1 is available in PATH.${NC}"
     fi
 
-    npm install
+    npm install --legacy-peer-deps
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to install dependencies in $ARBITER_OPERATOR_DIR${NC}"
         exit 1
