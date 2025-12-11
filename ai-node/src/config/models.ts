@@ -37,4 +37,15 @@ export const modelConfig = {
     { name: 'deepseek-ai/DeepSeek-R1', supportsImages: true, supportsAttachments: true },
     { name: 'moonshotai/Kimi-K2-Instruct', supportsImages: true, supportsAttachments: true },
   ],
+  xai: [
+    // Grok 4.1 models (2M context, multimodal - text + image input/output)
+    { name: 'grok-4-1-fast-reasoning', supportsImages: true, supportsAttachments: true },
+    { name: 'grok-4-1-fast-non-reasoning', supportsImages: true, supportsAttachments: true },
+    // Grok 4 models (2M context for fast variants, 256K for base)
+    { name: 'grok-4-fast-reasoning', supportsImages: true, supportsAttachments: true },
+    { name: 'grok-4-fast-non-reasoning', supportsImages: true, supportsAttachments: true },
+    { name: 'grok-4-0709', supportsImages: true, supportsAttachments: true },
+    // Code-specialized model (256K context)
+    { name: 'grok-code-fast-1', supportsImages: true, supportsAttachments: true },
+  ],
 };

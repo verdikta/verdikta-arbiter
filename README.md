@@ -56,7 +56,7 @@ Visit our [documentation](https://docs.verdikta.com/) to learn how to integrate 
 
 ## ✨ Key Features
 
-- **🤖 Multi-Model AI**: Leverage GPT-5, Claude-4, and local models simultaneously
+- **🤖 Multi-Model AI**: Leverage GPT-5, Claude-4, Grok-4, and local models simultaneously
 - **⚡ Fast Resolution**: Automated decisions in minutes, not days
 - **🔗 Blockchain Native**: Built for Base/Ethereum with smart contract integration
 - **🌐 Decentralized**: Multiple independent arbiters ensure fairness
@@ -161,6 +161,7 @@ See our [Contributing Guide](docs/CONTRIBUTING.md) for detailed information.
 ### Optional Requirements
 - **OpenAI API Key**: For GPT models
 - **Anthropic API Key**: For Claude models
+- **xAI/Grok API Key**: For Grok models
 - **Ollama**: For local AI models
 
 ## 📊 Usage Examples
@@ -220,7 +221,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- **OpenAI** and **Anthropic** for AI model APIs
+- **OpenAI**, **Anthropic**, and **xAI** for AI model APIs
 - **Chainlink** for oracle infrastructure
 - **IPFS** for decentralized storage
 - **Base** for blockchain infrastructure

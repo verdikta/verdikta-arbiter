@@ -149,6 +149,9 @@ export async function POST(request: Request) {
         ];
         const supported = pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
         console.log(`[Anthropic] Model: ${modelInfo.model}, Supported: ${supported}`);
+      } else if (modelInfo.provider === 'xAI' || modelInfo.provider === 'xai') {
+        // xAI Grok models support text attachments but not native PDF processing
+        console.log(`[xAI] Model: ${modelInfo.model}, Native PDF Supported: false (will use text extraction)`);
       } else {
         console.log(`[Other] Provider: ${modelInfo.provider}, Model: ${modelInfo.model}, Supported: false`);
       }
@@ -166,6 +169,9 @@ export async function POST(request: Request) {
           'claude-sonnet-4-20250514'
         ];
         return pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
+      } else if (modelInfo.provider === 'xAI' || modelInfo.provider === 'xai') {
+        // xAI Grok models don't support native PDF - will use text extraction
+        return false;
       }
       return false;
     });
@@ -777,7 +783,10 @@ async function processModelForIteration(
                           modelInfo.model.toLowerCase().includes('o3') ||
                           modelInfo.model.toLowerCase().includes('gpt-5') ||
                           modelInfo.model.toLowerCase().includes('gpt-4.1') ||
-                          modelInfo.model.toLowerCase().includes('nano');
+                          modelInfo.model.toLowerCase().includes('nano') ||
+                          modelInfo.model.toLowerCase().includes('grok-4') ||
+                          modelInfo.model.toLowerCase().includes('grok-3') ||
+                          modelInfo.model.toLowerCase().includes('reasoning');
   
   const modelOptions = isReasoningModel 
     ? { reasoning: { effort: 'medium' as const }, verbosity: 'low' as const }

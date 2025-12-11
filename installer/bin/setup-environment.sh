@@ -437,6 +437,18 @@ configure_api_keys() {
         fi
     fi
     
+    # xAI API Key (for Grok models)
+    if [ -z "$XAI_API_KEY" ]; then
+        echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
+        echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
+        read -p "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
+    else
+        read -p "Enter your xAI API Key (leave blank to use existing key): " new_key
+        if [ -n "$new_key" ]; then
+            XAI_API_KEY="$new_key"
+        fi
+    fi
+    
     # Infura API Key
     if [ -z "$INFURA_API_KEY" ]; then
         read -p "Enter your Infura API Key (leave blank to skip): " INFURA_API_KEY
@@ -560,6 +572,7 @@ configure_api_keys() {
 OPENAI_API_KEY="$OPENAI_API_KEY"
 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"
+XAI_API_KEY="$XAI_API_KEY"
 INFURA_API_KEY="$INFURA_API_KEY"
 PINATA_API_KEY="$PINATA_API_KEY"
 EOL
@@ -640,9 +653,10 @@ EOL
     echo -e "  4) claude-sonnet-4-20250514 (Anthropic) - Excellent reasoning (requires Anthropic API key)"
     echo -e "  5) claude-3-7-sonnet-20250219 (Anthropic) - Strong performance (requires Anthropic API key)"
     echo -e "  6) moonshotai/Kimi-K2-Instruct (Hyperbolic) - Fast, cost-effective (requires Hyperbolic API key)"
-    echo -e "  7) gemma3n:e4b (Ollama) - Recommended for open source (no API key required)"
-    echo -e "  8) deepseek-r1:8b (Ollama) - Good reasoning, free (no API key required)"
-    echo -e "  9) llama3.1:8b (Ollama) - Reliable, free (no API key required)"
+    echo -e "  7) grok-4-1-fast-non-reasoning (xAI) - Advanced reasoning (requires xAI API key)"
+    echo -e "  8) gemma3n:e4b (Ollama) - Recommended for open source (no API key required)"
+    echo -e "  9) deepseek-r1:8b (Ollama) - Good reasoning, free (no API key required)"
+    echo -e "  10) llama3.1:8b (Ollama) - Reliable, free (no API key required)"
     echo ""
     
     # Provide intelligent recommendations based on API keys
@@ -659,9 +673,12 @@ EOL
     elif [ -n "$HYPERBOLIC_API_KEY" ]; then
         echo -e "${YELLOW}   • You have Hyperbolic key - Option 6 (Kimi-K2) recommended for cost-effective performance${NC}"
         DEFAULT_CHOICE=6
-    else
-        echo -e "${CYAN}   • No API keys provided - Option 7 (gemma3n:e4b) recommended for open source${NC}"
+    elif [ -n "$XAI_API_KEY" ]; then
+        echo -e "${YELLOW}   • You have xAI key - Option 7 (grok-4-1-fast-non-reasoning) recommended for advanced reasoning${NC}"
         DEFAULT_CHOICE=7
+    else
+        echo -e "${CYAN}   • No API keys provided - Option 8 (gemma3n:e4b) recommended for open source${NC}"
+        DEFAULT_CHOICE=8
     fi
     echo ""
     
@@ -671,7 +688,7 @@ EOL
     fi
     
     while true; do
-        read -p "Select justification model (1-9) [${DEFAULT_CHOICE}]: " justification_choice
+        read -p "Select justification model (1-10) [${DEFAULT_CHOICE}]: " justification_choice
         
         # Default to recommended choice if empty
         if [ -z "$justification_choice" ]; then
@@ -716,25 +733,31 @@ EOL
                 break
                 ;;
             7)
+                JUSTIFICATION_MODEL_PROVIDER="xAI"
+                JUSTIFICATION_MODEL_NAME="grok-4-1-fast-non-reasoning"
+                echo -e "${GREEN}Selected: xAI Grok 4.1 (Advanced Reasoning)${NC}"
+                break
+                ;;
+            8)
                 JUSTIFICATION_MODEL_PROVIDER="Ollama"
                 JUSTIFICATION_MODEL_NAME="gemma3n:e4b"
                 echo -e "${GREEN}Selected: Ollama Gemma 3N${NC}"
                 break
                 ;;
-            8)
+            9)
                 JUSTIFICATION_MODEL_PROVIDER="Ollama"
                 JUSTIFICATION_MODEL_NAME="deepseek-r1:8b"
                 echo -e "${GREEN}Selected: Ollama DeepSeek R1${NC}"
                 break
                 ;;
-            9)
+            10)
                 JUSTIFICATION_MODEL_PROVIDER="Ollama"
                 JUSTIFICATION_MODEL_NAME="llama3.1:8b"
                 echo -e "${GREEN}Selected: Ollama Llama 3.1 8B${NC}"
                 break
                 ;;
             *)
-                echo -e "${RED}Invalid choice. Please enter 1-9.${NC}"
+                echo -e "${RED}Invalid choice. Please enter 1-10.${NC}"
                 ;;
         esac
     done
@@ -748,6 +771,9 @@ EOL
         echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
     elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Hyperbolic" ] && [ -z "$HYPERBOLIC_API_KEY" ]; then
         echo -e "${YELLOW}Warning: You selected a Hyperbolic model but no Hyperbolic API key was provided.${NC}"
+        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+    elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "xAI" ] && [ -z "$XAI_API_KEY" ]; then
+        echo -e "${YELLOW}Warning: You selected an xAI model but no xAI API key was provided.${NC}"
         echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
     fi
     

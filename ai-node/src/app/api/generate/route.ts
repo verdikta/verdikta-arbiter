@@ -5,7 +5,7 @@ import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '..
 
 
 // Define the list of supported LLM providers
-const PROVIDERS = ['Open-source', 'OpenAI', 'Anthropic'];
+const PROVIDERS = ['Open-source', 'OpenAI', 'Anthropic', 'xAI', 'Hyperbolic'];
 
 /**
  * GET handler for /api/generate

@@ -6,7 +6,7 @@ This is a [Next.js](https://nextjs.org/) project that serves as a platform for A
 
 This application extends beyond traditional AI chatbots by introducing a unique multi-model deliberation system. Key features include:
 
-- **Multi-LLM Integration**: Connect with multiple AI providers simultaneously (OpenAI, Anthropic Claude, and local Ollama models)
+- **Multi-LLM Integration**: Connect with multiple AI providers simultaneously (OpenAI, Anthropic Claude, xAI, Hyperbolic, and local Ollama models)
 - **Collective Decision Making**: Employ multiple AI models to deliberate on questions or statements
 - **Weighted Voting System**: Assign different weights to various models based on their reliability or expertise
 - **Outcome Ranking**: Vote on and rank possible outcomes for a given prompt
@@ -32,6 +32,7 @@ npm install
      ```
      OPENAI_API_KEY=your_openai_api_key
      ANTHROPIC_API_KEY=your_anthropic_api_key
+     XAI_API_KEY=your_xai_api_key
      ```
 
 4. Run the development server:
@@ -206,6 +207,11 @@ To change which models can be selected by the user:
        { name: 'claude-2.1', supportsImages: false },
        { name: 'claude-3-sonnet-20240229', supportsImages: true },
      ],
+     xai: [
+       { name: 'grok-4-1-fast-reasoning', supportsImages: true },
+       { name: 'grok-4-fast-reasoning', supportsImages: true },
+       { name: 'grok-4-0709', supportsImages: true },
+     ],
    };
    ```
 
@@ -224,10 +230,31 @@ A complete list of the models available can be found at the Ollama Library (http
 3. If you want to add or remove entire providers, update the `PROVIDERS` array in `src/app/api/generate/route.ts`:
 
    ```typescript
-   const PROVIDERS = ['Open-source', 'OpenAI', 'Anthropic', 'NewProvider'];
+   const PROVIDERS = ['Open-source', 'OpenAI', 'Anthropic', 'xAI', 'Hyperbolic', 'NewProvider'];
    ```
 
    Then, update the `LLMFactory` in `src/lib/llm/llm-factory.ts` to handle the new provider.
+
+## xAI Integration
+
+To use xAI's Grok models:
+
+1. Obtain an API key from the [xAI Console](https://console.x.ai/)
+
+2. Add your API key to `.env.local`:
+   ```
+   XAI_API_KEY=your_xai_api_key
+   ```
+
+3. Available Grok models include:
+   - `grok-4-1-fast-reasoning` - Latest multimodal reasoning model (2M context, images supported)
+   - `grok-4-1-fast-non-reasoning` - Fast non-reasoning variant (2M context, images supported)
+   - `grok-4-fast-reasoning` - High-performance reasoning (2M context, images supported)
+   - `grok-4-fast-non-reasoning` - Cost-efficient variant (2M context, images supported)
+   - `grok-4-0709` - Base Grok 4 model (256K context, images supported)
+   - `grok-code-fast-1` - Code-focused model (256K context, images supported)
+
+4. The xAI API is OpenAI-compatible, making integration seamless with existing workflows.
 
 Remember to restart your development server after making these changes for them to take effect.
 

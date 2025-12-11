@@ -383,6 +383,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
     [ -n "$OPENAI_API_KEY" ] && echo -e "  ✓ OpenAI API Key: Configured" || echo -e "  ✗ OpenAI API Key: Not configured"
     [ -n "$ANTHROPIC_API_KEY" ] && echo -e "  ✓ Anthropic API Key: Configured" || echo -e "  ✗ Anthropic API Key: Not configured"
     [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "  ✓ Hyperbolic API Key: Configured" || echo -e "  ✗ Hyperbolic API Key: Not configured"
+    [ -n "$XAI_API_KEY" ] && echo -e "  ✓ xAI API Key: Configured" || echo -e "  ✗ xAI API Key: Not configured"
     [ -n "$INFURA_API_KEY" ] && echo -e "  ✓ Infura API Key: Configured" || echo -e "  ✗ Infura API Key: Configured"
     [ -n "$PINATA_API_KEY" ] && echo -e "  ✓ Pinata JWT: Configured" || echo -e "  ✗ Pinata JWT: Not configured"
     echo ""
@@ -431,6 +432,22 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
         [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "${GREEN}Hyperbolic API Key added.${NC}"
     fi
     
+    # xAI API Key (for Grok models)
+    if [ -n "$XAI_API_KEY" ]; then
+        if ask_yes_no "Update xAI API Key? (currently configured)"; then
+            read -p "Enter new xAI API Key: " new_key
+            if [ -n "$new_key" ]; then
+                XAI_API_KEY="$new_key"
+                echo -e "${GREEN}xAI API Key updated.${NC}"
+            fi
+        fi
+    else
+        echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
+        echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
+        read -p "Enter xAI API Key (leave blank to skip): " XAI_API_KEY
+        [ -n "$XAI_API_KEY" ] && echo -e "${GREEN}xAI API Key added.${NC}"
+    fi
+    
     # Infura API Key
     if [ -n "$INFURA_API_KEY" ]; then
         if ask_yes_no "Update Infura API Key? (currently configured)"; then
@@ -465,6 +482,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
 OPENAI_API_KEY="$OPENAI_API_KEY"
 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"
+XAI_API_KEY="$XAI_API_KEY"
 INFURA_API_KEY="$INFURA_API_KEY"
 PINATA_API_KEY="$PINATA_API_KEY"
 EOL
@@ -474,6 +492,7 @@ EOL
 OPENAI_API_KEY="$OPENAI_API_KEY"
 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"
+XAI_API_KEY="$XAI_API_KEY"
 INFURA_API_KEY="$INFURA_API_KEY"
 PINATA_API_KEY="$PINATA_API_KEY"
 EOL
@@ -770,6 +789,16 @@ if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
             echo "HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY" >> "$TARGET_AI_NODE/.env.local"
         fi
         echo -e "${GREEN}✓ Hyperbolic API Key updated in AI Node${NC}"
+    fi
+    
+    # Update xAI key (for Grok models)
+    if [ -n "$XAI_API_KEY" ]; then
+        if grep -q "^XAI_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
+            sed -i.bak "s/^XAI_API_KEY=.*/XAI_API_KEY=$XAI_API_KEY/" "$TARGET_AI_NODE/.env.local"
+        else
+            echo "XAI_API_KEY=$XAI_API_KEY" >> "$TARGET_AI_NODE/.env.local"
+        fi
+        echo -e "${GREEN}✓ xAI API Key updated in AI Node${NC}"
     fi
     
     echo -e "${GREEN}AI Node API keys updated successfully.${NC}"

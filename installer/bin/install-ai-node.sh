@@ -447,6 +447,20 @@ else
     echo -e "${YELLOW}Note: Hyperbolic API Key not provided. Hyperbolic models will not be available.${NC}"
 fi
 
+if [ -n "$XAI_API_KEY" ]; then
+    # Check if key already exists in file
+    if grep -q "^XAI_API_KEY=" "$AI_NODE_DIR/.env.local"; then
+        # Update existing key
+        sed -i.bak "s/^XAI_API_KEY=.*/XAI_API_KEY=$XAI_API_KEY/" "$AI_NODE_DIR/.env.local"
+    else
+        # Add new key
+        echo "XAI_API_KEY=$XAI_API_KEY" >> "$AI_NODE_DIR/.env.local"
+    fi
+    echo -e "${GREEN}xAI API Key configured (Grok models).${NC}"
+else
+    echo -e "${YELLOW}Note: xAI API Key not provided. Grok models will not be available.${NC}"
+fi
+
 # Set justifier model from environment configuration
 if [ -n "$JUSTIFICATION_MODEL_PROVIDER" ] && [ -n "$JUSTIFICATION_MODEL_NAME" ]; then
     JUSTIFIER_MODEL="$JUSTIFICATION_MODEL_PROVIDER:$JUSTIFICATION_MODEL_NAME"
