@@ -4,19 +4,26 @@ import { HumanMessage } from '@langchain/core/messages';
 
 import OpenAI from 'openai';
 
-// Mock the OpenAI class directly without a separate MockOpenAI class
-jest.mock('openai', () => ({
-  __esModule: true,
-  default: jest.fn().mockReturnValue({
+// Create a mock for the native OpenAI client
+const mockOpenAICreate = jest.fn().mockResolvedValue({
+  choices: [{ message: { content: 'Mocked native response' } }]
+});
+
+// Mock the OpenAI class - needs to handle both regular imports and dynamic imports
+jest.mock('openai', () => {
+  const MockOpenAI = jest.fn().mockImplementation(() => ({
     chat: {
       completions: {
-        create: jest.fn().mockResolvedValue({
-          choices: [{ message: { content: 'Mocked response' } }]
-        })
+        create: mockOpenAICreate
       }
     }
-  })
-}));
+  }));
+  return {
+    __esModule: true,
+    default: MockOpenAI,
+    OpenAI: MockOpenAI
+  };
+});
 
 jest.mock("@langchain/openai");
 
@@ -307,11 +314,11 @@ describe('OpenAIProvider', () => {
   });
 
   // New tests for reasoning model support with attachments
-  test('generateResponse with reasoning model uses higher maxTokens and reasoning options', async () => {
-    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Reasoning model response' });
-    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
-      invoke: mockInvoke
-    }));
+  test('generateResponse with GPT-5 model uses native client with reasoning_effort', async () => {
+    // Reset mock for this test
+    mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'Reasoning model response' } }]
+    });
 
     const response = await provider.generateResponse(
       'Analyze this complex problem',
@@ -320,25 +327,26 @@ describe('OpenAIProvider', () => {
     );
 
     expect(response).toBe('Reasoning model response');
-    expect(ChatOpenAI).toHaveBeenCalledWith({
-      openAIApiKey: 'test-api-key',
-      modelName: 'gpt-5-mini',
-      maxTokens: 16000,
-      reasoning: { effort: 'medium' },
-      verbosity: 'low',
-    });
-    expect(mockInvoke).toHaveBeenCalledWith('Analyze this complex problem');
+    // GPT-5 models use native OpenAI client with reasoning_effort (string) not reasoning (object)
+    expect(mockOpenAICreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5-mini',
+        max_completion_tokens: 16000,
+        reasoning_effort: 'medium',
+        verbosity: 'low',
+      })
+    );
   });
 
-  test('generateResponseWithAttachments with reasoning model uses higher maxTokens', async () => {
-    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Reasoning model with attachments' });
-    (ChatOpenAI as jest.Mock).mockImplementation(() => ({
-      invoke: mockInvoke
-    }));
+  test('generateResponseWithAttachments with GPT-5 model uses native client', async () => {
+    // Reset mock for this test
+    mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'Reasoning model with attachments' } }]
+    });
 
     const attachments = [
-      { 
-        type: 'text', 
+      {
+        type: 'text',
         content: 'Smart contract code to analyze',
         mediaType: 'text/plain'
       }
@@ -352,14 +360,17 @@ describe('OpenAIProvider', () => {
     );
 
     expect(response).toBe('Reasoning model with attachments');
-    expect(ChatOpenAI).toHaveBeenCalledWith({
-      openAIApiKey: 'test-api-key',
-      modelName: 'gpt-5-mini-2025-08-07',
-      maxTokens: 16000,
-      reasoning: { effort: 'medium' },
-      verbosity: 'low',
-    });
-    expect(mockInvoke).toHaveBeenCalled();
+    // GPT-5 models use native OpenAI client with max_completion_tokens and reasoning_effort
+    expect(mockOpenAICreate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: 'gpt-5-mini-2025-08-07',
+        max_completion_tokens: 16000,
+        reasoning_effort: 'medium',
+      }),
+      expect.objectContaining({
+        headers: { 'OpenAI-Beta': 'pdf-files-v1' }
+      })
+    );
   });
 
   test('generateResponseWithAttachments with non-reasoning model uses default maxTokens', async () => {

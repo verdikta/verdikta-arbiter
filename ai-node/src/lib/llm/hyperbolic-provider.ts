@@ -32,13 +32,15 @@ export class HyperbolicProvider implements LLMProvider {
 
   /**
    * Initialize the provider and validate configuration
+   * Note: We don't throw here to allow models to be listed in the UI even when
+   * the API key isn't configured. The actual error will occur when trying to use the model.
    */
   async initialize(): Promise<void> {
     if (!this.apiKey) {
-      throw new Error(`[${this.providerName}] HYPERBOLIC_API_KEY environment variable is required`);
+      console.warn(`[${this.providerName}] HYPERBOLIC_API_KEY not set. Models will be listed but won't work until configured.`);
+    } else {
+      console.log(`[${this.providerName}] Provider initialized with base URL: ${this.baseUrl}`);
     }
-    
-    console.log(`[${this.providerName}] Provider initialized with base URL: ${this.baseUrl}`);
     console.log(`[${this.providerName}] Available models: ${this.models.length}`);
   }
 

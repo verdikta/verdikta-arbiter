@@ -11,6 +11,7 @@ export const modelConfig = {
     { name: 'gpt-5-2025-08-07', supportsImages: true, supportsAttachments: true },
     { name: 'gpt-5-mini-2025-08-07', supportsImages: true, supportsAttachments: true },
     { name: 'gpt-5-nano-2025-08-07', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.2-2025-12-11', supportsImages: true, supportsAttachments: true },
   ],
   anthropic: [
     { name: 'claude-2.1', supportsImages: false, supportsAttachments: false },

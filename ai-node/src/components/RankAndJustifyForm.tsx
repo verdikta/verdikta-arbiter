@@ -55,7 +55,23 @@ export function RankAndJustifyForm({ providerModels, isLoadingModels, onSubmit }
 
   const handleModelChange = (index: number, field: keyof ModelWeight, value: string | number) => {
     const updatedModels = [...selectedModels];
-    updatedModels[index] = { ...updatedModels[index], [field]: value };
+    
+    // When changing provider, reset the model to the first model of the new provider
+    if (field === 'provider') {
+      const newProvider = providerModels.find(pm => pm.provider === value);
+      if (newProvider && newProvider.models.length > 0) {
+        updatedModels[index] = { 
+          ...updatedModels[index], 
+          provider: value as string,
+          model: newProvider.models[0].name  // Reset to first model of new provider
+        };
+      } else {
+        updatedModels[index] = { ...updatedModels[index], [field]: value };
+      }
+    } else {
+      updatedModels[index] = { ...updatedModels[index], [field]: value };
+    }
+    
     setSelectedModels(updatedModels);
   };
 

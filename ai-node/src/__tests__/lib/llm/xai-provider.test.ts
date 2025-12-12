@@ -64,13 +64,16 @@ describe('XAIProvider', () => {
       consoleSpy.mockRestore();
     });
 
-    test('initialize throws error when API key is not set', async () => {
+    test('initialize logs warning when API key is not set', async () => {
       delete process.env.XAI_API_KEY;
       delete process.env.GROK_API_KEY;
+      const consoleSpy = jest.spyOn(console, 'warn').mockImplementation();
       const p = new XAIProvider();
-      await expect(p.initialize()).rejects.toThrow(
-        'XAI_API_KEY environment variable is required'
+      await p.initialize();
+      expect(consoleSpy).toHaveBeenCalledWith(
+        expect.stringContaining('XAI_API_KEY not set')
       );
+      consoleSpy.mockRestore();
     });
 
     test('initialize succeeds with valid API key', async () => {
@@ -123,7 +126,8 @@ describe('XAIProvider', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: 'Mocked xAI response' } }]
+          choices: [{ message: { content: 'Mocked xAI response' }, finish_reason: 'stop' }],
+          usage: { completion_tokens: 10, total_tokens: 20 }
         })
       });
 
@@ -180,7 +184,8 @@ describe('XAIProvider', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: '' } }]
+          choices: [{ message: { content: '' }, finish_reason: 'stop' }],
+          usage: { completion_tokens: 0, total_tokens: 10 }
         })
       });
 
@@ -400,7 +405,8 @@ describe('XAIProvider', () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,
         json: async () => ({
-          choices: [{ message: { content: 'Response' } }]
+          choices: [{ message: { content: 'Response' }, finish_reason: 'stop' }],
+          usage: { completion_tokens: 5, total_tokens: 15 }
         })
       });
 

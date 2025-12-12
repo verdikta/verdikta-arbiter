@@ -52,12 +52,17 @@ export class XAIProvider implements LLMProvider {
   /**
    * Initialize the provider and validate configuration
    */
+  /**
+   * Initialize the provider.
+   * Note: We don't throw here to allow models to be listed in the UI even when
+   * the API key isn't configured. The actual error will occur when trying to use the model.
+   */
   async initialize(): Promise<void> {
     if (!this.apiKey) {
-      throw new Error(`[${this.providerName}] XAI_API_KEY environment variable is required`);
+      console.warn(`[${this.providerName}] XAI_API_KEY not set. Models will be listed but won't work until configured.`);
+    } else {
+      console.log(`[${this.providerName}] Provider initialized with base URL: ${this.baseUrl}`);
     }
-    
-    console.log(`[${this.providerName}] Provider initialized with base URL: ${this.baseUrl}`);
     console.log(`[${this.providerName}] Available models: ${this.models.length}`);
   }
 
@@ -157,12 +162,29 @@ export class XAIProvider implements LLMProvider {
       }
 
       const content = json.choices[0].message.content;
+      const finishReason = json.choices[0].finish_reason;
+      const usage = json.usage;
+      
+      // Log detailed response info for debugging
+      console.log(`[${this.providerName}] Response details:`, {
+        model,
+        contentLength: content?.length,
+        finishReason,
+        completionTokens: usage?.completion_tokens,
+        totalTokens: usage?.total_tokens,
+        maxTokensRequested: max_tokens
+      });
       
       if (!content) {
         throw new Error(`[${this.providerName}] No content in response from model ${model}`);
       }
 
-      console.log(`[${this.providerName}] Response received, length: ${content.length}`);
+      // Warn if response was truncated due to token limit
+      if (finishReason === 'length') {
+        console.warn(`[${this.providerName}] ⚠️ Response truncated! Model ${model} hit max_tokens limit (${max_tokens}). Consider increasing REASONING_MODEL_MAX_TOKENS.`);
+      }
+
+      console.log(`[${this.providerName}] Response received, length: ${content.length}, finish_reason: ${finishReason}`);
       return content;
     } catch (error: any) {
       console.error(`[${this.providerName}] Error calling model ${model}:`, error.message);
