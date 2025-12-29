@@ -139,11 +139,7 @@ class ClassIDIntegrator {
         try {
             const content = fs.readFileSync(this.modelsConfigPath, 'utf8');
             
-            // Parse the TypeScript config file (simple regex-based parsing)
-            const openaiMatch = content.match(/openai:\s*\[([\s\S]*?)\]/);
-            const anthropicMatch = content.match(/anthropic:\s*\[([\s\S]*?)\]/);
-            const ollamaMatch = content.match(/ollama:\s*\[([\s\S]*?)\]/);
-
+            // Parse the TypeScript config file dynamically for ALL providers
             const parseModels = (match) => {
                 if (!match) return [];
                 return match[1]
@@ -157,10 +153,19 @@ class ClassIDIntegrator {
                     .filter(Boolean);
             };
 
+            // Dynamically find all providers in the config
+            const providers = {};
+            const providerRegex = /(\w+):\s*\[([\s\S]*?)\]/g;
+            let match;
+            
+            while ((match = providerRegex.exec(content)) !== null) {
+                const providerName = match[1];
+                const providerContent = match[2];
+                providers[providerName] = parseModels([null, providerContent]);
+            }
+
             return {
-                openai: parseModels(openaiMatch),
-                anthropic: parseModels(anthropicMatch),
-                ollama: parseModels(ollamaMatch),
+                ...providers,
                 originalContent: content
             };
         } catch (error) {
@@ -185,22 +190,35 @@ class ClassIDIntegrator {
             this.log('   Using heuristic detection for model capabilities', colors.dim);
         }
 
-        // Collect all models from selected classes
-        const newModels = {
-            openai: new Set(currentConfig.openai),
-            anthropic: new Set(currentConfig.anthropic),
-            ollama: new Set(currentConfig.ollama)
-        };
+        // Collect all models from selected classes - DYNAMICALLY for ALL providers
+        const newModels = {};
+        const modelMetadata = {}; // Store metadata from ClassID for each model
+        
+        // Initialize with existing models from current config
+        Object.keys(currentConfig).forEach(key => {
+            if (key !== 'originalContent' && Array.isArray(currentConfig[key])) {
+                newModels[key] = new Set(currentConfig[key]);
+            }
+        });
 
+        // Add models from selected ClassIDs
         this.selectedClasses.forEach(classItem => {
             const cls = classMap.getClass(classItem.id);
             if (cls && cls.models) {
                 cls.models.forEach(model => {
-                    if (model.provider === 'openai' || model.provider === 'anthropic') {
-                        newModels[model.provider].add(model.model);
-                    } else if (model.provider === 'ollama') {
-                        newModels.ollama.add(model.model);
+                    // Initialize provider set if it doesn't exist
+                    if (!newModels[model.provider]) {
+                        newModels[model.provider] = new Set();
                     }
+                    // Add model to provider
+                    newModels[model.provider].add(model.model);
+                    
+                    // Store metadata from ClassID data for capability detection
+                    const modelKey = `${model.provider}:${model.model}`;
+                    modelMetadata[modelKey] = {
+                        supported_file_types: model.supported_file_types,
+                        context_window_tokens: model.context_window_tokens
+                    };
                 });
             }
         });
@@ -208,26 +226,28 @@ class ClassIDIntegrator {
         // Generate new config content
         const generateModelEntries = (models, provider) => {
             return Array.from(models).map(model => {
-                // Determine capabilities based on model name patterns
-                const supportsImages = this.modelSupportsImages(model, provider);
-                const supportsAttachments = this.modelSupportsAttachments(model, provider);
+                // Get metadata from ClassID if available
+                const modelKey = `${provider}:${model}`;
+                const metadata = modelMetadata[modelKey];
+                
+                // Determine capabilities using ClassID data first, then heuristics
+                const supportsImages = this.modelSupportsImages(model, provider, metadata);
+                const supportsAttachments = this.modelSupportsAttachments(model, provider, metadata);
                 
                 return `    { name: '${model}', supportsImages: ${supportsImages}, supportsAttachments: ${supportsAttachments} },`;
             }).join('\n');
         };
 
-        const newContent = `export const modelConfig = {
-  openai: [
-${generateModelEntries(newModels.openai, 'openai')}
-  ],
-  anthropic: [
-${generateModelEntries(newModels.anthropic, 'anthropic')}
-  ],
-  ollama: [
-${generateModelEntries(newModels.ollama, 'ollama')}
-  ],
-};
-`;
+        // Build config dynamically for all providers
+        const providerConfigs = Object.keys(newModels)
+            .sort() // Sort providers alphabetically for consistency
+            .map(provider => {
+                const modelEntries = generateModelEntries(newModels[provider], provider);
+                return `  ${provider}: [\n${modelEntries}\n  ],`;
+            })
+            .join('\n');
+
+        const newContent = `export const modelConfig = {\n${providerConfigs}\n};\n`;
 
         try {
             // Backup original file
@@ -239,30 +259,29 @@ ${generateModelEntries(newModels.ollama, 'ollama')}
             fs.writeFileSync(this.modelsConfigPath, newContent);
             this.log('✅ Updated models.ts configuration successfully!', colors.green);
 
-            // Show what was added
-            const addedOpenAI = Array.from(newModels.openai).filter(m => !currentConfig.openai.includes(m));
-            const addedAnthropic = Array.from(newModels.anthropic).filter(m => !currentConfig.anthropic.includes(m));
-            const addedOllama = Array.from(newModels.ollama).filter(m => !currentConfig.ollama.includes(m));
+            // Show what was added for each provider
+            Object.keys(newModels).sort().forEach(provider => {
+                const currentModels = currentConfig[provider] || [];
+                const addedModels = Array.from(newModels[provider]).filter(m => !currentModels.includes(m));
+                
+                if (addedModels.length > 0) {
+                    const providerName = provider.charAt(0).toUpperCase() + provider.slice(1);
+                    this.log(`   Added ${providerName} models: ${addedModels.join(', ')}`, colors.green);
+                }
+            });
 
-            if (addedOpenAI.length > 0) {
-                this.log(`   Added OpenAI models: ${addedOpenAI.join(', ')}`, colors.green);
-            }
-            if (addedAnthropic.length > 0) {
-                this.log(`   Added Anthropic models: ${addedAnthropic.join(', ')}`, colors.green);
-            }
-            if (addedOllama.length > 0) {
-                this.log(`   Added Ollama models: ${addedOllama.join(', ')}`, colors.green);
-            }
-
-            return Array.from(newModels.ollama);
+            return Array.from(newModels.ollama || []);
         } catch (error) {
             this.log(`❌ Error updating models config: ${error.message}`, colors.red);
             return false;
         }
     }
 
-    modelSupportsImages(modelName, provider) {
-        // Based on known model capabilities
+    modelSupportsImages(modelName, provider, metadata = null) {
+        // Note: ClassID data doesn't currently include image MIME types explicitly
+        // so we use heuristics for image support detection
+        
+        // Use heuristics based on known model capabilities
         if (provider === 'openai') {
             return modelName.includes('gpt-4') || 
                    modelName.includes('gpt-5') || 
@@ -273,28 +292,59 @@ ${generateModelEntries(newModels.ollama, 'ollama')}
                    modelName.includes('claude-sonnet-4') ||
                    modelName.includes('claude-4');
         } else if (provider === 'ollama') {
+            // For Ollama, check for vision-specific model names
             return modelName.includes('llava') || 
                    modelName.includes('vision') ||
                    modelName.includes('minicpm');
+        } else if (provider === 'hyperbolic') {
+            // Hyperbolic API models typically support images
+            return true;
+        } else if (provider === 'xai') {
+            // Grok models support multimodal
+            return true;
         }
-        return false;
+        
+        // For unknown providers: Default to TRUE for modern API-based models
+        // This is a safer default as most modern LLM APIs support multimodal input
+        // Models that don't support images will simply ignore image inputs gracefully
+        return true;
     }
 
-    modelSupportsAttachments(modelName, provider) {
-        // Most modern models support attachments
+    modelSupportsAttachments(modelName, provider, metadata = null) {
+        // Use ClassID data if available
+        if (metadata && metadata.supported_file_types !== null) {
+            // If supported_file_types is an array with items, attachments are supported
+            return Array.isArray(metadata.supported_file_types) && 
+                   metadata.supported_file_types.length > 0;
+        }
+        
+        // Fall back to heuristics if ClassID data is null or missing
         if (provider === 'openai') {
+            // OpenAI: All models except legacy 3.5-turbo support attachments
             return !modelName.includes('3.5-turbo') || 
                    modelName.includes('gpt-4') || 
                    modelName.includes('gpt-5') ||
                    modelName.includes('o3');
         } else if (provider === 'anthropic') {
+            // Anthropic: Claude 3+ supports attachments
             return modelName.includes('claude-3') || 
                    modelName.includes('claude-sonnet-4') ||
                    modelName.includes('claude-4');
         } else if (provider === 'ollama') {
-            return true; // Most ollama models can handle text attachments
+            // Ollama: Most models can handle text attachments
+            return true;
+        } else if (provider === 'hyperbolic') {
+            // Hyperbolic API models support attachments
+            return true;
+        } else if (provider === 'xai') {
+            // Grok models support attachments
+            return true;
         }
-        return false;
+        
+        // For unknown providers: Default to TRUE for modern API-based models
+        // This is a safe default as attachment handling is typically graceful
+        // (models will extract text from attachments as needed)
+        return true;
     }
 
     async pullOllamaModels(ollamaModels) {

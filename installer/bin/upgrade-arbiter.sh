@@ -936,10 +936,25 @@ else
 fi
 
 # Install node dependencies if needed
-echo -e "${BLUE}Checking for new Node.js dependencies...${NC}"
+echo -e "${BLUE}Installing Node.js dependencies from package.json...${NC}"
+
+# AI Node dependencies
+if [ -f "$TARGET_AI_NODE/package.json" ]; then
+    echo -e "${BLUE}Installing AI Node dependencies...${NC}"
+    cd "$TARGET_AI_NODE" && npm install
+    echo -e "${GREEN}AI Node dependencies installed.${NC}"
+fi
+
+# External Adapter dependencies
+if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
+    echo -e "${BLUE}Installing External Adapter dependencies...${NC}"
+    cd "$TARGET_EXTERNAL_ADAPTER" && npm install
+    echo -e "${GREEN}External Adapter dependencies installed.${NC}"
+fi
 
 # Update @verdikta/common library to get latest ClassID data for both components
-echo -e "${BLUE}Updating @verdikta/common library for latest ClassID model pools...${NC}"
+# NOTE: This must happen AFTER npm install to avoid being downgraded by package.json versions
+echo -e "${BLUE}Updating @verdikta/common library to latest version for ClassID model pools...${NC}"
 if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
     # Load environment to get Verdikta Common version preference
     VERDIKTA_VERSION="latest"
@@ -973,20 +988,6 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
     fi
 else
     echo -e "${YELLOW}@verdikta/common update utility not found, skipping library update.${NC}"
-fi
-
-# AI Node dependencies
-if [ -f "$TARGET_AI_NODE/package.json" ]; then
-    echo -e "${BLUE}Installing AI Node dependencies...${NC}"
-    cd "$TARGET_AI_NODE" && npm install
-    echo -e "${GREEN}AI Node dependencies installed.${NC}"
-fi
-
-# External Adapter dependencies
-if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
-    echo -e "${BLUE}Installing External Adapter dependencies...${NC}"
-    cd "$TARGET_EXTERNAL_ADAPTER" && npm install
-    echo -e "${GREEN}External Adapter dependencies installed.${NC}"
 fi
 
 # Synchronize ClassID model pools with models.ts
