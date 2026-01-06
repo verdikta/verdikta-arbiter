@@ -24,6 +24,7 @@ export class LLMFactory {
         break;
       case 'Hyperbolic':
       case 'hyperbolic':
+      case 'Hyperbolic API':  // ClassID data uses "Hyperbolic API" as provider name
         llmProvider = new HyperbolicProvider();
         break;
       case 'xAI':

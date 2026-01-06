@@ -36,6 +36,8 @@ export class AnthropicProvider implements LLMProvider {
     const anthropic = new ChatAnthropic({
       anthropicApiKey: this.apiKey,
       modelName: model,
+      temperature: 0.7,
+      topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
     });
     const response = await anthropic.invoke(prompt);
     if (typeof response.content !== 'string') {
@@ -58,6 +60,8 @@ export class AnthropicProvider implements LLMProvider {
     const anthropic = new ChatAnthropic({
       anthropicApiKey: this.apiKey,
       modelName: model,
+      temperature: 0.7,
+      topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
     });
 
     const dataUrl = `data:${mediaType};base64,${base64Image}`;
@@ -120,6 +124,8 @@ export class AnthropicProvider implements LLMProvider {
     const anthropic = new ChatAnthropic({
       anthropicApiKey: this.apiKey,
       modelName: model,
+      temperature: 0.7,
+      topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
     });
 
     const messageContent = [
@@ -231,7 +237,8 @@ export class AnthropicProvider implements LLMProvider {
             content: contentBlocks
           }
         ],
-        max_tokens: 1000
+        max_tokens: 1000,
+        temperature: 0.7  // Required for Claude Sonnet 4.5+ (cannot use both temperature and top_p)
       });
 
       const content = response.content[0];

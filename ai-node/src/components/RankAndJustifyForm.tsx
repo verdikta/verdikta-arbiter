@@ -66,10 +66,10 @@ export function RankAndJustifyForm({ providerModels, isLoadingModels, onSubmit }
           model: newProvider.models[0].name  // Reset to first model of new provider
         };
       } else {
-        updatedModels[index] = { ...updatedModels[index], [field]: value };
+        updatedModels[index] = { ...updatedModels[index], [field]: value } as ModelWeight;
       }
     } else {
-      updatedModels[index] = { ...updatedModels[index], [field]: value };
+      updatedModels[index] = { ...updatedModels[index], [field]: value } as ModelWeight;
     }
     
     setSelectedModels(updatedModels);

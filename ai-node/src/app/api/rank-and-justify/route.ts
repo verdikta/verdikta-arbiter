@@ -353,15 +353,23 @@ export async function POST(request: Request) {
           const modelKey = `${modelInfo.provider}-${modelInfo.model}`;
           
           if (result.status === 'fulfilled') {
-            modelResults.push(result.value);
+            // Type assertion for fulfilled promise result
+            const modelResult = result.value as {
+              modelAverage: number[];
+              weight: number;
+              justifications: string[];
+              timingData: any;
+            };
+            
+            modelResults.push(modelResult);
             
             // Check if the fulfilled result actually used fallback (parsing error)
-            if (result.value.timingData?.failed === true) {
-              console.warn(`❌ MODEL_FAILED: ${modelKey} failed (parsing error): ${result.value.timingData.failureReason || 'Unable to parse response'}`);
+            if (modelResult.timingData?.failed === true) {
+              console.warn(`❌ MODEL_FAILED: ${modelKey} failed (parsing error): ${modelResult.timingData.failureReason || 'Unable to parse response'}`);
               failedModels.push(modelKey);
               failureDetails.push({ 
                 model: modelKey, 
-                reason: result.value.timingData.failureReason || 'Unable to parse response' 
+                reason: modelResult.timingData.failureReason || 'Unable to parse response' 
               });
             } else {
               console.log(`✅ MODEL_SUCCESS: ${modelKey} completed successfully`);

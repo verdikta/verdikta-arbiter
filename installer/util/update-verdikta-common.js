@@ -125,7 +125,8 @@ class VerdiktaCommonUpdater {
             const action = force ? 'Installing' : 'Updating';
             log(`📦 ${action} @verdikta/common@${versionTag} in ${path.basename(targetPath)}...`, colors.blue);
             
-            const args = ['install', `@verdikta/common@${versionTag}`];
+            // Use --save to ensure package.json is updated with the new version
+            const args = ['install', `@verdikta/common@${versionTag}`, '--save'];
             if (force) {
                 args.push('--force');
             }
@@ -152,9 +153,24 @@ class VerdiktaCommonUpdater {
                 console.error(text.replace(/\n$/, ''));
             });
 
-            process.on('close', (code) => {
+            process.on('close', async (code) => {
                 if (code === 0) {
                     log(`✅ Successfully ${force ? 'installed' : 'updated'} @verdikta/common in ${path.basename(targetPath)}`, colors.green);
+                    
+                    // Update package.json to pin the new version
+                    try {
+                        const packageJsonPath = path.join(targetPath, 'package.json');
+                        const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
+                        const installedVersion = packageJson.dependencies?.['@verdikta/common'];
+                        
+                        if (installedVersion) {
+                            log(`📝 Updated package.json to pin @verdikta/common@${installedVersion}`, colors.dim);
+                        }
+                    } catch (pkgError) {
+                        log(`⚠️  Could not update package.json: ${pkgError.message}`, colors.yellow);
+                        // Don't fail the whole operation if package.json update fails
+                    }
+                    
                     resolve(true);
                 } else {
                     log(`❌ Failed to ${force ? 'install' : 'update'} @verdikta/common in ${path.basename(targetPath)}`, colors.red);

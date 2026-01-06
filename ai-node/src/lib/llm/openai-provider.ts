@@ -110,7 +110,6 @@ export class OpenAIProvider implements LLMProvider {
       content: response.content,
       contentType: typeof response.content,
       additionalKwargs: response.additional_kwargs,
-      responseType: response.response_type,
       allKeys: Object.keys(response)
     });
     
@@ -128,9 +127,10 @@ export class OpenAIProvider implements LLMProvider {
           return JSON.stringify(item);
         })
         .join('');
-    } else if (response.additional_kwargs?.reasoning_content) {
+    } else if (response.additional_kwargs && 'reasoning_content' in response.additional_kwargs) {
       // Check for reasoning content in additional_kwargs
-      textContent = response.additional_kwargs.reasoning_content;
+      const kwargs = response.additional_kwargs as { reasoning_content?: string };
+      textContent = kwargs.reasoning_content || '';
     }
     
     console.log(`[${this.providerName}] Extracted text content:`, {

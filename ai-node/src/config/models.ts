@@ -22,6 +22,8 @@ export const modelConfig = {
     { name: 'claude-3-7-sonnet-20250219', supportsImages: true, supportsAttachments: true },
     { name: 'claude-sonnet-4-20250514', supportsImages: true, supportsAttachments: true },
     { name: 'claude-sonnet-4', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-sonnet-4-5-20250929', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-haiku-4-5-20251001', supportsImages: true, supportsAttachments: true },
   ],
   ollama: [
     { name: 'llama3.1:8b', supportsImages: false, supportsAttachments: true },

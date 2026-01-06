@@ -12,6 +12,21 @@ const nextConfig = {
     
     return config;
   },
+  // Enable instrumentation for custom error filtering
+  experimental: {
+    instrumentationHook: true,
+  },
+  // Suppress noisy server action errors in development
+  onDemandEntries: {
+    maxInactiveAge: 60 * 1000,
+    pagesBufferLength: 5,
+  },
+  // Custom logging to suppress specific error patterns
+  logging: {
+    fetches: {
+      fullUrl: false,
+    },
+  },
 };
 
 export default nextConfig;

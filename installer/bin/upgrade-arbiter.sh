@@ -749,6 +749,19 @@ regenerate_job_specs() {
 # Call the job spec template check function (before component upgrades)
 check_job_spec_template
 
+# Pre-upgrade: Update @verdikta/common in DEV folder to ensure package.json has latest version
+echo -e "${BLUE}Pre-upgrade: Updating @verdikta/common in dev folder to latest version...${NC}"
+if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
+    # Update the dev folder's AI Node and External Adapter first
+    if node "$UTIL_DIR/update-verdikta-common.js" "$REPO_AI_NODE" "$REPO_EXTERNAL_ADAPTER" "latest"; then
+        echo -e "${GREEN}@verdikta/common updated in dev folder. This ensures package.json has the latest version.${NC}"
+    else
+        echo -e "${YELLOW}Warning: Could not update @verdikta/common in dev folder. Proceeding with current version.${NC}"
+    fi
+else
+    echo -e "${YELLOW}@verdikta/common update utility not found in dev folder.${NC}"
+fi
+
 # Perform the upgrades
 echo -e "${BLUE}Starting upgrade process...${NC}"
 

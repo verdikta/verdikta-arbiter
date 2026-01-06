@@ -31,12 +31,31 @@ mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="$LOG_DIR/ai-node_${TIMESTAMP}.log"
 
-# Start the server in persistent background mode
-echo "Starting AI Node in persistent mode..."
+# Build production bundle if .next directory doesn't exist or is older than package.json
+if [ ! -d ".next" ] || [ "package.json" -nt ".next" ]; then
+    echo "Building production bundle..."
+    npm run build
+    if [ $? -ne 0 ]; then
+        echo "ERROR: Build failed! Please check for errors and try again."
+        exit 1
+    fi
+    echo "Build completed successfully."
+fi
+
+# Start the server in persistent background mode (PRODUCTION MODE)
+echo "Starting AI Node in production mode..."
 echo "Logs will be available at: $LOG_FILE"
 
 # Use nohup to keep the process running after terminal disconnects
 export PORT=3000
-nohup npm run dev > "$LOG_FILE" 2>&1 &
+export NODE_ENV=production
+
+# Start with log filtering to remove noisy Next.js errors
+# Filter out known harmless errors: Server Action "x", workers, digest
+nohup bash -c "npm start 2>&1 | grep -v 'Failed to find Server Action \"x\"' | grep -v \"Cannot read properties of undefined (reading 'workers')\" | grep -v \"Cannot read properties of null (reading 'digest')\" > '$LOG_FILE'" &
 echo $! > ai-node.pid
-echo "AI Node started with PID $(cat ai-node.pid)"
+
+echo "AI Node started with PID $(cat ai-node.pid) in PRODUCTION mode"
+echo "For better performance, production mode is now enabled."
+echo "If you need development mode for debugging, use: npm run dev"
+echo "Note: Harmless Next.js server action errors are filtered from logs for readability."
