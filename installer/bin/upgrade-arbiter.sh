@@ -95,13 +95,30 @@ load_nvm() {
     fi
 }
 
-# Function to prompt for Yes/No question
+# Function to prompt for Yes/No question with optional default
 ask_yes_no() {
     local prompt="$1"
+    local default="$2"  # Optional: 'y' or 'n'
     local response
     
+    # Build prompt with default indicator
+    local prompt_text="$prompt"
+    if [ "$default" = "y" ]; then
+        prompt_text="$prompt (Y/n)"
+    elif [ "$default" = "n" ]; then
+        prompt_text="$prompt (y/N)"
+    else
+        prompt_text="$prompt (y/n)"
+    fi
+    
     while true; do
-        read -p "$prompt (y/n): " response
+        read -p "$prompt_text: " response
+        
+        # Use default if response is empty
+        if [ -z "$response" ] && [ -n "$default" ]; then
+            response="$default"
+        fi
+        
         case "$response" in
             [Yy]* ) return 0;;
             [Nn]* ) return 1;;
@@ -366,7 +383,7 @@ echo -e "${YELLOW}Before upgrading, you can add or update your AI provider API k
 echo -e "${YELLOW}This is useful if you want to enable new providers (like Hyperbolic) or update existing keys.${NC}"
 echo
 
-if ask_yes_no "Would you like to review and update your API keys?"; then
+if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     # Load existing keys
     if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
         source "$TARGET_DIR/installer/.api_keys"
@@ -390,7 +407,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
     
     # OpenAI API Key
     if [ -n "$OPENAI_API_KEY" ]; then
-        if ask_yes_no "Update OpenAI API Key? (currently configured)"; then
+        if ask_yes_no "Update OpenAI API Key? (currently configured)" "n"; then
             read -p "Enter new OpenAI API Key: " new_key
             if [ -n "$new_key" ]; then
                 OPENAI_API_KEY="$new_key"
@@ -404,7 +421,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
     
     # Anthropic API Key
     if [ -n "$ANTHROPIC_API_KEY" ]; then
-        if ask_yes_no "Update Anthropic API Key? (currently configured)"; then
+        if ask_yes_no "Update Anthropic API Key? (currently configured)" "n"; then
             read -p "Enter new Anthropic API Key: " new_key
             if [ -n "$new_key" ]; then
                 ANTHROPIC_API_KEY="$new_key"
@@ -418,7 +435,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
     
     # Hyperbolic API Key (NEW!)
     if [ -n "$HYPERBOLIC_API_KEY" ]; then
-        if ask_yes_no "Update Hyperbolic API Key? (currently configured)"; then
+        if ask_yes_no "Update Hyperbolic API Key? (currently configured)" "n"; then
             read -p "Enter new Hyperbolic API Key: " new_key
             if [ -n "$new_key" ]; then
                 HYPERBOLIC_API_KEY="$new_key"
@@ -434,7 +451,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
     
     # xAI API Key (for Grok models)
     if [ -n "$XAI_API_KEY" ]; then
-        if ask_yes_no "Update xAI API Key? (currently configured)"; then
+        if ask_yes_no "Update xAI API Key? (currently configured)" "n"; then
             read -p "Enter new xAI API Key: " new_key
             if [ -n "$new_key" ]; then
                 XAI_API_KEY="$new_key"
@@ -450,7 +467,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
     
     # Infura API Key
     if [ -n "$INFURA_API_KEY" ]; then
-        if ask_yes_no "Update Infura API Key? (currently configured)"; then
+        if ask_yes_no "Update Infura API Key? (currently configured)" "n"; then
             read -p "Enter new Infura API Key: " new_key
             if [ -n "$new_key" ]; then
                 INFURA_API_KEY="$new_key"
@@ -464,7 +481,7 @@ if ask_yes_no "Would you like to review and update your API keys?"; then
     
     # Pinata JWT
     if [ -n "$PINATA_API_KEY" ]; then
-        if ask_yes_no "Update Pinata JWT? (currently configured)"; then
+        if ask_yes_no "Update Pinata JWT? (currently configured)" "n"; then
             read -p "Enter new Pinata JWT: " new_key
             if [ -n "$new_key" ]; then
                 PINATA_API_KEY="$new_key"
@@ -511,23 +528,21 @@ echo -e "- External Adapter"
 echo -e "- Chainlink Node configuration files"
 echo -e "- Management Scripts"
 echo
+if [ $ARBITER_RUNNING -eq 1 ]; then
+    echo -e "${YELLOW}Note: The arbiter is currently running and will be stopped for the upgrade.${NC}"
+fi
+echo
 
-if ! ask_yes_no "Do you want to proceed with the upgrade?"; then
+if ! ask_yes_no "Do you want to proceed with the upgrade?" "y"; then
     echo -e "${YELLOW}Upgrade cancelled by user.${NC}"
     exit 0
 fi
 
 # If arbiter is running, stop it
 if [ $ARBITER_RUNNING -eq 1 ]; then
-    echo -e "${YELLOW}Arbiter is currently running and will be stopped for the upgrade.${NC}"
-    if ask_yes_no "Do you want to continue?"; then
-        echo -e "${BLUE}Stopping arbiter...${NC}"
-        "$TARGET_DIR/stop-arbiter.sh"
-        echo -e "${GREEN}Arbiter stopped successfully.${NC}"
-    else
-        echo -e "${YELLOW}Upgrade cancelled by user.${NC}"
-        exit 0
-    fi
+    echo -e "${BLUE}Stopping arbiter...${NC}"
+    "$TARGET_DIR/stop-arbiter.sh"
+    echo -e "${GREEN}Arbiter stopped successfully.${NC}"
 else
     echo -e "${GREEN}Arbiter is not running. Proceeding with upgrade...${NC}"
 fi
@@ -538,7 +553,7 @@ echo -e "${YELLOW}A backup of your current installation can be created before up
 echo -e "${YELLOW}This allows you to restore if something goes wrong, but takes time and disk space.${NC}"
 echo ""
 
-if ask_yes_no "Would you like to create a backup before upgrading? (Recommended for production)"; then
+if ask_yes_no "Would you like to create a backup before upgrading? (Recommended for production)" "y"; then
     create_backup "$TARGET_DIR"
     if [ $? -ne 0 ]; then
         exit 1
@@ -546,7 +561,7 @@ if ask_yes_no "Would you like to create a backup before upgrading? (Recommended 
 else
     echo -e "${YELLOW}Skipping backup creation. Proceeding with upgrade...${NC}"
     echo -e "${RED}WARNING: No backup will be available if the upgrade fails!${NC}"
-    if ! ask_yes_no "Are you sure you want to continue without a backup?"; then
+    if ! ask_yes_no "Are you sure you want to continue without a backup?" "n"; then
         echo -e "${YELLOW}Upgrade cancelled by user.${NC}"
         exit 0
     fi
@@ -593,7 +608,7 @@ check_job_spec_template() {
         diff "$target_job_spec" "$repo_job_spec" || true
         echo
         
-        if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)"; then
+        if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)" "y"; then
             # Handle the job spec regeneration with proper aggregator management
             regenerate_job_specs
             # Set flag to indicate jobs have been regenerated
@@ -755,6 +770,34 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
     # Update the dev folder's AI Node and External Adapter first
     if node "$UTIL_DIR/update-verdikta-common.js" "$REPO_AI_NODE" "$REPO_EXTERNAL_ADAPTER" "latest"; then
         echo -e "${GREEN}@verdikta/common updated in dev folder. This ensures package.json has the latest version.${NC}"
+        
+        # NEW: Also update models.ts in DEV folder to keep it in sync with TARGET
+        echo -e "${BLUE}Synchronizing models.ts in dev folder from @verdikta/common...${NC}"
+        if [ -f "$REPO_AI_NODE/src/scripts/classid-integration.js" ]; then
+            cd "$REPO_AI_NODE"
+            
+            # Check if classMap is available
+            if node -e "const { classMap } = require('@verdikta/common'); console.log('ClassMap available:', typeof classMap?.listClasses === 'function');" 2>/dev/null | grep -q "true"; then
+                # Run ClassID integration non-interactively (option 2 = integrate all classes)
+                echo -e "${BLUE}Integrating all available ClassID model pools into dev folder models.ts...${NC}"
+                echo "2" | node src/scripts/classid-integration.js
+                
+                if [ $? -eq 0 ]; then
+                    echo -e "${GREEN}✓ DEV folder models.ts synchronized with @verdikta/common${NC}"
+                    echo -e "${GREEN}✓ DEV and TARGET will now have matching model configurations${NC}"
+                else
+                    echo -e "${YELLOW}⚠ ClassID integration completed with warnings in dev folder${NC}"
+                fi
+            else
+                echo -e "${YELLOW}⚠ ClassID integration not available in @verdikta/common version${NC}"
+                echo -e "${YELLOW}  Skipping dev folder models.ts sync${NC}"
+            fi
+            
+            # Return to installer directory
+            cd "$SCRIPT_DIR"
+        else
+            echo -e "${YELLOW}ClassID integration script not found in dev folder, skipping models.ts sync${NC}"
+        fi
     else
         echo -e "${YELLOW}Warning: Could not update @verdikta/common in dev folder. Proceeding with current version.${NC}"
     fi
@@ -768,6 +811,13 @@ echo -e "${BLUE}Starting upgrade process...${NC}"
 # Upgrade AI Node
 echo -e "${BLUE}Upgrading AI Node...${NC}"
 upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local .env logs node_modules *.pid"
+
+# Force clean build by removing any .next folder (ensures fresh compilation)
+if [ -d "$TARGET_AI_NODE/.next" ]; then
+    echo -e "${BLUE}Removing cached build to force recompilation...${NC}"
+    rm -rf "$TARGET_AI_NODE/.next"
+    echo -e "${GREEN}Build cache cleared. AI Node will be recompiled on next start.${NC}"
+fi
 
 # Update AI Node API keys in .env.local if they were configured
 echo -e "${BLUE}Updating AI Node API keys...${NC}"
@@ -978,7 +1028,7 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
             echo -e "${YELLOW}Your installation is configured to use @verdikta/common@beta.${NC}"
             echo -e "${BLUE}The recommended version is now 'latest' for better stability and ClassID support.${NC}"
             echo -e "${BLUE}Note: ClassID model pool integration requires @verdikta/common@latest (v1.3.0+).${NC}"
-            if ask_yes_no "Would you like to switch to @verdikta/common@latest?"; then
+            if ask_yes_no "Would you like to switch to @verdikta/common@latest?" "y"; then
                 VERDIKTA_VERSION="latest"
                 # Update the .env file with the new preference
                 sed -i.bak "s/VERDIKTA_COMMON_VERSION=\"beta\"/VERDIKTA_COMMON_VERSION=\"latest\"/" "$TARGET_DIR/installer/.env"
@@ -1028,7 +1078,7 @@ if [ -f "$TARGET_AI_NODE/src/scripts/classid-integration.js" ]; then
     echo -e "${BLUE}  • Any future providers and models${NC}"
     echo ""
     
-    if ask_yes_no "Would you like to automatically integrate any new models from all ClassID pools into your AI Node configuration?"; then
+    if ask_yes_no "Would you like to automatically integrate any new models from all ClassID pools into your AI Node configuration?" "y"; then
         echo -e "${BLUE}Running ClassID integration to sync models.ts with latest ClassID data...${NC}"
         echo -e "${BLUE}This will add new models from ALL ClassIDs (128, 129, 130, etc.) and ALL providers.${NC}"
         
@@ -1149,7 +1199,7 @@ check_ollama_models() {
         echo -e "${BLUE}(OpenAI and Anthropic models from your ClassID pools are already available via API)${NC}"
         echo
         
-        if ask_yes_no "Would you like to download the missing Ollama models now? (This may take several minutes)"; then
+        if ask_yes_no "Would you like to download the missing Ollama models now? (This may take several minutes)" "n"; then
             for model in $missing_models; do
                 echo -e "${BLUE}Downloading $model...${NC}"
                 if ollama pull "$model"; then
@@ -1211,7 +1261,7 @@ else
     echo "During upgrades, your existing jobs and keys are preserved by default."
     echo "However, you can optionally reconfigure them if needed (e.g., to add more arbiters)."
     echo
-    if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This will recreate all jobs)"; then
+    if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This will recreate all jobs)" "n"; then
     echo -e "${BLUE}Starting job and key reconfiguration...${NC}"
     
     # Check if configure-node.sh exists in the source
@@ -1221,7 +1271,7 @@ else
         echo -e "${YELLOW}You should manually delete old jobs from the Chainlink UI after reconfiguration.${NC}"
         echo
         
-        if ask_yes_no "Are you sure you want to proceed with job reconfiguration?"; then
+        if ask_yes_no "Are you sure you want to proceed with job reconfiguration?" "y"; then
             # Start Chainlink node temporarily for job reconfiguration
             echo -e "${BLUE}Starting Chainlink node temporarily for job reconfiguration...${NC}"
             echo -e "${YELLOW}Note: The Chainlink node needs to be running for job and key management.${NC}"
@@ -1449,7 +1499,7 @@ check_chainlink_config() {
         diff "$current_filtered" "$temp_filtered" || true
         echo
         
-        if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)"; then
+        if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)" "n"; then
             # Create backup of current config
             local config_backup="${current_config}.backup.$(date +%Y%m%d-%H%M%S)"
             cp "$current_config" "$config_backup"
@@ -1503,7 +1553,7 @@ echo -e "${BLUE}Recommended funding per key: $RECOMMENDED_AMOUNT $CURRENCY_NAME$
 echo -e "${YELLOW}Note: $FUNDING_INFO${NC}"
 echo
 
-if ask_yes_no "Would you like to fund or top off your Chainlink keys now?"; then
+if ask_yes_no "Would you like to fund or top off your Chainlink keys now?" "n"; then
     echo
     echo -e "${BLUE}Automatic Funding Configuration${NC}"
     echo -e "${BLUE}Recommended amount: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
@@ -1561,7 +1611,7 @@ if ask_yes_no "Would you like to fund or top off your Chainlink keys now?"; then
         echo -e "${YELLOW}⚠ Your wallet will be charged for both the funding amount and gas fees.${NC}"
         echo
         
-        if ask_yes_no "Proceed with automatic funding?"; then
+        if ask_yes_no "Proceed with automatic funding?" "n"; then
             echo -e "${BLUE}Starting automatic funding process...${NC}"
             echo
             
@@ -1622,7 +1672,7 @@ UPGRADE_IN_PROGRESS=0
 
 # Ask if user wants to restart the arbiter
 if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
-    if ask_yes_no "Do you want to restart the arbiter now?"; then
+    if ask_yes_no "Do you want to restart the arbiter now?" "y"; then
         echo -e "${BLUE}Restarting arbiter...${NC}"
         "$TARGET_DIR/start-arbiter.sh"
         
@@ -1661,7 +1711,7 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
     fi
 else
     # Arbiter was not running before upgrade - ask if user wants to start it now
-    if ask_yes_no "The arbiter was not running before the upgrade. Would you like to start it now?"; then
+    if ask_yes_no "The arbiter was not running before the upgrade. Would you like to start it now?" "y"; then
         echo -e "${BLUE}Starting arbiter...${NC}"
         "$TARGET_DIR/start-arbiter.sh"
         

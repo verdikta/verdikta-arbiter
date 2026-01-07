@@ -21,10 +21,27 @@ command_exists() {
 if ! declare -f ask_yes_no >/dev/null 2>&1; then
     ask_yes_no() {
         local prompt="$1"
+        local default="$2"  # Optional: 'y' or 'n'
         local response
         
+        # Build prompt with default indicator
+        local prompt_text="$prompt"
+        if [ "$default" = "y" ]; then
+            prompt_text="$prompt (Y/n)"
+        elif [ "$default" = "n" ]; then
+            prompt_text="$prompt (y/N)"
+        else
+            prompt_text="$prompt (y/n)"
+        fi
+        
         while true; do
-            read -p "$prompt (y/n): " response
+            read -p "$prompt_text: " response
+            
+            # Use default if response is empty
+            if [ -z "$response" ] && [ -n "$default" ]; then
+                response="$default"
+            fi
+            
             case "$response" in
                 [Yy]* ) return 0;;
                 [Nn]* ) return 1;;
@@ -85,7 +102,7 @@ check_and_update_ollama() {
             fi
             
             if [ "$UPDATE_NEEDED" = "true" ]; then
-                if ask_yes_no "Would you like to update Ollama to the latest version?"; then
+                if ask_yes_no "Would you like to update Ollama to the latest version?" "n"; then
                     update_ollama_to_latest "$LATEST_VERSION"
                 else
                     echo -e "${YELLOW}Skipping Ollama update. Some newer models may not work.${NC}"
@@ -99,7 +116,7 @@ check_and_update_ollama() {
         echo -e "${BLUE}Ollama is required for running local AI models (Ollama-based ClassIDs).${NC}"
         echo -e "${BLUE}This includes models like: deepseek-r1:8b, gemma3n:e4b, llama3.1:8b${NC}"
         
-        if ask_yes_no "Would you like to install Ollama?"; then
+        if ask_yes_no "Would you like to install Ollama?" "n"; then
             install_ollama_fresh
         else
             echo -e "${YELLOW}Skipping Ollama installation. Ollama-based models will not be available.${NC}"
