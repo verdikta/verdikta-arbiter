@@ -38,12 +38,45 @@ interface ScoreOutcome {
 interface RankAndJustifyOutput {
   scores: ScoreOutcome[];
   justification: string;
+  // Enhanced error reporting fields (backward compatible - optional)
+  metadata?: EvaluationMetadata;
+  model_results?: ModelResult[];
+  warnings?: Warning[];
+  error?: string;  // Only present on catastrophic failure
 }
 
 interface LLMProvider {
   generateResponse: (prompt: string, model: string, options?: any) => Promise<string>;
   generateResponseWithAttachments?: (prompt: string, model: string, attachments: any[], options?: any) => Promise<string>;
   supportsAttachments: (model: string) => boolean;
+}
+
+// Enhanced error reporting structures
+interface EvaluationMetadata {
+  models_requested: number;
+  models_successful: number;
+  models_failed: number;
+  success_threshold_met: boolean;
+  total_duration_ms?: number;
+}
+
+interface ModelResult {
+  provider: string;
+  model: string;
+  status: 'success' | 'failed' | 'timeout' | 'parsing_error';
+  duration_ms: number;
+  error_type?: string;
+  error_message?: string;
+  error_code?: string;
+  http_status?: number;
+}
+
+interface Warning {
+  type: string;
+  message: string;
+  severity: 'info' | 'warning' | 'error';
+  model?: string;
+  details?: any;
 }
 
 function logInteraction(message: string) {
@@ -132,6 +165,9 @@ export async function POST(request: Request) {
     const prompt = body.prompt;
     const iterations = body.iterations || 1;
     const models = body.models;
+    
+    // Initialize warnings array early (used during attachment processing)
+    const warnings: Warning[] = [];
 
     // Add this before the check
     console.log('DEBUG: Checking native PDF support for each model:');
@@ -212,6 +248,35 @@ export async function POST(request: Request) {
         });
       } else {
         console.log('Some models do not support native PDF processing - using text extraction...');
+        
+        // Add warning for models that don't support native PDF
+        const unsupportedModels = body.models.filter(m => {
+          if (m.provider === 'OpenAI') {
+            return !['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini'].some(sm => 
+              m.model.toLowerCase().includes(sm.toLowerCase())
+            );
+          } else if (m.provider === 'Anthropic') {
+            const pdfCapableModels = [
+              'claude-opus-4', 'claude-sonnet-4', 'claude-4-sonnet', 'claude-4-opus',
+              'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
+              'claude-sonnet-4-20250514'
+            ];
+            return !pdfCapableModels.some(sm => m.model.includes(sm));
+          }
+          return true; // Assume unsupported for other providers
+        });
+        
+        if (unsupportedModels.length > 0) {
+          unsupportedModels.forEach(m => {
+            warnings.push({
+              type: 'attachment_unsupported',
+              message: `Model ${m.provider}-${m.model} does not support native PDF processing, using text extraction`,
+              severity: 'info',
+              model: `${m.provider}-${m.model}`
+            });
+          });
+        }
+        
         try {
           const primaryModel = body.models?.[0];
           const providerName = primaryModel?.provider;
@@ -227,6 +292,14 @@ export async function POST(request: Request) {
           
           if (skippedCount > 0) {
             console.warn(`Skipped ${skippedCount} attachment(s):`, skippedReasons);
+            // Add warnings for skipped attachments
+            skippedReasons.forEach(reason => {
+              warnings.push({
+                type: 'attachment_skipped',
+                message: reason,
+                severity: 'warning'
+              });
+            });
           }
           logTiming('attachment_text_extraction', attachmentStartTime, { 
             count: attachments.length, 
@@ -237,6 +310,11 @@ export async function POST(request: Request) {
           console.error('Error processing attachments:', error);
           // Continue without attachments rather than failing
           attachments = [];
+          warnings.push({
+            type: 'attachment_processing_error',
+            message: error instanceof Error ? error.message : 'Unknown error processing attachments',
+            severity: 'error'
+          });
           logTiming('attachment_error_fallback', attachmentStartTime, { 
             error: error instanceof Error ? error.message : 'Unknown error',
             type: 'error' 
@@ -257,6 +335,7 @@ export async function POST(request: Request) {
     const weights: number[] = [];
     const totalWeights = models.reduce((sum, m) => sum + m.weight, 0);
     const allJustifications: string[] = [];
+    // Note: warnings array declared earlier (before attachment processing)
     
     // Validate total weights
     if (totalWeights <= 0 || totalWeights > models.length) {
@@ -270,6 +349,7 @@ export async function POST(request: Request) {
 
     let finalAggregatedScore: number[] = [];
     let finalJustification: string = '';
+    let allStructuredModelResults: ModelResult[] = []; // NEW: Track all model results across iterations
 
     // Model Invocation
     for (let i = 0; i < iterations; i++) {
@@ -347,6 +427,7 @@ export async function POST(request: Request) {
         const modelResults: any[] = [];
         const failedModels: string[] = [];
         const failureDetails: Array<{ model: string; reason: string }> = [];
+        const structuredModelResults: ModelResult[] = []; // NEW: Collect structured model results
         
         modelSettledResults.forEach((result, index) => {
           const modelInfo = models[index];
@@ -371,13 +452,35 @@ export async function POST(request: Request) {
                 model: modelKey, 
                 reason: modelResult.timingData.failureReason || 'Unable to parse response' 
               });
+              
+              // Add structured model result for parsing error
+              structuredModelResults.push({
+                provider: modelInfo.provider,
+                model: modelInfo.model,
+                status: 'parsing_error',
+                duration_ms: modelResult.timingData.duration_ms || 0,
+                error_type: 'parsing_error',
+                error_message: modelResult.timingData.failureReason || 'Unable to parse response'
+              });
             } else {
               console.log(`✅ MODEL_SUCCESS: ${modelKey} completed successfully`);
+              
+              // Add structured model result for success
+              structuredModelResults.push({
+                provider: modelInfo.provider,
+                model: modelInfo.model,
+                status: 'success',
+                duration_ms: modelResult.timingData.duration_ms || 0
+              });
             }
           } else {
             console.warn(`❌ MODEL_FAILED: ${modelKey} failed: ${result.reason.message}`);
             failedModels.push(modelKey);
             failureDetails.push({ model: modelKey, reason: result.reason.message });
+            
+            // Extract error details from the rejected promise
+            const errorDetails = (result.reason as any).verdiktaErrorDetails;
+            const isTimeout = result.reason.message.includes('timed out');
             
             // Create fallback result for failed model
             const numOutcomes = body.outcomes?.length || 2;
@@ -394,11 +497,36 @@ export async function POST(request: Request) {
                 model: modelInfo.model,
                 count: modelInfo.count || 1,
                 weight: modelInfo.weight,
+                duration_ms: MODEL_TIMEOUT_MS, // Use timeout value for failed models
                 failed: true,
-                failureReason: result.reason.message
+                failureReason: result.reason.message,
+                ...(errorDetails && {
+                  errorType: errorDetails.errorType,
+                  errorMessage: errorDetails.errorMessage,
+                  errorCode: errorDetails.errorCode,
+                  httpStatus: errorDetails.httpStatus
+                })
               }
             };
             modelResults.push(fallbackResult);
+            
+            // Add structured model result for failure
+            structuredModelResults.push({
+              provider: modelInfo.provider,
+              model: modelInfo.model,
+              status: isTimeout ? 'timeout' : 'failed',
+              duration_ms: MODEL_TIMEOUT_MS,
+              ...(errorDetails && {
+                error_type: errorDetails.errorType,
+                error_message: errorDetails.errorMessage,
+                error_code: errorDetails.errorCode,
+                http_status: errorDetails.httpStatus
+              }),
+              ...(!errorDetails && {
+                error_type: isTimeout ? 'timeout' : 'unknown',
+                error_message: result.reason.message
+              })
+            });
           }
         });
         
@@ -406,8 +534,28 @@ export async function POST(request: Request) {
         const successfulModels = models.length - failedModels.length;
         console.log(`✅ PARALLEL_COMPLETE: ${successfulModels}/${models.length} models completed in ${parallelDuration}ms`);
         
+        // Store structured model results from this iteration
+        allStructuredModelResults = structuredModelResults;
+        
         if (failedModels.length > 0) {
           console.warn(`⚠️ FAILED_MODELS: ${failedModels.length} models failed/timed out: ${failedModels.join(', ')}`);
+          
+          // Add warnings for each failed model (only if evaluation succeeds)
+          structuredModelResults.forEach(modelResult => {
+            if (modelResult.status !== 'success') {
+              warnings.push({
+                type: modelResult.status === 'timeout' ? 'model_timeout' : 'model_failure',
+                message: `Model ${modelResult.provider}-${modelResult.model} ${modelResult.status === 'timeout' ? 'timed out' : 'failed'}: ${modelResult.error_message || 'Unknown error'}`,
+                severity: 'warning',
+                model: `${modelResult.provider}-${modelResult.model}`,
+                details: {
+                  error_type: modelResult.error_type,
+                  duration_ms: modelResult.duration_ms,
+                  http_status: modelResult.http_status
+                }
+              });
+            }
+          });
         }
         
         // Check if we have enough successful models to continue
@@ -616,6 +764,10 @@ ${finalJustification}\n`);
       // as the tests seem focused on single iteration or simple aggregation.
     }
 
+    // Calculate metadata for enhanced error reporting
+    const successfulModelsCount = allStructuredModelResults.filter(m => m.status === 'success').length;
+    const failedModelsCount = allStructuredModelResults.filter(m => m.status !== 'success').length;
+    
     // Format the final response using results from the LAST iteration
     const responseBody: RankAndJustifyOutput = {
        scores: body.outcomes
@@ -627,7 +779,17 @@ ${finalJustification}\n`);
              outcome: 'unnamed', // Match previous implicit behavior if no outcomes provided
              score: Math.floor(score)
            })),
-       justification: finalJustification
+       justification: finalJustification,
+       // Enhanced error reporting fields (backward compatible)
+       metadata: {
+         models_requested: models.length,
+         models_successful: successfulModelsCount,
+         models_failed: failedModelsCount,
+         success_threshold_met: true,
+         total_duration_ms: Date.now() - requestStartTime
+       },
+       model_results: allStructuredModelResults,
+       ...(warnings.length > 0 && { warnings: warnings }) // Only include if there are warnings
      };
 
     // Calculate total request time and log comprehensive timing summary
@@ -732,6 +894,63 @@ ${finalJustification}\n`);
   }
 }
 
+// Helper function to extract detailed error information from provider errors
+function extractProviderErrorDetails(error: any): {
+  errorType: string;
+  errorMessage: string;
+  errorCode?: string;
+  httpStatus?: number;
+} {
+  // Extract HTTP status if available
+  const httpStatus = error.response?.status || error.status || error.statusCode;
+  
+  // Extract error message (try multiple common patterns)
+  let errorMessage = error.message || 'Unknown error';
+  if (error.response?.data?.error?.message) {
+    errorMessage = error.response.data.error.message;
+  } else if (error.response?.data?.message) {
+    errorMessage = error.response.data.message;
+  } else if (error.response?.data?.error) {
+    errorMessage = typeof error.response.data.error === 'string' 
+      ? error.response.data.error 
+      : JSON.stringify(error.response.data.error);
+  }
+  
+  // Extract error code if available
+  const errorCode = error.code || error.response?.data?.error?.code || error.response?.data?.code;
+  
+  // Categorize error type based on status code and message
+  let errorType = 'unknown';
+  const lowerMessage = errorMessage.toLowerCase();
+  
+  if (httpStatus === 401 || lowerMessage.includes('unauthorized') || lowerMessage.includes('invalid api key') || lowerMessage.includes('authentication')) {
+    errorType = 'authentication';
+  } else if (httpStatus === 403 || lowerMessage.includes('forbidden') || lowerMessage.includes('access denied')) {
+    errorType = 'authorization';
+  } else if (httpStatus === 429 || lowerMessage.includes('rate limit') || lowerMessage.includes('too many requests')) {
+    errorType = 'rate_limit';
+  } else if (httpStatus === 404 || lowerMessage.includes('not found') || lowerMessage.includes('model not found')) {
+    errorType = 'model_not_found';
+  } else if (lowerMessage.includes('content policy') || lowerMessage.includes('safety') || lowerMessage.includes('flagged')) {
+    errorType = 'content_policy';
+  } else if (lowerMessage.includes('context length') || lowerMessage.includes('token limit') || lowerMessage.includes('max tokens')) {
+    errorType = 'token_limit';
+  } else if (httpStatus >= 500 || lowerMessage.includes('service unavailable') || lowerMessage.includes('internal error')) {
+    errorType = 'provider_error';
+  } else if (lowerMessage.includes('timeout') || error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+    errorType = 'timeout';
+  } else if (lowerMessage.includes('network') || error.code === 'ENOTFOUND' || error.code === 'ECONNREFUSED') {
+    errorType = 'network';
+  }
+  
+  return {
+    errorType,
+    errorMessage,
+    errorCode,
+    httpStatus
+  };
+}
+
 // Helper function for processing a single model in parallel - NOT exported
 async function processModelForIteration(
   modelInfo: ModelInput,
@@ -754,6 +973,12 @@ async function processModelForIteration(
   const justifications: string[] = [];
   let usedFallback = false; // Track if this model had to use fallback scores
   let failureReason = ''; // Track the reason for failure if fallback was used
+  let errorDetails: {
+    errorType: string;
+    errorMessage: string;
+    errorCode?: string;
+    httpStatus?: number;
+  } | null = null; // Track detailed error info
 
   console.log(`🔄 MODEL_START: Processing model ${modelInfo.provider}-${modelInfo.model} (iteration ${iterationNumber})`);
   console.log(`📊 MODEL_CONFIG: Provider=${modelInfo.provider}, Model=${modelInfo.model}, Weight=${weight}, Count=${count}`);
@@ -831,12 +1056,18 @@ async function processModelForIteration(
           responseLength: responseText.length
         });
       } catch (providerError: any) {
+        // Capture detailed error information
+        errorDetails = extractProviderErrorDetails(providerError);
         console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
           error: providerError.message,
+          errorType: errorDetails.errorType,
+          httpStatus: errorDetails.httpStatus,
           stack: providerError.stack,
           attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
         });
-        throw providerError; // Re-throw to be caught by Promise.all()
+        // Enhance the error with our details before re-throwing
+        providerError.verdiktaErrorDetails = errorDetails;
+        throw providerError; // Re-throw to be caught by Promise wrapper
       }
     } else {
       logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model}:\n${iterationPrompt}\n`);
@@ -859,12 +1090,18 @@ async function processModelForIteration(
           responseLength: responseText.length
         });
       } catch (providerError: any) {
+        // Capture detailed error information
+        errorDetails = extractProviderErrorDetails(providerError);
         console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
           error: providerError.message,
+          errorType: errorDetails.errorType,
+          httpStatus: errorDetails.httpStatus,
           stack: providerError.stack,
           attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
         });
-        throw providerError; // Re-throw to be caught by Promise.all()
+        // Enhance the error with our details before re-throwing
+        providerError.verdiktaErrorDetails = errorDetails;
+        throw providerError; // Re-throw to be caught by Promise wrapper
       }
     }
 
@@ -910,14 +1147,34 @@ async function processModelForIteration(
     ? averageVectors(allOutputs)
     : allOutputs[0];
 
-  const timingData = {
+  const modelDuration = Date.now() - modelStartTime;
+  
+  // Build timing data with optional fields
+  const timingData: any = {
     provider: modelInfo.provider,
     model: modelInfo.model,
     count: count,
     weight: weight,
-    failed: usedFallback, // Mark as failed if fallback scores were used
-    ...(usedFallback && { failureReason: failureReason }) // Include failure reason if fallback was used
+    duration_ms: modelDuration,
+    failed: usedFallback // Mark as failed if fallback scores were used
   };
+  
+  if (usedFallback && failureReason) {
+    timingData.failureReason = failureReason;
+  }
+  
+  if (errorDetails) {
+    // Type assertion to work around TypeScript narrowing issue
+    const details = errorDetails as { errorType: string; errorMessage: string; errorCode?: string; httpStatus?: number };
+    timingData.errorType = details.errorType;
+    timingData.errorMessage = details.errorMessage;
+    if (details.errorCode) {
+      timingData.errorCode = details.errorCode;
+    }
+    if (details.httpStatus) {
+      timingData.httpStatus = details.httpStatus;
+    }
+  }
 
   logTiming(`model_total_${modelInfo.provider}_${modelInfo.model}`, modelStartTime, timingData);
 

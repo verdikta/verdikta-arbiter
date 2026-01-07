@@ -465,11 +465,31 @@ async function handleMode2Reveal(hashHex, tempDir, runTag) {
  */
 async function createAndUploadJustification(result, tempDir) {
   logger.info('Creating justification archive...');
+  
+  // Build justification content with backward compatibility
   const justificationContent = {
     scores: result.scores || [{outcome: 'default', score: 0}],
     justification: result.justification || '',
     timestamp: new Date().toISOString()
   };
+  
+  // Include enhanced error reporting fields if present (backward compatible)
+  if (result.metadata) {
+    justificationContent.metadata = result.metadata;
+  }
+  
+  if (result.model_results && result.model_results.length > 0) {
+    justificationContent.model_results = result.model_results;
+  }
+  
+  if (result.warnings && result.warnings.length > 0) {
+    justificationContent.warnings = result.warnings;
+  }
+  
+  // Include error field if present (for catastrophic failures)
+  if (result.error) {
+    justificationContent.error = result.error;
+  }
 
   // Create temporary file for justification
   const justificationPath = path.join(tempDir, 'justification.json');
@@ -483,7 +503,16 @@ async function createAndUploadJustification(result, tempDir) {
   const ipfsUploadStart = Date.now();
   const justificationCid = await ipfsClient.uploadToIPFS(justificationPath);
   logger.info(`IPFS justification upload took ${Date.now() - ipfsUploadStart}ms`);
-  logger.info(`Justification uploaded with CID: ${justificationCid}`);
+  
+  // Log summary of what was uploaded
+  const uploadSummary = {
+    cid: justificationCid,
+    hasMetadata: !!result.metadata,
+    hasModelResults: !!(result.model_results && result.model_results.length > 0),
+    hasWarnings: !!(result.warnings && result.warnings.length > 0),
+    hasError: !!result.error
+  };
+  logger.info(`Justification uploaded:`, uploadSummary);
   
   return justificationCid;
 }
