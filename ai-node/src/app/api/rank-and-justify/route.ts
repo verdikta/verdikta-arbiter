@@ -4,7 +4,6 @@ import { prePromptConfig } from '../../../config/prePromptConfig';
 import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
 import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor';
-import { modelConfig } from '../../../config/models';
 import fs from 'fs';
 import path from 'path';
 
@@ -116,25 +115,6 @@ function stripThinkingBlocks(response: string): string {
   return cleaned;
 }
 
-/**
- * Helper function to check if a model supports attachments using the modelConfig
- * This is the single source of truth - synced with @verdikta/common during install/upgrade
- */
-function modelSupportsAttachments(provider: string, modelName: string): boolean {
-  const providerKey = provider.toLowerCase();
-  
-  // Get the model list for this provider from modelConfig
-  const providerModels = (modelConfig as any)[providerKey];
-  
-  if (!providerModels || !Array.isArray(providerModels)) {
-    return false;
-  }
-  
-  // Find the model in the config
-  const modelInfo = providerModels.find((m: any) => m.name === modelName);
-  
-  return modelInfo ? modelInfo.supportsAttachments : false;
-}
 
 export async function POST(request: Request) {
   const requestStartTime = Date.now();
@@ -190,17 +170,48 @@ export async function POST(request: Request) {
     // Initialize warnings array early (used during attachment processing)
     const warnings: Warning[] = [];
 
-    // Check attachment support using modelConfig (single source of truth)
-    console.log('DEBUG: Checking attachment support for each model (from models.ts):');
+    // Check native PDF support for each model
+    console.log('DEBUG: Checking native PDF support for each model:');
     body.models.forEach(modelInfo => {
-      const supported = modelSupportsAttachments(modelInfo.provider, modelInfo.model);
-      console.log(`[${modelInfo.provider}] Model: ${modelInfo.model}, Supports Attachments: ${supported}`);
+      if (modelInfo.provider === 'OpenAI') {
+        const supported = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini'].some(supportedModel =>
+          modelInfo.model.toLowerCase().includes(supportedModel.toLowerCase())
+        );
+        console.log(`[OpenAI] Model: ${modelInfo.model}, Supported: ${supported}`);
+      } else if (modelInfo.provider === 'Anthropic') {
+        const pdfCapableModels = [
+          'claude-opus-4', 'claude-sonnet-4', 'claude-4-sonnet', 'claude-4-opus',
+          'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
+          'claude-sonnet-4-20250514'
+        ];
+        const supported = pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
+        console.log(`[Anthropic] Model: ${modelInfo.model}, Supported: ${supported}`);
+      } else if (modelInfo.provider === 'xAI' || modelInfo.provider === 'xai') {
+        // xAI Grok models support text attachments but not native PDF processing
+        console.log(`[xAI] Model: ${modelInfo.model}, Native PDF Supported: false (will use text extraction)`);
+      } else {
+        console.log(`[Other] Provider: ${modelInfo.provider}, Model: ${modelInfo.model}, Supported: false`);
+      }
     });
 
-    // Check if all models support attachments using modelConfig (single source of truth)
-    const allModelsSupportNativePDF = body.models.every(modelInfo => 
-      modelSupportsAttachments(modelInfo.provider, modelInfo.model)
-    );
+    const allModelsSupportNativePDF = body.models.every(modelInfo => {
+      if (modelInfo.provider === 'OpenAI') {
+        return ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
+          modelInfo.model.toLowerCase().includes(supportedModel.toLowerCase())
+        );
+      } else if (modelInfo.provider === 'Anthropic') {
+        const pdfCapableModels = [
+          'claude-opus-4', 'claude-sonnet-4', 'claude-4-sonnet', 'claude-4-opus',
+          'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
+          'claude-sonnet-4-20250514'
+        ];
+        return pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
+      } else if (modelInfo.provider === 'xAI' || modelInfo.provider === 'xai') {
+        // xAI Grok models don't support native PDF - will use text extraction
+        return false;
+      }
+      return false;
+    });
 
     console.log('DEBUG: allModelsSupportNativePDF:', allModelsSupportNativePDF);
 
@@ -237,33 +248,7 @@ export async function POST(request: Request) {
           type: 'native' 
         });
       } else {
-        console.log('Some models do not support native document processing - using text extraction...');
-        
-        // Detect if there are actually PDF attachments
-        const hasPdfAttachments = body.attachments.some(att => {
-          if (att.startsWith('data:')) {
-            const mediaType = att.split(',')[0].split(';')[0].replace('data:', '');
-            return mediaType === 'application/pdf';
-          }
-          return false;
-        });
-        
-        // Find models that don't support attachments (using modelConfig as single source of truth)
-        const unsupportedModels = body.models.filter(m => 
-          !modelSupportsAttachments(m.provider, m.model)
-        );
-        
-        if (unsupportedModels.length > 0 && hasPdfAttachments) {
-          // Only warn about PDF if PDFs are actually attached
-          unsupportedModels.forEach(m => {
-            warnings.push({
-              type: 'attachment_unsupported',
-              message: `Model ${m.provider}-${m.model} does not support native PDF processing, using text extraction`,
-              severity: 'info',
-              model: `${m.provider}-${m.model}`
-            });
-          });
-        }
+        console.log('Some models do not support native PDF processing - using text extraction...')
         
         try {
           const primaryModel = body.models?.[0];
