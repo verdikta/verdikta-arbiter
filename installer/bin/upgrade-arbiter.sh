@@ -764,45 +764,87 @@ regenerate_job_specs() {
 # Call the job spec template check function (before component upgrades)
 check_job_spec_template
 
-# Pre-upgrade: Update @verdikta/common in DEV folder to ensure package.json has latest version
-echo -e "${BLUE}Pre-upgrade: Updating @verdikta/common in dev folder to latest version...${NC}"
-if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
-    # Update the dev folder's AI Node and External Adapter first
-    if node "$UTIL_DIR/update-verdikta-common.js" "$REPO_AI_NODE" "$REPO_EXTERNAL_ADAPTER" "latest"; then
-        echo -e "${GREEN}@verdikta/common updated in dev folder. This ensures package.json has the latest version.${NC}"
+# Pre-upgrade: Force fresh install of @verdikta/common in DEV folder to ensure latest ClassID data
+echo -e "${BLUE}Pre-upgrade: Forcing fresh install of @verdikta/common in dev folder...${NC}"
+echo -e "${BLUE}Note: This bypasses npm cache to ensure latest ClassID data (including new ClassIDs)${NC}"
+
+# Force reinstall in DEV AI Node
+if [ -d "$REPO_AI_NODE" ]; then
+    echo -e "${BLUE}Updating DEV AI Node @verdikta/common...${NC}"
+    cd "$REPO_AI_NODE"
+    
+    # Clear npm cache and force reinstall to get absolutely latest data
+    echo -e "${BLUE}Clearing npm cache for @verdikta/common...${NC}"
+    npm cache clean --force 2>/dev/null || true
+    
+    # Uninstall and reinstall to bypass any cached data
+    echo -e "${BLUE}Reinstalling @verdikta/common@latest...${NC}"
+    npm uninstall @verdikta/common 2>/dev/null || true
+    npm install @verdikta/common@latest
+    
+    if [ $? -eq 0 ]; then
+        DEV_VERSION=$(npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}')
+        echo -e "${GREEN}✓ DEV AI Node updated to @verdikta/common@${DEV_VERSION}${NC}"
+    else
+        echo -e "${RED}✗ Failed to install @verdikta/common in DEV AI Node${NC}"
+    fi
+    cd "$SCRIPT_DIR"
+else
+    echo -e "${YELLOW}DEV AI Node directory not found, skipping update${NC}"
+fi
+
+# Force reinstall in DEV External Adapter
+if [ -d "$REPO_EXTERNAL_ADAPTER" ]; then
+    echo -e "${BLUE}Updating DEV External Adapter @verdikta/common...${NC}"
+    cd "$REPO_EXTERNAL_ADAPTER"
+    npm cache clean --force 2>/dev/null || true
+    npm uninstall @verdikta/common 2>/dev/null || true
+    npm install @verdikta/common@latest
+    
+    if [ $? -eq 0 ]; then
+        DEV_ADAPTER_VERSION=$(npm list @verdikta/common --depth=0 2>/dev/null | grep @verdikta/common | awk '{print $2}')
+        echo -e "${GREEN}✓ DEV External Adapter updated to @verdikta/common@${DEV_ADAPTER_VERSION}${NC}"
+    fi
+    cd "$SCRIPT_DIR"
+fi
+
+echo -e "${GREEN}@verdikta/common force-reinstalled in dev folder with fresh ClassID data.${NC}"
+
+# Show which ClassIDs are now available in DEV
+if [ -d "$REPO_AI_NODE" ]; then
+    DEV_CLASSIDS=$(cd "$REPO_AI_NODE" && node -e "const { classMap } = require('@verdikta/common'); console.log(classMap.listClasses().map(c => c.id).join(', '));" 2>/dev/null)
+    DEV_CLASS_COUNT=$(cd "$REPO_AI_NODE" && node -e "const { classMap } = require('@verdikta/common'); console.log(classMap.listClasses().length);" 2>/dev/null)
+    echo -e "${BLUE}Available ClassIDs in DEV: ${DEV_CLASSIDS} (${DEV_CLASS_COUNT} total)${NC}"
+fi
+
+# Synchronize models.ts in DEV folder from @verdikta/common
+echo -e "${BLUE}Synchronizing models.ts in dev folder from @verdikta/common...${NC}"
+
+if [ -f "$REPO_AI_NODE/src/scripts/classid-integration.js" ]; then
+    echo -e "${GREEN}Found classid-integration.js in DEV folder${NC}"
+    cd "$REPO_AI_NODE"
+    
+    # Check if classMap is available
+    if node -e "const { classMap } = require('@verdikta/common'); console.log('ClassMap available:', typeof classMap?.listClasses === 'function');" 2>&1 | grep -q "true"; then
+        echo -e "${GREEN}ClassMap is available, running integration...${NC}"
+        echo -e "${BLUE}Auto-selecting ALL available ClassIDs (${DEV_CLASSIDS})...${NC}"
         
-        # NEW: Also update models.ts in DEV folder to keep it in sync with TARGET
-        echo -e "${BLUE}Synchronizing models.ts in dev folder from @verdikta/common...${NC}"
-        if [ -f "$REPO_AI_NODE/src/scripts/classid-integration.js" ]; then
-            cd "$REPO_AI_NODE"
-            
-            # Check if classMap is available
-            if node -e "const { classMap } = require('@verdikta/common'); console.log('ClassMap available:', typeof classMap?.listClasses === 'function');" 2>/dev/null | grep -q "true"; then
-                # Run ClassID integration non-interactively (option 2 = integrate all classes)
-                echo -e "${BLUE}Integrating all available ClassID model pools into dev folder models.ts...${NC}"
-                echo "2" | node src/scripts/classid-integration.js
-                
-                if [ $? -eq 0 ]; then
-                    echo -e "${GREEN}✓ DEV folder models.ts synchronized with @verdikta/common${NC}"
-                    echo -e "${GREEN}✓ DEV and TARGET will now have matching model configurations${NC}"
-                else
-                    echo -e "${YELLOW}⚠ ClassID integration completed with warnings in dev folder${NC}"
-                fi
-            else
-                echo -e "${YELLOW}⚠ ClassID integration not available in @verdikta/common version${NC}"
-                echo -e "${YELLOW}  Skipping dev folder models.ts sync${NC}"
-            fi
-            
-            # Return to installer directory
-            cd "$SCRIPT_DIR"
+        # Run ClassID integration non-interactively (option 2 = integrate all classes, n = skip Ollama pull)
+        echo -e "2\nn" | node src/scripts/classid-integration.js
+        
+        if [ $? -eq 0 ]; then
+            echo -e "${GREEN}✓ DEV folder models.ts synchronized with @verdikta/common${NC}"
         else
-            echo -e "${YELLOW}ClassID integration script not found in dev folder, skipping models.ts sync${NC}"
+            echo -e "${YELLOW}⚠ ClassID integration completed with warnings in dev folder${NC}"
         fi
     else
-        echo -e "${YELLOW}Warning: Could not update @verdikta/common in dev folder. Proceeding with current version.${NC}"
+        echo -e "${RED}✗ ClassMap not available in @verdikta/common${NC}"
+        echo -e "${YELLOW}Skipping dev folder models.ts sync${NC}"
     fi
+    
+    cd "$SCRIPT_DIR"
 else
-    echo -e "${YELLOW}@verdikta/common update utility not found in dev folder.${NC}"
+    echo -e "${YELLOW}ClassID integration script not found in dev folder${NC}"
 fi
 
 # Perform the upgrades
@@ -1084,14 +1126,51 @@ if [ -f "$TARGET_AI_NODE/src/scripts/classid-integration.js" ]; then
         
         # Check if @verdikta/common supports classMap before running integration
         if node -e "const { classMap } = require('@verdikta/common'); console.log('ClassMap available:', typeof classMap?.listClasses === 'function');" 2>/dev/null | grep -q "true"; then
-            # Run the ClassID integration script non-interactively (select all available classes)
-            echo "2" | node src/scripts/classid-integration.js
+            # Run the ClassID integration script non-interactively (option 2 = all classes, n = skip Ollama pull)
+            echo -e "2\nn" | node src/scripts/classid-integration.js
             
             if [ $? -eq 0 ]; then
                 echo -e "${GREEN}ClassID model pools synchronized successfully!${NC}"
                 echo -e "${GREEN}Your models.ts file has been updated with models from all ClassID pools.${NC}"
                 echo -e "${GREEN}This includes OpenAI, Anthropic, Ollama, and any other provider models.${NC}"
                 MODELS_UPDATED=true
+                
+                # VALIDATION: Verify DEV and TARGET have matching ClassID counts
+                echo -e "${BLUE}Validating DEV and TARGET synchronization...${NC}"
+                
+                DEV_CLASS_COUNT=0
+                TARGET_CLASS_COUNT=0
+                DEV_CLASSIDS=""
+                TARGET_CLASSIDS=""
+                
+                if [ -d "$REPO_AI_NODE" ]; then
+                    DEV_CLASS_COUNT=$(cd "$REPO_AI_NODE" && node -e "const { classMap } = require('@verdikta/common'); console.log(classMap.listClasses().length);" 2>/dev/null || echo "0")
+                    DEV_CLASSIDS=$(cd "$REPO_AI_NODE" && node -e "const { classMap } = require('@verdikta/common'); console.log(classMap.listClasses().map(c => c.id).join(', '));" 2>/dev/null || echo "unknown")
+                fi
+                
+                TARGET_CLASS_COUNT=$(node -e "const { classMap } = require('@verdikta/common'); console.log(classMap.listClasses().length);" 2>/dev/null || echo "0")
+                TARGET_CLASSIDS=$(node -e "const { classMap } = require('@verdikta/common'); console.log(classMap.listClasses().map(c => c.id).join(', '));" 2>/dev/null || echo "unknown")
+                
+                echo -e "${BLUE}DEV ClassIDs: ${DEV_CLASSIDS} (${DEV_CLASS_COUNT} total)${NC}"
+                echo -e "${BLUE}TARGET ClassIDs: ${TARGET_CLASSIDS} (${TARGET_CLASS_COUNT} total)${NC}"
+                
+                if [ "$DEV_CLASS_COUNT" != "$TARGET_CLASS_COUNT" ] || [ "$DEV_CLASSIDS" != "$TARGET_CLASSIDS" ]; then
+                    echo -e "${YELLOW}⚠️  ClassID mismatch detected between DEV and TARGET!${NC}"
+                    echo -e "${YELLOW}   DEV: ${DEV_CLASS_COUNT} classes (${DEV_CLASSIDS})${NC}"
+                    echo -e "${YELLOW}   TARGET: ${TARGET_CLASS_COUNT} classes (${TARGET_CLASSIDS})${NC}"
+                    echo -e "${BLUE}Syncing TARGET models.ts → DEV to ensure consistency...${NC}"
+                    
+                    # Copy TARGET models.ts to DEV to ensure they match
+                    if [ -f "$TARGET_AI_NODE/src/config/models.ts" ] && [ -d "$REPO_AI_NODE/src/config" ]; then
+                        cp "$TARGET_AI_NODE/src/config/models.ts" "$REPO_AI_NODE/src/config/models.ts"
+                        echo -e "${GREEN}✓ DEV models.ts synchronized from TARGET${NC}"
+                        echo -e "${GREEN}✓ Both folders now have matching model configurations${NC}"
+                    else
+                        echo -e "${RED}✗ Could not sync models.ts files${NC}"
+                    fi
+                else
+                    echo -e "${GREEN}✓ DEV and TARGET ClassIDs match perfectly (${DEV_CLASS_COUNT} classes)${NC}"
+                fi
             else
                 echo -e "${YELLOW}ClassID integration completed with warnings. Please check the output above.${NC}"
                 MODELS_UPDATED=false
