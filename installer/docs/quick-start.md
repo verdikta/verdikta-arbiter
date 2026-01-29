@@ -2,16 +2,23 @@
 
 Get your Verdikta Arbiter Node up and running with our automated installer. This comprehensive guide walks you through every step, from prerequisites to final configuration.
 
-## 🆕 What's New: Automated Fund Management
+## 🆕 What's New: Automated Fund Management & Multi-Provider Support
 
-The installer now includes **automatic Chainlink key funding** and **fund recovery** features:
+The installer now includes **automatic Chainlink key funding**, **fund recovery**, and **multi-provider AI support**:
 
+**Fund Management**:
 - **Zero Manual Transfers**: Automatically fund your Chainlink keys during installation
 - **Smart Recovery**: Easily recover excess ETH and accumulated LINK tokens
 - **Error-Proof Setup**: Built-in validation and retry mechanisms
 - **Post-Installation Tools**: Manage oracle finances throughout the lifecycle
 
-These new features eliminate the most error-prone manual steps and make oracle management significantly easier!
+**Multi-Provider AI Support**:
+- **Four AI Providers**: OpenAI, Anthropic, Hyperbolic, and xAI
+- **ClassID-Based Configuration**: Choose which arbitration classes to support
+- **Flexible API Key Setup**: Configure only the providers you need
+- **Local Model Support**: ClassID 129 runs Ollama models locally (no API costs)
+
+These features provide flexibility in cost management and model selection while simplifying the setup process!
 
 ## Prerequisites
 
@@ -23,10 +30,35 @@ Before starting, ensure you have:
 - **Software**: Git, Docker, Node.js (auto-installed if missing)
 
 ### Required API Keys
-- **OpenAI API Key**: For AI-powered arbitration ([Get API Key](.  https://platform.openai.com/))
+
+**Note**: The API keys you need depend on which ClassIDs you plan to support. See the [ClassID Requirements](#classid-requirements) section below for details.
+
+**AI Provider Keys** (based on your ClassID choices):
+- **OpenAI API Key**: For GPT models ([Get API Key](https://platform.openai.com/))
+- **Anthropic API Key**: For Claude models ([Get API Key](https://console.anthropic.com/))
+- **Hyperbolic API Key**: For cost-effective open-source models ([Get API Key](https://hyperbolic.xyz/))
+- **xAI API Key**: For Grok models ([Get API Key](https://console.x.ai))
+
+**Infrastructure Keys** (required for all installations):
 - **Web3 Provider**: Choose Infura, Alchemy, or QuickNode ([Infura](https://infura.io/), [Alchemy](https://alchemy.com/))
-- **IPFS Service**: For document storage ([Pinata](https://pinata.cloud/) recommended)
-- **Optional**: Anthropic API Key for Claude AI ([Anthropic Console](https://console.anthropic.com/))
+- **IPFS Service** (Optional): For document storage ([Pinata](https://pinata.cloud/) recommended)
+
+### ClassID Requirements
+
+Your arbiter node can support different classes of arbitration requests, each requiring specific API keys:
+
+| ClassID | Description | Required API Keys |
+|---------|-------------|-------------------|
+| **128** | Commercial Models | OpenAI + Anthropic |
+| **129** | Open-Source Local (Ollama) | None (models run locally) |
+| **130** | Open-Source via Hyperbolic | Hyperbolic |
+| **131** | Multi-Provider Premium | OpenAI + Anthropic + Hyperbolic + xAI |
+
+**Recommendations**:
+- **For testing/learning**: Start with ClassID 129 (no API keys needed, uses local Ollama models)
+- **For production**: Use ClassID 128 or 131 depending on model diversity requirements
+- **For cost optimization**: Consider ClassID 130 (Hyperbolic provides cost-effective access to open-source models)
+- **For maximum flexibility**: Support ClassID 131 (requires all four AI provider keys)
 
 ### Network Funds
 
@@ -97,6 +129,9 @@ Would you like to install Docker? (y/n): y
 
 Configure your installation directory, network selection, and API keys.
 
+!!! important "Understanding ClassID Requirements"
+    Before configuring API keys, the installer will display detailed ClassID information to help you understand which API keys you need based on the arbitration classes you plan to support. You can skip API keys for providers you won't use.
+
 ### Installation Directory
 
 **Prompt**: `Installation directory [~/verdikta-arbiter-node]:`
@@ -125,38 +160,85 @@ Configure your installation directory, network selection, and API keys.
 
 ### API Keys Configuration
 
+!!! info "ClassID-Based Requirements"
+    The installer will display ClassID information before prompting for API keys. Configure only the API keys needed for your intended ClassIDs:
+    
+    - **ClassID 128**: OpenAI + Anthropic
+    - **ClassID 129**: No API keys (local Ollama models)
+    - **ClassID 130**: Hyperbolic
+    - **ClassID 131**: OpenAI + Anthropic + Hyperbolic + xAI
+
 #### OpenAI API Key
 
 **Prompt**: `Enter your OpenAI API Key (leave blank to skip):`
 
+**Required for**: ClassID 128, 131
+
 **How to get it**:
 
 1. Go to [OpenAI Platform](https://platform.openai.com/)
-
 2. Sign up or log in
-
 3. Navigate to **API Keys** → **"+ Create new secret key"**
-
 4. Name it "Verdikta Arbiter" and copy the key
 
-**Example**: `sk-1234567890abcdef...`
+**Example**: `sk-proj-1234567890abcdef...`
 
 !!! warning "Important"
     Fund your OpenAI account with credits. The API requires payment for usage.
 
-#### Anthropic API Key (Optional)
+#### Anthropic API Key
 
 **Prompt**: `Enter your Anthropic API Key (leave blank to skip):`
+
+**Required for**: ClassID 128, 131
 
 **How to get it**:
 
 1. Go to [Anthropic Console](https://console.anthropic.com/)
+2. Sign up or log in
+3. Navigate to **API Keys** → **"Create Key"**
+4. Copy the key
 
-2. Sign up → **API Keys** → **"Create Key"**
+**Example**: `sk-ant-api03-...`
 
-3. Copy the key
+!!! tip "Anthropic Credits"
+    Anthropic requires payment for API usage. Ensure your account has sufficient credits.
 
-**Example**: `sk-ant-...`
+#### Hyperbolic API Key
+
+**Prompt**: `Enter your Hyperbolic API Key (leave blank to skip):`
+
+**Required for**: ClassID 130, 131
+
+**How to get it**:
+
+1. Go to [Hyperbolic](https://hyperbolic.xyz/)
+2. Sign up or log in
+3. Navigate to **API Keys** section
+4. Create a new API key and copy it
+
+**Example**: `hb_...`
+
+!!! info "Cost-Effective Models"
+    Hyperbolic provides cost-effective access to open-source models like Llama, Qwen, and others.
+
+#### xAI API Key
+
+**Prompt**: `Enter your xAI API Key (leave blank to skip):`
+
+**Required for**: ClassID 131
+
+**How to get it**:
+
+1. Go to [xAI Console](https://console.x.ai)
+2. Sign up or log in
+3. Navigate to **API Keys** section
+4. Create a new API key and copy it
+
+**Example**: `xai-...`
+
+!!! info "Grok Models"
+    xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning capabilities.
 
 #### Infura API Key (Required)
 
@@ -218,9 +300,14 @@ Configure your installation directory, network selection, and API keys.
 ## Step 3: AI Node Installation
 
 The installer downloads and sets up the AI arbitration service:
-- Configures with your API keys
-- Sets up AI model connections
+- Configures with your API keys (OpenAI, Anthropic, Hyperbolic, xAI as provided)
+- Integrates ClassID model pools from @verdikta/common library
+- Sets up AI model connections for all configured providers
+- Displays available ClassIDs and their model configurations
 - **Duration**: ~5 minutes
+
+!!! info "ClassID Model Pool Integration"
+    The AI Node automatically integrates the latest ClassID model pool data, ensuring you have access to the most current model configurations for each supported ClassID.
 
 ---
 
@@ -375,16 +462,23 @@ If registering, you'll be prompted for:
 
 **What to provide**: Arbitration categories your oracle can handle
 
-**Common Class IDs**:
-- `128` - General arbitration (default) - Uses OpenAI and Anthropic providers
-- `129` - OS Arbitration - Uses open-source models installed during installation process (no paid providers required)  
-- `130` - TBD
-- `131` - TBD
+**Available Class IDs**:
+
+| ClassID | Description | Required API Keys | Notes |
+|---------|-------------|-------------------|-------|
+| **128** | Commercial Models | OpenAI + Anthropic | General purpose arbitration with premium models |
+| **129** | Open-Source Local | None (Ollama) | Uses locally-installed models, no API costs |
+| **130** | Hyperbolic Provider | Hyperbolic | Cost-effective access to open-source models |
+| **131** | Multi-Provider Premium | OpenAI + Anthropic + Hyperbolic + xAI | Maximum model diversity and capabilities |
 
 **Examples**:
-- Single class: `128`
-- Multiple classes: `128,129,130`
-- Multiple classes (space-separated)): `128 129 130 131`
+- Single class: `128` (requires OpenAI + Anthropic keys)
+- Multiple classes: `128,129` (requires OpenAI + Anthropic keys, Ollama models)
+- All commercial: `128,130,131` (requires all four AI provider keys)
+- Open-source only: `129` (no API keys required)
+
+!!! warning "API Key Validation"
+    Only register for ClassIDs where you have configured the required API keys. Your node will not be able to process requests for ClassIDs if the necessary API keys are missing.
 
 ### Registration Verification
 
@@ -888,6 +982,32 @@ cd ~/verdikta-arbiter-node
 ./fund-chainlink-keys.sh    # Add ETH to keys
 ./recover-chainlink-funds.sh # Recover ETH and LINK from keys
 ```
+
+### ClassID Configuration Summary
+
+Your installation has been configured with ClassID model pools. The ClassIDs you can support depend on which API keys you provided:
+
+| ClassID | Provider Requirements | Your Configuration |
+|---------|----------------------|-------------------|
+| **128** | OpenAI + Anthropic | ✓ if both keys provided |
+| **129** | Ollama (local) | ✓ always available |
+| **130** | Hyperbolic | ✓ if Hyperbolic key provided |
+| **131** | All four providers | ✓ if OpenAI, Anthropic, Hyperbolic, and xAI keys provided |
+
+**To check your model configuration**:
+```bash
+cd ~/verdikta-arbiter-node/ai-node
+npm run display-classid
+```
+
+**To reconfigure models**:
+```bash
+cd ~/verdikta-arbiter-node/ai-node
+npm run integrate-classid
+```
+
+!!! tip "Adding API Keys Later"
+    If you need to add API keys after installation, update the `.env.local` file in the AI Node directory and restart your services.
 
 ### Getting Help
 
