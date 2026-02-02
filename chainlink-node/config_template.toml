@@ -37,10 +37,7 @@ ReaperThreshold = "168h"            # Keep txns longer before cleanup
 MaxInFlight = 32
 MaxQueued = 64
 
-[[EVM.Nodes]]
-Name="<NETWORK_NAME>"
-WSURL="<WS_URL>"
-HTTPURL="<HTTP_URL>"
+<EVM_NODES_BLOCK>
 
 [JobPipeline.HTTPRequest]
 DefaultTimeout = "300s"

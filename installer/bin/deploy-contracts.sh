@@ -317,9 +317,49 @@ HH_PRIVATE_KEY=$PRIVATE_KEY
 if [[ ! "$HH_PRIVATE_KEY" =~ ^0x ]]; then
     HH_PRIVATE_KEY="0x$HH_PRIVATE_KEY"
 fi
+first_from_list() {
+    local list="$1"
+    if [ -z "$list" ]; then
+        echo ""
+        return
+    fi
+    echo "$list" | tr -d ' ' | cut -d';' -f1
+}
+
+CURRENT_RPC_URL=""
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    if [ -n "$BASE_MAINNET_RPC_URL" ]; then
+        CURRENT_RPC_URL="$BASE_MAINNET_RPC_URL"
+    else
+        CURRENT_RPC_URL="$(first_from_list "$BASE_MAINNET_RPC_HTTP_URLS")"
+    fi
+else
+    if [ -n "$BASE_SEPOLIA_RPC_URL" ]; then
+        CURRENT_RPC_URL="$BASE_SEPOLIA_RPC_URL"
+    else
+        CURRENT_RPC_URL="$(first_from_list "$BASE_SEPOLIA_RPC_HTTP_URLS")"
+    fi
+fi
+
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ] && [ -z "$BASE_MAINNET_RPC_URL" ] && [ -n "$CURRENT_RPC_URL" ]; then
+    BASE_MAINNET_RPC_URL="$CURRENT_RPC_URL"
+fi
+
+if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ] && [ -z "$BASE_SEPOLIA_RPC_URL" ] && [ -n "$CURRENT_RPC_URL" ]; then
+    BASE_SEPOLIA_RPC_URL="$CURRENT_RPC_URL"
+fi
+
+if [ -z "$CURRENT_RPC_URL" ] && [ -z "$INFURA_API_KEY" ]; then
+    echo -e "${RED}Error: No RPC URL available for Hardhat deployment.${NC}"
+    echo -e "${RED}Please configure RPC URLs in setup-environment.sh and retry.${NC}"
+    exit 1
+fi
+
 cat > .env << EOL
 PRIVATE_KEY=$HH_PRIVATE_KEY
 INFURA_API_KEY=$INFURA_API_KEY
+BASE_SEPOLIA_RPC_URL=$BASE_SEPOLIA_RPC_URL
+BASE_MAINNET_RPC_URL=$BASE_MAINNET_RPC_URL
 NODE_ADDRESS=$NODE_ADDRESS
 EOL
 # Note: NODE_ADDRESS is added here for setAuthorizedSenders.js to potentially pick up if needed

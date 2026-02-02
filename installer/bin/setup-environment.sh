@@ -449,9 +449,9 @@ configure_api_keys() {
         fi
     fi
     
-    # Infura API Key
+    # Infura API Key (optional fallback)
     if [ -z "$INFURA_API_KEY" ]; then
-        read -p "Enter your Infura API Key (leave blank to skip): " INFURA_API_KEY
+        read -p "Enter your Infura API Key (optional, leave blank to skip): " INFURA_API_KEY
     else
         read -p "Enter your Infura API Key (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
@@ -524,6 +524,58 @@ configure_api_keys() {
                 ;;
         esac
     done
+
+    # RPC Endpoint Configuration
+    echo -e "${BLUE}RPC Endpoint Configuration${NC}"
+    echo -e "${YELLOW}For best reliability, configure multiple RPC endpoints.${NC}"
+    echo -e "${YELLOW}This is especially recommended for mainnet deployments.${NC}"
+    echo -e "${YELLOW}Provide semicolon-separated HTTP and WS URLs (no spaces).${NC}"
+    echo -e "${YELLOW}Example: https://...;https://...${NC}"
+    echo -e "${YELLOW}RPC URLs are required for Chainlink and contract deployment.${NC}"
+
+    normalize_rpc_list() {
+        local raw="$1"
+        # Trim spaces and remove trailing semicolons
+        raw="$(echo "$raw" | tr -d ' ' | sed 's/;*$//')"
+        echo "$raw"
+    }
+
+    prompt_rpc_urls() {
+        local network_label="$1"
+        local http_var_name="$2"
+        local ws_var_name="$3"
+        local http_input=""
+        local ws_input=""
+
+        echo -e "${BLUE}${network_label} RPC endpoints:${NC}"
+        read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
+        read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+
+        http_input="$(normalize_rpc_list "$http_input")"
+        ws_input="$(normalize_rpc_list "$ws_input")"
+
+        if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
+            echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
+            # Re-prompt once
+            read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
+            read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+            http_input="$(normalize_rpc_list "$http_input")"
+            ws_input="$(normalize_rpc_list "$ws_input")"
+            if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
+                echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
+                exit 1
+            fi
+        fi
+
+        eval "$http_var_name=\"$http_input\""
+        eval "$ws_var_name=\"$ws_input\""
+    }
+
+    if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ]; then
+        prompt_rpc_urls "Base Sepolia" "BASE_SEPOLIA_RPC_HTTP_URLS" "BASE_SEPOLIA_RPC_WS_URLS"
+    else
+        prompt_rpc_urls "Base Mainnet" "BASE_MAINNET_RPC_HTTP_URLS" "BASE_MAINNET_RPC_WS_URLS"
+    fi
     
     # Display network-specific requirements
     if [ "$NETWORK_TYPE" = "testnet" ]; then
@@ -593,15 +645,15 @@ EOL
         echo -e "${GREEN}Private key saved securely to .env.${NC}"
     fi
 
-    # Save Infura API Key to .env file as well for general use by scripts
+    # Save Infura API Key to .env file as optional fallback
     if [ -n "$INFURA_API_KEY" ]; then
         if grep -q "INFURA_API_KEY=" "$INSTALLER_DIR/.env" 2>/dev/null; then
             sed -i "s/INFURA_API_KEY=.*/INFURA_API_KEY=\"$INFURA_API_KEY\"/" "$INSTALLER_DIR/.env"
         else
             echo "INFURA_API_KEY=\"$INFURA_API_KEY\"" >> "$INSTALLER_DIR/.env"
         fi
-        chmod 600 "$INSTALLER_DIR/.env" # Ensure permissions are set if file was newly created or only had PRIVATE_KEY
-        echo -e "${GREEN}Infura API Key saved to .env.${NC}"
+        chmod 600 "$INSTALLER_DIR/.env"
+        echo -e "${GREEN}Infura API Key saved to .env (optional fallback).${NC}"
     fi
     
     # Save network configuration to .env file
@@ -617,6 +669,54 @@ EOL
         done
         chmod 600 "$INSTALLER_DIR/.env"
         echo -e "${GREEN}Network configuration saved to .env (Network: $NETWORK_NAME).${NC}"
+    fi
+
+    # Save RPC endpoint configuration to .env file (using grep+temp file to avoid sed issues with URLs)
+    save_env_var() {
+        local var_name="$1"
+        local var_val="$2"
+        local env_file="$3"
+        
+        if [ -z "$var_val" ]; then
+            return
+        fi
+        
+        if [ -f "$env_file" ]; then
+            grep -v "^$var_name=" "$env_file" > "${env_file}.tmp" 2>/dev/null || true
+            mv "${env_file}.tmp" "$env_file"
+        fi
+        echo "$var_name=\"$var_val\"" >> "$env_file"
+    }
+    
+    for var in BASE_SEPOLIA_RPC_HTTP_URLS BASE_SEPOLIA_RPC_WS_URLS BASE_MAINNET_RPC_HTTP_URLS BASE_MAINNET_RPC_WS_URLS; do
+        var_value=$(eval echo \"\$$var\")
+        if [ -n "$var_value" ]; then
+            save_env_var "$var" "$var_value" "$INSTALLER_DIR/.env"
+        fi
+    done
+
+    # Save first HTTP RPC URL as the default Hardhat RPC URL for deployments
+    first_from_list() {
+        local list="$1"
+        if [ -z "$list" ]; then
+            echo ""
+            return
+        fi
+        echo "$list" | cut -d';' -f1
+    }
+
+    if [ -n "$BASE_SEPOLIA_RPC_HTTP_URLS" ]; then
+        BASE_SEPOLIA_RPC_URL="$(first_from_list "$BASE_SEPOLIA_RPC_HTTP_URLS")"
+        if [ -n "$BASE_SEPOLIA_RPC_URL" ]; then
+            save_env_var "BASE_SEPOLIA_RPC_URL" "$BASE_SEPOLIA_RPC_URL" "$INSTALLER_DIR/.env"
+        fi
+    fi
+
+    if [ -n "$BASE_MAINNET_RPC_HTTP_URLS" ]; then
+        BASE_MAINNET_RPC_URL="$(first_from_list "$BASE_MAINNET_RPC_HTTP_URLS")"
+        if [ -n "$BASE_MAINNET_RPC_URL" ]; then
+            save_env_var "BASE_MAINNET_RPC_URL" "$BASE_MAINNET_RPC_URL" "$INSTALLER_DIR/.env"
+        fi
     fi
     
     # Configure Verdikta Common Library version

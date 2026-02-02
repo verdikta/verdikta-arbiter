@@ -12,6 +12,20 @@ const ACCOUNTS = [process.env.PRIVATE_KEY, process.env.PRIVATE_KEY_2].filter(Boo
 
 const keepAliveAgent = new https.Agent({ keepAlive: true, keepAliveMsecs: 60_000 });
 
+const firstRpcFromList = (value) => {
+  if (!value) return "";
+  const normalized = value.replace(/\s+/g, "").replace(/;+\s*$/, "");
+  const first = normalized.split(";")[0];
+  return first || "";
+};
+
+const rpcUrlForNetwork = ({ directEnv, listEnv, infuraUrl }) => {
+  if (directEnv) return directEnv;
+  const listFirst = firstRpcFromList(listEnv);
+  if (listFirst) return listFirst;
+  return infuraUrl;
+};
+
 /** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
@@ -33,7 +47,11 @@ module.exports = {
     },
 
     sepolia: {
-      url: `https://sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      url: rpcUrlForNetwork({
+        directEnv: process.env.SEPOLIA_RPC_URL,
+        listEnv: process.env.SEPOLIA_RPC_HTTP_URLS,
+        infuraUrl: `https://sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      }),
       httpAgent: keepAliveAgent,
       httpsAgent: keepAliveAgent,
       chainId: 11155111,
@@ -43,7 +61,11 @@ module.exports = {
     },
 
     base_sepolia: {
-      url: `https://base-sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      url: rpcUrlForNetwork({
+        directEnv: process.env.BASE_SEPOLIA_RPC_URL,
+        listEnv: process.env.BASE_SEPOLIA_RPC_HTTP_URLS,
+        infuraUrl: `https://base-sepolia.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      }),
       httpAgent: keepAliveAgent,
       httpsAgent: keepAliveAgent,
       chainId: 84532,
@@ -53,7 +75,11 @@ module.exports = {
     },
 
     base_mainnet: {
-      url: `https://base-mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      url: rpcUrlForNetwork({
+        directEnv: process.env.BASE_MAINNET_RPC_URL,
+        listEnv: process.env.BASE_MAINNET_RPC_HTTP_URLS,
+        infuraUrl: `https://base-mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
+      }),
       httpAgent: keepAliveAgent,
       httpsAgent: keepAliveAgent,
       chainId: 8453,

@@ -376,7 +376,7 @@ fi
 # Track if arbiter was running
 ARBITER_WAS_RUNNING=$ARBITER_RUNNING
 
-# Offer to update API keys before upgrading
+# Offer to update API keys and RPC endpoints before upgrading
 echo
 echo -e "${BLUE}API Key Configuration${NC}"
 echo -e "${YELLOW}Before upgrading, you can add or update your AI provider API keys.${NC}"
@@ -401,7 +401,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     [ -n "$ANTHROPIC_API_KEY" ] && echo -e "  ✓ Anthropic API Key: Configured" || echo -e "  ✗ Anthropic API Key: Not configured"
     [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "  ✓ Hyperbolic API Key: Configured" || echo -e "  ✗ Hyperbolic API Key: Not configured"
     [ -n "$XAI_API_KEY" ] && echo -e "  ✓ xAI API Key: Configured" || echo -e "  ✗ xAI API Key: Not configured"
-    [ -n "$INFURA_API_KEY" ] && echo -e "  ✓ Infura API Key: Configured" || echo -e "  ✗ Infura API Key: Configured"
+    [ -n "$INFURA_API_KEY" ] && echo -e "  ✓ Infura API Key: Configured (optional fallback)" || echo -e "  ✗ Infura API Key: Not configured (optional fallback)"
     [ -n "$PINATA_API_KEY" ] && echo -e "  ✓ Pinata JWT: Configured" || echo -e "  ✗ Pinata JWT: Not configured"
     echo ""
     
@@ -465,9 +465,12 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
         [ -n "$XAI_API_KEY" ] && echo -e "${GREEN}xAI API Key added.${NC}"
     fi
     
-    # Infura API Key
+    echo -e "${BLUE}Note: RPC endpoints are configured in the next section.${NC}"
+    echo -e "${BLUE}Infura is optional and used only as a fallback if you choose to set it.${NC}"
+    
+    # Infura API Key (optional fallback)
     if [ -n "$INFURA_API_KEY" ]; then
-        if ask_yes_no "Update Infura API Key? (currently configured)" "n"; then
+        if ask_yes_no "Update Infura API Key? (optional fallback, currently configured)" "n"; then
             read -p "Enter new Infura API Key: " new_key
             if [ -n "$new_key" ]; then
                 INFURA_API_KEY="$new_key"
@@ -475,7 +478,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
             fi
         fi
     else
-        read -p "Enter Infura API Key (leave blank to skip): " INFURA_API_KEY
+        read -p "Enter Infura API Key (optional fallback, leave blank to skip): " INFURA_API_KEY
         [ -n "$INFURA_API_KEY" ] && echo -e "${GREEN}Infura API Key added.${NC}"
     fi
     
@@ -518,6 +521,261 @@ EOL
     echo -e "${BLUE}Keys will be applied to AI Node during upgrade process.${NC}"
 else
     echo -e "${BLUE}Skipping API key configuration. Existing keys will be preserved.${NC}"
+fi
+
+echo
+echo -e "${BLUE}RPC Endpoint Configuration${NC}"
+echo -e "${YELLOW}For best reliability, configure multiple RPC endpoints.${NC}"
+echo -e "${YELLOW}This is especially recommended for mainnet deployments.${NC}"
+echo -e "${YELLOW}Provide semicolon-separated HTTP and WS URLs (no spaces).${NC}"
+echo -e "${YELLOW}Example: https://...;https://...${NC}"
+echo -e "${YELLOW}RPC URLs are required for Chainlink and contract deployment.${NC}"
+echo
+
+normalize_rpc_list() {
+    local raw="$1"
+    raw="$(echo "$raw" | tr -d ' ' | sed 's/;*$//')"
+    echo "$raw"
+}
+
+select_default_rpc() {
+    local list="$1"
+    local label="$2"
+    local selected=""
+
+    if [ -z "$list" ]; then
+        echo ""
+        return
+    fi
+
+    # Send menu display to stderr so only the result goes to stdout
+    echo -e "${BLUE}Select default RPC for $label (used by Hardhat):${NC}" >&2
+    IFS=';' read -r -a rpc_array <<< "$list"
+    for i in "${!rpc_array[@]}"; do
+        idx=$((i + 1))
+        echo -e "  $idx) ${rpc_array[$i]}" >&2
+    done
+    while true; do
+        read -p "Choose default RPC [1]: " choice
+        if [ -z "$choice" ]; then
+            choice=1
+        fi
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [ "$choice" -ge 1 ] && [ "$choice" -le "${#rpc_array[@]}" ]; then
+            selected="${rpc_array[$((choice - 1))]}"
+            break
+        else
+            echo -e "${RED}Please enter a number between 1 and ${#rpc_array[@]}.${NC}" >&2
+        fi
+    done
+    echo "$selected"
+}
+
+prompt_rpc_urls() {
+    local network_label="$1"
+    local http_var_name="$2"
+    local ws_var_name="$3"
+    local http_input=""
+    local ws_input=""
+    local default_http=""
+    local default_ws=""
+
+    default_http="$(eval echo \$$http_var_name)"
+    default_ws="$(eval echo \$$ws_var_name)"
+
+    echo -e "${BLUE}${network_label} RPC endpoints:${NC}"
+    read -p "Enter HTTP RPC URLs (semicolon-separated) [$default_http]: " http_input
+    read -p "Enter WS RPC URLs (semicolon-separated) [$default_ws]: " ws_input
+
+    if [ -z "$http_input" ]; then
+        http_input="$default_http"
+    fi
+    if [ -z "$ws_input" ]; then
+        ws_input="$default_ws"
+    fi
+
+    http_input="$(normalize_rpc_list "$http_input")"
+    ws_input="$(normalize_rpc_list "$ws_input")"
+
+    if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
+        echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
+        # Re-prompt once
+        read -p "Enter HTTP RPC URLs (semicolon-separated) [$default_http]: " http_input
+        read -p "Enter WS RPC URLs (semicolon-separated) [$default_ws]: " ws_input
+        if [ -z "$http_input" ]; then
+            http_input="$default_http"
+        fi
+        if [ -z "$ws_input" ]; then
+            ws_input="$default_ws"
+        fi
+        http_input="$(normalize_rpc_list "$http_input")"
+        ws_input="$(normalize_rpc_list "$ws_input")"
+        if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
+            echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
+            exit 1
+        fi
+    fi
+
+    eval "$http_var_name=\"$http_input\""
+    eval "$ws_var_name=\"$ws_input\""
+}
+
+if ask_yes_no "Would you like to update your RPC endpoint lists?" "n"; then
+    RPCS_CHANGED=true
+    # Load existing RPCs if available
+    if [ -f "$TARGET_DIR/installer/.env" ]; then
+        source "$TARGET_DIR/installer/.env"
+    fi
+
+    if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+        prompt_rpc_urls "Base Mainnet" "BASE_MAINNET_RPC_HTTP_URLS" "BASE_MAINNET_RPC_WS_URLS"
+        BASE_MAINNET_RPC_URL="$(select_default_rpc "$BASE_MAINNET_RPC_HTTP_URLS" "Base Mainnet")"
+    else
+        prompt_rpc_urls "Base Sepolia" "BASE_SEPOLIA_RPC_HTTP_URLS" "BASE_SEPOLIA_RPC_WS_URLS"
+        BASE_SEPOLIA_RPC_URL="$(select_default_rpc "$BASE_SEPOLIA_RPC_HTTP_URLS" "Base Sepolia")"
+    fi
+
+    # Save RPC endpoint configuration to .env files (using grep+temp file to avoid sed issues with URLs)
+    save_env_var() {
+        local var_name="$1"
+        local var_val="$2"
+        local env_file="$3"
+        
+        if [ -z "$var_val" ]; then
+            return
+        fi
+        
+        if [ -f "$env_file" ]; then
+            grep -v "^$var_name=" "$env_file" > "${env_file}.tmp" 2>/dev/null || true
+            mv "${env_file}.tmp" "$env_file"
+        fi
+        echo "$var_name=\"$var_val\"" >> "$env_file"
+    }
+    
+    for var in BASE_SEPOLIA_RPC_HTTP_URLS BASE_SEPOLIA_RPC_WS_URLS BASE_MAINNET_RPC_HTTP_URLS BASE_MAINNET_RPC_WS_URLS; do
+        var_value=$(eval echo \"\$$var\")
+        if [ -n "$var_value" ]; then
+            save_env_var "$var" "$var_value" "$TARGET_DIR/installer/.env"
+            save_env_var "$var" "$var_value" "$INSTALLER_DIR/.env"
+        fi
+    done
+
+    # Save default Hardhat RPC URLs based on selection
+    if [ -n "$BASE_SEPOLIA_RPC_URL" ]; then
+        save_env_var "BASE_SEPOLIA_RPC_URL" "$BASE_SEPOLIA_RPC_URL" "$TARGET_DIR/installer/.env"
+        save_env_var "BASE_SEPOLIA_RPC_URL" "$BASE_SEPOLIA_RPC_URL" "$INSTALLER_DIR/.env"
+    fi
+
+    if [ -n "$BASE_MAINNET_RPC_URL" ]; then
+        save_env_var "BASE_MAINNET_RPC_URL" "$BASE_MAINNET_RPC_URL" "$TARGET_DIR/installer/.env"
+        save_env_var "BASE_MAINNET_RPC_URL" "$BASE_MAINNET_RPC_URL" "$INSTALLER_DIR/.env"
+    fi
+else
+    echo -e "${BLUE}Skipping RPC endpoint updates. Existing values will be preserved.${NC}"
+    RPCS_CHANGED=false
+fi
+
+# Preflight RPC connectivity check (uses current values)
+echo -e "${YELLOW}Preflight: Checking RPC endpoint connectivity...${NC}"
+if [ -f "$TARGET_DIR/installer/.env" ]; then
+    source "$TARGET_DIR/installer/.env"
+fi
+
+normalize_rpc_list() {
+    local raw="$1"
+    raw="$(echo "$raw" | tr -d ' ' | sed 's/;*$//')"
+    echo "$raw"
+}
+
+check_rpc_url() {
+    local url="$1"
+    local type="$2"
+    python3 - "$url" "$type" << 'PY'
+import json
+import sys
+from urllib.parse import urlparse
+
+url = sys.argv[1]
+kind = sys.argv[2]
+timeout_seconds = 7
+
+if kind == "http":
+    try:
+        import urllib.request
+        payload = json.dumps({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}).encode("utf-8")
+        headers = {"Content-Type":"application/json", "User-Agent":"verdikta-arbiter/1.0"}
+        req = urllib.request.Request(url, data=payload, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            if resp.status < 200 or resp.status >= 300:
+                sys.exit(1)
+            body = resp.read().decode("utf-8", errors="ignore")
+            if '"result"' not in body:
+                sys.exit(1)
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
+
+if kind == "ws":
+    try:
+        import socket
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+        if not host:
+            sys.exit(1)
+        sock = socket.create_connection((host, port), timeout=timeout_seconds)
+        sock.close()
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
+
+sys.exit(1)
+PY
+}
+
+RPC_HTTP_URLS=""
+RPC_WS_URLS=""
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    RPC_HTTP_URLS="$(normalize_rpc_list "$BASE_MAINNET_RPC_HTTP_URLS")"
+    RPC_WS_URLS="$(normalize_rpc_list "$BASE_MAINNET_RPC_WS_URLS")"
+else
+    RPC_HTTP_URLS="$(normalize_rpc_list "$BASE_SEPOLIA_RPC_HTTP_URLS")"
+    RPC_WS_URLS="$(normalize_rpc_list "$BASE_SEPOLIA_RPC_WS_URLS")"
+fi
+
+if [ -z "$RPC_HTTP_URLS" ] || [ -z "$RPC_WS_URLS" ]; then
+    echo -e "${RED}Error: RPC URL lists are required for upgrade.${NC}"
+    exit 1
+fi
+
+IFS=';' read -r -a HTTP_URL_ARRAY <<< "$RPC_HTTP_URLS"
+IFS=';' read -r -a WS_URL_ARRAY <<< "$RPC_WS_URLS"
+
+FAILED_RPC_CHECKS=""
+for url in "${HTTP_URL_ARRAY[@]}"; do
+    if ! check_rpc_url "$url" "http"; then
+        FAILED_RPC_CHECKS="${FAILED_RPC_CHECKS}\n  HTTP: $url"
+    fi
+done
+
+for url in "${WS_URL_ARRAY[@]}"; do
+    if ! check_rpc_url "$url" "ws"; then
+        FAILED_RPC_CHECKS="${FAILED_RPC_CHECKS}\n  WS:   $url"
+    fi
+done
+
+if [ -n "$FAILED_RPC_CHECKS" ]; then
+    echo -e "${RED}RPC connectivity check failed for:${NC}${FAILED_RPC_CHECKS}"
+    if ! ask_yes_no "Continue upgrade anyway?" "n"; then
+        exit 1
+    fi
+else
+    echo -e "${GREEN}RPC connectivity check passed.${NC}"
+fi
+
+if [ "$RPCS_CHANGED" = "true" ]; then
+    echo -e "${YELLOW}IMPORTANT: RPCs were updated.${NC}"
+    echo -e "${YELLOW}You must regenerate the Chainlink config when prompted later in this upgrade.${NC}"
+    echo -e "${YELLOW}This is required for the new RPCs to take effect.${NC}"
 fi
 
 # Ask for confirmation before upgrading
@@ -1497,7 +1755,7 @@ check_chainlink_config() {
         return 0
     fi
     
-    # Try to load Infura API key from installation
+    # Try to load Infura API key from installation (fallback)
     local infura_key=""
     if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
         source "$TARGET_DIR/installer/.api_keys"
@@ -1507,11 +1765,6 @@ check_chainlink_config() {
         infura_key="$INFURA_API_KEY"
     fi
     
-    if [ -z "$infura_key" ]; then
-        echo -e "${YELLOW}Could not find Infura API key. Skipping config regeneration.${NC}"
-        return 0
-    fi
-    
     # Load network configuration to populate template placeholders
     local chain_id=""
     local network_name=""
@@ -1519,12 +1772,22 @@ check_chainlink_config() {
     local fee_cap_default=""
     local ws_url=""
     local http_url=""
+    local rpc_http_urls=""
+    local rpc_ws_urls=""
     
     # Load environment variables from target installation
     if [ -f "$TARGET_DIR/installer/.env" ]; then
         source "$TARGET_DIR/installer/.env"
         chain_id="$NETWORK_CHAIN_ID"
         network_name="$NETWORK_NAME"
+        
+        if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+            rpc_http_urls="${BASE_MAINNET_RPC_HTTP_URLS:-}"
+            rpc_ws_urls="${BASE_MAINNET_RPC_WS_URLS:-}"
+        else
+            rpc_http_urls="${BASE_SEPOLIA_RPC_HTTP_URLS:-}"
+            rpc_ws_urls="${BASE_SEPOLIA_RPC_WS_URLS:-}"
+        fi
         
         # Set default gas values based on network type
         if [ "$NETWORK_TYPE" = "testnet" ]; then
@@ -1539,17 +1802,77 @@ check_chainlink_config() {
             http_url="https://base-mainnet.infura.io/v3/$infura_key"
         fi
     fi
+
+    rpc_http_urls="$(echo "$rpc_http_urls" | tr -d ' ' | sed 's/;*$//')"
+    rpc_ws_urls="$(echo "$rpc_ws_urls" | tr -d ' ' | sed 's/;*$//')"
+
+    if [ -n "$rpc_http_urls" ] || [ -n "$rpc_ws_urls" ]; then
+        if [ -z "$rpc_http_urls" ] || [ -z "$rpc_ws_urls" ]; then
+            echo -e "${YELLOW}RPC lists are incomplete (missing HTTP or WS). Skipping config regeneration.${NC}"
+            return 0
+        fi
+    fi
+
+    if [ -z "$rpc_http_urls" ] && [ -z "$rpc_ws_urls" ]; then
+        if [ -z "$infura_key" ]; then
+            echo -e "${YELLOW}Could not find RPC URLs or Infura API key. Skipping config regeneration.${NC}"
+            return 0
+        fi
+        rpc_http_urls="$http_url"
+        rpc_ws_urls="$ws_url"
+    fi
+
+    IFS=';' read -r -a http_url_array <<< "$rpc_http_urls"
+    IFS=';' read -r -a ws_url_array <<< "$rpc_ws_urls"
+
+    if [ "${#http_url_array[@]}" -ne "${#ws_url_array[@]}" ]; then
+        echo -e "${YELLOW}RPC URL list counts do not match. Skipping config regeneration.${NC}"
+        return 0
+    fi
+
+    local evm_nodes_block=""
+    for i in "${!http_url_array[@]}"; do
+        node_index=$((i + 1))
+        http_entry="${http_url_array[$i]}"
+        ws_entry="${ws_url_array[$i]}"
+        if [ -z "$http_entry" ] || [ -z "$ws_entry" ]; then
+            echo -e "${YELLOW}RPC URL list contains empty entries. Skipping config regeneration.${NC}"
+            return 0
+        fi
+        evm_nodes_block="${evm_nodes_block}[[EVM.Nodes]]
+Name=\"${network_name}-${node_index}\"
+WSURL=\"${ws_entry}\"
+HTTPURL=\"${http_entry}\"
+
+"
+    done
     
     # Generate what the new config would look like with ALL placeholders populated
     local temp_config=$(mktemp)
-    sed -e "s/<KEY>/$infura_key/g" \
-        -e "s/<CHAIN_ID>/$chain_id/g" \
-        -e "s/<NETWORK_NAME>/$network_name/g" \
-        -e "s/<TIP_CAP_DEFAULT>/$tip_cap_default/g" \
-        -e "s/<FEE_CAP_DEFAULT>/$fee_cap_default/g" \
-        -e "s|<WS_URL>|$ws_url|g" \
-        -e "s|<HTTP_URL>|$http_url|g" \
-        "$template_file" > "$temp_config"
+    export chain_id network_name tip_cap_default fee_cap_default evm_nodes_block template_file temp_config
+    python3 - << 'PY'
+import os
+
+template_path = os.environ["template_file"]
+output_path = os.environ["temp_config"]
+
+with open(template_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+replacements = {
+    "<CHAIN_ID>": os.environ["chain_id"],
+    "<NETWORK_NAME>": os.environ["network_name"],
+    "<TIP_CAP_DEFAULT>": os.environ["tip_cap_default"],
+    "<FEE_CAP_DEFAULT>": os.environ["fee_cap_default"],
+    "<EVM_NODES_BLOCK>": os.environ["evm_nodes_block"].rstrip() + "\n",
+}
+
+for key, value in replacements.items():
+    content = content.replace(key, value)
+
+with open(output_path, "w", encoding="utf-8") as f:
+    f.write(content)
+PY
     
     # Create filtered versions for comparison (excluding dynamic/environment-specific lines)
     local current_filtered=$(mktemp)

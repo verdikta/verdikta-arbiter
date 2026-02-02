@@ -624,8 +624,9 @@ fi
 if [ ${#JOB_IDS[@]} -gt 0 ]; then
     echo -e "${BLUE}Updating contracts file with job IDs...${NC}"
     
-    # Remove existing job ID entries
+    # Remove existing job ID entries and arbiter count
     sed -i '/^JOB_ID.*=/d' "$INSTALLER_DIR/.contracts"
+    sed -i '/^ARBITER_COUNT=/d' "$INSTALLER_DIR/.contracts"
     
     # Add new job ID entries
     for ((i=0; i<${#JOB_IDS[@]}; i++)); do
@@ -740,8 +741,32 @@ else
         echo -e "${BLUE}Found $CURRENT_KEY_COUNT keys to authorize with operator contract${NC}"
         echo -e "${BLUE}Keys: $CURRENT_NODE_ADDRESSES${NC}"
         
+        first_from_list() {
+            local list="$1"
+            if [ -z "$list" ]; then
+                echo ""
+                return
+            fi
+            echo "$list" | tr -d ' ' | cut -d';' -f1
+        }
+
+        REAUTH_RPC_URL=""
+        if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+            if [ -n "$BASE_MAINNET_RPC_URL" ]; then
+                REAUTH_RPC_URL="$BASE_MAINNET_RPC_URL"
+            else
+                REAUTH_RPC_URL="$(first_from_list "$BASE_MAINNET_RPC_HTTP_URLS")"
+            fi
+        else
+            if [ -n "$BASE_SEPOLIA_RPC_URL" ]; then
+                REAUTH_RPC_URL="$BASE_SEPOLIA_RPC_URL"
+            else
+                REAUTH_RPC_URL="$(first_from_list "$BASE_SEPOLIA_RPC_HTTP_URLS")"
+            fi
+        fi
+
         # Check if we have the necessary contract information
-        if [ -n "$OPERATOR_ADDR" ] && [ -n "$PRIVATE_KEY" ] && [ -n "$INFURA_API_KEY" ]; then
+        if [ -n "$OPERATOR_ADDR" ] && [ -n "$PRIVATE_KEY" ] && { [ -n "$REAUTH_RPC_URL" ] || [ -n "$INFURA_API_KEY" ]; }; then
             echo -e "${BLUE}Re-authorizing all keys with operator contract...${NC}"
             
             # Create temporary directory for re-authorization
@@ -768,9 +793,18 @@ else
                     REAUTH_PRIVATE_KEY="0x$REAUTH_PRIVATE_KEY"
                 fi
                 
+                if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ] && [ -z "$BASE_MAINNET_RPC_URL" ] && [ -n "$REAUTH_RPC_URL" ]; then
+                    BASE_MAINNET_RPC_URL="$REAUTH_RPC_URL"
+                fi
+                if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ] && [ -z "$BASE_SEPOLIA_RPC_URL" ] && [ -n "$REAUTH_RPC_URL" ]; then
+                    BASE_SEPOLIA_RPC_URL="$REAUTH_RPC_URL"
+                fi
+
                 cat > "$TEMP_REAUTH_DIR/.env" << EOL
 PRIVATE_KEY=$REAUTH_PRIVATE_KEY
 INFURA_API_KEY=$INFURA_API_KEY
+BASE_SEPOLIA_RPC_URL=$BASE_SEPOLIA_RPC_URL
+BASE_MAINNET_RPC_URL=$BASE_MAINNET_RPC_URL
 EOL
                 
                 # Install minimal dependencies for hardhat
@@ -809,6 +843,7 @@ EOL
             echo -e "${YELLOW}Warning: Missing contract information for re-authorization${NC}"
             echo -e "${YELLOW}OPERATOR_ADDR: ${OPERATOR_ADDR:-'not set'}${NC}"
             echo -e "${YELLOW}PRIVATE_KEY: ${PRIVATE_KEY:+'set'}${PRIVATE_KEY:-'not set'}${NC}"
+            echo -e "${YELLOW}RPC_URL: ${REAUTH_RPC_URL:+'set'}${REAUTH_RPC_URL:-'not set'}${NC}"
             echo -e "${YELLOW}INFURA_API_KEY: ${INFURA_API_KEY:+'set'}${INFURA_API_KEY:-'not set'}${NC}"
         fi
     else

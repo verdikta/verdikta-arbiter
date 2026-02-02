@@ -85,16 +85,9 @@ if ! docker info > /dev/null 2>&1; then
     exit 1
 fi
 
-# Verify Infura API key exists
+# Infura API key is optional and only used as a fallback if no RPC URLs are provided
 if [ -z "$INFURA_API_KEY" ]; then
-    echo -e "${YELLOW}WARNING: Infura API key not provided. The Chainlink node will not be able to connect to Base Sepolia.${NC}"
-    read -p "Enter your Infura API Key: " INFURA_API_KEY
-    if [ -z "$INFURA_API_KEY" ]; then
-        echo -e "${RED}Error: Infura API key is required for Chainlink node setup.${NC}"
-        exit 1
-    fi
-    # Update .api_keys file with new Infura key
-    sed -i.bak "s/^INFURA_API_KEY=.*/INFURA_API_KEY=\"$INFURA_API_KEY\"/" "$INSTALLER_DIR/.api_keys"
+    echo -e "${YELLOW}Infura API key not provided. Will rely on user-supplied RPC URLs.${NC}"
 fi
 
 # Load environment variables
@@ -136,6 +129,8 @@ if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
     NETWORK_NAME_CONFIG="Base-Mainnet"
     WS_URL="wss://base-mainnet.infura.io/ws/v3/$INFURA_API_KEY"
     HTTP_URL="https://base-mainnet.infura.io/v3/$INFURA_API_KEY"
+    RPC_HTTP_URLS="${BASE_MAINNET_RPC_HTTP_URLS:-}"
+    RPC_WS_URLS="${BASE_MAINNET_RPC_WS_URLS:-}"
 else
     # Default to Base Sepolia
     CHAIN_ID="84532"
@@ -144,17 +139,91 @@ else
     NETWORK_NAME_CONFIG="Base-Sepolia"
     WS_URL="wss://base-sepolia.infura.io/ws/v3/$INFURA_API_KEY"
     HTTP_URL="https://base-sepolia.infura.io/v3/$INFURA_API_KEY"
+    RPC_HTTP_URLS="${BASE_SEPOLIA_RPC_HTTP_URLS:-}"
+    RPC_WS_URLS="${BASE_SEPOLIA_RPC_WS_URLS:-}"
 fi
+
+# Build EVM nodes block from RPC lists (semicolon-separated)
+normalize_rpc_list() {
+    local raw="$1"
+    raw="$(echo "$raw" | tr -d ' ' | sed 's/;*$//')"
+    echo "$raw"
+}
+
+RPC_HTTP_URLS="$(normalize_rpc_list "$RPC_HTTP_URLS")"
+RPC_WS_URLS="$(normalize_rpc_list "$RPC_WS_URLS")"
+
+if [ -n "$RPC_HTTP_URLS" ] || [ -n "$RPC_WS_URLS" ]; then
+    if [ -z "$RPC_HTTP_URLS" ] || [ -z "$RPC_WS_URLS" ]; then
+        echo -e "${RED}Error: Both HTTP and WS RPC URL lists are required when configuring custom RPCs.${NC}"
+        exit 1
+    fi
+fi
+
+if [ -z "$RPC_HTTP_URLS" ] && [ -z "$RPC_WS_URLS" ]; then
+    if [ -n "$INFURA_API_KEY" ]; then
+        echo -e "${YELLOW}No custom RPC URLs provided. Falling back to Infura endpoints.${NC}"
+        RPC_HTTP_URLS="$HTTP_URL"
+        RPC_WS_URLS="$WS_URL"
+    else
+        echo -e "${RED}Error: No RPC URLs provided and Infura fallback is not available.${NC}"
+        echo -e "${RED}Please configure RPC URLs in setup-environment.sh and retry.${NC}"
+        exit 1
+    fi
+fi
+
+IFS=';' read -r -a HTTP_URL_ARRAY <<< "$RPC_HTTP_URLS"
+IFS=';' read -r -a WS_URL_ARRAY <<< "$RPC_WS_URLS"
+
+if [ "${#HTTP_URL_ARRAY[@]}" -ne "${#WS_URL_ARRAY[@]}" ]; then
+    echo -e "${RED}Error: HTTP and WS RPC URL list counts do not match.${NC}"
+    echo -e "${RED}HTTP count: ${#HTTP_URL_ARRAY[@]}, WS count: ${#WS_URL_ARRAY[@]}${NC}"
+    exit 1
+fi
+
+EVM_NODES_BLOCK=""
+for i in "${!HTTP_URL_ARRAY[@]}"; do
+    node_index=$((i + 1))
+    http_url="${HTTP_URL_ARRAY[$i]}"
+    ws_url="${WS_URL_ARRAY[$i]}"
+    if [ -z "$http_url" ] || [ -z "$ws_url" ]; then
+        echo -e "${RED}Error: Empty RPC URL detected at index $node_index.${NC}"
+        exit 1
+    fi
+    EVM_NODES_BLOCK="${EVM_NODES_BLOCK}[[EVM.Nodes]]
+Name=\"${NETWORK_NAME_CONFIG}-${node_index}\"
+WSURL=\"${ws_url}\"
+HTTPURL=\"${http_url}\"
+
+"
+done
 
 # Create config.toml from template, replacing all placeholders
 echo -e "${BLUE}Using config template from $TEMPLATE_FILE for $NETWORK_NAME...${NC}"
-sed -e "s/<CHAIN_ID>/$CHAIN_ID/g" \
-    -e "s/<TIP_CAP_DEFAULT>/$TIP_CAP_DEFAULT/g" \
-    -e "s/<FEE_CAP_DEFAULT>/$FEE_CAP_DEFAULT/g" \
-    -e "s/<NETWORK_NAME>/$NETWORK_NAME_CONFIG/g" \
-    -e "s|<WS_URL>|$WS_URL|g" \
-    -e "s|<HTTP_URL>|$HTTP_URL|g" \
-    "$TEMPLATE_FILE" > "$CHAINLINK_DIR/config.toml"
+export CHAIN_ID TIP_CAP_DEFAULT FEE_CAP_DEFAULT NETWORK_NAME_CONFIG EVM_NODES_BLOCK TEMPLATE_FILE CHAINLINK_DIR
+python3 - << 'PY'
+import os
+
+template_path = os.environ["TEMPLATE_FILE"]
+output_path = os.path.join(os.environ["CHAINLINK_DIR"], "config.toml")
+
+with open(template_path, "r", encoding="utf-8") as f:
+    content = f.read()
+
+replacements = {
+    "<CHAIN_ID>": os.environ["CHAIN_ID"],
+    "<TIP_CAP_DEFAULT>": os.environ["TIP_CAP_DEFAULT"],
+    "<FEE_CAP_DEFAULT>": os.environ["FEE_CAP_DEFAULT"],
+    "<NETWORK_NAME>": os.environ["NETWORK_NAME_CONFIG"],
+    "<EVM_NODES_BLOCK>": os.environ["EVM_NODES_BLOCK"].rstrip() + "\n",
+}
+
+for key, value in replacements.items():
+    content = content.replace(key, value)
+
+with open(output_path, "w", encoding="utf-8") as f:
+    f.write(content)
+PY
 
 echo -e "${GREEN}Config file created from template for $NETWORK_NAME with all network-specific values substituted.${NC}"
 

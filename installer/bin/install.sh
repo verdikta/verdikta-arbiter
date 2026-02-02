@@ -172,12 +172,117 @@ if [ ! -f "$SCRIPT_DIR/setup-environment.sh" ]; then
     exit 1
 fi
 
+echo -e "${BLUE}Note: Configuring multiple RPC endpoints is recommended for robust performance,${NC}"
+echo -e "${BLUE}especially for mainnet deployments.${NC}"
+echo ""
+
 bash "$SCRIPT_DIR/setup-environment.sh"
 if [ $? -ne 0 ]; then
     echo -e "${RED}Environment setup failed. Please check the logs for details.${NC}"
     exit 1
 fi
 echo -e "${GREEN}Environment setup completed.${NC}"
+
+# Preflight RPC connectivity check
+echo -e "${YELLOW}Preflight: Checking RPC endpoint connectivity...${NC}"
+if [ -f "$INSTALLER_DIR/.env" ]; then
+    source "$INSTALLER_DIR/.env"
+else
+    echo -e "${RED}Error: Environment file not found after setup. Cannot verify RPCs.${NC}"
+    exit 1
+fi
+
+normalize_rpc_list() {
+    local raw="$1"
+    raw="$(echo "$raw" | tr -d ' ' | sed 's/;*$//')"
+    echo "$raw"
+}
+
+check_rpc_url() {
+    local url="$1"
+    local type="$2"
+    python3 - "$url" "$type" << 'PY'
+import json
+import sys
+from urllib.parse import urlparse
+
+url = sys.argv[1]
+kind = sys.argv[2]
+timeout_seconds = 7
+
+if kind == "http":
+    try:
+        import urllib.request
+        payload = json.dumps({"jsonrpc":"2.0","id":1,"method":"eth_chainId","params":[]}).encode("utf-8")
+        headers = {"Content-Type":"application/json", "User-Agent":"verdikta-arbiter/1.0"}
+        req = urllib.request.Request(url, data=payload, headers=headers)
+        with urllib.request.urlopen(req, timeout=timeout_seconds) as resp:
+            if resp.status < 200 or resp.status >= 300:
+                sys.exit(1)
+            body = resp.read().decode("utf-8", errors="ignore")
+            if '"result"' not in body:
+                sys.exit(1)
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
+
+if kind == "ws":
+    try:
+        import socket
+        parsed = urlparse(url)
+        host = parsed.hostname
+        port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+        if not host:
+            sys.exit(1)
+        sock = socket.create_connection((host, port), timeout=timeout_seconds)
+        sock.close()
+        sys.exit(0)
+    except Exception:
+        sys.exit(1)
+
+sys.exit(1)
+PY
+}
+
+RPC_HTTP_URLS=""
+RPC_WS_URLS=""
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    RPC_HTTP_URLS="$(normalize_rpc_list "$BASE_MAINNET_RPC_HTTP_URLS")"
+    RPC_WS_URLS="$(normalize_rpc_list "$BASE_MAINNET_RPC_WS_URLS")"
+else
+    RPC_HTTP_URLS="$(normalize_rpc_list "$BASE_SEPOLIA_RPC_HTTP_URLS")"
+    RPC_WS_URLS="$(normalize_rpc_list "$BASE_SEPOLIA_RPC_WS_URLS")"
+fi
+
+if [ -z "$RPC_HTTP_URLS" ] || [ -z "$RPC_WS_URLS" ]; then
+    echo -e "${RED}Error: RPC URL lists are required for installation.${NC}"
+    exit 1
+fi
+
+IFS=';' read -r -a HTTP_URL_ARRAY <<< "$RPC_HTTP_URLS"
+IFS=';' read -r -a WS_URL_ARRAY <<< "$RPC_WS_URLS"
+
+FAILED_RPC_CHECKS=""
+for url in "${HTTP_URL_ARRAY[@]}"; do
+    if ! check_rpc_url "$url" "http"; then
+        FAILED_RPC_CHECKS="${FAILED_RPC_CHECKS}\n  HTTP: $url"
+    fi
+done
+
+for url in "${WS_URL_ARRAY[@]}"; do
+    if ! check_rpc_url "$url" "ws"; then
+        FAILED_RPC_CHECKS="${FAILED_RPC_CHECKS}\n  WS:   $url"
+    fi
+done
+
+if [ -n "$FAILED_RPC_CHECKS" ]; then
+    echo -e "${RED}RPC connectivity check failed for:${NC}${FAILED_RPC_CHECKS}"
+    if ! ask_yes_no "Continue installation anyway?"; then
+        exit 1
+    fi
+else
+    echo -e "${GREEN}RPC connectivity check passed.${NC}"
+fi
 
 # Install AI Node
 echo -e "${YELLOW}[3/9]${NC} Installing AI Node..."
