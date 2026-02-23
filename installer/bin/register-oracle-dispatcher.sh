@@ -101,12 +101,16 @@ done
 echo -e "${BLUE}Registration job IDs (space-separated): $REGISTRATION_JOB_IDS${NC}"
 echo -e "${BLUE}Total jobs to register: ${#JOB_IDS_AVAILABLE[@]}${NC}"
 
-# Create .env file in arbiter-operator directory
+# Create .env file in arbiter-operator directory with all RPC configuration
 echo -e "${BLUE}Creating .env file in arbiter-operator directory...${NC}"
-cat > "$ARBITER_OPERATOR_DIR/.env" << EOL
-PRIVATE_KEY=$PRIVATE_KEY
-INFURA_API_KEY=$INFURA_API_KEY
-EOL
+{
+    echo "PRIVATE_KEY=$PRIVATE_KEY"
+    [ -n "$INFURA_API_KEY" ] && echo "INFURA_API_KEY=$INFURA_API_KEY"
+    [ -n "$BASE_MAINNET_RPC_URL" ] && echo "BASE_MAINNET_RPC_URL=$BASE_MAINNET_RPC_URL"
+    [ -n "$BASE_MAINNET_RPC_HTTP_URLS" ] && echo "BASE_MAINNET_RPC_HTTP_URLS=$BASE_MAINNET_RPC_HTTP_URLS"
+    [ -n "$BASE_SEPOLIA_RPC_URL" ] && echo "BASE_SEPOLIA_RPC_URL=$BASE_SEPOLIA_RPC_URL"
+    [ -n "$BASE_SEPOLIA_RPC_HTTP_URLS" ] && echo "BASE_SEPOLIA_RPC_HTTP_URLS=$BASE_SEPOLIA_RPC_HTTP_URLS"
+} > "$ARBITER_OPERATOR_DIR/.env"
 chmod 600 "$ARBITER_OPERATOR_DIR/.env"
 echo -e "${GREEN}.env file created in arbiter-operator directory${NC}"
 

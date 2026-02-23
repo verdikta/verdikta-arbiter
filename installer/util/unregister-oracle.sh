@@ -111,8 +111,21 @@ if [ -z "$PRIVATE_KEY" ]; then
     exit 1
 fi
 
-if [ -z "$INFURA_API_KEY" ]; then
-    echo -e "${RED}Error: Infura API key not found in environment configuration${NC}"
+# Check for RPC configuration (either custom RPC URLs or Infura API key)
+HAS_CUSTOM_RPC=false
+if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+    if [ -n "$BASE_MAINNET_RPC_URL" ] || [ -n "$BASE_MAINNET_RPC_HTTP_URLS" ]; then
+        HAS_CUSTOM_RPC=true
+    fi
+else
+    if [ -n "$BASE_SEPOLIA_RPC_URL" ] || [ -n "$BASE_SEPOLIA_RPC_HTTP_URLS" ]; then
+        HAS_CUSTOM_RPC=true
+    fi
+fi
+
+if [ "$HAS_CUSTOM_RPC" = "false" ] && [ -z "$INFURA_API_KEY" ]; then
+    echo -e "${RED}Error: No RPC configuration found.${NC}"
+    echo -e "${YELLOW}Please provide either custom RPC URLs or an Infura API key in your .env file.${NC}"
     exit 1
 fi
 
@@ -139,12 +152,16 @@ if [ -n "$AGGREGATOR_ADDRESS" ]; then
     echo ""
 fi
 
-# Create .env file in arbiter-operator directory
+# Create .env file in arbiter-operator directory with all RPC configuration
 echo -e "${BLUE}Preparing arbiter-operator environment...${NC}"
-cat > "$ARBITER_OPERATOR_DIR/.env" << EOL
-PRIVATE_KEY=$PRIVATE_KEY
-INFURA_API_KEY=$INFURA_API_KEY
-EOL
+{
+    echo "PRIVATE_KEY=$PRIVATE_KEY"
+    [ -n "$INFURA_API_KEY" ] && echo "INFURA_API_KEY=$INFURA_API_KEY"
+    [ -n "$BASE_MAINNET_RPC_URL" ] && echo "BASE_MAINNET_RPC_URL=$BASE_MAINNET_RPC_URL"
+    [ -n "$BASE_MAINNET_RPC_HTTP_URLS" ] && echo "BASE_MAINNET_RPC_HTTP_URLS=$BASE_MAINNET_RPC_HTTP_URLS"
+    [ -n "$BASE_SEPOLIA_RPC_URL" ] && echo "BASE_SEPOLIA_RPC_URL=$BASE_SEPOLIA_RPC_URL"
+    [ -n "$BASE_SEPOLIA_RPC_HTTP_URLS" ] && echo "BASE_SEPOLIA_RPC_HTTP_URLS=$BASE_SEPOLIA_RPC_HTTP_URLS"
+} > "$ARBITER_OPERATOR_DIR/.env"
 chmod 600 "$ARBITER_OPERATOR_DIR/.env"
 echo -e "${GREEN}Environment file created in arbiter-operator directory${NC}"
 
