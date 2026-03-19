@@ -134,6 +134,7 @@ See our [Contributing Guide](docs/CONTRIBUTING.md) for detailed information.
 ## 📚 Documentation
 
 - **[Full Documentation](https://docs.verdikta.com/)** - Comprehensive guides and API references
+- **[Deployed Addresses](docs/deployments.md)** - Canonical contract addresses per network
 - **[Contributing Guide](docs/CONTRIBUTING.md)** - How to contribute to the project
 - **[Development Setup](docs/development/setup.md)** - Local development environment
 - **[Architecture Overview](docs/development/architecture.md)** - Technical architecture details
@@ -144,10 +145,9 @@ See our [Contributing Guide](docs/CONTRIBUTING.md) for detailed information.
 
 | Component | Status | Network |
 |-----------|--------|---------|
-| Arbiter Nodes | ✅ Beta | Base Sepolia |
-| Dispatcher | ✅ Beta | Base Sepolia |
+| Arbiter Nodes | ✅ Live | Base Sepolia, Base Mainnet |
+| Dispatcher | ✅ Live | Base Sepolia, Base Mainnet |
 | Client SDKs | 🚧 Alpha | - |
-| Mainnet | 📅 Planned | Base Mainnet |
 
 ## 🔧 Requirements
 
@@ -237,14 +237,14 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🗺️ Roadmap
 
-### Current (Beta)
+### Current (v1.0)
 - ✅ Core arbitration functionality
 - ✅ ClassID model pool integration
 - ✅ Base Sepolia deployment
+- ✅ Base Mainnet deployment
 - ✅ Basic web interface
 
-### Next (v1.0)
-- 🔄 Mainnet deployment
+### Next (v1.x)
 - 🔄 Advanced UI/UX
 - 🔄 Mobile app support
 - 🔄 Enterprise features

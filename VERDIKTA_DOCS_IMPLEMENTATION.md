@@ -463,8 +463,7 @@ Verdikta is built as a modular ecosystem with several key components:
 ### Supported Networks
 
 - Base Sepolia (Testnet)
-- Ethereum Mainnet (Coming Soon)
-- Polygon (Planned)
+- Base Mainnet
 
 ## How It Works
 
@@ -492,7 +491,6 @@ cat > docs/changelog/index.md << 'EOF'
 
 ## Coming Soon
 
-- Mainnet deployment
 - Additional AI model support
 - Enhanced reputation system
 - Multi-chain expansion

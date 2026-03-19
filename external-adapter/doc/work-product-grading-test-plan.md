@@ -313,7 +313,7 @@ The outcomes vector `["DONT_FUND", "FUND"]` is returned to the smart contract:
 ### Task Description
 Write a Python function that calculates the Fibonacci sequence up to n terms.
 
-### Rubric (JSON format - IPFS CID: TBD_UPLOAD_REQUIRED)
+### Rubric (JSON format)
 
 **Note:** A comprehensive Code Review & Quality Assessment rubric is available at CID `QmYVBYZJvHBvWrYdRw9DtLkpICxBK33ek6UCV4UNCNwP1`, but for the simple Fibonacci test, we'll use a streamlined version:
 
@@ -738,7 +738,6 @@ The `references` array in primary_query.json ensures attachments are properly co
    - Note: Too comprehensive for simple Fibonacci test; used as format reference
 
 3. **Fibonacci Function Rubric** (Streamlined - For Testing)
-   - CID: TBD (needs to be uploaded to IPFS)
    - Title: "Fibonacci Function Implementation"
    - Criteria: 5 (correctness, algorithm_efficiency, code_quality, documentation, robustness)
    - Threshold: 90

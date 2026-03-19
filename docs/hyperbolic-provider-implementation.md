@@ -795,13 +795,7 @@ Complete API reference for Hyperbolic endpoints, request/response formats, and e
 - [OpenAI SDK Documentation](https://github.com/openai/openai-node)
 - [Verdikta Common Library](https://github.com/verdikta/verdikta-common)
 
-### B. Related Issues
-
-- Issue #XXX: Add multi-provider support
-- Issue #XXX: Reduce arbitration costs
-- Issue #XXX: ClassID 130 definition
-
-### C. Change Log
+### B. Change Log
 
 | Date | Version | Changes | Author |
 |------|---------|---------|--------|

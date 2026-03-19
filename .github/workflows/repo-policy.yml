@@ -1,0 +1,50 @@
+name: Repository Policy
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  required-files:
+    name: Required Governance Files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check required files exist
+        run: |
+          missing=0
+          for f in README.md LICENSE .gitignore; do
+            if [ ! -f "$f" ]; then
+              echo "::error::Missing required file: $f"
+              missing=1
+            else
+              echo "Found: $f"
+            fi
+          done
+          if [ "$missing" -eq 1 ]; then
+            exit 1
+          fi
+
+  license-consistency:
+    name: License Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify LICENSE matches README claim
+        run: |
+          if ! grep -qi "MIT" LICENSE; then
+            echo "::error::LICENSE file does not contain MIT license text"
+            exit 1
+          fi
+          if ! grep -qi "MIT" README.md; then
+            echo "::error::README.md does not reference MIT license"
+            exit 1
+          fi
+          echo "License references are consistent."
