@@ -9,6 +9,7 @@ Project-level documentation, design documents, and guides for the Verdikta Arbit
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Contribution guidelines |
 | [deployments.md](deployments.md) | Canonical deployed contract addresses |
 | [public-release-checklist.md](public-release-checklist.md) | Pre-release verification checklist |
+| [release-runbook.md](release-runbook.md) | Step-by-step release process |
 | [hyperbolic-provider-implementation.md](hyperbolic-provider-implementation.md) | Hyperbolic provider design document |
 | [HYPERBOLIC_SETUP.md](HYPERBOLIC_SETUP.md) | Hyperbolic provider setup guide |
 | [timeout-handling-plan.md](timeout-handling-plan.md) | Timeout handling design |
