@@ -754,9 +754,66 @@ else
     RPC_WS_URLS="$(normalize_rpc_list "$BASE_SEPOLIA_RPC_WS_URLS")"
 fi
 
+# Fallback: construct RPC URLs from Infura key for pre-multi-RPC installations
 if [ -z "$RPC_HTTP_URLS" ] || [ -z "$RPC_WS_URLS" ]; then
-    echo -e "${RED}Error: RPC URL lists are required for upgrade.${NC}"
-    exit 1
+    echo -e "${YELLOW}No RPC URL lists found in configuration. Checking for Infura API key fallback...${NC}"
+
+    INFURA_KEY_FALLBACK=""
+    if [ -n "$INFURA_API_KEY" ]; then
+        INFURA_KEY_FALLBACK="$INFURA_API_KEY"
+    elif [ -f "$TARGET_DIR/installer/.api_keys" ]; then
+        source "$TARGET_DIR/installer/.api_keys"
+        INFURA_KEY_FALLBACK="$INFURA_API_KEY"
+    fi
+
+    if [ -n "$INFURA_KEY_FALLBACK" ]; then
+        echo -e "${BLUE}Found Infura API key. Constructing RPC URLs from Infura key...${NC}"
+        if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+            RPC_HTTP_URLS="https://base-mainnet.infura.io/v3/$INFURA_KEY_FALLBACK"
+            RPC_WS_URLS="wss://base-mainnet.infura.io/ws/v3/$INFURA_KEY_FALLBACK"
+            BASE_MAINNET_RPC_HTTP_URLS="$RPC_HTTP_URLS"
+            BASE_MAINNET_RPC_WS_URLS="$RPC_WS_URLS"
+            BASE_MAINNET_RPC_URL="$RPC_HTTP_URLS"
+        else
+            RPC_HTTP_URLS="https://base-sepolia.infura.io/v3/$INFURA_KEY_FALLBACK"
+            RPC_WS_URLS="wss://base-sepolia.infura.io/ws/v3/$INFURA_KEY_FALLBACK"
+            BASE_SEPOLIA_RPC_HTTP_URLS="$RPC_HTTP_URLS"
+            BASE_SEPOLIA_RPC_WS_URLS="$RPC_WS_URLS"
+            BASE_SEPOLIA_RPC_URL="$RPC_HTTP_URLS"
+        fi
+        echo -e "${GREEN}Constructed RPC URLs from Infura key.${NC}"
+
+        # Persist to .env files so this migration only needs to happen once
+        save_env_var_preflight() {
+            local var_name="$1"
+            local var_val="$2"
+            local env_file="$3"
+            if [ -z "$var_val" ] || [ -z "$env_file" ]; then return; fi
+            if [ -f "$env_file" ]; then
+                grep -v "^$var_name=" "$env_file" > "${env_file}.tmp" 2>/dev/null || true
+                mv "${env_file}.tmp" "$env_file"
+            fi
+            echo "$var_name=\"$var_val\"" >> "$env_file"
+        }
+
+        for env_target in "$TARGET_DIR/installer/.env" "$INSTALLER_DIR/.env"; do
+            if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
+                save_env_var_preflight "BASE_MAINNET_RPC_HTTP_URLS" "$RPC_HTTP_URLS" "$env_target"
+                save_env_var_preflight "BASE_MAINNET_RPC_WS_URLS" "$RPC_WS_URLS" "$env_target"
+                save_env_var_preflight "BASE_MAINNET_RPC_URL" "$RPC_HTTP_URLS" "$env_target"
+            else
+                save_env_var_preflight "BASE_SEPOLIA_RPC_HTTP_URLS" "$RPC_HTTP_URLS" "$env_target"
+                save_env_var_preflight "BASE_SEPOLIA_RPC_WS_URLS" "$RPC_WS_URLS" "$env_target"
+                save_env_var_preflight "BASE_SEPOLIA_RPC_URL" "$RPC_HTTP_URLS" "$env_target"
+            fi
+        done
+        echo -e "${GREEN}RPC URL configuration migrated and saved to .env files.${NC}"
+    else
+        echo -e "${RED}Error: No RPC URL lists or Infura API key found.${NC}"
+        echo -e "${YELLOW}Please re-run the upgrade and choose 'Yes' when asked to update RPC endpoints,${NC}"
+        echo -e "${YELLOW}or add your RPC URLs to: $TARGET_DIR/installer/.env${NC}"
+        exit 1
+    fi
 fi
 
 IFS=';' read -r -a HTTP_URL_ARRAY <<< "$RPC_HTTP_URLS"
