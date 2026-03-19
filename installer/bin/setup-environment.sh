@@ -590,20 +590,24 @@ configure_api_keys() {
     
     # Wallet Private Key
     if [ -z "$PRIVATE_KEY" ]; then
-        read -p "Enter your wallet private key for contract deployment (without 0x prefix): " PRIVATE_KEY
+        read -sp "Enter your wallet private key for contract deployment (without 0x prefix): " PRIVATE_KEY
+        echo
         
         # Validate private key format (without 0x prefix)
         while [[ ! "$PRIVATE_KEY" =~ ^[a-fA-F0-9]{64}$ ]]; do
             echo -e "${RED}Error: Invalid private key format. It should be a 64-character hex string without 0x prefix.${NC}"
-            read -p "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
+            read -sp "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
+            echo
         done
     else
-        read -p "Enter your wallet private key (leave blank to use existing key): " new_key
+        read -sp "Enter your wallet private key (leave blank to use existing key): " new_key
+        echo
         if [ -n "$new_key" ]; then
             # Validate new key if provided
             while [[ ! "$new_key" =~ ^[a-fA-F0-9]{64}$ ]]; do
                 echo -e "${RED}Error: Invalid private key format. It should be a 64-character hex string without 0x prefix.${NC}"
-                read -p "Enter your wallet private key (without 0x prefix): " new_key
+                read -sp "Enter your wallet private key (without 0x prefix): " new_key
+                echo
                 
                 # If empty, keep existing
                 if [ -z "$new_key" ]; then

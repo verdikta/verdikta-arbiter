@@ -91,7 +91,7 @@ run_test "Get key index for job 5" "bash '$KEY_MGMT_SCRIPT' get_key_index_for_jo
 
 # Test 3: List existing keys
 echo -e "\n${BLUE}Testing key listing...${NC}"
-EXISTING_KEYS=$(bash "$KEY_MGMT_SCRIPT" list_existing_keys "$API_EMAIL" "$API_PASSWORD")
+EXISTING_KEYS=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" bash "$KEY_MGMT_SCRIPT" list_existing_keys)
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}✓ List existing keys passed${NC}"
     echo "Existing keys: $EXISTING_KEYS"
@@ -112,7 +112,7 @@ fi
 # Test 4: Create a new key (only if we have fewer than 2 keys)
 if [ "$KEY_COUNT" -lt 2 ]; then
     echo -e "\n${BLUE}Testing key creation...${NC}"
-    NEW_KEY_ADDRESS=$(bash "$KEY_MGMT_SCRIPT" create_chainlink_key "$API_EMAIL" "$API_PASSWORD")
+    NEW_KEY_ADDRESS=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" bash "$KEY_MGMT_SCRIPT" create_chainlink_key)
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Create key passed${NC}"
         echo "New key address: $NEW_KEY_ADDRESS"
@@ -151,7 +151,7 @@ fi
 echo -e "\n${BLUE}Testing ensure keys exist...${NC}"
 for job_count in 2 4 6; do
     echo -e "\nTesting with $job_count jobs:"
-    RESULT_KEYS=$(bash "$KEY_MGMT_SCRIPT" ensure_keys_exist "$job_count" "$API_EMAIL" "$API_PASSWORD")
+    RESULT_KEYS=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" bash "$KEY_MGMT_SCRIPT" ensure_keys_exist "$job_count")
     if [ $? -eq 0 ]; then
         echo -e "${GREEN}✓ Ensure keys exist for $job_count jobs passed${NC}"
         echo "Result keys: $RESULT_KEYS"

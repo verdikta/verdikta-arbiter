@@ -33,7 +33,7 @@ Use this checklist before making the repository public or announcing a major rel
 
 | ID | Task | Owner | Status | Acceptance Criteria | Notes |
 |---|---|---|---|---|---|
-| P1-1 | Harden private key handling in scripts/logs | Installer + DevOps | Todo | No script prints raw private keys; sensitive values are masked in console and logs; manual test confirms no secret leakage in standard install/deploy paths. | |
+| P1-1 | Harden private key handling in scripts/logs | Installer + DevOps | Done | No script prints raw private keys; sensitive values are masked in console and logs; manual test confirms no secret leakage in standard install/deploy paths. | Private keys passed via env vars instead of `python3 -c` CLI args (4 scripts); `read -sp` for all secret prompts (3 install scripts + upgrade script API key prompts); `chmod 600` on all temp/build `.env` files; curl credentials piped via stdin; key-management.sh supports env-var fallback for backward compatibility. |
 | P1-2 | Fix `arbiter-operator` test command | Smart Contract Team | Done | `arbiter-operator/package.json` test script runs real tests (not placeholder); CI or local run confirms tests execute successfully. | Changed script from placeholder `echo` to `npx hardhat test`. |
 | P1-3 | Add repository policy checks in CI | Platform/CI | Done | CI enforces presence of required governance files (license, readme), blocks tracked `.env` files, and reports actionable failures. | Added `.github/workflows/repo-policy.yml` (required files + license consistency). |
 

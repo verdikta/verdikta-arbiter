@@ -284,13 +284,14 @@ get_wallet_address_from_private_key() {
         private_key="0x$private_key"
     fi
     
-    # Use Python to derive address from private key
-    local address=$(python3 -c "
+    # Use Python to derive address from private key (key passed via env, not CLI)
+    local address=$(VERDIKTA_PK="$private_key" python3 -c "
+import os
 try:
     from eth_account import Account
     import sys
     
-    private_key = '$private_key'
+    private_key = os.environ['VERDIKTA_PK']
     account = Account.from_key(private_key)
     print(account.address)
 except ImportError:
@@ -456,8 +457,9 @@ send_eth_transaction() {
         from_private_key="0x$from_private_key"
     fi
     
-    # Use Python to create and send transaction
-    local tx_hash=$(timeout 60 python3 -c "
+    # Use Python to create and send transaction (key passed via env, not CLI)
+    local tx_hash=$(timeout 60 env VERDIKTA_PK="$from_private_key" python3 -c "
+import os
 try:
     from eth_account import Account
     from web3 import Web3
@@ -477,7 +479,7 @@ try:
             POA_MIDDLEWARE_AVAILABLE = False
     
     # Setup
-    private_key = '$from_private_key'
+    private_key = os.environ['VERDIKTA_PK']
     to_address = '$to_address'
     value_wei = $value_wei
     gas_limit = $gas_limit

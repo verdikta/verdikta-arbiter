@@ -71,9 +71,9 @@ if check_chainlink_api; then
         
         # Login and get session cookie
         COOKIE_JAR=$(mktemp)
-        LOGIN_RESPONSE=$(curl -s -c "$COOKIE_JAR" -X POST \
+        LOGIN_RESPONSE=$(printf '{"email":"%s","password":"%s"}' "$EMAIL" "$PASSWORD" | curl -s -c "$COOKIE_JAR" -X POST \
             -H "Content-Type: application/json" \
-            -d "{\"email\":\"$EMAIL\",\"password\":\"$PASSWORD\"}" \
+            -d @- \
             http://localhost:6688/sessions)
         
         if echo "$LOGIN_RESPONSE" | grep -q "authenticated"; then

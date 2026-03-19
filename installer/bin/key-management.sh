@@ -96,9 +96,9 @@ check_chainlink_container() {
 
 # Login to Chainlink CLI
 login_to_chainlink_cli() {
-    local api_email="$1"
-    local api_password="$2"
-    
+    local api_email="${1:-$CL_API_EMAIL}"
+    local api_password="${2:-$CL_API_PASSWORD}"
+
     if [ -z "$api_email" ] || [ -z "$api_password" ]; then
         log_error "API email and password are required for login"
         return 1
@@ -184,9 +184,9 @@ get_key_index_for_job() {
 
 # List existing Ethereum keys from Chainlink node using CLI
 list_existing_keys() {
-    local api_email="$1"
-    local api_password="$2"
-    
+    local api_email="${1:-$CL_API_EMAIL}"
+    local api_password="${2:-$CL_API_PASSWORD}"
+
     if [ -z "$api_email" ] || [ -z "$api_password" ]; then
         log_error "API email and password are required"
         return 1
@@ -244,9 +244,9 @@ list_existing_keys() {
 
 # Create a new Ethereum key using CLI
 create_chainlink_key() {
-    local api_email="$1"
-    local api_password="$2"
-    
+    local api_email="${1:-$CL_API_EMAIL}"
+    local api_password="${2:-$CL_API_PASSWORD}"
+
     if [ -z "$api_email" ] || [ -z "$api_password" ]; then
         log_error "API email and password are required"
         return 1
@@ -296,9 +296,9 @@ create_chainlink_key() {
 # Ensure we have the required number of keys, creating them if necessary
 ensure_keys_exist() {
     local job_count="$1"
-    local api_email="$2"
-    local api_password="$3"
-    
+    local api_email="${2:-$CL_API_EMAIL}"
+    local api_password="${3:-$CL_API_PASSWORD}"
+
     if [ -z "$job_count" ] || [ -z "$api_email" ] || [ -z "$api_password" ]; then
         log_error "Missing required parameters: job_count, api_email, api_password"
         return 1
@@ -430,9 +430,9 @@ update_contracts_with_keys() {
 # Export private key for a specific Chainlink key address
 export_chainlink_private_key() {
     local key_address="$1"
-    local api_email="$2"
-    local api_password="$3"
-    
+    local api_email="${2:-$CL_API_EMAIL}"
+    local api_password="${3:-$CL_API_PASSWORD}"
+
     if [ -z "$key_address" ] || [ -z "$api_email" ] || [ -z "$api_password" ]; then
         log_error "Missing required parameters: key_address, api_email, api_password"
         return 1

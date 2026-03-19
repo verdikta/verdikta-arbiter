@@ -615,7 +615,8 @@ fi
 echo -e "${YELLOW}You need to provide a private key for a wallet with Base Sepolia ETH for contract deployment.${NC}"
 echo -e "${YELLOW}IMPORTANT: Never use your main wallet key. Use a testing wallet with minimal funds.${NC}"
 echo -e "${YELLOW}NOTE: Do NOT include the '0x' prefix - Truffle does not expect it.${NC}"
-read -p "Enter private key (without 0x prefix): " PRIVATE_KEY
+read -sp "Enter private key (without 0x prefix): " PRIVATE_KEY
+echo
 
 # Validate private key format (without 0x prefix)
 if [[ ! "$PRIVATE_KEY" =~ ^[a-fA-F0-9]{64}$ ]]; then

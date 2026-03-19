@@ -99,7 +99,7 @@ login_to_chainlink() {
     CSRF_TOKEN=$(curl -sS -c /tmp/chainlink_cookies.txt "http://localhost:6688/login" | grep csrf | sed -E 's/.*content="([^"]+)".*/\1/')
     
     # Login and get session cookie
-    LOGIN_RESPONSE=$(curl -sS -b /tmp/chainlink_cookies.txt -c /tmp/chainlink_cookies.txt -X POST -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF_TOKEN" -d "{\"email\":\"$API_EMAIL\",\"password\":\"$API_PASSWORD\"}" "http://localhost:6688/sessions")
+    LOGIN_RESPONSE=$(printf '{"email":"%s","password":"%s"}' "$API_EMAIL" "$API_PASSWORD" | curl -sS -b /tmp/chainlink_cookies.txt -c /tmp/chainlink_cookies.txt -X POST -H "Content-Type: application/json" -H "X-CSRF-Token: $CSRF_TOKEN" -d @- "http://localhost:6688/sessions")
     
     # Check if login was successful
     if echo "$LOGIN_RESPONSE" | grep -q "error"; then
@@ -189,7 +189,7 @@ fi
 
 # Ensure we have sufficient keys for all arbiters
 echo -e "${BLUE}Setting up Ethereum keys for $ARBITER_COUNT arbiters...${NC}"
-KEYS_LIST=$(bash "$KEY_MGMT_SCRIPT" ensure_keys_exist "$ARBITER_COUNT" "$API_EMAIL" "$API_PASSWORD")
+KEYS_LIST=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" bash "$KEY_MGMT_SCRIPT" ensure_keys_exist "$ARBITER_COUNT")
 if [ $? -ne 0 ]; then
     echo -e "${RED}Error: Failed to ensure sufficient keys exist.${NC}"
     exit 1
@@ -729,7 +729,7 @@ echo -e "${BLUE}   This step prevents authorization gaps when multiple keys are 
 echo -e "${BLUE}   Expected time: 2-5 minutes (depending on network conditions)${NC}"
 
 # Get all current keys
-CURRENT_KEYS_LIST=$(bash "$KEY_MGMT_SCRIPT" list_existing_keys "$API_EMAIL" "$API_PASSWORD")
+CURRENT_KEYS_LIST=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" bash "$KEY_MGMT_SCRIPT" list_existing_keys)
 if [ $? -ne 0 ] || [ -z "$CURRENT_KEYS_LIST" ]; then
     echo -e "${YELLOW}Warning: Could not retrieve current keys for re-authorization${NC}"
 else
@@ -806,6 +806,7 @@ INFURA_API_KEY=$INFURA_API_KEY
 BASE_SEPOLIA_RPC_URL=$BASE_SEPOLIA_RPC_URL
 BASE_MAINNET_RPC_URL=$BASE_MAINNET_RPC_URL
 EOL
+                chmod 600 "$TEMP_REAUTH_DIR/.env"
                 
                 # Install minimal dependencies for hardhat
                 cd "$TEMP_REAUTH_DIR"

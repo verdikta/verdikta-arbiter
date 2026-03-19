@@ -397,13 +397,14 @@ get_wallet_address_from_private_key() {
         private_key="0x$private_key"
     fi
     
-    # Use Python to derive address from private key
-    local address=$(python3 -c "
+    # Use Python to derive address from private key (key passed via env, not CLI)
+    local address=$(VERDIKTA_PK="$private_key" python3 -c "
+import os
 try:
     from eth_account import Account
     import sys
     
-    private_key = '$private_key'
+    private_key = os.environ['VERDIKTA_PK']
     account = Account.from_key(private_key)
     print(account.address)
 except ImportError:
@@ -429,7 +430,7 @@ get_chainlink_private_key() {
     local api_password="$3"
     
     # Use the key management script to export the private key
-    local private_key=$(bash "$KEY_MGMT_SCRIPT" export_chainlink_private_key "$key_address" "$api_email" "$api_password" 2>/dev/null)
+    local private_key=$(CL_API_EMAIL="$api_email" CL_API_PASSWORD="$api_password" bash "$KEY_MGMT_SCRIPT" export_chainlink_private_key "$key_address" 2>/dev/null)
     
     if [ $? -ne 0 ] || [[ "$private_key" == ERROR:* ]]; then
         echo "ERROR: Failed to export key $key_address"
@@ -550,15 +551,16 @@ send_eth_transaction() {
         from_private_key="0x$from_private_key"
     fi
     
-    # Use Python to create and send transaction
-    local tx_hash=$(python3 -c "
+    # Use Python to create and send transaction (key passed via env, not CLI)
+    local tx_hash=$(VERDIKTA_PK="$from_private_key" python3 -c "
+import os
 try:
     from eth_account import Account
     from web3 import Web3
     import sys
     
     # Setup
-    private_key = '$from_private_key'
+    private_key = os.environ['VERDIKTA_PK']
     to_address = '$to_address'
     value_wei = $value_wei
     gas_limit = $gas_limit
@@ -625,15 +627,16 @@ send_link_transaction() {
         from_private_key="0x$from_private_key"
     fi
     
-    # Use Python to create and send ERC-20 transfer transaction
-    local tx_hash=$(python3 -c "
+    # Use Python to create and send ERC-20 transfer transaction (key passed via env, not CLI)
+    local tx_hash=$(VERDIKTA_PK="$from_private_key" python3 -c "
+import os
 try:
     from eth_account import Account
     from web3 import Web3
     import sys
     
     # Setup
-    private_key = '$from_private_key'
+    private_key = os.environ['VERDIKTA_PK']
     to_address = '$to_address'
     amount_wei = $amount_wei
     gas_limit = $gas_limit

@@ -130,7 +130,7 @@ KEY_RETRIEVAL_SUCCESS=false
 
 for retry in {1..5}; do
     echo -e "${BLUE}Key retrieval attempt $retry of 5...${NC}"
-    KEYS_LIST=$(bash "$KEY_MGMT_SCRIPT" list_existing_keys "$API_EMAIL" "$API_PASSWORD" 2>&1)
+    KEYS_LIST=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" bash "$KEY_MGMT_SCRIPT" list_existing_keys 2>&1)
     
     if [ $? -eq 0 ] && [ -n "$KEYS_LIST" ] && [[ "$KEYS_LIST" =~ ^[0-9]+: ]]; then
         echo -e "${GREEN}✓ Successfully retrieved keys on attempt $retry${NC}"
@@ -202,7 +202,8 @@ if [ -z "$PRIVATE_KEY" ]; then
     echo
     echo -e "${YELLOW}To deploy the operator contract, a wallet private key is needed.${NC}"
     echo -e "${YELLOW}This key will be used only for deployment and should have $NETWORK_NAME ETH.${NC}"
-    read -p "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
+    read -sp "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
+    echo
 
     # Validate private key format (basic check)
     if [[ ! "$PRIVATE_KEY" =~ ^[a-fA-F0-9]{64}$ ]]; then
@@ -362,7 +363,7 @@ BASE_SEPOLIA_RPC_URL=$BASE_SEPOLIA_RPC_URL
 BASE_MAINNET_RPC_URL=$BASE_MAINNET_RPC_URL
 NODE_ADDRESS=$NODE_ADDRESS
 EOL
-# Note: NODE_ADDRESS is added here for setAuthorizedSenders.js to potentially pick up if needed
+chmod 600 .env
 
 echo -e "${BLUE}Deploying ArbiterOperator contract via Hardhat to $NETWORK_NAME...${NC}"
 # Run the custom deploy script and capture its output. If the build directory still references OperatorMod,
