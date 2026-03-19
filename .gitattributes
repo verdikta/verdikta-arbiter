@@ -1,0 +1,8 @@
+# Mark generated / vendored files so GitHub collapses them in PRs
+# and excludes them from language statistics.
+
+# Package lock files
+**/package-lock.json linguist-generated=true
+
+# MkDocs build output (should not be tracked; belt-and-suspenders)
+installer/docs/site/** linguist-generated=true

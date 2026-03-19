@@ -28,6 +28,9 @@ testing-tool/logs/
 .postgres
 .next
 
+# MkDocs generated site
+installer/docs/site/
+
 # Installer generated/temp files
 installer/temp_client_build/
 installer/.env

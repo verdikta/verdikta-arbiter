@@ -53,7 +53,7 @@ Use this checklist before making the repository public or announcing a major rel
 
 | ID | Task | Owner | Status | Acceptance Criteria | Notes |
 |---|---|---|---|---|---|
-| P3-1 | Separate generated assets from review-critical source | Docs + Build Tooling | Todo | Generated/minified assets are clearly scoped and excluded from manual review expectations where appropriate. | |
+| P3-1 | Separate generated assets from review-critical source | Docs + Build Tooling | Done | Generated/minified assets are clearly scoped and excluded from manual review expectations where appropriate. | Removed 94 tracked MkDocs build files from `installer/docs/site/`; added to `.gitignore`; created `.gitattributes` marking `package-lock.json` and any residual site output as `linguist-generated`. |
 | P3-2 | Create repeatable pre-release process | Maintainers | Todo | A release runbook links this checklist and defines owner sign-off before release tag/public announcement. | |
 
 ---
