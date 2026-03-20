@@ -191,7 +191,7 @@ Ready to begin? Start with our [Quick Start Guide](quick-start.md) for the faste
     1. Start with the [Overview](overview.md) to understand how Verdikta Arbiter works
     2. Begin with **Base Sepolia testnet** for risk-free learning
     3. Start with **1 arbiter** to understand the system before scaling up
-    4. Review the [Multi-Arbiter Design](MULTI_ARBITER_DESIGN.md) for advanced configurations
+    4. Review the [Multi-Arbiter Design](reference/design/multi-arbiter.md) for advanced configurations
 
 !!! warning "Production Deployment"
 

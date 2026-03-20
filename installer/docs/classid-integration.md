@@ -129,7 +129,7 @@ console.log('Models:', cls?.models?.length || 0);
 ## Related Documentation
 
 - [Verdikta ClassID Usage Guide](https://docs.verdikta.com/verdikta-common/CLASSID_USAGE_GUIDE/)
-- [AI Node Configuration](ai-node-config.md)
+- [AI Node Installation](quick-start.md#step-3-ai-node-installation)
 - [Installation Guide](installation/automated.md)
 - [Troubleshooting](troubleshooting/common-issues.md)
 

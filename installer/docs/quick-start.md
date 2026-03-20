@@ -943,7 +943,7 @@ cd ~/verdikta-arbiter-node
 ### 🛠️ Advanced Configuration
 
 For advanced configurations, see:
-- [Multi-Arbiter Design Guide](MULTI_ARBITER_DESIGN.md)
+- [Multi-Arbiter Design Guide](reference/design/multi-arbiter.md)
 - [Management & Monitoring](management/index.md)
 - [Troubleshooting Guide](troubleshooting/index.md)
 
