@@ -12,7 +12,8 @@ The Verdikta Arbiter installer automatically handles all environment configurati
 
 The installer sets up:
 
-- API key configuration for OpenAI, Anthropic, Web3 providers
+- API key configuration for OpenAI/Anthropic and optional provider keys
+- RPC endpoint configuration for Base networks (HTTP + WS)
 - IPFS service configuration  
 - Database connection settings
 - Chainlink node configuration

@@ -152,7 +152,7 @@ Before installation, ensure you have the following API keys:
 
 - **OpenAI**: For GPT-4 access (recommended for best performance)
 - **Anthropic**: For Claude access (alternative/backup AI provider)
-- **Infura/Alchemy**: Web3 provider for Base network access
+- **RPC Endpoints (HTTP + WS)**: Base network access via Infura, Alchemy, QuickNode, or other compatible providers
 - **IPFS Service**: Pinata or Infura IPFS for document storage
 - **Network Funds**: ETH and LINK tokens for chosen network (testnet or mainnet)
 

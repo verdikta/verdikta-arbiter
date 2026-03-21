@@ -39,8 +39,9 @@ Before starting, ensure you have:
 - **Hyperbolic API Key**: For cost-effective open-source models ([Get API Key](https://hyperbolic.xyz/))
 - **xAI API Key**: For Grok models ([Get API Key](https://console.x.ai))
 
-**Infrastructure Keys** (required for all installations):
-- **Web3 Provider**: Choose Infura, Alchemy, or QuickNode ([Infura](https://infura.io/), [Alchemy](https://alchemy.com/))
+**Infrastructure Configuration** (required for all installations):
+- **RPC Endpoints**: Provide HTTP and WS RPC URLs for your selected Base network (Infura, Alchemy, QuickNode, or any compatible provider)
+- **Infura API Key** (Optional): Kept as an optional fallback only
 - **IPFS Service** (Optional): For document storage ([Pinata](https://pinata.cloud/) recommended)
 
 ### ClassID Requirements
@@ -240,22 +241,32 @@ Configure your installation directory, network selection, and API keys.
 !!! info "Grok Models"
     xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning capabilities.
 
-#### Infura API Key (Required)
+#### RPC Endpoints (Required)
 
-**Prompt**: `Enter your Infura API Key:`
+**Prompts**:
+- `Enter HTTP RPC URLs (semicolon-separated):`
+- `Enter WS RPC URLs (semicolon-separated):`
 
-**How to get it**:
+**How to configure**:
 
-1. Go to [Infura.io](https://infura.io/) and sign up (free)
+1. Choose a Base-compatible provider (Infura, Alchemy, QuickNode, or your own node)
+2. Copy your HTTP(S) endpoint URL for the selected network
+3. Copy your WS(S) endpoint URL for the selected network
+4. If using multiple providers, separate URLs with semicolons (`;`) and do not add spaces
 
-2. Create a new project → Select **Ethereum**
+**Examples**:
+- Single endpoint:
+  - `https://base-sepolia.provider-a.example`
+  - `wss://base-sepolia.provider-a.example/ws`
+- Multiple endpoints:
+  - `https://provider-a.example;https://provider-b.example`
+  - `wss://provider-a.example/ws;wss://provider-b.example/ws`
 
-3. Copy the **Project ID** from your dashboard
+#### Infura API Key (Optional Fallback)
 
-**Example**: `1234567890abcdef1234567890abcdef`
+**Prompt**: `Enter your Infura API Key (optional, leave blank to skip):`
 
-!!! tip "Free Tier"
-    Infura's free tier provides 100,000 requests/day - perfect for testing.
+If you use Infura, you can provide the key for optional fallback behavior. It is no longer required for installation.
 
 #### Pinata JWT (Optional)
 
@@ -867,7 +878,7 @@ cd ~/verdikta-arbiter-node
     # Check deployment wallet balance
     curl -X POST -H "Content-Type: application/json" \
       -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["YOUR_WALLET","latest"],"id":1}' \
-      https://base-sepolia.infura.io/v3/YOUR_INFURA_KEY
+      YOUR_BASE_SEPOLIA_HTTP_RPC_URL
     
     # Retry funding with custom amount
     ./fund-chainlink-keys.sh --amount 0.003
@@ -900,7 +911,7 @@ cd ~/verdikta-arbiter-node
     # (Replace KEY_ADDRESS with actual key)
     curl -X POST -H "Content-Type: application/json" \
       -d '{"jsonrpc":"2.0","method":"eth_getBalance","params":["KEY_ADDRESS","latest"],"id":1}' \
-      https://base-sepolia.infura.io/v3/YOUR_INFURA_KEY
+      YOUR_BASE_SEPOLIA_HTTP_RPC_URL
     
     # Force re-funding if needed
     ./fund-chainlink-keys.sh --force --amount 0.005

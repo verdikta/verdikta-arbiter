@@ -13,7 +13,7 @@ Before testing, ensure you have:
 
 2. Have access to:
    - A wallet with Base Sepolia ETH (get from [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-sepolia-faucet))
-   - An Infura API key (for Base Sepolia access)
+   - Base Sepolia RPC endpoints (HTTP + WS)
 
 ## Quick Test Setup
 
@@ -29,11 +29,11 @@ To quickly set up a minimal environment for testing the automated deployment scr
    ```bash
    mkdir -p /root/verdikta-validator/contracts
    
-   # Create minimal API keys file
-   echo 'INFURA_API_KEY="your-infura-api-key"' > installer/.api_keys
-   
    # Create minimal .env file
    echo 'INSTALL_DIR="/root/verdikta-validator"' > installer/.env
+   echo 'DEPLOYMENT_NETWORK="base_sepolia"' >> installer/.env
+   echo 'BASE_SEPOLIA_RPC_HTTP_URLS="https://your-base-sepolia-http-rpc"' >> installer/.env
+   echo 'BASE_SEPOLIA_RPC_WS_URLS="wss://your-base-sepolia-ws-rpc"' >> installer/.env
    ```
 
 3. Make the script executable:

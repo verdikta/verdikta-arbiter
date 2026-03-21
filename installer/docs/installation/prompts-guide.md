@@ -57,20 +57,35 @@ Enter your OpenAI API Key (leave blank to skip): sk-1234567890abcdef...
 Enter your Anthropic API Key (leave blank to skip): sk-ant-...
 ```
 
-#### Infura API Key
+#### RPC Endpoints (Required)
 
-**Prompt:** `Enter your Infura API Key (leave blank to skip):`
+**Prompts:**
+- `Enter HTTP RPC URLs (semicolon-separated):`
+- `Enter WS RPC URLs (semicolon-separated):`
 
-**What it means:** Web3 provider for blockchain connectivity.
+**What it means:** Required blockchain endpoints used by Chainlink and contract deployment.
 
 **How to obtain:**
-1. Go to [Infura.io](https://infura.io/)
-2. Create a free account and new project
-3. Copy the **Project ID**
+1. Choose a Base-compatible provider (Infura, Alchemy, QuickNode, or your own node)
+2. Copy the Base network HTTP endpoint URL
+3. Copy the Base network WS endpoint URL
+4. For redundancy, provide multiple endpoints separated by semicolons (`;`)
 
 **Example:**
 ```bash
-Enter your Infura API Key (leave blank to skip): 1234567890abcdef...
+Enter HTTP RPC URLs (semicolon-separated): https://provider-a.example;https://provider-b.example
+Enter WS RPC URLs (semicolon-separated): wss://provider-a.example/ws;wss://provider-b.example/ws
+```
+
+#### Infura API Key (Optional Fallback)
+
+**Prompt:** `Enter your Infura API Key (optional, leave blank to skip):`
+
+**What it means:** Optional fallback value if you also use Infura. Not required for installation.
+
+**Example:**
+```bash
+Enter your Infura API Key (optional, leave blank to skip): 1234567890abcdef...
 ```
 
 #### Pinata JWT Token
@@ -177,18 +192,19 @@ The installer will prompt for these items in order:
 1. **Installation directory** - Where to install files
 2. **OpenAI API key** - For AI processing  
 3. **Anthropic API key** - Alternative AI provider
-4. **Infura API key** - Web3 provider
-5. **Pinata JWT** - IPFS storage
-6. **Network selection** - Base Sepolia (recommended)
-7. **Wallet private key** - For contract deployment
-8. **Logging level** - Service verbosity
-9. **Start services** - Whether to start immediately
+4. **Pinata JWT** - IPFS storage (optional)
+5. **Network selection** - Base Sepolia (recommended)
+6. **RPC HTTP URLs** - Required for selected network
+7. **RPC WS URLs** - Required for selected network
+8. **Wallet private key** - For contract deployment
+9. **Logging level** - Service verbosity
+10. **Start services** - Whether to start immediately
 
 After these prompts, the installer runs automatically through all 9 installation steps.
 
 ## Tips for Success
 
-1. **Prepare API Keys**: Have all API keys ready before starting
+1. **Prepare Credentials**: Have AI provider keys and RPC endpoint URLs ready before starting
 2. **Use Test Wallet**: Create a separate wallet for testnet only
 3. **Fund Test Wallet**: Get Base Sepolia ETH and LINK from faucets
 4. **Secure Storage**: Save all credentials securely

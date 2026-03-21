@@ -175,7 +175,7 @@ Before starting the installation, verify you have:
 
 - [ ] OpenAI API key with GPT-4 access and funded account
 - [ ] Anthropic API key for Claude access (optional but recommended)
-- [ ] Web3 provider API key (Infura/Alchemy/QuickNode) supporting Base network
+- [ ] Base network RPC endpoint URLs (HTTP + WS) for your chosen provider(s)
 - [ ] IPFS service credentials (Pinata/Infura IPFS)
 
 ### :material-wallet: Network Selection & Blockchain Resources

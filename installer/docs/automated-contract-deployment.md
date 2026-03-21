@@ -19,7 +19,7 @@ Before running the script, make sure you have:
 1. A wallet with Base Sepolia ETH for deployment (get from [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-sepolia-faucet))
 2. The Chainlink node running (the script will ask for the node's ETH address)
 3. Node.js and npm installed
-4. Infura API key configured in `.api_keys`
+4. Base RPC endpoints configured in `.env` (HTTP + WS for your selected network)
 
 ## Testing Instructions
 
@@ -125,8 +125,8 @@ The deployment script now includes these features to handle rate limiting:
 If you still encounter rate limiting issues:
 
 1. Wait 10-15 minutes before trying again (this allows rate limits to reset)
-2. Try using a different Infura API key if available
-3. Consider upgrading to a paid Infura plan for higher rate limits
+2. Try adding or reordering fallback RPC endpoints from another provider
+3. If you're using a hosted provider, consider a higher-tier plan for better rate limits
 4. Run the deployment during off-peak hours when fewer users are making requests
 
 ## Troubleshooting
@@ -134,7 +134,7 @@ If you still encounter rate limiting issues:
 ### If deployment fails:
 
 1. Check that your wallet has sufficient Base Sepolia ETH
-2. Verify your Infura API key is valid
+2. Verify your configured RPC endpoints are reachable and valid
 3. You may need to adjust gas settings in the `truffle-config.js`
 
 ### If node authorization fails:
