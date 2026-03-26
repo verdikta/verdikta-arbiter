@@ -430,61 +430,69 @@ configure_api_keys() {
         source "$INSTALLER_DIR/.env"
     fi
     
-    # Default AI gateway key (OpenRouter)
+    # --- Native Provider Keys ---
+    echo -e "${BLUE}Native Provider Keys${NC}"
+    echo -e "${YELLOW}Enter API keys for the providers you have accounts with.${NC}"
+    echo -e "${YELLOW}Native keys connect directly at each provider's standard rates.${NC}"
+    echo -e "${YELLOW}Leave blank to skip any provider you don't use.${NC}"
+    echo ""
+    
+    # OpenAI API Key
+    if [ -z "$OPENAI_API_KEY" ]; then
+        read_secret "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
+    else
+        read_secret "Enter your OpenAI API Key (leave blank to use existing key): " new_key
+        if [ -n "$new_key" ]; then
+            OPENAI_API_KEY="$new_key"
+        fi
+    fi
+
+    # Anthropic API Key
+    if [ -z "$ANTHROPIC_API_KEY" ]; then
+        read_secret "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
+    else
+        read_secret "Enter your Anthropic API Key (leave blank to use existing key): " new_key
+        if [ -n "$new_key" ]; then
+            ANTHROPIC_API_KEY="$new_key"
+        fi
+    fi
+
+    # Hyperbolic API Key
+    if [ -z "$HYPERBOLIC_API_KEY" ]; then
+        read_secret "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
+    else
+        read_secret "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
+        if [ -n "$new_key" ]; then
+            HYPERBOLIC_API_KEY="$new_key"
+        fi
+    fi
+
+    # xAI API Key (for Grok models)
+    if [ -z "$XAI_API_KEY" ]; then
+        echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
+        echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
+        read_secret "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
+    else
+        read_secret "Enter your xAI API Key (leave blank to use existing key): " new_key
+        if [ -n "$new_key" ]; then
+            XAI_API_KEY="$new_key"
+        fi
+    fi
+
+    # --- OpenRouter (optional gap-filler) ---
+    echo ""
+    echo -e "${BLUE}OpenRouter Gateway (optional)${NC}"
+    echo -e "${YELLOW}OpenRouter provides access to any models you don't have native keys for.${NC}"
+    echo -e "${YELLOW}This is useful to broaden ClassID coverage without signing up for every provider.${NC}"
+    echo -e "${YELLOW}Note: OpenRouter adds a small fee (~5%) on top of standard token costs.${NC}"
+    echo -e "${YELLOW}If you already have native keys for all providers above, you can skip this.${NC}"
+    echo ""
     if [ -z "$OPENROUTER_API_KEY" ]; then
-        read_secret "Enter your OpenRouter API Key (recommended default): " OPENROUTER_API_KEY
+        read_secret "Enter your OpenRouter API Key (leave blank to skip): " OPENROUTER_API_KEY
     else
         read_secret "Enter your OpenRouter API Key (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
             OPENROUTER_API_KEY="$new_key"
-        fi
-    fi
-
-    echo ""
-    echo -e "${BLUE}Advanced / Native Provider Overrides (optional)${NC}"
-    echo -e "${YELLOW}Native keys are only used when AI_GATEWAY=native or per-class overrides are set.${NC}"
-
-    if ask_yes_no "Configure native provider API keys now?"; then
-        # OpenAI API Key
-        if [ -z "$OPENAI_API_KEY" ]; then
-            read_secret "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
-        else
-            read_secret "Enter your OpenAI API Key (leave blank to use existing key): " new_key
-            if [ -n "$new_key" ]; then
-                OPENAI_API_KEY="$new_key"
-            fi
-        fi
-
-        # Anthropic API Key
-        if [ -z "$ANTHROPIC_API_KEY" ]; then
-            read_secret "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
-        else
-            read_secret "Enter your Anthropic API Key (leave blank to use existing key): " new_key
-            if [ -n "$new_key" ]; then
-                ANTHROPIC_API_KEY="$new_key"
-            fi
-        fi
-
-        # Hyperbolic API Key
-        if [ -z "$HYPERBOLIC_API_KEY" ]; then
-            read_secret "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
-        else
-            read_secret "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
-            if [ -n "$new_key" ]; then
-                HYPERBOLIC_API_KEY="$new_key"
-            fi
-        fi
-
-        # xAI API Key (for Grok models)
-        if [ -z "$XAI_API_KEY" ]; then
-            echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
-            echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
-            read_secret "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
-        else
-            read_secret "Enter your xAI API Key (leave blank to use existing key): " new_key
-            if [ -n "$new_key" ]; then
-                XAI_API_KEY="$new_key"
-            fi
         fi
     fi
     

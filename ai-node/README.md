@@ -319,38 +319,48 @@ The text extraction system can be configured via environment variables or progra
 - Failed/unsupported attachments are skipped with console warnings
 - Image attachments bypass text extraction and are sent directly
 
-## AI Gateway (OpenRouter default)
+## AI Gateway
 
-The AI node now routes provider classes through an AI gateway abstraction.
+The AI node includes a gateway abstraction that routes provider classes to either native providers or OpenRouter.
 
-Default behavior:
-- `OpenAI`, `Anthropic`, `xAI`, and `Hyperbolic` classes use **OpenRouter** by default.
-- `Ollama` remains local-only/native.
+**Native keys are preferred** — any provider class with a native API key configured will use it directly at the provider's standard rates. OpenRouter serves as an optional fallback that covers any provider classes you don't have native keys for, broadening ClassID support without requiring accounts at every provider. Note that OpenRouter adds a ~5% fee on top of standard token costs.
 
-Required for default path:
+`Ollama` always runs locally and is unaffected by gateway settings.
+
+### Configuration
 
 ```env
-OPENROUTER_API_KEY=your_openrouter_api_key
+# Native provider keys (used directly when present)
+OPENAI_API_KEY=your_openai_key
+ANTHROPIC_API_KEY=your_anthropic_key
+XAI_API_KEY=your_xai_key
+HYPERBOLIC_API_KEY=your_hyperbolic_key
+
+# OpenRouter (optional — fills gaps for providers without native keys)
+OPENROUTER_API_KEY=your_openrouter_key
 ```
 
-Override controls:
+### Override controls
 
 ```env
-# Global
-AI_GATEWAY=openrouter   # default
+# Force all non-Ollama classes through OpenRouter regardless of native keys
+# AI_GATEWAY=openrouter
+
+# Force all non-Ollama classes to use native keys (no OpenRouter fallback)
 # AI_GATEWAY=native
 
-# Per-class
+# Per-class overrides (take precedence over global setting)
 # OPENAI_CLASS_PROVIDER=native
-# ANTHROPIC_CLASS_PROVIDER=native
-# XAI_CLASS_PROVIDER=native
-# HYPERBOLIC_CLASS_PROVIDER=native
+# ANTHROPIC_CLASS_PROVIDER=openrouter
 ```
 
-Important:
-- Native keys being present in env do **not** auto-enable native mode.
-- Native mode is used only with explicit override (`AI_GATEWAY=native` or per-class override),
-  except fallback behavior when `OPENROUTER_API_KEY` is missing and a class has a native key.
+### Routing precedence
+
+1. Per-class override (`OPENAI_CLASS_PROVIDER=native`)
+2. Global override (`AI_GATEWAY=native`)
+3. Native key present → uses native provider
+4. `OPENROUTER_API_KEY` present → routes through OpenRouter
+5. No key available → error
 
 ## Additional Environment Variables
 

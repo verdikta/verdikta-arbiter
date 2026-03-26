@@ -403,7 +403,8 @@ ARBITER_WAS_RUNNING=$ARBITER_RUNNING
 echo
 echo -e "${BLUE}API Key Configuration${NC}"
 echo -e "${YELLOW}Before upgrading, you can add or update your AI provider API keys.${NC}"
-echo -e "${YELLOW}The default AI gateway is OpenRouter. Native provider keys are optional overrides.${NC}"
+echo -e "${YELLOW}Native keys (OpenAI, Anthropic, etc.) connect directly to providers at standard rates.${NC}"
+echo -e "${YELLOW}OpenRouter is optional — it fills gaps for any providers you don't have native keys for.${NC}"
 echo
 
 if ask_yes_no "Would you like to review and update your API keys?" "n"; then
@@ -420,32 +421,20 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     
     echo ""
     echo -e "${BLUE}Current API Key Status:${NC}"
-    [ -n "$OPENROUTER_API_KEY" ] && echo -e "  ✓ OpenRouter API Key: Configured (default gateway)" || echo -e "  ✗ OpenRouter API Key: Not configured (default gateway)"
-    [ -n "$OPENAI_API_KEY" ] && echo -e "  ✓ OpenAI API Key: Configured (native override)" || echo -e "  ✗ OpenAI API Key: Not configured (native override)"
-    [ -n "$ANTHROPIC_API_KEY" ] && echo -e "  ✓ Anthropic API Key: Configured (native override)" || echo -e "  ✗ Anthropic API Key: Not configured (native override)"
-    [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "  ✓ Hyperbolic API Key: Configured (native override)" || echo -e "  ✗ Hyperbolic API Key: Not configured (native override)"
-    [ -n "$XAI_API_KEY" ] && echo -e "  ✓ xAI API Key: Configured (native override)" || echo -e "  ✗ xAI API Key: Not configured (native override)"
+    [ -n "$OPENAI_API_KEY" ] && echo -e "  ✓ OpenAI API Key: Configured" || echo -e "  ✗ OpenAI API Key: Not configured"
+    [ -n "$ANTHROPIC_API_KEY" ] && echo -e "  ✓ Anthropic API Key: Configured" || echo -e "  ✗ Anthropic API Key: Not configured"
+    [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "  ✓ Hyperbolic API Key: Configured" || echo -e "  ✗ Hyperbolic API Key: Not configured"
+    [ -n "$XAI_API_KEY" ] && echo -e "  ✓ xAI API Key: Configured" || echo -e "  ✗ xAI API Key: Not configured"
+    [ -n "$OPENROUTER_API_KEY" ] && echo -e "  ✓ OpenRouter API Key: Configured (optional fallback)" || echo -e "  ✗ OpenRouter API Key: Not configured (optional)"
     [ -n "$INFURA_API_KEY" ] && echo -e "  ✓ Infura API Key: Configured (optional fallback)" || echo -e "  ✗ Infura API Key: Not configured (optional fallback)"
     [ -n "$PINATA_API_KEY" ] && echo -e "  ✓ Pinata JWT: Configured" || echo -e "  ✗ Pinata JWT: Not configured"
     echo ""
     
-    # OpenRouter API Key (default gateway)
-    echo -e "${BLUE}OpenRouter is the default AI gateway. One key covers all provider classes.${NC}"
-    if [ -n "$OPENROUTER_API_KEY" ]; then
-        if ask_yes_no "Update OpenRouter API Key? (currently configured)" "n"; then
-            read_secret "Enter new OpenRouter API Key: " new_key
-            if [ -n "$new_key" ]; then
-                OPENROUTER_API_KEY="$new_key"
-                echo -e "${GREEN}OpenRouter API Key updated.${NC}"
-            fi
-        fi
-    else
-        read_secret "Enter OpenRouter API Key (recommended default): " OPENROUTER_API_KEY
-    fi
-    
+    # --- Native Provider Keys (primary) ---
+    echo -e "${BLUE}Native Provider Keys${NC}"
+    echo -e "${YELLOW}Native keys connect directly to each provider at their standard rates.${NC}"
+    echo -e "${YELLOW}Any provider class with a native key will use it automatically.${NC}"
     echo ""
-    echo -e "${BLUE}Advanced / Native Provider Overrides (optional)${NC}"
-    echo -e "${YELLOW}Native keys are only used when AI_GATEWAY=native or per-class overrides are set.${NC}"
     
     # OpenAI API Key
     if [ -n "$OPENAI_API_KEY" ]; then
@@ -503,6 +492,26 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
         read_secret "Enter xAI API Key (leave blank to skip): " XAI_API_KEY
     fi
     
+    # --- OpenRouter (optional gap-filler) ---
+    echo ""
+    echo -e "${BLUE}OpenRouter Gateway (optional)${NC}"
+    echo -e "${YELLOW}OpenRouter can route any provider class you don't have a native key for.${NC}"
+    echo -e "${YELLOW}Note: OpenRouter adds a small fee (~5%) on top of standard token costs.${NC}"
+    echo -e "${YELLOW}If you have native keys for all providers above, you can skip this.${NC}"
+    echo ""
+    if [ -n "$OPENROUTER_API_KEY" ]; then
+        if ask_yes_no "Update OpenRouter API Key? (currently configured)" "n"; then
+            read_secret "Enter new OpenRouter API Key: " new_key
+            if [ -n "$new_key" ]; then
+                OPENROUTER_API_KEY="$new_key"
+                echo -e "${GREEN}OpenRouter API Key updated.${NC}"
+            fi
+        fi
+    else
+        read_secret "Enter OpenRouter API Key (leave blank to skip): " OPENROUTER_API_KEY
+    fi
+    
+    echo ""
     echo -e "${BLUE}Note: RPC endpoints are configured in the next section.${NC}"
     echo -e "${BLUE}Infura is optional and used only as a fallback if you choose to set it.${NC}"
     
@@ -1219,16 +1228,14 @@ echo -e "${BLUE}Updating AI Node API keys...${NC}"
 if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
     source "$TARGET_DIR/installer/.api_keys"
     
-    # Update OpenRouter key (default gateway)
+    # Update OpenRouter key (optional gap-filler)
     if [ -n "$OPENROUTER_API_KEY" ]; then
         if grep -q "^OPENROUTER_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
             sed -i.bak "s/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=$OPENROUTER_API_KEY/" "$TARGET_AI_NODE/.env.local"
         else
             echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY" >> "$TARGET_AI_NODE/.env.local"
         fi
-        echo -e "${GREEN}✓ OpenRouter API Key updated in AI Node (default gateway)${NC}"
-    else
-        echo -e "${YELLOW}⚠ OpenRouter API Key not configured. Gateway will require explicit native fallback.${NC}"
+        echo -e "${GREEN}✓ OpenRouter API Key updated in AI Node (fallback for uncovered providers)${NC}"
     fi
     
     # Update OpenAI key
