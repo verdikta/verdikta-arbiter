@@ -133,6 +133,7 @@ fi
 # Load API keys
 if [ -f "$INSTALLER_DIR/.api_keys" ]; then
     source "$INSTALLER_DIR/.api_keys"
+    echo -e "${BLUE}AI gateway default is OpenRouter. Native provider keys are treated as advanced overrides.${NC}"
 else
     echo -e "${RED}Error: API keys file not found. Please run setup-environment.sh first.${NC}"
     exit 1
@@ -405,6 +406,17 @@ else
 fi
 
 # Update environment file
+if [ -n "$OPENROUTER_API_KEY" ]; then
+    if grep -q "^OPENROUTER_API_KEY=" "$AI_NODE_DIR/.env.local"; then
+        sed -i.bak "s/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=$OPENROUTER_API_KEY/" "$AI_NODE_DIR/.env.local"
+    else
+        echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY" >> "$AI_NODE_DIR/.env.local"
+    fi
+    echo -e "${GREEN}OpenRouter API Key configured (default gateway).${NC}"
+else
+    echo -e "${YELLOW}WARNING: OpenRouter API Key not provided. Gateway will require explicit native fallback.${NC}"
+fi
+
 if [ -n "$OPENAI_API_KEY" ]; then
     # Check if key already exists in file
     if grep -q "^OPENAI_API_KEY=" "$AI_NODE_DIR/.env.local"; then
