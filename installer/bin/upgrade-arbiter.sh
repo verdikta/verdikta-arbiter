@@ -127,6 +127,29 @@ ask_yes_no() {
     done
 }
 
+# Function to read a secret value with masked feedback
+# Usage: read_secret "prompt text" VARIABLE_NAME
+read_secret() {
+    local prompt="$1"
+    local varname="$2"
+    local value=""
+    
+    read -sp "$prompt" value
+    echo  # newline after silent input
+    
+    if [ -n "$value" ]; then
+        local len=${#value}
+        local visible="${value:0:4}"
+        if [ $len -le 4 ]; then
+            echo -e "${GREEN}  ✓ Key entered (${len} chars)${NC}"
+        else
+            echo -e "${GREEN}  ✓ Key entered: ${visible}$( printf '*%.0s' $(seq 1 $((len - 4))) )${NC}"
+        fi
+    fi
+    
+    eval "$varname=\"\$value\""
+}
+
 # Function to check if a directory is a valid Verdikta arbiter installation
 validate_installation() {
     local dir="$1"
@@ -410,17 +433,14 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     echo -e "${BLUE}OpenRouter is the default AI gateway. One key covers all provider classes.${NC}"
     if [ -n "$OPENROUTER_API_KEY" ]; then
         if ask_yes_no "Update OpenRouter API Key? (currently configured)" "n"; then
-            read -sp "Enter new OpenRouter API Key: " new_key
-            echo
+            read_secret "Enter new OpenRouter API Key: " new_key
             if [ -n "$new_key" ]; then
                 OPENROUTER_API_KEY="$new_key"
                 echo -e "${GREEN}OpenRouter API Key updated.${NC}"
             fi
         fi
     else
-        read -sp "Enter OpenRouter API Key (recommended default): " OPENROUTER_API_KEY
-        echo
-        [ -n "$OPENROUTER_API_KEY" ] && echo -e "${GREEN}OpenRouter API Key added.${NC}"
+        read_secret "Enter OpenRouter API Key (recommended default): " OPENROUTER_API_KEY
     fi
     
     echo ""
@@ -430,40 +450,33 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     # OpenAI API Key
     if [ -n "$OPENAI_API_KEY" ]; then
         if ask_yes_no "Update OpenAI API Key? (currently configured)" "n"; then
-            read -sp "Enter new OpenAI API Key: " new_key
-            echo
+            read_secret "Enter new OpenAI API Key: " new_key
             if [ -n "$new_key" ]; then
                 OPENAI_API_KEY="$new_key"
                 echo -e "${GREEN}OpenAI API Key updated.${NC}"
             fi
         fi
     else
-        read -sp "Enter OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
-        echo
-        [ -n "$OPENAI_API_KEY" ] && echo -e "${GREEN}OpenAI API Key added.${NC}"
+        read_secret "Enter OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
     fi
     
     # Anthropic API Key
     if [ -n "$ANTHROPIC_API_KEY" ]; then
         if ask_yes_no "Update Anthropic API Key? (currently configured)" "n"; then
-            read -sp "Enter new Anthropic API Key: " new_key
-            echo
+            read_secret "Enter new Anthropic API Key: " new_key
             if [ -n "$new_key" ]; then
                 ANTHROPIC_API_KEY="$new_key"
                 echo -e "${GREEN}Anthropic API Key updated.${NC}"
             fi
         fi
     else
-        read -sp "Enter Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
-        echo
-        [ -n "$ANTHROPIC_API_KEY" ] && echo -e "${GREEN}Anthropic API Key added.${NC}"
+        read_secret "Enter Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
     fi
     
-    # Hyperbolic API Key (NEW!)
+    # Hyperbolic API Key
     if [ -n "$HYPERBOLIC_API_KEY" ]; then
         if ask_yes_no "Update Hyperbolic API Key? (currently configured)" "n"; then
-            read -sp "Enter new Hyperbolic API Key: " new_key
-            echo
+            read_secret "Enter new Hyperbolic API Key: " new_key
             if [ -n "$new_key" ]; then
                 HYPERBOLIC_API_KEY="$new_key"
                 echo -e "${GREEN}Hyperbolic API Key updated.${NC}"
@@ -472,16 +485,13 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     else
         echo -e "${BLUE}Hyperbolic provides cost-effective serverless inference for open-source models.${NC}"
         echo -e "${BLUE}Get your key at: https://app.hyperbolic.xyz${NC}"
-        read -sp "Enter Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
-        echo
-        [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "${GREEN}Hyperbolic API Key added.${NC}"
+        read_secret "Enter Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
     fi
     
     # xAI API Key (for Grok models)
     if [ -n "$XAI_API_KEY" ]; then
         if ask_yes_no "Update xAI API Key? (currently configured)" "n"; then
-            read -sp "Enter new xAI API Key: " new_key
-            echo
+            read_secret "Enter new xAI API Key: " new_key
             if [ -n "$new_key" ]; then
                 XAI_API_KEY="$new_key"
                 echo -e "${GREEN}xAI API Key updated.${NC}"
@@ -490,9 +500,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     else
         echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
         echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
-        read -sp "Enter xAI API Key (leave blank to skip): " XAI_API_KEY
-        echo
-        [ -n "$XAI_API_KEY" ] && echo -e "${GREEN}xAI API Key added.${NC}"
+        read_secret "Enter xAI API Key (leave blank to skip): " XAI_API_KEY
     fi
     
     echo -e "${BLUE}Note: RPC endpoints are configured in the next section.${NC}"
@@ -501,33 +509,27 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     # Infura API Key (optional fallback)
     if [ -n "$INFURA_API_KEY" ]; then
         if ask_yes_no "Update Infura API Key? (optional fallback, currently configured)" "n"; then
-            read -sp "Enter new Infura API Key: " new_key
-            echo
+            read_secret "Enter new Infura API Key: " new_key
             if [ -n "$new_key" ]; then
                 INFURA_API_KEY="$new_key"
                 echo -e "${GREEN}Infura API Key updated.${NC}"
             fi
         fi
     else
-        read -sp "Enter Infura API Key (optional fallback, leave blank to skip): " INFURA_API_KEY
-        echo
-        [ -n "$INFURA_API_KEY" ] && echo -e "${GREEN}Infura API Key added.${NC}"
+        read_secret "Enter Infura API Key (optional fallback, leave blank to skip): " INFURA_API_KEY
     fi
     
     # Pinata JWT
     if [ -n "$PINATA_API_KEY" ]; then
         if ask_yes_no "Update Pinata JWT? (currently configured)" "n"; then
-            read -sp "Enter new Pinata JWT: " new_key
-            echo
+            read_secret "Enter new Pinata JWT: " new_key
             if [ -n "$new_key" ]; then
                 PINATA_API_KEY="$new_key"
                 echo -e "${GREEN}Pinata JWT updated.${NC}"
             fi
         fi
     else
-        read -sp "Enter Pinata JWT (leave blank to skip): " PINATA_API_KEY
-        echo
-        [ -n "$PINATA_API_KEY" ] && echo -e "${GREEN}Pinata JWT added.${NC}"
+        read_secret "Enter Pinata JWT (leave blank to skip): " PINATA_API_KEY
     fi
     
     # Save updated keys

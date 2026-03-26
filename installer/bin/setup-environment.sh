@@ -249,6 +249,29 @@ ask_yes_no() {
     done
 }
 
+# Function to read a secret value with masked feedback
+# Usage: read_secret "prompt text" VARIABLE_NAME
+read_secret() {
+    local prompt="$1"
+    local varname="$2"
+    local value=""
+    
+    read -sp "$prompt" value
+    echo  # newline after silent input
+    
+    if [ -n "$value" ]; then
+        local len=${#value}
+        local visible="${value:0:4}"
+        if [ $len -le 4 ]; then
+            echo -e "${GREEN}  ✓ Key entered (${len} chars)${NC}"
+        else
+            echo -e "${GREEN}  ✓ Key entered: ${visible}$( printf '*%.0s' $(seq 1 $((len - 4))) )${NC}"
+        fi
+    fi
+    
+    eval "$varname=\"\$value\""
+}
+
 # Function to check if a directory contains a Verdikta arbiter installation
 is_arbiter_installation() {
     local dir="$1"
@@ -409,9 +432,9 @@ configure_api_keys() {
     
     # Default AI gateway key (OpenRouter)
     if [ -z "$OPENROUTER_API_KEY" ]; then
-        read -p "Enter your OpenRouter API Key (recommended default): " OPENROUTER_API_KEY
+        read_secret "Enter your OpenRouter API Key (recommended default): " OPENROUTER_API_KEY
     else
-        read -p "Enter your OpenRouter API Key (leave blank to use existing key): " new_key
+        read_secret "Enter your OpenRouter API Key (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
             OPENROUTER_API_KEY="$new_key"
         fi
@@ -424,9 +447,9 @@ configure_api_keys() {
     if ask_yes_no "Configure native provider API keys now?"; then
         # OpenAI API Key
         if [ -z "$OPENAI_API_KEY" ]; then
-            read -p "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
+            read_secret "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
         else
-            read -p "Enter your OpenAI API Key (leave blank to use existing key): " new_key
+            read_secret "Enter your OpenAI API Key (leave blank to use existing key): " new_key
             if [ -n "$new_key" ]; then
                 OPENAI_API_KEY="$new_key"
             fi
@@ -434,9 +457,9 @@ configure_api_keys() {
 
         # Anthropic API Key
         if [ -z "$ANTHROPIC_API_KEY" ]; then
-            read -p "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
+            read_secret "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
         else
-            read -p "Enter your Anthropic API Key (leave blank to use existing key): " new_key
+            read_secret "Enter your Anthropic API Key (leave blank to use existing key): " new_key
             if [ -n "$new_key" ]; then
                 ANTHROPIC_API_KEY="$new_key"
             fi
@@ -444,9 +467,9 @@ configure_api_keys() {
 
         # Hyperbolic API Key
         if [ -z "$HYPERBOLIC_API_KEY" ]; then
-            read -p "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
+            read_secret "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
         else
-            read -p "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
+            read_secret "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
             if [ -n "$new_key" ]; then
                 HYPERBOLIC_API_KEY="$new_key"
             fi
@@ -456,9 +479,9 @@ configure_api_keys() {
         if [ -z "$XAI_API_KEY" ]; then
             echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
             echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
-            read -p "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
+            read_secret "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
         else
-            read -p "Enter your xAI API Key (leave blank to use existing key): " new_key
+            read_secret "Enter your xAI API Key (leave blank to use existing key): " new_key
             if [ -n "$new_key" ]; then
                 XAI_API_KEY="$new_key"
             fi
@@ -467,9 +490,9 @@ configure_api_keys() {
     
     # Infura API Key (optional fallback)
     if [ -z "$INFURA_API_KEY" ]; then
-        read -p "Enter your Infura API Key (optional, leave blank to skip): " INFURA_API_KEY
+        read_secret "Enter your Infura API Key (optional, leave blank to skip): " INFURA_API_KEY
     else
-        read -p "Enter your Infura API Key (leave blank to use existing key): " new_key
+        read_secret "Enter your Infura API Key (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
             INFURA_API_KEY="$new_key"
         fi
@@ -477,9 +500,9 @@ configure_api_keys() {
     
     # Pinata API Key
     if [ -z "$PINATA_API_KEY" ]; then
-        read -p "Enter your Pinata JWT (leave blank to skip): " PINATA_API_KEY
+        read_secret "Enter your Pinata JWT (leave blank to skip): " PINATA_API_KEY
     else
-        read -p "Enter your Pinata JWT (leave blank to use existing key): " new_key
+        read_secret "Enter your Pinata JWT (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
             PINATA_API_KEY="$new_key"
         fi
@@ -608,22 +631,26 @@ configure_api_keys() {
     if [ -z "$PRIVATE_KEY" ]; then
         read -sp "Enter your wallet private key for contract deployment (without 0x prefix): " PRIVATE_KEY
         echo
+        [ -n "$PRIVATE_KEY" ] && echo -e "${GREEN}  ✓ Key entered: ${PRIVATE_KEY:0:4}$(printf '*%.0s' $(seq 1 $((${#PRIVATE_KEY} - 4))))${NC}"
         
         # Validate private key format (without 0x prefix)
         while [[ ! "$PRIVATE_KEY" =~ ^[a-fA-F0-9]{64}$ ]]; do
             echo -e "${RED}Error: Invalid private key format. It should be a 64-character hex string without 0x prefix.${NC}"
             read -sp "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
             echo
+            [ -n "$PRIVATE_KEY" ] && echo -e "${GREEN}  ✓ Key entered: ${PRIVATE_KEY:0:4}$(printf '*%.0s' $(seq 1 $((${#PRIVATE_KEY} - 4))))${NC}"
         done
     else
         read -sp "Enter your wallet private key (leave blank to use existing key): " new_key
         echo
+        [ -n "$new_key" ] && echo -e "${GREEN}  ✓ Key entered: ${new_key:0:4}$(printf '*%.0s' $(seq 1 $((${#new_key} - 4))))${NC}"
         if [ -n "$new_key" ]; then
             # Validate new key if provided
             while [[ ! "$new_key" =~ ^[a-fA-F0-9]{64}$ ]]; do
                 echo -e "${RED}Error: Invalid private key format. It should be a 64-character hex string without 0x prefix.${NC}"
                 read -sp "Enter your wallet private key (without 0x prefix): " new_key
                 echo
+                [ -n "$new_key" ] && echo -e "${GREEN}  ✓ Key entered: ${new_key:0:4}$(printf '*%.0s' $(seq 1 $((${#new_key} - 4))))${NC}"
                 
                 # If empty, keep existing
                 if [ -z "$new_key" ]; then
