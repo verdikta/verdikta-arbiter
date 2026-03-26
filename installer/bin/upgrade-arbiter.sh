@@ -438,12 +438,10 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     
     # OpenAI API Key
     if [ -n "$OPENAI_API_KEY" ]; then
-        if ask_yes_no "Update OpenAI API Key? (currently configured)" "n"; then
-            read_secret "Enter new OpenAI API Key: " new_key
-            if [ -n "$new_key" ]; then
-                OPENAI_API_KEY="$new_key"
-                echo -e "${GREEN}OpenAI API Key updated.${NC}"
-            fi
+        if ask_yes_no "Update or remove OpenAI API Key? (currently configured)" "n"; then
+            read_secret "Enter new OpenAI API Key (blank to remove): " new_key
+            OPENAI_API_KEY="$new_key"
+            [ -n "$OPENAI_API_KEY" ] && echo -e "${GREEN}OpenAI API Key updated.${NC}" || echo -e "${YELLOW}OpenAI API Key removed.${NC}"
         fi
     else
         read_secret "Enter OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
@@ -451,12 +449,10 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     
     # Anthropic API Key
     if [ -n "$ANTHROPIC_API_KEY" ]; then
-        if ask_yes_no "Update Anthropic API Key? (currently configured)" "n"; then
-            read_secret "Enter new Anthropic API Key: " new_key
-            if [ -n "$new_key" ]; then
-                ANTHROPIC_API_KEY="$new_key"
-                echo -e "${GREEN}Anthropic API Key updated.${NC}"
-            fi
+        if ask_yes_no "Update or remove Anthropic API Key? (currently configured)" "n"; then
+            read_secret "Enter new Anthropic API Key (blank to remove): " new_key
+            ANTHROPIC_API_KEY="$new_key"
+            [ -n "$ANTHROPIC_API_KEY" ] && echo -e "${GREEN}Anthropic API Key updated.${NC}" || echo -e "${YELLOW}Anthropic API Key removed.${NC}"
         fi
     else
         read_secret "Enter Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
@@ -464,12 +460,10 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     
     # Hyperbolic API Key
     if [ -n "$HYPERBOLIC_API_KEY" ]; then
-        if ask_yes_no "Update Hyperbolic API Key? (currently configured)" "n"; then
-            read_secret "Enter new Hyperbolic API Key: " new_key
-            if [ -n "$new_key" ]; then
-                HYPERBOLIC_API_KEY="$new_key"
-                echo -e "${GREEN}Hyperbolic API Key updated.${NC}"
-            fi
+        if ask_yes_no "Update or remove Hyperbolic API Key? (currently configured)" "n"; then
+            read_secret "Enter new Hyperbolic API Key (blank to remove): " new_key
+            HYPERBOLIC_API_KEY="$new_key"
+            [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "${GREEN}Hyperbolic API Key updated.${NC}" || echo -e "${YELLOW}Hyperbolic API Key removed.${NC}"
         fi
     else
         echo -e "${BLUE}Hyperbolic provides cost-effective serverless inference for open-source models.${NC}"
@@ -479,12 +473,10 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     
     # xAI API Key (for Grok models)
     if [ -n "$XAI_API_KEY" ]; then
-        if ask_yes_no "Update xAI API Key? (currently configured)" "n"; then
-            read_secret "Enter new xAI API Key: " new_key
-            if [ -n "$new_key" ]; then
-                XAI_API_KEY="$new_key"
-                echo -e "${GREEN}xAI API Key updated.${NC}"
-            fi
+        if ask_yes_no "Update or remove xAI API Key? (currently configured)" "n"; then
+            read_secret "Enter new xAI API Key (blank to remove): " new_key
+            XAI_API_KEY="$new_key"
+            [ -n "$XAI_API_KEY" ] && echo -e "${GREEN}xAI API Key updated.${NC}" || echo -e "${YELLOW}xAI API Key removed.${NC}"
         fi
     else
         echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
@@ -500,12 +492,10 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     echo -e "${YELLOW}If you have native keys for all providers above, you can skip this.${NC}"
     echo ""
     if [ -n "$OPENROUTER_API_KEY" ]; then
-        if ask_yes_no "Update OpenRouter API Key? (currently configured)" "n"; then
-            read_secret "Enter new OpenRouter API Key: " new_key
-            if [ -n "$new_key" ]; then
-                OPENROUTER_API_KEY="$new_key"
-                echo -e "${GREEN}OpenRouter API Key updated.${NC}"
-            fi
+        if ask_yes_no "Update or remove OpenRouter API Key? (currently configured)" "n"; then
+            read_secret "Enter new OpenRouter API Key (blank to remove): " new_key
+            OPENROUTER_API_KEY="$new_key"
+            [ -n "$OPENROUTER_API_KEY" ] && echo -e "${GREEN}OpenRouter API Key updated.${NC}" || echo -e "${YELLOW}OpenRouter API Key removed.${NC}"
         fi
     else
         read_secret "Enter OpenRouter API Key (leave blank to skip): " OPENROUTER_API_KEY
@@ -517,12 +507,10 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     
     # Infura API Key (optional fallback)
     if [ -n "$INFURA_API_KEY" ]; then
-        if ask_yes_no "Update Infura API Key? (optional fallback, currently configured)" "n"; then
-            read_secret "Enter new Infura API Key: " new_key
-            if [ -n "$new_key" ]; then
-                INFURA_API_KEY="$new_key"
-                echo -e "${GREEN}Infura API Key updated.${NC}"
-            fi
+        if ask_yes_no "Update or remove Infura API Key? (optional fallback, currently configured)" "n"; then
+            read_secret "Enter new Infura API Key (blank to remove): " new_key
+            INFURA_API_KEY="$new_key"
+            [ -n "$INFURA_API_KEY" ] && echo -e "${GREEN}Infura API Key updated.${NC}" || echo -e "${YELLOW}Infura API Key removed.${NC}"
         fi
     else
         read_secret "Enter Infura API Key (optional fallback, leave blank to skip): " INFURA_API_KEY
@@ -530,12 +518,10 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     
     # Pinata JWT
     if [ -n "$PINATA_API_KEY" ]; then
-        if ask_yes_no "Update Pinata JWT? (currently configured)" "n"; then
-            read_secret "Enter new Pinata JWT: " new_key
-            if [ -n "$new_key" ]; then
-                PINATA_API_KEY="$new_key"
-                echo -e "${GREEN}Pinata JWT updated.${NC}"
-            fi
+        if ask_yes_no "Update or remove Pinata JWT? (currently configured)" "n"; then
+            read_secret "Enter new Pinata JWT (blank to remove): " new_key
+            PINATA_API_KEY="$new_key"
+            [ -n "$PINATA_API_KEY" ] && echo -e "${GREEN}Pinata JWT updated.${NC}" || echo -e "${YELLOW}Pinata JWT removed.${NC}"
         fi
     else
         read_secret "Enter Pinata JWT (leave blank to skip): " PINATA_API_KEY
@@ -1225,58 +1211,37 @@ fi
 
 # Update AI Node API keys in .env.local if they were configured
 echo -e "${BLUE}Updating AI Node API keys...${NC}"
+
+# Helper: set or clear a key in .env.local
+apply_env_key() {
+    local key_name="$1"
+    local key_value="$2"
+    local env_file="$3"
+    local label="$4"
+    
+    if [ -n "$key_value" ]; then
+        if grep -q "^${key_name}=" "$env_file"; then
+            sed -i.bak "s/^${key_name}=.*/${key_name}=${key_value}/" "$env_file"
+        else
+            echo "${key_name}=${key_value}" >> "$env_file"
+        fi
+        echo -e "${GREEN}✓ ${label} set in AI Node${NC}"
+    else
+        if grep -q "^${key_name}=" "$env_file"; then
+            sed -i.bak "s/^${key_name}=.*/${key_name}=/" "$env_file"
+            echo -e "${YELLOW}✓ ${label} cleared in AI Node${NC}"
+        fi
+    fi
+}
+
 if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
     source "$TARGET_DIR/installer/.api_keys"
     
-    # Update OpenRouter key (optional gap-filler)
-    if [ -n "$OPENROUTER_API_KEY" ]; then
-        if grep -q "^OPENROUTER_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
-            sed -i.bak "s/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=$OPENROUTER_API_KEY/" "$TARGET_AI_NODE/.env.local"
-        else
-            echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY" >> "$TARGET_AI_NODE/.env.local"
-        fi
-        echo -e "${GREEN}✓ OpenRouter API Key updated in AI Node (fallback for uncovered providers)${NC}"
-    fi
-    
-    # Update OpenAI key
-    if [ -n "$OPENAI_API_KEY" ]; then
-        if grep -q "^OPENAI_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
-            sed -i.bak "s/^OPENAI_API_KEY=.*/OPENAI_API_KEY=$OPENAI_API_KEY/" "$TARGET_AI_NODE/.env.local"
-        else
-            echo "OPENAI_API_KEY=$OPENAI_API_KEY" >> "$TARGET_AI_NODE/.env.local"
-        fi
-        echo -e "${GREEN}✓ OpenAI API Key updated in AI Node${NC}"
-    fi
-    
-    # Update Anthropic key
-    if [ -n "$ANTHROPIC_API_KEY" ]; then
-        if grep -q "^ANTHROPIC_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
-            sed -i.bak "s/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY/" "$TARGET_AI_NODE/.env.local"
-        else
-            echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> "$TARGET_AI_NODE/.env.local"
-        fi
-        echo -e "${GREEN}✓ Anthropic API Key updated in AI Node${NC}"
-    fi
-    
-    # Update Hyperbolic key (NEW!)
-    if [ -n "$HYPERBOLIC_API_KEY" ]; then
-        if grep -q "^HYPERBOLIC_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
-            sed -i.bak "s/^HYPERBOLIC_API_KEY=.*/HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY/" "$TARGET_AI_NODE/.env.local"
-        else
-            echo "HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY" >> "$TARGET_AI_NODE/.env.local"
-        fi
-        echo -e "${GREEN}✓ Hyperbolic API Key updated in AI Node${NC}"
-    fi
-    
-    # Update xAI key (for Grok models)
-    if [ -n "$XAI_API_KEY" ]; then
-        if grep -q "^XAI_API_KEY=" "$TARGET_AI_NODE/.env.local"; then
-            sed -i.bak "s/^XAI_API_KEY=.*/XAI_API_KEY=$XAI_API_KEY/" "$TARGET_AI_NODE/.env.local"
-        else
-            echo "XAI_API_KEY=$XAI_API_KEY" >> "$TARGET_AI_NODE/.env.local"
-        fi
-        echo -e "${GREEN}✓ xAI API Key updated in AI Node${NC}"
-    fi
+    apply_env_key "OPENAI_API_KEY" "$OPENAI_API_KEY" "$TARGET_AI_NODE/.env.local" "OpenAI API Key"
+    apply_env_key "ANTHROPIC_API_KEY" "$ANTHROPIC_API_KEY" "$TARGET_AI_NODE/.env.local" "Anthropic API Key"
+    apply_env_key "HYPERBOLIC_API_KEY" "$HYPERBOLIC_API_KEY" "$TARGET_AI_NODE/.env.local" "Hyperbolic API Key"
+    apply_env_key "XAI_API_KEY" "$XAI_API_KEY" "$TARGET_AI_NODE/.env.local" "xAI API Key"
+    apply_env_key "OPENROUTER_API_KEY" "$OPENROUTER_API_KEY" "$TARGET_AI_NODE/.env.local" "OpenRouter API Key"
     
     echo -e "${GREEN}AI Node API keys updated successfully.${NC}"
 else
