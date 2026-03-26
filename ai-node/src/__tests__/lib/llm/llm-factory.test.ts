@@ -88,4 +88,15 @@ describe('LLMFactory gateway routing', () => {
 
     expect(OpenAIProvider).toHaveBeenCalled();
   });
+
+  test('falls back to native when OPENROUTER_API_KEY missing and native key exists', async () => {
+    process.env.OPENAI_API_KEY = 'native-key';
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+
+    await LLMFactory.getProvider('OpenAI');
+
+    expect(OpenAIProvider).toHaveBeenCalled();
+    expect(OpenRouterProvider).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
 });

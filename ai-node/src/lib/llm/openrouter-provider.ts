@@ -7,14 +7,29 @@ export class OpenRouterProvider implements LLMProvider {
   private apiKey: string;
   private readonly providerName = 'OpenRouter';
   private readonly baseUrl: string;
+  private readonly modelPrefix: string;
   private models: Array<{ name: string; supportsImages: boolean; supportsAttachments: boolean }>;
 
-  constructor(models?: Array<{ name: string; supportsImages: boolean; supportsAttachments: boolean }>) {
+  constructor(
+    models?: Array<{ name: string; supportsImages: boolean; supportsAttachments: boolean }>,
+    modelPrefix?: string,
+  ) {
     this.apiKey = process.env.OPENROUTER_API_KEY || '';
     this.baseUrl = process.env.OPENROUTER_BASE_URL || 'https://openrouter.ai/api/v1';
+    this.modelPrefix = modelPrefix || '';
     this.models = models || [
       { name: 'openai/gpt-4o', supportsImages: true, supportsAttachments: true },
     ];
+  }
+
+  private normalizeModelId(model: string): string {
+    if (model.includes('/')) {
+      return model;
+    }
+    if (this.modelPrefix) {
+      return `${this.modelPrefix}/${model}`;
+    }
+    return model;
   }
 
   async initialize(): Promise<void> {
@@ -113,8 +128,12 @@ export class OpenRouterProvider implements LLMProvider {
       throw new Error('[OpenRouter] OPENROUTER_API_KEY not configured');
     }
 
+    const defaultMaxTokens = parseInt(process.env.DEFAULT_MAX_TOKENS || '4096');
+    const reasoningMaxTokens = parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000');
+    const normalizedModel = this.normalizeModelId(model);
+
     const payload: any = {
-      model,
+      model: normalizedModel,
       messages: [
         {
           role: 'user',
@@ -122,9 +141,7 @@ export class OpenRouterProvider implements LLMProvider {
         },
       ],
       stream: false,
-      max_tokens: this.isReasoningModel(model)
-        ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
-        : 1000,
+      max_tokens: this.isReasoningModel(normalizedModel) ? reasoningMaxTokens : defaultMaxTokens,
     };
 
     if (options?.reasoning) {
@@ -134,27 +151,41 @@ export class OpenRouterProvider implements LLMProvider {
       payload.verbosity = options.verbosity;
     }
 
-    const response = await fetch(`${this.baseUrl}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${this.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(payload),
-    });
+    const timeoutMs = parseInt(process.env.MODEL_TIMEOUT_MS || '120000');
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`[OpenRouter] HTTP ${response.status}: ${errorText}`);
+    try {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.apiKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        throw new Error(`[OpenRouter] HTTP ${response.status}: ${errorText}`);
+      }
+
+      const data = await response.json();
+      const content = data?.choices?.[0]?.message?.content;
+      if (!content) {
+        throw new Error('[OpenRouter] Invalid response payload: missing choices[0].message.content');
+      }
+
+      return content;
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        throw new Error(`[OpenRouter] Request timed out after ${timeoutMs}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
     }
-
-    const data = await response.json();
-    const content = data?.choices?.[0]?.message?.content;
-    if (!content) {
-      throw new Error('[OpenRouter] Invalid response payload: missing choices[0].message.content');
-    }
-
-    return content;
   }
 
   private isReasoningModel(model: string): boolean {

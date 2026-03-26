@@ -6,23 +6,27 @@ import { HyperbolicProvider } from './hyperbolic-provider';
 import { XAIProvider } from './xai-provider';
 import { OpenRouterProvider } from './openrouter-provider';
 import { resolveProviderConfig } from './provider-config';
+import { getOpenRouterModelPrefix } from '../../config/openrouter-models';
 
 export class LLMFactory {
-  static async getProvider(provider: string, classOverride?: string): Promise<LLMProvider> {
-    const providerKey = classOverride || provider;
-    const resolution = resolveProviderConfig(providerKey);
+  static async getProvider(provider: string): Promise<LLMProvider> {
+    const resolution = resolveProviderConfig(provider);
 
     let llmProvider: LLMProvider;
 
     if (resolution.backend === 'openrouter' && resolution.providerClass !== 'ollama') {
       const mappedModel = resolution.modelOverride || 'openai/gpt-4o';
-      llmProvider = new OpenRouterProvider([
-        {
-          name: mappedModel,
-          supportsImages: true,
-          supportsAttachments: true,
-        },
-      ]);
+      const prefix = getOpenRouterModelPrefix(resolution.providerClass) || '';
+      llmProvider = new OpenRouterProvider(
+        [
+          {
+            name: mappedModel,
+            supportsImages: true,
+            supportsAttachments: true,
+          },
+        ],
+        prefix,
+      );
       console.log(`[LLMFactory] Class=${provider} → backend=openrouter model=${mappedModel}`);
     } else {
       switch (provider) {
