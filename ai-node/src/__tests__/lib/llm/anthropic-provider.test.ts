@@ -52,6 +52,8 @@ describe('AnthropicProvider', () => {
     expect(ChatAnthropic).toHaveBeenCalledWith({
       anthropicApiKey: 'test-anthropic-api-key',
       modelName: 'claude-2.1',
+      temperature: 0.7,
+      topP: undefined,
     });
     expect(mockInvoke).toHaveBeenCalledWith('Test prompt');
   });
@@ -72,6 +74,8 @@ describe('AnthropicProvider', () => {
     expect(ChatAnthropic).toHaveBeenCalledWith({
       anthropicApiKey: 'test-anthropic-api-key',
       modelName: 'claude-3-sonnet-20240229',
+      temperature: 0.7,
+      topP: undefined,
     });
     expect(mockInvoke).toHaveBeenCalledWith([{
       role: "user",
@@ -122,6 +126,8 @@ describe('AnthropicProvider', () => {
     expect(ChatAnthropic).toHaveBeenCalledWith({
       anthropicApiKey: 'test-anthropic-api-key',
       modelName: 'claude-3-5-sonnet-20241022',
+      temperature: 0.7,
+      topP: undefined,
     });
     expect(mockInvoke).toHaveBeenCalledWith([{
       role: "user",

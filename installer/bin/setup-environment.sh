@@ -407,45 +407,61 @@ configure_api_keys() {
         source "$INSTALLER_DIR/.env"
     fi
     
-    # OpenAI API Key
-    if [ -z "$OPENAI_API_KEY" ]; then
-        read -p "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
+    # Default AI gateway key (OpenRouter)
+    if [ -z "$OPENROUTER_API_KEY" ]; then
+        read -p "Enter your OpenRouter API Key (recommended default): " OPENROUTER_API_KEY
     else
-        read -p "Enter your OpenAI API Key (leave blank to use existing key): " new_key
+        read -p "Enter your OpenRouter API Key (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
-            OPENAI_API_KEY="$new_key"
+            OPENROUTER_API_KEY="$new_key"
         fi
     fi
-    
-    # Anthropic API Key
-    if [ -z "$ANTHROPIC_API_KEY" ]; then
-        read -p "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
-    else
-        read -p "Enter your Anthropic API Key (leave blank to use existing key): " new_key
-        if [ -n "$new_key" ]; then
-            ANTHROPIC_API_KEY="$new_key"
+
+    echo ""
+    echo -e "${BLUE}Advanced / Native Provider Overrides (optional)${NC}"
+    echo -e "${YELLOW}Native keys are only used when AI_GATEWAY=native or per-class overrides are set.${NC}"
+
+    if ask_yes_no "Configure native provider API keys now?"; then
+        # OpenAI API Key
+        if [ -z "$OPENAI_API_KEY" ]; then
+            read -p "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
+        else
+            read -p "Enter your OpenAI API Key (leave blank to use existing key): " new_key
+            if [ -n "$new_key" ]; then
+                OPENAI_API_KEY="$new_key"
+            fi
         fi
-    fi
-    
-    # Hyperbolic API Key
-    if [ -z "$HYPERBOLIC_API_KEY" ]; then
-        read -p "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
-    else
-        read -p "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
-        if [ -n "$new_key" ]; then
-            HYPERBOLIC_API_KEY="$new_key"
+
+        # Anthropic API Key
+        if [ -z "$ANTHROPIC_API_KEY" ]; then
+            read -p "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
+        else
+            read -p "Enter your Anthropic API Key (leave blank to use existing key): " new_key
+            if [ -n "$new_key" ]; then
+                ANTHROPIC_API_KEY="$new_key"
+            fi
         fi
-    fi
-    
-    # xAI API Key (for Grok models)
-    if [ -z "$XAI_API_KEY" ]; then
-        echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
-        echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
-        read -p "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
-    else
-        read -p "Enter your xAI API Key (leave blank to use existing key): " new_key
-        if [ -n "$new_key" ]; then
-            XAI_API_KEY="$new_key"
+
+        # Hyperbolic API Key
+        if [ -z "$HYPERBOLIC_API_KEY" ]; then
+            read -p "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
+        else
+            read -p "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
+            if [ -n "$new_key" ]; then
+                HYPERBOLIC_API_KEY="$new_key"
+            fi
+        fi
+
+        # xAI API Key (for Grok models)
+        if [ -z "$XAI_API_KEY" ]; then
+            echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
+            echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
+            read -p "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
+        else
+            read -p "Enter your xAI API Key (leave blank to use existing key): " new_key
+            if [ -n "$new_key" ]; then
+                XAI_API_KEY="$new_key"
+            fi
         fi
     fi
     
@@ -625,6 +641,7 @@ configure_api_keys() {
     cat > "$CONFIG_FILE" << EOL
 # Note: GitHub Token is temporarily required while repositories are private
 # GITHUB_TOKEN="$GITHUB_TOKEN" # Removed
+OPENROUTER_API_KEY="$OPENROUTER_API_KEY"
 OPENAI_API_KEY="$OPENAI_API_KEY"
 ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY"
 HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"

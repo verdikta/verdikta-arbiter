@@ -319,6 +319,39 @@ The text extraction system can be configured via environment variables or progra
 - Failed/unsupported attachments are skipped with console warnings
 - Image attachments bypass text extraction and are sent directly
 
+## AI Gateway (OpenRouter default)
+
+The AI node now routes provider classes through an AI gateway abstraction.
+
+Default behavior:
+- `OpenAI`, `Anthropic`, `xAI`, and `Hyperbolic` classes use **OpenRouter** by default.
+- `Ollama` remains local-only/native.
+
+Required for default path:
+
+```env
+OPENROUTER_API_KEY=your_openrouter_api_key
+```
+
+Override controls:
+
+```env
+# Global
+AI_GATEWAY=openrouter   # default
+# AI_GATEWAY=native
+
+# Per-class
+# OPENAI_CLASS_PROVIDER=native
+# ANTHROPIC_CLASS_PROVIDER=native
+# XAI_CLASS_PROVIDER=native
+# HYPERBOLIC_CLASS_PROVIDER=native
+```
+
+Important:
+- Native keys being present in env do **not** auto-enable native mode.
+- Native mode is used only with explicit override (`AI_GATEWAY=native` or per-class override),
+  except fallback behavior when `OPENROUTER_API_KEY` is missing and a class has a native key.
+
 ## Additional Environment Variables
 
 For the rank-and-justify feature, you may configure an additional environment variable:
