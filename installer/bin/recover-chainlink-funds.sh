@@ -631,7 +631,10 @@ try:
     # Send transaction (web3.py v6+ uses raw_transaction; v5 uses rawTransaction)
     raw_tx = getattr(signed_txn, 'raw_transaction', None) or getattr(signed_txn, 'rawTransaction', None)
     tx_hash = w3.eth.send_raw_transaction(raw_tx)
-    print(tx_hash.hex())
+    tx_hex = tx_hash.hex()
+    if not tx_hex.startswith('0x'):
+        tx_hex = '0x' + tx_hex
+    print(tx_hex)
     
 except ImportError as e:
     print('ERROR: Missing required packages. Please install: pip3 install eth-account web3')
@@ -715,7 +718,10 @@ try:
     # Send transaction (web3.py v6+ uses raw_transaction; v5 uses rawTransaction)
     raw_tx = getattr(signed_txn, 'raw_transaction', None) or getattr(signed_txn, 'rawTransaction', None)
     tx_hash = w3.eth.send_raw_transaction(raw_tx)
-    print(tx_hash.hex())
+    tx_hex = tx_hash.hex()
+    if not tx_hex.startswith('0x'):
+        tx_hex = '0x' + tx_hex
+    print(tx_hex)
     
 except ImportError as e:
     print('ERROR: Missing required packages. Please install: pip3 install eth-account web3')
@@ -740,6 +746,11 @@ wait_for_transaction() {
     local max_wait_time=300  # 5 minutes
     local wait_interval=10   # 10 seconds
     local elapsed_time=0
+    
+    # eth_getTransactionReceipt requires 0x-prefixed hash
+    if [[ ! "$tx_hash" =~ ^0x ]]; then
+        tx_hash="0x$tx_hash"
+    fi
     
     echo -e "${BLUE}Waiting for transaction confirmation: $tx_hash${NC}"
     

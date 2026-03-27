@@ -601,6 +601,11 @@ wait_for_transaction() {
     local wait_interval=10   # 10 seconds
     local elapsed_time=0
     
+    # eth_getTransactionReceipt requires 0x-prefixed hash
+    if [[ ! "$tx_hash" =~ ^0x ]]; then
+        tx_hash="0x$tx_hash"
+    fi
+    
     echo -e "${BLUE}Waiting for transaction confirmation: $tx_hash${NC}"
     
     while [ $elapsed_time -lt $max_wait_time ]; do
