@@ -125,6 +125,58 @@ check_and_update_ollama() {
     fi
 }
 
+# Function to ensure zstd is installed (required by Ollama's installer for extraction)
+ensure_zstd_installed() {
+    if command_exists zstd; then
+        return 0
+    fi
+
+    echo -e "${BLUE}Installing zstd (required by Ollama installer)...${NC}"
+
+    local os_id=""
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        os_id="$ID"
+    fi
+
+    case "$os_id" in
+        ubuntu|debian)
+            sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+            ;;
+        centos|rhel|fedora)
+            if command_exists dnf; then
+                sudo dnf install -y zstd
+            elif command_exists yum; then
+                sudo yum install -y zstd
+            fi
+            ;;
+        arch|manjaro)
+            sudo pacman -S --noconfirm zstd
+            ;;
+        *)
+            # Best-effort: try apt-get, then dnf, then yum
+            if command_exists apt-get; then
+                sudo apt-get update -qq && sudo apt-get install -y -qq zstd
+            elif command_exists dnf; then
+                sudo dnf install -y zstd
+            elif command_exists yum; then
+                sudo yum install -y zstd
+            fi
+            ;;
+    esac
+
+    if ! command_exists zstd; then
+        echo -e "${RED}Failed to install zstd automatically. Please install it manually:${NC}"
+        echo -e "${RED}  Debian/Ubuntu: sudo apt-get install zstd${NC}"
+        echo -e "${RED}  RHEL/CentOS/Fedora: sudo dnf install zstd${NC}"
+        echo -e "${RED}  Arch: sudo pacman -S zstd${NC}"
+        return 1
+    fi
+
+    echo -e "${GREEN}zstd installed successfully.${NC}"
+    return 0
+}
+
 # Function to update Ollama to latest version
 update_ollama_to_latest() {
     local target_version="$1"
@@ -151,6 +203,12 @@ update_ollama_to_latest() {
         esac
     fi
     
+    # Ensure zstd is available (required by Ollama's installer)
+    if ! ensure_zstd_installed; then
+        echo -e "${RED}Cannot update Ollama without zstd. Please install zstd and retry.${NC}"
+        return 1
+    fi
+
     # Download and install latest version
     case "$os_id" in
         ubuntu|debian|linux|"")
@@ -203,6 +261,12 @@ install_ollama_fresh() {
         esac
     fi
     
+    # Ensure zstd is available (required by Ollama's installer)
+    if ! ensure_zstd_installed; then
+        echo -e "${RED}Cannot install Ollama without zstd. Please install zstd and retry.${NC}"
+        return 1
+    fi
+
     case "$os_id" in
         ubuntu|debian|linux|"")
             echo -e "${BLUE}Installing Ollama on Linux...${NC}"

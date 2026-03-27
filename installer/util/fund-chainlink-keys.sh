@@ -148,31 +148,50 @@ if [ -z "$PRIVATE_KEY" ]; then
     exit 1
 fi
 
-if [ -z "$INFURA_API_KEY" ]; then
-    echo -e "${RED}Error: INFURA_API_KEY not found in environment. Please run the installer first.${NC}"
-    exit 1
-fi
-
 if [ -z "$DEPLOYMENT_NETWORK" ]; then
     echo -e "${RED}Error: DEPLOYMENT_NETWORK not found in environment. Please run the installer first.${NC}"
     exit 1
 fi
 
+# Resolve RPC URL: prefer user-supplied RPC URLs, fall back to Infura-constructed URL
+resolve_rpc_url() {
+    local custom_url="$1"
+    local custom_url_list="$2"
+    local infura_url="$3"
+
+    if [ -n "$custom_url" ]; then
+        echo "$custom_url"
+    elif [ -n "$custom_url_list" ]; then
+        echo "$custom_url_list" | cut -d';' -f1
+    elif [ -n "$infura_url" ]; then
+        echo "$infura_url"
+    else
+        echo ""
+    fi
+}
+
 # Set network-specific configuration
 if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
     CHAIN_ID="8453"
     NETWORK_NAME="Base Mainnet"
-    RPC_URL="https://base-mainnet.infura.io/v3/$INFURA_API_KEY"
+    RPC_URL="$(resolve_rpc_url "$BASE_MAINNET_RPC_URL" "$BASE_MAINNET_RPC_HTTP_URLS" \
+        "${INFURA_API_KEY:+https://base-mainnet.infura.io/v3/$INFURA_API_KEY}")"
     DEFAULT_FUNDING_AMOUNT="$DEFAULT_FUNDING_AMOUNT_MAINNET"
     CURRENCY_NAME="Base ETH"
     NETWORK_TYPE="mainnet"
 else
     CHAIN_ID="84532"
     NETWORK_NAME="Base Sepolia"
-    RPC_URL="https://base-sepolia.infura.io/v3/$INFURA_API_KEY"
+    RPC_URL="$(resolve_rpc_url "$BASE_SEPOLIA_RPC_URL" "$BASE_SEPOLIA_RPC_HTTP_URLS" \
+        "${INFURA_API_KEY:+https://base-sepolia.infura.io/v3/$INFURA_API_KEY}")"
     DEFAULT_FUNDING_AMOUNT="$DEFAULT_FUNDING_AMOUNT_TESTNET"
     CURRENCY_NAME="Base Sepolia ETH"
     NETWORK_TYPE="testnet"
+fi
+
+if [ -z "$RPC_URL" ]; then
+    echo -e "${RED}Error: No RPC URL available. Please configure RPC endpoints or an Infura API key.${NC}"
+    exit 1
 fi
 
 # Function to check if a command exists

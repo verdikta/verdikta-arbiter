@@ -74,39 +74,46 @@ fi
 
 if ask_yes_no "Apply optimized Chainlink configuration?"; then
     # Set network-specific configuration values
+    # Load API keys and env for RPC URL resolution
+    if [ -f "$INSTALLER_DIR/.api_keys" ]; then
+        source "$INSTALLER_DIR/.api_keys"
+    fi
+    if [ -f "$INSTALLER_DIR/.env" ]; then
+        source "$INSTALLER_DIR/.env"
+    fi
+
+    # Resolve RPC URLs: prefer user-supplied URLs, fall back to Infura
+    resolve_first_url() {
+        local url_list="$1"
+        if [ -n "$url_list" ]; then
+            echo "$url_list" | cut -d';' -f1
+        else
+            echo ""
+        fi
+    }
+
     if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
         CHAIN_ID="8453"
         TIP_CAP_DEFAULT="1 gwei"
         FEE_CAP_DEFAULT="10 gwei"
         NETWORK_NAME_CONFIG="Base-Mainnet"
-        
-        # Load API keys for mainnet
-        if [ -f "$INSTALLER_DIR/.api_keys" ]; then
-            source "$INSTALLER_DIR/.api_keys"
-            WS_URL="wss://base-mainnet.infura.io/ws/v3/$INFURA_API_KEY"
-            HTTP_URL="https://base-mainnet.infura.io/v3/$INFURA_API_KEY"
-        else
-            echo -e "${YELLOW}Warning: API keys not found${NC}"
-            WS_URL="wss://base-mainnet.infura.io/ws/v3/YOUR_API_KEY"
-            HTTP_URL="https://base-mainnet.infura.io/v3/YOUR_API_KEY"
-        fi
+        HTTP_URL="$(resolve_first_url "$BASE_MAINNET_RPC_HTTP_URLS")"
+        WS_URL="$(resolve_first_url "$BASE_MAINNET_RPC_WS_URLS")"
+        [ -z "$HTTP_URL" ] && [ -n "$INFURA_API_KEY" ] && HTTP_URL="https://base-mainnet.infura.io/v3/$INFURA_API_KEY"
+        [ -z "$WS_URL" ] && [ -n "$INFURA_API_KEY" ] && WS_URL="wss://base-mainnet.infura.io/ws/v3/$INFURA_API_KEY"
     else
-        # Default to Base Sepolia
         CHAIN_ID="84532"
         TIP_CAP_DEFAULT="2 gwei"
         FEE_CAP_DEFAULT="30 gwei"
         NETWORK_NAME_CONFIG="Base-Sepolia"
-        
-        # Load API keys for testnet
-        if [ -f "$INSTALLER_DIR/.api_keys" ]; then
-            source "$INSTALLER_DIR/.api_keys"
-            WS_URL="wss://base-sepolia.infura.io/ws/v3/$INFURA_API_KEY"
-            HTTP_URL="https://base-sepolia.infura.io/v3/$INFURA_API_KEY"
-        else
-            echo -e "${YELLOW}Warning: API keys not found${NC}"
-            WS_URL="wss://base-sepolia.infura.io/ws/v3/YOUR_API_KEY"
-            HTTP_URL="https://base-sepolia.infura.io/v3/YOUR_API_KEY"
-        fi
+        HTTP_URL="$(resolve_first_url "$BASE_SEPOLIA_RPC_HTTP_URLS")"
+        WS_URL="$(resolve_first_url "$BASE_SEPOLIA_RPC_WS_URLS")"
+        [ -z "$HTTP_URL" ] && [ -n "$INFURA_API_KEY" ] && HTTP_URL="https://base-sepolia.infura.io/v3/$INFURA_API_KEY"
+        [ -z "$WS_URL" ] && [ -n "$INFURA_API_KEY" ] && WS_URL="wss://base-sepolia.infura.io/ws/v3/$INFURA_API_KEY"
+    fi
+
+    if [ -z "$HTTP_URL" ] || [ -z "$WS_URL" ]; then
+        echo -e "${YELLOW}Warning: Could not resolve RPC URLs. Check your .env configuration.${NC}"
     fi
     
     # Create optimized config.toml

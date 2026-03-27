@@ -495,17 +495,11 @@ configure_api_keys() {
             OPENROUTER_API_KEY="$new_key"
         fi
     fi
-    
-    # Infura API Key (optional fallback)
-    if [ -z "$INFURA_API_KEY" ]; then
-        read_secret "Enter your Infura API Key (optional, leave blank to skip): " INFURA_API_KEY
-    else
-        read_secret "Enter your Infura API Key (leave blank to use existing key): " new_key
-        if [ -n "$new_key" ]; then
-            INFURA_API_KEY="$new_key"
-        fi
-    fi
-    
+
+    # --- Infrastructure Keys ---
+    echo ""
+    echo -e "${BLUE}Infrastructure Keys${NC}"
+
     # Pinata API Key
     if [ -z "$PINATA_API_KEY" ]; then
         read_secret "Enter your Pinata JWT (leave blank to skip): " PINATA_API_KEY
@@ -574,11 +568,13 @@ configure_api_keys() {
 
     # RPC Endpoint Configuration
     echo -e "${BLUE}RPC Endpoint Configuration${NC}"
+    echo -e "${YELLOW}RPC endpoints are required for Chainlink and contract deployment.${NC}"
     echo -e "${YELLOW}For best reliability, configure multiple RPC endpoints.${NC}"
-    echo -e "${YELLOW}This is especially recommended for mainnet deployments.${NC}"
-    echo -e "${YELLOW}Provide semicolon-separated HTTP and WS URLs (no spaces).${NC}"
-    echo -e "${YELLOW}Example: https://...;https://...${NC}"
-    echo -e "${YELLOW}RPC URLs are required for Chainlink and contract deployment.${NC}"
+    echo ""
+    echo -e "${BLUE}Choose how to configure your RPC endpoints:${NC}"
+    echo -e "  1) Enter an Infura API Key (endpoints will be generated automatically)"
+    echo -e "  2) Enter custom RPC URLs (Alchemy, QuickNode, your own Infura URLs, etc.)"
+    echo ""
 
     normalize_rpc_list() {
         local raw="$1"
@@ -587,42 +583,123 @@ configure_api_keys() {
         echo "$raw"
     }
 
-    prompt_rpc_urls() {
-        local network_label="$1"
-        local http_var_name="$2"
-        local ws_var_name="$3"
-        local http_input=""
-        local ws_input=""
-
-        echo -e "${BLUE}${network_label} RPC endpoints:${NC}"
-        read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
-        read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
-
-        http_input="$(normalize_rpc_list "$http_input")"
-        ws_input="$(normalize_rpc_list "$ws_input")"
-
-        if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
-            echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
-            # Re-prompt once
-            read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
-            read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
-            http_input="$(normalize_rpc_list "$http_input")"
-            ws_input="$(normalize_rpc_list "$ws_input")"
-            if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
-                echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
-                exit 1
+    # Try to extract an Infura API key from a list of URLs (for backward compat with scripts that use it)
+    extract_infura_key_from_urls() {
+        local urls="$1"
+        local key=""
+        IFS=';' read -r -a url_array <<< "$urls"
+        for url in "${url_array[@]}"; do
+            if echo "$url" | grep -q "infura.io/v3/"; then
+                key="$(echo "$url" | sed 's|.*infura.io/v3/||' | sed 's|[/?].*||')"
+                if [ -n "$key" ]; then
+                    echo "$key"
+                    return 0
+                fi
             fi
-        fi
-
-        eval "$http_var_name=\"$http_input\""
-        eval "$ws_var_name=\"$ws_input\""
+            if echo "$url" | grep -q "infura.io/ws/v3/"; then
+                key="$(echo "$url" | sed 's|.*infura.io/ws/v3/||' | sed 's|[/?].*||')"
+                if [ -n "$key" ]; then
+                    echo "$key"
+                    return 0
+                fi
+            fi
+        done
+        echo ""
     }
 
-    if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ]; then
-        prompt_rpc_urls "Base Sepolia" "BASE_SEPOLIA_RPC_HTTP_URLS" "BASE_SEPOLIA_RPC_WS_URLS"
-    else
-        prompt_rpc_urls "Base Mainnet" "BASE_MAINNET_RPC_HTTP_URLS" "BASE_MAINNET_RPC_WS_URLS"
-    fi
+    while true; do
+        read -p "Select option (1 or 2) [2]: " rpc_method_choice
+        if [ -z "$rpc_method_choice" ]; then
+            rpc_method_choice=2
+        fi
+
+        case "$rpc_method_choice" in
+            1)
+                # Infura key path: auto-generate endpoints
+                echo ""
+                echo -e "${BLUE}Infura will provide HTTP and WebSocket RPC endpoints for your selected network.${NC}"
+                echo -e "${YELLOW}Get your key at: https://app.infura.io${NC}"
+                if [ -z "$INFURA_API_KEY" ]; then
+                    read_secret "Enter your Infura API Key: " INFURA_API_KEY
+                else
+                    read_secret "Enter your Infura API Key (leave blank to use existing key): " new_key
+                    if [ -n "$new_key" ]; then
+                        INFURA_API_KEY="$new_key"
+                    fi
+                fi
+
+                if [ -z "$INFURA_API_KEY" ]; then
+                    echo -e "${RED}Error: Infura API Key is required for this option.${NC}"
+                    continue
+                fi
+
+                if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ]; then
+                    BASE_SEPOLIA_RPC_HTTP_URLS="https://base-sepolia.infura.io/v3/$INFURA_API_KEY"
+                    BASE_SEPOLIA_RPC_WS_URLS="wss://base-sepolia.infura.io/ws/v3/$INFURA_API_KEY"
+                    echo -e "${GREEN}Generated Base Sepolia RPC endpoints from Infura key.${NC}"
+                else
+                    BASE_MAINNET_RPC_HTTP_URLS="https://base-mainnet.infura.io/v3/$INFURA_API_KEY"
+                    BASE_MAINNET_RPC_WS_URLS="wss://base-mainnet.infura.io/ws/v3/$INFURA_API_KEY"
+                    echo -e "${GREEN}Generated Base Mainnet RPC endpoints from Infura key.${NC}"
+                fi
+                break
+                ;;
+            2)
+                # Custom URLs path
+                echo ""
+                echo -e "${YELLOW}Provide semicolon-separated HTTP and WS URLs (no spaces).${NC}"
+                echo -e "${YELLOW}Example: https://base-sepolia.g.alchemy.com/v2/KEY;https://other-rpc.example.com${NC}"
+                echo ""
+
+                if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ]; then
+                    NETWORK_LABEL="Base Sepolia"
+                else
+                    NETWORK_LABEL="Base Mainnet"
+                fi
+
+                echo -e "${BLUE}${NETWORK_LABEL} RPC endpoints:${NC}"
+                read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
+                read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+
+                http_input="$(normalize_rpc_list "$http_input")"
+                ws_input="$(normalize_rpc_list "$ws_input")"
+
+                if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
+                    echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
+                    read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
+                    read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+                    http_input="$(normalize_rpc_list "$http_input")"
+                    ws_input="$(normalize_rpc_list "$ws_input")"
+                    if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
+                        echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
+                        exit 1
+                    fi
+                fi
+
+                if [ "$DEPLOYMENT_NETWORK" = "base_sepolia" ]; then
+                    BASE_SEPOLIA_RPC_HTTP_URLS="$http_input"
+                    BASE_SEPOLIA_RPC_WS_URLS="$ws_input"
+                else
+                    BASE_MAINNET_RPC_HTTP_URLS="$http_input"
+                    BASE_MAINNET_RPC_WS_URLS="$ws_input"
+                fi
+
+                # Auto-extract Infura key from URLs if present (used by some utility scripts)
+                extracted_key="$(extract_infura_key_from_urls "$http_input")"
+                if [ -z "$extracted_key" ]; then
+                    extracted_key="$(extract_infura_key_from_urls "$ws_input")"
+                fi
+                if [ -n "$extracted_key" ]; then
+                    INFURA_API_KEY="$extracted_key"
+                    echo -e "${GREEN}Detected Infura API key from your URLs (saved for utility scripts).${NC}"
+                fi
+                break
+                ;;
+            *)
+                echo -e "${RED}Invalid choice. Please enter 1 or 2.${NC}"
+                ;;
+        esac
+    done
     
     # Display network-specific requirements
     if [ "$NETWORK_TYPE" = "testnet" ]; then
@@ -801,15 +878,31 @@ EOL
     echo -e "${YELLOW}This model combines individual model responses into a coherent explanation.${NC}"
     echo ""
     
+    # Determine whether OpenRouter covers commercial models
+    HAS_OPENROUTER="false"
+    if [ -n "$OPENROUTER_API_KEY" ]; then
+        HAS_OPENROUTER="true"
+    fi
+
     # Display available justification models with updated options
     echo -e "${BLUE}Available Justification Models:${NC}"
-    echo -e "  1) gpt-5-nano-2025-08-07 (OpenAI) - Recommended default (requires OpenAI API key)"
-    echo -e "  2) gpt-5-mini-2025-08-07 (OpenAI) - Balanced performance (requires OpenAI API key)"
-    echo -e "  3) gpt-5-2025-08-07 (OpenAI) - Highest quality (requires OpenAI API key)"
-    echo -e "  4) claude-sonnet-4-20250514 (Anthropic) - Excellent reasoning (requires Anthropic API key)"
-    echo -e "  5) claude-3-7-sonnet-20250219 (Anthropic) - Strong performance (requires Anthropic API key)"
-    echo -e "  6) moonshotai/Kimi-K2-Instruct (Hyperbolic) - Fast, cost-effective (requires Hyperbolic API key)"
-    echo -e "  7) grok-4-1-fast-non-reasoning (xAI) - Advanced reasoning (requires xAI API key)"
+    if [ "$HAS_OPENROUTER" = "true" ]; then
+        echo -e "  1) gpt-5-nano-2025-08-07 (OpenAI) - Recommended default"
+        echo -e "  2) gpt-5-mini-2025-08-07 (OpenAI) - Balanced performance"
+        echo -e "  3) gpt-5-2025-08-07 (OpenAI) - Highest quality"
+        echo -e "  4) claude-sonnet-4-20250514 (Anthropic) - Excellent reasoning"
+        echo -e "  5) claude-3-7-sonnet-20250219 (Anthropic) - Strong performance"
+        echo -e "  6) moonshotai/Kimi-K2-Instruct (Hyperbolic) - Fast, cost-effective"
+        echo -e "  7) grok-4-1-fast-non-reasoning (xAI) - Advanced reasoning"
+    else
+        echo -e "  1) gpt-5-nano-2025-08-07 (OpenAI) - Recommended default (requires OpenAI API key)"
+        echo -e "  2) gpt-5-mini-2025-08-07 (OpenAI) - Balanced performance (requires OpenAI API key)"
+        echo -e "  3) gpt-5-2025-08-07 (OpenAI) - Highest quality (requires OpenAI API key)"
+        echo -e "  4) claude-sonnet-4-20250514 (Anthropic) - Excellent reasoning (requires Anthropic API key)"
+        echo -e "  5) claude-3-7-sonnet-20250219 (Anthropic) - Strong performance (requires Anthropic API key)"
+        echo -e "  6) moonshotai/Kimi-K2-Instruct (Hyperbolic) - Fast, cost-effective (requires Hyperbolic API key)"
+        echo -e "  7) grok-4-1-fast-non-reasoning (xAI) - Advanced reasoning (requires xAI API key)"
+    fi
     echo -e "  8) gemma3n:e4b (Ollama) - Recommended for open source (no API key required)"
     echo -e "  9) deepseek-r1:8b (Ollama) - Good reasoning, free (no API key required)"
     echo -e "  10) llama3.1:8b (Ollama) - Reliable, free (no API key required)"
@@ -817,13 +910,13 @@ EOL
     
     # Provide intelligent recommendations based on API keys
     echo -e "${BLUE}💡 Recommendations based on your configuration:${NC}"
-    if [ -n "$OPENAI_API_KEY" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${GREEN}   • You have OpenAI and Anthropic keys - Option 1 (gpt-5-nano) recommended${NC}"
+    if [ "$HAS_OPENROUTER" = "true" ]; then
+        echo -e "${GREEN}   • OpenRouter key detected - all commercial models are available via OpenRouter${NC}"
         DEFAULT_CHOICE=1
-    elif [ -n "$OPENAI_API_KEY" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${YELLOW}   • You have OpenAI key only - Option 1 (gpt-5-nano) recommended${NC}"
+    elif [ -n "$OPENAI_API_KEY" ]; then
+        echo -e "${GREEN}   • You have an OpenAI key - Option 1 (gpt-5-nano) recommended${NC}"
         DEFAULT_CHOICE=1
-    elif [ -z "$OPENAI_API_KEY" ] && [ -n "$ANTHROPIC_API_KEY" ]; then
+    elif [ -n "$ANTHROPIC_API_KEY" ]; then
         echo -e "${YELLOW}   • You have Anthropic key only - Option 4 (claude-sonnet-4) recommended${NC}"
         DEFAULT_CHOICE=4
     elif [ -n "$HYPERBOLIC_API_KEY" ]; then
@@ -833,7 +926,7 @@ EOL
         echo -e "${YELLOW}   • You have xAI key - Option 7 (grok-4-1-fast-non-reasoning) recommended for advanced reasoning${NC}"
         DEFAULT_CHOICE=7
     else
-        echo -e "${CYAN}   • No API keys provided - Option 8 (gemma3n:e4b) recommended for open source${NC}"
+        echo -e "${YELLOW}   • No API keys provided - Option 8 (gemma3n:e4b) recommended for open source${NC}"
         DEFAULT_CHOICE=8
     fi
     echo ""
@@ -918,19 +1011,21 @@ EOL
         esac
     done
     
-    # Validate that the user has the required API key for their selection
-    if [ "$JUSTIFICATION_MODEL_PROVIDER" = "OpenAI" ] && [ -z "$OPENAI_API_KEY" ]; then
-        echo -e "${YELLOW}Warning: You selected an OpenAI model but no OpenAI API key was provided.${NC}"
-        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
-    elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Anthropic" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
-        echo -e "${YELLOW}Warning: You selected an Anthropic model but no Anthropic API key was provided.${NC}"
-        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
-    elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Hyperbolic" ] && [ -z "$HYPERBOLIC_API_KEY" ]; then
-        echo -e "${YELLOW}Warning: You selected a Hyperbolic model but no Hyperbolic API key was provided.${NC}"
-        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
-    elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "xAI" ] && [ -z "$XAI_API_KEY" ]; then
-        echo -e "${YELLOW}Warning: You selected an xAI model but no xAI API key was provided.${NC}"
-        echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+    # Validate that the user has the required API key for their selection (OpenRouter covers all commercial providers)
+    if [ "$HAS_OPENROUTER" = "false" ]; then
+        if [ "$JUSTIFICATION_MODEL_PROVIDER" = "OpenAI" ] && [ -z "$OPENAI_API_KEY" ]; then
+            echo -e "${YELLOW}Warning: You selected an OpenAI model but no OpenAI or OpenRouter API key was provided.${NC}"
+            echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+        elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Anthropic" ] && [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo -e "${YELLOW}Warning: You selected an Anthropic model but no Anthropic or OpenRouter API key was provided.${NC}"
+            echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+        elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "Hyperbolic" ] && [ -z "$HYPERBOLIC_API_KEY" ]; then
+            echo -e "${YELLOW}Warning: You selected a Hyperbolic model but no Hyperbolic or OpenRouter API key was provided.${NC}"
+            echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+        elif [ "$JUSTIFICATION_MODEL_PROVIDER" = "xAI" ] && [ -z "$XAI_API_KEY" ]; then
+            echo -e "${YELLOW}Warning: You selected an xAI model but no xAI or OpenRouter API key was provided.${NC}"
+            echo -e "${YELLOW}You can set this later or the system will fall back to available models.${NC}"
+        fi
     fi
     
     # Save justification model configuration
