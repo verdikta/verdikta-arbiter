@@ -177,8 +177,7 @@ else
     if [ -f "$ADAPTER_DIR/.env.example" ]; then
         cp "$ADAPTER_DIR/.env.example" "$ADAPTER_DIR/.env"
     else
-        echo -e "${RED}Error: .env.example not found in External Adapter repository.${NC}"
-        echo -e "${BLUE}Creating .env file from scratch...${NC}"
+        echo -e "${BLUE}Creating .env file for External Adapter...${NC}"
         touch "$ADAPTER_DIR/.env"
     fi
 fi
