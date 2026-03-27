@@ -232,19 +232,13 @@ try {
     
     console.log(`✅ Found ${availableClasses.length} active ClassID model pools`);
     
-    // Read current models.ts
+    // Read current models.ts and dynamically discover all providers
     const modelsPath = path.join(__dirname, 'src/config/models.ts');
     const currentContent = fs.readFileSync(modelsPath, 'utf8');
     
-    // Parse existing models
-    const openaiMatch = currentContent.match(/openai:\s*\[([\s\S]*?)\]/);
-    const anthropicMatch = currentContent.match(/anthropic:\s*\[([\s\S]*?)\]/);
-    const ollamaMatch = currentContent.match(/ollama:\s*\[([\s\S]*?)\]/);
-    const hyperbolicMatch = currentContent.match(/hyperbolic:\s*\[([\s\S]*?)\]/);
-    
-    const parseModels = (match) => {
-        if (!match) return [];
-        return match[1]
+    const parseModels = (content) => {
+        if (!content) return [];
+        return content
             .split('\n')
             .map(line => line.trim())
             .filter(line => line.startsWith('{'))
@@ -254,74 +248,74 @@ try {
             })
             .filter(Boolean);
     };
+
+    // Dynamically parse ALL providers from the existing config
+    const existingModels = {};
+    const providerRegex = /(\w+):\s*\[([\s\S]*?)\]/g;
+    let match;
+    while ((match = providerRegex.exec(currentContent)) !== null) {
+        existingModels[match[1]] = new Set(parseModels(match[2]));
+    }
     
-    const existingModels = {
-        openai: new Set(parseModels(openaiMatch)),
-        anthropic: new Set(parseModels(anthropicMatch)),
-        ollama: new Set(parseModels(ollamaMatch)),
-        hyperbolic: new Set(parseModels(hyperbolicMatch))
-    };
+    // Store ClassID metadata for capability detection
+    const modelMetadata = {};
     
-    // Add models from ClassID pools
+    // Add models from ClassID pools (all providers, dynamically)
     availableClasses.forEach(classItem => {
         const cls = classMap.getClass(classItem.id);
         console.log(`📋 Processing ClassID ${cls.id}: ${cls.name}`);
         
         if (cls && cls.models) {
             cls.models.forEach(model => {
-                if (model.provider === 'openai' || model.provider === 'anthropic') {
-                    existingModels[model.provider].add(model.model);
-                    console.log(`   + Added ${model.provider}/${model.model}`);
-                } else if (model.provider === 'ollama') {
-                    existingModels.ollama.add(model.model);
-                    console.log(`   + Added ${model.provider}/${model.model}`);
-                } else if (model.provider === 'hyperbolic') {
-                    existingModels.hyperbolic.add(model.model);
-                    console.log(`   + Added ${model.provider}/${model.model}`);
+                if (!existingModels[model.provider]) {
+                    existingModels[model.provider] = new Set();
                 }
+                existingModels[model.provider].add(model.model);
+                console.log(`   + Added ${model.provider}/${model.model}`);
+                
+                modelMetadata[`${model.provider}:${model.model}`] = {
+                    supported_file_types: model.supported_file_types
+                };
             });
         }
     });
     
-    // Generate model configuration with capability detection
+    // Capability detection using ClassID metadata first, then heuristics
     const modelSupportsImages = (modelName, provider) => {
-        if (provider === 'openai') {
-            return modelName.includes('gpt-4') || 
-                   modelName.includes('gpt-5') || 
-                   modelName.includes('o3') || 
-                   modelName === 'gpt-4o';
-        } else if (provider === 'anthropic') {
-            return modelName.includes('claude-3') || 
-                   modelName.includes('claude-sonnet-4') ||
-                   modelName.includes('claude-4');
-        } else if (provider === 'ollama') {
-            return modelName.includes('llava') || 
-                   modelName.includes('vision') ||
-                   modelName.includes('minicpm');
-        } else if (provider === 'hyperbolic') {
-            // Hyperbolic models typically support images
-            return true;
+        const meta = modelMetadata[`${provider}:${modelName}`];
+        if (meta && Array.isArray(meta.supported_file_types)) {
+            return meta.supported_file_types.some(t => t.startsWith('image/'));
         }
-        return false;
+        // Heuristic fallback
+        if (provider === 'openai') {
+            return modelName.includes('gpt-4') || modelName.includes('gpt-5') ||
+                   modelName.includes('o3') || modelName === 'gpt-4o';
+        } else if (provider === 'anthropic') {
+            return modelName.includes('claude-3') || modelName.includes('claude-sonnet-4') ||
+                   modelName.includes('claude-4') || modelName.includes('claude-haiku-4');
+        } else if (provider === 'ollama') {
+            return modelName.includes('llava') || modelName.includes('vision') ||
+                   modelName.includes('minicpm');
+        }
+        // Modern API-based providers (xai, hyperbolic, etc.) generally support multimodal
+        return provider !== 'ollama';
     };
     
     const modelSupportsAttachments = (modelName, provider) => {
+        const meta = modelMetadata[`${provider}:${modelName}`];
+        if (meta && Array.isArray(meta.supported_file_types)) {
+            return meta.supported_file_types.length > 0;
+        }
+        // Heuristic fallback
         if (provider === 'openai') {
-            return !modelName.includes('3.5-turbo') || 
-                   modelName.includes('gpt-4') || 
-                   modelName.includes('gpt-5') ||
+            return modelName.includes('gpt-4') || modelName.includes('gpt-5') ||
                    modelName.includes('o3');
         } else if (provider === 'anthropic') {
-            return modelName.includes('claude-3') || 
-                   modelName.includes('claude-sonnet-4') ||
-                   modelName.includes('claude-4');
-        } else if (provider === 'ollama') {
-            return true;
-        } else if (provider === 'hyperbolic') {
-            // Hyperbolic models typically support attachments
-            return true;
+            return modelName.includes('claude-3') || modelName.includes('claude-sonnet-4') ||
+                   modelName.includes('claude-4') || modelName.includes('claude-haiku-4');
         }
-        return false;
+        // Ollama, hyperbolic, xai, and other modern providers support attachments
+        return true;
     };
     
     const generateModelEntries = (models, provider) => {
@@ -332,21 +326,16 @@ try {
         }).join('\n');
     };
     
-    const newContent = `export const modelConfig = {
-  openai: [
-${generateModelEntries(existingModels.openai, 'openai')}
-  ],
-  anthropic: [
-${generateModelEntries(existingModels.anthropic, 'anthropic')}
-  ],
-  ollama: [
-${generateModelEntries(existingModels.ollama, 'ollama')}
-  ],
-  hyperbolic: [
-${generateModelEntries(existingModels.hyperbolic, 'hyperbolic')}
-  ],
-};
-`;
+    // Build config dynamically for all discovered providers
+    const providerConfigs = Object.keys(existingModels)
+        .sort()
+        .map(provider => {
+            const entries = generateModelEntries(existingModels[provider], provider);
+            return `  ${provider}: [\n${entries}\n  ],`;
+        })
+        .join('\n');
+    
+    const newContent = `export const modelConfig = {\n${providerConfigs}\n};\n`;
     
     // Backup and write new configuration
     fs.copyFileSync(modelsPath, modelsPath + '.backup');
@@ -356,18 +345,13 @@ ${generateModelEntries(existingModels.hyperbolic, 'hyperbolic')}
     console.log('📋 Configuration updated with models from all active ClassID pools');
     
     // List models by provider
-    const ollamaModels = Array.from(existingModels.ollama);
-    const hyperbolicModels = Array.from(existingModels.hyperbolic);
-    
-    if (ollamaModels.length > 0) {
-        console.log('🐋 Ollama models configured:', ollamaModels.join(', '));
-        console.log('   These will be pulled during Ollama installation if selected.');
-    }
-    
-    if (hyperbolicModels.length > 0) {
-        console.log('🌐 Hyperbolic models configured:', hyperbolicModels.join(', '));
-        console.log('   These require Hyperbolic API key configuration.');
-    }
+    Object.keys(existingModels).sort().forEach(provider => {
+        const models = Array.from(existingModels[provider]);
+        if (models.length > 0) {
+            const icon = provider === 'ollama' ? '🐋' : '🌐';
+            console.log(`${icon} ${provider} models configured: ${models.join(', ')}`);
+        }
+    });
     
 } catch (error) {
     console.error('❌ ClassID integration failed:', error.message);

@@ -278,10 +278,12 @@ class ClassIDIntegrator {
     }
 
     modelSupportsImages(modelName, provider, metadata = null) {
-        // Note: ClassID data doesn't currently include image MIME types explicitly
-        // so we use heuristics for image support detection
+        // Use ClassID metadata if it contains image MIME types
+        if (metadata && Array.isArray(metadata.supported_file_types)) {
+            return metadata.supported_file_types.some(t => t.startsWith('image/'));
+        }
         
-        // Use heuristics based on known model capabilities
+        // Heuristic fallback based on known model capabilities
         if (provider === 'openai') {
             return modelName.includes('gpt-4') || 
                    modelName.includes('gpt-5') || 
@@ -290,60 +292,38 @@ class ClassIDIntegrator {
         } else if (provider === 'anthropic') {
             return modelName.includes('claude-3') || 
                    modelName.includes('claude-sonnet-4') ||
-                   modelName.includes('claude-4');
+                   modelName.includes('claude-4') ||
+                   modelName.includes('claude-haiku-4');
         } else if (provider === 'ollama') {
-            // For Ollama, check for vision-specific model names
             return modelName.includes('llava') || 
                    modelName.includes('vision') ||
                    modelName.includes('minicpm');
-        } else if (provider === 'hyperbolic') {
-            // Hyperbolic API models typically support images
-            return true;
-        } else if (provider === 'xai') {
-            // Grok models support multimodal
-            return true;
         }
         
-        // For unknown providers: Default to TRUE for modern API-based models
-        // This is a safer default as most modern LLM APIs support multimodal input
-        // Models that don't support images will simply ignore image inputs gracefully
-        return true;
+        // Modern API-based providers (xai, hyperbolic, etc.) generally support multimodal
+        return provider !== 'ollama';
     }
 
     modelSupportsAttachments(modelName, provider, metadata = null) {
         // Use ClassID data if available
         if (metadata && metadata.supported_file_types !== null) {
-            // If supported_file_types is an array with items, attachments are supported
             return Array.isArray(metadata.supported_file_types) && 
                    metadata.supported_file_types.length > 0;
         }
         
-        // Fall back to heuristics if ClassID data is null or missing
+        // Heuristic fallback
         if (provider === 'openai') {
-            // OpenAI: All models except legacy 3.5-turbo support attachments
-            return !modelName.includes('3.5-turbo') || 
-                   modelName.includes('gpt-4') || 
+            return modelName.includes('gpt-4') || 
                    modelName.includes('gpt-5') ||
                    modelName.includes('o3');
         } else if (provider === 'anthropic') {
-            // Anthropic: Claude 3+ supports attachments
             return modelName.includes('claude-3') || 
                    modelName.includes('claude-sonnet-4') ||
-                   modelName.includes('claude-4');
-        } else if (provider === 'ollama') {
-            // Ollama: Most models can handle text attachments
-            return true;
-        } else if (provider === 'hyperbolic') {
-            // Hyperbolic API models support attachments
-            return true;
-        } else if (provider === 'xai') {
-            // Grok models support attachments
-            return true;
+                   modelName.includes('claude-4') ||
+                   modelName.includes('claude-haiku-4');
         }
         
-        // For unknown providers: Default to TRUE for modern API-based models
-        // This is a safe default as attachment handling is typically graceful
-        // (models will extract text from attachments as needed)
+        // Ollama, hyperbolic, xai, and other modern providers support attachments
         return true;
     }
 
