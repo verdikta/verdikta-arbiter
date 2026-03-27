@@ -697,6 +697,15 @@ else
     echo -e "${YELLOW}Warning: Key management script not found at $SCRIPT_DIR/key-management.sh${NC}"
 fi
 
+# Copy the RPC endpoint update utility
+if [ -f "$UTIL_DIR/update-rpc-endpoints.sh" ]; then
+    cp "$UTIL_DIR/update-rpc-endpoints.sh" "$INSTALL_DIR/update-rpc-endpoints.sh"
+    chmod +x "$INSTALL_DIR/update-rpc-endpoints.sh"
+    echo -e "${GREEN}RPC endpoint update utility copied to $INSTALL_DIR/update-rpc-endpoints.sh${NC}"
+else
+    echo -e "${YELLOW}Warning: RPC endpoint update utility not found at $UTIL_DIR/update-rpc-endpoints.sh${NC}"
+fi
+
 echo -e "${GREEN}Arbiter management scripts created:${NC}"
 echo -e "  - To start all services: $INSTALL_DIR/start-arbiter.sh"
 echo -e "  - To stop all services:  $INSTALL_DIR/stop-arbiter.sh"
@@ -705,6 +714,7 @@ echo -e "  - To register with dispatcher: $INSTALL_DIR/register-oracle.sh"
 echo -e "  - To unregister from dispatcher: $INSTALL_DIR/unregister-oracle.sh"
 echo -e "  - To fund Chainlink keys: $INSTALL_DIR/fund-chainlink-keys.sh"
 echo -e "  - To recover funds from keys: $INSTALL_DIR/recover-chainlink-funds.sh"
+echo -e "  - To update RPC endpoints: $INSTALL_DIR/update-rpc-endpoints.sh"
 
 # Configure logging level
 echo -e "${YELLOW}Configuring logging level...${NC}"
