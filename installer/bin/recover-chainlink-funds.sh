@@ -628,8 +628,9 @@ try:
     # Sign transaction
     signed_txn = account.sign_transaction(transaction)
     
-    # Send transaction
-    tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+    # Send transaction (web3.py v6+ uses raw_transaction; v5 uses rawTransaction)
+    raw_tx = getattr(signed_txn, 'raw_transaction', None) or getattr(signed_txn, 'rawTransaction', None)
+    tx_hash = w3.eth.send_raw_transaction(raw_tx)
     print(tx_hash.hex())
     
 except ImportError as e:
@@ -711,8 +712,9 @@ try:
     # Sign transaction
     signed_txn = account.sign_transaction(transaction)
     
-    # Send transaction
-    tx_hash = w3.eth.send_raw_transaction(signed_txn.rawTransaction)
+    # Send transaction (web3.py v6+ uses raw_transaction; v5 uses rawTransaction)
+    raw_tx = getattr(signed_txn, 'raw_transaction', None) or getattr(signed_txn, 'rawTransaction', None)
+    tx_hash = w3.eth.send_raw_transaction(raw_tx)
     print(tx_hash.hex())
     
 except ImportError as e:
