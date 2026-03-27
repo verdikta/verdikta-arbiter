@@ -647,7 +647,11 @@ except:
     done
     
     echo -e "${YELLOW}⚠ Transaction confirmation timeout after ${max_wait_time}s${NC}"
-    echo -e "${YELLOW}  Transaction may still be processing. Check: https://basescan.org/tx/$tx_hash${NC}"
+    if [ "$NETWORK_TYPE" = "testnet" ]; then
+        echo -e "${YELLOW}  Transaction may still be processing. Check: https://sepolia.basescan.org/tx/$tx_hash${NC}"
+    else
+        echo -e "${YELLOW}  Transaction may still be processing. Check: https://basescan.org/tx/$tx_hash${NC}"
+    fi
     return 1
 }
 
