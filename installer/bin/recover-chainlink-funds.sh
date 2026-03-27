@@ -8,7 +8,27 @@ set -e  # Exit on any error
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
-KEY_MGMT_SCRIPT="$SCRIPT_DIR/key-management.sh"
+
+# Locate key-management.sh - check multiple locations for portability
+KEY_MGMT_SCRIPT=""
+KEY_MGMT_SEARCH_LOCATIONS=(
+    "$SCRIPT_DIR/key-management.sh"               # Same directory (target install or installer/bin)
+    "$INSTALLER_DIR/bin/key-management.sh"         # Original installer bin directory
+    "$SCRIPT_DIR/installer/bin/key-management.sh"  # Nested installer path from target dir
+)
+for _kms_path in "${KEY_MGMT_SEARCH_LOCATIONS[@]}"; do
+    if [ -f "$_kms_path" ]; then
+        KEY_MGMT_SCRIPT="$_kms_path"
+        break
+    fi
+done
+if [ -z "$KEY_MGMT_SCRIPT" ]; then
+    echo -e "\033[0;31mError: key-management.sh not found in any of these locations:\033[0m"
+    for _kms_path in "${KEY_MGMT_SEARCH_LOCATIONS[@]}"; do
+        echo -e "\033[0;31m  - $_kms_path\033[0m"
+    done
+    exit 1
+fi
 
 # Color definitions
 GREEN='\033[0;32m'
@@ -449,9 +469,12 @@ get_chainlink_private_key() {
     local api_password="$3"
     
     # Use the key management script to export the private key
-    local private_key=$(CL_API_EMAIL="$api_email" CL_API_PASSWORD="$api_password" bash "$KEY_MGMT_SCRIPT" export_chainlink_private_key "$key_address" 2>/dev/null)
+    # Capture exit code separately since 'local' masks the command substitution exit status
+    local private_key
+    private_key=$(CL_API_EMAIL="$api_email" CL_API_PASSWORD="$api_password" bash "$KEY_MGMT_SCRIPT" export_chainlink_private_key "$key_address" 2>/dev/null)
+    local export_exit_code=$?
     
-    if [ $? -ne 0 ] || [[ "$private_key" == ERROR:* ]]; then
+    if [ $export_exit_code -ne 0 ] || [[ "$private_key" == ERROR:* ]]; then
         echo "ERROR: Failed to export key $key_address"
         return 1
     fi
@@ -996,8 +1019,8 @@ for i in "${!KEY_ADDRESSES[@]}"; do
     
     # Get ETH balance
     if [ "$RECOVER_ETH" = "true" ]; then
-        ETH_BALANCE_WEI=$(get_wallet_balance "$KEY_ADDRESS" "$RPC_URL")
-        if [[ "$ETH_BALANCE_WEI" != ERROR:* ]]; then
+        ETH_BALANCE_WEI=$(get_wallet_balance "$KEY_ADDRESS" "$RPC_URL") || true
+        if [[ -n "$ETH_BALANCE_WEI" && "$ETH_BALANCE_WEI" != ERROR:* ]]; then
             ETH_BALANCE_ETH=$(wei_to_eth "$ETH_BALANCE_WEI")
             KEY_ETH_BALANCES[$KEY_ADDRESS]="$ETH_BALANCE_ETH"
             
@@ -1022,8 +1045,8 @@ for i in "${!KEY_ADDRESSES[@]}"; do
     
     # Get LINK balance
     if [ "$RECOVER_LINK" = "true" ]; then
-        LINK_BALANCE_WEI=$(get_link_balance "$KEY_ADDRESS" "$RPC_URL" "$LINK_TOKEN_ADDRESS")
-        if [[ "$LINK_BALANCE_WEI" != ERROR:* ]]; then
+        LINK_BALANCE_WEI=$(get_link_balance "$KEY_ADDRESS" "$RPC_URL" "$LINK_TOKEN_ADDRESS") || true
+        if [[ -n "$LINK_BALANCE_WEI" && "$LINK_BALANCE_WEI" != ERROR:* ]]; then
             LINK_BALANCE_LINK=$(wei_to_link "$LINK_BALANCE_WEI")
             KEY_LINK_BALANCES[$KEY_ADDRESS]="$LINK_BALANCE_LINK"
             
@@ -1120,15 +1143,15 @@ for i in "${!KEY_ADDRESSES[@]}"; do
     
     # Export private key for this Chainlink key
     echo -e "${BLUE}  Exporting private key...${NC}"
-    CHAINLINK_PRIVATE_KEY=$(get_chainlink_private_key "$KEY_ADDRESS" "$API_EMAIL" "$API_PASSWORD")
-    if [[ "$CHAINLINK_PRIVATE_KEY" == ERROR:* ]]; then
-        echo -e "${RED}  ✗ Failed to export private key: $CHAINLINK_PRIVATE_KEY${NC}"
+    CHAINLINK_PRIVATE_KEY=$(get_chainlink_private_key "$KEY_ADDRESS" "$API_EMAIL" "$API_PASSWORD") || true
+    if [[ -z "$CHAINLINK_PRIVATE_KEY" || "$CHAINLINK_PRIVATE_KEY" == ERROR:* ]]; then
+        echo -e "${RED}  ✗ Failed to export private key: ${CHAINLINK_PRIVATE_KEY:-unknown error}${NC}"
         FAILED_RECOVERY=$((FAILED_RECOVERY + 1))
         continue
     fi
     
     # Get current nonce for this key
-    CURRENT_NONCE=$(get_nonce "$KEY_ADDRESS" "$RPC_URL")
+    CURRENT_NONCE=$(get_nonce "$KEY_ADDRESS" "$RPC_URL") || true
     
     # Recover ETH if requested and available
     if [ "$RECOVER_ETH" = "true" ] && (( $(echo "${KEY_ETH_RECOVERABLE[$KEY_ADDRESS]:-0} > 0" | bc -l) )); then
@@ -1144,9 +1167,9 @@ for i in "${!KEY_ADDRESSES[@]}"; do
             echo -e "${BLUE}  Recovering $ACTUAL_ETH_AMOUNT $CURRENCY_NAME...${NC}"
             
             if [ "$DRY_RUN" = "false" ]; then
-                TX_HASH=$(send_eth_transaction "$CHAINLINK_PRIVATE_KEY" "$OWNER_WALLET" "$ACTUAL_ETH_AMOUNT_WEI" "21000" "$GAS_PRICE" "$CURRENT_NONCE" "$RPC_URL")
+                TX_HASH=$(send_eth_transaction "$CHAINLINK_PRIVATE_KEY" "$OWNER_WALLET" "$ACTUAL_ETH_AMOUNT_WEI" "21000" "$GAS_PRICE" "$CURRENT_NONCE" "$RPC_URL") || true
                 
-                if [[ "$TX_HASH" == ERROR:* ]]; then
+                if [[ -z "$TX_HASH" || "$TX_HASH" == ERROR:* ]]; then
                     echo -e "${RED}  ✗ Failed to send ETH transaction: $TX_HASH${NC}"
                     FAILED_RECOVERY=$((FAILED_RECOVERY + 1))
                 else
@@ -1179,9 +1202,9 @@ for i in "${!KEY_ADDRESSES[@]}"; do
         echo -e "${BLUE}  Recovering $LINK_AMOUNT LINK tokens...${NC}"
         
         if [ "$DRY_RUN" = "false" ]; then
-            TX_HASH=$(send_link_transaction "$CHAINLINK_PRIVATE_KEY" "$OWNER_WALLET" "$LINK_AMOUNT_WEI" "65000" "$GAS_PRICE" "$CURRENT_NONCE" "$RPC_URL" "$LINK_TOKEN_ADDRESS")
+            TX_HASH=$(send_link_transaction "$CHAINLINK_PRIVATE_KEY" "$OWNER_WALLET" "$LINK_AMOUNT_WEI" "65000" "$GAS_PRICE" "$CURRENT_NONCE" "$RPC_URL" "$LINK_TOKEN_ADDRESS") || true
             
-            if [[ "$TX_HASH" == ERROR:* ]]; then
+            if [[ -z "$TX_HASH" || "$TX_HASH" == ERROR:* ]]; then
                 echo -e "${RED}  ✗ Failed to send LINK transaction: $TX_HASH${NC}"
                 FAILED_RECOVERY=$((FAILED_RECOVERY + 1))
             else

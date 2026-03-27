@@ -688,6 +688,15 @@ else
     echo -e "${YELLOW}Warning: Fund recovery script not found at $SCRIPT_DIR/recover-chainlink-funds.sh${NC}"
 fi
 
+# Copy the key management script (required by fund-chainlink-keys.sh and recover-chainlink-funds.sh)
+if [ -f "$SCRIPT_DIR/key-management.sh" ]; then
+    cp "$SCRIPT_DIR/key-management.sh" "$INSTALL_DIR/key-management.sh"
+    chmod +x "$INSTALL_DIR/key-management.sh"
+    echo -e "${GREEN}Key management script copied to $INSTALL_DIR/key-management.sh${NC}"
+else
+    echo -e "${YELLOW}Warning: Key management script not found at $SCRIPT_DIR/key-management.sh${NC}"
+fi
+
 echo -e "${GREEN}Arbiter management scripts created:${NC}"
 echo -e "  - To start all services: $INSTALL_DIR/start-arbiter.sh"
 echo -e "  - To stop all services:  $INSTALL_DIR/stop-arbiter.sh"

@@ -8,7 +8,28 @@ set -e  # Exit on any error
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
-KEY_MGMT_SCRIPT="$SCRIPT_DIR/key-management.sh"
+
+# Locate key-management.sh - check multiple locations for portability
+KEY_MGMT_SCRIPT=""
+KEY_MGMT_SEARCH_LOCATIONS=(
+    "$SCRIPT_DIR/key-management.sh"               # Same directory (target install or installer/util)
+    "$INSTALLER_DIR/bin/key-management.sh"         # Original installer bin directory
+    "$SCRIPT_DIR/../bin/key-management.sh"         # Sibling bin directory
+    "$SCRIPT_DIR/installer/bin/key-management.sh"  # Nested installer path from target dir
+)
+for _kms_path in "${KEY_MGMT_SEARCH_LOCATIONS[@]}"; do
+    if [ -f "$_kms_path" ]; then
+        KEY_MGMT_SCRIPT="$_kms_path"
+        break
+    fi
+done
+if [ -z "$KEY_MGMT_SCRIPT" ]; then
+    echo -e "\033[0;31mError: key-management.sh not found in any of these locations:\033[0m"
+    for _kms_path in "${KEY_MGMT_SEARCH_LOCATIONS[@]}"; do
+        echo -e "\033[0;31m  - $_kms_path\033[0m"
+    done
+    exit 1
+fi
 
 # Color definitions
 GREEN='\033[0;32m'
@@ -449,56 +470,86 @@ get_chainlink_private_key() {
     local api_password="$3"
     
     # Check if container is running
-    local container_id=$(docker ps -q --filter "name=chainlink")
+    local container_id
+    container_id=$(docker ps -q --filter "name=chainlink")
     if [ -z "$container_id" ]; then
         echo "ERROR: Chainlink container not running"
         return 1
     fi
     
-    # Login to CLI first
-    if ! CL_API_EMAIL="$api_email" CL_API_PASSWORD="$api_password" bash "$KEY_MGMT_SCRIPT" login_to_chainlink_cli >/dev/null 2>&1; then
-        echo "ERROR: Failed to login to Chainlink CLI"
+    # Login to CLI (non-interactive via --file flag)
+    if ! docker exec "$container_id" chainlink admin login --file /chainlink/.api >/dev/null 2>&1; then
+        # Fallback: create temp credentials file inside container
+        docker exec "$container_id" sh -c "printf '%s\n%s\n' '$api_email' '$api_password' > /tmp/cl_api_login" 2>/dev/null
+        if ! docker exec "$container_id" chainlink admin login --file /tmp/cl_api_login >/dev/null 2>&1; then
+            docker exec "$container_id" rm -f /tmp/cl_api_login 2>/dev/null
+            echo "ERROR: Failed to login to Chainlink CLI"
+            return 1
+        fi
+        docker exec "$container_id" rm -f /tmp/cl_api_login 2>/dev/null
+    fi
+    
+    # Export the key non-interactively using temp files inside the container
+    # Chainlink CLI requires both -p (password file, must be non-empty) and -o (output file)
+    local export_pw="chainlink-export"
+    if ! docker exec "$container_id" sh -c "echo '$export_pw' > /tmp/cl_export_pw" 2>/dev/null; then
+        echo "ERROR: Failed to create password file in container"
         return 1
     fi
     
-    # Export the key
-    local export_output=$(docker exec -i "$container_id" chainlink keys eth export "$key_address" 2>/dev/null)
+    local export_result
+    export_result=$(docker exec "$container_id" chainlink keys eth export "$key_address" -p /tmp/cl_export_pw -o /tmp/cl_export_out 2>&1)
+    local export_exit=$?
     
-    if [ $? -ne 0 ]; then
-        echo "ERROR: Failed to export key $key_address"
+    if [ $export_exit -ne 0 ]; then
+        docker exec "$container_id" rm -f /tmp/cl_export_pw /tmp/cl_export_out 2>/dev/null
+        echo "ERROR: Failed to export key $key_address: $export_result"
         return 1
     fi
     
-    # Parse the exported key JSON to get private key
-    local private_key=$(echo "$export_output" | python3 -c "
-import json
-import sys
+    # Read the exported keystore JSON from the output file
+    local export_output
+    export_output=$(docker exec "$container_id" cat /tmp/cl_export_out 2>&1)
+    export_exit=$?
+    
+    # Clean up temp files
+    docker exec "$container_id" rm -f /tmp/cl_export_pw /tmp/cl_export_out 2>/dev/null
+    
+    if [ $export_exit -ne 0 ] || [ -z "$export_output" ]; then
+        echo "ERROR: Failed to read exported key file for $key_address"
+        return 1
+    fi
+    
+    # Decrypt the exported keystore to get the raw private key
+    local private_key
+    private_key=$(echo "$export_output" | EXPORT_PW="$export_pw" python3 -c "
+import json, sys, os
 try:
-    # Read password prompt and key data
-    lines = sys.stdin.read().strip().split('\n')
-    json_line = None
-    for line in lines:
-        if line.strip().startswith('{'):
-            json_line = line.strip()
-            break
+    data = json.load(sys.stdin)
+    export_pw = os.environ['EXPORT_PW']
     
-    if not json_line:
-        print('ERROR: No JSON found in export output')
-        sys.exit(1)
-    
-    data = json.loads(json_line)
     if 'privateKey' in data:
-        print(data['privateKey'])
+        pk = data['privateKey']
+        if pk.startswith('0x'):
+            pk = pk[2:]
+        print(pk)
+    elif 'crypto' in data or 'Crypto' in data:
+        from eth_account import Account
+        pk_bytes = Account.decrypt(data, export_pw)
+        pk_hex = pk_bytes.hex() if isinstance(pk_bytes, bytes) else str(pk_bytes)
+        if pk_hex.startswith('0x'):
+            pk_hex = pk_hex[2:]
+        print(pk_hex)
     else:
-        print('ERROR: No privateKey field found')
+        print('ERROR: Unrecognized export format')
         sys.exit(1)
 except Exception as e:
     print('ERROR: ' + str(e))
     sys.exit(1)
 " 2>/dev/null)
     
-    if [[ "$private_key" == ERROR:* ]]; then
-        echo "$private_key"
+    if [[ -z "$private_key" || "$private_key" == ERROR:* ]]; then
+        echo "${private_key:-ERROR: Empty private key returned for $key_address}"
         return 1
     fi
     
@@ -1161,9 +1212,9 @@ for i in "${!KEY_ADDRESSES[@]}"; do
     
     # Export private key for this Chainlink key
     echo -e "${BLUE}  Exporting private key...${NC}"
-    CHAINLINK_PRIVATE_KEY=$(get_chainlink_private_key "$KEY_ADDRESS" "$API_EMAIL" "$API_PASSWORD")
-    if [[ "$CHAINLINK_PRIVATE_KEY" == ERROR:* ]]; then
-        echo -e "${RED}  ✗ Failed to export private key: $CHAINLINK_PRIVATE_KEY${NC}"
+    CHAINLINK_PRIVATE_KEY=$(get_chainlink_private_key "$KEY_ADDRESS" "$API_EMAIL" "$API_PASSWORD") || true
+    if [[ -z "$CHAINLINK_PRIVATE_KEY" || "$CHAINLINK_PRIVATE_KEY" == ERROR:* ]]; then
+        echo -e "${RED}  ✗ Failed to export private key: ${CHAINLINK_PRIVATE_KEY:-unknown error}${NC}"
         FAILED_RECOVERY=$((FAILED_RECOVERY + 1))
         continue
     fi

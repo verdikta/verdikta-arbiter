@@ -79,7 +79,8 @@ get_chainlink_container_id() {
 
 # Check if chainlink container is running
 check_chainlink_container() {
-    local container_id=$(get_chainlink_container_id)
+    local container_id
+    container_id=$(get_chainlink_container_id)
     if [ $? -ne 0 ]; then
         return 1
     fi
@@ -113,39 +114,24 @@ login_to_chainlink_cli() {
     
     log_verbose "Logging in to Chainlink CLI"
     
-    # Use expect to automate the interactive login
-    if ! command -v expect >/dev/null 2>&1; then
-        log_error "expect command not found. Please install expect package: sudo apt-get install expect"
-        return 1
-    fi
-    
-    # Create temporary expect script
-    local expect_script=$(mktemp)
-    cat > "$expect_script" << EOF
-#!/usr/bin/expect -f
-set timeout 10
-spawn docker exec -it $container_id chainlink admin login
-expect "Enter email:"
-send "$api_email\r"
-expect "Enter password:"
-send "$api_password\r"
-expect eof
-catch wait result
-exit [lindex \$result 3]
-EOF
-    
-    chmod +x "$expect_script"
-    
-    # Run the expect script
-    if "$expect_script" >/dev/null 2>&1; then
-        log_verbose "Successfully logged in to Chainlink CLI"
-        rm -f "$expect_script"
+    # Prefer non-interactive login via --file flag (uses the .api credentials file inside the container)
+    if docker exec "$container_id" chainlink admin login --file /chainlink/.api >/dev/null 2>&1; then
+        log_verbose "Successfully logged in to Chainlink CLI via --file"
         return 0
-    else
-        log_error "Failed to login to Chainlink CLI"
-        rm -f "$expect_script"
-        return 1
     fi
+    
+    # Fallback: create a temporary credentials file inside the container
+    log_verbose "Trying fallback login with temporary credentials file"
+    docker exec "$container_id" sh -c "printf '%s\n%s\n' '$api_email' '$api_password' > /tmp/cl_api_login" 2>/dev/null
+    if docker exec "$container_id" chainlink admin login --file /tmp/cl_api_login >/dev/null 2>&1; then
+        docker exec "$container_id" rm -f /tmp/cl_api_login 2>/dev/null
+        log_verbose "Successfully logged in to Chainlink CLI via fallback"
+        return 0
+    fi
+    docker exec "$container_id" rm -f /tmp/cl_api_login 2>/dev/null
+    
+    log_error "Failed to login to Chainlink CLI"
+    return 1
 }
 
 # Calculate number of keys needed based on job count
@@ -452,67 +438,62 @@ export_chainlink_private_key() {
     
     log_verbose "Exporting private key for address: $key_address"
     
-    # Create temporary expect script to handle password prompt
-    local expect_script=$(mktemp)
-    cat > "$expect_script" << EOF
-#!/usr/bin/expect -f
-set timeout 30
-spawn docker exec -it $container_id chainlink keys eth export $key_address
-expect {
-    "Enter password:" {
-        send "\r"
-        exp_continue
-    }
-    "Enter Password:" {
-        send "\r"
-        exp_continue
-    }
-    eof
-}
-catch wait result
-exit [lindex \$result 3]
-EOF
+    local export_pw="chainlink-export"
     
-    chmod +x "$expect_script"
-    
-    # Run the expect script and capture output
-    local export_output=$("$expect_script" 2>/dev/null)
-    local exit_code=$?
-    
-    rm -f "$expect_script"
-    
-    if [ $exit_code -ne 0 ]; then
-        log_error "Failed to export key $key_address"
+    # Create password file and export key to a file inside the container
+    # Both -p (password file) and -o (output file) are required by Chainlink CLI
+    if ! docker exec "$container_id" sh -c "echo '$export_pw' > /tmp/cl_export_pw" 2>/dev/null; then
+        log_error "Failed to create password file in container"
         return 1
     fi
     
-    # Parse the exported key JSON to get private key
-    local private_key=$(echo "$export_output" | python3 -c "
-import json
-import sys
+    local export_result
+    export_result=$(docker exec "$container_id" chainlink keys eth export "$key_address" -p /tmp/cl_export_pw -o /tmp/cl_export_out 2>&1)
+    local exit_code=$?
+    
+    if [ $exit_code -ne 0 ]; then
+        docker exec "$container_id" rm -f /tmp/cl_export_pw /tmp/cl_export_out 2>/dev/null
+        log_error "Failed to export key $key_address: $export_result"
+        return 1
+    fi
+    
+    # Read the exported keystore JSON from the output file
+    local export_output
+    export_output=$(docker exec "$container_id" cat /tmp/cl_export_out 2>&1)
+    exit_code=$?
+    
+    # Clean up temp files
+    docker exec "$container_id" rm -f /tmp/cl_export_pw /tmp/cl_export_out 2>/dev/null
+    
+    if [ $exit_code -ne 0 ] || [ -z "$export_output" ]; then
+        log_error "Failed to read exported key file for $key_address"
+        return 1
+    fi
+    
+    # Decrypt the exported keystore to get the raw private key
+    local private_key
+    private_key=$(echo "$export_output" | EXPORT_PW="$export_pw" python3 -c "
+import json, sys, os
 try:
-    # Read all lines and find JSON
-    lines = sys.stdin.read().strip().split('\n')
-    json_line = None
-    for line in lines:
-        line = line.strip()
-        if line.startswith('{') and 'privateKey' in line:
-            json_line = line
-            break
+    data = json.load(sys.stdin)
+    export_pw = os.environ['EXPORT_PW']
     
-    if not json_line:
-        print('ERROR: No valid JSON found in export output')
-        sys.exit(1)
-    
-    data = json.loads(json_line)
+    # Format 1: Raw private key in JSON (older Chainlink versions)
     if 'privateKey' in data:
-        # Remove 0x prefix if present
-        private_key = data['privateKey']
-        if private_key.startswith('0x'):
-            private_key = private_key[2:]
-        print(private_key)
+        pk = data['privateKey']
+        if pk.startswith('0x'):
+            pk = pk[2:]
+        print(pk)
+    # Format 2: Encrypted Web3 keystore (Chainlink v2.x)
+    elif 'crypto' in data or 'Crypto' in data:
+        from eth_account import Account
+        pk_bytes = Account.decrypt(data, export_pw)
+        pk_hex = pk_bytes.hex() if isinstance(pk_bytes, bytes) else str(pk_bytes)
+        if pk_hex.startswith('0x'):
+            pk_hex = pk_hex[2:]
+        print(pk_hex)
     else:
-        print('ERROR: No privateKey field found in JSON')
+        print('ERROR: Unrecognized export format')
         sys.exit(1)
 except Exception as e:
     print('ERROR: ' + str(e))
