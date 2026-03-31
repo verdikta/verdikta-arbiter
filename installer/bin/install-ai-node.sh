@@ -83,12 +83,14 @@ fi
 # Load Node.js (via nvm or system-installed)
 load_node || exit 1
 
-# Use nvm to set version if nvm is available; otherwise verify system Node.js meets requirements
+# Use nvm to set version if nvm is available; only download if not already installed locally
 if command_exists nvm; then
-    echo -e "${BLUE}Setting up Node.js v20.18.1 via nvm...${NC}"
-    nvm install 20.18.1
-    nvm use 20.18.1
-    nvm alias default 20.18.1
+    if ! nvm use 20.18.1 2>/dev/null; then
+        echo -e "${BLUE}Installing Node.js v20.18.1 via nvm...${NC}"
+        nvm install 20.18.1
+        nvm use 20.18.1
+    fi
+    nvm alias default 20.18.1 2>/dev/null || true
 fi
 
 # Verify Node.js version meets minimum requirement (v20.18.0+)
