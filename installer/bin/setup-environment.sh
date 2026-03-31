@@ -119,6 +119,12 @@ install_node_binary() {
 install_node() {
     echo -e "${BLUE}Setting up Node.js...${NC}"
     
+    # Try loading nvm first so node is on PATH if previously installed via nvm
+    if [ -d "$HOME/.nvm" ]; then
+        export NVM_DIR="$HOME/.nvm"
+        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    fi
+    
     if command_exists node; then
         NODE_VERSION=$(node --version | cut -d 'v' -f 2)
         NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d'.' -f1)
@@ -129,14 +135,14 @@ install_node() {
             return 0
         else
             echo -e "${YELLOW}Node.js v$NODE_VERSION is installed but does not meet requirements (v20.18.0+).${NC}"
-            if ! ask_yes_no "Would you like to install Node.js v20.18.0 using nvm?"; then
+            if ! ask_yes_no "Would you like to install Node.js v20.18.1?"; then
                 echo -e "${YELLOW}Skipping Node.js installation. This may cause issues later.${NC}"
                 return 1
             fi
         fi
     else
         echo -e "${YELLOW}Node.js is not installed.${NC}"
-        if ! ask_yes_no "Would you like to install Node.js v20.18.0 using nvm?"; then
+        if ! ask_yes_no "Would you like to install Node.js v20.18.1?"; then
             echo -e "${YELLOW}Skipping Node.js installation. This may cause issues later.${NC}"
             return 1
         fi
