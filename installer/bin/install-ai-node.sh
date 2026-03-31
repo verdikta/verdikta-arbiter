@@ -489,8 +489,10 @@ if [ -f "$UTIL_DIR/ollama-manager.sh" ]; then
     source "$UTIL_DIR/ollama-manager.sh"
     check_and_update_ollama "install-ai-node" "false"
     
-    # Start Ollama service
-    start_ollama_service
+    # Start Ollama service only if ollama is installed
+    if command_exists ollama; then
+        start_ollama_service
+    fi
 else
     echo -e "${YELLOW}Ollama manager utility not found. Skipping Ollama management.${NC}"
     echo -e "${YELLOW}Ollama-based models may not be available.${NC}"
