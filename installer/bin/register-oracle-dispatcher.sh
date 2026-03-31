@@ -114,30 +114,25 @@ echo -e "${BLUE}Creating .env file in arbiter-operator directory...${NC}"
 chmod 600 "$ARBITER_OPERATOR_DIR/.env"
 echo -e "${GREEN}.env file created in arbiter-operator directory${NC}"
 
+# Load Node.js (via nvm or system-installed)
+if [ -d "$HOME/.nvm" ]; then
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+    [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
+    nvm use 20.18.1 2>/dev/null || true
+fi
+
+if ! command -v node >/dev/null 2>&1; then
+    echo -e "${RED}Error: Node.js is not available. Please install Node.js v20.18.0+ first.${NC}"
+    exit 1
+fi
+echo -e "${GREEN}Node.js $(node --version) loaded successfully.${NC}"
+
 # Ensure dependencies are installed in arbiter-operator
 echo -e "${BLUE}Checking dependencies for arbiter-operator...${NC}"
 if [ ! -d "$ARBITER_OPERATOR_DIR/node_modules" ]; then
     echo -e "${YELLOW}node_modules not found in $ARBITER_OPERATOR_DIR. Running npm install...${NC}"
     cd "$ARBITER_OPERATOR_DIR"
-    
-    # Load nvm if it exists, and set Node version
-    if [ -d "$HOME/.nvm" ]; then
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
-        
-        echo -e "${BLUE}Using Node.js v20.18.1 for arbiter-operator dependency installation...${NC}"
-        nvm_output=$(nvm use 20.18.1 2>&1)
-        if [[ $nvm_output == *"N/A"* ]]; then
-            echo -e "${YELLOW}Node.js v20.18.1 not installed via NVM. Installing...${NC}"
-            nvm install 20.18.1
-            nvm use 20.18.1
-        fi
-        echo -e "${GREEN}Node.js version set: $(node --version)${NC}"
-    else
-        echo -e "${YELLOW}NVM not found. Assuming Node.js v20.18.1 is available in PATH.${NC}"
-    fi
-
     npm install --legacy-peer-deps
     if [ $? -ne 0 ]; then
         echo -e "${RED}Failed to install dependencies in $ARBITER_OPERATOR_DIR${NC}"
