@@ -9,6 +9,7 @@ set -e  # Exit on any error
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
 CONFIG_DIR="$INSTALLER_DIR/config"
+UTIL_DIR="$INSTALLER_DIR/util"
 
 # Color definitions
 GREEN='\033[0;32m'
@@ -269,6 +270,12 @@ if docker ps -a | grep -q "chainlink"; then
     echo -e "${YELLOW}Chainlink container already exists. Stopping and removing...${NC}"
     docker stop chainlink || true
     docker rm chainlink || true
+fi
+
+# Load shared Docker pull helper and pre-pull the Chainlink image
+if [ -f "$UTIL_DIR/docker-pull-helper.sh" ]; then
+    source "$UTIL_DIR/docker-pull-helper.sh"
+    docker_pull_with_retry "smartcontract/chainlink:2.23.0"
 fi
 
 # Start chainlink container

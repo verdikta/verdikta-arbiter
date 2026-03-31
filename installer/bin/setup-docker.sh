@@ -254,6 +254,15 @@ generate_password() {
     fi
 }
 
+# Load shared Docker pull helper
+UTIL_DIR="$INSTALLER_DIR/util"
+if [ -f "$UTIL_DIR/docker-pull-helper.sh" ]; then
+    source "$UTIL_DIR/docker-pull-helper.sh"
+else
+    echo -e "${RED}Error: docker-pull-helper.sh not found in $UTIL_DIR${NC}"
+    exit 1
+fi
+
 # PostgreSQL configuration
 echo -e "${BLUE}Configuring PostgreSQL...${NC}"
 
@@ -265,6 +274,9 @@ echo -e "${BLUE}Generated a secure password for PostgreSQL.${NC}"
 echo "POSTGRES_PASSWORD=\"$POSTGRES_PASSWORD\"" > "$INSTALLER_DIR/.postgres"
 echo -e "${GREEN}PostgreSQL password saved to $INSTALLER_DIR/.postgres${NC}"
 echo -e "${YELLOW}Important: Keep this password safe, it will be needed for Chainlink node configuration.${NC}"
+
+# Pre-pull the PostgreSQL image with retry logic
+docker_pull_with_retry "postgres:14"
 
 # Create PostgreSQL container
 echo -e "${BLUE}Creating PostgreSQL container...${NC}"
