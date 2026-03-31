@@ -55,26 +55,23 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to load NVM
-load_nvm() {
-    # Load nvm if it exists
+# Function to load Node.js (via nvm or system-installed)
+load_node() {
+    # Try loading nvm if the directory exists
     if [ -d "$HOME/.nvm" ]; then
         export NVM_DIR="$HOME/.nvm"
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
         [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-        
-        # Verify node is available
-        if command_exists node; then
-            echo -e "${GREEN}Node.js $(node --version) loaded successfully${NC}"
-            return 0
-        else
-            echo -e "${RED}Failed to load Node.js${NC}"
-            return 1
-        fi
-    else
-        echo -e "${RED}NVM directory not found. Please run setup-environment.sh first.${NC}"
-        return 1
     fi
+
+    # Check if node is available (installed via nvm, apt, or binary)
+    if command_exists node; then
+        echo -e "${GREEN}Node.js $(node --version) loaded successfully${NC}"
+        return 0
+    fi
+
+    echo -e "${RED}Node.js is not available. Please run setup-environment.sh first or install Node.js v20.18.1 manually.${NC}"
+    return 1
 }
 
 echo -e "${BLUE}Installing External Adapter for Verdikta Validator Node...${NC}"
@@ -82,8 +79,8 @@ if [ "$SKIP_TESTS" = "true" ]; then
     echo -e "${YELLOW}Note: Unit tests will be skipped during installation${NC}"
 fi
 
-# Load NVM and Node.js
-load_nvm || exit 1
+# Load Node.js (via nvm or system-installed)
+load_node || exit 1
 
 # Load environment variables
 if [ -f "$INSTALLER_DIR/.env" ]; then

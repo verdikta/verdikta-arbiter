@@ -75,6 +75,46 @@ detect_os() {
     echo -e "${BLUE}Detected OS: $OS_NAME${NC}"
 }
 
+# Function to install Node.js by downloading the official binary tarball
+install_node_binary() {
+    local version="$1"
+    local arch
+    arch="$(uname -m)"
+    case "$arch" in
+        x86_64)  arch="x64" ;;
+        aarch64) arch="arm64" ;;
+        armv7l)  arch="armv7l" ;;
+        *)
+            echo -e "${RED}Unsupported architecture: $arch${NC}"
+            return 1
+            ;;
+    esac
+
+    local tarball="node-v${version}-linux-${arch}.tar.xz"
+    local url="https://nodejs.org/dist/v${version}/${tarball}"
+    local tmp_dir
+    tmp_dir="$(mktemp -d)"
+
+    echo -e "${BLUE}Downloading Node.js v${version} binary from nodejs.org...${NC}"
+    if ! curl -fSL --retry 3 --retry-delay 3 --connect-timeout 15 --max-time 120 -o "${tmp_dir}/${tarball}" "$url"; then
+        echo -e "${RED}Failed to download Node.js binary from ${url}${NC}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    echo -e "${BLUE}Extracting and installing Node.js to /usr/local...${NC}"
+    if ! sudo tar -xJf "${tmp_dir}/${tarball}" -C /usr/local --strip-components=1; then
+        echo -e "${RED}Failed to extract Node.js binary.${NC}"
+        rm -rf "$tmp_dir"
+        return 1
+    fi
+
+    rm -rf "$tmp_dir"
+    hash -r 2>/dev/null || true
+    echo -e "${GREEN}Node.js binary installed successfully.${NC}"
+    return 0
+}
+
 # Function to install Node.js using nvm
 install_node() {
     echo -e "${BLUE}Setting up Node.js...${NC}"
@@ -102,20 +142,41 @@ install_node() {
         fi
     fi
     
+    local NODE_TARGET_VERSION="20.18.1"
+    local NVM_INSTALLED=false
+
     # Install nvm if it doesn't exist
     if ! command_exists nvm && [ ! -d "$HOME/.nvm" ]; then
         echo -e "${BLUE}Installing nvm (Node Version Manager)...${NC}"
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
-        
-        # Source nvm
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-        
-        # Make sure nvm command is available
-        if ! command_exists nvm; then
-            echo -e "${RED}Failed to install nvm. Please install Node.js v20.18.1 manually.${NC}"
-            return 1
+
+        local NVM_INSTALL_SUCCESS=false
+        local NVM_URL="https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh"
+        local MAX_RETRIES=3
+
+        for attempt in $(seq 1 $MAX_RETRIES); do
+            echo -e "${BLUE}nvm download attempt $attempt of $MAX_RETRIES...${NC}"
+            if curl -o- --retry 2 --retry-delay 3 --connect-timeout 15 --max-time 60 "$NVM_URL" | bash; then
+                NVM_INSTALL_SUCCESS=true
+                break
+            fi
+            if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+                echo -e "${YELLOW}Attempt $attempt failed. Retrying in 5 seconds...${NC}"
+                sleep 5
+            fi
+        done
+
+        if [ "$NVM_INSTALL_SUCCESS" = "true" ]; then
+            export NVM_DIR="$HOME/.nvm"
+            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+            [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+            if command_exists nvm; then
+                NVM_INSTALLED=true
+            fi
+        fi
+
+        if [ "$NVM_INSTALLED" = "false" ]; then
+            echo -e "${YELLOW}nvm installation failed. Trying fallback methods...${NC}"
         fi
     else
         # Source nvm if it exists but command isn't available
@@ -124,14 +185,38 @@ install_node() {
             [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
             [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
         fi
+        if command_exists nvm; then
+            NVM_INSTALLED=true
+        fi
     fi
-    
-    # Install Node.js 20.18.1
-    echo -e "${BLUE}Installing Node.js v20.18.1...${NC}"
-    nvm install 20.18.1
-    nvm use 20.18.1
-    nvm alias default 20.18.1
-    
+
+    if [ "$NVM_INSTALLED" = "true" ]; then
+        echo -e "${BLUE}Installing Node.js v${NODE_TARGET_VERSION} via nvm...${NC}"
+        nvm install "$NODE_TARGET_VERSION"
+        nvm use "$NODE_TARGET_VERSION"
+        nvm alias default "$NODE_TARGET_VERSION"
+    else
+        # Fallback: install Node.js via NodeSource apt repository (Ubuntu/Debian)
+        if [ "$OS_ID" = "ubuntu" ] || [ "$OS_ID" = "debian" ]; then
+            echo -e "${BLUE}Attempting Node.js installation via NodeSource apt repository...${NC}"
+            local NODESOURCE_SUCCESS=false
+
+            if curl -fsSL --retry 3 --retry-delay 3 --connect-timeout 15 https://deb.nodesource.com/setup_20.x | sudo -E bash - 2>/dev/null; then
+                if sudo apt-get install -y nodejs 2>/dev/null; then
+                    NODESOURCE_SUCCESS=true
+                fi
+            fi
+
+            if [ "$NODESOURCE_SUCCESS" = "false" ]; then
+                echo -e "${YELLOW}NodeSource apt method failed. Trying direct binary download...${NC}"
+                install_node_binary "$NODE_TARGET_VERSION"
+            fi
+        else
+            echo -e "${YELLOW}Trying direct binary download for Node.js...${NC}"
+            install_node_binary "$NODE_TARGET_VERSION"
+        fi
+    fi
+
     # Verify installation
     if command_exists node; then
         NODE_VERSION=$(node --version)

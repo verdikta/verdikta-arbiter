@@ -80,9 +80,24 @@ if [ -d "$HOME/.nvm" ]; then
     fi
 fi
 
-# Fresh NVM installation
+# Fresh NVM installation with retry logic
 echo -e "${BLUE}Installing NVM (Node Version Manager)...${NC}"
-curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
+
+NVM_URL="https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh"
+NVM_INSTALL_SUCCESS=false
+MAX_RETRIES=3
+
+for attempt in $(seq 1 $MAX_RETRIES); do
+    echo -e "${BLUE}nvm download attempt $attempt of $MAX_RETRIES...${NC}"
+    if curl -o- --retry 2 --retry-delay 3 --connect-timeout 15 --max-time 60 "$NVM_URL" | bash; then
+        NVM_INSTALL_SUCCESS=true
+        break
+    fi
+    if [ "$attempt" -lt "$MAX_RETRIES" ]; then
+        echo -e "${YELLOW}Attempt $attempt failed. Retrying in 5 seconds...${NC}"
+        sleep 5
+    fi
+done
 
 # Source NVM immediately
 export NVM_DIR="$HOME/.nvm"
@@ -91,11 +106,12 @@ export NVM_DIR="$HOME/.nvm"
 
 # Verify NVM installation
 if ! command_exists nvm; then
-    echo -e "${RED}Error: NVM installation failed.${NC}"
-    echo -e "${YELLOW}Please try the following manual steps:${NC}"
-    echo -e "${YELLOW}1. Close and reopen your terminal${NC}"
-    echo -e "${YELLOW}2. Run: source ~/.bashrc${NC}"
-    echo -e "${YELLOW}3. Run: nvm --version${NC}"
+    echo -e "${RED}Error: NVM installation failed after $MAX_RETRIES attempts.${NC}"
+    echo -e "${YELLOW}This is often caused by DNS issues on VPS environments.${NC}"
+    echo -e "${YELLOW}You can try:${NC}"
+    echo -e "${YELLOW}  1. Check DNS: nslookup raw.githubusercontent.com${NC}"
+    echo -e "${YELLOW}  2. Use Google DNS: echo 'nameserver 8.8.8.8' | sudo tee /etc/resolv.conf${NC}"
+    echo -e "${YELLOW}  3. Install Node.js directly: curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash - && sudo apt-get install -y nodejs${NC}"
     exit 1
 fi
 

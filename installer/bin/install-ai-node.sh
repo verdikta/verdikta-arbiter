@@ -56,47 +56,23 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to load NVM
-load_nvm() {
-    # Load nvm if it exists
+# Function to load NVM or verify Node.js is available
+load_node() {
+    # Try loading nvm if the directory exists
     if [ -d "$HOME/.nvm" ]; then
         export NVM_DIR="$HOME/.nvm"
         [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
         [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-        
-        # Verify node is available
-        if command_exists node; then
-            echo -e "${GREEN}Node.js $(node --version) loaded successfully${NC}"
-            return 0
-        else
-            echo -e "${RED}Failed to load Node.js${NC}"
-            return 1
-        fi
-    else
-        echo -e "${YELLOW}NVM directory not found. Attempting to install NVM...${NC}"
-        # Try to install NVM if it's missing
-        if command_exists curl; then
-            echo -e "${BLUE}Installing NVM...${NC}"
-            curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.3/install.sh | bash
-            
-            # Source nvm immediately after installation
-            export NVM_DIR="$HOME/.nvm"
-            [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-            [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-            
-            if [ -d "$HOME/.nvm" ] && command_exists nvm; then
-                echo -e "${GREEN}NVM installed successfully.${NC}"
-                return 1  # Return 1 to indicate Node.js still needs to be installed
-            else
-                echo -e "${RED}Failed to install NVM. Please install Node.js v20.18.1 manually or run setup-environment.sh.${NC}"
-                return 1
-            fi
-        else
-            echo -e "${RED}curl not found. Cannot install NVM automatically.${NC}"
-            echo -e "${RED}Please run setup-environment.sh first or install Node.js v20.18.1 manually.${NC}"
-            return 1
-        fi
     fi
+
+    # Check if node is already available (installed via nvm, apt, or binary)
+    if command_exists node; then
+        echo -e "${GREEN}Node.js $(node --version) loaded successfully${NC}"
+        return 0
+    fi
+
+    echo -e "${RED}Node.js is not available. Please run setup-environment.sh first or install Node.js v20.18.1 manually.${NC}"
+    return 1
 }
 
 echo -e "${BLUE}Installing AI Node for Verdikta Validator Node...${NC}"
@@ -104,20 +80,24 @@ if [ "$SKIP_TESTS" = "true" ]; then
     echo -e "${YELLOW}Note: Unit tests will be skipped during installation${NC}"
 fi
 
-# Load NVM and Node.js
-load_nvm || exit 1
+# Load Node.js (via nvm or system-installed)
+load_node || exit 1
 
-# Force Node.js version 20.18.1
-echo -e "${BLUE}Setting up Node.js v20.18.1...${NC}"
-nvm install 20.18.1
-nvm use 20.18.1
-nvm alias default 20.18.1
+# Use nvm to set version if nvm is available; otherwise verify system Node.js meets requirements
+if command_exists nvm; then
+    echo -e "${BLUE}Setting up Node.js v20.18.1 via nvm...${NC}"
+    nvm install 20.18.1
+    nvm use 20.18.1
+    nvm alias default 20.18.1
+fi
 
-# Verify Node.js version
+# Verify Node.js version meets minimum requirement (v20.18.0+)
 NODE_VERSION=$(node --version)
-if [[ ! "$NODE_VERSION" == "v20.18.1" ]]; then
-    echo -e "${RED}Failed to set Node.js version to v20.18.1. Current version: $NODE_VERSION${NC}"
-    echo -e "${YELLOW}Please run 'nvm use 20.18.1' manually and try again.${NC}"
+NODE_MAJOR=$(echo "$NODE_VERSION" | cut -d'.' -f1 | tr -d 'v')
+NODE_MINOR=$(echo "$NODE_VERSION" | cut -d'.' -f2)
+if [ "$NODE_MAJOR" -lt 20 ] || ([ "$NODE_MAJOR" -eq 20 ] && [ "$NODE_MINOR" -lt 18 ]); then
+    echo -e "${RED}Node.js version $NODE_VERSION does not meet requirements (v20.18.0+).${NC}"
+    echo -e "${YELLOW}Please install Node.js v20.18.1 or later.${NC}"
     exit 1
 fi
 echo -e "${GREEN}Node.js version verified: $NODE_VERSION${NC}"
@@ -799,15 +779,20 @@ cat > "$AI_NODE_DIR/start.sh" << 'EOLS'
 #!/bin/bash
 cd "$(dirname "$0")"
 
-# Load NVM
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+# Load NVM if available
+if [ -d "$HOME/.nvm" ]; then
+    export NVM_DIR="$HOME/.nvm"
+    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+    nvm use 20.18.1 2>/dev/null || true
+fi
 
-# Use the correct Node.js version
-nvm use 20.18.1 || nvm install 20.18.1
+# Verify Node.js is available
+if ! command -v node >/dev/null 2>&1; then
+    echo "ERROR: Node.js is not available. Please install Node.js v20.18.0+ first."
+    exit 1
+fi
 
-# Verify Node.js version
 node_version=$(node --version)
 echo "Using Node.js version: $node_version"
 
