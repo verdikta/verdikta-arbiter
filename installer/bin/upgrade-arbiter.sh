@@ -1533,8 +1533,10 @@ if [ -f "$UTIL_DIR/ollama-manager.sh" ]; then
     source "$UTIL_DIR/ollama-manager.sh"
     check_and_update_ollama "upgrade-arbiter" "false"
     
-    # Start Ollama service if it was updated
-    start_ollama_service
+    # Start Ollama service only if ollama is installed
+    if command_exists ollama; then
+        start_ollama_service
+    fi
 else
     echo -e "${YELLOW}Ollama manager utility not found. Proceeding with basic model check.${NC}"
 fi
