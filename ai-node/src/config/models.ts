@@ -1,18 +1,4 @@
 export const modelConfig = {
-  openai: [
-    { name: 'gpt-3.5-turbo', supportsImages: false, supportsAttachments: false },
-    { name: 'gpt-4', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-4o', supportsImages: true, supportsAttachments: true },
-    { name: 'o3', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-4.1', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-4.1-mini', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5-mini', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5-2025-08-07', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5-mini-2025-08-07', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5-nano-2025-08-07', supportsImages: true, supportsAttachments: true },
-    { name: 'gpt-5.2-2025-12-11', supportsImages: true, supportsAttachments: true },
-  ],
   anthropic: [
     { name: 'claude-2.1', supportsImages: false, supportsAttachments: false },
     { name: 'claude-3-sonnet-20240229', supportsImages: true, supportsAttachments: true },
@@ -24,6 +10,17 @@ export const modelConfig = {
     { name: 'claude-sonnet-4', supportsImages: true, supportsAttachments: true },
     { name: 'claude-sonnet-4-5-20250929', supportsImages: true, supportsAttachments: true },
     { name: 'claude-haiku-4-5-20251001', supportsImages: true, supportsAttachments: true },
+    // Softlinked aliases (ClassID 132+)
+    { name: 'claude-3.5-sonnet', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-3.5-haiku', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-3.7-sonnet', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-sonnet-4.5', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-haiku-4.5', supportsImages: true, supportsAttachments: true },
+  ],
+  hyperbolic: [
+    { name: 'Qwen/Qwen3-235B-A22B-Instruct-2507', supportsImages: true, supportsAttachments: true },
+    { name: 'deepseek-ai/DeepSeek-R1', supportsImages: true, supportsAttachments: true },
+    { name: 'moonshotai/Kimi-K2-Instruct', supportsImages: true, supportsAttachments: true },
   ],
   ollama: [
     { name: 'llama3.1:8b', supportsImages: false, supportsAttachments: true },
@@ -35,20 +32,35 @@ export const modelConfig = {
     { name: 'qwen3:1.7b', supportsImages: false, supportsAttachments: true },
     { name: 'gemma3n:e2b', supportsImages: false, supportsAttachments: true },
   ],
-  hyperbolic: [
-    { name: 'Qwen/Qwen3-235B-A22B-Instruct-2507', supportsImages: true, supportsAttachments: true },
-    { name: 'deepseek-ai/DeepSeek-R1', supportsImages: true, supportsAttachments: true },
-    { name: 'moonshotai/Kimi-K2-Instruct', supportsImages: true, supportsAttachments: true },
+  openai: [
+    { name: 'gpt-3.5-turbo', supportsImages: false, supportsAttachments: false },
+    { name: 'gpt-4', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-4o', supportsImages: true, supportsAttachments: true },
+    { name: 'o3', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-4.1', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-4.1-mini', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5-mini', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5-nano', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.1', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.1-codex', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.1-codex-mini', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.2', supportsImages: true, supportsAttachments: true },
+    // Legacy date-suffixed names (ClassIDs 128, 131)
+    { name: 'gpt-5-2025-08-07', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5-mini-2025-08-07', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5-nano-2025-08-07', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.1-2025-11-13', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.1-codex-2025-11-13', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.1-codex-mini-2025-11-13', supportsImages: true, supportsAttachments: true },
+    { name: 'gpt-5.2-2025-12-11', supportsImages: true, supportsAttachments: true },
   ],
   xai: [
-    // Grok 4.1 models (2M context, multimodal - text + image input/output)
     { name: 'grok-4-1-fast-reasoning', supportsImages: true, supportsAttachments: true },
     { name: 'grok-4-1-fast-non-reasoning', supportsImages: true, supportsAttachments: true },
-    // Grok 4 models (2M context for fast variants, 256K for base)
     { name: 'grok-4-fast-reasoning', supportsImages: true, supportsAttachments: true },
     { name: 'grok-4-fast-non-reasoning', supportsImages: true, supportsAttachments: true },
     { name: 'grok-4-0709', supportsImages: true, supportsAttachments: true },
-    // Code-specialized model (256K context)
     { name: 'grok-code-fast-1', supportsImages: true, supportsAttachments: true },
   ],
 };

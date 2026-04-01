@@ -1,4 +1,5 @@
 import { LLMProvider } from './llm-provider-interface';
+import { resolveOpenRouterModelId } from '../../config/openrouter-models';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -23,13 +24,7 @@ export class OpenRouterProvider implements LLMProvider {
   }
 
   private normalizeModelId(model: string): string {
-    if (model.includes('/')) {
-      return model;
-    }
-    if (this.modelPrefix) {
-      return `${this.modelPrefix}/${model}`;
-    }
-    return model;
+    return resolveOpenRouterModelId(this.modelPrefix, model);
   }
 
   async initialize(): Promise<void> {

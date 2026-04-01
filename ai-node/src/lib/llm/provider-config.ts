@@ -18,6 +18,7 @@ const CLASS_FROM_PROVIDER: Record<string, ProviderClass> = {
   'hyperbolic api': 'hyperbolic',
   ollama: 'ollama',
   'open-source': 'ollama',
+  openrouter: 'openrouter',
 };
 
 function normalizeProvider(provider: string): string {
@@ -47,6 +48,8 @@ function hasNativeKey(providerClass: ProviderClass): boolean {
       return !!process.env.HYPERBOLIC_API_KEY;
     case 'ollama':
       return true;
+    case 'openrouter':
+      return !!process.env.OPENROUTER_API_KEY;
     default:
       return false;
   }
@@ -91,6 +94,14 @@ export function resolveProviderConfig(provider: string): ProviderResolution {
       providerClass,
       backend: 'native',
       reason: 'Ollama is local-only',
+    };
+  }
+
+  if (providerClass === 'openrouter') {
+    return {
+      providerClass,
+      backend: 'openrouter',
+      reason: 'OpenRouter-only provider',
     };
   }
 

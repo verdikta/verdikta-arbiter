@@ -118,4 +118,25 @@ describe('provider-config precedence', () => {
     expect(result.backend).toBe('openrouter');
     expect(result.reason).toContain('default openrouter');
   });
+
+  test('openrouter provider always routes to openrouter backend', () => {
+    const result = resolveProviderConfig('openrouter');
+
+    expect(result.providerClass).toBe('openrouter');
+    expect(result.backend).toBe('openrouter');
+    expect(result.reason).toContain('OpenRouter-only');
+  });
+
+  test('openrouter provider routes to openrouter regardless of AI_GATEWAY setting', () => {
+    process.env.AI_GATEWAY = 'native';
+
+    const result = resolveProviderConfig('openrouter');
+
+    expect(result.backend).toBe('openrouter');
+  });
+
+  test('resolves openrouter provider class', () => {
+    expect(resolveProviderClass('openrouter')).toBe('openrouter');
+    expect(resolveProviderClass('OpenRouter')).toBe('openrouter');
+  });
 });
