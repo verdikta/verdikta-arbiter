@@ -124,6 +124,8 @@ function displayClassIDInfo() {
                                         provider === 'anthropic' ? colors.magenta :
                                         provider === 'ollama' ? colors.yellow :
                                         provider === 'hyperbolic' ? colors.cyan :
+                                        provider === 'xai' ? colors.blue :
+                                        provider === 'openrouter' ? colors.bright + colors.cyan :
                                         colors.reset;
                     
                     log(`     ${provider.toUpperCase()} (${models.length} models):`, providerColor);
@@ -156,16 +158,26 @@ function displayClassIDInfo() {
                 });
                 
                 // Show API requirements for this specific class
-                const requiredProviders = Object.keys(modelsByProvider).filter(p => p !== 'ollama');
-                if (requiredProviders.length > 0) {
-                    const keyNames = requiredProviders.map(p => 
-                        p === 'openai' ? 'OpenAI API Key' :
-                        p === 'anthropic' ? 'Anthropic API Key' :
-                        `${p.toUpperCase()} API Key`
+                const nativeProviders = Object.keys(modelsByProvider).filter(p => p !== 'ollama' && p !== 'openrouter');
+                const hasOpenRouterModels = !!modelsByProvider['openrouter'];
+                
+                if (nativeProviders.length > 0 || hasOpenRouterModels) {
+                    const nativeKeyNames = nativeProviders.map(p => 
+                        p === 'openai' ? 'OpenAI' :
+                        p === 'anthropic' ? 'Anthropic' :
+                        p === 'xai' ? 'xAI' :
+                        p.charAt(0).toUpperCase() + p.slice(1)
                     );
-                    log(`   Required API Keys: ${keyNames.join(', ')}`, colors.yellow);
+                    
+                    if (nativeProviders.length > 0 && hasOpenRouterModels) {
+                        log(`   API Keys: ${nativeKeyNames.join(', ')} (native or via OpenRouter) + OpenRouter API Key`, colors.yellow);
+                    } else if (hasOpenRouterModels) {
+                        log(`   API Keys: OpenRouter API Key`, colors.yellow);
+                    } else {
+                        log(`   API Keys: ${nativeKeyNames.join(', ')} (native keys or OpenRouter API Key)`, colors.yellow);
+                    }
                 } else {
-                    log(`   Required API Keys: None (Ollama models only)`, colors.green);
+                    log(`   API Keys: None (Ollama models only)`, colors.green);
                 }
             } else {
                 log(`   Models: None (Empty class)`, colors.red);
@@ -189,36 +201,38 @@ function displayClassIDInfo() {
         
         activeClasses.forEach(cls => {
             const providers = Array.from(providersByClass[cls.id]);
+            const nativeKeys = providers.filter(p => p !== 'ollama' && p !== 'openrouter');
+            const needsOpenRouter = providers.includes('openrouter');
             
-            // Special handling for ClassID 130 (Hyperbolic)
-            if (cls.id === 130) {
-                if (cls.status === 'EMPTY') {
-                    log(`ClassID ${cls.id} (${cls.name}): Will require Hyperbolic API Key when active`, colors.yellow);
-                } else {
-                    log(`ClassID ${cls.id} (${cls.name}): Requires Hyperbolic API Key`, colors.yellow);
-                }
-                return;
-            }
-            
-            const apiKeys = providers.filter(p => p !== 'ollama').map(p => 
-                p === 'openai' ? 'OpenAI API Key' :
-                p === 'anthropic' ? 'Anthropic API Key' :
-                `${p} API Key`
-            );
-            
-            if (apiKeys.length === 0) {
+            if (nativeKeys.length === 0 && !needsOpenRouter) {
                 log(`ClassID ${cls.id} (${cls.name}): No API keys required (Ollama only)`, colors.green);
             } else {
-                log(`ClassID ${cls.id} (${cls.name}): Requires ${apiKeys.join(', ')}`, colors.yellow);
+                const keyNames = nativeKeys.map(p => 
+                    p === 'openai' ? 'OpenAI' :
+                    p === 'anthropic' ? 'Anthropic' :
+                    p === 'xai' ? 'xAI' :
+                    p.charAt(0).toUpperCase() + p.slice(1)
+                );
+                
+                let keyText = '';
+                if (nativeKeys.length > 0 && needsOpenRouter) {
+                    keyText = `${keyNames.join(', ')} (native or via OpenRouter) + OpenRouter`;
+                } else if (needsOpenRouter) {
+                    keyText = 'OpenRouter';
+                } else {
+                    keyText = `${keyNames.join(', ')} (native keys or OpenRouter)`;
+                }
+                log(`ClassID ${cls.id} (${cls.name}): ${keyText}`, colors.yellow);
             }
         });
 
         log('\n💡 Recommendations:', colors.bright + colors.cyan);
         log('-'.repeat(20), colors.dim);
         log('• For open source only: Use ClassID 129 (no API keys needed)', colors.green);
-        log('• For commercial models: Use ClassID 128 (requires OpenAI + Anthropic keys)', colors.yellow);
-        log('• For Hyperbolic API: Use ClassID 130 (requires Hyperbolic API key)', colors.cyan);
-        log('• For mixed usage: Multiple ClassIDs (requires respective API keys)', colors.blue);
+        log('• For commercial models: Use ClassID 128 (requires OpenAI + Anthropic keys, or OpenRouter key)', colors.yellow);
+        log('• For Hyperbolic API: Use ClassID 130 (requires Hyperbolic key, or OpenRouter key)', colors.cyan);
+        log('• For OpenRouter compatible: Use ClassID 132 (works with just an OpenRouter key)', colors.blue);
+        log('• An OpenRouter API key can substitute for any native provider key', colors.bright + colors.green);
         log('• Leave API keys blank if you don\'t plan to use those providers\n', colors.dim);
 
         return { 
