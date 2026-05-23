@@ -2160,25 +2160,13 @@ fi
 
 echo -e "${GREEN}Upgrade completed successfully!${NC}"
 
-# Post-upgrade invariants check — best-effort, advisory only.
-if [ -x "$TARGET_DIR/arbiter-doctor.sh" ]; then
-    echo ""
-    echo -e "${BLUE}Running post-upgrade health check ($TARGET_DIR/arbiter-doctor.sh --quiet)...${NC}"
-    if "$TARGET_DIR/arbiter-doctor.sh" --quiet; then
-        echo -e "${GREEN}Post-upgrade health check: HEALTHY${NC}"
-    else
-        cc=$?
-        case "$cc" in
-            1) echo -e "${YELLOW}Post-upgrade health check: WARNINGS (exit 1). Review output above.${NC}" ;;
-            2) echo -e "${RED}Post-upgrade health check: FAILURES (exit 2). Run: $TARGET_DIR/arbiter-doctor.sh --fix${NC}" ;;
-            3) echo -e "${RED}Post-upgrade health check: CRITICAL (exit 3). Run: $TARGET_DIR/arbiter-doctor.sh --fix${NC}" ;;
-            *) echo -e "${YELLOW}Post-upgrade health check returned exit $cc${NC}" ;;
-        esac
-    fi
-fi
-
 # Clear the upgrade in progress flag
 UPGRADE_IN_PROGRESS=0
+
+# Track whether we (re)started services so the post-upgrade health check
+# only runs against a live arbiter — otherwise it would FAIL on every
+# service check just because the user hasn't restarted yet.
+SERVICES_STARTED_FOR_DOCTOR=0
 
 # Ask if user wants to restart the arbiter
 if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
@@ -2215,6 +2203,7 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
             echo -e "${YELLOW}The AI Node may still be starting up and could take a few minutes to fully initialize.${NC}"
             echo -e "${YELLOW}Run the status script after a few minutes to verify: $TARGET_DIR/arbiter-status.sh${NC}"
         fi
+        SERVICES_STARTED_FOR_DOCTOR=1
     else
         echo -e "${YELLOW}Please restart the arbiter manually when ready:${NC}"
         echo -e "${YELLOW}  - $TARGET_DIR/start-arbiter.sh${NC}"
@@ -2255,8 +2244,38 @@ else
             echo -e "${YELLOW}The AI Node may still be starting up and could take a few minutes to fully initialize.${NC}"
             echo -e "${YELLOW}Run the status script after a few minutes to verify: $TARGET_DIR/arbiter-status.sh${NC}"
         fi
+        SERVICES_STARTED_FOR_DOCTOR=1
     else
         echo -e "${BLUE}You can start the arbiter later using: $TARGET_DIR/start-arbiter.sh${NC}"
+    fi
+fi
+
+# Post-upgrade health check. Best-effort, advisory only.
+# Skipped if services weren't (re)started — otherwise every service check
+# would FAIL purely because nothing is listening.
+if [ -x "$TARGET_DIR/arbiter-doctor.sh" ]; then
+    if [ "$SERVICES_STARTED_FOR_DOCTOR" = "1" ]; then
+        # Brief additional settling time: the AI Node (next dev) can take
+        # tens of seconds to compile + bind to :3000 on first boot.
+        echo ""
+        echo -e "${BLUE}Letting services settle for 10s before health check...${NC}"
+        sleep 10
+        echo -e "${BLUE}Running post-upgrade health check ($TARGET_DIR/arbiter-doctor.sh --quiet)...${NC}"
+        if "$TARGET_DIR/arbiter-doctor.sh" --quiet; then
+            echo -e "${GREEN}Post-upgrade health check: HEALTHY${NC}"
+        else
+            cc=$?
+            case "$cc" in
+                1) echo -e "${YELLOW}Post-upgrade health check: WARNINGS (exit 1). Review output above.${NC}" ;;
+                2) echo -e "${RED}Post-upgrade health check: FAILURES (exit 2). Run: $TARGET_DIR/arbiter-doctor.sh --fix${NC}" ;;
+                3) echo -e "${RED}Post-upgrade health check: CRITICAL (exit 3). Run: $TARGET_DIR/arbiter-doctor.sh --fix${NC}" ;;
+                *) echo -e "${YELLOW}Post-upgrade health check returned exit $cc${NC}" ;;
+            esac
+        fi
+    else
+        echo ""
+        echo -e "${BLUE}Skipping post-upgrade health check (services were not (re)started).${NC}"
+        echo -e "${BLUE}After you start the arbiter, run: $TARGET_DIR/arbiter-doctor.sh${NC}"
     fi
 fi
 

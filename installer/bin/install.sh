@@ -965,6 +965,7 @@ echo
 
 # ask_yes_no function is now defined at the top of this script
 
+SERVICES_STARTED_FOR_DOCTOR=0
 if ask_yes_no "Start Verdikta Arbiter services?"; then
     echo -e "${BLUE}Starting Verdikta Arbiter services...${NC}"
     echo -e "${BLUE}This may take a few minutes for all services to fully initialize.${NC}"
@@ -974,6 +975,7 @@ if ask_yes_no "Start Verdikta Arbiter services?"; then
     
     echo -e "${GREEN}Verdikta Arbiter services have been started!${NC}"
     echo -e "${BLUE}You can check the status with: $INSTALL_DIR/arbiter-status.sh${NC}"
+    SERVICES_STARTED_FOR_DOCTOR=1
 else
     echo -e "${BLUE}Services are not running. You can start them later with:${NC}"
     echo -e "  $INSTALL_DIR/start-arbiter.sh"
@@ -1016,19 +1018,30 @@ echo "To back up your installation, run: bash $INSTALL_DIR/installer/util/backup
 echo "To check arbiter health: bash $INSTALL_DIR/arbiter-doctor.sh"
 
 # Post-install invariants check — best-effort, advisory only.
+# Only runs if services were actually started: otherwise every service check
+# would FAIL purely because nothing is listening.
 if [ -x "$INSTALL_DIR/arbiter-doctor.sh" ]; then
-    echo ""
-    echo -e "${BLUE}Running post-install health check ($INSTALL_DIR/arbiter-doctor.sh --quiet)...${NC}"
-    if "$INSTALL_DIR/arbiter-doctor.sh" --quiet; then
-        echo -e "${GREEN}Post-install health check: HEALTHY${NC}"
+    if [ "${SERVICES_STARTED_FOR_DOCTOR:-0}" = "1" ]; then
+        # Brief settling time for AI Node (next dev) to compile + bind :3000.
+        echo ""
+        echo -e "${BLUE}Letting services settle for 15s before health check...${NC}"
+        sleep 15
+        echo -e "${BLUE}Running post-install health check ($INSTALL_DIR/arbiter-doctor.sh --quiet)...${NC}"
+        if "$INSTALL_DIR/arbiter-doctor.sh" --quiet; then
+            echo -e "${GREEN}Post-install health check: HEALTHY${NC}"
+        else
+            cc=$?
+            case "$cc" in
+                1) echo -e "${YELLOW}Post-install health check: WARNINGS (exit 1). Review output above.${NC}" ;;
+                2) echo -e "${RED}Post-install health check: FAILURES (exit 2). Install completed but the arbiter is not operational. Run: $INSTALL_DIR/arbiter-doctor.sh --fix${NC}" ;;
+                3) echo -e "${RED}Post-install health check: CRITICAL (exit 3). Install completed but the arbiter cannot function. Run: $INSTALL_DIR/arbiter-doctor.sh --fix${NC}" ;;
+                *) echo -e "${YELLOW}Post-install health check returned exit $cc${NC}" ;;
+            esac
+        fi
     else
-        cc=$?
-        case "$cc" in
-            1) echo -e "${YELLOW}Post-install health check: WARNINGS (exit 1). Review output above.${NC}" ;;
-            2) echo -e "${RED}Post-install health check: FAILURES (exit 2). Install completed but the arbiter is not operational. Run: $INSTALL_DIR/arbiter-doctor.sh --fix${NC}" ;;
-            3) echo -e "${RED}Post-install health check: CRITICAL (exit 3). Install completed but the arbiter cannot function. Run: $INSTALL_DIR/arbiter-doctor.sh --fix${NC}" ;;
-            *) echo -e "${YELLOW}Post-install health check returned exit $cc${NC}" ;;
-        esac
+        echo ""
+        echo -e "${BLUE}Skipping post-install health check (services were not started).${NC}"
+        echo -e "${BLUE}After you start the arbiter, run: $INSTALL_DIR/arbiter-doctor.sh${NC}"
     fi
 fi
 echo ""
