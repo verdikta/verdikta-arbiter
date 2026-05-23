@@ -793,14 +793,20 @@ check_chainlink_txm() {
 check_external_adapter() {
     section_header "EXTERNAL ADAPTER"
 
-    # commitStore mode (the bug from today)
+    # commitStore mode.
+    # USE_FILE=false makes the EA keep commits in RAM only — fine for normal
+    # steady-state operation (where reveals follow commits within seconds and
+    # the EA process isn't bounced), but commits are lost if the EA restarts
+    # mid-flight. Treat as WARN, not FAIL: it's a latent footgun rather than
+    # an active outage. Real outages (e.g. unfunded node, missing auth) are
+    # what actually break running arbiters.
     local cs_file="$INSTALL_DIR/external-adapter/src/services/commitStore.js"
     if [ -f "$cs_file" ]; then
         if grep -qE '^const[[:space:]]+USE_FILE[[:space:]]*=[[:space:]]*true' "$cs_file"; then
-            emit PASS ea.commit_store_mode "USE_FILE=true (commits persist across restarts)" ""
+            emit PASS ea.commit_store_mode "USE_FILE=true (commits persist across EA restarts)" ""
         elif grep -qE '^const[[:space:]]+USE_FILE[[:space:]]*=[[:space:]]*false' "$cs_file"; then
-            emit FAIL ea.commit_store_mode "USE_FILE=false — commits LOST on every EA restart" \
-                 "Patch $cs_file to USE_FILE = true, then restart EA"
+            emit WARN ea.commit_store_mode "USE_FILE=false — in-flight commits are RAM-only and would be lost across an EA restart" \
+                 "Steady-state operation is unaffected; only matters during recovery / rapid restarts. To eliminate the risk: patch $cs_file (USE_FILE=true) and restart EA."
         else
             emit WARN ea.commit_store_mode "could not parse USE_FILE flag in commitStore.js" ""
         fi

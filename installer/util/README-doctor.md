@@ -11,7 +11,7 @@ caused the April–May 2026 incident:
 | `setAuthorizedSenders` was never called | `chain.is_authorized`, `chain.authorized_senders_list` (CRIT) |
 | Chainlink TXM has stuck unconfirmed transactions | `txm.stuck_unconfirmed` (FAIL) |
 | Chainlink local nonce out of sync with chain | `txm.local_nonce_vs_chain` (FAIL) |
-| External Adapter `commitStore` runs in RAM-only mode and loses commits across restarts | `ea.commit_store_mode` (FAIL) |
+| External Adapter `commitStore` runs in RAM-only mode and would lose commits across restarts | `ea.commit_store_mode` (WARN — latent risk, not active outage) |
 | RPC keeps rejecting fulfill txs with "Invalid params" | `txm.invalid_params_recent` (FAIL) |
 | Chainlink emitting CRIT lines | `txm.crit_lines_recent` (FAIL) |
 | Operator contract not deployed at configured address (e.g. wrong network) | `chain.operator_code` (FAIL) |
