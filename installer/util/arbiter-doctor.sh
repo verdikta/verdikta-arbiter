@@ -933,6 +933,50 @@ check_ai_node() {
         emit WARN ai.health "/api/health returned status='$ok'" ""
     fi
 
+    # JUSTIFIER_MODEL sanity. Format is Provider:model-name; common foot-gun
+    # is picking an Ollama model on a host where Ollama isn't running (every
+    # reveal then fails to produce a final justification).
+    local ai_env_local="$INSTALL_DIR/ai-node/.env.local"
+    if [ -f "$ai_env_local" ]; then
+        local justifier
+        justifier=$(grep -E '^JUSTIFIER_MODEL=' "$ai_env_local" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+        if [ -z "$justifier" ]; then
+            emit FAIL ai.justifier_model "JUSTIFIER_MODEL not set in ai-node/.env.local" \
+                 "Run $INSTALL_DIR/update-justifier-model.sh to set it (e.g. OpenAI:gpt-5-nano-2025-08-07)."
+        elif [[ "$justifier" != *:* ]]; then
+            emit FAIL ai.justifier_model "JUSTIFIER_MODEL='$justifier' is malformed (missing ':')" \
+                 "Format must be Provider:model-name. Run $INSTALL_DIR/update-justifier-model.sh."
+        else
+            local _prov_lc
+            _prov_lc=$(printf '%s' "${justifier%%:*}" | tr '[:upper:]' '[:lower:]')
+            case "$_prov_lc" in
+                openai|anthropic|xai|grok|hyperbolic|"hyperbolic api")
+                    emit PASS ai.justifier_model "JUSTIFIER_MODEL=$justifier  (routable via native key or OpenRouter)" ""
+                    ;;
+                ollama|open-source)
+                    # Ollama is local-only; check the daemon
+                    if curl -fsS --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+                        local _model="${justifier#*:}"
+                        if curl -fsS --max-time 3 http://localhost:11434/api/tags 2>/dev/null \
+                            | grep -q "\"name\":\"$_model\""; then
+                            emit PASS ai.justifier_model "JUSTIFIER_MODEL=$justifier  (Ollama up, model pulled)" ""
+                        else
+                            emit FAIL ai.justifier_model "JUSTIFIER_MODEL=$justifier  Ollama running but '$_model' is NOT pulled" \
+                                 "Run 'ollama pull $_model' or switch class via $INSTALL_DIR/update-justifier-model.sh."
+                        fi
+                    else
+                        emit FAIL ai.justifier_model "JUSTIFIER_MODEL=$justifier  but Ollama daemon NOT reachable at :11434" \
+                             "Ollama is local-only — start it + pull the model, OR switch to a non-Ollama class via $INSTALL_DIR/update-justifier-model.sh (e.g. OpenAI:gpt-5-nano-2025-08-07)."
+                    fi
+                    ;;
+                *)
+                    emit FAIL ai.justifier_model "JUSTIFIER_MODEL=$justifier  unknown provider class '${justifier%%:*}'" \
+                         "Accepted: OpenAI, Anthropic, xAI, Hyperbolic, Open-source/Ollama. Run $INSTALL_DIR/update-justifier-model.sh."
+                    ;;
+            esac
+        fi
+    fi
+
     # Recent error count.
     # Be conservative about what counts as a "real" AI Node error: Next.js logs
     # many bot-scanner-induced 404s as `Error: Failed to find Server Action`,

@@ -597,6 +597,79 @@ EOL
         echo -e "${YELLOW}  The new Pinata JWT was saved to .api_keys but not applied to the EA.${NC}"
         echo -e "${YELLOW}  After installing the EA, run: $TARGET_DIR/update-pinata-key.sh${NC}"
     fi
+
+    # ──────────────────────────────────────────────────────────────────────
+    # JUSTIFIER_MODEL — the AI Node's final-justification model. Previously
+    # not touched by the upgrade flow at all, so operators who picked the
+    # wrong value at install time (commonly: an Ollama model on a host
+    # without a running Ollama daemon) had no supported way to fix it
+    # through this script.
+    # ──────────────────────────────────────────────────────────────────────
+    AI_NODE_ENV_LOCAL="$TARGET_DIR/ai-node/.env.local"
+    CURRENT_JUSTIFIER=""
+    if [ -f "$AI_NODE_ENV_LOCAL" ] && grep -q '^JUSTIFIER_MODEL=' "$AI_NODE_ENV_LOCAL"; then
+        CURRENT_JUSTIFIER=$(grep '^JUSTIFIER_MODEL=' "$AI_NODE_ENV_LOCAL" | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    fi
+    echo ""
+    echo -e "${BLUE}AI Node Justifier Model${NC}"
+    echo -e "${YELLOW}The justifier produces the final consolidated explanation for each${NC}"
+    echo -e "${YELLOW}arbitration. Format: Provider:model-name (case-insensitive provider).${NC}"
+    echo -e "${YELLOW}Accepted providers: OpenAI, Anthropic, xAI, Hyperbolic, Open-source (Ollama).${NC}"
+    echo -e "${YELLOW}Ollama is local-only — picking it without a running Ollama daemon breaks${NC}"
+    echo -e "${YELLOW}every reveal. For OpenRouter-only operators, OpenAI:gpt-5-nano-2025-08-07${NC}"
+    echo -e "${YELLOW}is a sensible lightweight default.${NC}"
+    if [ -n "$CURRENT_JUSTIFIER" ]; then
+        echo -e "${BLUE}Current JUSTIFIER_MODEL: $CURRENT_JUSTIFIER${NC}"
+    else
+        echo -e "${BLUE}Current JUSTIFIER_MODEL: (not set)${NC}"
+    fi
+
+    NEW_JUSTIFIER=""
+    if ask_yes_no "Update JUSTIFIER_MODEL now?" "n"; then
+        read -p "Enter new JUSTIFIER_MODEL (blank to keep current): " NEW_JUSTIFIER
+        if [ -n "$NEW_JUSTIFIER" ]; then
+            # Validate basic shape
+            if [[ "$NEW_JUSTIFIER" != *:* ]]; then
+                echo -e "${RED}Invalid value: missing ':' separator. Skipping JUSTIFIER_MODEL update.${NC}"
+            else
+                _prov=$(echo "${NEW_JUSTIFIER%%:*}" | tr '[:upper:]' '[:lower:]')
+                case "$_prov" in
+                    openai|anthropic|xai|grok|hyperbolic|"hyperbolic api"|ollama|open-source)
+                        if [ -f "$AI_NODE_ENV_LOCAL" ]; then
+                            if grep -q '^JUSTIFIER_MODEL=' "$AI_NODE_ENV_LOCAL"; then
+                                sed -i.bak "s|^JUSTIFIER_MODEL=.*|JUSTIFIER_MODEL=${NEW_JUSTIFIER}|" "$AI_NODE_ENV_LOCAL"
+                            else
+                                printf '\nJUSTIFIER_MODEL=%s\n' "${NEW_JUSTIFIER}" >> "$AI_NODE_ENV_LOCAL"
+                            fi
+                            echo -e "${GREEN}JUSTIFIER_MODEL set to: $NEW_JUSTIFIER${NC}"
+                            echo -e "${BLUE}If the AI Node is currently running, restart it to pick up the change:${NC}"
+                            echo -e "${BLUE}  $TARGET_DIR/ai-node/stop.sh && $TARGET_DIR/ai-node/start.sh${NC}"
+                            # Ollama-without-daemon foot-gun warning
+                            if [ "$_prov" = "ollama" ] || [ "$_prov" = "open-source" ]; then
+                                if ! curl -fsS --max-time 3 http://localhost:11434/api/tags >/dev/null 2>&1; then
+                                    echo -e "${YELLOW}⚠ You selected an Ollama justifier but no Ollama daemon is running on localhost:11434.${NC}"
+                                    echo -e "${YELLOW}  Ollama is LOCAL-ONLY — never routed via OpenRouter. Without Ollama${NC}"
+                                    echo -e "${YELLOW}  running + the model pulled, every reveal will fail. Either start${NC}"
+                                    echo -e "${YELLOW}  Ollama and 'ollama pull ${NEW_JUSTIFIER#*:}', or pick a non-Ollama${NC}"
+                                    echo -e "${YELLOW}  class (e.g. OpenAI:gpt-5-nano-2025-08-07).${NC}"
+                                fi
+                            fi
+                        else
+                            echo -e "${YELLOW}⚠ ai-node/.env.local not found at $AI_NODE_ENV_LOCAL${NC}"
+                            echo -e "${YELLOW}  Save the JUSTIFIER_MODEL value for later and re-run after the AI Node is installed:${NC}"
+                            echo -e "${YELLOW}  $TARGET_DIR/update-justifier-model.sh --model \"$NEW_JUSTIFIER\"${NC}"
+                        fi
+                        ;;
+                    *)
+                        echo -e "${RED}Unknown provider class '${NEW_JUSTIFIER%%:*}'. Skipping update.${NC}"
+                        echo -e "${YELLOW}Accepted: OpenAI, Anthropic, xAI, Hyperbolic, Open-source/Ollama${NC}"
+                        ;;
+                esac
+            fi
+        else
+            echo -e "${BLUE}Keeping existing JUSTIFIER_MODEL.${NC}"
+        fi
+    fi
 else
     echo -e "${BLUE}Skipping API key configuration. Existing keys will be preserved.${NC}"
 fi
@@ -1409,7 +1482,8 @@ cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
 for _util in \
     unregister-oracle.sh \
     update-rpc-endpoints.sh \
-    update-pinata-key.sh; do
+    update-pinata-key.sh \
+    update-justifier-model.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
         chmod +x "$TARGET_DIR/$_util"

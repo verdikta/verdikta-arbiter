@@ -542,6 +542,11 @@ if [ -f "$UTIL_DIR/update-pinata-key.sh" ]; then
     cp "$UTIL_DIR/update-pinata-key.sh" "$INSTALL_DIR/update-pinata-key.sh"
     chmod +x "$INSTALL_DIR/update-pinata-key.sh"
 fi
+# Operator rotation tool for the AI Node justifier model.
+if [ -f "$UTIL_DIR/update-justifier-model.sh" ]; then
+    cp "$UTIL_DIR/update-justifier-model.sh" "$INSTALL_DIR/update-justifier-model.sh"
+    chmod +x "$INSTALL_DIR/update-justifier-model.sh"
+fi
 
 # Make scripts executable in the correct destination directory
 chmod +x "$INSTALL_DIR/start-arbiter.sh"
