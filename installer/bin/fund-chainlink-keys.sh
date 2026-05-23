@@ -918,16 +918,43 @@ fi
 WALLET_BALANCE_ETH=$(wei_to_eth "$WALLET_BALANCE_WEI")
 echo -e "${GREEN}Current wallet balance: $WALLET_BALANCE_ETH $CURRENCY_NAME${NC}"
 
-# Check if wallet has sufficient funds
+# Compute actual gas estimate from current network conditions BEFORE checking
+# the wallet's balance, so the precondition can be sized to what the txes
+# will actually cost rather than a hardcoded constant. The old code used a
+# fixed 0.01 ETH "buffer", which was sized for L1 Ethereum at 30-100 gwei
+# but is ~5 orders of magnitude too large for Base (~0.001-0.01 gwei), and
+# rejected funding requests on wallets that had plenty of ETH for the job.
 TOTAL_FUNDING_NEEDED=$(echo "$FUNDING_AMOUNT * $KEY_COUNT" | bc -l)
-MIN_BALANCE_NEEDED=$(echo "$TOTAL_FUNDING_NEEDED + 0.01" | bc -l)  # Add buffer for gas
+
+# Get current gas price (RPC-driven, falls back to network-aware default).
+echo -e "${BLUE}Getting current gas price...${NC}"
+GAS_PRICE=$(get_gas_price "$RPC_URL")
+GAS_PRICE_GWEI=$(echo "scale=4; $GAS_PRICE / 1000000000" | bc -l)
+echo -e "${GREEN}Current gas price: $GAS_PRICE_GWEI gwei${NC}"
+
+# Calculate total cost including gas (21000 gas per simple ETH transfer)
+FUNDING_AMOUNT_WEI=$(eth_to_wei "$FUNDING_AMOUNT")
+ESTIMATED_GAS_PER_TX="21000"
+GAS_COST_PER_TX=$(echo "$ESTIMATED_GAS_PER_TX * $GAS_PRICE" | bc -l)
+GAS_COST_PER_TX_ETH=$(wei_to_eth "$GAS_COST_PER_TX")
+TOTAL_GAS_COST_ETH=$(echo "$GAS_COST_PER_TX_ETH * $KEY_COUNT" | bc -l)
+TOTAL_COST_ETH=$(echo "$TOTAL_FUNDING_NEEDED + $TOTAL_GAS_COST_ETH" | bc -l)
+
+# Pre-flight balance check: require enough for the funding amount plus a 5x
+# safety margin on the gas estimate. The margin absorbs gas spikes between
+# estimation and broadcast without bloating the requirement on networks
+# where gas is cheap.
+GAS_SAFETY_FACTOR=5
+GAS_BUFFER_ETH=$(echo "$TOTAL_GAS_COST_ETH * $GAS_SAFETY_FACTOR" | bc -l)
+MIN_BALANCE_NEEDED=$(echo "$TOTAL_FUNDING_NEEDED + $GAS_BUFFER_ETH" | bc -l)
 
 if (( $(echo "$WALLET_BALANCE_ETH < $MIN_BALANCE_NEEDED" | bc -l) )); then
     echo -e "${RED}Error: Insufficient wallet balance${NC}"
     echo -e "${RED}  Available: $WALLET_BALANCE_ETH $CURRENCY_NAME${NC}"
-    echo -e "${RED}  Required: $MIN_BALANCE_NEEDED $CURRENCY_NAME (includes gas buffer)${NC}"
+    echo -e "${RED}  Required:  $MIN_BALANCE_NEEDED $CURRENCY_NAME${NC}"
+    echo -e "${RED}             (= $TOTAL_FUNDING_NEEDED funding + $GAS_BUFFER_ETH gas buffer at ${GAS_SAFETY_FACTOR}x estimate)${NC}"
     echo ""
-    
+
     if [ "$NETWORK_TYPE" = "testnet" ]; then
         echo -e "${YELLOW}To get testnet funds:${NC}"
         echo -e "${YELLOW}  Visit: https://www.alchemy.com/faucets/base-sepolia${NC}"
@@ -938,20 +965,6 @@ if (( $(echo "$WALLET_BALANCE_ETH < $MIN_BALANCE_NEEDED" | bc -l) )); then
     fi
     exit 1
 fi
-
-# Get current gas price
-echo -e "${BLUE}Getting current gas price...${NC}"
-GAS_PRICE=$(get_gas_price "$RPC_URL")
-GAS_PRICE_GWEI=$(echo "scale=2; $GAS_PRICE / 1000000000" | bc -l)
-echo -e "${GREEN}Current gas price: $GAS_PRICE_GWEI gwei${NC}"
-
-# Calculate total cost including gas
-FUNDING_AMOUNT_WEI=$(eth_to_wei "$FUNDING_AMOUNT")
-ESTIMATED_GAS_PER_TX="21000"  # Standard ETH transfer
-GAS_COST_PER_TX=$(echo "$ESTIMATED_GAS_PER_TX * $GAS_PRICE" | bc -l)
-GAS_COST_PER_TX_ETH=$(wei_to_eth "$GAS_COST_PER_TX")
-TOTAL_GAS_COST_ETH=$(echo "$GAS_COST_PER_TX_ETH * $KEY_COUNT" | bc -l)
-TOTAL_COST_ETH=$(echo "$TOTAL_FUNDING_NEEDED + $TOTAL_GAS_COST_ETH" | bc -l)
 
 echo ""
 echo -e "${BLUE}Funding Summary:${NC}"
