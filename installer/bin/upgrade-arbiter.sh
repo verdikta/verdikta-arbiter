@@ -1346,6 +1346,16 @@ cp "$UTIL_DIR/start-arbiter.sh" "$TARGET_DIR/start-arbiter.sh"
 cp "$UTIL_DIR/stop-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh"
 cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
 
+# Diagnostic tools (doctor + remote-doctor) — best-effort copy
+[ -f "$UTIL_DIR/arbiter-doctor.sh" ] && {
+    cp "$UTIL_DIR/arbiter-doctor.sh" "$TARGET_DIR/arbiter-doctor.sh"
+    chmod +x "$TARGET_DIR/arbiter-doctor.sh"
+}
+[ -f "$UTIL_DIR/remote-doctor.sh" ] && {
+    cp "$UTIL_DIR/remote-doctor.sh" "$TARGET_DIR/remote-doctor.sh"
+    chmod +x "$TARGET_DIR/remote-doctor.sh"
+}
+
 # Copy the standalone registration script (if it exists)
 if [ -f "$UTIL_DIR/register-oracle.sh" ]; then
     cp "$UTIL_DIR/register-oracle.sh" "$TARGET_DIR/register-oracle.sh"
@@ -2149,6 +2159,23 @@ if [ "$KEYS_FUNDED" = "false" ]; then
 fi
 
 echo -e "${GREEN}Upgrade completed successfully!${NC}"
+
+# Post-upgrade invariants check — best-effort, advisory only.
+if [ -x "$TARGET_DIR/arbiter-doctor.sh" ]; then
+    echo ""
+    echo -e "${BLUE}Running post-upgrade health check ($TARGET_DIR/arbiter-doctor.sh --quiet)...${NC}"
+    if "$TARGET_DIR/arbiter-doctor.sh" --quiet; then
+        echo -e "${GREEN}Post-upgrade health check: HEALTHY${NC}"
+    else
+        cc=$?
+        case "$cc" in
+            1) echo -e "${YELLOW}Post-upgrade health check: WARNINGS (exit 1). Review output above.${NC}" ;;
+            2) echo -e "${RED}Post-upgrade health check: FAILURES (exit 2). Run: $TARGET_DIR/arbiter-doctor.sh --fix${NC}" ;;
+            3) echo -e "${RED}Post-upgrade health check: CRITICAL (exit 3). Run: $TARGET_DIR/arbiter-doctor.sh --fix${NC}" ;;
+            *) echo -e "${YELLOW}Post-upgrade health check returned exit $cc${NC}" ;;
+        esac
+    fi
+fi
 
 # Clear the upgrade in progress flag
 UPGRADE_IN_PROGRESS=0

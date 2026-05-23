@@ -527,6 +527,17 @@ cp "$UTIL_DIR/start-arbiter.sh" "$INSTALL_DIR/start-arbiter.sh"
 cp "$UTIL_DIR/stop-arbiter.sh" "$INSTALL_DIR/stop-arbiter.sh"
 cp "$UTIL_DIR/arbiter-status.sh" "$INSTALL_DIR/arbiter-status.sh"
 
+# Diagnostic tools (doctor + remote-doctor). Best-effort: continue install if
+# missing, since they're non-critical for runtime.
+if [ -f "$UTIL_DIR/arbiter-doctor.sh" ]; then
+    cp "$UTIL_DIR/arbiter-doctor.sh" "$INSTALL_DIR/arbiter-doctor.sh"
+    chmod +x "$INSTALL_DIR/arbiter-doctor.sh"
+fi
+if [ -f "$UTIL_DIR/remote-doctor.sh" ]; then
+    cp "$UTIL_DIR/remote-doctor.sh" "$INSTALL_DIR/remote-doctor.sh"
+    chmod +x "$INSTALL_DIR/remote-doctor.sh"
+fi
+
 # Make scripts executable in the correct destination directory
 chmod +x "$INSTALL_DIR/start-arbiter.sh"
 chmod +x "$INSTALL_DIR/stop-arbiter.sh"
@@ -1002,6 +1013,24 @@ echo
 echo "All utility scripts are available in: $INSTALL_DIR/installer/util/"
 echo "For troubleshooting, consult the documentation in the installer/docs directory."
 echo "To back up your installation, run: bash $INSTALL_DIR/installer/util/backup-restore.sh backup"
+echo "To check arbiter health: bash $INSTALL_DIR/arbiter-doctor.sh"
+
+# Post-install invariants check — best-effort, advisory only.
+if [ -x "$INSTALL_DIR/arbiter-doctor.sh" ]; then
+    echo ""
+    echo -e "${BLUE}Running post-install health check ($INSTALL_DIR/arbiter-doctor.sh --quiet)...${NC}"
+    if "$INSTALL_DIR/arbiter-doctor.sh" --quiet; then
+        echo -e "${GREEN}Post-install health check: HEALTHY${NC}"
+    else
+        cc=$?
+        case "$cc" in
+            1) echo -e "${YELLOW}Post-install health check: WARNINGS (exit 1). Review output above.${NC}" ;;
+            2) echo -e "${RED}Post-install health check: FAILURES (exit 2). Install completed but the arbiter is not operational. Run: $INSTALL_DIR/arbiter-doctor.sh --fix${NC}" ;;
+            3) echo -e "${RED}Post-install health check: CRITICAL (exit 3). Install completed but the arbiter cannot function. Run: $INSTALL_DIR/arbiter-doctor.sh --fix${NC}" ;;
+            *) echo -e "${YELLOW}Post-install health check returned exit $cc${NC}" ;;
+        esac
+    fi
+fi
 echo ""
 echo "ClassID Model Pool Integration:"
 echo "  - Your AI Node has been configured with ClassID model pools"
