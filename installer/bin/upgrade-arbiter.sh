@@ -1356,6 +1356,30 @@ cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
     chmod +x "$TARGET_DIR/remote-doctor.sh"
 }
 
+# Refresh remaining operator-facing utility scripts that install.sh deploys
+# to the install root. Previously these were copied only on initial install,
+# so any bug fix shipped via `git pull && upgrade-arbiter.sh` would not reach
+# the actually-executed copy in the install dir. Best-effort: missing source
+# files just skip without aborting the upgrade.
+for _util in \
+    unregister-oracle.sh \
+    update-rpc-endpoints.sh; do
+    if [ -f "$UTIL_DIR/$_util" ]; then
+        cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
+        chmod +x "$TARGET_DIR/$_util"
+    fi
+done
+# These live in installer/bin/ rather than installer/util/
+for _bin in \
+    fund-chainlink-keys.sh \
+    recover-chainlink-funds.sh \
+    key-management.sh; do
+    if [ -f "$SCRIPT_DIR/$_bin" ]; then
+        cp "$SCRIPT_DIR/$_bin" "$TARGET_DIR/$_bin"
+        chmod +x "$TARGET_DIR/$_bin"
+    fi
+done
+
 # Copy the standalone registration script (if it exists)
 if [ -f "$UTIL_DIR/register-oracle.sh" ]; then
     cp "$UTIL_DIR/register-oracle.sh" "$TARGET_DIR/register-oracle.sh"
