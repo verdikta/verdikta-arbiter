@@ -245,12 +245,89 @@ fi
 ############################################
 # 4. Restart EA (optional)
 ############################################
+
+# Helper: is port 8080 still bound?  Use ss (kernel-backed, reliable) and
+# fall back to lsof only if ss is unavailable. `lsof -i` is known to miss
+# listening sockets on some installs (different cgroup/namespace, long-
+# running process), which is exactly the kind of false-clear that causes
+# orphaned listeners to survive a "successful" stop.sh.
+port_8080_held() {
+    if command -v ss >/dev/null 2>&1; then
+        ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE '[:.]8080$' && return 0
+        return 1
+    fi
+    lsof -nP -iTCP:8080 -sTCP:LISTEN >/dev/null 2>&1
+}
+
+# Helper: find the PID(s) holding port 8080, again preferring ss over lsof.
+port_8080_pids() {
+    if command -v ss >/dev/null 2>&1; then
+        # ss -tlnp prints lines like:  LISTEN 0 511 *:8080 *:* users:(("node",pid=12345,fd=19))
+        ss -tlnp 2>/dev/null \
+            | awk '/[:.]8080[[:space:]]/ {print $0}' \
+            | grep -oE 'pid=[0-9]+' \
+            | cut -d= -f2 \
+            | sort -u
+        return
+    fi
+    lsof -nP -iTCP:8080 -sTCP:LISTEN -t 2>/dev/null | sort -u
+}
+
 if [ "$RESTART" = "1" ]; then
     echo
     echo -e "${C_BLUE}Restarting the External Adapter to pick up the new JWT…${C_NC}"
     if [ -x "$ADAPTER_DIR/stop.sh" ] && [ -x "$ADAPTER_DIR/start.sh" ]; then
-        (cd "$ADAPTER_DIR" && ./stop.sh && sleep 2 && ./start.sh)
-        echo -e "${C_GREEN}  ✓ EA restarted.${C_NC}"
+        # 4.1: run the EA's stop.sh
+        (cd "$ADAPTER_DIR" && ./stop.sh) || true
+
+        # 4.2: belt-and-suspenders — actively confirm port 8080 is free using
+        # ss (which sees listening sockets even when lsof can't). If anything
+        # is still bound, kill it directly; that's the failure mode the
+        # operator hit before this hardening: stop.sh removed the PID file
+        # but a node grandchild still owned the port, and start.sh then
+        # refused to bind because the port looked occupied.
+        for _i in 1 2 3 4 5; do
+            port_8080_held || break
+            sleep 1
+        done
+        if port_8080_held; then
+            stragglers=$(port_8080_pids)
+            if [ -n "$stragglers" ]; then
+                echo -e "${C_YELLOW}  port 8080 still held after stop.sh; killing straggler(s):${C_NC} $stragglers"
+                # SIGTERM first, then SIGKILL after a moment
+                for pid in $stragglers; do kill -15 "$pid" 2>/dev/null || true; done
+                sleep 2
+                for pid in $stragglers; do
+                    if kill -0 "$pid" 2>/dev/null; then
+                        echo -e "${C_YELLOW}  process $pid did not exit on SIGTERM; sending SIGKILL${C_NC}"
+                        kill -9 "$pid" 2>/dev/null || true
+                    fi
+                done
+                sleep 1
+            fi
+        fi
+        if port_8080_held; then
+            echo -e "${C_RED}  port 8080 is STILL held; refusing to start a second EA.${C_NC}"
+            echo -e "${C_YELLOW}  Inspect with:  ss -tlnp | grep :8080${C_NC}"
+            echo -e "${C_YELLOW}  Manual recovery:  $INSTALL_DIR/stop-arbiter.sh && $INSTALL_DIR/start-arbiter.sh${C_NC}"
+            exit 1
+        fi
+
+        # 4.3: actually start the EA back up
+        (cd "$ADAPTER_DIR" && ./start.sh)
+
+        # 4.4: confirm the new EA is up and responding
+        for _i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS --max-time 2 http://localhost:8080/ -o /dev/null 2>/dev/null; then
+                break
+            fi
+            sleep 1
+        done
+        if curl -fsS --max-time 2 http://localhost:8080/ -o /dev/null 2>/dev/null; then
+            echo -e "${C_GREEN}  ✓ EA restarted and responding on :8080${C_NC}"
+        else
+            echo -e "${C_YELLOW}  EA process started but is not yet responding on :8080; check logs.${C_NC}"
+        fi
     else
         echo -e "${C_YELLOW}  stop.sh/start.sh not found at $ADAPTER_DIR; please restart manually.${C_NC}"
     fi

@@ -39,11 +39,20 @@ if [ -f adapter.pid ]; then
     fi
 fi
 
-# Check if port 8080 is already in use
-if lsof -i:8080 > /dev/null 2>&1; then
+# Check if port 8080 is already in use. Prefer lsof, but also consult `ss` —
+# lsof -i silently misses listening sockets in some namespace/cgroup configs
+# and we'd otherwise march forward, try to bind, and get an opaque EADDRINUSE.
+port_8080_in_use() {
+    lsof -i:8080 >/dev/null 2>&1 && return 0
+    if command -v ss >/dev/null 2>&1; then
+        ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE '[:.]8080$' && return 0
+    fi
+    return 1
+}
+if port_8080_in_use; then
     echo "Error: Port 8080 is already in use!"
     echo "Current process(es) using port 8080:"
-    lsof -i:8080
+    (ss -tlnp 2>/dev/null | grep ':8080') || (lsof -i:8080 2>/dev/null)
     echo ""
     echo "Please stop the conflicting process or run './stop.sh' to clean up"
     exit 1
@@ -78,8 +87,8 @@ if ! ps -p $NPM_PID > /dev/null 2>&1; then
     exit 1
 fi
 
-# Check if port is now listening
-if lsof -i:8080 > /dev/null 2>&1; then
+# Check if port is now listening (lsof + ss fallback per above).
+if port_8080_in_use; then
     echo "External Adapter started successfully with PID $NPM_PID"
     echo "Service is listening on port 8080"
 else

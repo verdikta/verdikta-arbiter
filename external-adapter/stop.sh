@@ -37,8 +37,19 @@ if [ -f adapter.pid ]; then
     rm -f adapter.pid
 fi
 
-# 2. Find and stop any process listening on port 8080
+# 2. Find and stop any process listening on port 8080.
+#    Prefer lsof, but fall through to `ss` when lsof returns empty. `lsof -i`
+#    is known to silently miss listening sockets on long-running processes in
+#    some namespace/cgroup setups — leaving orphan listeners after a
+#    "successful" stop. See: update-pinata-key.sh restart hardening.
 PORT_PIDS=$(lsof -ti:8080 2>/dev/null)
+if [ -z "$PORT_PIDS" ] && command -v ss >/dev/null 2>&1; then
+    PORT_PIDS=$(ss -tlnp 2>/dev/null \
+                | awk '/[:.]8080[[:space:]]/ {print $0}' \
+                | grep -oE 'pid=[0-9]+' \
+                | cut -d= -f2 \
+                | sort -u)
+fi
 if [ -n "$PORT_PIDS" ]; then
     echo "Found process(es) on port 8080: $PORT_PIDS"
     for pid in $PORT_PIDS; do
@@ -78,10 +89,18 @@ done
 # Wait a moment for processes to fully terminate
 sleep 2
 
-# Final verification
-if lsof -i:8080 > /dev/null 2>&1; then
+# Final verification — check via both lsof and ss; either positive means
+# something is still bound. lsof-blindness affects detection on some hosts.
+port_8080_still_held() {
+    lsof -i:8080 >/dev/null 2>&1 && return 0
+    if command -v ss >/dev/null 2>&1; then
+        ss -lnt 2>/dev/null | awk '{print $4}' | grep -qE '[:.]8080$' && return 0
+    fi
+    return 1
+}
+if port_8080_still_held; then
     echo "WARNING: Port 8080 is still in use after cleanup"
-    lsof -i:8080
+    (ss -tlnp 2>/dev/null | grep ':8080') || (lsof -i:8080 2>/dev/null)
 else
     if [ $STOPPED -eq 1 ]; then
         echo "External Adapter stopped successfully."
