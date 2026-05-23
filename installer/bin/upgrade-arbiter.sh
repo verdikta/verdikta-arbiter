@@ -552,6 +552,51 @@ EOL
     
     echo -e "${GREEN}API keys saved successfully.${NC}"
     echo -e "${BLUE}Keys will be applied to AI Node during upgrade process.${NC}"
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Apply Pinata JWT to the External Adapter env now (not just .api_keys).
+    # Historically the upgrader updated .api_keys but never touched
+    # external-adapter/.env, where IPFS_PINNING_KEY actually lives — so any
+    # rotation prompted above silently never reached the EA, causing 401
+    # "INVALID_CREDENTIALS" Pinata uploads even after operators thought
+    # they'd updated the key.
+    # ──────────────────────────────────────────────────────────────────────
+    ADAPTER_ENV_FILE="$TARGET_DIR/external-adapter/.env"
+    if [ -f "$ADAPTER_ENV_FILE" ]; then
+        # IPFS_PINNING_KEY ← PINATA_API_KEY
+        if grep -q "^IPFS_PINNING_KEY=" "$ADAPTER_ENV_FILE"; then
+            sed -i.bak "s|^IPFS_PINNING_KEY=.*|IPFS_PINNING_KEY=${PINATA_API_KEY}|" "$ADAPTER_ENV_FILE"
+        else
+            printf '\nIPFS_PINNING_KEY=%s\n' "${PINATA_API_KEY}" >> "$ADAPTER_ENV_FILE"
+        fi
+        # IPFS_PINNING_SERVICE — write a sensible default if absent so the EA
+        # doesn't have to fall back to in-code defaults.
+        if ! grep -q "^IPFS_PINNING_SERVICE=" "$ADAPTER_ENV_FILE"; then
+            printf 'IPFS_PINNING_SERVICE=https://api.pinata.cloud\n' >> "$ADAPTER_ENV_FILE"
+        fi
+        if [ -n "$PINATA_API_KEY" ]; then
+            echo -e "${GREEN}Pinata JWT applied to external-adapter/.env (IPFS_PINNING_KEY).${NC}"
+        else
+            echo -e "${YELLOW}Pinata JWT cleared in external-adapter/.env (IPFS_PINNING_KEY blanked).${NC}"
+            echo -e "${YELLOW}Note: with no JWT, IPFS uploads will fail at runtime.${NC}"
+        fi
+        # Validate JWT format if a key was provided — cheap sanity check.
+        if [ -n "$PINATA_API_KEY" ]; then
+            _segs=$(echo "$PINATA_API_KEY" | awk -F. '{print NF}')
+            if [ "$_segs" != "3" ] || [ "${PINATA_API_KEY:0:3}" != "eyJ" ]; then
+                echo -e "${YELLOW}⚠ Heads up: the value you provided doesn't look like a JWT${NC}"
+                echo -e "${YELLOW}  (expected 3 dot-separated segments starting with 'eyJ'; got $_segs segment(s)).${NC}"
+                echo -e "${YELLOW}  IPFS uploads will fail until a valid JWT is set.${NC}"
+                echo -e "${YELLOW}  Use $TARGET_DIR/update-pinata-key.sh to rotate, or edit $ADAPTER_ENV_FILE directly.${NC}"
+            fi
+        fi
+        echo -e "${BLUE}If the EA is currently running, restart it to pick up the new JWT:${NC}"
+        echo -e "${BLUE}  $TARGET_DIR/external-adapter/stop.sh && $TARGET_DIR/external-adapter/start.sh${NC}"
+    else
+        echo -e "${YELLOW}⚠ external-adapter/.env not found at $ADAPTER_ENV_FILE${NC}"
+        echo -e "${YELLOW}  The new Pinata JWT was saved to .api_keys but not applied to the EA.${NC}"
+        echo -e "${YELLOW}  After installing the EA, run: $TARGET_DIR/update-pinata-key.sh${NC}"
+    fi
 else
     echo -e "${BLUE}Skipping API key configuration. Existing keys will be preserved.${NC}"
 fi
@@ -1363,7 +1408,8 @@ cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
 # files just skip without aborting the upgrade.
 for _util in \
     unregister-oracle.sh \
-    update-rpc-endpoints.sh; do
+    update-rpc-endpoints.sh \
+    update-pinata-key.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
         chmod +x "$TARGET_DIR/$_util"

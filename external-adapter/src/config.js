@@ -21,7 +21,12 @@ const config = {
   ipfs: {
     gateway: process.env.IPFS_GATEWAY || 'https://ipfs.io',
     pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
-    pinningKey: process.env.IPFS_PINNING_KEY || 'SCaXFElLUP98fCFWmb47vekse78ZZ6-67GoP06RdtDWYyB4P0NOFKtAZiUZVjaP4',
+    // No hardcoded fallback: a missing IPFS_PINNING_KEY should be a loud,
+    // clear failure rather than a silent fallback to a bogus default that
+    // produces an opaque 401 from Pinata at request time. Operators should
+    // populate external-adapter/.env via the installer or
+    // installer/util/update-pinata-key.sh.
+    pinningKey: process.env.IPFS_PINNING_KEY,
   },
   ai: {
     nodeUrl: process.env.AI_NODE_URL || 'http://localhost:3000',

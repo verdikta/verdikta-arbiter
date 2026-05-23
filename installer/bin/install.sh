@@ -537,6 +537,11 @@ if [ -f "$UTIL_DIR/remote-doctor.sh" ]; then
     cp "$UTIL_DIR/remote-doctor.sh" "$INSTALL_DIR/remote-doctor.sh"
     chmod +x "$INSTALL_DIR/remote-doctor.sh"
 fi
+# Operator rotation tool for the Pinata JWT.
+if [ -f "$UTIL_DIR/update-pinata-key.sh" ]; then
+    cp "$UTIL_DIR/update-pinata-key.sh" "$INSTALL_DIR/update-pinata-key.sh"
+    chmod +x "$INSTALL_DIR/update-pinata-key.sh"
+fi
 
 # Make scripts executable in the correct destination directory
 chmod +x "$INSTALL_DIR/start-arbiter.sh"

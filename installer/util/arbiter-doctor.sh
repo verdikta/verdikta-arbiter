@@ -833,6 +833,45 @@ print(n)' "$commit_db" 2>/dev/null || echo 0)
         emit INFO ea.commit_db "commit DB not created yet" "$commit_db (created on first commit)"
     fi
 
+    # Pinata IPFS pinning key sanity.
+    # The EA loads IPFS_PINNING_KEY via dotenv from external-adapter/.env at
+    # startup, then uses it as a Bearer token against api.pinata.cloud — so
+    # the value MUST be a JWT (3 dot-separated segments, starts with `eyJ`).
+    # Validate format here; a live Pinata round-trip is reserved for the
+    # rotation tool (it's an external dependency we don't want to depend on
+    # in the read-only doctor pass).
+    local ea_env="$INSTALL_DIR/external-adapter/.env"
+    if [ -f "$ea_env" ]; then
+        local pinata_key
+        pinata_key=$(grep -E '^IPFS_PINNING_KEY=' "$ea_env" | head -1 | cut -d= -f2-)
+        # Strip optional surrounding quotes
+        pinata_key="${pinata_key%\"}"
+        pinata_key="${pinata_key#\"}"
+        pinata_key="${pinata_key%\'}"
+        pinata_key="${pinata_key#\'}"
+        if [ -z "$pinata_key" ]; then
+            emit FAIL ea.pinata_key_format "IPFS_PINNING_KEY not set in external-adapter/.env" \
+                 "Run $INSTALL_DIR/update-pinata-key.sh to provision the Pinata JWT (IPFS uploads will 401 until this is set)."
+        else
+            local segs="${pinata_key//[^.]/}"
+            segs=${#segs}
+            segs=$((segs + 1))
+            local prefix3="${pinata_key:0:3}"
+            local klen=${#pinata_key}
+            if [ "$prefix3" = "eyJ" ] && [ "$segs" = "3" ] && [ "$klen" -ge 200 ]; then
+                emit PASS ea.pinata_key_format "JWT-shaped (len=$klen, 3 segments, eyJ prefix)"
+            elif [ "$prefix3" = "eyJ" ] && [ "$segs" = "3" ]; then
+                emit WARN ea.pinata_key_format "JWT-shaped but suspiciously short (len=$klen)" \
+                     "Real Pinata JWTs are usually 400-800 chars; verify you copied the entire token."
+            else
+                emit FAIL ea.pinata_key_format "value in IPFS_PINNING_KEY is not a JWT (len=$klen, segments=$segs, prefix=$prefix3...)" \
+                     "Replace with the JWT from https://app.pinata.cloud/developers/api-keys (NOT the 'API Key' field — that's a different shorter value). Use $INSTALL_DIR/update-pinata-key.sh to apply."
+            fi
+        fi
+    else
+        emit WARN ea.pinata_key "external-adapter/.env not found" "$ea_env"
+    fi
+
     # Recent EA activity
     local latest_ea_log
     latest_ea_log=$(ls -t "$INSTALL_DIR/external-adapter/logs/"adapter_*.log 2>/dev/null | head -1)
@@ -848,6 +887,19 @@ print(n)' "$commit_db" 2>/dev/null || echo 0)
                  "Usually means commitStore was RAM-only at some point (or commits older than retention); see ea.commit_store_mode."
         else
             emit PASS ea.recent_reveal_miss "no REVEAL misses in current log" ""
+        fi
+        # Pinata upload failures — symptom of bad/missing JWT or unreachable Pinata.
+        local pinata_auth_fail pinata_other_fail
+        pinata_auth_fail=$(safe_grep_count 'INVALID_CREDENTIALS|"status":401' "$latest_ea_log")
+        pinata_other_fail=$(safe_grep_count 'Upload failed: Authentication|Upload failed: Server error|Upload failed: Bad request' "$latest_ea_log")
+        if [ "${pinata_auth_fail:-0}" = "0" ] && [ "${pinata_other_fail:-0}" = "0" ]; then
+            emit PASS ea.recent_pinata_errors "no Pinata upload failures in current log" ""
+        elif [ "${pinata_auth_fail:-0}" -gt 0 ]; then
+            emit FAIL ea.recent_pinata_errors "$pinata_auth_fail Pinata 401/INVALID_CREDENTIALS line(s) in current EA log" \
+                 "Run $INSTALL_DIR/update-pinata-key.sh to rotate the JWT, then restart the EA."
+        else
+            emit WARN ea.recent_pinata_errors "$pinata_other_fail Pinata upload failure(s) (non-auth) in current EA log" \
+                 "Inspect: grep -E 'Upload failed|status\":[45]' $latest_ea_log | tail -5"
         fi
     else
         emit WARN ea.recent_activity "no EA log files found in $INSTALL_DIR/external-adapter/logs" \
