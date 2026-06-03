@@ -66,19 +66,22 @@ AGGREGATOR_ADDRESS=""
 DEPLOYMENT_NETWORK=""
 RPC_URL=""
 CHAIN_ID=""
+ASSUME_YES=0
 
 ############################################
 # Argument parsing
 ############################################
 usage() {
     cat <<EOF
-Usage: $0 [--json|--quiet] [--fix] [--collect [FILE]] [--install-dir DIR] [-h]
+Usage: $0 [--json|--quiet] [--fix [-y]] [--collect [FILE]] [--install-dir DIR] [-h]
 
   --json              Emit one JSON object per check to stdout
   --quiet             Only emit FAIL/WARN/CRIT lines (good for cron)
   --fix               Interactive remediation: walk through each failure and
                       offer a y/N command to apply. No destructive action is
                       taken without confirmation.
+  -y, --yes           With --fix, auto-confirm every prompt (no TTY required).
+                      Use only when you are sure all proposed fixes are safe.
   --collect [FILE]    Bundle sanitized logs + state into a tarball (default
                       ./arbiter-diag.tgz) and exit. Implies --quiet for the
                       doctor pass that runs first.
@@ -94,6 +97,7 @@ while [ $# -gt 0 ]; do
         --json) OUTPUT="json"; shift ;;
         --quiet) OUTPUT="quiet"; shift ;;
         --fix) MODE="fix"; shift ;;
+        -y|--yes) ASSUME_YES=1; shift ;;
         --collect)
             MODE="collect"
             shift
@@ -1010,7 +1014,11 @@ check_ai_node() {
 ############################################
 prompt_yes_no() {
     local prompt="$1"
-    [ -t 0 ] || { echo "  (no TTY — refusing material action)"; return 1; }
+    if [ "$ASSUME_YES" = "1" ]; then
+        echo "  ${prompt} [y/N]: y  (auto-confirmed via --yes)"
+        return 0
+    fi
+    [ -t 0 ] || { echo "  (no TTY — refusing material action; re-run with --yes to auto-confirm)"; return 1; }
     local ans
     read -r -p "  ${prompt} [y/N]: " ans
     [[ "$ans" =~ ^[Yy]$ ]]
