@@ -500,7 +500,44 @@ if ask_yes_no "Would you like to review and update your API keys?" "n"; then
     else
         read_secret "Enter OpenRouter API Key (leave blank to skip): " OPENROUTER_API_KEY
     fi
-    
+
+    # --- Provider Routing Preference (native-first vs OpenRouter override) ---
+    # Offer the explicit override only when the operator has BOTH native key(s)
+    # and an OpenRouter key. Default is native-first.
+    GLOBAL_PREF="keep"
+    HAS_ANY_NATIVE=0
+    if [ -n "$OPENAI_API_KEY" ] || [ -n "$ANTHROPIC_API_KEY" ] || \
+       [ -n "$HYPERBOLIC_API_KEY" ] || [ -n "$XAI_API_KEY" ]; then
+        HAS_ANY_NATIVE=1
+    fi
+    CURRENT_GW=""
+    if [ -f "$TARGET_AI_NODE/.env.local" ]; then
+        CURRENT_GW=$(grep '^AI_GATEWAY=' "$TARGET_AI_NODE/.env.local" 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"' | tr -d "'")
+    fi
+    if [ "$HAS_ANY_NATIVE" = "1" ] && [ -n "$OPENROUTER_API_KEY" ]; then
+        echo ""
+        echo -e "${BLUE}Provider Routing Preference${NC}"
+        echo -e "${YELLOW}By default, native provider keys are ALWAYS used when available; OpenRouter${NC}"
+        echo -e "${YELLOW}only covers providers without a working native key (and is typically pricier).${NC}"
+        if [ "$CURRENT_GW" = "openrouter" ]; then
+            echo -e "${YELLOW}Current setting: ALL providers are routed through OpenRouter (override active).${NC}"
+            if ask_yes_no "Keep routing ALL providers through OpenRouter?" "y"; then
+                GLOBAL_PREF="openrouter"
+            else
+                GLOBAL_PREF="native"
+                echo -e "${GREEN}Switching back to native-first routing.${NC}"
+            fi
+        else
+            if ask_yes_no "Override native-first and route ALL providers through OpenRouter instead?" "n"; then
+                GLOBAL_PREF="openrouter"
+                echo -e "${YELLOW}All providers will be routed through OpenRouter (override enabled).${NC}"
+            else
+                GLOBAL_PREF="native"
+                echo -e "${GREEN}Keeping native-first routing (recommended).${NC}"
+            fi
+        fi
+    fi
+
     echo ""
     echo -e "${BLUE}Note: RPC endpoints are configured in the next section.${NC}"
     echo -e "${BLUE}Infura is optional and used only as a fallback if you choose to set it.${NC}"
@@ -1362,6 +1399,21 @@ if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
     apply_env_key "OPENROUTER_API_KEY" "$OPENROUTER_API_KEY" "$TARGET_AI_NODE/.env.local" "OpenRouter API Key"
     
     echo -e "${GREEN}AI Node API keys updated successfully.${NC}"
+
+    # Validate the keys and apply native-first routing. Native keys are always
+    # preferred; any native key that fails validation is routed via OpenRouter
+    # (when available) until a working key is added. GLOBAL_PREF (set earlier if
+    # the operator reviewed keys) can override everything to OpenRouter.
+    if [ -f "$UTIL_DIR/validate-api-keys.sh" ]; then
+        echo -e "${BLUE}Validating API keys and applying provider routing (native-first)...${NC}"
+        bash "$UTIL_DIR/validate-api-keys.sh" \
+            --api-keys-file "$TARGET_DIR/installer/.api_keys" \
+            --env-file "$TARGET_AI_NODE/.env.local" \
+            --global "${GLOBAL_PREF:-keep}" \
+            || echo -e "${YELLOW}API key validation step reported an issue; continuing upgrade.${NC}"
+    else
+        echo -e "${YELLOW}Note: validate-api-keys.sh not found; skipping key validation/routing.${NC}"
+    fi
 else
     echo -e "${YELLOW}No API keys configuration found. Preserving existing AI Node configuration.${NC}"
 fi

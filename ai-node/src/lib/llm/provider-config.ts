@@ -81,11 +81,6 @@ function readGlobalGateway(): GatewayBackend | null {
   return null;
 }
 
-function legacyNativeOptInEnabled(): boolean {
-  const value = process.env.AI_GATEWAY_LEGACY_NATIVE_FALLBACK?.trim().toLowerCase();
-  return value === '1' || value === 'true' || value === 'yes';
-}
-
 export function resolveProviderConfig(provider: string): ProviderResolution {
   const providerClass = resolveProviderClass(provider);
 
@@ -125,29 +120,35 @@ export function resolveProviderConfig(provider: string): ProviderResolution {
     };
   }
 
-  if (legacyNativeOptInEnabled() && hasNativeKey(providerClass)) {
+  // Native-first default: always prefer a provider's own native key when one is
+  // configured. OpenRouter is only used to fill gaps — i.e. when there is no
+  // native key for the class, or when a native key has been administratively
+  // routed away via <CLASS>_CLASS_PROVIDER (handled above; the installer's
+  // key-validation step sets that override when a native key is failing).
+  if (hasNativeKey(providerClass)) {
     return {
       providerClass,
       backend: 'native',
       modelOverride: readClassModelOverride(providerClass),
-      reason: 'legacy native fallback opt-in',
+      reason: 'native-first: native key present',
     };
   }
 
-  if (!process.env.OPENROUTER_API_KEY && hasNativeKey(providerClass)) {
-    console.warn(`[Gateway] OPENROUTER_API_KEY not set; falling back to native provider for ${providerClass}`);
+  if (process.env.OPENROUTER_API_KEY) {
     return {
       providerClass,
-      backend: 'native',
-      modelOverride: readClassModelOverride(providerClass),
-      reason: 'openrouter missing, native key available',
+      backend: 'openrouter',
+      modelOverride: readClassModelOverride(providerClass) || getOpenRouterDefaultModel(providerClass) || undefined,
+      reason: 'no native key; routing via OpenRouter',
     };
   }
 
+  // No native key and no OpenRouter key. Return native so the provider raises a
+  // clear "missing API key" error at initialization rather than failing opaquely.
   return {
     providerClass,
-    backend: 'openrouter',
-    modelOverride: readClassModelOverride(providerClass) || getOpenRouterDefaultModel(providerClass) || undefined,
-    reason: 'default openrouter gateway',
+    backend: 'native',
+    modelOverride: readClassModelOverride(providerClass),
+    reason: 'no keys configured; defaulting to native',
   };
 }

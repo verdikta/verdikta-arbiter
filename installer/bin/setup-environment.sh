@@ -525,6 +525,9 @@ configure_api_keys() {
     echo -e "${BLUE}Native Provider Keys${NC}"
     echo -e "${YELLOW}Enter API keys for the providers you have accounts with.${NC}"
     echo -e "${YELLOW}Native keys connect directly at each provider's standard rates.${NC}"
+    echo -e "${GREEN}Native keys are ALWAYS preferred: whenever a provider has a working native${NC}"
+    echo -e "${GREEN}key it is used directly. OpenRouter (entered later) is only a fallback for${NC}"
+    echo -e "${GREEN}providers without a working native key.${NC}"
     echo -e "${YELLOW}Leave blank to skip any provider you don't use.${NC}"
     echo ""
     
@@ -584,6 +587,33 @@ configure_api_keys() {
         read_secret "Enter your OpenRouter API Key (leave blank to use existing key): " new_key
         if [ -n "$new_key" ]; then
             OPENROUTER_API_KEY="$new_key"
+        fi
+    fi
+
+    # --- Provider Routing Preference (native-first vs OpenRouter override) ---
+    # By default native keys are always preferred; OpenRouter only fills gaps.
+    # If the operator supplied BOTH native key(s) AND an OpenRouter key, offer
+    # the explicit choice to override native-first and route everything via
+    # OpenRouter instead.
+    AI_GATEWAY_PREF="native"
+    HAS_ANY_NATIVE=0
+    if [ -n "$OPENAI_API_KEY" ] || [ -n "$ANTHROPIC_API_KEY" ] || \
+       [ -n "$HYPERBOLIC_API_KEY" ] || [ -n "$XAI_API_KEY" ]; then
+        HAS_ANY_NATIVE=1
+    fi
+    if [ "$HAS_ANY_NATIVE" = "1" ] && [ -n "$OPENROUTER_API_KEY" ]; then
+        echo ""
+        echo -e "${BLUE}Provider Routing Preference${NC}"
+        echo -e "${GREEN}You provided native key(s) AND an OpenRouter key.${NC}"
+        echo -e "${YELLOW}By default, native keys are ALWAYS used when available; OpenRouter only${NC}"
+        echo -e "${YELLOW}covers providers without a working native key (and is typically pricier).${NC}"
+        echo ""
+        if ask_yes_no "Override native-first and route ALL providers through OpenRouter instead?"; then
+            AI_GATEWAY_PREF="openrouter"
+            echo -e "${YELLOW}All providers will be routed through OpenRouter (override enabled).${NC}"
+        else
+            AI_GATEWAY_PREF="native"
+            echo -e "${GREEN}Keeping native-first routing (recommended).${NC}"
         fi
     fi
 
@@ -851,6 +881,8 @@ HYPERBOLIC_API_KEY="$HYPERBOLIC_API_KEY"
 XAI_API_KEY="$XAI_API_KEY"
 INFURA_API_KEY="$INFURA_API_KEY"
 PINATA_API_KEY="$PINATA_API_KEY"
+# Provider routing preference: native (native-first, default) or openrouter (route all via OpenRouter)
+AI_GATEWAY_PREF="${AI_GATEWAY_PREF:-native}"
 EOL
     
     # Save private key separately in the .env file for better security

@@ -22,22 +22,34 @@ describe('provider-config precedence', () => {
     process.env = ORIGINAL_ENV;
   });
 
-  test('defaults to openrouter when OPENROUTER_API_KEY is set', () => {
+  test('routes to openrouter when only OPENROUTER_API_KEY is set (no native key)', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
 
     const result = resolveProviderConfig('openai');
 
     expect(result.backend).toBe('openrouter');
-    expect(result.reason).toContain('default openrouter');
+    expect(result.reason).toContain('no native key');
   });
 
-  test('native key present without AI_GATEWAY still routes to openrouter by default', () => {
+  test('native-first: native key present routes to native even when OpenRouter key is set', () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
     process.env.OPENAI_API_KEY = 'native-key';
 
     const result = resolveProviderConfig('OpenAI');
 
+    expect(result.backend).toBe('native');
+    expect(result.reason).toContain('native-first');
+  });
+
+  test('per-class override to openrouter wins even when a native key is present', () => {
+    process.env.OPENAI_API_KEY = 'native-key';
+    process.env.OPENROUTER_API_KEY = 'or-key';
+    process.env.OPENAI_CLASS_PROVIDER = 'openrouter';
+
+    const result = resolveProviderConfig('openai');
+
     expect(result.backend).toBe('openrouter');
+    expect(result.reason).toContain('CLASS_PROVIDER');
   });
 
   test('AI_GATEWAY=native with native key routes to native', () => {
@@ -70,16 +82,13 @@ describe('provider-config precedence', () => {
     expect(result.reason).toContain('local-only');
   });
 
-  test('falls back to native with warning when OPENROUTER_API_KEY missing and native key exists', () => {
+  test('uses native when a native key exists and OPENROUTER_API_KEY is missing', () => {
     process.env.OPENAI_API_KEY = 'native-key';
-    const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
 
     const result = resolveProviderConfig('openai');
 
     expect(result.backend).toBe('native');
-    expect(result.reason).toContain('openrouter missing');
-    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('OPENROUTER_API_KEY not set'));
-    warnSpy.mockRestore();
+    expect(result.reason).toContain('native-first');
   });
 
   test('resolves xai native key via both XAI_API_KEY and GROK_API_KEY', () => {
@@ -112,11 +121,11 @@ describe('provider-config precedence', () => {
     expect(resolveProviderClass('Grok')).toBe('xai');
   });
 
-  test('defaults to openrouter even when no keys are set at all', () => {
+  test('defaults to native (which will surface a missing-key error) when no keys are set at all', () => {
     const result = resolveProviderConfig('openai');
 
-    expect(result.backend).toBe('openrouter');
-    expect(result.reason).toContain('default openrouter');
+    expect(result.backend).toBe('native');
+    expect(result.reason).toContain('no keys configured');
   });
 
   test('openrouter provider always routes to openrouter backend', () => {

@@ -51,13 +51,23 @@ describe('LLMFactory gateway routing', () => {
     process.env = ORIGINAL_ENV;
   });
 
-  test('uses OpenRouter by default when OPENROUTER_API_KEY is present', async () => {
+  test('uses OpenRouter when no native key exists but OPENROUTER_API_KEY is present', async () => {
     process.env.OPENROUTER_API_KEY = 'or-key';
 
     await LLMFactory.getProvider('OpenAI');
 
     expect(OpenRouterProvider).toHaveBeenCalled();
     expect(OpenAIProvider).not.toHaveBeenCalled();
+  });
+
+  test('native-first: native key wins over OpenRouter key by default', async () => {
+    process.env.OPENAI_API_KEY = 'native-key';
+    process.env.OPENROUTER_API_KEY = 'or-key';
+
+    await LLMFactory.getProvider('OpenAI');
+
+    expect(OpenAIProvider).toHaveBeenCalled();
+    expect(OpenRouterProvider).not.toHaveBeenCalled();
   });
 
   test('uses native when AI_GATEWAY=native is set', async () => {
@@ -80,7 +90,7 @@ describe('LLMFactory gateway routing', () => {
     expect(OpenRouterProvider).not.toHaveBeenCalled();
   });
 
-  test('legacy native opt-in fallback is still supported', async () => {
+  test('legacy native opt-in flag is now a no-op (native-first is the default)', async () => {
     process.env.AI_GATEWAY_LEGACY_NATIVE_FALLBACK = 'true';
     process.env.OPENAI_API_KEY = 'native-key';
 

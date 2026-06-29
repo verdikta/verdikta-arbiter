@@ -466,6 +466,21 @@ else
     echo -e "${GREEN}Log level already configured in .env.local${NC}"
 fi
 
+# Validate provider API keys and apply native-first routing.
+# Native keys are always preferred; OpenRouter only covers providers whose
+# native key is missing or failing. AI_GATEWAY_PREF (from .api_keys) lets the
+# operator override this and route everything through OpenRouter instead.
+if [ -f "$UTIL_DIR/validate-api-keys.sh" ]; then
+    echo -e "${BLUE}Validating API keys and configuring provider routing (native-first)...${NC}"
+    bash "$UTIL_DIR/validate-api-keys.sh" \
+        --api-keys-file "$INSTALLER_DIR/.api_keys" \
+        --env-file "$AI_NODE_DIR/.env.local" \
+        --global "${AI_GATEWAY_PREF:-native}" \
+        || echo -e "${YELLOW}API key validation step reported an issue; continuing installation.${NC}"
+else
+    echo -e "${YELLOW}Note: validate-api-keys.sh not found; skipping key validation/routing.${NC}"
+fi
+
 # Detect OS for Ollama installation
 OS="$(uname -s)"
 case "$OS" in

@@ -41,15 +41,17 @@ Per-class overrides take precedence:
 - `ANTHROPIC_CLASS_PROVIDER=openrouter`
 
 ### Legacy compatibility
-- `AI_GATEWAY_LEGACY_NATIVE_FALLBACK=true` — opt-in for legacy behavior
+- `AI_GATEWAY_LEGACY_NATIVE_FALLBACK` is **deprecated and a no-op**. Native-first
+  is now the default, so a working native key is always preferred without it.
 
 ## Routing precedence
 
-1. Per-class override (`<CLASS>_CLASS_PROVIDER`)
+1. Per-class override (`<CLASS>_CLASS_PROVIDER`) — auto-managed by the installer's
+   key-validation step, which pins a class to OpenRouter only while its native key
+   is failing.
 2. Global override (`AI_GATEWAY`)
-3. Legacy opt-in (`AI_GATEWAY_LEGACY_NATIVE_FALLBACK=true` + native key)
-4. Native key present → uses native provider
-5. `OPENROUTER_API_KEY` present → routes through OpenRouter
+3. Native key present → uses native provider (native-first default)
+4. `OPENROUTER_API_KEY` present → routes through OpenRouter (only when no native key)
 
 ## Justifier model
 `JUSTIFIER_MODEL` format remains supported:
