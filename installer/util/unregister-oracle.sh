@@ -142,13 +142,18 @@ echo -e "${BLUE}Unregistration job IDs (space-separated): $UNREGISTRATION_JOB_ID
 echo -e "${BLUE}Total jobs to unregister: ${#JOB_IDS_AVAILABLE[@]}${NC}"
 echo ""
 
-# List existing registrations if any
+# List saved dispatcher info (kept after unregister for reference)
 if [ -n "$AGGREGATOR_ADDRESS" ]; then
-    echo -e "${BLUE}Previously Registered Dispatchers:${NC}"
+    echo -e "${BLUE}Last dispatcher registration (from .contracts):${NC}"
     echo -e "  Aggregator: $AGGREGATOR_ADDRESS"
     if [ -n "$CLASSES_ID" ]; then
         echo -e "  Classes ID: $CLASSES_ID"
     fi
+    case "${AGGREGATOR_REGISTRATION_ACTIVE:-true}" in
+        false|False|FALSE|0|no|No|NO)
+            echo -e "  ${YELLOW}Local state: inactive (already unregistered from this aggregator on-chain).${NC}"
+            ;;
+    esac
     echo ""
 fi
 
@@ -255,6 +260,20 @@ eval "$UNREGISTER_CMD"
 
 if [ $? -eq 0 ]; then
     echo -e "${GREEN}Oracle unregistration completed successfully!${NC}"
+    # Mark inactive in .contracts but keep AGGREGATOR_ADDRESS / CLASSES_ID so register-oracle.sh
+    # can show the last values; register-oracle.sh only warns on duplicate when active is true.
+    if [ -n "${AGGREGATOR_ADDRESS:-}" ]; then
+        new_lc=$(echo "$NEW_AGGREGATOR_ADDRESS" | tr '[:upper:]' '[:lower:]')
+        stored_lc=$(echo "$AGGREGATOR_ADDRESS" | tr '[:upper:]' '[:lower:]')
+        if [ "$new_lc" = "$stored_lc" ]; then
+            if grep -q '^AGGREGATOR_REGISTRATION_ACTIVE=' "$CONTRACTS_FILE" 2>/dev/null; then
+                sed -i 's/^AGGREGATOR_REGISTRATION_ACTIVE=.*/AGGREGATOR_REGISTRATION_ACTIVE="false"/' "$CONTRACTS_FILE"
+            else
+                echo 'AGGREGATOR_REGISTRATION_ACTIVE="false"' >> "$CONTRACTS_FILE"
+            fi
+            echo -e "${GREEN}Marked dispatcher registration inactive in installer/.contracts (aggregator & classes kept for reference).${NC}"
+        fi
+    fi
     echo ""
     echo -e "${BLUE}Unregistration Complete!${NC}"
     echo -e "Your oracle has been unregistered from the dispatcher contract."

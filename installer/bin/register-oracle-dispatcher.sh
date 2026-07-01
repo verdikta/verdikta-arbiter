@@ -232,6 +232,13 @@ if [ $REGISTRATION_RESULT -eq 0 ]; then
         echo "CLASSES_ID=\"$CLASSES_ID\"" >> "$INSTALLER_DIR/.contracts"
     fi
     echo -e "${GREEN}Classes ID saved to .contracts file: $CLASSES_ID${NC}"
+
+    if grep -q '^AGGREGATOR_REGISTRATION_ACTIVE=' "$INSTALLER_DIR/.contracts" 2>/dev/null; then
+        sed -i 's/^AGGREGATOR_REGISTRATION_ACTIVE=.*/AGGREGATOR_REGISTRATION_ACTIVE="true"/' "$INSTALLER_DIR/.contracts"
+    else
+        echo 'AGGREGATOR_REGISTRATION_ACTIVE="true"' >> "$INSTALLER_DIR/.contracts"
+    fi
+    echo -e "${GREEN}Dispatcher registration marked active in .contracts file${NC}"
 else
     echo -e "${RED}Oracle registration failed with exit code: $REGISTRATION_RESULT${NC}"
     echo -e "${YELLOW}Common causes of registration failure:${NC}"

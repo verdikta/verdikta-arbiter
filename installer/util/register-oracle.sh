@@ -154,13 +154,18 @@ echo -e "${BLUE}Registration job IDs (space-separated): $REGISTRATION_JOB_IDS${N
 echo -e "${BLUE}Total jobs to register: ${#JOB_IDS_AVAILABLE[@]}${NC}"
 echo ""
 
-# List existing registrations if any
+# Last saved dispatcher registration (addresses/classes kept after unregister for reference)
 if [ -n "$AGGREGATOR_ADDRESS" ]; then
-    echo -e "${BLUE}Previously Registered Dispatchers:${NC}"
+    echo -e "${BLUE}Last dispatcher registration (from .contracts):${NC}"
     echo -e "  Aggregator: $AGGREGATOR_ADDRESS"
     if [ -n "$CLASSES_ID" ]; then
         echo -e "  Classes IDs: [$CLASSES_ID]"
     fi
+    case "${AGGREGATOR_REGISTRATION_ACTIVE:-true}" in
+        false|False|FALSE|0|no|No|NO)
+            echo -e "  ${YELLOW}Local state: inactive — use the values above when re-registering if you want the same setup.${NC}"
+            ;;
+    esac
     echo ""
 fi
 
@@ -237,22 +242,35 @@ if [[ ! "$NEW_AGGREGATOR_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
     exit 1
 fi
 
-# Check if already registered with this aggregator
-if [ "$NEW_AGGREGATOR_ADDRESS" = "$AGGREGATOR_ADDRESS" ]; then
-    echo -e "${YELLOW}Warning: Oracle is already registered with this aggregator address.${NC}"
-    read -p "Do you want to continue anyway? (y/n): " continue_response
-    if [[ ! "$continue_response" =~ ^[Yy]$ ]]; then
-        echo -e "${YELLOW}Registration cancelled.${NC}"
-        exit 0
+# Warn only if .contracts indicates an active on-chain registration for this aggregator.
+# After unregister-oracle.sh, AGGREGATOR_REGISTRATION_ACTIVE is false but addresses remain for reference.
+# Legacy .contracts without the flag: treat as active when the address matches (backward compatible).
+if [ -n "${AGGREGATOR_ADDRESS:-}" ]; then
+    new_lc=$(echo "$NEW_AGGREGATOR_ADDRESS" | tr '[:upper:]' '[:lower:]')
+    stored_lc=$(echo "$AGGREGATOR_ADDRESS" | tr '[:upper:]' '[:lower:]')
+    if [ "$new_lc" = "$stored_lc" ]; then
+        active="${AGGREGATOR_REGISTRATION_ACTIVE:-true}"
+        case "$active" in
+            false|False|FALSE|0|no|No|NO) ;;
+            *)
+                echo -e "${YELLOW}Warning: Oracle is already registered with this aggregator address.${NC}"
+                read -p "Do you want to continue anyway? (y/n): " continue_response
+                if [[ ! "$continue_response" =~ ^[Yy]$ ]]; then
+                    echo -e "${YELLOW}Registration cancelled.${NC}"
+                    exit 0
+                fi
+                ;;
+        esac
     fi
 fi
 
 # Ask for classes IDs with default
 echo ""
-echo -e "${YELLOW}Please enter the classes IDs (space-separated, default: 128):${NC}"
+classes_default="${CLASSES_ID:-128}"
+echo -e "${YELLOW}Please enter the classes IDs (space-separated, default: $classes_default):${NC}"
 echo -e "${BLUE}Examples: 128, or 128 129, or 128 129 130${NC}"
-read -p "Classes IDs [128]: " NEW_CLASSES_INPUT
-NEW_CLASSES_INPUT=${NEW_CLASSES_INPUT:-128}  # Use 128 as default if no input
+read -p "Classes IDs [$classes_default]: " NEW_CLASSES_INPUT
+NEW_CLASSES_INPUT=${NEW_CLASSES_INPUT:-$classes_default}
 
 # Parse and validate classes IDs
 IFS=' ' read -ra NEW_CLASSES_ARRAY <<< "$NEW_CLASSES_INPUT"
@@ -341,6 +359,13 @@ if [ $? -eq 0 ]; then
         echo "CLASSES_ID=\"$NEW_CLASSES_STR\"" >> "$CONTRACTS_FILE"
     fi
     echo -e "${GREEN}Latest classes IDs saved: [$NEW_CLASSES_STR]${NC}"
+
+    if grep -q '^AGGREGATOR_REGISTRATION_ACTIVE=' "$CONTRACTS_FILE" 2>/dev/null; then
+        sed -i 's/^AGGREGATOR_REGISTRATION_ACTIVE=.*/AGGREGATOR_REGISTRATION_ACTIVE="true"/' "$CONTRACTS_FILE"
+    else
+        echo 'AGGREGATOR_REGISTRATION_ACTIVE="true"' >> "$CONTRACTS_FILE"
+    fi
+    echo -e "${GREEN}Dispatcher registration marked active in installer/.contracts${NC}"
     
     echo ""
     echo -e "${BLUE}Registration Complete!${NC}"
