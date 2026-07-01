@@ -166,39 +166,72 @@ See our [Contributing Guide](docs/CONTRIBUTING.md) for detailed information.
 
 ## 📊 Usage Examples
 
-### Basic Arbitration Query
+### Querying an AI Node directly
+
+The AI Node exposes `POST /api/rank-and-justify`. This is the endpoint the
+External Adapter calls after fetching evidence from IPFS; it's also handy for
+testing a node in isolation. Scores are integers that sum to `1,000,000`.
 
 ```javascript
-const arbitrationResult = await fetch('/api/arbitrate', {
+const res = await fetch('http://localhost:3000/api/rank-and-justify', {
   method: 'POST',
   headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify({
-    manifest: {
-      outcomes: ['Approve', 'Reject', 'Request More Info'],
-      panel: [
-        { provider: 'openai', model: 'gpt-5' },
-        { provider: 'anthropic', model: 'claude-sonnet-4' }
-      ],
-      evidence: [{ type: 'text', content: 'Dispute details...' }]
-    },
-    classId: 128
+    prompt: 'Dispute details...',
+    outcomes: ['Approve', 'Reject', 'Request More Info'],
+    models: [
+      { provider: 'OpenAI', model: 'gpt-5', weight: 0.5, count: 1 },
+      { provider: 'Anthropic', model: 'claude-sonnet-4', weight: 0.5, count: 1 }
+    ],
+    iterations: 1,
+    attachments: [] // base64 data URIs or raw text, optional
   })
 });
+
+const { scores, justification } = await res.json();
+// scores: [{ outcome: 'Approve', score: 620000 }, { outcome: 'Reject', score: 250000 }, ...]
 ```
+
+> In production, clients don't call this endpoint directly. They submit a request
+> on-chain and the network routes evidence CIDs to an arbiter's External Adapter,
+> which invokes this endpoint. See the smart-contract example below.
 
 ### Smart Contract Integration
 
+Clients interact with the **ETH-funded `ReputationAggregator`** (the "Verdikta
+Aggregator", deployed separately — see [`verdikta-dispatcher`](https://github.com/verdikta/verdikta-dispatcher)).
+Arbiters are paid in native ETH attached to the request (there is no LINK for the
+consumer); any unspent prepay is held as a withdrawable credit. The aggregator
+selects a pool of arbiters by `classId`, runs commit-reveal aggregation, and
+records the aggregated scores plus a justification CID on-chain.
+
 ```solidity
-// Request arbitration
-bytes32 requestId = arbiterOperator.requestArbitration{value: fee}(
-  classId,
-  manifestCID
+interface IReputationAggregator {
+    // Submit evidence CIDs; fund with attached ETH (msg.value). Returns an aggregation request id.
+    function requestAIEvaluationWithApproval(
+        string[] calldata cids,                 // IPFS CIDs of the evidence archive(s)
+        string   calldata addendumText,         // real-time text appended to the prompt ("" if none)
+        uint256  alpha,                         // oracle-selection quality/timeliness blend (e.g. 500)
+        uint256  maxOracleFee,                  // per-oracle fee ceiling, in wei
+        uint256  estimatedBaseCost,
+        uint256  maxFeeBasedScalingFactor,
+        uint64   requestedClass                 // ClassID (model pool), default 128
+    ) external payable returns (bytes32 aggRequestId);
+
+    // Read the aggregated result once fulfilled.
+    function getEvaluation(bytes32 aggRequestId)
+        external view returns (uint256[] memory scores, string memory justificationCID, bool exists);
+
+    function maxTotalFee(uint256 maxOracleFee) external view returns (uint256); // worst-case ETH to attach
+}
+
+// Example: submit a request, then later read the result.
+bytes32 id = aggregator.requestAIEvaluationWithApproval{ value: aggregator.maxTotalFee(15e13) }(
+    cids, "", 500, 15e13, 8e9, 5, 128
 );
 
-// Handle result
-function fulfillArbitration(bytes32 requestId, string memory resultCID) external {
-  // Process arbitration result
-}
+(uint256[] memory scores, string memory justificationCID, bool exists) = aggregator.getEvaluation(id);
+// scores sum to 1,000,000; the full justification JSON lives at justificationCID on IPFS.
 ```
 
 ## 🔐 Security

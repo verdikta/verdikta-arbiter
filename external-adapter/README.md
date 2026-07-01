@@ -12,50 +12,32 @@ This external adapter serves as a bridge between Chainlink nodes and an AI-based
 
 ## Project Structure
 
+Manifest parsing, archive extraction, IPFS access, request validation, and
+logging now live in the shared [`@verdikta/common`](https://www.npmjs.com/package/@verdikta/common)
+package, so they no longer have local copies under `src/utils/`.
+
 ```
-chainlink-ai-adapter/
-├── .env.example                 # Example environment variables
-├── .gitignore                  # Git ignore file
+external-adapter/
 ├── package.json                # Project dependencies and scripts
 ├── README.md                   # Project documentation
 ├── TESTING.md                  # Testing documentation
 ├── jest.config.js              # Jest configuration
 │
 ├── src/                        # Source code
-│   ├── index.js               # Application entry point
+│   ├── index.js               # Express entry point + config self-check
 │   ├── config.js              # Configuration management
 │   │
 │   ├── handlers/              # Request handlers
-│   │   └── evaluateHandler.js # Main evaluation handler
+│   │   └── evaluateHandler.js # Main evaluation handler (modes 0/1/2)
 │   │
-│   ├── services/              # External service clients
-│   │   ├── ipfsClient.js      # IPFS interaction
-│   │   └── aiClient.js        # AI Node interaction
+│   ├── services/              # Service clients
+│   │   ├── aiClient.js        # AI Node interaction (/api/rank-and-justify)
+│   │   └── commitStore.js     # Persists commit-reveal state between modes 1 & 2
 │   │
-│   ├── utils/                 # Utility functions
-│   │   ├── archiveUtils.js    # Archive handling
-│   │   ├── logger.js          # Logging configuration
-│   │   └── validator.js       # Request validation
-│   │
-│   └── __tests__/            # Test files
-│       ├── helpers/           # Test helpers
-│       │   └── mockData.js    # Mock data for tests
-│       │
-│       ├── integration/       # Integration tests
-│       │   └── adapter.test.js
-│       │
-│       ├── handlers/          # Handler tests
-│       │   └── evaluateHandler.test.js
-│       │
-│       └── utils/             # Utility tests
-│           └── archiveUtils.test.js
+│   └── __tests__/            # Test files (unit + integration + fixtures)
 │
 ├── logs/                      # Log files
-│   ├── error.log             # Error logs
-│   └── combined.log          # All logs
-│
-└── tmp/                      # Temporary files directory
-    └── .gitkeep              # Keep empty directory in git
+└── tmp/                      # Temporary files directory (extraction workspace)
 ```
 
 ## Installation
@@ -66,44 +48,83 @@ npm install
 
 ## Configuration
 
-Create a `.env` file in the root directory with the following variables:
+Create a `.env` file in the root directory. Values map to `src/config.js`:
 
 ```env
+# Server
 PORT=8080
 HOST=0.0.0.0
-IPFS_HOST=ipfs.infura.io
-IPFS_PORT=5001
-IPFS_PROTOCOL=https
-IPFS_PROJECT_ID=your_project_id
-IPFS_PROJECT_SECRET=your_project_secret
-AI_NODE_URL=http://localhost:5000
+SERVER_TIMEOUT=300000          # HTTP server socket timeout (ms)
+
+# AI Node
+AI_NODE_URL=http://localhost:3000
+AI_TIMEOUT=300000              # Request timeout when calling the AI Node (ms)
+
+# IPFS (Pinata)
+IPFS_GATEWAY=https://ipfs.io
+IPFS_PINNING_SERVICE=https://api.pinata.cloud
+IPFS_PINNING_KEY=eyJ...        # Pinata JWT (NOT the API key/secret). Required to upload justifications.
+
+# On-chain
+OPERATOR_ADDR=0x...            # ArbiterOperator address; used in the commit hash. Required.
+
+# Logging
+LOG_LEVEL=info                 # error | warn | info | debug
 ```
+
+> `IPFS_PINNING_KEY` must be the Pinata **JWT** (three dot-separated segments,
+> prefix `eyJ`). The adapter validates this at boot and logs a fatal-config
+> warning if it looks wrong. Rotate it with `installer/util/update-pinata-key.sh`.
 
 ## API Documentation
 
 ### POST /evaluate
 
-Evaluates dispute evidence using AI.
+Called by the Chainlink node's `verdikta-ai` bridge. Fetches the evidence
+archive(s) from IPFS, runs AI deliberation via the AI Node, and returns scores
+plus a justification CID. The response is **synchronous** (the Chainlink job
+waits for it).
 
 #### Request Body
 
 ```json
 {
-  "id": "jobRunId-123456789",
+  "id": "<externalJobID>",
   "data": {
-    "cid": "Qm... (IPFS CID of the evidence archive)"
+    "cid": "<mode><CID(s)>[:addendum]",
+    "aggId": "<aggregator request id, optional>"
   }
 }
 ```
 
-#### Response
+`cid` encodes an optional **mode** prefix used by the dispatcher's
+commit-reveal aggregation:
+
+| `cid` value | Mode | Behavior |
+|---|---|---|
+| `Qm...` (no prefix) | 0 | Standard: evaluate now, upload justification, return scores + CID |
+| `1:Qm...` | 1 (commit) | Evaluate, store the result locally, return only a hash commitment |
+| `2:<hash>` | 2 (reveal) | Look up the committed result, upload its justification, return scores + `CID:salt` |
+
+Multiple comma-separated CIDs after the mode prefix trigger multi-CID
+(multi-party) evaluation. An optional `:addendum` appends real-time text to the
+prompt.
+
+#### Response (mode 0 / mode 2)
 
 ```json
 {
-  "jobRunId": "jobRunId-123456789",
-  "status": "in_progress",
-  "message": "Job received and processing"
+  "jobRunID": "<externalJobID>",
+  "status": "success",
+  "statusCode": 200,
+  "data": {
+    "aggregatedScore": [650000, 350000],
+    "justificationCid": "bafybe..."
+  }
 }
 ```
+
+Scores are integers that sum to 1,000,000. In mode 1 the `data.aggregatedScore`
+array holds a single decimal hash commitment and `justificationCid` is empty.
 
 For testing information, please refer to [TESTING.md](TESTING.md).

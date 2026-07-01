@@ -69,95 +69,86 @@ The on-chain components handle request lifecycle:
 
 ### 1. Request Initiation
 
-A smart contract initiates an arbitration request by calling the Chainlink Oracle:
+A client contract submits a request to the ETH-funded **ReputationAggregator**
+(deployed from the separate `verdikta-dispatcher` repo). Evidence is referenced
+by IPFS CID(s); arbiters are paid in native ETH attached as `msg.value`:
 
 ```solidity
-function requestArbitration(
-    string memory caseDescription,
-    string[] memory evidenceIPFSHashes,
-    uint256 payment
-) external {
-    Chainlink.Request memory req = buildChainlinkRequest(
-        jobId,
-        address(this),
-        this.fulfill.selector
-    );
-    req.add("caseDescription", caseDescription);
-    req.addStringArray("evidence", evidenceIPFSHashes);
-    sendChainlinkRequest(req, payment);
-}
+bytes32 aggRequestId = aggregator.requestAIEvaluationWithApproval{
+    value: aggregator.maxTotalFee(maxOracleFee)
+}(
+    cids,                      // IPFS CIDs of the evidence archive(s)
+    "",                        // addendum text ("" if none)
+    500,                       // alpha (oracle-selection blend)
+    maxOracleFee,              // per-oracle fee ceiling (wei)
+    estimatedBaseCost,
+    maxFeeBasedScalingFactor,
+    128                        // requestedClass (ClassID / model pool)
+);
 ```
 
 ### 2. Oracle Processing
 
-The Chainlink Node receives the request and triggers the job specification:
+The aggregator selects arbiters via the ReputationKeeper and emits an
+`OracleRequest` to each selected **ArbiterOperator**. That operator's Chainlink
+node runs a `directrequest` job that calls the **`verdikta-ai`** bridge (the
+External Adapter). See `chainlink-node/basicJobSpec` for the full template:
 
 ```toml
 type = "directrequest"
 schemaVersion = 1
-name = "Verdikta Arbitration Job"
-contractAddress = "OPERATOR_CONTRACT_ADDRESS"
-maxTaskDuration = "5m"
 observationSource = """
-    decode_log   [type="ethabidecodelog"]
-    decode_cbor  [type="cborparse"]
-    fetch        [type="bridge" name="verdikta-adapter"]
-    encode_data  [type="ethabiencode"]
-    encode_tx    [type="ethabiencodetx"]
-    submit_tx    [type="ethabsubmittx"]
+    decode_log   [type="ethabidecodelog" ...]          # OracleRequest
+    decode_cbor  [type="cborparse" data="$(decode_log.data)"]
+    fetch        [type="bridge" name="verdikta-ai"
+                  requestData="{\\"id\\": $(jobSpec.externalJobID), \\"data\\": {\\"cid\\": $(decode_cbor.cid), \\"aggId\\": $(decode_cbor.aggId)}}"]
+    parse_scores [type="jsonparse" path="data,aggregatedScore" data="$(fetch)"]
+    parse_cid    [type="jsonparse" path="data,justificationCid" data="$(fetch)"]
+    encode_data  [type="ethabiencode" abi="(bytes32 requestId, uint256[] value, string cid)" ...]
+    encode_tx    [type="ethabiencode" abi="fulfillOracleRequestV(...)" ...]
+    submit_tx    [type="ethtx" to="{CONTRACT_ADDRESS}" ...]
 """
 ```
 
 ### 3. AI Processing
 
-The AI Node processes the request through several stages:
+The External Adapter fetches the evidence archive from IPFS and calls the AI
+Node's `POST /api/rank-and-justify`. The AI Node runs the model panel in
+parallel and returns a **score array that sums to 1,000,000** plus a
+justification; the External Adapter uploads the justification JSON to IPFS:
 
-#### Evidence Retrieval
 ```javascript
-// Fetch evidence documents from IPFS
-const evidenceDocuments = await Promise.all(
-    evidenceHashes.map(hash => ipfs.cat(hash))
-);
+// External Adapter → AI Node (external-adapter/src/services/aiClient.js)
+const { data } = await aiClient.post('/api/rank-and-justify', {
+    prompt, outcomes, models, iterations, attachments
+});
+// data.scores → [{ outcome, score }], sums to 1,000,000
+const justificationCid = await ipfsClient.uploadToIPFS(justificationFile);
 ```
 
-#### AI Analysis
-```javascript
-// Analyze case with multiple AI models
-const decisions = await Promise.all([
-    analyzeWithGPT4(caseDescription, evidence),
-    analyzeWithClaude(caseDescription, evidence)
-]);
-
-// Consensus or confidence-based selection
-const finalDecision = selectBestDecision(decisions);
-```
-
-#### Response Generation
-```javascript
-// Structure response for blockchain
-const response = {
-    decision: finalDecision.ruling,
-    confidence: finalDecision.confidence,
-    reasoning: finalDecision.explanation,
-    evidenceReview: finalDecision.evidenceAnalysis
-};
-```
+For commit-reveal rounds the adapter uses `cid` mode prefixes (`1:` commit,
+`2:` reveal) so aggregated oracles can't copy one another.
 
 ### 4. Response Delivery
 
-The decision is returned to the requesting smart contract:
+The Chainlink job encodes `(bytes32 requestId, uint256[] scores, string cid)`
+and submits it to the ArbiterOperator, which forwards it to the aggregator:
 
 ```solidity
-function fulfill(
+// arbiter-operator/contracts/ArbiterOperator.sol
+function fulfillOracleRequestV(
     bytes32 requestId,
-    uint256 decision,
-    uint256 confidence,
-    string memory reasoning
-) external recordChainlinkFulfillment(requestId) {
-    // Process arbitration result
-    emit ArbitrationComplete(requestId, decision, confidence);
-}
+    uint256 payment,
+    address callbackAddress,
+    bytes4  callbackFunctionId,
+    uint256 expiration,
+    bytes   calldata data          // ABI-encoded (uint256[] scores, string cid)
+) external returns (bool success);
 ```
+
+The aggregator records each arbiter's response, aggregates them via
+commit-reveal, and exposes the final result through
+`getEvaluation(aggRequestId) → (uint256[] scores, string justificationCID, bool exists)`.
 
 ## Architecture Benefits
 

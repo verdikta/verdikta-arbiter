@@ -711,8 +711,7 @@ async function processCase(archivePath) {
 This specification documents the current state of the Verdikta manifest.json format as implemented in the codebase. The format has evolved to support complex multi-party arbitration scenarios while maintaining backward compatibility with simpler use cases.
 
 For questions or clarifications regarding this specification, refer to:
-- `external-adapter/src/utils/manifestParser.js` - Implementation source
-- `external-adapter/src/utils/validator.js` - Validation schema  
+- `@verdikta/common` (`manifestParser`, `archiveService`, `validateRequest`/`requestSchema`) - Implementation source; the external adapter consumes these via `createClient()` in `external-adapter/src/handlers/evaluateHandler.js`
 - `external-adapter/src/__tests__/integration/fixtures/` - Test examples
 
 **Note:** This specification reflects the actual implementation as of December 2024. The original `manifestFile-r3.docx` may contain outdated information and should be considered superseded by this document. 
