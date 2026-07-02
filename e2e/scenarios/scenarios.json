@@ -14,13 +14,5 @@
     "modes": ["0", "commit-reveal"],
     "minOutcomes": 2,
     "expectedWinnerIndex": 0
-  },
-  {
-    "id": "democlient-default",
-    "description": "External pre-pinned package (verdikta-dispatcher/demoClient default).",
-    "cid": "QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS",
-    "modes": ["0"],
-    "minOutcomes": 2,
-    "expectedWinnerIndex": 0
   }
 ]

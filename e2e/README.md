@@ -173,6 +173,17 @@ the pinned `.cid` **is** committed.
 > Because the archive is content-addressed and the build is deterministic,
 > re-pinning the same source yields the same CID.
 
+**Why this matters in practice:** the `verdikta-dispatcher/demoClient` default
+archive (`QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS`) has empty-string
+`type`/`description` fields on its `additional[]` entry, which passed
+validation under `@verdikta/common@1.3.x` but is **rejected** by `@1.6.0`'s
+stricter Joi schema (`Joi.string()` disallows `""` even when the field is
+optional). Since that archive isn't ours to fix and is pinned/immutable, it was
+dropped from `scenarios.json` rather than papered over — exactly the kind of
+external breakage a project-owned archive avoids. If external-CID scenarios are
+reintroduced later, expect them to need periodic revalidation against the
+`@verdikta/common` version actually in use.
+
 ## Scenarios
 
 `scenarios/scenarios.json` — each entry needs `id` and either `cid` (literal) or
