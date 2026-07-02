@@ -2507,6 +2507,13 @@ else
     echo -e "${RED}⚠ No configuration file found${NC}"
 fi
 
+# Stamp the upgraded release version. The External Adapter reads this file
+# (GET /version and the justification uploads) so deployed arbiters can be
+# identified remotely. Format: "<git describe> <ISO timestamp>".
+REPO_GIT_VERSION="$(cd "$REPO_ROOT" && git describe --tags --always 2>/dev/null || echo "unknown")"
+echo "$REPO_GIT_VERSION $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TARGET_DIR/VERSION"
+echo -e "${GREEN}Release version stamped: $(cat "$TARGET_DIR/VERSION")${NC}"
+
 # Success!
 echo -e "${GREEN}"
 echo "===================================================="

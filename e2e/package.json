@@ -13,6 +13,7 @@
     "mock-ai": "node src/l2/mock-ai-node.js",
     "build-archive": "node scripts/build-archive.js",
     "generate-wallet": "node scripts/generate-wallet.js",
+    "audit-oracles": "node scripts/audit-oracles.js",
     "test": "jest"
   },
   "dependencies": {

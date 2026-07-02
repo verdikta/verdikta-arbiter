@@ -784,6 +784,34 @@ check_chainlink_txm() {
 check_external_adapter() {
     section_header "EXTERNAL ADAPTER"
 
+    # Self-reported version (GET /version). The same block is embedded in every
+    # justification the EA uploads to IPFS, so this is what remote observers see.
+    local ver_json
+    ver_json=$(curl -fsS --max-time 5 http://localhost:8080/version 2>/dev/null)
+    if [ -n "$ver_json" ]; then
+        local ver_line
+        ver_line=$(printf '%s' "$ver_json" | python3 -c '
+import sys, json
+v = json.load(sys.stdin)
+print(f"release={v.get(\"release\") or \"unstamped\"} adapter={v.get(\"adapter\")} ai-node={v.get(\"aiNode\")} verdikta-common={v.get(\"verdiktaCommon\")}")' 2>/dev/null)
+        if [ -n "$ver_line" ]; then
+            emit INFO ea.version "$ver_line" ""
+        else
+            emit WARN ea.version "/version responded but could not be parsed" ""
+        fi
+    else
+        emit INFO ea.version "/version endpoint not available (EA not running, or pre-versioning build)" \
+             "Upgrade with installer/bin/upgrade-arbiter.sh to enable version self-reporting."
+    fi
+
+    # Release stamp written by install/upgrade scripts
+    if [ -f "$INSTALL_DIR/VERSION" ]; then
+        emit INFO ea.release_stamp "$(cat "$INSTALL_DIR/VERSION")" "$INSTALL_DIR/VERSION"
+    else
+        emit INFO ea.release_stamp "no VERSION stamp (pre-versioning install)" \
+             "Created automatically by the next install.sh / upgrade-arbiter.sh run."
+    fi
+
     # commitStore mode.
     # USE_FILE=false makes the EA keep commits in RAM only — fine for normal
     # steady-state operation (where reveals follow commits within seconds and

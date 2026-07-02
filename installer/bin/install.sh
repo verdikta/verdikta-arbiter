@@ -634,6 +634,13 @@ if [ -f "$INSTALLER_DIR/.api_keys" ]; then
     echo -e "${GREEN}API keys copied to $INSTALL_DIR/installer/.api_keys${NC}"
 fi
 
+# Stamp the installed release version. The External Adapter reads this file
+# (GET /version and the justification uploads) so deployed arbiters can be
+# identified remotely. Format: "<git describe> <ISO timestamp>".
+REPO_GIT_VERSION="$(cd "$(dirname "$INSTALLER_DIR")" && git describe --tags --always 2>/dev/null || echo "unknown")"
+echo "$REPO_GIT_VERSION $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$INSTALL_DIR/VERSION"
+echo -e "${GREEN}Release version stamped: $(cat "$INSTALL_DIR/VERSION")${NC}"
+
 # Copy all utility scripts to installer directory (excluding management scripts which are placed at install root)
 echo -e "${BLUE}Copying all utility scripts...${NC}"
 if [ -d "$UTIL_DIR" ]; then

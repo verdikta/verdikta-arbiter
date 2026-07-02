@@ -212,6 +212,26 @@ knobs: `adapterUrl`, `mockAi.{port,winnerIndex,winnerShare}`,
 
 Exit code is `0` when all cases pass, `1` otherwise.
 
+## Auditing the oracles behind a request
+
+`getEvaluation`'s `justificationCID` is a **comma-separated list** — one
+justification per revealed oracle — and the aggregator emits `OracleSelected` /
+`CommitReceived` / `NewOracleResponseRecorded` events identifying the operators.
+The audit tool combines both to show exactly who served a request and how:
+
+```bash
+npm run audit-oracles -- 0x<aggId> [0x<aggId>…] [--lookback 20000]
+```
+
+Per aggId it reports: fulfillment status, aggregated scores, selected/committed/
+revealed slots with operator addresses, and each oracle's justification —
+scores, per-model failures, and the arbiter's **self-reported version** (the
+External Adapter embeds `{ arbiter: { adapter, aiNode, verdiktaCommon,
+release } }` in every justification it uploads; the same info is served at
+`GET /version` and stamped in `$INSTALL_DIR/VERSION` by install/upgrade).
+Arbiters running pre-versioning builds show `(not reported)` — sampling live
+traffic with this tool is how you inventory which fleet nodes need upgrading.
+
 ## Roadmap / ideas
 
 - Optionally boot the AI Node too (for turnkey `l2 --real` in CI).

@@ -41,9 +41,20 @@ validatePinataKey();
 const express = require('express');
 const bodyParser = require('body-parser');
 const evaluateHandler = require('./handlers/evaluateHandler');
+const { versionInfo } = require('./utils/versionInfo');
 
 const app = express();
 app.use(bodyParser.json());
+
+// Version self-report for local ops tooling (arbiter-doctor) and debugging.
+// The same block is embedded in every justification uploaded to IPFS.
+app.get('/version', (req, res) => {
+  res.json({
+    service: 'verdikta-external-adapter',
+    ...versionInfo,
+    uptimeSeconds: Math.floor(process.uptime())
+  });
+});
 
 // Create HTTP server to set connection limits
 const server = require('http').createServer(app);
