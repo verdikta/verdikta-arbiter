@@ -1,0 +1,126 @@
+name: E2E
+
+# End-to-end tests for the arbiter node.
+#
+# Secrets (Settings → Secrets and variables → Actions, ideally scoped to the
+# "e2e" Environment):
+#   IPFS_PINNING_KEY        Pinata JWT (least-privilege, pinning-only). Needed by
+#                           the External Adapter to upload justifications (L2).
+#   RPC_URL                 Base Sepolia RPC endpoint (L4).
+#   E2E_WALLET_PRIVATE_KEY  Dedicated, funded *testnet* wallet key (L4). NEVER a
+#                           mainnet key. Keep in the "e2e" Environment.
+#   AGGREGATOR_ADDRESS      (optional) overrides the default aggregator (L4).
+#
+# NOTE: GitHub does not expose secrets to workflows triggered by pull_request
+# from forks. The secret-dependent jobs below are gated to same-repo events.
+
+on:
+  pull_request:
+    branches: [main, master]
+    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', '.github/workflows/e2e.yml']
+  push:
+    branches: [main, master]
+    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', '.github/workflows/e2e.yml']
+  schedule:
+    - cron: '0 7 * * *'   # nightly acceptance (L4)
+  workflow_dispatch:
+    inputs:
+      run_l4:
+        description: 'Run L4 live-testnet acceptance'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ── L2: off-chain arbiter pipeline (mock AI, deterministic) ────────────────
+  l2-mock:
+    name: L2 pipeline (mock AI)
+    # Secrets are unavailable to fork PRs; skip there instead of failing.
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install External Adapter deps (needed for --boot-adapter)
+        working-directory: external-adapter
+        run: npm ci
+
+      - name: Install E2E harness deps
+        working-directory: e2e
+        run: npm ci
+
+      - name: Validate canonical evidence archive (no secrets needed)
+        working-directory: e2e
+        run: node scripts/build-archive.js --validate --predict-cid
+
+      - name: Run L2 (mock AI, boot adapter)
+        working-directory: e2e
+        env:
+          IPFS_PINNING_KEY: ${{ secrets.IPFS_PINNING_KEY }}
+        run: |
+          if [ -z "$IPFS_PINNING_KEY" ]; then
+            echo "::warning::IPFS_PINNING_KEY not set — skipping L2 (adapter cannot upload justifications)."
+            exit 0
+          fi
+          node src/index.js l2 --mock --boot-adapter \
+            --junit results/l2-mock.xml --report results/l2-mock.json
+
+      - name: Upload L2 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-mock-report
+          path: e2e/results/
+          if-no-files-found: ignore
+
+  # ── L4: live testnet acceptance (Base Sepolia) ─────────────────────────────
+  l4-testnet:
+    name: L4 acceptance (Base Sepolia)
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.run_l4)
+    runs-on: ubuntu-latest
+    environment: e2e
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install E2E harness deps
+        working-directory: e2e
+        run: npm ci
+
+      - name: Run L4 (live testnet)
+        working-directory: e2e
+        env:
+          RPC_URL: ${{ secrets.RPC_URL }}
+          AGGREGATOR_ADDRESS: ${{ secrets.AGGREGATOR_ADDRESS }}
+          E2E_WALLET_PRIVATE_KEY: ${{ secrets.E2E_WALLET_PRIVATE_KEY }}
+        run: |
+          if [ -z "$E2E_WALLET_PRIVATE_KEY" ] || [ -z "$RPC_URL" ]; then
+            echo "::error::L4 requires RPC_URL and E2E_WALLET_PRIVATE_KEY secrets."
+            exit 1
+          fi
+          node src/index.js l4 --junit results/l4.xml --report results/l4.json
+
+      - name: Upload L4 report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: l4-report
+          path: e2e/results/
+          if-no-files-found: ignore

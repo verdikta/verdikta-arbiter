@@ -1,0 +1,26 @@
+[
+  {
+    "id": "canonical-vuln",
+    "description": "Project-owned canonical archive: reentrancy contract review, outcomes [Vulnerabilities, Safe]. Source in archives/contract-vuln/. Activate by pinning: `npm run build-archive -- --pin` (writes archives/contract-vuln.cid).",
+    "cidFile": "archives/contract-vuln.cid",
+    "modes": ["0", "commit-reveal"],
+    "minOutcomes": 2,
+    "expectedWinnerIndex": 0
+  },
+  {
+    "id": "frontend-default",
+    "description": "External pre-pinned package (example-frontend default). Smart-contract vulnerability review, 2 outcomes. Works today; not project-owned.",
+    "cid": "QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH",
+    "modes": ["0", "commit-reveal"],
+    "minOutcomes": 2,
+    "expectedWinnerIndex": 0
+  },
+  {
+    "id": "democlient-default",
+    "description": "External pre-pinned package (verdikta-dispatcher/demoClient default).",
+    "cid": "QmSnynnZVufbeb9GVNLBjxBJ45FyHgjPYUHTvMK5VmQZcS",
+    "modes": ["0"],
+    "minOutcomes": 2,
+    "expectedWinnerIndex": 0
+  }
+]

@@ -1,0 +1,33 @@
+{
+  "version": "1.0",
+  "name": "verdikta-e2e-canonical-contract-vuln",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      {
+        "AI_PROVIDER": "OpenAI",
+        "AI_MODEL": "gpt-4o",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      },
+      {
+        "AI_PROVIDER": "Anthropic",
+        "AI_MODEL": "claude-3-5-sonnet-20241022",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      }
+    ],
+    "ITERATIONS": 1
+  },
+  "additional": [
+    {
+      "name": "contractSource",
+      "type": "text/plain",
+      "filename": "VulnerableBank.sol",
+      "description": "Solidity contract to review for security vulnerabilities."
+    }
+  ]
+}

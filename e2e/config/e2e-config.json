@@ -1,0 +1,37 @@
+{
+  "adapterUrl": "http://localhost:8080",
+  "aiNodeUrl": "http://localhost:3000",
+  "ipfs": {
+    "gateway": "https://ipfs.io",
+    "checkJustificationFetch": true
+  },
+  "mockAi": {
+    "port": 8547,
+    "winnerIndex": 0,
+    "winnerShare": 0.6,
+    "justification": "[mock] Deterministic E2E justification: winner is outcome index {winnerIndex} by construction."
+  },
+  "timeouts": {
+    "evaluateMs": 180000,
+    "ipfsFetchMs": 20000
+  },
+  "tolerances": {
+    "scoreSumTarget": 1000000,
+    "scoreSumSlack": 5
+  },
+  "l4": {
+    "network": "base_sepolia",
+    "rpcUrl": "https://sepolia.base.org",
+    "aggregatorAddress": "0xe8a385E473EA710c5a88Cc72681a16a26fe380e4",
+    "classId": 128,
+    "fees": {
+      "alpha": 500,
+      "maxOracleFee": "150000000000000",
+      "estimatedBaseCost": "8000000000",
+      "maxFeeScaling": 5
+    },
+    "pollIntervalMs": 20000,
+    "timeoutMs": 900000,
+    "gasLimit": 3000000
+  }
+}

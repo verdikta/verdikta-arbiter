@@ -1,0 +1,32 @@
+{
+  "name": "verdikta-arbiter-e2e",
+  "version": "0.1.0",
+  "description": "End-to-end test harness for the Verdikta Arbiter node (L2 off-chain pipeline; L4 live testnet acceptance)",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "l2": "node src/index.js l2",
+    "l2:mock": "node src/index.js l2 --mock",
+    "l2:real": "node src/index.js l2 --real",
+    "smoke": "node src/index.js smoke",
+    "l4": "node src/index.js l4",
+    "mock-ai": "node src/l2/mock-ai-node.js",
+    "build-archive": "node scripts/build-archive.js",
+    "generate-wallet": "node scripts/generate-wallet.js",
+    "test": "jest"
+  },
+  "dependencies": {
+    "@verdikta/common": "^1.6.0",
+    "adm-zip": "^0.5.16",
+    "axios": "^1.7.7",
+    "chalk": "^4.1.2",
+    "commander": "^11.1.0",
+    "dotenv": "^16.4.5",
+    "ethers": "^6.13.4",
+    "express": "^4.21.1",
+    "ipfs-only-hash": "^4.0.0"
+  },
+  "devDependencies": {
+    "jest": "^29.7.0"
+  }
+}

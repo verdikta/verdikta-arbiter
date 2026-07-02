@@ -1,0 +1,8 @@
+node_modules/
+results/
+.env
+tmp-*.js
+*.log
+# Built archive zips are reproducible from archives/<name>/ source; the pinned
+# CID (archives/<name>.cid) IS committed so tests/CI can use it.
+archives/*.zip

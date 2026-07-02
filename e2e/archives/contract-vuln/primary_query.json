@@ -1,0 +1,10 @@
+{
+  "query": "You are auditing the accompanying Solidity contract (see reference 'contractSource') for security vulnerabilities. Judge the outcome 'Vulnerabilities' if the contract contains any exploitable security flaw (for example: reentrancy, unchecked external calls, missing access control, or integer issues). Judge 'Safe' only if there are no exploitable vulnerabilities. Base your decision on the contract source provided.",
+  "references": [
+    "contractSource"
+  ],
+  "outcomes": [
+    "Vulnerabilities",
+    "Safe"
+  ]
+}
