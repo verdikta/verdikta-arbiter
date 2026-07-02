@@ -41,20 +41,33 @@ async function pollEvaluation(contract, aggId, { pollIntervalMs, timeoutMs }, on
   return { status: 'timeout', scores: [], justificationCID: '' };
 }
 
-/** Fetch and validate a justification CID (may be a comma-separated list). */
-async function checkJustificationFetch(gateway, justificationCID, timeoutMs) {
+/**
+ * Fetch and validate a justification CID (may be a comma-separated list).
+ * Tries each gateway in order (first success wins) — see run-l2.js for why.
+ */
+async function checkJustificationFetch(gateways, justificationCID, timeoutMs) {
   const first = String(justificationCID).split(',')[0].trim();
   const checks = [A.cidAssertion('justificationCid.valid', first)];
   if (!A.isLikelyCid(first)) return checks;
-  const url = `${gateway.replace(/\/$/, '')}/ipfs/${first}`;
-  try {
-    const { data } = await axios.get(url, { timeout: timeoutMs });
-    const obj = typeof data === 'string' ? JSON.parse(data) : data;
-    const ok = obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string');
-    checks.push(A.assert('justification.fetchableJson', ok, ok ? `keys=${Object.keys(obj).join(',')}` : 'missing scores/justification'));
-  } catch (err) {
-    checks.push(A.assert('justification.fetchableJson', false, `fetch failed: ${err.message}`));
+
+  const list = Array.isArray(gateways) ? gateways : [gateways];
+  const errors = [];
+  for (const gateway of list) {
+    const url = `${gateway.replace(/\/$/, '')}/ipfs/${first}`;
+    try {
+      const { data } = await axios.get(url, { timeout: timeoutMs });
+      const obj = typeof data === 'string' ? JSON.parse(data) : data;
+      const ok = obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string');
+      if (ok) {
+        checks.push(A.assert('justification.fetchableJson', true, `gateway=${gateway}, keys=${Object.keys(obj).join(',')}`));
+        return checks;
+      }
+      errors.push(`${gateway}: missing scores/justification`);
+    } catch (err) {
+      errors.push(`${gateway}: ${err.message}`);
+    }
   }
+  checks.push(A.assert('justification.fetchableJson', false, `all gateways failed — ${errors.join('; ')}`));
   return checks;
 }
 
@@ -123,7 +136,7 @@ async function runL4(cfg, scenarios, opts) {
           if (opts.assertWinner && Number.isInteger(scenario.expectedWinnerIndex)) {
             checks.push(A.winnerAssertion(result.scores, scenario.expectedWinnerIndex));
           }
-          checks.push(...await checkJustificationFetch(cfg.ipfs.gateway, result.justificationCID, cfg.timeouts.ipfsFetchMs));
+          checks.push(...await checkJustificationFetch(cfg.ipfs.gateways, result.justificationCID, cfg.timeouts.ipfsFetchMs));
         }
       }
       reporter.addCase({ id: scenario.id, mode: 'l4', durationMs: Date.now() - start, checks });

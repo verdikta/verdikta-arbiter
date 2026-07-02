@@ -23,7 +23,10 @@ function buildConfig(cliOpts = {}) {
     aiNodeUrl: process.env.AI_NODE_URL || base.aiNodeUrl,
     ipfs: {
       ...base.ipfs,
-      gateway: process.env.IPFS_GATEWAY || base.ipfs.gateway,
+      // Try our own Pinata pin first (always immediately available since we
+      // just uploaded it there), then public gateways as fallback — public
+      // gateways can have propagation delay or rate-limit fresh pins.
+      gateways: process.env.IPFS_GATEWAY ? [process.env.IPFS_GATEWAY] : base.ipfs.gateways,
       checkJustificationFetch: process.env.E2E_SKIP_IPFS_CHECK === 'true'
         ? false
         : base.ipfs.checkJustificationFetch,

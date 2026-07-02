@@ -7,34 +7,57 @@ const A = require('../assertions');
 const { startMockAiNode } = require('./mock-ai-node');
 const { bootAdapter } = require('./boot-adapter');
 
-/** POST a request to the External Adapter's /evaluate endpoint. */
-async function callEvaluate(adapterUrl, cid, { aggId = '', timeoutMs = 180000 } = {}) {
+/**
+ * POST a request to the External Adapter's /evaluate endpoint.
+ *
+ * `aggId` mirrors the real Chainlink job spec, which always forwards the
+ * aggregator-assigned aggId (chainlink-node/basicJobSpec: decode_cbor.aggId) —
+ * for every mode, not just commit/reveal. @verdikta/common's request schema
+ * validates aggId as Joi.string().optional(), and Joi rejects an empty string
+ * even on optional fields, so we must omit the key entirely rather than send
+ * "" when no aggId is supplied.
+ */
+async function callEvaluate(adapterUrl, cid, { aggId, timeoutMs = 180000 } = {}) {
   const id = `e2e-${crypto.randomBytes(4).toString('hex')}`;
-  const { data } = await axios.post(
+  const data = { cid };
+  if (aggId) data.aggId = aggId;
+  const { data: body } = await axios.post(
     `${adapterUrl.replace(/\/$/, '')}/evaluate`,
-    { id, data: { cid, aggId } },
+    { id, data },
     { timeout: timeoutMs, headers: { 'Content-Type': 'application/json' } }
   );
-  return data;
+  return body;
 }
 
-/** Verify the returned justification CID is fetchable and looks like a result JSON. */
-async function checkJustificationFetch(gateway, cid, timeoutMs) {
-  const url = `${gateway.replace(/\/$/, '')}/ipfs/${cid}`;
-  try {
-    const { data } = await axios.get(url, { timeout: timeoutMs });
-    const obj = typeof data === 'string' ? JSON.parse(data) : data;
-    const ok = obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string');
-    return A.assert('justification.fetchableJson', ok, ok ? `keys=${Object.keys(obj).join(',')}` : 'missing scores/justification');
-  } catch (err) {
-    return A.assert('justification.fetchableJson', false, `fetch failed: ${err.message}`);
+/**
+ * Verify the returned justification CID is fetchable and looks like a result
+ * JSON. Tries each gateway in order (first success wins) — public gateways
+ * can have propagation delay or rate limits for freshly-pinned content, so a
+ * single gateway is not a reliable check on its own.
+ */
+async function checkJustificationFetch(gateways, cid, timeoutMs) {
+  const list = Array.isArray(gateways) ? gateways : [gateways];
+  const errors = [];
+  for (const gateway of list) {
+    const url = `${gateway.replace(/\/$/, '')}/ipfs/${cid}`;
+    try {
+      const { data } = await axios.get(url, { timeout: timeoutMs });
+      const obj = typeof data === 'string' ? JSON.parse(data) : data;
+      const ok = obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string');
+      if (ok) return A.assert('justification.fetchableJson', true, `gateway=${gateway}, keys=${Object.keys(obj).join(',')}`);
+      errors.push(`${gateway}: missing scores/justification`);
+    } catch (err) {
+      errors.push(`${gateway}: ${err.message}`);
+    }
   }
+  return A.assert('justification.fetchableJson', false, `all gateways failed — ${errors.join('; ')}`);
 }
 
 /** Run one scenario in mode 0 (standard evaluate). */
 async function runMode0(cfg, scenario, expectedWinnerIndex, assertWinner) {
   const checks = [];
-  const resp = await callEvaluate(cfg.adapterUrl, scenario.cid, { timeoutMs: cfg.timeouts.evaluateMs });
+  const aggId = crypto.randomBytes(8).toString('hex'); // always present in production (aggregator-assigned)
+  const resp = await callEvaluate(cfg.adapterUrl, scenario.cid, { aggId, timeoutMs: cfg.timeouts.evaluateMs });
   const scoreArr = resp?.data?.aggregatedScore;
   const cid = resp?.data?.justificationCid;
 
@@ -50,7 +73,7 @@ async function runMode0(cfg, scenario, expectedWinnerIndex, assertWinner) {
     checks.push(A.winnerAssertion(scoreArr, expectedWinnerIndex));
   }
   if (cfg.ipfs.checkJustificationFetch && A.isLikelyCid(cid)) {
-    checks.push(await checkJustificationFetch(cfg.ipfs.gateway, cid, cfg.timeouts.ipfsFetchMs));
+    checks.push(await checkJustificationFetch(cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs));
   }
   return checks;
 }

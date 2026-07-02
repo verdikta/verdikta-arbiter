@@ -2,7 +2,11 @@
   "adapterUrl": "http://localhost:8080",
   "aiNodeUrl": "http://localhost:3000",
   "ipfs": {
-    "gateway": "https://ipfs.io",
+    "gateways": [
+      "https://gateway.pinata.cloud",
+      "https://ipfs.io",
+      "https://dweb.link"
+    ],
     "checkJustificationFetch": true
   },
   "mockAi": {
