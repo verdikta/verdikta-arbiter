@@ -9,13 +9,13 @@
     "AI_NODES": [
       {
         "AI_PROVIDER": "OpenAI",
-        "AI_MODEL": "gpt-4o",
+        "AI_MODEL": "gpt-5.2-2025-12-11",
         "NO_COUNTS": 1,
         "WEIGHT": 0.5
       },
       {
         "AI_PROVIDER": "Anthropic",
-        "AI_MODEL": "claude-3-5-sonnet-20241022",
+        "AI_MODEL": "claude-sonnet-4-5-20250929",
         "NO_COUNTS": 1,
         "WEIGHT": 0.5
       }
