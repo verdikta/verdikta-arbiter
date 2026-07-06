@@ -41,7 +41,7 @@ validatePinataKey();
 const express = require('express');
 const bodyParser = require('body-parser');
 const evaluateHandler = require('./handlers/evaluateHandler');
-const { versionInfo } = require('./utils/versionInfo');
+const { collectVersionInfo } = require('./utils/versionInfo');
 
 const app = express();
 app.use(bodyParser.json());
@@ -51,7 +51,7 @@ app.use(bodyParser.json());
 app.get('/version', (req, res) => {
   res.json({
     service: 'verdikta-external-adapter',
-    ...versionInfo,
+    ...collectVersionInfo(),
     uptimeSeconds: Math.floor(process.uptime())
   });
 });

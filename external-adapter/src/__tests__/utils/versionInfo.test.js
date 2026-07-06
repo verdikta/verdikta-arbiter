@@ -1,15 +1,17 @@
 const path = require('path');
-const { versionInfo, collectVersionInfo } = require('../../utils/versionInfo');
+const fs = require('fs');
+const os = require('os');
+const { collectVersionInfo } = require('../../utils/versionInfo');
 
 describe('versionInfo', () => {
   it('reports the adapter version from package.json', () => {
     const expected = require(path.join(__dirname, '..', '..', '..', 'package.json')).version;
-    expect(versionInfo.adapter).toBe(expected);
+    expect(collectVersionInfo().adapter).toBe(expected);
   });
 
   it('reports the installed @verdikta/common version', () => {
     const expected = require('@verdikta/common/package.json').version;
-    expect(versionInfo.verdiktaCommon).toBe(expected);
+    expect(collectVersionInfo().verdiktaCommon).toBe(expected);
   });
 
   it('has all expected keys, using null (not throwing) for missing sources', () => {
@@ -21,6 +23,19 @@ describe('versionInfo', () => {
   });
 
   it('is JSON-serializable (goes into every justification upload)', () => {
-    expect(() => JSON.stringify(versionInfo)).not.toThrow();
+    expect(() => JSON.stringify(collectVersionInfo())).not.toThrow();
+  });
+
+  it('picks up a release stamp written AFTER startup (upgrade writes VERSION last)', () => {
+    const stampFile = path.join(__dirname, '..', '..', '..', 'VERSION');
+    const existed = fs.existsSync(stampFile);
+    const original = existed ? fs.readFileSync(stampFile, 'utf8') : null;
+    try {
+      fs.writeFileSync(stampFile, 'testrelease-abc123 2026-01-01T00:00:00Z\n');
+      expect(collectVersionInfo().release).toBe('testrelease-abc123 2026-01-01T00:00:00Z');
+    } finally {
+      if (existed) fs.writeFileSync(stampFile, original);
+      else fs.rmSync(stampFile, { force: true });
+    }
   });
 });

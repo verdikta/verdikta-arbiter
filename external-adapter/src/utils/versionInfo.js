@@ -13,7 +13,7 @@
  *  - verdiktaCommon: installed @verdikta/common version
  *  - release:        VERSION stamp written by installer/bin/install.sh and
  *                    upgrade-arbiter.sh at the install root (or EA root),
- *                    e.g. "51b3d4f 2026-07-02T15:00:00Z"
+ *                    e.g. "b9a58e2 2026-07-06T21:20:25Z"
  */
 
 const fs = require('fs');
@@ -45,18 +45,23 @@ function readReleaseStamp() {
   return null;
 }
 
-/** Collect version info once at startup; the values cannot change at runtime. */
+// Package versions can't change while the process runs — cache them once.
+const packageVersions = {
+  adapter: readJsonVersion(path.join(EA_ROOT, 'package.json')),
+  aiNode: readJsonVersion(path.join(EA_ROOT, '..', 'ai-node', 'package.json')),
+  verdiktaCommon: readJsonVersion(
+    path.join(EA_ROOT, 'node_modules', '@verdikta', 'common', 'package.json')
+  ),
+};
+
+/**
+ * Collect version info. The release stamp is read lazily on every call:
+ * upgrade-arbiter.sh writes $INSTALL_DIR/VERSION at the END of an upgrade —
+ * after services have already been restarted — so a startup-time cache would
+ * report release=null until the next restart.
+ */
 function collectVersionInfo() {
-  return {
-    adapter: readJsonVersion(path.join(EA_ROOT, 'package.json')),
-    aiNode: readJsonVersion(path.join(EA_ROOT, '..', 'ai-node', 'package.json')),
-    verdiktaCommon: readJsonVersion(
-      path.join(EA_ROOT, 'node_modules', '@verdikta', 'common', 'package.json')
-    ),
-    release: readReleaseStamp(),
-  };
+  return { ...packageVersions, release: readReleaseStamp() };
 }
 
-const versionInfo = collectVersionInfo();
-
-module.exports = { versionInfo, collectVersionInfo };
+module.exports = { collectVersionInfo };

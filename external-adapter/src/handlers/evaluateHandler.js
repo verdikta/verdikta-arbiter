@@ -6,7 +6,7 @@ const aiClient = require('../services/aiClient');
 const crypto = require('crypto');
 const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
-const { versionInfo } = require('../utils/versionInfo');
+const { collectVersionInfo } = require('../utils/versionInfo');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -475,7 +475,7 @@ async function createAndUploadJustification(result, tempDir) {
     // Self-reported arbiter version: responses are the only remote observation
     // channel for deployed arbiters, so each justification identifies the
     // software that produced it (consumers ignore unknown fields).
-    arbiter: versionInfo
+    arbiter: collectVersionInfo()
   };
   
   // Include enhanced error reporting fields if present (backward compatible)
