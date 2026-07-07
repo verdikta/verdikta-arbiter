@@ -771,8 +771,42 @@ if ask_yes_no "Install cron entries for the health watchdog and log rotation?"; 
         echo -e "${YELLOW}Warning: could not install watchdog cron entry${NC}"
     bash "$INSTALL_DIR/rotate-logs.sh" --install-cron || \
         echo -e "${YELLOW}Warning: could not install log-rotation cron entry${NC}"
-    echo -e "${YELLOW}To receive pages (not just syslog entries), set WATCHDOG_ALERT_WEBHOOK"
-    echo -e "or WATCHDOG_ALERT_COMMAND in $INSTALL_DIR/installer/.env${NC}"
+
+    # Optional: report health to the Verdikta arbiter status page. The watchdog
+    # then POSTs one JSON event per run (OK heartbeat / ALERT / RECOVERED,
+    # keyed by this node's operator address) so the site can show live alerts
+    # and flag arbiters whose heartbeats stop. Requires the shared ingest token
+    # from the status page operator.
+    echo
+    echo -e "${BLUE}The watchdog can also report to the Verdikta arbiter status page"
+    echo -e "(https://arbiters.verdikta.org/analytics), where your node shows up with"
+    echo -e "live health alerts and heartbeat monitoring.${NC}"
+    if ask_yes_no "Report this arbiter's health to the arbiter status page?"; then
+        DEFAULT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
+        read -p "Alerts webhook URL [$DEFAULT_WEBHOOK]: " WATCHDOG_WEBHOOK_INPUT
+        WATCHDOG_WEBHOOK_INPUT="${WATCHDOG_WEBHOOK_INPUT:-$DEFAULT_WEBHOOK}"
+        read -p "Ingest token (from the status page operator, blank to skip): " WATCHDOG_TOKEN_INPUT
+        if [ -n "$WATCHDOG_TOKEN_INPUT" ]; then
+            # Write to the install-dir .env (what the watchdog reads at runtime)
+            # and the source installer/.env so re-installs keep the setting.
+            for _envf in "$INSTALL_DIR/installer/.env" "$INSTALLER_DIR/.env"; do
+                [ -f "$_envf" ] || continue
+                sed -i.bak '/^WATCHDOG_ALERT_WEBHOOK=/d; /^WATCHDOG_ALERT_TOKEN=/d' "$_envf" && rm -f "${_envf}.bak"
+                printf 'WATCHDOG_ALERT_WEBHOOK="%s"\nWATCHDOG_ALERT_TOKEN="%s"\n' \
+                    "$WATCHDOG_WEBHOOK_INPUT" "$WATCHDOG_TOKEN_INPUT" >> "$_envf"
+            done
+            echo -e "${GREEN}Status page reporting configured. Your node will appear on the"
+            echo -e "Arbiter Alerts card within ~2 minutes of the watchdog cron running.${NC}"
+        else
+            echo -e "${YELLOW}No token entered — skipped. Configure later by setting"
+            echo -e "WATCHDOG_ALERT_WEBHOOK and WATCHDOG_ALERT_TOKEN in $INSTALL_DIR/installer/.env${NC}"
+        fi
+    else
+        echo -e "${BLUE}Skipped. To enable later, set WATCHDOG_ALERT_WEBHOOK and"
+        echo -e "WATCHDOG_ALERT_TOKEN in $INSTALL_DIR/installer/.env${NC}"
+    fi
+    echo -e "${YELLOW}For direct pages (email/SMS/etc.), you can also set"
+    echo -e "WATCHDOG_ALERT_COMMAND in $INSTALL_DIR/installer/.env${NC}"
 else
     echo -e "${BLUE}Skipped. You can install them later with:${NC}"
     echo -e "  $INSTALL_DIR/chainlink-health-watchdog.sh --install-cron"
