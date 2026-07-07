@@ -2250,6 +2250,28 @@ if [ -f "$TARGET_DIR/chainlink-health-watchdog.sh" ]; then
                 echo -e "${YELLOW}Warning: could not install log-rotation cron entry${NC}"
         fi
     fi
+
+    # Offer status-page reporting if not yet configured. Events are signed
+    # locally with the operator owner key (EIP-191 personal message — no
+    # transaction, no gas) and verified against owner() on-chain, so there is
+    # no secret to obtain — just the webhook URL.
+    if ! grep -q '^WATCHDOG_ALERT_WEBHOOK=' "$TARGET_DIR/installer/.env" 2>/dev/null; then
+        echo
+        echo -e "${BLUE}The watchdog can also report this arbiter's health to the Verdikta arbiter"
+        echo -e "status page (https://arbiters.verdikta.org/analytics): live alerts plus"
+        echo -e "heartbeat monitoring that flags the node if its machine goes dark."
+        echo -e "Reports are signed with your operator owner key — free (no gas).${NC}"
+        if ask_yes_no "Report this arbiter's health to the arbiter status page?" "y"; then
+            DEFAULT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
+            read -p "Alerts webhook URL [$DEFAULT_WEBHOOK]: " WATCHDOG_WEBHOOK_INPUT
+            WATCHDOG_WEBHOOK_INPUT="${WATCHDOG_WEBHOOK_INPUT:-$DEFAULT_WEBHOOK}"
+            printf 'WATCHDOG_ALERT_WEBHOOK="%s"\n' "$WATCHDOG_WEBHOOK_INPUT" >> "$TARGET_DIR/installer/.env"
+            echo -e "${GREEN}Status page reporting configured — the node appears on the Arbiter"
+            echo -e "Alerts card within ~2 minutes of the next watchdog cron run.${NC}"
+        else
+            echo -e "${BLUE}Skipped. Enable later by setting WATCHDOG_ALERT_WEBHOOK in $TARGET_DIR/installer/.env${NC}"
+        fi
+    fi
 fi
 
 # Optional: Fund or top-off Chainlink keys
