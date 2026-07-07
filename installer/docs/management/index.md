@@ -253,8 +253,8 @@ No shared secret is needed for the status page: each event is **signed with
 your operator owner key** (the `PRIVATE_KEY` already in `installer/.env`) as an
 EIP-191 personal message — a purely local computation, **no transaction and no
 gas** — and the status page verifies the signer against your operator's
-on-chain `owner()`. A `WATCHDOG_ALERT_TOKEN` env var exists only as a fallback
-for nodes that cannot sign (missing key/node/ethers).
+on-chain `owner()`. Unsigned events are rejected, so the key, Node.js, and the
+ethers package (all present on a standard install) are required for reporting.
 
 When the webhook points at the status page, healthy runs send heartbeats too —
 so the page can flag your arbiter as "not reporting" if the whole machine goes

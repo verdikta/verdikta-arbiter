@@ -777,27 +777,23 @@ if ask_yes_no "Install cron entries for the health watchdog and log rotation?"; 
     # keyed by this node's operator address) so the site can show live alerts
     # and flag arbiters whose heartbeats stop. Events are signed locally with
     # the operator owner key (EIP-191 personal message — no transaction, no
-    # gas) and verified against owner() on-chain, so no shared secret is
-    # needed; a token is only for nodes that cannot sign.
+    # gas) and verified against owner() on-chain — no shared secret exists.
     echo
     echo -e "${BLUE}The watchdog can also report to the Verdikta arbiter status page"
     echo -e "(https://arbiters.verdikta.org/analytics), where your node shows up with"
     echo -e "live health alerts and heartbeat monitoring. Reports are authenticated"
-    echo -e "by signing with your operator owner key — free (no gas), and no shared"
-    echo -e "secret to obtain.${NC}"
+    echo -e "by signing with your operator owner key — free (no gas), nothing to"
+    echo -e "obtain or configure beyond the URL.${NC}"
     if ask_yes_no "Report this arbiter's health to the arbiter status page?"; then
         DEFAULT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
         read -p "Alerts webhook URL [$DEFAULT_WEBHOOK]: " WATCHDOG_WEBHOOK_INPUT
         WATCHDOG_WEBHOOK_INPUT="${WATCHDOG_WEBHOOK_INPUT:-$DEFAULT_WEBHOOK}"
-        read -p "Shared ingest token (usually NOT needed — signature auth is automatic; blank to skip): " WATCHDOG_TOKEN_INPUT
         # Write to the install-dir .env (what the watchdog reads at runtime)
         # and the source installer/.env so re-installs keep the setting.
         for _envf in "$INSTALL_DIR/installer/.env" "$INSTALLER_DIR/.env"; do
             [ -f "$_envf" ] || continue
-            sed -i.bak '/^WATCHDOG_ALERT_WEBHOOK=/d; /^WATCHDOG_ALERT_TOKEN=/d' "$_envf" && rm -f "${_envf}.bak"
+            sed -i.bak '/^WATCHDOG_ALERT_WEBHOOK=/d' "$_envf" && rm -f "${_envf}.bak"
             printf 'WATCHDOG_ALERT_WEBHOOK="%s"\n' "$WATCHDOG_WEBHOOK_INPUT" >> "$_envf"
-            [ -n "$WATCHDOG_TOKEN_INPUT" ] && \
-                printf 'WATCHDOG_ALERT_TOKEN="%s"\n' "$WATCHDOG_TOKEN_INPUT" >> "$_envf"
         done
         echo -e "${GREEN}Status page reporting configured. Your node will appear on the"
         echo -e "Arbiter Alerts card within ~2 minutes of the watchdog cron running"

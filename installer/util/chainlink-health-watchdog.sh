@@ -25,9 +25,9 @@
 #     Events are signed with the operator owner key (PRIVATE_KEY from
 #     installer/.env) — an EIP-191 personal-message signature computed locally:
 #     no transaction, no gas. The server verifies the signer against owner()
-#     on-chain, so no shared secret is needed. WATCHDOG_ALERT_TOKEN
-#     (X-Watchdog-Token header) remains as an optional fallback for nodes
-#     that cannot sign. All can be set in the env or <install>/installer/.env
+#     on-chain; unsigned events are rejected, so signing (key + node + ethers,
+#     all present on a standard install) is required for status-page reporting.
+#     Both can be set in the environment or in <install>/installer/.env
 #
 # Self-heal (stopgap, per incident report P1-B: restart is acceptable but
 # must alert, never silently restart):
@@ -103,10 +103,8 @@ fi
 if [ -n "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/installer/.env" ]; then
     _env_webhook=$(grep -E '^WATCHDOG_ALERT_WEBHOOK=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
     _env_command=$(grep -E '^WATCHDOG_ALERT_COMMAND=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
-    _env_token=$(grep -E '^WATCHDOG_ALERT_TOKEN=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
     WATCHDOG_ALERT_WEBHOOK="${WATCHDOG_ALERT_WEBHOOK:-$_env_webhook}"
     WATCHDOG_ALERT_COMMAND="${WATCHDOG_ALERT_COMMAND:-$_env_command}"
-    WATCHDOG_ALERT_TOKEN="${WATCHDOG_ALERT_TOKEN:-$_env_token}"
 fi
 
 # Identity for structured webhook events: the on-chain operator address is how
@@ -235,10 +233,8 @@ const Wallet = pkg.Wallet || (pkg.ethers && pkg.ethers.Wallet);
 # (e.g. the arbiter status page's /api/alerts) gets both alerts AND heartbeats
 # — missing heartbeats let it flag arbiters whose whole machine went dark.
 #
-# Authentication: the event is signed with the operator owner key when
-# available (the server verifies the signer matches owner() on-chain, so no
-# shared token is needed). WATCHDOG_ALERT_TOKEN is still sent if configured,
-# as a fallback for nodes that cannot sign.
+# Authentication: the event is signed with the operator owner key (the server
+# verifies the signer matches owner() on-chain and rejects unsigned events).
 # Args: STATUS(OK|ALERT|RECOVERED) SEVERITY(info|warning|critical) SUBJECT PROBLEMS_TEXT [SELF_HEAL_NOTE]
 post_status_webhook() {
     [ -n "$WATCHDOG_ALERT_WEBHOOK" ] || return 0
@@ -257,7 +253,7 @@ post_status_webhook() {
             wd_signer="${sign_out%% *}"
             wd_sig="${sign_out##* }"
         else
-            log_line "webhook signing unavailable (missing key/node/ethers) — sending unsigned"
+            log_line "webhook signing unavailable (missing key/node/ethers) — the status page will reject unsigned events"
         fi
     fi
 
@@ -287,9 +283,7 @@ print(json.dumps(event))
 PY
 ) || { log_line "webhook payload build FAILED"; return 1; }
 
-    local -a hdr=(-H 'Content-Type: application/json')
-    [ -n "$WATCHDOG_ALERT_TOKEN" ] && hdr+=(-H "X-Watchdog-Token: $WATCHDOG_ALERT_TOKEN")
-    curl -fsS --max-time 10 -X POST "${hdr[@]}" \
+    curl -fsS --max-time 10 -X POST -H 'Content-Type: application/json' \
         --data-binary "$payload" "$WATCHDOG_ALERT_WEBHOOK" >/dev/null 2>&1 \
         || log_line "webhook delivery FAILED ($WATCHDOG_ALERT_WEBHOOK)"
 }
