@@ -15,9 +15,15 @@
 #
 # How it alerts (all configured alert channels fire; syslog always fires):
 #   - syslog via `logger -t verdikta-watchdog` (always)
-#   - WATCHDOG_ALERT_WEBHOOK  — URL POSTed the alert text (curl)
-#   - WATCHDOG_ALERT_COMMAND  — shell command the alert text is piped into
-#     Both can be set in the environment or in <install>/installer/.env
+#   - WATCHDOG_ALERT_COMMAND  — shell command the human-readable alert text is
+#     piped into (paging channel; cooldown-limited)
+#   - WATCHDOG_ALERT_WEBHOOK  — URL POSTed one JSON event per run: status
+#     OK (heartbeat) / ALERT / RECOVERED, tagged with the node's on-chain
+#     operator address and network. This is what the arbiter status page
+#     (example-arbiters /api/alerts) consumes; heartbeats let it flag arbiters
+#     that stop reporting entirely. Optional WATCHDOG_ALERT_TOKEN is sent as an
+#     X-Watchdog-Token header for ingest authentication.
+#     All can be set in the environment or in <install>/installer/.env
 #
 # Self-heal (stopgap, per incident report P1-B: restart is acceptable but
 # must alert, never silently restart):
@@ -93,8 +99,21 @@ fi
 if [ -n "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/installer/.env" ]; then
     _env_webhook=$(grep -E '^WATCHDOG_ALERT_WEBHOOK=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
     _env_command=$(grep -E '^WATCHDOG_ALERT_COMMAND=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
+    _env_token=$(grep -E '^WATCHDOG_ALERT_TOKEN=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
     WATCHDOG_ALERT_WEBHOOK="${WATCHDOG_ALERT_WEBHOOK:-$_env_webhook}"
     WATCHDOG_ALERT_COMMAND="${WATCHDOG_ALERT_COMMAND:-$_env_command}"
+    WATCHDOG_ALERT_TOKEN="${WATCHDOG_ALERT_TOKEN:-$_env_token}"
+fi
+
+# Identity for structured webhook events: the on-chain operator address is how
+# the arbiter status page (example-arbiters /analytics) keys its tables.
+WD_OPERATOR=""
+WD_NETWORK=""
+if [ -n "$INSTALL_DIR" ]; then
+    [ -f "$INSTALL_DIR/installer/.contracts" ] && \
+        WD_OPERATOR=$(grep -E '^OPERATOR_ADDR=' "$INSTALL_DIR/installer/.contracts" | tail -1 | cut -d= -f2- | tr -d '"')
+    [ -f "$INSTALL_DIR/installer/.env" ] && \
+        WD_NETWORK=$(grep -E '^DEPLOYMENT_NETWORK=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
 fi
 
 STATE_DIR="${INSTALL_DIR:-$HOME}/.chainlink-watchdog"
@@ -150,6 +169,8 @@ minutes_since_file() {
     fi
 }
 
+# Page the operator: syslog + optional shell command (human-readable text).
+# The webhook channel is separate — see post_status_webhook.
 send_alert() {
     local subject="$1" body="$2"
     local msg="[verdikta-watchdog] $(hostname): $subject
@@ -157,16 +178,47 @@ $body"
 
     logger -t verdikta-watchdog -p daemon.err "$subject" 2>/dev/null
 
-    if [ -n "$WATCHDOG_ALERT_WEBHOOK" ]; then
-        curl -fsS --max-time 10 -X POST -H 'Content-Type: text/plain' \
-            --data-binary "$msg" "$WATCHDOG_ALERT_WEBHOOK" >/dev/null 2>&1 \
-            || log_line "alert webhook delivery FAILED ($WATCHDOG_ALERT_WEBHOOK)"
-    fi
     if [ -n "$WATCHDOG_ALERT_COMMAND" ]; then
         printf '%s\n' "$msg" | bash -c "$WATCHDOG_ALERT_COMMAND" >/dev/null 2>&1 \
             || log_line "alert command delivery FAILED ($WATCHDOG_ALERT_COMMAND)"
     fi
     log_line "ALERT: $subject"
+}
+
+# Post one structured JSON event to WATCHDOG_ALERT_WEBHOOK (if configured).
+# Called exactly once per run with the current state, so the receiving side
+# (e.g. the arbiter status page's /api/alerts) gets both alerts AND heartbeats
+# — missing heartbeats let it flag arbiters whose whole machine went dark.
+# Args: STATUS(OK|ALERT|RECOVERED) SEVERITY(info|warning|critical) SUBJECT PROBLEMS_TEXT [SELF_HEAL_NOTE]
+post_status_webhook() {
+    [ -n "$WATCHDOG_ALERT_WEBHOOK" ] || return 0
+    local payload
+    payload=$(WD_STATUS="$1" WD_SEVERITY="$2" WD_SUBJECT="$3" WD_PROBLEMS="$4" WD_SELFHEAL="${5:-}" \
+              WD_OPERATOR="$WD_OPERATOR" WD_NETWORK="$WD_NETWORK" python3 - << 'PY'
+import json, os, socket, datetime
+problems = [p.strip().lstrip("- ").strip() for p in os.environ.get("WD_PROBLEMS", "").splitlines() if p.strip()]
+event = {
+    "type": "verdikta-arbiter-watchdog",
+    "version": 1,
+    "operator": os.environ.get("WD_OPERATOR") or None,
+    "network": os.environ.get("WD_NETWORK") or None,
+    "hostname": socket.gethostname(),
+    "status": os.environ["WD_STATUS"],
+    "severity": os.environ.get("WD_SEVERITY") or "info",
+    "subject": os.environ.get("WD_SUBJECT") or "",
+    "problems": problems,
+    "selfHeal": os.environ.get("WD_SELFHEAL") or None,
+    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+}
+print(json.dumps(event))
+PY
+) || { log_line "webhook payload build FAILED"; return 1; }
+
+    local -a hdr=(-H 'Content-Type: application/json')
+    [ -n "$WATCHDOG_ALERT_TOKEN" ] && hdr+=(-H "X-Watchdog-Token: $WATCHDOG_ALERT_TOKEN")
+    curl -fsS --max-time 10 -X POST "${hdr[@]}" \
+        --data-binary "$payload" "$WATCHDOG_ALERT_WEBHOOK" >/dev/null 2>&1 \
+        || log_line "webhook delivery FAILED ($WATCHDOG_ALERT_WEBHOOK)"
 }
 
 ############################################
@@ -243,7 +295,11 @@ if [ -z "$PROBLEMS" ]; then
     # Recovery notification: alert once when transitioning unhealthy -> healthy.
     if [ "$(cat "$LAST_STATE_FILE" 2>/dev/null)" = "unhealthy" ]; then
         send_alert "RECOVERED: chainlink node healthy again" "All health checks passing."
+        post_status_webhook "RECOVERED" "info" "chainlink node healthy again" ""
         rm -f "$LAST_ALERT_FILE"
+    else
+        # Heartbeat: lets the receiving side flag arbiters that stop reporting.
+        post_status_webhook "OK" "info" "healthy" ""
     fi
     echo "healthy" > "$LAST_STATE_FILE"
     say "OK: chainlink container running, all health checks passing, no recent 0-live RPC events."
@@ -266,10 +322,15 @@ if [ "$SELF_HEAL" = "1" ] && [ "$ZERO_LIVE" = "1" ]; then
 fi
 
 subject="chainlink node UNHEALTHY"
-[ "$ZERO_LIVE" = "1" ] && subject="chainlink node CANNOT BROADCAST (0 live RPC / broadcaster down)"
+severity="warning"
+[ "$ZERO_LIVE" = "1" ] && { subject="chainlink node CANNOT BROADCAST (0 live RPC / broadcaster down)"; severity="critical"; }
 body="$PROBLEMS"
 [ -n "$restart_note" ] && body="$body  - $restart_note
 "
+
+# Webhook gets the current state on every unhealthy run (the receiving side
+# dedupes); the paging channels below stay cooldown-limited.
+post_status_webhook "ALERT" "$severity" "$subject" "$PROBLEMS" "$restart_note"
 
 # Cooldown: alert immediately on a new problem set, re-alert only after cooldown.
 fingerprint=$(printf '%s' "$PROBLEMS" | cksum | cut -d' ' -f1)

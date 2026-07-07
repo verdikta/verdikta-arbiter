@@ -241,11 +241,18 @@ Alerts always go to syslog (`logger -t verdikta-watchdog`). To be paged,
 configure one or both of the following in `~/verdikta-arbiter-node/installer/.env`:
 
 ```bash
-# URL that receives the alert text as an HTTP POST body
-WATCHDOG_ALERT_WEBHOOK="https://alert.example.com/arbiter"
-# Shell command the alert text is piped into
+# URL that receives one JSON event per watchdog run (OK heartbeat / ALERT /
+# RECOVERED, tagged with your operator address + network). Point this at the
+# Verdikta arbiter status page to appear on its "Arbiter Alerts" card:
+WATCHDOG_ALERT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
+WATCHDOG_ALERT_TOKEN="<token from the status page operator>"
+# Shell command the human-readable alert text is piped into (paging channel)
 WATCHDOG_ALERT_COMMAND="mail -s 'arbiter alert' ops@example.com"
 ```
+
+When the webhook points at the status page, healthy runs send heartbeats too —
+so the page can flag your arbiter as "not reporting" if the whole machine goes
+dark (a failure mode no self-hosted alert can catch).
 
 Repeated alerts for the same unresolved condition are rate-limited (default
 30 minutes), and a one-time "RECOVERED" notice is sent when the node returns
