@@ -235,7 +235,9 @@ Install phases: prereqs → env setup → AI Node → EA → Docker/Postgres →
 ### Runtime management (post-install, in the install dir)
 `start-arbiter.sh`, `stop-arbiter.sh`, `arbiter-status.sh`, `arbiter-doctor.sh`
 (health check + `--fix`), `register-oracle.sh` / `unregister-oracle.sh`,
-`fund-chainlink-keys.sh`, `update-pinata-key.sh`, `update-justifier-model.sh`.
+`fund-chainlink-keys.sh`, `update-pinata-key.sh`, `update-justifier-model.sh`,
+`chainlink-health-watchdog.sh` (cron alerting on 0-live-RPC / failing health
+checks, optional `--self-heal`), `rotate-logs.sh` (app-log rotation).
 
 ---
 

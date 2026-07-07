@@ -15,6 +15,7 @@ caused the April–May 2026 incident:
 | RPC keeps rejecting fulfill txs with "Invalid params" | `txm.invalid_params_recent` (FAIL when recent, INFO when only historical) |
 | Chainlink emitting CRIT lines | `txm.crit_lines_recent` (FAIL when recent, INFO when only historical) |
 | Chainlink RPC websocket out of sync | `txm.rpc_out_of_sync` (WARN when recent, INFO when only historical) |
+| RPC pool at 0 live nodes — TxManager cannot broadcast, commits miss their round deadline (July 2026 outage) | `txm.no_live_rpc_nodes` (CRIT when recent, INFO when only historical) |
 | Operator contract not deployed at configured address (e.g. wrong network) | `chain.operator_code` (FAIL) |
 | Job spec `fromAddress` doesn't match `NODE_ADDRESS` | `cfg.job_from_addr` (CRIT) |
 | Node key missing from chainlink keystore | `txm.key_registered` (CRIT) |
@@ -159,6 +160,22 @@ service start/restart step at the end of the run. Key points:
   has a chance to be ready.
 
 ## Cron / monitoring usage
+
+For fast paging on the specific "0 live RPC nodes / cannot broadcast" failure
+mode (the July 2026 silent outage), use the dedicated watchdog, which ships
+alongside the doctor in the install root and runs in ~2 seconds:
+
+```bash
+# Install a */2-minute cron entry; alerts via syslog and, if configured,
+# WATCHDOG_ALERT_WEBHOOK / WATCHDOG_ALERT_COMMAND (installer/.env).
+~/verdikta-arbiter-node/chainlink-health-watchdog.sh --install-cron 2
+
+# Optional stopgap: restart the chainlink container on the 0-live condition
+# (always alerts first; never restarts silently, max once per 30 min).
+~/verdikta-arbiter-node/chainlink-health-watchdog.sh --install-cron 2 --self-heal
+```
+
+The full doctor is heavier (~30s) and better suited to a coarser interval:
 
 ```cron
 # Every 5 minutes: if the doctor prints anything (i.e. exit != 0), forward

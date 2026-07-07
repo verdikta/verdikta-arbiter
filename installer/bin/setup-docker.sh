@@ -279,10 +279,14 @@ echo -e "${YELLOW}Important: Keep this password safe, it will be needed for Chai
 docker_pull_with_retry "postgres:14"
 
 # Create PostgreSQL container
+# P2-A: bound container log growth (json-file, 100 MB x 5)
 echo -e "${BLUE}Creating PostgreSQL container...${NC}"
 docker run --name "$POSTGRES_CONTAINER" \
     -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
     -p 5432:5432 \
+    --log-driver json-file \
+    --log-opt max-size=100m \
+    --log-opt max-file=5 \
     -d postgres:14
 
 echo -e "${GREEN}PostgreSQL container created successfully.${NC}"
@@ -353,6 +357,11 @@ services:
       - ~/.chainlink-${NETWORK_TYPE}:/chainlink
     command: ["node", "-config", "/chainlink/config.toml", "-secrets", "/chainlink/secrets.toml", "start", "-a", "/chainlink/.api"]
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
     networks:
       - verdikta-network
     extra_hosts:
@@ -368,6 +377,11 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "5"
     networks:
       - verdikta-network
 

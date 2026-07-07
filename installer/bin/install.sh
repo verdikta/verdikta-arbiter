@@ -547,6 +547,16 @@ if [ -f "$UTIL_DIR/update-justifier-model.sh" ]; then
     cp "$UTIL_DIR/update-justifier-model.sh" "$INSTALL_DIR/update-justifier-model.sh"
     chmod +x "$INSTALL_DIR/update-justifier-model.sh"
 fi
+# Chainlink health watchdog (cron alerting on 0-live-RPC / failing health checks).
+if [ -f "$UTIL_DIR/chainlink-health-watchdog.sh" ]; then
+    cp "$UTIL_DIR/chainlink-health-watchdog.sh" "$INSTALL_DIR/chainlink-health-watchdog.sh"
+    chmod +x "$INSTALL_DIR/chainlink-health-watchdog.sh"
+fi
+# Application log rotation (ai-node/logs, external-adapter/logs).
+if [ -f "$UTIL_DIR/rotate-logs.sh" ]; then
+    cp "$UTIL_DIR/rotate-logs.sh" "$INSTALL_DIR/rotate-logs.sh"
+    chmod +x "$INSTALL_DIR/rotate-logs.sh"
+fi
 
 # Make scripts executable in the correct destination directory
 chmod +x "$INSTALL_DIR/start-arbiter.sh"
@@ -743,6 +753,31 @@ echo -e "  - To unregister from dispatcher: $INSTALL_DIR/unregister-oracle.sh"
 echo -e "  - To fund Chainlink keys: $INSTALL_DIR/fund-chainlink-keys.sh"
 echo -e "  - To recover funds from keys: $INSTALL_DIR/recover-chainlink-funds.sh"
 echo -e "  - To update RPC endpoints: $INSTALL_DIR/update-rpc-endpoints.sh"
+echo -e "  - Chainlink health watchdog: $INSTALL_DIR/chainlink-health-watchdog.sh"
+echo -e "  - Application log rotation: $INSTALL_DIR/rotate-logs.sh"
+
+# Offer cron-based monitoring + log rotation (P1-B / P2-A, July 2026 incident).
+# The watchdog pages the operator within minutes when the Chainlink node's RPC
+# pool hits 0 live nodes (the failure mode behind the silent commit-stage
+# outages); the rotation job bounds ai-node/ and external-adapter/ logs.
+echo
+echo -e "${BLUE}Cron-based monitoring and log rotation:${NC}"
+echo -e "  - watchdog: every 2 min, checks the Chainlink container, health endpoint,"
+echo -e "    and recent 'No live RPC nodes available' log lines; alerts via syslog"
+echo -e "    (plus WATCHDOG_ALERT_WEBHOOK / WATCHDOG_ALERT_COMMAND if configured)"
+echo -e "  - log rotation: daily, compresses/prunes ai-node and external-adapter logs"
+if ask_yes_no "Install cron entries for the health watchdog and log rotation?"; then
+    bash "$INSTALL_DIR/chainlink-health-watchdog.sh" --install-cron 2 || \
+        echo -e "${YELLOW}Warning: could not install watchdog cron entry${NC}"
+    bash "$INSTALL_DIR/rotate-logs.sh" --install-cron || \
+        echo -e "${YELLOW}Warning: could not install log-rotation cron entry${NC}"
+    echo -e "${YELLOW}To receive pages (not just syslog entries), set WATCHDOG_ALERT_WEBHOOK"
+    echo -e "or WATCHDOG_ALERT_COMMAND in $INSTALL_DIR/installer/.env${NC}"
+else
+    echo -e "${BLUE}Skipped. You can install them later with:${NC}"
+    echo -e "  $INSTALL_DIR/chainlink-health-watchdog.sh --install-cron"
+    echo -e "  $INSTALL_DIR/rotate-logs.sh --install-cron"
+fi
 
 # Configure logging level
 echo -e "${YELLOW}Configuring logging level...${NC}"

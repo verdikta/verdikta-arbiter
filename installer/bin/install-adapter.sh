@@ -370,8 +370,9 @@ if ! command -v npm >/dev/null 2>&1; then
   exit 1
 fi
 
-# Use nohup to keep the process running after terminal disconnects
-nohup npm start > "$LOG_FILE" 2>&1 &
+# Use nohup to keep the process running after terminal disconnects.
+# Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
+nohup npm start >> "$LOG_FILE" 2>&1 &
 
 # Save PID for later management
 echo $! > adapter.pid

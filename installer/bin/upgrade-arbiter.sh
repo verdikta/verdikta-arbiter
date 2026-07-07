@@ -1535,7 +1535,10 @@ for _util in \
     unregister-oracle.sh \
     update-rpc-endpoints.sh \
     update-pinata-key.sh \
-    update-justifier-model.sh; do
+    update-justifier-model.sh \
+    chainlink-health-watchdog.sh \
+    rotate-logs.sh \
+    apply-docker-log-rotation.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
         chmod +x "$TARGET_DIR/$_util"
@@ -2211,6 +2214,43 @@ PY
 
 # Call the config check function
 check_chainlink_config
+
+# P2-A (July 2026 incident): docker log options are fixed at container
+# creation, so containers created by older installers keep an unbounded
+# json-file log (1.8 GB observed). Offer to recreate the chainlink container
+# with bounded logging; the utility preserves image, volume, and network.
+if [ -f "$UTIL_DIR/apply-docker-log-rotation.sh" ]; then
+    if ! bash "$UTIL_DIR/apply-docker-log-rotation.sh" --check; then
+        echo -e "${YELLOW}The chainlink container's Docker log is unbounded — a disk-fill risk that${NC}"
+        echo -e "${YELLOW}also makes 'docker logs'-based diagnostics very slow.${NC}"
+        if ask_yes_no "Recreate the chainlink container with bounded log rotation (100MB x 5)?" "y"; then
+            bash "$UTIL_DIR/apply-docker-log-rotation.sh" --apply || \
+                echo -e "${YELLOW}Log-rotation apply failed; run $UTIL_DIR/apply-docker-log-rotation.sh manually.${NC}"
+        else
+            echo -e "${BLUE}Skipped. Apply later with: $TARGET_DIR/apply-docker-log-rotation.sh${NC}"
+        fi
+    fi
+fi
+
+# P1-B (July 2026 incident): make sure the operator has the health watchdog
+# available; offer to install its cron entry if not already present.
+if [ -f "$TARGET_DIR/chainlink-health-watchdog.sh" ]; then
+    if ! crontab -l 2>/dev/null | grep -q "verdikta-chainlink-watchdog"; then
+        echo
+        echo -e "${BLUE}The Chainlink health watchdog alerts within minutes when the node's RPC pool${NC}"
+        echo -e "${BLUE}hits 0 live nodes (the silent failure behind the July 2026 commit-stage outage).${NC}"
+        if ask_yes_no "Install the watchdog cron entry (runs every 2 minutes)?" "y"; then
+            bash "$TARGET_DIR/chainlink-health-watchdog.sh" --install-cron 2 || \
+                echo -e "${YELLOW}Warning: could not install watchdog cron entry${NC}"
+        fi
+    fi
+    if ! crontab -l 2>/dev/null | grep -q "verdikta-rotate-logs"; then
+        if ask_yes_no "Install the daily application log-rotation cron entry?" "y"; then
+            bash "$TARGET_DIR/rotate-logs.sh" --install-cron || \
+                echo -e "${YELLOW}Warning: could not install log-rotation cron entry${NC}"
+        fi
+    fi
+fi
 
 # Optional: Fund or top-off Chainlink keys
 echo

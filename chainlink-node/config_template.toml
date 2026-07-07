@@ -11,8 +11,18 @@ HTTPSPort=0
 [[EVM]]
 ChainID=<CHAIN_ID>
 Enabled=true
-FinalityDepth=5
 MinContractPayment="0"
+
+# P0-A (July 2026 incident): decouple finality-tag staleness from RPC liveness.
+# Base's `finalized` tag intermittently stalls/regresses chain-wide, so every
+# provider reflects the same bad signal at once. With the chain default
+# (NoNewFinalizedHeadsThreshold = 15m on Base mainnet), a stalled tag marks
+# ALL nodes FinalizedBlockOutOfSync -> 0 live nodes -> commit txs cannot be
+# broadcast even though regular heads keep advancing. A commit/reveal oracle
+# only needs tx submission and log/head reads, so disable the finalized-head
+# staleness kill entirely. Truly dead RPCs are still caught by the regular
+# head check (NoNewHeadsThreshold, 40s chain default) and pool poll checks.
+NoNewFinalizedHeadsThreshold = '0s'
 
 [EVM.GasEstimator]
 Mode = "FeeHistory"
@@ -29,6 +39,12 @@ HistoryDepth = 25
 PollInterval   = "80s"
 NewHeadsPollInterval = "30s"
 SyncThreshold = 10
+# P0-A companion: EnforceRepeatableRead=true (default) marks an RPC
+# FinalizedBlockOutOfSync when its finalized block lags or regresses vs. the
+# highest one observed ("Received finalized block older than one already
+# processed" in the incident logs). Same chain-level finality signal, same
+# 0-live outcome; disable so finality wobble cannot disable tx submission.
+EnforceRepeatableRead = false
 
  
 [EVM.Transactions]

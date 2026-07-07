@@ -1,0 +1,288 @@
+#!/bin/bash
+#
+# Verdikta Arbiter - Chainlink Health Watchdog (P1-B, July 2026 incident)
+#
+# The July 2026 commit-stage outage was silent for hours: the Chainlink node's
+# RPC pool dropped to 0 live nodes ("No live RPC nodes available") and the
+# TxManager could not broadcast commit transactions, while every service
+# looked "up" from the outside. This watchdog is designed to run from cron
+# every few minutes and page the operator within minutes of that condition.
+#
+# What it checks:
+#   1. chainlink container is running
+#   2. http://localhost:6688/health — every EVM.* / core check is "passing"
+#   3. recent container log lines matching "No live RPC nodes available"
+#
+# How it alerts (all configured alert channels fire; syslog always fires):
+#   - syslog via `logger -t verdikta-watchdog` (always)
+#   - WATCHDOG_ALERT_WEBHOOK  — URL POSTed the alert text (curl)
+#   - WATCHDOG_ALERT_COMMAND  — shell command the alert text is piped into
+#     Both can be set in the environment or in <install>/installer/.env
+#
+# Self-heal (stopgap, per incident report P1-B: restart is acceptable but
+# must alert, never silently restart):
+#   --self-heal           restart the chainlink container when the 0-live
+#                         condition is detected; the alert always fires first
+#                         and records the restart. Rate-limited to one restart
+#                         per WATCHDOG_RESTART_COOLDOWN_MINUTES (default 30).
+#
+# Usage:
+#   chainlink-health-watchdog.sh                 # one check pass, human output
+#   chainlink-health-watchdog.sh --quiet         # cron mode: output only on problems
+#   chainlink-health-watchdog.sh --self-heal     # also restart on 0-live condition
+#   chainlink-health-watchdog.sh --install-cron [N]   # install crontab entry (every N min, default 2)
+#   chainlink-health-watchdog.sh --uninstall-cron
+#
+# Exit codes: 0 healthy, 1 unhealthy (alert fired or suppressed by cooldown), 64 misuse.
+#
+
+set -o pipefail
+
+SCRIPT_PATH="$(readlink -f "$0" 2>/dev/null || echo "$0")"
+SCRIPT_DIR="$(cd "$(dirname "$SCRIPT_PATH")" && pwd)"
+
+QUIET=0
+SELF_HEAL=0
+CRON_TAG="# verdikta-chainlink-watchdog"
+
+# Tunables (environment or installer/.env can override)
+HEALTH_URL="${WATCHDOG_HEALTH_URL:-http://localhost:6688/health}"
+LOG_WINDOW_MINUTES="${WATCHDOG_LOG_WINDOW_MINUTES:-10}"
+ALERT_COOLDOWN_MINUTES="${WATCHDOG_ALERT_COOLDOWN_MINUTES:-30}"
+RESTART_COOLDOWN_MINUTES="${WATCHDOG_RESTART_COOLDOWN_MINUTES:-30}"
+
+usage() {
+    sed -n '2,40p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
+}
+
+INSTALL_CRON=""
+ACTION="check"
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --quiet) QUIET=1; shift ;;
+        --self-heal) SELF_HEAL=1; shift ;;
+        --install-cron)
+            ACTION="install-cron"; shift
+            if [ $# -gt 0 ] && [[ "$1" =~ ^[0-9]+$ ]]; then INSTALL_CRON="$1"; shift; fi
+            ;;
+        --uninstall-cron) ACTION="uninstall-cron"; shift ;;
+        -h|--help) usage; exit 0 ;;
+        *) echo "unknown argument: $1" >&2; usage >&2; exit 64 ;;
+    esac
+done
+
+say() { [ "$QUIET" = "1" ] || echo "$@"; }
+
+############################################
+# Locate install dir (same strategy as arbiter-doctor.sh)
+############################################
+INSTALL_DIR=""
+if [ -d "/root/verdikta-arbiter-node" ] && [ -f "/root/verdikta-arbiter-node/installer/.env" ]; then
+    INSTALL_DIR="/root/verdikta-arbiter-node"
+elif [ -d "$HOME/verdikta-arbiter-node" ] && [ -f "$HOME/verdikta-arbiter-node/installer/.env" ]; then
+    INSTALL_DIR="$HOME/verdikta-arbiter-node"
+else
+    d="$SCRIPT_DIR"
+    while [ "$d" != "/" ]; do
+        if [ -f "$d/installer/.env" ]; then INSTALL_DIR="$d"; break; fi
+        d="$(dirname "$d")"
+    done
+fi
+
+# Pick up alert configuration from the install env file (env vars win).
+if [ -n "$INSTALL_DIR" ] && [ -f "$INSTALL_DIR/installer/.env" ]; then
+    _env_webhook=$(grep -E '^WATCHDOG_ALERT_WEBHOOK=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
+    _env_command=$(grep -E '^WATCHDOG_ALERT_COMMAND=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
+    WATCHDOG_ALERT_WEBHOOK="${WATCHDOG_ALERT_WEBHOOK:-$_env_webhook}"
+    WATCHDOG_ALERT_COMMAND="${WATCHDOG_ALERT_COMMAND:-$_env_command}"
+fi
+
+STATE_DIR="${INSTALL_DIR:-$HOME}/.chainlink-watchdog"
+mkdir -p "$STATE_DIR" 2>/dev/null
+WATCHDOG_LOG="$STATE_DIR/watchdog.log"
+LAST_ALERT_FILE="$STATE_DIR/last-alert"
+LAST_RESTART_FILE="$STATE_DIR/last-restart"
+LAST_STATE_FILE="$STATE_DIR/last-state"
+
+############################################
+# Cron management
+############################################
+if [ "$ACTION" = "install-cron" ]; then
+    interval="${INSTALL_CRON:-2}"
+    extra=""
+    [ "$SELF_HEAL" = "1" ] && extra=" --self-heal"
+    entry="*/$interval * * * * $SCRIPT_PATH --quiet$extra $CRON_TAG"
+    ( crontab -l 2>/dev/null | grep -vF "$CRON_TAG"; echo "$entry" ) | crontab -
+    echo "Installed cron entry (every $interval min):"
+    echo "  $entry"
+    echo "Configure alerting by setting WATCHDOG_ALERT_WEBHOOK and/or WATCHDOG_ALERT_COMMAND"
+    echo "in $INSTALL_DIR/installer/.env (syslog via 'logger' is always used)."
+    exit 0
+fi
+if [ "$ACTION" = "uninstall-cron" ]; then
+    crontab -l 2>/dev/null | grep -vF "$CRON_TAG" | crontab -
+    echo "Removed watchdog cron entry (if present)."
+    exit 0
+fi
+
+############################################
+# Helpers
+############################################
+now_epoch() { date +%s; }
+
+log_line() {
+    # Bounded internal log so the watchdog itself never becomes a disk risk.
+    echo "$(date -u +%Y-%m-%dT%H:%M:%SZ) $*" >> "$WATCHDOG_LOG"
+    if [ "$(wc -c < "$WATCHDOG_LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
+        tail -n 500 "$WATCHDOG_LOG" > "$WATCHDOG_LOG.tmp" && mv "$WATCHDOG_LOG.tmp" "$WATCHDOG_LOG"
+    fi
+}
+
+minutes_since_file() {
+    # prints minutes since the epoch stored on the file's first line,
+    # or a huge number if the file is absent/garbled
+    local f="$1" ts
+    ts=$(head -n1 "$f" 2>/dev/null)
+    if [[ "$ts" =~ ^[0-9]+$ ]]; then
+        echo $(( ($(now_epoch) - ts) / 60 ))
+    else
+        echo 999999
+    fi
+}
+
+send_alert() {
+    local subject="$1" body="$2"
+    local msg="[verdikta-watchdog] $(hostname): $subject
+$body"
+
+    logger -t verdikta-watchdog -p daemon.err "$subject" 2>/dev/null
+
+    if [ -n "$WATCHDOG_ALERT_WEBHOOK" ]; then
+        curl -fsS --max-time 10 -X POST -H 'Content-Type: text/plain' \
+            --data-binary "$msg" "$WATCHDOG_ALERT_WEBHOOK" >/dev/null 2>&1 \
+            || log_line "alert webhook delivery FAILED ($WATCHDOG_ALERT_WEBHOOK)"
+    fi
+    if [ -n "$WATCHDOG_ALERT_COMMAND" ]; then
+        printf '%s\n' "$msg" | bash -c "$WATCHDOG_ALERT_COMMAND" >/dev/null 2>&1 \
+            || log_line "alert command delivery FAILED ($WATCHDOG_ALERT_COMMAND)"
+    fi
+    log_line "ALERT: $subject"
+}
+
+############################################
+# Checks
+############################################
+PROBLEMS=""
+ZERO_LIVE=0
+
+add_problem() {
+    PROBLEMS="${PROBLEMS}  - $1
+"
+}
+
+# 1. Container running?
+container_running=$(docker inspect --format '{{.State.Running}}' chainlink 2>/dev/null)
+if [ "$container_running" != "true" ]; then
+    add_problem "chainlink container is not running"
+    ZERO_LIVE=1   # cannot broadcast anything either way
+else
+    # 2. Health endpoint: collect every check whose status != passing.
+    #    /health returns 200 when all pass, 503 when any fail — both carry the
+    #    JSON body, so do not use curl -f here.
+    health_json=$(curl -sS --max-time 10 "$HEALTH_URL" 2>/dev/null)
+    if [ -z "$health_json" ]; then
+        add_problem "chainlink /health endpoint unreachable at $HEALTH_URL"
+    else
+        failing=$(printf '%s' "$health_json" | python3 -c '
+import sys, json
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+for item in doc.get("data", []):
+    attrs = item.get("attributes", {})
+    status = attrs.get("status")
+    if status != "passing":
+        name = attrs.get("name") or item.get("id") or "?"
+        out = (attrs.get("output") or "").strip().splitlines()
+        detail = " (" + out[0][:160] + ")" if out else ""
+        print(name + ": " + str(status) + detail)
+' 2>/dev/null)
+        if [ -n "$failing" ]; then
+            while IFS= read -r line; do
+                add_problem "health check not passing: $line"
+            done <<< "$failing"
+            # Broadcaster/HeadTracker failing usually accompanies the 0-live state
+            echo "$failing" | grep -qE 'Txm\.Broadcaster|HeadTracker' && ZERO_LIVE=1
+        fi
+    fi
+
+    # 3. Recent "No live RPC nodes available" lines in the container log.
+    #    Use --tail (seek-to-end, fast even on big logs) and filter by the
+    #    ISO-8601 timestamp prefix, same approach as arbiter-doctor.sh.
+    cutoff=$(date -u -d "$LOG_WINDOW_MINUTES minutes ago" +"%Y-%m-%dT%H:%M:%SZ" 2>/dev/null)
+    if [ -n "$cutoff" ]; then
+        recent_zero_live=$(timeout 15 docker logs chainlink --tail 5000 2>&1 \
+            | grep -F 'No live RPC nodes available' \
+            | awk -v c="$cutoff" '
+                $0 ~ /^2[0-9]{3}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z/ {
+                    if (substr($0,1,20) >= c) n++
+                }
+                END { print n+0 }')
+        if [ "${recent_zero_live:-0}" -gt 0 ]; then
+            add_problem "$recent_zero_live \"No live RPC nodes available\" line(s) in the last ${LOG_WINDOW_MINUTES}m — TxManager cannot broadcast (commit txs will miss their round deadline)"
+            ZERO_LIVE=1
+        fi
+    fi
+fi
+
+############################################
+# Report / alert / self-heal
+############################################
+if [ -z "$PROBLEMS" ]; then
+    # Recovery notification: alert once when transitioning unhealthy -> healthy.
+    if [ "$(cat "$LAST_STATE_FILE" 2>/dev/null)" = "unhealthy" ]; then
+        send_alert "RECOVERED: chainlink node healthy again" "All health checks passing."
+        rm -f "$LAST_ALERT_FILE"
+    fi
+    echo "healthy" > "$LAST_STATE_FILE"
+    say "OK: chainlink container running, all health checks passing, no recent 0-live RPC events."
+    exit 0
+fi
+
+echo "unhealthy" > "$LAST_STATE_FILE"
+
+restart_note=""
+if [ "$SELF_HEAL" = "1" ] && [ "$ZERO_LIVE" = "1" ]; then
+    if [ "$(minutes_since_file "$LAST_RESTART_FILE")" -ge "$RESTART_COOLDOWN_MINUTES" ]; then
+        now_epoch > "$LAST_RESTART_FILE"
+        restart_note="self-heal: restarting chainlink container (docker restart --time=30)"
+        log_line "$restart_note"
+        docker restart chainlink --time=30 >/dev/null 2>&1 \
+            || restart_note="self-heal: chainlink container restart FAILED"
+    else
+        restart_note="self-heal: restart skipped (last restart <${RESTART_COOLDOWN_MINUTES}m ago)"
+    fi
+fi
+
+subject="chainlink node UNHEALTHY"
+[ "$ZERO_LIVE" = "1" ] && subject="chainlink node CANNOT BROADCAST (0 live RPC / broadcaster down)"
+body="$PROBLEMS"
+[ -n "$restart_note" ] && body="$body  - $restart_note
+"
+
+# Cooldown: alert immediately on a new problem set, re-alert only after cooldown.
+fingerprint=$(printf '%s' "$PROBLEMS" | cksum | cut -d' ' -f1)
+last_fingerprint=$(sed -n '2p' "$LAST_ALERT_FILE" 2>/dev/null)
+if [ "$fingerprint" != "$last_fingerprint" ] \
+   || [ "$(minutes_since_file "$LAST_ALERT_FILE")" -ge "$ALERT_COOLDOWN_MINUTES" ]; then
+    send_alert "$subject" "$body"
+    printf '%s\n%s\n' "$(now_epoch)" "$fingerprint" > "$LAST_ALERT_FILE"
+else
+    log_line "unhealthy (alert suppressed by ${ALERT_COOLDOWN_MINUTES}m cooldown): $subject"
+fi
+
+# Always print problems (cron captures stdout; --quiet only silences the OK path)
+echo "$subject"
+printf '%s' "$body"
+exit 1

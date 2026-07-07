@@ -837,9 +837,10 @@ LOG_FILE="$LOG_DIR/ai-node_${TIMESTAMP}.log"
 echo "Starting AI Node in persistent mode..."
 echo "Logs will be available at: $LOG_FILE"
 
-# Use nohup to keep the process running after terminal disconnects
+# Use nohup to keep the process running after terminal disconnects.
+# Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
 export PORT=3000
-nohup npm run dev > "$LOG_FILE" 2>&1 &
+nohup npm run dev >> "$LOG_FILE" 2>&1 &
 echo $! > ai-node.pid
 echo "AI Node started with PID $(cat ai-node.pid)"
 EOLS

@@ -774,6 +774,11 @@ check_chainlink_txm() {
             "Usually means tx has insufficient gas budget OR sender has 0 ETH. Check chain.node_balance."
         _classify_chainlink_pattern txm.rpc_out_of_sync 'RPC endpoint detected out of sync' WARN \
             "Infura's WebSocket dropped behind. If recurrent, add a second RPC endpoint for failover."
+        # July 2026 incident: RPC pool at 0 live nodes disables tx broadcast entirely
+        # (commit txs miss their round deadline). CRIT because fulfillment is dead
+        # while this condition holds, even though every service looks 'up'.
+        _classify_chainlink_pattern txm.no_live_rpc_nodes 'No live RPC nodes available' CRIT \
+            "TxManager cannot broadcast. If finality-tag stalls caused this, regenerate config.toml from the updated template (NoNewFinalizedHeadsThreshold='0s'); set up chainlink-health-watchdog.sh for alerting."
     else
         emit WARN txm.log_scrape "could not read chainlink logs within 15s" \
              "Container may be busy or log volume excessive. Check svc.log_size."

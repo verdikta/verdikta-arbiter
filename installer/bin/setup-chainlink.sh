@@ -279,6 +279,9 @@ if [ -f "$UTIL_DIR/docker-pull-helper.sh" ]; then
 fi
 
 # Start chainlink container
+# P2-A: bound container log growth (json-file, 100 MB x 5). Without this the
+# json log grows unbounded (1.8 GB observed in the July 2026 incident) and
+# makes `docker logs`-based diagnostics unusably slow.
 echo -e "${BLUE}Creating and starting Chainlink container...${NC}"
 docker run --platform linux/amd64 \
     --name chainlink \
@@ -286,6 +289,9 @@ docker run --platform linux/amd64 \
     -it \
     -d \
     -p 6688:6688 \
+    --log-driver json-file \
+    --log-opt max-size=100m \
+    --log-opt max-file=5 \
     --add-host=host.docker.internal:host-gateway \
     --network verdikta-network \
     smartcontract/chainlink:2.23.0 \

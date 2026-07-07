@@ -218,9 +218,42 @@ Monitor these key metrics:
 
 ## Automated Monitoring
 
+### Chainlink Health Watchdog (recommended)
+
+The install ships `chainlink-health-watchdog.sh` in the install root. It is
+purpose-built for the failure mode behind the July 2026 commit-stage outage:
+the Chainlink node's RPC pool drops to 0 live nodes ("No live RPC nodes
+available"), transactions cannot be broadcast, and every service still looks
+"up" from the outside. Each pass it verifies the chainlink container is
+running, that every check on `http://localhost:6688/health` is `passing`, and
+that no recent "No live RPC nodes available" lines appear in the container log.
+
+```bash
+# Install a cron entry that runs every 2 minutes
+~/verdikta-arbiter-node/chainlink-health-watchdog.sh --install-cron 2
+
+# Optional stopgap: also restart the chainlink container when the 0-live
+# condition is detected (always alerts first; max one restart per 30 min)
+~/verdikta-arbiter-node/chainlink-health-watchdog.sh --install-cron 2 --self-heal
+```
+
+Alerts always go to syslog (`logger -t verdikta-watchdog`). To be paged,
+configure one or both of the following in `~/verdikta-arbiter-node/installer/.env`:
+
+```bash
+# URL that receives the alert text as an HTTP POST body
+WATCHDOG_ALERT_WEBHOOK="https://alert.example.com/arbiter"
+# Shell command the alert text is piped into
+WATCHDOG_ALERT_COMMAND="mail -s 'arbiter alert' ops@example.com"
+```
+
+Repeated alerts for the same unresolved condition are rate-limited (default
+30 minutes), and a one-time "RECOVERED" notice is sent when the node returns
+to healthy.
+
 ### Service Health Checks
 
-You can automate status monitoring with cron jobs:
+You can additionally automate the broader diagnostics with cron jobs:
 
 ```bash
 # Add to crontab (crontab -e)
@@ -230,18 +263,27 @@ You can automate status monitoring with cron jobs:
 
 ### Log Rotation
 
-Set up automatic log rotation:
+Container logs (`chainlink`, `cl-postgres`) are created with bounded Docker
+logging (json-file, 100 MB × 5 files). Installs created before this change
+can apply it in place — the chainlink container is recreated with the same
+image, volume, and network (the operator upgrade flow also offers this):
 
 ```bash
-# Add to /etc/logrotate.d/verdikta-arbiter
-~/verdikta-arbiter-node/*/logs/*.log {
-    daily
-    missingok
-    rotate 7
-    compress
-    notifempty
-    create 644 root root
-}
+~/verdikta-arbiter-node/installer/util/apply-docker-log-rotation.sh          # check + prompt
+~/verdikta-arbiter-node/installer/util/apply-docker-log-rotation.sh --check  # report only
+```
+
+Application logs (`ai-node/logs`, `external-adapter/logs`) are rotated by
+`rotate-logs.sh` in the install root: finished logs are compressed after a
+day, archives are pruned after 14 days, and any live log exceeding 200 MB is
+copy-truncated (last 5,000 lines preserved).
+
+```bash
+# Install a daily cron entry (03:17)
+~/verdikta-arbiter-node/rotate-logs.sh --install-cron
+
+# Or run once / preview
+~/verdikta-arbiter-node/rotate-logs.sh --dry-run
 ```
 
 ### Restart on Failure
