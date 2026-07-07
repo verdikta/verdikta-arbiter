@@ -21,9 +21,13 @@
 #     OK (heartbeat) / ALERT / RECOVERED, tagged with the node's on-chain
 #     operator address and network. This is what the arbiter status page
 #     (example-arbiters /api/alerts) consumes; heartbeats let it flag arbiters
-#     that stop reporting entirely. Optional WATCHDOG_ALERT_TOKEN is sent as an
-#     X-Watchdog-Token header for ingest authentication.
-#     All can be set in the environment or in <install>/installer/.env
+#     that stop reporting entirely.
+#     Events are signed with the operator owner key (PRIVATE_KEY from
+#     installer/.env) — an EIP-191 personal-message signature computed locally:
+#     no transaction, no gas. The server verifies the signer against owner()
+#     on-chain, so no shared secret is needed. WATCHDOG_ALERT_TOKEN
+#     (X-Watchdog-Token header) remains as an optional fallback for nodes
+#     that cannot sign. All can be set in the env or <install>/installer/.env
 #
 # Self-heal (stopgap, per incident report P1-B: restart is acceptable but
 # must alert, never silently restart):
@@ -109,11 +113,20 @@ fi
 # the arbiter status page (example-arbiters /analytics) keys its tables.
 WD_OPERATOR=""
 WD_NETWORK=""
+WD_PRIVATE_KEY=""
 if [ -n "$INSTALL_DIR" ]; then
     [ -f "$INSTALL_DIR/installer/.contracts" ] && \
         WD_OPERATOR=$(grep -E '^OPERATOR_ADDR=' "$INSTALL_DIR/installer/.contracts" | tail -1 | cut -d= -f2- | tr -d '"')
-    [ -f "$INSTALL_DIR/installer/.env" ] && \
+    if [ -f "$INSTALL_DIR/installer/.env" ]; then
         WD_NETWORK=$(grep -E '^DEPLOYMENT_NETWORK=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
+        # Operator owner key (stored without 0x prefix by the installer). Used
+        # ONLY to sign webhook events locally (EIP-191 personal message — no
+        # transaction, no gas); never sent anywhere.
+        if [ -n "$WATCHDOG_ALERT_WEBHOOK" ]; then
+            WD_PRIVATE_KEY=$(grep -E '^PRIVATE_KEY=' "$INSTALL_DIR/installer/.env" | tail -1 | cut -d= -f2- | tr -d '"')
+            [ -n "$WD_PRIVATE_KEY" ] && [[ "$WD_PRIVATE_KEY" != 0x* ]] && WD_PRIVATE_KEY="0x$WD_PRIVATE_KEY"
+        fi
+    fi
 fi
 
 STATE_DIR="${INSTALL_DIR:-$HOME}/.chainlink-watchdog"
@@ -185,17 +198,74 @@ $body"
     log_line "ALERT: $subject"
 }
 
+# Locate a node binary (cron has a bare PATH; prefer the newest nvm install).
+wd_find_node() {
+    command -v node 2>/dev/null && return 0
+    ls -1 "$HOME"/.nvm/versions/node/*/bin/node 2>/dev/null | sort -V | tail -1
+}
+
+# Sign a message with the operator owner key (EIP-191 personal message —
+# pure local computation, NO transaction and NO gas). Uses the ethers package
+# already installed with the arbiter components (works with ethers v5 and v6).
+# Args: MESSAGE. Echoes "signerAddress signature"; fails silently if the key,
+# node, or ethers are unavailable (caller falls back to unsigned + token).
+wd_sign_message() {
+    [ -n "$WD_PRIVATE_KEY" ] || return 1
+    local node_bin ethers_home d
+    node_bin=$(wd_find_node) || return 1
+    [ -n "$node_bin" ] || return 1
+    for d in "$INSTALL_DIR/external-adapter" "$INSTALL_DIR/arbiter-operator" "$INSTALL_DIR/ai-node"; do
+        [ -d "$d/node_modules/ethers" ] && { ethers_home="$d"; break; }
+    done
+    [ -n "$ethers_home" ] || return 1
+    WD_SIGN_MSG="$1" WD_PK="$WD_PRIVATE_KEY" WD_ETHERS_HOME="$ethers_home" "$node_bin" -e '
+const path = require("path");
+const pkg = require(path.join(process.env.WD_ETHERS_HOME, "node_modules", "ethers"));
+const Wallet = pkg.Wallet || (pkg.ethers && pkg.ethers.Wallet);
+(async () => {
+  const w = new Wallet(process.env.WD_PK);
+  const sig = await w.signMessage(process.env.WD_SIGN_MSG);
+  console.log(w.address + " " + sig);
+})().catch(() => process.exit(1));
+' 2>/dev/null
+}
+
 # Post one structured JSON event to WATCHDOG_ALERT_WEBHOOK (if configured).
 # Called exactly once per run with the current state, so the receiving side
 # (e.g. the arbiter status page's /api/alerts) gets both alerts AND heartbeats
 # — missing heartbeats let it flag arbiters whose whole machine went dark.
+#
+# Authentication: the event is signed with the operator owner key when
+# available (the server verifies the signer matches owner() on-chain, so no
+# shared token is needed). WATCHDOG_ALERT_TOKEN is still sent if configured,
+# as a fallback for nodes that cannot sign.
 # Args: STATUS(OK|ALERT|RECOVERED) SEVERITY(info|warning|critical) SUBJECT PROBLEMS_TEXT [SELF_HEAL_NOTE]
 post_status_webhook() {
     [ -n "$WATCHDOG_ALERT_WEBHOOK" ] || return 0
+
+    local wd_ts wd_signer wd_sig sign_out
+    wd_ts=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    wd_signer=""
+    wd_sig=""
+    if [ -n "$WD_OPERATOR" ] && [ -n "$WD_PRIVATE_KEY" ]; then
+        # Canonical message: pipe-free colon form, operator lowercased. Must
+        # match the verification in example-arbiters alertsRoutes.js exactly.
+        local op_lower msg
+        op_lower=$(echo "$WD_OPERATOR" | tr '[:upper:]' '[:lower:]')
+        msg="verdikta-arbiter-watchdog:v1:${op_lower}:${WD_NETWORK}:${1}:${wd_ts}"
+        if sign_out=$(wd_sign_message "$msg"); then
+            wd_signer="${sign_out%% *}"
+            wd_sig="${sign_out##* }"
+        else
+            log_line "webhook signing unavailable (missing key/node/ethers) — sending unsigned"
+        fi
+    fi
+
     local payload
     payload=$(WD_STATUS="$1" WD_SEVERITY="$2" WD_SUBJECT="$3" WD_PROBLEMS="$4" WD_SELFHEAL="${5:-}" \
-              WD_OPERATOR="$WD_OPERATOR" WD_NETWORK="$WD_NETWORK" python3 - << 'PY'
-import json, os, socket, datetime
+              WD_OPERATOR="$WD_OPERATOR" WD_NETWORK="$WD_NETWORK" WD_TS="$wd_ts" \
+              WD_SIGNER="$wd_signer" WD_SIG="$wd_sig" python3 - << 'PY'
+import json, os, socket
 problems = [p.strip().lstrip("- ").strip() for p in os.environ.get("WD_PROBLEMS", "").splitlines() if p.strip()]
 event = {
     "type": "verdikta-arbiter-watchdog",
@@ -208,8 +278,11 @@ event = {
     "subject": os.environ.get("WD_SUBJECT") or "",
     "problems": problems,
     "selfHeal": os.environ.get("WD_SELFHEAL") or None,
-    "ts": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    "ts": os.environ["WD_TS"],
 }
+if os.environ.get("WD_SIGNER") and os.environ.get("WD_SIG"):
+    event["signer"] = os.environ["WD_SIGNER"]
+    event["sig"] = os.environ["WD_SIG"]
 print(json.dumps(event))
 PY
 ) || { log_line "webhook payload build FAILED"; return 1; }

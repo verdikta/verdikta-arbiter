@@ -245,10 +245,16 @@ configure one or both of the following in `~/verdikta-arbiter-node/installer/.en
 # RECOVERED, tagged with your operator address + network). Point this at the
 # Verdikta arbiter status page to appear on its "Arbiter Alerts" card:
 WATCHDOG_ALERT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
-WATCHDOG_ALERT_TOKEN="<token from the status page operator>"
 # Shell command the human-readable alert text is piped into (paging channel)
 WATCHDOG_ALERT_COMMAND="mail -s 'arbiter alert' ops@example.com"
 ```
+
+No shared secret is needed for the status page: each event is **signed with
+your operator owner key** (the `PRIVATE_KEY` already in `installer/.env`) as an
+EIP-191 personal message — a purely local computation, **no transaction and no
+gas** — and the status page verifies the signer against your operator's
+on-chain `owner()`. A `WATCHDOG_ALERT_TOKEN` env var exists only as a fallback
+for nodes that cannot sign (missing key/node/ethers).
 
 When the webhook points at the status page, healthy runs send heartbeats too —
 so the page can flag your arbiter as "not reporting" if the whole machine goes
