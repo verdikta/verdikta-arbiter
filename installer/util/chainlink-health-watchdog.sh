@@ -257,10 +257,27 @@ post_status_webhook() {
         fi
     fi
 
+    # Node telemetry (informational, best-effort): host + chainlink container
+    # uptime and the chainlink image tag. Missing values are simply omitted.
+    local host_uptime cl_uptime cl_image cl_started
+    host_uptime=$(cut -d. -f1 /proc/uptime 2>/dev/null)
+    cl_image=$(docker inspect --format '{{.Config.Image}}' chainlink 2>/dev/null)
+    cl_started=$(docker inspect --format '{{.State.StartedAt}}' chainlink 2>/dev/null)
+    cl_uptime=""
+    if [ "$(docker inspect --format '{{.State.Running}}' chainlink 2>/dev/null)" = "true" ] && [ -n "$cl_started" ]; then
+        cl_uptime=$(python3 -c "
+import sys, datetime, re
+s = re.sub(r'\.[0-9]+', '', sys.argv[1]).replace('Z', '+00:00')
+t = datetime.datetime.fromisoformat(s).astimezone(datetime.timezone.utc)
+print(int((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds()))
+" "$cl_started" 2>/dev/null)
+    fi
+
     local payload
     payload=$(WD_STATUS="$1" WD_SEVERITY="$2" WD_SUBJECT="$3" WD_PROBLEMS="$4" WD_SELFHEAL="${5:-}" \
               WD_OPERATOR="$WD_OPERATOR" WD_NETWORK="$WD_NETWORK" WD_TS="$wd_ts" \
-              WD_SIGNER="$wd_signer" WD_SIG="$wd_sig" python3 - << 'PY'
+              WD_SIGNER="$wd_signer" WD_SIG="$wd_sig" \
+              WD_HOST_UPTIME="$host_uptime" WD_CL_UPTIME="$cl_uptime" WD_CL_IMAGE="$cl_image" python3 - << 'PY'
 import json, os, socket
 problems = [p.strip().lstrip("- ").strip() for p in os.environ.get("WD_PROBLEMS", "").splitlines() if p.strip()]
 event = {
@@ -276,6 +293,12 @@ event = {
     "selfHeal": os.environ.get("WD_SELFHEAL") or None,
     "ts": os.environ["WD_TS"],
 }
+for key, env in (("hostUptimeSec", "WD_HOST_UPTIME"), ("chainlinkUptimeSec", "WD_CL_UPTIME")):
+    v = os.environ.get(env, "")
+    if v.isdigit():
+        event[key] = int(v)
+if os.environ.get("WD_CL_IMAGE"):
+    event["chainlinkImage"] = os.environ["WD_CL_IMAGE"]
 if os.environ.get("WD_SIGNER") and os.environ.get("WD_SIG"):
     event["signer"] = os.environ["WD_SIGNER"]
     event["sig"] = os.environ["WD_SIG"]
