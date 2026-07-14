@@ -8,6 +8,14 @@
 
 Verdikta-Arbiter is an open-source oracle system that provides AI-powered dispute resolution services on blockchain networks. It combines advanced language models with blockchain infrastructure to deliver fair, transparent, and efficient arbitration.
 
+## Backlog and contribution workflow
+
+Verdikta coordinates work across repositories through the
+[Verdikta Master Backlog](https://github.com/orgs/verdikta/projects/1).
+Humans and automated agents contributing here must read [AGENTS.md](AGENTS.md)
+and the canonical [backlog and issue workflow](https://github.com/verdikta/verdikta-docs/blob/main/docs/backlog-workflow.md)
+before creating, selecting, or changing work items.
+
 ## 🚀 Quick Start
 
 ### For Node Operators
