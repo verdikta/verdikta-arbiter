@@ -1,5 +1,6 @@
 import { textExtractor } from '../lib/text-extraction/text-extractor';
 import { AttachmentProcessingResult, ProcessedAttachment } from '../lib/text-extraction/types';
+import { resolveMediaType } from './media-type';
 
 /**
  * Unified Attachment Processor
@@ -115,11 +116,18 @@ async function processStringAttachment(
   // Check if it's a data URI
   if (content.startsWith('data:')) {
     const mediaTypeMatch = content.match(/^data:([^;]+);base64,/);
-    const mediaType = mediaTypeMatch ? mediaTypeMatch[1] : 'application/octet-stream';
+    const declaredMediaType = mediaTypeMatch ? mediaTypeMatch[1] : 'application/octet-stream';
+    // Strip the header on the comma rather than on the declared type: sniffing can
+    // move an attachment between the image and document branches below, and a
+    // type-keyed strip would then leave the `data:...;base64,` prefix in place.
+    const payload = content.slice(content.indexOf(',') + 1);
+    // The declared header is submitter-supplied; provider APIs sniff the bytes and
+    // reject mismatches, so sniff them ourselves first.
+    const mediaType = resolveMediaType(declaredMediaType, payload);
 
     if (mediaType.startsWith('image/')) {
       // Handle image attachment
-      const base64Data = content.replace(/^data:image\/[^;]+;base64,/, '');
+      const base64Data = payload;
       return {
         attachment: {
           type: 'image',
@@ -132,7 +140,7 @@ async function processStringAttachment(
         // For PDFs with native support, pass through without extraction
         if (mediaType === 'application/pdf' && supportsNativePDF) {
           console.log(`Processing PDF attachment ${index + 1} with native provider support`);
-          const base64Data = content.split(',')[1] || content;
+          const base64Data = payload || content;
           return {
             attachment: {
               type: 'document', // Keep as document for native processing

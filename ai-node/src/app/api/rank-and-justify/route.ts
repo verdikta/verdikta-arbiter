@@ -4,6 +4,7 @@ import { prePromptConfig } from '../../../config/prePromptConfig';
 import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
 import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor';
+import { resolveMediaType } from '../../../utils/media-type';
 import fs from 'fs';
 import path from 'path';
 
@@ -225,7 +226,10 @@ export async function POST(request: Request) {
         attachments = body.attachments.map(attachment => {
           if (attachment.startsWith('data:')) {
             const [header, base64Data] = attachment.split(',');
-            const mediaType = header.split(';')[0].replace('data:', '');
+            const declaredMediaType = header.split(';')[0].replace('data:', '');
+            // The declared header is submitter-supplied; provider APIs sniff the
+            // bytes and reject mismatches, so sniff them ourselves first.
+            const mediaType = resolveMediaType(declaredMediaType, base64Data);
             return {
               type: mediaType.startsWith('image/') ? 'image' : 'document',
               content: base64Data,
