@@ -7,6 +7,63 @@
 
 ---
 
+## Verdikta backlog and issue workflow (mandatory)
+
+`verdikta-arbiter` owns the operator-hosted arbiter stack: AI Node, External
+Adapter, Chainlink Node, Arbiter Operator contract, installer, upgrades,
+diagnostics, and operator documentation. Aggregation protocol work belongs in
+`verdikta-dispatcher`; shared ClassID/schema work in `verdikta-common`; and
+application behavior in the relevant application repository.
+
+- Project: [Verdikta Master Backlog](https://github.com/orgs/verdikta/projects/1)
+- Canonical guide: [Backlog and issue workflow](https://github.com/verdikta/verdikta-docs/blob/main/docs/backlog-workflow.md)
+
+Repository issues are the canonical work records. The Project supplies shared
+Status, Readiness, Priority, Size, Area, and roadmap progress. Never duplicate
+an issue merely to make it visible in the Project.
+
+Before starting work:
+
+1. Read the full issue, parent initiative, dependencies, linked PRs, and this
+   repository guide.
+2. Search the repository and organization for duplicate or superseding work.
+3. Confirm the issue belongs here and is present in the Master Backlog.
+4. Confirm `Readiness = Ready`. Resolve missing scope, acceptance criteria,
+   validation, provider/class decisions, or access instead of guessing.
+5. Treat Agent Queue membership as discovery, not authorization. Inspect risk,
+   permissions, and repository instructions before acting.
+6. Assign the implementing GitHub identity when practical and set
+   `Status = In Progress` only when work begins.
+
+During and after work:
+
+- Keep Scope and acceptance criteria aligned with the implementation.
+- Link the PR and use closing syntax only when the PR will satisfy the issue.
+- If blocked, set `Readiness = Blocked`, keep the truthful execution Status,
+  and record the blocker and removal condition.
+- Set `Status = Review` while the deliverable awaits review.
+- Set `Status = Done` and close the issue only after acceptance criteria and
+  validation are complete and accepted. A merged PR alone is insufficient.
+
+When creating or maintaining issues:
+
+- Implementation issues live here. Cross-repository parent initiatives live in
+  `verdikta-roadmap`, use the `initiative` label, and connect through native
+  GitHub sub-issues.
+- Search before creating. New intake begins as `Inbox` + `Needs Triage`.
+- Do not mark work Ready without Goal, Context, testable Acceptance criteria,
+  Validation, and explicit in/out Scope.
+- Priority is Verdikta-wide. Preserve the distinction between Status and
+  Readiness.
+- GitHub Assignee is the owner. Do not add Owner Type, calendar dates, or a
+  duplicate of Verdikta Bounties state.
+- Summarize and obtain approval before bulk issue or Project mutations.
+
+Use **Top Priorities** for the global next-work queue, **Agent Queue** for
+unassigned Ready/Todo discovery, **Execution Board** for active work,
+**Blocked** for intervention, **Roadmap** for initiatives, and **Master
+Backlog** for the complete inventory.
+
 ## 1. What this repo is
 
 A **Verdikta Arbiter** is a self-hostable node that acts as a **decentralized,
