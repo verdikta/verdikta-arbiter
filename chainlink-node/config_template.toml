@@ -32,12 +32,12 @@ FeeCapDefault = "<FEE_CAP_DEFAULT>"
 # EstimateLimit = true
 
 [EVM.HeadTracker]
-SamplingInterval = "30s"            # coalesce heads
+SamplingInterval = "20s"            # coalesce heads
 HistoryDepth = 25
 
 [EVM.NodePool]
 PollInterval   = "80s"
-NewHeadsPollInterval = "30s"
+NewHeadsPollInterval = "8s"
 SyncThreshold = 10
 # P0-A companion: EnforceRepeatableRead=true (default) marks an RPC
 # FinalizedBlockOutOfSync when its finalized block lags or regresses vs. the
@@ -57,4 +57,7 @@ MaxQueued = 64
 
 [JobPipeline.HTTPRequest]
 DefaultTimeout = "300s"
+
+[EVM.BalanceMonitor]
+Enabled = false
 
