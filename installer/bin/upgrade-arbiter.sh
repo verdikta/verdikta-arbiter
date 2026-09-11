@@ -12,6 +12,69 @@ REPO_ROOT="$(dirname "$INSTALLER_DIR")"
 CONFIG_DIR="$INSTALLER_DIR/config"
 UTIL_DIR="$INSTALLER_DIR/util"
 
+# Shared prompt helpers (interactive by default; unattended when VERDIKTA_UNATTENDED=1)
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
+
+# Command line arguments
+ANSWERS_FILE=""
+UNATTENDED_REQUESTED=false
+TARGET_DIR_FLAG=""
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --answers|-a)
+            shift
+            [ -z "${1:-}" ] && { echo "--answers requires a file argument"; exit 1; }
+            ANSWERS_FILE="$1"
+            shift
+            ;;
+        --unattended)
+            UNATTENDED_REQUESTED=true
+            shift
+            ;;
+        --target-dir)
+            shift
+            [ -z "${1:-}" ] && { echo "--target-dir requires a directory argument"; exit 1; }
+            TARGET_DIR_FLAG="$1"
+            shift
+            ;;
+        --help|-h)
+            echo "Usage: $0 [OPTIONS]"
+            echo "Upgrade an existing Verdikta Arbiter installation from this repository checkout."
+            echo ""
+            echo "Options:"
+            echo "  --target-dir DIR    Installation to upgrade (default: saved INSTALL_DIR, else ~/verdikta-arbiter-node)"
+            echo "  --answers, -a FILE  Unattended upgrade: answer every prompt from FILE"
+            echo "                      (KEY=value lines; template: installer/config/unattended.env.example)"
+            echo "  --unattended        Unattended upgrade answered from VA_* environment variables;"
+            echo "                      unset answers take the safe defaults (no job regeneration, no funding)"
+            echo "  --help, -h          Show this help message"
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Use --help for usage information"
+            exit 1
+            ;;
+    esac
+done
+if [ -n "$ANSWERS_FILE" ]; then
+    load_answers_file "$ANSWERS_FILE"
+elif [ "$UNATTENDED_REQUESTED" = "true" ]; then
+    export VERDIKTA_UNATTENDED=1
+    VERDIKTA_UNATTENDED=1
+fi
+if unattended_mode; then
+    if [ -f "$SCRIPT_DIR/validate-answers.sh" ] && ! bash "$SCRIPT_DIR/validate-answers.sh" upgrade; then
+        echo "Unattended answers are invalid. Nothing was changed."
+        exit "$UNATTENDED_EXIT_CODE"
+    fi
+    [ -n "$TARGET_DIR_FLAG" ] && VA_INSTALL_DIR="$TARGET_DIR_FLAG"
+fi
+
 # Color definitions
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -95,60 +158,7 @@ load_nvm() {
     fi
 }
 
-# Function to prompt for Yes/No question with optional default
-ask_yes_no() {
-    local prompt="$1"
-    local default="$2"  # Optional: 'y' or 'n'
-    local response
-    
-    # Build prompt with default indicator
-    local prompt_text="$prompt"
-    if [ "$default" = "y" ]; then
-        prompt_text="$prompt (Y/n)"
-    elif [ "$default" = "n" ]; then
-        prompt_text="$prompt (y/N)"
-    else
-        prompt_text="$prompt (y/n)"
-    fi
-    
-    while true; do
-        read -p "$prompt_text: " response
-        
-        # Use default if response is empty
-        if [ -z "$response" ] && [ -n "$default" ]; then
-            response="$default"
-        fi
-        
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
-
-# Function to read a secret value with masked feedback
-# Usage: read_secret "prompt text" VARIABLE_NAME
-read_secret() {
-    local prompt="$1"
-    local varname="$2"
-    local value=""
-    
-    read -sp "$prompt" value
-    echo  # newline after silent input
-    
-    if [ -n "$value" ]; then
-        local len=${#value}
-        local visible="${value:0:4}"
-        if [ $len -le 4 ]; then
-            echo -e "${GREEN}  ✓ Key entered (${len} chars)${NC}"
-        else
-            echo -e "${GREEN}  ✓ Key entered: ${visible}$( printf '*%.0s' $(seq 1 $((len - 4))) )${NC}"
-        fi
-    fi
-    
-    eval "$varname=\"\$value\""
-}
+# ask_yes_no / read_secret / prompt_value / prompt_secret come from installer/lib/prompts.sh
 
 # Function to check if a directory is a valid Verdikta arbiter installation
 validate_installation() {
@@ -304,7 +314,12 @@ if [ -f "$INSTALLER_DIR/.env" ]; then
     fi
 fi
 
-read -p "Enter the target installation directory [$DEFAULT_INSTALL_DIR]: " TARGET_DIR
+if [ -n "$TARGET_DIR_FLAG" ]; then
+    TARGET_DIR="$TARGET_DIR_FLAG"
+    echo -e "${BLUE}Target installation directory: $TARGET_DIR${NC}"
+else
+    prompt_value "Enter the target installation directory [$DEFAULT_INSTALL_DIR]: " TARGET_DIR VA_INSTALL_DIR
+fi
 TARGET_DIR=${TARGET_DIR:-$DEFAULT_INSTALL_DIR}
 
 # Validate that it's a Verdikta arbiter installation
@@ -407,7 +422,7 @@ echo -e "${YELLOW}Native keys (OpenAI, Anthropic, etc.) connect directly to prov
 echo -e "${YELLOW}OpenRouter is optional — it fills gaps for any providers you don't have native keys for.${NC}"
 echo
 
-if ask_yes_no "Would you like to review and update your API keys?" "n"; then
+if ask_yes_no "Would you like to review and update your API keys?" "n" VA_UPGRADE_REVIEW_API_KEYS; then
     # Load existing keys
     if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
         source "$TARGET_DIR/installer/.api_keys"
@@ -662,8 +677,8 @@ EOL
     fi
 
     NEW_JUSTIFIER=""
-    if ask_yes_no "Update JUSTIFIER_MODEL now?" "n"; then
-        read -p "Enter new JUSTIFIER_MODEL (blank to keep current): " NEW_JUSTIFIER
+    if ask_yes_no "Update JUSTIFIER_MODEL now?" "n" VA_UPGRADE_UPDATE_JUSTIFIER; then
+        prompt_value "Enter new JUSTIFIER_MODEL (blank to keep current): " NEW_JUSTIFIER VA_JUSTIFIER_MODEL
         if [ -n "$NEW_JUSTIFIER" ]; then
             # Validate basic shape
             if [[ "$NEW_JUSTIFIER" != *:* ]]; then
@@ -744,7 +759,7 @@ select_default_rpc() {
         echo -e "  $idx) ${rpc_array[$i]}" >&2
     done
     while true; do
-        read -p "Choose default RPC [1]: " choice
+        prompt_value "Choose default RPC [1]: " choice "" 1
         if [ -z "$choice" ]; then
             choice=1
         fi
@@ -771,8 +786,8 @@ prompt_rpc_urls() {
     default_ws="$(eval echo \$$ws_var_name)"
 
     echo -e "${BLUE}${network_label} RPC endpoints:${NC}"
-    read -p "Enter HTTP RPC URLs (semicolon-separated) [$default_http]: " http_input
-    read -p "Enter WS RPC URLs (semicolon-separated) [$default_ws]: " ws_input
+    prompt_value "Enter HTTP RPC URLs (semicolon-separated) [$default_http]: " http_input VA_RPC_HTTP_URLS
+    prompt_value "Enter WS RPC URLs (semicolon-separated) [$default_ws]: " ws_input VA_RPC_WS_URLS
 
     if [ -z "$http_input" ]; then
         http_input="$default_http"
@@ -787,8 +802,8 @@ prompt_rpc_urls() {
     if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
         echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
         # Re-prompt once
-        read -p "Enter HTTP RPC URLs (semicolon-separated) [$default_http]: " http_input
-        read -p "Enter WS RPC URLs (semicolon-separated) [$default_ws]: " ws_input
+        prompt_value "Enter HTTP RPC URLs (semicolon-separated) [$default_http]: " http_input VA_RPC_HTTP_URLS
+        prompt_value "Enter WS RPC URLs (semicolon-separated) [$default_ws]: " ws_input VA_RPC_WS_URLS
         if [ -z "$http_input" ]; then
             http_input="$default_http"
         fi
@@ -807,7 +822,7 @@ prompt_rpc_urls() {
     eval "$ws_var_name=\"$ws_input\""
 }
 
-if ask_yes_no "Would you like to update your RPC endpoint lists?" "n"; then
+if ask_yes_no "Would you like to update your RPC endpoint lists?" "n" VA_UPGRADE_UPDATE_RPC; then
     RPCS_CHANGED=true
     # Load existing RPCs if available
     if [ -f "$TARGET_DIR/installer/.env" ]; then
@@ -1010,7 +1025,7 @@ done
 
 if [ -n "$FAILED_RPC_CHECKS" ]; then
     echo -e "${RED}RPC connectivity check failed for:${NC}${FAILED_RPC_CHECKS}"
-    if ! ask_yes_no "Continue upgrade anyway?" "n"; then
+    if ! ask_yes_no "Continue upgrade anyway?" "n" VA_CONTINUE_ON_RPC_FAILURE; then
         exit 1
     fi
 else
@@ -1036,7 +1051,7 @@ if [ $ARBITER_RUNNING -eq 1 ]; then
 fi
 echo
 
-if ! ask_yes_no "Do you want to proceed with the upgrade?" "y"; then
+if ! ask_yes_no "Do you want to proceed with the upgrade?" "y" VA_UPGRADE_PROCEED; then
     echo -e "${YELLOW}Upgrade cancelled by user.${NC}"
     exit 0
 fi
@@ -1056,7 +1071,7 @@ echo -e "${YELLOW}A backup of your current installation can be created before up
 echo -e "${YELLOW}This allows you to restore if something goes wrong, but takes time and disk space.${NC}"
 echo ""
 
-if ask_yes_no "Would you like to create a backup before upgrading? (Recommended for production)" "y"; then
+if ask_yes_no "Would you like to create a backup before upgrading? (Recommended for production)" "y" VA_UPGRADE_BACKUP; then
     create_backup "$TARGET_DIR"
     if [ $? -ne 0 ]; then
         exit 1
@@ -1111,7 +1126,7 @@ check_job_spec_template() {
         diff "$target_job_spec" "$repo_job_spec" || true
         echo
         
-        if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)" "y"; then
+        if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)" "y" VA_UPGRADE_REGENERATE_JOBS n; then
             # Handle the job spec regeneration with proper aggregator management
             regenerate_job_specs
             # Set flag to indicate jobs have been regenerated
@@ -1228,7 +1243,11 @@ regenerate_job_specs() {
                 cd "$TARGET_DIR"
                 # Use the existing register script non-interactively
                 # Input sequence: y (register?), aggregator_addr, y (continue if already registered?), classes_id, y (confirm registration?)
-                echo -e "y\n$aggregator_addr\ny\n$classes_id\ny" | bash register-oracle.sh
+                # (Unattended runs ignore the pipe and take the same answers from the VA_* variables.)
+                echo -e "y\n$aggregator_addr\ny\n$classes_id\ny" | \
+                    VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" \
+                    VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="$classes_id" \
+                    bash register-oracle.sh
                 if [ $? -eq 0 ]; then
                     echo -e "${GREEN}Successfully re-registered with aggregator using new job IDs!${NC}"
                     echo -e "${GREEN}Job specification regeneration completed successfully!${NC}"
@@ -1512,6 +1531,16 @@ fi
 
 # Update management scripts
 echo -e "${BLUE}Updating management scripts...${NC}"
+# Shared prompt library + answers validator (used by the root/util scripts)
+if [ -d "$INSTALLER_DIR/lib" ]; then
+    mkdir -p "$TARGET_DIR/installer/lib"
+    cp "$INSTALLER_DIR/lib/"*.sh "$TARGET_DIR/installer/lib/"
+fi
+if [ -f "$SCRIPT_DIR/validate-answers.sh" ]; then
+    mkdir -p "$TARGET_DIR/installer/bin"
+    cp "$SCRIPT_DIR/validate-answers.sh" "$TARGET_DIR/installer/bin/validate-answers.sh"
+    chmod +x "$TARGET_DIR/installer/bin/validate-answers.sh"
+fi
 cp "$UTIL_DIR/start-arbiter.sh" "$TARGET_DIR/start-arbiter.sh"
 cp "$UTIL_DIR/stop-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh"
 cp "$UTIL_DIR/arbiter-status.sh" "$TARGET_DIR/arbiter-status.sh"
@@ -1616,7 +1645,7 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
             echo -e "${YELLOW}Your installation is configured to use @verdikta/common@beta.${NC}"
             echo -e "${BLUE}The recommended version is now 'latest' for better stability and ClassID support.${NC}"
             echo -e "${BLUE}Note: ClassID model pool integration requires @verdikta/common@latest (v1.3.0+).${NC}"
-            if ask_yes_no "Would you like to switch to @verdikta/common@latest?" "y"; then
+            if ask_yes_no "Would you like to switch to @verdikta/common@latest?" "y" VA_UPGRADE_SWITCH_COMMON_LATEST; then
                 VERDIKTA_VERSION="latest"
                 # Update the .env file with the new preference
                 sed -i.bak "s/VERDIKTA_COMMON_VERSION=\"beta\"/VERDIKTA_COMMON_VERSION=\"latest\"/" "$TARGET_DIR/installer/.env"
@@ -1666,7 +1695,7 @@ if [ -f "$TARGET_AI_NODE/src/scripts/classid-integration.js" ]; then
     echo -e "${BLUE}  • Any future providers and models${NC}"
     echo ""
     
-    if ask_yes_no "Would you like to automatically integrate any new models from all ClassID pools into your AI Node configuration?" "y"; then
+    if ask_yes_no "Would you like to automatically integrate any new models from all ClassID pools into your AI Node configuration?" "y" VA_UPGRADE_INTEGRATE_MODELS; then
         echo -e "${BLUE}Running ClassID integration to sync models.ts with latest ClassID data...${NC}"
         echo -e "${BLUE}This will add new models from ALL ClassIDs (128, 129, 130, etc.) and ALL providers.${NC}"
         
@@ -1826,7 +1855,7 @@ check_ollama_models() {
         echo -e "${BLUE}(OpenAI and Anthropic models from your ClassID pools are already available via API)${NC}"
         echo
         
-        if ask_yes_no "Would you like to download the missing Ollama models now? (This may take several minutes)" "n"; then
+        if ask_yes_no "Would you like to download the missing Ollama models now? (This may take several minutes)" "n" VA_PULL_OLLAMA_MODELS; then
             for model in $missing_models; do
                 echo -e "${BLUE}Downloading $model...${NC}"
                 if ollama pull "$model"; then
@@ -1888,7 +1917,7 @@ else
     echo "During upgrades, your existing jobs and keys are preserved by default."
     echo "However, you can optionally reconfigure them if needed (e.g., to add more arbiters)."
     echo
-    if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This will recreate all jobs)" "n"; then
+    if ask_yes_no "Would you like to reconfigure your Chainlink jobs and keys? (This will recreate all jobs)" "n" VA_UPGRADE_RECONFIGURE_JOBS; then
     echo -e "${BLUE}Starting job and key reconfiguration...${NC}"
     
     # Check if configure-node.sh exists in the source
@@ -1898,7 +1927,7 @@ else
         echo -e "${YELLOW}You should manually delete old jobs from the Chainlink UI after reconfiguration.${NC}"
         echo
         
-        if ask_yes_no "Are you sure you want to proceed with job reconfiguration?" "y"; then
+        if ask_yes_no "Are you sure you want to proceed with job reconfiguration?" "y" "" y; then
             # Start Chainlink node temporarily for job reconfiguration
             echo -e "${BLUE}Starting Chainlink node temporarily for job reconfiguration...${NC}"
             echo -e "${YELLOW}Note: The Chainlink node needs to be running for job and key management.${NC}"
@@ -2191,7 +2220,7 @@ PY
         diff "$current_filtered" "$temp_filtered" || true
         echo
         
-        if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)" "n"; then
+        if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)" "n" VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG; then
             # Create backup of current config
             local config_backup="${current_config}.backup.$(date +%Y%m%d-%H%M%S)"
             cp "$current_config" "$config_backup"
@@ -2223,7 +2252,7 @@ if [ -f "$UTIL_DIR/apply-docker-log-rotation.sh" ]; then
     if ! bash "$UTIL_DIR/apply-docker-log-rotation.sh" --check; then
         echo -e "${YELLOW}The chainlink container's Docker log is unbounded — a disk-fill risk that${NC}"
         echo -e "${YELLOW}also makes 'docker logs'-based diagnostics very slow.${NC}"
-        if ask_yes_no "Recreate the chainlink container with bounded log rotation (100MB x 5)?" "y"; then
+        if ask_yes_no "Recreate the chainlink container with bounded log rotation (100MB x 5)?" "y" VA_UPGRADE_DOCKER_LOG_ROTATION; then
             bash "$UTIL_DIR/apply-docker-log-rotation.sh" --apply || \
                 echo -e "${YELLOW}Log-rotation apply failed; run $UTIL_DIR/apply-docker-log-rotation.sh manually.${NC}"
         else
@@ -2239,13 +2268,13 @@ if [ -f "$TARGET_DIR/chainlink-health-watchdog.sh" ]; then
         echo
         echo -e "${BLUE}The Chainlink health watchdog alerts within minutes when the node's RPC pool${NC}"
         echo -e "${BLUE}hits 0 live nodes (the silent failure behind the July 2026 commit-stage outage).${NC}"
-        if ask_yes_no "Install the watchdog cron entry (runs every 2 minutes)?" "y"; then
+        if ask_yes_no "Install the watchdog cron entry (runs every 2 minutes)?" "y" VA_INSTALL_CRON; then
             bash "$TARGET_DIR/chainlink-health-watchdog.sh" --install-cron 2 || \
                 echo -e "${YELLOW}Warning: could not install watchdog cron entry${NC}"
         fi
     fi
     if ! crontab -l 2>/dev/null | grep -q "verdikta-rotate-logs"; then
-        if ask_yes_no "Install the daily application log-rotation cron entry?" "y"; then
+        if ask_yes_no "Install the daily application log-rotation cron entry?" "y" VA_INSTALL_LOG_ROTATION_CRON; then
             bash "$TARGET_DIR/rotate-logs.sh" --install-cron || \
                 echo -e "${YELLOW}Warning: could not install log-rotation cron entry${NC}"
         fi
@@ -2261,9 +2290,9 @@ if [ -f "$TARGET_DIR/chainlink-health-watchdog.sh" ]; then
         echo -e "status page (https://arbiters.verdikta.org/analytics): live alerts plus"
         echo -e "heartbeat monitoring that flags the node if its machine goes dark."
         echo -e "Reports are signed with your operator owner key — free (no gas).${NC}"
-        if ask_yes_no "Report this arbiter's health to the arbiter status page?" "y"; then
+        if ask_yes_no "Report this arbiter's health to the arbiter status page?" "y" VA_STATUS_PAGE_REPORTING; then
             DEFAULT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
-            read -p "Alerts webhook URL [$DEFAULT_WEBHOOK]: " WATCHDOG_WEBHOOK_INPUT
+            prompt_value "Alerts webhook URL [$DEFAULT_WEBHOOK]: " WATCHDOG_WEBHOOK_INPUT VA_STATUS_PAGE_WEBHOOK
             WATCHDOG_WEBHOOK_INPUT="${WATCHDOG_WEBHOOK_INPUT:-$DEFAULT_WEBHOOK}"
             printf 'WATCHDOG_ALERT_WEBHOOK="%s"\n' "$WATCHDOG_WEBHOOK_INPUT" >> "$TARGET_DIR/installer/.env"
             echo -e "${GREEN}Status page reporting configured — the node appears on the Arbiter"
@@ -2304,7 +2333,7 @@ echo -e "${BLUE}Recommended funding per key: $RECOMMENDED_AMOUNT $CURRENCY_NAME$
 echo -e "${YELLOW}Note: $FUNDING_INFO${NC}"
 echo
 
-if ask_yes_no "Would you like to fund or top off your Chainlink keys now?" "n"; then
+if ask_yes_no "Would you like to fund or top off your Chainlink keys now?" "n" VA_FUND_KEYS; then
     echo
     echo -e "${BLUE}Automatic Funding Configuration${NC}"
     echo -e "${BLUE}Recommended amount: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
@@ -2319,7 +2348,8 @@ if ask_yes_no "Would you like to fund or top off your Chainlink keys now?" "n"; 
     echo
     
     while true; do
-        read -p "Choose option (1-3) [1]: " funding_choice
+        if unattended_mode && [ -n "${VA_FUND_AMOUNT:-}" ]; then UNATTENDED_FUNDING_CHOICE=2; else UNATTENDED_FUNDING_CHOICE=1; fi
+        prompt_value "Choose option (1-3) [1]: " funding_choice "" "$UNATTENDED_FUNDING_CHOICE"
         
         # Default to option 1 if empty
         if [ -z "$funding_choice" ]; then
@@ -2334,7 +2364,7 @@ if ask_yes_no "Would you like to fund or top off your Chainlink keys now?" "n"; 
                 ;;
             2)
                 while true; do
-                    read -p "Enter custom amount per key (in $CURRENCY_NAME): " custom_amount
+                    prompt_value "Enter custom amount per key (in $CURRENCY_NAME): " custom_amount VA_FUND_AMOUNT
                     
                     if [[ "$custom_amount" =~ ^[0-9]+\.?[0-9]*$ ]] && (( $(echo "$custom_amount > 0" | bc -l) )); then
                         FUNDING_AMOUNT="$custom_amount"
@@ -2362,7 +2392,7 @@ if ask_yes_no "Would you like to fund or top off your Chainlink keys now?" "n"; 
         echo -e "${YELLOW}⚠ Your wallet will be charged for both the funding amount and gas fees.${NC}"
         echo
         
-        if ask_yes_no "Proceed with automatic funding?" "n"; then
+        if ask_yes_no "Proceed with automatic funding?" "n" "" y; then
             echo -e "${BLUE}Starting automatic funding process...${NC}"
             echo
             
@@ -2428,7 +2458,7 @@ SERVICES_STARTED_FOR_DOCTOR=0
 
 # Ask if user wants to restart the arbiter
 if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
-    if ask_yes_no "Do you want to restart the arbiter now?" "y"; then
+    if ask_yes_no "Do you want to restart the arbiter now?" "y" VA_RESTART_SERVICES; then
         echo -e "${BLUE}Restarting arbiter...${NC}"
         "$TARGET_DIR/start-arbiter.sh"
         
@@ -2468,7 +2498,7 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
     fi
 else
     # Arbiter was not running before upgrade - ask if user wants to start it now
-    if ask_yes_no "The arbiter was not running before the upgrade. Would you like to start it now?" "y"; then
+    if ask_yes_no "The arbiter was not running before the upgrade. Would you like to start it now?" "y" VA_START_SERVICES; then
         echo -e "${BLUE}Starting arbiter...${NC}"
         "$TARGET_DIR/start-arbiter.sh"
         

@@ -78,20 +78,12 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
 
 # Function to login to Chainlink node API and get session cookie (for bridge creation)
 login_to_chainlink() {
@@ -163,7 +155,7 @@ if [ "$DEFAULT_COUNT_SOURCE" != "default" ]; then
 fi
 echo "How many arbiters would you like to configure? (1-10)"
 while true; do
-    read -p "Enter number of arbiters [$DETECTED_ARBITER_COUNT]: " ARBITER_COUNT
+    prompt_value "Enter number of arbiters [$DETECTED_ARBITER_COUNT]: " ARBITER_COUNT VA_ARBITER_COUNT
     
     # Default to detected count if empty
     if [ -z "$ARBITER_COUNT" ]; then
@@ -232,7 +224,7 @@ fi
 
 # Ask for the host IP or confirm local IP
 echo -e "${BLUE}Setting up External Adapter bridge connection...${NC}"
-read -p "Enter your machine's IP address or hostname [$LOCAL_IP]: " HOST_IP
+prompt_value "Enter your machine's IP address or hostname [$LOCAL_IP]: " HOST_IP VA_HOST_IP
 if [ -z "$HOST_IP" ]; then
     HOST_IP="$LOCAL_IP"
 fi

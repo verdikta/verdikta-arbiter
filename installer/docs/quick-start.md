@@ -98,6 +98,11 @@ Start the installation process:
 ./bin/install.sh
 ```
 
+!!! tip "No keyboard? Use an answers file"
+    `./bin/install.sh --answers my-answers.env` answers every prompt below from a
+    file (template: `installer/config/unattended.env.example`). See
+    [Unattended Install](installation/unattended.md).
+
 The installer will guide you through **10 main steps**. Here's what happens in each step:
 
 ---

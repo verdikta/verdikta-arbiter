@@ -9,6 +9,60 @@ set -e
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# ── Shared prompt helpers (installer/lib/prompts.sh) ─────────────────────────
+# Interactive by default; --answers FILE / --unattended answer prompts from
+# VA_* variables. Falls back to plain interactive prompts on installs that
+# predate the library.
+_load_prompts_lib() {
+    local base="$1" cand
+    for cand in "$base/installer/lib/prompts.sh" "$base/../lib/prompts.sh" "$base/lib/prompts.sh"; do
+        if [ -f "$cand" ]; then
+            # shellcheck disable=SC1090
+            source "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+ANSWERS_FILE=""
+UNATTENDED_REQUESTED=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --answers|-a) shift; [ -z "${1:-}" ] && { echo "--answers requires a file argument"; exit 1; }; ANSWERS_FILE="$1"; shift ;;
+        --unattended) UNATTENDED_REQUESTED=true; shift ;;
+        --help|-h)
+            echo "Usage: $0 [--answers FILE | --unattended]"
+            echo "  --answers FILE   answer every prompt from FILE (VA_* KEY=value lines)"
+            echo "  --unattended     answer every prompt from VA_* environment variables"
+            exit 0 ;;
+        *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
+    esac
+done
+if ! _load_prompts_lib "$SCRIPT_DIR"; then
+    if [ -n "$ANSWERS_FILE" ] || [ "$UNATTENDED_REQUESTED" = "true" ] || [ "${VERDIKTA_UNATTENDED:-0}" = "1" ]; then
+        echo "Error: unattended mode needs installer/lib/prompts.sh (upgrade this installation first)."
+        exit 1
+    fi
+    unattended_mode() { return 1; }
+    ask_yes_no() {
+        local prompt="$1" default="${2:-}" response hint="(y/n)"
+        [ "$default" = "y" ] && hint="(Y/n)"; [ "$default" = "n" ] && hint="(y/N)"
+        while true; do
+            read -p "$prompt $hint: " response || exit 1
+            [ -z "$response" ] && response="$default"
+            case "$response" in [Yy]*) return 0;; [Nn]*) return 1;; *) echo "Please answer yes (y) or no (n).";; esac
+        done
+    }
+    prompt_value() { local v; read -p "$1" v || exit 1; eval "$2=\"\$v\""; }
+    prompt_secret() { local v; read -sp "$1" v || exit 1; echo; eval "$2=\"\$v\""; }
+fi
+if [ -n "$ANSWERS_FILE" ]; then
+    load_answers_file "$ANSWERS_FILE"
+elif [ "$UNATTENDED_REQUESTED" = "true" ]; then
+    export VERDIKTA_UNATTENDED=1
+    VERDIKTA_UNATTENDED=1
+fi
+
 # Color definitions
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -89,21 +143,7 @@ CHAINLINK_DIR="$HOME/.chainlink-${NETWORK_TYPE}"
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
-ask_yes_no() {
-    local prompt="$1"
-    local default="${2:-y}"
-    local yn_hint="[Y/n]"
-    [ "$default" = "n" ] && yn_hint="[y/N]"
-    while true; do
-        read -p "$prompt $yn_hint: " answer
-        answer="${answer:-$default}"
-        case "$answer" in
-            [Yy]*) return 0 ;;
-            [Nn]*) return 1 ;;
-            *) echo -e "${RED}Please answer yes or no.${NC}" ;;
-        esac
-    done
-}
+# ask_yes_no / prompt_value come from installer/lib/prompts.sh (see loader above)
 
 normalize_rpc_list() {
     local raw="$1"
@@ -247,7 +287,9 @@ NEW_WS_URLS=""
 NEW_INFURA_KEY=""
 
 while true; do
-    read -p "Select option (1 or 2) [2]: " rpc_method_choice
+    UNATTENDED_RPC_CHOICE=2
+    if [ -z "${VA_RPC_HTTP_URLS:-}" ] && [ -n "${VA_INFURA_API_KEY:-}" ]; then UNATTENDED_RPC_CHOICE=1; fi
+    prompt_value "Select option (1 or 2) [2]: " rpc_method_choice "" "$UNATTENDED_RPC_CHOICE"
     rpc_method_choice="${rpc_method_choice:-2}"
 
     case "$rpc_method_choice" in
@@ -258,10 +300,10 @@ while true; do
 
             local_default_key="${INFURA_API_KEY:-}"
             if [ -n "$local_default_key" ]; then
-                read -p "Enter your Infura API Key [existing key]: " input_key
+                prompt_secret "Enter your Infura API Key [existing key]: " input_key VA_INFURA_API_KEY
                 input_key="${input_key:-$local_default_key}"
             else
-                read -p "Enter your Infura API Key: " input_key
+                prompt_secret "Enter your Infura API Key: " input_key VA_INFURA_API_KEY
             fi
 
             if [ -z "$input_key" ]; then
@@ -287,8 +329,8 @@ while true; do
             echo ""
             echo -e "${BLUE}${NETWORK_LABEL} RPC endpoints:${NC}"
 
-            read -p "Enter HTTP RPC URLs (semicolon-separated) [$CURRENT_HTTP_URLS]: " http_input
-            read -p "Enter WS RPC URLs (semicolon-separated) [$CURRENT_WS_URLS]: " ws_input
+            prompt_value "Enter HTTP RPC URLs (semicolon-separated) [$CURRENT_HTTP_URLS]: " http_input VA_RPC_HTTP_URLS
+            prompt_value "Enter WS RPC URLs (semicolon-separated) [$CURRENT_WS_URLS]: " ws_input VA_RPC_WS_URLS
 
             http_input="${http_input:-$CURRENT_HTTP_URLS}"
             ws_input="${ws_input:-$CURRENT_WS_URLS}"
@@ -297,8 +339,8 @@ while true; do
 
             if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
                 echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
-                read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
-                read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+                prompt_value "Enter HTTP RPC URLs (semicolon-separated): " http_input VA_RPC_HTTP_URLS
+                prompt_value "Enter WS RPC URLs (semicolon-separated): " ws_input VA_RPC_WS_URLS
                 http_input="$(normalize_rpc_list "$http_input")"
                 ws_input="$(normalize_rpc_list "$ws_input")"
                 if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
@@ -376,7 +418,7 @@ done
 if [ -n "$FAILED_CHECKS" ]; then
     echo ""
     echo -e "${RED}Some RPC endpoints failed connectivity checks:${NC}${FAILED_CHECKS}"
-    if ! ask_yes_no "Continue anyway?" "n"; then
+    if ! ask_yes_no "Continue anyway?" "n" VA_CONTINUE_ON_RPC_FAILURE; then
         echo -e "${YELLOW}Aborted. No changes were made.${NC}"
         exit 0
     fi
@@ -387,7 +429,7 @@ echo ""
 
 # ── Confirm before applying ──────────────────────────────────────────────────
 
-if ! ask_yes_no "Apply these new RPC endpoints?" "y"; then
+if ! ask_yes_no "Apply these new RPC endpoints?" "y" "" y; then
     echo -e "${YELLOW}Aborted. No changes were made.${NC}"
     exit 0
 fi
@@ -522,7 +564,7 @@ fi
 
 if [ "$NODE_RUNNING" = true ]; then
     echo -e "${YELLOW}The Chainlink node must be restarted for the new endpoints to take effect.${NC}"
-    if ask_yes_no "Restart the Chainlink node now?" "y"; then
+    if ask_yes_no "Restart the Chainlink node now?" "y" VA_RESTART_SERVICES; then
         echo -e "${BLUE}→ Stopping Chainlink container...${NC}"
         docker stop chainlink --time=30
         if [ $? -ne 0 ]; then
@@ -570,7 +612,7 @@ if [ "$NODE_RUNNING" = true ]; then
     fi
 elif docker ps -a 2>/dev/null | grep -q "chainlink"; then
     echo -e "${BLUE}Chainlink node is currently stopped. New config will apply on next start.${NC}"
-    if ask_yes_no "Start the Chainlink node now?" "n"; then
+    if ask_yes_no "Start the Chainlink node now?" "n" VA_START_SERVICES; then
         if ! docker ps | grep -q "cl-postgres"; then
             echo -e "${BLUE}→ Starting PostgreSQL...${NC}"
             docker start cl-postgres 2>/dev/null || true

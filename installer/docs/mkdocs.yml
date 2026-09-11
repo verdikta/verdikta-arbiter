@@ -135,6 +135,7 @@ nav:
     - overview.md
     - Installation Guide: quick-start.md
     - Prompts Guide: installation/prompts-guide.md
+    - Unattended Install: installation/unattended.md
   - Management:
     - management/index.md
     - Starting Services: management/starting.md

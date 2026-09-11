@@ -22,6 +22,15 @@ NC='\033[0m' # No Color
 SKIP_TESTS=true
 RESUME_REGISTRATION=false
 INSTALL_FLAGS="--skip-tests"
+ANSWERS_FILE=""
+UNATTENDED_REQUESTED=false
+
+# Shared prompt helpers (interactive by default; unattended when VERDIKTA_UNATTENDED=1)
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
 
 # Parse command line arguments
 while [[ $# -gt 0 ]]; do
@@ -35,6 +44,16 @@ while [[ $# -gt 0 ]]; do
             RESUME_REGISTRATION=true
             shift
             ;;
+        --answers|-a)
+            shift
+            [ -z "${1:-}" ] && { echo "--answers requires a file argument"; exit 1; }
+            ANSWERS_FILE="$1"
+            shift
+            ;;
+        --unattended)
+            UNATTENDED_REQUESTED=true
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo "Main installation script for Verdikta Arbiter Node"
@@ -42,10 +61,14 @@ while [[ $# -gt 0 ]]; do
             echo "Options:"
             echo "  --run-tests, -t            Run unit tests during installation (skipped by default)"
             echo "  --resume-registration, -r  Skip all installation steps and resume from oracle registration"
+            echo "  --answers, -a FILE         Unattended install: answer every prompt from FILE"
+            echo "                             (KEY=value lines; template: installer/config/unattended.env.example)"
+            echo "  --unattended               Unattended install answered from VA_* environment variables"
             echo "  --help, -h                 Show this help message"
             echo ""
             echo "Environment Variables:"
             echo "  RUN_TESTS=true      Run unit tests (alternative to --run-tests)"
+            echo "  VERDIKTA_UNATTENDED=1  Same as --unattended (VA_* variables answer the prompts)"
             echo ""
             echo "This script orchestrates the complete installation process including:"
             echo "  1. Prerequisites check"
@@ -77,6 +100,27 @@ done
 if [ "$RUN_TESTS" = "true" ]; then
     SKIP_TESTS=false
     INSTALL_FLAGS=""
+fi
+
+# Unattended mode: load the answers file (exported to every sub-script) and
+# validate the answers up front so a typo fails here, not 20 minutes in.
+if [ -n "$ANSWERS_FILE" ]; then
+    load_answers_file "$ANSWERS_FILE"
+elif [ "$UNATTENDED_REQUESTED" = "true" ]; then
+    export VERDIKTA_UNATTENDED=1
+    VERDIKTA_UNATTENDED=1
+fi
+if unattended_mode; then
+    if [ ! -f "$SCRIPT_DIR/validate-answers.sh" ]; then
+        echo "Error: validate-answers.sh not found in $SCRIPT_DIR"
+        exit 1
+    fi
+    if ! bash "$SCRIPT_DIR/validate-answers.sh" install; then
+        echo -e "${RED}Unattended answers are incomplete or invalid. Nothing was installed.${NC}"
+        exit "$UNATTENDED_EXIT_CODE"
+    fi
+    echo -e "${BLUE}Unattended mode: prompts are answered from VA_* variables.${NC}"
+    echo ""
 fi
 
 # Banner
@@ -133,20 +177,7 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
 
 # Skip installation steps if resuming registration
 if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
@@ -277,7 +308,7 @@ done
 
 if [ -n "$FAILED_RPC_CHECKS" ]; then
     echo -e "${RED}RPC connectivity check failed for:${NC}${FAILED_RPC_CHECKS}"
-    if ! ask_yes_no "Continue installation anyway?"; then
+    if ! ask_yes_no "Continue installation anyway?" "" VA_CONTINUE_ON_RPC_FAILURE n; then
         exit 1
     fi
 else
@@ -651,6 +682,18 @@ REPO_GIT_VERSION="$(cd "$(dirname "$INSTALLER_DIR")" && git describe --tags --al
 echo "$REPO_GIT_VERSION $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$INSTALL_DIR/VERSION"
 echo -e "${GREEN}Release version stamped: $(cat "$INSTALL_DIR/VERSION")${NC}"
 
+# Copy the shared prompt library (the util/root scripts source it at runtime)
+if [ -d "$INSTALLER_DIR/lib" ]; then
+    mkdir -p "$INSTALL_DIR/installer/lib"
+    cp "$INSTALLER_DIR/lib/"*.sh "$INSTALL_DIR/installer/lib/"
+    echo -e "${GREEN}Prompt library copied to $INSTALL_DIR/installer/lib${NC}"
+fi
+if [ -f "$SCRIPT_DIR/validate-answers.sh" ]; then
+    mkdir -p "$INSTALL_DIR/installer/bin"
+    cp "$SCRIPT_DIR/validate-answers.sh" "$INSTALL_DIR/installer/bin/validate-answers.sh"
+    chmod +x "$INSTALL_DIR/installer/bin/validate-answers.sh"
+fi
+
 # Copy all utility scripts to installer directory (excluding management scripts which are placed at install root)
 echo -e "${BLUE}Copying all utility scripts...${NC}"
 if [ -d "$UTIL_DIR" ]; then
@@ -766,7 +809,7 @@ echo -e "  - watchdog: every 2 min, checks the Chainlink container, health endpo
 echo -e "    and recent 'No live RPC nodes available' log lines; alerts via syslog"
 echo -e "    (plus WATCHDOG_ALERT_WEBHOOK / WATCHDOG_ALERT_COMMAND if configured)"
 echo -e "  - log rotation: daily, compresses/prunes ai-node and external-adapter logs"
-if ask_yes_no "Install cron entries for the health watchdog and log rotation?"; then
+if ask_yes_no "Install cron entries for the health watchdog and log rotation?" "" VA_INSTALL_CRON y; then
     bash "$INSTALL_DIR/chainlink-health-watchdog.sh" --install-cron 2 || \
         echo -e "${YELLOW}Warning: could not install watchdog cron entry${NC}"
     bash "$INSTALL_DIR/rotate-logs.sh" --install-cron || \
@@ -784,9 +827,9 @@ if ask_yes_no "Install cron entries for the health watchdog and log rotation?"; 
     echo -e "live health alerts and heartbeat monitoring. Reports are authenticated"
     echo -e "by signing with your operator owner key — free (no gas), nothing to"
     echo -e "obtain or configure beyond the URL.${NC}"
-    if ask_yes_no "Report this arbiter's health to the arbiter status page?"; then
+    if ask_yes_no "Report this arbiter's health to the arbiter status page?" "" VA_STATUS_PAGE_REPORTING y; then
         DEFAULT_WEBHOOK="https://arbiters.verdikta.org/api/alerts"
-        read -p "Alerts webhook URL [$DEFAULT_WEBHOOK]: " WATCHDOG_WEBHOOK_INPUT
+        prompt_value "Alerts webhook URL [$DEFAULT_WEBHOOK]: " WATCHDOG_WEBHOOK_INPUT VA_STATUS_PAGE_WEBHOOK
         WATCHDOG_WEBHOOK_INPUT="${WATCHDOG_WEBHOOK_INPUT:-$DEFAULT_WEBHOOK}"
         # Write to the install-dir .env (what the watchdog reads at runtime)
         # and the source installer/.env so re-installs keep the setting.
@@ -819,17 +862,18 @@ echo -e "  3) info    - General information, warnings, and errors (recommended f
 echo -e "  4) debug   - Detailed debugging information (recommended for troubleshooting)"
 echo
 
-# Function to get log level choice
+# Function to get log level choice (unattended: VA_LOG_LEVEL accepts 1-4 or the level name)
 get_log_level() {
     local log_level="info"  # Default
+    local choice
     
     while true; do
-        read -p "Enter your choice (1-4) [3 for info]: " choice
+        prompt_value "Enter your choice (1-4) [3 for info]: " choice VA_LOG_LEVEL
         case "$choice" in
-            1) log_level="error"; break;;
-            2) log_level="warn"; break;;
-            3|"") log_level="info"; break;;
-            4) log_level="debug"; break;;
+            1|error) log_level="error"; break;;
+            2|warn|warning) log_level="warn"; break;;
+            3|""|info) log_level="info"; break;;
+            4|debug) log_level="debug"; break;;
             *) echo "Please enter a number between 1-4.";;
         esac
     done
@@ -924,7 +968,7 @@ if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
     echo -e "${YELLOW}Note: $FUNDING_INFO${NC}"
     echo
     
-    if ask_yes_no "Would you like to automatically fund your Chainlink keys now?"; then
+    if ask_yes_no "Would you like to automatically fund your Chainlink keys now?" "" VA_FUND_KEYS n; then
         echo
         echo -e "${BLUE}Automatic Funding Configuration${NC}"
         echo -e "${BLUE}Recommended amount: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
@@ -938,8 +982,14 @@ if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
         echo -e "${BLUE}  3) Skip automatic funding${NC}"
         echo
         
+        # Unattended: VA_FUND_AMOUNT set -> custom amount; unset -> recommended amount.
+        if unattended_mode && [ -n "${VA_FUND_AMOUNT:-}" ]; then
+            UNATTENDED_FUNDING_CHOICE=2
+        else
+            UNATTENDED_FUNDING_CHOICE=1
+        fi
         while true; do
-            read -p "Choose option (1-3) [1]: " funding_choice
+            prompt_value "Choose option (1-3) [1]: " funding_choice "" "$UNATTENDED_FUNDING_CHOICE"
             
             # Default to option 1 if empty
             if [ -z "$funding_choice" ]; then
@@ -954,7 +1004,7 @@ if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
                     ;;
                 2)
                     while true; do
-                        read -p "Enter custom amount per key (in $CURRENCY_NAME): " custom_amount
+                        prompt_value "Enter custom amount per key (in $CURRENCY_NAME): " custom_amount VA_FUND_AMOUNT
                         
                         if [[ "$custom_amount" =~ ^[0-9]+\.?[0-9]*$ ]] && (( $(echo "$custom_amount > 0" | bc -l) )); then
                             FUNDING_AMOUNT="$custom_amount"
@@ -982,7 +1032,7 @@ if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
             echo -e "${YELLOW}⚠ Your wallet will be charged for both the funding amount and gas fees.${NC}"
             echo
             
-            if ask_yes_no "Proceed with automatic funding?"; then
+            if ask_yes_no "Proceed with automatic funding?" "" "" y; then
                 echo -e "${BLUE}Starting automatic funding process...${NC}"
                 echo
                 
@@ -1049,7 +1099,7 @@ echo
 # ask_yes_no function is now defined at the top of this script
 
 SERVICES_STARTED_FOR_DOCTOR=0
-if ask_yes_no "Start Verdikta Arbiter services?"; then
+if ask_yes_no "Start Verdikta Arbiter services?" "" VA_START_SERVICES y; then
     echo -e "${BLUE}Starting Verdikta Arbiter services...${NC}"
     echo -e "${BLUE}This may take a few minutes for all services to fully initialize.${NC}"
     

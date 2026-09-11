@@ -7,6 +7,11 @@ cd verdikta-arbiter/installer
 ./bin/upgrade-arbiter.sh
 ```
 
+Flags: `--target-dir DIR` skips the directory prompt; `--answers FILE` or
+`--unattended` run without any prompts (see
+[Unattended Install](../installation/unattended.md) — unset answers take the
+safe defaults: backup yes, job regeneration no, funding no).
+
 This guide follows the real behavior of `installer/bin/upgrade-arbiter.sh` so you can safely upgrade code, configuration, and runtime components without reinstalling from scratch.
 
 ## What the upgrade script does

@@ -121,20 +121,12 @@ else
     exit 1
 fi
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
 
 # Define AI Node directory based on script location
 # AI_NODE_DIR="$INSTALL_DIR/ai-node" # Old definition based on INSTALL_DIR
@@ -557,7 +549,7 @@ if command_exists ollama; then
             echo -e "${GREEN}Ollama model '$model' is already installed.${NC}"
         else
             echo -e "${YELLOW}Ollama model '$model' is not installed.${NC}"
-            if ask_yes_no "Would you like to install Ollama model '$model' from ClassID configuration?"; then
+            if ask_yes_no "Would you like to install Ollama model '$model' from ClassID configuration?" "" VA_PULL_OLLAMA_MODELS n; then
                 echo -e "${BLUE}Pulling Ollama model '$model'...${NC}"
                 ollama pull "$model"
                 if [ $? -eq 0 ]; then
