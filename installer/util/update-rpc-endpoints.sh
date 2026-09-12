@@ -98,14 +98,21 @@ source "$ENV_FILE"
 
 # ── Locate config template ───────────────────────────────────────────────────
 
+# The script runs from three places: the repo (installer/util/), the install
+# root (where install.sh copies it), and the install root's installer/util/
+# copy. Each candidate below is the chainlink-node/ directory of THAT tree.
+# Never search one level above the install root: from $HOME/verdikta-arbiter-node
+# that is $HOME (or /), where a stale or foreign template can live — a
+# regenerated config with unfilled <WS_URL>/<HTTP_URL> placeholders took a
+# node down that way. A candidate also has to carry the placeholder this
+# script fills in, or it is the wrong file whatever its name.
 TEMPLATE_FILE=""
 TEMPLATE_SEARCH_LOCATIONS=(
-    "$SCRIPT_DIR/../chainlink-node/config_template.toml"       # Install target root
-    "$SCRIPT_DIR/../../chainlink-node/config_template.toml"    # Repo: installer/util/ -> repo root
-    "$SCRIPT_DIR/chainlink-node/config_template.toml"          # Fallback
+    "$SCRIPT_DIR/chainlink-node/config_template.toml"          # install root
+    "$SCRIPT_DIR/../../chainlink-node/config_template.toml"    # installer/util/ (repo or installed copy) -> root
 )
 for _tpl_path in "${TEMPLATE_SEARCH_LOCATIONS[@]}"; do
-    if [ -f "$_tpl_path" ]; then
+    if [ -f "$_tpl_path" ] && grep -q '<EVM_NODES_BLOCK>' "$_tpl_path"; then
         TEMPLATE_FILE="$(cd "$(dirname "$_tpl_path")" && pwd)/$(basename "$_tpl_path")"
         break
     fi
@@ -458,20 +465,27 @@ fi
 chmod 600 "$ENV_FILE"
 echo -e "${GREEN}✓ Environment file updated: $ENV_FILE${NC}"
 
-# Also update the repo-side .env if it exists and is different from ENV_FILE
+# Also update the repo-side .env (the checkout install.sh/upgrade-arbiter.sh
+# read) when one exists and differs from ENV_FILE. Candidates are the repo's
+# own installer/.env when running from the repo, and the conventional
+# checkout next to the install root. A candidate must already exist, hold
+# an installer env (DEPLOYMENT_NETWORK=), and live under $HOME — a relative
+# walk from the install root used to reach /installer/.env at the
+# filesystem root and write the RPC lists (and their keys) there.
 REPO_ENV_FILE=""
 REPO_ENV_CANDIDATES=(
-    "$SCRIPT_DIR/../.env"                  # installer/util/ -> installer/.env (repo)
-    "$SCRIPT_DIR/../../installer/.env"     # install target util -> repo installer/.env
+    "$SCRIPT_DIR/../.env"                          # repo installer/util/ -> installer/.env
+    "$HOME/verdikta-arbiter/installer/.env"        # conventional checkout beside the install root
+    "$SCRIPT_DIR/../verdikta-arbiter/installer/.env"  # checkout as a sibling of the install root
 )
 for _repo_env in "${REPO_ENV_CANDIDATES[@]}"; do
-    if [ -f "$_repo_env" ]; then
-        _repo_env_abs="$(cd "$(dirname "$_repo_env")" && pwd)/$(basename "$_repo_env")"
-        if [ "$_repo_env_abs" != "$ENV_FILE" ]; then
-            REPO_ENV_FILE="$_repo_env_abs"
-            break
-        fi
-    fi
+    [ -f "$_repo_env" ] || continue
+    _repo_env_abs="$(cd "$(dirname "$_repo_env")" && pwd)/$(basename "$_repo_env")"
+    case "$_repo_env_abs" in "$HOME"/*) ;; *) continue ;; esac
+    [ "$_repo_env_abs" != "$ENV_FILE" ] || continue
+    grep -q '^DEPLOYMENT_NETWORK=' "$_repo_env_abs" || continue
+    REPO_ENV_FILE="$_repo_env_abs"
+    break
 done
 
 if [ -n "$REPO_ENV_FILE" ]; then
@@ -551,7 +565,36 @@ with open(output_path, "w", encoding="utf-8") as f:
     f.write(content)
 PY
 
-echo -e "${GREEN}✓ Config regenerated: $CONFIG_FILE${NC}"
+# Validate BEFORE touching the node: an unfilled placeholder or a missing
+# node entry means the template was wrong, and restarting chainlink on such
+# a file takes the arbiter down (config validation fails at startup).
+_cfg_problems=""
+if grep -qE '<[A-Z_]+>' "$CONFIG_FILE"; then
+    _cfg_problems="${_cfg_problems}\n  unfilled placeholder(s): $(grep -oE '<[A-Z_]+>' "$CONFIG_FILE" | sort -u | tr '\n' ' ')"
+fi
+_cfg_nodes=$(grep -c '^\[\[EVM.Nodes\]\]' "$CONFIG_FILE")
+if [ "$_cfg_nodes" != "${#HTTP_URL_ARRAY[@]}" ]; then
+    _cfg_problems="${_cfg_problems}\n  expected ${#HTTP_URL_ARRAY[@]} [[EVM.Nodes]] entries, found $_cfg_nodes"
+fi
+if grep -E '^(WSURL|HTTPURL)=' "$CONFIG_FILE" | grep -vqE '^WSURL="wss?://|^HTTPURL="https?://'; then
+    _cfg_problems="${_cfg_problems}\n  a WSURL/HTTPURL line is not a ws(s)/http(s) URL"
+fi
+if [ -n "$_cfg_problems" ]; then
+    echo -e "${RED}Generated config is invalid:${NC}${_cfg_problems}"
+    if [ -n "${BACKUP_FILE:-}" ] && [ -f "$BACKUP_FILE" ]; then
+        cp -p "$BACKUP_FILE" "$CONFIG_FILE"
+        echo -e "${YELLOW}Restored the previous config from $BACKUP_FILE. The node was NOT restarted.${NC}"
+    fi
+    echo -e "${YELLOW}Template used: $TEMPLATE_FILE${NC}"
+    exit 1
+fi
+# Keep the previous file's mode/owner: the chainlink container runs as an
+# unprivileged user and must still be able to read the config.
+if [ -n "${BACKUP_FILE:-}" ] && [ -f "$BACKUP_FILE" ]; then
+    chmod --reference="$BACKUP_FILE" "$CONFIG_FILE" 2>/dev/null || true
+    chown --reference="$BACKUP_FILE" "$CONFIG_FILE" 2>/dev/null || true
+fi
+echo -e "${GREEN}✓ Config regenerated: $CONFIG_FILE ($_cfg_nodes RPC node(s), validated)${NC}"
 
 # ── Restart Chainlink node ───────────────────────────────────────────────────
 
