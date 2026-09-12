@@ -1,0 +1,31 @@
+# Gitleaks configuration for verdikta-arbiter.
+#
+# Extends the built-in rules. The allowlist below removes the two classes of
+# false positive this repository is full of by nature:
+#   - Ethereum ADDRESSES (0x + 40 hex): contract/token/wallet addresses are
+#     public identifiers, not secrets, and the installer, docs and deployment
+#     manifests are full of them (the LINK token address alone trips the
+#     generic-api-key rule a dozen times).
+#   - Documentation placeholders (YOUR_..., <your-key>, sk-your-key...).
+# Private KEYS (64 hex) and API keys are NOT allowlisted: a 64-hex value next
+# to "privateKey" still fails the scan, which is the point.
+#
+# Historical findings that predate this file are pinned in .gitleaksignore.
+
+title = "verdikta-arbiter"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Public identifiers and documentation placeholders"
+regexTarget = "match"
+regexes = [
+  '''\b0x[0-9a-fA-F]{40}\b''',
+  '''(?i)(your[_-]?(api[_-]?)?key|<your[^>]*>|REPLACE_ME|xxx+|YOUR_TOKEN|your_token|example[_-]?key)''',
+]
+paths = [
+  '''^installer/docs/site/''',
+  '''^search/search_index\.json$''',
+  '''(^|/)\.next/''',
+]
