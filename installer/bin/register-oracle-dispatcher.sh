@@ -8,6 +8,13 @@
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 INSTALLER_DIR="$(dirname "$SCRIPT_DIR")"
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
+
 ARBITER_OPERATOR_DIR="$(dirname "$INSTALLER_DIR")/arbiter-operator"
 
 # Color definitions
@@ -156,15 +163,14 @@ echo -e "${GREEN}Using wrapped VDKA address for $NETWORK_NAME: $WRAPPED_VERDIKTA
 
 # Ask if user wants to register with a dispatcher
 echo -e "${YELLOW}Would you like to register the oracle with a dispatcher (aggregator) contract?${NC}"
-read -p "Register with dispatcher? (y/n): " register_response
-if [[ ! "$register_response" =~ ^[Yy]$ ]]; then
+if ! ask_yes_no "Register with dispatcher?" "" VA_REGISTER_ORACLE n; then
     echo -e "${YELLOW}Oracle registration skipped.${NC}"
     exit 0
 fi
 
 # Get the Aggregator address from the user
 echo -e "${YELLOW}Please enter the Aggregator contract address (0x...):${NC}"
-read -p "Aggregator address: " AGGREGATOR_ADDRESS
+prompt_value "Aggregator address: " AGGREGATOR_ADDRESS VA_AGGREGATOR_ADDRESS
 
 # Validate Aggregator address format
 if [[ ! "$AGGREGATOR_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
@@ -175,8 +181,9 @@ fi
 # Ask for classes ID with default
 echo -e "${YELLOW}Please enter the classes ID(s) - space-separated for multiple (default: 128):${NC}"
 echo -e "${BLUE}Example: 128 or 128 888 999${NC}"
-read -p "Classes ID(s) [128]: " CLASSES_ID
+prompt_value "Classes ID(s) [128]: " CLASSES_ID VA_CLASS_IDS
 CLASSES_ID=${CLASSES_ID:-128}  # Use 128 as default if no input
+CLASSES_ID="$(echo "$CLASSES_ID" | tr ',' ' ' | tr -s ' ' | sed 's/^ *//; s/ *$//')"  # accept comma-separated too
 
 # Validate classes ID(s) - allow multiple space-separated numbers
 if ! [[ "$CLASSES_ID" =~ ^[0-9]+([[:space:]]+[0-9]+)*$ ]]; then
@@ -198,8 +205,7 @@ REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-c
 echo -e "${BLUE}The following command will be executed:${NC}"
 echo "$REGISTER_CMD"
 echo
-read -p "Proceed with executing this command? (y/n): " response
-if [[ ! "$response" =~ ^[Yy]$ ]]; then
+if ! ask_yes_no "Proceed with executing this command?" "" "" y; then
     echo -e "${YELLOW}Oracle registration cancelled.${NC}"
     exit 0
 fi

@@ -41,20 +41,12 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
 
 # --- ALL COMPATIBLE-OPERATOR AND TRUFFLE LOGIC REMOVED FROM HERE --- 
 # --- UNTIL THE "Instructions for getting the Chainlink node address" SECTION ---
@@ -202,7 +194,7 @@ if [ -z "$PRIVATE_KEY" ]; then
     echo
     echo -e "${YELLOW}To deploy the operator contract, a wallet private key is needed.${NC}"
     echo -e "${YELLOW}This key will be used only for deployment and should have $NETWORK_NAME ETH.${NC}"
-    read -sp "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
+    prompt_secret "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY VA_PRIVATE_KEY
     echo
 
     # Validate private key format (basic check)
@@ -406,7 +398,7 @@ if [[ ! "$CONTRACT_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
     echo -e "${RED}Failed to extract contract address from deployment script output.${NC}"
     echo -e "${YELLOW}Output was:${NC}"
     cat "$DEPLOY_OUTPUT_FILE"
-    read -p "Please enter the deployed ArbiterOperator contract address manually: " CONTRACT_ADDRESS
+    prompt_value "Please enter the deployed ArbiterOperator contract address manually: " CONTRACT_ADDRESS
 fi
 
 if [[ ! "$CONTRACT_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then

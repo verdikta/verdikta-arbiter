@@ -32,20 +32,12 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
 
 # Verify Docker installation
 if ! command_exists docker; then
@@ -117,7 +109,7 @@ if [ -n "$EXISTING_POSTGRES" ] || [ -n "$EXISTING_CHAINLINK" ]; then
             echo -e "${BLUE}The PostgreSQL database is currently running and can be backed up.${NC}"
             echo
             
-            if ask_yes_no "Would you like to back up the existing PostgreSQL database before cleanup?"; then
+            if ask_yes_no "Would you like to back up the existing PostgreSQL database before cleanup?" "" VA_DOCKER_BACKUP_EXISTING_DB y; then
                 BACKUP_DIR="$HOME/verdikta-backups"
                 mkdir -p "$BACKUP_DIR"
                 BACKUP_TIMESTAMP=$(date +"%Y%m%d-%H%M%S")
@@ -175,7 +167,7 @@ EOL
             echo -e "${YELLOW}  4. Re-run the installer${NC}"
             echo
             
-            if ! ask_yes_no "Continue installation without backup?"; then
+            if ! ask_yes_no "Continue installation without backup?" "" VA_DOCKER_CONTINUE_WITHOUT_BACKUP n; then
                 echo -e "${BLUE}Installation cancelled by user.${NC}"
                 exit 0
             fi
@@ -198,8 +190,12 @@ EOL
         echo
     fi
     
-    if ! ask_yes_no "Proceed with removing existing containers and starting clean installation?"; then
+    if ! ask_yes_no "Proceed with removing existing containers and starting clean installation?" "" VA_DOCKER_REMOVE_EXISTING n; then
         echo -e "${BLUE}Installation cancelled by user.${NC}"
+        if unattended_mode; then
+            echo -e "${RED}Existing chainlink/postgres containers block a fresh install; set VA_DOCKER_REMOVE_EXISTING=y to replace them.${NC}"
+            exit 1
+        fi
         echo -e "${YELLOW}To perform a manual cleanup, run:${NC}"
         [ -n "$EXISTING_CHAINLINK" ] && echo -e "${YELLOW}  docker rm -f $CHAINLINK_CONTAINER${NC}"
         [ -n "$EXISTING_POSTGRES" ] && echo -e "${YELLOW}  docker rm -f $POSTGRES_CONTAINER${NC}"

@@ -9,6 +9,60 @@ set -e
 # Script directory
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
+# ── Shared prompt helpers (installer/lib/prompts.sh) ─────────────────────────
+# Interactive by default; --answers FILE / --unattended answer prompts from
+# VA_* variables. Falls back to plain interactive prompts on installs that
+# predate the library.
+_load_prompts_lib() {
+    local base="$1" cand
+    for cand in "$base/installer/lib/prompts.sh" "$base/../lib/prompts.sh" "$base/lib/prompts.sh"; do
+        if [ -f "$cand" ]; then
+            # shellcheck disable=SC1090
+            source "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+ANSWERS_FILE=""
+UNATTENDED_REQUESTED=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --answers|-a) shift; [ -z "${1:-}" ] && { echo "--answers requires a file argument"; exit 1; }; ANSWERS_FILE="$1"; shift ;;
+        --unattended) UNATTENDED_REQUESTED=true; shift ;;
+        --help|-h)
+            echo "Usage: $0 [--answers FILE | --unattended]"
+            echo "  --answers FILE   answer every prompt from FILE (VA_* KEY=value lines)"
+            echo "  --unattended     answer every prompt from VA_* environment variables"
+            exit 0 ;;
+        *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
+    esac
+done
+if ! _load_prompts_lib "$SCRIPT_DIR"; then
+    if [ -n "$ANSWERS_FILE" ] || [ "$UNATTENDED_REQUESTED" = "true" ] || [ "${VERDIKTA_UNATTENDED:-0}" = "1" ]; then
+        echo "Error: unattended mode needs installer/lib/prompts.sh (upgrade this installation first)."
+        exit 1
+    fi
+    unattended_mode() { return 1; }
+    ask_yes_no() {
+        local prompt="$1" default="${2:-}" response hint="(y/n)"
+        [ "$default" = "y" ] && hint="(Y/n)"; [ "$default" = "n" ] && hint="(y/N)"
+        while true; do
+            read -p "$prompt $hint: " response || exit 1
+            [ -z "$response" ] && response="$default"
+            case "$response" in [Yy]*) return 0;; [Nn]*) return 1;; *) echo "Please answer yes (y) or no (n).";; esac
+        done
+    }
+    prompt_value() { local v; read -p "$1" v || exit 1; eval "$2=\"\$v\""; }
+    prompt_secret() { local v; read -sp "$1" v || exit 1; echo; eval "$2=\"\$v\""; }
+fi
+if [ -n "$ANSWERS_FILE" ]; then
+    load_answers_file "$ANSWERS_FILE"
+elif [ "$UNATTENDED_REQUESTED" = "true" ]; then
+    export VERDIKTA_UNATTENDED=1
+    VERDIKTA_UNATTENDED=1
+fi
+
 # Color definitions
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -44,14 +98,21 @@ source "$ENV_FILE"
 
 # ── Locate config template ───────────────────────────────────────────────────
 
+# The script runs from three places: the repo (installer/util/), the install
+# root (where install.sh copies it), and the install root's installer/util/
+# copy. Each candidate below is the chainlink-node/ directory of THAT tree.
+# Never search one level above the install root: from $HOME/verdikta-arbiter-node
+# that is $HOME (or /), where a stale or foreign template can live — a
+# regenerated config with unfilled <WS_URL>/<HTTP_URL> placeholders took a
+# node down that way. A candidate also has to carry the placeholder this
+# script fills in, or it is the wrong file whatever its name.
 TEMPLATE_FILE=""
 TEMPLATE_SEARCH_LOCATIONS=(
-    "$SCRIPT_DIR/../chainlink-node/config_template.toml"       # Install target root
-    "$SCRIPT_DIR/../../chainlink-node/config_template.toml"    # Repo: installer/util/ -> repo root
-    "$SCRIPT_DIR/chainlink-node/config_template.toml"          # Fallback
+    "$SCRIPT_DIR/chainlink-node/config_template.toml"          # install root
+    "$SCRIPT_DIR/../../chainlink-node/config_template.toml"    # installer/util/ (repo or installed copy) -> root
 )
 for _tpl_path in "${TEMPLATE_SEARCH_LOCATIONS[@]}"; do
-    if [ -f "$_tpl_path" ]; then
+    if [ -f "$_tpl_path" ] && grep -q '<EVM_NODES_BLOCK>' "$_tpl_path"; then
         TEMPLATE_FILE="$(cd "$(dirname "$_tpl_path")" && pwd)/$(basename "$_tpl_path")"
         break
     fi
@@ -89,21 +150,7 @@ CHAINLINK_DIR="$HOME/.chainlink-${NETWORK_TYPE}"
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
-ask_yes_no() {
-    local prompt="$1"
-    local default="${2:-y}"
-    local yn_hint="[Y/n]"
-    [ "$default" = "n" ] && yn_hint="[y/N]"
-    while true; do
-        read -p "$prompt $yn_hint: " answer
-        answer="${answer:-$default}"
-        case "$answer" in
-            [Yy]*) return 0 ;;
-            [Nn]*) return 1 ;;
-            *) echo -e "${RED}Please answer yes or no.${NC}" ;;
-        esac
-    done
-}
+# ask_yes_no / prompt_value come from installer/lib/prompts.sh (see loader above)
 
 normalize_rpc_list() {
     local raw="$1"
@@ -247,7 +294,9 @@ NEW_WS_URLS=""
 NEW_INFURA_KEY=""
 
 while true; do
-    read -p "Select option (1 or 2) [2]: " rpc_method_choice
+    UNATTENDED_RPC_CHOICE=2
+    if [ -z "${VA_RPC_HTTP_URLS:-}" ] && [ -n "${VA_INFURA_API_KEY:-}" ]; then UNATTENDED_RPC_CHOICE=1; fi
+    prompt_value "Select option (1 or 2) [2]: " rpc_method_choice "" "$UNATTENDED_RPC_CHOICE"
     rpc_method_choice="${rpc_method_choice:-2}"
 
     case "$rpc_method_choice" in
@@ -258,10 +307,10 @@ while true; do
 
             local_default_key="${INFURA_API_KEY:-}"
             if [ -n "$local_default_key" ]; then
-                read -p "Enter your Infura API Key [existing key]: " input_key
+                prompt_secret "Enter your Infura API Key [existing key]: " input_key VA_INFURA_API_KEY
                 input_key="${input_key:-$local_default_key}"
             else
-                read -p "Enter your Infura API Key: " input_key
+                prompt_secret "Enter your Infura API Key: " input_key VA_INFURA_API_KEY
             fi
 
             if [ -z "$input_key" ]; then
@@ -287,8 +336,8 @@ while true; do
             echo ""
             echo -e "${BLUE}${NETWORK_LABEL} RPC endpoints:${NC}"
 
-            read -p "Enter HTTP RPC URLs (semicolon-separated) [$CURRENT_HTTP_URLS]: " http_input
-            read -p "Enter WS RPC URLs (semicolon-separated) [$CURRENT_WS_URLS]: " ws_input
+            prompt_value "Enter HTTP RPC URLs (semicolon-separated) [$CURRENT_HTTP_URLS]: " http_input VA_RPC_HTTP_URLS
+            prompt_value "Enter WS RPC URLs (semicolon-separated) [$CURRENT_WS_URLS]: " ws_input VA_RPC_WS_URLS
 
             http_input="${http_input:-$CURRENT_HTTP_URLS}"
             ws_input="${ws_input:-$CURRENT_WS_URLS}"
@@ -297,8 +346,8 @@ while true; do
 
             if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
                 echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
-                read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
-                read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+                prompt_value "Enter HTTP RPC URLs (semicolon-separated): " http_input VA_RPC_HTTP_URLS
+                prompt_value "Enter WS RPC URLs (semicolon-separated): " ws_input VA_RPC_WS_URLS
                 http_input="$(normalize_rpc_list "$http_input")"
                 ws_input="$(normalize_rpc_list "$ws_input")"
                 if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
@@ -376,7 +425,7 @@ done
 if [ -n "$FAILED_CHECKS" ]; then
     echo ""
     echo -e "${RED}Some RPC endpoints failed connectivity checks:${NC}${FAILED_CHECKS}"
-    if ! ask_yes_no "Continue anyway?" "n"; then
+    if ! ask_yes_no "Continue anyway?" "n" VA_CONTINUE_ON_RPC_FAILURE; then
         echo -e "${YELLOW}Aborted. No changes were made.${NC}"
         exit 0
     fi
@@ -387,7 +436,7 @@ echo ""
 
 # ── Confirm before applying ──────────────────────────────────────────────────
 
-if ! ask_yes_no "Apply these new RPC endpoints?" "y"; then
+if ! ask_yes_no "Apply these new RPC endpoints?" "y" "" y; then
     echo -e "${YELLOW}Aborted. No changes were made.${NC}"
     exit 0
 fi
@@ -416,20 +465,27 @@ fi
 chmod 600 "$ENV_FILE"
 echo -e "${GREEN}✓ Environment file updated: $ENV_FILE${NC}"
 
-# Also update the repo-side .env if it exists and is different from ENV_FILE
+# Also update the repo-side .env (the checkout install.sh/upgrade-arbiter.sh
+# read) when one exists and differs from ENV_FILE. Candidates are the repo's
+# own installer/.env when running from the repo, and the conventional
+# checkout next to the install root. A candidate must already exist, hold
+# an installer env (DEPLOYMENT_NETWORK=), and live under $HOME — a relative
+# walk from the install root used to reach /installer/.env at the
+# filesystem root and write the RPC lists (and their keys) there.
 REPO_ENV_FILE=""
 REPO_ENV_CANDIDATES=(
-    "$SCRIPT_DIR/../.env"                  # installer/util/ -> installer/.env (repo)
-    "$SCRIPT_DIR/../../installer/.env"     # install target util -> repo installer/.env
+    "$SCRIPT_DIR/../.env"                          # repo installer/util/ -> installer/.env
+    "$HOME/verdikta-arbiter/installer/.env"        # conventional checkout beside the install root
+    "$SCRIPT_DIR/../verdikta-arbiter/installer/.env"  # checkout as a sibling of the install root
 )
 for _repo_env in "${REPO_ENV_CANDIDATES[@]}"; do
-    if [ -f "$_repo_env" ]; then
-        _repo_env_abs="$(cd "$(dirname "$_repo_env")" && pwd)/$(basename "$_repo_env")"
-        if [ "$_repo_env_abs" != "$ENV_FILE" ]; then
-            REPO_ENV_FILE="$_repo_env_abs"
-            break
-        fi
-    fi
+    [ -f "$_repo_env" ] || continue
+    _repo_env_abs="$(cd "$(dirname "$_repo_env")" && pwd)/$(basename "$_repo_env")"
+    case "$_repo_env_abs" in "$HOME"/*) ;; *) continue ;; esac
+    [ "$_repo_env_abs" != "$ENV_FILE" ] || continue
+    grep -q '^DEPLOYMENT_NETWORK=' "$_repo_env_abs" || continue
+    REPO_ENV_FILE="$_repo_env_abs"
+    break
 done
 
 if [ -n "$REPO_ENV_FILE" ]; then
@@ -509,7 +565,36 @@ with open(output_path, "w", encoding="utf-8") as f:
     f.write(content)
 PY
 
-echo -e "${GREEN}✓ Config regenerated: $CONFIG_FILE${NC}"
+# Validate BEFORE touching the node: an unfilled placeholder or a missing
+# node entry means the template was wrong, and restarting chainlink on such
+# a file takes the arbiter down (config validation fails at startup).
+_cfg_problems=""
+if grep -qE '<[A-Z_]+>' "$CONFIG_FILE"; then
+    _cfg_problems="${_cfg_problems}\n  unfilled placeholder(s): $(grep -oE '<[A-Z_]+>' "$CONFIG_FILE" | sort -u | tr '\n' ' ')"
+fi
+_cfg_nodes=$(grep -c '^\[\[EVM.Nodes\]\]' "$CONFIG_FILE")
+if [ "$_cfg_nodes" != "${#HTTP_URL_ARRAY[@]}" ]; then
+    _cfg_problems="${_cfg_problems}\n  expected ${#HTTP_URL_ARRAY[@]} [[EVM.Nodes]] entries, found $_cfg_nodes"
+fi
+if grep -E '^(WSURL|HTTPURL)=' "$CONFIG_FILE" | grep -vqE '^WSURL="wss?://|^HTTPURL="https?://'; then
+    _cfg_problems="${_cfg_problems}\n  a WSURL/HTTPURL line is not a ws(s)/http(s) URL"
+fi
+if [ -n "$_cfg_problems" ]; then
+    echo -e "${RED}Generated config is invalid:${NC}${_cfg_problems}"
+    if [ -n "${BACKUP_FILE:-}" ] && [ -f "$BACKUP_FILE" ]; then
+        cp -p "$BACKUP_FILE" "$CONFIG_FILE"
+        echo -e "${YELLOW}Restored the previous config from $BACKUP_FILE. The node was NOT restarted.${NC}"
+    fi
+    echo -e "${YELLOW}Template used: $TEMPLATE_FILE${NC}"
+    exit 1
+fi
+# Keep the previous file's mode/owner: the chainlink container runs as an
+# unprivileged user and must still be able to read the config.
+if [ -n "${BACKUP_FILE:-}" ] && [ -f "$BACKUP_FILE" ]; then
+    chmod --reference="$BACKUP_FILE" "$CONFIG_FILE" 2>/dev/null || true
+    chown --reference="$BACKUP_FILE" "$CONFIG_FILE" 2>/dev/null || true
+fi
+echo -e "${GREEN}✓ Config regenerated: $CONFIG_FILE ($_cfg_nodes RPC node(s), validated)${NC}"
 
 # ── Restart Chainlink node ───────────────────────────────────────────────────
 
@@ -522,7 +607,7 @@ fi
 
 if [ "$NODE_RUNNING" = true ]; then
     echo -e "${YELLOW}The Chainlink node must be restarted for the new endpoints to take effect.${NC}"
-    if ask_yes_no "Restart the Chainlink node now?" "y"; then
+    if ask_yes_no "Restart the Chainlink node now?" "y" VA_RESTART_SERVICES; then
         echo -e "${BLUE}→ Stopping Chainlink container...${NC}"
         docker stop chainlink --time=30
         if [ $? -ne 0 ]; then
@@ -570,7 +655,7 @@ if [ "$NODE_RUNNING" = true ]; then
     fi
 elif docker ps -a 2>/dev/null | grep -q "chainlink"; then
     echo -e "${BLUE}Chainlink node is currently stopped. New config will apply on next start.${NC}"
-    if ask_yes_no "Start the Chainlink node now?" "n"; then
+    if ask_yes_no "Start the Chainlink node now?" "n" VA_START_SERVICES; then
         if ! docker ps | grep -q "cl-postgres"; then
             echo -e "${BLUE}→ Starting PostgreSQL...${NC}"
             docker start cl-postgres 2>/dev/null || true

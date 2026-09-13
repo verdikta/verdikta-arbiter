@@ -24,20 +24,12 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo -e "${RED}Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh${NC}"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
 
 # Function to detect OS
 detect_os() {
@@ -135,14 +127,14 @@ install_node() {
             return 0
         else
             echo -e "${YELLOW}Node.js v$NODE_VERSION is installed but does not meet requirements (v20.18.0+).${NC}"
-            if ! ask_yes_no "Would you like to install Node.js v20.18.1?"; then
+            if ! ask_yes_no "Would you like to install Node.js v20.18.1?" "" VA_INSTALL_NODE y; then
                 echo -e "${YELLOW}Skipping Node.js installation. This may cause issues later.${NC}"
                 return 1
             fi
         fi
     else
         echo -e "${YELLOW}Node.js is not installed.${NC}"
-        if ! ask_yes_no "Would you like to install Node.js v20.18.1?"; then
+        if ! ask_yes_no "Would you like to install Node.js v20.18.1?" "" VA_INSTALL_NODE y; then
             echo -e "${YELLOW}Skipping Node.js installation. This may cause issues later.${NC}"
             return 1
         fi
@@ -260,7 +252,7 @@ install_docker() {
         fi
     else
         echo -e "${YELLOW}Docker is not installed.${NC}"
-        if ! ask_yes_no "Would you like to install Docker?"; then
+        if ! ask_yes_no "Would you like to install Docker?" "" VA_INSTALL_DOCKER y; then
             echo -e "${YELLOW}Skipping Docker installation. This may cause issues later.${NC}"
             return 1
         fi
@@ -325,43 +317,7 @@ install_docker() {
 }
 
 
-# Function to ask for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
-
-# Function to read a secret value with masked feedback
-# Usage: read_secret "prompt text" VARIABLE_NAME
-read_secret() {
-    local prompt="$1"
-    local varname="$2"
-    local value=""
-    
-    read -sp "$prompt" value
-    echo  # newline after silent input
-    
-    if [ -n "$value" ]; then
-        local len=${#value}
-        local visible="${value:0:4}"
-        if [ $len -le 4 ]; then
-            echo -e "${GREEN}  ✓ Key entered (${len} chars)${NC}"
-        else
-            echo -e "${GREEN}  ✓ Key entered: ${visible}$( printf '*%.0s' $(seq 1 $((len - 4))) )${NC}"
-        fi
-    fi
-    
-    eval "$varname=\"\$value\""
-}
+# ask_yes_no / read_secret (= prompt_secret) come from installer/lib/prompts.sh
 
 # Function to check if a directory contains a Verdikta arbiter installation
 is_arbiter_installation() {
@@ -389,7 +345,7 @@ create_installation_directory() {
         INSTALL_DIR="$HOME/verdikta-arbiter-node"
         
         # Ask for custom installation directory
-        read -p "Installation directory [$INSTALL_DIR]: " custom_dir
+        prompt_value "Installation directory [$INSTALL_DIR]: " custom_dir VA_INSTALL_DIR
         if [ -n "$custom_dir" ]; then
             INSTALL_DIR="$custom_dir"
         fi
@@ -410,11 +366,14 @@ create_installation_directory() {
                 echo "  2. Choose a different directory"
                 echo "  3. Cancel installation"
                 echo
-                read -p "Please choose an option [1-3]: " choice
+                # Unattended: VA_EXISTING_INSTALL_ACTION=overwrite -> option 1, anything else -> cancel.
+                UNATTENDED_EXISTING_CHOICE=3
+                [ "${VA_EXISTING_INSTALL_ACTION:-}" = "overwrite" ] && UNATTENDED_EXISTING_CHOICE=1
+                prompt_value "Please choose an option [1-3]: " choice "" "$UNATTENDED_EXISTING_CHOICE"
                 
                 case "$choice" in
                     1)
-                        if ask_yes_no "Are you sure you want to delete $INSTALL_DIR and all its contents?"; then
+                        if ask_yes_no "Are you sure you want to delete $INSTALL_DIR and all its contents?" "" "" y; then
                             echo -e "${YELLOW}Removing existing installation...${NC}"
                             rm -rf "$INSTALL_DIR"
                             mkdir -p "$INSTALL_DIR"
@@ -431,6 +390,10 @@ create_installation_directory() {
                         ;;
                     3)
                         echo -e "${YELLOW}Installation cancelled by user.${NC}"
+                        if unattended_mode; then
+                            echo -e "${RED}$INSTALL_DIR already holds an arbiter installation; set VA_EXISTING_INSTALL_ACTION=overwrite to replace it, or choose another VA_INSTALL_DIR.${NC}"
+                            exit 1
+                        fi
                         exit 0
                         ;;
                     *)
@@ -441,10 +404,14 @@ create_installation_directory() {
             # Directory exists but doesn't appear to be a Verdikta installation
             else
                 echo -e "${YELLOW}Directory $INSTALL_DIR exists and contains other files.${NC}"
-                if ask_yes_no "Do you want to use this directory anyway? (Existing files may conflict with the installation)"; then
+                if ask_yes_no "Do you want to use this directory anyway? (Existing files may conflict with the installation)" "" VA_USE_NONEMPTY_DIR n; then
                     echo -e "${GREEN}Using existing directory: $INSTALL_DIR${NC}"
                     break
                 else
+                    if unattended_mode; then
+                        echo -e "${RED}$INSTALL_DIR exists and is not empty; set VA_USE_NONEMPTY_DIR=y to use it anyway, or choose another VA_INSTALL_DIR.${NC}"
+                        exit 1
+                    fi
                     echo -e "${BLUE}Please choose a different directory.${NC}"
                     continue
                 fi
@@ -533,9 +500,9 @@ configure_api_keys() {
     
     # OpenAI API Key
     if [ -z "$OPENAI_API_KEY" ]; then
-        read_secret "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
+        prompt_secret "Enter your OpenAI API Key (leave blank to skip): " OPENAI_API_KEY VA_OPENAI_API_KEY
     else
-        read_secret "Enter your OpenAI API Key (leave blank to use existing key): " new_key
+        prompt_secret "Enter your OpenAI API Key (leave blank to use existing key): " new_key VA_OPENAI_API_KEY
         if [ -n "$new_key" ]; then
             OPENAI_API_KEY="$new_key"
         fi
@@ -543,9 +510,9 @@ configure_api_keys() {
 
     # Anthropic API Key
     if [ -z "$ANTHROPIC_API_KEY" ]; then
-        read_secret "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
+        prompt_secret "Enter your Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY VA_ANTHROPIC_API_KEY
     else
-        read_secret "Enter your Anthropic API Key (leave blank to use existing key): " new_key
+        prompt_secret "Enter your Anthropic API Key (leave blank to use existing key): " new_key VA_ANTHROPIC_API_KEY
         if [ -n "$new_key" ]; then
             ANTHROPIC_API_KEY="$new_key"
         fi
@@ -553,9 +520,9 @@ configure_api_keys() {
 
     # Hyperbolic API Key
     if [ -z "$HYPERBOLIC_API_KEY" ]; then
-        read_secret "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY
+        prompt_secret "Enter your Hyperbolic API Key (leave blank to skip): " HYPERBOLIC_API_KEY VA_HYPERBOLIC_API_KEY
     else
-        read_secret "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key
+        prompt_secret "Enter your Hyperbolic API Key (leave blank to use existing key): " new_key VA_HYPERBOLIC_API_KEY
         if [ -n "$new_key" ]; then
             HYPERBOLIC_API_KEY="$new_key"
         fi
@@ -565,9 +532,9 @@ configure_api_keys() {
     if [ -z "$XAI_API_KEY" ]; then
         echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
         echo -e "${BLUE}Get your key at: https://console.x.ai${NC}"
-        read_secret "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY
+        prompt_secret "Enter your xAI API Key (leave blank to skip): " XAI_API_KEY VA_XAI_API_KEY
     else
-        read_secret "Enter your xAI API Key (leave blank to use existing key): " new_key
+        prompt_secret "Enter your xAI API Key (leave blank to use existing key): " new_key VA_XAI_API_KEY
         if [ -n "$new_key" ]; then
             XAI_API_KEY="$new_key"
         fi
@@ -582,9 +549,9 @@ configure_api_keys() {
     echo -e "${YELLOW}If you already have native keys for all providers above, you can skip this.${NC}"
     echo ""
     if [ -z "$OPENROUTER_API_KEY" ]; then
-        read_secret "Enter your OpenRouter API Key (leave blank to skip): " OPENROUTER_API_KEY
+        prompt_secret "Enter your OpenRouter API Key (leave blank to skip): " OPENROUTER_API_KEY VA_OPENROUTER_API_KEY
     else
-        read_secret "Enter your OpenRouter API Key (leave blank to use existing key): " new_key
+        prompt_secret "Enter your OpenRouter API Key (leave blank to use existing key): " new_key VA_OPENROUTER_API_KEY
         if [ -n "$new_key" ]; then
             OPENROUTER_API_KEY="$new_key"
         fi
@@ -608,7 +575,7 @@ configure_api_keys() {
         echo -e "${YELLOW}By default, native keys are ALWAYS used when available; OpenRouter only${NC}"
         echo -e "${YELLOW}covers providers without a working native key (and is typically pricier).${NC}"
         echo ""
-        if ask_yes_no "Override native-first and route ALL providers through OpenRouter instead?"; then
+        if ask_yes_no "Override native-first and route ALL providers through OpenRouter instead?" "" VA_ROUTE_ALL_VIA_OPENROUTER n; then
             AI_GATEWAY_PREF="openrouter"
             echo -e "${YELLOW}All providers will be routed through OpenRouter (override enabled).${NC}"
         else
@@ -623,9 +590,9 @@ configure_api_keys() {
 
     # Pinata API Key
     if [ -z "$PINATA_API_KEY" ]; then
-        read_secret "Enter your Pinata JWT (leave blank to skip): " PINATA_API_KEY
+        prompt_secret "Enter your Pinata JWT (leave blank to skip): " PINATA_API_KEY VA_PINATA_JWT
     else
-        read_secret "Enter your Pinata JWT (leave blank to use existing key): " new_key
+        prompt_secret "Enter your Pinata JWT (leave blank to use existing key): " new_key VA_PINATA_JWT
         if [ -n "$new_key" ]; then
             PINATA_API_KEY="$new_key"
         fi
@@ -646,8 +613,19 @@ configure_api_keys() {
         fi
     fi
     
+    # Unattended: VA_NETWORK names the network (base_sepolia | base_mainnet).
+    UNATTENDED_NETWORK_CHOICE=""
+    case "${VA_NETWORK:-}" in
+        base_mainnet|mainnet|2) UNATTENDED_NETWORK_CHOICE=2 ;;
+        base_sepolia|sepolia|testnet|1|"") UNATTENDED_NETWORK_CHOICE=1 ;;
+        *)
+            if unattended_mode; then
+                unattended_fail VA_NETWORK "Select network" "VA_NETWORK='${VA_NETWORK}' must be base_sepolia or base_mainnet"
+            fi
+            ;;
+    esac
     while true; do
-        read -p "Select network (1 for Base Sepolia, 2 for Base Mainnet) [1]: " network_choice
+        prompt_value "Select network (1 for Base Sepolia, 2 for Base Mainnet) [1]: " network_choice "" "$UNATTENDED_NETWORK_CHOICE"
         
         # Default to option 1 if empty
         if [ -z "$network_choice" ]; then
@@ -675,7 +653,7 @@ configure_api_keys() {
                 echo -e "${RED}This will require real ETH for gas fees and contract deployment.${NC}"
                 echo -e "${RED}Make sure you understand the costs involved.${NC}"
                 
-                if ! ask_yes_no "Are you sure you want to use Base Mainnet?"; then
+                if ! ask_yes_no "Are you sure you want to use Base Mainnet?" "" "" y; then
                     echo -e "${YELLOW}Switching back to network selection...${NC}"
                     continue
                 fi
@@ -728,8 +706,13 @@ configure_api_keys() {
         echo ""
     }
 
+    # Unattended: VA_RPC_HTTP_URLS/VA_RPC_WS_URLS -> option 2, else VA_INFURA_API_KEY -> option 1.
+    UNATTENDED_RPC_CHOICE=2
+    if [ -z "${VA_RPC_HTTP_URLS:-}" ] && [ -n "${VA_INFURA_API_KEY:-}" ]; then
+        UNATTENDED_RPC_CHOICE=1
+    fi
     while true; do
-        read -p "Select option (1 or 2) [2]: " rpc_method_choice
+        prompt_value "Select option (1 or 2) [2]: " rpc_method_choice "" "$UNATTENDED_RPC_CHOICE"
         if [ -z "$rpc_method_choice" ]; then
             rpc_method_choice=2
         fi
@@ -741,9 +724,9 @@ configure_api_keys() {
                 echo -e "${BLUE}Infura will provide HTTP and WebSocket RPC endpoints for your selected network.${NC}"
                 echo -e "${YELLOW}Get your key at: https://app.infura.io${NC}"
                 if [ -z "$INFURA_API_KEY" ]; then
-                    read_secret "Enter your Infura API Key: " INFURA_API_KEY
+                    prompt_secret "Enter your Infura API Key: " INFURA_API_KEY VA_INFURA_API_KEY
                 else
-                    read_secret "Enter your Infura API Key (leave blank to use existing key): " new_key
+                    prompt_secret "Enter your Infura API Key (leave blank to use existing key): " new_key VA_INFURA_API_KEY
                     if [ -n "$new_key" ]; then
                         INFURA_API_KEY="$new_key"
                     fi
@@ -779,16 +762,16 @@ configure_api_keys() {
                 fi
 
                 echo -e "${BLUE}${NETWORK_LABEL} RPC endpoints:${NC}"
-                read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
-                read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+                prompt_value "Enter HTTP RPC URLs (semicolon-separated): " http_input VA_RPC_HTTP_URLS
+                prompt_value "Enter WS RPC URLs (semicolon-separated): " ws_input VA_RPC_WS_URLS
 
                 http_input="$(normalize_rpc_list "$http_input")"
                 ws_input="$(normalize_rpc_list "$ws_input")"
 
                 if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
                     echo -e "${RED}Error: Both HTTP and WS URL lists are required.${NC}"
-                    read -p "Enter HTTP RPC URLs (semicolon-separated): " http_input
-                    read -p "Enter WS RPC URLs (semicolon-separated): " ws_input
+                    prompt_value "Enter HTTP RPC URLs (semicolon-separated): " http_input VA_RPC_HTTP_URLS
+                    prompt_value "Enter WS RPC URLs (semicolon-separated): " ws_input VA_RPC_WS_URLS
                     http_input="$(normalize_rpc_list "$http_input")"
                     ws_input="$(normalize_rpc_list "$ws_input")"
                     if [ -z "$http_input" ] || [ -z "$ws_input" ]; then
@@ -835,28 +818,20 @@ configure_api_keys() {
     
     # Wallet Private Key
     if [ -z "$PRIVATE_KEY" ]; then
-        read -sp "Enter your wallet private key for contract deployment (without 0x prefix): " PRIVATE_KEY
-        echo
-        [ -n "$PRIVATE_KEY" ] && echo -e "${GREEN}  ✓ Key entered: ${PRIVATE_KEY:0:4}$(printf '*%.0s' $(seq 1 $((${#PRIVATE_KEY} - 4))))${NC}"
+        prompt_secret "Enter your wallet private key for contract deployment (without 0x prefix): " PRIVATE_KEY VA_PRIVATE_KEY
         
         # Validate private key format (without 0x prefix)
         while [[ ! "$PRIVATE_KEY" =~ ^[a-fA-F0-9]{64}$ ]]; do
             echo -e "${RED}Error: Invalid private key format. It should be a 64-character hex string without 0x prefix.${NC}"
-            read -sp "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY
-            echo
-            [ -n "$PRIVATE_KEY" ] && echo -e "${GREEN}  ✓ Key entered: ${PRIVATE_KEY:0:4}$(printf '*%.0s' $(seq 1 $((${#PRIVATE_KEY} - 4))))${NC}"
+            prompt_secret "Enter your wallet private key (without 0x prefix): " PRIVATE_KEY VA_PRIVATE_KEY
         done
     else
-        read -sp "Enter your wallet private key (leave blank to use existing key): " new_key
-        echo
-        [ -n "$new_key" ] && echo -e "${GREEN}  ✓ Key entered: ${new_key:0:4}$(printf '*%.0s' $(seq 1 $((${#new_key} - 4))))${NC}"
+        prompt_secret "Enter your wallet private key (leave blank to use existing key): " new_key VA_PRIVATE_KEY
         if [ -n "$new_key" ]; then
             # Validate new key if provided
             while [[ ! "$new_key" =~ ^[a-fA-F0-9]{64}$ ]]; do
                 echo -e "${RED}Error: Invalid private key format. It should be a 64-character hex string without 0x prefix.${NC}"
-                read -sp "Enter your wallet private key (without 0x prefix): " new_key
-                echo
-                [ -n "$new_key" ] && echo -e "${GREEN}  ✓ Key entered: ${new_key:0:4}$(printf '*%.0s' $(seq 1 $((${#new_key} - 4))))${NC}"
+                prompt_secret "Enter your wallet private key (without 0x prefix): " new_key VA_PRIVATE_KEY
                 
                 # If empty, keep existing
                 if [ -z "$new_key" ]; then
@@ -981,7 +956,7 @@ EOL
     echo -e "${YELLOW}Available versions: 'latest' (stable, recommended) or 'beta' (testing)${NC}"
     
     VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
-    read -p "Verdikta Common Library version [latest]: " user_version
+    prompt_value "Verdikta Common Library version [latest]: " user_version VA_VERDIKTA_COMMON_VERSION
     if [ -n "$user_version" ]; then
         VERDIKTA_COMMON_VERSION="$user_version"
     fi
@@ -1060,7 +1035,7 @@ EOL
     fi
     
     while true; do
-        read -p "Select justification model (1-10) [${DEFAULT_CHOICE}]: " justification_choice
+        prompt_value "Select justification model (1-10) [${DEFAULT_CHOICE}]: " justification_choice VA_JUSTIFICATION_MODEL
         
         # Default to recommended choice if empty
         if [ -z "$justification_choice" ]; then

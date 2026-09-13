@@ -49,20 +49,12 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
-# Function to prompt for Yes/No question
-ask_yes_no() {
-    local prompt="$1"
-    local response
-    
-    while true; do
-        read -p "$prompt (y/n): " response
-        case "$response" in
-            [Yy]* ) return 0;;
-            [Nn]* ) return 1;;
-            * ) echo "Please answer yes (y) or no (n).";;
-        esac
-    done
-}
+# ask_yes_no / prompt_value / prompt_secret come from installer/lib/prompts.sh
+if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+    echo "Error: prompts library not found at $INSTALLER_DIR/lib/prompts.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/prompts.sh"
 
 # Function to generate a secure random password
 generate_password() {
@@ -244,7 +236,7 @@ echo -e "${BLUE}Creating API credentials...${NC}"
 
 # Generate secure credentials
 API_EMAIL="admin@example.com"
-read -p "Enter email for Chainlink node login [$API_EMAIL]: " input_email
+prompt_value "Enter email for Chainlink node login [$API_EMAIL]: " input_email VA_CHAINLINK_EMAIL
 if [ -n "$input_email" ]; then
     API_EMAIL="$input_email"
 fi
