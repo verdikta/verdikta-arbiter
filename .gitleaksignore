@@ -1,0 +1,21 @@
+# Historical findings baselined when the free gitleaks scan was introduced
+# (2026-09-12). Format: <commit>:<file>:<rule>:<line>. Everything here
+# predates the scan; NONE of it is in the current tree. Do not add new
+# entries to silence a finding on new code — fix the code or rotate the
+# secret instead.
+
+# Initial commit (2025-05-01): a 64-hex private key in a since-deleted
+# truffle config (installer/fixed-client). Treat that wallet as burned.
+04dbc9271a27247ada634b67f68356e8ff60c6f1:installer/fixed-client/truffle-config.js:generic-api-key:50
+
+# chainlink-node/info.txt (deleted in 890be8d): generated node UI +
+# keystore passwords of a May 2025 dev install.
+04dbc9271a27247ada634b67f68356e8ff60c6f1:chainlink-node/info.txt:generic-api-key:6
+04dbc9271a27247ada634b67f68356e8ff60c6f1:chainlink-node/info.txt:generic-api-key:9
+9b30020d555dcb24ec392712c334f96640da1551:chainlink-node/info.txt:generic-api-key:6
+9b30020d555dcb24ec392712c334f96640da1551:chainlink-node/info.txt:generic-api-key:9
+ae7cec9571327262ddb394ac8d4e4c4e9d652337:chainlink-node/info.txt:generic-api-key:6
+ae7cec9571327262ddb394ac8d4e4c4e9d652337:chainlink-node/info.txt:generic-api-key:9
+
+# Documentation: an illustrative 32-char "Enter your Infura API Key:" example.
+c49f57a25f0d8bfba0501e239eafce6fae18d043:installer/docs/docs/installation/prompts-guide.md:generic-api-key:83
