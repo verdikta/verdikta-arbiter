@@ -30,4 +30,12 @@ out=$(printf '\n' | bash -c "source $LIB; ask_yes_no 'Q?' y && echo yes"); echo 
 bash -c "source $LIB; ask_yes_no 'Q?'" </dev/null >/dev/null 2>&1; [ $? -eq 65 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: eof"; }
 # load_answers_file
 tmp=$(mktemp); echo 'VA_A="1"' > $tmp; out=$(bash -c "source $LIB; load_answers_file $tmp; bash -c 'echo \$VA_A-\$VERDIKTA_UNATTENDED'"); [ "$out" = "1-1" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: load $out"; }
+# unattended announcements go to STDERR, so helpers are safe inside $(...) (issue #17:
+# install.sh's LOG_LEVEL=$(get_log_level) captured the announcement + a newline and sed died)
+out=$(bash -c "export VERDIKTA_UNATTENDED=1 VA_X=info; source $LIB; f(){ local c; prompt_value 'P: ' c VA_X; echo \"\$c\"; }; v=\$(f); printf '%s' \"\$v\"" 2>/dev/null); [ "$out" = "info" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: prompt_value polluted capture: [$out]"; }
+out=$(bash -c "export VERDIKTA_UNATTENDED=1; source $LIB; f(){ local c; prompt_value 'P: ' c VA_UNSET dflt; echo \"\$c\"; }; v=\$(f); printf '%s' \"\$v\"" 2>/dev/null); [ "$out" = "dflt" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: prompt_value default polluted capture: [$out]"; }
+out=$(bash -c "export VERDIKTA_UNATTENDED=1 VA_X=y; source $LIB; f(){ ask_yes_no 'Q?' '' VA_X && echo yes; }; v=\$(f); printf '%s' \"\$v\"" 2>/dev/null); [ "$out" = "yes" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: ask_yes_no polluted capture: [$out]"; }
+out=$(bash -c "export VERDIKTA_UNATTENDED=1 VA_S=sekrit; source $LIB; f(){ local c; prompt_secret 'K: ' c VA_S; echo \"\${#c}\"; }; v=\$(f); printf '%s' \"\$v\"" 2>/dev/null); [ "$out" = "6" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: prompt_secret polluted capture: [$out]"; }
+# ...and the announcement is still visible (on stderr, which the job log captures 2>&1)
+err=$(bash -c "export VERDIKTA_UNATTENDED=1 VA_X=info; source $LIB; prompt_value 'P: ' V VA_X" 2>&1 >/dev/null); echo "$err" | grep -q 'P: info  \[unattended: VA_X\]' && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: announcement missing from stderr: [$err]"; }
 echo "pass=$pass fail=$fail"

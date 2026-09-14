@@ -119,7 +119,7 @@ ask_yes_no() {
         else
             unattended_fail "$key" "$prompt"
         fi
-        echo "$prompt (y/n): $normalised  [unattended${key:+: $key}]"
+        echo "$prompt (y/n): $normalised  [unattended${key:+: $key}]" >&2
         [ "$normalised" = "y" ]
         return
     fi
@@ -159,9 +159,9 @@ prompt_value() {
         value="$(_va_lookup "$key")"
         [ -z "$value" ] && value="$unattended_default"
         if [ -n "$value" ]; then
-            echo "${prompt}${value}  [unattended${key:+: $key}]"
+            echo "${prompt}${value}  [unattended${key:+: $key}]" >&2
         else
-            echo "${prompt}(default)  [unattended${key:+: $key}]"
+            echo "${prompt}(default)  [unattended${key:+: $key}]" >&2
         fi
     else
         if ! read -p "$prompt" value; then
@@ -182,9 +182,9 @@ prompt_secret() {
         value="$(_va_lookup "$key")"
         [ -z "$value" ] && value="$unattended_default"
         if [ -n "$value" ]; then
-            echo "${prompt}(provided, ${#value} chars)  [unattended${key:+: $key}]"
+            echo "${prompt}(provided, ${#value} chars)  [unattended${key:+: $key}]" >&2
         else
-            echo "${prompt}(blank)  [unattended${key:+: $key}]"
+            echo "${prompt}(blank)  [unattended${key:+: $key}]" >&2
         fi
     else
         if ! read -sp "$prompt" value; then
