@@ -9,10 +9,10 @@
 
 HARDHAT_NETWORK=base_sepolia \
 node scripts/register-oracle-cl.js \
-  --aggregator      0x262f48f06DEf1FE49e0568dB4234a3478A191cFd \
+  --aggregator      0xe8a385E473EA710c5a88Cc72681a16a26fe380e4   # current Base Sepolia dispatcher — see docs/deployments.md \
   --link            0xE4aB69C077896252FAFBD49EFD26B5D171A32410 \
-  --oracle          0xD67D6508D4E5611cd6a463Dd0969Fa153Be91101 \
-  --wrappedverdikta 0x2F1d1aF9d5C25A48C29f56f57c7BAFFa7cc910a3 \
+  --oracle          <your ArbiterOperator, OPERATOR_ADDR in installer/.contracts> \
+  --wrappedverdikta 0x94e3c031fe9403c80E14DaFbCb73f191C683c2B1   # must equal the dispatcher keeper's verdiktaToken() \
   --jobids          "38f19572c51041baa5f2dea284614590" "39515f75ac2947beb7f2eeae4d8eaf3e" \
   --classes         128 129
 
