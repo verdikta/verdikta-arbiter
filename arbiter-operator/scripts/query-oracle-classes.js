@@ -8,8 +8,8 @@
 
 HARDHAT_NETWORK=base_sepolia \
 node scripts/query-oracle-classes.js \
-  --aggregator 0x262f48f06DEf1FE49e0568dB4234a3478A191cFd \
-  --oracle     0xD67D6508D4E5611cd6a463Dd0969Fa153Be91101 \
+  --aggregator 0xe8a385E473EA710c5a88Cc72681a16a26fe380e4   # current Base Sepolia dispatcher — see docs/deployments.md \
+  --oracle     <your ArbiterOperator, OPERATOR_ADDR in installer/.contracts> \
   --jobid      "38f19572c51041baa5f2dea284614590"
 
 */
