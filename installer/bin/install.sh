@@ -1104,6 +1104,8 @@ if ask_yes_no "Start Verdikta Arbiter services?" "" VA_START_SERVICES y; then
     echo -e "${BLUE}This may take a few minutes for all services to fully initialize.${NC}"
     
     # Start all services using the management script from target directory
+    # (it waits, bounded, for the AI Node's /api/health before returning —
+    # issue #23 — so the doctor run that follows sees a warmed-up node).
     "$INSTALL_DIR/start-arbiter.sh"
     
     echo -e "${GREEN}Verdikta Arbiter services have been started!${NC}"

@@ -28,24 +28,41 @@ check_port() {
     fi
 }
 
+# The AI Node (Next.js) listens on :3000 well before /api/health answers —
+# ~60 s on a small VPS. Anything that checks status right after a start
+# (install.sh, upgrade-arbiter.sh, the doctor, an operator) saw a FAIL and
+# restarted it, which only resets the warm-up (issue #23). Wait, bounded,
+# until it actually answers "ok". AI_NODE_START_TIMEOUT_SECS overrides.
+ai_node_healthy() {
+    curl -fsS --max-time 3 http://localhost:3000/api/health 2>/dev/null | grep -q '"status" *: *"ok"'
+}
+wait_for_ai_node() {
+    local timeout="${AI_NODE_START_TIMEOUT_SECS:-180}" waited=0
+    while [ "$waited" -lt "$timeout" ]; do
+        if ai_node_healthy; then
+            echo -e "${GREEN}AI Node is healthy (answered /api/health after ${waited}s).${NC}"
+            return 0
+        fi
+        sleep 3; waited=$((waited+3))
+    done
+    echo -e "${YELLOW}AI Node has not answered /api/health after ${timeout}s.${NC}"
+    echo -e "${YELLOW}It may still be starting; check the logs at $AI_NODE_DIR/logs/ai-node_*.log${NC}"
+    return 1
+}
+
 # Start AI Node
 echo -e "${BLUE}Starting AI Node...${NC}"
 if check_port 3000; then
     echo -e "${YELLOW}AI Node is already running on port 3000.${NC}"
+    # A listener is not readiness: it may be mid warm-up from an earlier start.
+    wait_for_ai_node || true
 else
     if [ -f "$AI_NODE_DIR/start.sh" ]; then
         # Ensure the directory exists before trying to cd into it
         if [ -d "$AI_NODE_DIR" ]; then
         cd "$AI_NODE_DIR" && ./start.sh &
-        echo -e "${YELLOW}AI Node is starting up. This may take a few minutes...${NC}"
-        sleep 10  # Increased from 5 to 10 seconds to give AI Node more time to start
-        if check_port 3000; then
-            echo -e "${GREEN}AI Node started successfully.${NC}"
-        else
-                echo -e "${YELLOW}AI Node is still initializing. It may take a few minutes to fully start.${NC}"
-                echo -e "${YELLOW}You can check its status later with arbiter-status.sh${NC}"
-                echo -e "${YELLOW}If it fails to start, check the logs at $AI_NODE_DIR/logs/ai-node_*.log${NC}"
-            fi
+        echo -e "${YELLOW}AI Node is starting up. This usually takes about a minute...${NC}"
+        wait_for_ai_node || true
         else
              echo -e "${RED}AI Node directory not found at $AI_NODE_DIR${NC}"
         fi

@@ -274,10 +274,26 @@ if ! ask_yes_no "Unregister from dispatcher?" "" VA_DEREGISTER_ORACLE n; then
     exit 0
 fi
 
-# Get the Aggregator address from the user
+# The stake sits on the aggregator recorded in .contracts at registration,
+# so that is the one to deregister from. Unattended (issue #22): use it
+# whenever it is recorded — a differing VA_AGGREGATOR_ADDRESS is reported
+# and ignored; VA_AGGREGATOR_ADDRESS is only consulted when .contracts has
+# none. Interactive: the recorded one is the prompt's default.
 echo ""
-echo -e "${YELLOW}Please enter the Aggregator contract address:${NC}"
-prompt_value "Aggregator address (0x...): " NEW_AGGREGATOR_ADDRESS VA_AGGREGATOR_ADDRESS "${AGGREGATOR_ADDRESS:-}"
+if unattended_mode && [ -n "${AGGREGATOR_ADDRESS:-}" ]; then
+    if [ -n "${VA_AGGREGATOR_ADDRESS:-}" ] && [ "$(echo "$VA_AGGREGATOR_ADDRESS" | tr '[:upper:]' '[:lower:]')" != "$(echo "$AGGREGATOR_ADDRESS" | tr '[:upper:]' '[:lower:]')" ]; then
+        echo -e "${YELLOW}VA_AGGREGATOR_ADDRESS=$VA_AGGREGATOR_ADDRESS differs from the aggregator this node registered with ($AGGREGATOR_ADDRESS); using the recorded one — that is where the stake is.${NC}"
+    fi
+    NEW_AGGREGATOR_ADDRESS="$AGGREGATOR_ADDRESS"
+    echo "Aggregator address (0x...): $NEW_AGGREGATOR_ADDRESS  [from installer/.contracts]" >&2
+else
+    echo -e "${YELLOW}Please enter the Aggregator contract address:${NC}"
+    prompt_value "Aggregator address (0x...): " NEW_AGGREGATOR_ADDRESS VA_AGGREGATOR_ADDRESS "${AGGREGATOR_ADDRESS:-}"
+fi
+if [ -z "$NEW_AGGREGATOR_ADDRESS" ]; then
+    echo -e "${RED}Error: no aggregator to deregister from — installer/.contracts has no AGGREGATOR_ADDRESS (was this node ever registered?) and none was given.${NC}"
+    exit 65
+fi
 
 # Validate Aggregator address format
 if [[ ! "$NEW_AGGREGATOR_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then

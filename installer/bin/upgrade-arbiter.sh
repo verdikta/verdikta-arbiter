@@ -2469,15 +2469,16 @@ if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
         echo -e "${BLUE}Restarting arbiter...${NC}"
         "$TARGET_DIR/start-arbiter.sh"
         
-        # Verify restart
-        echo -e "${BLUE}Waiting for services to fully start...${NC}"
-        # Increase delay to give AI Node more time to start
-        sleep 20  # Increased from 10 to 20 seconds
+        # Verify restart. start-arbiter.sh already waits (bounded) for the AI
+        # Node's /api/health, so a FAIL here means it really did not come up —
+        # not that Next.js is still warming (issue #23).
+        echo -e "${BLUE}Verifying services...${NC}"
+        sleep 5
         RESTART_SUCCESS=1
         
-        if [ $NODE_RUNNING -eq 1 ] && ! check_port 3000; then
-            echo -e "${RED}Warning: AI Node failed to restart.${NC}"
-            echo -e "${YELLOW}AI Node may still be starting up. Please check status again after a few minutes.${NC}"
+        if [ $NODE_RUNNING -eq 1 ] && ! curl -fsS --max-time 3 http://localhost:3000/api/health 2>/dev/null | grep -q '"status" *: *"ok"'; then
+            echo -e "${RED}Warning: AI Node is not answering /api/health after the restart.${NC}"
+            echo -e "${YELLOW}Check the logs at $TARGET_DIR/ai-node/logs/ai-node_*.log, then $TARGET_DIR/arbiter-doctor.sh${NC}"
             RESTART_SUCCESS=0
         fi
         
