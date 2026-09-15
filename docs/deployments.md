@@ -29,7 +29,9 @@ approves the wrong token and reverts.
 | Base Sepolia | `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4` | `0xE09821277D9af702F7910a57e85EaC6D83e4d794` | `0x94e3c031fe9403c80E14DaFbCb73f191C683c2B1` |
 | Base Mainnet | `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` | `0x2D96cc4F6619d08FC14b7ee0eec02d1F3eE1d0b0` | `0x1EA68D018a11236E07D5647175DAA8ca1C3D0280` |
 
-The live values are also served per owner by the status page:
+The live values are shown on the bounty program's analytics page under **System Health › Contract
+Addresses** (`https://bounties-testnet.verdikta.org/analytics` for Base Sepolia,
+`https://bounties.verdikta.org/analytics` for mainnet) and served per owner by the status page:
 `https://arbiters.verdikta.org/api/arbiters/owned?owner=<address>` returns `aggregatorAddress`
 and `keeperAddress` for the network it tracks.
 
