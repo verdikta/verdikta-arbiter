@@ -1584,6 +1584,13 @@ for _bin in \
     fi
 done
 
+# Copy the standalone unregistration script (lives in util/, so the bin/ loop above skips it)
+if [ -f "$UTIL_DIR/unregister-oracle.sh" ]; then
+    cp "$UTIL_DIR/unregister-oracle.sh" "$TARGET_DIR/unregister-oracle.sh"
+    chmod +x "$TARGET_DIR/unregister-oracle.sh"
+    echo -e "${GREEN}Standalone unregistration script updated.${NC}"
+fi
+
 # Copy the standalone registration script (if it exists)
 if [ -f "$UTIL_DIR/register-oracle.sh" ]; then
     cp "$UTIL_DIR/register-oracle.sh" "$TARGET_DIR/register-oracle.sh"

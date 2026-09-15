@@ -15,6 +15,60 @@ NC='\033[0m' # No Color
 
 # Base directory (where this script runs from - should be $INSTALL_DIR)
 INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
+
+# ── Shared prompt helpers (installer/lib/prompts.sh) ─────────────────────────
+# Interactive by default; --answers FILE / --unattended answer prompts from
+# VA_* variables. Falls back to plain interactive prompts on installs that
+# predate the library.
+_load_prompts_lib() {
+    local base="$1" cand
+    for cand in "$base/installer/lib/prompts.sh" "$base/../lib/prompts.sh" "$base/lib/prompts.sh"; do
+        if [ -f "$cand" ]; then
+            # shellcheck disable=SC1090
+            source "$cand"
+            return 0
+        fi
+    done
+    return 1
+}
+ANSWERS_FILE=""
+UNATTENDED_REQUESTED=false
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --answers|-a) shift; [ -z "${1:-}" ] && { echo "--answers requires a file argument"; exit 1; }; ANSWERS_FILE="$1"; shift ;;
+        --unattended) UNATTENDED_REQUESTED=true; shift ;;
+        --help|-h)
+            echo "Usage: $0 [--answers FILE | --unattended]"
+            echo "  --answers FILE   answer every prompt from FILE (VA_* KEY=value lines)"
+            echo "  --unattended     answer every prompt from VA_* environment variables"
+            exit 0 ;;
+        *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
+    esac
+done
+if ! _load_prompts_lib "$INSTALL_DIR"; then
+    if [ -n "$ANSWERS_FILE" ] || [ "$UNATTENDED_REQUESTED" = "true" ] || [ "${VERDIKTA_UNATTENDED:-0}" = "1" ]; then
+        echo "Error: unattended mode needs installer/lib/prompts.sh (upgrade this installation first)."
+        exit 1
+    fi
+    unattended_mode() { return 1; }
+    ask_yes_no() {
+        local prompt="$1" default="${2:-}" response hint="(y/n)"
+        [ "$default" = "y" ] && hint="(Y/n)"; [ "$default" = "n" ] && hint="(y/N)"
+        while true; do
+            read -p "$prompt $hint: " response || exit 1
+            [ -z "$response" ] && response="$default"
+            case "$response" in [Yy]*) return 0;; [Nn]*) return 1;; *) echo "Please answer yes (y) or no (n).";; esac
+        done
+    }
+    prompt_value() { local v; read -p "$1" v || exit 1; eval "$2=\"\$v\""; }
+    prompt_secret() { local v; read -sp "$1" v || exit 1; echo; eval "$2=\"\$v\""; }
+fi
+if [ -n "$ANSWERS_FILE" ]; then
+    load_answers_file "$ANSWERS_FILE"
+elif [ "$UNATTENDED_REQUESTED" = "true" ]; then
+    export VERDIKTA_UNATTENDED=1
+    VERDIKTA_UNATTENDED=1
+fi
 ARBITER_OPERATOR_DIR="$INSTALL_DIR/arbiter-operator"
 CONTRACTS_FILE="$INSTALL_DIR/installer/.contracts"
 
@@ -213,8 +267,9 @@ echo -e "${GREEN}Using wrapped VDKA address for $NETWORK_NAME: $WRAPPED_VERDIKTA
 
 # Ask if user wants to unregister from a dispatcher
 echo -e "${YELLOW}Would you like to unregister the oracle from a dispatcher (aggregator) contract?${NC}"
-read -p "Unregister from dispatcher? (y/n): " unregister_response
-if [[ ! "$unregister_response" =~ ^[Yy]$ ]]; then
+# Unattended: VA_DEREGISTER_ORACLE=y; VA_AGGREGATOR_ADDRESS defaults to the one
+# recorded in .contracts at registration time (the one the stake sits on).
+if ! ask_yes_no "Unregister from dispatcher?" "" VA_DEREGISTER_ORACLE n; then
     echo -e "${YELLOW}Oracle unregistration cancelled.${NC}"
     exit 0
 fi
@@ -222,7 +277,7 @@ fi
 # Get the Aggregator address from the user
 echo ""
 echo -e "${YELLOW}Please enter the Aggregator contract address:${NC}"
-read -p "Aggregator address (0x...): " NEW_AGGREGATOR_ADDRESS
+prompt_value "Aggregator address (0x...): " NEW_AGGREGATOR_ADDRESS VA_AGGREGATOR_ADDRESS "${AGGREGATOR_ADDRESS:-}"
 
 # Validate Aggregator address format
 if [[ ! "$NEW_AGGREGATOR_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
@@ -247,8 +302,7 @@ echo ""
 echo -e "${BLUE}The following command will be executed:${NC}"
 echo "$UNREGISTER_CMD"
 echo ""
-read -p "Proceed with unregistration? (y/n): " response
-if [[ ! "$response" =~ ^[Yy]$ ]]; then
+if ! ask_yes_no "Proceed with unregistration?" "" VA_DEREGISTER_CONFIRM y; then
     echo -e "${YELLOW}Oracle unregistration cancelled.${NC}"
     exit 0
 fi
