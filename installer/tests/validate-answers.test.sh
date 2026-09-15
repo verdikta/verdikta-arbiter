@@ -28,6 +28,9 @@ expect 0  install "$PK" "$RPC" "$WS" VA_REGISTER_ORACLE=y "VA_AGGREGATOR_ADDRESS
 expect 65 install "$PK" "$RPC" "$WS" VA_REGISTER_ORACLE=y "VA_AGGREGATOR_ADDRESS=0x$(printf 'c%.0s' $(seq 1 40))" "VA_CLASS_IDS=128;x"
 expect 65 install "$PK" "$RPC" "$WS" VA_FUND_AMOUNT=-1
 expect 0  install "$PK" "$RPC" "$WS" VA_FUND_KEYS=y VA_FUND_AMOUNT=0.005
+expect 65 install "$PK" "$RPC" "$WS" VA_ORACLE_FEE_ETH=0.002       # above the 0.0004 ceiling (the value the old script hard-coded)
+expect 65 install "$PK" "$RPC" "$WS" VA_ORACLE_FEE_ETH=abc
+expect 0  install "$PK" "$RPC" "$WS" VA_ORACLE_FEE_ETH=0.00002
 expect 65 install "$PK" "$RPC" "$WS" VA_CHAINLINK_EMAIL=notanemail
 expect 0  upgrade                                        # upgrade needs nothing
 expect 65 upgrade VA_UPGRADE_REVIEW_API_KEYS=y

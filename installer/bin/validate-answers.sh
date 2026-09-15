@@ -58,6 +58,12 @@ if [ -n "${VA_FUND_AMOUNT:-}" ]; then
     fi
 fi
 
+if [ -n "${VA_ORACLE_FEE_ETH:-}" ]; then
+    if ! [[ "$VA_ORACLE_FEE_ETH" =~ ^[0-9]+\.?[0-9]*$ ]] || ! awk "BEGIN{exit !($VA_ORACLE_FEE_ETH > 0 && $VA_ORACLE_FEE_ETH <= 0.0004)}"; then
+        problem "VA_ORACLE_FEE_ETH='$VA_ORACLE_FEE_ETH' must be a positive ETH amount no greater than the dispatcher ceiling 0.0004 (default 0.00002)"
+    fi
+fi
+
 if [ -n "${VA_RPC_HTTP_URLS:-}" ] || [ -n "${VA_RPC_WS_URLS:-}" ]; then
     [ -z "${VA_RPC_HTTP_URLS:-}" ] && problem "VA_RPC_WS_URLS is set but VA_RPC_HTTP_URLS is empty (both are needed)"
     [ -z "${VA_RPC_WS_URLS:-}" ] && problem "VA_RPC_HTTP_URLS is set but VA_RPC_WS_URLS is empty (both are needed)"

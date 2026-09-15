@@ -2,15 +2,22 @@
 /*
   scripts/register-oracle-cl.js – Hardhat + ethers
 
-  Register one or more job IDs for a given oracle, using flags identical to
-  the original Truffle script.
+  Register one or more job IDs for a given oracle.
+
+  --fee is the oracle's per-job fee in ETH (the current dispatcher generation
+  pays oracles in ETH; there is no LINK anywhere in this flow). The keeper only
+  ever SELECTS an oracle whose fee is <= the request's max fee, which is capped
+  by the aggregator's maxOracleFee (0.0004 ETH at the time of writing), so the
+  script reads that ceiling and refuses a fee above it. Default 0.00002 ETH —
+  what the fleet runs with; lower fees also rank higher in selection.
+  --link is accepted for backwards compatibility and ignored.
 
   Example:
 
 HARDHAT_NETWORK=base_sepolia \
 node scripts/register-oracle-cl.js \
   --aggregator      0xe8a385E473EA710c5a88Cc72681a16a26fe380e4   # current Base Sepolia dispatcher — see docs/deployments.md \
-  --link            0xE4aB69C077896252FAFBD49EFD26B5D171A32410 \
+  --fee             0.00002 \
   --oracle          <your ArbiterOperator, OPERATOR_ADDR in installer/.contracts> \
   --wrappedverdikta 0x94e3c031fe9403c80E14DaFbCb73f191C683c2B1   # must equal the dispatcher keeper's verdiktaToken() \
   --jobids          "38f19572c51041baa5f2dea284614590" "39515f75ac2947beb7f2eeae4d8eaf3e" \
@@ -30,6 +37,7 @@ const { hideBin } = require("yargs/helpers");
 /* ------------------------------------------------------------------- */
 const AggregatorABI = [
   "function reputationKeeper() view returns (address)",
+  "function maxOracleFee() view returns (uint256)",
   "function getContractConfig() view returns (address oracleAddr,address linkAddr,bytes32 jobId,uint256 fee)"
 ];
 
@@ -64,7 +72,8 @@ const toBytes32 = (id) => {
     /* Args ------------------------------------------------------------ */
     const argv = yargs(hideBin(process.argv))
       .option("aggregator",      { alias: "a", type: "string", demandOption: true })
-      .option("link",            { alias: "l", type: "string", demandOption: true })
+      .option("link",            { alias: "l", type: "string", demandOption: false, describe: "ignored (legacy LINK-fee generation)" })
+      .option("fee",             { alias: "f", type: "string", default: "0.00002", describe: "oracle fee per job in ETH (must be <= the aggregator's maxOracleFee)" })
       .option("oracle",          { alias: "o", type: "string", demandOption: true })
       .option("wrappedverdikta", { alias: "w", type: "string", demandOption: true })
       .option("jobids",          { alias: "j", type: "array",  demandOption: true })
@@ -85,24 +94,37 @@ const toBytes32 = (id) => {
 
     const keeper     = new ethers.Contract(keeperAddr, KeeperABI, signer);
     const verdikta   = new ethers.Contract(argv.wrappedverdikta, ERC20_ABI, signer);
-    const linkToken  = new ethers.Contract(argv.link,           ERC20_ABI, signer);
+    if (argv.link) console.log("Note: --link is ignored — oracle fees are paid in ETH, not LINK.");
 
     const oracleAddr = argv.oracle;
     const classes    = argv.classes.map(Number);
 
     /* Fees & stake ---------------------------------------------------- */
-    const LINK_FEE   = ethers.parseUnits("0.002", 18); 
-    const VDKA_STAKE = ethers.parseUnits("100", 18);   
+    if (!/^[0-9]+(\.[0-9]+)?$/.test(String(argv.fee))) throw new Error(`--fee must be a decimal ETH amount, got "${argv.fee}"`);
+    const ORACLE_FEE = ethers.parseUnits(String(argv.fee), 18);   // ETH per job, in wei
+    if (ORACLE_FEE <= 0n) throw new Error("--fee must be greater than 0");
+    const VDKA_STAKE = ethers.parseUnits("100", 18);
     const totalStake = VDKA_STAKE * BigInt(argv.jobids.length);
+
+    /* Ceiling: an oracle whose fee exceeds the aggregator's maxOracleFee is
+       never eligible (ReputationKeeper.selectOracles: fee <= maxFee). Refuse
+       here rather than register a node that can never be picked. */
+    let feeCeiling = null;
+    try { feeCeiling = await aggregator.maxOracleFee(); } catch { /* older aggregator generation */ }
+    if (feeCeiling !== null && ORACLE_FEE > feeCeiling) {
+      throw new Error(
+        `--fee ${ethers.formatEther(ORACLE_FEE)} ETH exceeds this aggregator's maxOracleFee ` +
+        `${ethers.formatEther(feeCeiling)} ETH — the keeper would never select this oracle. Use a lower fee.`
+      );
+    }
 
     /* Debug: Check balances ------------------------------------------ */
     console.log("\n=== Balance Checks ===");
     const vdkaBal = await verdikta.balanceOf(owner);
-    const linkBal = await linkToken.balanceOf(owner);
     console.log(`Owner wVDKA balance: ${ethers.formatEther(vdkaBal)}`);
-    console.log(`Owner LINK balance: ${ethers.formatEther(linkBal)}`);
     console.log(`Required wVDKA stake: ${ethers.formatEther(totalStake)}`);
-    console.log(`Required LINK fee per job: ${ethers.formatEther(LINK_FEE)}`);
+    console.log(`Oracle fee per job: ${ethers.formatEther(ORACLE_FEE)} ETH` +
+      (feeCeiling !== null ? ` (aggregator ceiling ${ethers.formatEther(feeCeiling)} ETH)` : ""));
     
     /* Debug: Validate parameters ------------------------------------- */
     console.log("\n=== Parameter Validation ===");
@@ -136,19 +158,19 @@ const toBytes32 = (id) => {
       console.log("Calling registerOracle…");
       console.log(`  Oracle: ${oracleAddr}`);
       console.log(`  JobID: ${jobId}`);
-      console.log(`  LINK Fee: ${ethers.formatEther(LINK_FEE)}`);
+      console.log(`  Oracle fee: ${ethers.formatEther(ORACLE_FEE)} ETH`);
       console.log(`  Classes: [${classes.join(', ')}]`);
       
       try {
         // Try to estimate gas first to get a better error message
-        const gasEstimate = await keeper.registerOracle.estimateGas(oracleAddr, jobId, LINK_FEE, classes);
+        const gasEstimate = await keeper.registerOracle.estimateGas(oracleAddr, jobId, ORACLE_FEE, classes);
         console.log(`  Gas estimate: ${gasEstimate.toString()}`);
         
         // Add buffer to gas estimate for safety (20% buffer)
         const gasLimit = Math.ceil(Number(gasEstimate) * 1.2);
         console.log(`  Using gas limit: ${gasLimit}`);
         
-        const tx = await keeper.registerOracle(oracleAddr, jobId, LINK_FEE, classes, { gasLimit });
+        const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit });
         await tx.wait();
       console.log("✓ Registered");
       } catch (estimateError) {
@@ -159,7 +181,7 @@ const toBytes32 = (id) => {
         console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
         
         try {
-          const tx = await keeper.registerOracle(oracleAddr, jobId, LINK_FEE, classes, { gasLimit: fallbackGasLimit });
+          const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit: fallbackGasLimit });
           await tx.wait();
           console.log("✓ Registered with fallback gas limit");
           continue; // Skip the error handling below and move to next job
@@ -172,7 +194,7 @@ const toBytes32 = (id) => {
         
         // Try to call the function statically to get a better error message
         try {
-          await keeper.registerOracle.staticCall(oracleAddr, jobId, LINK_FEE, classes);
+          await keeper.registerOracle.staticCall(oracleAddr, jobId, ORACLE_FEE, classes);
         } catch (staticError) {
           console.error("Static call error:", staticError.message);
           if (staticError.reason) {
@@ -192,7 +214,7 @@ const toBytes32 = (id) => {
           for (const gasLimit of gasLimitTests) {
             try {
               console.log(`Testing with gas limit: ${gasLimit}`);
-              await keeper.registerOracle.staticCall(oracleAddr, jobId, LINK_FEE, classes, { gasLimit });
+              await keeper.registerOracle.staticCall(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit });
               console.log(`Success with gas limit: ${gasLimit}`);
               break;
             } catch (gasError) {
@@ -206,7 +228,7 @@ const toBytes32 = (id) => {
           }
           
           // Try to call with explicit overrides
-          await keeper.registerOracle.staticCall(oracleAddr, jobId, LINK_FEE, classes, {
+          await keeper.registerOracle.staticCall(oracleAddr, jobId, ORACLE_FEE, classes, {
             from: owner,
             gasLimit: 1000000
           });
@@ -217,7 +239,7 @@ const toBytes32 = (id) => {
           // Try the actual transaction with a high gas limit to see if it gives better errors
           try {
             console.log("Attempting actual transaction with high gas limit...");
-            const tx = await keeper.registerOracle(oracleAddr, jobId, LINK_FEE, classes, { gasLimit: 1000000 });
+            const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit: 1000000 });
             await tx.wait();
             console.log("✓ Registered with high gas limit");
           } catch (txError) {
@@ -233,13 +255,6 @@ const toBytes32 = (id) => {
         
         throw estimateError;
       }
-    }
-
-    /* LINK allowance for aggregator ---------------------------------- */
-    const linkAllow = await linkToken.allowance(owner, argv.aggregator);
-    if (linkAllow < LINK_FEE) {
-      console.log("Approving LINK for aggregator…");
-      await (await linkToken.approve(argv.aggregator, LINK_FEE)).wait();
     }
 
     console.log("\nAll done.");
