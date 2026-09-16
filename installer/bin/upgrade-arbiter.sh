@@ -1970,11 +1970,59 @@ else
                 echo -e "${GREEN}Chainlink node is already running.${NC}"
             fi
             
+            # configure-node.sh reads and rewrites $INSTALLER_DIR/.contracts. Work from
+            # the LIVE file (the one under the install dir carries the registration
+            # state written since install), not the clone's stale snapshot (issue #25).
+            if [ -f "$TARGET_DIR/installer/.contracts" ]; then
+                cp "$TARGET_DIR/installer/.contracts" "$INSTALLER_DIR/.contracts"
+            fi
+
+            # Reconfiguration replaces EVERY job id. Stake stays locked on the old
+            # ids until they are deregistered, so deregister first (refund) — and
+            # remember to re-register the new ids afterwards (issue #35).
+            RECONF_REREGISTER=0
+            RECONF_AGGREGATOR=""
+            RECONF_CLASSES="128"
+            if [ -f "$TARGET_DIR/installer/.contracts" ]; then
+                RECONF_AGGREGATOR="$(grep -E '^AGGREGATOR_ADDRESS=' "$TARGET_DIR/installer/.contracts" | head -1 | sed -E 's/^[^=]+="?([^"]*)"?$/\1/')"
+                RECONF_CLASSES="$(grep -E '^CLASSES_ID=' "$TARGET_DIR/installer/.contracts" | head -1 | sed -E 's/^[^=]+="?([^"]*)"?$/\1/')"
+                RECONF_ACTIVE="$(grep -E '^AGGREGATOR_REGISTRATION_ACTIVE=' "$TARGET_DIR/installer/.contracts" | head -1 | sed -E 's/^[^=]+="?([^"]*)"?$/\1/')"
+                RECONF_CLASSES="${RECONF_CLASSES:-128}"
+                case "${RECONF_ACTIVE:-true}" in
+                    false|False|FALSE|0|no|No|NO) ;;
+                    *) [ -n "$RECONF_AGGREGATOR" ] && RECONF_REREGISTER=1 ;;
+                esac
+            fi
+            RECONF_ABORT=0
+            if [ $RECONF_REREGISTER -eq 1 ]; then
+                echo -e "${BLUE}Deregistering the current jobs from $RECONF_AGGREGATOR before reconfiguring (stake is refunded)...${NC}"
+                if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
+                    cd "$TARGET_DIR"
+                    if unattended_mode; then
+                        VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" bash unregister-oracle.sh --unattended
+                    else
+                        echo -e "y\n$RECONF_AGGREGATOR\ny" | bash unregister-oracle.sh
+                    fi
+                    if [ $? -ne 0 ]; then
+                        echo -e "${RED}Deregistration failed. Reconfiguring now would strand the stake on the old job ids — job reconfiguration cancelled.${NC}"
+                        RECONF_ABORT=1
+                    fi
+                else
+                    echo -e "${RED}unregister-oracle.sh not found at $TARGET_DIR — cannot release the stake on the current jobs; job reconfiguration cancelled.${NC}"
+                    RECONF_ABORT=1
+                fi
+            fi
+
             # Run the multi-arbiter configuration
-            cd "$SCRIPT_DIR"
-            bash "$SCRIPT_DIR/configure-node.sh"
+            if [ $RECONF_ABORT -eq 0 ]; then
+                cd "$SCRIPT_DIR"
+                bash "$SCRIPT_DIR/configure-node.sh"
+                RECONF_RC=$?
+            else
+                RECONF_RC=1
+            fi
             
-            if [ $? -eq 0 ]; then
+            if [ $RECONF_RC -eq 0 ]; then
                 echo -e "${GREEN}Job and key reconfiguration completed successfully!${NC}"
                 
                 # Update the target installation with the new contracts file
@@ -2027,6 +2075,42 @@ else
                             fi
                         fi
                     fi
+                fi
+
+                # Re-register the NEW job ids (issue #35): the run deregistered the old
+                # ones above. Unattended: VA_REGISTER_ORACLE=y (+ VA_AGGREGATOR_ADDRESS
+                # when given) or the previous registration; interactive: same answers piped.
+                RECONF_DO_REGISTER=$RECONF_REREGISTER
+                if unattended_mode && [ -n "${VA_REGISTER_ORACLE:-}" ]; then
+                    case "$(printf '%s' "$VA_REGISTER_ORACLE" | tr '[:upper:]' '[:lower:]')" in
+                        y|yes|true|1) RECONF_DO_REGISTER=1; [ -n "${VA_AGGREGATOR_ADDRESS:-}" ] && RECONF_AGGREGATOR="$VA_AGGREGATOR_ADDRESS" ;;
+                        *) RECONF_DO_REGISTER=0 ;;
+                    esac
+                fi
+                if [ $RECONF_DO_REGISTER -eq 1 ] && [ -n "$RECONF_AGGREGATOR" ]; then
+                    echo -e "${BLUE}Registering the new job ids with $RECONF_AGGREGATOR (classes [$RECONF_CLASSES])...${NC}"
+                    if [ -f "$TARGET_DIR/register-oracle.sh" ]; then
+                        cd "$TARGET_DIR"
+                        if unattended_mode; then
+                            VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" \
+                            VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="${VA_CLASS_IDS:-$RECONF_CLASSES}" \
+                            bash register-oracle.sh --unattended
+                        else
+                            echo -e "y\n$RECONF_AGGREGATOR\ny\n$RECONF_CLASSES\ny" | \
+                                VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" \
+                                VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="$RECONF_CLASSES" \
+                                bash register-oracle.sh
+                        fi
+                        if [ $? -eq 0 ]; then
+                            echo -e "${GREEN}✓ New job ids registered with the dispatcher${NC}"
+                        else
+                            echo -e "${RED}⚠ Registration of the new job ids failed — run $TARGET_DIR/register-oracle.sh (it registers only the missing ones).${NC}"
+                        fi
+                    else
+                        echo -e "${YELLOW}register-oracle.sh not found at $TARGET_DIR — register the new job ids by hand.${NC}"
+                    fi
+                elif [ $RECONF_REREGISTER -eq 1 ]; then
+                    echo -e "${YELLOW}Old jobs were deregistered but re-registration was declined — the node is unregistered until you run $TARGET_DIR/register-oracle.sh.${NC}"
                 fi
             else
                 echo -e "${RED}Job and key reconfiguration failed!${NC}"
