@@ -498,8 +498,14 @@ else
     # Save registration attempt state
     echo "REGISTRATION_ATTEMPTED=true" > "$INSTALLER_DIR/.registration_state"
     
+    # This script runs under `set -e`; a failed registration must NOT abort
+    # the install (issue #28) — the handler below is what continues it, and
+    # everything after this step (contracts file into the install dir, cron,
+    # status page, funding, services) is what a node needs even unregistered.
+    set +e
     bash "$SCRIPT_DIR/register-oracle-dispatcher.sh"
     REGISTRATION_EXIT_CODE=$?
+    set -e
     
     if [ $REGISTRATION_EXIT_CODE -ne 0 ]; then
         echo -e "${RED}Oracle registration failed with exit code: $REGISTRATION_EXIT_CODE${NC}"
