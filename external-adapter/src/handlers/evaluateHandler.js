@@ -1,12 +1,16 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { createClient, validateRequest, requestSchema } = require('@verdikta/common');
+const { createClient, validateRequest, validator } = require('@verdikta/common');
 const aiClient = require('../services/aiClient');
 const crypto = require('crypto');
 const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
 const { collectVersionInfo } = require('../utils/versionInfo');
+const {
+  fetchAndTriageArchives,
+  buildMalformedSubmissionVerdict
+} = require('../utils/bcidValidation');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -43,8 +47,9 @@ const evaluateHandler = async (request) => {
   const { id, data } = request;
   const aggId = (data.aggId || data.aggid || '').toLowerCase();
   const t0 = Date.now();   
-  let   runTag;            
+  let   runTag;
   let tempDir; // Declare here so we can reuse if provider error happens
+  let modeString = '0'; // visible to the catch: a provider error in mode 1 must not look like a commit
 
   try {
     // console.log('Validating request:', request);
@@ -53,7 +58,6 @@ const evaluateHandler = async (request) => {
     // console.log('Processing CID string:', data.cid);
 
     // Process mode if present
-    let modeString;
     let cidString;
     if (data.cid.length >= 2 && data.cid.charAt(1) === ":" && data.cid.charAt(0) !== ":") {
       modeString = data.cid.substring(0, 1);
@@ -167,101 +171,121 @@ const evaluateHandler = async (request) => {
     // Multi-CID processing
     else {
       logger.info(`Multi-CID (${cidArray.length}) start`);
-      
-      // Process all CIDs
-      const t7 = Date.now();
-      const extractedPaths = await archiveService.processMultipleCIDs(cidArray, tempDir);
-      logger.info(`${runTag} processMultipleCIDs took ${Date.now() - t7}ms`);
-      
-      // Validate all manifests
-      const t8 = Date.now();
-      for (const cid of cidArray) {
-        await archiveService.validateManifest(extractedPaths[cid]);
-      }
-      logger.info(`${runTag} validateManifest (all) took ${Date.now() - t8}ms`);
-      
-      // Parse all manifests
-      const t9 = Date.now();
-      const { primaryManifest, bCIDManifests } = 
-        await manifestParser.parseMultipleManifests(extractedPaths, cidArray);
-      logger.info(`${runTag} parseMultipleManifests took ${Date.now() - t9}ms`);
-      
-      logger.info(`Parsed primary manifest and ${bCIDManifests.length} bCID manifests`);
-      
-      // Construct combined query
-      const t10 = Date.now();
-      let combinedQueryData = await manifestParser.constructCombinedQuery(
-        primaryManifest,
-        bCIDManifests,
-        addendumString
-      );
-      logger.info(`${runTag} constructCombinedQuery took ${Date.now() - t10}ms`);
-      
 
-      
-      // Fallback implementation if constructCombinedQuery returns invalid result
-      if (!combinedQueryData || !combinedQueryData.prompt) {
-        logger.warn('constructCombinedQuery returned invalid result, using fallback implementation');
-        
-        // Build combined query manually
-        let combinedPrompt = primaryManifest.prompt || primaryManifest.query || '';
-        let combinedReferences = primaryManifest.references || [];
-        
-        // Add bCID content
-        for (const bCIDItem of bCIDManifests) {
-          if (bCIDItem && bCIDItem.manifest) {
-            const manifest = bCIDItem.manifest;
-            if (manifest.prompt || manifest.query) {
-              combinedPrompt += '\n\n' + (manifest.prompt || manifest.query);
-            }
-            if (manifest.references && Array.isArray(manifest.references)) {
-              combinedReferences = [...combinedReferences, ...manifest.references];
+      // Fetch + extract all archives and triage the bCID (submitted-work) ones.
+      // IPFS/extraction failures and anything wrong with the PRIMARY archive throw
+      // here and stay on the errored path below; only a deterministically malformed
+      // bCID archive is collected, because that is the one case every arbiter can
+      // settle identically without an AI call (see utils/bcidValidation.js).
+      const t7 = Date.now();
+      const { extractedPaths, malformedBCIDs } = await fetchAndTriageArchives(
+        cidArray, tempDir, { archiveService, validator, logger, runTag }
+      );
+      logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
+
+      let result;
+      if (malformedBCIDs.length > 0) {
+        // The requester's package must itself be sound (it supplies the outcomes),
+        // and the request must be consistent with it; both failures are the
+        // requester's, not the submitter's, so they keep the errored path.
+        const t8 = Date.now();
+        const primaryManifest = await manifestParser.parse(extractedPaths[cidArray[0]]);
+        await validator.validateMultiCIDLogic(primaryManifest, cidArray);
+        logger.info(`${runTag} primary manifest parse (malformed-bCID path) took ${Date.now() - t8}ms`);
+
+        result = buildMalformedSubmissionVerdict(primaryManifest, malformedBCIDs);
+        logger.warn(`${runTag} Malformed bCID archive(s) ` +
+          `${malformedBCIDs.map(e => `${e.cid}:${e.check}`).join(', ')} → deterministic verdict ` +
+          `"${result.scores[0].outcome}" (no AI evaluation)`);
+      } else {
+        // Validate all manifests
+        const t8 = Date.now();
+        for (const cid of cidArray) {
+          await archiveService.validateManifest(extractedPaths[cid]);
+        }
+        logger.info(`${runTag} validateManifest (all) took ${Date.now() - t8}ms`);
+
+        // Parse all manifests
+        const t9 = Date.now();
+        const { primaryManifest, bCIDManifests } =
+          await manifestParser.parseMultipleManifests(extractedPaths, cidArray);
+        logger.info(`${runTag} parseMultipleManifests took ${Date.now() - t9}ms`);
+
+        logger.info(`Parsed primary manifest and ${bCIDManifests.length} bCID manifests`);
+
+        // Construct combined query
+        const t10 = Date.now();
+        let combinedQueryData = await manifestParser.constructCombinedQuery(
+          primaryManifest,
+          bCIDManifests,
+          addendumString
+        );
+        logger.info(`${runTag} constructCombinedQuery took ${Date.now() - t10}ms`);
+
+        // Fallback implementation if constructCombinedQuery returns invalid result
+        if (!combinedQueryData || !combinedQueryData.prompt) {
+          logger.warn('constructCombinedQuery returned invalid result, using fallback implementation');
+
+          // Build combined query manually
+          let combinedPrompt = primaryManifest.prompt || primaryManifest.query || '';
+          let combinedReferences = primaryManifest.references || [];
+
+          // Add bCID content
+          for (const bCIDItem of bCIDManifests) {
+            if (bCIDItem && bCIDItem.manifest) {
+              const manifest = bCIDItem.manifest;
+              if (manifest.prompt || manifest.query) {
+                combinedPrompt += '\n\n' + (manifest.prompt || manifest.query);
+              }
+              if (manifest.references && Array.isArray(manifest.references)) {
+                combinedReferences = [...combinedReferences, ...manifest.references];
+              }
             }
           }
+
+          // Add addendum if present
+          if (addendumString && primaryManifest.addendum) {
+            const sanitizedAddendum = addendumString.replace(/[<>{}]/g, '');
+            combinedPrompt += `\n\nAddendum: \n${primaryManifest.addendum}: ${sanitizedAddendum}`;
+          }
+
+          combinedQueryData = {
+            prompt: combinedPrompt,
+            references: combinedReferences,
+            outcomes: primaryManifest.outcomes || ['outcome1', 'outcome2'],
+            models: primaryManifest.models || [],
+            iterations: primaryManifest.iterations || 1
+          };
+
+          logger.info('Created fallback combined query with length:', combinedQueryData.prompt.length);
         }
-        
-        // Add addendum if present
-        if (addendumString && primaryManifest.addendum) {
-          const sanitizedAddendum = addendumString.replace(/[<>{}]/g, '');
-          combinedPrompt += `\n\nAddendum: \n${primaryManifest.addendum}: ${sanitizedAddendum}`;
+
+        logger.info('Constructed combined query with length: ' + combinedQueryData.prompt.length);
+
+        // Collect all attachments
+        let allAttachments = primaryManifest.additional || [];
+        for (const bCIDItem of bCIDManifests) {
+          if (bCIDItem && bCIDItem.manifest && bCIDItem.manifest.additional && bCIDItem.manifest.additional.length > 0) {
+            logger.info(`Adding ${bCIDItem.manifest.additional.length} attachments from ${bCIDItem.manifest.name || 'unnamed manifest'}`);
+            allAttachments = [...allAttachments, ...bCIDItem.manifest.additional];
+          }
         }
-        
-        combinedQueryData = {
-          prompt: combinedPrompt,
-          references: combinedReferences,
-          outcomes: primaryManifest.outcomes || ['outcome1', 'outcome2'],
-          models: primaryManifest.models || [],
-          iterations: primaryManifest.iterations || 1
+
+        // Create final query object
+        const queryObject = {
+          prompt: combinedQueryData.prompt,
+          models: primaryManifest.models,
+          iterations: primaryManifest.iterations,
+          additional: allAttachments,
+          outcomes: primaryManifest.outcomes
         };
-        
-        logger.info('Created fallback combined query with length:', combinedQueryData.prompt.length);
+
+        logger.info(`${runTag} Evaluating combined query with AI service...`);
+        const t11 = Date.now();
+        result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag);
+        logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
       }
-      
-      logger.info('Constructed combined query with length: ' + combinedQueryData.prompt.length);
-      
-      // Collect all attachments
-      let allAttachments = primaryManifest.additional || [];
-      for (const bCIDItem of bCIDManifests) {
-        if (bCIDItem && bCIDItem.manifest && bCIDItem.manifest.additional && bCIDItem.manifest.additional.length > 0) {
-          logger.info(`Adding ${bCIDItem.manifest.additional.length} attachments from ${bCIDItem.manifest.name || 'unnamed manifest'}`);
-          allAttachments = [...allAttachments, ...bCIDItem.manifest.additional];
-        }
-      }
-      
-      // Create final query object
-      const queryObject = {
-        prompt: combinedQueryData.prompt,
-        models: primaryManifest.models,
-        iterations: primaryManifest.iterations,
-        additional: allAttachments,
-        outcomes: primaryManifest.outcomes
-      };
-      
-      logger.info(`${runTag} Evaluating combined query with AI service...`);
-      const t11 = Date.now();
-      const result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag);
-      logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
-     
+
       if (modeString === '1') {
         const hashDecimal = await handleMode1Commit(result, aggId, runTag);
         await archiveService.cleanup(tempDir);
@@ -294,8 +318,13 @@ const evaluateHandler = async (request) => {
       code: error.code
     });
 
-    // If we detect the custom PROVIDER_ERROR prefix, handle that differently
-    if (error.message && error.message.startsWith('PROVIDER_ERROR:')) {
+    // If we detect the custom PROVIDER_ERROR prefix, handle that differently.
+    // Mode 0 keeps its historical contract (200 + [0] + an error justification).
+    // In mode 1 the aggregator reads aggregatedScore[0] as a COMMITMENT HASH, so a
+    // [0] would be accepted as a commit that can never be revealed (mode 2 has no
+    // stored result for hash 0). A provider outage is transient, so it must look
+    // like every other transient failure: errored, no commit, retry-able.
+    if (error.message && error.message.startsWith('PROVIDER_ERROR:') && modeString !== '1') {
       const providerMessage = error.message.replace('PROVIDER_ERROR:', '').trim();
       const justificationCid = await handleProviderError(providerMessage, tempDir);
       
@@ -410,9 +439,7 @@ async function handleMode2Reveal(hashHex, tempDir, runTag) {
     hashHex = BigInt(hashHex).toString(16);
   } else if (hashHex.startsWith('0x')) {         // 0x… hex
     hashHex = hashHex.slice(2);
-  } else {                                        // bare hex
-    hashHex = hashHex;
-  }
+  }                                               // else: bare hex, use as-is
   hashHex = hashHex.toLowerCase().padStart(32, '0'); // 128 bit, zero-padded
   logger.info(`${runTag} REVEAL lookup hash=${hashHex}`);
   const commit = await commitStore.get(hashHex);

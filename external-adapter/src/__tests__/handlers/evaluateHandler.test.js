@@ -220,7 +220,8 @@ describe('evaluateHandler', () => {
     expect(justificationContent).toEqual({
       scores: mockScores,
       justification: 'test justification',
-      timestamp: expect.any(String)
+      timestamp: expect.any(String),
+      arbiter: expect.any(Object)
     });
   });
 
@@ -285,4 +286,41 @@ describe('evaluateHandler', () => {
       timestamp: expect.any(String)
     });
   });
-}); 
+
+  it('should not turn a provider error into a commitment in mode 1', async () => {
+    const request = {
+      id: '1',
+      data: { cid: '1:QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', aggId: '0xagg' }
+    };
+
+    archiveService.getArchive.mockResolvedValue(Buffer.from('test'));
+    archiveService.extractArchive.mockResolvedValue('/tmp/test');
+    archiveService.validateManifest.mockResolvedValue(true);
+    archiveService.cleanup.mockResolvedValue(true);
+    manifestParser.parse.mockResolvedValue({
+      prompt: 'Test query',
+      models: [{ provider: 'OpenAI', model: 'gpt-4', weight: 1.0, count: 1 }],
+      iterations: 1,
+      outcomes: ['True', 'False']
+    });
+    aiClient.evaluate.mockRejectedValue(new Error('PROVIDER_ERROR: Model not available'));
+    ipfsClient.uploadToIPFS.mockResolvedValue('QmShouldNotBeUsed');
+
+    const result = await evaluateHandler(request);
+
+    // Errored, like every other transient failure: the Chainlink run fails and no
+    // commit transaction is sent. A 200 with [0] would be submitted as the commitment.
+    expect(result).toEqual({
+      jobRunID: '1',
+      status: 'errored',
+      statusCode: 500,
+      error: 'PROVIDER_ERROR: Model not available',
+      data: {
+        aggregatedScore: [0],
+        error: 'PROVIDER_ERROR: Model not available',
+        justification: ''
+      }
+    });
+    expect(ipfsClient.uploadToIPFS).not.toHaveBeenCalled();
+  });
+});

@@ -125,6 +125,17 @@ The commit hash = low/high 128 bits of `sha256(abi.encode(OPERATOR_ADDRESS, scor
 Multiple comma-separated CIDs after the prefix ⇒ multi-CID (multi-party)
 evaluation; an optional trailing `:addendum` appends real-time text to the prompt.
 
+**Malformed bCID (submitted-work) archives settle, they do not abort.** In the
+multi-CID path the EA pre-validates every archive after the first
+(`external-adapter/src/utils/bcidValidation.js`). A bCID archive that is
+deterministically malformed (not a ZIP, no/invalid `manifest.json`, no
+`primary`, primary file missing or not JSON, no `query`, name mismatch) yields a
+verdict with the full 1,000,000 on the **first outcome** of the primary
+manifest (`DONT_FUND` for bounties) and a justification naming the failed check;
+that verdict goes through the normal commit/reveal tail. Transient failures
+(IPFS, AI provider, disk) and problems in the **primary** archive still return
+the errored/500 response and never commit.
+
 ---
 
 ## 4. Data contracts (get these right)
@@ -304,3 +315,18 @@ Ollama runs locally and is unaffected by gateway settings.
   *simplified* from the real handlers (`ai-node/src/app/api/rank-and-justify/route.ts`,
   `external-adapter/src/handlers/evaluateHandler.js`) — trust the source files for
   exact behavior.
+- **`@verdikta/common`'s `parseMultipleManifests` throws a plain `Error` for
+  every archive it cannot parse, primary and bCID alike**, so the library alone
+  cannot tell "the requester's package is broken" from "the submitter's archive
+  is broken". The EA draws that line itself before calling the parser (see
+  §3, "Malformed bCID archives settle"). Until the library exposes a typed
+  error (`archiveRole`, `cid`, `reason`), keep any new archive-level error
+  handling in `bcidValidation.js`, not in string matching on `error.message`.
+- **A mode-1 (commit) response must carry a real commitment or an error.** The
+  aggregator submits whatever is in `aggregatedScore[0]` as the commit hash; a
+  `200` with `[0]` is a commit that can never be revealed. The handler's
+  provider-error branch therefore returns the errored/500 shape in mode 1 and
+  keeps the historical `200 + [0] + error justification` only in mode 0.
+- `external-adapter/doc/MANIFEST_SPECIFICATION.md`, "Submitted-work (bCID)
+  archives", is the contract hunters/agents that pin their own archives must
+  follow; the bounty API's `POST /jobs/:id/submit` builds exactly that shape.
