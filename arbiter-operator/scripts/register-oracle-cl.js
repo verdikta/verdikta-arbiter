@@ -104,7 +104,22 @@ const toBytes32 = (id) => {
     const ORACLE_FEE = ethers.parseUnits(String(argv.fee), 18);   // ETH per job, in wei
     if (ORACLE_FEE <= 0n) throw new Error("--fee must be greater than 0");
     const VDKA_STAKE = ethers.parseUnits("100", 18);
-    const totalStake = VDKA_STAKE * BigInt(argv.jobids.length);
+
+    /* Which job ids still need registering? Already-active ones cost no
+       stake, so a partial registration (issue #26) can be completed with
+       exactly the remaining 100 wVDKA per job. */
+    const pendingJobs = [];
+    for (const raw of argv.jobids) {
+      const jobId = toBytes32(raw);
+      const info = await keeper.getOracleInfo(oracleAddr, jobId);
+      if (info.isActive) console.log(`JobID ${raw}: already registered – skipping`);
+      else pendingJobs.push(raw);
+    }
+    if (pendingJobs.length === 0) {
+      console.log("\nAll job ids are already registered. Nothing to do.");
+      process.exit(0);
+    }
+    const totalStake = VDKA_STAKE * BigInt(pendingJobs.length);
 
     /* Ceiling: an oracle whose fee exceeds the aggregator's maxOracleFee is
        never eligible (ReputationKeeper.selectOracles: fee <= maxFee). Refuse
@@ -132,11 +147,16 @@ const toBytes32 = (id) => {
     console.log(`Classes array: [${classes.join(', ')}]`);
     console.log(`Classes array type: ${classes.map(c => typeof c).join(', ')}`);
     console.log(`Keeper address: ${keeperAddr}`);
-    console.log(`Job IDs to register: ${argv.jobids.length}`);
+    console.log(`Job IDs to register: ${pendingJobs.length} of ${argv.jobids.length}`);
 
     /* wVDKA allowance (one approval covers every job) ----------------- */
     const bal = await verdikta.balanceOf(owner);
-    if (bal < totalStake) throw new Error("Insufficient wVDKA");
+    if (bal < totalStake) {
+      throw new Error(
+        `Insufficient wVDKA: ${ethers.formatEther(bal)} available, ${ethers.formatEther(totalStake)} needed ` +
+        `(100 per job for the ${pendingJobs.length} job id(s) not yet registered).`
+      );
+    }
 
     let allow = await verdikta.allowance(owner, keeperAddr);
     if (allow < totalStake) {
@@ -144,16 +164,10 @@ const toBytes32 = (id) => {
       await (await verdikta.approve(keeperAddr, totalStake)).wait();
     }
 
-    /* Register each job ID ------------------------------------------- */
-    for (const raw of argv.jobids) {
+    /* Register each pending job ID ----------------------------------- */
+    for (const raw of pendingJobs) {
       const jobId = toBytes32(raw);
       console.log(`\nJobID ${raw} → ${jobId}`);
-
-      const info = await keeper.getOracleInfo(oracleAddr, jobId);
-      if (info.isActive) {
-        console.log("Already registered – skipping");
-        continue;
-      }
 
       console.log("Calling registerOracle…");
       console.log(`  Oracle: ${oracleAddr}`);
