@@ -1603,23 +1603,18 @@ fi
 chmod +x "$TARGET_DIR/start-arbiter.sh" "$TARGET_DIR/stop-arbiter.sh" "$TARGET_DIR/arbiter-status.sh"
 echo -e "${GREEN}Management scripts updated.${NC}"
 
-# Copy contracts and environment information
-echo -e "${BLUE}Copying contract and environment information...${NC}"
+# Contract and environment information: the LIVE files under
+# $TARGET_DIR/installer are the truth (registration, RPC edits made after
+# install); the clone's copies are the install-time snapshot. Only fill a
+# missing one (issue #25).
+echo -e "${BLUE}Checking contract and environment information...${NC}"
 mkdir -p "$TARGET_DIR/installer"
-
-if [ -f "$INSTALLER_DIR/.contracts" ]; then
-    cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
-    echo -e "${GREEN}Contract information copied to $TARGET_DIR/installer/.contracts${NC}"
-else
-    echo -e "${YELLOW}Contract information file not found at $INSTALLER_DIR/.contracts${NC}"
-fi
-
-if [ -f "$INSTALLER_DIR/.env" ]; then
-    cp "$INSTALLER_DIR/.env" "$TARGET_DIR/installer/.env"
+# shellcheck disable=SC1091
+source "$INSTALLER_DIR/lib/install-meta.sh"
+copy_if_missing "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts" "Contract information"
+copy_if_missing "$INSTALLER_DIR/.env" "$TARGET_DIR/installer/.env" "Environment information"
+if [ -f "$TARGET_DIR/installer/.env" ]; then
     chmod 600 "$TARGET_DIR/installer/.env"
-    echo -e "${GREEN}Environment information copied to $TARGET_DIR/installer/.env${NC}"
-else
-    echo -e "${YELLOW}Environment file not found at $INSTALLER_DIR/.env${NC}"
 fi
 
 # Install node dependencies if needed
