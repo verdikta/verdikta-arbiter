@@ -164,6 +164,39 @@ const toBytes32 = (id) => {
       await (await verdikta.approve(keeperAddr, totalStake)).wait();
     }
 
+    /* Some RPC providers (Infura, for EIP-7702 delegated accounts such as a
+       MetaMask smart account) cap the number of in-flight transactions per
+       sender and reject the next send with "in-flight transaction limit
+       reached for delegated accounts" even though each tx.wait() has
+       returned — their view lags a block or two. Wait until the sender's
+       pending nonce equals its mined nonce before every send, and on that
+       specific error back off and retry (issue #29). */
+    const waitForNonceSettle = async (label) => {
+      for (let i = 0; i < 30; i++) {
+        const [pending, latest] = await Promise.all([
+          provider.getTransactionCount(owner, "pending"),
+          provider.getTransactionCount(owner, "latest"),
+        ]);
+        if (pending === latest) return;
+        if (i === 0) console.log(`  waiting for ${pending - latest} in-flight tx to settle before ${label}…`);
+        await new Promise((r) => setTimeout(r, 3000));
+      }
+      console.log("  in-flight transactions did not settle within 90 s; continuing anyway");
+    };
+    const isInFlightLimit = (e) => /in-flight transaction limit/i.test(String(e && (e.message || e)));
+    const sendWithRetry = async (label, fn) => {
+      for (let attempt = 1; attempt <= 5; attempt++) {
+        await waitForNonceSettle(label);
+        try {
+          return await fn();
+        } catch (e) {
+          if (!isInFlightLimit(e) || attempt === 5) throw e;
+          console.log(`  provider in-flight limit hit (attempt ${attempt}); backing off 10 s and retrying…`);
+          await new Promise((r) => setTimeout(r, 10000));
+        }
+      }
+    };
+
     /* Register each pending job ID ----------------------------------- */
     for (const raw of pendingJobs) {
       const jobId = toBytes32(raw);
@@ -184,8 +217,10 @@ const toBytes32 = (id) => {
         const gasLimit = Math.ceil(Number(gasEstimate) * 1.2);
         console.log(`  Using gas limit: ${gasLimit}`);
         
-        const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit });
-        await tx.wait();
+        await sendWithRetry(`registerOracle ${raw}`, async () => {
+          const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit });
+          await tx.wait();
+        });
       console.log("✓ Registered");
       } catch (estimateError) {
         console.error("Gas estimation failed, trying with fallback gas limit...");
@@ -195,8 +230,10 @@ const toBytes32 = (id) => {
         console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
         
         try {
-          const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit: fallbackGasLimit });
-          await tx.wait();
+          await sendWithRetry(`registerOracle ${raw} (fallback gas)`, async () => {
+            const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit: fallbackGasLimit });
+            await tx.wait();
+          });
           console.log("✓ Registered with fallback gas limit");
           continue; // Skip the error handling below and move to next job
         } catch (fallbackError) {
