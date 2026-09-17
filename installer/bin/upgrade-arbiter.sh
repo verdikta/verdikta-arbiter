@@ -137,6 +137,21 @@ command_exists() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Runs "$@" with its stdout+stderr shown on THIS script's stderr and captured
+# in CAPTURED_OUT; returns the command's exit code. The copy goes through the
+# inherited descriptor (tee's stdout >&2). `tee /dev/stderr` re-opens the path
+# with O_TRUNC: when stderr is a file — the agents platform's job log — that
+# wiped everything logged so far and left a NUL hole (#42). Call it directly,
+# never at the end of a pipe (CAPTURED_OUT would be set in a subshell).
+run_echo_capture() {
+    local _cap _rc
+    CAPTURED_OUT=""
+    _cap=$(mktemp) || return 1
+    ( set -o pipefail; "$@" 2>&1 | tee "$_cap" >&2 ); _rc=$?
+    CAPTURED_OUT=$(cat "$_cap"); rm -f "$_cap"
+    return $_rc
+}
+
 # Function to load NVM and Node.js
 load_nvm() {
     # Check if node is already available
@@ -2018,10 +2033,11 @@ else
                     # (#38 — it did, with the node's services left stopped).
                     set +e
                     if unattended_mode; then
-                        dereg_out=$( set -o pipefail; VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" bash unregister-oracle.sh --unattended 2>&1 | tee /dev/stderr ); dereg_rc=$?
+                        VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended; dereg_rc=$?
                     else
-                        dereg_out=$( set -o pipefail; echo -e "y\n$RECONF_AGGREGATOR\ny" | bash unregister-oracle.sh 2>&1 | tee /dev/stderr ); dereg_rc=$?
+                        run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")"; dereg_rc=$?
                     fi
+                    dereg_out="$CAPTURED_OUT"
                     set -e
                     RECONF_DEREGISTERED=$(printf '%s\n' "$dereg_out" | grep -c "Deregistered" || true)
                     if [ "$dereg_rc" -ne 0 ]; then
