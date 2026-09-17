@@ -181,7 +181,7 @@ fi
 
 # Ensure we have sufficient keys for all arbiters
 echo -e "${BLUE}Setting up Ethereum keys for $ARBITER_COUNT arbiters...${NC}"
-KEYS_LIST=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" bash "$KEY_MGMT_SCRIPT" ensure_keys_exist "$ARBITER_COUNT")
+KEYS_LIST=$(CL_API_EMAIL="$API_EMAIL" CL_API_PASSWORD="$API_PASSWORD" KEYS_CONTRACTS_FILE="$INSTALLER_DIR/.contracts" bash "$KEY_MGMT_SCRIPT" ensure_keys_exist "$ARBITER_COUNT")
 if [ $? -ne 0 ]; then
     echo -e "${RED}Error: Failed to ensure sufficient keys exist.${NC}"
     exit 1

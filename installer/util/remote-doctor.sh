@@ -358,7 +358,7 @@ check_config() {
             emit PASS cfg.node_addr_keys "NODE_ADDRESS == KEY_1_ADDRESS" ""
         else
             emit CRIT cfg.node_addr_keys "NODE_ADDRESS ($NODE_ADDRESS) != KEY_1_ADDRESS ($KEY_1_ADDRESS)" \
-                 "Edit $CONTRACTS_FILE so both refer to the same key, or run register-oracle.sh."
+                 "NODE_ADDRESS must name key 1 (the balance, nonce and authorization checks read it). Run arbiter-doctor.sh --fix on the node to set it to KEY_1_ADDRESS; registration scripts do not change it."
         fi
     fi
 

@@ -20,8 +20,10 @@ bash -n "$S" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL syntax"; }
 check "errexit on" '^set -e'
 # Deregistration: guarded, its rc captured, its output counted.
 check "dereg guarded" 'set \+e' 3
-check "dereg rc" 'bash unregister-oracle.sh --unattended 2>&1 \| tee /dev/stderr \); dereg_rc=\$\?'
-check "dereg pipefail" 'set -o pipefail; VA_DEREGISTER_ORACLE=y'
+check "dereg rc" 'run_echo_capture bash unregister-oracle.sh --unattended; dereg_rc=\$\?'
+check "dereg env reaches the script" 'VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$RECONF_AGGREGATOR" run_echo_capture'
+check "dereg output captured" 'dereg_out="\$CAPTURED_OUT"'
+check "capture keeps the pipe status" 'set -o pipefail; "\$@" 2>&1 \| tee "\$_cap" >&2'
 check "dereg count" 'RECONF_DEREGISTERED=\$\(printf'
 check "dereg abort sets failed" 'RECONF_ABORT=1' 
 check "dereg summary" 'RECONF_SUMMARY="deregistered \$RECONF_DEREGISTERED of \$RECONF_TOTAL job'
@@ -37,5 +39,34 @@ plus=$(grep -cE '^\s*set \+e\s*$' "$S"); minus=$(grep -cE '^\s*set -e(\s|$)' "$S
 tail -6 "$S" | grep -q 'RECONFIGURE FAILED: \${RECONF_SUMMARY}' && tail -6 "$S" | grep -qE '^\s*exit 3\s*$' && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL final exit 3"; }
 # The error trap restarts a node that was running before the attempt.
 awk '/^cleanup_on_error\(\)/,/^}/' "$S" | grep -q 'bash "\$TARGET_DIR/start-arbiter.sh" ||' && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL trap restart"; }
+
+# ── The job log survives the capture (#42) ───────────────────────────────────
+# `tee /dev/stderr` re-opens the path with O_TRUNC: with stderr on a file (the
+# agents platform's job log) it wiped every earlier line and left a NUL hole.
+# Run the script's REAL run_echo_capture with stderr on a file that already has
+# content, opened the way the job launcher opens it (truncate once, no append).
+ok()  { pass=$((pass+1)); }
+bad() { fail=$((fail+1)); echo "FAIL $1"; }
+fn=$(awk '/^run_echo_capture\(\) \{$/{p=1} p{print} p&&/^}$/{exit}' "$S")
+[ -n "$fn" ] && ok || bad "could not extract run_echo_capture"
+LOG=$(mktemp); trap 'rm -f "$LOG"' EXIT
+bash -c "$fn"'
+echo "before-1" >&2
+echo "before-2" >&2
+FOO=bar run_echo_capture bash -c "echo out-line; echo err-line >&2; echo env=\$FOO; exit 7"; rc=$?
+echo "after rc=$rc captured=[$(printf %s "$CAPTURED_OUT" | sort | tr "\n" "|")]" >&2
+run_echo_capture bash -c "read a; read b; read c; echo answers=\$a,\$b,\$c" <<< "$(printf "y\n%s\ny" 0xAGG)"; rc=$?
+echo "stdin rc=$rc captured=[$CAPTURED_OUT]" >&2
+' 2> "$LOG"
+grep -q '^before-1$' "$LOG" && grep -q '^before-2$' "$LOG" && ok || bad "lines logged before the capture were lost"
+[ "$(tr -cd '\000' < "$LOG" | wc -c | tr -d ' ')" = "0" ] && ok || bad "the log has a NUL hole"
+grep -q '^out-line$' "$LOG" && grep -q '^err-line$' "$LOG" && ok || bad "the command output was not echoed to the log"
+grep -q '^after rc=7 captured=\[env=bar|err-line|out-line|\]$' "$LOG" && ok || bad "rc / captured output / env prefix: $(grep '^after' "$LOG")"
+grep -q '^stdin rc=0 captured=\[answers=y,0xAGG,y\]$' "$LOG" && ok || bad "stdin answers did not reach the command: $(grep '^stdin' "$LOG")"
+[ "$(grep -n -E '^(before-2|out-line|after rc)' "$LOG" | cut -d: -f2 | tr '\n' ' ')" = "before-2 out-line after rc=7 captured=[env=bar|err-line|out-line|] " ] && ok || bad "log order"
+# No script may tee onto a re-opened standard stream (comment lines may name the idiom).
+tee_hits=$(grep -rnE 'tee +(-a +)?(/dev/(std(err|out)|fd/[0-9])|/proc/self/fd)' "$ROOT/bin" "$ROOT/util" "$ROOT/lib" 2>/dev/null | grep -vE '^[^:]+:[0-9]+:[[:space:]]*#' || true)
+[ -z "$tee_hits" ] && ok || bad "tee onto a re-opened standard stream: $tee_hits"
+
 echo "pass=$pass fail=$fail"
 [ "$fail" = "0" ]
