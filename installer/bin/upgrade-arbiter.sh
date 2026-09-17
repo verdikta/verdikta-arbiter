@@ -2711,14 +2711,11 @@ if [ -f "$TARGET_DIR/installer/.contracts" ]; then
     if [ -n "$ARBITER_COUNT" ]; then
         echo -e "${GREEN}✓ Multi-Arbiter Configuration: $ARBITER_COUNT arbiter(s)${NC}"
         
-        # Count actual jobs configured
-        CONFIGURED_JOBS=0
-        for ((i=1; i<=10; i++)); do
-            eval job_var="JOB_ID_$i"
-            if [ -n "${!job_var}" ]; then
-                CONFIGURED_JOBS=$((CONFIGURED_JOBS + 1))
-            fi
-        done
+        # Count the jobs the FILE records. JOB_ID_n shell variables from sourcing
+        # the previous .contracts earlier in this run outlive a reconfigure to a
+        # smaller count: the summary said "10 job(s)" after configuring 3 (#43).
+        CONFIGURED_JOBS=$(grep -cE '^JOB_ID_[0-9]+=' "$TARGET_DIR/installer/.contracts" 2>/dev/null || true)
+        CONFIGURED_JOBS=${CONFIGURED_JOBS:-0}
         
         if [ $CONFIGURED_JOBS -gt 0 ]; then
             echo -e "${GREEN}✓ Chainlink Jobs: $CONFIGURED_JOBS job(s) configured${NC}"

@@ -280,10 +280,61 @@ create_chainlink_key() {
 }
 
 # Ensure we have the required number of keys, creating them if necessary
+# Re-number a "1:addr|2:addr|…" key list so the keys installer/.contracts already
+# records keep their KEY_n order (those still on the node), and keys it does not
+# know follow in the order given. `chainlink keys eth list` has no stable order:
+# a reconfigure re-numbered five keys by address, moved the jobs onto other keys
+# and left NODE_ADDRESS — the key the doctor watches — naming an idle one (#43).
+order_keys_stably() {
+    local keys_list="$1"
+    local contracts_file="$2"
+
+    if [ -z "$keys_list" ] || [ -z "$contracts_file" ] || [ ! -f "$contracts_file" ]; then
+        echo "$keys_list"
+        return 0
+    fi
+
+    local ordered="" seen="|" addr lc recorded
+    # Recorded addresses in KEY index order (KEY_10 after KEY_9, not after KEY_1).
+    recorded=$(grep -E '^KEY_[0-9]+_ADDRESS=' "$contracts_file" 2>/dev/null \
+        | sed -E 's/^KEY_([0-9]+)_ADDRESS="?([^"]*)"?[[:space:]]*$/\1 \2/' | sort -n | cut -d' ' -f2)
+    local on_node
+    on_node=$(echo "$keys_list" | tr '|' '\n' | cut -d':' -f2)
+
+    for addr in $recorded; do
+        lc=$(echo "$addr" | tr 'A-F' 'a-f')
+        case "$seen" in *"|$lc|"*) continue ;; esac
+        local match
+        # `|| true`: a recorded key that left the node is not an error (set -e).
+        match=$(echo "$on_node" | while IFS= read -r a; do
+            if [ "$(echo "$a" | tr 'A-F' 'a-f')" = "$lc" ]; then echo "$a"; break; fi
+        done) || true
+        if [ -n "$match" ]; then
+            ordered="${ordered:+$ordered }$match"
+            seen="${seen}${lc}|"
+        fi
+    done
+    for addr in $on_node; do
+        lc=$(echo "$addr" | tr 'A-F' 'a-f')
+        case "$seen" in *"|$lc|"*) continue ;; esac
+        ordered="${ordered:+$ordered }$addr"
+        seen="${seen}${lc}|"
+    done
+
+    local out="" i=0
+    for addr in $ordered; do
+        i=$((i + 1))
+        out="${out:+$out|}${i}:${addr}"
+    done
+    echo "$out"
+    return 0
+}
+
 ensure_keys_exist() {
     local job_count="$1"
     local api_email="${2:-$CL_API_EMAIL}"
     local api_password="${3:-$CL_API_PASSWORD}"
+    local contracts_file="${4:-${KEYS_CONTRACTS_FILE:-}}"
 
     if [ -z "$job_count" ] || [ -z "$api_email" ] || [ -z "$api_password" ]; then
         log_error "Missing required parameters: job_count, api_email, api_password"
@@ -304,6 +355,9 @@ ensure_keys_exist() {
         return 1
     fi
     
+    # Keep the numbering installer/.contracts already records (#43).
+    existing_keys=$(order_keys_stably "$existing_keys" "$contracts_file")
+
     # Count existing keys
     local existing_count=0
     if [ -n "$existing_keys" ]; then
@@ -396,10 +450,24 @@ update_contracts_with_keys() {
         return 1
     fi
     
-    # Remove existing key entries to avoid duplicates
-    sed -i '/^KEY_[0-9]*_ADDRESS=/d' "$contracts_file"
-    sed -i '/^KEY_COUNT=/d' "$contracts_file"
-    
+    # NODE_ADDRESS is "the first key" by the installer's convention
+    # (deploy-contracts.sh) and the doctor's balance, nonce and authorization
+    # checks read it, so it moves with key 1 (#43).
+    local first_key
+    first_key=$(echo "$keys_list" | tr '|' '\n' | grep '^1:' | cut -d':' -f2 || true)
+    local drop='^(KEY_[0-9]+_ADDRESS|KEY_COUNT)='
+    [ -n "$first_key" ] && drop='^(KEY_[0-9]+_ADDRESS|KEY_COUNT|NODE_ADDRESS)='
+
+    # Remove existing key entries to avoid duplicates. Rewritten through a temp
+    # file INTO the same file (mode and any symlink stay), without sed -i.
+    local tmp_contracts
+    tmp_contracts=$(mktemp) || return 1
+    grep -vE "$drop" "$contracts_file" > "$tmp_contracts" || true
+    cat "$tmp_contracts" > "$contracts_file"
+    rm -f "$tmp_contracts"
+
+    [ -n "$first_key" ] && echo "NODE_ADDRESS=\"$first_key\"" >> "$contracts_file"
+
     # Add key information
     echo "$keys_list" | tr '|' '\n' | while IFS=':' read key_index key_address; do
         echo "KEY_${key_index}_ADDRESS=\"$key_address\"" >> "$contracts_file"
@@ -593,6 +661,9 @@ case "$FUNCTION_NAME" in
         ;;
     ensure_keys_exist)
         ensure_keys_exist "$@"
+        ;;
+    order_keys_stably)
+        order_keys_stably "$@"
         ;;
     get_key_address_for_job)
         get_key_address_for_job "$@"

@@ -349,7 +349,7 @@ check_config() {
             emit PASS cfg.node_addr_keys "NODE_ADDRESS == KEY_1_ADDRESS" ""
         else
             emit CRIT cfg.node_addr_keys "NODE_ADDRESS ($NODE_ADDRESS) != KEY_1_ADDRESS ($KEY_1_ADDRESS)" \
-                 "Edit $CONTRACTS_FILE so both refer to the same key, or run register-oracle.sh."
+                 "NODE_ADDRESS must name key 1 (the balance, nonce and authorization checks read it). Run with --fix to set it to KEY_1_ADDRESS; registration scripts do not change it."
         fi
     fi
 
@@ -1095,6 +1095,26 @@ run_fix_mode() {
                     fi
                 else
                     echo "  (no setAuthorizedSenders-dynamic.sh found — manual step required)"
+                fi
+                ;;
+            cfg.node_addr_keys)
+                # The jobs run on the KEY_n keys; NODE_ADDRESS is only the pointer the
+                # on-chain checks read. Older reconfigures re-numbered the keys and left
+                # it behind (#43). No funds or registrations move.
+                if [[ "${KEY_1_ADDRESS:-}" =~ ^0x[0-9a-fA-F]{40}$ ]] && [ -f "$CONTRACTS_FILE" ]; then
+                    if prompt_yes_no "Set NODE_ADDRESS to KEY_1_ADDRESS ($KEY_1_ADDRESS) in $CONTRACTS_FILE? (a backup copy is kept)"; then
+                        local contracts_backup="${CONTRACTS_FILE}.backup.$(date +%Y%m%d-%H%M%S)"
+                        local contracts_tmp
+                        cp -p "$CONTRACTS_FILE" "$contracts_backup" && contracts_tmp=$(mktemp) \
+                            && grep -vE '^NODE_ADDRESS=' "$CONTRACTS_FILE" > "$contracts_tmp" \
+                            && echo "NODE_ADDRESS=\"$KEY_1_ADDRESS\"" >> "$contracts_tmp" \
+                            && cat "$contracts_tmp" > "$CONTRACTS_FILE" \
+                            && echo "  NODE_ADDRESS set to $KEY_1_ADDRESS (backup: $contracts_backup)." \
+                            || echo "  could not rewrite $CONTRACTS_FILE — manual step required"
+                        rm -f "${contracts_tmp:-}"
+                    fi
+                else
+                    echo "  (KEY_1_ADDRESS is not a valid address — manual step required)"
                 fi
                 ;;
             ea.commit_store_mode)
