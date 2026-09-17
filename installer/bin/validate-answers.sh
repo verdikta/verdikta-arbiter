@@ -143,6 +143,9 @@ else
         VA_UPGRADE_REGENERATE_JOBS VA_UPGRADE_SWITCH_COMMON_LATEST \
         VA_UPGRADE_INTEGRATE_MODELS VA_UPGRADE_RECONFIGURE_JOBS \
         VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG VA_UPGRADE_DOCKER_LOG_ROTATION
+    if [ -n "${VA_UPGRADE_BACKUP_KEEP:-}" ] && ! [[ "$VA_UPGRADE_BACKUP_KEEP" =~ ^[0-9]{1,3}$ ]]; then
+        problem "VA_UPGRADE_BACKUP_KEEP='$VA_UPGRADE_BACKUP_KEEP' must be a whole number (install backups to keep; 0 keeps them all, default 3)"
+    fi
     if is_yes "${VA_UPGRADE_REVIEW_API_KEYS:-}"; then
         problem "VA_UPGRADE_REVIEW_API_KEYS=y walks an interactive key-by-key review; leave it n and rotate keys with update-pinata-key.sh / installer/.api_keys instead"
     fi

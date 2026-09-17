@@ -23,6 +23,7 @@ source "$INSTALLER_DIR/lib/prompts.sh"
 ANSWERS_FILE=""
 UNATTENDED_REQUESTED=false
 TARGET_DIR_FLAG=""
+KEEP_BACKUPS_FLAG=""
 while [[ $# -gt 0 ]]; do
     case $1 in
         --answers|-a)
@@ -41,12 +42,20 @@ while [[ $# -gt 0 ]]; do
             TARGET_DIR_FLAG="$1"
             shift
             ;;
+        --keep-backups)
+            shift
+            [ -z "${1:-}" ] && { echo "--keep-backups requires a number (0 keeps every backup)"; exit 1; }
+            KEEP_BACKUPS_FLAG="$1"
+            shift
+            ;;
         --help|-h)
             echo "Usage: $0 [OPTIONS]"
             echo "Upgrade an existing Verdikta Arbiter installation from this repository checkout."
             echo ""
             echo "Options:"
             echo "  --target-dir DIR    Installation to upgrade (default: saved INSTALL_DIR, else ~/verdikta-arbiter-node)"
+            echo "  --keep-backups N    After a new backup succeeds, keep only the newest N install backups"
+            echo "                      (default 3; 0 keeps them all). Same as VA_UPGRADE_BACKUP_KEEP=N"
             echo "  --answers, -a FILE  Unattended upgrade: answer every prompt from FILE"
             echo "                      (KEY=value lines; template: installer/config/unattended.env.example)"
             echo "  --unattended        Unattended upgrade answered from VA_* environment variables;"
@@ -253,6 +262,83 @@ create_backup() {
         echo -e "${RED}Failed to create backup! Aborting upgrade.${NC}"
         return 1
     fi
+}
+
+# Every upgrade copies the whole installation aside (~1.8 GB with node_modules)
+# and nothing removed the copies: a node upgraded routinely fills its disk (#47).
+BACKUP_KEEP_DEFAULT=3
+
+# How many install backups to keep: --keep-backups, else VA_UPGRADE_BACKUP_KEEP,
+# else 3. 0 keeps them all. Anything that is not a whole number falls back to
+# the default with a warning (on stderr) rather than pruning on a guess.
+resolve_backup_keep() {
+    local raw="${KEEP_BACKUPS_FLAG:-${VA_UPGRADE_BACKUP_KEEP:-}}"
+    if [ -z "$raw" ]; then
+        echo "$BACKUP_KEEP_DEFAULT"
+    elif [[ "$raw" =~ ^[0-9]{1,3}$ ]]; then
+        echo "$((10#$raw))"
+    else
+        echo -e "${YELLOW}Ignoring backup retention '$raw' (not a whole number); keeping the newest $BACKUP_KEEP_DEFAULT.${NC}" >&2
+        echo "$BACKUP_KEEP_DEFAULT"
+    fi
+}
+
+# The install backups create_backup made for DIR, oldest first:
+# <DIR>_backup_YYYYMMDD-HHMMSS, real directories only. A symlink, a file, or
+# any other name (a copy the operator made by hand) is never ours to remove.
+list_install_backups() {
+    local dir="${1%/}" entry
+    [ -n "$dir" ] || return 0
+    for entry in "${dir}_backup_"[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]; do
+        if [ -d "$entry" ] && [ ! -L "$entry" ]; then
+            echo "$entry"
+        fi
+    done | sort
+}
+
+# prune_old_backups DIR KEEP — removes all but the newest KEEP install backups
+# of DIR. Call it only after a NEW backup succeeded, so the newest KEEP always
+# include a good copy of what is about to be upgraded. Interactive runs are
+# asked first; unattended runs follow KEEP (their answer is the number).
+prune_old_backups() {
+    local dir="$1" keep="$2"
+    local -a backups=()
+    local entry
+    while IFS= read -r entry; do
+        [ -n "$entry" ] && backups+=("$entry")
+    done < <(list_install_backups "$dir")
+    local total=${#backups[@]}
+    if [ "$keep" -eq 0 ]; then
+        echo -e "${BLUE}Backup retention: keeping all $total install backup(s) (retention is 0 = off).${NC}"
+        return 0
+    fi
+    if [ "$total" -le "$keep" ]; then
+        echo -e "${BLUE}Backup retention: $total install backup(s) on disk, keeping up to $keep — nothing to remove.${NC}"
+        return 0
+    fi
+    local remove_count=$((total - keep)) i
+    echo -e "${BLUE}Backup retention: $total install backups on disk, keeping the newest $keep. Older:${NC}"
+    for ((i = 0; i < remove_count; i++)); do
+        echo "  - ${backups[$i]} ($(du -sh "${backups[$i]}" 2>/dev/null | cut -f1))"
+    done
+    if ! ask_yes_no "Remove these $remove_count older backup(s)?" "y" "" y; then
+        echo -e "${YELLOW}Older backups kept.${NC}"
+        return 0
+    fi
+    for ((i = 0; i < remove_count; i++)); do
+        # Belt and braces: the name must still be one of ours, and never the backup just made.
+        case "${backups[$i]}" in
+            "${dir%/}_backup_"*) ;;
+            *) continue ;;
+        esac
+        [ "${backups[$i]}" = "${BACKUP_DIR:-}" ] && continue
+        if rm -rf -- "${backups[$i]}"; then
+            echo -e "${GREEN}Removed old backup: ${backups[$i]}${NC}"
+        else
+            echo -e "${YELLOW}Could not remove ${backups[$i]} — left in place.${NC}"
+        fi
+    done
+    return 0
 }
 
 # Function to upgrade a component using full replacement
@@ -1099,6 +1185,8 @@ if ask_yes_no "Would you like to create a backup before upgrading? (Recommended 
     if [ $? -ne 0 ]; then
         exit 1
     fi
+    # Only now that the new copy exists: keep the newest N, drop the rest (#47).
+    prune_old_backups "$TARGET_DIR" "$(resolve_backup_keep)"
 else
     echo -e "${YELLOW}Skipping backup creation. Proceeding with upgrade...${NC}"
     echo -e "${RED}WARNING: No backup will be available if the upgrade fails!${NC}"

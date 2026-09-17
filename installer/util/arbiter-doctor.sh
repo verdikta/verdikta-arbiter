@@ -481,6 +481,27 @@ check_services() {
         fi
     fi
 
+    # Install backups left by upgrade-arbiter.sh (<install>_backup_YYYYMMDD-HHMMSS,
+    # ~1.8 GB each). It keeps the newest 3 by default since #47; more than 5 means
+    # older upgrades left theirs behind and the disk is leaking.
+    local backup_entry backup_count=0 backup_size=""
+    for backup_entry in "${INSTALL_DIR%/}_backup_"[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9][0-9][0-9][0-9]; do
+        if [ -d "$backup_entry" ] && [ ! -L "$backup_entry" ]; then
+            backup_count=$((backup_count + 1))
+        fi
+    done
+    if [ "$backup_count" -gt 0 ]; then
+        if command -v timeout >/dev/null 2>&1; then
+            backup_size=$(timeout 15 du -sch "${INSTALL_DIR%/}_backup_"[0-9]*-[0-9]* 2>/dev/null | tail -1 | cut -f1 || true)
+        fi
+        if [ "$backup_count" -gt 5 ]; then
+            emit WARN svc.install_backups "$backup_count install backups${backup_size:+ ($backup_size)} next to $INSTALL_DIR" \
+                 "upgrade-arbiter.sh keeps the newest 3 (--keep-backups N / VA_UPGRADE_BACKUP_KEEP): the next upgrade removes the rest, or delete old ${INSTALL_DIR%/}_backup_* directories yourself."
+        else
+            emit INFO svc.install_backups "$backup_count install backup(s)${backup_size:+ ($backup_size)} next to $INSTALL_DIR" ""
+        fi
+    fi
+
     # Log file sizes
     local biggest
     biggest=$(find "$INSTALL_DIR" -name "*.log" -printf '%s %p\n' 2>/dev/null \
