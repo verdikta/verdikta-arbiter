@@ -23,6 +23,7 @@ const hre   = require("hardhat");
 const { ethers } = hre;
 const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
+const { createInFlightGuard } = require("./lib/inflight.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs                                                        */
@@ -69,6 +70,7 @@ const toBytes32 = (id) => {
 
     const [signer] = await ethers.getSigners();
     const caller   = await signer.getAddress();
+    const { sendWithRetry, isInFlightLimit } = createInFlightGuard({ provider: ethers.provider, sender: caller });
     console.log("Caller:", caller);
 
     /* Resolve keeper -------------------------------------------------- */
@@ -108,26 +110,29 @@ const toBytes32 = (id) => {
       }
 
       console.log("Calling deregisterOracle…");
-      
+
+      /* A count change deregisters every job in a row; on a delegated
+         (EIP-7702) sender Infura rejects the next send once a few are in
+         flight (#38). Settle + retry around every send, like registration. */
       try {
-        // Try to estimate gas first
         const gasEstimate = await keeper.deregisterOracle.estimateGas(argv.oracle, jobId);
         const gasLimit = Math.ceil(Number(gasEstimate) * 1.2); // 20% buffer
         console.log(`  Gas estimate: ${gasEstimate}, using limit: ${gasLimit}`);
-        
-        const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit });
-        await tx.wait();
-        console.log("✓ Deregistered (tx:", tx.hash, ")");
+        await sendWithRetry(`deregisterOracle ${rawId}`, async () => {
+          const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit });
+          await tx.wait();
+          console.log("✓ Deregistered (tx:", tx.hash, ")");
+        });
       } catch (error) {
+        if (isInFlightLimit(error)) throw error; // retries exhausted — not a gas problem
         console.error("Gas estimation failed, trying with fallback gas limit...");
-        
-        // Fallback with reasonable gas limit
         const fallbackGasLimit = 300000;
         console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
-        
-        const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit: fallbackGasLimit });
-        await tx.wait();
-        console.log("✓ Deregistered with fallback gas (tx:", tx.hash, ")");
+        await sendWithRetry(`deregisterOracle ${rawId} (fallback gas)`, async () => {
+          const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit: fallbackGasLimit });
+          await tx.wait();
+          console.log("✓ Deregistered with fallback gas (tx:", tx.hash, ")");
+        });
       }
     }
 
