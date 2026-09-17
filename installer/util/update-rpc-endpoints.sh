@@ -72,16 +72,26 @@ NC='\033[0m'
 
 # ── Locate installer .env ────────────────────────────────────────────────────
 
+# Each candidate is the installer/.env of the tree this script runs from (the
+# same three places as the template search below). Never search one level
+# above the install root: from $HOME/verdikta-arbiter-node that is
+# $HOME/installer/.env (or $HOME/.env), and this script WRITES what it finds —
+# a stray file there took every update while the installation's own .env (the
+# one upgrade-arbiter.sh and the registration scripts read) kept the old
+# endpoints (#40). A symlink is resolved first: save_env_var replaces the file
+# it is given, which would swap the link for a detached copy and leave the
+# link's target stale.
 ENV_FILE=""
 ENV_SEARCH_LOCATIONS=(
-    "$SCRIPT_DIR/../installer/.env"        # From install target root's installer/util/
-    "$SCRIPT_DIR/installer/.env"           # From install target root
-    "$SCRIPT_DIR/../.env"                  # From installer/util/ in repo
-    "$SCRIPT_DIR/.env"                     # Fallback: same directory
+    "$SCRIPT_DIR/installer/.env"           # install root
 )
+if [ "$(basename "$SCRIPT_DIR")" = "util" ]; then
+    ENV_SEARCH_LOCATIONS+=("$SCRIPT_DIR/../.env")   # installer/util/ (repo or installed copy) -> installer/.env
+fi
 for _env_path in "${ENV_SEARCH_LOCATIONS[@]}"; do
     if [ -f "$_env_path" ]; then
-        ENV_FILE="$(cd "$(dirname "$_env_path")" && pwd)/$(basename "$_env_path")"
+        ENV_FILE="$(readlink -f "$_env_path" 2>/dev/null || true)"
+        [ -n "$ENV_FILE" ] || ENV_FILE="$(cd "$(dirname "$_env_path")" && pwd)/$(basename "$_env_path")"
         break
     fi
 done
