@@ -92,15 +92,19 @@ auto-remediations it knows about are:
 
 | Finding | Auto-fix command |
 |---|---|
-| `chain.node_balance_zero`, `chain.node_balance` (low) | `fund-chainlink-keys.sh --amount 0.01` |
+| `chain.node_balance_zero`, `chain.node_balance` (low) | `fund-chainlink-keys.sh --amount 0.01` — **spends ETH**; skipped (and named) under `--no-spend` |
 | `chain.is_authorized` / `chain.authorized_senders_list` | `arbiter-operator/setAuthorizedSenders-dynamic.sh` |
+| `cfg.node_addr_keys` | set `NODE_ADDRESS` to `KEY_1_ADDRESS` in `installer/.contracts` (backup kept; nothing moves) |
 | `txm.stuck_unconfirmed` / `txm.stuck_in_progress` / `txm.local_nonce_vs_chain` | stop chainlink → wipe stale `evm.txes` rows → start chainlink |
 
 Anything else is left to the operator with a printable hint that points at
 the right rotation tool (see below) or manual recovery command.
 
 The fix mode refuses to run without an interactive TTY, so accidental
-non-interactive invocations cannot apply destructive changes.
+non-interactive invocations cannot apply destructive changes. `--yes`
+auto-confirms every prompt for automated callers; add `--no-spend` there so a
+failing balance check never turns into a transfer — funding stays a separate,
+explicit `fund-chainlink-keys.sh --amount <eth>`.
 
 ## Collect mode
 
