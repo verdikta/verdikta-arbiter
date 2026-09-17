@@ -31,6 +31,7 @@ const hre   = require("hardhat");
 const { ethers } = hre;
 const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
+const { createInFlightGuard } = require("./lib/inflight.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs                                                        */
@@ -164,38 +165,9 @@ const toBytes32 = (id) => {
       await (await verdikta.approve(keeperAddr, totalStake)).wait();
     }
 
-    /* Some RPC providers (Infura, for EIP-7702 delegated accounts such as a
-       MetaMask smart account) cap the number of in-flight transactions per
-       sender and reject the next send with "in-flight transaction limit
-       reached for delegated accounts" even though each tx.wait() has
-       returned — their view lags a block or two. Wait until the sender's
-       pending nonce equals its mined nonce before every send, and on that
-       specific error back off and retry (issue #29). */
-    const waitForNonceSettle = async (label) => {
-      for (let i = 0; i < 30; i++) {
-        const [pending, latest] = await Promise.all([
-          provider.getTransactionCount(owner, "pending"),
-          provider.getTransactionCount(owner, "latest"),
-        ]);
-        if (pending === latest) return;
-        if (i === 0) console.log(`  waiting for ${pending - latest} in-flight tx to settle before ${label}…`);
-        await new Promise((r) => setTimeout(r, 3000));
-      }
-      console.log("  in-flight transactions did not settle within 90 s; continuing anyway");
-    };
-    const isInFlightLimit = (e) => /in-flight transaction limit/i.test(String(e && (e.message || e)));
-    const sendWithRetry = async (label, fn) => {
-      for (let attempt = 1; attempt <= 5; attempt++) {
-        await waitForNonceSettle(label);
-        try {
-          return await fn();
-        } catch (e) {
-          if (!isInFlightLimit(e) || attempt === 5) throw e;
-          console.log(`  provider in-flight limit hit (attempt ${attempt}); backing off 10 s and retrying…`);
-          await new Promise((r) => setTimeout(r, 10000));
-        }
-      }
-    };
+    /* In-flight cap handling (issues #29, #38) lives in ./lib/inflight.js and
+       is shared with unregister-oracle-cl.js. */
+    const { sendWithRetry } = createInFlightGuard({ provider, sender: owner });
 
     /* Register each pending job ID ----------------------------------- */
     for (const raw of pendingJobs) {

@@ -99,6 +99,7 @@ The operator tools copied into the install root accept the same flags:
 |---|---|
 | `0` | Success |
 | `1` | A step failed (see the log) |
+| `3` | `upgrade-arbiter.sh` only: the upgrade itself completed (services restarted, previous job specs preserved) but the job reconfiguration you asked for was cancelled or failed — the last line starts with `RECONFIGURE FAILED:` and says what happened and what to do (usually: run the same count change again) |
 | `65` | An unattended answer is missing or was rejected; nothing further was run |
 
 ## Running over SSH

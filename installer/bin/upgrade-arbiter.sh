@@ -106,7 +106,15 @@ cleanup_on_error() {
         
         if [ $ARBITER_WAS_RUNNING -eq 1 ]; then
             echo -e "${YELLOW}Your arbiter was running before the upgrade attempt.${NC}"
-            echo -e "${YELLOW}You may need to restart it manually with: $TARGET_DIR/start-arbiter.sh${NC}"
+            # An unattended upgrade must not leave the node down (#38): the
+            # AI Node and the External Adapter are stopped for the component
+            # update, so bring everything back up before bailing out.
+            if [ -x "$TARGET_DIR/start-arbiter.sh" ]; then
+                echo -e "${BLUE}Restarting the arbiter so it does not stay down...${NC}"
+                bash "$TARGET_DIR/start-arbiter.sh" || echo -e "${YELLOW}Restart failed — run $TARGET_DIR/start-arbiter.sh by hand.${NC}"
+            else
+                echo -e "${YELLOW}You may need to restart it manually with: $TARGET_DIR/start-arbiter.sh${NC}"
+            fi
         fi
         
         echo -e "${RED}Please check the logs for more information about what went wrong.${NC}"
@@ -1994,18 +2002,33 @@ else
                 esac
             fi
             RECONF_ABORT=0
+            # RECONF_FAILED/RECONF_SUMMARY: the upgrade finishes (services
+            # restarted, existing configuration preserved) but exits 3 with a
+            # one-line summary, so an unattended caller can tell "upgrade
+            # fine, reconfigure aborted" from "upgrade broke" (#38).
+            RECONF_FAILED=0
+            RECONF_SUMMARY=""
+            RECONF_TOTAL=$(grep -cE '^JOB_ID_[0-9]+=' "$TARGET_DIR/installer/.contracts" 2>/dev/null || echo 0)
             if [ $RECONF_REREGISTER -eq 1 ]; then
                 echo -e "${BLUE}Deregistering the current jobs from $RECONF_AGGREGATOR before reconfiguring (stake is refunded)...${NC}"
                 if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
                     cd "$TARGET_DIR"
+                    # The script runs under `set -e`: a failing dispatcher call must
+                    # reach the check below, not kill the upgrade mid-reconfigure
+                    # (#38 — it did, with the node's services left stopped).
+                    set +e
                     if unattended_mode; then
-                        VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" bash unregister-oracle.sh --unattended
+                        dereg_out=$( set -o pipefail; VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" bash unregister-oracle.sh --unattended 2>&1 | tee /dev/stderr ); dereg_rc=$?
                     else
-                        echo -e "y\n$RECONF_AGGREGATOR\ny" | bash unregister-oracle.sh
+                        dereg_out=$( set -o pipefail; echo -e "y\n$RECONF_AGGREGATOR\ny" | bash unregister-oracle.sh 2>&1 | tee /dev/stderr ); dereg_rc=$?
                     fi
-                    if [ $? -ne 0 ]; then
+                    set -e
+                    RECONF_DEREGISTERED=$(printf '%s\n' "$dereg_out" | grep -c "Deregistered" || true)
+                    if [ "$dereg_rc" -ne 0 ]; then
                         echo -e "${RED}Deregistration failed. Reconfiguring now would strand the stake on the old job ids — job reconfiguration cancelled.${NC}"
                         RECONF_ABORT=1
+                        RECONF_FAILED=1
+                        RECONF_SUMMARY="deregistered $RECONF_DEREGISTERED of $RECONF_TOTAL job(s) before the dispatcher call failed; the stake on the rest is intact and the job specs are unchanged — fix the cause and run the same count change again (jobs already deregistered are skipped)"
                     fi
                 else
                     echo -e "${RED}unregister-oracle.sh not found at $TARGET_DIR — cannot release the stake on the current jobs; job reconfiguration cancelled.${NC}"
@@ -2016,8 +2039,14 @@ else
             # Run the multi-arbiter configuration
             if [ $RECONF_ABORT -eq 0 ]; then
                 cd "$SCRIPT_DIR"
+                set +e
                 bash "$SCRIPT_DIR/configure-node.sh"
                 RECONF_RC=$?
+                set -e
+                if [ $RECONF_RC -ne 0 ]; then
+                    RECONF_FAILED=1
+                    RECONF_SUMMARY="the $RECONF_TOTAL old job(s) were deregistered (stake refunded) but creating the new jobs and keys failed (configure-node.sh exit $RECONF_RC); the node keeps its previous job specs and is unregistered — fix the cause and run the same count change again"
+                fi
             else
                 RECONF_RC=1
             fi
@@ -2091,6 +2120,7 @@ else
                     echo -e "${BLUE}Registering the new job ids with $RECONF_AGGREGATOR (classes [$RECONF_CLASSES])...${NC}"
                     if [ -f "$TARGET_DIR/register-oracle.sh" ]; then
                         cd "$TARGET_DIR"
+                        set +e
                         if unattended_mode; then
                             VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" \
                             VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="${VA_CLASS_IDS:-$RECONF_CLASSES}" \
@@ -2101,10 +2131,14 @@ else
                                 VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="$RECONF_CLASSES" \
                                 bash register-oracle.sh
                         fi
-                        if [ $? -eq 0 ]; then
+                        reg_rc=$?
+                        set -e
+                        if [ "$reg_rc" -eq 0 ]; then
                             echo -e "${GREEN}✓ New job ids registered with the dispatcher${NC}"
                         else
                             echo -e "${RED}⚠ Registration of the new job ids failed — run $TARGET_DIR/register-oracle.sh (it registers only the missing ones).${NC}"
+                            RECONF_FAILED=1
+                            RECONF_SUMMARY="the new jobs and keys were created but registering them with the dispatcher failed (register-oracle.sh exit $reg_rc); register the missing job ids (register-oracle.sh registers only those)"
                         fi
                     else
                         echo -e "${YELLOW}register-oracle.sh not found at $TARGET_DIR — register the new job ids by hand.${NC}"
@@ -2709,4 +2743,11 @@ echo "  - $BACKUP_DIR"
 echo
 echo "For troubleshooting, consult the documentation in the installer/docs directory."
 echo
-echo "Thank you for using Verdikta Arbiter Node!" 
+echo "Thank you for using Verdikta Arbiter Node!"
+
+# A cancelled or failed job reconfiguration is not a successful upgrade for
+# whoever asked for the count change: say so on the last line and exit 3.
+if [ "${RECONF_FAILED:-0}" -eq 1 ]; then
+    echo -e "${RED}RECONFIGURE FAILED: ${RECONF_SUMMARY}${NC}"
+    exit 3
+fi
