@@ -79,6 +79,7 @@ The keys that matter most:
 | `VA_FUND_KEYS` / `VA_FUND_AMOUNT` | Fund the Chainlink keys at the end | `n` / recommended |
 | `VA_START_SERVICES` | Start the arbiter when done | `y` |
 | `VA_UPGRADE_BACKUP` | (upgrade) copy the install aside first | `y` |
+| `VA_UPGRADE_BACKUP_KEEP` | (upgrade) install backups to keep once the new one succeeded — older `<install>_backup_YYYYMMDD-HHMMSS` directories are removed; `0` keeps them all (also `--keep-backups N`) | `3` |
 | `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) regenerate job specs + re-register on-chain | `n` |
 
 Yes/no keys accept `y`/`n`, `yes`/`no`, `true`/`false`, `1`/`0`.
