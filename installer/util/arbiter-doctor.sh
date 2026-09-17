@@ -67,13 +67,14 @@ DEPLOYMENT_NETWORK=""
 RPC_URL=""
 CHAIN_ID=""
 ASSUME_YES=0
+NO_SPEND=0          # --no-spend: --fix skips repairs that move funds
 
 ############################################
 # Argument parsing
 ############################################
 usage() {
     cat <<EOF
-Usage: $0 [--json|--quiet] [--fix [-y]] [--collect [FILE]] [--install-dir DIR] [-h]
+Usage: $0 [--json|--quiet] [--fix [-y] [--no-spend]] [--collect [FILE]] [--install-dir DIR] [-h]
 
   --json              Emit one JSON object per check to stdout
   --quiet             Only emit FAIL/WARN/CRIT lines (good for cron)
@@ -82,6 +83,9 @@ Usage: $0 [--json|--quiet] [--fix [-y]] [--collect [FILE]] [--install-dir DIR] [
                       taken without confirmation.
   -y, --yes           With --fix, auto-confirm every prompt (no TTY required).
                       Use only when you are sure all proposed fixes are safe.
+  --no-spend          With --fix, skip every repair that moves funds (funding
+                      the node key) and say what to run instead. For automated
+                      callers: funding stays a separate, explicit decision.
   --collect [FILE]    Bundle sanitized logs + state into a tarball (default
                       ./arbiter-diag.tgz) and exit. Implies --quiet for the
                       doctor pass that runs first.
@@ -98,6 +102,7 @@ while [ $# -gt 0 ]; do
         --quiet) OUTPUT="quiet"; shift ;;
         --fix) MODE="fix"; shift ;;
         -y|--yes) ASSUME_YES=1; shift ;;
+        --no-spend) NO_SPEND=1; shift ;;
         --collect)
             MODE="collect"
             shift
@@ -1079,7 +1084,10 @@ run_fix_mode() {
         case "$id" in
             chain.node_balance_zero|chain.node_balance)
                 local fund_script="$INSTALL_DIR/fund-chainlink-keys.sh"
-                if [ -x "$fund_script" ]; then
+                if [ "${NO_SPEND:-0}" = "1" ]; then
+                    # --yes would otherwise send 0.01 ETH from the deployment wallet (#45).
+                    echo "  (skipped: this repair spends ETH from the deployment wallet and --no-spend is set — fund the node keys yourself: $fund_script --amount <eth>)"
+                elif [ -x "$fund_script" ]; then
                     if prompt_yes_no "Run '$fund_script --amount 0.01' to fund node key?"; then
                         "$fund_script" --amount 0.01
                     fi
