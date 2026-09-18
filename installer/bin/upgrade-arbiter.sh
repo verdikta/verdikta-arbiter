@@ -1190,7 +1190,10 @@ if ask_yes_no "Would you like to create a backup before upgrading? (Recommended 
 else
     echo -e "${YELLOW}Skipping backup creation. Proceeding with upgrade...${NC}"
     echo -e "${RED}WARNING: No backup will be available if the upgrade fails!${NC}"
-    if ! ask_yes_no "Are you sure you want to continue without a backup?" "n"; then
+    # Unattended, VA_UPGRADE_BACKUP=n already answered this deliberately: with
+    # no answer key and the interactive default (n) the run used to cancel
+    # itself and exit 0 — a no-op that callers read as a successful upgrade (#49).
+    if ! ask_yes_no "Are you sure you want to continue without a backup?" "n" "" y; then
         echo -e "${YELLOW}Upgrade cancelled by user.${NC}"
         exit 0
     fi
