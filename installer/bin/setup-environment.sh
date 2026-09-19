@@ -347,6 +347,18 @@ create_installation_directory() {
         # Ask for custom installation directory
         prompt_value "Installation directory [$INSTALL_DIR]: " custom_dir VA_INSTALL_DIR
         if [ -n "$custom_dir" ]; then
+            # A leading ~ or $HOME means the user's home, typed or unattended.
+            # Taken literally, the checks below looked at a path that never
+            # exists: an existing installation went undetected (never replaced)
+            # and a stray 'installer/$HOME/…' directory was created (#57).
+            case "$custom_dir" in
+                '~')         custom_dir="$HOME" ;;
+                '~/'*)       custom_dir="$HOME/${custom_dir#'~/'}" ;;
+                '$HOME')     custom_dir="$HOME" ;;
+                '$HOME/'*)   custom_dir="$HOME/${custom_dir#'$HOME/'}" ;;
+                '${HOME}')   custom_dir="$HOME" ;;
+                '${HOME}/'*) custom_dir="$HOME/${custom_dir#'${HOME}/'}" ;;
+            esac
             INSTALL_DIR="$custom_dir"
         fi
         

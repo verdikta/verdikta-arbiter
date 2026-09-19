@@ -964,7 +964,7 @@ if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
         CURRENCY_NAME="Base Sepolia ETH"
         FUNDING_INFO="This is free testnet currency from faucets."
     else
-        RECOMMENDED_AMOUNT="0.002"
+        RECOMMENDED_AMOUNT="0.001"   # ~1,000 fulfilments at Base gas; fees accrue to the owner, keys only spend (#58)
         CURRENCY_NAME="Base ETH"
         FUNDING_INFO="This will use real ETH from your wallet."
     fi

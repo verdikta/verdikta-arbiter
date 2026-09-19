@@ -1,6 +1,6 @@
 #!/bin/bash
 # `arbiter-doctor.sh --fix --yes` auto-confirms every repair, and the repair for a
-# failing node-key balance SPENDS (fund-chainlink-keys.sh --amount 0.01). Automated
+# failing node-key balance SPENDS (fund-chainlink-keys.sh --amount 0.001). Automated
 # callers gate spending separately, so --no-spend must skip it — issue #45.
 # Runs the doctor's real balance fix case against a recording fake fund script.
 # Run: bash installer/tests/doctor-no-spend.test.sh
@@ -32,7 +32,7 @@ for id in chain.node_balance_zero chain.node_balance; do
 done
 # Without the flag the repair is unchanged.
 rm -f "$T/calls"; run_case 0 chain.node_balance_zero >/dev/null
-grep -q '^FUNDED --amount 0.01$' "$T/calls" 2>/dev/null && ok || bad "without --no-spend the repair no longer funds"
+grep -q '^FUNDED --amount 0.001$' "$T/calls" 2>/dev/null && ok || bad "without --no-spend the repair no longer funds"
 
 # Flag parsing and help.
 grep -qE '^\s*--no-spend\) NO_SPEND=1; shift ;;' "$DOCTOR" && ok || bad "--no-spend is not parsed"

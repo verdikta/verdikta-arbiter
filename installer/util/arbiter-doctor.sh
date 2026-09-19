@@ -542,18 +542,19 @@ check_onchain() {
         bal_eth=$(wei_to_eth "$bal_wei")
         if [ "$bal_wei" = "0" ]; then
             emit CRIT chain.node_balance_zero "node EOA balance = 0 ETH" \
-                 "run: $INSTALL_DIR/fund-chainlink-keys.sh --amount 0.01"
+                 "run: $INSTALL_DIR/fund-chainlink-keys.sh --amount 0.001"
         else
-            # min 0.001 ETH = 1e15 wei
-            if python3 -c "import sys; sys.exit(0 if int(sys.argv[1])>=10**15 else 1)" "$bal_wei"; then
-                if python3 -c "import sys; sys.exit(0 if int(sys.argv[1])>=5*10**15 else 1)" "$bal_wei"; then
+            # Base gas: a fulfilment costs ~1e-6 ETH, so 0.001 ETH (1e15 wei) is
+            # ~1,000 fulfilments = PASS; below 0.0002 (2e14) = FAIL (#58).
+            if python3 -c "import sys; sys.exit(0 if int(sys.argv[1])>=2*10**14 else 1)" "$bal_wei"; then
+                if python3 -c "import sys; sys.exit(0 if int(sys.argv[1])>=10**15 else 1)" "$bal_wei"; then
                     emit PASS chain.node_balance "$bal_eth ETH" ""
                 else
                     emit WARN chain.node_balance "$bal_eth ETH  (low)" \
                          "Top up with $INSTALL_DIR/fund-chainlink-keys.sh"
                 fi
             else
-                emit FAIL chain.node_balance "$bal_eth ETH  (below 0.001 threshold)" \
+                emit FAIL chain.node_balance "$bal_eth ETH  (below 0.0002 threshold)" \
                      "Top up with $INSTALL_DIR/fund-chainlink-keys.sh"
             fi
         fi
@@ -1109,8 +1110,8 @@ run_fix_mode() {
                     # --yes would otherwise send 0.01 ETH from the deployment wallet (#45).
                     echo "  (skipped: this repair spends ETH from the deployment wallet and --no-spend is set — fund the node keys yourself: $fund_script --amount <eth>)"
                 elif [ -x "$fund_script" ]; then
-                    if prompt_yes_no "Run '$fund_script --amount 0.01' to fund node key?"; then
-                        "$fund_script" --amount 0.01
+                    if prompt_yes_no "Run '$fund_script --amount 0.001' to fund node key?"; then
+                        "$fund_script" --amount 0.001
                     fi
                 else
                     echo "  (no fund-chainlink-keys.sh found at $fund_script — manual step required)"

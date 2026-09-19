@@ -18,9 +18,8 @@ BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Configuration defaults
-DEFAULT_FUNDING_AMOUNT_TESTNET="0.005"  # 0.005 Base Sepolia ETH per key (~50 queries worth)
-DEFAULT_FUNDING_AMOUNT_MAINNET="0.002"  # 0.002 Base ETH per key (~50 queries worth)
-MIN_WALLET_BALANCE_THRESHOLD="0.01"     # Minimum wallet balance to proceed
+DEFAULT_FUNDING_AMOUNT_TESTNET="0.005"  # 0.005 Base Sepolia ETH per key (thousands of fulfilments at Base gas)
+DEFAULT_FUNDING_AMOUNT_MAINNET="0.001"  # 0.001 Base ETH per key (~1,000 fulfilments at ~1e-6 ETH each; query fees go to the owner, keys only spend) (#58)
 
 # Command line options
 DRY_RUN=false
@@ -45,8 +44,8 @@ usage() {
     echo "  - Uses appropriate default funding amounts for each network"
     echo ""
     echo "Default Funding Amounts:"
-    echo "  - Base Sepolia: $DEFAULT_FUNDING_AMOUNT_TESTNET ETH per key (~50 queries)"
-    echo "  - Base Mainnet: $DEFAULT_FUNDING_AMOUNT_MAINNET ETH per key (~50 queries)"
+    echo "  - Base Sepolia: $DEFAULT_FUNDING_AMOUNT_TESTNET ETH per key"
+    echo "  - Base Mainnet: $DEFAULT_FUNDING_AMOUNT_MAINNET ETH per key (~1,000 fulfilments; fees are paid to the owner, keys only spend gas)"
     echo ""
     echo "Examples:"
     echo "  $0                                    # Interactive funding with defaults"
