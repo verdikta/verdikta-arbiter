@@ -38,8 +38,12 @@
 VERDIKTA_UNATTENDED="${VERDIKTA_UNATTENDED:-0}"
 UNATTENDED_EXIT_CODE=65
 
-# Keys already consumed in this process (space-separated), to detect re-asks.
-_VA_CONSUMED_KEYS=""
+# Questions already answered in this process, one "KEY<TAB>PROMPT" per line,
+# to detect a validation loop re-asking the SAME question with the same key
+# (unattended, the same value would be rejected forever). The same key asked
+# with a DIFFERENT prompt is a per-item loop — one answer applies to every
+# item, e.g. VA_PULL_OLLAMA_MODELS once per missing model (#56) — and is fine.
+_VA_CONSUMED_ASKS=""
 
 unattended_mode() {
     [ "$VERDIKTA_UNATTENDED" = "1" ]
@@ -72,12 +76,12 @@ _prompt_eof_fail() {
 _va_consume() {
     local key="$1" prompt="$2"
     [ -z "$key" ] && return 0
-    case " $_VA_CONSUMED_KEYS " in
-        *" $key "*)
-            unattended_fail "$key" "$prompt" "the value of ${key} was rejected by validation"
-            ;;
-    esac
-    _VA_CONSUMED_KEYS="$_VA_CONSUMED_KEYS $key"
+    local entry
+    entry="$(printf '%s\t%s' "$key" "$prompt")"
+    if [ -n "$_VA_CONSUMED_ASKS" ] && printf '%s\n' "$_VA_CONSUMED_ASKS" | grep -qxF -- "$entry"; then
+        unattended_fail "$key" "$prompt" "the value of ${key} was rejected by validation"
+    fi
+    _VA_CONSUMED_ASKS="${_VA_CONSUMED_ASKS}${_VA_CONSUMED_ASKS:+$'\n'}${entry}"
 }
 
 # _va_lookup KEY -> prints the value of the variable named KEY ("" if unset).

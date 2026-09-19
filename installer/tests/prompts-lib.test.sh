@@ -17,6 +17,10 @@ bash -c "export VERDIKTA_UNATTENDED=1; source $LIB; ask_yes_no 'Q?' '' VA_UNSET"
 bash -c "export VERDIKTA_UNATTENDED=1 VA_X=maybe; source $LIB; ask_yes_no 'Q?' '' VA_X" >/dev/null 2>&1; [ $? -eq 65 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: bad value exit"; }
 # re-ask -> 65
 bash -c "export VERDIKTA_UNATTENDED=1 VA_X=abc; source $LIB; prompt_value 'P: ' V VA_X; prompt_value 'P: ' V VA_X" >/dev/null 2>&1; [ $? -eq 65 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: reask"; }
+# same key, DIFFERENT prompts = a per-item loop (one answer for every item): both answered, no 65 (#56)
+out=$(bash -c "export VERDIKTA_UNATTENDED=1 VA_X=n; source $LIB; ask_yes_no 'Install a?' '' VA_X; r1=\$?; ask_yes_no 'Install b?' '' VA_X; r2=\$?; echo \"r=\$r1,\$r2\"" 2>/dev/null | tail -1); [ "$out" = "r=1,1" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: per-item loop re-ask ($out)"; }
+# same key, SAME prompt = a validation loop: still 65
+bash -c "export VERDIKTA_UNATTENDED=1 VA_X=n; source $LIB; ask_yes_no 'Install a?' '' VA_X; ask_yes_no 'Install a?' '' VA_X" >/dev/null 2>&1; [ $? -eq 65 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: identical re-ask not caught"; }
 # value set
 out=$(bash -c "export VERDIKTA_UNATTENDED=1 VA_X=hello; source $LIB; prompt_value 'P: ' V VA_X; echo \"got=\$V\"" | tail -1); [ "$out" = "got=hello" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL: value $out"; }
 # unset value -> empty (Enter semantics)
