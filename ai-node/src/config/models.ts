@@ -17,6 +17,9 @@ export const modelConfig = {
     { name: 'claude-haiku-4.5', supportsImages: true, supportsAttachments: true },
     { name: 'claude-sonnet-4.6', supportsImages: true, supportsAttachments: true },
     { name: 'claude-opus-4.6', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-sonnet-4-6', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-sonnet-5', supportsImages: true, supportsAttachments: true },
+    { name: 'claude-opus-5', supportsImages: true, supportsAttachments: true },
   ],
   hyperbolic: [
     { name: 'Qwen/Qwen3-235B-A22B-Instruct-2507', supportsImages: true, supportsAttachments: true },

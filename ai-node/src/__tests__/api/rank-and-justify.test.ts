@@ -386,6 +386,65 @@ describe('POST /api/rank-and-justify', () => {
   });
 
   describe('Error Handling and Fallback', () => {
+    test('a model that fails fast reports its measured duration, not the 120 s timeout', async () => {
+      // Bounty 71 (2026-09-18): claude-sonnet-5 was rejected by the API in well under a
+      // second ("`temperature` is deprecated for this model") but the card showed 2.0m,
+      // because failed models were reported with MODEL_TIMEOUT_MS as their duration.
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockResolvedValue(JSON.stringify({
+          score: [700000, 300000],
+          justification: 'OpenAI model justification.'
+        })),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const rejection = Object.assign(
+        new Error('400 `temperature` is deprecated for this model.'),
+        { status: 400 }
+      );
+      const mockAnthropicProvider = {
+        generateResponse: jest.fn().mockRejectedValue(rejection),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockJustifierProvider = {
+        generateResponse: jest.fn().mockResolvedValue('Aggregated justification.'),
+      };
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          default: return mockJustifierProvider;
+        }
+      });
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Binary decision?',
+          outcomes: ['Yes', 'No'],
+          iterations: 1,
+          models: [
+            { provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 0.5 },
+            { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5 },
+          ],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      const failed = data.model_results.find((r: any) => r.model === 'claude-sonnet-5');
+      expect(failed).toMatchObject({ provider: 'Anthropic', status: 'failed' });
+      expect(failed.error_message).toContain('temperature');
+      expect(typeof failed.duration_ms).toBe('number');
+      expect(failed.duration_ms).toBeGreaterThanOrEqual(0);
+      expect(failed.duration_ms).toBeLessThan(30000); // measured, not the 120000 ms ceiling
+
+      const succeeded = data.model_results.find((r: any) => r.model === 'gpt-5.6-terra');
+      expect(succeeded.status).toBe('success');
+    });
+
     test('should handle malformed response from one model and apply fallback', async () => {
       // Mock responses for each model
       const mockOpenAIResponse = JSON.stringify({
