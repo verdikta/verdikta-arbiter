@@ -169,6 +169,13 @@ EOL
             
             if ! ask_yes_no "Continue installation without backup?" "" VA_DOCKER_CONTINUE_WITHOUT_BACKUP n; then
                 echo -e "${BLUE}Installation cancelled by user.${NC}"
+                # Unattended, a cancel here must not read as success: install.sh
+                # checks this script's exit code and would carry on to
+                # setup-chainlink.sh with the old containers still in place (#53).
+                if unattended_mode; then
+                    echo -e "${RED}The old ${POSTGRES_CONTAINER} container is stopped, so its database cannot be backed up; set VA_DOCKER_CONTINUE_WITHOUT_BACKUP=y to replace it without a backup, or start it and re-run.${NC}"
+                    exit 1
+                fi
                 exit 0
             fi
             echo
