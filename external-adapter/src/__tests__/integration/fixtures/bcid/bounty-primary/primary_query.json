@@ -1,0 +1,5 @@
+{
+  "query": "A bounty asked for a short technical note explaining why a multi-model AI panel produces more reliable evaluations than a single model. Decide whether the submitted work fulfils the bounty well enough to be funded.",
+  "references": [],
+  "outcomes": ["DONT_FUND", "FUND"]
+}

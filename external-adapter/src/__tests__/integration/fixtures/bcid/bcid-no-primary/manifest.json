@@ -1,0 +1,10 @@
+{
+  "version": "1.0",
+  "type": "submission",
+  "files": [
+    {
+      "filename": "submission.md",
+      "contentType": "text/markdown"
+    }
+  ]
+}

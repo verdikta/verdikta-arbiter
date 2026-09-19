@@ -1,0 +1,28 @@
+{
+  "version": "1.0",
+  "name": "Bounty evaluation package",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "juryParameters": {
+    "NUMBER_OF_OUTCOMES": 2,
+    "AI_NODES": [
+      {
+        "AI_MODEL": "gpt-4o",
+        "AI_PROVIDER": "OpenAI",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      },
+      {
+        "AI_MODEL": "claude-sonnet-4-5",
+        "AI_PROVIDER": "Anthropic",
+        "NO_COUNTS": 1,
+        "WEIGHT": 0.5
+      }
+    ],
+    "ITERATIONS": 1
+  },
+  "bCIDs": {
+    "submittedWork": "The work submitted by a hunter."
+  }
+}

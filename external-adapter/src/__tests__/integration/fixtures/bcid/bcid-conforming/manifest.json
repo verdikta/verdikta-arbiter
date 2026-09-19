@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "name": "submittedWork",
+  "primary": {
+    "filename": "primary_query.json"
+  },
+  "additional": [
+    {
+      "name": "content",
+      "type": "utf8/file",
+      "filename": "submission.md",
+      "description": "The submitted work product"
+    }
+  ]
+}

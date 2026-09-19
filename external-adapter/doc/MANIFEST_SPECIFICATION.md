@@ -225,6 +225,69 @@ The `manifest.json` file is the core configuration file for Verdikta AI arbitrat
 - **Usage:** Allows injection of current data (e.g., market prices) into the evaluation
 - **Security:** Content is sanitized to prevent code injection
 
+### Submitted-work (bCID) archives
+
+Every CID after the first in a multi-CID request is a **bCID archive**: a
+package supplied by a party other than the requester. For the bounty program
+the requester is the bounty creator (its evaluation package is the primary CID)
+and the single bCID, named `submittedWork` in the primary manifest's `bCIDs`,
+is the hunter's submitted work. A bCID archive is parsed with **exactly the
+same rules as a primary archive**: it is a ZIP whose `manifest.json` names a
+`primary` JSON file with a `query`, plus optional attachments.
+
+**Required shape** (what the bounty API's `POST /jobs/:id/submit` builds):
+
+```json
+{
+  "version": "1.0",
+  "name": "submittedWork",
+  "primary": { "filename": "primary_query.json" },
+  "additional": [
+    {
+      "name": "content",
+      "type": "utf8/file",
+      "filename": "submission.md",
+      "description": "The submitted work product"
+    }
+  ]
+}
+```
+
+- `name` must equal the key the primary manifest declares in `bCIDs`
+  (`submittedWork` for bounties). A missing `name` is tolerated; a different one is not.
+- `primary.filename` must name a **JSON** file inside the archive whose `query`
+  is a string of 10–10,000 characters (the work summary, or the work itself).
+  It is appended to the prompt under the description the primary manifest gives
+  the bCID.
+- The work product itself goes under `additional` (text or image files are
+  passed to the model panel as attachments). Do **not** point `primary.filename`
+  at the markdown/text work product: the primary file is parsed as JSON.
+- `juryParameters`, `bCIDs` and `addendum` are ignored on a bCID archive; only
+  the primary archive configures the jury and the outcomes.
+
+**Consequence of a malformed bCID archive.** The External Adapter checks each
+bCID archive before any AI model runs (`src/utils/bcidValidation.js`). If the
+archive is malformed in a way every arbiter reproduces identically — not a ZIP,
+no `manifest.json`, manifest not JSON or failing the schema, no `primary`,
+`primary.filename` missing from the archive, primary file not JSON, primary
+JSON without a valid `query`, or a `name` that contradicts the primary
+manifest's `bCIDs` — the arbiter does **not** abort. It renders a deterministic
+verdict instead: the **full 1,000,000 score goes to the first outcome** of the
+requester's `primary_query.json` (`DONT_FUND` for bounties), and the
+justification uploaded to IPFS states which check failed, the `manifest.json`
+it found, and the conforming shape above. The verdict is committed and revealed
+like any AI verdict, so the aggregator round settles and the party that
+submitted the archive can read the reason through the requesting application
+(for bounties, `GET /jobs/:id/submissions/:subId/evaluation`).
+
+Only content problems get this treatment. IPFS fetch failures, extraction
+I/O errors, AI provider outages and anything wrong with the **primary**
+(requester's) archive keep the previous behaviour: an errored job run and no
+commit, so a transient fault can never become a verdict against the submitter.
+Background: Base mainnet bounties 57/58/59 (2026-09-15) stranded 0 of 6 commits
+because the submitted archives (a) were not a ZIP, (b) had no `primary`, and
+(c) pointed `primary.filename` at `submission.md`.
+
 ---
 
 ## Primary File Format
@@ -535,6 +598,9 @@ The primary file referenced in the `primary` section must be a JSON file with th
 - `additional[].name`: Must be unique within the array
 - `juryParameters.AI_NODES[].WEIGHT`: Should sum to reasonable total (not enforced)
 - `bCIDs`: Keys must match `name` field in corresponding archives
+- bCID archives that fail any of the above are settled with a deterministic
+  first-outcome verdict rather than an error — see
+  [Submitted-work (bCID) archives](#submitted-work-bcid-archives)
 
 ### Schema Validation (Joi)
 The implementation includes a Joi schema that validates:
