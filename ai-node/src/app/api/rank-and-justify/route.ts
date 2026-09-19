@@ -355,6 +355,7 @@ export async function POST(request: Request) {
           
           // Apply model-level timeout wrapper with proper cleanup to prevent memory leaks
           return new Promise((resolve, reject) => {
+            const modelStartTime = Date.now();
             let timeoutId: NodeJS.Timeout | null = null;
             let completed = false;
             
@@ -371,7 +372,9 @@ export async function POST(request: Request) {
               if (!completed) {
                 console.warn(`⏰ MODEL_TIMEOUT: Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`);
                 completed = true;
-                reject(new Error(`Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`));
+                const timeoutError: any = new Error(`Model ${modelInfo.provider}-${modelInfo.model} timed out after ${MODEL_TIMEOUT_MS}ms`);
+                timeoutError.verdiktaDurationMs = Date.now() - modelStartTime;
+                reject(timeoutError);
               }
             }, MODEL_TIMEOUT_MS);
             
@@ -391,6 +394,12 @@ export async function POST(request: Request) {
             })
             .catch(error => {
               cleanup();
+              // Record how long the model actually took to fail, so the report shows the
+              // measured time rather than the timeout constant (a 400 comes back in well
+              // under a second; showing it as 120 s made it look like a timeout).
+              if (error && typeof error === 'object' && error.verdiktaDurationMs === undefined) {
+                error.verdiktaDurationMs = Date.now() - modelStartTime;
+              }
               reject(error);
             });
           });
@@ -458,6 +467,9 @@ export async function POST(request: Request) {
             // Extract error details from the rejected promise
             const errorDetails = (result.reason as any).verdiktaErrorDetails;
             const isTimeout = result.reason.message.includes('timed out');
+            const failedDurationMs: number = typeof (result.reason as any)?.verdiktaDurationMs === 'number'
+              ? (result.reason as any).verdiktaDurationMs
+              : MODEL_TIMEOUT_MS; // nothing measured (should not happen) → the ceiling
             
             // Create fallback result for failed model
             const numOutcomes = body.outcomes?.length || 2;
@@ -474,7 +486,7 @@ export async function POST(request: Request) {
                 model: modelInfo.model,
                 count: modelInfo.count || 1,
                 weight: modelInfo.weight,
-                duration_ms: MODEL_TIMEOUT_MS, // Use timeout value for failed models
+                duration_ms: failedDurationMs,
                 failed: true,
                 failureReason: result.reason.message,
                 ...(errorDetails && {
@@ -492,7 +504,7 @@ export async function POST(request: Request) {
               provider: modelInfo.provider,
               model: modelInfo.model,
               status: isTimeout ? 'timeout' : 'failed',
-              duration_ms: MODEL_TIMEOUT_MS,
+              duration_ms: failedDurationMs,
               ...(errorDetails && {
                 error_type: errorDetails.errorType,
                 error_message: errorDetails.errorMessage,

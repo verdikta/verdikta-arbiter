@@ -265,6 +265,16 @@ Ollama runs locally and is unaffected by gateway settings.
 - **ClassID**: a curated model-pool identifier (default 128). Model pool data
   ships via `@verdikta/common`; the installer integrates it into the AI Node
   (`npm run integrate-classid`, `src/scripts/display-classids.js`).
+- **Anthropic sampling parameters are per model.** Claude Opus 4.7+ and every
+  Claude 5 model reject `temperature`/`top_p`/`top_k` with HTTP 400
+  ("`temperature` is deprecated for this model"); Claude ≤ 4.6 still accepts
+  `temperature` (never together with `top_p`). `ai-node/src/lib/llm/anthropic-request-params.ts`
+  derives the rule from the model version — unrecognised IDs get no sampling
+  parameters, because omitting can never 400 — and the provider retries once
+  without them if the API rejects one anyway. The pinned `@langchain/anthropic`
+  always sends `thinking: {type: "disabled"}` (accepted by Sonnet 5 / Opus 5)
+  and gives models outside its table only 2048 output tokens, so modern models
+  get `maxTokens` set explicitly. Do not re-add a blanket `temperature`.
 - **Two networks**: `base_sepolia` (testnet) and `base_mainnet`. Network-specific
   wrapped-VDKA and RPC config live in `installer/.env`. See `docs/deployments.md`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.

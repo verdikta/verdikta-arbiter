@@ -1,6 +1,17 @@
 import { LLMProvider } from './llm-provider-interface';
 import { ChatAnthropic } from "@langchain/anthropic";
 import { modelConfig } from '../../config/models';
+import {
+  AnthropicChatParams,
+  LEGACY_TEMPERATURE,
+  SAMPLING_FREE_PARAMS,
+  acceptsSamplingParams,
+  anthropicChatParams,
+  extractTextContent,
+  isSamplingParamRejection,
+} from './anthropic-request-params';
+
+type ChatInput = Parameters<ChatAnthropic['invoke']>[0];
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
@@ -33,17 +44,40 @@ export class AnthropicProvider implements LLMProvider {
     if (!this.apiKey) {
       throw new Error('ANTHROPIC_API_KEY is not set');
     }
-    const anthropic = new ChatAnthropic({
+    return this.invokeText(model, prompt);
+  }
+
+  private createChat(model: string, params: AnthropicChatParams): ChatAnthropic {
+    // Sampling parameters are chosen per model (anthropic-request-params.ts):
+    // Claude ≤ 4.6 gets temperature 0.7 as always; Opus 4.7+ / Claude 5 reject
+    // temperature, top_p and top_k with a 400, so they get none. LangChain only
+    // sends a field when it is set, so nothing else has to be "disabled" here.
+    return new ChatAnthropic({
       anthropicApiKey: this.apiKey,
       modelName: model,
-      temperature: 0.7,
-      topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
+      ...params,
     });
-    const response = await anthropic.invoke(prompt);
-    if (typeof response.content !== 'string') {
-      throw new Error('Unexpected response format from Anthropic');
+  }
+
+  /**
+   * Invoke a chat model and return its text. If the API still rejects a sampling
+   * parameter (a model the version rule mis-classified, or one that changed its
+   * rules), the call is retried once without any — so a parameter we do not need
+   * can never take a jury member down.
+   */
+  private async invokeText(model: string, input: ChatInput): Promise<string> {
+    const params = anthropicChatParams(model);
+    try {
+      const response = await this.createChat(model, params).invoke(input);
+      return extractTextContent(response.content);
+    } catch (error: any) {
+      if (params.temperature === undefined || !isSamplingParamRejection(error)) {
+        throw error;
+      }
+      console.warn(`[${this.providerName}] ${model} rejected a sampling parameter (${error.message}); retrying without sampling parameters`);
+      const response = await this.createChat(model, { ...SAMPLING_FREE_PARAMS }).invoke(input);
+      return extractTextContent(response.content);
     }
-    return response.content;
   }
 
   async generateResponseWithImage(prompt: string, model: string, base64Image: string, mediaType: string = 'image/jpeg'): Promise<string> {
@@ -57,16 +91,9 @@ export class AnthropicProvider implements LLMProvider {
       throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${mediaType}. Supported formats are: JPEG, PNG, WEBP, and GIF.`);
     }
 
-    const anthropic = new ChatAnthropic({
-      anthropicApiKey: this.apiKey,
-      modelName: model,
-      temperature: 0.7,
-      topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
-    });
-
     const dataUrl = `data:${mediaType};base64,${base64Image}`;
 
-    const response = await anthropic.invoke([{
+    return this.invokeText(model, [{
       role: "user",
       content: [
         { type: "text", text: prompt },
@@ -76,11 +103,6 @@ export class AnthropicProvider implements LLMProvider {
         }
       ]
     }]);
-
-    if (typeof response.content !== 'string') {
-      throw new Error('Unexpected response format from Anthropic');
-    }
-    return response.content;
   }
 
   async initialize(): Promise<void> {
@@ -121,13 +143,6 @@ export class AnthropicProvider implements LLMProvider {
       }
     }
 
-    const anthropic = new ChatAnthropic({
-      anthropicApiKey: this.apiKey,
-      modelName: model,
-      temperature: 0.7,
-      topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
-    });
-
     const messageContent = [
       { type: "text", text: prompt },
       ...otherAttachments.map(attachment => {
@@ -142,15 +157,10 @@ export class AnthropicProvider implements LLMProvider {
       })
     ];
 
-    const response = await anthropic.invoke([{
+    return this.invokeText(model, [{
       role: "user",
       content: messageContent
     }]);
-
-    if (typeof response.content !== 'string') {
-      throw new Error('Unexpected response format from Anthropic');
-    }
-    return response.content;
   }
 
   supportsAttachments(model: string): boolean {
@@ -238,10 +248,13 @@ export class AnthropicProvider implements LLMProvider {
           }
         ],
         max_tokens: 1000,
-        temperature: 0.7  // Required for Claude Sonnet 4.5+ (cannot use both temperature and top_p)
+        // Claude ≤ 4.6 accepts temperature (never together with top_p); Opus 4.7+ and
+        // Claude 5 reject every sampling parameter, so they get none.
+        ...(acceptsSamplingParams(model) ? { temperature: LEGACY_TEMPERATURE } : {})
       });
 
-      const content = response.content[0];
+      // The answer is the first text block (a thinking block may precede it).
+      const content = response.content.find(block => block.type === 'text');
       if (!content || content.type !== 'text') {
         throw new Error('No text content in Anthropic response');
       }
