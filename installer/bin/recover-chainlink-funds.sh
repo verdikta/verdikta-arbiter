@@ -302,6 +302,41 @@ eth_to_wei() {
     echo "$eth_amount * 1000000000000000000" | bc -l | cut -d'.' -f1
 }
 
+# Gas a value transfer from a key to the owner wallet needs. A plain EOA
+# takes 21000; an owner wallet that is a smart account (EIP-7702 delegation,
+# e.g. MetaMask) runs code on receive and needs more — 21220 on Base for the
+# MetaMask delegator — so a hard-coded 21000 reverted every sweep (#61).
+# eth_estimateGas, then a 25% margin, never below 21000.
+estimate_transfer_gas() {
+    local from_address="$1"
+    local to_address="$2"
+    local value_wei="$3"
+    local rpc_url="$4"
+    local value_hex
+    value_hex=$(python3 -c "print(hex(int('$value_wei')))" 2>/dev/null || echo "0x0")
+    local rpc_response
+    rpc_response=$(curl -s -X POST -H "Content-Type: application/json" \
+        -d "{\"jsonrpc\":\"2.0\",\"method\":\"eth_estimateGas\",\"params\":[{\"from\":\"$from_address\",\"to\":\"$to_address\",\"value\":\"$value_hex\"}],\"id\":1}" \
+        "$rpc_url" 2>/dev/null) || rpc_response=""
+    local estimate
+    estimate=$(echo "$rpc_response" | python3 -c "
+import json, sys
+try:
+    data = json.load(sys.stdin)
+    print(int(data['result'], 16) if 'result' in data else 0)
+except Exception:
+    print(0)
+" 2>/dev/null)
+    case "$estimate" in ''|*[!0-9]*) estimate=0 ;; esac
+    if [ "$estimate" -le 0 ]; then
+        echo "21000"
+        return 0
+    fi
+    local with_margin=$(( estimate + estimate / 4 ))
+    [ "$with_margin" -lt 21000 ] && with_margin=21000
+    echo "$with_margin"
+}
+
 # Function to convert Wei to ETH
 wei_to_eth() {
     local wei_amount="$1"
@@ -1020,7 +1055,7 @@ TOTAL_GAS_COST="0"
 
 # Get current gas price
 GAS_PRICE=$(get_gas_price "$RPC_URL")
-GAS_PRICE_GWEI=$(echo "scale=2; $GAS_PRICE / 1000000000" | bc -l)
+GAS_PRICE_GWEI=$(echo "scale=4; $GAS_PRICE / 1000000000" | bc -l)
 echo -e "${GREEN}Current gas price: $GAS_PRICE_GWEI gwei${NC}"
 
 declare -A KEY_ETH_BALANCES
@@ -1176,7 +1211,10 @@ for i in "${!KEY_ADDRESSES[@]}"; do
         ETH_AMOUNT_WEI=$(eth_to_wei "$ETH_AMOUNT")
         
         # Calculate actual amount after gas (deduct gas from transfer amount)
-        GAS_COST_WEI="$ETH_GAS_COST_PER_TX"
+        # The transfer's real gas: estimated for THIS recipient (a smart-account
+        # owner needs more than 21000), priced at the current gas price (#61).
+        ETH_GAS_LIMIT=$(estimate_transfer_gas "$KEY_ADDRESS" "$OWNER_WALLET" "$ETH_AMOUNT_WEI" "$RPC_URL")
+        GAS_COST_WEI=$(echo "$ETH_GAS_LIMIT * $GAS_PRICE" | bc -l | cut -d'.' -f1)
         ACTUAL_ETH_AMOUNT_WEI=$(echo "$ETH_AMOUNT_WEI - $GAS_COST_WEI" | bc -l | cut -d'.' -f1)
         ACTUAL_ETH_AMOUNT=$(wei_to_eth "$ACTUAL_ETH_AMOUNT_WEI")
         
@@ -1184,7 +1222,7 @@ for i in "${!KEY_ADDRESSES[@]}"; do
             echo -e "${BLUE}  Recovering $ACTUAL_ETH_AMOUNT $CURRENCY_NAME...${NC}"
             
             if [ "$DRY_RUN" = "false" ]; then
-                TX_HASH=$(send_eth_transaction "$CHAINLINK_PRIVATE_KEY" "$OWNER_WALLET" "$ACTUAL_ETH_AMOUNT_WEI" "21000" "$GAS_PRICE" "$CURRENT_NONCE" "$RPC_URL") || true
+                TX_HASH=$(send_eth_transaction "$CHAINLINK_PRIVATE_KEY" "$OWNER_WALLET" "$ACTUAL_ETH_AMOUNT_WEI" "$ETH_GAS_LIMIT" "$GAS_PRICE" "$CURRENT_NONCE" "$RPC_URL") || true
                 
                 if [[ -z "$TX_HASH" || "$TX_HASH" == ERROR:* ]]; then
                     echo -e "${RED}  ✗ Failed to send ETH transaction: $TX_HASH${NC}"
