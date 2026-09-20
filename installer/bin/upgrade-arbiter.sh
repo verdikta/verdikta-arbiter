@@ -2224,7 +2224,10 @@ else
                     esac
                 fi
                 if [ $RECONF_DO_REGISTER -eq 1 ] && [ -n "$RECONF_AGGREGATOR" ]; then
-                    echo -e "${BLUE}Registering the new job ids with $RECONF_AGGREGATOR (classes [$RECONF_CLASSES])...${NC}"
+                    # The classes the registration below actually uses: VA_CLASS_IDS when the
+                    # answers set it, else the recorded ones (#55 — the banner used to name the
+                    # recorded classes even when the answers changed them).
+                    echo -e "${BLUE}Registering the new job ids with $RECONF_AGGREGATOR (classes [${VA_CLASS_IDS:-$RECONF_CLASSES}])...${NC}"
                     if [ -f "$TARGET_DIR/register-oracle.sh" ]; then
                         cd "$TARGET_DIR"
                         set +e
