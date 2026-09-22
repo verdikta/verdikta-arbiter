@@ -825,7 +825,9 @@ check_external_adapter() {
         ver_line=$(printf '%s' "$ver_json" | python3 -c '
 import sys, json
 v = json.load(sys.stdin)
-print(f"release={v.get(\"release\") or \"unstamped\"} adapter={v.get(\"adapter\")} ai-node={v.get(\"aiNode\")} verdikta-common={v.get(\"verdiktaCommon\")}")' 2>/dev/null)
+# %-formatting, not an f-string: backslash-escaped quotes inside an f-string
+# expression are a SyntaxError before Python 3.12, and nodes ship 3.8 / 3.10.
+print("release=%s adapter=%s ai-node=%s verdikta-common=%s" % (v.get("release") or "unstamped", v.get("adapter"), v.get("aiNode"), v.get("verdiktaCommon")))' 2>/dev/null)
         if [ -n "$ver_line" ]; then
             emit INFO ea.version "$ver_line" ""
         else
