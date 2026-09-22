@@ -946,6 +946,12 @@ print(n)' "$commit_db" 2>/dev/null || echo 0)
         reveals_miss=$(safe_grep_count 'REVEAL miss' "$latest_ea_log")
         errs=$(safe_grep_count '"level":"error"' "$latest_ea_log")
         emit INFO ea.recent_activity "current log: commits=$commits reveals_hit=$reveals_hit reveals_miss=$reveals_miss errors=$errs" "$(basename "$latest_ea_log")"
+        # #69: one dispatcher request fans out to several jobs; the EA shares one
+        # download per CID and reuses it briefly. Non-zero counts mean it is working.
+        local fetch_inflight fetch_hits
+        fetch_inflight=$(safe_grep_count 'IPFS fetch reused in-flight' "$latest_ea_log")
+        fetch_hits=$(safe_grep_count 'IPFS fetch cache hit' "$latest_ea_log")
+        emit INFO ea.fetch_reuse "current log: in_flight_reuses=$fetch_inflight cache_hits=$fetch_hits" "$(basename "$latest_ea_log")"
         if [ "${reveals_miss:-0}" -gt 0 ]; then
             emit WARN ea.recent_reveal_miss "$reveals_miss REVEAL miss(es) in current EA log" \
                  "Usually means commitStore was RAM-only at some point (or commits older than retention); see ea.commit_store_mode."

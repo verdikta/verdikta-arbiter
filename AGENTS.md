@@ -301,6 +301,11 @@ Ollama runs locally and is unaffected by gateway settings.
   as operator-preferred gateways; releases ≤ 1.6.x ignore them and use a
   hard-coded order (ipfs.io, the retired cloudflare-ipfs.com, Pinata, dweb.link)
   in which only Pinata serves content today. Fix gateway problems in the library.
+- **IPFS fetches are shared per process.** A dispatcher request selects several
+  of one operator's jobs within milliseconds; `external-adapter/src/services/cidFetchCache.js`
+  wraps the library client so one download serves every job asking for that CID
+  and the bytes are kept for a short TTL (bounded; malformed archives evicted).
+  Fetch-time log lines carry the job's run tag via AsyncLocalStorage.
 - **Two networks**: `base_sepolia` (testnet) and `base_mainnet`. Network-specific
   wrapped-VDKA and RPC config live in `installer/.env`. See `docs/deployments.md`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.

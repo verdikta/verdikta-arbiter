@@ -68,6 +68,13 @@ AI_TIMEOUT=300000              # Request timeout when calling the AI Node (ms)
 # slower, not faster. Honoured by @verdikta/common >= 1.7; older releases ignore it.
 # IPFS_GATEWAY=https://<subdomain>.mypinata.cloud
 # IPFS_GATEWAY_TOKEN=<dedicated-gateway key; sent only to the gateways listed above>
+# Shared IPFS fetches: one dispatcher request fans out to several of this node's
+# jobs, so downloads of the same CID are shared while in flight and kept briefly
+# for the next selected job. Defaults suit most nodes; TTL 0 keeps only the
+# in-flight sharing. Counters are on GET /version (ipfsFetchCache).
+# IPFS_FETCH_CACHE_TTL_MS=120000
+# IPFS_FETCH_CACHE_MAX_ENTRIES=32
+# IPFS_FETCH_CACHE_MAX_BYTES=67108864
 IPFS_PINNING_SERVICE=https://api.pinata.cloud
 IPFS_PINNING_KEY=eyJ...        # Pinata JWT (NOT the API key/secret). Required to upload justifications.
 

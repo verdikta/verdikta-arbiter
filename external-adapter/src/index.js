@@ -52,7 +52,9 @@ app.get('/version', (req, res) => {
   res.json({
     service: 'verdikta-external-adapter',
     ...collectVersionInfo(),
-    uptimeSeconds: Math.floor(process.uptime())
+    uptimeSeconds: Math.floor(process.uptime()),
+    // #69: shared/cached IPFS fetches (hits, in-flight reuses, entries, bytes)
+    ipfsFetchCache: evaluateHandler.fetchCache ? evaluateHandler.fetchCache.stats() : null
   });
 });
 
