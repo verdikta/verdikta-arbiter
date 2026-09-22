@@ -124,9 +124,33 @@ ever held test funds).
 
 Requires: a funded testnet wallet (worst-case ~`maxTotalFee` per request + gas),
 the aggregator deployed, and **at least one live registered arbiter** serving the
-requested class (128). Fee params come from `config.l4.fees` (defaults match the
+requested class. Fee params come from `config.l4.fees` (defaults match the
 DemoClient: `maxOracleFee=15e13`, `estimatedBaseCost=8e9`, `maxFeeScaling=5`,
 `alpha=500`).
+
+### Class selection and the testnet canary gate
+
+The requested class comes from `--class-id`, then `L4_CLASS_ID`, then
+`config.l4.classId` (128). Class **5555** is reserved for release testing: the
+arbiters that register it on Base Sepolia are ones we control, so a request
+against 5555 exercises exactly the build that was just deployed there.
+
+Every revealing arbiter's justification carries a self-reported `arbiter`
+block (`adapter`, `aiNode`, `verdiktaCommon`, `release`). L4 prints it per
+arbiter (`arbiter.versions`) and, when asked, gates on it:
+
+```bash
+# after upgrading the class-5555 arbiters, before touching mainnet:
+node src/index.js l4 --class-id 5555 --expect-common 1.7.0 --expect-release <commit> --junit results/l4.xml
+```
+
+`--expect-common` fails the run unless **every** revealing arbiter reports that
+`@verdikta/common` version; `--expect-release` does the same for the release
+commit stamped by the installer (prefix match, so a short SHA works). Without
+them the versions are reported only. `npm run audit-oracles -- <aggId>` shows
+which identities were selected, committed and revealed, with the same version
+block per oracle. The release procedure that uses this is
+[`docs/release-runbook.md`](../docs/release-runbook.md) ("Testnet canary gate").
 
 ## CI & secret handling
 
@@ -134,9 +158,19 @@ DemoClient: `maxOracleFee=15e13`, `estimatedBaseCost=8e9`, `maxFeeScaling=5`,
 
 - **`l2-mock`** — runs on PRs/pushes (same-repo) and manual dispatch; boots the
   adapter + mock AI and asserts the pipeline. Needs `IPFS_PINNING_KEY`.
-- **`l4-testnet`** — runs nightly (schedule) and via manual dispatch; needs
-  `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
-  scoped to the `e2e` GitHub Environment.
+- **`l4-testnet`** — runs nightly (schedule, class 128) and via manual dispatch;
+  needs `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
+  scoped to the `e2e` GitHub Environment. Dispatch inputs: `class_id`
+  (default `5555`), `expect_common`, `expect_release`, `scenario`:
+
+  ```bash
+  gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
+    -f expect_common=1.7.0 -f expect_release=<commit>
+  ```
+
+  The wallet must be funded first: the run prints `[l4] wallet=<addr> balance=…`,
+  and an `insufficient funds` error within a second of submitting means it
+  is empty (each request costs `maxTotalFee` ≈ 0.0018 ETH plus gas).
 
 Secret guidance:
 

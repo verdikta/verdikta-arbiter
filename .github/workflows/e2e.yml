@@ -29,6 +29,22 @@ on:
         description: 'Run L4 live-testnet acceptance'
         type: boolean
         default: false
+      class_id:
+        description: 'L4: class to request. 5555 is the testnet canary class (arbiters we control, upgraded first); the nightly uses config.l4.classId (128).'
+        type: string
+        default: '5555'
+      expect_common:
+        description: 'L4: fail unless every revealing arbiter reports this @verdikta/common version (e.g. 1.7.0). Blank = report only.'
+        type: string
+        default: ''
+      expect_release:
+        description: 'L4: fail unless every revealing arbiter reports this release commit (prefix match). Blank = report only.'
+        type: string
+        default: ''
+      scenario:
+        description: 'L4: comma-separated scenario ids (blank = all)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -87,7 +103,7 @@ jobs:
 
   # ── L4: live testnet acceptance (Base Sepolia) ─────────────────────────────
   l4-testnet:
-    name: L4 acceptance (Base Sepolia)
+    name: L4 acceptance (Base Sepolia, class ${{ inputs.class_id || '128' }})
     if: >-
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.run_l4)
@@ -110,6 +126,11 @@ jobs:
           RPC_URL: ${{ secrets.RPC_URL }}
           AGGREGATOR_ADDRESS: ${{ secrets.AGGREGATOR_ADDRESS }}
           E2E_WALLET_PRIVATE_KEY: ${{ secrets.E2E_WALLET_PRIVATE_KEY }}
+          # Dispatch inputs (empty on the nightly schedule → config defaults apply).
+          L4_CLASS_ID: ${{ inputs.class_id }}
+          L4_EXPECT_COMMON: ${{ inputs.expect_common }}
+          L4_EXPECT_RELEASE: ${{ inputs.expect_release }}
+          L4_SCENARIO: ${{ inputs.scenario }}
         run: |
           if [ -z "$E2E_WALLET_PRIVATE_KEY" ] || [ -z "$RPC_URL" ]; then
             echo "::error::L4 requires RPC_URL and E2E_WALLET_PRIVATE_KEY secrets."
