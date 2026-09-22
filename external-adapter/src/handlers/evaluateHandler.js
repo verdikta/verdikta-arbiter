@@ -1,7 +1,10 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { createClient, validateRequest, validator, DEFAULT_IPFS_GATEWAYS } = require('@verdikta/common');
+const {
+  createClient, validateRequest, validator, DEFAULT_IPFS_GATEWAYS,
+  MalformedArchiveError: LibMalformedArchiveError
+} = require('@verdikta/common');
 const { buildIpfsGatewayConfig } = require('../utils/ipfsGatewayConfig');
 const aiClient = require('../services/aiClient');
 const crypto = require('crypto');
@@ -10,8 +13,15 @@ const ethers = require('ethers');
 const { collectVersionInfo } = require('../utils/versionInfo');
 const {
   fetchAndTriageArchives,
-  buildMalformedSubmissionVerdict
+  buildMalformedSubmissionVerdict,
+  isMalformedArchiveError
 } = require('../utils/bcidValidation');
+const {
+  installCidFetchCache,
+  cidFetchCacheOptionsFromEnv,
+  runWithRequestContext,
+  setRunTag
+} = require('../services/cidFetchCache');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -57,13 +67,22 @@ for (const warning of ipfsGatewayConfig.warnings) {
   logger.warn(`IPFS gateway configuration: ${warning}`);
 }
 
-const evaluateHandler = async (request) => {
+// One dispatcher request fans out to several of this node's jobs within
+// milliseconds, and each used to download the same archive CIDs on its own.
+// Downloads of a CID are shared while in flight and kept briefly for the next
+// selected job (#69). Wrapping the library client covers the archive fetches
+// and the manifest parser's ipfs/cid additional-file fetches alike.
+const fetchCache = installCidFetchCache(ipfsClient, { ...cidFetchCacheOptionsFromEnv(process.env), logger });
+logger.info(`IPFS fetch cache: ttl=${fetchCache.ttlMs}ms maxEntries=${fetchCache.maxEntries} maxBytes=${fetchCache.maxBytes}`);
+
+const evaluate = async (request) => {
   const { id, data } = request;
   const aggId = (data.aggId || data.aggid || '').toLowerCase();
   const t0 = Date.now();   
   let   runTag;
   let tempDir; // Declare here so we can reuse if provider error happens
   let modeString = '0'; // visible to the catch: a provider error in mode 1 must not look like a commit
+  let cidArray = [];    // visible to the catch: a malformed archive must not stay cached
 
   try {
     // console.log('Validating request:', request);
@@ -82,6 +101,7 @@ const evaluateHandler = async (request) => {
     }
     logger.debug(`Mode: ${modeString}`);
     runTag = `[EA ${id} agg=${aggId} mode=${modeString}]`;
+    setRunTag(runTag); // fetch-cache log lines made by library code carry this job's tag
 
     // if mode 2, there is nothing to calculate--just reveal previously calculated information
     // (input in this case is 2:<hash>)
@@ -106,7 +126,7 @@ const evaluateHandler = async (request) => {
     }
     
     // Split multiple CIDs if present
-    const cidArray = cidString.split(',').map(cid => cid.trim()).filter(cid => cid);
+    cidArray = cidString.split(',').map(cid => cid.trim()).filter(cid => cid);
     // logger.info(`Processing ${cidArray.length} CIDs:`, cidArray);
     logger.debug(`CID list count = ${cidArray.length}`);
     
@@ -196,6 +216,9 @@ const evaluateHandler = async (request) => {
         cidArray, tempDir, { archiveService, validator, logger, runTag }
       );
       logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
+      // Malformed archives are never kept: jobs fetching at the same moment shared
+      // the bytes (and reach the same verdict), but no later job reuses them.
+      for (const malformed of malformedBCIDs) fetchCache.forget(malformed.cid);
 
       let result;
       if (malformedBCIDs.length > 0) {
@@ -332,6 +355,13 @@ const evaluateHandler = async (request) => {
       code: error.code
     });
 
+    // A malformed archive on the errored path (the primary, or one the library's
+    // parser rejected) must not be served from cache to the next job either.
+    if (isMalformedArchiveError(error) ||
+        (typeof LibMalformedArchiveError === 'function' && error instanceof LibMalformedArchiveError)) {
+      for (const cid of cidArray) fetchCache.forget(cid);
+    }
+
     // If we detect the custom PROVIDER_ERROR prefix, handle that differently.
     // Mode 0 keeps its historical contract (200 + [0] + an error justification).
     // In mode 1 the aggregator reads aggregatedScore[0] as a COMMITMENT HASH, so a
@@ -375,6 +405,15 @@ const evaluateHandler = async (request) => {
     };
   }
 };
+
+/**
+ * Entry point. Runs the evaluation inside a request context so that fetches
+ * made by library code (which never sees the job) are logged with this job's
+ * run tag. The fetch cache is exposed for /version and tests.
+ */
+const evaluateHandler = (request) =>
+  runWithRequestContext({ runTag: `[EA ${request && request.id}]` }, () => evaluate(request));
+evaluateHandler.fetchCache = fetchCache;
 
 /**
  * Mode-1 (commit) helper
