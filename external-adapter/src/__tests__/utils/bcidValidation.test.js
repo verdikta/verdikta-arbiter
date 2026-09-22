@@ -235,7 +235,43 @@ describe('bcidValidation', () => {
         .rejects.toBe(boom);
     });
 
-    it('a malformed PRIMARY archive is never classified: triage passes it through and the parser rejects it as a plain error', async () => {
+    it('fetches every archive concurrently, so no archive queues behind another one\'s gateway retries', async () => {
+      const started = [];
+      let release;
+      const bothStarted = new Promise((resolve) => { release = resolve; });
+      const svc = fetchingService();
+      svc.getArchive = jest.fn(async (cid) => {
+        started.push(cid);
+        if (started.length === 2) release();
+        // Neither fetch resolves until both have begun: a sequential loop would hang here.
+        await Promise.race([
+          bothStarted,
+          new Promise((_, reject) => setTimeout(() => reject(new Error('fetches ran sequentially')), 2000).unref())
+        ]);
+        return buffers[cid];
+      });
+      const r = await fetchAndTriageArchives([P, C], tempDir, opts(svc));
+      expect(started).toEqual([P, C]);
+      expect(r.malformedBCIDs).toEqual([]);
+      expect(Object.keys(r.extractedPaths).sort()).toEqual([C, P].sort());
+    });
+
+    it('reports the first failure in CID order once every fetch has settled', async () => {
+      const primaryBoom = new Error('primary gateway failure');
+      const bcidBoom = new Error('bCID gateway failure');
+      let bcidFinished = false;
+      const svc = fetchingService();
+      svc.getArchive = jest.fn(async (cid) => {
+        if (cid === P) throw primaryBoom;
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        bcidFinished = true;
+        throw bcidBoom;
+      });
+      await expect(fetchAndTriageArchives([P, C], tempDir, opts(svc))).rejects.toBe(primaryBoom);
+      expect(bcidFinished).toBe(true); // the slower fetch was awaited, not abandoned
+    });
+
+    it('a malformed PRIMARY archive is never classified: triage passes it through and the parser rejection is not one of ours', async () => {
       // bcid-primary-not-json.zip as the requester's package: valid manifest, primary file is markdown
       const r = await fetchAndTriageArchives([M, C], tempDir, opts(fetchingService()));
       expect(r.malformedBCIDs).toEqual([]);
@@ -245,7 +281,9 @@ describe('bcidValidation', () => {
       console.log.mockRestore();
       expect(err).toBeInstanceOf(Error);
       expect(err.message).toMatch(/Invalid JSON in primary file/);
-      expect(isMalformedArchiveError(err)).toBe(false); // → errored path in the handler, no verdict
+      // @verdikta/common >= 1.7 throws its own MalformedArchiveError here; it is not a
+      // classification made by this module → errored path in the handler, no verdict
+      expect(isMalformedArchiveError(err)).toBe(false);
     });
   });
 

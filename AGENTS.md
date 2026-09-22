@@ -256,8 +256,10 @@ checks, optional `--self-heal`), `rotate-logs.sh` (app-log rotation).
 
 **External Adapter** (`external-adapter/.env`): `PORT`, `AI_NODE_URL`
 (default `http://localhost:3000`), `AI_TIMEOUT`, `OPERATOR_ADDR` (**required**),
-`IPFS_PINNING_KEY` (Pinata **JWT**, **required** for reveals), `IPFS_GATEWAY`,
-`IPFS_PINNING_SERVICE`, `LOG_LEVEL`.
+`IPFS_PINNING_KEY` (Pinata **JWT**, **required** for reveals), `IPFS_GATEWAY`
+(optional comma-separated list of operator-preferred gateways, tried before the
+library's built-in ones), `IPFS_GATEWAY_TOKEN` (optional Pinata dedicated-gateway
+key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`.
 
 **AI Node** (`ai-node/.env.local`): provider keys (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `HYPERBOLIC_API_KEY`, `OPENROUTER_API_KEY`),
@@ -286,6 +288,11 @@ Ollama runs locally and is unaffected by gateway settings.
   always sends `thinking: {type: "disabled"}` (accepted by Sonnet 5 / Opus 5)
   and gives models outside its table only 2048 output tokens, so modern models
   get `maxTokens` set explicitly. Do not re-add a blanket `temperature`.
+- **IPFS gateway order lives in `@verdikta/common`**, not here. The EA only
+  forwards `IPFS_GATEWAY` / `IPFS_GATEWAY_TOKEN` (`external-adapter/src/utils/ipfsGatewayConfig.js`)
+  as operator-preferred gateways; releases ≤ 1.6.x ignore them and use a
+  hard-coded order (ipfs.io, the retired cloudflare-ipfs.com, Pinata, dweb.link)
+  in which only Pinata serves content today. Fix gateway problems in the library.
 - **Two networks**: `base_sepolia` (testnet) and `base_mainnet`. Network-specific
   wrapped-VDKA and RPC config live in `installer/.env`. See `docs/deployments.md`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.

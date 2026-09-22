@@ -1,7 +1,8 @@
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
-const { createClient, validateRequest, validator } = require('@verdikta/common');
+const { createClient, validateRequest, validator, DEFAULT_IPFS_GATEWAYS } = require('@verdikta/common');
+const { buildIpfsGatewayConfig } = require('../utils/ipfsGatewayConfig');
 const aiClient = require('../services/aiClient');
 const crypto = require('crypto');
 const commitStore = require('../services/commitStore');
@@ -25,12 +26,21 @@ const OPERATOR_ADDRESS = (() => {
   }
 })();
 
+// Operator-preferred IPFS gateways (IPFS_GATEWAY, tried first) and the optional
+// dedicated-gateway key (IPFS_GATEWAY_TOKEN); see utils/ipfsGatewayConfig.js.
+// @verdikta/common ≤ 1.6.x ignores these keys (and exports no
+// DEFAULT_IPFS_GATEWAYS), so they are forward-compatible.
+const ipfsGatewayConfig = buildIpfsGatewayConfig(process.env, {
+  builtInGateways: DEFAULT_IPFS_GATEWAYS
+});
+
 // Initialize verdikta-common client with configuration
 const verdikta = createClient({
   ipfs: {
     pinningService: process.env.IPFS_PINNING_SERVICE || 'https://api.pinata.cloud',
     pinningKey: process.env.IPFS_PINNING_KEY,
-    timeout: 30000
+    timeout: 30000,
+    ...ipfsGatewayConfig.ipfs
   },
   logging: {
     level: process.env.LOG_LEVEL || 'warn',
@@ -42,6 +52,10 @@ const verdikta = createClient({
 });
 
 const { manifestParser, archiveService, logger, ipfsClient } = verdikta;
+
+for (const warning of ipfsGatewayConfig.warnings) {
+  logger.warn(`IPFS gateway configuration: ${warning}`);
+}
 
 const evaluateHandler = async (request) => {
   const { id, data } = request;
