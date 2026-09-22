@@ -54,23 +54,34 @@ async function pollEvaluation(contract, aggId, { pollIntervalMs, timeoutMs }, on
  * wins — see run-l2.js for why). Returns { json: null, errors } when every
  * gateway failed or none returned a justification-shaped object.
  */
-async function fetchJustificationJson(gateways, cid, timeoutMs) {
+async function fetchJustificationJson(gateways, cid, timeoutMs, retry = {}) {
+  // A justification is pinned seconds before the aggregator fulfils, and public
+  // gateways (and even Pinata's) can take a minute or two to serve a fresh CID:
+  // the first class-5555 canary run saw Pinata time out and ipfs.io/dweb.link
+  // answer 403/429 on a CID that was fetchable shortly after. Sweep the
+  // gateways, wait, sweep again — up to retry.attempts times.
+  const attempts = Math.max(1, Number(retry.attempts) || 1);
+  const delayMs = Math.max(0, Number(retry.delayMs) || 0);
   const list = Array.isArray(gateways) ? gateways : [gateways];
-  const errors = [];
-  for (const gateway of list) {
-    const url = `${gateway.replace(/\/$/, '')}/ipfs/${cid}`;
-    try {
-      const { data } = await axios.get(url, { timeout: timeoutMs });
-      const obj = typeof data === 'string' ? JSON.parse(data) : data;
-      if (obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string')) {
-        return { json: obj, gateway, errors };
+  let errors = [];
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    errors = [];
+    for (const gateway of list) {
+      const url = `${gateway.replace(/\/$/, '')}/ipfs/${cid}`;
+      try {
+        const { data } = await axios.get(url, { timeout: timeoutMs });
+        const obj = typeof data === 'string' ? JSON.parse(data) : data;
+        if (obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string')) {
+          return { json: obj, gateway, errors, attempt };
+        }
+        errors.push(`${gateway}: missing scores/justification`);
+      } catch (err) {
+        errors.push(`${gateway}: ${err.message}`);
       }
-      errors.push(`${gateway}: missing scores/justification`);
-    } catch (err) {
-      errors.push(`${gateway}: ${err.message}`);
     }
+    if (attempt < attempts) await sleep(delayMs);
   }
-  return { json: null, gateway: null, errors };
+  return { json: null, gateway: null, errors, attempt: attempts };
 }
 
 /**
@@ -89,11 +100,14 @@ async function justificationChecks(cfg, justificationCID, expect) {
 
   const reports = [];
   for (const cid of cids) {
-    const { json, gateway, errors } = await fetchJustificationJson(cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs);
+    const { json, gateway, errors, attempt } = await fetchJustificationJson(
+      cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs,
+      { attempts: cfg.timeouts.ipfsFetchAttempts, delayMs: cfg.timeouts.ipfsFetchRetryMs }
+    );
     if (cid === first) {
       checks.push(json
-        ? A.assert('justification.fetchableJson', true, `gateway=${gateway}, keys=${Object.keys(json).join(',')}`)
-        : A.assert('justification.fetchableJson', false, `all gateways failed — ${errors.join('; ')}`));
+        ? A.assert('justification.fetchableJson', true, `gateway=${gateway}, attempt=${attempt}, keys=${Object.keys(json).join(',')}`)
+        : A.assert('justification.fetchableJson', false, `all gateways failed on ${attempt} attempt(s) — ${errors.join('; ')}`));
     }
     reports.push({ cid, version: json ? arbiterVersion(json) : null });
   }

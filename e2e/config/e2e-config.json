@@ -17,7 +17,9 @@
   },
   "timeouts": {
     "evaluateMs": 180000,
-    "ipfsFetchMs": 20000
+    "ipfsFetchMs": 20000,
+    "ipfsFetchAttempts": 6,
+    "ipfsFetchRetryMs": 15000
   },
   "tolerances": {
     "scoreSumTarget": 1000000,

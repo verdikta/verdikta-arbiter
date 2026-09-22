@@ -259,6 +259,7 @@ The audit tool combines both to show exactly who served a request and how:
 
 ```bash
 npm run audit-oracles -- 0x<aggId> [0x<aggId>…] [--lookback 20000]
+# commits/reveals/fulfilment are printed as t+Ns after the request block
 ```
 
 Per aggId it reports: fulfillment status, aggregated scores, selected/committed/
