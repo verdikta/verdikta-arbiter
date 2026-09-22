@@ -52,6 +52,68 @@ cd ai-node && npm test -- --passWithNoTests && cd ..
 cd external-adapter && npm test -- --forceExit && cd ..
 ```
 
+## 3b. Testnet canary gate (class 5555)
+
+Backend arbiter changes — External Adapter, AI Node, Chainlink job specs,
+`@verdikta/common` bumps — reach mainnet only after the same build has served a
+real request on Base Sepolia. Class **5555** is reserved for this: ten arbiter
+identities on the testnet VPS register it (they also serve 128), so a request
+with `requestedClass = 5555` is answered only by nodes we control. Do not
+register 5555 on mainnet or on nodes you do not upgrade first.
+
+1. **Upgrade the canaries first.** On the testnet VPS, for every install
+   directory (see [Unattended Installation and Upgrade](../installer/docs/installation/unattended.md)):
+
+   ```bash
+   cd ~/verdikta-arbiter && git pull
+   ./installer/bin/upgrade-arbiter.sh --unattended --target-dir <install-dir>
+   ```
+
+   Then confirm each adapter reports the build you expect:
+
+   ```bash
+   curl -s http://localhost:<adapter-port>/version
+   ```
+
+   `verdiktaCommon` is the installed `@verdikta/common`; `release` is the commit
+   stamped by the upgrade.
+
+2. **Check the e2e wallet.** The L4 run pays `maxTotalFee` (≈ 0.0018 ETH) plus
+   gas per scenario from the wallet whose key lives in the `e2e` GitHub
+   Environment; its address is printed as `[l4] wallet=` by every run. Top it up
+   from a Base Sepolia faucet when it is below ~0.005 ETH:
+
+   ```bash
+   cast balance <wallet> --rpc-url https://sepolia.base.org --ether
+   ```
+
+3. **Run the canary request** against class 5555 with the versions the
+   arbiters must report:
+
+   ```bash
+   gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
+     -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
+   gh run watch   # or: gh run list --workflow e2e.yml --limit 1
+   ```
+
+   Locally, with the key in your own shell only:
+
+   ```bash
+   cd e2e && node src/index.js l4 --class-id 5555 --expect-common <version> --expect-release <commit>
+   ```
+
+4. **Gate.** Green means: the request was fulfilled, every revealing arbiter's
+   justification reports the expected `verdiktaCommon` and `release`, and the
+   justification is fetchable. `cd e2e && npm run audit-oracles -- <aggId>`
+   lists which identities were selected, committed and revealed, with each
+   one's version. A red canary stops the release: fix on `main`, re-upgrade the
+   canaries, re-run.
+
+5. **Then upgrade mainnet** arbiters with the same upgrade command and confirm
+   `GET /version` on each. There is no mainnet e2e wallet, so the mainnet check
+   is the per-node version endpoint plus the next real request's justification
+   (`audit-oracles` works against mainnet with `--rpc` / `--aggregator`).
+
 ## 4. Update deployment addresses
 
 If any contracts were deployed since the last release:
@@ -128,7 +190,8 @@ If a critical issue is found after tagging:
 | Step | Gate |
 |---|---|
 | Public-release checklist all Done | Proceed to version bump |
-| Automated verification passes | Proceed to tag |
+| Automated verification passes | Proceed to the testnet canary |
+| Class-5555 canary green with the expected versions | Proceed to mainnet upgrades and tag |
 | Tag pushed + CI green | Proceed to GitHub release |
 | Docs site updated | Proceed to sign-off |
 | Sign-off table complete | Release is official |

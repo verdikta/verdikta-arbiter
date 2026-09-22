@@ -6,6 +6,7 @@ const chalk = require('chalk');
 const A = require('../assertions');
 const { startMockAiNode } = require('./mock-ai-node');
 const { bootAdapter } = require('./boot-adapter');
+const { fetchJustificationJson, justificationRetry } = require('../ipfs');
 
 /**
  * POST a request to the External Adapter's /evaluate endpoint.
@@ -35,22 +36,12 @@ async function callEvaluate(adapterUrl, cid, { aggId, timeoutMs = 180000 } = {})
  * can have propagation delay or rate limits for freshly-pinned content, so a
  * single gateway is not a reliable check on its own.
  */
-async function checkJustificationFetch(gateways, cid, timeoutMs) {
-  const list = Array.isArray(gateways) ? gateways : [gateways];
-  const errors = [];
-  for (const gateway of list) {
-    const url = `${gateway.replace(/\/$/, '')}/ipfs/${cid}`;
-    try {
-      const { data } = await axios.get(url, { timeout: timeoutMs });
-      const obj = typeof data === 'string' ? JSON.parse(data) : data;
-      const ok = obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string');
-      if (ok) return A.assert('justification.fetchableJson', true, `gateway=${gateway}, keys=${Object.keys(obj).join(',')}`);
-      errors.push(`${gateway}: missing scores/justification`);
-    } catch (err) {
-      errors.push(`${gateway}: ${err.message}`);
-    }
+async function checkJustificationFetch(gateways, cid, timeoutMs, retry) {
+  const { json, gateway, errors, attempt } = await fetchJustificationJson(gateways, cid, timeoutMs, retry);
+  if (json) {
+    return A.assert('justification.fetchableJson', true, `gateway=${gateway}, attempt=${attempt}, keys=${Object.keys(json).join(',')}`);
   }
-  return A.assert('justification.fetchableJson', false, `all gateways failed — ${errors.join('; ')}`);
+  return A.assert('justification.fetchableJson', false, `all gateways failed on ${attempt} attempt(s) — ${errors.join('; ')}`);
 }
 
 /** Run one scenario in mode 0 (standard evaluate). */
@@ -73,7 +64,7 @@ async function runMode0(cfg, scenario, expectedWinnerIndex, assertWinner) {
     checks.push(A.winnerAssertion(scoreArr, expectedWinnerIndex));
   }
   if (cfg.ipfs.checkJustificationFetch && A.isLikelyCid(cid)) {
-    checks.push(await checkJustificationFetch(cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs));
+    checks.push(await checkJustificationFetch(cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs, justificationRetry(cfg)));
   }
   return checks;
 }

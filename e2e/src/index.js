@@ -63,13 +63,21 @@ async function executeL2(cliOpts) {
 
 async function executeL4(cliOpts) {
   const cfg = buildConfig(cliOpts);
-  const ids = cliOpts.scenario ? cliOpts.scenario.split(',').map((s) => s.trim()) : null;
+  // CI passes the dispatch inputs as L4_* environment variables; flags win.
+  const scenarioIds = cliOpts.scenario || process.env.L4_SCENARIO || '';
+  const ids = scenarioIds ? scenarioIds.split(',').map((s) => s.trim()).filter(Boolean) : null;
   const scenarios = loadScenarios(cliOpts.scenarios, ids);
 
   console.log(chalk.bold(`\nVerdikta E2E — L4 (live testnet) — ${scenarios.length} scenario(s)\n`));
 
   const reporter = new Reporter();
-  await runL4(cfg, scenarios, { reporter, assertWinner: cliOpts.assertWinner });
+  await runL4(cfg, scenarios, {
+    reporter,
+    assertWinner: cliOpts.assertWinner,
+    classId: cliOpts.classId,
+    expectCommon: cliOpts.expectCommon || process.env.L4_EXPECT_COMMON || undefined,
+    expectRelease: cliOpts.expectRelease || process.env.L4_EXPECT_RELEASE || undefined,
+  });
   reporter.printConsole();
 
   if (cliOpts.report) reporter.writeJson(cliOpts.report);
@@ -119,6 +127,9 @@ program
   .option('--scenario <ids>', 'comma-separated scenario ids to run')
   .option('--scenarios <file>', 'path to a scenarios JSON file')
   .option('--assert-winner', 'also assert the winning outcome index (needs expectedWinnerIndex)')
+  .option('--class-id <id>', 'requested class (default: L4_CLASS_ID env, then config.l4.classId; the testnet canary class is 5555)')
+  .option('--expect-common <version>', 'fail unless every revealing arbiter reports this @verdikta/common version (default: L4_EXPECT_COMMON env)')
+  .option('--expect-release <commit>', 'fail unless every revealing arbiter reports this release commit, prefix match (default: L4_EXPECT_RELEASE env)')
   .option('--report <file>', 'write JSON report to file')
   .option('--junit <file>', 'write JUnit XML report to file')
   .action((opts) => executeL4(opts).catch((err) => {

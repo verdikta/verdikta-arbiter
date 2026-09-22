@@ -34,6 +34,7 @@ const ABI = [
   'event OracleSelected(bytes32 indexed aggRequestId, uint256 indexed pollIndex, address oracle, bytes32 jobId)',
   'event CommitReceived(bytes32 indexed aggRequestId, uint256 pollIndex, address operator, bytes16 commitHash)',
   'event NewOracleResponseRecorded(bytes32 requestId, uint256 pollIndex, bytes32 indexed aggRequestId, address operator)',
+  'event FulfillAIEvaluation(bytes32 indexed requestId, uint256[] likelihoods, string justificationCID)',
 ];
 
 const GETLOGS_CHUNK = 1999; // public Base Sepolia RPC caps eth_getLogs at 2000 blocks
@@ -132,13 +133,25 @@ function summarizeJustification(j) {
     const selected = await chunkedQuery(agg, agg.filters.OracleSelected(aggId), fromBlock, latest);
     const commits = await chunkedQuery(agg, agg.filters.CommitReceived(aggId), fromBlock, latest);
     const reveals = await chunkedQuery(agg, agg.filters.NewOracleResponseRecorded(null, null, aggId), fromBlock, latest);
+    const fulfilled = await chunkedQuery(agg, agg.filters.FulfillAIEvaluation(aggId), fromBlock, latest);
 
-    console.log(`\nselected (${selected.length}):`);
-    selected.forEach((e) => console.log(`  slot ${e.args.pollIndex}: oracle=${e.args.oracle} jobId=${e.args.jobId}`));
+    // Seconds after the request block (selection happens in the request tx), so
+    // commit latency = chain detection + IPFS fetch + AI evaluation + commit tx.
+    const blockTs = new Map();
+    const ts = async (bn) => {
+      if (!blockTs.has(bn)) { blockTs.set(bn, (await provider.getBlock(bn)).timestamp); await sleep(80); }
+      return blockTs.get(bn);
+    };
+    const t0 = selected.length ? await ts(selected[0].blockNumber) : null;
+    const rel = async (e) => (t0 === null ? '' : ` t+${(await ts(e.blockNumber)) - t0}s`);
+
+    console.log(`\nselected (${selected.length})${t0 === null ? '' : ` at ${new Date(t0 * 1000).toISOString()}`}:`);
+    for (const e of selected) console.log(`  slot ${e.args.pollIndex}: oracle=${e.args.oracle} jobId=${e.args.jobId}`);
     console.log(`commits (${commits.length}):`);
-    commits.forEach((e) => console.log(`  slot ${e.args.pollIndex}: operator=${e.args.operator}`));
+    for (const e of commits) console.log(`  slot ${e.args.pollIndex}: operator=${e.args.operator}${await rel(e)}`);
     console.log(`reveals (${reveals.length}):`);
-    reveals.forEach((e) => console.log(`  slot ${e.args.pollIndex}: operator=${e.args.operator}`));
+    for (const e of reveals) console.log(`  slot ${e.args.pollIndex}: operator=${e.args.operator}${await rel(e)}`);
+    for (const e of fulfilled) console.log(`fulfilled:${await rel(e)}`);
 
     const distinctOperators = [...new Set(commits.map((e) => e.args.operator))];
     console.log(`distinct committing operators: ${distinctOperators.length} → ${distinctOperators.join(', ')}`);

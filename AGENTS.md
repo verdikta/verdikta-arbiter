@@ -234,6 +234,14 @@ cd external-adapter && npm test     # see external-adapter/TESTING.md (unit vs i
 cd arbiter-operator && npx hardhat test
 ```
 
+### Release gate: testnet canaries before mainnet
+Backend changes go to the **class-5555** arbiters on the testnet VPS first
+(`upgrade-arbiter.sh --unattended`), then `e2e` L4 runs a real Base Sepolia
+request against 5555 and asserts every revealing arbiter's self-reported
+version (`--class-id 5555 --expect-common <ver> --expect-release <sha>`, or the
+`e2e.yml` dispatch inputs), and only then mainnet arbiters are upgraded. See
+`docs/release-runbook.md` §3b.
+
 ### Install / upgrade a full node (operator machine)
 ```bash
 ./installer/bin/install.sh            # 9-phase install; installs to ~/verdikta-arbiter-node by default

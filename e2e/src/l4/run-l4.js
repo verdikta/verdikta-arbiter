@@ -1,9 +1,17 @@
 'use strict';
 
 const { ethers } = require('ethers');
-const axios = require('axios');
 const chalk = require('chalk');
 const A = require('../assertions');
+const { fetchJustificationJson, justificationRetry } = require('../ipfs');
+const {
+  gasLimitFor,
+  resolveClassId,
+  splitJustificationCids,
+  arbiterVersion,
+  releaseCommit,
+  versionChecks,
+} = require('./helpers');
 
 // Minimal human-readable ABI for the ETH-funded ReputationAggregator.
 // Matches verdikta-dispatcher/reputationBasedAggregator/contracts/ReputationAggregator.sol
@@ -42,55 +50,58 @@ async function pollEvaluation(contract, aggId, { pollIntervalMs, timeoutMs }, on
 }
 
 /**
- * Fetch and validate a justification CID (may be a comma-separated list).
- * Tries each gateway in order (first success wins) — see run-l2.js for why.
+ * Checks on the aggregator's justificationCID (a comma-separated list, one CID
+ * per revealing arbiter): the first must be a valid, fetchable justification
+ * (as before), and every arbiter's self-reported version is collected — and
+ * asserted when `expect.expectCommon` / `expect.expectRelease` are given.
+ *
+ * @returns {Promise<{ checks: Array, reports: Array<{cid, version}> }>}
  */
-async function checkJustificationFetch(gateways, justificationCID, timeoutMs) {
-  const first = String(justificationCID).split(',')[0].trim();
+async function justificationChecks(cfg, justificationCID, expect) {
+  const cids = splitJustificationCids(justificationCID);
+  const first = cids[0] || '';
   const checks = [A.cidAssertion('justificationCid.valid', first)];
-  if (!A.isLikelyCid(first)) return checks;
+  if (!A.isLikelyCid(first)) return { checks, reports: [] };
 
-  const list = Array.isArray(gateways) ? gateways : [gateways];
-  const errors = [];
-  for (const gateway of list) {
-    const url = `${gateway.replace(/\/$/, '')}/ipfs/${first}`;
-    try {
-      const { data } = await axios.get(url, { timeout: timeoutMs });
-      const obj = typeof data === 'string' ? JSON.parse(data) : data;
-      const ok = obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string');
-      if (ok) {
-        checks.push(A.assert('justification.fetchableJson', true, `gateway=${gateway}, keys=${Object.keys(obj).join(',')}`));
-        return checks;
-      }
-      errors.push(`${gateway}: missing scores/justification`);
-    } catch (err) {
-      errors.push(`${gateway}: ${err.message}`);
+  const reports = [];
+  for (const cid of cids) {
+    const { json, gateway, errors, attempt } = await fetchJustificationJson(
+      cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs, justificationRetry(cfg)
+    );
+    if (cid === first) {
+      checks.push(json
+        ? A.assert('justification.fetchableJson', true, `gateway=${gateway}, attempt=${attempt}, keys=${Object.keys(json).join(',')}`)
+        : A.assert('justification.fetchableJson', false, `all gateways failed on ${attempt} attempt(s) — ${errors.join('; ')}`));
     }
+    reports.push({ cid, version: json ? arbiterVersion(json) : null });
   }
-  checks.push(A.assert('justification.fetchableJson', false, `all gateways failed — ${errors.join('; ')}`));
-  return checks;
+  checks.push(...versionChecks(reports, expect));
+  return { checks, reports };
 }
 
-function buildL4Config(cfg) {
+function buildL4Config(cfg, opts = {}) {
   const l4 = cfg.l4 || {};
+  // --class-id, then L4_CLASS_ID, then config; the canary gate requests class 5555.
+  const classId = resolveClassId({ cli: opts.classId, env: process.env.L4_CLASS_ID, config: l4.classId });
   const rpcUrl = process.env.RPC_URL || l4.rpcUrl;
   const aggregatorAddress = process.env.AGGREGATOR_ADDRESS || l4.aggregatorAddress;
   const privateKey = process.env.E2E_WALLET_PRIVATE_KEY;
   if (!rpcUrl) throw new Error('L4 requires an RPC URL (set RPC_URL or config.l4.rpcUrl).');
   if (!aggregatorAddress) throw new Error('L4 requires an aggregator address (set AGGREGATOR_ADDRESS or config.l4.aggregatorAddress).');
   if (!privateKey) throw new Error('L4 requires a funded test wallet (set E2E_WALLET_PRIVATE_KEY — use a dedicated testnet key).');
-  return { ...l4, rpcUrl, aggregatorAddress, privateKey };
+  return { ...l4, classId, rpcUrl, aggregatorAddress, privateKey };
 }
 
 /**
  * Run the L4 (live testnet) suite.
  * @param {object} cfg - merged config (must include cfg.l4)
  * @param {Array} scenarios
- * @param {object} opts - { reporter, assertWinner }
+ * @param {object} opts - { reporter, assertWinner, classId?, expectCommon?, expectRelease? }
  */
 async function runL4(cfg, scenarios, opts) {
   const { reporter } = opts;
-  const l4 = buildL4Config(cfg);
+  const l4 = buildL4Config(cfg, opts);
+  const expect = { expectCommon: opts.expectCommon, expectRelease: opts.expectRelease };
 
   const provider = new ethers.JsonRpcProvider(l4.rpcUrl);
   const wallet = new ethers.Wallet(l4.privateKey, provider);
@@ -98,7 +109,12 @@ async function runL4(cfg, scenarios, opts) {
 
   const net = await provider.getNetwork();
   const balance = await provider.getBalance(wallet.address);
-  console.log(chalk.gray(`[l4] network=${l4.network} chainId=${net.chainId} aggregator=${l4.aggregatorAddress}`));
+  console.log(chalk.gray(`[l4] network=${l4.network} chainId=${net.chainId} aggregator=${l4.aggregatorAddress} classId=${l4.classId}`));
+  if (expect.expectCommon || expect.expectRelease) {
+    console.log(chalk.gray(`[l4] expecting every revealing arbiter to report`
+      + `${expect.expectCommon ? ` @verdikta/common=${expect.expectCommon}` : ''}`
+      + `${expect.expectRelease ? ` release=${expect.expectRelease}` : ''}`));
+  }
   console.log(chalk.gray(`[l4] wallet=${wallet.address} balance=${ethers.formatEther(balance)} ETH`));
 
   const { alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling } = l4.fees;
@@ -107,12 +123,20 @@ async function runL4(cfg, scenarios, opts) {
     const start = Date.now();
     try {
       const value = await aggregator.maxTotalFee(maxOracleFee);
-      console.log(chalk.gray(`[l4] ${scenario.id}: submitting (value=${ethers.formatEther(value)} ETH)…`));
+      const args = [[scenario.cid], '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId];
 
-      const tx = await aggregator.requestAIEvaluationWithApproval(
-        [scenario.cid], '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId,
-        { value, gasLimit: l4.gasLimit }
-      );
+      // Estimate rather than trust config.l4.gasLimit: selection cost grows with
+      // the registry, and an out-of-gas request still pays for the whole limit.
+      let estimate = null;
+      try {
+        estimate = await aggregator.requestAIEvaluationWithApproval.estimateGas(...args, { value });
+      } catch (err) {
+        console.log(chalk.yellow(`[l4] ${scenario.id}: gas estimation failed (${err.shortMessage || err.message}); using configured gasLimit=${l4.gasLimit}`));
+      }
+      const gasLimit = gasLimitFor(estimate, l4.gasLimit);
+      console.log(chalk.gray(`[l4] ${scenario.id}: submitting (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
+
+      const tx = await aggregator.requestAIEvaluationWithApproval(...args, { value, gasLimit });
       const receipt = await tx.wait(1);
       const aggId = parseAggId(aggregator, receipt);
 
@@ -136,7 +160,13 @@ async function runL4(cfg, scenarios, opts) {
           if (opts.assertWinner && Number.isInteger(scenario.expectedWinnerIndex)) {
             checks.push(A.winnerAssertion(result.scores, scenario.expectedWinnerIndex));
           }
-          checks.push(...await checkJustificationFetch(cfg.ipfs.gateways, result.justificationCID, cfg.timeouts.ipfsFetchMs));
+          const { checks: jChecks, reports } = await justificationChecks(cfg, result.justificationCID, expect);
+          checks.push(...jChecks);
+          console.log(chalk.gray(`[l4] ${scenario.id}: fulfilled in ${Math.round((Date.now() - start) / 1000)}s; ${reports.length} revealing arbiter(s)`));
+          for (const r of reports) {
+            const v = r.version;
+            console.log(chalk.gray(`[l4]   ${r.cid}: ${v ? `common=${v.verdiktaCommon || '?'} adapter=${v.adapter || '?'} aiNode=${v.aiNode || '?'} release=${releaseCommit(v.release) || '?'}` : 'justification fetch failed'}`));
+          }
         }
       }
       reporter.addCase({ id: scenario.id, mode: 'l4', durationMs: Date.now() - start, checks });
@@ -146,4 +176,4 @@ async function runL4(cfg, scenarios, opts) {
   }
 }
 
-module.exports = { runL4, AGGREGATOR_ABI };
+module.exports = { runL4, AGGREGATOR_ABI, justificationChecks };
