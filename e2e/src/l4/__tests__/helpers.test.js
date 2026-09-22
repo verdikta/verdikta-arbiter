@@ -1,6 +1,7 @@
 'use strict';
 
 const {
+  gasLimitFor,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
@@ -94,5 +95,15 @@ describe('versionChecks', () => {
 
   it('ignores blank expectations', () => {
     expect(versionChecks([reported('QmA', '1.7.0')], { expectCommon: '  ', expectRelease: '' })).toHaveLength(1);
+  });
+});
+
+describe('gasLimitFor', () => {
+  it('adds 30% headroom to the estimate and falls back to the configured limit without one', () => {
+    expect(gasLimitFor(3073632n, 4000000)).toBe(3995721n);
+    expect(gasLimitFor(1000000, 4000000)).toBe(1300000n);
+    expect(gasLimitFor(null, 4000000)).toBe(4000000n);
+    expect(gasLimitFor(undefined, 4000000n)).toBe(4000000n);
+    expect(gasLimitFor(0n, 4000000)).toBe(4000000n);
   });
 });

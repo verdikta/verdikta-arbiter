@@ -36,6 +36,6 @@
     },
     "pollIntervalMs": 20000,
     "timeoutMs": 900000,
-    "gasLimit": 3000000
+    "gasLimit": 4000000
   }
 }

@@ -127,6 +127,10 @@ the aggregator deployed, and **at least one live registered arbiter** serving th
 requested class. Fee params come from `config.l4.fees` (defaults match the
 DemoClient: `maxOracleFee=15e13`, `estimatedBaseCost=8e9`, `maxFeeScaling=5`,
 `alpha=500`).
+The request's gas limit is the node's estimate plus 30 %; `config.l4.gasLimit`
+is only the fallback when estimation fails. Oracle selection walks the whole
+keeper registry, so a fixed limit silently stops working as identities
+register (3,000,000 ran out at 30 identities on Base Sepolia).
 
 ### Class selection and the testnet canary gate
 

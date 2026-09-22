@@ -5,6 +5,7 @@ const axios = require('axios');
 const chalk = require('chalk');
 const A = require('../assertions');
 const {
+  gasLimitFor,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
@@ -144,12 +145,20 @@ async function runL4(cfg, scenarios, opts) {
     const start = Date.now();
     try {
       const value = await aggregator.maxTotalFee(maxOracleFee);
-      console.log(chalk.gray(`[l4] ${scenario.id}: submitting (value=${ethers.formatEther(value)} ETH)…`));
+      const args = [[scenario.cid], '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId];
 
-      const tx = await aggregator.requestAIEvaluationWithApproval(
-        [scenario.cid], '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId,
-        { value, gasLimit: l4.gasLimit }
-      );
+      // Estimate rather than trust config.l4.gasLimit: selection cost grows with
+      // the registry, and an out-of-gas request still pays for the whole limit.
+      let estimate = null;
+      try {
+        estimate = await aggregator.requestAIEvaluationWithApproval.estimateGas(...args, { value });
+      } catch (err) {
+        console.log(chalk.yellow(`[l4] ${scenario.id}: gas estimation failed (${err.shortMessage || err.message}); using configured gasLimit=${l4.gasLimit}`));
+      }
+      const gasLimit = gasLimitFor(estimate, l4.gasLimit);
+      console.log(chalk.gray(`[l4] ${scenario.id}: submitting (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
+
+      const tx = await aggregator.requestAIEvaluationWithApproval(...args, { value, gasLimit });
       const receipt = await tx.wait(1);
       const aggId = parseAggId(aggregator, receipt);
 

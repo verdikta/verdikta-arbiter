@@ -130,7 +130,27 @@ function versionChecks(reports, expect = {}) {
   return checks;
 }
 
+/**
+ * Gas limit for the request transaction: the node's estimate plus 30 %
+ * headroom. Oracle selection iterates the whole keeper registry, so the cost
+ * grows as identities register — the old fixed 3,000,000 limit ran out of gas
+ * once Base Sepolia reached 30 identities (needs ~3.07M for class 5555, ~3.11M
+ * for class 128). Falls back to the configured limit when estimation failed.
+ *
+ * @param {bigint|number|null|undefined} estimate
+ * @param {bigint|number} fallback
+ * @returns {bigint}
+ */
+function gasLimitFor(estimate, fallback) {
+  const fb = BigInt(fallback);
+  if (estimate === null || estimate === undefined) return fb;
+  const est = BigInt(estimate);
+  if (est <= 0n) return fb;
+  return (est * 13n) / 10n;
+}
+
 module.exports = {
+  gasLimitFor,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
