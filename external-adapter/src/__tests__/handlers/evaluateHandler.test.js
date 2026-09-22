@@ -324,3 +324,53 @@ describe('evaluateHandler', () => {
     expect(ipfsClient.uploadToIPFS).not.toHaveBeenCalled();
   });
 });
+
+describe('IPFS gateway configuration handed to @verdikta/common', () => {
+  const ENV_KEYS = ['IPFS_GATEWAY', 'IPFS_GATEWAY_TOKEN'];
+  const saved = {};
+
+  beforeEach(() => {
+    for (const key of ENV_KEYS) {
+      saved[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (saved[key] === undefined) delete process.env[key];
+      else process.env[key] = saved[key];
+    }
+  });
+
+  // The handler builds its client at module load, so load a fresh copy per case
+  // and read the config it handed to the mocked createClient. The mock function
+  // itself survives isolateModules, so take its most recent call.
+  function clientConfigForFreshHandler() {
+    let config;
+    jest.isolateModules(() => {
+      require('../../handlers/evaluateHandler');
+      const { calls } = require('@verdikta/common').createClient.mock;
+      config = calls[calls.length - 1][0];
+    });
+    return config;
+  }
+
+  it('passes operator gateways (tried first) and the dedicated-gateway token', () => {
+    process.env.IPFS_GATEWAY = 'https://abc-123.mypinata.cloud/, https://ipfs.io';
+    process.env.IPFS_GATEWAY_TOKEN = 'gateway-key';
+
+    const config = clientConfigForFreshHandler();
+
+    expect(config.ipfs.gateways).toEqual(['https://abc-123.mypinata.cloud', 'https://ipfs.io']);
+    expect(config.ipfs.gatewayToken).toBe('gateway-key');
+    expect(config.ipfs.timeout).toBe(30000);
+  });
+
+  it('passes no gateway keys when the operator configured none, so the library defaults apply', () => {
+    const config = clientConfigForFreshHandler();
+
+    expect(config.ipfs).not.toHaveProperty('gateways');
+    expect(config.ipfs).not.toHaveProperty('gatewayToken');
+  });
+});

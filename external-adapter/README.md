@@ -61,7 +61,13 @@ AI_NODE_URL=http://localhost:3000
 AI_TIMEOUT=300000              # Request timeout when calling the AI Node (ms)
 
 # IPFS (Pinata)
-IPFS_GATEWAY=https://ipfs.io
+# Optional: gateways to try FIRST, in order, ahead of @verdikta/common's built-in
+# public gateways (Pinata, ipfs.io, dweb.link). Comma-separated. Point this at a
+# dedicated Pinata gateway to avoid public rate limits; leave it unset to use the
+# library's default order. Listing only ipfs.io/dweb.link here makes fetches
+# slower, not faster. Honoured by @verdikta/common >= 1.7; older releases ignore it.
+# IPFS_GATEWAY=https://<subdomain>.mypinata.cloud
+# IPFS_GATEWAY_TOKEN=<dedicated-gateway key; sent only to the gateways listed above>
 IPFS_PINNING_SERVICE=https://api.pinata.cloud
 IPFS_PINNING_KEY=eyJ...        # Pinata JWT (NOT the API key/secret). Required to upload justifications.
 

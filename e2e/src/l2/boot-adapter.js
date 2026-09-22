@@ -46,7 +46,10 @@ async function bootAdapter({ adapterUrl, aiNodeUrl, eaDir = DEFAULT_EA_DIR, time
     PORT: port,
     AI_NODE_URL: aiNodeUrl,
     OPERATOR_ADDR: process.env.OPERATOR_ADDR || DUMMY_OPERATOR,
-    IPFS_GATEWAY: process.env.IPFS_GATEWAY || 'https://ipfs.io',
+    // IPFS_GATEWAY is inherited from process.env only when the caller set it:
+    // the adapter passes it to @verdikta/common as an operator-preferred gateway
+    // list, and defaulting it to ipfs.io would push a rate-limited public
+    // gateway ahead of Pinata.
     LOG_LEVEL: process.env.LOG_LEVEL || 'warn',
   };
   if (process.env.IPFS_PINNING_KEY) env.IPFS_PINNING_KEY = process.env.IPFS_PINNING_KEY;

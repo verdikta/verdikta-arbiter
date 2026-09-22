@@ -80,8 +80,12 @@ class MalformedArchiveError extends Error {
   }
 }
 
+// Strictly this module's own class. @verdikta/common >= 1.7 throws its own
+// `MalformedArchiveError` (same name) from parse()/validator; that one is NOT a
+// classification made here, and until the adapter adopts it deliberately (#31
+// follow-up) it must keep propagating as transient like any other library error.
 function isMalformedArchiveError(error) {
-  return error instanceof MalformedArchiveError || Boolean(error && error.name === 'MalformedArchiveError');
+  return error instanceof MalformedArchiveError;
 }
 
 /**
@@ -229,7 +233,7 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
  * bCID archives.
  *
  * Stage by stage:
- *  - fetch (IPFS): any failure propagates untouched — transient.
+ *  - fetch (IPFS, every archive concurrently): any failure propagates untouched — transient.
  *  - primary archive: extracted and manifest-checked with the library; any
  *    failure propagates untouched — the requester's package is never turned
  *    into a verdict (see PR discussion: the requester chose the outcomes and
@@ -241,12 +245,19 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
  * @returns {Promise<{extractedPaths: Object<string,string>, malformedBCIDs: MalformedArchiveError[]}>}
  */
 async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '' }) {
-  // --- fetch everything first: a gateway failure must surface before any verdict logic runs
+  // --- fetch everything first, concurrently: a gateway failure must surface before
+  // any verdict logic runs, and no archive should queue behind another archive's
+  // gateway retries. allSettled so we return only once every fetch has finished
+  // (no request keeps running after the caller has moved on); the first failure
+  // in CID order is the one reported, so the primary's error wins deterministically.
+  const outcomes = await Promise.allSettled(cidArray.map((cid, i) => {
+    logger.info(`${runTag} Fetching archive ${i + 1}/${cidArray.length}: ${cid}`);
+    return archiveService.getArchive(cid);
+  }));
   const archiveData = {};
   for (let i = 0; i < cidArray.length; i++) {
-    const cid = cidArray[i];
-    logger.info(`${runTag} Fetching archive ${i + 1}/${cidArray.length}: ${cid}`);
-    archiveData[cid] = await archiveService.getArchive(cid);
+    if (outcomes[i].status === 'rejected') throw outcomes[i].reason;
+    archiveData[cidArray[i]] = outcomes[i].value;
   }
 
   const extractedPaths = {};
