@@ -1,9 +1,9 @@
 'use strict';
 
 const { ethers } = require('ethers');
-const axios = require('axios');
 const chalk = require('chalk');
 const A = require('../assertions');
+const { fetchJustificationJson, justificationRetry } = require('../ipfs');
 const {
   gasLimitFor,
   resolveClassId,
@@ -50,41 +50,6 @@ async function pollEvaluation(contract, aggId, { pollIntervalMs, timeoutMs }, on
 }
 
 /**
- * Fetch one justification JSON, trying each gateway in order (first success
- * wins — see run-l2.js for why). Returns { json: null, errors } when every
- * gateway failed or none returned a justification-shaped object.
- */
-async function fetchJustificationJson(gateways, cid, timeoutMs, retry = {}) {
-  // A justification is pinned seconds before the aggregator fulfils, and public
-  // gateways (and even Pinata's) can take a minute or two to serve a fresh CID:
-  // the first class-5555 canary run saw Pinata time out and ipfs.io/dweb.link
-  // answer 403/429 on a CID that was fetchable shortly after. Sweep the
-  // gateways, wait, sweep again — up to retry.attempts times.
-  const attempts = Math.max(1, Number(retry.attempts) || 1);
-  const delayMs = Math.max(0, Number(retry.delayMs) || 0);
-  const list = Array.isArray(gateways) ? gateways : [gateways];
-  let errors = [];
-  for (let attempt = 1; attempt <= attempts; attempt++) {
-    errors = [];
-    for (const gateway of list) {
-      const url = `${gateway.replace(/\/$/, '')}/ipfs/${cid}`;
-      try {
-        const { data } = await axios.get(url, { timeout: timeoutMs });
-        const obj = typeof data === 'string' ? JSON.parse(data) : data;
-        if (obj && (Array.isArray(obj.scores) || typeof obj.justification === 'string')) {
-          return { json: obj, gateway, errors, attempt };
-        }
-        errors.push(`${gateway}: missing scores/justification`);
-      } catch (err) {
-        errors.push(`${gateway}: ${err.message}`);
-      }
-    }
-    if (attempt < attempts) await sleep(delayMs);
-  }
-  return { json: null, gateway: null, errors, attempt: attempts };
-}
-
-/**
  * Checks on the aggregator's justificationCID (a comma-separated list, one CID
  * per revealing arbiter): the first must be a valid, fetchable justification
  * (as before), and every arbiter's self-reported version is collected — and
@@ -101,8 +66,7 @@ async function justificationChecks(cfg, justificationCID, expect) {
   const reports = [];
   for (const cid of cids) {
     const { json, gateway, errors, attempt } = await fetchJustificationJson(
-      cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs,
-      { attempts: cfg.timeouts.ipfsFetchAttempts, delayMs: cfg.timeouts.ipfsFetchRetryMs }
+      cfg.ipfs.gateways, cid, cfg.timeouts.ipfsFetchMs, justificationRetry(cfg)
     );
     if (cid === first) {
       checks.push(json
@@ -212,4 +176,4 @@ async function runL4(cfg, scenarios, opts) {
   }
 }
 
-module.exports = { runL4, AGGREGATOR_ABI, justificationChecks, fetchJustificationJson };
+module.exports = { runL4, AGGREGATOR_ABI, justificationChecks };

@@ -2,7 +2,7 @@
 
 jest.mock('axios');
 const axios = require('axios');
-const { fetchJustificationJson } = require('../run-l4');
+const { fetchJustificationJson } = require('../ipfs');
 
 const GATEWAYS = ['https://gw-a.example', 'https://gw-b.example'];
 const JUSTIFICATION = { scores: [{ outcome: 'A', score: 1000000 }], justification: 'ok', arbiter: { verdiktaCommon: '1.7.0' } };

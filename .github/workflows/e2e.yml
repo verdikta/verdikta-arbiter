@@ -103,7 +103,9 @@ jobs:
 
   # ── L4: live testnet acceptance (Base Sepolia) ─────────────────────────────
   l4-testnet:
-    name: L4 acceptance (Base Sepolia, class ${{ inputs.class_id || '128' }})
+    # Static name: a job name with an expression renders as the raw template in
+    # the PR checks list when the job is skipped. The class is logged instead.
+    name: L4 acceptance (Base Sepolia)
     if: >-
       github.event_name == 'schedule' ||
       (github.event_name == 'workflow_dispatch' && inputs.run_l4)
