@@ -149,8 +149,27 @@ function gasLimitFor(estimate, fallback) {
   return (est * 13n) / 10n;
 }
 
+/**
+ * ETH to attach to a request. The aggregator funds a round from the caller's
+ * ethOwed credit first (ReputationAggregator._fundFromCredit) and needs
+ * msg.value only for the shortfall; anything more is refunded as further
+ * credit at settlement. Sending the full maxTotalFee every run therefore moves
+ * the wallet's ETH into credit that is never spent.
+ *
+ * @param {bigint|number|string} required - maxTotalFee(maxOracleFee), in wei
+ * @param {bigint|number|string} credit - ethOwed(wallet), in wei
+ * @returns {{ value: bigint, fromCredit: bigint }}
+ */
+function requestFunding(required, credit) {
+  const req = BigInt(required);
+  const cred = BigInt(credit);
+  const fromCredit = cred < req ? cred : req;
+  return { value: req - fromCredit, fromCredit };
+}
+
 module.exports = {
   gasLimitFor,
+  requestFunding,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
