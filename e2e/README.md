@@ -131,6 +131,12 @@ The request's gas limit is the node's estimate plus 30 %; `config.l4.gasLimit`
 is only the fallback when estimation fails. Oracle selection walks the whole
 keeper registry, so a fixed limit silently stops working as identities
 register (3,000,000 ran out at 30 identities on Base Sepolia).
+Each request attaches only what the wallet's refund credit does not cover.
+The aggregator refunds a round's unspent ETH as `ethOwed` credit and spends
+that credit first on the caller's next request, so L4 sends
+`maxTotalFee − ethOwed(wallet)` (zero once enough credit has built up) instead
+of the full `maxTotalFee` every time. The run prints the credit next to the
+balance and, per request, how much came from credit.
 
 ### Class selection and the testnet canary gate
 
@@ -172,9 +178,10 @@ block per oracle. The release procedure that uses this is
     -f expect_common=1.7.0 -f expect_release=<commit>
   ```
 
-  The wallet must be funded first: the run prints `[l4] wallet=<addr> balance=…`,
-  and an `insufficient funds` error within a second of submitting means it
-  is empty (each request costs `maxTotalFee` ≈ 0.0018 ETH plus gas).
+  The wallet must be funded first: the run prints `[l4] wallet=<addr> balance=… credit=…`,
+  and an `insufficient funds` error within a second of submitting means the
+  balance cannot cover gas plus whatever part of `maxTotalFee` (≈ 0.0018 ETH)
+  the credit does not.
 
 Secret guidance:
 

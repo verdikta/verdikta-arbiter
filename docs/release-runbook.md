@@ -78,13 +78,16 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    `verdiktaCommon` is the installed `@verdikta/common`; `release` is the commit
    stamped by the upgrade.
 
-2. **Check the e2e wallet.** The L4 run pays `maxTotalFee` (≈ 0.0018 ETH) plus
-   gas per scenario from the wallet whose key lives in the `e2e` GitHub
-   Environment; its address is printed as `[l4] wallet=` by every run. Top it up
-   from a Base Sepolia faucet when it is below ~0.005 ETH:
+2. **Check the e2e wallet.** Each L4 scenario needs `maxTotalFee` (≈ 0.0018 ETH)
+   plus gas, from the wallet whose key lives in the `e2e` GitHub Environment;
+   its address is printed as `[l4] wallet=` by every run. The aggregator refunds
+   each round's unspent ETH as `ethOwed` credit and spends it first, and L4
+   attaches only the shortfall, so the wallet itself mostly pays gas. Top it up
+   from a Base Sepolia faucet when credit plus balance is below ~0.005 ETH:
 
    ```bash
    cast balance <wallet> --rpc-url https://sepolia.base.org --ether
+   cast call <aggregator> 'ethOwed(address)(uint256)' <wallet> --rpc-url https://sepolia.base.org
    ```
 
 3. **Run the canary request** against class 5555 with the versions the
