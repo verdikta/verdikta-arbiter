@@ -50,16 +50,31 @@ check_nextjs() {
     fi
 }
 
-# Function to check HTTP endpoint health
+# Function to check HTTP endpoint health.
+# -f is essential: without it curl exits 0 on a 404, so a missing route would
+# be reported as "Healthy" (issue #13). Any non-2xx is unhealthy.
 check_health() {
     local url=$1
     local endpoint=$2
     local timeout=5
-    if curl -s -m $timeout "$url$endpoint" >/dev/null 2>&1; then
+    if curl -fsS -m $timeout "$url$endpoint" >/dev/null 2>&1; then
         return 0
     else
         return 1
     fi
+}
+
+# External Adapter health: prefer /health (added for issue #13), fall back to
+# /version so this script still reports correctly against an adapter built
+# before /health existed.
+check_adapter_health() {
+    if check_health "http://localhost:8080" "/health"; then
+        return 0
+    fi
+    if check_health "http://localhost:8080" "/version"; then
+        return 0
+    fi
+    return 1
 }
 
 # Check AI Node
@@ -146,7 +161,7 @@ fi
 
 if [ "$ADAPTER_RUNNING" = true ]; then
     # Health + details
-    if check_health "http://localhost:8080" "/health"; then
+    if check_adapter_health; then
         echo -e "  Status: ${GREEN}Running${NC}"
         echo -e "  Health: ${GREEN}Healthy${NC}"
     else
@@ -295,4 +310,13 @@ top -b -n 1 | grep -E "ai-node|external-adapter|chainlink" | awk '{print "    " 
 echo -e "  Memory Usage:"
 free -h | awk 'NR==2{printf "    Total: %s, Used: %s, Free: %s\n", $2, $3, $4}'
 echo -e "  Disk Usage:"
-df -h / | awk 'NR==2{printf "    Total: %s, Used: %s, Free: %s\n", $2, $3, $4}' 
+df -h / | awk 'NR==2{printf "    Total: %s, Used: %s, Free: %s\n", $2, $3, $4}'
+
+# Exit code so callers and monitoring can key off the result (issue #13):
+#   0 = all four components running, 1 = at least one is not.
+# The script previously always exited 0, which made it unusable in a check.
+if [ $RUNNING -eq $TOTAL ]; then
+    exit 0
+else
+    exit 1
+fi
