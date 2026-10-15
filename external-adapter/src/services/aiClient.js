@@ -4,6 +4,7 @@ const config = require('../config');
 const { createClient } = require('@verdikta/common');
 const fs = require('fs').promises;
 const path = require('path');
+const { summarizePayload } = require('../utils/payloadSummary');
 
 // Initialize verdikta-common client for logging
 const verdikta = createClient({
@@ -259,18 +260,10 @@ class AIClient {
           const payloadConstructTime = Date.now() - tPayloadStart;
           logger.info(`${runTag} Payload construction took ${payloadConstructTime}ms`);
           
-          logger.info(`${runTag} Sending request with payload structure:`, {
-            prompt: payload.prompt,
-            modelsCount: payload.models.length,
-            attachmentsCount: payload.attachments.length,
-            outcomesCount: payload.outcomes?.length || 0,
-            attachmentTypes: payload.attachments.map(a => typeof a === 'object' ? `${a.type}/${a.mediaType}` : 'unknown'),
-            hasOutcomes: !!payload.outcomes,
-            outcomes: payload.outcomes
-          });
-
-          // Log the full payload for debugging
-          logger.info(`${runTag} Full payload:`, JSON.stringify(payload, null, 2));
+          // Attachments are logged by shape only: their contents are the evidence
+          // itself, megabytes of base64 for a single image.
+          logger.info(`${runTag} Sending request to AI Node:`, summarizePayload(payload));
+          logger.debug(`${runTag} Prompt:`, { prompt: payload.prompt });
 
           const tApiStart = Date.now();
           const response = await this.client.post('/api/rank-and-justify', payload);
@@ -307,6 +300,7 @@ class AIClient {
             status: error.response?.status,
             statusText: error.response?.statusText,
             data: error.response?.data,
+            // Never error.config.data: that is the request body, attachments included.
             config: {
               url: error.config?.url,
               method: error.config?.method,
