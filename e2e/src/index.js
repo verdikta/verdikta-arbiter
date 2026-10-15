@@ -66,7 +66,8 @@ async function executeL4(cliOpts) {
   // CI passes the dispatch inputs as L4_* environment variables; flags win.
   const scenarioIds = cliOpts.scenario || process.env.L4_SCENARIO || '';
   const ids = scenarioIds ? scenarioIds.split(',').map((s) => s.trim()).filter(Boolean) : null;
-  const scenarios = loadScenarios(cliOpts.scenarios, ids);
+  // manualOnly scenarios (paid juries) run here only when named; the nightly names none.
+  const scenarios = loadScenarios(cliOpts.scenarios, ids, { allowManualOnly: true });
 
   console.log(chalk.bold(`\nVerdikta E2E — L4 (live testnet) — ${scenarios.length} scenario(s)\n`));
 

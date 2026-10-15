@@ -1,8 +1,8 @@
 'use strict';
 
 /**
- * Pure helpers for the L4 (live testnet) runner: class selection and the
- * self-reported arbiter versions found in justifications. No network, no
+ * Pure helpers for the L4 (live testnet) runner: class selection, request
+ * arguments and the self-reported arbiter versions found in justifications. No network, no
  * process state, so they are unit-tested in src/l4/__tests__.
  */
 
@@ -149,8 +149,26 @@ function gasLimitFor(estimate, fallback) {
   return (est * 13n) / 10n;
 }
 
+/**
+ * Arguments for `requestAIEvaluationWithApproval(cids, addendumText, alpha,
+ * maxOracleFee, estimatedBaseCost, maxFeeScaling, requestedClass)`. A loaded
+ * scenario carries its CID array (one entry, or e.g. a bounty's [evaluation
+ * package, hunter archive]) and its addendum, sent exactly as a client would.
+ *
+ * @param {{ cids?: string[], cid?: string, addendum?: string }} scenario
+ * @param {{ alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling }} fees - config.l4.fees
+ * @param {number} classId
+ * @returns {Array}
+ */
+function requestArgs(scenario, fees, classId) {
+  const cids = Array.isArray(scenario.cids) && scenario.cids.length ? [...scenario.cids] : [scenario.cid];
+  const { alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling } = fees;
+  return [cids, scenario.addendum || '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, classId];
+}
+
 module.exports = {
   gasLimitFor,
+  requestArgs,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
