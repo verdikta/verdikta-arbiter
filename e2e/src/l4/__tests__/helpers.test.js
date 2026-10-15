@@ -2,6 +2,7 @@
 
 const {
   gasLimitFor,
+  requestFunding,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
@@ -105,5 +106,23 @@ describe('gasLimitFor', () => {
     expect(gasLimitFor(null, 4000000)).toBe(4000000n);
     expect(gasLimitFor(undefined, 4000000n)).toBe(4000000n);
     expect(gasLimitFor(0n, 4000000)).toBe(4000000n);
+  });
+});
+
+describe('requestFunding', () => {
+  const required = 1800000000000000n; // maxTotalFee on Base Sepolia (0.0018 ETH)
+
+  it('sends nothing when existing credit covers the worst case', () => {
+    expect(requestFunding(required, 39000000000000000n)).toEqual({ value: 0n, fromCredit: required });
+    expect(requestFunding(required, required)).toEqual({ value: 0n, fromCredit: required });
+  });
+
+  it('sends only the shortfall when credit is partial', () => {
+    expect(requestFunding(required, 500000000000000n)).toEqual({ value: 1300000000000000n, fromCredit: 500000000000000n });
+  });
+
+  it('sends the full amount with no credit, and accepts number and string inputs', () => {
+    expect(requestFunding(required, 0n)).toEqual({ value: required, fromCredit: 0n });
+    expect(requestFunding('1800000000000000', 0)).toEqual({ value: required, fromCredit: 0n });
   });
 });

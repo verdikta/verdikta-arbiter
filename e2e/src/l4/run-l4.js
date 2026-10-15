@@ -6,6 +6,7 @@ const A = require('../assertions');
 const { fetchJustificationJson, justificationRetry } = require('../ipfs');
 const {
   gasLimitFor,
+  requestFunding,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
@@ -20,8 +21,23 @@ const AGGREGATOR_ABI = [
   'function getEvaluation(bytes32 aggRequestId) view returns (uint256[] scores, string justificationCID, bool exists)',
   'function isFailed(bytes32 aggRequestId) view returns (bool)',
   'function maxTotalFee(uint256 requestedMaxOracleFee) view returns (uint256)',
+  'function ethOwed(address payee) view returns (uint256)',
   'event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)',
 ];
+
+/**
+ * The wallet's refund credit on the aggregator. Read before every request,
+ * because the previous round's unspent ETH is credited when it settles.
+ * A failed read counts as no credit, which is the old full-prepay behaviour.
+ */
+async function readCredit(aggregator, address, label) {
+  try {
+    return await aggregator.ethOwed(address);
+  } catch (err) {
+    console.log(chalk.yellow(`[l4] ${label}: could not read ethOwed (${err.shortMessage || err.message}); sending the full prepay`));
+    return 0n;
+  }
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -115,14 +131,17 @@ async function runL4(cfg, scenarios, opts) {
       + `${expect.expectCommon ? ` @verdikta/common=${expect.expectCommon}` : ''}`
       + `${expect.expectRelease ? ` release=${expect.expectRelease}` : ''}`));
   }
-  console.log(chalk.gray(`[l4] wallet=${wallet.address} balance=${ethers.formatEther(balance)} ETH`));
+  const startCredit = await readCredit(aggregator, wallet.address, 'start');
+  console.log(chalk.gray(`[l4] wallet=${wallet.address} balance=${ethers.formatEther(balance)} ETH credit=${ethers.formatEther(startCredit)} ETH`));
 
   const { alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling } = l4.fees;
 
   for (const scenario of scenarios) {
     const start = Date.now();
     try {
-      const value = await aggregator.maxTotalFee(maxOracleFee);
+      const required = await aggregator.maxTotalFee(maxOracleFee);
+      const credit = await readCredit(aggregator, wallet.address, scenario.id);
+      const { value, fromCredit } = requestFunding(required, credit);
       const args = [[scenario.cid], '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId];
 
       // Estimate rather than trust config.l4.gasLimit: selection cost grows with
@@ -134,7 +153,7 @@ async function runL4(cfg, scenarios, opts) {
         console.log(chalk.yellow(`[l4] ${scenario.id}: gas estimation failed (${err.shortMessage || err.message}); using configured gasLimit=${l4.gasLimit}`));
       }
       const gasLimit = gasLimitFor(estimate, l4.gasLimit);
-      console.log(chalk.gray(`[l4] ${scenario.id}: submitting (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
+      console.log(chalk.gray(`[l4] ${scenario.id}: submitting (value=${ethers.formatEther(value)} ETH, fromCredit=${ethers.formatEther(fromCredit)} ETH of maxTotalFee=${ethers.formatEther(required)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
 
       const tx = await aggregator.requestAIEvaluationWithApproval(...args, { value, gasLimit });
       const receipt = await tx.wait(1);
