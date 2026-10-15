@@ -77,22 +77,32 @@ nohup npm start >> "$LOG_FILE" 2>&1 &
 NPM_PID=$!
 echo $NPM_PID > adapter.pid
 
-# Wait a moment and verify the process started
-sleep 2
+# Wait, bounded, until the adapter answers. It needs a few seconds to listen,
+# more on a busy VPS right after an upgrade, so a one-shot check after a fixed
+# `sleep 2` warned about adapters that were fine. Success as soon as GET
+# /version answers or the port listens (lsof + ss fallback per above); failure
+# only if the process exits or ADAPTER_START_TIMEOUT_SECS (default 60) runs out.
+adapter_answers() {
+    curl -fsS --max-time 2 http://localhost:8080/version >/dev/null 2>&1 || port_8080_in_use
+}
+START_TIMEOUT="${ADAPTER_START_TIMEOUT_SECS:-60}"
+waited=0
+until adapter_answers; do
+    if ! ps -p $NPM_PID > /dev/null 2>&1; then
+        echo "Error: External Adapter exited before it answered on port 8080. Check logs at: $LOG_FILE"
+        rm -f adapter.pid
+        tail -20 "$LOG_FILE"
+        exit 1
+    fi
+    if [ "$waited" -ge "$START_TIMEOUT" ]; then
+        # Left running: it may still come up; ./stop.sh stops it.
+        echo "Error: External Adapter (PID $NPM_PID) has not answered on port 8080 after ${START_TIMEOUT}s"
+        echo "Check logs at: $LOG_FILE"
+        exit 1
+    fi
+    sleep 1
+    waited=$((waited+1))
+done
 
-# Check if the process is still running
-if ! ps -p $NPM_PID > /dev/null 2>&1; then
-    echo "Error: External Adapter failed to start. Check logs at: $LOG_FILE"
-    rm -f adapter.pid
-    tail -20 "$LOG_FILE"
-    exit 1
-fi
-
-# Check if port is now listening (lsof + ss fallback per above).
-if port_8080_in_use; then
-    echo "External Adapter started successfully with PID $NPM_PID"
-    echo "Service is listening on port 8080"
-else
-    echo "Warning: Process started but port 8080 is not yet listening"
-    echo "Check logs at: $LOG_FILE"
-fi
+echo "External Adapter started successfully with PID $NPM_PID"
+echo "Service is listening on port 8080 (answered after ${waited}s)"
