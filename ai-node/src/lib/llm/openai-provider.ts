@@ -11,6 +11,7 @@ import { LLMProvider } from './llm-provider-interface';
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from '@langchain/core/messages';
 import { modelConfig } from '../../config/models';
+import { AttachmentContext, attachmentRequestError } from './attachment-errors';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -248,11 +249,17 @@ export class OpenAIProvider implements LLMProvider {
 
     // GPT-5 models require native client for max_completion_tokens support
     const isGpt5Model = model.toLowerCase().includes('gpt-5');
-    
-    // Use native client for GPT-5 models or models with native PDF support
-    if (isGpt5Model || (supportsNativePDF && pdfAttachments.length > 0)) {
-      console.log(`[${this.providerName}] Using native client for ${model} (GPT-5: ${isGpt5Model}, Native PDF: ${supportsNativePDF && pdfAttachments.length > 0})`);
+
+    // The native PDF path only when a PDF is actually attached
+    if (supportsNativePDF && pdfAttachments.length > 0) {
+      console.log(`[${this.providerName}] Using native PDF support for ${model} (${pdfAttachments.length} PDF(s))`);
       return this.generateResponseWithNativePDFSupport(prompt, model, pdfAttachments, otherAttachments, options);
+    }
+
+    // GPT-5 still needs the native client for images and text, without the PDF handling
+    if (isGpt5Model) {
+      console.log(`[${this.providerName}] Using native client for GPT-5 model ${model} (${otherAttachments.length} attachment(s), no PDF)`);
+      return this.generateResponseWithNativeAttachments(prompt, model, otherAttachments, options);
     }
 
     // Check if this is a reasoning model
@@ -319,6 +326,25 @@ export class OpenAIProvider implements LLMProvider {
     }
     return response.content;
   }
+  /**
+   * Generate response for a GPT-5 request with images / text but no PDF.
+   * GPT-5 needs the native client for max_completion_tokens; nothing here is PDF-specific.
+   */
+  private async generateResponseWithNativeAttachments(
+    prompt: string,
+    model: string,
+    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+  ): Promise<string> {
+    const messageContent: any[] = [
+      { type: "text", text: prompt },
+      ...this.nativeAttachmentBlocks(model, attachments)
+    ];
+    return this.completeWithNativeClient(model, messageContent, options, {
+      hasPdf: false,
+      hasImage: attachments.some(att => att.type === 'image')
+    });
+  }
 
   /**
    * Generate response using OpenAI's native PDF support
@@ -330,71 +356,95 @@ export class OpenAIProvider implements LLMProvider {
     otherAttachments: Array<{ type: string, content: string, mediaType: string }>,
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
+    // Build message content with native PDF support
+    const messageContent: any[] = [
+      { type: "text", text: prompt }
+    ];
+
+    // Add PDF attachments using base64 method (as per OpenAI docs)
+    for (const pdfAttachment of pdfAttachments) {
+      // Validate PDF size (OpenAI limit: 32MB, 100 pages)
+      const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4; // Approximate base64 to bytes conversion
+      if (pdfSizeBytes > 32 * 1024 * 1024) {
+        throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds OpenAI's 32MB limit`);
+      }
+
+      // Use the correct file content block for PDFs
+      messageContent.push({
+        type: "file",
+        file: {
+          file_data: `data:application/pdf;base64,${pdfAttachment.content}`,
+          filename: "document.pdf"
+        }
+      });
+    }
+
+    // Add other attachments (images, etc.)
+    messageContent.push(...this.nativeAttachmentBlocks(model, otherAttachments));
+
+    return this.completeWithNativeClient(model, messageContent, options, {
+      hasPdf: true,
+      hasImage: otherAttachments.some(att => att.type === 'image')
+    }, { 'OpenAI-Beta': 'pdf-files-v1' });
+  }
+
+  /**
+   * Image and text content blocks for the native client
+   */
+  private nativeAttachmentBlocks(
+    model: string,
+    attachments: Array<{ type: string, content: string, mediaType: string }>
+  ): any[] {
+    return attachments.map(attachment => {
+      if (attachment.type === "image") {
+        if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
+          throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${attachment.mediaType}. Supported formats are: JPEG, PNG, GIF, and WEBP.`);
+        }
+        return {
+          type: "image_url",
+          image_url: {
+            url: `data:${attachment.mediaType};base64,${attachment.content}`,
+            detail: "auto"
+          }
+        };
+      }
+      // Handle text content
+      return { type: "text", text: attachment.content };
+    });
+  }
+
+  /**
+   * Send a request with attachments through the native OpenAI client. A failure keeps
+   * the provider's status and message and says which input it is about.
+   */
+  private async completeWithNativeClient(
+    model: string,
+    messageContent: any[],
+    options: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } | undefined,
+    context: AttachmentContext,
+    headers?: Record<string, string>
+  ): Promise<string> {
+    // Check if this is a reasoning model
+    const isReasoningModel = model.toLowerCase().includes('o1') || 
+                            model.toLowerCase().includes('o3') || 
+                            model.toLowerCase().includes('gpt-5') ||
+                            model.toLowerCase().includes('gpt-4.1') ||
+                            model.toLowerCase().includes('nano');
+    
+    // GPT-5 models require max_completion_tokens instead of max_tokens
+    const isGpt5Model = model.toLowerCase().includes('gpt-5');
+    const maxTokensValue = isReasoningModel 
+      ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
+      : 1000;
+
+    // GPT-5 models use reasoning_effort (string), other reasoning models use reasoning (object)
+    const reasoningEffort = options?.reasoning?.effort || 'medium';
+
     try {
-      // Use OpenAI's direct client for native PDF support
+      // Use OpenAI's direct client
       const { OpenAI } = await import('openai');
       const client = new OpenAI({ apiKey: this.apiKey });
 
-      // Build message content with native PDF support
-      const messageContent: any[] = [
-        { type: "text", text: prompt }
-      ];
-
-      // Add PDF attachments using base64 method (as per OpenAI docs)
-      for (const pdfAttachment of pdfAttachments) {
-        // Validate PDF size (OpenAI limit: 32MB, 100 pages)
-        const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4; // Approximate base64 to bytes conversion
-        if (pdfSizeBytes > 32 * 1024 * 1024) {
-          throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds OpenAI's 32MB limit`);
-        }
-
-        // Use the correct file content block for PDFs
-        messageContent.push({
-          type: "file",
-          file: {
-            file_data: `data:application/pdf;base64,${pdfAttachment.content}`,
-            filename: "document.pdf"
-          }
-        });
-      }
-
-      // Add other attachments (images, etc.)
-      for (const attachment of otherAttachments) {
-        if (attachment.type === "image") {
-          if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
-            throw new Error(`Unsupported image format: ${attachment.mediaType}`);
-          }
-          messageContent.push({
-            type: "image_url",
-            image_url: {
-              url: `data:${attachment.mediaType};base64,${attachment.content}`,
-              detail: "auto"
-            }
-          });
-        } else {
-          // Handle text content
-          messageContent.push({ type: "text", text: attachment.content });
-        }
-      }
-
-      // Check if this is a reasoning model
-      const isReasoningModel = model.toLowerCase().includes('o1') || 
-                              model.toLowerCase().includes('o3') || 
-                              model.toLowerCase().includes('gpt-5') ||
-                              model.toLowerCase().includes('gpt-4.1') ||
-                              model.toLowerCase().includes('nano');
-      
-      // GPT-5 models require max_completion_tokens instead of max_tokens
-      const isGpt5Model = model.toLowerCase().includes('gpt-5');
-      const maxTokensValue = isReasoningModel 
-        ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
-        : 1000;
-
-      // Make the API call with native PDF support
-      // Use max_completion_tokens for GPT-5 models, max_tokens for others
-      // GPT-5 models use reasoning_effort (string), other reasoning models use reasoning (object)
-      const reasoningEffort = options?.reasoning?.effort || 'medium';
-      
       const response = await client.chat.completions.create({
         model: model,
         messages: [
@@ -411,37 +461,19 @@ export class OpenAIProvider implements LLMProvider {
         ...(isGpt5Model && { reasoning_effort: reasoningEffort }),
         ...(isReasoningModel && !isGpt5Model && options?.reasoning && { reasoning: options.reasoning }),
         ...(isReasoningModel && options?.verbosity && { verbosity: options.verbosity }),
-      } as any, {
-        headers: {
-          'OpenAI-Beta': 'pdf-files-v1'
-        }
-      });
+      } as any, headers ? { headers } : undefined);
 
       const content = response.choices[0]?.message?.content;
       if (!content) {
         throw new Error('No content in OpenAI response');
       }
 
-      console.log(`[${this.providerName}] Native PDF processing successful, response length: ${content.length}`);
+      console.log(`[${this.providerName}] Native client response length: ${content.length} (PDF: ${context.hasPdf}, images: ${context.hasImage})`);
       return content;
 
     } catch (error: any) {
-      console.error(`[${this.providerName}] Native PDF processing failed:`, error.message);
-      
-      // Provide helpful error messages based on common issues
-      if (error.message?.includes('32MB') || error.message?.includes('file size')) {
-        throw new Error(`PDF too large for OpenAI (max 32MB). Consider splitting the document.`);
-      } else if (error.message?.includes('pages') || error.message?.includes('100')) {
-        throw new Error(`PDF has too many pages for OpenAI (max 100 pages).`);
-      } else if (error.message?.includes('Invalid MIME type') || error.message?.includes('Only image types')) {
-        throw new Error(`PDF processing error - ensure you have OpenAI PDF beta access enabled.`);
-      } else if (error.message?.includes('Missing required parameter') || error.message?.includes('filename')) {
-        throw new Error(`PDF processing error - missing required filename parameter.`);
-      } else if (error.message?.includes('model')) {
-        throw new Error(`Model ${model} does not support PDF processing. Use gpt-4o, gpt-4o-mini, or o1.`);
-      } else {
-        throw new Error(`OpenAI PDF processing failed: ${error.message}`);
-      }
+      console.error(`[${this.providerName}] Native request with attachments failed for ${model}:`, error.message);
+      throw attachmentRequestError(this.providerName, model, error, context);
     }
   }
 }

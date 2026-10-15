@@ -5,6 +5,11 @@ import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
 import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor';
 import { resolveMediaType } from '../../../utils/media-type';
+import {
+  normalizeImageAttachments,
+  appendAttachmentNotes,
+  UnprocessableImageError,
+} from '../../../lib/attachments/normalizeImages';
 import fs from 'fs';
 import path from 'path';
 
@@ -29,6 +34,8 @@ interface RankAndJustifyInput {
   models: ModelInput[];
   iterations?: number;
   attachments?: string[];
+  attachmentNames?: string[];  // Optional original file names, index-aligned with attachments
+  requestTag?: string;         // Optional caller id (job run / aggregation) for log lines
 }
 
 interface ScoreOutcome {
@@ -164,12 +171,49 @@ export async function POST(request: Request) {
       );
     }
 
-    const prompt = body.prompt;
+    let prompt = body.prompt;
     const iterations = body.iterations || 1;
     const models = body.models;
     
     // Initialize warnings array early (used during attachment processing)
     const warnings: Warning[] = [];
+
+    // Make every image fit every provider's limits before any model sees it, so one
+    // oversized screenshot can no longer fail the whole jury. Images that already fit
+    // are passed through unchanged; the prompt only changes when an image did.
+    if (body.attachments?.length) {
+      const imageStartTime = Date.now();
+      try {
+        const normalized = await normalizeImageAttachments(body.attachments, {
+          names: body.attachmentNames,
+          models,
+          requestTag: body.requestTag || `req_${requestStartTime}`,
+        });
+        body.attachments = normalized.attachments;
+        prompt = appendAttachmentNotes(prompt, normalized.promptNotes);
+        normalized.changes.forEach(change => {
+          warnings.push({
+            type: change.action === 'omitted' ? 'attachment_omitted' : 'image_normalized',
+            message: change.note,
+            severity: change.action === 'omitted' ? 'warning' : 'info'
+          });
+        });
+        logTiming('image_normalization', imageStartTime, { changed: normalized.changes.length });
+      } catch (error) {
+        if (error instanceof UnprocessableImageError) {
+          // DROP_UNPROCESSABLE_IMAGES is off: fail with the real cause rather than
+          // letting every provider reject the image.
+          console.error(`❌ IMAGE_ERROR: ${error.message}`);
+          return NextResponse.json({
+            error: error.message,
+            scores: [] as ScoreOutcome[],
+            justification: ''
+          }, { status: 400 });
+        }
+        // A bug in normalization must not cost the evaluation: send the attachments as received.
+        console.error('Image normalization failed; continuing with the original attachments:', error);
+      }
+    }
 
     // Check native PDF support for each model
     console.log('DEBUG: Checking native PDF support for each model:');
@@ -924,6 +968,10 @@ function extractProviderErrorDetails(error: any): {
     errorType = 'content_policy';
   } else if (lowerMessage.includes('context length') || lowerMessage.includes('token limit') || lowerMessage.includes('max tokens')) {
     errorType = 'token_limit';
+  } else if ((httpStatus === 400 || httpStatus === 413 || /http (400|413)/.test(lowerMessage)) &&
+             /image|patch|pixel/.test(lowerMessage)) {
+    // e.g. "rejected an image attachment ... exceeding the limit of 30000" (patches)
+    errorType = 'invalid_image';
   } else if (httpStatus >= 500 || lowerMessage.includes('service unavailable') || lowerMessage.includes('internal error')) {
     errorType = 'provider_error';
   } else if (lowerMessage.includes('timeout') || error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {

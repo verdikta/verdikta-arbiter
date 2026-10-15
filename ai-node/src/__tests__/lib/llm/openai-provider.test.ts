@@ -367,10 +367,68 @@ describe('OpenAIProvider', () => {
         max_completion_tokens: 16000,
         reasoning_effort: 'medium',
       }),
-      expect.objectContaining({
-        headers: { 'OpenAI-Beta': 'pdf-files-v1' }
-      })
+      undefined // no PDF attached, so no PDF beta header
     );
+  });
+
+  test('generateResponseWithAttachments with GPT-5 and a PDF uses the native PDF path', async () => {
+    mockOpenAICreate.mockResolvedValueOnce({
+      choices: [{ message: { content: 'Read the PDF' } }]
+    });
+
+    await provider.generateResponseWithAttachments(
+      'Evaluate the contract',
+      'gpt-5.6-sol',
+      [{ type: 'document', content: 'JVBERi0xLjQK', mediaType: 'application/pdf' }]
+    );
+
+    const [body, requestOptions] = mockOpenAICreate.mock.calls[0];
+    expect(body.messages[0].content[1]).toEqual({
+      type: 'file',
+      file: { file_data: 'data:application/pdf;base64,JVBERi0xLjQK', filename: 'document.pdf' }
+    });
+    expect(requestOptions).toEqual({ headers: { 'OpenAI-Beta': 'pdf-files-v1' } });
+  });
+
+  test('an image rejection on an image-only GPT-5 request is reported as an image error, not a PDF one', async () => {
+    // Shaped like the openai SDK's BadRequestError: status field + "<status> <message>".
+    const apiError = Object.assign(
+      new Error('400 Invalid image: the image requires 30720 patches after processing, exceeding the limit of 30000.'),
+      { status: 400, code: 'invalid_image' }
+    );
+    mockOpenAICreate.mockRejectedValueOnce(apiError);
+
+    const attempt = provider.generateResponseWithAttachments(
+      'Judge this submission',
+      'gpt-5.6-sol',
+      [{ type: 'image', content: 'iVBORw0KGgo=', mediaType: 'image/png' }],
+      { reasoning: { effort: 'medium' }, verbosity: 'low' }
+    );
+
+    const error = await attempt.catch(e => e);
+    expect(error.message).toBe(
+      'OpenAI rejected an image attachment for gpt-5.6-sol (HTTP 400): ' +
+      '400 Invalid image: the image requires 30720 patches after processing, exceeding the limit of 30000.'
+    );
+    expect(error.message).not.toMatch(/PDF/);
+    expect(error.status).toBe(400);
+    expect(error.code).toBe('invalid_image');
+    expect(error.cause).toBe(apiError);
+    // The request went out without the PDF beta header.
+    expect(mockOpenAICreate.mock.calls[0][1]).toBeUndefined();
+  });
+
+  test('a non-attachment failure on the native path keeps its message and status', async () => {
+    mockOpenAICreate.mockRejectedValueOnce(Object.assign(new Error('503 Service Unavailable'), { status: 503 }));
+
+    await expect(provider.generateResponseWithAttachments(
+      'Judge this submission',
+      'gpt-5.6-sol',
+      [{ type: 'text', content: 'the submitted text', mediaType: 'text/plain' }]
+    )).rejects.toMatchObject({
+      message: 'OpenAI request with attachments failed for gpt-5.6-sol (HTTP 503): 503 Service Unavailable',
+      status: 503
+    });
   });
 
   test('generateResponseWithAttachments with non-reasoning model uses default maxTokens', async () => {

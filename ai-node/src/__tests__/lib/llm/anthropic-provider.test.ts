@@ -9,6 +9,13 @@ jest.mock("@langchain/anthropic", () => ({
   })),
 }));
 
+// Native client used by the PDF path.
+const mockMessagesCreate = jest.fn();
+jest.mock('@anthropic-ai/sdk', () => ({
+  __esModule: true,
+  Anthropic: jest.fn().mockImplementation(() => ({ messages: { create: mockMessagesCreate } })),
+}));
+
 jest.mock('../../../config/models', () => ({
   modelConfig: {
     anthropic: [
@@ -391,4 +398,45 @@ describe('AnthropicProvider', () => {
     expect(response).toBe('Mocked attachments response');
     expect(mockInvoke).toHaveBeenCalledTimes(1);
   });
+
+  describe('native PDF path errors', () => {
+    const pdf = { type: 'document', content: 'JVBERi0xLjQK', mediaType: 'application/pdf' };
+    const image = { type: 'image', content: 'iVBORw0KGgo=', mediaType: 'image/png' };
+
+    beforeEach(() => {
+      jest.spyOn(console, 'error').mockImplementation(() => {});
+    });
+
+    test('an image rejection is reported as an image error with its status, not a PDF one', async () => {
+      const apiError = Object.assign(
+        new Error('400 messages.0.content.2.image.source.base64: At least one of the image dimensions exceed max allowed size: 8000 pixels'),
+        { status: 400 }
+      );
+      mockMessagesCreate.mockRejectedValueOnce(apiError);
+
+      const error = await provider
+        .generateResponseWithAttachments('Judge this', 'claude-3-5-sonnet-20241022', [pdf, image])
+        .catch(e => e);
+
+      expect(error.message).toBe(
+        'Anthropic rejected an image attachment for claude-3-5-sonnet-20241022 (HTTP 400): ' + apiError.message
+      );
+      expect(error.status).toBe(400);
+      expect(error.cause).toBe(apiError);
+    });
+
+    test('a message that merely contains "100" is no longer relabelled "too many pages"', async () => {
+      mockMessagesCreate.mockRejectedValueOnce(
+        Object.assign(new Error('429 rate limit: 100 requests per minute exceeded'), { status: 429 })
+      );
+
+      await expect(
+        provider.generateResponseWithAttachments('Judge this', 'claude-3-5-sonnet-20241022', [pdf])
+      ).rejects.toMatchObject({
+        message: 'Anthropic request with attachments failed for claude-3-5-sonnet-20241022 (HTTP 429): 429 rate limit: 100 requests per minute exceeded',
+        status: 429,
+      });
+    });
+  });
+
 });
