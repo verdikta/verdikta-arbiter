@@ -2,6 +2,7 @@
 
 const {
   gasLimitFor,
+  requestArgs,
   resolveClassId,
   splitJustificationCids,
   arbiterVersion,
@@ -105,5 +106,31 @@ describe('gasLimitFor', () => {
     expect(gasLimitFor(null, 4000000)).toBe(4000000n);
     expect(gasLimitFor(undefined, 4000000n)).toBe(4000000n);
     expect(gasLimitFor(0n, 4000000)).toBe(4000000n);
+  });
+});
+
+describe('requestArgs', () => {
+  const fees = { alpha: 500, maxOracleFee: '150000000000000', estimatedBaseCost: '8000000000', maxFeeScaling: 5 };
+
+  it('sends a multi-CID scenario as the request CID array, with its addendum', () => {
+    const scenario = { cids: ['QmPackage', 'QmArchive'], addendum: 'price=42', cid: 'QmPackage,QmArchive:price=42' };
+    expect(requestArgs(scenario, fees, 5555)).toEqual([
+      ['QmPackage', 'QmArchive'], 'price=42', 500, '150000000000000', '8000000000', 5, 5555,
+    ]);
+  });
+
+  it('sends a single-CID scenario as a one-element array with an empty addendum', () => {
+    expect(requestArgs({ cids: ['QmOne'], addendum: '', cid: 'QmOne' }, fees, 128))
+      .toEqual([['QmOne'], '', 500, '150000000000000', '8000000000', 5, 128]);
+    // A scenario object that never went through the loader still works.
+    expect(requestArgs({ cid: 'QmOne' }, fees, 128)[0]).toEqual(['QmOne']);
+    expect(requestArgs({ cid: 'QmOne' }, fees, 128)[1]).toBe('');
+  });
+
+  it('does not hand the scenario\'s own array to the contract call', () => {
+    const scenario = { cids: ['QmA', 'QmB'] };
+    const [cids] = requestArgs(scenario, fees, 128);
+    expect(cids).toEqual(scenario.cids);
+    expect(cids).not.toBe(scenario.cids);
   });
 });

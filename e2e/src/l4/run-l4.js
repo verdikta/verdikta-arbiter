@@ -11,6 +11,7 @@ const {
   arbiterVersion,
   releaseCommit,
   versionChecks,
+  requestArgs,
 } = require('./helpers');
 
 // Minimal human-readable ABI for the ETH-funded ReputationAggregator.
@@ -117,13 +118,13 @@ async function runL4(cfg, scenarios, opts) {
   }
   console.log(chalk.gray(`[l4] wallet=${wallet.address} balance=${ethers.formatEther(balance)} ETH`));
 
-  const { alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling } = l4.fees;
+  const { maxOracleFee } = l4.fees;
 
   for (const scenario of scenarios) {
     const start = Date.now();
     try {
       const value = await aggregator.maxTotalFee(maxOracleFee);
-      const args = [[scenario.cid], '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId];
+      const args = requestArgs(scenario, l4.fees, l4.classId);
 
       // Estimate rather than trust config.l4.gasLimit: selection cost grows with
       // the registry, and an out-of-gas request still pays for the whole limit.
@@ -134,7 +135,7 @@ async function runL4(cfg, scenarios, opts) {
         console.log(chalk.yellow(`[l4] ${scenario.id}: gas estimation failed (${err.shortMessage || err.message}); using configured gasLimit=${l4.gasLimit}`));
       }
       const gasLimit = gasLimitFor(estimate, l4.gasLimit);
-      console.log(chalk.gray(`[l4] ${scenario.id}: submitting (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
+      console.log(chalk.gray(`[l4] ${scenario.id}: submitting ${args[0].length} CID(s) (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}${estimate === null ? '' : `, estimate=${estimate}`})…`));
 
       const tx = await aggregator.requestAIEvaluationWithApproval(...args, { value, gasLimit });
       const receipt = await tx.wait(1);

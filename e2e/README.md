@@ -165,7 +165,8 @@ block per oracle. The release procedure that uses this is
 - **`l4-testnet`** — runs nightly (schedule, class 128) and via manual dispatch;
   needs `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
   scoped to the `e2e` GitHub Environment. Dispatch inputs: `class_id`
-  (default `5555`), `expect_common`, `expect_release`, `scenario`:
+  (default `5555`), `expect_common`, `expect_release`, `scenario` (the only
+  way to run a `manualOnly` scenario, see [Scenarios](#scenarios)):
 
   ```bash
   gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
@@ -224,8 +225,9 @@ reintroduced later, expect them to need periodic revalidation against the
 
 ## Scenarios
 
-`scenarios/scenarios.json` — each entry needs `id` and either `cid` (literal) or
-`cidFile` (path to a file containing the CID, e.g. from `--pin`):
+`scenarios/scenarios.json` — each entry needs `id` and exactly one of `cid`
+(literal), `cidFile` (path to a file containing the CID, e.g. from `--pin`) or
+`cids` (an array, for a multi-CID request):
 
 ```json
 {
@@ -235,6 +237,30 @@ reintroduced later, expect them to need periodic revalidation against the
   "minOutcomes": 2,             // structural check
   "expectedWinnerIndex": 0      // mock: always asserted; real: with --assert-winner
 }
+```
+
+Optional fields:
+
+- `cids` — several archives in one request, the way a bounty sends
+  `[evaluation package, hunter archive]`. L4 passes the array as the request's
+  `cids`; L2 sends the adapter's comma-joined form (`Qm1,Qm2`).
+- `addendum` — the request's `addendumText` (default `""`). L2 appends it as
+  `:<addendum>`, which is how the adapter receives it from the job.
+- `manualOnly: true` — the scenario never runs in a full-suite run, so the
+  nightly L4 (which runs every committed scenario on class 128) and the L2 job
+  skip it. It runs only when named for L4 (`--scenario <id>` or the `scenario`
+  dispatch input / `L4_SCENARIO`); naming it for L2 is an error. Use it for
+  scenarios whose archive names a paid jury.
+
+`bounty-171-replay` is manual-only: it replays mainnet bounty 171 (issue #81),
+whose 2560×12268 px screenshot failed every jury model before the image
+normalization in #82, and its package names a paid jury (gpt-5.6-sol +
+claude-sonnet-5). Run it against the class-5555 canaries after an AI Node
+change:
+
+```bash
+gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
+  -f scenario=bounty-171-replay -f expect_release=<commit>
 ```
 
 ## Configuration
@@ -276,5 +302,6 @@ traffic with this tool is how you inventory which fleet nodes need upgrading.
 - Optionally boot the AI Node too (for turnkey `l2 --real` in CI).
 - Pin a canonical, project-owned E2E evidence archive (instead of relying on the
   frontend/demoClient default CIDs) and reference it from `scenarios.json`.
-- Additional scenarios (more outcomes, multi-CID, attachments) once canonical
-  archives are pinned.
+- Additional scenarios (more outcomes, attachments) once canonical archives
+  are pinned; a project-owned multi-CID scenario for the nightly (the only one
+  today, `bounty-171-replay`, is manual-only).
