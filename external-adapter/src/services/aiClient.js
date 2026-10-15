@@ -105,6 +105,14 @@ function encodeAttachment(fileData, mimeType) {
   return fileData;
 }
 
+/**
+ * The name an attachment had in its archive (e.g. "submission/medium_article.png"),
+ * falling back to its manifest name, then to the file on disk.
+ */
+function attachmentName(file, filePath) {
+  return file.filename || file.name || path.basename(filePath);
+}
+
 class AIClient {
   constructor() {
     this.client = axios.create({
@@ -132,6 +140,9 @@ class AIClient {
           
           let manifest;
           let attachments = [];
+          // Original file names, index-aligned with attachments; the AI Node uses them
+          // to name an image it had to split or omit.
+          let attachmentNames = [];
           
           if (extractedPath) {
             // Read manifest if path provided
@@ -179,6 +190,7 @@ class AIClient {
                   // Use the same encodeAttachment function for consistent formatting
                   const attachment = encodeAttachment(fileData, mimeType);
                   attachments.push(attachment);
+                  attachmentNames.push(attachmentName(file, filePath));
                   const fileProcessTime = Date.now() - tFileStart;
                   logger.info(`${runTag} Added file to attachments: ${filePath}, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${fileProcessTime}ms`);
                 } catch (fileError) {
@@ -217,6 +229,7 @@ class AIClient {
                   
                   const attachment = encodeAttachment(fileData, mimeType);
                   attachments.push(attachment);
+                  attachmentNames.push(attachmentName(file, filePath));
                   const supportFileTime = Date.now() - tSupportFileStart;
                   logger.info(`${runTag} Added support file to attachments: ${file.name || filePath}, size: ${fileData.length} bytes, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${supportFileTime}ms`);
                 } catch (fileError) {
@@ -234,7 +247,9 @@ class AIClient {
           const tPayloadStart = Date.now();
           const payload = {
             ...query,
-            attachments
+            attachments,
+            attachmentNames,
+            requestTag: runTag || undefined
           };
           
           // If query contains outcomes array, include it in payload

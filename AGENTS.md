@@ -169,9 +169,11 @@ Request:
   "outcomes": ["Yes", "No"],
   "models": [ { "provider": "OpenAI", "model": "gpt-4o", "weight": 0.5, "count": 1 } ],
   "iterations": 1,
-  "attachments": ["data:image/png;base64,…", "raw text …"]
+  "attachments": ["data:image/png;base64,…", "raw text …"],
+  "attachmentNames": ["submission/page.png", "notes.txt"]
 }
 ```
+(`attachmentNames` and `requestTag` are optional; the EA sends both.)
 Response (see `ai-node/API_RESPONSE_SPECIFICATION.md`):
 ```json
 {
@@ -272,7 +274,9 @@ key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`.
 **AI Node** (`ai-node/.env.local`): provider keys (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `HYPERBOLIC_API_KEY`, `OPENROUTER_API_KEY`),
 `JUSTIFIER_MODEL` (`provider:model`), `MODEL_TIMEOUT_MS`, `REQUEST_TIMEOUT_MS`,
-`JUSTIFICATION_TIMEOUT_MS`, `MIN_SUCCESSFUL_MODELS_PERCENT`, `AI_GATEWAY`, `LOG_LEVEL`.
+`JUSTIFICATION_TIMEOUT_MS`, `MIN_SUCCESSFUL_MODELS_PERCENT`, `AI_GATEWAY`, `LOG_LEVEL`,
+`DROP_UNPROCESSABLE_IMAGES` (default on: an undecodable image is omitted with a
+prompt note instead of failing the request).
 
 Ollama runs locally and is unaffected by gateway settings.
 
@@ -296,6 +300,15 @@ Ollama runs locally and is unaffected by gateway settings.
   always sends `thinking: {type: "disabled"}` (accepted by Sonnet 5 / Opus 5)
   and gives models outside its table only 2048 output tokens, so modern models
   get `maxTokens` set explicitly. Do not re-add a blanket `temperature`.
+- **Images are fitted to provider limits before the jury sees them.**
+  `ai-node/src/lib/attachments/normalizeImages.ts` (sharp, pinned exactly) runs
+  once per request: images within every limit (8000 px/side, 30,000 OpenAI
+  32-px patches, 5 MB base64; 2000 px/side when > 20 images and Claude is in
+  the jury) pass through byte-for-byte; over-limit tall/wide images are split
+  into labelled, overlapping tiles; others are downscaled; undecodable ones are
+  omitted with a prompt note. A single oversized screenshot used to fail every
+  model and time the request out across the network (bounty 171). Keep the
+  limits in its `IMAGE_LIMITS` object, with their doc sources.
 - **IPFS gateway order lives in `@verdikta/common`**, not here. The EA only
   forwards `IPFS_GATEWAY` / `IPFS_GATEWAY_TOKEN` (`external-adapter/src/utils/ipfsGatewayConfig.js`)
   as operator-preferred gateways; releases ≤ 1.6.x ignore them and use a

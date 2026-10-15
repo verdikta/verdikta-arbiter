@@ -88,6 +88,31 @@ Insufficient successful models: {successful}/{total} (minimum required: {min}). 
 
 ---
 
+## Image Attachments
+
+Before any model is called, every image attachment is fitted to the providers'
+limits (`src/lib/attachments/normalizeImages.ts`). Images that already fit are
+sent unchanged and the response is exactly as above. When an image is changed or
+dropped, the prompt gets one line per image and the response carries a warning:
+
+```json
+"warnings": [
+  { "type": "image_normalized", "severity": "info",
+    "message": "submission/medium_article.png was split into 5 parts, top to bottom; neighbouring parts overlap slightly." },
+  { "type": "attachment_omitted", "severity": "warning",
+    "message": "Attachment submission/broken.png could not be processed and was omitted: Input buffer has corrupt header." }
+]
+```
+
+With `DROP_UNPROCESSABLE_IMAGES=false`, an image that cannot be decoded fails the
+request with HTTP 400 and `"error": "Image attachment <name> could not be processed: <reason>"`.
+A provider that still rejects an image is reported with `error_type: "invalid_image"`.
+
+Optional request fields: `attachmentNames` (file names, index-aligned with
+`attachments`, used in those lines) and `requestTag` (an id for log lines).
+
+---
+
 ## Integration Guidelines for External Adapter
 
 ### Success Case (Status 200)

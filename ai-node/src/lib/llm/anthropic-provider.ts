@@ -10,6 +10,7 @@ import {
   extractTextContent,
   isSamplingParamRejection,
 } from './anthropic-request-params';
+import { attachmentRequestError } from './attachment-errors';
 
 type ChatInput = Parameters<ChatAnthropic['invoke']>[0];
 
@@ -189,54 +190,54 @@ export class AnthropicProvider implements LLMProvider {
     pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
     otherAttachments: Array<{ type: string, content: string, mediaType: string }>
   ): Promise<string> {
+    // Build message content with native PDF support
+    const contentBlocks: any[] = [
+      { type: "text", text: prompt }
+    ];
+
+    // Add PDF attachments using Anthropic's document structure
+    for (const pdfAttachment of pdfAttachments) {
+      // Validate PDF size (Anthropic limit: 32MB, 100 pages)
+      const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4; // Approximate base64 to bytes conversion
+      if (pdfSizeBytes > 32 * 1024 * 1024) {
+        throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds Anthropic's 32MB limit`);
+      }
+
+      // Use Anthropic's document content block for PDFs
+      contentBlocks.push({
+        type: "document",
+        source: {
+          type: "base64",
+          media_type: "application/pdf",
+          data: pdfAttachment.content
+        }
+      });
+    }
+
+    // Add other attachments (images, text, etc.)
+    for (const attachment of otherAttachments) {
+      if (attachment.type === "image") {
+        if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
+          throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${attachment.mediaType}. Supported formats are: JPEG, PNG, WEBP, and GIF.`);
+        }
+        contentBlocks.push({
+          type: "image",
+          source: {
+            type: "base64",
+            media_type: attachment.mediaType,
+            data: attachment.content
+          }
+        });
+      } else {
+        // Handle text content
+        contentBlocks.push({ type: "text", text: attachment.content });
+      }
+    }
+
     try {
       // Use Anthropic's direct client for native PDF support
       const { Anthropic } = await import('@anthropic-ai/sdk');
       const client = new Anthropic({ apiKey: this.apiKey });
-
-      // Build message content with native PDF support
-      const contentBlocks: any[] = [
-        { type: "text", text: prompt }
-      ];
-
-      // Add PDF attachments using Anthropic's document structure
-      for (const pdfAttachment of pdfAttachments) {
-        // Validate PDF size (Anthropic limit: 32MB, 100 pages)
-        const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4; // Approximate base64 to bytes conversion
-        if (pdfSizeBytes > 32 * 1024 * 1024) {
-          throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds Anthropic's 32MB limit`);
-        }
-
-        // Use Anthropic's document content block for PDFs
-        contentBlocks.push({
-          type: "document",
-          source: {
-            type: "base64",
-            media_type: "application/pdf",
-            data: pdfAttachment.content
-          }
-        });
-      }
-
-      // Add other attachments (images, text, etc.)
-      for (const attachment of otherAttachments) {
-        if (attachment.type === "image") {
-          if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
-            throw new Error(`Unsupported image format: ${attachment.mediaType}`);
-          }
-          contentBlocks.push({
-            type: "image",
-            source: {
-              type: "base64",
-              media_type: attachment.mediaType,
-              data: attachment.content
-            }
-          });
-        } else {
-          // Handle text content
-          contentBlocks.push({ type: "text", text: attachment.content });
-        }
-      }
 
       // Make the API call with native PDF support
       const response = await client.messages.create({
@@ -263,20 +264,12 @@ export class AnthropicProvider implements LLMProvider {
       return content.text;
 
     } catch (error: any) {
-      console.error(`[${this.providerName}] Native PDF processing failed:`, error.message);
-      
-      // Provide helpful error messages based on common issues
-      if (error.message?.includes('32MB') || error.message?.includes('file size')) {
-        throw new Error(`PDF too large for Anthropic (max 32MB). Consider splitting the document.`);
-      } else if (error.message?.includes('pages') || error.message?.includes('100')) {
-        throw new Error(`PDF has too many pages for Anthropic (max 100 pages).`);
-      } else if (error.message?.includes('document') || error.message?.includes('media_type')) {
-        throw new Error(`PDF processing error - ensure you have Anthropic PDF beta access enabled.`);
-      } else if (error.message?.includes('model')) {
-        throw new Error(`Model ${model} does not support PDF processing. Use Claude Opus 4, Sonnet 4, or newer models.`);
-      } else {
-        throw new Error(`Anthropic PDF processing failed: ${error.message}`);
-      }
+      console.error(`[${this.providerName}] Native PDF request failed for ${model}:`, error.message);
+      // Keep the provider's status and message; say which input it is about.
+      throw attachmentRequestError(this.providerName, model, error, {
+        hasPdf: true,
+        hasImage: otherAttachments.some(att => att.type === 'image')
+      });
     }
   }
 }
