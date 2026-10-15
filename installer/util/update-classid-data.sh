@@ -86,5 +86,7 @@ fi
 
 echo ""
 echo -e "${GREEN}ClassID data update completed!${NC}"
+echo -e "${BLUE}If @verdikta/common changed, restart the AI Node to use it: $AI_NODE_DIR/stop.sh && $AI_NODE_DIR/start.sh${NC}"
+echo -e "${BLUE}(start.sh rebuilds the production bundle first; that takes a few minutes.)${NC}"
 
 

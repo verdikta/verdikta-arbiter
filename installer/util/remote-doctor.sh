@@ -414,8 +414,9 @@ check_services() {
     # AI Node :3000 — probe /api/health directly. The HTTP response is the
     # most reliable signal: if curl gets through, the service is up regardless
     # of whether port-detection helpers can enumerate the socket.
-    local ai_health
+    local ai_health ai_dir="$INSTALL_DIR/ai-node" ai_build_pid ai_run_mode
     ai_health=$(curl -fsS --max-time 5 http://localhost:3000/api/health 2>/dev/null)
+    ai_build_pid=$(cat "$ai_dir/.build-in-progress" 2>/dev/null)
     if [ -n "$ai_health" ]; then
         local ok mode
         ok=$(printf '%s' "$ai_health" | python3 -c 'import sys,json; print(json.load(sys.stdin).get("status","")=="ok")' 2>/dev/null)
@@ -425,6 +426,11 @@ check_services() {
         else
             emit WARN svc.ai_node "responding on :3000  (health endpoint reachable but not 'ok')" ""
         fi
+    elif [ -n "$ai_build_pid" ] && kill -0 "$ai_build_pid" 2>/dev/null; then
+        # start.sh rebuilds before serving when the code changed; restarting
+        # now would only start the build over.
+        emit WARN svc.ai_node "not answering yet: building its production bundle (pid $ai_build_pid)" \
+             "Wait for the build; start.sh serves it when done (progress in the newest $ai_dir/logs/ai-node_*.log)"
     elif port_listening 3000; then
         emit FAIL svc.ai_node "port :3000 has a listener but /api/health did not respond" \
              "Restart with $INSTALL_DIR/ai-node/stop.sh && $INSTALL_DIR/ai-node/start.sh"
@@ -432,6 +438,23 @@ check_services() {
         emit FAIL svc.ai_node "not listening on :3000" \
              "Start with $INSTALL_DIR/start-arbiter.sh or $INSTALL_DIR/ai-node/start.sh"
     fi
+
+    # How ai-node/start.sh last launched it (it writes ai-node/.run-mode).
+    ai_run_mode=$(cat "$ai_dir/.run-mode" 2>/dev/null)
+    case "$ai_run_mode" in
+        production)
+            emit PASS svc.ai_node_mode "production build (next start)" "" ;;
+        dev)
+            emit INFO svc.ai_node_mode "next dev (AI_NODE_MODE=dev or ai-node/.use-next-dev)" "" ;;
+        dev-fallback)
+            emit WARN svc.ai_node_mode "next dev: the production build failed, start.sh fell back" \
+                 "Build output is in the newest $ai_dir/logs/ai-node_*.log; after fixing (e.g. adding swap): $ai_dir/stop.sh && $ai_dir/start.sh" ;;
+        *)
+            if [ -n "$ai_health" ]; then
+                emit INFO svc.ai_node_mode "next dev (no ai-node/.run-mode: started by a pre-production start.sh)" \
+                     "upgrade-arbiter.sh builds it and switches to next start"
+            fi ;;
+    esac
 
     # EA :8080
     if port_listening 8080; then

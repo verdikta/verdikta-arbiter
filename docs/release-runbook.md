@@ -76,7 +76,11 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    ```
 
    `verdiktaCommon` is the installed `@verdikta/common`; `release` is the commit
-   stamped by the upgrade.
+   stamped by the upgrade. Also check the AI Node serves its production build:
+   `<install-dir>/arbiter-status.sh` shows `Mode: production build (next start)`
+   and `<install-dir>/arbiter-doctor.sh --quiet` prints no `svc.ai_node_mode`
+   warning (a failed build falls back to `next dev`, which the canary request
+   would not notice).
 
 2. **Check the e2e wallet.** The L4 run pays `maxTotalFee` (≈ 0.0018 ETH) plus
    gas per scenario from the wallet whose key lives in the `e2e` GitHub

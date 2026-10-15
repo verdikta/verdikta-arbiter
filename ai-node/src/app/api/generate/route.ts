@@ -4,6 +4,10 @@ import { fileToBase64 } from '../../../utils/fileUtils';
 import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor'; 
 
 
+// The GET handler lists models from the configured providers: build it per
+// request, never prerendered by `next build` from build-time env.
+export const dynamic = 'force-dynamic';
+
 // Define the list of supported LLM providers
 const PROVIDERS = ['Open-source', 'OpenAI', 'Anthropic', 'xAI', 'Hyperbolic'];
 

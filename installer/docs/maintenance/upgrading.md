@@ -189,6 +189,53 @@ During upgrade, the script:
 - can auto-integrate ClassID model pool updates into AI Node config
 - can check/download missing Ollama models (optional)
 
+## AI Node production build
+
+The AI Node runs as a production Next.js build (`next build` once, then
+`next start`) rather than under `next dev`. It starts in seconds instead of
+compiling on the first request, and uses about 100 MB of RAM instead of the
+600 MB or more `next dev` holds.
+
+- **Install and upgrade build it** after the last change to the AI Node's code
+  and dependencies (`npm install`, the `@verdikta/common` update, the ClassID
+  `models.ts` sync), while the node is stopped. The output is in `ai-node/.next`.
+- **`ai-node/start.sh` rebuilds only when needed.** The build is stamped with a
+  fingerprint of the sources, dependencies and Node version; if any changed
+  since (for example after `update-classid-data.sh` or a hand edit), the next
+  start rebuilds first. `start-arbiter.sh` waits for that build.
+- **Runtime settings need only a restart.** `.env.local` (API keys,
+  `JUSTIFIER_MODEL`, `LOG_LEVEL`, `AI_GATEWAY`) is read when the server starts,
+  not compiled in, so `update-justifier-model.sh` and key changes do not rebuild.
+- **If a build fails**, `start.sh` falls back to `next dev` so the arbiter keeps
+  answering. `arbiter-status.sh` shows the mode, and `arbiter-doctor.sh` warns
+  with `svc.ai_node_mode` until a build succeeds; the build output is in the
+  newest `ai-node/logs/ai-node_*.log`. Every start retries the build. To retry by
+  hand:
+
+  ```bash
+  ~/verdikta-arbiter-node/ai-node/stop.sh
+  ~/verdikta-arbiter-node/ai-node/build.sh && ~/verdikta-arbiter-node/ai-node/start.sh
+  ```
+
+- **To run `next dev` on purpose**, create `ai-node/.use-next-dev` (kept across
+  upgrades) or start with `AI_NODE_MODE=dev`, and restart the AI Node. Delete the
+  file to go back; the next start rebuilds.
+
+**Build time and memory.** `next build` peaks at about 1.2 GB of RAM and takes
+roughly 20–40 s on fast cores, so expect a few minutes on a small shared-vCPU
+VPS. With less than ~1.5 GB of free memory plus swap the kernel kills it (at
+1 GB without swap it always fails); the doctor then reports `dev-fallback`.
+Add swap before upgrading such a machine:
+
+```bash
+sudo fallocate -l 2G /swapfile && sudo chmod 600 /swapfile
+sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
+
+During an upgrade the AI Node is down for the build on top of the usual
+dependency installs; schedule upgrades of a mainnet node accordingly.
+
 ## Optional Chainlink key funding
 
 At the end of upgrade, you can top off Chainlink keys:
@@ -244,7 +291,7 @@ cd ~/verdikta-arbiter-node
 
 Then verify:
 
-1. AI Node healthy on `http://localhost:3000`
+1. AI Node healthy on `http://localhost:3000`, with `Mode: production build (next start)`
 2. External Adapter reachable on `http://localhost:8080`
 3. Chainlink UI reachable on `http://localhost:6688`
 4. Expected jobs and keys still present in Chainlink

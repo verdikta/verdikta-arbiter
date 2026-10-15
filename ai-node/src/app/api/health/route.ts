@@ -1,6 +1,11 @@
 import { NextResponse } from 'next/server';
 import { resolveProviderConfig } from '../../../lib/llm/provider-config';
 
+// A GET handler that never reads the request is prerendered by `next build`:
+// the timestamp and the gateway routing (read from env, checked by the
+// doctor) would be frozen at build time. Answer every request live.
+export const dynamic = 'force-dynamic';
+
 function buildGatewayStatus() {
   const classes = ['openai', 'anthropic', 'xai', 'hyperbolic', 'ollama'];
 

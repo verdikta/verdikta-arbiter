@@ -1488,13 +1488,15 @@ echo -e "${BLUE}Starting upgrade process...${NC}"
 
 # Upgrade AI Node
 echo -e "${BLUE}Upgrading AI Node...${NC}"
-upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local .env logs node_modules *.pid"
+upgrade_component "$REPO_AI_NODE" "$TARGET_AI_NODE" "AI Node" ".env.local .env logs node_modules *.pid .use-next-dev"
 
-# Force clean build by removing any .next folder (ensures fresh compilation)
+# Force clean build by removing any .next folder (the old build, or one copied
+# over from the repository clone); the production build is made further down,
+# once dependencies and models.ts are final.
 if [ -d "$TARGET_AI_NODE/.next" ]; then
     echo -e "${BLUE}Removing cached build to force recompilation...${NC}"
     rm -rf "$TARGET_AI_NODE/.next"
-    echo -e "${GREEN}Build cache cleared. AI Node will be recompiled on next start.${NC}"
+    echo -e "${GREEN}Build cache cleared.${NC}"
 fi
 
 # Update AI Node API keys in .env.local if they were configured
@@ -1995,6 +1997,23 @@ check_ollama_models() {
 
 # Call the Ollama model check function
 check_ollama_models
+
+# Build the AI Node for production (`next start`) now, while it is stopped and
+# after the last change to its code and dependencies (npm install, the
+# @verdikta/common update, the ClassID models.ts sync), so the restart below
+# serves it straight away. A failed build does not abort the upgrade:
+# start.sh retries it and serves `next dev` until one succeeds.
+if [ -x "$TARGET_AI_NODE/build.sh" ]; then
+    echo -e "${BLUE}Building AI Node for production (next build; can take several minutes on a small VPS)...${NC}"
+    if bash "$TARGET_AI_NODE/build.sh"; then
+        echo -e "${GREEN}AI Node production build complete.${NC}"
+    else
+        echo -e "${YELLOW}Warning: AI Node production build failed (see the output above).${NC}"
+        echo -e "${YELLOW}The AI Node will run under 'next dev' until a build succeeds; arbiter-doctor.sh reports${NC}"
+        echo -e "${YELLOW}svc.ai_node_mode until then. Every start retries the build; by hand:${NC}"
+        echo -e "${YELLOW}  $TARGET_AI_NODE/stop.sh && $TARGET_AI_NODE/build.sh && $TARGET_AI_NODE/start.sh${NC}"
+    fi
+fi
 
 # Check current arbiter configuration
 echo -e "${BLUE}Checking current arbiter configuration...${NC}"
@@ -2774,8 +2793,8 @@ fi
 # would FAIL purely because nothing is listening.
 if [ -x "$TARGET_DIR/arbiter-doctor.sh" ]; then
     if [ "$SERVICES_STARTED_FOR_DOCTOR" = "1" ]; then
-        # Brief additional settling time: the AI Node (next dev) can take
-        # tens of seconds to compile + bind to :3000 on first boot.
+        # Brief additional settling time; start-arbiter.sh has already waited
+        # for the AI Node's /api/health.
         echo ""
         echo -e "${BLUE}Letting services settle for 10s before health check...${NC}"
         sleep 10

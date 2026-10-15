@@ -336,7 +336,8 @@ if [ "$RESTART" = "1" ]; then
             sleep 1
         done
         (cd "$AI_NODE_DIR" && ./start.sh)
-        # Wait for AI Node to compile and bind (next dev can take 30+ seconds)
+        # Wait for AI Node to bind and answer (seconds for the production
+        # build; .env.local is read at runtime, so no rebuild is needed)
         echo -e "${C_DIM}  waiting up to 60s for AI Node to respond on :3000…${C_NC}"
         for _i in $(seq 1 60); do
             if curl -fsS --max-time 2 http://localhost:3000/api/health -o /dev/null 2>/dev/null; then

@@ -43,7 +43,7 @@ check_port() {
 
 # Function to check if a Next.js process is running
 check_nextjs() {
-    if ps aux | grep -E "next dev|next-server" | grep -v grep >/dev/null 2>&1; then
+    if ps aux | grep -E "next dev|next start|next-server" | grep -v grep >/dev/null 2>&1; then
         return 0
     else
         return 1
@@ -62,6 +62,19 @@ check_health() {
     fi
 }
 
+# How ai-node/start.sh last launched the AI Node: production (next start),
+# dev (AI_NODE_MODE=dev / .use-next-dev) or dev-fallback (the build failed).
+print_ai_node_mode() {
+    local mode
+    mode=$(cat "$AI_NODE_DIR/.run-mode" 2>/dev/null)
+    case "$mode" in
+        production)   echo -e "  Mode:   ${GREEN}production build (next start)${NC}" ;;
+        dev)          echo -e "  Mode:   ${YELLOW}next dev (AI_NODE_MODE=dev or .use-next-dev)${NC}" ;;
+        dev-fallback) echo -e "  Mode:   ${RED}next dev - production build failed; see the newest ai-node_*.log${NC}" ;;
+        *)            echo -e "  Mode:   next dev (started by a pre-production start.sh)" ;;
+    esac
+}
+
 # Check AI Node
 echo -e "${BLUE}AI Node Status:${NC}"
 AI_NODE_RUNNING=false
@@ -78,7 +91,7 @@ fi
 # If PID file check failed, look for Next.js process
 if [ "$AI_NODE_RUNNING" = false ] && check_nextjs; then
     AI_NODE_RUNNING=true
-    AI_NODE_PID=$(ps aux | grep -E "next dev|next-server" | grep -v grep | awk '{print $2}' | head -n1)
+    AI_NODE_PID=$(ps aux | grep -E "next dev|next start|next-server" | grep -v grep | awk '{print $2}' | head -n1)
 fi
 
 if [ "$AI_NODE_RUNNING" = true ]; then
@@ -94,9 +107,10 @@ if [ "$AI_NODE_RUNNING" = true ]; then
         echo -e "  Port:   3000"
         echo -e "  PID:    $AI_NODE_PID"
         [ -n "$UPTIME" ] && echo -e "  Uptime: $UPTIME"
+        print_ai_node_mode
         
         # Check log file
-        LATEST_LOG=$(ls -t "$AI_NODE_DIR/logs/"*.log 2>/dev/null | head -n1)
+        LATEST_LOG=$(ls -t "$AI_NODE_DIR/logs/"ai-node_*.log 2>/dev/null | head -n1)
         if [ -n "$LATEST_LOG" ]; then
             echo -e "  Log:    $LATEST_LOG"
         fi
@@ -106,9 +120,10 @@ if [ "$AI_NODE_RUNNING" = true ]; then
         echo -e "  Port:   3000"
         echo -e "  PID:    $AI_NODE_PID"
         [ -n "$UPTIME" ] && echo -e "  Uptime: $UPTIME"
+        print_ai_node_mode
         
         # Check for recent errors in log
-        LATEST_LOG=$(ls -t "$AI_NODE_DIR/logs/"*.log 2>/dev/null | head -n1)
+        LATEST_LOG=$(ls -t "$AI_NODE_DIR/logs/"ai-node_*.log 2>/dev/null | head -n1)
         if [ -n "$LATEST_LOG" ]; then
             echo -e "  Log:    $LATEST_LOG"
             echo -e "  Recent Errors:"
@@ -116,13 +131,18 @@ if [ "$AI_NODE_RUNNING" = true ]; then
         fi
     fi
 else
-    echo -e "  Status: ${RED}Not Running${NC}"
+    BUILD_PID=$(cat "$AI_NODE_DIR/.build-in-progress" 2>/dev/null)
+    if [ -n "$BUILD_PID" ] && kill -0 "$BUILD_PID" 2>/dev/null; then
+        echo -e "  Status: ${YELLOW}Building the production bundle (pid $BUILD_PID); start.sh serves it when done${NC}"
+    else
+        echo -e "  Status: ${RED}Not Running${NC}"
+    fi
     # Check if port is taken
     if check_port 3000; then
         echo -e "  Warning: ${YELLOW}Port 3000 is in use by another process${NC}"
     fi
     # Check for crash logs
-    LATEST_LOG=$(ls -t "$AI_NODE_DIR/logs/"*.log 2>/dev/null | head -n1)
+    LATEST_LOG=$(ls -t "$AI_NODE_DIR/logs/"ai-node_*.log 2>/dev/null | head -n1)
     if [ -n "$LATEST_LOG" ]; then
         echo -e "  Last Log: $LATEST_LOG"
         echo -e "  Last Error:"

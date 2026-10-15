@@ -1,6 +1,10 @@
 import { NextResponse } from 'next/server';
 import { HyperbolicProvider } from '../../../lib/llm/hyperbolic-provider';
 
+// Without this, `next build` runs the probe (live Hyperbolic calls with the
+// operator's key) while trying to prerender the route.
+export const dynamic = 'force-dynamic';
+
 /**
  * Test endpoint for Hyperbolic provider
  * 

@@ -576,8 +576,8 @@ cleanup_existing_processes() {
 
     echo -e "${BLUE}Checking for existing Next.js processes...${NC}"
     
-    # Check for both 'next dev' and 'next-server' processes
-    local next_pids=$(ps aux | grep -E "next dev|next-server" | grep -v grep | awk '{print $2}')
+    # Check for 'next dev', 'next start' and 'next-server' processes
+    local next_pids=$(ps aux | grep -E "next dev|next start|next-server" | grep -v grep | awk '{print $2}')
     
     if [ -n "$next_pids" ]; then
         echo -e "${YELLOW}Found existing Next.js processes. Terminating...${NC}"
@@ -629,7 +629,7 @@ cleanup_existing_processes() {
     sleep 5
 
     # Final check for any remaining processes
-    local remaining_pids=$(ps aux | grep -E "next dev|next-server" | grep -v grep | awk '{print $2}')
+    local remaining_pids=$(ps aux | grep -E "next dev|next start|next-server" | grep -v grep | awk '{print $2}')
     if [ -n "$remaining_pids" ]; then
         echo -e "${RED}Some Next.js processes are still running. Forcing termination...${NC}"
         for pid in $remaining_pids; do
@@ -750,9 +750,9 @@ cleanup_test_instance() {
     fi
     
     # Final verification
-    if ps aux | grep -E "next dev|next-server" | grep -v grep > /dev/null; then
+    if ps aux | grep -E "next dev|next start|next-server" | grep -v grep > /dev/null; then
         echo -e "${RED}Warning: Some Next.js processes are still running. Please check manually with:${NC}"
-        echo -e "${YELLOW}ps aux | grep -E \"next dev|next-server\" | grep -v grep${NC}"
+        echo -e "${YELLOW}ps aux | grep -E \"next dev|next start|next-server\" | grep -v grep${NC}"
     else
         echo -e "${GREEN}All Next.js processes cleaned up successfully.${NC}"
     fi
@@ -761,17 +761,34 @@ cleanup_test_instance() {
 # Ensure cleanup happens even if script exits
 trap cleanup_test_instance EXIT
 
-echo -e "${BLUE}Starting AI Node for testing...${NC}"
+# Build once for production. start.sh serves this build with `next start`
+# and rebuilds only when the code or dependencies change later.
+chmod +x "$AI_NODE_DIR/build.sh" "$AI_NODE_DIR/start.sh" "$AI_NODE_DIR/stop.sh"
+echo -e "${BLUE}Building AI Node for production (next build; can take several minutes on a small VPS)...${NC}"
+if ! "$AI_NODE_DIR/build.sh"; then
+    echo -e "${RED}AI Node production build failed. See the output above.${NC}"
+    echo -e "${YELLOW}next build needs about 1.5 GB of free memory: on a smaller machine add swap, then re-run the installer.${NC}"
+    exit 1
+fi
+
+echo -e "${BLUE}Starting AI Node (next start) for testing...${NC}"
 # Set the port explicitly
-PORT=3000 npm run dev &
+PORT=3000 NEXT_TELEMETRY_DISABLED=1 npm run start &
 AI_NODE_PID=$!
 
-# Wait for server to start
+# Wait for server to start (a production build answers within seconds)
 echo -e "${BLUE}Waiting for AI Node to start...${NC}"
-sleep 5
+AI_NODE_HEALTHY=false
+for _i in $(seq 1 30); do
+    if curl -fsS --max-time 3 http://localhost:3000/api/health 2>/dev/null | grep -q '"status":"ok"'; then
+        AI_NODE_HEALTHY=true
+        break
+    fi
+    sleep 1
+done
 
 # Test if server is running
-if curl -s http://localhost:3000/api/health | grep -q '"status":"ok"'; then
+if [ "$AI_NODE_HEALTHY" = "true" ]; then
     echo -e "${GREEN}AI Node is running and responding to health checks.${NC}"
 else
     echo -e "${RED}AI Node is not responding to health checks. Please check the logs for errors.${NC}"
@@ -782,96 +799,17 @@ fi
 # Cleanup test instance
 cleanup_test_instance
 
-# Create a service file for AI Node
-echo -e "${BLUE}Creating AI Node service...${NC}"
-
-# Create start script
-cat > "$AI_NODE_DIR/start.sh" << 'EOLS'
-#!/bin/bash
-cd "$(dirname "$0")"
-
-# Load NVM if available
-if [ -d "$HOME/.nvm" ]; then
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-    nvm use 20.18.1 2>/dev/null || true
-fi
-
-# Verify Node.js is available
-if ! command -v node >/dev/null 2>&1; then
-    echo "ERROR: Node.js is not available. Please install Node.js v20.18.0+ first."
-    exit 1
-fi
-
-node_version=$(node --version)
-echo "Using Node.js version: $node_version"
-
-# Cleanup any existing instances first
-echo "Checking for existing Next.js processes..."
-existing_pids=$(ps aux | grep -E "next dev|next-server" | grep -v grep | awk '{print $2}')
-if [ -n "$existing_pids" ]; then
-    echo "Found existing processes. Terminating..."
-    for pid in $existing_pids; do
-        echo "Killing process $pid..."
-        kill -9 $pid 2>/dev/null || true
-    done
-    sleep 2
-fi
-
-# Get the directory path and current timestamp for log file
-LOG_DIR="$(pwd)/logs"
-mkdir -p "$LOG_DIR"
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="$LOG_DIR/ai-node_${TIMESTAMP}.log"
-
-# Start the server in persistent background mode
-echo "Starting AI Node in persistent mode..."
-echo "Logs will be available at: $LOG_FILE"
-
-# Use nohup to keep the process running after terminal disconnects.
-# Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
-export PORT=3000
-nohup npm run dev >> "$LOG_FILE" 2>&1 &
-echo $! > ai-node.pid
-echo "AI Node started with PID $(cat ai-node.pid)"
-EOLS
-
-# Create stop script
-cat > "$AI_NODE_DIR/stop.sh" << 'EOLT'
-#!/bin/bash
-echo "Stopping AI Node..."
-if [ -f ai-node.pid ]; then
-    pid=$(cat ai-node.pid)
-    echo "Found PID file, stopping process $pid..."
-    kill -15 $pid 2>/dev/null || kill -9 $pid 2>/dev/null
-    rm ai-node.pid
-fi
-
-# Cleanup any remaining processes
-ps aux | grep -E "next dev|next-server" | grep -v grep | awk '{print $2}' | xargs -r kill -9
-sleep 2
-if ps aux | grep -E "next dev|next-server" | grep -v grep > /dev/null; then
-    echo "Warning: Some processes are still running"
-else
-    echo "AI Node stopped successfully"
-fi
-EOLT
-
-# Make scripts executable
-chmod +x "$AI_NODE_DIR/start.sh"
-chmod +x "$AI_NODE_DIR/stop.sh"
-
-# Verify scripts were created
-if [ ! -f "$AI_NODE_DIR/start.sh" ] || [ ! -f "$AI_NODE_DIR/stop.sh" ]; then
-    echo -e "${RED}Error: Failed to create service scripts${NC}"
+# start.sh / stop.sh / build.sh ship with the AI Node (ai-node/*.sh)
+if [ ! -x "$AI_NODE_DIR/start.sh" ] || [ ! -x "$AI_NODE_DIR/stop.sh" ] || [ ! -x "$AI_NODE_DIR/build.sh" ]; then
+    echo -e "${RED}Error: AI Node service scripts (start.sh, stop.sh, build.sh) missing in $AI_NODE_DIR${NC}"
     exit 1
 fi
 
 echo -e "${GREEN}AI Node installation completed!${NC}"
-echo -e "${BLUE}Service scripts created:${NC}"
-echo -e "  To start: cd $AI_NODE_DIR && ./start.sh"
+echo -e "${BLUE}Service scripts:${NC}"
+echo -e "  To start: cd $AI_NODE_DIR && ./start.sh   (serves the production build)"
 echo -e "  To stop:  cd $AI_NODE_DIR && ./stop.sh"
+echo -e "  To build: cd $AI_NODE_DIR && ./build.sh   (start.sh does this when the code changed)"
 echo
 echo -e "${BLUE}Note: AI Node will be available to start after the full installation completes.${NC}"
 
