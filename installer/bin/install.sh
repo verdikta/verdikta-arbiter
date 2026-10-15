@@ -625,6 +625,15 @@ if [ -d "$AI_NODE_SRC_DIR" ]; then
     else
         echo -e "${YELLOW}Warning: .env.local file not found in copied AI Node${NC}"
     fi
+
+    # The production build made in phase 3 came along with the copy. Rebuild
+    # only if the @verdikta/common update above changed what it was built from.
+    if [ -x "$INSTALL_DIR/ai-node/build.sh" ]; then
+        if !"$INSTALL_DIR/ai-node/build.sh" --if-needed; then
+            echo -e "${YELLOW}Warning: AI Node production build failed in $INSTALL_DIR/ai-node.${NC}"
+            echo -e "${YELLOW}start.sh will retry it, and serve 'next dev' until a build succeeds.${NC}"
+        fi
+    fi
 else
     echo -e "${YELLOW}Warning: AI Node source directory not found at $AI_NODE_SRC_DIR${NC}"
 fi
@@ -1163,7 +1172,8 @@ echo "To check arbiter health: bash $INSTALL_DIR/arbiter-doctor.sh"
 # would FAIL purely because nothing is listening.
 if [ -x "$INSTALL_DIR/arbiter-doctor.sh" ]; then
     if [ "${SERVICES_STARTED_FOR_DOCTOR:-0}" = "1" ]; then
-        # Brief settling time for AI Node (next dev) to compile + bind :3000.
+        # Brief settling time for the services; start-arbiter.sh has already
+        # waited for the AI Node's /api/health.
         echo ""
         echo -e "${BLUE}Letting services settle for 15s before health check...${NC}"
         sleep 15

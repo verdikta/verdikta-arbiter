@@ -18,9 +18,21 @@ fi
 node_version=$(node --version)
 echo "Using Node.js version: $node_version"
 
-# Cleanup any existing instances first
+# Serve the production build (`next start`) by default. AI_NODE_MODE=dev, or a
+# file named .use-next-dev in this directory, runs `next dev` instead.
+MODE="${AI_NODE_MODE:-}"
+if [ -z "$MODE" ]; then
+    if [ -f .use-next-dev ]; then MODE=dev; else MODE=production; fi
+fi
+
+# Cleanup any existing instances first (the pid file holds the npm parent,
+# which the patterns below do not match; build.sh refuses while it lives)
 echo "Checking for existing Next.js processes..."
-existing_pids=$(ps aux | grep -E "next dev|next-server" | grep -v grep | awk '{print $2}')
+if [ -f ai-node.pid ]; then
+    kill -15 "$(cat ai-node.pid)" 2>/dev/null || true
+    rm -f ai-node.pid
+fi
+existing_pids=$(ps aux | grep -E "next dev|next start|next-server" | grep -v grep | awk '{print $2}')
 if [ -n "$existing_pids" ]; then
     echo "Found existing processes. Terminating..."
     for pid in $existing_pids; do
@@ -36,13 +48,46 @@ mkdir -p "$LOG_DIR"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="$LOG_DIR/ai-node_${TIMESTAMP}.log"
 
+export PORT=3000
+export NEXT_TELEMETRY_DISABLED=1
+
+RUN_SCRIPT=dev
+if [ "$MODE" = "dev" ]; then
+    echo "AI_NODE_MODE=dev / .use-next-dev: starting with next dev."
+    echo dev > .run-mode
+    # next dev writes its own files into .next: the next production start
+    # must rebuild rather than trust the stamp.
+    rm -f .next/VERDIKTA_BUILD_FINGERPRINT
+else
+    # Install and upgrade build up front, so this is normally a no-op. It
+    # rebuilds when the code or dependencies changed since (a ClassID or
+    # @verdikta/common update, a hand edit). Its output goes to the log.
+    echo "Checking the production build (rebuilds first if the code changed; that takes a few minutes)..."
+    ./build.sh --if-needed >> "$LOG_FILE" 2>&1
+    build_rc=$?
+    if [ "$build_rc" -eq 0 ]; then
+        RUN_SCRIPT=start
+        echo production > .run-mode
+    elif [ "$build_rc" -eq 3 ]; then
+        echo "Another AI Node build is running; the start.sh that launched it will start the server."
+        exit 1
+    elif [ "$build_rc" -ge 128 ]; then
+        echo "The AI Node build was interrupted (stop.sh?); not starting." | tee -a "$LOG_FILE"
+        exit 1
+    else
+        # Keep the arbiter answering: next dev is what ran before production
+        # builds. The doctor flags this mode until a build succeeds.
+        echo "WARNING: production build failed (exit $build_rc, see $LOG_FILE); falling back to next dev." | tee -a "$LOG_FILE"
+        echo dev-fallback > .run-mode
+    fi
+fi
+
 # Start the server in persistent background mode
-echo "Starting AI Node in persistent mode..."
+echo "Starting AI Node in persistent mode (npm run $RUN_SCRIPT)..."
 echo "Logs will be available at: $LOG_FILE"
 
 # Use nohup to keep the process running after terminal disconnects.
 # Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
-export PORT=3000
-nohup npm run dev >> "$LOG_FILE" 2>&1 &
+nohup npm run "$RUN_SCRIPT" >> "$LOG_FILE" 2>&1 &
 echo $! > ai-node.pid
 echo "AI Node started with PID $(cat ai-node.pid)"

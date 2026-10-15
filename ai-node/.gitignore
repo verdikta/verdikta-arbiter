@@ -2,6 +2,11 @@
 .next/
 out/
 
+# Run state written by build.sh / start.sh, and the operator's dev-mode switch
+.build-in-progress
+.run-mode
+.use-next-dev
+
 # Node modules
 node_modules/
 

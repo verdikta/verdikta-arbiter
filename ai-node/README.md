@@ -43,23 +43,23 @@ Open [http://localhost:3000](http://localhost:3000) with your browser to see the
 
 ## Running in Production
 
-To run the application in production mode, follow these steps:
+Arbiter operators do not run these steps by hand: the installer and
+`upgrade-arbiter.sh` build the AI Node once, and `./start.sh` serves the build
+with `next start` on port 3000 (see "AI Node production build" in
+`installer/docs/maintenance/upgrading.md`). The scripts:
 
-1.  **Set Environment Variables:** Ensure all required environment variables (e.g., `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `JUSTIFIER_MODEL`) are set in your production environment. Note that `.env.local` is **not** loaded in production builds; these variables must be set directly in the server environment or through a `.env.production` file (though environment variables usually take precedence).
+- `./build.sh` runs `next build` and stamps `.next` with a fingerprint of the
+  sources, dependencies and Node version; `./build.sh --if-needed` rebuilds only
+  when that fingerprint changed, `./build.sh --check` only reports.
+- `./start.sh` runs `./build.sh --if-needed`, then `npm run start` (falling back
+  to `npm run dev` if the build fails); `AI_NODE_MODE=dev` or a `.use-next-dev`
+  file selects `next dev`. `./stop.sh` stops either.
 
-2.  **Install Dependencies:** Run `npm install` (or `npm ci --omit=dev` for a cleaner install using `package-lock.json` and skipping development dependencies).
-
-3.  **Build the Application:** Create an optimized production build:
-    ```bash
-    npm run build
-    ```
-    This command compiles the application and outputs the result to the `.next` directory.
-
-4.  **Start the Production Server:** Start the server using the built application:
-    ```bash
-    npm start
-    ```
-    This command starts the Next.js production server, which serves the optimized application, typically on port 3000 unless configured otherwise (e.g., via the `PORT` environment variable).
+By hand, the equivalent is `npm ci`, `npm run build`, `npm start`.
+`.env.local` is loaded by `next start` as well as `next dev`, and server code
+reads it at startup, so changing a key or `JUSTIFIER_MODEL` needs a restart,
+not a rebuild. A change under `src/` (including the ClassID-generated
+`src/config/models.ts`) or in `node_modules` needs a rebuild.
 
 ## Project Structure
 

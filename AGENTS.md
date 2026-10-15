@@ -253,6 +253,17 @@ Install phases: prereqs → env setup → AI Node → EA → Docker/Postgres →
 → deploy contracts → configure jobs/bridges → register oracle. Config lands in
 `installer/.env`, `installer/.contracts`, `installer/.api_keys`.
 
+**Operators run the AI Node as a production build**, not `next dev` (which
+stays the local dev loop). Install and upgrade run `ai-node/build.sh`
+(`next build`) once; `ai-node/start.sh` serves `.next` with `next start` on
+:3000 and runs `build.sh --if-needed` first, which rebuilds only when the
+fingerprint of sources, dependencies and Node version changed (a ClassID
+`models.ts` sync or `@verdikta/common` update needs a rebuild; `.env.local`
+does not — it is read at runtime). A failed build falls back to `next dev`;
+`ai-node/.run-mode` records `production` / `dev` / `dev-fallback`, shown by
+`arbiter-status.sh` and the doctor's `svc.ai_node_mode`. Operator notes:
+`installer/docs/maintenance/upgrading.md`, "AI Node production build".
+
 ### Runtime management (post-install, in the install dir)
 `start-arbiter.sh`, `stop-arbiter.sh`, `arbiter-status.sh`, `arbiter-doctor.sh`
 (health check + `--fix`), `register-oracle.sh` / `unregister-oracle.sh`,
@@ -319,6 +330,11 @@ Ollama runs locally and is unaffected by gateway settings.
   as operator-preferred gateways; releases ≤ 1.6.x ignore them and use a
   hard-coded order (ipfs.io, the retired cloudflare-ipfs.com, Pinata, dweb.link)
   in which only Pinata serves content today. Fix gateway problems in the library.
+- **A `GET` route handler needs `export const dynamic = 'force-dynamic'`.**
+  `next build` prerenders a GET handler that never reads its request: before
+  this was added, `/api/health` (timestamp, gateway routing the doctor reads)
+  was frozen at build time and `/api/test-hyperbolic` ran live calls during the
+  build. Check the route table `next build` prints: API routes must show `ƒ`.
 - **IPFS fetches are shared per process.** A dispatcher request selects several
   of one operator's jobs within milliseconds; `external-adapter/src/services/cidFetchCache.js`
   wraps the library client so one download serves every job asking for that CID

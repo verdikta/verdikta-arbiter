@@ -36,12 +36,25 @@ check_port() {
 ai_node_healthy() {
     curl -fsS --max-time 3 http://localhost:3000/api/health 2>/dev/null | grep -q '"status" *: *"ok"'
 }
+# ai-node/start.sh rebuilds the production bundle first when the code changed
+# since the last build (install and upgrade build up front, so this is rare).
+# That build gets its own budget: AI_NODE_BUILD_TIMEOUT_SECS, default 20 min.
+ai_node_building() {
+    local pid
+    pid=$(cat "$AI_NODE_DIR/.build-in-progress" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
 wait_for_ai_node() {
     local timeout="${AI_NODE_START_TIMEOUT_SECS:-180}" waited=0
+    local build_timeout="${AI_NODE_BUILD_TIMEOUT_SECS:-1200}" built=0
     while [ "$waited" -lt "$timeout" ]; do
         if ai_node_healthy; then
-            echo -e "${GREEN}AI Node is healthy (answered /api/health after ${waited}s).${NC}"
+            echo -e "${GREEN}AI Node is healthy (answered /api/health after $((waited+built))s).${NC}"
             return 0
+        fi
+        if [ "$built" -lt "$build_timeout" ] && ai_node_building; then
+            [ $((built % 30)) -eq 0 ] && echo -e "${YELLOW}AI Node is building its production bundle (${built}s so far)...${NC}"
+            sleep 3; built=$((built+3))
+            continue
         fi
         sleep 3; waited=$((waited+3))
     done
@@ -61,7 +74,7 @@ else
         # Ensure the directory exists before trying to cd into it
         if [ -d "$AI_NODE_DIR" ]; then
         cd "$AI_NODE_DIR" && ./start.sh &
-        echo -e "${YELLOW}AI Node is starting up. This usually takes about a minute...${NC}"
+        echo -e "${YELLOW}AI Node is starting up (a few seconds; minutes if it has to rebuild first)...${NC}"
         wait_for_ai_node || true
         else
              echo -e "${RED}AI Node directory not found at $AI_NODE_DIR${NC}"
