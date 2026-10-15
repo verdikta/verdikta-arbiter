@@ -123,7 +123,8 @@ async function runL4(cfg, scenarios, opts) {
     const start = Date.now();
     try {
       const value = await aggregator.maxTotalFee(maxOracleFee);
-      const args = [[scenario.cid], '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId];
+      const cids = Array.isArray(scenario.cids) && scenario.cids.length ? scenario.cids : [scenario.cid];
+      const args = [cids, scenario.addendum || '', alpha, maxOracleFee, estimatedBaseCost, maxFeeScaling, l4.classId];
 
       // Estimate rather than trust config.l4.gasLimit: selection cost grows with
       // the registry, and an out-of-gas request still pays for the whole limit.

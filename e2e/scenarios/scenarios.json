@@ -14,5 +14,13 @@
     "modes": ["0", "commit-reveal"],
     "minOutcomes": 2,
     "expectedWinnerIndex": 0
+  },
+  {
+    "id": "bounty-171-replay",
+    "description": "Replay of mainnet bounty 171 (issue #81): the hunter archive holds a 2560x12268 px screenshot that every jury model rejected before #82. cids = [evaluation package, hunter archive] with an empty addendum, exactly as BountyEscrow sends them.",
+    "cids": ["QmR8nMcL3UgKQZ93YTjXyaTSPdwHhf36LVgce635bA5Eb9", "QmfGZLLN7YVwT6b9RKjxVPinb1c1zozu6w8xuxeTwFxX1B"],
+    "addendum": "",
+    "modes": ["commit-reveal"],
+    "minOutcomes": 2
   }
 ]

@@ -13,6 +13,9 @@ const DEFAULT_SCENARIOS = path.join(E2E_ROOT, 'scenarios', 'scenarios.json');
  * a cidFile is declared but not yet present.
  */
 function resolveCid(scenario) {
+  // A multi-CID scenario (e.g. a bounty: [evaluation package, hunter archive])
+  // resolves to the adapter's comma-joined form; L4 sends `cids` as the array.
+  if (Array.isArray(scenario.cids) && scenario.cids.length) return scenario.cids.join(',');
   if (scenario.cid) return scenario.cid;
   if (scenario.cidFile) {
     const p = path.resolve(E2E_ROOT, scenario.cidFile);
@@ -47,7 +50,9 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null) {
 
   scenarios.forEach((s, i) => {
     if (!s.id) throw new Error(`Scenario at index ${i} is missing "id"`);
-    if (!s.cid && !s.cidFile) throw new Error(`Scenario "${s.id}" is missing "cid" or "cidFile"`);
+    if (!s.cid && !s.cidFile && !(Array.isArray(s.cids) && s.cids.length)) {
+      throw new Error(`Scenario "${s.id}" is missing "cid", "cids" or "cidFile"`);
+    }
   });
 
   const explicit = Boolean(ids && ids.length);
