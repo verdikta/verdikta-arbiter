@@ -104,8 +104,15 @@ dropped, the prompt gets one line per image and the response carries a warning:
 ]
 ```
 
-With `DROP_UNPROCESSABLE_IMAGES=false`, an image that cannot be decoded fails the
-request with HTTP 400 and `"error": "Image attachment <name> could not be processed: <reason>"`.
+The request as a whole is also kept within the jury's request-wide limits (with
+Claude in the jury: 100 images and documents, 20 MB). Tall images are cut into
+fewer parts, then images are sent as JPEG or scaled down, and as a last resort
+the last images are omitted; each image affected gets a line and a warning, e.g.
+`"scroll.png was split into 10 parts, ... To keep the whole request within the models' size limit, the parts were scaled down to 675 px wide and sent as JPEG."`
+
+With `DROP_UNPROCESSABLE_IMAGES=false`, an image that cannot be decoded, or would
+have to be omitted to meet a request-wide limit, fails the request with HTTP 400
+and `"error": "Image attachment <name> could not be processed: <reason>"`.
 A provider that still rejects an image is reported with `error_type: "invalid_image"`.
 
 Optional request fields: `attachmentNames` (file names, index-aligned with

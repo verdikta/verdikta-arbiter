@@ -306,7 +306,12 @@ Ollama runs locally and is unaffected by gateway settings.
   32-px patches, 5 MB base64; 2000 px/side when > 20 images and Claude is in
   the jury) pass through byte-for-byte; over-limit tall/wide images are split
   into labelled, overlapping tiles; others are downscaled; undecodable ones are
-  omitted with a prompt note. A single oversized screenshot used to fail every
+  omitted with a prompt note. The whole request is then held to the jury's
+  request-wide limits (Claude: 100 images incl. PDFs, 20 MB — Bedrock's figure,
+  since the gateway is operator config; OpenAI: 1,500, 512 MB): fewer tiles
+  first, then JPEG / downscaling of the already-changed images, untouched images
+  only when that is not enough, omitting the last images as a last resort — all
+  decided from the request alone. A single oversized screenshot used to fail every
   model and time the request out across the network (bounty 171). Keep the
   limits in its `IMAGE_LIMITS` object, with their doc sources.
 - **IPFS gateway order lives in `@verdikta/common`**, not here. The EA only
