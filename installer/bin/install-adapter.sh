@@ -338,83 +338,17 @@ else
     fi
 fi
 
-# Create a start script
-echo -e "${BLUE}Creating External Adapter service...${NC}"
-
-# Create start script
-cat > "$ADAPTER_DIR/start.sh" << 'EOL'
-#!/bin/bash
-cd "$(dirname "$0")"
-
-# Load NVM so node/npm are available in non-interactive sessions
-export NVM_DIR="$HOME/.nvm"
-[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
-[ -s "$NVM_DIR/bash_completion" ] && . "$NVM_DIR/bash_completion"
-
-# Select the Node.js version used during install if available
-if command -v nvm >/dev/null 2>&1; then
-  nvm use 20.18.1 >/dev/null 2>&1 || true
-fi
-
-# Get the directory path and current timestamp for log file
-LOG_DIR="$(pwd)/logs"
-mkdir -p "$LOG_DIR"
-TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
-LOG_FILE="$LOG_DIR/adapter_${TIMESTAMP}.log"
-
-echo "Starting External Adapter in persistent mode..."
-echo "Logs will be available at: $LOG_FILE"
-
-if ! command -v npm >/dev/null 2>&1; then
-  echo "Error: npm not found. Ensure Node.js is installed and NVM is loaded." | tee -a "$LOG_FILE"
-  exit 1
-fi
-
-# Use nohup to keep the process running after terminal disconnects.
-# Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
-nohup npm start >> "$LOG_FILE" 2>&1 &
-
-# Save PID for later management
-echo $! > adapter.pid
-echo "External Adapter started with PID $(cat adapter.pid)"
-EOL
-
-# Make start script executable
-chmod +x "$ADAPTER_DIR/start.sh"
-
-# Create stop script
-cat > "$ADAPTER_DIR/stop.sh" << 'EOL'
-#!/bin/bash
-cd "$(dirname "$0")"
-
-# Check for PID file first (our preferred method)
-if [ -f adapter.pid ]; then
-    pid=$(cat adapter.pid)
-    echo "Found PID file, stopping process $pid..."
-    kill -15 $pid 2>/dev/null || kill -9 $pid 2>/dev/null
-    rm adapter.pid
-    echo "External Adapter stopped."
-    exit 0
-fi
-
-# Fallback to port check if PID file doesn't exist or is invalid
-PID=$(lsof -i:8080 -t)
-if [ -n "$PID" ]; then
-  echo "Stopping External Adapter (PID: $PID)..."
-  kill -15 $PID 2>/dev/null || kill -9 $PID 2>/dev/null
-  echo "External Adapter stopped."
-else
-  echo "External Adapter is not running."
-fi
-
-# Final cleanup of any npm processes related to the adapter
-ps aux | grep "npm start" | grep -v grep | awk '{print $2}' | xargs -r kill -9 2>/dev/null
-
-echo "All External Adapter processes should be stopped now."
-EOL
-
-# Make stop script executable
-chmod +x "$ADAPTER_DIR/stop.sh"
+# start.sh and stop.sh are tracked in the repo, and upgrades deploy exactly
+# those files. This step used to overwrite both with older heredoc copies (no
+# bounded wait for :8080; a stop that kill -9'd every `npm start` on the host),
+# so a fresh install ran different scripts until its first upgrade.
+for script in start.sh stop.sh; do
+    if [ ! -f "$ADAPTER_DIR/$script" ]; then
+        echo -e "${RED}Error: $ADAPTER_DIR/$script is missing from the checkout.${NC}"
+        exit 1
+    fi
+done
+chmod +x "$ADAPTER_DIR/start.sh" "$ADAPTER_DIR/stop.sh"
 
 echo -e "${GREEN}External Adapter installation completed!${NC}"
 echo -e "${GREEN}✅ Verdikta Common Library (@verdikta/common) successfully integrated${NC}"

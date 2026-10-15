@@ -63,6 +63,46 @@ wait_for_ai_node() {
     return 1
 }
 
+# The External Adapter (npm start → node) needs a few seconds to listen on
+# :8080, more on a busy VPS right after an upgrade. A single check after a
+# fixed `sleep 5` printed "Failed to start" for adapters that came up a moment
+# later (canary upgrade to d4ff0ec, 2026-10-15). Wait, bounded, until GET
+# /version answers or the port listens; fail early only if start.sh gives up
+# or the adapter process dies. ADAPTER_START_TIMEOUT_SECS overrides the 60 s.
+adapter_up() {
+    curl -fsS --max-time 2 http://localhost:8080/version >/dev/null 2>&1 || check_port 8080
+}
+adapter_process_alive() {
+    local pid
+    pid=$(cat "$ADAPTER_DIR/adapter.pid" 2>/dev/null) && [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+}
+wait_for_adapter() {
+    local starter="$1" timeout="${ADAPTER_START_TIMEOUT_SECS:-60}" waited=0 status=""
+    while true; do
+        if adapter_up; then
+            echo -e "${GREEN}External Adapter started successfully (answered on port 8080 after ${waited}s).${NC}"
+            return 0
+        fi
+        # start.sh returns once the adapter answers or it has given up; from
+        # then on the adapter's own process (adapter.pid) has to stay alive.
+        if [ -z "$status" ] && ! kill -0 "$starter" 2>/dev/null; then
+            if wait "$starter"; then status=0; else status=$?; fi
+        fi
+        if [ -n "$status" ] && [ "$status" -ne 0 ]; then
+            echo -e "${RED}Failed to start External Adapter (start.sh exited with status $status; see its output above). Check logs at $ADAPTER_DIR/logs/adapter_*.log${NC}"
+            return 1
+        fi
+        if [ "$status" = 0 ] && ! adapter_process_alive; then
+            echo -e "${RED}Failed to start External Adapter: its process exited. Check logs at $ADAPTER_DIR/logs/adapter_*.log${NC}"
+            return 1
+        fi
+        [ "$waited" -ge "$timeout" ] && break
+        sleep 1; waited=$((waited+1))
+    done
+    echo -e "${RED}Failed to start External Adapter: no answer on port 8080 after ${timeout}s. Check logs at $ADAPTER_DIR/logs/adapter_*.log${NC}"
+    return 1
+}
+
 # Start AI Node
 echo -e "${BLUE}Starting AI Node...${NC}"
 if check_port 3000; then
@@ -92,13 +132,10 @@ else
     if [ -f "$ADAPTER_DIR/start.sh" ]; then
         # Ensure the directory exists before trying to cd into it
         if [ -d "$ADAPTER_DIR" ]; then
-        cd "$ADAPTER_DIR" && ./start.sh &
-        sleep 5
-        if check_port 8080; then
-            echo -e "${GREEN}External Adapter started successfully.${NC}"
-        else
-                echo -e "${RED}Failed to start External Adapter. Check logs at $ADAPTER_DIR/logs/adapter_*.log${NC}" # Updated log path based on install-adapter.sh
-            fi
+        (cd "$ADAPTER_DIR" && ./start.sh) &
+        # Callers run under set -e (install.sh, upgrade-arbiter.sh); a slow
+        # or failed adapter is reported, never turned into a non-zero exit.
+        wait_for_adapter $! || true
         else
             echo -e "${RED}External Adapter directory not found at $ADAPTER_DIR${NC}"
         fi
