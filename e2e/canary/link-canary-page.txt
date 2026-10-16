@@ -1,0 +1,5 @@
+VERDIKTA LINK CANARY
+This page exists to test whether an AI juror actually opens links.
+
+Canary code: 976AB00F4F56
+Answer: COBALT
