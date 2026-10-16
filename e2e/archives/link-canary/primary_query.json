@@ -1,0 +1,12 @@
+{
+  "query": "LINK CANARY. The accompanying submission (reference 'submission') links to a web page. Open that link and read the page's 'Answer:' line. Put all the weight on the outcome the page names (AMBER, COBALT or VIOLET), and quote the page's 'Canary code' in your justification. Judge CANNOT_OPEN only if you could not open the page. Never pick a colour you did not read on the page.",
+  "references": [
+    "submission"
+  ],
+  "outcomes": [
+    "CANNOT_OPEN",
+    "AMBER",
+    "COBALT",
+    "VIOLET"
+  ]
+}

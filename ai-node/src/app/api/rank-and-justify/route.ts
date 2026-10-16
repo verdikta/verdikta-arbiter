@@ -1251,7 +1251,8 @@ async function generateJustification(
     ? { reasoning: { effort: 'low' as const }, verbosity: 'low' as const }
     : undefined;
 
-  const response = await justifierProvider.generateResponse(prompt, justifierModel, options);
+  // The justifier summarizes the jurors' answers; links quoted in them are not its to open.
+  const response = await justifierProvider.generateResponse(prompt, justifierModel, { ...(options || {}), webAccess: false });
   return response;
 }
 

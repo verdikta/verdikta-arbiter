@@ -4,6 +4,7 @@ import { modelConfig } from '../../config/models';
 import {
   AnthropicChatParams,
   LEGACY_TEMPERATURE,
+  MODERN_MAX_TOKENS,
   SAMPLING_FREE_PARAMS,
   acceptsSamplingParams,
   anthropicChatParams,
@@ -11,10 +12,20 @@ import {
   isSamplingParamRejection,
 } from './anthropic-request-params';
 import { attachmentRequestError } from './attachment-errors';
+import { WebAccessOption, anthropicModelSupportsWebTools, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
 
 type ChatInput = Parameters<ChatAnthropic['invoke']>[0];
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+
+/** Beta header for the web_fetch server tool (web_search needs none). */
+export const ANTHROPIC_WEB_FETCH_BETA = 'web-fetch-2025-09-10';
+
+/** Page text one web_fetch may add to the context: bounds what a long page costs the operator. */
+export const WEB_FETCH_MAX_CONTENT_TOKENS = 25000;
+
+/** A server-tool turn can stop with pause_turn; it is resumed at most this many times. */
+const MAX_PAUSE_CONTINUATIONS = 3;
 
 export class AnthropicProvider implements LLMProvider {
   private apiKey: string;
@@ -41,9 +52,13 @@ export class AnthropicProvider implements LLMProvider {
     return modelInfo ? modelInfo.supportsImages : false;
   }
 
-  async generateResponse(prompt: string, model: string): Promise<string> {
+  async generateResponse(prompt: string, model: string, options?: WebAccessOption): Promise<string> {
     if (!this.apiKey) {
       throw new Error('ANTHROPIC_API_KEY is not set');
+    }
+    if (options?.webAccess !== false && shouldUseWebTools(prompt) && anthropicModelSupportsWebTools(model)) {
+      const answer = await this.tryWebTools(model, [{ type: 'text', text: withWebAccessNote(prompt) }]);
+      if (answer !== null) return answer;
     }
     return this.invokeText(model, prompt);
   }
@@ -131,6 +146,13 @@ export class AnthropicProvider implements LLMProvider {
     const pdfAttachments = attachments.filter(att => att.mediaType === 'application/pdf');
     const otherAttachments = attachments.filter(att => att.mediaType !== 'application/pdf');
 
+    // Links in the request are opened by Anthropic's web tools; same inputs as below.
+    if (shouldUseWebTools(prompt, attachments) && anthropicModelSupportsWebTools(model)) {
+      const blocks = this.nativeContentBlocks(model, withWebAccessNote(prompt), supportsNativePDF ? pdfAttachments : [], otherAttachments);
+      const answer = await this.tryWebTools(model, blocks);
+      if (answer !== null) return answer;
+    }
+
     // Use native PDF support for supported models
     if (supportsNativePDF && pdfAttachments.length > 0) {
       console.log(`[${this.providerName}] Using native PDF support for ${pdfAttachments.length} PDF(s)`);
@@ -190,7 +212,57 @@ export class AnthropicProvider implements LLMProvider {
     pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
     otherAttachments: Array<{ type: string, content: string, mediaType: string }>
   ): Promise<string> {
-    // Build message content with native PDF support
+    const contentBlocks = this.nativeContentBlocks(model, prompt, pdfAttachments, otherAttachments);
+
+    try {
+      // Use Anthropic's direct client for native PDF support
+      const { Anthropic } = await import('@anthropic-ai/sdk');
+      const client = new Anthropic({ apiKey: this.apiKey });
+
+      // Make the API call with native PDF support
+      const response = await client.messages.create({
+        model: model,
+        messages: [
+          {
+            role: "user",
+            content: contentBlocks
+          }
+        ],
+        max_tokens: 1000,
+        // Claude ≤ 4.6 accepts temperature (never together with top_p); Opus 4.7+ and
+        // Claude 5 reject every sampling parameter, so they get none.
+        ...(acceptsSamplingParams(model) ? { temperature: LEGACY_TEMPERATURE } : {})
+      });
+
+      // The answer is the first text block (a thinking block may precede it).
+      const content = response.content.find(block => block.type === 'text');
+      if (!content || content.type !== 'text') {
+        throw new Error('No text content in Anthropic response');
+      }
+
+      console.log(`[${this.providerName}] Native PDF processing successful, response length: ${content.text.length}`);
+      return content.text;
+
+    } catch (error: any) {
+      console.error(`[${this.providerName}] Native PDF request failed for ${model}:`, error.message);
+      // Keep the provider's status and message; say which input it is about.
+      throw attachmentRequestError(this.providerName, model, error, {
+        hasPdf: true,
+        hasImage: otherAttachments.some(att => att.type === 'image')
+      });
+    }
+  }
+
+  /**
+   * Content blocks for the direct client: the prompt, PDFs as document blocks,
+   * images as base64 image blocks, anything else as text.
+   */
+  private nativeContentBlocks(
+    model: string,
+    prompt: string,
+    pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
+    otherAttachments: Array<{ type: string, content: string, mediaType: string }>
+  ): any[] {
     const contentBlocks: any[] = [
       { type: "text", text: prompt }
     ];
@@ -234,42 +306,63 @@ export class AnthropicProvider implements LLMProvider {
       }
     }
 
+    return contentBlocks;
+  }
+
+  /**
+   * The answer with Anthropic's web_fetch and web_search server tools enabled, or
+   * null when that request fails: the juror then answers without web access (as
+   * every request did before), and the warning says why.
+   */
+  private async tryWebTools(model: string, content: any[]): Promise<string | null> {
     try {
-      // Use Anthropic's direct client for native PDF support
-      const { Anthropic } = await import('@anthropic-ai/sdk');
-      const client = new Anthropic({ apiKey: this.apiKey });
-
-      // Make the API call with native PDF support
-      const response = await client.messages.create({
-        model: model,
-        messages: [
-          {
-            role: "user",
-            content: contentBlocks
-          }
-        ],
-        max_tokens: 1000,
-        // Claude ≤ 4.6 accepts temperature (never together with top_p); Opus 4.7+ and
-        // Claude 5 reject every sampling parameter, so they get none.
-        ...(acceptsSamplingParams(model) ? { temperature: LEGACY_TEMPERATURE } : {})
-      });
-
-      // The answer is the first text block (a thinking block may precede it).
-      const content = response.content.find(block => block.type === 'text');
-      if (!content || content.type !== 'text') {
-        throw new Error('No text content in Anthropic response');
-      }
-
-      console.log(`[${this.providerName}] Native PDF processing successful, response length: ${content.text.length}`);
-      return content.text;
-
+      return await this.generateWithWebTools(model, content);
     } catch (error: any) {
-      console.error(`[${this.providerName}] Native PDF request failed for ${model}:`, error.message);
-      // Keep the provider's status and message; say which input it is about.
-      throw attachmentRequestError(this.providerName, model, error, {
-        hasPdf: true,
-        hasImage: otherAttachments.some(att => att.type === 'image')
-      });
+      console.warn(`[${this.providerName}] Web tools failed for ${model} (${error?.message}); answering without web access`);
+      return null;
     }
   }
+
+  private async generateWithWebTools(model: string, content: any[]): Promise<string> {
+    const { Anthropic } = await import('@anthropic-ai/sdk');
+    const client = new Anthropic({ apiKey: this.apiKey });
+    const maxUses = webMaxUses();
+    console.log(`[${this.providerName}] Web tools on for ${model} (web_fetch, web_search; max_uses ${maxUses})`);
+
+    const messages: any[] = [{ role: 'user', content }];
+    for (let turn = 0; turn <= MAX_PAUSE_CONTINUATIONS; turn++) {
+      const response: any = await client.messages.create({
+        model,
+        messages,
+        max_tokens: MODERN_MAX_TOKENS,
+        tools: [
+          { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: maxUses, max_content_tokens: WEB_FETCH_MAX_CONTENT_TOKENS },
+          { type: 'web_search_20250305', name: 'web_search', max_uses: maxUses },
+        ],
+        ...(acceptsSamplingParams(model) ? { temperature: LEGACY_TEMPERATURE } : {})
+      } as any, { headers: { 'anthropic-beta': ANTHROPIC_WEB_FETCH_BETA } });
+
+      // A long server-tool turn is handed back unfinished; sending it back resumes it.
+      if (response.stop_reason === 'pause_turn') {
+        messages.push({ role: 'assistant', content: response.content });
+        continue;
+      }
+      return finalAnswerText(response.content);
+    }
+    throw new Error(`still paused after ${MAX_PAUSE_CONTINUATIONS} continuations`);
+  }
+}
+
+/**
+ * The text after the last tool block: the model's answer. Text before a fetch
+ * ("I'll open that link") is narration, not part of the JSON answer.
+ */
+export function finalAnswerText(content: unknown): string {
+  if (!Array.isArray(content)) return extractTextContent(content);
+  let lastTool = -1;
+  content.forEach((block: any, i: number) => {
+    if (block && typeof block === 'object' && block.type !== 'text') lastTool = i;
+  });
+  const answer = content.slice(lastTool + 1);
+  return extractTextContent(answer.length > 0 ? answer : content);
 }

@@ -5,8 +5,8 @@ A standalone testing tool for systematically evaluating Verdikta AI arbiters acr
 ## Model Limitations
 
 - **o3** does not support native PDF processing.
-- **Claude models** do not support native internet searches if fed URLs.
-- **Open source models** do not support PDF processing or internet searches.
+- **Links**: no model opens a URL from a plain request (checked 2026-10-16 on gpt-4o, gpt-4.1, gpt-5.x, claude-sonnet-5, claude-opus-5). The AI node turns on the providers' web tools for OpenAI and Claude jurors when the request contains a URL (`AI_WEB_ACCESS`, see `ai-node/.env.local.example`).
+- **Open source models** do not support PDF processing or web access.
 
 ## Overview
 

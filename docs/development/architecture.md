@@ -339,6 +339,12 @@ const parsedManifest = await manifestParser.parse(extractedPath);
 - The model panel runs in parallel, bounded by `MODEL_TIMEOUT_MS` per model and
   `REQUEST_TIMEOUT_MS` for the whole request (justification generation has its own
   `JUSTIFICATION_TIMEOUT_MS`).
+- Links: OpenAI and Claude jurors open http(s) URLs through the providers' own web
+  tools (OpenAI Responses API `web_search`; Anthropic `web_fetch` + `web_search`),
+  enabled when the request or a text attachment contains a URL (`AI_WEB_ACCESS`,
+  `src/lib/llm/web-access.ts`). Pages are fetched by the provider, not by the node;
+  the justifier never browses. If the tool request fails the juror answers without
+  web access and the node logs a warning.
 - Commit-reveal (mode 1/2) avoids recomputation on reveal: the mode-1 result is
   stored by the External Adapter (`commitStore`) and returned in mode 2.
 

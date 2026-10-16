@@ -287,7 +287,10 @@ key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`.
 `JUSTIFIER_MODEL` (`provider:model`), `MODEL_TIMEOUT_MS`, `REQUEST_TIMEOUT_MS`,
 `JUSTIFICATION_TIMEOUT_MS`, `MIN_SUCCESSFUL_MODELS_PERCENT`, `AI_GATEWAY`, `LOG_LEVEL`,
 `DROP_UNPROCESSABLE_IMAGES` (default on: an undecodable image is omitted with a
-prompt note instead of failing the request).
+prompt note instead of failing the request), `AI_WEB_ACCESS` (`auto` default: OpenAI
+and Claude jurors get the providers' web tools when the request contains a URL;
+`always`; `off`) and `AI_WEB_MAX_USES` (tool calls per juror request, default 5).
+Without web tools a model cannot open a link: it only sees the text it is sent.
 
 Ollama runs locally and is unaffected by gateway settings.
 

@@ -263,6 +263,21 @@ gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
   -f scenario=bounty-171-replay -f expect_release=<commit>
 ```
 
+`link-canary` is manual-only too: it checks that jurors open links (the AI
+Node's web tools, `AI_WEB_ACCESS`). The URL is only in the submission file, the
+page's `Answer:` line names the winning outcome (COBALT, index 2) and its
+`Canary code` (`976AB00F4F56`) exists only on that page, so a juror that did not
+open the link cannot quote it. Run it after an AI Node change:
+
+```bash
+gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
+  -f scenario=link-canary -f expect_release=<commit>
+```
+
+then confirm the winner is COBALT and the justification quotes the code. OpenAI's
+fetcher cannot read IPFS gateways (Pinata timed out, ipfs.io and dweb.link
+answered 403 on 2026-10-16), so the page is served from raw.githubusercontent.com.
+
 ## Configuration
 
 `config/e2e-config.json` holds defaults; `.env` and CLI flags override. Key
