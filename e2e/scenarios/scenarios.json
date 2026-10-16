@@ -3,7 +3,10 @@
     "id": "canonical-vuln",
     "description": "Project-owned canonical archive: reentrancy contract review, outcomes [Vulnerabilities, Safe]. Source in archives/contract-vuln/. Activate by pinning: `npm run build-archive -- --pin` (writes archives/contract-vuln.cid).",
     "cidFile": "archives/contract-vuln.cid",
-    "modes": ["0", "commit-reveal"],
+    "modes": [
+      "0",
+      "commit-reveal"
+    ],
     "minOutcomes": 2,
     "expectedWinnerIndex": 0
   },
@@ -11,17 +14,36 @@
     "id": "frontend-default",
     "description": "External pre-pinned package (example-frontend default). Smart-contract vulnerability review, 2 outcomes. Works today; not project-owned.",
     "cid": "QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH",
-    "modes": ["0", "commit-reveal"],
+    "modes": [
+      "0",
+      "commit-reveal"
+    ],
     "minOutcomes": 2,
     "expectedWinnerIndex": 0
   },
   {
     "id": "bounty-171-replay",
     "description": "Replay of mainnet bounty 171 (issue #81): the hunter archive holds a 2560x12268 px screenshot that every jury model rejected before #82. cids = [evaluation package, hunter archive] with an empty addendum, exactly as BountyEscrow sends them. Manual only: the package names a paid jury (gpt-5.6-sol + claude-sonnet-5); run it by name against the class-5555 canaries.",
-    "cids": ["QmR8nMcL3UgKQZ93YTjXyaTSPdwHhf36LVgce635bA5Eb9", "QmfGZLLN7YVwT6b9RKjxVPinb1c1zozu6w8xuxeTwFxX1B"],
+    "cids": [
+      "QmR8nMcL3UgKQZ93YTjXyaTSPdwHhf36LVgce635bA5Eb9",
+      "QmfGZLLN7YVwT6b9RKjxVPinb1c1zozu6w8xuxeTwFxX1B"
+    ],
     "addendum": "",
     "manualOnly": true,
-    "modes": ["commit-reveal"],
+    "modes": [
+      "commit-reveal"
+    ],
     "minOutcomes": 2
+  },
+  {
+    "id": "link-canary",
+    "description": "Web access canary (PR #95): the submission links to e2e/canary/link-canary-page.txt (raw.githubusercontent.com, pinned to commit 42bd630), whose 'Answer:' line names the winning colour and whose 'Canary code' (976AB00F4F56) appears nowhere else. A juror that does not open the link can only pick CANNOT_OPEN or guess. Source in archives/link-canary/. Manual only: the package names a paid jury (gpt-5.6-terra + claude-sonnet-5); run it by name against the class-5555 canaries after an AI Node change, then check the justification quotes the code.",
+    "cidFile": "archives/link-canary.cid",
+    "manualOnly": true,
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 4,
+    "expectedWinnerIndex": 2
   }
 ]
