@@ -56,7 +56,7 @@
 
 ```json
 {
-  "error": "Insufficient successful models: 0/2 (minimum required: 1). Failures: OpenAI-gpt-4 (Network timeout); Anthropic-claude-3 (Unable to parse response: Invalid JSON format...)",
+  "error": "Insufficient successful models: 0/2 (minimum required: 1). Failures: OpenAI-gpt-4 (Network timeout); Anthropic-claude-3 (Unable to parse response (Could not extract valid JSON response from model output): I cannot provide scores...)",
   "scores": [],
   "justification": ""
 }
@@ -83,7 +83,7 @@ Insufficient successful models: {successful}/{total} (minimum required: {min}). 
 
 **Example Failure Reasons:**
 - Network/API errors: `"OpenAI-gpt-4 (Connection timeout after 30s)"`
-- Parsing errors: `"Anthropic-claude-3 (Unable to parse response: I cannot provide scores...)"`
+- Parsing errors: `"Anthropic-claude-3 (Unable to parse response (Scores must sum to 1,000,000 (got 999999)): {\"score\": [333333, 333333, 333333], ...)"` (the parser's reason, then the first 100 characters of the reply)
 - Provider errors: `"Ollama-llama3 (Model not available)"`
 
 ---

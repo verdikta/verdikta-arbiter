@@ -1142,7 +1142,7 @@ async function processModelForIteration(
       }
     }
 
-    let { decisionVector, justification, scores } = parseModelResponse(responseText, outcomes);
+    let { decisionVector, justification, scores, error: parseError } = parseModelResponse(responseText, outcomes);
     let effectiveJustification = justification; // Store potentially modified justification
     
     // DEBUG: Log what each model actually returned
@@ -1153,7 +1153,7 @@ async function processModelForIteration(
     });
     
     if (!decisionVector) {
-      console.warn(`Failed to parse decision vector from model ${modelInfo.model}. Response: ${responseText}. Applying fallback.`);
+      console.warn(`Failed to parse decision vector from model ${modelInfo.model} (${parseError}). Response: ${responseText}. Applying fallback.`);
       const numOutcomes = outcomes?.length || 2; // Default to 2 if outcomes not specified
       const baseScore = Math.floor(1000000 / numOutcomes);
       const fallbackDecisionVector = Array(numOutcomes).fill(baseScore);
@@ -1162,9 +1162,12 @@ async function processModelForIteration(
       
       decisionVector = fallbackDecisionVector; // Use fallback vector
       usedFallback = true; // Mark that this model used fallback scores
-      failureReason = responseText.length > 100 
-        ? `Unable to parse response: ${responseText.substring(0, 100)}...` 
-        : `Unable to parse response: ${responseText}`;
+      // Lead with the parser's reason: the start of a well-formed reply looks correct and says nothing
+      // about why it was rejected (e.g. scores that don't sum to 1,000,000).
+      const responseExcerpt = responseText.length > 100
+        ? `${responseText.substring(0, 100)}...`
+        : responseText;
+      failureReason = `Unable to parse response (${parseError || 'unknown reason'}): ${responseExcerpt}`;
 
       if (!justification) {
         effectiveJustification = `LLM_ERROR: ${responseText}`; // Create fallback justification

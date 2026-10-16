@@ -288,14 +288,14 @@ New fields are **optional** and **additive**:
       "status": "parsing_error",
       "duration_ms": 3100,
       "error_type": "parsing_error",
-      "error_message": "Unable to parse response: The model returned an unexpected format..."
+      "error_message": "Unable to parse response (Scores must sum to 1,000,000 (got 999999)): ```json\n{\n  \"score\": [333333, 333333, 333333], ..."
     }
   ],
   
   "warnings": [
     {
       "type": "model_failure",
-      "message": "Model Anthropic-claude-sonnet-4 failed: Unable to parse response: The model returned an unexpected format...",
+      "message": "Model Anthropic-claude-sonnet-4 failed: Unable to parse response (Scores must sum to 1,000,000 (got 999999)): ```json\n{\n  \"score\": [333333, 333333, 333333], ...",
       "severity": "warning",
       "model": "Anthropic-claude-sonnet-4",
       "details": {

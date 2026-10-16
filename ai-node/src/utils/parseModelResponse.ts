@@ -6,11 +6,13 @@ interface ScoreOutcome {
 /**
  * Parses the response from a model to extract score and justification.
  * This function is robust to various JSON formats and handles special characters in justifications.
+ * On failure, `error` says why the response was rejected (the caller surfaces it to the operator).
  */
 export function parseModelResponse(responseText: string, outcomes?: string[]): {
   decisionVector: number[] | null;
   justification: string;
   scores: ScoreOutcome[];
+  error?: string;
 } {
   try {
     console.log('parseModelResponse input:', {
@@ -133,7 +135,7 @@ export function parseModelResponse(responseText: string, outcomes?: string[]): {
     }
 
     if (!Array.isArray(response.score)) {
-      throw new Error('Score must be an array of numbers');
+      throw new Error('The "score" field must be an array of numbers');
     }
 
     if (typeof response.justification !== 'string') {
@@ -182,7 +184,8 @@ export function parseModelResponse(responseText: string, outcomes?: string[]): {
     return { 
       decisionVector: null, 
       justification: '', 
-      scores: []  // Return empty array instead of undefined
+      scores: [],  // Return empty array instead of undefined
+      error: err instanceof Error ? err.message : String(err)
     };
   }
 }

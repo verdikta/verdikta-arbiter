@@ -88,6 +88,40 @@ describe('parseModelResponse', () => {
     });
   });
 
+  // The reason a response was rejected is returned so the route can report it: the first
+  // 100 chars of a fenced Claude reply are always `{"score": [...` and explain nothing.
+  describe('Rejection reasons', () => {
+    it('returns no error for a valid response', () => {
+      const result = parseModelResponse('{"score": [600000, 400000], "justification": "ok"}', ['A', 'B']);
+
+      expect(result.decisionVector).toEqual([600000, 400000]);
+      expect(result.error).toBeUndefined();
+    });
+
+    it('reports scores that do not sum to 1,000,000', () => {
+      const fenced = '```json\n{\n  "score": [333333, 333333, 333333],\n  "justification": "Even split."\n}\n```';
+
+      const result = parseModelResponse(fenced, ['A', 'B', 'C']);
+
+      expect(result.decisionVector).toBeNull();
+      expect(result.error).toBe('Scores must sum to 1,000,000 (got 999999)');
+    });
+
+    it('reports a score array of the wrong length', () => {
+      const result = parseModelResponse('{"score": [1000000], "justification": "Only one."}', ['A', 'B']);
+
+      expect(result.decisionVector).toBeNull();
+      expect(result.error).toBe('Score array length (1) does not match outcomes length (2)');
+    });
+
+    it('reports a response with no JSON in it', () => {
+      const result = parseModelResponse('I am unable to provide a score in the requested format.', ['A', 'B']);
+
+      expect(result.decisionVector).toBeNull();
+      expect(result.error).toBe('Could not extract valid JSON response from model output');
+    });
+  });
+
   // Regression tests for the specific examples in the user's query
   describe('Regression tests from provided examples', () => {
     it('should handle the first example (failed parsing)', () => {

@@ -449,6 +449,64 @@ describe('POST /api/rank-and-justify', () => {
       expect(succeeded.status).toBe('success');
     });
 
+    test('a parse failure reports why the response was rejected, not just its first 100 chars', async () => {
+      // 2026-09-23: an operator's key test showed a claude-sonnet-4.5 warning whose excerpt began
+      // `{"score": [` and was misread as a field-name mismatch; the real reason was only in the log.
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockResolvedValue(JSON.stringify({
+          score: [700000, 300000],
+          justification: 'OpenAI model justification.'
+        })),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockAnthropicProvider = {
+        generateResponse: jest.fn().mockResolvedValue(
+          '```json\n{\n  "score": [700000, 299999],\n  "justification": "Almost adds up."\n}\n```'
+        ),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockJustifierProvider = {
+        generateResponse: jest.fn().mockResolvedValue('Aggregated justification.'),
+      };
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          default: return mockJustifierProvider;
+        }
+      });
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Binary decision?',
+          outcomes: ['Yes', 'No'],
+          iterations: 1,
+          models: [
+            { provider: 'OpenAI', model: 'gpt-5.2', weight: 0.5 },
+            { provider: 'Anthropic', model: 'claude-sonnet-4.5', weight: 0.5 },
+          ],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      const failed = data.model_results.find((r: any) => r.model === 'claude-sonnet-4.5');
+      expect(failed).toMatchObject({ provider: 'Anthropic', status: 'parsing_error' });
+      expect(failed.error_message).toMatch(
+        /^Unable to parse response \(Scores must sum to 1,000,000 \(got 999999\)\): ```json/
+      );
+      expect(data.warnings).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          model: 'Anthropic-claude-sonnet-4.5',
+          message: expect.stringContaining('Scores must sum to 1,000,000 (got 999999)'),
+        }),
+      ]));
+    });
+
     test('should handle malformed response from one model and apply fallback', async () => {
       // Mock responses for each model
       const mockOpenAIResponse = JSON.stringify({
