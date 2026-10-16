@@ -10,9 +10,11 @@ export const modelConfig = {
     { name: 'claude-sonnet-4', supportsImages: true, supportsAttachments: true },
     { name: 'claude-sonnet-4-5-20250929', supportsImages: true, supportsAttachments: true },
     { name: 'claude-haiku-4-5-20251001', supportsImages: true, supportsAttachments: true },
-    { name: 'claude-3.5-sonnet', supportsImages: true, supportsAttachments: true },
-    { name: 'claude-3.5-haiku', supportsImages: true, supportsAttachments: true },
-    { name: 'claude-3.7-sonnet', supportsImages: true, supportsAttachments: true },
+    // Dotted names below are normalized to real Anthropic API IDs by
+    // resolveAnthropicModelId (src/config/anthropic-models.ts). Only list a
+    // dotted name here if a live dash-form Anthropic model exists for it —
+    // claude-3.5-sonnet/-haiku and claude-3.7-sonnet were removed because
+    // Anthropic retired the underlying models.
     { name: 'claude-sonnet-4.5', supportsImages: true, supportsAttachments: true },
     { name: 'claude-haiku-4.5', supportsImages: true, supportsAttachments: true },
     { name: 'claude-sonnet-4.6', supportsImages: true, supportsAttachments: true },

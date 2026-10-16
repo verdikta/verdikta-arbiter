@@ -1,6 +1,7 @@
 import { LLMProvider } from './llm-provider-interface';
 import { ChatAnthropic } from "@langchain/anthropic";
 import { modelConfig } from '../../config/models';
+import { resolveAnthropicModelId } from '../../config/anthropic-models';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
 
@@ -35,7 +36,7 @@ export class AnthropicProvider implements LLMProvider {
     }
     const anthropic = new ChatAnthropic({
       anthropicApiKey: this.apiKey,
-      modelName: model,
+      modelName: resolveAnthropicModelId(model),
       temperature: 0.7,
       topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
     });
@@ -59,7 +60,7 @@ export class AnthropicProvider implements LLMProvider {
 
     const anthropic = new ChatAnthropic({
       anthropicApiKey: this.apiKey,
-      modelName: model,
+      modelName: resolveAnthropicModelId(model),
       temperature: 0.7,
       topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
     });
@@ -123,7 +124,7 @@ export class AnthropicProvider implements LLMProvider {
 
     const anthropic = new ChatAnthropic({
       anthropicApiKey: this.apiKey,
-      modelName: model,
+      modelName: resolveAnthropicModelId(model),
       temperature: 0.7,
       topP: undefined, // Explicitly disable topP to prevent LangChain's default of -1 (Claude 4.5+ requires only temperature OR top_p, not both)
     });
@@ -230,7 +231,7 @@ export class AnthropicProvider implements LLMProvider {
 
       // Make the API call with native PDF support
       const response = await client.messages.create({
-        model: model,
+        model: resolveAnthropicModelId(model),
         messages: [
           {
             role: "user",

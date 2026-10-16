@@ -1,6 +1,7 @@
 import { AnthropicProvider } from '../../../lib/llm/anthropic-provider';
 import { ChatAnthropic } from "@langchain/anthropic";
 import { modelConfig } from '../../../config/models';
+import { resolveAnthropicModelId } from '../../../config/anthropic-models';
 
 jest.mock("@langchain/anthropic", () => ({
   ChatAnthropic: jest.fn().mockImplementation(() => ({
@@ -14,6 +15,7 @@ jest.mock('../../../config/models', () => ({
       { name: 'claude-2.1', supportsImages: false, supportsAttachments: false },
       { name: 'claude-3-sonnet-20240229', supportsImages: true, supportsAttachments: false },
       { name: 'claude-3-5-sonnet-20241022', supportsImages: true, supportsAttachments: true },
+      { name: 'claude-sonnet-4.5', supportsImages: true, supportsAttachments: true },
     ],
   },
 }));
@@ -232,6 +234,96 @@ describe('AnthropicProvider', () => {
 
     expect(response).toBe('Mocked attachments response');
     expect(mockInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  test('generateResponse normalizes dotted model names to Anthropic API IDs', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Mocked Anthropic response' });
+    (ChatAnthropic as unknown as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke,
+    }));
+
+    const response = await provider.generateResponse('Test prompt', 'claude-sonnet-4.5');
+
+    expect(response).toBe('Mocked Anthropic response');
+    expect(ChatAnthropic).toHaveBeenCalledWith({
+      anthropicApiKey: 'test-anthropic-api-key',
+      modelName: 'claude-sonnet-4-5',
+      temperature: 0.7,
+      topP: undefined,
+    });
+  });
+
+  test('generateResponseWithImage normalizes dotted model names to Anthropic API IDs', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Mocked image response' });
+    (ChatAnthropic as unknown as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke,
+    }));
+
+    await provider.generateResponseWithImage(
+      'Describe this image',
+      'claude-sonnet-4.5',
+      'base64EncodedImageString'
+    );
+
+    expect(ChatAnthropic).toHaveBeenCalledWith({
+      anthropicApiKey: 'test-anthropic-api-key',
+      modelName: 'claude-sonnet-4-5',
+      temperature: 0.7,
+      topP: undefined,
+    });
+  });
+
+  test('generateResponseWithAttachments normalizes dotted model names to Anthropic API IDs', async () => {
+    const mockInvoke = jest.fn().mockResolvedValue({ content: 'Mocked attachments response' });
+    (ChatAnthropic as unknown as jest.Mock).mockImplementation(() => ({
+      invoke: mockInvoke,
+    }));
+
+    await provider.generateResponseWithAttachments(
+      'Process these attachments',
+      'claude-sonnet-4.5',
+      [{ type: 'text', content: 'Some text attachment', mediaType: 'text/plain' }]
+    );
+
+    expect(ChatAnthropic).toHaveBeenCalledWith({
+      anthropicApiKey: 'test-anthropic-api-key',
+      modelName: 'claude-sonnet-4-5',
+      temperature: 0.7,
+      topP: undefined,
+    });
+  });
+});
+
+describe('resolveAnthropicModelId', () => {
+  test('maps dotted names to real Anthropic API IDs', () => {
+    expect(resolveAnthropicModelId('claude-sonnet-4.5')).toBe('claude-sonnet-4-5');
+    expect(resolveAnthropicModelId('claude-haiku-4.5')).toBe('claude-haiku-4-5');
+    expect(resolveAnthropicModelId('claude-sonnet-4.6')).toBe('claude-sonnet-4-6');
+    expect(resolveAnthropicModelId('claude-opus-4.6')).toBe('claude-opus-4-6');
+  });
+
+  test('converts unmapped family-dotted names to dash form', () => {
+    expect(resolveAnthropicModelId('claude-opus-4.7')).toBe('claude-opus-4-7');
+    expect(resolveAnthropicModelId('claude-sonnet-5.1')).toBe('claude-sonnet-5-1');
+  });
+
+  test('passes dash-form IDs through unchanged', () => {
+    expect(resolveAnthropicModelId('claude-sonnet-4-5-20250929')).toBe('claude-sonnet-4-5-20250929');
+    expect(resolveAnthropicModelId('claude-haiku-4-5-20251001')).toBe('claude-haiku-4-5-20251001');
+    expect(resolveAnthropicModelId('claude-opus-4-6')).toBe('claude-opus-4-6');
+    expect(resolveAnthropicModelId('claude-3-5-sonnet-20241022')).toBe('claude-3-5-sonnet-20241022');
+  });
+
+  test('preserves claude-2.1, whose dot is part of the literal API ID', () => {
+    expect(resolveAnthropicModelId('claude-2.1')).toBe('claude-2.1');
+  });
+
+  test('does not remap retired version-first dotted names', () => {
+    // These models were retired by Anthropic; they are no longer listed in
+    // modelConfig and must not be silently converted to some other model.
+    expect(resolveAnthropicModelId('claude-3.5-sonnet')).toBe('claude-3.5-sonnet');
+    expect(resolveAnthropicModelId('claude-3.5-haiku')).toBe('claude-3.5-haiku');
+    expect(resolveAnthropicModelId('claude-3.7-sonnet')).toBe('claude-3.7-sonnet');
   });
 });
 
