@@ -12,6 +12,7 @@ import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from '@langchain/core/messages';
 import { modelConfig } from '../../config/models';
 import { AttachmentContext, attachmentRequestError } from './attachment-errors';
+import { WebAccessOption, openAIModelSupportsWebSearch, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -75,8 +76,14 @@ export class OpenAIProvider implements LLMProvider {
   async generateResponse(
     prompt: string, 
     model: string, 
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string> {
+    // Links in the prompt are opened by OpenAI's web_search tool (Responses API).
+    if (options?.webAccess !== false && shouldUseWebTools(prompt) && openAIModelSupportsWebSearch(model)) {
+      const answer = await this.tryWebSearch(model, [{ type: 'input_text', text: withWebAccessNote(prompt) }], options);
+      if (answer !== null) return answer;
+    }
+
     // Check if this is a reasoning model (o1, o3, gpt-4.1, gpt-5, nano, etc.)
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
@@ -246,6 +253,13 @@ export class OpenAIProvider implements LLMProvider {
     // Separate PDFs from other attachments
     const pdfAttachments = attachments.filter(att => att.mediaType === 'application/pdf');
     const otherAttachments = attachments.filter(att => att.mediaType !== 'application/pdf');
+
+    // Links in the request are opened by OpenAI's web_search tool; same inputs as below.
+    if (shouldUseWebTools(prompt, attachments) && openAIModelSupportsWebSearch(model)) {
+      const input = this.responsesInputContent(model, withWebAccessNote(prompt), supportsNativePDF ? pdfAttachments : [], otherAttachments);
+      const answer = await this.tryWebSearch(model, input, options);
+      if (answer !== null) return answer;
+    }
 
     // GPT-5 models require native client for max_completion_tokens support
     const isGpt5Model = model.toLowerCase().includes('gpt-5');
@@ -476,4 +490,98 @@ export class OpenAIProvider implements LLMProvider {
       throw attachmentRequestError(this.providerName, model, error, context);
     }
   }
+
+  /**
+   * Responses API input content: the prompt, PDFs as input_file, images as
+   * input_image, anything else as input_text.
+   */
+  private responsesInputContent(
+    model: string,
+    prompt: string,
+    pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
+    otherAttachments: Array<{ type: string, content: string, mediaType: string }>
+  ): any[] {
+    const content: any[] = [{ type: 'input_text', text: prompt }];
+    for (const pdfAttachment of pdfAttachments) {
+      const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4;
+      if (pdfSizeBytes > 32 * 1024 * 1024) {
+        throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds OpenAI's 32MB limit`);
+      }
+      content.push({
+        type: 'input_file',
+        filename: 'document.pdf',
+        file_data: `data:application/pdf;base64,${pdfAttachment.content}`
+      });
+    }
+    for (const attachment of otherAttachments) {
+      if (attachment.type === 'image') {
+        if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
+          throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${attachment.mediaType}. Supported formats are: JPEG, PNG, GIF, and WEBP.`);
+        }
+        content.push({ type: 'input_image', image_url: `data:${attachment.mediaType};base64,${attachment.content}`, detail: 'auto' });
+      } else {
+        content.push({ type: 'input_text', text: attachment.content });
+      }
+    }
+    return content;
+  }
+
+  /**
+   * The answer with OpenAI's web_search tool enabled, or null when that request
+   * fails: the juror then answers without web access (as every request did
+   * before), and the warning says why.
+   */
+  private async tryWebSearch(
+    model: string,
+    content: any[],
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+  ): Promise<string | null> {
+    try {
+      return await this.generateWithWebSearch(model, content, options);
+    } catch (error: any) {
+      console.warn(`[${this.providerName}] Web search failed for ${model} (${error?.message}); answering without web access`);
+      return null;
+    }
+  }
+
+  private async generateWithWebSearch(
+    model: string,
+    content: any[],
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+  ): Promise<string> {
+    const { OpenAI } = await import('openai');
+    const client = new OpenAI({ apiKey: this.apiKey });
+    const id = model.toLowerCase().split('/').pop() || '';
+    // Only the GPT-5 and o-series models take a reasoning effort on the Responses API.
+    const takesReasoning = /^(gpt-5|o3|o4)/.test(id);
+    const maxUses = webMaxUses();
+    console.log(`[${this.providerName}] Web search on for ${model} (Responses API; max_tool_calls ${maxUses})`);
+
+    const response: any = await client.responses.create({
+      model,
+      input: [{ role: 'user', content }],
+      tools: [{ type: 'web_search' }],
+      max_tool_calls: maxUses,
+      max_output_tokens: takesReasoning ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000') : 4000,
+      ...(takesReasoning && { reasoning: { effort: options?.reasoning?.effort || 'medium' } }),
+      ...(takesReasoning && id.startsWith('gpt-5') && options?.verbosity && { text: { verbosity: options.verbosity } }),
+    } as any);
+
+    const text = responsesOutputText(response);
+    if (!text) {
+      throw new Error(`no text in the response (status ${response?.status})`);
+    }
+    return text;
+  }
+}
+
+/** The answer text of a Responses API result (the SDK's output_text, or the message items). */
+export function responsesOutputText(response: any): string {
+  if (typeof response?.output_text === 'string' && response.output_text) return response.output_text;
+  return (response?.output || [])
+    .filter((item: any) => item?.type === 'message')
+    .flatMap((item: any) => item.content || [])
+    .filter((part: any) => part?.type === 'output_text' && typeof part.text === 'string')
+    .map((part: any) => part.text)
+    .join('');
 }

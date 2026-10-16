@@ -224,6 +224,10 @@ describe('POST /api/rank-and-justify', () => {
 
       expect(data.scores).toEqual(expectedScores);
       expect(data.justification).toBe(mockJustifierResponse);
+      // The justifier summarizes the jurors; it never opens links quoted in their answers.
+      expect(mockJustifierProvider.generateResponse).toHaveBeenCalledWith(
+        expect.any(String), expect.any(String), expect.objectContaining({ webAccess: false })
+      );
       // Verify total score sums to 1,000,000
       const totalScore = data.scores.reduce((sum: number, item: ScoreOutcome) => sum + item.score, 0);
       expect(totalScore).toBe(1000000);
@@ -543,7 +547,7 @@ describe('POST /api/rank-and-justify', () => {
       expect(mockJustifierProvider.generateResponse).toHaveBeenCalledWith(
         expect.stringContaining('LLM_ERROR: I am unable to provide a score in the requested format.'),
         expect.any(String), // The specific justifier model name
-        undefined // The options parameter (undefined for non-reasoning models)
+        { webAccess: false } // Non-reasoning justifier: no reasoning options, and never web access
       );
       expect(data.justification).toBe(mockJustifierResponse);
     });

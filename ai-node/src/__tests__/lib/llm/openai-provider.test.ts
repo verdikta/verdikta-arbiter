@@ -1,4 +1,5 @@
-import { OpenAIProvider } from '../../../lib/llm/openai-provider';
+import { OpenAIProvider, responsesOutputText } from '../../../lib/llm/openai-provider';
+import { WEB_ACCESS_NOTE } from '../../../lib/llm/web-access';
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from '@langchain/core/messages';
 
@@ -9,6 +10,9 @@ const mockOpenAICreate = jest.fn().mockResolvedValue({
   choices: [{ message: { content: 'Mocked native response' } }]
 });
 
+// Responses API (web search path)
+const mockResponsesCreate = jest.fn();
+
 // Mock the OpenAI class - needs to handle both regular imports and dynamic imports
 jest.mock('openai', () => {
   const MockOpenAI = jest.fn().mockImplementation(() => ({
@@ -16,6 +20,9 @@ jest.mock('openai', () => {
       completions: {
         create: mockOpenAICreate
       }
+    },
+    responses: {
+      create: mockResponsesCreate
     }
   }));
   return {
@@ -518,6 +525,104 @@ describe('OpenAIProvider', () => {
       openAIApiKey: 'test-api-key',
       modelName: 'gpt-4o',
       maxTokens: 1000,
+    });
+  });
+  describe('web search (links are opened by OpenAI, not by the arbiter)', () => {
+    const LINK_PROMPT = 'Check the final score at https://www.nfl.com/games/jets-at-patriots-2026-reg-6';
+    const REASONING = { reasoning: { effort: 'medium' as const }, verbosity: 'low' as const };
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      delete process.env.AI_WEB_ACCESS;
+      warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      mockResponsesCreate.mockReset();
+    });
+
+    afterEach(() => {
+      warnSpy.mockRestore();
+      delete process.env.AI_WEB_ACCESS;
+    });
+
+    test('a GPT-5 prompt with a URL goes to the Responses API with web_search and the web note', async () => {
+      mockResponsesCreate.mockResolvedValueOnce({ status: 'completed', output_text: '{"score":[0,1000000]}' });
+
+      const response = await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', REASONING);
+
+      expect(response).toBe('{"score":[0,1000000]}');
+      expect(mockOpenAICreate).not.toHaveBeenCalled();
+      const body = mockResponsesCreate.mock.calls[0][0];
+      expect(body).toMatchObject({
+        model: 'gpt-5.4',
+        tools: [{ type: 'web_search' }],
+        max_tool_calls: 5,
+        reasoning: { effort: 'medium' },
+        text: { verbosity: 'low' },
+      });
+      expect(body.input).toEqual([{ role: 'user', content: [{ type: 'input_text', text: `${WEB_ACCESS_NOTE}\n\n${LINK_PROMPT}` }] }]);
+    });
+
+    test('a prompt without a URL keeps chat completions', async () => {
+      const response = await provider.generateResponse('Write a haiku', 'gpt-5.4', REASONING);
+      expect(response).toBe('Mocked native response');
+      expect(mockResponsesCreate).not.toHaveBeenCalled();
+    });
+
+    test('AI_WEB_ACCESS=off keeps chat completions even with a URL', async () => {
+      process.env.AI_WEB_ACCESS = 'off';
+      await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', REASONING);
+      expect(mockResponsesCreate).not.toHaveBeenCalled();
+      expect(mockOpenAICreate).toHaveBeenCalled();
+    });
+
+    test('webAccess: false (the justifier) keeps chat completions even with a URL', async () => {
+      await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', { ...REASONING, webAccess: false });
+      expect(mockResponsesCreate).not.toHaveBeenCalled();
+      expect(mockOpenAICreate).toHaveBeenCalled();
+    });
+
+    test('a failed web request falls back to chat completions with a warning', async () => {
+      mockResponsesCreate.mockRejectedValueOnce(Object.assign(new Error('400 Unsupported parameter'), { status: 400 }));
+
+      const response = await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', REASONING);
+
+      expect(response).toBe('Mocked native response');
+      expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('Web search failed for gpt-5.4'));
+    });
+
+    test('a URL in a text attachment turns web search on and maps every attachment', async () => {
+      mockResponsesCreate.mockResolvedValueOnce({ status: 'completed', output_text: 'ok' });
+      const attachments = [
+        { type: 'image', content: 'iVBORw0KGgo=', mediaType: 'image/png' },
+        { type: 'text', content: 'Source: https://apnews.com/article/jets-patriots', mediaType: 'text/plain' },
+      ];
+
+      const response = await provider.generateResponseWithAttachments('Evaluate the claim', 'gpt-5.4', attachments, REASONING);
+
+      expect(response).toBe('ok');
+      expect(mockResponsesCreate.mock.calls[0][0].input[0].content).toEqual([
+        { type: 'input_text', text: `${WEB_ACCESS_NOTE}\n\nEvaluate the claim` },
+        { type: 'input_image', image_url: 'data:image/png;base64,iVBORw0KGgo=', detail: 'auto' },
+        { type: 'input_text', text: 'Source: https://apnews.com/article/jets-patriots' },
+      ]);
+    });
+
+    test('a non-reasoning model gets no reasoning or verbosity fields', async () => {
+      mockResponsesCreate.mockResolvedValueOnce({ status: 'completed', output_text: 'ok' });
+      await provider.generateResponse(LINK_PROMPT, 'gpt-4o');
+      const body = mockResponsesCreate.mock.calls[0][0];
+      expect(body).not.toHaveProperty('reasoning');
+      expect(body).not.toHaveProperty('text');
+      expect(body.max_output_tokens).toBe(4000);
+    });
+
+    test('responsesOutputText reads message items when output_text is absent', () => {
+      expect(responsesOutputText({
+        output: [
+          { type: 'web_search_call', action: { type: 'open_page' } },
+          { type: 'message', content: [{ type: 'output_text', text: 'a' }, { type: 'output_text', text: 'b' }] },
+        ],
+      })).toBe('ab');
+      expect(responsesOutputText({ output: [] })).toBe('');
     });
   });
 });
