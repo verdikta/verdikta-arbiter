@@ -36,14 +36,20 @@ Eight decisions carry the design:
    fails, an acceptance test fails, a previously passing test regresses.
 5. **Jev makes the many small, typed judgements** — one per rubric criterion,
    per lint finding, per gaming signal — for a fraction of a cent, and sits on
-   the jury as a low-weight "rubric juror".
+   the jury as a low-weight "rubric juror". It is reached through OpenRouter, so
+   operators need no new key.
 6. **Frontier models do the deep review** — logic and edge cases the tests miss,
    security, test adequacy — with the report as ground truth and a bounded,
    deterministic context pack.
-7. **Code bounties get their own ClassID.** Only arbiters whose runner passes a
-   conformance self-test register for it.
-8. **One protocol change:** raise the aggregators' `responseTimeoutSeconds` from
-   300 s to 900 s.
+7. **Code bounties get their own ClassID.** Its pool is broad — Jev, a code
+   specialist, `claude-sonnet-5-5` / `gpt-6-sol`, `claude-opus-5-5` /
+   `gpt-6-astra` — the creator picks the panel from a standard or premium
+   template, and only arbiters whose runner passes a conformance self-test
+   register for it.
+8. **One protocol change,** raising the aggregators' `responseTimeoutSeconds`
+   from 300 s to 900 s, **and one economic one:** code panels cost operators
+   8–30× today's ~5¢ per-oracle fee, so code bounties need higher oracle fees and,
+   this design recommends, creator-funded evaluation (§8.8).
 
 ## 2. Goals and non-goals
 
@@ -76,6 +82,7 @@ Eight decisions carry the design:
 | Security | The arbiter host holds the operator key, funded node keys, the Pinata JWT and the AI provider keys. | Untrusted code runs only inside gVisor (or on a separate machine), with no network and no credentials. |
 | Sandbox speed | verdikta-agents measured gVisor without KVM at 2–6× slower than runc. A cold install + typecheck + test of this repository took ≈19–25 min against ≈6 min; warm test runs take seconds (`verdikta-agents/docs/agent_coding_sandbox_design.md`, D2). The Contabo hosts have no `/dev/kvm`. | Dependencies cannot be installed at grading time. Hence decision 2. |
 | Bounty model | The rubric has ≤10 criteria, each with `must` / `weight` / `description`; outcomes are `[DONT_FUND, FUND]`; a submission is paid when FUND ≥ threshold (`BountyEscrow.sol` `_scoreVector`). Submissions are ≤10 files and archives are rejected. There is no repo, PR or commit field anywhere. The "Code Review" rubric template is judged by reading alone. | A code bounty spec and a patch-based submission are needed. Rubric semantics stay as they are. |
+| Fees | The bounty program's default per-oracle fee is 0.00002 ETH (≈ $0.05); the hunter prepays 12× at submission; the aggregators cap the per-oracle fee at 0.0004 ETH (`maxOracleFee`, owner-settable). | Code panels cost operators 8–30× today's fee (§8.8). |
 | Precedent | The EA already settles a deterministically malformed bCID archive with a first-outcome verdict and no AI call (`external-adapter/src/utils/bcidValidation.js`, `buildMalformedSubmissionVerdict` in `evaluateHandler.js`). | Gate failures reuse that path. |
 
 ## 4. What best-in-class grading looks like
@@ -137,10 +144,10 @@ Evaluation (each selected arbiter)
 | `@verdikta/common` | Manifest key `codeReview`; schemas for `code_review.json` and the Verification Report; pinned base-image, gVisor and Semgrep-rule versions; the new ClassID and its models; the conformance canary's expected report hash |
 | `code-runner/` (new) | `POST /v1/runs` `{ spec, patch, acceptancePatch, hurl, baseline, deadline }` → `{ report, reportSha256, contextPack }`; `GET /health` |
 | External Adapter | When the primary manifest has `codeReview`: call the runner, settle gate failures, otherwise pass the report and context pack to the AI Node as named text attachments plus a structured `codeReview` field |
-| AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed rubric): code-review pre-prompt, Jev stage, `TypeSafe` provider, web access off, code-mode timeouts |
+| AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed rubric): code-review pre-prompt, Jev stage through an OpenRouter `systemone` client, web access off, code-mode timeouts |
 | Chainlink job spec | `maxTaskDuration` and bridge timeout 300 s → 840 s |
-| Aggregators | `setResponseTimeout(900)` |
-| Bounty program | Code bounty form and template; environment builder and validation report; `prUrl`/`.patch` submissions; code variant of the evaluation query |
+| Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH if premium panels are wanted (§8.8) |
+| Bounty program | Code bounty form with standard/premium templates that set `maxOracleFee`; builder Action and fallback workflow with the validation report; `prUrl`/`.patch` submissions; code variant of the evaluation query; creator-funded evaluation budget (§8.8) |
 
 ## 6. Bounty and submission contract
 
@@ -186,9 +193,11 @@ schema in `@verdikta/common`.
 
 ### 6.2 Environment image, built at bounty creation
 
-The bounty program's environment builder (reference implementation: a GitHub
-Actions workflow in a Verdikta repository; the build job holds no secrets and a
-separate job pushes the image):
+The environment builder is a reusable GitHub Action published by Verdikta. A
+creator whose repository has CI runs it there (the build job holds no secrets; a
+separate job pushes the image); for everyone else the bounty program runs the same
+Action in its own workflow. Either way the bounty program validates the result
+before the bounty can be funded, by running steps 2–3 itself. The Action:
 
 1. Starts `FROM` a blessed base image (`node22`, `python312`; digests pinned in
    `@verdikta/common`), clones `repo` at `baseCommit` and runs the creator's
@@ -201,12 +210,24 @@ separate job pushes the image):
 3. Applies `acceptance.patch` and checks that the acceptance tests **fail** at
    base; if they pass, it warns the creator that they cannot tell a submission
    from no change. It also checks that the API `start`/`ready` pair boots.
-4. Pushes the image to a public registry (rejecting images over 2 GB compressed,
-   so arbiters can pull one inside the budget) and writes its digest into
-   `code_review.json`.
+4. Pushes the image to a public registry (GHCR by default — public images cost
+   nothing to store or pull; images over 2 GB compressed are rejected so arbiters
+   can pull one inside the budget) and writes its digest into `code_review.json`.
 
 The creator sees this validation report before funding. Arbiters treat the image
 like the rest of the bounty: defined by the creator, public, content-addressed.
+
+**How arbiters get it.** Arbiters learn nothing about a bounty in advance. The
+image digest travels in `code_review.json` inside the primary archive, which the
+EA fetches from IPFS at evaluation time exactly as it fetches the rubric today;
+the runner then pulls the image by digest. The first pull per operator per bounty
+costs 0–90 s (a 2 GB image at 50 MB/s is about 40 s; the §9 budget allows for
+it), and every later submission to that bounty hits the cache. The work scales
+per bounty, not per submission or per arbiter: one build of 5–25 CI minutes,
+0.3–2 GB of registry storage with the base layers shared, and on each arbiter a
+30 GB LRU cache (15–30 images) whose evictions only cost a re-pull. If registry
+availability becomes a concern, the image tarball can also be pinned to IPFS as a
+fallback source; v1 does not need it.
 
 ### 6.3 Submission: the bCID archive
 
@@ -382,7 +403,18 @@ reasoning, accuracy loss on long or irrelevant context, unreliable counting and
 arithmetic, susceptibility to adversarial text, and worse accuracy when one
 question bundles several judgements.
 
-One or two fan-out requests per evaluation, all questions answered in parallel:
+Arbiters reach Jev through **OpenRouter**, which serves it at
+`POST https://openrouter.ai/api/v1/systemone` in TypeSafe's own request shape (the
+TypeSafe SDK works against it by changing the base URL). The operator's existing
+`OPENROUTER_API_KEY` is therefore enough; TypeSafe's native endpoint is early
+access and optional. This is not the `/chat/completions` path the current
+OpenRouter provider speaks (`ai-node/src/lib/llm/openrouter-provider.ts`), so it
+is a small second client under the same provider, reusing its key, base URL,
+gateway configuration and logging.
+
+Several small fan-out requests per evaluation — each under 32 KB of state,
+because OpenRouter routes larger text requests to TypeSafe's long-context mode,
+which it describes as slower and less accurate — all answered in parallel:
 
 | Question | Type | Feeds |
 |---|---|---|
@@ -393,16 +425,17 @@ One or two fan-out requests per evaluation, all questions answered in parallel:
 | Does the change special-case test inputs? Does it address an AI grader? | `noul` | Flags for the frontier jurors |
 | Each changed file: required / related / unrelated to the task | `choice` | Scope flag |
 
-Rules: pin the model version (`jev-1.13.0`, never `jev-latest`, so every arbiter
-asks the same model); one judgement per question; at most ~24k tokens of focused
-state (report summary plus the highest-priority hunks); all arithmetic in code; a
-fixed option order.
+Rules: pin the model (`typesafe/jev-1.13`, or its dated snapshot
+`typesafe/jev-1.13-20260917`; never `~typesafe/jev-latest`, so every arbiter asks
+the same model); one judgement per question; one criterion or finding per
+request, carrying the report summary and only the hunks that matter to it, under
+32 KB; all arithmetic in code; a fixed option order.
 
-A request looks like this (`POST https://api.typesafe.ai/v1/systemone`):
+A request looks like this (`POST https://openrouter.ai/api/v1/systemone`):
 
 ```json
 {
-  "model": "jev-1.13.0",
+  "model": "typesafe/jev-1.13",
   "state": { "requirement": "…bounty query…", "evidence": "…report summary…", "change": "…diff hunks…" },
   "questions": {
     "crit_functionality": {
@@ -425,9 +458,11 @@ rule the bounty's evaluation prompt gives the LLM jurors
 (`archiveGenerator.js`, `buildEvaluationQuery`). TypeSafe says score levels are
 only weakly calibrated as magnitudes, so the level-to-score mapping is tuned on
 the calibration set in Phase 2 (falling back to thresholds if it must). Its
-justification is a deterministic table of its answers. Implementation: a `TypeSafe` provider and one
-branch in `queryModel` (`ai-node/src/app/api/rank-and-justify/route.ts`) that
-returns a decision vector directly instead of parsing model text.
+justification is a deterministic table of its answers. Implementation: a
+`systemone` client beside the OpenRouter provider (a native TypeSafe key is
+optional, under the usual `AI_GATEWAY` rules) and one branch in `queryModel`
+(`ai-node/src/app/api/rank-and-justify/route.ts`) that returns a decision vector
+directly instead of parsing model text.
 
 Jev never decides a gate and never sees anything the frontier jurors don't.
 
@@ -459,19 +494,45 @@ The prompt asks each juror to:
 Web access is forced off in code mode; the PR URL would otherwise turn it on
 under `AI_WEB_ACCESS=auto`.
 
-Suggested class panel: Jev 0.2, `claude-sonnet-5-5` 0.4 and one GPT-5.x code
-model 0.4, at effort `high` (coding responds strongly to effort). Premium bounties
-swap in `claude-opus-5-5`. Neither is in the class map yet (class 131 lists
-`claude-sonnet-5` and `claude-opus-5`), so the new class adds them. Code mode
-raises `MODEL_TIMEOUT_MS` to 240 s.
+Code mode raises `MODEL_TIMEOUT_MS` to 240 s and runs frontier jurors at effort
+`high` (coding responds strongly to effort).
 
-### 8.4 Final scores
+### 8.4 The code-review class: pool and templates
+
+A ClassID is the pool of models an operator must serve; the **creator** picks the
+panel — models, weights, iterations — from that pool in the manifest's `AI_NODES`.
+So the class is broad and the panel is a bounty-program template. The class also
+carries the runner conformance requirement (§11), and it adds `claude-opus-5-5`
+and `claude-sonnet-5-5`, which classmap 1.6.0 does not list yet.
+
+| Model in the pool | $/M in / out | Per juror, 60k in / 8k out | Role |
+|---|---|---|---|
+| `claude-opus-5-5` | 4 / 20 | $0.40 | Premium deep review |
+| `gpt-6-astra` | 10 / 50 | $1.00 | Premium deep review |
+| `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | 2 / 10–12 | ~$0.20 | Standard deep review |
+| `grok-4.7` | 2 / 6 | $0.17 | Standard deep review, third opinion |
+| `qwen3-coder` | 0.3 / 1 | $0.03 | Code specialist, cheap third juror |
+| `claude-haiku-5-5`, `gpt-6-luna` | 0.1 / 0.5 | $0.01 | Justifier; cheap juror |
+| `typesafe/jev-1.13` | 0.042 / free | <$0.01 | Rubric juror, triage |
+
+(OpenRouter list prices, 2026-10-17.)
+
+Templates in the bounty program's code-bounty form:
+
+| Template | Panel | Operator spend per arbiter |
+|---|---|---|
+| Standard | Jev 0.2, `claude-sonnet-5-5` 0.4, `gpt-6-sol` 0.4 | ≈ $0.40 |
+| Premium | Jev 0.2, `claude-opus-5-5` 0.4, `gpt-6-astra` 0.4 | ≈ $1.40 |
+
+The template also sets the oracle fee the creator must offer (§8.8).
+
+### 8.5 Final scores
 
 Unchanged: the weighted average over `AI_NODES`, then the justifier. The EA
 prepends a deterministic "Execution evidence" block (gates, test counts, report
 hash) to the justification it uploads, so hunters and creators can see why.
 
-### 8.5 Gaming and prompt injection
+### 8.6 Gaming and prompt injection
 
 | Attack | Defence |
 |---|---|
@@ -482,20 +543,60 @@ hash) to the justification it uploads, so hunters and creators can see why.
 | Huge or binary-padded patch | `maxPatchBytes`; binary changes reported as stats only |
 | Sandbox escape or resource exhaustion | gVisor, no network, hard limits, admission control, remote mode |
 
-### 8.6 Cost per evaluation (estimate, one arbiter)
+### 8.7 Cost per evaluation (operator spend, one arbiter)
+
+Standard template:
 
 | Item | Tokens | Cost |
 |---|---|---|
-| Jev, 2 fan-out calls | ~60k in | ~$0.003 |
+| Jev, ~10 small fan-out calls | ~60k in, total | ~$0.003 |
 | `claude-sonnet-5-5` juror ($2 / $10 per million tokens) | 60k in / 8k out | ~$0.20 |
-| GPT-5.x juror | similar | ~$0.20 (confirm current price) |
+| `gpt-6-sol` juror ($2 / $10) | 60k in / 8k out | ~$0.20 |
 | Justifier (`claude-haiku-5-5`, $0.10 / $0.50) | 15k in / 2k out | <$0.01 |
 | **Total** | | **≈ $0.40**; a submission that fails a gate ≈ $0 |
 
-With six arbiters per request, that is about $2.50 per submission. For
-comparison, three `claude-opus-5-5` jurors ($4 / $20) reading unfiltered
-100k-token contexts would cost about $0.55 each — around $10 per submission.
+Premium (`claude-opus-5-5` $0.40 + `gpt-6-astra` $1.00 + Jev) ≈ **$1.40**.
 Sandbox compute is about 2 vCPU for 1–5 minutes.
+
+All six selected arbiters evaluate (a commit needs the result), so one request
+costs operators about $2.50 (standard) or $8.50 (premium) in provider fees in
+total. That is the spend oracle fees have to cover; it is **not** what the hunter
+pays today (§8.8). The context pack is the main dial: 40k instead of 60k input
+tokens cuts a third. For comparison, three `claude-opus-5-5` jurors reading
+unfiltered 100k-token contexts would cost about $0.55 each.
+
+### 8.8 Fee economics: who pays
+
+Today the hunter funds the evaluation when they start a submission
+(`BountyEscrow.startPreparedSubmission` is payable by the hunter; anyone may fund
+once a creator window has expired). The prepay is
+`maxOracleFee × (K + bonusMultiplier × clusterSize)`, 12× the per-oracle fee on
+both aggregators (6 + 3 × 2), with the unused part refunded. With the bounty
+program's default fee of 0.00002 ETH (`server/config.js`) and ETH at about $2,420
+(Chainlink ETH/USD on Base, 2026-10-17) that is $0.048 per oracle and a $0.58
+prepay — the roughly $0.50 a submission costs now. An arbiter therefore earns
+about 5¢ per evaluation; the standard code panel costs it about 8× that and the
+premium panel about 30×.
+
+| | Per-oracle fee | Hunter prepay (12×) | Under the ceiling? |
+|---|---|---|---|
+| Today's default | 0.00002 ETH ≈ $0.05 | 0.00024 ETH ≈ $0.58 | yes |
+| Standard code panel (≈ $0.40 + compute) | ≈ 0.0002 ETH ≈ $0.48 | 0.0024 ETH ≈ $5.80 | yes (ceiling 0.0004 ETH ≈ $0.97) |
+| Premium code panel (≈ $1.40 + compute) | ≈ 0.0007 ETH ≈ $1.70 | 0.0084 ETH ≈ $20 | no — needs `setMaxOracleFee` (aggregator owner) |
+
+The mechanics exist: operators register the code class's jobs at a fee that
+covers their spend (`ReputationKeeper` `fee`), and arbiters priced above the
+bounty's `maxOracleFee` are ineligible, so the code-bounty template sets
+`maxOracleFee` from the panel.
+
+Who pays is a bounty-program decision. A $6 prepay is a fair spam deterrent on a
+$500 bounty and a barrier on a $50 one. Recommendation: for code bounties the
+**creator funds the evaluation budget at creation** — the creator chooses the
+panel and gains from the grading — and the hunter posts a small deposit returned
+when the submission passes the gates. The escrow is close to this already
+(`startPreparedSubmission` accepts funding from anyone after a creator window); a
+creator-funded path needs a per-bounty evaluation budget in `createBounty` and a
+cap on funded submissions per hunter.
 
 ## 9. Time budget
 
@@ -542,7 +643,9 @@ Typical evaluations are expected to take 3–6 minutes.
   `sandbox.runsc` and `sandbox.conformance`.
 - Resources: +2 vCPU, +4 GB RAM and +30 GB disk for the image cache, or a remote
   runner VPS.
-- Keys: `TYPESAFE_API_KEY` for Jev, alongside today's provider keys.
+- Keys: none new. Jev is reached through the operator's existing
+  `OPENROUTER_API_KEY`; a native `TYPESAFE_API_KEY` is optional under the usual
+  `AI_GATEWAY` rules.
 - `start-arbiter.sh`, `stop-arbiter.sh`, `arbiter-status.sh` and `rotate-logs.sh`
   include the runner.
 
@@ -550,14 +653,14 @@ Typical evaluations are expected to take 3–6 minutes.
 
 | Phase | Delivers | Exit criteria |
 |---|---|---|
-| 0. Decisions | Timeout change approved; ClassID chosen; Jev access confirmed for the canary operators; `code_review.json` and report schemas in `@verdikta/common` | Schemas merged |
+| 0. Decisions | Timeout change and fee model approved; ClassID and pool chosen; OpenRouter `systemone` access verified from a canary; `code_review.json` and report schemas in `@verdikta/common` | Schemas merged |
 | 1. Execution evidence | `code-runner` (local mode); `node22` and `python312` images; environment builder with creation-time validation; PR-to-patch submissions; gates; report and context pack fed to the existing jury; class 5555 canaries on testnet | Identical report hash on every canary; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases; p95 inside the budget |
-| 2. Cheap and sharp | Jev triage and rubric juror; Semgrep and secret scan; Hurl API checks; tests-only replay; cost logging | ≤ $0.50 per arbiter per evaluation; accuracy no worse than Phase 1 |
+| 2. Cheap and sharp | `systemone` client, Jev triage and rubric juror; Semgrep and secret scan; Hurl API checks; tests-only replay; cost logging | ≤ $0.50 per arbiter per evaluation on the standard template; accuracy no worse than Phase 1 |
 | 3. Breadth | `bug` bounties with a Foundry image; dependency changes through a registry-only proxy; remote runner mode; a Go image | A canary gate per feature; mainnet rollout per `docs/release-runbook.md` §3b |
 
 Jev comes in Phase 2 on purpose: execution evidence is what makes the grades
-accurate, Jev is what makes them cheap, and every operator in the class needs Jev
-access before it can sit on the jury.
+accurate, Jev is what makes them cheap, and every operator in the class needs the
+`systemone` client deployed before Jev can sit on the jury.
 
 ## 13. Validation
 
@@ -596,13 +699,16 @@ access before it can sit on the jury.
 1. **Raise `responseTimeoutSeconds` from 300 to 900 s on both aggregators?** First
    check that the bounty program and the example frontends don't assume five
    minutes.
-2. **Jev availability.** Early access, no free tier, unpublished rate limits;
-   every operator in the class needs a key. Cloudflare's open-weight Clef accepts
-   Jev's request format and is the fallback, but a class must pin one model, not
-   mix them. TypeSafe does not document run-to-run determinism; Phase 2 measures
-   it, since every arbiter sends Jev the same request.
-3. **Who runs the environment builder** and owns `ghcr.io/verdikta/bounty-env`
-   (retention, size limits).
+2. **Jev continuity and behaviour.** Access is solved by OpenRouter. The
+   remaining risks are model retirement (pin the dated snapshot; move the class
+   deliberately when TypeSafe retires 1.13), run-to-run determinism, which
+   TypeSafe does not document and Phase 2 measures since every arbiter sends the
+   same request, and the 32 KB state rule. Cloudflare's open-weight Clef accepts
+   the same request format and is the fallback, but a class pins one model, not a
+   mix.
+3. **Who owns the builder Action's fallback workflow and the
+   `ghcr.io/verdikta/bounty-env` registry** (retention, size limits), given that
+   creators with CI build their own images.
 4. **Bounty-program wording.** It currently says GitHub PRs are not bounties,
    meaning Verdikta's own repositories. Code bounties will take PR links through
    bounties.verdikta.org, so the wording must tell the two apart.
@@ -611,6 +717,9 @@ access before it can sit on the jury.
 6. **Public acceptance tests invite overfitting.** Mitigated by the
    special-casing checks; hidden tests would need encryption to the arbiters and
    are out of scope.
+7. **Fee model for code bounties (§8.8).** Creator-funded evaluation budget, or
+   hunter-paid as today; and whether to raise the aggregators' `maxOracleFee`
+   ceiling (0.0004 ETH) so premium panels are possible.
 
 ## Sources
 
@@ -624,7 +733,12 @@ access before it can sit on the jury.
 - Jev: docs.typesafe.ai (`/api`, `/model-jaggedness/jev-1.13`,
   `/introduction/coding-agents`); en.wikipedia.org/wiki/Jev_(AI_model); pricing
   as listed on openrouter.ai/typesafe/jev-1.13 and aimlapi.com/models/typesafe-jev.
+- Jev on OpenRouter: openrouter.ai/docs/guides/community/jev and
+  …/typesafe-sdk; model prices from openrouter.ai/api/v1/models on 2026-10-17.
 - Clef: InfoQ, "Clef decision models" (infoq.com/news/2026/10/clef-decision-models).
+- Fees: `maxOracleFee`, `maxTotalFee`, `bonusMultiplier`, `clusterSize` read from
+  the mainnet aggregator on 2026-10-17; ETH/USD from the Chainlink feed on Base
+  (`0x7104…Bb70`); defaults in `example-bounty-program/server/config.js`.
 - Claude pricing: Anthropic's model table as of 2026-10-06.
 - Internal: `verdikta-agents/docs/agent_coding_sandbox_design.md` (D2, D3) and
   `docs/coding_sandbox_runbook.md` on `origin/main`;
