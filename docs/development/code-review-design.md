@@ -1,10 +1,11 @@
 # Code-review evaluations on Verdikta arbiters — design
 
-**Status:** proposal, 2026-10-16; revised 2026-10-19 after review (PR #96)
+**Status:** proposal, 2026-10-16; revised 2026-10-19 after review (PR #96);
+§15 records the decisions taken on 2026-10-19
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
-installer), verdikta-common (schemas, two ClassIDs with hard limits, image pins,
+installer), verdikta-common (schemas, three ClassIDs with hard limits, image pins,
 trusted builder keys), example-bounty-program (code bounty type, environment
-build and attestation, PR submissions, funding policy), aggregator configuration
+build and attestation, PR submissions, pre-flight checks, PR convention), aggregator configuration
 (one timeout; the fee ceiling for the premium class).
 
 ---
@@ -48,17 +49,19 @@ Eight decisions carry the design:
 6. **Frontier models do the deep review** — logic and edge cases the tests miss,
    security, test adequacy — with the report as evidence whose trust tier is
    explicit, every tool finding in view, and a bounded, deterministic context
-   pack. In code mode every frontier juror must answer.
-7. **Code bounties get two ClassIDs, `code-standard` and `code-premium`,** each
-   with an enforced envelope (model pool, panel size, counts, iterations, context
-   and output budgets) and its own registered fee. One class cannot carry two
-   price tiers: the selector takes any job priced at or below the request's
-   ceiling and pays the job's registered fee. Only arbiters whose runner passes a
-   conformance self-test register for either.
+   pack. In code mode every non-Jev juror must answer.
+7. **Code bounties get three ClassIDs — `code-micro`, `code-standard`,
+   `code-premium`** — each with an enforced envelope (model pool, panel size,
+   counts, iterations, context and output budgets) and its own registered fee.
+   One class cannot carry two price tiers: the selector takes any job priced at
+   or below the request's ceiling and pays the job's registered fee. Only
+   arbiters whose runner passes a conformance self-test register for any of them.
 8. **One protocol change,** raising the aggregators' `responseTimeoutSeconds`
-   from 300 s to 900 s, **and one economic one:** code panels cost operators
-   8–30× today's ~5¢ per-oracle fee, so code bounties need higher oracle fees and,
-   this design recommends, creator-funded evaluation (§8.8).
+   from 300 s to 900 s, **and a cost plan instead of a funding change:** the
+   hunter keeps paying, as today, and the design brings the price down — a micro
+   class on open-weight code models (≈ $1 per submission), a standard class with
+   one frontier juror (≈ $3.50), free pre-flight checks before anyone pays, and
+   a deterministic context pack sized to the change (§8.7–8.8).
 
 ## 2. Goals and non-goals
 
@@ -156,13 +159,13 @@ Evaluation (each selected arbiter; one deadline from EA receipt)
 
 | Where | Change |
 |---|---|
-| `@verdikta/common` | Manifest key `codeReview`; schemas for `code_review.json`, `attestation.json` and the Verification Report; the trusted-builder key set; the two code ClassIDs with their envelopes and **hard limits**; pinned base-image, gVisor and Semgrep-rule versions and the OCI platform; the conformance canary's expected report hash |
+| `@verdikta/common` | Manifest key `codeReview`; schemas for `code_review.json`, `attestation.json` and the Verification Report; the trusted-builder key set; the three code ClassIDs with their envelopes and **hard limits**; pinned base-image, gVisor and Semgrep-rule versions and the OCI platform; the conformance canary's expected report hash |
 | `code-runner/` (new) | `POST /v1/runs` `{ primaryCid, bcid, spec, attestation, patch, acceptancePatch, hurl, baseline, deadline }` → `{ report, reportSha256, contextPack }`; `GET /health`. Own `dockerd` with a fixed-size data disk (§7.1) |
 | External Adapter | When the primary manifest has `codeReview`: verify the attestation and class envelope; compute the single deadline (§9) and pass remaining time to the runner and the AI Node; call the runner (shared per primary CID + bCID); settle gate and integrity failures; otherwise pass the report and context pack to the AI Node as named text attachments plus a structured `codeReview` field; no sandbox re-run on retry |
-| AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed rubric, `deadlineMs`): code-review pre-prompt with trust tiers, Jev stage through an OpenRouter `systemone` client (annotating, never filtering), all frontier jurors required, deadline-derived timeouts with cancellation, web access off |
+| AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed rubric, `deadlineMs`): code-review pre-prompt with trust tiers, Jev stage through an OpenRouter `systemone` client (annotating, never filtering) plus a Jev claim check on the justification, every non-Jev juror required, deadline-derived timeouts with cancellation, web access off |
 | Chainlink job spec | `maxTaskDuration` and bridge timeout 300 s → 840 s |
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§8.8) |
-| Bounty program | Code bounty form with standard/premium templates bound to the two classes; builder Action, fallback workflow, validation report and **attestation signing**; `prUrl`/`.patch` submissions checked against a temporary index; code variant of the evaluation query; creator-funded evaluation budget and funding policy (§8.8); pending-state UI to 15 min |
+| Bounty program | Code bounty form with micro/standard/premium templates bound to the three classes; builder Action, fallback workflow, validation report and **attestation signing**; `prUrl`/`.patch` submissions checked against a temporary index; **free pre-flight check** and a local CLI before the hunter pays (§6.4); Jev rubric check at creation and submission pre-check (§6.4); PR bot comment and label for bounty submissions (§6.3); code variant of the evaluation query; hunter-diligence text (§6.4); pending-state UI to 15 min |
 
 ## 6. Bounty and submission contract
 
@@ -199,7 +202,7 @@ schema in `@verdikta/common`.
 ```
 
 - `kind` is `change` (a feature or fix PR) or `bug` (a bug report with a
-  proof-of-concept test, §6.4).
+  proof-of-concept test, §6.5).
 - Commands run **only inside the sandbox**, exactly as written, and the runner
   appends its own reporter flags for the declared `framework` (JUnit to a path it
   chooses). The tested program can still see that path and the arguments — it
@@ -294,7 +297,54 @@ fallback source; v1 does not need it.
 The PR may change after submission; the grade belongs to the pinned patch.
 Arbiters never read `prUrl`.
 
-### 6.4 Two bounty kinds, one pipeline
+**Paid and unpaid PRs on the same repository.** Verdikta's own repositories will
+carry bounties too, so "PRs are not bounties" has to become a mechanism rather
+than a blanket rule:
+
+- A bounty on a repository is announced by a GitHub issue carrying the `bounty`
+  label and the bounties.verdikta.org link; the bounty's `repo` + `baseCommit`
+  point at that repository.
+- A PR is **paid only if the site records it as a submission**. When a hunter
+  submits, the bounty program's bot comments on the PR ("Submitted to bounty #N
+  at commit `abc123`; graded on the pinned patch") and adds the
+  `bounty-submission` label. A PR without that comment is an ordinary,
+  unpaid contribution, whatever its description says.
+- `CONTRIBUTING.md` / `AGENTS.md` wording: "Pull requests are unpaid
+  contributions unless bounties.verdikta.org records them as a submission to a
+  bounty; bounty-labelled issues say which work is paid and how to submit."
+
+### 6.4 Before anyone pays: pre-flight, local CLI, and cheap checks
+
+The hunter pays the evaluation prepay (§8.8), so the cheapest evaluation is the
+one that never reaches the network. The bounty program adds, all outside the
+consensus path:
+
+- **Pre-flight check.** At `submit/prepare`, before the prepay transaction, the
+  site runs the deterministic part of the pipeline (apply → build → acceptance
+  tests → integrity checks) on its own `code-runner` with the same image and
+  shows the result. It is advisory — arbiters re-run everything — but a hunter
+  learns for free that their patch fails to apply or fails an acceptance test,
+  instead of paying ≈ $1–6 to be told so by six arbiters.
+- **Local CLI.** `npx @verdikta/bounty-check <bounty-url> <patch|PR>` runs the
+  same pipeline on the hunter's machine against the public image. Zero cost to
+  everyone.
+- **Jev at creation** (`noul` per criterion: "is this assessable from code and
+  tests?", "does an acceptance test exercise it?"; `noul` on the query for
+  contradictions). Warnings to the creator, no gating; ≈ $0.001 per bounty.
+  Fewer unsatisfiable or ambiguous bounties means fewer wasted submissions.
+- **Jev at submission** (`noul`: "does the narrative address this bounty?",
+  `choice` per changed file: required / related / unrelated). Shown to the hunter
+  with the pre-flight result; nothing is blocked.
+- **Hunter-diligence text** on the bounty page and in the CLI output: the
+  creator defines the environment, acceptance tests and gates (§15.5); read the
+  acceptance tests before working; run the CLI before paying; the prepay is
+  spent even when the verdict is `DONT_FUND`; the grade belongs to the pinned
+  patch, not to the PR as it later evolves.
+
+None of these touch what arbiters compute, so they need no determinism and can
+change freely.
+
+### 6.5 Two bounty kinds, one pipeline
 
 | | `change` (feature or fix) | `bug` (find a bug) |
 |---|---|---|
@@ -646,6 +696,31 @@ finding shown without triage, and Jev's weight **dropped, not redistributed**
 (§8.5). Jev never decides a gate, never sees anything the frontier jurors don't,
 and never removes anything from what they see.
 
+**Claim check on the justification.** After the justifier writes the
+justification, each sentence that asserts an execution fact ("all acceptance
+tests pass", "no regressions", "the SQL-injection finding is a false positive")
+is checked against the Verification Report with one `choice` question per claim
+— `supports` / `contradicts` / `says_nothing`, TypeSafe's own citation-check
+recipe. A claim the report contradicts is annotated in the uploaded
+justification ("⚠ the report shows 1 acceptance failure") and, if the deadline
+reserve allows, the justifier is re-run once with the contradiction pointed out.
+Scores are never touched. Cost ≈ $0.002 per evaluation; the justification is the
+only thing hunters and creators read, so a hallucinated "all tests pass" is the
+most visible failure the system can have. This runs per arbiter on that arbiter's
+own text, so it needs no cross-arbiter determinism.
+
+**What Jev is deliberately not used for.** TypeSafe's cookbooks were reviewed
+for further uses (re-ranking, RAG-passage filtering, confidence-gated routing,
+cascades, guardrails, self-consistency). Two rules decide: Jev may not change
+the bytes the frontier jurors see — TypeSafe's own re-ranking recipe notes that
+repeated scoring can vary, and divergent inputs across arbiters would mean
+divergent verdicts — and it may not add a decision the panel then depends on.
+So: no Jev-ranked context pack (the pack is built by deterministic rules; a Jev
+re-rank is re-visitable only after Phase 2 measures determinism and only if the
+rule-built pack proves too large), no confidence-gated third juror (the panel
+is fixed in the manifest for every arbiter), no cascade that skips a juror. The
+guardrail recipe is already covered by the injection flag.
+
 ### 8.3 Frontier jury: deep review (AI Node)
 
 The existing multi-model `rank-and-justify`, with a code-review pre-prompt. Input:
@@ -689,59 +764,69 @@ Code mode takes its request deadline from the EA (§9) instead of the fixed
 than racing them, and runs frontier jurors at effort `high` (coding responds
 strongly to effort).
 
-### 8.4 Two code-review classes: envelopes and templates
+### 8.4 Three code-review classes: envelopes and templates
 
 A ClassID is the pool of models an operator must serve; the **creator** picks the
 panel — models, weights, iterations — from that pool in the manifest's `AI_NODES`.
-The first draft proposed one broad class with two price templates. That cannot
-work: `ReputationKeeper.selectOracles` takes every active job in the class whose
+The first draft proposed one broad class with price templates. That cannot work:
+`ReputationKeeper.selectOracles` takes every active job in the class whose
 registered `fee <= maxFee`, and the aggregator pays the **registered** fee. A
 premium request with a 0.0007 ETH ceiling would select a job registered at the
-standard 0.0002 ETH and hand it the premium panel's ~$1.40 bill; pricing every
-job for premium would exclude it from standard requests. So there are **two
-classes**, each with an **envelope** the arbiter enforces:
+standard fee and hand it the premium panel's bill; pricing every job for premium
+would exclude it from cheaper requests. So each price tier is a **class**, each
+with an **envelope** the arbiter enforces. The hunter pays (§8.8), so the tiers
+are chosen to make small bounties cheap:
 
-| | `code-standard` | `code-premium` |
-|---|---|---|
-| Pool | `typesafe/jev-1.13`, `qwen3-coder`, `claude-haiku-5-5`, `gpt-6-luna`, `grok-4.7`, `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | the standard pool plus `claude-opus-5-5`, `gpt-6-astra` |
-| Panel | ≤ 3 models, `NO_COUNTS` 1, `ITERATIONS` 1 | ≤ 3 models, `NO_COUNTS` 1, `ITERATIONS` 1 |
-| Context pack / juror output | 80k / 8k tokens | 120k / 12k tokens |
-| Sandbox | class hard limits (§7.1) | same |
-| Operator spend per evaluation | ≈ $0.40 | ≈ $1.40–2.00 |
-| Registered fee (indicative) | 0.0002 ETH | 0.0007 ETH (above today's ceiling, §8.8) |
+| | `code-micro` | `code-standard` | `code-premium` |
+|---|---|---|---|
+| Pool | `typesafe/jev-1.13`, `deepseek-v4-pro`, `kimi-k2.7-code`, `qwen3-coder`, `glm-5.3`, `mimo-v2.6-pro`, `gpt-oss-120b`, `claude-haiku-5-5`, `gpt-6-luna` | the micro pool plus `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra`, `grok-4.7` | the standard pool plus `claude-opus-5-5`, `gpt-6-astra` |
+| Panel | ≤ 3 models, `NO_COUNTS` 1, `ITERATIONS` 1 | same | same |
+| Context pack / juror output | 40k / 6k tokens | 60k / 8k tokens | 120k / 12k tokens |
+| Sandbox | class hard limits (§7.1) | same | same |
+| Operator spend per evaluation | ≈ $0.06–0.09 | ≈ $0.25 | ≈ $1.40–2.00 |
+| Registered fee (indicative) | 0.00004 ETH ≈ $0.10 | 0.00012 ETH ≈ $0.29 | 0.0007 ETH ≈ $1.70 (above today's ceiling, §8.8) |
+| Hunter prepay (12×) | ≈ $1.16 | ≈ $3.50 | ≈ $20 |
 
 The envelope is enforced on the arbiter, not only in the UI: today nothing in the
 EA or AI Node reads the classmap's `max_panel_size`, `max_no_counts` or
 `max_iterations`, so code mode adds that check — a manifest whose `AI_NODES`,
 counts, iterations or requested budgets fall outside the class envelope is a
-requester error (errored path, no commit) before any model is called. Both
-classes carry the runner conformance requirement (§11) and add `claude-opus-5-5`
-and `claude-sonnet-5-5`, which classmap 1.6.0 does not list yet.
+requester error (errored path, no commit) before any model is called. All three
+classes carry the runner conformance requirement (§11); the pools add
+`claude-opus-5-5`, `claude-sonnet-5-5` and the open-weight coders, which
+classmap 1.6.0 does not list yet. The micro and standard pools lean on
+open-weight code models served through OpenRouter; whether they grade as
+accurately as the frontier pair is exactly what the calibration set measures per
+class (§13), and a class whose accuracy falls short is withdrawn, not discounted.
 
-Per-juror cost on a 60k-in / 8k-out context pack:
+Per-juror cost, OpenRouter list prices on 2026-10-19:
 
-| Model in the pools | $/M in / out | Per juror, 60k in / 8k out | Role |
-|---|---|---|---|
-| `claude-opus-5-5` | 4 / 20 | $0.40 | Premium deep review |
-| `gpt-6-astra` | 10 / 50 | $1.00 | Premium deep review |
-| `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | 2 / 10–12 | ~$0.20 | Standard deep review |
-| `grok-4.7` | 2 / 6 | $0.17 | Standard deep review, third opinion |
-| `qwen3-coder` | 0.3 / 1 | $0.03 | Code specialist, cheap third juror |
-| `claude-haiku-5-5`, `gpt-6-luna` | 0.1 / 0.5 | $0.01 | Justifier; cheap juror |
-| `typesafe/jev-1.13` | 0.042 / free | <$0.01 | Rubric juror, triage |
-
-(OpenRouter list prices, 2026-10-17.)
+| Model in the pools | $/M in / out | 40k in / 6k out | 60k in / 8k out | Role |
+|---|---|---|---|---|
+| `gpt-6-astra` | 10 / 50 | — | $1.00 | Premium deep review |
+| `claude-opus-5-5` | 4 / 20 | — | $0.40 | Premium deep review |
+| `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | 2 / 10–12 | $0.14 | ~$0.20 | Standard deep review |
+| `grok-4.7` | 2 / 6 | $0.12 | $0.17 | Standard, third opinion |
+| `kimi-k2.7-code` | 0.67 / 3.35 | $0.047 | $0.067 | Open-weight code review |
+| `deepseek-v4-pro` | 0.42 / 0.84 | $0.022 | $0.032 | Open-weight code review |
+| `mimo-v2.6-pro` | 0.43 / 0.87 | $0.022 | $0.033 | Open-weight code review |
+| `qwen3-coder` | 0.30 / 1.00 | $0.018 | $0.026 | Open-weight code specialist |
+| `glm-5.3` | 0.08 / 1.40 | $0.012 | $0.016 | Open-weight code review |
+| `gpt-oss-120b` | 0.15 / 0.60 | $0.010 | $0.014 | Open-weight, third opinion |
+| `claude-haiku-5-5`, `gpt-6-luna` | 0.1 / 0.5 | $0.007 | $0.010 | Justifier; cheap juror |
+| `typesafe/jev-1.13` | 0.042 / free | <$0.01 | <$0.01 | Rubric juror, triage, claim check |
 
 Templates in the bounty program's code-bounty form, each bound to its class:
 
 | Template | Class | Panel | Operator spend per arbiter |
 |---|---|---|---|
-| Standard | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `gpt-6-sol` 0.4 | ≈ $0.40 |
+| Micro | `code-micro` | Jev 0.2, `deepseek-v4-pro` 0.4, `kimi-k2.7-code` 0.4 | ≈ $0.08 |
+| Standard | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `deepseek-v4-pro` 0.4 | ≈ $0.25 |
 | Premium | `code-premium` | Jev 0.2, `claude-opus-5-5` 0.4, `gpt-6-astra` 0.4 | ≈ $1.40 |
 
 The template sets the class and the oracle fee the creator must offer (§8.8). A
-mixed-fee selection test — a premium request must never select a standard-priced
-job — is a Phase 0 deliverable.
+mixed-fee selection test — a request on one class must never select a job
+registered on another — is a Phase 0 deliverable.
 
 ### 8.5 Final scores and the partial-success rule
 
@@ -754,10 +839,10 @@ creators can see why.
 least `MIN_SUCCESSFUL_MODELS_PERCENT` (0.5) of the models answer, with the
 failed models' weight redistributed. On a three-model code panel that lets Jev
 plus one frontier juror settle the verdict, with Jev's effective weight rising
-from 20% to one-third. Code mode therefore requires **every frontier juror** in
+from 20% to one-third. Code mode therefore requires **every non-Jev juror** in
 the panel to succeed; if one fails, the arbiter abstains (error, no commit).
 Jev's failure is tolerated: its weight is dropped, not redistributed, so the
-frontier jurors' relative weights are unchanged and the final vector is theirs
+other jurors' relative weights are unchanged and the final vector is theirs
 alone.
 
 ### 8.6 Gaming and prompt injection
@@ -775,27 +860,48 @@ alone.
 | Highly compressible image that unpacks to fill the host disk | Attested unpacked size checked at admission; the runner's own Docker `data-root` on a fixed-size disk bounds the damage regardless |
 | Direct on-chain request with an unvalidated image or oversized limits | Attestation required; class maxima enforced by the runner; rejected before any pull |
 
-### 8.7 Cost per evaluation (operator spend, one arbiter)
+### 8.7 Cost per evaluation (operator spend, one arbiter) and its assumptions
 
-Standard template:
+Standard template, worst case:
 
 | Item | Tokens | Cost |
 |---|---|---|
-| Jev, ~10 small fan-out calls | ~60k in, total | ~$0.003 |
+| Jev, ~10 small fan-out calls + claim check | ~60k in, total | ~$0.003 |
 | `claude-sonnet-5-5` juror ($2 / $10 per million tokens) | 60k in / 8k out | ~$0.20 |
-| `gpt-6-sol` juror ($2 / $10) | 60k in / 8k out | ~$0.20 |
+| `deepseek-v4-pro` juror ($0.42 / $0.84) | 60k in / 8k out | ~$0.03 |
 | Justifier (`claude-haiku-5-5`, $0.10 / $0.50) | 15k in / 2k out | <$0.01 |
-| **Total** | | **≈ $0.40**; a submission that fails a gate ≈ $0 |
+| Sandbox compute (2 vCPU × ≤ 6 min at ≈ $0.03 per vCPU-hour) | | <$0.01 |
+| **Total** | | **≈ $0.25**; a submission that fails a gate ≈ $0.01 |
 
-Premium (`claude-opus-5-5` $0.40 + `gpt-6-astra` $1.00 + Jev) ≈ **$1.40**.
-Sandbox compute is about 2 vCPU for 1–5 minutes.
+Micro (`deepseek-v4-pro` $0.022 + `kimi-k2.7-code` $0.047 on a 40k pack + Jev +
+justifier) ≈ **$0.08**. Premium (`claude-opus-5-5` $0.40 + `gpt-6-astra` $1.00
++ Jev) ≈ **$1.40**.
 
-All six selected arbiters evaluate (a commit needs the result), so one request
-costs operators about $2.50 (standard) or $8.50 (premium) in provider fees in
-total. That is the spend oracle fees have to cover; it is **not** what the hunter
-pays today (§8.8). The context pack is the main dial: 40k instead of 60k input
-tokens cuts a third. For comparison, three `claude-opus-5-5` jurors reading
-unfiltered 100k-token contexts would cost about $0.55 each.
+**The assumptions behind these numbers**, so they can be challenged one by one:
+
+1. **Six arbiters do the full work.** K = 6 are polled to commit, 4 reveal, 3 are
+   aggregated, but a commit needs the finished evaluation, so all six spend. A
+   third of the network's work is structurally unused; K/M/N are global per
+   aggregator, so a class cannot lower them (a dispatcher roadmap item).
+2. **60k input tokens** is a mid-size PR filling most of the standard pack
+   budget (diff with function context, changed files, call sites, tree). A
+   300-line PR produces 20–30k. Pricing is at the cap; the average is lower.
+3. **8k output tokens** per juror covers a structured review with file:line
+   findings. Premium allows 12k.
+4. **Every submission reaches the jury.** Gate failures cost ≈ $0.01 (sandbox
+   only), so the average falls with the gate-failure rate; the pre-flight check
+   (§6.4) pushes most sure-failures out before anyone pays.
+5. **List prices on OpenRouter, 2026-10-19**, no caching (the two jurors are
+   different providers; nothing repeats within an arbiter) and no batch pricing
+   (batch latency does not fit a 15-minute round).
+6. **Operators price at worst case plus ≈ 20%**, since the on-chain fee cannot
+   depend on how the evaluation went.
+
+The levers, in order of effect: the **class** (open-weight code models cost
+5–15× less than the frontier pair), the **context pack** (40k instead of 60k cuts
+input cost by a third), and the **gate-failure rate** (free pre-flight means paid
+evaluations are the ones with a chance). For comparison, three `claude-opus-5-5`
+jurors reading unfiltered 100k-token contexts would cost about $0.55 each.
 
 ### 8.8 Fee economics: who pays
 
@@ -807,14 +913,21 @@ both aggregators (6 + 3 × 2), with the unused part refunded. With the bounty
 program's default fee of 0.00002 ETH (`server/config.js`) and ETH at about $2,420
 (Chainlink ETH/USD on Base, 2026-10-17) that is $0.048 per oracle and a $0.58
 prepay — the roughly $0.50 a submission costs now. An arbiter therefore earns
-about 5¢ per evaluation; the standard code panel costs it about 8× that and the
-premium panel about 30×.
+about 5¢ per evaluation; the micro code panel costs it about 2× that, standard
+about 5× and premium about 30×.
+
+How the prepay is derived, so the figures can be checked: per-oracle fee =
+worst-case operator spend (§8.7) × ≈ 1.2, rounded to a round number of wei;
+prepay = fee × 12; dollars at $2,420/ETH. Worst case the whole prepay is spent
+(six base fees plus the 3× bonus to each of the two clustered oracles); the
+unused remainder is refunded.
 
 | | Per-oracle fee | Hunter prepay (12×) | Under the ceiling? |
 |---|---|---|---|
-| Today's default | 0.00002 ETH ≈ $0.05 | 0.00024 ETH ≈ $0.58 | yes |
-| `code-standard` (≈ $0.40 + compute) | ≈ 0.0002 ETH ≈ $0.48 | 0.0024 ETH ≈ $5.80 | yes (ceiling 0.0004 ETH ≈ $0.97) |
-| `code-premium` (≈ $1.40–2.00 + compute) | ≈ 0.0007 ETH ≈ $1.70 | 0.0084 ETH ≈ $20 | no — needs `setMaxOracleFee` (aggregator owner) |
+| Today's default (text bounties) | 0.00002 ETH ≈ $0.05 | 0.00024 ETH ≈ $0.58 | yes |
+| `code-micro` (≈ $0.08) | 0.00004 ETH ≈ $0.10 | 0.00048 ETH ≈ $1.16 | yes |
+| `code-standard` (≈ $0.25) | 0.00012 ETH ≈ $0.29 | 0.00144 ETH ≈ $3.50 | yes (ceiling 0.0004 ETH ≈ $0.97) |
+| `code-premium` (≈ $1.40–2.00) | 0.0007 ETH ≈ $1.70 | 0.0084 ETH ≈ $20 | no — needs `setMaxOracleFee` (aggregator owner) |
 
 The payment path pays each selected job its **registered** fee, so raising the
 ceiling alone buys nothing: the `code-premium` class's jobs must themselves be
@@ -823,29 +936,33 @@ tiers are classes (§8.4). Within a class, operators register at a fee that
 covers their spend and arbiters priced above the bounty's `maxOracleFee` are
 ineligible; the template sets `maxOracleFee` from the class.
 
-**Who pays** is a bounty-program decision, and it has to be one the contract can
-act on. A $6 prepay is a fair spam deterrent on a $500 bounty and a barrier on a
-$50 one. The first draft proposed a hunter deposit "returned when the gates
-pass"; that is not implementable: `BountyEscrow.finalizeSubmission` sees only
-the score vector and a justification CID, and a gate failure and a jury
-rejection both arrive as `[1,000,000, 0]`. The contract cannot tell them apart
-without a protocol change (an authenticated gate-status signal), which this
-design does not propose. Recommendation for code bounties:
+**Who pays: the hunter, as today** (decision 7, §15). The earlier draft proposed
+a creator-funded budget and, before that, a hunter deposit "returned when the
+gates pass"; the deposit is not implementable (`BountyEscrow.finalizeSubmission`
+sees only the score vector and a justification CID, and a gate failure and a
+jury rejection both arrive as `[1,000,000, 0]`), and the creator-funded budget
+would have meant escrow changes to funder and refund semantics. Keeping the
+hunter as payer leaves `startPreparedSubmission`, `s.funder` and the refund path
+untouched. The cost of that choice is carried by the cost plan instead:
 
-- the **creator funds an evaluation budget at creation** (`createBounty` takes
-  `evaluationBudget` = N × the class prepay; the creator chooses the panel and
-  gains from the grading);
-- a **per-hunter cap** on funded submissions and the existing creator window
-  control spam;
-- an optional **flat, non-refundable hunter fee** set by the creator — a plain
-  payment the contract can observe — instead of a conditional deposit.
+- **Class choice by bounty size.** `code-micro` at ≈ $1.16 per submission is
+  the default for bounties under a few hundred dollars; `code-standard` at
+  ≈ $3.50 for mid-size work; `code-premium` for high-value audits once the
+  ceiling is raised.
+- **Nothing paid for sure failures.** The free pre-flight check and the local
+  CLI (§6.4) run apply, build, acceptance and integrity before the prepay
+  transaction exists.
+- **Context pack sized to the change.** The pack budget is a cap; a small PR
+  produces a small pack and the jurors' input cost falls with it.
+- **Open-weight code models** in the micro and standard pools, through the
+  OpenRouter gateway operators already run.
+- **Protocol follow-ups** (dispatcher roadmap, not this design): per-class K/M/N
+  so a micro class can poll fewer arbiters, and a lower bonus multiplier for
+  cheap classes — together they would roughly halve the prepay again.
 
-Funding mechanics to specify, because today `startPreparedSubmission` records
-`msg.sender` as `s.funder` and refunds leftover prepay to that address: who the
-funder is when the escrow pays from the creator's budget, reservation and release
-of the budget per in-flight submission, and recovery of unused prepay on
-timeout. Test cases: gate failure, gate pass with jury rejection, round timeout,
-concurrent starts against one budget, and leftover recovery.
+Operators' margin is thin by design in the micro class (≈ $0.10 fee against
+≈ $0.08 worst-case spend); the calibration set decides whether the open-weight
+pools grade well enough to run it at all (§8.4).
 
 ## 9. Time budget
 
@@ -909,7 +1026,7 @@ justifier, a registry failure and a cancellation.
 | `submission.patch` missing or not a patch | Malformed-bCID settlement (existing rule) |
 | `code_review.json` invalid; **attestation missing or invalid; spec above the class maxima; manifest outside the class envelope** | Error: the requester's package is broken (existing rule); no commit, before any pull or model call |
 | Jev fails | Jurors proceed unaided; Jev's weight dropped, not redistributed (§8.5) |
-| A frontier juror fails | Error, no commit — code mode requires every frontier juror (§8.5) |
+| A non-Jev juror fails | Error, no commit — code mode requires every non-Jev juror (§8.5) |
 
 **Abstaining is not neutral.** A round that times out applies the configured
 timeliness penalty (−20 on mainnet) to every polled oracle that did not commit
@@ -940,9 +1057,9 @@ work inside the budget on ordinary hosts.
 
 | Phase | Delivers | Exit criteria |
 |---|---|---|
-| 0. Decisions | Timeout change and funding policy approved; the two ClassIDs, envelopes and hard limits chosen; trusted-builder key governance; OpenRouter `systemone` access verified from a canary; `code_review.json`, `attestation.json` and report schemas in `@verdikta/common` | Schemas merged **and** the adversarial fixtures of §13 written as failing tests: forged, missing or duplicate test reports, runtime test/reporter tampering, an unattested image and an over-limit direct request cannot yield trusted passing evidence or exceed operator limits; a mixed-fee selection test shows a premium request cannot select a standard-priced job |
-| 1. Execution evidence | `code-runner` (local mode, own `dockerd` and disk); `node22` and `python312` images; builder Action with validation and attestation; PR-to-patch submissions; gates and integrity checks; deadline propagation; report and context pack fed to the existing jury; class 5555 canaries on testnet | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases; a cold-cache end-to-end run with slow jurors, justifier delay, registry failure and cancellation; funding and refund cases pass; p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
-| 2. Cheap and sharp | `systemone` client, Jev annotation and rubric juror; Semgrep and secret scan; Hurl acceptance and API checks; tests-only replay; cost logging | ≤ $0.50 per arbiter per evaluation on `code-standard`; accuracy no worse than Phase 1; finding-recall against the Phase 1 unfiltered baseline unchanged, including injected dismissals; Jev run-to-run determinism measured |
+| 0. Decisions | Timeout change approved and hunter-pays confirmed (§15); the three ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (deferred: a single Verdikta key is the placeholder); OpenRouter `systemone` access verified from a canary; `code_review.json`, `attestation.json` and report schemas in `@verdikta/common` | Schemas merged **and** the adversarial fixtures of §13 written as failing tests: forged, missing or duplicate test reports, runtime test/reporter tampering, an unattested image and an over-limit direct request cannot yield trusted passing evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another |
+| 1. Execution evidence | `code-runner` (local mode, own `dockerd` and disk); `node22` and `python312` images; builder Action with validation and attestation; PR-to-patch submissions with the PR bot comment and label; **pre-flight check and local CLI** (§6.4); gates and integrity checks; deadline propagation; report and context pack fed to the existing jury; `code-standard` and `code-micro` on class 5555 canaries on testnet | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end run with slow jurors, justifier delay, registry failure and cancellation; prepay and refund cases pass; p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
+| 2. Cheap and sharp | `systemone` client, Jev annotation and rubric juror, claim check on the justification; Jev rubric check and submission pre-check in the bounty program (§6.4); Semgrep and secret scan; Hurl acceptance and API checks; tests-only replay; cost logging | ≤ $0.30 per arbiter per evaluation on `code-standard` and ≤ $0.10 on `code-micro`; accuracy no worse than Phase 1; finding-recall against the Phase 1 unfiltered baseline unchanged, including injected dismissals; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures |
 | 3. Breadth | `bug` bounties with a Foundry image; dependency changes through a registry-only proxy; remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised | A canary gate per feature; mainnet rollout per `docs/release-runbook.md` §3b |
 
 Jev comes in Phase 2 on purpose: execution evidence is what makes the grades
@@ -1004,43 +1121,90 @@ accurate, Jev is what makes them cheap, and every operator in the class needs th
   open to injected text by TypeSafe's own notes. Kept as a low-weight juror and
   a triage layer.
 
-## 15. Open decisions and risks
+## 15. Decisions (2026-10-19) and remaining risks
 
-1. **Raise `responseTimeoutSeconds` from 300 to 900 s on both aggregators?** First
-   check that the bounty program and the example frontends don't assume five
-   minutes.
-2. **Jev continuity and behaviour.** Access is solved by OpenRouter. The
-   remaining risks are model retirement (pin the dated snapshot; move the class
-   deliberately when TypeSafe retires 1.13), run-to-run determinism, which
-   TypeSafe does not document and Phase 2 measures since every arbiter sends the
-   same request, and the 32 KB state rule. Cloudflare's open-weight Clef accepts
-   the same request format and is the fallback, but a class pins one model, not a
-   mix.
-3. **Who owns the builder Action's fallback workflow and the
-   `ghcr.io/verdikta/bounty-env` registry** (retention, size limits), given that
-   creators with CI build their own images.
-4. **Bounty-program wording.** It currently says GitHub PRs are not bounties,
-   meaning Verdikta's own repositories. Code bounties will take PR links through
-   bounties.verdikta.org, so the wording must tell the two apart.
-5. **Creator trust.** The creator defines the environment, tests and gates — the
-   same trust the rubric already carries.
-6. **Public acceptance tests invite overfitting.** Mitigated by the
-   special-casing checks; hidden tests would need encryption to the arbiters and
-   are out of scope.
-7. **Funding policy for code bounties (§8.8).** Creator-funded evaluation budget
-   with a per-hunter cap and an optional flat hunter fee (recommended), or
-   hunter-paid as today; the funder/refund mechanics in `BountyEscrow`; and
-   whether to raise the aggregators' `maxOracleFee` ceiling (0.0004 ETH) so the
-   `code-premium` class can exist.
-8. **Trusted-builder keys.** Who holds the attestation signing keys listed in
-   `@verdikta/common`, and how they rotate. Anyone can run the builder Action;
-   only a listed key's signature makes a bounty gradable.
-9. **In-process test evidence is tier B (§7.5).** The design accepts that a
-   submission which forges results, passes every integrity check and survives two
-   diff reviews is a residual risk, and asks creators for black-box acceptance
-   checks where possible. The alternative — requiring black-box acceptance for
-   every code bounty — is stronger and narrows what can be bountied. Decide
-   before Phase 1.
+Each item records the options weighed, the decision, and what it changed in the
+document.
+
+1. **`responseTimeoutSeconds` 300 → 900 s on both aggregators — decided: raise
+   globally.** The timeout is global per aggregator, so a stuck text round also
+   waits 15 minutes before it can be force-finalised, and `BountyEscrow`'s
+   `MAX_ACTIVE_EVALUATIONS` slots stay occupied that long. Normal rounds finish
+   when reveals arrive and are unaffected. A separate aggregator for code
+   classes, or a per-class timeout in the contract, would isolate the change but
+   is a deployment or protocol change too large for v1. Per-class timeouts go on
+   the dispatcher roadmap. Condition: the bounty program and example frontend
+   depend on the window only through UI polling (§9).
+2. **Jev — decided: pinned `typesafe/jev-1.13-20260917` via OpenRouter.**
+   Alternatives were Clef (open weights, same request format, a different model
+   with its own answers; self-hosting needs a GPU) and dropping Jev from v1
+   (saves little money — Jev is under 1% of spend — and loses the annotation).
+   Determinism, which TypeSafe does not document and its own re-ranking recipe
+   says can vary, becomes a Phase 2 canary exit criterion; if it fails, Jev is
+   demoted to annotator with no jury weight rather than removed. A review of
+   TypeSafe's cookbooks added one arbiter-side use (the claim check on the
+   justification, §8.2) and two bounty-program uses (rubric check at creation,
+   submission pre-check, §6.4), and rejected re-ranking, confidence-gated
+   routing and cascades because they would change what the jurors see (§8.2).
+3. **Builder fallback workflow and registry — decided: Verdikta owns both for
+   v1,** with the Action published so creators with CI self-build. GHCR public
+   storage and public-repo Actions minutes are free; the fallback runs creators'
+   `setup` on ephemeral hosted runners with no secrets in the build job and
+   signing in a separate job, and builds are gated behind bounty creation so
+   nobody burns minutes for free. Retention: an image lives until every
+   submission to its bounty is finalised plus 30 days.
+4. **Paid and unpaid PRs on Verdikta's repositories — decided: a mechanism, not
+   a rule (§6.3).** Verdikta's own repositories will carry bounties, so "PRs are
+   not bounties" cannot stay a blanket statement. A bounty is announced by a
+   `bounty`-labelled issue with the site link; a PR is paid only if the site
+   records it as a submission, which the bot marks on the PR with a comment and
+   the `bounty-submission` label; `CONTRIBUTING.md` / `AGENTS.md` say so.
+5. **Creator trust — decided: accept, with hunter-diligence text (§6.4).** The
+   creator defines environment, tests and gates — the trust the rubric already
+   carries, now pinned and attested so nothing changes after funding. A
+   mandatory reference solution would prove solvability but makes the creator
+   solve the task first; it may return later as an optional "verified solvable"
+   badge. Hunters are told to read the acceptance tests and run the CLI before
+   paying.
+6. **Public acceptance tests — decided: accept.** Hidden tests encrypted to the
+   arbiters would need key distribution and a protocol change. Creators who
+   want hidden tests can run them off-chain inside the existing creator window
+   and approve or decline there; arbiter evaluation stays the fallback. The
+   special-casing flag, the tests-only replay and the diff review carry the
+   overfitting risk.
+7. **Who pays — decided: the hunter, as today; bring the cost down (§8.4,
+   §8.7–8.8).** A creator-funded budget would have aligned payer and
+   beneficiary but needed `BountyEscrow` changes to funder and refund
+   semantics; the gate-pass deposit was not contract-observable. Instead: a
+   `code-micro` class on open-weight code models (≈ $1.16 per submission), a
+   cheaper `code-standard` with one frontier juror (≈ $3.50), free pre-flight
+   checks and a local CLI before the prepay exists, a context pack sized to the
+   change, and the assumptions behind every figure written down in §8.7.
+   `code-premium` (≈ $20) waits for the fee ceiling to be raised to about
+   0.001 ETH (Phase 3). Per-class K/M/N and a lower bonus multiplier for cheap
+   classes go on the dispatcher roadmap; together they would roughly halve the
+   prepay again.
+8. **Trusted-builder keys — deferred.** Placeholder for planning: a single
+   Verdikta-held Ed25519 key with its id in `@verdikta/common`, rotated by adding
+   a key and keeping the old one valid for bounties it attested. Sigstore keyless
+   signing and a multi-builder list are the alternatives to weigh when the
+   decision is taken; it must land before Phase 1's canaries, because the
+   runner refuses unattested bounties.
+9. **In-process test evidence — decided: allow tier B with the integrity
+   checks, and label the bounty.** Black-box observation protects against
+   forged results, not against hard-coding to public expected outputs — the
+   diff review carries that in both models — so making it mandatory would cost
+   library-style bounties for a narrower gain than it looks. The form shows
+   "evidence: in-process" or "evidence: black-box" and warns the creator; the
+   adversarial fixtures measure the residue; `code-premium` will require tier A
+   if Phase 1 data says the residue matters.
+
+**Remaining risks** (no decision pending, tracked through the exit criteria):
+open-weight pools may grade worse than the frontier pair — measured per class,
+a short class is withdrawn (§8.4, §12); Jev determinism (§15.2); the residual
+forgery risk on tier-B evidence (§7.5); registry availability (IPFS fallback,
+§6.2); gVisor's wall-clock distortions on repositories with timing-sensitive
+tests (§7.3).
 
 ## Sources
 
@@ -1055,7 +1219,13 @@ accurate, Jev is what makes them cheap, and every operator in the class needs th
   `/introduction/coding-agents`); en.wikipedia.org/wiki/Jev_(AI_model); pricing
   as listed on openrouter.ai/typesafe/jev-1.13 and aimlapi.com/models/typesafe-jev.
 - Jev on OpenRouter: openrouter.ai/docs/guides/community/jev and
-  …/typesafe-sdk; model prices from openrouter.ai/api/v1/models on 2026-10-17.
+  …/typesafe-sdk; model prices from openrouter.ai/api/v1/models on 2026-10-17
+  (frontier) and 2026-10-19 (open-weight code models).
+- Jev use-case review: docs.typesafe.ai `/patterns`, `/cookbooks`,
+  `/cookbooks/citation_check` (the claim-check recipe: `supports` /
+  `contradicts` / `says_nothing`, auto-accept at 0.8), `/cookbooks/rerank_typesafe`
+  (BM25 top-1 5% → 18% on 40 queries for $0.06; "repeated scoring can vary"),
+  `/confidence`.
 - Clef: InfoQ, "Clef decision models" (infoq.com/news/2026/10/clef-decision-models).
 - Fees: `maxOracleFee`, `maxTotalFee`, `bonusMultiplier`, `clusterSize` read from
   the mainnet aggregator on 2026-10-17; ETH/USD from the Chainlink feed on Base
