@@ -283,10 +283,14 @@ docker_pull_with_retry "postgres:14"
 
 # Create PostgreSQL container
 # P2-A: bound container log growth (json-file, 100 MB x 5)
+# --restart unless-stopped: Docker brings the container back after a host
+# reboot or daemon restart unless an operator stopped it (2026-10-18 Contabo
+# reboot wave left every arbiter down; see arbiter-boot-service.sh).
 echo -e "${BLUE}Creating PostgreSQL container...${NC}"
 docker run --name "$POSTGRES_CONTAINER" \
     -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
     -p 5432:5432 \
+    --restart unless-stopped \
     --log-driver json-file \
     --log-opt max-size=100m \
     --log-opt max-file=5 \

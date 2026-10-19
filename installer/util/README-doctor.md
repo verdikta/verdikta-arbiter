@@ -23,6 +23,7 @@ caused the April–May 2026 incident:
 | Pinata 401 / upload failures in recent EA log | `ea.recent_pinata_errors` (FAIL / WARN) |
 | `JUSTIFIER_MODEL` unset, malformed, or points at Ollama without a running Ollama daemon | `ai.justifier_model` (FAIL) |
 | Container or service down | `svc.ai_node` / `svc.adapter` / `svc.chainlink` / `svc.postgres` |
+| Node would not come back after a host reboot | `svc.boot_start` (WARN; `arbiter-boot-service.sh enable`) |
 
 The current build runs **30 checks** across six sections: `cfg.*`, `svc.*`,
 `chain.*`, `txm.*`, `ea.*`, `ai.*`.

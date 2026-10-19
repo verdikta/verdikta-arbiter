@@ -19,6 +19,11 @@ ADAPTER_DIR="$INSTALL_DIR/external-adapter"
 
 echo -e "${BLUE}Starting Verdikta Arbiter from $INSTALL_DIR...${NC}"
 
+# stop-arbiter.sh leaves this marker so the watchdog knows the node is down on
+# purpose (upgrade, maintenance) and must not self-heal it. Starting clears it.
+# verdikta-arbiter.service (arbiter-boot-service.sh) runs this script at boot.
+rm -f "$INSTALL_DIR/.arbiter-stopped"
+
 # Function to check if a process is running on a port
 check_port() {
     if lsof -i:$1 >/dev/null 2>&1; then
@@ -144,23 +149,61 @@ else
     fi
 fi
 
+# Containers. After a host reboot Docker brings both back on its own when they
+# carry --restart unless-stopped (installs since the 2026-10-18 reboot wave;
+# arbiter-boot-service.sh sets it on older ones), possibly still starting when
+# this runs at boot: `docker start` on a running container is a no-op, and the
+# waits below are bounded.
+container_exists()  { docker inspect "$1" >/dev/null 2>&1; }
+container_running() { [ "$(docker inspect --format '{{.State.Running}}' "$1" 2>/dev/null)" = "true" ]; }
+
+# Start PostgreSQL (the Chainlink node exits without its database).
+echo -e "${BLUE}Starting PostgreSQL (cl-postgres)...${NC}"
+if ! container_exists cl-postgres; then
+    echo -e "${RED}cl-postgres container not found. Please run setup-docker.sh first.${NC}"
+else
+    if container_running cl-postgres; then
+        echo -e "${YELLOW}PostgreSQL container is already running.${NC}"
+    else
+        docker start cl-postgres >/dev/null
+    fi
+    pg_waited=0
+    until docker exec cl-postgres pg_isready -q >/dev/null 2>&1; do
+        if [ "$pg_waited" -ge 60 ]; then
+            echo -e "${RED}PostgreSQL is not accepting connections after ${pg_waited}s. Check 'docker logs cl-postgres'${NC}"
+            break
+        fi
+        sleep 2; pg_waited=$((pg_waited+2))
+    done
+    [ "$pg_waited" -lt 60 ] && echo -e "${GREEN}PostgreSQL is ready.${NC}"
+fi
+
 # Start Chainlink Node
 echo -e "${BLUE}Starting Chainlink Node...${NC}"
 if check_port 6688; then
     echo -e "${YELLOW}Chainlink Node is already running on port 6688.${NC}"
+elif ! container_exists chainlink; then
+    echo -e "${RED}Chainlink container not found. Please run setup-chainlink.sh first.${NC}"
 else
-    if docker ps -a | grep -q "chainlink"; then
-        echo -e "${BLUE}Starting Chainlink container...${NC}"
-        docker start chainlink
-        sleep 5
-        if check_port 6688; then
-            echo -e "${GREEN}Chainlink Node started successfully.${NC}"
-        else
-            echo -e "${RED}Failed to start Chainlink Node. Check the logs with 'docker logs chainlink'${NC}"
-        fi
+    if container_running chainlink; then
+        echo -e "${YELLOW}Chainlink container is running; waiting for it to listen on port 6688...${NC}"
     else
-        echo -e "${RED}Chainlink container not found. Please run setup-chainlink.sh first.${NC}"
+        echo -e "${BLUE}Starting Chainlink container...${NC}"
+        docker start chainlink >/dev/null
     fi
+    cl_waited=0
+    until check_port 6688; do
+        if ! container_running chainlink; then
+            echo -e "${RED}Chainlink container is not running (it exited, or docker start failed). Check the logs with 'docker logs chainlink'${NC}"
+            break
+        fi
+        if [ "$cl_waited" -ge "${CHAINLINK_START_TIMEOUT_SECS:-90}" ]; then
+            echo -e "${RED}Chainlink Node is not listening on port 6688 after ${cl_waited}s. Check the logs with 'docker logs chainlink'${NC}"
+            break
+        fi
+        sleep 3; cl_waited=$((cl_waited+3))
+    done
+    check_port 6688 && echo -e "${GREEN}Chainlink Node started successfully (listening after ${cl_waited}s).${NC}"
 fi
 
 # Print status

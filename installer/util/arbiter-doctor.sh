@@ -489,6 +489,26 @@ check_services() {
         emit CRIT svc.postgres "cl-postgres container missing" "Reinstall chainlink component"
     fi
 
+    # Comes back after a host reboot? (2026-10-18: six provider reboots, every
+    # arbiter down until started by hand.) arbiter-boot-service.sh status checks
+    # the containers' restart policy and the verdikta-arbiter.service unit.
+    if [ -x "$INSTALL_DIR/arbiter-boot-service.sh" ]; then
+        local boot_rc
+        bash "$INSTALL_DIR/arbiter-boot-service.sh" status --quiet >/dev/null 2>&1
+        boot_rc=$?
+        case "$boot_rc" in
+            0) emit PASS svc.boot_start "starts at boot (verdikta-arbiter.service + --restart unless-stopped)" "" ;;
+            2) emit INFO svc.boot_start "systemd is not managing this host; containers restart on their own" \
+                    "Run $INSTALL_DIR/start-arbiter.sh from your init system at boot" ;;
+            *) emit WARN svc.boot_start "the node will NOT come back after a host reboot" \
+                    "Run (as root): $INSTALL_DIR/arbiter-boot-service.sh enable" ;;
+        esac
+    fi
+    if [ -f "$INSTALL_DIR/.arbiter-stopped" ]; then
+        emit INFO svc.stopped_by_operator "stop-arbiter.sh ran at $(cat "$INSTALL_DIR/.arbiter-stopped" 2>/dev/null); the watchdog does not self-heal while this marker exists" \
+             "$INSTALL_DIR/start-arbiter.sh clears it"
+    fi
+
     # Disk space
     local free_gb
     free_gb=$(df -BG "$INSTALL_DIR" 2>/dev/null | awk 'NR==2 {sub(/G/,"",$4); print $4+0}')

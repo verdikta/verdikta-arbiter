@@ -220,20 +220,32 @@ Monitor these key metrics:
 
 ### Chainlink Health Watchdog (recommended)
 
-The install ships `chainlink-health-watchdog.sh` in the install root. It is
-purpose-built for the failure mode behind the July 2026 commit-stage outage:
-the Chainlink node's RPC pool drops to 0 live nodes ("No live RPC nodes
+The install ships `chainlink-health-watchdog.sh` in the install root. It was
+built for the failure mode behind the July 2026 commit-stage outage: the
+Chainlink node's RPC pool drops to 0 live nodes ("No live RPC nodes
 available"), transactions cannot be broadcast, and every service still looks
-"up" from the outside. Each pass it verifies the chainlink container is
-running, that every check on `http://localhost:6688/health` is `passing`, and
-that no recent "No live RPC nodes available" lines appear in the container log.
+"up" from the outside. Each pass it verifies that all four components are
+running (the `cl-postgres` and `chainlink` containers, the AI Node on :3000,
+the External Adapter on :8080), that every check on
+`http://localhost:6688/health` is `passing`, and that no recent "No live RPC
+nodes available" lines appear in the container log.
+
+The alert subject says which it is: `chainlink container NOT RUNNING` /
+`arbiter components NOT RUNNING: ...` when something is down (after a host
+reboot the body adds how long ago the host booted and whether
+`verdikta-arbiter.service` is enabled), `chainlink node CANNOT BROADCAST (0 live
+RPC / broadcaster down)` when the container runs but its RPC pool is dead, and
+`arbiter STOPPED by operator (stop-arbiter.sh)` while the `.arbiter-stopped`
+marker that `stop-arbiter.sh` leaves exists (an upgrade or maintenance window).
 
 ```bash
 # Install a cron entry that runs every 2 minutes
 ~/verdikta-arbiter-node/chainlink-health-watchdog.sh --install-cron 2
 
-# Optional stopgap: also restart the chainlink container when the 0-live
-# condition is detected (always alerts first; max one restart per 30 min)
+# Optional: also bring the node back. Components down -> start-arbiter.sh
+# (starts whatever is missing, containers included); 0-live RPC -> restart
+# the chainlink container. Always alerts first; one action per 30 min; never
+# while stop-arbiter.sh's marker exists or in the first 5 min after a boot.
 ~/verdikta-arbiter-node/chainlink-health-watchdog.sh --install-cron 2 --self-heal
 ```
 
@@ -299,26 +311,36 @@ copy-truncated (last 5,000 lines preserved).
 ~/verdikta-arbiter-node/rotate-logs.sh --dry-run
 ```
 
-### Restart on Failure
+### Start at boot
 
-Implement automatic restart for critical services:
+A hosting-provider reboot used to leave every component down until an operator
+ran `start-arbiter.sh` by hand (2026-10-18: six VMs rebooted, the main mainnet
+node was down for 15 hours and missed three requests). Since then the installer
+and the upgrade make a node come back on its own:
+
+- the `chainlink` and `cl-postgres` containers are created with
+  `--restart unless-stopped`, so Docker restarts them after a reboot or daemon
+  restart unless an operator stopped them;
+- a systemd unit, `verdikta-arbiter.service`, runs the install's
+  `start-arbiter.sh` after Docker and the network are up, as the install's
+  user. It is a oneshot unit with no `Restart=`: nothing supervises or restarts
+  the components behind your back, `stop-arbiter.sh` works as before, and the
+  node stays down until `start-arbiter.sh` runs again (by hand or at the next
+  boot).
+
+`arbiter-boot-service.sh` in the install root owns both pieces:
 
 ```bash
-# systemd service file example
-[Unit]
-Description=Verdikta Arbiter Node
-After=docker.service
-
-[Service]
-Type=oneshot
-ExecStart=/home/user/verdikta-arbiter-node/start-arbiter.sh
-ExecStop=/home/user/verdikta-arbiter-node/stop-arbiter.sh
-RemainAfterExit=yes
-Restart=on-failure
-
-[Install]
-WantedBy=multi-user.target
+~/verdikta-arbiter-node/arbiter-boot-service.sh status    # exit 0 = will come back after a reboot
+sudo ~/verdikta-arbiter-node/arbiter-boot-service.sh enable   # unit + restart policies (install/upgrade offer this)
+sudo ~/verdikta-arbiter-node/arbiter-boot-service.sh disable  # remove the unit, containers back to --restart no
 ```
+
+`disable` also turns the container policies off on purpose: with the unit
+gone, containers that restart on their own would leave a half-up node after a
+reboot (the Chainlink node taking requests, no adapter to answer them).
+`arbiter-status.sh` and `arbiter-doctor.sh` (`svc.boot_start`) report the
+state; `systemctl status verdikta-arbiter` shows the last boot's start log.
 
 ## Emergency Procedures
 
