@@ -2558,11 +2558,14 @@ fi
 # leaves the node down until an operator runs start-arbiter.sh. Offer to fix
 # both in place; runs after the log-rotation step above, which may recreate the
 # chainlink container. Needs sudo for the unit (passwordless when unattended).
+# `status --quiet` exits 1 on every install that still needs the fix, and the
+# script's ERR trap fires on any failing plain command even under `set +e`
+# (the trap does not need errexit), so the status is read with `|| rc=$?`:
+# a command on the left of `||` never triggers the trap. The first canary
+# upgrade died here with "Upgrade failed!" (#97).
 if [ -x "$TARGET_DIR/arbiter-boot-service.sh" ]; then
-    set +e
-    bash "$TARGET_DIR/arbiter-boot-service.sh" status --quiet
-    BOOT_STATUS_RC=$?
-    set -e
+    BOOT_STATUS_RC=0
+    bash "$TARGET_DIR/arbiter-boot-service.sh" status --quiet || BOOT_STATUS_RC=$?
     if [ "$BOOT_STATUS_RC" = "1" ]; then
         echo
         echo -e "${BLUE}This node does not come back on its own after a host reboot (the 2026-10-18${NC}"
@@ -2570,10 +2573,8 @@ if [ -x "$TARGET_DIR/arbiter-boot-service.sh" ]; then
         echo -e "${BLUE}on the chainlink and cl-postgres containers plus a systemd unit (verdikta-arbiter.service)${NC}"
         echo -e "${BLUE}that runs start-arbiter.sh at boot. stop-arbiter.sh keeps working as before.${NC}"
         if ask_yes_no "Make the arbiter start automatically at boot (needs sudo)?" "y" VA_INSTALL_BOOT_SERVICE; then
-            set +e
-            bash "$TARGET_DIR/arbiter-boot-service.sh" enable
-            BOOT_SERVICE_RC=$?
-            set -e
+            BOOT_SERVICE_RC=0
+            bash "$TARGET_DIR/arbiter-boot-service.sh" enable || BOOT_SERVICE_RC=$?
             case "$BOOT_SERVICE_RC" in
                 0) ;;
                 2) echo -e "${YELLOW}No systemd on this host: the containers will restart on their own, but you need${NC}"
