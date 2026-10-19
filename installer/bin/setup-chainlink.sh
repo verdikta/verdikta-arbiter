@@ -274,6 +274,9 @@ fi
 # P2-A: bound container log growth (json-file, 100 MB x 5). Without this the
 # json log grows unbounded (1.8 GB observed in the July 2026 incident) and
 # makes `docker logs`-based diagnostics unusably slow.
+# --restart unless-stopped: survive host reboots / daemon restarts unless an
+# operator stopped the container (stop-arbiter.sh); the systemd unit installed
+# by arbiter-boot-service.sh starts the rest of the node at boot.
 echo -e "${BLUE}Creating and starting Chainlink container...${NC}"
 docker run --platform linux/amd64 \
     --name chainlink \
@@ -281,6 +284,7 @@ docker run --platform linux/amd64 \
     -it \
     -d \
     -p 6688:6688 \
+    --restart unless-stopped \
     --log-driver json-file \
     --log-opt max-size=100m \
     --log-opt max-file=5 \

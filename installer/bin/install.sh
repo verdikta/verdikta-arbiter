@@ -594,6 +594,11 @@ if [ -f "$UTIL_DIR/rotate-logs.sh" ]; then
     cp "$UTIL_DIR/rotate-logs.sh" "$INSTALL_DIR/rotate-logs.sh"
     chmod +x "$INSTALL_DIR/rotate-logs.sh"
 fi
+# Start at boot (systemd unit + container restart policies; 2026-10-18 reboot wave).
+if [ -f "$UTIL_DIR/arbiter-boot-service.sh" ]; then
+    cp "$UTIL_DIR/arbiter-boot-service.sh" "$INSTALL_DIR/arbiter-boot-service.sh"
+    chmod +x "$INSTALL_DIR/arbiter-boot-service.sh"
+fi
 
 # Make scripts executable in the correct destination directory
 chmod +x "$INSTALL_DIR/start-arbiter.sh"
@@ -813,6 +818,35 @@ echo -e "  - To recover funds from keys: $INSTALL_DIR/recover-chainlink-funds.sh
 echo -e "  - To update RPC endpoints: $INSTALL_DIR/update-rpc-endpoints.sh"
 echo -e "  - Chainlink health watchdog: $INSTALL_DIR/chainlink-health-watchdog.sh"
 echo -e "  - Application log rotation: $INSTALL_DIR/rotate-logs.sh"
+echo -e "  - Start at boot (on/off):   $INSTALL_DIR/arbiter-boot-service.sh"
+
+# Start at boot (2026-10-18 Contabo reboot wave: six VMs rebooted, every arbiter
+# stayed down until an operator ran start-arbiter.sh by hand). The containers
+# get --restart unless-stopped at creation; the systemd unit runs
+# start-arbiter.sh for the AI Node and External Adapter after docker is up.
+echo
+echo -e "${BLUE}Start at boot:${NC}"
+echo -e "  A hosting-provider reboot otherwise leaves the node down until someone runs"
+echo -e "  start-arbiter.sh. The installer can enable a systemd unit (verdikta-arbiter.service,"
+echo -e "  needs sudo) that starts the arbiter after Docker and the network are up."
+echo -e "  stop-arbiter.sh keeps working; turn it off with: $INSTALL_DIR/arbiter-boot-service.sh disable"
+if [ -x "$INSTALL_DIR/arbiter-boot-service.sh" ]; then
+    if ask_yes_no "Start the arbiter automatically at boot (systemd unit verdikta-arbiter.service)?" "" VA_INSTALL_BOOT_SERVICE y; then
+        set +e
+        bash "$INSTALL_DIR/arbiter-boot-service.sh" enable
+        BOOT_SERVICE_RC=$?
+        set -e
+        case "$BOOT_SERVICE_RC" in
+            0) ;;
+            2) echo -e "${YELLOW}No systemd on this host: the containers will restart on their own, but you need${NC}"
+               echo -e "${YELLOW}your init system to run $INSTALL_DIR/start-arbiter.sh at boot.${NC}" ;;
+            *) echo -e "${YELLOW}Warning: could not enable start-at-boot (exit $BOOT_SERVICE_RC). Run later, as root:${NC}"
+               echo -e "${YELLOW}  $INSTALL_DIR/arbiter-boot-service.sh enable${NC}" ;;
+        esac
+    else
+        echo -e "${BLUE}Skipped. Enable later with: $INSTALL_DIR/arbiter-boot-service.sh enable${NC}"
+    fi
+fi
 
 # Offer cron-based monitoring + log rotation (P1-B / P2-A, July 2026 incident).
 # The watchdog pages the operator within minutes when the Chainlink node's RPC
@@ -820,9 +854,10 @@ echo -e "  - Application log rotation: $INSTALL_DIR/rotate-logs.sh"
 # outages); the rotation job bounds ai-node/ and external-adapter/ logs.
 echo
 echo -e "${BLUE}Cron-based monitoring and log rotation:${NC}"
-echo -e "  - watchdog: every 2 min, checks the Chainlink container, health endpoint,"
-echo -e "    and recent 'No live RPC nodes available' log lines; alerts via syslog"
-echo -e "    (plus WATCHDOG_ALERT_WEBHOOK / WATCHDOG_ALERT_COMMAND if configured)"
+echo -e "  - watchdog: every 2 min, checks that all four components are running (containers,"
+echo -e "    AI Node, External Adapter), the Chainlink health endpoint, and recent 'No live"
+echo -e "    RPC nodes available' log lines; alerts via syslog (plus WATCHDOG_ALERT_WEBHOOK /"
+echo -e "    WATCHDOG_ALERT_COMMAND if configured); --self-heal can start what is down"
 echo -e "  - log rotation: daily, compresses/prunes ai-node and external-adapter logs"
 if ask_yes_no "Install cron entries for the health watchdog and log rotation?" "" VA_INSTALL_CRON y; then
     bash "$INSTALL_DIR/chainlink-health-watchdog.sh" --install-cron 2 || \

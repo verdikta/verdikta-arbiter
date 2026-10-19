@@ -111,6 +111,14 @@ fi
 IMAGE=$(docker inspect --format '{{.Config.Image}}' chainlink)
 CHAINLINK_MOUNT=$(docker inspect --format '{{range .Mounts}}{{if eq .Destination "/chainlink"}}{{.Source}}{{end}}{{end}}' chainlink)
 WAS_RUNNING=$(docker inspect --format '{{.State.Running}}' chainlink)
+# Restart policy: keep what the container has, but never downgrade a node that
+# already survives reboots to the Docker default "no" (installs since the
+# 2026-10-18 reboot wave use unless-stopped; see arbiter-boot-service.sh).
+RESTART_POLICY=$(docker inspect --format '{{.HostConfig.RestartPolicy.Name}}' chainlink 2>/dev/null)
+case "$RESTART_POLICY" in
+    always|unless-stopped|on-failure) ;;
+    *) RESTART_POLICY="unless-stopped" ;;
+esac
 
 if [ -z "$IMAGE" ] || [ -z "$CHAINLINK_MOUNT" ]; then
     echo -e "${RED}Could not determine image or /chainlink mount of the existing container. Aborting.${NC}"
@@ -135,6 +143,7 @@ docker create --platform linux/amd64 \
     -v "$CHAINLINK_MOUNT:/chainlink" \
     -it \
     -p 6688:6688 \
+    --restart "$RESTART_POLICY" \
     --log-driver json-file \
     --log-opt max-size=$MAX_SIZE \
     --log-opt max-file=$MAX_FILE \
@@ -149,7 +158,7 @@ docker create --platform linux/amd64 \
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Failed to create the new container. Recover manually with:${NC}"
-    echo "  docker run --platform linux/amd64 --name chainlink -v \"$CHAINLINK_MOUNT:/chainlink\" -it -d -p 6688:6688 --add-host=host.docker.internal:host-gateway --network verdikta-network $IMAGE node -config /chainlink/config.toml -secrets /chainlink/secrets.toml start -a /chainlink/.api"
+    echo "  docker run --platform linux/amd64 --name chainlink -v \"$CHAINLINK_MOUNT:/chainlink\" -it -d -p 6688:6688 --restart $RESTART_POLICY --add-host=host.docker.internal:host-gateway --network verdikta-network $IMAGE node -config /chainlink/config.toml -secrets /chainlink/secrets.toml start -a /chainlink/.api"
     exit 1
 fi
 

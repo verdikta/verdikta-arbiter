@@ -1683,7 +1683,8 @@ for _util in \
     update-justifier-model.sh \
     chainlink-health-watchdog.sh \
     rotate-logs.sh \
-    apply-docker-log-rotation.sh; do
+    apply-docker-log-rotation.sh \
+    arbiter-boot-service.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
         chmod +x "$TARGET_DIR/$_util"
@@ -2548,6 +2549,40 @@ if [ -f "$TARGET_DIR/chainlink-health-watchdog.sh" ]; then
             echo -e "Alerts card within ~2 minutes of the next watchdog cron run.${NC}"
         else
             echo -e "${BLUE}Skipped. Enable later by setting WATCHDOG_ALERT_WEBHOOK in $TARGET_DIR/installer/.env${NC}"
+        fi
+    fi
+fi
+
+# Start at boot (2026-10-18 Contabo reboot wave): existing installs have
+# containers with restart policy "no" and no systemd unit, so a provider reboot
+# leaves the node down until an operator runs start-arbiter.sh. Offer to fix
+# both in place; runs after the log-rotation step above, which may recreate the
+# chainlink container. Needs sudo for the unit (passwordless when unattended).
+if [ -x "$TARGET_DIR/arbiter-boot-service.sh" ]; then
+    set +e
+    bash "$TARGET_DIR/arbiter-boot-service.sh" status --quiet
+    BOOT_STATUS_RC=$?
+    set -e
+    if [ "$BOOT_STATUS_RC" = "1" ]; then
+        echo
+        echo -e "${BLUE}This node does not come back on its own after a host reboot (the 2026-10-18${NC}"
+        echo -e "${BLUE}provider reboots left arbiters down for hours). The fix: --restart unless-stopped${NC}"
+        echo -e "${BLUE}on the chainlink and cl-postgres containers plus a systemd unit (verdikta-arbiter.service)${NC}"
+        echo -e "${BLUE}that runs start-arbiter.sh at boot. stop-arbiter.sh keeps working as before.${NC}"
+        if ask_yes_no "Make the arbiter start automatically at boot (needs sudo)?" "y" VA_INSTALL_BOOT_SERVICE; then
+            set +e
+            bash "$TARGET_DIR/arbiter-boot-service.sh" enable
+            BOOT_SERVICE_RC=$?
+            set -e
+            case "$BOOT_SERVICE_RC" in
+                0) ;;
+                2) echo -e "${YELLOW}No systemd on this host: the containers will restart on their own, but you need${NC}"
+                   echo -e "${YELLOW}your init system to run $TARGET_DIR/start-arbiter.sh at boot.${NC}" ;;
+                *) echo -e "${YELLOW}Warning: could not enable start-at-boot (exit $BOOT_SERVICE_RC). Run later, as root:${NC}"
+                   echo -e "${YELLOW}  $TARGET_DIR/arbiter-boot-service.sh enable${NC}" ;;
+            esac
+        else
+            echo -e "${BLUE}Skipped. Enable later with: $TARGET_DIR/arbiter-boot-service.sh enable${NC}"
         fi
     fi
 fi

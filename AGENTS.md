@@ -268,8 +268,25 @@ does not — it is read at runtime). A failed build falls back to `next dev`;
 `start-arbiter.sh`, `stop-arbiter.sh`, `arbiter-status.sh`, `arbiter-doctor.sh`
 (health check + `--fix`), `register-oracle.sh` / `unregister-oracle.sh`,
 `fund-chainlink-keys.sh`, `update-pinata-key.sh`, `update-justifier-model.sh`,
-`chainlink-health-watchdog.sh` (cron alerting on 0-live-RPC / failing health
-checks, optional `--self-heal`), `rotate-logs.sh` (app-log rotation).
+`chainlink-health-watchdog.sh` (cron alerting: components not running /
+0-live-RPC / failing health checks; `--self-heal` starts what is down through
+`start-arbiter.sh`), `rotate-logs.sh` (app-log rotation),
+`arbiter-boot-service.sh` (start at boot, below).
+
+**Boot behaviour.** A node comes back on its own after a host reboot (the
+2026-10-18 provider reboots left every arbiter down for hours): `setup-docker.sh`
+and `setup-chainlink.sh` create `cl-postgres` and `chainlink` with
+`--restart unless-stopped`, and `arbiter-boot-service.sh enable` (run by
+`install.sh` and offered by `upgrade-arbiter.sh`, answer `VA_INSTALL_BOOT_SERVICE`)
+installs the systemd unit `verdikta-arbiter.service`, a oneshot unit that runs
+the install's `start-arbiter.sh` after `docker.service` and
+`network-online.target`. It has no `Restart=`: `stop-arbiter.sh` stops the node
+and leaves `.arbiter-stopped`, which the watchdog reports as "STOPPED by
+operator" and never self-heals; `start-arbiter.sh` (by hand or at boot) clears
+it. Disable with `arbiter-boot-service.sh disable` (also puts the containers
+back to `--restart no`, so a disabled node is fully down after a reboot rather
+than half up). `arbiter-status.sh` and the doctor's `svc.boot_start` show the
+state. Unit text: `arbiter-boot-service.sh print-unit`.
 
 ---
 

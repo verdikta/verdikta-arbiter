@@ -50,7 +50,7 @@ echo "Validating unattended answers ($MODE)..." >&2
 # ---- keys common to install and upgrade -----------------------------------
 check_yes_no_keys VA_CONTINUE_ON_RPC_FAILURE VA_PULL_OLLAMA_MODELS VA_INSTALL_CRON \
     VA_INSTALL_LOG_ROTATION_CRON VA_STATUS_PAGE_REPORTING VA_FUND_KEYS \
-    VA_START_SERVICES VA_RESTART_SERVICES
+    VA_START_SERVICES VA_RESTART_SERVICES VA_INSTALL_BOOT_SERVICE
 
 if [ -n "${VA_FUND_AMOUNT:-}" ]; then
     if ! [[ "$VA_FUND_AMOUNT" =~ ^[0-9]+\.?[0-9]*$ ]] || ! awk "BEGIN{exit !($VA_FUND_AMOUNT > 0)}"; then

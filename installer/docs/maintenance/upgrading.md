@@ -263,6 +263,27 @@ It waits for startup and performs basic port checks:
 - External Adapter: `8080`
 - Chainlink UI/API: `6688`
 
+## Start at boot
+
+Installs made before October 2026 do not survive a host reboot: the
+`chainlink` and `cl-postgres` containers have Docker's default restart policy
+(`no`) and the AI Node and External Adapter are plain background processes, so
+a provider reboot leaves the node down until someone runs `start-arbiter.sh`
+(the 2026-10-18 Contabo reboots cost one mainnet node 15 hours). The upgrade
+checks this and offers to fix it in place (`VA_INSTALL_BOOT_SERVICE`, default
+`y`; needs sudo, passwordless when unattended): `docker update --restart
+unless-stopped` on both containers plus the systemd unit
+`verdikta-arbiter.service`, which runs the install's `start-arbiter.sh` after
+Docker and the network are up. Nothing else changes: `stop-arbiter.sh` still
+stops the node and nothing restarts it until the next `start-arbiter.sh` or
+boot. Turn it off with `<install-dir>/arbiter-boot-service.sh disable`, check
+it with `arbiter-boot-service.sh status` or the `svc.boot_start` line of
+`arbiter-doctor.sh`. See [Service Management](../management/index.md#start-at-boot).
+
+While an upgrade has the node stopped, the watchdog reports `arbiter STOPPED
+by operator (stop-arbiter.sh)` and does not self-heal; `start-arbiter.sh`
+clears that state.
+
 ## Rollback and failure recovery
 
 If upgrade fails after the process starts, the script prints guidance and references any created backup directory.

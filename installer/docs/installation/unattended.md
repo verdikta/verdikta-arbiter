@@ -76,6 +76,7 @@ The keys that matter most:
 | `VA_ARBITER_COUNT` | Jobs to create (1-10) | `1` |
 | `VA_REGISTER_ORACLE` / `VA_AGGREGATOR_ADDRESS` / `VA_CLASS_IDS` | Dispatcher registration | `n` / — / `128` |
 | `VA_INSTALL_CRON`, `VA_STATUS_PAGE_REPORTING` | Watchdog cron + status-page reporting | `y` / `y` |
+| `VA_INSTALL_BOOT_SERVICE` | Start at boot (systemd unit + container restart policies; needs passwordless sudo) | `y` |
 | `VA_FUND_KEYS` / `VA_FUND_AMOUNT` | Fund the Chainlink keys at the end | `n` / recommended |
 | `VA_START_SERVICES` | Start the arbiter when done | `y` |
 | `VA_UPGRADE_BACKUP` | (upgrade) copy the install aside first | `y` |

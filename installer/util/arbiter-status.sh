@@ -307,6 +307,19 @@ elif [ $RUNNING -eq 0 ]; then
 else
     echo -e "  ${YELLOW}Partially operational${NC} ($RUNNING/$TOTAL components running)"
 fi
+if [ -f "$INSTALL_DIR/.arbiter-stopped" ]; then
+    echo -e "  ${YELLOW}Stopped by operator${NC} (stop-arbiter.sh at $(cat "$INSTALL_DIR/.arbiter-stopped" 2>/dev/null); the watchdog will not self-heal until start-arbiter.sh runs)"
+fi
+
+# Will it come back after a host reboot? (systemd unit + container restart policies)
+if [ -x "$INSTALL_DIR/arbiter-boot-service.sh" ]; then
+    bash "$INSTALL_DIR/arbiter-boot-service.sh" status --quiet >/dev/null 2>&1
+    case $? in
+        0) echo -e "  Start at boot: ${GREEN}enabled${NC} (verdikta-arbiter.service + container restart policies)" ;;
+        2) echo -e "  Start at boot: ${YELLOW}no systemd on this host${NC} - run start-arbiter.sh from your init system" ;;
+        *) echo -e "  Start at boot: ${RED}NOT configured${NC} - the node stays down after a reboot; run: $INSTALL_DIR/arbiter-boot-service.sh enable" ;;
+    esac
+fi
 
 # Resource Usage
 echo -e "\n${BLUE}Resource Usage:${NC}"

@@ -19,6 +19,14 @@ ADAPTER_DIR="$INSTALL_DIR/external-adapter"
 
 echo -e "${BLUE}Stopping Verdikta Arbiter services located in $INSTALL_DIR...${NC}"
 
+# Record that an operator stopped the node on purpose. The watchdog reports
+# "STOPPED by operator" instead of "NOT RUNNING" and does not self-heal while
+# this marker exists; start-arbiter.sh removes it. Nothing restarts the node
+# behind your back: the containers' --restart unless-stopped honours `docker
+# stop`, and verdikta-arbiter.service only runs start-arbiter.sh at boot.
+date -u +%Y-%m-%dT%H:%M:%SZ > "$INSTALL_DIR/.arbiter-stopped" 2>/dev/null \
+    || echo -e "${YELLOW}Could not write $INSTALL_DIR/.arbiter-stopped (the watchdog may self-heal this stop).${NC}"
+
 # Function to check if a process is running on a port
 check_port() {
     if lsof -i:$1 >/dev/null 2>&1; then
@@ -110,4 +118,5 @@ echo -e "  External Adapter: $(check_port 8080 && echo -e "${RED}Still Running${
 echo -e "  Chainlink Node:   $(check_port 6688 && echo -e "${RED}Still Running${NC}" || echo -e "${GREEN}Stopped${NC}")"
 
 # echo -e "${GREEN}Verdikta Validator shutdown completed.${NC}"
-echo -e "${GREEN}Verdikta Arbiter shutdown completed.${NC}" 
+echo -e "${GREEN}Verdikta Arbiter shutdown completed.${NC}"
+echo -e "The node stays down until $INSTALL_DIR/start-arbiter.sh runs (by hand, or at the next boot if verdikta-arbiter.service is enabled)."
