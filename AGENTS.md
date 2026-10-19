@@ -363,6 +363,24 @@ Ollama runs locally and is unaffected by gateway settings.
 - **Two networks**: `base_sepolia` (testnet) and `base_mainnet`. Network-specific
   wrapped-VDKA and RPC config live in `installer/.env`. See `docs/deployments.md`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.
+- **`upgrade-arbiter.sh` also has `trap cleanup_on_error ERR`, and the ERR trap
+  fires on any failing plain command whether or not errexit is on.** So
+  `set +e; cmd; rc=$?; set -e` does not protect a command whose non-zero exit
+  is the information wanted: the trap prints "Upgrade failed!" and exits (that
+  killed the first canary upgrade of #98 at the start-at-boot block, #97).
+  Read exit codes as `rc=0; cmd || rc=$?` — a command on the left of `||`
+  never triggers the trap — and never add a `set +e` guard to that script
+  (`installer/tests/upgrade-reconfigure-guards.test.sh` pins zero of them;
+  `upgrade-boot-service-trap.test.sh` / `upgrade-reconfigure-trap.test.sh`
+  run the real blocks under the real trap).
+- **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
+  "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
+  "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a
+  process whose comm has an unbalanced "(" — `lsof -p <pid>` lists nothing
+  while `ss` and `/api/health` see it. Scripts that need to know whether a
+  component is up ask the service (`/api/health`, `/version`) or `ss` first;
+  the doctor and the watchdog already do, `start-arbiter.sh` does since its
+  status line said "AI Node: Not Running" right after "AI Node is healthy".
 - The Solidity version is pinned to **0.8.19** to match imported Chainlink
   contracts (see `arbiter-operator/README.md`); don't bump it casually.
 - Repo hygiene: large stray logs (`docker.log`, `grepevm8453.log`) and
