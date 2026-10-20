@@ -108,9 +108,15 @@ wait_for_adapter() {
     return 1
 }
 
-# Start AI Node
+# Start AI Node. Ask the service before the port: lsof (check_port) is blind
+# to the AI Node on some hosts. Next.js names its process "next-server (v14.2.5)",
+# the kernel keeps 15 characters of that as comm — "next-server (v1", with the
+# "(" left unbalanced — and lsof 4.93.2 (Ubuntu 20.04, the canary host) then
+# drops the whole process: `lsof -p <pid>` lists nothing, `lsof -i:3000` finds
+# nothing, while ss and /api/health see it. A blind check here would kill and
+# restart a healthy node (ai-node/start.sh terminates every next-server it finds).
 echo -e "${BLUE}Starting AI Node...${NC}"
-if check_port 3000; then
+if ai_node_healthy || check_port 3000; then
     echo -e "${YELLOW}AI Node is already running on port 3000.${NC}"
     # A listener is not readiness: it may be mid warm-up from an earlier start.
     wait_for_ai_node || true
@@ -131,7 +137,7 @@ fi
 
 # Start External Adapter
 echo -e "${BLUE}Starting External Adapter...${NC}"
-if check_port 8080; then
+if adapter_up; then
     echo -e "${YELLOW}External Adapter is already running on port 8080.${NC}"
 else
     if [ -f "$ADAPTER_DIR/start.sh" ]; then
@@ -206,11 +212,22 @@ else
     check_port 6688 && echo -e "${GREEN}Chainlink Node started successfully (listening after ${cl_waited}s).${NC}"
 fi
 
-# Print status
+# Print status, with the same checks the waits above used. The AI Node line
+# used to ask lsof alone and printed "Not Running" seconds after this script
+# had logged "AI Node is healthy (answered /api/health after 6s)" (canary host,
+# 2026-10-19, journalctl -u verdikta-arbiter and the upgrade log): lsof does
+# not see the next-server process there (see "Start AI Node" above).
+ai_node_status() {
+    if ai_node_healthy; then echo -e "${GREEN}Running${NC}"
+    elif check_port 3000; then echo -e "${YELLOW}Starting (listening on :3000, /api/health not ok yet)${NC}"
+    else echo -e "${RED}Not Running${NC}"; fi
+}
+adapter_status()  { if adapter_up; then echo -e "${GREEN}Running${NC}"; else echo -e "${RED}Not Running${NC}"; fi; }
+chainlink_status() { if check_port 6688; then echo -e "${GREEN}Running${NC}"; else echo -e "${RED}Not Running${NC}"; fi; }
 echo -e "${BLUE}Verdikta Arbiter Status:${NC}"
-echo -e "  AI Node:          $(check_port 3000 && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Not Running${NC}")"
-echo -e "  External Adapter: $(check_port 8080 && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Not Running${NC}")"
-echo -e "  Chainlink Node:   $(check_port 6688 && echo -e "${GREEN}Running${NC}" || echo -e "${RED}Not Running${NC}")"
+echo -e "  AI Node:          $(ai_node_status)"
+echo -e "  External Adapter: $(adapter_status)"
+echo -e "  Chainlink Node:   $(chainlink_status)"
 
 echo -e "${GREEN}Verdikta Arbiter startup completed.${NC}"
 echo -e "Access your services at:"

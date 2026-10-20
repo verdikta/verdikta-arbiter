@@ -2139,17 +2139,22 @@ else
                 echo -e "${BLUE}Deregistering the current jobs from $RECONF_AGGREGATOR before reconfiguring (stake is refunded)...${NC}"
                 if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
                     cd "$TARGET_DIR"
-                    # The script runs under `set -e`: a failing dispatcher call must
-                    # reach the check below, not kill the upgrade mid-reconfigure
-                    # (#38 — it did, with the node's services left stopped).
-                    set +e
+                    # The script runs under `set -e` with an ERR trap: a failing
+                    # dispatcher call must reach the check below, not kill the
+                    # upgrade mid-reconfigure (#38 — it did, with the node's
+                    # services left stopped). `set +e` around the call is not
+                    # enough: the ERR trap fires on any failing plain command even
+                    # with errexit off (#97), so the exit code is read with
+                    # `|| dereg_rc=$?` — a command on the left of `||` never
+                    # triggers the trap. Same for configure-node.sh and
+                    # register-oracle.sh below.
+                    dereg_rc=0
                     if unattended_mode; then
-                        VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended; dereg_rc=$?
+                        VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended || dereg_rc=$?
                     else
-                        run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")"; dereg_rc=$?
+                        run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")" || dereg_rc=$?
                     fi
                     dereg_out="$CAPTURED_OUT"
-                    set -e
                     RECONF_DEREGISTERED=$(printf '%s\n' "$dereg_out" | grep -c "Deregistered" || true)
                     if [ "$dereg_rc" -ne 0 ]; then
                         echo -e "${RED}Deregistration failed. Reconfiguring now would strand the stake on the old job ids — job reconfiguration cancelled.${NC}"
@@ -2166,10 +2171,8 @@ else
             # Run the multi-arbiter configuration
             if [ $RECONF_ABORT -eq 0 ]; then
                 cd "$SCRIPT_DIR"
-                set +e
-                bash "$SCRIPT_DIR/configure-node.sh"
-                RECONF_RC=$?
-                set -e
+                RECONF_RC=0
+                bash "$SCRIPT_DIR/configure-node.sh" || RECONF_RC=$?
                 if [ $RECONF_RC -ne 0 ]; then
                     RECONF_FAILED=1
                     RECONF_SUMMARY="the $RECONF_TOTAL old job(s) were deregistered (stake refunded) but creating the new jobs and keys failed (configure-node.sh exit $RECONF_RC); the node keeps its previous job specs and is unregistered — fix the cause and run the same count change again"
@@ -2250,19 +2253,17 @@ else
                     echo -e "${BLUE}Registering the new job ids with $RECONF_AGGREGATOR (classes [${VA_CLASS_IDS:-$RECONF_CLASSES}])...${NC}"
                     if [ -f "$TARGET_DIR/register-oracle.sh" ]; then
                         cd "$TARGET_DIR"
-                        set +e
+                        reg_rc=0
                         if unattended_mode; then
                             VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" \
                             VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="${VA_CLASS_IDS:-$RECONF_CLASSES}" \
-                            bash register-oracle.sh --unattended
+                            bash register-oracle.sh --unattended || reg_rc=$?
                         else
                             echo -e "y\n$RECONF_AGGREGATOR\ny\n$RECONF_CLASSES\ny" | \
                                 VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" \
                                 VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="$RECONF_CLASSES" \
-                                bash register-oracle.sh
+                                bash register-oracle.sh || reg_rc=$?
                         fi
-                        reg_rc=$?
-                        set -e
                         if [ "$reg_rc" -eq 0 ]; then
                             echo -e "${GREEN}✓ New job ids registered with the dispatcher${NC}"
                         else
