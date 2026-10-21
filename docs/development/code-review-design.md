@@ -84,7 +84,8 @@ Eight decisions carry the design:
 - Private repositories; monorepos whose suite cannot finish inside the limits;
   browser/E2E suites; GPU work.
 - Hidden tests. Acceptance tests are public in the bounty archive (§15).
-- Reviewers with a shell during grading (§14).
+- Reviewers with a shell during grading, in v1 (§14; a bounded form — a local
+  read/grep tool, then a hosted shell for `code-premium` — arrives in Phase 3).
 - Languages other than Node and Python in Phase 1. Solidity (Foundry) and Go follow.
 
 ## 3. Constraints from the current system
@@ -826,6 +827,14 @@ Code mode takes its request deadline from the EA (§9) instead of the fixed
 than racing them, and runs frontier jurors at effort `high` (coding responds
 strongly to effort).
 
+In v1 the jurors see only the context pack. Phase 3 adds **juror exploration**
+(§12, §14): a local `read_file` / `grep` tool served by the AI Node from the
+runner's post-patch checkout, so a juror can pull in a caller or a config file
+the pack dropped; and, for `code-premium`, an optional provider-hosted shell
+where the juror runs its own probe tests. Whatever a juror finds this way is its
+own observation — it goes into that juror's text and score, never into the
+Verification Report, and it may differ between arbiters just as juror text does.
+
 ### 8.4 Three code-review classes: envelopes and templates
 
 A ClassID is the pool of models an operator must serve; the **creator** picks the
@@ -1124,7 +1133,7 @@ work inside the budget on ordinary hosts.
 | 0. Decisions | Timeout change approved and hunter-pays confirmed (§15); the three ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (deferred: a single Verdikta key is the placeholder); OpenRouter `systemone` access verified from a canary; `code_review.json`, `attestation.json` and report schemas in `@verdikta/common` | Schemas merged **and** the adversarial fixtures of §13 written as failing tests: forged, missing or duplicate test reports, runtime test/reporter tampering, an unattested image and an over-limit direct request cannot yield trusted passing evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another |
 | 1. Execution evidence | `code-runner` (local mode, own `dockerd` and disk); `node22` and `python312` images; builder Action with validation and attestation; PR-to-patch submissions with the PR bot comment and label; **pre-flight check (tiers 0–1), payable `prepareSubmission` with the credited fee, and the local CLI** (§6.4); gates and integrity checks; deadline propagation; report and context pack fed to the existing jury; `code-standard` and `code-micro` on class 5555 canaries on testnet | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end run with slow jurors, justifier delay, registry failure and cancellation; prepay and refund cases pass; p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
 | 2. Cheap and sharp | `systemone` client, Jev annotation and rubric juror, claim check on the justification; Jev readiness in the pre-flight (tier 1b), rubric check at creation and submission pre-check in the bounty program (§6.4); Semgrep and secret scan; Hurl acceptance and API checks; tests-only replay; cost logging | ≤ $0.30 per arbiter per evaluation on `code-standard` and ≤ $0.10 on `code-micro`; accuracy no worse than Phase 1; finding-recall against the Phase 1 unfiltered baseline unchanged, including injected dismissals; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures |
-| 3. Breadth | `bug` bounties with a Foundry image; dependency changes through a registry-only proxy; remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised | A canary gate per feature; mainnet rollout per `docs/release-runbook.md` §3b |
+| 3. Breadth | `bug` bounties with a Foundry image; dependency changes through a registry-only proxy; remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised; **juror exploration** — first a local read/grep tool in the AI Node over the runner's checkout (tier-A facts, no container cost, every class), then for `code-premium` an optional provider-hosted shell on a copy of the post-patch tree where the juror can grep callers beyond the context pack, read files and, when the repository's dependencies install inside a minute from an allowlisted registry, write and run its own probe tests (§14; ≈ +$0.5–2 per arbiter, priced into the premium fee) | A canary gate per feature; juror-exploration findings labelled as the juror's own observations, never as report facts; mainnet rollout per `docs/release-runbook.md` §3b |
 
 Jev comes in Phase 2 on purpose: execution evidence is what makes the grades
 accurate, Jev is what makes them cheap, and every operator in the class needs the
@@ -1177,8 +1186,50 @@ accurate, Jev is what makes them cheap, and every operator in the class needs th
 - **Clone and install at grading time.** 19–25 minutes under gVisor, needs the
   network, and registry drift breaks agreement between arbiters.
 - **Agentic reviewers with a shell in the sandbox.** Strongest on very large PRs,
-  but slow, expensive and different on every arbiter. A read-only browse of the
-  checked-out tree could come later.
+  but slow, expensive and different on every arbiter. Returns in a bounded form as
+  the Phase 3 juror-exploration item (§12): first a local read/grep tool over the
+  runner's checkout, then, for `code-premium`, a provider-hosted shell.
+- **Provider-hosted execution tools as the runner** (Anthropic code execution and
+  Managed Agents, OpenAI hosted shell / code interpreter; assessed 2026-10-21).
+  All three are a shell the *model* drives inside a provider-managed container,
+  billed as container time plus every token the model spends issuing commands
+  and reading output. Container time is cheap and comparable to native compute
+  — Anthropic: 1,550 free hours a month then $0.05/h, or $0.08 per session-hour
+  on Managed Agents; OpenAI: $0.03 (1 GB) to $0.48 (16 GB) per 20-minute session
+  — so a scripted single-turn run costs ≈ $0.01–0.22 against ≈ $0.01–0.03
+  native, and an agentic run (10–20 turns, context re-sent each turn) ≈ $0.3–2.5.
+  The cost gap is the mandatory model tokens, and native is the only path where
+  a gate failure costs nothing. Three structural problems rule them out as the
+  source of gate facts:
+  1. **No attested image.** Anthropic's code-execution container is Python 3.11
+     with no network and no Node, so it cannot build a Node project at all;
+     OpenAI's shell and Managed Agents can `npm ci` from an allowlisted registry,
+     which is the install-at-grading-time path rejected above, on a toolchain
+     the providers say may change and do not version. The one exception is
+     Managed Agents, whose Ubuntu 24.04 sandbox lists `docker` ("limited
+     availability") and allows `ghcr.io`, so a session could in principle
+     `docker run` the attested image.
+  2. **A model in the chain of custody.** Even with a fixed script, the model
+     runs it and relays the result; the submission's stdout enters the model's
+     context and can carry instructions aimed at it, and nothing inside the
+     sandbox can sign the report because the model and the tested code can read
+     any secret placed there. For gates that move funds this is weaker than a
+     runner no model touches.
+  3. **Determinism and time limits.** Two arbiters' models may run different
+     commands or truncate differently; Anthropic caps each invocation (90 s per
+     Python cell under programmatic tool calling), so a 3–6 minute suite must be
+     split and shepherded.
+  What they do offer is isolation at the provider rather than on the
+  key-holding host — the benefit of `remote` mode without a second VPS. So: kept
+  out of the gate path; adopted for **juror exploration** in `code-premium`
+  (Phase 3, §12), where a juror's commands are allowed to differ per arbiter
+  because juror text already varies and is clustered; a Managed-Agents
+  **hosted-runner mode** for operators without a sandbox host is revisited when
+  docker in cloud sandboxes leaves "limited availability", with the
+  model-in-custody caveat written down; and a pure-Python micro path on
+  Anthropic's container is possible but not worth a second execution path to
+  keep in conformance. Not usable for the pre-flight (it must predict the gates
+  on the attested image) or the environment builder (needs `docker build`).
 - **Firecracker or Kata microVMs.** A stronger boundary, but the current hosts
   have no KVM.
 - **Hosted sandboxes (E2B, Modal, Daytona).** A vendor account and bill for every
@@ -1309,6 +1360,15 @@ tests (§7.3).
 - Review of PR #96 (2026-10-19): the forged-JUnit, bare-mirror `git apply`
   and all-mandatory-rubric counterexamples were reproduced locally before being
   folded in; gVisor's security model (gvisor.dev/docs/architecture_guide/security).
+- Hosted execution tools (2026-10-21): platform.claude.com/docs/en/agents-and-tools/tool-use/code-execution-tool
+  (1 CPU / 5 GiB / no network / Python 3.11; 1,550 free hours then $0.05/h),
+  …/about-claude/pricing (Managed Agents $0.08 per session-hour),
+  …/managed-agents/environments and …/cloud-sandboxes-reference (Ubuntu 24.04,
+  ≤ 8 GB, Node 20–22, `docker` limited, `ghcr.io` among package-manager hosts);
+  developers.openai.com/api/docs/guides/tools-shell (Debian 12, Node 22.16, no
+  outbound network by default, `network_policy` allowlist),
+  …/guides/tools-code-interpreter, …/pricing ($0.03–$1.92 per 20-minute session
+  by memory tier).
 - Claude pricing: Anthropic's model table as of 2026-10-06.
 - Internal: `verdikta-agents/docs/agent_coding_sandbox_design.md` (D2, D3) and
   `docs/coding_sandbox_runbook.md` on `origin/main`;
