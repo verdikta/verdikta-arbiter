@@ -550,6 +550,68 @@ describe('POST /api/rank-and-justify', () => {
         { webAccess: false } // Non-reasoning justifier: no reasoning options, and never web access
       );
       expect(data.justification).toBe(mockJustifierResponse);
+      // The evaluation, then one repair call that also gave no scores: no further retries.
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
+      expect(data.model_results.find((r: any) => r.model === 'claude-3').status).toBe('parsing_error');
+    });
+
+    test('a prose reply is repaired by one call to the same model, and the juror stays on the panel', async () => {
+      // claude-sonnet-5 with web tools sometimes answers in the rubric's prose layout, with no JSON.
+      const proseReply = 'PHASE 1 - MANDATORY REQUIREMENTS:\n\n1. Claim matches wager terms: PASS - same wager ID.\n\nAll mandatory criteria PASS.\n\nFINAL SCORES: DONT_FUND=0, FUND=100 (expressed proportionally below)';
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockResolvedValue(JSON.stringify({ score: [200000, 800000], justification: 'OpenAI justification.' })),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockAnthropicProvider = {
+        generateResponse: jest.fn()
+          .mockResolvedValueOnce(proseReply)
+          .mockResolvedValueOnce('{"score": [0, 100]}'),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockJustifierProvider = { generateResponse: jest.fn().mockResolvedValue('Aggregated.') };
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          default: return mockJustifierProvider;
+        }
+      });
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Evaluate the claim.',
+          outcomes: ['DONT_FUND', 'FUND'],
+          iterations: 1,
+          models: [
+            { provider: 'OpenAI', model: 'gpt-4', weight: 0.5 },
+            { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5 },
+          ],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      // Both jurors count: (200000 + 0) / 2 and (800000 + 1000000) / 2.
+      expect(data.scores).toEqual([
+        { outcome: 'DONT_FUND', score: 100000 },
+        { outcome: 'FUND', score: 900000 },
+      ]);
+      expect(data.model_results.find((r: any) => r.model === 'claude-sonnet-5').status).toBe('success');
+
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
+      const [repairPrompt, repairModel, repairOptions] = mockAnthropicProvider.generateResponse.mock.calls[1];
+      expect(repairPrompt).toContain(proseReply);
+      expect(repairModel).toBe('claude-sonnet-5');
+      expect(repairOptions).toEqual({ webAccess: false });
+
+      // The prose reply is the juror's justification, not an LLM_ERROR.
+      const justifierPrompt = mockJustifierProvider.generateResponse.mock.calls[0][0];
+      expect(justifierPrompt).toContain(`From model claude-sonnet-5:\n${proseReply}`);
+      expect(justifierPrompt).not.toContain('LLM_ERROR');
     });
 
     test('should handle provider error during generation', async () => {
