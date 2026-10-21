@@ -266,9 +266,13 @@ if docker ps | grep -q "cl-postgres"; then
     fi
 
     # Get PostgreSQL port
-    PORT=$(docker port cl-postgres 5432/tcp | cut -d: -f2)
+    PORT=$(docker port cl-postgres 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')
     if [ ! -z "$PORT" ]; then
         echo -e "  Port:   $PORT"
+    else
+        # Fresh installs do not publish the database on the host: Chainlink reaches
+        # it as cl-postgres:5432 on verdikta-network (2026-10-21 port audit).
+        echo -e "  Port:   5432, inside the Docker network only (not published on the host)"
     fi
 else
     echo -e "  Status: ${RED}Not Running${NC}"

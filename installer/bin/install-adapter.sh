@@ -194,11 +194,13 @@ else
     echo "HOST=0.0.0.0" >> "$ADAPTER_DIR/.env"
 fi
 
-# Set AI_NODE_URL (default: http://localhost:3000)
+# Set AI_NODE_URL. 127.0.0.1, not localhost: the AI Node listens on loopback only
+# (ai-node/start.sh, .ai-node-loopback), and with a loopback-only listener the
+# answer must not depend on whether the resolver returns ::1 first.
 if grep -q "^AI_NODE_URL=" "$ADAPTER_DIR/.env"; then
-    sed -i.bak "s|^AI_NODE_URL=.*|AI_NODE_URL=http://localhost:3000|" "$ADAPTER_DIR/.env"
+    sed -i.bak "s|^AI_NODE_URL=.*|AI_NODE_URL=http://127.0.0.1:3000|" "$ADAPTER_DIR/.env"
 else
-    echo "AI_NODE_URL=http://localhost:3000" >> "$ADAPTER_DIR/.env"
+    echo "AI_NODE_URL=http://127.0.0.1:3000" >> "$ADAPTER_DIR/.env"
 fi
 
 # Set AI_TIMEOUT (updated: 300000ms = 300 seconds for slow model compatibility)
@@ -293,7 +295,9 @@ else
         if ! (command -v curl >/dev/null 2>&1 && curl -s http://localhost:3000 > /dev/null 2>&1) && ! (command -v nc >/dev/null 2>&1 && nc -z localhost 3000 > /dev/null 2>&1) && ! lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1; then
             # Start AI Node in background
             cd "$AI_NODE_DIR"
-            ./start.sh > /dev/null 2>&1
+            # Loopback only: a throwaway test start during the install (the repo's ai-node/
+            # has no .ai-node-loopback marker, the installed one does).
+            AI_NODE_HOST=127.0.0.1 ./start.sh > /dev/null 2>&1
             AI_NODE_STARTED=true
             
             # Wait for AI Node to be ready (max 30 seconds)
