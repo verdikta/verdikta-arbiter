@@ -961,8 +961,8 @@ justifier) ≈ **$0.08**. Premium (`claude-opus-5-5` $0.40 + `gpt-6-astra` $1.00
 
 The levers, in order of effect: the **class** (open-weight code models cost
 5–15× less than the frontier pair), the **context pack** (40k instead of 60k cuts
-input cost by a third), and the **gate-failure rate** (free pre-flight means paid
-evaluations are the ones with a chance). For comparison, three `claude-opus-5-5`
+input cost by a third), and the **gate-failure rate** (the credited pre-flight
+means paid evaluations are the ones with a chance). For comparison, three `claude-opus-5-5`
 jurors reading unfiltered 100k-token contexts would cost about $0.55 each.
 
 ### 8.8 Fee economics: who pays
