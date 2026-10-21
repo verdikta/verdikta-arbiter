@@ -1,7 +1,8 @@
 # Code-review evaluations on Verdikta arbiters — design
 
 **Status:** proposal, 2026-10-16; revised 2026-10-19 after review (PR #96);
-§15 records the decisions taken on 2026-10-19
+§15 records the decisions taken on 2026-10-19 and the pre-flight fee of
+2026-10-20
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, three ClassIDs with hard limits, image pins,
 trusted builder keys), example-bounty-program (code bounty type, environment
@@ -60,8 +61,9 @@ Eight decisions carry the design:
    from 300 s to 900 s, **and a cost plan instead of a funding change:** the
    hunter keeps paying, as today, and the design brings the price down — a micro
    class on open-weight code models (≈ $1 per submission), a standard class with
-   one frontier juror (≈ $3.50), free pre-flight checks before anyone pays, and
-   a deterministic context pack sized to the change (§8.7–8.8).
+   one frontier juror (≈ $3.50), a pre-flight check for a small fee credited
+   against the prepay (§6.4), and a deterministic context pack sized to the
+   change (§8.7–8.8).
 
 ## 2. Goals and non-goals
 
@@ -165,7 +167,8 @@ Evaluation (each selected arbiter; one deadline from EA receipt)
 | AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed rubric, `deadlineMs`): code-review pre-prompt with trust tiers, Jev stage through an OpenRouter `systemone` client (annotating, never filtering) plus a Jev claim check on the justification, every non-Jev juror required, deadline-derived timeouts with cancellation, web access off |
 | Chainlink job spec | `maxTaskDuration` and bridge timeout 300 s → 840 s |
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§8.8) |
-| Bounty program | Code bounty form with micro/standard/premium templates bound to the three classes; builder Action, fallback workflow, validation report and **attestation signing**; `prUrl`/`.patch` submissions checked against a temporary index; **free pre-flight check** and a local CLI before the hunter pays (§6.4); Jev rubric check at creation and submission pre-check (§6.4); PR bot comment and label for bounty submissions (§6.3); code variant of the evaluation query; hunter-diligence text (§6.4); pending-state UI to 15 min |
+| Bounty program | Code bounty form with micro/standard/premium templates bound to the three classes; builder Action, fallback workflow, validation report and **attestation signing**; `prUrl`/`.patch` submissions checked against a temporary index; **pre-flight check** (tiers 0–1b) and a local CLI before the hunter pays (§6.4); Jev rubric check at creation and submission pre-check (§6.4); PR bot comment and label for bounty submissions (§6.3); code variant of the evaluation query; hunter-diligence text (§6.4); pending-state UI to 15 min |
+| `BountyEscrow` | `prepareSubmission` becomes payable (`preflightFeeWei` per bounty, recorded as `s.preflightPaid`); `startPreparedSubmission` requires `maxTotalFee − s.preflightPaid`; forfeited fees of still-`Prepared` submissions go to an immutable `preflightProvider` (§6.4) |
 
 ## 6. Bounty and submission contract
 
@@ -316,33 +319,92 @@ than a blanket rule:
 ### 6.4 Before anyone pays: pre-flight, local CLI, and cheap checks
 
 The hunter pays the evaluation prepay (§8.8), so the cheapest evaluation is the
-one that never reaches the network. The bounty program adds, all outside the
-consensus path:
+one that never reaches the network. Submission becomes a two-step flow that maps
+onto the escrow's existing STEP 1 / STEP 2: **pre-flight** (small fee, credited)
+then **submission** (the class prepay). Everything here runs outside the
+consensus path, so it needs no determinism and can change freely.
 
-- **Pre-flight check.** At `submit/prepare`, before the prepay transaction, the
-  site runs the deterministic part of the pipeline (apply → build → acceptance
-  tests → integrity checks) on its own `code-runner` with the same image and
-  shows the result. It is advisory — arbiters re-run everything — but a hunter
-  learns for free that their patch fails to apply or fails an acceptance test,
-  instead of paying ≈ $1–6 to be told so by six arbiters.
-- **Local CLI.** `npx @verdikta/bounty-check <bounty-url> <patch|PR>` runs the
-  same pipeline on the hunter's machine against the public image. Zero cost to
-  everyone.
+**The pre-flight tiers.**
+
+| Tier | What runs | Time | Marginal cost to provide | What the hunter learns |
+|---|---|---|---|---|
+| **0 — static** (today's `POST /submit/dry-run`, extended) | PR based on `baseCommit`; patch applies against a temporary index; size and binary checks; dependency-file changes; protected paths touched; tests deleted or skipped; `submission.json` consistent | < 1 s | ≈ 0 | The `applies` and `noDependencyChanges` gates and the deterministic flags, exactly as the arbiters will compute them |
+| **1 — sandbox** | The arbiters' `code-runner` pipeline on the same attested image, **minus the jury**: apply → build → full suite with the three-run schedule → integrity checks → lint/SAST → `acceptance.hurl` / `api.hurl` → tests-only replay → Verification Report | 1–6 min | ≈ $0.01–0.03 (2 vCPU × ≤ 6 min, image pull, IPFS fetch), plus a warm runner pool | A **gate forecast**: a run that passes every gate here passes them on-chain — same runner, image and rules, barring the nondeterminism the fixtures guard against. Plus the exact context pack the jurors will read |
+| **1b — Jev readiness** | Jev's rubric questions on the report and diff: a level and confidence per weighted criterion, a probability per must-pass criterion, the special-casing and scope flags | ~2 s | ≈ $0.003 | A **readiness** signal, labelled advisory and weakly calibrated: "the gates will pass; the jury is not the gates" |
+
+Tier 1 is the part worth paying for: it is the only way to learn, before paying,
+that the prepay will not be lost to a deterministic gate. The result page shows
+two things and never a predicted verdict — **gates: pass / fail** (certain) and
+**readiness: low / medium / high** (advisory). A *preview grade* by a cheap LLM
+juror is deliberately not offered in v1: it duplicates the real evaluation,
+invites iterating against the jury, and a cheap model predicts the frontier
+jurors poorly.
+
+**The pre-flight fee.** Tier 0 is free and unlimited. Tier 1 carries a small
+fee, for two reasons that have nothing to do with revenue: without it the
+sandbox is free CI for anyone and a free "run until green" loop against the
+public acceptance tests, and the runner pool costs money to keep warm. The local
+CLI (below) already gives the same deterministic answer for free on the hunter's
+own machine, so the fee withholds no information; it only stops people spending
+the site's compute.
+
+- **Amount:** `preflightFeeWei`, set by the creator per bounty in `CreateParams`
+  (0 allowed, capped by a constant); the template default is **0.0001 ETH
+  (≈ $0.24)** — about 10× marginal cost, enough that a 20-iteration loop costs
+  $5, and a fifth of the micro prepay rather than half of it.
+- **Credited, not added.** The fee counts toward the prepay when the hunter
+  submits the **same** archive (`hunterCid`) the pre-flight ran on. A hunter who
+  passes pre-flight and submits pays nothing extra; the fee only sticks with the
+  hunter who was told "this fails" and walks away — the one the check saved
+  $1–3.50.
+- **Forfeit:** if the submission is still `Prepared` when the bounty closes or
+  its deadline passes, the fee goes to `preflightProvider`, an immutable address
+  set at escrow deployment for whoever runs the runner pool (the bounty site
+  today).
+- **Rate limits regardless:** one pre-flight in flight per wallet, and a per-bounty
+  daily cap.
+
+**How it maps onto `BountyEscrow`** (two edits to functions that already exist):
+
+1. `prepareSubmission(bountyId, evaluationCid, hunterCid)` — STEP 1, today
+   non-payable — becomes `payable` with `msg.value == b.preflightFeeWei`,
+   recorded as `s.preflightPaid`. The site listens for the prepared event, runs
+   tiers 0–1b for that `hunterCid` on its runner, and posts the gate forecast,
+   readiness and context pack.
+2. `startPreparedSubmission(bountyId, submissionId)` — STEP 2, payable today with
+   `msg.value == maxTotalFee` — requires `msg.value == maxTotalFee −
+   s.preflightPaid`. The credit falls out of the existing arithmetic; the
+   evaluation wallet still receives the full prepay and the refund path is
+   untouched.
+3. `closeExpiredBounty` / the deadline path pays `s.preflightPaid` of any
+   still-`Prepared` submission to `preflightProvider`.
+
+An off-chain alternative (x402 USDC micropayments on the API endpoint) needs no
+contract change but adds a second payment rail and cannot credit the fee against
+an on-chain prepay; the on-chain form is preferred.
+
+Net flow for a hunter on a micro bounty: iterate with the free CLI → pay ≈ $0.24
+for the official pre-flight → see "gates pass, readiness medium" → pay ≈ $0.92
+more to submit. A hunter whose patch fails a gate pays $0.24 and keeps $1.16.
+
+**The rest of the toolkit:**
+
+- **Local CLI.** `npx @verdikta/bounty-check <bounty-url> <patch|PR>` runs tiers
+  0–1 on the hunter's machine against the public image. Zero cost to everyone,
+  and the recommended way to iterate.
 - **Jev at creation** (`noul` per criterion: "is this assessable from code and
   tests?", "does an acceptance test exercise it?"; `noul` on the query for
   contradictions). Warnings to the creator, no gating; ≈ $0.001 per bounty.
   Fewer unsatisfiable or ambiguous bounties means fewer wasted submissions.
 - **Jev at submission** (`noul`: "does the narrative address this bounty?",
-  `choice` per changed file: required / related / unrelated). Shown to the hunter
-  with the pre-flight result; nothing is blocked.
+  `choice` per changed file: required / related / unrelated). Shown with the
+  pre-flight result; nothing is blocked.
 - **Hunter-diligence text** on the bounty page and in the CLI output: the
   creator defines the environment, acceptance tests and gates (§15.5); read the
-  acceptance tests before working; run the CLI before paying; the prepay is
-  spent even when the verdict is `DONT_FUND`; the grade belongs to the pinned
-  patch, not to the PR as it later evolves.
-
-None of these touch what arbiters compute, so they need no determinism and can
-change freely.
+  acceptance tests before working; run the CLI before paying; the pre-flight fee
+  is credited only against the same archive; the prepay is spent even when the
+  verdict is `DONT_FUND`; the grade belongs to the pinned patch, not to the PR
+  as it later evolves.
 
 ### 6.5 Two bounty kinds, one pipeline
 
@@ -949,9 +1011,11 @@ untouched. The cost of that choice is carried by the cost plan instead:
   the default for bounties under a few hundred dollars; `code-standard` at
   ≈ $3.50 for mid-size work; `code-premium` for high-value audits once the
   ceiling is raised.
-- **Nothing paid for sure failures.** The free pre-flight check and the local
-  CLI (§6.4) run apply, build, acceptance and integrity before the prepay
-  transaction exists.
+- **Almost nothing paid for sure failures.** The pre-flight check (§6.4) runs
+  the whole deterministic pipeline before the prepay exists, for a creator-set
+  fee defaulting to 0.0001 ETH (≈ $0.24) that is **credited against the prepay**
+  when the hunter submits the same archive; the local CLI does the same for
+  free. A hunter whose patch fails a gate loses ≈ $0.24 instead of the prepay.
 - **Context pack sized to the change.** The pack budget is a cap; a small PR
   produces a small pack and the jurors' input cost falls with it.
 - **Open-weight code models** in the micro and standard pools, through the
@@ -1058,8 +1122,8 @@ work inside the budget on ordinary hosts.
 | Phase | Delivers | Exit criteria |
 |---|---|---|
 | 0. Decisions | Timeout change approved and hunter-pays confirmed (§15); the three ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (deferred: a single Verdikta key is the placeholder); OpenRouter `systemone` access verified from a canary; `code_review.json`, `attestation.json` and report schemas in `@verdikta/common` | Schemas merged **and** the adversarial fixtures of §13 written as failing tests: forged, missing or duplicate test reports, runtime test/reporter tampering, an unattested image and an over-limit direct request cannot yield trusted passing evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another |
-| 1. Execution evidence | `code-runner` (local mode, own `dockerd` and disk); `node22` and `python312` images; builder Action with validation and attestation; PR-to-patch submissions with the PR bot comment and label; **pre-flight check and local CLI** (§6.4); gates and integrity checks; deadline propagation; report and context pack fed to the existing jury; `code-standard` and `code-micro` on class 5555 canaries on testnet | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end run with slow jurors, justifier delay, registry failure and cancellation; prepay and refund cases pass; p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
-| 2. Cheap and sharp | `systemone` client, Jev annotation and rubric juror, claim check on the justification; Jev rubric check and submission pre-check in the bounty program (§6.4); Semgrep and secret scan; Hurl acceptance and API checks; tests-only replay; cost logging | ≤ $0.30 per arbiter per evaluation on `code-standard` and ≤ $0.10 on `code-micro`; accuracy no worse than Phase 1; finding-recall against the Phase 1 unfiltered baseline unchanged, including injected dismissals; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures |
+| 1. Execution evidence | `code-runner` (local mode, own `dockerd` and disk); `node22` and `python312` images; builder Action with validation and attestation; PR-to-patch submissions with the PR bot comment and label; **pre-flight check (tiers 0–1), payable `prepareSubmission` with the credited fee, and the local CLI** (§6.4); gates and integrity checks; deadline propagation; report and context pack fed to the existing jury; `code-standard` and `code-micro` on class 5555 canaries on testnet | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end run with slow jurors, justifier delay, registry failure and cancellation; prepay and refund cases pass; p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
+| 2. Cheap and sharp | `systemone` client, Jev annotation and rubric juror, claim check on the justification; Jev readiness in the pre-flight (tier 1b), rubric check at creation and submission pre-check in the bounty program (§6.4); Semgrep and secret scan; Hurl acceptance and API checks; tests-only replay; cost logging | ≤ $0.30 per arbiter per evaluation on `code-standard` and ≤ $0.10 on `code-micro`; accuracy no worse than Phase 1; finding-recall against the Phase 1 unfiltered baseline unchanged, including injected dismissals; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures |
 | 3. Breadth | `bug` bounties with a Foundry image; dependency changes through a registry-only proxy; remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised | A canary gate per feature; mainnet rollout per `docs/release-runbook.md` §3b |
 
 Jev comes in Phase 2 on purpose: execution evidence is what makes the grades
@@ -1093,8 +1157,10 @@ accurate, Jev is what makes them cheap, and every operator in the class needs th
   - a juror finishing just under its limit followed by justification; a provider
     timeout with retry; a slow justifier; a registry failure; a cancellation at
     the deadline;
-  - funding: gate failure, gate pass with jury rejection, round timeout,
-    concurrent starts against one budget, leftover recovery;
+  - payments: gate failure, gate pass with jury rejection, round timeout,
+    leftover recovery; pre-flight fee credited on the same `hunterCid`, not
+    credited on a different one, forfeited to `preflightProvider` on a
+    still-`Prepared` submission at close, and a zero-fee bounty;
   - a time-dependent and a randomness-dependent test, run on two different hosts
     — identical report hash.
 - Run through `testing-tool` (a new `code` scenario type) and the e2e L4 gate
@@ -1177,9 +1243,16 @@ document.
    beneficiary but needed `BountyEscrow` changes to funder and refund
    semantics; the gate-pass deposit was not contract-observable. Instead: a
    `code-micro` class on open-weight code models (≈ $1.16 per submission), a
-   cheaper `code-standard` with one frontier juror (≈ $3.50), free pre-flight
-   checks and a local CLI before the prepay exists, a context pack sized to the
+   cheaper `code-standard` with one frontier juror (≈ $3.50), a pre-flight check
+   and a local CLI before the prepay exists, a context pack sized to the
    change, and the assumptions behind every figure written down in §8.7.
+   **Pre-flight fee (2026-10-20):** tier 0 free; tier 1 (the sandbox gate
+   forecast plus Jev readiness) for a creator-set fee defaulting to 0.0001 ETH,
+   credited against the prepay for the same archive and forfeited to the
+   runner-pool provider otherwise — abuse control and compute recovery, not
+   revenue. Collected by making `prepareSubmission` payable and netting the
+   credit in `startPreparedSubmission` (§6.4); a cheap-LLM preview grade was
+   considered and left out.
    `code-premium` (≈ $20) waits for the fee ceiling to be raised to about
    0.001 ETH (Phase 3). Per-class K/M/N and a lower bonus multiplier for cheap
    classes go on the dispatcher roadmap; together they would roughly halve the
