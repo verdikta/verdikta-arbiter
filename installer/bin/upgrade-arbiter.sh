@@ -1685,7 +1685,8 @@ for _util in \
     rotate-logs.sh \
     apply-docker-log-rotation.sh \
     arbiter-boot-service.sh \
-    arbiter-firewall.sh; do
+    arbiter-firewall.sh \
+    apply-chainlink-loopback.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
         chmod +x "$TARGET_DIR/$_util"
@@ -2906,6 +2907,46 @@ if [ "${PORTS_HARDENED:-0}" = "1" ] && [ "$SERVICES_STARTED_FOR_DOCTOR" = "1" ] 
     elif [ "$BRIDGE_CHECK_RC" = "2" ]; then
         echo -e "${YELLOW}Could not check the bridge (see above). Confirm one evaluation end to end, or run:${NC}"
         echo -e "${YELLOW}  $TARGET_DIR/arbiter-firewall.sh check-bridge --probe${NC}"
+    fi
+fi
+
+# Optional second layer: publish the Chainlink UI/API on 127.0.0.1 only. Older
+# installs publish the chainlink container on every interface (`-p 6688:6688`);
+# Docker fixes that at container creation, so it takes a recreate (Chainlink is
+# down for about a minute; the database container is never touched). The firewall
+# above already drops the traffic on the public interface, so this is defense in
+# depth, kept as its own question: it restarts Chainlink on a live node, so the
+# interactive default is no and, like the firewall, the UNATTENDED default is no
+# unless VA_UPGRADE_BIND_CHAINLINK_LOCAL=y. It runs AFTER the arbiter has been
+# restarted: the upgrade stops Chainlink first, and the recreate only works on a
+# running container (that is what lets it start the replacement, see it answer,
+# and roll back to the old container if it does not). Same ERR-trap rule: read
+# exit codes with `|| rc=$?`, never behind `set +e` (#97).
+if [ -x "$TARGET_DIR/apply-chainlink-loopback.sh" ]; then
+    CL_LOOPBACK_CHECK_RC=0
+    bash "$TARGET_DIR/apply-chainlink-loopback.sh" --check || CL_LOOPBACK_CHECK_RC=$?
+    if [ "$CL_LOOPBACK_CHECK_RC" = "1" ]; then
+        echo
+        if [ "$SERVICES_STARTED_FOR_DOCTOR" != "1" ]; then
+            echo -e "${BLUE}The Chainlink UI/API is published on every interface. Once the arbiter is running, you can${NC}"
+            echo -e "${BLUE}publish it on 127.0.0.1 only with: $TARGET_DIR/apply-chainlink-loopback.sh --apply${NC}"
+        else
+            echo -e "${BLUE}The Chainlink UI/API is published on every interface of this host. The container${NC}"
+            echo -e "${BLUE}can be recreated to publish it on 127.0.0.1 only (same image, volume, restart policy,${NC}"
+            echo -e "${BLUE}log options and network; the old container is restored if the new one does not${NC}"
+            echo -e "${BLUE}start). Chainlink restarts, about a minute of downtime. Unattended runs skip this${NC}"
+            echo -e "${BLUE}unless VA_UPGRADE_BIND_CHAINLINK_LOCAL=y.${NC}"
+            if ask_yes_no "Recreate the chainlink container with port 6688 on 127.0.0.1 only?" "n" VA_UPGRADE_BIND_CHAINLINK_LOCAL "n"; then
+                CL_LOOPBACK_RC=0
+                bash "$TARGET_DIR/apply-chainlink-loopback.sh" --apply || CL_LOOPBACK_RC=$?
+                if [ "$CL_LOOPBACK_RC" != "0" ]; then
+                    echo -e "${YELLOW}Warning: the chainlink container was not changed (exit $CL_LOOPBACK_RC). Retry later with:${NC}"
+                    echo -e "${YELLOW}  $TARGET_DIR/apply-chainlink-loopback.sh --apply${NC}"
+                fi
+            else
+                echo -e "${BLUE}Skipped. Do it later with: $TARGET_DIR/apply-chainlink-loopback.sh --apply${NC}"
+            fi
+        fi
     fi
 fi
 
