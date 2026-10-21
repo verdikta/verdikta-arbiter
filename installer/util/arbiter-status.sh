@@ -325,6 +325,17 @@ if [ -x "$INSTALL_DIR/arbiter-boot-service.sh" ]; then
     esac
 fi
 
+# Are the database / UI / AI / adapter ports closed to the internet? (2026-10-21 port audit)
+if [ -x "$INSTALL_DIR/arbiter-firewall.sh" ]; then
+    bash "$INSTALL_DIR/arbiter-firewall.sh" status --quiet >/dev/null 2>&1
+    case $? in
+        0) echo -e "  Public ports:  ${GREEN}5432/6688/3000/8080 closed${NC} on the public interface (arbiter-firewall.sh)" ;;
+        2) echo -e "  Public ports:  ${YELLOW}closed now, but nothing re-applies the rules after a reboot${NC} (no systemd)" ;;
+        4) echo -e "  Public ports:  ${YELLOW}iptables is not installed${NC} - close 5432/6688/3000/8080 with your provider's firewall" ;;
+        *) echo -e "  Public ports:  ${RED}NOT closed${NC} - 5432/6688/3000/8080 are not firewalled; run: $INSTALL_DIR/arbiter-firewall.sh enable" ;;
+    esac
+fi
+
 # Resource Usage
 echo -e "\n${BLUE}Resource Usage:${NC}"
 echo -e "  CPU Usage:"
