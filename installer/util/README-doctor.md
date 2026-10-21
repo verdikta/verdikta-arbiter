@@ -24,8 +24,9 @@ caused the April–May 2026 incident:
 | `JUSTIFIER_MODEL` unset, malformed, or points at Ollama without a running Ollama daemon | `ai.justifier_model` (FAIL) |
 | Container or service down | `svc.ai_node` / `svc.adapter` / `svc.chainlink` / `svc.postgres` |
 | Node would not come back after a host reboot | `svc.boot_start` (WARN; `arbiter-boot-service.sh enable`) |
+| 5432 / 6688 / 3000 / 8080 listening on public addresses with no firewall rule closing them | `svc.public_ports` (WARN; `arbiter-firewall.sh enable`) |
 
-The current build runs **30 checks** across six sections: `cfg.*`, `svc.*`,
+The current build runs **31 checks** across six sections: `cfg.*`, `svc.*`,
 `chain.*`, `txm.*`, `ea.*`, `ai.*`.
 
 ## Quick reference

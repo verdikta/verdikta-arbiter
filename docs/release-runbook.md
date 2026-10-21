@@ -75,6 +75,11 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    curl -s http://localhost:<adapter-port>/version
    ```
 
+   Run it on the arbiter host (over ssh). Once an install has closed its ports
+   (`arbiter-firewall.sh`, see `installer/docs/maintenance/upgrading.md`), the
+   adapter's port no longer answers from outside the host, so a remote
+   `curl http://<host-ip>:8080/version` times out by design.
+
    `verdiktaCommon` is the installed `@verdikta/common`; `release` is the commit
    stamped by the upgrade. Also check the AI Node serves its production build:
    `<install-dir>/arbiter-status.sh` shows `Mode: production build (next start)`
@@ -114,7 +119,7 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    canaries, re-run.
 
 5. **Then upgrade mainnet** arbiters with the same upgrade command and confirm
-   `GET /version` on each. There is no mainnet e2e wallet, so the mainnet check
+   `GET /version` on each (on the host, as above). There is no mainnet e2e wallet, so the mainnet check
    is the per-node version endpoint plus the next real request's justification
    (`audit-oracles` works against mainnet with `--rpc` / `--aggregator`).
 

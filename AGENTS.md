@@ -276,7 +276,8 @@ does not — it is read at runtime). A failed build falls back to `next dev`;
 `chainlink-health-watchdog.sh` (cron alerting: components not running /
 0-live-RPC / failing health checks; `--self-heal` starts what is down through
 `start-arbiter.sh`), `rotate-logs.sh` (app-log rotation),
-`arbiter-boot-service.sh` (start at boot, below).
+`arbiter-boot-service.sh` (start at boot, below), `arbiter-firewall.sh` and
+`apply-chainlink-loopback.sh` (port exposure, below).
 
 **Boot behaviour.** A node comes back on its own after a host reboot (the
 2026-10-18 provider reboots left every arbiter down for hours): `setup-docker.sh`
@@ -293,16 +294,47 @@ back to `--restart no`, so a disabled node is fully down after a reboot rather
 than half up). `arbiter-status.sh` and the doctor's `svc.boot_start` show the
 state. Unit text: `arbiter-boot-service.sh print-unit`.
 
+**Port exposure.** A 2026-10-21 port review found 5432 (Chainlink Postgres), 6688
+(Chainlink UI/API), 3000 (AI Node) and 8080 (External Adapter) reachable from the
+internet on the hosts it checked; the last two have no authentication in front of
+the operator's LLM keys. Fresh installs publish no database port (`secrets.toml`
+says `cl-postgres:5432`, reached over `verdikta-network`), publish 6688 on
+`127.0.0.1`, write `<install-dir>/.ai-node-loopback` (`ai-node/start.sh` then
+passes `-H 127.0.0.1` to Next) and offer `arbiter-firewall.sh enable`. Existing
+installs get the same through `upgrade-arbiter.sh`: `arbiter-firewall.sh
+enable|disable|status` inserts iptables DROP rules on the default-route
+interface only (DOCKER-USER `--ctorigdstport 5432|6688 --ctdir ORIGINAL`, INPUT
+3000/8080, ip6tables INPUT; tagged `verdikta-arbiter-ports`, persisted by a
+systemd oneshot of plain iptables lines), so container-to-host and loopback
+traffic is untouched. `enable` refuses if the Chainlink bridge URL names an
+address that is not this host's (the call would leave through the public NIC and
+the 8080 drop would cut it off; `check-bridge --probe` re-checks it after the
+upgrade restarts the arbiter), keeps the NICs of an installed unit on re-run, and
+exits 1 when Docker publishes a port but there is no DOCKER-USER chain to hold
+the rule. Both prompts are opt-in when unattended
+(`VA_UPGRADE_HARDEN_PORTS`, `VA_UPGRADE_BIND_CHAINLINK_LOCAL`, default `n`);
+`apply-chainlink-loopback.sh` recreates only the `chainlink` container, only
+while it is RUNNING (the upgrade asks after its restart), creating the
+replacement first and restoring the old container on failure. **Never recreate
+`cl-postgres`** (anonymous data volume) and **never publish 5432 on 127.0.0.1
+while `secrets.toml` says `host.docker.internal`** (that is the docker0
+gateway). The adapter stays on all interfaces (the bridge URL is the host's own
+address); the firewall is its control. Doctor: `svc.public_ports`.
+
 ---
 
 ## 7. Key env vars
 
 **External Adapter** (`external-adapter/.env`): `PORT`, `AI_NODE_URL`
-(default `http://localhost:3000`), `AI_TIMEOUT`, `OPERATOR_ADDR` (**required**),
+(code default `http://localhost:3000`; installs write `http://127.0.0.1:3000`),
+`AI_TIMEOUT`, `OPERATOR_ADDR` (**required**),
 `IPFS_PINNING_KEY` (Pinata **JWT**, **required** for reveals), `IPFS_GATEWAY`
 (optional comma-separated list of operator-preferred gateways, tried before the
 library's built-in ones), `IPFS_GATEWAY_TOKEN` (optional Pinata dedicated-gateway
-key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`.
+key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`, `HOST`
+(optional listen address; unset or a wildcard — `0.0.0.0`, `::`, which the
+installer has always written — = the default dual-stack listener, which Chainlink
+needs, see Port exposure).
 
 **AI Node** (`ai-node/.env.local`): provider keys (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `HYPERBOLIC_API_KEY`, `OPENROUTER_API_KEY`),
@@ -381,8 +413,12 @@ Ollama runs locally and is unaffected by gateway settings.
   Read exit codes as `rc=0; cmd || rc=$?` — a command on the left of `||`
   never triggers the trap — and never add a `set +e` guard to that script
   (`installer/tests/upgrade-reconfigure-guards.test.sh` pins zero of them;
-  `upgrade-boot-service-trap.test.sh` / `upgrade-reconfigure-trap.test.sh`
-  run the real blocks under the real trap).
+  `upgrade-boot-service-trap.test.sh` / `upgrade-reconfigure-trap.test.sh` /
+  `upgrade-firewall-trap.test.sh` / `upgrade-bridge-check-trap.test.sh` /
+  `upgrade-chainlink-loopback-trap.test.sh` run the real blocks under the real
+  trap). The opt-in `installer/tests/*.integration.sh` scripts (need Docker) check
+  the firewall rules with real iptables and packets, the unit under a real
+  systemd, and the container recreate against real Docker.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a

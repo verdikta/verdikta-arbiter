@@ -129,10 +129,13 @@ Default port assignments:
 
 | Service | Port | Protocol | Access |
 |---------|------|----------|---------|
-| **AI Node** | 3000 | HTTP | Local/External |
-| **External Adapter** | 8080 | HTTP | Local only |
-| **Chainlink Node** | 6688 | HTTP | Local/External |
-| **PostgreSQL** | 5432 | TCP | Local only |
+| **AI Node** | 3000 | HTTP | This host only (listens on 127.0.0.1) |
+| **External Adapter** | 8080 | HTTP | Chainlink container only; no authentication of its own, so closed to the internet by `arbiter-firewall.sh` |
+| **Chainlink Node** | 6688 | HTTP | This host only; from your machine use an SSH tunnel: `ssh -L 6688:127.0.0.1:6688 <user>@<host>` |
+| **PostgreSQL** | 5432 | TCP | Not published on the host (Chainlink reaches it as `cl-postgres:5432` inside the Docker network); `docker exec cl-postgres psql -U postgres` |
+
+Installs made before 2026-10-21 published all four on every interface; see
+[Closing the exposed ports](../maintenance/upgrading.md#closing-the-exposed-ports).
 
 ## Common Management Tasks
 
@@ -341,6 +344,24 @@ gone, containers that restart on their own would leave a half-up node after a
 reboot (the Chainlink node taking requests, no adapter to answer them).
 `arbiter-status.sh` and `arbiter-doctor.sh` (`svc.boot_start`) report the
 state; `systemctl status verdikta-arbiter` shows the last boot's start log.
+
+## Port exposure
+
+`arbiter-firewall.sh` in the install root keeps ports 5432, 6688, 3000 and 8080
+off the internet (iptables drop rules on the public interface only, kept across
+reboots by `verdikta-arbiter-firewall.service`; the arbiter's own traffic is not
+affected):
+
+```bash
+~/verdikta-arbiter-node/arbiter-firewall.sh status        # exit 0 = closed
+sudo ~/verdikta-arbiter-node/arbiter-firewall.sh enable   # install/upgrade offer this
+sudo ~/verdikta-arbiter-node/arbiter-firewall.sh disable  # reopen: rules, unit and AI Node marker removed
+```
+
+`arbiter-status.sh` ("Public ports") and `arbiter-doctor.sh` (`svc.public_ports`)
+report the state. Because a host cannot test its own external reachability, they
+check bind addresses and rules; confirm from another machine with
+`nc -z -w5 <public-ip> 5432`.
 
 ## Emergency Procedures
 
