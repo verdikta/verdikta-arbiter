@@ -42,6 +42,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const evaluateHandler = require('./handlers/evaluateHandler');
 const { collectVersionInfo } = require('./utils/versionInfo');
+const { listenArgs } = require('./utils/listenArgs');
 
 const app = express();
 app.use(bodyParser.json());
@@ -89,7 +90,9 @@ app.use((err, req, res, next) => {
   });
 });
 
-const port = process.env.PORT || 8080;
-server.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+// HOST is optional; unset = every interface, as always (see utils/listenArgs.js
+// for why that stays the default and what protects port 8080).
+const listenOn = listenArgs();
+server.listen(...listenOn, () => {
+  console.log(`Server is running on port ${listenOn[0]}${listenOn[1] ? ` (address ${listenOn[1]})` : ''}`);
 }); 
