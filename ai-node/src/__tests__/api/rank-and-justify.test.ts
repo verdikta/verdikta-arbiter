@@ -1060,5 +1060,58 @@ describe('POST /api/rank-and-justify', () => {
       expect(mockOpenAIProvider.generateResponse.mock.calls[0][2]).toMatchObject({ reasoning: { effort: 'medium' }, verbosity: 'low' });
       expect(mockJustifierProvider.generateResponse.mock.calls[0][2]).toEqual({ webAccess: false });
     });
+
+    test('a repaired juror keeps the retrieval of its web-tools call; the repair call (web access off) adds none', async () => {
+      const claudeRead = retrieval({ pages_opened: 1, pages: ['https://stockanalysis.com/stocks/msft/history/'] });
+      const proseReply = 'PHASE 1 - MANDATORY REQUIREMENTS: all PASS.\n\nFINAL SCORES: DONT_FUND=0, FUND=100 (expressed proportionally below)';
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockResolvedValue(JSON.stringify({ score: [0, 1000000], justification: 'Read it.' })),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockAnthropicProvider = {
+        generateResponse: jest.fn()
+          .mockImplementationOnce(async (_p: string, _m: string, options: any) => {
+            options.onWebRetrieval(claudeRead);
+            return proseReply;
+          })
+          .mockImplementationOnce(async (_p: string, _m: string, options: any) => {
+            // A provider would only report through a listener it was given.
+            options?.onWebRetrieval?.(retrieval({ searches: 99 }));
+            return '{"score": [0, 100]}';
+          }),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockJustifierProvider = { generateResponse: jest.fn().mockResolvedValue('Aggregated.') };
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          default: return mockJustifierProvider;
+        }
+      });
+
+      const response = await POST(new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Resolution source: https://stockanalysis.com/stocks/msft/history/',
+          outcomes: ['DONT_FUND', 'FUND'],
+          iterations: 1,
+          models: [
+            { provider: 'OpenAI', model: 'gpt-4', weight: 0.5 },
+            { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5 },
+          ],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
+      expect(mockAnthropicProvider.generateResponse.mock.calls[1][2]).toEqual({ webAccess: false });
+      expect(data.model_results.find((r: any) => r.model === 'claude-sonnet-5')).toMatchObject({
+        status: 'success',
+        web_retrieval: claudeRead,
+      });
+    });
   });
 });
