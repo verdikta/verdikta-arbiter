@@ -425,6 +425,18 @@ interface JustificationContent {
     error_message?: string;
     error_code?: string;
     http_status?: number;
+    // What the juror's web tools did (ai-node/API_RESPONSE_SPECIFICATION.md, "Web Retrieval")
+    web_retrieval?: {
+      web_tools: 'on' | 'off';
+      searches: number;
+      pages_opened: number;
+      fetch_errors: Array<{ url: string; code: string }>;
+      search_errors: Array<{ query: string; code: string }>;
+      pages: string[];
+      queries: string[];
+      page_errors_reported: boolean;
+      error?: string;
+    };
   }>;
   warnings?: Array<{
     type: string;

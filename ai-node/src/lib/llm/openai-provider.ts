@@ -13,6 +13,7 @@ import { HumanMessage } from '@langchain/core/messages';
 import { modelConfig } from '../../config/models';
 import { AttachmentContext, attachmentRequestError } from './attachment-errors';
 import { WebAccessOption, openAIModelSupportsWebSearch, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
+import { WebRetrieval, summarizeOpenAIWebSearch, webToolsOff } from './web-retrieval';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -243,7 +244,7 @@ export class OpenAIProvider implements LLMProvider {
     prompt: string, 
     model: string, 
     attachments: Array<{ type: string, content: string, mediaType: string }>,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string> {
     // Check if this model supports native PDF processing
     const supportsNativePDF = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini'].some(supportedModel => 
@@ -529,26 +530,31 @@ export class OpenAIProvider implements LLMProvider {
   /**
    * The answer with OpenAI's web_search tool enabled, or null when that request
    * fails: the juror then answers without web access (as every request did
-   * before), and the warning says why.
+   * before), and the warning says why. options.onWebRetrieval hears what the
+   * tool did, or that it was off for this answer.
    */
   private async tryWebSearch(
     model: string,
     content: any[],
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string | null> {
+    let result: { text: string; retrieval: WebRetrieval };
     try {
-      return await this.generateWithWebSearch(model, content, options);
+      result = await this.generateWithWebSearch(model, content, options);
     } catch (error: any) {
       console.warn(`[${this.providerName}] Web search failed for ${model} (${error?.message}); answering without web access`);
+      options?.onWebRetrieval?.(webToolsOff(error?.message || 'web search request failed'));
       return null;
     }
+    options?.onWebRetrieval?.(result.retrieval);
+    return result.text;
   }
 
   private async generateWithWebSearch(
     model: string,
     content: any[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
-  ): Promise<string> {
+  ): Promise<{ text: string; retrieval: WebRetrieval }> {
     const { OpenAI } = await import('openai');
     const client = new OpenAI({ apiKey: this.apiKey });
     const id = model.toLowerCase().split('/').pop() || '';
@@ -571,7 +577,7 @@ export class OpenAIProvider implements LLMProvider {
     if (!text) {
       throw new Error(`no text in the response (status ${response?.status})`);
     }
-    return text;
+    return { text, retrieval: summarizeOpenAIWebSearch(response) };
   }
 }
 

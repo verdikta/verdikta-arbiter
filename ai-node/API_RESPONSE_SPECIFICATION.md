@@ -120,6 +120,49 @@ Optional request fields: `attachmentNames` (file names, index-aligned with
 
 ---
 
+## Web Retrieval (`model_results[].web_retrieval`)
+
+Every juror that answered (`success` or `parsing_error`) carries what its web
+tools did, read from the provider's own response
+(`src/lib/llm/web-retrieval.ts`). It is telemetry only: no score depends on it.
+The EA copies `model_results` into the justification on IPFS, so it is public.
+
+```json
+"web_retrieval": {
+  "web_tools": "on",
+  "searches": 0,
+  "pages_opened": 0,
+  "fetch_errors": [
+    { "url": "https://www.wsj.com/market-data/quotes/MSFT/historical-prices", "code": "url_not_allowed" }
+  ],
+  "search_errors": [],
+  "pages": [],
+  "queries": [],
+  "page_errors_reported": true
+}
+```
+
+- `web_tools`: `on` when the answer came from a request with the provider's web
+  tools; `off` when the tools were not used (no link in the request,
+  `AI_WEB_ACCESS=off`, a provider or model without web tools). When the
+  web-tools request failed and the juror answered without web access, it is
+  `off` with an `error`.
+- `pages_opened` / `pages`: Anthropic counts pages whose content came back.
+  OpenAI marks every page it opens `completed`, also when the model then says
+  the site refused it, so for OpenAI this counts pages the model asked for and
+  `page_errors_reported` is `false`.
+- `fetch_errors`: Anthropic's codes, e.g. `url_not_allowed` (what Claude quotes
+  as "You don't have permission to access this domain"), `url_not_accessible`,
+  `url_not_in_prior_context`; `no_result` for a tool call the response ended
+  before answering. OpenAI reports a call's status other than `completed`.
+- With `count` > 1 the calls are added up. Lists are capped at 20 entries.
+
+Each juror also gets one log line:
+`🌐 WEB_RETRIEVAL: Anthropic-claude-sonnet-5 on, 0 pages opened, 0 searches, fetch errors: www.wsj.com url_not_allowed | {…}`.
+A request that fails with 400 has no `model_results`; the log line is still written.
+
+---
+
 ## Integration Guidelines for External Adapter
 
 ### Success Case (Status 200)

@@ -13,6 +13,7 @@ import {
 } from './anthropic-request-params';
 import { attachmentRequestError } from './attachment-errors';
 import { WebAccessOption, anthropicModelSupportsWebTools, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
+import { WebRetrieval, WebRetrievalListener, summarizeAnthropicWebBlocks, webToolsOff } from './web-retrieval';
 
 type ChatInput = Parameters<ChatAnthropic['invoke']>[0];
 
@@ -57,7 +58,7 @@ export class AnthropicProvider implements LLMProvider {
       throw new Error('ANTHROPIC_API_KEY is not set');
     }
     if (options?.webAccess !== false && shouldUseWebTools(prompt) && anthropicModelSupportsWebTools(model)) {
-      const answer = await this.tryWebTools(model, [{ type: 'text', text: withWebAccessNote(prompt) }]);
+      const answer = await this.tryWebTools(model, [{ type: 'text', text: withWebAccessNote(prompt) }], options?.onWebRetrieval);
       if (answer !== null) return answer;
     }
     return this.invokeText(model, prompt);
@@ -130,7 +131,7 @@ export class AnthropicProvider implements LLMProvider {
     prompt: string, 
     model: string, 
     attachments: Array<{ type: string, content: string, mediaType: string }>,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string> {
     if (!this.supportsAttachments(model)) {
       throw new Error(`[${this.providerName}] Model ${model} does not support attachments.`);
@@ -149,7 +150,7 @@ export class AnthropicProvider implements LLMProvider {
     // Links in the request are opened by Anthropic's web tools; same inputs as below.
     if (shouldUseWebTools(prompt, attachments) && anthropicModelSupportsWebTools(model)) {
       const blocks = this.nativeContentBlocks(model, withWebAccessNote(prompt), supportsNativePDF ? pdfAttachments : [], otherAttachments);
-      const answer = await this.tryWebTools(model, blocks);
+      const answer = await this.tryWebTools(model, blocks, options?.onWebRetrieval);
       if (answer !== null) return answer;
     }
 
@@ -312,24 +313,30 @@ export class AnthropicProvider implements LLMProvider {
   /**
    * The answer with Anthropic's web_fetch and web_search server tools enabled, or
    * null when that request fails: the juror then answers without web access (as
-   * every request did before), and the warning says why.
+   * every request did before), and the warning says why. onWebRetrieval hears what
+   * the tools did, or that they were off for this answer.
    */
-  private async tryWebTools(model: string, content: any[]): Promise<string | null> {
+  private async tryWebTools(model: string, content: any[], onWebRetrieval?: WebRetrievalListener): Promise<string | null> {
+    let result: { text: string; retrieval: WebRetrieval };
     try {
-      return await this.generateWithWebTools(model, content);
+      result = await this.generateWithWebTools(model, content);
     } catch (error: any) {
       console.warn(`[${this.providerName}] Web tools failed for ${model} (${error?.message}); answering without web access`);
+      onWebRetrieval?.(webToolsOff(error?.message || 'web tools request failed'));
       return null;
     }
+    onWebRetrieval?.(result.retrieval);
+    return result.text;
   }
 
-  private async generateWithWebTools(model: string, content: any[]): Promise<string> {
+  private async generateWithWebTools(model: string, content: any[]): Promise<{ text: string; retrieval: WebRetrieval }> {
     const { Anthropic } = await import('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: this.apiKey });
     const maxUses = webMaxUses();
     console.log(`[${this.providerName}] Web tools on for ${model} (web_fetch, web_search; max_uses ${maxUses})`);
 
     const messages: any[] = [{ role: 'user', content }];
+    const blocks: any[] = []; // every turn's blocks, for the retrieval summary
     for (let turn = 0; turn <= MAX_PAUSE_CONTINUATIONS; turn++) {
       const response: any = await client.messages.create({
         model,
@@ -342,12 +349,13 @@ export class AnthropicProvider implements LLMProvider {
         ...(acceptsSamplingParams(model) ? { temperature: LEGACY_TEMPERATURE } : {})
       } as any, { headers: { 'anthropic-beta': ANTHROPIC_WEB_FETCH_BETA } });
 
+      if (Array.isArray(response.content)) blocks.push(...response.content);
       // A long server-tool turn is handed back unfinished; sending it back resumes it.
       if (response.stop_reason === 'pause_turn') {
         messages.push({ role: 'assistant', content: response.content });
         continue;
       }
-      return finalAnswerText(response.content);
+      return { text: finalAnswerText(response.content), retrieval: summarizeAnthropicWebBlocks(blocks) };
     }
     throw new Error(`still paused after ${MAX_PAUSE_CONTINUATIONS} continuations`);
   }

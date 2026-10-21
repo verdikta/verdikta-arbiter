@@ -615,6 +615,45 @@ describe('OpenAIProvider', () => {
       expect(body.max_output_tokens).toBe(4000);
     });
 
+    test('onWebRetrieval hears the web_search_call actions of the response', async () => {
+      mockResponsesCreate.mockResolvedValueOnce({
+        status: 'completed',
+        output: [
+          { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'jets patriots final score' } },
+          { type: 'web_search_call', status: 'completed', action: { type: 'open_page', url: 'https://www.nfl.com/games/jets-at-patriots-2026-reg-6' } },
+        ],
+        output_text: '{"score":[0,1000000]}',
+      });
+      const onWebRetrieval = jest.fn();
+
+      await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', { ...REASONING, onWebRetrieval });
+
+      expect(onWebRetrieval).toHaveBeenCalledTimes(1);
+      expect(onWebRetrieval.mock.calls[0][0]).toMatchObject({
+        web_tools: 'on',
+        searches: 1,
+        pages_opened: 1,
+        pages: ['https://www.nfl.com/games/jets-at-patriots-2026-reg-6'],
+        queries: ['jets patriots final score'],
+        page_errors_reported: false,
+      });
+      // The listener is ours, not OpenAI's: it never reaches the request body.
+      expect(mockResponsesCreate.mock.calls[0][0]).not.toHaveProperty('onWebRetrieval');
+    });
+
+    test('onWebRetrieval hears "off" with the reason when web search failed, and nothing without a URL', async () => {
+      mockResponsesCreate.mockRejectedValueOnce(Object.assign(new Error('400 Unsupported parameter'), { status: 400 }));
+      const onWebRetrieval = jest.fn();
+
+      await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', { ...REASONING, onWebRetrieval });
+      expect(onWebRetrieval).toHaveBeenCalledWith(expect.objectContaining({ web_tools: 'off', error: '400 Unsupported parameter' }));
+
+      onWebRetrieval.mockClear();
+      await provider.generateResponse('Write a haiku', 'gpt-5.4', { ...REASONING, onWebRetrieval });
+      expect(onWebRetrieval).not.toHaveBeenCalled();
+      expect(mockOpenAICreate.mock.calls[mockOpenAICreate.mock.calls.length - 1][0]).not.toHaveProperty('onWebRetrieval');
+    });
+
     test('responsesOutputText reads message items when output_text is absent', () => {
       expect(responsesOutputText({
         output: [
