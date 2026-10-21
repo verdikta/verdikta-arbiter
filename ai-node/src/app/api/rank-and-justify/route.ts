@@ -3,6 +3,7 @@ import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { prePromptConfig } from '../../../config/prePromptConfig';
 import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
+import { repairModelScores, replyJustification } from '../../../utils/repairModelResponse';
 import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor';
 import { resolveMediaType } from '../../../utils/media-type';
 import {
@@ -1144,7 +1145,28 @@ async function processModelForIteration(
 
     let { decisionVector, justification, scores } = parseModelResponse(responseText, outcomes);
     let effectiveJustification = justification; // Store potentially modified justification
-    
+
+    if (!decisionVector) {
+      // One short call without tools: the same model returns the scores its reply states
+      // (a prose answer, or scores that do not sum to 1,000,000). See repairModelResponse.ts.
+      const repairStartTime = Date.now();
+      console.warn(`🔧 MODEL_REPAIR: ${modelInfo.provider}-${modelInfo.model} reply could not be parsed; asking it once for the scores it states`);
+      const repaired = await repairModelScores(
+        llmProvider,
+        modelInfo.model,
+        responseText,
+        outcomes,
+        isReasoningModel ? { reasoning: { effort: 'low' as const }, verbosity: 'low' as const } : undefined
+      );
+      if (repaired) {
+        decisionVector = repaired;
+        effectiveJustification = replyJustification(responseText);
+        console.log(`🔧 MODEL_REPAIRED: ${modelInfo.provider}-${modelInfo.model} scores ${JSON.stringify(repaired)} in ${Date.now() - repairStartTime}ms`);
+      } else {
+        console.warn(`🔧 MODEL_REPAIR_FAILED: ${modelInfo.provider}-${modelInfo.model} after ${Date.now() - repairStartTime}ms`);
+      }
+    }
+
     // DEBUG: Log what each model actually returned
     console.log(`🔍 DEBUG - Model ${modelInfo.provider}/${modelInfo.model} returned:`, {
       decisionVector,
