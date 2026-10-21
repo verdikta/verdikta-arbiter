@@ -11,6 +11,7 @@ import {
   appendAttachmentNotes,
   UnprocessableImageError,
 } from '../../../lib/attachments/normalizeImages';
+import { WebRetrieval, describeWebRetrieval, mergeWebRetrievals } from '../../../lib/llm/web-retrieval';
 import fs from 'fs';
 import path from 'path';
 
@@ -78,6 +79,8 @@ interface ModelResult {
   error_message?: string;
   error_code?: string;
   http_status?: number;
+  /** What the juror's web tools did (success and parsing_error only); see web-retrieval.ts. */
+  web_retrieval?: WebRetrieval;
 }
 
 interface Warning {
@@ -471,6 +474,7 @@ export async function POST(request: Request) {
               weight: number;
               justifications: string[];
               timingData: any;
+              webRetrieval: WebRetrieval;
             };
             
             modelResults.push(modelResult);
@@ -491,7 +495,8 @@ export async function POST(request: Request) {
                 status: 'parsing_error',
                 duration_ms: modelResult.timingData.duration_ms || 0,
                 error_type: 'parsing_error',
-                error_message: modelResult.timingData.failureReason || 'Unable to parse response'
+                error_message: modelResult.timingData.failureReason || 'Unable to parse response',
+                web_retrieval: modelResult.webRetrieval
               });
             } else {
               console.log(`✅ MODEL_SUCCESS: ${modelKey} completed successfully`);
@@ -501,7 +506,8 @@ export async function POST(request: Request) {
                 provider: modelInfo.provider,
                 model: modelInfo.model,
                 status: 'success',
-                duration_ms: modelResult.timingData.duration_ms || 0
+                duration_ms: modelResult.timingData.duration_ms || 0,
+                web_retrieval: modelResult.webRetrieval
               });
             }
           } else {
@@ -1003,12 +1009,14 @@ async function processModelForIteration(
   weight: number;
   justifications: string[];
   timingData: any;
+  webRetrieval: WebRetrieval;
 }> {
   const modelStartTime = Date.now();
   const count = modelInfo.count || 1;
   const weight = modelInfo.weight;
   const allOutputs: number[][] = [];
   const justifications: string[] = [];
+  const webRetrievals: WebRetrieval[] = []; // one per call: what its web tools did
   let usedFallback = false; // Track if this model had to use fallback scores
   let failureReason = ''; // Track the reason for failure if fallback was used
   let errorDetails: {
@@ -1071,7 +1079,10 @@ async function processModelForIteration(
     const callStartTime = Date.now();
     console.log(`📞 API_CALL: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} starting...`);
     let responseText: string;
-    
+    // Providers with web tools report what the tools did; a call nobody reports on had them off.
+    const callRetrievals: WebRetrieval[] = [];
+    const callOptions = { ...(modelOptions || {}), onWebRetrieval: (r: WebRetrieval) => { callRetrievals.push(r); } };
+
     if (attachments.length > 0 && llmProvider.supportsAttachments(modelInfo.model)) {
       logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model} with attachments:\n${iterationPrompt}\n`);
       try {
@@ -1079,7 +1090,7 @@ async function processModelForIteration(
           iterationPrompt,
           modelInfo.model,
           attachments,
-          modelOptions
+          callOptions
         );
         // Strip thinking blocks from the response
         responseText = stripThinkingBlocks(responseText);
@@ -1113,7 +1124,7 @@ async function processModelForIteration(
         responseText = await llmProvider.generateResponse(
           iterationPrompt,
           modelInfo.model,
-          modelOptions
+          callOptions
         );
         // Strip thinking blocks from the response
         responseText = stripThinkingBlocks(responseText);
@@ -1195,7 +1206,8 @@ async function processModelForIteration(
     }
 
     allOutputs.push(decisionVector);
-    
+    webRetrievals.push(mergeWebRetrievals(callRetrievals));
+
     if (effectiveJustification) { // Use the potentially modified justification
       justifications.push(`From model ${modelInfo.model}:\n${effectiveJustification}`);
     }
@@ -1237,11 +1249,15 @@ async function processModelForIteration(
 
   logTiming(`model_total_${modelInfo.provider}_${modelInfo.model}`, modelStartTime, timingData);
 
+  const webRetrieval = mergeWebRetrievals(webRetrievals);
+  console.log(`🌐 WEB_RETRIEVAL: ${modelInfo.provider}-${modelInfo.model} ${describeWebRetrieval(webRetrieval)} | ${JSON.stringify(webRetrieval)}`);
+
   return {
     modelAverage,
     weight,
     justifications,
-    timingData
+    timingData,
+    webRetrieval
   };
 }
 
