@@ -1684,7 +1684,8 @@ for _util in \
     chainlink-health-watchdog.sh \
     rotate-logs.sh \
     apply-docker-log-rotation.sh \
-    arbiter-boot-service.sh; do
+    arbiter-boot-service.sh \
+    arbiter-firewall.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
         chmod +x "$TARGET_DIR/$_util"
@@ -2589,6 +2590,68 @@ if [ -x "$TARGET_DIR/arbiter-boot-service.sh" ]; then
     fi
 fi
 
+# Close the database / UI / AI ports on the public interface (2026-10-21 port
+# review): the Chainlink Postgres (5432), the Chainlink UI/API (6688), the AI Node
+# (3000) and the External Adapter (8080) were reachable from the internet on the
+# hosts it checked. arbiter-firewall.sh
+# drops them on the default-route interface only, so the arbiter's own traffic
+# (container -> host, adapter -> AI Node) is unaffected, and marks the AI Node to
+# bind 127.0.0.1. This changes how the node is reachable (the Chainlink UI then
+# needs an SSH tunnel), so it is the operator's call: interactive default yes,
+# UNATTENDED default NO unless VA_UPGRADE_HARDEN_PORTS=y, so an unattended upgrade
+# never changes a running node's networking behind anyone's back.
+# Same ERR-trap rule as the start-at-boot block above: `status --quiet` exits 1 on
+# every install that still needs the fix, so exit codes are read with `|| rc=$?`
+# and never behind `set +e` (#97).
+if [ -x "$TARGET_DIR/arbiter-firewall.sh" ]; then
+    FIREWALL_STATUS_RC=0
+    bash "$TARGET_DIR/arbiter-firewall.sh" status --quiet || FIREWALL_STATUS_RC=$?
+    case "$FIREWALL_STATUS_RC" in
+        0|2) ;;   # already closed (2: closed now, but no systemd to persist it; the operator was told)
+        4)
+            echo
+            echo -e "${YELLOW}iptables is not installed on this host, so the installer cannot close ports 5432,${NC}"
+            echo -e "${YELLOW}6688, 3000 and 8080 for you. Close them with your provider's firewall (allow SSH only).${NC}"
+            ;;
+        *)
+            echo
+            echo -e "${BLUE}Port exposure: this node's Chainlink database (5432), Chainlink UI/API (6688),${NC}"
+            echo -e "${BLUE}AI Node (3000) and External Adapter (8080) are reachable from the internet. The${NC}"
+            echo -e "${BLUE}A 2026-10-21 port review found all four reachable from the internet on the hosts it${NC}"
+            echo -e "${BLUE}checked, the database under constant password guessing. What this change does:${NC}"
+            echo -e "${BLUE}  - adds iptables rules (IPv4 and IPv6) that drop those four ports on the public${NC}"
+            echo -e "${BLUE}    network interface only, kept across reboots by a systemd unit;${NC}"
+            echo -e "${BLUE}  - does NOT affect the arbiter itself: Chainlink -> database, Chainlink -> adapter${NC}"
+            echo -e "${BLUE}    and adapter -> AI Node never use the public interface; SSH stays open;${NC}"
+            echo -e "${BLUE}  - the AI Node listens on 127.0.0.1 only from its next start;${NC}"
+            echo -e "${BLUE}  - the Chainlink UI is then reachable only through an SSH tunnel:${NC}"
+            echo -e "${BLUE}      ssh -L 6688:127.0.0.1:6688 <user>@<this-host>   then open http://localhost:6688${NC}"
+            echo -e "${BLUE}  - undo any time: $TARGET_DIR/arbiter-firewall.sh disable${NC}"
+            echo -e "${BLUE}Unattended runs skip this unless VA_UPGRADE_HARDEN_PORTS=y.${NC}"
+            if ask_yes_no "Close these ports to the internet (needs sudo)?" "y" VA_UPGRADE_HARDEN_PORTS "n"; then
+                FIREWALL_RC=0
+                bash "$TARGET_DIR/arbiter-firewall.sh" enable || FIREWALL_RC=$?
+                case "$FIREWALL_RC" in
+                    0) PORTS_HARDENED=1 ;;
+                    2) PORTS_HARDENED=1
+                       echo -e "${YELLOW}No systemd on this host: the rules are active now, but a reboot removes them.${NC}"
+                       echo -e "${YELLOW}Run $TARGET_DIR/arbiter-firewall.sh enable from your init system at boot.${NC}" ;;
+                    3) echo -e "${YELLOW}Warning: could not close the ports (needs root or passwordless sudo). Run later, as root:${NC}"
+                       echo -e "${YELLOW}  $TARGET_DIR/arbiter-firewall.sh enable${NC}" ;;
+                    *) echo -e "${YELLOW}Warning: could not close the ports (exit $FIREWALL_RC). After fixing the cause, run:${NC}"
+                       echo -e "${YELLOW}  $TARGET_DIR/arbiter-firewall.sh enable${NC}" ;;
+                esac
+                if [ "${PORTS_HARDENED:-0}" = "1" ]; then
+                    echo -e "${GREEN}Ports 5432, 6688, 3000 and 8080 are closed on the public interface.${NC}"
+                    echo -e "${BLUE}Turn it off again with: $TARGET_DIR/arbiter-firewall.sh disable${NC}"
+                fi
+            else
+                echo -e "${BLUE}Skipped. Close the ports later with: $TARGET_DIR/arbiter-firewall.sh enable${NC}"
+            fi
+            ;;
+    esac
+fi
+
 # Optional: Fund or top-off Chainlink keys
 echo
 echo -e "${BLUE}============================================================${NC}"
@@ -2825,6 +2888,27 @@ else
     fi
 fi
 
+# Verify that Chainlink still reaches the adapter now that the ports are closed. It
+# calls the adapter on the host's own address (local delivery on a docker bridge,
+# never the public interface), which is why the 8080 drop does not touch it. This
+# looks the bridge URL up in Chainlink's database and probes it from inside the
+# chainlink container; it can only run now that the arbiter is back up. A failure is
+# a loud warning with the undo command, not an abort: the upgrade itself is done.
+# Same ERR-trap rule: `|| rc=$?`, never `set +e` (#97).
+if [ "${PORTS_HARDENED:-0}" = "1" ] && [ "$SERVICES_STARTED_FOR_DOCTOR" = "1" ] && [ -x "$TARGET_DIR/arbiter-firewall.sh" ]; then
+    echo
+    echo -e "${BLUE}Checking that Chainlink still reaches the External Adapter with the ports closed...${NC}"
+    BRIDGE_CHECK_RC=0
+    bash "$TARGET_DIR/arbiter-firewall.sh" check-bridge --probe || BRIDGE_CHECK_RC=$?
+    if [ "$BRIDGE_CHECK_RC" = "1" ]; then
+        echo -e "${RED}WARNING: Chainlink could not reach the adapter. Evaluations will fail until this is fixed.${NC}"
+        echo -e "${RED}Undo the port closing right away with: $TARGET_DIR/arbiter-firewall.sh disable${NC}"
+    elif [ "$BRIDGE_CHECK_RC" = "2" ]; then
+        echo -e "${YELLOW}Could not check the bridge (see above). Confirm one evaluation end to end, or run:${NC}"
+        echo -e "${YELLOW}  $TARGET_DIR/arbiter-firewall.sh check-bridge --probe${NC}"
+    fi
+fi
+
 # Post-upgrade health check. Best-effort, advisory only.
 # Skipped if services weren't (re)started — otherwise every service check
 # would FAIL purely because nothing is listening.
@@ -2900,6 +2984,9 @@ echo "Access your services at:"
 echo "  - AI Node:          http://localhost:3000"
 echo "  - External Adapter: http://localhost:8080"
 echo "  - Chainlink Node:   http://localhost:6688"
+if [ "${PORTS_HARDENED:-0}" = "1" ]; then
+    echo "    (ports 5432/6688/3000/8080 are closed to the internet; from your machine: ssh -L 6688:127.0.0.1:6688 <user>@<this-host>)"
+fi
 echo
 echo "If you encounter any issues, you can restore from backup at:"
 echo "  - $BACKUP_DIR"
