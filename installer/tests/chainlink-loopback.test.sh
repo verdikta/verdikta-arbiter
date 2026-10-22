@@ -33,6 +33,15 @@ case "$1" in
     shift
     if [ "$1" = "--format" ]; then
         name="$3"; [ -f "$S/exists.$name" ] || exit 1
+        case "$2" in
+          *Health*)   # Docker's HEALTHCHECK state; an empty health.<name> file = the image has none
+            if [ "${HEALTH_STUCK:-0}" = 1 ]; then echo starting; exit 0; fi
+            if [ "${HEALTH_STARTING:-0}" = 1 ]; then
+                n=$(cat "$S/health.count" 2>/dev/null || echo 0); n=$((n+1)); echo $n > "$S/health.count"
+                if [ "$n" -lt 4 ]; then echo starting; else echo healthy; fi; exit 0
+            fi
+            cat "$S/health.$name" 2>/dev/null || echo healthy; exit 0 ;;
+        esac
         cat "$S/running.$name" 2>/dev/null || echo false; exit 0
     fi
     [ -f "$S/exists.$1" ] || exit 1
@@ -103,7 +112,7 @@ PY
 }
 reset() {  # old container exists; $1 = running state; extra args = mk_container options
     local running="$1"; shift
-    rm -f "$ST"/exists.* "$ST"/running.* "$ST"/is_new.* "$ST"/calls "$ST"/create.args "$ST"/new.name
+    rm -f "$ST"/exists.* "$ST"/running.* "$ST"/is_new.* "$ST"/health.* "$ST"/calls "$ST"/create.args "$ST"/new.name
     : > "$ST/exists.chainlink"; echo "$running" > "$ST/running.chainlink"
     mk_container "$@"
 }
@@ -197,6 +206,28 @@ out=$(HEALTH_FAIL=1 run); rc=$?
 eq  "slow start rc" "$rc" 0
 has "slow start: warning" "$out" "not answering yet"
 [ -f "$ST/is_new.chainlink" ] && ok || bad "slow start: new container not kept"
+
+# 7b. Docker's own health status: the recreate waits for "healthy" so what looks at the
+#     container right afterwards (the post-upgrade doctor) does not see "starting" -- the
+#     first testnet run's post-upgrade doctor FAILed on exactly that.
+reset true
+out=$(run); rc=$?
+eq  "healthy at once: rc" "$rc" 0
+hasnt "healthy at once: no health wait" "$out" "Waiting for Docker's health check"
+reset true
+out=$(HEALTH_STARTING=1 run); rc=$?
+eq  "starting for a while: rc" "$rc" 0
+has "starting: waited" "$out" "Waiting for Docker's health check"
+has "starting: became healthy" "$out" "Docker reports .* healthy"
+reset true
+out=$(HEALTH_STUCK=1 run); rc=$?
+eq  "stuck at starting: rc (the API answers, so the upgrade must not fail)" "$rc" 0
+has "stuck: warning" "$out" "Docker still reports 'starting'"
+reset true
+: > "$ST/health.chainlink"
+out=$(run); rc=$?
+eq  "no healthcheck in the image: rc" "$rc" 0
+hasnt "no healthcheck in the image: no wait" "$out" "Waiting for Docker's health check"
 
 # 8. Refusals change nothing.
 for opt in extraport extramount extraenv privileged entrypoint user workdir healthcheck labels tmpfs rom staticip alias; do

@@ -264,6 +264,23 @@ for _ in $(seq 1 30); do
 done
 if [ "$up" = "1" ]; then
     echo -e "${GREEN}✓ Chainlink is answering on 127.0.0.1:$HOST_PORT.${NC}"
+    # The image carries a Docker HEALTHCHECK that reports "starting" for a while after every
+    # start. Anything that looks right after this (the post-upgrade doctor's svc.chainlink
+    # reads that state, and failed on it in the first testnet run) should find "healthy".
+    hs=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CL" 2>/dev/null)
+    if [ -n "$hs" ] && [ "$hs" != "healthy" ]; then
+        echo -e "${BLUE}→ Waiting for Docker's health check (reports '$hs' for a while after every start)...${NC}"
+        for _ in $(seq 1 60); do
+            hs=$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{end}}' "$CL" 2>/dev/null)
+            [ "$hs" = "healthy" ] && break
+            sleep 2
+        done
+        if [ "$hs" = "healthy" ]; then
+            echo -e "${GREEN}✓ Docker reports $CL healthy.${NC}"
+        else
+            echo -e "${YELLOW}⚠ Docker still reports '$hs' for $CL after 2 minutes; the API answers, so the node is up. Check: docker inspect --format '{{json .State.Health}}' $CL${NC}"
+        fi
+    fi
 else
     echo -e "${YELLOW}⚠ The container is running but the API is not answering yet (database migrations can take a while). Watch: docker logs -f $CL${NC}"
 fi
