@@ -82,12 +82,34 @@ else
     fi
 fi
 
+# Which address to listen on. Only the External Adapter (http://127.0.0.1:3000)
+# and the operator's own tools (curl localhost:3000) talk to the AI Node, and it
+# sits in front of the operator's paid LLM keys with no authentication of its
+# own, so installs hardened by arbiter-firewall.sh (and fresh installs) bind
+# loopback only. Two switches, either is enough:
+#   AI_NODE_HOST=<address>   in the environment of this script, or
+#   <install-dir>/.ai-node-loopback   (a file; lives outside ai-node/ so an
+#                            upgrade of the component never removes it)
+# Neither set = Next.js's default (all interfaces), exactly as before.
+BIND_ARGS=()
+AI_HOST="${AI_NODE_HOST:-}"
+if [ -z "$AI_HOST" ] && [ -f ../.ai-node-loopback ]; then
+    AI_HOST=127.0.0.1
+fi
+case "$AI_HOST" in
+    *[!0-9A-Za-z.:_-]*) echo "WARNING: ignoring AI_NODE_HOST='$AI_HOST' (not an address)"; AI_HOST="" ;;
+esac
+if [ -n "$AI_HOST" ]; then
+    BIND_ARGS=(-- -H "$AI_HOST")
+    echo "AI Node listens on $AI_HOST only."
+fi
+
 # Start the server in persistent background mode
 echo "Starting AI Node in persistent mode (npm run $RUN_SCRIPT)..."
 echo "Logs will be available at: $LOG_FILE"
 
 # Use nohup to keep the process running after terminal disconnects.
 # Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
-nohup npm run "$RUN_SCRIPT" >> "$LOG_FILE" 2>&1 &
+nohup npm run "$RUN_SCRIPT" "${BIND_ARGS[@]}" >> "$LOG_FILE" 2>&1 &
 echo $! > ai-node.pid
 echo "AI Node started with PID $(cat ai-node.pid)"

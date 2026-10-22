@@ -284,6 +284,148 @@ While an upgrade has the node stopped, the watchdog reports `arbiter STOPPED
 by operator (stop-arbiter.sh)` and does not self-heal; `start-arbiter.sh`
 clears that state.
 
+## Closing the exposed ports
+
+A read-only port review on 2026-10-21 found the Chainlink database (5432), the
+Chainlink UI/API (6688), the AI Node (3000) and the External Adapter (8080)
+reachable from the internet on the hosts it checked: the installer published them
+on every interface, no firewall was active, the database was under constant
+password guessing, and the AI Node and adapter have no authentication in front of
+the operator's LLM keys. Installs made before this change are affected; new
+installs publish nothing but the adapter (see below).
+
+The upgrade checks this and offers the fix in place. **It is your choice and it
+is opt-in when unattended**: interactive upgrades default to yes,
+unattended upgrades (`--unattended`, `--answers`) default to **no** unless you
+set `VA_UPGRADE_HARDEN_PORTS=y`, so an unattended upgrade never changes a node's
+networking by itself.
+
+```bash
+# interactive: answer the prompt "Close these ports to the internet (needs sudo)?"
+installer/bin/upgrade-arbiter.sh
+
+# unattended, opting in (passwordless sudo needed):
+VA_UPGRADE_HARDEN_PORTS=y installer/bin/upgrade-arbiter.sh --unattended
+# ... or put VA_UPGRADE_HARDEN_PORTS="y" in the --answers file
+```
+
+What it does (`<install-dir>/arbiter-firewall.sh enable`):
+
+- adds iptables rules, IPv4 and IPv6, that **drop** 5432, 6688, 3000 and 8080 on
+  the **public network interface only** (found with `ip route get`, never
+  hard-coded). Chainlink to the database, Chainlink to the adapter (the bridge
+  URL is the host's own address) and the adapter to the AI Node arrive on
+  `docker0`, `br-*` or `lo`, not on the public interface, so they keep working.
+  SSH is not touched;
+- keeps them across reboots with a systemd oneshot unit,
+  `verdikta-arbiter-firewall.service`, ordered after Docker (and after
+  `verdikta-sandbox.service` where that exists). The unit contains plain
+  `iptables` lines; nothing from your install directory runs as root;
+- makes the AI Node listen on `127.0.0.1` from its next start (a marker file,
+  `<install-dir>/.ai-node-loopback`, that `ai-node/start.sh` reads, so reboots
+  and the start-at-boot unit honour it) and points the adapter's default
+  `AI_NODE_URL` at `http://127.0.0.1:3000`. The upgrade restarts the arbiter
+  anyway, so no extra restart is needed. If the adapter's `AI_NODE_URL` names
+  any other address, the bind is left alone (a loopback-only AI Node would no
+  longer answer it) and you are told;
+- first checks where Chainlink calls the adapter: the `verdikta-ai` bridge URL,
+  read from Chainlink's database, must name an address of this machine (the
+  usual case: the host's own public IP, which is local delivery on a Docker
+  bridge). If it names something else (a load balancer, a NAT'd floating IP) the
+  call would leave through the public interface and the `8080` rule would cut
+  Chainlink off, so `enable` refuses (`--ignore-bridge-check` overrides). After
+  the upgrade has restarted the arbiter it probes the bridge from inside the
+  `chainlink` container and tells you loudly, with the undo command, if that
+  fails. Run it yourself with `arbiter-firewall.sh check-bridge --probe`.
+
+**Reaching the Chainlink UI afterwards** (it is the operator's admin plane, so it
+is no longer on the internet): open an SSH tunnel from your machine and browse
+`http://localhost:6688`:
+
+```bash
+ssh -L 6688:127.0.0.1:6688 <user>@<arbiter-host>
+```
+
+Check or undo it any time:
+
+```bash
+~/verdikta-arbiter-node/arbiter-firewall.sh status            # exit 0 = closed; --quiet for scripts
+sudo ~/verdikta-arbiter-node/arbiter-firewall.sh disable      # remove the rules, the unit and the AI Node marker
+~/verdikta-arbiter-node/arbiter-firewall.sh enable --print-rules   # show the exact iptables commands, change nothing
+```
+
+`arbiter-doctor.sh` (`svc.public_ports`) and `arbiter-status.sh` report the
+state. The doctor cannot test the host's *external* reachability from inside the
+host, so it checks bind addresses and the rules and tells you to confirm from
+another machine: `nc -z -w5 <public-ip> 5432` (and 6688, 3000, 8080) should
+time out while `nc -z -w5 <public-ip> 22` connects.
+
+Notes:
+
+- A host with a second, private network interface (for example a DigitalOcean
+  VPC `eth1`) keeps those ports open on it; add `--interface eth0 --interface
+  eth1` to `enable` to close it too. A later plain `enable` (the upgrade offers
+  one whenever `status` is not clean) keeps the interfaces of the installed
+  unit; to shrink the set, `disable` first.
+- If Docker publishes a port on a public address but has no `DOCKER-USER` chain
+  (Docker on its nftables backend, or started after the unit ran), the rules
+  cannot hold it: `enable` and `status` say so and exit 1 instead of reporting
+  "closed". Start Docker and re-run `enable`, or close the port in your
+  provider's firewall.
+- The rules do not stop a machine **on the same host** from calling the ports,
+  and the adapter and AI Node still have no authentication of their own.
+  A provider firewall (allow SSH only) is the best additional layer where one
+  is available.
+- There is a short window after a reboot between Docker starting the containers
+  and the unit adding the rules (seconds).
+
+### Publishing the Chainlink UI on loopback (optional second layer)
+
+Docker fixes published ports when a container is created, so older installs keep
+`-p 6688:6688`. The upgrade offers, as a **separate question**
+(`VA_UPGRADE_BIND_CHAINLINK_LOCAL`, default **no** both interactively and
+unattended because it restarts Chainlink), to recreate the `chainlink` container
+with `-p 127.0.0.1:6688:6688`. It is asked **after** the arbiter has been
+restarted, because the recreate only works on a running container: that is what
+lets it start the replacement and see it answer before the old container is
+removed. The replacement is created first from the old container's settings
+(image, `/chainlink` mount, restart policy, log options, network, command), the
+old container is only then stopped (30 s grace), and the old one is restored if
+the new one does not start or exits. Expect about a minute of Chainlink
+downtime. It refuses and changes nothing when the container is stopped or has
+settings it would drop. Run it yourself with
+`<install-dir>/apply-chainlink-loopback.sh --apply`; `--check` reports, and
+`--revert` publishes on all interfaces again.
+
+### What this does not change
+
+- **The database container is never recreated by an upgrade.** `cl-postgres`
+  sits on an anonymous Docker data volume; recreating it without that volume
+  would start Chainlink against an empty database. On existing installs the
+  firewall is therefore the control for 5432. Fresh installs create it without
+  a host port and Chainlink reaches it as `cl-postgres:5432` over
+  `verdikta-network`. Never publish 5432 on `127.0.0.1` only while
+  `secrets.toml` says `host.docker.internal:5432`: that name is the `docker0`
+  gateway, not loopback, and Chainlink would lose its database.
+- **The External Adapter (8080) keeps listening on all interfaces**: the
+  Chainlink container calls it through the host's own address. An optional
+  `HOST` variable in `external-adapter/.env` can bind one specific address; the
+  wildcard values (`0.0.0.0`, `::`, empty or unset, which is what the installer
+  has always written) keep today's behaviour exactly. The firewall is what
+  protects 8080. There is no adapter authentication yet.
+- A Postgres password that may already have been guessed is not rotated. Check
+  `docker exec cl-postgres psql -U postgres -c '\du'` and
+  `select client_addr, usename, state from pg_stat_activity`.
+
+### New installs
+
+`install.sh` creates `cl-postgres` without a host port, points `secrets.toml` at
+`cl-postgres:5432`, publishes the Chainlink UI on `127.0.0.1`, binds the AI Node
+to loopback (including the throwaway AI Node that install phases 3 and 4 start for
+their tests) and offers `arbiter-firewall.sh enable` for the one port that must
+stay reachable through the host's address, the adapter (`VA_INSTALL_FIREWALL`,
+default `y`).
+
 ## Rollback and failure recovery
 
 If upgrade fails after the process starts, the script prints guidance and references any created backup directory.

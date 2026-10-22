@@ -772,8 +772,9 @@ if ! "$AI_NODE_DIR/build.sh"; then
 fi
 
 echo -e "${BLUE}Starting AI Node (next start) for testing...${NC}"
-# Set the port explicitly
-PORT=3000 NEXT_TELEMETRY_DISABLED=1 npm run start &
+# Set the port explicitly. Loopback only (-H 127.0.0.1): this is a throwaway test
+# start during the install, and the AI Node has no authentication of its own.
+PORT=3000 NEXT_TELEMETRY_DISABLED=1 npm run start -- -H 127.0.0.1 &
 AI_NODE_PID=$!
 
 # Wait for server to start (a production build answers within seconds)

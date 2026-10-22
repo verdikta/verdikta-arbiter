@@ -77,11 +77,14 @@ The keys that matter most:
 | `VA_REGISTER_ORACLE` / `VA_AGGREGATOR_ADDRESS` / `VA_CLASS_IDS` | Dispatcher registration | `n` / — / `128` |
 | `VA_INSTALL_CRON`, `VA_STATUS_PAGE_REPORTING` | Watchdog cron + status-page reporting | `y` / `y` |
 | `VA_INSTALL_BOOT_SERVICE` | Start at boot (systemd unit + container restart policies; needs passwordless sudo) | `y` |
+| `VA_INSTALL_FIREWALL` | Close ports 5432/6688/3000/8080 on the public interface (iptables rules + systemd unit; needs passwordless sudo) | `y` |
 | `VA_FUND_KEYS` / `VA_FUND_AMOUNT` | Fund the Chainlink keys at the end | `n` / recommended |
 | `VA_START_SERVICES` | Start the arbiter when done | `y` |
 | `VA_UPGRADE_BACKUP` | (upgrade) copy the install aside first | `y` |
 | `VA_UPGRADE_BACKUP_KEEP` | (upgrade) install backups to keep once the new one succeeded — older `<install>_backup_YYYYMMDD-HHMMSS` directories are removed; `0` keeps them all (also `--keep-backups N`) | `3` |
 | `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) regenerate job specs + re-register on-chain | `n` |
+| `VA_UPGRADE_HARDEN_PORTS` | (upgrade) close 5432/6688/3000/8080 on the public interface (`arbiter-firewall.sh enable`; needs passwordless sudo). **Unattended default is `n`**: an unattended upgrade never changes networking by itself | `n` |
+| `VA_UPGRADE_BIND_CHAINLINK_LOCAL` | (upgrade) recreate the chainlink container with 6688 on `127.0.0.1` only (Chainlink restarts for about a minute) | `n` |
 
 Yes/no keys accept `y`/`n`, `yes`/`no`, `true`/`false`, `1`/`0`.
 

@@ -404,6 +404,75 @@ check_config() {
     fi
 }
 
+# Are 5432 / 6688 / 3000 / 8080 closed to the internet? (2026-10-21 port audit:
+# all four were reachable from the internet on the hosts it checked.) A host cannot truthfully test its
+# own external reachability: a connect to its own public address is local
+# delivery and never crosses the firewall's public interface. So this reports
+# what the host CAN see -- the addresses the services are bound to, and whether
+# the arbiter-firewall.sh rules are in place -- and says so.
+
+# listen_addrs PORT -> local addresses of TCP listeners on PORT, one per line.
+listen_addrs() {
+    ss -ltnH 2>/dev/null | awk -v p=":$1" '{ n = length($4); if (substr($4, n - length(p) + 1) == p) print $4 }'
+}
+# addr_public ADDR -> 0 unless ADDR is a loopback address (127.x, ::1).
+addr_public() {
+    case "$1" in
+        127.*|"[::1]"*|"::1"*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+# published_addrs CONTAINER PORT -> host addresses a Docker-published port is bound to.
+published_addrs() {
+    docker port "$1" "$2/tcp" 2>/dev/null
+}
+
+# doctor_can_read_rules -> 0 when this user can read iptables (root, or passwordless sudo).
+doctor_can_read_rules() { [ "$(id -u)" = "0" ] || sudo -n true 2>/dev/null; }
+
+check_public_ports() {
+    local exposed="" a fw_rc=1 verify unread=""
+    for a in $(published_addrs cl-postgres 5432); do
+        addr_public "$a" && { exposed="$exposed 5432"; break; }
+    done
+    for a in $(published_addrs chainlink 6688); do
+        addr_public "$a" && { exposed="$exposed 6688"; break; }
+    done
+    for a in $(listen_addrs 3000); do
+        addr_public "$a" && { exposed="$exposed 3000"; break; }
+    done
+    for a in $(listen_addrs 8080); do
+        addr_public "$a" && { exposed="$exposed 8080"; break; }
+    done
+    exposed="${exposed# }"
+
+    if [ -x "$INSTALL_DIR/arbiter-firewall.sh" ]; then
+        bash "$INSTALL_DIR/arbiter-firewall.sh" status --quiet >/dev/null 2>&1
+        fw_rc=$?
+    else
+        fw_rc=99
+    fi
+    verify="(checked: bind addresses and the firewall rules; a host cannot test its own external reachability, so confirm from another machine: nc -z -w5 <public-ip> <port>)"
+
+    doctor_can_read_rules || unread=" The rules themselves were not read (that needs root); the unit is enabled and active."
+    case "$fw_rc" in
+        0) emit PASS svc.public_ports "5432/6688/3000/8080 are dropped on the public interface (arbiter-firewall.sh)${exposed:+; still bound on public addresses: ${exposed// /, }}.${unread} $verify" "" ;;
+        2) emit WARN svc.public_ports "the port rules are active now but nothing re-applies them after a reboot (no systemd). $verify"                 "Run $INSTALL_DIR/arbiter-firewall.sh enable from your init system at boot" ;;
+        4) if [ -n "$exposed" ]; then
+               emit WARN svc.public_ports "port(s) ${exposed// /, } listen on public addresses and iptables is not installed. $verify"                     "Close them with your provider's firewall (allow SSH only); the Chainlink UI then needs: ssh -L 6688:127.0.0.1:6688 <host>"
+           else
+               emit PASS svc.public_ports "no service listens on a public address. $verify" ""
+           fi ;;
+        *) if [ -z "$exposed" ]; then
+               emit PASS svc.public_ports "no service listens on a public address. $verify" ""
+           elif [ "$fw_rc" = "99" ]; then
+               emit WARN svc.public_ports "port(s) ${exposed// /, } listen on public addresses and arbiter-firewall.sh is not installed. $verify"                     "Run upgrade-arbiter.sh (it installs arbiter-firewall.sh and offers to close the ports)"
+           else
+               emit WARN svc.public_ports "port(s) ${exposed// /, } listen on public addresses and no firewall rule closes them. $verify"                     "Run (as root): $INSTALL_DIR/arbiter-firewall.sh enable   (Chainlink UI afterwards: ssh -L 6688:127.0.0.1:6688 <host>)"
+           fi ;;
+    esac
+}
+
 check_services() {
     section_header "SERVICES"
 
@@ -504,6 +573,7 @@ check_services() {
                     "Run (as root): $INSTALL_DIR/arbiter-boot-service.sh enable" ;;
         esac
     fi
+    check_public_ports
     if [ -f "$INSTALL_DIR/.arbiter-stopped" ]; then
         emit INFO svc.stopped_by_operator "stop-arbiter.sh ran at $(cat "$INSTALL_DIR/.arbiter-stopped" 2>/dev/null); the watchdog does not self-heal while this marker exists" \
              "$INSTALL_DIR/start-arbiter.sh clears it"

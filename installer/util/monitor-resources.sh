@@ -211,7 +211,9 @@ for port_info in "${PORTS[@]}"; do
     PORT=$(echo "$port_info" | cut -d: -f1)
     SERVICE=$(echo "$port_info" | cut -d: -f2)
     
-    if netstat -an 2>/dev/null | grep -q ":$PORT.*LISTEN"; then
+    # The database is not published on the host on fresh installs (2026-10-21 port
+    # audit), so a listening socket is not the test; ask the container.
+    if netstat -an 2>/dev/null | grep -q ":$PORT.*LISTEN" || { [ "$PORT" = "5432" ] && docker exec cl-postgres pg_isready -q >/dev/null 2>&1; }; then
         echo -e "  $SERVICE (port $PORT): ${GREEN}Active${NC}"
     else
         echo -e "  $SERVICE (port $PORT): ${RED}Not listening${NC}"

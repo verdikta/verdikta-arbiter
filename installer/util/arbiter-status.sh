@@ -266,9 +266,13 @@ if docker ps | grep -q "cl-postgres"; then
     fi
 
     # Get PostgreSQL port
-    PORT=$(docker port cl-postgres 5432/tcp | cut -d: -f2)
+    PORT=$(docker port cl-postgres 5432/tcp 2>/dev/null | head -1 | sed 's/.*://')
     if [ ! -z "$PORT" ]; then
         echo -e "  Port:   $PORT"
+    else
+        # Fresh installs do not publish the database on the host: Chainlink reaches
+        # it as cl-postgres:5432 on verdikta-network (2026-10-21 port audit).
+        echo -e "  Port:   5432, inside the Docker network only (not published on the host)"
     fi
 else
     echo -e "  Status: ${RED}Not Running${NC}"
@@ -318,6 +322,17 @@ if [ -x "$INSTALL_DIR/arbiter-boot-service.sh" ]; then
         0) echo -e "  Start at boot: ${GREEN}enabled${NC} (verdikta-arbiter.service + container restart policies)" ;;
         2) echo -e "  Start at boot: ${YELLOW}no systemd on this host${NC} - run start-arbiter.sh from your init system" ;;
         *) echo -e "  Start at boot: ${RED}NOT configured${NC} - the node stays down after a reboot; run: $INSTALL_DIR/arbiter-boot-service.sh enable" ;;
+    esac
+fi
+
+# Are the database / UI / AI / adapter ports closed to the internet? (2026-10-21 port audit)
+if [ -x "$INSTALL_DIR/arbiter-firewall.sh" ]; then
+    bash "$INSTALL_DIR/arbiter-firewall.sh" status --quiet >/dev/null 2>&1
+    case $? in
+        0) echo -e "  Public ports:  ${GREEN}5432/6688/3000/8080 closed${NC} on the public interface (arbiter-firewall.sh)" ;;
+        2) echo -e "  Public ports:  ${YELLOW}closed now, but nothing re-applies the rules after a reboot${NC} (no systemd)" ;;
+        4) echo -e "  Public ports:  ${YELLOW}iptables is not installed${NC} - close 5432/6688/3000/8080 with your provider's firewall" ;;
+        *) echo -e "  Public ports:  ${RED}NOT closed${NC} - 5432/6688/3000/8080 are not firewalled; run: $INSTALL_DIR/arbiter-firewall.sh enable" ;;
     esac
 fi
 
