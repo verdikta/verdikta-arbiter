@@ -456,15 +456,17 @@ describe('AnthropicProvider', () => {
 
     beforeEach(() => {
       delete process.env.AI_WEB_ACCESS;
+      delete process.env.AI_WEB_FETCH_FRESH;
       mockInvoke = jest.fn().mockResolvedValue({ content: 'plain answer' });
       MockedChatAnthropic.mockImplementation(() => ({ invoke: mockInvoke }));
     });
 
     afterEach(() => {
       delete process.env.AI_WEB_ACCESS;
+      delete process.env.AI_WEB_FETCH_FRESH;
     });
 
-    test('a prompt with a URL is sent with web_fetch and web_search, the beta header and the web note', async () => {
+    test('a prompt with a URL is sent with web_fetch (fresh) and web_search, the beta header and the web note', async () => {
       mockMessagesCreate.mockResolvedValueOnce(toolTurn('{"score":[0,1000000],"justification":"page says 27-13"}'));
 
       const response = await provider.generateResponse(LINK_PROMPT, 'claude-sonnet-5');
@@ -475,13 +477,24 @@ describe('AnthropicProvider', () => {
       const [body, options] = mockMessagesCreate.mock.calls[0];
       expect(body.model).toBe('claude-sonnet-5');
       expect(body.tools).toEqual([
-        { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: 5, max_content_tokens: 25000 },
+        { type: 'web_fetch_20260309', name: 'web_fetch', max_uses: 5, max_content_tokens: 25000, use_cache: false, allowed_callers: ['direct'] },
         { type: 'web_search_20250305', name: 'web_search', max_uses: 5 },
       ]);
       expect(body.max_tokens).toBe(MODERN_MAX_TOKENS);
       expect(body).not.toHaveProperty('temperature');
       expect(body.messages[0].content[0].text).toBe(`${WEB_ACCESS_NOTE}\n\n${LINK_PROMPT}`);
       expect(options).toEqual({ headers: { 'anthropic-beta': ANTHROPIC_WEB_FETCH_BETA } });
+    });
+
+    test('AI_WEB_FETCH_FRESH=off lets web_fetch use cached copies, and the summary says so', async () => {
+      process.env.AI_WEB_FETCH_FRESH = 'off';
+      mockMessagesCreate.mockResolvedValueOnce(toolTurn('ok'));
+      const onWebRetrieval = jest.fn();
+
+      await provider.generateResponse(LINK_PROMPT, 'claude-sonnet-5', { onWebRetrieval });
+
+      expect(mockMessagesCreate.mock.calls[0][0].tools[0]).toMatchObject({ type: 'web_fetch_20260309', use_cache: true });
+      expect(onWebRetrieval.mock.calls[0][0]).toMatchObject({ fetch_cache: 'allowed' });
     });
 
     test('a prompt without a URL keeps the plain request', async () => {
@@ -570,6 +583,8 @@ describe('AnthropicProvider', () => {
         searches: 0,
         fetch_errors: [{ url: 'https://www.wsj.com/market-data/quotes/MSFT/historical-prices', code: 'url_not_allowed' }],
         page_errors_reported: true,
+        page_times_reported: true,
+        fetch_cache: 'bypassed',
       });
       // The listener is ours, not Anthropic's: it never reaches the request body.
       expect(mockMessagesCreate.mock.calls[0][0]).not.toHaveProperty('onWebRetrieval');

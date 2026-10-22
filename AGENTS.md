@@ -343,7 +343,9 @@ needs, see Port exposure).
 `DROP_UNPROCESSABLE_IMAGES` (default on: an undecodable image is omitted with a
 prompt note instead of failing the request), `AI_WEB_ACCESS` (`auto` default: OpenAI
 and Claude jurors get the providers' web tools when the request contains a URL;
-`always`; `off`) and `AI_WEB_MAX_USES` (tool calls per juror request, default 5).
+`always`; `off`), `AI_WEB_MAX_USES` (tool calls per juror request, default 5) and
+`AI_WEB_FETCH_FRESH` (default on: Claude's `web_fetch` asks for a fresh copy,
+`use_cache: false`; `off` accepts Anthropic's cached copies, which can be a day old).
 Without web tools a model cannot open a link: it only sees the text it is sent.
 What each juror's tools did (pages opened, searches, fetch errors with the
 provider's code) is in `model_results[].web_retrieval` and the `WEB_RETRIEVAL` log
