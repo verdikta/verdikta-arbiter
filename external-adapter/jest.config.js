@@ -1,5 +1,6 @@
 module.exports = {
   testEnvironment: 'node',
+  coverageProvider: 'v8',
   transform: {},
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
@@ -7,4 +8,4 @@ module.exports = {
   },
   testTimeout: 60000,
   setupFiles: ['<rootDir>/jest.setup.js'],
-}; 
+};
