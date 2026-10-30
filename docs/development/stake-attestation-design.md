@@ -5,11 +5,14 @@ after review (PR #96); 2026-10-30 chose stake-backed security attestation as the
 application to build and, in the same revision series, **restructured the document
 around it**. Code bounties, the original framing, are out of scope and summarised
 in Appendix A; the full code-bounty design is in this file's history at `df0e2de`.
+**MVP scope (2026-10-30, owner):** Foundry artifacts only, on a new attestation
+site separate from the bounty site (§17 Phase 1; §20 decisions 17–18).
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, two ClassIDs with hard limits, image pins,
 trusted builder keys, the outcome set), verdikta-applications (a new
-`StakeAttestation` contract and the attestation site: listing, baseline scan,
-feed, record page and badge, the hunter tool, `@verdikta/attest-check`), and
+`StakeAttestation` contract and a **new attestation site, separate from the bounty
+site**: listing, baseline scan, feed, record page and badge, the hunter tool,
+`@verdikta/attest-check`), and
 aggregator configuration (one timeout; the fee ceiling for the premium class).
 
 ---
@@ -120,9 +123,10 @@ posts the request, what a submission is, and what the verdict is for.
 
 **Goals**
 
-- Judge a security claim against a Node, Python or Foundry repository — a
-  proof-of-concept test that fails at the staked commit — on validity, scope,
-  novelty and severity, from execution evidence every arbiter reproduces.
+- Judge a security claim against a repository — a proof-of-concept test that
+  fails at the staked commit — on validity, scope, novelty and severity, from
+  execution evidence every arbiter reproduces. The MVP judges Solidity
+  repositories on the Foundry image; Node and Python follow (§17).
 - Every arbiter on a request reaches the same execution facts. Commit-reveal
   clusters the answers, so divergent evidence costs operators reputation.
 - Untrusted code never gets near the node's keys.
@@ -142,7 +146,8 @@ posts the request, what a submission is, and what the verdict is for.
   never against a deployment.
 - Agent skills and MCP servers as artifacts. Their harness image (§8.8) follows
   Phase 1.
-- Monorepos whose suite cannot finish inside the limits; browser/E2E suites;
+- Node and Python artifacts in the MVP (they are the second release, §17);
+  monorepos whose suite cannot finish inside the limits; browser/E2E suites;
   GPU work; Go (an image follows in Phase 3).
 - Reviewers with a shell during judging (§19; a bounded form — a local
   read/grep tool, then a hosted shell for `code-premium` — arrives in Phase 3).
@@ -367,7 +372,7 @@ publishing, was rejected for the operator exposure (§19).
 | Chainlink job spec | `maxTaskDuration` and bridge timeout 300 s → 840 s |
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§10.8) |
 | `StakeAttestation` (new, verdikta-applications) | Escrow by award table bound to an artifact hash, with lineage; commit (archive hash + ciphertext CID) → fix window → reveal (bCID + keys); bond; bad-disclosure flag; release; dispute escalation; six-outcome settlement; `recordByHash`; the listing feed as events (§13) |
-| Attestation site (verdikta-applications) | Listing flow with the disclosure key and the award table; builder Action, fallback workflow, validation report and **attestation signing**; baseline scan; record page and badge; feed API; the maker's decrypt-and-check step; the dispute form; `@verdikta/attest-check` for runtimes (§14) |
+| Attestation site (verdikta-applications, **a new site**) | A separate application with its own domain, API and contract, not an addition to the bounty site (§20, decision 18). Listing flow with the disclosure key and the award table; builder Action, fallback workflow, validation report and **attestation signing**; baseline scan; record page and badge; feed API; the maker's decrypt-and-check step; the dispute form; `@verdikta/attest-check` for runtimes (§14) |
 | Hunter tool (verdikta-applications) | `check` (the arbiters' pipeline minus the jury, locally), `commit` (encrypt to the disclosure key, pin the ciphertext, keep the keys beside the archive, send the transaction), `reveal`; optional paid pre-flight on the site's runner (§8.6) |
 
 ## 8. Listing and claim: the data contract
@@ -458,8 +463,9 @@ same Action in its own workflow. Either way the site validates the result before
 escrow can open, by running steps 2–3 itself, and only then signs the
 attestation (step 5). The Action:
 
-1. Starts `FROM` a blessed base image (`node22`, `python312`, `foundry`; digests
-   pinned in `@verdikta/common`, platform `linux/amd64`), clones `repo` at
+1. Starts `FROM` a blessed base image (`foundry` in the MVP; `node22` and
+   `python312` in the second release; digests pinned in `@verdikta/common`,
+   platform `linux/amd64`), clones `repo` at
    `baseCommit` and runs the maker's `setup` (`npm ci`, `uv sync --frozen`,
    `forge install`, …) with network access. For a `contract` listing it also
    checks the deployed bytecode's verified source against the repository's
@@ -672,8 +678,8 @@ minutes apart, the ordering costs little time.
 
 ### 8.8 Artifact kinds
 
-`repo` — any repository at a commit on the `node22`, `python312` or `foundry`
-image. `contract` — a `repo` plus a deployment address and chain id, with a
+`repo` — any repository at a commit on a blessed image: `foundry` in the MVP,
+`node22` and `python312` from the second release (§17). `contract` — a `repo` plus a deployment address and chain id, with a
 verified-source check at listing (§8.2); the record page links the deployment.
 `skill` — a skills or MCP package (a `SKILL.md` or server manifest with its
 scripts), judged on a harness image that runs the package's entry points in the
@@ -1387,8 +1393,9 @@ work inside the budget on ordinary hosts.
 
 ## 13. The `StakeAttestation` contract
 
-A new contract in verdikta-applications, a requester of the aggregator like
-`BountyEscrow`, holding the escrow, the claims and the record. This section is
+A new contract in verdikta-applications, deployed beside `BountyEscrow` and, like
+it, a requester of the aggregator, holding the escrow, the claims and the record.
+The bounty site and its contract are untouched (§20, decision 18). This section is
 its specification at the level the Phase 1 implementation and its Hardhat
 fixtures (§18) are written from; storage layout and gas are the
 implementation's business.
@@ -1624,8 +1631,8 @@ scan, funded by the listing fee, as the floor of attention every record gets.
 | Phase | Delivers | Exit criteria |
 |---|---|---|
 | 0. Decisions and schemas | Timeout change approved and hunter-pays confirmed (§20); the two ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (deferred: a single Verdikta key is the placeholder); OpenRouter `systemone` access verified from a canary; `code_review.json` with the `stake` block, `finding.json`, `known_issues.json`, `attestation.json` and the report schema in `@verdikta/common`; the outcome set and settlement rule as a shared helper; the `StakeAttestation` spec (§13) agreed | Schemas merged **and** the fixtures of §18 written as failing tests: forged, missing or duplicate test reports, runtime tampering, an unattested image and an over-limit direct request cannot yield trusted evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another; the settlement rule's cases (median class, below-threshold split, duplicate vs invalid) as unit tests |
-| 1. Execution evidence and the record | `code-runner` (local mode, own `dockerd` and disk); `node22`, `python312` and `foundry` images; builder Action with validation, the harness proof and attestation; the baseline scan; the hunter tool (`check`, `commit`, `reveal`); the `disclosure` gate and the claim gates of §10.1; deadline propagation; report and context pack fed to the existing jury with the four questions; `StakeAttestation` on testnet with the record page, badge and feed; `code-standard` on class 5555 canaries | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; on the calibration set (§18) no false valid on the adversarial claims and ≥ 90% agreement on the clear cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end round with slow jurors, justifier delay, registry failure and cancellation; every contract fixture of §18 passes (bond, dispute, release, embargo, lineage, duplicate order, expiry, depletion); p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
-| 2. Cheap and sharp | `systemone` client, Jev typed questions and rubric juror, claim check on the justification; Jev readiness in the pre-flight (tier 1b) and Jev at listing (§8.6); Semgrep honesty rules and secret scan tuned on the fixtures; cost logging; **published accuracy**: precision and recall per class from on-chain verdicts and dispute outcomes | ≤ $0.30 per arbiter per evaluation on `code-standard`; accuracy no worse than Phase 1; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures; the accuracy page live |
+| 1. MVP: execution evidence and the record, **Foundry only** | `code-runner` (local mode, own `dockerd` and disk); the `foundry` image and the `forge` adapter only (§20, decision 17: one toolchain, native JUnit output, a ready calibration set); builder Action with validation, the harness proof and attestation; the baseline scan; the hunter tool (`check`, `commit`, `reveal`); the `disclosure` gate and the claim gates of §10.1; deadline propagation; report and context pack fed to the existing jury with the four questions; `StakeAttestation` on testnet behind the **new attestation site**: record page, badge and feed; `code-standard` on class 5555 canaries | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; on the Solidity calibration set (§18) no false valid on the adversarial claims and ≥ 90% agreement on the clear cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end round with slow jurors, justifier delay, registry failure and cancellation; every contract fixture of §18 passes (bond, dispute, release, embargo, lineage, duplicate order, expiry, depletion); p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
+| 2. Languages, cheap and sharp | `node22` and `python312` images with the `vitest`, `jest`, `mocha` and `pytest` adapters and their calibration cases; `systemone` client, Jev typed questions and rubric juror, claim check on the justification; Jev readiness in the pre-flight (tier 1b) and Jev at listing (§8.6); Semgrep honesty rules and secret scan tuned on the fixtures; cost logging; **published accuracy**: precision and recall per class from on-chain verdicts and dispute outcomes | Identical report hashes on the Node and Python fixtures across hosts and the per-class accuracy bar met on their calibration cases; ≤ $0.30 per arbiter per evaluation on `code-standard`; accuracy no worse than Phase 1; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures; the accuracy page live |
 | 3. Breadth | the `skill` harness image and its activity-log report (§8.8); enclave or permissioned-class evaluation for closed-source stakes (§14); remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised; yield-bearing escrow if Phase 1 shows the capital lock deters makers; **juror exploration** — first a local read/grep tool in the AI Node over the runner's checkout (tier-A facts, no container cost), then for `code-premium` an optional provider-hosted shell on a copy of the post-patch tree where the juror can grep callers beyond the context pack, read files and, when the repository's dependencies install inside a minute from an allowlisted registry, write and run its own probe tests (§19; ≈ +$0.5–2 per arbiter, priced into the premium fee) | A canary gate per feature; juror-exploration findings labelled as the juror's own observations, never as report facts; mainnet rollout per `docs/release-runbook.md` §3b |
 
 Jev comes in Phase 2 on purpose: execution evidence is what makes the verdicts
@@ -1640,8 +1647,9 @@ handful of popular skills, so the feed is never empty when hunters arrive.
   - **Clear valid:** public audit-contest findings with runnable proofs —
     Code4rena and Sherlock reports whose repositories and fixes are public,
     DeFiHackLabs reproductions on Foundry — repackaged as listings at the
-    vulnerable commit with the finding's own class; SWE-bench-style FAIL_TO_PASS
-    bugs in Node and Python repositories whose fix PR documents the defect.
+    vulnerable commit with the finding's own class — the MVP set; SWE-bench-style
+    FAIL_TO_PASS bugs in Node and Python repositories whose fix PR documents the
+    defect join with their images in Phase 2.
   - **Clear invalid:** tests that assert documented or intended behaviour; tests
     that fail for a reason outside the scope paths; tests whose precondition the
     scope excludes.
@@ -1903,6 +1911,31 @@ confirmation** where marked.
     register a new key; claims already committed keep the key they were
     encrypted to, since the ciphertext is pinned. A maker who cannot use their
     registered key still owes the award on a finding verifiably encrypted to it.
+17. **MVP scope: Foundry only (2026-10-30, owner) — decided.** Most of Phase 1's
+    cost multiplies by language: a reporter adapter, JUnit quirks, identity and
+    summary rules per framework; a builder path and dependency checksums per
+    ecosystem; calibration cases, nondeterminism fixtures and a conformance
+    canary per language. Shipping Solidity on the Foundry image alone removes
+    four framework adapters and two builder paths — on the order of 40% of the
+    runner, builder and validation work — and loses nothing the proposition
+    sells: the paying maker is a protocol on Base, the hunters most able to
+    write runnable proofs today are the smart-contract auditors and their
+    agents, and the record, feed and contract are language-independent. Cost:
+    the open-source-repository story moves to the second release (§17, Phase 2);
+    `repo` on the Foundry image remains allowed. Until the other adapters ship,
+    `@verdikta/common` rejects a spec whose image is not `foundry`
+    (`BASE_IMAGE_UNSUPPORTED`), the way it rejects the `skill` kind.
+18. **A new site, not the bounty site (2026-10-30, owner) — decided; layout
+    proposed.** The attestation product is a separate application with its own
+    domain, API and contract. It shares the aggregator, the code ClassIDs and
+    the arbiter network, and may reuse library code from the bounty program
+    (archive generation, IPFS pinning, the request path) as a dependency, never
+    by adding routes or flows to bounties.verdikta.org; `BountyEscrow` is
+    untouched. Proposed home: a new top-level application in
+    verdikta-applications beside `example-bounty-program/` (working folder name
+    `stake-attestation/`), so the contracts share tooling and the deploy
+    conventions of that repository; a repository of its own is the alternative
+    if the application grows a team of its own.
 
 **Remaining risks** (no decision pending, tracked through the exit criteria):
 
