@@ -1371,11 +1371,12 @@ hunters submit patches, arbiters grade them. Two research rounds (2026-10-27
 and 2026-10-28: *Code bounty market and fee fit* and *Code bounty trends with
 AI agents*, kept with their notes and raw evidence in the private
 `verdikta-knowledge` repository, `initiatives/stake-attestation/research/`)
-found that market closing while the design was under review, and the assessment of 2026-10-29/30 chose a different first
-application for the same machinery. This section records that choice and what
-it changes. §5–§10 stand: the sandbox, the gates, the context pack, the jury
-and the fee plan are unchanged. What changes is who posts the request, what a
-submission is, and what the verdict is for.
+found that market closing while the design was under review, and the assessment
+of 2026-10-29/30 chose a different first application for the same machinery.
+This section records that choice and what it changes. §5–§10 stand: the
+sandbox, the gates, the context pack, the jury and the fee plan are unchanged.
+What changes is who posts the request, what a submission is, and what the
+verdict is for.
 
 ### 16.1 The market finding
 
@@ -1777,20 +1778,23 @@ Nothing in §7 (runner), §9 (time budget) or §10 (failure semantics) changes: 
   `server/utils/validation.js`, `onchain/contracts/BountyEscrow.sol`).
 - Market research for §16 (2026-10-27/28; reports, notes and raw evidence in
   the private `verdikta-knowledge` repository under
-  `initiatives/stake-attestation/research/`): Code4rena wind-down (code4rena.com); curl bounty end and
-  2026 report volume (daniel.haxx.se, 2026-01-26, 2026-05-26, 2026-10-14);
-  hackbots (hackerone.com/blog/2025-hpsr-researcher-signals;
+  `initiatives/stake-attestation/research/`): Code4rena wind-down
+  (code4rena.com); curl bounty end and 2026 report volume (daniel.haxx.se,
+  2026-01-26, 2026-05-26, 2026-10-14); hackbots
+  (hackerone.com/blog/2025-hpsr-researcher-signals;
   hackerone.com/blog/welcome-hackbots-how-ai-shaping-future-vulnerability-discovery;
   xbow.com/blog/series-b; the inference-exceeds-earnings claim is third-party,
   utkusen.substack.com); GitHub payout cuts and submission caps (techtimes.com,
-  2026-07-27); Sherlock Audit Engine (docs.sherlock.xyz/audit-engine/about-audit-engine,
-  …/faq) and Aerodrome's tiered pool (cryptobriefing.com/aerodrome-finance-400k-audit-contest-sherlock);
-  Flare FAssets (immunefi.com, as recorded in the notes); Code4rena's V12
-  known-issue rule (docs.code4rena.com/competitions/submission-guidelines);
-  Anthropic's HackerOne program averages (hackerone.com/anthropic via
-  gigazine.net, 2026-05-08); HackenProof's $5 fee effect (podcast interview, as
-  recorded in the notes; no written source); Internet Bug Bounty pause
-  (hackerone.com/ibb, 2026-03-27); ERC-8004 registry statistics
+  2026-07-27); Sherlock Audit Engine
+  (docs.sherlock.xyz/audit-engine/about-audit-engine, …/faq) and Aerodrome's
+  tiered pool
+  (cryptobriefing.com/aerodrome-finance-400k-audit-contest-sherlock); Flare
+  FAssets (immunefi.com, as recorded in the notes); Code4rena's V12 known-issue
+  rule (docs.code4rena.com/competitions/submission-guidelines); Anthropic's
+  HackerOne program averages (hackerone.com/anthropic via gigazine.net,
+  2026-05-08); HackenProof's $5 fee effect (podcast interview, as recorded in
+  the notes; no written source); Internet Bug Bounty pause (hackerone.com/ibb,
+  2026-03-27); ERC-8004 registry statistics
   (datawallet.com/crypto/erc-8004-explained, secondary); ERC-8183 evaluator
   role (futurehumanism.co/articles/three-laws-agent-commerce-erc-8183-ribbita);
   OpenAI MCP bounty (niteagent.com, single source); platform AI rules census
