@@ -1369,9 +1369,9 @@ tests (§7.3).
 The design above was written for code bounties: a creator pays for a change,
 hunters submit patches, arbiters grade them. Two research rounds (2026-10-27
 and 2026-10-28: *Code bounty market and fee fit* and *Code bounty trends with
-AI agents*, kept with their notes under `reports/` and `research_notes/`,
-outside the tracked tree for now) found that market closing while the design
-was under review, and the assessment of 2026-10-29/30 chose a different first
+AI agents*, kept with their notes and raw evidence in the private
+`verdikta-knowledge` repository, `initiatives/stake-attestation/research/`)
+found that market closing while the design was under review, and the assessment of 2026-10-29/30 chose a different first
 application for the same machinery. This section records that choice and what
 it changes. §5–§10 stand: the sandbox, the gates, the context pack, the jury
 and the fee plan are unchanged. What changes is who posts the request, what a
@@ -1775,8 +1775,9 @@ Nothing in §7 (runner), §9 (time budget) or §10 (failure semantics) changes: 
   `verdikta-dispatcher/reputationBasedAggregator/contracts/ReputationAggregator.sol`;
   `verdikta-applications/example-bounty-program` (`server/utils/archiveGenerator.js`,
   `server/utils/validation.js`, `onchain/contracts/BountyEscrow.sol`).
-- Market research for §16 (2026-10-27/28; reports and notes kept with the
-  branch, untracked): Code4rena wind-down (code4rena.com); curl bounty end and
+- Market research for §16 (2026-10-27/28; reports, notes and raw evidence in
+  the private `verdikta-knowledge` repository under
+  `initiatives/stake-attestation/research/`): Code4rena wind-down (code4rena.com); curl bounty end and
   2026 report volume (daniel.haxx.se, 2026-01-26, 2026-05-26, 2026-10-14);
   hackbots (hackerone.com/blog/2025-hpsr-researcher-signals;
   hackerone.com/blog/welcome-hackbots-how-ai-shaping-future-vulnerability-discovery;
