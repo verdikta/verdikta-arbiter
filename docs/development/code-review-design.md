@@ -2,12 +2,15 @@
 
 **Status:** proposal, 2026-10-16; revised 2026-10-19 after review (PR #96);
 §15 records the decisions taken on 2026-10-19 and the pre-flight fee of
-2026-10-20
+2026-10-20; §16 (2026-10-30) chooses the first application, stake-backed
+security attestation
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, three ClassIDs with hard limits, image pins,
 trusted builder keys), example-bounty-program (code bounty type, environment
 build and attestation, PR submissions, pre-flight checks, PR convention), aggregator configuration
-(one timeout; the fee ceiling for the premium class).
+(one timeout; the fee ceiling for the premium class), and — for the first
+application (§16) — a `StakeAttestation` contract and attestation site flows
+(verdikta-applications).
 
 ---
 
@@ -64,6 +67,14 @@ Eight decisions carry the design:
    one frontier juror (≈ $3.50), a pre-flight check for a small fee credited
    against the prepay (§6.4), and a deterministic context pack sized to the
    change (§8.7–8.8).
+
+A ninth decision, taken on 2026-10-30 after two rounds of market research,
+chooses the **first application** of this machinery: not code bounties but
+**stake-backed security attestation** — a maker escrows awards by severity
+against an exact artifact hash, hunters try to claim them with executed proofs
+of concept, arbiters judge the claims, and the live public record of the stake
+and its history is the product (§16). The pipeline is unchanged; the `bug` kind
+of §6.5 becomes the lead.
 
 ## 2. Goals and non-goals
 
@@ -170,6 +181,7 @@ Evaluation (each selected arbiter; one deadline from EA receipt)
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§8.8) |
 | Bounty program | Code bounty form with micro/standard/premium templates bound to the three classes; builder Action, fallback workflow, validation report and **attestation signing**; `prUrl`/`.patch` submissions checked against a temporary index; **pre-flight check** (tiers 0–1b) and a local CLI before the hunter pays (§6.4); Jev rubric check at creation and submission pre-check (§6.4); PR bot comment and label for bounty submissions (§6.3); code variant of the evaluation query; hunter-diligence text (§6.4); pending-state UI to 15 min |
 | `BountyEscrow` | `prepareSubmission` becomes payable (`preflightFeeWei` per bounty, recorded as `s.preflightPaid`); `startPreparedSubmission` requires `maxTotalFee − s.preflightPaid`; forfeited fees of still-`Prepared` submissions go to an immutable `preflightProvider` (§6.4) |
+| `StakeAttestation` (new, verdikta-applications) | Escrow by severity award table bound to an artifact hash, with lineage; commit → fix window → reveal; hunter bond returned on VALID; maker dispute escalation; `recordByHash` and the listing feed (§16) |
 
 ## 6. Bounty and submission contract
 
@@ -415,8 +427,9 @@ more to submit. A hunter whose patch fails a gate pays $0.24 and keeps $1.16.
 | Must hold (gates) | Patch applies; build passes; acceptance tests pass; no baseline-passing test fails or disappears | PoC tests **fail at base** as test failures, not import/collection errors where the framework tells them apart; with a fix included, they pass |
 | Jury judges | Rubric fit, correctness beyond the tests, test quality, scope, safety | Is the asserted behaviour really required (spec, docs, scope)? Severity? Is the PoC minimal and honest? |
 
-`bug` arrives in Phase 3 together with the Foundry image, where it matters most:
-smart-contract bug bounties.
+`bug` is the lead kind of the first application (§16) and moves into Phase 1
+together with the Foundry image; §16.6 adds three gates to its row. `change`
+bounties use the same pipeline and remain supported.
 
 ## 7. The code runner
 
@@ -1131,9 +1144,9 @@ work inside the budget on ordinary hosts.
 | Phase | Delivers | Exit criteria |
 |---|---|---|
 | 0. Decisions | Timeout change approved and hunter-pays confirmed (§15); the three ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (deferred: a single Verdikta key is the placeholder); OpenRouter `systemone` access verified from a canary; `code_review.json`, `attestation.json` and report schemas in `@verdikta/common` | Schemas merged **and** the adversarial fixtures of §13 written as failing tests: forged, missing or duplicate test reports, runtime test/reporter tampering, an unattested image and an over-limit direct request cannot yield trusted passing evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another |
-| 1. Execution evidence | `code-runner` (local mode, own `dockerd` and disk); `node22` and `python312` images; builder Action with validation and attestation; PR-to-patch submissions with the PR bot comment and label; **pre-flight check (tiers 0–1), payable `prepareSubmission` with the credited fee, and the local CLI** (§6.4); gates and integrity checks; deadline propagation; report and context pack fed to the existing jury; `code-standard` and `code-micro` on class 5555 canaries on testnet | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end run with slow jurors, justifier delay, registry failure and cancellation; prepay and refund cases pass; p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
+| 1. Execution evidence | `code-runner` (local mode, own `dockerd` and disk); `node22` and `python312` images; builder Action with validation and attestation; PR-to-patch submissions with the PR bot comment and label; **pre-flight check (tiers 0–1), payable `prepareSubmission` with the credited fee, and the local CLI** (§6.4); gates and integrity checks; deadline propagation; report and context pack fed to the existing jury; `code-standard` and `code-micro` on class 5555 canaries on testnet; **`bug` kind with the `foundry` image, the `stake` block, and the `StakeAttestation` contract and record page on testnet (§16)** | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; ≥ 90% agreement on the calibration set's clear cases and no false FUND on its adversarial cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end run with slow jurors, justifier delay, registry failure and cancellation; prepay and refund cases pass; the attestation fixtures of §13 pass (bond, dispute, embargo, lineage); p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
 | 2. Cheap and sharp | `systemone` client, Jev annotation and rubric juror, claim check on the justification; Jev readiness in the pre-flight (tier 1b), rubric check at creation and submission pre-check in the bounty program (§6.4); Semgrep and secret scan; Hurl acceptance and API checks; tests-only replay; cost logging | ≤ $0.30 per arbiter per evaluation on `code-standard` and ≤ $0.10 on `code-micro`; accuracy no worse than Phase 1; finding-recall against the Phase 1 unfiltered baseline unchanged, including injected dismissals; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures |
-| 3. Breadth | `bug` bounties with a Foundry image; dependency changes through a registry-only proxy; remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised; **juror exploration** — first a local read/grep tool in the AI Node over the runner's checkout (tier-A facts, no container cost, every class), then for `code-premium` an optional provider-hosted shell on a copy of the post-patch tree where the juror can grep callers beyond the context pack, read files and, when the repository's dependencies install inside a minute from an allowlisted registry, write and run its own probe tests (§14; ≈ +$0.5–2 per arbiter, priced into the premium fee) | A canary gate per feature; juror-exploration findings labelled as the juror's own observations, never as report facts; mainnet rollout per `docs/release-runbook.md` §3b |
+| 3. Breadth | the `skill` harness image and its activity-log report (§16.5); enclave or permissioned-class evaluation for closed-source stakes (§16.9); dependency changes through a registry-only proxy; remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised; **juror exploration** — first a local read/grep tool in the AI Node over the runner's checkout (tier-A facts, no container cost, every class), then for `code-premium` an optional provider-hosted shell on a copy of the post-patch tree where the juror can grep callers beyond the context pack, read files and, when the repository's dependencies install inside a minute from an allowlisted registry, write and run its own probe tests (§14; ≈ +$0.5–2 per arbiter, priced into the premium fee) | A canary gate per feature; juror-exploration findings labelled as the juror's own observations, never as report facts; mainnet rollout per `docs/release-runbook.md` §3b |
 
 Jev comes in Phase 2 on purpose: execution evidence is what makes the grades
 accurate, Jev is what makes them cheap, and every operator in the class needs the
@@ -1172,6 +1185,14 @@ accurate, Jev is what makes them cheap, and every operator in the class needs th
     still-`Prepared` submission at close, and a zero-fee bounty;
   - a time-dependent and a randomness-dependent test, run on two different hosts
     — identical report hash.
+- **Attestation fixtures** (§16; each must settle as written): a PoC that also
+  fails at the fixed hash; one that fails by import error (INVALID, not a
+  finding); a `poc.patch` that edits source (INVALID); a duplicate root cause
+  phrased differently; a known issue listed *after* the hunter's commit (still
+  valid); bond returned on VALID and forfeited on INVALID; a dispute that flips
+  and one that holds; a reveal before the fix window ends (rejected); a later
+  finding recorded against a closed hash; two hunters committing the same root
+  cause minutes apart (first commit paid).
 - Run through `testing-tool` (a new `code` scenario type) and the e2e L4 gate
   against class 5555.
 - Metrics: verdict accuracy; spread of FUND scores across arbiters (σ ≤ 5
@@ -1322,6 +1343,19 @@ document.
    "evidence: in-process" or "evidence: black-box" and warns the creator; the
    adversarial fixtures measure the residue; `code-premium` will require tier A
    if Phase 1 data says the residue matters.
+10. **First application (2026-10-30) — decided: stake-backed security
+    attestation (§16).** Two research rounds (2026-10-27/28) found the
+    code-bounty boards emptied by agent supply and the maintainer's own agent
+    cheaper than a bounty below ≈ $50–$150; the durable demand is for a verdict
+    the requester cannot credibly produce — adversarial independence. The `bug`
+    kind becomes the lead, with an escrow-by-severity contract, a live stake
+    record bound to the artifact hash, commit → fix window → reveal
+    disclosure, a hunter bond returned on VALID, a maker dispute window,
+    "scanned" labelling below a floor, and a seeded registry for skills and MCP
+    servers. `change` bounties keep the same pipeline and remain supported, with
+    `code-micro` still their default. Rejected: a historical "certified after a
+    quiet week" badge (attests almost nothing and is contradicted permanently
+    when wrong); "certification" wording; closed-source private rounds in v1.
 
 **Remaining risks** (no decision pending, tracked through the exit criteria):
 open-weight pools may grade worse than the frontier pair — measured per class,
@@ -1329,6 +1363,372 @@ a short class is withdrawn (§8.4, §12); Jev determinism (§15.2); the residual
 forgery risk on tier-B evidence (§7.5); registry availability (IPFS fallback,
 §6.2); gVisor's wall-clock distortions on repositories with timing-sensitive
 tests (§7.3).
+
+## 16. First application: stake-backed security attestation (2026-10-30)
+
+The design above was written for code bounties: a creator pays for a change,
+hunters submit patches, arbiters grade them. Two research rounds (2026-10-27
+and 2026-10-28: *Code bounty market and fee fit* and *Code bounty trends with
+AI agents*, kept with their notes under `reports/` and `research_notes/`,
+outside the tracked tree for now) found that market closing while the design
+was under review, and the assessment of 2026-10-29/30 chose a different first
+application for the same machinery. This section records that choice and what
+it changes. §5–§10 stand: the sandbox, the gates, the context pack, the jury
+and the fee plan are unchanged. What changes is who posts the request, what a
+submission is, and what the verdict is for.
+
+### 16.1 The market finding
+
+- **Agents emptied the bounty boards; they did not lower the price.** Nominal
+  awards held (Algora's median bounty went $50 → $100 on PRs twice the size;
+  Superteam's development median has been $1,000 every year) while supply
+  exploded (8–158 agent PRs per bounty) and the posters left: Algora's genuine
+  closures went 1,019 → 1,543 → 243 over 2024/25/26 and the company became a
+  recruiter; Polar removed issue funding; IssueHunt and Gitcoin are gone as
+  public boards. Maintainers prompt their own agents (GitHub telemetry puts
+  agent-started PRs above 40% of the total) and close the gate to outside code
+  (tldraw, codex, Ladybird). In-house cost per merged change is about expected
+  attempts × (tokens + review) ≈ $15–$120, review dominating; a bounty beats
+  it only above ≈ $50–$150, and only where the maintainer's own agent cannot
+  act.
+- **Machine judging is the precondition for transacting agent work, not the
+  demand.** Every venue that pays agents is flooded; the ones that survive judge
+  by machine — hidden-test competitions, Sherlock's Audit Engine, Immunefi's
+  triage agent, submission fees. That fixes the cost side. It does not supply a
+  buyer.
+- **The durable demand is for a verdict the requester cannot credibly produce
+  themselves.** A protocol can audit its own code; it cannot credibly tell its
+  users it did. Vendor security payouts kept rising through 2026 (HackerOne
+  $81M → $89M, Google $11.8M → $17.1M) while open-source feature bounties
+  collapsed, because self-audit carries no credibility and an attacker cannot be
+  hired in-house. Flare's FAssets is the illustration: a dedicated review found
+  no highs; a competition one month later with 151 researchers found nine
+  high-severity fund-loss bugs.
+
+Hence the first application: **a maker stakes money against an exact artifact,
+hunters try to claim it with executed proofs of concept, arbiters judge the
+claims, and the public record of that stake and its history is the product.**
+It is the one use case whose demand grows as agents improve, and it is the
+`bug` kind of §6.5 with an escrow and a record around it.
+
+### 16.2 What the record is, and is not
+
+A **stake record** is a live on-chain state bound to an artifact hash:
+
+```
+artifact   hash (repo@commit, contract source@address, or skill package), kind,
+           declared value at risk (optional)
+stake      award table by severity class (wei), bond, opened-at, funded-until
+history    submissions judged (count), verdicts by outcome, valid findings
+           (class, paid, disclosed-at), disputes and their outcomes,
+           days since the last valid finding
+lineage    predecessor hash (what this version fixed), successor hash (what fixed it)
+later      findings recorded against this hash after the stake closed
+```
+
+It is a **warranty anyone can price**, not a certificate. "There are 4 ETH
+escrowed against this hash, 94 days unclaimed, 37 submissions judged, 0 valid"
+is a claim an attacker can test and a reader can check; "certified after a quiet
+week" is neither. Three consequences:
+
+1. **The badge is the live state.** Funds stay escrowed and the stake stays open
+   on that hash while the badge is shown; closing the stake ends the badge and
+   leaves the history. A single quiet week attests only that nobody who looked
+   valued a finding below the award, and a historical badge contradicted later
+   by an exploit is just as permanent as the exploit.
+2. **The record states facts, never a security claim.** What was staked, for
+   how long, what was judged, what was found, what was fixed, what was found
+   later. The words "certified" and "certification" appear nowhere in the
+   contract, the site or the badge: they imply a warranty from Verdikta and
+   invite liability. The record is an *attestation of stake and judgement*.
+3. **The reader interprets the amount.** The record shows the stake, the bond
+   and, when declared, the stake as a share of value at risk. Tiers are not
+   named gold or silver. The site labels a record **scanned** (below the
+   program floor, §16.3), **staked**, **under-staked** (declared value at risk
+   with the stake below a program-set share of it) or **invited** (allow-listed
+   hunters only, §16.9).
+
+### 16.3 What a stake proves
+
+An unclaimed stake means one of five things: no finding exists at the staked
+class; nobody competent looked; someone found one worth more than the award and
+is holding it; the jury wrongly rejected a real finding; or the rules made a
+real finding unclaimable. Which reading applies depends on the award against
+two quantities: the cost of looking and the value of holding.
+
+**The cost of looking is near zero for small artifacts.** Six hackbots filed
+over 1,100 HackerOne reports in a year at about 50% validity; agentic tooling
+turned curl's inbox from under 5% valid in 2025 into a record CVE rate in 2026,
+every one of them low or medium. Two consequences. Any listing a feed announces
+will be scanned, so small stakes do get attention — of the kind the maker could
+buy for a dollar of inference. And "find any bug" will be claimed on any
+nontrivial codebase, so the record is defined by **severity**: the maker stakes
+an award table by class and names the lowest class that counts, and the badge
+reads "no finding at or above *class* while staked". That converges on a
+standard bounty table with escrow and neutral judgement — a product the market
+already understands.
+
+**The value of holding is the hold problem.** A $1,000 stake on a contract
+securing $10M tells every hunter that any real finding is worth more unheld.
+The maker may declare value at risk; the record shows the ratio and labels
+under-staked records. Stakes whose top award is below `badgeFloorWei` (a
+program constant, ≈ $100 at launch) carry no badge wording beyond "scanned".
+
+| Top award | Who looks | What an unclaimed period attests | Record label |
+|---|---|---|---|
+| ≈ $10–$50 | Scanners, if a feed exists | Nothing a scanner reaches; the maker could run that | **scanned** |
+| ≈ $100–$500 | Scanners plus agent passes over small artifacts (skills, MCP servers, small contracts) | No medium-or-worse issue an agent pass finds at that budget; a Medium averages $973 at Anthropic's HackerOne program | **staked** |
+| ≈ $1k–$10k | Serious agent audits, some humans | No High found while staked; a High averages $3,334 in market programs | **staked**; dispute window applies |
+| ≥ $50k | Human specialists | The only level credible for value-bearing code | **staked**; a guaranteed floor draws the effort |
+
+Aerodrome is the precedent for the top row and for the whole shape: after two
+private audits found nothing, a three-week $400k tiered pool on Sherlock's Audit
+Engine ($100k guaranteed, $200k if a High surfaced, $400k if a Critical did),
+and the clean result was the marketing. Hats Finance has sold the
+pay-for-results form for years (budget by severity, retained when nothing is
+found, only the first unique submission paid, 10–20% of payouts as its fee)
+without displacing fixed-fee audits — a caution that the pricing pitch alone
+does not sell, and the reason the live record and the autonomous-hunter supply
+(§16.8) carry the proposition here.
+
+### 16.4 A round
+
+```
+LIST      maker: artifact (repo@commit with an attested image, §6.2), scope paths, award table by
+          class, lowest class counted, bond, fix window, dispute window, known issues (hashes),
+          optional value at risk
+BASELINE  site: pre-flight tier 1 (§6.4) + Semgrep/secret scan + one cheap agent pass; findings go
+          to the maker privately; the maker fixes (new hash) or lists them as known issues; paid by
+          the listing fee
+OPEN      maker escrows the award table; the record goes live; the feed announces the hash
+COMMIT    hunter: bond + class prepay + sha256(archive) on-chain (the timestamp); the archive,
+          encrypted to the maker's key, goes through the site. Nothing is public yet
+FIX       maker has fixWindowDays (default 14; 30 for contracts) to ship a fix as a successor hash;
+          the hunter may not reveal before the window ends or the maker signals FIXED
+REVEAL    hunter pins the archive (bCID); the evaluation runs against the committed hash:
+          gates (§16.6), then jury; outcome in {INVALID, LOW, MEDIUM, HIGH, CRITICAL}
+DISPUTE   disputeWindowHours (default 72): the maker may escalate a VALID by paying the escalation
+          prepay; a larger panel re-evaluates and its outcome is final
+SETTLE    VALID: awards[outcome] to the hunter, bond returned, finding published on IPFS, record
+          updated. INVALID: bond to the maker; the record counts the submission; nothing published
+CONTINUE  the stake rolls to the successor hash once the maker attests the fixed version; the
+          record carries the lineage. CLOSE withdraws the escrow and ends the badge; history stays
+```
+
+Commit → private disclosure → reveal is ordinary coordinated disclosure with an
+on-chain timestamp. The hunter's commit proves the finding predates the fix, so
+"known issue" counts only if it was listed before the commit, and a maker who
+never fixes is judged anyway when the window ends, with the valid unfixed
+finding on their record. Arbiters first see the proof of concept at reveal, so
+the evaluation of §7 runs unchanged and §15.6's rejection of key distribution
+to arbiters stands.
+
+### 16.5 Spec, submission and outcomes
+
+`code_review.json` keeps `kind: "bug"` and gains a `stake` block, schema in
+`@verdikta/common`:
+
+```json
+"stake": {
+  "awards": { "LOW": "0", "MEDIUM": "0.1 ETH", "HIGH": "0.4 ETH", "CRITICAL": "2 ETH" },
+  "lowestClassCounted": "MEDIUM",
+  "bondWei": "…",
+  "fixWindowDays": 14,
+  "disputeWindowHours": 72,
+  "scope": { "include": ["contracts/**"], "exclude": ["test/**", "script/**"] },
+  "knownIssues": ["sha256:…"],
+  "severityRubric": "immunefi-v2.3",
+  "valueAtRiskUsd": 1250000
+}
+```
+
+The **submission archive** (bCID) carries `finding.json` (claimed class, a
+one-paragraph root-cause statement, affected paths, the PoC command and the
+observable it asserts), `report.md`, and `poc.patch` — a patch that adds a
+proof-of-concept test and touches nothing outside the bounty's test paths. A fix
+is optional and, when present, is a second patch, `fix.patch`.
+
+**Outcomes** are `[INVALID, LOW, MEDIUM, HIGH, CRITICAL]`. The jury's vector
+sums to 1,000,000 as today; settlement reads the outcome with the largest mass,
+pays `awards[outcome]` when the outcome is at or above `lowestClassCounted` and
+the mass clears the program threshold, and records the vector either way. A
+gate failure and a jury rejection both arrive as INVALID, which is exactly when
+the bond is forfeited, so **the bond is contract-observable here** — unlike the
+gate-pass deposit §8.8 rejected for `BountyEscrow`, where a gate failure and a
+rejection were indistinguishable and the deposit's return condition was not.
+
+**Artifact kinds.** `repo` — any repository at a commit on the `node22`,
+`python312` or `foundry` image; `contract` — a `repo` plus a deployment address
+and a verified-source check at listing; `skill` — a skills or MCP package (a
+`SKILL.md` or server manifest with its scripts), graded on a harness image that
+runs the package's entry points in the sandbox and records attempted network,
+file and process activity as tier-A facts, against which the PoC asserts.
+`repo` and `contract` are Phase 1; `skill` follows once the harness exists
+(§16.10).
+
+### 16.6 Gates and jury
+
+Gates (deterministic, in the EA, settle as INVALID with no model call):
+
+- `poc.patch` applies and touches only the bounty's test paths — a patch that
+  edits source is a fix, and belongs in `fix.patch`;
+- the PoC test **fails at the committed hash as an assertion failure**, not an
+  import, compile or collection error, on every run of the fixed schedule
+  (§7.3);
+- with `fix.patch` applied, the PoC passes and no baseline-passing test
+  regresses;
+- the integrity checks of §7.5 (forged or missing reports, runtime tampering);
+- the PoC command and the observable claimed in `finding.json` match what the
+  runner recorded.
+
+The jury (code mode, §8.3, with the Verification Report, the diff of
+`poc.patch`, the in-scope source and the known-issues list in the context pack)
+answers four questions: is the asserted behaviour really required by the spec,
+documentation or scope; which class under the bounty's severity rubric; is it a
+known issue or a duplicate of a finding already valid on this hash; is the PoC
+minimal and honest (no environment manipulation, no out-of-scope assumption).
+Jev (§8.2) asks each as a typed question first — `choice` on the class, `noul`
+on "known issue", `noul` on "required behaviour" — and sits on the jury at low
+weight; the frontier jurors decide. Severity is the subjective part and, in
+practice, the only thing a dispute is about; the award table makes the stakes of
+that judgement explicit.
+
+Classes: `code-standard` (≈ $3.50 prepay) is the evaluation class for stakes up
+to about $1k. Above that the listing requires `code-premium` once the fee
+ceiling is raised (§8.8) and, until then, `code-standard` at the largest panel
+its envelope allows. A dispute escalates one class up, or to the largest
+standard panel in Phase 1.
+
+### 16.7 Money
+
+**Hunter.** Pays the class prepay per submission as today (decision 7, §15) and
+posts a **bond**, returned on any VALID outcome and forfeited to the maker on
+INVALID. The bond is the slop filter. A submission with probability *p* of
+being wrongly paid is worth sending when *p* × award > bond, so the bond sets
+the false-VALID rate the stake can tolerate: `bond ≥ p_tolerated × top award`.
+At a 1% tolerance a $1k stake needs a $10 bond and a $10k stake a $100 bond;
+market deposits sit in that range (HackenProof $5, which cut slop by about
+80%; Code4rena 25 USDC; Sherlock $250). The record shows the bond so hunters
+can price it. The pre-flight fee and local CLI (§6.4) apply unchanged: a PoC
+that does not fail at base never reaches the network.
+
+**Maker.** Pays a **listing fee** per 30 days of live stake to the attestation
+provider (the site, in the role `preflightProvider` already plays), which funds
+the baseline scan so no record reads "0 of 0"; the capital lock (tens of
+dollars a year on a $10k stake at current yields); the awards actually claimed;
+and the escalation prepay when disputing. Expected cost is the sum over classes
+of P(finding) × award — pay per finding, against a fixed-fee audit that costs
+the same whether the code is clean or not. A maker with five $1k findings has
+bought a $5k audit with a public receipt; a maker with none has paid a listing
+fee and a lock.
+
+**Arbiters.** Earn the registered class fee per submission as today. Nothing in
+the arbiter payment path changes.
+
+**Verdikta.** The listing fee and its operated arbiters; no share of awards in
+v1 (Hats takes 10–20% of payouts — an option, not a design choice here).
+Revenue concentrates where stakes are large, which is Base protocols; skills
+and MCP servers supply volume, the seeding story (§16.9) and the runtime hook.
+
+### 16.8 Hunter supply
+
+The supply the record needs is turned away elsewhere. HackerOne requires a
+hacker-in-the-loop to validate before submission; Immunefi's terms ban
+AI-generated and scanner reports; Cantina bans unvalidated AI output; GitHub
+caps newcomers at four submissions and moved its top rates to an invite-only
+tier; Sherlock's Audit Engine welcomes "AI auditors" but gates them by
+application, KYC and NDA and pays only participants with at least two valid
+findings and a 20% valid ratio. A venue that **welcomes autonomous hunters
+outright**, judges in minutes, pays on-chain and prices slop with a bond rather
+than a ban is a differentiator, and the likeliest source of attention at the
+$100–$10k tiers.
+
+What it costs them: a thorough agent pass over a small artifact is cents to a
+dollar; over a 10k-line codebase, $5–$50 of agent time. XBOW reportedly spent
+more on inference than it earned in 2025, so the feed must carry enough
+positive-expected-value listings or the hunters leave. Hence the **listing
+feed** (hash, image, scope, award table, bond, days open, submissions so far) as
+a public API from day one, and the baseline scan, funded by the listing fee, as
+the floor of attention every record gets.
+
+### 16.9 Disclosure, privacy, lookup
+
+- **What is public when.** On-chain at commit: the archive hash, the bond and
+  the timestamp. At reveal: the bCID and the evaluation. At settle: the verdict
+  and payout, and the finding body on IPFS only when VALID — an INVALID
+  submission is never published, so slop does not pollute the record. The
+  known-issues list is hashes; sealed bodies reach arbiters inside the
+  evaluation request only for findings already judged VALID and fixed, so an
+  operator never reads an unfixed finding.
+- **Private posting.** Asked for as "post privately so nobody finds the bug
+  before it is fixed". For public artifacts the need is **embargo**, which
+  commit → fix window → reveal provides. For closed-source code every arbiter
+  operator must read it, and a permissionless operator set cannot promise
+  confidentiality without enclaves or a permissioned class: **out of v1**,
+  revisited with the remote-runner work (§12, Phase 3). An **invited** round
+  (allow-listed hunter addresses) is supported and labelled in the record as
+  the weaker attestation it is.
+- **Lookup.** `recordByHash(bytes32)` on the contract and an HTTP mirror; a
+  one-line hook for agent runtimes (`npx @verdikta/attest-check <path|hash>`)
+  resolves a skill or package to its record and applies the caller's own rule
+  ("load only if staked above X with no valid unfixed finding"). ERC-8004's
+  reputation registries were found gamed (Sybil reviewers, empty identities);
+  a stake-backed record is a different kind of signal — escrowed money and
+  judged history, not scores. The chicken-and-egg (runtimes will not check
+  until artifacts are staked; makers will not stake until runtimes check) is
+  broken by **seeding**: Verdikta funds stakes on the most-installed skills and
+  MCP servers, discloses findings to their maintainers through the fix window,
+  and publishes the records — what the Internet Bug Bounty did for third-party
+  open source before it paused in March 2026. The need is live: Koi Security
+  found 341 malicious skills among 2,857 on ClawHub on 1 February 2026 (335
+  shipping a macOS stealer), later audits report four-figure counts, and
+  ClawHub's answer was scanner integration (VirusTotal, ClawScan). OpenAI added
+  MCP servers to its bug bounty in April 2026 at up to $6,500 (single source).
+
+### 16.10 What this changes in the rest of the design
+
+| Where | Change |
+|---|---|
+| §6.5 | `bug` is the lead kind. Its gates gain the test-paths-only, no-regression-with-fix and claimed-observable rules of §16.6; the Foundry image moves from Phase 3 to Phase 1 |
+| §6.1, `@verdikta/common` | `stake` block in `code_review.json`; `finding.json` schema; the outcome set `[INVALID, LOW, MEDIUM, HIGH, CRITICAL]` and the severity-rubric id; artifact kinds; the `skill` harness image and its activity-log report (after Phase 1) |
+| §8.2–8.3 | Jev's typed questions and the jury prompt for `bug`: required behaviour, class, known or duplicate, PoC honesty; the known-issues list in the context pack |
+| §8.4 | `bug` listings evaluate on `code-standard`; stakes above ≈ $1k require `code-premium` once the ceiling is raised; disputes escalate one class |
+| §12 | Phase 1 adds `bug`, the `foundry` image and the `StakeAttestation` contract and record page on testnet; Phase 3 drops `bug` and adds the `skill` harness and the closed-source question |
+| §13 | The attestation fixtures listed there |
+| verdikta-applications | New `StakeAttestation` contract: escrow by award table bound to an artifact hash with lineage; commit → fix window → reveal; bond; dispute escalation; `recordByHash`. Site flows: listing, baseline scan, encrypted disclosure relay, feed, record page and badge; `@verdikta/attest-check` |
+| §15 | Decision 10 |
+
+Nothing in §7 (runner), §9 (time budget) or §10 (failure semantics) changes: a
+`bug` evaluation is a `change` evaluation whose patch is a test.
+
+### 16.11 Risks and open questions
+
+- **Judge accuracy on security findings.** No platform publishes it, Sherlock
+  included. A false VALID pays the maker's stake to slop and ends the product; a
+  false INVALID leaves a bug in and mints a false record. The bond bounds the
+  first; the dispute window and the calibration set (§13) bound both; and
+  because every verdict and dispute outcome is on-chain, Verdikta can publish
+  precision and recall per class — the one metric no competitor publishes.
+  Phase 1 exit: no false VALID on the adversarial fixtures, and the dispute-flip
+  rate measured on canaries.
+- **Hunter supply at the middle tiers** is assumed, not shown; the feed and the
+  seeded stakes are how it is tested. If autonomous hunters do not come, the
+  record degrades to "scanned" and the proposition is a baseline scan plus
+  escrow — weaker, still honest.
+- **Capital lock.** Makers may balk at open-ended escrow. A yield-bearing
+  escrow (stake held in a vault, awards paid from principal) is the obvious
+  mitigation and a contract question for verdikta-applications.
+- **Operator exposure.** Operators read proofs of concept at reveal, after the
+  fix window, and never see unfixed sealed findings. A maker who ships no fix
+  inside the window exposes their users at reveal — by their own choice, and
+  recorded.
+- **Legal.** Safe-harbour terms for hunters (the artifact is tested offline in
+  the sandbox; live systems are out of scope); "certification" is avoided
+  throughout; the record is a statement of stake and judgement.
+- **Demand backdrop.** DeFi TVL roughly halved between October 2025 and May
+  2026 and public audit contests fell 83%; the stake form competes for a
+  shrunken protocol budget, which is why the skills registry is the growth
+  story and the protocols the revenue.
 
 ## Sources
 
@@ -1375,3 +1775,32 @@ tests (§7.3).
   `verdikta-dispatcher/reputationBasedAggregator/contracts/ReputationAggregator.sol`;
   `verdikta-applications/example-bounty-program` (`server/utils/archiveGenerator.js`,
   `server/utils/validation.js`, `onchain/contracts/BountyEscrow.sol`).
+- Market research for §16 (2026-10-27/28; reports and notes kept with the
+  branch, untracked): Code4rena wind-down (code4rena.com); curl bounty end and
+  2026 report volume (daniel.haxx.se, 2026-01-26, 2026-05-26, 2026-10-14);
+  hackbots (hackerone.com/blog/2025-hpsr-researcher-signals;
+  hackerone.com/blog/welcome-hackbots-how-ai-shaping-future-vulnerability-discovery;
+  xbow.com/blog/series-b; the inference-exceeds-earnings claim is third-party,
+  utkusen.substack.com); GitHub payout cuts and submission caps (techtimes.com,
+  2026-07-27); Sherlock Audit Engine (docs.sherlock.xyz/audit-engine/about-audit-engine,
+  …/faq) and Aerodrome's tiered pool (cryptobriefing.com/aerodrome-finance-400k-audit-contest-sherlock);
+  Flare FAssets (immunefi.com, as recorded in the notes); Code4rena's V12
+  known-issue rule (docs.code4rena.com/competitions/submission-guidelines);
+  Anthropic's HackerOne program averages (hackerone.com/anthropic via
+  gigazine.net, 2026-05-08); HackenProof's $5 fee effect (podcast interview, as
+  recorded in the notes; no written source); Internet Bug Bounty pause
+  (hackerone.com/ibb, 2026-03-27); ERC-8004 registry statistics
+  (datawallet.com/crypto/erc-8004-explained, secondary); ERC-8183 evaluator
+  role (futurehumanism.co/articles/three-laws-agent-commerce-erc-8183-ribbita);
+  OpenAI MCP bounty (niteagent.com, single source); platform AI rules census
+  (github.com/munimtechnologies/audit-contest-ai-rules, AI-produced, not peer
+  reviewed).
+- Hats Finance pay-for-results model (2026-10-30): governance.cartesi.io
+  (proposal/313), gov.pooltogether.com (…/3041, 10% fee),
+  forum.dappradar.com (…/1228, budget retained if nothing found),
+  ionprotocol.io/2024/01/17 ($40k pool), medium.com/@metromxyz (20% fee); the
+  "sole pay-for-results platform" claim (cointelegraph.com) is promotional.
+- ClawHub malicious skills (2026-10-30): thehackernews.com/2026/02/researchers-find-341-malicious-clawhub.html
+  (Koi Security, 341 of 2,857, 1 Feb 2026); unit42.paloaltonetworks.com/openclaw-ai-supply-chain-risk/
+  (Feb–May 2026 persistence); antiy.net ClawHavoc analysis; the 1,103-of-14,706
+  figure is from a single secondary guide (insiderllm.com).
