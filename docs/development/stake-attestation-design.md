@@ -639,7 +639,9 @@ version.
 order. INVALID is first so the existing malformed-archive settlement (full mass
 on the first outcome) means what it should. The jury's vector sums to
 1,000,000 as today. The contract settles it with a **threshold `T`** (a program
-constant; 500,000 — a majority — proposed) and the following rule, chosen
+constant; 500,001 — a strict majority — proposed, so an exact tie between two
+classes settles to the lower one and a 50/50 split on validity is not valid)
+and the following rule, chosen
 because jurors disagree about adjacent classes far more often than about
 validity, and a plain argmax would pay nothing on a 40/35/25 split between
 three classes that all say "valid":
