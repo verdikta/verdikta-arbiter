@@ -1192,7 +1192,12 @@ accurate, Jev is what makes them cheap, and every operator in the class needs th
   valid); bond returned on VALID and forfeited on INVALID; a dispute that flips
   and one that holds; a reveal before the fix window ends (rejected); a later
   finding recorded against a closed hash; two hunters committing the same root
-  cause minutes apart (first commit paid).
+  cause minutes apart (first commit paid); a reveal whose plaintext does not
+  hash to the commitment, and one whose re-encryption with the revealed keys
+  does not reproduce the pinned ciphertext (both INVALID, bond forfeited); a
+  bad-disclosure flag followed by a reveal that verifies (claim proceeds, the
+  flag on the record); a listing whose disclosure key the maker cannot use
+  (award still owed).
 - Run through `testing-tool` (a new `code` scenario type) and the e2e L4 gate
   against class 5555.
 - Metrics: verdict accuracy; spread of FUND scores across arbiters (σ ≤ 5
@@ -1350,7 +1355,8 @@ document.
     the requester cannot credibly produce — adversarial independence. The `bug`
     kind becomes the lead, with an escrow-by-severity contract, a live stake
     record bound to the artifact hash, commit → fix window → reveal
-    disclosure, a hunter bond returned on VALID, a maker dispute window,
+    disclosure (verifiable: ciphertext committed, keys revealed, §16.9), a
+    hunter bond returned on VALID, a maker dispute window,
     "scanned" labelling below a floor, and a seeded registry for skills and MCP
     servers. `change` bounties keep the same pipeline and remain supported, with
     `code-micro` still their default. Rejected: a historical "certified after a
@@ -1502,12 +1508,15 @@ BASELINE  site: pre-flight tier 1 (§6.4) + Semgrep/secret scan + one cheap agen
           to the maker privately; the maker fixes (new hash) or lists them as known issues; paid by
           the listing fee
 OPEN      maker escrows the award table; the record goes live; the feed announces the hash
-COMMIT    hunter: bond + class prepay + sha256(archive) on-chain (the timestamp); the archive,
-          encrypted to the maker's key, goes through the site. Nothing is public yet
-FIX       maker has fixWindowDays (default 14; 30 for contracts) to ship a fix as a successor hash;
-          the hunter may not reveal before the window ends or the maker signals FIXED
-REVEAL    hunter pins the archive (bCID); the evaluation runs against the committed hash:
-          gates (§16.6), then jury; outcome in {INVALID, LOW, MEDIUM, HIGH, CRITICAL}
+COMMIT    hunter: bond + class prepay + sha256(archive) + the CID of the archive encrypted to the
+          maker's disclosure key, on-chain (the timestamp). The ciphertext is pinned; the keys stay
+          with the hunter (§16.9). Nothing readable is public yet
+FIX       maker decrypts, checks the hash against the commitment, and has fixWindowDays (default
+          14; 30 for contracts) to ship a fix as a successor hash; the hunter may not reveal before
+          the window ends or the maker signals FIXED
+REVEAL    hunter pins the archive (bCID) and publishes the encryption keys; the evaluation runs
+          against the committed artifact hash: the disclosure check, then the gates (§16.6), then
+          jury; outcome in {INVALID, LOW, MEDIUM, HIGH, CRITICAL}
 DISPUTE   disputeWindowHours (default 72): the maker may escalate a VALID by paying the escalation
           prepay; a larger panel re-evaluates and its outcome is final
 SETTLE    VALID: awards[outcome] to the hunter, bond returned, finding published on IPFS, record
@@ -1522,7 +1531,8 @@ on-chain timestamp. The hunter's commit proves the finding predates the fix, so
 never fixes is judged anyway when the window ends, with the valid unfixed
 finding on their record. Arbiters first see the proof of concept at reveal, so
 the evaluation of §7 runs unchanged and §15.6's rejection of key distribution
-to arbiters stands.
+to arbiters stands; what they see is provably what the maker was given
+(§16.9, "Verifiable disclosure").
 
 ### 16.5 Spec, submission and outcomes
 
@@ -1539,6 +1549,7 @@ to arbiters stands.
   "scope": { "include": ["contracts/**"], "exclude": ["test/**", "script/**"] },
   "knownIssues": ["sha256:…"],
   "severityRubric": "immunefi-v2.3",
+  "disclosureKey": "age1…",
   "valueAtRiskUsd": 1250000
 }
 ```
@@ -1547,7 +1558,9 @@ The **submission archive** (bCID) carries `finding.json` (claimed class, a
 one-paragraph root-cause statement, affected paths, the PoC command and the
 observable it asserts), `report.md`, and `poc.patch` — a patch that adds a
 proof-of-concept test and touches nothing outside the bounty's test paths. A fix
-is optional and, when present, is a second patch, `fix.patch`.
+is optional and, when present, is a second patch, `fix.patch`. The archive's
+bytes are fixed at commit; the content key and ephemeral key that unlock the
+maker's copy travel in the reveal transaction, not inside the archive (§16.9).
 
 **Outcomes** are `[INVALID, LOW, MEDIUM, HIGH, CRITICAL]`. The jury's vector
 sums to 1,000,000 as today; settlement reads the outcome with the largest mass,
@@ -1571,6 +1584,10 @@ file and process activity as tier-A facts, against which the PoC asserts.
 
 Gates (deterministic, in the EA, settle as INVALID with no model call):
 
+- the revealed archive hashes to the `sha256(archive)` committed on-chain, and
+  re-encrypted with the revealed keys to the listing's `disclosureKey` it
+  reproduces the ciphertext pinned at commit, byte for byte (§16.9) — anything
+  else is a reveal of something other than what the maker was given;
 - `poc.patch` applies and touches only the bounty's test paths — a patch that
   edits source is a fix, and belongs in `fix.patch`;
 - the PoC test **fails at the committed hash as an assertion failure**, not an
@@ -1654,13 +1671,44 @@ the floor of attention every record gets.
 
 ### 16.9 Disclosure, privacy, lookup
 
-- **What is public when.** On-chain at commit: the archive hash, the bond and
-  the timestamp. At reveal: the bCID and the evaluation. At settle: the verdict
-  and payout, and the finding body on IPFS only when VALID — an INVALID
-  submission is never published, so slop does not pollute the record. The
-  known-issues list is hashes; sealed bodies reach arbiters inside the
-  evaluation request only for findings already judged VALID and fixed, so an
-  operator never reads an unfixed finding.
+- **What is public when.** On-chain at commit: the archive hash, the CID of
+  the encrypted archive, the bond and the timestamp. At reveal: the bCID, the
+  encryption keys and the evaluation. At settle: the verdict and payout, and
+  the finding body on IPFS only when VALID — an INVALID submission is never
+  published, so slop does not pollute the record. The known-issues list is
+  hashes; sealed bodies reach arbiters inside the evaluation request only for
+  findings already judged VALID and fixed, so an operator never reads an
+  unfixed finding.
+- **Verifiable disclosure.** The maker's copy and the revealed archive are the
+  same bytes by construction, not on anyone's word. At listing the maker
+  registers a **disclosure key** in the `stake` block: a dedicated public key
+  for an age-style hybrid scheme (X25519 key wrap plus authenticated symmetric
+  encryption; libsodium's `box` is equivalent), never the wallet key, which
+  wallets do not expose for decryption. At commit the hunter's tool draws a
+  fresh content key and ephemeral key, encrypts the archive to the disclosure
+  key, pins the **ciphertext** to IPFS (encrypted bytes are safe in public)
+  and records two commitments on-chain: `sha256(archive)` and the ciphertext
+  CID. The keys stay with the hunter's tool, stored beside the archive. The
+  maker fetches the ciphertext, decrypts it and compares the hash to the
+  commitment; a copy that does not decrypt or does not match is flagged
+  on-chain as a **bad disclosure** within `disclosureGraceHours` (48 proposed)
+  — a claim, not a verdict, free to raise, and shown on the record. At reveal
+  the hunter pins the plaintext archive (bCID) and puts the content key and
+  ephemeral key in the reveal transaction, from where they reach the arbiters
+  with the evaluation request; nothing is secret any more. The first gate of
+  §16.6 then verifies both commitments in every arbiter: the plaintext hashes
+  to `sha256(archive)`, and re-running the encryption with the revealed keys
+  and the listed disclosure key reproduces the pinned ciphertext byte for byte
+  — the schemes named are deterministic once the randomness is supplied.
+  Either failure settles INVALID and forfeits the bond through the
+  malformed-archive path. Consequences: a hunter cannot disclose one thing and
+  reveal another; a maker cannot falsely claim a bad disclosure, because a
+  flag followed by a verified reveal is itself on the record; arbiters need no
+  key, and the maker's private key is used by nobody but the maker. The
+  residual responsibilities sit where they belong: a maker who registers a key
+  they cannot use still owes the award on a finding verifiably encrypted to
+  it; a hunter who loses the keys cannot reveal and forfeits the bond, so the
+  tool keeps them with the archive.
 - **Private posting.** Asked for as "post privately so nobody finds the bug
   before it is fixed". For public artifacts the need is **embargo**, which
   commit → fix window → reveal provides. For closed-source code every arbiter
@@ -1690,13 +1738,13 @@ the floor of attention every record gets.
 
 | Where | Change |
 |---|---|
-| §6.5 | `bug` is the lead kind. Its gates gain the test-paths-only, no-regression-with-fix and claimed-observable rules of §16.6; the Foundry image moves from Phase 3 to Phase 1 |
-| §6.1, `@verdikta/common` | `stake` block in `code_review.json`; `finding.json` schema; the outcome set `[INVALID, LOW, MEDIUM, HIGH, CRITICAL]` and the severity-rubric id; artifact kinds; the `skill` harness image and its activity-log report (after Phase 1) |
+| §6.5 | `bug` is the lead kind. Its gates gain the disclosure check, the test-paths-only, no-regression-with-fix and claimed-observable rules of §16.6; the Foundry image moves from Phase 3 to Phase 1 |
+| §6.1, `@verdikta/common` | `stake` block in `code_review.json` (including `disclosureKey`); `finding.json` schema; the reveal's key pair as a typed payload; the outcome set `[INVALID, LOW, MEDIUM, HIGH, CRITICAL]` and the severity-rubric id; artifact kinds; the `skill` harness image and its activity-log report (after Phase 1) |
 | §8.2–8.3 | Jev's typed questions and the jury prompt for `bug`: required behaviour, class, known or duplicate, PoC honesty; the known-issues list in the context pack |
 | §8.4 | `bug` listings evaluate on `code-standard`; stakes above ≈ $1k require `code-premium` once the ceiling is raised; disputes escalate one class |
 | §12 | Phase 1 adds `bug`, the `foundry` image and the `StakeAttestation` contract and record page on testnet; Phase 3 drops `bug` and adds the `skill` harness and the closed-source question |
 | §13 | The attestation fixtures listed there |
-| verdikta-applications | New `StakeAttestation` contract: escrow by award table bound to an artifact hash with lineage; commit → fix window → reveal; bond; dispute escalation; `recordByHash`. Site flows: listing, baseline scan, encrypted disclosure relay, feed, record page and badge; `@verdikta/attest-check` |
+| verdikta-applications | New `StakeAttestation` contract: escrow by award table bound to an artifact hash with lineage; commit (archive hash + ciphertext CID) → fix window → reveal (bCID + keys); bond; bad-disclosure flag; dispute escalation; `recordByHash`. Site flows: listing with a disclosure key, baseline scan, ciphertext pinning, feed, record page and badge; `@verdikta/attest-check`; a hunter tool that encrypts, pins and keeps the keys (§16.9) |
 | §15 | Decision 10 |
 
 Nothing in §7 (runner), §9 (time budget) or §10 (failure semantics) changes: a
@@ -1730,6 +1778,21 @@ Nothing in §7 (runner), §9 (time budget) or §10 (failure semantics) changes: 
   2026 and public audit contests fell 83%; the stake form competes for a
   shrunken protocol budget, which is why the skills registry is the growth
   story and the protocols the revenue.
+- **Fix-window signals.** The only early exit is FIXED. A maker who believes a
+  claim is invalid has no honest way to shorten the window; the candidate
+  addition is a RELEASE signal (waive the window without a fix; reveal allowed
+  at once), with the record showing which signal ended the window.
+- **Hunter capital during the window.** The bond and the prepay sit locked for
+  up to 14 or 30 days before any payout, on top of the agent time spent. Short
+  by disclosure norms, but a cost the feed should show per listing, and a
+  reason to keep the window defaults modest.
+- **Unrevealed commits.** A hunter who never reveals has still handed the
+  maker a verified finding. Proposed: after `revealWindowDays` past the fix
+  window the bond forfeits to the maker, the commit is recorded as unrevealed
+  and nothing is published.
+- **Disclosure-key custody.** Registration at listing is settled (§16.9);
+  rotation mid-stake (a successor hash may carry a new key; commits already
+  made keep the old one) and loss (the award is still owed) are not.
 
 ## Sources
 
