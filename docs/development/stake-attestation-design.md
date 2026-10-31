@@ -645,9 +645,9 @@ version.
 order. INVALID is first so the existing malformed-archive settlement (full mass
 on the first outcome) means what it should. The jury's vector sums to
 1,000,000 as today. The contract settles it with a **threshold `T`** (a program
-constant; 500,001 — a strict majority — proposed, so an exact tie between two
-classes settles to the lower one and a 50/50 split on validity is not valid)
-and the following rule, chosen
+constant, 500,001, a strict majority, so an exact tie between two classes
+settles to the lower one and a 50/50 split on validity is not valid; confirmed
+2026-10-31) and the following rule, chosen
 because jurors disagree about adjacent classes far more often than about
 validity, and a plain argmax would pay nothing on a 40/35/25 split between
 three classes that all say "valid":
@@ -1806,8 +1806,9 @@ handful of popular skills, so the feed is never empty when hunters arrive.
 
 Each item records the options weighed, the decision, and what it changed in the
 document. Decisions 1–8 were taken on 2026-10-19/20 and 2026-10-30 under the
-earlier structure; 9–16 are this revision's and are **proposed for the owner's
-confirmation** where marked.
+earlier structure; 9–16 were proposed by the 2026-10-30 restructure and
+**confirmed as written by the owner on 2026-10-31**; 17–18 are the owner's MVP
+decisions of 2026-10-30.
 
 1. **`responseTimeoutSeconds` 300 → 900 s on both aggregators — decided: raise
    globally.** The timeout is global per aggregator, so a stuck text round also
@@ -1875,7 +1876,7 @@ confirmation** where marked.
    calibration set leave the document (Appendix A records them). `kind` stays in
    the schema with `bug` as its only value, so another kind can return without a
    format change.
-10. **A DUPLICATE outcome, settled in commit order — proposed.** With five
+10. **A DUPLICATE outcome, settled in commit order — decided (confirmed 2026-10-31).** With five
     outcomes a known issue or a duplicate could only settle INVALID, which
     forfeits an honest second hunter's bond; the product summary promises
     hunters that the bond prices mistakes, and a duplicate is not one.
@@ -1885,29 +1886,29 @@ confirmation** where marked.
     bond, pays nothing, publishes nothing, spends the prepay; reveals are
     accepted in commit order so the prior finding is in front of the jury
     (§8.7, §13.3).
-11. **Settlement by median class under a threshold — proposed.** Plain argmax
+11. **Settlement by median class under a threshold — decided (confirmed 2026-10-31).** Plain argmax
     with a 50% threshold pays nothing when three valid classes split 40/35/25;
     the median-class rule (highest class whose mass at-or-above reaches the
     threshold) pays the class a majority agrees is at least met, and validity is
     the valid mass against the same threshold (§8.7). The alternative, argmax
     with no threshold, lets a 34% plurality decide a CRITICAL payout.
-12. **Known issues public and fixed at listing — proposed.** Hash-only or
+12. **Known issues public and fixed at listing — decided (confirmed 2026-10-31).** Hash-only or
     sealed bodies cannot be applied by the jury (§8.4, §19). Additions after
     open are not supported: fix and roll forward, or leave it claimable.
-13. **RELEASE signal and roll-forward as FIXED — proposed.** A maker who
+13. **RELEASE signal and roll-forward as FIXED — decided (confirmed 2026-10-31).** A maker who
     believes a claim is bogus had no honest way to shorten the window; `release`
     waives it for one claim and is recorded. A roll-forward ends the window for
     every pending claim on the predecessor (§7.1, §13.2).
-14. **`fix.patch` is informational — proposed.** The earlier revision's gates
+14. **`fix.patch` is informational — decided (confirmed 2026-10-31).** The earlier revision's gates
     (16.6 at `df0e2de`) made "with the fix, the PoC passes and nothing regresses" a gate, so a valid
     finding with a flawed fix would have been INVALID with the bond forfeited.
     The fix is now checked and reported, never gating; the maker sees whether
     it verified (§9.2).
-15. **Unrevealed commits expire — proposed.** `revealWindowDays` (7) after a
+15. **Unrevealed commits expire — decided (confirmed 2026-10-31).** `revealWindowDays` (7) after a
     claim becomes revealable, anyone may expire it: bond to the maker, prepay
     back, recorded as unrevealed. A hunter who never reveals has still handed
     the maker a verified finding; the bond is the price of walking away.
-16. **Disclosure-key rotation and loss — proposed.** A successor listing may
+16. **Disclosure-key rotation and loss — decided (confirmed 2026-10-31).** A successor listing may
     register a new key; claims already committed keep the key they were
     encrypted to, since the ciphertext is pinned. A maker who cannot use their
     registered key still owes the award on a finding verifiably encrypted to it.
