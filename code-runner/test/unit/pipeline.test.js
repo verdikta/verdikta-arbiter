@@ -318,10 +318,11 @@ test('when the probe cannot start after a step and the pid table is full, the ru
         probes += 1;
         // The probe at launch works; the one after the storm cannot start.
         if (probes === 1) return { stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n' };
-        return { exitCode: 126, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: resource temporarily unavailable: unknown' };
+        // As GitHub's runner printed it: on stdout, exit 128.
+        return { exitCode: 128, stdout: 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n' };
       }
     }),
-    stats: () => ({ stdout: '4096\n' })
+    stats: () => ({ stdout: '4095\n' })
   });
   const steps = [async (ctx) => { await ctx.exec(['sh', '-c', 'storm'], { name: 'storm' }); }];
   const { result } = await run({ docker, steps });

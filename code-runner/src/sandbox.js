@@ -356,8 +356,13 @@ class Sandbox {
     const r = await runText(this.docker, execArgs({ name: this.name, argv: ['head', '-n', '20', ...COUNTER_FILES] }), within(CONTROL_TIMEOUT_MS, signal));
     if (r.spawnError) return { counters: null, startFailed: false, error: r.spawnError };
     const counters = parseCounters(r.stdout);
-    const startFailed = !counters && r.exitCode !== 0 && r.stdout === '' && PROBE_START_FAILED.test(r.stderr);
-    return { counters, startFailed, error: startFailed ? r.stderr.split('\n')[0].slice(0, 300) : null };
+    // The CLI can print this failure on stdout (seen on GitHub's runners:
+    // "OCI runtime exec failed: ... unable to spawn stage-1: Resource
+    // temporarily unavailable", exit 128), so look at both streams.
+    const said = `${r.stdout}\n${r.stderr}`;
+    const startFailed = !counters && r.exitCode !== 0 && PROBE_START_FAILED.test(said);
+    const error = startFailed ? (said.split(/\r?\n/).find((l) => PROBE_START_FAILED.test(l)) || '').slice(0, 300) : null;
+    return { counters, startFailed, error };
   }
 
   /** The number of tasks in the sandbox, as Docker counts them (`docker stats`). */
