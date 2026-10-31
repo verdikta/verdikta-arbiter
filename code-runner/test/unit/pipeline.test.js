@@ -446,3 +446,18 @@ test('a run-level kill answers by the deadline even when the step never returns'
   assert.equal(result.abstain.cause, 'step_timeout');
   assert.ok(elapsed < 1400, `answered after ${elapsed} ms, past the 1100 ms deadline`);
 });
+
+test('a step whose process could not be spawned abstains even when the probes after it work', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: () => ({ exitCode: 128, stdout: 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n' })
+  }));
+  const steps = [async (ctx) => {
+    const r = await ctx.exec(['forge', 'build'], { name: 'build' });
+    ctx.gate('build', r.exitCode === 0 ? 'pass' : 'fail', 'exit_code');
+  }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.equal(result.abstain.step, 'build');
+  assert.deepEqual(result.gates, {}, 'no gate decided on a command that never ran');
+});

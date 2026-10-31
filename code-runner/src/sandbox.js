@@ -298,6 +298,7 @@ class Sandbox {
       spawnError: r.spawnError,
       exitCode: r.exitCode,
       cliSignal: r.signal && !r.aborted && !r.timedOut ? r.signal : null,
+      stdoutHead: stdout.snapshot().head.subarray(0, 4096).toString('utf8'),
       stderrHead: stderr.snapshot().head.subarray(0, 4096).toString('utf8'),
       state: null,
       inspectError: null,

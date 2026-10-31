@@ -109,6 +109,10 @@ function signalName(exitCode) {
 }
 
 const DAEMON_UNREACHABLE = /Cannot connect to the Docker daemon|error during connect|permission denied while trying to connect to the Docker daemon/i;
+/** docker exec's own report that the step's process never started. */
+const OCI_START_FAILED = /^(?:docker: )?(?:Error response from daemon: )?OCI runtime (?:exec|create|start) failed/;
+/** ...for a reason that is the image's and the same on every host: the program is not there, or not executable. */
+const OCI_DETERMINISTIC = /executable file not found in \$PATH|no such file or directory|permission denied/i;
 
 function increased(before, after, key) {
   if (!before || !after) return false;
@@ -125,6 +129,7 @@ function increased(before, after, key) {
  * @param {number|null} obs.exitCode - the CLI's exit code (the process's, for a clean exec)
  * @param {string|null} obs.cliSignal - the CLI died of a signal the runner did not send
  * @param {string} obs.stderrHead - the first bytes of stderr (the CLI's own errors land here)
+ * @param {string} [obs.stdoutHead] - the first bytes of stdout (some CLIs print exec failures here)
  * @param {null|{missing:true}|{running:boolean,oomKilled:boolean,exitCode:number,status:string}} obs.state
  *   the container after the step (`null` when inspect failed)
  * @param {null|'unreachable'|'error'} obs.inspectError
@@ -174,10 +179,23 @@ function classifyExec(obs) {
   if (!Number.isInteger(code)) return abstain(ABSTAIN.DOCKER_ERROR, 'the step ended without an exit code');
   if (code === 137) return abstain(ABSTAIN.OOM, 'the step was killed with SIGKILL (exit 137), as the OOM killer does');
   if (code > 128) return abstain(ABSTAIN.KILLED_BY_SIGNAL, `the step died of ${signalName(code)} (exit ${code})`);
-  const head = obs.stderrHead || '';
-  if (code !== 0 && DAEMON_UNREACHABLE.test(head)) return abstain(ABSTAIN.DOCKER_UNREACHABLE, 'the Docker daemon could not be reached');
-  if (code !== 0 && /^(docker: )?Error response from daemon:/.test(head)) {
-    return abstain(ABSTAIN.DOCKER_ERROR, `the daemon refused the step: ${head.split('\n')[0].slice(0, 200)}`);
+  if (code !== 0) {
+    // The CLI's own errors come first on one of the streams (GitHub's
+    // runners print an exec failure on stdout).
+    const heads = [obs.stderrHead || '', obs.stdoutHead || ''].map((h) => h.replace(/^\s+/, ''));
+    const firstLine = (h) => h.split(/\r?\n/)[0].slice(0, 200);
+    for (const head of heads) {
+      if (DAEMON_UNREACHABLE.test(firstLine(head))) return abstain(ABSTAIN.DOCKER_UNREACHABLE, 'the Docker daemon could not be reached');
+    }
+    for (const head of heads) {
+      if (OCI_START_FAILED.test(head)) {
+        if ((code === 126 || code === 127) && OCI_DETERMINISTIC.test(firstLine(head))) break;
+        return abstain(ABSTAIN.DOCKER_ERROR, `the step's process could not be started: ${firstLine(head)}`);
+      }
+      if (/^(?:docker: )?Error response from daemon:/.test(head)) {
+        return abstain(ABSTAIN.DOCKER_ERROR, `the daemon refused the step: ${firstLine(head)}`);
+      }
+    }
   }
   return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: code };
 }

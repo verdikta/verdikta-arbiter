@@ -14,7 +14,7 @@ const ZERO = { oomKill: 0, pidsMax: 0 };
 
 function obs(over = {}) {
   return {
-    killedBy: null, spawnError: null, exitCode: 0, cliSignal: null, stderrHead: '',
+    killedBy: null, spawnError: null, exitCode: 0, cliSignal: null, stderrHead: '', stdoutHead: '',
     state: RUNNING, inspectError: null, counters: { before: ZERO, after: ZERO }, runtime: 'runsc',
     ...over
   };
@@ -87,6 +87,21 @@ test('Docker trouble abstains', () => {
   assert.equal(cause({ exitCode: 1, stderrHead: 'Cannot connect to the Docker daemon at unix:///x. Is the docker daemon running?' }), ABSTAIN.DOCKER_UNREACHABLE);
   assert.equal(cause({ exitCode: 1, stderrHead: 'Error response from daemon: container is paused' }), ABSTAIN.DOCKER_ERROR);
   assert.equal(cause({ exitCode: null, cliSignal: 'SIGSEGV' }), ABSTAIN.DOCKER_ERROR);
+});
+
+test('a step whose process never started is not a definitive exit, unless the image simply lacks the program', () => {
+  const spawn = 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n';
+  assert.equal(cause({ exitCode: 128, stdoutHead: spawn }), ABSTAIN.DOCKER_ERROR);
+  assert.equal(cause({ exitCode: 126, stderrHead: spawn }), ABSTAIN.DOCKER_ERROR);
+  assert.equal(cause({ exitCode: 1, stderrHead: 'Error response from daemon: OCI runtime exec failed: unable to start container process: unknown' }), ABSTAIN.DOCKER_ERROR);
+  assert.equal(cause({ exitCode: 1, stdoutHead: 'Error response from daemon: container abc is restarting' }), ABSTAIN.DOCKER_ERROR);
+  // Deterministic: the binary is not in the image, or not executable.
+  const missing = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "forge": executable file not found in $PATH: unknown\r\n';
+  assert.deepEqual(classifyExec(obs({ exitCode: 127, stderrHead: missing })), { kind: 'definitive', basis: 'exit_code', exitCode: 127 });
+  const denied = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "/etc/passwd": permission denied: unknown';
+  assert.equal(classifyExec(obs({ exitCode: 126, stdoutHead: denied })).kind, 'definitive');
+  // Program output that merely mentions it later is the program's business.
+  assert.equal(classifyExec(obs({ exitCode: 1, stdoutHead: 'building...\nOCI runtime exec failed? no\n' })).kind, 'definitive');
 });
 
 test('a process killed by a signal is not a clean exit', () => {
