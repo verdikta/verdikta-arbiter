@@ -91,7 +91,10 @@ async function executeRun({
   // Run-level kill switch: the deadline, the run budget, the caller.
   const run = new AbortController();
   const sandboxes = [];
-  let current = null;
+  // The steps in flight (the fix check may run beside the PoC, §11), for
+  // naming the step a run-level kill interrupted.
+  const running = new Set();
+  const current = () => (running.size ? [...running].join(', ') : null);
   const kill = (reason) => {
     if (run.signal.aborted) return;
     run.abort(reason);
@@ -106,7 +109,7 @@ async function executeRun({
   const killed = new Promise((_, reject) => {
     run.signal.addEventListener('abort', () => {
       const [cause, detail] = RUN_KILL_CAUSE[run.signal.reason];
-      reject(new Abstain(cause, detail, { step: current }));
+      reject(new Abstain(cause, detail, { step: current() }));
     }, { once: true });
   });
   killed.catch(() => {});
@@ -130,9 +133,13 @@ async function executeRun({
     sandboxes.push(sb);
     const late = stopped('launch');
     if (late) throw late;
-    current = 'launch';
-    await sb.launch({ image, limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
-    current = null;
+    const label = sandboxes.length === 1 ? 'launch' : `launch:${name}`;
+    running.add(label);
+    try {
+      await sb.launch({ image, limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
+    } finally {
+      running.delete(label);
+    }
     return handle(sb);
   }
 
@@ -149,7 +156,7 @@ async function executeRun({
         const stepName = name || argv[0];
         const late = stopped(stepName);
         if (late) throw late;
-        current = stepName;
+        running.add(stepName);
         const step = new AbortController();
         const forward = () => step.abort(run.signal.reason);
         run.signal.addEventListener('abort', forward, { once: true });
@@ -162,7 +169,7 @@ async function executeRun({
         } finally {
           if (timer) clearTimeout(timer);
           run.signal.removeEventListener('abort', forward);
-          current = null;
+          running.delete(stepName);
         }
       },
       /**
@@ -173,7 +180,7 @@ async function executeRun({
         const stepName = name || `read:${filePath}`;
         const late = stopped(stepName);
         if (late) throw late;
-        current = stepName;
+        running.add(stepName);
         const step = new AbortController();
         const forward = () => step.abort(run.signal.reason);
         run.signal.addEventListener('abort', forward, { once: true });
@@ -186,7 +193,7 @@ async function executeRun({
         } finally {
           if (timer) clearTimeout(timer);
           run.signal.removeEventListener('abort', forward);
-          current = null;
+          running.delete(stepName);
         }
       }
     };
@@ -212,7 +219,7 @@ async function executeRun({
       receivedAt
     };
     for (const step of steps) {
-      const late = stopped(current);
+      const late = stopped(null);
       if (late) throw late;
       await step(ctx);
     }
@@ -222,7 +229,7 @@ async function executeRun({
   try {
     await Promise.race([work, killed]);
   } catch (err) {
-    abstainWith(asAbstain(err, current));
+    abstainWith(asAbstain(err, current()));
     if (run.signal.aborted) {
       // Give the killed exec a moment to report what it saw.
       await Promise.race([work.catch(() => {}), delay(KILL_GRACE_MS)]);
