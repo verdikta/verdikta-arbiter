@@ -235,8 +235,8 @@ async function executeRun({
   } catch (err) {
     abstainWith(asAbstain(err, current()));
     if (run.signal.aborted) {
-      // Give the killed exec a moment to report what it saw.
-      await Promise.race([work.catch(() => {}), delay(KILL_GRACE_MS)]);
+      // Give the killed exec a moment to report what it saw, within the deadline.
+      await Promise.race([work.catch(() => {}), delay(Math.min(KILL_GRACE_MS, Math.max(0, deadlineAt - Date.now())))]);
     }
   } finally {
     for (const t of timers) clearTimeout(t);

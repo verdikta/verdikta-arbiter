@@ -344,7 +344,10 @@ test('a counters probe that fails for any other reason is not a pass', async () 
     [() => ({ exitCode: 1, stderr: 'Cannot connect to the Docker daemon at unix:///x.sock. Is the docker daemon running?' }), 'docker_unreachable'],
     [() => ({ spawnError: 'spawn docker ENOENT' }), 'docker_unreachable'],
     [() => ({ exitCode: 1, stderr: "head: cannot open '/sys/fs/cgroup/pids.events' for reading: Permission denied" }), 'docker_error'],
-    [() => ({ exitCode: 137 }), 'docker_error']
+    [() => ({ exitCode: 137 }), 'docker_error'],
+    // Some counters printed, then a failure: still no check.
+    [() => ({ exitCode: 1, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n', stderr: "head: cannot open '/sys/fs/cgroup/pids.events' for reading: Permission denied\n" }), 'docker_error'],
+    [() => ({ exitCode: 137, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n' }), 'docker_error']
   ];
   for (const [after, expected] of cases) {
     let probes = 0;
@@ -414,4 +417,32 @@ test('counter files that do not exist (gVisor) are not a problem', async () => {
   }));
   const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['true'], { name: 'ok' }); }] });
   assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+});
+
+test('missing counter files of the other cgroup version are fine, with or without the rest', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: () => ({ exitCode: 1 }),
+    counters: () => ({
+      exitCode: 1,
+      stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n',
+      stderr: "head: cannot open '/sys/fs/cgroup/memory/memory.oom_control' for reading: No such file or directory\nhead: cannot open '/sys/fs/cgroup/pids/pids.events' for reading: No such file or directory\n"
+    })
+  }));
+  const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['forge', 'build'], { name: 'build' }); }] });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+  assert.equal(result.steps[0].exitCode, 1);
+});
+
+test('a run-level kill answers by the deadline even when the step never returns', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const started = Date.now();
+  const { result } = await run({
+    docker, config, deadlineMs: 1100, lim: limits({ runSeconds: 1, testSeconds: 1 }), admit: noAdmission,
+    steps: [async () => { await never(); }]
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(result.abstain.cause, 'step_timeout');
+  assert.ok(elapsed < 1400, `answered after ${elapsed} ms, past the 1100 ms deadline`);
 });

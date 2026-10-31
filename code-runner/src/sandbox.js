@@ -391,14 +391,16 @@ class Sandbox {
     if (r.timedOut || r.aborted) return { outcome: 'failed', counters: null, error: 'the counters probe did not finish' };
     if (isUnreachableText(said)) return { outcome: 'unreachable', counters: null, error: firstLine(/Docker daemon|connect/i) };
     const counters = parseCounters(r.stdout);
-    if (counters) return { outcome: 'ok', counters, error: null };
-    if (PROBE_START_FAILED.test(said)) return { outcome: 'start_failed', counters: null, error: firstLine(PROBE_START_FAILED) };
-    // `head` ran and found none of the files: nothing to count with (gVisor).
+    if (!counters && PROBE_START_FAILED.test(said)) return { outcome: 'start_failed', counters: null, error: firstLine(PROBE_START_FAILED) };
+    if (r.exitCode === 0) return { outcome: 'ok', counters, error: null };
+    // `head` exits 1 when a file is missing: the cgroup version this host does
+    // not use, or every file under gVisor. Any other complaint, or any other
+    // exit, means the check did not happen, whatever was printed before it.
     const complaints = r.stderr.split(/\r?\n/).filter((l) => l.trim());
-    if (r.exitCode === 0 || (complaints.length > 0 && complaints.every((l) => /No such file or directory/.test(l)))) {
-      return { outcome: 'ok', counters: null, error: null };
+    if (r.exitCode === 1 && complaints.length > 0 && complaints.every((l) => /No such file or directory/.test(l))) {
+      return { outcome: 'ok', counters, error: null };
     }
-    return { outcome: 'failed', counters: null, error: firstLine(/./) };
+    return { outcome: 'failed', counters: null, error: firstLine(/./) || `the probe exited ${r.exitCode}` };
   }
 
   async readCounters({ signal } = {}) {
