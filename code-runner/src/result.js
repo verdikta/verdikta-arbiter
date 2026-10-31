@@ -111,8 +111,29 @@ function signalName(exitCode) {
 const DAEMON_UNREACHABLE = /Cannot connect to the Docker daemon|error during connect|permission denied while trying to connect to the Docker daemon/i;
 /** docker exec's own report that the step's process never started. */
 const OCI_START_FAILED = /^(?:docker: )?(?:Error response from daemon: )?OCI runtime (?:exec|create|start) failed/;
-/** ...for a reason that is the image's and the same on every host: the program is not there, or not executable. */
-const OCI_DETERMINISTIC = /executable file not found in \$PATH|error finding executable|no such file or directory|permission denied/i;
+function escapeRegExp(text) {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * True when an OCI start failure is the image's own answer, the same on every
+ * host: the step's program (argv[0]) is not there or not executable. The
+ * diagnostic must name that program; Docker maps any "no such file" or
+ * "permission denied" to 126/127 (moby daemon/errors.go), including ones from
+ * the runtime's own helpers, so the exit code alone proves nothing.
+ *
+ *   runc:   exec: "forge": executable file not found in $PATH
+ *           exec: "/opt/x": stat /opt/x: no such file or directory
+ *           exec: "/etc/passwd": permission denied
+ *   gVisor: error finding executable "forge" in PATH [...]: no such file or directory
+ */
+function startFailureIsTheImages(line, program) {
+  if (typeof program !== 'string' || program === '') return false;
+  const p = escapeRegExp(program);
+  const q = escapeRegExp(JSON.stringify(program));
+  return new RegExp(`exec: ${q}: (?:executable file not found in \\$PATH|stat ${p}: no such file or directory|permission denied)(?::|$)`).test(line)
+    || new RegExp(`error finding executable ${q} in PATH \\[[^\\]]*\\]: no such file or directory(?::|$)`).test(line);
+}
 
 function increased(before, after, key) {
   if (!before || !after) return false;
@@ -130,6 +151,7 @@ function increased(before, after, key) {
  * @param {string|null} obs.cliSignal - the CLI died of a signal the runner did not send
  * @param {string} obs.stderrHead - the first bytes of stderr (the CLI's own errors land here)
  * @param {string} [obs.stdoutHead] - the first bytes of stdout (some CLIs print exec failures here)
+ * @param {string} [obs.program] - the step's argv[0]
  * @param {null|{missing:true}|{running:boolean,oomKilled:boolean,exitCode:number,status:string}} obs.state
  *   the container after the step (`null` when inspect failed)
  * @param {null|'unreachable'|'error'} obs.inspectError
@@ -189,7 +211,7 @@ function classifyExec(obs) {
     }
     for (const head of heads) {
       if (OCI_START_FAILED.test(head)) {
-        if ((code === 126 || code === 127) && OCI_DETERMINISTIC.test(head.split(/\r?\n/)[0])) break;
+        if ((code === 126 || code === 127) && startFailureIsTheImages(head.split(/\r?\n/)[0], obs.program)) break;
         return abstain(ABSTAIN.DOCKER_ERROR, `the step's process could not be started: ${firstLine(head)}`);
       }
       if (/^(?:docker: )?Error response from daemon:/.test(head)) {
@@ -200,4 +222,4 @@ function classifyExec(obs) {
   return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: code };
 }
 
-module.exports = { OUTCOME, ABSTAIN, DEFINITIVE_BASIS, Abstain, RequesterError, makeGate, classifyExec, signalName };
+module.exports = { OUTCOME, ABSTAIN, DEFINITIVE_BASIS, Abstain, RequesterError, makeGate, classifyExec, signalName, startFailureIsTheImages };

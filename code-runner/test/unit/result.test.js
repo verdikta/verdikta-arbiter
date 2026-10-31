@@ -91,20 +91,33 @@ test('Docker trouble abstains', () => {
 
 test('a step whose process never started is not a definitive exit, unless the image simply lacks the program', () => {
   const spawn = 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n';
-  assert.equal(cause({ exitCode: 128, stdoutHead: spawn }), ABSTAIN.DOCKER_ERROR);
-  assert.equal(cause({ exitCode: 126, stderrHead: spawn }), ABSTAIN.DOCKER_ERROR);
+  assert.equal(cause({ exitCode: 128, stdoutHead: spawn, program: 'forge' }), ABSTAIN.DOCKER_ERROR);
+  assert.equal(cause({ exitCode: 126, stderrHead: spawn, program: 'forge' }), ABSTAIN.DOCKER_ERROR);
   assert.equal(cause({ exitCode: 1, stderrHead: 'Error response from daemon: OCI runtime exec failed: unable to start container process: unknown' }), ABSTAIN.DOCKER_ERROR);
   assert.equal(cause({ exitCode: 1, stdoutHead: 'Error response from daemon: container abc is restarting' }), ABSTAIN.DOCKER_ERROR);
-  // Deterministic: the binary is not in the image, or not executable.
-  const missing = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "forge": executable file not found in $PATH: unknown\r\n';
-  assert.deepEqual(classifyExec(obs({ exitCode: 127, stderrHead: missing })), { kind: 'definitive', basis: 'exit_code', exitCode: 127 });
+
+  // Deterministic: the diagnostic names the step's own program.
+  const definitive = (head, program, exitCode) => assert.deepEqual(
+    classifyExec(obs({ exitCode, stderrHead: head, program })), { kind: 'definitive', basis: 'exit_code', exitCode }, head);
+  definitive('OCI runtime exec failed: exec failed: unable to start container process: exec: "forge": executable file not found in $PATH: unknown\r\n', 'forge', 127);
+  definitive('OCI runtime exec failed: exec failed: unable to start container process: exec: "/opt/bin/x": stat /opt/bin/x: no such file or directory: unknown', '/opt/bin/x', 127);
+  definitive('OCI runtime exec failed: exec failed: unable to start container process: exec: "/etc/passwd": permission denied: unknown', '/etc/passwd', 126);
   // gVisor's wording, with the PATH list before the reason.
-  const gvisor = 'OCI runtime exec failed: executing processes for container: executing command "no-such-binary" in sandbox: error finding executable "no-such-binary" in PATH [/usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin]: no such file or directory: unknown\n';
-  assert.equal(classifyExec(obs({ exitCode: 127, stderrHead: gvisor })).kind, 'definitive');
-  const denied = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "/etc/passwd": permission denied: unknown';
-  assert.equal(classifyExec(obs({ exitCode: 126, stdoutHead: denied })).kind, 'definitive');
+  definitive('OCI runtime exec failed: executing processes for container: executing command "no-such-binary" in sandbox: error finding executable "no-such-binary" in PATH [/usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin]: no such file or directory: unknown\n', 'no-such-binary', 127);
+
+  // The runtime's own helper missing, or another program named: infrastructure, not the image's answer.
+  const infra = [
+    ['OCI runtime exec failed: exec failed: unable to start container process: error starting setns process: fork/exec /proc/self/exe: no such file or directory: unknown', 'forge', 127],
+    ['OCI runtime exec failed: exec failed: unable to start container process: open /dev/pts/ptmx: permission denied: unknown', 'forge', 126],
+    ['OCI runtime exec failed: exec failed: unable to start container process: exec: "sh": executable file not found in $PATH: unknown', 'forge', 127],
+    ['OCI runtime exec failed: exec failed: unable to start container process: exec: "forge": executable file not found in $PATH: unknown', undefined, 127],
+    ['OCI runtime exec failed: exec failed: unable to start container process: exec: "forge": executable file not found in $PATH: unknown', 'forge', 1]
+  ];
+  for (const [head, program, exitCode] of infra) {
+    assert.equal(cause({ exitCode, stderrHead: head, program }), ABSTAIN.DOCKER_ERROR, head);
+  }
   // Program output that merely mentions it later is the program's business.
-  assert.equal(classifyExec(obs({ exitCode: 1, stdoutHead: 'building...\nOCI runtime exec failed? no\n' })).kind, 'definitive');
+  assert.equal(classifyExec(obs({ exitCode: 1, stdoutHead: 'building...\nOCI runtime exec failed? no\n', program: 'forge' })).kind, 'definitive');
 });
 
 test('a process killed by a signal is not a clean exit', () => {

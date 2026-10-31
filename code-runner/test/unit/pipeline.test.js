@@ -461,3 +461,16 @@ test('a step whose process could not be spawned abstains even when the probes af
   assert.equal(result.abstain.step, 'build');
   assert.deepEqual(result.gates, {}, 'no gate decided on a command that never ran');
 });
+
+test('an OCI start failure from the runtime\'s own helper does not decide a gate', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: () => ({ exitCode: 127, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: error starting setns process: fork/exec /proc/self/exe: no such file or directory: unknown\r\n' })
+  }));
+  const steps = [async (ctx) => {
+    const r = await ctx.exec(['forge', 'build'], { name: 'build' });
+    ctx.gate('build', r.exitCode === 0 ? 'pass' : 'fail', 'exit_code');
+  }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.deepEqual(result.gates, {});
+});
