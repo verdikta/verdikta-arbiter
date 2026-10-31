@@ -12,7 +12,7 @@ import {
   isSamplingParamRejection,
 } from './anthropic-request-params';
 import { attachmentRequestError } from './attachment-errors';
-import { WebAccessOption, anthropicModelSupportsWebTools, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
+import { WebAccessOption, anthropicModelSupportsWebTools, shouldUseWebTools, webFetchFresh, webMaxUses, withWebAccessNote } from './web-access';
 import { WebRetrieval, WebRetrievalListener, summarizeAnthropicWebBlocks, webToolsOff } from './web-retrieval';
 
 type ChatInput = Parameters<ChatAnthropic['invoke']>[0];
@@ -25,8 +25,28 @@ export const ANTHROPIC_WEB_FETCH_BETA = 'web-fetch-2025-09-10';
 /** Page text one web_fetch may add to the context: bounds what a long page costs the operator. */
 export const WEB_FETCH_MAX_CONTENT_TOKENS = 25000;
 
+/**
+ * The first web_fetch version with use_cache (cache bypass). Every Claude model the API
+ * still serves accepted it with web_search_20250305 and the beta header (2026-10-22:
+ * sonnet-4-5, haiku-4-5, sonnet-4-6, opus-4-6, sonnet-5, opus-5, sonnet-5-5, opus-5-5;
+ * the 3.x and 4.0 IDs in config/models.ts now answer 404 for any request).
+ */
+export const WEB_FETCH_TOOL = 'web_fetch_20260309';
+
 /** A server-tool turn can stop with pause_turn; it is resumed at most this many times. */
 const MAX_PAUSE_CONTINUATIONS = 3;
+
+/**
+ * The server tools of a web-enabled juror request. fresh sends use_cache: false.
+ * allowed_callers ['direct'] keeps web_fetch a plain fetch: from this version on it
+ * could otherwise run inside code execution (dynamic filtering).
+ */
+export function anthropicWebTools(maxUses: number, fresh: boolean) {
+  return [
+    { type: WEB_FETCH_TOOL, name: 'web_fetch', max_uses: maxUses, max_content_tokens: WEB_FETCH_MAX_CONTENT_TOKENS, use_cache: !fresh, allowed_callers: ['direct'] },
+    { type: 'web_search_20250305', name: 'web_search', max_uses: maxUses },
+  ];
+}
 
 export class AnthropicProvider implements LLMProvider {
   private apiKey: string;
@@ -333,8 +353,10 @@ export class AnthropicProvider implements LLMProvider {
     const { Anthropic } = await import('@anthropic-ai/sdk');
     const client = new Anthropic({ apiKey: this.apiKey });
     const maxUses = webMaxUses();
-    console.log(`[${this.providerName}] Web tools on for ${model} (web_fetch, web_search; max_uses ${maxUses})`);
+    const fresh = webFetchFresh();
+    console.log(`[${this.providerName}] Web tools on for ${model} (web_fetch ${fresh ? 'fresh' : 'cached copies allowed'}, web_search; max_uses ${maxUses})`);
 
+    const requestedAt = new Date();
     const messages: any[] = [{ role: 'user', content }];
     const blocks: any[] = []; // every turn's blocks, for the retrieval summary
     for (let turn = 0; turn <= MAX_PAUSE_CONTINUATIONS; turn++) {
@@ -342,10 +364,7 @@ export class AnthropicProvider implements LLMProvider {
         model,
         messages,
         max_tokens: MODERN_MAX_TOKENS,
-        tools: [
-          { type: 'web_fetch_20250910', name: 'web_fetch', max_uses: maxUses, max_content_tokens: WEB_FETCH_MAX_CONTENT_TOKENS },
-          { type: 'web_search_20250305', name: 'web_search', max_uses: maxUses },
-        ],
+        tools: anthropicWebTools(maxUses, fresh),
         ...(acceptsSamplingParams(model) ? { temperature: LEGACY_TEMPERATURE } : {})
       } as any, { headers: { 'anthropic-beta': ANTHROPIC_WEB_FETCH_BETA } });
 
@@ -355,7 +374,8 @@ export class AnthropicProvider implements LLMProvider {
         messages.push({ role: 'assistant', content: response.content });
         continue;
       }
-      return { text: finalAnswerText(response.content), retrieval: summarizeAnthropicWebBlocks(blocks) };
+      const retrieval = summarizeAnthropicWebBlocks(blocks, { requestedAt, fetchCache: fresh ? 'bypassed' : 'allowed' });
+      return { text: finalAnswerText(response.content), retrieval };
     }
     throw new Error(`still paused after ${MAX_PAUSE_CONTINUATIONS} continuations`);
   }
