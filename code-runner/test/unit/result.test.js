@@ -64,6 +64,9 @@ test('pids limit: the cgroup counter, or a runsc sandbox crash (exit 2)', () => 
   assert.equal(cause({ exitCode: 2, counters: { before: ZERO, after: { oomKill: 0, pidsMax: 3 } } }), ABSTAIN.PIDS_LIMIT);
   assert.equal(cause({ exitCode: 0, counters: { before: { oomKill: 0, pidsMax: 1 }, after: { oomKill: 0, pidsMax: 2 } } }), ABSTAIN.PIDS_LIMIT);
   assert.equal(cause({ exitCode: 1, state: { running: false, oomKilled: false, exitCode: 2, status: 'exited' } }), ABSTAIN.PIDS_LIMIT);
+  // The probe after the step could not even start: the pid table is full.
+  assert.equal(cause({ exitCode: 2, counters: { before: ZERO, after: null }, probe: 'pids_exhausted' }), ABSTAIN.PIDS_LIMIT);
+  assert.equal(cause({ exitCode: 0, counters: { before: ZERO, after: null }, probe: 'failed' }), ABSTAIN.DOCKER_ERROR);
   // Earlier events that were already accounted for do not count again.
   const r = classifyExec(obs({ exitCode: 0, counters: { before: { oomKill: 0, pidsMax: 5 }, after: { oomKill: 0, pidsMax: 5 } } }));
   assert.equal(r.kind, 'definitive');

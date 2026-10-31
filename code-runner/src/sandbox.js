@@ -44,6 +44,9 @@ const COUNTER_FILES = Object.freeze([
   '/sys/fs/cgroup/pids/pids.events'
 ]);
 
+/** docker exec could not start a process in the sandbox (as opposed to the process failing). */
+const PROBE_START_FAILED = /OCI runtime exec failed|unable to start container process|resource temporarily unavailable|cannot fork|EAGAIN/i;
+
 const LAUNCH_TIMEOUT_MS = 120000;
 const CONTROL_TIMEOUT_MS = 15000;
 const REMOVE_TIMEOUT_MS = 60000;
@@ -207,6 +210,7 @@ class Sandbox {
     this.counters = null;
     this.killing = null;
     this.launched = false;
+    this.pidsLimit = null;
   }
 
   /**
@@ -222,6 +226,7 @@ class Sandbox {
       throw new Abstain(...launchFailure(r), { step: 'launch' });
     }
     this.launched = true;
+    this.pidsLimit = spec.limits.pids;
     this.counters = await this.readCounters({ signal });
     return this;
   }
@@ -269,6 +274,8 @@ class Sandbox {
       state: null,
       inspectError: null,
       counters: { before: this.counters, after: null },
+      probe: null,
+      probeDetail: null,
       runtime: this.runtime
     };
     if (!killedBy && stdoutSink && stdoutSink.overLimit) {
@@ -286,7 +293,8 @@ class Sandbox {
       durationMs,
       stdout: stdout.toJSON(),
       stderr: stderr.toJSON(),
-      ...(verdict.kind === 'abstain' ? { cause: verdict.cause, detail: verdict.detail } : {})
+      ...(verdict.kind === 'abstain' ? { cause: verdict.cause, detail: verdict.detail } : {}),
+      ...(obs.probeDetail ? { probe: obs.probeDetail } : {})
     };
     return { record, verdict };
   }
@@ -307,9 +315,17 @@ class Sandbox {
     obs.state = state;
     obs.inspectError = inspectError;
     if (state && state.running) {
-      const after = await this.readCounters({ signal });
-      obs.counters.after = after;
-      if (after) this.counters = after;
+      const read = await this.probeCounters({ signal });
+      obs.counters.after = read.counters;
+      if (read.counters) this.counters = read.counters;
+      else if (read.startFailed) {
+        // Not even the probe could start in the sandbox. Processes a step
+        // left behind can hold the whole pid table (runc's exec forks into
+        // the container's cgroup), so ask Docker how many there are.
+        const pids = await this.pidsInUse({ signal });
+        obs.probe = pids !== null && pids >= this.pidsLimit - 1 ? 'pids_exhausted' : 'failed';
+        obs.probeDetail = read.error;
+      }
     }
   }
 
@@ -328,9 +344,27 @@ class Sandbox {
   }
 
   async readCounters({ signal } = {}) {
+    return (await this.probeCounters({ signal })).counters;
+  }
+
+  /**
+   * Read the cgroup counters from inside the sandbox. `startFailed` says the
+   * probe process itself could not be started there (as opposed to the files
+   * being absent, as under gVisor, which is not a problem).
+   */
+  async probeCounters({ signal } = {}) {
     const r = await runText(this.docker, execArgs({ name: this.name, argv: ['head', '-n', '20', ...COUNTER_FILES] }), within(CONTROL_TIMEOUT_MS, signal));
-    if (r.spawnError) return null;
-    return parseCounters(r.stdout);
+    if (r.spawnError) return { counters: null, startFailed: false, error: r.spawnError };
+    const counters = parseCounters(r.stdout);
+    const startFailed = !counters && r.exitCode !== 0 && r.stdout === '' && PROBE_START_FAILED.test(r.stderr);
+    return { counters, startFailed, error: startFailed ? r.stderr.split('\n')[0].slice(0, 300) : null };
+  }
+
+  /** The number of tasks in the sandbox, as Docker counts them (`docker stats`). */
+  async pidsInUse({ signal } = {}) {
+    const r = await runText(this.docker, ['stats', '--no-stream', '--format', '{{.PIDs}}', this.name], within(CONTROL_TIMEOUT_MS, signal));
+    const n = Number(String(r.stdout).trim());
+    return r.exitCode === 0 && Number.isInteger(n) ? n : null;
   }
 
   /**

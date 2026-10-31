@@ -116,6 +116,7 @@ function increased(before, after, key) {
  *   the container after the step (`null` when inspect failed)
  * @param {null|'unreachable'|'error'} obs.inspectError
  * @param {{before:object|null, after:object|null}} obs.counters - cgroup oom_kill / pids max counters
+ * @param {null|'pids_exhausted'|'failed'} [obs.probe] - the counters probe could not start in the sandbox
  * @param {'runsc'|'runc'} obs.runtime
  * @returns {{kind:'definitive', basis:'exit_code', exitCode:number} | {kind:'abstain', cause:string, detail:string}}
  */
@@ -142,6 +143,8 @@ function classifyExec(obs) {
   const after = obs.counters && obs.counters.after;
   if (increased(before, after, 'oomKill')) return abstain(ABSTAIN.OOM, 'a process in the sandbox was OOM-killed during the step');
   if (increased(before, after, 'pidsMax')) return abstain(ABSTAIN.PIDS_LIMIT, 'the sandbox hit its process limit during the step');
+  if (obs.probe === 'pids_exhausted') return abstain(ABSTAIN.PIDS_LIMIT, 'the sandbox\'s process table is full: nothing more can start in it');
+  if (obs.probe === 'failed') return abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox could not be probed after the step');
 
   if (!state.running) {
     // gVisor takes the whole sandbox down at the process limit and exits 2

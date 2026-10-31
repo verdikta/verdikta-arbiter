@@ -308,3 +308,51 @@ test('a removal that hangs does not hold the answer past the deadline', async ()
   // The removal carries on; the live-run set keeps the name until it is done.
   assert.ok(active.has('vcr-0123456789abcdef-1'));
 });
+
+test('when the probe cannot start after a step and the pid table is full, the run abstains: pids_limit', async () => {
+  let probes = 0;
+  const docker = fakeDocker({
+    ...healthyDaemon({
+      step: () => ({ exitCode: 2, stderr: 'sh: 0: Cannot fork\n' }),
+      counters: () => {
+        probes += 1;
+        // The probe at launch works; the one after the storm cannot start.
+        if (probes === 1) return { stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n' };
+        return { exitCode: 126, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: resource temporarily unavailable: unknown' };
+      }
+    }),
+    stats: () => ({ stdout: '4096\n' })
+  });
+  const steps = [async (ctx) => { await ctx.exec(['sh', '-c', 'storm'], { name: 'storm' }); }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.abstain.cause, 'pids_limit');
+  assert.equal(result.abstain.step, 'storm');
+  assert.match(result.steps[0].probe, /OCI runtime exec failed/);
+  assert.deepEqual(docker.callsOf('stats')[0].args, ['stats', '--no-stream', '--format', '{{.PIDs}}', 'vcr-0123456789abcdef-1']);
+});
+
+test('a probe that cannot start while the pid table has room abstains too (docker_error)', async () => {
+  let probes = 0;
+  const docker = fakeDocker({
+    ...healthyDaemon({
+      step: () => ({ exitCode: 0 }),
+      counters: () => {
+        probes += 1;
+        if (probes === 1) return { stdout: '==> /sys/fs/cgroup/pids.events <==\nmax 0\n' };
+        return { exitCode: 126, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: unknown' };
+      }
+    }),
+    stats: () => ({ stdout: '12\n' })
+  });
+  const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['true'], { name: 'ok' }); }] });
+  assert.equal(result.abstain.cause, 'docker_error');
+});
+
+test('counter files that do not exist (gVisor) are not a problem', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: () => ({ exitCode: 0 }),
+    counters: () => ({ exitCode: 1, stderr: "head: cannot open '/sys/fs/cgroup/memory.events' for reading: No such file or directory\n" })
+  }));
+  const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['true'], { name: 'ok' }); }] });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+});
