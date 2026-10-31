@@ -290,3 +290,21 @@ test('claim content enters the sandbox on stdin, never through a host file', asy
   assert.ok(apply.args.includes('--interactive'));
   assert.equal(apply.stdin.toString(), 'diff --git a/x b/x\n');
 });
+
+test('a removal that hangs does not hold the answer past the deadline', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: never,
+    rm: () => new Promise((resolve) => setTimeout(() => resolve({}), 5000))
+  }));
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const active = new Set();
+  const started = Date.now();
+  const steps = [async (ctx) => { await ctx.exec(['sleep', '1000'], { name: 'poc', timeoutMs: 60000 }); }];
+  const { result } = await run({ docker, steps, config, deadlineMs: 500, admit: noAdmission, active });
+  const elapsed = Date.now() - started;
+  assert.equal(result.abstain.cause, 'deadline');
+  assert.ok(elapsed < 4000, `answered after ${elapsed} ms`);
+  // The removal carries on; the live-run set keeps the name until it is done.
+  assert.ok(active.has('vcr-0123456789abcdef-1'));
+});

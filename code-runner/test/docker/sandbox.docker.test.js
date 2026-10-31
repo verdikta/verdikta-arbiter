@@ -38,6 +38,7 @@ test('the sandbox has the §9.1 isolation, whatever the image would like', { tim
       gid: ['id', '-g'],
       status: ['cat', '/proc/self/status'],
       netdev: ['cat', '/proc/net/dev'],
+      route: ['cat', '/proc/net/route'],
       hostname: ['hostname'],
       env: ['env'],
       kernel: ['uname', '-r']
@@ -74,8 +75,12 @@ test('the sandbox has the §9.1 isolation, whatever the image would like', { tim
   assert.equal(inside.gid.trim(), '10001');
   assert.match(inside.status, /^CapEff:\s*0+$/m);
   assert.match(inside.status, /^NoNewPrivs:\s*1$/m);
+  // --network none: loopback only. (Some kernels add idle tunnel devices,
+  // tunl0, gre0 ..., to every namespace; none of them is a way out.)
   const interfaces = inside.netdev.split('\n').slice(2).map((l) => l.split(':')[0].trim()).filter(Boolean);
-  assert.deepEqual(interfaces, ['lo'], `interfaces: ${interfaces}`);
+  assert.ok(interfaces.includes('lo'), `interfaces: ${interfaces}`);
+  assert.deepEqual(interfaces.filter((i) => /^(eth|en|veth|wl|br|docker)/.test(i)), [], `interfaces: ${interfaces}`);
+  assert.deepEqual(inside.route.split('\n').slice(1).filter((l) => l.trim()), [], 'no IPv4 route');
   assert.equal(inside.hostname.trim(), 'sandbox');
   assert.match(inside.env, /^TZ=UTC$/m);
   assert.doesNotMatch(inside.env, /CODE_RUNNER|TOKEN|API_KEY/);

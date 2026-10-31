@@ -9,6 +9,7 @@
 
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
+const fs = require('node:fs');
 const { createDocker, runText } = require('../../src/docker');
 const { testConfig } = require('../helpers/http');
 const { psArgs } = require('../../src/gc');
@@ -31,6 +32,7 @@ function dockerTestConfig(env = {}) {
 }
 
 function dockerFor(config) {
+  fs.mkdirSync(config.dockerConfigDir, { recursive: true, mode: 0o700 });
   return createDocker({ dockerHost: config.dockerHost, dockerConfigDir: config.dockerConfigDir, baseEnv: process.env });
 }
 

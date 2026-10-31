@@ -40,7 +40,9 @@ test('argv reaches the binary verbatim, with no shell in between', async () => {
 test('the child environment is an allow-list: no token, no keys, no NODE_OPTIONS', async () => {
   const r = await runText(docker({ dockerHost: 'unix:///run/verdikta-code-runner/docker.sock' }), ['echo-env']);
   const env = JSON.parse(r.stdout).env;
-  assert.deepEqual(Object.keys(env).sort(), ['DOCKER_CONFIG', 'DOCKER_HOST', 'HOME', 'PATH']);
+  // macOS adds __CF_USER_TEXT_ENCODING to every process it starts.
+  const keys = Object.keys(env).filter((k) => k !== '__CF_USER_TEXT_ENCODING').sort();
+  assert.deepEqual(keys, ['DOCKER_CONFIG', 'DOCKER_HOST', 'HOME', 'PATH']);
   assert.equal(env.DOCKER_HOST, 'unix:///run/verdikta-code-runner/docker.sock');
   assert.equal(env.DOCKER_CONFIG, '/opt/code-runner/.state/docker-config');
   assert.ok(!r.stdout.includes('must-not-leak'));

@@ -26,7 +26,7 @@ function code(file) {
 
 const FORBIDDEN = [
   [/\bexecSync\b|\bexecFileSync\b|\bspawnSync\b/, 'synchronous child processes'],
-  [/child_process['"]\)\.exec\b|\{\s*exec\s*[,}]|\bcp\.exec\(/, 'child_process.exec (a shell)'],
+  [/child_process['"]\)\.(exec|execFile)\b|\{[^}]*\b(exec|execFile)\b[^}]*\}\s*=\s*require\(\s*['"](node:)?child_process/, 'child_process.exec (a shell)'],
   [/shell\s*:\s*true/, 'shell: true'],
   [/\beval\s*\(|new\s+Function\s*\(/, 'eval / new Function'],
   [/['"]--volume['"]|['"]-v['"]|['"]--mount['"]|['"]--privileged['"]|['"]--cap-add['"]/, 'a mount or privilege flag'],
