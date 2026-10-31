@@ -112,7 +112,7 @@ const DAEMON_UNREACHABLE = /Cannot connect to the Docker daemon|error during con
 /** docker exec's own report that the step's process never started. */
 const OCI_START_FAILED = /^(?:docker: )?(?:Error response from daemon: )?OCI runtime (?:exec|create|start) failed/;
 /** ...for a reason that is the image's and the same on every host: the program is not there, or not executable. */
-const OCI_DETERMINISTIC = /executable file not found in \$PATH|no such file or directory|permission denied/i;
+const OCI_DETERMINISTIC = /executable file not found in \$PATH|error finding executable|no such file or directory|permission denied/i;
 
 function increased(before, after, key) {
   if (!before || !after) return false;
@@ -189,7 +189,7 @@ function classifyExec(obs) {
     }
     for (const head of heads) {
       if (OCI_START_FAILED.test(head)) {
-        if ((code === 126 || code === 127) && OCI_DETERMINISTIC.test(firstLine(head))) break;
+        if ((code === 126 || code === 127) && OCI_DETERMINISTIC.test(head.split(/\r?\n/)[0])) break;
         return abstain(ABSTAIN.DOCKER_ERROR, `the step's process could not be started: ${firstLine(head)}`);
       }
       if (/^(?:docker: )?Error response from daemon:/.test(head)) {

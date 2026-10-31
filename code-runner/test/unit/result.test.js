@@ -98,6 +98,9 @@ test('a step whose process never started is not a definitive exit, unless the im
   // Deterministic: the binary is not in the image, or not executable.
   const missing = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "forge": executable file not found in $PATH: unknown\r\n';
   assert.deepEqual(classifyExec(obs({ exitCode: 127, stderrHead: missing })), { kind: 'definitive', basis: 'exit_code', exitCode: 127 });
+  // gVisor's wording, with the PATH list before the reason.
+  const gvisor = 'OCI runtime exec failed: executing processes for container: executing command "no-such-binary" in sandbox: error finding executable "no-such-binary" in PATH [/usr/local/sbin /usr/local/bin /usr/sbin /usr/bin /sbin /bin]: no such file or directory: unknown\n';
+  assert.equal(classifyExec(obs({ exitCode: 127, stderrHead: gvisor })).kind, 'definitive');
   const denied = 'OCI runtime exec failed: exec failed: unable to start container process: exec: "/etc/passwd": permission denied: unknown';
   assert.equal(classifyExec(obs({ exitCode: 126, stdoutHead: denied })).kind, 'definitive');
   // Program output that merely mentions it later is the program's business.
