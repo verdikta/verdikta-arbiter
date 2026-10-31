@@ -1,0 +1,17 @@
+{
+  "name": "verdikta-code-runner",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Verdikta arbiter code runner: executes a claim's proof of concept in a fresh gVisor container and reports what happened (stake-attestation design §9)",
+  "main": "src/index.js",
+  "type": "commonjs",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.3"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "test": "node --test test/unit/",
+    "test:docker": "node --test --test-concurrency=1 test/docker/"
+  }
+}
