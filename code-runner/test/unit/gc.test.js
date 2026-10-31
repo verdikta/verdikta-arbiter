@@ -38,8 +38,8 @@ test('removes what no live run owns, and anything past its expiry', async () => 
   assert.deepEqual(r.removed.sort(), ['vcr-aaaaaaaaaaaaaaaa-1', 'vcr-cccccccccccccccc-1', 'vcr-dddddddddddddddd-2']);
   const rm = docker.callsOf('rm');
   assert.equal(rm.length, 1);
-  assert.deepEqual(rm[0].args.slice(0, 2), ['rm', '--force']);
-  assert.deepEqual(rm[0].args.slice(2).sort(), r.removed.sort());
+  assert.deepEqual(rm[0].args.slice(0, 3), ['rm', '--force', '--volumes']);
+  assert.deepEqual(rm[0].args.slice(3).sort(), r.removed.sort());
 });
 
 test('nothing to remove means no rm call', async () => {

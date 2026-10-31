@@ -32,8 +32,14 @@ async function main() {
   const docker = createDocker({ bin: config.dockerBin, dockerHost: config.dockerHost, dockerConfigDir: config.dockerConfigDir });
   const runner = createServer({ config, docker, log });
 
-  // Nothing of this instance survives a restart: a container from before is a leftover.
-  const swept = await collectLeftovers({ docker, instance: config.instance, active: new Set() });
+  // The listener is the instance's lock: a second process with the same
+  // config fails here (address or socket in use) before it can touch the
+  // first one's containers.
+  const address = await runner.listen();
+
+  // Nothing of this instance survives a restart: a container from before is
+  // a leftover. Runs admitted in the meantime are in runner.active.
+  const swept = await collectLeftovers({ docker, instance: config.instance, active: runner.active });
   if (swept.error) log.warn('startup GC could not list containers', { error: swept.error });
   else if (swept.removed.length) log.info('startup GC removed leftovers', { removed: swept.removed });
 
@@ -47,7 +53,6 @@ async function main() {
     gcTimer.unref();
   }
 
-  const address = await runner.listen();
   log.info('code-runner listening', { version: RUNNER_VERSION, runtime: config.runtime, instance: config.instance, ...address });
 
   const shutdown = async (sig) => {

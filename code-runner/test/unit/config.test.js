@@ -121,3 +121,10 @@ test('the instance label is a short slug', () => {
   assert.equal(load({ CODE_RUNNER_INSTANCE: 'canary-1' }).instance, 'canary-1');
   assert.match(problems(() => load({ CODE_RUNNER_INSTANCE: 'Bad Name' })), /CODE_RUNNER_INSTANCE/);
 });
+
+test('the platform is linux/amd64; linux/arm64 only for runc development', () => {
+  assert.equal(load({}).platform, 'linux/amd64');
+  assert.equal(load({ CODE_RUNNER_RUNTIME: 'runc', CODE_RUNNER_PLATFORM: 'linux/arm64' }).platform, 'linux/arm64');
+  assert.match(problems(() => load({ CODE_RUNNER_PLATFORM: 'linux/arm64' })), /runc/);
+  assert.match(problems(() => load({ CODE_RUNNER_RUNTIME: 'runc', CODE_RUNNER_PLATFORM: 'linux/386' })), /CODE_RUNNER_PLATFORM/);
+});

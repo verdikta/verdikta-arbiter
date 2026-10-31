@@ -48,12 +48,16 @@ function isCountersRead(args) {
  * Handlers for a healthy daemon. `step` answers step execs (anything that is
  * not the runner's own counters read); `counters` answers the counters read.
  */
-function healthyDaemon({ step, counters, inspect, run, rm, info, ps, version } = {}) {
+function healthyDaemon({ step, counters, inspect, create, start, mounts, rm, info, ps, version } = {}) {
   return {
     info: info || (() => ({ stdout: healthyInfo() })),
     version: version || (() => ({ stdout: '28.0.4\n' })),
-    run: run || (() => ({ stdout: 'c0ffee\n' })),
-    inspect: inspect || (() => ({ stdout: runningState() })),
+    create: create || (() => ({ stdout: 'c0ffee\n' })),
+    start: start || ((args) => ({ stdout: `${args[1]}\n` })),
+    inspect: (args, opts, calls) => {
+      if (args.includes('{{json .Mounts}}')) return mounts ? mounts(args, opts, calls) : { stdout: '[]\n' };
+      return inspect ? inspect(args, opts, calls) : { stdout: runningState() };
+    },
     rm: rm || (() => ({ stdout: '' })),
     ps: ps || (() => ({ stdout: '' })),
     exec: (args, opts, calls) => {

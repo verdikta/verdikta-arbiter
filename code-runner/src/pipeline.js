@@ -19,15 +19,13 @@
  */
 
 const { Sandbox } = require('./sandbox');
-const { ABSTAIN, OUTCOME, Abstain, makeGate } = require('./result');
+const { ABSTAIN, OUTCOME, Abstain, RequesterError, makeGate } = require('./result');
 const { admitRun } = require('./admission');
 
 /** Keepalive past the stop time, so a container outlives a dead runner only briefly. */
 const KEEPALIVE_MARGIN_SECONDS = 30;
 /** After a run-level kill, how long to let the step's exec report what it saw. */
 const KILL_GRACE_MS = 1000;
-/** The least time teardown is given before the run answers anyway. */
-const TEARDOWN_MIN_MS = 2000;
 
 const RUN_KILL_CAUSE = Object.freeze({
   run: [ABSTAIN.STEP_TIMEOUT, 'the run reached its wall-clock limit (runSeconds) and the sandbox was killed'],
@@ -67,17 +65,23 @@ async function executeRun({
     outcome: OUTCOME.DEFINITIVE,
     runId,
     runtime: config.runtime,
+    platform: config.platform,
     limits,
     abstain: null,
     steps: [],
     gates: {}
   };
   const abstainWith = (err) => {
+    if (err instanceof RequesterError) {
+      result.outcome = OUTCOME.REQUESTER_ERROR;
+      result.issues = err.issues;
+      return result;
+    }
     result.outcome = OUTCOME.ABSTAIN;
     result.abstain = { cause: err.cause, step: err.step || null, detail: err.detail };
     return result;
   };
-  const asAbstain = (err, step) => (err instanceof Abstain
+  const asAbstain = (err, step) => (err instanceof Abstain || err instanceof RequesterError
     ? err
     : new Abstain(ABSTAIN.RUNNER_ERROR, `the runner failed: ${err && err.message ? err.message : String(err)}`, { step }));
 
@@ -136,7 +140,7 @@ async function executeRun({
     const label = sandboxes.length === 1 ? 'launch' : `launch:${name}`;
     running.add(label);
     try {
-      await sb.launch({ image, limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
+      await sb.launch({ image, platform: config.platform, limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
     } finally {
       running.delete(label);
     }
@@ -237,9 +241,9 @@ async function executeRun({
   } finally {
     for (const t of timers) clearTimeout(t);
     if (signal) signal.removeEventListener('abort', onCancel);
-    // Remove every sandbox. The answer waits for that until the deadline
-    // (at least TEARDOWN_MIN_MS); a removal still hanging then carries on in
-    // the background, and the GC retries whatever it could not remove.
+    // Remove every sandbox. The answer waits for that until the deadline,
+    // never longer; a removal still running then carries on in the
+    // background, and the GC retries whatever could not be removed.
     const removal = Promise.all(sandboxes.map(async (sb) => {
       let gone = false;
       try {
@@ -249,14 +253,23 @@ async function executeRun({
       }
       if (!gone) log.warn('sandbox not removed; the GC will retry', { runId, container: sb.name });
       active.delete(sb.name);
+      return gone;
     }));
     let timer = null;
-    const finished = await Promise.race([
-      removal.then(() => true),
-      new Promise((resolve) => { timer = setTimeout(() => resolve(false), Math.max(TEARDOWN_MIN_MS, deadlineAt - Date.now())); })
+    const removed = await Promise.race([
+      removal.then((all) => all.every(Boolean)),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), Math.max(0, deadlineAt - Date.now())); })
     ]);
     clearTimeout(timer);
-    if (!finished) log.warn('teardown still running at the deadline; answering now', { runId });
+    if (removed !== true) {
+      log.warn(removed === null ? 'teardown still running at the deadline; answering now' : 'teardown failed', { runId });
+      // A run is definitive only once every sandbox it started is gone.
+      if (result.outcome === OUTCOME.DEFINITIVE) {
+        abstainWith(new Abstain(ABSTAIN.DOCKER_ERROR, removed === null
+          ? 'the sandbox was not removed by the deadline'
+          : 'the sandbox could not be removed', { step: 'teardown' }));
+      }
+    }
   }
   return result;
 }

@@ -75,6 +75,19 @@ class Abstain extends Error {
 }
 
 /**
+ * The requester's package is broken (§12): an error with no commit, the same
+ * on every arbiter, raised before any claim code runs. `issues` have the
+ * `{ code, path, detail }` shape of the 400 answer.
+ */
+class RequesterError extends Error {
+  constructor(issues) {
+    super(issues.map((i) => i.detail).join('; '));
+    this.name = 'RequesterError';
+    this.issues = issues;
+  }
+}
+
+/**
  * A gate's result. Only a definitive basis is accepted: a gate can never be
  * decided on a timeout or a dead sandbox (those abstain instead).
  */
@@ -116,7 +129,7 @@ function increased(before, after, key) {
  *   the container after the step (`null` when inspect failed)
  * @param {null|'unreachable'|'error'} obs.inspectError
  * @param {{before:object|null, after:object|null}} obs.counters - cgroup oom_kill / pids max counters
- * @param {null|'pids_exhausted'|'failed'} [obs.probe] - the counters probe could not start in the sandbox
+ * @param {null|'pids_exhausted'|'unreachable'|'failed'} [obs.probe] - what went wrong with the counters probe
  * @param {'runsc'|'runc'} obs.runtime
  * @returns {{kind:'definitive', basis:'exit_code', exitCode:number} | {kind:'abstain', cause:string, detail:string}}
  */
@@ -144,7 +157,8 @@ function classifyExec(obs) {
   if (increased(before, after, 'oomKill')) return abstain(ABSTAIN.OOM, 'a process in the sandbox was OOM-killed during the step');
   if (increased(before, after, 'pidsMax')) return abstain(ABSTAIN.PIDS_LIMIT, 'the sandbox hit its process limit during the step');
   if (obs.probe === 'pids_exhausted') return abstain(ABSTAIN.PIDS_LIMIT, 'the sandbox\'s process table is full: nothing more can start in it');
-  if (obs.probe === 'failed') return abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox could not be probed after the step');
+  if (obs.probe === 'unreachable') return abstain(ABSTAIN.DOCKER_UNREACHABLE, 'the Docker daemon stopped answering while the sandbox was probed');
+  if (obs.probe === 'failed') return abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox could not be probed after the step, so its limits were not checked');
 
   if (!state.running) {
     // gVisor takes the whole sandbox down at the process limit and exits 2
@@ -168,4 +182,4 @@ function classifyExec(obs) {
   return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: code };
 }
 
-module.exports = { OUTCOME, ABSTAIN, DEFINITIVE_BASIS, Abstain, makeGate, classifyExec, signalName };
+module.exports = { OUTCOME, ABSTAIN, DEFINITIVE_BASIS, Abstain, RequesterError, makeGate, classifyExec, signalName };

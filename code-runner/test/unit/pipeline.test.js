@@ -33,7 +33,7 @@ function run({ docker, steps = [], deadlineMs = 600000, config = testConfig(), s
 }
 
 function removed(docker) {
-  return docker.callsOf('rm').flatMap((c) => c.args.slice(2));
+  return docker.callsOf('rm').flatMap((c) => c.args.slice(3));
 }
 
 test('no steps: the sandbox starts and is torn down, the run is definitive', async () => {
@@ -42,7 +42,7 @@ test('no steps: the sandbox starts and is torn down, the run is definitive', asy
   assert.equal(result.outcome, 'definitive');
   assert.equal(result.abstain, null);
   assert.deepEqual(result.steps, []);
-  const name = docker.callsOf('run')[0].args[docker.callsOf('run')[0].args.indexOf('--name') + 1];
+  const name = docker.callsOf('create')[0].args[docker.callsOf('create')[0].args.indexOf('--name') + 1];
   assert.match(name, /^vcr-0123456789abcdef-1$/);
   assert.ok(removed(docker).includes(name));
   assert.equal(active.size, 0);
@@ -102,7 +102,7 @@ test('admission: Docker unreachable, or the runtime not registered', async () =>
   const r = (await run({ docker: noRuntime, config })).result;
   assert.equal(r.abstain.cause, 'admission_refused');
   assert.match(r.abstain.detail, /runsc/);
-  assert.equal(noRuntime.callsOf('run').length, 0);
+  assert.equal(noRuntime.callsOf('create').length, 0);
 });
 
 test('launch failures abstain and leave nothing behind', async () => {
@@ -112,7 +112,7 @@ test('launch failures abstain and leave nothing behind', async () => {
     [() => ({ exitCode: 125, stderr: 'docker: Error response from daemon: unknown or invalid runtime name: runsc' }), 'docker_error']
   ];
   for (const [launch, expected] of cases) {
-    const docker = fakeDocker(healthyDaemon({ run: launch }));
+    const docker = fakeDocker(healthyDaemon({ create: launch }));
     const { result, active } = await run({ docker });
     assert.equal(result.abstain.cause, expected);
     assert.equal(result.abstain.step, 'launch');
@@ -261,7 +261,7 @@ test('a second sandbox (the fix check) gets the same flags and is torn down too'
   }];
   const { result, active } = await run({ docker, steps });
   assert.equal(result.outcome, 'definitive');
-  const launches = docker.callsOf('run');
+  const launches = docker.callsOf('create');
   assert.equal(launches.length, 2);
   const flags = (a) => a.filter((x) => x.startsWith('--'));
   assert.deepEqual(flags(launches[1].args), flags(launches[0].args));
@@ -275,7 +275,7 @@ test('the keepalive and the GC label outlive the deadline only by a margin', asy
   const docker = fakeDocker(healthyDaemon());
   const before = Math.floor(Date.now() / 1000);
   await run({ docker, deadlineMs: 600000 });
-  const args = docker.callsOf('run')[0].args;
+  const args = docker.callsOf('create')[0].args;
   const keepalive = Number(args[args.length - 1]);
   assert.ok(keepalive >= 600 && keepalive <= 660, `keepalive ${keepalive}`);
   const expires = Number(args.find((a) => a.startsWith('verdikta.code-runner.expires=')).split('=')[1]);
@@ -294,7 +294,7 @@ test('claim content enters the sandbox on stdin, never through a host file', asy
 test('a removal that hangs does not hold the answer past the deadline', async () => {
   const docker = fakeDocker(healthyDaemon({
     step: never,
-    rm: () => new Promise((resolve) => setTimeout(() => resolve({}), 5000))
+    rm: () => new Promise((resolve) => setTimeout(() => resolve({}), 3000))
   }));
   const config = testConfig();
   config.deadlineReserveMs = 0;
@@ -304,9 +304,67 @@ test('a removal that hangs does not hold the answer past the deadline', async ()
   const { result } = await run({ docker, steps, config, deadlineMs: 500, admit: noAdmission, active });
   const elapsed = Date.now() - started;
   assert.equal(result.abstain.cause, 'deadline');
-  assert.ok(elapsed < 4000, `answered after ${elapsed} ms`);
+  assert.ok(elapsed < 1500, `answered after ${elapsed} ms`);
   // The removal carries on; the live-run set keeps the name until it is done.
   assert.ok(active.has('vcr-0123456789abcdef-1'));
+});
+
+test('a definitive run whose sandbox is still there at the deadline abstains', async () => {
+  const docker = fakeDocker(healthyDaemon({ rm: () => new Promise((resolve) => setTimeout(() => resolve({}), 3000)) }));
+  const config = testConfig();
+  config.deadlineReserveMs = 900;
+  const started = Date.now();
+  const { result } = await run({ docker, config, deadlineMs: 1100, lim: limits({ runSeconds: 1, testSeconds: 1 }), admit: noAdmission });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1600, `answered after ${elapsed} ms, past the 1100 ms deadline`);
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.equal(result.abstain.step, 'teardown');
+});
+
+test('a definitive run whose sandbox cannot be removed abstains', async () => {
+  const docker = fakeDocker(healthyDaemon({ rm: () => ({ exitCode: 1, stderr: 'Error response from daemon: removal of container vcr-0123456789abcdef-1 is already in progress' }) }));
+  const { result } = await run({ docker });
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.equal(result.abstain.step, 'teardown');
+});
+
+test('an image that declares volumes is a requester error; it is removed with its volumes and never started', async () => {
+  const docker = fakeDocker(healthyDaemon({ mounts: () => ({ stdout: '[{"Type":"volume","Destination":"/var/lib/data"}]' }) }));
+  const { result, active } = await run({ docker });
+  assert.equal(result.outcome, 'requester_error');
+  assert.equal(result.issues[0].code, 'IMAGE_DECLARES_VOLUMES');
+  assert.equal(docker.callsOf('start').length, 0);
+  assert.deepEqual(docker.callsOf('rm')[0].args, ['rm', '--force', '--volumes', 'vcr-0123456789abcdef-1']);
+  assert.equal(active.size, 0);
+});
+
+test('a counters probe that fails for any other reason is not a pass', async () => {
+  const cases = [
+    [() => ({ exitCode: 1, stderr: 'Cannot connect to the Docker daemon at unix:///x.sock. Is the docker daemon running?' }), 'docker_unreachable'],
+    [() => ({ spawnError: 'spawn docker ENOENT' }), 'docker_unreachable'],
+    [() => ({ exitCode: 1, stderr: "head: cannot open '/sys/fs/cgroup/pids.events' for reading: Permission denied" }), 'docker_error'],
+    [() => ({ exitCode: 137 }), 'docker_error']
+  ];
+  for (const [after, expected] of cases) {
+    let probes = 0;
+    const docker = fakeDocker(healthyDaemon({
+      step: () => ({ exitCode: 1 }),
+      counters: (...a) => { probes += 1; return probes === 1 ? { stdout: '==> /sys/fs/cgroup/pids.events <==\nmax 0\n' } : after(...a); }
+    }));
+    const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['forge', 'build'], { name: 'build' }); }] });
+    assert.equal(result.outcome, 'abstain', expected);
+    assert.equal(result.abstain.cause, expected);
+    assert.equal(result.abstain.step, 'build');
+  }
+});
+
+test('the platform is the class platform, passed to docker create', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const { result } = await run({ docker });
+  const args = docker.callsOf('create')[0].args;
+  assert.equal(args[args.indexOf('--platform') + 1], 'linux/amd64');
+  assert.equal(result.platform, 'linux/amd64');
 });
 
 test('when the probe cannot start after a step and the pid table is full, the run abstains: pids_limit', async () => {

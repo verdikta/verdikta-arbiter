@@ -23,7 +23,15 @@ const FIELDS = Object.freeze([
 
 /** CIDv0 (base58btc multihash) or CIDv1 in base32. */
 const CID = /^(Qm[1-9A-HJ-NP-Za-km-z]{44}|b[a-z2-7]{50,120})$/;
-const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+/**
+ * Canonical base64: decoding and re-encoding gives the same text. Linear in
+ * the input; a grouped regex overflows V8's backtrack stack on megabytes.
+ */
+function decodeBase64(text) {
+  if (typeof text !== 'string' || text === '' || text.length % 4 !== 0) return null;
+  const bytes = Buffer.from(text, 'base64');
+  return bytes.toString('base64') === text ? bytes : null;
+}
 const GATE_NAME = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 /** E2: at most 8 prior valid findings ride with a claim. */
 const MAX_PRIOR_FINDINGS = 8;
@@ -63,21 +71,18 @@ function validateRunRequest(body) {
     if (required(key) && !isPlainObject(body[key])) issue(`/${key}`, 'must be an object');
   }
 
+  // Sizes are not checked here: a patch above maxPatchBytes is the hunter's
+  // fault and settles INVALID through the `applies` gate (node A2a), not as
+  // the requester's error.
   let pocPatch = null;
   if (required('pocPatch')) {
-    if (typeof body.pocPatch !== 'string' || body.pocPatch === '' || !BASE64.test(body.pocPatch)) {
-      issue('/pocPatch', 'must be the patch bytes in base64, not empty');
-    } else {
-      pocPatch = Buffer.from(body.pocPatch, 'base64');
-    }
+    pocPatch = decodeBase64(body.pocPatch);
+    if (!pocPatch) issue('/pocPatch', 'must be the patch bytes in canonical base64, not empty');
   }
   let fixPatch = null;
   if (body.fixPatch !== undefined && body.fixPatch !== null) {
-    if (typeof body.fixPatch !== 'string' || body.fixPatch === '' || !BASE64.test(body.fixPatch)) {
-      issue('/fixPatch', 'must be null or the patch bytes in base64');
-    } else {
-      fixPatch = Buffer.from(body.fixPatch, 'base64');
-    }
+    fixPatch = decodeBase64(body.fixPatch);
+    if (!fixPatch) issue('/fixPatch', 'must be null or the patch bytes in canonical base64');
   }
 
   if (required('report') && typeof body.report !== 'string') issue('/report', 'must be a string (report.md)');

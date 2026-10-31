@@ -10,7 +10,7 @@ const os = require('node:os');
 const { executeRun } = require('../../src/pipeline');
 const { runText } = require('../../src/docker');
 const {
-  RUNTIME, TEST_IMAGE, silent, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, smallLimits
+  RUNTIME, PLATFORM, TEST_IMAGE, silent, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, smallLimits
 } = require('./helpers');
 
 function run(config, docker, steps, over = {}) {
@@ -41,7 +41,8 @@ test('the sandbox has the §9.1 isolation, whatever the image would like', { tim
       route: ['cat', '/proc/net/route'],
       hostname: ['hostname'],
       env: ['env'],
-      kernel: ['uname', '-r']
+      kernel: ['uname', '-r'],
+      machine: ['uname', '-m']
     })) {
       inside[key] = (await ctx.exec(argv, { name: key, timeoutMs: 30000 })).stdout.text;
     }
@@ -71,6 +72,9 @@ test('the sandbox has the §9.1 isolation, whatever the image would like', { tim
     assert.ok(inspected.Config.Env.includes(kv), kv);
   }
 
+  // The platform asked for is the one that runs.
+  assert.equal(inside.machine.trim(), PLATFORM === 'linux/amd64' ? 'x86_64' : 'aarch64');
+  assert.equal(result.platform, PLATFORM);
   assert.equal(inside.uid.trim(), '10001');
   assert.equal(inside.gid.trim(), '10001');
   assert.match(inside.status, /^CapEff:\s*0+$/m);

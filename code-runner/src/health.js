@@ -57,6 +57,7 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
     version: RUNNER_VERSION,
     node: process.version,
     runtime: config.runtime,
+    platform: config.platform,
     runtimeAvailable: Boolean(runtime),
     runtimeArgs: runtime ? runtime.runtimeArgs : [],
     docker: {

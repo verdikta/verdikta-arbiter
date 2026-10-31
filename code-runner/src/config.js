@@ -118,6 +118,16 @@ function loadConfig(env = process.env, { root = CODE_RUNNER_ROOT, readFile = (p)
   const runtime = blank(env.CODE_RUNNER_RUNTIME) ? 'runsc' : String(env.CODE_RUNNER_RUNTIME).trim();
   if (!RUNTIMES.includes(runtime)) problems.push(`CODE_RUNNER_RUNTIME must be runsc or runc, got ${JSON.stringify(runtime)}`);
 
+  // The class platform is linux/amd64 (§9.3). Apple-silicon development
+  // without amd64 emulation can run arm64 variants of multi-platform test
+  // images, under runc only; the run reports the platform it used.
+  const platform = blank(env.CODE_RUNNER_PLATFORM) ? 'linux/amd64' : String(env.CODE_RUNNER_PLATFORM).trim();
+  if (platform !== 'linux/amd64' && platform !== 'linux/arm64') {
+    problems.push(`CODE_RUNNER_PLATFORM must be linux/amd64 (or linux/arm64 for runc development), got ${JSON.stringify(platform)}`);
+  } else if (platform !== 'linux/amd64' && runtime !== 'runc') {
+    problems.push('CODE_RUNNER_PLATFORM=linux/arm64 is a development setting: it needs CODE_RUNNER_RUNTIME=runc');
+  }
+
   const instance = blank(env.CODE_RUNNER_INSTANCE) ? 'default' : String(env.CODE_RUNNER_INSTANCE).trim();
   if (!INSTANCE.test(instance)) problems.push(`CODE_RUNNER_INSTANCE must be a lowercase slug of up to 32 characters, got ${JSON.stringify(instance)}`);
 
@@ -147,6 +157,7 @@ function loadConfig(env = process.env, { root = CODE_RUNNER_ROOT, readFile = (p)
     allowRemoteBind,
     token,
     runtime,
+    platform,
     dockerHost: blank(env.DOCKER_HOST) ? null : String(env.DOCKER_HOST).trim(),
     dockerBin: blank(env.CODE_RUNNER_DOCKER_BIN) ? 'docker' : String(env.CODE_RUNNER_DOCKER_BIN).trim(),
     instance,

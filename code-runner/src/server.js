@@ -71,7 +71,7 @@ function toResponse(result) {
   return {
     outcome: result.outcome,
     runId: result.runId,
-    runner: { version: RUNNER_VERSION, runtime: result.runtime },
+    runner: { version: RUNNER_VERSION, runtime: result.runtime, platform: result.platform },
     limits: result.limits,
     abstain: result.abstain,
     steps: result.steps,
@@ -96,6 +96,8 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
   const active = new Set();
   /** runId → { controller, done } for the runs in flight. */
   const runs = new Map();
+  /** Set by close(): no new run is admitted. */
+  let closing = false;
 
   async function handleRun(req, res, receivedAt) {
     const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
@@ -135,6 +137,10 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
       return;
     }
 
+    if (closing) {
+      send(res, 503, { outcome: OUTCOME.ABSTAIN, abstain: { cause: ABSTAIN.ADMISSION_REFUSED, step: 'admission', detail: 'the runner is shutting down' } });
+      return;
+    }
     const request = v.request;
     const runId = crypto.randomBytes(8).toString('hex');
     const controller = new AbortController();
@@ -166,6 +172,10 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
       cause: result.abstain ? result.abstain.cause : null, step: result.abstain ? result.abstain.step : null,
       ms: Date.now() - receivedAt
     });
+    if (result.outcome === OUTCOME.REQUESTER_ERROR) {
+      send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, runId, issues: result.issues });
+      return;
+    }
     send(res, result.outcome === OUTCOME.DEFINITIVE ? 200 : 503, toResponse(result));
   }
 
@@ -261,15 +271,20 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
     return { host: addr.address, port: addr.port };
   }
 
-  /** Cancel every run in flight (their sandboxes are removed) and stop. */
+  /**
+   * Stop: admit nothing new, cancel every run in flight and wait until each
+   * has removed its sandboxes, then close the connections.
+   */
   async function close() {
-    const pending = [...runs.values()];
-    for (const r of pending) r.controller.abort('cancel');
-    await Promise.all(pending.map((r) => r.done));
-    await new Promise((resolve) => {
-      server.close(() => resolve());
-      if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
-    });
+    closing = true;
+    const stopped = new Promise((resolve) => { server.close(() => resolve()); });
+    while (runs.size > 0) {
+      const pending = [...runs.values()];
+      for (const r of pending) r.controller.abort('cancel');
+      await Promise.all(pending.map((r) => r.done));
+    }
+    if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
+    await stopped;
   }
 
   return { server, listen, close, active, runs };

@@ -10,11 +10,18 @@
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
+const os = require('node:os');
 const { createDocker, runText } = require('../../src/docker');
 const { testConfig } = require('../helpers/http');
 const { psArgs } = require('../../src/gc');
 
 const RUNTIME = process.env.CODE_RUNNER_RUNTIME || 'runc';
+/**
+ * linux/amd64, the class platform; on Apple silicon under runc (no amd64
+ * emulation in Docker Desktop by default) the arm64 variant of the same
+ * multi-platform index. Override with CODE_RUNNER_PLATFORM.
+ */
+const PLATFORM = process.env.CODE_RUNNER_PLATFORM || (RUNTIME === 'runc' && os.arch() === 'arm64' ? 'linux/arm64' : 'linux/amd64');
 
 /** ubuntu:24.04, the multi-arch index, pinned by digest. Test fixture only. */
 const TEST_IMAGE = 'ubuntu@sha256:69cecf4bbf72d2d44a9eef1b71fb98c7fb973d78af11399deccef19beb008ad9';
@@ -26,7 +33,7 @@ function instanceId() {
 }
 
 function dockerTestConfig(env = {}) {
-  const config = testConfig({ CODE_RUNNER_RUNTIME: RUNTIME, CODE_RUNNER_INSTANCE: instanceId(), ...env });
+  const config = testConfig({ CODE_RUNNER_RUNTIME: RUNTIME, CODE_RUNNER_PLATFORM: PLATFORM, CODE_RUNNER_INSTANCE: instanceId(), ...env });
   config.dockerHost = env.DOCKER_HOST !== undefined ? env.DOCKER_HOST : (process.env.DOCKER_HOST || null);
   return config;
 }
@@ -39,9 +46,9 @@ function dockerFor(config) {
 let pulled = false;
 async function ensureTestImage(docker) {
   if (pulled) return;
-  const have = await runText(docker, ['image', 'inspect', '--format', '{{.Id}}', TEST_IMAGE], { timeoutMs: 30000 });
+  const have = await runText(docker, ['run', '--rm', '--pull', 'never', '--platform', PLATFORM, '--network', 'none', '--entrypoint', 'true', TEST_IMAGE], { timeoutMs: 60000 });
   if (have.exitCode !== 0) {
-    const pull = await runText(docker, ['pull', TEST_IMAGE], { timeoutMs: 300000 });
+    const pull = await runText(docker, ['pull', '--platform', PLATFORM, TEST_IMAGE], { timeoutMs: 300000 });
     assert.equal(pull.exitCode, 0, `docker pull ${TEST_IMAGE}: ${pull.stderr}`);
   }
   pulled = true;
@@ -70,7 +77,7 @@ async function eventually(fn, { timeoutMs = 15000, everyMs = 200 } = {}) {
   return last;
 }
 
-/** Limits small enough for the abstain tests; runArgs still checks them. */
+/** Limits small enough for the abstain tests; createArgs still checks them. */
 function smallLimits(over = {}) {
   return {
     cpus: 1, memoryMb: 512, pids: 512, buildSeconds: 30, testSeconds: 60, runSeconds: 60,
@@ -79,5 +86,5 @@ function smallLimits(over = {}) {
 }
 
 module.exports = {
-  RUNTIME, TEST_IMAGE, silent, instanceId, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, eventually, smallLimits
+  RUNTIME, PLATFORM, TEST_IMAGE, silent, instanceId, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, eventually, smallLimits
 };

@@ -86,6 +86,7 @@ test('POST /v1/runs accepts the full request and answers with a definitive resul
   assert.match(res.body.runId, /^[0-9a-f]{16}$/);
   assert.equal(res.body.runner.version, RUNNER_VERSION);
   assert.equal(res.body.runner.runtime, 'runc');
+  assert.equal(res.body.runner.platform, 'linux/amd64');
   assert.equal(res.body.abstain, null);
   assert.deepEqual(res.body.steps, []);
   assert.equal(res.body.report, null);
@@ -96,7 +97,7 @@ test('POST /v1/runs accepts the full request and answers with a definitive resul
     maxPatchBytes: 2000000, patchExpansionBytes: 50000000, platform: 'linux/amd64'
   });
   // The sandbox was started and torn down.
-  assert.ok(docker.callsOf('run').length === 1);
+  assert.ok(docker.callsOf('create').length === 1);
   assert.ok(docker.callsOf('rm').length >= 1);
 });
 
@@ -132,7 +133,7 @@ test('POST /v1/runs: every field is required and typed', async (t) => {
   assert.equal((await request(target, { method: 'POST', path: '/v1/runs', body: noFix })).status, 200);
   const withFix = runRequest({ fixPatch: Buffer.from('diff --git a/src/A.sol b/src/A.sol\n').toString('base64') });
   assert.equal((await request(target, { method: 'POST', path: '/v1/runs', body: withFix })).status, 200);
-  assert.equal(docker.callsOf('run').length, 2);
+  assert.equal(docker.callsOf('create').length, 2);
 });
 
 test('a spec above the class hard limits is a requester error before any work', async (t) => {
@@ -213,7 +214,7 @@ test('the maintenance lock refuses runs (503, abstain: admission_refused) and sh
   assert.equal(res.body.outcome, 'abstain');
   assert.equal(res.body.abstain.cause, 'admission_refused');
   assert.match(res.body.abstain.detail, /maintenance/);
-  assert.equal(docker.callsOf('run').length, 0);
+  assert.equal(docker.callsOf('create').length, 0);
   const health = await request(target, { path: '/health' });
   assert.equal(health.body.maintenance, true);
   assert.equal(health.status, 503);
@@ -227,5 +228,50 @@ test('a deadline the run cannot meet is refused at admission', async (t) => {
   assert.equal(res.status, 503);
   assert.equal(res.body.abstain.cause, 'admission_refused');
   assert.match(res.body.abstain.detail, /deadline/);
-  assert.equal(docker.callsOf('run').length, 0);
+  assert.equal(docker.callsOf('create').length, 0);
+});
+
+test('a 6 MB patch is validated without a regex blow-up (its size is the applies gate\'s business)', async (t) => {
+  const { runner, target } = await start();
+  t.after(() => runner.close());
+  const big = Buffer.alloc(6 * 1024 * 1024, 0x61).toString('base64');
+  const res = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest({ pocPatch: big }) });
+  assert.equal(res.status, 200, res.raw.slice(0, 300));
+  // Non-canonical base64 is refused.
+  const bad = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest({ pocPatch: 'YQ' }) });
+  assert.equal(bad.status, 400);
+  assert.ok(bad.body.issues.some((i) => i.path === '/pocPatch'));
+});
+
+test('an env image that declares volumes is the requester\'s error, found before anything runs in it', async (t) => {
+  const docker = fakeDocker(healthyDaemon({ mounts: () => ({ stdout: JSON.stringify([{ Type: 'volume', Destination: '/data' }]) }) }));
+  const { runner, target } = await start({ docker });
+  t.after(() => runner.close());
+  const res = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(res.status, 400, res.raw);
+  assert.equal(res.body.outcome, 'requester_error');
+  assert.ok(res.body.issues.some((i) => i.code === 'IMAGE_DECLARES_VOLUMES' && /\/data/.test(i.detail)));
+  assert.equal(docker.callsOf('start').length, 0, 'never started');
+  const rm = docker.callsOf('rm').map((c) => c.args);
+  assert.ok(rm.some((a) => a[1] === '--force' && a[2] === '--volumes'), 'removed with its volume');
+});
+
+test('close() admits nothing new and waits for every run to remove its sandbox', async () => {
+  let release;
+  const docker = fakeDocker(healthyDaemon({ step: () => new Promise((r) => { release = r; }) }));
+  const config = testConfig();
+  const runner = createServer({ config, docker, log: silent, statfs, stepsFor: () => [async (ctx) => { await ctx.exec(['sleep', '100'], { name: 'poc' }); }] });
+  const address = await runner.listen();
+  const target = { host: address.host, port: address.port };
+  const inFlight = request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  while (runner.runs.size === 0) await new Promise((r) => setTimeout(r, 10));
+  const closed = runner.close();
+  const res = await inFlight;
+  assert.equal(res.status, 503);
+  assert.equal(res.body.abstain.cause, 'cancelled');
+  await closed;
+  assert.equal(runner.runs.size, 0);
+  assert.equal(runner.active.size, 0);
+  assert.ok(docker.callsOf('rm').length >= 1);
+  if (release) release({ exitCode: 0 });
 });

@@ -31,7 +31,11 @@ env -i PATH="$PATH" HOME="$HOME" CODE_RUNNER_TOKEN=... CODE_RUNNER_RUNTIME=runc 
 ### macOS (development): runc
 
 Docker Desktop runs containers in a Linux VM with `runc`; gVisor is not
-available there. Set `CODE_RUNNER_RUNTIME=runc`. `DOCKER_HOST` can stay unset:
+available there. Set `CODE_RUNNER_RUNTIME=runc`. The class platform is
+`linux/amd64`, which Apple silicon runs only with Docker Desktop's amd64
+emulation turned on; without it, `CODE_RUNNER_PLATFORM=linux/arm64` (accepted
+with `runc` only) runs the arm64 variant of a multi-platform image, and every
+answer reports the platform it used. `DOCKER_HOST` can stay unset:
 the runner gives the docker CLI its own empty `DOCKER_CONFIG`, so the CLI uses
 the default socket, `/var/run/docker.sock`, which Docker Desktop links to
 `~/.docker/run/docker.sock` (set `DOCKER_HOST=unix://$HOME/.docker/run/docker.sock`
@@ -118,7 +122,7 @@ runner stops at receipt + deadline minus `CODE_RUNNER_DEADLINE_RESERVE_MS`.
 |---|---|---|
 | 200 | `definitive` | Every step ended in a fact the arbiters may settle on. Gates (from A2a on) decide INVALID or the jury. |
 | 503 | `abstain` | Error, no commit. `abstain.cause` says why. |
-| 400 | `requester_error` | The requester's package is broken (§12): a malformed request, or a spec above the class hard limits. No work was done. `issues[]` names each problem. |
+| 400 | `requester_error` | The requester's package is broken (§12): a malformed request, a spec above the class hard limits, or an env image that declares volumes. No claim code ran. `issues[]` names each problem. |
 | 401 / 404 / 405 / 413 / 415 | — | Token, route, method, body size (16 MiB), content type. |
 
 A definitive or abstaining answer looks like:
@@ -126,7 +130,7 @@ A definitive or abstaining answer looks like:
 ```json
 {
   "outcome": "abstain", "runId": "3f2a…",
-  "runner": { "version": "0.1.0", "runtime": "runsc" },
+  "runner": { "version": "0.1.0", "runtime": "runsc", "platform": "linux/amd64" },
   "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "testSeconds": 180, "runSeconds": 360, "maxPatchBytes": 2000000, "patchExpansionBytes": 50000000, "platform": "linux/amd64" },
   "abstain": { "cause": "oom", "step": "build", "detail": "a process in the sandbox was OOM-killed during the step" },
   "steps": [ { "name": "build", "outcome": "abstain", "exitCode": 1, "durationMs": 8123,
@@ -156,16 +160,22 @@ Every check gets a fresh container (`src/sandbox.js`, which builds every argv
 the runner gives Docker; `test/unit/sandbox.test.js` pins it exactly):
 
 ```
-docker run --detach --pull never --name vcr-<run>-<n> --label verdikta.code-runner=1 …
+docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label verdikta.code-runner=1 …
   --runtime runsc --network none --cap-drop ALL --security-opt no-new-privileges
   --user 10001:10001 --pids-limit 4096 --memory 4096m --memory-swap 4096m --cpus 2
   --hostname sandbox --env TZ=UTC --env LANG=C.UTF-8 --env CI=true --env PYTHONHASHSEED=0
   --log-driver none --init --entrypoint sleep <image@sha256:…> <keepalive seconds>
 ```
 
-- No bind mounts, no volumes, no Docker socket, no added capability. The
-  entrypoint is the runner's keepalive, not the image's; it ends the container
-  shortly after the deadline even if the runner dies.
+- No bind mounts, no volumes, no Docker socket, no added capability. Between
+  `docker create` and `docker start` the runner checks the container's mounts:
+  an image whose `VOLUME` lines would give it anonymous volumes (outside the
+  capped scratch layer) is refused as the requester's error before anything
+  runs in it. Containers are removed with `--volumes`.
+- `--platform linux/amd64`: the class platform is the one that runs, not the
+  host's variant of a multi-platform image.
+- The entrypoint is the runner's keepalive, not the image's; it ends the
+  container shortly after the deadline even if the runner dies.
 - `--pull never`: the runner never pulls implicitly (the controlled pull is
   A1b). An image that is not on the runner's disk abstains (`image_unavailable`).
 - Steps run through `docker exec --user 10001:10001 <container> <argv…>`. The
@@ -203,7 +213,10 @@ cannot be decided on anything else. Everything else **abstains**:
 
 After every step the runner inspects the container and reads its cgroup
 counters, so an OOM kill or a refused fork behind an otherwise clean exit code
-still abstains.
+still abstains. A probe that cannot be made counts against the step: when it
+cannot even start in the sandbox and `docker stats` shows the pid table full,
+`pids_limit`; when the daemon does not answer, `docker_unreachable`; otherwise
+`docker_error`. Counter files that do not exist (gVisor) are not a failure.
 
 ## Time
 
@@ -211,7 +224,12 @@ still abstains.
   `runSeconds`.
 - Each step is bounded by its own limit, the run's `runSeconds` and the
   deadline less the reserve (5 s by default). The first to pass kills the
-  container (`docker rm --force`) and the run abstains with that cause.
+  container (`docker rm --force --volumes`) and the run abstains with that
+  cause.
+- Teardown has until the deadline itself, never longer: the answer is sent by
+  then, and a removal still running carries on in the background for the GC to
+  finish. A run is definitive only once every sandbox it started is gone; one
+  that could not be removed (or not by the deadline) abstains `docker_error`.
 - Every Docker control call has its own timeout, and the run stops at the
   deadline even if a step is stuck outside Docker.
 - Step logs keep the first and last 32 KiB of stdout and of stderr
@@ -220,6 +238,11 @@ still abstains.
 ## Cleanup and maintenance
 
 - Every sandbox is removed when its run ends, whatever happened.
+- Stopping (SIGTERM, SIGINT) admits no new run, cancels the runs in flight and
+  waits until each has removed its sandboxes.
+- One process per instance: the listener is the lock. A second process with
+  the same configuration fails to listen before its startup GC can touch the
+  first one's containers.
 - GC (`src/gc.js`) removes containers carrying this instance's label that no
   live run owns, or that are past their expiry label: at startup and every
   `CODE_RUNNER_GC_INTERVAL_SECONDS`.
@@ -237,6 +260,7 @@ still abstains.
 | `CODE_RUNNER_SOCKET` | — | Listen on this Unix socket (mode 0600) instead. |
 | `CODE_RUNNER_ALLOW_REMOTE_BIND` | — | `true` permits another address (remote placement mode). |
 | `CODE_RUNNER_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` (macOS development). |
+| `CODE_RUNNER_PLATFORM` | `linux/amd64` | `linux/arm64` only with `runc`, for Apple silicon without amd64 emulation. |
 | `DOCKER_HOST` | CLI default | The daemon the runner drives. |
 | `CODE_RUNNER_DOCKER_BIN` | `docker` | The docker CLI. |
 | `CODE_RUNNER_DATA_ROOT` | the daemon's `DockerRootDir` | Where `/health` measures free bytes. |
@@ -255,7 +279,8 @@ CODE_RUNNER_RUNTIME=runc npm run test:docker    # needs a Docker daemon
 CODE_RUNNER_RUNTIME=runsc npm run test:docker   # Linux with gVisor registered as runsc
 ```
 
-The Docker tests pull `ubuntu:24.04` by digest, run one test per abstain cause,
+The Docker tests pull `ubuntu:24.04` by digest (for `CODE_RUNNER_PLATFORM`,
+which they set to `linux/arm64` on Apple silicon under runc), run one test per abstain cause,
 check the real isolation of a container and remove everything they start. CI
 (`.github/workflows/code-runner.yml`) runs the unit tests, and the Docker tests
 under `runc` and under the pinned gVisor on the systrap platform.
@@ -268,9 +293,9 @@ under `runc` and under the pinned gVisor on the systrap platform.
   `ctx.readFile(path, { maxBytes })`, `ctx.gate(name, status, basis, detail)`,
   `ctx.openSandbox()` (a second container with the same flags, for the fix
   check), `ctx.remainingMs()` and `ctx.limits`.
-- **Launch** (`src/sandbox.js`): `runArgs`, `execArgs`, `removeArgs` and the
-  `Sandbox` class.
+- **Launch** (`src/sandbox.js`): `createArgs`, `startArgs`, `execArgs`,
+  `removeArgs` and the `Sandbox` class.
 - **Admission** (`src/admission.js`): A1b adds slots, the memory reserve and
   the disk check for the pull.
 - **Result** (`src/result.js`): `ABSTAIN`, `DEFINITIVE_BASIS`, `Abstain`,
-  `makeGate`, `classifyExec`.
+  `RequesterError`, `makeGate`, `classifyExec`.

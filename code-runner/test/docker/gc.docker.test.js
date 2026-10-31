@@ -6,16 +6,19 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { collectLeftovers } = require('../../src/gc');
-const { runArgs } = require('../../src/sandbox');
+const { createArgs, startArgs } = require('../../src/sandbox');
 const { runText } = require('../../src/docker');
-const { RUNTIME, TEST_IMAGE, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, instanceId } = require('./helpers');
+const { RUNTIME, PLATFORM, TEST_IMAGE, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, instanceId } = require('./helpers');
 
-function launch(docker, instance, runId) {
+async function launch(docker, instance, runId) {
   const now = Math.floor(Date.now() / 1000);
-  return runText(docker, runArgs({
-    name: `vcr-${runId}-1`, image: TEST_IMAGE, runtime: RUNTIME, limits: { cpus: 1, memoryMb: 256, pids: 256 },
+  const name = `vcr-${runId}-1`;
+  const created = await runText(docker, createArgs({
+    name, image: TEST_IMAGE, runtime: RUNTIME, platform: PLATFORM, limits: { cpus: 1, memoryMb: 256, pids: 256 },
     instance, runId, expiresAt: now + 600, keepaliveSeconds: 600
   }), { timeoutMs: 120000 });
+  if (created.exitCode !== 0) return created;
+  return runText(docker, startArgs(name), { timeoutMs: 120000 });
 }
 
 test('GC removes a crashed run\'s container and nothing that is not its own', { timeout: 180000 }, async (t) => {
@@ -34,7 +37,7 @@ test('GC removes a crashed run\'s container and nothing that is not its own', { 
   assert.equal(mine.exitCode, 0, mine.stderr);
   const theirs = await launch(docker, other, 'd0d0d0d0d0d0d0d0');
   assert.equal(theirs.exitCode, 0, theirs.stderr);
-  const unlabelled = await runText(docker, ['run', '--detach', '--pull', 'never', '--name', plain, '--network', 'none', '--entrypoint', 'sleep', TEST_IMAGE, '600'], { timeoutMs: 120000 });
+  const unlabelled = await runText(docker, ['run', '--detach', '--pull', 'never', '--platform', PLATFORM, '--name', plain, '--network', 'none', '--entrypoint', 'sleep', TEST_IMAGE, '600'], { timeoutMs: 120000 });
   assert.equal(unlabelled.exitCode, 0, unlabelled.stderr);
 
   // A live run's container is left alone.

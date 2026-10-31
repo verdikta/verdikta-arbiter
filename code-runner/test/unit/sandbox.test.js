@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { runArgs, execArgs, removeArgs, SANDBOX_USER, SANDBOX_ENV, LABEL } = require('../../src/sandbox');
+const { createArgs, startArgs, execArgs, removeArgs, SANDBOX_USER, SANDBOX_ENV, LABEL } = require('../../src/sandbox');
 const { checkSpec } = require('../../src/classLimits');
 const { spec, IMAGE } = require('../helpers/requests');
 
@@ -20,9 +20,10 @@ const BASE = {
   keepaliveSeconds: 800
 };
 
-test('docker run argv is exactly the §9.1 sandbox', () => {
-  assert.deepEqual(runArgs(BASE), [
-    'run', '--detach', '--pull', 'never',
+test('docker create argv is exactly the §9.1 sandbox', () => {
+  assert.deepEqual(createArgs(BASE), [
+    'create', '--pull', 'never',
+    '--platform', 'linux/amd64',
     '--name', 'vcr-0123456789abcdef-1',
     '--label', 'verdikta.code-runner=1',
     '--label', 'verdikta.code-runner.instance=default',
@@ -51,22 +52,31 @@ test('docker run argv is exactly the §9.1 sandbox', () => {
   assert.equal(SANDBOX_USER, '10001:10001');
   assert.deepEqual({ ...SANDBOX_ENV }, { TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0' });
   assert.equal(LABEL, 'verdikta.code-runner');
+  assert.deepEqual(startArgs(BASE.name), ['start', BASE.name]);
+});
+
+test('the platform is linux/amd64 unless runc development asks for linux/arm64', () => {
+  const arm = createArgs({ ...BASE, runtime: 'runc', platform: 'linux/arm64' });
+  assert.equal(arm[arm.indexOf('--platform') + 1], 'linux/arm64');
+  for (const platform of ['linux/386', 'windows/amd64', '--privileged', '']) {
+    assert.throws(() => createArgs({ ...BASE, platform }), /platform/, platform);
+  }
 });
 
 test('runc is the only other runtime, and it changes nothing else', () => {
-  const runsc = runArgs(BASE);
-  const runc = runArgs({ ...BASE, runtime: 'runc' });
+  const runsc = createArgs(BASE);
+  const runc = createArgs({ ...BASE, runtime: 'runc' });
   assert.deepEqual(runc.filter((a, i) => a !== runsc[i]), ['runc']);
-  assert.throws(() => runArgs({ ...BASE, runtime: 'kata' }), /runtime/);
-  assert.throws(() => runArgs({ ...BASE, runtime: undefined }), /runtime/);
+  assert.throws(() => createArgs({ ...BASE, runtime: 'kata' }), /runtime/);
+  assert.throws(() => createArgs({ ...BASE, runtime: undefined }), /runtime/);
 });
 
 test('a spec can only lower numbers; the flag set never changes', () => {
   const low = checkSpec(spec({ limits: { cpus: 1, memoryMb: 512, runSeconds: 60, testSeconds: 30 } }));
   assert.equal(low.ok, true);
-  const argv = runArgs({ ...BASE, limits: low.limits });
+  const argv = createArgs({ ...BASE, limits: low.limits });
   const flags = (a) => a.filter((x) => x.startsWith('--'));
-  assert.deepEqual(flags(argv), flags(runArgs(BASE)));
+  assert.deepEqual(flags(argv), flags(createArgs(BASE)));
   assert.equal(argv[argv.indexOf('--cpus') + 1], '1');
   assert.equal(argv[argv.indexOf('--memory') + 1], '512m');
   assert.equal(argv[argv.indexOf('--memory-swap') + 1], '512m');
@@ -75,7 +85,7 @@ test('a spec can only lower numbers; the flag set never changes', () => {
 });
 
 test('no mount, no socket, no privilege, no host namespace, ever', () => {
-  const argv = runArgs(BASE).join('\n');
+  const argv = createArgs(BASE).join('\n');
   for (const forbidden of ['--volume', '-v', '--mount', '--privileged', '--cap-add', 'docker.sock', '--network=host',
     'host', '--pid', '--ipc', '--userns', '--device', '--security-opt=seccomp=unconfined', 'apparmor=unconfined', '--tmpfs']) {
     assert.ok(!argv.split('\n').includes(forbidden), forbidden);
@@ -101,7 +111,7 @@ test('inputs that could smuggle a flag or a second argument are refused', () => 
     { expiresAt: 'soon' }
   ];
   for (const over of bad) {
-    assert.throws(() => runArgs({ ...BASE, ...over }), Error, JSON.stringify(over));
+    assert.throws(() => createArgs({ ...BASE, ...over }), Error, JSON.stringify(over));
   }
 });
 
@@ -121,7 +131,7 @@ test('docker exec argv: the sandbox user, the container, then the step argv unto
   assert.throws(() => execArgs({ name: BASE.name, argv: ['true'], workdir: 'relative' }), /workdir/);
 });
 
-test('teardown argv removes the container by name, forcefully', () => {
-  assert.deepEqual(removeArgs([BASE.name]), ['rm', '--force', BASE.name]);
+test('teardown argv removes the container by name, forcefully, with any anonymous volume', () => {
+  assert.deepEqual(removeArgs([BASE.name]), ['rm', '--force', '--volumes', BASE.name]);
   assert.throws(() => removeArgs(['--all']), /name/);
 });

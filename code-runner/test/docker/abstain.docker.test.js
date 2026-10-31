@@ -52,6 +52,9 @@ test('step wall-clock limit: killed, abstains', { timeout: 120000 }, async (t) =
 
 test('deadline: the container is killed at the deadline and the run abstains', { timeout: 120000 }, async (t) => {
   const env = await setup(t);
+  // The run stops at the deadline less the reserve and has the reserve to
+  // remove its sandbox before it answers.
+  env.config.deadlineReserveMs = 3000;
   // Time already spent before the steps (fetch, pull) can leave less than
   // runSeconds; admission is skipped here to model exactly that.
   const started = Date.now();
@@ -61,7 +64,7 @@ test('deadline: the container is killed at the deadline and the run abstains', {
     await ctx.exec(['sleep', '60'], { name: 'poc', timeoutMs: 60000 });
   }], { deadlineMs: 8000, admit: noAdmission });
   assert.ok(launchedAt, 'the step started');
-  assert.ok(Date.now() - started < 8000 + 15000, `took ${Date.now() - started} ms`);
+  assert.ok(Date.now() - started < 8000 + 1000, `answered after ${Date.now() - started} ms, past the 8000 ms deadline`);
   await expectAbstain(env, r, 'deadline', 'poc');
 });
 
