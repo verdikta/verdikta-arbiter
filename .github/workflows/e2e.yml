@@ -13,14 +13,18 @@ name: E2E
 #
 # NOTE: GitHub does not expose secrets to workflows triggered by pull_request
 # from forks. The secret-dependent jobs below are gated to same-repo events.
+#
+# claude/stake-attestation is the stake-attestation integration branch: its
+# node PRs land there, not in main, and need the same checks (issue #105).
+# .github/tests/workflow-triggers.test.sh pins these triggers.
 
 on:
   pull_request:
-    branches: [main, master]
-    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', '.github/workflows/e2e.yml']
+    branches: [main, master, claude/stake-attestation]
+    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', 'code-runner/**', 'testing-tool/**', '.github/workflows/e2e.yml']
   push:
-    branches: [main, master]
-    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', '.github/workflows/e2e.yml']
+    branches: [main, master, claude/stake-attestation]
+    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', 'code-runner/**', 'testing-tool/**', '.github/workflows/e2e.yml']
   schedule:
     - cron: '0 7 * * *'   # nightly acceptance (L4)
   workflow_dispatch:
