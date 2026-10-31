@@ -75,9 +75,18 @@ test('OOM: a step past the memory limit abstains', { timeout: 120000 }, async (t
 
 test('pids limit: a fork storm past --pids-limit abstains', { timeout: 120000 }, async (t) => {
   const env = await setup(t);
+  let diag = null;
   const r = await run(env, [async (ctx) => {
     await ctx.exec(['sh', '-c', 'i=0; while [ $i -lt 1500 ]; do sleep 30 & i=$((i+1)); done; wait'], { name: 'storm', timeoutMs: 60000 });
+    // Reached only if the storm was (wrongly) taken as definitive: say why.
+    const info = await runText(env.docker, ['info', '--format', '{{.CgroupDriver}} {{.CgroupVersion}} {{.KernelVersion}}'], { timeoutMs: 30000 });
+    const inspect = await runText(env.docker, ['inspect', '--format', '{{.HostConfig.CgroupnsMode}} {{.HostConfig.CgroupParent}}', ctx.sandboxName], { timeoutMs: 30000 });
+    const inside = await runText(env.docker, ['exec', ctx.sandboxName, 'sh', '-c', 'cat /proc/self/cgroup; ls /sys/fs/cgroup | head -50; for f in /sys/fs/cgroup/pids.* /sys/fs/cgroup/memory.events; do echo "== $f"; cat $f; done'], { timeoutMs: 30000 });
+    const stats = await runText(env.docker, ['stats', '--no-stream', '--format', '{{.PIDs}}', ctx.sandboxName], { timeoutMs: 30000 });
+    diag = { info: info.stdout, inspect: inspect.stdout, inside: inside.stdout, insideErr: inside.stderr, insideExit: inside.exitCode, stats: stats.stdout };
   }], { limits: { pids: 256 } });
+  if (diag) t.diagnostic(JSON.stringify(diag));
+  assert.equal(diag, null, `storm counted as definitive; ${JSON.stringify(diag)}`);
   await expectAbstain(env, r, 'pids_limit', 'storm');
 });
 
