@@ -52,6 +52,10 @@ const VARIANTS = Object.freeze({
   // a changed file the submodule's own index hides.
   sub: { setup: SUBMODULE },
   subassume: { setup: `${SUBMODULE} && cd lib/dep && printf "changed\\n" >> dep.txt && git update-index --assume-unchanged dep.txt` },
+  // R8-F1: the submodule's files kept, changed, without its .git (git then sees it as not checked out);
+  // and the same submodule left empty, as a clone without --recurse-submodules leaves it.
+  subbare: { setup: `${SUBMODULE} && rm -rf lib/dep/.git .git/modules/lib/dep && printf "changed\\n" >> lib/dep/dep.txt` },
+  subempty: { setup: `${SUBMODULE} && rm -rf lib/dep .git/modules/lib/dep && mkdir lib/dep` },
   // R1-F3 (round 3): the submodule's own clean filter maps its changed file back to the committed bytes.
   submask: {
     setup: SUBMODULE.replace('git -C /tmp/dep add -A', 'printf "*.txt filter=mask\\n" > /tmp/dep/.gitattributes && git -C /tmp/dep add -A')
@@ -519,4 +523,17 @@ test('R6-F1: a claim process that names itself like a zombie ("w) Z" and a line 
   const killed = Object.fromEntries(r.facts.leftoverProcesses.map((x) => [x.after, x.killed]));
   for (const after of ['poc:1', 'poc:2', 'poc:3']) assert.ok(killed[after] >= 1, `the disguised process left by ${after} was killed: ${JSON.stringify(r.facts.leftoverProcesses)}`);
   assert.doesNotMatch(seen.comms, /w\) Z/, `no disguised process survived: ${seen.comms}`);
+});
+
+test('R8-F1: a submodule directory that holds files but no .git is a dirty checkout; an empty one is fine', { timeout: TIMEOUT }, async (t) => {
+  const bare = await fixture('subbare');
+  const { result: r1 } = await run(t, claim(bare, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r1.outcome, 'requester_error', show(r1));
+  assert.deepEqual(r1.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
+  assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but is not checked out/);
+
+  const empty = await fixture('subempty');
+  const { result: r2 } = await run(t, claim(empty, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r2.outcome, 'definitive', show(r2));
+  assert.equal(r2.gates.reproduces.status, 'pass', show(r2));
 });

@@ -243,7 +243,9 @@ What the env image (P3a) must provide:
   self-contained: no symbolic link, `commondir` (a linked worktree), object
   alternates or grafts. Each submodule gets the same neutral attributes and
   index rebuild before the clean check, so neither its own index flags nor
-  its own clean filter can hide a change. The claim
+  its own clean filter can hide a change. A submodule that is not checked
+  out (no `.git` in its directory) must be absent or empty: git would match
+  any files there against the commit it records without reading them. The claim
   pipeline copies it into `/work`, which starts empty, and rebuilds its
   index from `HEAD`, so no assume-unchanged or skip-worktree bit hides a
   change; otherwise the run is the requester's error

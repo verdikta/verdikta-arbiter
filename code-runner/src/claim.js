@@ -175,6 +175,25 @@ const SUBMODULE_INDEX_SCRIPT = [
   'exit 0'
 ].join('; ');
 
+/**
+ * Every path given ($@) must be absent or an empty directory: shell builtins
+ * only. Exit 1 when one holds anything.
+ */
+const EMPTY_PATHS_SCRIPT = [
+  'for p in "$@"; do',
+  '  if [ -d "$p" ] && [ ! -L "$p" ]; then',
+  '    for f in "$p"/* "$p"/.[!.]* "$p"/..?*; do',
+  '      if [ -e "$f" ] || [ -L "$f" ]; then printf "%s\\n" "$p"; exit 1; fi',
+  '    done',
+  '  elif [ -e "$p" ] || [ -L "$p" ]; then printf "%s\\n" "$p"; exit 1',
+  '  fi',
+  'done',
+  'exit 0'
+].join('\n');
+
+/** A line of `git submodule status --recursive`: state, the recorded commit, the path (an initialised one adds ` (describe)`). */
+const SUBMODULE_STATUS_LINE = /^([ +U-])([0-9a-f]{40}(?:[0-9a-f]{24})?) (.+)$/;
+
 const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
 function firstLine(text) {
@@ -327,6 +346,30 @@ function claimSteps(request, limits) {
     if (subs.exitCode !== 0) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
         `a submodule's repository is not self-contained or its index could not be rebuilt from its HEAD: ${firstLine(subs.stderr.text)}`)]);
+    }
+    // A submodule git does not see as checked out (no .git in its directory)
+    // matches whatever its directory holds, and foreach skips it: it must be
+    // absent or empty, or its files would build unchecked.
+    const listed = await gitRead(ctx, 'prepare:gitlinks', ['submodule', 'status', '--recursive']);
+    if (listed.record.exitCode !== 0 || listed.out.truncated) {
+      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `the checkout's submodules could not be listed: ${firstLine(listed.record.stderr.text)}`)]);
+    }
+    const unpopulated = [];
+    for (const line of listed.out.bytes().toString('utf8').split('\n').filter(Boolean)) {
+      const m = SUBMODULE_STATUS_LINE.exec(line);
+      if (!m || m[1] === 'U' || /[\u0000-\u001f\u007f]/.test(m[3])) {
+        throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `a submodule could not be read: ${line.slice(0, 200)}`)]);
+      }
+      if (m[1] === '-') unpopulated.push(m[3]);
+    }
+    if (unpopulated.length) {
+      const empty = await ctx.exec(['/bin/sh', '-c', EMPTY_PATHS_SCRIPT, 'vcr-empty', ...unpopulated.map((p) => `/work/${p}`)], {
+        name: 'prepare:unpopulated', timeoutMs: PREP_TIMEOUT_MS
+      });
+      if (empty.exitCode !== 0) {
+        throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
+          `the submodule ${firstLine(empty.stdout.text).replace(/^\/work\//, '')} holds files but is not checked out (no .git), so they cannot be checked against the commit it records; a submodule must be checked out or empty`)]);
+      }
     }
     await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
     // Untracked and ignored files may be there (installed dependencies, also
@@ -634,5 +677,6 @@ function pocFacts(entries, runs) {
 }
 
 module.exports = {
-  claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, NEUTRAL_ATTRIBUTES, SUBMODULE_INDEX_SCRIPT, RUNS
+  claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, NEUTRAL_ATTRIBUTES, SUBMODULE_INDEX_SCRIPT,
+  EMPTY_PATHS_SCRIPT, RUNS
 };
