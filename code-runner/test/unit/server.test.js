@@ -21,7 +21,9 @@ const { runRequest, spec } = require('../helpers/requests');
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const statfs = async () => ({ bavail: 1000, bsize: 4096 });
 
-async function start({ docker = fakeDocker(healthyDaemon()), config = testConfig(), stepsFor } = {}) {
+// The engine with no claim steps unless a test passes its own; the default
+// pipeline (the forge claim steps) has its own test below.
+async function start({ docker = fakeDocker(healthyDaemon()), config = testConfig(), stepsFor = () => [] } = {}) {
   const runner = createServer({ config, docker, log: silent, statfs, stepsFor });
   const address = await runner.listen();
   const target = address.socketPath ? { socketPath: address.socketPath } : { host: address.host, port: address.port };
@@ -274,4 +276,26 @@ test('close() admits nothing new and waits for every run to remove its sandbox',
   assert.equal(runner.active.size, 0);
   assert.ok(docker.callsOf('rm').length >= 1);
   if (release) release({ exitCode: 0 });
+});
+
+test('POST /v1/runs runs the forge claim steps by default: a spec without the commands they need is the requester\'s error', async (t) => {
+  const docker = fakeDocker(healthyDaemon());
+  const runner = createServer({ config: testConfig(), docker, log: silent, statfs });
+  const address = await runner.listen();
+  t.after(() => runner.close());
+  const res = await request({ host: address.host, port: address.port }, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(res.status, 400, res.raw);
+  assert.equal(res.body.outcome, 'requester_error');
+  assert.deepEqual(res.body.issues.map((i) => i.code), ['COMMAND_MISSING']);
+  // No claim step ran: only the launch checks.
+  const steps = docker.callsOf('exec').filter((c) => !c.args.includes('vcr-launcher-check') && !c.args.includes('vcr-probe'));
+  assert.deepEqual(steps, []);
+});
+
+test('the answer carries the facts the steps recorded', async (t) => {
+  const { runner, target } = await start({ stepsFor: () => [async (ctx) => { ctx.fact('patch', { bytes: 3 }); }] });
+  t.after(() => runner.close());
+  const res = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(res.status, 200, res.raw);
+  assert.deepEqual(res.body.facts, { patch: { bytes: 3 } });
 });

@@ -1,14 +1,15 @@
-// The External Adapter, the AI Node and the e2e harness must read the same
-// @verdikta/common release: the code-review gates, schemas and classes are in
-// it, and an EA and AI Node on different versions could judge one claim by
-// two rule sets. They pin the stake-attestation prerelease exactly.
+// The External Adapter, the AI Node, the e2e harness and the code runner must
+// read the same @verdikta/common release: the code-review gates, schemas,
+// classes and sandbox pins are in it, and components on different versions
+// could judge one claim by two rule sets. They pin the stake-attestation
+// prerelease exactly.
 
 const fs = require('fs');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const PINNED = '1.9.0-attest.1';
-const PACKAGES = ['external-adapter', 'ai-node', 'e2e'];
+const PACKAGES = ['external-adapter', 'ai-node', 'e2e', 'code-runner'];
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
@@ -24,7 +25,7 @@ describe('@verdikta/common pin', () => {
     expect(lock.packages['node_modules/@verdikta/common'].version).toBe(PINNED);
   });
 
-  it('the three packages agree with each other', () => {
+  it('the four packages agree with each other', () => {
     const versions = PACKAGES.map((pkg) => readJson(path.join(REPO, pkg, 'package.json')).dependencies['@verdikta/common']);
     expect(new Set(versions).size).toBe(1);
   });
@@ -43,6 +44,15 @@ describe('@verdikta/common pin', () => {
     } finally {
       log.mockRestore();
     }
+  });
+
+  it('the installer\'s same-version check covers the AI Node, the adapter and the code runner', () => {
+    const { commonPinAgreement, COMMON_COMPONENTS } = require(path.join(REPO, 'installer', 'util', 'common-pin.js'));
+    expect(COMMON_COMPONENTS).toEqual(['ai-node', 'external-adapter', 'code-runner']);
+    expect(commonPinAgreement(REPO)).toEqual({
+      agree: true,
+      pins: { 'ai-node': PINNED, 'external-adapter': PINNED, 'code-runner': PINNED }
+    });
   });
 
   it('the installer reads each component\'s exact pin (installer/util/common-pin.js)', () => {
