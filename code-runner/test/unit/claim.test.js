@@ -123,7 +123,7 @@ test('applies: git apply runs inside the sandbox against the listed commit, the 
   assert.deepEqual(gitCalls(sb, 'status')[0].sub, ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=untracked']);
   // The fixed configuration on every git call: no hooks, no fsmonitor, whitespace never refuses a patch.
   for (const call of sb.execs().filter((d) => d.kind === 'git')) {
-    for (const c of ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'apply.whitespace=nowarn', 'core.autocrlf=false']) {
+    for (const c of ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'apply.whitespace=nowarn', 'core.autocrlf=false', 'core.useReplaceRefs=false']) {
       assert.ok(call.argv.includes(c), `${call.sub[0]} runs with ${c}`);
     }
     assert.equal(call.env.LC_ALL, 'C');
@@ -572,7 +572,10 @@ test('R8-F1: a submodule that is not checked out (no .git) must be absent or emp
   assert.ok(GITLINKS_SCRIPT.includes('case "$line" in "160000 "*) ;; *) continue ;; esac'));
   assert.ok(GITLINKS_SCRIPT.includes('p=${line#*\t}'));
   assert.ok(GITLINKS_SCRIPT.includes('case "$p" in \\"*) printf "%s\\n" "$p"; exit 2 ;; esac'));
-  assert.ok(GITLINKS_SCRIPT.includes('[ -e "$p/.git" ] && continue'));
+  // Checked out means what git itself resolves: a work tree at that very path (not a pipe, a broken gitfile or a redirect).
+  assert.ok(GITLINKS_SCRIPT.includes('git rev-parse --show-toplevel'));
+  assert.ok(GITLINKS_SCRIPT.includes('[ -n "$top" ] && [ "$top" = "$here" ] && continue'));
+  assert.ok(SUBMODULE_INDEX_SCRIPT.startsWith('top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1'));
   assert.doesNotMatch(GITLINKS_SCRIPT, /submodule status/);
   // Each submodule checks its own gitlinks, after its index is rebuilt.
   assert.ok(SUBMODULE_INDEX_SCRIPT.includes(GITLINKS_SCRIPT));
@@ -589,7 +592,7 @@ test('R8-F1: a submodule that is not checked out (no .git) must be absent or emp
   const r1 = await runClaim(full);
   assert.equal(r1.outcome, 'requester_error');
   assert.deepEqual(r1.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
-  assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but is not checked out/);
+  assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but git does not read it as a checkout at that path/);
   assert.equal(gitCalls(full, 'apply').length, 0);
   for (const [exitCode, re] of [[2, /a submodule path git has to quote/], [3, /index could not be read/]]) {
     const r = await runClaim(claimSandbox({ scripts: { 'vcr-gitlinks': () => ({ exitCode, stdout: '"lib/dep\\n"\n' }) } }));

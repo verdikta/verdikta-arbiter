@@ -58,6 +58,8 @@ const GIT_CONFIG = Object.freeze([
   'core.protectNTFS=true',
   'core.protectHFS=false',
   'core.bigFileThreshold=512m',
+  // GIT_NO_REPLACE_OBJECTS is dropped for submodule processes; -c settings reach them.
+  'core.useReplaceRefs=false',
   'apply.whitespace=nowarn',
   'apply.ignoreWhitespace=no',
   'diff.noprefix=false',

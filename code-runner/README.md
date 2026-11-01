@@ -244,8 +244,11 @@ What the env image (P3a) must provide:
   alternates or grafts. Each submodule gets the same neutral attributes and
   index rebuild before the clean check, so neither its own index flags nor
   its own clean filter can hide a change. A submodule that is not checked
-  out (no `.git` in its directory) must be absent or empty: git would match
-  any files there against the commit it records without reading them. The
+  out, as git itself resolves it (a `.git` git reads as a repository whose
+  work tree is that very directory), must be absent or empty: git would
+  match any files there against the commit it records without reading them.
+  A submodule whose `core.worktree` points elsewhere is refused, and replace
+  refs are off in submodules too (`core.useReplaceRefs=false`). The
   gitlinks are read from each repository's index (`git ls-files -s`), and
   a gitlink path git has to quote (a control character, `"` or `\`) is
   refused (`IMAGE_CHECKOUT_NOT_GIT`). The claim

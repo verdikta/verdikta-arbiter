@@ -157,13 +157,15 @@ const NEUTRAL_ATTRIBUTES = '* !filter !diff !merge !text !eol !ident !working-tr
 /**
  * Run in a repository (the checkout, then each submodule), its index fresh
  * from HEAD: every gitlink the index records must be a submodule that is
- * checked out (a `.git` in its directory) or a path that is absent or an
- * empty directory. git matches an unpopulated submodule's directory against
+ * checked out, as git itself resolves it (a `.git` there that git reads as a
+ * repository whose work tree is that very directory: not a pipe, a broken
+ * gitfile or a work tree redirected elsewhere), or a path that is absent or
+ * an empty directory. git matches an unpopulated submodule's directory against
  * the recorded commit without reading it, and foreach skips it, so files
  * there would build unchecked. Paths come from the index as git prints them
  * (`<mode> <object> <stage>\t<path>`); a path git has to quote (a control
  * character, `"` or `\\`) is refused rather than guessed at. Exit 1: a
- * gitlink holds files but is not checked out (its path printed); 2: a
+ * gitlink holds files but is not a checkout at its path (its path printed); 2: a
  * quoted path; 3: the index could not be read.
  */
 const GITLINKS_SCRIPT = [
@@ -173,7 +175,11 @@ const GITLINKS_SCRIPT = [
   '  case "$line" in "160000 "*) ;; *) continue ;; esac',
   '  p=${line#*\t}',
   '  case "$p" in \\"*) printf "%s\\n" "$p"; exit 2 ;; esac',
-  '  [ -e "$p/.git" ] && continue',
+  '  if [ ! -L "$p" ] && { [ -e "$p/.git" ] || [ -L "$p/.git" ]; }; then',
+  '    top=$(cd "$p" 2>/dev/null && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR && git rev-parse --show-toplevel 2>/dev/null) || top=',
+  '    here=$(cd "$p" 2>/dev/null && pwd -P) || here=',
+  '    [ -n "$top" ] && [ "$top" = "$here" ] && continue',
+  '  fi',
   '  if [ -d "$p" ] && [ ! -L "$p" ]; then',
   '    for f in "$p"/* "$p"/.[!.]* "$p"/..?*; do',
   '      if [ -e "$f" ] || [ -L "$f" ]; then printf "%s\\n" "$p"; exit 1; fi',
@@ -186,7 +192,9 @@ const GITLINKS_SCRIPT = [
 /**
  * Run by `git submodule foreach --recursive` in every submodule, before the
  * clean check: the superproject's rules for the submodule's own repository.
- * Its git directory must be self-contained (no commondir, alternates,
+ * Its work tree must be its own directory (core.worktree could point git at
+ * clean copies elsewhere while forge reads this one). Its git directory must
+ * be self-contained (no commondir, alternates,
  * grafts or symbolic link: its info/attributes must be the one git reads),
  * its attributes are neutralised (a submodule's clean filter could map
  * changed bytes back to the committed blob), its index is rebuilt from its
@@ -194,6 +202,7 @@ const GITLINKS_SCRIPT = [
  * checked (GITLINKS_SCRIPT), and its index is refreshed.
  */
 const SUBMODULE_INDEX_SCRIPT = [
+  'top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1',
   'gd=$(git rev-parse --path-format=absolute --git-dir) && cdir=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1',
   '[ "$gd" = "$cdir" ] || exit 1',
   'for f in commondir objects/info/alternates objects/info/http-alternates info/grafts; do [ -e "$gd/$f" ] && exit 1; done',
@@ -356,7 +365,7 @@ function claimSteps(request, limits) {
     const links = await ctx.exec(['/bin/sh', '-c', GITLINKS_SCRIPT, 'vcr-gitlinks'], { name: 'prepare:gitlinks', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
     if (links.exitCode === 1) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
-        `the submodule ${firstLine(links.stdout.text)} holds files but is not checked out (no .git), so they cannot be checked against the commit it records; a submodule must be checked out or empty`)]);
+        `the submodule ${firstLine(links.stdout.text)} holds files but git does not read it as a checkout at that path (no usable .git, or its work tree is elsewhere), so they cannot be checked against the commit it records; a submodule must be checked out or empty`)]);
     }
     if (links.exitCode !== 0) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, links.exitCode === 2
@@ -368,7 +377,7 @@ function claimSteps(request, limits) {
     });
     if (subs.exitCode !== 0) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-        `a submodule's repository is not self-contained, its index could not be rebuilt from its HEAD, or a submodule inside it holds files but is not checked out: ${firstLine(subs.stderr.text)}`)]);
+        `a submodule's work tree is elsewhere, its repository is not self-contained, its index could not be rebuilt from its HEAD, or a submodule inside it holds files but is not checked out: ${firstLine(subs.stderr.text)}`)]);
     }
     await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
     // Untracked and ignored files may be there (installed dependencies, also

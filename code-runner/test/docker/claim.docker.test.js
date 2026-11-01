@@ -67,6 +67,15 @@ const VARIANTS = Object.freeze({
       'mkdir -p "$p" && printf "changed\\n" > "$p/dep.txt"'
     ].join(' && ')
   },
+  // Round 10: changed submodule files behind a .git git cannot read (a pipe), behind a work tree
+  // redirected to clean copies (core.worktree), and behind a replace ref that swaps the recorded commit.
+  subfifo: { setup: `${SUBMODULE} && rm -rf lib/dep/.git .git/modules/lib/dep && mkfifo lib/dep/.git && printf "changed\\n" >> lib/dep/dep.txt` },
+  subwt: { setup: `${SUBMODULE} && cp -r lib/dep clean-dep && rm -f clean-dep/.git && git -C lib/dep config core.worktree ../../../../clean-dep && printf "changed\\n" >> lib/dep/dep.txt` },
+  subreplace: {
+    setup: `${SUBMODULE} && cd lib/dep && printf "changed\\n" >> dep.txt && git add dep.txt && t=$(git write-tree)`
+      + ' && c=$(GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit-tree "$t" -m replaced)'
+      + ' && git replace HEAD "$c" && cd /repo'
+  },
   // R1-F3 (round 3): the submodule's own clean filter maps its changed file back to the committed bytes.
   submask: {
     setup: SUBMODULE.replace('git -C /tmp/dep add -A', 'printf "*.txt filter=mask\\n" > /tmp/dep/.gitattributes && git -C /tmp/dep add -A')
@@ -541,7 +550,7 @@ test('R8-F1: a submodule directory that holds files but no .git is a dirty check
   const { result: r1 } = await run(t, claim(bare, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
   assert.equal(r1.outcome, 'requester_error', show(r1));
   assert.deepEqual(r1.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
-  assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but is not checked out/);
+  assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but git does not read it as a checkout at that path/);
 
   // A gitlink path ending in a line break: git quotes it, and the runner refuses it rather than check a trimmed path.
   const nl = await fixture('subnl');
@@ -554,4 +563,14 @@ test('R8-F1: a submodule directory that holds files but no .git is a dirty check
   const { result: r2 } = await run(t, claim(empty, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
   assert.equal(r2.outcome, 'definitive', show(r2));
   assert.equal(r2.gates.reproduces.status, 'pass', show(r2));
+});
+
+test('round 10: changed submodule files behind a .git git cannot read, a redirected work tree or a replaced commit are a dirty checkout', { timeout: TIMEOUT }, async (t) => {
+  for (const variant of ['subfifo', 'subwt', 'subreplace']) {
+    const fx = await fixture(variant);
+    const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY'], variant);
+    assert.match(r.issues[0].detail, /lib\/dep/, variant);
+  }
 });
