@@ -236,7 +236,8 @@ What the env image (P3a) must provide:
 - the repository checkout at `/repo`: a git repository (`/repo/.git` a
   directory) whose `HEAD` is the listed `baseCommit` and whose tracked files
   are that commit's (untracked and ignored files, such as installed `lib/`
-  dependencies, may be there), readable by uid 10001. The claim pipeline
+  dependencies, may be there, inside submodules too; a submodule must be at
+  the commit the listed commit records), readable by uid 10001. The claim pipeline
   copies it into `/work`, which starts empty; otherwise the run is the
   requester's error (`IMAGE_CHECKOUT_MISSING`, `_NOT_GIT`, `_UNREADABLE`,
   `_MISMATCH`, `_DIRTY`), before any claim code runs;

@@ -117,6 +117,15 @@ test('applies: git apply runs inside the sandbox against the listed commit, the 
   for (const c of sb.docker.calls) assert.notEqual(c.args[0], 'git');
   const verify = gitCalls(sb, 'rev-parse')[0];
   assert.deepEqual(verify.sub, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
+  // Clean means the tracked files (and submodules' commits and tracked files) are the commit's.
+  assert.deepEqual(gitCalls(sb, 'status')[0].sub, ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=untracked']);
+  // The fixed configuration on every git call: no hooks, no fsmonitor, whitespace never refuses a patch.
+  for (const call of sb.execs().filter((d) => d.kind === 'git')) {
+    for (const c of ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'apply.whitespace=nowarn', 'core.autocrlf=false']) {
+      assert.ok(call.argv.includes(c), `${call.sub[0]} runs with ${c}`);
+    }
+    assert.equal(call.env.LC_ALL, 'C');
+  }
 });
 
 test('applies: a patch above maxPatchBytes fails before git sees it', async () => {

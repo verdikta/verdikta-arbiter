@@ -244,7 +244,10 @@ function claimSteps(request, limits) {
     // The copy has new inode and time stamps: refresh the index's stat data
     // so git compares contents (its exit code says only that some needed it).
     await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
-    const status = await gitRead(ctx, 'prepare:status', ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=none']);
+    // Untracked and ignored files may be there (installed dependencies, also
+    // inside submodules); tracked files, and submodules' commits and tracked
+    // files, must be the listed commit's.
+    const status = await gitRead(ctx, 'prepare:status', ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=untracked']);
     if (status.record.exitCode !== 0) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `git status failed on the env image's checkout: ${firstLine(status.record.stderr.text)}`)]);
     }
