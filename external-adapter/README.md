@@ -83,6 +83,14 @@ OPERATOR_ADDR=0x...            # ArbiterOperator address; used in the commit has
 
 # Logging
 LOG_LEVEL=info                 # error | warn | info | debug
+
+# Code review (stake attestation). Off unless enabled; see "Code-review mode" below.
+# CODE_REVIEW_ENABLED=true
+# CODE_RUNNER_URL=http://127.0.0.1:8090
+# CODE_RUNNER_TOKEN=<the runner's bearer token>   # or CODE_RUNNER_TOKEN_FILE=<path>, not both
+# CODE_REVIEW_TRUST=production                     # dev: test chains only, with CODE_REVIEW_DEV_KEYS
+# CODE_REVIEW_DEV_KEYS=<base64 Ed25519 public key>[,<key>…]
+# NETWORK_CHAIN_ID=84532                          # the chain served; dev trust needs 84532 or 31337
 ```
 
 > `IPFS_PINNING_KEY` must be the Pinata **JWT** (three dot-separated segments,
@@ -139,5 +147,56 @@ prompt.
 
 Scores are integers that sum to 1,000,000. In mode 1 the `data.aggregatedScore`
 array holds a single decimal hash commitment and `justificationCid` is empty.
+
+### GET /health
+
+Liveness, plus the code-review mode: `{ "status": "ok", "codeReview": { "enabled",
+"ready", "runnerConfigured", "trust", "devKeyCount", "chainId", "network",
+"problems" } }`. `trust` is `production`, `dev`, `dev-refused` or `refused`.
+`GET /version` carries the same `codeReview` block. Neither shows the runner
+URL or token.
+
+## Code-review mode (stake attestation)
+
+A request whose primary archive's manifest has `codeReview` is a claim
+judgement for a stake-attestation listing
+([design](../docs/development/stake-attestation-design.md)): `cids` =
+`[listing, claim, up to 8 prior findings]`, and the addendum is the
+contract's machine lines (`verdikta-disclosure: …`, and on a dispute
+`verdikta-dispute: <statementCid>`, errata E1/E2). Before any runner or model
+call the adapter runs these gates, all from `@verdikta/common`
+(`src/codeReview/frontGates.js`):
+
+| Stage | Checks | On failure |
+|---|---|---|
+| Operator | `CODE_REVIEW_ENABLED=true`, a runner (`CODE_RUNNER_URL` + token), a usable trust mode | requester error |
+| Request | 2 to 10 CIDs, none repeated | requester error |
+| Listing (`cids[0]`) | manifest and the six outcomes; `code_review.json` (`validateCodeReviewSpec`, so a spec above the class maxima); the `code-standard` envelope whatever class the request came on (`validateClassEnvelope`); `attestation.json` (`validateAttestation`); `known_issues.json`; `baseline.json` | requester error |
+| Composition | prior findings' `finding.json` and `report.md` (nothing else of them is read); the dispute line and statement (at most 4 KB) | requester error |
+| Claim (`cids[1]`) | the archive's structure (the submitted-work checks of `utils/bcidValidation.js`); then, in this order, `finding.json` a JSON object, `report.md` non-empty UTF-8 text, `poc.patch` a patch (a `diff --git` header or a unified-diff hunk); `fix.patch` optional and never gated | INVALID, naming the member |
+| `disclosure` | the line parses strictly; the ciphertext fetched by CID hashes to `ciphertextSha256`; `verifyDisclosure` with the listing's `disclosureKey` (`BAD_DISCLOSURE_KEY` is the listing's: requester error) | INVALID |
+| `inScope` | `validateFinding` against the spec | INVALID |
+
+A requester error is the errored path (HTTP 500, `aggregatedScore: [0]`) with
+no commit, in mode 1 too. An INVALID is the full 1,000,000 on `INVALID`
+through the normal commit/reveal tail, with a justification naming the gate.
+IPFS or disk failures stay transient (errored, no commit). A claim that
+passes every gate goes to the code-review run (`src/codeReview/claimRun.js`),
+which this release does not have yet, so the arbiter abstains; whatever the run
+returns is committed only if it scores exactly the six outcomes with integers
+summing to 1,000,000.
+
+**Trust.** `production` (the default) verifies attestations against
+`@verdikta/common`'s trusted-builder set only. `CODE_REVIEW_TRUST=dev` also
+accepts attestations signed for dev trust by the keys in
+`CODE_REVIEW_DEV_KEYS`, logs a warning on every request and shows `dev` in
+`/health`. It is refused, and code mode with it, unless `NETWORK_CHAIN_ID` is
+84532 (Base Sepolia) or 31337 (a local node) and `DEPLOYMENT_NETWORK` does not
+name mainnet: an unknown chain counts as mainnet.
+
+**Logs.** Code mode logs CIDs, hashes and check codes. It never logs archive
+contents or the addendum's machine lines (an addendum carrying one is logged as
+`<withheld: N bytes …>`), so an operator's logs never hold a copy of a claim or
+its keys.
 
 For testing information, please refer to [TESTING.md](TESTING.md).

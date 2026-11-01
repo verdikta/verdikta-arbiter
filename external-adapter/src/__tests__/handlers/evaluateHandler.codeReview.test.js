@@ -230,6 +230,23 @@ describe('code review: request layout and operator switch', () => {
   });
 
   it.each([
+    ['no scores', {}],
+    ['scores for other outcomes', { scores: [{ outcome: 'DONT_FUND', score: 1000000 }] }],
+    ['six scores in the wrong order', { scores: [...codeReview.BUG_OUTCOMES].reverse().map((outcome, i) => ({ outcome, score: i === 0 ? 1000000 : 0 })) }],
+    ['scores that do not sum to 1,000,000', { scores: codeReview.BUG_OUTCOMES.map((outcome) => ({ outcome, score: 0 })) }],
+    ['a fractional score', { scores: codeReview.BUG_OUTCOMES.map((outcome, i) => ({ outcome, score: i === 0 ? 999999.5 : (i === 1 ? 0.5 : 0) })) }]
+  ])('mode-1 rule: a run result with %s is never committed (errored, no commit)', async (_label, result) => {
+    claimRun.runClaim.mockResolvedValue(result);
+    const s = scenario();
+    const res = await evaluateHandler(request(s.cid(1)));
+    expect(res.statusCode).toBe(500);
+    expect(res.status).toBe('errored');
+    expect(res.data.aggregatedScore).toEqual([0]);
+    expect(res.error).toMatch(/CODE_REVIEW_RUN_RESULT/);
+    expect(uploaded).toHaveLength(0);
+  });
+
+  it.each([
     ['CODE_REVIEW_ENABLED unset', { CODE_REVIEW_ENABLED: undefined }],
     ['CODE_REVIEW_ENABLED=false', { CODE_REVIEW_ENABLED: 'false' }],
     ['no runner configured', { CODE_RUNNER_URL: undefined }],
@@ -357,7 +374,8 @@ describe('code review: listing checks before any pull or model call (requester e
   });
 
   it('direct-request-spec-over-class-maxima: an image above the class maximum is rejected', async () => {
-    const s = scenario({ listing: { mutateSpec: (spec) => { spec.env.unpackedBytes = 7000000000; } } });
+    // (the builder would not sign this spec, so there is no attestation: the spec check comes first anyway)
+    const s = scenario({ listing: { attestation: 'none', mutateSpec: (spec) => { spec.env.unpackedBytes = 7000000000; } } });
     expectRequesterError(await evaluateHandler(request(s.cid(1))), /IMAGE_ABOVE_CLASS_MAX/);
   });
 

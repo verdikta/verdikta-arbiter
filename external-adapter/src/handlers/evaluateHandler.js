@@ -22,6 +22,9 @@ const {
   runWithRequestContext,
   setRunTag
 } = require('../services/cidFetchCache');
+const codeReviewMode = require('../codeReview');
+const { getCodeReviewConfig, devTrustActive } = require('../codeReview/config');
+const { addendumForLog } = require('../codeReview/addendum');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -75,6 +78,27 @@ for (const warning of ipfsGatewayConfig.warnings) {
 const fetchCache = installCidFetchCache(ipfsClient, { ...cidFetchCacheOptionsFromEnv(process.env), logger });
 logger.info(`IPFS fetch cache: ttl=${fetchCache.ttlMs}ms maxEntries=${fetchCache.maxEntries} maxBytes=${fetchCache.maxBytes}`);
 
+// Code-review (stake attestation) mode: off unless the operator enabled it with
+// a runner; dev trust only on a test chain (codeReview/config.js).
+{
+  const codeReviewConfig = getCodeReviewConfig();
+  if (codeReviewConfig.trust.refused) {
+    logger.error(`Code review: ${codeReviewConfig.trust.refused}; code-review requests are refused`);
+  } else if (devTrustActive(codeReviewConfig)) {
+    logger.warn('Code review: CODE_REVIEW_TRUST=dev: attestations signed by caller-supplied dev builder keys are accepted (never on mainnet)');
+  }
+  logger.info(`Code review: ${codeReviewConfig.ready ? 'ready' : 'off'} (trust=${codeReviewConfig.trust.mode})`);
+}
+
+/** The listing manifest of an extracted primary archive, or null when it cannot be read. */
+async function readManifestJson(extractedPath) {
+  try {
+    return JSON.parse(await fs.promises.readFile(path.join(extractedPath, 'manifest.json'), 'utf8'));
+  } catch (_error) {
+    return null;
+  }
+}
+
 const evaluate = async (request) => {
   const { id, data } = request;
   const aggId = (data.aggId || data.aggid || '').toLowerCase();
@@ -102,6 +126,9 @@ const evaluate = async (request) => {
     logger.debug(`Mode: ${modeString}`);
     runTag = `[EA ${id} agg=${aggId} mode=${modeString}]`;
     setRunTag(runTag); // fetch-cache log lines made by library code carry this job's tag
+    if (devTrustActive(getCodeReviewConfig())) {
+      logger.warn(`${runTag} CODE_REVIEW_TRUST=dev: listing attestations signed by caller-supplied dev builder keys are accepted on this arbiter`);
+    }
 
     // if mode 2, there is nothing to calculate--just reveal previously calculated information
     // (input in this case is 2:<hash>)
@@ -122,7 +149,8 @@ const evaluate = async (request) => {
     if (firstColonIndex !== -1) {
       addendumString = cidString.substring(firstColonIndex + 1);
       cidString = cidString.substring(0, firstColonIndex);
-      logger.info(`Found addendum string: ${addendumString}`);
+      // the stake-attestation machine lines carry keys: never logged (design §16)
+      logger.info(`Found addendum string: ${addendumForLog(addendumString)}`);
     }
     
     // Split multiple CIDs if present
@@ -152,10 +180,19 @@ const evaluate = async (request) => {
       const t3 = Date.now();
       await archiveService.validateManifest(extractedPath);
       logger.info(`${runTag} validateManifest took ${Date.now() - t3}ms`);
+
+      // A code-review listing needs its claim: [listing, claim, prior findings…]
+      if (codeReviewMode.isCodeReviewManifest(await readManifestJson(extractedPath))) {
+        codeReviewMode.refuseSingleCid(getCodeReviewConfig());
+      }
       
       const t4 = Date.now();
       const parsedManifest = await manifestParser.parse(extractedPath);
       logger.info(`${runTag} manifestParser.parse took ${Date.now() - t4}ms`);
+      // fail closed: a code-review listing never reaches the text-mode jury
+      if (parsedManifest && parsedManifest.codeReview !== undefined) {
+        codeReviewMode.refuseSingleCid(getCodeReviewConfig());
+      }
       
       // Construct query object
       const queryObject = {
@@ -169,7 +206,7 @@ const evaluate = async (request) => {
       // If addendum is present and manifest has addendum field, append it
       if (addendumString && parsedManifest.addendum) {
         const sanitizedAddendum = addendumString.replace(/[<>{}]/g, '');
-        logger.info(`Adding addendum to query: ${parsedManifest.addendum}: ${sanitizedAddendum}`);
+        logger.info(`Adding addendum to query: ${parsedManifest.addendum}: ${addendumForLog(sanitizedAddendum)}`);
         queryObject.prompt += `\n\nAddendum: \n${parsedManifest.addendum}: ${sanitizedAddendum}`;
       }
       
@@ -212,7 +249,7 @@ const evaluate = async (request) => {
       // bCID archive is collected, because that is the one case every arbiter can
       // settle identically without an AI call (see utils/bcidValidation.js).
       const t7 = Date.now();
-      const { extractedPaths, malformedBCIDs } = await fetchAndTriageArchives(
+      const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } = await fetchAndTriageArchives(
         cidArray, tempDir, { archiveService, validator, logger, runTag }
       );
       logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
@@ -221,7 +258,24 @@ const evaluate = async (request) => {
       for (const malformed of malformedBCIDs) fetchCache.forget(malformed.cid);
 
       let result;
-      if (malformedBCIDs.length > 0) {
+      if (codeReviewMode.isCodeReviewManifest(primaryManifestJson)) {
+        // Stake-attestation claim (cids = [listing, claim, prior findings…]): the
+        // code-review front gates settle requester errors (thrown: errored, no
+        // commit) and claim gate failures (a deterministic INVALID verdict) before
+        // any runner or model call; a claim that passes goes to the run (A4b).
+        const t8 = Date.now();
+        result = await codeReviewMode.evaluateCodeReview({
+          cidArray,
+          extractedPaths,
+          archiveData,
+          malformedBCIDs,
+          addendum: addendumString,
+          config: getCodeReviewConfig(),
+          deps: { archiveService, validator, logger },
+          runTag
+        });
+        logger.info(`${runTag} code-review evaluation took ${Date.now() - t8}ms`);
+      } else if (malformedBCIDs.length > 0) {
         // The requester's package must itself be sound (it supplies the outcomes),
         // and the request must be consistent with it; both failures are the
         // requester's, not the submitter's, so they keep the errored path.

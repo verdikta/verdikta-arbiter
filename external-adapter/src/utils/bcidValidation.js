@@ -242,7 +242,13 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
  *    `validateBCIDArchive`. Deterministic problems are COLLECTED (so the
  *    justification can name every broken archive); transient ones propagate.
  *
- * @returns {Promise<{extractedPaths: Object<string,string>, malformedBCIDs: MalformedArchiveError[]}>}
+ * In code-review mode (the primary manifest has `codeReview`) the bCIDs are the
+ * claim and prior findings of a stake-attestation request, and the malformed
+ * log line names the check only: a reason can quote the archive, and the
+ * adapter's log must not become a copy of a claim (design §16).
+ *
+ * @returns {Promise<{extractedPaths: Object<string,string>, malformedBCIDs: MalformedArchiveError[],
+ *   archiveData: Object<string,Buffer>, primaryManifestJson: object}>}
  */
 async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '' }) {
   // --- fetch everything first, concurrently: a gateway failure must surface before
@@ -275,6 +281,8 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
     await fs.promises.readFile(path.join(extractedPaths[primaryCid], 'manifest.json'), 'utf8')
   );
   const bCIDNames = Object.keys(primaryManifestJson.bCIDs || {});
+  const codeReviewMode = Boolean(primaryManifestJson) && typeof primaryManifestJson === 'object'
+    && Object.prototype.hasOwnProperty.call(primaryManifestJson, 'codeReview');
 
   // --- bCID archives
   const malformedBCIDs = [];
@@ -287,12 +295,12 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
       await validateBCIDArchive(extractedPaths[cid], { cid, expectedName, validator });
     } catch (err) {
       if (!isMalformedArchiveError(err)) throw err; // transient: keep today's behaviour
-      logger.warn(`${runTag} bCID archive ${cid} is malformed (${err.check}): ${err.reason}`);
+      logger.warn(`${runTag} bCID archive ${cid} is malformed (${err.check})${codeReviewMode ? '' : `: ${err.reason}`}`);
       malformedBCIDs.push(err);
     }
   }
 
-  return { extractedPaths, malformedBCIDs };
+  return { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson };
 }
 
 function truncate(text, max = 1500) {
