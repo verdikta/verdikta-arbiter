@@ -120,6 +120,13 @@ if [ -f "$INSTALLER_DIR/.env" ]; then
     source "$INSTALLER_DIR/.env"
 fi
 VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
+
+# An exact pin in package.json wins over the version preference: the adapter
+# needs that release (the stake-attestation prerelease carries the code-review
+# gates) and `npm install` above has installed it. Only a range is updated.
+if COMMON_PIN=$(node "$INSTALLER_DIR/util/common-pin.js" "$ADAPTER_DIR"); then
+    echo -e "${BLUE}@verdikta/common is pinned to $COMMON_PIN in package.json; keeping it (VERDIKTA_COMMON_VERSION=$VERDIKTA_COMMON_VERSION applies to unpinned components only).${NC}"
+else
 echo -e "${BLUE}Installing Verdikta Common Library (@verdikta/common@$VERDIKTA_COMMON_VERSION)...${NC}"
 
 if ! npm install @verdikta/common@$VERDIKTA_COMMON_VERSION; then
@@ -133,6 +140,7 @@ if ! npm install @verdikta/common@$VERDIKTA_COMMON_VERSION; then
         echo -e "${YELLOW}This is required for the External Adapter to function properly.${NC}"
         exit 1
     fi
+fi
 fi
 
 # Verify Verdikta Common installation
