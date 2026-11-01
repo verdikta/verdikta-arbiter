@@ -12,6 +12,7 @@ import {
   UnprocessableImageError,
 } from '../../../lib/attachments/normalizeImages';
 import { WebRetrieval, describeWebRetrieval, mergeWebRetrievals } from '../../../lib/llm/web-retrieval';
+import { handleCodeReviewRequest, isCodeReviewBody } from '../../../lib/code-review/handler';
 import fs from 'fs';
 import path from 'path';
 
@@ -129,6 +130,27 @@ function stripThinkingBlocks(response: string): string {
 
 
 export async function POST(request: Request) {
+  const receivedAt = Date.now();
+  // The body is read once. A request with a codeReview field is a claim evaluation
+  // (code mode, lib/code-review/handler.ts: its own deadline, envelope and prompt);
+  // every other request takes the text-mode path below, unchanged.
+  let parsedBody: unknown;
+  let parseFailed = false;
+  let parseError: unknown;
+  try {
+    parsedBody = await request.json();
+  } catch (error) {
+    parseFailed = true;
+    parseError = error;
+  }
+  if (!parseFailed && isCodeReviewBody(parsedBody)) {
+    const result = await handleCodeReviewRequest(parsedBody, receivedAt);
+    return NextResponse.json(result.body, { status: result.status });
+  }
+  return textModePOST(parsedBody, parseFailed, parseError);
+}
+
+async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseError: unknown) {
   const requestStartTime = Date.now();
   const timingLog: { [key: string]: number } = {};
   
@@ -158,7 +180,8 @@ export async function POST(request: Request) {
     try {
     console.log('POST request received at /api/rank-and-justify');
     const parseStartTime = Date.now();
-    const body: RankAndJustifyInput = await request.json();
+    if (parseFailed) throw parseError;
+    const body = parsedBody as RankAndJustifyInput;
     logTiming('request_parsing', parseStartTime);
     console.log('Request body:', {
       prompt: body.prompt,

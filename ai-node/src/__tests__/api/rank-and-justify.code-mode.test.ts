@@ -74,7 +74,8 @@ beforeEach(() => {
 afterEach(() => {
   jest.useRealTimers();
   jest.restoreAllMocks();
-  KEYS.forEach(key => { env[key] = saved[key]; });
+  // process.env turns undefined into the string "undefined": delete instead
+  KEYS.forEach(key => { if (saved[key] === undefined) delete env[key]; else env[key] = saved[key]; });
 });
 
 describe('code mode: the optional codeReview field', () => {
@@ -99,6 +100,14 @@ describe('code mode: the optional codeReview field', () => {
 
   test('a schema violation (deadline above the 840 s job timeout) is refused', async () => {
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 900000 }) }));
+    expect(result.status).toBe(400);
+    expect(result.body.errorCode).toBe('CODE_REVIEW_INVALID');
+    expect(mockProviderCalls()).toHaveLength(0);
+  }, 20000);
+
+  test('a disclosure line left in the prompt is refused: the keys never reach a model', async () => {
+    const prompt = `${codeModeBody().prompt}\nverdikta-disclosure: 0x${'a'.repeat(64)} 0x${'b'.repeat(64)} Qm 0x${'c'.repeat(32)} 0x${'d'.repeat(64)}`;
+    const result = await post(codeModeBody({ prompt }));
     expect(result.status).toBe(400);
     expect(result.body.errorCode).toBe('CODE_REVIEW_INVALID');
     expect(mockProviderCalls()).toHaveLength(0);
@@ -209,6 +218,14 @@ describe('code mode: every juror is required (no Jev in the MVP)', () => {
     expect(calls(JUSTIFIER)).toHaveLength(0);
   }, 20000);
 
+  test('a vector with a negative component is not an answer: repair, then failure', async () => {
+    script({ [SONNET]: { scores: [-500000, 1500000, 0, 0, 0, 0] }, [DEEPSEEK]: { scores: MEDIUM } });
+    const result = await post(codeModeBody());
+    expect(result.status).toBe(400);
+    expect(result.body.errorCode).toBe('CODE_REVIEW_JUROR_FAILED');
+    expect(calls(SONNET)).toHaveLength(2);
+  }, 20000);
+
   test('a juror whose reply cannot be parsed, even after the repair call, fails the request', async () => {
     script({ [SONNET]: { reply: 'I cannot decide.' }, [DEEPSEEK]: { scores: MEDIUM } });
     const result = await post(codeModeBody());
@@ -217,11 +234,22 @@ describe('code mode: every juror is required (no Jev in the MVP)', () => {
     expect(calls(SONNET)).toHaveLength(2); // the reply and one repair call
   }, 20000);
 
-  test('a reply repaired once counts as the juror\'s answer', async () => {
+  test('a reply repaired once counts as the juror\'s answer; the repair call has the same signal, no web, the envelope tokens', async () => {
     script({ [SONNET]: [{ reply: 'FINAL SCORES: HIGH=100' }, { reply: '{"score": [0, 0, 0, 0, 100, 0]}' }], [DEEPSEEK]: { scores: HIGH } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(200);
     expect(result.body.scores.map((s: any) => s.score)).toEqual(HIGH);
+    const repair = calls(SONNET)[1];
+    expect(repair.options).toEqual({ webAccess: false, maxTokens: 8000, effort: 'low', signal: true });
+    expect(repair.prompt).toContain('<<<BEGIN DATA');
+    expect(repair.prompt).not.toContain('=== END OF REPLY ===');
+  }, 20000);
+
+  test('a repair call still running at the deadline is cancelled like the juror', async () => {
+    script({ [SONNET]: [{ reply: 'prose only' }, { hang: true }], [DEEPSEEK]: { scores: HIGH } });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 100000 }) }));
+    expect(result.status).toBe(503);
+    expect(calls(SONNET)[1]).toMatchObject({ outcome: 'aborted', signalAborted: true });
   }, 20000);
 
   test('a juror timeout is the distinct retryable 503, and every juror call is aborted', async () => {

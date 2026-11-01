@@ -10,7 +10,7 @@
  * API Documentation: https://docs.x.ai/docs
  */
 
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { modelConfig } from '../../config/models';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -113,7 +113,7 @@ export class XAIProvider implements LLMProvider {
   async generateResponse(
     prompt: string, 
     model: string,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
     if (!this.apiKey) {
       throw new Error(`[${this.providerName}] XAI_API_KEY not configured`);
@@ -121,11 +121,13 @@ export class XAIProvider implements LLMProvider {
 
     const url = `${this.baseUrl}/chat/completions`;
     
-    // Model-specific parameters
+    // Model-specific parameters. Code mode sets the envelope's output ceiling and a
+    // signal; it sends no effort here: Grok 4 models reason at their own depth and
+    // the xAI API does not take reasoning_effort on them.
     const isReasoning = this.isReasoningModel(model);
-    const max_tokens = isReasoning 
+    const max_tokens = options?.maxTokens ?? (isReasoning 
       ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
-      : 1000;
+      : 1000);
     const temperature = 0.7;
 
     try {
@@ -148,6 +150,7 @@ export class XAIProvider implements LLMProvider {
           temperature,
           stream: false
         }),
+        ...(options?.signal && { signal: options.signal }),
       });
 
       if (!response.ok) {

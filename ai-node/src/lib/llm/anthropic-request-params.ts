@@ -34,6 +34,8 @@ export interface ClaudeVersion {
 export interface AnthropicChatParams {
   temperature?: number;
   maxTokens?: number;
+  /** Extra Messages API fields; @langchain/anthropic spreads them after its own (thinking included). */
+  invocationKwargs?: Record<string, unknown>;
 }
 
 // "claude-opus-4-7", "claude-sonnet-5", "claude-3-5-sonnet-20241022",
@@ -68,6 +70,33 @@ export function anthropicChatParams(model: string): AnthropicChatParams {
   return acceptsSamplingParams(model)
     ? { temperature: LEGACY_TEMPERATURE }
     : { ...SAMPLING_FREE_PARAMS };
+}
+
+/** The code-mode controls this module reads (llm-provider-interface.ts, CallControlOptions). */
+export interface AnthropicCallControls {
+  maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high';
+}
+
+/**
+ * Fields for a code-mode juror call (design §10.3): the class envelope's output
+ * ceiling and, on Claude 5 and later, the effort level with adaptive thinking.
+ * Effort is `output_config.effort` (GA, no beta header). The pinned
+ * @langchain/anthropic always sends `thinking: {type: "disabled"}`, which Claude
+ * Sonnet 5.5 and Opus 5.5 reject with a 400; invocationKwargs is spread after it,
+ * so `thinking: {type: "adaptive"}` there replaces it, which every Claude 5 model
+ * accepts. Earlier models get no effort field (Sonnet 4.5 and Haiku 4.5 reject it).
+ * Text mode passes no controls and gets {}.
+ */
+export function anthropicControlParams(model: string, controls?: AnthropicCallControls): AnthropicChatParams {
+  if (!controls) return {};
+  const params: AnthropicChatParams = {};
+  if (controls.maxTokens !== undefined) params.maxTokens = controls.maxTokens;
+  const version = parseClaudeVersion(model);
+  if (controls.effort !== undefined && version && version.major >= 5) {
+    params.invocationKwargs = { thinking: { type: 'adaptive' }, output_config: { effort: controls.effort } };
+  }
+  return params;
 }
 
 /**

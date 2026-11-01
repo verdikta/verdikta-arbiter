@@ -6,7 +6,7 @@
  * and generating responses to prompts.
  */
 
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { ChatOllama } from "@langchain/ollama";
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png']; // Most Ollama vision models support these formats
@@ -97,7 +97,7 @@ export class OllamaProvider implements LLMProvider {
    * @returns A promise that resolves to a string containing the generated response.
    * @throws Will throw an error if the model invocation fails.
    */
-  async generateResponse(prompt: string, model: string): Promise<string> {
+  async generateResponse(prompt: string, model: string, options?: CallControlOptions): Promise<string> {
     try {
       const ollama = new ChatOllama({
         baseUrl: this.baseUrl,
@@ -122,7 +122,8 @@ export class OllamaProvider implements LLMProvider {
           }
         }, OLLAMA_TIMEOUT_MS);
         
-        ollama.invoke(prompt)
+        // a code-mode justifier's signal cancels the request at its deadline
+        (options?.signal ? ollama.invoke(prompt, { signal: options.signal }) : ollama.invoke(prompt))
           .then(result => {
             if (timeoutId && !completed) {
               clearTimeout(timeoutId);

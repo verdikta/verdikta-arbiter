@@ -11,6 +11,7 @@ import { AnthropicProvider } from '../../../lib/llm/anthropic-provider';
 import { OpenAIProvider } from '../../../lib/llm/openai-provider';
 import { OpenRouterProvider } from '../../../lib/llm/openrouter-provider';
 import { XAIProvider } from '../../../lib/llm/xai-provider';
+import { HyperbolicProvider } from '../../../lib/llm/hyperbolic-provider';
 
 jest.mock('@langchain/anthropic', () => ({
   ChatAnthropic: jest.fn().mockImplementation(() => ({
@@ -57,7 +58,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-  KEYS.forEach(key => { env[key] = saved[key]; });
+  // process.env turns undefined into the string "undefined": delete instead
+  KEYS.forEach(key => { if (saved[key] === undefined) delete env[key]; else env[key] = saved[key]; });
   jest.restoreAllMocks();
 });
 
@@ -170,6 +172,28 @@ describe('code-mode controls reach each provider', () => {
     controller.abort();
     await expect(pending).rejects.toThrow(/aborted/i);
     await expect(pending).rejects.not.toThrow(/timed out after/);
+  }, 5000);
+
+  test('OpenAI: a code-mode justifier on a non-reasoning model sends the signal but no reasoning_effort', async () => {
+    const controller = new AbortController();
+    await new OpenAIProvider('test-openai').generateResponse('prompt', 'gpt-4o', { webAccess: false, signal: controller.signal });
+    const [body, requestOptions] = mockCreate.mock.calls[0];
+    expect(body.reasoning_effort).toBeUndefined();
+    expect(requestOptions).toEqual({ signal: controller.signal });
+  }, 5000);
+
+  test('OpenAI text mode is unchanged: gpt-5 keeps reasoning_effort medium and one argument to create', async () => {
+    await new OpenAIProvider('test-openai').generateResponse('prompt', 'gpt-5', { webAccess: false });
+    expect(mockCreate.mock.calls[0]).toHaveLength(1);
+    expect(mockCreate.mock.calls[0][0]).toMatchObject({ reasoning_effort: 'medium', max_completion_tokens: 16000 });
+  }, 5000);
+
+  test('Hyperbolic (a possible justifier): the caller\'s signal reaches fetch', async () => {
+    env.HYPERBOLIC_API_KEY = 'test-hyperbolic';
+    const controller = new AbortController();
+    await new HyperbolicProvider().generateResponse('prompt', 'deepseek-ai/DeepSeek-R1', { signal: controller.signal });
+    expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
+    delete env.HYPERBOLIC_API_KEY;
   }, 5000);
 
   test('xAI: max_tokens from the envelope and the caller\'s signal', async () => {

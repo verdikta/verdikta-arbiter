@@ -7,9 +7,23 @@ import { XAIProvider } from './xai-provider';
 import { OpenRouterProvider } from './openrouter-provider';
 import { resolveProviderConfig } from './provider-config';
 import { getOpenRouterModelPrefix } from '../../config/openrouter-models';
+import { MOCK_REFUSED_MESSAGE, MockProvider, mockProviderState } from './mock-provider';
 
 export class LLMFactory {
   static async getProvider(provider: string): Promise<LLMProvider> {
+    // The test-only mock (mock-provider.ts): off unless VERDIKTA_TEST_MOCK_PROVIDER=1,
+    // never in a production build. While on, every provider name resolves to it.
+    const mock = mockProviderState();
+    if (mock === 'refused') {
+      throw new Error(MOCK_REFUSED_MESSAGE);
+    }
+    if (mock === 'on') {
+      const mockProvider = new MockProvider(provider);
+      await mockProvider.initialize();
+      console.log(`[LLMFactory] Class=${provider} → backend=mock (test-only)`);
+      return mockProvider;
+    }
+
     const resolution = resolveProviderConfig(provider);
 
     let llmProvider: LLMProvider;

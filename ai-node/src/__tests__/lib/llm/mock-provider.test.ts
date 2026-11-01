@@ -14,10 +14,16 @@ import {
 const env = process.env as Record<string, string | undefined>;
 const saved = { flag: env[MOCK_PROVIDER_FLAG], script: env[MOCK_SCRIPT_ENV], nodeEnv: env.NODE_ENV };
 
+/** process.env turns undefined into the string "undefined": delete instead. */
+function restore(key: string, value: string | undefined) {
+  if (value === undefined) delete env[key];
+  else env[key] = value;
+}
+
 afterEach(() => {
-  env[MOCK_PROVIDER_FLAG] = saved.flag;
-  env[MOCK_SCRIPT_ENV] = saved.script;
-  env.NODE_ENV = saved.nodeEnv;
+  restore(MOCK_PROVIDER_FLAG, saved.flag);
+  restore(MOCK_SCRIPT_ENV, saved.script);
+  restore('NODE_ENV', saved.nodeEnv);
   resetMockProvider();
   jest.useRealTimers();
 });

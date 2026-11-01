@@ -66,7 +66,7 @@ export function codeModeBody(options: {
     attachments: options.attachments ?? ['## poc.patch\n+function testReenterDrainsVault() public { ... }\n'],
     attachmentNames: options.attachmentNames ?? ['context-pack.md'],
     requestTag: 'test-run',
-    codeReview: options.codeReview ?? codeReviewField(),
+    codeReview: 'codeReview' in options ? options.codeReview : codeReviewField(),
   };
 }
 

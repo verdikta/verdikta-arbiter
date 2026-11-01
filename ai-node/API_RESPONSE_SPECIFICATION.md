@@ -163,6 +163,102 @@ A request that fails with 400 has no `model_results`; the log line is still writ
 
 ---
 
+## Code mode (`codeReview`)
+
+A request with a `codeReview` key is a claim evaluation against a stake listing
+(design `docs/development/stake-attestation-design.md` §10.3, §10.5, §11). A
+request without one is handled exactly as everything above describes. Code is
+in `src/lib/code-review/`.
+
+### Request
+
+| Field | In code mode |
+| --- | --- |
+| `codeReview` | Validated with `@verdikta/common`'s `codeReview.validateCodeReviewRequest` (schema `code_review_request.v1.json`, the report hash, the claim's bCID). `null` or anything else invalid is a 400 |
+| `prompt` | The listing's query (`codeReview.buildClaimQuery`). It must not carry the addendum's `verdikta-disclosure:` or `verdikta-dispute:` line: the EA strips both before the jury, and a request that still has one is refused |
+| `outcomes` | Exactly `INVALID, DUPLICATE, LOW, MEDIUM, HIGH, CRITICAL` (`validateBugOutcomes`) |
+| `models`, `iterations` | Checked with `codeReview.validateClassEnvelope` against `codeReview.codeClass`: pool models only, at most 3, `count` (NO_COUNTS) 1, `iterations` 1 |
+| `attachments`, `attachmentNames` | The context pack and `report.md`, as text: a plain string, or a `data:` URI with a text media type (`text/*`, `application/json`, …). Any other attachment is refused |
+
+### What the jury reads
+
+One prompt, the same bytes for every juror (`claim-prompt.ts`): the claim
+pre-prompt (trust tiers, the four questions, the six outcomes), then the
+listing's query, the integrity and honesty flags, every lint/SAST finding, the
+report as `canonicalReportJson`, `finding.json`, the known-issue and prior
+finding ids, the pack, and on a dispute the maker's statement. Everything a
+hunter, a maker or the code could have written is quoted in a block whose
+BEGIN and END lines carry a hash of its own content, so quoted text cannot end
+its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
+
+### Time, cancellation and juror settings
+
+- Jurors run until `deadlineMs − 45 s` (the justifier reserve), at most 240 s;
+  the justifier then gets 45 s, never past `deadlineMs`. `REQUEST_TIMEOUT_MS`,
+  `MODEL_TIMEOUT_MS` and `JUSTIFICATION_TIMEOUT_MS` do not apply.
+- Each call gets an `AbortSignal` that is aborted at its deadline and goes into
+  the provider's HTTP request (Anthropic, OpenAI, OpenRouter, xAI; Hyperbolic
+  and Ollama too, as justifiers). The route answers at the deadline even if a
+  provider ignores it.
+- Every juror runs with web access off, `maxTokens` = the class envelope's
+  juror output (8,000 on `code-standard`, 12,000 on `code-premium`) and effort
+  `high` (Claude 5: `output_config.effort` with adaptive thinking; OpenAI:
+  `reasoning_effort`; OpenRouter: `reasoning.effort`; xAI: none, Grok 4 takes
+  no `reasoning_effort`). A reply that cannot be parsed gets one repair call
+  with the same signal.
+- Every juror is required (no Jev in the MVP): the first juror that fails ends
+  the request and the others are cancelled.
+
+### Responses
+
+Success (200) has the text-mode shape (`scores` for the six outcomes, the
+justification, `metadata`, `model_results`) plus:
+
+```json
+"codeReview": {
+  "codeClass": "code-standard",
+  "reportSha256": "…",
+  "promptSha256": "…",
+  "deadlineMs": 285000,
+  "jurorTimeoutMs": 240000,
+  "justifierReserveMs": 45000,
+  "maxTokens": 8000,
+  "effort": "high"
+}
+```
+
+Every error has `{ "error", "errorCode", "retryable", "scores": [], "justification": "" }`,
+plus `issues` (validation) or `jurors` (`{ juror: "<provider>:<model>", status,
+duration_ms, message?, http_status? }`, status `success`, `failed`,
+`parsing_error`, `timeout` or `cancelled`):
+
+| Status | `errorCode` | `retryable` | When |
+| --- | --- | --- | --- |
+| 400 | `CODE_REVIEW_INVALID` | false | The `codeReview` field or the prompt is invalid |
+| 400 | `CODE_REVIEW_ENVELOPE` | false | Outcomes, panel, NO_COUNTS or iterations outside the class envelope |
+| 400 | `CODE_REVIEW_ATTACHMENT` | false | An attachment is not text |
+| 400 | `CODE_REVIEW_JUROR_FAILED` | false | A juror's provider error, or a reply with no usable scores after the repair call |
+| 400 | `CODE_REVIEW_JUSTIFIER_FAILED` | false | The justifier failed; the arbiter abstains rather than publish the jurors' text |
+| **503** | **`CODE_REVIEW_JUROR_TIMEOUT`** | **true** | A juror did not answer by the jury deadline; every juror call was cancelled |
+| 503 | `CODE_REVIEW_JUSTIFIER_TIMEOUT` | true | The justifier did not finish within its reserve; nothing partial is returned |
+| 504 | `CODE_REVIEW_DEADLINE` | false | `deadlineMs` leaves under 10 s of jury time after the reserve, or the deadline passed before the justifier |
+| 500 | `CODE_REVIEW_INTERNAL` | false | An unexpected error, or `JUSTIFIER_MODEL` is not set as `provider:model` |
+
+The EA may retry a `retryable` error once while at least the justifier reserve
+remains (node A4b); a 503 body never contains the provider-error wording the
+EA's text-mode retry check stops on. Nothing is committed on any error.
+
+### Test-only mock provider
+
+`VERDIKTA_TEST_MOCK_PROVIDER=1` routes every provider name to a deterministic
+mock (`src/lib/llm/mock-provider.ts`) for tests and the local pipeline; its
+replies come from `VERDIKTA_TEST_MOCK_SCRIPT` (JSON by model id: `scores`,
+`reply`, `delayMs`, `hang`, `error`, `status`, or an array per call). A
+production build (`next build`) refuses it: while the flag is set there, every
+provider call fails with an error naming the flag.
+
+---
+
 ## Integration Guidelines for External Adapter
 
 ### Success Case (Status 200)
