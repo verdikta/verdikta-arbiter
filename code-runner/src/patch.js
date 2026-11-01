@@ -26,6 +26,9 @@
 const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 
+/** The header lines git reads as a rename (apply.c's table: rename from/to, and the older rename old/new). */
+const RENAME_HEADERS = Object.freeze(['rename from ', 'rename to ', 'rename old ', 'rename new ']);
+
 /** git's base85 alphabet (base85.c). */
 const B85 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~';
 const B85_VALUE = new Map([...B85].map((c, i) => [c.charCodeAt(0), i]));
@@ -139,6 +142,14 @@ function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }) {
     }
     if (line.startsWith('copy from ') || line.startsWith('copy to ')) {
       return fail('PATCH_COPY', 'poc.patch copies a file (a "copy from" header): a copy rebuilds a whole existing file from one line, so its size is not bounded by the patch; a PoC adds or edits test files');
+    }
+    // R15-F1: git reloads a rename's source for every rename of it, so one
+    // file renamed to many names multiplies it, and git apply's numstat names
+    // only the destinations. Every header form git reads (apply.c: rename
+    // from/to, and the old rename old/new) is refused, like a copy; a moved
+    // file is a deletion and an addition (git diff --no-renames).
+    if (RENAME_HEADERS.some((h) => line.startsWith(h))) {
+      return fail('PATCH_RENAME', 'poc.patch renames a file (a "rename from" header): git rebuilds a renamed file from the existing one, once for every rename of it, so the patch does not bound what it writes; a PoC adds or edits test files (write it with git diff --no-renames)');
     }
     if (line === 'GIT binary patch') {
       base.binaryHunks += 1;

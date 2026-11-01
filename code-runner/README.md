@@ -442,7 +442,11 @@ from the patch's bytes before git sees them, so a compression bomb (a 60 KB
 patch declaring 60 MB of zeros) fails `applies` instead of reaching git, which
 inflates every hunk in memory before it writes anything. A copy (`copy from`)
 fails too: it rebuilds a whole existing file from one header line, so the
-patch's size bounds nothing. Binary changes count as stats only: their content
+patch's size bounds nothing. So does a rename (`rename from` / `to`, and
+git's older `rename old` / `new`): git rebuilds a renamed file from the
+existing one, once for every rename of it, and its numstat names only the
+destinations. A moved file is a deletion and an addition (`git diff
+--no-renames`). Binary changes count as stats only: their content
 is never read for flags.
 
 **Commands** run as written in the sandbox's `/bin/sh` with pathname expansion

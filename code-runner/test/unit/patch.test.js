@@ -119,6 +119,27 @@ test('copies are refused: a copy rebuilds a whole existing file from one header 
   assert.equal(r.code, 'PATCH_COPY');
 });
 
+test('R15-F1: renames are refused in every header form git reads, so no source can be rebuilt many times', () => {
+  // One source renamed to many names: git apply --numstat names only the destinations, and git reloads the source each time.
+  const many = Buffer.from(Array.from({ length: 60 }, (_, i) => [
+    `diff --git a/test/fixture.bin b/test/r${i}.bin`, 'similarity index 100%', 'rename from test/fixture.bin', `rename to test/r${i}.bin`
+  ].join('\n')).join('\n') + '\n');
+  const r = scanPatch(many, LIMITS);
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'PATCH_RENAME');
+  assert.match(r.reason, /git diff --no-renames/);
+  for (const header of ['rename from test/a.sol', 'rename to test/b.sol', 'rename old test/a.sol', 'rename new test/b.sol', 'rename from "test/q\\"a.sol"']) {
+    const one = scanPatch(Buffer.from(['diff --git a/test/a.sol b/test/b.sol', 'similarity index 90%', header, ''].join('\n')), LIMITS);
+    assert.equal(one.code, 'PATCH_RENAME', header);
+  }
+  // A move written as a deletion and an addition is fine; so is text that only mentions a rename.
+  const moved = Buffer.concat([
+    Buffer.from(['diff --git a/test/a.sol b/test/a.sol', 'deleted file mode 100644', '--- a/test/a.sol', '+++ /dev/null', '@@ -1 +0,0 @@', '-x', ''].join('\n')),
+    textPatch('test/b.sol', ['x', 'rename from a comment'])
+  ]);
+  assert.equal(scanPatch(moved, LIMITS).ok, true);
+});
+
 test('added text counts toward expansion; many hunks of added text past 50 MB would fail', () => {
   const r = scanPatch(textPatch('test/a.txt', ['x'.repeat(1000)]), { ...LIMITS, patchExpansionBytes: 900 });
   assert.equal(r.ok, false);

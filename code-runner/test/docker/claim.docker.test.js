@@ -369,7 +369,7 @@ function binaryPatch(file, bytes) {
   ].join('\n'));
 }
 
-test('applies with real git: a patch that does not apply, one above maxPatchBytes, an expansion bomb; binary changes as stats only', { timeout: TIMEOUT }, async (t) => {
+test('applies with real git: a patch that does not apply, one above maxPatchBytes, an expansion bomb, repeated renames; binary changes as stats only', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture();
   const stale = modifyPatch('test/Vault.t.sol', VAULT_REPO['test/Vault.t.sol'].replace('no credit', 'other text'), VAULT_REPO['test/Vault.t.sol']);
   const { result: r1 } = await run(t, claim(fx, stale));
@@ -389,6 +389,23 @@ test('applies with real git: a patch that does not apply, one above maxPatchByte
   const big = await run(t, claim(fx, bomb));
   assert.equal(big.result.gates.applies.status, 'fail', show(big.result));
   assert.match(big.result.gates.applies.detail, /50000000/);
+
+  // R15-F1: one file renamed to 60 names (git would reload it for each) fails the input gate before git sees it;
+  // the same move written as a deletion and an addition (git diff --no-renames) applies.
+  const renames = Buffer.from(Array.from({ length: 60 }, (_, i) => [
+    `diff --git a/test/Vault.t.sol b/test/R${i}.t.sol`, 'similarity index 100%', 'rename from test/Vault.t.sol', `rename to test/R${i}.t.sol`
+  ].join('\n')).join('\n') + '\n');
+  const ren = await run(t, claim(fx, renames));
+  assert.equal(ren.result.gates.applies.status, 'fail', show(ren.result));
+  assert.equal(ren.result.gates.applies.basis, 'input');
+  assert.match(ren.result.gates.applies.detail, /renames a file/);
+  assert.ok(!stepNames(ren.result).some((n) => n.startsWith('patch:')), 'git never saw it');
+  const vaultTest = VAULT_REPO['test/Vault.t.sol'];
+  const deleted = Buffer.from(['diff --git a/test/Vault.t.sol b/test/Vault.t.sol', 'deleted file mode 100644', '--- a/test/Vault.t.sol', '+++ /dev/null',
+    `@@ -1,${vaultTest.split('\n').length - 1} +0,0 @@`, ...vaultTest.split('\n').slice(0, -1).map((l) => `-${l}`), ''].join('\n'));
+  const moved = await run(t, claim(fx, Buffer.concat([deleted, addFilesPatch({ 'test/Moved.t.sol': vaultTest, 'test/Exploit.t.sol': DRAIN })])));
+  assert.equal(moved.result.gates.applies.status, 'pass', show(moved.result));
+  assert.equal(moved.result.gates.testPathsOnly.status, 'pass', show(moved.result));
 
   // Fixed bytes with NULs: git calls a file binary when it holds a NUL (random bytes may hold none).
   const bin = Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 37) & 0xff));
