@@ -178,7 +178,8 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   container shortly after the deadline even if the runner dies.
 - `--pull never`: the runner never pulls implicitly (the controlled pull is
   A1b). An image that is not on the runner's disk abstains (`image_unavailable`).
-- Steps run through `docker exec --user 10001:10001 <container> <argv…>`. The
+- Steps run through `docker exec --user 10001:10001 <container>` and the
+  runner's launcher (below), which `exec`s the step's argv unchanged. The
   runner spawns only the docker CLI, always with an argv array and `shell:
   false` (`src/docker.js`); claim content reaches the sandbox only as stdin.
   Results are read as capped streams (`docker exec … cat`), never `docker cp`.
@@ -187,12 +188,46 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   and the runner's own empty `DOCKER_CONFIG`: no token, no operator credentials.
 - `test/unit/policy.test.js` fails the build if `src/` gains a shell, `eval`, a
   mount flag, the Docker socket, `docker cp` or a host file write.
-- The env builder must give the repository in the image to uid 10001.
+- The env builder must give the repository in the image to uid 10001, and the
+  image needs a POSIX `/bin/sh` (the launcher's interpreter) that uid 10001
+  cannot modify: checked at launch, before any claim code runs, else the run
+  is the requester's error (`IMAGE_LAUNCHER_WRITABLE`).
+
+## The launcher and its start nonce
+
+Whether a step's command started is never read from Docker's error text,
+whose wording differs between Docker versions and runtimes. Every exec,
+including the runner's own probes, runs
+
+```
+/bin/sh -c 'printf "vcr-start %s\n" "$1" && shift && exec "$@"' vcr-launch <nonce> <argv…>
+```
+
+with a fresh 128-bit nonce the runner generates for that exec
+(`src/launcher.js`). The launcher prints `vcr-start <nonce>` as the first line
+of stdout and `exec`s the step's argv, so the exit code, the files and the
+rest of the output are the program's own; the runner strips the line. Without
+it first, the step abstains `step_not_started`, whatever Docker printed (which
+goes into the detail). With it, a 127 is the image's own answer: the launcher
+ran and found no program.
+
+Claim code cannot fake the line for a command that never started: the nonce
+exists only in the runner and the `docker exec` request until the launcher
+process exists in the sandbox, and it is new for every exec. Once the
+launcher has run, the line is already written; after its `exec` the nonce is
+no longer in the process's argv, and it was never in its environment. Claim
+code cannot become a later step's launcher either, because the sandbox user
+cannot write `/bin/sh` or a directory holding it. What the nonce does not
+cover: a claim process that outlives its step and interferes with a later
+one inside the sandbox (A2a/A3a's integrity rules), and a docker CLI whose
+stream drops after the launcher started, which reports its own exit code
+(the inspection after the step catches a daemon that is down, not one dropped
+stream).
 
 ## Results: definitive or abstain
 
 `src/result.js` (§9.3, §12). A run is **definitive** only when every step
-ended in a clean exit code (0-128), and later a JUnit outcome or an integrity
+started (the nonce above) and ended in a clean exit code (0-128), and later a JUnit outcome or an integrity
 result; gates record their basis (`exit_code`, `junit`, `integrity`) and
 cannot be decided on anything else. Everything else **abstains**:
 
@@ -205,18 +240,20 @@ cannot be decided on anything else. Everything else **abstains**:
 | `step_timeout` | A step's own wall-clock limit, or the run's (`runSeconds`) |
 | `deadline` | The EA's deadline |
 | `oom` | The kernel's OOM flag or `oom_kill` counter, or exit 137 |
-| `pids_limit` | The `pids.events` counter, or a gVisor sandbox crash at the limit (exit 2) |
+| `pids_limit` | The `pids.events` counter, a probe that cannot start while `docker stats` shows the pid table full, or a gVisor sandbox crash at the limit (exit 2) |
+| `step_not_started` | The launcher's start nonce did not come first on stdout: the step's command did not run |
 | `sandbox_died` | The container died or vanished under the step |
 | `killed_by_signal` | The step's process died of a signal (exit > 128): not a clean exit |
 | `cancelled` | The caller hung up, or the runner is stopping |
 | `runner_error` | A bug in the runner |
 
 After every step the runner inspects the container and reads its cgroup
-counters, so an OOM kill or a refused fork behind an otherwise clean exit code
-still abstains. A probe that cannot be made counts against the step: when it
-cannot even start in the sandbox and `docker stats` shows the pid table full,
-`pids_limit`; when the daemon does not answer, `docker_unreachable`; otherwise
-`docker_error`. Counter files that do not exist (gVisor) are not a failure.
+counters (a shell-builtin probe, through the launcher), so an OOM kill or a
+refused fork behind an otherwise clean exit code still abstains. A probe that
+does not start or does not exit 0 counts against the step: `pids_limit` when
+`docker stats` shows the pid table full, `docker_error` otherwise. Counter
+files that do not exist (gVisor, or the other cgroup version) are not a
+failure.
 
 ## Time
 
@@ -297,5 +334,7 @@ under `runc` and under the pinned gVisor on the systrap platform.
   `removeArgs` and the `Sandbox` class.
 - **Admission** (`src/admission.js`): A1b adds slots, the memory reserve and
   the disk check for the pull.
+- **Launcher** (`src/launcher.js`): `launcherArgv`, `newNonce`, `StartGate`;
+  every exec goes through `Sandbox.runLaunched`.
 - **Result** (`src/result.js`): `ABSTAIN`, `DEFINITIVE_BASIS`, `Abstain`,
   `RequesterError`, `makeGate`, `classifyExec`.

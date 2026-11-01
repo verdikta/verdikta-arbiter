@@ -339,98 +339,12 @@ test('an image that declares volumes is a requester error; it is removed with it
   assert.equal(active.size, 0);
 });
 
-test('a counters probe that fails for any other reason is not a pass', async () => {
-  const cases = [
-    [() => ({ exitCode: 1, stderr: 'Cannot connect to the Docker daemon at unix:///x.sock. Is the docker daemon running?' }), 'docker_unreachable'],
-    [() => ({ spawnError: 'spawn docker ENOENT' }), 'docker_unreachable'],
-    [() => ({ exitCode: 1, stderr: "head: cannot open '/sys/fs/cgroup/pids.events' for reading: Permission denied" }), 'docker_error'],
-    [() => ({ exitCode: 137 }), 'docker_error'],
-    // Some counters printed, then a failure: still no check.
-    [() => ({ exitCode: 1, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n', stderr: "head: cannot open '/sys/fs/cgroup/pids.events' for reading: Permission denied\n" }), 'docker_error'],
-    [() => ({ exitCode: 137, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n' }), 'docker_error']
-  ];
-  for (const [after, expected] of cases) {
-    let probes = 0;
-    const docker = fakeDocker(healthyDaemon({
-      step: () => ({ exitCode: 1 }),
-      counters: (...a) => { probes += 1; return probes === 1 ? { stdout: '==> /sys/fs/cgroup/pids.events <==\nmax 0\n' } : after(...a); }
-    }));
-    const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['forge', 'build'], { name: 'build' }); }] });
-    assert.equal(result.outcome, 'abstain', expected);
-    assert.equal(result.abstain.cause, expected);
-    assert.equal(result.abstain.step, 'build');
-  }
-});
-
 test('the platform is the class platform, passed to docker create', async () => {
   const docker = fakeDocker(healthyDaemon());
   const { result } = await run({ docker });
   const args = docker.callsOf('create')[0].args;
   assert.equal(args[args.indexOf('--platform') + 1], 'linux/amd64');
   assert.equal(result.platform, 'linux/amd64');
-});
-
-test('when the probe cannot start after a step and the pid table is full, the run abstains: pids_limit', async () => {
-  let probes = 0;
-  const docker = fakeDocker({
-    ...healthyDaemon({
-      step: () => ({ exitCode: 2, stderr: 'sh: 0: Cannot fork\n' }),
-      counters: () => {
-        probes += 1;
-        // The probe at launch works; the one after the storm cannot start.
-        if (probes === 1) return { stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n' };
-        // As GitHub's runner printed it: on stdout, exit 128.
-        return { exitCode: 128, stdout: 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n' };
-      }
-    }),
-    stats: () => ({ stdout: '4095\n' })
-  });
-  const steps = [async (ctx) => { await ctx.exec(['sh', '-c', 'storm'], { name: 'storm' }); }];
-  const { result } = await run({ docker, steps });
-  assert.equal(result.abstain.cause, 'pids_limit');
-  assert.equal(result.abstain.step, 'storm');
-  assert.match(result.steps[0].probe, /OCI runtime exec failed/);
-  assert.deepEqual(docker.callsOf('stats')[0].args, ['stats', '--no-stream', '--format', '{{.PIDs}}', 'vcr-0123456789abcdef-1']);
-});
-
-test('a probe that cannot start while the pid table has room abstains too (docker_error)', async () => {
-  let probes = 0;
-  const docker = fakeDocker({
-    ...healthyDaemon({
-      step: () => ({ exitCode: 0 }),
-      counters: () => {
-        probes += 1;
-        if (probes === 1) return { stdout: '==> /sys/fs/cgroup/pids.events <==\nmax 0\n' };
-        return { exitCode: 126, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: unknown' };
-      }
-    }),
-    stats: () => ({ stdout: '12\n' })
-  });
-  const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['true'], { name: 'ok' }); }] });
-  assert.equal(result.abstain.cause, 'docker_error');
-});
-
-test('counter files that do not exist (gVisor) are not a problem', async () => {
-  const docker = fakeDocker(healthyDaemon({
-    step: () => ({ exitCode: 0 }),
-    counters: () => ({ exitCode: 1, stderr: "head: cannot open '/sys/fs/cgroup/memory.events' for reading: No such file or directory\n" })
-  }));
-  const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['true'], { name: 'ok' }); }] });
-  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
-});
-
-test('missing counter files of the other cgroup version are fine, with or without the rest', async () => {
-  const docker = fakeDocker(healthyDaemon({
-    step: () => ({ exitCode: 1 }),
-    counters: () => ({
-      exitCode: 1,
-      stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n',
-      stderr: "head: cannot open '/sys/fs/cgroup/memory/memory.oom_control' for reading: No such file or directory\nhead: cannot open '/sys/fs/cgroup/pids/pids.events' for reading: No such file or directory\n"
-    })
-  }));
-  const { result } = await run({ docker, steps: [async (ctx) => { await ctx.exec(['forge', 'build'], { name: 'build' }); }] });
-  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
-  assert.equal(result.steps[0].exitCode, 1);
 });
 
 test('a run-level kill answers by the deadline even when the step never returns', async () => {
@@ -447,45 +361,144 @@ test('a run-level kill answers by the deadline even when the step never returns'
   assert.ok(elapsed < 1400, `answered after ${elapsed} ms, past the 1100 ms deadline`);
 });
 
-test('a step whose process could not be spawned abstains even when the probes after it work', async () => {
-  const docker = fakeDocker(healthyDaemon({
-    step: () => ({ exitCode: 128, stdout: 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n' })
-  }));
-  const steps = [async (ctx) => {
-    const r = await ctx.exec(['forge', 'build'], { name: 'build' });
-    ctx.gate('build', r.exitCode === 0 ? 'pass' : 'fail', 'exit_code');
-  }];
-  const { result } = await run({ docker, steps });
-  assert.equal(result.outcome, 'abstain');
-  assert.equal(result.abstain.cause, 'docker_error');
-  assert.equal(result.abstain.step, 'build');
-  assert.deepEqual(result.gates, {}, 'no gate decided on a command that never ran');
+
+const SPAWN_FAILED = 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n';
+const COUNTERS_V2 = '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n';
+
+function withProbes(step, after, extra = {}) {
+  let probes = 0;
+  return fakeDocker({
+    ...healthyDaemon({
+      step,
+      // The probe at launch works; `after` answers the one after the step.
+      counters: (...a) => { probes += 1; return probes === 1 ? { stdout: COUNTERS_V2 } : after(...a); }
+    }),
+    ...extra
+  });
+}
+
+const buildStep = [async (ctx) => {
+  const r = await ctx.exec(['forge', 'build'], { name: 'build' });
+  ctx.gate('build', r.exitCode === 0 ? 'pass' : 'fail', 'exit_code');
+}];
+
+test('every exec goes through the launcher with a fresh nonce, and the start line is not the program\'s output', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: () => ({ exitCode: 0, stdout: 'built\n' }) }));
+  let record;
+  const { result } = await run({ docker, steps: [async (ctx) => {
+    record = await ctx.exec(['forge', 'build'], { name: 'build' });
+    await ctx.exec(['forge', 'build'], { name: 'again' });
+  }] });
+  assert.equal(result.outcome, 'definitive');
+  assert.equal(record.stdout.text, 'built\n');
+  assert.equal(record.started, true);
+  const execs = docker.callsOf('exec').map((c) => c.args);
+  for (const args of execs) {
+    const i = args.indexOf('/bin/sh');
+    assert.deepEqual(args.slice(i, i + 4), ['/bin/sh', '-c', 'printf "vcr-start %s\\n" "$1" && shift && exec "$@"', 'vcr-launch'], args.join(' '));
+    assert.match(args[i + 4], /^[0-9a-f]{32}$/);
+  }
+  const nonces = execs.map((a) => a[a.indexOf('vcr-launch') + 1]);
+  assert.equal(new Set(nonces).size, nonces.length, 'a new nonce for every exec');
+  const steps = execs.filter((a) => a.includes('forge'));
+  assert.deepEqual(steps[0].slice(-2), ['forge', 'build'], 'the step argv follows the nonce unchanged');
 });
 
-test('an OCI start failure from the runtime\'s own helper does not decide a gate', async () => {
-  const docker = fakeDocker(healthyDaemon({
-    step: () => ({ exitCode: 127, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: error starting setns process: fork/exec /proc/self/exe: no such file or directory: unknown\r\n' })
-  }));
-  const steps = [async (ctx) => {
-    const r = await ctx.exec(['forge', 'build'], { name: 'build' });
-    ctx.gate('build', r.exitCode === 0 ? 'pass' : 'fail', 'exit_code');
-  }];
-  const { result } = await run({ docker, steps });
-  assert.equal(result.abstain.cause, 'docker_error');
+test('R4-F1 form 1: a spawn failure (exit 128, Docker on stdout) never decides a gate', async () => {
+  const docker = withProbes(() => ({ started: false, exitCode: 128, stdout: SPAWN_FAILED }), () => ({ stdout: COUNTERS_V2 }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.abstain.cause, 'step_not_started');
+  assert.equal(result.abstain.step, 'build');
+  assert.match(result.abstain.detail, /unable to spawn stage-1/);
+  assert.deepEqual(result.gates, {});
+  assert.equal(result.steps[0].started, false);
+});
+
+test('R4-F1 form 2: the runtime helper missing, with a 127, never decides a gate', async () => {
+  const docker = withProbes(() => ({ started: false, exitCode: 127, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: error starting setns process: fork/exec /proc/self/exe: no such file or directory: unknown\r\n' }), () => ({ stdout: COUNTERS_V2 }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.abstain.cause, 'step_not_started');
   assert.deepEqual(result.gates, {});
 });
 
-test('a capped read that is really the CLI saying cat never started abstains', async () => {
-  const spawn = 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n';
-  const docker = fakeDocker(healthyDaemon({ step: (args) => (args.includes('cat') ? { exitCode: 128, stdout: spawn } : { exitCode: 0 }) }));
+test('R4-F1 form 3: a capped read whose bytes are Docker\'s diagnostic is never returned', async () => {
+  const docker = withProbes((args) => (args.includes('cat') ? { started: false, exitCode: 128, stdout: SPAWN_FAILED } : { exitCode: 0 }), () => ({ stdout: COUNTERS_V2 }));
   let got = null;
-  const steps = [async (ctx) => {
+  const { result } = await run({ docker, steps: [async (ctx) => {
     got = await ctx.readFile('/tmp/junit.xml', { maxBytes: 64 });
     ctx.gate('integrity', 'fail', 'integrity', 'never reached');
-  }];
-  const { result } = await run({ docker, steps });
-  assert.equal(got, null, 'readFile did not return the diagnostic as file bytes');
-  assert.equal(result.abstain.cause, 'docker_error');
+  }] });
+  assert.equal(got, null);
+  assert.equal(result.abstain.cause, 'step_not_started');
   assert.equal(result.abstain.step, 'read:/tmp/junit.xml');
   assert.deepEqual(result.gates, {});
+});
+
+test('Docker printing nothing unusual does not make a step count: the nonce must be there', async () => {
+  const docker = withProbes(() => ({ started: false, exitCode: 1 }), () => ({ stdout: COUNTERS_V2 }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.abstain.cause, 'step_not_started');
+  assert.match(result.abstain.detail, /Docker said: nothing/);
+  assert.deepEqual(result.gates, {});
+});
+
+test('with the nonce, a capped read is the file\'s bytes, the start line stripped', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: (args) => (args.includes('cat') ? { exitCode: 0, stdout: '<testsuites>' + 'x'.repeat(5000) } : { exitCode: 0 }) }));
+  let got;
+  const { result } = await run({ docker, steps: [async (ctx) => { got = await ctx.readFile('/tmp/junit.xml', { maxBytes: 12 }); }] });
+  assert.equal(result.outcome, 'definitive');
+  assert.equal(got.bytes.toString(), '<testsuites>');
+  assert.equal(got.overLimit, true);
+});
+
+test('the image\'s own answer: the launcher started and exec found no program (127) is definitive', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: () => ({ exitCode: 127, stderr: 'vcr-launch: 1: exec: forge: not found\n' }) }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.outcome, 'definitive');
+  assert.deepEqual(result.gates.build, { status: 'fail', basis: 'exit_code', detail: null });
+});
+
+test('a probe that does not start after a step: pids_limit when the pid table is full, docker_error otherwise', async () => {
+  const notStarted = () => ({ started: false, exitCode: 128, stdout: SPAWN_FAILED });
+  const full = withProbes(() => ({ exitCode: 2, stderr: 'sh: 0: Cannot fork\n' }), notStarted, { stats: () => ({ stdout: '4095\n' }) });
+  const r1 = (await run({ docker: full, steps: buildStep })).result;
+  assert.equal(r1.abstain.cause, 'pids_limit');
+  assert.match(r1.steps[0].probe, /did not start/);
+  assert.deepEqual(full.callsOf('stats')[0].args, ['stats', '--no-stream', '--format', '{{.PIDs}}', 'vcr-0123456789abcdef-1']);
+  const room = withProbes(() => ({ exitCode: 0 }), notStarted, { stats: () => ({ stdout: '12\n' }) });
+  assert.equal((await run({ docker: room, steps: buildStep })).result.abstain.cause, 'docker_error');
+});
+
+test('a probe that started but did not finish cleanly is not a pass', async () => {
+  const cases = [
+    [() => ({ exitCode: 3, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n' }), 'docker_error'],
+    [() => ({ exitCode: 137 }), 'docker_error'],
+    [() => ({ spawnError: 'spawn docker ENOENT' }), 'docker_unreachable']
+  ];
+  for (const [after, expected] of cases) {
+    const docker = withProbes(() => ({ exitCode: 1 }), after);
+    const { result } = await run({ docker, steps: buildStep });
+    assert.equal(result.abstain.cause, expected);
+    assert.equal(result.abstain.step, 'build');
+  }
+});
+
+test('counter files that do not exist (gVisor, or the other cgroup version) are not a problem', async () => {
+  for (const out of ['', COUNTERS_V2]) {
+    const docker = withProbes(() => ({ exitCode: 1 }), () => ({ exitCode: 0, stdout: out }));
+    const { result } = await run({ docker, steps: buildStep });
+    assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+    assert.equal(result.gates.build.status, 'fail');
+  }
+});
+
+test('at launch: an image whose launcher the sandbox user could replace is the requester\'s error', async () => {
+  const docker = fakeDocker(healthyDaemon({ launcherCheck: () => ({ exitCode: 1 }) }));
+  const { result } = await run({ docker });
+  assert.equal(result.outcome, 'requester_error');
+  assert.equal(result.issues[0].code, 'IMAGE_LAUNCHER_WRITABLE');
+  const notStarted = fakeDocker(healthyDaemon({ launcherCheck: () => ({ started: false, exitCode: 126, stderr: 'OCI runtime exec failed: exec: "/bin/sh": stat /bin/sh: no such file or directory' }) }));
+  const r2 = (await run({ docker: notStarted })).result;
+  assert.equal(r2.abstain.cause, 'step_not_started');
+  assert.equal(r2.abstain.step, 'launch');
 });

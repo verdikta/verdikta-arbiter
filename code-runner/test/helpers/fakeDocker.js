@@ -45,10 +45,25 @@ function isCountersRead(args) {
 }
 
 /**
- * Handlers for a healthy daemon. `step` answers step execs (anything that is
- * not the runner's own counters read); `counters` answers the counters read.
+ * The launcher (src/launcher.js) is emulated: an exec whose handler does not
+ * return `started: false` gets `vcr-start <nonce>` first on stdout, as the
+ * real launcher prints it before it execs the step's argv.
  */
-function healthyDaemon({ step, counters, inspect, create, start, mounts, rm, info, ps, version } = {}) {
+function nonceOf(args) {
+  const i = args.indexOf('vcr-launch');
+  return i >= 0 ? args[i + 1] : null;
+}
+
+function withStart(res, nonce) {
+  if (!res || res.spawnError || res.started === false || !nonce) return res;
+  return { ...res, stdout: `vcr-start ${nonce}\n${res.stdout || ''}` };
+}
+
+/**
+ * Handlers for a healthy daemon. `step` answers step execs; `counters` the
+ * runner's counters probe; `launcherCheck` its launch-time launcher check.
+ */
+function healthyDaemon({ step, counters, launcherCheck, inspect, create, start, mounts, rm, info, ps, version } = {}) {
   return {
     info: info || (() => ({ stdout: healthyInfo() })),
     version: version || (() => ({ stdout: '28.0.4\n' })),
@@ -61,8 +76,11 @@ function healthyDaemon({ step, counters, inspect, create, start, mounts, rm, inf
     rm: rm || (() => ({ stdout: '' })),
     ps: ps || (() => ({ stdout: '' })),
     exec: (args, opts, calls) => {
-      if (isCountersRead(args)) return counters ? counters(args, opts, calls) : { stdout: COUNTERS_ZERO };
-      return step ? step(args, opts, calls) : { exitCode: 0 };
+      let res;
+      if (args.includes('vcr-launcher-check')) res = launcherCheck ? launcherCheck(args, opts, calls) : { exitCode: 0 };
+      else if (isCountersRead(args)) res = counters ? counters(args, opts, calls) : { stdout: COUNTERS_ZERO };
+      else res = step ? step(args, opts, calls) : { exitCode: 0 };
+      return Promise.resolve(res).then((r) => withStart(r, nonceOf(args)));
     }
   };
 }
@@ -107,4 +125,4 @@ function fakeDocker(handlers = {}) {
   };
 }
 
-module.exports = { fakeDocker, healthyDaemon, healthyInfo, runningState, never, COUNTERS_ZERO, isCountersRead };
+module.exports = { fakeDocker, healthyDaemon, healthyInfo, runningState, never, COUNTERS_ZERO, isCountersRead, nonceOf };

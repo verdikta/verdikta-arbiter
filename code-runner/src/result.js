@@ -37,6 +37,8 @@ const ABSTAIN = Object.freeze({
   OOM: 'oom',
   /** The process limit (--pids-limit). */
   PIDS_LIMIT: 'pids_limit',
+  /** The step's launcher never reported its start nonce: its command did not run. */
+  STEP_NOT_STARTED: 'step_not_started',
   /** The sandbox died or vanished under the step. */
   SANDBOX_DIED: 'sandbox_died',
   /** The step's process died of a signal: not a clean exit. */
@@ -108,31 +110,13 @@ function signalName(exitCode) {
   return SIGNALS[n] || `signal ${n}`;
 }
 
-const DAEMON_UNREACHABLE = /Cannot connect to the Docker daemon|error during connect|permission denied while trying to connect to the Docker daemon/i;
-/** docker exec's own report that the step's process never started. */
-const OCI_START_FAILED = /^(?:docker: )?(?:Error response from daemon: )?OCI runtime (?:exec|create|start) failed/;
-function escapeRegExp(text) {
-  return text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/**
- * True when an OCI start failure is the image's own answer, the same on every
- * host: the step's program (argv[0]) is not there or not executable. The
- * diagnostic must name that program; Docker maps any "no such file" or
- * "permission denied" to 126/127 (moby daemon/errors.go), including ones from
- * the runtime's own helpers, so the exit code alone proves nothing.
- *
- *   runc:   exec: "forge": executable file not found in $PATH
- *           exec: "/opt/x": stat /opt/x: no such file or directory
- *           exec: "/etc/passwd": permission denied
- *   gVisor: error finding executable "forge" in PATH [...]: no such file or directory
- */
-function startFailureIsTheImages(line, program) {
-  if (typeof program !== 'string' || program === '') return false;
-  const p = escapeRegExp(program);
-  const q = escapeRegExp(JSON.stringify(program));
-  return new RegExp(`exec: ${q}: (?:executable file not found in \\$PATH|stat ${p}: no such file or directory|permission denied)(?::|$)`).test(line)
-    || new RegExp(`error finding executable ${q} in PATH \\[[^\\]]*\\]: no such file or directory(?::|$)`).test(line);
+/** The first non-empty line of what Docker printed, as a diagnostic only. */
+function diagnostic(obs) {
+  for (const head of [obs.stderrHead || '', obs.stdoutHead || '']) {
+    const line = head.split(/\r?\n/).find((l) => l.trim());
+    if (line) return line.trim().slice(0, 200);
+  }
+  return 'nothing';
 }
 
 function increased(before, after, key) {
@@ -142,43 +126,21 @@ function increased(before, after, key) {
 }
 
 /**
- * The docker CLI's own failure, reported at the head of stdout or stderr
- * (GitHub's runners print an exec failure on stdout), as an abstain; null
- * when the output is the program's. `code` is the exit code, or null for a
- * read the runner capped, where only the image's deterministic answer is not
- * possible either.
- */
-function cliDiagnostic(obs, code) {
-  const abstain = (cause, detail) => ({ kind: 'abstain', cause, detail });
-  const heads = [obs.stderrHead || '', obs.stdoutHead || ''].map((h) => h.replace(/^\s+/, ''));
-  const firstLine = (h) => h.split(/\r?\n/)[0].slice(0, 200);
-  for (const head of heads) {
-    if (DAEMON_UNREACHABLE.test(firstLine(head))) return abstain(ABSTAIN.DOCKER_UNREACHABLE, 'the Docker daemon could not be reached');
-  }
-  for (const head of heads) {
-    if (OCI_START_FAILED.test(head)) {
-      if ((code === 126 || code === 127) && startFailureIsTheImages(head.split(/\r?\n/)[0], obs.program)) return null;
-      return abstain(ABSTAIN.DOCKER_ERROR, `the step's process could not be started: ${firstLine(head)}`);
-    }
-    if (/^(?:docker: )?Error response from daemon:/.test(head)) {
-      return abstain(ABSTAIN.DOCKER_ERROR, `the daemon refused the step: ${firstLine(head)}`);
-    }
-  }
-  return null;
-}
-
-/**
  * Classify one `docker exec` of a step.
+ *
+ * Whether the step's command ran is decided by the start nonce (launcher.js),
+ * never by the wording of Docker's errors: no nonce, no result. Docker's
+ * output only goes into the detail of an abstain.
  *
  * @param {object} obs
  * @param {null|'step'|'run'|'deadline'|'cancel'} obs.killedBy - the runner ended it, and why
  * @param {string|null} obs.spawnError - the docker CLI could not be started
- * @param {number|null} obs.exitCode - the CLI's exit code (the process's, for a clean exec)
+ * @param {boolean} obs.started - the launcher's `vcr-start <nonce>` line came first on stdout
+ * @param {boolean} [obs.capped] - the runner stopped this read at its byte cap (no exit code)
+ * @param {number|null} obs.exitCode - the CLI's exit code: the program's own once it started
  * @param {string|null} obs.cliSignal - the CLI died of a signal the runner did not send
- * @param {string} obs.stderrHead - the first bytes of stderr (the CLI's own errors land here)
- * @param {string} [obs.stdoutHead] - the first bytes of stdout (some CLIs print exec failures here)
- * @param {string} [obs.program] - the step's argv[0]
- * @param {boolean} [obs.capped] - the runner stopped this read at its byte cap
+ * @param {string} [obs.stdoutHead] - for the detail only
+ * @param {string} [obs.stderrHead] - for the detail only
  * @param {null|{missing:true}|{running:boolean,oomKilled:boolean,exitCode:number,status:string}} obs.state
  *   the container after the step (`null` when inspect failed)
  * @param {null|'unreachable'|'error'} obs.inspectError
@@ -223,25 +185,19 @@ function classifyExec(obs) {
     return abstain(ABSTAIN.SANDBOX_DIED, `the sandbox died during the step (exit ${state.exitCode})`);
   }
 
-  if (obs.capped) {
-    // The runner stopped a capped read itself, so there is no exit code to
-    // judge by; the output must still be the program's, not the CLI's own
-    // report that the program never started.
-    const failure = cliDiagnostic(obs, null);
-    if (failure) return failure;
-    return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: 0 };
+  if (obs.started !== true) {
+    return abstain(ABSTAIN.STEP_NOT_STARTED,
+      `the step's launcher never reported its start nonce, so its command did not run (Docker said: ${diagnostic(obs)})`);
   }
 
+  // Started: what follows is the program's own.
+  if (obs.capped) return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: 0 };
   if (obs.cliSignal) return abstain(ABSTAIN.DOCKER_ERROR, `the docker CLI died of ${obs.cliSignal}`);
   const code = obs.exitCode;
   if (!Number.isInteger(code)) return abstain(ABSTAIN.DOCKER_ERROR, 'the step ended without an exit code');
   if (code === 137) return abstain(ABSTAIN.OOM, 'the step was killed with SIGKILL (exit 137), as the OOM killer does');
   if (code > 128) return abstain(ABSTAIN.KILLED_BY_SIGNAL, `the step died of ${signalName(code)} (exit ${code})`);
-  if (code !== 0) {
-    const failure = cliDiagnostic(obs, code);
-    if (failure) return failure;
-  }
   return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: code };
 }
 
-module.exports = { OUTCOME, ABSTAIN, DEFINITIVE_BASIS, Abstain, RequesterError, makeGate, classifyExec, signalName, startFailureIsTheImages };
+module.exports = { OUTCOME, ABSTAIN, DEFINITIVE_BASIS, Abstain, RequesterError, makeGate, classifyExec, signalName };

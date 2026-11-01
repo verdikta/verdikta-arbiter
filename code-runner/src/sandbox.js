@@ -7,16 +7,19 @@
  * numeric limits. Nothing else from a spec or a claim reaches these argv, so a
  * spec cannot add, drop or weaken a flag.
  *
- * A sandbox is one fresh container per check: `docker run --detach` with a
- * keepalive (`sleep`, our entrypoint, not the image's) under `--init`, then
- * each step through `docker exec` with an argv array. The keepalive's length
- * ends the container shortly after the deadline even if the runner dies, and
- * the labels let the GC find anything a crash left behind.
+ * A sandbox is one fresh container per check: `docker create` with a
+ * keepalive (`sleep`, our entrypoint, not the image's) under `--init`, a
+ * mounts check, `docker start`, then each step through `docker exec` and the
+ * runner's launcher (launcher.js), which proves with a per-exec nonce that the
+ * step's command started. The keepalive's length ends the container shortly
+ * after the deadline even if the runner dies, and the labels let the GC find
+ * anything a crash left behind.
  */
 
 const { IMAGE_REF, CLASS_HARD_LIMITS, OCI_PLATFORM } = require('./classLimits');
 const { runText, isUnreachableText } = require('./docker');
 const { HeadTail, Capped } = require('./capture');
+const { newNonce, launcherArgv, StartGate, LAUNCHER_CHECK, PROBE_SCRIPT } = require('./launcher');
 const { ABSTAIN, Abstain, RequesterError, classifyExec } = require('./result');
 
 /** The non-root user every sandbox process runs as. The env builder gives the repository to this uid. */
@@ -45,9 +48,6 @@ const COUNTER_FILES = Object.freeze([
   '/sys/fs/cgroup/memory/memory.oom_control',
   '/sys/fs/cgroup/pids/pids.events'
 ]);
-
-/** docker exec could not start a process in the sandbox (as opposed to the process failing). */
-const PROBE_START_FAILED = /OCI runtime exec failed|unable to start container process|resource temporarily unavailable|cannot fork|EAGAIN/i;
 
 const LAUNCH_TIMEOUT_MS = 120000;
 const CONTROL_TIMEOUT_MS = 15000;
@@ -128,10 +128,9 @@ function createArgs({ name, image, runtime, platform = OCI_PLATFORM, limits, ins
 }
 
 /**
- * The exact `docker exec` argv of a step. The step's argv follows the
- * container name, where Docker treats it as the command and its arguments,
- * never as options; inside the sandbox it is executed as given, with no shell
- * unless the step itself names one.
+ * The exact `docker exec` argv. `argv` (the launcher plus the step's argv, see
+ * launcherArgv) follows the container name, where Docker treats it as the
+ * command and its arguments, never as options.
  */
 function execArgs({ name, argv, stdin = false, env = {}, workdir = null }) {
   checkName(name);
@@ -167,7 +166,7 @@ function removeArgs(names) {
   return ['rm', '--force', '--volumes', ...names.map(checkName)];
 }
 
-/** Parse `head -n 20 <COUNTER_FILES>` output into { oomKill, pidsMax }. */
+/** Parse the counters probe's output (`==> file <==` sections) into { oomKill, pidsMax }. */
 function parseCounters(text) {
   const out = { oomKill: null, pidsMax: null };
   let file = null;
@@ -255,8 +254,46 @@ class Sandbox {
     if (started.exitCode !== 0) throw fail(started);
     this.launched = true;
     this.pidsLimit = spec.limits.pids;
+    await this.checkLauncher({ signal });
     this.counters = await this.readCounters({ signal });
     return this;
+  }
+
+  /**
+   * Run argv in the sandbox through the launcher with a fresh nonce.
+   * `stdout` receives the program's output (the start line stripped).
+   * @returns {Promise<{r:object, started:boolean}>}
+   */
+  async runLaunched(argv, { signal, timeoutMs, stdin, env, workdir, stdout, stderr }) {
+    const nonce = newNonce();
+    const gate = new StartGate(nonce, stdout);
+    const r = await this.docker.run(execArgs({ name: this.name, argv: launcherArgv(nonce, argv), stdin: Boolean(stdin), env, workdir }),
+      { signal, timeoutMs, stdin, stdout: gate, stderr });
+    gate.finish();
+    return { r, started: gate.seen };
+  }
+
+  /**
+   * Before any claim code runs: the launcher works, and the sandbox user
+   * cannot replace its interpreter (which would let claim code receive a
+   * later step's nonce). Throws Abstain or RequesterError.
+   */
+  async checkLauncher({ signal } = {}) {
+    const out = new Capped(4096);
+    const err = new Capped(4096);
+    const { r, started } = await this.runLaunched(['/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check'],
+      { signal, timeoutMs: CONTROL_TIMEOUT_MS, stdout: out, stderr: err });
+    const said = (err.bytes().toString('utf8') || out.bytes().toString('utf8')).split(/\r?\n/).find((l) => l.trim()) || 'nothing';
+    if (r.spawnError) throw new Abstain(ABSTAIN.DOCKER_UNREACHABLE, `the docker CLI could not be started: ${r.spawnError}`, { step: 'launch' });
+    if (r.aborted && signal) throw new Abstain(KILL_CAUSE[killReason(signal)], 'stopped while the sandbox was starting', { step: 'launch' });
+    if (!started) {
+      throw new Abstain(ABSTAIN.STEP_NOT_STARTED, `the launcher did not start in the sandbox (Docker said: ${said.slice(0, 200)})`, { step: 'launch' });
+    }
+    if (r.exitCode === 1) {
+      throw new RequesterError([{ code: 'IMAGE_LAUNCHER_WRITABLE', path: '/spec/env/image',
+        detail: 'the sandbox user can modify /bin/sh or a directory that holds it; an env image must keep them root-owned and read-only' }]);
+    }
+    if (r.exitCode !== 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, `the launcher check exited ${r.exitCode}: ${said.slice(0, 200)}`, { step: 'launch' });
   }
 
   /**
@@ -274,31 +311,28 @@ class Sandbox {
    * @param {{write(Buffer):boolean}} [o.stdoutSink] - instead of the 32 KiB head/tail log
    */
   async exec(argv, { name, signal, controlSignal, stdin, env, workdir, stdoutSink } = {}) {
-    const args = execArgs({ name: this.name, argv, stdin: Boolean(stdin), env, workdir });
     const stdout = new HeadTail();
     const stderr = new HeadTail();
+    const programOut = stdoutSink ? { write: (c) => { stdout.write(c); return stdoutSink.write(c); } } : stdout;
     const onAbort = () => { this.kill(); };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
-    const started = Date.now();
+    const t0 = Date.now();
     let r;
+    let started;
     try {
-      r = await this.docker.run(args, {
-        signal,
-        stdin,
-        stdout: stdoutSink ? { write: (c) => stdout.write(c) && stdoutSink.write(c) } : stdout,
-        stderr
-      });
+      ({ r, started } = await this.runLaunched(argv, { signal, stdin, env, workdir, stdout: programOut, stderr }));
     } finally {
       if (signal) signal.removeEventListener('abort', onAbort);
     }
-    const durationMs = Date.now() - started;
+    const durationMs = Date.now() - t0;
     const killedBy = signal && signal.aborted ? killReason(signal) : null;
     const obs = {
       killedBy,
       spawnError: r.spawnError,
+      started,
+      capped: Boolean(started && !killedBy && stdoutSink && stdoutSink.overLimit),
       exitCode: r.exitCode,
       cliSignal: r.signal && !r.aborted && !r.timedOut ? r.signal : null,
-      program: argv[0],
       stdoutHead: stdout.snapshot().head.subarray(0, 4096).toString('utf8'),
       stderrHead: stderr.snapshot().head.subarray(0, 4096).toString('utf8'),
       state: null,
@@ -308,18 +342,14 @@ class Sandbox {
       probeDetail: null,
       runtime: this.runtime
     };
-    if (!killedBy && stdoutSink && stdoutSink.overLimit) {
-      // The runner stopped the read at its cap (that is the fact recorded).
-      // There is no exit code: classifyExec still checks that the output is
-      // the program's, and the sandbox must still be sound for it to count.
-      obs.capped = true;
-      obs.cliSignal = null;
-    }
+    // A capped read was stopped by the runner itself: its own CLI kill is not an exit code.
+    if (obs.capped) obs.cliSignal = null;
     if (!killedBy && !r.spawnError) await this.observe(obs, obs.capped ? 0 : obs.exitCode, controlSignal);
     const verdict = classifyExec(obs);
     const record = {
       name,
       outcome: verdict.kind,
+      started,
       exitCode: Number.isInteger(r.exitCode) ? r.exitCode : null,
       durationMs,
       stdout: stdout.toJSON(),
@@ -349,14 +379,14 @@ class Sandbox {
       const read = await this.probeCounters({ signal });
       obs.counters.after = read.counters;
       if (read.counters) this.counters = read.counters;
-      if (read.outcome === 'start_failed') {
-        // Not even the probe could start in the sandbox. Processes a step
-        // left behind can hold the whole pid table (runc's exec forks into
-        // the container's cgroup), so ask Docker how many there are.
+      if (read.outcome === 'unreachable') {
+        obs.probe = 'unreachable';
+      } else if (read.outcome !== 'ok') {
+        // The probe did not start, or did not finish. Processes a step left
+        // behind can hold the whole pid table (runc's exec forks into the
+        // container's cgroup), so ask Docker how many there are.
         const pids = await this.pidsInUse({ signal });
         obs.probe = pids !== null && pids >= this.pidsLimit - 1 ? 'pids_exhausted' : 'failed';
-      } else if (read.outcome === 'unreachable' || read.outcome === 'failed') {
-        obs.probe = read.outcome;
       }
       if (obs.probe) obs.probeDetail = read.error;
     }
@@ -377,40 +407,30 @@ class Sandbox {
   }
 
   /**
-   * Read the cgroup counters from inside the sandbox.
-   * `outcome`: `ok` (counters read, or the files are simply absent, as under
-   * gVisor), `start_failed` (the probe process could not start in the
-   * sandbox), `unreachable` (the daemon did not answer) or `failed`
-   * (anything else: the check did not happen, so the step cannot count).
+   * Read the cgroup counters from inside the sandbox, through the launcher.
+   * `outcome`: `ok` (the probe started and exited 0: counters read, or the
+   * files are absent, as under gVisor), `not_started` (no start nonce),
+   * `unreachable` (the docker CLI could not be started) or `failed` (it
+   * started but did not finish cleanly).
    */
   async probeCounters({ signal } = {}) {
-    const r = await runText(this.docker, execArgs({ name: this.name, argv: ['head', '-n', '20', ...COUNTER_FILES] }), within(CONTROL_TIMEOUT_MS, signal));
-    // The CLI can print its own failure on stdout (seen on GitHub's runners:
-    // "OCI runtime exec failed: ... unable to spawn stage-1: Resource
-    // temporarily unavailable", exit 128), so look at both streams.
-    const said = `${r.stdout}\n${r.stderr}`;
-    const firstLine = (re) => (said.split(/\r?\n/).find((l) => re.test(l)) || said.trim().split(/\r?\n/)[0] || '').slice(0, 300);
+    const out = new Capped(64 * 1024);
+    const err = new Capped(4096);
+    const { r, started } = await this.runLaunched(['/bin/sh', '-c', PROBE_SCRIPT, 'vcr-probe', ...COUNTER_FILES],
+      { signal, timeoutMs: CONTROL_TIMEOUT_MS, stdout: out, stderr: err });
+    const said = () => ([err.bytes().toString('utf8'), out.bytes().toString('utf8')].map((t) => t.split(/\r?\n/).find((l) => l.trim())).find(Boolean) || 'nothing').slice(0, 300);
     if (r.spawnError) return { outcome: 'unreachable', counters: null, error: r.spawnError };
     if (r.timedOut || r.aborted) return { outcome: 'failed', counters: null, error: 'the counters probe did not finish' };
-    if (isUnreachableText(said)) return { outcome: 'unreachable', counters: null, error: firstLine(/Docker daemon|connect/i) };
-    const counters = parseCounters(r.stdout);
-    if (!counters && PROBE_START_FAILED.test(said)) return { outcome: 'start_failed', counters: null, error: firstLine(PROBE_START_FAILED) };
-    if (r.exitCode === 0) return { outcome: 'ok', counters, error: null };
-    // `head` exits 1 when a file is missing: the cgroup version this host does
-    // not use, or every file under gVisor. Any other complaint, or any other
-    // exit, means the check did not happen, whatever was printed before it.
-    const complaints = r.stderr.split(/\r?\n/).filter((l) => l.trim());
-    if (r.exitCode === 1 && complaints.length > 0 && complaints.every((l) => /No such file or directory/.test(l))) {
-      return { outcome: 'ok', counters, error: null };
-    }
-    return { outcome: 'failed', counters: null, error: firstLine(/./) || `the probe exited ${r.exitCode}` };
+    if (!started) return { outcome: 'not_started', counters: null, error: `the counters probe did not start (Docker said: ${said()})` };
+    if (r.exitCode !== 0) return { outcome: 'failed', counters: null, error: `the counters probe exited ${r.exitCode}: ${said()}` };
+    return { outcome: 'ok', counters: parseCounters(out.bytes().toString('utf8')), error: null };
   }
 
   async readCounters({ signal } = {}) {
     const read = await this.probeCounters({ signal });
     if (read.outcome === 'ok') return read.counters;
-    throw new Abstain(read.outcome === 'unreachable' ? ABSTAIN.DOCKER_UNREACHABLE : ABSTAIN.DOCKER_ERROR,
-      `the sandbox could not be probed after it started: ${read.error}`, { step: 'launch' });
+    const cause = { unreachable: ABSTAIN.DOCKER_UNREACHABLE, not_started: ABSTAIN.STEP_NOT_STARTED }[read.outcome] || ABSTAIN.DOCKER_ERROR;
+    throw new Abstain(cause, `the sandbox could not be probed after it started: ${read.error}`, { step: 'launch' });
   }
 
   /** The number of tasks in the sandbox, as Docker counts them (`docker stats`). */
@@ -421,9 +441,9 @@ class Sandbox {
   }
 
   /**
-   * Read a file inside the sandbox with `cat`, keeping at most `maxBytes`
-   * (the read stops there). Returns the step record, the verdict and
-   * `{ bytes, overLimit }`.
+   * Read a file inside the sandbox with `cat` (through the launcher, like any
+   * step), keeping at most `maxBytes` of it (the read stops there). Returns
+   * the step record, the verdict and `{ bytes, overLimit }`.
    */
   async readFile(filePath, { maxBytes, signal, controlSignal, name } = {}) {
     if (!noNul(filePath) || !filePath.startsWith('/')) throw new TypeError(`path must be absolute, got ${JSON.stringify(filePath)}`);

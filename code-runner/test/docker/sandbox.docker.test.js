@@ -109,6 +109,8 @@ test('definitive steps: exit codes as they are, logs cut to 32 KiB head and tail
     // 200 KiB of output: the step keeps the first and last 32 KiB.
     records.loud = await ctx.exec(['sh', '-c', 'head -c 204800 /dev/zero | tr "\\0" "a"; printf END'], { name: 'loud', timeoutMs: 30000 });
     records.stdin = await ctx.exec(['wc', '-c'], { name: 'stdin', timeoutMs: 30000, stdin: Buffer.alloc(12345, 1) });
+    // After the launcher's exec, the program sees neither the launcher nor its nonce.
+    records.self = await ctx.exec(['sh', '-c', 'tr "\\000" " " < /proc/self/cmdline; echo; env'], { name: 'self', timeoutMs: 30000 });
     const file = await ctx.readFile('/etc/hostname', { maxBytes: 4 });
     records.file = file;
   }];
@@ -122,8 +124,14 @@ test('definitive steps: exit codes as they are, logs cut to 32 KiB head and tail
   assert.equal(records.loud.stdout.omittedBytes, 204803 - 65536);
   assert.ok(records.loud.stdout.text.endsWith('aaaEND'));
   assert.equal(records.stdin.stdout.text.trim(), '12345');
+  for (const r of Object.values(records).filter((x) => x && x.stdout && typeof x.stdout.text === 'string')) {
+    assert.ok(!r.stdout.text.startsWith('vcr-start'), `${r.name}: the start line is stripped`);
+  }
+  assert.match(records.self.stdout.text, /^sh -c /);
+  assert.doesNotMatch(records.self.stdout.text, /vcr-launch|vcr-start|[0-9a-f]{32}/);
+  assert.equal(records.missing.started, true, 'the launcher started; exec found no program');
   assert.equal(records.file.overLimit, true);
   assert.equal(records.file.bytes.toString(), 'sand');
-  assert.deepEqual(result.steps.map((s) => s.name), ['ok', 'three', 'missing', 'loud', 'stdin', 'read:/etc/hostname']);
+  assert.deepEqual(result.steps.map((s) => s.name), ['ok', 'three', 'missing', 'loud', 'stdin', 'self', 'read:/etc/hostname']);
   assert.deepEqual(await leftovers(docker, config.instance), []);
 });
