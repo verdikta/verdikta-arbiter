@@ -249,9 +249,14 @@ class ImageCache {
       if (signal.aborted) wait.abort('cancel');
       else signal.addEventListener('abort', onCancel, { once: true });
     }
-    const gaveUp = (what, verb = 'did not finish') => (wait.signal.reason === 'cancel'
+    const window = `${Math.max(0, windowMs)} ms`;
+    const gaveUp = (what) => (wait.signal.reason === 'cancel'
       ? new Abstain(ABSTAIN.CANCELLED, `the run was cancelled while it waited for ${what}`, { step: 'pull' })
-      : new Abstain(ABSTAIN.PULL_FAILED, `${what} ${verb} in the time the deadline leaves before the run (${Math.max(0, windowMs)} ms)`, { step: 'pull' }));
+      : new Abstain(ABSTAIN.PULL_FAILED, `${what} did not finish in the time the deadline leaves before the run (${window})`, { step: 'pull' }));
+    // Out of time before any pull of its own: the deadline, not the registry.
+    const outOfTime = () => (wait.signal.reason === 'cancel'
+      ? new Abstain(ABSTAIN.CANCELLED, `the run was cancelled while the image ${key} was prepared`, { step: 'pull' })
+      : new Abstain(ABSTAIN.ADMISSION_REFUSED, `the time the deadline leaves before the run (${window}) ran out while the image ${key} was prepared`, { step: 'pull' }));
 
     try {
       let pull = null;
@@ -262,7 +267,7 @@ class ImageCache {
       } catch (_) {
         throw wait.signal.reason === 'cancel'
           ? gaveUp('the image cache')
-          : new Abstain(ABSTAIN.ADMISSION_REFUSED, 'the image cache was busy for all the time the deadline leaves before the run', { step: 'pull' });
+          : new Abstain(ABSTAIN.ADMISSION_REFUSED, `the image cache was busy for all the time the deadline leaves before the run (${window})`, { step: 'pull' });
       }
       // Everything under the lock follows the run's window and cancellation
       // too: each Docker call is cut off and nothing further starts, so a run
@@ -285,7 +290,7 @@ class ImageCache {
           }
         }
       } catch (err) {
-        if (err instanceof Interrupted) throw gaveUp(`the image ${key}`, 'was not ready');
+        if (err instanceof Interrupted) throw outOfTime();
         throw err;
       } finally {
         unlock();
@@ -299,7 +304,7 @@ class ImageCache {
         try {
           after = await this.inspect(key, wait.signal);
         } catch (err) {
-          if (err instanceof Interrupted) throw gaveUp(`the image ${key}`, 'was not ready');
+          if (err instanceof Interrupted) throw gaveUp(`the pull of ${key}`);
           throw err;
         }
         if (!after) {
@@ -526,7 +531,10 @@ class ImageCache {
     entry.promise = (async () => {
       try {
         const r = await runText(this.docker, pullArgs(key, platform), { timeoutMs: this.config.pullTimeoutMs, signal: this.closing.signal });
-        return { error: this.pullFailure(r, key) };
+        const error = this.pullFailure(r, key);
+        if (error) this.log.warn('image pull failed', { image: key, cause: error.cause, detail: error.detail });
+        else this.log.info('image pulled', { image: key, ms: r.durationMs });
+        return { error };
       } catch (err) {
         return { error: new Abstain(ABSTAIN.RUNNER_ERROR, `the pull of ${key} failed in the runner: ${err.message}`, { step: 'pull' }) };
       } finally {

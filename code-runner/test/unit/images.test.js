@@ -437,9 +437,9 @@ test('R1-F2: cancellation or the end of the window while the cache evicts stops 
   const lease = await cache.acquire(want(A));
   assert.equal(lease.cache, 'hit');
   lease.release();
-  // The window ending works the same way.
-  const late = await rejectsWith(cache.acquire(want(X, { windowMs: 100 })), Abstain, 'pull_failed');
-  assert.match(late.detail, /was not ready in the time/);
+  // The window ending works the same way: out of time before any pull is the deadline's doing.
+  const late = await rejectsWith(cache.acquire(want(X, { windowMs: 100 })), Abstain, 'admission_refused');
+  assert.match(late.detail, /ran out while the image .* was prepared/);
   assert.equal(removals, 2);
   assert.equal(store.pulls.length, 0);
 });

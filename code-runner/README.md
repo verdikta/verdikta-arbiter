@@ -322,11 +322,11 @@ decided on anything else. Everything else **abstains**:
 
 | `abstain.cause` | When |
 |---|---|
-| `admission_refused` | The maintenance lock is held; the deadline leaves less than `runSeconds` (also once the image is ready); the runtime is not registered; every execution slot is in use; the run would cut into the memory reserve; the data root has no room for the pull, even after eviction |
+| `admission_refused` | The maintenance lock is held; the deadline leaves less than `runSeconds` (also once the image is ready, or it ran out while the image was prepared); the runtime is not registered; every execution slot is in use; the run would cut into the memory reserve; the data root has no room for the pull, even after eviction |
 | `docker_unreachable` | The daemon cannot be reached (at admission or during the run) |
 | `docker_error` | The daemon refused something the step did not cause |
 | `registry_not_allowed` | The env image's registry and repository are not on `CODE_RUNNER_REGISTRY_ALLOWLIST` |
-| `pull_failed` | The pull failed: the registry unreachable, the digest unknown to it, bytes that do not hash to the digest, the pull timeout, or no time left before the run |
+| `pull_failed` | The pull failed: the registry unreachable, the digest unknown to it, bytes that do not hash to the digest, the pull timeout, or a pull that did not finish in the time the deadline leaves before the run |
 | `image_mismatch` | The image the digest reference resolves to does not carry that digest, or is of another platform |
 | `image_unavailable` | The env image is not on the runner's disk when the sandbox is created |
 | `step_timeout` | A step's own wall-clock limit, or the run's (`runSeconds`) |
@@ -531,7 +531,8 @@ failing harness records) and `leftoverProcesses`.
      two runs that need the same image share one pull. Waiting for the lock
      and everything done under it follow the run's window and cancellation:
      each Docker call is cut off and nothing further starts, so no run holds
-     the lock, or its slot, past its time. A run that runs out of
+     the lock, or its slot, past its time (`admission_refused` when the time
+     ran out before any pull of its own, `cancelled` when the caller left). A run that runs out of
      time while it waits abstains (`pull_failed`) and the pull carries on for
      the others (and for the EA's retry); the pull itself stops at
      `CODE_RUNNER_PULL_TIMEOUT_SECONDS` (default 90, §11's budget).
