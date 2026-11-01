@@ -3,11 +3,13 @@ name: Code Runner
 # The stake-attestation code runner (code-runner/, design §9). Unit tests need
 # no Docker; the Docker tests run twice, under runc and under gVisor (runsc),
 # because arbiters run claims under gVisor and developers on macOS use runc.
-# claude/stake-attestation is the integration branch its node PRs land in.
+# claude/stake-attestation is the integration branch its node PRs land in;
+# claude/sa-* are node branches a node PR may be stacked on before its
+# dependency merges (its runsc run would be skipped otherwise).
 
 on:
   pull_request:
-    branches: [main, master, claude/stake-attestation]
+    branches: [main, master, claude/stake-attestation, 'claude/sa-*']
     paths: ['code-runner/**', '.github/workflows/code-runner.yml']
   push:
     branches: [main, master, claude/stake-attestation]
