@@ -36,7 +36,7 @@
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
 const { matchesAny, pocPatchPathsGate } = require('./common');
-const { git, GIT_ENV, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
+const { git, GIT_ENV, GIT_DIR, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
 const forge = require('./forge');
 const { readForgeJUnit, JUNIT_MAX_BYTES } = require('./junit');
 const {
@@ -107,11 +107,14 @@ const CLEANUP_SCRIPT = [
 
 /**
  * Copies the checkout ($1) into the empty work tree, refuses a git directory
- * holding a symbolic link (a link into the work tree would let a patched
- * file stand in for the repository's config or attributes), and writes the
- * runner's attributes ($2) to .git/info/attributes. Exit 10: no checkout;
- * 11: not a git repository; 12: the copy failed; 13: a link in .git; 14:
- * .git/info could not be written.
+ * that points elsewhere, and writes the runner's attributes ($2) to
+ * .git/info/attributes. A git directory must be self-contained: a symbolic
+ * link in it, a `commondir` file (git then reads config, info/, refs and
+ * objects from that other directory), object alternates or grafts could
+ * leave the repository's metadata in the work tree, where a patched file
+ * would stand in for its config or attributes. Exit 10: no checkout; 11: not
+ * a git repository; 12: the copy failed; 13: the git directory points
+ * elsewhere; 14: .git/info could not be written.
  */
 const CHECKOUT_SCRIPT = [
   'set -u',
@@ -121,6 +124,9 @@ const CHECKOUT_SCRIPT = [
   'cp -a -- "$src/." /work/ || exit 12',
   'link=$(find /work/.git -type l -print -quit) || exit 13',
   '[ -z "$link" ] || exit 13',
+  'for f in commondir objects/info/alternates objects/info/http-alternates info/grafts; do',
+  '  [ -e "/work/.git/$f" ] && exit 13',
+  'done',
   'mkdir -p /work/.git/info && rm -f /work/.git/info/attributes && printf "%s\\n" "$2" > /work/.git/info/attributes || exit 14',
   'exit 0'
 ].join('\n');
@@ -255,11 +261,18 @@ function claimSteps(request, limits) {
       case 11: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `${IMAGE_CHECKOUT} in the env image is not a git repository`)]);
       case 12: throw new RequesterError([issue('IMAGE_CHECKOUT_UNREADABLE', image,
         `the checkout could not be copied into the work tree as uid 10001 (unreadable, or larger than the work tree): ${firstLine(copy.stderr.text)}`)]);
-      case 13: throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_LINK', image, `${IMAGE_CHECKOUT}/.git holds a symbolic link; the repository's git directory must hold none`)]);
+      case 13: throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
+        `${IMAGE_CHECKOUT}/.git points elsewhere (a symbolic link, commondir, object alternates or grafts); the git directory must be self-contained`)]);
       case 14: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `.git/info in the copied checkout could not be written: ${firstLine(copy.stderr.text)}`)]);
       default: throw new Abstain(ABSTAIN.DOCKER_ERROR, `the checkout copy exited ${copy.exitCode}`, { step: 'prepare:checkout' });
     }
 
+    // And git agrees: its git directory and common directory are /work/.git.
+    const dirs = await gitRead(ctx, 'prepare:gitdir', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
+    if (dirs.record.exitCode !== 0 || dirs.out.bytes().toString('utf8') !== `${GIT_DIR}\n${GIT_DIR}\n`) {
+      throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
+        `git does not keep the checkout's repository in its own .git: ${firstLine(dirs.out.bytes().toString('utf8') + dirs.record.stderr.text).slice(0, 200)}`)]);
+    }
     const head = await gitRead(ctx, 'prepare:head', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
     if (head.record.exitCode !== 0) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `HEAD of the env image's checkout is not a commit: ${firstLine(head.record.stderr.text)}`)]);

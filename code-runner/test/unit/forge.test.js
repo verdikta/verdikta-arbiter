@@ -129,3 +129,15 @@ test('harness records are setUp(), constructor() and afterInvariant(); check*/pr
   for (const n of ['check_x(uint256)', 'prove_y()']) assert.equal(forge.isTestFunction(n), true, n);
   assert.equal(forge.isTestFunction('handler deposit(uint256)'), false);
 });
+
+test('R1-F1 (round 2): the kind report is read where forge writes it, however long the reason', () => {
+  // An inline-config error whose reason runs to kilobytes: the (gas: 0) after it still counts.
+  const long = `invalid evm_version ${'x'.repeat(10000)}`;
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: long, out: `[FAIL: ${long}] test_x() (gas: 0)` }), { result: 'error', kind: 'error' });
+  // A reason with line breaks: the attribute reads them as spaces, the system-out keeps them.
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: 'a  b', out: '[FAIL: a\n\tb] test_x() (gas: 0)\nLogs:\n' }), { result: 'error', kind: 'error' });
+  // A body that ran, whose reason or logs print a fake (gas: 0) elsewhere, is still an assertion.
+  const fake = '] test_x() (gas: 0)';
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: fake, out: `[FAIL: ${fake}] test_x() (gas: 912)` }), { result: 'fail', kind: 'assertion' });
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: 'm', out: `[FAIL: m] test_x() (gas: 31)\nLogs:\n  [FAIL: m] test_x() (gas: 0)` }), { result: 'fail', kind: 'assertion' });
+});

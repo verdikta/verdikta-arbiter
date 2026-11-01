@@ -82,7 +82,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.build.basis, 'exit_code');
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
-    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git read-tree', 'git submodule', 'git update-index', 'git status',
+    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git rev-parse', 'git read-tree', 'git submodule', 'git update-index', 'git status',
     'git apply', 'git apply', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     'vcr-build', 'vcr-cleanup',
@@ -116,7 +116,8 @@ test('applies: git apply runs inside the sandbox against the listed commit, the 
   assert.ok(applies[1].sub.includes('--index'), 'then applied to the index and the work tree');
   // Every git call is a docker exec into the sandbox: the host never runs git.
   for (const c of sb.docker.calls) assert.notEqual(c.args[0], 'git');
-  const verify = gitCalls(sb, 'rev-parse')[0];
+  assert.deepEqual(gitCalls(sb, 'rev-parse')[0].sub, ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
+  const verify = gitCalls(sb, 'rev-parse')[1];
   assert.deepEqual(verify.sub, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
   // Clean means the tracked files (and submodules' commits and tracked files) are the commit's.
   assert.deepEqual(gitCalls(sb, 'status')[0].sub, ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=untracked']);
@@ -533,9 +534,10 @@ test('the requester\'s package: the env image\'s checkout is missing, not a repo
     [{ scripts: { 'vcr-checkout': () => ({ exitCode: 10 }) } }, 'IMAGE_CHECKOUT_MISSING'],
     [{ scripts: { 'vcr-checkout': () => ({ exitCode: 11 }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
     [{ scripts: { 'vcr-checkout': () => ({ exitCode: 12, stderr: 'cp: cannot open \'/repo/secret\' for reading: Permission denied\n' }) } }, 'IMAGE_CHECKOUT_UNREADABLE'],
-    [{ git: { 'rev-parse': () => ({ stdout: `${'1'.repeat(40)}\n` }) } }, 'IMAGE_CHECKOUT_MISMATCH'],
+    [{ git: { 'rev-parse': (d) => ({ stdout: d.sub.includes('--git-common-dir') ? '/work/.git\n/work/.git\n' : `${'1'.repeat(40)}\n` }) } }, 'IMAGE_CHECKOUT_MISMATCH'],
     [{ git: { status: () => ({ stdout: ' M foundry.toml\0' }) } }, 'IMAGE_CHECKOUT_DIRTY'],
-    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 13 }) } }, 'IMAGE_CHECKOUT_GIT_LINK'],
+    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 13 }) } }, 'IMAGE_CHECKOUT_GIT_REDIRECT'],
+    [{ git: { 'rev-parse': (d) => ({ stdout: d.sub.includes('--git-common-dir') ? '/work/.git\n/work/.git-common\n' : `${BASE}\n` }) } }, 'IMAGE_CHECKOUT_GIT_REDIRECT'],
     [{ scripts: { 'vcr-checkout': () => ({ exitCode: 14 }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
     [{ git: { 'read-tree': () => ({ exitCode: 128, stderr: 'fatal: failed to unpack tree object HEAD\n' }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
     [{ git: { submodule: () => ({ exitCode: 1, stderr: 'fatal: run_command returned non-zero status for lib/x\n' }) } }, 'IMAGE_CHECKOUT_NOT_GIT']
@@ -561,7 +563,9 @@ test('the checkout is copied into the empty /work before any step, as the sandbo
 
 test('R1-F3: the repository\'s attribute drivers are switched off before git touches the patch: no filter, textconv, conversion or ident', async () => {
   assert.equal(NEUTRAL_ATTRIBUTES, '* !filter !diff !merge !text !eol !ident !working-tree-encoding');
-  // Written to .git/info/attributes (the source above the repository's own .gitattributes) by the copy step.
+  // Written to .git/info/attributes (the source above the repository's own .gitattributes) by the copy step,
+  // which refuses a git directory that keeps its metadata elsewhere.
+  for (const f of ['commondir', 'objects/info/alternates', 'objects/info/http-alternates', 'info/grafts']) assert.ok(CHECKOUT_SCRIPT.includes(f), f);
   assert.match(CHECKOUT_SCRIPT, /printf "%s\\n" "\$2" > \/work\/\.git\/info\/attributes/);
   assert.match(CHECKOUT_SCRIPT, /rm -f \/work\/\.git\/info\/attributes/);
   const sb = claimSandbox();
@@ -574,7 +578,7 @@ test('R1-F4: the copied index is rebuilt from HEAD (repository and submodules) b
   const sb = claimSandbox();
   await runClaim(sb);
   const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
-  assert.deepEqual(order.slice(2, 7), ['git rev-parse', 'git read-tree', 'git submodule', 'git update-index', 'git status']);
+  assert.deepEqual(order.slice(2, 8), ['git rev-parse', 'git rev-parse', 'git read-tree', 'git submodule', 'git update-index', 'git status']);
   assert.deepEqual(gitCalls(sb, 'read-tree')[0].sub, ['read-tree', 'HEAD']);
   assert.deepEqual(gitCalls(sb, 'submodule')[0].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]);
   for (const c of ['core.ignoreStat=false', 'core.sparseCheckout=false', 'index.sparse=false']) {

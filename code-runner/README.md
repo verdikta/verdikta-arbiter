@@ -239,10 +239,12 @@ What the env image (P3a) must provide:
   filter or line-ending conversion (untracked and ignored files, such as
   installed `lib/` dependencies, may be there, inside submodules too; a
   submodule must be at the commit the listed commit records), readable by
-  uid 10001. The claim pipeline copies it into `/work`, which starts empty,
-  and rebuilds its index from `HEAD`, so no assume-unchanged or
-  skip-worktree bit hides a change; otherwise the run is the requester's
-  error (`IMAGE_CHECKOUT_MISSING`, `_NOT_GIT`, `_GIT_LINK`, `_UNREADABLE`,
+  uid 10001. Its git directory must be self-contained: no symbolic link,
+  `commondir` (a linked worktree), object alternates or grafts. The claim
+  pipeline copies it into `/work`, which starts empty, and rebuilds its
+  index from `HEAD`, so no assume-unchanged or skip-worktree bit hides a
+  change; otherwise the run is the requester's error
+  (`IMAGE_CHECKOUT_MISSING`, `_NOT_GIT`, `_GIT_REDIRECT`, `_UNREADABLE`,
   `_MISMATCH`, `_DIRTY`), before any claim code runs;
 - `git`, `cp`, `forge` and a POSIX `/bin/sh` (the foundry base has them);
 - every tool, `solc` included, outside `$HOME` and `/tmp` (both start empty),
@@ -388,8 +390,9 @@ harness proof draws between a trivially failing and a trivially broken test.
 Errors are everything else: no JUnit (a compile error, such as an import that
 does not resolve), a failed `setUp()`, `constructor()` or `afterInvariant()`,
 a failure whose body never ran (no reason, as when a `beforeTestSetup` call
-reverts, or forge's default `(gas: 0)` in the record's own `system-out`: a
-test body that ran always used gas), and failures forge raises itself at the
+reverts, or forge's default `(gas: 0)` in the record's own `system-out`, read
+where forge writes it, right after `[FAIL: <reason>] <signature> `, however
+long the reason: a test body that ran always used gas), and failures forge raises itself at the
 pinned version: a refused or failed cheatcode (`vm.<name>: …`), `testFail*`
 (removed), the EVM failing (`EvmError:` other than `Revert`), fuzz or
 invariant set-up, a fuzz test whose inputs `vm.assume` all rejected,

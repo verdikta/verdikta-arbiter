@@ -182,3 +182,10 @@ test('a suite file with colons keeps them; the contract is after the last colon'
   assert.equal(r.suites[0].file, 'test/a:b/C.t.sol');
   assert.equal(r.suites[0].contract, 'CTest');
 });
+
+test('a record\'s <system-out> is kept whole, so forge\'s line after a long reason is still there', () => {
+  const reason = 'r'.repeat(20000);
+  const r = read(forgeXml(`<testcase name="test_x()"><failure message="${reason}"/><system-out>[FAIL: ${reason}] test_x() (gas: 0)</system-out></testcase>`));
+  assert.equal(r.ok, true, r.reason);
+  assert.ok(r.suites[0].cases[0].out.endsWith('] test_x() (gas: 0)'));
+});

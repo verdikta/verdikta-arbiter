@@ -33,6 +33,14 @@ const VARIANTS = Object.freeze({
     files: { ...VAULT_REPO, 'test/filter.sh': '#!/bin/sh\ncat\n', '.gitattributes': 'test/*.bin filter=vcr\n' },
     setup: 'git config filter.vcr.smudge "sh test/filter.sh" && git config filter.vcr.clean "sh test/filter.sh"'
   },
+  // R1-F3 (round 2): the same filter, with the repository's metadata moved
+  // to a common directory in the work tree (.git/commondir), where the
+  // runner's .git/info/attributes would not be read.
+  commondir: {
+    files: { ...VAULT_REPO, 'test/filter.sh': '#!/bin/sh\ncat\n', '.gitattributes': 'test/*.bin filter=vcr\n' },
+    setup: 'mkdir .git-common && mv .git/objects .git/refs .git/config .git/info .git-common/ && echo ../.git-common > .git/commondir'
+      + ' && git config filter.vcr.smudge "sh test/filter.sh" && git config filter.vcr.clean "sh test/filter.sh"'
+  },
   // A changed tracked file the copied index hides (R1-F4).
   assume: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --assume-unchanged src/Vault.sol' },
   skip: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --skip-worktree src/Vault.sol' }
@@ -419,4 +427,38 @@ test('R1-F4: a changed tracked file the image\'s index marks assume-unchanged or
     assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY'], variant);
     assert.match(r.issues[0].detail, /src\/Vault\.sol/);
   }
+});
+
+test('R1-F3 (round 2): a git directory that keeps its metadata elsewhere (commondir) is refused before git touches the patch', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('commondir');
+  const patch = Buffer.concat([
+    modifyPatch('test/filter.sh', '#!/bin/sh\ncat\n', '#!/bin/sh\ntouch /tmp/vcr-filter-ran\ncat\n'),
+    addFilesPatch({ 'test/x.bin': 'payload\n', 'test/Exploit.t.sol': DRAIN })
+  ]);
+  const { result: r } = await run(t, claim(fx, patch));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_GIT_REDIRECT']);
+  assert.ok(!stepNames(r).some((n) => n.startsWith('patch:')), 'git never saw the patch');
+});
+
+test('R1-F1 (round 2): an inline-config error with a reason of kilobytes is an error, not an assertion', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const long = 'x'.repeat(6000);
+  const patch = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      `    /// forge-config: default.evm_version = "${long}"`,
+      '    function test_configured() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
+    ])
+  });
+  const { result: r } = await run(t, claim(fx, patch));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'fail', show(r));
+  // forge 1.8.5 fails the record without running its body: the reason (6 KB, past any prefix a reader
+  // might keep) and then forge's default (gas: 0). The test's own assertion would have failed.
+  const t0 = r.facts.poc.tests[0];
+  assert.ok(t0, JSON.stringify(r.facts.poc));
+  assert.deepEqual(t0.runs, ['error', 'error', 'error']);
+  assert.equal(t0.kind, 'error');
+  assert.match(t0.message, /^Unknown evm version: x{100}/);
+  assert.ok(t0.message.length >= 2000 - 1, 'the reason is kilobytes long (cut to 2000 in the facts)');
 });

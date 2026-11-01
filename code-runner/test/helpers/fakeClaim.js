@@ -97,7 +97,7 @@ function claimSandbox({ poc = [drainFails(), drainFails(), drainFails()], git = 
   let committed = false;
   let pocRun = 0;
   const gitDefaults = {
-    'rev-parse': () => ({ stdout: `${committed ? POC : BASE}\n` }),
+    'rev-parse': (d) => (d.sub.includes('--git-common-dir') ? { stdout: '/work/.git\n/work/.git\n' } : { stdout: `${committed ? POC : BASE}\n` }),
     'read-tree': () => ({ exitCode: 0 }),
     submodule: () => ({ exitCode: 0 }),
     'update-index': () => ({ exitCode: 0 }),

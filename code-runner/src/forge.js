@@ -103,10 +103,29 @@ const FORGE_ERRORS = Object.freeze([
   /^minimize (?:edge index|observations) lock poisoned$/
 ]);
 
+/** XML attribute-value normalisation (§3.3.3), applied to the system-out text so it compares with the message attribute. */
+function normaliseWhitespace(text) {
+  return text.replace(/[\t\n\r]/g, ' ');
+}
+
+/**
+ * forge's own line for the record, at the offset its format puts it
+ * (`[FAIL: <reason>] <signature> <kind report>`, junit_xml_report in forge
+ * 1.8.5): `(gas: 0)` there is TestKind's default, which only a path that
+ * failed the test without running its body leaves. Read at that offset, a
+ * long reason cannot push it out of reach, and text elsewhere (logs, the
+ * reason itself) is never taken for it.
+ */
+function bodyNeverRan(record, message) {
+  if (typeof record.out !== 'string') return false;
+  const head = `[FAIL: ${message}] ${record.name} (gas: 0)`;
+  return normaliseWhitespace(record.out.slice(0, head.length)) === head;
+}
+
 /**
  * Classify one JUnit record of a test function.
  * @param {{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out?:string}} record
- *   `out`: the start of the record's <system-out>
+ *   `out`: the record's <system-out>
  * @returns {{result:'pass'|'fail'|'error'|'skip', kind:'assertion'|'error'|null}}
  */
 function classifyRecord(record) {
@@ -118,7 +137,7 @@ function classifyRecord(record) {
       const m = record.message;
       if (typeof m !== 'string' || m === '') return error;
       if (FORGE_ERRORS.some((re) => re.test(m))) return error;
-      if (typeof record.out === 'string' && record.out.includes(`] ${record.name} (gas: 0)`)) return error;
+      if (bodyNeverRan(record, m)) return error;
       return { result: 'fail', kind: 'assertion' };
     }
     default: return { result: 'error', kind: 'error' };

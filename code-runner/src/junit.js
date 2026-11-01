@@ -31,8 +31,13 @@ const MAX_DEPTH = 16;
 const MAX_ELEMENTS = 100000;
 const MAX_ATTRIBUTES = 32;
 const MAX_NAME = 256;
-/** Text kept per element (system-out), for later integrity checks; the rest is checked and dropped. */
+/**
+ * Text kept per element; the rest is checked and dropped. A <system-out> is
+ * kept whole (the document's own cap bounds it): forge writes a record's
+ * kind report after its failure reason, however long the reason is.
+ */
 const MAX_TEXT_KEPT = 4096;
+const KEEP_WHOLE = new Set(['system-out']);
 
 const PREDEFINED = Object.freeze({ lt: '<', gt: '>', amp: '&', quot: '"', apos: '\'' });
 /** Characters XML 1.0 forbids in a document (C0 controls other than tab, LF and CR; U+FFFE, U+FFFF). */
@@ -257,7 +262,8 @@ class Parser {
     if (raw.includes(']]>')) { this.i = from; this.fail('the sequence ]]> in text'); }
     const text = this.decode(raw, from);
     if (!el.nonBlank && !blank(text)) el.nonBlank = true;
-    if (el.text.length < MAX_TEXT_KEPT) el.text = (el.text + text).slice(0, MAX_TEXT_KEPT);
+    if (KEEP_WHOLE.has(el.name)) el.text += text;
+    else if (el.text.length < MAX_TEXT_KEPT) el.text = (el.text + text).slice(0, MAX_TEXT_KEPT);
   }
 }
 
@@ -280,7 +286,7 @@ function blank(text) {
  * @param {Buffer} bytes - the JUnit as captured from forge's stdout
  * @param {{truncated?:boolean}} [o] - the capture was cut at its cap
  * @returns {{ok:true, suites:Array<{file:string, contract:string, cases:Array<{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out:string}>}>} | {ok:false, reason:string}}
- *   `out`: the start (4 KiB) of the record's <system-out>, forge's `<status> <signature> (gas: N)` line
+ *   `out`: the record's <system-out>, starting with forge's `<status> <signature> <kind report>` line
  */
 function readForgeJUnit(bytes, { truncated = false } = {}) {
   if (truncated) return { ok: false, reason: `the JUnit exceeds ${JUNIT_MAX_BYTES} bytes` };
@@ -315,8 +321,8 @@ function readForgeJUnit(bytes, { truncated = false } = {}) {
         if (RESULT_ELEMENTS.has(child.name)) {
           if (result) return bad(`a <testcase> with both <${result.name}> and <${child.name}>`);
           result = child;
-        } else if (child.name === 'system-out' && out.length < MAX_TEXT_KEPT) {
-          out = (out + child.text).slice(0, MAX_TEXT_KEPT);
+        } else if (child.name === 'system-out') {
+          out += child.text;
         }
       }
       const outcome = !result ? 'pass' : result.name === 'skipped' ? 'skipped' : result.name;
