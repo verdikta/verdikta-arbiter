@@ -250,7 +250,10 @@ What the env image (P3a) must provide:
   A submodule whose `core.worktree` points elsewhere is refused, and replace
   refs are off in submodules too (`core.useReplaceRefs=false`). Each
   submodule's own status must be clean as well, so its ignore settings
-  cannot hide the submodules inside it. Every git call of the check carries
+  cannot hide the submodules inside it. This runs in two passes: every
+  submodule, at every depth, is made safe to read (self-contained, own work
+  tree, neutral attributes, index rebuilt) before any work tree is read.
+  Every git call of the check carries
   the runner's fixed `-c` settings, so no hook of the repository (fsmonitor)
   runs before the build; forge's own git calls in the maker's commands are
   the maker's. The
