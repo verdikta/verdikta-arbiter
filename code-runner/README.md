@@ -233,39 +233,38 @@ and shows that every such write fails with "Read-only file system". The
 launcher path check stays as a second check.
 
 What the env image (P3a) must provide:
-- the repository checkout at `/repo`: a git repository (`/repo/.git` a
-  directory holding no symbolic link) whose `HEAD` is the listed `baseCommit`
-  and whose tracked files are that commit's blobs byte for byte, with no
-  filter or line-ending conversion (untracked and ignored files, such as
-  installed `lib/` dependencies, may be there, inside submodules too; a
-  submodule must be at the commit the listed commit records), readable by
-  uid 10001. Its git directory, and each submodule's, must be
-  self-contained: no symbolic link, `commondir` (a linked worktree), object
-  alternates or grafts. Each submodule gets the same neutral attributes and
-  index rebuild before the clean check, so neither its own index flags nor
-  its own clean filter can hide a change. A submodule that is not checked
-  out, as git itself resolves it (a `.git` git reads as a repository whose
-  work tree is that very directory), must be absent or empty: git would
-  match any files there against the commit it records without reading them.
-  A submodule whose `core.worktree` points elsewhere is refused, and replace
-  refs are off in submodules too (`core.useReplaceRefs=false`). Each
-  submodule's own status must be clean as well, so its ignore settings
-  cannot hide the submodules inside it. This runs in two passes: every
-  submodule, at every depth, is made safe to read (self-contained, own work
-  tree, neutral attributes, index rebuilt) before any work tree is read.
-  Every git call of the check carries
-  the runner's fixed `-c` settings, so no hook of the repository (fsmonitor)
-  runs before the build; forge's own git calls in the maker's commands are
-  the maker's. The
-  gitlinks are read from each repository's index (`git ls-files -s`), and
-  a gitlink path git has to quote (a control character, `"` or `\`) is
-  refused (`IMAGE_CHECKOUT_NOT_GIT`). The claim
-  pipeline copies it into `/work`, which starts empty, and rebuilds its
-  index from `HEAD`, so no assume-unchanged or skip-worktree bit hides a
-  change; otherwise the run is the requester's error
-  (`IMAGE_CHECKOUT_MISSING`, `_NOT_GIT`, `_GIT_REDIRECT`, `_UNREADABLE`,
-  `_MISMATCH`, `_DIRTY`), before any claim code runs;
-- `git`, `cp`, `forge` and a POSIX `/bin/sh` (the foundry base has them);
+- the repository at `/repo`, as its install commands left it. The runner
+  forces the checkout ([below](#the-forced-checkout)): every tracked file and
+  submodule is rewritten from the listed commit, so the image only needs
+  - the listed commit's objects (its commit, trees and blobs) in a
+    directory named `.git` under `/repo` (a real directory, not a link): the
+    repository's own `.git/objects`, as a clone leaves it (loose objects or
+    packs; a shallow clone of the listed commit is enough). Objects reached
+    only through `commondir`, alternates, a `.git` file or a link are not
+    read. A missing
+    object of the listed commit's own tree, or one that does not hash to its
+    id, is the requester's error (`IMAGE_OBJECTS_MISSING`,
+    `IMAGE_OBJECT_INVALID`);
+  - each submodule's commit's objects, wherever its `.git` directory is
+    under `/repo` (`.git/modules/<name>`, or the submodule's own `.git`), for
+    that submodule to be populated: without them it is left an empty
+    directory, as git leaves an unpopulated submodule;
+  - its installed dependencies, as untracked or ignored files (`lib/`
+    contents outside submodules, `node_modules`, `out/`, `cache/`): they are
+    kept as the image built them, unless one sits at a tracked path or on the
+    way to one;
+  - every entry readable by uid 10001 (`IMAGE_CHECKOUT_UNREADABLE`
+    otherwise), and the checkout within the work tree's 1 GiB.
+
+  The image's git state is never used: its config, index, hooks,
+  attributes, refs (`HEAD` included: the checkout may be at any commit),
+  replace refs, alternates, `commondir`, worktree redirects and submodule
+  settings. No filter of the image runs (git LFS included: a tracked file
+  holds its committed blob). Its `.git` entries, devices and sockets are not
+  copied into the work tree;
+- `git` 2.29 or later (2.34.1 on the foundry base), `/usr/bin/env`, GNU
+  `find`, `xargs`, `sort` and `tar`, `wc`, `cat`, `chmod`, `rm`, `mkdir`,
+  `forge` and a POSIX `/bin/sh` (the foundry base has them);
 - every tool, `solc` included, outside `$HOME` and `/tmp` (both start empty),
   or in the work tree;
 - the build and test commands writing only inside the work tree, `$HOME` and
@@ -343,7 +342,7 @@ failure.
 
 | Step | Gate | Decided on |
 |---|---|---|
-| Record the sandbox's processes (the init and the keepalive); copy `/repo` into `/work`; write `.git/info/attributes`; rebuild the index from `HEAD` (and each submodule's); check `HEAD` is `baseCommit` and the tracked files are clean | — (the requester's error otherwise) | |
+| Record the sandbox's processes (the init and the keepalive); force the checkout: `/work` becomes the listed commit in a fresh repository (below) | — (the requester's error when the image lacks the listed commit's objects) | |
 | `poc.patch` at most `maxPatchBytes`; what it would expand to at most 50 MB (below) | `applies` | `input` |
 | `git apply --numstat` (git reads it; a file changed twice fails), then `git apply --index` against the listed commit | `applies` | `exit_code` |
 | `git diff --cached --name-status --no-renames`: every touched path (a rename's source included) under `paths.tests`, none under `paths.protected`, each one a report can name | `testPathsOnly` | `exit_code` |
@@ -356,18 +355,80 @@ A step that hits a limit, dies or does not start abstains the run, and no
 gate is decided on it: an OOM-killed build is an abstain, never a `build`
 failure.
 
+### The forced checkout
+
+`src/checkout.js` with `src/objects.js` (owner decision Q25, "force the
+checkout"; design §9.2 step 3). Before any claim code runs, `/work` becomes
+the listed commit, whatever the image's install commands did to its
+checkout:
+
+1. The runner makes two repositories with its own settings (`git init
+   --template=`, so no hook is copied in): `/work/.git`, the one the claim
+   steps use, and a staging store. The image's files are copied into `/work`
+   without any `.git` entry (at any depth), device or socket. The loose
+   objects and packs of every `objects` directory inside a `.git` directory
+   of `/repo` are copied into the staging store as plain files, in byte
+   order, the first copy of a name kept; nothing else of theirs (no
+   `info/alternates`, multi-pack-index or commit-graph).
+2. The runner reads the listed commit, its trees level by level, each
+   submodule's commit (the one its gitlink records) and trees, and every
+   blob, out of the staging store, and re-hashes each one itself
+   (`<type> <size>\0<content>`, SHA-1, or SHA-256 when `baseCommit` has 64
+   hex digits). The store's answer is never trusted: an object that does not
+   hash to its id, has the wrong type or is malformed (a tree out of git's
+   order, a duplicate name, `.git`, `.`, `..`, an empty name, a symbolic link
+   Linux cannot hold) is the requester's error, as is a missing object of
+   the listed commit's own tree. A submodule whose commit, a tree or a blob
+   is missing is left an empty directory. Bounds: 512 MiB of files (every
+   path counted), 200,000 entries, 128 levels, 4,000-byte paths.
+3. The verified blobs and one root commit of the whole tree, with each
+   submodule's files as ordinary paths, go into `/work/.git` through `git
+   fast-import`, from the runner's bytes (`Verdikta code runner`,
+   `1767225600 +0000`, message `listed commit <baseCommit>`). The runner
+   checks git's tree id against its own, and builds the index from that
+   commit.
+4. Every tracked path is replaced, never written through: each directory on
+   the way to one must be a real directory (a symbolic link, file, pipe or
+   device node there is removed and a directory made, from the top down),
+   whatever sits at the path itself is removed (a directory with all it
+   holds included), and git checks the files out into the empty places
+   (`git checkout-index --all --index`). The work tree must then match the
+   index exactly, and the staging store is removed: `/work` holds one
+   repository, the runner's.
+5. `facts.checkout` records what was found, never judged: `commit` and
+   `tree` (the runner's commit of the listed tree), `paths`, `corrected` and
+   the first 100 `correctedPaths` (tracked paths the image had differently,
+   counted by git in the fresh repository before the rewrite),
+   `directoriesMade`, `emptySubmodules`, `gitRemoved` and
+   `gitEntriesRemoved`.
+
+The requester's errors, all before any claim code runs:
+`IMAGE_CHECKOUT_MISSING` (no `/repo`), `IMAGE_CHECKOUT_UNREADABLE`,
+`IMAGE_OBJECTS_MISSING`, `IMAGE_OBJECT_INVALID` (also a path git will not
+check out under the runner's settings, such as `git~1` or a symbolic link
+named `.gitmodules`) and `IMAGE_CHECKOUT_TOO_LARGE`. An image whose checkout
+differs from the listed commit is corrected and run, not refused.
+
+Every git call and every checkout script starts with an empty environment
+(`/usr/bin/env -i`, then the runner's fixed variables), so nothing the image
+sets with `ENV` (`GIT_CONFIG_*`, `GIT_TRACE`, `GIT_TEMPLATE_DIR`,
+`TAR_OPTIONS`, ...) reaches them, and runs in one of the runner's two
+repositories (`src/git.js` refuses any other `GIT_DIR`). Protected paths are
+reset to the runner's commit of the listed tree, and the PoC commit's parent
+is that commit.
+
 **git runs only in the sandbox.** The patch reaches it as stdin of
 `docker exec`; what the patch touches is what git says, from its `-z`
 output. Every git call fixes the settings that would change an outcome or
 run something (`src/git.js`): no system or global config, no hooks or
 fsmonitor, no line-ending conversion, whitespace never refuses a patch,
 diffs with no external driver or rename detection, the index compared by
-content (no ignored stat data, no sparse checkout), `LC_ALL=C`. The
-repository's own attribute drivers never run: `.git/info/attributes`, the
-source above every `.gitattributes`, is
-`* !filter !diff !merge !text !eol !ident !working-tree-encoding`, so a
-patched file can never be a clean or smudge filter, a textconv or a merge
-driver.
+content (no ignored stat data, no sparse checkout), `LC_ALL=C`. No attribute
+driver runs: `.git/info/attributes`, the source above every
+`.gitattributes`, is
+`* !filter !diff !merge !text !crlf !eol !ident !working-tree-encoding`, so
+a patched file can never be a clean or smudge filter, a textconv or a merge
+driver, and no conversion changes a file's bytes.
 
 **Expansion** (`src/patch.js`) is what git would have to materialise: every
 binary hunk, forward and reverse (git inflates both while it parses), at its
@@ -441,8 +502,8 @@ name before it is the process's own to choose, and before runs 2 and 3 the track
 to the PoC commit (`git reset --hard`). The number killed is in
 `facts.leftoverProcesses`.
 
-`facts` (A3b builds the report from them): `patch` (bytes, SHA-256,
-expansion, binary hunks), `commit` (`base`, `poc`), `diff` (files, added,
+`facts` (A3b builds the report from them): `checkout` (above), `patch`
+(bytes, SHA-256, expansion, binary hunks), `commit` (`base`, `poc`), `diff` (files, added,
 removed, binary files), `testPaths` (outside, protected, unreportable),
 `flags` (`existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
 `frameworkReferences`: forge inline config, JUnit markup, file and

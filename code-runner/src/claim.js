@@ -4,11 +4,12 @@
  * The claim pipeline for a forge listing (design §9.2 steps 3-6, §10.1:
  * `applies`, `testPathsOnly`, `build`, `reproduces`). Node A2a.
  *
- *   prepare   the env image's checkout (/repo) copied into the empty /work,
- *             its attributes neutralised (no filter or conversion runs), its
- *             index rebuilt from HEAD and checked to be the listed commit
- *             and clean, and the processes present before any claim code
- *             runs recorded
+ *   prepare   the processes present before any claim code runs recorded;
+ *             then the forced checkout (checkout.js): /work becomes the
+ *             listed commit, read from the env image's objects as data and
+ *             re-hashed by the runner, every tracked path replaced, in a
+ *             fresh repository with the runner's own settings; untracked
+ *             files (installed dependencies) stay as the image built them
  *   applies   maxPatchBytes and the 50 MB expansion from the patch's bytes;
  *             then git, in the sandbox, reads and applies it to the listed
  *             commit (index and work tree)
@@ -16,8 +17,9 @@
  *             touched: every one under paths.tests, none under
  *             paths.protected; the flags (existing tests modified, skip
  *             markers, framework or reporter references) from git's diff
- *   reset     protected paths back to the listed commit, then the result is
- *             committed with a fixed author and date
+ *   reset     protected paths back to the listed commit (the checkout's
+ *             commit of it), then the result is committed with a fixed
+ *             author and date
  *   build     the declared build command; its exit code is the gate (tier A)
  *   reproduces  the fixed schedule: testFiles on the PoC's files, then
  *             testIds twice on the tests run 1 found, each with --junit and
@@ -36,15 +38,14 @@
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
 const { matchesAny, pocPatchPathsGate } = require('./common');
-const { git, GIT_ENV, GIT_DIR, GIT_CONFIG, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
+const { git, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
+const { forceCheckout, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES } = require('./checkout');
 const forge = require('./forge');
 const { readForgeJUnit, JUNIT_MAX_BYTES } = require('./junit');
 const {
   scanPatch, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, reportablePath
 } = require('./patch');
 
-/** Where the env image keeps the repository checkout at the listed commit (README, "What the env image must provide"). */
-const IMAGE_CHECKOUT = '/repo';
 /** git's answers (paths, stats, the diff) are read up to this. */
 const GIT_OUTPUT_MAX = 16 * 1024 * 1024;
 const PREP_TIMEOUT_MS = 120000;
@@ -117,122 +118,6 @@ const CLEANUP_SCRIPT = [
   'printf "killed %s\\n" "$killed"',
   'exit 3'
 ].join('\n');
-
-/**
- * Copies the checkout ($1) into the empty work tree, refuses a git directory
- * that points elsewhere, and writes the runner's attributes ($2) to
- * .git/info/attributes. A git directory must be self-contained: a symbolic
- * link in it, a `commondir` file (git then reads config, info/, refs and
- * objects from that other directory), object alternates or grafts could
- * leave the repository's metadata in the work tree, where a patched file
- * would stand in for its config or attributes. Exit 10: no checkout; 11: not
- * a git repository; 12: the copy failed; 13: the git directory points
- * elsewhere; 14: .git/info could not be written.
- */
-const CHECKOUT_SCRIPT = [
-  'set -u',
-  'src=$1',
-  '[ -d "$src" ] || exit 10',
-  '[ -d "$src/.git" ] && [ ! -L "$src/.git" ] || exit 11',
-  'cp -a -- "$src/." /work/ || exit 12',
-  'link=$(find /work/.git -type l -print -quit) || exit 13',
-  '[ -z "$link" ] || exit 13',
-  'for f in commondir objects/info/alternates objects/info/http-alternates info/grafts; do',
-  '  [ -e "/work/.git/$f" ] && exit 13',
-  'done',
-  'mkdir -p /work/.git/info && rm -f /work/.git/info/attributes && printf "%s\\n" "$2" > /work/.git/info/attributes || exit 14',
-  'exit 0'
-].join('\n');
-
-/**
- * The repository's highest-precedence attributes (§9.1: claim content never
- * runs outside the declared commands). Every path gets no filter driver (a
- * clean or smudge command, which a patched file could be), no diff, merge or
- * textconv driver, no line-ending or working-tree-encoding conversion and no
- * ident expansion: the work tree holds the commit's bytes and the patch's,
- * exactly, and git runs nothing of the repository's.
- */
-const NEUTRAL_ATTRIBUTES = '* !filter !diff !merge !text !eol !ident !working-tree-encoding';
-
-/**
- * Run in a repository (the checkout, then each submodule), its index fresh
- * from HEAD: every gitlink the index records must be a submodule that is
- * checked out, as git itself resolves it (a `.git` there that git reads as a
- * repository whose work tree is that very directory: not a pipe, a broken
- * gitfile or a work tree redirected elsewhere), or a path that is absent or
- * an empty directory. git matches an unpopulated submodule's directory against
- * the recorded commit without reading it, and foreach skips it, so files
- * there would build unchecked. Paths come from the index as git prints them
- * (`<mode> <object> <stage>\t<path>`); a path git has to quote (a control
- * character, `"` or `\\`) is refused rather than guessed at. Its git calls
- * take the runner's fixed `-c` settings as arguments ($@; inside foreach they
- * arrive through GIT_CONFIG_PARAMETERS), so no fsmonitor or other hook of the
- * repository runs. Exit 1: a
- * gitlink holds files but is not a checkout at its path (its path printed); 2: a
- * quoted path; 3: the index could not be read.
- */
-const GITLINKS_SCRIPT = [
-  'out=$(git "$@" -c core.quotePath=false ls-files -s) || exit 3',
-  '[ -n "$out" ] || exit 0',
-  'printf "%s\\n" "$out" | while IFS= read -r line; do',
-  '  case "$line" in "160000 "*) ;; *) continue ;; esac',
-  '  p=${line#*\t}',
-  '  case "$p" in \\"*) printf "%s\\n" "$p"; exit 2 ;; esac',
-  '  if [ ! -L "$p" ] && { [ -e "$p/.git" ] || [ -L "$p/.git" ]; }; then',
-  '    top=$(cd "$p" 2>/dev/null && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR && git "$@" rev-parse --show-toplevel 2>/dev/null) || top=',
-  '    here=$(cd "$p" 2>/dev/null && pwd -P) || here=',
-  '    [ -n "$top" ] && [ "$top" = "$here" ] && continue',
-  '  fi',
-  '  if [ -d "$p" ] && [ ! -L "$p" ]; then',
-  '    for f in "$p"/* "$p"/.[!.]* "$p"/..?*; do',
-  '      if [ -e "$f" ] || [ -L "$f" ]; then printf "%s\\n" "$p"; exit 1; fi',
-  '    done',
-  '  elif [ -e "$p" ] || [ -L "$p" ]; then printf "%s\\n" "$p"; exit 1',
-  '  fi',
-  'done'
-].join('\n');
-
-/**
- * Run by `git submodule foreach --recursive` in every submodule, before the
- * clean check: the superproject's rules for the submodule's own repository.
- * Its work tree must be its own directory (core.worktree could point git at
- * clean copies elsewhere while forge reads this one). Its git directory must
- * be self-contained (no commondir, alternates,
- * grafts or symbolic link: its info/attributes must be the one git reads),
- * its attributes are neutralised (a submodule's clean filter could map
- * changed bytes back to the committed blob), and its index is rebuilt from
- * its HEAD (no assume-unchanged or skip-worktree bit). Nothing here reads a
- * work tree; SUBMODULE_CHECK_SCRIPT does, in a second pass.
- */
-const SUBMODULE_INDEX_SCRIPT = [
-  'top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1',
-  'gd=$(git rev-parse --path-format=absolute --git-dir) && cdir=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1',
-  '[ "$gd" = "$cdir" ] || exit 1',
-  'for f in commondir objects/info/alternates objects/info/http-alternates info/grafts; do [ -e "$gd/$f" ] && exit 1; done',
-  'link=$(find "$gd" -type l -print -quit) || exit 1',
-  '[ -z "$link" ] || exit 1',
-  `mkdir -p "$gd/info" && rm -f "$gd/info/attributes" && printf '%s\\n' '${NEUTRAL_ATTRIBUTES}' > "$gd/info/attributes" || exit 1`,
-  'git read-tree HEAD || exit 1',
-  'exit 0'
-].join('; ');
-
-/**
- * The second foreach pass, once every submodule at every depth has its
- * neutral attributes (foreach runs its command in a submodule before it
- * descends into it, and a status recurses into the submodules below, so a
- * status in the first pass could run a nested submodule's own filters): the
- * submodule's gitlinks (GITLINKS_SCRIPT), its refreshed index, and its own
- * status, clean (`--ignore-submodules=untracked` overrides any ignore
- * setting it has for its own submodules). A dirty one prints
- * `vcr-dirty: <dir>`.
- */
-const SUBMODULE_CHECK_SCRIPT = [
-  `( ${GITLINKS_SCRIPT}\n) || exit 1`,
-  'git update-index -q --refresh',
-  'st=$(git status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked) || exit 1',
-  '[ -z "$st" ] || { printf "vcr-dirty: %s\\n" "$(pwd -P)" >&2; exit 1; }',
-  'exit 0'
-].join('; ');
 
 const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -311,12 +196,12 @@ function claimSteps(request, limits) {
   const testGlobs = spec.paths.tests;
   const protectedGlobs = spec.paths.protected || [];
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
-  const state = { done: false, keep: [], touched: null, pocCommit: null, leftovers: [] };
+  const state = { done: false, keep: [], touched: null, prepared: null, pocCommit: null, leftovers: [] };
 
   /** Run a git command and read its stdout (capped); definitive or it throws. */
   async function gitRead(ctx, name, args, { stdin, env } = {}) {
     const out = new Prefix(GIT_OUTPUT_MAX);
-    const record = await ctx.exec(git(args), { name, timeoutMs: GIT_TIMEOUT_MS, stdin, env: { ...GIT_ENV, ...(env || {}) }, tee: out });
+    const record = await ctx.exec(git(args, { env }), { name, timeoutMs: GIT_TIMEOUT_MS, stdin, tee: out });
     return { record, out };
   }
 
@@ -343,83 +228,9 @@ function claimSteps(request, limits) {
     state.keep = procs.bytes().toString('utf8').split('\n').filter((l) => /^[0-9]+$/.test(l));
     if (state.keep.length === 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox\'s processes could not be listed', { step: 'prepare:procs' });
 
-    const copy = await ctx.exec(['/bin/sh', '-c', CHECKOUT_SCRIPT, 'vcr-checkout', IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES], { name: 'prepare:checkout', timeoutMs: PREP_TIMEOUT_MS });
-    const image = '/spec/env/image';
-    switch (copy.exitCode) {
-      case 0: break;
-      case 10: throw new RequesterError([issue('IMAGE_CHECKOUT_MISSING', image, `the env image has no repository checkout at ${IMAGE_CHECKOUT}`)]);
-      case 11: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `${IMAGE_CHECKOUT} in the env image is not a git repository`)]);
-      case 12: throw new RequesterError([issue('IMAGE_CHECKOUT_UNREADABLE', image,
-        `the checkout could not be copied into the work tree as uid 10001 (unreadable, or larger than the work tree): ${firstLine(copy.stderr.text)}`)]);
-      case 13: throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-        `${IMAGE_CHECKOUT}/.git points elsewhere (a symbolic link, commondir, object alternates or grafts); the git directory must be self-contained`)]);
-      case 14: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `.git/info in the copied checkout could not be written: ${firstLine(copy.stderr.text)}`)]);
-      default: throw new Abstain(ABSTAIN.DOCKER_ERROR, `the checkout copy exited ${copy.exitCode}`, { step: 'prepare:checkout' });
-    }
-
-    // And git agrees: its git directory and common directory are /work/.git.
-    const dirs = await gitRead(ctx, 'prepare:gitdir', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
-    if (dirs.record.exitCode !== 0 || dirs.out.bytes().toString('utf8') !== `${GIT_DIR}\n${GIT_DIR}\n`) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-        `git does not keep the checkout's repository in its own .git: ${firstLine(dirs.out.bytes().toString('utf8') + dirs.record.stderr.text).slice(0, 200)}`)]);
-    }
-    const head = await gitRead(ctx, 'prepare:head', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
-    if (head.record.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `HEAD of the env image's checkout is not a commit: ${firstLine(head.record.stderr.text)}`)]);
-    }
-    const headCommit = head.out.bytes().toString('utf8').trim();
-    if (headCommit !== base) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_MISMATCH', '/spec/baseCommit', `the env image's checkout is at ${headCommit.slice(0, 64)}, not the listed commit ${base}`)]);
-    }
-    // The copied index is the image's: it could mark a changed file
-    // assume-unchanged or skip-worktree, and git status would then call it
-    // clean. Rebuild it from HEAD, in the repository and in every submodule,
-    // and refresh it, so git compares every tracked file's bytes with the
-    // commit's (refresh's exit code says only that some file needed it).
-    const index = await ctx.exec(git(['read-tree', 'HEAD']), { name: 'prepare:index', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
-    if (index.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `the checkout's index could not be rebuilt from HEAD: ${firstLine(index.stderr.text)}`)]);
-    }
-    // The checkout's own gitlinks (each submodule checks its own in the foreach below).
-    const links = await ctx.exec(['/bin/sh', '-c', GITLINKS_SCRIPT, 'vcr-gitlinks', ...GIT_CONFIG.flatMap((c) => ['-c', c])], {
-      name: 'prepare:gitlinks', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV
-    });
-    if (links.exitCode === 1) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
-        `the submodule ${firstLine(links.stdout.text)} holds files but git does not read it as a checkout at that path (no usable .git, or its work tree is elsewhere), so they cannot be checked against the commit it records; a submodule must be checked out or empty`)]);
-    }
-    if (links.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, links.exitCode === 2
-        ? `a submodule path git has to quote (a control character, " or \\): ${firstLine(links.stdout.text).slice(0, 200)}`
-        : `the checkout's index could not be read: ${firstLine(links.stderr.text)}`)]);
-    }
-    // Two passes over every submodule, at every depth: first make each one
-    // safe to read (nothing reads a work tree yet), then check each one.
-    for (const [name, script] of [['prepare:submodules', SUBMODULE_INDEX_SCRIPT], ['prepare:submodules:check', SUBMODULE_CHECK_SCRIPT]]) {
-      const subs = await ctx.exec(git(['submodule', 'foreach', '--quiet', '--recursive', script]), { name, timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
-      const dirtySub = /vcr-dirty: (.*)/.exec(subs.stderr.text);
-      if (subs.exitCode !== 0 && dirtySub) {
-        throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
-          `the submodule ${dirtySub[1].replace(/^\/work\//, '').slice(0, 300)} differs from the commit it records; tracked files must be the commit's`)]);
-      }
-      if (subs.exitCode !== 0) {
-        throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-          `a submodule's work tree is elsewhere, its repository is not self-contained, its index could not be rebuilt from its HEAD, or a submodule inside it holds files but is not checked out: ${firstLine(subs.stderr.text)}`)]);
-      }
-    }
-    await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
-    // Untracked and ignored files may be there (installed dependencies, also
-    // inside submodules); tracked files, and submodules' commits and tracked
-    // files, must be the listed commit's.
-    const status = await gitRead(ctx, 'prepare:status', ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=untracked']);
-    if (status.record.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `git status failed on the env image's checkout: ${firstLine(status.record.stderr.text)}`)]);
-    }
-    const dirty = status.out.bytes().toString('utf8').split('\0').filter(Boolean).map((e) => e.slice(3));
-    if (dirty.length || status.out.truncated) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
-        `the env image's checkout differs from the listed commit in ${listPaths(dirty)}; tracked files must be the commit's`)]);
-    }
+    // Before any claim code runs: /work is the listed commit (checkout.js).
+    const checkout = await forceCheckout(ctx, { base });
+    state.prepared = checkout.commit;
     ctx.fact('commit', { base, poc: null });
   }
 
@@ -452,7 +263,7 @@ function claimSteps(request, limits) {
       seen.add(e.path);
     }
     const applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), {
-      name: 'patch:apply', timeoutMs: GIT_TIMEOUT_MS, stdin: request.pocPatch, env: GIT_ENV
+      name: 'patch:apply', timeoutMs: GIT_TIMEOUT_MS, stdin: request.pocPatch
     });
     if (applied.exitCode !== 0) {
       ctx.gate('applies', 'fail', 'exit_code', `poc.patch does not apply to the listed commit ${base} (exit ${applied.exitCode}): ${firstLine(applied.stderr.text)}`);
@@ -521,19 +332,20 @@ function claimSteps(request, limits) {
   }
 
   async function resetAndCommit(ctx) {
-    const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', base]);
+    // The listed commit's files as the checkout committed them (submodules' files as ordinary paths).
+    const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', state.prepared]);
     const all = tree.record.exitCode === 0 && !tree.out.truncated ? parseLsTreeZ(tree.out.bytes()) : null;
     if (!all) throw runnerError('reset:list', `the listed commit's files could not be listed (git exited ${tree.record.exitCode})`);
     const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(p, protectedGlobs)) : [];
     if (protectedFiles.length) {
-      const reset = await ctx.exec(git(['checkout', base, '--pathspec-from-file=-', '--pathspec-file-nul']), {
-        name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0')), env: { ...GIT_ENV, GIT_LITERAL_PATHSPECS: '1' }
+      const reset = await ctx.exec(git(['checkout', state.prepared, '--pathspec-from-file=-', '--pathspec-file-nul'], { env: { GIT_LITERAL_PATHSPECS: '1' } }), {
+        name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0'))
       });
       if (reset.exitCode !== 0) throw runnerError('reset:protected', `the protected paths could not be reset: ${firstLine(reset.stderr.text)}`);
     }
     ctx.fact('protectedReset', protectedFiles.length);
-    const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', COMMIT_MESSAGE]), {
-      name: 'patch:commit', timeoutMs: GIT_TIMEOUT_MS, env: { ...GIT_ENV, ...COMMIT_ENV }
+    const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', COMMIT_MESSAGE], { env: COMMIT_ENV }), {
+      name: 'patch:commit', timeoutMs: GIT_TIMEOUT_MS
     });
     if (commit.exitCode !== 0) throw runnerError('patch:commit', `the patched tree could not be committed: ${firstLine(commit.stderr.text)}`);
     const head = await gitRead(ctx, 'patch:head', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
@@ -602,7 +414,7 @@ function claimSteps(request, limits) {
     if (ids.length > 0) {
       const TEST_IDS = forge.testIdsRegex([...signatures.values()]);
       for (let k = 2; k <= RUNS; k += 1) {
-        const reset = await ctx.exec(git(['reset', '--quiet', '--hard', state.pocCommit]), { name: `poc:reset:${k}`, timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
+        const reset = await ctx.exec(git(['reset', '--quiet', '--hard', state.pocCommit]), { name: `poc:reset:${k}`, timeoutMs: GIT_TIMEOUT_MS });
         if (reset.exitCode !== 0) throw runnerError(`poc:reset:${k}`, `the work tree could not be reset to the PoC commit: ${firstLine(reset.stderr.text)}`);
         runs.push({ command: 'testIds', ...(await pocRun(ctx, k, spec.commands.testIds, { FILES, TEST_IDS })) });
       }
@@ -712,7 +524,4 @@ function pocFacts(entries, runs) {
   };
 }
 
-module.exports = {
-  claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, NEUTRAL_ATTRIBUTES, SUBMODULE_INDEX_SCRIPT, SUBMODULE_CHECK_SCRIPT,
-  GITLINKS_SCRIPT, RUNS
-};
+module.exports = { claimSteps, checkClaim, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, RUNS };
