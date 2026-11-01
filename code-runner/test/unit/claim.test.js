@@ -14,7 +14,6 @@ const { FORGE_FUZZ_SEED } = require('../../src/common');
 const { testConfig } = require('../helpers/http');
 const { spec: baseSpec, IMAGE } = require('../helpers/requests');
 const { BASE, POC, POC_PATCH, junit, drainFails, claimSandbox } = require('../helpers/fakeClaim');
-const { NEUTRAL_ATTRIBUTES, CHECKOUT_SCRIPT, SUBMODULE_INDEX_SCRIPT, SUBMODULE_CHECK_SCRIPT } = require('../../src/claim');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const noAdmission = async () => {};
@@ -68,6 +67,16 @@ async function runClaim(sandbox, request = claimRequest(), { deadlineMs = 700000
 }
 
 const kinds = (sb) => sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
+/**
+ * The forced checkout's execs for the default image (checkout.js): the commit, then one tree level per
+ * round (the root; lib, src, test; forge-std's commit; its root; its src), the blobs' sizes, the blobs.
+ */
+const PREPARE = [
+  'git init', 'git init', 'vcr-stage',
+  'git cat-file', 'git cat-file', 'git cat-file', 'git cat-file', 'git cat-file', 'git cat-file',
+  'git cat-file', 'git cat-file', 'git fast-import', 'git fast-import', 'git rev-parse', 'git read-tree',
+  'vcr-dirs', 'git update-index', 'git diff-files', 'vcr-clear', 'git checkout-index', 'git diff-files', 'vcr-unstage'
+];
 const gitCalls = (sb, sub) => sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === sub);
 const pocRuns = (sb) => sb.execs().filter((d) => d.kind === 'vcr-poc');
 
@@ -82,7 +91,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.build.basis, 'exit_code');
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
-    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git submodule', 'git update-index', 'git status',
+    'vcr-procs', ...PREPARE,
     'git apply', 'git apply', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     'vcr-build', 'vcr-cleanup',
@@ -94,6 +103,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.deepEqual(poc.runCounts, { fail: 3, pass: 0, error: 0, skip: 0, missing: 0, duplicate: 0, notRun: 0 });
   assert.equal(poc.tier, 'B');
   assert.deepEqual(r.facts.commit, { base: BASE, poc: POC });
+  assert.equal(r.facts.checkout.commit, sb.repo.commit, 'the PoC commit sits on the checkout\'s commit of the listed tree');
   assert.deepEqual(r.facts.diff, { files: 1, added: 3, removed: 0, binaryFiles: 0 });
 });
 
@@ -107,26 +117,23 @@ test('applies: git apply runs inside the sandbox against the listed commit, the 
   for (const a of applies) {
     assert.deepEqual(a.stdin, Buffer.from(POC_PATCH), 'the patch reaches git as stdin of docker exec');
     assert.ok(a.sub.includes('--whitespace=nowarn'));
-    assert.equal(a.env.GIT_DIR, '/work/.git');
-    assert.equal(a.env.GIT_WORK_TREE, '/work');
-    assert.equal(a.env.GIT_CONFIG_NOSYSTEM, '1');
-    assert.equal(a.env.GIT_CONFIG_GLOBAL, '/dev/null');
+    assert.equal(a.fixedEnv.GIT_DIR, '/work/.git');
+    assert.equal(a.fixedEnv.GIT_WORK_TREE, '/work');
+    assert.equal(a.fixedEnv.GIT_CONFIG_NOSYSTEM, '1');
+    assert.equal(a.fixedEnv.GIT_CONFIG_GLOBAL, '/dev/null');
   }
   assert.ok(applies[0].sub.includes('--numstat'), 'parsed by git first, nothing written');
   assert.ok(applies[1].sub.includes('--index'), 'then applied to the index and the work tree');
   // Every git call is a docker exec into the sandbox: the host never runs git.
   for (const c of sb.docker.calls) assert.notEqual(c.args[0], 'git');
-  assert.deepEqual(gitCalls(sb, 'rev-parse')[0].sub, ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
-  const verify = gitCalls(sb, 'rev-parse')[1];
-  assert.deepEqual(verify.sub, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
-  // Clean means the tracked files (and submodules' commits and tracked files) are the commit's.
-  assert.deepEqual(gitCalls(sb, 'status')[0].sub, ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=untracked']);
-  // The fixed configuration on every git call: no hooks, no fsmonitor, whitespace never refuses a patch.
+  // The fixed configuration on every git call: an empty environment first (nothing of the image's),
+  // no hooks, no fsmonitor, whitespace never refuses a patch.
   for (const call of sb.execs().filter((d) => d.kind === 'git')) {
+    assert.deepEqual(call.launched.slice(0, 2), ['/usr/bin/env', '-i'], `${call.sub[0]} starts with an empty environment`);
     for (const c of ['core.hooksPath=/dev/null', 'core.fsmonitor=false', 'apply.whitespace=nowarn', 'core.autocrlf=false', 'core.useReplaceRefs=false']) {
       assert.ok(call.argv.includes(c), `${call.sub[0]} runs with ${c}`);
     }
-    assert.equal(call.env.LC_ALL, 'C');
+    assert.equal(call.fixedEnv.LC_ALL, 'C');
   }
 });
 
@@ -251,24 +258,25 @@ test('testPathsOnly flags: existing tests modified, skip markers added, framewor
 });
 
 test('protected paths are reset to the listed commit, then the result is committed with a fixed author and date', async () => {
-  const sb = claimSandbox({ git: { 'ls-tree': () => ({ stdout: 'foundry.toml\0lib/forge-std\0lib/oz/Token.sol\0src/Vault.sol\0' }) } });
+  const sb = claimSandbox();
   const r = await runClaim(sb);
   assert.equal(r.outcome, 'definitive');
+  // The listed commit as the checkout committed it: the submodule's files are ordinary paths (lib/** covers them).
   const [lsTree] = gitCalls(sb, 'ls-tree');
-  assert.deepEqual(lsTree.sub, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', BASE]);
+  assert.deepEqual(lsTree.sub, ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', sb.repo.commit]);
   const [checkout] = gitCalls(sb, 'checkout');
-  assert.deepEqual(checkout.sub, ['checkout', BASE, '--pathspec-from-file=-', '--pathspec-file-nul']);
-  assert.equal(checkout.env.GIT_LITERAL_PATHSPECS, '1');
-  assert.deepEqual(checkout.stdin.toString('utf8').split('\0'), ['foundry.toml', 'lib/forge-std', 'lib/oz/Token.sol']);
-  assert.equal(r.facts.protectedReset, 3);
+  assert.deepEqual(checkout.sub, ['checkout', sb.repo.commit, '--pathspec-from-file=-', '--pathspec-file-nul']);
+  assert.equal(checkout.fixedEnv.GIT_LITERAL_PATHSPECS, '1');
+  assert.deepEqual(checkout.stdin.toString('utf8').split('\0'), ['foundry.toml', 'lib/forge-std/src/Test.sol']);
+  assert.equal(r.facts.protectedReset, 2);
   const [commit] = gitCalls(sb, 'commit');
   assert.deepEqual(commit.sub, ['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', 'poc.patch']);
-  assert.equal(commit.env.GIT_AUTHOR_NAME, 'Verdikta code runner');
-  assert.equal(commit.env.GIT_AUTHOR_EMAIL, 'code-runner@verdikta.invalid');
-  assert.equal(commit.env.GIT_COMMITTER_NAME, commit.env.GIT_AUTHOR_NAME);
-  assert.equal(commit.env.GIT_COMMITTER_EMAIL, commit.env.GIT_AUTHOR_EMAIL);
-  assert.equal(commit.env.GIT_AUTHOR_DATE, '1767225600 +0000');
-  assert.equal(commit.env.GIT_COMMITTER_DATE, '1767225600 +0000');
+  assert.equal(commit.fixedEnv.GIT_AUTHOR_NAME, 'Verdikta code runner');
+  assert.equal(commit.fixedEnv.GIT_AUTHOR_EMAIL, 'code-runner@verdikta.invalid');
+  assert.equal(commit.fixedEnv.GIT_COMMITTER_NAME, commit.fixedEnv.GIT_AUTHOR_NAME);
+  assert.equal(commit.fixedEnv.GIT_COMMITTER_EMAIL, commit.fixedEnv.GIT_AUTHOR_EMAIL);
+  assert.equal(commit.fixedEnv.GIT_AUTHOR_DATE, '1767225600 +0000');
+  assert.equal(commit.fixedEnv.GIT_COMMITTER_DATE, '1767225600 +0000');
   const order = kinds(sb);
   assert.ok(order.indexOf('git checkout') < order.indexOf('git commit'));
   assert.ok(order.indexOf('git commit') < order.indexOf('vcr-build'));
@@ -542,122 +550,7 @@ test('the requester\'s package: an unsupported framework or env, a command the a
   }
 });
 
-test('the requester\'s package: the env image\'s checkout is missing, not a repository, unreadable, at another commit, or dirty', async () => {
-  const cases = [
-    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 10 }) } }, 'IMAGE_CHECKOUT_MISSING'],
-    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 11 }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
-    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 12, stderr: 'cp: cannot open \'/repo/secret\' for reading: Permission denied\n' }) } }, 'IMAGE_CHECKOUT_UNREADABLE'],
-    [{ git: { 'rev-parse': (d) => ({ stdout: d.sub.includes('--git-common-dir') ? '/work/.git\n/work/.git\n' : `${'1'.repeat(40)}\n` }) } }, 'IMAGE_CHECKOUT_MISMATCH'],
-    [{ git: { status: () => ({ stdout: ' M foundry.toml\0' }) } }, 'IMAGE_CHECKOUT_DIRTY'],
-    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 13 }) } }, 'IMAGE_CHECKOUT_GIT_REDIRECT'],
-    [{ git: { 'rev-parse': (d) => ({ stdout: d.sub.includes('--git-common-dir') ? '/work/.git\n/work/.git-common\n' : `${BASE}\n` }) } }, 'IMAGE_CHECKOUT_GIT_REDIRECT'],
-    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 14 }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
-    [{ git: { 'read-tree': () => ({ exitCode: 128, stderr: 'fatal: failed to unpack tree object HEAD\n' }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
-    [{ git: { submodule: () => ({ exitCode: 1, stderr: 'fatal: run_command returned non-zero status for lib/x\n' }) } }, 'IMAGE_CHECKOUT_GIT_REDIRECT']
-  ];
-  for (const [over, code] of cases) {
-    const sb = claimSandbox(over);
-    const r = await runClaim(sb);
-    assert.equal(r.outcome, 'requester_error', code);
-    assert.deepEqual(r.issues.map((i) => i.code), [code]);
-    assert.equal(gitCalls(sb, 'apply').length, 0, 'the patch is never applied');
-    assert.equal(pocRuns(sb).length, 0);
-  }
-});
-
-test('R8-F1: a submodule that is not checked out (no .git) must be absent or empty, read from the index, never from printed paths', async () => {
-  const { GITLINKS_SCRIPT } = require('../../src/claim');
-  // The gitlinks come from the index, as git prints them; a quoted path is refused, never unquoted or trimmed.
-  assert.ok(GITLINKS_SCRIPT.startsWith('out=$(git "$@" -c core.quotePath=false ls-files -s) || exit 3'));
-  assert.ok(GITLINKS_SCRIPT.includes('case "$line" in "160000 "*) ;; *) continue ;; esac'));
-  assert.ok(GITLINKS_SCRIPT.includes('p=${line#*\t}'));
-  assert.ok(GITLINKS_SCRIPT.includes('case "$p" in \\"*) printf "%s\\n" "$p"; exit 2 ;; esac'));
-  // Checked out means what git itself resolves: a work tree at that very path (not a pipe, a broken gitfile or a redirect).
-  assert.ok(GITLINKS_SCRIPT.includes('git "$@" rev-parse --show-toplevel'));
-  assert.ok(GITLINKS_SCRIPT.includes('[ -n "$top" ] && [ "$top" = "$here" ] && continue'));
-  assert.ok(SUBMODULE_INDEX_SCRIPT.startsWith('top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1'));
-  assert.doesNotMatch(GITLINKS_SCRIPT, /submodule status/);
-  // Each submodule checks its own gitlinks, after its index is rebuilt.
-  assert.ok(SUBMODULE_CHECK_SCRIPT.includes(GITLINKS_SCRIPT));
-  assert.ok(!SUBMODULE_INDEX_SCRIPT.includes('ls-files'), 'after the first pass has rebuilt every index');
-
-  // The checkout's own check runs after its index is rebuilt and before the patch.
-  const ok = claimSandbox();
-  await runClaim(ok);
-  const order = kinds(ok);
-  assert.ok(order.indexOf('git read-tree') < order.indexOf('vcr-gitlinks') && order.indexOf('vcr-gitlinks') < order.indexOf('git apply'));
-  const gl = ok.execs().find((d) => d.kind === 'vcr-gitlinks');
-  assert.equal(gl.env.GIT_DIR, '/work/.git');
-  // R11-F1: the runner's fixed -c settings reach its git calls (no fsmonitor or other repository hook runs).
-  const { GIT_CONFIG } = require('../../src/git');
-  assert.deepEqual(gl.argv.slice(4), GIT_CONFIG.flatMap((c) => ['-c', c]));
-  assert.ok(gl.argv.includes('core.fsmonitor=false') && gl.argv.includes('core.hooksPath=/dev/null'));
-  assert.ok(GITLINKS_SCRIPT.includes('git "$@" -c core.quotePath=false ls-files -s') && GITLINKS_SCRIPT.includes('git "$@" rev-parse --show-toplevel'));
-
-  const full = claimSandbox({ scripts: { 'vcr-gitlinks': () => ({ exitCode: 1, stdout: 'lib/dep\n' }) } });
-  const r1 = await runClaim(full);
-  assert.equal(r1.outcome, 'requester_error');
-  assert.deepEqual(r1.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
-  assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but git does not read it as a checkout at that path/);
-  assert.equal(gitCalls(full, 'apply').length, 0);
-  for (const [exitCode, re] of [[2, /a submodule path git has to quote/], [3, /index could not be read/]]) {
-    const r = await runClaim(claimSandbox({ scripts: { 'vcr-gitlinks': () => ({ exitCode, stdout: '"lib/dep\\n"\n' }) } }));
-    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_NOT_GIT']);
-    assert.match(r.issues[0].detail, re);
-  }
-});
-
-test('R11-F2: each submodule\'s own status must be clean, whatever ignore setting it has for the submodules inside it', async () => {
-  assert.ok(SUBMODULE_CHECK_SCRIPT.includes('st=$(git status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked) || exit 1'));
-  assert.ok(SUBMODULE_CHECK_SCRIPT.indexOf('git update-index -q --refresh') < SUBMODULE_CHECK_SCRIPT.indexOf('git status --porcelain'));
-  const sb = claimSandbox({ git: { submodule: () => ({ exitCode: 128, stderr: 'vcr-dirty: /work/lib/a/lib/b\nfatal: run_command returned non-zero status for lib/a/lib/b\n' }) } });
-  const r = await runClaim(sb);
-  assert.equal(r.outcome, 'requester_error');
-  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
-  assert.match(r.issues[0].detail, /the submodule lib\/a\/lib\/b differs from the commit it records/);
-});
-
-test('the checkout is copied into the empty /work before any step, as the sandbox user', async () => {
-  const sb = claimSandbox();
-  await runClaim(sb);
-  const [procs, checkout] = sb.execs();
-  assert.equal(procs.kind, 'vcr-procs');
-  assert.equal(checkout.kind, 'vcr-checkout');
-  assert.deepEqual(checkout.argv.slice(4), ['/repo', NEUTRAL_ATTRIBUTES]);
-});
-
-test('R1-F3: the repository\'s attribute drivers are switched off before git touches the patch: no filter, textconv, conversion or ident', async () => {
-  assert.equal(NEUTRAL_ATTRIBUTES, '* !filter !diff !merge !text !eol !ident !working-tree-encoding');
-  // Written to .git/info/attributes (the source above the repository's own .gitattributes) by the copy step,
-  // which refuses a git directory that keeps its metadata elsewhere.
-  for (const f of ['commondir', 'objects/info/alternates', 'objects/info/http-alternates', 'info/grafts']) assert.ok(CHECKOUT_SCRIPT.includes(f), f);
-  assert.match(CHECKOUT_SCRIPT, /printf "%s\\n" "\$2" > \/work\/\.git\/info\/attributes/);
-  assert.match(CHECKOUT_SCRIPT, /rm -f \/work\/\.git\/info\/attributes/);
-  const sb = claimSandbox();
-  await runClaim(sb);
-  const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
-  assert.ok(order.indexOf('vcr-checkout') < order.indexOf('git apply'));
-});
-
-test('R1-F4: the copied index is rebuilt from HEAD (repository and submodules) before the clean check, so no flag can hide a change', async () => {
-  const sb = claimSandbox();
-  await runClaim(sb);
-  const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
-  assert.deepEqual(order.slice(2, 10), ['git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git submodule', 'git update-index', 'git status']);
-  assert.deepEqual(gitCalls(sb, 'read-tree')[0].sub, ['read-tree', 'HEAD']);
-  assert.deepEqual(gitCalls(sb, 'submodule')[0].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]);
-  // R12-F1: a second pass reads work trees only after the first has neutralised every submodule at every depth.
-  assert.deepEqual(gitCalls(sb, 'submodule')[1].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_CHECK_SCRIPT]);
-  for (const reader of ['git status', 'update-index', 'ls-files']) assert.ok(!SUBMODULE_INDEX_SCRIPT.includes(reader), `the first pass runs no ${reader}`);
-  // Each submodule's repository gets the superproject's rules: self-contained, attributes neutralised, index rebuilt.
-  for (const part of ['--git-common-dir', 'commondir objects/info/alternates', 'find "$gd" -type l', `'${NEUTRAL_ATTRIBUTES}' > "$gd/info/attributes"`, 'git read-tree HEAD']) {
-    assert.ok(SUBMODULE_INDEX_SCRIPT.includes(part), part);
-  }
-  assert.ok(SUBMODULE_INDEX_SCRIPT.indexOf('info/attributes') < SUBMODULE_INDEX_SCRIPT.indexOf('read-tree'), 'neutralised before the index is refreshed');
-  for (const c of ['core.ignoreStat=false', 'core.sparseCheckout=false', 'index.sparse=false']) {
-    assert.ok(gitCalls(sb, 'status')[0].argv.includes(c), c);
-  }
-});
+// The forced checkout (prepare) has its own tests: test/unit/checkout.test.js.
 
 test('facts: the patch\'s size, hash and expansion are recorded', async () => {
   const sb = claimSandbox();

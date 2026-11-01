@@ -56,6 +56,8 @@ function nonceOf(args) {
 
 function withStart(res, nonce) {
   if (!res || res.spawnError || res.started === false || !nonce) return res;
+  // A Buffer stays bytes (git objects need not be UTF-8).
+  if (Buffer.isBuffer(res.stdout)) return { ...res, stdout: Buffer.concat([Buffer.from(`vcr-start ${nonce}\n`), res.stdout]) };
   return { ...res, stdout: `vcr-start ${nonce}\n${res.stdout || ''}` };
 }
 
