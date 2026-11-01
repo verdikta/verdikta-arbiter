@@ -22,11 +22,30 @@ const { HeadTail, Capped } = require('./capture');
 const { newNonce, launcherArgv, StartGate, LAUNCHER_CHECK, LAUNCHER_PATH, PROBE_SCRIPT } = require('./launcher');
 const { ABSTAIN, Abstain, RequesterError, classifyExec } = require('./result');
 
-/** The non-root user every sandbox process runs as. The env builder gives the repository to this uid. */
+/** The non-root user every sandbox process runs as. */
 const SANDBOX_USER = '10001:10001';
+const SANDBOX_UID = 10001;
 const SANDBOX_HOSTNAME = 'sandbox';
+/** The work tree (the repository's writable copy) and $HOME: tmpfs mounts, like /tmp. */
+const WORK_DIR = '/work';
+const HOME_DIR = '/home/sandbox';
 /** Fixed environment (§9.3): never the host's. */
-const SANDBOX_ENV = Object.freeze({ TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0' });
+const SANDBOX_ENV = Object.freeze({ TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0', HOME: HOME_DIR });
+
+/**
+ * The scratch: the root filesystem is read-only and these memory-backed
+ * tmpfs mounts are the only writable places. Their sizes (MiB) are the
+ * scratch cap, 1,792 MiB in all; what is written is also memory charged to
+ * the container, so it counts against --memory too. Chosen from what a forge
+ * build and test write: out/ and cache/ inside the work tree, ~/.foundry under
+ * $HOME, and /tmp. Only the work tree may hold executables (solc, scripts).
+ */
+const SCRATCH_MB = Object.freeze({ work: 1024, tmp: 512, home: 256 });
+const TMPFS = Object.freeze([
+  `${WORK_DIR}:rw,exec,nosuid,nodev,size=${SCRATCH_MB.work}m,mode=0755,uid=${SANDBOX_UID},gid=${SANDBOX_UID}`,
+  `/tmp:rw,noexec,nosuid,nodev,size=${SCRATCH_MB.tmp}m,mode=1777`,
+  `${HOME_DIR}:rw,noexec,nosuid,nodev,size=${SCRATCH_MB.home}m,mode=0700,uid=${SANDBOX_UID},gid=${SANDBOX_UID}`
+]);
 const RUNTIMES = Object.freeze(['runsc', 'runc']);
 /** linux/amd64 is the class platform; linux/arm64 exists for runc development on Apple silicon. */
 const PLATFORMS = Object.freeze([OCI_PLATFORM, 'linux/arm64']);
@@ -48,6 +67,8 @@ const COUNTER_FILES = Object.freeze([
   '/sys/fs/cgroup/memory/memory.oom_control',
   '/sys/fs/cgroup/pids/pids.events'
 ]);
+
+const MOUNTS_FORMAT = '{"mounts":{{json .Mounts}},"readOnly":{{json .HostConfig.ReadonlyRootfs}}}';
 
 const LAUNCH_TIMEOUT_MS = 120000;
 const CONTROL_TIMEOUT_MS = 15000;
@@ -112,6 +133,9 @@ function createArgs({ name, image, runtime, platform = OCI_PLATFORM, limits, ins
     '--network', 'none',
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
+    '--read-only',
+    ...TMPFS.flatMap((t) => ['--tmpfs', t]),
+    '--ipc', 'none',
     '--user', SANDBOX_USER,
     '--pids-limit', String(pids),
     '--memory', `${memoryMb}m`,
@@ -119,6 +143,7 @@ function createArgs({ name, image, runtime, platform = OCI_PLATFORM, limits, ins
     '--cpus', String(cpus),
     '--hostname', SANDBOX_HOSTNAME,
     ...env,
+    '--workdir', WORK_DIR,
     '--log-driver', 'none',
     '--init',
     '--entrypoint', 'sleep',
@@ -235,17 +260,20 @@ class Sandbox {
     };
     const created = await runText(this.docker, createArgs({ ...spec, name: this.name, runtime: this.runtime }), within(LAUNCH_TIMEOUT_MS, signal));
     if (created.exitCode !== 0) throw fail(created);
-    // No mount of any kind, including the anonymous volumes an image's
-    // VOLUME lines would give it: those would sit outside the capped scratch
-    // layer. Checked before anything runs in the container.
-    const mounts = await runText(this.docker, ['inspect', '--type', 'container', '--format', '{{json .Mounts}}', this.name], within(CONTROL_TIMEOUT_MS, signal));
+    // A read-only root, and no mount but the runner's tmpfs ones: not even
+    // the anonymous volumes an image's VOLUME lines would give it, which
+    // would be writable places outside the capped scratch. Checked before
+    // anything runs in the container.
+    const mounts = await runText(this.docker, ['inspect', '--type', 'container', '--format', MOUNTS_FORMAT, this.name], within(CONTROL_TIMEOUT_MS, signal));
     if (mounts.exitCode !== 0) throw fail(mounts);
     let list;
+    let readOnly;
     try {
-      list = JSON.parse(mounts.stdout);
+      ({ mounts: list, readOnly } = JSON.parse(mounts.stdout));
     } catch (_) {
       throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox\'s mounts could not be read', { step: 'launch' });
     }
+    if (readOnly !== true) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the daemon did not make the sandbox\'s root filesystem read-only', { step: 'launch' });
     if (Array.isArray(list) && list.length > 0) {
       const where = list.map((m) => (m && m.Destination) || '?').join(', ');
       throw new RequesterError([{ code: 'IMAGE_DECLARES_VOLUMES', path: '/spec/env/image', detail: `the env image declares volumes (${where}); an env image may not` }]);
@@ -485,6 +513,10 @@ function launchFailure(r) {
 module.exports = {
   SANDBOX_USER,
   SANDBOX_HOSTNAME,
+  WORK_DIR,
+  HOME_DIR,
+  SCRATCH_MB,
+  TMPFS,
   SANDBOX_ENV,
   RUNTIMES,
   PLATFORMS,

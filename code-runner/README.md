@@ -162,8 +162,13 @@ the runner gives Docker; `test/unit/sandbox.test.js` pins it exactly):
 ```
 docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label verdikta.code-runner=1 …
   --runtime runsc --network none --cap-drop ALL --security-opt no-new-privileges
-  --user 10001:10001 --pids-limit 4096 --memory 4096m --memory-swap 4096m --cpus 2
+  --read-only
+  --tmpfs /work:rw,exec,nosuid,nodev,size=1024m,mode=0755,uid=10001,gid=10001
+  --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777
+  --tmpfs /home/sandbox:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001
+  --ipc none --user 10001:10001 --pids-limit 4096 --memory 4096m --memory-swap 4096m --cpus 2
   --hostname sandbox --env TZ=UTC --env LANG=C.UTF-8 --env CI=true --env PYTHONHASHSEED=0
+  --env HOME=/home/sandbox --workdir /work
   --log-driver none --init --entrypoint sleep <image@sha256:…> <keepalive seconds>
 ```
 
@@ -188,10 +193,47 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   and the runner's own empty `DOCKER_CONFIG`: no token, no operator credentials.
 - `test/unit/policy.test.js` fails the build if `src/` gains a shell, `eval`, a
   mount flag, the Docker socket, `docker cp` or a host file write.
-- The env builder must give the repository in the image to uid 10001, and the
-  image needs a POSIX `/bin/sh` (the launcher's interpreter) that uid 10001
-  cannot modify: checked at launch, before any claim code runs, else the run
-  is the requester's error (`IMAGE_LAUNCHER_WRITABLE`).
+- The image needs a POSIX `/bin/sh` (the launcher's interpreter) on a path
+  owned by root and not writable by uid 10001: checked at launch, before any
+  claim code runs, else the run is the requester's error
+  (`IMAGE_LAUNCHER_WRITABLE`).
+
+## Read-only root filesystem
+
+Every sandbox runs with `--read-only`. The only writable places are three
+memory-backed tmpfs mounts, and their sizes are the scratch cap (1,792 MiB in
+all, `SCRATCH_MB`). What is written there is memory charged to the container,
+so it counts against `--memory` as well: filling the scratch ends in an OOM,
+which abstains.
+
+| Mount | Size | | For |
+|---|---|---|---|
+| `/work` (the working directory) | 1,024 MiB | `exec`, owned by uid 10001 | The repository's writable copy: the claim's patch, `out/`, `cache/`, and programs such as `solc` |
+| `/home/sandbox` (`$HOME`) | 256 MiB | `noexec`, mode 0700 | `~/.foundry` and other per-user caches |
+| `/tmp` | 512 MiB | `noexec`, mode 1777 | Temporary files |
+
+The mounts follow what a forge build and test write. `forge build` writes
+`out/` and `cache/` in the project, `forge test` writes `~/.foundry/cache`,
+and tools use `/tmp`. `test/docker/readonly.docker.test.js` runs a real
+`forge build` and `forge test` (foundry 1.5.1 and solc 0.8.31, both pinned)
+on this root. `--ipc none` drops the `/dev/shm` mount, which would be a fourth
+writable place.
+
+Because nothing outside the scratch can be written, claim code cannot create,
+replace or retarget anything on `/bin/sh`'s path, whatever the image's
+permissions would allow. The same Docker test builds an image that routes
+`/bin/sh` through a directory owned by uid 10001, with the round 7-9 setups,
+and shows that every such write fails with "Read-only file system". The
+launcher path check stays as a second check.
+
+What the env image (P3a) must provide:
+- the repository checkout somewhere in the image; the claim pipeline (A2a)
+  copies it into `/work`, which starts empty;
+- every tool, `solc` included, outside `$HOME` and `/tmp` (both start empty),
+  or in the work tree;
+- the build and test commands writing only inside the work tree, `$HOME` and
+  `/tmp`;
+- `/bin/sh` on a path owned by root.
 
 ## The launcher and its start nonce
 

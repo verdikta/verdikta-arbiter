@@ -510,3 +510,11 @@ test('at launch: an image whose launcher the sandbox user could replace is the r
   const unsure = fakeDocker(healthyDaemon({ launcherCheck: () => ({ exitCode: 2 }) }));
   assert.equal((await run({ docker: unsure })).result.abstain.cause, 'docker_error');
 });
+
+test('a sandbox whose root the daemon did not make read-only abstains before anything runs', async () => {
+  const docker = fakeDocker(healthyDaemon({ mounts: () => ({ stdout: '{"mounts":[],"readOnly":false}' }) }));
+  const { result } = await run({ docker });
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.match(result.abstain.detail, /read-only/);
+  assert.equal(docker.callsOf('start').length, 0);
+});

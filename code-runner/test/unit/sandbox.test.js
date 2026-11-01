@@ -5,7 +5,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { createArgs, startArgs, execArgs, removeArgs, SANDBOX_USER, SANDBOX_ENV, LABEL } = require('../../src/sandbox');
+const { createArgs, startArgs, execArgs, removeArgs, SANDBOX_USER, SANDBOX_ENV, LABEL, SCRATCH_MB } = require('../../src/sandbox');
 const { checkSpec } = require('../../src/classLimits');
 const { spec, IMAGE } = require('../helpers/requests');
 
@@ -33,6 +33,11 @@ test('docker create argv is exactly the §9.1 sandbox', () => {
     '--network', 'none',
     '--cap-drop', 'ALL',
     '--security-opt', 'no-new-privileges',
+    '--read-only',
+    '--tmpfs', '/work:rw,exec,nosuid,nodev,size=1024m,mode=0755,uid=10001,gid=10001',
+    '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777',
+    '--tmpfs', '/home/sandbox:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001',
+    '--ipc', 'none',
     '--user', '10001:10001',
     '--pids-limit', '4096',
     '--memory', '4096m',
@@ -43,6 +48,8 @@ test('docker create argv is exactly the §9.1 sandbox', () => {
     '--env', 'LANG=C.UTF-8',
     '--env', 'CI=true',
     '--env', 'PYTHONHASHSEED=0',
+    '--env', 'HOME=/home/sandbox',
+    '--workdir', '/work',
     '--log-driver', 'none',
     '--init',
     '--entrypoint', 'sleep',
@@ -50,7 +57,7 @@ test('docker create argv is exactly the §9.1 sandbox', () => {
     '800'
   ]);
   assert.equal(SANDBOX_USER, '10001:10001');
-  assert.deepEqual({ ...SANDBOX_ENV }, { TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0' });
+  assert.deepEqual({ ...SANDBOX_ENV }, { TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0', HOME: '/home/sandbox' });
   assert.equal(LABEL, 'verdikta.code-runner');
   assert.deepEqual(startArgs(BASE.name), ['start', BASE.name]);
 });
@@ -85,11 +92,30 @@ test('a spec can only lower numbers; the flag set never changes', () => {
 });
 
 test('no mount, no socket, no privilege, no host namespace, ever', () => {
-  const argv = createArgs(BASE).join('\n');
+  const argv = createArgs(BASE);
   for (const forbidden of ['--volume', '-v', '--mount', '--privileged', '--cap-add', 'docker.sock', '--network=host',
-    'host', '--pid', '--ipc', '--userns', '--device', '--security-opt=seccomp=unconfined', 'apparmor=unconfined', '--tmpfs']) {
-    assert.ok(!argv.split('\n').includes(forbidden), forbidden);
+    'host', '--pid', '--userns', '--device', '--security-opt=seccomp=unconfined', 'apparmor=unconfined', '--volumes-from', '--shm-size']) {
+    assert.ok(!argv.includes(forbidden), forbidden);
   }
+  assert.ok(!argv.some((a) => /docker\.sock|^\/var\/run/.test(a)));
+});
+
+test('a read-only root: the only writable places are three capped tmpfs mounts, and no /dev/shm', () => {
+  const argv = createArgs(BASE);
+  assert.ok(argv.includes('--read-only'));
+  const tmpfs = argv.flatMap((a, i) => (a === '--tmpfs' ? [argv[i + 1]] : []));
+  assert.deepEqual(tmpfs.map((t) => t.split(':')[0]), ['/work', '/tmp', '/home/sandbox']);
+  for (const t of tmpfs) {
+    const opts = t.split(':')[1].split(',');
+    assert.ok(opts.includes('nosuid') && opts.includes('nodev'), t);
+    assert.ok(opts.some((o) => /^size=\d+m$/.test(o)), `${t} is capped`);
+  }
+  // Only the work tree may hold programs.
+  assert.deepEqual(tmpfs.map((t) => t.split(':')[1].split(',').includes('exec')), [true, false, false]);
+  const total = tmpfs.reduce((sum, t) => sum + Number(/size=(\d+)m/.exec(t)[1]), 0);
+  assert.equal(total, SCRATCH_MB.work + SCRATCH_MB.tmp + SCRATCH_MB.home);
+  assert.equal(total, 1792, 'the scratch cap');
+  assert.equal(argv[argv.indexOf('--ipc') + 1], 'none', 'no shared-memory mount either');
 });
 
 test('inputs that could smuggle a flag or a second argument are refused', () => {

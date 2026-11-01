@@ -70,7 +70,13 @@ function healthyDaemon({ step, counters, launcherCheck, inspect, create, start, 
     create: create || (() => ({ stdout: 'c0ffee\n' })),
     start: start || ((args) => ({ stdout: `${args[1]}\n` })),
     inspect: (args, opts, calls) => {
-      if (args.includes('{{json .Mounts}}')) return mounts ? mounts(args, opts, calls) : { stdout: '[]\n' };
+      if (args.some((a) => a.includes('.Mounts'))) {
+        if (!mounts) return { stdout: '{"mounts":[],"readOnly":true}\n' };
+        const r = mounts(args, opts, calls);
+        // A handler may give just the mount list; the root is then read-only.
+        if (r && typeof r.stdout === 'string' && r.stdout.trim().startsWith('[')) return { ...r, stdout: `{"mounts":${r.stdout.trim()},"readOnly":true}` };
+        return r;
+      }
       return inspect ? inspect(args, opts, calls) : { stdout: runningState() };
     },
     rm: rm || (() => ({ stdout: '' })),

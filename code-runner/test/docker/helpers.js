@@ -43,15 +43,20 @@ function dockerFor(config) {
   return createDocker({ dockerHost: config.dockerHost, dockerConfigDir: config.dockerConfigDir, baseEnv: process.env });
 }
 
-let pulled = false;
-async function ensureTestImage(docker) {
-  if (pulled) return;
-  const have = await runText(docker, ['run', '--rm', '--pull', 'never', '--platform', PLATFORM, '--network', 'none', '--entrypoint', 'true', TEST_IMAGE], { timeoutMs: 60000 });
+const pulled = new Set();
+/** Pull `image` (by digest, for PLATFORM) unless it is already on the daemon. Test setup only. */
+async function ensureImage(docker, image) {
+  if (pulled.has(image)) return;
+  const have = await runText(docker, ['run', '--rm', '--pull', 'never', '--platform', PLATFORM, '--network', 'none', '--entrypoint', 'true', image], { timeoutMs: 60000 });
   if (have.exitCode !== 0) {
-    const pull = await runText(docker, ['pull', '--platform', PLATFORM, TEST_IMAGE], { timeoutMs: 300000 });
-    assert.equal(pull.exitCode, 0, `docker pull ${TEST_IMAGE}: ${pull.stderr}`);
+    const pull = await runText(docker, ['pull', '--platform', PLATFORM, image], { timeoutMs: 600000 });
+    assert.equal(pull.exitCode, 0, `docker pull ${image}: ${pull.stderr}`);
   }
-  pulled = true;
+  pulled.add(image);
+}
+
+function ensureTestImage(docker) {
+  return ensureImage(docker, TEST_IMAGE);
 }
 
 async function leftovers(docker, instance) {
@@ -86,5 +91,5 @@ function smallLimits(over = {}) {
 }
 
 module.exports = {
-  RUNTIME, PLATFORM, TEST_IMAGE, silent, instanceId, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, eventually, smallLimits
+  RUNTIME, PLATFORM, TEST_IMAGE, silent, instanceId, dockerTestConfig, dockerFor, ensureImage, ensureTestImage, leftovers, removeAll, eventually, smallLimits
 };
