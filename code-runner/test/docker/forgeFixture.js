@@ -125,7 +125,7 @@ function vaultBaseline(baseCommit) {
   return { version: 1, baseCommit, framework: 'forge', runs: 3, tests: [{ id, results: ['pass', 'pass', 'pass'] }], stable: [id], unstable: [] };
 }
 
-const DOCKERFILE = (base) => [
+const DOCKERFILE = (base, setup) => [
   `FROM ${base}`,
   'USER root',
   'COPY solc /opt/solc/solc',
@@ -134,6 +134,7 @@ const DOCKERFILE = (base) => [
   ' && cd /repo && git init -q -b main && git add -A \\',
   ' && GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" \\',
   '    git -c user.name=fixture -c user.email=fixture@verdikta.invalid commit -q -m base \\',
+  ...(setup ? [` && ${setup} \\`] : []),
   ' && chmod -R a+rX /repo',
   ''
 ].join('\n');
@@ -146,10 +147,11 @@ let built = 0;
  * @param {object} o
  * @param {Record<string,string>} [o.files] - repository files (default VAULT_REPO)
  * @param {string} [o.toml] - extra foundry.toml lines (default profile)
+ * @param {string} [o.setup] - a shell command run as root in /repo after the commit (git config, index flags, …)
  * @param {string} o.instance - the test's instance id (names the image)
  * @returns {Promise<{image:string, baseCommit:string, remove:Function}>}
  */
-async function buildFixture(docker, { files = VAULT_REPO, toml = '', instance }) {
+async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '', instance }) {
   const base = foundryBase();
   await ensureImage(docker, base);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-fixture-'));
@@ -160,7 +162,7 @@ async function buildFixture(docker, { files = VAULT_REPO, toml = '', instance })
     fs.writeFileSync(path.join(repo, rel), content);
   }
   fs.writeFileSync(path.join(dir, 'solc'), await solcBytes());
-  fs.writeFileSync(path.join(dir, 'Dockerfile'), DOCKERFILE(base));
+  fs.writeFileSync(path.join(dir, 'Dockerfile'), DOCKERFILE(base, setup));
   built += 1;
   const tag = `vcr-fixture-${instance}:${built}`;
   const extraRefs = [];

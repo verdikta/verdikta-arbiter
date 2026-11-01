@@ -23,14 +23,24 @@ const TIMEOUT = 900000;
 const fixtures = new Map();
 const builder = dockerFor(dockerTestConfig());
 
-/** The fixture image for a foundry.toml variant, built once per file. */
+/** The fixture image for a variant, built once per file. */
+const VARIANTS = Object.freeze({
+  plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
+  ffi: { toml: 'ffi = true' },
+  // The image's own repository config runs test/filter.sh as a smudge filter
+  // for test/*.bin (R1-F3): a patch could edit the script, then add a .bin.
+  filter: {
+    files: { ...VAULT_REPO, 'test/filter.sh': '#!/bin/sh\ncat\n', '.gitattributes': 'test/*.bin filter=vcr\n' },
+    setup: 'git config filter.vcr.smudge "sh test/filter.sh" && git config filter.vcr.clean "sh test/filter.sh"'
+  },
+  // A changed tracked file the copied index hides (R1-F4).
+  assume: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --assume-unchanged src/Vault.sol' },
+  skip: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --skip-worktree src/Vault.sol' }
+});
+
 function fixture(variant = 'plain') {
   if (!fixtures.has(variant)) {
-    const toml = {
-      plain: 'fs_permissions = [{ access = "read-write", path = "./state" }]',
-      ffi: 'ffi = true'
-    }[variant];
-    fixtures.set(variant, buildFixture(builder, { toml, instance: `${instanceId()}${variant}` }));
+    fixtures.set(variant, buildFixture(builder, { ...VARIANTS[variant], instance: `${instanceId()}${variant}` }));
   }
   return fixtures.get(variant);
 }
@@ -273,9 +283,15 @@ test('assertion vs error, with real forge: one PoC file, each way a test can end
       '    function test_skip() public { vm.skip(true); }',
       `    function test_fake_xml() public view { console.log("${fake}"); revert("z"); }`,
       '    function testFuzz_assume(uint256 x) public pure { vm.assume(x == 3 && x == 4); }',
+      '    function table_poc(uint256 amount) public pure { amount; }',
       '}',
       'contract InvariantTest {',
-      '    function invariant_nothing() public pure {}'
+      '    function invariant_nothing() public pure {}',
+      '}',
+      'contract BeforeTest is Base {',
+      '    function beforeTestSetup(bytes4) public pure returns (bytes[] memory c) { c = new bytes[](1); c[0] = abi.encodeWithSignature("boom()"); }',
+      '    function boom() public pure { revert("boom"); }',
+      '    function test_with_before() public pure {}'
     ])
   });
   const { result: r } = await run(t, claim(fx, patch));
@@ -283,14 +299,16 @@ test('assertion vs error, with real forge: one PoC file, each way a test can end
   assert.equal(r.gates.reproduces.status, 'fail');
   const byName = Object.fromEntries(r.facts.poc.tests.map((x) => [x.id.split(' > ')[2], x]));
   assert.deepEqual(Object.keys(byName).sort(), [
-    'invariant_nothing()', 'testFuzz_assume(uint256)', 'test_assert()', 'test_fake_xml()', 'test_ffi()', 'test_getcode()', 'test_pass()', 'test_require()', 'test_skip()'
+    'invariant_nothing()', 'table_poc(uint256)', 'testFuzz_assume(uint256)', 'test_assert()', 'test_fake_xml()', 'test_ffi()', 'test_getcode()', 'test_pass()',
+    'test_require()', 'test_skip()', 'test_with_before()'
   ]);
   assert.deepEqual(byName['test_assert()'].runs, ['fail', 'fail', 'fail']);
   assert.equal(byName['test_assert()'].kind, 'assertion');
   assert.deepEqual(byName['test_require()'].runs, ['fail', 'fail', 'fail']);
   assert.equal(byName['test_require()'].message, 'vault over-credits');
   assert.deepEqual(byName['test_fake_xml()'].runs, ['fail', 'fail', 'fail'], 'printed XML adds no record');
-  for (const n of ['test_ffi()', 'test_getcode()', 'testFuzz_assume(uint256)', 'invariant_nothing()']) {
+  // R1-F1: a table test without fixtures and a test whose beforeTestSetup call reverts never ran their bodies.
+  for (const n of ['test_ffi()', 'test_getcode()', 'testFuzz_assume(uint256)', 'invariant_nothing()', 'table_poc(uint256)', 'test_with_before()']) {
     assert.deepEqual(byName[n].runs, ['error', 'error', 'error'], n);
     assert.equal(byName[n].kind, 'error');
   }
@@ -373,4 +391,32 @@ test('the fuzz seed is fixed on every forge test run: a fuzz test draws the same
   assert.equal(messages.length, 3);
   assert.ok(messages[0], 'forge reported the counterexample');
   assert.deepEqual(new Set(messages).size, 1, `the same counterexample on every run (seed ${FORGE_FUZZ_SEED}): ${messages}`);
+});
+
+test('R1-F3: a smudge filter the image configures cannot run a patched script: the repository\'s attribute drivers are off', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('filter');
+  const seen = {};
+  const marker = async (ctx) => {
+    seen.out = (await ctx.exec(['sh', '-c', 'ls -A /tmp; cat test/x.bin'], { name: 'inspect:marker', timeoutMs: 60000 })).stdout.text;
+  };
+  const patch = Buffer.concat([
+    modifyPatch('test/filter.sh', '#!/bin/sh\ncat\n', '#!/bin/sh\ntouch /tmp/vcr-filter-ran\ncat\n'),
+    addFilesPatch({ 'test/x.bin': 'payload\n', 'test/Exploit.t.sol': DRAIN })
+  ]);
+  const { result: r } = await run(t, claim(fx, patch), [marker]);
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.doesNotMatch(seen.out, /vcr-filter-ran/, 'the patched filter never ran');
+  assert.match(seen.out, /^payload$/m, 'the file holds the patch\'s bytes');
+});
+
+test('R1-F4: a changed tracked file the image\'s index marks assume-unchanged or skip-worktree is a dirty checkout', { timeout: TIMEOUT }, async (t) => {
+  for (const variant of ['assume', 'skip']) {
+    const fx = await fixture(variant);
+    const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY'], variant);
+    assert.match(r.issues[0].detail, /src\/Vault\.sol/);
+  }
 });

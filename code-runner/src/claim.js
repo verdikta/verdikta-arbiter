@@ -5,8 +5,10 @@
  * `applies`, `testPathsOnly`, `build`, `reproduces`). Node A2a.
  *
  *   prepare   the env image's checkout (/repo) copied into the empty /work,
- *             checked to be the listed commit and clean, and the processes
- *             present before any claim code runs recorded
+ *             its attributes neutralised (no filter or conversion runs), its
+ *             index rebuilt from HEAD and checked to be the listed commit
+ *             and clean, and the processes present before any claim code
+ *             runs recorded
  *   applies   maxPatchBytes and the 50 MB expansion from the patch's bytes;
  *             then git, in the sandbox, reads and applies it to the listed
  *             commit (index and work tree)
@@ -103,15 +105,38 @@ const CLEANUP_SCRIPT = [
   'exit 3'
 ].join('\n');
 
-/** Copies the checkout ($1) into the empty work tree. Exit 10: no checkout; 11: not a git repository; 12: the copy failed. */
+/**
+ * Copies the checkout ($1) into the empty work tree, refuses a git directory
+ * holding a symbolic link (a link into the work tree would let a patched
+ * file stand in for the repository's config or attributes), and writes the
+ * runner's attributes ($2) to .git/info/attributes. Exit 10: no checkout;
+ * 11: not a git repository; 12: the copy failed; 13: a link in .git; 14:
+ * .git/info could not be written.
+ */
 const CHECKOUT_SCRIPT = [
   'set -u',
   'src=$1',
   '[ -d "$src" ] || exit 10',
-  '[ -d "$src/.git" ] || exit 11',
+  '[ -d "$src/.git" ] && [ ! -L "$src/.git" ] || exit 11',
   'cp -a -- "$src/." /work/ || exit 12',
+  'link=$(find /work/.git -type l -print -quit) || exit 13',
+  '[ -z "$link" ] || exit 13',
+  'mkdir -p /work/.git/info && rm -f /work/.git/info/attributes && printf "%s\\n" "$2" > /work/.git/info/attributes || exit 14',
   'exit 0'
 ].join('\n');
+
+/**
+ * The repository's highest-precedence attributes (§9.1: claim content never
+ * runs outside the declared commands). Every path gets no filter driver (a
+ * clean or smudge command, which a patched file could be), no diff, merge or
+ * textconv driver, no line-ending or working-tree-encoding conversion and no
+ * ident expansion: the work tree holds the commit's bytes and the patch's,
+ * exactly, and git runs nothing of the repository's.
+ */
+const NEUTRAL_ATTRIBUTES = '* !filter !diff !merge !text !eol !ident !working-tree-encoding';
+
+/** Rebuilds a submodule's index from its HEAD (dropping assume-unchanged and skip-worktree bits) and refreshes it. */
+const SUBMODULE_INDEX_SCRIPT = 'git read-tree HEAD || exit 1; git update-index -q --refresh; exit 0';
 
 const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -222,7 +247,7 @@ function claimSteps(request, limits) {
     state.keep = procs.bytes().toString('utf8').split('\n').filter((l) => /^[0-9]+$/.test(l));
     if (state.keep.length === 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox\'s processes could not be listed', { step: 'prepare:procs' });
 
-    const copy = await ctx.exec(['/bin/sh', '-c', CHECKOUT_SCRIPT, 'vcr-checkout', IMAGE_CHECKOUT], { name: 'prepare:checkout', timeoutMs: PREP_TIMEOUT_MS });
+    const copy = await ctx.exec(['/bin/sh', '-c', CHECKOUT_SCRIPT, 'vcr-checkout', IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES], { name: 'prepare:checkout', timeoutMs: PREP_TIMEOUT_MS });
     const image = '/spec/env/image';
     switch (copy.exitCode) {
       case 0: break;
@@ -230,6 +255,8 @@ function claimSteps(request, limits) {
       case 11: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `${IMAGE_CHECKOUT} in the env image is not a git repository`)]);
       case 12: throw new RequesterError([issue('IMAGE_CHECKOUT_UNREADABLE', image,
         `the checkout could not be copied into the work tree as uid 10001 (unreadable, or larger than the work tree): ${firstLine(copy.stderr.text)}`)]);
+      case 13: throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_LINK', image, `${IMAGE_CHECKOUT}/.git holds a symbolic link; the repository's git directory must hold none`)]);
+      case 14: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `.git/info in the copied checkout could not be written: ${firstLine(copy.stderr.text)}`)]);
       default: throw new Abstain(ABSTAIN.DOCKER_ERROR, `the checkout copy exited ${copy.exitCode}`, { step: 'prepare:checkout' });
     }
 
@@ -241,8 +268,21 @@ function claimSteps(request, limits) {
     if (headCommit !== base) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_MISMATCH', '/spec/baseCommit', `the env image's checkout is at ${headCommit.slice(0, 64)}, not the listed commit ${base}`)]);
     }
-    // The copy has new inode and time stamps: refresh the index's stat data
-    // so git compares contents (its exit code says only that some needed it).
+    // The copied index is the image's: it could mark a changed file
+    // assume-unchanged or skip-worktree, and git status would then call it
+    // clean. Rebuild it from HEAD, in the repository and in every submodule,
+    // and refresh it, so git compares every tracked file's bytes with the
+    // commit's (refresh's exit code says only that some file needed it).
+    const index = await ctx.exec(git(['read-tree', 'HEAD']), { name: 'prepare:index', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
+    if (index.exitCode !== 0) {
+      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `the checkout's index could not be rebuilt from HEAD: ${firstLine(index.stderr.text)}`)]);
+    }
+    const subs = await ctx.exec(git(['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]), {
+      name: 'prepare:submodules', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV
+    });
+    if (subs.exitCode !== 0) {
+      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `a submodule's index could not be rebuilt from its HEAD: ${firstLine(subs.stderr.text)}`)]);
+    }
     await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
     // Untracked and ignored files may be there (installed dependencies, also
     // inside submodules); tracked files, and submodules' commits and tracked
@@ -368,7 +408,7 @@ function claimSteps(request, limits) {
       if (reset.exitCode !== 0) throw runnerError('reset:protected', `the protected paths could not be reset: ${firstLine(reset.stderr.text)}`);
     }
     ctx.fact('protectedReset', protectedFiles.length);
-    const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--message', COMMIT_MESSAGE]), {
+    const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', COMMIT_MESSAGE]), {
       name: 'patch:commit', timeoutMs: GIT_TIMEOUT_MS, env: { ...GIT_ENV, ...COMMIT_ENV }
     });
     if (commit.exitCode !== 0) throw runnerError('patch:commit', `the patched tree could not be committed: ${firstLine(commit.stderr.text)}`);
@@ -454,10 +494,12 @@ function claimSteps(request, limits) {
         for (const s of run.suites) {
           if (!fileSet.has(s.file)) continue;
           for (const c of s.cases) {
-            if (!forge.isTestFunction(c.name)) {
+            if (forge.isHarnessRecord(c.name)) {
               if (c.outcome === 'failure' || c.outcome === 'error') errors.push({ suite: `${s.file}:${s.contract}`, name: c.name, message: normaliseMessage(c.message) });
               continue;
             }
+            // Other records (an invariant campaign's `handler …` cases) are not tests of their own.
+            if (!forge.isTestFunction(c.name)) continue;
             const id = forge.testIdentity(s.file, s.contract, c.name);
             if (records.has(id)) records.get(id).push(c);
           }
@@ -546,4 +588,6 @@ function pocFacts(entries, runs) {
   };
 }
 
-module.exports = { claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, RUNS };
+module.exports = {
+  claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, NEUTRAL_ATTRIBUTES, SUBMODULE_INDEX_SCRIPT, RUNS
+};

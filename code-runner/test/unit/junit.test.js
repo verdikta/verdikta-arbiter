@@ -39,7 +39,10 @@ test('forge\'s JUnit is read into suites and records', () => {
   const s = r.suites[0];
   assert.equal(s.file, 'test/Exploit.t.sol');
   assert.equal(s.contract, 'ExploitTest');
-  assert.deepEqual(s.cases, [{ name: 'test_drain()', outcome: 'failure', message: 'assertion failed: 1 != 2' }]);
+  assert.deepEqual(s.cases, [{
+    name: 'test_drain()', outcome: 'failure', message: 'assertion failed: 1 != 2',
+    out: '[FAIL: assertion failed: 1 != 2] test_drain() (gas: 7460)'
+  }]);
 });
 
 test('passing, skipped and failing records; a failure without a message', () => {

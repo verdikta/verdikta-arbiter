@@ -87,7 +87,7 @@ test('50 MB expansion: a 60 MB binary literal of zeros (a 60 KB patch) fails bef
   assert.ok(r.expansionBytes >= size);
 });
 
-test('a binary literal is counted by its forward hunk only, and a small one passes', () => {
+test('a small binary literal passes and counts at its declared size', () => {
   const p = Buffer.from(binarySection('test/fixture.bin', 'literal', 3000, Buffer.alloc(3000, 7)));
   const r = scanPatch(p, LIMITS);
   assert.equal(r.ok, true, r.reason);
@@ -214,4 +214,22 @@ test('reportable paths: what a report can carry (no whitespace, control characte
   for (const p of ['test/a b.sol', 'test/a\tb', 'test/a\\b', 'test/\u0001', '', 'x'.repeat(513), 'test/../x', '/abs']) {
     assert.equal(reportablePath(p), false, JSON.stringify(p));
   }
+});
+
+test('R1-F2: the reverse hunk counts too (git inflates both while it parses), and sizes read as git\'s strtoul reads them', () => {
+  // A small forward literal, then a reverse literal declaring 60 MB.
+  const reverse = Buffer.from([
+    'diff --git a/test/f.bin b/test/f.bin', 'index 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 100644',
+    'GIT binary patch', 'literal 3', 'IcmV?d00001', '', 'literal 60000000', 'zcmeIuF#!Mo0K%a4Pi+Q3h&OqVfB^#r3>YwAz<>b*1`HT5V8DO@0|pEjFkrxd', '', ''
+  ].join('\n'));
+  const r = scanPatch(reverse, LIMITS);
+  assert.equal(r.ok, false);
+  assert.equal(r.code, 'PATCH_EXPANSION');
+  for (const [size, expected] of [['+60000000', 60000000], ['  +60000000', 60000000], ['060000000', 60000000], ['-1', Number.MAX_SAFE_INTEGER], ['-0', 0], ['x', 0], ['99999999999999999999', Number.MAX_SAFE_INTEGER]]) {
+    const p = Buffer.from(['diff --git a/test/f.bin b/test/f.bin', 'GIT binary patch', `literal ${size}`, 'HcmV?d00001', '', ''].join('\n'));
+    assert.equal(scanPatch(p, { ...LIMITS, patchExpansionBytes: Number.MAX_SAFE_INTEGER }).expansionBytes, expected, size);
+  }
+  assert.equal(scanPatch(Buffer.from(['GIT binary patch', 'literal +60000000', ''].join('\n')), LIMITS).code, 'PATCH_EXPANSION');
+  // A CRLF patch reads the same.
+  assert.equal(scanPatch(Buffer.from(['GIT binary patch\r', 'literal 60000000\r', ''].join('\n')), LIMITS).code, 'PATCH_EXPANSION');
 });

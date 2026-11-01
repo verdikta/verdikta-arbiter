@@ -279,7 +279,8 @@ function blank(text) {
  *
  * @param {Buffer} bytes - the JUnit as captured from forge's stdout
  * @param {{truncated?:boolean}} [o] - the capture was cut at its cap
- * @returns {{ok:true, suites:Array<{file:string, contract:string, cases:Array<{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null}>}>} | {ok:false, reason:string}}
+ * @returns {{ok:true, suites:Array<{file:string, contract:string, cases:Array<{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out:string}>}>} | {ok:false, reason:string}}
+ *   `out`: the start (4 KiB) of the record's <system-out>, forge's `<status> <signature> (gas: N)` line
  */
 function readForgeJUnit(bytes, { truncated = false } = {}) {
   if (truncated) return { ok: false, reason: `the JUnit exceeds ${JUNIT_MAX_BYTES} bytes` };
@@ -307,17 +308,20 @@ function readForgeJUnit(bytes, { truncated = false } = {}) {
       if (typeof name !== 'string' || name === '' || name.length > 1024 || CONTROL.test(name)) return bad('a <testcase> without a usable name');
       if (tc.nonBlank) return bad('text inside a <testcase>');
       let result = null;
+      let out = '';
       for (const child of tc.children) {
         if (!CASE_CHILDREN.has(child.name)) return bad(`<${child.name}> inside a <testcase>`);
         if (child.children.length > 0) return bad(`elements inside <${child.name}>`);
         if (RESULT_ELEMENTS.has(child.name)) {
           if (result) return bad(`a <testcase> with both <${result.name}> and <${child.name}>`);
           result = child;
+        } else if (child.name === 'system-out' && out.length < MAX_TEXT_KEPT) {
+          out = (out + child.text).slice(0, MAX_TEXT_KEPT);
         }
       }
       const outcome = !result ? 'pass' : result.name === 'skipped' ? 'skipped' : result.name;
       const message = result && typeof result.attrs.message === 'string' ? result.attrs.message : null;
-      cases.push({ name, outcome, message });
+      cases.push({ name, outcome, message, out });
     }
     suites.push({ file, contract, cases });
   }

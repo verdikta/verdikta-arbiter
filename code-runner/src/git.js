@@ -9,9 +9,14 @@
  * configuration is the maker's, so each call fixes what would change an
  * outcome or run something: no system or global config, no hooks, no
  * fsmonitor, no line-ending conversion, whitespace errors never refuse a
- * patch, diffs without external drivers, prefixes or rename detection, and
+ * patch, diffs without external drivers, prefixes or rename detection, the
+ * index compared by content (no ignored stat data, no sparse checkout), and
  * C-locale messages (they reach gate details, so they must read the same on
- * every arbiter).
+ * every arbiter). `-c` settings reach the git processes git starts for
+ * submodules too. Attribute drivers (filters, textconv) are switched off by
+ * the attributes the claim pipeline writes to .git/info/attributes
+ * (claim.js, NEUTRAL_ATTRIBUTES), the one attribute source above the
+ * repository's own.
  */
 
 const WORK_TREE = '/work';
@@ -43,6 +48,16 @@ const GIT_CONFIG = Object.freeze([
   'core.attributesFile=/dev/null',
   'core.untrackedCache=false',
   'core.splitIndex=false',
+  'core.ignoreStat=false',
+  'core.checkStat=default',
+  'core.trustctime=true',
+  'core.fileMode=true',
+  'core.sparseCheckout=false',
+  'core.sparseCheckoutCone=false',
+  'index.sparse=false',
+  'core.protectNTFS=true',
+  'core.protectHFS=false',
+  'core.bigFileThreshold=512m',
   'apply.whitespace=nowarn',
   'apply.ignoreWhitespace=no',
   'diff.noprefix=false',

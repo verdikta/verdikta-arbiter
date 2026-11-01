@@ -98,6 +98,8 @@ function claimSandbox({ poc = [drainFails(), drainFails(), drainFails()], git = 
   let pocRun = 0;
   const gitDefaults = {
     'rev-parse': () => ({ stdout: `${committed ? POC : BASE}\n` }),
+    'read-tree': () => ({ exitCode: 0 }),
+    submodule: () => ({ exitCode: 0 }),
     'update-index': () => ({ exitCode: 0 }),
     status: () => ({ stdout: '' }),
     'apply --numstat': () => ({ stdout: '3\t0\ttest/Exploit.t.sol\0' }),

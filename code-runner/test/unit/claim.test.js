@@ -14,6 +14,7 @@ const { FORGE_FUZZ_SEED } = require('../../src/common');
 const { testConfig } = require('../helpers/http');
 const { spec: baseSpec, IMAGE } = require('../helpers/requests');
 const { BASE, POC, POC_PATCH, junit, drainFails, claimSandbox } = require('../helpers/fakeClaim');
+const { NEUTRAL_ATTRIBUTES, CHECKOUT_SCRIPT, SUBMODULE_INDEX_SCRIPT } = require('../../src/claim');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const noAdmission = async () => {};
@@ -81,7 +82,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.build.basis, 'exit_code');
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
-    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git update-index', 'git status',
+    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git read-tree', 'git submodule', 'git update-index', 'git status',
     'git apply', 'git apply', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     'vcr-build', 'vcr-cleanup',
@@ -260,7 +261,7 @@ test('protected paths are reset to the listed commit, then the result is committ
   assert.deepEqual(checkout.stdin.toString('utf8').split('\0'), ['foundry.toml', 'lib/forge-std', 'lib/oz/Token.sol']);
   assert.equal(r.facts.protectedReset, 3);
   const [commit] = gitCalls(sb, 'commit');
-  assert.deepEqual(commit.sub, ['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--message', 'poc.patch']);
+  assert.deepEqual(commit.sub, ['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', 'poc.patch']);
   assert.equal(commit.env.GIT_AUTHOR_NAME, 'Verdikta code runner');
   assert.equal(commit.env.GIT_AUTHOR_EMAIL, 'code-runner@verdikta.invalid');
   assert.equal(commit.env.GIT_COMMITTER_NAME, commit.env.GIT_AUTHOR_NAME);
@@ -378,6 +379,19 @@ test('poc-fails-by-import-error: a PoC that errors before any assertion fails re
     assert.equal(r.gates.build.status, 'pass');
     assert.equal(r.gates.reproduces.status, 'fail');
     assert.match(r.gates.reproduces.detail, re);
+  }
+});
+
+test('R1-F1: a PoC test whose body never ran (no reason, or forge\'s (gas: 0)) errors on reproduces', async () => {
+  const noReason = junit([{ suite: 'test/Exploit.t.sol:ExploitTest', cases: [{ name: 'test_drain()', failure: '' }] }]).replace('<failure message=""/>', '<failure/>');
+  const table = '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="Test run">\n<testsuite name="test/Exploit.t.sol:ExploitTest">'
+    + '<testcase name="table_poc(uint256)"><failure message="x"/><system-out>[FAIL: x] table_poc(uint256) (gas: 0)</system-out></testcase></testsuite>\n</testsuites>\n';
+  for (const [poc, re] of [[noReason, /test_drain\(\) errored on run 1$/], [table, /table_poc\(uint256\) errored on run 1 \(x\)/]]) {
+    const sb = claimSandbox({ poc: [poc, poc, poc] });
+    const r = await runClaim(sb);
+    assert.equal(r.gates.reproduces.status, 'fail');
+    assert.match(r.gates.reproduces.detail, re);
+    assert.equal(r.facts.poc.tests[0].kind, 'error');
   }
 });
 
@@ -520,7 +534,11 @@ test('the requester\'s package: the env image\'s checkout is missing, not a repo
     [{ scripts: { 'vcr-checkout': () => ({ exitCode: 11 }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
     [{ scripts: { 'vcr-checkout': () => ({ exitCode: 12, stderr: 'cp: cannot open \'/repo/secret\' for reading: Permission denied\n' }) } }, 'IMAGE_CHECKOUT_UNREADABLE'],
     [{ git: { 'rev-parse': () => ({ stdout: `${'1'.repeat(40)}\n` }) } }, 'IMAGE_CHECKOUT_MISMATCH'],
-    [{ git: { status: () => ({ stdout: ' M foundry.toml\0' }) } }, 'IMAGE_CHECKOUT_DIRTY']
+    [{ git: { status: () => ({ stdout: ' M foundry.toml\0' }) } }, 'IMAGE_CHECKOUT_DIRTY'],
+    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 13 }) } }, 'IMAGE_CHECKOUT_GIT_LINK'],
+    [{ scripts: { 'vcr-checkout': () => ({ exitCode: 14 }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
+    [{ git: { 'read-tree': () => ({ exitCode: 128, stderr: 'fatal: failed to unpack tree object HEAD\n' }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
+    [{ git: { submodule: () => ({ exitCode: 1, stderr: 'fatal: run_command returned non-zero status for lib/x\n' }) } }, 'IMAGE_CHECKOUT_NOT_GIT']
   ];
   for (const [over, code] of cases) {
     const sb = claimSandbox(over);
@@ -538,7 +556,30 @@ test('the checkout is copied into the empty /work before any step, as the sandbo
   const [procs, checkout] = sb.execs();
   assert.equal(procs.kind, 'vcr-procs');
   assert.equal(checkout.kind, 'vcr-checkout');
-  assert.deepEqual(checkout.argv.slice(4), ['/repo']);
+  assert.deepEqual(checkout.argv.slice(4), ['/repo', NEUTRAL_ATTRIBUTES]);
+});
+
+test('R1-F3: the repository\'s attribute drivers are switched off before git touches the patch: no filter, textconv, conversion or ident', async () => {
+  assert.equal(NEUTRAL_ATTRIBUTES, '* !filter !diff !merge !text !eol !ident !working-tree-encoding');
+  // Written to .git/info/attributes (the source above the repository's own .gitattributes) by the copy step.
+  assert.match(CHECKOUT_SCRIPT, /printf "%s\\n" "\$2" > \/work\/\.git\/info\/attributes/);
+  assert.match(CHECKOUT_SCRIPT, /rm -f \/work\/\.git\/info\/attributes/);
+  const sb = claimSandbox();
+  await runClaim(sb);
+  const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
+  assert.ok(order.indexOf('vcr-checkout') < order.indexOf('git apply'));
+});
+
+test('R1-F4: the copied index is rebuilt from HEAD (repository and submodules) before the clean check, so no flag can hide a change', async () => {
+  const sb = claimSandbox();
+  await runClaim(sb);
+  const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
+  assert.deepEqual(order.slice(2, 7), ['git rev-parse', 'git read-tree', 'git submodule', 'git update-index', 'git status']);
+  assert.deepEqual(gitCalls(sb, 'read-tree')[0].sub, ['read-tree', 'HEAD']);
+  assert.deepEqual(gitCalls(sb, 'submodule')[0].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]);
+  for (const c of ['core.ignoreStat=false', 'core.sparseCheckout=false', 'index.sparse=false']) {
+    assert.ok(gitCalls(sb, 'status')[0].argv.includes(c), c);
+  }
 });
 
 test('facts: the patch\'s size, hash and expansion are recorded', async () => {

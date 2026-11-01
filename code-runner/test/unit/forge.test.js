@@ -45,7 +45,7 @@ test('assertion vs error: a test that ran and reverted is an assertion failure; 
     'assertion failed: 1 != 2', 'vault drained: 1 != 2', 'vault drained', 'assertion failed', 'panic: assertion failed (0x01)',
     'panic: arithmetic underflow or overflow (0x11)', 'panic: division or modulo by zero (0x12)', 'EvmError: Revert',
     'next call did not revert as expected',
-    'bug is 1', 'fuzz', null
+    'bug is 1', 'fuzz'
   ]) {
     assert.deepEqual(fail(m), { result: 'fail', kind: 'assertion' }, String(m));
   }
@@ -57,7 +57,12 @@ test('assertion vs error: a test that ran and reverted is an assertion failure; 
     '`testFail*` has been removed. Consider changing to test_Revert[If|When]_Condition and expecting a revert',
     'EvmError: OutOfGas', 'EvmError: MemoryOOG', 'EvmError: StackOverflow',
     '`vm.assume` rejected too many inputs (65536 allowed)',
-    'failed to set up invariant testing environment: No contracts to fuzz.'
+    'failed to set up invariant testing environment: No contracts to fuzz.',
+    'failed to set up fuzz testing environment: `--fuzz-input-file` cannot be combined with `fuzz.run`',
+    'Table test should have fixtures defined', 'Table test should have at least one parameter', 'Table test should have at least one fixture',
+    'No fixture defined for param amount', '2 fixtures defined for amount (expected 3)',
+    'invariant `invariant_x` must take no parameters', 'multiple setUp functions', 'multiple afterInvariant functions',
+    'incomplete symbolic execution (Timeout): solver gave up'
   ]) {
     assert.deepEqual(fail(m), { result: 'error', kind: 'error' }, m);
   }
@@ -98,4 +103,29 @@ test('added-line flags: skip markers and framework or reporter references', () =
     [7, 'framework-config'],
     [8, 'ffi']
   ]);
+});
+
+test('R1-F1: a failure whose body never ran is an error: no reason, or forge\'s (gas: 0) for the record', () => {
+  // A reverting beforeTestSetup: forge's single_fail(None).
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: null, out: '[FAIL] test_x() (gas: 0)' }), { result: 'error', kind: 'error' });
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: '' }), { result: 'error', kind: 'error' });
+  // Any reason forge wrote without running the body (an inline-config or executor error): the default (gas: 0).
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: 'some executor error', out: '[FAIL: some executor error] test_x() (gas: 0)' }),
+    { result: 'error', kind: 'error' });
+  assert.deepEqual(forge.classifyRecord({ name: 'table_poc(uint256)', outcome: 'failure', message: 'x', out: '[FAIL: x] table_poc(uint256) (gas: 0)\nLogs:\n  y' }),
+    { result: 'error', kind: 'error' });
+  // A body that ran used gas; a fuzz campaign reports runs, not gas.
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: 'vault drained', out: '[FAIL: vault drained] test_x() (gas: 7460)' }),
+    { result: 'fail', kind: 'assertion' });
+  assert.deepEqual(forge.classifyRecord({ name: 'testFuzz_x(uint256)', outcome: 'failure', message: 'fuzz', out: '[FAIL: fuzz; counterexample: calldata=0x args=[1]] testFuzz_x(uint256) (runs: 0, μ: 0, ~: 0)' }),
+    { result: 'fail', kind: 'assertion' });
+  // Only this record's own (gas: 0): another signature's does not count.
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: 'm', out: '[FAIL: m] test_x() (gas: 31)' }), { result: 'fail', kind: 'assertion' });
+});
+
+test('harness records are setUp(), constructor() and afterInvariant(); check*/prove* are (symbolic) tests', () => {
+  for (const n of ['setUp()', 'constructor()', 'afterInvariant()']) assert.equal(forge.isHarnessRecord(n), true, n);
+  for (const n of ['handler deposit(uint256)', 'test_a()', 'helper()']) assert.equal(forge.isHarnessRecord(n), false, n);
+  for (const n of ['check_x(uint256)', 'prove_y()']) assert.equal(forge.isTestFunction(n), true, n);
+  assert.equal(forge.isTestFunction('handler deposit(uint256)'), false);
 });

@@ -6,14 +6,16 @@
  *
  * 1. scanPatch: the request's own bytes, before git sees them. maxPatchBytes,
  *    and the 50 MB expansion: what git would have to materialise to apply
- *    the patch. git inflates a binary hunk to the size its header declares
- *    and holds every result in memory before it writes, so a 60 KB patch can
- *    declare 60 MB of zeros (a compression bomb). The scan is a superset of
- *    what git reads: it counts every forward binary hunk at its declared size
- *    (and a delta at its declared target size), every added text line, and
- *    refuses copies (a copy rebuilds a whole existing file from one header
- *    line, so the patch's bytes do not bound it). Whatever git would accept,
- *    the count is at least what git would allocate for it.
+ *    the patch. git inflates every binary hunk (forward and reverse) to the
+ *    size its header declares as it parses the patch, and holds every result
+ *    in memory before it writes, so a 60 KB patch can declare 60 MB of zeros
+ *    (a compression bomb). The scan is a superset of what git reads: it
+ *    counts every `literal`/`delta` line at its declared size (read as git's
+ *    strtoul reads it, sign included), a forward delta's target at the size
+ *    its header declares, every added text line, and refuses copies (a copy
+ *    rebuilds a whole existing file from one header line, so the patch's
+ *    bytes do not bound it). Whatever git would accept, the count is at least
+ *    what git would allocate for it.
  *
  * 2. Readers of git's own answers (`-z` outputs, the -U0 diff), which come
  *    back from the sandbox as bytes. They never interpret the patch
@@ -72,12 +74,18 @@ function encodeBase85Line(bytes) {
   return out;
 }
 
-/** strtoul as git calls it on a binary hunk's size: leading blanks, then decimal digits (none: 0). */
+/**
+ * strtoul(…, 10) as git calls it on a binary hunk's size: leading white
+ * space, an optional sign, decimal digits; no digits read as 0. A negative
+ * value wraps to a huge unsigned one, and anything past 2^53 is far over any
+ * limit, so both read as Number.MAX_SAFE_INTEGER.
+ */
 function declaredSize(rest) {
-  const m = /^[ \t]*([0-9]*)/.exec(rest);
-  if (!m[1]) return 0;
-  // Beyond 2^53 the exact value does not matter: it is far over any limit.
-  return m[1].length > 15 ? Number.MAX_SAFE_INTEGER : Number(m[1]);
+  const m = /^[ \t\n\v\f\r]*([+-]?)([0-9]*)/.exec(rest);
+  const digits = m[2].replace(/^0+(?=[0-9])/, '');
+  if (!digits || /^0+$/.test(digits)) return 0;
+  if (m[1] === '-' || digits.length > 15) return Number.MAX_SAFE_INTEGER;
+  return Number(digits);
 }
 
 /** A git delta's header: two little-endian base-128 varints, the source and target sizes. */
@@ -122,40 +130,41 @@ function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }) {
   // latin1: one character per byte, so lengths are byte counts.
   const lines = bytes.toString('latin1').split('\n');
   let expansion = 0;
-  for (let i = 0; i < lines.length; i += 1) {
-    const line = lines[i];
+  for (let i = 0; i < lines.length && expansion <= patchExpansionBytes; i += 1) {
+    const line = lines[i].replace(/\r$/, '');
     const c = line.charCodeAt(0);
     if (c === 43 /* + */) {
-      expansion += line.length; // the line without its '+', plus its newline
+      expansion += lines[i].length; // the line without its '+', plus its newline
       continue;
     }
     if (line.startsWith('copy from ') || line.startsWith('copy to ')) {
       return fail('PATCH_COPY', 'poc.patch copies a file (a "copy from" header): a copy rebuilds a whole existing file from one line, so its size is not bounded by the patch; a PoC adds or edits test files');
     }
-    if (line === 'GIT binary patch' || line === 'GIT binary patch\r') {
-      const hunk = (lines[i + 1] || '').replace(/\r$/, '');
+    if (line === 'GIT binary patch') {
       base.binaryHunks += 1;
-      if (hunk.startsWith('literal ')) {
-        expansion += declaredSize(hunk.slice(8));
-      } else if (hunk.startsWith('delta ')) {
-        const size = declaredSize(hunk.slice(6));
-        const data = [];
-        for (let j = i + 2; j < lines.length; j += 1) {
-          const l = lines[j].replace(/\r$/, '');
-          if (l === '') break;
-          const decoded = decodeBase85Line(l);
-          if (!decoded) break;
-          data.push(decoded);
-        }
-        const target = data.length ? deltaTargetSize(Buffer.concat(data)) : null;
-        if (target === null) {
-          return fail('PATCH_BINARY_UNREADABLE', 'poc.patch has a binary delta whose target size cannot be read');
-        }
-        // git holds both the inflated delta and the file it rebuilds.
-        expansion += size + target;
+      continue;
+    }
+    // git parses a binary patch's forward and reverse hunks and inflates
+    // each to its declared size while it reads the patch (even for
+    // --numstat): every literal and delta line counts, wherever it is.
+    const literal = line.startsWith('literal ');
+    if (!literal && !line.startsWith('delta ')) continue;
+    expansion += declaredSize(line.slice(literal ? 8 : 6));
+    if (!literal && i > 0 && lines[i - 1].replace(/\r$/, '') === 'GIT binary patch') {
+      // A forward delta also rebuilds its target, at the size its header declares.
+      const data = [];
+      for (let j = i + 1; j < lines.length; j += 1) {
+        const l = lines[j].replace(/\r$/, '');
+        if (l === '') break;
+        const decoded = decodeBase85Line(l);
+        if (!decoded) break;
+        data.push(decoded);
       }
-      // Anything else after the marker git refuses itself ("unrecognized binary patch").
-      if (expansion > patchExpansionBytes) break;
+      const target = data.length ? deltaTargetSize(Buffer.concat(data)) : null;
+      if (target === null) {
+        return fail('PATCH_BINARY_UNREADABLE', 'poc.patch has a binary delta whose target size cannot be read');
+      }
+      expansion += target;
     }
   }
   base.expansionBytes = expansion;

@@ -18,17 +18,32 @@
  * test function ran and reverted (an assertion helper, a require, a revert
  * reached from the code under test). That is the assertion failure the
  * gate wants; it is what the §8.2 harness proof tells apart from a broken
- * test. Everything else is an error: no JUnit at all (a compile error: an
- * import that does not resolve), a failed setUp() or constructor() (the
- * suite never reached its tests: forge's collection error), a record forge
- * marks as an error, or a failure forge raised itself rather than the test:
- * a refused or failed cheatcode (`vm.<name>: …`), a removed test form
- * (`testFail*`), the EVM failing (`EvmError: OutOfGas` and the like), a fuzz
- * test whose every input `vm.assume` rejected, an invariant campaign that
- * could not start. A bare `EvmError: Revert` stays the test's own revert:
- * forge prints the same for a call to an address with no code, so that case
- * is the jury's to read, not the gate's. The list is forge's wording at the
- * pinned version (checked against v1.8.5), so it moves with the pin.
+ * test. Everything else is an error:
+ *
+ * - no JUnit at all (a compile error: an import that does not resolve);
+ * - a failed setUp(), constructor() or afterInvariant() (the suite never
+ *   reached its tests: forge's collection error), or a record forge marks as
+ *   an error;
+ * - a failure whose body never ran. forge reports a unit-test failure's gas
+ *   as `(gas: N)`, and every path that fails a test without running it
+ *   (a reverting beforeTestSetup, a table test without fixtures, an inline
+ *   config error, an executor error) leaves the default `(gas: 0)`; a body
+ *   that ran always used gas. This is read from the record's own
+ *   <system-out>, as forge 1.8.5 writes it (`<status> <signature> (gas: N)`);
+ * - a failure without a reason (the reverting beforeTestSetup, and legacy
+ *   non-reverting assertions, which the listing check refuses);
+ * - a failure forge raised itself, by its fixed wording at the pinned
+ *   version (FORGE_ERRORS, taken from forge v1.8.5's runner): a refused or
+ *   failed cheatcode (`vm.<name>: …`), `testFail*` (removed), the EVM failing
+ *   (`EvmError:` other than `Revert`), fuzz or invariant set-up, a fuzz test
+ *   whose inputs `vm.assume` all rejected, table-test fixtures, an invariant
+ *   with parameters, incomplete symbolic execution.
+ *
+ * A bare `EvmError: Revert` stays the test's own revert: forge prints the
+ * same for a call to an address with no code, so that case is the jury's to
+ * read (claimedObservable, A3a), not the gate's. Misreading in the other
+ * direction gains a hunter nothing: a test that reverts on purpose is an
+ * assertion failure anyway. The rules move with the forge pin.
  */
 
 const { FORGE_FUZZ_SEED } = require('./common');
@@ -56,25 +71,42 @@ function testIdentity(file, contract, name) {
   return `${file} > ${contract} > ${name}`;
 }
 
-const TEST_FUNCTION = /^(?:test|invariant|statefulFuzz|table)[^()]*\(.*\)$/s;
+/** forge's test kinds (TestFunctionKind::classify): test*, invariant* / statefulFuzz*, table*, and check* / prove* when symbolic entry points are on. */
+const TEST_FUNCTION = /^(?:test|invariant|statefulFuzz|table|check|prove)[^()]*\(.*\)$/s;
 
-/** Whether a JUnit record is a test function (else a harness record: setUp(), constructor(), afterInvariant(), …). */
+/** Whether a JUnit record is a test function. */
 function isTestFunction(name) {
   return typeof name === 'string' && TEST_FUNCTION.test(name);
 }
 
-/** Failures forge raises itself, at the pinned version: the test never got to assert. */
-const HARNESS_ERRORS = Object.freeze([
+/** The records forge writes for a suite that failed before its tests ran (or after its invariants). */
+const HARNESS_RECORDS = Object.freeze(['setUp()', 'constructor()', 'afterInvariant()']);
+
+/** Whether a JUnit record is a harness record: a failure there means the suite's tests did not (all) run. */
+function isHarnessRecord(name) {
+  return HARNESS_RECORDS.includes(name);
+}
+
+/** Failure reasons forge writes itself, at the pinned version (forge v1.8.5, crates/forge/src/runner.rs and result.rs). */
+const FORGE_ERRORS = Object.freeze([
   /^vm\.[A-Za-z0-9_]+: /, // a cheatcode refused or failed: FFI disabled, a path not allowed, no such artifact
   /^`testFail\*` has been removed/, // forge refuses the removed test form
   /^EvmError: (?!Revert$)/, // the EVM itself failed: out of gas, memory, stack, …
-  /^`vm\.assume` rejected too many inputs/, // the fuzzer found no input: the test body never ran to an assertion
-  /^failed to set up invariant testing environment/ // the invariant campaign never started
+  /^`vm\.assume` rejected too many inputs/, // the fuzzer found no input the test accepts
+  /^failed to set up (?:fuzz|invariant) testing environment/, // the campaign never started
+  /^Table test should have /, // a table test without parameters or fixtures
+  /^No fixture defined for param /,
+  /^[0-9]+ fixtures defined for .* \(expected [0-9]+\)$/s,
+  /^invariant `[^`]*` must take no parameters$/,
+  /^multiple (?:setUp|afterInvariant) functions$/,
+  /^incomplete symbolic execution /,
+  /^minimize (?:edge index|observations) lock poisoned$/
 ]);
 
 /**
  * Classify one JUnit record of a test function.
- * @param {{outcome:'pass'|'failure'|'error'|'skipped', message:string|null}} record
+ * @param {{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out?:string}} record
+ *   `out`: the start of the record's <system-out>
  * @returns {{result:'pass'|'fail'|'error'|'skip', kind:'assertion'|'error'|null}}
  */
 function classifyRecord(record) {
@@ -82,8 +114,11 @@ function classifyRecord(record) {
     case 'pass': return { result: 'pass', kind: null };
     case 'skipped': return { result: 'skip', kind: null };
     case 'failure': {
-      const m = typeof record.message === 'string' ? record.message : '';
-      if (HARNESS_ERRORS.some((re) => re.test(m))) return { result: 'error', kind: 'error' };
+      const error = { result: 'error', kind: 'error' };
+      const m = record.message;
+      if (typeof m !== 'string' || m === '') return error;
+      if (FORGE_ERRORS.some((re) => re.test(m))) return error;
+      if (typeof record.out === 'string' && record.out.includes(`] ${record.name} (gas: 0)`)) return error;
       return { result: 'fail', kind: 'assertion' };
     }
     default: return { result: 'error', kind: 'error' };
@@ -136,6 +171,6 @@ function scanAddedLines(lines) {
 }
 
 module.exports = {
-  reporterFlags, forgeEnv, commandArgv, testIdentity, isTestFunction, classifyRecord, filesGlob, testIdsRegex, scanAddedLines,
-  HARNESS_ERRORS, REFERENCES
+  reporterFlags, forgeEnv, commandArgv, testIdentity, isTestFunction, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
+  scanAddedLines, FORGE_ERRORS, HARNESS_RECORDS, REFERENCES
 };
