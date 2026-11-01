@@ -415,6 +415,7 @@ test('the requester\'s package: no checkout, unreadable files or objects, a malf
   };
   const cases = [
     [{ scripts: { 'vcr-stage': () => ({ exitCode: 10 }) } }, 'IMAGE_CHECKOUT_MISSING', /no repository checkout at \/repo/],
+    [{ git: { init: () => ({ exitCode: 127, stderr: '/usr/bin/env: \'git\': No such file or directory\n' }) } }, 'IMAGE_TOOL_MISSING', /cannot run \/usr\/bin\/env and git \(exit 127\)/],
     [{ scripts: { 'vcr-stage': () => ({ exitCode: 12, stderr: 'tar: ./secret: Cannot open: Permission denied\n' }) } }, 'IMAGE_CHECKOUT_UNREADABLE', /could not be copied.*Permission denied/],
     [{ scripts: { 'vcr-stage': () => ({ exitCode: 13 }) } }, 'IMAGE_CHECKOUT_UNREADABLE', /git objects could not be copied for reading/],
     [{ git: { 'cat-file --batch': () => ({ exitCode: 128, stderr: 'fatal: loose object 12ab is corrupt\n' }) } }, 'IMAGE_OBJECT_INVALID', /could not read the env image's objects.*corrupt/],

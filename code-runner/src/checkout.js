@@ -225,6 +225,8 @@ async function forceCheckout(ctx, { base }) {
   // 1. The two fresh repositories, then the image's files and object files.
   for (const [name, gitDir, bare] of [['prepare:init', GIT_DIR, false], ['prepare:init:stage', STAGE_DIR, true]]) {
     const r = await exec(name, git(['init', '--quiet', ...(bare ? ['--bare'] : []), '--template=', `--object-format=${algo}`, '--initial-branch=main'], { gitDir }));
+    // 126/127: the launcher ran, and found no /usr/bin/env or git to run (README: the env image provides them).
+    if (r.exitCode === 126 || r.exitCode === 127) throw requester('IMAGE_TOOL_MISSING', image, `the env image cannot run /usr/bin/env and git (exit ${r.exitCode}): ${firstLine(r.stderr.text)}`);
     if (r.exitCode !== 0) throw runnerError(name, `git could not make a repository: ${firstLine(r.stderr.text)}`);
   }
   const stage = await exec('prepare:copy', hermetic(STAGE_SCRIPT, 'vcr-stage', [IMAGE_CHECKOUT, `${STAGE_DIR}/objects`, NEUTRAL_ATTRIBUTES, `${GIT_DIR}/info`, LISTS_DIR]));

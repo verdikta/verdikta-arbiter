@@ -406,7 +406,8 @@ checkout:
    `gitEntriesRemoved`.
 
 The requester's errors, all before any claim code runs:
-`IMAGE_CHECKOUT_MISSING` (no `/repo`), `IMAGE_CHECKOUT_UNREADABLE`,
+`IMAGE_CHECKOUT_MISSING` (no `/repo`), `IMAGE_TOOL_MISSING` (no
+`/usr/bin/env` or `git`), `IMAGE_CHECKOUT_UNREADABLE`,
 `IMAGE_OBJECTS_MISSING`, `IMAGE_OBJECT_INVALID` (also a path git will not
 check out under the runner's settings, such as `git~1` or a symbolic link
 named `.gitmodules`) and `IMAGE_CHECKOUT_TOO_LARGE`. An image whose checkout
