@@ -100,7 +100,6 @@ function claimSandbox({ poc = [drainFails(), drainFails(), drainFails()], git = 
     'rev-parse': (d) => (d.sub.includes('--git-common-dir') ? { stdout: '/work/.git\n/work/.git\n' } : { stdout: `${committed ? POC : BASE}\n` }),
     'read-tree': () => ({ exitCode: 0 }),
     submodule: () => ({ exitCode: 0 }),
-    'submodule status': () => ({ stdout: '' }),
     'update-index': () => ({ exitCode: 0 }),
     status: () => ({ stdout: '' }),
     'apply --numstat': () => ({ stdout: '3\t0\ttest/Exploit.t.sol\0' }),
@@ -118,7 +117,7 @@ function claimSandbox({ poc = [drainFails(), drainFails(), drainFails()], git = 
     'vcr-checkout': () => ({ exitCode: 0 }),
     'vcr-build': () => ({ exitCode: 0, stdout: 'Compiling 3 files with Solc 0.8.31\n' }),
     'vcr-cleanup': () => ({ stdout: 'killed 0\n' }),
-    'vcr-empty': () => ({ exitCode: 0 }),
+    'vcr-gitlinks': () => ({ exitCode: 0 }),
     'vcr-poc': (d) => {
       pocRun += 1;
       const h = poc[pocRun - 1];
@@ -128,7 +127,6 @@ function claimSandbox({ poc = [drainFails(), drainFails(), drainFails()], git = 
   };
   const key = (sub) => {
     if (sub[0] === 'apply') return sub.includes('--numstat') ? 'apply --numstat' : 'apply --index';
-    if (sub[0] === 'submodule' && sub[1] === 'status') return git['submodule status'] || !git.submodule ? 'submodule status' : 'submodule';
     if (sub[0] === 'diff') return sub.includes('--name-status') ? 'diff --name-status' : sub.includes('--numstat') ? 'diff --numstat' : 'diff -U0';
     return sub[0];
   };

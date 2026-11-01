@@ -82,7 +82,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.build.basis, 'exit_code');
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
-    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git rev-parse', 'git read-tree', 'git submodule', 'git submodule', 'git update-index', 'git status',
+    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git update-index', 'git status',
     'git apply', 'git apply', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     'vcr-build', 'vcr-cleanup',
@@ -565,32 +565,37 @@ test('the requester\'s package: the env image\'s checkout is missing, not a repo
   }
 });
 
-test('R8-F1: a submodule that is not checked out (no .git) must be absent or empty, or the checkout is dirty', async () => {
-  const sha = 'a'.repeat(40);
-  const status = () => ({ stdout: `-${sha} lib/dep\n ${'b'.repeat(40)} lib/ok (heads/main)\n-${sha} lib/with space\n` });
-  // Empty or absent: the claim goes on, and both unpopulated paths were checked.
-  const ok = claimSandbox({ git: { 'submodule status': status } });
-  const r1 = await runClaim(ok);
-  assert.equal(r1.outcome, 'definitive', JSON.stringify(r1.issues));
-  const [check] = ok.execs().filter((d) => d.kind === 'vcr-empty');
-  assert.deepEqual(check.argv.slice(4), ['/work/lib/dep', '/work/lib/with space']);
-  assert.deepEqual(gitCalls(ok, 'submodule')[1].sub, ['submodule', 'status', '--recursive']);
-  // Files in one: dirty, named.
-  const full = claimSandbox({ git: { 'submodule status': status }, scripts: { 'vcr-empty': () => ({ exitCode: 1, stdout: '/work/lib/dep\n' }) } });
-  const r2 = await runClaim(full);
-  assert.equal(r2.outcome, 'requester_error');
-  assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
-  assert.match(r2.issues[0].detail, /the submodule lib\/dep holds files but is not checked out/);
+test('R8-F1: a submodule that is not checked out (no .git) must be absent or empty, read from the index, never from printed paths', async () => {
+  const { GITLINKS_SCRIPT } = require('../../src/claim');
+  // The gitlinks come from the index, as git prints them; a quoted path is refused, never unquoted or trimmed.
+  assert.ok(GITLINKS_SCRIPT.startsWith('out=$(git -c core.quotePath=false ls-files -s) || exit 3'));
+  assert.ok(GITLINKS_SCRIPT.includes('case "$line" in "160000 "*) ;; *) continue ;; esac'));
+  assert.ok(GITLINKS_SCRIPT.includes('p=${line#*\t}'));
+  assert.ok(GITLINKS_SCRIPT.includes('case "$p" in \\"*) printf "%s\\n" "$p"; exit 2 ;; esac'));
+  assert.ok(GITLINKS_SCRIPT.includes('[ -e "$p/.git" ] && continue'));
+  assert.doesNotMatch(GITLINKS_SCRIPT, /submodule status/);
+  // Each submodule checks its own gitlinks, after its index is rebuilt.
+  assert.ok(SUBMODULE_INDEX_SCRIPT.includes(GITLINKS_SCRIPT));
+  assert.ok(SUBMODULE_INDEX_SCRIPT.indexOf('git read-tree HEAD') < SUBMODULE_INDEX_SCRIPT.indexOf('ls-files -s'));
+
+  // The checkout's own check runs after its index is rebuilt and before the patch.
+  const ok = claimSandbox();
+  await runClaim(ok);
+  const order = kinds(ok);
+  assert.ok(order.indexOf('git read-tree') < order.indexOf('vcr-gitlinks') && order.indexOf('vcr-gitlinks') < order.indexOf('git apply'));
+  assert.equal(ok.execs().find((d) => d.kind === 'vcr-gitlinks').env.GIT_DIR, '/work/.git');
+
+  const full = claimSandbox({ scripts: { 'vcr-gitlinks': () => ({ exitCode: 1, stdout: 'lib/dep\n' }) } });
+  const r1 = await runClaim(full);
+  assert.equal(r1.outcome, 'requester_error');
+  assert.deepEqual(r1.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
+  assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but is not checked out/);
   assert.equal(gitCalls(full, 'apply').length, 0);
-  // A line that cannot be read, a merge conflict, or a failed listing: not a usable repository.
-  for (const st of [() => ({ stdout: 'garbage\n' }), () => ({ stdout: `U${sha} lib/dep\n` }), () => ({ exitCode: 128, stderr: "fatal: no submodule mapping found in .gitmodules for path 'lib/dep'\n" })]) {
-    const r = await runClaim(claimSandbox({ git: { 'submodule status': st } }));
+  for (const [exitCode, re] of [[2, /a submodule path git has to quote/], [3, /index could not be read/]]) {
+    const r = await runClaim(claimSandbox({ scripts: { 'vcr-gitlinks': () => ({ exitCode, stdout: '"lib/dep\\n"\n' }) } }));
     assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_NOT_GIT']);
+    assert.match(r.issues[0].detail, re);
   }
-  // No unpopulated submodule: nothing to check.
-  const none = claimSandbox();
-  await runClaim(none);
-  assert.equal(none.execs().filter((d) => d.kind === 'vcr-empty').length, 0);
 });
 
 test('the checkout is copied into the empty /work before any step, as the sandbox user', async () => {
@@ -619,7 +624,7 @@ test('R1-F4: the copied index is rebuilt from HEAD (repository and submodules) b
   const sb = claimSandbox();
   await runClaim(sb);
   const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
-  assert.deepEqual(order.slice(2, 9), ['git rev-parse', 'git rev-parse', 'git read-tree', 'git submodule', 'git submodule', 'git update-index', 'git status']);
+  assert.deepEqual(order.slice(2, 9), ['git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git update-index', 'git status']);
   assert.deepEqual(gitCalls(sb, 'read-tree')[0].sub, ['read-tree', 'HEAD']);
   assert.deepEqual(gitCalls(sb, 'submodule')[0].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]);
   // Each submodule's repository gets the superproject's rules: self-contained, attributes neutralised, index rebuilt.

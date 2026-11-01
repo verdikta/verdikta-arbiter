@@ -56,6 +56,17 @@ const VARIANTS = Object.freeze({
   // and the same submodule left empty, as a clone without --recurse-submodules leaves it.
   subbare: { setup: `${SUBMODULE} && rm -rf lib/dep/.git .git/modules/lib/dep && printf "changed\\n" >> lib/dep/dep.txt` },
   subempty: { setup: `${SUBMODULE} && rm -rf lib/dep .git/modules/lib/dep && mkdir lib/dep` },
+  // R8-F1 (round 9): the same, at a gitlink whose path ends in a line break ("lib/dep\n"), mapped in .gitmodules.
+  subnl: {
+    setup: [
+      SUBMODULE.split(' && git -c protocol.file.allow=always submodule')[0],
+      'nl=$(printf "\\nx") && nl=${nl%x} && p="lib/dep$nl"',
+      'git update-index --add --cacheinfo "160000,$(git -C /tmp/dep rev-parse HEAD),$p"',
+      'git config -f .gitmodules submodule.dep.path "$p" && git config -f .gitmodules submodule.dep.url /tmp/dep && git add .gitmodules',
+      'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit -q -m sub',
+      'mkdir -p "$p" && printf "changed\\n" > "$p/dep.txt"'
+    ].join(' && ')
+  },
   // R1-F3 (round 3): the submodule's own clean filter maps its changed file back to the committed bytes.
   submask: {
     setup: SUBMODULE.replace('git -C /tmp/dep add -A', 'printf "*.txt filter=mask\\n" > /tmp/dep/.gitattributes && git -C /tmp/dep add -A')
@@ -531,6 +542,13 @@ test('R8-F1: a submodule directory that holds files but no .git is a dirty check
   assert.equal(r1.outcome, 'requester_error', show(r1));
   assert.deepEqual(r1.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
   assert.match(r1.issues[0].detail, /the submodule lib\/dep holds files but is not checked out/);
+
+  // A gitlink path ending in a line break: git quotes it, and the runner refuses it rather than check a trimmed path.
+  const nl = await fixture('subnl');
+  const { result: r3 } = await run(t, claim(nl, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r3.outcome, 'requester_error', show(r3));
+  assert.deepEqual(r3.issues.map((i) => i.code), ['IMAGE_CHECKOUT_NOT_GIT']);
+  assert.match(r3.issues[0].detail, /a submodule path git has to quote/);
 
   const empty = await fixture('subempty');
   const { result: r2 } = await run(t, claim(empty, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
