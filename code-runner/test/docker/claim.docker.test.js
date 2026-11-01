@@ -23,6 +23,13 @@ const TIMEOUT = 900000;
 const fixtures = new Map();
 const builder = dockerFor(dockerTestConfig());
 
+const SUBMODULE = [
+  'git init -q -b main /tmp/dep && printf "dep\\n" > /tmp/dep/dep.txt && git -C /tmp/dep add -A',
+  'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -C /tmp/dep -c user.name=f -c user.email=f@x commit -q -m dep',
+  'git -c protocol.file.allow=always submodule --quiet add /tmp/dep lib/dep',
+  'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit -q -m sub'
+].join(' && ');
+
 /** The fixture image for a variant, built once per file. */
 const VARIANTS = Object.freeze({
   plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
@@ -41,6 +48,10 @@ const VARIANTS = Object.freeze({
     setup: 'mkdir .git-common && mv .git/objects .git/refs .git/config .git/info .git-common/ && echo ../.git-common > .git/commondir'
       + ' && git config filter.vcr.smudge "sh test/filter.sh" && git config filter.vcr.clean "sh test/filter.sh"'
   },
+  // A submodule (lib/dep), committed at the listed commit; and the same with
+  // a changed file the submodule's own index hides.
+  sub: { setup: SUBMODULE },
+  subassume: { setup: `${SUBMODULE} && cd lib/dep && printf "changed\\n" >> dep.txt && git update-index --assume-unchanged dep.txt` },
   // A changed tracked file the copied index hides (R1-F4).
   assume: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --assume-unchanged src/Vault.sol' },
   skip: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --skip-worktree src/Vault.sol' }
@@ -461,4 +472,18 @@ test('R1-F1 (round 2): an inline-config error with a reason of kilobytes is an e
   assert.equal(t0.kind, 'error');
   assert.match(t0.message, /^Unknown evm version: x{100}/);
   assert.ok(t0.message.length >= 2000 - 1, 'the reason is kilobytes long (cut to 2000 in the facts)');
+});
+
+test('R1-F4 with real submodules: a clean submodule passes, a change its own index hides is a dirty checkout', { timeout: TIMEOUT }, async (t) => {
+  const clean = await fixture('sub');
+  const { result: r1 } = await run(t, claim(clean, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r1.outcome, 'definitive', show(r1));
+  assert.equal(r1.gates.reproduces.status, 'pass', show(r1));
+  assert.ok(r1.facts.protectedReset >= 1, 'the lib/dep gitlink is a protected path at the listed commit');
+
+  const hidden = await fixture('subassume');
+  const { result: r2 } = await run(t, claim(hidden, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r2.outcome, 'requester_error', show(r2));
+  assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
+  assert.match(r2.issues[0].detail, /lib\/dep/);
 });
