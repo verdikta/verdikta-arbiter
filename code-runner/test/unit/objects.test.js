@@ -8,10 +8,10 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  algorithmOf, hashObject, parseCommitTree, parseTree, treeObjects, BatchReader, fastImportPath, fastImportBlobs, fastImportCommit
+  algorithmOf, hashObject, parseCommitTree, parseTree, treeObjects, BatchReader, packObjects, commitObject
 } = require('../../src/objects');
 const { GitStore } = require('../helpers/gitStore');
-const { parseFastImport } = require('../helpers/fakeClaim');
+const { parsePack } = require('../helpers/fakeClaim');
 
 const id20 = (c) => c.repeat(40);
 const raw = (hex) => Buffer.from(hex, 'hex');
@@ -175,25 +175,32 @@ test('BatchReader: an object above its cap is counted, not kept; garbage, a long
   assert.equal(sha.finish().ok, false);
 });
 
-test('fast-import streams: paths quoted as fast-import reads them, byte for byte; blobs by id', () => {
-  assert.deepEqual(fastImportPath('src/A.sol'), Buffer.from('src/A.sol'));
-  assert.deepEqual(fastImportPath('sp ace\\x'), Buffer.from('sp ace\\x'), 'only a leading quote or a line break needs quoting');
-  assert.deepEqual(fastImportPath('"q'), Buffer.from('"\\"q"'));
-  assert.deepEqual(fastImportPath('a\nb\t\\'), Buffer.from('"a\\012b\\011\\\\"'));
-  const files = [
-    { path: '"lead', kind: 'blob', id: id20('1') },
-    { path: 'dir/new\nline', kind: 'exec', id: id20('2') },
-    { path: 'ÿþ-bytes', kind: 'link', id: id20('3') },
-    { path: '-dash', kind: 'blob', id: id20('4') }
-  ];
-  const stream = fastImportCommit({ ref: 'refs/heads/main', ident: 'V <v@x.invalid>', date: '1767225600 +0000', message: 'listed commit x\n', files });
-  const parsed = parseFastImport(stream);
-  assert.deepEqual(parsed.commit.files.map((f) => [f.mode, f.id, f.path]), [
-    ['100644', id20('1'), '"lead'], ['100755', id20('2'), 'dir/new\nline'], ['120000', id20('3'), 'ÿþ-bytes'], ['100644', id20('4'), '-dash']
-  ]);
-  assert.equal(parsed.commit.author, 'author V <v@x.invalid> 1767225600 +0000');
-  assert.equal(parsed.commit.message, 'listed commit x\n');
-  const blobs = parseFastImport(fastImportBlobs([Buffer.from('a\n'), Buffer.from([0, 0x0a, 1]), Buffer.alloc(0)]));
-  assert.deepEqual(blobs.blobs.map((b) => b.toString('hex')), ['610a', '000a01', '']);
-  assert.ok(fastImportBlobs([]).equals(Buffer.from('done\n')));
+test('packObjects: a version 2 pack of the runner\'s bytes, read back independently, for SHA-1 and SHA-256', () => {
+  for (const algo of ['sha1', 'sha256']) {
+    const objects = [
+      { type: 'blob', content: Buffer.alloc(0) },
+      { type: 'blob', content: Buffer.from('short') },
+      { type: 'blob', content: Buffer.from([0, 0x0a, 0xff, 0x80]) },
+      { type: 'blob', content: Buffer.alloc(16, 1) },
+      { type: 'blob', content: Buffer.alloc(300000, 7) },
+      { type: 'tree', content: Buffer.from(`100644 a\0${'1'.repeat(algo === 'sha1' ? 40 : 64)}`.replace(/1+$/, ''), 'latin1') },
+      { type: 'commit', content: commitObject({ tree: hashObject(algo, 'tree', Buffer.alloc(0)), ident: 'V <v@x.invalid>', date: '1767225600 +0000', message: 'listed commit x\n' }) }
+    ];
+    const pack = packObjects(algo, objects);
+    const back = parsePack(pack, algo);
+    assert.deepEqual(back.map((o) => [o.type, o.content.toString('hex')]), objects.map((o) => [o.type, o.content.toString('hex')]), algo);
+    assert.equal(pack.readUInt32BE(8), objects.length);
+  }
+  assert.throws(() => packObjects('sha1', [{ type: 'tag', content: Buffer.alloc(0) }]), /no pack type/);
+  // A pack with no object still has its header and trailing hash.
+  assert.equal(packObjects('sha1', []).length, 12 + 20);
+});
+
+test('commitObject: a root commit with the runner\'s identity and date, hashed as git would', () => {
+  const tree = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+  const c = commitObject({ tree, ident: 'Verdikta code runner <code-runner@verdikta.invalid>', date: '1767225600 +0000', message: 'listed commit abc\n' });
+  assert.equal(c.toString(), `tree ${tree}\nauthor Verdikta code runner <code-runner@verdikta.invalid> 1767225600 +0000\ncommitter Verdikta code runner <code-runner@verdikta.invalid> 1767225600 +0000\n\nlisted commit abc\n`);
+  assert.equal(parseCommitTree(c, 'sha1'), tree);
+  const store = new GitStore('sha1');
+  assert.equal(store.add('commit', c), hashObject('sha1', 'commit', c));
 });

@@ -69,12 +69,13 @@ async function runClaim(sandbox, request = claimRequest(), { deadlineMs = 700000
 const kinds = (sb) => sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
 /**
  * The forced checkout's execs for the default image (checkout.js): the commit, then one tree level per
- * round (the root; lib, src, test; forge-std's commit; its root; its src), the blobs' sizes, the blobs.
+ * round (the root; lib, src, test; forge-std's commit; its root; its src), the blobs' sizes, the blobs;
+ * then the runner's packs (the blobs; its trees and commit), the branch, git's agreement, the index.
  */
 const PREPARE = [
   'git init', 'git init', 'vcr-stage',
   'git cat-file', 'git cat-file', 'git cat-file', 'git cat-file', 'git cat-file', 'git cat-file',
-  'git cat-file', 'git cat-file', 'git fast-import', 'git fast-import', 'git rev-parse', 'git read-tree',
+  'git cat-file', 'git cat-file', 'git index-pack', 'git index-pack', 'git update-ref', 'git rev-parse', 'git read-tree',
   'vcr-dirs', 'git update-index', 'git diff-files', 'vcr-clear', 'git checkout-index', 'git diff-files', 'vcr-unstage'
 ];
 const gitCalls = (sb, sub) => sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === sub);

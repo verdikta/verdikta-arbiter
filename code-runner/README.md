@@ -260,8 +260,9 @@ What the env image (P3a) must provide:
   attributes, refs (`HEAD` included: the checkout may be at any commit),
   replace refs, alternates, `commondir`, worktree redirects and submodule
   settings. No filter of the image runs (git LFS included: a tracked file
-  holds its committed blob). Its `.git` entries, devices and sockets are not
-  copied into the work tree;
+  holds its committed blob). Its `.git` entries, device nodes, sockets and
+  named pipes are not copied into the work tree (none holds a file's bytes,
+  and a pipe git or a build opened would block it);
 - `git` 2.29 or later (2.34.1 on the foundry base), `/usr/bin/env`, GNU
   `find`, `xargs`, `sort` and `tar`, `wc`, `cat`, `chmod`, `rm`, `mkdir`,
   `forge` and a POSIX `/bin/sh` (the foundry base has them);
@@ -365,10 +366,11 @@ checkout:
 1. The runner makes two repositories with its own settings (`git init
    --template=`, so no hook is copied in): `/work/.git`, the one the claim
    steps use, and a staging store. The image's files are copied into `/work`
-   without any `.git` entry (at any depth), device or socket. The loose
-   objects and packs of every `objects` directory inside a `.git` directory
-   of `/repo` are copied into the staging store as plain files, in byte
-   order, the first copy of a name kept; nothing else of theirs (no
+   without any `.git` entry (at any depth), device node, socket or named
+   pipe. The loose objects and packs of every `objects` directory inside a
+   `.git` directory of `/repo` are copied into the staging store as plain
+   files, each with its own bytes (a hard link is read as the file it is),
+   in byte order, the first copy of a name kept; nothing else of theirs (no
    `info/alternates`, multi-pack-index or commit-graph).
 2. The runner reads the listed commit, its trees level by level, each
    submodule's commit (the one its gitlink records) and trees, and every
@@ -381,12 +383,13 @@ checkout:
    the listed commit's own tree. A submodule whose commit, a tree or a blob
    is missing is left an empty directory. Bounds: 512 MiB of files (every
    path counted), 200,000 entries, 128 levels, 4,000-byte paths.
-3. The verified blobs and one root commit of the whole tree, with each
-   submodule's files as ordinary paths, go into `/work/.git` through `git
-   fast-import`, from the runner's bytes (`Verdikta code runner`,
-   `1767225600 +0000`, message `listed commit <baseCommit>`). The runner
-   checks git's tree id against its own, and builds the index from that
-   commit.
+3. The verified blobs, the runner's own trees of the whole tree (each
+   submodule's files as ordinary paths) and its root commit (`Verdikta code
+   runner`, `1767225600 +0000`, message `listed commit <baseCommit>`) go
+   into `/work/.git` as packs the runner writes (`git index-pack --stdin`:
+   git stores the bytes and judges no path). git must then agree on the
+   commit and tree ids, and `read-tree` builds the index from that commit:
+   a path git will not check out is refused there.
 4. Every tracked path is replaced, never written through: each directory on
    the way to one must be a real directory (a symbolic link, file, pipe or
    device node there is removed and a directory made, from the top down),

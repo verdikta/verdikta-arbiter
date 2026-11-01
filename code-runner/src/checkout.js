@@ -12,7 +12,7 @@
  * 1. Two fresh repositories, made by the runner with its own settings
  *    (git.js): /work/.git, the one the claim pipeline uses, and a staging
  *    store. The image's files are copied into /work without any `.git`
- *    entry (at any depth), device or socket; the loose objects and packs of
+ *    entry (at any depth), device, socket or named pipe; the loose objects and packs of
  *    every `objects` directory inside a `.git` directory of /repo are copied
  *    into the staging store, as files, in byte order, the first copy of a
  *    name kept. Nothing else of theirs (no info/alternates, no
@@ -24,13 +24,16 @@
  *    type or is malformed is the requester's error; so is a missing object
  *    of the listed commit's own tree. A submodule whose objects are not all
  *    there is left an empty directory, as git leaves an unpopulated one.
- * 3. The verified blobs and one root commit of the whole tree (submodules'
- *    files as ordinary paths) go into /work/.git through git fast-import,
- *    from the runner's own bytes; the runner checks git's tree id against
- *    its own, and builds the index from that commit.
+ * 3. The verified blobs, the runner's own trees of the whole tree
+ *    (submodules' files as ordinary paths) and its root commit go into
+ *    /work/.git as packs the runner writes (`git index-pack --stdin`: git
+ *    stores the bytes and judges no path); git must then agree on the
+ *    commit and tree ids, and read-tree builds the index from that commit
+ *    (where git's own path rules apply: a path it refuses is the
+ *    requester's error).
  * 4. Every tracked path is replaced, never written through: each directory
  *    on the way to a tracked path must be a real directory (a symbolic link,
- *    file, pipe or anything else there is removed and a directory made, from
+ *    file or anything else there is removed and a directory made, from
  *    the top down), whatever sits at the tracked path itself is removed (a
  *    directory with all it holds included), and git checks the files out
  *    into the now empty places. Untracked and ignored files (installed
@@ -44,7 +47,7 @@
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { git, GIT_DIR, STAGE_DIR, WORK_TREE, COMMIT_IDENT, COMMIT_DATE, hermetic } = require('./git');
 const {
-  algorithmOf, hexLength, hashObject, parseCommitTree, parseTree, treeObjects, BatchReader, fastImportBlobs, fastImportCommit, KIND
+  algorithmOf, hashObject, parseCommitTree, parseTree, treeObjects, BatchReader, packObjects, commitObject, KIND
 } = require('./objects');
 
 /** Where the env image keeps the repository checkout (README, "What the env image must provide"). */
@@ -75,7 +78,13 @@ const ENTRY_NAME = '.git';
  * Copies the image's files into /work and its object files into the staging
  * store; writes the fresh repository's attributes. $1 /repo, $2 the staging
  * objects directory, $3 the attributes, $4 the fresh repository's info
- * directory, $5 the lists directory. Prints `vcr-git-entries <n>`, the number
+ * directory, $5 the lists directory. Not copied: `.git` entries (at any
+ * depth), device nodes, sockets and named pipes (none holds a file's bytes,
+ * and a pipe git or a build opened, such as a `.gitattributes`, would block
+ * it). Object files are copied each with its own bytes (a hard link is read
+ * as the file it is, never re-linked to another store's copy), in byte
+ * order within each store and across stores, the first copy of a name kept.
+ * Prints `vcr-git-entries <n>`, the number
  * of `.git` entries the image had (not copied). A pipeline's status is read
  * from every command in it (`5>&1 >&2`: each failure names itself on fd 5).
  * Exit 10: no checkout; 12: the files could not be copied (unreadable, or
@@ -88,7 +97,7 @@ const STAGE_SCRIPT = [
   'mkdir -p "$info" "$lists" "$objects/pack" && printf "%s\\n" "$attrs" > "$info/attributes" || exit 14',
   '[ -d "$src" ] || exit 10',
   'cd "$src" || exit 10',
-  `bad=$( { { find . -mindepth 1 \\( -name ${ENTRY_NAME} -o -type b -o -type c -o -type s \\) -prune -o -print0 || echo find >&5; } \\`,
+  `bad=$( { { find . -mindepth 1 \\( -name ${ENTRY_NAME} -o -type b -o -type c -o -type s -o -type p \\) -prune -o -print0 || echo find >&5; } \\`,
   '  | { tar --null --verbatim-files-from --no-recursion -T - -cf - || echo tar >&5; } \\',
   '  | { tar -xpf - -C /work || echo untar >&5; }; } 5>&1 >&2 )',
   '[ -z "$bad" ] || exit 12',
@@ -100,7 +109,8 @@ const STAGE_SCRIPT = [
   '      objects=$1; shift',
   '      for d; do',
   '        bad=$( { { cd "$d" && find . -mindepth 2 -maxdepth 2 -type f \\( -path "./[0-9a-f][0-9a-f]/*" -o -path "./pack/pack-*.pack" -o -path "./pack/pack-*.idx" \\) -print0 || echo find >&5; } \\',
-  '          | { cd "$d" && tar --null --verbatim-files-from --no-recursion -T - -cf - || echo tar >&5; } \\',
+  '          | { sort -z || echo sort >&5; } \\',
+  '          | { cd "$d" && tar --null --verbatim-files-from --no-recursion --hard-dereference -T - -cf - || echo tar >&5; } \\',
   '          | { tar -xf - -C "$objects" --skip-old-files || echo untar >&5; }; } 5>&1 >&2 )',
   '        [ -z "$bad" ] || exit 1',
   '      done\' vcr-harvest "$objects" || echo harvest >&5; }; } 5>&1 >&2 )',
@@ -261,6 +271,12 @@ async function forceCheckout(ctx, { base }) {
     return got;
   }
 
+  /** Store verified objects in the fresh repository: git computes their ids itself and judges no path. */
+  async function importPack(name, objects) {
+    const r = await exec(name, git(['index-pack', '--stdin']), { stdin: packObjects(algo, objects) });
+    if (r.exitCode !== 0) throw runnerError(name, `git could not store the runner's pack: ${firstLine(r.stderr.text)}`);
+  }
+
   const commit = (await readTrees('prepare:objects:1', [base])).get(base);
   if (commit.missing) throw missing(`the env image holds no object for the listed commit ${base}`);
   if (commit.type !== 'commit') throw invalid(`the listed commit ${base} is a ${commit.type} in the env image`);
@@ -364,19 +380,21 @@ async function forceCheckout(ctx, { base }) {
       }
       return rec.content;
     });
-    const imported = await exec(`prepare:import:${batch}`, git(['fast-import', '--quiet', '--done']), { stdin: fastImportBlobs(contents) });
-    if (imported.exitCode !== 0) throw runnerError(`prepare:import:${batch}`, `git fast-import refused the listed commit's files: ${firstLine(imported.stderr.text)}`);
+    await importPack(`prepare:import:${batch}`, contents.map((content) => ({ type: 'blob', content })));
   }
+  // The runner's own trees and root commit (the submodules' files as ordinary paths), then the branch.
   live.sort((a, b) => (a.path < b.path ? -1 : 1));
-  const committed = await exec('prepare:commit', git(['fast-import', '--quiet', '--done']), {
-    stdin: fastImportCommit({ ref: REF, ident: COMMIT_IDENT, date: COMMIT_DATE, message: `listed commit ${base}\n`, files: live })
-  });
-  if (committed.exitCode !== 0) throw runnerError('prepare:commit', `git fast-import refused the listed commit's tree: ${firstLine(committed.stderr.text)}`);
+  const built = treeObjects(live, algo);
+  const commitContent = commitObject({ tree: built.id, ident: COMMIT_IDENT, date: COMMIT_DATE, message: `listed commit ${base}\n` });
+  const prepared = hashObject(algo, 'commit', commitContent);
+  await importPack('prepare:commit', [...[...built.objects.values()].map((content) => ({ type: 'tree', content })), { type: 'commit', content: commitContent }]);
+  const ref = await exec('prepare:ref', git(['update-ref', REF, prepared]));
+  if (ref.exitCode !== 0) throw runnerError('prepare:ref', `the fresh repository's branch could not be set: ${firstLine(ref.stderr.text)}`);
+  // And git agrees: the branch holds the runner's commit, of the runner's tree.
   const head = await exec('prepare:head', git(['rev-parse', `${REF}^{commit}`, `${REF}^{tree}`]));
-  const [prepared, tree] = head.stdout.text.split('\n');
-  const expected = treeObjects(live, algo).id;
-  if (head.exitCode !== 0 || !new RegExp(`^[0-9a-f]{${hexLength(algo)}}$`).test(prepared) || tree !== expected) {
-    throw runnerError('prepare:head', `the fresh repository's tree is ${String(tree).slice(0, 64)}, not the ${expected} the runner built`);
+  const [got, tree] = head.stdout.text.split('\n');
+  if (head.exitCode !== 0 || got !== prepared || tree !== built.id) {
+    throw runnerError('prepare:head', `the fresh repository holds ${String(got).slice(0, 64)} of ${String(tree).slice(0, 64)}, not the runner's ${prepared} of ${built.id}`);
   }
   const index = await exec('prepare:index', git(['read-tree', prepared]));
   if (index.exitCode !== 0) throw invalid(`the listed commit has a path git will not check out: ${firstLine(index.stderr.text)}`);

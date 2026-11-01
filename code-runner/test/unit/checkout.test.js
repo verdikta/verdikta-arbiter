@@ -186,12 +186,17 @@ test('item 2: the fresh repository holds exactly the commit\'s files, bytes and 
     [`test/${nl}`]: ['100644', 'newline\n'],
     'test/ÿþ': ['100644', 'ÿ\u0000\n']
   };
-  const commit = sb.repo.imports.find((s) => s.commit).commit;
-  assert.deepEqual(Object.fromEntries(commit.files.map((f) => [f.path, [f.mode, f.id]])),
+  // The fresh repository's branch (read back from the runner's packs, hashed independently).
+  assert.deepEqual(Object.fromEntries(sb.repo.files.map((f) => [f.path, [f.mode, f.id]])),
     Object.fromEntries(Object.entries(expected).map(([p, [mode, content]]) => [p, [mode, blobId('sha1', content)]])));
-  // Every blob the fresh repository got is the commit's bytes (the fake hashes what fast-import received).
-  const imported = new Map(sb.repo.imports.flatMap((s) => s.blobs).map((b) => [blobId('sha1', b.toString('latin1')), b.toString('latin1')]));
-  for (const [p, [, content]] of Object.entries(expected)) assert.equal(imported.get(blobId('sha1', content)), content, p);
+  // Every blob the fresh repository got is the commit's bytes.
+  for (const [p, [, content]] of Object.entries(expected)) assert.equal(sb.repo.objects.get(blobId('sha1', content)).content.toString('latin1'), content, p);
+  // Packs hold the runner's objects only: the verified blobs, its trees, its commit.
+  const packed = sb.repo.packs.flat();
+  assert.deepEqual(new Set(packed.map((o) => o.type)), new Set(['blob', 'tree', 'commit']));
+  assert.equal(packed.filter((o) => o.type === 'commit').length, 1);
+  const commit = { author: `author ${/\nauthor ([^\n]*)/.exec(sb.repo.objects.get(sb.repo.commit).content.toString())[1]}`,
+    message: sb.repo.objects.get(sb.repo.commit).content.toString().split('\n\n')[1] };
   // The tree git built from them is the flattened commit, as an independent store computes it.
   const store = new GitStore('sha1');
   const flat = store.treeOfEntries(Object.entries(expected).map(([path, [mode, content]]) => ({ path, mode, id: blobId('sha1', content) })));
@@ -228,8 +233,9 @@ test('item 2: the scripts replace, never write through: real directories on the 
   assert.match(CLEAR_SCRIPT, /xargs -0 -r -a "\$list" rm -rf --/);
   assert.match(CLEAR_SCRIPT, /\{ \[ -L "\$p" \] \|\| chmod -R u\+rwx -- "\$p"; \} && rm -rf -- "\$p" \|\| exit 1/);
   assert.match(CLEAR_SCRIPT, /\{ \[ -e "\$p" \] \|\| \[ -L "\$p" \]; \} && exit 1/);
-  // The copy: every .git entry (at any depth, any type), device and socket left out; everything else as the image has it.
-  assert.match(STAGE_SCRIPT, /find \. -mindepth 1 \\\( -name \.git -o -type b -o -type c -o -type s \\\) -prune -o -print0/);
+  // The copy: every .git entry (at any depth, any type), device node, socket and named pipe left out (R13-F1: a pipe
+  // at .gitattributes would block git's attribute reader); everything else as the image has it.
+  assert.match(STAGE_SCRIPT, /find \. -mindepth 1 \\\( -name \.git -o -type b -o -type c -o -type s -o -type p \\\) -prune -o -print0/);
   assert.match(STAGE_SCRIPT, /tar --null --verbatim-files-from --no-recursion -T - -cf -/);
   assert.match(STAGE_SCRIPT, /tar -xpf - -C \/work/);
   // The objects: regular files only, loose objects and packs, from objects directories inside .git directories, in byte
@@ -238,6 +244,8 @@ test('item 2: the scripts replace, never write through: real directories on the 
   assert.match(STAGE_SCRIPT, /LC_ALL=C sort -z/);
   assert.match(STAGE_SCRIPT, /-type f \\\( -path "\.\/\[0-9a-f\]\[0-9a-f\]\/\*" -o -path "\.\/pack\/pack-\*\.pack" -o -path "\.\/pack\/pack-\*\.idx" \\\)/);
   assert.match(STAGE_SCRIPT, /--skip-old-files/);
+  // R13-F2: each object file with its own bytes (a hard link is never re-linked to another store's copy), sorted in a store.
+  assert.match(STAGE_SCRIPT, /\| \{ sort -z \|\| echo sort >&5; \} \\\n {10}\| \{ cd "\$d" && tar --null --verbatim-files-from --no-recursion --hard-dereference -T - -cf -/);
   for (const not of ['alternates', 'multi-pack-index', 'commit-graph', 'info/packs']) assert.ok(!STAGE_SCRIPT.includes(not), not);
   // The fresh repository's attributes: no filter, conversion, ident or driver for any path.
   assert.equal(NEUTRAL_ATTRIBUTES, '* !filter !diff !merge !text !crlf !eol !ident !working-tree-encoding');
@@ -273,7 +281,7 @@ test('item 3: a submodule whose objects are not in the image is left an empty di
   const r = await run(sb);
   assert.equal(r.outcome, 'definitive', JSON.stringify(r.abstain || r.issues));
   assert.deepEqual(r.facts.checkout.emptySubmodules, ['lib/noblob', 'lib/nocommit', 'lib/notree', 'lib/outer/lib/nested']);
-  const paths = sb.repo.imports.find((s) => s.commit).commit.files.map((f) => f.path).sort();
+  const paths = sb.repo.files.map((f) => f.path).sort();
   assert.deepEqual(paths, ['lib/outer/o.sol', 'src/Vault.sol'], 'nothing of an empty submodule is tracked');
   // Each is cleared like a tracked path, then made an empty directory (the second dirs pass).
   const [clear] = scriptIn(sb, 'vcr-clear');
@@ -323,15 +331,19 @@ test('item 4: two repositories the runner makes, one left: the staging store is 
   const after = all.slice(all.indexOf(unstage) + 1).filter((d) => d.kind === 'git');
   assert.ok(after.length >= 8);
   for (const d of after) assert.equal(d.fixedEnv.GIT_DIR, GIT_DIR, d.sub[0]);
-  for (const d of sb.execs().filter((x) => x.kind === 'git' && x.sub[0] === 'fast-import')) assert.equal(d.fixedEnv.GIT_DIR, GIT_DIR);
+  for (const d of sb.execs().filter((x) => x.kind === 'git' && ['index-pack', 'update-ref'].includes(x.sub[0]))) assert.equal(d.fixedEnv.GIT_DIR, GIT_DIR);
+  assert.deepEqual(gitIn(sb, 'index-pack').map((d) => d.sub), [['index-pack', '--stdin'], ['index-pack', '--stdin']]);
+  assert.deepEqual(gitIn(sb, 'update-ref')[0].sub, ['update-ref', 'refs/heads/main', sb.repo.commit]);
   assert.deepEqual(r.facts.commit, { base: sb.image.base, poc: '9e1b2d0000000000000000000000000000000000' });
 });
 
 test('item 4: a fresh repository that is not what the runner built, or a work tree that does not match it, abstains; nothing runs on it', async () => {
   const cases = [
     [{ git: { 'rev-parse': (d, repo) => ({ stdout: d.sub.includes('refs/heads/main^{commit}') ? `${repo.commit}\n${'0'.repeat(40)}\n` : `${repo.commit}\n` }) } }, 'prepare:head'],
+    [{ git: { 'rev-parse': (d, repo) => ({ stdout: d.sub.includes('refs/heads/main^{commit}') ? `${'0'.repeat(40)}\n${repo.tree}\n` : `${repo.commit}\n` }) } }, 'prepare:head'],
     [{ git: { 'diff-files --quiet': () => ({ exitCode: 1 }) } }, 'prepare:verify'],
-    [{ git: { 'fast-import': () => ({ exitCode: 128, stderr: 'fatal: out of memory\n' }) } }, 'prepare:import:1'],
+    [{ git: { 'index-pack': () => ({ exitCode: 128, stderr: 'fatal: out of memory\n' }) } }, 'prepare:import:1'],
+    [{ git: { 'update-ref': () => ({ exitCode: 128, stderr: 'fatal: cannot lock ref\n' }) } }, 'prepare:ref'],
     [{ git: { 'checkout-index': () => ({ exitCode: 1, stderr: 'error: x already exists\n' }) } }, 'prepare:write'],
     [{ scripts: { 'vcr-clear': () => ({ exitCode: 5 }) } }, 'prepare:clear'],
     [{ scripts: { 'vcr-dirs': () => ({ exitCode: 4 }) } }, 'prepare:dirs'],
@@ -385,7 +397,7 @@ test('item 5: the same image gives the same fresh repository, stream and facts o
   const ra = await run(a);
   const rb = await run(b);
   assert.deepEqual(ra.facts.checkout, rb.facts.checkout);
-  const streams = (sb) => sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'fast-import').map((d) => d.stdin.toString('hex'));
+  const streams = (sb) => sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'index-pack').map((d) => d.stdin.toString('hex'));
   assert.deepEqual(streams(a), streams(b));
 });
 

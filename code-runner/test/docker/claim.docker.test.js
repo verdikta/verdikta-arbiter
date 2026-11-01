@@ -45,6 +45,20 @@ const VARIANT_NESTED = [
   'printf "changed\\n" >> lib/a/lib/b/b.txt'
 ].join(' && ');
 
+/** A setup that makes the branch "listed" a commit of the base tree plus one entry git will not check out. */
+function badTree(mode, name) {
+  return `b=$(printf x | git hash-object -w --stdin) && t=$( (git ls-tree HEAD; printf "${mode} blob %s\\t${name}\\n" "$b") | git mktree)`
+    + ` && c=$(${FIXED_DATES} git -c user.name=f -c user.email=f@x commit-tree "$t" -p HEAD -m bad) && git branch listed "$c"`;
+}
+
+/** A setup where blob `a`'s loose file is copied into an earlier store and, in .git/objects, replaced by a hard link to blob `b`'s. */
+function hardLinked(a, b) {
+  const o = (v) => `.git/objects/$(echo $${v} | cut -c1-2)/$(echo $${v} | cut -c3-)`;
+  return `a=$(git rev-parse HEAD:${a}) && b=$(git rev-parse HEAD:${b})`
+    + ` && mkdir -p .git/modules/zz/objects/$(echo $a | cut -c1-2) && cp ${o('a')} .git/modules/zz/objects/$(echo $a | cut -c1-2)/`
+    + ` && rm -f ${o('a')} && ln ${o('b')} ${o('a')}`;
+}
+
 /** The fixture image for a variant, built once per file. */
 const VARIANTS = Object.freeze({
   plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
@@ -156,6 +170,20 @@ const VARIANTS = Object.freeze({
   // the listed commit's history (attempt 1 refused both; no history is read now).
   alternates: { setup: 'mkdir -p /opt/alt && mv .git/objects/?? /opt/alt/ && echo /opt/alt > .git/objects/info/alternates' },
   grafts: { setup: `printf "%s\\n" "$(git rev-parse HEAD)" > .git/info/grafts && sed -i "s/amount + 1/amount/" src/Vault.sol` },
+  // R13-F1: the tracked .gitattributes a named pipe, and untracked pipes (one an attributes file git would read for
+  // test/, one a .gitignore): opened by git, any would block it.
+  fifoattrs: {
+    files: { ...VAULT_REPO, '.gitattributes': '*.bin binary\n' },
+    setup: 'rm .gitattributes && mkfifo .gitattributes test/.gitattributes src/.gitignore pipe'
+  },
+  // R13-F3: a listed commit (the branch "listed") whose tree holds a path git will not check out: a symbolic link
+  // named .gitmodules, or an NTFS alias of .git (git~1). Built with mktree; the objects hash.
+  gitmodlink: { listed: 'listed', setup: badTree('120000', '.gitmodules') },
+  ntfsname: { listed: 'listed', setup: badTree('100644', 'git~1') },
+  // R13-F2: an earlier store (.git/modules/zz sorts before .git/objects) holds blob A; the later one holds A as a hard
+  // link to blob B's file. Each object must keep its own bytes, in either name order of A and B.
+  hardlink1: { setup: hardLinked('src/Vault.sol', 'test/Vault.t.sol') },
+  hardlink2: { setup: hardLinked('test/Vault.t.sol', 'src/Vault.sol') },
   // A SHA-256 repository.
   sha256: { objectFormat: 'sha256' },
   // Objects in packs only (the superproject's and a submodule's), with a commit-graph and a multi-pack-index.
@@ -745,6 +773,41 @@ test('attempt 2: a SHA-256 repository, and objects read from packs (a commit-gra
   assert.equal(r2.outcome, 'definitive', show(r2));
   assert.equal(r2.facts.checkout.corrected, 0);
   assert.equal(fileText(seen, 'lib/dep/dep.txt'), 'dep\n');
+});
+
+test('R13-F1: named pipes are not copied, so neither a pipe at the tracked .gitattributes nor an untracked one blocks git', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('fifoattrs');
+  const seen = {};
+  const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, ['.gitattributes', 'test/.gitattributes', 'src/.gitignore', 'pipe']) });
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', 'git apply read the attributes of test/ without blocking');
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.deepEqual(r.facts.checkout.correctedPaths, ['.gitattributes']);
+  assert.equal(fileText(seen, '.gitattributes'), '*.bin binary\n');
+  for (const p of ['test/.gitattributes', 'src/.gitignore', 'pipe']) assert.deepEqual(seen[p], ['absent'], p);
+});
+
+test('R13-F3: a hashed tree with a path git will not check out (a .gitmodules symbolic link, git~1) is the requester\'s error, on real git', { timeout: TIMEOUT }, async (t) => {
+  for (const [variant, name] of [['gitmodlink', '.gitmodules'], ['ntfsname', 'git~1']]) {
+    const fx = await fixture(variant);
+    const { result: r } = await run(t, claimDrain(fx));
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_OBJECT_INVALID'], variant);
+    assert.match(r.issues[0].detail, new RegExp(`a path git will not check out: .*${name.replace('.', '\\.')}`), variant);
+    assert.ok(!stepNames(r).some((n) => n.startsWith('patch:') || n === 'build'), variant);
+  }
+});
+
+test('R13-F2: objects hard-linked across stores keep their own bytes, whichever name comes first', { timeout: TIMEOUT }, async (t) => {
+  for (const variant of ['hardlink1', 'hardlink2']) {
+    const fx = await fixture(variant);
+    const seen = {};
+    const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, ['src/Vault.sol', 'test/Vault.t.sol']) });
+    assert.equal(r.outcome, 'definitive', `${variant}: ${show(r)}`);
+    assert.equal(r.gates.reproduces.status, 'pass', variant);
+    assert.equal(r.facts.checkout.corrected, 0, variant);
+    for (const p of ['src/Vault.sol', 'test/Vault.t.sol']) assert.equal(fileText(seen, p), VAULT_REPO[p], `${variant}: ${p}`);
+  }
 });
 
 test('R1-F1 (round 2): an inline-config error with a reason of kilobytes is an error, not an assertion', { timeout: TIMEOUT }, async (t) => {

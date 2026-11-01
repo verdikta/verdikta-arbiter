@@ -6,11 +6,13 @@
  * commands) the way a forge repository at the listed commit would, so the
  * gates and the schedule can be driven without Docker. The image's git
  * objects are a real object store (test/helpers/gitStore.js): `git cat-file`
- * answers from it, `git fast-import` is parsed and the fresh repository's
- * tree built from it. Every handler can be replaced per test; `execs()`
+ * answers from it, and the packs the runner gives `git index-pack` are read
+ * back and hashed independently, into the fresh repository. Every handler can be replaced per test; `execs()`
  * lists the execs in order, decoded.
  */
 
+const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 const { fakeDocker, healthyDaemon, nonceOf } = require('./fakeDocker');
 const { GitStore } = require('./gitStore');
 
@@ -122,51 +124,50 @@ function decode(call) {
   return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args) };
 }
 
-/** git's C-style quoting of a fast-import path, undone (byte string out). */
-function unquote(s) {
-  if (!s.startsWith('"')) return s;
-  let out = '';
-  for (let i = 1; i < s.length - 1; i += 1) {
-    if (s[i] !== '\\') { out += s[i]; continue; }
-    const n = s[i + 1];
-    if (/[0-7]/.test(n)) { out += String.fromCharCode(parseInt(s.slice(i + 1, i + 4), 8)); i += 3; } else { out += n; i += 1; }
+const PACK_TYPES = Object.freeze({ 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' });
+
+/**
+ * A pack the runner writes for `git index-pack --stdin`, read back
+ * independently: [{ type, content }]. Throws when it is not a well-formed,
+ * undeltified version 2 pack with the right trailing hash.
+ */
+function parsePack(buf, algo = 'sha1') {
+  const hashLen = algo === 'sha256' ? 32 : 20;
+  if (buf.toString('latin1', 0, 4) !== 'PACK' || buf.readUInt32BE(4) !== 2) throw new Error('pack: bad header');
+  const body = buf.subarray(0, buf.length - hashLen);
+  if (!crypto.createHash(algo).update(body).digest().equals(buf.subarray(buf.length - hashLen))) throw new Error('pack: bad trailing hash');
+  const count = buf.readUInt32BE(8);
+  const out = [];
+  let pos = 12;
+  for (let i = 0; i < count; i += 1) {
+    let c = buf[pos++];
+    const type = PACK_TYPES[(c >> 4) & 7];
+    let size = c & 0x0f;
+    let shift = 4;
+    while (c & 0x80) { c = buf[pos++]; size += (c & 0x7f) * 2 ** shift; shift += 7; }
+    if (!type) throw new Error('pack: a deltified or unknown entry');
+    const r = zlib.inflateSync(buf.subarray(pos, body.length), { info: true });
+    if (r.buffer.length !== size) throw new Error('pack: an entry whose size does not match');
+    out.push({ type, content: r.buffer });
+    pos += r.engine.bytesWritten;
   }
+  if (pos !== body.length) throw new Error('pack: trailing bytes');
   return out;
 }
 
-/** The fast-import streams the checkout writes: blobs, or one commit with M lines. */
-function parseFastImport(buf) {
-  let pos = 0;
-  const line = () => {
-    const nl = buf.indexOf(0x0a, pos);
-    if (nl < 0) throw new Error('fast-import: the stream ends without done');
-    const l = buf.toString('latin1', pos, nl);
-    pos = nl + 1;
-    return l;
-  };
-  const data = () => {
-    const m = /^data ([0-9]+)$/.exec(line());
-    if (!m) throw new Error('fast-import: expected data');
-    const out = buf.subarray(pos, pos + Number(m[1]));
-    pos += Number(m[1]);
-    if (buf[pos] === 0x0a) pos += 1;
-    return out;
-  };
-  const out = { blobs: [], commit: null };
-  for (;;) {
-    const l = line();
-    if (l === 'done') break;
-    if (l === 'blob') { out.blobs.push(data()); continue; }
-    const c = /^commit (.+)$/.exec(l);
-    if (!c) throw new Error(`fast-import: unexpected ${l}`);
-    const commit = { ref: c[1], author: line(), committer: line(), message: data().toString('utf8'), files: [] };
-    for (;;) {
-      const save = pos;
-      const m = /^M ([0-9]+) ([0-9a-f]+) (.+)$/.exec(line());
-      if (!m) { pos = save; break; }
-      commit.files.push({ mode: m[1], id: m[2], path: unquote(m[3]) });
-    }
-    out.commit = commit;
+/** The files a commit's trees describe, flattened: [{ path, mode, id }] (byte-string paths). */
+function filesOf(objects, treeId, prefix = '') {
+  const content = objects.get(treeId).content;
+  const out = [];
+  for (let pos = 0; pos < content.length;) {
+    const sp = content.indexOf(0x20, pos);
+    const nul = content.indexOf(0, sp);
+    const mode = content.toString('latin1', pos, sp);
+    const name = content.toString('latin1', sp + 1, nul);
+    const id = content.toString('hex', nul + 1, nul + 21 + (objects.algo === 'sha256' ? 12 : 0));
+    pos = nul + 1 + (objects.algo === 'sha256' ? 32 : 20);
+    if (mode === '40000') out.push(...filesOf(objects, id, `${prefix}${name}/`));
+    else out.push({ path: `${prefix}${name}`, mode, id });
   }
   return out;
 }
@@ -198,23 +199,27 @@ function claimSandbox({
   let committed = false;
   let pocRun = 0;
   const imageObjects = objects(new Map(image.store.objects));
-  // The runner's fresh repository, as fast-import fills it.
+  // The runner's fresh repository, as the runner's packs fill it (every object hashed here, independently).
   const fresh = new GitStore(image.store.algo);
-  const repo = { blobs: new Set(), commit: null, tree: null, files: null, imports: [] };
+  fresh.objects.algo = image.store.algo;
+  const repo = { commit: null, tree: null, files: null, packs: [], objects: fresh.objects };
   const gitDefaults = {
     init: () => ({ exitCode: 0 }),
     'cat-file --batch': (d) => ({ stdout: catFile(imageObjects, d.stdin.toString('latin1').split('\n').filter(Boolean), false) }),
     'cat-file --batch-check': (d) => ({ stdout: catFile(imageObjects, d.stdin.toString('latin1').split('\n').filter(Boolean), true) }),
-    'fast-import': (d) => {
-      const s = parseFastImport(d.stdin);
-      repo.imports.push(s);
-      for (const b of s.blobs) repo.blobs.add(fresh.add('blob', b));
-      if (s.commit) {
-        for (const f of s.commit.files) if (!repo.blobs.has(f.id)) return { exitCode: 128, stderr: `fatal: Not a blob: ${f.id}\n` };
-        repo.files = s.commit.files;
-        repo.tree = fresh.treeOfEntries(s.commit.files);
-        repo.commit = fresh.commit(repo.tree, s.commit.message);
-      }
+    'index-pack': (d) => {
+      const objs = parsePack(d.stdin, image.store.algo);
+      repo.packs.push(objs.map((o) => ({ ...o, id: fresh.add(o.type, o.content) })));
+      return { exitCode: 0, stdout: 'pack\n' };
+    },
+    'update-ref': (d) => {
+      const id = d.sub[2];
+      const o = fresh.objects.get(id);
+      if (!o || o.type !== 'commit') return { exitCode: 128, stderr: `fatal: ${id}: not a valid SHA1\n` };
+      repo.commit = id;
+      repo.tree = /^tree ([0-9a-f]+)/.exec(o.content.toString())[1];
+      repo.files = filesOf(fresh.objects, repo.tree);
+      for (const f of repo.files) if (!fresh.objects.has(f.id)) return { exitCode: 128, stderr: `fatal: missing blob ${f.id}\n` };
       return { exitCode: 0 };
     },
     'rev-parse': (d) => (d.sub.includes('refs/heads/main^{commit}')
@@ -275,4 +280,4 @@ function claimSandbox({
   return { docker, execs, repo, image };
 }
 
-module.exports = { BASE, POC, POC_PATCH, POC_DIFF, junit, drainFails, decode, stripEnv, claimSandbox, defaultImage, parseFastImport };
+module.exports = { BASE, POC, POC_PATCH, POC_DIFF, junit, drainFails, decode, stripEnv, claimSandbox, defaultImage, parsePack, filesOf };

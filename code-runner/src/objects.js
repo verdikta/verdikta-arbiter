@@ -14,16 +14,16 @@
  *   to check out as a path component: empty, `.`, `..`, `/`, `.git`)
  * - BatchReader: `git cat-file --batch` / `--batch-check` output, streamed,
  *   capped, never stopping the producer
- * - treeObjects: the tree objects git builds for a list of files (the
- *   runner's check on the fresh repository it writes them into)
- * - fastImportBlobs, fastImportCommit: the stream that writes verified
- *   objects into that fresh repository
+ * - treeObjects: the tree objects of a list of files, as git writes them
+ * - packObjects, commitObject: the pack that puts the verified blobs, the
+ *   runner's trees and its commit into the fresh repository
  *
  * Paths are byte strings ('latin1': one character per byte), so any name git
  * can hold round-trips and code-unit order is byte order.
  */
 
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 
 const ALGORITHMS = Object.freeze({ 40: 'sha1', 64: 'sha256' });
 
@@ -225,39 +225,44 @@ class BatchReader {
   }
 }
 
-/** A path as fast-import reads it: C-quoted when it starts with `"` or holds a line break (byte string in, Buffer out). */
-function fastImportPath(path) {
-  if (!path.startsWith('"') && !path.includes('\n')) return Buffer.from(path, 'latin1');
-  let out = '"';
-  for (const ch of path) {
-    const c = ch.charCodeAt(0);
-    if (ch === '"' || ch === '\\') out += `\\${ch}`;
-    else if (c < 0x20 || c === 0x7f) out += `\\${c.toString(8).padStart(3, '0')}`;
-    else out += ch;
-  }
-  return Buffer.from(`${out}"`, 'latin1');
-}
-
-/** A fast-import stream of blobs (no marks: the commit names them by id). */
-function fastImportBlobs(contents) {
-  const parts = [];
-  for (const c of contents) parts.push(Buffer.from(`blob\ndata ${c.length}\n`), c, Buffer.from('\n'));
-  parts.push(Buffer.from('done\n'));
-  return Buffer.concat(parts);
-}
+const PACK_TYPE = Object.freeze({ commit: 1, tree: 2, blob: 3 });
 
 /**
- * A fast-import stream of one root commit on `ref` holding `files` (each
- * { path, kind, id }, the blobs already in the repository).
+ * A pack (version 2) of `objects` ({ type, content }), undeltified, for
+ * `git index-pack --stdin`: git stores the runner's bytes and computes their
+ * ids itself, and judges no path (read-tree does, after). Each entry is its
+ * type and size, then its zlib-deflated content; the pack ends with the
+ * repository's hash of everything before it.
  */
-function fastImportCommit({ ref, ident, date, message, files }) {
-  const msg = Buffer.from(message, 'utf8');
-  const parts = [Buffer.from(`commit ${ref}\nauthor ${ident} ${date}\ncommitter ${ident} ${date}\ndata ${msg.length}\n`), msg, Buffer.from('\n')];
-  for (const f of files) parts.push(Buffer.from(`M ${MODE[f.kind]} ${f.id} `), fastImportPath(f.path), Buffer.from('\n'));
-  parts.push(Buffer.from('done\n'));
-  return Buffer.concat(parts);
+function packObjects(algo, objects) {
+  const head = Buffer.alloc(12);
+  head.write('PACK', 0, 'latin1');
+  head.writeUInt32BE(2, 4);
+  head.writeUInt32BE(objects.length, 8);
+  const parts = [head];
+  for (const { type, content } of objects) {
+    if (!PACK_TYPE[type]) throw new TypeError(`no pack type for ${type}`);
+    const bytes = [];
+    let size = content.length;
+    let b = (PACK_TYPE[type] << 4) | (size & 0x0f);
+    size = Math.floor(size / 16);
+    while (size > 0) {
+      bytes.push(b | 0x80);
+      b = size & 0x7f;
+      size = Math.floor(size / 128);
+    }
+    bytes.push(b);
+    parts.push(Buffer.from(bytes), zlib.deflateSync(content, { level: 1 }));
+  }
+  const body = Buffer.concat(parts);
+  return Buffer.concat([body, crypto.createHash(algo).update(body).digest()]);
+}
+
+/** A root commit's content: the tree, a fixed identity and date, the message. */
+function commitObject({ tree, ident, date, message }) {
+  return Buffer.from(`tree ${tree}\nauthor ${ident} ${date}\ncommitter ${ident} ${date}\n\n${message}`, 'utf8');
 }
 
 module.exports = {
-  algorithmOf, hexLength, hashObject, parseCommitTree, parseTree, badName, treeObjects, BatchReader, fastImportPath, fastImportBlobs, fastImportCommit, KIND, MODE
+  algorithmOf, hexLength, hashObject, parseCommitTree, parseTree, badName, treeObjects, BatchReader, packObjects, commitObject, KIND, MODE
 };
