@@ -568,8 +568,11 @@ image-pull failure"), never a verdict.
 - No run is admitted until the startup GC has removed what an earlier process
   of this instance left (A1b): those sandboxes hold no slot or memory in the
   new process, so until they are gone the capacity they use would look free.
-  A sweep that fails is retried every 5 s; meanwhile runs abstain
-  `admission_refused` and `/health` is 503 with the reason (`capacity.held`).
+  Admission opens only once a listing finds none left (a removal's exit code
+  alone is not taken as proof; the GC counts a failed removal as done only
+  when every error is "No such container"). A sweep that fails is retried
+  every 5 s; meanwhile runs abstain `admission_refused` and `/health` is 503
+  with the reason (`capacity.held`).
 - GC (`src/gc.js`) removes containers carrying this instance's label that no
   live run owns, or that are past their expiry label: at startup and every
   `CODE_RUNNER_GC_INTERVAL_SECONDS`.

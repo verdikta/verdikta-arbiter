@@ -73,7 +73,16 @@ async function startRunner({
       log.warn('startup GC could not remove the leftovers; runs stay refused until it can', { error: swept.error });
       return false;
     }
-    if (swept.removed.length) log.info('startup GC removed leftovers', { removed: swept.removed });
+    if (swept.removed.length) {
+      log.info('startup GC removed leftovers', { removed: swept.removed });
+      // Confirmed only by a listing that finds none left (a removal's exit
+      // code alone does not say every one is gone).
+      const check = await collectLeftovers({ docker, instance: config.instance, active: runner.active });
+      if (check.error || check.removed.length) {
+        log.warn('leftovers were still there after the startup GC; runs stay refused until none is', { error: check.error, found: check.removed });
+        return false;
+      }
+    }
     if (!stopping) runner.capacity.open();
     return true;
   };

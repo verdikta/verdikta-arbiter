@@ -107,3 +107,42 @@ test('R5-F1: no run is admitted until the startup sweep has removed an earlier p
   const ok = await request(at, { method: 'POST', path: '/v1/runs', body: runRequest() });
   assert.equal(ok.status, 200, ok.raw);
 });
+
+test('R5-F1 (round 6): with two leftovers, one gone already and the other failing to go, admission stays held until a listing finds none', async (t) => {
+  const { request } = require('../helpers/http');
+  const { runRequest } = require('../helpers/requests');
+  const exp = Math.floor(Date.now() / 1000) + 600;
+  const present = new Set(['vcr-aaaaaaaaaaaaaaaa-1', 'vcr-bbbbbbbbbbbbbbbb-1']);
+  let rmCalls = 0;
+  const h = healthyDaemon();
+  const docker = fakeDocker({
+    ...h,
+    ps: (args) => ({ stdout: args.includes('--filter') ? [...present].map((n) => `${n}\t${exp}\n`).join('') : '' }),
+    rm: (args, ...rest) => {
+      const names = args.filter((a) => present.has(a) || /^vcr-[ab]{16}-1$/.test(a));
+      if (names.length === 0) return h.rm(args, ...rest);
+      rmCalls += 1;
+      if (rmCalls === 1) {
+        // A vanished meanwhile (another sweep took it); B's removal fails.
+        present.delete('vcr-aaaaaaaaaaaaaaaa-1');
+        return { exitCode: 1, stderr: 'Error response from daemon: No such container: vcr-aaaaaaaaaaaaaaaa-1\nError response from daemon: removal of container vcr-bbbbbbbbbbbbbbbb-1 is already in progress\n' };
+      }
+      for (const n of names) present.delete(n);
+      return { stdout: '' };
+    }
+  });
+  const started = await startRunner({
+    config: testConfig(), docker, log: silent, onSignal: () => {}, exit: () => {}, sweepRetryMs: 30,
+    server: { meminfo: async () => ({ availableMb: 1e6, error: null }), statfs: async () => ({ bavail: 1e12, bsize: 1 }), stepsFor: () => [] }
+  });
+  t.after(() => started.stop('test'));
+  const at = { host: started.address.host, port: started.address.port };
+  assert.match(started.runner.capacity.held || '', /earlier process/, 'B is still there: admission stays held');
+  const refused = await request(at, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(refused.status, 503, refused.raw);
+  const until = Date.now() + 5000;
+  while (started.runner.capacity.held && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+  assert.equal(started.runner.capacity.held, null);
+  assert.equal(present.size, 0, 'opened only once none was left');
+  assert.equal((await request(at, { method: 'POST', path: '/v1/runs', body: runRequest() })).status, 200);
+});
