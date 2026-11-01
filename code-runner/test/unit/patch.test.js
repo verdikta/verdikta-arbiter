@@ -158,11 +158,22 @@ test('R17-F1: a binary section whose postimage is an object already in the repos
     assert.ok(two.ok);
     assert.equal(two.expansionBytes, 2 * 1024 * 1024, form);
   }
-  // git reads the id in any case and with a mode after it; a text section's index line is never used.
+  // git reads the id in any case and with a mode after it.
   const upper = scanPatch(Buffer.from(section(1, 'summary', big.toUpperCase()).replace(`..${big.toUpperCase()}`, `..${big.toUpperCase()} 100644`) + '\n'), LIMITS, { objects });
   assert.equal(upper.expansionBytes, 1024 * 1024);
+  // Round 18: git matches a summary by its first and last bytes only, so an embedded carriage return (or any other byte)
+  // still makes it binary. The count never asks: every section naming an existing object counts, marker or not.
+  for (const summary of ['Binary files /dev/null and b/test/c\r.bin differ', 'Files /dev/null\rand b/test/c.bin differ', 'no binary marker at all']) {
+    const sixty = Buffer.from(Array.from({ length: 60 }, (_, i) => [
+      `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${big}`, summary
+    ].join('\n')).join('\n') + '\n');
+    assert.equal(scanPatch(sixty, LIMITS, { objects }).code, 'PATCH_EXPANSION', JSON.stringify(summary));
+  }
+  // A text section whose postimage is an existing object (the patch recreates a tracked file) counts too: an over-count.
   const text = scanPatch(Buffer.from(['diff --git a/test/t.sol b/test/t.sol', `index ${'0'.repeat(40)}..${big}`, '--- /dev/null', '+++ b/test/t.sol', '@@ -0,0 +1 @@', '+x', ''].join('\n')), LIMITS, { objects });
-  assert.ok(text.expansionBytes < 100, 'the existing blob is not counted for a text section (only its added lines are)');
+  assert.ok(text.expansionBytes >= 1024 * 1024);
+  // An index line before any `diff --git` header is not one git reads.
+  assert.ok(scanPatch(Buffer.from(`index ${'0'.repeat(40)}..${big}\n`), LIMITS, { objects }).expansionBytes === 0);
 });
 
 test('added text counts toward expansion; many hunks of added text past 50 MB would fail', () => {

@@ -833,13 +833,19 @@ test('R13-F2: objects hard-linked across stores keep their own bytes, whichever 
   }
 });
 
-test('R17-F1: binary patches naming an existing blob as their postimage count its size at every destination, with real git', { timeout: TIMEOUT }, async (t) => {
+test('R17-F1: binary patches naming an existing blob as their postimage (any summary form, a carriage return inside included) count its size at every destination, with real git', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('big');
+  // Round 18: git matches a summary by its first and last bytes only, so one with a carriage return inside is binary too.
+  const SUMMARY = {
+    summary: (i) => [`Binary files /dev/null and b/test/c${i}.bin differ`],
+    'summary-cr': (i) => [`Binary files /dev/null and b/test/c${i}\r.bin differ`],
+    'files-cr': (i) => [`Files /dev/null\rand b/test/c${i}.bin differ`],
+    literal: () => ['GIT binary patch', 'literal 0', 'HcmV?d00001', '', 'literal 0', 'HcmV?d00001', '']
+  };
   const section = (i, form) => [
-    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${BIG_ID}`,
-    ...(form === 'summary' ? [`Binary files /dev/null and b/test/c${i}.bin differ`] : ['GIT binary patch', 'literal 0', 'HcmV?d00001', '', 'literal 0', 'HcmV?d00001', ''])
+    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${BIG_ID}`, ...SUMMARY[form](i)
   ].join('\n');
-  for (const form of ['summary', 'literal']) {
+  for (const form of Object.keys(SUMMARY)) {
     // 50 copies of 1.2 MB: past the 50 MB expansion, failed on the input basis before git loads anything.
     const fifty = Buffer.from(Array.from({ length: 50 }, (_, i) => section(i, form)).join('\n') + '\n');
     const { result: r1 } = await run(t, claim(fx, fifty));

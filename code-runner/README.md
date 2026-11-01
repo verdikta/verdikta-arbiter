@@ -437,12 +437,15 @@ driver, and no conversion changes a file's bytes.
 **Expansion** (`src/patch.js`) is what git would have to materialise: every
 binary hunk, forward and reverse (git inflates both while it parses), at its
 declared size read as git's `strtoul` reads it, a forward delta's target at
-the size its header declares, and every added text line. A binary section
-whose `index` line names, as its postimage, an object the fresh repository
-already holds counts at that object's size, at every destination: git loads
-that object instead of the hunk (`apply_binary`), so a summary-only `Binary
-files … differ` or a `literal 0` could otherwise copy a large blob to many
-paths. It is counted from the patch's bytes and the checkout's object sizes
+the size its header declares, and every added text line. A section whose
+`index` line names, as its postimage, an object the fresh repository already
+holds counts at that object's size, at every destination: for a binary
+section git loads that object instead of the hunk (`apply_binary`), so a
+summary-only `Binary files … differ` or a `literal 0` could otherwise copy a
+large blob to many paths. Which sections git reads as binary is not
+re-derived (it matches a summary line by its first and last bytes only):
+every section naming an existing object counts, a text one recreating a
+tracked file included. It is counted from the patch's bytes and the checkout's object sizes
 before git sees the patch, so a compression bomb (a 60 KB patch declaring 60
 MB of zeros) fails `applies` instead of reaching git, which inflates every
 hunk in memory before it writes anything. A copy (`copy from`)
