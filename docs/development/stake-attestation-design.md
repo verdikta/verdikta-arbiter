@@ -7,6 +7,9 @@ around it**. Code bounties, the original framing, are out of scope and summarise
 in Appendix A; the full code-bounty design is in this file's history at `df0e2de`.
 **MVP scope (2026-10-30, owner):** Foundry artifacts only, on a new attestation
 site separate from the bounty site (§17 Phase 1; §20 decisions 17–18).
+**Errata (2026-11-01):** six corrections found while building the MVP, E1–E6,
+are in one dated note at the top of §13.2; where they conflict with the text,
+they win.
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, two ClassIDs with hard limits, image pins,
 trusted builder keys, the outcome set), verdikta-applications (a new
@@ -1391,6 +1394,10 @@ therefore an operator cost, which is why admission refuses early — before a pu
 before a model call — rather than failing late, and why the envelope keeps the
 work inside the budget on ordinary hosts.
 
+Erratum E6 (2026-11-01, see §13.2) amends the last row of the table: the bond
+comes back only when the aggregator refused to start every attempt; a claim
+whose rounds ran but never settled a verdict forfeits it at expiry.
+
 ## 13. The `StakeAttestation` contract
 
 A new contract in verdikta-applications, deployed beside `BountyEscrow` and, like
@@ -1446,6 +1453,68 @@ paidWei, state ∈ { Committed, Revealable, Revealed, Judged, Disputed, Settled,
 
 ### 13.2 Functions and who pays
 
+> **Errata, 2026-11-01.** Building the MVP found places where this design
+> assumes something the deployed aggregator does not do, and the owner changed
+> two rules while it was built. The stake-attestation build plan records them as
+> errata E1–E6, approved by the owner (E1–E4 on 2026-10-31 with the plan, E5
+> on 2026-10-31, E6 on 2026-11-01). Where they conflict with §§10–14, they win.
+>
+> - **E1. The disclosure line carries the commitments** (§13.3, §14, the
+>   `disclosure` gate of §10.1). §13.3's line names only the two keys, but the
+>   gate also needs the two commitments, and no other request field carries
+>   them. The addendum's first line is, in ASCII with single spaces and no
+>   trailing newline:
+>   `verdikta-disclosure: 0x<archiveSha256> 0x<ciphertextSha256> <ciphertextCid> 0x<contentKey> 0x<ephemeralKey>`.
+>   The hashes are 64 lowercase hex digits, the content key (age's 16-byte file
+>   key) 32 and the ephemeral key (the X25519 ephemeral secret) 64; the
+>   ciphertext CID is the one given to `disclose` (E5). The line is 303 to 357
+>   bytes. The EA fetches the ciphertext by that CID, checks its SHA-256
+>   against `ciphertextSha256`, re-encrypts the revealed archive with the keys
+>   to the disclosure key of the listing archive at `cids[0]`, and compares
+>   bytes. A line that does not parse strictly, and any mismatch, settles
+>   INVALID; a listing disclosure key that cannot be used is the listing's
+>   fault, a requester error with no commit.
+> - **E2. At most 10 CIDs and a 1,000-byte addendum** (§13.3;
+>   `MAX_CID_COUNT` and `MAX_ADDENDUM_LENGTH` in verdikta-dispatcher). `cids`
+>   is `[listing (or dispute) archive, claim, up to 8 prior valid findings]`,
+>   not 20. The maker's dispute statement (up to 4 KB) does not fit the
+>   addendum, so it is pinned and its CID travels in a second line,
+>   `verdikta-dispute: <statementCid>`, which the EA strips like the first,
+>   fetches and fences as the maker's argument.
+> - **E3. Prepay is checked at reveal** (`reveal`, `retrigger`, `dispute`
+>   below). The aggregator's `maxTotalFee` can change between commit and
+>   reveal, so these calls are payable: they top the prepay up to the live
+>   figure, and the excess returns through `ethOwed`.
+> - **E4. There is no aggregator callback** (`fulfill` below). The aggregator
+>   never calls the requester; `BountyEscrow` polls. `fulfill` is a
+>   permissionless `finalize(claimId)` that reads `getEvaluation`, uses
+>   `finalizeEvaluationTimeout` / `getAggregationStatus` for failed rounds, and
+>   treats a malformed vector as a failed round (a sum of 999,995 to 1,000,000
+>   is valid: the aggregator floors each averaged component). The site's keeper
+>   calls it. Each request goes through its own `EvaluationWallet` clone so
+>   `ethOwed` leftovers reach the right payer.
+> - **E5. Two-step commit** (§13.1, `commit` below; owner decision,
+>   2026-10-31). A pending `commit` must not expose the ciphertext, or a maker
+>   could front-run it with `close` or `rollForward` and decrypt the finding for
+>   free. `commit(listingId, archiveHash, ciphertextSha256)` stores the two
+>   hashes, the bond and the prepay; once it is mined, the hunter pins the
+>   ciphertext and calls `disclose(claimId, ciphertextCid)` within
+>   `DISCLOSE_WINDOW` (1 hour, a program constant). The fix window and
+>   `disclosureGrace` run from `disclose`; commit order and "known issues
+>   listed before the commit" still use the commit time. A claim not disclosed
+>   in time may be expired by anyone: bond to the maker, prepay back to the
+>   hunter, counted as undisclosed (as decision 15 treats an unrevealed
+>   commit). `release` and `rollForward` apply to disclosed claims only.
+> - **E6. The bond follows the round** (§12, last row; owner decision,
+>   2026-11-01). §9.3 keeps resource and time limits as an abstention, so claim
+>   code could make every arbiter abstain on purpose, and §12 then returned the
+>   bond. Now a round the arbiters ran that settled no verdict (a malformed
+>   result included) leaves the claim re-triggerable with a fresh prepay inside
+>   the reveal window, and if no round settles before expiry the bond goes to
+>   the maker. The bond comes back only when the aggregator refused to start
+>   every attempt (a failed submission). The prepay of a started round is
+>   spent.
+
 | Function | Caller | Pays | Effect |
 |---|---|---|---|
 | `list(params, listingCid, disputeCid, knownIssueIds)` | maker | gas | Creates the listing from the attested archives; the site has validated them (§8.2) but the contract trusts only what it stores |
@@ -1475,6 +1544,11 @@ forfeits the bond to the maker, which covers the escalation prepay; one that
 holds costs the maker the prepay and is recorded as a failed dispute.
 
 ### 13.3 Request composition
+
+Errata E1 and E2 (2026-11-01, see §13.2) amend this section: the disclosure
+line also carries the two commitments and the ciphertext CID, at most 8 prior
+findings travel with a claim, and a dispute statement travels by CID in a
+second machine line.
 
 The contract composes the evaluation request from state it vouches for, so no
 off-chain party has to be trusted for what the jury sees:

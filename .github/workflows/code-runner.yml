@@ -1,0 +1,103 @@
+name: Code Runner
+
+# The stake-attestation code runner (code-runner/, design §9). Unit tests need
+# no Docker; the Docker tests run twice, under runc and under gVisor (runsc),
+# because arbiters run claims under gVisor and developers on macOS use runc.
+# claude/stake-attestation is the integration branch its node PRs land in.
+
+on:
+  pull_request:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['code-runner/**', '.github/workflows/code-runner.yml']
+  push:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['code-runner/**', '.github/workflows/code-runner.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-runner-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The gVisor release verdikta-agents' sandbox-kit pins (GVISOR_RELEASE), and
+  # the SHA-512 of its x86_64 gvisor.tar.bz2.
+  GVISOR_VERSION: '20260928.0'
+  GVISOR_SHA512: c8d3a9fd4d4c4f5b8ff213caa4517356be128d18659ec4cde37828fe797f61a9725a602a846c81a8ed19c057a996515d31c081eba343ed4613a89951ba32ed59
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        working-directory: code-runner
+        run: npm ci
+      - name: Unit tests
+        working-directory: code-runner
+        run: npm test
+
+  docker:
+    name: Docker tests (${{ matrix.runtime }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        runtime: [runc, runsc]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform)
+        if: matrix.runtime == 'runsc'
+        run: |
+          set -euo pipefail
+          url="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}/x86_64/gvisor.tar.bz2"
+          curl -fsSL -o gvisor.tar.bz2 "$url"
+          echo "${GVISOR_SHA512}  gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${GVISOR_VERSION}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf gvisor.tar.bz2 -C "$dest"
+          "$dest/runsc" --version
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo cat "$cfg"
+          # A reload registers the runtime without restarting containers, as
+          # on arbiter hosts.
+          sudo systemctl reload docker
+          for i in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc'
+          docker run --rm --runtime runsc --network none ubuntu@sha256:69cecf4bbf72d2d44a9eef1b71fb98c7fb973d78af11399deccef19beb008ad9 uname -a
+
+      - name: Install
+        working-directory: code-runner
+        run: npm ci
+
+      - name: Docker tests
+        working-directory: code-runner
+        env:
+          CODE_RUNNER_RUNTIME: ${{ matrix.runtime }}
+        run: npm run test:docker
+
+      - name: No container left behind
+        if: always()
+        run: |
+          left=$(docker ps --all --filter label=verdikta.code-runner --format '{{.Names}}')
+          if [ -n "$left" ]; then
+            echo "::error::containers left behind: $left"
+            exit 1
+          fi

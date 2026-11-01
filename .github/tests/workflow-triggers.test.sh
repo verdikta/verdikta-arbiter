@@ -24,7 +24,7 @@ is() { # is FILE EXPR EXPECTED_JSON MESSAGE
     [ "$got" = "$3" ] && ok || bad "$1: $4 (got $got)"
 }
 
-for f in e2e.yml repo-policy.yml secret-scan.yml; do
+for f in e2e.yml repo-policy.yml secret-scan.yml code-runner.yml; do
     [ -f "$WF/$f" ] && ok || { bad "$f is missing"; continue; }
     for ev in pull_request push; do
         for b in main master "$INTEGRATION"; do
@@ -52,6 +52,15 @@ for ev in pull_request push; do
     done
 done
 is e2e.yml "on.dig('pull_request', 'paths') == on.dig('push', 'paths')" true "pull_request and push path filters differ"
+
+# code-runner: its unit and Docker jobs run for every change to code-runner/.
+for ev in pull_request push; do
+    for p in 'code-runner/**' '.github/workflows/code-runner.yml'; do
+        is code-runner.yml "on.dig('$ev', 'paths').to_a.include?('$p')" true "$ev paths miss $p"
+    done
+done
+is code-runner.yml "w['jobs'].keys" '["unit","docker"]' "jobs added or removed (check their secret gates)"
+is code-runner.yml "w.dig('jobs', 'docker', 'strategy', 'matrix', 'runtime')" '["runc","runsc"]' "Docker tests no longer run under both runtimes"
 
 # Unchanged: the nightly L4 and the dispatch inputs.
 is e2e.yml "on['schedule']" '[{"cron":"0 7 * * *"}]' "nightly schedule changed"

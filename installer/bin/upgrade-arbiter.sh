@@ -1404,8 +1404,16 @@ check_job_spec_template
 echo -e "${BLUE}Pre-upgrade: Forcing fresh install of @verdikta/common in dev folder...${NC}"
 echo -e "${BLUE}Note: This bypasses npm cache to ensure latest ClassID data (including new ClassIDs)${NC}"
 
-# Force reinstall in DEV AI Node
-if [ -d "$REPO_AI_NODE" ]; then
+# Force reinstall in DEV AI Node, unless its package.json pins one exact
+# release (installer/util/common-pin.js): that pin wins over `latest`, so the
+# upgrade never replaces it (the stake-attestation prerelease carries the
+# code-review gates, and the AI Node and adapter must agree on it).
+if [ -d "$REPO_AI_NODE" ] && DEV_COMMON_PIN=$(node "$UTIL_DIR/common-pin.js" "$REPO_AI_NODE"); then
+    echo -e "${BLUE}DEV AI Node pins @verdikta/common@${DEV_COMMON_PIN}; installing exactly that release.${NC}"
+    cd "$REPO_AI_NODE"
+    npm install "@verdikta/common@${DEV_COMMON_PIN}" --save-exact
+    cd "$SCRIPT_DIR"
+elif [ -d "$REPO_AI_NODE" ]; then
     echo -e "${BLUE}Updating DEV AI Node @verdikta/common...${NC}"
     cd "$REPO_AI_NODE"
     
@@ -1429,8 +1437,13 @@ else
     echo -e "${YELLOW}DEV AI Node directory not found, skipping update${NC}"
 fi
 
-# Force reinstall in DEV External Adapter
-if [ -d "$REPO_EXTERNAL_ADAPTER" ]; then
+# Force reinstall in DEV External Adapter, unless it pins one exact release (as above)
+if [ -d "$REPO_EXTERNAL_ADAPTER" ] && DEV_COMMON_PIN=$(node "$UTIL_DIR/common-pin.js" "$REPO_EXTERNAL_ADAPTER"); then
+    echo -e "${BLUE}DEV External Adapter pins @verdikta/common@${DEV_COMMON_PIN}; installing exactly that release.${NC}"
+    cd "$REPO_EXTERNAL_ADAPTER"
+    npm install "@verdikta/common@${DEV_COMMON_PIN}" --save-exact
+    cd "$SCRIPT_DIR"
+elif [ -d "$REPO_EXTERNAL_ADAPTER" ]; then
     echo -e "${BLUE}Updating DEV External Adapter @verdikta/common...${NC}"
     cd "$REPO_EXTERNAL_ADAPTER"
     npm cache clean --force 2>/dev/null || true

@@ -1,0 +1,535 @@
+'use strict';
+
+/**
+ * The container-launch module (design §9.1). Every argv the runner hands to
+ * Docker for a sandbox is built here, from validated values only: the image
+ * reference (pinned by digest), the configured runtime, and the effective
+ * numeric limits. Nothing else from a spec or a claim reaches these argv, so a
+ * spec cannot add, drop or weaken a flag.
+ *
+ * A sandbox is one fresh container per check: `docker create` with a
+ * keepalive (`sleep`, our entrypoint, not the image's) under `--init`, a
+ * mounts check, `docker start`, then each step through `docker exec` and the
+ * runner's launcher (launcher.js), which proves with a per-exec nonce that the
+ * step's command started. The keepalive's length ends the container shortly
+ * after the deadline even if the runner dies, and the labels let the GC find
+ * anything a crash left behind.
+ */
+
+const { IMAGE_REF, CLASS_HARD_LIMITS, OCI_PLATFORM } = require('./classLimits');
+const { runText, isUnreachableText } = require('./docker');
+const { HeadTail, Capped } = require('./capture');
+const { newNonce, launcherArgv, StartGate, LAUNCHER_CHECK, LAUNCHER_PATH, PROBE_SCRIPT } = require('./launcher');
+const { ABSTAIN, Abstain, RequesterError, classifyExec } = require('./result');
+
+/** The non-root user every sandbox process runs as. */
+const SANDBOX_USER = '10001:10001';
+const SANDBOX_UID = 10001;
+const SANDBOX_HOSTNAME = 'sandbox';
+/** The work tree (the repository's writable copy) and $HOME: tmpfs mounts, like /tmp. */
+const WORK_DIR = '/work';
+const HOME_DIR = '/home/sandbox';
+/** Fixed environment (§9.3): never the host's. */
+const SANDBOX_ENV = Object.freeze({ TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0', HOME: HOME_DIR });
+
+/**
+ * The scratch: the root filesystem is read-only and these memory-backed
+ * tmpfs mounts are the only writable places. Their sizes (MiB) are the
+ * scratch cap, 1,792 MiB in all; what is written is also memory charged to
+ * the container, so it counts against --memory too. Chosen from what a forge
+ * build and test write: out/ and cache/ inside the work tree, ~/.foundry under
+ * $HOME, and /tmp. Only the work tree may hold executables (solc, scripts).
+ */
+const SCRATCH_MB = Object.freeze({ work: 1024, tmp: 512, home: 256 });
+const TMPFS = Object.freeze([
+  `${WORK_DIR}:rw,exec,nosuid,nodev,size=${SCRATCH_MB.work}m,mode=0755,uid=${SANDBOX_UID},gid=${SANDBOX_UID}`,
+  `/tmp:rw,noexec,nosuid,nodev,size=${SCRATCH_MB.tmp}m,mode=1777`,
+  `${HOME_DIR}:rw,noexec,nosuid,nodev,size=${SCRATCH_MB.home}m,mode=0700,uid=${SANDBOX_UID},gid=${SANDBOX_UID}`
+]);
+const RUNTIMES = Object.freeze(['runsc', 'runc']);
+/** linux/amd64 is the class platform; linux/arm64 exists for runc development on Apple silicon. */
+const PLATFORMS = Object.freeze([OCI_PLATFORM, 'linux/arm64']);
+
+const LABEL = 'verdikta.code-runner';
+const LABEL_INSTANCE = `${LABEL}.instance`;
+const LABEL_RUN = `${LABEL}.run`;
+const LABEL_EXPIRES = `${LABEL}.expires`;
+
+const NAME = /^vcr-[0-9a-f]{16}-[0-9]{1,3}$/;
+const RUN_ID = /^[0-9a-f]{16}$/;
+const INSTANCE = /^[a-z0-9][a-z0-9-]{0,31}$/;
+const ENV_KEY = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** cgroup v2 and v1 files with the OOM-kill and fork-refusal counters. */
+const COUNTER_FILES = Object.freeze([
+  '/sys/fs/cgroup/memory.events',
+  '/sys/fs/cgroup/pids.events',
+  '/sys/fs/cgroup/memory/memory.oom_control',
+  '/sys/fs/cgroup/pids/pids.events'
+]);
+
+const MOUNTS_FORMAT = '{"mounts":{{json .Mounts}},"readOnly":{{json .HostConfig.ReadonlyRootfs}}}';
+
+const LAUNCH_TIMEOUT_MS = 120000;
+const CONTROL_TIMEOUT_MS = 15000;
+const REMOVE_TIMEOUT_MS = 60000;
+/** After a step that may have killed the sandbox, how long to wait for Docker to notice. */
+const SETTLE_MS = 3000;
+
+function positiveInt(v, max, what) {
+  if (!Number.isInteger(v) || v < 1 || (max !== undefined && v > max)) {
+    throw new TypeError(`${what} must be an integer from 1 to ${max === undefined ? 'any' : max}, got ${JSON.stringify(v)}`);
+  }
+  return v;
+}
+
+function checkName(name) {
+  if (typeof name !== 'string' || !NAME.test(name)) throw new TypeError(`invalid sandbox name ${JSON.stringify(name)}`);
+  return name;
+}
+
+function noNul(s) {
+  return typeof s === 'string' && !s.includes('\0');
+}
+
+/**
+ * The exact `docker create` argv of a sandbox (started with startArgs once
+ * its mounts are checked).
+ * @param {object} o
+ * @param {string} o.name - vcr-<runId>-<n>
+ * @param {string} o.image - name@sha256:<digest>
+ * @param {'runsc'|'runc'} o.runtime - from the runner's config, never the spec
+ * @param {string} [o.platform] - the OCI platform to run (the class's linux/amd64; linux/arm64 only in runc development)
+ * @param {{cpus:number, memoryMb:number, pids:number}} o.limits - effective limits (within the class maxima)
+ * @param {string} o.instance - the runner instance label (GC scope)
+ * @param {string} o.runId
+ * @param {number} o.expiresAt - epoch seconds after which the GC may remove it
+ * @param {number} o.keepaliveSeconds - the container stops on its own after this
+ */
+function createArgs({ name, image, runtime, platform = OCI_PLATFORM, limits, instance, runId, expiresAt, keepaliveSeconds }) {
+  checkName(name);
+  if (typeof image !== 'string' || !IMAGE_REF.test(image)) throw new TypeError(`image must be pinned by digest, got ${JSON.stringify(image)}`);
+  if (!RUNTIMES.includes(runtime)) throw new TypeError(`runtime must be one of ${RUNTIMES.join(', ')}, got ${JSON.stringify(runtime)}`);
+  if (typeof instance !== 'string' || !INSTANCE.test(instance)) throw new TypeError(`invalid instance ${JSON.stringify(instance)}`);
+  if (typeof runId !== 'string' || !RUN_ID.test(runId)) throw new TypeError(`invalid run id ${JSON.stringify(runId)}`);
+  if (!limits || typeof limits !== 'object') throw new TypeError('limits are required');
+  const cpus = positiveInt(limits.cpus, CLASS_HARD_LIMITS.cpus, 'cpus');
+  const memoryMb = positiveInt(limits.memoryMb, CLASS_HARD_LIMITS.memoryMb, 'memoryMb');
+  const pids = positiveInt(limits.pids, CLASS_HARD_LIMITS.pids, 'pids');
+  if (!PLATFORMS.includes(platform)) throw new TypeError(`platform must be one of ${PLATFORMS.join(', ')}, got ${JSON.stringify(platform)}`);
+  positiveInt(expiresAt, undefined, 'expiresAt');
+  positiveInt(keepaliveSeconds, undefined, 'keepaliveSeconds');
+
+  const env = Object.entries(SANDBOX_ENV).flatMap(([k, v]) => ['--env', `${k}=${v}`]);
+  return [
+    'create', '--pull', 'never',
+    '--platform', platform,
+    '--name', name,
+    '--label', `${LABEL}=1`,
+    '--label', `${LABEL_INSTANCE}=${instance}`,
+    '--label', `${LABEL_RUN}=${runId}`,
+    '--label', `${LABEL_EXPIRES}=${expiresAt}`,
+    '--runtime', runtime,
+    '--network', 'none',
+    '--cap-drop', 'ALL',
+    '--security-opt', 'no-new-privileges',
+    '--read-only',
+    ...TMPFS.flatMap((t) => ['--tmpfs', t]),
+    '--ipc', 'none',
+    '--user', SANDBOX_USER,
+    '--pids-limit', String(pids),
+    '--memory', `${memoryMb}m`,
+    '--memory-swap', `${memoryMb}m`,
+    '--cpus', String(cpus),
+    '--hostname', SANDBOX_HOSTNAME,
+    ...env,
+    '--workdir', WORK_DIR,
+    '--log-driver', 'none',
+    '--init',
+    '--entrypoint', 'sleep',
+    image,
+    String(keepaliveSeconds)
+  ];
+}
+
+/**
+ * The exact `docker exec` argv. `argv` (the launcher plus the step's argv, see
+ * launcherArgv) follows the container name, where Docker treats it as the
+ * command and its arguments, never as options.
+ */
+function execArgs({ name, argv, stdin = false, env = {}, workdir = null }) {
+  checkName(name);
+  if (!Array.isArray(argv) || argv.length === 0 || !argv.every(noNul)) {
+    throw new TypeError('argv must be a non-empty array of strings without NUL');
+  }
+  const envFlags = [];
+  for (const [k, v] of Object.entries(env || {})) {
+    if (!ENV_KEY.test(k) || !noNul(v)) throw new TypeError(`invalid env entry ${JSON.stringify(k)}`);
+    envFlags.push('--env', `${k}=${v}`);
+  }
+  if (workdir !== null && (!noNul(workdir) || !workdir.startsWith('/'))) {
+    throw new TypeError(`workdir must be an absolute path, got ${JSON.stringify(workdir)}`);
+  }
+  return [
+    'exec',
+    ...(stdin ? ['--interactive'] : []),
+    '--user', SANDBOX_USER,
+    ...envFlags,
+    ...(workdir ? ['--workdir', workdir] : []),
+    name,
+    ...argv
+  ];
+}
+
+function startArgs(name) {
+  return ['start', checkName(name)];
+}
+
+/** Removes the containers and their anonymous volumes, if any were made. */
+function removeArgs(names) {
+  if (!Array.isArray(names) || names.length === 0) throw new TypeError('names are required');
+  return ['rm', '--force', '--volumes', ...names.map(checkName)];
+}
+
+/** Parse the counters probe's output (`==> file <==` sections) into { oomKill, pidsMax }. */
+function parseCounters(text) {
+  const out = { oomKill: null, pidsMax: null };
+  let file = null;
+  for (const line of String(text || '').split('\n')) {
+    const header = /^==> (.+) <==$/.exec(line);
+    if (header) { file = header[1]; continue; }
+    const kv = /^(\S+)\s+(\d+)$/.exec(line.trim());
+    if (!kv || !file) continue;
+    const n = Number(kv[2]);
+    if (kv[1] === 'oom_kill' && /memory/.test(file)) out.oomKill = (out.oomKill || 0) + n;
+    if (kv[1] === 'max' && /pids/.test(file)) out.pidsMax = (out.pidsMax || 0) + n;
+  }
+  return out.oomKill === null && out.pidsMax === null ? null : out;
+}
+
+function parseState(text) {
+  const s = JSON.parse(text);
+  return { running: Boolean(s.Running), oomKilled: Boolean(s.OOMKilled), exitCode: Number(s.ExitCode), status: String(s.Status || '') };
+}
+
+function within(ms, signal) {
+  return { timeoutMs: ms, signal };
+}
+
+/** Why a run-level or step-level abort happened, as an Abstain cause. */
+const KILL_CAUSE = Object.freeze({
+  step: ABSTAIN.STEP_TIMEOUT,
+  run: ABSTAIN.STEP_TIMEOUT,
+  deadline: ABSTAIN.DEADLINE,
+  cancel: ABSTAIN.CANCELLED
+});
+
+/** step | run | deadline | cancel: an abort with any other reason is a cancellation. */
+function killReason(signal) {
+  const r = signal.reason;
+  return typeof r === 'string' && Object.prototype.hasOwnProperty.call(KILL_CAUSE, r) ? r : 'cancel';
+}
+
+class Sandbox {
+  /**
+   * @param {object} o
+   * @param {object} o.docker - a client from createDocker()
+   * @param {string} o.name
+   * @param {'runsc'|'runc'} o.runtime
+   */
+  constructor({ docker, name, runtime, log }) {
+    this.docker = docker;
+    this.name = checkName(name);
+    this.runtime = runtime;
+    this.log = log;
+    this.counters = null;
+    this.killing = null;
+    this.launched = false;
+    this.pidsLimit = null;
+  }
+
+  /**
+   * Start the container. Throws Abstain (step `launch`) when it cannot.
+   * @param {object} spec - createArgs() input minus name and runtime
+   * @param {{signal?:AbortSignal}} [o]
+   */
+  async launch(spec, { signal } = {}) {
+    const fail = (r) => {
+      if (r.aborted && signal) return new Abstain(KILL_CAUSE[killReason(signal)], 'stopped while the sandbox was starting', { step: 'launch' });
+      return new Abstain(...launchFailure(r), { step: 'launch' });
+    };
+    const created = await runText(this.docker, createArgs({ ...spec, name: this.name, runtime: this.runtime }), within(LAUNCH_TIMEOUT_MS, signal));
+    if (created.exitCode !== 0) throw fail(created);
+    // A read-only root, and no mount but the runner's tmpfs ones: not even
+    // the anonymous volumes an image's VOLUME lines would give it, which
+    // would be writable places outside the capped scratch. Checked before
+    // anything runs in the container.
+    const mounts = await runText(this.docker, ['inspect', '--type', 'container', '--format', MOUNTS_FORMAT, this.name], within(CONTROL_TIMEOUT_MS, signal));
+    if (mounts.exitCode !== 0) throw fail(mounts);
+    let list;
+    let readOnly;
+    try {
+      ({ mounts: list, readOnly } = JSON.parse(mounts.stdout));
+    } catch (_) {
+      throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox\'s mounts could not be read', { step: 'launch' });
+    }
+    if (readOnly !== true) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the daemon did not make the sandbox\'s root filesystem read-only', { step: 'launch' });
+    if (Array.isArray(list) && list.length > 0) {
+      const where = list.map((m) => (m && m.Destination) || '?').join(', ');
+      throw new RequesterError([{ code: 'IMAGE_DECLARES_VOLUMES', path: '/spec/env/image', detail: `the env image declares volumes (${where}); an env image may not` }]);
+    }
+    const started = await runText(this.docker, startArgs(this.name), within(LAUNCH_TIMEOUT_MS, signal));
+    if (started.exitCode !== 0) throw fail(started);
+    this.launched = true;
+    this.pidsLimit = spec.limits.pids;
+    await this.checkLauncher({ signal });
+    this.counters = await this.readCounters({ signal });
+    return this;
+  }
+
+  /**
+   * Run argv in the sandbox through the launcher with a fresh nonce.
+   * `stdout` receives the program's output (the start line stripped).
+   * @returns {Promise<{r:object, started:boolean}>}
+   */
+  async runLaunched(argv, { signal, timeoutMs, stdin, env, workdir, stdout, stderr }) {
+    const nonce = newNonce();
+    const gate = new StartGate(nonce, stdout);
+    const r = await this.docker.run(execArgs({ name: this.name, argv: launcherArgv(nonce, argv), stdin: Boolean(stdin), env, workdir }),
+      { signal, timeoutMs, stdin, stdout: gate, stderr });
+    gate.finish();
+    return { r, started: gate.seen };
+  }
+
+  /**
+   * Before any claim code runs: the launcher works, and the sandbox user
+   * cannot replace its interpreter (which would let claim code receive a
+   * later step's nonce). Throws Abstain or RequesterError.
+   */
+  async checkLauncher({ signal } = {}) {
+    const out = new Capped(4096);
+    const err = new Capped(4096);
+    const { r, started } = await this.runLaunched(['/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check', LAUNCHER_PATH],
+      { signal, timeoutMs: CONTROL_TIMEOUT_MS, stdout: out, stderr: err });
+    const said = (err.bytes().toString('utf8') || out.bytes().toString('utf8')).split(/\r?\n/).find((l) => l.trim()) || 'nothing';
+    if (r.spawnError) throw new Abstain(ABSTAIN.DOCKER_UNREACHABLE, `the docker CLI could not be started: ${r.spawnError}`, { step: 'launch' });
+    if (r.aborted && signal) throw new Abstain(KILL_CAUSE[killReason(signal)], 'stopped while the sandbox was starting', { step: 'launch' });
+    if (!started) {
+      throw new Abstain(ABSTAIN.STEP_NOT_STARTED, `the launcher did not start in the sandbox (Docker said: ${said.slice(0, 200)})`, { step: 'launch' });
+    }
+    if (r.exitCode === 1) {
+      throw new RequesterError([{ code: 'IMAGE_LAUNCHER_WRITABLE', path: '/spec/env/image',
+        detail: 'the sandbox user owns or can write /bin/sh, a link on its way or a directory holding one; an env image must keep them root-owned and not writable by uid 10001' }]);
+    }
+    if (r.exitCode !== 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, `the launcher check exited ${r.exitCode}: ${said.slice(0, 200)}`, { step: 'launch' });
+  }
+
+  /**
+   * Run one step. Returns `{ record, verdict }`; never throws for anything
+   * the step or the sandbox did.
+   *
+   * @param {string[]} argv
+   * @param {object} o
+   * @param {string} o.name - the step's name in the result
+   * @param {AbortSignal} o.signal - aborted with reason step|run|deadline|cancel to kill the sandbox
+   * @param {AbortSignal} [o.controlSignal] - bounds the follow-up inspection
+   * @param {Buffer} [o.stdin]
+   * @param {object} [o.env]
+   * @param {string} [o.workdir]
+   * @param {{write(Buffer):boolean}} [o.stdoutSink] - instead of the 32 KiB head/tail log
+   */
+  async exec(argv, { name, signal, controlSignal, stdin, env, workdir, stdoutSink } = {}) {
+    const stdout = new HeadTail();
+    const stderr = new HeadTail();
+    const programOut = stdoutSink ? { write: (c) => { stdout.write(c); return stdoutSink.write(c); } } : stdout;
+    const onAbort = () => { this.kill(); };
+    if (signal) signal.addEventListener('abort', onAbort, { once: true });
+    const t0 = Date.now();
+    let r;
+    let started;
+    try {
+      ({ r, started } = await this.runLaunched(argv, { signal, stdin, env, workdir, stdout: programOut, stderr }));
+    } finally {
+      if (signal) signal.removeEventListener('abort', onAbort);
+    }
+    const durationMs = Date.now() - t0;
+    const killedBy = signal && signal.aborted ? killReason(signal) : null;
+    const obs = {
+      killedBy,
+      spawnError: r.spawnError,
+      started,
+      capped: Boolean(started && !killedBy && stdoutSink && stdoutSink.overLimit),
+      exitCode: r.exitCode,
+      cliSignal: r.signal && !r.aborted && !r.timedOut ? r.signal : null,
+      stdoutHead: stdout.snapshot().head.subarray(0, 4096).toString('utf8'),
+      stderrHead: stderr.snapshot().head.subarray(0, 4096).toString('utf8'),
+      state: null,
+      inspectError: null,
+      counters: { before: this.counters, after: null },
+      probe: null,
+      probeDetail: null,
+      runtime: this.runtime
+    };
+    // A capped read was stopped by the runner itself: its own CLI kill is not an exit code.
+    if (obs.capped) obs.cliSignal = null;
+    if (!killedBy && !r.spawnError) await this.observe(obs, obs.capped ? 0 : obs.exitCode, controlSignal);
+    const verdict = classifyExec(obs);
+    const record = {
+      name,
+      outcome: verdict.kind,
+      started,
+      exitCode: Number.isInteger(r.exitCode) ? r.exitCode : null,
+      durationMs,
+      stdout: stdout.toJSON(),
+      stderr: stderr.toJSON(),
+      ...(verdict.kind === 'abstain' ? { cause: verdict.cause, detail: verdict.detail } : {}),
+      ...(obs.probeDetail ? { probe: obs.probeDetail } : {})
+    };
+    return { record, verdict };
+  }
+
+  /** Fill in the sandbox's state and counters after a step. */
+  async observe(obs, exitCode, signal) {
+    let { state, inspectError } = await this.inspect({ signal });
+    // A sandbox that dies mid-command can make `docker exec` return before
+    // Docker marks the container exited (verdikta-agents sandbox-kit); give
+    // it a moment when the exit code says something may have gone wrong.
+    if (state && state.running && !state.oomKilled && (exitCode === null || exitCode > 128)) {
+      const until = Date.now() + SETTLE_MS;
+      while (Date.now() < until && state && state.running && !(signal && signal.aborted)) {
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        ({ state, inspectError } = await this.inspect({ signal }));
+      }
+    }
+    obs.state = state;
+    obs.inspectError = inspectError;
+    if (state && state.running) {
+      const read = await this.probeCounters({ signal });
+      obs.counters.after = read.counters;
+      if (read.counters) this.counters = read.counters;
+      if (read.outcome === 'unreachable') {
+        obs.probe = 'unreachable';
+      } else if (read.outcome !== 'ok') {
+        // The probe did not start, or did not finish. Processes a step left
+        // behind can hold the whole pid table (runc's exec forks into the
+        // container's cgroup), so ask Docker how many there are.
+        const pids = await this.pidsInUse({ signal });
+        obs.probe = pids !== null && pids >= this.pidsLimit - 1 ? 'pids_exhausted' : 'failed';
+      }
+      if (obs.probe) obs.probeDetail = read.error;
+    }
+  }
+
+  async inspect({ signal } = {}) {
+    const r = await runText(this.docker, ['inspect', '--type', 'container', '--format', '{{json .State}}', this.name], within(CONTROL_TIMEOUT_MS, signal));
+    if (r.spawnError || isUnreachableText(r.stderr)) return { state: null, inspectError: 'unreachable' };
+    if (r.exitCode !== 0) {
+      if (/No such (object|container)/i.test(r.stderr)) return { state: { missing: true }, inspectError: null };
+      return { state: null, inspectError: 'error' };
+    }
+    try {
+      return { state: parseState(r.stdout), inspectError: null };
+    } catch (_) {
+      return { state: null, inspectError: 'error' };
+    }
+  }
+
+  /**
+   * Read the cgroup counters from inside the sandbox, through the launcher.
+   * `outcome`: `ok` (the probe started and exited 0: counters read, or the
+   * files are absent, as under gVisor), `not_started` (no start nonce),
+   * `unreachable` (the docker CLI could not be started) or `failed` (it
+   * started but did not finish cleanly).
+   */
+  async probeCounters({ signal } = {}) {
+    const out = new Capped(64 * 1024);
+    const err = new Capped(4096);
+    const { r, started } = await this.runLaunched(['/bin/sh', '-c', PROBE_SCRIPT, 'vcr-probe', ...COUNTER_FILES],
+      { signal, timeoutMs: CONTROL_TIMEOUT_MS, stdout: out, stderr: err });
+    const said = () => ([err.bytes().toString('utf8'), out.bytes().toString('utf8')].map((t) => t.split(/\r?\n/).find((l) => l.trim())).find(Boolean) || 'nothing').slice(0, 300);
+    if (r.spawnError) return { outcome: 'unreachable', counters: null, error: r.spawnError };
+    if (r.timedOut || r.aborted) return { outcome: 'failed', counters: null, error: 'the counters probe did not finish' };
+    if (!started) return { outcome: 'not_started', counters: null, error: `the counters probe did not start (Docker said: ${said()})` };
+    if (r.exitCode !== 0) return { outcome: 'failed', counters: null, error: `the counters probe exited ${r.exitCode}: ${said()}` };
+    return { outcome: 'ok', counters: parseCounters(out.bytes().toString('utf8')), error: null };
+  }
+
+  async readCounters({ signal } = {}) {
+    const read = await this.probeCounters({ signal });
+    if (read.outcome === 'ok') return read.counters;
+    const cause = { unreachable: ABSTAIN.DOCKER_UNREACHABLE, not_started: ABSTAIN.STEP_NOT_STARTED }[read.outcome] || ABSTAIN.DOCKER_ERROR;
+    throw new Abstain(cause, `the sandbox could not be probed after it started: ${read.error}`, { step: 'launch' });
+  }
+
+  /** The number of tasks in the sandbox, as Docker counts them (`docker stats`). */
+  async pidsInUse({ signal } = {}) {
+    const r = await runText(this.docker, ['stats', '--no-stream', '--format', '{{.PIDs}}', this.name], within(CONTROL_TIMEOUT_MS, signal));
+    const n = Number(String(r.stdout).trim());
+    return r.exitCode === 0 && Number.isInteger(n) ? n : null;
+  }
+
+  /**
+   * Read a file inside the sandbox with `cat` (through the launcher, like any
+   * step), keeping at most `maxBytes` of it (the read stops there). Returns
+   * the step record, the verdict and `{ bytes, overLimit }`.
+   */
+  async readFile(filePath, { maxBytes, signal, controlSignal, name } = {}) {
+    if (!noNul(filePath) || !filePath.startsWith('/')) throw new TypeError(`path must be absolute, got ${JSON.stringify(filePath)}`);
+    if (!Number.isInteger(maxBytes) || maxBytes < 0) throw new TypeError('maxBytes must be a non-negative integer');
+    const sink = new Capped(maxBytes);
+    const { record, verdict } = await this.exec(['cat', '--', filePath], { name: name || `read:${filePath}`, signal, controlSignal, stdoutSink: sink });
+    record.stdout = { text: '', totalBytes: sink.totalBytes, omittedBytes: 0 };
+    return { record, verdict, bytes: sink.bytes(), overLimit: sink.overLimit };
+  }
+
+  /** Start removing the container now (idempotent). */
+  kill() {
+    if (!this.killing) {
+      this.killing = runText(this.docker, removeArgs([this.name]), { timeoutMs: REMOVE_TIMEOUT_MS }).catch(() => null);
+    }
+    return this.killing;
+  }
+
+  /** Remove the container (and any anonymous volume) and wait. Resolves true when it is gone. */
+  async remove() {
+    if (this.killing) await this.killing;
+    const r = await runText(this.docker, removeArgs([this.name]), { timeoutMs: REMOVE_TIMEOUT_MS });
+    return r.exitCode === 0 || /No such container/i.test(r.stderr);
+  }
+}
+
+function launchFailure(r) {
+  const text = r.stderr || '';
+  const first = text.split('\n').find((l) => l.trim()) || '';
+  if (r.spawnError) return [ABSTAIN.DOCKER_UNREACHABLE, `the docker CLI could not be started: ${r.spawnError}`];
+  if (isUnreachableText(text)) return [ABSTAIN.DOCKER_UNREACHABLE, 'the Docker daemon could not be reached'];
+  if (r.timedOut) return [ABSTAIN.DOCKER_ERROR, 'docker run did not return in time'];
+  if (/No such image|manifest unknown|pull access denied/i.test(text)) {
+    return [ABSTAIN.IMAGE_UNAVAILABLE, 'the env image is not on the runner\'s disk (the runner never pulls implicitly)'];
+  }
+  return [ABSTAIN.DOCKER_ERROR, `the sandbox did not start: ${first.slice(0, 300)}`];
+}
+
+module.exports = {
+  SANDBOX_USER,
+  SANDBOX_HOSTNAME,
+  WORK_DIR,
+  HOME_DIR,
+  SCRATCH_MB,
+  TMPFS,
+  SANDBOX_ENV,
+  RUNTIMES,
+  PLATFORMS,
+  LABEL,
+  LABEL_INSTANCE,
+  LABEL_RUN,
+  LABEL_EXPIRES,
+  NAME,
+  COUNTER_FILES,
+  createArgs,
+  startArgs,
+  execArgs,
+  removeArgs,
+  parseCounters,
+  Sandbox
+};
