@@ -45,11 +45,52 @@ describe('@verdikta/common pin', () => {
     }
   });
 
-  it('the installer\'s "latest" update does not replace the prerelease with an older release', () => {
+  it('the installer reads each component\'s exact pin (installer/util/common-pin.js)', () => {
+    const { exactCommonPin } = require(path.join(REPO, 'installer', 'util', 'common-pin.js'));
+    for (const pkg of PACKAGES) expect(exactCommonPin(path.join(REPO, pkg))).toBe(PINNED);
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ea-pin-'));
+    try {
+      for (const spec of ['^1.7.0', '~1.8.0', 'latest', 'attest', '1.x']) {
+        fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { '@verdikta/common': spec } }));
+        expect(exactCommonPin(dir)).toBeNull();
+      }
+      fs.rmSync(path.join(dir, 'package.json'));
+      expect(exactCommonPin(dir)).toBeNull();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it.each(['latest', 'beta', 'next'])('the installer\'s update (VERDIKTA_COMMON_VERSION=%s) never replaces the pinned prerelease', async (tag) => {
     const Updater = require(path.join(REPO, 'installer', 'util', 'update-verdikta-common.js'));
-    const updater = new Updater(path.join(REPO, 'ai-node'));
-    // latest on npm is 1.8.x while the prerelease is in use; an update must not downgrade it
-    expect(updater.compareVersions(PINNED, '1.8.0')).toBe(false);
-    expect(updater.compareVersions(PINNED, PINNED)).toBe(false);
+    const updater = new Updater(path.join(REPO, 'ai-node'), path.join(REPO, 'external-adapter'));
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+    const latest = jest.spyOn(Updater.prototype, 'getLatestVersion').mockRejectedValue(new Error('must not ask npm'));
+    const install = jest.spyOn(Updater.prototype, 'installOrUpdate').mockRejectedValue(new Error('must not install'));
+    try {
+      const result = await updater.updateIfNeeded(tag, true);
+      expect(result).toMatchObject({ updated: false, action: 'pinned', pins: { aiNode: PINNED, externalAdapter: PINNED } });
+      expect(latest).not.toHaveBeenCalled();
+      expect(install).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      latest.mockRestore();
+      install.mockRestore();
+    }
+  });
+
+  it('a component pinned to a range is still updated as before', () => {
+    const Updater = require(path.join(REPO, 'installer', 'util', 'update-verdikta-common.js'));
+    const os = require('os');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ea-pin-'));
+    try {
+      fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ dependencies: { '@verdikta/common': '^1.7.0' } }));
+      expect(new Updater(dir, dir).pinnedVersions()).toEqual({});
+      // and the version comparison never downgrades the prerelease to an older latest
+      expect(new Updater(dir).compareVersions(PINNED, '1.8.0')).toBe(false);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

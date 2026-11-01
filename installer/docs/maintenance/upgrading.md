@@ -185,7 +185,10 @@ This helps pick up template-level improvements safely.
 During upgrade, the script:
 
 - runs `npm install` in AI Node and External Adapter
-- updates `@verdikta/common` (with version handling via `VERDIKTA_COMMON_VERSION`)
+- updates `@verdikta/common` (with version handling via `VERDIKTA_COMMON_VERSION`);
+  a component whose `package.json` pins one exact release (the stake-attestation
+  prerelease, for example) keeps it whatever `VERDIKTA_COMMON_VERSION` says
+  (`installer/util/common-pin.js`)
 - can auto-integrate ClassID model pool updates into AI Node config
 - can check/download missing Ollama models (optional)
 
