@@ -241,7 +241,11 @@ function withBeforeBuild(steps, step) {
 }
 
 const stepNames = (r) => r.steps.map((s) => s.name);
-const show = (r) => JSON.stringify({ outcome: r.outcome, abstain: r.abstain, issues: r.issues, gates: r.gates }, null, 1);
+const show = (r) => JSON.stringify({
+  outcome: r.outcome, abstain: r.abstain, issues: r.issues, gates: r.gates,
+  // The abstaining step's own record (its probe detail, its stderr), for a failure in CI.
+  step: r.abstain ? (r.steps || []).find((s) => s.name === r.abstain.step) : undefined
+}, null, 1);
 
 /** The vault's bug: a deposit credits one wei too many. A PoC that asserts the right credit fails as an assertion. */
 const DRAIN = pocFile('ExploitTest', [
