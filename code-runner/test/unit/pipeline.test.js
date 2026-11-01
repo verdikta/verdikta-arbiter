@@ -518,3 +518,111 @@ test('a sandbox whose root the daemon did not make read-only abstains before any
   assert.match(result.abstain.detail, /read-only/);
   assert.equal(docker.callsOf('start').length, 0);
 });
+
+// ---- A1b: slots and memory (the admission ticket), and the image ----------
+
+/** An image cache stand-in that records what it was asked and when. */
+function fakeImages(events, { acquire } = {}) {
+  const asked = [];
+  return {
+    asked,
+    async acquire(o) {
+      asked.push(o);
+      events.push('acquire');
+      if (acquire) await acquire(o);
+      return { ref: o.image, cache: 'pulled', durationMs: 7, release: () => events.push('release image') };
+    }
+  };
+}
+
+function ticketAdmit(events, { fail } = {}) {
+  return async () => {
+    events.push('admit');
+    if (fail) throw fail;
+    return { release: () => events.push('release slot') };
+  };
+}
+
+function tracingDaemon(events, over = {}) {
+  const h = healthyDaemon(over);
+  return fakeDocker({
+    ...h,
+    create: (...a) => { events.push('create'); return h.create(...a); },
+    rm: (...a) => { events.push('rm'); return h.rm(...a); }
+  });
+}
+
+test('A1b: the image is acquired after admission and before any sandbox, and released with the slot only once the sandbox is gone', async () => {
+  const events = [];
+  const docker = tracingDaemon(events);
+  const images = fakeImages(events);
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1400000000
+  });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+  assert.deepEqual(events.slice(0, 3), ['admit', 'acquire', 'create']);
+  const lastRm = events.lastIndexOf('rm');
+  assert.ok(events.indexOf('release image') > lastRm && events.indexOf('release slot') > lastRm, events.join(', '));
+  assert.equal(events.filter((e) => e.startsWith('release')).length, 2);
+  // What the cache is asked for: the spec's image and the attestation's, the platform that runs,
+  // the attested size and a window that leaves runSeconds for the run.
+  const [o] = images.asked;
+  assert.equal(o.image, IMAGE);
+  assert.equal(o.attestedImage, IMAGE);
+  assert.equal(o.platform, 'linux/amd64');
+  assert.equal(o.unpackedBytes, 1400000000);
+  assert.ok(o.windowMs <= 600000 - 5000 - 60000 && o.windowMs > 600000 - 5000 - 60000 - 5000, String(o.windowMs));
+  assert.deepEqual(result.image, { ref: IMAGE, cache: 'pulled', durationMs: 7 });
+});
+
+test('A1b: an image that cannot be had abstains before any sandbox and frees the slot', async () => {
+  const { Abstain } = require('../../src/result');
+  const events = [];
+  const docker = tracingDaemon(events);
+  const images = fakeImages(events, { acquire: async () => { throw new Abstain('pull_failed', 'connection refused', { step: 'pull' }); } });
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1
+  });
+  assert.equal(result.outcome, 'abstain');
+  assert.deepEqual(result.abstain, { cause: 'pull_failed', step: 'pull', detail: 'connection refused' });
+  assert.deepEqual(events, ['admit', 'acquire', 'release slot']);
+  assert.equal(docker.callsOf('create').length, 0);
+});
+
+test('A1b: a refused admission takes no slot and asks for no image', async () => {
+  const { Abstain } = require('../../src/result');
+  const events = [];
+  const images = fakeImages(events);
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker: tracingDaemon(events), config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events, { fail: new Abstain('admission_refused', 'all 1 execution slots are in use', { step: 'admission' }) }),
+    images, attestedImage: IMAGE, unpackedBytes: 1
+  });
+  assert.equal(result.abstain.cause, 'admission_refused');
+  assert.deepEqual(events, ['admit']);
+});
+
+test('A1b: time spent getting the image that leaves less than runSeconds abstains before any sandbox', async () => {
+  const events = [];
+  const images = fakeImages(events, { acquire: () => new Promise((r) => setTimeout(r, 400)) });
+  const receivedAt = Date.now();
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const result = await executeRun({
+    docker: tracingDaemon(events), config, limits: limits({ runSeconds: 1, testSeconds: 1 }), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 1200, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1
+  });
+  assert.equal(result.abstain.cause, 'admission_refused');
+  assert.match(result.abstain.detail, /deadline/);
+  assert.ok(!events.includes('create'));
+  assert.deepEqual(events.filter((e) => e.startsWith('release')).sort(), ['release image', 'release slot']);
+});

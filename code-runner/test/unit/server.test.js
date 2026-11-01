@@ -20,11 +20,13 @@ const { runRequest, spec } = require('../helpers/requests');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const statfs = async () => ({ bavail: 1000, bsize: 4096 });
+/** Memory admission (A1b) sees a host with room to spare unless a test says otherwise. */
+const meminfo = async () => ({ availableMb: 1e6, error: null });
 
 // The engine with no claim steps unless a test passes its own; the default
 // pipeline (the forge claim steps) has its own test below.
-async function start({ docker = fakeDocker(healthyDaemon()), config = testConfig(), stepsFor = () => [] } = {}) {
-  const runner = createServer({ config, docker, log: silent, statfs, stepsFor });
+async function start({ docker = fakeDocker(healthyDaemon()), config = testConfig(), stepsFor = () => [], disk = statfs } = {}) {
+  const runner = createServer({ config, docker, log: silent, statfs: disk, meminfo, stepsFor });
   const address = await runner.listen();
   const target = address.socketPath ? { socketPath: address.socketPath } : { host: address.host, port: address.port };
   return { runner, target, docker, config };
@@ -303,4 +305,106 @@ test('the answer carries the facts the steps recorded', async (t) => {
   const res = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
   assert.equal(res.status, 200, res.raw);
   assert.deepEqual(res.body.facts, { patch: { bytes: 3 } });
+});
+
+// ---- A1b ---------------------------------------------------------------
+
+test('A1b: the attestation must name the image, platform and size code_review.json names (400 before any Docker call)', async (t) => {
+  const { runner, target, docker } = await start();
+  t.after(() => runner.close());
+  const base = runRequest();
+  const cases = [
+    [{ ...base.attestation, env: { ...base.attestation.env, image: `ghcr.io/verdikta/other@sha256:${'b'.repeat(64)}` } }, 'ATTESTATION_IMAGE_MISMATCH', '/attestation/env/image'],
+    [{ ...base.attestation, env: { ...base.attestation.env, unpackedBytes: 1 } }, 'ATTESTATION_SIZE_MISMATCH', '/attestation/env/unpackedBytes'],
+    [{ ...base.attestation, env: { ...base.attestation.env, platform: 'linux/arm64' } }, 'ATTESTATION_PLATFORM_MISMATCH', '/attestation/env/platform'],
+    [{ version: 1 }, 'SCHEMA', '/attestation/env']
+  ];
+  for (const [attestation, code, where] of cases) {
+    const res = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest({ attestation }) });
+    assert.equal(res.status, 400, res.raw);
+    assert.ok(res.body.issues.some((i) => i.code === code && i.path === where), `${code}: ${JSON.stringify(res.body.issues)}`);
+  }
+  // A reference Docker would not resolve as written is the requester's error too.
+  const odd = `a/b:123/c@sha256:${'a'.repeat(64)}`;
+  const res = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest({ spec: spec({ env: { image: odd, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 1 } }) }) });
+  assert.equal(res.status, 400, res.raw);
+  assert.ok(res.body.issues.some((i) => i.path === '/spec/env/image'), JSON.stringify(res.body.issues));
+  assert.equal(docker.calls.length, 0);
+});
+
+test('A1b: a requester error the claim steps find in the request is a 400 before admission or any pull', async (t) => {
+  const docker = fakeDocker(healthyDaemon());
+  const runner = createServer({ config: testConfig(), docker, log: silent, statfs });
+  const address = await runner.listen();
+  t.after(() => runner.close());
+  const res = await request({ host: address.host, port: address.port }, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(res.status, 400, res.raw);
+  assert.ok(res.body.issues.some((i) => i.code === 'COMMAND_MISSING'));
+  assert.deepEqual(docker.commands(), [], 'no Docker call at all');
+});
+
+test('A1b: registry-failure (runner half): an image outside the allowlist abstains (503) and is never pulled or run', async (t) => {
+  const { runner, target, docker } = await start();
+  t.after(() => runner.close());
+  const image = `ghcr.io/someone-else/env@sha256:${'c'.repeat(64)}`;
+  const env = { image, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 1000 };
+  const res = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest({ spec: spec({ env }) }) });
+  assert.equal(res.status, 503, res.raw);
+  assert.equal(res.body.abstain.cause, 'registry_not_allowed');
+  assert.equal(res.body.abstain.step, 'pull');
+  assert.deepEqual(docker.commands().filter((c) => c !== 'info'), [], 'only the admission\'s docker info');
+});
+
+test('A1b: a run pulls its image through the cache and the answer says how it got it', async (t) => {
+  let present = false;
+  const docker = fakeDocker(healthyDaemon({ imagePresent: () => present, pull: () => { present = true; return { stdout: '' }; } }));
+  const { runner, target } = await start({ docker, disk: async () => ({ bavail: 1e12, bsize: 1 }) });
+  t.after(() => runner.close());
+  const first = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(first.status, 200, first.raw);
+  assert.equal(first.body.image.cache, 'pulled');
+  assert.equal(first.body.image.ref, runRequest().spec.env.image);
+  assert.deepEqual(docker.callsOf('pull').map((c) => c.args), [['pull', '--quiet', '--platform', 'linux/amd64', runRequest().spec.env.image]]);
+  const second = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(second.body.image.cache, 'hit');
+  assert.equal(docker.callsOf('pull').length, 1);
+  // The pull comes before the sandbox.
+  const order = docker.commands();
+  assert.ok(order.indexOf('pull') < order.indexOf('create'));
+});
+
+test('A1b: one execution slot: a second run while one is in flight abstains admission_refused', async (t) => {
+  let release;
+  const docker = fakeDocker(healthyDaemon({ step: () => new Promise((r) => { release = r; }) }));
+  const { runner, target } = await start({ docker, stepsFor: () => [async (ctx) => { await ctx.exec(['sleep', '100'], { name: 'poc' }); }] });
+  t.after(() => runner.close());
+  const first = request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  while (!release) await new Promise((r) => setTimeout(r, 10));
+  const second = await request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
+  assert.equal(second.status, 503);
+  assert.equal(second.body.abstain.cause, 'admission_refused');
+  assert.match(second.body.abstain.detail, /execution slot/);
+  const health = await request(target, { path: '/health' });
+  assert.deepEqual(health.body.capacity.slots, { total: 1, inUse: 1 });
+  release({ exitCode: 0 });
+  assert.equal((await first).status, 200);
+  const after = await request(target, { path: '/health' });
+  assert.deepEqual(after.body.capacity.slots, { total: 1, inUse: 0 });
+});
+
+test('A1b: GET /health reports the slots, the memory reserve and the registry allowlist', async (t) => {
+  const config = testConfig({ CODE_RUNNER_REGISTRY_ALLOWLIST: 'ghcr.io/verdikta,127.0.0.1:5000' });
+  const runner = createServer({ config, docker: fakeDocker(healthyDaemon()), log: silent, statfs, meminfo: async () => ({ availableMb: 6000, error: null }) });
+  const address = await runner.listen();
+  t.after(() => runner.close());
+  const res = await request({ host: address.host, port: address.port }, { path: '/health' });
+  assert.equal(res.status, 200, res.raw);
+  assert.deepEqual(res.body.capacity, {
+    slots: { total: 1, inUse: 0 },
+    memory: { availableMb: 6000, committedMb: 0, reserveMb: 1280, reserve: { chainlink: 512, postgres: 256, aiNode: 512, localModel: 0 }, error: null }
+  });
+  assert.deepEqual(res.body.images, {
+    allowlist: [{ entry: 'ghcr.io/verdikta', dev: false }, { entry: '127.0.0.1:5000', dev: true }],
+    inUse: 0, pullsInFlight: 0, pendingBytes: 0, diskReserveMb: 1024, pullTimeoutMs: 90000
+  });
 });

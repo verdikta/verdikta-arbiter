@@ -13,7 +13,8 @@ const { runRequest, spec } = require('../helpers/requests');
 const { RUNTIME, TEST_IMAGE, silent, dockerTestConfig, dockerFor, ensureTestImage, leftovers, removeAll, eventually } = require('./helpers');
 
 async function start(t, stepsFor) {
-  const config = dockerTestConfig();
+  // TEST_IMAGE is docker.io/library/ubuntu, pinned by digest; A1b pulls only from the allowlist.
+  const config = dockerTestConfig({ CODE_RUNNER_REGISTRY_ALLOWLIST: 'docker.io/library/ubuntu' });
   const docker = dockerFor(config);
   t.after(() => removeAll(docker, config.instance).catch(() => {}));
   await ensureTestImage(docker);
