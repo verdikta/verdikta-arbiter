@@ -140,6 +140,31 @@ test('R15-F1: renames are refused in every header form git reads, so no source c
   assert.equal(scanPatch(moved, LIMITS).ok, true);
 });
 
+test('R17-F1: a binary section whose postimage is an object already in the repository counts at that object\'s size, every time', () => {
+  const big = 'ab'.repeat(20);
+  const objects = new Map([[big, 1024 * 1024]]);
+  const section = (i, form, id = big) => [
+    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${id}`,
+    ...(form === 'summary' ? [`Binary files /dev/null and b/test/c${i}.bin differ`] : ['GIT binary patch', 'literal 0', 'HcmV?d00001', '', 'literal 0', 'HcmV?d00001', ''])
+  ].join('\n');
+  for (const form of ['summary', 'literal']) {
+    const sixty = Buffer.from(Array.from({ length: 60 }, (_, i) => section(i, form)).join('\n') + '\n');
+    const r = scanPatch(sixty, LIMITS, { objects });
+    assert.equal(r.ok, false, form);
+    assert.equal(r.code, 'PATCH_EXPANSION', form);
+    // Without the object in the repository, git has nothing to load: the literal or summary is all there is.
+    assert.equal(scanPatch(sixty, LIMITS).ok, true, form);
+    const two = scanPatch(Buffer.from([section(1, form), section(2, form), ''].join('\n')), LIMITS, { objects });
+    assert.ok(two.ok);
+    assert.equal(two.expansionBytes, 2 * 1024 * 1024, form);
+  }
+  // git reads the id in any case and with a mode after it; a text section's index line is never used.
+  const upper = scanPatch(Buffer.from(section(1, 'summary', big.toUpperCase()).replace(`..${big.toUpperCase()}`, `..${big.toUpperCase()} 100644`) + '\n'), LIMITS, { objects });
+  assert.equal(upper.expansionBytes, 1024 * 1024);
+  const text = scanPatch(Buffer.from(['diff --git a/test/t.sol b/test/t.sol', `index ${'0'.repeat(40)}..${big}`, '--- /dev/null', '+++ b/test/t.sol', '@@ -0,0 +1 @@', '+x', ''].join('\n')), LIMITS, { objects });
+  assert.ok(text.expansionBytes < 100, 'the existing blob is not counted for a text section (only its added lines are)');
+});
+
 test('added text counts toward expansion; many hunks of added text past 50 MB would fail', () => {
   const r = scanPatch(textPatch('test/a.txt', ['x'.repeat(1000)]), { ...LIMITS, patchExpansionBytes: 900 });
   assert.equal(r.ok, false);

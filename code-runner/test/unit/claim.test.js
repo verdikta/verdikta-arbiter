@@ -553,6 +553,16 @@ test('the requester\'s package: an unsupported framework or env, a command the a
 
 // The forced checkout (prepare) has its own tests: test/unit/checkout.test.js.
 
+test('R17-F1: the checkout\'s objects reach the expansion count: a binary patch naming an existing blob counts its size', async () => {
+  const sb = claimSandbox();
+  const vault = [...sb.image.store.objects].find(([, o]) => o.type === 'blob' && o.content.toString() === 'contract Vault {}\n')[0];
+  const patch = Buffer.from([1, 2, 3].map((i) => [
+    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${vault}`, `Binary files /dev/null and b/test/c${i}.bin differ`
+  ].join('\n')).join('\n') + '\n');
+  const r = await runClaim(sb, claimRequest({ pocPatch: patch }));
+  assert.equal(r.facts.patch.expansionBytes, 3 * 'contract Vault {}\n'.length);
+});
+
 test('facts: the patch\'s size, hash and expansion are recorded', async () => {
   const sb = claimSandbox();
   const r = await runClaim(sb);

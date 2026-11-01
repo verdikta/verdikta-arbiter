@@ -45,6 +45,10 @@ const VARIANT_NESTED = [
   'printf "changed\\n" >> lib/a/lib/b/b.txt'
 ].join(' && ');
 
+/** 1.2 MB of fixed bytes (NULs included, so git calls it binary). */
+const BIG_BLOB = Buffer.from(Array.from({ length: 1200000 }, (_, i) => (i * 7) % 251));
+const BIG_ID = crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`blob ${BIG_BLOB.length}\0`), BIG_BLOB])).digest('hex');
+
 /** A setup that makes the branch "listed" a commit of the base tree plus one entry git will not check out. */
 function badTree(mode, name) {
   return `b=$(printf x | git hash-object -w --stdin) && t=$( (git ls-tree HEAD; printf "${mode} blob %s\\t${name}\\n" "$b") | git mktree)`
@@ -184,6 +188,8 @@ const VARIANTS = Object.freeze({
   // link to blob B's file. Each object must keep its own bytes, in either name order of A and B.
   hardlink1: { setup: hardLinked('src/Vault.sol', 'test/Vault.t.sol') },
   hardlink2: { setup: hardLinked('test/Vault.t.sol', 'src/Vault.sol') },
+  // R17-F1: a tracked 1.2 MB binary file a patch could name as the postimage of many new files.
+  big: { files: { ...VAULT_REPO, 'test/big.bin': BIG_BLOB } },
   // A SHA-256 repository.
   sha256: { objectFormat: 'sha256' },
   // Objects in packs only (the superproject's and a submodule's), with a commit-graph and a multi-pack-index.
@@ -824,6 +830,28 @@ test('R13-F2: objects hard-linked across stores keep their own bytes, whichever 
     assert.equal(r.gates.reproduces.status, 'pass', variant);
     assert.equal(r.facts.checkout.corrected, 0, variant);
     for (const p of ['src/Vault.sol', 'test/Vault.t.sol']) assert.equal(fileText(seen, p), VAULT_REPO[p], `${variant}: ${p}`);
+  }
+});
+
+test('R17-F1: binary patches naming an existing blob as their postimage count its size at every destination, with real git', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('big');
+  const section = (i, form) => [
+    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${BIG_ID}`,
+    ...(form === 'summary' ? [`Binary files /dev/null and b/test/c${i}.bin differ`] : ['GIT binary patch', 'literal 0', 'HcmV?d00001', '', 'literal 0', 'HcmV?d00001', ''])
+  ].join('\n');
+  for (const form of ['summary', 'literal']) {
+    // 50 copies of 1.2 MB: past the 50 MB expansion, failed on the input basis before git loads anything.
+    const fifty = Buffer.from(Array.from({ length: 50 }, (_, i) => section(i, form)).join('\n') + '\n');
+    const { result: r1 } = await run(t, claim(fx, fifty));
+    assert.equal(r1.gates.applies.status, 'fail', `${form}: ${show(r1)}`);
+    assert.equal(r1.gates.applies.basis, 'input', form);
+    assert.match(r1.gates.applies.detail, /would expand to at least [0-9]+ bytes; the class allows 50000000/, form);
+    assert.ok(!stepNames(r1).some((n) => n.startsWith('patch:')), `${form}: git never saw it`);
+    // Two copies: within the limit, counted at their real size; git applies them from the existing blob.
+    const two = Buffer.concat([Buffer.from([section(1, form), section(2, form), ''].join('\n')), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })]);
+    const { result: r2 } = await run(t, claim(fx, two));
+    assert.equal(r2.gates.applies.status, 'pass', `${form}: ${show(r2)}`);
+    assert.ok(r2.facts.patch.expansionBytes >= 2 * BIG_BLOB.length, `${form}: ${r2.facts.patch.expansionBytes}`);
   }
 });
 

@@ -196,7 +196,7 @@ function claimSteps(request, limits) {
   const testGlobs = spec.paths.tests;
   const protectedGlobs = spec.paths.protected || [];
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
-  const state = { done: false, keep: [], touched: null, prepared: null, pocCommit: null, leftovers: [] };
+  const state = { done: false, keep: [], touched: null, prepared: null, objects: new Map(), pocCommit: null, leftovers: [] };
 
   /** Run a git command and read its stdout (capped); definitive or it throws. */
   async function gitRead(ctx, name, args, { stdin, env } = {}) {
@@ -231,11 +231,12 @@ function claimSteps(request, limits) {
     // Before any claim code runs: /work is the listed commit (checkout.js).
     const checkout = await forceCheckout(ctx, { base });
     state.prepared = checkout.commit;
+    state.objects = checkout.objects;
     ctx.fact('commit', { base, poc: null });
   }
 
   async function applies(ctx) {
-    const scan = scanPatch(request.pocPatch, limits);
+    const scan = scanPatch(request.pocPatch, limits, { objects: state.objects });
     ctx.fact('patch', { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: scan.expansionBytes, binaryHunks: scan.binaryHunks });
     if (!scan.ok) {
       ctx.gate('applies', 'fail', 'input', scan.reason);

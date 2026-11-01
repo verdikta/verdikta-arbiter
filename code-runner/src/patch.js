@@ -118,13 +118,21 @@ function deltaTargetSize(data) {
   return varint();
 }
 
+/** git's binary markers in a patch section (apply.c, parse_chunk): `GIT binary patch`, or `Binary files … differ` / `Files … differ`. */
+const BINARY_SUMMARY = /^(?:Binary files |Files ).* differ$/;
+/** An `index <old>..<new>[ <mode>]` header line: the postimage id as git reads it (hex up to a space or the end; any case). */
+const INDEX_LINE = /^index [^.]*\.\.([0-9a-fA-F]+)(?: |$)/;
+
 /**
  * The host-side checks of poc.patch (the `applies` gate's input part).
  * @param {Buffer} bytes
  * @param {{maxPatchBytes:number, patchExpansionBytes:number}} limits
+ * @param {{objects?:Map<string, number>}} [repo] - every object in the repository the patch applies to, id → size.
+ *   git applies a binary patch whose `index` line names an existing object by loading that object (apply.c,
+ *   apply_binary), whatever the hunk holds, so each such section counts at that object's size (R17-F1).
  * @returns {{ok:boolean, code?:string, reason?:string, bytes:number, sha256:string, expansionBytes:number, binaryHunks:number}}
  */
-function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }) {
+function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }, { objects = new Map() } = {}) {
   const base = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), expansionBytes: 0, binaryHunks: 0 };
   const fail = (code, reason) => ({ ...base, ok: false, code, reason });
   if (bytes.length > maxPatchBytes) {
@@ -133,12 +141,28 @@ function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }) {
   // latin1: one character per byte, so lengths are byte counts.
   const lines = bytes.toString('latin1').split('\n');
   let expansion = 0;
+  // The current `diff --git` section: binary or not, and the postimage ids its index lines name.
+  let section = null;
+  const close = () => {
+    if (section && section.binary) for (const id of section.posts) expansion += objects.get(id) || 0;
+    section = null;
+  };
   for (let i = 0; i < lines.length && expansion <= patchExpansionBytes; i += 1) {
     const line = lines[i].replace(/\r$/, '');
     const c = line.charCodeAt(0);
     if (c === 43 /* + */) {
       expansion += lines[i].length; // the line without its '+', plus its newline
       continue;
+    }
+    if (line.startsWith('diff --git ')) {
+      close();
+      section = { binary: false, posts: [] };
+      continue;
+    }
+    if (section) {
+      const index = INDEX_LINE.exec(line);
+      if (index) section.posts.push(index[1].toLowerCase());
+      if (BINARY_SUMMARY.test(line)) section.binary = true;
     }
     if (line.startsWith('copy from ') || line.startsWith('copy to ')) {
       return fail('PATCH_COPY', 'poc.patch copies a file (a "copy from" header): a copy rebuilds a whole existing file from one line, so its size is not bounded by the patch; a PoC adds or edits test files');
@@ -153,6 +177,7 @@ function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }) {
     }
     if (line === 'GIT binary patch') {
       base.binaryHunks += 1;
+      if (section) section.binary = true;
       continue;
     }
     // git parses a binary patch's forward and reverse hunks and inflates
@@ -178,6 +203,7 @@ function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }) {
       expansion += target;
     }
   }
+  close();
   base.expansionBytes = expansion;
   if (expansion > patchExpansionBytes) {
     return fail('PATCH_EXPANSION', `poc.patch would expand to at least ${expansion} bytes; the class allows ${patchExpansionBytes} (patchExpansionBytes)`);

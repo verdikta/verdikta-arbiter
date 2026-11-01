@@ -205,7 +205,8 @@ function chainMissing(module) {
 
 /**
  * Force /work to the listed commit. Throws RequesterError (the image) or
- * Abstain; returns { commit, tree } of the fresh repository's commit.
+ * Abstain; returns { commit, tree } of the fresh repository's commit, and
+ * `objects` (every object it holds, id → size).
  * @param {object} ctx - the pipeline's step context
  * @param {{base:string}} o - the listed commit
  */
@@ -440,7 +441,11 @@ async function forceCheckout(ctx, { base }) {
     gitRemoved: gitEntries > 0,
     gitEntriesRemoved: gitEntries
   });
-  return { commit: prepared, tree };
+  // Every object the fresh repository holds, id → size: what a binary patch could name as its postimage (patch.js).
+  const objects = new Map(needed.map((id) => [id, info.get(id).size]));
+  for (const [id, content] of built.objects) objects.set(id, content.length);
+  objects.set(prepared, commitContent.length);
+  return { commit: prepared, tree, objects };
 }
 
 module.exports = {
