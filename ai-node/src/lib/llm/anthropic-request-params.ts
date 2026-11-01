@@ -74,27 +74,34 @@ export function anthropicChatParams(model: string): AnthropicChatParams {
 
 /** The code-mode controls this module reads (llm-provider-interface.ts, CallControlOptions). */
 export interface AnthropicCallControls {
+  signal?: AbortSignal;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high';
 }
 
 /**
- * Fields for a code-mode juror call (design §10.3): the class envelope's output
- * ceiling and, on Claude 5 and later, the effort level with adaptive thinking.
- * Effort is `output_config.effort` (GA, no beta header). The pinned
- * @langchain/anthropic always sends `thinking: {type: "disabled"}`, which Claude
- * Sonnet 5.5 and Opus 5.5 reject with a 400; invocationKwargs is spread after it,
- * so `thinking: {type: "adaptive"}` there replaces it, which every Claude 5 model
- * accepts. Earlier models get no effort field (Sonnet 4.5 and Haiku 4.5 reject it).
- * Text mode passes no controls and gets {}.
+ * Fields for a code-mode call, juror or justifier (design §10.3): the class
+ * envelope's output ceiling and, on Claude 5 and later, adaptive thinking with
+ * the effort level when one is asked for. Effort is `output_config.effort` (GA,
+ * no beta header). The pinned @langchain/anthropic always sends
+ * `thinking: {type: "disabled"}`, which Claude Sonnet 5.5 and Opus 5.5 reject
+ * with a 400; invocationKwargs is spread after it, so `thinking: {type:
+ * "adaptive"}` there replaces it, and every Claude 5 model accepts that.
+ * Earlier models keep LangChain's default and get no effort field (Sonnet 4.5
+ * and Haiku 4.5 reject it). Text mode passes no controls and gets {}.
  */
 export function anthropicControlParams(model: string, controls?: AnthropicCallControls): AnthropicChatParams {
-  if (!controls) return {};
+  if (!controls || (controls.signal === undefined && controls.maxTokens === undefined && controls.effort === undefined)) {
+    return {};
+  }
   const params: AnthropicChatParams = {};
   if (controls.maxTokens !== undefined) params.maxTokens = controls.maxTokens;
   const version = parseClaudeVersion(model);
-  if (controls.effort !== undefined && version && version.major >= 5) {
-    params.invocationKwargs = { thinking: { type: 'adaptive' }, output_config: { effort: controls.effort } };
+  if (version && version.major >= 5) {
+    params.invocationKwargs = {
+      thinking: { type: 'adaptive' },
+      ...(controls.effort !== undefined && { output_config: { effort: controls.effort } }),
+    };
   }
   return params;
 }

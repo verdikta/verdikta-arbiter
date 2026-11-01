@@ -22,7 +22,7 @@ import path from 'path';
 import { codeReview } from '@verdikta/common';
 import { buildClaimPrompt, buildCodeJustifierPrompt, PackFile } from './claim-prompt';
 import { JUSTIFIER_RESERVE_MS, justifierBudgetMs, planCodeReviewTimes } from './deadline';
-import { CODE_JUROR_EFFORT, CodeJuror, JurorResult, justifierModel, runCodeJury, runCodeJustifier, weightedVector } from './jury';
+import { CODE_JUROR_EFFORT, CodeJuror, JurorResult, justifierModel, roundToTotal, runCodeJury, runCodeJustifier, weightedVector } from './jury';
 
 export const CODE_REVIEW_ERRORS = {
   INVALID: 'CODE_REVIEW_INVALID',
@@ -263,7 +263,7 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
   }
 
   // 6. The vector, then the justifier within its reserve.
-  const vector = weightedVector(jury.results, jurors.map(j => j.weight));
+  const vector = roundToTotal(weightedVector(jury.results, jurors.map(j => j.weight)));
   const budget = justifierBudgetMs(times, Date.now());
   if (budget <= 0) return errorResponse('DEADLINE', 'the deadline passed before the justifier could start');
   const justifier = await runCodeJustifier(buildCodeJustifierPrompt({
@@ -280,11 +280,11 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
   }
 
   const totalMs = Date.now() - receivedAt;
-  console.log(`⚖️ CODE_REVIEW_DONE: ${requestTag} in ${totalMs} ms, vector ${JSON.stringify(vector.map(Math.floor))}`);
+  console.log(`⚖️ CODE_REVIEW_DONE: ${requestTag} in ${totalMs} ms, vector ${JSON.stringify(vector)}`);
   return {
     status: 200,
     body: {
-      scores: outcomes.map((outcome, i) => ({ outcome, score: Math.floor(vector[i]) })),
+      scores: outcomes.map((outcome, i) => ({ outcome, score: vector[i] })),
       justification: justifier.text,
       metadata: {
         models_requested: jurors.length,

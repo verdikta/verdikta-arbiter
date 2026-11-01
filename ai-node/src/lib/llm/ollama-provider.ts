@@ -98,6 +98,9 @@ export class OllamaProvider implements LLMProvider {
    * @throws Will throw an error if the model invocation fails.
    */
   async generateResponse(prompt: string, model: string, options?: CallControlOptions): Promise<string> {
+    if (options?.signal) {
+      return this.generateCancellable(prompt, model, options.signal);
+    }
     try {
       const ollama = new ChatOllama({
         baseUrl: this.baseUrl,
@@ -122,8 +125,7 @@ export class OllamaProvider implements LLMProvider {
           }
         }, OLLAMA_TIMEOUT_MS);
         
-        // a code-mode justifier's signal cancels the request at its deadline
-        (options?.signal ? ollama.invoke(prompt, { signal: options.signal }) : ollama.invoke(prompt))
+        ollama.invoke(prompt)
           .then(result => {
             if (timeoutId && !completed) {
               clearTimeout(timeoutId);
@@ -151,6 +153,29 @@ export class OllamaProvider implements LLMProvider {
         throw new Error(`Failed to generate response: ${error.message}`);
       }
     }
+  }
+
+  /**
+   * A code-mode call (a justifier): Ollama's own /api/chat with the caller's
+   * signal on the HTTP request, which the pinned @langchain/ollama does not pass
+   * on. The caller owns the deadline, so the MODEL_TIMEOUT_MS wrapper does not apply.
+   */
+  private async generateCancellable(prompt: string, model: string, signal: AbortSignal): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false }),
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`[${this.providerName}] HTTP ${response.status}: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const content = data?.message?.content;
+    if (typeof content !== 'string' || !content) {
+      throw new Error(`[${this.providerName}] Invalid response payload: missing message.content`);
+    }
+    return content;
   }
 
   async generateResponseWithImage(prompt: string, model: string, base64Image: string, mediaType: string = 'image/jpeg'): Promise<string> {

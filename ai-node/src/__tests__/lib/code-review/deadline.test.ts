@@ -9,6 +9,7 @@ import {
   planCodeReviewTimes,
   raceAbort,
 } from '../../../lib/code-review/deadline';
+import { parseCodeJurorReply, roundToTotal } from '../../../lib/code-review/jury';
 
 describe('code-review deadline plan (§11)', () => {
   test('reserves 45 s for the justifier and gives the jurors the rest', () => {
@@ -50,4 +51,26 @@ describe('code-review deadline plan (§11)', () => {
     const controller = new AbortController();
     await expect(raceAbort(Promise.resolve('ok'), controller.signal)).resolves.toBe('ok');
   }, 5000);
+});
+
+describe('code-mode vector arithmetic', () => {
+  test('roundToTotal keeps exactly 1,000,000 by largest remainder, ties to the lower index', () => {
+    expect(roundToTotal([0.5, 999999.5, 0, 0, 0, 0])).toEqual([1, 999999, 0, 0, 0, 0]);
+    const thirds = roundToTotal([333333.3333, 333333.3333, 333333.3334, 0, 0, 0]);
+    expect(thirds.reduce((a, b) => a + b, 0)).toBe(1000000);
+    expect(thirds).toEqual([333333, 333333, 333334, 0, 0, 0]);
+    expect(roundToTotal([0, 0, 0, 0, 1000000, 0])).toEqual([0, 0, 0, 0, 1000000, 0]);
+  });
+
+  test('parseCodeJurorReply takes only a reply that is exactly one valid JSON object', () => {
+    const six = ['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+    const ok = '{"score": [0, 0, 0, 0, 1000000, 0], "justification": "HIGH"}';
+    expect(parseCodeJurorReply(ok, six)).toEqual({ vector: [0, 0, 0, 0, 1000000, 0], justification: 'HIGH' });
+    expect(parseCodeJurorReply(`\`\`\`json\n${ok}\n\`\`\``, six)).not.toBeNull();
+    expect(parseCodeJurorReply(`My verdict: ${ok}`, six)).toBeNull();
+    expect(parseCodeJurorReply('{"score": [0, 0, 0, 0, 999999, 0], "justification": "x"}', six)).toBeNull();
+    expect(parseCodeJurorReply('{"score": [-1, 0, 0, 0, 1000001, 0], "justification": "x"}', six)).toBeNull();
+    expect(parseCodeJurorReply('{"score": [0, 0, 0, 0, 1000000], "justification": "x"}', six)).toBeNull();
+    expect(parseCodeJurorReply('{"score": [0, 0, 0, 0, 999999.5, 0.5], "justification": "x"}', six)).toBeNull();
+  });
 });

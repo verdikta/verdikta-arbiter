@@ -11,7 +11,6 @@
  */
 
 import { LLMFactory } from '../llm/llm-factory';
-import { parseModelResponse } from '../../utils/parseModelResponse';
 import { parseRepairedScores, replyJustification } from '../../utils/repairModelResponse';
 import { buildCodeRepairPrompt } from './claim-prompt';
 import { CallAbortedError, raceAbort, timedController } from './deadline';
@@ -61,6 +60,33 @@ function httpStatusOf(error: any): number | undefined {
   return typeof status === 'number' ? status : undefined;
 }
 
+/**
+ * A juror's answer when the reply is exactly one JSON object (optionally in one
+ * ```json fence): "score" with one non-negative integer per outcome summing to
+ * 1,000,000, and "justification". Text mode's parser takes the first score
+ * object anywhere in the reply, which in code mode could be a hunter's injected
+ * object the juror quoted while rejecting it; here anything else goes to the
+ * repair call, which reads the reply as data and takes the juror's own decision.
+ */
+export function parseCodeJurorReply(reply: string, outcomes: readonly string[]): { vector: number[]; justification: string } | null {
+  let text = reply.trim();
+  const fenced = /^```(?:json)?[ \t]*\n([\s\S]*?)\n?```$/i.exec(text);
+  if (fenced) text = fenced[1].trim();
+  if (!text.startsWith('{') || !text.endsWith('}')) return null;
+  let parsed: any;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const { score, justification } = parsed;
+  if (!Array.isArray(score) || score.length !== outcomes.length || typeof justification !== 'string') return null;
+  if (!score.every(value => Number.isInteger(value) && value >= 0)) return null;
+  if (score.reduce((sum: number, value: number) => sum + value, 0) !== 1000000) return null;
+  return { vector: score, justification };
+}
+
 async function askJuror(
   juror: CodeJuror,
   prompt: string,
@@ -72,16 +98,13 @@ async function askJuror(
   const options = { webAccess: false, signal, maxTokens, effort: CODE_JUROR_EFFORT };
   const reply = stripThinkingBlocks(await provider.generateResponse(prompt, juror.model, options));
   console.log(`⚖️ CODE_JUROR_REPLY: ${juror.provider}:${juror.model} (${reply.length} chars)\n${reply}`);
-  const parsed = parseModelResponse(reply, outcomes);
-  // The vector decides an award: every component a non-negative integer (the parser checks the sum).
-  if (parsed.decisionVector && parsed.decisionVector.every(value => Number.isInteger(value) && value >= 0)) {
-    return { vector: parsed.decisionVector, justification: parsed.justification || reply };
-  }
+  const answer = parseCodeJurorReply(reply, outcomes);
+  if (answer) return { vector: answer.vector, justification: answer.justification || reply };
   if (signal.aborted) throw new CallAbortedError('jury deadline');
   // One repair call, as in text mode, inside the juror's own time and signal; the
   // reply is quoted in a hash fence (claim-prompt.ts, buildCodeRepairPrompt).
-  const answer = await provider.generateResponse(buildCodeRepairPrompt(reply, outcomes), juror.model, { ...options, effort: 'low' });
-  const repaired = parseRepairedScores(answer, outcomes.length);
+  const repairAnswer = await provider.generateResponse(buildCodeRepairPrompt(reply, outcomes), juror.model, { ...options, effort: 'low' });
+  const repaired = parseRepairedScores(repairAnswer, outcomes.length);
   if (repaired) return { vector: repaired, justification: replyJustification(reply) };
   throw new JurorParseError();
 }
@@ -162,8 +185,11 @@ export async function runCodeJustifier(prompt: string, budgetMs: number): Promis
   if (!target) return { kind: 'failed', message: 'JUSTIFIER_MODEL is not set as provider:model' };
   const { controller, clear } = timedController(budgetMs);
   try {
-    const provider = await LLMFactory.getProvider(target.provider) as any;
-    const work = provider.generateResponse(prompt, target.model, { webAccess: false, signal: controller.signal });
+    // The reserve covers the provider's setup too (Ollama's initialization fetches its model list).
+    const work = (async () => {
+      const provider = await LLMFactory.getProvider(target.provider) as any;
+      return provider.generateResponse(prompt, target.model, { webAccess: false, signal: controller.signal }) as Promise<string>;
+    })();
     const text = stripThinkingBlocks(await raceAbort<string>(work, controller.signal, 'justifier reserve'));
     if (!text) return { kind: 'failed', message: `${target.provider}:${target.model} returned an empty justification` };
     return { kind: 'ok', text };
@@ -175,7 +201,7 @@ export async function runCodeJustifier(prompt: string, budgetMs: number): Promis
   }
 }
 
-/** The weighted average over every juror (§10.5: scoring is unchanged). */
+/** The weighted average over every juror (§10.5), before rounding. */
 export function weightedVector(results: JurorResult[], weights: number[]): number[] {
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   const length = results[0]?.vector?.length ?? 0;
@@ -186,4 +212,22 @@ export function weightedVector(results: JurorResult[], weights: number[]): numbe
     });
   });
   return vector;
+}
+
+/**
+ * Integers summing to exactly `total` by largest remainder (ties to the lower
+ * index), so every arbiter rounds alike. Flooring each component, as text mode
+ * does, can lose several units, and settlement accepts only the five the
+ * aggregator's own flooring can lose (common OUTCOME_MASS_MIN_TOTAL, 999,995).
+ */
+export function roundToTotal(vector: number[], total = 1000000): number[] {
+  const floors = vector.map(value => Math.floor(value));
+  let missing = total - floors.reduce((sum, value) => sum + value, 0);
+  const order = vector
+    .map((value, index) => ({ index, fraction: value - Math.floor(value) }))
+    .sort((a, b) => b.fraction - a.fraction || a.index - b.index);
+  for (let k = 0; missing > 0 && order.length > 0; k = (k + 1) % order.length, missing--) {
+    floors[order[k].index] += 1;
+  }
+  return floors;
 }

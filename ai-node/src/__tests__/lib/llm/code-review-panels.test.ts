@@ -12,6 +12,7 @@ import { OpenAIProvider } from '../../../lib/llm/openai-provider';
 import { OpenRouterProvider } from '../../../lib/llm/openrouter-provider';
 import { XAIProvider } from '../../../lib/llm/xai-provider';
 import { HyperbolicProvider } from '../../../lib/llm/hyperbolic-provider';
+import { OllamaProvider } from '../../../lib/llm/ollama-provider';
 
 jest.mock('@langchain/anthropic', () => ({
   ChatAnthropic: jest.fn().mockImplementation(() => ({
@@ -125,6 +126,19 @@ describe('code-mode controls reach each provider', () => {
     expect(invoke).toHaveBeenCalledWith('prompt with https://example.com', { signal: controller.signal });
   }, 5000);
 
+  test('Anthropic: a code-mode justifier on Claude 5.5 (signal, no effort) gets adaptive thinking, not LangChain\'s disabled', async () => {
+    const controller = new AbortController();
+    await new AnthropicProvider('test-anthropic').generateResponse('justify', 'claude-sonnet-5-5', { webAccess: false, signal: controller.signal });
+    const fields = MockedChatAnthropic.mock.calls[0][0];
+    expect(fields.invocationKwargs).toEqual({ thinking: { type: 'adaptive' } });
+    expect(fields.temperature).toBeUndefined();
+  }, 5000);
+
+  test('Anthropic: a code-mode call on Claude 4.x keeps LangChain\'s thinking and sends no effort', async () => {
+    await new AnthropicProvider('test-anthropic').generateResponse('p', 'claude-sonnet-4-6', { webAccess: false, signal: new AbortController().signal, effort: 'high' });
+    expect(MockedChatAnthropic.mock.calls[0][0].invocationKwargs).toBeUndefined();
+  }, 5000);
+
   test('Anthropic: aborting the signal rejects the pending call', async () => {
     MockedChatAnthropic.mockImplementationOnce(() => ({
       invoke: jest.fn((_input: unknown, options: { signal: AbortSignal }) => new Promise((_, reject) => {
@@ -194,6 +208,22 @@ describe('code-mode controls reach each provider', () => {
     await new HyperbolicProvider().generateResponse('prompt', 'deepseek-ai/DeepSeek-R1', { signal: controller.signal });
     expect((global.fetch as jest.Mock).mock.calls[0][1].signal).toBe(controller.signal);
     delete env.HYPERBOLIC_API_KEY;
+  }, 5000);
+
+  test('Ollama (a possible justifier): a signalled call goes to /api/chat with the signal on the request', async () => {
+    (global.fetch as jest.Mock).mockImplementation(async (url: string, init?: { signal?: AbortSignal }) => {
+      if (String(url).endsWith('/api/tags')) return { ok: true, status: 200, json: async () => ({ models: [] }) };
+      if (init?.signal?.aborted) throw Object.assign(new Error('aborted'), { name: 'AbortError' });
+      return { ok: true, status: 200, json: async () => ({ message: { content: 'a justification' } }), text: async () => '' };
+    });
+    const provider = new OllamaProvider('http://ollama.test:11434');
+    const controller = new AbortController();
+    await expect(provider.generateResponse('justify', 'llama3.1:8b', { signal: controller.signal })).resolves.toBe('a justification');
+    const chat = (global.fetch as jest.Mock).mock.calls.find(([url]) => String(url).endsWith('/api/chat'))!;
+    expect(chat[1].signal).toBe(controller.signal);
+    expect(JSON.parse(chat[1].body)).toEqual({ model: 'llama3.1:8b', messages: [{ role: 'user', content: 'justify' }], stream: false });
+    controller.abort();
+    await expect(provider.generateResponse('justify', 'llama3.1:8b', { signal: controller.signal })).rejects.toThrow(/abort/i);
   }, 5000);
 
   test('xAI: max_tokens from the envelope and the caller\'s signal', async () => {

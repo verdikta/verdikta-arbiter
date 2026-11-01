@@ -198,21 +198,30 @@ its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
   `MODEL_TIMEOUT_MS` and `JUSTIFICATION_TIMEOUT_MS` do not apply.
 - Each call gets an `AbortSignal` that is aborted at its deadline and goes into
   the provider's HTTP request (Anthropic, OpenAI, OpenRouter, xAI; Hyperbolic
-  and Ollama too, as justifiers). The route answers at the deadline even if a
-  provider ignores it.
+  and Ollama too, as justifiers: Ollama through its own `/api/chat`). The
+  deadline covers the provider's setup as well, and the route answers at the
+  deadline even if a provider ignores the signal.
+- A body read that does not finish within `REQUEST_TIMEOUT_MS` is the text-mode
+  408, in either mode.
 - Every juror runs with web access off, `maxTokens` = the class envelope's
   juror output (8,000 on `code-standard`, 12,000 on `code-premium`) and effort
   `high` (Claude 5: `output_config.effort` with adaptive thinking; OpenAI:
   `reasoning_effort`; OpenRouter: `reasoning.effort`; xAI: none, Grok 4 takes
-  no `reasoning_effort`). A reply that cannot be parsed gets one repair call
-  with the same signal.
+  no `reasoning_effort`). A juror's answer is its reply only when the reply is
+  exactly one JSON object (bare or in one ```json fence) with one non-negative
+  integer per outcome summing to 1,000,000; anything else (prose, or a score
+  object the juror merely quotes) gets one repair call with the same signal,
+  which reads the reply as quoted data.
 - Every juror is required (no Jev in the MVP): the first juror that fails ends
   the request and the others are cancelled.
 
 ### Responses
 
 Success (200) has the text-mode shape (`scores` for the six outcomes, the
-justification, `metadata`, `model_results`) plus:
+justification, `metadata`, `model_results`). The scores are the jurors'
+weighted average rounded by largest remainder (ties to the lower index), so
+they sum to exactly 1,000,000: flooring each one could lose more than the five
+units settlement allows for the aggregator's own rounding. Plus:
 
 ```json
 "codeReview": {
