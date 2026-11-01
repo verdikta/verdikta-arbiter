@@ -2,8 +2,13 @@
 // runner, production trust unless dev trust is asked for explicitly, and dev
 // trust never on Base mainnet (or on a chain the adapter cannot name).
 
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { codeReview } = require('@verdikta/common');
-const { codeReviewConfigFromEnv, describeCodeReviewConfig } = require('../../codeReview/config');
+const { codeReviewConfigFromEnv, describeCodeReviewConfig, readCommonVersions } = require('../../codeReview/config');
+
+const PINNED = '1.9.0-attest.1';
 
 const DEV_KEY = codeReview.createDevBuilderKey();
 const TOKEN = 'runner-token-0123456789abcdef0123456789abcdef';
@@ -56,9 +61,73 @@ describe('code-review config', () => {
     expect(config.problems.join(' ')).toMatch(/CODE_RUNNER/);
   });
 
-  it('accepts CODE_RUNNER_TOKEN_FILE instead of the token', () => {
-    const config = codeReviewConfigFromEnv({ ...READY, CODE_RUNNER_TOKEN: undefined, CODE_RUNNER_TOKEN_FILE: __filename });
-    expect(config.runner.configured).toBe(true);
+  describe('the runner token', () => {
+    let dir;
+    beforeAll(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'ea-token-')); });
+    afterAll(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+    const tokenFile = (name, contents) => {
+      const file = path.join(dir, name);
+      fs.writeFileSync(file, contents);
+      return file;
+    };
+    const withFile = (file) => codeReviewConfigFromEnv({ ...READY, CODE_RUNNER_TOKEN: undefined, CODE_RUNNER_TOKEN_FILE: file });
+
+    it('accepts CODE_RUNNER_TOKEN_FILE holding a token (a trailing newline is fine)', () => {
+      expect(withFile(tokenFile('good', `${TOKEN}\n`)).runner.configured).toBe(true);
+    });
+
+    it.each([
+      ['an empty file', ''],
+      ['a whitespace-only file', '  \n\t\n'],
+      ['a short token', 'tooshort\n'],
+      ['a token with a space in it', `${TOKEN.slice(0, 20)} ${TOKEN.slice(20)}`]
+    ])('refuses CODE_RUNNER_TOKEN_FILE holding %s', (label, contents) => {
+      const config = withFile(tokenFile(label.replace(/\W/g, '_'), contents));
+      expect(config.runner.configured).toBe(false);
+      expect(config.ready).toBe(false);
+      expect(config.problems.join(' ')).toMatch(/CODE_RUNNER_TOKEN_FILE/);
+      expect(config.problems.join(' ')).not.toContain(TOKEN);
+    });
+
+    it('refuses CODE_RUNNER_TOKEN_FILE naming a directory or nothing', () => {
+      expect(withFile(dir).runner.configured).toBe(false);
+      expect(withFile(path.join(dir, 'absent')).runner.configured).toBe(false);
+    });
+
+    it('refuses a short inline CODE_RUNNER_TOKEN', () => {
+      const config = codeReviewConfigFromEnv({ ...READY, CODE_RUNNER_TOKEN: 'short' });
+      expect(config.runner.configured).toBe(false);
+      expect(config.problems.join(' ')).toMatch(/CODE_RUNNER_TOKEN/);
+    });
+
+    it('refuses both the token and the file', () => {
+      expect(codeReviewConfigFromEnv({ ...READY, CODE_RUNNER_TOKEN_FILE: tokenFile('both', TOKEN) }).runner.configured).toBe(false);
+    });
+  });
+
+  describe('the @verdikta/common release', () => {
+    it('reads the pin, the installed copy and the AI Node\'s copy from this checkout', () => {
+      expect(readCommonVersions()).toMatchObject({ pinned: PINNED, installed: PINNED });
+    });
+
+    it.each([
+      ['the adapter runs another release than it pins (an install replaced it)', { pinned: PINNED, installed: '1.8.0', aiNode: '1.8.0' }, /adapter runs @verdikta\/common 1\.8\.0/],
+      ['the AI Node beside it runs another release', { pinned: PINNED, installed: PINNED, aiNode: '1.8.0' }, /AI Node runs @verdikta\/common 1\.8\.0/],
+      ['the installed release cannot be read', { pinned: PINNED, installed: null, aiNode: null }, /unknown/]
+    ])('code mode is off when %s', (_label, versions, pattern) => {
+      const config = codeReviewConfigFromEnv(READY, { versions });
+      expect(config.ready).toBe(false);
+      expect(config.problems.join(' ')).toMatch(pattern);
+    });
+
+    it('an AI Node that is not beside the adapter (split deployment) does not block it', () => {
+      expect(codeReviewConfigFromEnv(READY, { versions: { pinned: PINNED, installed: PINNED, aiNode: null } }).ready).toBe(true);
+    });
+
+    it('a mismatch is not reported while code review is off', () => {
+      const config = codeReviewConfigFromEnv({}, { versions: { pinned: PINNED, installed: '1.8.0', aiNode: null } });
+      expect(config.problems).toEqual(['CODE_REVIEW_ENABLED is not true']);
+    });
   });
 
   describe('trust mode', () => {
@@ -126,6 +195,7 @@ describe('code-review config', () => {
         enabled: true,
         ready: true,
         runnerConfigured: true,
+        commonVersion: PINNED,
         trust: 'dev',
         devKeyCount: 1,
         chainId: 84532,

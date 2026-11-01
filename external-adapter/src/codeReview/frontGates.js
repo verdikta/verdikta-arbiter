@@ -9,13 +9,14 @@
  * claim gates need, so an unreachable ciphertext cannot turn a malformed
  * claim into an abstention.
  *
- *  1. operator: code review enabled, runner configured, trust mode usable  → requester error
+ *  1. operator: code review enabled, runner configured, the pinned common
+ *     release installed (here and in the AI Node), trust mode usable           → requester error
  *  2. request:  cids = [listing, claim, ≤ 8 prior findings], no repeats    → requester error
  *  3. listing (cids[0]): manifest and the six outcomes, code_review.json,
  *     the code-standard envelope (assumption A8: whatever class the request
  *     came on), attestation.json, known_issues.json, baseline.json            → requester error
  *  4. request composition: prior findings readable (finding.json, report.md),
- *     the dispute line and statement (≤ 4 KB)                                 → requester error
+ *     the dispute line (read on its own) and statement (≤ 4 KB)               → requester error
  *  5. claim (cids[1]): the archive's structure, then its members
  *     (finding.json, report.md, poc.patch; fix.patch optional)                → INVALID
  *  6. disclosure: the E1 line, the ciphertext fetched by CID, verifyDisclosure
@@ -356,11 +357,13 @@ async function runFrontGates(input) {
 
   // 4
   const priorFindings = await readPriorFindings(priorCids, { extractedPaths, malformedBCIDs });
+  // the dispute line is the disputing maker's: read and checked on its own,
+  // before the claim is judged, whatever the disclosure line looks like
   const machineLines = readMachineLines(addendum);
   if (!machineLines.ok && machineLines.fault === 'requester') {
     throw requester('CODE_REVIEW_DISPUTE', `the dispute line does not parse: ${issueCodes(machineLines.issues)}`);
   }
-  const dispute = machineLines.ok && machineLines.dispute
+  const dispute = machineLines.dispute
     ? await readDisputeStatement(machineLines.dispute.statementCid, archiveService)
     : null;
 

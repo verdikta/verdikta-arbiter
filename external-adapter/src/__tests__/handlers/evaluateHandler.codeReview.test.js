@@ -574,7 +574,11 @@ describe('code review: disclosure gate (§10.1, §14, erratum E1)', () => {
     let line = addendum;
     if (label === 'uppercase hex') line = s.disclosure.line.replace(s.disclosure.fields.archiveSha256, s.disclosure.fields.archiveSha256.toUpperCase().replace('0X', '0x'));
     if (label === 'a trailing newline') line = `${s.disclosure.line}\n`;
-    if (label === 'three lines') line = `${s.disclosure.line}\nverdikta-dispute: ${H.cid('Statement')}\nmore`;
+    if (label === 'three lines') {
+      // the dispute line is checked first (the requester's), so give it a fine statement
+      archives[H.cid('Statement')] = Buffer.from('a fine statement');
+      line = `${s.disclosure.line}\nverdikta-dispute: ${H.cid('Statement')}\nmore`;
+    }
     s = { ...s, addendum: line, cid: (mode) => `${mode}:${s.cids.listing},${s.cids.claim}${line === null ? '' : `:${line}`}` };
     await expectInvalidCommit(s, { gate: 'disclosure', check: code });
   });
@@ -672,6 +676,28 @@ describe('code review: machine lines, the dispute statement, logs', () => {
   it('a malformed dispute line is a requester error, not INVALID against the hunter', async () => {
     const s = scenario({ dispute: { statement: 'ok', line: 'verdikta-dispute: not-a-cid!' } });
     expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_DISPUTE/);
+  });
+
+  it('the dispute is checked on its own: a malformed disclosure line does not hide an oversized statement', async () => {
+    const s = scenario({ dispute: { statement: 'x'.repeat(4097) }, addendum: 'verdikta-disclosure: 0xdeadbeef' });
+    expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_DISPUTE/);
+  });
+
+  it('when both machine lines are malformed the dispute line\'s requester error wins', async () => {
+    const s = scenario({ dispute: { statement: 'ok', line: 'verdikta-dispute: not-a-cid!' }, addendum: 'verdikta-disclosure: 0xdeadbeef' });
+    expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_DISPUTE/);
+  });
+
+  it('two dispute lines are a requester error', async () => {
+    const s = scenario({ dispute: { statement: 'ok' } });
+    const doubled = `${s.cid(1)}\n${codeReview.formatDisputeLine(s.statementCid)}`;
+    expectRequesterError(await evaluateHandler(request(doubled)), /CODE_REVIEW_DISPUTE/);
+  });
+
+  it('a malformed disclosure line with a good dispute settles INVALID after the statement passed its checks', async () => {
+    const s = scenario({ dispute: { statement: 'a fine statement' }, addendum: 'verdikta-disclosure: 0xdeadbeef' });
+    await expectInvalidCommit(s, { gate: 'disclosure', check: 'LINE_TOKEN_COUNT' });
+    expect(mockState.client.archiveService.getArchive).toHaveBeenCalledWith(s.statementCid);
   });
 
   it('a dispute statement that cannot be fetched is transient: errored, no commit', async () => {

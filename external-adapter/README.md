@@ -169,10 +169,10 @@ call the adapter runs these gates, all from `@verdikta/common`
 
 | Stage | Checks | On failure |
 |---|---|---|
-| Operator | `CODE_REVIEW_ENABLED=true`, a runner (`CODE_RUNNER_URL` + token), a usable trust mode | requester error |
+| Operator | `CODE_REVIEW_ENABLED=true`; a runner (`CODE_RUNNER_URL` and a token of 32+ printable characters); the `@verdikta/common` release `package.json` pins actually installed, and the same one in the AI Node beside it (an install that replaced it with `latest` leaves code mode off); a usable trust mode | requester error |
 | Request | 2 to 10 CIDs, none repeated | requester error |
 | Listing (`cids[0]`) | manifest and the six outcomes; `code_review.json` (`validateCodeReviewSpec`, so a spec above the class maxima); the `code-standard` envelope whatever class the request came on (`validateClassEnvelope`); `attestation.json` (`validateAttestation`); `known_issues.json`; `baseline.json` | requester error |
-| Composition | prior findings' `finding.json` and `report.md` (nothing else of them is read); the dispute line and statement (at most 4 KB) | requester error |
+| Composition | prior findings' `finding.json` and `report.md` (nothing else of them is read); the dispute line, read on its own whatever the disclosure line looks like, and its statement (at most 4 KB) | requester error |
 | Claim (`cids[1]`) | the archive's structure (the submitted-work checks of `utils/bcidValidation.js`); then, in this order, `finding.json` a JSON object, `report.md` non-empty UTF-8 text, `poc.patch` a patch (a `diff --git` header or a unified-diff hunk); `fix.patch` optional and never gated | INVALID, naming the member |
 | `disclosure` | the line parses strictly; the ciphertext fetched by CID hashes to `ciphertextSha256`; `verifyDisclosure` with the listing's `disclosureKey` (`BAD_DISCLOSURE_KEY` is the listing's: requester error) | INVALID |
 | `inScope` | `validateFinding` against the spec | INVALID |

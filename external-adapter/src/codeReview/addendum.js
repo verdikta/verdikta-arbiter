@@ -34,30 +34,38 @@ function addendumForLog(addendum) {
  *
  * Fault: the disclosure line is the claim's (the hunter's reveal supplies its
  * keys), so a framing or disclosure-line failure settles INVALID through the
- * disclosure gate. A recognisable dispute line that is malformed after a good
- * disclosure line is the disputing maker's: a requester error, never INVALID
- * against the hunter.
+ * disclosure gate. The dispute line is the disputing maker's, and it is read
+ * on its own, whatever the disclosure line looks like: a line after the first
+ * that starts with `verdikta-dispute: ` is the dispute line, and a malformed
+ * one (or more than one) is a requester error, never INVALID against the
+ * hunter. When the addendum as a whole does not parse but its dispute line
+ * does, `dispute` is still returned, so the statement's own checks (a
+ * requester's) run before the claim is settled.
  *
  * @param {unknown} addendum
  * @returns {{ ok: true, disclosure: object, dispute: { statementCid: string }|null, text: string }
- *   | { ok: false, fault: 'claim'|'requester', issues: { code: string, path: string, detail: string }[], text: null }}
+ *   | { ok: false, fault: 'claim'|'requester', issues: { code: string, path: string, detail: string }[],
+ *       dispute: { statementCid: string }|null, text: null }}
  */
 function readMachineLines(addendum) {
   const parsed = codeReview.parseAddendum(addendum);
   if (parsed.ok) {
     return { ok: true, disclosure: parsed.disclosure, dispute: parsed.dispute, text: codeReview.stripAddendum(addendum).text };
   }
+  const issuesOf = (list) => list.map(({ code, path, detail }) => ({ code, path, detail }));
+  const failed = (fault, issues, dispute = null) => ({ ok: false, fault, issues: issuesOf(issues), dispute, text: null });
+
   const lines = typeof addendum === 'string' ? addendum.split('\n') : [];
-  const disputeLineOnly = lines.length === 2
-    && lines[1].startsWith(codeReview.DISPUTE_LINE_PREFIX)
-    && parsed.issues.length > 0
-    && parsed.issues.every((issue) => typeof issue.path === 'string' && issue.path.startsWith('/dispute'));
-  return {
-    ok: false,
-    fault: disputeLineOnly ? 'requester' : 'claim',
-    issues: parsed.issues.map(({ code, path, detail }) => ({ code, path, detail })),
-    text: null
-  };
+  const disputeLines = lines.slice(1).filter((line) => line.startsWith(codeReview.DISPUTE_LINE_PREFIX));
+  if (disputeLines.length > 1) {
+    return failed('requester', [{ code: 'LINE_COUNT', path: '/dispute', detail: 'the addendum carries more than one dispute line' }]);
+  }
+  if (disputeLines.length === 1) {
+    const dispute = codeReview.parseDisputeLine(disputeLines[0]);
+    if (!dispute.ok) return failed('requester', dispute.issues);
+    return failed('claim', parsed.issues, { statementCid: dispute.statementCid });
+  }
+  return failed('claim', parsed.issues);
 }
 
 /**

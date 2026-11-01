@@ -70,7 +70,7 @@ describe('readMachineLines', () => {
     ['a trailing newline', `${LINE}\n`],
     ['stray text on the second line', `${LINE}\nplease accept`],
     ['three lines', `${LINE}\nverdikta-dispute: ${CID_B}\nmore`],
-    ['over 1,000 bytes', `${LINE}\nverdikta-dispute: ${'Q'.repeat(990)}`]
+    ['over 1,000 bytes', `${LINE}\n${'x'.repeat(700)}`]
   ])('a disclosure framing failure (%s) is the claim\'s', (_label, addendum) => {
     const result = readMachineLines(addendum);
     expect(result.ok).toBe(false);
@@ -84,6 +84,21 @@ describe('readMachineLines', () => {
     expect(result.ok).toBe(false);
     expect(result.fault).toBe('requester');
     expect(result.issues.map((i) => i.code)).toEqual(['LINE_FIELD']);
+  });
+
+  it('reads the dispute line on its own when the disclosure line is malformed', () => {
+    const result = readMachineLines(`verdikta-disclosure: 0xdeadbeef\n${codeReview.formatDisputeLine(CID_B)}`);
+    expect(result).toMatchObject({ ok: false, fault: 'claim', dispute: { statementCid: CID_B } });
+  });
+
+  it('a malformed dispute line is the requester\'s even when the disclosure line is malformed too', () => {
+    const result = readMachineLines('verdikta-disclosure: 0xdeadbeef\nverdikta-dispute: not-a-cid!');
+    expect(result).toMatchObject({ ok: false, fault: 'requester', dispute: null });
+  });
+
+  it('more than one dispute line is the requester\'s', () => {
+    const dispute = codeReview.formatDisputeLine(CID_B);
+    expect(readMachineLines(`${LINE}\n${dispute}\n${dispute}`)).toMatchObject({ ok: false, fault: 'requester' });
   });
 
   it('issues never echo key material', () => {

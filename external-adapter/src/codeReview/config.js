@@ -14,6 +14,12 @@
  *   NETWORK_CHAIN_ID / DEPLOYMENT_NETWORK
  *                                     the chain this arbiter serves (as installer/.env names it)
  *
+ * Library: code mode also needs the @verdikta/common release this adapter
+ * pins (package.json, exact), and the AI Node beside it on the same one. An
+ * install or upgrade that replaced it (the installer's default is `latest`)
+ * leaves code mode off, with the reason in /health, rather than judging
+ * claims by another release's rules.
+ *
  * Trust (build plan assumption A6): production trust verifies against
  * @verdikta/common's trusted-builder set and nothing else. CODE_REVIEW_TRUST=dev
  * adds the caller-supplied dev keys for attestations signed for dev trust; it
@@ -22,6 +28,7 @@
  */
 
 const fs = require('fs');
+const path = require('path');
 const { codeReview } = require('@verdikta/common');
 
 const BASE_MAINNET_CHAIN_ID = 8453;
@@ -30,6 +37,48 @@ const DEV_TRUST_CHAIN_IDS = Object.freeze([84532, 31337]);
 const TRUST_MODES = Object.freeze(['production', 'dev']);
 
 const present = (value) => typeof value === 'string' && value.trim() !== '';
+
+/** The runner's bearer token rule (code-runner README): 32 or more printable characters, no spaces. */
+const TOKEN_RE = /^[\x21-\x7e]{32,}$/;
+
+function readJsonVersion(file, pick) {
+  try {
+    return pick(JSON.parse(fs.readFileSync(file, 'utf8'))) || null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+const EA_ROOT = path.join(__dirname, '..', '..');
+
+/**
+ * The @verdikta/common versions code mode depends on: the adapter's exact pin,
+ * the copy it runs, and the copy the AI Node beside it runs (null when there
+ * is no AI Node there, as in a split deployment).
+ */
+function readCommonVersions() {
+  return {
+    pinned: readJsonVersion(path.join(EA_ROOT, 'package.json'), (pkg) => pkg.dependencies && pkg.dependencies['@verdikta/common']),
+    installed: readJsonVersion(path.join(EA_ROOT, 'node_modules', '@verdikta', 'common', 'package.json'), (pkg) => pkg.version),
+    aiNode: readJsonVersion(path.join(EA_ROOT, '..', 'ai-node', 'node_modules', '@verdikta', 'common', 'package.json'), (pkg) => pkg.version)
+  };
+}
+
+function commonVersionProblems(versions) {
+  const problems = [];
+  if (!versions.installed || versions.installed !== versions.pinned) {
+    problems.push(`the adapter runs @verdikta/common ${versions.installed || '(unknown)'}, not the ${versions.pinned || '(unknown)'} it pins`);
+  }
+  if (versions.aiNode && versions.aiNode !== versions.installed) {
+    problems.push(`the AI Node runs @verdikta/common ${versions.aiNode}, the adapter ${versions.installed || '(unknown)'}`);
+  }
+  return problems;
+}
+
+/** Why a token is unusable, or null. Never echoes it. */
+function tokenProblem(token, source) {
+  return TOKEN_RE.test(token.trim()) ? null : `${source} does not hold a usable token (32 or more printable characters, no spaces)`;
+}
 
 function runnerFromEnv(env, problems) {
   let url = null;
@@ -49,10 +98,24 @@ function runnerFromEnv(env, problems) {
   const inline = present(env.CODE_RUNNER_TOKEN);
   const file = present(env.CODE_RUNNER_TOKEN_FILE);
   if (inline && file) problems.push('set CODE_RUNNER_TOKEN or CODE_RUNNER_TOKEN_FILE, not both');
-  else if (inline) token = true;
-  else if (file) {
-    if (fs.existsSync(env.CODE_RUNNER_TOKEN_FILE.trim())) token = true;
-    else problems.push('CODE_RUNNER_TOKEN_FILE names a file that does not exist');
+  else if (inline) {
+    const problem = tokenProblem(env.CODE_RUNNER_TOKEN, 'CODE_RUNNER_TOKEN');
+    if (problem) problems.push(problem);
+    else token = true;
+  } else if (file) {
+    // read once to check it, never kept: the run reads the file itself (A4b)
+    let contents = null;
+    try {
+      const tokenPath = env.CODE_RUNNER_TOKEN_FILE.trim();
+      if (fs.statSync(tokenPath).isFile()) contents = fs.readFileSync(tokenPath, 'utf8');
+    } catch (_error) {
+      contents = null;
+    }
+    const problem = contents === null
+      ? 'CODE_RUNNER_TOKEN_FILE does not name a readable file'
+      : tokenProblem(contents, 'CODE_RUNNER_TOKEN_FILE');
+    if (problem) problems.push(problem);
+    else token = true;
   } else {
     problems.push('CODE_RUNNER_TOKEN (or CODE_RUNNER_TOKEN_FILE) is not set');
   }
@@ -117,14 +180,16 @@ function trustFromEnv(env, chain) {
 }
 
 /**
- * Read the code-review configuration from an environment. Pure: reads only
- * `env` (and checks that a token file exists).
+ * Read the code-review configuration from an environment. Reads `env`, the
+ * token file when one is named, and the @verdikta/common versions (or
+ * `options.versions`, for tests).
  * @param {object} env
+ * @param {{ versions?: { pinned: string|null, installed: string|null, aiNode: string|null } }} [options]
  * @returns {{ enabled: boolean, ready: boolean, runner: { configured: boolean, url: string|null },
  *   trust: { mode: string, devKeys: { publicKey: string }[], refused: string|null },
  *   chain: { chainId: number|null, network: string|null }, problems: string[] }}
  */
-function codeReviewConfigFromEnv(env = {}) {
+function codeReviewConfigFromEnv(env = {}, options = {}) {
   const problems = [];
   const enabled = typeof env.CODE_REVIEW_ENABLED === 'string' && env.CODE_REVIEW_ENABLED.trim().toLowerCase() === 'true';
   if (!enabled) problems.push('CODE_REVIEW_ENABLED is not true');
@@ -133,16 +198,21 @@ function codeReviewConfigFromEnv(env = {}) {
   const runner = runnerFromEnv(env, runnerProblems);
   if (enabled) problems.push(...runnerProblems);
 
+  const versions = options.versions || readCommonVersions();
+  const libraryProblems = commonVersionProblems(versions);
+  if (enabled) problems.push(...libraryProblems);
+
   const chain = chainFromEnv(env);
   const trust = trustFromEnv(env, chain);
   if (trust.refused) problems.push(trust.refused);
 
   return {
     enabled,
-    ready: enabled && runner.configured && trust.refused === null,
+    ready: enabled && runner.configured && libraryProblems.length === 0 && trust.refused === null,
     runner,
     trust,
     chain: { chainId: chain.chainId, network: chain.network },
+    commonVersion: versions.installed,
     problems
   };
 }
@@ -158,6 +228,7 @@ function describeCodeReviewConfig(config) {
     enabled: config.enabled,
     ready: config.ready,
     runnerConfigured: config.runner.configured,
+    commonVersion: config.commonVersion,
     trust,
     devKeyCount: config.trust.devKeys.length,
     chainId: config.chain.chainId,
@@ -187,6 +258,7 @@ function devTrustActive(config) {
 module.exports = {
   BASE_MAINNET_CHAIN_ID,
   DEV_TRUST_CHAIN_IDS,
+  readCommonVersions,
   codeReviewConfigFromEnv,
   describeCodeReviewConfig,
   loadCodeReviewConfig,
