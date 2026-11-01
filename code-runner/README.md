@@ -9,10 +9,11 @@ gate failures into INVALID, and the jury reads the report.
 Node A1 of the build is the service shell, the isolation, the limits, the
 deadline and the result taxonomy; node A2a adds the forge claim pipeline:
 the `applies`, `testPathsOnly`, `build` and `reproduces` gates
-([below](#the-forge-claim-pipeline)). Later nodes add the image pull and
-admission (A1b), listing checks (A2b), the integrity checks and the fix check
-(A3a), the report and context pack (A3b) and the honesty flags (A3c). See
-[Seams](#seams).
+([below](#the-forge-claim-pipeline)); node A1b the image pull by digest from
+a registry allowlist, the image cache and the slot and memory admission
+([below](#images-and-admission)). Later nodes add listing checks (A2b), the
+integrity checks and the fix check (A3a), the report and context pack (A3b)
+and the honesty flags (A3c). See [Seams](#seams).
 
 ## Run it
 
@@ -90,9 +91,20 @@ the answer is 401 whatever the route.
   "docker": { "reachable": true, "endpoint": "unix:///run/verdikta-code-runner/docker.sock", "serverVersion": "28.0.4", "osType": "linux", "architecture": "x86_64", "error": null },
   "dataRoot": { "path": "/var/lib/verdikta-code-runner/docker", "freeBytes": 38000000000, "error": null },
   "maintenance": false,
+  "capacity": {
+    "slots": { "total": 1, "inUse": 0 },
+    "memory": { "availableMb": 9800, "committedMb": 0, "reserveMb": 1280,
+                "reserve": { "chainlink": 512, "postgres": 256, "aiNode": 512, "localModel": 0 }, "error": null }
+  },
+  "images": { "allowlist": [{ "entry": "ghcr.io/verdikta", "dev": false }], "inUse": 0, "pullsInFlight": 0,
+              "pendingBytes": 0, "diskReserveMb": 1024, "pullTimeoutMs": 90000 },
   "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "runSeconds": 360, "…": "…" }
 }
 ```
+
+Busy slots are reported, not a failure (they free up). Under `runsc`, a host
+whose available memory cannot be measured is not ok: every run would be
+refused.
 
 ### `POST /v1/runs`
 
@@ -120,11 +132,19 @@ Patches are base64 so their bytes survive JSON. `deadline` is the **remaining
 time in milliseconds** when the EA sends the request (at most 900,000); the
 runner stops at receipt + deadline minus `CODE_RUNNER_DEADLINE_RESERVE_MS`.
 
+`attestation.env` must name the image, platform and unpacked size
+`code_review.json`'s `env` names (`ATTESTATION_IMAGE_MISMATCH`,
+`ATTESTATION_PLATFORM_MISMATCH`, `ATTESTATION_SIZE_MISMATCH`), and the image
+must be a reference Docker resolves exactly as written. These, and what the
+claim pipeline would refuse in the request itself (`FRAMEWORK_UNSUPPORTED`,
+`COMMAND_MISSING`, `BASELINE_INVALID`, …), are a 400 before admission or any
+pull.
+
 | Status | `outcome` | Meaning for the EA |
 |---|---|---|
 | 200 | `definitive` | Every step ended in a fact the arbiters may settle on. A failed gate means INVALID; all passing goes to the jury. |
 | 503 | `abstain` | Error, no commit. `abstain.cause` says why. |
-| 400 | `requester_error` | The requester's package is broken (§12): a malformed request, a spec above the class hard limits, or an env image that declares volumes. No claim code ran. `issues[]` names each problem. |
+| 400 | `requester_error` | The requester's package is broken (§12): a malformed request, a spec above the class hard limits, an attestation that names another image, or an env image that declares volumes. No claim code ran. `issues[]` names each problem. |
 | 401 / 404 / 405 / 413 / 415 | — | Token, route, method, body size (16 MiB), content type. |
 
 A definitive or abstaining answer looks like:
@@ -135,6 +155,7 @@ A definitive or abstaining answer looks like:
   "runner": { "version": "0.1.0", "runtime": "runsc", "platform": "linux/amd64" },
   "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "testSeconds": 180, "runSeconds": 360, "maxPatchBytes": 2000000, "patchExpansionBytes": 50000000, "platform": "linux/amd64" },
   "abstain": { "cause": "oom", "step": "build", "detail": "a process in the sandbox was OOM-killed during the step" },
+  "image": { "ref": "ghcr.io/verdikta/env@sha256:…", "cache": "hit", "durationMs": 41 },
   "steps": [ { "name": "build", "outcome": "abstain", "exitCode": 1, "durationMs": 8123,
                "stdout": { "text": "…", "totalBytes": 912, "omittedBytes": 0 }, "stderr": { "…": "…" },
                "cause": "oom", "detail": "…" } ],
@@ -144,7 +165,9 @@ A definitive or abstaining answer looks like:
 }
 ```
 
-`gates` holds `{ status: "pass"|"fail", basis, detail }` per gate decided;
+`image` says how the env image was had (`hit`, `pulled`, or `shared`: a pull
+another run started); it is operational and never part of the report, since
+it differs between arbiters. `gates` holds `{ status: "pass"|"fail", basis, detail }` per gate decided;
 a gate not reached is absent. `facts` holds what the steps observed (the
 patch, its flags, the PoC runs; see below). `report`, `reportSha256` and
 `contextPack` stay `null` until node A3b.
@@ -187,8 +210,10 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   host's variant of a multi-platform image.
 - The entrypoint is the runner's keepalive, not the image's; it ends the
   container shortly after the deadline even if the runner dies.
-- `--pull never`: the runner never pulls implicitly (the controlled pull is
-  A1b). An image that is not on the runner's disk abstains (`image_unavailable`).
+- `--pull never`: the run never pulls. The pull is a separate step before it,
+  by digest only, from the allowlist ([Images](#images-and-admission)). An
+  image that is not on the runner's disk when the sandbox is created abstains
+  (`image_unavailable`).
 - Steps run through `docker exec --user 10001:10001 <container>` and the
   runner's launcher (below), which `exec`s the step's argv unchanged. The
   runner spawns only the docker CLI, always with an argv array and `shell:
@@ -297,10 +322,13 @@ decided on anything else. Everything else **abstains**:
 
 | `abstain.cause` | When |
 |---|---|
-| `admission_refused` | The maintenance lock is held; the deadline leaves less than `runSeconds`; the runtime is not registered |
+| `admission_refused` | The maintenance lock is held; the deadline leaves less than `runSeconds` (also once the image is ready, or it ran out while the image was prepared); the runtime is not registered; every execution slot is in use; the run would cut into the memory reserve; the data root has no room for the pull, even after eviction |
 | `docker_unreachable` | The daemon cannot be reached (at admission or during the run) |
 | `docker_error` | The daemon refused something the step did not cause |
-| `image_unavailable` | The env image is not on the runner's disk |
+| `registry_not_allowed` | The env image's registry and repository are not on `CODE_RUNNER_REGISTRY_ALLOWLIST` |
+| `pull_failed` | The pull failed: the registry unreachable, the digest unknown to it, bytes that do not hash to the digest, the pull timeout, or a pull that did not finish in the time the deadline leaves before the run |
+| `image_mismatch` | The image the digest reference resolves to does not carry that digest, or is of another platform |
+| `image_unavailable` | The env image is not on the runner's disk when the sandbox is created |
 | `step_timeout` | A step's own wall-clock limit, or the run's (`runSeconds`) |
 | `deadline` | The EA's deadline |
 | `oom` | The kernel's OOM flag or `oom_kill` counter, or exit 137 |
@@ -435,6 +463,83 @@ environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset`, `poc`
 kind and message, and per run the command, JUnit status, exit code and
 failing harness records) and `leftoverProcesses`.
 
+## Images and admission
+
+`src/admission.js`, `src/images.js` and `src/registry.js` (design §9.1,
+§9.2 steps 1-2, §9.6, §12). Before any sandbox, in this order:
+
+1. **Admission.** A1's checks (maintenance lock, deadline against
+   `runSeconds`, daemon, runtime), then:
+   - **an execution slot** (`CODE_RUNNER_SLOTS`, default 1), held from
+     admission until every sandbox of the run is gone. A sandbox that could
+     not be removed keeps the slot, its memory and the image held: the runner
+     retries the removal in the background (2 s, doubling to 60 s; the GC may
+     get there first) and releases them only once it is gone;
+   - **the memory reserve**, as in verdikta-agents' sandbox-kit: the host's
+     `MemAvailable` (`/proc/meminfo`), less the memory limits of the runs
+     already admitted (their whole limit, whatever they use yet) and this
+     run's limit, must leave the reserve. The reserve is headroom for
+     Chainlink, Postgres and the AI Node on top of what they use now, and
+     the largest local (Ollama) model, which an evaluation may load at any
+     time (`CODE_RUNNER_RESERVE_*_MB`; the installer, A8, sets the model's).
+     Memory that cannot be measured refuses under `runsc`; under `runc`
+     (macOS has no `/proc/meminfo`) it is admitted with a warning.
+2. **The env image.** In the time that still leaves `runSeconds`:
+   - **The allowlist.** `CODE_RUNNER_REGISTRY_ALLOWLIST` (default
+     `ghcr.io/verdikta`): entries `host[:port][/path]`, matched on the
+     image's registry host exactly and on whole path components
+     (`ghcr.io/verdikta` allows `ghcr.io/verdikta/env`, not
+     `ghcr.io/verdikta-x/env`). References are read as Docker resolves
+     them: no host means Docker Hub (`docker.io`, `library/` for one name),
+     so Docker Hub is `docker.io/<namespace>`. A loopback entry
+     (`127.0.0.1:5000`, `localhost:5000`, `[::1]:5000`) is a **dev** entry
+     for a local `registry:2`: never in the default, marked `dev` in
+     `/health` and at startup. Not on the list: `registry_not_allowed`, with
+     no Docker call.
+   - **By digest only.** `src/registry.js` `pullArgs()` is the only place a
+     `docker pull` argv is built (`test/unit/policy.test.js`), and it takes
+     `name@sha256:<hex>` and nothing else: `docker pull --quiet --platform
+     <platform> <host/path@sha256:…>`, the canonical name, so what is pulled
+     is what was checked. A tag, a tag beside the digest, upper case or any
+     form Docker would read otherwise is refused (the spec's image is a 400).
+     The daemon checks every byte against the digest, so a registry (or the
+     CDN it redirects blob downloads to) can only make the pull fail.
+   - **The size check first.** A pull needs the attested unpacked size plus
+     the compressed layers while they are extracted (at most the class's
+     2 GB; the containerd image store keeps them), on top of the bytes pulls
+     in flight had reserved when the free space was sampled and
+     `CODE_RUNNER_DISK_RESERVE_MB`, all against the free space of the data
+     root (`CODE_RUNNER_DATA_ROOT`, else the
+     daemon's `DockerRootDir`). The sandboxes' scratch is memory (tmpfs), so
+     the image is all a run adds to the disk. Free space that cannot be
+     measured refuses a pull under `runsc`, and is allowed with a warning
+     under `runc` (Docker Desktop's data root is inside its VM).
+   - **LRU eviction** makes the room: least recently used first, one image
+     at a time, until the pull fits. Only images whose every reference is on
+     the allowlist; never a base image pinned in `@verdikta/common`
+     (`BASE_IMAGE_PINS`, by digest), an image a run holds (from before its
+     pull until its sandboxes are gone) or a pull is fetching, an image any
+     container uses, or a dangling image. `docker image rm` is never forced,
+     so the daemon refuses an image in use too. Last use is kept in memory:
+     after a restart the images found count as least recently used.
+   - **Verified before use.** After the pull, and for a cached image, the
+     image the digest reference resolves to must carry that digest and be of
+     the platform that runs (`image_mismatch` otherwise). A cached image of
+     another platform is pulled again for this one.
+   - **Concurrent runs.** Presence, the disk check, eviction and starting a
+     pull happen under one lock, so two runs never count the same free bytes;
+     two runs that need the same image share one pull. Waiting for the lock
+     and everything done under it follow the run's window and cancellation:
+     each Docker call is cut off and nothing further starts, so no run holds
+     the lock, or its slot, past its time (`admission_refused` when the time
+     ran out before any pull of its own, `cancelled` when the caller left). A run that runs out of
+     time while it waits abstains (`pull_failed`) and the pull carries on for
+     the others (and for the EA's retry); the pull itself stops at
+     `CODE_RUNNER_PULL_TIMEOUT_SECONDS` (default 90, §11's budget).
+
+Every failure abstains: an error with no commit (§12, "Registry or
+image-pull failure"), never a verdict.
+
 ## Time
 
 - Admission refuses a run whose deadline, less the reserve, cannot cover
@@ -460,6 +565,14 @@ failing harness records) and `leftoverProcesses`.
 - One process per instance: the listener is the lock. A second process with
   the same configuration fails to listen before its startup GC can touch the
   first one's containers.
+- No run is admitted until the startup GC has removed what an earlier process
+  of this instance left (A1b): those sandboxes hold no slot or memory in the
+  new process, so until they are gone the capacity they use would look free.
+  Admission opens only once a listing finds none left (a removal's exit code
+  alone is not taken as proof; the GC counts a failed removal as done only
+  when every error is "No such container"). A sweep that fails is retried
+  every 5 s; meanwhile runs abstain `admission_refused` and `/health` is 503
+  with the reason (`capacity.held`).
 - GC (`src/gc.js`) removes containers carrying this instance's label that no
   live run owns, or that are past their expiry label: at startup and every
   `CODE_RUNNER_GC_INTERVAL_SECONDS`.
@@ -486,6 +599,14 @@ failing harness records) and `leftoverProcesses`.
 | `CODE_RUNNER_INSTANCE` | `default` | Label scope for the GC. |
 | `CODE_RUNNER_GC_INTERVAL_SECONDS` | `60` | `0` turns the timer off. |
 | `CODE_RUNNER_DEADLINE_RESERVE_MS` | `5000` | Time kept for teardown and the response. |
+| `CODE_RUNNER_REGISTRY_ALLOWLIST` | `ghcr.io/verdikta` | Where env images may be pulled from: `host[:port][/path]` entries, comma or space separated. A loopback host is a dev entry (a local `registry:2`). |
+| `CODE_RUNNER_SLOTS` | `1` | Runs at once (1-16). |
+| `CODE_RUNNER_RESERVE_CHAINLINK_MB` | `512` | Memory headroom kept for Chainlink. |
+| `CODE_RUNNER_RESERVE_POSTGRES_MB` | `256` | For Postgres. |
+| `CODE_RUNNER_RESERVE_AI_NODE_MB` | `512` | For the AI Node. |
+| `CODE_RUNNER_RESERVE_LOCAL_MODEL_MB` | `0` | The largest local (Ollama) model; the installer sets it when Ollama runs. |
+| `CODE_RUNNER_DISK_RESERVE_MB` | `1024` | Space that stays free on the data root after a pull. |
+| `CODE_RUNNER_PULL_TIMEOUT_SECONDS` | `90` | A pull's own limit (1-900). |
 | `LOG_LEVEL` | `info` | JSON lines on stdout. |
 
 ## Tests
@@ -501,6 +622,14 @@ The Docker tests pull `ubuntu:24.04` and the foundry base pinned in
 `linux/arm64` on Apple silicon under runc, where the base's arm64 variant of
 the same release runs), run one test per abstain cause, check the real
 isolation of a container and remove everything they start.
+`pull.docker.test.js` runs a throwaway `registry:2` (`registry.js`) on the
+daemon host's network, listening on 127.0.0.1 only (under Docker Desktop that
+is the VM, where the daemon is), pushes small fixture images to it and
+removes them from the daemon, so that the runner has to pull them: the pull by
+digest (the registry's log holds no request by tag), an unreachable or
+non-allowlisted registry, a digest the registry lacks, a corrupted blob,
+another platform, LRU eviction around a pinned, a held and a
+container-used image, and the slot limit.
 `claim.docker.test.js` builds fixture Foundry repositories as env images
 locally (`forgeFixture.js`: FROM the pinned base, solc 0.8.31 by SHA-256,
 the repository at `/repo`); under Docker's classic image store, where a local
@@ -525,8 +654,14 @@ under `runc` and under the pinned gVisor on the systrap platform.
   class limits there too).
 - **Launch** (`src/sandbox.js`): `createArgs`, `startArgs`, `execArgs`,
   `removeArgs` and the `Sandbox` class.
-- **Admission** (`src/admission.js`): A1b adds slots, the memory reserve and
-  the disk check for the pull.
+- **Admission** (`src/admission.js`): `admitRun` (A1's checks) and
+  `Capacity` (slots, the memory reserve), whose ticket the engine releases
+  once the run's sandboxes are gone. A3a: a run that opens a second sandbox
+  in parallel (the fix check) needs its memory admitted twice.
+- **Images** (`src/images.js`, `src/registry.js`): `ImageCache.acquire()`
+  (allowlist, disk check, LRU eviction, pull, verify) gives a lease the
+  engine releases with the ticket; `parseImageRef`, `parseAllowlist`,
+  `pullArgs`.
 - **Launcher** (`src/launcher.js`): `launcherArgv`, `newNonce`, `StartGate`;
   every exec goes through `Sandbox.runLaunched`.
 - **Result** (`src/result.js`): `ABSTAIN`, `DEFINITIVE_BASIS`, `Abstain`,

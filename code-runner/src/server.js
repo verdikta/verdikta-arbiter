@@ -18,13 +18,16 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { checkBearer } = require('./auth');
 const { isLoopbackHost } = require('./config');
-const { validateRunRequest } = require('./request');
+const { validateRunRequest, imageBindingIssues } = require('./request');
 const { checkSpec } = require('./classLimits');
 const { executeRun } = require('./pipeline');
 const { health } = require('./health');
 const { claimSteps } = require('./steps');
+const { checkClaim } = require('./claim');
+const { Capacity } = require('./admission');
+const { ImageCache } = require('./images');
 const { RUNNER_VERSION } = require('./version');
-const { OUTCOME, ABSTAIN } = require('./result');
+const { OUTCOME, ABSTAIN, RequesterError } = require('./result');
 
 const nullLog = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -74,6 +77,8 @@ function toResponse(result) {
     runner: { version: RUNNER_VERSION, runtime: result.runtime, platform: result.platform },
     limits: result.limits,
     abstain: result.abstain,
+    // How the env image was had (A1b): { ref, cache: hit|pulled|shared, durationMs }; not part of the report.
+    image: result.image || null,
     steps: result.steps,
     gates: result.gates,
     facts: result.facts || {},
@@ -89,12 +94,20 @@ function toResponse(result) {
  * @param {object} o.config - loadConfig()
  * @param {object} o.docker - createDocker()
  * @param {Function} [o.stepsFor] - (request, limits) => steps (default: claimSteps)
+ * @param {Function|null} [o.checkRequest] - request => issues the steps would refuse, checked before
+ *   admission or any pull (default: the claim pipeline's checkClaim with the default steps)
  * @param {object} [o.log]
- * @param {Function} [o.statfs] - for /health
+ * @param {Function} [o.statfs] - for /health and the pull's disk check
+ * @param {Function} [o.meminfo] - the host's available memory, for admission (default /proc/meminfo)
+ * @param {string[]} [o.pins] - digests the image cache never evicts (default: @verdikta/common's base images)
  */
-function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, statfs }) {
+function createServer({ config, docker, stepsFor = claimSteps, checkRequest = stepsFor === claimSteps ? checkClaim : null, log = nullLog, statfs, meminfo, pins }) {
   /** Container names of live runs: the GC leaves them alone. */
   const active = new Set();
+  /** Execution slots and the memory reserve (A1b). */
+  const capacity = new Capacity({ config, log, ...(meminfo ? { meminfo } : {}) });
+  /** The env images: pull, verify, cache, evict (A1b). */
+  const images = new ImageCache({ config, docker, log, ...(statfs ? { statfs } : {}), ...(pins ? { pins } : {}) });
   /** runId → { controller, done } for the runs in flight. */
   const runs = new Map();
   /** Set by close(): no new run is admitted. */
@@ -131,18 +144,41 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
       const s = checkSpec(body.spec);
       issues.push(...s.issues);
       limits = s.limits;
+      if (s.ok) issues.push(...imageBindingIssues(body.spec, body.attestation));
     }
+    const refuse = (list) => {
+      log.info('run refused: requester error', { codes: [...new Set(list.map((i) => i.code))] });
+      send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, issues: list });
+    };
     if (issues.length) {
-      log.info('run refused: requester error', { codes: [...new Set(issues.map((i) => i.code))] });
-      send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, issues });
+      refuse(issues);
       return;
+    }
+    const request = v.request;
+    // What the steps would find wrong in the request itself (an unsupported
+    // framework, a missing command, a broken baseline) is the requester's
+    // error now, before admission or any pull (§12). A step builder's own
+    // bug still reaches the engine and abstains (runner_error).
+    const early = checkRequest ? checkRequest(request) : [];
+    if (early.length) {
+      refuse(early);
+      return;
+    }
+    let steps;
+    try {
+      steps = stepsFor(request, limits);
+    } catch (err) {
+      if (err instanceof RequesterError) {
+        refuse(err.issues);
+        return;
+      }
+      steps = [async () => { throw err; }];
     }
 
     if (closing) {
       send(res, 503, { outcome: OUTCOME.ABSTAIN, abstain: { cause: ABSTAIN.ADMISSION_REFUSED, step: 'admission', detail: 'the runner is shutting down' } });
       return;
     }
-    const request = v.request;
     const runId = crypto.randomBytes(8).toString('hex');
     const controller = new AbortController();
     res.on('close', () => { if (!res.writableFinished) controller.abort('cancel'); });
@@ -154,15 +190,13 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
     runs.set(runId, { controller, done });
     let result;
     try {
-      let steps;
-      try {
-        steps = stepsFor(request, limits);
-      } catch (err) {
-        steps = [async () => { throw err; }];
-      }
       result = await executeRun({
         docker, config, limits, image: request.spec.env.image, runId, steps,
-        receivedAt, deadlineAt: receivedAt + request.deadlineMs, signal: controller.signal, active, log
+        receivedAt, deadlineAt: receivedAt + request.deadlineMs, signal: controller.signal, active, log,
+        admit: (o) => capacity.admit(o),
+        images,
+        attestedImage: request.attestation.env.image,
+        unpackedBytes: request.spec.env.unpackedBytes
       });
     } finally {
       runs.delete(runId);
@@ -171,7 +205,7 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
     log.info('run finished', {
       runId, listingCid: request.listingCid, bcid: request.bcid, outcome: result.outcome,
       cause: result.abstain ? result.abstain.cause : null, step: result.abstain ? result.abstain.step : null,
-      ms: Date.now() - receivedAt
+      image: result.image ? result.image.cache : null, ms: Date.now() - receivedAt
     });
     if (result.outcome === OUTCOME.REQUESTER_ERROR) {
       send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, runId, issues: result.issues });
@@ -195,7 +229,7 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
           send(res, 405, { error: 'method_not_allowed' }, { allow: 'GET' });
           return;
         }
-        const body = await health({ config, docker, ...(statfs ? { statfs } : {}) });
+        const body = await health({ config, docker, capacity, images, ...(statfs ? { statfs } : {}) });
         send(res, body.ok ? 200 : 503, body);
         return;
       }
@@ -284,11 +318,13 @@ function createServer({ config, docker, stepsFor = claimSteps, log = nullLog, st
       for (const r of pending) r.controller.abort('cancel');
       await Promise.all(pending.map((r) => r.done));
     }
+    // A pull no run waits for any more is stopped too.
+    images.close();
     if (typeof server.closeAllConnections === 'function') server.closeAllConnections();
     await stopped;
   }
 
-  return { server, listen, close, active, runs };
+  return { server, listen, close, active, runs, capacity, images };
 }
 
 module.exports = { createServer };

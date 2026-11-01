@@ -16,6 +16,8 @@
  * Patches travel as base64 so their bytes, and so their hashes, survive JSON.
  */
 
+const { parseImageRef } = require('./registry');
+
 const FIELDS = Object.freeze([
   'listingCid', 'bcid', 'spec', 'attestation', 'pocPatch', 'fixPatch', 'baseline', 'finding', 'report',
   'knownIssues', 'priorFindings', 'eaGates', 'deadline'
@@ -133,4 +135,49 @@ function validateRunRequest(body) {
   };
 }
 
-module.exports = { validateRunRequest, FIELDS, MAX_DEADLINE_MS, MAX_PRIOR_FINDINGS };
+/**
+ * The attestation must name the env image code_review.json names (node A1b):
+ * the same digest reference, platform and unpacked size, which the EA has
+ * already bound by hash (§9.1). The runner pulls and verifies against both,
+ * so a request where they differ is the requester's broken package (§12),
+ * refused before any pull. The spec's image must also be a reference Docker
+ * resolves exactly as written (registry.parseImageRef).
+ *
+ * @param {object} spec - code_review.json, already through checkSpec
+ * @param {unknown} attestation - attestation.json (its shape is checked by validateRunRequest)
+ * @returns {{code:string,path:string,detail:string}[]}
+ */
+/** A request value in an issue's detail, bounded. */
+function describe(v) {
+  const text = JSON.stringify(v === undefined ? null : v);
+  return text.length > 200 ? `${text.slice(0, 200)}… (cut)` : text;
+}
+
+function imageBindingIssues(spec, attestation) {
+  const issues = [];
+  const issue = (code, path, detail) => issues.push({ code, path, detail });
+  const env = spec.env;
+  try {
+    parseImageRef(env.image);
+  } catch (err) {
+    issue('SCHEMA', '/spec/env/image', `is not an image reference Docker resolves as written: ${err.message}`);
+  }
+  if (!isPlainObject(attestation)) return issues;
+  const att = attestation.env;
+  if (!isPlainObject(att)) {
+    issue('SCHEMA', '/attestation/env', 'must be an object naming the image, its platform and its unpacked size');
+    return issues;
+  }
+  if (att.image !== env.image) {
+    issue('ATTESTATION_IMAGE_MISMATCH', '/attestation/env/image', `the attestation names ${describe(att.image)}, code_review.json ${describe(env.image)}`);
+  }
+  if (att.platform !== env.platform) {
+    issue('ATTESTATION_PLATFORM_MISMATCH', '/attestation/env/platform', `the attestation names ${describe(att.platform)}, code_review.json ${describe(env.platform)}`);
+  }
+  if (att.unpackedBytes !== env.unpackedBytes) {
+    issue('ATTESTATION_SIZE_MISMATCH', '/attestation/env/unpackedBytes', `the attestation names ${describe(att.unpackedBytes)}, code_review.json ${describe(env.unpackedBytes)}`);
+  }
+  return issues;
+}
+
+module.exports = { validateRunRequest, imageBindingIssues, FIELDS, MAX_DEADLINE_MS, MAX_PRIOR_FINDINGS };

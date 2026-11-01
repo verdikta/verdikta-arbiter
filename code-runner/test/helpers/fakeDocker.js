@@ -60,11 +60,36 @@ function withStart(res, nonce) {
 }
 
 /**
+ * `docker image inspect` lines (src/images.js's format) for references that
+ * are present: every one is an image of `platform` carrying that reference.
+ */
+function imageInspect(args, { present = () => true, platform = 'linux/amd64' } = {}) {
+  const keys = args.slice(args.indexOf('--format') + 2);
+  const [os, architecture] = platform.split('/');
+  const lines = [];
+  const missing = [];
+  for (const key of keys) {
+    if (!present(key)) { missing.push(key); continue; }
+    const digest = key.includes('@') ? [key] : [];
+    lines.push([JSON.stringify(`sha256:${Buffer.from(key).toString('hex').slice(0, 64).padEnd(64, '0')}`), JSON.stringify([]), JSON.stringify(digest),
+      JSON.stringify(os), JSON.stringify(architecture), 'null', '1000'].join('\t'));
+  }
+  const stdout = lines.length ? `${lines.join('\n')}\n` : '';
+  if (missing.length) return { exitCode: 1, stdout, stderr: missing.map((k) => `Error response from daemon: No such image: ${k}`).join('\n') };
+  return { stdout };
+}
+
+/**
  * Handlers for a healthy daemon. `step` answers step execs; `counters` the
  * runner's counters probe; `launcherCheck` its launch-time launcher check.
+ * Images (A1b): every reference is present unless `imagePresent` says not;
+ * `pull` answers pulls (success by default).
  */
-function healthyDaemon({ step, counters, launcherCheck, inspect, create, start, mounts, rm, info, ps, version } = {}) {
+function healthyDaemon({ step, counters, launcherCheck, inspect, create, start, mounts, rm, info, ps, version, imagePresent, pull, image } = {}) {
   return {
+    image: image || ((args) => (args[1] === 'inspect' ? imageInspect(args, { present: imagePresent || (() => true) }) : { stdout: '' })),
+    pull: pull || (() => ({ stdout: '' })),
+    container: () => ({ stdout: '' }),
     info: info || (() => ({ stdout: healthyInfo() })),
     version: version || (() => ({ stdout: '28.0.4\n' })),
     create: create || (() => ({ stdout: 'c0ffee\n' })),
@@ -131,4 +156,4 @@ function fakeDocker(handlers = {}) {
   };
 }
 
-module.exports = { fakeDocker, healthyDaemon, healthyInfo, runningState, never, COUNTERS_ZERO, isCountersRead, nonceOf };
+module.exports = { fakeDocker, healthyDaemon, healthyInfo, runningState, never, COUNTERS_ZERO, isCountersRead, nonceOf, imageInspect };

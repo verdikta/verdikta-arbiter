@@ -46,8 +46,13 @@ async function collectLeftovers({ docker, instance, active = new Set(), now = Ma
   }
   if (doomed.length === 0) return { removed: [], error: null };
   const rm = await runText(docker, removeArgs(doomed), { timeoutMs: 120000 });
-  if (rm.exitCode !== 0 && !/No such container/i.test(rm.stderr)) {
-    return { removed: [], error: (rm.stderr || `docker rm exited ${rm.exitCode}`).split('\n')[0] };
+  if (rm.exitCode !== 0) {
+    // Gone already is fine; any other error means a container may still be there.
+    const errors = String(rm.stderr || '').split('\n').map((l) => l.trim()).filter(Boolean);
+    const other = errors.filter((l) => !/No such container/i.test(l));
+    if (errors.length === 0 || other.length > 0 || rm.spawnError || rm.timedOut) {
+      return { removed: [], error: (other[0] || rm.spawnError || `docker rm exited ${rm.exitCode}`).slice(0, 300) };
+    }
   }
   return { removed: doomed, error: null };
 }
