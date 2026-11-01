@@ -565,6 +565,11 @@ image-pull failure"), never a verdict.
 - One process per instance: the listener is the lock. A second process with
   the same configuration fails to listen before its startup GC can touch the
   first one's containers.
+- No run is admitted until the startup GC has removed what an earlier process
+  of this instance left (A1b): those sandboxes hold no slot or memory in the
+  new process, so until they are gone the capacity they use would look free.
+  A sweep that fails is retried every 5 s; meanwhile runs abstain
+  `admission_refused` and `/health` is 503 with the reason (`capacity.held`).
 - GC (`src/gc.js`) removes containers carrying this instance's label that no
   live run owns, or that are past their expiry label: at startup and every
   `CODE_RUNNER_GC_INTERVAL_SECONDS`.

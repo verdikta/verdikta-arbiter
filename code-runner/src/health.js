@@ -56,6 +56,7 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
   if (capacity) {
     await capacity.measure();
     capacityStatus = capacity.status();
+    if (capacityStatus.held) reasons.push(capacityStatus.held);
     if (config.runtime === 'runsc' && capacityStatus.memory.availableMb === null) {
       reasons.push(`the host's available memory cannot be measured (${capacityStatus.memory.error})`);
     }

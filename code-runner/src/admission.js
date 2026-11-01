@@ -98,6 +98,22 @@ class Capacity {
     /** One per admitted run: { memoryMb, release }. */
     this.tickets = new Set();
     this.last = { availableMb: null, error: 'not measured yet' };
+    /** Why no run is admitted at all for now (null: runs are admitted). */
+    this.held = null;
+  }
+
+  /**
+   * Admit nothing until open(): sandboxes this process holds no ticket for
+   * (an earlier process's, after a crash) may still be running, with slots
+   * and memory nobody accounts for. index.js holds admission from before
+   * the listener until the startup sweep has removed them.
+   */
+  hold(reason) {
+    this.held = String(reason);
+  }
+
+  open() {
+    this.held = null;
   }
 
   async measure() {
@@ -126,6 +142,7 @@ class Capacity {
     const mem = await this.measure();
     // From here on nothing is awaited: the check and the taking of the slot are one step.
     const refuse = (detail) => new Abstain(ABSTAIN.ADMISSION_REFUSED, detail, { step: 'admission' });
+    if (this.held) throw refuse(this.held);
     if (this.tickets.size >= config.slots) {
       throw refuse(config.slots === 1
         ? 'the execution slot is in use (CODE_RUNNER_SLOTS=1)'
@@ -151,6 +168,7 @@ class Capacity {
   status() {
     const { total, ...parts } = memoryReserve(this.config);
     return {
+      held: this.held,
       slots: { total: this.config.slots, inUse: this.tickets.size },
       memory: { availableMb: this.last.availableMb, committedMb: this.committedMb(), reserveMb: total, reserve: parts, error: this.last.error }
     };

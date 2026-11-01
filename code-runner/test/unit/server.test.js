@@ -400,6 +400,7 @@ test('A1b: GET /health reports the slots, the memory reserve and the registry al
   const res = await request({ host: address.host, port: address.port }, { path: '/health' });
   assert.equal(res.status, 200, res.raw);
   assert.deepEqual(res.body.capacity, {
+    held: null,
     slots: { total: 1, inUse: 0 },
     memory: { availableMb: 6000, committedMb: 0, reserveMb: 1280, reserve: { chainlink: 512, postgres: 256, aiNode: 512, localModel: 0 }, error: null }
   });

@@ -5,6 +5,11 @@
  * to start on a bad one), installs the stop handlers, listens, removes
  * whatever an earlier process of this instance left behind and starts the GC
  * timer.
+ *
+ * No run is admitted until that startup sweep has succeeded (A1b): an
+ * earlier process's sandboxes hold no ticket here, so until they are gone
+ * their slots and memory would be counted as free. A sweep that fails is
+ * retried every `sweepRetryMs` until one succeeds.
  */
 
 const fs = require('node:fs');
@@ -15,6 +20,9 @@ const { collectLeftovers } = require('./gc');
 const { createLog } = require('./log');
 const { RUNNER_VERSION } = require('./version');
 
+/** A startup sweep that failed is tried again after this long. */
+const SWEEP_RETRY_MS = 5000;
+
 /**
  * Start the service.
  * @param {object} o
@@ -23,10 +31,17 @@ const { RUNNER_VERSION } = require('./version');
  * @param {object} o.log
  * @param {Function} [o.onSignal] - (signal, handler) => void; process.once by default
  * @param {Function} [o.exit] - process.exit by default
+ * @param {number} [o.sweepRetryMs] - how soon a failed startup sweep is tried again
+ * @param {object} [o.server] - extra createServer options (tests)
  * @returns {Promise<{runner:object, address:object, stop:Function}>}
  */
-async function startRunner({ config, docker, log, onSignal = (sig, fn) => process.once(sig, fn), exit = (code) => process.exit(code) }) {
-  const runner = createServer({ config, docker, log });
+async function startRunner({
+  config, docker, log, onSignal = (sig, fn) => process.once(sig, fn), exit = (code) => process.exit(code),
+  sweepRetryMs = SWEEP_RETRY_MS, server = {}
+}) {
+  const runner = createServer({ config, docker, log, ...server });
+  // Closed from before the listener until the earlier process's sandboxes are gone.
+  runner.capacity.hold('the runner is removing the sandboxes an earlier process of this instance left; no run is admitted until they are gone');
   let gcTimer = null;
   let stopping = null;
   const stop = (sig) => {
@@ -51,10 +66,25 @@ async function startRunner({ config, docker, log, onSignal = (sig, fn) => proces
   const address = await runner.listen();
 
   // Nothing of this instance survives a restart: a container from before is
-  // a leftover. Runs admitted in the meantime are in runner.active.
-  const swept = await collectLeftovers({ docker, instance: config.instance, active: runner.active });
-  if (swept.error) log.warn('startup GC could not list containers', { error: swept.error });
-  else if (swept.removed.length) log.info('startup GC removed leftovers', { removed: swept.removed });
+  // a leftover. No run is admitted until a sweep has removed them all.
+  const sweep = async () => {
+    const swept = await collectLeftovers({ docker, instance: config.instance, active: runner.active });
+    if (swept.error) {
+      log.warn('startup GC could not remove the leftovers; runs stay refused until it can', { error: swept.error });
+      return false;
+    }
+    if (swept.removed.length) log.info('startup GC removed leftovers', { removed: swept.removed });
+    if (!stopping) runner.capacity.open();
+    return true;
+  };
+  if (!(await sweep())) {
+    (async () => {
+      while (!stopping) {
+        await new Promise((resolve) => { setTimeout(resolve, sweepRetryMs).unref(); });
+        if (stopping || (await sweep())) return;
+      }
+    })();
+  }
 
   if (!stopping && config.gcIntervalMs > 0) {
     gcTimer = setInterval(async () => {
