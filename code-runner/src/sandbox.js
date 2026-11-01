@@ -19,7 +19,7 @@
 const { IMAGE_REF, CLASS_HARD_LIMITS, OCI_PLATFORM } = require('./classLimits');
 const { runText, isUnreachableText } = require('./docker');
 const { HeadTail, Capped } = require('./capture');
-const { newNonce, launcherArgv, StartGate, LAUNCHER_CHECK, PROBE_SCRIPT } = require('./launcher');
+const { newNonce, launcherArgv, StartGate, LAUNCHER_CHECK, LAUNCHER_PATH, PROBE_SCRIPT } = require('./launcher');
 const { ABSTAIN, Abstain, RequesterError, classifyExec } = require('./result');
 
 /** The non-root user every sandbox process runs as. The env builder gives the repository to this uid. */
@@ -281,7 +281,7 @@ class Sandbox {
   async checkLauncher({ signal } = {}) {
     const out = new Capped(4096);
     const err = new Capped(4096);
-    const { r, started } = await this.runLaunched(['/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check'],
+    const { r, started } = await this.runLaunched(['/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check', LAUNCHER_PATH],
       { signal, timeoutMs: CONTROL_TIMEOUT_MS, stdout: out, stderr: err });
     const said = (err.bytes().toString('utf8') || out.bytes().toString('utf8')).split(/\r?\n/).find((l) => l.trim()) || 'nothing';
     if (r.spawnError) throw new Abstain(ABSTAIN.DOCKER_UNREACHABLE, `the docker CLI could not be started: ${r.spawnError}`, { step: 'launch' });
@@ -291,7 +291,7 @@ class Sandbox {
     }
     if (r.exitCode === 1) {
       throw new RequesterError([{ code: 'IMAGE_LAUNCHER_WRITABLE', path: '/spec/env/image',
-        detail: 'the sandbox user can modify /bin/sh or a directory that holds it; an env image must keep them root-owned and read-only' }]);
+        detail: 'the sandbox user owns or can write /bin/sh, a link on its way or a directory holding one; an env image must keep them root-owned and not writable by uid 10001' }]);
     }
     if (r.exitCode !== 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, `the launcher check exited ${r.exitCode}: ${said.slice(0, 200)}`, { step: 'launch' });
   }

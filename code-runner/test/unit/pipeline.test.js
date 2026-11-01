@@ -471,6 +471,8 @@ test('a probe that does not start after a step: pids_limit when the pid table is
 
 test('a probe that started but did not finish cleanly is not a pass', async () => {
   const cases = [
+    // Exit 4: PROBE_SCRIPT found a counter file it cannot read (sandbox.docker.test.js runs it for real).
+    [() => ({ exitCode: 4, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n' }), 'docker_error'],
     [() => ({ exitCode: 3, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n' }), 'docker_error'],
     [() => ({ exitCode: 137 }), 'docker_error'],
     [() => ({ spawnError: 'spawn docker ENOENT' }), 'docker_unreachable']
@@ -495,10 +497,16 @@ test('counter files that do not exist (gVisor, or the other cgroup version) are 
 test('at launch: an image whose launcher the sandbox user could replace is the requester\'s error', async () => {
   const docker = fakeDocker(healthyDaemon({ launcherCheck: () => ({ exitCode: 1 }) }));
   const { result } = await run({ docker });
+  const checkArgs = docker.callsOf('exec').find((c) => c.args.includes('vcr-launcher-check')).args;
+  assert.deepEqual(checkArgs.slice(-2), ['vcr-launcher-check', '/bin/sh'], 'the check is given the launcher\'s path');
+  assert.equal(docker.callsOf('start').length, 1);
   assert.equal(result.outcome, 'requester_error');
   assert.equal(result.issues[0].code, 'IMAGE_LAUNCHER_WRITABLE');
   const notStarted = fakeDocker(healthyDaemon({ launcherCheck: () => ({ started: false, exitCode: 126, stderr: 'OCI runtime exec failed: exec: "/bin/sh": stat /bin/sh: no such file or directory' }) }));
   const r2 = (await run({ docker: notStarted })).result;
   assert.equal(r2.abstain.cause, 'step_not_started');
   assert.equal(r2.abstain.step, 'launch');
+  // A check that cannot be made (exit 2: a test the shell lacks) abstains, it does not pass.
+  const unsure = fakeDocker(healthyDaemon({ launcherCheck: () => ({ exitCode: 2 }) }));
+  assert.equal((await run({ docker: unsure })).result.abstain.cause, 'docker_error');
 });

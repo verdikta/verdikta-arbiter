@@ -135,3 +135,47 @@ test('definitive steps: exit codes as they are, logs cut to 32 KiB head and tail
   assert.deepEqual(result.steps.map((s) => s.name), ['ok', 'three', 'missing', 'loud', 'stdin', 'self', 'read:/etc/hostname']);
   assert.deepEqual(await leftovers(docker, config.instance), []);
 });
+
+test('the launcher check and the counters probe, run for real in the sandbox', { timeout: 180000 }, async (t) => {
+  const { LAUNCHER_CHECK, PROBE_SCRIPT } = require('../../src/launcher');
+  const config = dockerTestConfig();
+  const docker = dockerFor(config);
+  t.after(() => removeAll(docker, config.instance));
+  await ensureTestImage(docker);
+
+  const got = {};
+  const check = (p) => ['/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check', p];
+  const probe = (...files) => ['/bin/sh', '-c', PROBE_SCRIPT, 'vcr-probe', ...files];
+  const steps = [async (ctx) => {
+    const run = async (name, argv) => { got[name] = await ctx.exec(argv, { name, timeoutMs: 30000 }); };
+    await run('setup', ['sh', '-c', [
+      'set -e',
+      // An interpreter the sandbox user owns: read-only mode does not help, the owner can chmod it.
+      'mkdir -p /tmp/own && cp /bin/sh /tmp/own/sh && chmod 0555 /tmp/own/sh',
+      // A root-owned interpreter reached through a link in a directory the user owns.
+      'mkdir -p /tmp/anc && ln -sf /bin/sh /tmp/anc/sh && chmod 0555 /tmp/anc',
+      // Counter-like files: one readable, one that exists but cannot be read.
+      'mkdir -p /tmp/cg && printf "oom_kill 0\\n" > /tmp/cg/memory.events && printf "max 0\\n" > /tmp/cg/pids.events',
+      'cp /tmp/cg/pids.events /tmp/cg/locked.events && chmod 000 /tmp/cg/locked.events'
+    ].join('\n')]);
+    await run('checkImage', check('/bin/sh'));
+    await run('checkOwned', check('/tmp/own/sh'));
+    await run('checkAncestor', check('/tmp/anc/sh'));
+    await run('probeOk', probe('/tmp/cg/memory.events', '/tmp/cg/pids.events', '/tmp/cg/absent'));
+    await run('probeLocked', probe('/tmp/cg/memory.events', '/tmp/cg/locked.events'));
+  }];
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config, limits: smallLimits(), image: TEST_IMAGE, runId: '00000000000000a3', steps,
+    receivedAt, deadlineAt: receivedAt + 120000, active: new Set(), log: silent
+  });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+  assert.equal(got.setup.exitCode, 0, got.setup.stderr.text);
+  assert.equal(got.checkImage.exitCode, 0, 'the image\'s own /bin/sh is safe');
+  assert.equal(got.checkOwned.exitCode, 1, 'an interpreter the sandbox user owns is refused');
+  assert.equal(got.checkAncestor.exitCode, 1, 'a link in a directory the sandbox user owns is refused');
+  assert.equal(got.probeOk.exitCode, 0);
+  assert.equal(got.probeOk.stdout.text, '==> /tmp/cg/memory.events <==\noom_kill 0\n==> /tmp/cg/pids.events <==\nmax 0\n');
+  assert.equal(got.probeLocked.exitCode, 4, 'a counter file that exists but cannot be read fails the probe');
+  assert.deepEqual(await leftovers(docker, config.instance), []);
+});

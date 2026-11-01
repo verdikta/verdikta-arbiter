@@ -35,18 +35,44 @@ const LAUNCHER_SCRIPT = `printf "${MARKER} %s\\n" "$1" && shift && exec "$@"`;
 const NONCE = /^[0-9a-f]{32}$/;
 
 /**
- * Exits 1 when the sandbox user could replace the launcher's interpreter
- * (the file /bin/sh resolves to, its directory, /bin or /), 2 when it cannot
- * be resolved, 0 otherwise.
+ * The launch-time check of the launcher's interpreter ($1, /bin/sh). Exits 1
+ * when the sandbox user could replace it: some path it resolves through (each
+ * symlink hop, its canonical target, and every ancestor directory of both) is
+ * owned by that user (an owner can chmod, so read-only modes do not help) or
+ * writable by it. Exits 2 when the check cannot be made (a test the shell does
+ * not support, a link it cannot read), 0 when the interpreter is safe.
  */
-const LAUNCHER_CHECK = 'p=$(readlink -f /bin/sh) || exit 2; for d in "$p" "${p%/*}" /bin /; do if [ -w "$d" ]; then exit 1; fi; done; exit 0';
+const LAUNCHER_CHECK = [
+  'own() { [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
+  'wr() { [ -w "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
+  'up() { d=$1; while :; do if [ -e "$d" ] || [ -L "$d" ]; then own "$d"; wr "$d"; fi; [ "$d" = / ] && return 0; d=${d%/*}; [ -n "$d" ] || d=/; done; }',
+  'p=$1; n=0',
+  'while :; do',
+  '  up "$p"; c=$(readlink -f "$p") || exit 2; up "$c"',
+  '  [ -L "$p" ] || exit 0',
+  '  t=$(readlink "$p") || exit 2',
+  '  case $t in /*) p=$t ;; *) p=${p%/*}/$t ;; esac',
+  '  n=$((n+1)); [ "$n" -le 40 ] || exit 2',
+  'done'
+].join('\n');
 
 /**
  * The cgroup counters probe: shell builtins only, so it still runs when the
- * pid table is full, once its own process could start.
+ * pid table is full, once its own process could start. A counter file that
+ * is absent is skipped (gVisor, or the other cgroup version); one that exists
+ * but cannot be read fails the probe (exit 4), since that limit would go
+ * unchecked.
  */
-const PROBE_SCRIPT = 'for f in "$@"; do if [ -r "$f" ]; then printf "==> %s <==\\n" "$f"; '
-  + 'while IFS= read -r l || [ -n "$l" ]; do printf "%s\\n" "$l"; done < "$f" || exit 3; fi; done; exit 0';
+const PROBE_SCRIPT = [
+  'for f in "$@"; do',
+  '  if [ -e "$f" ]; then',
+  '    [ -r "$f" ] || exit 4',
+  '    printf "==> %s <==\\n" "$f"',
+  '    while IFS= read -r l || [ -n "$l" ]; do printf "%s\\n" "$l"; done < "$f" || exit 3',
+  '  fi',
+  'done',
+  'exit 0'
+].join('\n');
 
 function newNonce() {
   return crypto.randomBytes(16).toString('hex');
