@@ -497,3 +497,26 @@ test('R1-F4 / R1-F3 with real submodules: a clean submodule passes; a change its
     assert.match(r2.issues[0].detail, /lib\/dep/);
   }
 });
+
+test('R6-F1: a claim process that names itself like a zombie ("w) Z" and a line break) is still killed', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('ffi');
+  const seen = {};
+  const listComms = async (ctx) => {
+    seen.comms = (await ctx.exec(['sh', '-c', 'for d in /proc/[0-9]*; do tr "\\n" "|" < "$d/comm" 2>/dev/null; echo; done'], { name: 'inspect:comms', timeoutMs: 60000 })).stdout.text;
+  };
+  const disguise = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      '    function test_disguised() public {',
+      '        string[] memory c = new string[](3); c[0] = "sh"; c[1] = "-c";',
+      '        c[2] = "( printf \'w) Z\\\\nx\' > /proc/self/comm; while :; do sleep 1; done ) </dev/null >/dev/null 2>&1 &";',
+      '        vm.ffi(c);',
+      '        Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1);',
+      '    }'
+    ])
+  });
+  const { result: r } = await run(t, claim(fx, disguise), [listComms]);
+  assert.equal(r.outcome, 'definitive', show(r));
+  const killed = Object.fromEntries(r.facts.leftoverProcesses.map((x) => [x.after, x.killed]));
+  for (const after of ['poc:1', 'poc:2', 'poc:3']) assert.ok(killed[after] >= 1, `the disguised process left by ${after} was killed: ${JSON.stringify(r.facts.leftoverProcesses)}`);
+  assert.doesNotMatch(seen.comms, /w\) Z/, `no disguised process survived: ${seen.comms}`);
+});

@@ -69,10 +69,17 @@ const PROCS_SCRIPT = [
 
 /**
  * Stops and kills every process but its own and the ones given ($@), until
- * none is left: shell builtins and /proc only, so it still runs in a sandbox
- * whose processes hold most of the pid table, and a process cannot fork once
- * stopped. Zombies are left to the init. Prints `killed <n>`; exits 3 when
- * processes are still there after 50 passes.
+ * none is left alive: shell builtins and /proc only, so it still runs in a
+ * sandbox whose processes hold most of the pid table, and a process cannot
+ * fork once stopped.
+ *
+ * Every other process is signalled on every pass, whatever its state. A
+ * process counts as gone only when every one of its tasks is a zombie (a
+ * zombie leader can have live threads), and a task's state is read from its
+ * whole stat file, after the last ") ": the process name before it is the
+ * process's own to choose (`/proc/self/comm`) and can hold ") Z" and line
+ * breaks. Zombies are left to the init. Prints `killed <n>`; exits 3 when a
+ * process is still alive after 50 passes.
  */
 const CLEANUP_SCRIPT = [
   'self=$$',
@@ -80,6 +87,16 @@ const CLEANUP_SCRIPT = [
   'seen=" "',
   'killed=0',
   'pass=0',
+  'alive() {',
+  '  for t in "$1"/task/[0-9]*; do',
+  '    [ -e "$t/stat" ] || continue',
+  '    s=',
+  '    { while IFS= read -r l || [ -n "$l" ]; do s="$s $l"; done < "$t/stat"; } 2>/dev/null || continue',
+  '    s=${s##*) }',
+  '    case "$s" in Z*|X*) ;; *) return 0 ;; esac',
+  '  done',
+  '  return 1',
+  '}',
   'while [ "$pass" -lt 50 ]; do',
   '  pass=$((pass+1))',
   '  found=',
@@ -88,16 +105,12 @@ const CLEANUP_SCRIPT = [
   '    case "$p" in ""|*[!0-9]*) continue ;; esac',
   '    [ "$p" = "$self" ] && continue',
   '    case "$keep" in *" $p "*) continue ;; esac',
-  '    s=',
-  '    { read -r s < "$d/stat"; } 2>/dev/null || continue',
-  '    s=${s##*) }',
-  '    case "$s" in Z*|X*) continue ;; esac',
   '    kill -STOP "$p" 2>/dev/null',
-  '    found="$found $p"',
+  '    alive "$d" && found="$found $p"',
+  '    kill -KILL "$p" 2>/dev/null',
   '  done',
   '  if [ -z "$found" ]; then printf "killed %s\\n" "$killed"; exit 0; fi',
   '  for p in $found; do',
-  '    kill -KILL "$p" 2>/dev/null || continue',
   '    case "$seen" in *" $p "*) ;; *) seen="$seen$p "; killed=$((killed+1)) ;; esac',
   '  done',
   'done',

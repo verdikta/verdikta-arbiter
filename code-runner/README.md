@@ -417,8 +417,11 @@ richer.
 
 **Between steps that ran claim code** (after the build and after each run),
 every process but the ones recorded before any claim code ran is stopped and
-killed (shell builtins and `/proc`; a sandbox where that does not converge
-abstains `docker_error`), and before runs 2 and 3 the tracked files go back
+killed on every pass until none is alive (shell builtins and `/proc`; a
+sandbox where that does not converge abstains `docker_error`). A process
+counts as gone only when every one of its tasks is a zombie, and a task's
+state is read after the last `) ` of its whole stat file, since the process
+name before it is the process's own to choose, and before runs 2 and 3 the tracked files go back
 to the PoC commit (`git reset --hard`). The number killed is in
 `facts.leftoverProcesses`.
 

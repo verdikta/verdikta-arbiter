@@ -501,6 +501,19 @@ test('claim processes that outlive a step are killed before the next one; the wo
   for (const reset of gitCalls(sb, 'reset')) assert.deepEqual(reset.sub, ['reset', '--quiet', '--hard', POC]);
 });
 
+test('R6-F1: the cleanup reads a task\'s state from its whole stat file, checks every task, and signals every process on every pass', () => {
+  const { CLEANUP_SCRIPT } = require('../../src/claim');
+  // The process name is the process's own to choose: the state is after the last ") " of the whole file.
+  assert.ok(CLEANUP_SCRIPT.includes('while IFS= read -r l || [ -n "$l" ]; do s="$s $l"; done < "$t/stat"'));
+  assert.ok(CLEANUP_SCRIPT.includes('s=${s##*) }'));
+  // A zombie leader can have live threads: alive when any task is not a zombie.
+  assert.ok(CLEANUP_SCRIPT.includes('for t in "$1"/task/[0-9]*; do'));
+  // Every other process gets STOP and KILL each pass, whatever its state.
+  const loop = CLEANUP_SCRIPT.slice(CLEANUP_SCRIPT.indexOf('for d in /proc/[0-9]*'));
+  assert.ok(loop.indexOf('kill -STOP') < loop.indexOf('alive "$d"') && loop.indexOf('alive "$d"') < loop.indexOf('kill -KILL'));
+  assert.doesNotMatch(loop.slice(0, loop.indexOf('kill -KILL')), /continue ;; esac\n\s*kill -STOP[\s\S]*Z\*/, 'no zombie test before the signals');
+});
+
 test('a sandbox whose leftover processes cannot be stopped abstains', async () => {
   const sb = claimSandbox({ scripts: { 'vcr-cleanup': () => ({ exitCode: 3, stdout: 'killed 4096\n' }) } });
   const r = await runClaim(sb);
