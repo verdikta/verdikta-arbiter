@@ -23,6 +23,8 @@ export class OllamaProvider implements LLMProvider {
   private readonly providerName = 'Ollama';
   private models: Array<{ name: string; supportsImages: boolean; supportsAttachments: boolean }> = [];
   private modelsInitialized: Promise<void>;
+  /** Aborts model discovery when a code-mode caller's deadline passes (initialize(signal)). */
+  private readonly discovery = new AbortController();
 
   /**
    * Constructor for OllamaProvider
@@ -34,13 +36,17 @@ export class OllamaProvider implements LLMProvider {
     this.modelsInitialized = this.initializeModels();
   }
 
-  async initialize(): Promise<void> {
+  async initialize(signal?: AbortSignal): Promise<void> {
+    if (signal) {
+      if (signal.aborted) this.discovery.abort();
+      else signal.addEventListener('abort', () => this.discovery.abort(), { once: true });
+    }
     await this.modelsInitialized;
   }
 
   private async initializeModels() {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`);
+      const response = await fetch(`${this.baseUrl}/api/tags`, { signal: this.discovery.signal });
       console.log('Ollama - Fetching models response:', response.status);
       
       if (!response.ok) {

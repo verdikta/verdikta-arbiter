@@ -226,6 +226,23 @@ describe('code-mode controls reach each provider', () => {
     await expect(provider.generateResponse('justify', 'llama3.1:8b', { signal: controller.signal })).rejects.toThrow(/abort/i);
   }, 5000);
 
+  test('Ollama: model discovery during setup is aborted with the caller\'s signal', async () => {
+    let discoverySignal: AbortSignal | undefined;
+    (global.fetch as jest.Mock).mockImplementation((url: string, init?: { signal?: AbortSignal }) => {
+      if (!String(url).endsWith('/api/tags')) throw new Error(`unexpected ${url}`);
+      discoverySignal = init?.signal;
+      return new Promise((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(Object.assign(new Error('aborted'), { name: 'AbortError' })));
+      });
+    });
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    const controller = new AbortController();
+    const setup = LLMFactory.getProvider('ollama', { signal: controller.signal });
+    controller.abort();
+    await expect(setup).resolves.toBeInstanceOf(OllamaProvider);
+    expect(discoverySignal?.aborted).toBe(true);
+  }, 5000);
+
   test('xAI: max_tokens from the envelope and the caller\'s signal', async () => {
     const controller = new AbortController();
     await new XAIProvider().generateResponse('prompt', 'grok-4.7', codeOptions(controller.signal));

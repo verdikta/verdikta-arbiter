@@ -94,7 +94,7 @@ async function askJuror(
   signal: AbortSignal,
   maxTokens: number,
 ): Promise<{ vector: number[]; justification: string }> {
-  const provider = await LLMFactory.getProvider(juror.provider) as any;
+  const provider = await LLMFactory.getProvider(juror.provider, { signal }) as any;
   const options = { webAccess: false, signal, maxTokens, effort: CODE_JUROR_EFFORT };
   const reply = stripThinkingBlocks(await provider.generateResponse(prompt, juror.model, options));
   console.log(`⚖️ CODE_JUROR_REPLY: ${juror.provider}:${juror.model} (${reply.length} chars)\n${reply}`);
@@ -187,7 +187,7 @@ export async function runCodeJustifier(prompt: string, budgetMs: number): Promis
   try {
     // The reserve covers the provider's setup too (Ollama's initialization fetches its model list).
     const work = (async () => {
-      const provider = await LLMFactory.getProvider(target.provider) as any;
+      const provider = await LLMFactory.getProvider(target.provider, { signal: controller.signal }) as any;
       return provider.generateResponse(prompt, target.model, { webAccess: false, signal: controller.signal }) as Promise<string>;
     })();
     const text = stripThinkingBlocks(await raceAbort<string>(work, controller.signal, 'justifier reserve'));
