@@ -201,7 +201,12 @@ test('the launcher check resolves every component, directory links in the middle
     // The same chain through root-owned directories only.
     'mkdir -p /opt/safe && ln -s /usr/bin /opt/safe/current && ln -s /opt/safe/current /opt/rootdir/safebin',
     // A relative link with .. in the middle.
-    'ln -s ../safe/current /opt/rootdir/relbin'
+    'ln -s ../safe/current /opt/rootdir/relbin',
+    // Round 9's case: a link target ending in a newline, next to a decoy without one.
+    'mkdir -p /opt/owned && chown 10001:10001 /opt/owned && ln -s /usr/bin /opt/owned/current',
+    'ln -s /opt/owned/current "/opt/route\n"',
+    'ln -s /usr/bin /opt/route',
+    'ln -s "/opt/route\n" /opt/rootdir/nlbin'
   ].join('\n')], { timeoutMs: 60000 });
   assert.equal(asRoot.exitCode, 0, asRoot.stderr);
   const check = async (p) => (await runText(docker, ['exec', '--user', '10001:10001', name, '/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check', p], { timeoutMs: 60000 })).exitCode;
@@ -210,4 +215,5 @@ test('the launcher check resolves every component, directory links in the middle
   assert.equal(await check('/opt/rootdir/safebin/sh'), 0, 'the same chain through root-owned directories passes');
   assert.equal(await check('/opt/rootdir/relbin/sh'), 0, 'relative links and .. resolve');
   assert.equal(await check('/opt/rootdir/missing/sh'), 2, 'a missing component cannot be checked');
+  assert.equal(await check('/opt/rootdir/nlbin/sh'), 1, 'a target ending in a newline is followed as it is, not as the decoy');
 });

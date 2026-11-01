@@ -43,11 +43,15 @@ const NONCE = /^[0-9a-f]{32}$/;
  * modes do not help) or writable by it. Exits 1 when one is, 2 when the check
  * cannot be made (a test the shell does not support, a missing component, a
  * link it cannot read, more than 40 links), 0 when the interpreter is safe.
+ * Link targets are read byte for byte, trailing newlines included.
  */
 const LAUNCHER_CHECK = [
   'own() { [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
   'wr() { [ -w "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
   'chk() { own "$1"; wr "$1"; }',
+  // A literal newline: command substitution strips trailing newlines, which
+  // can belong to a link's target, so targets are read with a sentinel.
+  'nl=$(printf "\\nx"); nl=${nl%x}',
   'chk /',
   'cur=/; rest=$1; n=0',
   'while :; do',
@@ -60,7 +64,9 @@ const LAUNCHER_CHECK = [
   '  chk "$next"',
   '  if [ -L "$next" ]; then',
   '    n=$((n+1)); [ "$n" -le 40 ] || exit 2',
-  '    t=$(readlink "$next") || exit 2',
+  '    t=$(readlink -- "$next" && printf x) || exit 2',
+  '    t=${t%x}; t=${t%"$nl"}',
+  '    [ -n "$t" ] || exit 2',
   '    case $t in /*) cur=/ ;; esac',
   '    if [ -n "$rest" ]; then rest=$t/$rest; else rest=$t; fi',
   '  else',
