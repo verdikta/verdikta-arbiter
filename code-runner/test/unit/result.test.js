@@ -120,6 +120,17 @@ test('a step whose process never started is not a definitive exit, unless the im
   assert.equal(classifyExec(obs({ exitCode: 1, stdoutHead: 'building...\nOCI runtime exec failed? no\n', program: 'forge' })).kind, 'definitive');
 });
 
+test('a capped read counts only if what was read is the program\'s output', () => {
+  const spawn = 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n';
+  assert.deepEqual(classifyExec(obs({ capped: true, exitCode: null, stdoutHead: '<?xml version="1.0"?><testsuites>', program: 'cat' })),
+    { kind: 'definitive', basis: 'exit_code', exitCode: 0 });
+  assert.equal(cause({ capped: true, exitCode: null, stdoutHead: spawn, program: 'cat' }), ABSTAIN.DOCKER_ERROR);
+  assert.equal(cause({ capped: true, exitCode: 128, stderrHead: spawn, program: 'cat' }), ABSTAIN.DOCKER_ERROR);
+  assert.equal(cause({ capped: true, exitCode: null, stdoutHead: 'Error response from daemon: container x is paused', program: 'cat' }), ABSTAIN.DOCKER_ERROR);
+  // A capped read of a sandbox that died or ran out of memory still abstains.
+  assert.equal(cause({ capped: true, exitCode: null, state: { running: false, oomKilled: false, exitCode: 137, status: 'exited' }, program: 'cat' }), ABSTAIN.SANDBOX_DIED);
+});
+
 test('a process killed by a signal is not a clean exit', () => {
   const r = classifyExec(obs({ exitCode: 139 }));
   assert.equal(r.cause, ABSTAIN.KILLED_BY_SIGNAL);

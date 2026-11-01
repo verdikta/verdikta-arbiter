@@ -309,12 +309,13 @@ class Sandbox {
       runtime: this.runtime
     };
     if (!killedBy && stdoutSink && stdoutSink.overLimit) {
-      // The runner stopped the read at its cap (that is the fact recorded);
-      // the sandbox must still be sound for it to count.
-      obs.exitCode = 0;
+      // The runner stopped the read at its cap (that is the fact recorded).
+      // There is no exit code: classifyExec still checks that the output is
+      // the program's, and the sandbox must still be sound for it to count.
+      obs.capped = true;
       obs.cliSignal = null;
     }
-    if (!killedBy && !r.spawnError) await this.observe(obs, obs.exitCode, controlSignal);
+    if (!killedBy && !r.spawnError) await this.observe(obs, obs.capped ? 0 : obs.exitCode, controlSignal);
     const verdict = classifyExec(obs);
     const record = {
       name,

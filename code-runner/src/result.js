@@ -142,6 +142,32 @@ function increased(before, after, key) {
 }
 
 /**
+ * The docker CLI's own failure, reported at the head of stdout or stderr
+ * (GitHub's runners print an exec failure on stdout), as an abstain; null
+ * when the output is the program's. `code` is the exit code, or null for a
+ * read the runner capped, where only the image's deterministic answer is not
+ * possible either.
+ */
+function cliDiagnostic(obs, code) {
+  const abstain = (cause, detail) => ({ kind: 'abstain', cause, detail });
+  const heads = [obs.stderrHead || '', obs.stdoutHead || ''].map((h) => h.replace(/^\s+/, ''));
+  const firstLine = (h) => h.split(/\r?\n/)[0].slice(0, 200);
+  for (const head of heads) {
+    if (DAEMON_UNREACHABLE.test(firstLine(head))) return abstain(ABSTAIN.DOCKER_UNREACHABLE, 'the Docker daemon could not be reached');
+  }
+  for (const head of heads) {
+    if (OCI_START_FAILED.test(head)) {
+      if ((code === 126 || code === 127) && startFailureIsTheImages(head.split(/\r?\n/)[0], obs.program)) return null;
+      return abstain(ABSTAIN.DOCKER_ERROR, `the step's process could not be started: ${firstLine(head)}`);
+    }
+    if (/^(?:docker: )?Error response from daemon:/.test(head)) {
+      return abstain(ABSTAIN.DOCKER_ERROR, `the daemon refused the step: ${firstLine(head)}`);
+    }
+  }
+  return null;
+}
+
+/**
  * Classify one `docker exec` of a step.
  *
  * @param {object} obs
@@ -152,6 +178,7 @@ function increased(before, after, key) {
  * @param {string} obs.stderrHead - the first bytes of stderr (the CLI's own errors land here)
  * @param {string} [obs.stdoutHead] - the first bytes of stdout (some CLIs print exec failures here)
  * @param {string} [obs.program] - the step's argv[0]
+ * @param {boolean} [obs.capped] - the runner stopped this read at its byte cap
  * @param {null|{missing:true}|{running:boolean,oomKilled:boolean,exitCode:number,status:string}} obs.state
  *   the container after the step (`null` when inspect failed)
  * @param {null|'unreachable'|'error'} obs.inspectError
@@ -196,28 +223,23 @@ function classifyExec(obs) {
     return abstain(ABSTAIN.SANDBOX_DIED, `the sandbox died during the step (exit ${state.exitCode})`);
   }
 
+  if (obs.capped) {
+    // The runner stopped a capped read itself, so there is no exit code to
+    // judge by; the output must still be the program's, not the CLI's own
+    // report that the program never started.
+    const failure = cliDiagnostic(obs, null);
+    if (failure) return failure;
+    return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: 0 };
+  }
+
   if (obs.cliSignal) return abstain(ABSTAIN.DOCKER_ERROR, `the docker CLI died of ${obs.cliSignal}`);
   const code = obs.exitCode;
   if (!Number.isInteger(code)) return abstain(ABSTAIN.DOCKER_ERROR, 'the step ended without an exit code');
   if (code === 137) return abstain(ABSTAIN.OOM, 'the step was killed with SIGKILL (exit 137), as the OOM killer does');
   if (code > 128) return abstain(ABSTAIN.KILLED_BY_SIGNAL, `the step died of ${signalName(code)} (exit ${code})`);
   if (code !== 0) {
-    // The CLI's own errors come first on one of the streams (GitHub's
-    // runners print an exec failure on stdout).
-    const heads = [obs.stderrHead || '', obs.stdoutHead || ''].map((h) => h.replace(/^\s+/, ''));
-    const firstLine = (h) => h.split(/\r?\n/)[0].slice(0, 200);
-    for (const head of heads) {
-      if (DAEMON_UNREACHABLE.test(firstLine(head))) return abstain(ABSTAIN.DOCKER_UNREACHABLE, 'the Docker daemon could not be reached');
-    }
-    for (const head of heads) {
-      if (OCI_START_FAILED.test(head)) {
-        if ((code === 126 || code === 127) && startFailureIsTheImages(head.split(/\r?\n/)[0], obs.program)) break;
-        return abstain(ABSTAIN.DOCKER_ERROR, `the step's process could not be started: ${firstLine(head)}`);
-      }
-      if (/^(?:docker: )?Error response from daemon:/.test(head)) {
-        return abstain(ABSTAIN.DOCKER_ERROR, `the daemon refused the step: ${firstLine(head)}`);
-      }
-    }
+    const failure = cliDiagnostic(obs, code);
+    if (failure) return failure;
   }
   return { kind: 'definitive', basis: DEFINITIVE_BASIS.EXIT_CODE, exitCode: code };
 }

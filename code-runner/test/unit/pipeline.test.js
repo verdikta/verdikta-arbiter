@@ -474,3 +474,18 @@ test('an OCI start failure from the runtime\'s own helper does not decide a gate
   assert.equal(result.abstain.cause, 'docker_error');
   assert.deepEqual(result.gates, {});
 });
+
+test('a capped read that is really the CLI saying cat never started abstains', async () => {
+  const spawn = 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n';
+  const docker = fakeDocker(healthyDaemon({ step: (args) => (args.includes('cat') ? { exitCode: 128, stdout: spawn } : { exitCode: 0 }) }));
+  let got = null;
+  const steps = [async (ctx) => {
+    got = await ctx.readFile('/tmp/junit.xml', { maxBytes: 64 });
+    ctx.gate('integrity', 'fail', 'integrity', 'never reached');
+  }];
+  const { result } = await run({ docker, steps });
+  assert.equal(got, null, 'readFile did not return the diagnostic as file bytes');
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.equal(result.abstain.step, 'read:/tmp/junit.xml');
+  assert.deepEqual(result.gates, {});
+});
