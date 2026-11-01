@@ -361,7 +361,15 @@ class ImageCache {
     throw new Abstain(ABSTAIN.DOCKER_ERROR, `docker image inspect failed: ${firstLine(r.stderr, `exit ${r.exitCode}`)}`, { step: 'pull' });
   }
 
-  /** Free bytes on the data root, or null with the reason it could not be measured. */
+  /**
+   * Free bytes on the data root (null, with the reason, when they cannot be
+   * measured), and `pending`: the bytes pulls in flight held just before
+   * the measurement. A pull that finishes while statfs runs releases its
+   * reservation outside the lock, and its last writes may or may not be in
+   * the sample; paired with the reservation taken before it, its bytes are
+   * counted at least once, never zero times. (Pulls start only under the
+   * lock, which the caller holds, so nothing is added meanwhile.)
+   */
   async freeBytes(signal) {
     let dir = this.config.dataRoot;
     if (!dir) {
@@ -374,11 +382,12 @@ class ImageCache {
       dir = this.dockerRootDir;
     }
     if (!dir) return { bytes: null, path: null, error: 'the daemon reports no data root' };
+    const pending = this.pendingBytes;
     try {
       const s = await this.statfs(dir);
-      return { bytes: Number(s.bavail) * Number(s.bsize), path: dir, error: null };
+      return { bytes: Number(s.bavail) * Number(s.bsize), pending, path: dir, error: null };
     } catch (err) {
-      return { bytes: null, path: dir, error: err.code || err.message };
+      return { bytes: null, pending, path: dir, error: err.code || err.message };
     }
   }
 
@@ -400,7 +409,7 @@ class ImageCache {
       this.log.warn('the free space on the data root could not be measured; pulling without the disk check (runc development)', { path: free.path, error: free.error });
       return;
     }
-    const fits = () => free.bytes - this.pendingBytes - reserve >= need;
+    const fits = () => free.bytes - free.pending - reserve >= need;
     if (fits()) return;
     for (const candidate of await this.candidates(signal)) {
       stopIfAborted(signal);
@@ -415,8 +424,19 @@ class ImageCache {
       if (free.bytes === null) break;
       if (fits()) return;
     }
+    // A reservation is an upper bound, so a sample taken while a pull was
+    // ending can only understate the room: one fresh look before refusing.
+    if (free.bytes !== null) {
+      free = await this.freeBytes(signal);
+      stopIfAborted(signal);
+      if (free.bytes !== null && fits()) return;
+    }
+    if (free.bytes === null) {
+      throw new Abstain(ABSTAIN.ADMISSION_REFUSED,
+        `the free space on the data root (${free.path || 'unknown'}) could no longer be measured while making room (${free.error}); a pull needs ${need} bytes`, { step: 'pull' });
+    }
     throw new Abstain(ABSTAIN.ADMISSION_REFUSED,
-      `the data root has ${free.bytes} bytes free, ${this.pendingBytes} held by pulls in flight and ${reserve} kept free `
+      `the data root has ${free.bytes} bytes free, ${free.pending} held by pulls in flight and ${reserve} kept free `
       + `(CODE_RUNNER_DISK_RESERVE_MB); the image needs ${need} (${unpackedBytes} unpacked plus its compressed layers), `
       + 'and nothing more can be evicted', { step: 'pull' });
   }

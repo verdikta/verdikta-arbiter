@@ -507,8 +507,9 @@ failing harness records) and `leftoverProcesses`.
    - **The size check first.** A pull needs the attested unpacked size plus
      the compressed layers while they are extracted (at most the class's
      2 GB; the containerd image store keeps them), on top of the bytes pulls
-     in flight have reserved and `CODE_RUNNER_DISK_RESERVE_MB`, all against
-     the free space of the data root (`CODE_RUNNER_DATA_ROOT`, else the
+     in flight had reserved when the free space was sampled and
+     `CODE_RUNNER_DISK_RESERVE_MB`, all against the free space of the data
+     root (`CODE_RUNNER_DATA_ROOT`, else the
      daemon's `DockerRootDir`). The sandboxes' scratch is memory (tmpfs), so
      the image is all a run adds to the disk. Free space that cannot be
      measured refuses a pull under `runsc`, and is allowed with a warning

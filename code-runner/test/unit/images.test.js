@@ -335,6 +335,38 @@ test('eviction under concurrent runs: a pull in flight holds its space and its i
   for (const l of [second, x, third]) l.release();
 });
 
+test('R3-F1: a pull that finishes while the free space is measured is counted, so the reserve holds', async () => {
+  let finish;
+  const wait = new Promise((r) => { finish = r; });
+  const Y = REF('y', 'b');
+  const { store, handlers } = imageStore({ registry: { [X]: { image: image(X), wait }, [Y]: { image: image(Y) } } });
+  // 3000 bytes free; each image takes 2000 (and a pull of one needs 2000).
+  let calls = 0;
+  let deliver;
+  const late = new Promise((r) => { deliver = r; });
+  const statfs = async () => {
+    calls += 1;
+    const sample = 3000 - store.images.length * 2000;
+    // Y's measurement samples before X's last writes and is delivered after X's pull has ended.
+    if (calls === 2) await late;
+    return { bavail: Math.max(0, sample), bsize: 1 };
+  };
+  const cache = new ImageCache({ config: config(), docker: fakeDocker(handlers), log: silent, statfs });
+  const first = cache.acquire(want(X));
+  while (cache.status().pullsInFlight === 0) await tick();
+  const second = cache.acquire(want(Y));
+  while (calls < 2) await tick();
+  finish();
+  while (cache.status().pullsInFlight > 0) await tick();
+  assert.equal(cache.status().pendingBytes, 0, 'X\'s reservation is gone before Y\'s stale sample arrives');
+  deliver();
+  // Stale sample 3000 less X's reservation taken before it: 1000, too little; re-measured: 1000.
+  const err = await rejectsWith(second, Abstain, 'admission_refused');
+  assert.match(err.detail, /nothing more can be evicted/);
+  assert.equal(store.pulls.filter((a) => a[a.length - 1] === Y).length, 0, 'Y was never pulled');
+  (await first).release();
+});
+
 test('two runs that need the same image share one pull and one reservation', async () => {
   let finish;
   const wait = new Promise((r) => { finish = r; });
