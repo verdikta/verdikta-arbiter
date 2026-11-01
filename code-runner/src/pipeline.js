@@ -31,6 +31,9 @@ const { admitRun } = require('./admission');
 const KEEPALIVE_MARGIN_SECONDS = 30;
 /** After a run-level kill, how long to let the step's exec report what it saw. */
 const KILL_GRACE_MS = 1000;
+/** A sandbox that could not be removed is tried again after this long, doubling up to REAP_MAX_MS. */
+const REAP_FIRST_MS = 2000;
+const REAP_MAX_MS = 60000;
 
 const RUN_KILL_CAUSE = Object.freeze({
   run: [ABSTAIN.STEP_TIMEOUT, 'the run reached its wall-clock limit (runSeconds) and the sandbox was killed'],
@@ -62,11 +65,12 @@ function delay(ms) {
  * @param {object} [o.images] - the image cache (images.js); without it the image must already be there
  * @param {string} [o.attestedImage] - attestation.json's env.image (default: the image)
  * @param {number} [o.unpackedBytes] - the attested unpacked size, for the pull's disk check
+ * @param {number} [o.reapFirstMs] - first retry of a removal that failed (the slot stays held meanwhile)
  * @returns {Promise<object>} the run result; never rejects
  */
 async function executeRun({
   docker, config, limits, image, runId, steps = [], receivedAt = Date.now(), deadlineAt,
-  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes
+  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes, reapFirstMs = REAP_FIRST_MS
 }) {
   const stopAt = deadlineAt - (config.deadlineReserveMs || 0);
   const result = {
@@ -250,6 +254,22 @@ async function executeRun({
     };
   }
 
+  /** Release the reservations once every sandbox is gone; until then retry the removals. */
+  async function reap(gone) {
+    let wait = reapFirstMs;
+    let warned = false;
+    while (!gone.every(Boolean)) {
+      if (!warned) {
+        warned = true;
+        log.warn('a sandbox outlived its run: its slot, memory and image stay held until it is removed', { runId });
+      }
+      await new Promise((resolve) => { setTimeout(resolve, wait).unref(); });
+      wait = Math.min(wait * 2, REAP_MAX_MS);
+      gone = await Promise.all(sandboxes.map((sb, i) => (gone[i] ? true : sb.remove().catch(() => false))));
+    }
+    releaseAll();
+  }
+
   const work = (async () => {
     const primary = await open();
     const ctx = {
@@ -306,9 +326,11 @@ async function executeRun({
       active.delete(sb.name);
       return gone;
     }));
-    // The slot, the memory and the image stay held until the removal has
-    // ended, even when the answer goes out before (at the deadline).
-    removal.then(releaseAll, releaseAll);
+    // The slot, the memory and the image stay held until every sandbox is
+    // confirmed gone, even when the answer goes out before (at the
+    // deadline). A removal that failed is tried again in the background
+    // (the GC may get there first: then the retry finds nothing to remove).
+    removal.then((gone) => reap(gone), () => reap(sandboxes.map(() => false)));
     let timer = null;
     const removed = await Promise.race([
       removal.then((all) => all.every(Boolean)),

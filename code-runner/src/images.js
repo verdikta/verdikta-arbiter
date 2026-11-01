@@ -60,6 +60,13 @@ const DEFAULT_PINNED_DIGESTS = Object.freeze(Object.values(BASE_IMAGE_PINS).flat
 const nullLog = { info() {}, warn() {}, error() {}, debug() {} };
 const ABORTED = Symbol('aborted');
 
+/** The run's window ended, or it was cancelled, while the cache worked for it. */
+class Interrupted extends Error {}
+
+function stopIfAborted(signal) {
+  if (signal && signal.aborted) throw new Interrupted('interrupted');
+}
+
 /**
  * Bytes a pull may need on the data root: the unpacked image plus its
  * compressed layers while they are extracted (the containerd image store
@@ -242,9 +249,9 @@ class ImageCache {
       if (signal.aborted) wait.abort('cancel');
       else signal.addEventListener('abort', onCancel, { once: true });
     }
-    const gaveUp = (what) => (wait.signal.reason === 'cancel'
+    const gaveUp = (what, verb = 'did not finish') => (wait.signal.reason === 'cancel'
       ? new Abstain(ABSTAIN.CANCELLED, `the run was cancelled while it waited for ${what}`, { step: 'pull' })
-      : new Abstain(ABSTAIN.PULL_FAILED, `${what} did not finish in the time the deadline leaves before the run (${Math.max(0, windowMs)} ms)`, { step: 'pull' }));
+      : new Abstain(ABSTAIN.PULL_FAILED, `${what} ${verb} in the time the deadline leaves before the run (${Math.max(0, windowMs)} ms)`, { step: 'pull' }));
 
     try {
       let pull = null;
@@ -257,22 +264,29 @@ class ImageCache {
           ? gaveUp('the image cache')
           : new Abstain(ABSTAIN.ADMISSION_REFUSED, 'the image cache was busy for all the time the deadline leaves before the run', { step: 'pull' });
       }
+      // Everything under the lock follows the run's window and cancellation
+      // too: each Docker call is cut off and nothing further starts, so a run
+      // never holds the lock (or its slot) past its time.
       try {
         const inFlight = this.pulls.get(key);
         if (inFlight) {
           pull = inFlight;
           cache = 'shared';
         } else {
-          const present = await this.inspect(key);
+          const present = await this.inspect(key, wait.signal);
           const problem = present ? this.mismatch(present, key, platform) : null;
           if (present && problem && problem.kind === 'digest') throw new Abstain(ABSTAIN.IMAGE_MISMATCH, problem.detail, { step: 'pull' });
           if (!present || problem) {
             const need = needBytes(unpackedBytes);
-            await this.admitDisk(need, unpackedBytes);
+            await this.admitDisk(need, unpackedBytes, wait.signal);
+            stopIfAborted(wait.signal);
             pull = this.startPull(key, platform, need);
             cache = 'pulled';
           }
         }
+      } catch (err) {
+        if (err instanceof Interrupted) throw gaveUp(`the image ${key}`, 'was not ready');
+        throw err;
       } finally {
         unlock();
       }
@@ -281,7 +295,13 @@ class ImageCache {
         const outcome = await Promise.race([pull.promise, aborted(wait.signal)]);
         if (outcome === ABORTED) throw gaveUp(`the pull of ${key}`);
         if (outcome.error) throw outcome.error;
-        const after = await this.inspect(key);
+        let after;
+        try {
+          after = await this.inspect(key, wait.signal);
+        } catch (err) {
+          if (err instanceof Interrupted) throw gaveUp(`the image ${key}`, 'was not ready');
+          throw err;
+        }
         if (!after) {
           throw new Abstain(ABSTAIN.PULL_FAILED, `the pull of ${key} reported success, but the image is not on the disk under that reference`, { step: 'pull' });
         }
@@ -323,9 +343,13 @@ class ImageCache {
     return null;
   }
 
-  /** The image a reference resolves to, or null when there is none. Throws Abstain when the daemon cannot say. */
-  async inspect(key) {
-    const r = await runText(this.docker, ['image', 'inspect', '--format', INSPECT_FORMAT, key], { timeoutMs: CONTROL_TIMEOUT_MS });
+  /**
+   * The image a reference resolves to, or null when there is none. Throws
+   * Abstain when the daemon cannot say, Interrupted when `signal` aborts.
+   */
+  async inspect(key, signal) {
+    const r = await runText(this.docker, ['image', 'inspect', '--format', INSPECT_FORMAT, key], { timeoutMs: CONTROL_TIMEOUT_MS, signal });
+    stopIfAborted(signal);
     if (r.spawnError) throw new Abstain(ABSTAIN.DOCKER_UNREACHABLE, `the docker CLI could not be started: ${r.spawnError}`, { step: 'pull' });
     if (r.exitCode === 0) {
       const [info] = parseInspectLines(r.stdout);
@@ -338,11 +362,12 @@ class ImageCache {
   }
 
   /** Free bytes on the data root, or null with the reason it could not be measured. */
-  async freeBytes() {
+  async freeBytes(signal) {
     let dir = this.config.dataRoot;
     if (!dir) {
       if (!this.dockerRootDir) {
-        const info = await dockerInfo(this.docker, { timeoutMs: CONTROL_TIMEOUT_MS });
+        const info = await dockerInfo(this.docker, { timeoutMs: CONTROL_TIMEOUT_MS, signal });
+        stopIfAborted(signal);
         if (!info.reachable) return { bytes: null, path: null, error: info.error };
         this.dockerRootDir = info.dockerRootDir;
       }
@@ -360,11 +385,13 @@ class ImageCache {
   /**
    * Make room for a pull of `need` bytes, evicting least recently used
    * images while it does not fit. Throws Abstain (admission_refused) when it
-   * cannot. Called under the lock.
+   * cannot, Interrupted when `signal` aborts (no further step starts).
+   * Called under the lock.
    */
-  async admitDisk(need, unpackedBytes) {
+  async admitDisk(need, unpackedBytes, signal) {
     const reserve = this.config.diskReserveMb * MIB;
-    let free = await this.freeBytes();
+    let free = await this.freeBytes(signal);
+    stopIfAborted(signal);
     if (free.bytes === null) {
       if (this.config.runtime === 'runsc') {
         throw new Abstain(ABSTAIN.ADMISSION_REFUSED,
@@ -375,12 +402,16 @@ class ImageCache {
     }
     const fits = () => free.bytes - this.pendingBytes - reserve >= need;
     if (fits()) return;
-    for (const candidate of await this.candidates()) {
+    for (const candidate of await this.candidates(signal)) {
+      stopIfAborted(signal);
       // A run may have taken a lease on it since the list was made (leases
       // are taken before the lock): checked again right before the removal.
       if (candidate.keys.some((k) => this.inUse.has(k) || this.pulls.has(k))) continue;
-      if (!(await this.evict(candidate))) continue;
-      free = await this.freeBytes();
+      const evicted = await this.evict(candidate, signal);
+      stopIfAborted(signal);
+      if (!evicted) continue;
+      free = await this.freeBytes(signal);
+      stopIfAborted(signal);
       if (free.bytes === null) break;
       if (fits()) return;
     }
@@ -391,17 +422,19 @@ class ImageCache {
   }
 
   /** Images the cache may evict, least recently used first. */
-  async candidates() {
-    const ls = await runText(this.docker, ['image', 'ls', '--quiet', '--no-trunc'], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES });
+  async candidates(signal) {
+    const ls = await runText(this.docker, ['image', 'ls', '--quiet', '--no-trunc'], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES, signal });
+    stopIfAborted(signal);
     if (ls.exitCode !== 0 || ls.stdoutOverLimit) {
       this.log.warn('could not list images for eviction', { error: firstLine(ls.stderr || ls.spawnError, `exit ${ls.exitCode}`) });
       return [];
     }
     const ids = [...new Set(ls.stdout.split('\n').map((l) => l.trim()).filter(Boolean))];
     if (ids.length === 0) return [];
-    const usedByContainers = await this.containerImages();
+    const usedByContainers = await this.containerImages(signal);
     if (usedByContainers === null) return [];
-    const insp = await runText(this.docker, ['image', 'inspect', '--format', INSPECT_FORMAT, ...ids], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES });
+    const insp = await runText(this.docker, ['image', 'inspect', '--format', INSPECT_FORMAT, ...ids], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES, signal });
+    stopIfAborted(signal);
     if (insp.stdoutOverLimit || (insp.exitCode !== 0 && !/No such image/i.test(insp.stderr))) {
       this.log.warn('could not inspect images for eviction', { error: firstLine(insp.stderr, `exit ${insp.exitCode}`) });
       return [];
@@ -427,15 +460,17 @@ class ImageCache {
   }
 
   /** Image IDs any container uses (null when they cannot be listed: then nothing is evicted). */
-  async containerImages() {
-    const ps = await runText(this.docker, ['ps', '--all', '--quiet', '--no-trunc'], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES });
+  async containerImages(signal) {
+    const ps = await runText(this.docker, ['ps', '--all', '--quiet', '--no-trunc'], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES, signal });
+    stopIfAborted(signal);
     if (ps.exitCode !== 0 || ps.stdoutOverLimit) {
       this.log.warn('could not list containers for eviction', { error: firstLine(ps.stderr || ps.spawnError, `exit ${ps.exitCode}`) });
       return null;
     }
     const ids = [...new Set(ps.stdout.split('\n').map((l) => l.trim()).filter(Boolean))];
     if (ids.length === 0) return new Set();
-    const ci = await runText(this.docker, ['container', 'inspect', '--format', '{{json .Image}}', ...ids], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES });
+    const ci = await runText(this.docker, ['container', 'inspect', '--format', '{{json .Image}}', ...ids], { timeoutMs: CONTROL_TIMEOUT_MS, maxBytes: LISTING_BYTES, signal });
+    stopIfAborted(signal);
     if (ci.stdoutOverLimit || (ci.exitCode !== 0 && !/No such (container|object)/i.test(ci.stderr))) {
       this.log.warn('could not inspect containers for eviction', { error: firstLine(ci.stderr, `exit ${ci.exitCode}`) });
       return null;
@@ -453,9 +488,11 @@ class ImageCache {
   }
 
   /** Remove one image (never forced). True once no image has its ID. */
-  async evict(candidate) {
-    const rm = await runText(this.docker, ['image', 'rm', ...candidate.refs], { timeoutMs: REMOVE_TIMEOUT_MS });
-    const still = await runText(this.docker, ['image', 'inspect', '--format', '{{json .Id}}', candidate.id], { timeoutMs: CONTROL_TIMEOUT_MS });
+  async evict(candidate, signal) {
+    const rm = await runText(this.docker, ['image', 'rm', ...candidate.refs], { timeoutMs: REMOVE_TIMEOUT_MS, signal });
+    stopIfAborted(signal);
+    const still = await runText(this.docker, ['image', 'inspect', '--format', '{{json .Id}}', candidate.id], { timeoutMs: CONTROL_TIMEOUT_MS, signal });
+    stopIfAborted(signal);
     const gone = still.exitCode !== 0 && /No such image/i.test(still.stderr);
     if (gone) this.log.info('evicted an image (least recently used)', { id: candidate.id, refs: candidate.refs });
     else this.log.warn('could not evict an image', { id: candidate.id, error: firstLine(rm.stderr, `exit ${rm.exitCode}`) });

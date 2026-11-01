@@ -379,6 +379,39 @@ test('a run whose time runs out while it waits for a pull abstains; the pull car
   hung.cache.close();
 });
 
+test('R1-F2: cancellation or the end of the window while the cache evicts stops it at once, frees the lock and starts no pull', async () => {
+  const { never } = require('../helpers/fakeDocker');
+  const { store, handlers } = imageStore({ images: [image(A), image(B)], registry: { [X]: { image: image(X) } } });
+  const inner = handlers.image;
+  let removals = 0;
+  // Every image removal hangs (a slow daemon): only the run's signal can end it.
+  handlers.image = (args, opts, calls) => {
+    if (args[1] !== 'rm') return inner(args, opts, calls);
+    removals += 1;
+    return never();
+  };
+  const cache = new ImageCache({ config: config(), docker: fakeDocker(handlers), log: silent, statfs: virtualDisk(store, { capacity: 4000, perImage: 2000 }) });
+  const ac = new AbortController();
+  const p = cache.acquire(want(X, { signal: ac.signal }));
+  while (removals === 0) await tick();
+  const t0 = Date.now();
+  ac.abort('cancel');
+  await rejectsWith(p, Abstain, 'cancelled');
+  assert.ok(Date.now() - t0 < 1000, 'stopped at once');
+  assert.equal(removals, 1, 'no further removal was started');
+  assert.equal(store.pulls.length, 0, 'no pull was started');
+  assert.equal(cache.status().inUse, 0);
+  // The lock is free again: a cached image is had at once.
+  const lease = await cache.acquire(want(A));
+  assert.equal(lease.cache, 'hit');
+  lease.release();
+  // The window ending works the same way.
+  const late = await rejectsWith(cache.acquire(want(X, { windowMs: 100 })), Abstain, 'pull_failed');
+  assert.match(late.detail, /was not ready in the time/);
+  assert.equal(removals, 2);
+  assert.equal(store.pulls.length, 0);
+});
+
 test('free space that cannot be measured refuses a pull under runsc and is allowed, with a warning, under runc', async () => {
   const enoent = async () => { throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' }); };
   const runsc = cacheFor({ registry: { [X]: { image: image(X) } }, statfs: enoent, env: { CODE_RUNNER_RUNTIME: 'runsc' } });

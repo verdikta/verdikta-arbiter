@@ -626,3 +626,36 @@ test('A1b: time spent getting the image that leaves less than runSeconds abstain
   assert.ok(!events.includes('create'));
   assert.deepEqual(events.filter((e) => e.startsWith('release')).sort(), ['release image', 'release slot']);
 });
+
+test('R1-F1: a sandbox that could not be removed keeps the slot, the memory and the image held until a retry removes it', async () => {
+  const events = [];
+  let failures = 3;
+  const h = healthyDaemon();
+  const docker = fakeDocker({
+    ...h,
+    rm: (...a) => {
+      events.push('rm');
+      if (failures > 0) {
+        failures -= 1;
+        return { exitCode: 1, stderr: 'Error response from daemon: driver "overlay2" failed to remove root filesystem' };
+      }
+      return h.rm(...a);
+    }
+  });
+  const images = fakeImages(events);
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1, reapFirstMs: 20
+  });
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.ok(!events.some((e) => e.startsWith('release')), 'nothing is released while the sandbox is still there');
+  const until = Date.now() + 5000;
+  while (events.filter((e) => e.startsWith('release')).length < 2 && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events.slice(-2).sort(), ['release image', 'release slot']);
+  assert.equal(events.filter((e) => e === 'rm').length, 4, 'three failed removals, then one that worked');
+  const lastRm = events.lastIndexOf('rm');
+  assert.ok(events.indexOf('release image') > lastRm && events.indexOf('release slot') > lastRm, events.join(', '));
+});

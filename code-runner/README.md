@@ -471,7 +471,10 @@ failing harness records) and `leftoverProcesses`.
 1. **Admission.** A1's checks (maintenance lock, deadline against
    `runSeconds`, daemon, runtime), then:
    - **an execution slot** (`CODE_RUNNER_SLOTS`, default 1), held from
-     admission until every sandbox of the run is gone;
+     admission until every sandbox of the run is gone. A sandbox that could
+     not be removed keeps the slot, its memory and the image held: the runner
+     retries the removal in the background (2 s, doubling to 60 s; the GC may
+     get there first) and releases them only once it is gone;
    - **the memory reserve**, as in verdikta-agents' sandbox-kit: the host's
      `MemAvailable` (`/proc/meminfo`), less the memory limits of the runs
      already admitted (their whole limit, whatever they use yet) and this
@@ -524,7 +527,10 @@ failing harness records) and `leftoverProcesses`.
      another platform is pulled again for this one.
    - **Concurrent runs.** Presence, the disk check, eviction and starting a
      pull happen under one lock, so two runs never count the same free bytes;
-     two runs that need the same image share one pull. A run that runs out of
+     two runs that need the same image share one pull. Waiting for the lock
+     and everything done under it follow the run's window and cancellation:
+     each Docker call is cut off and nothing further starts, so no run holds
+     the lock, or its slot, past its time. A run that runs out of
      time while it waits abstains (`pull_failed`) and the pull carries on for
      the others (and for the EA's retry); the pull itself stops at
      `CODE_RUNNER_PULL_TIMEOUT_SECONDS` (default 90, §11's budget).
