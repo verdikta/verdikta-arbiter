@@ -200,11 +200,9 @@ const GITLINKS_SCRIPT = [
  * be self-contained (no commondir, alternates,
  * grafts or symbolic link: its info/attributes must be the one git reads),
  * its attributes are neutralised (a submodule's clean filter could map
- * changed bytes back to the committed blob), its index is rebuilt from its
- * HEAD (no assume-unchanged or skip-worktree bit), its own gitlinks are
- * checked (GITLINKS_SCRIPT), its index is refreshed, and its own status must
- * be clean (`--ignore-submodules=untracked` overrides any ignore setting it
- * has for its own submodules). A dirty submodule prints `vcr-dirty: <dir>`.
+ * changed bytes back to the committed blob), and its index is rebuilt from
+ * its HEAD (no assume-unchanged or skip-worktree bit). Nothing here reads a
+ * work tree; SUBMODULE_CHECK_SCRIPT does, in a second pass.
  */
 const SUBMODULE_INDEX_SCRIPT = [
   'top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1',
@@ -215,9 +213,22 @@ const SUBMODULE_INDEX_SCRIPT = [
   '[ -z "$link" ] || exit 1',
   `mkdir -p "$gd/info" && rm -f "$gd/info/attributes" && printf '%s\\n' '${NEUTRAL_ATTRIBUTES}' > "$gd/info/attributes" || exit 1`,
   'git read-tree HEAD || exit 1',
+  'exit 0'
+].join('; ');
+
+/**
+ * The second foreach pass, once every submodule at every depth has its
+ * neutral attributes (foreach runs its command in a submodule before it
+ * descends into it, and a status recurses into the submodules below, so a
+ * status in the first pass could run a nested submodule's own filters): the
+ * submodule's gitlinks (GITLINKS_SCRIPT), its refreshed index, and its own
+ * status, clean (`--ignore-submodules=untracked` overrides any ignore
+ * setting it has for its own submodules). A dirty one prints
+ * `vcr-dirty: <dir>`.
+ */
+const SUBMODULE_CHECK_SCRIPT = [
   `( ${GITLINKS_SCRIPT}\n) || exit 1`,
   'git update-index -q --refresh',
-  // Its own status too: a submodule's ignore settings could hide a nested one from the outer status.
   'st=$(git status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked) || exit 1',
   '[ -z "$st" ] || { printf "vcr-dirty: %s\\n" "$(pwd -P)" >&2; exit 1; }',
   'exit 0'
@@ -382,17 +393,19 @@ function claimSteps(request, limits) {
         ? `a submodule path git has to quote (a control character, " or \\): ${firstLine(links.stdout.text).slice(0, 200)}`
         : `the checkout's index could not be read: ${firstLine(links.stderr.text)}`)]);
     }
-    const subs = await ctx.exec(git(['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]), {
-      name: 'prepare:submodules', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV
-    });
-    const dirtySub = /vcr-dirty: (.*)/.exec(subs.stderr.text);
-    if (subs.exitCode !== 0 && dirtySub) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
-        `the submodule ${dirtySub[1].replace(/^\/work\//, '').slice(0, 300)} differs from the commit it records; tracked files must be the commit's`)]);
-    }
-    if (subs.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-        `a submodule's work tree is elsewhere, its repository is not self-contained, its index could not be rebuilt from its HEAD, or a submodule inside it holds files but is not checked out: ${firstLine(subs.stderr.text)}`)]);
+    // Two passes over every submodule, at every depth: first make each one
+    // safe to read (nothing reads a work tree yet), then check each one.
+    for (const [name, script] of [['prepare:submodules', SUBMODULE_INDEX_SCRIPT], ['prepare:submodules:check', SUBMODULE_CHECK_SCRIPT]]) {
+      const subs = await ctx.exec(git(['submodule', 'foreach', '--quiet', '--recursive', script]), { name, timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
+      const dirtySub = /vcr-dirty: (.*)/.exec(subs.stderr.text);
+      if (subs.exitCode !== 0 && dirtySub) {
+        throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
+          `the submodule ${dirtySub[1].replace(/^\/work\//, '').slice(0, 300)} differs from the commit it records; tracked files must be the commit's`)]);
+      }
+      if (subs.exitCode !== 0) {
+        throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
+          `a submodule's work tree is elsewhere, its repository is not self-contained, its index could not be rebuilt from its HEAD, or a submodule inside it holds files but is not checked out: ${firstLine(subs.stderr.text)}`)]);
+      }
     }
     await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
     // Untracked and ignored files may be there (installed dependencies, also
@@ -700,6 +713,6 @@ function pocFacts(entries, runs) {
 }
 
 module.exports = {
-  claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, NEUTRAL_ATTRIBUTES, SUBMODULE_INDEX_SCRIPT,
+  claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, NEUTRAL_ATTRIBUTES, SUBMODULE_INDEX_SCRIPT, SUBMODULE_CHECK_SCRIPT,
   GITLINKS_SCRIPT, RUNS
 };

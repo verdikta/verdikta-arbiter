@@ -31,6 +31,20 @@ const SUBMODULE = [
   'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit -q -m sub'
 ].join(' && ');
 
+const VARIANT_NESTED = [
+  'git init -q -b main /tmp/b && printf "b\\n" > /tmp/b/b.txt && git -C /tmp/b add -A',
+  `${FIXED_DATES} git -C /tmp/b -c user.name=f -c user.email=f@x commit -q -m b`,
+  'git init -q -b main /tmp/a && printf "a\\n" > /tmp/a/a.txt && git -C /tmp/a add -A',
+  `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m a`,
+  'git -C /tmp/a -c protocol.file.allow=always submodule --quiet add /tmp/b lib/b',
+  'git -C /tmp/a config -f .gitmodules submodule.lib/b.ignore all && git -C /tmp/a add .gitmodules',
+  `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m sub`,
+  'git -c protocol.file.allow=always submodule --quiet add /tmp/a lib/a',
+  'git -c protocol.file.allow=always submodule --quiet update --init --recursive',
+  `${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q -m sub`,
+  'printf "changed\\n" >> lib/a/lib/b/b.txt'
+].join(' && ');
+
 /** The fixture image for a variant, built once per file. */
 const VARIANTS = Object.freeze({
   plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
@@ -80,20 +94,13 @@ const VARIANTS = Object.freeze({
   // Round 11: the image's own fsmonitor hook (it must never run); and a nested submodule lib/a/lib/b whose
   // changed file lib/a hides with submodule.lib/b.ignore = all.
   fsmon: { setup: 'git config core.fsmonitor "touch /tmp/vcr-fsmonitor-ran; exit 1"' },
-  nested: {
-    setup: [
-      'git init -q -b main /tmp/b && printf "b\\n" > /tmp/b/b.txt && git -C /tmp/b add -A',
-      `${FIXED_DATES} git -C /tmp/b -c user.name=f -c user.email=f@x commit -q -m b`,
-      'git init -q -b main /tmp/a && printf "a\\n" > /tmp/a/a.txt && git -C /tmp/a add -A',
-      `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m a`,
-      'git -C /tmp/a -c protocol.file.allow=always submodule --quiet add /tmp/b lib/b',
-      'git -C /tmp/a config -f .gitmodules submodule.lib/b.ignore all && git -C /tmp/a add .gitmodules',
-      `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m sub`,
-      'git -c protocol.file.allow=always submodule --quiet add /tmp/a lib/a',
-      'git -c protocol.file.allow=always submodule --quiet update --init --recursive',
-      `${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q -m sub`,
-      'printf "changed\\n" >> lib/a/lib/b/b.txt'
-    ].join(' && ')
+  nested: { setup: VARIANT_NESTED },
+
+  // Round 12: the same nesting, lib/b clean, with lib/b's own clean filter for *.txt recording that it ran.
+  nestedfilter: {
+    setup: VARIANT_NESTED
+      .replace('printf "b\\n" > /tmp/b/b.txt && git -C /tmp/b add -A', 'printf "b\\n" > /tmp/b/b.txt && printf "*.txt filter=mask\\n" > /tmp/b/.gitattributes && git -C /tmp/b add -A')
+      .replace(' && printf "changed\\n" >> lib/a/lib/b/b.txt', ' && git -C lib/a/lib/b config filter.mask.clean "touch /tmp/vcr-nested-filter-ran; cat"')
   },
   // R1-F3 (round 3): the submodule's own clean filter maps its changed file back to the committed bytes.
   submask: {
@@ -619,4 +626,17 @@ test('round 11: the image\'s fsmonitor hook never runs in the checkout check; a 
   assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
   // lib/a's own status, its ignore setting overridden, reports lib/b changed.
   assert.match(r2.issues[0].detail, /the submodule lib\/a(\/lib\/b)? differs from the commit it records/);
+});
+
+test('round 12: a nested submodule\'s own clean filter does not run in the checkout check (every submodule is neutralised before any is read)', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('nestedfilter');
+  const seen = {};
+  const marker = async (ctx) => {
+    seen.tmp = (await ctx.exec(['sh', '-c', 'ls -A /tmp; cat /work/.git/info/attributes'], { name: 'inspect:tmp', timeoutMs: 60000 })).stdout.text;
+  };
+  const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })), [], { beforeBuild: marker });
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(typeof seen.tmp, 'string', 'the inspection ran before the build');
+  assert.doesNotMatch(seen.tmp, /vcr-nested-filter-ran/, 'lib/a/lib/b\'s clean filter did not run before the build');
+  assert.match(seen.tmp, /\* !filter !diff !merge !text !eol !ident !working-tree-encoding/, 'the neutral attributes are still in place');
 });

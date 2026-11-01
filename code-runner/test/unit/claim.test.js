@@ -14,7 +14,7 @@ const { FORGE_FUZZ_SEED } = require('../../src/common');
 const { testConfig } = require('../helpers/http');
 const { spec: baseSpec, IMAGE } = require('../helpers/requests');
 const { BASE, POC, POC_PATCH, junit, drainFails, claimSandbox } = require('../helpers/fakeClaim');
-const { NEUTRAL_ATTRIBUTES, CHECKOUT_SCRIPT, SUBMODULE_INDEX_SCRIPT } = require('../../src/claim');
+const { NEUTRAL_ATTRIBUTES, CHECKOUT_SCRIPT, SUBMODULE_INDEX_SCRIPT, SUBMODULE_CHECK_SCRIPT } = require('../../src/claim');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const noAdmission = async () => {};
@@ -82,7 +82,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.build.basis, 'exit_code');
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
-    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git update-index', 'git status',
+    'vcr-procs', 'vcr-checkout', 'git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git submodule', 'git update-index', 'git status',
     'git apply', 'git apply', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     'vcr-build', 'vcr-cleanup',
@@ -578,8 +578,8 @@ test('R8-F1: a submodule that is not checked out (no .git) must be absent or emp
   assert.ok(SUBMODULE_INDEX_SCRIPT.startsWith('top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1'));
   assert.doesNotMatch(GITLINKS_SCRIPT, /submodule status/);
   // Each submodule checks its own gitlinks, after its index is rebuilt.
-  assert.ok(SUBMODULE_INDEX_SCRIPT.includes(GITLINKS_SCRIPT));
-  assert.ok(SUBMODULE_INDEX_SCRIPT.indexOf('git read-tree HEAD') < SUBMODULE_INDEX_SCRIPT.indexOf('ls-files -s'));
+  assert.ok(SUBMODULE_CHECK_SCRIPT.includes(GITLINKS_SCRIPT));
+  assert.ok(!SUBMODULE_INDEX_SCRIPT.includes('ls-files'), 'after the first pass has rebuilt every index');
 
   // The checkout's own check runs after its index is rebuilt and before the patch.
   const ok = claimSandbox();
@@ -608,8 +608,8 @@ test('R8-F1: a submodule that is not checked out (no .git) must be absent or emp
 });
 
 test('R11-F2: each submodule\'s own status must be clean, whatever ignore setting it has for the submodules inside it', async () => {
-  assert.ok(SUBMODULE_INDEX_SCRIPT.includes('st=$(git status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked) || exit 1'));
-  assert.ok(SUBMODULE_INDEX_SCRIPT.indexOf('git update-index -q --refresh') < SUBMODULE_INDEX_SCRIPT.indexOf('git status --porcelain'));
+  assert.ok(SUBMODULE_CHECK_SCRIPT.includes('st=$(git status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked) || exit 1'));
+  assert.ok(SUBMODULE_CHECK_SCRIPT.indexOf('git update-index -q --refresh') < SUBMODULE_CHECK_SCRIPT.indexOf('git status --porcelain'));
   const sb = claimSandbox({ git: { submodule: () => ({ exitCode: 128, stderr: 'vcr-dirty: /work/lib/a/lib/b\nfatal: run_command returned non-zero status for lib/a/lib/b\n' }) } });
   const r = await runClaim(sb);
   assert.equal(r.outcome, 'requester_error');
@@ -643,9 +643,12 @@ test('R1-F4: the copied index is rebuilt from HEAD (repository and submodules) b
   const sb = claimSandbox();
   await runClaim(sb);
   const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
-  assert.deepEqual(order.slice(2, 9), ['git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git update-index', 'git status']);
+  assert.deepEqual(order.slice(2, 10), ['git rev-parse', 'git rev-parse', 'git read-tree', 'vcr-gitlinks', 'git submodule', 'git submodule', 'git update-index', 'git status']);
   assert.deepEqual(gitCalls(sb, 'read-tree')[0].sub, ['read-tree', 'HEAD']);
   assert.deepEqual(gitCalls(sb, 'submodule')[0].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]);
+  // R12-F1: a second pass reads work trees only after the first has neutralised every submodule at every depth.
+  assert.deepEqual(gitCalls(sb, 'submodule')[1].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_CHECK_SCRIPT]);
+  for (const reader of ['git status', 'update-index', 'ls-files']) assert.ok(!SUBMODULE_INDEX_SCRIPT.includes(reader), `the first pass runs no ${reader}`);
   // Each submodule's repository gets the superproject's rules: self-contained, attributes neutralised, index rebuilt.
   for (const part of ['--git-common-dir', 'commondir objects/info/alternates', 'find "$gd" -type l', `'${NEUTRAL_ATTRIBUTES}' > "$gd/info/attributes"`, 'git read-tree HEAD']) {
     assert.ok(SUBMODULE_INDEX_SCRIPT.includes(part), part);
