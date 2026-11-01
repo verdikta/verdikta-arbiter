@@ -76,6 +76,12 @@ function platformOf(info) {
   return variant ? `${os}/${architecture}/${variant}` : `${os}/${architecture}`;
 }
 
+/** A request value in a detail, bounded. */
+function short(v) {
+  const text = JSON.stringify(v === undefined ? null : v);
+  return text.length > 200 ? `${text.slice(0, 200)}… (cut)` : text;
+}
+
 function firstLine(text, fallback) {
   return (String(text || '').split('\n').find((l) => l.trim()) || fallback).trim().slice(0, 300);
 }
@@ -213,7 +219,7 @@ class ImageCache {
     }
     if (attested !== ref.canonical) {
       throw new RequesterError([{ code: 'ATTESTATION_IMAGE_MISMATCH', path: '/attestation/env/image',
-        detail: `the attestation names ${JSON.stringify(attestedImage)}, code_review.json ${JSON.stringify(image)}` }]);
+        detail: `the attestation names ${short(attestedImage)}, code_review.json ${short(image)}` }]);
     }
     if (!allowedBy(ref, this.allowlist)) {
       throw new Abstain(ABSTAIN.REGISTRY_NOT_ALLOWED,
