@@ -248,7 +248,12 @@ What the env image (P3a) must provide:
   work tree is that very directory), must be absent or empty: git would
   match any files there against the commit it records without reading them.
   A submodule whose `core.worktree` points elsewhere is refused, and replace
-  refs are off in submodules too (`core.useReplaceRefs=false`). The
+  refs are off in submodules too (`core.useReplaceRefs=false`). Each
+  submodule's own status must be clean as well, so its ignore settings
+  cannot hide the submodules inside it. Every git call of the check carries
+  the runner's fixed `-c` settings, so no hook of the repository (fsmonitor)
+  runs before the build; forge's own git calls in the maker's commands are
+  the maker's. The
   gitlinks are read from each repository's index (`git ls-files -s`), and
   a gitlink path git has to quote (a control character, `"` or `\`) is
   refused (`IMAGE_CHECKOUT_NOT_GIT`). The claim

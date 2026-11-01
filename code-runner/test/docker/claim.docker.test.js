@@ -23,6 +23,7 @@ const TIMEOUT = 900000;
 const fixtures = new Map();
 const builder = dockerFor(dockerTestConfig());
 
+const FIXED_DATES = 'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000"';
 const SUBMODULE = [
   'git init -q -b main /tmp/dep && printf "dep\\n" > /tmp/dep/dep.txt && git -C /tmp/dep add -A',
   'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -C /tmp/dep -c user.name=f -c user.email=f@x commit -q -m dep',
@@ -75,6 +76,24 @@ const VARIANTS = Object.freeze({
     setup: `${SUBMODULE} && cd lib/dep && printf "changed\\n" >> dep.txt && git add dep.txt && t=$(git write-tree)`
       + ' && c=$(GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit-tree "$t" -m replaced)'
       + ' && git replace HEAD "$c" && cd /repo'
+  },
+  // Round 11: the image's own fsmonitor hook (it must never run); and a nested submodule lib/a/lib/b whose
+  // changed file lib/a hides with submodule.lib/b.ignore = all.
+  fsmon: { setup: 'git config core.fsmonitor "touch /tmp/vcr-fsmonitor-ran; exit 1"' },
+  nested: {
+    setup: [
+      'git init -q -b main /tmp/b && printf "b\\n" > /tmp/b/b.txt && git -C /tmp/b add -A',
+      `${FIXED_DATES} git -C /tmp/b -c user.name=f -c user.email=f@x commit -q -m b`,
+      'git init -q -b main /tmp/a && printf "a\\n" > /tmp/a/a.txt && git -C /tmp/a add -A',
+      `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m a`,
+      'git -C /tmp/a -c protocol.file.allow=always submodule --quiet add /tmp/b lib/b',
+      'git -C /tmp/a config -f .gitmodules submodule.lib/b.ignore all && git -C /tmp/a add .gitmodules',
+      `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m sub`,
+      'git -c protocol.file.allow=always submodule --quiet add /tmp/a lib/a',
+      'git -c protocol.file.allow=always submodule --quiet update --init --recursive',
+      `${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q -m sub`,
+      'printf "changed\\n" >> lib/a/lib/b/b.txt'
+    ].join(' && ')
   },
   // R1-F3 (round 3): the submodule's own clean filter maps its changed file back to the committed bytes.
   submask: {
@@ -138,7 +157,7 @@ function claim(fx, pocPatch, over = {}) {
   };
 }
 
-async function run(t, request, extraSteps = []) {
+async function run(t, request, extraSteps = [], { beforeBuild = null } = {}) {
   const config = dockerTestConfig();
   const docker = dockerFor(config);
   t.after(() => removeAll(docker, config.instance).catch(() => {}));
@@ -147,11 +166,18 @@ async function run(t, request, extraSteps = []) {
   const receivedAt = Date.now();
   const result = await executeRun({
     docker, config, limits: lim.limits, image: request.spec.env.image, runId: crypto.randomBytes(8).toString('hex'),
-    steps: [...claimSteps(request, lim.limits), ...extraSteps], receivedAt, deadlineAt: receivedAt + request.deadlineMs,
+    steps: withBeforeBuild(claimSteps(request, lim.limits), beforeBuild).concat(extraSteps), receivedAt, deadlineAt: receivedAt + request.deadlineMs,
     active: new Set(), log: silent
   });
   assert.deepEqual(await leftovers(docker, config.instance), [], 'the run removed its sandbox');
   return { result, docker };
+}
+
+/** Insert a step after the commit and before the build (claimSteps: prepare, applies, testPathsOnly, resetAndCommit, build, reproduces). */
+function withBeforeBuild(steps, step) {
+  if (!step) return steps;
+  assert.deepEqual(steps.map((f) => f.name), ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces']);
+  return [...steps.slice(0, 4), step, ...steps.slice(4)];
 }
 
 const stepNames = (r) => r.steps.map((s) => s.name);
@@ -573,4 +599,24 @@ test('round 10: changed submodule files behind a .git git cannot read, a redirec
     assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY'], variant);
     assert.match(r.issues[0].detail, /lib\/dep/, variant);
   }
+});
+
+test('round 11: the image\'s fsmonitor hook never runs in the checkout check; a nested submodule\'s change its parent ignores is still a dirty checkout', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('fsmon');
+  const seen = {};
+  // After the commit, before the build: forge's own git calls in the maker's commands are the maker's.
+  const marker = async (ctx) => {
+    seen.tmp = (await ctx.exec(['sh', '-c', 'ls -A /tmp'], { name: 'inspect:tmp', timeoutMs: 60000 })).stdout.text;
+  };
+  const { result: r1 } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })), [], { beforeBuild: marker });
+  assert.equal(r1.outcome, 'definitive', show(r1));
+  assert.equal(typeof seen.tmp, 'string', 'the inspection ran before the build');
+  assert.doesNotMatch(seen.tmp, /vcr-fsmonitor-ran/, 'the repository\'s fsmonitor hook did not run before the build');
+
+  const nested = await fixture('nested');
+  const { result: r2 } = await run(t, claim(nested, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r2.outcome, 'requester_error', show(r2));
+  assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
+  // lib/a's own status, its ignore setting overridden, reports lib/b changed.
+  assert.match(r2.issues[0].detail, /the submodule lib\/a(\/lib\/b)? differs from the commit it records/);
 });

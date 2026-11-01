@@ -568,12 +568,12 @@ test('the requester\'s package: the env image\'s checkout is missing, not a repo
 test('R8-F1: a submodule that is not checked out (no .git) must be absent or empty, read from the index, never from printed paths', async () => {
   const { GITLINKS_SCRIPT } = require('../../src/claim');
   // The gitlinks come from the index, as git prints them; a quoted path is refused, never unquoted or trimmed.
-  assert.ok(GITLINKS_SCRIPT.startsWith('out=$(git -c core.quotePath=false ls-files -s) || exit 3'));
+  assert.ok(GITLINKS_SCRIPT.startsWith('out=$(git "$@" -c core.quotePath=false ls-files -s) || exit 3'));
   assert.ok(GITLINKS_SCRIPT.includes('case "$line" in "160000 "*) ;; *) continue ;; esac'));
   assert.ok(GITLINKS_SCRIPT.includes('p=${line#*\t}'));
   assert.ok(GITLINKS_SCRIPT.includes('case "$p" in \\"*) printf "%s\\n" "$p"; exit 2 ;; esac'));
   // Checked out means what git itself resolves: a work tree at that very path (not a pipe, a broken gitfile or a redirect).
-  assert.ok(GITLINKS_SCRIPT.includes('git rev-parse --show-toplevel'));
+  assert.ok(GITLINKS_SCRIPT.includes('git "$@" rev-parse --show-toplevel'));
   assert.ok(GITLINKS_SCRIPT.includes('[ -n "$top" ] && [ "$top" = "$here" ] && continue'));
   assert.ok(SUBMODULE_INDEX_SCRIPT.startsWith('top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1'));
   assert.doesNotMatch(GITLINKS_SCRIPT, /submodule status/);
@@ -586,7 +586,13 @@ test('R8-F1: a submodule that is not checked out (no .git) must be absent or emp
   await runClaim(ok);
   const order = kinds(ok);
   assert.ok(order.indexOf('git read-tree') < order.indexOf('vcr-gitlinks') && order.indexOf('vcr-gitlinks') < order.indexOf('git apply'));
-  assert.equal(ok.execs().find((d) => d.kind === 'vcr-gitlinks').env.GIT_DIR, '/work/.git');
+  const gl = ok.execs().find((d) => d.kind === 'vcr-gitlinks');
+  assert.equal(gl.env.GIT_DIR, '/work/.git');
+  // R11-F1: the runner's fixed -c settings reach its git calls (no fsmonitor or other repository hook runs).
+  const { GIT_CONFIG } = require('../../src/git');
+  assert.deepEqual(gl.argv.slice(4), GIT_CONFIG.flatMap((c) => ['-c', c]));
+  assert.ok(gl.argv.includes('core.fsmonitor=false') && gl.argv.includes('core.hooksPath=/dev/null'));
+  assert.ok(GITLINKS_SCRIPT.includes('git "$@" -c core.quotePath=false ls-files -s') && GITLINKS_SCRIPT.includes('git "$@" rev-parse --show-toplevel'));
 
   const full = claimSandbox({ scripts: { 'vcr-gitlinks': () => ({ exitCode: 1, stdout: 'lib/dep\n' }) } });
   const r1 = await runClaim(full);
@@ -599,6 +605,16 @@ test('R8-F1: a submodule that is not checked out (no .git) must be absent or emp
     assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_NOT_GIT']);
     assert.match(r.issues[0].detail, re);
   }
+});
+
+test('R11-F2: each submodule\'s own status must be clean, whatever ignore setting it has for the submodules inside it', async () => {
+  assert.ok(SUBMODULE_INDEX_SCRIPT.includes('st=$(git status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked) || exit 1'));
+  assert.ok(SUBMODULE_INDEX_SCRIPT.indexOf('git update-index -q --refresh') < SUBMODULE_INDEX_SCRIPT.indexOf('git status --porcelain'));
+  const sb = claimSandbox({ git: { submodule: () => ({ exitCode: 128, stderr: 'vcr-dirty: /work/lib/a/lib/b\nfatal: run_command returned non-zero status for lib/a/lib/b\n' }) } });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'requester_error');
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
+  assert.match(r.issues[0].detail, /the submodule lib\/a\/lib\/b differs from the commit it records/);
 });
 
 test('the checkout is copied into the empty /work before any step, as the sandbox user', async () => {

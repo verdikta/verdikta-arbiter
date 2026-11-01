@@ -36,7 +36,7 @@
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
 const { matchesAny, pocPatchPathsGate } = require('./common');
-const { git, GIT_ENV, GIT_DIR, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
+const { git, GIT_ENV, GIT_DIR, GIT_CONFIG, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
 const forge = require('./forge');
 const { readForgeJUnit, JUNIT_MAX_BYTES } = require('./junit');
 const {
@@ -164,19 +164,22 @@ const NEUTRAL_ATTRIBUTES = '* !filter !diff !merge !text !eol !ident !working-tr
  * the recorded commit without reading it, and foreach skips it, so files
  * there would build unchecked. Paths come from the index as git prints them
  * (`<mode> <object> <stage>\t<path>`); a path git has to quote (a control
- * character, `"` or `\\`) is refused rather than guessed at. Exit 1: a
+ * character, `"` or `\\`) is refused rather than guessed at. Its git calls
+ * take the runner's fixed `-c` settings as arguments ($@; inside foreach they
+ * arrive through GIT_CONFIG_PARAMETERS), so no fsmonitor or other hook of the
+ * repository runs. Exit 1: a
  * gitlink holds files but is not a checkout at its path (its path printed); 2: a
  * quoted path; 3: the index could not be read.
  */
 const GITLINKS_SCRIPT = [
-  'out=$(git -c core.quotePath=false ls-files -s) || exit 3',
+  'out=$(git "$@" -c core.quotePath=false ls-files -s) || exit 3',
   '[ -n "$out" ] || exit 0',
   'printf "%s\\n" "$out" | while IFS= read -r line; do',
   '  case "$line" in "160000 "*) ;; *) continue ;; esac',
   '  p=${line#*\t}',
   '  case "$p" in \\"*) printf "%s\\n" "$p"; exit 2 ;; esac',
   '  if [ ! -L "$p" ] && { [ -e "$p/.git" ] || [ -L "$p/.git" ]; }; then',
-  '    top=$(cd "$p" 2>/dev/null && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR && git rev-parse --show-toplevel 2>/dev/null) || top=',
+  '    top=$(cd "$p" 2>/dev/null && unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_COMMON_DIR && git "$@" rev-parse --show-toplevel 2>/dev/null) || top=',
   '    here=$(cd "$p" 2>/dev/null && pwd -P) || here=',
   '    [ -n "$top" ] && [ "$top" = "$here" ] && continue',
   '  fi',
@@ -199,7 +202,9 @@ const GITLINKS_SCRIPT = [
  * its attributes are neutralised (a submodule's clean filter could map
  * changed bytes back to the committed blob), its index is rebuilt from its
  * HEAD (no assume-unchanged or skip-worktree bit), its own gitlinks are
- * checked (GITLINKS_SCRIPT), and its index is refreshed.
+ * checked (GITLINKS_SCRIPT), its index is refreshed, and its own status must
+ * be clean (`--ignore-submodules=untracked` overrides any ignore setting it
+ * has for its own submodules). A dirty submodule prints `vcr-dirty: <dir>`.
  */
 const SUBMODULE_INDEX_SCRIPT = [
   'top=$(git rev-parse --show-toplevel) && [ "$top" = "$(pwd -P)" ] || exit 1',
@@ -212,6 +217,9 @@ const SUBMODULE_INDEX_SCRIPT = [
   'git read-tree HEAD || exit 1',
   `( ${GITLINKS_SCRIPT}\n) || exit 1`,
   'git update-index -q --refresh',
+  // Its own status too: a submodule's ignore settings could hide a nested one from the outer status.
+  'st=$(git status --porcelain=v1 --untracked-files=no --ignore-submodules=untracked) || exit 1',
+  '[ -z "$st" ] || { printf "vcr-dirty: %s\\n" "$(pwd -P)" >&2; exit 1; }',
   'exit 0'
 ].join('; ');
 
@@ -362,7 +370,9 @@ function claimSteps(request, limits) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `the checkout's index could not be rebuilt from HEAD: ${firstLine(index.stderr.text)}`)]);
     }
     // The checkout's own gitlinks (each submodule checks its own in the foreach below).
-    const links = await ctx.exec(['/bin/sh', '-c', GITLINKS_SCRIPT, 'vcr-gitlinks'], { name: 'prepare:gitlinks', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
+    const links = await ctx.exec(['/bin/sh', '-c', GITLINKS_SCRIPT, 'vcr-gitlinks', ...GIT_CONFIG.flatMap((c) => ['-c', c])], {
+      name: 'prepare:gitlinks', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV
+    });
     if (links.exitCode === 1) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
         `the submodule ${firstLine(links.stdout.text)} holds files but git does not read it as a checkout at that path (no usable .git, or its work tree is elsewhere), so they cannot be checked against the commit it records; a submodule must be checked out or empty`)]);
@@ -375,6 +385,11 @@ function claimSteps(request, limits) {
     const subs = await ctx.exec(git(['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]), {
       name: 'prepare:submodules', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV
     });
+    const dirtySub = /vcr-dirty: (.*)/.exec(subs.stderr.text);
+    if (subs.exitCode !== 0 && dirtySub) {
+      throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
+        `the submodule ${dirtySub[1].replace(/^\/work\//, '').slice(0, 300)} differs from the commit it records; tracked files must be the commit's`)]);
+    }
     if (subs.exitCode !== 0) {
       throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
         `a submodule's work tree is elsewhere, its repository is not self-contained, its index could not be rebuilt from its HEAD, or a submodule inside it holds files but is not checked out: ${firstLine(subs.stderr.text)}`)]);
