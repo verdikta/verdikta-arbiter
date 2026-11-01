@@ -139,6 +139,11 @@ function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }, { objects = ne
   if (bytes.length > maxPatchBytes) {
     return fail('PATCH_TOO_LARGE', `poc.patch is ${bytes.length} bytes; the listing allows ${maxPatchBytes} (maxPatchBytes)`);
   }
+  // Round 19: git reads a header field as a C string, so a NUL ends it where this scan would not (an index line's
+  // postimage id followed by a NUL still names the object). No patch git writes holds one (binary content is base85).
+  if (bytes.includes(0)) {
+    return fail('PATCH_NUL', 'poc.patch holds a NUL byte: no patch git writes does (binary content is base85), and git reads a header field only up to one');
+  }
   // latin1: one character per byte, so lengths are byte counts.
   const lines = bytes.toString('latin1').split('\n');
   let expansion = 0;

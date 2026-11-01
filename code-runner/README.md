@@ -445,7 +445,8 @@ summary-only `Binary files … differ` or a `literal 0` could otherwise copy a
 large blob to many paths. Which sections git reads as binary is not
 re-derived (it matches a summary line by its first and last bytes only):
 every section naming an existing object counts, a text one recreating a
-tracked file included. It is counted from the patch's bytes and the checkout's object sizes
+tracked file included. A patch holding a NUL byte fails too: no patch git
+writes does, and git reads a header field only up to one. It is counted from the patch's bytes and the checkout's object sizes
 before git sees the patch, so a compression bomb (a 60 KB patch declaring 60
 MB of zeros) fails `applies` instead of reaching git, which inflates every
 hunk in memory before it writes anything. A copy (`copy from`)

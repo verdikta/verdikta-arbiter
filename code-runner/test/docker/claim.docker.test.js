@@ -842,6 +842,15 @@ test('R17-F1: binary patches naming an existing blob as their postimage (any sum
     'files-cr': (i) => [`Files /dev/null\rand b/test/c${i}.bin differ`],
     literal: () => ['GIT binary patch', 'literal 0', 'HcmV?d00001', '', 'literal 0', 'HcmV?d00001', '']
   };
+  // Round 19: a NUL after the id (git's field ends there): any NUL in poc.patch fails the input gate before git.
+  const nul = Buffer.from(Array.from({ length: 50 }, (_, i) => [
+    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${BIG_ID}\0`, `Binary files /dev/null and b/test/c${i}.bin differ`
+  ].join('\n')).join('\n') + '\n');
+  const { result: rn } = await run(t, claim(fx, nul));
+  assert.equal(rn.gates.applies.status, 'fail', show(rn));
+  assert.equal(rn.gates.applies.basis, 'input');
+  assert.match(rn.gates.applies.detail, /NUL byte/);
+  assert.ok(!stepNames(rn).some((n) => n.startsWith('patch:')), 'git never saw it');
   const section = (i, form) => [
     `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${BIG_ID}`, ...SUMMARY[form](i)
   ].join('\n');

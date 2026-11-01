@@ -27,6 +27,8 @@ function textPatch(file = 'test/Exploit.t.sol', lines = ['// exploit']) {
   ].join('\n'));
 }
 
+const POC_TEXT = textPatch().toString('latin1');
+
 /** A git binary patch section, encoded the way git writes it (zlib, base85 lines of 52 bytes). */
 function binarySection(file, kind, size, payload) {
   const z = zlib.deflateSync(payload, { level: 9 });
@@ -172,6 +174,16 @@ test('R17-F1: a binary section whose postimage is an object already in the repos
   // A text section whose postimage is an existing object (the patch recreates a tracked file) counts too: an over-count.
   const text = scanPatch(Buffer.from(['diff --git a/test/t.sol b/test/t.sol', `index ${'0'.repeat(40)}..${big}`, '--- /dev/null', '+++ b/test/t.sol', '@@ -0,0 +1 @@', '+x', ''].join('\n')), LIMITS, { objects });
   assert.ok(text.expansionBytes >= 1024 * 1024);
+  // Round 19: a NUL right after the id ends git's field there (a C string); a patch with any NUL is refused first.
+  const nul = Buffer.from(Array.from({ length: 600 }, (_, i) => [
+    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${big}\0`, `Binary files /dev/null and b/test/c${i}.bin differ`
+  ].join('\n')).join('\n') + '\n');
+  assert.equal(scanPatch(nul, { ...LIMITS, maxPatchBytes: 10 * 1000 * 1000 }, { objects }).code, 'PATCH_NUL');
+  for (const at of [0, 10, POC_TEXT.length - 1]) {
+    const b = Buffer.from(POC_TEXT);
+    b[at] = 0;
+    assert.equal(scanPatch(b, LIMITS).code, 'PATCH_NUL', `a NUL at ${at}`);
+  }
   // An index line before any `diff --git` header is not one git reads.
   assert.ok(scanPatch(Buffer.from(`index ${'0'.repeat(40)}..${big}\n`), LIMITS, { objects }).expansionBytes === 0);
 });
