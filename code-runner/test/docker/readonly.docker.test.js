@@ -60,6 +60,8 @@ test('the root is read-only; /work, $HOME and /tmp are the capped, writable tmpf
     })) {
       await sh(name, `${script} 2>&1; echo "rc=$?"`);
     }
+    // /var/tmp is world-writable in the image: only the read-only root stops this.
+    await sh('after', 'ls -A /var/tmp; readlink /bin/sh; [ -e /bin2 ] && echo bin2');
   }]);
   assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
 
@@ -79,9 +81,14 @@ test('the root is read-only; /work, $HOME and /tmp are the capped, writable tmpf
     const out = got[name].stdout.text;
     assert.doesNotMatch(out, /rc=0/, `${name} must fail: ${out}`);
   }
-  for (const name of ['root', 'etc', 'usrBin', 'varTmp', 'replaceSh', 'retargetSh', 'newBin']) {
-    assert.match(got[name].stdout.text, /Read-only file system/i, `${name}: ${got[name].stdout.text}`);
+  // runc reports EROFS first; gVisor checks permissions first, so where the
+  // modes already forbid the write it says EACCES. /var/tmp (mode 1777) is
+  // the case where only the read-only root can refuse.
+  for (const name of ['root', 'etc', 'usrBin', 'replaceSh', 'retargetSh', 'newBin']) {
+    assert.match(got[name].stdout.text, /Read-only file system|Permission denied/i, `${name}: ${got[name].stdout.text}`);
   }
+  assert.match(got.varTmp.stdout.text, /Read-only file system/i, `varTmp: ${got.varTmp.stdout.text}`);
+  assert.equal(got.after.stdout.text, 'dash\n', 'nothing was created or retargeted');
   assert.deepEqual(await leftovers(docker, config.instance), []);
 });
 
@@ -138,13 +145,18 @@ test('Codex\'s round 7-9 setups: a /bin/sh path through a uid-10001 directory ca
     round9Replace: 'rm "/opt/owned/route\n"',
     newEntry: 'touch /opt/owned/new'
   };
+  // Each of these is allowed by the modes (uid 10001 owns /opt/owned, the
+  // interpreter and the links); only the read-only root refuses them. (gVisor
+  // reports EACCES for the 0555 file's content, which its mode forbids anyway.)
   for (const [name, script] of Object.entries(attacks)) {
     const r = await asClaim(script);
     assert.notEqual(r.exitCode, 0, `${name} succeeded`);
-    assert.match(r.stderr, /Read-only file system/i, `${name}: ${r.stderr}`);
+    const expected = name === 'round7Replace' ? /Read-only file system|Permission denied/i : /Read-only file system/i;
+    assert.match(r.stderr, expected, `${name}: ${r.stderr}`);
   }
-  // The path still resolves as the image had it.
-  assert.equal((await asClaim('readlink /opt/owned/current')).stdout.trim(), '/usr/bin');
+  // And nothing changed: the path still resolves as the image had it.
+  const state = await asClaim('readlink /opt/owned/current; readlink "/opt/owned/route\n"; stat -c %a /opt/owned/sh7; cmp -s /opt/owned/sh7 /usr/bin/dash && echo same; [ -e /opt/owned/new ] && echo new; readlink -f /bin/sh');
+  assert.equal(state.stdout, '/usr/bin\n/usr/bin\n555\nsame\n/usr/bin/dash\n', state.stderr);
   // The backup check still refuses such an image at launch.
   const backup = await runText(docker, ['exec', '--user', '10001:10001', box, '/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check', '/bin/sh'], { timeoutMs: 60000 });
   assert.equal(backup.exitCode, 1, backup.stderr);
