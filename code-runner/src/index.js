@@ -65,7 +65,12 @@ async function startRunner({ config, docker, log, onSignal = (sig, fn) => proces
     gcTimer.unref();
   }
 
-  log.info('code-runner listening', { version: RUNNER_VERSION, runtime: config.runtime, platform: config.platform, instance: config.instance, ...address });
+  log.info('code-runner listening', {
+    version: RUNNER_VERSION, runtime: config.runtime, platform: config.platform, instance: config.instance,
+    slots: config.slots, registries: config.registryAllowlist.map((e) => e.entry), ...address
+  });
+  const dev = config.registryAllowlist.filter((e) => e.dev).map((e) => e.entry);
+  if (dev.length) log.warn('the registry allowlist has dev entries (a local registry): not for a production arbiter', { dev });
   return { runner, address, stop };
 }
 

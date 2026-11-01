@@ -87,10 +87,10 @@ test('a cached image that matches is used as it is: no pull, no disk check', asy
 
 test('the short Docker Hub form in a daemon\'s listing is the same image as its canonical reference', async () => {
   const ref = `docker.io/library/ubuntu@sha256:${D('c')}`;
+  // The daemon is asked by the canonical name and lists the familiar one too.
   const familiar = image(`ubuntu@sha256:${D('c')}`);
-  const { cache } = cacheFor({ images: [familiar], env: { CODE_RUNNER_REGISTRY_ALLOWLIST: 'docker.io/library/ubuntu' } });
-  // The daemon is asked by canonical name and answers with the familiar one.
   familiar.refs.push(ref);
+  const { cache } = cacheFor({ images: [familiar], env: { CODE_RUNNER_REGISTRY_ALLOWLIST: 'docker.io/library/ubuntu' } });
   const lease = await cache.acquire(want(`ubuntu@sha256:${D('c')}`));
   assert.equal(lease.cache, 'hit');
   assert.equal(lease.ref, ref);
@@ -179,6 +179,14 @@ test('the pulled image must be of the platform that runs, and the attestation mu
   assert.equal(fresh.docker.calls.length, 0);
 });
 
+test('a size that is not a positive integer is refused, never read as "nothing fits" (which would evict everything)', async () => {
+  const { cache, docker } = await lruSetup();
+  for (const unpackedBytes of [undefined, NaN, 0, -1, 1.5, '1000']) {
+    await rejectsWith(cache.acquire(want(X, { unpackedBytes })), RequesterError);
+  }
+  assert.equal(docker.callsOf('image').filter((c) => c.args[1] === 'rm').length, 0);
+});
+
 test('a reference that resolves to an image without that digest is a mismatch', async () => {
   const other = `ghcr.io/verdikta/x@sha256:${D('e')}`;
   const { store, handlers } = imageStore({ images: [image(other)] });
@@ -243,7 +251,7 @@ test('LRU eviction frees the data root least recently used first, and only as mu
 });
 
 test('LRU eviction never removes a pinned base image, an image a container uses, an image that is not the runner\'s, or a dangling one', async () => {
-  const { cache, store, images } = await lruSetup();
+  const { cache, store, images, docker } = await lruSetup();
   // Make room for X by evicting all of A, B and C; the rest must survive.
   cache.statfs = virtualDisk(store, { capacity: images.length * 2000 - 2000, perImage: 2000 });
   const err = await rejectsWith(cache.acquire(want(X, { unpackedBytes: 4000 })), Abstain, 'admission_refused');
@@ -255,6 +263,28 @@ test('LRU eviction never removes a pinned base image, an image a container uses,
   assert.ok(present(store, `ghcr.io/verdikta/m@sha256:${D('7')}`), 'an image with a reference outside the allowlist stays');
   assert.equal(store.images.filter((i) => i.refs.length === 0).length, 1, 'the dangling image stays');
   assert.equal(store.pulls.length, 0);
+  // Not even attempted: the cache asked Docker to remove A, B and C only, and never forced it.
+  const removals = docker.callsOf('image').filter((c) => c.args[1] === 'rm').map((c) => c.args.slice(2));
+  assert.deepEqual(removals, [[A], [B], [C]]);
+});
+
+test('an image a run takes a lease on while the cache is evicting is not removed', async () => {
+  const { cache, store, images, docker } = await lruSetup();
+  cache.statfs = virtualDisk(store, { capacity: images.length * 2000 - 2000, perImage: 2000 });
+  // While the first removal (A) is in flight, another run asks for B: its lease comes before the lock.
+  const realRun = docker.run;
+  let late = null;
+  docker.run = async (args, opts) => {
+    if (args[0] === 'image' && args[1] === 'rm' && !late) late = cache.acquire(want(B));
+    return realRun(args, opts);
+  };
+  await rejectsWith(cache.acquire(want(X, { unpackedBytes: 4000 })), Abstain, 'admission_refused');
+  assert.ok(present(store, B), 'B, held by the late run, stayed');
+  assert.equal(present(store, A), false);
+  assert.equal(present(store, C), false);
+  const lease = await late;
+  assert.equal(lease.cache, 'hit');
+  lease.release();
 });
 
 test('the base images pinned in @verdikta/common are never evicted by default', () => {

@@ -141,13 +141,16 @@ test('digest mismatch: a registry serving bytes that do not hash to the digest m
   assert.deepEqual(await leftovers(docker, config.instance), []);
 });
 
-test('an image of another platform pulls, fails verification and is never run (image_mismatch)', { timeout: TIMEOUT }, async (t) => {
+test('an image of another platform is never run (image_mismatch, or the daemon refuses it at the pull)', { timeout: TIMEOUT }, async (t) => {
   const reg = await registry();
   const image = await reg.push({ repo: `vcr-${instance}/foreign`, platform: OTHER_PLATFORM });
   const { docker, config, target } = await serve(t, { allowlist: reg.host });
   const res = await request(target, { method: 'POST', path: '/v1/runs', body: body(image) });
   assert.equal(res.status, 503, res.raw);
-  assert.equal(res.body.abstain.cause, 'image_mismatch');
+  // The containerd image store pulls a single manifest of another platform
+  // and the runner's check refuses it; a daemon that refuses it itself makes
+  // the pull fail. Either way it names the platform and nothing runs.
+  assert.ok(['image_mismatch', 'pull_failed'].includes(res.body.abstain.cause), JSON.stringify(res.body.abstain));
   assert.match(res.body.abstain.detail, new RegExp(OTHER_PLATFORM));
   assert.deepEqual(await leftovers(docker, config.instance), [], 'no sandbox was made');
 });
@@ -156,10 +159,14 @@ test('LRU eviction on the daemon: never a pinned base image, an image a run hold
   const reg = await registry();
   const names = ['lru-a', 'lru-b', 'lru-e', 'lru-c', 'lru-d', 'lru-f'];
   const refs = {};
-  for (const n of names) refs[n] = await reg.push({ repo: `vcr-${instance}/${n}` });
+  for (const n of names) refs[n] = await reg.push({ repo: `vcr-${instance}/lru/${n}` });
   const [A, B, E, C, D, F] = names.map((n) => refs[n]);
-  const config = dockerTestConfig({ CODE_RUNNER_REGISTRY_ALLOWLIST: `${reg.host}/vcr-${instance}`, CODE_RUNNER_DISK_RESERVE_MB: '0' });
-  const docker = dockerFor(config);
+  // Its own repository prefix: the images other tests in this file left cached are not this cache's.
+  const config = dockerTestConfig({ CODE_RUNNER_REGISTRY_ALLOWLIST: `${reg.host}/vcr-${instance}/lru`, CODE_RUNNER_DISK_RESERVE_MB: '0' });
+  const real = dockerFor(config);
+  // Every image removal the cache asks for, to show the protected images are never even tried.
+  const removals = [];
+  const docker = { ...real, run: (args, opts) => { if (args[0] === 'image' && args[1] === 'rm') removals.push(args.slice(2)); return real.run(args, opts); } };
   // A virtual disk: each of this test's images present takes SLOT bytes.
   const SLOT = 1000000;
   let capacity = 0;
@@ -199,6 +206,7 @@ test('LRU eviction on the daemon: never a pinned base image, an image a run hold
   const holdF = await cache.acquire(want(F));
   assert.equal(await reg.has(C), false, 'C was evicted once released');
   for (const r of [A, B, D, F]) assert.ok(await reg.has(r), r);
+  assert.deepEqual(removals, [[E], [C]], 'only E and then the released C were ever asked to go, and never forced');
   holdD.release();
   holdF.release();
 });

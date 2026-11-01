@@ -81,8 +81,14 @@ async function startRegistry(docker, instance) {
     fs.writeFileSync(path.join(dir, 'Dockerfile'), `FROM ${from}\nCOPY marker /marker\n`);
     const tag = `${host}/${repo}:fixture`;
     made.add(tag);
-    // A single manifest (no provenance index), the same under either image store.
-    const b = await runText(docker, ['build', '--quiet', '--provenance=false', '--network', 'none', '--platform', platform, '--tag', tag, dir], { timeoutMs: 600000 });
+    // A single manifest (no provenance index), the same under either image
+    // store. The legacy builder (what the CLI uses when the runner's empty
+    // DOCKER_CONFIG hides the buildx plugin) makes no provenance anyway.
+    const args = ['build', '--quiet', '--provenance=false', '--network', 'none', '--platform', platform, '--tag', tag, dir];
+    let b = await runText(docker, args, { timeoutMs: 600000 });
+    if (b.exitCode !== 0 && /unknown flag: --provenance/.test(b.stderr)) {
+      b = await runText(docker, args.filter((a) => a !== '--provenance=false'), { timeoutMs: 600000 });
+    }
     assert.equal(b.exitCode, 0, `docker build: ${b.stderr}`);
     const p = await runText(docker, ['push', tag], { timeoutMs: 300000 });
     assert.equal(p.exitCode, 0, `docker push: ${p.stderr}`);

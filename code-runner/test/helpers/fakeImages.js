@@ -90,9 +90,11 @@ function imageStore({ images = [], registry = {}, containers = [], events = [] }
         const existing = store.images.find((i) => i.id === pulled.id);
         if (existing) existing.refs = [...new Set([...existing.refs, ...pulled.refs])];
         else {
-          // A pull replaces the reference on another image (another platform of the same index).
-          for (const i of store.images) i.refs = i.refs.filter((r) => !pulled.refs.includes(r));
-          store.images = store.images.filter((i) => i.refs.length > 0);
+          // A pull moves the reference off another image (another platform of the same index);
+          // an image left without references is gone.
+          const moved = store.images.filter((i) => i.refs.some((r) => pulled.refs.includes(r)));
+          for (const i of moved) i.refs = i.refs.filter((r) => !pulled.refs.includes(r));
+          store.images = store.images.filter((i) => !moved.includes(i) || i.refs.length > 0);
           store.images.push(pulled);
         }
         return { stdout: `${ref}\n` };

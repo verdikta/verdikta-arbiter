@@ -16,6 +16,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { DEFAULT_REGISTRY_ALLOWLIST, parseAllowlist } = require('./registry');
 
 const CODE_RUNNER_ROOT = path.join(__dirname, '..');
 
@@ -150,6 +151,20 @@ function loadConfig(env = process.env, { root = CODE_RUNNER_ROOT, readFile = (p)
   const gcIntervalMs = number('CODE_RUNNER_GC_INTERVAL_SECONDS', 60, 0, 86400) * 1000;
   const deadlineReserveMs = number('CODE_RUNNER_DEADLINE_RESERVE_MS', 5000, 0, 60000);
 
+  // A1b: where images come from, how many runs at once, what memory and disk stay free.
+  const allow = parseAllowlist(blank(env.CODE_RUNNER_REGISTRY_ALLOWLIST) ? DEFAULT_REGISTRY_ALLOWLIST : String(env.CODE_RUNNER_REGISTRY_ALLOWLIST));
+  for (const p of allow.problems) problems.push(`CODE_RUNNER_REGISTRY_ALLOWLIST: ${p}`);
+  const slots = number('CODE_RUNNER_SLOTS', 1, 1, 16);
+  const MAX_MB = 1024 * 1024;
+  const memoryReserveMb = {
+    chainlink: number('CODE_RUNNER_RESERVE_CHAINLINK_MB', 512, 0, MAX_MB),
+    postgres: number('CODE_RUNNER_RESERVE_POSTGRES_MB', 256, 0, MAX_MB),
+    aiNode: number('CODE_RUNNER_RESERVE_AI_NODE_MB', 512, 0, MAX_MB),
+    localModel: number('CODE_RUNNER_RESERVE_LOCAL_MODEL_MB', 0, 0, MAX_MB)
+  };
+  const diskReserveMb = number('CODE_RUNNER_DISK_RESERVE_MB', 1024, 0, MAX_MB);
+  const pullTimeoutMs = number('CODE_RUNNER_PULL_TIMEOUT_SECONDS', 90, 1, 900) * 1000;
+
   if (problems.length) throw new ConfigError(problems);
 
   return {
@@ -167,6 +182,11 @@ function loadConfig(env = process.env, { root = CODE_RUNNER_ROOT, readFile = (p)
     dataRoot,
     gcIntervalMs,
     deadlineReserveMs,
+    registryAllowlist: allow.entries,
+    slots,
+    memoryReserveMb,
+    diskReserveMb,
+    pullTimeoutMs,
     maxBodyBytes: MAX_BODY_BYTES
   };
 }

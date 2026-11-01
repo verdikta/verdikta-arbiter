@@ -3,7 +3,9 @@
 /**
  * GET /health: what the EA and the doctor need to decide whether this runner
  * can take a claim. `ok` is false when a run would be refused anyway: Docker
- * unreachable, the configured runtime missing, or the maintenance lock held.
+ * unreachable, the configured runtime missing, the maintenance lock held, or
+ * (under runsc) the host's memory not measurable. Busy slots are reported
+ * (`capacity`), not a failure: they free up.
  */
 
 const fs = require('node:fs');
@@ -40,7 +42,7 @@ async function freeBytes(dir, statfs) {
  * @param {object} o.docker
  * @param {Function} [o.statfs] - fs.promises.statfs
  */
-async function health({ config, docker, statfs = fs.promises.statfs, exists = fs.existsSync }) {
+async function health({ config, docker, statfs = fs.promises.statfs, exists = fs.existsSync, capacity = null, images = null }) {
   const info = await dockerInfo(docker);
   const runtime = info.runtimes[config.runtime] || null;
   const dataRootPath = config.dataRoot || info.dockerRootDir;
@@ -50,6 +52,14 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
   if (!info.reachable) reasons.push(`Docker unreachable: ${info.error}`);
   else if (!runtime) reasons.push(`the Docker daemon has no ${config.runtime} runtime registered`);
   if (maintenance) reasons.push('the maintenance lock is held');
+  let capacityStatus;
+  if (capacity) {
+    await capacity.measure();
+    capacityStatus = capacity.status();
+    if (config.runtime === 'runsc' && capacityStatus.memory.availableMb === null) {
+      reasons.push(`the host's available memory cannot be measured (${capacityStatus.memory.error})`);
+    }
+  }
   return {
     ok: reasons.length === 0,
     reasons,
@@ -70,6 +80,8 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
     },
     dataRoot: { path: dataRootPath || null, freeBytes: disk.freeBytes, error: disk.error },
     maintenance,
+    ...(capacity ? { capacity: capacityStatus } : {}),
+    ...(images ? { images: { ...images.status(), diskReserveMb: config.diskReserveMb, pullTimeoutMs: config.pullTimeoutMs } } : {}),
     limits: CLASS_HARD_LIMITS
   };
 }

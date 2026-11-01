@@ -31,7 +31,8 @@ test('the vocabulary', () => {
   assert.deepEqual({ ...OUTCOME }, { DEFINITIVE: 'definitive', ABSTAIN: 'abstain', REQUESTER_ERROR: 'requester_error' });
   assert.deepEqual({ ...DEFINITIVE_BASIS }, { EXIT_CODE: 'exit_code', JUNIT: 'junit', INTEGRITY: 'integrity', INPUT: 'input' });
   for (const c of ['admission_refused', 'docker_unreachable', 'docker_error', 'image_unavailable', 'step_timeout',
-    'deadline', 'oom', 'pids_limit', 'step_not_started', 'sandbox_died', 'killed_by_signal', 'cancelled', 'runner_error']) {
+    'deadline', 'oom', 'pids_limit', 'step_not_started', 'sandbox_died', 'killed_by_signal', 'cancelled', 'runner_error',
+    'registry_not_allowed', 'pull_failed', 'image_mismatch']) {
     assert.ok(Object.values(ABSTAIN).includes(c), c);
   }
 });
