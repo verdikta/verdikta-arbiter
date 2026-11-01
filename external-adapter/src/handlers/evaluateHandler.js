@@ -24,7 +24,7 @@ const {
 } = require('../services/cidFetchCache');
 const codeReviewMode = require('../codeReview');
 const { getCodeReviewConfig, devTrustActive } = require('../codeReview/config');
-const { addendumForLog } = require('../codeReview/addendum');
+const { addendumForLog, redactMachineLines } = require('../codeReview/addendum');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -250,7 +250,16 @@ const evaluate = async (request) => {
       // settle identically without an AI call (see utils/bcidValidation.js).
       const t7 = Date.now();
       const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } = await fetchAndTriageArchives(
-        cidArray, tempDir, { archiveService, validator, logger, runTag }
+        cidArray, tempDir, {
+          archiveService, validator, logger, runTag,
+          // a code-review request on an arbiter that does not serve one, or with a
+          // bad layout, is refused before any claim archive is extracted
+          checkPrimary: (manifest) => {
+            if (codeReviewMode.isCodeReviewManifest(manifest)) {
+              codeReviewMode.assertCodeReviewRequest(getCodeReviewConfig(), cidArray);
+            }
+          }
+        }
       );
       logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
       // Malformed archives are never kept: jobs fetching at the same moment shared
@@ -402,9 +411,11 @@ const evaluate = async (request) => {
       return createSuccessResponse(id, result, justificationCid);
     }
   } catch (error) {
+    // an error can quote the request's addendum, whose machine lines carry keys
+    const errorMessage = redactMachineLines(error.message);
     logger.error(`Error processing evaluation for jobRunID ${id}:`, {
-      message: error.message,
-      stack: error.stack,
+      message: errorMessage,
+      stack: redactMachineLines(error.stack),
       name: error.name,
       code: error.code
     });
@@ -450,11 +461,11 @@ const evaluate = async (request) => {
       jobRunID: id,
       status: 'errored',
       statusCode: 500,
-      error: error.message,
+      error: errorMessage,
       data: {
         aggregatedScore: [0],
         justification: '',
-        error: error.message
+        error: errorMessage
       },
     };
   }

@@ -257,6 +257,21 @@ describe('code review: request layout and operator switch', () => {
     expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_DISABLED/);
   });
 
+  it('with code review disabled no claim archive is even extracted', async () => {
+    loadCodeReviewConfig({});
+    const s = scenario({ priors: 1 });
+    const spy = jest.spyOn(mockState.client.archiveService, 'extractArchive');
+    expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_DISABLED/);
+    expect(spy).toHaveBeenCalledTimes(1); // the listing only
+  });
+
+  it('a request over the CID limit is refused before any claim archive is extracted', async () => {
+    const s = scenario({ priors: 9 });
+    const spy = jest.spyOn(mockState.client.archiveService, 'extractArchive');
+    expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_CIDS/);
+    expect(spy).toHaveBeenCalledTimes(1);
+  });
+
   it('a single CID whose manifest has codeReview is a requester error (no claim to judge)', async () => {
     const listing = H.makeListing({ builderKey: BUILDER });
     archives[H.cid('Listing')] = listing.buffer;
@@ -694,6 +709,17 @@ describe('code review: machine lines, the dispute statement, logs', () => {
     const all = logLines.join('\n');
     for (const secret of secretsOf(s)) expect(all).not.toContain(secret);
     expect(all).not.toContain('script/X.s.sol');
+  });
+
+  it('an error that quotes the addendum (request validation) is cut before the keys, in the log and the response', async () => {
+    const s = scenario({ dispute: { statement: 'ok' } });
+    const bad = s.cid(1).replace(s.cids.claim, 'Qmshort');
+    const res = await evaluateHandler(request(bad));
+    expect(res.statusCode).toBe(500);
+    expect(res.error).toMatch(/withheld/);
+    const all = `${logLines.join('\n')}\n${JSON.stringify(res)}`;
+    expect(all).not.toContain(s.disclosure.fields.contentKey.slice(2));
+    expect(all).not.toContain(s.disclosure.fields.ephemeralKey.slice(2));
   });
 
   it('the handler no longer logs the machine lines of an addendum ("Found addendum string")', async () => {

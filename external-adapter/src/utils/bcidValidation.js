@@ -250,7 +250,7 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
  * @returns {Promise<{extractedPaths: Object<string,string>, malformedBCIDs: MalformedArchiveError[],
  *   archiveData: Object<string,Buffer>, primaryManifestJson: object}>}
  */
-async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '' }) {
+async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '', checkPrimary }) {
   // --- fetch everything first, concurrently: a gateway failure must surface before
   // any verdict logic runs, and no archive should queue behind another archive's
   // gateway retries. allSettled so we return only once every fetch has finished
@@ -283,6 +283,8 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
   const bCIDNames = Object.keys(primaryManifestJson.bCIDs || {});
   const codeReviewMode = Boolean(primaryManifestJson) && typeof primaryManifestJson === 'object'
     && Object.prototype.hasOwnProperty.call(primaryManifestJson, 'codeReview');
+  // the caller may refuse the request from the primary manifest alone (it throws)
+  if (typeof checkPrimary === 'function') checkPrimary(primaryManifestJson);
 
   // --- bCID archives
   const malformedBCIDs = [];

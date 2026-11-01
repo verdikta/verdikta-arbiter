@@ -196,7 +196,9 @@ name mainnet: an unknown chain counts as mainnet.
 
 **Logs.** Code mode logs CIDs, hashes and check codes. It never logs archive
 contents or the addendum's machine lines (an addendum carrying one is logged as
-`<withheld: N bytes …>`), so an operator's logs never hold a copy of a claim or
-its keys.
+`<withheld: N bytes …>`, and an error message quoting one is cut before it), so
+an operator's logs never hold a copy of a claim or its keys. The operator
+switch and the CID count are checked from the listing's manifest alone, before
+any claim archive is extracted.
 
 For testing information, please refer to [TESTING.md](TESTING.md).

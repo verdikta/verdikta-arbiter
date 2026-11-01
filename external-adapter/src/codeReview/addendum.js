@@ -15,8 +15,8 @@
 
 const { codeReview } = require('@verdikta/common');
 
-/** Any machine-line prefix, anywhere, in any case: such an addendum is never logged. */
-const MACHINE_LINE = /verdikta-(?:disclosure|dispute):/i;
+/** Any machine-line prefix (with or without its colon), anywhere, in any case: such text is never logged. */
+const MACHINE_LINE = /verdikta-(?:disclosure|dispute)/i;
 
 /**
  * The addendum as the adapter may log it: unchanged, unless it carries (or
@@ -60,4 +60,16 @@ function readMachineLines(addendum) {
   };
 }
 
-module.exports = { MACHINE_LINE, addendumForLog, readMachineLines };
+/**
+ * Text for a log line or an error response, cut where it starts quoting a
+ * machine line (an error from request validation can quote the addendum).
+ * @param {string} text
+ * @returns {string}
+ */
+function redactMachineLines(text) {
+  if (typeof text !== 'string') return text;
+  const match = MACHINE_LINE.exec(text);
+  return match ? `${text.slice(0, match.index)}<withheld: quotes a verdikta machine line>` : text;
+}
+
+module.exports = { MACHINE_LINE, addendumForLog, readMachineLines, redactMachineLines };

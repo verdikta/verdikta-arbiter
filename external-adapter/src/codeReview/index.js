@@ -19,7 +19,7 @@
  */
 
 const { codeReview } = require('@verdikta/common');
-const { runFrontGates, refuseSingleCid } = require('./frontGates');
+const { runFrontGates, refuseSingleCid, assertOperatorReady, assertRequestLayout } = require('./frontGates');
 const claimRun = require('./claimRun');
 
 /** Does this (unvalidated) manifest opt into code review? */
@@ -52,6 +52,16 @@ function assertRunResult(result, outcomes) {
 }
 
 /**
+ * The checks that need only the configuration and the CID list (operator
+ * switch, then request layout), for the handler to run before any claim
+ * archive is extracted. runFrontGates repeats them.
+ */
+function assertCodeReviewRequest(config, cidArray) {
+  assertOperatorReady(config);
+  assertRequestLayout(cidArray);
+}
+
+/**
  * @param {object} input - see frontGates.runFrontGates
  * @returns {Promise<{ scores: object[], justification: string, metadata?: object }>}
  */
@@ -62,4 +72,4 @@ async function evaluateCodeReview(input) {
   return assertRunResult(result, gates.context.listing.outcomes);
 }
 
-module.exports = { isCodeReviewManifest, evaluateCodeReview, refuseSingleCid, assertRunResult };
+module.exports = { isCodeReviewManifest, assertCodeReviewRequest, evaluateCodeReview, refuseSingleCid, assertRunResult };

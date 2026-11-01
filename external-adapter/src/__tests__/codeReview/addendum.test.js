@@ -2,7 +2,7 @@
 // @verdikta/common, attributed to the party that wrote them, and never logged.
 
 const { codeReview } = require('@verdikta/common');
-const { addendumForLog, readMachineLines } = require('../../codeReview/addendum');
+const { addendumForLog, readMachineLines, redactMachineLines } = require('../../codeReview/addendum');
 
 const CID_A = 'Qm' + 'a'.repeat(44);
 const CID_B = 'Qm' + 'b'.repeat(44);
@@ -27,7 +27,8 @@ describe('addendumForLog', () => {
     ['a machine line after other text', `note\n${LINE}`],
     ['a malformed machine line', 'verdikta-disclosure: 0xdeadbeef'],
     ['a dispute line alone', `verdikta-dispute: ${CID_B}`],
-    ['a differently cased prefix', LINE.replace('verdikta-disclosure', 'VERDIKTA-Disclosure')]
+    ['a differently cased prefix', LINE.replace('verdikta-disclosure', 'VERDIKTA-Disclosure')],
+    ['a prefix without its colon', LINE.replace('verdikta-disclosure:', 'verdikta-disclosure')]
   ])('withholds %s', (_label, addendum) => {
     const logged = addendumForLog(addendum);
     expect(logged).not.toContain('3'.repeat(32));
@@ -35,6 +36,20 @@ describe('addendumForLog', () => {
     expect(logged).not.toContain('deadbeef');
     expect(logged).toMatch(/withheld/);
     expect(logged).toContain(String(Buffer.byteLength(addendum, 'utf8')));
+  });
+});
+
+describe('redactMachineLines', () => {
+  it('cuts an error message where it starts quoting a machine line', () => {
+    const message = `"cid" contains invalid IPFS CID: Qmshort:${LINE}\nverdikta-dispute`;
+    const redacted = redactMachineLines(message);
+    expect(redacted).toBe('"cid" contains invalid IPFS CID: Qmshort:<withheld: quotes a verdikta machine line>');
+    expect(redacted).not.toContain('3'.repeat(32));
+  });
+
+  it('leaves other text and non-strings alone', () => {
+    expect(redactMachineLines('Unable to fetch archive from IPFS.')).toBe('Unable to fetch archive from IPFS.');
+    expect(redactMachineLines(undefined)).toBeUndefined();
   });
 });
 
