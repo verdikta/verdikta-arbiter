@@ -98,7 +98,7 @@ test('a binary literal is counted by its forward hunk only, and a small one pass
 test('a binary delta counts the target size its header declares; an unreadable delta fails closed', () => {
   const ok = scanPatch(Buffer.from(binarySection('test/f.bin', 'delta', 6, delta(3000, 3100))), LIMITS);
   assert.equal(ok.ok, true, ok.reason);
-  assert.equal(ok.expansionBytes, 3100);
+  assert.equal(ok.expansionBytes, 6 + 3100, "the inflated delta and the file it rebuilds");
   const bomb = scanPatch(Buffer.from(binarySection('test/f.bin', 'delta', 9, delta(10, 80 * 1000 * 1000))), LIMITS);
   assert.equal(bomb.ok, false);
   assert.equal(bomb.code, 'PATCH_EXPANSION');

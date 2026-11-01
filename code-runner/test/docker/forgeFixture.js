@@ -12,8 +12,9 @@
  *
  * The runner takes images by digest. Under Docker's containerd image store a
  * local build has one (its manifest digest); under the classic store (GitHub's
- * runners) it gets one by a push to a throwaway local registry:2. Every image
- * and container made here is removed by `remove()`.
+ * runners) it gets one by a push to a throwaway local registry:2
+ * (VCR_TEST_FIXTURE_REGISTRY=1 forces that path). Every image and container
+ * made here is removed by `remove()`.
  */
 
 const assert = require('node:assert/strict');
@@ -80,6 +81,7 @@ const VM_SOL = [
   '    function isFile(string calldata p) external returns (bool);',
   '    function writeFile(string calldata p, string calldata d) external;',
   '    function envString(string calldata k) external view returns (string memory);',
+  '    function assume(bool c) external pure;',
   '}',
   'library console {',
   '    address constant CONSOLE = 0x000000000000000000636F6e736F6c652e6c6f67;',
@@ -177,7 +179,8 @@ async function buildFixture(docker, { files = VAULT_REPO, toml = '', instance })
     const baseCommit = head.stdout.trim();
     assert.match(baseCommit, /^[0-9a-f]{40}$/);
 
-    let image = await localDigestRef(docker, tag);
+    // VCR_TEST_FIXTURE_REGISTRY=1 takes the registry path under the containerd store too.
+    let image = process.env.VCR_TEST_FIXTURE_REGISTRY === '1' ? null : await localDigestRef(docker, tag);
     if (!image) {
       // The classic image store: get a repository digest by a push to a local registry.
       registry = `vcr-registry-${instance}-${built}`;

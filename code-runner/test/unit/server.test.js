@@ -286,7 +286,12 @@ test('POST /v1/runs runs the forge claim steps by default: a spec without the co
   const res = await request({ host: address.host, port: address.port }, { method: 'POST', path: '/v1/runs', body: runRequest() });
   assert.equal(res.status, 400, res.raw);
   assert.equal(res.body.outcome, 'requester_error');
-  assert.deepEqual(res.body.issues.map((i) => i.code), ['COMMAND_MISSING']);
+  // The shared test request names no testFiles, testIds or baseline tests.
+  assert.deepEqual(res.body.issues.map((i) => [i.code, i.path]), [
+    ['COMMAND_MISSING', '/spec/commands/testFiles'],
+    ['COMMAND_MISSING', '/spec/commands/testIds'],
+    ['BASELINE_INVALID', '/baseline/tests']
+  ]);
   // No claim step ran: only the launch checks.
   const steps = docker.callsOf('exec').filter((c) => !c.args.includes('vcr-launcher-check') && !c.args.includes('vcr-probe'));
   assert.deepEqual(steps, []);

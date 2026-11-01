@@ -43,7 +43,8 @@ test('assertion vs error: a test that ran and reverted is an assertion failure; 
   // this distinction (a trivially failing test vs a trivially broken one).
   for (const m of [
     'assertion failed: 1 != 2', 'vault drained: 1 != 2', 'vault drained', 'assertion failed', 'panic: assertion failed (0x01)',
-    'panic: arithmetic underflow or overflow (0x11)', 'EvmError: Revert', 'next call did not revert as expected',
+    'panic: arithmetic underflow or overflow (0x11)', 'panic: division or modulo by zero (0x12)', 'EvmError: Revert',
+    'next call did not revert as expected',
     'bug is 1', 'fuzz', null
   ]) {
     assert.deepEqual(fail(m), { result: 'fail', kind: 'assertion' }, String(m));
@@ -54,7 +55,9 @@ test('assertion vs error: a test that ran and reverted is an assertion failure; 
     'vm.readFile: the path /etc/passwd is not allowed to be accessed for read operations',
     'vm.getCode: no matching artifact found',
     '`testFail*` has been removed. Consider changing to test_Revert[If|When]_Condition and expecting a revert',
-    'EvmError: OutOfGas', 'EvmError: MemoryOOG', 'EvmError: StackOverflow'
+    'EvmError: OutOfGas', 'EvmError: MemoryOOG', 'EvmError: StackOverflow',
+    '`vm.assume` rejected too many inputs (65536 allowed)',
+    'failed to set up invariant testing environment: No contracts to fuzz.'
   ]) {
     assert.deepEqual(fail(m), { result: 'error', kind: 'error' }, m);
   }

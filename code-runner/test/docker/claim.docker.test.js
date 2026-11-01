@@ -271,20 +271,26 @@ test('assertion vs error, with real forge: one PoC file, each way a test can end
       '    function test_getcode() public view { vm.getCode("Missing.sol:Missing"); }',
       '    function test_pass() public pure {}',
       '    function test_skip() public { vm.skip(true); }',
-      `    function test_fake_xml() public view { console.log("${fake}"); revert("z"); }`
+      `    function test_fake_xml() public view { console.log("${fake}"); revert("z"); }`,
+      '    function testFuzz_assume(uint256 x) public pure { vm.assume(x == 3 && x == 4); }',
+      '}',
+      'contract InvariantTest {',
+      '    function invariant_nothing() public pure {}'
     ])
   });
   const { result: r } = await run(t, claim(fx, patch));
   assert.equal(r.outcome, 'definitive', show(r));
   assert.equal(r.gates.reproduces.status, 'fail');
   const byName = Object.fromEntries(r.facts.poc.tests.map((x) => [x.id.split(' > ')[2], x]));
-  assert.deepEqual(Object.keys(byName).sort(), ['test_assert()', 'test_fake_xml()', 'test_ffi()', 'test_getcode()', 'test_pass()', 'test_require()', 'test_skip()']);
+  assert.deepEqual(Object.keys(byName).sort(), [
+    'invariant_nothing()', 'testFuzz_assume(uint256)', 'test_assert()', 'test_fake_xml()', 'test_ffi()', 'test_getcode()', 'test_pass()', 'test_require()', 'test_skip()'
+  ]);
   assert.deepEqual(byName['test_assert()'].runs, ['fail', 'fail', 'fail']);
   assert.equal(byName['test_assert()'].kind, 'assertion');
   assert.deepEqual(byName['test_require()'].runs, ['fail', 'fail', 'fail']);
   assert.equal(byName['test_require()'].message, 'vault over-credits');
   assert.deepEqual(byName['test_fake_xml()'].runs, ['fail', 'fail', 'fail'], 'printed XML adds no record');
-  for (const n of ['test_ffi()', 'test_getcode()']) {
+  for (const n of ['test_ffi()', 'test_getcode()', 'testFuzz_assume(uint256)', 'invariant_nothing()']) {
     assert.deepEqual(byName[n].runs, ['error', 'error', 'error'], n);
     assert.equal(byName[n].kind, 'error');
   }
@@ -363,7 +369,7 @@ test('the fuzz seed is fixed on every forge test run: a fuzz test draws the same
   });
   const { result: r } = await run(t, claim(fx, fuzz));
   assert.equal(r.gates.reproduces.status, 'pass', show(r));
-  const messages = r.steps.filter((s) => /^poc:/.test(s.name)).map((s) => (/counterexample: calldata=(0x[0-9a-f]+)/.exec(s.stdout.text) || [])[1]);
+  const messages = r.steps.filter((s) => /^poc:[0-9]+$/.test(s.name)).map((s) => (/counterexample: calldata=(0x[0-9a-f]+)/.exec(s.stdout.text) || [])[1]);
   assert.equal(messages.length, 3);
   assert.ok(messages[0], 'forge reported the counterexample');
   assert.deepEqual(new Set(messages).size, 1, `the same counterexample on every run (seed ${FORGE_FUZZ_SEED}): ${messages}`);
