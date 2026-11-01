@@ -1,4 +1,4 @@
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { resolveOpenRouterModelId } from '../../config/openrouter-models';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
@@ -53,7 +53,7 @@ export class OpenRouterProvider implements LLMProvider {
   async generateResponse(
     prompt: string,
     model: string,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
     return this.callChatCompletions(prompt, model, [], options);
   }
@@ -117,7 +117,7 @@ export class OpenRouterProvider implements LLMProvider {
     prompt: string,
     model: string,
     contentBlocks: any[] = [],
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
     if (!this.apiKey) {
       throw new Error('[OpenRouter] OPENROUTER_API_KEY not configured');
@@ -136,19 +136,25 @@ export class OpenRouterProvider implements LLMProvider {
         },
       ],
       stream: false,
-      max_tokens: this.isReasoningModel(normalizedModel) ? reasoningMaxTokens : defaultMaxTokens,
+      max_tokens: options?.maxTokens ?? (this.isReasoningModel(normalizedModel) ? reasoningMaxTokens : defaultMaxTokens),
     };
 
     if (options?.reasoning) {
       payload.reasoning = options.reasoning;
     }
+    // Code mode's effort: OpenRouter's unified reasoning parameter.
+    if (options?.effort) {
+      payload.reasoning = { ...(payload.reasoning || {}), effort: options.effort };
+    }
     if (options?.verbosity) {
       payload.verbosity = options.verbosity;
     }
 
+    // A caller's signal (code mode) owns the deadline; otherwise the text-mode model timeout applies.
+    const callerSignal = options?.signal;
     const timeoutMs = parseInt(process.env.MODEL_TIMEOUT_MS || '120000');
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const controller = callerSignal ? null : new AbortController();
+    const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
 
     try {
       const response = await fetch(`${this.baseUrl}/chat/completions`, {
@@ -158,7 +164,7 @@ export class OpenRouterProvider implements LLMProvider {
           'Content-Type': 'application/json',
         },
         body: JSON.stringify(payload),
-        signal: controller.signal,
+        signal: callerSignal ?? controller!.signal,
       });
 
       if (!response.ok) {
@@ -175,11 +181,14 @@ export class OpenRouterProvider implements LLMProvider {
       return content;
     } catch (error: any) {
       if (error.name === 'AbortError') {
+        if (callerSignal) {
+          throw Object.assign(new Error('[OpenRouter] Request aborted by the caller'), { name: 'AbortError' });
+        }
         throw new Error(`[OpenRouter] Request timed out after ${timeoutMs}ms`);
       }
       throw error;
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
   }
 

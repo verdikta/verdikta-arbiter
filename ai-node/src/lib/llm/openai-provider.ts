@@ -7,7 +7,7 @@
  */
 
 
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider, hasCallControls } from './llm-provider-interface';
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from '@langchain/core/messages';
 import { modelConfig } from '../../config/models';
@@ -77,7 +77,7 @@ export class OpenAIProvider implements LLMProvider {
   async generateResponse(
     prompt: string, 
     model: string, 
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption & CallControlOptions
   ): Promise<string> {
     // Links in the prompt are opened by OpenAI's web_search tool (Responses API).
     if (options?.webAccess !== false && shouldUseWebTools(prompt) && openAIModelSupportsWebSearch(model)) {
@@ -96,7 +96,9 @@ export class OpenAIProvider implements LLMProvider {
     // Use native OpenAI client for these models
     const isGpt5Model = model.toLowerCase().includes('gpt-5');
     
-    if (isGpt5Model) {
+    // A code-mode call (signal, envelope max tokens, effort) also goes through the
+    // native client: it takes max_completion_tokens, reasoning_effort and a signal.
+    if (isGpt5Model || hasCallControls(options)) {
       return this.generateResponseWithNativeClient(prompt, model, options);
     }
     
@@ -162,20 +164,22 @@ export class OpenAIProvider implements LLMProvider {
   private async generateResponseWithNativeClient(
     prompt: string,
     model: string,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
     try {
       const { OpenAI } = await import('openai');
       const client = new OpenAI({ apiKey: this.apiKey });
 
-      const maxCompletionTokens = parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000');
+      const maxCompletionTokens = options?.maxTokens ?? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000');
       
-      // GPT-5 models use reasoning_effort as a direct string value, not an object
-      const reasoningEffort = options?.reasoning?.effort || 'medium';
+      // GPT-5 models use reasoning_effort as a direct string value, not an object.
+      // A code-mode call on another model (a gpt-4o justifier) sends none unless it asks for effort.
+      const reasoningEffort = options?.effort || options?.reasoning?.effort
+        || (model.toLowerCase().includes('gpt-5') ? 'medium' : undefined);
       
       console.log(`[${this.providerName}] Using native client for GPT-5 model ${model} with max_completion_tokens: ${maxCompletionTokens}, reasoning_effort: ${reasoningEffort}`);
 
-      const response = await client.chat.completions.create({
+      const body = {
         model: model,
         messages: [
           {
@@ -185,9 +189,13 @@ export class OpenAIProvider implements LLMProvider {
         ],
         max_completion_tokens: maxCompletionTokens,
         // GPT-5 uses reasoning_effort (string) instead of reasoning (object)
-        reasoning_effort: reasoningEffort,
+        ...(reasoningEffort && { reasoning_effort: reasoningEffort }),
         ...(options?.verbosity && { verbosity: options.verbosity }),
-      } as any);  // Cast to any since OpenAI SDK types may not include reasoning_effort yet
+      } as any;  // Cast to any since OpenAI SDK types may not include reasoning_effort yet
+      // A code-mode signal aborts the HTTP request at the deadline.
+      const response = options?.signal
+        ? await client.chat.completions.create(body, { signal: options.signal })
+        : await client.chat.completions.create(body);
 
       const content = response.choices[0]?.message?.content;
       if (!content) {

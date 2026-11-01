@@ -12,6 +12,7 @@ import {
   UnprocessableImageError,
 } from '../../../lib/attachments/normalizeImages';
 import { WebRetrieval, describeWebRetrieval, mergeWebRetrievals } from '../../../lib/llm/web-retrieval';
+import { handleCodeReviewRequest, isCodeReviewBody } from '../../../lib/code-review/handler';
 import fs from 'fs';
 import path from 'path';
 
@@ -130,6 +131,46 @@ function stripThinkingBlocks(response: string): string {
 
 export async function POST(request: Request) {
   const requestStartTime = Date.now();
+  // The body is read once. A request with a codeReview field is a claim evaluation
+  // (code mode, lib/code-review/handler.ts: its own deadline, envelope and prompt);
+  // every other request takes the text-mode path below, unchanged. Reading the body
+  // stays inside the text-mode REQUEST_TIMEOUT_MS budget, as it always was.
+  let parsedBody: unknown;
+  let parseFailed = false;
+  let parseError: unknown;
+  let parseTimer: NodeJS.Timeout | null = null;
+  try {
+    const read = await Promise.race([
+      request.json().then(value => ({ value })),
+      new Promise<'timeout'>(resolve => { parseTimer = setTimeout(() => resolve('timeout'), REQUEST_TIMEOUT_MS); }),
+    ]);
+    if (read === 'timeout') {
+      const totalRequestTime = Date.now() - requestStartTime;
+      console.error(`🚨 REQUEST_TIMEOUT_FINAL: Request timed out after ${totalRequestTime}ms`);
+      return NextResponse.json({
+        error: `Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit (actual: ${totalRequestTime}ms)`,
+        scores: [] as ScoreOutcome[],
+        justification: '',
+        timeout: true,
+        actualDuration: totalRequestTime,
+        timeoutLimit: REQUEST_TIMEOUT_MS
+      }, { status: 408 });
+    }
+    parsedBody = read.value;
+  } catch (error) {
+    parseFailed = true;
+    parseError = error;
+  } finally {
+    if (parseTimer) clearTimeout(parseTimer);
+  }
+  if (!parseFailed && isCodeReviewBody(parsedBody)) {
+    const result = await handleCodeReviewRequest(parsedBody, requestStartTime);
+    return NextResponse.json(result.body, { status: result.status });
+  }
+  return textModePOST(parsedBody, parseFailed, parseError, requestStartTime);
+}
+
+async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseError: unknown, requestStartTime: number) {
   const timingLog: { [key: string]: number } = {};
   
   function logTiming(operation: string, startTime: number, details?: any) {
@@ -151,14 +192,15 @@ export async function POST(request: Request) {
         requestCompleted = true;
         reject(new Error(`Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit`));
       }
-    }, REQUEST_TIMEOUT_MS);
+    }, Math.max(0, REQUEST_TIMEOUT_MS - (Date.now() - requestStartTime))); // the body read counts, as before
   });
 
   const requestProcessingPromise = (async () => {
     try {
     console.log('POST request received at /api/rank-and-justify');
     const parseStartTime = Date.now();
-    const body: RankAndJustifyInput = await request.json();
+    if (parseFailed) throw parseError;
+    const body = parsedBody as RankAndJustifyInput;
     logTiming('request_parsing', parseStartTime);
     console.log('Request body:', {
       prompt: body.prompt,
