@@ -38,57 +38,16 @@ function validatePinataKey() {
 // better than total outage. Only reveals (mode 2) will fail at upload time.
 validatePinataKey();
 
-const express = require('express');
-const bodyParser = require('body-parser');
-const evaluateHandler = require('./handlers/evaluateHandler');
-const { collectVersionInfo } = require('./utils/versionInfo');
+const { createApp } = require('./app');
 const { listenArgs } = require('./utils/listenArgs');
 
-const app = express();
-app.use(bodyParser.json());
-
-// Version self-report for local ops tooling (arbiter-doctor) and debugging.
-// The same block is embedded in every justification uploaded to IPFS.
-app.get('/version', (req, res) => {
-  res.json({
-    service: 'verdikta-external-adapter',
-    ...collectVersionInfo(),
-    uptimeSeconds: Math.floor(process.uptime()),
-    // #69: shared/cached IPFS fetches (hits, in-flight reuses, entries, bytes)
-    ipfsFetchCache: evaluateHandler.fetchCache ? evaluateHandler.fetchCache.stats() : null
-  });
-});
+// Routes (POST /evaluate, GET /version, GET /health) live in app.js.
+const app = createApp();
 
 // Create HTTP server to set connection limits
 const server = require('http').createServer(app);
 server.maxConnections = 1000;        // Handle more concurrent connections
 server.timeout = parseInt(process.env.SERVER_TIMEOUT) || 300000;  // 5 minute timeout (configurable)
-
-// Update the route handler
-app.post('/evaluate', async (req, res) => {
-  try {
-    const result = await evaluateHandler(req.body);
-    res.status(result.statusCode || 200).json(result);
-  } catch (error) {
-    res.status(500).json({
-      jobRunID: req.body?.id || 'unknown',
-      status: 'errored',
-      statusCode: 500,
-      error: error.message || 'Unknown error'
-    });
-  }
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({
-    jobRunID: req.body?.id || 'unknown',
-    status: 'errored',
-    statusCode: 500,
-    error: err.message || 'Internal server error'
-  });
-});
 
 // HOST is optional; unset = every interface, as always (see utils/listenArgs.js
 // for why that stays the default and what protects port 8080).
