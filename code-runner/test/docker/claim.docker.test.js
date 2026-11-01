@@ -244,11 +244,14 @@ test('applies with real git: a patch that does not apply, one above maxPatchByte
   assert.equal(big.result.gates.applies.status, 'fail', show(big.result));
   assert.match(big.result.gates.applies.detail, /50000000/);
 
-  const withBinary = Buffer.concat([addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), binaryPatch('test/fixture.bin', crypto.randomBytes(300))]);
+  // Fixed bytes with NULs: git calls a file binary when it holds a NUL (random bytes may hold none).
+  const bin = Buffer.from(Array.from({ length: 300 }, (_, i) => (i * 37) & 0xff));
+  const withBinary = Buffer.concat([addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), binaryPatch('test/fixture.bin', bin)]);
   const { result: r4 } = await run(t, claim(fx, withBinary));
   assert.equal(r4.gates.applies.status, 'pass', show(r4));
   assert.equal(r4.gates.reproduces.status, 'pass', show(r4));
-  assert.equal(r4.facts.diff.binaryFiles, 1);
+  const statsOut = (r4.steps.find((x) => x.name === 'patch:stats') || { stdout: { text: '' } }).stdout.text;
+  assert.equal(r4.facts.diff.binaryFiles, 1, JSON.stringify({ diff: r4.facts.diff, patch: r4.facts.patch, numstat: statsOut }));
   assert.equal(r4.facts.diff.files, 2);
   assert.equal(r4.facts.patch.binaryHunks, 1);
 });
