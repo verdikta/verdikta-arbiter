@@ -179,3 +179,35 @@ test('the launcher check and the counters probe, run for real in the sandbox', {
   assert.equal(got.probeLocked.exitCode, 4, 'a counter file that exists but cannot be read fails the probe');
   assert.deepEqual(await leftovers(docker, config.instance), []);
 });
+
+test('the launcher check resolves every component, directory links in the middle included (fixture built as root)', { timeout: 180000 }, async (t) => {
+  const { LAUNCHER_CHECK } = require('../../src/launcher');
+  const config = dockerTestConfig();
+  const docker = dockerFor(config);
+  await ensureTestImage(docker);
+  // A plain test container, not a sandbox: the fixture needs root-owned links,
+  // which the sandbox user cannot make. The check itself runs as uid 10001.
+  const name = `vcr-fixture-${config.instance}`;
+  t.after(() => runText(docker, ['rm', '--force', name], { timeoutMs: 60000 }));
+  const up = await runText(docker, ['run', '--detach', '--pull', 'never', '--platform', PLATFORM, '--runtime', RUNTIME, '--name', name,
+    '--network', 'none', '--entrypoint', 'sleep', TEST_IMAGE, '300'], { timeoutMs: 120000 });
+  assert.equal(up.exitCode, 0, up.stderr);
+  const asRoot = await runText(docker, ['exec', '--user', '0', name, 'sh', '-c', [
+    'set -e',
+    // Round 8's case: root-owned links whose chain passes through a directory uid 10001 owns.
+    'mkdir -p /opt/uo /opt/rootdir && chown 10001:10001 /opt/uo',
+    'ln -s /usr/bin /opt/uo/current',
+    'ln -s /opt/uo/current /opt/rootdir/bin',
+    // The same chain through root-owned directories only.
+    'mkdir -p /opt/safe && ln -s /usr/bin /opt/safe/current && ln -s /opt/safe/current /opt/rootdir/safebin',
+    // A relative link with .. in the middle.
+    'ln -s ../safe/current /opt/rootdir/relbin'
+  ].join('\n')], { timeoutMs: 60000 });
+  assert.equal(asRoot.exitCode, 0, asRoot.stderr);
+  const check = async (p) => (await runText(docker, ['exec', '--user', '10001:10001', name, '/bin/sh', '-c', LAUNCHER_CHECK, 'vcr-launcher-check', p], { timeoutMs: 60000 })).exitCode;
+  assert.equal(await check('/bin/sh'), 0);
+  assert.equal(await check('/opt/rootdir/bin/sh'), 1, 'a directory link into an owned directory is refused');
+  assert.equal(await check('/opt/rootdir/safebin/sh'), 0, 'the same chain through root-owned directories passes');
+  assert.equal(await check('/opt/rootdir/relbin/sh'), 0, 'relative links and .. resolve');
+  assert.equal(await check('/opt/rootdir/missing/sh'), 2, 'a missing component cannot be checked');
+});

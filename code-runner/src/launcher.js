@@ -35,24 +35,37 @@ const LAUNCHER_SCRIPT = `printf "${MARKER} %s\\n" "$1" && shift && exec "$@"`;
 const NONCE = /^[0-9a-f]{32}$/;
 
 /**
- * The launch-time check of the launcher's interpreter ($1, /bin/sh). Exits 1
- * when the sandbox user could replace it: some path it resolves through (each
- * symlink hop, its canonical target, and every ancestor directory of both) is
- * owned by that user (an owner can chmod, so read-only modes do not help) or
- * writable by it. Exits 2 when the check cannot be made (a test the shell does
- * not support, a link it cannot read), 0 when the interpreter is safe.
+ * The launch-time check of the launcher's interpreter ($1, /bin/sh). It
+ * resolves the path the way the kernel does, one component at a time from /,
+ * following every symlink wherever it sits (a directory link in the middle
+ * included), and checks every directory entered and every entry looked up:
+ * none may be owned by the sandbox user (an owner can chmod, so read-only
+ * modes do not help) or writable by it. Exits 1 when one is, 2 when the check
+ * cannot be made (a test the shell does not support, a missing component, a
+ * link it cannot read, more than 40 links), 0 when the interpreter is safe.
  */
 const LAUNCHER_CHECK = [
   'own() { [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
   'wr() { [ -w "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
-  'up() { d=$1; while :; do if [ -e "$d" ] || [ -L "$d" ]; then own "$d"; wr "$d"; fi; [ "$d" = / ] && return 0; d=${d%/*}; [ -n "$d" ] || d=/; done; }',
-  'p=$1; n=0',
+  'chk() { own "$1"; wr "$1"; }',
+  'chk /',
+  'cur=/; rest=$1; n=0',
   'while :; do',
-  '  up "$p"; c=$(readlink -f "$p") || exit 2; up "$c"',
-  '  [ -L "$p" ] || exit 0',
-  '  t=$(readlink "$p") || exit 2',
-  '  case $t in /*) p=$t ;; *) p=${p%/*}/$t ;; esac',
-  '  n=$((n+1)); [ "$n" -le 40 ] || exit 2',
+  '  while case $rest in /*) true ;; *) false ;; esac; do rest=${rest#/}; done',
+  '  [ -n "$rest" ] || exit 0',
+  '  case $rest in */*) comp=${rest%%/*}; rest=${rest#*/} ;; *) comp=$rest; rest= ;; esac',
+  '  case $comp in .) continue ;; ..) cur=${cur%/*}; [ -n "$cur" ] || cur=/; continue ;; esac',
+  '  next=${cur%/}/$comp',
+  '  [ -e "$next" ] || [ -L "$next" ] || exit 2',
+  '  chk "$next"',
+  '  if [ -L "$next" ]; then',
+  '    n=$((n+1)); [ "$n" -le 40 ] || exit 2',
+  '    t=$(readlink "$next") || exit 2',
+  '    case $t in /*) cur=/ ;; esac',
+  '    if [ -n "$rest" ]; then rest=$t/$rest; else rest=$t; fi',
+  '  else',
+  '    cur=$next',
+  '  fi',
   'done'
 ].join('\n');
 
