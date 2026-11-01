@@ -234,12 +234,15 @@ launcher path check stays as a second check.
 
 What the env image (P3a) must provide:
 - the repository checkout at `/repo`: a git repository (`/repo/.git` a
-  directory) whose `HEAD` is the listed `baseCommit` and whose tracked files
-  are that commit's (untracked and ignored files, such as installed `lib/`
-  dependencies, may be there, inside submodules too; a submodule must be at
-  the commit the listed commit records), readable by uid 10001. The claim pipeline
-  copies it into `/work`, which starts empty; otherwise the run is the
-  requester's error (`IMAGE_CHECKOUT_MISSING`, `_NOT_GIT`, `_UNREADABLE`,
+  directory holding no symbolic link) whose `HEAD` is the listed `baseCommit`
+  and whose tracked files are that commit's blobs byte for byte, with no
+  filter or line-ending conversion (untracked and ignored files, such as
+  installed `lib/` dependencies, may be there, inside submodules too; a
+  submodule must be at the commit the listed commit records), readable by
+  uid 10001. The claim pipeline copies it into `/work`, which starts empty,
+  and rebuilds its index from `HEAD`, so no assume-unchanged or
+  skip-worktree bit hides a change; otherwise the run is the requester's
+  error (`IMAGE_CHECKOUT_MISSING`, `_NOT_GIT`, `_GIT_LINK`, `_UNREADABLE`,
   `_MISMATCH`, `_DIRTY`), before any claim code runs;
 - `git`, `cp`, `forge` and a POSIX `/bin/sh` (the foundry base has them);
 - every tool, `solc` included, outside `$HOME` and `/tmp` (both start empty),
@@ -319,7 +322,7 @@ failure.
 
 | Step | Gate | Decided on |
 |---|---|---|
-| Record the sandbox's processes (the init and the keepalive); copy `/repo` into `/work`; check `HEAD` is `baseCommit` and the tracked files are clean | — (the requester's error otherwise) | |
+| Record the sandbox's processes (the init and the keepalive); copy `/repo` into `/work`; write `.git/info/attributes`; rebuild the index from `HEAD` (and each submodule's); check `HEAD` is `baseCommit` and the tracked files are clean | — (the requester's error otherwise) | |
 | `poc.patch` at most `maxPatchBytes`; what it would expand to at most 50 MB (below) | `applies` | `input` |
 | `git apply --numstat` (git reads it; a file changed twice fails), then `git apply --index` against the listed commit | `applies` | `exit_code` |
 | `git diff --cached --name-status --no-renames`: every touched path (a rename's source included) under `paths.tests`, none under `paths.protected`, each one a report can name | `testPathsOnly` | `exit_code` |
@@ -337,11 +340,18 @@ failure.
 output. Every git call fixes the settings that would change an outcome or
 run something (`src/git.js`): no system or global config, no hooks or
 fsmonitor, no line-ending conversion, whitespace never refuses a patch,
-diffs with no external driver or rename detection, `LC_ALL=C`.
+diffs with no external driver or rename detection, the index compared by
+content (no ignored stat data, no sparse checkout), `LC_ALL=C`. The
+repository's own attribute drivers never run: `.git/info/attributes`, the
+source above every `.gitattributes`, is
+`* !filter !diff !merge !text !eol !ident !working-tree-encoding`, so a
+patched file can never be a clean or smudge filter, a textconv or a merge
+driver.
 
 **Expansion** (`src/patch.js`) is what git would have to materialise: every
-forward binary hunk at its declared size, a binary delta at its own size plus
-the target size its header declares, and every added text line. It is counted
+binary hunk, forward and reverse (git inflates both while it parses), at its
+declared size read as git's `strtoul` reads it, a forward delta's target at
+the size its header declares, and every added text line. It is counted
 from the patch's bytes before git sees them, so a compression bomb (a 60 KB
 patch declaring 60 MB of zeros) fails `applies` instead of reaching git, which
 inflates every hunk in memory before it writes anything. A copy (`copy from`)
@@ -363,7 +373,7 @@ must declare `build`, `testFiles` with `$FILES` and `testIds` with
 **The schedule is fixed:** three runs whenever run 1 found a test the patch
 added, whatever run 1 showed and however much time is left. The tests the
 patch added are run 1's test functions (`test*`, `invariant*`,
-`statefulFuzz*`, `table*`) in the PoC's files whose identity is not in
+`statefulFuzz*`, `table*`, `check*`, `prove*`) in the PoC's files whose identity is not in
 `baseline.json`; the identity is `<file> > <Contract> > <signature>`.
 `reproduces` passes when every one of them fails as an assertion on all three
 runs. Any pass, skip, error, missing or duplicated record on any run fails
@@ -376,11 +386,16 @@ function ran and reverted (an assertion helper, a `require`, a revert from
 the code under test). That is an assertion failure, the same line the §8.2
 harness proof draws between a trivially failing and a trivially broken test.
 Errors are everything else: no JUnit (a compile error, such as an import that
-does not resolve), a failed `setUp()` or `constructor()`, and failures forge
-raises itself at the pinned version: a refused or failed cheatcode
-(`vm.<name>: …`), `testFail*` (removed), the EVM failing (`EvmError:` other
-than `Revert`), a fuzz test whose inputs `vm.assume` all rejected, an
-invariant campaign that could not start.
+does not resolve), a failed `setUp()`, `constructor()` or `afterInvariant()`,
+a failure whose body never ran (no reason, as when a `beforeTestSetup` call
+reverts, or forge's default `(gas: 0)` in the record's own `system-out`: a
+test body that ran always used gas), and failures forge raises itself at the
+pinned version: a refused or failed cheatcode (`vm.<name>: …`), `testFail*`
+(removed), the EVM failing (`EvmError:` other than `Revert`), fuzz or
+invariant set-up, a fuzz test whose inputs `vm.assume` all rejected,
+table-test fixtures, incomplete symbolic execution. Legacy, non-reverting
+assertions fail without a reason, so a listing built on them fails the
+harness proof.
 
 **The JUnit** is forge's stdout, read up to 8 MiB and parsed strictly
 (`src/junit.js`): UTF-8, no DOCTYPE (so no entity can be declared: entity
