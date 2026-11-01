@@ -141,8 +141,26 @@ const CHECKOUT_SCRIPT = [
  */
 const NEUTRAL_ATTRIBUTES = '* !filter !diff !merge !text !eol !ident !working-tree-encoding';
 
-/** Rebuilds a submodule's index from its HEAD (dropping assume-unchanged and skip-worktree bits) and refreshes it. */
-const SUBMODULE_INDEX_SCRIPT = 'git read-tree HEAD || exit 1; git update-index -q --refresh; exit 0';
+/**
+ * Run by `git submodule foreach --recursive` in every submodule, before the
+ * clean check: the superproject's rules for the submodule's own repository.
+ * Its git directory must be self-contained (no commondir, alternates,
+ * grafts or symbolic link: its info/attributes must be the one git reads),
+ * its attributes are neutralised (a submodule's clean filter could map
+ * changed bytes back to the committed blob), and its index is rebuilt from
+ * its HEAD (no assume-unchanged or skip-worktree bit) and refreshed.
+ */
+const SUBMODULE_INDEX_SCRIPT = [
+  'gd=$(git rev-parse --path-format=absolute --git-dir) && cdir=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1',
+  '[ "$gd" = "$cdir" ] || exit 1',
+  'for f in commondir objects/info/alternates objects/info/http-alternates info/grafts; do [ -e "$gd/$f" ] && exit 1; done',
+  'link=$(find "$gd" -type l -print -quit) || exit 1',
+  '[ -z "$link" ] || exit 1',
+  `mkdir -p "$gd/info" && rm -f "$gd/info/attributes" && printf '%s\\n' '${NEUTRAL_ATTRIBUTES}' > "$gd/info/attributes" || exit 1`,
+  'git read-tree HEAD || exit 1',
+  'git update-index -q --refresh',
+  'exit 0'
+].join('; ');
 
 const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -294,7 +312,8 @@ function claimSteps(request, limits) {
       name: 'prepare:submodules', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV
     });
     if (subs.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `a submodule's index could not be rebuilt from its HEAD: ${firstLine(subs.stderr.text)}`)]);
+      throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
+        `a submodule's repository is not self-contained or its index could not be rebuilt from its HEAD: ${firstLine(subs.stderr.text)}`)]);
     }
     await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
     // Untracked and ignored files may be there (installed dependencies, also

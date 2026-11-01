@@ -540,7 +540,7 @@ test('the requester\'s package: the env image\'s checkout is missing, not a repo
     [{ git: { 'rev-parse': (d) => ({ stdout: d.sub.includes('--git-common-dir') ? '/work/.git\n/work/.git-common\n' : `${BASE}\n` }) } }, 'IMAGE_CHECKOUT_GIT_REDIRECT'],
     [{ scripts: { 'vcr-checkout': () => ({ exitCode: 14 }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
     [{ git: { 'read-tree': () => ({ exitCode: 128, stderr: 'fatal: failed to unpack tree object HEAD\n' }) } }, 'IMAGE_CHECKOUT_NOT_GIT'],
-    [{ git: { submodule: () => ({ exitCode: 1, stderr: 'fatal: run_command returned non-zero status for lib/x\n' }) } }, 'IMAGE_CHECKOUT_NOT_GIT']
+    [{ git: { submodule: () => ({ exitCode: 1, stderr: 'fatal: run_command returned non-zero status for lib/x\n' }) } }, 'IMAGE_CHECKOUT_GIT_REDIRECT']
   ];
   for (const [over, code] of cases) {
     const sb = claimSandbox(over);
@@ -581,6 +581,11 @@ test('R1-F4: the copied index is rebuilt from HEAD (repository and submodules) b
   assert.deepEqual(order.slice(2, 8), ['git rev-parse', 'git rev-parse', 'git read-tree', 'git submodule', 'git update-index', 'git status']);
   assert.deepEqual(gitCalls(sb, 'read-tree')[0].sub, ['read-tree', 'HEAD']);
   assert.deepEqual(gitCalls(sb, 'submodule')[0].sub, ['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]);
+  // Each submodule's repository gets the superproject's rules: self-contained, attributes neutralised, index rebuilt.
+  for (const part of ['--git-common-dir', 'commondir objects/info/alternates', 'find "$gd" -type l', `'${NEUTRAL_ATTRIBUTES}' > "$gd/info/attributes"`, 'git read-tree HEAD']) {
+    assert.ok(SUBMODULE_INDEX_SCRIPT.includes(part), part);
+  }
+  assert.ok(SUBMODULE_INDEX_SCRIPT.indexOf('info/attributes') < SUBMODULE_INDEX_SCRIPT.indexOf('read-tree'), 'neutralised before the index is refreshed');
   for (const c of ['core.ignoreStat=false', 'core.sparseCheckout=false', 'index.sparse=false']) {
     assert.ok(gitCalls(sb, 'status')[0].argv.includes(c), c);
   }

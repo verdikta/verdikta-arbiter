@@ -52,6 +52,11 @@ const VARIANTS = Object.freeze({
   // a changed file the submodule's own index hides.
   sub: { setup: SUBMODULE },
   subassume: { setup: `${SUBMODULE} && cd lib/dep && printf "changed\\n" >> dep.txt && git update-index --assume-unchanged dep.txt` },
+  // R1-F3 (round 3): the submodule's own clean filter maps its changed file back to the committed bytes.
+  submask: {
+    setup: SUBMODULE.replace('git -C /tmp/dep add -A', 'printf "*.txt filter=mask\\n" > /tmp/dep/.gitattributes && git -C /tmp/dep add -A')
+      + ' && git -C lib/dep config filter.mask.clean "cat >/dev/null; echo dep" && printf "changed\\n" >> lib/dep/dep.txt'
+  },
   // A changed tracked file the copied index hides (R1-F4).
   assume: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --assume-unchanged src/Vault.sol' },
   skip: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --skip-worktree src/Vault.sol' }
@@ -474,16 +479,18 @@ test('R1-F1 (round 2): an inline-config error with a reason of kilobytes is an e
   assert.ok(t0.message.length >= 2000 - 1, 'the reason is kilobytes long (cut to 2000 in the facts)');
 });
 
-test('R1-F4 with real submodules: a clean submodule passes, a change its own index hides is a dirty checkout', { timeout: TIMEOUT }, async (t) => {
+test('R1-F4 / R1-F3 with real submodules: a clean submodule passes; a change its own index or its own clean filter hides is a dirty checkout', { timeout: TIMEOUT }, async (t) => {
   const clean = await fixture('sub');
   const { result: r1 } = await run(t, claim(clean, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
   assert.equal(r1.outcome, 'definitive', show(r1));
   assert.equal(r1.gates.reproduces.status, 'pass', show(r1));
   assert.ok(r1.facts.protectedReset >= 1, 'the lib/dep gitlink is a protected path at the listed commit');
 
-  const hidden = await fixture('subassume');
-  const { result: r2 } = await run(t, claim(hidden, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
-  assert.equal(r2.outcome, 'requester_error', show(r2));
-  assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY']);
-  assert.match(r2.issues[0].detail, /lib\/dep/);
+  for (const variant of ['subassume', 'submask']) {
+    const hidden = await fixture(variant);
+    const { result: r2 } = await run(t, claim(hidden, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+    assert.equal(r2.outcome, 'requester_error', `${variant}: ${show(r2)}`);
+    assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_CHECKOUT_DIRTY'], variant);
+    assert.match(r2.issues[0].detail, /lib\/dep/);
+  }
 });

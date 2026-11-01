@@ -239,8 +239,11 @@ What the env image (P3a) must provide:
   filter or line-ending conversion (untracked and ignored files, such as
   installed `lib/` dependencies, may be there, inside submodules too; a
   submodule must be at the commit the listed commit records), readable by
-  uid 10001. Its git directory must be self-contained: no symbolic link,
-  `commondir` (a linked worktree), object alternates or grafts. The claim
+  uid 10001. Its git directory, and each submodule's, must be
+  self-contained: no symbolic link, `commondir` (a linked worktree), object
+  alternates or grafts. Each submodule gets the same neutral attributes and
+  index rebuild before the clean check, so neither its own index flags nor
+  its own clean filter can hide a change. The claim
   pipeline copies it into `/work`, which starts empty, and rebuilds its
   index from `HEAD`, so no assume-unchanged or skip-worktree bit hides a
   change; otherwise the run is the requester's error
