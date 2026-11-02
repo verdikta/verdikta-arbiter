@@ -63,6 +63,12 @@ const VARIANTS = Object.freeze({
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: 'ln -s /work/helpers/helper /usr/local/bin/helper'
   },
+  // Round 19: the snapshot's find a dangling link to a file a patch would add.
+  toolpatch: {
+    toml: 'ffi = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'ln -s /work/test/find /usr/local/bin/find'
+  },
   // Round 18: the runner's own tool behind a link in the work tree, ending back on the root.
   toolchain: {
     toml: 'ffi = true',
@@ -561,6 +567,13 @@ test('A3a R16-F1 under real forge: what the checks take for immutable, with real
     assert.match(r.issues[0].detail, re);
     assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
   }
+  // Round 19: a patch adding test/find, which would suppress its own enumeration and restore what it changed: refused before the patch.
+  const finder = Buffer.concat([addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), Buffer.from(['diff --git a/test/find b/test/find', 'new file mode 100755', '--- /dev/null', '+++ b/test/find', '@@ -0,0 +1,2 @@', '+#!/bin/sh', '+exec /usr/bin/find "$@"', ''].join('\n'))]);
+  const r = await run(t, claim(await fixture('toolpatch'), finder));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /\/usr\/local\/bin\/find \(in PATH, the runner's tools or solc\) resolves through/);
+  assert.ok(!(r.steps || []).some((s) => /^patch:/.test(s.name)), 'refused before the patch was applied');
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {

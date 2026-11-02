@@ -851,7 +851,45 @@ test('A3a R16-F1 (round 18): the runner\'s own tools are held to it too: a link 
   assert.equal(r.outcome, 'requester_error', show(r));
   assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.match(r.issues[0].detail, /\/usr\/local\/bin\/find \(in PATH, the runner's tools or solc\) resolves through/);
-  assert.ok(!sb.execs().some((d) => d.kind === 'vcr-manifest' || d.kind === 'vcr-build'), 'before the snapshot could run it');
+  assert.ok(!sb.execs().some((d) => d.kind === 'vcr-manifest' || d.kind === 'vcr-build' || d.kind === 'git'), 'before the checkout, the patch or a snapshot could run it');
+});
+
+test('A3a R16-F1 (round 19): a file a patch adds cannot be a tool or forge: a dangling link to it is refused before the patch; forge or a PATH directory under paths.tests before forge runs', async () => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  // /usr/local/bin/find -> /work/test/find, dangling until a patch adds test/find.
+  const sb = claimSandbox({ onBox: (box) => { set(box, '/usr/local/bin/keep', 'x'); box.tree.set('/usr/local/bin/find', { type: 'l', target: '/work/test/find' }); } });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.match(r.issues[0].detail, /\/usr\/local\/bin\/find \(in PATH/);
+  assert.ok(!sb.execs().some((d) => d.kind === 'git'), 'the patch was never applied');
+  // A link to forge in a PATH directory off the tools': walked before forge first runs.
+  const viaPath = (d, box) => ({ stdout: `vcr-forge /opt/helpers/forge\nvcr-path /opt/helpers:/usr/bin\nvcr-real /work/test/forge\n${forgeConfig(box.tree)}` });
+  const f = claimSandbox({ onBox: (box) => box.tree.set('/opt/helpers/forge', { type: 'l', target: '/work/test/forge' }), scripts: { 'vcr-framework': viaPath } });
+  const fr = await runClaim(f);
+  assert.equal(fr.outcome, 'requester_error', show(fr));
+  assert.deepEqual(fr.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(fr.issues[0].detail, /forge \(\/work\/test\/forge\) is under paths\.tests/);
+  assert.ok(!f.execs().some((d) => d.forge), 'a patch\'s file never ran as forge');
+  // PATH=/work/test:…: refused before forge runs, whatever forge's configuration would have said.
+  const inTests = (d, box) => ({ stdout: `vcr-forge /work/test/forge\nvcr-path /work/test:/usr/bin\nvcr-real /work/test/forge\n${forgeConfig(box.tree)}` });
+  const t = claimSandbox({ scripts: { 'vcr-framework': inTests } });
+  const tr = await runClaim(t);
+  assert.equal(tr.outcome, 'requester_error', show(tr));
+  assert.ok(!t.execs().some((d) => d.forge), 'a patch\'s file never ran as forge');
+  // The listing check holds the same: its prepare is the claim's.
+  const { validateListingRequest, listingSteps, imageUnpackedBytes } = require('../../src/listing');
+  const body = { spec: { version: 1, kind: 'bug', repo: 'https://github.com/acme/vault', baseCommit: BASE, env: { from: 'foundry' }, commands: forgeSpec().commands, paths: forgeSpec().paths, stake: { scope: { include: ['src/**'] } } }, image: IMAGE, deadline: 900000 };
+  const v = validateListingRequest(body);
+  assert.ok(v.ok, JSON.stringify(v.issues));
+  const l = claimSandbox({ handlers: { history: () => ({ stdout: '400000000\n' }) }, onBox: (box) => { set(box, '/usr/local/bin/keep', 'x'); box.tree.set('/usr/local/bin/find', { type: 'l', target: '/work/test/find' }); } });
+  const receivedAt = Date.now();
+  const lr = await executeRun({
+    docker: l.docker, config: testConfig(), limits: v.limits, image: IMAGE, runId: '0123456789abcdef',
+    steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(l.docker, IMAGE) }),
+    receivedAt, deadlineAt: receivedAt + 900000, active: new Set(), log: silent, admit: async () => {}
+  });
+  assert.equal(lr.outcome, 'requester_error', JSON.stringify(lr.abstain || lr.facts.listing));
+  assert.deepEqual(lr.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
 });
 
 test('A3a R16-F1: links on the read-only root that stay there are fine (merged /usr, alternatives); asked once, hermetic, before the listing; the walk is A1\'s launcher check; a broken answer is the runner\'s', async () => {
@@ -866,13 +904,23 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
   assert.equal(fine.outcome, 'definitive', show(fine));
   assert.equal(fine.gates.integrity.status, 'pass', show(fine));
   const asked = ok.execs().filter((d) => d.kind === 'vcr-external-roots');
-  assert.equal(asked.length, 1, 'the way there is out of the sandbox user\'s reach: no need to ask again after a run');
-  assert.deepEqual(asked[0].launched.slice(0, 2), ['/usr/bin/env', '-i']);
-  assert.equal(asked[0].argv[4], LAUNCHER_CHECK);
-  // The tools' directories, then the image's PATH outside the work tree and $HOME, then solc.
-  assert.deepEqual(asked[0].stdin.toString('latin1').split('\0').filter(Boolean), ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin', '/opt/helpers', '/opt/solc/solc']);
+  assert.equal(asked.length, 3, 'the way there is out of the sandbox user\'s reach: no need to ask again after a run');
+  for (const a of asked) {
+    assert.deepEqual(a.launched.slice(0, 2), ['/usr/bin/env', '-i']);
+    assert.equal(a.argv[4], LAUNCHER_CHECK);
+  }
+  // First the tools' directories, before the checkout; then the image's PATH outside them, the work tree and $HOME, before
+  // forge first runs; then solc, which only forge's configuration names.
+  const list = (a) => a.stdin.toString('latin1').split('\0').filter(Boolean);
+  assert.deepEqual(list(asked[0]), ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin']);
+  assert.deepEqual(list(asked[1]), ['/opt/helpers']);
+  assert.deepEqual(list(asked[2]), ['/opt/solc/solc']);
   const order = ok.execs().map(label);
-  assert.ok(order.indexOf('vcr-external-roots') < order.indexOf('vcr-manifest'));
+  assert.equal(order.indexOf('vcr-external-roots'), 1, 'right after the processes are recorded');
+  assert.ok(order.indexOf('vcr-external-roots') < order.indexOf('git init'));
+  const config = order.indexOf('forge-config');
+  assert.equal(order[config - 1], 'vcr-external-roots', 'PATH walked before forge first runs');
+  assert.equal(order[config + 1], 'vcr-external-roots', 'solc right after its configuration names it');
   for (const bad of [() => ({ exitCode: 1 }), () => ({ stdout: Buffer.from('odd\0') }), () => ({ stdout: Buffer.from('p\0?\0') })]) {
     const r = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': bad } }));
     assert.equal(r.outcome, 'abstain', show(r));

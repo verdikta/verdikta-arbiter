@@ -596,6 +596,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
 
   async function prepare(ctx) {
     await recordProcesses(ctx, box);
+    // First thing, while the work tree is empty: the tools everything below runs are out of the claim's reach (R16-F1).
+    await integrity.requireImmutableTools(ctx);
     // Before any claim code runs: /work is the listed commit (checkout.js).
     const checkout = await forceCheckout(ctx, { base });
     state.prepared = checkout.commit;

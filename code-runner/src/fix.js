@@ -105,6 +105,7 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   };
 
   await kit.recordProcesses(ctx, box);
+  await integrity.requireImmutableTools(ctx);
   const checkout = await forceCheckout(ctx, { base });
 
   // The PoC, as the PoC's sandbox applies it: the check runs it with the fix.

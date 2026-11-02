@@ -201,7 +201,7 @@ test('a listing check builds once and runs the suite three times with --junit an
   const resets = sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'reset').slice(0, 2);
   for (const x of resets) assert.deepEqual(x.sub, ['reset', '--quiet', '--hard', sb.repo.commit]);
   // The forced checkout ran first, as for a claim: nothing of the image's checkout is used.
-  assert.deepEqual(seq.slice(0, 4), ['vcr-procs', 'git init', 'git init', 'vcr-stage']);
+  assert.deepEqual(seq.slice(0, 5), ['vcr-procs', 'vcr-external-roots', 'git init', 'git init', 'vcr-stage']);
 });
 
 test('the baseline: every test with its result on each run, stable = passed all three, unstable = everything else; valid baseline.json', async () => {
@@ -443,7 +443,7 @@ test('harness proof: every probe runs as a claim does, in a fresh sandbox of its
     const execs = sb.docker.callsOf('exec').filter((c) => containerOf(c) === name).map(decode)
       .filter((d) => d.kind && d.argv[3] !== 'vcr-probe' && d.argv[3] !== 'vcr-launcher-check');
     const ks = execs.map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
-    assert.deepEqual(ks.slice(0, 4), ['vcr-procs', 'git init', 'git init', 'vcr-stage'], name);
+    assert.deepEqual(ks.slice(0, 5), ['vcr-procs', 'vcr-external-roots', 'git init', 'git init', 'vcr-stage'], name);
     assert.equal(ks.filter((k) => k === 'git apply').length, 1, name);
     assert.equal(ks.includes('vcr-suite'), false, `${name}: no suite run in a probe's sandbox`);
   }

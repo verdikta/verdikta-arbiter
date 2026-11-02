@@ -241,6 +241,21 @@ function displayPath(key) {
 }
 
 /**
+ * PATH as the shell reads it, from forge's directory (/work): an empty entry or
+ * `.` is that directory, a relative one lies under it, and only an actual `./`
+ * prefix is stripped (`.bin` stays `.bin`; R11-F2).
+ */
+function parsePathDirs(value) {
+  return value.split(':').map((d) => {
+    if (d.startsWith('/')) return d.replace(/\/+$/, '') || '/';
+    let rel = d;
+    while (rel.startsWith('./')) rel = rel.slice(2).replace(/^\/+/, '');
+    rel = rel.replace(/\/+$/, '');
+    return rel === '' || rel === '.' ? WORK : `${WORK}/${rel}`;
+  });
+}
+
+/**
  * Read the framework probe's output.
  * @param {Buffer} buf
  * @returns {{ok:true, forgePath:string, path:string, pathDirs:string[], configSha256:string, config:{out:string|null, cachePath:string|null, libs:string[], solc:string|null}} | {ok:false, reason:string, forgePath?:string}}
@@ -251,15 +266,7 @@ function parseFramework(buf) {
   if (!m) return { ok: false, reason: 'the framework probe printed no forge path' };
   const forgePath = m[1];
   const realPath = m[3] !== undefined ? m[3] : forgePath;
-  // PATH as the shell reads it, from the maker's commands' directory (/work): an empty entry or `.` is that directory,
-  // a relative one lies under it, and only an actual `./` prefix is stripped (`.bin` stays `.bin`; R11-F2).
-  const pathDirs = m[2].split(':').map((d) => {
-    if (d.startsWith('/')) return d.replace(/\/+$/, '') || '/';
-    let rel = d;
-    while (rel.startsWith('./')) rel = rel.slice(2).replace(/^\/+/, '');
-    rel = rel.replace(/\/+$/, '');
-    return rel === '' || rel === '.' ? WORK : `${WORK}/${rel}`;
-  });
+  const pathDirs = parsePathDirs(m[2]);
   const configText = buf.subarray(Buffer.byteLength(m[0])).toString('utf8');
   let parsed;
   try {
@@ -873,12 +880,14 @@ const DISCOVERY = /^vcr-forge ([^\n]*)\nvcr-path ([^\n]*)\n(?:vcr-real ([^\n]*)\
  * fixed environment and PATH, /work. Its output follows the discovery's
  * lines in `bytes` (parseFramework); its exit code and stderr are the
  * configuration's. A forge the runner cannot run as an argv is `unrunnable`.
+ * `before` sees what the discovery found before forge runs (the reference's
+ * checks that forge is not a patch's file; it throws to stop there).
  * @param {object} ctx
  * @param {string} name
  * @param {string} forgePath - '' at the reference, else the reference's real path
- * @param {{config?:boolean, tool?:{realPath:string, path:string}}} [o]
+ * @param {{config?:boolean, tool?:{realPath:string, path:string}, before?:Function}} [o]
  */
-async function probe(ctx, name, forgePath, { config = true, tool = null } = {}) {
+async function probe(ctx, name, forgePath, { config = true, tool = null, before = null } = {}) {
   const head = new Prefix(CONFIG_MAX_BYTES);
   const found = await ctx.exec(frameworkArgv(forgePath), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: head });
   const headBytes = head.bytes();
@@ -889,6 +898,7 @@ async function probe(ctx, name, forgePath, { config = true, tool = null } = {}) 
   const use = tool || { realPath: m[3] !== undefined ? m[3] : m[1], path: m[2] };
   const problem = forge.toolProblem(use);
   if (problem) return done(found.exitCode, headBytes, '', { unrunnable: problem });
+  if (before) await before({ realPath: use.realPath, pathDirs: parsePathDirs(m[2]) });
   const out = new Prefix(CONFIG_MAX_BYTES);
   const record = await ctx.exec(forge.forgeArgv(use, ['config', '--json']), {
     name: `${name}:config`, timeoutMs: SNAPSHOT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR, tee: out
@@ -899,17 +909,11 @@ async function probe(ctx, name, forgePath, { config = true, tool = null } = {}) 
 }
 
 /**
- * R16-F1: everything the checks take for immutable by its place outside the
- * work tree: the PATH directories and solc that unwatchableRoots passes as
- * text, and the directories the runner's own tools come from (a snapshot's
- * find, sha256sum and xargs, git: hermetic()'s PATH). Asked before any claim
- * code; since each answer means the whole way there is out of the sandbox
- * user's reach, it needs no asking again after a run.
+ * The walk of EXTERNAL_ROOTS_SCRIPT over `asked`.
  * @returns {Promise<string[]>} the problems, for IMAGE_WATCH_ROOT_UNCOVERED
  */
-async function externalRootProblems(ctx, name, parsed) {
-  const outside = (p) => typeof p === 'string' && p.startsWith('/') && !within(p, WORK) && !within(p, HOME);
-  const asked = [...new Set([...BASE_ENV.PATH.split(':'), ...parsed.pathDirs, parsed.config.solc].filter(outside))];
+async function walkRoots(ctx, name, asked) {
+  if (asked.length === 0) return [];
   const out = new Prefix(LINKS_MAX_BYTES);
   const record = await ctx.exec(externalRootsArgv(), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, stdin: Buffer.from(`${asked.join('\0')}\0`, 'utf8'), tee: out });
   const fields = out.bytes().toString('utf8').split('\0');
@@ -922,6 +926,40 @@ async function externalRootProblems(ctx, name, parsed) {
     else throw runnerError(name, 'where PATH and solc lead could not be read');
   }
   return problems;
+}
+
+function uncovered(problems) {
+  return new RequesterError([{
+    code: 'IMAGE_WATCH_ROOT_UNCOVERED', path: '/spec/env/image',
+    detail: `forge's configuration puts what the runner watches where its snapshots cannot cover it: ${shown(problems, 5, '; ')}`
+  }]);
+}
+
+/** Where the runner's own tools come from: hermetic()'s PATH (a snapshot's find, sha256sum and xargs, git, realpath). */
+const TOOL_DIRS = Object.freeze(BASE_ENV.PATH.split(':'));
+
+/**
+ * R16-F1 (round 19): the runner's own tools are out of the sandbox user's reach.
+ * Run first thing in a sandbox, before the forced checkout: the work tree,
+ * $HOME and /tmp are still empty, so a dangling link to a file a patch would
+ * later add cannot be a tool yet, and the walk's own tools are the image's.
+ * Everything the runner runs from then on is held by this answer. The listing
+ * check gets it too, through the same prepare.
+ * @throws {RequesterError} IMAGE_WATCH_ROOT_UNCOVERED
+ */
+async function requireImmutableTools(ctx, name = 'prepare:tools') {
+  const problems = await walkRoots(ctx, name, [...TOOL_DIRS]);
+  if (problems.length) throw uncovered(problems);
+}
+
+/**
+ * What the checks take for immutable by its place outside the work tree and
+ * $HOME, the verified tools' directories apart. (/tmp is empty until claim code
+ * runs, and unwatchableRoots refuses a place in it by name.)
+ */
+function externalRoots(paths) {
+  const outside = (p) => typeof p === 'string' && p.startsWith('/') && !within(p, WORK) && !within(p, HOME) && !within(p, '/tmp') && !TOOL_DIRS.includes(p);
+  return [...new Set(paths.filter(outside))];
 }
 
 /**
@@ -1003,7 +1041,7 @@ class Watch {
    */
   async reference(ctx) {
     const name = `${this.prefix}:reference`;
-    const p = await probe(ctx, `${name}:framework`, '');
+    const p = await probe(ctx, `${name}:framework`, '', { before: (found) => this.beforeForgeRuns(ctx, name, found) });
     const parsed = p.truncated ? { ok: false, reason: 'more than 1 MiB' } : parseFramework(p.bytes);
     const forgePath = parsed.forgePath !== undefined ? parsed.forgePath : null;
     if (forgePath === '' || forgePath === null) {
@@ -1021,13 +1059,8 @@ class Watch {
     // Every place the sets are rooted at must be one the snapshots cover (R8-F1): none is dropped silently. What lies
     // outside the work tree as text is asked of the kernel (R16-F1).
     const uncoveredRoots = unwatchableRoots(parsed.config, parsed.pathDirs, this.testGlobs);
-    if (uncoveredRoots.length === 0) uncoveredRoots.push(...await externalRootProblems(ctx, `${name}:external-roots`, parsed));
-    if (uncoveredRoots.length) {
-      throw new RequesterError([{
-        code: 'IMAGE_WATCH_ROOT_UNCOVERED', path: '/spec/env/image',
-        detail: `forge's configuration puts what the runner watches where its snapshots cannot cover it: ${shown(uncoveredRoots, 5, '; ')}`
-      }]);
-    }
+    if (uncoveredRoots.length === 0) uncoveredRoots.push(...await walkRoots(ctx, `${name}:solc`, externalRoots([parsed.config.solc])));
+    if (uncoveredRoots.length) throw uncovered(uncoveredRoots);
     const tooLarge = (why) => new RequesterError([{
       code: 'IMAGE_WATCH_TOO_LARGE', path: '/spec/env/image', detail: `${why}: the runner cannot watch the work tree for changes during a run`
     }]);
@@ -1080,6 +1113,22 @@ class Watch {
     }
     this.ref.sets = sets;
     this.repository = sets.repository;
+  }
+
+  /**
+   * Before forge first runs, for `forge config`, at the reference: a patch has
+   * been applied, and a file of its must not be forge or anything forge looks
+   * up (R16-F1, round 19). So forge's real path and the PATH directories in the
+   * work tree may not lie under paths.tests, and the PATH directories elsewhere
+   * are walked (a dangling link there could lead to a file the patch added).
+   */
+  async beforeForgeRuns(ctx, name, { realPath, pathDirs }) {
+    const problems = [];
+    const inTests = (abs) => this.testGlobs.length && abs.startsWith(`${WORK}/`) && matchesAny(abs.slice(WORK.length + 1), this.testGlobs);
+    if (inTests(realPath)) problems.push(`forge (${realPath}) is under paths.tests, where a patch's file would be forge`);
+    for (const d of pathDirs) if (inTests(d)) problems.push(`PATH directory ${d} is under paths.tests, where a patch's file would be a command`);
+    if (problems.length === 0) problems.push(...await walkRoots(ctx, `${name}:external-roots`, externalRoots(pathDirs)));
+    if (problems.length) throw uncovered(problems);
   }
 
   /**
@@ -1448,6 +1497,6 @@ module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
-  discoverForge, probe,
+  discoverForge, probe, requireImmutableTools, TOOL_DIRS,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };

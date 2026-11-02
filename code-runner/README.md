@@ -892,17 +892,26 @@ process of the run is dead:
    would be a command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
    command, naming the setting and its value; nothing is dropped silently.
    "Outside the work tree" is checked step by step (R16-F1): the read-only
-   root protects a link there, not what it leads to. Before any claim code, each
-   `PATH` directory and `solc` outside the work tree and `$HOME`, the directories
-   the runner's own tools come from (a snapshot's `find` and `sha256sum`, `git`),
-   and each symbolic link directly in those directories are walked by A1's launcher
-   check, one component at a time from `/`. One whose way meets anything the sandbox
-   user owns or can write is `IMAGE_WATCH_ROOT_UNCOVERED`, even when it ends back on
-   the root (a run could retarget the link on the way), as is a directory the sandbox
-   cannot list (mode 0111: a link inside it would go unseen). What passes is out of
-   the sandbox user's reach, so it needs no asking again after a run. A program on
-   the read-only root that itself runs something in the work tree is the image's own
-   text, which no walk can see.
+   root protects a link there, not what it leads to. A1's launcher check walks
+   each path one component at a time from `/`, and each symbolic link directly in
+   a directory it is given. One whose way meets anything the sandbox user owns or
+   can write is `IMAGE_WATCH_ROOT_UNCOVERED`, even when it ends back on the root (a
+   run could retarget the link on the way), as is a directory the sandbox cannot
+   list (mode 0111: a link inside it would go unseen). The order is the point:
+   - first thing in a sandbox, before the forced checkout, while the work tree,
+     `$HOME` and `/tmp` are empty: the directories the runner's own tools come from
+     (a snapshot's `find` and `sha256sum`, `git`), so a dangling link to a file a
+     patch would later add is never a tool. Claims, the fix check and the listing
+     check alike;
+   - before forge first runs (for `forge config`, after the patch): the image's
+     `PATH` directories outside the work tree and `$HOME`; and forge's real path or a
+     `PATH` directory under `paths.tests` is refused there, since a patch's file
+     would be forge or a command;
+   - then `solc`, which only forge's configuration names.
+
+   What passes is out of the sandbox user's reach, so it needs no asking again
+   after a run. A program on the read-only root that itself runs something in the
+   work tree is the image's own text, which no walk can see.
    `PATH` is read as the shell reads it from `/work`, where forge runs and
    its children look commands up (R11-F2): an empty entry or `.` is `/work`, a relative entry
    lies under it, and only a real `./` prefix is stripped (`.bin` is
