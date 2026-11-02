@@ -713,3 +713,12 @@ test('A3a R8-F1 (round 9): out or a dependency directory inside forge\'s cache d
   assert.deepEqual(roots({ cachePath: 'out/cache' }), []);
   assert.deepEqual(roots({ cachePath: 'lib/.cache' }), []);
 });
+
+test('A3a R11-F2: PATH is read as the shell reads it from /work: `.bin` stays `.bin`, an empty entry or `.` is /work, only a real `./` prefix is stripped', () => {
+  const config = forgeConfig(initialTree());
+  const p = integrity.parseFramework(Buffer.from(`vcr-forge /usr/local/bin/forge\nvcr-path .bin:./tools::/usr/bin/:.:/:.//x\n${config}`));
+  assert.equal(p.ok, true, p.reason);
+  assert.deepEqual(p.pathDirs, ['/work/.bin', '/work/tools', '/work', '/usr/bin', '/work', '/', '/work/x']);
+  const leading = integrity.parseFramework(Buffer.from(`vcr-forge /usr/local/bin/forge\nvcr-path :/usr/bin:\n${config}`));
+  assert.deepEqual(leading.pathDirs, ['/work', '/usr/bin', '/work']);
+});

@@ -837,6 +837,10 @@ process of the run is dead:
    or `snapshots` directories, or under `paths.tests` (a patch's file there
    would be a command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
    command, naming the setting and its value; nothing is dropped silently.
+   `PATH` is read as the shell reads it from `/work`, where the maker's
+   commands run (R11-F2): an empty entry or `.` is `/work`, a relative entry
+   lies under it, and only a real `./` prefix is stripped (`.bin` is
+   `/work/.bin`).
 
    The host's work is linear in the listing: the closure is deduplicated by
    (set, link) and by (set, real tree) before anything is queued, and each

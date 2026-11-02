@@ -704,3 +704,13 @@ test('A3a R8-F1 (round 9): out = "cache/artifacts", or libs with "cache/pkg", is
     assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc'));
   }
 });
+
+test('A3a R11-F2: a helper reached through PATH `.bin`, or through an empty PATH entry (the commands\' directory), changed during a run fails frameworkUnchanged', async () => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  for (const [path, helper, rel] of [['.bin:/usr/local/bin:/usr/bin', '/work/.bin/helper', '.bin/helper'], [':/usr/local/bin:/usr/bin', '/work/helper.sh', 'helper.sh']]) {
+    const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path ${path}\n${forgeConfig(box.tree)}` });
+    const edit = (d, k, box) => { if (k === 2) set(box, helper, '#!/bin/sh\nexit 0\n'); return { exitCode: 1, stdout: drainFails() }; };
+    const r = await runClaim(claimSandbox({ onBox: (box) => set(box, helper, '#!/bin/sh\nexec "$@"\n'), poc: [edit, edit, edit], scripts: { 'vcr-framework': framework } }));
+    assertIntegrityFails(r, ['frameworkUnchanged'], new RegExp(`frameworkUnchanged \\(run 2: ${rel.replace(/\./g, '\\.')} changed`));
+  }
+});

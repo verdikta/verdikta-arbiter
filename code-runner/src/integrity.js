@@ -226,7 +226,15 @@ function parseFramework(buf) {
   if (!m) return { ok: false, reason: 'the framework probe printed no forge path' };
   const forgePath = m[1];
   const realPath = m[3] !== undefined ? m[3] : forgePath;
-  const pathDirs = m[2].split(':').filter((d) => d !== '').map((d) => (d.startsWith('/') ? d.replace(/\/+$/, '') : `${WORK}/${d.replace(/^\.\/?/, '').replace(/\/+$/, '')}`.replace(/\/$/, '')));
+  // PATH as the shell reads it, from the maker's commands' directory (/work): an empty entry or `.` is that directory,
+  // a relative one lies under it, and only an actual `./` prefix is stripped (`.bin` stays `.bin`; R11-F2).
+  const pathDirs = m[2].split(':').map((d) => {
+    if (d.startsWith('/')) return d.replace(/\/+$/, '') || '/';
+    let rel = d;
+    while (rel.startsWith('./')) rel = rel.slice(2).replace(/^\/+/, '');
+    rel = rel.replace(/\/+$/, '');
+    return rel === '' || rel === '.' ? WORK : `${WORK}/${rel}`;
+  });
   const configText = buf.subarray(Buffer.byteLength(m[0])).toString('utf8');
   let parsed;
   try {

@@ -53,13 +53,14 @@ const VARIANTS = Object.freeze({
   },
   // R8-F1: forge's out and compile cache configured in /tmp, outside everything the snapshots list.
   tmpout: {
-    toml: `${PLAIN_TOML}\nout = "/tmp/forge-out"\ncache_path = "/tmp/forge-cache"`,
-    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
+    files: {
+      ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD,
+      'foundry.toml': FOUNDRY_TOML(PLAIN_TOML).replace('out = "out"', 'out = "/tmp/forge-out"').replace('cache_path = "cache"', 'cache_path = "/tmp/forge-cache"')
+    }
   },
   // R8-F1 (round 9): forge's out inside its cache directory, which the snapshots skip.
   cacheout: {
-    toml: `${PLAIN_TOML}\nout = "cache/artifacts"`,
-    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML(PLAIN_TOML).replace('out = "out"', 'out = "cache/artifacts"') }
   },
   // Attempt 2: a dependency link into forge's cache directory (R6-F1, round 7).
   cachelink: {
