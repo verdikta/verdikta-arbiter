@@ -34,8 +34,10 @@
  *   `node_modules/` and `dependencies/` (Soldeer);
  * - framework: forge's executable (`command -v forge`, its path and, when it
  *   lives in the work tree, its bytes), forge's resolved configuration
- *   (`forge config --json`, which sees foundry.toml, remappings, .env, the
- *   global ~/.foundry/foundry.toml and the environment alike), the root
+ *   (`forge config --json`, run as every maker command runs forge: the same
+ *   argv builder, environment and directory, forge.forgeArgv; it sees
+ *   foundry.toml, remappings, .env and the global ~/.foundry/foundry.toml
+ *   alike), the root
  *   config files themselves, $HOME but its caches (~/.foundry/cache,
  *   ~/.cache), the PATH directories inside the work tree, solc when it is in
  *   the work tree, forge-std under the dependencies (the assertion library,
@@ -80,7 +82,6 @@ const { hermetic } = require('./git');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
 const forge = require('./forge');
-const shim = require('./shim');
 
 const WORK = '/work';
 const HOME = '/home/sandbox';
@@ -115,10 +116,12 @@ const HOME_CACHES = Object.freeze(['~/.foundry/cache', '~/.cache']);
 const DEPENDENCY_DIRS = Object.freeze(['node_modules', 'dependencies']);
 
 /**
- * The framework probe (§9.5 check 4, `frameworkUnchanged`), run like the
- * maker's commands (the image's PATH, forge's environment): where `forge`
- * resolves, PATH, and forge's resolved configuration. Later probes run the
- * forge the reference found ($1), never one a run may have put on PATH.
+ * The framework probe's discovery (§9.5 check 4, `frameworkUnchanged`), in
+ * the image's own environment (its PATH is what it reads): where `forge`
+ * resolves, PATH, and the real path of the forge to run. Later probes give
+ * the forge the reference found ($1), never one a run may have put on PATH.
+ * forge's configuration is read next, by forge itself through forgeArgv
+ * (probe()), never by this script.
  */
 const FRAMEWORK_SCRIPT = [
   'f=$(command -v forge 2>/dev/null) || f=',
@@ -128,9 +131,7 @@ const FRAMEWORK_SCRIPT = [
   '[ -n "$x" ] || exit 3',
   // Where the forge to run really is (a link into the work tree is the work tree's file): coreutils by absolute path.
   'r=$x; [ -x /usr/bin/readlink ] && r=$(/usr/bin/readlink -f -- "$x" 2>/dev/null) || r=$x',
-  'printf "vcr-real %s\\n" "$r"',
-  '[ "$2" = noconfig ] && exit 0',
-  'exec "$x" config --json'
+  'printf "vcr-real %s\\n" "$r"'
 ].join('\n');
 
 /**
@@ -252,7 +253,6 @@ function parseFramework(buf) {
     path: m[2],
     pathDirs,
     configSha256: sha256(buf.subarray(Buffer.byteLength(m[0]))),
-    configText,
     config: {
       out: str(parsed.out),
       cachePath: str(parsed.cache_path),
@@ -791,8 +791,8 @@ function changeWord(before, after, p) {
 
 // ------------------------------------------------------------ the snapshots
 
-function frameworkArgv(forgePath = '', { config = true } = {}) {
-  return ['/bin/sh', '-c', FRAMEWORK_SCRIPT, 'vcr-framework', forgePath, ...(config ? [] : ['noconfig'])];
+function frameworkArgv(forgePath = '') {
+  return ['/bin/sh', '-c', FRAMEWORK_SCRIPT, 'vcr-framework', forgePath];
 }
 
 function manifestArgv(roots, prunes = []) {
@@ -809,10 +809,58 @@ function runnerError(step, detail) {
   return new Abstain(ABSTAIN.RUNNER_ERROR, detail, { step });
 }
 
-async function probe(ctx, name, forgePath, { config = true } = {}) {
+/** The discovery's lines: forge's path, PATH, the real path. */
+const DISCOVERY = /^vcr-forge ([^\n]*)\nvcr-path ([^\n]*)\n(?:vcr-real ([^\n]*)\n)?$/;
+
+/**
+ * The framework probe: the discovery (FRAMEWORK_SCRIPT), then, with
+ * `config`, `forge config --json` run by forge itself through forgeArgv,
+ * exactly as the maker's commands run it: the same forge (`tool`'s real
+ * path, the reference's; at the reference, the one just found), the same
+ * fixed environment and PATH, /work. Its output follows the discovery's
+ * lines in `bytes` (parseFramework); its exit code and stderr are the
+ * configuration's. A forge the runner cannot run as an argv is `unrunnable`.
+ * @param {object} ctx
+ * @param {string} name
+ * @param {string} forgePath - '' at the reference, else the reference's real path
+ * @param {{config?:boolean, tool?:{realPath:string, path:string}}} [o]
+ */
+async function probe(ctx, name, forgePath, { config = true, tool = null } = {}) {
+  const head = new Prefix(CONFIG_MAX_BYTES);
+  const found = await ctx.exec(frameworkArgv(forgePath), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: head });
+  const headBytes = head.bytes();
+  const done = (exitCode, bytes, stderr, extra = {}) => ({ exitCode, truncated: head.truncated, bytes, stderr, ...extra });
+  if (found.exitCode !== 0 || !config) return done(found.exitCode, headBytes, found.stderr ? found.stderr.text : '');
+  const m = head.truncated ? null : DISCOVERY.exec(headBytes.toString('utf8'));
+  if (!m) return done(found.exitCode, headBytes, '');
+  const use = tool || { realPath: m[3] !== undefined ? m[3] : m[1], path: m[2] };
+  const problem = forge.toolProblem(use);
+  if (problem) return done(found.exitCode, headBytes, '', { unrunnable: problem });
   const out = new Prefix(CONFIG_MAX_BYTES);
-  const record = await ctx.exec(frameworkArgv(forgePath, { config }), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, env: forge.forgeEnv(), tee: out });
-  return { exitCode: record.exitCode, truncated: out.truncated, bytes: out.bytes(), stderr: record.stderr ? record.stderr.text : '' };
+  const record = await ctx.exec(forge.forgeArgv(use, ['config', '--json']), {
+    name: `${name}:config`, timeoutMs: SNAPSHOT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR, tee: out
+  });
+  return {
+    exitCode: record.exitCode, truncated: out.truncated, bytes: Buffer.concat([headBytes, out.bytes()]), stderr: record.stderr ? record.stderr.text : ''
+  };
+}
+
+/**
+ * Where forge is, for a session the integrity reference does not cover (the
+ * listing check's build and suite, its harness probes): the discovery only.
+ * What it finds is the requester's when it cannot be run (no forge, or a
+ * path the runner cannot pass as a program).
+ * @returns {Promise<{forgePath:string, realPath:string, path:string}>}
+ */
+async function discoverForge(ctx, name) {
+  const p = await probe(ctx, name, '', { config: false });
+  const m = p.truncated ? null : DISCOVERY.exec(p.bytes.toString('utf8'));
+  // As at the integrity reference: no forge, or an answer that holds none (an image PATH of several lines).
+  if (!m || m[1] === '' || p.exitCode !== 0) throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: 'the env image has no forge on its PATH' }]);
+  const tool = { forgePath: m[1], realPath: m[3] !== undefined ? m[3] : m[1], path: m[2] };
+  const problem = forge.toolProblem(tool);
+  if (problem) throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: `the env image has no forge the runner can run: ${problem}` }]);
+  return tool;
 }
 
 /** The listing; `overflow` with its reason when it is over a cap (MANIFEST_MAX_BYTES, MAX_ENTRIES). */
@@ -882,6 +930,9 @@ class Watch {
     if (forgePath === '' || forgePath === null) {
       throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: 'the env image has no forge on its PATH' }]);
     }
+    if (p.unrunnable) {
+      throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: `the env image has no forge the runner can run: ${p.unrunnable}` }]);
+    }
     if (p.exitCode !== 0 || !parsed.ok) {
       throw new RequesterError([{
         code: 'FORGE_CONFIG_INVALID', path: '/spec/env/image',
@@ -901,10 +952,9 @@ class Watch {
     }]);
     const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(parsed.config));
     if (m.overflow) throw tooLarge(m.reason);
+    // `path` and `realPath` are the forge every maker command runs, with the configuration hashed here (forgeArgv).
     this.ref = {
-      forgePath: parsed.forgePath, realPath: parsed.realPath, path: parsed.path, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config,
-      // What the runner's forge holds every call of the maker's commands to (src/shim.js, R11-F1).
-      configDigest: shim.watchedConfigDigest(parsed.configText)
+      forgePath: parsed.forgePath, realPath: parsed.realPath, path: parsed.path, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config
     };
     // A forge that lives in the work tree runs after claim code only while its bytes are the reference's (R1-F3): the
     // reference must have hashed it, wherever it is.
@@ -941,38 +991,17 @@ class Watch {
     }
     this.ref.sets = sets;
     this.repository = sets.repository;
-    await this.installShim(ctx, name);
   }
 
   /**
-   * The runner's forge (src/shim.js, R11-F1), written once by the shim's
-   * user before any maker command: the probed forge's real path and the
-   * probed configuration's digest. An image without awk or sha256sum cannot
-   * hold it (IMAGE_TOOL_MISSING).
+   * The forge the maker's commands run (forge.forgeArgv): the reference's,
+   * its real path and the image's PATH as probed, the configuration hashed
+   * at the reference.
+   * @returns {{forgePath:string, realPath:string, path:string}}
    */
-  async installShim(ctx, name) {
-    const script = shim.shimScript({ real: this.ref.realPath, want: this.ref.configDigest });
-    const record = await ctx.exec(shim.installArgv(), { name: `${name}:shim`, timeoutMs: SNAPSHOT_TIMEOUT_MS, stdin: Buffer.from(script, 'utf8'), as: shim.SHIM_USER });
-    if (record.exitCode === 4) {
-      throw new RequesterError([{ code: 'IMAGE_TOOL_MISSING', path: '/spec/env/image', detail: 'the env image has no awk or sha256sum, which the runner\'s forge needs to check each call\'s configuration' }]);
-    }
-    if (record.exitCode !== 0) throw runnerError(`${name}:shim`, `the runner's forge could not be installed (exit ${record.exitCode})`);
-  }
-
-  /** The environment of the maker's commands: the runner's forge first on PATH, FOUNDRY_CONFIG poisoned (src/shim.js). */
-  commandEnv() {
-    return shim.commandEnv(this.ref.path);
-  }
-
-  /**
-   * A maker's step's stderr, read for the runner's forge's refusal (or the
-   * poison's error, forge reached without it): a failure of
-   * frameworkUnchanged, named. Returns the reason, or null.
-   */
-  noteRefusal(label, stderr) {
-    const reason = shim.refusalOf(stderr);
-    if (reason) this.fail('framework', `${label}: ${reason}`);
-    return reason;
+  tool() {
+    if (!this.ref) throw new TypeError('the reference has not been taken');
+    return { forgePath: this.ref.forgePath, realPath: this.ref.realPath, path: this.ref.path };
   }
 
   /**
@@ -1023,8 +1052,8 @@ class Watch {
       const e = listed ? listed.get(Buffer.from(this.ref.realPath, 'utf8').toString('latin1')) : null;
       runnable = Boolean(e && e.type === 'f' && e.hash && describe(e) === this.ref.forgeEntry);
     }
-    // The reference's real path, never a link a run could retarget.
-    const p = await probe(ctx, `${name}:framework`, this.ref.realPath, { config: runnable });
+    // The reference's real path, never a link a run could retarget; its configuration read as the commands run forge.
+    const p = await probe(ctx, `${name}:framework`, this.ref.realPath, { config: runnable, tool: this.tool() });
     const parsed = p.truncated ? { ok: false, reason: 'more than 1 MiB' } : parseFramework(p.bytes);
     if (parsed.forgePath !== undefined && parsed.forgePath !== this.ref.forgePath) {
       this.fail('framework', `${label}: forge resolves to ${parsed.forgePath || 'nothing'}, not ${this.ref.forgePath}`);
@@ -1233,19 +1262,6 @@ function pathKinds(p) {
   return kinds;
 }
 
-/** The repository paths a maker's command names (a script it runs), with any leading ./ removed. */
-function commandPaths(commands) {
-  const out = new Set();
-  for (const v of Object.values(commands || {})) {
-    if (typeof v !== 'string') continue;
-    for (const tok of v.split(/[\s;|&()<>'"`]+/)) {
-      const t = tok.replace(/^(?:\.\/)+/, '');
-      if (t && !t.startsWith('-') && !t.startsWith('$') && t.includes('/') || /\.(?:sh|js|ts|py|mk)$/.test(t)) out.add(t);
-    }
-  }
-  return out;
-}
-
 /**
  * Static tamper flags (§9.5 check 5) over the lines a patch added, in its
  * files under paths.tests (and, for the fix check, the fix's lines): test
@@ -1253,16 +1269,15 @@ function commandPaths(commands) {
  * forge's process or registers an exit handler, changes forge's file
  * permissions inline, writes forge's configuration, its dependencies, its
  * artifacts, the runner's repository or forge-std (the assertion library)
- * with a file cheatcode, or writes outside the repository; and a patch that
- * changes a script a maker's command runs. One flag per kind per line, at
- * most 100, in the report's order (kind, file, line).
+ * with a file cheatcode, or writes outside the repository. (A maker's
+ * command names no script any more: the grammar refuses one, src/commands.js.)
+ * One flag per kind per line, at most 100, in the report's order (kind,
+ * file, line).
  * @param {object} o
  * @param {Map<string, Array<{line:number, text:string}>>} o.added - the patch's added lines by file
- * @param {Array<{status:string, path:string}>} o.touched - the paths the patch touched
- * @param {object} o.commands - the spec's commands
  * @returns {Array<{kind:string, file:string, line:number|null}>}
  */
-function tamperFlags({ added, touched = [], commands = {} }) {
+function tamperFlags({ added }) {
   const flags = new Map();
   const flag = (kind, file, line) => flags.set(`${kind}\u0000${file}\u0000${line}`, { kind, file, line });
   for (const [file, lines] of added) {
@@ -1292,14 +1307,9 @@ function tamperFlags({ added, touched = [], commands = {} }) {
       }
     }
   }
-  const named = commandPaths(commands);
-  for (const t of touched) if (named.has(t.path)) flag('framework-patched', t.path, null);
   const order = (a, b) => {
     if (a.kind !== b.kind) return a.kind < b.kind ? -1 : 1;
     if (a.file !== b.file) return a.file < b.file ? -1 : 1;
-    if (a.line === b.line) return 0;
-    if (a.line === null) return -1;
-    if (b.line === null) return 1;
     return a.line - b.line;
   };
   return [...flags.values()].sort(order).slice(0, MAX_TAMPER_FLAGS);
@@ -1346,5 +1356,6 @@ module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
+  discoverForge, probe,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };

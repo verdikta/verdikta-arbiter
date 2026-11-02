@@ -51,11 +51,6 @@ const VARIANTS = Object.freeze({
       'mkdir -p third_party/lib && printf "contract TP {}\\n" > third_party/lib/TP.sol && ln -s third_party deps'
     ].join(' && ')
   },
-  // R11-F1: profiles a maker's command could select: `ci` moves out (a watched path), `opt` only turns the optimizer on.
-  profiles: {
-    toml: 'ffi = true\n\n[profile.ci]\nout = "ci-out"\n\n[profile.opt]\noptimizer = true',
-    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
-  },
   // Attempt 3 (R11-F1, owner decision Q31): the image's own environment names another profile, out directory and
   // configuration file. forge runs with the runner's environment, so none of them may reach it (FOUNDRY_CONFIG names
   // no file: forge would fail if it did).
@@ -202,7 +197,7 @@ test('ordinary PoCs raise no integrity failure under real forge: the vault PoC, 
 
 // ------------------------------------------------------- the catalogue fixtures
 
-test('junit-forged-early-exit (forge form): an ffi child prints a JUnit to forge\'s stdout and kills forge; with the exit masked, exit-code and summary consistency refuse it, unmasked it abstains', { timeout: TIMEOUT }, async (t) => {
+test('junit-forged-early-exit (forge form): an ffi child prints a JUnit to forge\'s stdout and kills forge: the kill is a signal death, the arbiter abstains; a maker\'s command that would mask it (`! forge test`) is refused', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('ffi');
   const forged = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -216,26 +211,17 @@ test('junit-forged-early-exit (forge form): an ffi child prints a JUnit to forge
       `    function test_forged() public { ${ffiSh(`printf '%s\\n' '${forged}' > /proc/$PPID/fd/1; kill -9 $PPID`)} }`
     ])
   });
-  // A maker command that inverts forge's exit (`!`): a forge killed by the child then ends 0, a clean exit.
+  // Attempt 3 (owner decision Q31): the runner runs forge itself, so nothing can invert its exit. The form that once
+  // reached the exit-code and summary checks (`!`) is the requester's error; those checks stay, with their unit tests.
   const masked = await run(t, claim(fx, poc, {
     commands: { testFiles: '! forge test --match-path $FILES', testIds: '! forge test --match-test $TEST_IDS' },
     finding: finding({ command: 'forge test --match-test test_forged', observable: 'test_forged fails with "vault drained"' })
   }));
-  assert.equal(masked.outcome, 'definitive', show(masked));
-  assert.equal(masked.gates.integrity.status, 'fail', show(masked));
-  assert.equal(masked.gates.reproduces.status, 'fail');
-  assert.equal(masked.facts.poc.integrity.exitConsistent, false, 'the command exited 0 with no report of its own or a failing one');
-  if (masked.facts.poc.runs[0].junit === 'ok') {
-    // Where forge's stdout can be reopened (runc), the forged document was read: it has no forge summary.
-    assert.equal(masked.facts.poc.integrity.summaryConsistent, false, show(masked));
-    assert.equal(masked.gates.reproduces.basis, 'integrity', 'only the integrity checks stood between the forged record and reproduces');
-  } else {
-    assert.notEqual(RUNTIME, 'runc', 'runc reopens /proc/<pid>/fd/1');
-  }
-  const kinds = new Set(masked.facts.poc.integrity.tamperFlags.map((f) => f.kind));
-  for (const k of ['report-path-referenced', 'exit-during-import']) assert.ok(kinds.has(k), `${k}: ${JSON.stringify(masked.facts.poc.integrity.tamperFlags)}`);
+  assert.equal(masked.outcome, 'requester_error', show(masked));
+  assert.deepEqual(masked.issues.map((i) => i.code), ['COMMAND_NOT_ALLOWED', 'COMMAND_NOT_ALLOWED']);
+  assert.match(masked.issues[0].detail, /^commands\.testFiles: "!" is not allowed/);
 
-  // Unmasked, the kill is a signal death (exit 137): the arbiter abstains, no verdict.
+  // The kill is a signal death (exit 137): the arbiter abstains, no verdict.
   const plain = await run(t, claim(fx, poc));
   assert.equal(plain.outcome, 'abstain', show(plain));
   assert.equal(plain.abstain.step, 'poc:1');
@@ -330,7 +316,7 @@ test('test-report-missing-identity (forge form): the PoC skips itself on runs 2 
   assert.equal(r.facts.poc.integrity.exitConsistent, true);
 });
 
-test('test-report-duplicate-identity (forge form): an ffi child forges a summary-consistent JUnit carrying the PoC twice, and the maker\'s command masks forge\'s death', { timeout: TIMEOUT }, async (t) => {
+test('test-report-duplicate-identity (forge form): an ffi child forges a summary-consistent JUnit carrying the PoC twice: with forge\'s death unmasked the arbiter abstains; the wrapper that would mask it is refused', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('ffi');
   const forged = [
     '<?xml version="1.0" encoding="UTF-8"?>',
@@ -344,25 +330,21 @@ test('test-report-duplicate-identity (forge form): an ffi child forges a summary
   const poc = addFilesPatch({
     'test/Exploit.t.sol': pocFile('ExploitTest', [`    function test_dup() public { ${ffiSh(`printf '%s\\n' '${forged}' > /proc/$PPID/fd/1; kill -9 $PPID`)} }`])
   });
-  // A wrapper that keeps forge's 0 and 1 and turns a signal death into 1.
-  const r = await run(t, claim(fx, poc, {
+  // A wrapper that keeps forge's 0 and 1 and turns a signal death into 1: attempt 3 refuses it (the identity check that
+  // once caught this form stays, with its unit test `test-report-duplicate-identity`).
+  const wrapped = await run(t, claim(fx, poc, {
     commands: {
       testFiles: 'sh -c \'forge test --match-path "$0" "$@" || exit 1\' $FILES',
       testIds: 'sh -c \'forge test --match-test "$0" "$@" || exit 1\' $TEST_IDS'
     }
   }));
-  assert.equal(r.outcome, 'definitive', show(r));
-  assert.equal(r.gates.integrity.status, 'fail', show(r));
-  assert.equal(r.gates.reproduces.status, 'fail');
-  if (r.facts.poc.runs[0].junit === 'ok') {
-    assert.equal(r.facts.poc.integrity.identityComplete, false);
-    assert.match(r.gates.integrity.detail, /run 1: test\/Exploit\.t\.sol > ExploitTest > test_dup\(\) has 2 records/);
-    assert.equal(r.facts.poc.integrity.summaryConsistent, true, 'a careful forgery passes the summary check: identity is what refuses it');
-    assert.equal(r.facts.poc.integrity.exitConsistent, true);
-    assert.equal(r.facts.poc.tests[0].runs[0], 'duplicate');
-  } else {
-    assert.notEqual(RUNTIME, 'runc', `${JSON.stringify(r.facts.poc.runs[0])} ${(r.steps.find((s) => s.name === 'poc:1') || {}).stdout ? r.steps.find((s) => s.name === 'poc:1').stdout.text.slice(0, 2000) : ''}`);
-  }
+  assert.equal(wrapped.outcome, 'requester_error', show(wrapped));
+  assert.deepEqual(wrapped.issues.map((i) => i.code), ['COMMAND_NOT_ALLOWED', 'COMMAND_NOT_ALLOWED']);
+  assert.match(wrapped.issues[0].detail, /^commands\.testFiles: "sh" is not allowed/);
+  // The runner's own forge: the kill is forge's death, whatever the child printed.
+  const r = await run(t, claim(fx, poc));
+  assert.equal(r.outcome, 'abstain', show(r));
+  assert.equal(r.abstain.step, 'poc:1');
 });
 
 test('claimed-observable-mismatch (forge form): finding.json names another test, or quotes an observable forge did not record', { timeout: TIMEOUT }, async (t) => {
@@ -452,50 +434,6 @@ test('A3a R8-F1 under real forge: out and cache_path configured in /tmp, or out 
   assert.equal(inCache.outcome, 'requester_error', show(inCache));
   assert.match(inCache.issues[0].detail, /out \(cache\/artifacts\) is in forge's cache directory \(cache\)/);
   assert.ok(!(inCache.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)));
-});
-
-test('A3a R11-F1 under real forge: each override route is refused before forge runs with another configuration (FOUNDRY_PROFILE, --config-path, --root, through env), an absolute-path call fails on the poison; each is named', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('profiles');
-  const poc = addFilesPatch({ 'test/Exploit.t.sol': DRAIN });
-  for (const [build, re] of [
-    ['FOUNDRY_PROFILE=ci forge build', /refused the call: the call's environment \(FOUNDRY_PROFILE or another FOUNDRY_\* variable\) changes a setting the checks watch/],
-    ['forge build --config-path foundry.toml', /refused the call: forge was given --config-path/],
-    ['forge build --root /work', /refused the call: forge was given --root/],
-    ['env FOUNDRY_PROFILE=ci forge build', /refused the call: the call's environment/],
-    ['/usr/local/bin/forge build', /forge ran without the runner's forge \(by an absolute path/]
-  ]) {
-    const r = await run(t, claim(fx, poc, { commands: { build } }));
-    assert.equal(r.outcome, 'definitive', `${build}: ${show(r)}`);
-    assert.equal(r.gates.build.status, 'fail', `${build}: ${show(r)}`);
-    assert.match(r.gates.build.detail, re, build);
-  }
-  // In a PoC run, where claim code runs: integrity names it.
-  const inRun = await run(t, claim(fx, poc, { commands: { testFiles: 'FOUNDRY_PROFILE=ci forge test --match-path $FILES' } }));
-  assert.equal(inRun.outcome, 'definitive', show(inRun));
-  assert.equal(inRun.gates.integrity.status, 'fail', show(inRun));
-  assert.equal(inRun.facts.poc.integrity.frameworkUnchanged, false);
-  assert.match(inRun.gates.integrity.detail, /run 1: the runner's forge refused the call: the call's environment/);
-  assert.equal(inRun.gates.reproduces.status, 'fail');
-});
-
-test('A3a R11-F1 under real forge: ordinary commands pass untouched through the runner\'s forge (a profile or FOUNDRY_* that moves no watched path included), and claim code can neither change nor add to it', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('profiles');
-  // (One profile for every command: runs that compile differently rewrite the artifacts run 1 left, which the artifact check refuses.)
-  const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), {
-    commands: { build: 'FOUNDRY_PROFILE=opt forge build', testFiles: 'FOUNDRY_PROFILE=opt forge test --match-path $FILES', testIds: 'env FOUNDRY_PROFILE=opt FOUNDRY_FUZZ_RUNS=10 forge test --match-test $TEST_IDS' }
-  }));
-  assert.equal(r.outcome, 'definitive', show(r));
-  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
-  assert.deepEqual(r.facts.poc.integrity, CLEAN);
-  // An ffi child tries to rewrite the runner's forge, then to add one beside it; it reports what it managed.
-  const tamper = pocFile('ExploitTest', [
-    `    function ${NAME}() public { ${ffiSh('if (printf x > /vcr/forge) 2>/dev/null; then printf wrote; elif touch /vcr/forge2 2>/dev/null; then printf added; else printf denied; fi').replace('vm.ffi(c);', 'bytes memory got = vm.ffi(c); vm.assertTrue(false, string(got));')} }`
-  ]);
-  const d = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': tamper }), { finding: finding({ observable: `${NAME} fails with "denied"` }) }));
-  assert.equal(d.outcome, 'definitive', show(d));
-  assert.equal(d.facts.poc.tests[0].message, 'denied', show(d));
-  assert.deepEqual(d.facts.poc.tests[0].runs, ['fail', 'fail', 'fail'], 'runs 2 and 3 still went through the runner\'s forge, unchanged');
-  assert.equal(d.gates.integrity.status, 'pass', show(d));
 });
 
 test('A3a R11-F1 (attempt 3) under real forge: the runner runs forge as an argv, with its own environment in /work (the image\'s FOUNDRY_PROFILE, FOUNDRY_OUT and FOUNDRY_CONFIG never reach it), and every allowlisted flag works', { timeout: TIMEOUT }, async (t) => {

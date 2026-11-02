@@ -95,11 +95,12 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
     'vcr-procs', ...PREPARE,
     'vcr-freespace', 'git apply', 'git diff', 'git cat-file', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
-    // A3a: the integrity checks' reference (forge, its configuration, the watched files), then a snapshot after each run.
-    'vcr-framework', 'vcr-manifest', 'vcr-shim', 'vcr-build', 'vcr-cleanup',
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'git reset', 'vcr-manifest',
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'git reset', 'vcr-manifest',
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework'
+    // A3a: the integrity checks' reference (forge, its configuration, the watched files), then a snapshot after each run;
+    // forge's configuration is read by forge itself, run as the commands run it (attempt 3: `forge-config`).
+    'vcr-framework', 'forge-config', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config', 'git reset', 'vcr-manifest',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config', 'git reset', 'vcr-manifest',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config'
   ]);
   const poc = r.facts.poc;
   assert.equal(poc.testCount, 1);
@@ -393,9 +394,10 @@ test('build: the build command\'s exit code decides the gate (tier A); a failed 
   assert.equal(r.outcome, 'definitive');
   assert.deepEqual(r.gates.build, { status: 'fail', basis: 'exit_code', detail: 'the build command exited 1' });
   assert.equal(pocRuns(sb).length, 0);
+  // Attempt 3 (owner decision Q31): forge itself, as an argv, never the maker's text in a shell.
   const [build] = sb.execs().filter((d) => d.kind === 'vcr-build');
-  assert.deepEqual(build.argv, ['/bin/sh', '-c', 'set -f; forge build', 'vcr-build']);
-  assert.equal(build.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
+  assert.deepEqual(build.argv, ['/usr/local/bin/forge', 'build']);
+  assert.equal(build.fixedEnv.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
 });
 
 test('build: gates come only from definitive results; an OOM-killed build abstains with no build gate', async () => {
@@ -432,13 +434,12 @@ test('PoC runs: testFiles on the hunter\'s files, then testIds twice, each with 
   await runClaim(sb);
   const runs = pocRuns(sb);
   assert.equal(runs.length, 3);
-  assert.deepEqual(runs[0].argv, ['/bin/sh', '-c', 'set -f; forge test --match-path $FILES "$@"', 'vcr-poc', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-  assert.equal(runs[0].env.FILES, '{test/Exploit.t.sol,test/sub/More.t.sol}', 'the Solidity files the patch added or changed');
+  // $FILES: the Solidity files the patch added or changed, one argument (attempt 3: forge's argv, no shell).
+  assert.deepEqual(runs[0].argv, ['/usr/local/bin/forge', 'test', '--match-path={test/Exploit.t.sol,test/sub/More.t.sol}', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
   for (const run of runs.slice(1)) {
-    assert.deepEqual(run.argv, ['/bin/sh', '-c', 'set -f; forge test --match-test $TEST_IDS "$@"', 'vcr-poc', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-    assert.equal(run.env.TEST_IDS, '^(?:test_drain\\(\\))$');
+    assert.deepEqual(run.argv, ['/usr/local/bin/forge', 'test', '--match-test=^(?:test_drain\\(\\))$', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
   }
-  for (const run of runs) assert.equal(run.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
+  for (const run of runs) assert.equal(run.fixedEnv.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
 });
 
 test('reproduces: any pass on any run fails the gate, and the detail names the test and the run', async () => {
@@ -544,7 +545,7 @@ test('reproduces: the tests the patch added are the ones not in baseline.json; e
   const r2 = await runClaim(sb2);
   assert.equal(r2.gates.reproduces.status, 'fail');
   assert.equal(r2.gates.reproduces.detail, 'test/Exploit.t.sol > ExploitTest > test_b() passed on run 1');
-  assert.equal(pocRuns(sb2)[1].env.TEST_IDS, '^(?:test_a\\(\\)|test_b\\(\\))$');
+  assert.ok(pocRuns(sb2)[1].argv.includes('--match-test=^(?:test_a\\(\\)|test_b\\(\\))$'));
 });
 
 test('reproduces: a patch whose run shows no added test fails; runs 2 and 3 are not run', async () => {
@@ -634,7 +635,9 @@ test('the requester\'s package: an unsupported framework or env, a command the a
     [claimRequest({ spec: forgeSpec({ env: { image: IMAGE, from: 'node22', platform: 'linux/amd64', unpackedBytes: 1 } }) }), 'ENV_UNSUPPORTED'],
     [claimRequest({ spec: forgeSpec({ commands: { testIds: undefined } }) }), 'COMMAND_MISSING'],
     [claimRequest({ spec: forgeSpec({ commands: { testFiles: 'forge test' } }) }), 'COMMAND_PLACEHOLDER'],
-    [claimRequest({ spec: forgeSpec({ commands: { build: 'forge build\u0000' } }) }), 'COMMAND_INVALID'],
+    // Attempt 3: a NUL (any control character) is the grammar's refusal; only the length is COMMAND_INVALID.
+    [claimRequest({ spec: forgeSpec({ commands: { build: 'forge build\u0000' } }) }), 'COMMAND_NOT_ALLOWED'],
+    [claimRequest({ spec: forgeSpec({ commands: { build: `forge build${' '.repeat(2000)}` } }) }), 'COMMAND_INVALID'],
     [claimRequest({ baseline: { tests: 'nope' } }), 'BASELINE_INVALID']
   ];
   for (const [request, code] of cases) {

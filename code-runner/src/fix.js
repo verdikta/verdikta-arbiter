@@ -162,15 +162,14 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     fact.detail.builds = `with the fix, ${err.issues.map((i) => `${i.code}: ${i.detail}`).join('; ')}`;
     return finish();
   }
-  const built = await kit.runBuild(ctx, box, spec.commands.build, limits, watch.commandEnv());
-  const refused = watch.noteRefusal('the build', built.stderr);
-  fact.builds = built.exitCode === 0 ? 'pass' : 'fail';
-  fact.detail.builds = `the build command exited ${built.exitCode} with the fix${refused ? `: ${refused}` : ''}`;
+  // forge as the PoC's sandbox runs it (commands.js, forge.forgeArgv): the reference's forge and configuration.
+  const buildExit = await kit.runBuild(ctx, box, watch.tool(), kit.parsedCommand(spec, 'build'), limits);
+  fact.builds = buildExit === 0 ? 'pass' : 'fail';
+  fact.detail.builds = `the build command exited ${buildExit} with the fix`;
   if (fact.builds !== 'pass') return finish();
 
   // The maker's suite, once.
-  const run = await kit.forgeRun(ctx, box, { name: 'suite', script: 'vcr-suite', command: spec.commands.test, env: watch.commandEnv(), timeoutMs: limits.testSeconds * 1000 });
-  watch.noteRefusal('the suite', run.stderr);
+  const run = await kit.forgeRun(ctx, box, { name: 'suite', tool: watch.tool(), command: kit.parsedCommand(spec, 'test'), timeoutMs: limits.testSeconds * 1000 });
   await watch.afterRun(ctx, 'the suite', { first: true });
 
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
@@ -205,11 +204,7 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   const summary = [];
   const exit = [];
   kit.runConsistency(run, 'the suite', summary, exit);
-  const flags = integrity.tamperFlags({
-    added: new Map([...pocTouched.added, ...fixTouched.added]),
-    touched: [...pocTouched.touched, ...fixTouched.touched],
-    commands: spec.commands
-  });
+  const flags = integrity.tamperFlags({ added: new Map([...pocTouched.added, ...fixTouched.added]) });
 
   /**
    * pocPasses and the check's integrity, once the PoC's own run 1 named the

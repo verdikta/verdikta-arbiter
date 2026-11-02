@@ -63,6 +63,11 @@ function hardLinked(a, b) {
 const VARIANTS = Object.freeze({
   plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
   ffi: { toml: 'ffi = true' },
+  // Attempt 3: a build that hits the memory limit, with a plain `forge build`: forge's compiler, when it compiles (not
+  // for `forge config`, which only asks its version), asks for more than the sandbox has, and forge dies with it.
+  oomsolc: {
+    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) dd if=/dev/zero of=/dev/null bs=768M count=1 2>/dev/null || kill -KILL $PPID ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+  },
   // The image's own repository config runs test/filter.sh as a smudge filter
   // for test/*.bin (R1-F3): a patch could edit the script, then add a .bin.
   filter: {
@@ -418,10 +423,7 @@ test('build gate: a PoC that does not compile fails the build (tier A); an OOM-k
   assert.deepEqual(r.gates.build, { status: 'fail', basis: 'exit_code', detail: 'the build command exited 1' });
   assert.ok(!stepNames(r).includes('poc:1'));
 
-  const oom = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), {
-    commands: { build: 'forge build && dd if=/dev/zero of=/dev/null bs=768M count=1' },
-    limits: { memoryMb: 512 }
-  }));
+  const oom = await run(t, claim(await fixture('oomsolc'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { limits: { memoryMb: 512 } }));
   assert.equal(oom.result.outcome, 'abstain', show(oom.result));
   assert.equal(oom.result.abstain.cause, 'oom');
   assert.equal(oom.result.abstain.step, 'build');

@@ -71,7 +71,33 @@ const VARIANTS = Object.freeze({
   vault: { files: { ...VAULT_REPO, 'test/Flaky.t.sol': FLAKY }, toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
   modern: { files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD.modern }, toml: REMAP },
   legacy: { files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD.legacy }, toml: REMAP },
-  testsdir: { files: TESTS_DIR }
+  testsdir: { files: TESTS_DIR },
+  // Attempt 3: a build slow enough to be stopped, with a plain `forge build`: forge's compiler takes its time.
+  slowsolc: {
+    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) sleep 40 ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+  },
+  // A source that does not compile, at the listed commit.
+  broken: { files: { ...VAULT_REPO, 'src/Broken.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract Broken { function f() public { undeclared(); } }\n' } },
+  // R1-F2: the suite's third run leaves an untracked test file that does not compile (test_leaves counts its runs in state/).
+  leaver: {
+    files: {
+      ...VAULT_REPO,
+      'test/Leaver.t.sol': [
+        '// SPDX-License-Identifier: MIT',
+        'pragma solidity ^0.8.0;',
+        'import {Base} from "./Vm.sol";',
+        'contract LeaverTest is Base {',
+        '    function test_leaves() public {',
+        '        if (vm.isFile("state/second")) vm.writeFile("test/Late.t.sol", "this does not compile");',
+        '        else if (vm.isFile("state/first")) vm.writeFile("state/second", "x");',
+        '        else vm.writeFile("state/first", "x");',
+        '    }',
+        '}',
+        ''
+      ].join('\n')
+    },
+    toml: 'fs_permissions = [{ access = "read-write", path = "./state" }, { access = "read-write", path = "./test" }]'
+  }
 });
 
 function fixture(variant) {
@@ -212,9 +238,9 @@ test('legacy, non-reverting assertions: the trivially failing test is an error, 
 });
 
 test('too heavy: a build that runs past 30 s is stopped, and the listing refused (3x it passes the class\'s 90 s build)', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vault');
+  const fx = await fixture('slowsolc');
   const t0 = Date.now();
-  const r = await check(t, body(fx, { commands: { build: 'sleep 40; forge build' } }));
+  const r = await check(t, body(fx));
   assert.equal(r.outcome, 'definitive', show(r));
   assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['LISTING_TOO_HEAVY'], show(r));
   assert.match(r.facts.listing.refusals[0].detail, /the build ran past 30 s/);
@@ -223,24 +249,34 @@ test('too heavy: a build that runs past 30 s is stopped, and the listing refused
   assert.equal(r.facts.listing.limits, null);
 });
 
-test('a build that fails at the listed commit refuses the listing; a testFiles that ignores $FILES cannot host claims', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vault');
-  const built = await check(t, body(fx, { commands: { build: 'forge build && exit 3' } }));
+test('a build that fails at the listed commit refuses the listing; a testFiles that ignores $FILES (a shell line) is refused before any sandbox', { timeout: TIMEOUT }, async (t) => {
+  const built = await check(t, body(await fixture('broken')));
   assert.equal(built.outcome, 'definitive', show(built));
   assert.deepEqual(built.facts.listing.refusals.map((x) => x.code), ['BUILD_FAILED']);
-  // The maker's testFiles runs one fixed file whatever $FILES names: a PoC would never run.
-  const ignored = await check(t, body(fx, { commands: { testFiles: 'FILES=test/Vault.t.sol; forge test --match-path $FILES' } }));
-  assert.equal(ignored.outcome, 'definitive', show(ignored));
-  assert.deepEqual(ignored.facts.listing.refusals.map((x) => x.code), ['HARNESS_ASSERTION_NOT_REPORTED'], show(ignored));
+  // Attempt 3 (owner decision Q31): the maker's testFiles that runs one fixed file whatever $FILES names is no longer
+  // something the harness proof must catch: only `forge test --match-path $FILES` parses. An ordinary filter is refused too.
+  const fx = await fixture('vault');
+  for (const [testFiles, token] of [['FILES=test/Vault.t.sol; forge test --match-path $FILES', 'FILES=test/Vault.t.sol;'], ['forge test --match-path test/Vault.t.sol', 'test/Vault.t.sol']]) {
+    const v = validateListingRequest(body(fx, { commands: { testFiles } }));
+    assert.equal(v.ok, false, testFiles);
+    assert.deepEqual(v.issues.map((i) => [i.code, i.path]), [['COMMAND_NOT_ALLOWED', '/spec/commands/testFiles']]);
+    assert.ok(v.issues[0].detail.includes(JSON.stringify(token)), v.issues[0].detail);
+  }
 });
 
-test('what the suite leaves in its sandbox cannot make the harness proof pass: each probe gets a fresh one, as a claim does (R1-F2)', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vault');
-  // commands.test leaves /tmp/suite-ready behind, and testFiles needs it: a claim, which never runs commands.test, would fail.
-  const r = await check(t, body(fx, { commands: { test: 'touch /tmp/suite-ready && forge test', testFiles: '[ -e /tmp/suite-ready ] && forge test --match-path $FILES' } }));
+test('what the suite leaves in its sandbox cannot move the harness proof: each probe gets a fresh one, as a claim does (R1-F2)', { timeout: TIMEOUT }, async (t) => {
+  // The suite's third run leaves test/Late.t.sol, untracked and not compiling. In the suite's own sandbox every later
+  // forge would fail to compile; each probe's fresh sandbox never saw it, so the proof passes.
+  const r = await check(t, body(await fixture('leaver')));
   assert.equal(r.outcome, 'definitive', show(r));
-  assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['HARNESS_ASSERTION_NOT_REPORTED'], show(r));
-  assert.equal(r.facts.listing.baseline.stable.length, 1, 'the suite itself ran');
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  assert.deepEqual(r.facts.listing.baseline.stable, ['test/Leaver.t.sol > LeaverTest > test_leaves()', 'test/Vault.t.sol > VaultTest > test_deposit()'], 'the suite ran all three times');
+  assert.deepEqual(verdicts(r), [
+    ['fails', 'forge-std', 'not_run'],
+    ['fails', 'plain', 'assertion'],
+    ['compileError', null, 'no_junit'],
+    ['setUpError', null, 'harness_error']
+  ]);
 });
 
 test('a custom test directory (foundry.toml test = "tests") and a broad paths.tests: the probes go where the suite ran (R5-F1)', { timeout: TIMEOUT }, async (t) => {
@@ -267,8 +303,9 @@ test('A3a R11-F1 (attempt 3) under real forge: a listing whose commands use the 
   assert.equal(r.outcome, 'definitive', show(r));
   assert.equal(r.facts.listing.status, 'accepted', show(r));
   assert.deepEqual(r.facts.listing.baseline.stable, ['test/Vault.t.sol > VaultTest > test_deposit()']);
+  // `--skip test`: the forge-std probe's build passes (it leaves the probe out), so its missing import shows in run 1.
   assert.deepEqual(verdicts(r), [
-    ['fails', 'forge-std', 'not_run'],
+    ['fails', 'forge-std', 'no_junit'],
     ['fails', 'plain', 'assertion'],
     ['compileError', null, 'no_junit'],
     ['setUpError', null, 'harness_error']

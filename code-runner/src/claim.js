@@ -33,6 +33,14 @@
  *             every integrity check must pass (§9.5: any failed check fails
  *             reproduces with it); then claimedObservable (observable.js)
  *
+ * Every forge the pipeline starts is the runner's own argv (node A3a
+ * attempt 3, owner decision Q31): the listing's commands are parsed by
+ * src/commands.js (plain `forge build` / `forge test` with allowlisted
+ * flags; anything else is the requester's error before any sandbox) and run
+ * as `/usr/bin/env -i <forge's environment> <forge> <args>` (forge.js), in
+ * /work, the forge being the one the integrity reference probed and whose
+ * configuration it hashed. No shell reads the maker's text.
+ *
  * Gates come only from definitive results: a step that hits a limit, dies or
  * does not start throws Abstain out of ctx.exec, and the run abstains
  * without the gate. A gate that fails stops the pipeline (the later gates
@@ -52,6 +60,7 @@ const { matchesAny, pocPatchPathsGate } = require('./common');
 const { git, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
 const { forceCheckout, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES } = require('./checkout');
 const forge = require('./forge');
+const commands = require('./commands');
 const { readForgeJUnit, JUNIT_MAX_BYTES } = require('./junit');
 const {
   scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, reportablePath
@@ -166,29 +175,19 @@ function issue(code, path, detail) {
   return { code, path, detail };
 }
 
-/** A command the forge adapter needs, with the placeholder the runner fills (if any). */
-function commandIssues(commands, key, placeholder) {
-  const value = commands ? commands[key] : undefined;
-  const path = `/spec/commands/${key}`;
-  if (typeof value !== 'string' || value.trim() === '') return [issue('COMMAND_MISSING', path, `the forge adapter needs commands.${key}`)];
-  if (value.length > 2000 || /[\u0000\r\n]/.test(value)) return [issue('COMMAND_INVALID', path, `commands.${key} must be one line of at most 2000 characters`)];
-  if (placeholder && !new RegExp(`\\$(?:${placeholder}|\\{${placeholder}\\})(?![A-Za-z0-9_])`).test(value)) {
-    return [issue('COMMAND_PLACEHOLDER', path, `commands.${key} must use $${placeholder}, which the runner fills`)];
-  }
-  return [];
-}
-
 /**
  * What the forge adapter needs from the listing spec: the framework, the
- * base image, the commands it fills, the listed commit and the test paths.
- * The listing check (listing.js) asks the same of a spec before it runs one.
+ * base image, the commands it runs (build, testFiles, testIds: the grammar
+ * of src/commands.js), the listed commit and the test paths. The listing
+ * check (listing.js) asks the same of a spec before it runs one, plus
+ * commands.test (its suite), which a claim needs only with fix.patch.
  */
 function checkForgeSpec(spec) {
   const issues = [];
-  const commands = spec.commands && typeof spec.commands === 'object' ? spec.commands : {};
-  if (commands.framework !== 'forge') issues.push(issue('FRAMEWORK_UNSUPPORTED', '/spec/commands/framework', 'this runner runs forge listings only (the Foundry MVP)'));
+  const cmds = spec.commands && typeof spec.commands === 'object' ? spec.commands : {};
+  if (cmds.framework !== 'forge') issues.push(issue('FRAMEWORK_UNSUPPORTED', '/spec/commands/framework', 'this runner runs forge listings only (the Foundry MVP)'));
   if (!spec.env || spec.env.from !== 'foundry') issues.push(issue('ENV_UNSUPPORTED', '/spec/env/from', 'this runner runs env images built FROM the pinned foundry base only'));
-  issues.push(...commandIssues(commands, 'build', null), ...commandIssues(commands, 'testFiles', 'FILES'), ...commandIssues(commands, 'testIds', 'TEST_IDS'));
+  issues.push(...commands.commandIssues(cmds, 'build'), ...commands.commandIssues(cmds, 'testFiles'), ...commands.commandIssues(cmds, 'testIds'));
   if (typeof spec.baseCommit !== 'string' || !COMMIT_HEX.test(spec.baseCommit)) issues.push(issue('SCHEMA', '/spec/baseCommit', 'must be a full commit hash'));
   const paths = spec.paths;
   const globs = (v) => Array.isArray(v) && v.every((g) => typeof g === 'string' && g !== '');
@@ -201,8 +200,10 @@ function checkForgeSpec(spec) {
 function checkClaim(request) {
   const spec = request.spec || {};
   const issues = checkForgeSpec(spec);
-  // The fix check runs the maker's full suite (§9.2 step 8).
-  if (request.fixPatch) issues.push(...commandIssues(spec.commands && typeof spec.commands === 'object' ? spec.commands : {}, 'test', null));
+  // The fix check runs the maker's full suite (§9.2 step 8), so it needs commands.test; without a fix a claim never
+  // runs it, but one that is there is still held to the grammar: the listing check would have refused it.
+  const cmds = spec.commands && typeof spec.commands === 'object' ? spec.commands : {};
+  if (request.fixPatch || cmds.test !== undefined) issues.push(...commands.commandIssues(cmds, 'test'));
   const baseline = request.baseline;
   if (!baseline || !Array.isArray(baseline.tests) || !baseline.tests.every((t) => t && typeof t.id === 'string')) {
     issues.push(issue('BASELINE_INVALID', '/baseline/tests', 'baseline.json must list the tests at the listed commit (tests[].id)'));
@@ -437,27 +438,28 @@ async function resetHard(ctx, commit, name) {
 }
 
 /**
- * The declared build command: its exit code (tier A) and stderr (where the
- * runner's forge names a refused call). `env` is the runner's forge's
- * (Watch.commandEnv) when the integrity reference installed it.
+ * The declared build command, run by the runner as forge's argv (`tool`:
+ * the probed forge; `command`: commands.build, parsed); its exit code (tier A).
  */
-async function runBuild(ctx, box, command, limits, env = {}) {
-  const record = await ctx.exec(forge.commandArgv(command, { name: 'vcr-build' }), {
-    name: 'build', timeoutMs: limits.buildSeconds * 1000, env: { ...forge.forgeEnv(), ...env }
+async function runBuild(ctx, box, tool, command, limits) {
+  const record = await ctx.exec(forge.forgeArgv(tool, commands.forgeArgs(command)), {
+    name: 'build', timeoutMs: limits.buildSeconds * 1000, workdir: forge.FORGE_WORKDIR
   });
   await cleanup(ctx, box, 'build');
-  return { exitCode: record.exitCode, stderr: record.stderr ? record.stderr.text : '' };
+  return record.exitCode;
 }
 
 /**
  * One forge test run with the runner's reporter flags: the JUnit read
  * strictly, the run's exit code. `doc` is the reader's whole answer (the
  * suites, their counts and forge's summaries), for the integrity checks.
+ * `command` is a parsed test command; `values` fill its placeholders
+ * ($FILES, $TEST_IDS); forge is `tool`, run as an argv (forge.forgeArgv).
  */
-async function forgeRun(ctx, box, { name, script, command, env, timeoutMs }) {
+async function forgeRun(ctx, box, { name, tool, command, values = {}, timeoutMs }) {
   const out = new Prefix(JUNIT_MAX_BYTES);
-  const record = await ctx.exec(forge.commandArgv(command, { name: script, append: forge.reporterFlags() }), {
-    name, timeoutMs, env: { ...forge.forgeEnv(), ...env }, tee: out
+  const record = await ctx.exec(forge.forgeArgv(tool, [...commands.forgeArgs(command, values), ...forge.reporterFlags()]), {
+    name, timeoutMs, workdir: forge.FORGE_WORKDIR, tee: out
   });
   await cleanup(ctx, box, name);
   const bytes = out.bytes();
@@ -465,7 +467,6 @@ async function forgeRun(ctx, box, { name, script, command, env, timeoutMs }) {
   const read = blank ? null : readForgeJUnit(bytes, { truncated: out.truncated });
   return {
     exitCode: record.exitCode,
-    stderr: record.stderr ? record.stderr.text : '',
     junit: blank ? 'absent' : read.ok ? 'ok' : 'invalid',
     reason: blank ? `forge printed no JUnit (exit ${record.exitCode})` : read.ok ? null : read.reason,
     suites: read && read.ok ? read.suites : null,
@@ -504,6 +505,7 @@ function runConsistency(run, label, summary, exit) {
 }
 
 const KIT = Object.freeze({
+  parsedCommand: (spec, key) => commands.parsedCommand(spec.commands, key, RequesterError),
   gitRead, newBox, recordProcesses, cleanup, applyPatch, readTouched, resetProtected, commitTree, resetHard, runBuild, forgeRun,
   recordsById, entryOf, runConsistency, normaliseMessage, sortedUnique, capped, listPaths, firstLine, runnerError
 });
@@ -546,10 +548,11 @@ function claimSteps(request, limits) {
  * forced checkout of a session that already prepared this sandbox, so a
  * probe is applied, gated, built and run exactly as a claim's PoC is. A
  * session that never ran `watch` (a probe) gets every integrity check but
- * the post-run checksums.
+ * the post-run checksums; it finds forge itself (integrity.discoverForge)
+ * before the first forge it runs, and runs that forge the same way.
  * @param {object} request - spec, pocPatch, baseline (as checkClaim accepts them), fixPatch and finding for a claim
  * @param {object} limits - the effective limits
- * @param {{adopt?: {keep:string[], prepared:string}}} [o]
+ * @param {{adopt?: {keep:string[], prepared:string, tool?:object}}} [o]
  */
 function claimSession(request, limits, { adopt = null } = {}) {
   const spec = request.spec;
@@ -560,13 +563,29 @@ function claimSession(request, limits, { adopt = null } = {}) {
   // The state is the sandbox's box too (kit: the processes kept, the leftovers killed).
   const state = {
     done: false, halted: false, keep: [], leftovers: [], touched: null, added: null, addedIds: null, prepared: null, pocCommit: null, watch: null,
-    fix: null, integrity: { tier: 'A', poc: null, fix: null }
+    tool: null, fix: null, integrity: { tier: 'A', poc: null, fix: null }
   };
   if (adopt) {
     state.keep = [...adopt.keep];
     state.prepared = adopt.prepared;
+    if (adopt.tool) state.tool = adopt.tool;
   }
   const box = state;
+
+  /** A command of the spec, parsed (checkClaim and the listing check refused any other form before this). */
+  const command = (key) => commands.parsedCommand(spec.commands, key, RequesterError);
+
+  /**
+   * The forge every maker command runs: the integrity reference's (its
+   * configuration is what the checks watch), or, in a session without one
+   * (the listing check's), the one found in this sandbox before the first
+   * forge runs.
+   */
+  async function tool(ctx) {
+    if (state.watch) return state.watch.tool();
+    if (!state.tool) state.tool = await integrity.discoverForge(ctx, 'forge:find');
+    return state.tool;
+  }
 
   /** The fix check (§9.2 step 8), started before the PoC's own steps and run beside them. */
   async function startFixCheck(ctx) {
@@ -650,26 +669,21 @@ function claimSession(request, limits, { adopt = null } = {}) {
   }
 
   async function build(ctx) {
-    const { exitCode, stderr } = await runBuild(ctx, box, spec.commands.build, limits, state.watch ? state.watch.commandEnv() : {});
-    // Before any claim code: a refusal of the runner's forge here is the listing's commands breaking the configuration rule.
-    const refused = state.watch ? state.watch.noteRefusal('the build', stderr) : null;
+    const exitCode = await runBuild(ctx, box, await tool(ctx), command('build'), limits);
     const ok = exitCode === 0;
-    ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}${refused ? `: ${refused}` : ''}`);
+    ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}`);
     if (!ok) state.done = true;
   }
 
   /**
-   * One PoC run, then the snapshot the integrity checks compare (its
-   * processes are dead by then). `step` and `label` (the script's $0) name
-   * it; the listing check's suite runs pass their own.
+   * One PoC run of the test command `key` (testFiles, testIds; the listing
+   * check's suite: test), its placeholders filled from `values`, then the
+   * snapshot the integrity checks compare (its processes are dead by then).
+   * `step` names it; the listing check's suite runs pass their own.
    */
-  async function pocRun(ctx, index, command, env, { step = `poc:${index}`, label = 'vcr-poc' } = {}) {
-    const runEnv = state.watch ? { ...env, ...state.watch.commandEnv() } : env;
-    const run = await forgeRun(ctx, box, { name: step, script: label, command, env: runEnv, timeoutMs: limits.testSeconds * 1000 });
-    if (state.watch) {
-      state.watch.noteRefusal(`run ${index}`, run.stderr);
-      await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
-    }
+  async function pocRun(ctx, index, key, values, { step = `poc:${index}` } = {}) {
+    const run = await forgeRun(ctx, box, { name: step, tool: await tool(ctx), command: command(key), values, timeoutMs: limits.testSeconds * 1000 });
+    if (state.watch) await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
     return run;
   }
 
@@ -679,7 +693,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
     const fileSet = new Set(files);
     if (files.length) {
       const FILES = forge.filesGlob(files);
-      runs.push({ command: 'testFiles', ...(await pocRun(ctx, 1, spec.commands.testFiles, { FILES })) });
+      runs.push({ command: 'testFiles', ...(await pocRun(ctx, 1, 'testFiles', { FILES })) });
     }
 
     // The tests the patch added: test functions in the PoC's files, as run 1
@@ -705,7 +719,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
       for (let k = 2; k <= RUNS; k += 1) {
         await resetHard(ctx, state.pocCommit, `poc:reset:${k}`);
         if (state.watch) await state.watch.afterReset(ctx, `run ${k}`);
-        runs.push({ command: 'testIds', ...(await pocRun(ctx, k, spec.commands.testIds, { FILES, TEST_IDS })) });
+        runs.push({ command: 'testIds', ...(await pocRun(ctx, k, 'testIds', { FILES, TEST_IDS })) });
       }
     }
 
@@ -743,7 +757,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
     });
     for (let r = runs.length; r < RUNS; r += 1) for (const id of ids) results.get(id).push({ result: 'not-run', kind: null, message: null });
 
-    const flags = integrity.tamperFlags({ added: state.added, touched: state.touched, commands: spec.commands });
+    const flags = integrity.tamperFlags({ added: state.added });
     const checks = integrity.integrityOf({
       identity, summary, exit, ...(state.watch ? state.watch.failures : {}), tamperFlags: flags
     });
@@ -851,6 +865,6 @@ function pocFacts(entries, runs) {
 }
 
 module.exports = {
-  claimSteps, claimSession, checkClaim, checkForgeSpec, commandIssues, sandboxesFor, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES,
+  claimSteps, claimSession, checkClaim, checkForgeSpec, sandboxesFor, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES,
   PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS, FREE_SPACE_SCRIPT, FREE_SPACE_MARGIN_BYTES, RUNS, KIT
 };

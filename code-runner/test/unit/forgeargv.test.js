@@ -191,7 +191,7 @@ test('a refused command is a requester error before any sandbox: the claim\'s ru
     assert.equal(r.outcome, 'requester_error', `${key}: ${text}: ${show(r)}`);
     assert.deepEqual(r.issues.map((i) => [i.code, i.path]), [['COMMAND_NOT_ALLOWED', `/spec/commands/${key}`]], text);
     assert.ok(r.issues[0].detail.includes(JSON.stringify(token)), `${text}: ${r.issues[0].detail}`);
-    assert.deepEqual(sb.docker.callsOf('create'), [], 'no sandbox was made');
+    assert.deepEqual(sb.execs().map((d) => d.kind), [], 'nothing ran in the sandbox');
   }
   // Through the HTTP API: refused before admission or any pull.
   const sb = claimSandbox();
@@ -236,14 +236,19 @@ test('the listing check refuses exactly what a claim refuses, with the same issu
   for (const [key, list] of Object.entries(texts)) {
     for (const text of list) {
       const listing = validateListingRequest(draft({ [key]: text }));
-      // commands.test is the fix check's: a claim needs it only with fix.patch; a listing always runs the suite.
-      const claim = checkClaim(claimRequest({ spec: forgeSpec({ commands: { [key]: text } }), fixPatch: key === 'test' ? Buffer.from(FIX_PATCH) : null }));
+      const claim = checkClaim(claimRequest({ spec: forgeSpec({ commands: { [key]: text } }) }));
       const commandIssues = (issues) => issues.filter((i) => i.path.startsWith('/spec/commands/'));
       assert.deepEqual(commandIssues(listing.issues), commandIssues(claim), `${key}: ${text}`);
       if (claim.length) refusedBoth += 1;
     }
   }
   assert.ok(refusedBoth >= REFUSED.length + 5);
+  // commands.test is the fix check's: a claim needs it only with fix.patch (a listing always runs the suite).
+  const noTest = forgeSpec();
+  delete noTest.commands.test;
+  assert.deepEqual(checkClaim(claimRequest({ spec: noTest })), []);
+  assert.deepEqual(checkClaim(claimRequest({ spec: noTest, fixPatch: Buffer.from(FIX_PATCH) })).map((i) => i.code), ['COMMAND_MISSING']);
+  assert.deepEqual(validateListingRequest({ ...draft(), spec: { ...draft().spec, commands: noTest.commands } }).issues.map((i) => i.code), ['COMMAND_MISSING']);
 });
 
 test('POST /v1/listing-checks refuses a refused command with 400 before any sandbox, naming the token', async (t) => {
@@ -313,6 +318,37 @@ test('the listing check runs forge the same way: its build, its suite x3 and eve
     if (first < 0) continue;
     assert.ok(mine.slice(0, first).some((d) => d.kind === 'vcr-framework'), `${c}: forge found before it runs`);
   }
+});
+
+test('a session without an integrity reference (the listing check) finds forge itself: none on PATH, or one it cannot run, is the image\'s error', async () => {
+  const body = draft();
+  const v = validateListingRequest(body);
+  const run = async (framework) => {
+    const sb = claimSandbox({ handlers: { history: () => ({ stdout: '400000000\n' }) }, scripts: { 'vcr-framework': framework } });
+    const receivedAt = Date.now();
+    const r = await executeRun({
+      docker: sb.docker, config: testConfig(), limits: v.limits, image: v.request.image, runId: '0123456789abcdef',
+      steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image) }),
+      receivedAt, deadlineAt: receivedAt + 900000, active: new Set(), log: silent, admit: async () => {}
+    });
+    return { r, sb };
+  };
+  const cases = [
+    [() => ({ exitCode: 3, stdout: 'vcr-forge \nvcr-path /usr/bin\n' }), /no forge on its PATH/],
+    [() => ({ stdout: 'vcr-forge /opt/a=b/forge\nvcr-path /usr/bin\nvcr-real /opt/a=b/forge\n' }), /forge the runner can run/]
+  ];
+  for (const [framework, re] of cases) {
+    const { r, sb } = await run(framework);
+    assert.equal(r.outcome, 'requester_error', JSON.stringify(r.abstain || r.facts.listing));
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_FORGE_MISSING']);
+    assert.match(r.issues[0].detail, re);
+    assert.ok(!sb.execs().some((d) => d.forge), 'forge never ran');
+  }
+  // An image PATH of several lines holds no answer the runner can trust, as at the integrity reference.
+  const { discoverForge } = require('../../src/integrity');
+  const ctx = (text, exitCode = 0) => ({ exec: async (argv, o) => { o.tee.write(Buffer.from(text)); return { exitCode, stderr: { text: '' } }; } });
+  await assert.rejects(discoverForge(ctx('vcr-forge /f\nvcr-path /usr/bin\nsecond line of PATH\nvcr-real /f\n'), 'forge:find'), (e) => e.issues[0].code === 'IMAGE_FORGE_MISSING');
+  assert.deepEqual(await discoverForge(ctx('vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\nvcr-real /opt/forge\n'), 'forge:find'), { forgePath: '/usr/local/bin/forge', realPath: '/opt/forge', path: '/usr/bin' });
 });
 
 test('a forge config failure in a claim is the requester\'s (FORGE_CONFIG_INVALID); the probe reads it through the same argv as the commands', async () => {

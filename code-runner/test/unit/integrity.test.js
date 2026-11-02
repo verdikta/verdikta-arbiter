@@ -196,12 +196,8 @@ test('tamper flags: forge forms of each kind (fs cheatcodes, inline fs_permissio
     '    function test_g() public { vm.writeFile(".git/config", ""); vm.writeLine("/dev/stdout", "x"); }'
   ];
   const shell = ['#!/bin/sh', 'trap "printf done" EXIT'];
-  const files = new Map([...added('test/Exploit.t.sol', lines), ...added('test/helper.sh', shell), ...added('test/run.sh', ['exec forge test "$@"'])]);
-  const flags = integrity.tamperFlags({
-    added: files,
-    touched: [{ status: 'A', path: 'test/Exploit.t.sol' }, { status: 'A', path: 'test/helper.sh' }, { status: 'M', path: 'test/run.sh' }],
-    commands: { build: 'forge build', testFiles: 'sh ./test/run.sh --match-path $FILES', testIds: 'sh test/run.sh --match-test $TEST_IDS' }
-  });
+  const files = new Map([...added('test/Exploit.t.sol', lines), ...added('test/helper.sh', shell)]);
+  const flags = integrity.tamperFlags({ added: files });
   assert.deepEqual(kinds(flags), [
     'exit-during-import test/Exploit.t.sol:7',
     'exit-handler-registered test/helper.sh:2',
@@ -210,7 +206,6 @@ test('tamper flags: forge forms of each kind (fs cheatcodes, inline fs_permissio
     'framework-patched test/Exploit.t.sol:8',
     'framework-patched test/Exploit.t.sol:9',
     'framework-patched test/Exploit.t.sol:10',
-    'framework-patched test/run.sh:null',
     'report-path-referenced test/Exploit.t.sol:5',
     'report-path-referenced test/Exploit.t.sol:6',
     'report-path-referenced test/Exploit.t.sol:10',
@@ -243,17 +238,13 @@ test('tamper flags: ordinary forge tests raise none (forge-std imports, inline f
     '    }',
     '}'
   ];
-  const flags = integrity.tamperFlags({
-    added: added('test/Exploit.t.sol', lines),
-    touched: [{ status: 'A', path: 'test/Exploit.t.sol' }],
-    commands: { build: 'forge build', testFiles: 'forge test --match-path $FILES', testIds: 'forge test --match-test $TEST_IDS', test: 'forge test' }
-  });
+  const flags = integrity.tamperFlags({ added: added('test/Exploit.t.sol', lines) });
   assert.deepEqual(flags, []);
 });
 
 test('tamper flags are bounded (100) and in the report\'s order: kind, file, line', () => {
   const many = added('test/X.t.sol', Array.from({ length: 150 }, () => 'vm.writeFile("/tmp/x", "1");'));
-  const flags = integrity.tamperFlags({ added: many, touched: [], commands: {} });
+  const flags = integrity.tamperFlags({ added: many });
   assert.equal(flags.length, 100);
   assert.deepEqual(flags[0], { kind: 'write-outside-repository', file: 'test/X.t.sol', line: 1 });
   assert.deepEqual(flags[99], { kind: 'write-outside-repository', file: 'test/X.t.sol', line: 100 });

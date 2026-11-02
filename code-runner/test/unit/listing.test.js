@@ -191,9 +191,9 @@ test('a listing check builds once and runs the suite three times with --junit an
   const suites = sb.execs().filter((d) => d.kind === 'vcr-suite');
   assert.equal(suites.length, 3);
   for (const s of suites) {
-    assert.deepEqual(s.argv.slice(0, 3), ['/bin/sh', '-c', 'set -f; forge test "$@"'], 'the declared test command, as written');
-    assert.deepEqual(s.argv.slice(4), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED], 'the runner\'s reporter flags');
-    assert.equal(s.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
+    // Attempt 3 (owner decision Q31): the declared test command as forge's argv, with the runner's reporter flags.
+    assert.deepEqual(s.argv, ['/usr/local/bin/forge', 'test', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
+    assert.equal(s.fixedEnv.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
   }
   // Runs 2 and 3 start from the listed commit's tracked files (the checkout's commit of it), as a claim's re-runs do.
   const between = seq.slice(firstSuite, seq.lastIndexOf('vcr-suite') + 1);
@@ -409,8 +409,8 @@ test('harness proof: the trivially failing test fails as an assertion on all thr
   const pocs = sb.execs().filter((d) => d.kind === 'vcr-poc');
   assert.equal(pocs.length, 5);
   for (const p of pocs) {
-    assert.equal(p.env.FILES, 'test/VerdiktaHarness.t.sol');
-    assert.deepEqual(p.argv.slice(4), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
+    assert.ok(p.argv.includes('--match-path=test/VerdiktaHarness.t.sol') || p.argv.some((a) => a.startsWith('--match-test=')), JSON.stringify(p.argv));
+    assert.deepEqual(p.argv.slice(-3), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
   }
   // The compile probe goes straight to testFiles: no build between its apply and its run.
   const seq = kinds(sb);

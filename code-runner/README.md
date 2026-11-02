@@ -141,8 +141,8 @@ runner stops at receipt + deadline minus `CODE_RUNNER_DEADLINE_RESERVE_MS`.
 `ATTESTATION_PLATFORM_MISMATCH`, `ATTESTATION_SIZE_MISMATCH`), and the image
 must be a reference Docker resolves exactly as written. These, and what the
 claim pipeline would refuse in the request itself (`FRAMEWORK_UNSUPPORTED`,
-`COMMAND_MISSING`, `BASELINE_INVALID`, …), are a 400 before admission or any
-pull.
+`COMMAND_MISSING`, `COMMAND_NOT_ALLOWED`, `BASELINE_INVALID`, …), are a 400
+before admission or any pull.
 
 | Status | `outcome` | Meaning for the EA |
 |---|---|---|
@@ -210,7 +210,7 @@ broken package (an image without the listed commit's objects,
 |---|---|
 | image | The env image's unpacked size: the sum of its layer sizes as the runner's daemon lists them (`docker history`); above 6 GB is refused |
 | prepare | The claim pipeline's own prepare: the processes recorded, the forced checkout of the listed commit; the work tree's free space (a claim needs 50 MB + 64 MB, else `IMAGE_WORKDIR_FULL`); the listed commit's files, at least one of them in `stake.scope` |
-| build | `commands.build`, once, judged by its exit code |
+| build | Forge found in the sandbox; `commands.build`, once, judged by its exit code (every command as a claim runs it: [the forge commands](#the-forge-commands)) |
 | suite | `commands.test` three times with the runner's `--junit --fuzz-seed 0x76657264696b7461` and `FOUNDRY_FUZZ_SEED`, no network, the tracked files reset to the listed commit before runs 2 and 3 |
 | baseline | Every test function the JUnit names (forge's identity, `<file> > <Contract> > <signature>`) with its result on each run, by the claim pipeline's classifier (missing or duplicated on a run = `error`); `stable` = passed all three, the rest `unstable` (common's `baselineSets`), checked with common's `validateBaseline` |
 | limits | The defaults (below); above the class caps is too heavy |
@@ -332,7 +332,6 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   --tmpfs /work:rw,exec,nosuid,nodev,size=1024m,mode=0755,uid=10001,gid=10001
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777
   --tmpfs /home/sandbox:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001
-  --tmpfs /vcr:rw,exec,nosuid,nodev,size=1m,mode=0755,uid=10002,gid=10002
   --ipc none --user 10001:10001 --pids-limit 4096 --memory 4096m --memory-swap 4096m --cpus 2
   --hostname sandbox --env TZ=UTC --env LANG=C.UTF-8 --env CI=true --env PYTHONHASHSEED=0
   --env HOME=/home/sandbox --workdir /work
@@ -353,11 +352,7 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   image that is not on the runner's disk when the sandbox is created abstains
   (`image_unavailable`).
 - Steps run through `docker exec --user 10001:10001 <container>` and the
-  runner's launcher (below), which `exec`s the step's argv unchanged. One
-  exec runs as `--user 10002:10002`, another unprivileged user: it writes
-  the runner's forge into `/vcr`, before any maker command
-  ([The forge configuration rule](#the-forge-configuration-rule)); no other
-  user is accepted (`execArgs`). The
+  runner's launcher (below), which `exec`s the step's argv unchanged. The
   runner spawns only the docker CLI, always with an argv array and `shell:
   false` (`src/docker.js`); claim content reaches the sandbox only as stdin.
   Results are read as capped streams (`docker exec … cat`), never `docker cp`.
@@ -384,7 +379,6 @@ which abstains.
 | `/work` (the working directory) | 1,024 MiB | `exec`, owned by uid 10001 | The repository's writable copy: the claim's patch, `out/`, `cache/`, and programs such as `solc` |
 | `/home/sandbox` (`$HOME`) | 256 MiB | `noexec`, mode 0700 | `~/.foundry` and other per-user caches |
 | `/tmp` | 512 MiB | `noexec`, mode 1777 | Temporary files |
-| `/vcr` | 1 MiB | `exec`, owned by uid 10002, mode 0755 | The runner's forge (`src/shim.js`): not writable by the sandbox user, so not part of the scratch |
 
 The mounts follow what a forge build and test write. `forge build` writes
 `out/` and `cache/` in the project, `forge test` writes `~/.foundry/cache`,
@@ -433,9 +427,7 @@ What the env image (P3a) must provide:
   and a pipe git or a build opened would block it);
 - `git` 2.29 or later (2.34.1 on the foundry base), `/usr/bin/env`, GNU
   `find`, `xargs`, `sort` and `tar`, `wc`, `cat`, `chmod`, `rm`, `mkdir`,
-  `realpath`, `awk`, `sha256sum`, `forge` and a POSIX `/bin/sh` (the
-  foundry base has them; without `realpath`, `awk` or `sha256sum` the run is
-  `IMAGE_TOOL_MISSING`);
+  `forge` and a POSIX `/bin/sh` (the foundry base has them);
 - every tool, `solc` included, outside `$HOME` and `/tmp` (both start empty),
   or in the work tree;
 - the build and test commands writing only inside the work tree, `$HOME` and
@@ -510,8 +502,8 @@ failure.
 
 ## The forge claim pipeline
 
-`src/claim.js` with `src/forge.js`, `src/git.js`, `src/patch.js` and
-`src/junit.js` (design §9.2 steps 3-6, §10.1). For a forge listing
+`src/claim.js` with `src/commands.js`, `src/forge.js`, `src/git.js`,
+`src/patch.js` and `src/junit.js` (design §9.2 steps 3-6, §10.1). For a forge listing
 (`commands.framework: "forge"`, `env.from: "foundry"`), in one sandbox:
 
 | Step | Gate | Decided on |
@@ -533,6 +525,64 @@ A failed gate stops the pipeline; the gates after it are not run (absent).
 A step that hits a limit, dies or does not start abstains the run, and no
 gate is decided on it: an OOM-killed build is an abstain, never a `build`
 failure.
+
+### The forge commands
+
+`src/commands.js` (owner decision Q31, R11-F1). **The rule for makers:** a
+listing's `build` is `forge build`, and its `test`, `testFiles` and `testIds`
+are `forge test`, each followed only by the flags below. The runner parses
+the string and runs forge itself. Anything else (a script, an environment
+variable, `cd`, `&&`, any other flag) belongs in `commands.setup`, which runs
+only while the env image is built, and a forge setting belongs in the default
+profile of the repository's `foundry.toml`.
+
+| Command | Must be | May add |
+|---|---|---|
+| `build` | `forge build` | `--skip test` or `--skip script` |
+| `test` | `forge test` | `--match-test`/`--mt`, `--no-match-test`/`--nmt`, `--match-contract`/`--mc`, `--no-match-contract`/`--nmc`, `--match-path`/`--mp`, `--no-match-path`/`--nmp` (each a pattern); `-v` to `-vvvvv`; `--fuzz-runs <1-1000000>`; `--isolate` |
+| `testFiles` | `forge test --match-path $FILES` | `-v` to `-vvvvv`; `--fuzz-runs`; `--isolate` |
+| `testIds` | `forge test --match-test $TEST_IDS` | `--match-path $FILES`; `-v` to `-vvvvv`; `--fuzz-runs`; `--isolate` |
+
+The reasons: `--skip` leaves tests or scripts out of the build (they compile
+in run 1, where the artifact check allows it); the matching filters let the
+full suite leave out what cannot run in the sandbox (fork tests); `--fuzz-runs`
+fits a suite into its time limits; `--isolate` is a suite's own semantics;
+verbosity only adds logs to forge's report. In `testFiles` and `testIds` the
+runner chooses the tests, so another filter could only hide them.
+
+**The grammar.** Tokens separated by spaces. A token is unquoted (letters,
+digits, `_ . / : , + @ % = -`) or one whole value in single quotes (printable
+ASCII: a pattern with a space, a glob or a regex character, such as
+`--no-match-path 'test/fork/**'`). A value follows its flag as the next token
+or after `=`. `$FILES` and `$TEST_IDS` (or `${FILES}`, `${TEST_IDS}`) are whole
+unquoted tokens, only where the table has them. Each flag at most once. Patterns
+are 1 to 512 characters. No shell metacharacter outside a quoted value, no line
+break or control character anywhere, no environment assignment, no `env`, no path to
+forge, no other subcommand, no positional argument, no short option but
+verbosity, no flag the table does not list (a flag forge hides from its
+`--help` included), and never `--junit` or `--fuzz-seed`, which are the
+runner's. Everything else is `COMMAND_NOT_ALLOWED`, naming the command and the
+offending token, a requester error before any sandbox, at claim time and at
+listing time alike; a missing command is `COMMAND_MISSING`, one over 2,000
+characters `COMMAND_INVALID`, a `testFiles` or `testIds` without its placeholder
+`COMMAND_PLACEHOLDER`.
+
+**How forge runs.** There is no shell around the maker's text. The step's argv is
+`/usr/bin/env -i PATH=<the image's PATH> TZ=UTC LANG=C.UTF-8 CI=true
+PYTHONHASHSEED=0 HOME=/home/sandbox FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
+<flags…>`, in `/work`: forge at the real path the runner probed in the image
+(`command -v forge`; a forge path holding `=` or a control character, which env
+could not run as a program, is `IMAGE_FORGE_MISSING`). Each flag and its value are one
+argv element (`--name=value`). The launcher prints its start nonce and `exec`s
+that argv; nothing interprets it. Nothing of the image's `ENV` but `PATH` reaches
+forge, `FOUNDRY_*` included: the seed is the only `FOUNDRY_*` it sees. The runner
+reads `forge config --json` through the same argv, so the configuration the
+integrity checks watch is the one every command runs with. For a test run the
+runner appends `--junit --fuzz-seed 0x76657264696b7461` (the seed from
+`@verdikta/common`). `$FILES` is one forge glob over the Solidity files the patch
+added or changed (`{a.t.sol,b.t.sol}`, glob characters escaped); `$TEST_IDS` an
+anchored regex over the exact signatures forge matches `--match-test` against
+(`^(?:test_a\(\)|test_b\(uint256\))$`).
 
 ### The forced checkout
 
@@ -647,16 +697,9 @@ deletion and an addition (`git diff --no-renames`). `fix.patch` gets the same
 host-side checks, binary changes included (node A3a's rule,
 [below](#the-fix-check)).
 
-**Commands** run as written in the sandbox's `/bin/sh` with pathname expansion
-off (`set -f; <command>`). For `testFiles` and `testIds` the runner appends
-`--junit --fuzz-seed 0x76657264696b7461` (the seed from `@verdikta/common`)
-as arguments (`"$@"`), and every build and test step gets
-`FOUNDRY_FUZZ_SEED` too. `$FILES` is one forge glob over the Solidity files
-the patch added or changed (`{a.t.sol,b.t.sol}`, glob characters escaped);
-`$TEST_IDS` an anchored regex over the exact signatures forge matches
-`--match-test` against (`^(?:test_a\(\)|test_b\(uint256\))$`). A listing
-must declare `build`, `testFiles` with `$FILES` and `testIds` with
-`$TEST_IDS` (`COMMAND_MISSING`, `COMMAND_PLACEHOLDER`, `COMMAND_INVALID`).
+**Commands** are plain forge commands the runner parses and runs itself
+([above](#the-forge-commands)). A listing must declare `build`, `testFiles`
+with `$FILES` and `testIds` with `$TEST_IDS`.
 
 **The schedule is fixed:** three runs whenever run 1 found a test the patch
 added, whatever run 1 showed and however much time is left. The tests the
@@ -753,9 +796,12 @@ process of the run is dead:
 4. **Post-run checksums** (`protectedPathsUnchanged`, `frameworkUnchanged`,
    `dependenciesUnchanged`). Before the build (the image plus the accepted
    patch, before any maker command) the runner takes a reference: a framework
-   probe run like the maker's commands (`command -v forge`, `PATH`, and
-   `forge config --json`, whose output sees `foundry.toml`, remappings, `.env`,
-   the global `~/.foundry/foundry.toml` and the environment alike), and a
+   probe (`command -v forge` and `PATH` from the image's environment, then
+   `forge config --json` run exactly as the maker's commands run forge, the
+   same argv, environment and directory, so its output, which sees
+   `foundry.toml`, remappings, `.env` and the global
+   `~/.foundry/foundry.toml` alike, is the configuration every command runs
+   with), and a
    hermetic manifest of `/work` and `$HOME` (GNU `find` records and `sha256sum
    -z` of every file: type, mode, size, hash or link target). After each run
    both are taken again and compared, the files first: forge runs for its
@@ -845,8 +891,8 @@ process of the run is dead:
    or `snapshots` directories, or under `paths.tests` (a patch's file there
    would be a command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
    command, naming the setting and its value; nothing is dropped silently.
-   `PATH` is read as the shell reads it from `/work`, where the maker's
-   commands run (R11-F2): an empty entry or `.` is `/work`, a relative entry
+   `PATH` is read as the shell reads it from `/work`, where forge runs and
+   its children look commands up (R11-F2): an empty entry or `.` is `/work`, a relative entry
    lies under it, and only a real `./` prefix is stripped (`.bin` is
    `/work/.bin`).
 
@@ -883,13 +929,14 @@ process of the run is dead:
    | `report-path-referenced` | `/proc/…`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/…`, `/dev/tty` (forge's report is its stdout), or JUnit element markup (`<testsuites`, `<testsuite`, `<testcase`) |
    | `exit-during-import` | ending forge's process from test code: `kill -<signal>`, `pkill`, `killall` (an ffi command) |
    | `exit-handler-registered` | a shell `trap … EXIT`/`INT`/`TERM`/`HUP`/`QUIT` |
-   | `framework-patched` | a file cheatcode (`writeFile`, `writeFileBinary`, `writeLine`, `writeJson`, `writeToml`, `removeFile`, `removeDir`, `createDir`, `copyFile`) whose path names forge's configuration, the dependencies, `out`, `cache`, `.git` or `.foundry`; inline `fs_permissions` granting write access to the repository root, to those, or outside it; a patch that changes a script a maker's command names |
+   | `framework-patched` | a file cheatcode (`writeFile`, `writeFileBinary`, `writeLine`, `writeJson`, `writeToml`, `removeFile`, `removeDir`, `createDir`, `copyFile`) whose path names forge's configuration, the dependencies, `out`, `cache`, `.git` or `.foundry`; inline `fs_permissions` granting write access to the repository root, to those, or outside it |
    | `reporter-patched` | a file cheatcode writing forge-std |
    | `write-outside-repository` | a file cheatcode or an inline `fs_permissions` grant whose path is absolute, under `~` or climbs out (`..`) |
 
    Solidity has no import-time code or exit handler of its own: a test can
-   end forge only through ffi (a signal death, which abstains unless the
-   maker's command masks it) and the flags read those commands' text.
+   end forge only through ffi (a signal death, which abstains: the runner runs
+   forge itself, so no maker's command can mask it) and the flags read those
+   commands' text.
 
 The measured checks are what close the routes; the static flags are the
 cheap signal a juror can read. Ordinary tests raise none: forge-std imports,
@@ -901,8 +948,8 @@ maker or an inline grant allows, `console.log`, revert messages.
 | Route | Check that closes it | Tests |
 |---|---|---|
 | ffi child prints a forged JUnit to forge's stdout (`/proc/$PPID/fd/1`) and kills forge; unmasked | the kill is a signal death: abstain | Docker `junit-forged-early-exit` |
-| the same, the maker's command masking the exit (`! forge test …`) | exit-code and framework-summary consistency; `report-path-referenced`, `exit-during-import` | Docker and unit `junit-forged-early-exit` |
-| the same, with forge's summary forged too, and the PoC's identity twice | identity completeness | Docker and unit `test-report-duplicate-identity` |
+| the same, the maker's command masking the exit (`! forge test …`) | the command is `COMMAND_NOT_ALLOWED` (attempt 3); were forge's death masked, exit-code and framework-summary consistency, `report-path-referenced`, `exit-during-import` | Docker (refused) and unit `junit-forged-early-exit` |
+| the same, with forge's summary forged too, and the PoC's identity twice, behind a wrapper (`sh -c …`) | the wrapper is `COMMAND_NOT_ALLOWED`; identity completeness | Docker (refused) and unit `test-report-duplicate-identity` |
 | bytes a test writes into forge's stdout beside forge's own JUnit | the strict reader: unreadable JUnit, an error (A2a) | A2a's Docker inject test |
 | a test that skips itself or vanishes on later runs | identity completeness | Docker and unit `test-report-missing-identity` |
 | inline `fs_permissions` + `vm.writeFile` rewrites `foundry.toml` (e.g. `ffi = true`) during run 1 | protected and framework checksums, `forge config` fingerprint; `framework-patched` | Docker and unit `protected-file-modified-at-runtime` |
@@ -912,7 +959,8 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a `forge` (or another tool) planted on a writable `PATH` directory | `command -v forge` and the PATH directories in the work tree | unit `the forge executable` |
 | `.git/config` filter, a hook, a forged index or objects, so the runner's reset writes the claim's bytes | the runner's repository checksums | unit `the runner's repository is watched` |
 | forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts` |
-| a maker's command runs a script under `paths.tests`, which the PoC rewrites | `framework-patched` (the patch changes a script a command names) | unit tamper-flag tests |
+| a maker's command runs a script under `paths.tests`, which the PoC rewrites | the command is `COMMAND_NOT_ALLOWED`: a command names no script (a pattern naming a test file is not a script, so a PoC editing that file raises no flag) | unit `commands.test.js`, tamper-flag tests |
+| a maker's command running forge with another configuration: `FOUNDRY_PROFILE`, `--config-path`, `--root`, a path flag, a hidden alias such as `--compiler-version`, through `env`, by an absolute path, `env -u` (R11-F1) | the grammar refuses every such command (`COMMAND_NOT_ALLOWED`, the token named) at claim and listing time; the runner runs forge itself, from `/work`, with its own environment; an image `ENV` of `FOUNDRY_*` never reaches it | unit `commands.test.js`, `forgeargv.test.js`, Docker "A3a R11-F1 (attempt 3)" |
 | a file flood that hides a change | a listing over 64 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`) | unit snapshot and cap tests |
 | a change behind a watched link (`lib/pkg -> ../vendor/pkg`, a symlinked `lib/`, a link inside the tree a link leads to) | the kernel resolves each watched link in the sandbox; its target joins the link's set, transitively | unit and Docker "A3a R6-F1" |
 | a set's root behind a link (`libs = ["deps/lib"]`, `deps -> third_party`; `cache` a link) | the kernel resolves the root itself; exactly what it leads to joins | unit "a link at or above a set's root", Docker "A3a R6-F1 (round 7)" |
@@ -921,84 +969,14 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
 | forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
-| a maker's command running forge with another configuration: `FOUNDRY_PROFILE`, `--config-path`, `--root`, through `env`, by an absolute path (R11-F1) | the runner's forge refuses the call before forge runs (or the poisoned `FOUNDRY_CONFIG` stops a call that bypassed it); named in the build gate or `frameworkUnchanged` | unit `shim.test.js` (the real shim on Linux), pipeline and Docker "A3a R11-F1" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
 
-### The forge configuration rule
-
-The checksums watch the places forge's configuration names (`out`,
-`cache_path`, `libs`, `src`, `test`, `script`, `remappings`,
-`broadcast`, `snapshots`, `allow_paths`, `include_paths`, `solc`), as the
-runner probes it: `forge config --json` from `/work`. A maker's command that
-ran forge with another configuration would put them elsewhere (owner
-decision Q29, R11-F1). So:
-
-**The rule for makers.** The listing's commands (`build`, `test`,
-`testFiles`, `testIds`) run forge from `/work` with the configuration the
-runner probes:
-- the default profile and the repository's `foundry.toml`: no `--profile`,
-  `--config-path` or `--root`, and no `FOUNDRY_CONFIG`;
-- no flag that sets a path forge reads or writes: `--out`/`-o`,
-  `--contracts`/`-C`, `--remappings`/`-R`, `--remappings-env`,
-  `--cache-path`, `--lib-paths`, `--hardhat`, `--build-info-path`, `--use`;
-- no `FOUNDRY_*` variable (`FOUNDRY_PROFILE` included) that changes one of
-  the settings above. One that changes something else (`FOUNDRY_FUZZ_RUNS`,
-  a profile that only turns the optimizer on) is fine, as long as every
-  command compiles the same way;
-- forge called by name (`forge …`, `env … forge …`, or from a script), never
-  by its path. Settings the image's `ENV` makes are the probe's too, so they
-  are fine.
-
-**How it is held, by measurement, without changing the image**
-(`src/shim.js`). Each sandbox gets the runner's forge: a shell script in
-`/vcr`, a 1 MiB tmpfs owned by a second unprivileged user (uid 10002) and
-written by it once, after the integrity reference and before the build. The
-sandbox user, which runs claim code, can neither change it nor add to it
-(Docker test). The maker's commands get `/vcr` first on `PATH`, so `forge`
-by name is the shim. They also get `FOUNDRY_CONFIG=/vcr/no-forge-config`, a
-directory, so the image's forge reached any other way (its absolute path, a
-`PATH` of the command's own) fails at once on every subcommand that reads a
-configuration ("Is a directory"). Only the shim removes it. On each call the
-shim:
-- refuses a call outside `/work`, a `FOUNDRY_CONFIG` of the command's,
-  `--profile`, `--config-path`, `--root`, the path flags above, and any
-  short-option cluster holding `o`, `C` or `R`. Flags are read, never
-  reinterpreted: forge 1.8.5 infers no long option from a prefix, and its
-  one alias here, `--hh`, is listed;
-- asks the image's forge (the probed real path) for the call's effective
-  configuration, `forge config --json` in the call's own environment, and
-  compares its watched fields, by SHA-256, with the probed configuration's;
-- on any refusal, prints one record, `vcr-forge-config refused <code>` (a
-  code, never a value), and exits 86: forge never runs with another
-  configuration. An accepted call is `exec <forge> "$@"`, forge's own
-  behaviour, unchanged; the shim's own tools come from the read-only root's
-  `PATH`, never the command's.
-
-The runner reads each maker step's stderr. A refusal, or forge's error on the
-poison, in the build fails the build gate with the reason named; in a PoC run
-or the fix check's suite it fails `frameworkUnchanged` ("run 1: the runner's
-forge refused the call: forge was given --config-path"). Claim code could
-print a fake record, which only fails its own claim; it cannot suppress a
-refusal, because the refused forge never ran.
-
-Left open: a command that both reaches the image's forge without the shim
-(its absolute path) and replaces `FOUNDRY_CONFIG` itself (`env -i`,
-`env -u`, its own value). That would be a listing command or a script it
-runs, both the maker's. The listing check (A2c) runs the same commands under
-the same shim before any claim exists. For A2c, `src/shim.js` exports
-`shimScript`, `installArgv` (run as `SHIM_USER` with the script on stdin;
-exit 4: no `awk`/`sha256sum`), `commandEnv`, `refusalOf`,
-`watchedConfigDigest`, `SHIM_STATUS` and `POISON`, and `Watch` keeps the
-probed digest (`ref.configDigest`) and offers `commandEnv()` and
-`noteRefusal()`.
-
 Residual risk (decision 6): within run 1, claim code can still write a new
-artifact after forge's compile that runs 2-3 would execute; a forger that
-also forges forge's summary and identities exactly can pass checks 1-3 when
-the maker's command masks forge's death. Neither changes `reproduces`, which
-any PoC can satisfy with a trivially failing assertion: what the checks
-protect is that the recorded runs are the image's code under test, and the
-jury reads the PoC's source (and A3c's honesty flags).
+artifact after forge's compile that runs 2-3 would execute. That does not
+change `reproduces`, which any PoC can satisfy with a trivially failing
+assertion: what the checks protect is that the recorded runs are the image's
+code under test, and the jury reads the PoC's source (and A3c's honesty
+flags).
 
 ## claimedObservable
 
@@ -1265,7 +1243,13 @@ under `runc` and under the pinned gVisor on the systrap platform.
   it), `ctx.readFile(path, { maxBytes })`, `ctx.gate(name, status, basis, detail)`,
   `ctx.fact(name, value)`, `ctx.openSandbox()` (a second container with the
   same flags, for the fix check), `ctx.remainingMs()` and `ctx.limits`.
-- **Forge adapter** (`src/forge.js`): reporter flags, the test identity,
+- **Forge commands** (`src/commands.js`): `parseCommand(key, text)`,
+  `commandIssues(commands, key)`, `forgeArgs(parsed, values)`, the allowlists
+  (`COMMANDS`, `FLAGS`). The one grammar: `checkForgeSpec` (claims) and
+  `validateListingRequest` (the listing check, A2c) both use it.
+- **Forge adapter** (`src/forge.js`): `forgeArgv(tool, args)` (forge's whole
+  argv: `env -i`, its fixed environment, the probed forge), `forgeEnvironment`,
+  `toolProblem`, `FORGE_WORKDIR`, reporter flags, the test identity,
   `classifyRecord`, `$FILES` and `$TEST_IDS`; A2b's baseline reuses them.
 - **Claim session** (`src/claim.js`): `claimSession(request, limits, { adopt })`
   gives the claim pipeline's step functions over one state (`prepare`,
@@ -1275,11 +1259,13 @@ under `runc` and under the pinned gVisor on the systrap platform.
   them in order, with the fix check's start and end around them; the listing
   check (`src/listing.js`) runs them on its probes, gating into a scope of its
   own (without `watch`, a probe's runs get every integrity check but the
-  checksums). `KIT` holds the steps both of a claim's sandboxes run (apply
-  and measure a patch, read what it touched, reset, commit, build, a forge
-  run), which `src/fix.js` reuses.
+  checksums; it finds forge itself, `integrity.discoverForge`, and runs it
+  through the same argv). `KIT` holds the steps both of a claim's sandboxes
+  run (apply and measure a patch, read what it touched, reset, commit, build,
+  a forge run), which `src/fix.js` reuses.
 - **Integrity** (`src/integrity.js`): `Watch` (the reference and post-run
-  snapshots of a sandbox), `summaryConsistency`, `exitConsistency`,
+  snapshots of a sandbox; `tool()` is the forge the maker's commands run),
+  `discoverForge`, `summaryConsistency`, `exitConsistency`,
   `identityGap`, `tamperFlags`, `integrityOf`.
 - **Common** (`src/common.js`): `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`,
   `pocPatchPathsGate`, `matchesAny`, `baselineSets`, `validateBaseline` from

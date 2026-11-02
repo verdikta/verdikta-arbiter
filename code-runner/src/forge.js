@@ -5,14 +5,22 @@
  * the MVP is Foundry-only). What the runner adds to the maker's declared
  * commands, how it names a test, and how it reads a forge test result.
  *
- * Commands run only inside the sandbox, as written, in its /bin/sh with
- * pathname expansion off (`set -f`: $FILES is a forge glob, which the shell
- * must pass through untouched). The runner appends its reporter flags as
- * arguments: `--junit` (forge prints the JUnit on stdout, which the runner
- * reads as a capped stream) and the fixed `--fuzz-seed` from
- * @verdikta/common, so fuzz and invariant tests draw the same inputs on
- * every host and every run. Every forge invocation also gets the seed as
- * FOUNDRY_FUZZ_SEED.
+ * Commands (node A3a attempt 3, owner decision Q31): the runner runs forge
+ * itself. A listing's build and test commands are plain `forge build` /
+ * `forge test` with allowlisted flags (src/commands.js parses them); no
+ * shell ever reads them. forgeArgv() is forge's whole argv: `/usr/bin/env
+ * -i`, forge's fixed environment (forgeEnvironment: the sandbox's fixed
+ * variables, the image's PATH as the integrity reference probed it, the
+ * fuzz seed, nothing else), the forge the reference probed (its real path),
+ * then the parsed arguments, each one argv element. The launcher (A1) prints
+ * its nonce and execs that argv without interpreting it; the runner runs it
+ * in /work. `forge config --json` (the configuration the checks watch) is
+ * read through the same forgeArgv, so it is the configuration every maker
+ * command runs with. The runner appends its reporter flags to a test run:
+ * `--junit` (forge prints the JUnit on stdout, which the runner reads as a
+ * capped stream) and the fixed `--fuzz-seed` from @verdikta/common, so fuzz
+ * and invariant tests draw the same inputs on every host and every run; the
+ * seed is also FOUNDRY_FUZZ_SEED in forge's environment.
  *
  * Assertion vs error (§10.1 `reproduces`). A forge test fails one way: the
  * test function ran and reverted (an assertion helper, a require, a revert
@@ -47,23 +55,58 @@
  */
 
 const { FORGE_FUZZ_SEED } = require('./common');
+const { SANDBOX_ENV } = require('./sandbox');
+
+/** The work tree, where forge runs (forge reads /work/foundry.toml, as the reference probed it). */
+const FORGE_WORKDIR = '/work';
 
 function reporterFlags() {
   return ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED];
 }
 
-function forgeEnv() {
-  return { FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
+/**
+ * forge's whole environment: the image's PATH as the integrity reference
+ * probed it (what forge's own children, ffi included, look commands up on),
+ * the sandbox's fixed variables (§9.3: HOME, TZ, LANG, CI, PYTHONHASHSEED)
+ * and the fuzz seed. No other variable of the image's environment, and no
+ * FOUNDRY_* but the seed.
+ * @param {string} path - the probed PATH
+ */
+function forgeEnvironment(path) {
+  if (typeof path !== 'string' || /[\0\n]/.test(path)) throw new TypeError('the probed PATH must be one line');
+  return { PATH: path, ...SANDBOX_ENV, FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
 }
 
 /**
- * The argv that runs a declared command in the sandbox: the maker's text as
- * the script of /bin/sh -c, `name` as $0, and `append` passed as arguments
- * after it ("$@"), never spliced into the text.
+ * Why the runner cannot run this forge as an argv (null when it can): env
+ * reads an argument holding `=` before the program as an assignment, so the
+ * program's path must be absolute and hold no `=` and no control character.
+ * @param {{realPath:string, path:string}} tool
  */
-function commandArgv(command, { name, append = [] }) {
-  const script = append.length ? `set -f; ${command} "$@"` : `set -f; ${command}`;
-  return ['/bin/sh', '-c', script, name, ...append];
+function toolProblem(tool) {
+  if (!tool || typeof tool.realPath !== 'string' || !tool.realPath.startsWith('/')) return 'forge has no absolute path';
+  if (/[=\u0000-\u001f\u007f]/.test(tool.realPath)) return `forge's path ${JSON.stringify(tool.realPath)} holds "=" or a control character`;
+  if (typeof tool.path !== 'string' || /[\0\n]/.test(tool.path)) return 'the image\'s PATH is not one line';
+  return null;
+}
+
+/**
+ * The argv that runs forge in the sandbox (through ctx.exec, so through the
+ * launcher): `/usr/bin/env -i <forge's environment> <forge> <args…>`. `args`
+ * are forge's arguments, each one element, as commands.forgeArgs() gives
+ * them (plus the runner's reporter flags for a test run); no shell reads
+ * any of them.
+ * @param {{realPath:string, path:string}} tool - the forge the reference probed, and the image's PATH
+ * @param {string[]} args
+ */
+function forgeArgv(tool, args) {
+  const problem = toolProblem(tool);
+  if (problem) throw new TypeError(problem);
+  if (!Array.isArray(args) || args.length === 0 || !args.every((a) => typeof a === 'string' && !a.includes('\0'))) {
+    throw new TypeError('forge\'s arguments must be strings without NUL');
+  }
+  const env = forgeEnvironment(tool.path);
+  return ['/usr/bin/env', '-i', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), tool.realPath, ...args];
 }
 
 /** The runner's test identity (baseline.json): file > contract > test, the test as forge names it (its signature). */
@@ -190,6 +233,6 @@ function scanAddedLines(lines) {
 }
 
 module.exports = {
-  reporterFlags, forgeEnv, commandArgv, testIdentity, isTestFunction, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
+  reporterFlags, forgeEnvironment, forgeArgv, toolProblem, FORGE_WORKDIR, testIdentity, isTestFunction, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
   scanAddedLines, FORGE_ERRORS, HARNESS_RECORDS, REFERENCES
 };

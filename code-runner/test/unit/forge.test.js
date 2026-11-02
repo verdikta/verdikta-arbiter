@@ -14,13 +14,27 @@ const { FORGE_FUZZ_SEED } = require('../../src/common');
 test('the reporter flags: JUnit on stdout and the fixed fuzz seed from @verdikta/common', () => {
   assert.equal(FORGE_FUZZ_SEED, '0x76657264696b7461');
   assert.deepEqual(forge.reporterFlags(), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-  assert.deepEqual(forge.forgeEnv(), { FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED });
+  assert.deepEqual(forge.forgeEnvironment('/usr/bin:/bin'), {
+    PATH: '/usr/bin:/bin', TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0', HOME: '/home/sandbox', FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
+  });
 });
 
-test('a declared command runs as written in the sandbox\'s /bin/sh, with the reporter flags appended as arguments', () => {
-  const argv = forge.commandArgv('forge test --match-path $FILES', { name: 'vcr-poc', append: forge.reporterFlags() });
-  assert.deepEqual(argv, ['/bin/sh', '-c', 'set -f; forge test --match-path $FILES "$@"', 'vcr-poc', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-  assert.deepEqual(forge.commandArgv('forge build', { name: 'vcr-build' }), ['/bin/sh', '-c', 'set -f; forge build', 'vcr-build']);
+test('attempt 3 (owner decision Q31): forge runs as the runner\'s argv, env -i with its fixed environment, the probed forge, then the arguments unchanged', () => {
+  const tool = { realPath: '/usr/local/bin/forge', path: '/usr/bin:/bin' };
+  const env = ['PATH=/usr/bin:/bin', 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`];
+  assert.deepEqual(forge.forgeArgv(tool, ['build']), ['/usr/bin/env', '-i', ...env, '/usr/local/bin/forge', 'build']);
+  // An argument that would mean something to a shell, or to env before the program, is just forge's argument here.
+  const odd = ['test', '--no-match-contract=a; rm -rf / $(id) `x` > y', 'X=1', '-i', ...forge.reporterFlags()];
+  assert.deepEqual(forge.forgeArgv(tool, odd).slice(env.length + 3), odd);
+  assert.equal(forge.FORGE_WORKDIR, '/work');
+  // A program env cannot be handed safely, or arguments that are not strings, are refused.
+  for (const bad of [{ realPath: 'forge', path: '/bin' }, { realPath: '/opt/a=b/forge', path: '/bin' }, { realPath: '/f\norge', path: '/bin' }, { realPath: '/f', path: 'a\nb' }, null]) {
+    assert.throws(() => forge.forgeArgv(bad, ['build']), TypeError, JSON.stringify(bad));
+    assert.ok(forge.toolProblem(bad), JSON.stringify(bad));
+  }
+  assert.equal(forge.toolProblem(tool), null);
+  assert.throws(() => forge.forgeArgv(tool, []), TypeError);
+  assert.throws(() => forge.forgeArgv(tool, ['test', 'a\0b']), TypeError);
 });
 
 test('test identity: file > contract > test, as baseline.json has it', () => {

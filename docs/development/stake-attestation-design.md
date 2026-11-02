@@ -430,9 +430,14 @@ query names the six outcomes; the jury parameters name the class panel.
 - `artifact.kind` is `repo` (default when absent), `contract` or `skill`
   (§8.8). A `contract` listing carries the deployment and is checked at listing
   against verified source.
-- Commands run **only inside the sandbox**, exactly as written, and the runner
-  appends its own reporter flags for the declared `framework` (JUnit to a path it
-  chooses). The tested program can still see that path and the arguments — it
+- Commands run **only inside the sandbox**, and the runner appends its own
+  reporter flags for the declared `framework` (JUnit to a path it chooses). For
+  `forge`, `build` is plain `forge build` and `test`, `testFiles` and `testIds`
+  plain `forge test`, each with allowlisted flags only: the runner parses them and
+  runs forge itself as an argv with the configuration it probed, no shell, refused
+  otherwise at listing and at claim time (owner decision, code-runner README, "The
+  forge commands"); `setup` stays free-form because it runs only while the image is
+  built. The tested program can still see the reporter path and the arguments — it
   runs in the same process as the reporter — which is why in-process results are
   **tier-B evidence** subject to the integrity checks in §9.5. `testFiles` runs
   the hunter's PoC files; `testIds` re-runs named tests for the fixed repeat
