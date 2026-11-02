@@ -544,6 +544,11 @@ test('harness proof: the probes go under paths.tests, never under paths.protecte
   assert.equal(harnessPath(spec(['te st/**']), []), null);
   assert.equal(harnessPath(spec(['test\n+++ b/src/Vault.sol/**']), []), null);
   assert.deepEqual(probeCandidates('test/**'), ['test/VerdiktaHarness.t.sol']);
+  // Where the suite's own tests ran comes first (R5-F1): foundry.toml's test directory, whatever it is called.
+  assert.equal(harnessPath(spec(['**/*.t.sol']), [], { suiteFiles: ['tests/Vault.t.sol', 'tests/Oracle.t.sol', 'tests/unit/A.t.sol'] }), 'tests/VerdiktaHarness.t.sol');
+  assert.equal(harnessPath(spec(['**/*.t.sol']), [], { suiteFiles: ['b/X.t.sol', 'a/Y.t.sol'] }), 'a/VerdiktaHarness.t.sol', 'a tie: code-unit order');
+  assert.equal(harnessPath(spec(['test/**']), [], { suiteFiles: ['tests/Vault.t.sol'] }), 'test/VerdiktaHarness.t.sol', 'still under paths.tests');
+  assert.equal(harnessPath(spec(['**/*.t.sol']), [], { suiteFiles: ['Root.t.sol'] }), 'test/VerdiktaHarness.t.sol', 'a file at the root names no directory');
 });
 
 test('harness proof: no free path under paths.tests refuses the listing', async () => {

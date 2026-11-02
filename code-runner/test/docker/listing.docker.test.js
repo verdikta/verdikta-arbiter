@@ -59,10 +59,19 @@ const FORGE_STD = {
 };
 
 const REMAP = 'remappings = ["forge-std/=lib/forge-std/src/"]';
+
+/** The vault with foundry.toml's test directory named tests/ (R5-F1). */
+const TESTS_DIR = (() => {
+  const files = {};
+  for (const [k, v] of Object.entries(VAULT_REPO)) files[k.startsWith('test/') ? `tests/${k.slice(5)}` : k] = v;
+  files['foundry.toml'] = '[profile.default]\nsrc = "src"\ntest = "tests"\nout = "out"\ncache_path = "cache"\nsolc = "/opt/solc/solc"\noffline = true\n';
+  return files;
+})();
 const VARIANTS = Object.freeze({
   vault: { files: { ...VAULT_REPO, 'test/Flaky.t.sol': FLAKY }, toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
   modern: { files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD.modern }, toml: REMAP },
-  legacy: { files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD.legacy }, toml: REMAP }
+  legacy: { files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD.legacy }, toml: REMAP },
+  testsdir: { files: TESTS_DIR }
 });
 
 function fixture(variant) {
@@ -232,4 +241,15 @@ test('what the suite leaves in its sandbox cannot make the harness proof pass: e
   assert.equal(r.outcome, 'definitive', show(r));
   assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['HARNESS_ASSERTION_NOT_REPORTED'], show(r));
   assert.equal(r.facts.listing.baseline.stable.length, 1, 'the suite itself ran');
+});
+
+test('a custom test directory (foundry.toml test = "tests") and a broad paths.tests: the probes go where the suite ran (R5-F1)', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('testsdir');
+  const b = body(fx);
+  b.spec.paths = { tests: ['**/*.t.sol'], protected: ['foundry.toml', 'lib/**', '.gitignore'] };
+  const r = await check(t, b);
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  assert.equal(r.facts.listing.harness.path, 'tests/VerdiktaHarness.t.sol');
+  assert.deepEqual(r.facts.listing.baseline.stable, ['tests/Vault.t.sol > VaultTest > test_deposit()']);
 });

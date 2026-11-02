@@ -238,10 +238,11 @@ time and abstain.
 
 **The harness proof.** The runner's own probe files (fixed in
 `src/listing.js`, never the request's) go to one path under `paths.tests`,
-outside `paths.protected` and off every tracked file: forge's default
-`test/VerdiktaHarness.t.sol` when a glob allows it (forge compiles and runs
-tests there), else the glob's literal directory or the glob with its
-wildcards filled, each tried again with a number (`VerdiktaHarness2.t.sol`
+outside `paths.protected` and off every tracked file: the directory the
+suite's own test files ran from (most files first; `tests/` when
+`foundry.toml` says `test = "tests"`), else forge's default
+`test/VerdiktaHarness.t.sol` when a glob allows it, else the glob's literal
+directory or the glob with its wildcards filled, each tried again with a number (`VerdiktaHarness2.t.sol`
 … `9`) when the name is taken. Each probe runs as a claim does, in a fresh
 sandbox of its own (the previous one removed first): the claim pipeline's
 own functions (`claimSession` in `src/claim.js`: the forced checkout,

@@ -383,17 +383,26 @@ function probeCandidates(glob) {
  * Where the probes go: the first candidate that is a plain Solidity path the
  * claim gates admit (under paths.tests, not protected) and that no tracked
  * file holds, sits under or sits on. A candidate taken is tried again with
- * a number (VerdiktaHarness2.t.sol, … 9). forge's default test directory comes
- * first (forge compiles and runs what is there; a glob such as `**` would
- * otherwise put the probe at the root, where forge looks for no test),
- * then glob by glob.
+ * a number (VerdiktaHarness2.t.sol, … 9). The directories the suite's own
+ * test files ran from come first (R5-F1: forge ran tests there, whatever
+ * foundry.toml calls its test directory), then forge's default test
+ * directory (a glob such as `**` would otherwise put the probe at the root,
+ * where forge looks for no test), then glob by glob.
  * @param {object} spec
  * @param {string[]} tracked - the listed commit's files
+ * @param {{suiteFiles?: string[]}} [o] - the files the suite's JUnit named
  * @returns {string|null}
  */
-function harnessPath(spec, tracked) {
+function harnessPath(spec, tracked, { suiteFiles = [] } = {}) {
   const files = new Set(tracked);
-  const first = [`${FORGE_TEST_DIR}/${PROBE_STEM}.t.sol`, ...spec.paths.tests.flatMap(probeCandidates)];
+  const counts = new Map();
+  for (const f of suiteFiles) {
+    const dir = f.includes('/') ? f.slice(0, f.lastIndexOf('/')) : null;
+    if (dir) counts.set(dir, (counts.get(dir) || 0) + 1);
+  }
+  // Most test files first, then code-unit order: the same choice on every host.
+  const ran = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([dir]) => `${dir}/${PROBE_STEM}.t.sol`);
+  const first = [...ran, `${FORGE_TEST_DIR}/${PROBE_STEM}.t.sol`, ...spec.paths.tests.flatMap(probeCandidates)];
   // Each candidate, then the same with a number, for a name the repository already uses (R1-F3).
   const numbered = (p) => Array.from({ length: PROBE_ALTERNATES }, (_, i) => p.replace(/((?:\.t)?\.sol)$/, `${i + 2}$1`));
   const candidates = [...first, ...first.flatMap(numbered)];
@@ -515,7 +524,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     harness: null,
     leftoverProcesses: []
   };
-  const state = { stop: false, base: null, tracked: null, scope: null, prepareMs: 0, buildMs: 0, testMs: [], defaults: null, sandbox: null };
+  const state = { stop: false, base: null, tracked: null, scope: null, prepareMs: 0, buildMs: 0, testMs: [], defaults: null, sandbox: null, suiteFiles: [] };
   const refuse = (code, detail) => {
     out.refusals.push({ code, detail });
     state.stop = true;
@@ -641,6 +650,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
       }
       runs.push(run);
     }
+    state.suiteFiles = [...new Set(runs.flatMap((r) => r.suites.map((x) => x.file)))].sort();
     out.leftoverProcesses = state.scope.facts.leftoverProcesses || [];
     out.timings = { prepareSeconds: seconds(state.prepareMs), buildSeconds: seconds(state.buildMs), testSeconds: state.testMs.map(seconds) };
 
@@ -764,7 +774,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
   }
 
   async function harness(ctx) {
-    const path = harnessPath(spec, state.tracked);
+    const path = harnessPath(spec, state.tracked, { suiteFiles: state.suiteFiles });
     if (!path) {
       refuse('HARNESS_NO_PATH', `no plain Solidity path under paths.tests (${listed(spec.paths.tests)}) outside paths.protected is free for a test file`);
       return;
