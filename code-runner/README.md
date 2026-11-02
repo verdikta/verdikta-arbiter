@@ -332,6 +332,7 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   --tmpfs /work:rw,exec,nosuid,nodev,size=1024m,mode=0755,uid=10001,gid=10001
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777
   --tmpfs /home/sandbox:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001
+  --tmpfs /vcr:rw,exec,nosuid,nodev,size=1m,mode=0755,uid=10002,gid=10002
   --ipc none --user 10001:10001 --pids-limit 4096 --memory 4096m --memory-swap 4096m --cpus 2
   --hostname sandbox --env TZ=UTC --env LANG=C.UTF-8 --env CI=true --env PYTHONHASHSEED=0
   --env HOME=/home/sandbox --workdir /work
@@ -352,7 +353,11 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   image that is not on the runner's disk when the sandbox is created abstains
   (`image_unavailable`).
 - Steps run through `docker exec --user 10001:10001 <container>` and the
-  runner's launcher (below), which `exec`s the step's argv unchanged. The
+  runner's launcher (below), which `exec`s the step's argv unchanged. One
+  exec runs as `--user 10002:10002`, another unprivileged user: it writes
+  the runner's forge into `/vcr`, before any maker command
+  ([The forge configuration rule](#the-forge-configuration-rule)); no other
+  user is accepted (`execArgs`). The
   runner spawns only the docker CLI, always with an argv array and `shell:
   false` (`src/docker.js`); claim content reaches the sandbox only as stdin.
   Results are read as capped streams (`docker exec … cat`), never `docker cp`.
@@ -379,6 +384,7 @@ which abstains.
 | `/work` (the working directory) | 1,024 MiB | `exec`, owned by uid 10001 | The repository's writable copy: the claim's patch, `out/`, `cache/`, and programs such as `solc` |
 | `/home/sandbox` (`$HOME`) | 256 MiB | `noexec`, mode 0700 | `~/.foundry` and other per-user caches |
 | `/tmp` | 512 MiB | `noexec`, mode 1777 | Temporary files |
+| `/vcr` | 1 MiB | `exec`, owned by uid 10002, mode 0755 | The runner's forge (`src/shim.js`): not writable by the sandbox user, so not part of the scratch |
 
 The mounts follow what a forge build and test write. `forge build` writes
 `out/` and `cache/` in the project, `forge test` writes `~/.foundry/cache`,
@@ -427,7 +433,9 @@ What the env image (P3a) must provide:
   and a pipe git or a build opened would block it);
 - `git` 2.29 or later (2.34.1 on the foundry base), `/usr/bin/env`, GNU
   `find`, `xargs`, `sort` and `tar`, `wc`, `cat`, `chmod`, `rm`, `mkdir`,
-  `forge` and a POSIX `/bin/sh` (the foundry base has them);
+  `realpath`, `awk`, `sha256sum`, `forge` and a POSIX `/bin/sh` (the
+  foundry base has them; without `realpath`, `awk` or `sha256sum` the run is
+  `IMAGE_TOOL_MISSING`);
 - every tool, `solc` included, outside `$HOME` and `/tmp` (both start empty),
   or in the work tree;
 - the build and test commands writing only inside the work tree, `$HOME` and
@@ -913,7 +921,76 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
 | forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
+| a maker's command running forge with another configuration: `FOUNDRY_PROFILE`, `--config-path`, `--root`, through `env`, by an absolute path (R11-F1) | the runner's forge refuses the call before forge runs (or the poisoned `FOUNDRY_CONFIG` stops a call that bypassed it); named in the build gate or `frameworkUnchanged` | unit `shim.test.js` (the real shim on Linux), pipeline and Docker "A3a R11-F1" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
+
+### The forge configuration rule
+
+The checksums watch the places forge's configuration names (`out`,
+`cache_path`, `libs`, `src`, `test`, `script`, `remappings`,
+`broadcast`, `snapshots`, `allow_paths`, `include_paths`, `solc`), as the
+runner probes it: `forge config --json` from `/work`. A maker's command that
+ran forge with another configuration would put them elsewhere (owner
+decision Q29, R11-F1). So:
+
+**The rule for makers.** The listing's commands (`build`, `test`,
+`testFiles`, `testIds`) run forge from `/work` with the configuration the
+runner probes:
+- the default profile and the repository's `foundry.toml`: no `--profile`,
+  `--config-path` or `--root`, and no `FOUNDRY_CONFIG`;
+- no flag that sets a path forge reads or writes: `--out`/`-o`,
+  `--contracts`/`-C`, `--remappings`/`-R`, `--remappings-env`,
+  `--cache-path`, `--lib-paths`, `--hardhat`, `--build-info-path`, `--use`;
+- no `FOUNDRY_*` variable (`FOUNDRY_PROFILE` included) that changes one of
+  the settings above. One that changes something else (`FOUNDRY_FUZZ_RUNS`,
+  a profile that only turns the optimizer on) is fine, as long as every
+  command compiles the same way;
+- forge called by name (`forge …`, `env … forge …`, or from a script), never
+  by its path. Settings the image's `ENV` makes are the probe's too, so they
+  are fine.
+
+**How it is held, by measurement, without changing the image**
+(`src/shim.js`). Each sandbox gets the runner's forge: a shell script in
+`/vcr`, a 1 MiB tmpfs owned by a second unprivileged user (uid 10002) and
+written by it once, after the integrity reference and before the build. The
+sandbox user, which runs claim code, can neither change it nor add to it
+(Docker test). The maker's commands get `/vcr` first on `PATH`, so `forge`
+by name is the shim. They also get `FOUNDRY_CONFIG=/vcr/no-forge-config`, a
+directory, so the image's forge reached any other way (its absolute path, a
+`PATH` of the command's own) fails at once on every subcommand that reads a
+configuration ("Is a directory"). Only the shim removes it. On each call the
+shim:
+- refuses a call outside `/work`, a `FOUNDRY_CONFIG` of the command's,
+  `--profile`, `--config-path`, `--root`, the path flags above, and any
+  short-option cluster holding `o`, `C` or `R`. Flags are read, never
+  reinterpreted: forge 1.8.5 infers no long option from a prefix, and its
+  one alias here, `--hh`, is listed;
+- asks the image's forge (the probed real path) for the call's effective
+  configuration, `forge config --json` in the call's own environment, and
+  compares its watched fields, by SHA-256, with the probed configuration's;
+- on any refusal, prints one record, `vcr-forge-config refused <code>` (a
+  code, never a value), and exits 86: forge never runs with another
+  configuration. An accepted call is `exec <forge> "$@"`, forge's own
+  behaviour, unchanged; the shim's own tools come from the read-only root's
+  `PATH`, never the command's.
+
+The runner reads each maker step's stderr. A refusal, or forge's error on the
+poison, in the build fails the build gate with the reason named; in a PoC run
+or the fix check's suite it fails `frameworkUnchanged` ("run 1: the runner's
+forge refused the call: forge was given --config-path"). Claim code could
+print a fake record, which only fails its own claim; it cannot suppress a
+refusal, because the refused forge never ran.
+
+Left open: a command that both reaches the image's forge without the shim
+(its absolute path) and replaces `FOUNDRY_CONFIG` itself (`env -i`,
+`env -u`, its own value). That would be a listing command or a script it
+runs, both the maker's. The listing check (A2c) runs the same commands under
+the same shim before any claim exists. For A2c, `src/shim.js` exports
+`shimScript`, `installArgv` (run as `SHIM_USER` with the script on stdin;
+exit 4: no `awk`/`sha256sum`), `commandEnv`, `refusalOf`,
+`watchedConfigDigest`, `SHIM_STATUS` and `POISON`, and `Watch` keeps the
+probed digest (`ref.configDigest`) and offers `commandEnv()` and
+`noteRefusal()`.
 
 Residual risk (decision 6): within run 1, claim code can still write a new
 artifact after forge's compile that runs 2-3 would execute; a forger that

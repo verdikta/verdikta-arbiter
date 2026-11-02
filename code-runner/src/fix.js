@@ -162,13 +162,15 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     fact.detail.builds = `with the fix, ${err.issues.map((i) => `${i.code}: ${i.detail}`).join('; ')}`;
     return finish();
   }
-  const buildExit = await kit.runBuild(ctx, box, spec.commands.build, limits);
-  fact.builds = buildExit === 0 ? 'pass' : 'fail';
-  fact.detail.builds = `the build command exited ${buildExit} with the fix`;
+  const built = await kit.runBuild(ctx, box, spec.commands.build, limits, watch.commandEnv());
+  const refused = watch.noteRefusal('the build', built.stderr);
+  fact.builds = built.exitCode === 0 ? 'pass' : 'fail';
+  fact.detail.builds = `the build command exited ${built.exitCode} with the fix${refused ? `: ${refused}` : ''}`;
   if (fact.builds !== 'pass') return finish();
 
   // The maker's suite, once.
-  const run = await kit.forgeRun(ctx, box, { name: 'suite', script: 'vcr-suite', command: spec.commands.test, env: {}, timeoutMs: limits.testSeconds * 1000 });
+  const run = await kit.forgeRun(ctx, box, { name: 'suite', script: 'vcr-suite', command: spec.commands.test, env: watch.commandEnv(), timeoutMs: limits.testSeconds * 1000 });
+  watch.noteRefusal('the suite', run.stderr);
   await watch.afterRun(ctx, 'the suite', { first: true });
 
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));

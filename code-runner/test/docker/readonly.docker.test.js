@@ -48,7 +48,9 @@ test('the root is read-only; /work, $HOME and /tmp are the capped, writable tmpf
       replaceSh: 'cp /tmp/a /bin/sh',
       retargetSh: 'ln -sfn /tmp/a /bin/sh',
       newBin: 'mkdir /bin2',
-      shm: 'touch /dev/shm/x'
+      shm: 'touch /dev/shm/x',
+      // The runner's forge (src/shim.js): a tmpfs of the shim's user, which the sandbox user cannot write.
+      shim: 'touch /vcr/x'
     })) {
       await sh(name, `${script} 2>&1; echo "rc=$?"`);
     }
@@ -69,7 +71,7 @@ test('the root is read-only; /work, $HOME and /tmp are the capped, writable tmpf
   }
   assert.equal(got.where.stdout.text, '/work\n/home/sandbox\n');
   assert.equal(got.scratch.stdout.text.trim(), 'ok');
-  for (const name of ['root', 'etc', 'usrBin', 'varTmp', 'replaceSh', 'retargetSh', 'newBin', 'shm']) {
+  for (const name of ['root', 'etc', 'usrBin', 'varTmp', 'replaceSh', 'retargetSh', 'newBin', 'shm', 'shim']) {
     const out = got[name].stdout.text;
     assert.doesNotMatch(out, /rc=0/, `${name} must fail: ${out}`);
   }
@@ -80,6 +82,9 @@ test('the root is read-only; /work, $HOME and /tmp are the capped, writable tmpf
     assert.match(got[name].stdout.text, /Read-only file system|Permission denied/i, `${name}: ${got[name].stdout.text}`);
   }
   assert.match(got.varTmp.stdout.text, /Read-only file system/i, `varTmp: ${got.varTmp.stdout.text}`);
+  assert.match(got.shim.stdout.text, /Permission denied/i, `shim: ${got.shim.stdout.text}`);
+  const vcr = at('/vcr');
+  assert.ok(vcr && vcr[2] === 'tmpfs', 'the runner\'s forge has its own tmpfs');
   assert.equal(got.after.stdout.text, 'dash\n', 'nothing was created or retargeted');
   assert.deepEqual(await leftovers(docker, config.instance), []);
 });

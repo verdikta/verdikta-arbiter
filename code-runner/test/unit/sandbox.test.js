@@ -37,6 +37,7 @@ test('docker create argv is exactly the §9.1 sandbox', () => {
     '--tmpfs', '/work:rw,exec,nosuid,nodev,size=1024m,mode=0755,uid=10001,gid=10001',
     '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=512m,mode=1777',
     '--tmpfs', '/home/sandbox:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001',
+    '--tmpfs', '/vcr:rw,exec,nosuid,nodev,size=1m,mode=0755,uid=10002,gid=10002',
     '--ipc', 'none',
     '--user', '10001:10001',
     '--pids-limit', '4096',
@@ -100,11 +101,14 @@ test('no mount, no socket, no privilege, no host namespace, ever', () => {
   assert.ok(!argv.some((a) => /docker\.sock|^\/var\/run/.test(a)));
 });
 
-test('a read-only root: the only writable places are three capped tmpfs mounts, and no /dev/shm', () => {
+test('a read-only root: the only places the sandbox user can write are three capped tmpfs mounts, and no /dev/shm; the runner\'s forge has a fourth it cannot', () => {
   const argv = createArgs(BASE);
   assert.ok(argv.includes('--read-only'));
-  const tmpfs = argv.flatMap((a, i) => (a === '--tmpfs' ? [argv[i + 1]] : []));
-  assert.deepEqual(tmpfs.map((t) => t.split(':')[0]), ['/work', '/tmp', '/home/sandbox']);
+  const all = argv.flatMap((a, i) => (a === '--tmpfs' ? [argv[i + 1]] : []));
+  assert.deepEqual(all.map((t) => t.split(':')[0]), ['/work', '/tmp', '/home/sandbox', '/vcr']);
+  // The runner's forge (src/shim.js, A3a R11-F1): 1 MiB, owned by the shim's user (not 10001), mode 0755.
+  assert.deepEqual(all[3].split(':')[1].split(','), ['rw', 'exec', 'nosuid', 'nodev', 'size=1m', 'mode=0755', 'uid=10002', 'gid=10002']);
+  const tmpfs = all.slice(0, 3);
   for (const t of tmpfs) {
     const opts = t.split(':')[1].split(',');
     assert.ok(opts.includes('nosuid') && opts.includes('nodev'), t);
@@ -155,6 +159,9 @@ test('docker exec argv: the sandbox user, the container, then the step argv unto
   assert.throws(() => execArgs({ name: BASE.name, argv: ['a\0b'] }), /argv/);
   assert.throws(() => execArgs({ name: BASE.name, argv: ['true'], env: { 'A=B': 'c' } }), /env/);
   assert.throws(() => execArgs({ name: BASE.name, argv: ['true'], workdir: 'relative' }), /workdir/);
+  // The one other user: the shim's, which writes the runner's forge (src/shim.js); nothing else, root least of all.
+  assert.deepEqual(execArgs({ name: BASE.name, argv: ['true'], as: '10002:10002' }), ['exec', '--user', '10002:10002', BASE.name, 'true']);
+  for (const as of ['0', 'root', '0:0', '10003:10003', '10002']) assert.throws(() => execArgs({ name: BASE.name, argv: ['true'], as }), /runs as/, as);
 });
 
 test('teardown argv removes the container by name, forcefully, with any anonymous volume', () => {

@@ -51,6 +51,11 @@ const VARIANTS = Object.freeze({
       'mkdir -p third_party/lib && printf "contract TP {}\\n" > third_party/lib/TP.sol && ln -s third_party deps'
     ].join(' && ')
   },
+  // R11-F1: profiles a maker's command could select: `ci` moves out (a watched path), `opt` only turns the optimizer on.
+  profiles: {
+    toml: 'ffi = true\n\n[profile.ci]\nout = "ci-out"\n\n[profile.opt]\noptimizer = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
+  },
   // R8-F1: forge's out and compile cache configured in /tmp, outside everything the snapshots list.
   tmpout: {
     files: {
@@ -439,6 +444,50 @@ test('A3a R8-F1 under real forge: out and cache_path configured in /tmp, or out 
   assert.equal(inCache.outcome, 'requester_error', show(inCache));
   assert.match(inCache.issues[0].detail, /out \(cache\/artifacts\) is in forge's cache directory \(cache\)/);
   assert.ok(!(inCache.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)));
+});
+
+test('A3a R11-F1 under real forge: each override route is refused before forge runs with another configuration (FOUNDRY_PROFILE, --config-path, --root, through env), an absolute-path call fails on the poison; each is named', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('profiles');
+  const poc = addFilesPatch({ 'test/Exploit.t.sol': DRAIN });
+  for (const [build, re] of [
+    ['FOUNDRY_PROFILE=ci forge build', /refused the call: the call's environment \(FOUNDRY_PROFILE or another FOUNDRY_\* variable\) changes a setting the checks watch/],
+    ['forge build --config-path foundry.toml', /refused the call: forge was given --config-path/],
+    ['forge build --root /work', /refused the call: forge was given --root/],
+    ['env FOUNDRY_PROFILE=ci forge build', /refused the call: the call's environment/],
+    ['/usr/local/bin/forge build', /forge ran without the runner's forge \(by an absolute path/]
+  ]) {
+    const r = await run(t, claim(fx, poc, { commands: { build } }));
+    assert.equal(r.outcome, 'definitive', `${build}: ${show(r)}`);
+    assert.equal(r.gates.build.status, 'fail', `${build}: ${show(r)}`);
+    assert.match(r.gates.build.detail, re, build);
+  }
+  // In a PoC run, where claim code runs: integrity names it.
+  const inRun = await run(t, claim(fx, poc, { commands: { testFiles: 'FOUNDRY_PROFILE=ci forge test --match-path $FILES' } }));
+  assert.equal(inRun.outcome, 'definitive', show(inRun));
+  assert.equal(inRun.gates.integrity.status, 'fail', show(inRun));
+  assert.equal(inRun.facts.poc.integrity.frameworkUnchanged, false);
+  assert.match(inRun.gates.integrity.detail, /run 1: the runner's forge refused the call: the call's environment/);
+  assert.equal(inRun.gates.reproduces.status, 'fail');
+});
+
+test('A3a R11-F1 under real forge: ordinary commands pass untouched through the runner\'s forge (a profile or FOUNDRY_* that moves no watched path included), and claim code can neither change nor add to it', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('profiles');
+  // (One profile for every command: runs that compile differently rewrite the artifacts run 1 left, which the artifact check refuses.)
+  const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), {
+    commands: { build: 'FOUNDRY_PROFILE=opt forge build', testFiles: 'FOUNDRY_PROFILE=opt forge test --match-path $FILES', testIds: 'env FOUNDRY_PROFILE=opt FOUNDRY_FUZZ_RUNS=10 forge test --match-test $TEST_IDS' }
+  }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.integrity, CLEAN);
+  // An ffi child tries to rewrite the runner's forge, then to add one beside it; it reports what it managed.
+  const tamper = pocFile('ExploitTest', [
+    `    function ${NAME}() public { ${ffiSh('if (printf x > /vcr/forge) 2>/dev/null; then printf wrote; elif touch /vcr/forge2 2>/dev/null; then printf added; else printf denied; fi').replace('vm.ffi(c);', 'bytes memory got = vm.ffi(c); vm.assertTrue(false, string(got));')} }`
+  ]);
+  const d = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': tamper }), { finding: finding({ observable: `${NAME} fails with "denied"` }) }));
+  assert.equal(d.outcome, 'definitive', show(d));
+  assert.equal(d.facts.poc.tests[0].message, 'denied', show(d));
+  assert.deepEqual(d.facts.poc.tests[0].runs, ['fail', 'fail', 'fail'], 'runs 2 and 3 still went through the runner\'s forge, unchanged');
+  assert.equal(d.gates.integrity.status, 'pass', show(d));
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {

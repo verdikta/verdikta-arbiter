@@ -21,6 +21,7 @@ const { runText, isUnreachableText } = require('./docker');
 const { HeadTail, Capped } = require('./capture');
 const { newNonce, launcherArgv, StartGate, LAUNCHER_CHECK, LAUNCHER_PATH, PROBE_SCRIPT } = require('./launcher');
 const { ABSTAIN, Abstain, RequesterError, classifyExec } = require('./result');
+const { SHIM_DIR, SHIM_USER, SHIM_UID } = require('./shim');
 
 /** The non-root user every sandbox process runs as. */
 const SANDBOX_USER = '10001:10001';
@@ -41,10 +42,17 @@ const SANDBOX_ENV = Object.freeze({ TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTH
  * $HOME, and /tmp. Only the work tree may hold executables (solc, scripts).
  */
 const SCRATCH_MB = Object.freeze({ work: 1024, tmp: 512, home: 256 });
+/**
+ * The runner's own mount for its forge (src/shim.js, node A3a R11-F1): 1 MiB,
+ * owned by the shim's user, not the sandbox user, mode 0755, so claim code
+ * can neither change the shim nor add to the directory.
+ */
+const SHIM_MB = 1;
 const TMPFS = Object.freeze([
   `${WORK_DIR}:rw,exec,nosuid,nodev,size=${SCRATCH_MB.work}m,mode=0755,uid=${SANDBOX_UID},gid=${SANDBOX_UID}`,
   `/tmp:rw,noexec,nosuid,nodev,size=${SCRATCH_MB.tmp}m,mode=1777`,
-  `${HOME_DIR}:rw,noexec,nosuid,nodev,size=${SCRATCH_MB.home}m,mode=0700,uid=${SANDBOX_UID},gid=${SANDBOX_UID}`
+  `${HOME_DIR}:rw,noexec,nosuid,nodev,size=${SCRATCH_MB.home}m,mode=0700,uid=${SANDBOX_UID},gid=${SANDBOX_UID}`,
+  `${SHIM_DIR}:rw,exec,nosuid,nodev,size=${SHIM_MB}m,mode=0755,uid=${SHIM_UID},gid=${SHIM_UID}`
 ]);
 const RUNTIMES = Object.freeze(['runsc', 'runc']);
 /** linux/amd64 is the class platform; linux/arm64 exists for runc development on Apple silicon. */
@@ -157,8 +165,10 @@ function createArgs({ name, image, runtime, platform = OCI_PLATFORM, limits, ins
  * launcherArgv) follows the container name, where Docker treats it as the
  * command and its arguments, never as options.
  */
-function execArgs({ name, argv, stdin = false, env = {}, workdir = null }) {
+function execArgs({ name, argv, stdin = false, env = {}, workdir = null, as = SANDBOX_USER }) {
   checkName(name);
+  // The sandbox user runs every step; the shim's user only writes the runner's forge (src/shim.js).
+  if (as !== SANDBOX_USER && as !== SHIM_USER) throw new TypeError(`a step runs as ${SANDBOX_USER} or ${SHIM_USER}, not ${JSON.stringify(as)}`);
   if (!Array.isArray(argv) || argv.length === 0 || !argv.every(noNul)) {
     throw new TypeError('argv must be a non-empty array of strings without NUL');
   }
@@ -173,7 +183,7 @@ function execArgs({ name, argv, stdin = false, env = {}, workdir = null }) {
   return [
     'exec',
     ...(stdin ? ['--interactive'] : []),
-    '--user', SANDBOX_USER,
+    '--user', as,
     ...envFlags,
     ...(workdir ? ['--workdir', workdir] : []),
     name,
@@ -292,10 +302,10 @@ class Sandbox {
    * `stdout` receives the program's output (the start line stripped).
    * @returns {Promise<{r:object, started:boolean}>}
    */
-  async runLaunched(argv, { signal, timeoutMs, stdin, env, workdir, stdout, stderr }) {
+  async runLaunched(argv, { signal, timeoutMs, stdin, env, workdir, stdout, stderr, as }) {
     const nonce = newNonce();
     const gate = new StartGate(nonce, stdout);
-    const r = await this.docker.run(execArgs({ name: this.name, argv: launcherArgv(nonce, argv), stdin: Boolean(stdin), env, workdir }),
+    const r = await this.docker.run(execArgs({ name: this.name, argv: launcherArgv(nonce, argv), stdin: Boolean(stdin), env, workdir, as }),
       { signal, timeoutMs, stdin, stdout: gate, stderr });
     gate.finish();
     return { r, started: gate.seen };
@@ -340,7 +350,7 @@ class Sandbox {
    * @param {{write(Buffer):boolean}} [o.tee] - also receives the program's stdout; its return value is
    *   ignored, so it never stops the program (a Prefix: git's answers, forge's JUnit)
    */
-  async exec(argv, { name, signal, controlSignal, stdin, env, workdir, stdoutSink, tee } = {}) {
+  async exec(argv, { name, signal, controlSignal, stdin, env, workdir, stdoutSink, tee, as } = {}) {
     const stdout = new HeadTail();
     const stderr = new HeadTail();
     const toTee = (c) => { if (tee) tee.write(c); };
@@ -353,7 +363,7 @@ class Sandbox {
     let r;
     let started;
     try {
-      ({ r, started } = await this.runLaunched(argv, { signal, stdin, env, workdir, stdout: programOut, stderr }));
+      ({ r, started } = await this.runLaunched(argv, { signal, stdin, env, workdir, stdout: programOut, stderr, as }));
     } finally {
       if (signal) signal.removeEventListener('abort', onAbort);
     }

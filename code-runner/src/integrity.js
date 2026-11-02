@@ -80,6 +80,7 @@ const { hermetic } = require('./git');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
 const forge = require('./forge');
+const shim = require('./shim');
 
 const WORK = '/work';
 const HOME = '/home/sandbox';
@@ -251,6 +252,7 @@ function parseFramework(buf) {
     path: m[2],
     pathDirs,
     configSha256: sha256(buf.subarray(Buffer.byteLength(m[0]))),
+    configText,
     config: {
       out: str(parsed.out),
       cachePath: str(parsed.cache_path),
@@ -899,7 +901,11 @@ class Watch {
     }]);
     const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(parsed.config));
     if (m.overflow) throw tooLarge(m.reason);
-    this.ref = { forgePath: parsed.forgePath, realPath: parsed.realPath, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config };
+    this.ref = {
+      forgePath: parsed.forgePath, realPath: parsed.realPath, path: parsed.path, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config,
+      // What the runner's forge holds every call of the maker's commands to (src/shim.js, R11-F1).
+      configDigest: shim.watchedConfigDigest(parsed.configText)
+    };
     // A forge that lives in the work tree runs after claim code only while its bytes are the reference's (R1-F3): the
     // reference must have hashed it, wherever it is.
     this.ref.forgeEntry = null;
@@ -935,6 +941,38 @@ class Watch {
     }
     this.ref.sets = sets;
     this.repository = sets.repository;
+    await this.installShim(ctx, name);
+  }
+
+  /**
+   * The runner's forge (src/shim.js, R11-F1), written once by the shim's
+   * user before any maker command: the probed forge's real path and the
+   * probed configuration's digest. An image without awk or sha256sum cannot
+   * hold it (IMAGE_TOOL_MISSING).
+   */
+  async installShim(ctx, name) {
+    const script = shim.shimScript({ real: this.ref.realPath, want: this.ref.configDigest });
+    const record = await ctx.exec(shim.installArgv(), { name: `${name}:shim`, timeoutMs: SNAPSHOT_TIMEOUT_MS, stdin: Buffer.from(script, 'utf8'), as: shim.SHIM_USER });
+    if (record.exitCode === 4) {
+      throw new RequesterError([{ code: 'IMAGE_TOOL_MISSING', path: '/spec/env/image', detail: 'the env image has no awk or sha256sum, which the runner\'s forge needs to check each call\'s configuration' }]);
+    }
+    if (record.exitCode !== 0) throw runnerError(`${name}:shim`, `the runner's forge could not be installed (exit ${record.exitCode})`);
+  }
+
+  /** The environment of the maker's commands: the runner's forge first on PATH, FOUNDRY_CONFIG poisoned (src/shim.js). */
+  commandEnv() {
+    return shim.commandEnv(this.ref.path);
+  }
+
+  /**
+   * A maker's step's stderr, read for the runner's forge's refusal (or the
+   * poison's error, forge reached without it): a failure of
+   * frameworkUnchanged, named. Returns the reason, or null.
+   */
+  noteRefusal(label, stderr) {
+    const reason = shim.refusalOf(stderr);
+    if (reason) this.fail('framework', `${label}: ${reason}`);
+    return reason;
   }
 
   /**

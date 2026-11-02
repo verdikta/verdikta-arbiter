@@ -436,13 +436,17 @@ async function resetHard(ctx, commit, name) {
   if (reset.exitCode !== 0) throw runnerError(name, `the work tree could not be reset to ${commit}: ${firstLine(reset.stderr.text)}`);
 }
 
-/** The declared build command; its exit code (tier A). */
-async function runBuild(ctx, box, command, limits) {
+/**
+ * The declared build command: its exit code (tier A) and stderr (where the
+ * runner's forge names a refused call). `env` is the runner's forge's
+ * (Watch.commandEnv) when the integrity reference installed it.
+ */
+async function runBuild(ctx, box, command, limits, env = {}) {
   const record = await ctx.exec(forge.commandArgv(command, { name: 'vcr-build' }), {
-    name: 'build', timeoutMs: limits.buildSeconds * 1000, env: forge.forgeEnv()
+    name: 'build', timeoutMs: limits.buildSeconds * 1000, env: { ...forge.forgeEnv(), ...env }
   });
   await cleanup(ctx, box, 'build');
-  return record.exitCode;
+  return { exitCode: record.exitCode, stderr: record.stderr ? record.stderr.text : '' };
 }
 
 /**
@@ -461,6 +465,7 @@ async function forgeRun(ctx, box, { name, script, command, env, timeoutMs }) {
   const read = blank ? null : readForgeJUnit(bytes, { truncated: out.truncated });
   return {
     exitCode: record.exitCode,
+    stderr: record.stderr ? record.stderr.text : '',
     junit: blank ? 'absent' : read.ok ? 'ok' : 'invalid',
     reason: blank ? `forge printed no JUnit (exit ${record.exitCode})` : read.ok ? null : read.reason,
     suites: read && read.ok ? read.suites : null,
@@ -645,9 +650,11 @@ function claimSession(request, limits, { adopt = null } = {}) {
   }
 
   async function build(ctx) {
-    const exitCode = await runBuild(ctx, box, spec.commands.build, limits);
+    const { exitCode, stderr } = await runBuild(ctx, box, spec.commands.build, limits, state.watch ? state.watch.commandEnv() : {});
+    // Before any claim code: a refusal of the runner's forge here is the listing's commands breaking the configuration rule.
+    const refused = state.watch ? state.watch.noteRefusal('the build', stderr) : null;
     const ok = exitCode === 0;
-    ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}`);
+    ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}${refused ? `: ${refused}` : ''}`);
     if (!ok) state.done = true;
   }
 
@@ -657,8 +664,12 @@ function claimSession(request, limits, { adopt = null } = {}) {
    * it; the listing check's suite runs pass their own.
    */
   async function pocRun(ctx, index, command, env, { step = `poc:${index}`, label = 'vcr-poc' } = {}) {
-    const run = await forgeRun(ctx, box, { name: step, script: label, command, env, timeoutMs: limits.testSeconds * 1000 });
-    if (state.watch) await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
+    const runEnv = state.watch ? { ...env, ...state.watch.commandEnv() } : env;
+    const run = await forgeRun(ctx, box, { name: step, script: label, command, env: runEnv, timeoutMs: limits.testSeconds * 1000 });
+    if (state.watch) {
+      state.watch.noteRefusal(`run ${index}`, run.stderr);
+      await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
+    }
     return run;
   }
 

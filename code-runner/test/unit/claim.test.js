@@ -96,7 +96,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
     'vcr-freespace', 'git apply', 'git diff', 'git cat-file', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     // A3a: the integrity checks' reference (forge, its configuration, the watched files), then a snapshot after each run.
-    'vcr-framework', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
+    'vcr-framework', 'vcr-manifest', 'vcr-shim', 'vcr-build', 'vcr-cleanup',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'git reset', 'vcr-manifest',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'git reset', 'vcr-manifest',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework'

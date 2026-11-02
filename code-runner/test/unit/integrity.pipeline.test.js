@@ -106,7 +106,7 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
-    'vcr-framework', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
+    'vcr-framework', 'vcr-manifest', 'vcr-shim', 'vcr-build', 'vcr-cleanup',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework',
@@ -673,7 +673,7 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
-    'vcr-framework', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup',
+    'vcr-framework', 'vcr-manifest', 'vcr-links', 'vcr-shim', 'vcr-build', 'vcr-cleanup',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework'
@@ -713,4 +713,64 @@ test('A3a R11-F2: a helper reached through PATH `.bin`, or through an empty PATH
     const r = await runClaim(claimSandbox({ onBox: (box) => set(box, helper, '#!/bin/sh\nexec "$@"\n'), poc: [edit, edit, edit], scripts: { 'vcr-framework': framework } }));
     assertIntegrityFails(r, ['frameworkUnchanged'], new RegExp(`frameworkUnchanged \\(run 2: ${rel.replace(/\./g, '\\.')} changed`));
   }
+});
+
+// ------------------------------------- R11-F1: the runner's forge (owner decision Q29)
+
+test('A3a R11-F1: the runner\'s forge is written once per sandbox by the shim\'s user, before the build, held to the probed forge and configuration; the maker\'s commands, and only they, reach it', async () => {
+  const shim = require('../../src/shim');
+  const { forgeConfig, initialTree, FIX_PATCH } = require('../helpers/fakeClaim');
+  const sb = claimSandbox();
+  const r = await runClaim(sb, claimRequest({ fixPatch: Buffer.from(FIX_PATCH) }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.integrity.status, 'pass', show(r));
+  for (const box of [1, 2]) {
+    const execs = sb.execs().filter((d) => (d.box || 1) === box);
+    const installs = execs.filter((d) => d.kind === 'vcr-shim');
+    assert.equal(installs.length, 1, `box ${box}`);
+    assert.equal(installs[0].user, shim.SHIM_USER, 'never the sandbox user');
+    assert.deepEqual(installs[0].launched.slice(0, 2), ['/usr/bin/env', '-i']);
+    const script = installs[0].stdin.toString('utf8');
+    assert.ok(script.includes("real='/usr/local/bin/forge'"), script);
+    assert.ok(script.includes(`want=${shim.watchedConfigDigest(forgeConfig(initialTree()))}`));
+    const kinds = execs.map(label);
+    assert.ok(kinds.indexOf('vcr-shim') < kinds.indexOf('vcr-build'), 'before any maker command');
+    for (const d of execs) {
+      const maker = ['vcr-build', 'vcr-poc', 'vcr-suite'].includes(d.kind);
+      assert.equal(d.env.FOUNDRY_CONFIG, maker ? shim.POISON : undefined, `${d.kind} in box ${box}`);
+      if (maker) assert.equal(d.env.PATH, '/vcr:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin');
+      if (!maker && d.kind !== 'vcr-shim') assert.notEqual(d.user, shim.SHIM_USER);
+    }
+  }
+});
+
+test('A3a R11-F1: the runner\'s forge refusing a call (or forge failing on the poison) is named: in the build, the build gate; in a run or the fix check\'s suite, frameworkUnchanged', async () => {
+  const refuse = (code) => () => ({ exitCode: 86, stderr: `vcr-forge-config refused ${code}\n` });
+  const b = await runClaim(claimSandbox({ scripts: { 'vcr-build': refuse('watched-paths') } }));
+  assert.equal(b.outcome, 'definitive', show(b));
+  assert.equal(b.gates.build.status, 'fail');
+  assert.match(b.gates.build.detail, /^the build command exited 86: the runner's forge refused the call: the call's environment \(FOUNDRY_PROFILE or another FOUNDRY_\* variable\) changes a setting the checks watch$/);
+  for (const [stderr, re] of [
+    ['vcr-forge-config refused --config-path\n', /frameworkUnchanged \(run 1: the runner's forge refused the call: forge was given --config-path/],
+    ['vcr-forge-config refused --root\n', /run 1: the runner's forge refused the call: forge was given --root/],
+    ['Error: failed to extract foundry config:\nfoundry config error: Is a directory (os error 21) for setting `/vcr/no-forge-config`\n', /run 1: forge ran without the runner's forge \(by an absolute path, or a PATH of the command's own\)/]
+  ]) {
+    const poc = () => ({ exitCode: stderr.startsWith('vcr') ? 86 : 1, stdout: '', stderr });
+    const r = await runClaim(claimSandbox({ poc: [poc, poc, poc] }));
+    assertIntegrityFails(r, ['frameworkUnchanged'], re);
+  }
+  // The fix check's own build and suite are held the same way (the fix's integrity, never a gate).
+  const { FIX_PATCH } = require('../helpers/fakeClaim');
+  const f = await runClaim(claimSandbox({ fix: { suite: () => ({ exitCode: 86, stdout: '', stderr: 'vcr-forge-config refused --profile\n' }) } }), claimRequest({ fixPatch: Buffer.from(FIX_PATCH) }));
+  assert.equal(f.facts.fix.integrity.frameworkUnchanged, false, show(f));
+  assert.match(JSON.stringify(f.facts.integrity.fix.failures), /the suite: the runner's forge refused the call: forge was given --profile/);
+});
+
+test('A3a R11-F1: an image without awk or sha256sum cannot hold the runner\'s forge: IMAGE_TOOL_MISSING before any maker command', async () => {
+  const sb = claimSandbox({ scripts: { 'vcr-shim': () => ({ exitCode: 4 }) } });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_TOOL_MISSING']);
+  assert.match(r.issues[0].detail, /awk or sha256sum/);
+  assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build'));
 });

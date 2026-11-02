@@ -191,7 +191,9 @@ function decode(call) {
   const { argv, fixedEnv } = stripEnv(launched);
   const env = {};
   let container = null;
+  let user = null;
   for (let j = 0; j < (i >= 0 ? i : args.length); j += 1) {
+    if (args[j] === '--user') user = args[j + 1];
     if (args[j] === '--env') {
       const kv = args[j + 1];
       const eq = kv.indexOf('=');
@@ -212,7 +214,7 @@ function decode(call) {
     kind = 'cat';
   }
   const box = container ? Number(CONTAINER.exec(container)[1]) : null;
-  return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args), container, box };
+  return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args), container, box, user };
 }
 
 const PACK_TYPES = Object.freeze({ 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' });
@@ -407,7 +409,7 @@ function linksOf(tree, stdin) {
  *   { exitCode, stdout, stderr }; a text's exit code is forge's (1 when it records a failure)
  * @param {object} [o.git] - overrides by git subcommand key (see `key` below), both containers
  * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear,
- *   vcr-unstage, vcr-build, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links), both containers; a handler gets (d, box)
+ *   vcr-unstage, vcr-build, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links, vcr-shim), both containers; a handler gets (d, box)
  * @param {Function} [o.onBox] - (box) => void, when a container's state is made (to seed its tree)
  * @param {object} [o.fix] - the fix check's container: { patch (bytes the fix apply carries; default FIX_PATCH),
  *   nameStatus, numstat, diff, raw, writtenBytes, applyExit, build (handler), suite (JUnit text or handler) }
@@ -529,6 +531,8 @@ function claimSandbox({
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
+    // The runner's forge (src/shim.js), written by the shim's user: kept as the box's.
+    'vcr-shim': (d, b) => { b.shim = { script: d.stdin ? Buffer.from(d.stdin).toString('utf8') : '', user: d.user }; return { exitCode: 0 }; },
     'vcr-poc': (d, b) => {
       b.pocRun += 1;
       // forge writes the failing tests' names to its cache on every run.

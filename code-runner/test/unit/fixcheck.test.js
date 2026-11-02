@@ -89,7 +89,7 @@ test('fix check: in a second sandbox, fix.patch applies (source allowed), builds
   assert.deepEqual(applies.map((d) => d.stdin.toString()), [POC_PATCH, FIX_PATCH], 'the PoC, then the fix on top of it');
   assert.deepEqual(sb.fixExecs().filter((d) => d.kind === 'git' && d.sub[0] === 'commit').map((d) => d.sub[d.sub.length - 1]), ['poc.patch', 'fix.patch']);
   const tail = fixOrder.slice(fixOrder.lastIndexOf('git rev-parse') + 1);
-  assert.deepEqual(tail, ['vcr-framework', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-suite', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework']);
+  assert.deepEqual(tail, ['vcr-framework', 'vcr-manifest', 'vcr-shim', 'vcr-build', 'vcr-cleanup', 'vcr-suite', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework']);
   const [suite] = sb.fixExecs().filter((d) => d.kind === 'vcr-suite');
   assert.deepEqual(suite.argv, ['/bin/sh', '-c', 'set -f; forge test "$@"', 'vcr-suite', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED], 'commands.test with the reporter flags');
   assert.equal(suite.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
