@@ -188,6 +188,21 @@ const LINKS_SCRIPT = [
   '  done\' vcr-resolve'
 ].join('\n');
 
+/**
+ * Where the places the runner takes for immutable really lead (R16-F1): the
+ * PATH directories and solc outside the work tree and $HOME, absolute paths
+ * on stdin (NUL-separated), hermetic. One `path\0real\0` record for each, and
+ * for each symbolic link directly in one that is a directory, from `realpath
+ * -m` (GNU coreutils: every component the kernel can resolve resolved, a
+ * missing tail kept, so a dangling link still names where it leads). The
+ * runner reads no link's text. Exit 4: the image has no realpath.
+ */
+const EXTERNAL_ROOTS_SCRIPT = [
+  'command -v realpath >/dev/null 2>&1 || exit 4',
+  'xargs -0 -r sh -c \'for d do printf "%s\\0" "$d"; if [ -d "$d" ]; then find -H "$d" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null; fi; done\' vcr-list |',
+  'xargs -0 -r sh -c \'nl=$(printf "\\nx"); nl=${nl%x}; for p do r=$(realpath -m -- "$p" 2>/dev/null && printf x) || continue; r=${r%x}; r=${r%"$nl"}; printf "%s\\0%s\\0" "$p" "$r"; done\' vcr-external-roots'
+].join('\n');
+
 /** Thrown when what the check would watch is over one of its caps (IMAGE_WATCH_TOO_LARGE before claim code, a failure after). */
 class WatchTooLarge extends Error {}
 
@@ -834,6 +849,10 @@ function linksArgv() {
   return hermetic(LINKS_SCRIPT, 'vcr-links');
 }
 
+function externalRootsArgv() {
+  return hermetic(EXTERNAL_ROOTS_SCRIPT, 'vcr-external-roots');
+}
+
 function runnerError(step, detail) {
   return new Abstain(ABSTAIN.RUNNER_ERROR, detail, { step });
 }
@@ -872,6 +891,38 @@ async function probe(ctx, name, forgePath, { config = true, tool = null } = {}) 
   return {
     exitCode: record.exitCode, truncated: out.truncated, bytes: Buffer.concat([headBytes, out.bytes()]), stderr: record.stderr ? record.stderr.text : ''
   };
+}
+
+/**
+ * R16-F1: the PATH directories and solc that unwatchableRoots passes because
+ * they lie outside the work tree, as text. The read-only root protects a link
+ * there, not what it leads to, so the kernel is asked (EXTERNAL_ROOTS_SCRIPT),
+ * once, at the reference: the root cannot change after it. Each one leading
+ * to where runs write (the work tree, $HOME, /tmp) is a problem, as `path leads
+ * to real`. (A program on the root that runs something in the work tree is
+ * the image's own text, which no resolution sees.)
+ * @returns {Promise<string[]>}
+ */
+async function externalRootProblems(ctx, name, parsed) {
+  const outside = (p) => typeof p === 'string' && p.startsWith('/') && !within(p, WORK) && !within(p, HOME);
+  const asked = [...new Set([...parsed.pathDirs, parsed.config.solc].filter(outside))];
+  if (asked.length === 0) return [];
+  const out = new Prefix(LINKS_MAX_BYTES);
+  const record = await ctx.exec(externalRootsArgv(), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, stdin: Buffer.from(`${asked.join('\0')}\0`, 'utf8'), tee: out });
+  if (record.exitCode === 4) {
+    throw new RequesterError([{ code: 'IMAGE_TOOL_MISSING', path: '/spec/env/image', detail: 'the env image has no realpath (GNU coreutils), which the runner needs to resolve PATH and solc' }]);
+  }
+  const fields = out.bytes().toString('utf8').split('\0');
+  fields.pop();
+  if (record.exitCode !== 0 || out.truncated || fields.length % 2 !== 0 || fields.length < 2) {
+    throw runnerError(name, `where PATH and solc lead could not be read (exit ${record.exitCode})`);
+  }
+  const problems = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    const real = fields[i + 1];
+    if (within(real, WORK) || within(real, HOME) || within(real, '/tmp')) problems.push(`PATH directory or solc ${fields[i]} leads to ${real}, where runs write`);
+  }
+  return problems;
 }
 
 /**
@@ -968,8 +1019,10 @@ class Watch {
         detail: `\`forge config --json\` failed at the listed commit (exit ${p.exitCode}): ${firstLine(p.stderr) || parsed.reason || ''}`.trim()
       }]);
     }
-    // Every place the sets are rooted at must be one the snapshots cover (R8-F1): none is dropped silently.
+    // Every place the sets are rooted at must be one the snapshots cover (R8-F1): none is dropped silently. What lies
+    // outside the work tree as text is asked of the kernel (R16-F1).
     const uncoveredRoots = unwatchableRoots(parsed.config, parsed.pathDirs, this.testGlobs);
+    if (uncoveredRoots.length === 0) uncoveredRoots.push(...await externalRootProblems(ctx, `${name}:external-roots`, parsed));
     if (uncoveredRoots.length) {
       throw new RequesterError([{
         code: 'IMAGE_WATCH_ROOT_UNCOVERED', path: '/spec/env/image',
@@ -1393,7 +1446,7 @@ function integrityDetail(failures) {
 }
 
 module.exports = {
-  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
+  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   discoverForge, probe,

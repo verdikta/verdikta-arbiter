@@ -51,6 +51,18 @@ const VARIANTS = Object.freeze({
       'mkdir -p third_party/lib && printf "contract TP {}\\n" > third_party/lib/TP.sol && ln -s third_party deps'
     ].join(' && ')
   },
+  // R16-F1: a PATH directory on the read-only root that is a link into the work tree, and a link into it in a read-only one.
+  pathalias: {
+    toml: 'ffi = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'ln -s /work/helpers /opt/helpers',
+    env: ['PATH=/opt/helpers:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin']
+  },
+  pathlink: {
+    toml: 'ffi = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'ln -s /work/helpers/helper /usr/local/bin/helper'
+  },
   // R13-F1 (round 14): forge's out two levels down, so its parent can hide it.
   nestedout: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML('ffi = true').replace('out = "out"', 'out = "build/out"') }
@@ -514,6 +526,16 @@ test('A3a R13-F1 under real forge: a file or a directory a run leaves unreadable
   assert.equal(r.gates.integrity.status, 'fail', show(r));
   assert.equal(r.facts.poc.integrity.frameworkUnchanged, false, show(r));
   assert.match(r.gates.integrity.detail, /run 1: build cannot be read/);
+});
+
+test('A3a R16-F1 under real forge: a PATH directory that is a link into the work tree, and a link into it in a read-only PATH directory, are refused before any maker command', { timeout: TIMEOUT }, async (t) => {
+  for (const [variant, re] of [['pathalias', /\/opt\/helpers leads to \/work\/helpers/], ['pathlink', /\/usr\/local\/bin\/helper leads to \/work\/helpers\/helper/]]) {
+    const r = await run(t, claim(await fixture(variant), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+    assert.equal(r.outcome, 'requester_error', show(r));
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(r.issues[0].detail, re);
+    assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
+  }
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {

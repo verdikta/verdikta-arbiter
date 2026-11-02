@@ -106,7 +106,7 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
-    'vcr-framework', 'forge-config', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
+    'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
@@ -680,7 +680,7 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
-    'vcr-framework', 'forge-config', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup',
+    'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config'
@@ -805,4 +805,58 @@ test('A3a R13-F1: what the reference cannot read in the watched sets is the imag
   const r = await runClaim(claimSandbox({ onBox: (box) => box.tree.set('/work/src/unread.txt', { type: 'f', mode: '0', content: 'x', unreadable: true }), poc: [own, own, own] }));
   assert.equal(r.gates.integrity.status, 'pass', show(r));
   assert.deepEqual(r.facts.poc.integrity, CLEAN);
+});
+
+// ------------------------------------------- R16-F1: "outside the work tree" asked of the kernel
+
+test('A3a R16-F1: a PATH directory or solc on the read-only root that really leads into the work tree, or a symbolic link in such a PATH directory, is IMAGE_WATCH_ROOT_UNCOVERED before any maker command', async () => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  const PATH = '/opt/helpers:/usr/local/bin:/usr/bin';
+  const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path ${PATH}\n${forgeConfig(box.tree)}` });
+  for (const [seed, re] of [
+    [(box) => box.tree.set('/opt/helpers', { type: 'l', target: '/work/helpers' }), /PATH directory or solc \/opt\/helpers leads to \/work\/helpers/],
+    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/tool', { type: 'l', target: '/work/helpers/tool' }); }, /\/opt\/helpers\/tool leads to \/work\/helpers\/tool/],
+    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/tmp', { type: 'l', target: '/tmp/tool' }); }, /\/opt\/helpers\/tmp leads to \/tmp\/tool/],
+    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/home', { type: 'l', target: '/home/sandbox/tool' }); }, /\/opt\/helpers\/home leads to \/home\/sandbox\/tool/]
+  ]) {
+    const sb = claimSandbox({ onBox: seed, scripts: { 'vcr-framework': framework } });
+    const r = await runClaim(sb);
+    assert.equal(r.outcome, 'requester_error', show(r));
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(r.issues[0].detail, re);
+    assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc'), 'no maker command ran');
+  }
+  // solc, through a link on the read-only root.
+  const sb = claimSandbox({ onBox: (box) => box.tree.set('/opt/solc/solc', { type: 'l', target: '/work/tools/solc' }) });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.match(r.issues[0].detail, /\/opt\/solc\/solc leads to \/work\/tools\/solc/);
+  // Hermetic, asked once, at the reference (the read-only root cannot change after it), of PATH directories and solc outside the work tree and $HOME only.
+  const ok = claimSandbox({ scripts: { 'vcr-framework': (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /work/.bin:/home/sandbox/bin:/opt/helpers:/usr/bin\n${forgeConfig(box.tree)}` }) } });
+  const good = await runClaim(ok);
+  assert.equal(good.outcome, 'definitive', show(good));
+  const asked = ok.execs().filter((d) => d.kind === 'vcr-external-roots');
+  assert.equal(asked.length, 1);
+  assert.deepEqual(asked[0].launched.slice(0, 2), ['/usr/bin/env', '-i']);
+  assert.deepEqual(asked[0].stdin.toString('latin1').split('\0').filter(Boolean), ['/opt/helpers', '/usr/bin', '/opt/solc/solc']);
+});
+
+test('A3a R16-F1: links on the read-only root that stay there are fine (merged /usr, alternatives); the script\'s answer is checked; an image without realpath is IMAGE_TOOL_MISSING', async () => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /bin:/usr/bin\n${forgeConfig(box.tree)}` });
+  const fine = await runClaim(claimSandbox({
+    onBox: (box) => { box.tree.set('/bin', { type: 'l', target: 'usr/bin' }); set(box, '/usr/bin/mawk', 'ELF'); box.tree.set('/usr/bin/awk', { type: 'l', target: '/etc/alternatives/awk' }); box.tree.set('/etc/alternatives/awk', { type: 'l', target: '/usr/bin/mawk' }); },
+    scripts: { 'vcr-framework': framework }
+  }));
+  assert.equal(fine.outcome, 'definitive', show(fine));
+  assert.equal(fine.gates.integrity.status, 'pass', show(fine));
+  const missing = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': () => ({ exitCode: 4 }) } }));
+  assert.equal(missing.outcome, 'requester_error', show(missing));
+  assert.deepEqual(missing.issues.map((i) => i.code), ['IMAGE_TOOL_MISSING']);
+  // The runner's own failure, or a broken answer, is no verdict on the image.
+  for (const bad of [() => ({ exitCode: 1 }), () => ({ stdout: Buffer.from('odd\0') })]) {
+    const r = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': bad } }));
+    assert.equal(r.outcome, 'abstain', show(r));
+    assert.equal(r.abstain.cause, 'runner_error');
+  }
 });

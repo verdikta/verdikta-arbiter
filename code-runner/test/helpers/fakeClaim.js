@@ -432,6 +432,31 @@ function linksOf(tree, stdin) {
 }
 
 /**
+ * `vcr-external-roots`'s output for the paths on its stdin: `path\0real\0` for each, then for each symbolic link
+ * directly in one that is a directory. The fake's tree models the read-only root's links too (a `/opt/helpers` entry
+ * is never listed: the manifest holds /work and $HOME only).
+ */
+function externalRootsOf(tree, stdin) {
+  const resolve = kernelResolver(tree);
+  const paths = stdin ? Buffer.from(stdin).toString('latin1').split('\0').filter((x) => x !== '') : [];
+  const parts = [];
+  const record = (p) => {
+    const r = resolve(p);
+    // As `realpath -m`: a link whose target does not exist yet still names where it leads.
+    const link = tree.get(p);
+    const missing = link && link.type === 'l' && link.target.startsWith('/') ? link.target : p;
+    parts.push(`${p}\0${r.kind === '?' ? missing : r.real}\0`);
+    return r;
+  };
+  for (const p of paths) {
+    const r = record(p);
+    if (r.kind !== 'd') continue;
+    for (const [k, e] of tree) if (e.type === 'l' && k.startsWith(`${r.real}/`) && !k.slice(r.real.length + 1).includes('/')) record(`${p}/${k.slice(r.real.length + 1)}`);
+  }
+  return Buffer.from(parts.join(''), 'latin1');
+}
+
+/**
  * @param {object} [o]
  * @param {object} [o.image] - { store, base } (default: defaultImage())
  * @param {Function} [o.objects] - (a copy of the image's Map id → {type, content}) → the Map cat-file answers from
@@ -442,7 +467,7 @@ function linksOf(tree, stdin) {
  *   { exitCode, stdout, stderr }; a text's exit code is forge's (1 when it records a failure)
  * @param {object} [o.git] - overrides by git subcommand key (see `key` below), both containers
  * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear,
- *   vcr-unstage, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links) or forge exec (vcr-build, vcr-poc, vcr-suite; see
+ *   vcr-unstage, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links, vcr-external-roots) or forge exec (vcr-build, vcr-poc, vcr-suite; see
  *   the header), both containers; a handler gets (d, box)
  * @param {Function} [o.onBox] - (box) => void, when a container's state is made (to seed its tree)
  * @param {object} [o.fix] - the fix check's container: { patch (bytes the fix apply carries; default FIX_PATCH),
@@ -565,6 +590,7 @@ function claimSandbox({
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
+    'vcr-external-roots': (d, b) => ({ stdout: externalRootsOf(b.tree, d.stdin) }),
     'vcr-poc': (d, b) => {
       b.pocRun += 1;
       // forge writes the failing tests' names to its cache on every run.
@@ -638,6 +664,6 @@ function claimSandbox({
 }
 
 module.exports = {
-  BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv, forgeKind, splitProbe,
+  BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv, forgeKind, splitProbe, externalRootsOf,
   claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf, kernelResolver, linksOf
 };

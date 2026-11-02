@@ -891,6 +891,13 @@ process of the run is dead:
    or `snapshots` directories, or under `paths.tests` (a patch's file there
    would be a command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
    command, naming the setting and its value; nothing is dropped silently.
+   "Outside the work tree" is asked of the kernel, once, at the reference
+   (R16-F1): the read-only root protects a link there, not what it leads to, so
+   a `PATH` directory or `solc` that really leads into `/work`, `$HOME` or
+   `/tmp`, or a symbolic link directly in such a `PATH` directory that does
+   (`realpath -m`, so a dangling one counts), is `IMAGE_WATCH_ROOT_UNCOVERED`
+   too. A program on the read-only root that itself runs something in the work
+   tree is the image's own text, which no resolution can see.
    `PATH` is read as the shell reads it from `/work`, where forge runs and
    its children look commands up (R11-F2): an empty entry or `.` is `/work`, a relative entry
    lies under it, and only a real `./` prefix is stripped (`.bin` is
@@ -981,6 +988,7 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
 | forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
+| a helper reached through a `PATH` directory or link on the read-only root that leads into the work tree, or `solc` behind one (R16-F1) | the kernel resolves them at the reference: `IMAGE_WATCH_ROOT_UNCOVERED` | pipeline and Docker "A3a R16-F1" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
 | bytes changed behind an unreadable file in a watched set or `out/`, or anything hidden by an unlistable directory, a watched root's ancestor or a link's target included (R13-F1) | what a snapshot cannot read is never unchanged: the check fails; at the reference, `IMAGE_WATCH_UNREADABLE` | unit, pipeline and Docker "A3a R13-F1" |
 
