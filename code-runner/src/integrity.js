@@ -273,6 +273,8 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     if (rel === null) continue;
     const name = displayPath(rel);
     if (protectedGlobs.length && matchesAny(name, protectedGlobs)) sets.protected.set(rel, d);
+    // forge's executable and solc are the framework wherever they are, forge's cache directory included (R1-F3).
+    if (tools.includes(rel)) sets.framework.set(rel, d);
     if (cache && under(rel, cache)) {
       if (rel === filesCache) sets.artifacts.set(rel, d);
       continue;
@@ -402,6 +404,19 @@ class Watch {
       }]);
     }
     this.ref = { forgePath: parsed.forgePath, realPath: parsed.realPath, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config };
+    // A forge that lives in the work tree runs after claim code only while its bytes are the reference's (R1-F3): the
+    // reference must have hashed it, wherever it is.
+    this.ref.forgeEntry = null;
+    if (parsed.realPath.startsWith(`${WORK}/`)) {
+      const e = m.entries.get(Buffer.from(parsed.realPath, 'utf8').toString('latin1'));
+      if (!e || e.type !== 'f' || !e.hash) {
+        throw new RequesterError([{
+          code: 'IMAGE_FORGE_UNWATCHED', path: '/spec/env/image',
+          detail: `forge resolves to ${parsed.realPath}, in the work tree, which the runner cannot hash: it could not verify forge before running it after claim code`
+        }]);
+      }
+      this.ref.forgeEntry = describe(e);
+    }
     this.ref.sets = classify(m.entries, this.watchArgs());
     this.repository = this.ref.sets.repository;
   }
@@ -420,10 +435,15 @@ class Watch {
     const name = `${this.prefix}:${label.replace(/\s+/g, '-')}`;
     // The files first: forge runs (for its configuration) only once they are measured, and never when it is a file in
     // the work tree whose bytes the run changed (R1-F3): a replaced forge could restore what the listing would see.
-    const sets = await this.compareFiles(ctx, name, label, first);
-    const real = typeof this.ref.realPath === 'string' && this.ref.realPath.startsWith(`${WORK}/`) ? this.ref.realPath.slice(WORK.length + 1) : null;
-    const runnable = real === null || (sets !== null && this.ref.sets.framework.get(real) === sets.framework.get(real));
-    const p = await probe(ctx, `${name}:framework`, this.ref.forgePath, { config: runnable });
+    const listed = await this.compareFiles(ctx, name, label, first);
+    let runnable = true;
+    if (this.ref.forgeEntry !== null) {
+      // The executable's own entry, hashed in both listings and the same (never a set it might be skipped from).
+      const e = listed ? listed.get(Buffer.from(this.ref.realPath, 'utf8').toString('latin1')) : null;
+      runnable = Boolean(e && e.type === 'f' && e.hash && describe(e) === this.ref.forgeEntry);
+    }
+    // The reference's real path, never a link a run could retarget.
+    const p = await probe(ctx, `${name}:framework`, this.ref.realPath, { config: runnable });
     const parsed = p.truncated ? { ok: false, reason: 'more than 1 MiB' } : parseFramework(p.bytes);
     if (parsed.forgePath !== undefined && parsed.forgePath !== this.ref.forgePath) {
       this.fail('framework', `${label}: forge resolves to ${parsed.forgePath || 'nothing'}, not ${this.ref.forgePath}`);
@@ -456,7 +476,7 @@ class Watch {
     // The first run's artifacts are what the later ones are held to (none when its listing overflowed: already a failure).
     if (first) this.artifacts = sets.artifacts;
     else if (this.artifacts) compare('framework', this.artifacts, sets.artifacts);
-    return sets;
+    return m.entries;
   }
 
   /** After the runner's own reset: its repository is read again, as the next run's reference for it. */

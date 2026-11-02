@@ -147,9 +147,10 @@ async function executeRun({
   // Run-level kill switch: the deadline, the run budget, the caller.
   const run = new AbortController();
   const opened = [];
-  // Launches still in flight (the fix check's sandbox starts beside the PoC's steps): the teardown waits for them, so a
-  // container whose `docker create` was pending is removed, not left behind with its reservation released (R1-F4).
-  const launching = new Set();
+  // Each sandbox's launch, settled or not (the fix check's starts beside the PoC's steps): a sandbox's removal waits
+  // for its own launch, so a container whose `docker create` was still pending is removed once it exists, and the
+  // reservations stay held until then, however long after the answer that is (R1-F4).
+  const launches = new Map();
   // The steps in flight (the fix check may run beside the PoC, §11), for
   // naming the step a run-level kill interrupted.
   const running = new Set();
@@ -199,12 +200,10 @@ async function executeRun({
     const label = opened.length === 1 ? 'launch' : `launch:${name}`;
     running.add(label);
     const launch = sb.launch({ image, platform: config.platform, limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
-    const settled = launch.catch(() => {});
-    launching.add(settled);
+    launches.set(sb, launch.catch(() => {}));
     try {
       await launch;
     } finally {
-      launching.delete(settled);
       running.delete(label);
     }
     return handle(sb);
@@ -325,18 +324,14 @@ async function executeRun({
   } finally {
     for (const t of timers) clearTimeout(t);
     if (signal) signal.removeEventListener('abort', onCancel);
-    // A launch still in flight finishes first (bounded by the deadline), so its container is removed with the rest.
-    if (launching.size) {
-      let wait = null;
-      await Promise.race([Promise.all([...launching]), new Promise((resolve) => { wait = setTimeout(resolve, Math.max(0, deadlineAt - Date.now())); })]);
-      clearTimeout(wait);
-    }
-    // Remove every sandbox. The answer waits for that until the deadline,
-    // never longer; a removal still running then carries on in the
-    // background, and the GC retries whatever could not be removed.
+    // Remove every sandbox, each once its own launch has settled. The answer
+    // waits for that until the deadline, never longer; a removal still
+    // running then carries on in the background (the reservations held until
+    // it is done), and the GC retries whatever could not be removed.
     const removal = Promise.all(opened.map(async (sb) => {
       let gone = false;
       try {
+        await launches.get(sb);
         gone = await sb.remove();
       } catch (_) {
         gone = false;

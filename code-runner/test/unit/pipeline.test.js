@@ -297,6 +297,36 @@ test('A3a R1-F4: a step that fails while another sandbox is still launching: the
   assert.equal(active.size, 0);
 });
 
+test('A3a R1-F4 (round 2): a launch that outlives the answer\'s deadline is still removed once it exists, and the reservations are held until then', async () => {
+  const events = [];
+  const docker = fakeDocker(healthyDaemon({
+    create: (args) => {
+      if (!args.includes('vcr-0123456789abcdef-2')) return { stdout: 'c1\n' };
+      return new Promise((resolve) => setTimeout(() => { events.push('create 2 done'); resolve({ stdout: 'c2\n' }); }, 1500));
+    },
+    rm: (args) => { events.push(`rm ${args.slice(3).join(' ')}`); return { stdout: '' }; }
+  }));
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const { Abstain } = require('../../src/result');
+  const steps = [async (ctx) => {
+    ctx.openSandbox().catch(() => {});
+    await new Promise((r) => setTimeout(r, 20));
+    throw new Abstain('docker_error', 'the PoC\'s step failed', { step: 'poc' });
+  }];
+  let released = null;
+  const admit = async () => ({ release: () => { released = events.length; events.push('released'); } });
+  const t0 = Date.now();
+  const { result } = await run({ docker, steps, sandboxes: 2, deadlineMs: 600, config, admit });
+  assert.ok(Date.now() - t0 < 1400, 'the answer does not wait past the deadline');
+  assert.equal(result.outcome, 'abstain');
+  await new Promise((r) => setTimeout(r, 2500));
+  const created = events.indexOf('create 2 done');
+  const removed2 = events.lastIndexOf(events.filter((e) => e.startsWith('rm ') && e.includes('vcr-0123456789abcdef-2')).pop());
+  assert.ok(created >= 0 && removed2 > created, `removed after it was created: ${JSON.stringify(events)}`);
+  assert.ok(released !== null && released > removed2, `the reservations are released after that removal: ${JSON.stringify(events)}`);
+});
+
 test('the keepalive and the GC label outlive the deadline only by a margin', async () => {
   const docker = fakeDocker(healthyDaemon());
   const before = Math.floor(Date.now() / 1000);

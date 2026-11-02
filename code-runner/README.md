@@ -616,9 +616,11 @@ process of the run is dead:
    hermetic manifest of `/work` and `$HOME` (GNU `find` records and `sha256sum
    -z` of every file: type, mode, size, hash or link target). After each run
    both are taken again and compared, the files first: forge runs for its
-   configuration only once they are measured, and a forge in the work tree
-   (its real path, a link followed) whose bytes the run changed is never run
-   again:
+   configuration only once they are measured; later probes run the
+   reference's real path (a link followed), never a link a run could
+   retarget; and a forge in the work tree is run only while its own manifest
+   entry is hashed and the reference's (one the reference cannot hash is
+   `IMAGE_FORGE_UNWATCHED`):
    - protected: work-tree paths under `paths.protected`, tracked or not, and
      the runner's own repository (`/work/.git`: config, attributes, index and
      objects decide what the reset between runs writes; it is read again after
@@ -642,7 +644,7 @@ process of the run is dead:
    files outside the sets go back to the PoC commit by the reset before each
    re-run. A reference that cannot be read is the requester's package, found
    before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
-   `IMAGE_WATCH_TOO_LARGE`: a listing over 64 MiB); after a run, the same is a
+   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_TOO_LARGE`: a listing over 64 MiB); after a run, the same is a
    definitive failure of the checks.
 5. **Static tamper flags** (`tamperFlags`), on the lines the patch added
    (any file under `paths.tests`, shell helpers included), one per kind per
@@ -853,7 +855,9 @@ image-pull failure"), never a verdict.
   cause.
 - Teardown has until the deadline itself, never longer: the answer is sent by
   then, and a removal still running carries on in the background for the GC to
-  finish. A run is definitive only once every sandbox it started is gone; one
+  finish. Each sandbox's removal waits for its own launch (the fix check's may
+  still be in `docker create`), so its container is removed once it exists and
+  the slot and memory stay held until then (A3a). A run is definitive only once every sandbox it started is gone; one
   that could not be removed (or not by the deadline) abstains `docker_error`.
 - Every Docker control call has its own timeout, and the run stops at the
   deadline even if a step is stuck outside Docker.

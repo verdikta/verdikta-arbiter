@@ -491,3 +491,27 @@ test('A3a R1-F6: claimedObservable reads forge\'s whole message as well as the r
     assert.equal(r.gates.claimedObservable.status, 'pass', `${observable}: ${show(r)}`);
   }
 });
+
+test('A3a R1-F3 (round 2): the executable is checked by its own entry, wherever it is (forge\'s cache directory too); one the reference cannot hash is the requester\'s', async () => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  const at = (where) => (d, box) => ({ stdout: `vcr-forge /work/bin/forge\nvcr-path /work/bin:/usr/bin\nvcr-real ${where}\n${d.argv[5] === 'noconfig' ? '' : forgeConfig(box.tree)}` });
+  const FORGE = '/work/cache/tools/forge';
+  const replace = (d, k, box) => { if (k === 2) set(box, FORGE, '#!/bin/sh\n'); return { exitCode: 1, stdout: drainFails() }; };
+  const sb = claimSandbox({ onBox: (box) => { set(box, FORGE, 'ELF'); box.tree.set('/work/bin/forge', { type: 'l', target: '../cache/tools/forge' }); }, poc: [drainFails(), replace, drainFails()], scripts: { 'vcr-framework': at(FORGE) } });
+  const r = await runClaim(sb);
+  assertIntegrityFails(r, ['frameworkUnchanged'], /run 2: cache\/tools\/forge changed/);
+  assert.match(r.gates.integrity.detail, /forge's executable \/work\/cache\/tools\/forge changed; it was not run/);
+  const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
+  assert.deepEqual(probes.slice(1).map((d) => [d.argv[4], d.argv[5]]), [[FORGE, undefined], [FORGE, 'noconfig'], [FORGE, 'noconfig']],
+    'later probes run the reference\'s real path, never the link a run could retarget; not at all once it changed');
+  // A forge in the work tree the reference cannot hash (a listing it is pruned from, or unreadable) is refused before any claim code.
+  for (const [where, seed] of [['/work/cache/solidity-files-cache.json.abi/forge', 'f'], ['/work/bin/forge', 'unreadable']]) {
+    const sb2 = claimSandbox({
+      onBox: (box) => box.tree.set(where, { type: 'f', mode: '755', content: 'ELF', unreadable: seed === 'unreadable' }),
+      scripts: { 'vcr-framework': at(where) }
+    });
+    const r2 = await runClaim(sb2);
+    assert.equal(r2.outcome, 'requester_error', `${where}: ${show(r2)}`);
+    assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_FORGE_UNWATCHED']);
+  }
+});
