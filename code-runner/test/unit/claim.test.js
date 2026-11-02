@@ -181,37 +181,39 @@ test('applies: a patch that writes more than patchExpansionBytes fails by measur
   for (const g of ['testPathsOnly', 'build', 'reproduces']) assert.equal(r.gates[g], undefined, `${g} is not run`);
 });
 
-test('applyFailureReason: OOM and the apply\'s own timeout blame the patch; the run\'s budget, deadline and cancel do not', () => {
+test('applyFailureReason: only the apply\'s own timeout blames the patch; an OOM (Q28) and the run\'s aborts do not', () => {
   const { applyFailureReason, APPLY_TIMEOUT_MS } = require('../../src/claim');
   const Abstain = (cause, detail) => ({ cause, detail });
-  assert.match(applyFailureReason(Abstain('oom', 'the sandbox hit its memory limit (OOM kill)'), APPLY_TIMEOUT_MS), /exhausted the sandbox's memory/);
-  assert.match(applyFailureReason(Abstain('oom', 'a process in the sandbox was OOM-killed during the step'), APPLY_TIMEOUT_MS), /exhausted/);
   assert.match(applyFailureReason(Abstain('step_timeout', 'the step reached its wall-clock limit and the sandbox was killed'), 90000), /did not finish applying within 90s/);
+  // Q28 / R20-F1: running out of memory while applying is an ordinary resource abstain, never the patch's fault.
+  assert.equal(applyFailureReason(Abstain('oom', 'the sandbox hit its memory limit (OOM kill)'), APPLY_TIMEOUT_MS), null);
+  assert.equal(applyFailureReason(Abstain('oom', 'a process in the sandbox was OOM-killed during the step'), APPLY_TIMEOUT_MS), null);
   // The run's own aborts are not the patch: they map to STEP_TIMEOUT (run budget) or their own cause, and are rethrown.
   assert.equal(applyFailureReason(Abstain('step_timeout', 'the run reached its wall-clock limit (runSeconds) and the sandbox was killed'), 90000), null);
   assert.equal(applyFailureReason(Abstain('deadline', 'the deadline was reached and the sandbox was killed'), 90000), null);
   assert.equal(applyFailureReason(Abstain('cancelled', 'the run was cancelled and the sandbox was killed'), 90000), null);
   assert.equal(applyFailureReason(Abstain('docker_error', 'x'), 90000), null);
-  // The details applyFailureReason matches are result.js's own, pinned so a reword there breaks loudly here.
+  // The detail applyFailureReason matches is result.js's own, pinned so a reword there breaks loudly here.
   const result = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'src', 'result.js'), 'utf8');
   assert.ok(result.includes('the step reached its wall-clock limit and the sandbox was killed'));
   assert.ok(result.includes('the run reached its wall-clock limit (runSeconds) and the sandbox was killed'));
 });
 
-test('applies: out of memory or the apply\'s own time budget, with room confirmed, is the patch (input); the run\'s deadline is not', async () => {
-  const oom = claimSandbox({ git: { 'apply --index': () => ({ exitCode: 137 }) } });
-  const ro = await runClaim(oom);
-  assert.equal(ro.gates.applies.status, 'fail', JSON.stringify(ro.abstain));
-  assert.equal(ro.gates.applies.basis, 'input');
-  assert.match(ro.gates.applies.detail, /exhausted the sandbox's memory.*patchExpansionBytes/);
-  assert.equal(ro.outcome, 'definitive');
-
+test('applies: running out of the confirmed disk room or the apply\'s own budget is the patch (input); an OOM (Q28) and the run\'s deadline abstain', async () => {
   // ENOSPC, with the free-space check already passed: the patch overran the work tree.
   const enospc = claimSandbox({ git: { 'apply --index': () => ({ exitCode: 1, stderr: "error: failed to write to 'big.bin': No space left on device\n" }) } });
   const re = await runClaim(enospc);
   assert.equal(re.gates.applies.status, 'fail');
   assert.equal(re.gates.applies.basis, 'input');
   assert.match(re.gates.applies.detail, /filled the work tree/);
+  assert.equal(re.outcome, 'definitive');
+
+  // Q28 / R20-F1: running out of memory while applying is an ordinary resource abstain, not an input refusal.
+  const oom = claimSandbox({ git: { 'apply --index': () => ({ exitCode: 137 }) } });
+  const ro = await runClaim(oom);
+  assert.equal(ro.outcome, 'abstain', JSON.stringify(ro));
+  assert.equal(ro.abstain.cause, 'oom');
+  assert.equal(ro.gates.applies, undefined, 'no gate from an out-of-memory apply');
 
   // The apply's own wall-clock budget (the step reached its limit) is the patch; the run's deadline still abstains.
   const slow = claimSandbox({ git: { 'apply --index': () => new Promise(() => {}) } });
@@ -231,13 +233,35 @@ test('applies: a patch git cannot apply to the listed commit fails with git\'s r
   assert.ok(!kinds(sb).includes('vcr-build'));
 });
 
-test('applies: too little room in the work tree is the image, not the patch (a requester error before the apply)', async () => {
-  const sb = claimSandbox({ freeBytes: 40 * 1024 * 1024 });
-  const r = await runClaim(sb);
-  assert.equal(r.outcome, 'requester_error', JSON.stringify(r));
-  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WORKDIR_FULL']);
-  assert.match(r.issues[0].detail, /leave only 41943040 bytes free.*patchExpansionBytes/);
-  assert.equal(gitCalls(sb, 'apply').length, 0, 'the patch never ran');
+test('applies: too little free disk is the image, not the patch (a requester error before the apply)', async () => {
+  const disk = claimSandbox({ freeBytes: 40 * 1024 * 1024 });
+  const rd = await runClaim(disk);
+  assert.equal(rd.outcome, 'requester_error', JSON.stringify(rd));
+  assert.deepEqual(rd.issues.map((i) => i.code), ['IMAGE_WORKDIR_FULL']);
+  assert.match(rd.issues[0].detail, /leave only 41943040 bytes free in the work tree.*patchExpansionBytes/);
+  assert.equal(gitCalls(disk, 'apply').length, 0, 'the patch never ran');
+});
+
+test('applies: a binary change in poc.patch is refused host-side (Q28), before git sees it', async () => {
+  const cases = [
+    ['GIT binary patch', ['diff --git a/test/x.bin b/test/x.bin', 'new file mode 100644', 'index 0000000..1111111', 'GIT binary patch', 'literal 3', 'IcmZPo000310RR91', '', '']],
+    ['Binary files differ', ['diff --git a/test/x.bin b/test/x.bin', 'new file mode 100644', 'index 0000000..1111111 100644', 'Binary files /dev/null and b/test/x.bin differ', '']],
+    ['Files differ', ['diff --git a/test/x.bin b/test/x.bin', 'Files /dev/null and b/test/x.bin differ', '']]
+  ];
+  for (const [what, lines] of cases) {
+    const sb = claimSandbox();
+    const r = await runClaim(sb, claimRequest({ pocPatch: Buffer.from(lines.join('\n')) }));
+    assert.equal(r.outcome, 'definitive', what);
+    assert.equal(r.gates.applies.status, 'fail', what);
+    assert.equal(r.gates.applies.basis, 'input', what);
+    assert.match(r.gates.applies.detail, /makes a binary change/, what);
+    assert.equal(gitCalls(sb, 'apply').length, 0, `${what}: git never saw it`);
+    for (const g of ['testPathsOnly', 'build', 'reproduces']) assert.equal(r.gates[g], undefined, `${what}: ${g} not run`);
+  }
+  // An added line that merely reads like a binary marker (a '+' prefix) is content, not a header: it is not refused.
+  const ok = claimSandbox();
+  const rok = await runClaim(ok, claimRequest({ pocPatch: Buffer.from(['diff --git a/test/A.t.sol b/test/A.t.sol', 'new file mode 100644', '--- /dev/null', '+++ b/test/A.t.sol', '@@ -0,0 +1,2 @@', '+// Binary files a and b differ', '+contract A {}', ''].join('\n')) }));
+  assert.equal(rok.gates.applies.status, 'pass', JSON.stringify(rok.gates.applies));
 });
 
 test('applies: binary changes count as stats only', async () => {
@@ -615,9 +639,8 @@ test('facts: the patch\'s size, hash and measured expansion are recorded (expans
   assert.deepEqual(r.facts.patch, {
     bytes: Buffer.byteLength(POC_PATCH),
     sha256: crypto.createHash('sha256').update(POC_PATCH).digest('hex'),
-    expansionBytes: 7777,
-    binaryHunks: 0
+    expansionBytes: 7777
   });
-  // A binary postimage reused at many paths (old R17-F1) is caught by measurement now: each path's bytes are summed
-  // from the index (claim.docker.test.js, the "big" fixture). No host-side existing-object count remains.
+  // Binary changes are refused host-side (Q28), so the old existing-blob-reuse (R17-F1) can no longer reach git; the
+  // measurement sums the postimage bytes of an accepted text patch from the index.
 });

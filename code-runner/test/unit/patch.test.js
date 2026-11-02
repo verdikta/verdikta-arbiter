@@ -12,7 +12,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  scanPatch, parseRawZ, sumObjectSizes, encodeBase85Line, parseNameStatusZ, parseNumstatZ, parseAddedLines, unquoteCStyle, reportablePath, parseLsTreeZ
+  scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseAddedLines, unquoteCStyle, reportablePath, parseLsTreeZ
 } = require('../../src/patch');
 
 const LIMITS = { maxPatchBytes: 2000000 };
@@ -31,18 +31,29 @@ function textPatch(file = 'test/Exploit.t.sol', lines = ['// exploit']) {
 
 const POC_TEXT = textPatch().toString('latin1');
 
-test('a small patch passes; its size, hash and binary-hunk count are reported, no expansion yet', () => {
+test('a small text patch passes; its size and hash are reported, no expansion counted here', () => {
   const p = textPatch();
   const r = scanPatch(p, LIMITS);
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.bytes, p.length);
-  assert.equal(r.binaryHunks, 0);
   assert.equal(r.expansionBytes, undefined, 'the expansion is measured after the apply, not here');
   assert.match(r.sha256, /^[0-9a-f]{64}$/);
-  // A binary section is counted for the fact, but its size is not parsed.
-  const bin = scanPatch(Buffer.from(['diff --git a/test/f.bin b/test/f.bin', 'GIT binary patch', 'literal 999999999', 'HcmV?d00001', '', ''].join('\n')), LIMITS);
-  assert.equal(bin.ok, true, 'a huge declared size is not refused here; the apply measures what is written');
-  assert.equal(bin.binaryHunks, 1);
+});
+
+test('Q28: a binary change is refused host-side, in every form git writes, but not an added line that reads like one', () => {
+  const forms = [
+    ['diff --git a/test/f.bin b/test/f.bin', 'GIT binary patch', 'literal 3', 'IcmZPo000310RR91', '', ''],
+    ['diff --git a/test/f.bin b/test/f.bin', 'index 0000000..1111111 100644', 'Binary files /dev/null and b/test/f.bin differ', ''],
+    ['diff --git a/test/f.bin b/test/f.bin', 'Files /dev/null and b/test/f.bin differ', '']
+  ];
+  for (const lines of forms) {
+    const r = scanPatch(Buffer.from(lines.join('\n')), LIMITS);
+    assert.equal(r.ok, false, lines[1]);
+    assert.equal(r.code, 'PATCH_BINARY', lines[1]);
+  }
+  // A '+' added line or a context line that merely contains the words is content, not a header.
+  const ok = scanPatch(textPatch('test/A.t.sol', ['// Binary files a and b differ', 'contract A {}']), LIMITS);
+  assert.equal(ok.ok, true, ok.reason);
 });
 
 test('maxPatchBytes: one byte over the spec\'s limit fails, at the limit passes', () => {
@@ -148,13 +159,6 @@ test('git -z outputs: name-status and numstat, paths byte for byte', () => {
 
 test('ls-tree -z: paths of the listed commit', () => {
   assert.deepEqual(parseLsTreeZ(Buffer.from('foundry.toml\0lib/forge-std\0src/V.sol\0')), ['foundry.toml', 'lib/forge-std', 'src/V.sol']);
-});
-
-test('base85 encodes the way git writes it (fixtures build binary patches from it)', () => {
-  // 4 bytes -> a length prefix ('D' = 64 + 4) and one 5-char group; the value 1 is "00001".
-  assert.equal(encodeBase85Line(Buffer.from([0, 0, 0, 1])), 'D00001');
-  for (const n of [1, 4, 5, 52]) assert.equal(encodeBase85Line(Buffer.alloc(n, 7)).length, 1 + Math.ceil(n / 4) * 5);
-  assert.throws(() => encodeBase85Line(Buffer.alloc(53)), RangeError);
 });
 
 test('added lines from a -U0 diff, per file, with new line numbers; hunk bodies are never read as headers', () => {

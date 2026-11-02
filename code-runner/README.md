@@ -440,35 +440,33 @@ driver, and no conversion changes a file's bytes.
 patch in the sandbox, in the fresh repository, under its memory, pids and time
 limits. The runner then reads from its own index what the patch wrote: the
 postimage bytes of every path it created or modified (`git diff --cached
---raw`, then each blob's `%(objectsize)`), summed, counted once per path — so
-a blob the patch names many times, or a `Binary files … differ` section that
-makes git load an existing object (`apply_binary`), counts at every path it
-lands on. More than `patchExpansionBytes` is an `input` failure
-(`PATCH_EXPANSION`), the same as before; the measured figure is in the reason
-and in `facts.patch.expansionBytes`.
+--raw`, then each blob's `%(objectsize)`), summed, counted once per path. More
+than `patchExpansionBytes` is an `input` failure (`PATCH_EXPANSION`), the same
+gate as before; the measured figure is in the reason and in
+`facts.patch.expansionBytes`.
 
 Getting the blame right (§9.2 step 3): the patch is refused only when the
 patch is what ran out of room.
 - Before applying, the runner checks the work tree has `patchExpansionBytes`
-  plus a 64 MB margin free. If it does not, the image's checkout and
+  plus a 64 MB margin of free disk. If not, the image's checkout and
   installed dependencies left too little room — the requester's package, not
   the hunter's patch: `IMAGE_WORKDIR_FULL`, before any apply.
-- With that room confirmed, running out of space (`ENOSPC`) or memory (an OOM
-  kill) as git applies, or the apply's own 90 s budget, is the patch
-  materialising more than it may: `PATCH_EXPANSION`, `input`. A real
-  compression bomb (a 60 KB patch of 60 MB of zeros) applies and is caught by
-  the measurement; one that inflates past the sandbox's memory is caught by
-  the OOM kill. The run's own deadline, budget or cancellation during the
-  apply still abstains — it is not the patch's fault.
+- With that room confirmed, running out of it (`ENOSPC`) as git applies, or
+  the apply's own 90 s budget, is the patch materialising more than it may:
+  `PATCH_EXPANSION`, `input`. Running out of **memory** while applying is an
+  ordinary resource abstain (owner decision Q28), never charged to the patch;
+  so are the run's own deadline, budget and cancellation.
 
-**The host-side checks** (`src/patch.js`, before git sees the patch) no longer
-parse the patch's meaning: `maxPatchBytes`; no NUL byte (no patch git writes
-holds one, and git reads a header field only up to one); no copy (`copy
-from`) and no rename (`rename from` / `to`, and git's older `rename old` /
-`new`), each of which rebuilds a whole existing file from one header line, so
-the patch's bytes bound neither what git writes nor how often. A moved file is
-a deletion and an addition (`git diff --no-renames`). Binary changes count as
-stats only: their content is never read for flags.
+**The host-side checks** (`src/patch.js`, before git sees the patch) parse no
+meaning: `maxPatchBytes`; no NUL byte (no patch git writes holds one, and git
+reads a header field only up to one); no copy (`copy from`) and no rename
+(`rename from` / `to`, and git's older `rename old` / `new`), each of which
+rebuilds a whole existing file from one header line; and no binary change (a
+`GIT binary patch` or `Binary files … differ` / `Files … differ` entry, owner
+decision Q28) — a PoC adds or edits text test files, and a binary postimage
+can name an existing object the patch's bytes do not bound. A moved file is a
+deletion and an addition (`git diff --no-renames`). (`fix.patch` may touch
+other kinds of file; that is A3a's question, not this node's.)
 
 **Commands** run as written in the sandbox's `/bin/sh` with pathname expansion
 off (`set -f; <command>`). For `testFiles` and `testIds` the runner appends
@@ -532,7 +530,7 @@ to the PoC commit (`git reset --hard`). The number killed is in
 `facts.leftoverProcesses`.
 
 `facts` (A3b builds the report from them): `checkout` (above), `patch`
-(bytes, SHA-256, expansion, binary hunks), `commit` (`base`, `poc`), `diff` (files, added,
+(bytes, SHA-256, the measured expansion), `commit` (`base`, `poc`), `diff` (files, added,
 removed, binary files), `testPaths` (outside, protected, unreportable),
 `flags` (`existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
 `frameworkReferences`: forge inline config, JUnit markup, file and

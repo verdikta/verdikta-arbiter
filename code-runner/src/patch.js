@@ -6,11 +6,13 @@
  *
  * 1. scanPatch: the request's own bytes, before git sees them. The checks
  *    that do not depend on parsing the patch's meaning: maxPatchBytes, no NUL
- *    byte, and no copy or rename header (each rebuilds a whole existing file
- *    from one header line, so the patch's bytes do not bound what git writes,
- *    and git apply's numstat names only the destinations). What the patch
- *    would expand to is no longer counted from the text; it is measured after
- *    git applies the patch in the sandbox (claim.js, the applies step, owner
+ *    byte, no copy or rename header (each rebuilds a whole existing file from
+ *    one header line, so the patch's bytes do not bound what git writes, and
+ *    git apply's numstat names only the destinations), and no binary change
+ *    (owner decision Q28: a PoC adds or edits text test files; a binary
+ *    postimage can name an existing object whose size the patch's bytes do
+ *    not bound). What an accepted (text) patch writes is still measured after
+ *    git applies it in the sandbox (claim.js, the applies step, owner
  *    decision Q26: "measure instead").
  *
  * 2. Readers of git's own answers (`-z` outputs, the -U0 diff, the raw diff),
@@ -24,37 +26,16 @@ const crypto = require('node:crypto');
 /** The header lines git reads as a rename (apply.c's table: rename from/to, and the older rename old/new). */
 const RENAME_HEADERS = Object.freeze(['rename from ', 'rename to ', 'rename old ', 'rename new ']);
 
-/** The inverse of git's base85 (base85.c), for tests and fixtures to build binary patches (≤ 52 bytes per line). */
-const B85 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~';
-function encodeBase85Line(bytes) {
-  if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > 52) throw new RangeError('1 to 52 bytes per line');
-  const len = bytes.length;
-  const head = len <= 26 ? String.fromCharCode(64 + len) : String.fromCharCode(96 + len - 26);
-  const padded = Buffer.alloc(Math.ceil(len / 4) * 4);
-  bytes.copy(padded);
-  let out = head;
-  for (let g = 0; g < padded.length; g += 4) {
-    let acc = padded.readUInt32BE(g);
-    const chars = [];
-    for (let k = 0; k < 5; k += 1) {
-      chars.unshift(B85[acc % 85]);
-      acc = Math.floor(acc / 85);
-    }
-    out += chars.join('');
-  }
-  return out;
-}
-
 /**
  * The host-side checks of poc.patch (part of the `applies` gate's `input`
- * basis), without parsing what the patch means. What it expands to is not
- * counted here; it is measured after the patch is applied.
+ * basis), without parsing what the patch means. What an accepted text patch
+ * writes is not counted here; it is measured after the patch is applied.
  * @param {Buffer} bytes
  * @param {{maxPatchBytes:number}} limits
- * @returns {{ok:boolean, code?:string, reason?:string, bytes:number, sha256:string, binaryHunks:number}}
+ * @returns {{ok:boolean, code?:string, reason?:string, bytes:number, sha256:string}}
  */
 function scanPatch(bytes, { maxPatchBytes }) {
-  const base = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), binaryHunks: 0 };
+  const base = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
   const fail = (code, reason) => ({ ...base, ok: false, code, reason });
   if (bytes.length > maxPatchBytes) {
     return fail('PATCH_TOO_LARGE', `poc.patch is ${bytes.length} bytes; the listing allows ${maxPatchBytes} (maxPatchBytes)`);
@@ -76,7 +57,12 @@ function scanPatch(bytes, { maxPatchBytes }) {
     if (RENAME_HEADERS.some((h) => line.startsWith(h))) {
       return fail('PATCH_RENAME', 'poc.patch renames a file (a "rename from" header): git rebuilds a renamed file from the existing one, once for every rename of it, so the patch does not bound what it writes; a PoC adds or edits test files (write it with git diff --no-renames)');
     }
-    if (line === 'GIT binary patch') base.binaryHunks += 1;
+    // Q28: a PoC adds or edits text test files. A binary change (git's `GIT binary patch`, or a no-`--binary`
+    // `Binary files … differ` / `Files … differ` summary) can name an existing object as its postimage, whose size
+    // the patch's bytes do not bound; it is refused before git sees it. A header line, never an added `+`/context line.
+    if (line === 'GIT binary patch' || line.startsWith('Binary files ') || line.startsWith('Files ')) {
+      return fail('PATCH_BINARY', 'poc.patch makes a binary change (a "GIT binary patch" or "Binary files … differ" entry): a PoC adds or edits text test files, and a binary postimage can name an existing object the patch does not bound');
+    }
   }
   return { ...base, ok: true };
 }
@@ -275,5 +261,5 @@ function reportablePath(p) {
 }
 
 module.exports = {
-  scanPatch, parseRawZ, sumObjectSizes, encodeBase85Line, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, unquoteCStyle, reportablePath
+  scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, unquoteCStyle, reportablePath
 };

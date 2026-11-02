@@ -53,14 +53,20 @@ const GIT_TIMEOUT_MS = 120000;
 /** The patch's own apply budget: a timeout here is the patch's fault, not the run's (§9.2 step 3, owner decision Q26). */
 const APPLY_TIMEOUT_MS = 90000;
 const CLEANUP_TIMEOUT_MS = 60000;
-/** The work tree (git.js WORK_TREE), and the headroom the apply needs beyond patchExpansionBytes, so ENOSPC is the patch's fault, not a full image's. */
+/**
+ * The work tree (git.js WORK_TREE), and the free disk the apply needs beyond
+ * patchExpansionBytes before running out of it is charged to the patch. The
+ * margin covers git's own working files (loose objects, the index) besides
+ * the postimage bytes written.
+ */
 const WORK_TREE = '/work';
 const FREE_SPACE_MARGIN_BYTES = 64 * 1024 * 1024;
 /**
  * Prints the work tree's free bytes as `vcr-free <bytes>`: GNU `stat -f` (free
  * blocks x block size), falling back to `df` (POSIX 1K blocks) where statfs is
- * not available. Both ship on the foundry base; one of them answers on every
- * runtime (runc and gVisor).
+ * not available. Both ship on the foundry base; one answers on every runtime
+ * (runc and gVisor). Memory is not read: running out of it while applying is
+ * an ordinary resource abstain (owner decision Q28), not the patch's fault.
  */
 const FREE_SPACE_SCRIPT = [
   `b=$(stat -f -c '%a %S' ${WORK_TREE} 2>/dev/null) && set -- $b && printf 'vcr-free %s\\n' "$(( $1 * $2 ))" && exit 0`,
@@ -205,15 +211,15 @@ function normaliseMessage(message) {
  */
 /**
  * Why a failed `git apply` blames the patch (`input`, PATCH_EXPANSION) rather
- * than the run, given the work tree's free space was confirmed first. An OOM
- * kill or the apply's own wall-clock budget is then the patch materialising
- * more than it may; the run's own deadline, budget or cancellation is not.
+ * than the run, given the work tree's free space was confirmed first. Only the
+ * apply's own wall-clock budget is the patch here; running out of memory is an
+ * ordinary resource abstain (owner decision Q28, R20-F1), and the run's own
+ * deadline, budget or cancellation is not the patch either.
  * @param {Abstain} abstain - the abstain ctx.exec threw for the apply step
  * @param {number} applyTimeoutMs - the apply's own budget
- * @returns {string|null} the gate detail when it is the patch, else null (rethrow)
+ * @returns {string|null} the gate detail when it is the patch, else null (rethrow to abstain)
  */
 function applyFailureReason(abstain, applyTimeoutMs) {
-  if (abstain.cause === ABSTAIN.OOM) return 'poc.patch exhausted the sandbox\'s memory as git applied it (a hunk that inflates past the limit)';
   // The step's own timer aborts with reason 'step'; the run's budget, deadline and cancel use other reasons. Both
   // the step and the run budget map to STEP_TIMEOUT, so the apply's own timeout is told apart by its detail (result.js).
   if (abstain.cause === ABSTAIN.STEP_TIMEOUT && /^the step reached its wall-clock limit/.test(abstain.detail || '')) {
@@ -280,7 +286,7 @@ function claimSteps(request, limits) {
 
   async function applies(ctx) {
     const scan = scanPatch(request.pocPatch, limits);
-    const patchFact = { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: null, binaryHunks: scan.binaryHunks };
+    const patchFact = { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: null };
     ctx.fact('patch', patchFact);
     if (!scan.ok) {
       ctx.gate('applies', 'fail', 'input', scan.reason);
@@ -289,8 +295,8 @@ function claimSteps(request, limits) {
     }
     const failExpansion = (reason) => { ctx.fact('patch', { ...patchFact }); ctx.gate('applies', 'fail', 'input', reason); state.done = true; };
 
-    // The measurement needs room to write patchExpansionBytes; without it, the image's checkout and dependencies left
-    // too little, which is the requester's package, not the hunter's patch (owner decision Q26).
+    // The measurement needs disk room to write patchExpansionBytes; without it, the image's checkout and dependencies
+    // left too little, which is the requester's package, not the hunter's patch (owner decision Q26).
     const need = limits.patchExpansionBytes + FREE_SPACE_MARGIN_BYTES;
     const free = await freeBytes(ctx);
     if (free < need) {
@@ -299,7 +305,8 @@ function claimSteps(request, limits) {
     }
 
     // git applies the patch in the sandbox, in the runner's own repository, under its memory, pids and space limits
-    // and the apply's own time budget. Out of space or memory, or the budget, is then the patch's fault.
+    // and the apply's own time budget. Running out of the confirmed disk room, or the budget, is the patch's fault;
+    // running out of memory is an ordinary resource abstain (owner decision Q28), not an input refusal.
     let applied;
     try {
       applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), {
@@ -307,7 +314,7 @@ function claimSteps(request, limits) {
       });
     } catch (err) {
       const reason = err instanceof Abstain ? applyFailureReason(err, APPLY_TIMEOUT_MS) : null;
-      if (!reason) throw err;
+      if (!reason) throw err; // an OOM, or the run's own abort: a genuine abstain.
       failExpansion(`${reason}; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`);
       return;
     }
