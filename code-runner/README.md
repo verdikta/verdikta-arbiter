@@ -893,7 +893,7 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a watched link into forge's `cache/` (or `out/`, `broadcast/`, `snapshots/`, `.git`, `paths.tests`, `/tmp`, `$HOME`, the work tree's root, a directory outside the work tree) | `IMAGE_WATCH_LINK_UNCOVERED`, the link and its target named | unit and Docker "A3a R6-F1 (round 7)" |
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
-| a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit "a link the patch adds" |
+| a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
 
 Residual risk (decision 6): within run 1, claim code can still write a new
 artifact after forge's compile that runs 2-3 would execute; a forger that
