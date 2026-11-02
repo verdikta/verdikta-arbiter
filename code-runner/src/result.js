@@ -51,11 +51,17 @@ const ABSTAIN = Object.freeze({
 
 const ABSTAIN_CAUSES = new Set(Object.values(ABSTAIN));
 
-/** What a definitive gate was decided on (§9.3: settle only on these). */
+/**
+ * What a definitive gate was decided on (§9.3: settle only on these): a
+ * step's clean exit code (and what that step printed), a JUnit outcome, an
+ * integrity check, or the request's own bytes (`input`: a patch's size or
+ * expansion, the same on every arbiter, decided before any exec).
+ */
 const DEFINITIVE_BASIS = Object.freeze({
   EXIT_CODE: 'exit_code',
   JUNIT: 'junit',
-  INTEGRITY: 'integrity'
+  INTEGRITY: 'integrity',
+  INPUT: 'input'
 });
 
 const BASES = new Set(Object.values(DEFINITIVE_BASIS));

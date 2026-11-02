@@ -76,6 +76,7 @@ function toResponse(result) {
     abstain: result.abstain,
     steps: result.steps,
     gates: result.gates,
+    facts: result.facts || {},
     // The Verification Report, its hash and the context pack arrive with node A3b.
     report: null,
     reportSha256: null,

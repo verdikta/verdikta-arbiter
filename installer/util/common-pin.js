@@ -13,6 +13,11 @@
  * Usage: node common-pin.js <componentDir>
  *   prints the pinned version and exits 0, or exits 1 when the component pins
  *   no exact version (a range, a dist-tag, or no package.json).
+ *
+ *        node common-pin.js --agree <repoRoot>
+ *   the same-version check: the AI Node, the External Adapter and the code
+ *   runner (COMMON_COMPONENTS) must each pin one exact release, the same one.
+ *   Prints it and exits 0, or names each component's pin and exits 1.
  */
 
 const fs = require('fs');
@@ -35,7 +40,32 @@ function exactCommonPin(componentDir) {
   }
 }
 
-module.exports = { EXACT_VERSION, exactCommonPin };
+/** The components that judge a claim and must read one @verdikta/common release, by directory. */
+const COMMON_COMPONENTS = Object.freeze(['ai-node', 'external-adapter', 'code-runner']);
+
+/**
+ * @param {string} repoRoot - the directory holding the components
+ * @returns {{ agree: boolean, pins: Record<string, string|null> }} agree: every
+ *   component pins an exact version and they are all the same one
+ */
+function commonPinAgreement(repoRoot) {
+  const pins = {};
+  for (const component of COMMON_COMPONENTS) pins[component] = exactCommonPin(path.join(repoRoot, component));
+  const values = Object.values(pins);
+  return { agree: values.every(Boolean) && new Set(values).size === 1, pins };
+}
+
+module.exports = { EXACT_VERSION, COMMON_COMPONENTS, exactCommonPin, commonPinAgreement };
+
+if (require.main === module && process.argv[2] === '--agree') {
+  const { agree, pins } = commonPinAgreement(process.argv[3] || process.cwd());
+  if (agree) {
+    console.log(pins[COMMON_COMPONENTS[0]]);
+    process.exit(0);
+  }
+  console.error(`@verdikta/common pins disagree: ${COMMON_COMPONENTS.map((c) => `${c}:${pins[c] || 'none'}`).join(', ')}`);
+  process.exit(1);
+}
 
 if (require.main === module) {
   const pin = exactCommonPin(process.argv[2] || process.cwd());
