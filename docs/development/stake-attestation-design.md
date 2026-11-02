@@ -934,7 +934,10 @@ Within that:
   as a residual, and that question is with the owner.
 
 A change to a watched place during the maker's build, before any claim code has
-run, is the image's doing and a requester error, never a failed check. One open
+run, is the image's doing and a requester error, never a failed check. Where forge
+itself writes (its out and cache directories, and what else a plain run writes to)
+is forge's output, not held to the reference; it must be plain and hold nothing
+watched in the image, or the image is refused before any claim code. One open
 point stays with the owner: a program the image ships as `solc`, or repository code
 a PoC calls, runs inside the PoC's runs, so one that fails an honest claim's
 integrity only then cannot be told from claim code (code-runner README, "The check's

@@ -772,18 +772,17 @@ test('A3a R13-F1 (round 14): a directory on the way to a watched root, or a watc
     poc: [hideAncestor, hideAncestor, hideAncestor]
   }));
   assertIntegrityFails(nested, ['frameworkUnchanged'], /run 1: build cannot be read/);
-  // out -> real-out: the link's target itself, its contents no longer listed.
+  // lib/pkg -> ../real-pkg: the link's target itself, its contents no longer listed.
   const hideTarget = (d, k, box) => {
-    box.tree.delete('/work/real-out/Vault.json');
-    box.tree.set('/work/real-out', { type: 'd', mode: '111', content: '' });
+    box.tree.delete('/work/real-pkg/P.sol');
+    box.tree.set('/work/real-pkg', { type: 'd', mode: '111', content: '' });
     return { exitCode: 1, stdout: drainFails() };
   };
   const linked = await runClaim(claimSandbox({
-    onBox: (box) => { box.tree.set('/work/out', { type: 'l', target: 'real-out' }); set(box, '/work/real-out/Vault.json', '{}'); },
-    poc: [hideTarget, hideTarget, hideTarget],
-    scripts: { 'vcr-build': () => ({ exitCode: 0 }) }
+    onBox: (box) => { box.tree.set('/work/lib/pkg', { type: 'l', target: '../real-pkg' }); set(box, '/work/real-pkg/P.sol', 'contract P {}'); },
+    poc: [hideTarget, hideTarget, hideTarget]
   }));
-  assertIntegrityFails(linked, ['frameworkUnchanged'], /run 1: real-out cannot be read/);
+  assertIntegrityFails(linked, ['frameworkUnchanged'], /run 1: real-pkg cannot be read/);
 });
 
 test('A3a R13-F1: what the reference cannot read in the watched sets is the image\'s error before any maker command (IMAGE_WATCH_UNREADABLE); outside them it is not watched and raises nothing', async () => {
@@ -984,6 +983,67 @@ test('A3a R21-F1: where forge itself writes is never held to the reference, what
   const dep = (d, k, box) => { set(box, '/work/lib/forge-std/src/Test.sol', 'changed'); return { exitCode: 1, stdout: drainFails() }; };
   const depChanged = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { out: 'lib/out' }; }, poc: [dep, dep, dep] }));
   assertIntegrityFails(depChanged, ['dependenciesUnchanged'], /run 1: lib\/forge-std\/src\/Test\.sol changed/);
+});
+
+test('A3a R22-F1: a watched input the image already has inside forge\'s output is refused before any maker command or claim code, so a run could not rewrite it as an artifact', async () => {
+  const refused = (r, re) => {
+    assert.equal(r.outcome, 'requester_error', show(r));
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(r.issues[0].detail, re);
+  };
+  // out = "lib" beside what lib/ holds: everything there would have been exempt.
+  const dep = claimSandbox({ onBox: (box) => { box.configOver = { out: 'lib' }; } });
+  refused(await runClaim(dep), /lib\/forge-std\/src\/Test\.sol is watched and lies where forge writes/);
+  assert.equal(dep.execs().filter((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc').length, 0);
+  // A protected glob over what the setup built: `forge test` compiles again with other settings and rewrites it.
+  const seed = (box) => { set(box, '/work/out/Base.t.sol/Base.json', '{}'); set(box, '/work/cache/solidity-files-cache.json', '{}'); };
+  for (const [glob, re] of [['out/Base.t.sol/**', /out\/Base\.t\.sol\/Base\.json/], ['cache/**', /cache\/solidity-files-cache\.json/], ['**/*.json', /out\/Base\.t\.sol\/Base\.json/]]) {
+    const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', glob] } });
+    refused(await runClaim(claimSandbox({ onBox: seed }), claimRequest({ spec })), re);
+  }
+  // The same image with nothing watched over it is no conflict: what a build leaves in out/ is an artifact.
+  const plain = await runClaim(claimSandbox({ onBox: seed }));
+  assert.equal(plain.gates.integrity.status, 'pass', show(plain));
+  // Forge's output behind a link, or a link inside it: forge writes through it to where no rule here names.
+  const behind = claimSandbox({ onBox: (box) => { box.tree.set('/work/out', { type: 'l', target: 'build/artifacts' }); set(box, '/work/build/artifacts/V.json', '{}'); } });
+  refused(await runClaim(behind), /out is a link where forge writes/);
+  const onTheWay = claimSandbox({ onBox: (box) => { box.configOver = { out: 'build/out' }; box.tree.set('/work/build', { type: 'l', target: 'elsewhere' }); } });
+  refused(await runClaim(onTheWay), /build is a link on the way to build\/out, where forge writes/);
+  const inside = claimSandbox({ onBox: (box) => { box.tree.set('/work/out/E.t.sol', { type: 'l', target: '../y' }); } });
+  refused(await runClaim(inside), /out\/E\.t\.sol is a link where forge writes/);
+});
+
+test('A3a: what else forge writes in a plain run (an invariant\'s failure_persist_dir, a maker\'s foundry.toml) is forge\'s output: an honest PoC passes, a watched input already there is refused, and outside the work tree it is refused', async () => {
+  const persist = { invariant: { failure_persist_dir: 'lib/persist' } };
+  const writes = (d, k, box) => { set(box, '/work/lib/persist/failures/E/invariants/invariant_x', 'seq'); return { exitCode: 1, stdout: drainFails() }; };
+  const honest = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = persist; }, poc: [writes, writes, writes] }));
+  assert.equal(honest.outcome, 'definitive', show(honest));
+  assert.equal(honest.gates.integrity.status, 'pass', show(honest));
+  // A real dependency beside it stays held.
+  const dep = (d, k, box) => { set(box, '/work/lib/forge-std/src/Test.sol', 'changed'); return { exitCode: 1, stdout: drainFails() }; };
+  assertIntegrityFails(await runClaim(claimSandbox({ onBox: (box) => { box.configOver = persist; }, poc: [dep, dep, dep] })), ['dependenciesUnchanged'], /lib\/forge-std\/src\/Test\.sol changed/);
+  const over = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { fuzz: { failure_persist_dir: 'lib/forge-std' } }; } }));
+  assert.equal(over.outcome, 'requester_error', show(over));
+  assert.deepEqual(over.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(over.issues[0].detail, /lib\/forge-std\/src\/Test\.sol is watched and lies where forge writes/);
+  for (const value of ['/home/sandbox/persist', '../persist', '.git/persist']) {
+    const away = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { invariant: { failure_persist_dir: value } }; } }));
+    assert.equal(away.outcome, 'requester_error', `${value}: ${show(away)}`);
+    assert.deepEqual(away.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(away.issues[0].detail, /invariant\.failure_persist_dir/);
+  }
+});
+
+test('A3a R21-F1 (round 22): a protected root behind a link into forge\'s output is refused at the reference, though it resolves to nothing until run 1 compiles', async () => {
+  const seed = (box) => { box.tree.set('/work/artifact-alias', { type: 'l', target: 'out' }); };
+  const links = (d) => ({ stdout: Buffer.from(d.stdin.toString('latin1').split('\0').filter(Boolean).map((p) => `?\0${p}\0/work/out/Exploit.t.sol\0`).join(''), 'latin1') });
+  const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', 'artifact-alias/Exploit.t.sol/**'] }, commands: { build: 'forge build --skip test' } });
+  const sb = claimSandbox({ onBox: seed, scripts: { 'vcr-links': links } });
+  const r = await runClaim(sb, claimRequest({ spec }));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
+  assert.match(r.issues[0].detail, /artifact-alias\/Exploit\.t\.sol -> \/work\/out\/Exploit\.t\.sol \(forge's out directory \(out\)\)/);
+  assert.equal(sb.execs().filter((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc').length, 0);
 });
 
 test('Q32: in the fix check\'s sandbox a build that changes a watched place is a failed fixed build, a fact; the PoC\'s gates stand', async () => {

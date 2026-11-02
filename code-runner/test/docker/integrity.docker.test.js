@@ -79,6 +79,28 @@ const VARIANTS = Object.freeze({
   outlib: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('out = "out"', 'out = "lib/out"') }
   },
+  // R21-F1, round 22: a link at forge's out before anything is compiled, and one a build left behind in out/.
+  outalias: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'ln -s out artifact-alias && mkdir -p out/Prebuilt.sol && printf "{}\\n" > out/Prebuilt.sol/Prebuilt.json'
+  },
+  // The same dangling route, through a link on the read-only root that the listing never sees.
+  outchain: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'ln -s /work/out/Exploit.t.sol/ExploitTest.json /opt/pending && ln -s /opt/pending lib/pending'
+  },
+  // R22-F1: out is the dependency directory, beside what it holds.
+  libout: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('out = "out"', 'out = "lib"') }
+  },
+  // What forge writes in a plain run besides out and its cache, and an out that is a link.
+  runoutputs: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML('test_failures_file = "lib/failures/tf"\n\n[invariant]\nfailure_persist_dir = "lib/persist"') }
+  },
+  outlinked: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'mkdir -p build/artifacts && ln -s build/artifacts out'
+  },
   // R21-F2: invariants, with reverting handlers allowed.
   invariants: { toml: '[profile.default.invariant]\nruns = 3\ndepth = 4\nfail_on_revert = false', files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD } },
   solcsecond: {
@@ -723,6 +745,70 @@ test('A3a R21-F2 under real forge: invariant PoCs and suites: one predicate fail
   const report = r4.steps.find((s) => s.name === 'poc:1').stdout.text;
   assert.match(report, /<testcase name="handler [^"]*"/, 'forge wrote the handler\'s record');
   assert.match(report, /Suite result: FAILED\. 0 passed; 1 failed; 0 skipped/);
+});
+
+test('A3a R21-F1 (round 22) and R22-F1 under real forge: the same conflict by a link, by a chain through the read-only root, by a prebuilt artifact and by `out = "lib"`: each a requester error before any maker command or claim code', { timeout: TIMEOUT }, async (t) => {
+  const poc = addFilesPatch({ 'test/Exploit.t.sol': DRAIN });
+  const paths = (...protect) => ({ tests: ['test/**'], protected: ['foundry.toml', 'lib/**', '.gitignore', ...protect] });
+  const refused = (r, code, re) => {
+    assert.equal(r.outcome, 'requester_error', show(r));
+    assert.deepEqual(r.issues.map((i) => i.code), [code], show(r));
+    assert.match(r.issues[0].detail, re);
+    assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
+  };
+  const fx = await fixture('outalias');
+  refused(await run(t, claim(fx, poc, { commands: { build: 'forge build --skip test' }, paths: paths('artifact-alias/Exploit.t.sol/**') })),
+    'IMAGE_WATCH_LINK_UNCOVERED', /artifact-alias\/Exploit\.t\.sol -> \/work\/out\/Exploit\.t\.sol \(forge's out directory \(out\)\)/);
+  refused(await run(t, claim(fx, poc, { paths: paths('out/Prebuilt.sol/**') })), 'IMAGE_WATCH_ROOT_UNCOVERED', /out\/Prebuilt\.sol\/Prebuilt\.json is watched/);
+  // The link alone, with nothing watched through it, is nothing: the honest claim passes.
+  const plain = await run(t, claim(fx, poc));
+  assert.equal(plain.outcome, 'definitive', show(plain));
+  for (const g of ['build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(plain.gates[g].status, 'pass', `${g}: ${show(plain)}`);
+  refused(await run(t, claim(await fixture('outchain'), poc, { commands: { build: 'forge build --skip test' } })),
+    'IMAGE_WATCH_LINK_UNCOVERED', /lib\/pending -> \/work\/out\/Exploit\.t\.sol\/ExploitTest\.json \(forge's out directory \(out\)\)/);
+  refused(await run(t, claim(await fixture('libout'), poc)), 'IMAGE_WATCH_ROOT_UNCOVERED', /lib\/forge-std\/src\/Test\.sol is watched/);
+});
+
+test('A3a under real forge: forge\'s other outputs (test_failures_file, failure_persist_dir) inside a dependency directory are its output: an honest failing PoC and an honest invariant PoC with a counterexample pass; out behind a link is refused', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('runoutputs');
+  const plain = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(plain.outcome, 'definitive', show(plain));
+  for (const g of ['build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(plain.gates[g].status, 'pass', `${g}: ${show(plain)}`);
+  assert.deepEqual(plain.facts.poc.integrity, CLEAN);
+  // A counterexample's sequence: forge persists it in failure_persist_dir, in the run's own compile.
+  const inv = ['// SPDX-License-Identifier: MIT', 'pragma solidity ^0.8.0;', 'import {Base} from "./Vm.sol";', 'contract H { uint256 public x; function bump() public { x += 1; } }',
+    'contract InvPersist is Base {', '    H h;', '    function setUp() public { h = new H(); }', '    function invariant_only() public view { require(h.x() == 0, "moved"); }', '}', ''].join('\n');
+  const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': inv }), { finding: finding({ command: 'forge test --match-test invariant_only', observable: 'invariant_only fails' }) }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.integrity.status, 'pass', show(r));
+  assert.deepEqual(r.facts.poc.integrity, CLEAN);
+  const linked = await run(t, claim(await fixture('outlinked'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(linked.outcome, 'requester_error', show(linked));
+  assert.deepEqual(linked.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(linked.issues[0].detail, /out is a link/);
+});
+
+test('A3a R22-F2 under real forge: a one-predicate invariant whose reason spans lines is an assertion failure, with or without a counterexample\'s sequence, and a quoted observable on its later line is found', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('invariants');
+  const flat = pocFile('InvLines', [
+    '    Vault v;', '    function setUp() public { v = new Vault(); v.deposit(1); }',
+    '    function invariant_only() public view { require(v.balanceOf(address(this)) == 1, "expected balance\\nactual balance"); }'
+  ]);
+  const seq = [
+    '// SPDX-License-Identifier: MIT', 'pragma solidity ^0.8.0;', 'import {Base} from "./Vm.sol";',
+    'contract H { uint256 public x; function bump() public { x += 1; } }',
+    'contract InvSeq is Base {', '    H h;', '    function setUp() public { h = new H(); }',
+    '    function invariant_only() public view { require(h.x() == 0, "expected zero\\nactual more"); }', '}', ''
+  ].join('\n');
+  for (const [source, fragment] of [[flat, 'actual balance'], [seq, 'actual more']]) {
+    const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': source }), { finding: finding({ command: 'forge test --match-test invariant_only', observable: `invariant_only fails with "${fragment}"` }) }));
+    assert.equal(r.outcome, 'definitive', show(r));
+    assert.deepEqual(r.facts.poc.tests[0].runs, ['fail', 'fail', 'fail'], show(r));
+    assert.equal(r.facts.poc.tests[0].kind, 'assertion', show(r));
+    assert.equal(r.gates.reproduces.status, 'pass', show(r));
+    assert.equal(r.gates.claimedObservable.status, 'pass', show(r));
+    assert.equal(r.facts.poc.tests[0].message.split('\n').length, 2, show(r));
+  }
 });
 
 test('Q32, OPEN for the owner (pins today\'s behaviour, not a wanted one): a compiler in the image that waits for run 1 fails an honest claim\'s integrity; the runner cannot tell it from claim code', { timeout: TIMEOUT }, async (t) => {

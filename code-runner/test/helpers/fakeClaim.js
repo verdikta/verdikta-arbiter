@@ -329,6 +329,9 @@ function forgeConfig(tree, over = {}) {
   return `${JSON.stringify({
     src: 'src', test: 'test', out: 'out', libs: ['lib'], cache_path: 'cache', broadcast: 'broadcast', snapshots: 'snapshots', solc: '/opt/solc/solc',
     remappings: read('/work/remappings.txt'), project: read('/work/foundry.toml'), global: read(`${HOME}/.foundry/foundry.toml`), dotenv: read('/work/.env'),
+    // forge's defaults for what else it writes in a run (RUN_OUTPUT_SETTINGS).
+    test_failures_file: 'cache/test-failures', build_info_path: null,
+    fuzz: { failure_persist_dir: 'cache/fuzz', corpus_dir: null, frontier_dir: null }, invariant: { failure_persist_dir: 'cache/invariant', corpus_dir: null, frontier_dir: null },
     ...over
   }, null, 2)}\n`;
 }

@@ -159,13 +159,19 @@ test('R1-F1 (round 2): the kind report is read where forge writes it, however lo
 });
 
 test('A3a R21-F2: a campaign of one invariant predicate has its reason only in its <system-out>: read there, for invariants alone, so an honest invariant PoC is an assertion failure', () => {
-  const out = '[FAIL: nonzero only]\n[Sequence] (original: 1, shrunk: 1)\n invariant_only() (runs: 1, calls: 1, reverts: 0)';
+  const out = '[FAIL: nonzero only]\n\t[Sequence] (original: 1, shrunk: 1)\n invariant_only() (runs: 1, calls: 1, reverts: 0)';
   const record = { name: 'invariant_only()', outcome: 'failure', message: null, out };
   assert.equal(forge.recordReason(record), 'nonzero only');
   // Without a counterexample's sequence, forge's line goes on after the reason.
   assert.equal(forge.recordReason({ ...record, out: '[FAIL: assertion failed: 2 != 1] invariant_only() (runs: 1, calls: 1, reverts: 0)' }), 'assertion failed: 2 != 1');
   assert.deepEqual(forge.classifyRecord(record), { result: 'fail', kind: 'assertion' });
   assert.deepEqual(forge.classifyRecord({ ...record, name: 'statefulFuzz_x()' }), { result: 'fail', kind: 'assertion' });
+  // R22-F2: forge inserts the reason as it is, line breaks included, in every form it writes.
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: expected balance\nactual balance] invariant_only() (runs: 1, calls: 1, reverts: 0)' }), 'expected balance\nactual balance');
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: expected zero\n\nactual more]\n\t[Sequence] (original: 1, shrunk: 1)\n\t\tsender=0x1 addr=[test/E.t.sol:H]0x2 calldata=boom() args=[]\n invariant_only() (runs: 1, calls: 1, reverts: 0)' }), 'expected zero\n\nactual more');
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: a\nb] invariant_only()\n\t[Sequence] (original: 1, shrunk: 1)\n invariant_only() (runs: 1)' }), 'a\nb');
+  assert.deepEqual(forge.classifyRecord({ ...record, out: '[FAIL: expected balance\nactual balance] invariant_only() (runs: 1)' }), { result: 'fail', kind: 'assertion' });
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: no framing at all\nanywhere' }), null, 'no framing, no reason');
   // Forge's own errors, there as well, stay errors; so does no reason at all.
   assert.deepEqual(forge.classifyRecord({ ...record, out: '[FAIL: vm.ffi: FFI is disabled]\n invariant_only() (runs: 1)' }), { result: 'error', kind: 'error' });
   assert.deepEqual(forge.classifyRecord({ ...record, out: '[FAIL] invariant_only() (runs: 1)' }), { result: 'error', kind: 'error' });

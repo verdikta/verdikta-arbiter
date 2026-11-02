@@ -161,7 +161,8 @@ const MANIFEST_SCRIPT = [
  * walks it in `cd -P`; `$PWD` is then getcwd's answer). `f`: to anything
  * else that exists, `real` from `realpath -e` (GNU coreutils, component by
  * component). `?`: the kernel resolves it to nothing (missing, a loop, a file
- * used as a directory, no search permission). `!`: the kernel found an entry
+ * used as a directory, no search permission), `real` where it would land as
+ * far as `realpath -m` can tell, or empty (R21-F1, round 22). `!`: the kernel found an entry
  * but its physical path could not be read (realpath failed, or getcwd did).
  * Every path is resolved from /work, forge's own directory (a
  * /proc/self/cwd on the way means the same as it does to forge). The script
@@ -184,7 +185,8 @@ const LINKS_SCRIPT = [
   '    elif [ -e "$l" ]; then',
   '      if r=$(realpath -e -- "$l" 2>/dev/null && printf x); then r=${r%x}; r=${r%"$nl"}; printf "f\\0%s\\0%s\\0" "$l" "$r"; else printf "!\\0%s\\0\\0" "$l"; fi',
   '    else',
-  '      printf "?\\0%s\\0\\0" "$l"',
+  '      if r=$(realpath -m -- "$l" 2>/dev/null && printf x); then r=${r%x}; r=${r%"$nl"}; else r=; fi',
+  '      printf "?\\0%s\\0%s\\0" "$l" "$r"',
   '    fi',
   '  done\' vcr-resolve'
 ].join('\n');
@@ -231,6 +233,18 @@ function sha256(bytes) {
 function globLiteral(p) {
   return p.replace(/[\\*?[\]]/g, '\\$&');
 }
+
+/**
+ * What else forge writes by itself in a plain build or test run, by its name in
+ * `forge config --json` (1.8.5); unset (null) writes nothing. An invariant's
+ * counterexample lands in failure_persist_dir on an honest PoC's first failure,
+ * so where a maker's foundry.toml puts it is forge's output like out and the cache.
+ */
+const RUN_OUTPUT_SETTINGS = Object.freeze([
+  'test_failures_file', 'build_info_path',
+  'fuzz.failure_persist_dir', 'fuzz.corpus_dir', 'fuzz.frontier_dir',
+  'invariant.failure_persist_dir', 'invariant.corpus_dir', 'invariant.frontier_dir'
+]);
 
 /** A repository-relative directory a config names (`out`, `cache_path`, a lib): a plain relative path, or null. */
 function plainDir(value) {
@@ -301,7 +315,11 @@ function parseFramework(buf) {
       libs: Array.isArray(parsed.libs) ? parsed.libs.filter((l) => typeof l === 'string') : [],
       solc: str(parsed.solc),
       broadcast: str(parsed.broadcast),
-      snapshots: str(parsed.snapshots)
+      snapshots: str(parsed.snapshots),
+      runOutputs: RUN_OUTPUT_SETTINGS.map((setting) => {
+        const value = str(setting.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : null), parsed));
+        return { setting, value };
+      }).filter((o) => o.value !== null)
     }
   };
 }
@@ -394,7 +412,10 @@ function layout({ config, forgePath = '', realPath = '', pathDirs = [] }) {
   const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
   const tools = [inWork(forgePath), inWork(realPath), config.solc && !config.solc.startsWith('/') ? plainDir(config.solc) : inWork(config.solc)].filter(Boolean).map(bytes);
   const pathRoots = pathDirs.map((d) => (d === WORK ? '' : inWork(d))).filter((d) => d !== null).map(bytes);
-  return { deps, out, cache, filesCache, tools, pathRoots };
+  const runOutputs = (config.runOutputs || []).map((o) => bytes(plainDir(o.value))).filter(Boolean);
+  // Everywhere forge itself writes in a plain build or test run (the configured form, at the reference).
+  const outputs = [...new Set([out, cache, ...runOutputs].filter(Boolean))];
+  return { deps, out, cache, filesCache, tools, pathRoots, outputs };
 }
 
 /**
@@ -438,6 +459,12 @@ function unwatchableRoots(config, pathDirs = [], testGlobs = []) {
   inWork('out', typeof config.out === 'string' ? config.out : 'out');
   if (typeof config.cachePath === 'string' && plainDir(config.cachePath) === null) problems.push(`cache_path (${config.cachePath}) is not a plain path in the work tree`);
   for (const lib of config.libs) inWork('libs', lib);
+  // Forge writes these in a run, and outside the work tree nothing here could exempt them ($HOME is watched).
+  for (const { setting, value } of config.runOutputs || []) {
+    const rel = plainDir(value);
+    if (rel === null) problems.push(`${setting} (${value}) is not a plain path in the work tree`);
+    else if (under(rel, '.git')) problems.push(`${setting} (${value}) is in the runner's repository`);
+  }
   for (const dir of DEPENDENCY_DIRS) if (cache && under(dir, cache)) problems.push(`the dependency directory ${dir} is in forge's cache directory (${cache}), which the snapshots skip`);
   if (typeof config.solc === 'string' && config.solc !== '') {
     const s = config.solc;
@@ -502,7 +529,7 @@ function watchRoots({ protectedGlobs = [], ...w }) {
  */
 function classify(entries, { protectedGlobs = [], config, forgePath = '', realPath = '', pathDirs = [] }) {
   const sets = { protected: new Map(), dependencies: new Map(), framework: new Map(), artifacts: new Map(), repository: new Map() };
-  const { deps, out, cache, filesCache, tools, pathRoots } = layout({ config, forgePath, realPath, pathDirs });
+  const { deps, out, cache, filesCache, tools, pathRoots, outputs } = layout({ config, forgePath, realPath, pathDirs });
   const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
   for (const p of [...entries.keys()].sort()) {
     const entry = entries.get(p);
@@ -528,7 +555,8 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     const name = displayPath(rel);
     // Where forge itself writes is never held to the reference, whatever else names it (a protected glob over out/, a
     // `libs` entry holding it): every honest compile would fail that check (R21-F1). The artifacts are held from run 1 on.
-    const output = (out && under(rel, out)) || (cache && under(rel, cache));
+    // What the image already has there and a set names is refused before any claim code (outputConflicts, R22-F1).
+    const output = outputs.some((dir) => under(rel, dir));
     if (!output && protectedGlobs.length && matchesAny(name, protectedGlobs)) sets.protected.set(rel, d);
     // forge's executable and solc are the framework wherever they are, forge's cache directory included (R1-F3).
     if (tools.includes(rel)) sets.framework.set(rel, d);
@@ -546,6 +574,46 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     if (out && under(rel, out)) sets.artifacts.set(rel, d);
   }
   return sets;
+}
+
+/**
+ * R22-F1: forge's own output (layout's `outputs`) must be plain and hold
+ * nothing watched, in the image the reference sees. classify() holds nothing
+ * there, and could not: an honest compile may rewrite such a file, and a run's
+ * change to it would become the artifact the later runs are held to. So the
+ * reference refuses, before any claim code:
+ * - a watched input already there: a file a dependency directory holds (`out =
+ *   "lib"` beside lib/pkg/), a framework file, or one a protected glob names
+ *   (`out/**` over a build the setup ran);
+ * - a link there or on the way there (`out -> build/x`, `out/E.t.sol -> ../y`):
+ *   forge writes through it, to where a protected `build/x/**` would catch an
+ *   honest compile and no rule here would know why.
+ * What only appears there later is forge's output. What a patch added or
+ * changed is the claim's, never the image's.
+ * @param {Map} entries - parseManifest().entries
+ * @param {object} w - as for classify()
+ * @param {Set<string>} [w.patchPaths] - work-tree paths the patches touched (latin1)
+ * @returns {string[]} what is wrong, as text, sorted
+ */
+function outputConflicts(entries, { protectedGlobs = [], config, forgePath = '', realPath = '', pathDirs = [], patchPaths = new Set() }) {
+  const { deps, outputs } = layout({ config, forgePath, realPath, pathDirs });
+  const found = new Set();
+  for (const dir of outputs) {
+    for (let i = dir.indexOf('/'); i > 0; i = dir.indexOf('/', i + 1)) {
+      const prefix = dir.slice(0, i);
+      const e = entries.get(`${WORK}/${prefix}`);
+      if (e && e.type === 'l' && !patchPaths.has(prefix)) found.add(`${displayPath(prefix)} is a link on the way to ${displayPath(dir)}, where forge writes`);
+    }
+  }
+  for (const [p, e] of entries) {
+    if (!p.startsWith(`${WORK}/`)) continue;
+    const rel = p.slice(WORK.length + 1);
+    if (patchPaths.has(rel) || !outputs.some((dir) => under(rel, dir))) continue;
+    const name = displayPath(rel);
+    if (e.type === 'l') found.add(`${name} is a link where forge writes`);
+    else if (deps.some((r) => under(rel, r)) || FRAMEWORK_FILES.includes(rel) || (protectedGlobs.length && matchesAny(name, protectedGlobs))) found.add(`${name} is watched and lies where forge writes`);
+  }
+  return [...found].sort();
 }
 
 // ------------------------------------------------------------------- links
@@ -603,7 +671,9 @@ function parseLinks(buf, batch) {
     if (real === null) return { ok: false, reason: 'a record ends early' };
     if (!['d', 'f', '?', '!'].includes(kind)) return { ok: false, reason: `a record of kind ${JSON.stringify(kind.slice(0, 8))}` };
     if (i >= batch.length || path !== batch[i]) return { ok: false, reason: 'a record for a path not asked about, or out of order' };
-    if ((kind === 'd' || kind === 'f') ? !real.startsWith('/') : real !== '') return { ok: false, reason: 'a record whose answer is not an absolute path' };
+    if ((kind === 'd' || kind === 'f') ? !real.startsWith('/') : kind === '?' ? (real !== '' && !real.startsWith('/')) : real !== '') {
+      return { ok: false, reason: 'a record whose answer is not an absolute path' };
+    }
     answers.set(path, { kind, real });
   }
   if (answers.size !== batch.length) return { ok: false, reason: `${batch.length - answers.size} of ${batch.length} links have no answer` };
@@ -636,8 +706,11 @@ function parseLinks(buf, batch) {
  *   (forge's executable in its cache directory, R1-F3); an artifact link's
  *   target in out/ is an artifact; and one leading to a directory outside
  *   the work tree (not listed, so the links inside it are not seen). A file
- *   on the read-only root needs nothing watched; a link the kernel resolves
- *   to nothing is recorded as such.
+ *   on the read-only root needs nothing watched. A link the kernel resolves
+ *   to nothing is recorded as such, and judged by where it would land: an
+ *   honest compile or run could make it resolve there, and its entry would
+ *   then change (R21-F1, round 22: `alias -> out`, a protected
+ *   `alias/Exploit.t.sol/**`).
  * - `patchLinks`: a link at a path a patch touched (possible only where
  *   paths.tests overlaps a set): the claim's, never the image's.
  *
@@ -667,6 +740,10 @@ async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = 
   const areas = [['.git', 'the runner\'s repository']];
   for (const [d, what] of [[out, 'out'], [cache, 'cache'], [dirOf(config.broadcast, 'broadcast'), 'broadcast'], [dirOf(config.snapshots, 'snapshots'), 'snapshots']]) {
     if (d) areas.push([d, `forge's ${what} directory`]);
+  }
+  for (const { setting, value } of config.runOutputs || []) {
+    const d = bytes(plainDir(value));
+    if (d && !areas.some(([dir]) => under(d, dir))) areas.push([d, `forge's ${setting}`]);
   }
   const relOf = (abs) => (abs.startsWith(`${WORK}/`) ? abs.slice(WORK.length + 1) : abs.startsWith(`${HOME}/`) ? `~/${abs.slice(HOME.length + 1)}` : null);
 
@@ -783,8 +860,13 @@ async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = 
     for (const [abs, c] of pending) {
       visited += 1;
       const r = resolution.get(abs);
-      if (r.kind === '?') continue;
       const link = displayPath(relOf(abs));
+      if (r.kind === '?') {
+        // Not there yet, so the directory case is whether it would hold such a place; outside the work tree, only /tmp and $HOME.
+        const where = r.real ? refusal(r.real, r.real.startsWith(`${WORK}/`) ? 'd' : 'f', c) : null;
+        if (where) uncovered.push({ link, target: displayPath(r.real), where, category: c });
+        continue;
+      }
       if (r.kind === '!') {
         uncovered.push({ link, target: '?', where: 'a target realpath could not resolve', category: c });
         continue;
@@ -1098,6 +1180,8 @@ class Watch {
       }
       this.ref.forgeEntry = describe(e);
     }
+    const conflicts = outputConflicts(m.entries, { ...this.watchArgs(), patchPaths: this.patchPaths });
+    if (conflicts.length) throw uncovered(conflicts);
     const sets = classify(m.entries, this.watchArgs());
     let links;
     try {
@@ -1557,7 +1641,7 @@ function integrityDetail(failures) {
 module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
-  parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
+  parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   discoverForge, probe, requireImmutableTools, TOOL_DIRS, IMMUTABLE_CHECK,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };

@@ -44,7 +44,12 @@ test('parseFramework reads forge\'s path, PATH and `forge config --json` (out, c
   assert.equal(p.forgePath, '/usr/local/bin/forge');
   assert.deepEqual(p.pathDirs, ['/usr/local/bin', '/work/bin', '/work/bin']);
   assert.equal(p.configSha256, sha(config));
-  assert.deepEqual(p.config, { out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots' });
+  assert.deepEqual(p.config, {
+    out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots',
+    runOutputs: [
+      { setting: 'test_failures_file', value: 'cache/test-failures' }, { setting: 'fuzz.failure_persist_dir', value: 'cache/fuzz' }, { setting: 'invariant.failure_persist_dir', value: 'cache/invariant' }
+    ]
+  });
   assert.equal(integrity.parseFramework(Buffer.from('{}')).ok, false, 'no header lines');
   assert.equal(integrity.parseFramework(Buffer.from('vcr-forge /f\nvcr-path /b\nnot json')).ok, false);
 });
@@ -595,6 +600,64 @@ test('a link at or above a set\'s root: the kernel resolves the root itself, and
   assert.deepEqual(p.r.patchLinks, [{ link: 'deps', category: 'dependencies' }]);
 });
 
+test('A3a R21-F1 (round 22): a watched link that leads nowhere yet is judged by where it would land, so an honest compile cannot make it resolve into what forge writes', async () => {
+  const entriesOf = (tree) => integrity.parseManifest(manifestOf(tree, ['/work', '/home/sandbox'])).entries;
+  const judge = async (tree, answers, protectedGlobs = ['foundry.toml']) => {
+    const args = { protectedGlobs, config: CONFIG, forgePath: '/usr/local/bin/forge', pathDirs: ['/usr/local/bin'] };
+    const entries = entriesOf(tree);
+    const sets = integrity.classify(entries, args);
+    const kernel = kernelResolver(tree);
+    return (await integrity.watchLinks(entries, sets, { config: CONFIG, testGlobs: ['test/**'], roots: integrity.watchRoots(args) },
+      async (paths) => new Map(paths.map((p) => [p, answers[p] ? { kind: '?', real: answers[p] } : kernel(p)])))).uncovered;
+  };
+  // A protected root behind `artifact-alias -> out`: resolves to nothing until run 1 compiles the PoC.
+  const alias = initialTree();
+  link(alias, '/work/artifact-alias', 'out');
+  const asked = { '/work/artifact-alias/Exploit.t.sol': '/work/out/Exploit.t.sol' };
+  assert.deepEqual(await judge(alias, asked, ['foundry.toml', 'artifact-alias/Exploit.t.sol/**']), [
+    { link: 'artifact-alias/Exploit.t.sol', target: '/work/out/Exploit.t.sol', where: 'forge\'s out directory (out)', category: 'protected' }
+  ]);
+  // A dependency's link, by any route; into the compile cache; to a directory that would hold out/; into /tmp or $HOME.
+  for (const [real, where] of [
+    ['/work/out/E.t.sol/E.json', 'forge\'s out directory (out)'], ['/work/cache/x', 'forge\'s cache directory (cache)'],
+    ['/tmp/x', '/tmp'], ['/home/sandbox/x', '$HOME']
+  ]) {
+    const tree = initialTree();
+    link(tree, '/work/lib/pending', '/opt/somewhere');
+    assert.deepEqual(await judge(tree, { '/work/lib/pending': real }), [{ link: 'lib/pending', target: real, where, category: 'dependencies' }], real);
+  }
+  // Anywhere else, or no landing to speak of, it stays what it was: a dangling link, recorded.
+  for (const real of ['/work/nothing/here', '/opt/missing/dir', '']) {
+    const tree = initialTree();
+    link(tree, '/work/lib/pending', 'x');
+    assert.deepEqual(await judge(tree, { '/work/lib/pending': real }), [], real);
+  }
+});
+
+test('A3a R22-F1: outputConflicts names what the image has as a watched input inside forge\'s output; what is not watched, not there, or the patch\'s is no conflict', () => {
+  const entries = new Map(['/work/lib/pkg/fixture.json', '/work/lib/other.sol', '/work/src/V.sol', '/work/build/V.json', '/work/cache/solidity-files-cache.json', '/home/sandbox/lib/x'].map((p) => [p, { type: 'f' }]));
+  const args = { config: { ...CONFIG, out: 'lib', cachePath: 'cache', libs: ['lib'] } };
+  const is = (...names) => names.map((n) => `${n} is watched and lies where forge writes`);
+  assert.deepEqual(integrity.outputConflicts(entries, args), is('lib/other.sol', 'lib/pkg/fixture.json'), 'out = "lib" beside what lib/ holds');
+  assert.deepEqual(integrity.outputConflicts(entries, { ...args, patchPaths: new Set(['lib/other.sol']) }), is('lib/pkg/fixture.json'), 'a patch\'s own file');
+  const out = { config: { ...CONFIG, out: 'build', cachePath: 'cache', libs: ['lib'] } };
+  assert.deepEqual(integrity.outputConflicts(entries, out), [], 'output nobody watches');
+  assert.deepEqual(integrity.outputConflicts(entries, { ...out, protectedGlobs: ['build/**'] }), is('build/V.json'));
+  assert.deepEqual(integrity.outputConflicts(entries, { ...out, protectedGlobs: ['**/*.json'] }), is('build/V.json', 'cache/solidity-files-cache.json'));
+  assert.deepEqual(integrity.outputConflicts(entries, { ...out, protectedGlobs: ['src/**', '**/*.sol'] }), [], 'inputs elsewhere');
+  // Forge's other outputs are its output too; a framework file there is watched by name.
+  const persist = { config: { ...out.config, runOutputs: [{ setting: 'fuzz.failure_persist_dir', value: 'src' }, { setting: 'test_failures_file', value: 'foundry.toml' }] } };
+  assert.deepEqual(integrity.outputConflicts(new Map([['/work/foundry.toml', { type: 'f' }]]), persist), is('foundry.toml'));
+  assert.deepEqual(integrity.outputConflicts(entries, { ...persist, protectedGlobs: ['src/**'] }), is('src/V.sol'));
+  // A link there or on the way there, whatever it names; the patch's own stays the claim's (reported by watchLinks).
+  const linkTo = { type: 'l', target: 'elsewhere' };
+  const nested = { config: { ...CONFIG, out: 'build/out', cachePath: 'cache', libs: [] } };
+  assert.deepEqual(integrity.outputConflicts(new Map([['/work/build', linkTo]]), nested), ['build is a link on the way to build/out, where forge writes']);
+  assert.deepEqual(integrity.outputConflicts(new Map([['/work/build', linkTo]]), { ...nested, patchPaths: new Set(['build']) }), []);
+  assert.deepEqual(integrity.outputConflicts(new Map([['/work/cache', linkTo]]), nested), ['cache is a link where forge writes']);
+  assert.deepEqual(integrity.outputConflicts(new Map([['/work/build/out/E.t.sol', linkTo]]), nested), ['build/out/E.t.sol is a link where forge writes']);
+});
+
 test('a link a patch adds inside a watched set (paths.tests overlapping lib/) is reported, never resolved or followed', async () => {
   const tree = initialTree();
   link(tree, '/work/lib/x/E.t.sol', '/tmp/evil');
@@ -619,9 +682,12 @@ test('parseLinks reads the link script\'s records in the order asked, byte for b
     `d\0${batch[0]}\0/work/v\0`, // too few
     `x\0${batch[0]}\0/work/v\0`, // not a kind
     `d\0${batch[0]}\0relative\0`, // not absolute
-    `?\0${batch[0]}\0/work/v\0`, // an answer for nothing
+    `?\0${batch[0]}\0relative\0`, // where it would land, not absolute
+    `!\0${batch[0]}\0/work/v\0`, // an answer for nothing
     `d\0${batch[0]}\0/work/v` // no end
   ]) assert.equal(integrity.parseLinks(Buffer.from(bad, 'latin1'), batch).ok, false, JSON.stringify(bad));
+  const landing = integrity.parseLinks(Buffer.from(`?\0${batch[0]}\0/work/out/x\0`, 'latin1'), [batch[0]]);
+  assert.deepEqual(landing.answers.get(batch[0]), { kind: '?', real: '/work/out/x' }, 'nothing there yet: where it would land');
 });
 
 test('the link script is hermetic, reads its paths from stdin, and leaves resolution to the kernel (cd -P, realpath -e)', () => {
@@ -658,9 +724,14 @@ test('the link script against the real kernel (Linux: dash, GNU coreutils): the 
     assert.equal(r.status, 0, r.stderr.toString());
     const p = integrity.parseLinks(r.stdout, batch);
     assert.equal(p.ok, true, p.reason);
-    assert.deepEqual([...p.answers.values()], [
+    const answers = [...p.answers.values()];
+    // A loop has no landing to speak of: whatever realpath -m gives, it stays where the loop is.
+    assert.equal(answers[4].kind, '?');
+    assert.ok(answers[4].real === '' || answers[4].real.startsWith(at('lib/')), answers[4].real);
+    answers[4] = null;
+    assert.deepEqual(answers, [
       { kind: 'd', real: at('vendor/payload') }, { kind: 'd', real: at('cache/pkg') }, { kind: 'f', real: at('vendor/payload/f.json') },
-      { kind: '?', real: '' }, { kind: '?', real: '' }, { kind: 'd', real: at('a\nb') }
+      { kind: '?', real: at('lib/nope') }, null, { kind: 'd', real: at('a\nb') }
     ]);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });

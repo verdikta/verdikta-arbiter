@@ -186,20 +186,19 @@ function bodyNeverRan(record, message) {
 
 /**
  * A failure's reason. forge writes it as the record's message, but for a
- * campaign of one invariant predicate only in the record's own <system-out>,
- * on the first line (TestResult keeps invariant reasons in invariant_failures,
- * and only the expanded form sets the message). Read there for invariants
- * alone: another test's failure without a message stays one.
+ * campaign of one invariant predicate only in the record's own <system-out>
+ * (TestResult keeps invariant reasons in invariant_failures, and only the
+ * expanded form sets the message). Read there for invariants alone: another
+ * test's failure without a message stays one. forge inserts the reason as it
+ * is, line breaks included (R22-F2), so it ends at forge's framing: `]` then a
+ * counterexample's sequence, or `] <name>` then the report.
  */
 function recordReason(record) {
   if (typeof record.message === 'string' && record.message !== '') return record.message;
-  if (!isInvariantRecord(record.name) || typeof record.out !== 'string') return record.message;
-  const line = record.out.split('\n', 1)[0];
-  if (!line.startsWith('[FAIL: ')) return record.message;
-  // `[FAIL: <reason>]` alone with a counterexample's sequence below it, else `[FAIL: <reason>] <name> (runs: …)`.
-  const tail = `] ${record.name} `;
-  const end = line.endsWith(']') ? line.length - 1 : line.lastIndexOf(tail);
-  return end > 7 ? line.slice(7, end) : record.message;
+  if (!isInvariantRecord(record.name) || typeof record.out !== 'string' || !record.out.startsWith('[FAIL: ')) return record.message;
+  const ends = [record.out.search(/\]\n\s*\[Sequence\] \(original: /), record.out.indexOf(`] ${record.name} `), record.out.indexOf(`] ${record.name}\n`)];
+  const end = Math.min(...ends.filter((i) => i > 7));
+  return Number.isFinite(end) ? record.out.slice(7, end) : record.message;
 }
 
 /**
