@@ -615,7 +615,10 @@ process of the run is dead:
    the global `~/.foundry/foundry.toml` and the environment alike), and a
    hermetic manifest of `/work` and `$HOME` (GNU `find` records and `sha256sum
    -z` of every file: type, mode, size, hash or link target). After each run
-   both are taken again and compared:
+   both are taken again and compared, the files first: forge runs for its
+   configuration only once they are measured, and a forge in the work tree
+   (its real path, a link followed) whose bytes the run changed is never run
+   again:
    - protected: work-tree paths under `paths.protected`, tracked or not, and
      the runner's own repository (`/work/.git`: config, attributes, index and
      objects decide what the reset between runs writes; it is read again after
@@ -701,10 +704,12 @@ finding.json and the recorded failures alone:
   least one must be named, and every one named must be a test the patch
   added (which, the PoC having reproduced, failed on every run).
 - **The observable appears in the recorded failure**: each text in double
-  quotes in `poc.observable` appears in the recorded failure message of a
-  named test on every run; or, when it quotes nothing, the recorded message
-  of a named test (the same on every run) appears in the observable as
-  written. Whitespace runs compare as one space.
+  quotes in `poc.observable` appears in the failure message of a named test
+  on every run; or, when it quotes nothing, the message of a named test (the
+  same on every run) appears in the observable as written. The message is
+  forge's own, whole, or the form the report carries (repository-relative,
+  at most 2,000 characters): either matches. Whitespace runs compare as one
+  space.
 
 So a finding names its test and quotes what forge printed:
 `"observable": "test_withdraw_drains fails with \"vault balance 0 after one withdraw\""`.
@@ -731,12 +736,15 @@ admitted for. In it:
    applied is always built: `pass` or `fail`, never `not-run`).
 4. The maker's full suite (`commands.test`, required with a fix) **once**,
    with the reporter flags, then a snapshot. `fix.pocPasses`: every test the
-   patch added has exactly one record and passes. `fix.regressions` /
+   patch added (as the PoC's own run 1 reported them, this run's when the
+   PoC's sandbox has none) has exactly one record and passes, and no PoC
+   suite failed before its tests ran (a `setUp` that now fails). `fix.regressions` /
    `regressionCount`: every baseline `stable` test that does not pass (fails,
    errors, is skipped, missing or duplicated), the first 200 in code-unit
    order.
 5. The integrity checks on that run: identity (the PoC's tests and every
-   stable identity, each exactly once, none skipped), forge's summary, the
+   stable identity, each exactly once, none skipped, no PoC suite failing
+   before its tests), forge's summary, the
    exit code, the checksums and the static flags of both patches.
    `fix.integrity`.
 
