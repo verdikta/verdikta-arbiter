@@ -21,14 +21,24 @@ const OUTCOME = Object.freeze({
 });
 
 const ABSTAIN = Object.freeze({
-  /** Admission said no: maintenance lock, deadline too short, runtime missing (A1b adds slots, memory, disk). */
+  /**
+   * Admission said no: maintenance lock, deadline too short, runtime
+   * missing, every execution slot busy, the memory reserve, no room on the
+   * data root for the pull.
+   */
   ADMISSION_REFUSED: 'admission_refused',
   /** The Docker daemon could not be reached. */
   DOCKER_UNREACHABLE: 'docker_unreachable',
   /** The daemon answered with an error the step did not cause. */
   DOCKER_ERROR: 'docker_error',
-  /** The env image is not on the runner's disk (A1b adds pull failures). */
+  /** The env image is not on the runner's disk when the sandbox is created. */
   IMAGE_UNAVAILABLE: 'image_unavailable',
+  /** The env image's registry and repository are not on the runner's allowlist (A1b). */
+  REGISTRY_NOT_ALLOWED: 'registry_not_allowed',
+  /** The pull failed: the registry unreachable, the digest unknown, bytes that do not match it, a timeout (A1b). */
+  PULL_FAILED: 'pull_failed',
+  /** The image the digest resolves to does not carry that digest, or is of another platform (A1b). */
+  IMAGE_MISMATCH: 'image_mismatch',
   /** A step's own wall-clock limit, or the run's (runSeconds). */
   STEP_TIMEOUT: 'step_timeout',
   /** The deadline the EA passed in. */

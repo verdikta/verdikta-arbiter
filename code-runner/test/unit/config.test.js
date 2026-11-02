@@ -128,3 +128,42 @@ test('the platform is linux/amd64; linux/arm64 only for runc development', () =>
   assert.match(problems(() => load({ CODE_RUNNER_PLATFORM: 'linux/arm64' })), /runc/);
   assert.match(problems(() => load({ CODE_RUNNER_RUNTIME: 'runc', CODE_RUNNER_PLATFORM: 'linux/386' })), /CODE_RUNNER_PLATFORM/);
 });
+
+// A1b: the registry allowlist, the execution slots, the memory reserve, the
+// disk reserve and the pull timeout.
+
+test('A1b defaults: allowlist ghcr.io/verdikta, one slot, the memory and disk reserves, a 90 s pull', () => {
+  const c = load({});
+  assert.deepEqual(c.registryAllowlist, [{ entry: 'ghcr.io/verdikta', domain: 'ghcr.io', path: 'verdikta', dev: false }]);
+  assert.equal(c.slots, 1);
+  assert.deepEqual(c.memoryReserveMb, { chainlink: 512, postgres: 256, aiNode: 512, localModel: 0 });
+  assert.equal(c.diskReserveMb, 1024);
+  assert.equal(c.pullTimeoutMs, 90000);
+});
+
+test('the registry allowlist is CODE_RUNNER_REGISTRY_ALLOWLIST; a local registry is an explicit dev entry', () => {
+  const c = load({ CODE_RUNNER_REGISTRY_ALLOWLIST: 'ghcr.io/verdikta,127.0.0.1:5000/vcr' });
+  assert.deepEqual(c.registryAllowlist.map((e) => [e.entry, e.dev]), [['ghcr.io/verdikta', false], ['127.0.0.1:5000/vcr', true]]);
+  assert.match(problems(() => load({ CODE_RUNNER_REGISTRY_ALLOWLIST: 'ghcr.io/verdikta:latest' })), /CODE_RUNNER_REGISTRY_ALLOWLIST/);
+  assert.match(problems(() => load({ CODE_RUNNER_REGISTRY_ALLOWLIST: 'ghcr.io/*' })), /CODE_RUNNER_REGISTRY_ALLOWLIST/);
+  assert.match(problems(() => load({ CODE_RUNNER_REGISTRY_ALLOWLIST: ' , ' })), /CODE_RUNNER_REGISTRY_ALLOWLIST/);
+});
+
+test('slots, reserves and the pull timeout are bounded integers', () => {
+  const c = load({
+    CODE_RUNNER_SLOTS: '3', CODE_RUNNER_RESERVE_CHAINLINK_MB: '1024', CODE_RUNNER_RESERVE_POSTGRES_MB: '512',
+    CODE_RUNNER_RESERVE_AI_NODE_MB: '768', CODE_RUNNER_RESERVE_LOCAL_MODEL_MB: '4700', CODE_RUNNER_DISK_RESERVE_MB: '0',
+    CODE_RUNNER_PULL_TIMEOUT_SECONDS: '300'
+  });
+  assert.equal(c.slots, 3);
+  assert.deepEqual(c.memoryReserveMb, { chainlink: 1024, postgres: 512, aiNode: 768, localModel: 4700 });
+  assert.equal(c.diskReserveMb, 0);
+  assert.equal(c.pullTimeoutMs, 300000);
+  for (const [name, value] of [
+    ['CODE_RUNNER_SLOTS', '0'], ['CODE_RUNNER_SLOTS', '17'], ['CODE_RUNNER_SLOTS', '1.5'],
+    ['CODE_RUNNER_RESERVE_CHAINLINK_MB', '-1'], ['CODE_RUNNER_RESERVE_LOCAL_MODEL_MB', 'lots'],
+    ['CODE_RUNNER_DISK_RESERVE_MB', '-5'], ['CODE_RUNNER_PULL_TIMEOUT_SECONDS', '0'], ['CODE_RUNNER_PULL_TIMEOUT_SECONDS', '901']
+  ]) {
+    assert.match(problems(() => load({ [name]: value })), new RegExp(name), `${name}=${value}`);
+  }
+});

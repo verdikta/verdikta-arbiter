@@ -30,12 +30,20 @@ function spec(overrides = {}) {
 }
 
 /** A valid POST /v1/runs body. */
+/** The attestation's env names the spec's image, platform and size (A1b checks they agree). */
+function attestationFor(s) {
+  if (!s || typeof s !== 'object' || !s.env || typeof s.env !== 'object') return { version: 1 };
+  const { image, from, platform, unpackedBytes } = s.env;
+  return { version: 1, env: { image, from, platform, unpackedBytes } };
+}
+
 function runRequest(overrides = {}) {
+  const s = overrides.spec || spec();
   return {
     listingCid: LISTING_CID,
     bcid: BCID,
-    spec: spec(),
-    attestation: { version: 1, image: IMAGE },
+    spec: s,
+    attestation: attestationFor(s),
     pocPatch: Buffer.from(POC_PATCH).toString('base64'),
     fixPatch: null,
     baseline: { stable: ['test/Vault.t.sol > test_deposit'], unstable: [] },
@@ -49,4 +57,4 @@ function runRequest(overrides = {}) {
   };
 }
 
-module.exports = { LISTING_CID, BCID, IMAGE, POC_PATCH, spec, runRequest };
+module.exports = { LISTING_CID, BCID, IMAGE, POC_PATCH, spec, runRequest, attestationFor };

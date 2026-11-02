@@ -55,3 +55,20 @@ test('an unreachable daemon is reported, not thrown', async () => {
   assert.deepEqual(r.removed, []);
   assert.match(r.error, /Cannot connect/);
 });
+
+test('R5-F1: a removal is a success only when every error is "No such container"', async () => {
+  const listing = () => ({ stdout: `vcr-aaaaaaaaaaaaaaaa-1\t${NOW + 600}\nvcr-bbbbbbbbbbbbbbbb-1\t${NOW + 600}\n` });
+  const mixed = fakeDocker({
+    ps: listing,
+    rm: () => ({ exitCode: 1, stderr: 'Error response from daemon: No such container: vcr-aaaaaaaaaaaaaaaa-1\nError response from daemon: removal of container vcr-bbbbbbbbbbbbbbbb-1 is already in progress\n' })
+  });
+  const r1 = await collectLeftovers({ docker: mixed, instance: 'default', now: NOW });
+  assert.deepEqual(r1.removed, []);
+  assert.match(r1.error, /vcr-bbbbbbbbbbbbbbbb-1/);
+  const gone = fakeDocker({ ps: listing, rm: () => ({ exitCode: 1, stderr: 'Error response from daemon: No such container: vcr-aaaaaaaaaaaaaaaa-1\nError response from daemon: No such container: vcr-bbbbbbbbbbbbbbbb-1\n' }) });
+  const r2 = await collectLeftovers({ docker: gone, instance: 'default', now: NOW });
+  assert.equal(r2.error, null);
+  assert.equal(r2.removed.length, 2);
+  const silentFail = fakeDocker({ ps: listing, rm: () => ({ exitCode: 1, stderr: '' }) });
+  assert.match((await collectLeftovers({ docker: silentFail, instance: 'default', now: NOW })).error, /exited 1/);
+});

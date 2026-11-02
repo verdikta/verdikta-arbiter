@@ -66,6 +66,16 @@ test('the runner writes no files on the host (it only creates its own empty stat
   }
 });
 
+test('A1b: only src/registry.js builds a docker pull argv; nothing pulls every tag or forces an image removal', () => {
+  for (const file of sources()) {
+    const text = code(file);
+    const base = path.relative(SRC, file);
+    if (base !== 'registry.js') assert.doesNotMatch(text, /['"]pull['"]\s*,/, `${base} builds a pull argv`);
+    assert.doesNotMatch(text, /--all-tags|['"]-a['"]/, `${base} could pull every tag`);
+    if (base === 'images.js') assert.doesNotMatch(text, /['"](--force|-f)['"]/, 'images.js forces an image removal');
+  }
+});
+
 // A2a attempt 2, acceptance item 1 (owner decision Q25): the forced checkout
 // never runs git with the env image's git state, and every git object it uses
 // is re-hashed by the runner. Behaviour: test/unit/checkout.test.js.

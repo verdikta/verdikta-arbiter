@@ -1,9 +1,14 @@
 'use strict';
 
 /**
- * The run engine (design §9.2 steps 1 and 10, §9.3, §11).
+ * The run engine (design §9.2 steps 1, 2 and 10, §9.3, §11).
  *
- *   admit → launch the sandbox → steps, in order → tear down
+ *   admit → the env image → launch the sandbox → steps, in order → tear down
+ *
+ * Admission (admission.js) may hand back a ticket (a slot and the run's
+ * memory), and the image cache (images.js, node A1b) a lease on the image;
+ * both are released once every sandbox of the run is gone. Getting the image
+ * may use only the time that leaves runSeconds before the deadline.
  *
  * A step is an async function of a context (`ctx`) that runs commands in the
  * sandbox through ctx.exec / ctx.readFile and records gates with ctx.gate.
@@ -26,6 +31,9 @@ const { admitRun } = require('./admission');
 const KEEPALIVE_MARGIN_SECONDS = 30;
 /** After a run-level kill, how long to let the step's exec report what it saw. */
 const KILL_GRACE_MS = 1000;
+/** A sandbox that could not be removed is tried again after this long, doubling up to REAP_MAX_MS. */
+const REAP_FIRST_MS = 2000;
+const REAP_MAX_MS = 60000;
 
 const RUN_KILL_CAUSE = Object.freeze({
   run: [ABSTAIN.STEP_TIMEOUT, 'the run reached its wall-clock limit (runSeconds) and the sandbox was killed'],
@@ -53,12 +61,16 @@ function delay(ms) {
  * @param {number} o.deadlineAt - the EA's deadline, epoch ms
  * @param {AbortSignal} [o.signal] - aborted when the caller goes away
  * @param {Set<string>} o.active - container names of live runs (the GC leaves these alone)
- * @param {Function} [o.admit] - admission (default admitRun)
+ * @param {Function} [o.admit] - admission (default admitRun); may resolve a ticket with release()
+ * @param {object} [o.images] - the image cache (images.js); without it the image must already be there
+ * @param {string} [o.attestedImage] - attestation.json's env.image (default: the image)
+ * @param {number} [o.unpackedBytes] - the attested unpacked size, for the pull's disk check
+ * @param {number} [o.reapFirstMs] - first retry of a removal that failed (the slot stays held meanwhile)
  * @returns {Promise<object>} the run result; never rejects
  */
 async function executeRun({
   docker, config, limits, image, runId, steps = [], receivedAt = Date.now(), deadlineAt,
-  signal, active, log = nullLog, admit = admitRun
+  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes, reapFirstMs = REAP_FIRST_MS
 }) {
   const stopAt = deadlineAt - (config.deadlineReserveMs || 0);
   const result = {
@@ -68,6 +80,8 @@ async function executeRun({
     platform: config.platform,
     limits,
     abstain: null,
+    // How the image was had (cache hit, pulled, shared): operational, never part of the report.
+    image: null,
     steps: [],
     gates: {},
     facts: {}
@@ -87,10 +101,45 @@ async function executeRun({
     : new Abstain(ABSTAIN.RUNNER_ERROR, `the runner failed: ${err && err.message ? err.message : String(err)}`, { step }));
 
   if (signal && signal.aborted) return abstainWith(new Abstain(ABSTAIN.CANCELLED, 'the run was cancelled before it started'));
+  let ticket = null;
   try {
-    await admit({ config, docker, limits, stopAt, now: Date.now(), signal });
+    ticket = (await admit({ config, docker, limits, stopAt, now: Date.now(), signal })) || null;
   } catch (err) {
     return abstainWith(asAbstain(err, 'admission'));
+  }
+  let lease = null;
+  let released = false;
+  const releaseAll = () => {
+    if (released) return;
+    released = true;
+    if (lease) lease.release();
+    if (ticket && typeof ticket.release === 'function') ticket.release();
+  };
+
+  // The env image (§9.2 step 2): pulled by digest if it is not cached, in
+  // the time that still leaves runSeconds for the run.
+  if (images) {
+    const runMs = limits.runSeconds * 1000;
+    try {
+      lease = await images.acquire({
+        image, attestedImage: attestedImage === undefined ? image : attestedImage, platform: config.platform,
+        unpackedBytes, windowMs: stopAt - Date.now() - runMs, signal
+      });
+    } catch (err) {
+      releaseAll();
+      return abstainWith(asAbstain(err, 'pull'));
+    }
+    result.image = { ref: lease.ref, cache: lease.cache, durationMs: lease.durationMs };
+    const left = stopAt - Date.now();
+    if (signal && signal.aborted) {
+      releaseAll();
+      return abstainWith(new Abstain(ABSTAIN.CANCELLED, 'the run was cancelled before it started', { step: 'pull' }));
+    }
+    if (left < runMs) {
+      releaseAll();
+      return abstainWith(new Abstain(ABSTAIN.ADMISSION_REFUSED,
+        `once the image was ready the deadline left ${Math.max(0, left)} ms; the run may need ${runMs} ms (runSeconds)`, { step: 'pull' }));
+    }
   }
 
   // Run-level kill switch: the deadline, the run budget, the caller.
@@ -205,6 +254,22 @@ async function executeRun({
     };
   }
 
+  /** Release the reservations once every sandbox is gone; until then retry the removals. */
+  async function reap(gone) {
+    let wait = reapFirstMs;
+    let warned = false;
+    while (!gone.every(Boolean)) {
+      if (!warned) {
+        warned = true;
+        log.warn('a sandbox outlived its run: its slot, memory and image stay held until it is removed', { runId });
+      }
+      await new Promise((resolve) => { setTimeout(resolve, wait).unref(); });
+      wait = Math.min(wait * 2, REAP_MAX_MS);
+      gone = await Promise.all(sandboxes.map((sb, i) => (gone[i] ? true : sb.remove().catch(() => false))));
+    }
+    releaseAll();
+  }
+
   const work = (async () => {
     const primary = await open();
     const ctx = {
@@ -261,6 +326,11 @@ async function executeRun({
       active.delete(sb.name);
       return gone;
     }));
+    // The slot, the memory and the image stay held until every sandbox is
+    // confirmed gone, even when the answer goes out before (at the
+    // deadline). A removal that failed is tried again in the background
+    // (the GC may get there first: then the retry finds nothing to remove).
+    removal.then((gone) => reap(gone), () => reap(sandboxes.map(() => false)));
     let timer = null;
     const removed = await Promise.race([
       removal.then((all) => all.every(Boolean)),
