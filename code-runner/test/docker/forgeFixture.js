@@ -38,11 +38,19 @@ const SOLC = Object.freeze({
   'linux/arm64': { url: 'https://binaries.soliditylang.org/linux-arm64/solc-linux-arm64-v0.8.31+commit.fd3a2265', sha256: 'acf358d82da7db033debb2f4db11e1c9cfcb02b0cb5b5ddbb9635ad817b41bdd' }
 });
 
+/** A second solc release, for images with several installed (owner decision Q37), also by SHA-256. */
+const SOLC_RELEASES = Object.freeze({
+  '0.8.32': Object.freeze({
+    'linux/amd64': { url: 'https://binaries.soliditylang.org/linux-amd64/solc-linux-amd64-v0.8.32+commit.ebbd65e5', sha256: 'aafc7e409a10b669010cd93207474a4364fbccbe635106ac09c12cd0cb475a1b' },
+    'linux/arm64': { url: 'https://binaries.soliditylang.org/linux-arm64/solc-linux-arm64-v0.8.32+commit.ebbd65e5', sha256: 'f268aa17d0b770806ceb9072ff54c8970fcf74abf4f9d44fef11b4831ef6414c' }
+  })
+});
+
 /** registry:2 (2.8.3), the multi-platform index pinned by digest. */
 const REGISTRY_IMAGE = 'registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373';
 
-async function solcBytes(platform = PLATFORM) {
-  const pin = SOLC[platform];
+async function solcBytes(platform = PLATFORM, release = '0.8.31') {
+  const pin = release === '0.8.31' ? SOLC[platform] : SOLC_RELEASES[release][platform];
   const cached = path.join(os.tmpdir(), `vcr-${path.basename(pin.url)}`);
   if (fs.existsSync(cached)) {
     const bytes = fs.readFileSync(cached);
@@ -125,11 +133,14 @@ function vaultBaseline(baseCommit) {
   return { version: 1, baseCommit, framework: 'forge', runs: 3, tests: [{ id, results: ['pass', 'pass', 'pass'] }], stable: [id], unstable: [] };
 }
 
-const DOCKERFILE = (base, setup, { objectFormat = null, env = [] } = {}) => [
+const DOCKERFILE = (base, setup, { objectFormat = null, env = [], installed = [] } = {}) => [
   `FROM ${base}`,
   'USER root',
   'COPY solc /opt/solc/solc',
   'COPY repo /repo',
+  // Releases as the builder's setup installs them: under XDG_DATA_HOME, the bytes checked by SHA-256 on the way in.
+  ...installed.map((v) => `COPY solc-${v} /opt/verdikta/tools/share/svm/${v}/solc-${v}`),
+  ...(installed.length ? ['RUN chmod -R a+rX /opt/verdikta && find /opt/verdikta/tools/share/svm -type f -exec chmod 0755 {} +'] : []),
   'RUN chmod 0755 /opt/solc/solc \\',
   ` && cd /repo && git init -q -b main${objectFormat ? ` --object-format=${objectFormat}` : ''} && git add -A \\`,
   ' && GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" \\',
@@ -153,10 +164,11 @@ let built = 0;
  * @param {string} [o.listed] - the ref whose commit is the listed one (default HEAD; a setup may move HEAD past it)
  * @param {string} [o.objectFormat] - sha256 for a SHA-256 repository
  * @param {string[]} [o.env] - `ENV` lines for the image's own environment
+ * @param {string[]} [o.installed] - solc releases to install under the builder's XDG_DATA_HOME
  * @param {string} o.instance - the test's instance id (names the image)
  * @returns {Promise<{image:string, baseCommit:string, remove:Function}>}
  */
-async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '', listed = 'HEAD', objectFormat = null, env = [], instance }) {
+async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '', listed = 'HEAD', objectFormat = null, env = [], installed = [], instance }) {
   const base = foundryBase();
   await ensureImage(docker, base);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-fixture-'));
@@ -167,7 +179,8 @@ async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '',
     fs.writeFileSync(path.join(repo, rel), content);
   }
   fs.writeFileSync(path.join(dir, 'solc'), await solcBytes());
-  fs.writeFileSync(path.join(dir, 'Dockerfile'), DOCKERFILE(base, setup, { objectFormat, env }));
+  for (const v of installed) fs.writeFileSync(path.join(dir, `solc-${v}`), await solcBytes(PLATFORM, v));
+  fs.writeFileSync(path.join(dir, 'Dockerfile'), DOCKERFILE(base, setup, { objectFormat, env, installed }));
   built += 1;
   const tag = `vcr-fixture-${instance}:${built}`;
   const extraRefs = [];
@@ -224,12 +237,12 @@ async function localDigestRef(docker, tag, repository = tag.split(':')[0]) {
 }
 
 /** A git patch that adds `files` (path → text) as new files. */
-function addFilesPatch(files) {
+function addFilesPatch(files, mode = '100644') {
   return Buffer.from(Object.entries(files).map(([file, text]) => {
     const lines = text.endsWith('\n') ? text.slice(0, -1).split('\n') : text.split('\n');
     return [
       `diff --git a/${file} b/${file}`,
-      'new file mode 100644',
+      `new file mode ${mode}`,
       '--- /dev/null',
       `+++ b/${file}`,
       `@@ -0,0 +1,${lines.length} @@`,

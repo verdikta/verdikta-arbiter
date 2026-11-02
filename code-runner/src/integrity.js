@@ -1016,13 +1016,14 @@ const DISCOVERY = /^vcr-forge ([^\n]*)\nvcr-path ([^\n]*)\n(?:vcr-real ([^\n]*)\
  * lines in `bytes` (parseFramework); its exit code and stderr are the
  * configuration's. A forge the runner cannot run as an argv is `unrunnable`.
  * `before` sees what the discovery found before forge runs (the reference's
- * checks that forge is not a patch's file; it throws to stop there).
+ * checks that forge is not a patch's file; it throws to stop there). `solc` is
+ * the pin for a forge just found; `listed` is the one read without it (pinCompiler).
  * @param {object} ctx
  * @param {string} name
  * @param {string} forgePath - '' at the reference, else the reference's real path
  * @param {{config?:boolean, tool?:{realPath:string, path:string}, before?:Function}} [o]
  */
-async function probe(ctx, name, forgePath, { config = true, tool = null, before = null } = {}) {
+async function probe(ctx, name, forgePath, { config = true, tool = null, before = null, solc, listed = false } = {}) {
   const head = new Prefix(CONFIG_MAX_BYTES);
   const found = await ctx.exec(frameworkArgv(forgePath), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: head });
   const headBytes = head.bytes();
@@ -1030,12 +1031,12 @@ async function probe(ctx, name, forgePath, { config = true, tool = null, before 
   if (found.exitCode !== 0 || !config) return done(found.exitCode, headBytes, found.stderr ? found.stderr.text : '');
   const m = head.truncated ? null : DISCOVERY.exec(headBytes.toString('utf8'));
   if (!m) return done(found.exitCode, headBytes, '');
-  const use = tool || { realPath: m[3] !== undefined ? m[3] : m[1], path: m[2] };
+  const use = tool || { realPath: m[3] !== undefined ? m[3] : m[1], path: m[2], solc };
   const problem = forge.toolProblem(use);
   if (problem) return done(found.exitCode, headBytes, '', { unrunnable: problem });
   if (before) await before({ realPath: use.realPath, pathDirs: parsePathDirs(m[2]) });
   const out = new Prefix(CONFIG_MAX_BYTES);
-  const record = await ctx.exec(forge.forgeArgv(use, ['config', '--json']), {
+  const record = await ctx.exec(listed ? forge.listedConfigArgv(use) : forge.forgeArgv(use, ['config', '--json']), {
     name: `${name}:config`, timeoutMs: SNAPSHOT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR, tee: out
   });
   return {
@@ -1091,6 +1092,19 @@ async function forgeOutOfReach(ctx, name, { realPath, pathDirs }, { testGlobs, p
 const SOLC_RELEASE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 
 /**
+ * Owner decision Q37: the compiler is pinned, and the pin read here. This read is
+ * the only forge run without the pin: right after the forced checkout, before
+ * any patch, on the listing's own files. Every later forge run sets FOUNDRY_SOLC
+ * to what comes back: the release the listing names, the absolute path of a file
+ * it names outside the work tree, or empty when it names nothing, which leaves
+ * the choice to the sources' pragmas among the installed releases. So what a patch
+ * or a fix later does to forge's configuration no longer picks a compiler.
+ *
+ * The pin does not stand alone (owner's condition 1): with FOUNDRY_SOLC a release
+ * or empty, forge still runs whatever the installed release's path leads to. So
+ * the refusals stay, and they cover every installed release, since with the
+ * variable empty a proof's pragma can pick any of them.
+ *
  * R24-F1: the compiler is out of a patch's reach. forge runs a configured solc
  * even to print its configuration, so a patch that replaced it (`solc =
  * "test/solc"`, or a link on its way) would run before the reference is taken,
@@ -1103,15 +1117,17 @@ const SOLC_RELEASE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
  * held to the same, as forge runs it for a `.vy` file a patch adds. forge itself
  * is held to forgeOutOfReach first, as at the reference.
  * @param {{testGlobs:string[], protectedGlobs:string[]}} globs
+ * @returns {Promise<string>} the pin, for forge.forgeEnvironment
  * @throws {RequesterError} IMAGE_WATCH_ROOT_UNCOVERED, IMAGE_FORGE_MISSING, FORGE_CONFIG_INVALID
  */
-async function requireCompilerOutOfReach(ctx, globs, name = 'prepare:compiler') {
-  const { config } = await readFramework(ctx, name, { before: (found) => forgeOutOfReach(ctx, name, found, globs) });
+async function pinCompiler(ctx, globs, name = 'prepare:compiler') {
+  const { config } = await readFramework(ctx, name, { listed: true, before: (found) => forgeOutOfReach(ctx, name, found, globs) });
   const paths = [
     ['solc', typeof config.solc === 'string' && config.solc !== '' && !SOLC_RELEASE.test(config.solc) ? config.solc : null],
     ['vyper.path', typeof config.vyperPath === 'string' && config.vyperPath !== '' ? config.vyperPath : null]
   ].filter(([, value]) => value !== null);
-  const inTree = paths.filter(([, value]) => !value.startsWith('/') || within(value, WORK));
+  // `..` could lead back into the work tree, and the pin would carry it as it stands.
+  const inTree = paths.filter(([, value]) => !value.startsWith('/') || within(value, WORK) || value.split('/').includes('..'));
   if (inTree.length) {
     throw uncovered(inTree.map(([setting, value]) => `${setting} (${value}) is in the work tree, where a patch could replace it, and forge runs it even to print its configuration`));
   }
@@ -1122,6 +1138,9 @@ async function requireCompilerOutOfReach(ctx, globs, name = 'prepare:compiler') 
   const installed = out.bytes().toString('latin1').split('\0').filter(Boolean);
   const problems = await walkRoots(ctx, `${name}:walk`, externalRoots([...paths.map(([, value]) => value), ...installed]));
   if (problems.length) throw uncovered(problems);
+  const pin = typeof config.solc === 'string' ? config.solc : '';
+  if (/[\u0000-\u001f]/.test(pin)) throw uncovered([`solc (${JSON.stringify(pin)}) holds a control character`]);
+  return pin;
 }
 
 /**
@@ -1250,7 +1269,9 @@ class Watch {
    * @param {string[]} [o.patchPaths] - the work-tree paths the claim's patches add or change (git's names)
    * @param {string} [o.prefix] - exec names' prefix
    */
-  constructor({ protectedGlobs = [], testGlobs = [], patchPaths = [], prefix = 'integrity' } = {}) {
+  constructor({ protectedGlobs = [], testGlobs = [], patchPaths = [], prefix = 'integrity', solc } = {}) {
+    if (typeof solc !== 'string') throw new TypeError('the watch runs forge with the compiler pinned: solc is not set');
+    this.solc = solc;
     this.protectedGlobs = protectedGlobs;
     this.testGlobs = testGlobs;
     // In the manifest's byte form (its keys are the paths' bytes read latin1).
@@ -1281,7 +1302,11 @@ class Watch {
    */
   async reference(ctx) {
     const name = `${this.prefix}:reference`;
-    const parsed = await readFramework(ctx, `${name}:framework`, { before: (found) => this.beforeForgeRuns(ctx, name, found) });
+    const parsed = await readFramework(ctx, `${name}:framework`, { solc: this.solc, before: (found) => this.beforeForgeRuns(ctx, name, found) });
+    // forge's own answer under the pin. The later comparisons read it under the same pin, so the pin is no change.
+    if ((parsed.config.solc === null ? '' : parsed.config.solc) !== this.solc) {
+      throw uncovered([`forge reads solc as ${JSON.stringify(parsed.config.solc)} with FOUNDRY_SOLC set to ${JSON.stringify(this.solc)}`]);
+    }
     // Every place the sets are rooted at must be one the snapshots cover (R8-F1): none is dropped silently. What lies
     // outside the work tree as text is asked of the kernel (R16-F1).
     const uncoveredRoots = unwatchableRoots(parsed.config, parsed.pathDirs, this.testGlobs);
@@ -1362,7 +1387,7 @@ class Watch {
    */
   tool() {
     if (!this.ref) throw new TypeError('the reference has not been taken');
-    return { forgePath: this.ref.forgePath, realPath: this.ref.realPath, path: this.ref.path };
+    return { forgePath: this.ref.forgePath, realPath: this.ref.realPath, path: this.ref.path, solc: this.solc };
   }
 
   /**
@@ -1763,7 +1788,7 @@ function integrityDetail(failures) {
 }
 
 module.exports = {
-  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, requireCompilerOutOfReach, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
+  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, pinCompiler, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   discoverForge, probe, requireImmutableTools, TOOL_DIRS, IMMUTABLE_CHECK,

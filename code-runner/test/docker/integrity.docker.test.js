@@ -11,9 +11,11 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { executeRun } = require('../../src/pipeline');
+const forgeLib = require('../../src/forge');
+const integrityLib = require('../../src/integrity');
 const { checkSpec } = require('../../src/classLimits');
 const { claimSteps } = require('../../src/steps');
-const { RUNTIME, silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll } = require('./helpers');
+const { RUNTIME, silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll, smallLimits } = require('./helpers');
 const { settlementFacts } = require('../helpers/settlementFacts');
 const { VAULT_REPO, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile } = require('./forgeFixture');
 
@@ -23,6 +25,19 @@ const builder = dockerFor(dockerTestConfig());
 
 const FORGE_STD = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract StdMarker {}\n';
 const PLAIN_TOML = 'fs_permissions = [{ access = "read-write", path = "./state" }]';
+// Owner decision Q37. A listing that names no compiler, a repository whose sources need two releases, and a planted
+// compiler that shows itself if it ever runs: it writes a watched place and fails.
+const NO_SOLC_TOML = (extra = '') => FOUNDRY_TOML(extra).replace('solc = "/opt/solc/solc"\n', '');
+const VAULT_0831 = VAULT_REPO['src/Vault.sol'].replace('pragma solidity ^0.8.0;', 'pragma solidity =0.8.31;');
+const MIXED_REPO = Object.freeze({
+  ...VAULT_REPO,
+  'lib/forge-std/src/Test.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract StdMarker {}\n',
+  'src/Vault.sol': VAULT_0831,
+  'src/Later.sol': '// SPDX-License-Identifier: MIT\npragma solidity =0.8.32;\ncontract Later { function value() public pure returns (uint256) { return 1; } }\n',
+  'test/Later.t.sol': '// SPDX-License-Identifier: MIT\npragma solidity =0.8.32;\nimport {Later} from "../src/Later.sol";\ncontract LaterTest { function test_later() public { require(new Later().value() == 1, "later"); } }\n'
+});
+const EXPLOIT_LATER = '// SPDX-License-Identifier: MIT\npragma solidity =0.8.32;\nimport {Later} from "../src/Later.sol";\ncontract ExploitLater { function test_later_is_two() public { require(new Later().value() == 2, "later is one"); } }\n';
+const PLANTED = '#!/bin/sh\nprintf x > /work/lib/PLANTED\nexit 1\n';
 const ANNOTATED = [
   '// SPDX-License-Identifier: MIT', 'pragma solidity ^0.8.0;', 'import {Base} from "./Vm.sol";',
   'contract H { uint256 public x; function bump() public { x += 1; } }',
@@ -126,6 +141,35 @@ const VARIANTS = Object.freeze({
   },
   envredirect: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, '.env': 'FOUNDRY_CONFIG=/work/test/compiler.toml\n', 'test/compiler.toml': FOUNDRY_TOML().replace('out = "out"', 'out = "redirected"') }
+  },
+  // Owner decision Q37, condition 3: two real releases, offline, with sources that need both, and no solc in the listing.
+  mixed: { files: { ...MIXED_REPO, 'foundry.toml': NO_SOLC_TOML() }, installed: ['0.8.31', '0.8.32'] },
+  mixednokey: { files: { ...MIXED_REPO, 'foundry.toml': NO_SOLC_TOML().replace('offline = true\n', '') }, installed: ['0.8.31', '0.8.32'] },
+  // auto_detect_solc off, with a compiler on PATH that shows itself if forge looks there.
+  autodetectoff: {
+    files: { ...MIXED_REPO, 'foundry.toml': NO_SOLC_TOML('auto_detect_solc = false') },
+    installed: ['0.8.31', '0.8.32'],
+    setup: `mkdir -p /opt/pathsolc && printf '${PLANTED.replace(/\n/g, '\\n')}' > /opt/pathsolc/solc && chmod 0755 /opt/pathsolc/solc`,
+    env: ['PATH=/opt/pathsolc:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin']
+  },
+  // The routes run directly, on an image with both releases installed; and a release that is a link into the tree.
+  pinroutes: { installed: ['0.8.31', '0.8.32'] },
+  pinlinked: {
+    installed: ['0.8.31'],
+    setup: 'mkdir -p /opt/verdikta/tools/share/svm/0.8.32 && ln -s /work/test/solc /opt/verdikta/tools/share/svm/0.8.32/solc-0.8.32 && chmod -R a+rX /opt/verdikta'
+  },
+  // The same link when the listing names the other release: a pragma could still pick it with the variable empty.
+  svmlinkother: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc_version = "0.8.31"') },
+    installed: ['0.8.31'],
+    setup: 'mkdir -p /opt/verdikta/tools/share/svm/0.8.32 && ln -s /work/test/solc /opt/verdikta/tools/share/svm/0.8.32/solc-0.8.32 && chmod -R a+rX /opt/verdikta'
+  },
+  // A .env that moves forge's configuration into a file a patch, or a fix, can change.
+  envtests: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, '.env': 'FOUNDRY_CONFIG=/work/test/compiler.toml\n', 'test/compiler.toml': '[profile.default]\nsolc = "/opt/solc/solc"\n' }
+  },
+  envconfig: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, '.env': 'FOUNDRY_CONFIG=/work/config/compiler.toml\n', 'config/compiler.toml': '[profile.default]\nsolc = "/opt/solc/solc"\n' }
   },
   // R25-F2: foundry.toml as a fix would change it, not protected.
   fixconfig: {
@@ -841,6 +885,197 @@ test('A3a under real forge: forge\'s other outputs (test_failures_file, failure_
   assert.equal(linked.outcome, 'requester_error', show(linked));
   assert.deepEqual(linked.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.match(linked.issues[0].detail, /out is a link/);
+});
+
+// ------------------------------------------------- owner decision Q37: the pin
+
+/** A run of the step functions on an image, as the runner runs a sandbox. */
+async function directRun(t, image, step) {
+  const config = dockerTestConfig();
+  const docker = dockerFor(config);
+  t.after(() => removeAll(docker, config.instance).catch(() => {}));
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config, limits: smallLimits({ memoryMb: 2048, cpus: 2, pids: 1024, runSeconds: 700, testSeconds: 240, buildSeconds: 240 }), image, runId: crypto.randomBytes(8).toString('hex'),
+    steps: [step], receivedAt, deadlineAt: receivedAt + 800000, active: new Set(), log: silent
+  });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+}
+
+const envPairs = (env) => Object.entries(env).map(([k, v]) => `${k}=${v}`);
+
+/** A small project in /work, the marker gone, the planted compiler at test/solc, then `lines` of the route's own shell. */
+const PROJECT = (lines, pragma = '=0.8.31') => [
+  'cd /work && find . -mindepth 1 -delete; rm -f /tmp/planted-ran; mkdir -p src test',
+  `printf '// SPDX-License-Identifier: MIT\\npragma solidity ${pragma};\\ncontract A {}\\n' > src/A.sol`,
+  'printf \'[profile.default]\\nsrc = "src"\\ntest = "test"\\nout = "out"\\ncache_path = "cache"\\noffline = true\\n\' > foundry.toml',
+  'printf \'#!/bin/sh\\nprintf x > /tmp/planted-ran\\nexec /opt/solc/solc "$@"\\n\' > test/solc && chmod 0755 test/solc',
+  ...lines
+].join('\n');
+
+test('owner decision Q37 under real forge: each route to a planted compiler loses under the pin, a release, a path or empty, with forge config reading the pin; without the pin the same route runs it', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('pinroutes');
+  const toml = (line) => `printf '${line}\\n' >> foundry.toml`;
+  const compilerToml = 'printf \'[profile.default]\\nsolc = "test/solc"\\n\' > test/c.toml';
+  const routes = [
+    ['foundry.toml solc', [toml('solc = "test/solc"')]],
+    ['foundry.toml solc_version', [toml('solc_version = "test/solc"')]],
+    ['extends', [compilerToml, toml('extends = "test/c.toml"')]],
+    ['.env FOUNDRY_SOLC', ['printf \'FOUNDRY_SOLC=test/solc\\n\' > .env']],
+    ['.env FOUNDRY_SOLC_VERSION', ['printf \'FOUNDRY_SOLC_VERSION=test/solc\\n\' > .env']],
+    ['.env FOUNDRY_CONFIG', [compilerToml, 'printf \'FOUNDRY_CONFIG=/work/test/c.toml\\n\' > .env']]
+  ];
+  const got = [];
+  await directRun(t, fx.image, async (ctx) => {
+    const found = await integrityLib.discoverForge(ctx, 'find');
+    const sh = (name, script) => ctx.exec(['/bin/sh', '-c', script], { name, timeoutMs: 60000 });
+    const ran = async (name) => (await sh(`${name}:marker`, 'test -e /tmp/planted-ran')).exitCode === 0;
+    let n = 0;
+    for (const [route, lines] of routes) {
+      const name = () => { n += 1; return `s${n}`; };
+      // The control: no pin, and for the last route no fixed FOUNDRY_CONFIG either.
+      await sh(name(), PROJECT(lines));
+      const { FOUNDRY_CONFIG, ...noConfig } = forgeLib.forgeEnvironment(found.path);
+      const env = route === '.env FOUNDRY_CONFIG' ? noConfig : forgeLib.forgeEnvironment(found.path);
+      await ctx.exec(['/usr/bin/env', '-i', ...envPairs(env), found.realPath, 'build'], { name: name(), timeoutMs: 120000, workdir: forgeLib.FORGE_WORKDIR });
+      const control = await ran(name());
+      for (const solc of ['/opt/solc/solc', '0.8.31', '']) {
+        await sh(name(), PROJECT(lines));
+        const tool = { ...found, solc };
+        const config = await ctx.exec(forgeLib.forgeArgv(tool, ['config', '--json']), { name: name(), timeoutMs: 120000, workdir: forgeLib.FORGE_WORKDIR });
+        const afterConfig = await ran(name());
+        const build = await ctx.exec(forgeLib.forgeArgv(tool, ['build']), { name: name(), timeoutMs: 120000, workdir: forgeLib.FORGE_WORKDIR });
+        got.push({ route, solc, control, configExit: config.exitCode, configSolc: JSON.parse(config.stdout.text).solc, afterConfig, buildExit: build.exitCode, buildOut: build.stdout.text, afterBuild: await ran(name()) });
+      }
+    }
+  });
+  assert.equal(got.length, routes.length * 3);
+  for (const g of got) {
+    const at = `${g.route} under ${JSON.stringify(g.solc)}`;
+    assert.equal(g.control, true, `${g.route}: the route is live without the pin`);
+    assert.equal(g.configExit, 0, at);
+    assert.equal(g.configSolc, g.solc === '' ? null : g.solc, `${at}: forge config reads the pin`);
+    assert.equal(g.afterConfig, false, `${at}: forge config never ran the planted compiler`);
+    assert.equal(g.buildExit, 0, `${at}: ${g.buildOut}`);
+    assert.equal(g.afterBuild, false, `${at}: the build never ran the planted compiler`);
+    assert.match(g.buildOut, /Solc 0\.8\.31/, at);
+  }
+});
+
+test('owner decision Q37 under real forge: why the walk stays: under a pin, a release or empty, forge still runs what an installed release links to, so every installed release is walked, and a claim on that image is refused', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('pinlinked');
+  const got = {};
+  await directRun(t, fx.image, async (ctx) => {
+    const found = await integrityLib.discoverForge(ctx, 'find');
+    const sh = (name, script) => ctx.exec(['/bin/sh', '-c', script], { name, timeoutMs: 60000 });
+    for (const solc of ['0.8.32', '']) {
+      await sh(`p${solc}`, PROJECT([], '=0.8.32'));
+      await ctx.exec(forgeLib.forgeArgv({ ...found, solc }, ['build']), { name: `b${solc}`, timeoutMs: 120000, workdir: forgeLib.FORGE_WORKDIR });
+      got[solc] = (await sh(`m${solc}`, 'test -e /tmp/planted-ran')).exitCode === 0;
+    }
+  });
+  assert.deepEqual(got, { '0.8.32': true, '': true }, 'the pin alone does not stop it');
+  // The listing names 0.8.31, a real file; the link is on the other release, which a pragma could pick.
+  const r = await run(t, claim(await fixture('svmlinkother'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /svm\/0\.8\.32\/solc-0\.8\.32/);
+  assert.ok(!(r.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
+});
+
+test('owner decision Q37, condition 3, under real forge: a listing that names no compiler builds and tests sources that need two real releases, offline, by the variable left empty; forge config reads it as unset on every comparison', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('mixed');
+  // A proof with files that need each release; the build and every run compile both.
+  const poc = addFilesPatch({ 'test/Exploit.t.sol': DRAIN, 'test/ExploitLater.t.sol': EXPLOIT_LATER });
+  const r = await run(t, claim(fx, poc));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.integrity, CLEAN);
+  assert.equal(r.facts.poc.testCount, 2);
+  const build = r.steps.find((s) => s.name === 'build');
+  assert.match(build.stdout.text, /Solc 0\.8\.31/, 'both real releases compiled');
+  assert.match(build.stdout.text, /Solc 0\.8\.32/, 'both real releases compiled');
+  // The reference and each later comparison read forge's configuration under the same pin.
+  const configs = r.steps.filter((s) => /:config$/.test(s.name));
+  assert.ok(configs.length >= 5, configs.map((s) => s.name).join());
+  for (const s of configs) assert.equal(JSON.parse(s.stdout.text).solc, null, s.name);
+
+  // The fix check: a real `forge test` of the maker's suite over both.
+  const fixPatch = modifyPatch('src/Vault.sol', VAULT_0831, VAULT_0831.replace('amount + 1', 'amount'));
+  const fixed = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { fixPatch }));
+  assert.equal(fixed.outcome, 'definitive', show(fixed));
+  assert.equal(fixed.facts.fix.builds, 'pass', JSON.stringify(fixed.facts.fix.detail));
+  assert.equal(fixed.facts.fix.pocPasses, true, JSON.stringify(fixed.facts.fix.suite));
+  assert.deepEqual(fixed.facts.fix.regressions, []);
+  assert.deepEqual(fixed.facts.fix.integrity, CLEAN);
+
+  // The same with no `offline` key: the sandbox has no network, and nothing here needs one.
+  const noKey = await run(t, claim(await fixture('mixednokey'), poc));
+  assert.equal(noKey.outcome, 'definitive', show(noKey));
+  for (const g of ['build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(noKey.gates[g].status, 'pass', `${g}: ${show(noKey)}`);
+});
+
+test('owner decision Q37 under real forge: auto_detect_solc = false with the variable empty: forge does not look for solc on PATH, a compiler planted there never runs, and the honest claim passes', { timeout: TIMEOUT }, async (t) => {
+  const r = await run(t, claim(await fixture('autodetectoff'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN, 'test/ExploitLater.t.sol': EXPLOIT_LATER })));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.integrity, CLEAN, 'lib/PLANTED would show here');
+  assert.equal(JSON.parse(r.steps.find((s) => s.name === 'prepare:compiler:config').stdout.text).auto_detect_solc, false);
+});
+
+test('owner decision Q37 under real forge: through a patch and through a fix: a .env that moves the configuration moves nothing, the planted compiler never runs; a fix that changes forge\'s own files is not built; a pin hides nothing a run writes', { timeout: TIMEOUT }, async (t) => {
+  // A PoC that changes the file the .env names, to select a compiler it adds. If it ran: a failed build, lib/PLANTED.
+  const tests = await fixture('envtests');
+  const before = '[profile.default]\nsolc = "/opt/solc/solc"\n';
+  const poc = Buffer.concat([
+    modifyPatch('test/compiler.toml', before, '[profile.default]\nsolc = "test/solc"\n'),
+    addFilesPatch({ 'test/Exploit.t.sol': DRAIN }),
+    addFilesPatch({ 'test/solc': PLANTED }, '100755')
+  ]);
+  const r = await run(t, claim(tests, poc));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.integrity, CLEAN, 'lib/PLANTED would show here');
+
+  // A fix that does the same. If the compiler ran the fixed build would fail; if a compiler it chose hid the bug the PoC would pass.
+  const config = await fixture('envconfig');
+  const fixPatch = Buffer.concat([
+    modifyPatch('config/compiler.toml', before, '[profile.default]\nsolc = "src/compiler"\n'),
+    addFilesPatch({ 'src/compiler': PLANTED }, '100755')
+  ]);
+  const fixed = await run(t, claim(config, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { fixPatch, paths: { tests: ['test/**'], protected: ['foundry.toml', '.env', 'lib/**', '.gitignore'] } }));
+  assert.equal(fixed.outcome, 'definitive', show(fixed));
+  assert.equal(fixed.gates.reproduces.status, 'pass', show(fixed));
+  assert.equal(fixed.facts.fix.applies, 'pass', JSON.stringify(fixed.facts.fix.detail));
+  assert.equal(fixed.facts.fix.builds, 'pass', JSON.stringify(fixed.facts.fix.detail));
+  assert.equal(fixed.facts.fix.pocPasses, false, 'the source is not repaired, and the compiler that said so is the listing\'s');
+  assert.deepEqual(fixed.facts.fix.integrity, CLEAN, 'lib/PLANTED would show here');
+
+  // A fix that changes forge's own files directly stays a failed fixed build: foundry.toml, by a key or by extends, or a .env.
+  const fx = await fixture('fixconfig');
+  const toml = FOUNDRY_TOML();
+  const paths = { tests: ['test/**'], protected: ['lib/**', '.gitignore'] };
+  for (const [name, patch] of [
+    ['solc', modifyPatch('foundry.toml', toml, toml.replace('solc = "/opt/solc/solc"', 'solc = "src/compiler"'))],
+    ['extends', modifyPatch('foundry.toml', toml, toml.replace('solc = "/opt/solc/solc"', 'extends = "src/c.toml"'))],
+    ['.env', addFilesPatch({ '.env': 'FOUNDRY_SOLC=src/compiler\n' })]
+  ]) {
+    const own = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { fixPatch: Buffer.concat([patch, addFilesPatch({ 'src/compiler': PLANTED }, '100755')]), paths }));
+    assert.equal(own.gates.reproduces.status, 'pass', `${name}: ${show(own)}`);
+    assert.equal(own.facts.fix.builds, 'fail', `${name}: ${JSON.stringify(own.facts.fix)}`);
+    assert.match(own.facts.fix.detail.builds, /forge's own configuration/, name);
+    assert.ok(!own.steps.some((s) => s.name === 'fix:build'), `${name}: the fixed tree was never built`);
+  }
+
+  // forge config no longer shows a solc a run writes, since the pin wins: the files themselves are still what is held.
+  const write = pocFile('ExploitTest', [
+    `    function ${NAME}() public { ${ffiSh('printf \'FOUNDRY_SOLC=test/solc\\n\' > .env')} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+  ]);
+  const wrote = await run(t, claim(await fixture('ffi'), addFilesPatch({ 'test/Exploit.t.sol': write })));
+  assert.equal(wrote.outcome, 'definitive', show(wrote));
+  assert.equal(wrote.gates.integrity.status, 'fail', show(wrote));
+  assert.equal(wrote.facts.poc.integrity.frameworkUnchanged, false, show(wrote));
+  assert.match(wrote.gates.integrity.detail, /run 1: \.env added/);
 });
 
 test('A3a R24-F1 under real forge: a compiler under paths.tests is refused before the patch that would replace it, so a wrapper never runs', { timeout: TIMEOUT }, async (t) => {

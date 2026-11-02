@@ -26,10 +26,10 @@ const { BASE, POC_PATCH, FIX_PATCH, forgeConfig, initialTree, claimSandbox, juni
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const PROBED_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
-/** forge's whole environment, in order: the probed PATH, the sandbox's fixed variables, the fuzz seed. */
+/** forge's whole environment, in order: the probed PATH, the sandbox's fixed variables, the pinned compiler (the fake config's), the fuzz seed. */
 const FORGE_ENV = (path = PROBED_PATH) => [
   `PATH=${path}`, 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox',
-  'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`
+  'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', 'FOUNDRY_SOLC=/opt/solc/solc', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`
 ];
 const REPORTER = ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED];
 
@@ -108,18 +108,27 @@ test('a claim: the build, each PoC run, the fix check\'s build and suite, and `f
   // The PoC's sandbox: the listed image's configuration before any patch, the reference's, the build, then three runs each followed by a configuration read.
   assert.deepEqual(poc.map((d) => d.kind), ['forge-config', 'forge-config', 'vcr-build', 'vcr-poc', 'forge-config', 'vcr-poc', 'forge-config', 'vcr-poc', 'forge-config']);
   const [listed, ref, build, run1, , run2, , run3] = poc;
-  assertForgeArgv(sb, listed, ['config', '--json']);
+  // Owner decision Q37: the first read is the one without the pin, before any patch; every later forge run has it.
+  assert.ok(!listed.launched.some((a) => a.startsWith('FOUNDRY_SOLC')), JSON.stringify(listed.launched));
+  assert.deepEqual(listed.launched.slice(-2), ['config', '--json']);
+  const execs = sb.execs();
+  assert.ok(execs.indexOf(listed) < execs.findIndex((d) => d.kind === 'git' && d.sub[0] === 'apply'), 'before any patch');
   assertForgeArgv(sb, ref, ['config', '--json']);
   assertForgeArgv(sb, build, ['build']);
   assertForgeArgv(sb, run1, ['test', '--match-path=test/Exploit.t.sol', ...REPORTER]);
   for (const run of [run2, run3]) assertForgeArgv(sb, run, ['test', '--match-test=^(?:test_drain\\(\\))$', ...REPORTER]);
   // The fix check's sandbox: its own reference, the fixed build, the maker's suite once.
-  assert.deepEqual(fix.map((d) => d.kind), ['forge-config', 'vcr-build', 'vcr-suite', 'forge-config']);
-  assertForgeArgv(sb, fix[0], ['config', '--json']);
-  assertForgeArgv(sb, fix[1], ['build']);
-  assertForgeArgv(sb, fix[2], ['test', ...REPORTER]);
-  // forge's environment holds no variable but the fixed ones: no FOUNDRY_* but the seed.
-  for (const d of forge) assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_FUZZ_SEED']);
+  // In its own read of the listing, before either patch, its pin; then the same steps.
+  assert.deepEqual(fix.map((d) => d.kind), ['forge-config', 'forge-config', 'vcr-build', 'vcr-suite', 'forge-config']);
+  assert.ok(!fix[0].launched.some((a) => a.startsWith('FOUNDRY_SOLC')), JSON.stringify(fix[0].launched));
+  assertForgeArgv(sb, fix[1], ['config', '--json']);
+  assertForgeArgv(sb, fix[2], ['build']);
+  assertForgeArgv(sb, fix[3], ['test', ...REPORTER]);
+  // forge's environment holds no variable but the fixed ones: no FOUNDRY_* but these three.
+  for (const d of forge.filter((x) => x !== listed && x !== fix[0])) {
+    assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_SOLC', 'FOUNDRY_FUZZ_SEED']);
+  }
+  for (const d of [listed, fix[0]]) assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_FUZZ_SEED']);
 });
 
 test('the maker\'s allowlisted flags reach forge unchanged, each one argv element; a quoted value holding shell text stays one argument', async () => {
@@ -153,7 +162,9 @@ test('forge is the one the reference probed (its real path), with the image\'s P
   assert.equal(r.outcome, 'definitive', show(r));
   const forge = sb.execs().filter((d) => d.forge);
   assert.ok(forge.length >= 5);
-  for (const d of forge) assert.deepEqual(d.launched.slice(0, 13), ['/usr/bin/env', '-i', ...FORGE_ENV(path), '/opt/foundry/bin/forge-1.8.5']);
+  const [listed, ...pinned] = forge;
+  assert.deepEqual(listed.launched, ['/usr/bin/env', '-i', ...FORGE_ENV(path).filter((e) => !e.startsWith('FOUNDRY_SOLC=')), '/opt/foundry/bin/forge-1.8.5', 'config', '--json']);
+  for (const d of pinned) assert.deepEqual(d.launched.slice(0, 14), ['/usr/bin/env', '-i', ...FORGE_ENV(path), '/opt/foundry/bin/forge-1.8.5']);
   // The later probes run the reference's real path too (R1-F3).
   const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
   assert.deepEqual(probes.slice(2).map((d) => d.argv[4]), ['/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5']);
@@ -359,8 +370,9 @@ test('a forge config failure in a claim is the requester\'s (FORGE_CONFIG_INVALI
   const r = await runClaim(sb);
   assert.equal(r.outcome, 'requester_error', show(r));
   assert.deepEqual(r.issues.map((i) => i.code), ['FORGE_CONFIG_INVALID']);
+  // The read of the listing's own files, before any patch and without the pin, is where it shows.
   const [config] = sb.execs().filter((d) => d.kind === 'forge-config');
-  assertForgeArgv(sb, config, ['config', '--json'], { path: '/usr/bin' });
+  assert.deepEqual(config.launched, ['/usr/bin/env', '-i', ...FORGE_ENV('/usr/bin').filter((e) => !e.startsWith('FOUNDRY_SOLC=')), '/usr/local/bin/forge', 'config', '--json']);
   assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build'));
   // The config text read is the one every maker command runs with: forgeConfig of the reference tree, hashed once.
   assert.ok(forgeConfig(initialTree()).length > 0);

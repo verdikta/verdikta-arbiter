@@ -553,7 +553,7 @@ function claimSteps(request, limits) {
  * before the first forge it runs, and runs that forge the same way.
  * @param {object} request - spec, pocPatch, baseline (as checkClaim accepts them), fixPatch and finding for a claim
  * @param {object} limits - the effective limits
- * @param {{adopt?: {keep:string[], prepared:string, tool?:object}}} [o]
+ * @param {{adopt?: {keep:string[], prepared:string, solcPin:string, tool?:object}}} [o]
  */
 function claimSession(request, limits, { adopt = null } = {}) {
   const spec = request.spec;
@@ -564,11 +564,12 @@ function claimSession(request, limits, { adopt = null } = {}) {
   // The state is the sandbox's box too (kit: the processes kept, the leftovers killed).
   const state = {
     done: false, halted: false, keep: [], leftovers: [], touched: null, added: null, addedIds: null, prepared: null, pocCommit: null, watch: null,
-    tool: null, fix: null, integrity: { tier: 'A', poc: null, fix: null }
+    tool: null, solcPin: null, fix: null, integrity: { tier: 'A', poc: null, fix: null }
   };
   if (adopt) {
     state.keep = [...adopt.keep];
     state.prepared = adopt.prepared;
+    state.solcPin = adopt.solcPin;
     if (adopt.tool) state.tool = adopt.tool;
   }
   const box = state;
@@ -584,7 +585,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
    */
   async function tool(ctx) {
     if (state.watch) return state.watch.tool();
-    if (!state.tool) state.tool = await integrity.discoverForge(ctx, 'forge:find');
+    if (!state.tool) state.tool = { ...await integrity.discoverForge(ctx, 'forge:find'), solc: state.solcPin };
     return state.tool;
   }
 
@@ -603,8 +604,9 @@ function claimSession(request, limits, { adopt = null } = {}) {
     const checkout = await forceCheckout(ctx, { base });
     // The maker's own inline configuration, before a patch can touch it (R23-F1).
     await integrity.requirePlainInlineConfig(ctx);
-    // And where the compiler is, which forge runs from its first start on (R24-F1).
-    await integrity.requireCompilerOutOfReach(ctx, { testGlobs, protectedGlobs });
+    // Where the compiler is, which forge runs from its first start on (R24-F1), read from the listing's own files: every
+    // later forge run is pinned to it (owner decision Q37).
+    state.solcPin = await integrity.pinCompiler(ctx, { testGlobs, protectedGlobs });
     state.prepared = checkout.commit;
     ctx.fact('commit', { tier: 'A', base, poc: null });
   }
@@ -671,7 +673,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
   /** The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command. */
   async function watch(ctx) {
     const patchPaths = state.touched.filter((t) => t.status !== 'D').map((t) => t.path);
-    state.watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths });
+    state.watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths, solc: state.solcPin });
     await state.watch.reference(ctx);
   }
 

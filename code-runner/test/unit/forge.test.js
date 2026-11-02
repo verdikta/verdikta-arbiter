@@ -24,8 +24,8 @@ test('the reporter flags: JUnit on stdout and the fixed fuzz seed from @verdikta
 });
 
 test('attempt 3 (owner decision Q31): forge runs as the runner\'s argv, env -i with its fixed environment, the probed forge, then the arguments unchanged', () => {
-  const tool = { realPath: '/usr/local/bin/forge', path: '/usr/bin:/bin' };
-  const env = ['PATH=/usr/bin:/bin', 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox', 'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`];
+  const tool = { realPath: '/usr/local/bin/forge', path: '/usr/bin:/bin', solc: '0.8.31' };
+  const env = ['PATH=/usr/bin:/bin', 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox', 'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', 'FOUNDRY_SOLC=0.8.31', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`];
   assert.deepEqual(forge.forgeArgv(tool, ['build']), ['/usr/bin/env', '-i', ...env, '/usr/local/bin/forge', 'build']);
   // An argument that would mean something to a shell, or to env before the program, is just forge's argument here.
   const odd = ['test', '--no-match-contract=a; rm -rf / $(id) `x` > y', 'X=1', '-i', ...forge.reporterFlags()];
@@ -38,6 +38,16 @@ test('attempt 3 (owner decision Q31): forge runs as the runner\'s argv, env -i w
   }
   assert.equal(forge.toolProblem(tool), null);
   assert.throws(() => forge.forgeArgv(tool, []), TypeError);
+  // Owner decision Q37: forge runs only with the compiler pinned, and the pin is one line; empty is a pin.
+  assert.throws(() => forge.forgeArgv({ realPath: tool.realPath, path: tool.path }, ['build']), /compiler pinned/);
+  assert.throws(() => forge.forgeArgv({ ...tool, solc: 'a\nb' }, ['build']), TypeError);
+  assert.ok(forge.forgeArgv({ ...tool, solc: '' }, ['build']).includes('FOUNDRY_SOLC='));
+  assert.ok(forge.forgeArgv({ ...tool, solc: '/opt/solc/solc' }, ['build']).includes('FOUNDRY_SOLC=/opt/solc/solc'));
+  // The one read without it, the read that decides it.
+  const listed = forge.listedConfigArgv({ realPath: tool.realPath, path: tool.path });
+  assert.deepEqual(listed.slice(-2), ['config', '--json']);
+  assert.ok(!listed.some((a) => a.startsWith('FOUNDRY_SOLC')), 'no pin in it');
+  assert.ok(listed.includes('FOUNDRY_CONFIG=foundry.toml'), 'FOUNDRY_CONFIG is fixed there too');
   assert.throws(() => forge.forgeArgv(tool, ['test', 'a\0b']), TypeError);
 });
 

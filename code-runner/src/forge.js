@@ -11,12 +11,14 @@
  * shell ever reads them. forgeArgv() is forge's whole argv: `/usr/bin/env
  * -i`, forge's fixed environment (forgeEnvironment: the sandbox's fixed
  * variables, the image's PATH as the integrity reference probed it, the
- * builder's fixed values, the fuzz seed, nothing else), the forge the reference probed (its real path),
+ * builder's fixed values, the fuzz seed, FOUNDRY_CONFIG at forge's default and
+ * FOUNDRY_SOLC at the pin, nothing else), the forge the reference probed (its real path),
  * then the parsed arguments, each one argv element. The launcher (A1) prints
  * its nonce and execs that argv without interpreting it; the runner runs it
  * in /work. `forge config --json` (the configuration the checks watch) is
  * read through the same forgeArgv, so it is the configuration every maker
- * command runs with. The runner appends its reporter flags to a test run:
+ * command runs with; listedConfigArgv is the one read without the pin, the one
+ * that decides it. The runner appends its reporter flags to a test run:
  * `--junit` (forge prints the JUnit on stdout, which the runner reads as a
  * capped stream) and the fixed `--fuzz-seed` from @verdikta/common, so fuzz
  * and invariant tests draw the same inputs on every host and every run; the
@@ -77,15 +79,22 @@ function reporterFlags() {
  * forge's whole environment: the image's PATH as the integrity reference
  * probed it (what forge's own children, ffi included, look commands up on),
  * the sandbox's fixed variables (§9.3: HOME, TZ, LANG, CI, PYTHONHASHSEED),
- * the builder's fixed values (BUILDER_ENV), the fuzz seed and FOUNDRY_CONFIG at
- * forge's own default: forge loads /work/.env without overriding what is set, so
- * a .env cannot move its configuration into a file a patch could change (R25-F1,
- * round 26). No other variable of the image's environment, and no other FOUNDRY_*.
+ * the builder's fixed values (BUILDER_ENV), the fuzz seed, FOUNDRY_CONFIG at
+ * forge's own default and FOUNDRY_SOLC at the pin. forge loads /work/.env without
+ * overriding what is set, so a .env moves neither (R25-F1, round 26; owner
+ * decision Q37). No other variable of the image's environment, and no other
+ * FOUNDRY_*.
  * @param {string} path - the probed PATH
+ * @param {string} [solc] - the pin: a release, an absolute path, or empty to leave
+ *   the choice to the sources' pragmas among the installed releases (integrity.pinCompiler).
+ *   Left out only for the one read that decides it (listedConfigArgv).
  */
-function forgeEnvironment(path) {
+function forgeEnvironment(path, solc) {
   if (typeof path !== 'string' || /[\0\n]/.test(path)) throw new TypeError('the probed PATH must be one line');
-  return { PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_CONFIG: 'foundry.toml', FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
+  if (solc !== undefined && (typeof solc !== 'string' || /[\0\n]/.test(solc))) throw new TypeError('the pinned compiler must be one line');
+  return {
+    PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_CONFIG: 'foundry.toml', ...(solc === undefined ? {} : { FOUNDRY_SOLC: solc }), FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
+  };
 }
 
 /**
@@ -116,7 +125,24 @@ function forgeArgv(tool, args) {
   if (!Array.isArray(args) || args.length === 0 || !args.every((a) => typeof a === 'string' && !a.includes('\0'))) {
     throw new TypeError('forge\'s arguments must be strings without NUL');
   }
-  const env = forgeEnvironment(tool.path);
+  if (typeof tool.solc !== 'string') throw new TypeError('forge runs only with the compiler pinned: tool.solc is not set');
+  return envArgv(tool, tool.solc, args);
+}
+
+/**
+ * `forge config --json` as the listing's own files say it, with no pin: the one
+ * read that decides the pin (integrity.pinCompiler), right after the forced
+ * checkout, before any patch. Everything else goes through forgeArgv.
+ * @param {{realPath:string, path:string}} tool
+ */
+function listedConfigArgv(tool) {
+  const problem = toolProblem(tool);
+  if (problem) throw new TypeError(problem);
+  return envArgv(tool, undefined, ['config', '--json']);
+}
+
+function envArgv(tool, solc, args) {
+  const env = forgeEnvironment(tool.path, solc);
   return ['/usr/bin/env', '-i', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), tool.realPath, ...args];
 }
 
@@ -271,6 +297,6 @@ function scanAddedLines(lines) {
 }
 
 module.exports = {
-  reporterFlags, forgeEnvironment, forgeArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, isTestFunction, isInvariantRecord, recordReason, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
+  reporterFlags, forgeEnvironment, forgeArgv, listedConfigArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, isTestFunction, isInvariantRecord, recordReason, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
   scanAddedLines, FORGE_ERRORS, HARNESS_RECORDS, REFERENCES
 };

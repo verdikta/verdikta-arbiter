@@ -578,14 +578,16 @@ characters `COMMAND_INVALID`, a `testFiles` or `testIds` without its placeholder
 **How forge runs.** There is no shell around the maker's text. The step's argv is
 `/usr/bin/env -i PATH=<the image's PATH> TZ=UTC LANG=C.UTF-8 CI=true
 PYTHONHASHSEED=0 HOME=/home/sandbox XDG_DATA_HOME=/opt/verdikta/tools/share
-VERDIKTA_TOOLS=/opt/verdikta/tools FOUNDRY_CONFIG=foundry.toml FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
+VERDIKTA_TOOLS=/opt/verdikta/tools FOUNDRY_CONFIG=foundry.toml FOUNDRY_SOLC=<the pin>
+FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
 <flags…>`, in `/work`: forge at the real path the runner probed in the image
 (`command -v forge`; a forge path holding `=` or a control character, which env
 could not run as a program, is `IMAGE_FORGE_MISSING`). Each flag and its value are one
 argv element (`--name=value`). The launcher prints its start nonce and `exec`s
 that argv; nothing interprets it. Nothing of the image's `ENV` but `PATH` reaches
-forge, `FOUNDRY_*` included: the seed is the only `FOUNDRY_*` it sees besides
-`FOUNDRY_CONFIG` at forge's own default, set so a `.env` cannot move its configuration. The two
+forge, `FOUNDRY_*` included. forge sees three `FOUNDRY_*`, all the runner's: the seed,
+`FOUNDRY_CONFIG` at forge's own default, so a `.env` cannot move its configuration, and
+`FOUNDRY_SOLC`, the pinned compiler ([below](#the-compiler-is-pinned)). The two
 `/opt/verdikta` values are the builder's fixed `ENV`, set here as constants: forge
 finds the solc releases the maker's setup installed under `XDG_DATA_HOME`. The runner
 reads `forge config --json` through the same argv, so the configuration the
@@ -974,14 +976,15 @@ process of the run is dead:
    later runs are held to; and a link there or on the way there (`out -> build/x`), since
    forge writes through it to where no rule here names it.
 
-   **A compiler in the work tree is refused** right after the checkout, before any patch
-   (R24-F1, `IMAGE_WATCH_ROOT_UNCOVERED`): forge runs a configured `solc` even to print its
+   **The compiler is pinned** ([below](#the-compiler-is-pinned)). And **a compiler in the
+   work tree is refused** right after the checkout, before any patch (R24-F1,
+   `IMAGE_WATCH_ROOT_UNCOVERED`): forge runs a configured `solc` even to print its
    configuration, so a patch that replaced it would run before the reference is taken.
    A maker's compiler goes in the builder's tools folder, and a release named by version
-   is forge's own to find. `vyper.path` is held to the same. So that nothing a patch can
-   change names another compiler, `foundry.toml` may not use `extends` (R25-F1), it and
-   `.env` may not be links, and a root file forge reads may not lie under `paths.tests`
-   unless protected. A `fix.patch` that changes one is a failed fixed build, a fact (R25-F2).
+   is forge's own to find. `vyper.path` is held to the same, since the pin does not cover
+   it. `foundry.toml` may not use `extends` (R25-F1), it and `.env` may not be links, and a
+   root file forge reads may not lie under `paths.tests` unless protected. A `fix.patch`
+   that changes one is a failed fixed build, a fact (R25-F2).
 
    **A listed Solidity file that sets a path by inline configuration is refused** right
    after the checkout, before any patch (R23-F1, `IMAGE_WATCH_ROOT_UNCOVERED`): `///
@@ -1048,6 +1051,47 @@ The measured checks are what close the routes; the static flags are the
 cheap signal a juror can read. Ordinary tests raise none: forge-std imports,
 inline fuzz or read-only file settings, a write to a scratch directory the
 maker or an inline grant allows, `console.log`, revert messages.
+
+### The compiler is pinned
+
+Owner decision Q37. A patch that changed what names the compiler would have forge run its
+compiler before the reference is taken, and refusing each way of naming one left the next.
+So the runner sets it: right after the forced checkout, before any patch, it reads `forge
+config --json` on the listing's own files, and every later forge run has `FOUNDRY_SOLC` in
+its fixed environment (`integrity.pinCompiler`, `forge.forgeEnvironment`). That read is the
+only forge run without the variable (`forge.listedConfigArgv`); `forge.forgeArgv` refuses to
+build any other without it. Each sandbox reads for itself, the fix check's too.
+
+| The listing names | `FOUNDRY_SOLC` |
+|---|---|
+| A release (`solc` or `solc_version`, a whole `x.y.z`) | That release |
+| A file outside the work tree | That absolute path, once walked: it may not lead through a place the sandbox can write |
+| A file in the work tree | Nothing: refused, `IMAGE_WATCH_ROOT_UNCOVERED` |
+| Nothing | Empty: the sources' pragmas pick among the installed releases, as forge does by itself |
+
+forge's environment beats `foundry.toml`, `extends`, a `.env` and `FOUNDRY_CONFIG`, so what a
+patch or a fix does to any of those no longer picks a compiler. Pinned on real forge, with a
+marker showing the planted compiler never ran and a control showing the same route runs it
+without the pin. With the variable empty, sources that need two real releases build and test
+offline, with or without an `offline` key, and `auto_detect_solc = false` does not send forge
+to `solc` on `PATH`.
+
+The pin does not stand alone. Under a release, or empty, forge runs whatever the installed
+release's path leads to: with `svm/0.8.32/solc-0.8.32` a link into `test/`, forge runs what a
+patch put there (the Docker test "why the walk stays"). And with the variable empty a pragma can
+pick any installed release, so the walk covers all of them, not only one the listing names. So
+"no patch or file in the tree can choose the compiler" holds only with the refusals above in
+place. It says nothing about what the installed bytes do: those are the maker's, the fake-`solc`
+known limit stays, and checking them against the official releases is A2c's to look at. A
+`.vy` file's compiler is not covered by the variable, so `vyper.path` keeps its refusal.
+
+A proof whose pragma the listing's release cannot compile fails `build`, as it did before the
+pin: `check` shows it first.
+
+The comparisons read forge's configuration under the same pin as the reference, so the pin
+is no change: the reference confirms forge reads `solc` as the pin, and refuses otherwise. A
+`solc` a run writes no longer shows in that configuration, since the pin wins, so what holds
+such a write is the files themselves: `foundry.toml`, `.env` and `$HOME` are watched.
 
 ### What a failed check settles as
 
@@ -1157,6 +1201,7 @@ The routes the review raised, against that scope (each has its test):
 | A patch changing what names the compiler: `extends` into a file under `paths.tests` (R25-F1), `foundry.toml` or `.env` a link, a root file forge reads under `paths.tests` and not protected | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED`: `extends` and the links right after the checkout, the rest before forge first runs |
 | `fix.patch` changing forge's own configuration to select a compiler it adds (R25-F2) | Yes: a hunter, where `foundry.toml` is not protected | **Blocks: hunter alone.** Closed | A failed fixed build, a fact; the fixed tree is never built, and the claim's outcome doesn't move |
 | A `.env` with `FOUNDRY_CONFIG` moving forge's configuration into a file a patch or a fix could change (R25-F1, R25-F2, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | forge's fixed environment sets `FOUNDRY_CONFIG` to its own default, and forge loads a `.env` without overriding what is set |
+| Any other way a patch or a fix changes what names the compiler (Q37) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed by the pin | `FOUNDRY_SOLC` wins over `foundry.toml`, `extends`, `.env` and `FOUNDRY_CONFIG`; the planted compiler never runs |
 | An installed release, named by version, that is a link through the work tree a patch could fill (R24-F1, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | What is directly in the tools folder's `svm/` is walked right after the checkout: `IMAGE_WATCH_ROOT_UNCOVERED` |
 | `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
 | A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error, a multi-line reason lost (R21-F2, R22-F2) | Yes: any honest claim | **Blocks: runner misreading, no maker's files.** Closed | Forge's campaign counts accepted within a range; the reason read up to forge's framing |

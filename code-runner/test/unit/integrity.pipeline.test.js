@@ -125,9 +125,10 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   assert.equal(probes[0].launched[0], '/bin/sh');
   assert.deepEqual(probes.slice(2).map((p) => p.argv[4]), ['/usr/local/bin/forge', '/usr/local/bin/forge', '/usr/local/bin/forge'], 'before any patch and at the reference: discovery; then forge\'s own path');
   const [build] = sb.execs().filter((d) => d.kind === 'vcr-build');
-  for (const config of sb.execs().filter((d) => d.kind === 'forge-config')) {
-    assert.deepEqual(config.launched, [...build.launched.slice(0, -1), 'config', '--json']);
-  }
+  const [listed, ...configs] = sb.execs().filter((d) => d.kind === 'forge-config');
+  for (const config of configs) assert.deepEqual(config.launched, [...build.launched.slice(0, -1), 'config', '--json']);
+  // The one read without the pin, on the listing's own files.
+  assert.deepEqual(listed.launched, [...build.launched.filter((a) => !a.startsWith('FOUNDRY_SOLC=')).slice(0, -1), 'config', '--json']);
 });
 
 test('every fact carries its tier: A for what the runner observed from outside, B for results from a process that ran claim code', async () => {
@@ -1089,8 +1090,37 @@ test('owner decision Q35: settlement can tell, from fields of verdikta.claim-rep
   assert.deepEqual(settlementFacts(noBuild), { valid: true, issues: [], integrity: 'not-run', tampered: false, failedChecks: [], reproduces: 'not-run', reproducesFailed: null });
 });
 
+test('owner decision Q37: the read before any patch decides the pin, and every later forge run carries it: a release, a path outside the work tree, or empty; a compiler in the work tree is refused; forge answering otherwise under the pin is refused', async () => {
+  const pinOf = (d) => { const e = d.launched.find((a) => a.startsWith('FOUNDRY_SOLC=')); return e === undefined ? undefined : e.slice('FOUNDRY_SOLC='.length); };
+  for (const [solc, pin] of [['0.8.31', '0.8.31'], ['/opt/solc/solc', '/opt/solc/solc'], [null, '']]) {
+    const sb = claimSandbox({ onBox: (box) => { box.configOver = { solc }; } });
+    const r = await runClaim(sb);
+    assert.equal(r.gates.integrity.status, 'pass', `${solc}: ${show(r)}`);
+    const execs = sb.execs();
+    const forge = execs.filter((d) => d.forge);
+    assert.equal(pinOf(forge[0]), undefined, 'the read that decides it has no pin');
+    assert.equal(forge[0].kind, 'forge-config');
+    assert.ok(execs.indexOf(forge[0]) < execs.findIndex((d) => d.kind === 'git' && d.sub[0] === 'apply'), 'before any patch');
+    assert.ok(execs.findIndex((d) => d.kind === 'git' && d.sub[0] === 'apply') < execs.indexOf(forge[1]), 'and only that one');
+    for (const d of forge.slice(1)) assert.equal(pinOf(d), pin, `${solc}: ${d.kind}`);
+    assert.ok(forge.length >= 6);
+  }
+  // forge answers with something else under the pin: nothing later could be read as the pinned compiler's.
+  let n = 0;
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  const moved = claimSandbox({ scripts: { 'vcr-framework': (d, box) => { n += 1; return { stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n${forgeConfig(box.tree, n === 1 ? {} : { solc: '/opt/other/solc' })}` }; } } });
+  const r = await runClaim(moved);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /forge reads solc as "\/opt\/other\/solc" with FOUNDRY_SOLC set to "\/opt\/solc\/solc"/);
+  assert.equal(moved.execs().filter((d) => d.kind === 'vcr-build').length, 0);
+  // The watch itself will not run forge without one.
+  const { Watch } = require('../../src/integrity');
+  assert.throws(() => new Watch({}), /compiler pinned/);
+});
+
 test('A3a R24-F1: a compiler a patch could replace is refused before any patch, since forge runs it from its first start: in the work tree by any form, or outside it through a place the sandbox can write', async () => {
-  for (const solc of ['test/solc', 'bin/solc', './bin/solc', '/work/test/solc', 'solc', '0.8.31/solc', '00.8.31', '0.8.31-tools/solc']) {
+  for (const solc of ['test/solc', 'bin/solc', './bin/solc', '/work/test/solc', 'solc', '0.8.31/solc', '00.8.31', '0.8.31-tools/solc', '/opt/../work/test/solc']) {
     const sb = claimSandbox({ onBox: (box) => { box.configOver = { solc }; } });
     const r = await runClaim(sb);
     assert.equal(r.outcome, 'requester_error', `${solc}: ${show(r)}`);
@@ -1161,7 +1191,7 @@ test('A3a R25-F2: a fix that changes forge\'s own configuration is not built: a 
   assert.equal(r.facts.fix.builds, 'fail');
   assert.equal(r.facts.fix.pocPasses, null);
   assert.match(r.facts.fix.detail.builds, /fix\.patch changes foundry\.toml, forge's own configuration/);
-  assert.equal(sb.execs().filter((d) => d.box === 2 && d.forge).length, 0, 'forge never ran on the fix');
+  assert.deepEqual(sb.execs().filter((d) => d.box === 2 && d.forge).map((d) => d.kind), ['forge-config'], 'only the read of the listing, before any patch: forge never ran on the fix');
 });
 
 test('A3a R23-F1: a listed Solidity file that sets a path by inline configuration is refused right after the checkout, before any patch; other inline settings are nothing', async () => {

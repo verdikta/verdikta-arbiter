@@ -986,7 +986,18 @@ watched in the image, or the image is refused before any claim code. A listed
 Solidity file that sets a path by inline configuration is refused too, and so is
 what would put the compiler in a patch's reach, right after the checkout, since forge
 runs a configured `solc` from its first start: a compiler file in the work tree, a
-`foundry.toml` that uses `extends`, or that file or `.env` as a link.
+`foundry.toml` that uses `extends`, that file or `.env` as a link, or an installed
+release that leads through a place the sandbox can write.
+
+**The runner pins the compiler (owner decision Q37).** Right after the checkout, before
+any patch, it reads forge's configuration on the listing's own files. Every later forge run
+then has `FOUNDRY_SOLC` in its fixed environment: the release the listing names, the
+absolute path of a file it names outside the work tree, or empty when it names nothing, which
+leaves the choice to the sources' pragmas among the installed releases. forge's environment
+beats its configuration files, so what a patch or a fix does to them no longer picks a
+compiler. This holds only with the refusals above: forge still runs whatever an installed
+release's path leads to, and a pragma can pick any installed release. It says nothing about
+the installed bytes, which are the maker's, so the fake-`solc` limit below stays.
 
 **Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
 before mainnet. The code-runner README's route table has every route the review raised.

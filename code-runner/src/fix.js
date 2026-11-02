@@ -107,6 +107,8 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   await kit.recordProcesses(ctx, box);
   await integrity.requireImmutableTools(ctx);
   const checkout = await forceCheckout(ctx, { base });
+  // The listing's own configuration, before either patch: the compiler the check runs with is the claim's (owner decision Q37).
+  const solc = await integrity.pinCompiler(ctx, { testGlobs, protectedGlobs });
 
   // The PoC, as the PoC's sandbox applies it: the check runs it with the fix.
   const poc = await kit.applyPatch(ctx, { bytes: request.pocPatch, label: 'poc.patch', limits, base, step: 'patch' });
@@ -163,7 +165,7 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   // (a malformed foundry.toml, a forge it replaced): the fixed tree does not build, a fact, never the requester's
   // error and never the claim's outcome (R4-F2).
   const patchPaths = [...pocTouched.touched, ...fixTouched.touched].filter((t) => t.status !== 'D').map((t) => t.path);
-  const watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths, prefix: 'integrity' });
+  const watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths, prefix: 'integrity', solc });
   try {
     await watch.reference(ctx);
   } catch (err) {
