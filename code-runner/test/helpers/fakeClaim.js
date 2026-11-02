@@ -433,7 +433,7 @@ function linksOf(tree, stdin) {
 
 /**
  * `vcr-external-roots`'s output for the paths on its stdin: `path\0real\0` for each, then for each symbolic link
- * directly in one that is a directory. The fake's tree models the read-only root's links too (a `/opt/helpers` entry
+ * directly in one that is a directory (`path\0!\0` for one it cannot list). The fake's tree models the read-only root's links too (a `/opt/helpers` entry
  * is never listed: the manifest holds /work and $HOME only).
  */
 function externalRootsOf(tree, stdin) {
@@ -449,6 +449,8 @@ function externalRootsOf(tree, stdin) {
     return r;
   };
   for (const p of paths) {
+    // A directory `find` cannot list (mode 0111): the script's `!` record.
+    if (tree.has(p) && tree.get(p).type === 'd') { parts.push(`${p}\0!\0`); continue; }
     const r = record(p);
     if (r.kind !== 'd') continue;
     for (const [k, e] of tree) if (e.type === 'l' && k.startsWith(`${r.real}/`) && !k.slice(r.real.length + 1).includes('/')) record(`${p}/${k.slice(r.real.length + 1)}`);

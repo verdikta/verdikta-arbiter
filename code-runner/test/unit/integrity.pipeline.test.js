@@ -108,9 +108,9 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   assert.deepEqual(order.slice(from + 1), [
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config'
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-external-roots', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-external-roots', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-external-roots', 'vcr-framework', 'forge-config'
   ]);
   const manifests = sb.execs().filter((d) => d.kind === 'vcr-manifest');
   // Every snapshot is hermetic (nothing of the image's environment reaches find or sha256sum).
@@ -681,9 +681,9 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup',
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config'
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-external-roots', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-external-roots', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-external-roots', 'vcr-framework', 'forge-config'
   ]);
 });
 
@@ -831,14 +831,47 @@ test('A3a R16-F1: a PATH directory or solc on the read-only root that really lea
   const r = await runClaim(sb);
   assert.equal(r.outcome, 'requester_error', show(r));
   assert.match(r.issues[0].detail, /\/opt\/solc\/solc leads to \/work\/tools\/solc/);
-  // Hermetic, asked once, at the reference (the read-only root cannot change after it), of PATH directories and solc outside the work tree and $HOME only.
+  // Hermetic, at the reference and after each run, of PATH directories and solc outside the work tree and $HOME only.
   const ok = claimSandbox({ scripts: { 'vcr-framework': (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /work/.bin:/home/sandbox/bin:/opt/helpers:/usr/bin\n${forgeConfig(box.tree)}` }) } });
   const good = await runClaim(ok);
   assert.equal(good.outcome, 'definitive', show(good));
   const asked = ok.execs().filter((d) => d.kind === 'vcr-external-roots');
-  assert.equal(asked.length, 1);
-  assert.deepEqual(asked[0].launched.slice(0, 2), ['/usr/bin/env', '-i']);
-  assert.deepEqual(asked[0].stdin.toString('latin1').split('\0').filter(Boolean), ['/opt/helpers', '/usr/bin', '/opt/solc/solc']);
+  assert.equal(asked.length, 4, 'the reference, and after each of the three runs');
+  for (const a of asked) {
+    assert.deepEqual(a.launched.slice(0, 2), ['/usr/bin/env', '-i']);
+    assert.deepEqual(a.stdin.toString('latin1').split('\0').filter(Boolean), ['/opt/helpers', '/usr/bin', '/opt/solc/solc']);
+  }
+});
+
+test('A3a R16-F1 (round 17): a resolution through a link a run can retarget, final destination read-only at the reference, fails frameworkUnchanged once it changes; a scan that was not complete is refused', async () => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /opt/helpers:/usr/local/bin:/usr/bin\n${forgeConfig(box.tree)}` });
+  // /opt/helpers -> /work/helper-path -> /opt/helpers-v1: read-only at the reference, retargeted by run 1 or run 2.
+  for (const [k, re] of [[1, /run 1: where PATH or solc leads changed: \/opt\/helpers/], [2, /run 2: where PATH or solc leads changed: \/opt\/helpers/]]) {
+    const retarget = (d, n, box) => { if (n === k) box.tree.set('/work/helper-path', { type: 'l', target: '/work/helpers' }); return { exitCode: 1, stdout: drainFails() }; };
+    const r = await runClaim(claimSandbox({
+      onBox: (box) => { box.tree.set('/opt/helpers', { type: 'l', target: '/work/helper-path' }); box.tree.set('/work/helper-path', { type: 'l', target: '/opt/helpers-v1' }); set(box, '/opt/helpers-v1/helper', 'x'); },
+      poc: [retarget, retarget, retarget], scripts: { 'vcr-framework': framework }
+    }));
+    assertIntegrityFails(r, ['frameworkUnchanged'], re);
+  }
+  // Left alone, the same image passes: only a change is the failure.
+  const still = await runClaim(claimSandbox({
+    onBox: (box) => { box.tree.set('/opt/helpers', { type: 'l', target: '/work/helper-path' }); box.tree.set('/work/helper-path', { type: 'l', target: '/opt/helpers-v1' }); set(box, '/opt/helpers-v1/helper', 'x'); },
+    scripts: { 'vcr-framework': framework }
+  }));
+  assert.equal(still.gates.integrity.status, 'pass', show(still));
+  // A PATH directory the sandbox can search but not list (mode 0111) could hold a link nobody saw.
+  const hid = claimSandbox({ onBox: (box) => box.tree.set('/opt/helpers', { type: 'd', mode: '111', content: '' }), scripts: { 'vcr-framework': framework } });
+  const h = await runClaim(hid);
+  assert.equal(h.outcome, 'requester_error', show(h));
+  assert.deepEqual(h.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(h.issues[0].detail, /PATH directory or solc \/opt\/helpers cannot be listed/);
+  // After a run, an answer that cannot be read is a failure of the check, never a pass.
+  let calls = 0;
+  const broken = (d, box) => { calls += 1; return calls === 1 ? { stdout: require('../helpers/fakeClaim').externalRootsOf(box.tree, d.stdin) } : { exitCode: 1 }; };
+  const b = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': broken } }));
+  assertIntegrityFails(b, ['frameworkUnchanged'], /run 1: where PATH and solc lead could not be read/);
 });
 
 test('A3a R16-F1: links on the read-only root that stay there are fine (merged /usr, alternatives); the script\'s answer is checked; an image without realpath is IMAGE_TOOL_MISSING', async () => {

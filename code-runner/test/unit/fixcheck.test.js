@@ -89,7 +89,7 @@ test('fix check: in a second sandbox, fix.patch applies (source allowed), builds
   assert.deepEqual(applies.map((d) => d.stdin.toString()), [POC_PATCH, FIX_PATCH], 'the PoC, then the fix on top of it');
   assert.deepEqual(sb.fixExecs().filter((d) => d.kind === 'git' && d.sub[0] === 'commit').map((d) => d.sub[d.sub.length - 1]), ['poc.patch', 'fix.patch']);
   const tail = fixOrder.slice(fixOrder.lastIndexOf('git rev-parse') + 1);
-  assert.deepEqual(tail, ['vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-suite', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config']);
+  assert.deepEqual(tail, ['vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-suite', 'vcr-cleanup', 'vcr-manifest', 'vcr-external-roots', 'vcr-framework', 'forge-config']);
   const [suite] = sb.fixExecs().filter((d) => d.kind === 'vcr-suite');
   // commands.test with the reporter flags, run as forge's argv (attempt 3).
   assert.deepEqual(suite.argv, ['/usr/local/bin/forge', 'test', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED], 'commands.test with the reporter flags');

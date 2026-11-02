@@ -194,13 +194,15 @@ const LINKS_SCRIPT = [
  * on stdin (NUL-separated), hermetic. One `path\0real\0` record for each, and
  * for each symbolic link directly in one that is a directory, from `realpath
  * -m` (GNU coreutils: every component the kernel can resolve resolved, a
- * missing tail kept, so a dangling link still names where it leads). The
+ * missing tail kept, so a dangling link still names where it leads);
+ * `path\0!\0` for a directory `find` could not list completely (mode 0111: a
+ * link inside it would go unseen) or a path realpath could not answer. The
  * runner reads no link's text. Exit 4: the image has no realpath.
  */
 const EXTERNAL_ROOTS_SCRIPT = [
   'command -v realpath >/dev/null 2>&1 || exit 4',
-  'xargs -0 -r sh -c \'for d do printf "%s\\0" "$d"; if [ -d "$d" ]; then find -H "$d" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null; fi; done\' vcr-list |',
-  'xargs -0 -r sh -c \'nl=$(printf "\\nx"); nl=${nl%x}; for p do r=$(realpath -m -- "$p" 2>/dev/null && printf x) || continue; r=${r%x}; r=${r%"$nl"}; printf "%s\\0%s\\0" "$p" "$r"; done\' vcr-external-roots'
+  'xargs -0 -r sh -c \'for d do printf "%s\\0" "$d"; if [ -d "$d" ]; then find -H "$d" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null || printf "!%s\\0" "$d"; fi; done\' vcr-list |',
+  'xargs -0 -r sh -c \'nl=$(printf "\\nx"); nl=${nl%x}; for p do case $p in !*) printf "%s\\0!\\0" "${p#!}"; continue ;; esac; if r=$(realpath -m -- "$p" 2>/dev/null && printf x); then r=${r%x}; r=${r%"$nl"}; printf "%s\\0%s\\0" "$p" "$r"; else printf "%s\\0!\\0" "$p"; fi; done\' vcr-external-roots'
 ].join('\n');
 
 /** Thrown when what the check would watch is over one of its caps (IMAGE_WATCH_TOO_LARGE before claim code, a failure after). */
@@ -896,31 +898,33 @@ async function probe(ctx, name, forgePath, { config = true, tool = null } = {}) 
 /**
  * R16-F1: the PATH directories and solc that unwatchableRoots passes because
  * they lie outside the work tree, as text. The read-only root protects a link
- * there, not what it leads to, so the kernel is asked (EXTERNAL_ROOTS_SCRIPT),
- * once, at the reference: the root cannot change after it. Each one leading
- * to where runs write (the work tree, $HOME, /tmp) is a problem, as `path leads
- * to real`. (A program on the root that runs something in the work tree is
- * the image's own text, which no resolution sees.)
- * @returns {Promise<string[]>}
+ * there, not what it leads to, so the kernel is asked (EXTERNAL_ROOTS_SCRIPT).
+ * @param {string[]} asked - externalRootsAsked()
+ * @returns {Promise<{exitCode:number, ok:boolean, records:Array<[string, string]>}>} `records`: [path, real], in the script's order
  */
-async function externalRootProblems(ctx, name, parsed) {
-  const outside = (p) => typeof p === 'string' && p.startsWith('/') && !within(p, WORK) && !within(p, HOME);
-  const asked = [...new Set([...parsed.pathDirs, parsed.config.solc].filter(outside))];
-  if (asked.length === 0) return [];
+async function readExternalRoots(ctx, name, asked) {
   const out = new Prefix(LINKS_MAX_BYTES);
   const record = await ctx.exec(externalRootsArgv(), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, stdin: Buffer.from(`${asked.join('\0')}\0`, 'utf8'), tee: out });
-  if (record.exitCode === 4) {
-    throw new RequesterError([{ code: 'IMAGE_TOOL_MISSING', path: '/spec/env/image', detail: 'the env image has no realpath (GNU coreutils), which the runner needs to resolve PATH and solc' }]);
-  }
   const fields = out.bytes().toString('utf8').split('\0');
   fields.pop();
-  if (record.exitCode !== 0 || out.truncated || fields.length % 2 !== 0 || fields.length < 2) {
-    throw runnerError(name, `where PATH and solc lead could not be read (exit ${record.exitCode})`);
-  }
+  const ok = record.exitCode === 0 && !out.truncated && fields.length >= 2 && fields.length % 2 === 0;
+  const records = [];
+  if (ok) for (let i = 0; i < fields.length; i += 2) records.push([fields[i], fields[i + 1]]);
+  return { exitCode: record.exitCode, ok, records };
+}
+
+/** The PATH directories and solc outside the work tree and $HOME (both listed and watched), as the script is asked. */
+function externalRootsAsked(parsed) {
+  const outside = (p) => typeof p === 'string' && p.startsWith('/') && !within(p, WORK) && !within(p, HOME);
+  return [...new Set([...parsed.pathDirs, parsed.config.solc].filter(outside))];
+}
+
+/** What the answer refuses at the reference: one leading where runs write, or a directory it could not list. */
+function externalRootProblems(records) {
   const problems = [];
-  for (let i = 0; i < fields.length; i += 2) {
-    const real = fields[i + 1];
-    if (within(real, WORK) || within(real, HOME) || within(real, '/tmp')) problems.push(`PATH directory or solc ${fields[i]} leads to ${real}, where runs write`);
+  for (const [path, real] of records) {
+    if (real === '!') problems.push(`PATH directory or solc ${path} cannot be listed, so a link in it could not be seen`);
+    else if (within(real, WORK) || within(real, HOME) || within(real, '/tmp')) problems.push(`PATH directory or solc ${path} leads to ${real}, where runs write`);
   }
   return problems;
 }
@@ -1022,7 +1026,17 @@ class Watch {
     // Every place the sets are rooted at must be one the snapshots cover (R8-F1): none is dropped silently. What lies
     // outside the work tree as text is asked of the kernel (R16-F1).
     const uncoveredRoots = unwatchableRoots(parsed.config, parsed.pathDirs, this.testGlobs);
-    if (uncoveredRoots.length === 0) uncoveredRoots.push(...await externalRootProblems(ctx, `${name}:external-roots`, parsed));
+    const externalAsked = externalRootsAsked(parsed);
+    let external = [];
+    if (uncoveredRoots.length === 0 && externalAsked.length) {
+      const answer = await readExternalRoots(ctx, `${name}:external-roots`, externalAsked);
+      if (answer.exitCode === 4) {
+        throw new RequesterError([{ code: 'IMAGE_TOOL_MISSING', path: '/spec/env/image', detail: 'the env image has no realpath (GNU coreutils), which the runner needs to resolve PATH and solc' }]);
+      }
+      if (!answer.ok) throw runnerError(`${name}:external-roots`, `where PATH and solc lead could not be read (exit ${answer.exitCode})`);
+      external = answer.records;
+      uncoveredRoots.push(...externalRootProblems(external));
+    }
     if (uncoveredRoots.length) {
       throw new RequesterError([{
         code: 'IMAGE_WATCH_ROOT_UNCOVERED', path: '/spec/env/image',
@@ -1036,7 +1050,8 @@ class Watch {
     if (m.overflow) throw tooLarge(m.reason);
     // `path` and `realPath` are the forge every maker command runs, with the configuration hashed here (forgeArgv).
     this.ref = {
-      forgePath: parsed.forgePath, realPath: parsed.realPath, path: parsed.path, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config
+      forgePath: parsed.forgePath, realPath: parsed.realPath, path: parsed.path, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config,
+      externalAsked, external
     };
     // A forge that lives in the work tree runs after claim code only while its bytes are the reference's (R1-F3): the
     // reference must have hashed it, wherever it is.
@@ -1136,6 +1151,7 @@ class Watch {
     // The files first: forge runs (for its configuration) only once they are measured, and never when it is a file in
     // the work tree whose bytes the run changed (R1-F3): a replaced forge could restore what the listing would see.
     const listed = await this.compareFiles(ctx, name, label, first);
+    await this.compareExternalRoots(ctx, name, label);
     let runnable = true;
     if (this.ref.forgeEntry !== null) {
       // The executable's own entry, hashed in both listings and the same (never a set it might be skipped from).
@@ -1152,6 +1168,26 @@ class Watch {
     else if (p.exitCode !== 0) this.fail('framework', `${label}: forge config exited ${p.exitCode}${firstLine(p.stderr) ? `: ${firstLine(p.stderr)}` : ''}`);
     else if (!parsed.ok) this.fail('framework', `${label}: forge's configuration could not be read: ${parsed.reason}`);
     else if (parsed.configSha256 !== this.ref.configSha256) this.fail('framework', `${label}: forge's resolved configuration changed (\`forge config --json\`)`);
+  }
+
+  /**
+   * Where the PATH directories and solc on the read-only root lead, as at the
+   * reference (R16-F1, round 17). The way there can pass through a link a run
+   * can retarget, so the answer is watched like any other fact.
+   */
+  async compareExternalRoots(ctx, name, label) {
+    if (this.ref.externalAsked.length === 0) return;
+    const now = await readExternalRoots(ctx, `${name}:external-roots`, this.ref.externalAsked);
+    if (!now.ok) {
+      this.fail('framework', `${label}: where PATH and solc lead could not be read`);
+      return;
+    }
+    const before = new Map(this.ref.external);
+    const after = new Map(now.records);
+    const changed = [...new Set([...before.keys(), ...after.keys()])].filter((p) => before.get(p) !== after.get(p)).sort();
+    if (changed.length) {
+      this.fail('framework', `${label}: where PATH or solc leads changed: ${shown(changed, 3, ', ')}`, changed.map((p) => Buffer.from(p, 'utf8').toString('latin1')));
+    }
   }
 
   async compareFiles(ctx, name, label, first) {
