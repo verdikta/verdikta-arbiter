@@ -558,6 +558,37 @@ test('harness proof: a probe that does not finish within the default limits refu
   assert.match(r.facts.listing.refusals[0].detail, /harness:fails:forge-std:poc:1 ran past/);
 });
 
+test('harness proof: a probe whose steps each fit their limits but whose whole run, from its launch, passes runSeconds is refused (R3-F1)', async () => {
+  // The measurement is fast (defaults: buildSeconds 1, testSeconds 1, runSeconds 3 or 4); each probe sandbox takes
+  // 0.9 s to prepare, 0.9 s to build and 0.9 s a run: every step inside its own limit, the probe's run about 4.5 s.
+  let first = null;
+  let sb = null;
+  const slowInProbe = (answer) => async (d) => {
+    const c = containerOf(sb.docker.calls[sb.docker.calls.length - 1]);
+    first = first || c;
+    if (c !== first) await delay(900);
+    return answer(d);
+  };
+  const fail = (d, repo, p) => ({ exitCode: 1, stdout: junitOf([{ suite: `${p}:VerdiktaHarnessFails`, cases: [{ name: 'test_verdiktaHarnessFails()', failure: 'x: 1 != 2' }] }]) });
+  sb = listingSandbox({
+    scripts: { 'vcr-stage': slowInProbe(() => ({ stdout: 'vcr-git-entries 2\n' })) },
+    build: (d, kind) => (kind === null ? { exitCode: 0 } : delay(900).then(() => ({ exitCode: 0 }))),
+    probeRun: { failsForgeStd: (d, repo, p) => delay(900).then(() => fail(d, repo, p)) }
+  });
+  const r = await runListing(sb);
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.ok(r.facts.listing.limits.runSeconds <= 4 && r.facts.listing.limits.testSeconds === 1, JSON.stringify(r.facts.listing.limits));
+  assert.deepEqual(codes(r), ['HARNESS_TOO_SLOW'], show(r));
+  assert.match(r.facts.listing.refusals[0].detail, /stopped at runSeconds [34]: the probe's run, from its launch, did not fit/);
+  // No step passed its own limit: the probe's runSeconds stopped it.
+  for (const st of r.steps.filter((x) => x.name.startsWith('harness:') && x.outcome === 'definitive')) assert.ok(st.durationMs < 1000, st.name);
+});
+
+test('the probes without forge-std compile with any solc from 0.4.22 (revert reasons); the forge-std one needs forge-std\'s own 0.6.2 (R3-F2)', () => {
+  assert.ok(PROBES.failsForgeStd.lines.includes('pragma solidity >=0.6.2;'));
+  for (const p of [PROBES.failsPlain, PROBES.compileError, PROBES.setUpError]) assert.ok(p.lines.includes('pragma solidity >=0.4.22;'), p.name);
+});
+
 // ----------------------------- 4. the same isolation, limits and deadline rules
 
 test('the check runs under the class\'s limits, the spec\'s lower cpus and memory, and its own budget as runSeconds', () => {

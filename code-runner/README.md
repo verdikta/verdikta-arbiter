@@ -246,9 +246,12 @@ wildcards filled, each tried again with a number (`VerdiktaHarness2.t.sol`
 sandbox of its own (the previous one removed first): the claim pipeline's
 own functions (`claimSession` in `src/claim.js`: the forced checkout,
 `applies`, `testPathsOnly`, the protected reset, the commit) put it in
-place, and its `reproduces` gate judges it under the default limits.
+place, and its `reproduces` gate judges it under the default limits: each
+step within its own `buildSeconds` or `testSeconds`, and the probe's whole
+run, from its sandbox's launch, within `runSeconds`, as a claim's run is.
 Nothing the suite or an earlier probe left in a work tree, `$HOME` or `/tmp`
-reaches a probe:
+reaches a probe. The probes without forge-std need only solc 0.4.22 (revert
+reasons):
 
 | Probe | Expected |
 |---|---|
@@ -262,7 +265,7 @@ reason, or passed: non-reverting assertions, or `assertions_revert = false`;
 a PoC written with them would be an error), `HARNESS_ASSERTION_NOT_REPORTED`
 (the failing test was not an assertion on every run: `testFiles` does not run
 the PoC's files, or the result is flaky), `HARNESS_ERROR_NOT_REPORTED`,
-`HARNESS_TOO_SLOW` (a probe past the default limits), `HARNESS_NO_PATH`,
+`HARNESS_TOO_SLOW` (a probe step past its default limit, or a probe's run past `runSeconds`), `HARNESS_NO_PATH`,
 `HARNESS_PROBE_REJECTED`. A listing whose tests use `ds-test` directly,
 without forge-std, is proven with the plain revert only.
 

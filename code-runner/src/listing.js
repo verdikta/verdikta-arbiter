@@ -92,7 +92,13 @@ const SAFE_PATH = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
 const PROBE_STEM = 'VerdiktaHarness';
 /** forge's default `test` directory (foundry.toml `test = "test"`). */
 const FORGE_TEST_DIR = 'test';
-const PRAGMA = 'pragma solidity >=0.6.2;';
+/**
+ * The probes' pragmas: forge-std's own floor for the one that imports it;
+ * the oldest compiler with revert reasons for the others (R3-F2), which use
+ * nothing newer (a revert with a reason, pure functions, an undeclared name).
+ */
+const PRAGMA_FORGE_STD = 'pragma solidity >=0.6.2;';
+const PRAGMA_PLAIN = 'pragma solidity >=0.4.22;';
 
 /**
  * The harness probes: fixed sources, never the request's. `fails` uses the
@@ -104,7 +110,7 @@ const PROBES = Object.freeze({
     name: 'fails', variant: 'forge-std', build: true, contract: `${PROBE_STEM}Fails`, test: 'test_verdiktaHarnessFails()',
     lines: Object.freeze([
       '// SPDX-License-Identifier: MIT',
-      PRAGMA,
+      PRAGMA_FORGE_STD,
       'import {Test} from "forge-std/Test.sol";',
       `contract ${PROBE_STEM}Fails is Test {`,
       '    function test_verdiktaHarnessFails() public {',
@@ -117,7 +123,7 @@ const PROBES = Object.freeze({
     name: 'fails', variant: 'plain', build: true, contract: `${PROBE_STEM}Fails`, test: 'test_verdiktaHarnessFails()',
     lines: Object.freeze([
       '// SPDX-License-Identifier: MIT',
-      PRAGMA,
+      PRAGMA_PLAIN,
       `contract ${PROBE_STEM}Fails {`,
       '    function test_verdiktaHarnessFails() public pure {',
       '        revert("verdikta harness: a trivially failing test");',
@@ -130,7 +136,7 @@ const PROBES = Object.freeze({
     name: 'compileError', variant: null, build: false, contract: `${PROBE_STEM}CompileError`, test: 'test_verdiktaHarnessCompileError()',
     lines: Object.freeze([
       '// SPDX-License-Identifier: MIT',
-      PRAGMA,
+      PRAGMA_PLAIN,
       `contract ${PROBE_STEM}CompileError {`,
       '    function test_verdiktaHarnessCompileError() public pure {',
       '        verdiktaHarnessUndeclared();',
@@ -142,7 +148,7 @@ const PROBES = Object.freeze({
     name: 'setUpError', variant: null, build: true, contract: `${PROBE_STEM}SetUpError`, test: 'test_verdiktaHarnessSetUpError()',
     lines: Object.freeze([
       '// SPDX-License-Identifier: MIT',
-      PRAGMA,
+      PRAGMA_PLAIN,
       `contract ${PROBE_STEM}SetUpError {`,
       '    function setUp() public pure {',
       '        revert("verdikta harness: a trivially broken setUp");',
@@ -449,27 +455,39 @@ function ownTimeout(err, isStep) {
 /**
  * A context for the claim functions the check reuses: their gates and facts
  * stay in `gates` and `facts` (never the run's), and their steps are named
- * under `prefix`.
+ * under `prefix`. With `stopAt` (epoch ms), every step is also bounded by
+ * it, as a claim's steps are by its runSeconds: a step that the bound (not
+ * its own limit) stopped is named in `overBudget`.
  */
-function scoped(ctx, prefix = null) {
+function scoped(ctx, prefix = null, { stopAt = null } = {}) {
   const gates = {};
   const facts = {};
+  const scope = { gates, facts, overBudget: null, ctx: null };
   const named = (name) => (prefix && name ? `${prefix}:${name}` : name);
-  return {
-    gates,
-    facts,
-    ctx: {
-      ...ctx,
-      exec: (argv, o = {}) => ctx.exec(argv, { ...o, name: named(o.name || argv[0]) }),
-      readFile: (p, o = {}) => ctx.readFile(p, { ...o, name: named(o.name || `read:${p}`) }),
-      gate(name, status, basis, detail) {
-        gates[name] = makeGate(status, basis, detail);
-      },
-      fact(name, value) {
-        facts[name] = value;
-      }
+  const bounded = (run, fallback) => async (target, o = {}) => {
+    const name = named(o.name || fallback(target));
+    if (stopAt === null) return run(target, { ...o, name });
+    const left = Math.max(0, stopAt - Date.now());
+    const own = Number.isFinite(o.timeoutMs) ? o.timeoutMs : Infinity;
+    try {
+      return await run(target, { ...o, name, timeoutMs: Math.min(own, left) });
+    } catch (err) {
+      if (left < own && ownTimeout(err, (st) => st === name)) scope.overBudget = name;
+      throw err;
     }
   };
+  scope.ctx = {
+    ...ctx,
+    exec: bounded((argv, o) => ctx.exec(argv, o), (argv) => argv[0]),
+    readFile: bounded((p, o) => ctx.readFile(p, o), (p) => `read:${p}`),
+    gate(name, status, basis, detail) {
+      gates[name] = makeGate(status, basis, detail);
+    },
+    fact(name, value) {
+      facts[name] = value;
+    }
+  };
+  return scope;
 }
 
 /**
@@ -671,10 +689,13 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
    * The one in use is removed first, so there is never more than one: the
    * memory admitted for the run covers them.
    */
-  async function freshSandbox(ctx) {
+  async function closeCurrent(ctx) {
     if (state.sandbox) await state.sandbox.close();
     else await ctx.closeSandbox();
     state.sandbox = null;
+  }
+
+  async function freshSandbox(ctx) {
     state.sandbox = await ctx.openSandbox();
     return { ...ctx, exec: state.sandbox.exec, readFile: state.sandbox.readFile, sandboxName: state.sandbox.name };
   }
@@ -682,26 +703,37 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
   /**
    * One probe, run as a claim is: a fresh sandbox, the claim pipeline's
    * prepare (the forced checkout), the probe put in place as a PoC, then the
-   * claim's build and reproduces gate under the default limits.
+   * claim's build and reproduces gate under the default limits, the whole of
+   * it, from the launch on, within the default runSeconds (R3-F1), as a
+   * claim's run is held to it.
    */
-  async function runProbe(ctx, probe, path, probeLimits) {
+  async function runProbe(ctx, probe, path, probeLimits, runSeconds) {
     const prefix = `harness:${probe.name}${probe.variant ? `:${probe.variant}` : ''}`;
-    const scope = scoped(await freshSandbox(ctx), prefix);
+    await closeCurrent(ctx);
+    const t0 = Date.now();
+    const stopAt = t0 + runSeconds * 1000;
+    const scope = scoped(await freshSandbox(ctx), prefix, { stopAt });
     const session = claimSession({ spec, pocPatch: probePatch(path, probe.lines), baseline: out.baseline }, probeLimits);
     const steps = probe.build
       ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces']
       : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'reproduces'];
     let timedOut = null;
     for (const name of steps) {
-      if (session.state.done) break;
+      if (session.state.done || scope.overBudget) break;
       try {
         await session[name](scope.ctx);
       } catch (err) {
+        if (scope.overBudget) break;
         if (!ownTimeout(err, (s) => s === `${prefix}:build` || s.startsWith(`${prefix}:poc:`))) throw err;
-        timedOut = err.step;
+        timedOut = `${err.step} ran past the default limits`;
         break;
       }
     }
+    // The bound stopped a step (read first: a claim function may turn its own timeout into a gate), or the launch and
+    // the steps together ran past runSeconds.
+    const elapsed = Date.now() - t0;
+    if (scope.overBudget) timedOut = `${scope.overBudget} was stopped at runSeconds ${runSeconds}: the probe's run, from its launch, did not fit`;
+    else if (!timedOut && elapsed > runSeconds * 1000) timedOut = `the probe's run took ${seconds(elapsed)} s from its launch, past runSeconds ${runSeconds}`;
     return { probe, prefix, gates: scope.gates, facts: scope.facts, timedOut };
   }
 
@@ -712,7 +744,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     const test = poc ? poc.tests.find((t) => t.id === id) || null : null;
     const run1 = poc && poc.runs[0] ? poc.runs[0] : null;
     const base = { id, gates: r.gates, run1: run1 ? { junit: run1.junit, exitCode: run1.exitCode, reason: run1.reason, harnessErrors: run1.harnessErrors } : null, test };
-    if (r.timedOut) return { ...base, verdict: 'too_slow', detail: `${r.timedOut} ran past the default limits` };
+    if (r.timedOut) return { ...base, verdict: 'too_slow', detail: r.timedOut };
     for (const g of ['applies', 'testPathsOnly']) {
       if (r.gates[g] && r.gates[g].status === 'fail') return { ...base, verdict: 'rejected', detail: `${g}: ${r.gates[g].detail}` };
     }
@@ -743,14 +775,14 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     const probes = [];
     out.harness = { path, probes };
     const probe = async (p) => {
-      const r = await runProbe(ctx, p, path, probeLimits);
+      const r = await runProbe(ctx, p, path, probeLimits, d.runSeconds);
       const j = judge(r, path);
       probes.push({ name: p.name, variant: p.variant, verdict: j.verdict, detail: j.detail, test: j.id, gates: j.gates, run1: j.run1 });
       return j;
     };
     const slow = (j) => {
       if (j.verdict !== 'too_slow') return false;
-      refuse('HARNESS_TOO_SLOW', `a trivial test did not finish within the default limits (buildSeconds ${d.buildSeconds}, testSeconds ${d.testSeconds}): ${j.detail}`);
+      refuse('HARNESS_TOO_SLOW', `a trivial test did not finish within the default limits (buildSeconds ${d.buildSeconds}, testSeconds ${d.testSeconds}, runSeconds ${d.runSeconds}): ${j.detail}`);
       return true;
     };
     const rejected = (j) => {
