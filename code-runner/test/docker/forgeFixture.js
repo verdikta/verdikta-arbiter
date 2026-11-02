@@ -125,17 +125,19 @@ function vaultBaseline(baseCommit) {
   return { version: 1, baseCommit, framework: 'forge', runs: 3, tests: [{ id, results: ['pass', 'pass', 'pass'] }], stable: [id], unstable: [] };
 }
 
-const DOCKERFILE = (base, setup) => [
+const DOCKERFILE = (base, setup, { objectFormat = null, env = [] } = {}) => [
   `FROM ${base}`,
   'USER root',
   'COPY solc /opt/solc/solc',
   'COPY repo /repo',
   'RUN chmod 0755 /opt/solc/solc \\',
-  ' && cd /repo && git init -q -b main && git add -A \\',
+  ` && cd /repo && git init -q -b main${objectFormat ? ` --object-format=${objectFormat}` : ''} && git add -A \\`,
   ' && GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" \\',
   '    git -c user.name=fixture -c user.email=fixture@verdikta.invalid commit -q -m base \\',
   ...(setup ? [` && ${setup} \\`] : []),
   ' && chmod -R a+rX /repo',
+  // The image's own environment, set after the build so its commands do not see it.
+  ...env.map((e) => `ENV ${e}`),
   ''
 ].join('\n');
 
@@ -148,10 +150,13 @@ let built = 0;
  * @param {Record<string,string>} [o.files] - repository files (default VAULT_REPO)
  * @param {string} [o.toml] - extra foundry.toml lines (default profile)
  * @param {string} [o.setup] - a shell command run as root in /repo after the commit (git config, index flags, …)
+ * @param {string} [o.listed] - the ref whose commit is the listed one (default HEAD; a setup may move HEAD past it)
+ * @param {string} [o.objectFormat] - sha256 for a SHA-256 repository
+ * @param {string[]} [o.env] - `ENV` lines for the image's own environment
  * @param {string} o.instance - the test's instance id (names the image)
  * @returns {Promise<{image:string, baseCommit:string, remove:Function}>}
  */
-async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '', instance }) {
+async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '', listed = 'HEAD', objectFormat = null, env = [], instance }) {
   const base = foundryBase();
   await ensureImage(docker, base);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-fixture-'));
@@ -162,7 +167,7 @@ async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '',
     fs.writeFileSync(path.join(repo, rel), content);
   }
   fs.writeFileSync(path.join(dir, 'solc'), await solcBytes());
-  fs.writeFileSync(path.join(dir, 'Dockerfile'), DOCKERFILE(base, setup));
+  fs.writeFileSync(path.join(dir, 'Dockerfile'), DOCKERFILE(base, setup, { objectFormat, env }));
   built += 1;
   const tag = `vcr-fixture-${instance}:${built}`;
   const extraRefs = [];
@@ -176,10 +181,11 @@ async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '',
   try {
     const b = await runText(docker, ['build', '--quiet', '--network', 'none', '--platform', PLATFORM, '--tag', tag, dir], { timeoutMs: 600000 });
     assert.equal(b.exitCode, 0, `docker build: ${b.stderr}`);
-    const head = await runText(docker, ['run', '--rm', '--pull', 'never', '--network', 'none', '--platform', PLATFORM, '--user', '0', '--entrypoint', 'git', tag, '-C', '/repo', 'rev-parse', 'HEAD'], { timeoutMs: 120000 });
+    const head = await runText(docker, ['run', '--rm', '--pull', 'never', '--network', 'none', '--platform', PLATFORM, '--user', '0', '--entrypoint', '/usr/bin/env', tag,
+      '-i', 'PATH=/usr/bin:/bin', 'git', '-C', '/repo', 'rev-parse', '--verify', `${listed}^{commit}`], { timeoutMs: 120000 });
     assert.equal(head.exitCode, 0, head.stderr);
     const baseCommit = head.stdout.trim();
-    assert.match(baseCommit, /^[0-9a-f]{40}$/);
+    assert.match(baseCommit, objectFormat === 'sha256' ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{40}$/);
 
     // VCR_TEST_FIXTURE_REGISTRY=1 takes the registry path under the containerd store too.
     let image = process.env.VCR_TEST_FIXTURE_REGISTRY === '1' ? null : await localDigestRef(docker, tag);

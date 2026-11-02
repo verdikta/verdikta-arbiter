@@ -4,11 +4,12 @@
  * The claim pipeline for a forge listing (design §9.2 steps 3-6, §10.1:
  * `applies`, `testPathsOnly`, `build`, `reproduces`). Node A2a.
  *
- *   prepare   the env image's checkout (/repo) copied into the empty /work,
- *             its attributes neutralised (no filter or conversion runs), its
- *             index rebuilt from HEAD and checked to be the listed commit
- *             and clean, and the processes present before any claim code
- *             runs recorded
+ *   prepare   the processes present before any claim code runs recorded;
+ *             then the forced checkout (checkout.js): /work becomes the
+ *             listed commit, read from the env image's objects as data and
+ *             re-hashed by the runner, every tracked path replaced, in a
+ *             fresh repository with the runner's own settings; untracked
+ *             files (installed dependencies) stay as the image built them
  *   applies   maxPatchBytes and the 50 MB expansion from the patch's bytes;
  *             then git, in the sandbox, reads and applies it to the listed
  *             commit (index and work tree)
@@ -16,8 +17,9 @@
  *             touched: every one under paths.tests, none under
  *             paths.protected; the flags (existing tests modified, skip
  *             markers, framework or reporter references) from git's diff
- *   reset     protected paths back to the listed commit, then the result is
- *             committed with a fixed author and date
+ *   reset     protected paths back to the listed commit (the checkout's
+ *             commit of it), then the result is committed with a fixed
+ *             author and date
  *   build     the declared build command; its exit code is the gate (tier A)
  *   reproduces  the fixed schedule: testFiles on the PoC's files, then
  *             testIds twice on the tests run 1 found, each with --junit and
@@ -36,20 +38,41 @@
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
 const { matchesAny, pocPatchPathsGate } = require('./common');
-const { git, GIT_ENV, GIT_DIR, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
+const { git, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
+const { forceCheckout, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES } = require('./checkout');
 const forge = require('./forge');
 const { readForgeJUnit, JUNIT_MAX_BYTES } = require('./junit');
 const {
-  scanPatch, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, reportablePath
+  scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, reportablePath
 } = require('./patch');
 
-/** Where the env image keeps the repository checkout at the listed commit (README, "What the env image must provide"). */
-const IMAGE_CHECKOUT = '/repo';
 /** git's answers (paths, stats, the diff) are read up to this. */
 const GIT_OUTPUT_MAX = 16 * 1024 * 1024;
 const PREP_TIMEOUT_MS = 120000;
 const GIT_TIMEOUT_MS = 120000;
+/** The patch's own apply budget: a timeout here is the patch's fault, not the run's (§9.2 step 3, owner decision Q26). */
+const APPLY_TIMEOUT_MS = 90000;
 const CLEANUP_TIMEOUT_MS = 60000;
+/**
+ * The work tree (git.js WORK_TREE), and the free disk the apply needs beyond
+ * patchExpansionBytes before running out of it is charged to the patch. The
+ * margin covers git's own working files (loose objects, the index) besides
+ * the postimage bytes written.
+ */
+const WORK_TREE = '/work';
+const FREE_SPACE_MARGIN_BYTES = 64 * 1024 * 1024;
+/**
+ * Prints the work tree's free bytes as `vcr-free <bytes>`: GNU `stat -f` (free
+ * blocks x block size), falling back to `df` (POSIX 1K blocks) where statfs is
+ * not available. Both ship on the foundry base; one answers on every runtime
+ * (runc and gVisor). Memory is not read: running out of it while applying is
+ * an ordinary resource abstain (owner decision Q28), not the patch's fault.
+ */
+const FREE_SPACE_SCRIPT = [
+  `b=$(stat -f -c '%a %S' ${WORK_TREE} 2>/dev/null) && set -- $b && printf 'vcr-free %s\\n' "$(( $1 * $2 ))" && exit 0`,
+  `k=$(df -P -k ${WORK_TREE} 2>/dev/null | awk 'NR==2{print $4}') && [ -n "$k" ] && printf 'vcr-free %s\\n' "$(( k * 1024 ))" && exit 0`,
+  'exit 1'
+].join('\n');
 /** The fixed repeat schedule (§9.2 step 6): run 1 with testFiles, runs 2 and 3 with testIds. */
 const RUNS = 3;
 /** Lists in the facts keep the first entries in code-unit order (the report's bounds). */
@@ -117,63 +140,6 @@ const CLEANUP_SCRIPT = [
   'printf "killed %s\\n" "$killed"',
   'exit 3'
 ].join('\n');
-
-/**
- * Copies the checkout ($1) into the empty work tree, refuses a git directory
- * that points elsewhere, and writes the runner's attributes ($2) to
- * .git/info/attributes. A git directory must be self-contained: a symbolic
- * link in it, a `commondir` file (git then reads config, info/, refs and
- * objects from that other directory), object alternates or grafts could
- * leave the repository's metadata in the work tree, where a patched file
- * would stand in for its config or attributes. Exit 10: no checkout; 11: not
- * a git repository; 12: the copy failed; 13: the git directory points
- * elsewhere; 14: .git/info could not be written.
- */
-const CHECKOUT_SCRIPT = [
-  'set -u',
-  'src=$1',
-  '[ -d "$src" ] || exit 10',
-  '[ -d "$src/.git" ] && [ ! -L "$src/.git" ] || exit 11',
-  'cp -a -- "$src/." /work/ || exit 12',
-  'link=$(find /work/.git -type l -print -quit) || exit 13',
-  '[ -z "$link" ] || exit 13',
-  'for f in commondir objects/info/alternates objects/info/http-alternates info/grafts; do',
-  '  [ -e "/work/.git/$f" ] && exit 13',
-  'done',
-  'mkdir -p /work/.git/info && rm -f /work/.git/info/attributes && printf "%s\\n" "$2" > /work/.git/info/attributes || exit 14',
-  'exit 0'
-].join('\n');
-
-/**
- * The repository's highest-precedence attributes (§9.1: claim content never
- * runs outside the declared commands). Every path gets no filter driver (a
- * clean or smudge command, which a patched file could be), no diff, merge or
- * textconv driver, no line-ending or working-tree-encoding conversion and no
- * ident expansion: the work tree holds the commit's bytes and the patch's,
- * exactly, and git runs nothing of the repository's.
- */
-const NEUTRAL_ATTRIBUTES = '* !filter !diff !merge !text !eol !ident !working-tree-encoding';
-
-/**
- * Run by `git submodule foreach --recursive` in every submodule, before the
- * clean check: the superproject's rules for the submodule's own repository.
- * Its git directory must be self-contained (no commondir, alternates,
- * grafts or symbolic link: its info/attributes must be the one git reads),
- * its attributes are neutralised (a submodule's clean filter could map
- * changed bytes back to the committed blob), and its index is rebuilt from
- * its HEAD (no assume-unchanged or skip-worktree bit) and refreshed.
- */
-const SUBMODULE_INDEX_SCRIPT = [
-  'gd=$(git rev-parse --path-format=absolute --git-dir) && cdir=$(git rev-parse --path-format=absolute --git-common-dir) || exit 1',
-  '[ "$gd" = "$cdir" ] || exit 1',
-  'for f in commondir objects/info/alternates objects/info/http-alternates info/grafts; do [ -e "$gd/$f" ] && exit 1; done',
-  'link=$(find "$gd" -type l -print -quit) || exit 1',
-  '[ -z "$link" ] || exit 1',
-  `mkdir -p "$gd/info" && rm -f "$gd/info/attributes" && printf '%s\\n' '${NEUTRAL_ATTRIBUTES}' > "$gd/info/attributes" || exit 1`,
-  'git read-tree HEAD || exit 1',
-  'git update-index -q --refresh',
-  'exit 0'
-].join('; ');
 
 const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
@@ -243,6 +209,25 @@ function normaliseMessage(message) {
  * @param {object} limits - the effective limits
  * @returns {Function[]}
  */
+/**
+ * Why a failed `git apply` blames the patch (`input`, PATCH_EXPANSION) rather
+ * than the run, given the work tree's free space was confirmed first. Only the
+ * apply's own wall-clock budget is the patch here; running out of memory is an
+ * ordinary resource abstain (owner decision Q28, R20-F1), and the run's own
+ * deadline, budget or cancellation is not the patch either.
+ * @param {Abstain} abstain - the abstain ctx.exec threw for the apply step
+ * @param {number} applyTimeoutMs - the apply's own budget
+ * @returns {string|null} the gate detail when it is the patch, else null (rethrow to abstain)
+ */
+function applyFailureReason(abstain, applyTimeoutMs) {
+  // The step's own timer aborts with reason 'step'; the run's budget, deadline and cancel use other reasons. Both
+  // the step and the run budget map to STEP_TIMEOUT, so the apply's own timeout is told apart by its detail (result.js).
+  if (abstain.cause === ABSTAIN.STEP_TIMEOUT && /^the step reached its wall-clock limit/.test(abstain.detail || '')) {
+    return `poc.patch did not finish applying within ${Math.round(applyTimeoutMs / 1000)}s`;
+  }
+  return null;
+}
+
 function claimSteps(request, limits) {
   const issues = checkClaim(request);
   if (issues.length) return [async () => { throw new RequesterError(issues); }];
@@ -252,12 +237,12 @@ function claimSteps(request, limits) {
   const testGlobs = spec.paths.tests;
   const protectedGlobs = spec.paths.protected || [];
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
-  const state = { done: false, keep: [], touched: null, pocCommit: null, leftovers: [] };
+  const state = { done: false, keep: [], touched: null, prepared: null, pocCommit: null, leftovers: [] };
 
   /** Run a git command and read its stdout (capped); definitive or it throws. */
   async function gitRead(ctx, name, args, { stdin, env } = {}) {
     const out = new Prefix(GIT_OUTPUT_MAX);
-    const record = await ctx.exec(git(args), { name, timeoutMs: GIT_TIMEOUT_MS, stdin, env: { ...GIT_ENV, ...(env || {}) }, tee: out });
+    const record = await ctx.exec(git(args, { env }), { name, timeoutMs: GIT_TIMEOUT_MS, stdin, tee: out });
     return { record, out };
   }
 
@@ -284,103 +269,84 @@ function claimSteps(request, limits) {
     state.keep = procs.bytes().toString('utf8').split('\n').filter((l) => /^[0-9]+$/.test(l));
     if (state.keep.length === 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox\'s processes could not be listed', { step: 'prepare:procs' });
 
-    const copy = await ctx.exec(['/bin/sh', '-c', CHECKOUT_SCRIPT, 'vcr-checkout', IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES], { name: 'prepare:checkout', timeoutMs: PREP_TIMEOUT_MS });
-    const image = '/spec/env/image';
-    switch (copy.exitCode) {
-      case 0: break;
-      case 10: throw new RequesterError([issue('IMAGE_CHECKOUT_MISSING', image, `the env image has no repository checkout at ${IMAGE_CHECKOUT}`)]);
-      case 11: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `${IMAGE_CHECKOUT} in the env image is not a git repository`)]);
-      case 12: throw new RequesterError([issue('IMAGE_CHECKOUT_UNREADABLE', image,
-        `the checkout could not be copied into the work tree as uid 10001 (unreadable, or larger than the work tree): ${firstLine(copy.stderr.text)}`)]);
-      case 13: throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-        `${IMAGE_CHECKOUT}/.git points elsewhere (a symbolic link, commondir, object alternates or grafts); the git directory must be self-contained`)]);
-      case 14: throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `.git/info in the copied checkout could not be written: ${firstLine(copy.stderr.text)}`)]);
-      default: throw new Abstain(ABSTAIN.DOCKER_ERROR, `the checkout copy exited ${copy.exitCode}`, { step: 'prepare:checkout' });
-    }
-
-    // And git agrees: its git directory and common directory are /work/.git.
-    const dirs = await gitRead(ctx, 'prepare:gitdir', ['rev-parse', '--path-format=absolute', '--git-dir', '--git-common-dir']);
-    if (dirs.record.exitCode !== 0 || dirs.out.bytes().toString('utf8') !== `${GIT_DIR}\n${GIT_DIR}\n`) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-        `git does not keep the checkout's repository in its own .git: ${firstLine(dirs.out.bytes().toString('utf8') + dirs.record.stderr.text).slice(0, 200)}`)]);
-    }
-    const head = await gitRead(ctx, 'prepare:head', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
-    if (head.record.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `HEAD of the env image's checkout is not a commit: ${firstLine(head.record.stderr.text)}`)]);
-    }
-    const headCommit = head.out.bytes().toString('utf8').trim();
-    if (headCommit !== base) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_MISMATCH', '/spec/baseCommit', `the env image's checkout is at ${headCommit.slice(0, 64)}, not the listed commit ${base}`)]);
-    }
-    // The copied index is the image's: it could mark a changed file
-    // assume-unchanged or skip-worktree, and git status would then call it
-    // clean. Rebuild it from HEAD, in the repository and in every submodule,
-    // and refresh it, so git compares every tracked file's bytes with the
-    // commit's (refresh's exit code says only that some file needed it).
-    const index = await ctx.exec(git(['read-tree', 'HEAD']), { name: 'prepare:index', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
-    if (index.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `the checkout's index could not be rebuilt from HEAD: ${firstLine(index.stderr.text)}`)]);
-    }
-    const subs = await ctx.exec(git(['submodule', 'foreach', '--quiet', '--recursive', SUBMODULE_INDEX_SCRIPT]), {
-      name: 'prepare:submodules', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV
-    });
-    if (subs.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_GIT_REDIRECT', image,
-        `a submodule's repository is not self-contained or its index could not be rebuilt from its HEAD: ${firstLine(subs.stderr.text)}`)]);
-    }
-    await ctx.exec(git(['update-index', '-q', '--refresh']), { name: 'prepare:refresh', timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
-    // Untracked and ignored files may be there (installed dependencies, also
-    // inside submodules); tracked files, and submodules' commits and tracked
-    // files, must be the listed commit's.
-    const status = await gitRead(ctx, 'prepare:status', ['status', '--porcelain=v1', '-z', '--untracked-files=no', '--ignore-submodules=untracked']);
-    if (status.record.exitCode !== 0) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_NOT_GIT', image, `git status failed on the env image's checkout: ${firstLine(status.record.stderr.text)}`)]);
-    }
-    const dirty = status.out.bytes().toString('utf8').split('\0').filter(Boolean).map((e) => e.slice(3));
-    if (dirty.length || status.out.truncated) {
-      throw new RequesterError([issue('IMAGE_CHECKOUT_DIRTY', image,
-        `the env image's checkout differs from the listed commit in ${listPaths(dirty)}; tracked files must be the commit's`)]);
-    }
+    // Before any claim code runs: /work is the listed commit (checkout.js).
+    const checkout = await forceCheckout(ctx, { base });
+    state.prepared = checkout.commit;
     ctx.fact('commit', { base, poc: null });
+  }
+
+  /** The work tree's free bytes before the apply (its own value is definitive or it throws). */
+  async function freeBytes(ctx) {
+    const out = new Prefix(256);
+    const record = await ctx.exec(['/bin/sh', '-c', FREE_SPACE_SCRIPT, 'vcr-freespace'], { name: 'patch:space', timeoutMs: GIT_TIMEOUT_MS, tee: out });
+    const m = /vcr-free ([0-9]+)/.exec(out.bytes().toString('utf8'));
+    if (record.exitCode !== 0 || !m) throw runnerError('patch:space', `the work tree's free space could not be read (exit ${record.exitCode})`);
+    return Number(m[1]);
   }
 
   async function applies(ctx) {
     const scan = scanPatch(request.pocPatch, limits);
-    ctx.fact('patch', { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: scan.expansionBytes, binaryHunks: scan.binaryHunks });
+    const patchFact = { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: null };
+    ctx.fact('patch', patchFact);
     if (!scan.ok) {
       ctx.gate('applies', 'fail', 'input', scan.reason);
       state.done = true;
       return;
     }
-    const parsed = await gitRead(ctx, 'patch:read', ['apply', '--numstat', '-z', '--whitespace=nowarn', '-'], { stdin: request.pocPatch });
-    if (parsed.record.exitCode !== 0) {
-      ctx.gate('applies', 'fail', 'exit_code', `git could not read poc.patch (exit ${parsed.record.exitCode}): ${firstLine(parsed.record.stderr.text)}`);
-      state.done = true;
+    const failExpansion = (reason) => { ctx.fact('patch', { ...patchFact }); ctx.gate('applies', 'fail', 'input', reason); state.done = true; };
+
+    // The measurement needs disk room to write patchExpansionBytes; without it, the image's checkout and dependencies
+    // left too little, which is the requester's package, not the hunter's patch (owner decision Q26).
+    const need = limits.patchExpansionBytes + FREE_SPACE_MARGIN_BYTES;
+    const free = await freeBytes(ctx);
+    if (free < need) {
+      throw new RequesterError([issue('IMAGE_WORKDIR_FULL', '/spec/env/image',
+        `the env image's checkout and installed dependencies leave only ${free} bytes free in the work tree; a claim needs room to write up to ${limits.patchExpansionBytes} (patchExpansionBytes) plus a ${FREE_SPACE_MARGIN_BYTES}-byte margin`)]);
+    }
+
+    // git applies the patch in the sandbox, in the runner's own repository, under its memory, pids and space limits
+    // and the apply's own time budget. Running out of the confirmed disk room, or the budget, is the patch's fault;
+    // running out of memory is an ordinary resource abstain (owner decision Q28), not an input refusal.
+    let applied;
+    try {
+      applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), {
+        name: 'patch:apply', timeoutMs: APPLY_TIMEOUT_MS, stdin: request.pocPatch
+      });
+    } catch (err) {
+      const reason = err instanceof Abstain ? applyFailureReason(err, APPLY_TIMEOUT_MS) : null;
+      if (!reason) throw err; // an OOM, or the run's own abort: a genuine abstain.
+      failExpansion(`${reason}; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`);
       return;
     }
-    const entries = parsed.out.truncated ? null : parseNumstatZ(parsed.out.bytes());
-    if (!entries) throw runnerError('patch:read', 'git\'s reading of poc.patch could not be parsed');
-    // git holds the result of every entry in memory before it writes; one
-    // file patched many times over would multiply a large file. git diff
-    // never writes a patch like that.
-    const seen = new Set();
-    for (const e of entries) {
-      if (seen.has(e.path)) {
-        ctx.gate('applies', 'fail', 'exit_code', `poc.patch changes ${e.path.slice(0, 300)} more than once`);
-        state.done = true;
+    if (applied.exitCode !== 0) {
+      // ENOSPC with the room confirmed above is the patch overrunning the work tree, not a full image.
+      if (/No space left on device|Disk quota exceeded/.test(applied.stderr.text)) {
+        failExpansion(`poc.patch filled the work tree as git applied it; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`);
         return;
       }
-      seen.add(e.path);
-    }
-    const applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), {
-      name: 'patch:apply', timeoutMs: GIT_TIMEOUT_MS, stdin: request.pocPatch, env: GIT_ENV
-    });
-    if (applied.exitCode !== 0) {
       ctx.gate('applies', 'fail', 'exit_code', `poc.patch does not apply to the listed commit ${base} (exit ${applied.exitCode}): ${firstLine(applied.stderr.text)}`);
       state.done = true;
       return;
     }
-    ctx.gate('applies', 'pass', 'exit_code', `poc.patch applies to the listed commit ${base}`);
+
+    // Measure what git wrote: the postimage bytes of every path the patch created or modified, from the runner's index.
+    const raw = await gitRead(ctx, 'patch:measure', ['diff', '--cached', '--raw', '-z', '--no-renames', '--abbrev=' + base.length, 'HEAD', '--']);
+    const parsed = raw.record.exitCode === 0 && !raw.out.truncated ? parseRawZ(raw.out.bytes(), base.length) : null;
+    if (!parsed || !parsed.ok) throw runnerError('patch:measure', `the paths poc.patch wrote could not be read: ${parsed ? parsed.reason : `git exited ${raw.record.exitCode}`}`);
+    let written = 0;
+    if (parsed.ids.length) {
+      const sizes = await gitRead(ctx, 'patch:sizes', ['cat-file', '--batch-check=%(objectsize)'], { stdin: Buffer.from(parsed.ids.map((id) => `${id}\n`).join('')) });
+      const total = sizes.record.exitCode === 0 && !sizes.out.truncated ? sumObjectSizes(sizes.out.bytes().toString('utf8'), parsed.ids.length) : null;
+      if (total === null) throw runnerError('patch:sizes', `the sizes poc.patch wrote could not be read (git exited ${sizes.record.exitCode})`);
+      written = total;
+    }
+    patchFact.expansionBytes = written;
+    ctx.fact('patch', { ...patchFact });
+    if (written > limits.patchExpansionBytes) {
+      failExpansion(`poc.patch wrote ${written} bytes across ${parsed.paths} path${parsed.paths === 1 ? '' : 's'}; the class allows ${limits.patchExpansionBytes} (patchExpansionBytes)`);
+      return;
+    }
+    ctx.gate('applies', 'pass', 'exit_code', `poc.patch applies to the listed commit ${base} and writes ${written} bytes`);
   }
 
   async function testPathsOnly(ctx) {
@@ -442,19 +408,23 @@ function claimSteps(request, limits) {
   }
 
   async function resetAndCommit(ctx) {
-    const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', base]);
+    // The listed commit's files as the checkout committed them (submodules' files as ordinary paths).
+    const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', state.prepared]);
     const all = tree.record.exitCode === 0 && !tree.out.truncated ? parseLsTreeZ(tree.out.bytes()) : null;
     if (!all) throw runnerError('reset:list', `the listed commit's files could not be listed (git exited ${tree.record.exitCode})`);
-    const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(p, protectedGlobs)) : [];
+    // Each path is latin1 (one char per byte). The glob is matched on the path's UTF-8 decoding, so a UTF-8 filename
+    // matches the same way the path gate (testPathsOnly) matches it (R23-F1); the literal pathspec is written back as
+    // the original bytes (R22-F1). A non-UTF-8 byte decodes to U+FFFD in both, so they still agree.
+    const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(Buffer.from(p, 'latin1').toString('utf8'), protectedGlobs)) : [];
     if (protectedFiles.length) {
-      const reset = await ctx.exec(git(['checkout', base, '--pathspec-from-file=-', '--pathspec-file-nul']), {
-        name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0')), env: { ...GIT_ENV, GIT_LITERAL_PATHSPECS: '1' }
+      const reset = await ctx.exec(git(['checkout', state.prepared, '--pathspec-from-file=-', '--pathspec-file-nul'], { env: { GIT_LITERAL_PATHSPECS: '1' } }), {
+        name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0'), 'latin1')
       });
       if (reset.exitCode !== 0) throw runnerError('reset:protected', `the protected paths could not be reset: ${firstLine(reset.stderr.text)}`);
     }
     ctx.fact('protectedReset', protectedFiles.length);
-    const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', COMMIT_MESSAGE]), {
-      name: 'patch:commit', timeoutMs: GIT_TIMEOUT_MS, env: { ...GIT_ENV, ...COMMIT_ENV }
+    const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', COMMIT_MESSAGE], { env: COMMIT_ENV }), {
+      name: 'patch:commit', timeoutMs: GIT_TIMEOUT_MS
     });
     if (commit.exitCode !== 0) throw runnerError('patch:commit', `the patched tree could not be committed: ${firstLine(commit.stderr.text)}`);
     const head = await gitRead(ctx, 'patch:head', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
@@ -523,7 +493,7 @@ function claimSteps(request, limits) {
     if (ids.length > 0) {
       const TEST_IDS = forge.testIdsRegex([...signatures.values()]);
       for (let k = 2; k <= RUNS; k += 1) {
-        const reset = await ctx.exec(git(['reset', '--quiet', '--hard', state.pocCommit]), { name: `poc:reset:${k}`, timeoutMs: GIT_TIMEOUT_MS, env: GIT_ENV });
+        const reset = await ctx.exec(git(['reset', '--quiet', '--hard', state.pocCommit]), { name: `poc:reset:${k}`, timeoutMs: GIT_TIMEOUT_MS });
         if (reset.exitCode !== 0) throw runnerError(`poc:reset:${k}`, `the work tree could not be reset to the PoC commit: ${firstLine(reset.stderr.text)}`);
         runs.push({ command: 'testIds', ...(await pocRun(ctx, k, spec.commands.testIds, { FILES, TEST_IDS })) });
       }
@@ -633,6 +603,4 @@ function pocFacts(entries, runs) {
   };
 }
 
-module.exports = {
-  claimSteps, checkClaim, IMAGE_CHECKOUT, PROCS_SCRIPT, CLEANUP_SCRIPT, CHECKOUT_SCRIPT, NEUTRAL_ATTRIBUTES, SUBMODULE_INDEX_SCRIPT, RUNS
-};
+module.exports = { claimSteps, checkClaim, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS, FREE_SPACE_SCRIPT, RUNS };

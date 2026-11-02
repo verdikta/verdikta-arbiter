@@ -1,6 +1,25 @@
 /**
+ * Controls a code-mode juror call passes to `generateResponse` (design §10.3,
+ * §11). Text mode passes none of them, and a provider that is given none
+ * behaves exactly as before.
+ */
+export interface CallControlOptions {
+  /** Aborts the provider request. The caller owns the deadline: no provider timer applies. */
+  signal?: AbortSignal;
+  /** Output-token ceiling: the code class envelope's juror output. */
+  maxTokens?: number;
+  /** Reasoning effort for a frontier juror (code mode sends 'high'). */
+  effort?: 'low' | 'medium' | 'high';
+}
+
+/** true when a call carries any code-mode control. */
+export function hasCallControls(options?: CallControlOptions | null): boolean {
+  return !!options && (options.signal !== undefined || options.maxTokens !== undefined || options.effort !== undefined);
+}
+
+/**
  * LLMProvider Interface
- * 
+ *
  * This interface defines the contract for Language Model (LLM) providers.
  * It specifies the methods that must be implemented by any class that
  * wants to serve as an LLM provider in the application.

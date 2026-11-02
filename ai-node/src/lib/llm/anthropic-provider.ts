@@ -8,10 +8,12 @@ import {
   SAMPLING_FREE_PARAMS,
   acceptsSamplingParams,
   anthropicChatParams,
+  anthropicControlParams,
   extractTextContent,
   isSamplingParamRejection,
 } from './anthropic-request-params';
 import { attachmentRequestError } from './attachment-errors';
+import { CallControlOptions } from './llm-provider-interface';
 import { WebAccessOption, anthropicModelSupportsWebTools, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
 import { WebRetrieval, WebRetrievalListener, summarizeAnthropicWebBlocks, webToolsOff } from './web-retrieval';
 
@@ -53,7 +55,7 @@ export class AnthropicProvider implements LLMProvider {
     return modelInfo ? modelInfo.supportsImages : false;
   }
 
-  async generateResponse(prompt: string, model: string, options?: WebAccessOption): Promise<string> {
+  async generateResponse(prompt: string, model: string, options?: WebAccessOption & CallControlOptions): Promise<string> {
     if (!this.apiKey) {
       throw new Error('ANTHROPIC_API_KEY is not set');
     }
@@ -61,7 +63,7 @@ export class AnthropicProvider implements LLMProvider {
       const answer = await this.tryWebTools(model, [{ type: 'text', text: withWebAccessNote(prompt) }], options?.onWebRetrieval);
       if (answer !== null) return answer;
     }
-    return this.invokeText(model, prompt);
+    return this.invokeText(model, prompt, options);
   }
 
   private createChat(model: string, params: AnthropicChatParams): ChatAnthropic {
@@ -82,17 +84,22 @@ export class AnthropicProvider implements LLMProvider {
    * rules), the call is retried once without any — so a parameter we do not need
    * can never take a jury member down.
    */
-  private async invokeText(model: string, input: ChatInput): Promise<string> {
-    const params = anthropicChatParams(model);
+  private async invokeText(model: string, input: ChatInput, controls?: CallControlOptions): Promise<string> {
+    // Code mode (controls given): the envelope's max tokens, effort, and an AbortSignal
+    // that cancels the HTTP request (LangChain hands call-option signals to the SDK).
+    const controlParams = anthropicControlParams(model, controls);
+    const params = { ...anthropicChatParams(model), ...controlParams };
+    const invoke = (chat: ChatAnthropic) =>
+      controls?.signal ? chat.invoke(input, { signal: controls.signal }) : chat.invoke(input);
     try {
-      const response = await this.createChat(model, params).invoke(input);
+      const response = await invoke(this.createChat(model, params));
       return extractTextContent(response.content);
     } catch (error: any) {
       if (params.temperature === undefined || !isSamplingParamRejection(error)) {
         throw error;
       }
       console.warn(`[${this.providerName}] ${model} rejected a sampling parameter (${error.message}); retrying without sampling parameters`);
-      const response = await this.createChat(model, { ...SAMPLING_FREE_PARAMS }).invoke(input);
+      const response = await invoke(this.createChat(model, { ...SAMPLING_FREE_PARAMS, ...controlParams }));
       return extractTextContent(response.content);
     }
   }

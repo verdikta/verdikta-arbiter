@@ -1,177 +1,119 @@
 'use strict';
 
 /**
- * poc.patch on the host side, without applying it (design §9.1: git apply
- * runs only inside the container). Two kinds of code live here:
+ * poc.patch on the host side (design §9.1: git apply runs only inside the
+ * container). Two kinds of code live here:
  *
- * 1. scanPatch: the request's own bytes, before git sees them. maxPatchBytes,
- *    and the 50 MB expansion: what git would have to materialise to apply
- *    the patch. git inflates every binary hunk (forward and reverse) to the
- *    size its header declares as it parses the patch, and holds every result
- *    in memory before it writes, so a 60 KB patch can declare 60 MB of zeros
- *    (a compression bomb). The scan is a superset of what git reads: it
- *    counts every `literal`/`delta` line at its declared size (read as git's
- *    strtoul reads it, sign included), a forward delta's target at the size
- *    its header declares, every added text line, and refuses copies (a copy
- *    rebuilds a whole existing file from one header line, so the patch's
- *    bytes do not bound it). Whatever git would accept, the count is at least
- *    what git would allocate for it.
+ * 1. scanPatch: the request's own bytes, before git sees them. The checks
+ *    that do not depend on parsing the patch's meaning: maxPatchBytes, no NUL
+ *    byte, no copy or rename header (each rebuilds a whole existing file from
+ *    one header line, so the patch's bytes do not bound what git writes, and
+ *    git apply's numstat names only the destinations), and no binary change
+ *    (owner decision Q28: a PoC adds or edits text test files; a binary
+ *    postimage can name an existing object whose size the patch's bytes do
+ *    not bound). What an accepted (text) patch writes is still measured after
+ *    git applies it in the sandbox (claim.js, the applies step, owner
+ *    decision Q26: "measure instead").
  *
- * 2. Readers of git's own answers (`-z` outputs, the -U0 diff), which come
- *    back from the sandbox as bytes. They never interpret the patch
- *    themselves: what the patch touches is what git, inside the sandbox,
- *    says it touched.
+ * 2. Readers of git's own answers (`-z` outputs, the -U0 diff, the raw diff),
+ *    which come back from the sandbox as bytes. They never interpret the
+ *    patch themselves: what the patch touches, and how large its result is,
+ *    is what git, inside the sandbox, says.
  */
 
 const crypto = require('node:crypto');
-const zlib = require('node:zlib');
 
-/** git's base85 alphabet (base85.c). */
-const B85 = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz!#$%&()*+-;<=>?@^_`{|}~';
-const B85_VALUE = new Map([...B85].map((c, i) => [c.charCodeAt(0), i]));
-
-/** One line of a git binary hunk: a length character (A-Z = 1-26, a-z = 27-52), then base85 groups. */
-function decodeBase85Line(line) {
-  if (typeof line !== 'string' || line.length < 6) return null;
-  const c = line.charCodeAt(0);
-  let len;
-  if (c >= 65 && c <= 90) len = c - 64;
-  else if (c >= 97 && c <= 122) len = c - 96 + 26;
-  else return null;
-  const groups = Math.ceil(len / 4);
-  if (line.length !== 1 + groups * 5) return null;
-  const out = Buffer.alloc(groups * 4);
-  for (let g = 0; g < groups; g += 1) {
-    let acc = 0;
-    for (let k = 0; k < 5; k += 1) {
-      const v = B85_VALUE.get(line.charCodeAt(1 + g * 5 + k));
-      if (v === undefined) return null;
-      acc = acc * 85 + v;
-    }
-    if (acc > 0xffffffff) return null;
-    out.writeUInt32BE(acc, g * 4);
-  }
-  return out.subarray(0, len);
-}
-
-/** The inverse, for tests and fixtures (at most 52 bytes per line, as git writes them). */
-function encodeBase85Line(bytes) {
-  if (!Buffer.isBuffer(bytes) || bytes.length < 1 || bytes.length > 52) throw new RangeError('1 to 52 bytes per line');
-  const len = bytes.length;
-  const head = len <= 26 ? String.fromCharCode(64 + len) : String.fromCharCode(96 + len - 26);
-  const padded = Buffer.alloc(Math.ceil(len / 4) * 4);
-  bytes.copy(padded);
-  let out = head;
-  for (let g = 0; g < padded.length; g += 4) {
-    let acc = padded.readUInt32BE(g);
-    const chars = [];
-    for (let k = 0; k < 5; k += 1) {
-      chars.unshift(B85[acc % 85]);
-      acc = Math.floor(acc / 85);
-    }
-    out += chars.join('');
-  }
-  return out;
-}
+/** The header lines git reads as a rename (apply.c's table: rename from/to, and the older rename old/new). */
+const RENAME_HEADERS = Object.freeze(['rename from ', 'rename to ', 'rename old ', 'rename new ']);
 
 /**
- * strtoul(…, 10) as git calls it on a binary hunk's size: leading white
- * space, an optional sign, decimal digits; no digits read as 0. A negative
- * value wraps to a huge unsigned one, and anything past 2^53 is far over any
- * limit, so both read as Number.MAX_SAFE_INTEGER.
- */
-function declaredSize(rest) {
-  const m = /^[ \t\n\v\f\r]*([+-]?)([0-9]*)/.exec(rest);
-  const digits = m[2].replace(/^0+(?=[0-9])/, '');
-  if (!digits || /^0+$/.test(digits)) return 0;
-  if (m[1] === '-' || digits.length > 15) return Number.MAX_SAFE_INTEGER;
-  return Number(digits);
-}
-
-/** A git delta's header: two little-endian base-128 varints, the source and target sizes. */
-function deltaTargetSize(data) {
-  let out;
-  try {
-    // At most the first 4 KiB of compressed data: enough for the header,
-    // and its output is bounded however well it compresses.
-    out = zlib.inflateSync(data.subarray(0, 4096), { finishFlush: zlib.constants.Z_SYNC_FLUSH });
-  } catch (_) {
-    return null;
-  }
-  let pos = 0;
-  const varint = () => {
-    let value = 0;
-    let scale = 1;
-    for (;;) {
-      if (pos >= out.length || scale > 2 ** 56) return null;
-      const b = out[pos++];
-      value += (b & 0x7f) * scale;
-      scale *= 128;
-      if (!(b & 0x80)) return value;
-    }
-  };
-  const source = varint();
-  if (source === null) return null;
-  return varint();
-}
-
-/**
- * The host-side checks of poc.patch (the `applies` gate's input part).
+ * The host-side checks of poc.patch (part of the `applies` gate's `input`
+ * basis), without parsing what the patch means. What an accepted text patch
+ * writes is not counted here; it is measured after the patch is applied.
  * @param {Buffer} bytes
- * @param {{maxPatchBytes:number, patchExpansionBytes:number}} limits
- * @returns {{ok:boolean, code?:string, reason?:string, bytes:number, sha256:string, expansionBytes:number, binaryHunks:number}}
+ * @param {{maxPatchBytes:number}} limits
+ * @returns {{ok:boolean, code?:string, reason?:string, bytes:number, sha256:string}}
  */
-function scanPatch(bytes, { maxPatchBytes, patchExpansionBytes }) {
-  const base = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex'), expansionBytes: 0, binaryHunks: 0 };
+function scanPatch(bytes, { maxPatchBytes }) {
+  const base = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
   const fail = (code, reason) => ({ ...base, ok: false, code, reason });
   if (bytes.length > maxPatchBytes) {
     return fail('PATCH_TOO_LARGE', `poc.patch is ${bytes.length} bytes; the listing allows ${maxPatchBytes} (maxPatchBytes)`);
   }
-  // latin1: one character per byte, so lengths are byte counts.
+  // Round 19: git reads a header field as a C string, so a NUL ends it where a byte scan would not. No patch git
+  // writes holds one (binary content is base85), so any NUL is refused before git sees the patch.
+  if (bytes.includes(0)) {
+    return fail('PATCH_NUL', 'poc.patch holds a NUL byte: no patch git writes does (binary content is base85), and git reads a header field only up to one');
+  }
   const lines = bytes.toString('latin1').split('\n');
-  let expansion = 0;
-  for (let i = 0; i < lines.length && expansion <= patchExpansionBytes; i += 1) {
+  for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i].replace(/\r$/, '');
-    const c = line.charCodeAt(0);
-    if (c === 43 /* + */) {
-      expansion += lines[i].length; // the line without its '+', plus its newline
-      continue;
-    }
     if (line.startsWith('copy from ') || line.startsWith('copy to ')) {
       return fail('PATCH_COPY', 'poc.patch copies a file (a "copy from" header): a copy rebuilds a whole existing file from one line, so its size is not bounded by the patch; a PoC adds or edits test files');
     }
-    if (line === 'GIT binary patch') {
-      base.binaryHunks += 1;
-      continue;
+    // R15-F1: git reloads a rename's source for every rename of it, so one file renamed to many names multiplies it,
+    // and git apply's numstat names only the destinations. Every header form git reads (apply.c: rename from/to, and
+    // the old rename old/new) is refused, like a copy; a moved file is a deletion and an addition (git diff --no-renames).
+    if (RENAME_HEADERS.some((h) => line.startsWith(h))) {
+      return fail('PATCH_RENAME', 'poc.patch renames a file (a "rename from" header): git rebuilds a renamed file from the existing one, once for every rename of it, so the patch does not bound what it writes; a PoC adds or edits test files (write it with git diff --no-renames)');
     }
-    // git parses a binary patch's forward and reverse hunks and inflates
-    // each to its declared size while it reads the patch (even for
-    // --numstat): every literal and delta line counts, wherever it is.
-    const literal = line.startsWith('literal ');
-    if (!literal && !line.startsWith('delta ')) continue;
-    expansion += declaredSize(line.slice(literal ? 8 : 6));
-    if (!literal && i > 0 && lines[i - 1].replace(/\r$/, '') === 'GIT binary patch') {
-      // A forward delta also rebuilds its target, at the size its header declares.
-      const data = [];
-      for (let j = i + 1; j < lines.length; j += 1) {
-        const l = lines[j].replace(/\r$/, '');
-        if (l === '') break;
-        const decoded = decodeBase85Line(l);
-        if (!decoded) break;
-        data.push(decoded);
-      }
-      const target = data.length ? deltaTargetSize(Buffer.concat(data)) : null;
-      if (target === null) {
-        return fail('PATCH_BINARY_UNREADABLE', 'poc.patch has a binary delta whose target size cannot be read');
-      }
-      expansion += target;
+    // Q28: a PoC adds or edits text test files. A binary change (git's `GIT binary patch`, or a no-`--binary`
+    // `Binary files … differ` / `Files … differ` summary) can name an existing object as its postimage, whose size
+    // the patch's bytes do not bound; it is refused before git sees it. A header line, never an added `+`/context line.
+    if (line === 'GIT binary patch' || line.startsWith('Binary files ') || line.startsWith('Files ')) {
+      return fail('PATCH_BINARY', 'poc.patch makes a binary change (a "GIT binary patch" or "Binary files … differ" entry): a PoC adds or edits text test files, and a binary postimage can name an existing object the patch does not bound');
     }
-  }
-  base.expansionBytes = expansion;
-  if (expansion > patchExpansionBytes) {
-    return fail('PATCH_EXPANSION', `poc.patch would expand to at least ${expansion} bytes; the class allows ${patchExpansionBytes} (patchExpansionBytes)`);
   }
   return { ...base, ok: true };
+}
+
+/**
+ * The bytes git materialised applying the patch, measured from the runner's
+ * own index: `git diff --cached --raw -z --no-renames HEAD` names every
+ * touched path and its postimage object. Each created or modified regular or
+ * executable file (not a deletion, not a gitlink) contributes its staged
+ * blob's size, counted once per path — so a blob reused at many paths counts
+ * at every path, as git wrote it. Parses the raw `-z` records; `sizes` maps
+ * each postimage id to its size (`git cat-file --batch-check`).
+ * @param {Buffer} rawZ - `git diff --cached --raw -z` output
+ * @param {string} hexLen - the id length of the repository (40 or 64)
+ * @returns {{ok:true, ids:string[], paths:number} | {ok:false, reason:string}}
+ */
+function parseRawZ(rawZ, hexLen) {
+  const fields = zFields(rawZ);
+  if (fields === null) return { ok: false, reason: 'the raw diff did not end with a NUL' };
+  const ids = [];
+  let paths = 0;
+  // Records alternate meta, path (a rename/copy would add a second path, but both are refused before apply).
+  for (let i = 0; i + 1 < fields.length; i += 2) {
+    const meta = fields[i];
+    const m = new RegExp(`^:[0-7]{6} ([0-7]{6}) [0-9a-f]{${hexLen}} ([0-9a-f]{${hexLen}}) ([A-Z])$`).exec(meta);
+    if (!m) return { ok: false, reason: `an unreadable raw record: ${meta.slice(0, 80)}` };
+    paths += 1;
+    const [, dstMode, dstId, status] = m;
+    if (status === 'D') continue;
+    // A blob (regular or executable); a gitlink (160000) or an absent postimage adds no file bytes here.
+    if ((dstMode === '100644' || dstMode === '100755' || dstMode === '120000') && !/^0+$/.test(dstId)) ids.push(dstId);
+  }
+  if (fields.length % 2 !== 0) return { ok: false, reason: 'a raw record without a path' };
+  return { ok: true, ids, paths };
+}
+
+/**
+ * `git cat-file --batch-check='%(objectsize)'` over `ids`: one line each, a
+ * decimal size or `<id> missing`. Returns the sum, counting each line (so a
+ * repeated id sums repeatedly), or null when a line is unreadable or missing.
+ */
+function sumObjectSizes(text, count) {
+  const lines = text.split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  if (lines.length !== count) return null;
+  let total = 0;
+  for (const l of lines) {
+    if (!/^[0-9]+$/.test(l)) return null;
+    total += Number(l);
+  }
+  return total;
 }
 
 /** `-z` fields: NUL-terminated, the last one followed by a NUL (so a trailing empty field). */
@@ -209,10 +151,26 @@ function parseNumstatZ(buf) {
   return out;
 }
 
-/** `git ls-tree -r -z --name-only`: the paths. */
+/**
+ * `git ls-tree -r -z --name-only` (with core.quotePath=false): the paths,
+ * byte for byte, as latin1 strings (one character per byte). These are fed
+ * back to git as a literal pathspec, so a non-UTF-8 filename must survive
+ * unchanged — decoding as UTF-8 would turn `0xff` into U+FFFD and reset a
+ * different, nonexistent path (R22-F1). Returns null when the output is not
+ * NUL-terminated.
+ */
 function parseLsTreeZ(buf) {
-  const f = zFields(buf);
-  return f ? f.filter((p) => p !== '') : null;
+  if (buf.length === 0) return [];
+  if (buf[buf.length - 1] !== 0) return null;
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < buf.length; i += 1) {
+    if (buf[i] === 0) {
+      if (i > start) out.push(buf.toString('latin1', start, i));
+      start = i + 1;
+    }
+  }
+  return out;
 }
 
 const C_ESCAPES = Object.freeze({ a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 });
@@ -228,7 +186,11 @@ function unquoteCStyle(s) {
     const ch = body[i];
     if (ch === '"') return null;
     if (ch !== '\\') {
-      for (const b of Buffer.from(ch, 'utf8')) bytes.push(b);
+      // A whole code point: git with core.quotePath=false can leave a supplementary character (an emoji) raw inside
+      // the quotes, and indexing by code unit would split its surrogate pair into two replacement characters (R24-F2).
+      const cp = body.codePointAt(i);
+      for (const b of Buffer.from(String.fromCodePoint(cp), 'utf8')) bytes.push(b);
+      if (cp > 0xffff) i += 1;
       continue;
     }
     const next = body[i + 1];
@@ -319,5 +281,5 @@ function reportablePath(p) {
 }
 
 module.exports = {
-  scanPatch, decodeBase85Line, encodeBase85Line, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, unquoteCStyle, reportablePath
+  scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, unquoteCStyle, reportablePath
 };
