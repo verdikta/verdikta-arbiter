@@ -402,10 +402,11 @@ function harnessPath(spec, tracked, { suiteFiles = [] } = {}) {
   }
   // Most test files first, then code-unit order: the same choice on every host.
   const ran = [...counts.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0)).map(([dir]) => `${dir}/${PROBE_STEM}.t.sol`);
-  const first = [...ran, `${FORGE_TEST_DIR}/${PROBE_STEM}.t.sol`, ...spec.paths.tests.flatMap(probeCandidates)];
-  // Each candidate, then the same with a number, for a name the repository already uses (R1-F3).
+  const fallback = [`${FORGE_TEST_DIR}/${PROBE_STEM}.t.sol`, ...spec.paths.tests.flatMap(probeCandidates)];
+  // A candidate, then the same with a number, for a name the repository already uses (R1-F3): every name in the
+  // directories the suite ran from before any fallback (R5-F1), then the fallbacks' first names, then their numbered.
   const numbered = (p) => Array.from({ length: PROBE_ALTERNATES }, (_, i) => p.replace(/((?:\.t)?\.sol)$/, `${i + 2}$1`));
-  const candidates = [...first, ...first.flatMap(numbered)];
+  const candidates = [...ran.flatMap((p) => [p, ...numbered(p)]), ...fallback, ...fallback.flatMap(numbered)];
   for (const p of new Set(candidates)) {
     if (!p.endsWith('.sol') || !SAFE_PATH.test(p) || !reportablePath(p)) continue;
     if (!pocPatchPathsGate([p], spec).pass) continue;

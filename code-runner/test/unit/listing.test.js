@@ -549,6 +549,9 @@ test('harness proof: the probes go under paths.tests, never under paths.protecte
   assert.equal(harnessPath(spec(['**/*.t.sol']), [], { suiteFiles: ['b/X.t.sol', 'a/Y.t.sol'] }), 'a/VerdiktaHarness.t.sol', 'a tie: code-unit order');
   assert.equal(harnessPath(spec(['test/**']), [], { suiteFiles: ['tests/Vault.t.sol'] }), 'test/VerdiktaHarness.t.sol', 'still under paths.tests');
   assert.equal(harnessPath(spec(['**/*.t.sol']), [], { suiteFiles: ['Root.t.sol'] }), 'test/VerdiktaHarness.t.sol', 'a file at the root names no directory');
+  // Taken there: the numbered names in that directory before any fallback directory.
+  assert.equal(harnessPath(spec(['**/*.t.sol']), ['tests/VerdiktaHarness.t.sol'], { suiteFiles: ['tests/Vault.t.sol'] }), 'tests/VerdiktaHarness2.t.sol');
+  assert.equal(harnessPath(spec(['**/*.t.sol'], ['tests/VerdiktaHarness.t.sol']), [], { suiteFiles: ['tests/Vault.t.sol'] }), 'tests/VerdiktaHarness2.t.sol', 'protected there');
 });
 
 test('harness proof: no free path under paths.tests refuses the listing', async () => {

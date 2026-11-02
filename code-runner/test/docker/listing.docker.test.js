@@ -246,10 +246,11 @@ test('what the suite leaves in its sandbox cannot make the harness proof pass: e
 test('a custom test directory (foundry.toml test = "tests") and a broad paths.tests: the probes go where the suite ran (R5-F1)', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('testsdir');
   const b = body(fx);
-  b.spec.paths = { tests: ['**/*.t.sol'], protected: ['foundry.toml', 'lib/**', '.gitignore'] };
+  // The first name there taken (protected): the numbered one in the same directory, not test/, which forge never compiles.
+  b.spec.paths = { tests: ['**/*.t.sol'], protected: ['foundry.toml', 'lib/**', '.gitignore', 'tests/VerdiktaHarness.t.sol'] };
   const r = await check(t, b);
   assert.equal(r.outcome, 'definitive', show(r));
   assert.equal(r.facts.listing.status, 'accepted', show(r));
-  assert.equal(r.facts.listing.harness.path, 'tests/VerdiktaHarness.t.sol');
+  assert.equal(r.facts.listing.harness.path, 'tests/VerdiktaHarness2.t.sol');
   assert.deepEqual(r.facts.listing.baseline.stable, ['tests/Vault.t.sol > VaultTest > test_deposit()']);
 });
