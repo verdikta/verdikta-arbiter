@@ -141,9 +141,10 @@ const FRAMEWORK_SCRIPT = [
  * target, NUL-separated), a marker, then sha256sum -z's line for every
  * regular file. "$@" is find's start: the roots, -xdev and the prune
  * expression the runner builds. Errors are never fatal. What the listing
- * cannot read (a file with no hash line, a directory that hides what is under
- * it) has nothing to compare, so in a watched set it never counts as
- * unchanged (changedPaths, R13-F1); at the reference it is the image's error.
+ * cannot read has nothing to compare, so it never counts as unchanged
+ * (changedPaths, R13-F1): a file with no hash line in a watched set, and a
+ * directory anywhere in the listing, since it can hide a watched root
+ * (classify). At the reference either is the image's error.
  */
 const MANIFEST_SCRIPT = [
   'find "$@" \\( ! -type d -o ! -readable -o ! -executable \\) -printf "%y\\0%m\\0%s\\0%p\\0%l\\0" 2>/dev/null',
@@ -465,10 +466,18 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
   const { deps, out, cache, filesCache, tools, pathRoots } = layout({ config, forgePath, realPath, pathDirs });
   const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
   for (const p of [...entries.keys()].sort()) {
-    const d = describe(entries.get(p));
+    const entry = entries.get(p);
+    const d = describe(entry);
     if (p === `${WORK}/.git` || p.startsWith(`${WORK}/.git/`)) {
       sets.repository.set(p.slice(WORK.length + 1), d);
       continue;
+    }
+    // A directory the listing cannot read can hide anything, on the way to a watched root as well as under one (forge
+    // reaches `build/out` by its path through a `build/` at mode 0111; find lists nothing there), and nothing honest
+    // makes one. So it is the framework's wherever it is (R13-F1), and also its own set's below.
+    if (entry.type === 'd') {
+      const inHome = p.startsWith(`${HOME}/`);
+      sets.framework.set(inHome ? `~/${p.slice(HOME.length + 1)}` : inWork(p) || p, d);
     }
     if (p.startsWith(`${HOME}/`)) {
       const rel = `~/${p.slice(HOME.length + 1)}`;
@@ -482,8 +491,7 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     // forge's executable and solc are the framework wherever they are, forge's cache directory included (R1-F3).
     if (tools.includes(rel)) sets.framework.set(rel, d);
     if (cache && under(rel, cache)) {
-      // The compile cache, and any directory on the way to it that a listing could not read (it hides the cache).
-      if (rel === filesCache || (filesCache && entries.get(p).type === 'd' && under(filesCache, rel))) sets.artifacts.set(rel, d);
+      if (rel === filesCache) sets.artifacts.set(rel, d);
       continue;
     }
     const dep = deps.find((r) => under(rel, r));

@@ -51,6 +51,10 @@ const VARIANTS = Object.freeze({
       'mkdir -p third_party/lib && printf "contract TP {}\\n" > third_party/lib/TP.sol && ln -s third_party deps'
     ].join(' && ')
   },
+  // R13-F1 (round 14): forge's out two levels down, so its parent can hide it.
+  nestedout: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML('ffi = true').replace('out = "out"', 'out = "build/out"') }
+  },
   // Attempt 3 (R11-F1, owner decision Q31): the image's own environment names another profile, out directory and
   // configuration file. forge runs with the runner's environment, so none of them may reach it (FOUNDRY_CONFIG names
   // no file: forge would fail if it did).
@@ -501,6 +505,15 @@ test('A3a R13-F1 under real forge: a file or a directory a run leaves unreadable
     assert.match(r.gates.integrity.detail, re);
     assert.equal(r.gates.reproduces.status, 'fail');
   }
+  // Round 14: out = "build/out", build/ at mode 0111. forge still reaches its artifacts by their path; find lists nothing.
+  const hidden = pocFile('ExploitTest', [
+    `    function ${NAME}() public { ${ffiSh('chmod 0111 build')} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+  ]);
+  const r = await run(t, claim(await fixture('nestedout'), addFilesPatch({ 'test/Exploit.t.sol': hidden })));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.integrity.status, 'fail', show(r));
+  assert.equal(r.facts.poc.integrity.frameworkUnchanged, false, show(r));
+  assert.match(r.gates.integrity.detail, /run 1: build cannot be read/);
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {
