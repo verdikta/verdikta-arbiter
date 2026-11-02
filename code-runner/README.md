@@ -829,10 +829,13 @@ process of the run is dead:
    dependencies in `/tmp`, or a directory on the read-only root, would go
    unwatched); `solc` and the `PATH` directories may also be on the read-only
    root or in `$HOME`, but not in `/tmp`, a `$HOME` cache or through `..`;
-   and a `PATH` directory in the work tree may not lie in the runner's
-   repository, forge's `out`, `cache`, `broadcast` or `snapshots`
-   directories, or under `paths.tests` (a patch's file there would be a
-   command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
+   `out` and the dependency directories may not lie in the runner's repository
+   or in forge's cache directory either (the snapshots sort those out first:
+   the cache is skipped but for its compile cache, so `out = "cache/artifacts"`
+   would be watched as nothing); and a `PATH` directory in the work tree may
+   not lie in the runner's repository, forge's `out`, `cache`, `broadcast`
+   or `snapshots` directories, or under `paths.tests` (a patch's file there
+   would be a command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
    command, naming the setting and its value; nothing is dropped silently.
 
    The host's work is linear in the listing: the closure is deduplicated by
@@ -905,7 +908,7 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a watched link into forge's `cache/` (or `out/`, `broadcast/`, `snapshots/`, `.git`, `paths.tests`, `/tmp`, `$HOME`, the work tree's root, a directory outside the work tree) | `IMAGE_WATCH_LINK_UNCOVERED`, the link and its target named | unit and Docker "A3a R6-F1 (round 7)" |
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
-| forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`) (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
+| forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
 
 Residual risk (decision 6): within run 1, claim code can still write a new

@@ -338,9 +338,12 @@ function layout({ config, forgePath = '', realPath = '', pathDirs = [] }) {
  * read-only root a directory whose links are unseen). solc and the PATH
  * directories may also be on the read-only root (immutable) or in $HOME
  * (watched), but not in /tmp or a $HOME cache (both unlisted) or through
- * `..`. A PATH directory in the work tree may not lie where builds and runs
- * write (the runner's repository, forge's out, cache, broadcast and snapshots
- * directories) or under paths.tests, where a patch's file would be a command.
+ * `..`. out and the dependency directories may not lie in the runner's
+ * repository or forge's cache directory, which classify() sorts out first
+ * (round 9). A PATH directory in the work tree may not lie where builds and
+ * runs write (the runner's repository, forge's out, cache, broadcast and
+ * snapshots directories) or under paths.tests, where a patch's file would be
+ * a command.
  * @param {object} config - parseFramework().config
  * @param {string[]} pathDirs - PATH, as absolute directories
  * @param {string[]} testGlobs - paths.tests
@@ -354,19 +357,26 @@ function unwatchableRoots(config, pathDirs = [], testGlobs = []) {
     if (HOME_CACHES.some((c) => within(abs, `${HOME}/${c.slice(2)}`))) return 'is in a $HOME cache, which the runner does not list';
     return null;
   };
+  const named = (value, fallback) => plainDir(typeof value === 'string' ? value : fallback);
+  const cache = named(config.cachePath, 'cache');
+  // classify() sorts the runner's repository and forge's cache directory out first (the cache is skipped but for its
+  // compile cache): an out or dependency directory inside either would be watched as neither (round 9).
   const inWork = (setting, value) => {
-    if (plainDir(value) === null) problems.push(`${setting} (${value}) is not a plain path in the work tree`);
+    const rel = plainDir(value);
+    if (rel === null) problems.push(`${setting} (${value}) is not a plain path in the work tree`);
+    else if (under(rel, '.git')) problems.push(`${setting} (${value}) is in the runner's repository`);
+    else if (cache && under(rel, cache)) problems.push(`${setting} (${value}) is in forge's cache directory (${cache}), which the snapshots skip`);
   };
-  if (typeof config.out === 'string') inWork('out', config.out);
-  if (typeof config.cachePath === 'string') inWork('cache_path', config.cachePath);
+  inWork('out', typeof config.out === 'string' ? config.out : 'out');
+  if (typeof config.cachePath === 'string' && plainDir(config.cachePath) === null) problems.push(`cache_path (${config.cachePath}) is not a plain path in the work tree`);
   for (const lib of config.libs) inWork('libs', lib);
+  for (const dir of DEPENDENCY_DIRS) if (cache && under(dir, cache)) problems.push(`the dependency directory ${dir} is in forge's cache directory (${cache}), which the snapshots skip`);
   if (typeof config.solc === 'string' && config.solc !== '') {
     const s = config.solc;
     const why = s.startsWith('/') && !s.startsWith(`${WORK}/`) ? outside(s) : plainDir(s) === null ? 'is not a plain path in the work tree' : null;
     if (why) problems.push(`solc (${s}) ${why}`);
   }
-  const named = (value, fallback) => plainDir(typeof value === 'string' ? value : fallback);
-  const areas = [['.git', 'the runner\'s repository'], [named(config.out, 'out'), 'forge\'s out directory'], [named(config.cachePath, 'cache'), 'forge\'s cache directory'],
+  const areas = [['.git', 'the runner\'s repository'], [named(config.out, 'out'), 'forge\'s out directory'], [cache, 'forge\'s cache directory'],
     [named(config.broadcast, 'broadcast'), 'forge\'s broadcast directory'], [named(config.snapshots, 'snapshots'), 'forge\'s snapshots directory']].filter(([d]) => d);
   for (const d of pathDirs) {
     if (d === WORK) continue;

@@ -701,3 +701,15 @@ test('A3a R8-F1: every configured root must be one the snapshots cover: out, cac
     assert.match(got[0], why, d);
   }
 });
+
+test('A3a R8-F1 (round 9): out or a dependency directory inside forge\'s cache directory or the runner\'s repository is refused (classify sorts those out first)', () => {
+  const roots = (over) => integrity.unwatchableRoots({ ...CONFIG, ...over }, ['/usr/bin'], ['test/**']);
+  assert.deepEqual(roots({ out: 'cache/artifacts' }), ['out (cache/artifacts) is in forge\'s cache directory (cache), which the snapshots skip']);
+  assert.deepEqual(roots({ out: 'out', cachePath: 'out' }), ['out (out) is in forge\'s cache directory (out), which the snapshots skip']);
+  assert.deepEqual(roots({ libs: ['lib', 'cache/pkg'] }), ['libs (cache/pkg) is in forge\'s cache directory (cache), which the snapshots skip']);
+  assert.deepEqual(roots({ libs: ['.git/modules/x'], out: '.git/out' }), ['out (.git/out) is in the runner\'s repository', 'libs (.git/modules/x) is in the runner\'s repository']);
+  assert.deepEqual(roots({ cachePath: 'node_modules' }), ['the dependency directory node_modules is in forge\'s cache directory (node_modules), which the snapshots skip']);
+  // A cache inside out or inside a dependency directory is fine: classify skips just the cache, which forge rewrites.
+  assert.deepEqual(roots({ cachePath: 'out/cache' }), []);
+  assert.deepEqual(roots({ cachePath: 'lib/.cache' }), []);
+});

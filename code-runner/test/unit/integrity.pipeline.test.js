@@ -693,3 +693,14 @@ test('A3a R8-F1: forge\'s out and compile cache configured in /tmp (and a PATH d
   assert.equal(p.outcome, 'requester_error', show(p));
   assert.match(p.issues[0].detail, /PATH directory \/tmp\/bin is in \/tmp/);
 });
+
+test('A3a R8-F1 (round 9): out = "cache/artifacts", or libs with "cache/pkg", is IMAGE_WATCH_ROOT_UNCOVERED before any maker command', async () => {
+  for (const [over, re] of [[{ out: 'cache/artifacts' }, /out \(cache\/artifacts\) is in forge's cache directory \(cache\)/], [{ libs: ['lib', 'cache/pkg'] }, /libs \(cache\/pkg\) is in forge's cache directory \(cache\)/]]) {
+    const sb = claimSandbox({ onBox: (box) => { box.configOver = over; } });
+    const r = await runClaim(sb);
+    assert.equal(r.outcome, 'requester_error', show(r));
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(r.issues[0].detail, re);
+    assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc'));
+  }
+});

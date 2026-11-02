@@ -56,6 +56,11 @@ const VARIANTS = Object.freeze({
     toml: `${PLAIN_TOML}\nout = "/tmp/forge-out"\ncache_path = "/tmp/forge-cache"`,
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
   },
+  // R8-F1 (round 9): forge's out inside its cache directory, which the snapshots skip.
+  cacheout: {
+    toml: `${PLAIN_TOML}\nout = "cache/artifacts"`,
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
+  },
   // Attempt 2: a dependency link into forge's cache directory (R6-F1, round 7).
   cachelink: {
     toml: PLAIN_TOML,
@@ -421,13 +426,18 @@ test('A3a R6-F1 (round 7) under real forge: a dependency link into forge\'s cach
   assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
 });
 
-test('A3a R8-F1 under real forge: out and cache_path configured in /tmp are refused before any maker command (IMAGE_WATCH_ROOT_UNCOVERED)', { timeout: TIMEOUT }, async (t) => {
+test('A3a R8-F1 under real forge: out and cache_path configured in /tmp, or out inside the cache directory, are refused before any maker command (IMAGE_WATCH_ROOT_UNCOVERED)', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('tmpout');
   const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
   assert.equal(r.outcome, 'requester_error', show(r));
   assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.match(r.issues[0].detail, /out \(\/tmp\/forge-out\) is not a plain path in the work tree; cache_path \(\/tmp\/forge-cache\)/);
   assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
+  // Round 9: out inside forge's cache directory.
+  const inCache = await run(t, claim(await fixture('cacheout'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(inCache.outcome, 'requester_error', show(inCache));
+  assert.match(inCache.issues[0].detail, /out \(cache\/artifacts\) is in forge's cache directory \(cache\)/);
+  assert.ok(!(inCache.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)));
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {
