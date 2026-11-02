@@ -48,20 +48,19 @@
  * listing is physical (find never follows a link), so a file listed in a set
  * is reached through real directories only, and a write to it changes its
  * hash. The ways to reach other bytes through a watched path are a link in
- * the set, and a link on the way to a set's root. Each one is resolved by the kernel inside the sandbox (LINKS_SCRIPT:
- * `cd -P`, `realpath -e`; the runner never computes a path from a link's
- * text), its answer is part of the link's own entry (so a link on the way
- * retargeted is a change), and what it leads to joins the link's set,
- * transitively. A set's root reached through a link (watchRoots) is resolved
- * the same way. A watched link whose real target is in, or holds, a place
- * builds and runs write to (/tmp, $HOME, the work tree's root, the runner's
- * repository, forge's out, cache, broadcast and snapshots directories,
- * paths.tests) is refused (IMAGE_WATCH_LINK_UNCOVERED), as is one leading to a
- * directory outside the work tree (not listed, so its own links are unseen);
- * a file on the read-only root needs nothing watched. Links outside the sets
- * are not followed: what they reach is no more than an untracked file at
- * their own path would be.
- * The work is linear in the listing and capped (MAX_ENTRIES,
+ * the set and a link on the way to a set's root (watchRoots). Each one is
+ * resolved by the kernel inside the sandbox (LINKS_SCRIPT: `cd -P`,
+ * `realpath -e`; the runner never computes a path from a link's text), its
+ * answer is part of its own entry (so a link on the way retargeted is a
+ * change), and what it leads to joins its set, transitively. A watched link
+ * whose real target is in, or holds, a place builds and runs write to (/tmp,
+ * $HOME, the work tree's root, the runner's repository, forge's out, cache,
+ * broadcast and snapshots directories, paths.tests) is refused
+ * (IMAGE_WATCH_LINK_UNCOVERED), as is one leading to a directory outside the
+ * work tree (not listed, so its own links are unseen); a file on the
+ * read-only root needs nothing watched. Links outside the sets are not
+ * followed: what they reach is no more than an untracked file at their own
+ * path would be. The work is linear in the listing and capped (MAX_ENTRIES,
  * MAX_WATCHED_LINKS, MAX_LINK_ROUNDS): beyond a cap the image is
  * IMAGE_WATCH_TOO_LARGE.
  *
@@ -308,17 +307,6 @@ function describe(e) {
 }
 
 /**
- * Sort a manifest into the watched sets.
- * @param {Map} entries - parseManifest().entries
- * @param {object} w
- * @param {string[]} w.protectedGlobs - paths.protected
- * @param {{out:string|null, cachePath:string|null, libs:string[], solc:string|null}} w.config - the reference's forge config
- * @param {string} [w.forgePath] - where forge resolved (the reference)
- * @param {string[]} [w.pathDirs] - PATH, as directories
- * @returns {{protected:Map, dependencies:Map, framework:Map, artifacts:Map, repository:Map}} each relative path (latin1) → description;
- *   $HOME entries as `~/…`, the repository's as `.git/…`
- */
-/**
  * The work-tree paths the sets are rooted at, from the reference's forge
  * config, forge's path and PATH, in the manifest's byte form (its keys are
  * the paths' bytes read latin1; forge's config and PATH are text, so every
@@ -361,6 +349,17 @@ function watchRoots({ protectedGlobs = [], ...w }) {
   return roots;
 }
 
+/**
+ * Sort a manifest into the watched sets.
+ * @param {Map} entries - parseManifest().entries
+ * @param {object} w
+ * @param {string[]} w.protectedGlobs - paths.protected
+ * @param {{out:string|null, cachePath:string|null, libs:string[], solc:string|null}} w.config - the reference's forge config
+ * @param {string} [w.forgePath] - where forge resolved (the reference)
+ * @param {string[]} [w.pathDirs] - PATH, as directories
+ * @returns {{protected:Map, dependencies:Map, framework:Map, artifacts:Map, repository:Map}} each relative path (latin1) → description;
+ *   $HOME entries as `~/…`, the repository's as `.git/…`
+ */
 function classify(entries, { protectedGlobs = [], config, forgePath = '', realPath = '', pathDirs = [] }) {
   const sets = { protected: new Map(), dependencies: new Map(), framework: new Map(), artifacts: new Map(), repository: new Map() };
   const { deps, out, cache, filesCache, tools, pathRoots } = layout({ config, forgePath, realPath, pathDirs });
