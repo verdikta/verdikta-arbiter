@@ -90,6 +90,8 @@ const MAX_LISTED = 20;
 const OWN_TIMEOUT = /^the step reached its wall-clock limit/;
 const SAFE_PATH = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
 const PROBE_STEM = 'VerdiktaHarness';
+/** forge's default `test` directory (foundry.toml `test = "test"`). */
+const FORGE_TEST_DIR = 'test';
 const PRAGMA = 'pragma solidity >=0.6.2;';
 
 /**
@@ -369,25 +371,27 @@ function probeCandidates(glob) {
 }
 
 /**
- * Where the probes go: the first candidate, glob by glob, that is a plain
- * Solidity path the claim gates admit (under paths.tests, not protected) and
- * that no tracked file holds, sits under or sits on.
+ * Where the probes go: the first candidate that is a plain Solidity path the
+ * claim gates admit (under paths.tests, not protected) and that no tracked
+ * file holds, sits under or sits on. forge's default test directory comes
+ * first (forge compiles and runs what is there; a glob such as `**` would
+ * otherwise put the probe at the root, where forge looks for no test),
+ * then glob by glob.
  * @param {object} spec
  * @param {string[]} tracked - the listed commit's files
  * @returns {string|null}
  */
 function harnessPath(spec, tracked) {
   const files = new Set(tracked);
-  for (const glob of spec.paths.tests) {
-    for (const p of probeCandidates(glob)) {
-      if (!p.endsWith('.sol') || !SAFE_PATH.test(p) || !reportablePath(p)) continue;
-      if (!pocPatchPathsGate([p], spec).pass) continue;
-      if (files.has(p)) continue;
-      const parts = p.split('/');
-      if (parts.slice(1).some((_, i) => files.has(parts.slice(0, i + 1).join('/')))) continue;
-      if (tracked.some((f) => f.startsWith(`${p}/`))) continue;
-      return p;
-    }
+  const candidates = [`${FORGE_TEST_DIR}/${PROBE_STEM}.t.sol`, ...spec.paths.tests.flatMap(probeCandidates)];
+  for (const p of new Set(candidates)) {
+    if (!p.endsWith('.sol') || !SAFE_PATH.test(p) || !reportablePath(p)) continue;
+    if (!pocPatchPathsGate([p], spec).pass) continue;
+    if (files.has(p)) continue;
+    const parts = p.split('/');
+    if (parts.slice(1).some((_, i) => files.has(parts.slice(0, i + 1).join('/')))) continue;
+    if (tracked.some((f) => f.startsWith(`${p}/`))) continue;
+    return p;
   }
   return null;
 }

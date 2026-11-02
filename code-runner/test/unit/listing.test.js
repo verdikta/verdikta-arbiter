@@ -481,6 +481,10 @@ test('harness proof: the probes go under paths.tests, never under paths.protecte
   const spec = (tests, prot = []) => ({ paths: { tests, protected: prot } });
   assert.equal(harnessPath(spec(['test/**']), []), 'test/VerdiktaHarness.t.sol');
   assert.equal(harnessPath(spec(['test/**/*.t.sol']), []), 'test/VerdiktaHarness.t.sol');
+  // forge's test directory first, where a glob allows it: not the root, where forge compiles no test.
+  assert.equal(harnessPath(spec(['**/*.t.sol']), []), 'test/VerdiktaHarness.t.sol');
+  assert.equal(harnessPath(spec(['**']), []), 'test/VerdiktaHarness.t.sol');
+  assert.equal(harnessPath(spec(['tests/**']), []), 'tests/VerdiktaHarness.t.sol');
   assert.equal(harnessPath(spec(['test/*/Exploit*.sol']), []), 'test/VerdiktaHarness/ExploitVerdiktaHarness.sol');
   assert.equal(harnessPath(spec(['test/poc/**']), ['test/poc/VerdiktaHarness.t.sol']), null, 'a tracked file at the path');
   assert.equal(harnessPath(spec(['test/**'], ['test/**']), []), null, 'protected');

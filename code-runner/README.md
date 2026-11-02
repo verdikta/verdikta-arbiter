@@ -235,10 +235,11 @@ the defaults are refused (`LIMITS_BELOW_DEFAULTS`): claims would run out of
 time and abstain.
 
 **The harness proof.** The runner's own probe files (fixed in
-`src/listing.js`, never the request's) go to one path under `paths.tests`
-(the glob's literal directory, or the glob with its wildcards filled:
-`test/VerdiktaHarness.t.sol` for `test/**`), outside `paths.protected` and
-off every tracked file. Each starts from the listed commit and is put in
+`src/listing.js`, never the request's) go to one path under `paths.tests`,
+outside `paths.protected` and off every tracked file: forge's default
+`test/VerdiktaHarness.t.sol` when a glob allows it (forge compiles and runs
+tests there), else the glob's literal directory or the glob with its
+wildcards filled. Each starts from the listed commit and is put in
 place exactly as a claim's PoC is, by the claim pipeline's own functions
 (`claimSession` in `src/claim.js`: `applies`, `testPathsOnly`, the protected
 reset, the commit), then judged by its `reproduces` gate under the default
