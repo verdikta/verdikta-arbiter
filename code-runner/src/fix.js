@@ -152,7 +152,8 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   // sandbox read the same reference without the fix, so a reference that cannot be read here is the fix's doing
   // (a malformed foundry.toml, a forge it replaced): the fixed tree does not build, a fact, never the requester's
   // error and never the claim's outcome (R4-F2).
-  const watch = new integrity.Watch({ protectedGlobs, prefix: 'integrity' });
+  const patchPaths = [...pocTouched.touched, ...fixTouched.touched].filter((t) => t.status !== 'D').map((t) => t.path);
+  const watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths, prefix: 'integrity' });
   try {
     await watch.reference(ctx);
   } catch (err) {

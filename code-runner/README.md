@@ -773,13 +773,56 @@ process of the run is dead:
      run (forge compiles what the build left out, e.g. after `forge build
      --skip test`) and never after it.
 
-   Links (R6-F1): forge reads through symbolic links, so what a link in the
-   work tree points to is watched as what the link is (a dependency when the
-   link is in no set), recursively and wherever it physically lives: a
-   `lib/pkg -> ../vendor/pkg`, a symlinked `lib/` root, a tracked link to an
-   untracked file. A watched link that points where nothing is watched (`/tmp`,
-   a `$HOME` cache) is `IMAGE_WATCH_LINK_UNCOVERED`. (A PoC that writes into a
-   directory a link points to fails `dependenciesUnchanged`.)
+   **Symbolic links: the kernel resolves them** (R6-F1, R7-F1; node A3a's
+   attempt 2). The listing is physical (`find` never follows a link), so a
+   file listed in a set is reached through real directories only and a write
+   to it changes its hash. The one way to reach other bytes through a watched
+   path is a symbolic link in a set, and only those are followed:
+   - every link in a set (the protected paths, the dependencies, the
+     framework, and the artifacts from run 1) is resolved by the kernel inside
+     the sandbox, in one hermetic exec per snapshot and level (`LINKS_SCRIPT`:
+     `cd -P` and `$PWD` for a directory, `realpath -e` for anything else; the
+     runner never computes a path from a link's text);
+   - the kernel's answer is part of the link's own entry (`=> d /work/vendor/pkg`,
+     `=> f …`, or `=> ?` when it resolves to nothing), so a link on the way
+     retargeted between runs, or a target a run creates, is a change;
+   - what a link leads to in the work tree joins the link's set (a directory
+     with everything listed under it, or the file), and its own links are
+     followed for that set in the next round: `lib/pkg -> ../bridge/../payload`
+     with `bridge -> vendor/nested` watches `vendor/payload/`, where the kernel
+     goes;
+   - a watched link whose real target is in, or (a directory) holds, a place
+     builds and runs write to is `IMAGE_WATCH_LINK_UNCOVERED`, naming the link
+     and its target: `/tmp`, `$HOME`, the work tree's root, the runner's
+     repository, forge's `out`, `cache`, `broadcast` and `snapshots`
+     directories (from `forge config`), `paths.tests`; so is one leading to a
+     directory outside the work tree, which is not listed (a link inside it
+     could lead back to where runs write, unseen). A file the set already
+     watches is fine where it is (forge's executable in its cache directory,
+     R1-F3), and an artifact link's target in `out/` is an artifact. A file
+     on the read-only root needs nothing watched: it never changes, and its
+     real path holds no link;
+   - links outside the sets are never followed. That is complete: a write
+     through any link lands on its real target, which the checksums see
+     whenever it is in a set, and the sets are closed under the links they
+     hold. A link outside them reaches nothing more than an untracked file at
+     the link's own path would, which the check never watched; a maker who
+     wants a linked source watched lists it under `paths.protected`;
+   - a link a patch adds cannot sit in a set while `paths.tests` stays out of
+     the sets (`testPathsOnly` admits only paths under it, and the protected
+     reset restores `paths.protected`). Where a maker's `paths.tests`
+     overlaps one (`**/*.t.sol` matches under `lib/`), such a link is the
+     claim's: its check fails (`the patch adds a link inside the
+     dependencies`), it is never followed, and the image is not refused.
+
+   The host's work is linear in the listing: the closure is deduplicated by
+   (set, link) and by (set, real tree) before anything is queued, and each
+   tree joins by one range of the sorted listing with a skip pointer per set,
+   so every listed entry is visited at most once per set. It is also capped:
+   at most 1,000,000 entries in a listing, 50,000 watched links, 16 levels of
+   linked trees (one exec each). 20,000 links to `.` are one batch of 20,000
+   paths and one pass (attempt 1 scanned the listing once per link). Each
+   path is resolved from `/work`, as forge resolves it.
 
    Not watched: the rest of forge's cache directory (its ABI cache,
    `test-failures`, fuzz failures, rewritten on every run), the `$HOME`
@@ -787,8 +830,15 @@ process of the run is dead:
    files outside the sets go back to the PoC commit by the reset before each
    re-run. A reference that cannot be read is the requester's package, found
    before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
-   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_TOO_LARGE`: a listing over 64 MiB); after a run, the same is a
-   definitive failure of the checks.
+   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_TOOL_MISSING`
+   when the image has no `realpath`, `IMAGE_WATCH_TOO_LARGE`: a listing over
+   64 MiB or over a cap above); after a run, the same is a definitive failure
+   of the checks.
+
+   A possible later hardening, not in this node: make the watched sets
+   unwritable to the sandbox user during the runs, with the checksums as the
+   backup. The sandbox runs as the files' owner without the capabilities to
+   change ownership, so that means restructuring A1's sandbox.
 5. **Static tamper flags** (`tamperFlags`), on the lines the patch added
    (any file under `paths.tests`, shell helpers included), one per kind per
    line, at most 100, in the report's order:
@@ -828,7 +878,13 @@ maker or an inline grant allows, `console.log`, revert messages.
 | `.git/config` filter, a hook, a forged index or objects, so the runner's reset writes the claim's bytes | the runner's repository checksums | unit `the runner's repository is watched` |
 | forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts` |
 | a maker's command runs a script under `paths.tests`, which the PoC rewrites | `framework-patched` (the patch changes a script a command names) | unit tamper-flag tests |
-| a file flood that hides a change | a listing over 64 MiB is a definitive failure | unit snapshot test |
+| a file flood that hides a change | a listing over 64 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`) | unit snapshot and cap tests |
+| a change behind a watched link (`lib/pkg -> ../vendor/pkg`, a symlinked `lib/`, a link inside the tree a link leads to) | the kernel resolves each watched link in the sandbox; its target joins the link's set, transitively | unit and Docker "A3a R6-F1" |
+| `..` after a link in the middle (`lib/pkg -> ../bridge/../payload`, `bridge -> vendor/nested`) | the kernel's answer (`vendor/payload`) is what is watched, never a path computed from the link's text | unit and Docker "A3a R6-F1 (round 7)" |
+| a watched link into forge's `cache/` (or `out/`, `broadcast/`, `snapshots/`, `.git`, `paths.tests`, `/tmp`, `$HOME`, the work tree's root, a directory outside the work tree) | `IMAGE_WATCH_LINK_UNCOVERED`, the link and its target named | unit and Docker "A3a R6-F1 (round 7)" |
+| a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
+| many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
+| a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit "a link the patch adds" |
 
 Residual risk (decision 6): within run 1, claim code can still write a new
 artifact after forge's compile that runs 2-3 would execute; a forger that

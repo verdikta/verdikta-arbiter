@@ -354,7 +354,7 @@ test('A3a R6-F1 (round 7): a watched link into forge\'s cache directory is uncov
   assert.ok(!keysOf(sets.dependencies).includes('cache/pkg/Dep.sol'));
 });
 
-test('item 3: a watched link whose real target is in (or holds) a place builds and runs write to is uncovered; one on the read-only root, or that resolves to nothing, is not', async () => {
+test('item 3: a watched link whose real target is in (or holds) a place builds and runs write to, or is a directory outside the work tree, is uncovered; a file on the read-only root, or a link that resolves to nothing, is not', async () => {
   const tree = initialTree();
   const want = {
     'lib/tmp': ['/tmp/dep', '/tmp/dep', /^\/tmp$/],
@@ -368,7 +368,9 @@ test('item 3: a watched link whose real target is in (or holds) a place builds a
     'lib/homes': ['/home', '/home', /holds \/tmp, \$HOME or the work tree/],
     'lib/tests': ['../test/helpers', '/work/test/helpers', /^paths\.tests$/],
     'lib/testfile': ['../test/Vault.t.sol', '/work/test/Vault.t.sol', /^paths\.tests$/],
-    'lib/nest': ['../nest', '/work/nest', /^a directory holding forge's out directory \(nest\/out\)$/]
+    'lib/nest': ['../nest', '/work/nest', /^a directory holding forge's out directory \(nest\/out\)$/],
+    // A directory on the read-only root is not listed: a link inside it (here one back into the work tree) is unseen.
+    'lib/ro': ['/opt/pkg', '/opt/pkg', /^a directory outside the work tree, whose links the runner does not list$/]
   };
   for (const [rel, [target]] of Object.entries(want)) link(tree, `/work/${rel}`, target);
   file(tree, '/tmp/dep/A.sol');
@@ -378,9 +380,11 @@ test('item 3: a watched link whose real target is in (or holds) a place builds a
   file(tree, '/work/snapshots/A.json');
   file(tree, '/work/test/helpers/H.sol');
   file(tree, '/work/nest/src/N.sol');
-  // Not uncovered: a target on the read-only root (immutable, so nothing to watch), and links that resolve to nothing.
-  link(tree, '/work/lib/ro', '/opt/pkg');
+  // Not uncovered: a file on the read-only root (immutable, its real path holds no link), and links that resolve to nothing.
   file(tree, '/opt/pkg/P.sol');
+  link(tree, '/opt/pkg/inner', '/work/vendor/evil');
+  file(tree, '/work/vendor/evil/E.sol');
+  link(tree, '/work/lib/rofile', '/opt/pkg/P.sol');
   link(tree, '/work/lib/dangling', '../nothing/here');
   link(tree, '/work/lib/loop1', 'loop2');
   link(tree, '/work/lib/loop2', 'loop1');
@@ -397,8 +401,9 @@ test('item 3: a watched link whose real target is in (or holds) a place builds a
     assert.equal(got.get(rel).target, target, rel);
     assert.match(got.get(rel).where, where, rel);
   }
-  for (const rel of ['lib/ro', 'lib/dangling', 'lib/loop1', 'lib/loop2']) assert.ok(!got.has(rel), `${rel} is not uncovered`);
-  assert.match(sets.dependencies.get('lib/ro'), / => d \/opt\/pkg$/);
+  for (const rel of ['lib/rofile', 'lib/dangling', 'lib/loop1', 'lib/loop2']) assert.ok(!got.has(rel), `${rel} is not uncovered`);
+  assert.match(sets.dependencies.get('lib/rofile'), / => f \/opt\/pkg\/P\.sol$/);
+  assert.ok(!keysOf(sets.dependencies).includes('vendor/evil/E.sol'));
   assert.match(sets.dependencies.get('lib/dangling'), / => \?$/);
   assert.match(sets.dependencies.get('lib/loop1'), / => \?$/);
   assert.ok(!keysOf(sets.dependencies).some((k) => k.startsWith('/opt')), 'the read-only root is not listed');
@@ -490,6 +495,25 @@ test('A3a R7-F1: host work is linear and bounded: 20,000 watched links to `.` ar
   assert.equal(up.calls.length, 1);
   assert.equal(up.r.uncovered.length, N);
   assert.ok(up.r.visited <= 3 * up.entries.size);
+});
+
+test('A3a R7-F1: each listed entry is visited at most once per set, also when a later round joins a tree that holds an earlier one', async () => {
+  // t/1/…/8, 500 files at each level; lib/a leads to the deepest, and each level holds `up -> ..`: every round joins
+  // the parent of the last tree. Joined naively (each tree scanned whole), that is 8 passes over the deepest files.
+  const tree = initialTree();
+  let dir = '/work/t';
+  const levels = [];
+  for (let d = 1; d <= 8; d += 1) {
+    dir = `${dir}/${d}`;
+    levels.push(dir);
+    for (let i = 0; i < 500; i += 1) file(tree, `${dir}/f${i}.sol`);
+  }
+  for (const d of levels.slice(1)) link(tree, `${d}/up`, '..');
+  link(tree, '/work/lib/a', `..${levels[7].slice('/work'.length)}`);
+  const { sets, r, entries } = await watched(tree);
+  assert.equal(r.rounds, 8);
+  assert.equal(keysOf(sets.dependencies).filter((k) => k.startsWith('t/')).length, 8 * 500 + 7);
+  assert.ok(r.visited <= entries.size + 2 * r.links, `${r.visited} visits for ${entries.size} entries and ${r.links} links`);
 });
 
 test('item 4: more watched links than the cap, or links nested deeper than the round cap, are too large to watch, before any resolution past the cap', async () => {

@@ -37,9 +37,10 @@ const VARIANTS = Object.freeze({
   },
   // Attempt 2 (ffi): lib/pkg -> ../bridge/../payload with bridge -> vendor/nested (R6-F1, round 7), a decoy at payload/
   // (where collapsing `..` before the link would lead), and 20,000 links to `.` in node_modules (R7-F1: a dependency
-  // directory the runner watches and this forge never reads).
+  // directory the runner always watches; `libs` keeps forge itself out of it, since forge adds node_modules to its libs
+  // by default and walks every link there).
   links: {
-    toml: 'ffi = true',
+    toml: 'ffi = true\nlibs = ["lib"]',
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: [
       'mkdir -p lib/solady/src && printf "contract Solady {}\\n" > lib/solady/src/Solady.sol',

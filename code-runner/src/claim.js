@@ -639,7 +639,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
 
   /** The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command. */
   async function watch(ctx) {
-    state.watch = new integrity.Watch({ protectedGlobs });
+    const patchPaths = state.touched.filter((t) => t.status !== 'D').map((t) => t.path);
+    state.watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths });
     await state.watch.reference(ctx);
   }
 

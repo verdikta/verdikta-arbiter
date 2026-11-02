@@ -44,6 +44,26 @@
  *   may change during the first test run (forge compiles what the build left
  *   out) and never after it.
  *
+ * Symbolic links in those sets (watchLinks(); attempt 2 of R6-F1/R7-F1): the
+ * listing is physical (find never follows a link), so a file listed in a set
+ * is reached through real directories only, and a write to it changes its
+ * hash. The one way to reach other bytes through a watched path is a link in
+ * the set. Each one is resolved by the kernel inside the sandbox (LINKS_SCRIPT:
+ * `cd -P`, `realpath -e`; the runner never computes a path from a link's
+ * text), its answer is part of the link's own entry (so a link on the way
+ * retargeted is a change), and what it leads to joins the link's set,
+ * transitively. A watched link whose real target is in, or holds, a place
+ * builds and runs write to (/tmp, $HOME, the work tree's root, the runner's
+ * repository, forge's out, cache, broadcast and snapshots directories,
+ * paths.tests) is refused (IMAGE_WATCH_LINK_UNCOVERED), as is one leading to a
+ * directory outside the work tree (not listed, so its own links are unseen);
+ * a file on the read-only root needs nothing watched. Links outside the sets
+ * are not followed: what they reach is no more than an untracked file at
+ * their own path would be.
+ * The work is linear in the listing and capped (MAX_ENTRIES,
+ * MAX_WATCHED_LINKS, MAX_LINK_ROUNDS): beyond a cap the image is
+ * IMAGE_WATCH_TOO_LARGE.
+ *
  * Not watched: the rest of forge's cache directory (`cache_path`: the ABI
  * cache, test-failures, fuzz failures, which forge rewrites on every run),
  * the $HOME caches, /tmp, untracked files elsewhere (a state file a PoC
@@ -61,6 +81,13 @@ const forge = require('./forge');
 const WORK = '/work';
 const HOME = '/home/sandbox';
 const MANIFEST_MAX_BYTES = 64 * 1024 * 1024;
+/** Entries (files, links, anything but a directory) in one listing. */
+const MAX_ENTRIES = 1000000;
+/** Watched links the kernel is asked about, across a snapshot's rounds. */
+const MAX_WATCHED_LINKS = 50000;
+/** Levels of linked trees (a link in a tree a link leads to is the next level). */
+const MAX_LINK_ROUNDS = 16;
+const LINKS_MAX_BYTES = 64 * 1024 * 1024;
 const CONFIG_MAX_BYTES = 1024 * 1024;
 const SNAPSHOT_TIMEOUT_MS = 120000;
 const MAX_CHANGED = 100;
@@ -117,6 +144,44 @@ const MANIFEST_SCRIPT = [
   'find "$@" -type f -print0 2>/dev/null | xargs -0 -r sha256sum -z -- 2>/dev/null',
   'exit 0'
 ].join('\n');
+
+/**
+ * The kernel's answer for each watched link, hermetic: absolute paths on
+ * stdin (NUL-separated), one `kind\0path\0real\0` record each, in order.
+ * `d`: the link leads to a directory, `real` its physical path (the kernel
+ * walks it in `cd -P`; `$PWD` is then getcwd's answer). `f`: to anything
+ * else that exists, `real` from `realpath -e` (GNU coreutils, component by
+ * component). `?`: the kernel resolves it to nothing (missing, a loop, a file
+ * used as a directory, no search permission). `!`: the kernel found an entry
+ * but its physical path could not be read (realpath failed, or getcwd did).
+ * Every path is resolved from /work, forge's own directory (a
+ * /proc/self/cwd on the way means the same as it does to forge). The script
+ * reads no link's text itself. Exit 4: the image has no realpath.
+ */
+const LINKS_SCRIPT = [
+  'command -v realpath >/dev/null 2>&1 || exit 4',
+  'exec xargs -0 -r sh -c \'',
+  '  home() { cd /work 2>/dev/null || cd /; }',
+  '  home',
+  '  nl=$(printf "\\nx"); nl=${nl%x}',
+  '  for l do',
+  '    if [ -d "$l" ]; then',
+  '      if cd -P -- "$l" 2>/dev/null; then',
+  '        case $PWD in /*) printf "d\\0%s\\0%s\\0" "$l" "$PWD" ;; *) printf "!\\0%s\\0\\0" "$l" ;; esac',
+  '        home',
+  '      else',
+  '        printf "?\\0%s\\0\\0" "$l"',
+  '      fi',
+  '    elif [ -e "$l" ]; then',
+  '      if r=$(realpath -e -- "$l" 2>/dev/null && printf x); then r=${r%x}; r=${r%"$nl"}; printf "f\\0%s\\0%s\\0" "$l" "$r"; else printf "!\\0%s\\0\\0" "$l"; fi',
+  '    else',
+  '      printf "?\\0%s\\0\\0" "$l"',
+  '    fi',
+  '  done\' vcr-resolve'
+].join('\n');
+
+/** Thrown when what the check would watch is over one of its caps (IMAGE_WATCH_TOO_LARGE before claim code, a failure after). */
+class WatchTooLarge extends Error {}
 
 function sha256(bytes) {
   return crypto.createHash('sha256').update(bytes).digest('hex');
@@ -179,7 +244,9 @@ function parseFramework(buf) {
       out: str(parsed.out),
       cachePath: str(parsed.cache_path),
       libs: Array.isArray(parsed.libs) ? parsed.libs.filter((l) => typeof l === 'string') : [],
-      solc: str(parsed.solc)
+      solc: str(parsed.solc),
+      broadcast: str(parsed.broadcast),
+      snapshots: str(parsed.snapshots)
     }
   };
 }
@@ -187,10 +254,11 @@ function parseFramework(buf) {
 /**
  * Read the manifest: find's records, then sha256sum's lines.
  * @param {Buffer} buf
- * @returns {{ok:true, entries:Map<string, {type:string, mode:string, size:string, target:string, hash:string|null}>} | {ok:false, reason:string}}
+ * @param {{maxEntries?:number}} [o] - more records than this is `tooLarge` (default MAX_ENTRIES), read no further
+ * @returns {{ok:true, entries:Map<string, {type:string, mode:string, size:string, target:string, hash:string|null}>} | {ok:false, reason:string, tooLarge?:true}}
  *   keys are absolute paths, as bytes read latin1
  */
-function parseManifest(buf) {
+function parseManifest(buf, { maxEntries = MAX_ENTRIES } = {}) {
   const marker = Buffer.from('vcr-hashes\0');
   const entries = new Map();
   let pos = 0;
@@ -217,6 +285,7 @@ function parseManifest(buf) {
       return { ok: false, reason: 'a listing record is not find\'s' };
     }
     entries.set(p, { type, mode, size, target: type === 'l' ? target : '', hash: null });
+    if (entries.size > maxEntries) return { ok: false, tooLarge: true, reason: `the listing has more than ${maxEntries} entries` };
   }
   while (pos < buf.length) {
     const end = buf.indexOf(0, pos);
@@ -291,102 +360,265 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     if (framework) sets.framework.set(rel, d);
     if (out && under(rel, out)) sets.artifacts.set(rel, d);
   }
-  followLinks(entries, sets, { skip: [out, cache].filter(Boolean) });
   return sets;
 }
 
-const WATCHED = Object.freeze(['protected', 'dependencies', 'framework', 'artifacts']);
-const MAX_LINK_HOPS = 40;
+// ------------------------------------------------------------------- links
 
-/** A path joined and normalised within the work tree (latin1 keys), or null when it climbs out of it. */
-function normaliseRel(parts) {
-  const out = [];
-  for (const p of parts) {
-    if (p === '' || p === '.') continue;
-    if (p === '..') {
-      if (!out.length) return null;
-      out.pop();
-    } else out.push(p);
+/** The sets whose links are followed after a run: every set compared (the runner's repository holds no link of the image's). */
+const LINK_CATEGORIES = Object.freeze(['protected', 'dependencies', 'framework', 'artifacts']);
+/** At the reference, the sets it is compared by: the artifacts are first held to run 1's. */
+const REFERENCE_CATEGORIES = Object.freeze(['protected', 'dependencies', 'framework']);
+const CATEGORY_WORDS = Object.freeze({ protected: 'protected paths', dependencies: 'dependencies', framework: 'framework', artifacts: 'artifacts' });
+/** A directory target that holds /tmp, $HOME or the work tree (`/`, `/home`): every place a run writes is under it. */
+const HOLDS_WRITABLE = 'a directory that holds /tmp, $HOME or the work tree';
+/** A directory target on the read-only root, which the listing does not cover. */
+const OUTSIDE_DIRECTORY = 'a directory outside the work tree, whose links the runner does not list';
+
+/** Whether `p` is `dir` or lies under it (`/` holds every absolute path). */
+function within(p, dir) {
+  return dir === '/' ? p.startsWith('/') : under(p, dir);
+}
+
+/** The first index of a sorted array whose element is not below `x`. */
+function lowerBound(arr, x) {
+  let lo = 0;
+  let hi = arr.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid] < x) lo = mid + 1;
+    else hi = mid;
   }
-  return out.join('/');
+  return lo;
 }
 
 /**
- * Where a link in the work tree points: the referent's work-tree path, with
- * links on the way to it resolved too (at most 40 hops); `{ outside }` when it
- * leaves the work tree.
+ * Read the link script's records (LINKS_SCRIPT) for `batch`, in its order.
+ * @param {Buffer} buf
+ * @param {string[]} batch - the absolute paths asked about (latin1)
+ * @returns {{ok:true, answers:Map<string, {kind:string, real:string}>} | {ok:false, reason:string}}
  */
-function referentOf(linkRel, target, links) {
-  let parts = target.startsWith('/')
-    ? (target === WORK || target.startsWith(`${WORK}/`) ? target.slice(WORK.length + 1).split('/') : null)
-    : [...linkRel.split('/').slice(0, -1), ...target.split('/')];
-  if (parts === null) return { outside: target };
-  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
-    const rel = normaliseRel(parts);
-    if (rel === null) return { outside: target };
-    const segs = rel === '' ? [] : rel.split('/');
-    let k = 1;
-    for (; k <= segs.length; k += 1) if (links.has(segs.slice(0, k).join('/'))) break;
-    if (k > segs.length) return { rel };
-    const prefix = segs.slice(0, k).join('/');
-    const t = links.get(prefix);
-    const rest = segs.slice(k);
-    if (t.startsWith('/')) {
-      if (!(t === WORK || t.startsWith(`${WORK}/`))) return { outside: t };
-      parts = [...t.slice(WORK.length + 1).split('/'), ...rest];
-    } else parts = [...segs.slice(0, k - 1), ...t.split('/'), ...rest];
+function parseLinks(buf, batch) {
+  const answers = new Map();
+  let pos = 0;
+  const field = () => {
+    const end = buf.indexOf(0, pos);
+    if (end < 0) return null;
+    const s = buf.toString('latin1', pos, end);
+    pos = end + 1;
+    return s;
+  };
+  while (pos < buf.length) {
+    const i = answers.size;
+    const kind = field();
+    const path = field();
+    const real = field();
+    if (real === null) return { ok: false, reason: 'a record ends early' };
+    if (!['d', 'f', '?', '!'].includes(kind)) return { ok: false, reason: `a record of kind ${JSON.stringify(kind.slice(0, 8))}` };
+    if (i >= batch.length || path !== batch[i]) return { ok: false, reason: 'a record for a path not asked about, or out of order' };
+    if ((kind === 'd' || kind === 'f') ? !real.startsWith('/') : real !== '') return { ok: false, reason: 'a record whose answer is not an absolute path' };
+    answers.set(path, { kind, real });
   }
-  return { outside: target };
+  if (answers.size !== batch.length) return { ok: false, reason: `${batch.length - answers.size} of ${batch.length} links have no answer` };
+  return { ok: true, answers };
 }
 
 /**
- * Symbolic links in the work tree (R6-F1): forge reads through them, so what a
- * link points to is watched as what the link is (a dependency when the link
- * is in none of the sets), recursively, wherever it physically lives (forge's
- * artifact and cache directories, which have their own rules, excepted). A
- * watched link that points where nothing is watched (/tmp, a $HOME cache, a
- * place outside the work tree that is writable) is recorded in
- * `sets.uncovered`: the reference refuses it.
+ * Follow the watched sets' symbolic links through the kernel's answers
+ * (§9.5 check 4; attempt 2 of R6-F1/R7-F1). `sets` (classify()'s) is changed
+ * in place: each watched link's entry gets the kernel's answer (` => d
+ * /real`, ` => f /real`, ` => ?`), and what a link leads to in the work tree
+ * joins the link's set (a directory with everything listed under it, a
+ * file), its own links then followed for that set in the next round.
+ *
+ * Only links in a set are followed: a write through any link lands on its
+ * real target, which the checksums see whenever that target is listed in a
+ * set, so what needs adding is exactly what watched links lead to. The
+ * closure is deduplicated by (set, link) and by (set, real tree) before it
+ * is queued, and each tree is joined by one range of the sorted listing,
+ * with a skip pointer per set, so every listed entry is visited at most once
+ * per set: the host's work is linear in the listing and the links (one sort,
+ * then at most four visits per entry), and the kernel is asked at most
+ * MAX_LINK_ROUNDS times.
+ *
+ * Not followed but reported:
+ * - `uncovered`: a link whose real target is in, or (a directory) holds, a
+ *   place builds and runs write to (/tmp, $HOME, the work tree's root, the
+ *   runner's repository, forge's out, cache, broadcast and snapshots
+ *   directories, paths.tests), unless it is a file the set already watches
+ *   (forge's executable in its cache directory, R1-F3); an artifact link's
+ *   target in out/ is an artifact; and one leading to a directory outside
+ *   the work tree (not listed, so the links inside it are not seen). A file
+ *   on the read-only root needs nothing watched; a link the kernel resolves
+ *   to nothing is recorded as such.
+ * - `patchLinks`: a link at a path a patch touched (possible only where
+ *   paths.tests overlaps a set): the claim's, never the image's.
+ *
+ * @param {Map} entries - parseManifest().entries
+ * @param {object} sets - classify()'s sets
+ * @param {object} o
+ * @param {object} o.config - the reference's forge config (out, cachePath, broadcast, snapshots)
+ * @param {string[]} [o.testGlobs] - paths.tests
+ * @param {Set<string>} [o.patchPaths] - work-tree paths the patches touched (latin1)
+ * @param {string[]} [o.categories] - the sets whose links are followed
+ * @param {{links?:number, rounds?:number}} [o.limits] - the caps (MAX_WATCHED_LINKS, MAX_LINK_ROUNDS)
+ * @param {(paths:string[]) => Promise<Map<string, {kind:string, real:string}>>} resolve - the kernel's answers
+ * @returns {Promise<{uncovered:Array<{link:string, target:string, where:string, category:string}>,
+ *   patchLinks:Array<{link:string, category:string}>, links:number, rounds:number, visited:number}>}
+ * @throws {WatchTooLarge} more watched links, or levels of linked trees, than the caps
  */
-function followLinks(entries, sets, { skip }) {
-  const work = [];
-  const links = new Map();
-  for (const [p, e] of entries) {
-    if (e.type !== 'l' || !p.startsWith(`${WORK}/`) || p.startsWith(`${WORK}/.git/`)) continue;
-    const rel = p.slice(WORK.length + 1);
-    links.set(rel, e.target);
-    work.push(rel);
+async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = new Set(), categories = LINK_CATEGORIES, limits = {} }, resolve) {
+  const maxLinks = limits.links || MAX_WATCHED_LINKS;
+  const maxRounds = limits.rounds || MAX_LINK_ROUNDS;
+  const bytes = (p) => (p === null ? null : Buffer.from(p, 'utf8').toString('latin1'));
+  const dirOf = (value, fallback) => bytes(plainDir(typeof value === 'string' ? value : fallback));
+  const out = dirOf(config.out, 'out');
+  const cache = dirOf(config.cachePath, 'cache');
+  const filesCache = cache ? `${cache}/solidity-files-cache.json` : null;
+  // Where builds and runs write in the work tree: forge's directories (its defaults when the config names none).
+  const areas = [['.git', 'the runner\'s repository']];
+  for (const [d, what] of [[out, 'out'], [cache, 'cache'], [dirOf(config.broadcast, 'broadcast'), 'broadcast'], [dirOf(config.snapshots, 'snapshots'), 'snapshots']]) {
+    if (d) areas.push([d, `forge's ${what} directory`]);
   }
-  sets.uncovered = [];
-  if (!work.length) return;
-  const rels = [...entries.keys()].filter((p) => p.startsWith(`${WORK}/`) && !p.startsWith(`${WORK}/.git/`)).map((p) => p.slice(WORK.length + 1)).sort();
-  const describeRel = (rel) => describe(entries.get(`${WORK}/${rel}`));
-  const done = new Set();
-  const queue = work.sort().map((rel) => ({ rel, cats: WATCHED.filter((c) => sets[c].has(rel)) }));
-  while (queue.length) {
-    const { rel, cats } = queue.shift();
-    const into = cats.length ? cats : ['dependencies'];
-    const key = `${rel}\u0000${into.join(',')}`;
-    if (done.has(key)) continue;
-    done.add(key);
-    const r = referentOf(rel, links.get(rel), links);
-    if (r.outside !== undefined) {
-      const t = r.outside;
-      const watchedHome = t.startsWith(`${HOME}/`) && !HOME_CACHES.some((c) => under(`~/${t.slice(HOME.length + 1)}`, c));
-      const writable = t === '/tmp' || t.startsWith('/tmp/') || t === HOME || t.startsWith(`${HOME}/`) || t === WORK || t.startsWith(`${WORK}/`);
-      if (cats.length && writable && !watchedHome) sets.uncovered.push(`${displayPath(rel)} -> ${displayPath(t)}`);
-      continue;
+  const relOf = (abs) => (abs.startsWith(`${WORK}/`) ? abs.slice(WORK.length + 1) : abs.startsWith(`${HOME}/`) ? `~/${abs.slice(HOME.length + 1)}` : null);
+
+  /** Why a real target cannot be watched for set `c`, or null. */
+  function refusal(real, kind, c) {
+    const holds = kind === 'd';
+    const hit = (dir) => within(real, dir) || (holds && within(dir, real));
+    if (hit('/tmp')) return within(real, '/tmp') ? '/tmp' : HOLDS_WRITABLE;
+    if (hit(HOME)) return within(real, HOME) ? '$HOME' : HOLDS_WRITABLE;
+    if (real === WORK) return 'the work tree\'s root';
+    if (holds && within(WORK, real)) return HOLDS_WRITABLE;
+    // The read-only root: a file there never changes and its real path holds no link; a directory is not listed, so a
+    // link inside it (one leading back into the work tree, say) could not be seen.
+    if (!real.startsWith(`${WORK}/`)) return holds ? OUTSIDE_DIRECTORY : null;
+    const rel = real.slice(WORK.length + 1);
+    if (c === 'artifacts' && ((out && under(rel, out)) || rel === filesCache)) return null;
+    for (const [dir, what] of areas) {
+      if (under(rel, dir)) return `${what} (${displayPath(dir)})`;
+      if (holds && under(dir, rel)) return `a directory holding ${what} (${displayPath(dir)})`;
     }
-    if (r.rel !== '' && skip.some((d) => under(r.rel, d))) continue;
-    for (const other of rels) {
-      // The referent's tree (the whole work tree for a link to its root), forge's artifact and cache directories aside.
-      if (r.rel !== '' && !under(other, r.rel)) continue;
-      if (skip.some((d) => under(other, d))) continue;
-      const d = describeRel(other);
-      for (const c of into) sets[c].set(other, d);
-      if (links.has(other)) queue.push({ rel: other, cats: into });
+    if (testGlobs.length && matchesAny(displayPath(rel), testGlobs)) return 'paths.tests';
+    return null;
+  }
+
+  const resolution = new Map();
+  const seen = new Set();
+  const uncovered = [];
+  const patchLinks = [];
+  const roots = Object.fromEntries(categories.map((c) => [c, new Set()]));
+  let frontier = [];
+  let visited = 0;
+  const addPair = (abs, c) => {
+    const key = `${c}\u0000${abs}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const rel = relOf(abs);
+    if (patchPaths.has(rel)) patchLinks.push({ link: displayPath(rel), category: c });
+    else frontier.push([abs, c]);
+  };
+  for (const [abs, e] of entries) {
+    if (e.type !== 'l') continue;
+    const rel = relOf(abs);
+    if (rel === null || rel === '.git' || rel.startsWith('.git/')) continue;
+    for (const c of categories) if (sets[c].has(rel)) addPair(abs, c);
+  }
+
+  let keys = null;
+  const skips = new Map();
+  // skip[i]: the first index from i on not yet joined to the set (path halving keeps every lookup near constant).
+  const skipOf = (c) => {
+    if (!skips.has(c)) {
+      const skip = new Int32Array(keys.length + 1);
+      for (let i = 0; i <= keys.length; i += 1) skip[i] = i;
+      skips.set(c, skip);
+    }
+    return skips.get(c);
+  };
+  const nextOf = (skip, from) => {
+    let i = from;
+    while (skip[i] !== i) {
+      skip[i] = skip[skip[i]];
+      i = skip[i];
+    }
+    return i;
+  };
+  let rounds = 0;
+  while (frontier.length) {
+    rounds += 1;
+    if (rounds > maxRounds) throw new WatchTooLarge(`the watched links lead through more than ${maxRounds} levels of linked trees`);
+    const need = [...new Set(frontier.filter(([abs]) => !resolution.has(abs)).map(([abs]) => abs))].sort();
+    if (need.length) {
+      if (resolution.size + need.length > maxLinks) throw new WatchTooLarge(`more than ${maxLinks} watched links`);
+      const answers = await resolve(need);
+      for (const abs of need) {
+        const a = answers.get(abs);
+        if (!a) throw new TypeError(`the link resolver gave no answer for ${displayPath(abs)}`);
+        resolution.set(abs, a);
+      }
+    }
+    const pending = frontier;
+    frontier = [];
+    const joins = new Map(categories.map((c) => [c, new Set()]));
+    for (const [abs, c] of pending) {
+      visited += 1;
+      const r = resolution.get(abs);
+      if (r.kind === '?') continue;
+      const link = displayPath(relOf(abs));
+      if (r.kind === '!') {
+        uncovered.push({ link, target: '?', where: 'a target realpath could not resolve', category: c });
+        continue;
+      }
+      const trel = relOf(r.real);
+      if (r.kind === 'f' && trel !== null && sets[c].has(trel)) continue;
+      const where = refusal(r.real, r.kind, c);
+      if (where) {
+        uncovered.push({ link, target: displayPath(r.real), where, category: c });
+        continue;
+      }
+      if (!r.real.startsWith(`${WORK}/`)) continue;
+      if (r.kind === 'f') {
+        const e = entries.get(r.real);
+        if (e) sets[c].set(trel, describe(e));
+      } else joins.get(c).add(r.real);
+    }
+    // Each new tree joins as one range of the sorted listing (the entries under a directory are the keys from "dir/" up
+    // to "dir0"), each entry at most once per set across every round: a skip pointer per set jumps over what is joined.
+    for (const [c, trees] of joins) {
+      for (const root of [...trees].sort()) {
+        if (roots[c].has(root)) continue;
+        roots[c].add(root);
+        if (keys === null) keys = [...entries.keys()].sort();
+        const skip = skipOf(c);
+        const end = lowerBound(keys, `${root}0`);
+        for (let i = nextOf(skip, lowerBound(keys, `${root}/`)); i < end; i = nextOf(skip, i + 1)) {
+          skip[i] = i + 1;
+          visited += 1;
+          const k = keys[i];
+          const e = entries.get(k);
+          const rel = k.slice(WORK.length + 1);
+          if (!sets[c].has(rel)) sets[c].set(rel, describe(e));
+          if (e.type === 'l') addPair(k, c);
+        }
+      }
     }
   }
+  // The kernel's answer is part of each watched link's entry: a link on the way retargeted changes it.
+  for (const [abs, r] of resolution) {
+    const rel = relOf(abs);
+    const d = `${describe(entries.get(abs))} => ${r.kind}${r.real ? ` ${r.real}` : ''}`;
+    for (const c of categories) if (sets[c].has(rel)) sets[c].set(rel, d);
+  }
+  const order = (a, b) => (a.link !== b.link ? (a.link < b.link ? -1 : 1) : a.category < b.category ? -1 : a.category > b.category ? 1 : 0);
+  return { uncovered: uncovered.sort(order), patchLinks: patchLinks.sort(order), links: resolution.size, rounds, visited };
+}
+
+/** The links detail: the first five links with their targets and why, and how many more there are. */
+function listUncovered(uncovered) {
+  const byLink = new Map();
+  for (const u of uncovered) if (!byLink.has(u.link)) byLink.set(u.link, `${u.link} -> ${u.target} (${u.where})`);
+  return shown([...byLink.values()], 5, ', ');
 }
 
 /**
@@ -418,6 +650,11 @@ function manifestArgv(roots, prunes = []) {
   return hermetic(MANIFEST_SCRIPT, 'vcr-manifest', [...roots, '-xdev', ...prune]);
 }
 
+/** The link script's argv (its paths go on stdin). */
+function linksArgv() {
+  return hermetic(LINKS_SCRIPT, 'vcr-links');
+}
+
 function runnerError(step, detail) {
   return new Abstain(ABSTAIN.RUNNER_ERROR, detail, { step });
 }
@@ -428,12 +665,14 @@ async function probe(ctx, name, forgePath, { config = true } = {}) {
   return { exitCode: record.exitCode, truncated: out.truncated, bytes: out.bytes(), stderr: record.stderr ? record.stderr.text : '' };
 }
 
+/** The listing; `overflow` with its reason when it is over a cap (MANIFEST_MAX_BYTES, MAX_ENTRIES). */
 async function manifest(ctx, name, roots, prunes) {
   const out = new Prefix(MANIFEST_MAX_BYTES);
   const record = await ctx.exec(manifestArgv(roots, prunes), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
   if (record.exitCode !== 0) throw runnerError(name, `the watched paths could not be listed (exit ${record.exitCode})`);
-  if (out.truncated) return { overflow: true };
+  if (out.truncated) return { overflow: true, reason: `the watched paths exceed ${MANIFEST_MAX_BYTES} bytes of listing` };
   const m = parseManifest(out.bytes());
+  if (!m.ok && m.tooLarge) return { overflow: true, reason: `the watched paths' listing has more than ${MAX_ENTRIES} entries` };
   if (!m.ok) throw runnerError(name, `the watched paths' listing could not be read: ${m.reason}`);
   return { overflow: false, entries: m.entries };
 }
@@ -452,10 +691,15 @@ class Watch {
   /**
    * @param {object} o
    * @param {string[]} o.protectedGlobs - paths.protected
+   * @param {string[]} [o.testGlobs] - paths.tests (a watched link may not lead there)
+   * @param {string[]} [o.patchPaths] - the work-tree paths the claim's patches add or change (git's names)
    * @param {string} [o.prefix] - exec names' prefix
    */
-  constructor({ protectedGlobs = [], prefix = 'integrity' } = {}) {
+  constructor({ protectedGlobs = [], testGlobs = [], patchPaths = [], prefix = 'integrity' } = {}) {
     this.protectedGlobs = protectedGlobs;
+    this.testGlobs = testGlobs;
+    // In the manifest's byte form (its keys are the paths' bytes read latin1).
+    this.patchPaths = new Set(patchPaths.map((p) => Buffer.from(p, 'utf8').toString('latin1')));
     this.prefix = prefix;
     this.ref = null;
     this.repository = null;
@@ -494,13 +738,11 @@ class Watch {
         detail: `\`forge config --json\` failed at the listed commit (exit ${p.exitCode}): ${firstLine(p.stderr) || parsed.reason || ''}`.trim()
       }]);
     }
+    const tooLarge = (why) => new RequesterError([{
+      code: 'IMAGE_WATCH_TOO_LARGE', path: '/spec/env/image', detail: `${why}: the runner cannot watch the work tree for changes during a run`
+    }]);
     const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(parsed.config));
-    if (m.overflow) {
-      throw new RequesterError([{
-        code: 'IMAGE_WATCH_TOO_LARGE', path: '/spec/env/image',
-        detail: `the work tree's listing exceeds ${MANIFEST_MAX_BYTES} bytes: the runner cannot watch it for changes during a run`
-      }]);
-    }
+    if (m.overflow) throw tooLarge(m.reason);
     this.ref = { forgePath: parsed.forgePath, realPath: parsed.realPath, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config };
     // A forge that lives in the work tree runs after claim code only while its bytes are the reference's (R1-F3): the
     // reference must have hashed it, wherever it is.
@@ -515,14 +757,54 @@ class Watch {
       }
       this.ref.forgeEntry = describe(e);
     }
-    this.ref.sets = classify(m.entries, this.watchArgs());
-    if (this.ref.sets.uncovered.length) {
+    const sets = classify(m.entries, this.watchArgs());
+    let links;
+    try {
+      links = await this.links(ctx, name, m.entries, sets, REFERENCE_CATEGORIES, { reference: true });
+    } catch (err) {
+      if (err instanceof WatchTooLarge) throw tooLarge(err.message);
+      throw err;
+    }
+    if (links.uncovered.length) {
       throw new RequesterError([{
         code: 'IMAGE_WATCH_LINK_UNCOVERED', path: '/spec/env/image',
-        detail: `a watched link points where the runner watches nothing a run may write (${this.ref.sets.uncovered.slice(0, 5).join(', ')}): it could not tell a change behind it`
+        detail: `a watched link leads where builds and runs write, so the runner could not tell a change behind it: ${listUncovered(links.uncovered)}`
       }]);
     }
-    this.repository = this.ref.sets.repository;
+    // A link a patch added in a set (paths.tests overlapping it) is the claim's: its check fails, the image is not refused.
+    for (const p of links.patchLinks) {
+      const category = p.category === 'artifacts' ? 'framework' : p.category;
+      this.fail(category, `the reference: the patch adds a link inside the ${CATEGORY_WORDS[p.category]} (${p.link}): the runner follows only the image's links`);
+      this.changed[category].add(p.link);
+    }
+    this.ref.sets = sets;
+    this.repository = sets.repository;
+  }
+
+  /**
+   * The watched sets' links, resolved by the kernel in this sandbox
+   * (watchLinks, LINKS_SCRIPT): one exec per level of linked trees, none
+   * when no watched set holds a link.
+   */
+  links(ctx, name, entries, sets, categories, { reference }) {
+    const step = `${name}:links`;
+    const resolve = async (paths) => {
+      const out = new Prefix(LINKS_MAX_BYTES);
+      const record = await ctx.exec(linksArgv(), {
+        name: step, timeoutMs: SNAPSHOT_TIMEOUT_MS, stdin: Buffer.from(`${paths.join('\0')}\0`, 'latin1'), tee: out
+      });
+      if (record.exitCode === 4 && reference) {
+        throw new RequesterError([{
+          code: 'IMAGE_TOOL_MISSING', path: '/spec/env/image', detail: 'the env image has no realpath (GNU coreutils), which the runner needs to resolve the watched links'
+        }]);
+      }
+      if (record.exitCode !== 0) throw runnerError(step, `the watched links could not be resolved (exit ${record.exitCode})`);
+      if (out.truncated) throw new WatchTooLarge(`the watched links' resolution exceeds ${LINKS_MAX_BYTES} bytes`);
+      const parsed = parseLinks(out.bytes(), paths);
+      if (!parsed.ok) throw runnerError(step, `the watched links' resolution could not be read: ${parsed.reason}`);
+      return parsed.answers;
+    };
+    return watchLinks(entries, sets, { config: this.ref.config, testGlobs: this.testGlobs, patchPaths: this.patchPaths, categories }, resolve);
   }
 
   fail(category, detail, paths = []) {
@@ -560,12 +842,19 @@ class Watch {
 
   async compareFiles(ctx, name, label, first) {
     const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(this.ref.config));
-    if (m.overflow) {
-      const detail = `${label}: the watched paths exceed ${MANIFEST_MAX_BYTES} bytes of listing`;
-      for (const c of ['protected', 'framework', 'dependencies']) this.fail(c, detail);
+    const overflow = (reason) => {
+      for (const c of ['protected', 'framework', 'dependencies']) this.fail(c, `${label}: ${reason}`);
       return null;
-    }
+    };
+    if (m.overflow) return overflow(m.reason);
     const sets = classify(m.entries, this.watchArgs());
+    let links;
+    try {
+      links = await this.links(ctx, name, m.entries, sets, LINK_CATEGORIES, { reference: false });
+    } catch (err) {
+      if (err instanceof WatchTooLarge) return overflow(err.message);
+      throw err;
+    }
     const compare = (category, before, after) => {
       const changed = changedPaths(before, after);
       if (changed.length) {
@@ -580,6 +869,13 @@ class Watch {
     // The first run's artifacts are what the later ones are held to (none when its listing overflowed: already a failure).
     if (first) this.artifacts = sets.artifacts;
     else if (this.artifacts) compare('framework', this.artifacts, sets.artifacts);
+    // A watched link a run left leading where builds and runs write: for a set held to the reference its entry changed
+    // too; for the artifacts after run 1 (the later runs' reference) this is the failure.
+    for (const u of links.uncovered) {
+      const category = u.category === 'artifacts' ? 'framework' : u.category;
+      this.fail(category, `${label}: ${u.link} -> ${u.target} is a watched link into ${u.where}`);
+      this.changed[category].add(u.link);
+    }
     return m.entries;
   }
 
@@ -852,7 +1148,8 @@ function integrityDetail(failures) {
 }
 
 module.exports = {
-  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, MANIFEST_MAX_BYTES, CONFIG_MAX_BYTES, TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
-  parseFramework, parseManifest, classify, changedPaths, displayPath, frameworkArgv, manifestArgv, Watch,
+  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
+  TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
+  parseFramework, parseManifest, parseLinks, classify, watchLinks, WatchTooLarge, changedPaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };
