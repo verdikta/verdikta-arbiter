@@ -107,9 +107,10 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
     'vcr-framework', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
-    'vcr-poc', 'vcr-cleanup', 'vcr-framework', 'vcr-manifest',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-framework', 'vcr-manifest',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-framework', 'vcr-manifest'
+    // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework'
   ]);
   const manifests = sb.execs().filter((d) => d.kind === 'vcr-manifest');
   // Every snapshot is hermetic (nothing of the image's environment reaches find or sha256sum).
@@ -454,5 +455,39 @@ test('the facts and gates make a valid verdikta.claim-report/1 on every outcome 
     if (trusted !== null) assert.equal(isTrustedPassingEvidence(report), trusted, what);
     else assert.equal(report.poc, null, what);
     if (report.fix.applies === 'pass') assert.notEqual(report.fix.builds, 'not-run', `${what}: R6-F1`);
+  }
+});
+
+// ------------------------------------------------------------------- round 1
+
+test('A3a R1-F3: a forge in the work tree is measured before it runs; one a run replaced is never run for its configuration', async () => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  const framework = (d, box) => ({ stdout: `vcr-forge /work/bin/forge\nvcr-path /work/bin:/usr/bin:/bin\nvcr-real /work/bin/forge\n${d.argv[5] === 'noconfig' ? '' : forgeConfig(box.tree)}` });
+  const replace = (d, k, box) => { if (k === 1) set(box, '/work/bin/forge', '#!/bin/sh\n# restores itself, then execs the real forge\n'); return { exitCode: 1, stdout: drainFails() }; };
+  const sb = claimSandbox({ onBox: (box) => set(box, '/work/bin/forge', 'ELF'), poc: [replace, drainFails(), drainFails()], scripts: { 'vcr-framework': framework } });
+  const r = await runClaim(sb);
+  assertIntegrityFails(r, ['frameworkUnchanged'], /run 1: bin\/forge changed/);
+  assert.match(r.gates.integrity.detail, /forge's executable \/work\/bin\/forge changed; it was not run/);
+  const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
+  assert.equal(probes[0].argv[5], undefined, 'the reference runs forge config');
+  assert.equal(probes[1].argv[5], 'noconfig', 'after run 1, the replaced forge is not executed');
+  // Measured first: the manifest after each run comes before that run's probe.
+  const order = sb.execs().map(label);
+  assert.ok(order.indexOf('vcr-manifest', order.indexOf('vcr-poc')) < order.indexOf('vcr-framework', order.indexOf('vcr-poc')));
+});
+
+test('A3a R1-F6: claimedObservable reads forge\'s whole message as well as the report\'s form (past 2,000 characters, absolute paths)', async () => {
+  const long = drainFails(`${'x'.repeat(2100)} vault drained at /work/src/Vault.sol`);
+  for (const observable of [
+    'test_drain fails with "vault drained at /work/src/Vault.sol"',
+    'test_drain fails with "xxxx"'
+  ]) {
+    const r = await runClaim(claimSandbox({ poc: [long, long, long] }), claimRequest({ finding: finding({ observable }) }));
+    assert.equal(r.gates.claimedObservable.status, 'pass', `${observable}: ${show(r)}`);
+  }
+  const short = drainFails('balance wrong in /work/src/Vault.sol');
+  for (const observable of ['test_drain fails with "in src/Vault.sol"', 'test_drain fails with "in /work/src/Vault.sol"']) {
+    const r = await runClaim(claimSandbox({ poc: [short, short, short] }), claimRequest({ finding: finding({ observable }) }));
+    assert.equal(r.gates.claimedObservable.status, 'pass', `${observable}: ${show(r)}`);
   }
 });

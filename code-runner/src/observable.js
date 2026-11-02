@@ -14,11 +14,13 @@
  *   At least one must be named, and every one named must be a test the
  *   patch added (which, the PoC having reproduced, failed on every run).
  * - The observable appears in the recorded failure: the observable's text
- *   in double quotes, each fragment of it, appears in the recorded failure
- *   message of a named test on every run; or, when it quotes nothing, the
- *   recorded failure message of a named test (the same on every run)
- *   appears in the observable as written. Whitespace runs compare as one
- *   space; nothing else is normalised.
+ *   in double quotes, each fragment of it, appears in the failure message of
+ *   a named test on every run; or, when it quotes nothing, the failure
+ *   message of a named test (the same on every run) appears in the
+ *   observable as written. The message is forge's own, whole, or the form
+ *   the report carries (repository-relative paths, at most 2,000
+ *   characters): either matches. Whitespace runs compare as one space;
+ *   nothing else is normalised.
  *
  * The rule is for the hunter tool to follow (P5): name the test, quote the
  * message forge prints.
@@ -46,7 +48,8 @@ function listNames(names) {
 /**
  * @param {object} o
  * @param {object} o.finding - finding.json
- * @param {Array<{id:string, messages:Array<string|null>}>} o.tests - the tests the patch added, with each run's failure message
+ * @param {Array<{id:string, messages:Array<string|null>, recorded?:Array<string|null>}>} o.tests - the tests the patch added, with
+ *   each run's failure message as forge wrote it (`messages`) and as the report carries it (`recorded`)
  * @param {Iterable<string>} o.knownNames - function names of every test the runner knows of
  * @returns {{status:'pass'|'fail', detail:string, named:string[]}}
  */
@@ -71,24 +74,26 @@ function claimedObservable({ finding, tests, knownNames }) {
   const other = named.filter((n) => !added.has(n));
   if (other.length) return fail(`finding.json names ${other[0]}, which is not a test the patch added that failed`, named);
   const namedTests = named.flatMap((n) => added.get(n));
-  const messages = (t) => t.messages.map((m) => (typeof m === 'string' ? squash(m) : null));
+  // Each run's message in both forms: forge's whole message, and the report's.
+  const forms = (t) => [t.messages, t.recorded || t.messages].map((list) => list.map((m) => (typeof m === 'string' ? squash(m) : null)));
   const fragments = [...observable.matchAll(QUOTED)].map((m) => squash(m[1])).filter((f) => f !== '');
   const who = named.join(', ');
   if (fragments.length) {
     for (const f of fragments) {
-      const seen = namedTests.some((t) => messages(t).every((m) => m !== null && m.includes(f)));
+      const seen = namedTests.some((t) => forms(t).some((ms) => ms.every((m) => m !== null && m.includes(f))));
       if (!seen) return fail(`"${f.slice(0, 300)}" is not in the recorded failure of ${who} on every run`, named);
     }
     return { status: 'pass', detail: `finding.json names ${who}; each quoted observable is in its recorded failure on every run`, named };
   }
   const plain = squash(observable);
   for (const t of namedTests) {
-    const ms = messages(t);
-    if (ms[0] !== null && ms[0] !== '' && ms.every((m) => m === ms[0]) && plain.includes(ms[0])) {
-      return { status: 'pass', detail: `finding.json names ${who}; its recorded failure is in the observable`, named };
+    for (const ms of forms(t)) {
+      if (ms[0] !== null && ms[0] !== '' && ms.every((m) => m === ms[0]) && plain.includes(ms[0])) {
+        return { status: 'pass', detail: `finding.json names ${who}; its recorded failure is in the observable`, named };
+      }
     }
   }
-  const first = namedTests[0] ? messages(namedTests[0])[0] : null;
+  const first = namedTests[0] ? forms(namedTests[0])[1][0] : null;
   return fail(`poc.observable quotes no failure text, and the recorded failure of ${who}${first ? ` ("${first.slice(0, 300)}")` : ''} is not in it`, named);
 }
 

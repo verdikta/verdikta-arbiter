@@ -477,7 +477,7 @@ function recordsById(suites, keep = () => true) {
 function entryOf(got) {
   if (!got || got.length === 0) return { result: 'missing', kind: null, message: null };
   if (got.length > 1) return { result: 'duplicate', kind: null, message: null, records: got.length };
-  return { ...forge.classifyRecord(got[0]), message: normaliseMessage(got[0].message) };
+  return { ...forge.classifyRecord(got[0]), message: normaliseMessage(got[0].message), rawMessage: typeof got[0].message === 'string' ? got[0].message : null };
 }
 
 /** The consistency checks of one run (§9.5 checks 2 and 3), as `label: detail` failures. */
@@ -513,7 +513,7 @@ function claimSteps(request, limits) {
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
   const box = newBox();
   const state = {
-    done: false, halted: false, touched: null, added: null, prepared: null, pocCommit: null, watch: null,
+    done: false, halted: false, touched: null, added: null, addedIds: null, prepared: null, pocCommit: null, watch: null,
     fix: null, integrity: { tier: 'A', poc: null, fix: null }
   };
 
@@ -633,6 +633,7 @@ function claimSteps(request, limits) {
       }
     }
     const ids = [...signatures.keys()].sort();
+    state.addedIds = ids;
     if (ids.length > 0) {
       const FILES = forge.filesGlob(files);
       const TEST_IDS = forge.testIdsRegex([...signatures.values()]);
@@ -697,7 +698,9 @@ function claimSteps(request, limits) {
       : integrity.integrityDetail(checks.failures));
     if (verdict[0] === 'pass') {
       const known = new Set([...pocNames, ...request.baseline.tests.map((t) => functionName(t.id))]);
-      const o = claimedObservable({ finding: request.finding, tests: ids.map((id) => ({ id, messages: results.get(id).map((e) => e.message) })), knownNames: known });
+      // forge's own messages and the report's (repository-relative, bounded) forms of them (R1-F6).
+      const tests = ids.map((id) => ({ id, messages: results.get(id).map((e) => e.rawMessage), recorded: results.get(id).map((e) => e.message) }));
+      const o = claimedObservable({ finding: request.finding, tests, knownNames: known });
       ctx.gate('claimedObservable', o.status, 'junit', o.detail);
     }
     state.done = true;
@@ -709,8 +712,10 @@ function claimSteps(request, limits) {
     if (state.fix) {
       const r = await state.fix;
       if (r.error) throw r.error;
-      fix = r.value.fact;
-      state.integrity.fix = r.value.integrity;
+      // Held to the tests the patch added as the PoC's run 1 reported them (R1-F1).
+      const settled = r.value.settle(state.addedIds);
+      fix = settled.fact;
+      state.integrity.fix = settled.integrity;
     }
     ctx.fact('fix', fix);
     ctx.fact('integrity', { ...state.integrity });

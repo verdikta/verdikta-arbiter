@@ -97,9 +97,9 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     // A3a: the integrity checks' reference (forge, its configuration, the watched files), then a snapshot after each run.
     'vcr-framework', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
-    'vcr-poc', 'vcr-cleanup', 'vcr-framework', 'vcr-manifest', 'git reset', 'vcr-manifest',
-    'vcr-poc', 'vcr-cleanup', 'vcr-framework', 'vcr-manifest', 'git reset', 'vcr-manifest',
-    'vcr-poc', 'vcr-cleanup', 'vcr-framework', 'vcr-manifest'
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'git reset', 'vcr-manifest',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'git reset', 'vcr-manifest',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework'
   ]);
   const poc = r.facts.poc;
   assert.equal(poc.testCount, 1);

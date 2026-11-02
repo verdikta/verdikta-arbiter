@@ -89,7 +89,7 @@ test('fix check: in a second sandbox, fix.patch applies (source allowed), builds
   assert.deepEqual(applies.map((d) => d.stdin.toString()), [POC_PATCH, FIX_PATCH], 'the PoC, then the fix on top of it');
   assert.deepEqual(sb.fixExecs().filter((d) => d.kind === 'git' && d.sub[0] === 'commit').map((d) => d.sub[d.sub.length - 1]), ['poc.patch', 'fix.patch']);
   const tail = fixOrder.slice(fixOrder.lastIndexOf('git rev-parse') + 1);
-  assert.deepEqual(tail, ['vcr-framework', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-suite', 'vcr-cleanup', 'vcr-framework', 'vcr-manifest']);
+  assert.deepEqual(tail, ['vcr-framework', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-suite', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework']);
   const [suite] = sb.fixExecs().filter((d) => d.kind === 'vcr-suite');
   assert.deepEqual(suite.argv, ['/bin/sh', '-c', 'set -f; forge test "$@"', 'vcr-suite', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED], 'commands.test with the reporter flags');
   assert.equal(suite.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
@@ -273,4 +273,39 @@ test('admission through the server: POST /v1/runs with fix.patch asks for two sa
   }
   assert.deepEqual(admitted, [1, 2]);
   assert.deepEqual(seen, [4096, 4096], 'each sandbox keeps the spec\'s own memory limit');
+});
+
+// ------------------------------------------------------------------- round 1
+
+test('A3a R1-F1: the fix run is held to the tests the PoC\'s run 1 added: a PoC suite whose setUp now fails is a gap, not a pass', async () => {
+  const two = junit([
+    { suite: 'test/Exploit.t.sol:ExploitTest', cases: [{ name: 'test_drain()', failure: 'vault drained' }] },
+    { suite: 'test/Exploit.t.sol:ExploitTwo', cases: [{ name: 'test_two()', failure: 'vault drained twice' }] }
+  ]);
+  const suite = junit([
+    { suite: 'test/Exploit.t.sol:ExploitTest', cases: [{ name: 'test_drain()' }] },
+    { suite: 'test/Exploit.t.sol:ExploitTwo', cases: [{ name: 'setUp()', failure: 'cannot deploy with the fix' }] },
+    { suite: 'test/Vault.t.sol:VaultTest', cases: [{ name: 'test_deposit()' }] }
+  ]);
+  const r = await runClaim(claimSandbox({ poc: [two, two, two], fix: { suite } }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass');
+  assert.equal(r.facts.fix.pocPasses, false, 'test_two() never ran with the fix');
+  assert.equal(r.facts.fix.integrity.identityComplete, false);
+  const detail = r.facts.integrity.fix.failures.find((f) => f.check === 'identityComplete').detail;
+  assert.match(detail, /test\/Exploit\.t\.sol > ExploitTwo > test_two\(\) has no record/);
+  assert.match(detail, /setUp\(\) failed in test\/Exploit\.t\.sol:ExploitTwo: its tests did not run/);
+  assert.deepEqual(r.facts.fix.suite.pocTests.map((t) => [t.id.split(' > ')[1], t.result]), [['ExploitTest', 'pass'], ['ExploitTwo', 'missing']]);
+});
+
+test('A3a R1-F2: fix.patch paths are matched by their own (UTF-8) names: a protected src/café.sol is refused', async () => {
+  const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', 'src/café.sol'] } });
+  const r = await runClaim(claimSandbox({ fix: { nameStatus: 'M\0src/café.sol\0', numstat: '1\t1\tsrc/café.sol\0' } }), claimRequest({ spec }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.facts.fix.applies, 'fail');
+  assert.match(r.facts.fix.detail.applies, /src\/café\.sol under paths\.protected/);
+  // A test directory with a non-ASCII name is matched the same way.
+  const spec2 = forgeSpec({ paths: { tests: ['test/**', 'tést/**'], protected: ['foundry.toml'] } });
+  const r2 = await runClaim(claimSandbox({ fix: { nameStatus: 'M\0tést/A.t.sol\0', numstat: '1\t1\ttést/A.t.sol\0' } }), claimRequest({ spec: spec2 }));
+  assert.match(r2.facts.fix.detail.applies, /tést\/A\.t\.sol under paths\.tests/);
 });

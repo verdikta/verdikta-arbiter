@@ -234,6 +234,7 @@ test('tamper flags: ordinary forge tests raise none (forge-std imports, inline f
     '    function test_drain() public {',
     '        string memory data = vm.readFile("test/fixtures/state.json");',
     '        vm.writeFile("state/ran", "1");',
+    '        vm.copyFile("lib/pkg/fixture.json", "state/input.json");',
     '        console.log("vault balance", address(v).balance);',
     '        require(ok, "the kill switch did not trip");',
     '        assertEq(v.balanceOf(address(this)), 1, "proc: drained");',

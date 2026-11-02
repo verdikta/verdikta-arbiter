@@ -95,10 +95,14 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     // git's stats once it applied fix.patch; zeros (applied: false) when it never did (the report's diff.fix is set whenever a fix is present).
     diff: { tier: 'A', files: 0, added: 0, removed: 0, binaryFiles: 0, applied: false }
   };
-  const finish = (integrityFact = null) => ({
-    fact: { ...fact, checkout: facts.checkout, leftoverProcesses: facts.leftoverProcesses || { tier: 'A', steps: [] } },
-    integrity: integrityFact
-  });
+  const finish = (integrityFact = null) => {
+    const done = {
+      fact: { ...fact, checkout: facts.checkout, leftoverProcesses: facts.leftoverProcesses || { tier: 'A', steps: [] } },
+      integrity: integrityFact
+    };
+    // A check that ended before the suite has nothing left to settle.
+    return { ...done, settle: () => done };
+  };
 
   await kit.recordProcesses(ctx, box);
   const checkout = await forceCheckout(ctx, { base });
@@ -127,10 +131,10 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   }
   const fixTouched = await kit.readTouched(ctx, 'fixpatch', 'fix.patch');
   fact.diff = { ...fixTouched.diff, applied: true };
+  // git's -z names, already UTF-8 (patch.js), matched as the PoC's path gate matches them (R1-F2).
   const paths = fixTouched.touched.map((t) => t.path);
-  const name = (p) => Buffer.from(p, 'latin1').toString('utf8');
-  const inTests = kit.sortedUnique(paths.filter((p) => matchesAny(name(p), testGlobs)));
-  const inProtected = protectedGlobs.length ? kit.sortedUnique(paths.filter((p) => matchesAny(name(p), protectedGlobs))) : [];
+  const inTests = kit.sortedUnique(paths.filter((p) => matchesAny(p, testGlobs)));
+  const inProtected = protectedGlobs.length ? kit.sortedUnique(paths.filter((p) => matchesAny(p, protectedGlobs))) : [];
   const unreportable = kit.sortedUnique(paths.filter((p) => !reportablePath(p)));
   if (inTests.length || inProtected.length || unreportable.length) {
     const parts = [];
@@ -159,22 +163,26 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
   const pocFiles = new Set(pocTouched.touched.filter((t) => t.status !== 'D' && t.path.endsWith('.sol')).map((t) => t.path));
   const all = kit.recordsById(run.suites);
-  const added = run.suites ? [...kit.recordsById(run.suites, (id, s) => pocFiles.has(s.file)).keys()].filter((id) => !baselineIds.has(id)).sort() : [];
-  const identity = [];
-  const pocTests = added.map((id) => {
-    const entry = kit.entryOf(all.get(id));
-    const gap = integrity.identityGap(id, entry);
-    if (gap) identity.push(`the suite: ${gap}`);
-    return { id, result: entry.result };
-  });
-  fact.pocPasses = run.suites !== null && added.length > 0 && pocTests.every((t) => t.result === 'pass');
+  // The tests the patch added, as this run reports them; settle() holds the run to the PoC's own run-1 identities
+  // when the PoC's sandbox has them (R1-F1), so a PoC test that vanishes here (its suite's setUp failing) is a gap.
+  const localIds = run.suites ? [...kit.recordsById(run.suites, (id, s) => pocFiles.has(s.file)).keys()].filter((id) => !baselineIds.has(id)).sort() : [];
+  // A PoC suite that failed before its tests ran (setUp, constructor): its tests did not run with the fix.
+  const harness = [];
+  for (const s of run.suites || []) {
+    if (!pocFiles.has(s.file)) continue;
+    for (const c of s.cases) {
+      if (forge.isHarnessRecord(c.name) && (c.outcome === 'failure' || c.outcome === 'error')) harness.push(`${c.name} failed in ${s.file}:${s.contract}`);
+    }
+  }
+  harness.sort();
 
+  const stableIdentity = [];
   const regressions = [];
   for (const id of [...new Set(request.baseline.stable)].sort()) {
     const entry = run.suites ? kit.entryOf(all.get(id)) : { result: 'error' };
     if (run.suites) {
       const gap = integrity.identityGap(id, entry);
-      if (gap) identity.push(`the suite: ${gap}`);
+      if (gap) stableIdentity.push(`the suite: ${gap}`);
     }
     if (entry.result !== 'pass') regressions.push(id);
   }
@@ -189,13 +197,32 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     touched: [...pocTouched.touched, ...fixTouched.touched],
     commands: spec.commands
   });
-  const checks = integrity.integrityOf({ identity, summary, exit, ...watch.failures, tamperFlags: flags });
-  fact.integrity = checks.integrity;
-  fact.suite = {
-    tier: 'B', command: 'test', junit: run.junit, reason: run.reason, exitCode: run.exitCode,
-    pocCommit, pocTests: pocTests.slice(0, MAX_TESTS), testCount: pocTests.length
-  };
-  return finish({ failures: checks.failures, changed: watch.changedFacts() });
+
+  /**
+   * pocPasses and the check's integrity, once the PoC's own run 1 named the
+   * tests the patch added (`expected`; this run's own when it has none).
+   */
+  function settle(expected) {
+    const ids = expected && expected.length ? [...expected].sort() : localIds;
+    const identity = [];
+    const pocTests = ids.map((id) => {
+      const entry = run.suites ? kit.entryOf(all.get(id)) : { result: 'error' };
+      const gap = run.suites ? integrity.identityGap(id, entry) : null;
+      if (gap) identity.push(`the suite: ${gap}`);
+      return { id, result: entry.result };
+    });
+    for (const h of harness) identity.push(`the suite: ${h}: its tests did not run`);
+    identity.push(...stableIdentity);
+    fact.pocPasses = run.suites !== null && ids.length > 0 && harness.length === 0 && pocTests.every((t) => t.result === 'pass');
+    const checks = integrity.integrityOf({ identity, summary, exit, ...watch.failures, tamperFlags: flags });
+    fact.integrity = checks.integrity;
+    fact.suite = {
+      tier: 'B', command: 'test', junit: run.junit, reason: run.reason, exitCode: run.exitCode,
+      pocCommit, pocTests: pocTests.slice(0, MAX_TESTS), testCount: pocTests.length, harnessErrors: harness.slice(0, MAX_TESTS)
+    };
+    return finish({ failures: checks.failures, changed: watch.changedFacts() });
+  }
+  return { ...settle(null), settle };
 }
 
 module.exports = { runFixCheck, notRunFix };

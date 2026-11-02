@@ -95,6 +95,10 @@ const FRAMEWORK_SCRIPT = [
   'printf "vcr-path %s\\n" "$PATH"',
   'x=${1:-$f}',
   '[ -n "$x" ] || exit 3',
+  // Where the forge to run really is (a link into the work tree is the work tree's file): coreutils by absolute path.
+  'r=$x; [ -x /usr/bin/readlink ] && r=$(/usr/bin/readlink -f -- "$x" 2>/dev/null) || r=$x',
+  'printf "vcr-real %s\\n" "$r"',
+  '[ "$2" = noconfig ] && exit 0',
   'exec "$x" config --json'
 ].join('\n');
 
@@ -150,22 +154,24 @@ function displayPath(key) {
  */
 function parseFramework(buf) {
   const text = buf.toString('utf8');
-  const m = /^vcr-forge ([^\n]*)\nvcr-path ([^\n]*)\n/.exec(text);
+  const m = /^vcr-forge ([^\n]*)\nvcr-path ([^\n]*)\n(?:vcr-real ([^\n]*)\n)?/.exec(text);
   if (!m) return { ok: false, reason: 'the framework probe printed no forge path' };
   const forgePath = m[1];
+  const realPath = m[3] !== undefined ? m[3] : forgePath;
   const pathDirs = m[2].split(':').filter((d) => d !== '').map((d) => (d.startsWith('/') ? d.replace(/\/+$/, '') : `${WORK}/${d.replace(/^\.\/?/, '').replace(/\/+$/, '')}`.replace(/\/$/, '')));
   const configText = buf.subarray(Buffer.byteLength(m[0])).toString('utf8');
   let parsed;
   try {
     parsed = JSON.parse(configText);
   } catch (_) {
-    return { ok: false, reason: '`forge config --json` printed no JSON', forgePath };
+    return { ok: false, reason: '`forge config --json` printed no JSON', forgePath, realPath };
   }
   if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return { ok: false, reason: '`forge config --json` printed no object', forgePath };
   const str = (v) => (typeof v === 'string' ? v : null);
   return {
     ok: true,
     forgePath,
+    realPath,
     path: m[2],
     pathDirs,
     configSha256: sha256(buf.subarray(Buffer.byteLength(m[0]))),
@@ -242,7 +248,7 @@ function describe(e) {
  * @returns {{protected:Map, dependencies:Map, framework:Map, artifacts:Map, repository:Map}} each relative path (latin1) → description;
  *   $HOME entries as `~/…`, the repository's as `.git/…`
  */
-function classify(entries, { protectedGlobs = [], config, forgePath = '', pathDirs = [] }) {
+function classify(entries, { protectedGlobs = [], config, forgePath = '', realPath = '', pathDirs = [] }) {
   const sets = { protected: new Map(), dependencies: new Map(), framework: new Map(), artifacts: new Map(), repository: new Map() };
   const deps = [...new Set([...config.libs.map(plainDir).filter(Boolean), ...DEPENDENCY_DIRS])];
   const out = plainDir(config.out);
@@ -250,7 +256,7 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', pathDi
   // forge's compile cache names the artifact files a later run loads instead of compiling: it is held like them.
   const filesCache = cache ? `${cache}/solidity-files-cache.json` : null;
   const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
-  const tools = [inWork(forgePath), config.solc && !config.solc.startsWith('/') ? plainDir(config.solc) : inWork(config.solc)].filter(Boolean);
+  const tools = [inWork(forgePath), inWork(realPath), config.solc && !config.solc.startsWith('/') ? plainDir(config.solc) : inWork(config.solc)].filter(Boolean);
   const pathRoots = pathDirs.map((d) => (d === WORK ? '' : inWork(d))).filter((d) => d !== null);
   for (const p of [...entries.keys()].sort()) {
     const d = describe(entries.get(p));
@@ -303,8 +309,8 @@ function changeWord(before, after, p) {
 
 // ------------------------------------------------------------ the snapshots
 
-function frameworkArgv(forgePath = '') {
-  return ['/bin/sh', '-c', FRAMEWORK_SCRIPT, 'vcr-framework', forgePath];
+function frameworkArgv(forgePath = '', { config = true } = {}) {
+  return ['/bin/sh', '-c', FRAMEWORK_SCRIPT, 'vcr-framework', forgePath, ...(config ? [] : ['noconfig'])];
 }
 
 function manifestArgv(roots, prunes = []) {
@@ -316,9 +322,9 @@ function runnerError(step, detail) {
   return new Abstain(ABSTAIN.RUNNER_ERROR, detail, { step });
 }
 
-async function probe(ctx, name, forgePath) {
+async function probe(ctx, name, forgePath, { config = true } = {}) {
   const out = new Prefix(CONFIG_MAX_BYTES);
-  const record = await ctx.exec(frameworkArgv(forgePath), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, env: forge.forgeEnv(), tee: out });
+  const record = await ctx.exec(frameworkArgv(forgePath, { config }), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, env: forge.forgeEnv(), tee: out });
   return { exitCode: record.exitCode, truncated: out.truncated, bytes: out.bytes(), stderr: record.stderr ? record.stderr.text : '' };
 }
 
@@ -359,8 +365,8 @@ class Watch {
   }
 
   watchArgs() {
-    const { config, forgePath, pathDirs } = this.ref;
-    return { protectedGlobs: this.protectedGlobs, config, forgePath, pathDirs };
+    const { config, forgePath, realPath, pathDirs } = this.ref;
+    return { protectedGlobs: this.protectedGlobs, config, forgePath, realPath, pathDirs };
   }
 
   /** Trees the listing skips: forge's ABI cache (rewritten on every run) and the $HOME caches. */
@@ -395,7 +401,7 @@ class Watch {
         detail: `the work tree's listing exceeds ${MANIFEST_MAX_BYTES} bytes: the runner cannot watch it for changes during a run`
       }]);
     }
-    this.ref = { forgePath: parsed.forgePath, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config };
+    this.ref = { forgePath: parsed.forgePath, realPath: parsed.realPath, pathDirs: parsed.pathDirs, configSha256: parsed.configSha256, config: parsed.config };
     this.ref.sets = classify(m.entries, this.watchArgs());
     this.repository = this.ref.sets.repository;
   }
@@ -412,20 +418,20 @@ class Watch {
    */
   async afterRun(ctx, label, { first }) {
     const name = `${this.prefix}:${label.replace(/\s+/g, '-')}`;
-    const p = await probe(ctx, `${name}:framework`, this.ref.forgePath);
+    // The files first: forge runs (for its configuration) only once they are measured, and never when it is a file in
+    // the work tree whose bytes the run changed (R1-F3): a replaced forge could restore what the listing would see.
+    const sets = await this.compareFiles(ctx, name, label, first);
+    const real = typeof this.ref.realPath === 'string' && this.ref.realPath.startsWith(`${WORK}/`) ? this.ref.realPath.slice(WORK.length + 1) : null;
+    const runnable = real === null || (sets !== null && this.ref.sets.framework.get(real) === sets.framework.get(real));
+    const p = await probe(ctx, `${name}:framework`, this.ref.forgePath, { config: runnable });
     const parsed = p.truncated ? { ok: false, reason: 'more than 1 MiB' } : parseFramework(p.bytes);
-    const probeFailures = [];
     if (parsed.forgePath !== undefined && parsed.forgePath !== this.ref.forgePath) {
-      probeFailures.push(`${label}: forge resolves to ${parsed.forgePath || 'nothing'}, not ${this.ref.forgePath}`);
+      this.fail('framework', `${label}: forge resolves to ${parsed.forgePath || 'nothing'}, not ${this.ref.forgePath}`);
     }
-    if (p.exitCode !== 0) probeFailures.push(`${label}: forge config exited ${p.exitCode}${firstLine(p.stderr) ? `: ${firstLine(p.stderr)}` : ''}`);
-    else if (!parsed.ok) probeFailures.push(`${label}: forge's configuration could not be read: ${parsed.reason}`);
-    else if (parsed.configSha256 !== this.ref.configSha256) probeFailures.push(`${label}: forge's resolved configuration changed (\`forge config --json\`)`);
-    try {
-      await this.compareFiles(ctx, name, label, first);
-    } finally {
-      for (const d of probeFailures) this.fail('framework', d);
-    }
+    if (!runnable) this.fail('framework', `${label}: forge's executable ${this.ref.realPath} changed; it was not run`);
+    else if (p.exitCode !== 0) this.fail('framework', `${label}: forge config exited ${p.exitCode}${firstLine(p.stderr) ? `: ${firstLine(p.stderr)}` : ''}`);
+    else if (!parsed.ok) this.fail('framework', `${label}: forge's configuration could not be read: ${parsed.reason}`);
+    else if (parsed.configSha256 !== this.ref.configSha256) this.fail('framework', `${label}: forge's resolved configuration changed (\`forge config --json\`)`);
   }
 
   async compareFiles(ctx, name, label, first) {
@@ -433,7 +439,7 @@ class Watch {
     if (m.overflow) {
       const detail = `${label}: the watched paths exceed ${MANIFEST_MAX_BYTES} bytes of listing`;
       for (const c of ['protected', 'framework', 'dependencies']) this.fail(c, detail);
-      return;
+      return null;
     }
     const sets = classify(m.entries, this.watchArgs());
     const compare = (category, before, after) => {
@@ -450,6 +456,7 @@ class Watch {
     // The first run's artifacts are what the later ones are held to (none when its listing overflowed: already a failure).
     if (first) this.artifacts = sets.artifacts;
     else if (this.artifacts) compare('framework', this.artifacts, sets.artifacts);
+    return sets;
   }
 
   /** After the runner's own reset: its repository is read again, as the next run's reference for it. */
@@ -551,7 +558,7 @@ function identityGap(id, entry) {
 /** File cheatcodes that write, and which of their arguments are paths. */
 const WRITE_CHEATCODES = Object.freeze({
   writeFile: [0], writeFileBinary: [0], writeLine: [0], writeJson: [1], writeToml: [1],
-  removeFile: [0], removeDir: [0], createDir: [0], copyFile: [0, 1]
+  removeFile: [0], removeDir: [0], createDir: [0], copyFile: [1]
 });
 const WRITE_CALL = new RegExp(`\\.\\s*(${Object.keys(WRITE_CHEATCODES).join('|')})\\s*\\(`, 'g');
 /** forge's report is its stdout: a path that reaches it, or another process's descriptors. */

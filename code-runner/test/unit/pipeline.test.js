@@ -272,6 +272,31 @@ test('a second sandbox (the fix check) gets the same flags and is torn down too'
   assert.equal(active.size, 0);
 });
 
+test('A3a R1-F4: a step that fails while another sandbox is still launching: the teardown waits for that launch and removes its container', async () => {
+  const events = [];
+  const docker = fakeDocker(healthyDaemon({
+    create: (args) => {
+      if (!args.includes('vcr-0123456789abcdef-2')) return { stdout: 'c1\n' };
+      return new Promise((resolve) => setTimeout(() => { events.push('create 2 done'); resolve({ stdout: 'c2\n' }); }, 300));
+    },
+    rm: (args) => { events.push(`rm ${args.slice(3).join(' ')}`); return { stdout: '' }; }
+  }));
+  const { Abstain } = require('../../src/result');
+  const steps = [async (ctx) => {
+    ctx.openSandbox().catch(() => {});
+    await new Promise((r) => setTimeout(r, 20));
+    throw new Abstain('docker_error', 'the PoC\'s step failed', { step: 'poc' });
+  }];
+  const { result, active } = await run({ docker, steps, sandboxes: 2 });
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.detail, 'the PoC\'s step failed');
+  const created = events.indexOf('create 2 done');
+  const removed2 = events.findIndex((e) => e.startsWith('rm ') && e.includes('vcr-0123456789abcdef-2'));
+  assert.ok(created >= 0, JSON.stringify(events));
+  assert.ok(removed2 > created, `the second container is removed after its create returned: ${JSON.stringify(events)}`);
+  assert.equal(active.size, 0);
+});
+
 test('the keepalive and the GC label outlive the deadline only by a margin', async () => {
   const docker = fakeDocker(healthyDaemon());
   const before = Math.floor(Date.now() / 1000);
