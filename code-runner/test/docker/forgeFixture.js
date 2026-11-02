@@ -239,6 +239,19 @@ function addFilesPatch(files) {
   }).join('\n') + '\n');
 }
 
+/** A git patch that adds `links` (path → target) as symbolic links (mode 120000). */
+function addLinksPatch(links) {
+  return Buffer.from(Object.entries(links).map(([file, target]) => [
+    `diff --git a/${file} b/${file}`,
+    'new file mode 120000',
+    '--- /dev/null',
+    `+++ b/${file}`,
+    '@@ -0,0 +1 @@',
+    `+${target}`,
+    '\\ No newline at end of file'
+  ].join('\n')).join('\n') + '\n');
+}
+
 /**
  * A git patch that changes one file from `before` to `after`: one hunk with
  * up to three lines of context, as `git diff` writes a single change.
@@ -288,5 +301,5 @@ function pocFile(contract, body) {
 }
 
 module.exports = {
-  foundryBase, solcBytes, SOLC, REGISTRY_IMAGE, VAULT_REPO, VM_SOL, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, modifyPatch, pocFile
+  foundryBase, solcBytes, SOLC, REGISTRY_IMAGE, VAULT_REPO, VM_SOL, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile
 };

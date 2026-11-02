@@ -516,25 +516,153 @@ test('A3a R1-F3 (round 2): the executable is checked by its own entry, wherever 
   }
 });
 
-test('A3a R6-F1: what a link in the work tree points to is watched as the link is (a dependency link, a symlinked lib/ root, a tracked link to an untracked file)', async () => {
+test('A3a R6-F1: what a watched link points to is watched as the link is (a dependency link, a symlinked lib/ root with a link inside); a link outside every watched set is not followed', async () => {
   const link = (box, p, target) => box.tree.set(p, { type: 'l', target });
   const cases = [
     // lib/pkg -> ../vendor/pkg, the fixture under vendor/ untracked.
     [(box) => { link(box, '/work/lib/pkg', '../vendor/pkg'); set(box, '/work/vendor/pkg/fixture.json', '{}'); }, '/work/vendor/pkg/fixture.json', /dependenciesUnchanged \(run 2: vendor\/pkg\/fixture\.json changed/],
-    // lib itself a link (the dependency root), with a link chain inside the referent.
-    [(box) => { box.tree.delete('/work/lib/forge-std/src/Test.sol'); link(box, '/work/lib', '../third_party'); link(box, '/work/third_party/oz', '/work/vendor2/oz'); set(box, '/work/vendor2/oz/ERC20.sol', 'contract ERC20 {}'); }, '/work/vendor2/oz/ERC20.sol', /dependenciesUnchanged \(run 2: vendor2\/oz\/ERC20\.sol changed/],
-    // A link outside every set (a source file the maker links to a generated, untracked one): its referent is a dependency.
-    [(box) => { link(box, '/work/src/Gen.sol', '../gen/Gen.sol'); set(box, '/work/gen/Gen.sol', 'contract Gen {}'); }, '/work/gen/Gen.sol', /dependenciesUnchanged \(run 2: gen\/Gen\.sol changed/]
+    // lib itself a link (the dependency root), with a link inside what it leads to. (Attempt 1 wrote `lib -> ../third_party`,
+    // which the kernel resolves from /work to /third_party, outside the work tree: the case's intent is a sibling.)
+    [(box) => { box.tree.delete('/work/lib/forge-std/src/Test.sol'); link(box, '/work/lib', 'third_party'); link(box, '/work/third_party/oz', '/work/vendor2/oz'); set(box, '/work/vendor2/oz/ERC20.sol', 'contract ERC20 {}'); }, '/work/vendor2/oz/ERC20.sol', /dependenciesUnchanged \(run 2: vendor2\/oz\/ERC20\.sol changed/]
   ];
   for (const [seed, target, re] of cases) {
     const edit = (d, k, box) => { if (k === 2) set(box, target, '// changed behind the link'); return { exitCode: 1, stdout: drainFails() }; };
     const r = await runClaim(claimSandbox({ onBox: seed, poc: [edit, edit, edit] }));
     assertIntegrityFails(r, ['dependenciesUnchanged'], re);
   }
-  // A watched link that points where nothing is watched (/tmp) is refused before any claim code; an unwatched one is not.
-  const r = await runClaim(claimSandbox({ onBox: (box) => link(box, '/work/lib/tmpdep', '/tmp/dep') }));
+  // A link outside every watched set (a source file the maker links to an untracked one) is not followed (attempt 2, item
+  // 2): what it reaches is an untracked file outside the sets, which the check never watched. A maker who wants it
+  // watched lists the link under paths.protected, and then a change behind it fails protectedPathsUnchanged.
+  const gen = (box) => { link(box, '/work/src/Gen.sol', '../gen/Gen.sol'); set(box, '/work/gen/Gen.sol', 'contract Gen {}'); };
+  const editGen = (d, k, box) => { if (k === 2) set(box, '/work/gen/Gen.sol', '// changed behind the link'); return { exitCode: 1, stdout: drainFails() }; };
+  const unwatched = await runClaim(claimSandbox({ onBox: gen, poc: [editGen, editGen, editGen] }));
+  assert.equal(unwatched.gates.integrity.status, 'pass', show(unwatched));
+  const protectedSrc = claimRequest({ spec: forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', 'src/**'] } }) });
+  const watchedGen = await runClaim(claimSandbox({ onBox: gen, poc: [editGen, editGen, editGen] }), protectedSrc);
+  assertIntegrityFails(watchedGen, ['protectedPathsUnchanged'], /protectedPathsUnchanged \(run 2: gen\/Gen\.sol changed/);
+  // A watched link into /tmp is refused before any claim code, the link and its target named; an unwatched one is not.
+  const r = await runClaim(claimSandbox({ onBox: (box) => { link(box, '/work/lib/tmpdep', '/tmp/dep'); set(box, '/tmp/dep/Dep.sol', 'contract Dep {}'); } }));
   assert.equal(r.outcome, 'requester_error', show(r));
   assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
+  assert.match(r.issues[0].detail, /lib\/tmpdep -> \/tmp\/dep \(\/tmp\)/);
   const ok = await runClaim(claimSandbox({ onBox: (box) => link(box, '/work/scratch', '/tmp/scratch') }));
   assert.equal(ok.gates.integrity.status, 'pass', show(ok));
+  // /tmp is empty when the reference is taken, so such a link usually resolves to nothing then: the kernel's "nothing" is
+  // recorded, and a run that creates its target changes the link's own entry.
+  const create = (d, k, box) => { if (k === 1) set(box, '/tmp/dep/Dep.sol', 'contract Dep {}'); return { exitCode: 1, stdout: drainFails() }; };
+  const later = await runClaim(claimSandbox({ onBox: (box) => link(box, '/work/lib/tmpdep', '/tmp/dep'), poc: [create, create, create] }));
+  assertIntegrityFails(later, ['dependenciesUnchanged'], /dependenciesUnchanged \(run 1: lib\/tmpdep changed/);
+  assert.match(later.gates.integrity.detail, /lib\/tmpdep -> \/tmp\/dep is a watched link into \/tmp/);
+});
+
+// ----------------------------------------------- attempt 2: the kernel resolves the links
+
+test('A3a R6-F1 (round 7): `lib/pkg -> ../bridge/../payload` with `bridge -> vendor/nested`: the kernel\'s answer (vendor/payload) is watched, not the lexical one', async () => {
+  const seed = (box) => {
+    box.tree.set('/work/lib/pkg', { type: 'l', target: '../bridge/../payload' });
+    box.tree.set('/work/bridge', { type: 'l', target: 'vendor/nested' });
+    set(box, '/work/vendor/nested/.keep', '');
+    set(box, '/work/vendor/payload/fixture.json', '{}');
+    set(box, '/work/payload/fixture.json', '{}');
+  };
+  const edit = (p) => (d, k, box) => { if (k === 2) set(box, p, '{"drained":true}'); return { exitCode: 1, stdout: drainFails() }; };
+  const sb = claimSandbox({ onBox: seed, poc: [edit('/work/vendor/payload/fixture.json'), edit('/work/vendor/payload/fixture.json'), edit('/work/vendor/payload/fixture.json')] });
+  const r = await runClaim(sb);
+  assertIntegrityFails(r, ['dependenciesUnchanged'], /dependenciesUnchanged \(run 2: vendor\/payload\/fixture\.json changed/);
+  // The runner asked the sandbox about the watched link only (bridge is in no set), the path on stdin, hermetically.
+  const links = sb.execs().filter((d) => d.kind === 'vcr-links');
+  assert.equal(links.length, 4, 'the reference and after each run');
+  for (const l of links) {
+    assert.equal(l.stdin.toString('latin1'), '/work/lib/pkg\0');
+    assert.deepEqual(l.launched.slice(0, 2), ['/usr/bin/env', '-i']);
+  }
+  // The lexical answer (payload/) is nobody's dependency: changing it is not a change of the watched sets.
+  const decoy = edit('/work/payload/fixture.json');
+  const ok = await runClaim(claimSandbox({ onBox: seed, poc: [decoy, decoy, decoy] }));
+  assert.equal(ok.gates.integrity.status, 'pass', show(ok));
+});
+
+test('A3a R6-F1 (round 7): a watched link into forge\'s cache directory is IMAGE_WATCH_LINK_UNCOVERED, the link and its target named', async () => {
+  const r = await runClaim(claimSandbox({ onBox: (box) => { box.tree.set('/work/lib/cpkg', { type: 'l', target: '../cache/pkg' }); set(box, '/work/cache/pkg/Dep.sol', 'contract Dep {}'); } }));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
+  assert.match(r.issues[0].detail, /lib\/cpkg -> \/work\/cache\/pkg \(forge's cache directory \(cache\)\)/);
+});
+
+test('links whose targets change between runs: an unwatched link on the way retargeted during a run changes the watched link\'s own entry', async () => {
+  const seed = (box) => {
+    box.tree.set('/work/lib/pkg', { type: 'l', target: '../bridge/pkg' });
+    box.tree.set('/work/bridge', { type: 'l', target: 'vendor' });
+    set(box, '/work/vendor/pkg/X.sol', 'contract X {}');
+    set(box, '/work/vendor2/pkg/X.sol', 'contract X {}');
+  };
+  // The same bytes behind the new target: only the kernel's answer for lib/pkg differs.
+  const retarget = (to) => (d, k, box) => { if (k === 1) box.tree.set('/work/bridge', { type: 'l', target: to }); return { exitCode: 1, stdout: drainFails() }; };
+  const r = await runClaim(claimSandbox({ onBox: seed, poc: [retarget('vendor2'), drainFails(), drainFails()] }));
+  assertIntegrityFails(r, ['dependenciesUnchanged'], /dependenciesUnchanged \(run 1: lib\/pkg changed/);
+  // Retargeted into /tmp: the after-run snapshot names where it now leads.
+  const tmp = await runClaim(claimSandbox({ onBox: (box) => { seed(box); set(box, '/tmp/pkg/X.sol', 'contract X {}'); }, poc: [retarget('/tmp'), drainFails(), drainFails()] }));
+  assertIntegrityFails(tmp, ['dependenciesUnchanged'], /lib\/pkg -> \/tmp\/pkg is a watched link into \/tmp/);
+});
+
+test('A3a R7-F1: 20,000 links to `.` in the test paths are never resolved, and 20,000 in lib/ are one resolution per snapshot, deduplicated to one tree; the claim still passes, in bounded time', async () => {
+  const N = 20000;
+  const many = (dir) => (box) => { for (let i = 0; i < N; i += 1) box.tree.set(`/work/${dir}/l${i}`, { type: 'l', target: '.' }); };
+  const t0 = process.hrtime.bigint();
+  const tests = claimSandbox({ onBox: many('test/links') });
+  const r1 = await runClaim(tests);
+  assert.equal(r1.gates.integrity.status, 'pass', show(r1));
+  assert.equal(tests.execs().filter((d) => d.kind === 'vcr-links').length, 0, 'links in the test paths are never followed');
+  const lib = claimSandbox({ onBox: many('lib') });
+  const r2 = await runClaim(lib);
+  assert.equal(r2.gates.integrity.status, 'pass', show(r2));
+  const links = lib.execs().filter((d) => d.kind === 'vcr-links');
+  assert.equal(links.length, 4);
+  for (const l of links) assert.equal(l.stdin.toString('latin1').split('\0').filter(Boolean).length, N);
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.ok(ms < 60000, `${ms} ms for both claims (each builds its fake listings of ${N} links five times)`);
+});
+
+test('a link the patch adds inside a watched set (paths.tests overlapping lib/) fails the check it sits in; it is never followed, and never the image\'s error', async () => {
+  const spec = forgeSpec({ paths: { tests: ['test/**', 'lib/**/*.t.sol'], protected: ['foundry.toml'] } });
+  const git = {
+    'diff --name-status': () => ({ stdout: 'A\0lib/x/E.t.sol\0A\0test/Exploit.t.sol\0' }),
+    'diff --numstat': () => ({ stdout: '0\t0\tlib/x/E.t.sol\0' + '3\t0\ttest/Exploit.t.sol\0' })
+  };
+  const sb = claimSandbox({ git, onBox: (box) => box.tree.set('/work/lib/x/E.t.sol', { type: 'l', target: '/tmp/evil' }) });
+  const r = await runClaim(sb, claimRequest({ spec }));
+  assertIntegrityFails(r, ['dependenciesUnchanged'], /dependenciesUnchanged \(the reference: the patch adds a link inside the dependencies \(lib\/x\/E\.t\.sol\)/);
+  assert.equal(sb.execs().filter((d) => d.kind === 'vcr-links').length, 0, 'never resolved');
+});
+
+test('resolving the links: an image without realpath is IMAGE_TOOL_MISSING; an unreadable answer is the runner\'s error; more watched links than the cap after a run is a definitive failure', async () => {
+  const seed = (box) => { box.tree.set('/work/lib/pkg', { type: 'l', target: '../vendor/pkg' }); set(box, '/work/vendor/pkg/X.sol', 'contract X {}'); };
+  const missing = await runClaim(claimSandbox({ onBox: seed, scripts: { 'vcr-links': () => ({ exitCode: 4 }) } }));
+  assert.equal(missing.outcome, 'requester_error', show(missing));
+  assert.deepEqual(missing.issues.map((i) => i.code), ['IMAGE_TOOL_MISSING']);
+  assert.match(missing.issues[0].detail, /realpath/);
+  const garbled = await runClaim(claimSandbox({ onBox: seed, scripts: { 'vcr-links': () => ({ stdout: 'd\0/work/lib/other\0/work\0' }) } }));
+  assert.equal(garbled.outcome, 'abstain', show(garbled));
+  assert.equal(garbled.abstain.cause, 'runner_error');
+  // Past the cap on watched links (a run that adds them): every check the listing feeds fails, nothing is resolved past it.
+  const { MAX_WATCHED_LINKS } = require('../../src/integrity');
+  const flood = (d, k, box) => { if (k === 1) for (let i = 0; i <= MAX_WATCHED_LINKS; i += 1) box.tree.set(`/work/lib/f${i}`, { type: 'l', target: '.' }); return { exitCode: 1, stdout: drainFails() }; };
+  const sb = claimSandbox({ poc: [flood, drainFails(), drainFails()] });
+  const r = await runClaim(sb);
+  assertIntegrityFails(r, ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged'], new RegExp(`run 1: more than ${MAX_WATCHED_LINKS} watched links`));
+  assert.ok(sb.execs().filter((d) => d.kind === 'vcr-links').every((d) => d.stdin.toString('latin1').split('\0').filter(Boolean).length <= MAX_WATCHED_LINKS));
+});
+
+test('with a watched link, its resolution is part of measuring the files: after the manifest, before forge runs for its configuration (R1-F3)', async () => {
+  const sb = claimSandbox({ onBox: (box) => { box.tree.set('/work/lib/pkg', { type: 'l', target: '../vendor/pkg' }); set(box, '/work/vendor/pkg/X.sol', 'contract X {}'); } });
+  const r = await runClaim(sb);
+  assert.equal(r.gates.integrity.status, 'pass', show(r));
+  const order = sb.execs().map(label);
+  const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
+  assert.deepEqual(order.slice(from + 1), [
+    'vcr-framework', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework'
+  ]);
 });

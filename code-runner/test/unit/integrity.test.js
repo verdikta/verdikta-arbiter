@@ -11,7 +11,7 @@ const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const integrity = require('../../src/integrity');
 const { readForgeJUnit } = require('../../src/junit');
-const { junit, manifestOf, forgeConfig, initialTree } = require('../helpers/fakeClaim');
+const { junit, manifestOf, forgeConfig, initialTree, kernelResolver } = require('../helpers/fakeClaim');
 
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
@@ -37,14 +37,14 @@ test('parseManifest reads find\'s NUL records and sha256sum -z lines, byte for b
   }
 });
 
-test('parseFramework reads forge\'s path, PATH and `forge config --json` (out, cache_path, libs, solc), and the config\'s hash', () => {
+test('parseFramework reads forge\'s path, PATH and `forge config --json` (out, cache_path, libs, solc, broadcast, snapshots), and the config\'s hash', () => {
   const config = forgeConfig(initialTree());
   const p = integrity.parseFramework(Buffer.from(`vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/bin:/work/bin:bin\n${config}`));
   assert.equal(p.ok, true, p.reason);
   assert.equal(p.forgePath, '/usr/local/bin/forge');
   assert.deepEqual(p.pathDirs, ['/usr/local/bin', '/work/bin', '/work/bin']);
   assert.equal(p.configSha256, sha(config));
-  assert.deepEqual(p.config, { out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc' });
+  assert.deepEqual(p.config, { out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots' });
   assert.equal(integrity.parseFramework(Buffer.from('{}')).ok, false, 'no header lines');
   assert.equal(integrity.parseFramework(Buffer.from('vcr-forge /f\nvcr-path /b\nnot json')).ok, false);
 });
@@ -296,4 +296,296 @@ test('A3a R4-F1: configured directories with non-ASCII names (libs, out, cache_p
   assert.deepEqual(keys(sets.dependencies), ['dépendances/x/src/X.sol']);
   assert.deepEqual(keys(sets.artifacts), ['cäche/solidity-files-cache.json', 'résultats/X.sol/X.json']);
   assert.deepEqual(keys(sets.framework), ['bïn/tool', 'outils/forgé']);
+});
+
+// ------------------------------------------------- links: the kernel resolves (attempt 2)
+
+const CONFIG = Object.freeze({ out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots' });
+const link = (tree, p, target) => tree.set(p, { type: 'l', target });
+const file = (tree, p, content = 'x') => tree.set(p, { type: 'f', mode: '644', content });
+const keysOf = (x) => [...x.keys()].map(integrity.displayPath).sort();
+
+/**
+ * The sets of a fake tree with its watched links followed, the kernel's
+ * answers coming from the fake's resolver (test/helpers/fakeClaim.js); every
+ * batch the runner asked to resolve is in `calls`.
+ */
+async function watched(tree, o = {}) {
+  const m = integrity.parseManifest(manifestOf(tree, ['/work', '/home/sandbox']));
+  assert.equal(m.ok, true, m.reason);
+  const sets = integrity.classify(m.entries, {
+    protectedGlobs: o.protectedGlobs || ['foundry.toml'], config: CONFIG, forgePath: '/usr/local/bin/forge', pathDirs: ['/usr/local/bin']
+  });
+  const kernel = kernelResolver(tree);
+  const calls = [];
+  const resolve = async (paths) => {
+    calls.push(paths);
+    return new Map(paths.map((p) => [p, kernel(p)]));
+  };
+  const r = await integrity.watchLinks(m.entries, sets, {
+    config: CONFIG, testGlobs: o.testGlobs || ['test/**'], patchPaths: o.patchPaths || new Set(), ...(o.categories ? { categories: o.categories } : {}), ...(o.limits ? { limits: o.limits } : {})
+  }, resolve);
+  return { sets, r, calls, entries: m.entries };
+}
+
+test('A3a R6-F1 (round 7): the kernel resolves a watched link in filesystem order, `..` after a link in the middle taken from where that link leads', async () => {
+  const tree = initialTree();
+  // lib/pkg -> ../bridge/../payload with bridge -> vendor/nested: the kernel reaches vendor/payload; collapsing `..` first gives payload/.
+  link(tree, '/work/lib/pkg', '../bridge/../payload');
+  link(tree, '/work/bridge', 'vendor/nested');
+  file(tree, '/work/vendor/nested/.keep');
+  file(tree, '/work/vendor/payload/fixture.json', '{}');
+  file(tree, '/work/payload/fixture.json', '{}');
+  const { sets, r, calls } = await watched(tree);
+  assert.ok(keysOf(sets.dependencies).includes('vendor/payload/fixture.json'), JSON.stringify(keysOf(sets.dependencies)));
+  assert.ok(!keysOf(sets.dependencies).includes('payload/fixture.json'), 'the lexical answer is nobody\'s dependency');
+  // The link's own entry carries the kernel's answer; the unwatched link on the way (bridge) is never asked about.
+  assert.match(sets.dependencies.get('lib/pkg'), /^l 777 20 -> \.\.\/bridge\/\.\.\/payload => d \/work\/vendor\/payload$/);
+  assert.deepEqual(calls, [['/work/lib/pkg']]);
+  assert.deepEqual(r.uncovered, []);
+});
+
+test('A3a R6-F1 (round 7): a watched link into forge\'s cache directory is uncovered, the link and its target named; its tree is never watched as a dependency', async () => {
+  const tree = initialTree();
+  link(tree, '/work/lib/cpkg', '../cache/pkg');
+  file(tree, '/work/cache/pkg/Dep.sol', 'contract Dep {}');
+  const { sets, r } = await watched(tree);
+  assert.deepEqual(r.uncovered, [{ link: 'lib/cpkg', target: '/work/cache/pkg', where: 'forge\'s cache directory (cache)', category: 'dependencies' }]);
+  assert.ok(!keysOf(sets.dependencies).includes('cache/pkg/Dep.sol'));
+});
+
+test('item 3: a watched link whose real target is in (or holds) a place builds and runs write to is uncovered; one on the read-only root, or that resolves to nothing, is not', async () => {
+  const tree = initialTree();
+  const want = {
+    'lib/tmp': ['/tmp/dep', '/tmp/dep', /^\/tmp$/],
+    'lib/home': ['/home/sandbox/dep', '/home/sandbox/dep', /^\$HOME$/],
+    'lib/out': ['../out/Vault.sol', '/work/out/Vault.sol', /^forge's out directory \(out\)$/],
+    'lib/bc': ['../broadcast/Deploy.s.sol', '/work/broadcast/Deploy.s.sol', /^forge's broadcast directory \(broadcast\)$/],
+    'lib/snap': ['../snapshots', '/work/snapshots', /^forge's snapshots directory \(snapshots\)$/],
+    'lib/git': ['../.git', '/work/.git', /^the runner's repository \(\.git\)$/],
+    'lib/root': ['..', '/work', /^the work tree's root$/],
+    'lib/slash': ['/', '/', /holds \/tmp, \$HOME or the work tree/],
+    'lib/homes': ['/home', '/home', /holds \/tmp, \$HOME or the work tree/],
+    'lib/tests': ['../test/helpers', '/work/test/helpers', /^paths\.tests$/],
+    'lib/testfile': ['../test/Vault.t.sol', '/work/test/Vault.t.sol', /^paths\.tests$/],
+    'lib/nest': ['../nest', '/work/nest', /^a directory holding forge's out directory \(nest\/out\)$/]
+  };
+  for (const [rel, [target]] of Object.entries(want)) link(tree, `/work/${rel}`, target);
+  file(tree, '/tmp/dep/A.sol');
+  file(tree, '/home/sandbox/dep/A.sol');
+  file(tree, '/work/out/Vault.sol/Vault.json');
+  file(tree, '/work/broadcast/Deploy.s.sol/1/run-latest.json');
+  file(tree, '/work/snapshots/A.json');
+  file(tree, '/work/test/helpers/H.sol');
+  file(tree, '/work/nest/src/N.sol');
+  // Not uncovered: a target on the read-only root (immutable, so nothing to watch), and links that resolve to nothing.
+  link(tree, '/work/lib/ro', '/opt/pkg');
+  file(tree, '/opt/pkg/P.sol');
+  link(tree, '/work/lib/dangling', '../nothing/here');
+  link(tree, '/work/lib/loop1', 'loop2');
+  link(tree, '/work/lib/loop2', 'loop1');
+  const m = integrity.parseManifest(manifestOf(tree, ['/work', '/home/sandbox']));
+  const config = { ...CONFIG, out: 'nest/out' };
+  const sets = integrity.classify(m.entries, { protectedGlobs: [], config, forgePath: '/usr/local/bin/forge', pathDirs: [] });
+  const kernel = kernelResolver(tree);
+  const r = await integrity.watchLinks(m.entries, sets, { config, testGlobs: ['test/**'], patchPaths: new Set() }, async (ps) => new Map(ps.map((p) => [p, kernel(p)])));
+  // nest/out is forge's out here; lib/out's target is then no artifact directory, so the default out/ rule comes from `config`.
+  const got = new Map(r.uncovered.map((u) => [u.link, u]));
+  for (const [rel, [, target, where]] of Object.entries(want)) {
+    if (rel === 'lib/out') continue;
+    assert.ok(got.has(rel), `${rel} is uncovered: ${JSON.stringify(r.uncovered)}`);
+    assert.equal(got.get(rel).target, target, rel);
+    assert.match(got.get(rel).where, where, rel);
+  }
+  for (const rel of ['lib/ro', 'lib/dangling', 'lib/loop1', 'lib/loop2']) assert.ok(!got.has(rel), `${rel} is not uncovered`);
+  assert.match(sets.dependencies.get('lib/ro'), / => d \/opt\/pkg$/);
+  assert.match(sets.dependencies.get('lib/dangling'), / => \?$/);
+  assert.match(sets.dependencies.get('lib/loop1'), / => \?$/);
+  assert.ok(!keysOf(sets.dependencies).some((k) => k.startsWith('/opt')), 'the read-only root is not listed');
+  // With forge's out at out/, a link into it is uncovered too.
+  const plain = await watched(tree, { testGlobs: ['test/**'] });
+  assert.match(plain.r.uncovered.find((u) => u.link === 'lib/out').where, /^forge's out directory \(out\)$/);
+});
+
+test('item 2: only links inside a watched set are resolved; links in the test paths, the sources and anywhere else are never followed', async () => {
+  const tree = initialTree();
+  for (let i = 0; i < 5; i += 1) link(tree, `/work/test/links/l${i}`, '.');
+  link(tree, '/work/src/Gen.sol', '../gen/Gen.sol');
+  file(tree, '/work/gen/Gen.sol', 'contract Gen {}');
+  link(tree, '/work/state/tmp', '/tmp/scratch');
+  const before = await watched(new Map(tree));
+  assert.deepEqual(before.calls, [], 'nothing was resolved');
+  assert.equal(before.r.links, 0);
+  assert.ok(!keysOf(before.sets.dependencies).includes('gen/Gen.sol'));
+  assert.deepEqual(before.r.uncovered, []);
+  // A maker who wants a linked source watched lists it under paths.protected: then the kernel resolves it and its target is watched as it is.
+  const prot = await watched(new Map(tree), { protectedGlobs: ['foundry.toml', 'src/**'] });
+  assert.deepEqual(prot.calls, [['/work/src/Gen.sol']]);
+  assert.ok(keysOf(prot.sets.protected).includes('gen/Gen.sol'));
+});
+
+test('item 2: the closure is transitive and deduplicated by real path: links in a tree a link leads to are resolved in the next round, once', async () => {
+  const tree = initialTree();
+  link(tree, '/work/lib/a', '../v1');
+  link(tree, '/work/lib/a2', '../v1/.');
+  link(tree, '/work/v1/b', '../v2');
+  file(tree, '/work/v1/x.sol');
+  file(tree, '/work/v2/c.sol');
+  // A forge-std behind a link: the link is the framework and a dependency, and so is what it leads to.
+  link(tree, '/work/lib/forge-std2', '../vendor/forge-std');
+  file(tree, '/work/vendor/forge-std/src/Test.sol');
+  const { sets, r, calls } = await watched(tree);
+  assert.deepEqual(calls, [['/work/lib/a', '/work/lib/a2', '/work/lib/forge-std2'], ['/work/v1/b']]);
+  assert.equal(r.rounds, 2);
+  for (const k of ['v1/x.sol', 'v1/b', 'v2/c.sol', 'vendor/forge-std/src/Test.sol']) assert.ok(keysOf(sets.dependencies).includes(k), k);
+  assert.ok(keysOf(sets.framework).includes('vendor/forge-std/src/Test.sol'));
+  assert.ok(!keysOf(sets.framework).includes('v1/x.sol'));
+  assert.match(sets.dependencies.get('v1/b'), / => d \/work\/v2$/);
+});
+
+test('links whose targets change between runs: a link on the way retargeted, with identical bytes behind it, changes the watched link\'s own entry', async () => {
+  const mk = (bridge) => {
+    const tree = initialTree();
+    link(tree, '/work/lib/pkg', '../bridge/pkg');
+    link(tree, '/work/bridge', bridge);
+    file(tree, '/work/vendor/pkg/X.sol', 'contract X {}');
+    file(tree, '/work/vendor2/pkg/X.sol', 'contract X {}');
+    return tree;
+  };
+  const a = await watched(mk('vendor'));
+  const b = await watched(mk('vendor2'));
+  assert.deepEqual(integrity.changedPaths(a.sets.dependencies, b.sets.dependencies).map(integrity.displayPath), ['lib/pkg', 'vendor/pkg/X.sol', 'vendor2/pkg/X.sol']);
+});
+
+test('A3a R7-F1: host work is linear and bounded: 20,000 watched links to `.` are one batch of 20,000, deduplicated to one tree, in bounded time and memory', async () => {
+  const N = 20000;
+  const many = (dir, target = '.') => {
+    const tree = initialTree();
+    for (let i = 0; i < N; i += 1) link(tree, `/work/${dir}/l${i}`, target);
+    return tree;
+  };
+  const heap = process.memoryUsage().heapUsed;
+  const t0 = process.hrtime.bigint();
+  const { r, calls, entries } = await watched(many('lib'));
+  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].length, N);
+  assert.equal(r.links, N);
+  assert.deepEqual(r.uncovered, []);
+  // Each link and each listed entry is visited a bounded number of times (attempt 1 scanned the listing per link: N^2).
+  assert.ok(r.visited <= 3 * entries.size, `${r.visited} visits for ${entries.size} entries`);
+  assert.ok(ms < 5000, `${ms} ms`);
+  assert.ok(process.memoryUsage().heapUsed - heap < 256 * 1024 * 1024, 'memory');
+  // Twice the links, about twice the work.
+  const half = await watched((() => { const t = initialTree(); for (let i = 0; i < N / 2; i += 1) link(t, `/work/lib/l${i}`, '.'); return t; })());
+  assert.ok(r.visited <= 2.2 * half.r.visited, `${r.visited} vs ${half.r.visited}`);
+  // In the test paths (where poc.patch may add them) they are never followed.
+  const t1 = process.hrtime.bigint();
+  const tests = await watched(many('test/links'));
+  assert.deepEqual(tests.calls, []);
+  assert.equal(tests.r.visited, 0);
+  assert.ok(Number(process.hrtime.bigint() - t1) / 1e6 < 5000);
+  // To `..` (the work tree's root): every one uncovered, still one batch.
+  const up = await watched(many('lib', '..'));
+  assert.equal(up.calls.length, 1);
+  assert.equal(up.r.uncovered.length, N);
+  assert.ok(up.r.visited <= 3 * up.entries.size);
+});
+
+test('item 4: more watched links than the cap, or links nested deeper than the round cap, are too large to watch, before any resolution past the cap', async () => {
+  assert.equal(integrity.MAX_WATCHED_LINKS, 50000);
+  assert.equal(integrity.MAX_LINK_ROUNDS, 16);
+  const tree = initialTree();
+  for (let i = 0; i < 11; i += 1) link(tree, `/work/lib/l${i}`, '.');
+  await assert.rejects(watched(tree, { limits: { links: 10 } }), (err) => err instanceof integrity.WatchTooLarge && /more than 10 watched links/.test(err.message));
+  // A chain d0 -> d1 -> … each one a round: 17 rounds exceed 16.
+  const chain = initialTree();
+  link(chain, '/work/lib/c0', '../d1');
+  for (let i = 1; i <= 17; i += 1) link(chain, `/work/d${i}/c${i}`, `../d${i + 1}`);
+  file(chain, '/work/d18/end.sol');
+  await assert.rejects(watched(chain), (err) => err instanceof integrity.WatchTooLarge && /more than 16 levels/.test(err.message));
+  const ok = await watched(chain, { limits: { rounds: 20 } });
+  assert.equal(ok.r.rounds, 18);
+  assert.ok(keysOf(ok.sets.dependencies).includes('d18/end.sol'));
+  // The listing's entries are capped too (parseManifest stops past the cap).
+  const big = new Map();
+  for (let i = 0; i < 5; i += 1) file(big, `/work/f${i}`);
+  const p = integrity.parseManifest(manifestOf(big, ['/work']), { maxEntries: 4 });
+  assert.equal(p.ok, false);
+  assert.equal(p.tooLarge, true);
+  assert.match(p.reason, /more than 4 entries/);
+  assert.equal(integrity.parseManifest(manifestOf(big, ['/work']), { maxEntries: 5 }).ok, true);
+  assert.equal(integrity.MAX_ENTRIES, 1000000);
+});
+
+test('a link a patch adds inside a watched set (paths.tests overlapping lib/) is reported, never resolved or followed', async () => {
+  const tree = initialTree();
+  link(tree, '/work/lib/x/E.t.sol', '/tmp/evil');
+  link(tree, '/work/lib/y', '../vendor/y');
+  file(tree, '/work/vendor/y/Y.sol');
+  const { r, calls } = await watched(tree, { patchPaths: new Set(['lib/x/E.t.sol']), testGlobs: ['test/**', 'lib/**/*.t.sol'] });
+  assert.deepEqual(calls, [['/work/lib/y']]);
+  assert.deepEqual(r.patchLinks, [{ link: 'lib/x/E.t.sol', category: 'dependencies' }]);
+  assert.deepEqual(r.uncovered, []);
+});
+
+test('parseLinks reads the link script\'s records in the order asked, byte for byte; anything else is unreadable', () => {
+  const batch = ['/work/lib/a', `/work/lib/${Buffer.from('é\nb').toString('latin1')}`, '/work/lib/c', '/work/lib/d'];
+  const ok = Buffer.from(`d\0${batch[0]}\0/work/v\0f\0${batch[1]}\0/work/x\ny\0?\0${batch[2]}\0\0!\0${batch[3]}\0\0`, 'latin1');
+  const p = integrity.parseLinks(ok, batch);
+  assert.equal(p.ok, true, p.reason);
+  assert.deepEqual([...p.answers], [
+    [batch[0], { kind: 'd', real: '/work/v' }], [batch[1], { kind: 'f', real: '/work/x\ny' }], [batch[2], { kind: '?', real: '' }], [batch[3], { kind: '!', real: '' }]
+  ]);
+  for (const bad of [
+    `d\0${batch[1]}\0/work/v\0`, // out of order
+    `d\0${batch[0]}\0/work/v\0`, // too few
+    `x\0${batch[0]}\0/work/v\0`, // not a kind
+    `d\0${batch[0]}\0relative\0`, // not absolute
+    `?\0${batch[0]}\0/work/v\0`, // an answer for nothing
+    `d\0${batch[0]}\0/work/v` // no end
+  ]) assert.equal(integrity.parseLinks(Buffer.from(bad, 'latin1'), batch).ok, false, JSON.stringify(bad));
+});
+
+test('the link script is hermetic, reads its paths from stdin, and leaves resolution to the kernel (cd -P, realpath -e)', () => {
+  const argv = integrity.linksArgv();
+  assert.deepEqual(argv.slice(0, 2), ['/usr/bin/env', '-i']);
+  const sh = argv.indexOf('/bin/sh');
+  assert.deepEqual(argv.slice(sh), ['/bin/sh', '-c', integrity.LINKS_SCRIPT, 'vcr-links']);
+  assert.match(integrity.LINKS_SCRIPT, /cd -P -- "\$l"/);
+  assert.match(integrity.LINKS_SCRIPT, /realpath -e -- "\$l"/);
+  assert.doesNotMatch(integrity.LINKS_SCRIPT, /readlink/, 'the script never reads a link\'s text');
+});
+
+test('the link script against the real kernel (Linux: dash, GNU coreutils): the R6-F1 forms, a file link, dangling and looping links, a line break in a name', { skip: process.platform !== 'linux' }, () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-links-')));
+  try {
+    const at = (p) => path.join(root, p);
+    for (const d of ['vendor/nested', 'vendor/payload', 'lib', 'cache/pkg', 'a\nb']) fs.mkdirSync(at(d), { recursive: true });
+    fs.writeFileSync(at('vendor/payload/f.json'), '{}');
+    fs.symlinkSync('vendor/nested', at('bridge'));
+    fs.symlinkSync('../bridge/../payload', at('lib/pkg'));
+    fs.symlinkSync('../cache/pkg', at('lib/cpkg'));
+    fs.symlinkSync('../vendor/payload/f.json', at('lib/file'));
+    fs.symlinkSync('nope', at('lib/dang'));
+    fs.symlinkSync('loop2', at('lib/loop1'));
+    fs.symlinkSync('loop1', at('lib/loop2'));
+    fs.symlinkSync('../a\nb', at('lib/nl'));
+    const batch = ['lib/pkg', 'lib/cpkg', 'lib/file', 'lib/dang', 'lib/loop1', 'lib/nl'].map(at);
+    const argv = integrity.linksArgv();
+    const r = spawnSync(argv[0], argv.slice(1), { input: Buffer.from(`${batch.join('\0')}\0`, 'latin1') });
+    assert.equal(r.status, 0, r.stderr.toString());
+    const p = integrity.parseLinks(r.stdout, batch);
+    assert.equal(p.ok, true, p.reason);
+    assert.deepEqual([...p.answers.values()], [
+      { kind: 'd', real: at('vendor/payload') }, { kind: 'd', real: at('cache/pkg') }, { kind: 'f', real: at('vendor/payload/f.json') },
+      { kind: '?', real: '' }, { kind: '?', real: '' }, { kind: 'd', real: at('a\nb') }
+    ]);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

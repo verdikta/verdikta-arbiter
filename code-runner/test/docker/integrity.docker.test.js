@@ -14,7 +14,7 @@ const { executeRun } = require('../../src/pipeline');
 const { checkSpec } = require('../../src/classLimits');
 const { claimSteps } = require('../../src/steps');
 const { RUNTIME, silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll } = require('./helpers');
-const { VAULT_REPO, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, modifyPatch, pocFile } = require('./forgeFixture');
+const { VAULT_REPO, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile } = require('./forgeFixture');
 
 const TIMEOUT = 900000;
 const fixtures = new Map();
@@ -34,6 +34,26 @@ const VARIANTS = Object.freeze({
     toml: 'ffi = true',
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: 'mkdir -p lib/solady/src && printf "contract Solady {}\\n" > lib/solady/src/Solady.sol'
+  },
+  // Attempt 2 (ffi): lib/pkg -> ../bridge/../payload with bridge -> vendor/nested (R6-F1, round 7), a decoy at payload/
+  // (where collapsing `..` before the link would lead), and 20,000 links to `.` in node_modules (R7-F1: a dependency
+  // directory the runner watches and this forge never reads).
+  links: {
+    toml: 'ffi = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: [
+      'mkdir -p lib/solady/src && printf "contract Solady {}\\n" > lib/solady/src/Solady.sol',
+      'mkdir -p vendor/nested vendor/payload payload && touch vendor/nested/.keep',
+      'printf "{}\\n" > vendor/payload/fixture.json && printf "{}\\n" > payload/fixture.json',
+      'ln -s vendor/nested bridge && ln -s ../bridge/../payload lib/pkg',
+      'mkdir -p node_modules && i=0 && while [ $i -lt 20000 ]; do ln -s . node_modules/l$i; i=$((i+1)); done'
+    ].join(' && ')
+  },
+  // Attempt 2: a dependency link into forge's cache directory (R6-F1, round 7).
+  cachelink: {
+    toml: PLAIN_TOML,
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'mkdir -p cache/pkg && printf "contract Dep {}\\n" > cache/pkg/Dep.sol && ln -s ../cache/pkg lib/cpkg'
   }
 });
 
@@ -332,6 +352,71 @@ test('claimed-observable-mismatch (forge form): finding.json names another test,
     assert.equal(r.gates.claimedObservable.status, status, show(r));
     assert.match(r.gates.claimedObservable.detail, re);
   }
+});
+
+// ------------------------------------------------- attempt 2: the kernel resolves the links
+
+/** Each named step's duration, in ms, from the run's step records. */
+const stepMs = (r, re) => (r.steps || []).filter((s) => re.test(s.name)).map((s) => s.durationMs);
+
+test('A3a R6-F1 (round 7) under real forge: the kernel resolves `lib/pkg -> ../bridge/../payload` (bridge -> vendor/nested) to vendor/payload, which is watched; payload/ is not', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('links');
+  // An ordinary PoC on this image raises nothing: the chain, and 20,000 node_modules links resolved once per snapshot.
+  const plain = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(plain.outcome, 'definitive', show(plain));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(plain.gates[g].status, 'pass', `${g}: ${show(plain)}`);
+  assert.deepEqual(plain.facts.poc.integrity, CLEAN);
+  const linkSteps = stepMs(plain, /^integrity:.*:links$/);
+  assert.equal(linkSteps.length, 4, 'the reference and one after each run');
+  for (const ms of linkSteps) assert.ok(ms < 60000, `${ms} ms in the sandbox`);
+
+  // An ffi child edits vendor/payload/fixture.json on run 2: the kernel's answer for lib/pkg, watched.
+  const edit = (p) => addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      `    function ${NAME}() public { ${ffiSh(`n=$(cat state/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > state/n; if [ $n -eq 2 ]; then echo '"x"' >> ${p}; fi`)} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+    ])
+  });
+  const r = await run(t, claim(fx, edit('vendor/payload/fixture.json')));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.integrity.status, 'fail', show(r));
+  assert.equal(r.facts.poc.integrity.dependenciesUnchanged, false);
+  assert.match(r.gates.integrity.detail, /dependenciesUnchanged \(run 2: vendor\/payload\/fixture\.json changed/);
+  assert.deepEqual(r.facts.poc.tests[0].runs, ['fail', 'fail', 'fail'], 'the JUnit alone would have reproduced');
+
+  // The lexical answer (payload/) is nobody's dependency: an edit there is not a change of the watched sets.
+  const decoy = await run(t, claim(fx, edit('payload/fixture.json')));
+  assert.equal(decoy.gates.integrity.status, 'pass', show(decoy));
+
+  // The unwatched link on the way retargeted during run 1: lib/pkg's own entry (the kernel's answer) changed.
+  const retarget = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      `    function ${NAME}() public { ${ffiSh('[ -e state/r ] || { rm bridge && ln -s . bridge && touch state/r; }')} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+    ])
+  });
+  const moved = await run(t, claim(fx, retarget));
+  assert.equal(moved.outcome, 'definitive', show(moved));
+  assert.equal(moved.facts.poc.integrity.dependenciesUnchanged, false, show(moved));
+  assert.match(moved.gates.integrity.detail, /dependenciesUnchanged \(run 1: lib\/pkg changed/);
+});
+
+test('A3a R6-F1 (round 7) under real forge: a dependency link into forge\'s cache directory is refused before any claim code (IMAGE_WATCH_LINK_UNCOVERED)', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('cachelink');
+  const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
+  assert.match(r.issues[0].detail, /lib\/cpkg -> \/work\/cache\/pkg \(forge's cache directory \(cache\)\)/);
+  assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
+});
+
+test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const links = {};
+  for (let i = 0; i < 5000; i += 1) links[`test/links/l${i}`] = '.';
+  const patch = Buffer.concat([addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), addLinksPatch(links)]);
+  const r = await run(t, claim(fx, patch));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(stepMs(r, /:links$/), [], 'links outside every watched set are never resolved');
 });
 
 // ------------------------------------------------------------------ the fix check

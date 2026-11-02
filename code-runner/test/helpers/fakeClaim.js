@@ -299,7 +299,7 @@ function initialTree() {
 function forgeConfig(tree, over = {}) {
   const read = (p) => (tree.has(p) && tree.get(p).type === 'f' ? String(tree.get(p).content) : null);
   return `${JSON.stringify({
-    src: 'src', test: 'test', out: 'out', libs: ['lib'], cache_path: 'cache', solc: '/opt/solc/solc',
+    src: 'src', test: 'test', out: 'out', libs: ['lib'], cache_path: 'cache', broadcast: 'broadcast', snapshots: 'snapshots', solc: '/opt/solc/solc',
     remappings: read('/work/remappings.txt'), project: read('/work/foundry.toml'), global: read(`${HOME}/.foundry/foundry.toml`), dotenv: read('/work/.env'),
     ...over
   }, null, 2)}\n`;
@@ -330,6 +330,72 @@ function manifestOf(tree, findArgs) {
   return Buffer.concat([...meta, Buffer.from('vcr-hashes\0'), ...hashes]);
 }
 
+/** Directories that exist in every sandbox whether or not the fake's tree has an entry under them. */
+const FAKE_DIRS = Object.freeze(['/', '/work', '/tmp', '/home', HOME]);
+
+/**
+ * The kernel's path resolution over a fake tree, as the runner's link script
+ * sees it (test-only): components walked from /, a link followed where it
+ * sits (its target read relative to the physical directory reached so far),
+ * `..` taken from that physical directory, at most 40 links. A directory is
+ * any path an entry lies under (or one of FAKE_DIRS). Returns, per absolute
+ * path, `{ kind: 'd'|'f', real }` or `{ kind: '?', real: '' }` (missing, a
+ * loop, a file used as a directory).
+ * @param {Map} tree
+ * @returns {(p: string) => {kind:string, real:string}}
+ */
+function kernelResolver(tree) {
+  const dirs = new Set(FAKE_DIRS);
+  for (const k of tree.keys()) {
+    for (let i = k.lastIndexOf('/'); i > 0; i = k.lastIndexOf('/', i - 1)) {
+      const d = k.slice(0, i);
+      if (dirs.has(d)) break;
+      dirs.add(d);
+    }
+  }
+  const none = { kind: '?', real: '' };
+  return (p) => {
+    let cur = [];
+    let queue = p.split('/');
+    let hops = 0;
+    while (queue.length) {
+      const c = queue.shift();
+      if (c === '' || c === '.') continue;
+      if (c === '..') { cur.pop(); continue; }
+      const next = `/${[...cur, c].join('/')}`;
+      const e = tree.get(next);
+      if (e && e.type === 'l') {
+        hops += 1;
+        if (hops > 40) return none;
+        if (e.target.startsWith('/')) cur = [];
+        queue = [...e.target.split('/'), ...queue];
+        continue;
+      }
+      if (e) {
+        // A file with anything after it (even a trailing slash) is ENOTDIR.
+        if (queue.length) return none;
+        cur.push(c);
+        continue;
+      }
+      if (!dirs.has(next)) return none;
+      cur.push(c);
+    }
+    const real = `/${cur.join('/')}`;
+    if (tree.has(real)) return { kind: 'f', real };
+    return dirs.has(real) ? { kind: 'd', real } : none;
+  };
+}
+
+/** `vcr-links`'s output for the paths on its stdin (NUL-separated): one `kind\0path\0real\0` record each, in order. */
+function linksOf(tree, stdin) {
+  const resolve = kernelResolver(tree);
+  const paths = stdin ? Buffer.from(stdin).toString('latin1').split('\0').filter((x) => x !== '') : [];
+  return Buffer.from(paths.map((p) => {
+    const r = resolve(p);
+    return `${r.kind}\0${p}\0${r.real}\0`;
+  }).join(''), 'latin1');
+}
+
 /**
  * @param {object} [o]
  * @param {object} [o.image] - { store, base } (default: defaultImage())
@@ -341,7 +407,7 @@ function manifestOf(tree, findArgs) {
  *   { exitCode, stdout, stderr }; a text's exit code is forge's (1 when it records a failure)
  * @param {object} [o.git] - overrides by git subcommand key (see `key` below), both containers
  * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear,
- *   vcr-unstage, vcr-build, vcr-cleanup, vcr-framework, vcr-manifest), both containers; a handler gets (d, box)
+ *   vcr-unstage, vcr-build, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links), both containers; a handler gets (d, box)
  * @param {Function} [o.onBox] - (box) => void, when a container's state is made (to seed its tree)
  * @param {object} [o.fix] - the fix check's container: { patch (bytes the fix apply carries; default FIX_PATCH),
  *   nameStatus, numstat, diff, raw, writtenBytes, applyExit, build (handler), suite (JUnit text or handler) }
@@ -462,6 +528,7 @@ function claimSandbox({
     'vcr-cleanup': () => ({ stdout: 'killed 0\n' }),
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
+    'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
     'vcr-poc': (d, b) => {
       b.pocRun += 1;
       // forge writes the failing tests' names to its cache on every run.
@@ -527,5 +594,5 @@ function claimSandbox({
 
 module.exports = {
   BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv,
-  claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf
+  claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf, kernelResolver, linksOf
 };
