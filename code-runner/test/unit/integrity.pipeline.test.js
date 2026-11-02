@@ -128,7 +128,7 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   const [listed, ...configs] = sb.execs().filter((d) => d.kind === 'forge-config');
   for (const config of configs) assert.deepEqual(config.launched, [...build.launched.slice(0, -1), 'config', '--json']);
   // The one read without the pin, on the listing's own files.
-  assert.deepEqual(listed.launched, [...build.launched.filter((a) => !a.startsWith('FOUNDRY_SOLC=')).slice(0, -1), 'config', '--json']);
+  assert.deepEqual(listed.launched, [...build.launched.filter((a) => !/^FOUNDRY_(?:SOLC|EXTERNAL_COMPILERS)=/.test(a)).slice(0, -1), 'config', '--json']);
 });
 
 test('every fact carries its tier: A for what the runner observed from outside, B for results from a process that ran claim code', async () => {
@@ -1149,6 +1149,24 @@ test('A3a R24-F1: a compiler a patch could replace is refused before any patch, 
   // A real file there is nothing.
   const installed = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { solc: '0.8.31' }; set(box, '/opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31', 'ELF'); } }));
   assert.equal(installed.gates.integrity.status, 'pass', show(installed));
+  // R24-F1, round 27: an adapter, anywhere; a solver named by a path in the work tree; bare solver names are PATH's, and fine.
+  const adapter = claimSandbox({ onBox: (box) => { box.configOver = { external_compilers: [{ id: 'x', command: '/opt/adapter', roots: ['test'] }] }; } });
+  const viaAdapter = await runClaim(adapter);
+  assert.equal(viaAdapter.outcome, 'requester_error', show(viaAdapter));
+  assert.deepEqual(viaAdapter.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(viaAdapter.issues[0].detail, /external_compilers names 1 adapter/);
+  assert.equal(adapter.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'apply').length, 0, 'no patch applied');
+  for (const [symbolic, re] of [
+    [{ solver: 'test/z3' }, /symbolic\.solver \(test\/z3\) is in the work tree/],
+    [{ solver_command: 'test/z3 -smt2' }, /symbolic\.solver_command \(test\/z3\) is in the work tree/],
+    [{ solver_portfolio: ['z3', '"/work/test/cvc5" --lang smt2'] }, /symbolic\.solver_portfolio \(\/work\/test\/cvc5\) is in the work tree/]
+  ]) {
+    const solver = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { symbolic }; } }));
+    assert.equal(solver.outcome, 'requester_error', show(solver));
+    assert.match(solver.issues[0].detail, re);
+  }
+  const fine = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { symbolic: { solver: 'z3', solver_command: '', solver_portfolio: ['cvc5', 'yices'] } }; } }));
+  assert.equal(fine.gates.integrity.status, 'pass', show(fine));
   // Vyper's, which forge runs for a `.vy` file a patch adds.
   const vyper = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { vyper: { path: 'test/vyper' } }; } }));
   assert.equal(vyper.outcome, 'requester_error', show(vyper));
@@ -1200,7 +1218,8 @@ test('A3a R23-F1: a listed Solidity file that sets a path by inline configuratio
     '/// forge-config: default.invariant.failure_persist_dir = "lib/persist"',
     '/// forge-config: default.fuzz.corpus_dir = "lib/corpus"',
     '/** forge-config: default.invariant = { frontier_dir = "lib/f" } */',
-    '/// forge-config: default.invariant."failure\\u005fpersist\\u005fdir" = "lib/persist"'
+    '/// forge-config: default.invariant."failure\\u005fpersist\\u005fdir" = "lib/persist"',
+    '/// forge-config: default.symbolic.solver_command = "test/z3"'
   ]) {
     const sb = claimSandbox({ onBox: annotate(line) });
     const r = await runClaim(sb);

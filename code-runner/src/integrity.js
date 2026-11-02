@@ -170,7 +170,7 @@ const MANIFEST_SCRIPT = [
  */
 /**
  * The Solidity files in the work tree that set a path by inline configuration
- * (R23-F1), hermetic, NUL-separated. forge applies `/// forge-config:
+ * or a solver (R23-F1), hermetic, NUL-separated. forge applies `/// forge-config:
  * default.invariant.failure_persist_dir = "lib/x"` when it runs a test, and
  * `forge config` never shows it. The key is on the comment's own line, in
  * whatever TOML form (dotted, an inline table); a backslash is a TOML escape
@@ -184,7 +184,7 @@ const MANIFEST_SCRIPT = [
  */
 const INLINE_CONFIG_SCRIPT = [
   'command -v grep >/dev/null 2>&1 || exit 4',
-  'find /work -name .git -prune -o -name "*.sol" \\( -type f -o -type l \\) -print0 2>/dev/null | xargs -0 -r grep -lZE -- \'forge-config:.*(_dir|_file|_path|\\\\)\' 2>/dev/null',
+  'find /work -name .git -prune -o -name "*.sol" \\( -type f -o -type l \\) -print0 2>/dev/null | xargs -0 -r grep -lZE -- \'forge-config:.*(_dir|_file|_path|solver|\\\\)\' 2>/dev/null',
   'grep -lZE -- \'^[[:space:]]*([^#[:space:]].*)?(extends|\\\\)\' /work/foundry.toml 2>/dev/null',
   'for f in /work/foundry.toml /work/.env; do if [ -L "$f" ]; then printf "link:%s\\0" "$f"; fi; done',
   'exit 0'
@@ -275,6 +275,22 @@ const RUN_OUTPUT_SETTINGS = Object.freeze([
   'invariant.failure_persist_dir', 'invariant.corpus_dir', 'invariant.frontier_dir'
 ]);
 
+/**
+ * The programs forge's symbolic section names by a path, as `[setting, path]`. A
+ * bare name is looked up on PATH alone, which forgeOutOfReach holds.
+ */
+function solverPrograms(symbolic) {
+  if (!symbolic || typeof symbolic !== 'object') return [];
+  const program = (s) => s.trim().split(/\s+/)[0].replace(/^["']|["']$/g, '');
+  const named = [];
+  if (typeof symbolic.solver === 'string') named.push(['symbolic.solver', symbolic.solver.trim()]);
+  if (typeof symbolic.solver_command === 'string') named.push(['symbolic.solver_command', program(symbolic.solver_command)]);
+  for (const e of Array.isArray(symbolic.solver_portfolio) ? symbolic.solver_portfolio : []) {
+    if (typeof e === 'string') named.push(['symbolic.solver_portfolio', program(e)]);
+  }
+  return named.filter(([, p]) => p.includes('/'));
+}
+
 /** A repository-relative directory a config names (`out`, `cache_path`, a lib): a plain relative path, or null. */
 function plainDir(value) {
   if (typeof value !== 'string') return null;
@@ -346,6 +362,8 @@ function parseFramework(buf) {
       broadcast: str(parsed.broadcast),
       snapshots: str(parsed.snapshots),
       vyperPath: parsed.vyper && typeof parsed.vyper === 'object' ? str(parsed.vyper.path) : null,
+      externalCompilers: Array.isArray(parsed.external_compilers) ? parsed.external_compilers.length : 0,
+      solverPrograms: solverPrograms(parsed.symbolic),
       runOutputs: RUN_OUTPUT_SETTINGS.map((setting) => {
         const value = str(setting.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : null), parsed));
         return { setting, value };
@@ -1124,8 +1142,13 @@ async function pinCompiler(ctx, globs, name = 'prepare:compiler') {
   const { config } = await readFramework(ctx, name, { listed: true, before: (found) => forgeOutOfReach(ctx, name, found, globs) });
   const paths = [
     ['solc', typeof config.solc === 'string' && config.solc !== '' && !SOLC_RELEASE.test(config.solc) ? config.solc : null],
-    ['vyper.path', typeof config.vyperPath === 'string' && config.vyperPath !== '' ? config.vyperPath : null]
+    ['vyper.path', typeof config.vyperPath === 'string' && config.vyperPath !== '' ? config.vyperPath : null],
+    ...(config.solverPrograms || [])
   ].filter(([, value]) => value !== null);
+  // An adapter is a compiler the pin does not name, and forge runs it in every build: refused wherever it is (R24-F1, round 27).
+  if (config.externalCompilers) {
+    throw uncovered([`external_compilers names ${config.externalCompilers} adapter${config.externalCompilers === 1 ? '' : 's'}, a compiler forge would run beside the pinned one, which the runner does not support`]);
+  }
   // `..` could lead back into the work tree, and the pin would carry it as it stands.
   const inTree = paths.filter(([, value]) => !value.startsWith('/') || within(value, WORK) || value.split('/').includes('..'));
   if (inTree.length) {

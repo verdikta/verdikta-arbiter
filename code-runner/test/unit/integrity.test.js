@@ -45,7 +45,7 @@ test('parseFramework reads forge\'s path, PATH and `forge config --json` (out, c
   assert.deepEqual(p.pathDirs, ['/usr/local/bin', '/work/bin', '/work/bin']);
   assert.equal(p.configSha256, sha(config));
   assert.deepEqual(p.config, {
-    out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots', vyperPath: null,
+    out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots', vyperPath: null, externalCompilers: 0, solverPrograms: [],
     runOutputs: [
       { setting: 'test_failures_file', value: 'cache/test-failures' }, { setting: 'fuzz.failure_persist_dir', value: 'cache/fuzz' }, { setting: 'invariant.failure_persist_dir', value: 'cache/invariant' }
     ]

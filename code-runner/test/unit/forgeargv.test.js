@@ -29,7 +29,7 @@ const PROBED_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 /** forge's whole environment, in order: the probed PATH, the sandbox's fixed variables, the pinned compiler (the fake config's), the fuzz seed. */
 const FORGE_ENV = (path = PROBED_PATH) => [
   `PATH=${path}`, 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox',
-  'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', 'FOUNDRY_SOLC=/opt/solc/solc', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`
+  'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', 'FOUNDRY_SOLC=/opt/solc/solc', 'FOUNDRY_EXTERNAL_COMPILERS=[]', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`
 ];
 const REPORTER = ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED];
 
@@ -124,9 +124,9 @@ test('a claim: the build, each PoC run, the fix check\'s build and suite, and `f
   assertForgeArgv(sb, fix[1], ['config', '--json']);
   assertForgeArgv(sb, fix[2], ['build']);
   assertForgeArgv(sb, fix[3], ['test', ...REPORTER]);
-  // forge's environment holds no variable but the fixed ones: no FOUNDRY_* but these three.
+  // forge's environment holds no variable but the fixed ones: no FOUNDRY_* but these four.
   for (const d of forge.filter((x) => x !== listed && x !== fix[0])) {
-    assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_SOLC', 'FOUNDRY_FUZZ_SEED']);
+    assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_SOLC', 'FOUNDRY_EXTERNAL_COMPILERS', 'FOUNDRY_FUZZ_SEED']);
   }
   for (const d of [listed, fix[0]]) assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_FUZZ_SEED']);
 });
@@ -163,8 +163,8 @@ test('forge is the one the reference probed (its real path), with the image\'s P
   const forge = sb.execs().filter((d) => d.forge);
   assert.ok(forge.length >= 5);
   const [listed, ...pinned] = forge;
-  assert.deepEqual(listed.launched, ['/usr/bin/env', '-i', ...FORGE_ENV(path).filter((e) => !e.startsWith('FOUNDRY_SOLC=')), '/opt/foundry/bin/forge-1.8.5', 'config', '--json']);
-  for (const d of pinned) assert.deepEqual(d.launched.slice(0, 14), ['/usr/bin/env', '-i', ...FORGE_ENV(path), '/opt/foundry/bin/forge-1.8.5']);
+  assert.deepEqual(listed.launched, ['/usr/bin/env', '-i', ...FORGE_ENV(path).filter((e) => !/^FOUNDRY_(?:SOLC|EXTERNAL_COMPILERS)=/.test(e)), '/opt/foundry/bin/forge-1.8.5', 'config', '--json']);
+  for (const d of pinned) assert.deepEqual(d.launched.slice(0, 15), ['/usr/bin/env', '-i', ...FORGE_ENV(path), '/opt/foundry/bin/forge-1.8.5']);
   // The later probes run the reference's real path too (R1-F3).
   const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
   assert.deepEqual(probes.slice(2).map((d) => d.argv[4]), ['/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5']);
@@ -372,7 +372,7 @@ test('a forge config failure in a claim is the requester\'s (FORGE_CONFIG_INVALI
   assert.deepEqual(r.issues.map((i) => i.code), ['FORGE_CONFIG_INVALID']);
   // The read of the listing's own files, before any patch and without the pin, is where it shows.
   const [config] = sb.execs().filter((d) => d.kind === 'forge-config');
-  assert.deepEqual(config.launched, ['/usr/bin/env', '-i', ...FORGE_ENV('/usr/bin').filter((e) => !e.startsWith('FOUNDRY_SOLC=')), '/usr/local/bin/forge', 'config', '--json']);
+  assert.deepEqual(config.launched, ['/usr/bin/env', '-i', ...FORGE_ENV('/usr/bin').filter((e) => !/^FOUNDRY_(?:SOLC|EXTERNAL_COMPILERS)=/.test(e)), '/usr/local/bin/forge', 'config', '--json']);
   assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build'));
   // The config text read is the one every maker command runs with: forgeConfig of the reference tree, hashed once.
   assert.ok(forgeConfig(initialTree()).length > 0);

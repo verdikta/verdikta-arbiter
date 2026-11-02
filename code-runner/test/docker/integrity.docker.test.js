@@ -164,6 +164,15 @@ const VARIANTS = Object.freeze({
     installed: ['0.8.31'],
     setup: 'mkdir -p /opt/verdikta/tools/share/svm/0.8.32 && ln -s /work/test/solc /opt/verdikta/tools/share/svm/0.8.32/solc-0.8.32 && chmod -R a+rX /opt/verdikta'
   },
+  // R24-F1, round 27: an adapter under paths.tests, and a solver named there.
+  adapter: {
+    toml: '\n[[profile.default.external_compilers]]\nid = "x"\ncommand = "test/adapter"\nroots = ["test"]',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'test/adapter': '#!/bin/sh\nexit 0\n' }
+  },
+  solverpath: {
+    toml: '\n[profile.default.symbolic]\nsolver_command = "test/z3 -smt2"',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'test/z3': '#!/bin/sh\nexit 0\n' }
+  },
   // A .env that moves forge's configuration into a file a patch, or a fix, can change.
   envtests: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, '.env': 'FOUNDRY_CONFIG=/work/test/compiler.toml\n', 'test/compiler.toml': '[profile.default]\nsolc = "/opt/solc/solc"\n' }
@@ -923,7 +932,9 @@ test('owner decision Q37 under real forge: each route to a planted compiler lose
     ['extends', [compilerToml, toml('extends = "test/c.toml"')]],
     ['.env FOUNDRY_SOLC', ['printf \'FOUNDRY_SOLC=test/solc\\n\' > .env']],
     ['.env FOUNDRY_SOLC_VERSION', ['printf \'FOUNDRY_SOLC_VERSION=test/solc\\n\' > .env']],
-    ['.env FOUNDRY_CONFIG', [compilerToml, 'printf \'FOUNDRY_CONFIG=/work/test/c.toml\\n\' > .env']]
+    ['.env FOUNDRY_CONFIG', [compilerToml, 'printf \'FOUNDRY_CONFIG=/work/test/c.toml\\n\' > .env']],
+    // An adapter is another compiler, which the fixed variable keeps out. A claim on such a listing is refused (below).
+    ['external_compilers', [toml('\\n[[profile.default.external_compilers]]\\nid = "x"\\ncommand = "test/solc"\\nroots = ["test"]')]]
   ];
   const got = [];
   await directRun(t, fx.image, async (ctx) => {
@@ -936,6 +947,7 @@ test('owner decision Q37 under real forge: each route to a planted compiler lose
       // The control: no pin, and for the last route no fixed FOUNDRY_CONFIG either.
       await sh(name(), PROJECT(lines));
       const { FOUNDRY_CONFIG, ...noConfig } = forgeLib.forgeEnvironment(found.path);
+      void FOUNDRY_CONFIG;
       const env = route === '.env FOUNDRY_CONFIG' ? noConfig : forgeLib.forgeEnvironment(found.path);
       await ctx.exec(['/usr/bin/env', '-i', ...envPairs(env), found.realPath, 'build'], { name: name(), timeoutMs: 120000, workdir: forgeLib.FORGE_WORKDIR });
       const control = await ran(name());
@@ -959,6 +971,16 @@ test('owner decision Q37 under real forge: each route to a planted compiler lose
     assert.equal(g.buildExit, 0, `${at}: ${g.buildOut}`);
     assert.equal(g.afterBuild, false, `${at}: the build never ran the planted compiler`);
     assert.match(g.buildOut, /Solc 0\.8\.31/, at);
+  }
+});
+
+test('A3a R24-F1, round 27, under real forge: a listing that names an external compiler adapter, or a solver by a path in the tree, is refused before any patch', { timeout: TIMEOUT }, async (t) => {
+  for (const variant of ['adapter', 'solverpath']) {
+    const r = await run(t, claim(await fixture(variant), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(r.issues[0].detail, variant === 'adapter' ? /external_compilers names 1 adapter/ : /symbolic\.solver_command \(test\/z3\) is in the work tree/);
+    assert.ok(!(r.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
   }
 });
 

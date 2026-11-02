@@ -80,10 +80,11 @@ function reporterFlags() {
  * probed it (what forge's own children, ffi included, look commands up on),
  * the sandbox's fixed variables (§9.3: HOME, TZ, LANG, CI, PYTHONHASHSEED),
  * the builder's fixed values (BUILDER_ENV), the fuzz seed, FOUNDRY_CONFIG at
- * forge's own default and FOUNDRY_SOLC at the pin. forge loads /work/.env without
- * overriding what is set, so a .env moves neither (R25-F1, round 26; owner
- * decision Q37). No other variable of the image's environment, and no other
- * FOUNDRY_*.
+ * forge's own default, FOUNDRY_SOLC at the pin and FOUNDRY_EXTERNAL_COMPILERS
+ * empty, since an adapter is a compiler the pin does not name (R24-F1, round 27).
+ * forge loads /work/.env without overriding what is set, so a .env moves none of
+ * them (R25-F1, round 26; owner decision Q37). No other variable of the image's
+ * environment, and no other FOUNDRY_*.
  * @param {string} path - the probed PATH
  * @param {string} [solc] - the pin: a release, an absolute path, or empty to leave
  *   the choice to the sources' pragmas among the installed releases (integrity.pinCompiler).
@@ -93,7 +94,7 @@ function forgeEnvironment(path, solc) {
   if (typeof path !== 'string' || /[\0\n]/.test(path)) throw new TypeError('the probed PATH must be one line');
   if (solc !== undefined && (typeof solc !== 'string' || /[\0\n]/.test(solc))) throw new TypeError('the pinned compiler must be one line');
   return {
-    PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_CONFIG: 'foundry.toml', ...(solc === undefined ? {} : { FOUNDRY_SOLC: solc }), FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
+    PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_CONFIG: 'foundry.toml', ...(solc === undefined ? {} : { FOUNDRY_SOLC: solc, FOUNDRY_EXTERNAL_COMPILERS: '[]' }), FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
   };
 }
 

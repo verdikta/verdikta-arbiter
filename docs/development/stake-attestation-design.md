@@ -997,7 +997,9 @@ leaves the choice to the sources' pragmas among the installed releases. forge's 
 beats its configuration files, so what a patch or a fix does to them no longer picks a
 compiler. This holds only with the refusals above: forge still runs whatever an installed
 release's path leads to, and a pragma can pick any installed release. It says nothing about
-the installed bytes, which are the maker's, so the fake-`solc` limit below stays.
+the installed bytes, which are the maker's, so the fake-`solc` limit below stays. A listing
+that names an external compiler adapter is refused, since that is a compiler the pin does
+not name, and the runner keeps that list empty in forge's environment.
 
 **Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
 before mainnet. The code-runner README's route table has every route the review raised.

@@ -579,15 +579,16 @@ characters `COMMAND_INVALID`, a `testFiles` or `testIds` without its placeholder
 `/usr/bin/env -i PATH=<the image's PATH> TZ=UTC LANG=C.UTF-8 CI=true
 PYTHONHASHSEED=0 HOME=/home/sandbox XDG_DATA_HOME=/opt/verdikta/tools/share
 VERDIKTA_TOOLS=/opt/verdikta/tools FOUNDRY_CONFIG=foundry.toml FOUNDRY_SOLC=<the pin>
-FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
+FOUNDRY_EXTERNAL_COMPILERS=[] FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
 <flags…>`, in `/work`: forge at the real path the runner probed in the image
 (`command -v forge`; a forge path holding `=` or a control character, which env
 could not run as a program, is `IMAGE_FORGE_MISSING`). Each flag and its value are one
 argv element (`--name=value`). The launcher prints its start nonce and `exec`s
 that argv; nothing interprets it. Nothing of the image's `ENV` but `PATH` reaches
-forge, `FOUNDRY_*` included. forge sees three `FOUNDRY_*`, all the runner's: the seed,
-`FOUNDRY_CONFIG` at forge's own default, so a `.env` cannot move its configuration, and
-`FOUNDRY_SOLC`, the pinned compiler ([below](#the-compiler-is-pinned)). The two
+forge, `FOUNDRY_*` included. forge sees four `FOUNDRY_*`, all the runner's: the seed,
+`FOUNDRY_CONFIG` at forge's own default, so a `.env` cannot move its configuration,
+`FOUNDRY_SOLC`, the pinned compiler, and `FOUNDRY_EXTERNAL_COMPILERS` empty
+([below](#the-compiler-is-pinned)). The two
 `/opt/verdikta` values are the builder's fixed `ENV`, set here as constants: forge
 finds the solc releases the maker's setup installed under `XDG_DATA_HOME`. The runner
 reads `forge config --json` through the same argv, so the configuration the
@@ -1085,6 +1086,15 @@ place. It says nothing about what the installed bytes do: those are the maker's,
 known limit stays, and checking them against the official releases is A2c's to look at. A
 `.vy` file's compiler is not covered by the variable, so `vyper.path` keeps its refusal.
 
+An external compiler adapter (`external_compilers`, which forge runs in every build) is a
+compiler the pin does not name. A listing that names one is refused before any patch, and
+forge's fixed environment keeps the list empty, so no later file can add one (R24-F1, round
+27). A solver named by a path in the work tree is refused the same way, in `foundry.toml` or
+in a listed file's inline configuration: a patch could replace what the maker's own symbolic
+tests rely on. A program a proof's own test starts during a run (ffi, or a solver the proof's
+own inline configuration names) is not a compiler: it runs under the integrity checks, like
+any claim code.
+
 A proof whose pragma the listing's release cannot compile fails `build`, as it did before the
 pin: `check` shows it first.
 
@@ -1202,6 +1212,7 @@ The routes the review raised, against that scope (each has its test):
 | `fix.patch` changing forge's own configuration to select a compiler it adds (R25-F2) | Yes: a hunter, where `foundry.toml` is not protected | **Blocks: hunter alone.** Closed | A failed fixed build, a fact; the fixed tree is never built, and the claim's outcome doesn't move |
 | A `.env` with `FOUNDRY_CONFIG` moving forge's configuration into a file a patch or a fix could change (R25-F1, R25-F2, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | forge's fixed environment sets `FOUNDRY_CONFIG` to its own default, and forge loads a `.env` without overriding what is set |
 | Any other way a patch or a fix changes what names the compiler (Q37) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed by the pin | `FOUNDRY_SOLC` wins over `foundry.toml`, `extends`, `.env` and `FOUNDRY_CONFIG`; the planted compiler never runs |
+| An external compiler adapter, or a solver named by a path, that a patch replaces (R24-F1, round 27) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | Refused before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. `FOUNDRY_EXTERNAL_COMPILERS` is fixed empty |
 | An installed release, named by version, that is a link through the work tree a patch could fill (R24-F1, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | What is directly in the tools folder's `svm/` is walked right after the checkout: `IMAGE_WATCH_ROOT_UNCOVERED` |
 | `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
 | A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error, a multi-line reason lost (R21-F2, R22-F2) | Yes: any honest claim | **Blocks: runner misreading, no maker's files.** Closed | Forge's campaign counts accepted within a range; the reason read up to forge's framing |
