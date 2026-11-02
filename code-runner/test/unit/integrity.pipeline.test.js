@@ -108,9 +108,9 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   assert.deepEqual(order.slice(from + 1), [
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-external-roots', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-external-roots', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-external-roots', 'vcr-framework', 'forge-config'
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config'
   ]);
   const manifests = sb.execs().filter((d) => d.kind === 'vcr-manifest');
   // Every snapshot is hermetic (nothing of the image's environment reaches find or sha256sum).
@@ -681,9 +681,9 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup',
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-external-roots', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-external-roots', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-external-roots', 'vcr-framework', 'forge-config'
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config'
   ]);
 });
 
@@ -807,17 +807,19 @@ test('A3a R13-F1: what the reference cannot read in the watched sets is the imag
   assert.deepEqual(r.facts.poc.integrity, CLEAN);
 });
 
-// ------------------------------------------- R16-F1: "outside the work tree" asked of the kernel
+// ------------------------------------------- R16-F1: "immutable" asked of the kernel, step by step
 
-test('A3a R16-F1: a PATH directory or solc on the read-only root that really leads into the work tree, or a symbolic link in such a PATH directory, is IMAGE_WATCH_ROOT_UNCOVERED before any maker command', async () => {
+test('A3a R16-F1: a PATH directory or solc on the read-only root whose way leads through the work tree, $HOME or /tmp, or a symbolic link in such a PATH directory, is IMAGE_WATCH_ROOT_UNCOVERED before any maker command', async () => {
   const { forgeConfig } = require('../helpers/fakeClaim');
   const PATH = '/opt/helpers:/usr/local/bin:/usr/bin';
   const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path ${PATH}\n${forgeConfig(box.tree)}` });
   for (const [seed, re] of [
-    [(box) => box.tree.set('/opt/helpers', { type: 'l', target: '/work/helpers' }), /PATH directory or solc \/opt\/helpers leads to \/work\/helpers/],
-    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/tool', { type: 'l', target: '/work/helpers/tool' }); }, /\/opt\/helpers\/tool leads to \/work\/helpers\/tool/],
-    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/tmp', { type: 'l', target: '/tmp/tool' }); }, /\/opt\/helpers\/tmp leads to \/tmp\/tool/],
-    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/home', { type: 'l', target: '/home/sandbox/tool' }); }, /\/opt\/helpers\/home leads to \/home\/sandbox\/tool/]
+    [(box) => box.tree.set('/opt/helpers', { type: 'l', target: '/work/helpers' }), /\/opt\/helpers \(in PATH, the runner's tools or solc\) resolves through a place the sandbox can write/],
+    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/tool', { type: 'l', target: '/work/helpers/tool' }); }, /\/opt\/helpers\/tool \(in PATH/],
+    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/tmp', { type: 'l', target: '/tmp/tool' }); }, /\/opt\/helpers\/tmp \(in PATH/],
+    [(box) => { set(box, '/opt/helpers/keep', 'x'); box.tree.set('/opt/helpers/home', { type: 'l', target: '/home/sandbox/tool' }); }, /\/opt\/helpers\/home \(in PATH/],
+    // Round 17: through a link in the work tree, the destination read-only: a run could retarget the link.
+    [(box) => { box.tree.set('/opt/helpers', { type: 'l', target: '/work/helper-path' }); box.tree.set('/work/helper-path', { type: 'l', target: '/opt/helpers-v1' }); set(box, '/opt/helpers-v1/helper', 'x'); }, /\/opt\/helpers \(in PATH/]
   ]) {
     const sb = claimSandbox({ onBox: seed, scripts: { 'vcr-framework': framework } });
     const r = await runClaim(sb);
@@ -830,64 +832,48 @@ test('A3a R16-F1: a PATH directory or solc on the read-only root that really lea
   const sb = claimSandbox({ onBox: (box) => box.tree.set('/opt/solc/solc', { type: 'l', target: '/work/tools/solc' }) });
   const r = await runClaim(sb);
   assert.equal(r.outcome, 'requester_error', show(r));
-  assert.match(r.issues[0].detail, /\/opt\/solc\/solc leads to \/work\/tools\/solc/);
-  // Hermetic, at the reference and after each run, of PATH directories and solc outside the work tree and $HOME only.
-  const ok = claimSandbox({ scripts: { 'vcr-framework': (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /work/.bin:/home/sandbox/bin:/opt/helpers:/usr/bin\n${forgeConfig(box.tree)}` }) } });
-  const good = await runClaim(ok);
-  assert.equal(good.outcome, 'definitive', show(good));
-  const asked = ok.execs().filter((d) => d.kind === 'vcr-external-roots');
-  assert.equal(asked.length, 4, 'the reference, and after each of the three runs');
-  for (const a of asked) {
-    assert.deepEqual(a.launched.slice(0, 2), ['/usr/bin/env', '-i']);
-    assert.deepEqual(a.stdin.toString('latin1').split('\0').filter(Boolean), ['/opt/helpers', '/usr/bin', '/opt/solc/solc']);
-  }
+  assert.match(r.issues[0].detail, /\/opt\/solc\/solc \(in PATH/);
+  // Round 17: a PATH directory the sandbox can search but not list could hold a link nobody saw.
+  const hid = await runClaim(claimSandbox({ onBox: (box) => box.tree.set('/opt/helpers', { type: 'd', mode: '111', content: '' }), scripts: { 'vcr-framework': framework } }));
+  assert.equal(hid.outcome, 'requester_error', show(hid));
+  assert.deepEqual(hid.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(hid.issues[0].detail, /\/opt\/helpers \(in PATH or the runner's tools\) cannot be listed/);
 });
 
-test('A3a R16-F1 (round 17): a resolution through a link a run can retarget, final destination read-only at the reference, fails frameworkUnchanged once it changes; a scan that was not complete is refused', async () => {
-  const { forgeConfig } = require('../helpers/fakeClaim');
-  const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /opt/helpers:/usr/local/bin:/usr/bin\n${forgeConfig(box.tree)}` });
-  // /opt/helpers -> /work/helper-path -> /opt/helpers-v1: read-only at the reference, retargeted by run 1 or run 2.
-  for (const [k, re] of [[1, /run 1: where PATH or solc leads changed: \/opt\/helpers/], [2, /run 2: where PATH or solc leads changed: \/opt\/helpers/]]) {
-    const retarget = (d, n, box) => { if (n === k) box.tree.set('/work/helper-path', { type: 'l', target: '/work/helpers' }); return { exitCode: 1, stdout: drainFails() }; };
-    const r = await runClaim(claimSandbox({
-      onBox: (box) => { box.tree.set('/opt/helpers', { type: 'l', target: '/work/helper-path' }); box.tree.set('/work/helper-path', { type: 'l', target: '/opt/helpers-v1' }); set(box, '/opt/helpers-v1/helper', 'x'); },
-      poc: [retarget, retarget, retarget], scripts: { 'vcr-framework': framework }
-    }));
-    assertIntegrityFails(r, ['frameworkUnchanged'], re);
-  }
-  // Left alone, the same image passes: only a change is the failure.
-  const still = await runClaim(claimSandbox({
-    onBox: (box) => { box.tree.set('/opt/helpers', { type: 'l', target: '/work/helper-path' }); box.tree.set('/work/helper-path', { type: 'l', target: '/opt/helpers-v1' }); set(box, '/opt/helpers-v1/helper', 'x'); },
-    scripts: { 'vcr-framework': framework }
-  }));
-  assert.equal(still.gates.integrity.status, 'pass', show(still));
-  // A PATH directory the sandbox can search but not list (mode 0111) could hold a link nobody saw.
-  const hid = claimSandbox({ onBox: (box) => box.tree.set('/opt/helpers', { type: 'd', mode: '111', content: '' }), scripts: { 'vcr-framework': framework } });
-  const h = await runClaim(hid);
-  assert.equal(h.outcome, 'requester_error', show(h));
-  assert.deepEqual(h.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
-  assert.match(h.issues[0].detail, /PATH directory or solc \/opt\/helpers cannot be listed/);
-  // After a run, an answer that cannot be read is a failure of the check, never a pass.
-  let calls = 0;
-  const broken = (d, box) => { calls += 1; return calls === 1 ? { stdout: require('../helpers/fakeClaim').externalRootsOf(box.tree, d.stdin) } : { exitCode: 1 }; };
-  const b = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': broken } }));
-  assertIntegrityFails(b, ['frameworkUnchanged'], /run 1: where PATH and solc lead could not be read/);
+test('A3a R16-F1 (round 18): the runner\'s own tools are held to it too: a link in hermetic()\'s PATH through the work tree is refused, whatever the image\'s PATH says', async () => {
+  // /usr/local/bin/find -> /work/find-link -> /usr/bin/find: a retarget would run a claim's program as the snapshot's find.
+  const sb = claimSandbox({ onBox: (box) => {
+    set(box, '/usr/local/bin/keep', 'x');
+    box.tree.set('/usr/local/bin/find', { type: 'l', target: '/work/find-link' });
+    box.tree.set('/work/find-link', { type: 'l', target: '/usr/bin/find' });
+  } });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /\/usr\/local\/bin\/find \(in PATH, the runner's tools or solc\) resolves through/);
+  assert.ok(!sb.execs().some((d) => d.kind === 'vcr-manifest' || d.kind === 'vcr-build'), 'before the snapshot could run it');
 });
 
-test('A3a R16-F1: links on the read-only root that stay there are fine (merged /usr, alternatives); the script\'s answer is checked; an image without realpath is IMAGE_TOOL_MISSING', async () => {
+test('A3a R16-F1: links on the read-only root that stay there are fine (merged /usr, alternatives); asked once, hermetic, before the listing; the walk is A1\'s launcher check; a broken answer is the runner\'s', async () => {
   const { forgeConfig } = require('../helpers/fakeClaim');
-  const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /bin:/usr/bin\n${forgeConfig(box.tree)}` });
-  const fine = await runClaim(claimSandbox({
+  const { LAUNCHER_CHECK } = require('../../src/launcher');
+  const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /work/.bin:/home/sandbox/bin:/opt/helpers:/bin:/usr/bin\n${forgeConfig(box.tree)}` });
+  const ok = claimSandbox({
     onBox: (box) => { box.tree.set('/bin', { type: 'l', target: 'usr/bin' }); set(box, '/usr/bin/mawk', 'ELF'); box.tree.set('/usr/bin/awk', { type: 'l', target: '/etc/alternatives/awk' }); box.tree.set('/etc/alternatives/awk', { type: 'l', target: '/usr/bin/mawk' }); },
     scripts: { 'vcr-framework': framework }
-  }));
+  });
+  const fine = await runClaim(ok);
   assert.equal(fine.outcome, 'definitive', show(fine));
   assert.equal(fine.gates.integrity.status, 'pass', show(fine));
-  const missing = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': () => ({ exitCode: 4 }) } }));
-  assert.equal(missing.outcome, 'requester_error', show(missing));
-  assert.deepEqual(missing.issues.map((i) => i.code), ['IMAGE_TOOL_MISSING']);
-  // The runner's own failure, or a broken answer, is no verdict on the image.
-  for (const bad of [() => ({ exitCode: 1 }), () => ({ stdout: Buffer.from('odd\0') })]) {
+  const asked = ok.execs().filter((d) => d.kind === 'vcr-external-roots');
+  assert.equal(asked.length, 1, 'the way there is out of the sandbox user\'s reach: no need to ask again after a run');
+  assert.deepEqual(asked[0].launched.slice(0, 2), ['/usr/bin/env', '-i']);
+  assert.equal(asked[0].argv[4], LAUNCHER_CHECK);
+  // The tools' directories, then the image's PATH outside the work tree and $HOME, then solc.
+  assert.deepEqual(asked[0].stdin.toString('latin1').split('\0').filter(Boolean), ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin', '/opt/helpers', '/opt/solc/solc']);
+  const order = ok.execs().map(label);
+  assert.ok(order.indexOf('vcr-external-roots') < order.indexOf('vcr-manifest'));
+  for (const bad of [() => ({ exitCode: 1 }), () => ({ stdout: Buffer.from('odd\0') }), () => ({ stdout: Buffer.from('p\0?\0') })]) {
     const r = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': bad } }));
     assert.equal(r.outcome, 'abstain', show(r));
     assert.equal(r.abstain.cause, 'runner_error');

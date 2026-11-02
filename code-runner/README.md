@@ -891,17 +891,18 @@ process of the run is dead:
    or `snapshots` directories, or under `paths.tests` (a patch's file there
    would be a command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
    command, naming the setting and its value; nothing is dropped silently.
-   "Outside the work tree" is asked of the kernel (R16-F1): the read-only root
-   protects a link there, not what it leads to, so a `PATH` directory or `solc`
-   that really leads into `/work`, `$HOME` or `/tmp`, or a symbolic link
-   directly in such a `PATH` directory that does (`realpath -m`, so a dangling
-   one counts), is `IMAGE_WATCH_ROOT_UNCOVERED` too, as is a `PATH` directory
-   the sandbox cannot list (mode 0111: a link inside it would go unseen). The
-   answer is taken again after every run, with the files, since the way there
-   can pass through a link a run can retarget: a change fails
-   `frameworkUnchanged`. A program on the read-only root that itself runs
-   something in the work tree is the image's own text, which no resolution can
-   see.
+   "Outside the work tree" is checked step by step (R16-F1): the read-only
+   root protects a link there, not what it leads to. Before any claim code, each
+   `PATH` directory and `solc` outside the work tree and `$HOME`, the directories
+   the runner's own tools come from (a snapshot's `find` and `sha256sum`, `git`),
+   and each symbolic link directly in those directories are walked by A1's launcher
+   check, one component at a time from `/`. One whose way meets anything the sandbox
+   user owns or can write is `IMAGE_WATCH_ROOT_UNCOVERED`, even when it ends back on
+   the root (a run could retarget the link on the way), as is a directory the sandbox
+   cannot list (mode 0111: a link inside it would go unseen). What passes is out of
+   the sandbox user's reach, so it needs no asking again after a run. A program on
+   the read-only root that itself runs something in the work tree is the image's own
+   text, which no walk can see.
    `PATH` is read as the shell reads it from `/work`, where forge runs and
    its children look commands up (R11-F2): an empty entry or `.` is `/work`, a relative entry
    lies under it, and only a real `./` prefix is stripped (`.bin` is
@@ -992,8 +993,7 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
 | forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
-| a helper reached through a `PATH` directory or link on the read-only root that leads into the work tree, `solc` behind one, or a `PATH` directory that cannot be listed (R16-F1) | the kernel resolves them at the reference: `IMAGE_WATCH_ROOT_UNCOVERED` | pipeline and Docker "A3a R16-F1" |
-| a link in the work tree on the way to such a directory, read-only at the reference, retargeted by a run (R16-F1, round 17) | the kernel's answer is taken again after every run: a change fails `frameworkUnchanged` | pipeline and Docker "A3a R16-F1" |
+| a helper, `solc` or the runner's own tool (`find`, `sha256sum`) reached through a `PATH` directory or link on the read-only root whose way leads through the work tree, even back to the root, or a `PATH` directory that cannot be listed (R16-F1) | A1's launcher check walks each one before any claim code: `IMAGE_WATCH_ROOT_UNCOVERED` | pipeline and Docker "A3a R16-F1" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
 | bytes changed behind an unreadable file in a watched set or `out/`, or anything hidden by an unlistable directory, a watched root's ancestor or a link's target included (R13-F1) | what a snapshot cannot read is never unchanged: the check fails; at the reference, `IMAGE_WATCH_UNREADABLE` | unit, pipeline and Docker "A3a R13-F1" |
 

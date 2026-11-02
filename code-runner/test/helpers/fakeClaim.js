@@ -432,28 +432,48 @@ function linksOf(tree, stdin) {
 }
 
 /**
- * `vcr-external-roots`'s output for the paths on its stdin: `path\0real\0` for each, then for each symbolic link
- * directly in one that is a directory (`path\0!\0` for one it cannot list). The fake's tree models the read-only root's links too (a `/opt/helpers` entry
- * is never listed: the manifest holds /work and $HOME only).
+ * `vcr-external-roots`'s output for the paths on its stdin: a record for each offender among them and the symbolic
+ * links directly in those that are directories (`path\0w\0`: the walk from / meets the work tree, $HOME or /tmp, as
+ * A1's launcher check would; `path\0!\0`: a directory it cannot list). Nothing when all is safe. The fake's tree
+ * models the read-only root's links too (a `/opt/helpers` entry is never listed: the manifest holds /work and $HOME only).
  */
 function externalRootsOf(tree, stdin) {
+  const WRITABLE = ['/work', '/tmp', HOME];
+  const walksWritable = (p) => {
+    let cur = [];
+    let queue = p.split('/');
+    let hops = 0;
+    while (queue.length) {
+      const c = queue.shift();
+      if (c === '' || c === '.') continue;
+      if (c === '..') { cur.pop(); continue; }
+      const next = `/${[...cur, c].join('/')}`;
+      if (WRITABLE.some((w) => next === w || next.startsWith(`${w}/`))) return true;
+      const e = tree.get(next);
+      if (e && e.type === 'l') {
+        hops += 1;
+        if (hops > 40) return false;
+        if (e.target.startsWith('/')) cur = [];
+        queue = [...e.target.split('/'), ...queue];
+        continue;
+      }
+      cur.push(c);
+    }
+    return false;
+  };
   const resolve = kernelResolver(tree);
   const paths = stdin ? Buffer.from(stdin).toString('latin1').split('\0').filter((x) => x !== '') : [];
   const parts = [];
-  const record = (p) => {
-    const r = resolve(p);
-    // As `realpath -m`: a link whose target does not exist yet still names where it leads.
-    const link = tree.get(p);
-    const missing = link && link.type === 'l' && link.target.startsWith('/') ? link.target : p;
-    parts.push(`${p}\0${r.kind === '?' ? missing : r.real}\0`);
-    return r;
-  };
   for (const p of paths) {
-    // A directory `find` cannot list (mode 0111): the script's `!` record.
     if (tree.has(p) && tree.get(p).type === 'd') { parts.push(`${p}\0!\0`); continue; }
-    const r = record(p);
+    if (walksWritable(p)) { parts.push(`${p}\0w\0`); continue; }
+    const r = resolve(p);
     if (r.kind !== 'd') continue;
-    for (const [k, e] of tree) if (e.type === 'l' && k.startsWith(`${r.real}/`) && !k.slice(r.real.length + 1).includes('/')) record(`${p}/${k.slice(r.real.length + 1)}`);
+    for (const [k, e] of tree) {
+      if (e.type !== 'l' || !k.startsWith(`${r.real}/`) || k.slice(r.real.length + 1).includes('/')) continue;
+      const link = `${p}/${k.slice(r.real.length + 1)}`;
+      if (walksWritable(link)) parts.push(`${link}\0w\0`);
+    }
   }
   return Buffer.from(parts.join(''), 'latin1');
 }

@@ -63,7 +63,13 @@ const VARIANTS = Object.freeze({
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: 'ln -s /work/helpers/helper /usr/local/bin/helper'
   },
-  // Round 17: the alias through a link in the work tree, read-only at the reference; a PATH directory that cannot be listed.
+  // Round 18: the runner's own tool behind a link in the work tree, ending back on the root.
+  toolchain: {
+    toml: 'ffi = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'ln -s /work/sum-link /usr/local/bin/sha256sum && ln -s /usr/bin/sha256sum sum-link'
+  },
+  // Round 17: the alias through a link in the work tree, ending back on the root; a PATH directory that cannot be listed.
   pathchain: {
     toml: 'ffi = true',
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
@@ -541,32 +547,20 @@ test('A3a R13-F1 under real forge: a file or a directory a run leaves unreadable
   assert.match(r.gates.integrity.detail, /run 1: build cannot be read/);
 });
 
-test('A3a R16-F1 under real forge: a PATH directory that is a link into the work tree, and a link into it in a read-only PATH directory, are refused before any maker command', { timeout: TIMEOUT }, async (t) => {
-  for (const [variant, re] of [['pathalias', /\/opt\/helpers leads to \/work\/helpers/], ['pathlink', /\/usr\/local\/bin\/helper leads to \/work\/helpers\/helper/]]) {
+test('A3a R16-F1 under real forge: what the checks take for immutable, with real symbolic links in the image: a PATH directory through the work tree, directly or by a chain back to the root; a link into it in a read-only PATH directory; the runner\'s own tool behind one; a directory it cannot list', { timeout: TIMEOUT }, async (t) => {
+  for (const [variant, re] of [
+    ['pathalias', /\/opt\/helpers \(in PATH, the runner's tools or solc\) resolves through a place the sandbox can write/],
+    ['pathchain', /\/opt\/helpers \(in PATH, the runner's tools or solc\) resolves through/],
+    ['pathlink', /\/usr\/local\/bin\/helper \(in PATH, the runner's tools or solc\) resolves through/],
+    ['toolchain', /\/usr\/local\/bin\/sha256sum \(in PATH, the runner's tools or solc\) resolves through/],
+    ['pathhidden', /\/opt\/helpers \(in PATH or the runner's tools\) cannot be listed/]
+  ]) {
     const r = await run(t, claim(await fixture(variant), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
-    assert.equal(r.outcome, 'requester_error', show(r));
-    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED'], variant);
     assert.match(r.issues[0].detail, re);
     assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
   }
-  // Round 17: mode 0111, a link inside it nobody could list.
-  const hidden = await run(t, claim(await fixture('pathhidden'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
-  assert.equal(hidden.outcome, 'requester_error', show(hidden));
-  assert.deepEqual(hidden.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
-  assert.match(hidden.issues[0].detail, /\/opt\/helpers cannot be listed/);
-  // Round 17: through a link in the work tree. As the image has it, the claim passes; retargeted by a run, it fails.
-  const chain = await fixture('pathchain');
-  const clean = await run(t, claim(chain, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
-  assert.equal(clean.outcome, 'definitive', show(clean));
-  assert.equal(clean.gates.integrity.status, 'pass', show(clean));
-  const retarget = pocFile('ExploitTest', [
-    `    function ${NAME}() public { ${ffiSh('mkdir -p helpers; rm -f helper-path; ln -s /work/helpers helper-path')} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
-  ]);
-  const moved = await run(t, claim(chain, addFilesPatch({ 'test/Exploit.t.sol': retarget })));
-  assert.equal(moved.outcome, 'definitive', show(moved));
-  assert.equal(moved.gates.integrity.status, 'fail', show(moved));
-  assert.equal(moved.facts.poc.integrity.frameworkUnchanged, false, show(moved));
-  assert.match(moved.gates.integrity.detail, /run 1: where PATH or solc leads changed: \/opt\/helpers/);
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {
