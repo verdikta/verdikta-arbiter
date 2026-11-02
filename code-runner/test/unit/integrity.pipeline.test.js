@@ -515,3 +515,26 @@ test('A3a R1-F3 (round 2): the executable is checked by its own entry, wherever 
     assert.deepEqual(r2.issues.map((i) => i.code), ['IMAGE_FORGE_UNWATCHED']);
   }
 });
+
+test('A3a R6-F1: what a link in the work tree points to is watched as the link is (a dependency link, a symlinked lib/ root, a tracked link to an untracked file)', async () => {
+  const link = (box, p, target) => box.tree.set(p, { type: 'l', target });
+  const cases = [
+    // lib/pkg -> ../vendor/pkg, the fixture under vendor/ untracked.
+    [(box) => { link(box, '/work/lib/pkg', '../vendor/pkg'); set(box, '/work/vendor/pkg/fixture.json', '{}'); }, '/work/vendor/pkg/fixture.json', /dependenciesUnchanged \(run 2: vendor\/pkg\/fixture\.json changed/],
+    // lib itself a link (the dependency root), with a link chain inside the referent.
+    [(box) => { box.tree.delete('/work/lib/forge-std/src/Test.sol'); link(box, '/work/lib', '../third_party'); link(box, '/work/third_party/oz', '/work/vendor2/oz'); set(box, '/work/vendor2/oz/ERC20.sol', 'contract ERC20 {}'); }, '/work/vendor2/oz/ERC20.sol', /dependenciesUnchanged \(run 2: vendor2\/oz\/ERC20\.sol changed/],
+    // A link outside every set (a source file the maker links to a generated, untracked one): its referent is a dependency.
+    [(box) => { link(box, '/work/src/Gen.sol', '../gen/Gen.sol'); set(box, '/work/gen/Gen.sol', 'contract Gen {}'); }, '/work/gen/Gen.sol', /dependenciesUnchanged \(run 2: gen\/Gen\.sol changed/]
+  ];
+  for (const [seed, target, re] of cases) {
+    const edit = (d, k, box) => { if (k === 2) set(box, target, '// changed behind the link'); return { exitCode: 1, stdout: drainFails() }; };
+    const r = await runClaim(claimSandbox({ onBox: seed, poc: [edit, edit, edit] }));
+    assertIntegrityFails(r, ['dependenciesUnchanged'], re);
+  }
+  // A watched link that points where nothing is watched (/tmp) is refused before any claim code; an unwatched one is not.
+  const r = await runClaim(claimSandbox({ onBox: (box) => link(box, '/work/lib/tmpdep', '/tmp/dep') }));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
+  const ok = await runClaim(claimSandbox({ onBox: (box) => link(box, '/work/scratch', '/tmp/scratch') }));
+  assert.equal(ok.gates.integrity.status, 'pass', show(ok));
+});

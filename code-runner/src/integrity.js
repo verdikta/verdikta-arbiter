@@ -291,7 +291,102 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     if (framework) sets.framework.set(rel, d);
     if (out && under(rel, out)) sets.artifacts.set(rel, d);
   }
+  followLinks(entries, sets, { skip: [out, cache].filter(Boolean) });
   return sets;
+}
+
+const WATCHED = Object.freeze(['protected', 'dependencies', 'framework', 'artifacts']);
+const MAX_LINK_HOPS = 40;
+
+/** A path joined and normalised within the work tree (latin1 keys), or null when it climbs out of it. */
+function normaliseRel(parts) {
+  const out = [];
+  for (const p of parts) {
+    if (p === '' || p === '.') continue;
+    if (p === '..') {
+      if (!out.length) return null;
+      out.pop();
+    } else out.push(p);
+  }
+  return out.join('/');
+}
+
+/**
+ * Where a link in the work tree points: the referent's work-tree path, with
+ * links on the way to it resolved too (at most 40 hops); `{ outside }` when it
+ * leaves the work tree.
+ */
+function referentOf(linkRel, target, links) {
+  let parts = target.startsWith('/')
+    ? (target === WORK || target.startsWith(`${WORK}/`) ? target.slice(WORK.length + 1).split('/') : null)
+    : [...linkRel.split('/').slice(0, -1), ...target.split('/')];
+  if (parts === null) return { outside: target };
+  for (let hop = 0; hop < MAX_LINK_HOPS; hop += 1) {
+    const rel = normaliseRel(parts);
+    if (rel === null) return { outside: target };
+    const segs = rel === '' ? [] : rel.split('/');
+    let k = 1;
+    for (; k <= segs.length; k += 1) if (links.has(segs.slice(0, k).join('/'))) break;
+    if (k > segs.length) return { rel };
+    const prefix = segs.slice(0, k).join('/');
+    const t = links.get(prefix);
+    const rest = segs.slice(k);
+    if (t.startsWith('/')) {
+      if (!(t === WORK || t.startsWith(`${WORK}/`))) return { outside: t };
+      parts = [...t.slice(WORK.length + 1).split('/'), ...rest];
+    } else parts = [...segs.slice(0, k - 1), ...t.split('/'), ...rest];
+  }
+  return { outside: target };
+}
+
+/**
+ * Symbolic links in the work tree (R6-F1): forge reads through them, so what a
+ * link points to is watched as what the link is (a dependency when the link
+ * is in none of the sets), recursively, wherever it physically lives (forge's
+ * artifact and cache directories, which have their own rules, excepted). A
+ * watched link that points where nothing is watched (/tmp, a $HOME cache, a
+ * place outside the work tree that is writable) is recorded in
+ * `sets.uncovered`: the reference refuses it.
+ */
+function followLinks(entries, sets, { skip }) {
+  const work = [];
+  const links = new Map();
+  for (const [p, e] of entries) {
+    if (e.type !== 'l' || !p.startsWith(`${WORK}/`) || p.startsWith(`${WORK}/.git/`)) continue;
+    const rel = p.slice(WORK.length + 1);
+    links.set(rel, e.target);
+    work.push(rel);
+  }
+  sets.uncovered = [];
+  if (!work.length) return;
+  const rels = [...entries.keys()].filter((p) => p.startsWith(`${WORK}/`) && !p.startsWith(`${WORK}/.git/`)).map((p) => p.slice(WORK.length + 1)).sort();
+  const describeRel = (rel) => describe(entries.get(`${WORK}/${rel}`));
+  const done = new Set();
+  const queue = work.sort().map((rel) => ({ rel, cats: WATCHED.filter((c) => sets[c].has(rel)) }));
+  while (queue.length) {
+    const { rel, cats } = queue.shift();
+    const into = cats.length ? cats : ['dependencies'];
+    const key = `${rel}\u0000${into.join(',')}`;
+    if (done.has(key)) continue;
+    done.add(key);
+    const r = referentOf(rel, links.get(rel), links);
+    if (r.outside !== undefined) {
+      const t = r.outside;
+      const watchedHome = t.startsWith(`${HOME}/`) && !HOME_CACHES.some((c) => under(`~/${t.slice(HOME.length + 1)}`, c));
+      const writable = t === '/tmp' || t.startsWith('/tmp/') || t === HOME || t.startsWith(`${HOME}/`) || t === WORK || t.startsWith(`${WORK}/`);
+      if (cats.length && writable && !watchedHome) sets.uncovered.push(`${displayPath(rel)} -> ${displayPath(t)}`);
+      continue;
+    }
+    if (r.rel !== '' && skip.some((d) => under(r.rel, d))) continue;
+    for (const other of rels) {
+      // The referent's tree (the whole work tree for a link to its root), forge's artifact and cache directories aside.
+      if (r.rel !== '' && !under(other, r.rel)) continue;
+      if (skip.some((d) => under(other, d))) continue;
+      const d = describeRel(other);
+      for (const c of into) sets[c].set(other, d);
+      if (links.has(other)) queue.push({ rel: other, cats: into });
+    }
+  }
 }
 
 /**
@@ -421,6 +516,12 @@ class Watch {
       this.ref.forgeEntry = describe(e);
     }
     this.ref.sets = classify(m.entries, this.watchArgs());
+    if (this.ref.sets.uncovered.length) {
+      throw new RequesterError([{
+        code: 'IMAGE_WATCH_LINK_UNCOVERED', path: '/spec/env/image',
+        detail: `a watched link points where the runner watches nothing a run may write (${this.ref.sets.uncovered.slice(0, 5).join(', ')}): it could not tell a change behind it`
+      }]);
+    }
     this.repository = this.ref.sets.repository;
   }
 

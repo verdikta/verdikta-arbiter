@@ -773,13 +773,21 @@ process of the run is dead:
      run (forge compiles what the build left out, e.g. after `forge build
      --skip test`) and never after it.
 
+   Links (R6-F1): forge reads through symbolic links, so what a link in the
+   work tree points to is watched as what the link is (a dependency when the
+   link is in no set), recursively and wherever it physically lives: a
+   `lib/pkg -> ../vendor/pkg`, a symlinked `lib/` root, a tracked link to an
+   untracked file. A watched link that points where nothing is watched (`/tmp`,
+   a `$HOME` cache) is `IMAGE_WATCH_LINK_UNCOVERED`. (A PoC that writes into a
+   directory a link points to fails `dependenciesUnchanged`.)
+
    Not watched: the rest of forge's cache directory (its ABI cache,
    `test-failures`, fuzz failures, rewritten on every run), the `$HOME`
    caches, `/tmp`, untracked files elsewhere (a state file the PoC writes). Tracked
    files outside the sets go back to the PoC commit by the reset before each
    re-run. A reference that cannot be read is the requester's package, found
    before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
-   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_TOO_LARGE`: a listing over 64 MiB); after a run, the same is a
+   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_TOO_LARGE`: a listing over 64 MiB); after a run, the same is a
    definitive failure of the checks.
 5. **Static tamper flags** (`tamperFlags`), on the lines the patch added
    (any file under `paths.tests`, shell helpers included), one per kind per

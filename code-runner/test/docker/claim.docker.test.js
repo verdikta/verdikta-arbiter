@@ -275,10 +275,10 @@ async function run(t, request, extraSteps = [], { beforeBuild = null } = {}) {
   return { result, docker };
 }
 
-/** Insert a step after the commit and before the build (claimSteps: startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, build, reproduces, fixCheck). */
+/** Insert a step after the commit and before the build (claimSteps: startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, watch, build, reproduces, fixCheck). */
 function withBeforeBuild(steps, step) {
   if (!step) return steps;
-  assert.deepEqual(steps.map((f) => f.name), ['startFixCheck', 'prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces', 'fixCheck']);
+  assert.deepEqual(steps.map((f) => f.name), ['startFixCheck', 'prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'watch', 'build', 'reproduces', 'fixCheck']);
   return [...steps.slice(0, 5), step, ...steps.slice(5)];
 }
 
