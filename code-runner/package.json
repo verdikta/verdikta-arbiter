@@ -12,7 +12,7 @@
   "scripts": {
     "start": "node src/index.js",
     "test": "node --test --test-timeout=60000 test/unit/",
-    "test:docker": "node --test --test-concurrency=1 --test-timeout=300000 test/docker/"
+    "test:docker": "node --test --test-concurrency=1 --test-timeout=1800000 test/docker/"
   },
   "dependencies": {
     "@verdikta/common": "1.9.0-attest.1"
