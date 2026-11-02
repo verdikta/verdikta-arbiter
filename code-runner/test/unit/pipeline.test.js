@@ -659,3 +659,29 @@ test('R1-F1: a sandbox that could not be removed keeps the slot, the memory and 
   const lastRm = events.lastIndexOf('rm');
   assert.ok(events.indexOf('release image') > lastRm && events.indexOf('release slot') > lastRm, events.join(', '));
 });
+
+test('close(): a step removes a sandbox it is done with (the first one too), then opens a fresh one; a removal that fails abstains', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  let second = null;
+  const steps = [async (ctx) => {
+    await ctx.closeSandbox();
+    const sb = await ctx.openSandbox();
+    second = sb.name;
+    const r = await sb.exec(['true'], { name: 'in-second', timeoutMs: 5000 });
+    assert.equal(r.exitCode, 0);
+    await sb.close();
+  }];
+  const { result, active } = await run({ docker, steps });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+  assert.equal(second, 'vcr-0123456789abcdef-2');
+  // The first was removed before the second was created.
+  const order = docker.calls.filter((c) => c.args[0] === 'create' || c.args[0] === 'rm').map((c) => `${c.args[0]} ${c.args[0] === 'create' ? c.args[c.args.indexOf('--name') + 1] : c.args[c.args.length - 1]}`);
+  assert.ok(order.indexOf('rm vcr-0123456789abcdef-1') < order.indexOf('create vcr-0123456789abcdef-2'), order.join(', '));
+  assert.equal(active.size, 0);
+
+  const failing = fakeDocker(healthyDaemon({ rm: () => ({ exitCode: 1, stderr: 'Error response from daemon: busy\n' }) }));
+  const { result: r2 } = await run({ docker: failing, steps: [async (ctx) => { await ctx.closeSandbox(); }] });
+  assert.equal(r2.outcome, 'abstain');
+  assert.equal(r2.abstain.cause, 'docker_error');
+  assert.equal(r2.abstain.step, 'close:vcr-0123456789abcdef-1');
+});

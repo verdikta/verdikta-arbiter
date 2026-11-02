@@ -250,6 +250,27 @@ async function executeRun({
           run.signal.removeEventListener('abort', forward);
           running.delete(stepName);
         }
+      },
+      /**
+       * Remove this sandbox now, when the steps are done with it (the
+       * listing check opens a fresh one per probe, never two at once, so
+       * the memory admitted for one sandbox covers them). The teardown's own
+       * removal then finds nothing to remove.
+       */
+      async close() {
+        const stepName = `close:${sb.name}`;
+        const late = stopped(stepName);
+        if (late) throw late;
+        running.add(stepName);
+        let gone = false;
+        try {
+          gone = await sb.remove();
+        } catch (_) {
+          gone = false;
+        } finally {
+          running.delete(stepName);
+        }
+        if (!gone) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox could not be removed', { step: stepName });
       }
     };
   }
@@ -278,8 +299,10 @@ async function executeRun({
       sandboxName: primary.name,
       exec: primary.exec,
       readFile: primary.readFile,
-      /** Another sandbox with the same flags (the fix check, §9.2 step 8). */
+      /** Another sandbox with the same flags (the fix check, §9.2 step 8), with exec, readFile, name and close(). */
       openSandbox: () => open(),
+      /** Remove the first sandbox now (its handle's close()); ctx.exec cannot be used after. */
+      closeSandbox: primary.close,
       /** Record a gate decided on a definitive basis (exit_code, junit, integrity, input). */
       gate(name, status, basis, detail) {
         result.gates[name] = makeGate(status, basis, detail);

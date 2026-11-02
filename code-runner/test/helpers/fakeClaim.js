@@ -194,10 +194,11 @@ function catFile(objects, ids, check) {
  * @param {Function[]|string[]} [o.poc] - per PoC run (1-3): the JUnit text, or a handler returning { exitCode, stdout, stderr }
  * @param {object} [o.git] - overrides by git subcommand key (see `key` below)
  * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear, vcr-unstage, vcr-build, vcr-cleanup)
+ * @param {object} [o.handlers] - more docker subcommand handlers (fakeDocker's), e.g. `history` for the listing check
  */
 function claimSandbox({
   image = defaultImage(), objects = (m) => m, corrected = [], freeBytes = 1024 * 1024 * 1024, writtenBytes = 120,
-  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF
+  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF, handlers = {}
 } = {}) {
   let committed = false;
   let pocRun = 0;
@@ -275,7 +276,7 @@ function claimSandbox({
     if (sub[0] === 'diff-files') return sub.includes('--quiet') ? 'diff-files --quiet' : 'diff-files --name-only';
     return sub[0];
   };
-  const docker = fakeDocker(healthyDaemon({
+  const docker = fakeDocker({ ...healthyDaemon({
     step: (args, opts, calls) => {
       const d = decode(calls[calls.length - 1]);
       if (d.kind === 'git') {
@@ -288,7 +289,7 @@ function claimSandbox({
       if (!h) throw new Error(`unexpected exec ${JSON.stringify(d.argv.slice(0, 4))}`);
       return h(d, repo);
     }
-  }));
+  }), ...handlers });
   const execs = () => docker.callsOf('exec').map(decode).filter((d) => d.kind && d.argv[3] !== 'vcr-probe' && d.argv[3] !== 'vcr-launcher-check');
   return { docker, execs, repo, image };
 }
