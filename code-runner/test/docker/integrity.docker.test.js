@@ -36,18 +36,19 @@ const VARIANTS = Object.freeze({
     setup: 'mkdir -p lib/solady/src && printf "contract Solady {}\\n" > lib/solady/src/Solady.sol'
   },
   // Attempt 2 (ffi): lib/pkg -> ../bridge/../payload with bridge -> vendor/nested (R6-F1, round 7), a decoy at payload/
-  // (where collapsing `..` before the link would lead), and 20,000 links to `.` in node_modules (R7-F1: a dependency
+  // (where collapsing `..` before the link would lead), 20,000 links to `.` in node_modules (R7-F1: a dependency
   // directory the runner always watches; `libs` keeps forge itself out of it, since forge adds node_modules to its libs
-  // by default and walks every link there).
+  // by default and walks every link there), and a lib root behind a link (libs "deps/lib", deps -> third_party).
   links: {
-    toml: 'ffi = true\nlibs = ["lib"]',
+    toml: 'ffi = true\nlibs = ["lib", "deps/lib"]',
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: [
       'mkdir -p lib/solady/src && printf "contract Solady {}\\n" > lib/solady/src/Solady.sol',
       'mkdir -p vendor/nested vendor/payload payload && touch vendor/nested/.keep',
       'printf "{}\\n" > vendor/payload/fixture.json && printf "{}\\n" > payload/fixture.json',
       'ln -s vendor/nested bridge && ln -s ../bridge/../payload lib/pkg',
-      'mkdir -p node_modules && i=0 && while [ $i -lt 20000 ]; do ln -s . node_modules/l$i; i=$((i+1)); done'
+      'mkdir -p node_modules && i=0 && while [ $i -lt 20000 ]; do ln -s . node_modules/l$i; i=$((i+1)); done',
+      'mkdir -p third_party/lib && printf "contract TP {}\\n" > third_party/lib/TP.sol && ln -s third_party deps'
     ].join(' && ')
   },
   // Attempt 2: a dependency link into forge's cache directory (R6-F1, round 7).
@@ -387,6 +388,12 @@ test('A3a R6-F1 (round 7) under real forge: the kernel resolves `lib/pkg -> ../b
   // The lexical answer (payload/) is nobody's dependency: an edit there is not a change of the watched sets.
   const decoy = await run(t, claim(fx, edit('payload/fixture.json')));
   assert.equal(decoy.gates.integrity.status, 'pass', show(decoy));
+
+  // A lib root behind a link (libs "deps/lib", deps -> third_party): the kernel resolves the root, so an edit of what
+  // forge reads there is a dependency change.
+  const behind = await run(t, claim(fx, edit('third_party/lib/TP.sol')));
+  assert.equal(behind.outcome, 'definitive', show(behind));
+  assert.match(behind.gates.integrity.detail, /dependenciesUnchanged \(run 2: third_party\/lib\/TP\.sol changed/);
 
   // The unwatched link on the way retargeted during run 1: lib/pkg's own entry (the kernel's answer) changed.
   const retarget = addFilesPatch({

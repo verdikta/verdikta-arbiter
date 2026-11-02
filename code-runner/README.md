@@ -776,8 +776,9 @@ process of the run is dead:
    **Symbolic links: the kernel resolves them** (R6-F1, R7-F1; node A3a's
    attempt 2). The listing is physical (`find` never follows a link), so a
    file listed in a set is reached through real directories only and a write
-   to it changes its hash. The one way to reach other bytes through a watched
-   path is a symbolic link in a set, and only those are followed:
+   to it changes its hash. The ways to reach other bytes through a watched
+   path are a symbolic link in a set and one on the way to a set's root, and
+   only those are followed:
    - every link in a set (the protected paths, the dependencies, the
      framework, and the artifacts from run 1) is resolved by the kernel inside
      the sandbox, in one hermetic exec per snapshot and level (`LINKS_SCRIPT`:
@@ -791,6 +792,13 @@ process of the run is dead:
      followed for that set in the next round: `lib/pkg -> ../bridge/../payload`
      with `bridge -> vendor/nested` watches `vendor/payload/`, where the kernel
      goes;
+   - a link at or above a set's root (`libs = ["deps/lib"]` with `deps` a
+     link, forge's `cache` directory a link, a protected glob's literal
+     directory a link) hides everything under the root from the listing, so
+     the kernel resolves the root itself, which then counts as a link of its
+     set: exactly what it leads to joins (for forge's cache, only the compile
+     cache). Tracked paths never lie behind a link: the forced checkout makes
+     every directory on the way to one real;
    - a watched link whose real target is in, or (a directory) holds, a place
      builds and runs write to is `IMAGE_WATCH_LINK_UNCOVERED`, naming the link
      and its target: `/tmp`, `$HOME`, the work tree's root, the runner's
@@ -880,6 +888,7 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a maker's command runs a script under `paths.tests`, which the PoC rewrites | `framework-patched` (the patch changes a script a command names) | unit tamper-flag tests |
 | a file flood that hides a change | a listing over 64 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`) | unit snapshot and cap tests |
 | a change behind a watched link (`lib/pkg -> ../vendor/pkg`, a symlinked `lib/`, a link inside the tree a link leads to) | the kernel resolves each watched link in the sandbox; its target joins the link's set, transitively | unit and Docker "A3a R6-F1" |
+| a set's root behind a link (`libs = ["deps/lib"]`, `deps -> third_party`; `cache` a link) | the kernel resolves the root itself; exactly what it leads to joins | unit "a link at or above a set's root", Docker "A3a R6-F1 (round 7)" |
 | `..` after a link in the middle (`lib/pkg -> ../bridge/../payload`, `bridge -> vendor/nested`) | the kernel's answer (`vendor/payload`) is what is watched, never a path computed from the link's text | unit and Docker "A3a R6-F1 (round 7)" |
 | a watched link into forge's `cache/` (or `out/`, `broadcast/`, `snapshots/`, `.git`, `paths.tests`, `/tmp`, `$HOME`, the work tree's root, a directory outside the work tree) | `IMAGE_WATCH_LINK_UNCOVERED`, the link and its target named | unit and Docker "A3a R6-F1 (round 7)" |
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |

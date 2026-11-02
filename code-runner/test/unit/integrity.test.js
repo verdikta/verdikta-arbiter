@@ -314,7 +314,7 @@ async function watched(tree, o = {}) {
   const m = integrity.parseManifest(manifestOf(tree, ['/work', '/home/sandbox']));
   assert.equal(m.ok, true, m.reason);
   const sets = integrity.classify(m.entries, {
-    protectedGlobs: o.protectedGlobs || ['foundry.toml'], config: CONFIG, forgePath: '/usr/local/bin/forge', pathDirs: ['/usr/local/bin']
+    protectedGlobs: o.protectedGlobs || ['foundry.toml'], config: o.config || CONFIG, forgePath: '/usr/local/bin/forge', pathDirs: ['/usr/local/bin']
   });
   const kernel = kernelResolver(tree);
   const calls = [];
@@ -322,8 +322,10 @@ async function watched(tree, o = {}) {
     calls.push(paths);
     return new Map(paths.map((p) => [p, kernel(p)]));
   };
+  const roots = integrity.watchRoots({ protectedGlobs: o.protectedGlobs || ['foundry.toml'], config: o.config || CONFIG, forgePath: '/usr/local/bin/forge', pathDirs: ['/usr/local/bin'] });
   const r = await integrity.watchLinks(m.entries, sets, {
-    config: CONFIG, testGlobs: o.testGlobs || ['test/**'], patchPaths: o.patchPaths || new Set(), ...(o.categories ? { categories: o.categories } : {}), ...(o.limits ? { limits: o.limits } : {})
+    config: o.config || CONFIG, testGlobs: o.testGlobs || ['test/**'], patchPaths: o.patchPaths || new Set(), roots,
+    ...(o.categories ? { categories: o.categories } : {}), ...(o.limits ? { limits: o.limits } : {})
   }, resolve);
   return { sets, r, calls, entries: m.entries };
 }
@@ -522,6 +524,17 @@ test('item 4: more watched links than the cap, or links nested deeper than the r
   const tree = initialTree();
   for (let i = 0; i < 11; i += 1) link(tree, `/work/lib/l${i}`, '.');
   await assert.rejects(watched(tree, { limits: { links: 10 } }), (err) => err instanceof integrity.WatchTooLarge && /more than 10 watched links/.test(err.message));
+  // The cap holds as links are queued: a tree a link leads to that holds 1,000 links stops at the 11th, the kernel asked once.
+  const wide = initialTree();
+  link(wide, '/work/lib/a', '../v');
+  for (let i = 0; i < 1000; i += 1) link(wide, `/work/v/l${i}`, '.');
+  const m = integrity.parseManifest(manifestOf(wide, ['/work', '/home/sandbox']));
+  const sets = integrity.classify(m.entries, { protectedGlobs: [], config: CONFIG, forgePath: '/usr/local/bin/forge', pathDirs: [] });
+  const kernel = kernelResolver(wide);
+  const asked = [];
+  await assert.rejects(integrity.watchLinks(m.entries, sets, { config: CONFIG, limits: { links: 10 } }, async (ps) => { asked.push(ps.length); return new Map(ps.map((p) => [p, kernel(p)])); }),
+    (err) => err instanceof integrity.WatchTooLarge);
+  assert.deepEqual(asked, [1]);
   // A chain d0 -> d1 -> … each one a round: 17 rounds exceed 16.
   const chain = initialTree();
   link(chain, '/work/lib/c0', '../d1');
@@ -540,6 +553,51 @@ test('item 4: more watched links than the cap, or links nested deeper than the r
   assert.match(p.reason, /more than 4 entries/);
   assert.equal(integrity.parseManifest(manifestOf(big, ['/work']), { maxEntries: 5 }).ok, true);
   assert.equal(integrity.MAX_ENTRIES, 1000000);
+});
+
+test('a link at or above a set\'s root: the kernel resolves the root itself, and exactly what it leads to joins the set (a lib behind a linked directory, forge\'s cache directory, out, a protected path)', async () => {
+  const tree = initialTree();
+  // libs = ["deps/lib"] with deps -> third_party: forge reads deps/lib/… from third_party/lib/; nothing is listed under deps/.
+  link(tree, '/work/deps', 'third_party');
+  file(tree, '/work/third_party/lib/X.sol', 'contract X {}');
+  file(tree, '/work/third_party/other.sol');
+  // forge's out under a linked directory, and its cache directory itself a link (the compile cache is held, the rest is not).
+  link(tree, '/work/build', 'b');
+  file(tree, '/work/b/out/V.sol/V.json', '{}');
+  link(tree, '/work/cache', 'shared-cache');
+  file(tree, '/work/shared-cache/solidity-files-cache.json', '{}');
+  file(tree, '/work/shared-cache/test-failures', 'run 1');
+  // A protected glob whose literal directory is a link (over the whole tree it leads to), and an exact protected path.
+  link(tree, '/work/config', 'shared');
+  file(tree, '/work/shared/a.toml');
+  file(tree, '/work/shared/notes.txt');
+  link(tree, '/work/conf2', 'shared2');
+  file(tree, '/work/shared2/x.toml');
+  file(tree, '/work/shared2/y.toml');
+  const config = { ...CONFIG, libs: ['lib', 'deps/lib'], out: 'build/out' };
+  const { sets, r } = await watched(tree, { config, protectedGlobs: ['foundry.toml', 'config/*.toml', 'conf2/x.toml'] });
+  assert.deepEqual(r.uncovered, []);
+  assert.ok(keysOf(sets.dependencies).includes('third_party/lib/X.sol'));
+  assert.ok(!keysOf(sets.dependencies).includes('third_party/other.sol'), 'the root, not the whole tree the link leads to');
+  assert.match(sets.dependencies.get('deps/lib'), /^root => d \/work\/third_party\/lib$/);
+  assert.ok(keysOf(sets.artifacts).includes('b/out/V.sol/V.json'));
+  assert.ok(keysOf(sets.artifacts).includes('shared-cache/solidity-files-cache.json'));
+  assert.ok(!keysOf(sets.artifacts).includes('shared-cache/test-failures'), 'forge rewrites the rest of its cache on every run');
+  for (const k of ['shared/a.toml', 'shared/notes.txt', 'shared2/x.toml']) assert.ok(keysOf(sets.protected).includes(k), k);
+  assert.ok(!keysOf(sets.protected).includes('shared2/y.toml'));
+  // The cache directory a link into /tmp: the compile cache there is uncovered (the artifacts are run 1's on).
+  const tmp = initialTree();
+  link(tmp, '/work/cache', '/tmp/cache');
+  file(tmp, '/tmp/cache/solidity-files-cache.json', '{}');
+  const t = await watched(tmp);
+  assert.deepEqual(t.r.uncovered, [{ link: 'cache/solidity-files-cache.json', target: '/tmp/cache/solidity-files-cache.json', where: '/tmp', category: 'artifacts' }]);
+  // The patch's own link on the way to a root (paths.tests overlapping) is the claim's, never resolved.
+  const own = initialTree();
+  link(own, '/work/deps', 'third_party');
+  file(own, '/work/third_party/lib/X.sol');
+  const p = await watched(own, { config, patchPaths: new Set(['deps']) });
+  assert.deepEqual(p.calls, []);
+  assert.deepEqual(p.r.patchLinks, [{ link: 'deps', category: 'dependencies' }]);
 });
 
 test('a link a patch adds inside a watched set (paths.tests overlapping lib/) is reported, never resolved or followed', async () => {

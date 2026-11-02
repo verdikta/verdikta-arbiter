@@ -47,12 +47,13 @@
  * Symbolic links in those sets (watchLinks(); attempt 2 of R6-F1/R7-F1): the
  * listing is physical (find never follows a link), so a file listed in a set
  * is reached through real directories only, and a write to it changes its
- * hash. The one way to reach other bytes through a watched path is a link in
- * the set. Each one is resolved by the kernel inside the sandbox (LINKS_SCRIPT:
+ * hash. The ways to reach other bytes through a watched path are a link in
+ * the set, and a link on the way to a set's root. Each one is resolved by the kernel inside the sandbox (LINKS_SCRIPT:
  * `cd -P`, `realpath -e`; the runner never computes a path from a link's
  * text), its answer is part of the link's own entry (so a link on the way
  * retargeted is a change), and what it leads to joins the link's set,
- * transitively. A watched link whose real target is in, or holds, a place
+ * transitively. A set's root reached through a link (watchRoots) is resolved
+ * the same way. A watched link whose real target is in, or holds, a place
  * builds and runs write to (/tmp, $HOME, the work tree's root, the runner's
  * repository, forge's out, cache, broadcast and snapshots directories,
  * paths.tests) is refused (IMAGE_WATCH_LINK_UNCOVERED), as is one leading to a
@@ -72,7 +73,7 @@
  */
 
 const crypto = require('node:crypto');
-const { matchesAny } = require('./common');
+const { matchesAny, normalizePath } = require('./common');
 const { hermetic } = require('./git');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
@@ -317,10 +318,13 @@ function describe(e) {
  * @returns {{protected:Map, dependencies:Map, framework:Map, artifacts:Map, repository:Map}} each relative path (latin1) → description;
  *   $HOME entries as `~/…`, the repository's as `.git/…`
  */
-function classify(entries, { protectedGlobs = [], config, forgePath = '', realPath = '', pathDirs = [] }) {
-  const sets = { protected: new Map(), dependencies: new Map(), framework: new Map(), artifacts: new Map(), repository: new Map() };
-  // The manifest's keys are the paths' bytes (read latin1); forge's config and PATH are text. Every configured path is
-  // turned into the same byte form before it is compared (R4-F1), so a directory with a non-ASCII name is watched.
+/**
+ * The work-tree paths the sets are rooted at, from the reference's forge
+ * config, forge's path and PATH, in the manifest's byte form (its keys are
+ * the paths' bytes read latin1; forge's config and PATH are text, so every
+ * configured path is turned into the same form before it is compared, R4-F1).
+ */
+function layout({ config, forgePath = '', realPath = '', pathDirs = [] }) {
   const bytes = (p) => (p === null ? null : Buffer.from(p, 'utf8').toString('latin1'));
   const deps = [...new Set([...config.libs.map(plainDir).filter(Boolean), ...DEPENDENCY_DIRS])].map(bytes);
   const out = bytes(plainDir(config.out));
@@ -330,6 +334,37 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
   const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
   const tools = [inWork(forgePath), inWork(realPath), config.solc && !config.solc.startsWith('/') ? plainDir(config.solc) : inWork(config.solc)].filter(Boolean).map(bytes);
   const pathRoots = pathDirs.map((d) => (d === WORK ? '' : inWork(d))).filter((d) => d !== null).map(bytes);
+  return { deps, out, cache, filesCache, tools, pathRoots };
+}
+
+/**
+ * The roots of the watched sets as paths (`rel`, latin1) with their set: the
+ * dependency directories, PATH directories and tools in the work tree,
+ * forge's out directory and compile cache, and each protected glob's path
+ * (the glob itself when it has no wildcard, else its literal directories).
+ * watchLinks asks the kernel about one only when a link sits at or above it.
+ */
+function watchRoots({ protectedGlobs = [], ...w }) {
+  const { deps, out, filesCache, tools, pathRoots } = layout(w);
+  const roots = [];
+  const add = (rel, category) => { if (rel) roots.push({ rel, category }); };
+  for (const d of deps) add(d, 'dependencies');
+  for (const d of [...pathRoots, ...tools]) add(d, 'framework');
+  add(out, 'artifacts');
+  add(filesCache, 'artifacts');
+  for (const g of protectedGlobs) {
+    const segs = normalizePath(g).split('/');
+    const wild = segs.findIndex((s) => /[*?]/.test(s));
+    const literal = wild < 0 ? segs : segs.slice(0, wild);
+    add(Buffer.from(literal.join('/'), 'utf8').toString('latin1'), 'protected');
+  }
+  return roots;
+}
+
+function classify(entries, { protectedGlobs = [], config, forgePath = '', realPath = '', pathDirs = [] }) {
+  const sets = { protected: new Map(), dependencies: new Map(), framework: new Map(), artifacts: new Map(), repository: new Map() };
+  const { deps, out, cache, filesCache, tools, pathRoots } = layout({ config, forgePath, realPath, pathDirs });
+  const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
   for (const p of [...entries.keys()].sort()) {
     const d = describe(entries.get(p));
     if (p === `${WORK}/.git` || p.startsWith(`${WORK}/.git/`)) {
@@ -365,10 +400,12 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
 
 // ------------------------------------------------------------------- links
 
-/** The sets whose links are followed after a run: every set compared (the runner's repository holds no link of the image's). */
+/**
+ * The sets whose links are followed: every set compared (the runner's repository holds no link of the image's). The
+ * artifacts are first compared after run 1, but a link among them at the reference (out/ a link into /tmp) is refused
+ * then, before any claim code, rather than failing every claim.
+ */
 const LINK_CATEGORIES = Object.freeze(['protected', 'dependencies', 'framework', 'artifacts']);
-/** At the reference, the sets it is compared by: the artifacts are first held to run 1's. */
-const REFERENCE_CATEGORIES = Object.freeze(['protected', 'dependencies', 'framework']);
 const CATEGORY_WORDS = Object.freeze({ protected: 'protected paths', dependencies: 'dependencies', framework: 'framework', artifacts: 'artifacts' });
 /** A directory target that holds /tmp, $HOME or the work tree (`/`, `/home`): every place a run writes is under it. */
 const HOLDS_WRITABLE = 'a directory that holds /tmp, $HOME or the work tree';
@@ -460,14 +497,15 @@ function parseLinks(buf, batch) {
  * @param {object} o.config - the reference's forge config (out, cachePath, broadcast, snapshots)
  * @param {string[]} [o.testGlobs] - paths.tests
  * @param {Set<string>} [o.patchPaths] - work-tree paths the patches touched (latin1)
+ * @param {Array<{rel:string, category:string}>} [o.roots] - watchRoots(): resolved too when a link sits at or above one
  * @param {string[]} [o.categories] - the sets whose links are followed
  * @param {{links?:number, rounds?:number}} [o.limits] - the caps (MAX_WATCHED_LINKS, MAX_LINK_ROUNDS)
- * @param {(paths:string[]) => Promise<Map<string, {kind:string, real:string}>>} resolve - the kernel's answers
+ * @param {(paths:string[], round:number) => Promise<Map<string, {kind:string, real:string}>>} resolve - the kernel's answers
  * @returns {Promise<{uncovered:Array<{link:string, target:string, where:string, category:string}>,
  *   patchLinks:Array<{link:string, category:string}>, links:number, rounds:number, visited:number}>}
  * @throws {WatchTooLarge} more watched links, or levels of linked trees, than the caps
  */
-async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = new Set(), categories = LINK_CATEGORIES, limits = {} }, resolve) {
+async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = new Set(), roots = [], categories = LINK_CATEGORIES, limits = {} }, resolve) {
   const maxLinks = limits.links || MAX_WATCHED_LINKS;
   const maxRounds = limits.rounds || MAX_LINK_ROUNDS;
   const bytes = (p) => (p === null ? null : Buffer.from(p, 'utf8').toString('latin1'));
@@ -507,22 +545,53 @@ async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = 
   const seen = new Set();
   const uncovered = [];
   const patchLinks = [];
-  const roots = Object.fromEntries(categories.map((c) => [c, new Set()]));
+  const joined = Object.fromEntries(categories.map((c) => [c, new Set()]));
   let frontier = [];
+  // The distinct links of the frontier the kernel has not answered yet: the cap holds as they are queued.
+  let unresolved = new Set();
   let visited = 0;
   const addPair = (abs, c) => {
     const key = `${c}\u0000${abs}`;
     if (seen.has(key)) return;
     seen.add(key);
     const rel = relOf(abs);
-    if (patchPaths.has(rel)) patchLinks.push({ link: displayPath(rel), category: c });
-    else frontier.push([abs, c]);
+    if (patchPaths.has(rel)) {
+      patchLinks.push({ link: displayPath(rel), category: c });
+      return;
+    }
+    if (!resolution.has(abs) && !unresolved.has(abs)) {
+      unresolved.add(abs);
+      if (resolution.size + unresolved.size > maxLinks) throw new WatchTooLarge(`more than ${maxLinks} watched links`);
+    }
+    frontier.push([abs, c]);
   };
   for (const [abs, e] of entries) {
     if (e.type !== 'l') continue;
     const rel = relOf(abs);
     if (rel === null || rel === '.git' || rel.startsWith('.git/')) continue;
     for (const c of categories) if (sets[c].has(rel)) addPair(abs, c);
+  }
+  // A link at or above a set's root (`libs = ["deps/lib"]` with deps a link; forge's cache directory a link): nothing
+  // under the root is listed, so the kernel resolves the root itself, which then counts as a link of its set (its
+  // answer is its entry). A tracked path never lies behind a link (the forced checkout makes the way to it real).
+  for (const { rel, category: c } of roots) {
+    if (!categories.includes(c)) continue;
+    let via = null;
+    for (let i = rel.indexOf('/'); via === null; i = rel.indexOf('/', i + 1)) {
+      const prefix = i < 0 ? rel : rel.slice(0, i);
+      const e = entries.get(`${WORK}/${prefix}`);
+      if (e && e.type === 'l') via = prefix;
+      if (i < 0) break;
+    }
+    if (via === null) continue;
+    // The patch's own link on the way is the claim's (reported, never followed).
+    if (patchPaths.has(via)) {
+      addPair(`${WORK}/${via}`, c);
+      continue;
+    }
+    const abs = `${WORK}/${rel}`;
+    if (!sets[c].has(rel)) sets[c].set(rel, entries.has(abs) ? describe(entries.get(abs)) : 'root');
+    addPair(abs, c);
   }
 
   let keys = null;
@@ -548,10 +617,10 @@ async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = 
   while (frontier.length) {
     rounds += 1;
     if (rounds > maxRounds) throw new WatchTooLarge(`the watched links lead through more than ${maxRounds} levels of linked trees`);
-    const need = [...new Set(frontier.filter(([abs]) => !resolution.has(abs)).map(([abs]) => abs))].sort();
+    const need = [...unresolved].sort();
+    unresolved = new Set();
     if (need.length) {
-      if (resolution.size + need.length > maxLinks) throw new WatchTooLarge(`more than ${maxLinks} watched links`);
-      const answers = await resolve(need);
+      const answers = await resolve(need, rounds);
       for (const abs of need) {
         const a = answers.get(abs);
         if (!a) throw new TypeError(`the link resolver gave no answer for ${displayPath(abs)}`);
@@ -587,8 +656,8 @@ async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = 
     // to "dir0"), each entry at most once per set across every round: a skip pointer per set jumps over what is joined.
     for (const [c, trees] of joins) {
       for (const root of [...trees].sort()) {
-        if (roots[c].has(root)) continue;
-        roots[c].add(root);
+        if (joined[c].has(root)) continue;
+        joined[c].add(root);
         if (keys === null) keys = [...entries.keys()].sort();
         const skip = skipOf(c);
         const end = lowerBound(keys, `${root}0`);
@@ -607,7 +676,7 @@ async function watchLinks(entries, sets, { config, testGlobs = [], patchPaths = 
   // The kernel's answer is part of each watched link's entry: a link on the way retargeted changes it.
   for (const [abs, r] of resolution) {
     const rel = relOf(abs);
-    const d = `${describe(entries.get(abs))} => ${r.kind}${r.real ? ` ${r.real}` : ''}`;
+    const d = `${entries.has(abs) ? describe(entries.get(abs)) : 'root'} => ${r.kind}${r.real ? ` ${r.real}` : ''}`;
     for (const c of categories) if (sets[c].has(rel)) sets[c].set(rel, d);
   }
   const order = (a, b) => (a.link !== b.link ? (a.link < b.link ? -1 : 1) : a.category < b.category ? -1 : a.category > b.category ? 1 : 0);
@@ -760,7 +829,7 @@ class Watch {
     const sets = classify(m.entries, this.watchArgs());
     let links;
     try {
-      links = await this.links(ctx, name, m.entries, sets, REFERENCE_CATEGORIES, { reference: true });
+      links = await this.links(ctx, name, m.entries, sets, { reference: true });
     } catch (err) {
       if (err instanceof WatchTooLarge) throw tooLarge(err.message);
       throw err;
@@ -786,9 +855,9 @@ class Watch {
    * (watchLinks, LINKS_SCRIPT): one exec per level of linked trees, none
    * when no watched set holds a link.
    */
-  links(ctx, name, entries, sets, categories, { reference }) {
-    const step = `${name}:links`;
-    const resolve = async (paths) => {
+  links(ctx, name, entries, sets, { reference }) {
+    const resolve = async (paths, round) => {
+      const step = round === 1 ? `${name}:links` : `${name}:links-${round}`;
       const out = new Prefix(LINKS_MAX_BYTES);
       const record = await ctx.exec(linksArgv(), {
         name: step, timeoutMs: SNAPSHOT_TIMEOUT_MS, stdin: Buffer.from(`${paths.join('\0')}\0`, 'latin1'), tee: out
@@ -804,7 +873,8 @@ class Watch {
       if (!parsed.ok) throw runnerError(step, `the watched links' resolution could not be read: ${parsed.reason}`);
       return parsed.answers;
     };
-    return watchLinks(entries, sets, { config: this.ref.config, testGlobs: this.testGlobs, patchPaths: this.patchPaths, categories }, resolve);
+    const roots = watchRoots(this.watchArgs());
+    return watchLinks(entries, sets, { config: this.ref.config, testGlobs: this.testGlobs, patchPaths: this.patchPaths, roots }, resolve);
   }
 
   fail(category, detail, paths = []) {
@@ -850,7 +920,7 @@ class Watch {
     const sets = classify(m.entries, this.watchArgs());
     let links;
     try {
-      links = await this.links(ctx, name, m.entries, sets, LINK_CATEGORIES, { reference: false });
+      links = await this.links(ctx, name, m.entries, sets, { reference: false });
     } catch (err) {
       if (err instanceof WatchTooLarge) return overflow(err.message);
       throw err;
@@ -1150,6 +1220,6 @@ function integrityDetail(failures) {
 module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
-  parseFramework, parseManifest, parseLinks, classify, watchLinks, WatchTooLarge, changedPaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
+  parseFramework, parseManifest, parseLinks, classify, watchRoots, watchLinks, WatchTooLarge, changedPaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };

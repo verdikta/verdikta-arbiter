@@ -605,6 +605,19 @@ test('links whose targets change between runs: an unwatched link on the way reta
   assertIntegrityFails(tmp, ['dependenciesUnchanged'], /lib\/pkg -> \/tmp\/pkg is a watched link into \/tmp/);
 });
 
+test('a dependency root behind a link (libs = ["deps/lib"], deps -> third_party): what forge reads there is watched, and a run that edits it fails dependenciesUnchanged', async () => {
+  const seed = (box) => {
+    box.configOver = { libs: ['lib', 'deps/lib'] };
+    box.tree.set('/work/deps', { type: 'l', target: 'third_party' });
+    set(box, '/work/third_party/lib/X.sol', 'contract X {}');
+  };
+  const edit = (d, k, box) => { if (k === 2) set(box, '/work/third_party/lib/X.sol', '// drained'); return { exitCode: 1, stdout: drainFails() }; };
+  const sb = claimSandbox({ onBox: seed, poc: [edit, edit, edit] });
+  const r = await runClaim(sb);
+  assertIntegrityFails(r, ['dependenciesUnchanged'], /dependenciesUnchanged \(run 2: third_party\/lib\/X\.sol changed/);
+  assert.equal(sb.execs().filter((d) => d.kind === 'vcr-links')[0].stdin.toString('latin1'), '/work/deps/lib\0', 'the root itself, through the link');
+});
+
 test('A3a R7-F1: 20,000 links to `.` in the test paths are never resolved, and 20,000 in lib/ are one resolution per snapshot, deduplicated to one tree; the claim still passes, in bounded time', async () => {
   const N = 20000;
   const many = (dir) => (box) => { for (let i = 0; i < N; i += 1) box.tree.set(`/work/${dir}/l${i}`, { type: 'l', target: '.' }); };
