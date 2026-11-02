@@ -973,6 +973,15 @@ process of the run is dead:
    later runs are held to; and a link there or on the way there (`out -> build/x`), since
    forge writes through it to where no rule here names it.
 
+   **A listed Solidity file that sets a path by inline configuration is refused** right
+   after the checkout, before any patch (R23-F1, `IMAGE_WATCH_ROOT_UNCOVERED`): `///
+   forge-config: default.invariant.failure_persist_dir = "lib/x"`. forge applies it when
+   it runs a test and `forge config` never shows it. The scan is by text, of every
+   `*.sol` in the work tree: a `forge-config:` line naming a `_dir`, `_file` or `_path`
+   key, or holding a backslash, which could be a TOML escape spelling one. An over-match
+   costs a requester error at the listing. A claim's own annotation is its own: not
+   scanned, and its write fails its own check.
+
    **A watched link that leads nowhere yet is judged by where it would land** (R21-F1,
    round 22, `IMAGE_WATCH_LINK_UNCOVERED`): `alias -> out` with a protected
    `alias/Exploit.t.sol/**`, or `lib/x -> /opt/y -> /work/out/…`. It resolves to nothing
@@ -1079,6 +1088,7 @@ The routes the review raised, against that scope (each has its test):
 | `paths.protected` or `libs` over forge's own output, nothing there yet (`out = "lib/out"`, `out/**`, a test's artifact with `--skip test`; R21-F1) | Yes: the maker's listing | **Defect** | Where forge writes is not held to the reference: the honest claim passes, and the artifacts are held from run 1 on |
 | The same over what the image already has there (`out/**` over a prebuilt `out/`; R22-F1), through a link that leads there once forge has compiled (R21-F1, round 22), or forge's output behind a link | Yes: the maker's setup or listing | **Defect** | Refused before any maker command or claim code: `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_LINK_UNCOVERED`. A2c will refuse them at listing |
 | `[invariant] failure_persist_dir = "lib/persist"`: an honest invariant PoC writes a counterexample into a dependency directory on its first failure | Yes: the maker's `foundry.toml` | **Defect** | Forge's own output: the honest claim passes (found while fixing R22-F1, confirmed under real forge) |
+| The same by inline configuration in a listed contract (`/// forge-config: …failure_persist_dir`; R23-F1) | Yes: the maker's source | **Defect** | Refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. A2c will refuse it at listing |
 | `out = "lib"` beside `lib/pkg/fixture.json`, a run rewriting that dependency (R22-F1) | Yes: a hunter, on such a listing | **In scope** | The same refusal: no claim runs on that image |
 | A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error (R21-F2) | Yes: any honest claim | **Defect** | Forge's campaign counts accepted within a range; the reason read from forge's line |
 | A setup that makes a watched listing unreadable or too large, or a watched link uncovered | Links and size yes, modes no | **Defect** | The reference's requester errors, never INVALID. A2c (#135) will refuse it at listing |

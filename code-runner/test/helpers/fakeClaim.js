@@ -492,7 +492,7 @@ function externalRootsOf(tree, stdin) {
  *   { exitCode, stdout, stderr }; a text's exit code is forge's (1 when it records a failure)
  * @param {object} [o.git] - overrides by git subcommand key (see `key` below), both containers
  * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear,
- *   vcr-unstage, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links, vcr-external-roots) or forge exec (vcr-build, vcr-poc, vcr-suite; see
+ *   vcr-unstage, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links, vcr-external-roots, vcr-inline-config) or forge exec (vcr-build, vcr-poc, vcr-suite; see
  *   the header), both containers; a handler gets (d, box)
  * @param {Function} [o.onBox] - (box) => void, when a container's state is made (to seed its tree)
  * @param {object} [o.fix] - the fix check's container: { patch (bytes the fix apply carries; default FIX_PATCH),
@@ -616,6 +616,9 @@ function claimSandbox({
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
     'vcr-external-roots': (d, b) => ({ stdout: externalRootsOf(b.tree, d.stdin) }),
+    'vcr-inline-config': (d, b) => ({
+      stdout: Buffer.from([...b.tree].filter(([p, e]) => p.startsWith('/work/') && p.endsWith('.sol') && e.type === 'f' && /forge-config:.*(_dir|_file|_path|\\)/.test(String(e.content))).map(([p]) => `${p}\0`).join(''), 'latin1')
+    }),
     'vcr-poc': (d, b) => {
       b.pocRun += 1;
       // forge writes the failing tests' names to its cache on every run.

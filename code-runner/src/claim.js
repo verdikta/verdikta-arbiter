@@ -601,6 +601,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
     await integrity.requireImmutableTools(ctx);
     // Before any claim code runs: /work is the listed commit (checkout.js).
     const checkout = await forceCheckout(ctx, { base });
+    // The maker's own inline configuration, before a patch can touch it (R23-F1).
+    await integrity.requirePlainInlineConfig(ctx);
     state.prepared = checkout.commit;
     ctx.fact('commit', { tier: 'A', base, poc: null });
   }

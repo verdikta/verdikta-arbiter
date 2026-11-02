@@ -22,6 +22,13 @@ const builder = dockerFor(dockerTestConfig());
 
 const FORGE_STD = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract StdMarker {}\n';
 const PLAIN_TOML = 'fs_permissions = [{ access = "read-write", path = "./state" }]';
+const ANNOTATED = [
+  '// SPDX-License-Identifier: MIT', 'pragma solidity ^0.8.0;', 'import {Base} from "./Vm.sol";',
+  'contract H { uint256 public x; function bump() public { x += 1; } }',
+  '/// forge-config: default.invariant.failure_persist_dir = "lib/persist"',
+  'contract Annotated is Base {', '    function test_ok() public pure {}', '}', ''
+].join('\n');
+
 const VARIANTS = Object.freeze({
   // The vault with a maker-allowed state directory, a tracked forge-std file and an untracked dependency in lib/.
   plain: {
@@ -100,6 +107,10 @@ const VARIANTS = Object.freeze({
   outlinked: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: 'mkdir -p build/artifacts && ln -s build/artifacts out'
+  },
+  // R23-F1: a listed test contract that sets where forge writes by inline configuration, which `forge config` never shows.
+  inlinepersist: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'test/Annotated.t.sol': ANNOTATED }
   },
   // R21-F2: invariants, with reverting handlers allowed.
   invariants: { toml: '[profile.default.invariant]\nruns = 3\ndepth = 4\nfail_on_revert = false', files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD } },
@@ -786,6 +797,22 @@ test('A3a under real forge: forge\'s other outputs (test_failures_file, failure_
   assert.equal(linked.outcome, 'requester_error', show(linked));
   assert.deepEqual(linked.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.match(linked.issues[0].detail, /out is a link/);
+});
+
+test('A3a R23-F1 under real forge: a listed contract whose inline configuration sets where forge writes is refused before any patch or claim code, so an honest invariant PoC added to it cannot be failed by its counterexample', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('inlinepersist');
+  const after = ANNOTATED.replace('function test_ok() public pure {}', 'H h;\n    function setUp() public { h = new H(); }\n    function invariant_only() public view { require(h.x() == 0, "moved"); }');
+  const r = await run(t, claim(fx, modifyPatch('test/Annotated.t.sol', ANNOTATED, after), { finding: finding({ command: 'forge test --match-test invariant_only', observable: 'invariant_only fails' }) }));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /test\/Annotated\.t\.sol sets a path by inline configuration/);
+  assert.ok(!(r.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
+  // A claim's own annotation is the claim's: the scan is of what the maker listed, and its write fails its own check.
+  const own = ANNOTATED.replace('function test_ok() public pure {}', 'H h;\n    function setUp() public { h = new H(); }\n    function invariant_only() public view { require(h.x() == 0, "moved"); }');
+  const mine = await run(t, claim(await fixture('invariants'), addFilesPatch({ 'test/Exploit.t.sol': own }), { finding: finding({ command: 'forge test --match-test invariant_only', observable: 'invariant_only fails' }) }));
+  assert.equal(mine.outcome, 'definitive', show(mine));
+  assert.equal(mine.gates.integrity.status, 'fail', show(mine));
+  assert.equal(mine.facts.poc.integrity.dependenciesUnchanged, false, show(mine));
 });
 
 test('A3a R22-F2 under real forge: a one-predicate invariant whose reason spans lines is an assertion failure, with or without a counterexample\'s sequence, and a quoted observable on its later line is found', { timeout: TIMEOUT }, async (t) => {

@@ -1046,6 +1046,31 @@ test('A3a R21-F1 (round 22): a protected root behind a link into forge\'s output
   assert.equal(sb.execs().filter((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc').length, 0);
 });
 
+test('A3a R23-F1: a listed Solidity file that sets a path by inline configuration is refused right after the checkout, before any patch; other inline settings are nothing', async () => {
+  const annotate = (line) => (box) => set(box, '/work/test/Annotated.t.sol', `// SPDX-License-Identifier: MIT\n${line}\ncontract Annotated {}\n`);
+  for (const line of [
+    '/// forge-config: default.invariant.failure_persist_dir = "lib/persist"',
+    '/// forge-config: default.fuzz.corpus_dir = "lib/corpus"',
+    '/** forge-config: default.invariant = { frontier_dir = "lib/f" } */',
+    '/// forge-config: default.invariant."failure\\u005fpersist\\u005fdir" = "lib/persist"'
+  ]) {
+    const sb = claimSandbox({ onBox: annotate(line) });
+    const r = await runClaim(sb);
+    assert.equal(r.outcome, 'requester_error', `${line}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(r.issues[0].detail, /test\/Annotated\.t\.sol sets a path by inline configuration/);
+    assert.equal(sb.execs().filter((d) => /^git apply|^vcr-(?:build|poc|framework)/.test(d.kind)).length, 0, 'nothing after the checkout ran');
+  }
+  const fine = await runClaim(claimSandbox({ onBox: annotate('/// forge-config: default.fuzz.runs = 5') }));
+  assert.equal(fine.gates.integrity.status, 'pass', show(fine));
+  const noGrep = await runClaim(claimSandbox({ scripts: { 'vcr-inline-config': () => ({ exitCode: 4 }) } }));
+  assert.equal(noGrep.outcome, 'requester_error', show(noGrep));
+  assert.deepEqual(noGrep.issues.map((i) => i.code), ['IMAGE_TOOL_MISSING']);
+  const broken = await runClaim(claimSandbox({ scripts: { 'vcr-inline-config': () => ({ exitCode: 2 }) } }));
+  assert.equal(broken.outcome, 'abstain', show(broken));
+  assert.equal(broken.abstain.cause, 'runner_error');
+});
+
 test('Q32: in the fix check\'s sandbox a build that changes a watched place is a failed fixed build, a fact; the PoC\'s gates stand', async () => {
   const { FIX_PATCH } = require('../helpers/fakeClaim');
   const build = (d, box) => { set(box, '/work/lib/trap.sol', 'x'); return { exitCode: 0 }; };

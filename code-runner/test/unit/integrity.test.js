@@ -700,6 +700,33 @@ test('the link script is hermetic, reads its paths from stdin, and leaves resolu
   assert.doesNotMatch(integrity.LINKS_SCRIPT, /readlink/, 'the script never reads a link\'s text');
 });
 
+test('the inline-configuration scan is hermetic, skips the runner\'s repository, and reads what forge reads against real files (Linux: GNU grep)', { skip: process.platform !== 'linux' }, () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { spawnSync } = require('node:child_process');
+  const argv = integrity.inlineConfigArgv();
+  assert.deepEqual(argv.slice(0, 2), ['/usr/bin/env', '-i']);
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-inline-')));
+  try {
+    const at = (p) => path.join(root, p);
+    for (const d of ['test', '.git/x', 'lib/a b']) fs.mkdirSync(at(d), { recursive: true });
+    const inline = '/// forge-config: default.invariant.failure_persist_dir = "lib/x"\n';
+    fs.writeFileSync(at('test/A.t.sol'), inline);
+    fs.writeFileSync(at('lib/a b/B.sol'), '/// forge-config: default.fuzz."x\\u005fdir" = "y"\n');
+    fs.writeFileSync(at('test/Fine.t.sol'), '/// forge-config: default.fuzz.runs = 5\n// failure_persist_dir is only a word here\n');
+    fs.writeFileSync(at('.git/x/C.sol'), inline);
+    fs.writeFileSync(at('test/notes.txt'), inline);
+    fs.symlinkSync('A.t.sol', at('test/L.t.sol'));
+    const script = integrity.INLINE_CONFIG_SCRIPT.replace('find /work', `find ${root}`);
+    const r = spawnSync(argv[0], [...argv.slice(1, argv.indexOf('/bin/sh')), '/bin/sh', '-c', script, 'vcr-inline-config']);
+    assert.equal(r.status, 0, r.stderr.toString());
+    assert.deepEqual(r.stdout.toString('latin1').split('\0').filter(Boolean).sort(), [at('lib/a b/B.sol'), at('test/A.t.sol'), at('test/L.t.sol')].sort());
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('the link script against the real kernel (Linux: dash, GNU coreutils): the R6-F1 forms, a file link, dangling and looping links, a line break in a name', { skip: process.platform !== 'linux' }, () => {
   const fs = require('node:fs');
   const os = require('node:os');

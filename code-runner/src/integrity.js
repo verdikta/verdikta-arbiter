@@ -168,6 +168,21 @@ const MANIFEST_SCRIPT = [
  * /proc/self/cwd on the way means the same as it does to forge). The script
  * reads no link's text itself. Exit 4: the image has no realpath.
  */
+/**
+ * The Solidity files in the work tree that set a path by inline configuration
+ * (R23-F1), hermetic, NUL-separated. forge applies `/// forge-config:
+ * default.invariant.failure_persist_dir = "lib/x"` when it runs a test, and
+ * `forge config` never shows it. The key is on the comment's own line, in
+ * whatever TOML form (dotted, an inline table); a backslash is a TOML escape
+ * that could spell one. The over-match costs a requester error at the listing.
+ * Exit 4: the image has no grep.
+ */
+const INLINE_CONFIG_SCRIPT = [
+  'command -v grep >/dev/null 2>&1 || exit 4',
+  'find /work -name .git -prune -o -name "*.sol" \\( -type f -o -type l \\) -print0 2>/dev/null | xargs -0 -r grep -lZE -- \'forge-config:.*(_dir|_file|_path|\\\\)\' 2>/dev/null',
+  'exit 0'
+].join('\n');
+
 const LINKS_SCRIPT = [
   'command -v realpath >/dev/null 2>&1 || exit 4',
   'exec xargs -0 -r sh -c \'',
@@ -954,6 +969,10 @@ function manifestArgv(roots, prunes = []) {
 }
 
 /** The link script's argv (its paths go on stdin). */
+function inlineConfigArgv() {
+  return hermetic(INLINE_CONFIG_SCRIPT, 'vcr-inline-config');
+}
+
 function linksArgv() {
   return hermetic(LINKS_SCRIPT, 'vcr-links');
 }
@@ -1003,6 +1022,26 @@ async function probe(ctx, name, forgePath, { config = true, tool = null, before 
   return {
     exitCode: record.exitCode, truncated: out.truncated, bytes: Buffer.concat([headBytes, out.bytes()]), stderr: record.stderr ? record.stderr.text : ''
   };
+}
+
+/**
+ * R23-F1: the listed checkout sets no path by inline configuration. Run right
+ * after the forced checkout, before any patch: this is what the maker listed,
+ * so a claim's own annotation stays the claim's (its write fails its own check),
+ * and an honest patch to an annotated contract does not hide the maker's.
+ * @throws {RequesterError} IMAGE_WATCH_ROOT_UNCOVERED, IMAGE_TOOL_MISSING
+ */
+async function requirePlainInlineConfig(ctx, name = 'prepare:inline-config') {
+  const out = new Prefix(LINKS_MAX_BYTES);
+  const record = await ctx.exec(inlineConfigArgv(), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
+  if (record.exitCode === 4) {
+    throw new RequesterError([{ code: 'IMAGE_TOOL_MISSING', path: '/spec/env/image', detail: 'the env image has no grep, which the runner needs to read what inline configuration sets' }]);
+  }
+  if (record.exitCode !== 0) throw runnerError(name, `the inline configuration could not be read (exit ${record.exitCode})`);
+  const files = out.bytes().toString('latin1').split('\0').filter(Boolean).sort();
+  if (files.length) {
+    throw uncovered(files.map((f) => `${displayPath(f.startsWith(`${WORK}/`) ? f.slice(WORK.length + 1) : f)} sets a path by inline configuration (forge-config), so forge could write where the runner cannot read`));
+  }
 }
 
 /**
@@ -1639,7 +1678,7 @@ function integrityDetail(failures) {
 }
 
 module.exports = {
-  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
+  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   discoverForge, probe, requireImmutableTools, TOOL_DIRS, IMMUTABLE_CHECK,
