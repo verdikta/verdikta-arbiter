@@ -100,6 +100,10 @@ test('changedPaths: a changed byte, mode, link target, a new and a removed file 
   const after = new Map([['a', 'f 644 1 x'], ['b', 'f 755 1 y'], ['c', 'l 777 1 u'], ['e', 'f 644 1 n']]);
   assert.deepEqual(integrity.changedPaths(before, after), ['b', 'c', 'd', 'e']);
   assert.deepEqual(integrity.changedPaths(before, new Map(before)), []);
+  // R13-F1: what a snapshot could not read has no hash to compare, so it never counts as unchanged.
+  const unread = new Map([['f', 'f 0 3 unreadable'], ['d', 'd 0 40 unreadable'], ['ok', 'f 644 3 aa'], ['l', 'l 777 12 -> x unreadable']]);
+  assert.deepEqual(integrity.changedPaths(unread, new Map(unread)), ['d', 'f']);
+  assert.deepEqual(integrity.unreadablePaths({ a: unread, b: new Map([['g', 'f 600 1 unreadable']]) }), ['d', 'f', 'g']);
 });
 
 // ---------------------------------------------------- framework-summary consistency

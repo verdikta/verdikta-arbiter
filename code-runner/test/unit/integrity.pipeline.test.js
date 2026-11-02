@@ -721,3 +721,58 @@ test('A3a R11-F2: a helper reached through PATH `.bin`, or through an empty PATH
     assertIntegrityFails(r, ['frameworkUnchanged'], new RegExp(`frameworkUnchanged \\(run 2: ${rel.replace(/\./g, '\\.')} changed`));
   }
 });
+
+// ------------------------------------------------- R13-F1: what a snapshot cannot read
+
+test('A3a R13-F1: a file a run leaves unreadable in out/ fails frameworkUnchanged at once: same-length bytes changed behind mode 000 are never accepted as run 1\'s artifact', async () => {
+  const hide = (d, k, box) => {
+    box.tree.set('/work/out/payload.bin', { type: 'f', mode: '0', content: k === 1 ? 'aaa' : 'bbb', unreadable: true });
+    return { exitCode: 1, stdout: drainFails() };
+  };
+  const r = await runClaim(claimSandbox({ poc: [hide, hide, hide] }));
+  assertIntegrityFails(r, ['frameworkUnchanged'], /run 1: out\/payload\.bin cannot be read/);
+  // In the one run of the fix check's suite too: there is no run 2 to compare it with.
+  const { FIX_PATCH, suitePasses } = require('../helpers/fakeClaim');
+  const suite = (d, k, box) => { box.tree.set('/work/out/payload.bin', { type: 'f', mode: '0', content: 'aaa', unreadable: true }); return { exitCode: 0, stdout: suitePasses() }; };
+  const f = await runClaim(claimSandbox({ fix: { suite } }), claimRequest({ fixPatch: Buffer.from(FIX_PATCH) }));
+  assert.equal(f.facts.fix.integrity.frameworkUnchanged, false, show(f));
+  assert.match(JSON.stringify(f.facts.integrity.fix.failures), /the suite: out\/payload\.bin cannot be read/);
+});
+
+test('A3a R13-F1: a directory a run leaves unlistable hides what is under it, so it fails its set\'s check; in the sets held to the reference, as in the artifacts', async () => {
+  for (const [dir, check, re] of [
+    ['/work/out/hid', 'frameworkUnchanged', /run 1: out\/hid cannot be read/],
+    ['/work/lib/hid', 'dependenciesUnchanged', /run 1: lib\/hid cannot be read/],
+    ['/home/sandbox/.foundry/hid', 'frameworkUnchanged', /run 1: ~\/\.foundry\/hid cannot be read/],
+    // forge's cache directory is not watched, but one it hides the compile cache behind counts as the compile cache.
+    ['/work/cache', 'frameworkUnchanged', /run 1: cache cannot be read/]
+  ]) {
+    const hide = (d, k, box) => { box.tree.set(dir, { type: 'd', mode: '0', content: '' }); return { exitCode: 1, stdout: drainFails() }; };
+    const r = await runClaim(claimSandbox({ poc: [hide, hide, hide] }));
+    assertIntegrityFails(r, [check], re);
+  }
+  // A file unreadable after a run in a set held to the reference: the same.
+  const lock = (d, k, box) => { box.tree.set('/work/lib/forge-std/src/Test.sol', { type: 'f', mode: '0', content: '// forge-std\n', unreadable: true }); return { exitCode: 1, stdout: drainFails() }; };
+  const r = await runClaim(claimSandbox({ poc: [lock, lock, lock] }));
+  assertIntegrityFails(r, ['dependenciesUnchanged'], /run 1: lib\/forge-std\/src\/Test\.sol cannot be read/);
+});
+
+test('A3a R13-F1: what the reference cannot read in the watched sets is the image\'s error before any maker command (IMAGE_WATCH_UNREADABLE); outside them it is not watched and raises nothing', async () => {
+  for (const [p, entry] of [
+    ['/work/lib/secret.sol', { type: 'f', mode: '0', content: 'x', unreadable: true }],
+    ['/work/lib/hidden', { type: 'd', mode: '0', content: '' }],
+    ['/work/out/old.bin', { type: 'f', mode: '0', content: 'x', unreadable: true }]
+  ]) {
+    const sb = claimSandbox({ onBox: (box) => box.tree.set(p, entry) });
+    const r = await runClaim(sb);
+    assert.equal(r.outcome, 'requester_error', `${p}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_UNREADABLE']);
+    assert.ok(r.issues[0].detail.includes(p.slice('/work/'.length)), r.issues[0].detail);
+    assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc'), 'no maker command ran');
+  }
+  // A state file or directory of the PoC's own, in no watched set: no check reads it, before or after.
+  const own = (d, k, box) => { box.tree.set('/work/state/own', { type: 'f', mode: '0', content: `run ${k}`, unreadable: true }); box.tree.set('/work/state/dir', { type: 'd', mode: '0', content: '' }); return { exitCode: 1, stdout: drainFails() }; };
+  const r = await runClaim(claimSandbox({ onBox: (box) => box.tree.set('/work/src/unread.txt', { type: 'f', mode: '0', content: 'x', unreadable: true }), poc: [own, own, own] }));
+  assert.equal(r.gates.integrity.status, 'pass', show(r));
+  assert.deepEqual(r.facts.poc.integrity, CLEAN);
+});

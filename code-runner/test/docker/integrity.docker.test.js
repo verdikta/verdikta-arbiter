@@ -485,6 +485,24 @@ test('A3a R11-F1 (attempt 3) under real forge: the routes rounds 11 and 12 found
   }
 });
 
+test('A3a R13-F1 under real forge: a file or a directory a run leaves unreadable under out/ fails frameworkUnchanged, its bytes changed behind mode 000 or not', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('ffi');
+  for (const [script, re] of [
+    ['if [ -e out/payload.bin ]; then chmod 600 out/payload.bin; printf bbb > out/payload.bin; else printf aaa > out/payload.bin; fi; chmod 000 out/payload.bin', /run 1: out\/payload\.bin cannot be read/],
+    ['if [ -e out/hid ]; then chmod 700 out/hid; printf bbb > out/hid/f; else mkdir out/hid; printf aaa > out/hid/f; fi; chmod 000 out/hid', /run 1: out\/hid cannot be read/]
+  ]) {
+    const poc = pocFile('ExploitTest', [
+      `    function ${NAME}() public { ${ffiSh(script)} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+    ]);
+    const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': poc })));
+    assert.equal(r.outcome, 'definitive', show(r));
+    assert.equal(r.gates.integrity.status, 'fail', show(r));
+    assert.equal(r.facts.poc.integrity.frameworkUnchanged, false, show(r));
+    assert.match(r.gates.integrity.detail, re);
+    assert.equal(r.gates.reproduces.status, 'fail');
+  }
+});
+
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture();
   const links = {};

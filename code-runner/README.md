@@ -905,13 +905,22 @@ process of the run is dead:
    paths and one pass (attempt 1 scanned the listing once per link). Each
    path is resolved from `/work`, as forge resolves it.
 
+   **What a snapshot cannot read is never unchanged** (R13-F1). A file with no
+   hash (mode 000, say) has nothing to compare, and a directory `find` cannot
+   list or enter hides what is under it. In a watched set either one is a
+   failure of its check as soon as a run leaves it ("run 1: out/payload.bin
+   cannot be read"), even when an earlier snapshot could not read it either, so
+   bytes changed behind mode 000 are never accepted as run 1's artifact. At the
+   reference it is the image's error, `IMAGE_WATCH_UNREADABLE`. Outside the
+   sets nothing reads it.
+
    Not watched: the rest of forge's cache directory (its ABI cache,
    `test-failures`, fuzz failures, rewritten on every run), the `$HOME`
    caches, `/tmp`, untracked files elsewhere (a state file the PoC writes). Tracked
    files outside the sets go back to the PoC commit by the reset before each
    re-run. A reference that cannot be read is the requester's package, found
    before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
-   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_TOOL_MISSING`
+   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_UNREADABLE`, `IMAGE_TOOL_MISSING`
    when the image has no `realpath`, `IMAGE_WATCH_TOO_LARGE`: a listing over
    64 MiB or over a cap above); after a run, the same is a definitive failure
    of the checks.
@@ -970,6 +979,7 @@ maker or an inline grant allows, `console.log`, revert messages.
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
 | forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
+| bytes changed behind an unreadable file, or under an unlistable directory, in a watched set or `out/` (R13-F1) | what a snapshot cannot read is never unchanged: its set's check fails; at the reference, `IMAGE_WATCH_UNREADABLE` | unit, pipeline and Docker "A3a R13-F1" |
 
 Residual risk (decision 6): within run 1, claim code can still write a new
 artifact after forge's compile that runs 2-3 would execute. That does not

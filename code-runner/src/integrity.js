@@ -136,15 +136,17 @@ const FRAMEWORK_SCRIPT = [
 
 /**
  * The manifest of the watched trees, hermetic (nothing of the image's
- * environment): GNU find's records of every entry that is not a directory
- * (type, mode, size, path, link target, NUL-separated), a marker, then
- * sha256sum -z's line for every regular file. "$@" is find's start: the
- * roots, -xdev and the prune expression the runner builds. Errors (an
- * unreadable directory or file) are left out of the listing, never fatal:
- * a file the listing lacks or cannot hash differs from the reference.
+ * environment): GNU find's records of every entry that is not a directory,
+ * and of every directory it cannot list or enter (type, mode, size, path, link
+ * target, NUL-separated), a marker, then sha256sum -z's line for every
+ * regular file. "$@" is find's start: the roots, -xdev and the prune
+ * expression the runner builds. Errors are never fatal. What the listing
+ * cannot read (a file with no hash line, a directory that hides what is under
+ * it) has nothing to compare, so in a watched set it never counts as
+ * unchanged (changedPaths, R13-F1); at the reference it is the image's error.
  */
 const MANIFEST_SCRIPT = [
-  'find "$@" ! -type d -printf "%y\\0%m\\0%s\\0%p\\0%l\\0" 2>/dev/null',
+  'find "$@" \\( ! -type d -o ! -readable -o ! -executable \\) -printf "%y\\0%m\\0%s\\0%p\\0%l\\0" 2>/dev/null',
   'printf "vcr-hashes\\0"',
   'find "$@" -type f -print0 2>/dev/null | xargs -0 -r sha256sum -z -- 2>/dev/null',
   'exit 0'
@@ -313,10 +315,26 @@ function parseManifest(buf, { maxEntries = MAX_ENTRIES } = {}) {
   return { ok: true, entries };
 }
 
-/** One watched entry, as compared: type, mode, size, and the hash (a file; `unreadable` when it could not be hashed) or the target. */
+/**
+ * One watched entry, as compared: type, mode, size, and the hash (a file;
+ * `unreadable` when it could not be hashed) or the target. The only directories
+ * a listing holds are the ones it could not read.
+ */
 function describe(e) {
-  const what = e.type === 'f' ? (e.hash || 'unreadable') : e.type === 'l' ? `-> ${e.target}` : '';
+  const what = e.type === 'f' ? (e.hash || 'unreadable') : e.type === 'd' ? 'unreadable' : e.type === 'l' ? `-> ${e.target}` : '';
   return `${e.type} ${e.mode} ${e.size} ${what}`;
+}
+
+/** Whether a description is of something the listing could not read (never a link, whatever its target says). */
+function isUnreadable(description) {
+  return /^[fd] \S+ \S+ unreadable$/.test(description);
+}
+
+/** What the listing could not read across a snapshot's sets, in the manifest's byte form, sorted. */
+function unreadablePaths(sets) {
+  const out = new Set();
+  for (const set of Object.values(sets)) for (const [p, d] of set) if (isUnreadable(d)) out.add(p);
+  return [...out].sort();
 }
 
 /**
@@ -464,7 +482,8 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     // forge's executable and solc are the framework wherever they are, forge's cache directory included (R1-F3).
     if (tools.includes(rel)) sets.framework.set(rel, d);
     if (cache && under(rel, cache)) {
-      if (rel === filesCache) sets.artifacts.set(rel, d);
+      // The compile cache, and any directory on the way to it that a listing could not read (it hides the cache).
+      if (rel === filesCache || (filesCache && entries.get(p).type === 'd' && under(filesCache, rel))) sets.artifacts.set(rel, d);
       continue;
     }
     const dep = deps.find((r) => under(rel, r));
@@ -778,12 +797,14 @@ function listUncovered(uncovered) {
  */
 function changedPaths(before, after) {
   const out = [];
-  for (const [p, d] of before) if (after.get(p) !== d) out.push(p);
+  // Unreadable on either side: there is nothing to compare, so it is never unchanged (R13-F1).
+  for (const [p, d] of before) if (after.get(p) !== d || isUnreadable(d)) out.push(p);
   for (const p of after.keys()) if (!before.has(p)) out.push(p);
   return [...new Set(out)].sort();
 }
 
 function changeWord(before, after, p) {
+  if (after.has(p) && isUnreadable(after.get(p))) return 'cannot be read';
   if (!before.has(p)) return 'added';
   if (!after.has(p)) return 'removed';
   return 'changed';
@@ -983,6 +1004,14 @@ class Watch {
         detail: `a watched link leads where builds and runs write, so the runner could not tell a change behind it: ${listUncovered(links.uncovered)}`
       }]);
     }
+    // What the reference cannot read could change unseen (R13-F1). No claim code has run, and a patch writes no such mode.
+    const unreadable = unreadablePaths(sets);
+    if (unreadable.length) {
+      throw new RequesterError([{
+        code: 'IMAGE_WATCH_UNREADABLE', path: '/spec/env/image',
+        detail: `the env image holds files or directories the runner watches but cannot read, so it could not tell a change in them: ${shown(unreadable.map(displayPath), 5, ', ')}`
+      }]);
+    }
     // A link a patch added in a set (paths.tests overlapping it) is the claim's: its check fails, the image is not refused.
     for (const p of links.patchLinks) {
       const category = p.category === 'artifacts' ? 'framework' : p.category;
@@ -1090,9 +1119,12 @@ class Watch {
     compare('protected', this.repository, sets.repository);
     compare('dependencies', this.ref.sets.dependencies, sets.dependencies);
     compare('framework', this.ref.sets.framework, sets.framework);
-    // The first run's artifacts are what the later ones are held to (none when its listing overflowed: already a failure).
-    if (first) this.artifacts = sets.artifacts;
-    else if (this.artifacts) compare('framework', this.artifacts, sets.artifacts);
+    // The first run's artifacts are what the later ones are held to (none when its listing overflowed: already a
+    // failure), so an artifact it left unreadable fails here: nothing later could tell a change in it (R13-F1).
+    if (first) {
+      this.artifacts = sets.artifacts;
+      compare('framework', new Map(), new Map([...sets.artifacts].filter(([, d]) => isUnreadable(d))));
+    } else if (this.artifacts) compare('framework', this.artifacts, sets.artifacts);
     // A watched link a run left leading where builds and runs write: for a set held to the reference its entry changed
     // too; for the artifacts after run 1 (the later runs' reference) this is the failure.
     for (const u of links.uncovered) {
@@ -1355,7 +1387,7 @@ function integrityDetail(failures) {
 module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
-  parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
+  parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   discoverForge, probe,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };
