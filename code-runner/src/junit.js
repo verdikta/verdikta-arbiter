@@ -285,8 +285,10 @@ function blank(text) {
  *
  * @param {Buffer} bytes - the JUnit as captured from forge's stdout
  * @param {{truncated?:boolean}} [o] - the capture was cut at its cap
- * @returns {{ok:true, suites:Array<{file:string, contract:string, cases:Array<{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out:string}>}>} | {ok:false, reason:string}}
- *   `out`: the record's <system-out>, starting with forge's `<status> <signature> <kind report>` line
+ * @returns {{ok:true, suites:Array<{file:string, contract:string, cases:Array<{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out:string}>, counts:object, summaries:string[]}>, totals:object} | {ok:false, reason:string}}
+ *   `out`: the record's <system-out>, starting with forge's `<status> <signature> <kind report>` line;
+ *   `counts` / `totals`: the tests, failures, errors and skipped counts on <testsuite> / <testsuites> as written
+ *   (null when absent); `summaries`: the texts of the suite's own <system-out> elements (forge's summary)
  */
 function readForgeJUnit(bytes, { truncated = false } = {}) {
   if (truncated) return { ok: false, reason: `the JUnit exceeds ${JUNIT_MAX_BYTES} bytes` };
@@ -297,6 +299,8 @@ function readForgeJUnit(bytes, { truncated = false } = {}) {
   if (root.name !== 'testsuites') return bad(`the root element is <${root.name}>, not <testsuites>`);
   if (root.nonBlank) return bad('text inside <testsuites>');
   const suites = [];
+  // The counts forge writes on <testsuites> (its run's summary), kept as written: integrity.js compares them.
+  const totals = countAttributes(root.attrs);
   for (const suite of root.children) {
     if (suite.name !== 'testsuite') return bad(`<${suite.name}> inside <testsuites>`);
     if (suite.nonBlank) return bad('text inside a <testsuite>');
@@ -307,8 +311,14 @@ function readForgeJUnit(bytes, { truncated = false } = {}) {
     const contract = full.slice(colon + 1);
     if (CONTROL.test(file) || !CONTRACT.test(contract)) return bad(`a <testsuite> whose name is not <file>:<Contract>: ${JSON.stringify(full).slice(0, 120)}`);
     const cases = [];
+    // forge's own summary of the suite (`Suite result: …`), in the suite's <system-out>.
+    const summaries = [];
     for (const tc of suite.children) {
       if (!SUITE_CHILDREN.has(tc.name)) return bad(`<${tc.name}> inside a <testsuite>`);
+      if (tc.name === 'system-out') {
+        if (tc.children.length > 0) return bad('elements inside a <system-out>');
+        summaries.push(tc.text);
+      }
       if (tc.name !== 'testcase') continue;
       const name = tc.attrs.name;
       if (typeof name !== 'string' || name === '' || name.length > 1024 || CONTROL.test(name)) return bad('a <testcase> without a usable name');
@@ -329,9 +339,16 @@ function readForgeJUnit(bytes, { truncated = false } = {}) {
       const message = result && typeof result.attrs.message === 'string' ? result.attrs.message : null;
       cases.push({ name, outcome, message, out });
     }
-    suites.push({ file, contract, cases });
+    suites.push({ file, contract, cases, counts: countAttributes(suite.attrs), summaries });
   }
-  return { ok: true, suites };
+  return { ok: true, suites, totals };
+}
+
+/** The counts an element carries (`tests`, `failures`, `errors`, `skipped`), as written: a string, or null when absent. */
+function countAttributes(attrs) {
+  const out = {};
+  for (const k of ['tests', 'failures', 'errors', 'skipped']) out[k] = typeof attrs[k] === 'string' ? attrs[k] : null;
+  return out;
 }
 
 module.exports = { parseXml, readForgeJUnit, JUNIT_MAX_BYTES, MAX_DEPTH, MAX_ELEMENTS, MAX_ATTRIBUTES };

@@ -23,7 +23,7 @@ const { checkSpec } = require('./classLimits');
 const { executeRun } = require('./pipeline');
 const { health } = require('./health');
 const { claimSteps } = require('./steps');
-const { checkClaim } = require('./claim');
+const { checkClaim, sandboxesFor } = require('./claim');
 const { Capacity } = require('./admission');
 const { ImageCache } = require('./images');
 const { RUNNER_VERSION } = require('./version');
@@ -196,7 +196,9 @@ function createServer({ config, docker, stepsFor = claimSteps, checkRequest = st
         admit: (o) => capacity.admit(o),
         images,
         attestedImage: request.attestation.env.image,
-        unpackedBytes: request.spec.env.unpackedBytes
+        unpackedBytes: request.spec.env.unpackedBytes,
+        // The fix check's sandbox runs beside the PoC's: admission holds memory for both (A3a).
+        sandboxes: sandboxesFor(request)
       });
     } finally {
       runs.delete(runId);

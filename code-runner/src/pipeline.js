@@ -66,11 +66,13 @@ function delay(ms) {
  * @param {string} [o.attestedImage] - attestation.json's env.image (default: the image)
  * @param {number} [o.unpackedBytes] - the attested unpacked size, for the pull's disk check
  * @param {number} [o.reapFirstMs] - first retry of a removal that failed (the slot stays held meanwhile)
+ * @param {number} [o.sandboxes] - how many sandboxes the run may have open at once (the fix check's beside the
+ *   PoC's: 2), each with the spec's limits; admission holds memory for all of them (node A3a)
  * @returns {Promise<object>} the run result; never rejects
  */
 async function executeRun({
   docker, config, limits, image, runId, steps = [], receivedAt = Date.now(), deadlineAt,
-  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes, reapFirstMs = REAP_FIRST_MS
+  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes, reapFirstMs = REAP_FIRST_MS, sandboxes = 1
 }) {
   const stopAt = deadlineAt - (config.deadlineReserveMs || 0);
   const result = {
@@ -103,7 +105,7 @@ async function executeRun({
   if (signal && signal.aborted) return abstainWith(new Abstain(ABSTAIN.CANCELLED, 'the run was cancelled before it started'));
   let ticket = null;
   try {
-    ticket = (await admit({ config, docker, limits, stopAt, now: Date.now(), signal })) || null;
+    ticket = (await admit({ config, docker, limits, stopAt, now: Date.now(), signal, sandboxes })) || null;
   } catch (err) {
     return abstainWith(asAbstain(err, 'admission'));
   }
@@ -144,7 +146,7 @@ async function executeRun({
 
   // Run-level kill switch: the deadline, the run budget, the caller.
   const run = new AbortController();
-  const sandboxes = [];
+  const opened = [];
   // The steps in flight (the fix check may run beside the PoC, §11), for
   // naming the step a run-level kill interrupted.
   const running = new Set();
@@ -152,7 +154,7 @@ async function executeRun({
   const kill = (reason) => {
     if (run.signal.aborted) return;
     run.abort(reason);
-    for (const sb of sandboxes) sb.kill();
+    for (const sb of opened) sb.kill();
   };
   const timers = [
     setTimeout(() => kill('deadline'), Math.max(0, stopAt - Date.now())),
@@ -179,15 +181,19 @@ async function executeRun({
   }
 
   async function open() {
-    const name = `vcr-${runId}-${sandboxes.length + 1}`;
+    // Admission held memory for `sandboxes` of them; a step may not open more.
+    if (opened.length >= sandboxes) {
+      throw new Abstain(ABSTAIN.RUNNER_ERROR, `a step opened sandbox ${opened.length + 1}, but the run was admitted for ${sandboxes} sandbox${sandboxes === 1 ? '' : 'es'}`, { step: 'launch' });
+    }
+    const name = `vcr-${runId}-${opened.length + 1}`;
     const sb = new Sandbox({ docker, name, runtime: config.runtime, log });
     // Registered before `docker run`, so the GC never races a launch and the
     // teardown removes a half-created container.
     active.add(name);
-    sandboxes.push(sb);
+    opened.push(sb);
     const late = stopped('launch');
     if (late) throw late;
-    const label = sandboxes.length === 1 ? 'launch' : `launch:${name}`;
+    const label = opened.length === 1 ? 'launch' : `launch:${name}`;
     running.add(label);
     try {
       await sb.launch({ image, platform: config.platform, limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
@@ -265,7 +271,7 @@ async function executeRun({
       }
       await new Promise((resolve) => { setTimeout(resolve, wait).unref(); });
       wait = Math.min(wait * 2, REAP_MAX_MS);
-      gone = await Promise.all(sandboxes.map((sb, i) => (gone[i] ? true : sb.remove().catch(() => false))));
+      gone = await Promise.all(opened.map((sb, i) => (gone[i] ? true : sb.remove().catch(() => false))));
     }
     releaseAll();
   }
@@ -315,7 +321,7 @@ async function executeRun({
     // Remove every sandbox. The answer waits for that until the deadline,
     // never longer; a removal still running then carries on in the
     // background, and the GC retries whatever could not be removed.
-    const removal = Promise.all(sandboxes.map(async (sb) => {
+    const removal = Promise.all(opened.map(async (sb) => {
       let gone = false;
       try {
         gone = await sb.remove();
@@ -330,7 +336,7 @@ async function executeRun({
     // confirmed gone, even when the answer goes out before (at the
     // deadline). A removal that failed is tried again in the background
     // (the GC may get there first: then the retry finds nothing to remove).
-    removal.then((gone) => reap(gone), () => reap(sandboxes.map(() => false)));
+    removal.then((gone) => reap(gone), () => reap(opened.map(() => false)));
     let timer = null;
     const removed = await Promise.race([
       removal.then((all) => all.every(Boolean)),

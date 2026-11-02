@@ -195,13 +195,29 @@ test('junit-forged-early-exit (forge form): an ffi child prints a JUnit to forge
   assert.equal(plain.abstain.step, 'poc:1');
 });
 
-test('protected-file-modified-at-runtime (forge form): inline fs_permissions and vm.writeFile rewrite foundry.toml during run 1', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture();
+test('protected-file-modified-at-runtime (forge form): an ffi child rewrites foundry.toml during run 1; forge itself refuses the file cheatcode form', { timeout: TIMEOUT }, async (t) => {
+  // forge 1.8.5 refuses vm.writeFile on foundry.toml whatever fs_permissions say: the attempt errors, and is flagged.
+  const plain = await fixture();
   const toml = `${FOUNDRY_TOML(PLAIN_TOML)}ffi = true\n`;
-  const poc = addFilesPatch({
+  const cheat = addFilesPatch({
     'test/Exploit.t.sol': pocFile('ExploitTest', [
       '    /// forge-config: default.fs_permissions = [{ access = "read-write", path = "./" }]',
       `    function ${NAME}() public { vm.writeFile("foundry.toml", ${sol(toml)}); Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+    ])
+  });
+  const c = await run(t, claim(plain, cheat));
+  assert.equal(c.outcome, 'definitive', show(c));
+  assert.equal(c.gates.reproduces.status, 'fail', show(c));
+  assert.equal(c.facts.poc.tests[0].kind, 'error', 'the refused cheatcode is an error, not an assertion');
+  assert.equal(c.gates.integrity.status, 'fail');
+  assert.equal(c.facts.poc.integrity.protectedPathsUnchanged, true, 'forge left foundry.toml alone');
+  assert.ok(c.facts.poc.integrity.tamperFlags.some((f) => f.kind === 'framework-patched'), JSON.stringify(c.facts.poc.integrity.tamperFlags));
+
+  // ffi (enabled by the maker) has no such guard: the child appends to foundry.toml, which later runs would load.
+  const fx = await fixture('ffi');
+  const poc = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      `    function ${NAME}() public { ${ffiSh("printf 'optimizer = true\\n' >> foundry.toml")} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
     ])
   });
   const r = await run(t, claim(fx, poc));
@@ -210,9 +226,10 @@ test('protected-file-modified-at-runtime (forge form): inline fs_permissions and
   assert.equal(r.facts.poc.integrity.protectedPathsUnchanged, false);
   assert.equal(r.facts.poc.integrity.frameworkUnchanged, false, 'forge\'s resolved configuration changed with it');
   assert.match(r.gates.integrity.detail, /protectedPathsUnchanged \(run 1: foundry\.toml changed/);
+  assert.match(r.gates.integrity.detail, /forge's resolved configuration changed/);
+  assert.deepEqual(r.facts.poc.tests[0].runs, ['fail', 'fail', 'fail'], 'the JUnit alone would have reproduced');
   assert.equal(r.gates.reproduces.status, 'fail');
   assert.equal(r.gates.reproduces.basis, 'integrity');
-  assert.ok(r.facts.poc.integrity.tamperFlags.some((f) => f.kind === 'framework-patched'), JSON.stringify(r.facts.poc.integrity.tamperFlags));
 });
 
 test('reporter-monkeypatched (forge form): a PoC rewrites forge-std\'s source with a file cheatcode during run 1', { timeout: TIMEOUT }, async (t) => {
@@ -281,8 +298,13 @@ test('test-report-duplicate-identity (forge form): an ffi child forges a summary
   const poc = addFilesPatch({
     'test/Exploit.t.sol': pocFile('ExploitTest', [`    function test_dup() public { ${ffiSh(`printf '%s\\n' '${forged}' > /proc/$PPID/fd/1; kill -9 $PPID`)} }`])
   });
-  // `! !` keeps forge's 0 and 1 and turns a signal death into 1.
-  const r = await run(t, claim(fx, poc, { commands: { testFiles: '! ! forge test --match-path $FILES', testIds: '! ! forge test --match-test $TEST_IDS' } }));
+  // A wrapper that keeps forge's 0 and 1 and turns a signal death into 1.
+  const r = await run(t, claim(fx, poc, {
+    commands: {
+      testFiles: 'sh -c \'forge test --match-path "$0" "$@" || exit 1\' $FILES',
+      testIds: 'sh -c \'forge test --match-test "$0" "$@" || exit 1\' $TEST_IDS'
+    }
+  }));
   assert.equal(r.outcome, 'definitive', show(r));
   assert.equal(r.gates.integrity.status, 'fail', show(r));
   assert.equal(r.gates.reproduces.status, 'fail');
@@ -293,7 +315,7 @@ test('test-report-duplicate-identity (forge form): an ffi child forges a summary
     assert.equal(r.facts.poc.integrity.exitConsistent, true);
     assert.equal(r.facts.poc.tests[0].runs[0], 'duplicate');
   } else {
-    assert.notEqual(RUNTIME, 'runc');
+    assert.notEqual(RUNTIME, 'runc', `${JSON.stringify(r.facts.poc.runs[0])} ${(r.steps.find((s) => s.name === 'poc:1') || {}).stdout ? r.steps.find((s) => s.name === 'poc:1').stdout.text.slice(0, 2000) : ''}`);
   }
 });
 

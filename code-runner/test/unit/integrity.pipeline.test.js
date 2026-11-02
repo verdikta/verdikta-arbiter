@@ -333,7 +333,7 @@ test('the forge executable: `command -v forge` resolving to another program afte
   assertIntegrityFails(r, ['frameworkUnchanged'], /run 2: forge resolves to \/work\/node_modules\/\.bin\/forge, not \/usr\/local\/bin\/forge/);
 });
 
-test('artifacts: out/ may change during run 1 (forge compiles what the build left out), never after: an artifact forged for runs 2-3 fails frameworkUnchanged', async () => {
+test('artifacts: out/ and forge\'s compile cache may change during run 1 (forge compiles what the build left out), never after: one forged for runs 2-3 fails frameworkUnchanged', async () => {
   // Run 1 rewrites an artifact and adds one, as forge does after `forge build --skip test`: not a change.
   const compile = (d, k, box) => {
     if (k === 1) { set(box, '/work/out/Vault.sol/Vault.json', '{"bytecode":"0x6080","id":2}'); set(box, '/work/out/Exploit.t.sol/Helper.json', '{}'); }
@@ -345,6 +345,10 @@ test('artifacts: out/ may change during run 1 (forge compiles what the build lef
   const forge = (d, k, box) => { if (k === 2) set(box, '/work/out/Vault.sol/Vault.json', '{"bytecode":"0xfe"}'); return { exitCode: 1, stdout: drainFails() }; };
   const r = await runClaim(claimSandbox({ poc: [forge, forge, forge] }));
   assertIntegrityFails(r, ['frameworkUnchanged'], /run 2: out\/Vault\.sol\/Vault\.json changed/);
+  // The compile cache pointing a source at another artifact file is the same route.
+  const point = (d, k, box) => { if (k === 2) set(box, '/work/cache/solidity-files-cache.json', '{"files":{"src/Vault.sol":{"artifacts":"../test/x.json"}}}'); set(box, '/work/cache/test-failures', `run ${k}`); return { exitCode: 1, stdout: drainFails() }; };
+  const r2 = await runClaim(claimSandbox({ poc: [point, point, point] }));
+  assertIntegrityFails(r2, ['frameworkUnchanged'], /run 2: cache\/solidity-files-cache\.json changed/);
 });
 
 test('a snapshot that cannot be read before any claim code is the requester\'s package; after a run it is a definitive integrity failure', async () => {
@@ -384,4 +388,71 @@ test('integrity is decided on every PoC that ran, also when reproduces fails on 
   assert.equal(b.gates.build.status, 'fail');
   for (const g of ['reproduces', 'integrity', 'claimedObservable']) assert.equal(b.gates[g], undefined, g);
   assert.equal(b.facts.poc, undefined);
+});
+
+// ------------------------------------------- the facts always make a valid report
+
+/**
+ * The Verification Report the facts and gates make (A3b builds the real one): a test-only mapping, so
+ * @verdikta/common's validator can check that no outcome of the gates and the fix check breaks the
+ * report's one form (R6-F1: a fix that applied is never `builds: not-run`).
+ */
+function toReport(r, request) {
+  const g = (name) => (r.gates[name] ? r.gates[name].status : 'not-run');
+  const f = r.facts;
+  const stat = (d) => (d ? { files: d.files, added: d.added, removed: d.removed } : { files: 0, added: 0, removed: 0 });
+  return {
+    schema: 'verdikta.claim-report/1',
+    inputs: {
+      listingCid: request.listingCid, bcid: request.bcid, envImage: `sha256:${'a'.repeat(64)}`, platform: 'linux/amd64',
+      attestationSha256: 'b'.repeat(64), baseCommit: request.spec.baseCommit, pocPatchSha256: f.patch.sha256,
+      fixPatchSha256: f.fix.present ? f.fix.patch.sha256 : null, runner: '0.1.0', gvisor: 'runc', semgrepRules: '2026.10',
+      eaGates: { disclosure: 'pass', inScope: 'pass' }
+    },
+    gates: Object.fromEntries(['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable'].map((k) => [k, g(k)])),
+    poc: f.poc ? {
+      tier: 'B', testCount: f.poc.testCount, runCounts: f.poc.runCounts, tests: f.poc.tests, integrity: f.poc.integrity, honestyFlags: []
+    } : null,
+    fix: {
+      present: f.fix.present, applies: f.fix.applies, builds: f.fix.builds, pocPasses: f.fix.pocPasses, regressions: f.fix.regressions,
+      regressionCount: f.fix.regressionCount, tier: 'B', integrity: f.fix.integrity
+    },
+    build: { status: g('build'), tier: 'A' },
+    findings: [],
+    flags: f.flags ? { existingTestsModified: f.flags.existingTestsModified, skipMarkersAdded: f.flags.skipMarkersAdded, protectedPathsTouched: f.flags.protectedPathsTouched }
+      : { existingTestsModified: [], skipMarkersAdded: [], protectedPathsTouched: [] },
+    diff: { poc: stat(f.diff), fix: f.fix.present ? stat(f.fix.diff) : null }
+  };
+}
+
+test('the facts and gates make a valid verdikta.claim-report/1 on every outcome (common\'s validator), and tier-B trust follows integrity', async () => {
+  const { validateClaimReport, isTrustedPassingEvidence } = require('@verdikta/common/src/codeReview/report');
+  const { FIX_PATCH, suitePasses } = require('../helpers/fakeClaim');
+  const fix = Buffer.from(FIX_PATCH);
+  const passing = junit([{ suite: 'test/Exploit.t.sol:ExploitTest', cases: [{ name: 'test_drain()' }] }]);
+  const forged = () => ({ exitCode: 0, stdout: junit([{ suite: 'test/Exploit.t.sol:ExploitTest', cases: [{ name: 'test_drain()', failure: 'vault drained' }] }], { summary: false }) });
+  const cases = [
+    ['clean', {}, {}, true],
+    ['clean, with a fix that verifies', {}, { fixPatch: fix }, true],
+    ['a fix whose PoC still fails, and a regression', { fix: { suite: suitePasses({ poc: { failure: 'x' }, deposit: { failure: 'y' } }) } }, { fixPatch: fix }, true],
+    ['a fix that does not build', { fix: { build: () => ({ exitCode: 1 }) } }, { fixPatch: fix }, true],
+    ['a fix touching tests', { fix: { nameStatus: 'M\0test/Vault.t.sol\0' } }, { fixPatch: fix }, true],
+    ['a binary fix', { fix: { patch: Buffer.from('diff --git a/x.png b/x.png\nGIT binary patch\nliteral 1\n') } }, { fixPatch: Buffer.from('diff --git a/x.png b/x.png\nGIT binary patch\nliteral 1\n') }, true],
+    ['integrity fails', { poc: [forged, forged, forged] }, {}, false],
+    ['observable mismatch', {}, { finding: finding({ observable: 'test_drain fails with "elsewhere"' }) }, true],
+    ['a pass on run 2', { poc: [drainFails(), passing, drainFails()] }, {}, true],
+    ['the build fails', { scripts: { 'vcr-build': () => ({ exitCode: 1 }) } }, { fixPatch: fix }, null],
+    ['the patch does not apply', { git: { 'apply --index': () => ({ exitCode: 1, stderr: 'error: patch failed\n' }) } }, { fixPatch: fix }, null]
+  ];
+  for (const [what, sbOver, reqOver, trusted] of cases) {
+    const request = claimRequest(reqOver);
+    const r = await runClaim(claimSandbox(sbOver), request);
+    assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
+    const report = toReport(r, request);
+    const v = validateClaimReport(report);
+    assert.equal(v.ok, true, `${what}: ${JSON.stringify(v.issues)}`);
+    if (trusted !== null) assert.equal(isTrustedPassingEvidence(report), trusted, what);
+    else assert.equal(report.poc, null, what);
+    if (report.fix.applies === 'pass') assert.notEqual(report.fix.builds, 'not-run', `${what}: R6-F1`);
+  }
 });

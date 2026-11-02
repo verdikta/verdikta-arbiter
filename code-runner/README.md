@@ -11,9 +11,11 @@ deadline and the result taxonomy; node A2a adds the forge claim pipeline:
 the `applies`, `testPathsOnly`, `build` and `reproduces` gates
 ([below](#the-forge-claim-pipeline)); node A1b the image pull by digest from
 a registry allowlist, the image cache and the slot and memory admission
-([below](#images-and-admission)). Later nodes add listing checks (A2b), the
-integrity checks and the fix check (A3a), the report and context pack (A3b)
-and the honesty flags (A3c). See [Seams](#seams).
+([below](#images-and-admission)); node A3a the five integrity checks of §9.5
+with the evidence tiers, the `integrity` and `claimedObservable` gates
+([below](#integrity-checks)) and the fix check
+([below](#the-fix-check)). Later nodes add listing checks (A2b), the report
+and context pack (A3b) and the honesty flags (A3c). See [Seams](#seams).
 
 ## Run it
 
@@ -376,8 +378,13 @@ failure.
 | `git apply --index` against the listed commit, then the bytes it wrote measured against 50 MB (below) | `applies` | `exit_code` / `input` |
 | `git diff --cached --name-status --no-renames`: every touched path (a rename's source included) under `paths.tests`, none under `paths.protected`, each one a report can name | `testPathsOnly` | `exit_code` |
 | Protected files reset to `baseCommit`; the result committed (`Verdikta code runner <code-runner@verdikta.invalid>`, `1767225600 +0000`, message `poc.patch`) | — | |
-| `commands.build` | `build` | `exit_code` (tier A) |
-| Run 1: `commands.testFiles` on the PoC's files; runs 2 and 3: `commands.testIds` on the tests run 1 found | `reproduces` | `junit` |
+| The integrity checks' reference snapshot ([below](#integrity-checks)); then `commands.build` | `build` | `exit_code` (tier A) |
+| Run 1: `commands.testFiles` on the PoC's files; runs 2 and 3: `commands.testIds` on the tests run 1 found; a snapshot after each run | `reproduces` | `junit` (or `integrity`) |
+| The five checks of §9.5 on the three runs | `integrity` | `integrity` |
+| finding.json against the recorded failures (only once `reproduces` passed) | `claimedObservable` | `junit` |
+
+With `fix.patch`, the fix check runs beside these steps in a second sandbox
+and is recorded, never gated ([below](#the-fix-check)).
 
 A failed gate stops the pipeline; the gates after it are not run (absent).
 A step that hits a limit, dies or does not start abstains the run, and no
@@ -493,8 +500,9 @@ rebuilds a whole existing file from one header line; and no binary change (a
 `GIT binary patch` or `Binary files … differ` / `Files … differ` entry, owner
 decision Q28) — a PoC adds or edits text test files, and a binary postimage
 can name an existing object the patch's bytes do not bound. A moved file is a
-deletion and an addition (`git diff --no-renames`). (`fix.patch` may touch
-other kinds of file; that is A3a's question, not this node's.)
+deletion and an addition (`git diff --no-renames`). `fix.patch` gets the same
+host-side checks, binary changes included (node A3a's rule,
+[below](#the-fix-check)).
 
 **Commands** run as written in the sandbox's `/bin/sh` with pathname expansion
 off (`set -f; <command>`). For `testFiles` and `testIds` the runner appends
@@ -557,15 +565,198 @@ name before it is the process's own to choose, and before runs 2 and 3 the track
 to the PoC commit (`git reset --hard`). The number killed is in
 `facts.leftoverProcesses`.
 
-`facts` (A3b builds the report from them): `checkout` (above), `patch`
-(bytes, SHA-256, the measured expansion), `commit` (`base`, `poc`), `diff` (files, added,
-removed, binary files), `testPaths` (outside, protected, unreportable),
-`flags` (`existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
+`facts` (A3b builds the report from them), each an object carrying its
+evidence tier (§9.5: `tier: "A"`, observed by the runner from outside the
+tested process; `tier: "B"`, reported by a process that ran claim code):
+`checkout` (A, above), `patch` (A: bytes, SHA-256, the measured expansion),
+`commit` (A: `base`, `poc`), `diff` (A: files, added, removed, binary
+files), `testPaths` (A: outside, protected, unreportable), `flags` (A:
+`existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
 `frameworkReferences`: forge inline config, JUnit markup, file and
-environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset`, `poc`
-(`testCount`, `runCounts`, the first 200 tests with their three results,
-kind and message, and per run the command, JUnit status, exit code and
-failing harness records) and `leftoverProcesses`.
+environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset` (A:
+`files`), `poc` (B: `testCount`, `runCounts`, the first 200 tests with their
+three results, kind and message, per run the command, JUnit status, exit code
+and failing harness records, and `integrity`, the report's Integrity object),
+`integrity` (A: per sandbox the failed checks with their evidence and the
+changed paths), `fix` (B, [below](#the-fix-check)) and `leftoverProcesses`
+(A: `steps`). A gate's basis gives its tier: `exit_code`, `input` and
+`integrity` are A, `junit` is B.
+
+## Integrity checks
+
+`src/integrity.js` (design §9.5, §20 decision 6). gVisor separates the
+sandbox from the host, not the grader from the program inside it: forge,
+which writes the JUnit, runs the claim's code as the same user. So the PoC's
+results are trusted only when all five checks pass; any failure sets
+`gates.integrity` to `fail` (basis `integrity`, the detail names every
+failed check and its first evidence) and fails `reproduces` with it. The
+checks are measured by the runner wherever they can be, after every claim
+process of the run is dead:
+
+1. **Identity completeness** (`identityComplete`): every test the patch
+   added has exactly one record on every run whose JUnit was read, and none
+   is skipped. A missing record (renamed, skipped, never collected) is not a
+   demonstrated failure; a duplicated identity makes neither record trusted.
+2. **Framework-summary consistency** (`summaryConsistent`): forge 1.8.5
+   writes its own summary of each suite into the suite's `<system-out>`
+   (`Suite result: ok|FAILED. P passed; F failed; S skipped; finished in …`)
+   and counts on `<testsuite>` and `<testsuites>` (`tests`, `failures`,
+   `errors`, `skipped`). They must agree with the records; a JUnit with no
+   summary is not forge's whole report.
+3. **Exit-code consistency** (`exitConsistent`): the test command exits
+   non-zero exactly when the JUnit records a failure. Without a readable JUnit
+   only a non-zero exit is consistent (forge failed before its report, as on a
+   compile error); an exit 0 there is an exit before forge's report.
+4. **Post-run checksums** (`protectedPathsUnchanged`, `frameworkUnchanged`,
+   `dependenciesUnchanged`). Before the build (the image plus the accepted
+   patch, before any maker command) the runner takes a reference: a framework
+   probe run like the maker's commands (`command -v forge`, `PATH`, and
+   `forge config --json`, whose output sees `foundry.toml`, remappings, `.env`,
+   the global `~/.foundry/foundry.toml` and the environment alike), and a
+   hermetic manifest of `/work` and `$HOME` (GNU `find` records and `sha256sum
+   -z` of every file: type, mode, size, hash or link target). After each run
+   both are taken again and compared:
+   - protected: work-tree paths under `paths.protected`, tracked or not, and
+     the runner's own repository (`/work/.git`: config, attributes, index and
+     objects decide what the reset between runs writes; it is read again after
+     each of the runner's resets);
+   - dependencies: everything under forge's `libs`, `node_modules/` and
+     `dependencies/` (Soldeer), new files included;
+   - framework: forge's path and resolved configuration; the root
+     `foundry.toml`, `remappings.txt`, `.env`, `foundry.lock`, `soldeer.lock`;
+     `$HOME` but its caches (`~/.foundry/cache`, `~/.cache`); `PATH`
+     directories and solc inside the work tree; forge-std under the
+     dependencies (the assertion library, forge's "reporter module"); and the
+     build's artifacts (`out`, and forge's compile cache
+     `<cache_path>/solidity-files-cache.json`, which names the artifact files a
+     later run loads instead of compiling), which may change during the first
+     run (forge compiles what the build left out, e.g. after `forge build
+     --skip test`) and never after it.
+
+   Not watched: the rest of forge's cache directory (its ABI cache,
+   `test-failures`, fuzz failures, rewritten on every run), the `$HOME`
+   caches, `/tmp`, untracked files elsewhere (a state file the PoC writes). Tracked
+   files outside the sets go back to the PoC commit by the reset before each
+   re-run. A reference that cannot be read is the requester's package, found
+   before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
+   `IMAGE_WATCH_TOO_LARGE`: a listing over 64 MiB); after a run, the same is a
+   definitive failure of the checks.
+5. **Static tamper flags** (`tamperFlags`), on the lines the patch added
+   (any file under `paths.tests`, shell helpers included), one per kind per
+   line, at most 100, in the report's order:
+
+   | Kind | forge form |
+   |---|---|
+   | `report-path-referenced` | `/proc/…`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/…`, `/dev/tty` (forge's report is its stdout), or JUnit element markup (`<testsuites`, `<testsuite`, `<testcase`) |
+   | `exit-during-import` | ending forge's process from test code: `kill -<signal>`, `pkill`, `killall` (an ffi command) |
+   | `exit-handler-registered` | a shell `trap … EXIT`/`INT`/`TERM`/`HUP`/`QUIT` |
+   | `framework-patched` | a file cheatcode (`writeFile`, `writeFileBinary`, `writeLine`, `writeJson`, `writeToml`, `removeFile`, `removeDir`, `createDir`, `copyFile`) whose path names forge's configuration, the dependencies, `out`, `cache`, `.git` or `.foundry`; inline `fs_permissions` granting write access to the repository root, to those, or outside it; a patch that changes a script a maker's command names |
+   | `reporter-patched` | a file cheatcode writing forge-std |
+   | `write-outside-repository` | a file cheatcode or an inline `fs_permissions` grant whose path is absolute, under `~` or climbs out (`..`) |
+
+   Solidity has no import-time code or exit handler of its own: a test can
+   end forge only through ffi (a signal death, which abstains unless the
+   maker's command masks it) and the flags read those commands' text.
+
+The measured checks are what close the routes; the static flags are the
+cheap signal a juror can read. Ordinary tests raise none: forge-std imports,
+inline fuzz or read-only file settings, a write to a scratch directory the
+maker or an inline grant allows, `console.log`, revert messages.
+
+### Tamper routes under forge
+
+| Route | Check that closes it | Tests |
+|---|---|---|
+| ffi child prints a forged JUnit to forge's stdout (`/proc/$PPID/fd/1`) and kills forge; unmasked | the kill is a signal death: abstain | Docker `junit-forged-early-exit` |
+| the same, the maker's command masking the exit (`! forge test …`) | exit-code and framework-summary consistency; `report-path-referenced`, `exit-during-import` | Docker and unit `junit-forged-early-exit` |
+| the same, with forge's summary forged too, and the PoC's identity twice | identity completeness | Docker and unit `test-report-duplicate-identity` |
+| bytes a test writes into forge's stdout beside forge's own JUnit | the strict reader: unreadable JUnit, an error (A2a) | A2a's Docker inject test |
+| a test that skips itself or vanishes on later runs | identity completeness | Docker and unit `test-report-missing-identity` |
+| inline `fs_permissions` + `vm.writeFile` rewrites `foundry.toml` (e.g. `ffi = true`) during run 1 | protected and framework checksums, `forge config` fingerprint; `framework-patched` | Docker and unit `protected-file-modified-at-runtime` |
+| `vm.writeFile` patches forge-std (the assertion library) | framework and dependency checksums; `reporter-patched` | Docker and unit `reporter-monkeypatched` |
+| ffi edits an untracked `lib/` dependency (or `node_modules`) so a later run compiles it | dependency checksums (no static flag catches it: measured) | Docker and unit `dependencies-edited-during-run` |
+| `~/.foundry/foundry.toml`, `~/.gitconfig` or `.env` written for later runs | `$HOME`/config checksums, `forge config` fingerprint | unit `$HOME is watched` |
+| a `forge` (or another tool) planted on a writable `PATH` directory | `command -v forge` and the PATH directories in the work tree | unit `the forge executable` |
+| `.git/config` filter, a hook, a forged index or objects, so the runner's reset writes the claim's bytes | the runner's repository checksums | unit `the runner's repository is watched` |
+| forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts` |
+| a maker's command runs a script under `paths.tests`, which the PoC rewrites | `framework-patched` (the patch changes a script a command names) | unit tamper-flag tests |
+| a file flood that hides a change | a listing over 64 MiB is a definitive failure | unit snapshot test |
+
+Residual risk (decision 6): within run 1, claim code can still write a new
+artifact after forge's compile that runs 2-3 would execute; a forger that
+also forges forge's summary and identities exactly can pass checks 1-3 when
+the maker's command masks forge's death. Neither changes `reproduces`, which
+any PoC can satisfy with a trivially failing assertion: what the checks
+protect is that the recorded runs are the image's code under test, and the
+jury reads the PoC's source (and A3c's honesty flags).
+
+## claimedObservable
+
+`src/observable.js` (§10.1), decided only on a PoC that reproduced, from
+finding.json and the recorded failures alone:
+
+- **The tests finding.json names** are the identifiers in `poc.command` and
+  `poc.observable` that are the function name of a test the runner knows (a
+  test the patch added, a test of the PoC's files, a baseline test). At
+  least one must be named, and every one named must be a test the patch
+  added (which, the PoC having reproduced, failed on every run).
+- **The observable appears in the recorded failure**: each text in double
+  quotes in `poc.observable` appears in the recorded failure message of a
+  named test on every run; or, when it quotes nothing, the recorded message
+  of a named test (the same on every run) appears in the observable as
+  written. Whitespace runs compare as one space.
+
+So a finding names its test and quotes what forge printed:
+`"observable": "test_withdraw_drains fails with \"vault balance 0 after one withdraw\""`.
+The hunter tool (P5) checks the same rule locally.
+
+## The fix check
+
+`src/fix.js` (§9.2 step 8, §20 decision 14). Only when the claim carries
+`fix.patch`; informational, never a gate. A second sandbox (`ctx.openSandbox`,
+the same flags) is started before the PoC's own steps and runs beside them;
+admission holds the spec's memory for both (`sandboxes: 2`, `src/server.js`),
+and the engine refuses a step that opens more sandboxes than the run was
+admitted for. In it:
+
+1. The forced checkout, then `poc.patch` with its `applies` and
+   `testPathsOnly` checks, protected paths reset, committed: the check runs
+   the PoC with the fix. A PoC that fails there fails the fix check.
+2. `fix.patch` on top: the same host-side checks as `poc.patch` (size, no
+   NUL, no rename or copy, **no binary change**), `git apply`, the measured
+   expansion, and every touched path outside `paths.tests` and
+   `paths.protected` and nameable in a report (source allowed; tests and
+   protected paths not). Committed (`fix.patch`). `fix.applies`.
+3. The reference snapshot, then `commands.build`. `fix.builds` (a fix that
+   applied is always built: `pass` or `fail`, never `not-run`).
+4. The maker's full suite (`commands.test`, required with a fix) **once**,
+   with the reporter flags, then a snapshot. `fix.pocPasses`: every test the
+   patch added has exactly one record and passes. `fix.regressions` /
+   `regressionCount`: every baseline `stable` test that does not pass (fails,
+   errors, is skipped, missing or duplicated), the first 200 in code-unit
+   order.
+5. The integrity checks on that run: identity (the PoC's tests and every
+   stable identity, each exactly once, none skipped), forge's summary, the
+   exit code, the checksums and the static flags of both patches.
+   `fix.integrity`.
+
+One run of the suite rather than the PoC and the suite apart: a second run in
+the same sandbox would execute what the first run's claim code left behind.
+A step that hits a limit abstains the whole run: an informational fact is
+still one every arbiter must agree on. `facts.fix` (tier B) carries
+`present`, `applies`, `builds`, `pocPasses`, `regressions`,
+`regressionCount`, `integrity` (the report's fields), `detail` (why it
+applied or not, how the build ended), `patch` and `diff` (tier A), the fix
+sandbox's `checkout` and `leftoverProcesses`, and `suite` (the run). Without
+`fix.patch` it takes the not-run values.
+
+**Binary changes in fix.patch are refused** (this node's rule, beside owner
+decision Q28 for poc.patch). A fix to Solidity source is text; a binary
+postimage can name an existing object whose size the patch's bytes do not
+bound; keeping one host-side scan for both patches means the measured
+expansion and the diff facts mean the same thing for both; and since the
+fix is informational, refusing one costs the hunter nothing: the report says
+`applies: fail` with the reason.
 
 ## Images and admission
 
@@ -738,7 +929,10 @@ container-used image, and the slot limit.
 locally (`forgeFixture.js`: FROM the pinned base, solc 0.8.31 by SHA-256,
 the repository at `/repo`); under Docker's classic image store, where a local
 build has no repository digest, it pushes them to a throwaway `registry:2`
-on 127.0.0.1 first. CI
+on 127.0.0.1 first. `integrity.docker.test.js` runs every A3a fixture in
+its forge form against real forge (ffi and file-cheatcode attempts, stdout
+mimicking forge's JUnit, `lib/` edits), ordinary PoCs that must raise
+nothing, and the fix check. CI
 (`.github/workflows/code-runner.yml`) runs the unit tests, and the Docker tests
 under `runc` and under the pinned gVisor on the systrap platform.
 
@@ -753,6 +947,11 @@ under `runc` and under the pinned gVisor on the systrap platform.
   same flags, for the fix check), `ctx.remainingMs()` and `ctx.limits`.
 - **Forge adapter** (`src/forge.js`): reporter flags, the test identity,
   `classifyRecord`, `$FILES` and `$TEST_IDS`; A2b's baseline reuses them.
+- **Integrity** (`src/integrity.js`): `Watch` (the reference and post-run
+  snapshots of a sandbox), `summaryConsistency`, `exitConsistency`,
+  `identityGap`, `tamperFlags`, `integrityOf`; `src/claim.js`'s `KIT` holds
+  the steps both sandboxes run (apply and measure a patch, read what it
+  touched, reset, commit, build, a forge run), which `src/fix.js` reuses.
 - **Common** (`src/common.js`): `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`,
   `pocPatchPathsGate`, `matchesAny` from `@verdikta/common` (A3b moves the
   class limits there too).
@@ -760,8 +959,10 @@ under `runc` and under the pinned gVisor on the systrap platform.
   `removeArgs` and the `Sandbox` class.
 - **Admission** (`src/admission.js`): `admitRun` (A1's checks) and
   `Capacity` (slots, the memory reserve), whose ticket the engine releases
-  once the run's sandboxes are gone. A3a: a run that opens a second sandbox
-  in parallel (the fix check) needs its memory admitted twice.
+  once the run's sandboxes are gone. `executeRun({ sandboxes })` passes how
+  many sandboxes the run opens at once to admission, which holds
+  `memoryMb` for each (A3a: 2 with a fix check), and the engine refuses a
+  step that opens more.
 - **Images** (`src/images.js`, `src/registry.js`): `ImageCache.acquire()`
   (allowlist, disk check, LRU eviction, pull, verify) gives a lease the
   engine releases with the ticket; `parseImageRef`, `parseAllowlist`,

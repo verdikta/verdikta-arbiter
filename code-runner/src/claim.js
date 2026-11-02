@@ -1,9 +1,12 @@
 'use strict';
 
 /**
- * The claim pipeline for a forge listing (design §9.2 steps 3-6, §10.1:
- * `applies`, `testPathsOnly`, `build`, `reproduces`). Node A2a.
+ * The claim pipeline for a forge listing (design §9.2 steps 3-8, §9.5, §10.1:
+ * `applies`, `testPathsOnly`, `build`, `reproduces`, `integrity`,
+ * `claimedObservable`, and the fix check). Nodes A2a and A3a.
  *
+ *   fix check  with fix.patch: a second sandbox, started first and run
+ *             beside the PoC's (fix.js); its result is a fact, never a gate
  *   prepare   the processes present before any claim code runs recorded;
  *             then the forced checkout (checkout.js): /work becomes the
  *             listed commit, read from the env image's objects as data and
@@ -20,11 +23,15 @@
  *   reset     protected paths back to the listed commit (the checkout's
  *             commit of it), then the result is committed with a fixed
  *             author and date
- *   build     the declared build command; its exit code is the gate (tier A)
+ *   build     the reference snapshot of what the integrity checks watch
+ *             (integrity.js, the image plus the accepted patch); then the
+ *             declared build command, whose exit code is the gate (tier A)
  *   reproduces  the fixed schedule: testFiles on the PoC's files, then
  *             testIds twice on the tests run 1 found, each with --junit and
- *             the fixed --fuzz-seed. Every test the patch added must fail as
- *             an assertion on all three runs.
+ *             the fixed --fuzz-seed, a snapshot after each. Every test the
+ *             patch added must fail as an assertion on all three runs, and
+ *             every integrity check must pass (§9.5: any failed check fails
+ *             reproduces with it); then claimedObservable (observable.js)
  *
  * Gates come only from definitive results: a step that hits a limit, dies or
  * does not start throws Abstain out of ctx.exec, and the run abstains
@@ -33,6 +40,10 @@
  * always, once run 1 found the PoC's tests. Between steps that ran claim
  * code, every process the claim left behind is killed, and the work tree's
  * tracked files go back to the PoC commit before each re-run.
+ *
+ * Every fact carries its tier (§9.5): A for what the runner observed from
+ * outside the tested process, B for results reported by a process that ran
+ * claim code (the PoC's JUnit, the fix check's).
  */
 
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
@@ -45,6 +56,9 @@ const { readForgeJUnit, JUNIT_MAX_BYTES } = require('./junit');
 const {
   scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, reportablePath
 } = require('./patch');
+const integrity = require('./integrity');
+const { claimedObservable, functionName } = require('./observable');
+const { runFixCheck, notRunFix } = require('./fix');
 
 /** git's answers (paths, stats, the diff) are read up to this. */
 const GIT_OUTPUT_MAX = 16 * 1024 * 1024;
@@ -172,6 +186,8 @@ function checkClaim(request) {
   if (commands.framework !== 'forge') issues.push(issue('FRAMEWORK_UNSUPPORTED', '/spec/commands/framework', 'this runner runs forge listings only (the Foundry MVP)'));
   if (!spec.env || spec.env.from !== 'foundry') issues.push(issue('ENV_UNSUPPORTED', '/spec/env/from', 'this runner runs env images built FROM the pinned foundry base only'));
   issues.push(...commandIssues(commands, 'build', null), ...commandIssues(commands, 'testFiles', 'FILES'), ...commandIssues(commands, 'testIds', 'TEST_IDS'));
+  // The fix check runs the maker's full suite (§9.2 step 8).
+  if (request.fixPatch) issues.push(...commandIssues(commands, 'test', null));
   if (typeof spec.baseCommit !== 'string' || !COMMIT_HEX.test(spec.baseCommit)) issues.push(issue('SCHEMA', '/spec/baseCommit', 'must be a full commit hash'));
   const paths = spec.paths;
   const globs = (v) => Array.isArray(v) && v.every((g) => typeof g === 'string' && g !== '');
@@ -180,8 +196,15 @@ function checkClaim(request) {
   const baseline = request.baseline;
   if (!baseline || !Array.isArray(baseline.tests) || !baseline.tests.every((t) => t && typeof t.id === 'string')) {
     issues.push(issue('BASELINE_INVALID', '/baseline/tests', 'baseline.json must list the tests at the listed commit (tests[].id)'));
+  } else if (request.fixPatch && (!Array.isArray(baseline.stable) || !baseline.stable.every((id) => typeof id === 'string'))) {
+    issues.push(issue('BASELINE_INVALID', '/baseline/stable', 'baseline.json must list its stable tests (stable[]) for the fix check'));
   }
   return issues;
+}
+
+/** How many sandboxes a claim's run opens at once (admission holds memory for each): the fix check's beside the PoC's. */
+function sandboxesFor(request) {
+  return request && request.fixPatch ? 2 : 1;
 }
 
 function sortedUnique(list) {
@@ -204,12 +227,6 @@ function normaliseMessage(message) {
 }
 
 /**
- * The claim steps for a forge listing.
- * @param {object} request - the validated POST /v1/runs request
- * @param {object} limits - the effective limits
- * @returns {Function[]}
- */
-/**
  * Why a failed `git apply` blames the patch (`input`, PATCH_EXPANSION) rather
  * than the run, given the work tree's free space was confirmed first. Only the
  * apply's own wall-clock budget is the patch here; running out of memory is an
@@ -217,17 +234,274 @@ function normaliseMessage(message) {
  * deadline, budget or cancellation is not the patch either.
  * @param {Abstain} abstain - the abstain ctx.exec threw for the apply step
  * @param {number} applyTimeoutMs - the apply's own budget
+ * @param {string} [label] - the patch's name
  * @returns {string|null} the gate detail when it is the patch, else null (rethrow to abstain)
  */
-function applyFailureReason(abstain, applyTimeoutMs) {
+function applyFailureReason(abstain, applyTimeoutMs, label = 'poc.patch') {
   // The step's own timer aborts with reason 'step'; the run's budget, deadline and cancel use other reasons. Both
   // the step and the run budget map to STEP_TIMEOUT, so the apply's own timeout is told apart by its detail (result.js).
   if (abstain.cause === ABSTAIN.STEP_TIMEOUT && /^the step reached its wall-clock limit/.test(abstain.detail || '')) {
-    return `poc.patch did not finish applying within ${Math.round(applyTimeoutMs / 1000)}s`;
+    return `${label} did not finish applying within ${Math.round(applyTimeoutMs / 1000)}s`;
   }
   return null;
 }
 
+// ------------------------------------------------------------------------
+// The kit: steps both sandboxes run (the PoC's, and the fix check's in
+// fix.js). Each takes the sandbox's context and its `box` (the processes
+// recorded before any claim code ran, the leftovers killed since).
+
+function runnerError(step, detail) {
+  return new Abstain(ABSTAIN.RUNNER_ERROR, detail, { step });
+}
+
+/** Run a git command and read its stdout (capped); definitive or it throws. */
+async function gitRead(ctx, name, args, { stdin, env } = {}) {
+  const out = new Prefix(GIT_OUTPUT_MAX);
+  const record = await ctx.exec(git(args, { env }), { name, timeoutMs: GIT_TIMEOUT_MS, stdin, tee: out });
+  return { record, out };
+}
+
+function newBox() {
+  return { keep: [], leftovers: [] };
+}
+
+async function recordProcesses(ctx, box) {
+  const procs = new Prefix(64 * 1024);
+  await ctx.exec(['/bin/sh', '-c', PROCS_SCRIPT, 'vcr-procs'], { name: 'prepare:procs', timeoutMs: PREP_TIMEOUT_MS, tee: procs });
+  box.keep = procs.bytes().toString('utf8').split('\n').filter((l) => /^[0-9]+$/.test(l));
+  if (box.keep.length === 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox\'s processes could not be listed', { step: 'prepare:procs' });
+}
+
+/** Kill whatever the last step left behind (§9.5: claim processes that outlive a step). */
+async function cleanup(ctx, box, after) {
+  const name = `cleanup:${after}`;
+  const out = new Prefix(4096);
+  const record = await ctx.exec(['/bin/sh', '-c', CLEANUP_SCRIPT, 'vcr-cleanup', ...box.keep], { name, timeoutMs: CLEANUP_TIMEOUT_MS, tee: out });
+  const m = /^killed ([0-9]+)$/m.exec(out.bytes().toString('utf8'));
+  if (record.exitCode !== 0 || !m) {
+    throw new Abstain(ABSTAIN.DOCKER_ERROR, `processes the step left in the sandbox could not be stopped (exit ${record.exitCode})`, { step: name });
+  }
+  box.leftovers.push({ after, killed: Number(m[1]) });
+  ctx.fact('leftoverProcesses', { tier: 'A', steps: [...box.leftovers] });
+}
+
+/** The work tree's free bytes before an apply (its own value is definitive or it throws). */
+async function freeBytes(ctx, name) {
+  const out = new Prefix(256);
+  const record = await ctx.exec(['/bin/sh', '-c', FREE_SPACE_SCRIPT, 'vcr-freespace'], { name, timeoutMs: GIT_TIMEOUT_MS, tee: out });
+  const m = /vcr-free ([0-9]+)/.exec(out.bytes().toString('utf8'));
+  if (record.exitCode !== 0 || !m) throw runnerError(name, `the work tree's free space could not be read (exit ${record.exitCode})`);
+  return Number(m[1]);
+}
+
+/**
+ * The `applies` checks of one patch (§9.2 step 3): the host-side scan, the
+ * free disk, git apply in the sandbox, the measurement of what it wrote.
+ * @param {object} ctx
+ * @param {object} o
+ * @param {Buffer} o.bytes - the patch
+ * @param {string} o.label - 'poc.patch' or 'fix.patch'
+ * @param {object} o.limits
+ * @param {string} o.base - the listed commit (for the detail and the id length)
+ * @param {string} o.step - exec name prefix ('patch', 'fixpatch')
+ * @param {'requester'|'fail'} [o.noRoom] - too little free disk: the requester's package (before any patch), or a failure of this patch
+ * @returns {Promise<{status:'pass'|'fail', basis:string, detail:string, fact:object, applied:boolean}>}
+ *   `applied`: git applied it (an over-large result is applied and must be undone by the caller)
+ */
+async function applyPatch(ctx, { bytes, label, limits, base, step, noRoom = 'requester' }) {
+  const scan = scanPatch(bytes, limits, label);
+  const fact = { tier: 'A', bytes: scan.bytes, sha256: scan.sha256, expansionBytes: null };
+  const fail = (basis, detail, applied = false) => ({ status: 'fail', basis, detail, fact: { ...fact }, applied });
+  if (!scan.ok) return fail('input', scan.reason);
+
+  // The measurement needs disk room to write patchExpansionBytes; without it, the image's checkout and dependencies
+  // left too little, which is the requester's package, not the hunter's patch (owner decision Q26).
+  const need = limits.patchExpansionBytes + FREE_SPACE_MARGIN_BYTES;
+  const free = await freeBytes(ctx, `${step}:space`);
+  if (free < need) {
+    if (noRoom === 'fail') {
+      return fail('input', `the work tree has ${free} bytes free after poc.patch; ${label} needs room for up to ${limits.patchExpansionBytes} (patchExpansionBytes) plus a ${FREE_SPACE_MARGIN_BYTES}-byte margin`);
+    }
+    throw new RequesterError([issue('IMAGE_WORKDIR_FULL', '/spec/env/image',
+      `the env image's checkout and installed dependencies leave only ${free} bytes free in the work tree; a claim needs room to write up to ${limits.patchExpansionBytes} (patchExpansionBytes) plus a ${FREE_SPACE_MARGIN_BYTES}-byte margin`)]);
+  }
+
+  // git applies the patch in the sandbox, in the runner's own repository, under its memory, pids and space limits
+  // and the apply's own time budget. Running out of the confirmed disk room, or the budget, is the patch's fault;
+  // running out of memory is an ordinary resource abstain (owner decision Q28), not an input refusal.
+  let applied;
+  try {
+    applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), { name: `${step}:apply`, timeoutMs: APPLY_TIMEOUT_MS, stdin: bytes });
+  } catch (err) {
+    const reason = err instanceof Abstain ? applyFailureReason(err, APPLY_TIMEOUT_MS, label) : null;
+    if (!reason) throw err; // an OOM, or the run's own abort: a genuine abstain.
+    return { ...fail('input', `${reason}; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`), sandboxKilled: true };
+  }
+  if (applied.exitCode !== 0) {
+    // ENOSPC with the room confirmed above is the patch overrunning the work tree, not a full image.
+    if (/No space left on device|Disk quota exceeded/.test(applied.stderr.text)) {
+      return fail('input', `${label} filled the work tree as git applied it; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`, true);
+    }
+    return fail('exit_code', `${label} does not apply to ${label === 'poc.patch' ? 'the listed commit' : 'the listed commit with poc.patch'} ${base} (exit ${applied.exitCode}): ${firstLine(applied.stderr.text)}`);
+  }
+
+  // Measure what git wrote: the postimage bytes of every path the patch created or modified, from the runner's index.
+  const raw = await gitRead(ctx, `${step}:measure`, ['diff', '--cached', '--raw', '-z', '--no-renames', '--abbrev=' + base.length, 'HEAD', '--']);
+  const parsed = raw.record.exitCode === 0 && !raw.out.truncated ? parseRawZ(raw.out.bytes(), base.length) : null;
+  if (!parsed || !parsed.ok) throw runnerError(`${step}:measure`, `the paths ${label} wrote could not be read: ${parsed ? parsed.reason : `git exited ${raw.record.exitCode}`}`);
+  let written = 0;
+  if (parsed.ids.length) {
+    const sizes = await gitRead(ctx, `${step}:sizes`, ['cat-file', '--batch-check=%(objectsize)'], { stdin: Buffer.from(parsed.ids.map((id) => `${id}\n`).join('')) });
+    const total = sizes.record.exitCode === 0 && !sizes.out.truncated ? sumObjectSizes(sizes.out.bytes().toString('utf8'), parsed.ids.length) : null;
+    if (total === null) throw runnerError(`${step}:sizes`, `the sizes ${label} wrote could not be read (git exited ${sizes.record.exitCode})`);
+    written = total;
+  }
+  fact.expansionBytes = written;
+  if (written > limits.patchExpansionBytes) {
+    return fail('input', `${label} wrote ${written} bytes across ${parsed.paths} path${parsed.paths === 1 ? '' : 's'}; the class allows ${limits.patchExpansionBytes} (patchExpansionBytes)`, true);
+  }
+  return { status: 'pass', basis: 'exit_code', detail: `${label} applies to the listed commit ${base} and writes ${written} bytes`, fact: { ...fact }, applied: true };
+}
+
+/** What the applied patch touched, as git says (staged against HEAD): paths, stats and added lines. */
+async function readTouched(ctx, step, label) {
+  const ns = await gitRead(ctx, `${step}:paths`, ['diff', '--cached', '--name-status', '-z', '--no-renames', 'HEAD', '--']);
+  const touched = ns.record.exitCode === 0 && !ns.out.truncated ? parseNameStatusZ(ns.out.bytes()) : null;
+  if (!touched) throw runnerError(`${step}:paths`, `the paths ${label} touched could not be read (git exited ${ns.record.exitCode})`);
+  const num = await gitRead(ctx, `${step}:stats`, ['diff', '--cached', '--numstat', '-z', '--no-renames', 'HEAD', '--']);
+  const stats = num.record.exitCode === 0 && !num.out.truncated ? parseNumstatZ(num.out.bytes()) : null;
+  if (!stats) throw runnerError(`${step}:stats`, `the diff stats of ${label} could not be read (git exited ${num.record.exitCode})`);
+  const diff = await gitRead(ctx, `${step}:diff`, ['diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames',
+    '--diff-algorithm=myers', '--src-prefix=a/', '--dst-prefix=b/', 'HEAD', '--']);
+  const added = diff.record.exitCode === 0 ? parseAddedLines(diff.out.bytes()) : null;
+  if (!added || !added.ok) throw runnerError(`${step}:diff`, `the diff of ${label} could not be read: ${added ? added.reason : `git exited ${diff.record.exitCode}`}`);
+  return {
+    touched,
+    added: added.files,
+    diff: {
+      tier: 'A',
+      files: stats.length,
+      added: stats.reduce((n, s) => n + s.added, 0),
+      removed: stats.reduce((n, s) => n + s.removed, 0),
+      binaryFiles: stats.filter((s) => s.binary).length
+    }
+  };
+}
+
+/** Protected files back to the listed commit (the checkout's commit of it): how many were reset. */
+async function resetProtected(ctx, prepared, protectedGlobs) {
+  // The listed commit's files as the checkout committed them (submodules' files as ordinary paths).
+  const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', prepared]);
+  const all = tree.record.exitCode === 0 && !tree.out.truncated ? parseLsTreeZ(tree.out.bytes()) : null;
+  if (!all) throw runnerError('reset:list', `the listed commit's files could not be listed (git exited ${tree.record.exitCode})`);
+  // Each path is latin1 (one char per byte). The glob is matched on the path's UTF-8 decoding, so a UTF-8 filename
+  // matches the same way the path gate (testPathsOnly) matches it (R23-F1); the literal pathspec is written back as
+  // the original bytes (R22-F1). A non-UTF-8 byte decodes to U+FFFD in both, so they still agree.
+  const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(Buffer.from(p, 'latin1').toString('utf8'), protectedGlobs)) : [];
+  if (protectedFiles.length) {
+    const reset = await ctx.exec(git(['checkout', prepared, '--pathspec-from-file=-', '--pathspec-file-nul'], { env: { GIT_LITERAL_PATHSPECS: '1' } }), {
+      name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0'), 'latin1')
+    });
+    if (reset.exitCode !== 0) throw runnerError('reset:protected', `the protected paths could not be reset: ${firstLine(reset.stderr.text)}`);
+  }
+  return protectedFiles.length;
+}
+
+/** Commit the index with the runner's fixed identity and date; the commit's id. */
+async function commitTree(ctx, message, step) {
+  const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', message], { env: COMMIT_ENV }), {
+    name: `${step}:commit`, timeoutMs: GIT_TIMEOUT_MS
+  });
+  if (commit.exitCode !== 0) throw runnerError(`${step}:commit`, `the patched tree could not be committed: ${firstLine(commit.stderr.text)}`);
+  const head = await gitRead(ctx, `${step}:head`, ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
+  const id = head.out.bytes().toString('utf8').trim();
+  if (head.record.exitCode !== 0 || !COMMIT_HEX.test(id)) throw runnerError(`${step}:head`, `the ${message} commit could not be read`);
+  return id;
+}
+
+/** The tracked files back to `commit` (git reset --hard), between runs. */
+async function resetHard(ctx, commit, name) {
+  const reset = await ctx.exec(git(['reset', '--quiet', '--hard', commit]), { name, timeoutMs: GIT_TIMEOUT_MS });
+  if (reset.exitCode !== 0) throw runnerError(name, `the work tree could not be reset to ${commit}: ${firstLine(reset.stderr.text)}`);
+}
+
+/** The declared build command; its exit code (tier A). */
+async function runBuild(ctx, box, command, limits) {
+  const record = await ctx.exec(forge.commandArgv(command, { name: 'vcr-build' }), {
+    name: 'build', timeoutMs: limits.buildSeconds * 1000, env: forge.forgeEnv()
+  });
+  await cleanup(ctx, box, 'build');
+  return record.exitCode;
+}
+
+/**
+ * One forge test run with the runner's reporter flags: the JUnit read
+ * strictly, the run's exit code. `doc` is the reader's whole answer (the
+ * suites, their counts and forge's summaries), for the integrity checks.
+ */
+async function forgeRun(ctx, box, { name, script, command, env, timeoutMs }) {
+  const out = new Prefix(JUNIT_MAX_BYTES);
+  const record = await ctx.exec(forge.commandArgv(command, { name: script, append: forge.reporterFlags() }), {
+    name, timeoutMs, env: { ...forge.forgeEnv(), ...env }, tee: out
+  });
+  await cleanup(ctx, box, name);
+  const bytes = out.bytes();
+  const blank = out.totalBytes === 0 || !/[^\s]/.test(bytes.toString('latin1'));
+  const read = blank ? null : readForgeJUnit(bytes, { truncated: out.truncated });
+  return {
+    exitCode: record.exitCode,
+    junit: blank ? 'absent' : read.ok ? 'ok' : 'invalid',
+    reason: blank ? `forge printed no JUnit (exit ${record.exitCode})` : read.ok ? null : read.reason,
+    suites: read && read.ok ? read.suites : null,
+    doc: read && read.ok ? read : null
+  };
+}
+
+/** The identity of every test-function record of a run, with its records: id → [record]. */
+function recordsById(suites, keep = () => true) {
+  const out = new Map();
+  for (const s of suites || []) {
+    for (const c of s.cases) {
+      if (!forge.isTestFunction(c.name)) continue;
+      const id = forge.testIdentity(s.file, s.contract, c.name);
+      if (!keep(id, s)) continue;
+      if (!out.has(id)) out.set(id, []);
+      out.get(id).push(c);
+    }
+  }
+  return out;
+}
+
+/** One identity's result on a run: `missing`, `duplicate` (with the count), or forge's record classified. */
+function entryOf(got) {
+  if (!got || got.length === 0) return { result: 'missing', kind: null, message: null };
+  if (got.length > 1) return { result: 'duplicate', kind: null, message: null, records: got.length };
+  return { ...forge.classifyRecord(got[0]), message: normaliseMessage(got[0].message) };
+}
+
+/** The consistency checks of one run (§9.5 checks 2 and 3), as `label: detail` failures. */
+function runConsistency(run, label, summary, exit) {
+  const s = integrity.summaryConsistency(run.doc);
+  if (!s.ok) summary.push(`${label}: ${s.detail}`);
+  const e = integrity.exitConsistency(run);
+  if (!e.ok) exit.push(`${label}: ${e.detail}`);
+}
+
+const KIT = Object.freeze({
+  gitRead, newBox, recordProcesses, cleanup, applyPatch, readTouched, resetProtected, commitTree, resetHard, runBuild, forgeRun,
+  recordsById, entryOf, runConsistency, normaliseMessage, sortedUnique, capped, listPaths, firstLine, runnerError
+});
+
+// ------------------------------------------------------------------------
+// The PoC's sandbox.
+
+/**
+ * The claim steps for a forge listing.
+ * @param {object} request - the validated POST /v1/runs request
+ * @param {object} limits - the effective limits
+ * @returns {Function[]}
+ */
 function claimSteps(request, limits) {
   const issues = checkClaim(request);
   if (issues.length) return [async () => { throw new RequesterError(issues); }];
@@ -237,149 +511,50 @@ function claimSteps(request, limits) {
   const testGlobs = spec.paths.tests;
   const protectedGlobs = spec.paths.protected || [];
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
-  const state = { done: false, keep: [], touched: null, prepared: null, pocCommit: null, leftovers: [] };
+  const box = newBox();
+  const state = {
+    done: false, halted: false, touched: null, added: null, prepared: null, pocCommit: null, watch: null,
+    fix: null, integrity: { tier: 'A', poc: null, fix: null }
+  };
 
-  /** Run a git command and read its stdout (capped); definitive or it throws. */
-  async function gitRead(ctx, name, args, { stdin, env } = {}) {
-    const out = new Prefix(GIT_OUTPUT_MAX);
-    const record = await ctx.exec(git(args, { env }), { name, timeoutMs: GIT_TIMEOUT_MS, stdin, tee: out });
-    return { record, out };
-  }
-
-  function runnerError(step, detail) {
-    return new Abstain(ABSTAIN.RUNNER_ERROR, detail, { step });
-  }
-
-  /** Kill whatever the last step left behind (§9.5: claim processes that outlive a step). */
-  async function cleanup(ctx, after) {
-    const name = `cleanup:${after}`;
-    const out = new Prefix(4096);
-    const record = await ctx.exec(['/bin/sh', '-c', CLEANUP_SCRIPT, 'vcr-cleanup', ...state.keep], { name, timeoutMs: CLEANUP_TIMEOUT_MS, tee: out });
-    const m = /^killed ([0-9]+)$/m.exec(out.bytes().toString('utf8'));
-    if (record.exitCode !== 0 || !m) {
-      throw new Abstain(ABSTAIN.DOCKER_ERROR, `processes the step left in the sandbox could not be stopped (exit ${record.exitCode})`, { step: name });
-    }
-    state.leftovers.push({ after, killed: Number(m[1]) });
-    ctx.fact('leftoverProcesses', state.leftovers);
+  /** The fix check (§9.2 step 8), started before the PoC's own steps and run beside them. */
+  async function startFixCheck(ctx) {
+    if (!request.fixPatch) return;
+    const running = runFixCheck(ctx, { request, limits, kit: KIT, halted: () => state.halted });
+    state.fix = running.then((value) => ({ value }), (error) => ({ error }));
   }
 
   async function prepare(ctx) {
-    const procs = new Prefix(64 * 1024);
-    await ctx.exec(['/bin/sh', '-c', PROCS_SCRIPT, 'vcr-procs'], { name: 'prepare:procs', timeoutMs: PREP_TIMEOUT_MS, tee: procs });
-    state.keep = procs.bytes().toString('utf8').split('\n').filter((l) => /^[0-9]+$/.test(l));
-    if (state.keep.length === 0) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox\'s processes could not be listed', { step: 'prepare:procs' });
-
+    await recordProcesses(ctx, box);
     // Before any claim code runs: /work is the listed commit (checkout.js).
     const checkout = await forceCheckout(ctx, { base });
     state.prepared = checkout.commit;
-    ctx.fact('commit', { base, poc: null });
-  }
-
-  /** The work tree's free bytes before the apply (its own value is definitive or it throws). */
-  async function freeBytes(ctx) {
-    const out = new Prefix(256);
-    const record = await ctx.exec(['/bin/sh', '-c', FREE_SPACE_SCRIPT, 'vcr-freespace'], { name: 'patch:space', timeoutMs: GIT_TIMEOUT_MS, tee: out });
-    const m = /vcr-free ([0-9]+)/.exec(out.bytes().toString('utf8'));
-    if (record.exitCode !== 0 || !m) throw runnerError('patch:space', `the work tree's free space could not be read (exit ${record.exitCode})`);
-    return Number(m[1]);
+    ctx.fact('commit', { tier: 'A', base, poc: null });
   }
 
   async function applies(ctx) {
-    const scan = scanPatch(request.pocPatch, limits);
-    const patchFact = { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: null };
-    ctx.fact('patch', patchFact);
-    if (!scan.ok) {
-      ctx.gate('applies', 'fail', 'input', scan.reason);
-      state.done = true;
-      return;
-    }
-    const failExpansion = (reason) => { ctx.fact('patch', { ...patchFact }); ctx.gate('applies', 'fail', 'input', reason); state.done = true; };
-
-    // The measurement needs disk room to write patchExpansionBytes; without it, the image's checkout and dependencies
-    // left too little, which is the requester's package, not the hunter's patch (owner decision Q26).
-    const need = limits.patchExpansionBytes + FREE_SPACE_MARGIN_BYTES;
-    const free = await freeBytes(ctx);
-    if (free < need) {
-      throw new RequesterError([issue('IMAGE_WORKDIR_FULL', '/spec/env/image',
-        `the env image's checkout and installed dependencies leave only ${free} bytes free in the work tree; a claim needs room to write up to ${limits.patchExpansionBytes} (patchExpansionBytes) plus a ${FREE_SPACE_MARGIN_BYTES}-byte margin`)]);
-    }
-
-    // git applies the patch in the sandbox, in the runner's own repository, under its memory, pids and space limits
-    // and the apply's own time budget. Running out of the confirmed disk room, or the budget, is the patch's fault;
-    // running out of memory is an ordinary resource abstain (owner decision Q28), not an input refusal.
-    let applied;
-    try {
-      applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), {
-        name: 'patch:apply', timeoutMs: APPLY_TIMEOUT_MS, stdin: request.pocPatch
-      });
-    } catch (err) {
-      const reason = err instanceof Abstain ? applyFailureReason(err, APPLY_TIMEOUT_MS) : null;
-      if (!reason) throw err; // an OOM, or the run's own abort: a genuine abstain.
-      failExpansion(`${reason}; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`);
-      return;
-    }
-    if (applied.exitCode !== 0) {
-      // ENOSPC with the room confirmed above is the patch overrunning the work tree, not a full image.
-      if (/No space left on device|Disk quota exceeded/.test(applied.stderr.text)) {
-        failExpansion(`poc.patch filled the work tree as git applied it; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`);
-        return;
-      }
-      ctx.gate('applies', 'fail', 'exit_code', `poc.patch does not apply to the listed commit ${base} (exit ${applied.exitCode}): ${firstLine(applied.stderr.text)}`);
-      state.done = true;
-      return;
-    }
-
-    // Measure what git wrote: the postimage bytes of every path the patch created or modified, from the runner's index.
-    const raw = await gitRead(ctx, 'patch:measure', ['diff', '--cached', '--raw', '-z', '--no-renames', '--abbrev=' + base.length, 'HEAD', '--']);
-    const parsed = raw.record.exitCode === 0 && !raw.out.truncated ? parseRawZ(raw.out.bytes(), base.length) : null;
-    if (!parsed || !parsed.ok) throw runnerError('patch:measure', `the paths poc.patch wrote could not be read: ${parsed ? parsed.reason : `git exited ${raw.record.exitCode}`}`);
-    let written = 0;
-    if (parsed.ids.length) {
-      const sizes = await gitRead(ctx, 'patch:sizes', ['cat-file', '--batch-check=%(objectsize)'], { stdin: Buffer.from(parsed.ids.map((id) => `${id}\n`).join('')) });
-      const total = sizes.record.exitCode === 0 && !sizes.out.truncated ? sumObjectSizes(sizes.out.bytes().toString('utf8'), parsed.ids.length) : null;
-      if (total === null) throw runnerError('patch:sizes', `the sizes poc.patch wrote could not be read (git exited ${sizes.record.exitCode})`);
-      written = total;
-    }
-    patchFact.expansionBytes = written;
-    ctx.fact('patch', { ...patchFact });
-    if (written > limits.patchExpansionBytes) {
-      failExpansion(`poc.patch wrote ${written} bytes across ${parsed.paths} path${parsed.paths === 1 ? '' : 's'}; the class allows ${limits.patchExpansionBytes} (patchExpansionBytes)`);
-      return;
-    }
-    ctx.gate('applies', 'pass', 'exit_code', `poc.patch applies to the listed commit ${base} and writes ${written} bytes`);
+    const r = await applyPatch(ctx, { bytes: request.pocPatch, label: 'poc.patch', limits, base, step: 'patch' });
+    ctx.fact('patch', r.fact);
+    ctx.gate('applies', r.status, r.basis, r.detail);
+    if (r.status !== 'pass') state.done = true;
   }
 
   async function testPathsOnly(ctx) {
-    const ns = await gitRead(ctx, 'patch:paths', ['diff', '--cached', '--name-status', '-z', '--no-renames', 'HEAD', '--']);
-    const touched = ns.record.exitCode === 0 && !ns.out.truncated ? parseNameStatusZ(ns.out.bytes()) : null;
-    if (!touched) throw runnerError('patch:paths', `the paths poc.patch touched could not be read (git exited ${ns.record.exitCode})`);
-    const num = await gitRead(ctx, 'patch:stats', ['diff', '--cached', '--numstat', '-z', '--no-renames', 'HEAD', '--']);
-    const stats = num.record.exitCode === 0 && !num.out.truncated ? parseNumstatZ(num.out.bytes()) : null;
-    if (!stats) throw runnerError('patch:stats', `the diff stats of poc.patch could not be read (git exited ${num.record.exitCode})`);
-    const diff = await gitRead(ctx, 'patch:diff', ['diff', '--cached', '-U0', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames',
-      '--diff-algorithm=myers', '--src-prefix=a/', '--dst-prefix=b/', 'HEAD', '--']);
-    const added = diff.record.exitCode === 0 ? parseAddedLines(diff.out.bytes()) : null;
-    if (!added || !added.ok) throw runnerError('patch:diff', `the diff of poc.patch could not be read: ${added ? added.reason : `git exited ${diff.record.exitCode}`}`);
-
-    ctx.fact('diff', {
-      files: stats.length,
-      added: stats.reduce((n, s) => n + s.added, 0),
-      removed: stats.reduce((n, s) => n + s.removed, 0),
-      binaryFiles: stats.filter((s) => s.binary).length
-    });
+    const { touched, added, diff } = await readTouched(ctx, 'patch', 'poc.patch');
+    ctx.fact('diff', diff);
 
     const paths = touched.map((t) => t.path);
     const gate = pocPatchPathsGate(paths, spec);
     const unreportable = sortedUnique(paths.filter((p) => !reportablePath(p) && !gate.outside.includes(p)));
     const outside = sortedUnique(gate.outside);
     const prot = sortedUnique(gate.protected);
-    ctx.fact('testPaths', { outside: capped(outside, MAX_PATHS), protected: capped(prot, MAX_PATHS), unreportable: capped(unreportable, MAX_PATHS) });
+    ctx.fact('testPaths', { tier: 'A', outside: capped(outside, MAX_PATHS), protected: capped(prot, MAX_PATHS), unreportable: capped(unreportable, MAX_PATHS) });
 
     // Tier-A flags (§9.2 step 3), as plain repository paths under paths.tests.
     const inTests = (p) => reportablePath(p) && matchesAny(p, testGlobs);
     const skipFiles = [];
     const references = [];
-    for (const [file, lines] of added.files) {
+    for (const [file, lines] of added) {
       if (!inTests(file)) continue;
       const scan = forge.scanAddedLines(lines);
       if (scan.skipMarkers.length) skipFiles.push(file);
@@ -387,6 +562,7 @@ function claimSteps(request, limits) {
     }
     references.sort((a, b) => (a.file < b.file ? -1 : a.file > b.file ? 1 : a.line - b.line));
     ctx.fact('flags', {
+      tier: 'A',
       existingTestsModified: capped(sortedUnique(touched.filter((t) => t.status !== 'A' && inTests(t.path)).map((t) => t.path)), MAX_PATHS),
       skipMarkersAdded: capped(sortedUnique(skipFiles), MAX_PATHS),
       protectedPathsTouched: capped(prot.filter(reportablePath), MAX_PATHS),
@@ -404,86 +580,53 @@ function claimSteps(request, limits) {
       return;
     }
     state.touched = touched;
+    state.added = new Map([...added].filter(([file]) => inTests(file)));
     ctx.gate('testPathsOnly', 'pass', 'exit_code', `poc.patch touches ${touched.length} path${touched.length === 1 ? '' : 's'}, all under paths.tests`);
   }
 
   async function resetAndCommit(ctx) {
-    // The listed commit's files as the checkout committed them (submodules' files as ordinary paths).
-    const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', state.prepared]);
-    const all = tree.record.exitCode === 0 && !tree.out.truncated ? parseLsTreeZ(tree.out.bytes()) : null;
-    if (!all) throw runnerError('reset:list', `the listed commit's files could not be listed (git exited ${tree.record.exitCode})`);
-    // Each path is latin1 (one char per byte). The glob is matched on the path's UTF-8 decoding, so a UTF-8 filename
-    // matches the same way the path gate (testPathsOnly) matches it (R23-F1); the literal pathspec is written back as
-    // the original bytes (R22-F1). A non-UTF-8 byte decodes to U+FFFD in both, so they still agree.
-    const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(Buffer.from(p, 'latin1').toString('utf8'), protectedGlobs)) : [];
-    if (protectedFiles.length) {
-      const reset = await ctx.exec(git(['checkout', state.prepared, '--pathspec-from-file=-', '--pathspec-file-nul'], { env: { GIT_LITERAL_PATHSPECS: '1' } }), {
-        name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0'), 'latin1')
-      });
-      if (reset.exitCode !== 0) throw runnerError('reset:protected', `the protected paths could not be reset: ${firstLine(reset.stderr.text)}`);
-    }
-    ctx.fact('protectedReset', protectedFiles.length);
-    const commit = await ctx.exec(git(['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', COMMIT_MESSAGE], { env: COMMIT_ENV }), {
-      name: 'patch:commit', timeoutMs: GIT_TIMEOUT_MS
-    });
-    if (commit.exitCode !== 0) throw runnerError('patch:commit', `the patched tree could not be committed: ${firstLine(commit.stderr.text)}`);
-    const head = await gitRead(ctx, 'patch:head', ['rev-parse', '--verify', '--end-of-options', 'HEAD^{commit}']);
-    const poc = head.out.bytes().toString('utf8').trim();
-    if (head.record.exitCode !== 0 || !COMMIT_HEX.test(poc)) throw runnerError('patch:head', 'the PoC commit could not be read');
-    state.pocCommit = poc;
-    ctx.fact('commit', { base, poc });
+    const files = await resetProtected(ctx, state.prepared, protectedGlobs);
+    ctx.fact('protectedReset', { tier: 'A', files });
+    state.pocCommit = await commitTree(ctx, COMMIT_MESSAGE, 'patch');
+    ctx.fact('commit', { tier: 'A', base, poc: state.pocCommit });
   }
 
   async function build(ctx) {
-    const record = await ctx.exec(forge.commandArgv(spec.commands.build, { name: 'vcr-build' }), {
-      name: 'build', timeoutMs: limits.buildSeconds * 1000, env: forge.forgeEnv()
-    });
-    await cleanup(ctx, 'build');
-    const ok = record.exitCode === 0;
-    ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${record.exitCode}`);
+    // The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command.
+    state.watch = new integrity.Watch({ protectedGlobs });
+    await state.watch.reference(ctx);
+    const exitCode = await runBuild(ctx, box, spec.commands.build, limits);
+    const ok = exitCode === 0;
+    ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}`);
     if (!ok) state.done = true;
   }
 
-  /** One PoC run: the JUnit read, the harness records failing in the PoC's suites. */
+  /** One PoC run, then the snapshot the integrity checks compare (its processes are dead by then). */
   async function pocRun(ctx, index, command, env) {
-    const out = new Prefix(JUNIT_MAX_BYTES);
-    const name = `poc:${index}`;
-    const record = await ctx.exec(forge.commandArgv(command, { name: 'vcr-poc', append: forge.reporterFlags() }), {
-      name, timeoutMs: limits.testSeconds * 1000, env: { ...forge.forgeEnv(), ...env }, tee: out
-    });
-    await cleanup(ctx, name);
-    const bytes = out.bytes();
-    const blank = out.totalBytes === 0 || !/[^\s]/.test(bytes.toString('latin1'));
-    const read = blank ? null : readForgeJUnit(bytes, { truncated: out.truncated });
-    return {
-      exitCode: record.exitCode,
-      junit: blank ? 'absent' : read.ok ? 'ok' : 'invalid',
-      reason: blank ? `forge printed no JUnit (exit ${record.exitCode})` : read.ok ? null : read.reason,
-      suites: read && read.ok ? read.suites : null
-    };
+    const run = await forgeRun(ctx, box, { name: `poc:${index}`, script: 'vcr-poc', command, env, timeoutMs: limits.testSeconds * 1000 });
+    await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
+    return run;
   }
 
   async function reproduces(ctx) {
     const files = sortedUnique(state.touched.filter((t) => t.status !== 'D' && t.path.endsWith('.sol')).map((t) => t.path));
-    const done = (status, basis, detail) => { ctx.gate('reproduces', status, basis, detail); state.done = true; };
-    if (files.length === 0) {
-      ctx.fact('poc', pocFacts([], []));
-      done('fail', 'exit_code', 'poc.patch adds or changes no Solidity file under paths.tests: there is no PoC to run');
-      return;
-    }
-    const fileSet = new Set(files);
-    const FILES = forge.filesGlob(files);
     const runs = [];
-    runs.push({ command: 'testFiles', ...(await pocRun(ctx, 1, spec.commands.testFiles, { FILES })) });
+    const fileSet = new Set(files);
+    if (files.length) {
+      const FILES = forge.filesGlob(files);
+      runs.push({ command: 'testFiles', ...(await pocRun(ctx, 1, spec.commands.testFiles, { FILES })) });
+    }
 
     // The tests the patch added: test functions in the PoC's files, as run 1
     // reported them, that are not in the listed commit's baseline.
     const signatures = new Map();
-    if (runs[0].suites) {
+    const pocNames = new Set();
+    if (runs.length && runs[0].suites) {
       for (const s of runs[0].suites) {
         if (!fileSet.has(s.file)) continue;
         for (const c of s.cases) {
           if (!forge.isTestFunction(c.name)) continue;
+          pocNames.add(functionName(c.name));
           const id = forge.testIdentity(s.file, s.contract, c.name);
           if (!baselineIds.has(id)) signatures.set(id, c.name);
         }
@@ -491,10 +634,11 @@ function claimSteps(request, limits) {
     }
     const ids = [...signatures.keys()].sort();
     if (ids.length > 0) {
+      const FILES = forge.filesGlob(files);
       const TEST_IDS = forge.testIdsRegex([...signatures.values()]);
       for (let k = 2; k <= RUNS; k += 1) {
-        const reset = await ctx.exec(git(['reset', '--quiet', '--hard', state.pocCommit]), { name: `poc:reset:${k}`, timeoutMs: GIT_TIMEOUT_MS });
-        if (reset.exitCode !== 0) throw runnerError(`poc:reset:${k}`, `the work tree could not be reset to the PoC commit: ${firstLine(reset.stderr.text)}`);
+        await resetHard(ctx, state.pocCommit, `poc:reset:${k}`);
+        await state.watch.afterReset(ctx, `run ${k}`);
         runs.push({ command: 'testIds', ...(await pocRun(ctx, k, spec.commands.testIds, { FILES, TEST_IDS })) });
       }
     }
@@ -502,56 +646,99 @@ function claimSteps(request, limits) {
     // Each added test on each run, and the harness records that failed in the PoC's suites.
     const results = new Map(ids.map((id) => [id, []]));
     const harness = [];
+    const identity = [];
+    const summary = [];
+    const exit = [];
     runs.forEach((run, r) => {
       const errors = [];
-      const records = new Map(ids.map((id) => [id, []]));
       if (run.suites) {
         for (const s of run.suites) {
           if (!fileSet.has(s.file)) continue;
           for (const c of s.cases) {
-            if (forge.isHarnessRecord(c.name)) {
-              if (c.outcome === 'failure' || c.outcome === 'error') errors.push({ suite: `${s.file}:${s.contract}`, name: c.name, message: normaliseMessage(c.message) });
-              continue;
+            if (forge.isHarnessRecord(c.name) && (c.outcome === 'failure' || c.outcome === 'error')) {
+              errors.push({ suite: `${s.file}:${s.contract}`, name: c.name, message: normaliseMessage(c.message) });
             }
-            // Other records (an invariant campaign's `handler …` cases) are not tests of their own.
-            if (!forge.isTestFunction(c.name)) continue;
-            const id = forge.testIdentity(s.file, s.contract, c.name);
-            if (records.has(id)) records.get(id).push(c);
           }
         }
       }
+      // Other records (an invariant campaign's `handler …` cases) are not tests of their own.
+      const records = recordsById(run.suites, (id, s) => fileSet.has(s.file));
       errors.sort((a, b) => (a.suite + a.name < b.suite + b.name ? -1 : 1));
       harness.push(errors);
       for (const id of ids) {
-        const got = records.get(id);
-        let entry;
-        if (!run.suites) entry = { result: 'error', kind: null, message: null };
-        else if (got.length === 0) entry = { result: 'missing', kind: null, message: null };
-        else if (got.length > 1) entry = { result: 'duplicate', kind: null, message: null };
-        else entry = { ...forge.classifyRecord(got[0]), message: normaliseMessage(got[0].message) };
+        const entry = run.suites ? entryOf(records.get(id)) : { result: 'error', kind: null, message: null };
         results.get(id).push(entry);
+        // §9.5 check 1: exactly one record of every test the patch added, none skipped, on every run read.
+        const gap = run.suites ? integrity.identityGap(id, entry) : null;
+        if (gap) identity.push(`run ${r + 1}: ${gap}`);
       }
       run.harnessErrors = capped(errors, MAX_TESTS);
+      runConsistency(run, `run ${r + 1}`, summary, exit);
     });
     for (let r = runs.length; r < RUNS; r += 1) for (const id of ids) results.get(id).push({ result: 'not-run', kind: null, message: null });
 
-    ctx.fact('poc', pocFacts(ids.map((id) => [id, results.get(id)]), runs));
-    done(...reproducesVerdict(runs, harness, ids, results));
+    const flags = integrity.tamperFlags({ added: state.added, touched: state.touched, commands: spec.commands });
+    const checks = integrity.integrityOf({
+      identity, summary, exit, ...state.watch.failures, tamperFlags: flags
+    });
+    ctx.fact('poc', { ...pocFacts(ids.map((id) => [id, results.get(id)]), runs), integrity: checks.integrity });
+    state.integrity.poc = { failures: checks.failures, changed: state.watch.changedFacts() };
+    ctx.fact('integrity', { ...state.integrity });
+
+    let verdict;
+    if (files.length === 0) verdict = ['fail', 'exit_code', 'poc.patch adds or changes no Solidity file under paths.tests: there is no PoC to run'];
+    else verdict = reproducesVerdict(runs, harness, ids, results);
+    if (verdict[0] === 'pass' && !checks.clean) {
+      verdict = ['fail', 'integrity', `the PoC's results are not trusted: ${checks.failures.map((f) => f.check).join(', ')} failed (§9.5)`];
+    }
+    ctx.gate('reproduces', ...verdict);
+    ctx.gate('integrity', checks.clean ? 'pass' : 'fail', 'integrity', checks.clean
+      ? `every integrity check passed on ${runs.length} run${runs.length === 1 ? '' : 's'}`
+      : integrity.integrityDetail(checks.failures));
+    if (verdict[0] === 'pass') {
+      const known = new Set([...pocNames, ...request.baseline.tests.map((t) => functionName(t.id))]);
+      const o = claimedObservable({ finding: request.finding, tests: ids.map((id) => ({ id, messages: results.get(id).map((e) => e.message) })), knownNames: known });
+      ctx.gate('claimedObservable', o.status, 'junit', o.detail);
+    }
+    state.done = true;
   }
 
-  return [prepare, applies, testPathsOnly, resetAndCommit, build, reproduces].map((step) => {
-    const wrapped = async (ctx) => { if (!state.done) await step(ctx); };
+  /** The fix check's result, whatever the PoC's gates were (it is never a gate). */
+  async function fixCheck(ctx) {
+    let fix = notRunFix();
+    if (state.fix) {
+      const r = await state.fix;
+      if (r.error) throw r.error;
+      fix = r.value.fact;
+      state.integrity.fix = r.value.integrity;
+    }
+    ctx.fact('fix', fix);
+    ctx.fact('integrity', { ...state.integrity });
+  }
+
+  const steps = [prepare, applies, testPathsOnly, resetAndCommit, build, reproduces].map((step) => {
+    const wrapped = async (ctx) => {
+      if (state.done) return;
+      try {
+        await step(ctx);
+      } catch (err) {
+        state.halted = true;
+        throw err;
+      }
+    };
     Object.defineProperty(wrapped, 'name', { value: step.name });
     return wrapped;
   });
+  return [startFixCheck, ...steps, fixCheck];
 }
 
 const WORD = Object.freeze({ pass: 'passed', error: 'errored', skip: 'skipped', missing: 'missing', duplicate: 'duplicated' });
 
 /**
- * The reproduces gate from the three runs, in a fixed order (run by run;
- * within a run: the JUnit, the harness, then the tests in code-unit order),
- * so the detail names the same first failure on every arbiter.
+ * The reproduces gate from the three runs' JUnit, in a fixed order (run by
+ * run; within a run: the JUnit, the harness, then the tests in code-unit
+ * order), so the detail names the same first failure on every arbiter. The
+ * integrity checks are applied on top (claimSteps).
  * @returns {[status:string, basis:string, detail:string]}
  */
 function reproducesVerdict(runs, harness, ids, results) {
@@ -581,7 +768,7 @@ function reproducesVerdict(runs, harness, ids, results) {
   return ['pass', 'junit', `${ids.length} test${ids.length === 1 ? '' : 's'} the patch added failed as an assertion on all ${RUNS} runs`];
 }
 
-/** The PoC facts (§9.4 `poc`): counts over every test and run, the first 200 tests in code-unit order. */
+/** The PoC facts (§9.4 `poc`, tier B): counts over every test and run, the first 200 tests in code-unit order. */
 function pocFacts(entries, runs) {
   const runCounts = { fail: 0, pass: 0, error: 0, skip: 0, missing: 0, duplicate: 0, notRun: 0 };
   const tests = [];
@@ -603,4 +790,7 @@ function pocFacts(entries, runs) {
   };
 }
 
-module.exports = { claimSteps, checkClaim, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS, FREE_SPACE_SCRIPT, RUNS };
+module.exports = {
+  claimSteps, checkClaim, sandboxesFor, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS,
+  FREE_SPACE_SCRIPT, RUNS, KIT
+};

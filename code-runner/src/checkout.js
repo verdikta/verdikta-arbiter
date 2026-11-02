@@ -431,8 +431,9 @@ async function forceCheckout(ctx, { base }) {
   const unstaged = await exec('prepare:unstage', hermetic(UNSTAGE_SCRIPT, 'vcr-unstage', [STAGE_DIR, LISTS_DIR]));
   if (unstaged.exitCode !== 0) throw runnerError('prepare:unstage', `the staging store could not be removed: ${firstLine(unstaged.stderr.text)}`);
 
-  // 5. Facts, not gates.
+  // 5. Facts, not gates (tier A: the runner read them, no claim code had run).
   ctx.fact('checkout', {
+    tier: 'A',
     commit: prepared,
     tree,
     paths: live.length,

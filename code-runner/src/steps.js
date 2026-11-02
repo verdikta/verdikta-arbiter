@@ -8,8 +8,9 @@
  * - A2a (claim.js, forge.js): copy the checkout into the work tree, apply
  *   poc.patch inside the sandbox (applies, testPathsOnly), reset protected
  *   paths, commit, build, PoC x3 and the reproduces gate, for forge listings
- * - A3a: integrity checks, claimedObservable, the fix check in a second
- *   sandbox (ctx.openSandbox)
+ * - A3a (claim.js, integrity.js, observable.js, fix.js): the §9.5 integrity
+ *   checks on the three runs, the integrity and claimedObservable gates, the
+ *   fix check in a second sandbox run beside the PoC's (ctx.openSandbox)
  * - A3c: honesty flags (Semgrep) and fix-mode lint
  * - A3b: the Verification Report, its hash and the context pack
  */

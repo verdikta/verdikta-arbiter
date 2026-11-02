@@ -30,38 +30,42 @@ const RENAME_HEADERS = Object.freeze(['rename from ', 'rename to ', 'rename old 
  * The host-side checks of poc.patch (part of the `applies` gate's `input`
  * basis), without parsing what the patch means. What an accepted text patch
  * writes is not counted here; it is measured after the patch is applied.
+ * fix.patch gets the same checks (node A3a, the proposed rule for its binary
+ * changes: refused like poc.patch's), named by `label`.
  * @param {Buffer} bytes
  * @param {{maxPatchBytes:number}} limits
+ * @param {string} [label] - the patch's name in the reasons ('poc.patch' or 'fix.patch')
  * @returns {{ok:boolean, code?:string, reason?:string, bytes:number, sha256:string}}
  */
-function scanPatch(bytes, { maxPatchBytes }) {
+function scanPatch(bytes, { maxPatchBytes }, label = 'poc.patch') {
   const base = { bytes: bytes.length, sha256: crypto.createHash('sha256').update(bytes).digest('hex') };
   const fail = (code, reason) => ({ ...base, ok: false, code, reason });
+  const what = label === 'fix.patch' ? 'a fix edits text source files' : 'a PoC adds or edits test files';
   if (bytes.length > maxPatchBytes) {
-    return fail('PATCH_TOO_LARGE', `poc.patch is ${bytes.length} bytes; the listing allows ${maxPatchBytes} (maxPatchBytes)`);
+    return fail('PATCH_TOO_LARGE', `${label} is ${bytes.length} bytes; the listing allows ${maxPatchBytes} (maxPatchBytes)`);
   }
   // Round 19: git reads a header field as a C string, so a NUL ends it where a byte scan would not. No patch git
   // writes holds one (binary content is base85), so any NUL is refused before git sees the patch.
   if (bytes.includes(0)) {
-    return fail('PATCH_NUL', 'poc.patch holds a NUL byte: no patch git writes does (binary content is base85), and git reads a header field only up to one');
+    return fail('PATCH_NUL', `${label} holds a NUL byte: no patch git writes does (binary content is base85), and git reads a header field only up to one`);
   }
   const lines = bytes.toString('latin1').split('\n');
   for (let i = 0; i < lines.length; i += 1) {
     const line = lines[i].replace(/\r$/, '');
     if (line.startsWith('copy from ') || line.startsWith('copy to ')) {
-      return fail('PATCH_COPY', 'poc.patch copies a file (a "copy from" header): a copy rebuilds a whole existing file from one line, so its size is not bounded by the patch; a PoC adds or edits test files');
+      return fail('PATCH_COPY', `${label} copies a file (a "copy from" header): a copy rebuilds a whole existing file from one line, so its size is not bounded by the patch; ${what}`);
     }
     // R15-F1: git reloads a rename's source for every rename of it, so one file renamed to many names multiplies it,
     // and git apply's numstat names only the destinations. Every header form git reads (apply.c: rename from/to, and
     // the old rename old/new) is refused, like a copy; a moved file is a deletion and an addition (git diff --no-renames).
     if (RENAME_HEADERS.some((h) => line.startsWith(h))) {
-      return fail('PATCH_RENAME', 'poc.patch renames a file (a "rename from" header): git rebuilds a renamed file from the existing one, once for every rename of it, so the patch does not bound what it writes; a PoC adds or edits test files (write it with git diff --no-renames)');
+      return fail('PATCH_RENAME', `${label} renames a file (a "rename from" header): git rebuilds a renamed file from the existing one, once for every rename of it, so the patch does not bound what it writes; ${what} (write it with git diff --no-renames)`);
     }
     // Q28: a PoC adds or edits text test files. A binary change (git's `GIT binary patch`, or a no-`--binary`
     // `Binary files … differ` / `Files … differ` summary) can name an existing object as its postimage, whose size
     // the patch's bytes do not bound; it is refused before git sees it. A header line, never an added `+`/context line.
     if (line === 'GIT binary patch' || line.startsWith('Binary files ') || line.startsWith('Files ')) {
-      return fail('PATCH_BINARY', 'poc.patch makes a binary change (a "GIT binary patch" or "Binary files … differ" entry): a PoC adds or edits text test files, and a binary postimage can name an existing object the patch does not bound');
+      return fail('PATCH_BINARY', `${label} makes a binary change (a "GIT binary patch" or "Binary files … differ" entry): ${label === 'fix.patch' ? 'a fix edits text source files' : 'a PoC adds or edits text test files'}, and a binary postimage can name an existing object the patch does not bound`);
     }
   }
   return { ...base, ok: true };

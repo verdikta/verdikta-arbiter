@@ -98,7 +98,7 @@ test('fix check: in a second sandbox, fix.patch applies (source allowed), builds
   assert.ok(r.steps.some((s) => s.name === 'fix:build'));
   // The fix's own patch facts, tier A.
   assert.equal(r.facts.fix.patch.sha256, require('node:crypto').createHash('sha256').update(FIX_PATCH).digest('hex'));
-  assert.deepEqual({ ...r.facts.fix.diff }, { tier: 'A', files: 1, added: 1, removed: 1, binaryFiles: 0 });
+  assert.deepEqual({ ...r.facts.fix.diff }, { tier: 'A', files: 1, added: 1, removed: 1, binaryFiles: 0, applied: true });
 });
 
 test('fix check: fix.pocPasses = false when the PoC still fails with the fix; the claim\'s outcome is unaffected', async () => {
@@ -163,6 +163,9 @@ test('fix check: binary changes, renames and copies in fix.patch are refused hos
     assert.match(r.facts.fix.detail.applies, re);
     const applied = sb.fixExecs().filter((d) => d.kind === 'git' && d.sub[0] === 'apply').map((d) => d.stdin.toString());
     assert.deepEqual(applied, [POC_PATCH], 'git never saw fix.patch');
+    // The report still gets the patch's hash and a diff object (zeros: never applied).
+    assert.equal(r.facts.fix.patch.sha256, require('node:crypto').createHash('sha256').update(fixPatch).digest('hex'));
+    assert.deepEqual(r.facts.fix.diff, { tier: 'A', files: 0, added: 0, removed: 0, binaryFiles: 0, applied: false });
   }
 });
 

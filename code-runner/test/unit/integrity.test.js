@@ -64,6 +64,8 @@ test('classify: protected globs (on the UTF-8 name), dependencies, the framework
   add('/home/sandbox/.foundry/foundry.toml');
   add('/home/sandbox/.gitconfig');
   add('/home/sandbox/.foundry/cache/signatures');
+  add('/home/sandbox/.cache/pip/http/x');
+  add('/work/cache/test-failures');
   add('/work/bin/forge');
   add(`/work/${Buffer.from('lib/café.sol').toString('latin1')}`);
   add('/work/state/ran');
@@ -84,10 +86,11 @@ test('classify: protected globs (on the UTF-8 name), dependencies, the framework
   assert.deepEqual(keys(sets.framework), [
     '.env', 'bin/forge', 'foundry.lock', 'foundry.toml', 'lib/forge-std/src/Test.sol', 'remappings.txt', '~/.foundry/foundry.toml', '~/.gitconfig'
   ]);
-  assert.deepEqual(keys(sets.artifacts), ['out/Vault.sol/Vault.json']);
+  // forge's compile cache names the artifacts a later run loads: held like them; the rest of cache/ is not watched.
+  assert.deepEqual(keys(sets.artifacts), ['cache/solidity-files-cache.json', 'out/Vault.sol/Vault.json']);
   assert.deepEqual(keys(sets.repository), ['.git/HEAD', '.git/config', '.git/index', '.git/info/attributes']);
   const all = new Set(Object.values(sets).flatMap(keys));
-  for (const p of ['src/Vault.sol', 'test/Vault.t.sol', 'state/ran', 'cache/solidity-files-cache.json', '~/.foundry/cache/signatures']) {
+  for (const p of ['src/Vault.sol', 'test/Vault.t.sol', 'state/ran', 'cache/test-failures', '~/.foundry/cache/signatures', '~/.cache/pip/http/x']) {
     assert.ok(!all.has(p), `${p} is not watched`);
   }
 });
@@ -227,6 +230,7 @@ test('tamper flags: ordinary forge tests raise none (forge-std imports, inline f
     'contract ExploitTest is Test {',
     '    /// forge-config: default.fuzz.runs = 1024',
     '    /// forge-config: default.fs_permissions = [{ access = "read", path = "./test/fixtures" }]',
+    '    /// forge-config: default.fs_permissions = [{ access = "read-write", path = "./poc-output" }]',
     '    function test_drain() public {',
     '        string memory data = vm.readFile("test/fixtures/state.json");',
     '        vm.writeFile("state/ran", "1");',
