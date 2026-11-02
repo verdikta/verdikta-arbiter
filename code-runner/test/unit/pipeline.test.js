@@ -24,11 +24,11 @@ function limits(over = {}) {
   return r.limits;
 }
 
-function run({ docker, steps = [], deadlineMs = 600000, config = testConfig(), signal, admit, lim = limits(), active = new Set() } = {}) {
+function run({ docker, steps = [], deadlineMs = 600000, config = testConfig(), signal, admit, lim = limits(), active = new Set(), sandboxes } = {}) {
   const receivedAt = Date.now();
   return executeRun({
     docker, config, limits: lim, image: IMAGE, runId: '0123456789abcdef', steps,
-    receivedAt, deadlineAt: receivedAt + deadlineMs, signal, active, log: silent, ...(admit ? { admit } : {})
+    receivedAt, deadlineAt: receivedAt + deadlineMs, signal, active, log: silent, ...(admit ? { admit } : {}), ...(sandboxes ? { sandboxes } : {})
   }).then((result) => ({ result, active }));
 }
 
@@ -259,7 +259,8 @@ test('a second sandbox (the fix check) gets the same flags and is torn down too'
     const fix = await ctx.openSandbox('fix');
     await fix.exec(['true'], { name: 'fix-build' });
   }];
-  const { result, active } = await run({ docker, steps });
+  // A3a: the run is admitted for two sandboxes (the fix check's beside the PoC's).
+  const { result, active } = await run({ docker, steps, sandboxes: 2 });
   assert.equal(result.outcome, 'definitive');
   const launches = docker.callsOf('create');
   assert.equal(launches.length, 2);

@@ -337,7 +337,7 @@ test('item 4: two repositories the runner makes, one left: the staging store is 
   for (const d of sb.execs().filter((x) => x.kind === 'git' && ['index-pack', 'update-ref'].includes(x.sub[0]))) assert.equal(d.fixedEnv.GIT_DIR, GIT_DIR);
   assert.deepEqual(gitIn(sb, 'index-pack').map((d) => d.sub), [['index-pack', '--stdin'], ['index-pack', '--stdin']]);
   assert.deepEqual(gitIn(sb, 'update-ref')[0].sub, ['update-ref', 'refs/heads/main', sb.repo.commit]);
-  assert.deepEqual(r.facts.commit, { base: sb.image.base, poc: '9e1b2d0000000000000000000000000000000000' });
+  assert.deepEqual(r.facts.commit, { tier: 'A', base: sb.image.base, poc: '9e1b2d0000000000000000000000000000000000' });
 });
 
 test('item 4: a fresh repository that is not what the runner built, or a work tree that does not match it, abstains; nothing runs on it', async () => {
@@ -374,6 +374,7 @@ test('item 5: corrections are facts: tracked paths the image had differently, di
   for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces']) assert.ok(r.gates[g], g);
   const c = r.facts.checkout;
   assert.deepEqual({ ...c, commit: undefined, tree: undefined }, {
+    tier: 'A',
     commit: undefined,
     tree: undefined,
     paths: 5,

@@ -275,11 +275,11 @@ async function run(t, request, extraSteps = [], { beforeBuild = null } = {}) {
   return { result, docker };
 }
 
-/** Insert a step after the commit and before the build (claimSteps: prepare, applies, testPathsOnly, resetAndCommit, build, reproduces). */
+/** Insert a step after the commit and before the build (claimSteps: startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, build, reproduces, fixCheck). */
 function withBeforeBuild(steps, step) {
   if (!step) return steps;
-  assert.deepEqual(steps.map((f) => f.name), ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces']);
-  return [...steps.slice(0, 4), step, ...steps.slice(4)];
+  assert.deepEqual(steps.map((f) => f.name), ['startFixCheck', 'prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces', 'fixCheck']);
+  return [...steps.slice(0, 5), step, ...steps.slice(5)];
 }
 
 const stepNames = (r) => r.steps.map((s) => s.name);
@@ -326,12 +326,12 @@ test('a PoC that fails as an assertion on all three runs reproduces, on the pinn
   assert.equal(changed, 'test/Exploit.t.sol');
   assert.equal(r.facts.commit.base, fx.baseCommit);
   assert.deepEqual({ ...r.facts.checkout, commit: undefined, tree: undefined }, {
-    commit: undefined, tree: undefined, paths: 6, corrected: 0, correctedPaths: [], directoriesMade: 0, emptySubmodules: [], gitRemoved: true, gitEntriesRemoved: 1
+    tier: 'A', commit: undefined, tree: undefined, paths: 6, corrected: 0, correctedPaths: [], directoriesMade: 0, emptySubmodules: [], gitRemoved: true, gitEntriesRemoved: 1
   });
   // The fixed environment: TZ, LANG, CI, the hostname, CPU and memory from the spec.
   assert.equal(inspected.env, 'UTC|C.UTF-8|true|sandbox|/home/sandbox');
   assert.equal(inspected.host, `${1e9} ${1024 * 1024 * 1024} sandbox`);
-  assert.deepEqual(r.facts.leftoverProcesses.map((x) => x.killed), [0, 0, 0, 0]);
+  assert.deepEqual(r.facts.leftoverProcesses.steps.map((x) => x.killed), [0, 0, 0, 0]);
 
   // The same claim again: the same commit, gates and facts (the commit hash is
   // fixed by the author, the date and the tree).
@@ -535,7 +535,7 @@ test('a claim process that outlives its run is killed before the next one; bytes
   const { result: r1 } = await run(t, claim(fx, spawn), [listProcs]);
   assert.equal(r1.outcome, 'definitive', show(r1));
   assert.equal(r1.gates.reproduces.status, 'pass', show(r1));
-  const killed = Object.fromEntries(r1.facts.leftoverProcesses.map((x) => [x.after, x.killed]));
+  const killed = Object.fromEntries(r1.facts.leftoverProcesses.steps.map((x) => [x.after, x.killed]));
   for (const after of ['poc:1', 'poc:2', 'poc:3']) assert.ok(killed[after] >= 1, `the sleep left by ${after} was killed: ${JSON.stringify(r1.facts.leftoverProcesses)}`);
   assert.doesNotMatch(procs.after, /\(sleep\).*\n.*\(sleep\)/s, `only the keepalive sleeps: ${procs.after}`);
 
@@ -669,7 +669,7 @@ test('attack table, corrected: a submodule\'s own index flag or clean filter (R1
   assert.equal(r0.outcome, 'definitive', show(r0));
   assert.equal(r0.gates.reproduces.status, 'pass', show(r0));
   assert.equal(r0.facts.checkout.corrected, 0);
-  assert.ok(r0.facts.protectedReset >= 1, 'the submodule\'s files are protected paths (lib/**) at the listed commit');
+  assert.ok(r0.facts.protectedReset.files >= 1, 'the submodule\'s files are protected paths (lib/**) at the listed commit');
   assert.equal(fileText(seen0, 'lib/dep/dep.txt'), 'dep\n');
   assertOneRepository(seen0);
 
@@ -835,7 +835,7 @@ test('R22-F1 / R23-F1: protected files with a non-UTF-8 and a UTF-8 name are res
   const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
   assert.equal(r.outcome, 'definitive', show(r));
   assert.equal(r.gates.applies.status, 'pass', show(r));
-  assert.ok(r.facts.protectedReset >= 2, 'both the non-UTF-8 and the UTF-8 lib files are protected paths that were reset');
+  assert.ok(r.facts.protectedReset.files >= 2, 'both the non-UTF-8 and the UTF-8 lib files are protected paths that were reset');
   assert.equal(r.gates.build.status, 'pass', show(r));
   assert.equal(r.gates.reproduces.status, 'pass', show(r));
 });
@@ -903,7 +903,7 @@ test('R6-F1: a claim process that names itself like a zombie ("w) Z" and a line 
   });
   const { result: r } = await run(t, claim(fx, disguise), [listComms]);
   assert.equal(r.outcome, 'definitive', show(r));
-  const killed = Object.fromEntries(r.facts.leftoverProcesses.map((x) => [x.after, x.killed]));
+  const killed = Object.fromEntries(r.facts.leftoverProcesses.steps.map((x) => [x.after, x.killed]));
   for (const after of ['poc:1', 'poc:2', 'poc:3']) assert.ok(killed[after] >= 1, `the disguised process left by ${after} was killed: ${JSON.stringify(r.facts.leftoverProcesses)}`);
   assert.doesNotMatch(seen.comms, /w\) Z/, `no disguised process survived: ${seen.comms}`);
 });

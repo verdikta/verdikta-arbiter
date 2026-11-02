@@ -9,6 +9,15 @@
  * answers from it, and the packs the runner gives `git index-pack` are read
  * back and hashed independently, into the fresh repository. Every handler can be replaced per test; `execs()`
  * lists the execs in order, decoded.
+ *
+ * Node A3a: each container (the PoC's sandbox, and the fix check's second
+ * one) has its own state, including a model of the files the integrity
+ * snapshots watch (`box.tree`: absolute path → { type, mode, content } or a
+ * link), which `vcr-manifest` lists the way GNU find and sha256sum would
+ * and `vcr-framework` answers from (forge's path, PATH, `forge config
+ * --json`). The build, the commit, the runs and the reset change the tree
+ * the way forge and git do (out/ and cache/ written, the index rewritten);
+ * a test changes it from a PoC handler to model a claim that tampers.
  */
 
 const crypto = require('node:crypto');
@@ -17,6 +26,7 @@ const { fakeDocker, healthyDaemon, nonceOf } = require('./fakeDocker');
 const { GitStore } = require('./gitStore');
 
 const POC = '9e1b2d0000000000000000000000000000000000';
+const FIX_COMMIT = 'f1f1f10000000000000000000000000000000000';
 
 /** The default listed repository: a vault, its suite, foundry.toml, and forge-std as a submodule. */
 function defaultImage(algo = 'sha1') {
@@ -59,25 +69,100 @@ const POC_DIFF = [
   ''
 ].join('\n');
 
-/** forge's JUnit for a list of suites: [{ suite: 'file:Contract', cases: [{ name, failure?, skipped?, error? }] }]. */
-function junit(suites) {
-  const body = suites.map(({ suite, cases }) => [
-    `    <testsuite name="${suite}" tests="${cases.length}" skipped="0" errors="0" failures="0" time="0.001">`,
-    ...cases.map((c) => {
-      const inner = c.failure !== undefined ? `<failure message="${c.failure}"/>`
-        : c.skipped ? '<skipped/>'
-          : c.error !== undefined ? `<error message="${c.error}"/>` : '';
-      return `        <testcase name="${c.name}" time="0.000">${inner}<system-out>[x] ${c.name}</system-out></testcase>`;
-    }),
-    '        <system-out>Suite result: FAILED.</system-out>',
-    '    </testsuite>'
-  ].join('\n')).join('\n');
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="Test run" tests="1" skipped="0" failures="1" errors="0" timestamp="2026-11-01T17:03:58.228+00:00" time="0.003">\n${body}\n</testsuites>\n`;
+/** A fix: Vault.sol changed (source, outside paths.tests). */
+const FIX_PATCH = [
+  'diff --git a/src/Vault.sol b/src/Vault.sol',
+  '--- a/src/Vault.sol',
+  '+++ b/src/Vault.sol',
+  '@@ -1 +1 @@',
+  '-contract Vault {}',
+  '+contract Vault { uint256 fixed; }',
+  ''
+].join('\n');
+
+const FIX_DIFF = [
+  'diff --git a/src/Vault.sol b/src/Vault.sol',
+  'index 1111111..2222222 100644',
+  '--- a/src/Vault.sol',
+  '+++ b/src/Vault.sol',
+  '@@ -1 +1 @@',
+  '-contract Vault {}',
+  '+contract Vault { uint256 fixed; }',
+  ''
+].join('\n');
+
+function xmlAttr(s) {
+  return String(s).replace(/&(?![a-z]+;|#)/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * forge's JUnit (forge 1.8.5's junit_xml_report) for a list of suites:
+ * [{ suite: 'file:Contract', cases: [{ name, failure?, skipped?, error?, gas?, out? }] }]. Every
+ * record's system-out is forge's `[STATUS] signature (gas: N)` line, every suite carries forge's own
+ * summary (`Suite result: …`), and the counts on <testsuite> and <testsuites> follow the records.
+ * `o.summary: false` leaves the suite summaries out (a hand-written JUnit); `o.totals` overrides the
+ * root's counts; `o.suiteSummary(suite, counts)` replaces a summary line.
+ */
+function junit(suites, o = {}) {
+  const totals = { tests: 0, skipped: 0, failures: 0, errors: 0 };
+  const body = suites.map(({ suite, cases }) => {
+    const c = { tests: cases.length, skipped: 0, failures: 0, errors: 0, passed: 0 };
+    const records = cases.map((k) => {
+      let inner = '';
+      let status = 'PASS';
+      if (k.failure !== undefined) {
+        c.failures += 1;
+        inner = k.failure === null ? '<failure/>' : `<failure message="${xmlAttr(k.failure)}"/>`;
+        status = `FAIL${k.failure ? `: ${xmlAttr(k.failure)}` : ''}`;
+      } else if (k.error !== undefined) {
+        c.errors += 1;
+        inner = `<error message="${xmlAttr(k.error)}"/>`;
+        status = `FAIL: ${xmlAttr(k.error)}`;
+      } else if (k.skipped) {
+        c.skipped += 1;
+        inner = '<skipped/>';
+        status = 'SKIP';
+      } else {
+        c.passed += 1;
+      }
+      const gas = k.gas !== undefined ? k.gas : (k.skipped ? 0 : 3266);
+      const out = k.out !== undefined ? k.out : `[${status}] ${xmlAttr(k.name)} (gas: ${gas})`;
+      return `        <testcase name="${xmlAttr(k.name)}" time="0.000">${inner}<system-out>${out}</system-out></testcase>`;
+    });
+    totals.tests += c.tests;
+    totals.skipped += c.skipped;
+    totals.failures += c.failures;
+    totals.errors += c.errors;
+    const failed = c.failures + c.errors;
+    let summary = `Suite result: ${failed ? 'FAILED' : 'ok'}. ${c.passed} passed; ${failed} failed; ${c.skipped} skipped; finished in 264.34µs (129.98µs CPU time)`;
+    if (o.suiteSummary) summary = o.suiteSummary(suite, c, summary);
+    return [
+      `    <testsuite name="${xmlAttr(suite)}" tests="${c.tests}" skipped="${c.skipped}" errors="${c.errors}" failures="${c.failures}" time="0.001">`,
+      ...records,
+      ...(o.summary === false || summary === null ? [] : [`        <system-out>${summary}</system-out>`]),
+      '    </testsuite>'
+    ].join('\n');
+  }).join('\n');
+  const t = { ...totals, ...(o.totals || {}) };
+  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="Test run" tests="${t.tests}" skipped="${t.skipped}" failures="${t.failures}" errors="${t.errors}" timestamp="2026-11-01T17:03:58.228+00:00" time="0.003">\n${body}\n</testsuites>\n`;
 }
 
 /** The PoC's JUnit on one run: test_drain() failing as an assertion. */
 function drainFails(message = 'vault drained') {
   return junit([{ suite: 'test/Exploit.t.sol:ExploitTest', cases: [{ name: 'test_drain()', failure: message }] }]);
+}
+
+/** The fixed suite's JUnit (commands.test, the fix check): the PoC passes, the maker's stable test passes. */
+function suitePasses(over = {}) {
+  return junit([
+    { suite: 'test/Exploit.t.sol:ExploitTest', cases: [{ name: 'test_drain()', ...(over.poc || {}) }] },
+    { suite: 'test/Vault.t.sol:VaultTest', cases: [{ name: 'test_deposit()', ...(over.deposit || {}) }] }
+  ]);
+}
+
+/** Whether a JUnit text records a failure (forge exits 1 exactly then). */
+function hasFailure(text) {
+  return /<(?:failure|error)\b/.test(String(text));
 }
 
 /** `/usr/bin/env -i K=V ... <command>`: the command and the fixed environment it gets (null when it is not run that way). */
@@ -92,9 +177,12 @@ function stripEnv(argv) {
   return { argv: argv.slice(k), fixedEnv };
 }
 
+const CONTAINER = /^vcr-[0-9a-f]+-([0-9]+)$/;
+
 /**
  * Decode one exec: the program argv after the launcher (and after an
- * `env -i` prefix), the docker --env flags, the fixed environment, stdin.
+ * `env -i` prefix), the docker --env flags, the fixed environment, stdin,
+ * and the container (`box`: 1 the PoC's sandbox, 2 the fix check's).
  */
 function decode(call) {
   const args = call.args;
@@ -102,12 +190,14 @@ function decode(call) {
   const launched = i >= 0 ? args.slice(i + 2) : [];
   const { argv, fixedEnv } = stripEnv(launched);
   const env = {};
+  let container = null;
   for (let j = 0; j < (i >= 0 ? i : args.length); j += 1) {
     if (args[j] === '--env') {
       const kv = args[j + 1];
       const eq = kv.indexOf('=');
       env[kv.slice(0, eq)] = kv.slice(eq + 1);
     }
+    if (CONTAINER.test(args[j])) container = args[j];
   }
   let kind = null;
   let sub = null;
@@ -121,7 +211,8 @@ function decode(call) {
   } else if (argv[0] === 'cat') {
     kind = 'cat';
   }
-  return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args) };
+  const box = container ? Number(CONTAINER.exec(container)[1]) : null;
+  return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args), container, box };
 }
 
 const PACK_TYPES = Object.freeze({ 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' });
@@ -184,6 +275,61 @@ function catFile(objects, ids, check) {
   return Buffer.concat(parts);
 }
 
+const HOME = '/home/sandbox';
+/** The fake's tracked files (the listed commit's, and the patch's): what a reset --hard rewrites. */
+const TRACKED = /^\/work\/(?:\.gitmodules|foundry\.toml|lib\/forge-std\/|src\/|test\/)/;
+
+/** The watched files of a freshly forced checkout, as the integrity snapshots see them. */
+function initialTree() {
+  const f = (content, mode = '644') => ({ type: 'f', mode, content });
+  return new Map([
+    ['/work/.gitmodules', f('[submodule "lib/forge-std"]\n')],
+    ['/work/foundry.toml', f('[profile.default]\n')],
+    ['/work/lib/forge-std/src/Test.sol', f('// forge-std\n')],
+    ['/work/src/Vault.sol', f('contract Vault {}\n')],
+    ['/work/test/Vault.t.sol', f('contract VaultTest {}\n')],
+    ['/work/.git/HEAD', f('ref: refs/heads/main\n')],
+    ['/work/.git/config', f('[core]\n\trepositoryformatversion = 0\n')],
+    ['/work/.git/index', f('index: checkout')],
+    ['/work/.git/info/attributes', f('* !filter !diff !merge !text !crlf !eol !ident !working-tree-encoding\n')]
+  ]);
+}
+
+/** forge's resolved configuration as `forge config --json` prints it, from the files forge reads (the fake's model). */
+function forgeConfig(tree, over = {}) {
+  const read = (p) => (tree.has(p) && tree.get(p).type === 'f' ? String(tree.get(p).content) : null);
+  return `${JSON.stringify({
+    src: 'src', test: 'test', out: 'out', libs: ['lib'], cache_path: 'cache', solc: '/opt/solc/solc',
+    remappings: read('/work/remappings.txt'), project: read('/work/foundry.toml'), global: read(`${HOME}/.foundry/foundry.toml`), dotenv: read('/work/.env'),
+    ...over
+  }, null, 2)}\n`;
+}
+
+/** `vcr-manifest`'s output for a tree: GNU find's records, then sha256sum -z's lines (as src/integrity.js reads them). */
+function manifestOf(tree, findArgs) {
+  const roots = [];
+  let k = 0;
+  while (k < findArgs.length && findArgs[k].startsWith('/')) roots.push(findArgs[k++]);
+  const prunes = [];
+  for (let j = k; j < findArgs.length; j += 1) if (findArgs[j] === '-path') prunes.push(findArgs[j + 1].replace(/\\(.)/g, '$1'));
+  const under = (p, d) => p === d || p.startsWith(`${d}/`);
+  const listed = [...tree.entries()]
+    .filter(([p]) => roots.some((r) => under(p, r)) && !prunes.some((x) => under(p, x)))
+    .sort(([a], [b]) => (a < b ? -1 : 1));
+  const meta = [];
+  const hashes = [];
+  for (const [p, e] of listed) {
+    if (e.type === 'l') {
+      meta.push(Buffer.from(`l\x00777\x00${Buffer.byteLength(e.target, 'latin1')}\0${p}\0${e.target}\0`, 'latin1'));
+      continue;
+    }
+    const content = Buffer.isBuffer(e.content) ? e.content : Buffer.from(String(e.content), 'latin1');
+    meta.push(Buffer.from(`${e.type}\0${e.mode}\0${content.length}\0${p}\0\0`, 'latin1'));
+    if (e.type === 'f' && !e.unreadable) hashes.push(Buffer.from(`${crypto.createHash('sha256').update(content).digest('hex')}  ${p}\0`, 'latin1'));
+  }
+  return Buffer.concat([...meta, Buffer.from('vcr-hashes\0'), ...hashes]);
+}
+
 /**
  * @param {object} [o]
  * @param {object} [o.image] - { store, base } (default: defaultImage())
@@ -191,60 +337,110 @@ function catFile(objects, ids, check) {
  * @param {string[]} [o.corrected] - the tracked paths `git diff-files` reports before the checkout
  * @param {number} [o.freeBytes] - the work tree's free bytes `vcr-freespace` reports (default 1 GiB)
  * @param {number} [o.writtenBytes] - the bytes the applied patch wrote, as the measurement sums (default 120)
- * @param {Function[]|string[]} [o.poc] - per PoC run (1-3): the JUnit text, or a handler returning { exitCode, stdout, stderr }
- * @param {object} [o.git] - overrides by git subcommand key (see `key` below)
- * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear, vcr-unstage, vcr-build, vcr-cleanup)
+ * @param {Function[]|string[]} [o.poc] - per PoC run (1-3): the JUnit text, or a handler (d, run, box) returning
+ *   { exitCode, stdout, stderr }; a text's exit code is forge's (1 when it records a failure)
+ * @param {object} [o.git] - overrides by git subcommand key (see `key` below), both containers
+ * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear,
+ *   vcr-unstage, vcr-build, vcr-cleanup, vcr-framework, vcr-manifest), both containers; a handler gets (d, box)
+ * @param {Function} [o.onBox] - (box) => void, when a container's state is made (to seed its tree)
+ * @param {object} [o.fix] - the fix check's container: { patch (bytes the fix apply carries; default FIX_PATCH),
+ *   nameStatus, numstat, diff, raw, writtenBytes, applyExit, build (handler), suite (JUnit text or handler) }
  */
 function claimSandbox({
   image = defaultImage(), objects = (m) => m, corrected = [], freeBytes = 1024 * 1024 * 1024, writtenBytes = 120,
-  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF
+  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF, onBox = null, fix = {}
 } = {}) {
-  let committed = false;
-  let pocRun = 0;
   const hexLen = image.store.algo === 'sha256' ? 64 : 40;
   const imageObjects = objects(new Map(image.store.objects));
-  // The runner's fresh repository, as the runner's packs fill it (every object hashed here, independently).
-  const fresh = new GitStore(image.store.algo);
-  fresh.objects.algo = image.store.algo;
-  const repo = { commit: null, tree: null, files: null, packs: [], objects: fresh.objects };
+  const fixBytes = Buffer.from(fix.patch || FIX_PATCH);
+  const boxes = new Map();
+  function newBox(n) {
+    // The runner's fresh repository, as the runner's packs fill it (every object hashed here, independently).
+    const fresh = new GitStore(image.store.algo);
+    fresh.objects.algo = image.store.algo;
+    const b = {
+      n, committed: false, fixApplied: false, fixCommitted: false, lastApply: null, pocRun: 0, suiteRun: 0,
+      tree: initialTree(), configOver: {},
+      repo: { commit: null, tree: null, files: null, packs: [], objects: fresh.objects },
+      fresh
+    };
+    if (onBox) onBox(b);
+    return b;
+  }
+  const boxOf = (d) => {
+    const n = d.box || 1;
+    if (!boxes.has(n)) boxes.set(n, newBox(n));
+    return boxes.get(n);
+  };
+  const isFix = (b) => b.lastApply === 'fix';
   const gitDefaults = {
     init: () => ({ exitCode: 0 }),
     'cat-file --batch': (d) => ({ stdout: catFile(imageObjects, d.stdin.toString('latin1').split('\n').filter(Boolean), false) }),
     'cat-file --batch-check': (d) => ({ stdout: catFile(imageObjects, d.stdin.toString('latin1').split('\n').filter(Boolean), true) }),
-    'index-pack': (d) => {
+    'index-pack': (d, b) => {
       const objs = parsePack(d.stdin, image.store.algo);
-      repo.packs.push(objs.map((o) => ({ ...o, id: fresh.add(o.type, o.content) })));
+      b.repo.packs.push(objs.map((o) => ({ ...o, id: b.fresh.add(o.type, o.content) })));
       return { exitCode: 0, stdout: 'pack\n' };
     },
-    'update-ref': (d) => {
+    'update-ref': (d, b) => {
       const id = d.sub[2];
-      const o = fresh.objects.get(id);
+      const o = b.fresh.objects.get(id);
       if (!o || o.type !== 'commit') return { exitCode: 128, stderr: `fatal: ${id}: not a valid SHA1\n` };
-      repo.commit = id;
-      repo.tree = /^tree ([0-9a-f]+)/.exec(o.content.toString())[1];
-      repo.files = filesOf(fresh.objects, repo.tree);
-      for (const f of repo.files) if (!fresh.objects.has(f.id)) return { exitCode: 128, stderr: `fatal: missing blob ${f.id}\n` };
+      b.repo.commit = id;
+      b.repo.tree = /^tree ([0-9a-f]+)/.exec(o.content.toString())[1];
+      b.repo.files = filesOf(b.fresh.objects, b.repo.tree);
+      for (const f of b.repo.files) if (!b.fresh.objects.has(f.id)) return { exitCode: 128, stderr: `fatal: missing blob ${f.id}\n` };
       return { exitCode: 0 };
     },
-    'rev-parse': (d) => (d.sub.includes('refs/heads/main^{commit}')
-      ? { stdout: `${repo.commit}\n${repo.tree}\n` }
-      : { stdout: `${committed ? POC : repo.commit}\n` }),
+    'rev-parse': (d, b) => {
+      if (d.sub.includes('refs/heads/main^{commit}')) return { stdout: `${b.repo.commit}\n${b.repo.tree}\n` };
+      if (b.fixCommitted) return { stdout: `${FIX_COMMIT}\n` };
+      return { stdout: `${b.committed ? POC : b.repo.commit}\n` };
+    },
     'read-tree': () => ({ exitCode: 0 }),
     'update-index': () => ({ exitCode: 0 }),
     'diff-files --name-only': () => ({ stdout: Buffer.from(corrected.map((p) => `${p}\0`).join(''), 'latin1') }),
     'diff-files --quiet': () => ({ exitCode: 0 }),
     'checkout-index': () => ({ exitCode: 0 }),
-    'apply --index': () => ({ exitCode: 0 }),
+    'apply --index': (d, b) => {
+      b.lastApply = d.stdin && Buffer.from(d.stdin).equals(fixBytes) ? 'fix' : 'poc';
+      if (b.lastApply === 'fix' && fix.applyExit) return { exitCode: fix.applyExit, stderr: 'error: patch failed: src/Vault.sol:1\n' };
+      return { exitCode: 0 };
+    },
     // The applied patch adds test/Exploit.t.sol: the measurement reads its postimage from the raw diff, then its size.
-    'diff --raw': () => ({ stdout: Buffer.from(`:000000 100644 ${'0'.repeat(hexLen)} ${'a'.repeat(hexLen)} A\0test/Exploit.t.sol\0`, 'latin1') }),
-    'cat-file --sizes': (d) => ({ stdout: d.stdin.toString('latin1').split('\n').filter(Boolean).map(() => `${writtenBytes}\n`).join('') }),
-    'diff --name-status': () => ({ stdout: 'A\0test/Exploit.t.sol\0' }),
-    'diff --numstat': () => ({ stdout: '3\t0\ttest/Exploit.t.sol\0' }),
-    'diff -U0': () => ({ stdout: diff }),
-    'ls-tree': () => ({ stdout: Buffer.from(repo.files.map((f) => `${f.path}\0`).join(''), 'latin1') }),
+    'diff --raw': (d, b) => ({
+      stdout: Buffer.from(isFix(b)
+        ? (fix.raw || `:100644 100644 ${'1'.repeat(hexLen)} ${'b'.repeat(hexLen)} M\0src/Vault.sol\0`)
+        : `:000000 100644 ${'0'.repeat(hexLen)} ${'a'.repeat(hexLen)} A\0test/Exploit.t.sol\0`, 'latin1')
+    }),
+    'cat-file --sizes': (d, b) => ({
+      stdout: d.stdin.toString('latin1').split('\n').filter(Boolean).map(() => `${isFix(b) && fix.writtenBytes !== undefined ? fix.writtenBytes : writtenBytes}\n`).join('')
+    }),
+    'diff --name-status': (d, b) => ({ stdout: isFix(b) ? (fix.nameStatus || 'M\0src/Vault.sol\0') : 'A\0test/Exploit.t.sol\0' }),
+    'diff --numstat': (d, b) => ({ stdout: isFix(b) ? (fix.numstat || '1\t1\tsrc/Vault.sol\0') : '3\t0\ttest/Exploit.t.sol\0' }),
+    'diff -U0': (d, b) => ({ stdout: isFix(b) ? (fix.diff || FIX_DIFF) : diff }),
+    'ls-tree': (d, b) => ({ stdout: Buffer.from(b.repo.files.map((f) => `${f.path}\0`).join(''), 'latin1') }),
     checkout: () => ({ exitCode: 0 }),
-    commit: () => { committed = true; return { exitCode: 0 }; },
-    reset: () => ({ exitCode: 0 })
+    commit: (d, b) => {
+      if (d.sub.includes('fix.patch')) {
+        b.fixCommitted = true;
+        b.tree.set('/work/src/Vault.sol', { type: 'f', mode: '644', content: 'contract Vault { uint256 fixed; }\n' });
+      } else {
+        b.committed = true;
+        b.tree.set('/work/test/Exploit.t.sol', { type: 'f', mode: '644', content: POC_DIFF });
+      }
+      b.tree.set('/work/.git/index', { type: 'f', mode: '644', content: `index: commit ${b.fixCommitted ? 'fix' : 'poc'}` });
+      // The committed (tracked) files, which the runner's reset --hard restores.
+      b.committedTree = new Map([...b.tree].filter(([p]) => TRACKED.test(p)));
+      return { exitCode: 0 };
+    },
+    // The runner's own reset between runs rewrites the index and ORIG_HEAD (never a claim's doing).
+    reset: (d, b) => {
+      for (const [p, e] of b.committedTree || []) b.tree.set(p, e);
+      b.tree.set('/work/.git/index', { type: 'f', mode: '644', content: `index: reset ${b.pocRun}` });
+      b.tree.set('/work/.git/ORIG_HEAD', { type: 'f', mode: '644', content: `${POC}\n` });
+      return { exitCode: 0 };
+    }
   };
   const scriptDefaults = {
     'vcr-procs': () => ({ stdout: '1\n7\n' }),
@@ -253,13 +449,31 @@ function claimSandbox({
     'vcr-dirs': () => ({ exitCode: 0 }),
     'vcr-clear': () => ({ exitCode: 0 }),
     'vcr-unstage': () => ({ exitCode: 0 }),
-    'vcr-build': () => ({ exitCode: 0, stdout: 'Compiling 3 files with Solc 0.8.31\n' }),
+    'vcr-build': (d, b) => {
+      if (b.n === 2 && fix.build) return fix.build(d, b);
+      // forge build writes its artifacts, its cache and its signature cache in $HOME.
+      b.tree.set('/work/out/Vault.sol/Vault.json', { type: 'f', mode: '644', content: '{"bytecode":"0x6080"}' });
+      b.tree.set('/work/out/Exploit.t.sol/ExploitTest.json', { type: 'f', mode: '644', content: '{"bytecode":"0x6081"}' });
+      b.tree.set('/work/cache/solidity-files-cache.json', { type: 'f', mode: '644', content: '{}' });
+      b.tree.set(`${HOME}/.foundry/cache/signatures`, { type: 'f', mode: '644', content: '{}' });
+      return { exitCode: 0, stdout: 'Compiling 3 files with Solc 0.8.31\n' };
+    },
     'vcr-cleanup': () => ({ stdout: 'killed 0\n' }),
-    'vcr-poc': (d) => {
-      pocRun += 1;
-      const h = poc[pocRun - 1];
-      if (typeof h === 'function') return h(d, pocRun);
-      return { exitCode: 1, stdout: h === undefined ? '' : h };
+    'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
+    'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
+    'vcr-poc': (d, b) => {
+      b.pocRun += 1;
+      // forge writes the failing tests' names to its cache on every run.
+      b.tree.set('/work/cache/test-failures', { type: 'f', mode: '644', content: `run ${b.pocRun}` });
+      const h = poc[b.pocRun - 1];
+      if (typeof h === 'function') return h(d, b.pocRun, b);
+      return { exitCode: hasFailure(h) ? 1 : 0, stdout: h === undefined ? '' : h };
+    },
+    'vcr-suite': (d, b) => {
+      b.suiteRun += 1;
+      const h = fix.suite === undefined ? suitePasses() : fix.suite;
+      if (typeof h === 'function') return h(d, b.suiteRun, b);
+      return { exitCode: hasFailure(h) ? 1 : 0, stdout: h };
     }
   };
   const key = (sub) => {
@@ -276,21 +490,39 @@ function claimSandbox({
     return sub[0];
   };
   const docker = fakeDocker(healthyDaemon({
-    step: (args, opts, calls) => {
-      const d = decode(calls[calls.length - 1]);
+    // The exec's own argv and stdin (with two sandboxes, the last call recorded may be the other one's).
+    step: (args, opts) => {
+      const d = decode({ args, stdin: opts && opts.stdin ? Buffer.from(opts.stdin) : null });
+      const b = boxOf(d);
       if (d.kind === 'git') {
         const k = key(d.sub);
-        const h = git[k] || gitDefaults[k];
+        // A test's override answers the PoC's diffs in both containers; the fix's own diffs stay the fake's.
+        const own = b.n === 2 && isFix(b) && /^(?:diff|cat-file --sizes|apply)/.test(k);
+        const h = (!own && git[k]) || gitDefaults[k];
         if (!h) throw new Error(`unexpected git ${d.sub.join(' ')}`);
-        return h(d, repo);
+        return h(d, b);
       }
       const h = scripts[d.kind] || scriptDefaults[d.kind];
       if (!h) throw new Error(`unexpected exec ${JSON.stringify(d.argv.slice(0, 4))}`);
-      return h(d, repo);
+      return h(d, b);
     }
   }));
-  const execs = () => docker.callsOf('exec').map(decode).filter((d) => d.kind && d.argv[3] !== 'vcr-probe' && d.argv[3] !== 'vcr-launcher-check');
-  return { docker, execs, repo, image };
+  const decoded = () => docker.callsOf('exec').map(decode).filter((d) => d.kind && d.argv[3] !== 'vcr-probe' && d.argv[3] !== 'vcr-launcher-check');
+  /** The PoC sandbox's execs (the first container), in order. */
+  const execs = () => decoded().filter((d) => (d.box || 1) === 1);
+  /** The fix check's execs (the second container). */
+  const fixExecs = () => decoded().filter((d) => d.box === 2);
+  const box = (n = 1) => {
+    if (!boxes.has(n)) boxes.set(n, newBox(n));
+    return boxes.get(n);
+  };
+  return {
+    docker, execs, fixExecs, image, box,
+    get repo() { return box(1).repo; }
+  };
 }
 
-module.exports = { BASE, POC, POC_PATCH, POC_DIFF, junit, drainFails, decode, stripEnv, claimSandbox, defaultImage, parsePack, filesOf };
+module.exports = {
+  BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv,
+  claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf
+};
