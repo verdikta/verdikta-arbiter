@@ -104,4 +104,42 @@ class Capped {
   }
 }
 
-module.exports = { HeadTail, Capped, STEP_LOG_HEAD_BYTES, STEP_LOG_TAIL_BYTES };
+/**
+ * Keeps the first `maxBytes` of a stream and counts the rest, but never
+ * stops the producer: `write` always returns true. For a step's output that
+ * the runner reads (git's answers, forge's JUnit) while the program runs to
+ * its own exit code. (Capped stops the producer, which suits `cat`, not a
+ * program whose exit code matters: killing the docker CLI does not kill the
+ * process inside the container.) `truncated` says bytes were dropped.
+ */
+class Prefix {
+  constructor(maxBytes) {
+    if (!Number.isInteger(maxBytes) || maxBytes < 0) throw new TypeError('maxBytes must be a non-negative integer');
+    this.maxBytes = maxBytes;
+    this.chunks = [];
+    this.length = 0;
+    this.totalBytes = 0;
+  }
+
+  get truncated() {
+    return this.totalBytes > this.maxBytes;
+  }
+
+  write(chunk) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    this.totalBytes += buf.length;
+    const room = this.maxBytes - this.length;
+    if (room > 0 && buf.length > 0) {
+      const take = buf.subarray(0, room);
+      this.chunks.push(Buffer.from(take));
+      this.length += take.length;
+    }
+    return true;
+  }
+
+  bytes() {
+    return Buffer.concat(this.chunks);
+  }
+}
+
+module.exports = { HeadTail, Capped, Prefix, STEP_LOG_HEAD_BYTES, STEP_LOG_TAIL_BYTES };

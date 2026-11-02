@@ -1,0 +1,890 @@
+'use strict';
+
+// Node A2a against real forge (the base pinned in @verdikta/common, v1.8.5):
+// the patch gates, the build, the PoC on the fixed schedule and the
+// reproduces gate, on fixture Foundry repositories built locally as env
+// images (forgeFixture.js). Under runc locally; CI runs this file under runc
+// and under gVisor (runsc). Every container and image is removed.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const crypto = require('node:crypto');
+const { executeRun } = require('../../src/pipeline');
+const { checkSpec } = require('../../src/classLimits');
+const { claimSteps } = require('../../src/steps');
+const { FORGE_FUZZ_SEED } = require('../../src/common');
+const { runText } = require('../../src/docker');
+const { RUNTIME, silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll } = require('./helpers');
+const { VAULT_REPO, vaultBaseline, buildFixture, addFilesPatch, modifyPatch, pocFile } = require('./forgeFixture');
+
+const TIMEOUT = 900000;
+const fixtures = new Map();
+const builder = dockerFor(dockerTestConfig());
+
+const FIXED_DATES = 'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000"';
+const SUBMODULE = [
+  'git init -q -b main /tmp/dep && printf "dep\\n" > /tmp/dep/dep.txt && git -C /tmp/dep add -A',
+  'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -C /tmp/dep -c user.name=f -c user.email=f@x commit -q -m dep',
+  'git -c protocol.file.allow=always submodule --quiet add /tmp/dep lib/dep',
+  'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit -q -m sub'
+].join(' && ');
+
+const VARIANT_NESTED = [
+  'git init -q -b main /tmp/b && printf "b\\n" > /tmp/b/b.txt && git -C /tmp/b add -A',
+  `${FIXED_DATES} git -C /tmp/b -c user.name=f -c user.email=f@x commit -q -m b`,
+  'git init -q -b main /tmp/a && printf "a\\n" > /tmp/a/a.txt && git -C /tmp/a add -A',
+  `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m a`,
+  'git -C /tmp/a -c protocol.file.allow=always submodule --quiet add /tmp/b lib/b',
+  'git -C /tmp/a config -f .gitmodules submodule.lib/b.ignore all && git -C /tmp/a add .gitmodules',
+  `${FIXED_DATES} git -C /tmp/a -c user.name=f -c user.email=f@x commit -q -m sub`,
+  'git -c protocol.file.allow=always submodule --quiet add /tmp/a lib/a',
+  'git -c protocol.file.allow=always submodule --quiet update --init --recursive',
+  `${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q -m sub`,
+  'printf "changed\\n" >> lib/a/lib/b/b.txt'
+].join(' && ');
+
+/** 1.2 MB of fixed bytes (NULs included, so git calls it binary). */
+
+/** A setup that makes the branch "listed" a commit of the base tree plus one entry git will not check out. */
+function badTree(mode, name) {
+  return `b=$(printf x | git hash-object -w --stdin) && t=$( (git ls-tree HEAD; printf "${mode} blob %s\\t${name}\\n" "$b") | git mktree)`
+    + ` && c=$(${FIXED_DATES} git -c user.name=f -c user.email=f@x commit-tree "$t" -p HEAD -m bad) && git branch listed "$c"`;
+}
+
+/** A setup where blob `a`'s loose file is copied into an earlier store and, in .git/objects, replaced by a hard link to blob `b`'s. */
+function hardLinked(a, b) {
+  const o = (v) => `.git/objects/$(echo $${v} | cut -c1-2)/$(echo $${v} | cut -c3-)`;
+  return `a=$(git rev-parse HEAD:${a}) && b=$(git rev-parse HEAD:${b})`
+    + ` && mkdir -p .git/modules/zz/objects/$(echo $a | cut -c1-2) && cp ${o('a')} .git/modules/zz/objects/$(echo $a | cut -c1-2)/`
+    + ` && rm -f ${o('a')} && ln ${o('b')} ${o('a')}`;
+}
+
+/** The fixture image for a variant, built once per file. */
+const VARIANTS = Object.freeze({
+  plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
+  ffi: { toml: 'ffi = true' },
+  // The image's own repository config runs test/filter.sh as a smudge filter
+  // for test/*.bin (R1-F3): a patch could edit the script, then add a .bin.
+  filter: {
+    files: { ...VAULT_REPO, 'test/filter.sh': '#!/bin/sh\ncat\n', '.gitattributes': 'test/*.bin filter=vcr\n' },
+    setup: 'git config filter.vcr.smudge "sh test/filter.sh" && git config filter.vcr.clean "sh test/filter.sh"'
+  },
+  // R1-F3 (round 2): the same filter, with the repository's metadata moved
+  // to a common directory in the work tree (.git/commondir), where the
+  // runner's .git/info/attributes would not be read.
+  commondir: {
+    files: { ...VAULT_REPO, 'test/filter.sh': '#!/bin/sh\ncat\n', '.gitattributes': 'test/*.bin filter=vcr\n' },
+    setup: 'mkdir .git-common && mv .git/objects .git/refs .git/config .git/info .git-common/ && echo ../.git-common > .git/commondir'
+      + ' && git config filter.vcr.smudge "sh test/filter.sh" && git config filter.vcr.clean "sh test/filter.sh"'
+  },
+  // A submodule (lib/dep), committed at the listed commit; and the same with
+  // a changed file the submodule's own index hides.
+  sub: { setup: SUBMODULE },
+  subassume: { setup: `${SUBMODULE} && cd lib/dep && printf "changed\\n" >> dep.txt && git update-index --assume-unchanged dep.txt` },
+  // R8-F1: the submodule's files kept, changed, without its .git (git then sees it as not checked out);
+  // and the same submodule left empty, as a clone without --recurse-submodules leaves it.
+  subbare: { setup: `${SUBMODULE} && rm -rf lib/dep/.git .git/modules/lib/dep && printf "changed\\n" >> lib/dep/dep.txt` },
+  subempty: { setup: `${SUBMODULE} && rm -rf lib/dep .git/modules/lib/dep && mkdir lib/dep` },
+  // R8-F1 (round 9): the same, at a gitlink whose path ends in a line break ("lib/dep\n"), mapped in .gitmodules.
+  subnl: {
+    setup: [
+      SUBMODULE.split(' && git -c protocol.file.allow=always submodule')[0],
+      'nl=$(printf "\\nx") && nl=${nl%x} && p="lib/dep$nl"',
+      'git update-index --add --cacheinfo "160000,$(git -C /tmp/dep rev-parse HEAD),$p"',
+      'git config -f .gitmodules submodule.dep.path "$p" && git config -f .gitmodules submodule.dep.url /tmp/dep && git add .gitmodules',
+      'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit -q -m sub',
+      'mkdir -p "$p" && printf "changed\\n" > "$p/dep.txt"'
+    ].join(' && ')
+  },
+  // Round 10: changed submodule files behind a .git git cannot read (a pipe), behind a work tree
+  // redirected to clean copies (core.worktree), and behind a replace ref that swaps the recorded commit.
+  subfifo: { setup: `${SUBMODULE} && rm -rf lib/dep/.git .git/modules/lib/dep && mkfifo lib/dep/.git && printf "changed\\n" >> lib/dep/dep.txt` },
+  subwt: { setup: `${SUBMODULE} && cp -r lib/dep clean-dep && rm -f clean-dep/.git && git -C lib/dep config core.worktree ../../../../clean-dep && printf "changed\\n" >> lib/dep/dep.txt` },
+  subreplace: {
+    setup: `${SUBMODULE} && cd lib/dep && printf "changed\\n" >> dep.txt && git add dep.txt && t=$(git write-tree)`
+      + ' && c=$(GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000" git -c user.name=f -c user.email=f@x commit-tree "$t" -m replaced)'
+      + ' && git replace HEAD "$c" && cd /repo'
+  },
+  // Round 11: the image's own fsmonitor hook (it must never run); and a nested submodule lib/a/lib/b whose
+  // changed file lib/a hides with submodule.lib/b.ignore = all.
+  fsmon: { setup: 'git config core.fsmonitor "touch /tmp/vcr-fsmonitor-ran; exit 1"' },
+  nested: { setup: VARIANT_NESTED },
+
+  // Round 12: the same nesting, lib/b clean, with lib/b's own clean filter for *.txt recording that it ran.
+  nestedfilter: {
+    setup: VARIANT_NESTED
+      .replace('printf "b\\n" > /tmp/b/b.txt && git -C /tmp/b add -A', 'printf "b\\n" > /tmp/b/b.txt && printf "*.txt filter=mask\\n" > /tmp/b/.gitattributes && git -C /tmp/b add -A')
+      .replace(' && printf "changed\\n" >> lib/a/lib/b/b.txt', ' && git -C lib/a/lib/b config filter.mask.clean "touch /tmp/vcr-nested-filter-ran; cat"')
+  },
+  // R1-F3 (round 3): the submodule's own clean filter maps its changed file back to the committed bytes (and records that it ran).
+  submask: {
+    setup: SUBMODULE.replace('git -C /tmp/dep add -A', 'printf "*.txt filter=mask\\n" > /tmp/dep/.gitattributes && git -C /tmp/dep add -A')
+      + ' && git -C lib/dep config filter.mask.clean "touch /tmp/vcr-submask-ran; cat >/dev/null; echo dep" && printf "changed\\n" >> lib/dep/dep.txt'
+  },
+  // A changed tracked file the copied index hides (R1-F4).
+  assume: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --assume-unchanged src/Vault.sol' },
+  skip: { setup: 'printf "// changed\\n" >> src/Vault.sol && git update-index --skip-worktree src/Vault.sol' },
+
+  // Attempt 2: whatever sits at a tracked path or on the way to one. HEAD moved to a commit that fixes the bug (the listed
+  // commit is the branch "listed"); src a symbolic link to an untracked copy of the fix; a tracked file that is a
+  // directory, one that is a link out of the tree, a pipe, a device node (/dev/null's numbers) and a missing one; an
+  // untracked nested .git directory and an untracked file.
+  mangled: {
+    listed: 'listed',
+    setup: [
+      'git branch listed',
+      'sed -i "s/amount + 1/amount/" src/Vault.sol && git add -A',
+      `${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q -m fix`,
+      'mkdir fake && cp src/Vault.sol fake/Vault.sol && rm -rf src && ln -s fake src',
+      'rm test/Vault.t.sol && mkdir -p test/Vault.t.sol/junk && echo junk > test/Vault.t.sol/junk/x',
+      'rm test/Vm.sol && ln -s /etc/hostname test/Vm.sol',
+      'rm foundry.toml && mkfifo foundry.toml',
+      'rm .gitignore && mknod .gitignore c 1 3',
+      'rm state/.keep',
+      'mkdir -p test/vendor/.git && echo "ref: refs/heads/x" > test/vendor/.git/HEAD && echo kept > untracked.txt'
+    ].join(' && ')
+  },
+  // The image's own environment and git's default template: git trace, an fsmonitor hook and a template directory by
+  // ENV, tar options that would write every copied file to stdout, and hooks in the system template directory.
+  envgit: {
+    setup: [
+      'mkdir -p /usr/share/git-core/templates/hooks',
+      'for h in post-commit post-checkout post-index-change; do printf "#!/bin/sh\\ntouch /tmp/vcr-template-hook-ran\\n" > /usr/share/git-core/templates/hooks/$h; chmod 0755 /usr/share/git-core/templates/hooks/$h; done'
+    ].join(' && '),
+    env: [
+      'GIT_TRACE=/tmp/vcr-git-trace',
+      'GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.fsmonitor GIT_CONFIG_VALUE_0="touch /tmp/vcr-env-fsmonitor-ran; false"',
+      'GIT_TEMPLATE_DIR=/usr/share/git-core/templates',
+      'TAR_OPTIONS=--to-stdout'
+    ]
+  },
+  // An object of the listed commit that does not hash to its id: src/Vault.sol's loose blob replaced by the fix's.
+  forged: {
+    setup: 'id=$(git rev-parse HEAD:src/Vault.sol) && nid=$(sed "s/amount + 1/amount/" src/Vault.sol | git hash-object -w --stdin)'
+      + ' && f=.git/objects/$(echo $id | cut -c1-2)/$(echo $id | cut -c3-) && chmod u+w $f'
+      + ' && cp .git/objects/$(echo $nid | cut -c1-2)/$(echo $nid | cut -c3-) $f'
+  },
+  // An object of the listed commit's own tree that is not in the image: src/Vault.sol's blob.
+  missingblob: { setup: 'id=$(git rev-parse HEAD:src/Vault.sol) && rm -f .git/objects/$(echo $id | cut -c1-2)/$(echo $id | cut -c3-)' },
+  // Round 2's other redirects: the objects moved out of /repo behind objects/info/alternates; and a graft that rewrites
+  // the listed commit's history (attempt 1 refused both; no history is read now).
+  alternates: { setup: 'mkdir -p /opt/alt && mv .git/objects/?? /opt/alt/ && echo /opt/alt > .git/objects/info/alternates' },
+  grafts: { setup: `printf "%s\\n" "$(git rev-parse HEAD)" > .git/info/grafts && sed -i "s/amount + 1/amount/" src/Vault.sol` },
+  // R13-F1: the tracked .gitattributes a named pipe, and untracked pipes (one an attributes file git would read for
+  // test/, one a .gitignore): opened by git, any would block it.
+  fifoattrs: {
+    files: { ...VAULT_REPO, '.gitattributes': '*.bin binary\n' },
+    setup: 'rm .gitattributes && mkfifo .gitattributes test/.gitattributes src/.gitignore pipe'
+  },
+  // R13-F3: a listed commit (the branch "listed") whose tree holds a path git will not check out: a symbolic link
+  // named .gitmodules, or an NTFS alias of .git (git~1). Built with mktree; the objects hash.
+  gitmodlink: { listed: 'listed', setup: badTree('120000', '.gitmodules') },
+  ntfsname: { listed: 'listed', setup: badTree('100644', 'git~1') },
+  // R13-F2: an earlier store (.git/modules/zz sorts before .git/objects) holds blob A; the later one holds A as a hard
+  // link to blob B's file. Each object must keep its own bytes, in either name order of A and B.
+  hardlink1: { setup: hardLinked('src/Vault.sol', 'test/Vault.t.sol') },
+  hardlink2: { setup: hardLinked('test/Vault.t.sol', 'src/Vault.sol') },
+  // R22-F1: a protected file (lib/**) whose name holds a non-UTF-8 byte (0xff). It is created and amended into the
+  // base commit, so the listed commit tracks it; the reset must feed its exact bytes back to git, not a mangled name.
+  protnonutf8: {
+    setup: `mkdir -p lib/odd && printf x > "lib/odd/$(printf '\\377').txt" && git add -A`
+      + ` && ${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q --amend --no-edit`
+  },
+  // A SHA-256 repository.
+  sha256: { objectFormat: 'sha256' },
+  // Objects in packs only (the superproject's and a submodule's), with a commit-graph and a multi-pack-index.
+  packed: {
+    setup: `${SUBMODULE} && git repack -a -d -q && git -C lib/dep repack -a -d -q && git prune-packed`
+      + ' && git commit-graph write --reachable && git multi-pack-index write'
+  }
+});
+
+function fixture(variant = 'plain') {
+  if (!fixtures.has(variant)) {
+    fixtures.set(variant, buildFixture(builder, { ...VARIANTS[variant], instance: `${instanceId()}${variant}` }));
+  }
+  return fixtures.get(variant);
+}
+
+test.after(async () => {
+  for (const f of fixtures.values()) {
+    try { await (await f).remove(); } catch (_) { /* the build failed: nothing to remove */ }
+  }
+});
+
+function claimSpec(fx, over = {}) {
+  return {
+    version: 1,
+    kind: 'bug',
+    repo: 'https://github.com/acme/vault',
+    baseCommit: fx.baseCommit,
+    env: { image: fx.image, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 2000000000 },
+    attestation: 'attestation.json',
+    commands: {
+      framework: 'forge',
+      build: 'forge build',
+      test: 'forge test',
+      testFiles: 'forge test --match-path $FILES',
+      testIds: 'forge test --match-test $TEST_IDS',
+      ...(over.commands || {})
+    },
+    paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', '.gitignore'] },
+    limits: { cpus: 1, memoryMb: 1024, buildSeconds: 90, testSeconds: 120, runSeconds: 360, maxPatchBytes: 2000000, ...(over.limits || {}) }
+  };
+}
+
+function claim(fx, pocPatch, over = {}) {
+  return {
+    listingCid: 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
+    bcid: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
+    spec: claimSpec(fx, over),
+    attestation: {},
+    pocPatch,
+    fixPatch: null,
+    baseline: vaultBaseline(fx.baseCommit),
+    finding: {},
+    report: '',
+    knownIssues: [],
+    priorFindings: [],
+    eaGates: { disclosure: 'pass', inScope: 'pass' },
+    deadlineMs: 800000
+  };
+}
+
+async function run(t, request, extraSteps = [], { beforeBuild = null } = {}) {
+  const config = dockerTestConfig();
+  const docker = dockerFor(config);
+  t.after(() => removeAll(docker, config.instance).catch(() => {}));
+  const lim = checkSpec(request.spec);
+  assert.ok(lim.ok, JSON.stringify(lim.issues));
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config, limits: lim.limits, image: request.spec.env.image, runId: crypto.randomBytes(8).toString('hex'),
+    steps: withBeforeBuild(claimSteps(request, lim.limits), beforeBuild).concat(extraSteps), receivedAt, deadlineAt: receivedAt + request.deadlineMs,
+    active: new Set(), log: silent
+  });
+  assert.deepEqual(await leftovers(docker, config.instance), [], 'the run removed its sandbox');
+  return { result, docker };
+}
+
+/** Insert a step after the commit and before the build (claimSteps: prepare, applies, testPathsOnly, resetAndCommit, build, reproduces). */
+function withBeforeBuild(steps, step) {
+  if (!step) return steps;
+  assert.deepEqual(steps.map((f) => f.name), ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces']);
+  return [...steps.slice(0, 4), step, ...steps.slice(4)];
+}
+
+const stepNames = (r) => r.steps.map((s) => s.name);
+const show = (r) => JSON.stringify({
+  outcome: r.outcome, abstain: r.abstain, issues: r.issues, gates: r.gates,
+  // The abstaining step's own record (its probe detail, its stderr), for a failure in CI.
+  step: r.abstain ? (r.steps || []).find((s) => s.name === r.abstain.step) : undefined
+}, null, 1);
+
+/** The vault's bug: a deposit credits one wei too many. A PoC that asserts the right credit fails as an assertion. */
+const DRAIN = pocFile('ExploitTest', [
+  '    function test_deposit_credits_exactly() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
+]);
+
+test('a PoC that fails as an assertion on all three runs reproduces, on the pinned foundry base; the commit is fixed', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const inspected = {};
+  const inspect = async (ctx) => {
+    const sh = async (name, script) => (await ctx.exec(['sh', '-c', script], { name, timeoutMs: 60000 })).stdout.text;
+    inspected.commit = await sh('inspect:commit', 'git log -1 --date=raw --format="%an|%ae|%ad|%cn|%ce|%cd|%P|%s" && git diff --name-only HEAD^ HEAD');
+    inspected.env = await sh('inspect:env', 'printf "%s|%s|%s|%s|%s" "$TZ" "$LANG" "$CI" "$(hostname)" "$HOME"');
+    const host = await runText(builder, ['inspect', '--type', 'container', '--format', '{{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.Config.Hostname}}', ctx.sandboxName], { timeoutMs: 30000 });
+    inspected.host = host.stdout.trim();
+  };
+  const request = claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }));
+  const { result: r } = await run(t, request, [inspect]);
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.tests, [{
+    id: 'test/Exploit.t.sol > ExploitTest > test_deposit_credits_exactly()',
+    runs: ['fail', 'fail', 'fail'],
+    kind: 'assertion',
+    message: 'assertion failed: 2 != 1'
+  }]);
+  assert.deepEqual(r.facts.poc.runs.map((x) => [x.command, x.junit]), [['testFiles', 'ok'], ['testIds', 'ok'], ['testIds', 'ok']]);
+  const names = stepNames(r);
+  for (const n of ['poc:1', 'poc:2', 'poc:3']) assert.ok(names.includes(n), n);
+  const poc1 = r.steps.find((s) => s.name === 'poc:1');
+  assert.match(poc1.stdout.text, /<testsuites /, 'forge printed its JUnit');
+  // Committed with a fixed author and date, on the listed commit.
+  const [meta, changed] = inspected.commit.trim().split('\n');
+  // The PoC commit's parent is the runner's commit of the listed tree (the forced checkout's), with the same identity.
+  assert.equal(meta, `Verdikta code runner|code-runner@verdikta.invalid|1767225600 +0000|Verdikta code runner|code-runner@verdikta.invalid|1767225600 +0000|${r.facts.checkout.commit}|poc.patch`);
+  assert.equal(changed, 'test/Exploit.t.sol');
+  assert.equal(r.facts.commit.base, fx.baseCommit);
+  assert.deepEqual({ ...r.facts.checkout, commit: undefined, tree: undefined }, {
+    commit: undefined, tree: undefined, paths: 6, corrected: 0, correctedPaths: [], directoriesMade: 0, emptySubmodules: [], gitRemoved: true, gitEntriesRemoved: 1
+  });
+  // The fixed environment: TZ, LANG, CI, the hostname, CPU and memory from the spec.
+  assert.equal(inspected.env, 'UTC|C.UTF-8|true|sandbox|/home/sandbox');
+  assert.equal(inspected.host, `${1e9} ${1024 * 1024 * 1024} sandbox`);
+  assert.deepEqual(r.facts.leftoverProcesses.map((x) => x.killed), [0, 0, 0, 0]);
+
+  // The same claim again: the same commit, gates and facts (the commit hash is
+  // fixed by the author, the date and the tree).
+  const again = await run(t, request);
+  assert.equal(again.result.facts.commit.poc, r.facts.commit.poc);
+  assert.deepEqual(again.result.gates, r.gates);
+  assert.deepEqual(again.result.facts.poc, r.facts.poc);
+});
+
+test('poc-patch-edits-source: a patch that edits src/ fails testPathsOnly, decided by git inside the sandbox before the build', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const vault = VAULT_REPO['src/Vault.sol'];
+  const vaultTest = VAULT_REPO['test/Vault.t.sol'];
+  const patch = Buffer.concat([
+    modifyPatch('src/Vault.sol', vault, vault.replace('amount + 1', 'amount')),
+    modifyPatch('test/Vault.t.sol', vaultTest, vaultTest.replace('    function test_deposit()', '    function test_more() public { revert("x"); }\n    function test_deposit()')),
+    addFilesPatch({ 'test/Exploit.t.sol': pocFile('ExploitTest', ['    /// forge-config: default.fuzz.runs = 1', '    function test_x() public { vm.skip(true); }']) })
+  ]);
+  const { result: r } = await run(t, claim(fx, patch));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', show(r));
+  assert.equal(r.gates.testPathsOnly.status, 'fail');
+  assert.match(r.gates.testPathsOnly.detail, /src\/Vault\.sol.*outside paths\.tests/);
+  assert.deepEqual(r.facts.testPaths.outside, ['src/Vault.sol']);
+  assert.ok(!stepNames(r).includes('build'), 'nothing ran after the gate');
+  assert.equal(r.gates.build, undefined);
+  // The flags, from git's own diff of the applied patch.
+  assert.deepEqual(r.facts.flags.existingTestsModified, ['test/Vault.t.sol']);
+  assert.deepEqual(r.facts.flags.skipMarkersAdded, ['test/Exploit.t.sol']);
+  assert.deepEqual(r.facts.flags.frameworkReferences, [{ file: 'test/Exploit.t.sol', line: 6, rule: 'forge-inline-config' }]);
+
+  // A patch to a protected path fails too.
+  const toml = await run(t, claim(fx, Buffer.concat([
+    addFilesPatch({ 'test/Exploit.t.sol': DRAIN }),
+    modifyPatch('.gitignore', VAULT_REPO['.gitignore'], `${VAULT_REPO['.gitignore']}src/\n`)
+  ])));
+  assert.equal(toml.result.gates.testPathsOnly.status, 'fail', show(toml.result));
+  assert.match(toml.result.gates.testPathsOnly.detail, /\.gitignore.*paths\.protected/);
+});
+
+test('applies with real git: a patch that does not apply, one above maxPatchBytes, repeated renames; a text patch is measured; a move applies', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const stale = modifyPatch('test/Vault.t.sol', VAULT_REPO['test/Vault.t.sol'].replace('no credit', 'other text'), VAULT_REPO['test/Vault.t.sol']);
+  const { result: r1 } = await run(t, claim(fx, stale));
+  assert.equal(r1.gates.applies.status, 'fail', show(r1));
+  assert.equal(r1.gates.applies.basis, 'exit_code');
+  assert.match(r1.gates.applies.detail, /does not apply to the listed commit/);
+
+  const small = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { limits: { maxPatchBytes: 200 } }));
+  assert.equal(small.result.gates.applies.status, 'fail', show(small.result));
+  assert.equal(small.result.gates.applies.basis, 'input');
+  assert.ok(!stepNames(small.result).some((n) => n.startsWith('patch:')), 'git never saw it');
+
+  // A text patch applies and is measured: the gate passes and reports the bytes written, which match the added file.
+  const { result: ok } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(ok.gates.applies.status, 'pass', show(ok));
+  assert.equal(ok.gates.applies.basis, 'exit_code');
+  assert.match(ok.gates.applies.detail, new RegExp(`writes ${DRAIN.length} bytes`));
+  assert.equal(ok.facts.patch.expansionBytes, DRAIN.length, 'the postimage of test/Exploit.t.sol, from the index');
+
+  // R15-F1: one file renamed to 60 names (git would reload it for each) fails the input gate before git sees it;
+  // the same move written as a deletion and an addition (git diff --no-renames) applies.
+  const renames = Buffer.from(Array.from({ length: 60 }, (_, i) => [
+    `diff --git a/test/Vault.t.sol b/test/R${i}.t.sol`, 'similarity index 100%', 'rename from test/Vault.t.sol', `rename to test/R${i}.t.sol`
+  ].join('\n')).join('\n') + '\n');
+  const ren = await run(t, claim(fx, renames));
+  assert.equal(ren.result.gates.applies.status, 'fail', show(ren.result));
+  assert.equal(ren.result.gates.applies.basis, 'input');
+  assert.match(ren.result.gates.applies.detail, /renames a file/);
+  assert.ok(!stepNames(ren.result).some((n) => n.startsWith('patch:')), 'git never saw it');
+  const vaultTest = VAULT_REPO['test/Vault.t.sol'];
+  const deleted = Buffer.from(['diff --git a/test/Vault.t.sol b/test/Vault.t.sol', 'deleted file mode 100644', '--- a/test/Vault.t.sol', '+++ /dev/null',
+    `@@ -1,${vaultTest.split('\n').length - 1} +0,0 @@`, ...vaultTest.split('\n').slice(0, -1).map((l) => `-${l}`), ''].join('\n'));
+  const moved = await run(t, claim(fx, Buffer.concat([deleted, addFilesPatch({ 'test/Moved.t.sol': vaultTest, 'test/Exploit.t.sol': DRAIN })])));
+  assert.equal(moved.result.gates.applies.status, 'pass', show(moved.result));
+  assert.equal(moved.result.gates.testPathsOnly.status, 'pass', show(moved.result));
+});
+
+test('build gate: a PoC that does not compile fails the build (tier A); an OOM-killed build abstains', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const broken = addFilesPatch({ 'test/Exploit.t.sol': DRAIN.replace('import {Vault} from "../src/Vault.sol";', 'import {Vault} from "../src/Missing.sol";') });
+  const { result: r } = await run(t, claim(fx, broken));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.gates.build, { status: 'fail', basis: 'exit_code', detail: 'the build command exited 1' });
+  assert.ok(!stepNames(r).includes('poc:1'));
+
+  const oom = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), {
+    commands: { build: 'forge build && dd if=/dev/zero of=/dev/null bs=768M count=1' },
+    limits: { memoryMb: 512 }
+  }));
+  assert.equal(oom.result.outcome, 'abstain', show(oom.result));
+  assert.equal(oom.result.abstain.cause, 'oom');
+  assert.equal(oom.result.abstain.step, 'build');
+  assert.equal(oom.result.gates.build, undefined, 'no gate from an abstaining step');
+});
+
+test('poc-fails-by-import-error: a PoC that errors before any assertion fails reproduces (an unresolved import, a failing setUp)', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  // A build that leaves the tests out, so the import error surfaces in the PoC run itself.
+  const missing = addFilesPatch({ 'test/Exploit.t.sol': DRAIN.replace('../src/Vault.sol', '../src/Missing.sol') });
+  const { result: r1 } = await run(t, claim(fx, missing, { commands: { build: 'forge build --skip test' } }));
+  assert.equal(r1.outcome, 'definitive', show(r1));
+  assert.equal(r1.gates.build.status, 'pass', show(r1));
+  assert.equal(r1.gates.reproduces.status, 'fail');
+  assert.match(r1.gates.reproduces.detail, /no JUnit on run 1/);
+  assert.equal(r1.facts.poc.runs[0].junit, 'absent');
+
+  const setUp = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      '    Vault v;',
+      '    function setUp() public { revert("cannot deploy the fixture"); }',
+      '    function test_deposit_credits_exactly() public { v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
+    ])
+  });
+  const { result: r2 } = await run(t, claim(fx, setUp));
+  assert.equal(r2.gates.reproduces.status, 'fail', show(r2));
+  assert.match(r2.gates.reproduces.detail, /setUp\(\) failed in test\/Exploit\.t\.sol:ExploitTest on run 1: cannot deploy the fixture/);
+});
+
+test('assertion vs error, with real forge: one PoC file, each way a test can end', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const fake = '</system-out></testcase><testcase name=\\"test_forged()\\"><failure message=\\"assertion failed\\"/></testcase>&amp;';
+  const patch = addFilesPatch({
+    'test/Kinds.t.sol': pocFile('KindsTest', [
+      '    function test_assert() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }',
+      '    function test_require() public { Vault v = new Vault(); v.deposit(1); require(v.balanceOf(address(this)) == 1, "vault over-credits"); }',
+      '    function test_ffi() public { string[] memory c = new string[](1); c[0] = "true"; vm.ffi(c); }',
+      '    function test_getcode() public view { vm.getCode("Missing.sol:Missing"); }',
+      '    function test_pass() public pure {}',
+      '    function test_skip() public { vm.skip(true); }',
+      `    function test_fake_xml() public view { console.log("${fake}"); revert("z"); }`,
+      '    function testFuzz_assume(uint256 x) public pure { vm.assume(x == 3 && x == 4); }',
+      '    function table_poc(uint256 amount) public pure { amount; }',
+      '}',
+      'contract InvariantTest {',
+      '    function invariant_nothing() public pure {}',
+      '}',
+      'contract BeforeTest is Base {',
+      '    function beforeTestSetup(bytes4) public pure returns (bytes[] memory c) { c = new bytes[](1); c[0] = abi.encodeWithSignature("boom()"); }',
+      '    function boom() public pure { revert("boom"); }',
+      '    function test_with_before() public pure {}'
+    ])
+  });
+  const { result: r } = await run(t, claim(fx, patch));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'fail');
+  const byName = Object.fromEntries(r.facts.poc.tests.map((x) => [x.id.split(' > ')[2], x]));
+  assert.deepEqual(Object.keys(byName).sort(), [
+    'invariant_nothing()', 'table_poc(uint256)', 'testFuzz_assume(uint256)', 'test_assert()', 'test_fake_xml()', 'test_ffi()', 'test_getcode()', 'test_pass()',
+    'test_require()', 'test_skip()', 'test_with_before()'
+  ]);
+  assert.deepEqual(byName['test_assert()'].runs, ['fail', 'fail', 'fail']);
+  assert.equal(byName['test_assert()'].kind, 'assertion');
+  assert.deepEqual(byName['test_require()'].runs, ['fail', 'fail', 'fail']);
+  assert.equal(byName['test_require()'].message, 'vault over-credits');
+  assert.deepEqual(byName['test_fake_xml()'].runs, ['fail', 'fail', 'fail'], 'printed XML adds no record');
+  // R1-F1: a table test without fixtures and a test whose beforeTestSetup call reverts never ran their bodies.
+  for (const n of ['test_ffi()', 'test_getcode()', 'testFuzz_assume(uint256)', 'invariant_nothing()', 'table_poc(uint256)', 'test_with_before()']) {
+    assert.deepEqual(byName[n].runs, ['error', 'error', 'error'], n);
+    assert.equal(byName[n].kind, 'error');
+  }
+  assert.deepEqual(byName['test_pass()'].runs, ['pass', 'pass', 'pass']);
+  assert.deepEqual(byName['test_skip()'].runs, ['skip', 'skip', 'skip']);
+  assert.equal(r.facts.poc.runs.length, 3, 'the schedule is fixed');
+});
+
+test('reproduces: a PoC that passes on its second run fails the gate (testIds for the re-runs)', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  // Run 1 leaves a file behind (an untracked state file, allowed by the
+  // fixture's fs_permissions); runs 2 and 3 see it and pass.
+  const flaky = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      '    function test_flaky() public {',
+      '        if (!vm.isFile("state/ran")) { vm.writeFile("state/ran", "1"); vm.assertEq(uint256(1), uint256(2)); }',
+      '    }'
+    ])
+  });
+  const { result: r } = await run(t, claim(fx, flaky));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'fail');
+  assert.equal(r.gates.reproduces.detail, 'test/Exploit.t.sol > ExploitTest > test_flaky() passed on run 2');
+  assert.deepEqual(r.facts.poc.tests[0].runs, ['fail', 'pass', 'pass']);
+  assert.deepEqual(r.facts.poc.runs.map((x) => x.command), ['testFiles', 'testIds', 'testIds']);
+});
+
+test('a claim process that outlives its run is killed before the next one; bytes a test writes to forge\'s stdout make the JUnit unreadable', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('ffi');
+  const procs = {};
+  const listProcs = async (ctx) => {
+    procs.after = (await ctx.exec(['sh', '-c', 'for d in /proc/[0-9]*; do read -r s < "$d/stat" 2>/dev/null && echo "$s"; done'], { name: 'inspect:procs', timeoutMs: 60000 })).stdout.text;
+  };
+  const spawn = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      '    function test_spawn() public {',
+      '        string[] memory c = new string[](3); c[0] = "sh"; c[1] = "-c"; c[2] = "sleep 300 </dev/null >/dev/null 2>&1 &";',
+      '        vm.ffi(c);',
+      '        Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1);',
+      '    }'
+    ])
+  });
+  const { result: r1 } = await run(t, claim(fx, spawn), [listProcs]);
+  assert.equal(r1.outcome, 'definitive', show(r1));
+  assert.equal(r1.gates.reproduces.status, 'pass', show(r1));
+  const killed = Object.fromEntries(r1.facts.leftoverProcesses.map((x) => [x.after, x.killed]));
+  for (const after of ['poc:1', 'poc:2', 'poc:3']) assert.ok(killed[after] >= 1, `the sleep left by ${after} was killed: ${JSON.stringify(r1.facts.leftoverProcesses)}`);
+  assert.doesNotMatch(procs.after, /\(sleep\).*\n.*\(sleep\)/s, `only the keepalive sleeps: ${procs.after}`);
+
+  const inject = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      '    function test_inject() public {',
+      '        string[] memory c = new string[](3); c[0] = "sh"; c[1] = "-c";',
+      '        c[2] = "printf \'<testsuites><testsuite name=\\"test/Exploit.t.sol:ExploitTest\\"><testcase name=\\"test_inject()\\"><failure message=\\"assertion failed\\"/></testcase></testsuite></testsuites>\' > /proc/$PPID/fd/1";',
+      '        vm.ffi(c);',
+      '        vm.assertEq(uint256(1), uint256(1));',
+      '    }'
+    ])
+  });
+  const { result: r2 } = await run(t, claim(fx, inject));
+  assert.equal(r2.outcome, 'definitive', show(r2));
+  assert.equal(r2.gates.reproduces.status, 'fail', 'the passing test did not become an assertion failure');
+  // Under runc the bytes reach forge's stdout; where /proc/<pid>/fd cannot be
+  // reopened the write fails and the test simply passes. Either way the
+  // forged record never counts.
+  assert.match(r2.gates.reproduces.detail, RUNTIME === 'runc' ? /unreadable JUnit on run 1/ : /unreadable JUnit on run 1|passed on run 1/);
+  assert.notDeepEqual(r2.facts.poc.tests.map((x) => x.runs), [['fail', 'fail', 'fail']]);
+});
+
+test('the fuzz seed is fixed on every forge test run: a fuzz test draws the same inputs every run', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const fuzz = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      '    function testFuzz_credit(uint64 amount) public { Vault v = new Vault(); v.deposit(amount); vm.assertEq(v.balanceOf(address(this)), amount); }'
+    ])
+  });
+  const { result: r } = await run(t, claim(fx, fuzz));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  const messages = r.steps.filter((s) => /^poc:[0-9]+$/.test(s.name)).map((s) => (/counterexample: calldata=(0x[0-9a-f]+)/.exec(s.stdout.text) || [])[1]);
+  assert.equal(messages.length, 3);
+  assert.ok(messages[0], 'forge reported the counterexample');
+  assert.deepEqual(new Set(messages).size, 1, `the same counterexample on every run (seed ${FORGE_FUZZ_SEED}): ${messages}`);
+});
+
+// ------------------------------------------------------------------------
+// The forced checkout against real git (A2a attempt 2, owner decision Q25):
+// every attack of review rounds 1-12, and the cases attempt 2 adds, end with
+// the build seeing exactly the listed commit's files, or are refused before
+// any claim code; no hook or filter of the image runs in prepare. The table
+// is in the PR body.
+
+/** An inspection step: each path's type (a file's mode and bytes), /tmp, the .git entries under /work, the runner's .git. */
+function inspector(seen, paths = [], name = 'inspect:tree') {
+  const script = [
+    'for p; do',
+    '  if [ -L "$p" ]; then printf "%s|link|%s\\n" "$p" "$(readlink "$p")"',
+    '  elif [ -d "$p" ]; then printf "%s|dir|%s\\n" "$p" "$(ls -A "$p" | tr "\\n" " ")"',
+    '  elif [ -f "$p" ]; then printf "%s|file|%s|%s\\n" "$p" "$(stat -c %a "$p")" "$(base64 -w0 < "$p")"',
+    '  elif [ -e "$p" ]; then printf "%s|other\\n" "$p"',
+    '  else printf "%s|absent\\n" "$p"; fi',
+    'done',
+    'printf "tmp|%s\\n" "$(ls -A /tmp | tr "\\n" " ")"',
+    'printf "gits|%s\\n" "$(find /work -name .git | tr "\\n" " ")"',
+    'printf "dotgit|%s\\n" "$(ls -A /work/.git | tr "\\n" " ")"',
+    'printf "attributes|%s\\n" "$(cat /work/.git/info/attributes)"'
+  ].join('\n');
+  return async (ctx) => {
+    const out = (await ctx.exec(['sh', '-c', script, 'vcr-inspect', ...paths], { name, timeoutMs: 60000 })).stdout.text;
+    for (const line of out.split('\n').filter(Boolean)) {
+      const [k, ...v] = line.split('|');
+      seen[k] = v;
+    }
+  };
+}
+
+/** A file the inspection saw: its bytes as text. */
+function fileText(seen, p) {
+  const v = seen[p];
+  assert.ok(v && v[0] === 'file', `${p} is a regular file: ${JSON.stringify(v)}`);
+  return Buffer.from(v[2] || '', 'base64').toString('utf8');
+}
+
+/** What every forced checkout leaves: one repository (the runner's), no staging store, the neutral attributes. */
+function assertOneRepository(seen) {
+  assert.equal(seen.gits[0].trim(), '/work/.git', `the only .git under /work is the runner's: ${seen.gits[0]}`);
+  assert.doesNotMatch(seen.dotgit[0], /vcr-image|vcr-lists|modules/, 'the staging store is gone');
+  assert.equal(seen.attributes[0], '* !filter !diff !merge !text !crlf !eol !ident !working-tree-encoding');
+}
+
+const claimDrain = (fx) => claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }));
+
+test('attack table, safe as before: the image\'s smudge filter (R1-F3), fsmonitor hook (R11-F1) and a nested clean filter (R12-F1) never run', { timeout: TIMEOUT }, async (t) => {
+  // R1-F3: the image's config runs test/filter.sh as a filter for test/*.bin; the patch edits the script, then adds a .bin.
+  const fx = await fixture('filter');
+  const seen = {};
+  const patch = Buffer.concat([
+    modifyPatch('test/filter.sh', '#!/bin/sh\ncat\n', '#!/bin/sh\ntouch /tmp/vcr-filter-ran\ncat\n'),
+    addFilesPatch({ 'test/x.bin': 'payload\n', 'test/Exploit.t.sol': DRAIN })
+  ]);
+  const { result: r } = await run(t, claim(fx, patch), [inspector(seen, ['test/x.bin'])]);
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.doesNotMatch(seen.tmp[0], /vcr-filter-ran/, 'the patched filter never ran');
+  assert.equal(fileText(seen, 'test/x.bin'), 'payload\n', 'the file holds the patch\'s bytes');
+
+  for (const [variant, marker] of [['fsmon', /vcr-fsmonitor-ran/], ['nestedfilter', /vcr-nested-filter-ran/]]) {
+    const v = await fixture(variant);
+    const before = {};
+    const { result: rv } = await run(t, claimDrain(v), [], { beforeBuild: inspector(before) });
+    assert.equal(rv.outcome, 'definitive', `${variant}: ${show(rv)}`);
+    assert.equal(rv.gates.reproduces.status, 'pass', variant);
+    assert.doesNotMatch(before.tmp[0], marker, `${variant}: the image's hook or filter did not run before the build`);
+    assert.equal(rv.facts.checkout.corrected, 0, variant);
+    assertOneRepository(before);
+  }
+});
+
+test('attack table, corrected: a changed file the image\'s index hides (assume-unchanged, skip-worktree; R1-F4) or a graft beside it is rewritten, then run', { timeout: TIMEOUT }, async (t) => {
+  for (const variant of ['assume', 'skip', 'grafts']) {
+    const fx = await fixture(variant);
+    const seen = {};
+    const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, ['src/Vault.sol']) });
+    assert.equal(r.outcome, 'definitive', `${variant}: ${show(r)}`);
+    assert.equal(r.gates.reproduces.status, 'pass', `${variant}: the listed commit's bug reproduces`);
+    assert.deepEqual(r.facts.checkout.correctedPaths, ['src/Vault.sol'], variant);
+    assert.equal(fileText(seen, 'src/Vault.sol'), VAULT_REPO['src/Vault.sol'], variant);
+    assert.equal(seen['src/Vault.sol'][1], '644');
+    assertOneRepository(seen);
+  }
+});
+
+test('attack table, corrected: a submodule\'s own index flag or clean filter (R1-F3/F4), worktree redirect (R10-F1), replace ref (R10-F2) or a nested ignore=all (R11-F2)', { timeout: TIMEOUT }, async (t) => {
+  const clean = await fixture('sub');
+  const seen0 = {};
+  const { result: r0 } = await run(t, claimDrain(clean), [], { beforeBuild: inspector(seen0, ['lib/dep/dep.txt']) });
+  assert.equal(r0.outcome, 'definitive', show(r0));
+  assert.equal(r0.gates.reproduces.status, 'pass', show(r0));
+  assert.equal(r0.facts.checkout.corrected, 0);
+  assert.ok(r0.facts.protectedReset >= 1, 'the submodule\'s files are protected paths (lib/**) at the listed commit');
+  assert.equal(fileText(seen0, 'lib/dep/dep.txt'), 'dep\n');
+  assertOneRepository(seen0);
+
+  for (const variant of ['subassume', 'submask', 'subwt', 'subreplace']) {
+    const fx = await fixture(variant);
+    const seen = {};
+    const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, ['lib/dep/dep.txt', 'clean-dep']) });
+    assert.equal(r.outcome, 'definitive', `${variant}: ${show(r)}`);
+    assert.equal(r.gates.reproduces.status, 'pass', variant);
+    assert.deepEqual(r.facts.checkout.correctedPaths, ['lib/dep/dep.txt'], variant);
+    assert.equal(fileText(seen, 'lib/dep/dep.txt'), 'dep\n', `${variant}: the submodule's file is its recorded commit's`);
+    assert.doesNotMatch(seen.tmp[0], /vcr-submask-ran/, `${variant}: no filter of the image ran`);
+    assert.equal(seen['clean-dep'][0], variant === 'subwt' ? 'dir' : 'absent', `${variant}: untracked files stay as the image built them`);
+    assertOneRepository(seen);
+  }
+
+  const nested = await fixture('nested');
+  const seen2 = {};
+  const { result: r2 } = await run(t, claimDrain(nested), [], { beforeBuild: inspector(seen2, ['lib/a/lib/b/b.txt', 'lib/a/a.txt']) });
+  assert.equal(r2.outcome, 'definitive', show(r2));
+  assert.deepEqual(r2.facts.checkout.correctedPaths, ['lib/a/lib/b/b.txt']);
+  assert.equal(fileText(seen2, 'lib/a/lib/b/b.txt'), 'b\n', 'the nested submodule\'s file is its recorded commit\'s');
+  assert.equal(fileText(seen2, 'lib/a/a.txt'), 'a\n');
+});
+
+test('attack table, emptied: a submodule whose objects the image lacks (no .git, a pipe for .git, a path ending in a line break; R8-F1) is left an empty directory', { timeout: TIMEOUT }, async (t) => {
+  for (const variant of ['subbare', 'subfifo', 'subempty']) {
+    const fx = await fixture(variant);
+    const seen = {};
+    const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, ['lib/dep']) });
+    assert.equal(r.outcome, 'definitive', `${variant}: ${show(r)}`);
+    assert.equal(r.gates.reproduces.status, 'pass', variant);
+    assert.deepEqual(r.facts.checkout.emptySubmodules, ['lib/dep'], variant);
+    assert.deepEqual(seen['lib/dep'], ['dir', ''], `${variant}: an empty directory, its changed files and its .git gone`);
+    assertOneRepository(seen);
+  }
+  const nl = await fixture('subnl');
+  const seen = {};
+  const { result: r } = await run(t, claimDrain(nl), [], { beforeBuild: inspector(seen) });
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.facts.checkout.emptySubmodules, ['lib/dep\n'], 'the path is the gitlink\'s, line break included, never a trimmed one');
+  assertOneRepository(seen);
+});
+
+test('attack table, refused: objects kept outside .git (commondir, alternates; round 2), a forged object, a missing object of the listed commit', { timeout: TIMEOUT }, async (t) => {
+  for (const [variant, code, re] of [
+    ['commondir', 'IMAGE_OBJECTS_MISSING', /no object for the listed commit/],
+    ['alternates', 'IMAGE_OBJECTS_MISSING', /no object for the listed commit/],
+    ['forged', 'IMAGE_OBJECT_INVALID', /does not hash to its id/],
+    ['missingblob', 'IMAGE_OBJECTS_MISSING', /no object for "src\/Vault\.sol"/]
+  ]) {
+    const fx = await fixture(variant);
+    const { result: r } = await run(t, claimDrain(fx));
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), [code], variant);
+    assert.match(r.issues[0].detail, re, variant);
+    assert.ok(!stepNames(r).some((n) => n.startsWith('patch:') || n === 'build'), `${variant}: git never saw the patch, nothing was built`);
+  }
+});
+
+test('attempt 2: whatever sits at a tracked path or on the way to one is replaced, never written through; untracked files stay', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('mangled');
+  const seen = {};
+  const paths = ['src', 'src/Vault.sol', 'fake/Vault.sol', 'test/Vault.t.sol', 'test/Vm.sol', 'foundry.toml', '.gitignore', 'state/.keep', 'test/vendor', 'untracked.txt'];
+  const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, paths) });
+  assert.equal(r.outcome, 'definitive', show(r));
+  // HEAD and the work tree held the fix; the listed commit's bug reproduces, so the build saw the listed commit.
+  assert.equal(r.gates.build.status, 'pass', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.deepEqual(r.facts.checkout.correctedPaths, ['.gitignore', 'foundry.toml', 'src/Vault.sol', 'state/.keep', 'test/Vault.t.sol', 'test/Vm.sol']);
+  assert.equal(r.facts.checkout.corrected, 6);
+  assert.equal(r.facts.checkout.directoriesMade, 1, 'src, a symbolic link, became a directory');
+  assert.equal(r.facts.checkout.gitEntriesRemoved, 2, '/repo/.git and the untracked test/vendor/.git');
+  assert.equal(seen.src[0], 'dir');
+  for (const p of ['src/Vault.sol', 'test/Vault.t.sol', 'test/Vm.sol', '.gitignore', 'state/.keep']) assert.equal(fileText(seen, p), VAULT_REPO[p], p);
+  assert.match(fileText(seen, 'foundry.toml'), /^\[profile\.default\]/);
+  // The link's target was never written through: the untracked copy of the fix is as the image built it.
+  assert.match(fileText(seen, 'fake/Vault.sol'), /balanceOf\[msg\.sender\] \+= amount;/);
+  assert.equal(fileText(seen, 'untracked.txt'), 'kept\n');
+  assert.deepEqual(seen['test/vendor'], ['dir', ''], 'an untracked directory stays; the .git inside it is dropped');
+  assertOneRepository(seen);
+});
+
+test('attempt 2: the image\'s environment (GIT_TRACE, GIT_CONFIG_*, GIT_TEMPLATE_DIR, TAR_OPTIONS) and git\'s template hooks never reach the runner', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('envgit');
+  const before = {};
+  const after = {};
+  const { result: r } = await run(t, claimDrain(fx), [inspector(after, [], 'inspect:after')], { beforeBuild: inspector(before) });
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.equal(r.facts.checkout.corrected, 0, 'TAR_OPTIONS=--to-stdout did not reach the copy');
+  for (const marker of [/vcr-git-trace/, /vcr-env-fsmonitor-ran/, /vcr-template-hook-ran/]) assert.doesNotMatch(before.tmp[0], marker);
+  assert.doesNotMatch(after.tmp[0], /vcr-template-hook-ran/, 'the PoC commit ran no hook');
+  assertOneRepository(before);
+});
+
+test('attempt 2: a SHA-256 repository, and objects read from packs (a commit-graph and multi-pack-index left out)', { timeout: TIMEOUT }, async (t) => {
+  const sha = await fixture('sha256');
+  assert.match(sha.baseCommit, /^[0-9a-f]{64}$/);
+  const { result: r1 } = await run(t, claimDrain(sha));
+  assert.equal(r1.outcome, 'definitive', show(r1));
+  assert.equal(r1.gates.reproduces.status, 'pass', show(r1));
+  assert.match(r1.facts.checkout.tree, /^[0-9a-f]{64}$/);
+  assert.match(r1.facts.commit.poc, /^[0-9a-f]{64}$/);
+
+  const packed = await fixture('packed');
+  const seen = {};
+  const { result: r2 } = await run(t, claimDrain(packed), [], { beforeBuild: inspector(seen, ['lib/dep/dep.txt']) });
+  assert.equal(r2.outcome, 'definitive', show(r2));
+  assert.equal(r2.facts.checkout.corrected, 0);
+  assert.equal(fileText(seen, 'lib/dep/dep.txt'), 'dep\n');
+});
+
+test('R13-F1: named pipes are not copied, so neither a pipe at the tracked .gitattributes nor an untracked one blocks git', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('fifoattrs');
+  const seen = {};
+  const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, ['.gitattributes', 'test/.gitattributes', 'src/.gitignore', 'pipe']) });
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', 'git apply read the attributes of test/ without blocking');
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.deepEqual(r.facts.checkout.correctedPaths, ['.gitattributes']);
+  assert.equal(fileText(seen, '.gitattributes'), '*.bin binary\n');
+  for (const p of ['test/.gitattributes', 'src/.gitignore', 'pipe']) assert.deepEqual(seen[p], ['absent'], p);
+});
+
+test('R13-F3: a hashed tree with a path git will not check out (a .gitmodules symbolic link, git~1) is the requester\'s error, on real git', { timeout: TIMEOUT }, async (t) => {
+  for (const [variant, name] of [['gitmodlink', '.gitmodules'], ['ntfsname', 'git~1']]) {
+    const fx = await fixture(variant);
+    const { result: r } = await run(t, claimDrain(fx));
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_OBJECT_INVALID'], variant);
+    assert.match(r.issues[0].detail, new RegExp(`a path git will not check out: .*${name.replace('.', '\\.')}`), variant);
+    assert.ok(!stepNames(r).some((n) => n.startsWith('patch:') || n === 'build'), variant);
+  }
+});
+
+test('R13-F2: objects hard-linked across stores keep their own bytes, whichever name comes first', { timeout: TIMEOUT }, async (t) => {
+  for (const variant of ['hardlink1', 'hardlink2']) {
+    const fx = await fixture(variant);
+    const seen = {};
+    const { result: r } = await run(t, claimDrain(fx), [], { beforeBuild: inspector(seen, ['src/Vault.sol', 'test/Vault.t.sol']) });
+    assert.equal(r.outcome, 'definitive', `${variant}: ${show(r)}`);
+    assert.equal(r.gates.reproduces.status, 'pass', variant);
+    assert.equal(r.facts.checkout.corrected, 0, variant);
+    for (const p of ['src/Vault.sol', 'test/Vault.t.sol']) assert.equal(fileText(seen, p), VAULT_REPO[p], `${variant}: ${p}`);
+  }
+});
+
+test('R22-F1: a protected file with a non-UTF-8 name is reset byte-for-byte; an ordinary PoC reaches the build and reproduces', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('protnonutf8');
+  const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', show(r));
+  assert.ok(r.facts.protectedReset >= 1, 'the non-UTF-8 lib file is a protected path that was reset');
+  assert.equal(r.gates.build.status, 'pass', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+});
+
+test('Q28: a binary change in poc.patch is refused host-side, before git sees it, with real git', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  // Both forms git writes: a `GIT binary patch` literal, and a no-`--binary` `Binary files … differ` summary.
+  const literal = Buffer.from([
+    'diff --git a/test/x.bin b/test/x.bin', 'new file mode 100644', 'index 0000000..d95f3ad',
+    'GIT binary patch', 'literal 3', 'IcmZPo000310RR91', '', ''
+  ].join('\n'));
+  const summary = Buffer.from([
+    'diff --git a/test/y.bin b/test/y.bin', 'new file mode 100644', 'index 0000000..d95f3ad 100644',
+    'Binary files /dev/null and b/test/y.bin differ', ''
+  ].join('\n'));
+  for (const [what, patch] of [['GIT binary patch', literal], ['Binary files differ', summary]]) {
+    const { result: r } = await run(t, claim(fx, patch));
+    assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
+    assert.equal(r.gates.applies.status, 'fail', what);
+    assert.equal(r.gates.applies.basis, 'input', what);
+    assert.match(r.gates.applies.detail, /makes a binary change/, what);
+    assert.ok(!stepNames(r).some((n) => n.startsWith('patch:')), `${what}: git never saw it`);
+    assert.ok(!stepNames(r).includes('build'), `${what}: nothing ran after the gate`);
+  }
+});
+
+test('R1-F1 (round 2): an inline-config error with a reason of kilobytes is an error, not an assertion', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const long = 'x'.repeat(6000);
+  const patch = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      `    /// forge-config: default.evm_version = "${long}"`,
+      '    function test_configured() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
+    ])
+  });
+  const { result: r } = await run(t, claim(fx, patch));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'fail', show(r));
+  // forge 1.8.5 fails the record without running its body: the reason (6 KB, past any prefix a reader
+  // might keep) and then forge's default (gas: 0). The test's own assertion would have failed.
+  const t0 = r.facts.poc.tests[0];
+  assert.ok(t0, JSON.stringify(r.facts.poc));
+  assert.deepEqual(t0.runs, ['error', 'error', 'error']);
+  assert.equal(t0.kind, 'error');
+  assert.match(t0.message, /^Unknown evm version: x{100}/);
+  assert.ok(t0.message.length >= 2000 - 1, 'the reason is kilobytes long (cut to 2000 in the facts)');
+});
+
+
+test('R6-F1: a claim process that names itself like a zombie ("w) Z" and a line break) is still killed', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('ffi');
+  const seen = {};
+  const listComms = async (ctx) => {
+    seen.comms = (await ctx.exec(['sh', '-c', 'for d in /proc/[0-9]*; do tr "\\n" "|" < "$d/comm" 2>/dev/null; echo; done'], { name: 'inspect:comms', timeoutMs: 60000 })).stdout.text;
+  };
+  const disguise = addFilesPatch({
+    'test/Exploit.t.sol': pocFile('ExploitTest', [
+      '    function test_disguised() public {',
+      '        string[] memory c = new string[](3); c[0] = "sh"; c[1] = "-c";',
+      '        c[2] = "( printf \'w) Z\\\\nx\' > /proc/self/comm; while :; do sleep 1; done ) </dev/null >/dev/null 2>&1 &";',
+      '        vm.ffi(c);',
+      '        Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1);',
+      '    }'
+    ])
+  });
+  const { result: r } = await run(t, claim(fx, disguise), [listComms]);
+  assert.equal(r.outcome, 'definitive', show(r));
+  const killed = Object.fromEntries(r.facts.leftoverProcesses.map((x) => [x.after, x.killed]));
+  for (const after of ['poc:1', 'poc:2', 'poc:3']) assert.ok(killed[after] >= 1, `the disguised process left by ${after} was killed: ${JSON.stringify(r.facts.leftoverProcesses)}`);
+  assert.doesNotMatch(seen.comms, /w\) Z/, `no disguised process survived: ${seen.comms}`);
+});
+

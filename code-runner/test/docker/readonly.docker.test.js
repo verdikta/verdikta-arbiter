@@ -8,10 +8,6 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const crypto = require('node:crypto');
-const fs = require('node:fs');
-const os = require('node:os');
-const path = require('node:path');
 const { executeRun } = require('../../src/pipeline');
 const { createArgs, SCRATCH_MB } = require('../../src/sandbox');
 const { LAUNCHER_CHECK } = require('../../src/launcher');
@@ -19,14 +15,10 @@ const { runText } = require('../../src/docker');
 const {
   RUNTIME, PLATFORM, TEST_IMAGE, silent, dockerTestConfig, dockerFor, ensureImage, ensureTestImage, leftovers, removeAll, smallLimits
 } = require('./helpers');
+const { foundryBase, solcBytes } = require('./forgeFixture');
 
-/** Foundry's published image (stable, 1.5.1), the multi-platform index pinned by digest. */
-const FOUNDRY_IMAGE = 'ghcr.io/foundry-rs/foundry@sha256:043752653d5be351c71709091b3db97c4421c907eb40ea294195e7f532aadf46';
-/** solc 0.8.31 static builds, as binaries.soliditylang.org lists them. */
-const SOLC = {
-  'linux/amd64': { url: 'https://binaries.soliditylang.org/linux-amd64/solc-linux-amd64-v0.8.31+commit.fd3a2265', sha256: 'aac9cd0116e9ae0cd3d8f64a8641381845dc9f12e2a52653de36fb619323e557' },
-  'linux/arm64': { url: 'https://binaries.soliditylang.org/linux-arm64/solc-linux-arm64-v0.8.31+commit.fd3a2265', sha256: 'acf358d82da7db033debb2f4db11e1c9cfcb02b0cb5b5ddbb9635ad817b41bdd' }
-};
+/** The forge base pinned in @verdikta/common (v1.8.5) and solc 0.8.31, as the claim fixtures use them. */
+const FOUNDRY_IMAGE = foundryBase();
 
 function run(config, docker, steps, { image = TEST_IMAGE, limits } = {}) {
   const receivedAt = Date.now();
@@ -167,21 +159,6 @@ test('Codex\'s round 7-9 setups: a /bin/sh path through a uid-10001 directory ca
   const retarget = await runText(docker, ['exec', control, 'sh', '-c', 'ln -sfn /tmp /opt/owned/current && readlink /opt/owned/current'], { timeoutMs: 60000 });
   assert.equal(retarget.stdout.trim(), '/tmp', 'without the read-only root the write would have worked');
 });
-
-async function solcBytes(platform) {
-  const pin = SOLC[platform];
-  const cached = path.join(os.tmpdir(), `vcr-${path.basename(pin.url)}`);
-  if (fs.existsSync(cached)) {
-    const bytes = fs.readFileSync(cached);
-    if (crypto.createHash('sha256').update(bytes).digest('hex') === pin.sha256) return bytes;
-  }
-  const res = await fetch(pin.url);
-  assert.equal(res.status, 200, `GET ${pin.url}`);
-  const bytes = Buffer.from(await res.arrayBuffer());
-  assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), pin.sha256, 'solc checksum');
-  fs.writeFileSync(cached, bytes);
-  return bytes;
-}
 
 test('a legitimate forge build and test pass on the read-only root', { timeout: 600000 }, async (t) => {
   const config = dockerTestConfig();

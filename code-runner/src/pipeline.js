@@ -69,7 +69,8 @@ async function executeRun({
     limits,
     abstain: null,
     steps: [],
-    gates: {}
+    gates: {},
+    facts: {}
   };
   const abstainWith = (err) => {
     if (err instanceof RequesterError) {
@@ -154,9 +155,10 @@ async function executeRun({
        * Run argv in the sandbox. Resolves the step record of a definitive
        * exec; throws Abstain otherwise (the run then abstains).
        * @param {string[]} argv
-       * @param {{name:string, timeoutMs?:number, stdin?:Buffer, env?:object, workdir?:string}} o
+       * @param {{name:string, timeoutMs?:number, stdin?:Buffer, env?:object, workdir?:string, tee?:object}} o
+       *   `tee` (a capture.Prefix) also receives the program's stdout, for steps whose output the runner reads
        */
-      async exec(argv, { name, timeoutMs, stdin, env, workdir } = {}) {
+      async exec(argv, { name, timeoutMs, stdin, env, workdir, tee } = {}) {
         const stepName = name || argv[0];
         const late = stopped(stepName);
         if (late) throw late;
@@ -166,7 +168,7 @@ async function executeRun({
         run.signal.addEventListener('abort', forward, { once: true });
         const timer = Number.isFinite(timeoutMs) ? setTimeout(() => step.abort('step'), Math.max(0, timeoutMs)) : null;
         try {
-          const { record, verdict } = await sb.exec(argv, { name: stepName, signal: step.signal, controlSignal: run.signal, stdin, env, workdir });
+          const { record, verdict } = await sb.exec(argv, { name: stepName, signal: step.signal, controlSignal: run.signal, stdin, env, workdir, tee });
           result.steps.push(record);
           if (verdict.kind !== 'definitive') throw new Abstain(verdict.cause, verdict.detail, { step: stepName });
           return record;
@@ -213,9 +215,13 @@ async function executeRun({
       readFile: primary.readFile,
       /** Another sandbox with the same flags (the fix check, §9.2 step 8). */
       openSandbox: () => open(),
-      /** Record a gate decided on a definitive basis (exit_code, junit, integrity). */
+      /** Record a gate decided on a definitive basis (exit_code, junit, integrity, input). */
       gate(name, status, basis, detail) {
         result.gates[name] = makeGate(status, basis, detail);
+      },
+      /** Record a fact the steps observed (the patch, its flags, the PoC runs), for the report. */
+      fact(name, value) {
+        result.facts[name] = value;
       },
       /** Milliseconds until the run must stop. */
       remainingMs: () => Math.max(0, stopAt - Date.now()),

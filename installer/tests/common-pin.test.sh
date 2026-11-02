@@ -46,6 +46,28 @@ for spec in '^1.7.0' '~1.8.0' latest attest '>=1.8.0' '1.x' '1.9.0 || 1.8.0'; do
 done
 node "$ROOT/util/common-pin.js" "$T/none" >/dev/null && bad "common-pin: no package.json counted as a pin" || ok
 
+# --- the same-version check: the AI Node, the adapter and the code runner pin one release
+agree_repo() { # agree_repo DIR AI EA RUNNER (a spec of "-" leaves that component out)
+    rm -rf "$1"; mkdir -p "$1"
+    [ "$2" = - ] || component "$1/ai-node" "$2"
+    [ "$3" = - ] || component "$1/external-adapter" "$3"
+    [ "$4" = - ] || component "$1/code-runner" "$4"
+}
+agree_repo "$T/r" 1.9.0-attest.1 1.9.0-attest.1 1.9.0-attest.1
+out=$(node "$ROOT/util/common-pin.js" --agree "$T/r"); rc=$?
+[ "$rc" = 0 ] && [ "$out" = 1.9.0-attest.1 ] && ok || bad "agree: three equal pins → rc=$rc out=$out"
+agree_repo "$T/r" 1.9.0-attest.1 1.9.0-attest.1 1.9.0-attest.2
+out=$(node "$ROOT/util/common-pin.js" --agree "$T/r" 2>&1); rc=$?
+[ "$rc" = 1 ] && ok || bad "agree: the code runner on another release passed (rc=$rc)"
+has "agree: names the disagreeing component" "$out" "code-runner:1.9.0-attest.2"
+agree_repo "$T/r" 1.9.0-attest.1 1.9.0-attest.1 '^1.9.0'
+node "$ROOT/util/common-pin.js" --agree "$T/r" >/dev/null 2>&1 && bad "agree: a range in the code runner passed" || ok
+agree_repo "$T/r" 1.9.0-attest.1 1.9.0-attest.1 -
+node "$ROOT/util/common-pin.js" --agree "$T/r" >/dev/null 2>&1 && bad "agree: a missing code runner passed" || ok
+# and the real repository agrees
+out=$(node "$ROOT/util/common-pin.js" --agree "$ROOT/.."); rc=$?
+[ "$rc" = 0 ] && ok || bad "agree: this repository's components disagree: $out"
+
 # --- install-adapter.sh: the common-library block, from its header to the verify step
 block=$(awk '/^# Install Verdikta Common Library$/{p=1} /^# Verify Verdikta Common installation/{p=0} p{print}' "$INSTALL")
 [ -n "$block" ] && ok || bad "could not extract the common block from $INSTALL"

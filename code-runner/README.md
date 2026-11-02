@@ -6,17 +6,19 @@ Adapter calls it for a claim; it runs the claim's proof of concept in a fresh,
 isolated container and reports what happened. It never judges: the EA turns
 gate failures into INVALID, and the jury reads the report.
 
-This is node A1 of the build: the service shell, the isolation, the limits,
-the deadline and the result taxonomy. Later nodes add the image pull and
-admission (A1b), the forge steps and gates (A2a), listing checks (A2b), the
-integrity checks and the fix check (A3a), the report and context pack (A3b)
-and the honesty flags (A3c). See [Seams](#seams).
+Node A1 of the build is the service shell, the isolation, the limits, the
+deadline and the result taxonomy; node A2a adds the forge claim pipeline:
+the `applies`, `testPathsOnly`, `build` and `reproduces` gates
+([below](#the-forge-claim-pipeline)). Later nodes add the image pull and
+admission (A1b), listing checks (A2b), the integrity checks and the fix check
+(A3a), the report and context pack (A3b) and the honesty flags (A3c). See
+[Seams](#seams).
 
 ## Run it
 
 ```bash
 cd code-runner
-npm ci                       # no runtime dependencies; npm ci just checks the lockfile
+npm ci                       # one runtime dependency: @verdikta/common, pinned exactly
 CODE_RUNNER_TOKEN="$(openssl rand -hex 32)" CODE_RUNNER_RUNTIME=runc npm start
 ```
 
@@ -120,7 +122,7 @@ runner stops at receipt + deadline minus `CODE_RUNNER_DEADLINE_RESERVE_MS`.
 
 | Status | `outcome` | Meaning for the EA |
 |---|---|---|
-| 200 | `definitive` | Every step ended in a fact the arbiters may settle on. Gates (from A2a on) decide INVALID or the jury. |
+| 200 | `definitive` | Every step ended in a fact the arbiters may settle on. A failed gate means INVALID; all passing goes to the jury. |
 | 503 | `abstain` | Error, no commit. `abstain.cause` says why. |
 | 400 | `requester_error` | The requester's package is broken (§12): a malformed request, a spec above the class hard limits, or an env image that declares volumes. No claim code ran. `issues[]` names each problem. |
 | 401 / 404 / 405 / 413 / 415 | — | Token, route, method, body size (16 MiB), content type. |
@@ -137,11 +139,15 @@ A definitive or abstaining answer looks like:
                "stdout": { "text": "…", "totalBytes": 912, "omittedBytes": 0 }, "stderr": { "…": "…" },
                "cause": "oom", "detail": "…" } ],
   "gates": {},
+  "facts": {},
   "report": null, "reportSha256": null, "contextPack": null
 }
 ```
 
-`report`, `reportSha256` and `contextPack` stay `null` until node A3b.
+`gates` holds `{ status: "pass"|"fail", basis, detail }` per gate decided;
+a gate not reached is absent. `facts` holds what the steps observed (the
+patch, its flags, the PoC runs; see below). `report`, `reportSha256` and
+`contextPack` stay `null` until node A3b.
 
 ## Class hard limits
 
@@ -215,8 +221,8 @@ which abstains.
 The mounts follow what a forge build and test write. `forge build` writes
 `out/` and `cache/` in the project, `forge test` writes `~/.foundry/cache`,
 and tools use `/tmp`. `test/docker/readonly.docker.test.js` runs a real
-`forge build` and `forge test` (foundry 1.5.1 and solc 0.8.31, both pinned)
-on this root. `--ipc none` drops the `/dev/shm` mount, which would be a fourth
+`forge build` and `forge test` (the foundry base pinned in `@verdikta/common`,
+v1.8.5, and solc 0.8.31) on this root. `--ipc none` drops the `/dev/shm` mount, which would be a fourth
 writable place.
 
 Because nothing outside the scratch can be written, claim code cannot create,
@@ -227,8 +233,39 @@ and shows that every such write fails with "Read-only file system". The
 launcher path check stays as a second check.
 
 What the env image (P3a) must provide:
-- the repository checkout somewhere in the image; the claim pipeline (A2a)
-  copies it into `/work`, which starts empty;
+- the repository at `/repo`, as its install commands left it. The runner
+  forces the checkout ([below](#the-forced-checkout)): every tracked file and
+  submodule is rewritten from the listed commit, so the image only needs
+  - the listed commit's objects (its commit, trees and blobs) in a
+    directory named `.git` under `/repo` (a real directory, not a link): the
+    repository's own `.git/objects`, as a clone leaves it (loose objects or
+    packs; a shallow clone of the listed commit is enough). Objects reached
+    only through `commondir`, alternates, a `.git` file or a link are not
+    read. A missing
+    object of the listed commit's own tree, or one that does not hash to its
+    id, is the requester's error (`IMAGE_OBJECTS_MISSING`,
+    `IMAGE_OBJECT_INVALID`);
+  - each submodule's commit's objects, wherever its `.git` directory is
+    under `/repo` (`.git/modules/<name>`, or the submodule's own `.git`), for
+    that submodule to be populated: without them it is left an empty
+    directory, as git leaves an unpopulated submodule;
+  - its installed dependencies, as untracked or ignored files (`lib/`
+    contents outside submodules, `node_modules`, `out/`, `cache/`): they are
+    kept as the image built them, unless one sits at a tracked path or on the
+    way to one;
+  - every entry readable by uid 10001 (`IMAGE_CHECKOUT_UNREADABLE`
+    otherwise), and the checkout within the work tree's 1 GiB.
+
+  The image's git state is never used: its config, index, hooks,
+  attributes, refs (`HEAD` included: the checkout may be at any commit),
+  replace refs, alternates, `commondir`, worktree redirects and submodule
+  settings. No filter of the image runs (git LFS included: a tracked file
+  holds its committed blob). Its `.git` entries, device nodes, sockets and
+  named pipes are not copied into the work tree (none holds a file's bytes,
+  and a pipe git or a build opened would block it);
+- `git` 2.29 or later (2.34.1 on the foundry base), `/usr/bin/env`, GNU
+  `find`, `xargs`, `sort` and `tar`, `wc`, `cat`, `chmod`, `rm`, `mkdir`,
+  `forge` and a POSIX `/bin/sh` (the foundry base has them);
 - every tool, `solc` included, outside `$HOME` and `/tmp` (both start empty),
   or in the work tree;
 - the build and test commands writing only inside the work tree, `$HOME` and
@@ -270,8 +307,9 @@ stream).
 
 `src/result.js` (§9.3, §12). A run is **definitive** only when every step
 started (the nonce above) and ended in a clean exit code (0-128), and later a JUnit outcome or an integrity
-result; gates record their basis (`exit_code`, `junit`, `integrity`) and
-cannot be decided on anything else. Everything else **abstains**:
+result; gates record their basis (`exit_code`, `junit`, `integrity`, or
+`input`: the request's own bytes, such as a patch's size) and cannot be
+decided on anything else. Everything else **abstains**:
 
 | `abstain.cause` | When |
 |---|---|
@@ -296,6 +334,210 @@ does not start or does not exit 0 counts against the step: `pids_limit` when
 `docker stats` shows the pid table full, `docker_error` otherwise. Counter
 files that do not exist (gVisor, or the other cgroup version) are not a
 failure.
+
+## The forge claim pipeline
+
+`src/claim.js` with `src/forge.js`, `src/git.js`, `src/patch.js` and
+`src/junit.js` (design §9.2 steps 3-6, §10.1). For a forge listing
+(`commands.framework: "forge"`, `env.from: "foundry"`), in one sandbox:
+
+| Step | Gate | Decided on |
+|---|---|---|
+| Record the sandbox's processes (the init and the keepalive); force the checkout: `/work` becomes the listed commit in a fresh repository (below) | — (the requester's error when the image lacks the listed commit's objects) | |
+| `poc.patch` at most `maxPatchBytes`, no NUL byte, no copy or rename header (below) | `applies` | `input` |
+| `git apply --index` against the listed commit, then the bytes it wrote measured against 50 MB (below) | `applies` | `exit_code` / `input` |
+| `git diff --cached --name-status --no-renames`: every touched path (a rename's source included) under `paths.tests`, none under `paths.protected`, each one a report can name | `testPathsOnly` | `exit_code` |
+| Protected files reset to `baseCommit`; the result committed (`Verdikta code runner <code-runner@verdikta.invalid>`, `1767225600 +0000`, message `poc.patch`) | — | |
+| `commands.build` | `build` | `exit_code` (tier A) |
+| Run 1: `commands.testFiles` on the PoC's files; runs 2 and 3: `commands.testIds` on the tests run 1 found | `reproduces` | `junit` |
+
+A failed gate stops the pipeline; the gates after it are not run (absent).
+A step that hits a limit, dies or does not start abstains the run, and no
+gate is decided on it: an OOM-killed build is an abstain, never a `build`
+failure.
+
+### The forced checkout
+
+`src/checkout.js` with `src/objects.js` (owner decision Q25, "force the
+checkout"; design §9.2 step 3). Before any claim code runs, `/work` becomes
+the listed commit, whatever the image's install commands did to its
+checkout:
+
+1. The runner makes two repositories with its own settings (`git init
+   --template=`, so no hook is copied in): `/work/.git`, the one the claim
+   steps use, and a staging store. The image's files are copied into `/work`
+   without any `.git` entry (at any depth), device node, socket or named
+   pipe. The loose objects and packs of every `objects` directory inside a
+   `.git` directory of `/repo` are copied into the staging store as plain
+   files, each with its own bytes (a hard link is read as the file it is),
+   in byte order, the first copy of a name kept; nothing else of theirs (no
+   `info/alternates`, multi-pack-index or commit-graph).
+2. The runner reads the listed commit, its trees level by level, each
+   submodule's commit (the one its gitlink records) and trees, and every
+   blob, out of the staging store, and re-hashes each one itself
+   (`<type> <size>\0<content>`, SHA-1, or SHA-256 when `baseCommit` has 64
+   hex digits). The store's answer is never trusted: an object that does not
+   hash to its id, has the wrong type or is malformed (a tree out of git's
+   order, a duplicate name, `.git`, `.`, `..`, an empty name, a symbolic link
+   Linux cannot hold) is the requester's error, as is a missing object of
+   the listed commit's own tree. A submodule whose commit, a tree or a blob
+   is missing is left an empty directory. Bounds: 512 MiB of files (every
+   path counted), 200,000 entries, 128 levels, 4,000-byte paths.
+3. The verified blobs, the runner's own trees of the whole tree (each
+   submodule's files as ordinary paths) and its root commit (`Verdikta code
+   runner`, `1767225600 +0000`, message `listed commit <baseCommit>`) go
+   into `/work/.git` as packs the runner writes (`git index-pack --stdin`:
+   git stores the bytes and judges no path). git must then agree on the
+   commit and tree ids, and `read-tree` builds the index from that commit:
+   a path git will not check out is refused there.
+4. Every tracked path is replaced, never written through: each directory on
+   the way to one must be a real directory (a symbolic link, file, pipe or
+   device node there is removed and a directory made, from the top down),
+   whatever sits at the path itself is removed (a directory with all it
+   holds included), and git checks the files out into the empty places
+   (`git checkout-index --all --index`). The work tree must then match the
+   index exactly, and the staging store is removed: `/work` holds one
+   repository, the runner's.
+5. `facts.checkout` records what was found, never judged: `commit` and
+   `tree` (the runner's commit of the listed tree), `paths`, `corrected` and
+   the first 100 `correctedPaths` (tracked paths the image had differently,
+   counted by git in the fresh repository before the rewrite),
+   `directoriesMade`, `emptySubmodules`, `gitRemoved` and
+   `gitEntriesRemoved`.
+
+The requester's errors, all before any claim code runs:
+`IMAGE_CHECKOUT_MISSING` (no `/repo`), `IMAGE_TOOL_MISSING` (no
+`/usr/bin/env` or `git`), `IMAGE_CHECKOUT_UNREADABLE`,
+`IMAGE_OBJECTS_MISSING`, `IMAGE_OBJECT_INVALID` (also a path git will not
+check out under the runner's settings, such as `git~1` or a symbolic link
+named `.gitmodules`), `IMAGE_CHECKOUT_TOO_LARGE`, and `IMAGE_WORKDIR_FULL`
+(the checkout and dependencies leave too little room to apply a claim). An
+image whose checkout differs from the listed commit is corrected and run, not
+refused.
+
+Every git call and every checkout script starts with an empty environment
+(`/usr/bin/env -i`, then the runner's fixed variables), so nothing the image
+sets with `ENV` (`GIT_CONFIG_*`, `GIT_TRACE`, `GIT_TEMPLATE_DIR`,
+`TAR_OPTIONS`, ...) reaches them, and runs in one of the runner's two
+repositories (`src/git.js` refuses any other `GIT_DIR`). Protected paths are
+reset to the runner's commit of the listed tree, and the PoC commit's parent
+is that commit.
+
+**git runs only in the sandbox.** The patch reaches it as stdin of
+`docker exec`; what the patch touches is what git says, from its `-z`
+output. Every git call fixes the settings that would change an outcome or
+run something (`src/git.js`): no system or global config, no hooks or
+fsmonitor, no line-ending conversion, whitespace never refuses a patch,
+diffs with no external driver or rename detection, the index compared by
+content (no ignored stat data, no sparse checkout), `LC_ALL=C`. No attribute
+driver runs: `.git/info/attributes`, the source above every
+`.gitattributes`, is
+`* !filter !diff !merge !text !crlf !eol !ident !working-tree-encoding`, so
+a patched file can never be a clean or smudge filter, a textconv or a merge
+driver, and no conversion changes a file's bytes.
+
+**Expansion is measured, not counted** (owner decision Q26). git applies the
+patch in the sandbox, in the fresh repository, under its memory, pids and time
+limits. The runner then reads from its own index what the patch wrote: the
+postimage bytes of every path it created or modified (`git diff --cached
+--raw`, then each blob's `%(objectsize)`), summed, counted once per path. More
+than `patchExpansionBytes` is an `input` failure (`PATCH_EXPANSION`), the same
+gate as before; the measured figure is in the reason and in
+`facts.patch.expansionBytes`.
+
+Getting the blame right (§9.2 step 3): the patch is refused only when the
+patch is what ran out of room.
+- Before applying, the runner checks the work tree has `patchExpansionBytes`
+  plus a 64 MB margin of free disk. If not, the image's checkout and
+  installed dependencies left too little room — the requester's package, not
+  the hunter's patch: `IMAGE_WORKDIR_FULL`, before any apply.
+- With that room confirmed, running out of it (`ENOSPC`) as git applies, or
+  the apply's own 90 s budget, is the patch materialising more than it may:
+  `PATCH_EXPANSION`, `input`. Running out of **memory** while applying is an
+  ordinary resource abstain (owner decision Q28), never charged to the patch;
+  so are the run's own deadline, budget and cancellation.
+
+**The host-side checks** (`src/patch.js`, before git sees the patch) parse no
+meaning: `maxPatchBytes`; no NUL byte (no patch git writes holds one, and git
+reads a header field only up to one); no copy (`copy from`) and no rename
+(`rename from` / `to`, and git's older `rename old` / `new`), each of which
+rebuilds a whole existing file from one header line; and no binary change (a
+`GIT binary patch` or `Binary files … differ` / `Files … differ` entry, owner
+decision Q28) — a PoC adds or edits text test files, and a binary postimage
+can name an existing object the patch's bytes do not bound. A moved file is a
+deletion and an addition (`git diff --no-renames`). (`fix.patch` may touch
+other kinds of file; that is A3a's question, not this node's.)
+
+**Commands** run as written in the sandbox's `/bin/sh` with pathname expansion
+off (`set -f; <command>`). For `testFiles` and `testIds` the runner appends
+`--junit --fuzz-seed 0x76657264696b7461` (the seed from `@verdikta/common`)
+as arguments (`"$@"`), and every build and test step gets
+`FOUNDRY_FUZZ_SEED` too. `$FILES` is one forge glob over the Solidity files
+the patch added or changed (`{a.t.sol,b.t.sol}`, glob characters escaped);
+`$TEST_IDS` an anchored regex over the exact signatures forge matches
+`--match-test` against (`^(?:test_a\(\)|test_b\(uint256\))$`). A listing
+must declare `build`, `testFiles` with `$FILES` and `testIds` with
+`$TEST_IDS` (`COMMAND_MISSING`, `COMMAND_PLACEHOLDER`, `COMMAND_INVALID`).
+
+**The schedule is fixed:** three runs whenever run 1 found a test the patch
+added, whatever run 1 showed and however much time is left. The tests the
+patch added are run 1's test functions (`test*`, `invariant*`,
+`statefulFuzz*`, `table*`, `check*`, `prove*`) in the PoC's files whose identity is not in
+`baseline.json`; the identity is `<file> > <Contract> > <signature>`.
+`reproduces` passes when every one of them fails as an assertion on all three
+runs. Any pass, skip, error, missing or duplicated record on any run fails
+it, as does a run with no readable JUnit or a failing `setUp()` or
+`constructor()` in a PoC suite; the detail names the first one, run by run,
+in code-unit order of identity.
+
+**Assertion vs error** (`src/forge.js`). A forge test fails one way: the test
+function ran and reverted (an assertion helper, a `require`, a revert from
+the code under test). That is an assertion failure, the same line the §8.2
+harness proof draws between a trivially failing and a trivially broken test.
+Errors are everything else: no JUnit (a compile error, such as an import that
+does not resolve), a failed `setUp()`, `constructor()` or `afterInvariant()`,
+a failure whose body never ran (no reason, as when a `beforeTestSetup` call
+reverts, or forge's default `(gas: 0)` in the record's own `system-out`, read
+where forge writes it, right after `[FAIL: <reason>] <signature> `, however
+long the reason: a test body that ran always used gas), and failures forge raises itself at the
+pinned version: a refused or failed cheatcode (`vm.<name>: …`), `testFail*`
+(removed), the EVM failing (`EvmError:` other than `Revert`), fuzz or
+invariant set-up, a fuzz test whose inputs `vm.assume` all rejected,
+table-test fixtures, incomplete symbolic execution. Legacy, non-reverting
+assertions fail without a reason, so a listing built on them fails the
+harness proof.
+
+**The JUnit** is forge's stdout, read up to 8 MiB and parsed strictly
+(`src/junit.js`): UTF-8, no DOCTYPE (so no entity can be declared: entity
+expansion is off), only the five predefined entities and character
+references, no comments, CDATA or processing instructions, exactly one root
+and only forge's shape (`testsuites` > `testsuite name="<file>:<Contract>"`
+> `testcase` with at most one `failure`, `error` or `skipped`), with caps on
+depth, elements and attributes. Anything else is an unreadable JUnit, an
+error on that run. A test that logs XML gets it escaped into a `system-out`,
+which is never read as markup; bytes a test writes straight to forge's stdout
+make a second document or stray text, so the JUnit is unreadable rather than
+richer.
+
+**Between steps that ran claim code** (after the build and after each run),
+every process but the ones recorded before any claim code ran is stopped and
+killed on every pass until none is alive (shell builtins and `/proc`; a
+sandbox where that does not converge abstains `docker_error`). A process
+counts as gone only when every one of its tasks is a zombie, and a task's
+state is read after the last `) ` of its whole stat file, since the process
+name before it is the process's own to choose, and before runs 2 and 3 the tracked files go back
+to the PoC commit (`git reset --hard`). The number killed is in
+`facts.leftoverProcesses`.
+
+`facts` (A3b builds the report from them): `checkout` (above), `patch`
+(bytes, SHA-256, the measured expansion), `commit` (`base`, `poc`), `diff` (files, added,
+removed, binary files), `testPaths` (outside, protected, unreportable),
+`flags` (`existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
+`frameworkReferences`: forge inline config, JUnit markup, file and
+environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset`, `poc`
+(`testCount`, `runCounts`, the first 200 tests with their three results,
+kind and message, and per run the command, JUnit status, exit code and
+failing harness records) and `leftoverProcesses`.
 
 ## Time
 
@@ -358,20 +600,33 @@ CODE_RUNNER_RUNTIME=runc npm run test:docker    # needs a Docker daemon
 CODE_RUNNER_RUNTIME=runsc npm run test:docker   # Linux with gVisor registered as runsc
 ```
 
-The Docker tests pull `ubuntu:24.04` by digest (for `CODE_RUNNER_PLATFORM`,
-which they set to `linux/arm64` on Apple silicon under runc), run one test per abstain cause,
-check the real isolation of a container and remove everything they start. CI
+The Docker tests pull `ubuntu:24.04` and the foundry base pinned in
+`@verdikta/common` by digest (for `CODE_RUNNER_PLATFORM`, which they set to
+`linux/arm64` on Apple silicon under runc, where the base's arm64 variant of
+the same release runs), run one test per abstain cause, check the real
+isolation of a container and remove everything they start.
+`claim.docker.test.js` builds fixture Foundry repositories as env images
+locally (`forgeFixture.js`: FROM the pinned base, solc 0.8.31 by SHA-256,
+the repository at `/repo`); under Docker's classic image store, where a local
+build has no repository digest, it pushes them to a throwaway `registry:2`
+on 127.0.0.1 first. CI
 (`.github/workflows/code-runner.yml`) runs the unit tests, and the Docker tests
 under `runc` and under the pinned gVisor on the systrap platform.
 
 ## Seams
 
 - **Steps** (`src/steps.js`): `claimSteps(request, limits)` returns the steps
-  the engine runs, in order. A1 returns none. A step is `async (ctx) => {}`
-  with `ctx.exec(argv, { name, timeoutMs, stdin, env, workdir })`,
-  `ctx.readFile(path, { maxBytes })`, `ctx.gate(name, status, basis, detail)`,
-  `ctx.openSandbox()` (a second container with the same flags, for the fix
-  check), `ctx.remainingMs()` and `ctx.limits`.
+  the engine runs, in order (A2a: `src/claim.js`). A step is `async (ctx) => {}`
+  with `ctx.exec(argv, { name, timeoutMs, stdin, env, workdir, tee })` (`tee`, a
+  `capture.Prefix`, also receives the program's stdout without ever stopping
+  it), `ctx.readFile(path, { maxBytes })`, `ctx.gate(name, status, basis, detail)`,
+  `ctx.fact(name, value)`, `ctx.openSandbox()` (a second container with the
+  same flags, for the fix check), `ctx.remainingMs()` and `ctx.limits`.
+- **Forge adapter** (`src/forge.js`): reporter flags, the test identity,
+  `classifyRecord`, `$FILES` and `$TEST_IDS`; A2b's baseline reuses them.
+- **Common** (`src/common.js`): `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`,
+  `pocPatchPathsGate`, `matchesAny` from `@verdikta/common` (A3b moves the
+  class limits there too).
 - **Launch** (`src/sandbox.js`): `createArgs`, `startArgs`, `execArgs`,
   `removeArgs` and the `Sandbox` class.
 - **Admission** (`src/admission.js`): A1b adds slots, the memory reserve and

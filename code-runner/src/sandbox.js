@@ -337,11 +337,16 @@ class Sandbox {
    * @param {object} [o.env]
    * @param {string} [o.workdir]
    * @param {{write(Buffer):boolean}} [o.stdoutSink] - instead of the 32 KiB head/tail log
+   * @param {{write(Buffer):boolean}} [o.tee] - also receives the program's stdout; its return value is
+   *   ignored, so it never stops the program (a Prefix: git's answers, forge's JUnit)
    */
-  async exec(argv, { name, signal, controlSignal, stdin, env, workdir, stdoutSink } = {}) {
+  async exec(argv, { name, signal, controlSignal, stdin, env, workdir, stdoutSink, tee } = {}) {
     const stdout = new HeadTail();
     const stderr = new HeadTail();
-    const programOut = stdoutSink ? { write: (c) => { stdout.write(c); return stdoutSink.write(c); } } : stdout;
+    const toTee = (c) => { if (tee) tee.write(c); };
+    const programOut = stdoutSink
+      ? { write: (c) => { stdout.write(c); toTee(c); return stdoutSink.write(c); } }
+      : { write: (c) => { stdout.write(c); toTee(c); return true; } };
     const onAbort = () => { this.kill(); };
     if (signal) signal.addEventListener('abort', onAbort, { once: true });
     const t0 = Date.now();
