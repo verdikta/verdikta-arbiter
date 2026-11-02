@@ -82,7 +82,7 @@ function claimSpec(fx, over = {}) {
       framework: 'forge', build: 'forge build', test: 'forge test',
       testFiles: 'forge test --match-path $FILES', testIds: 'forge test --match-test $TEST_IDS', ...(over.commands || {})
     },
-    paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', '.gitignore'] },
+    paths: over.paths || { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', '.gitignore'] },
     limits: { cpus: 1, memoryMb: 1024, buildSeconds: 90, testSeconds: 120, runSeconds: 360, maxPatchBytes: 2000000 }
   };
 }
@@ -425,6 +425,18 @@ test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under te
   assert.equal(r.outcome, 'definitive', show(r));
   for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
   assert.deepEqual(stepMs(r, /:links$/), [], 'links outside every watched set are never resolved');
+});
+
+test('a link the patch adds inside a watched set (paths.tests overlapping lib/) under real forge: the dependencies check fails, the link is never followed, the image is not refused', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const patch = Buffer.concat([addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), addLinksPatch({ 'lib/x/E.t.sol': '/tmp/evil' })]);
+  const r = await run(t, claim(fx, patch, { paths: { tests: ['test/**', 'lib/**/*.t.sol'], protected: ['foundry.toml', '.gitignore'] } }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.testPathsOnly.status, 'pass', show(r));
+  assert.equal(r.gates.integrity.status, 'fail', show(r));
+  assert.equal(r.facts.poc.integrity.dependenciesUnchanged, false);
+  assert.match(r.gates.integrity.detail, /dependenciesUnchanged \(the reference: the patch adds a link inside the dependencies \(lib\/x\/E\.t\.sol\)/);
+  assert.deepEqual(stepMs(r, /:links/), [], 'never resolved');
 });
 
 // ------------------------------------------------------------------ the fix check
