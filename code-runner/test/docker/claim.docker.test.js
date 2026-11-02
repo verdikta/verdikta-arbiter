@@ -184,10 +184,11 @@ const VARIANTS = Object.freeze({
   // link to blob B's file. Each object must keep its own bytes, in either name order of A and B.
   hardlink1: { setup: hardLinked('src/Vault.sol', 'test/Vault.t.sol') },
   hardlink2: { setup: hardLinked('test/Vault.t.sol', 'src/Vault.sol') },
-  // R22-F1: a protected file (lib/**) whose name holds a non-UTF-8 byte (0xff). It is created and amended into the
-  // base commit, so the listed commit tracks it; the reset must feed its exact bytes back to git, not a mangled name.
+  // R22-F1 / R23-F1: protected files (lib/**) whose names hold a non-UTF-8 byte (0xff) and a UTF-8 character (café).
+  // Both are amended into the base commit; the reset must feed each one's exact bytes back to git, and must match the
+  // glob on the same UTF-8 decoding the path gate uses. Created with printf so the UTF-8 bytes are literal (c3 a9).
   protnonutf8: {
-    setup: `mkdir -p lib/odd && printf x > "lib/odd/$(printf '\\377').txt" && git add -A`
+    setup: `mkdir -p lib/odd && printf x > "lib/odd/$(printf '\\377').txt" && printf x > "lib/odd/$(printf 'caf\\303\\251').sol" && git add -A`
       + ` && ${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q --amend --no-edit`
   },
   // A SHA-256 repository.
@@ -810,12 +811,12 @@ test('R13-F2: objects hard-linked across stores keep their own bytes, whichever 
   }
 });
 
-test('R22-F1: a protected file with a non-UTF-8 name is reset byte-for-byte; an ordinary PoC reaches the build and reproduces', { timeout: TIMEOUT }, async (t) => {
+test('R22-F1 / R23-F1: protected files with a non-UTF-8 and a UTF-8 name are reset byte-for-byte; an ordinary PoC reaches the build and reproduces', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('protnonutf8');
   const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
   assert.equal(r.outcome, 'definitive', show(r));
   assert.equal(r.gates.applies.status, 'pass', show(r));
-  assert.ok(r.facts.protectedReset >= 1, 'the non-UTF-8 lib file is a protected path that was reset');
+  assert.ok(r.facts.protectedReset >= 2, 'both the non-UTF-8 and the UTF-8 lib files are protected paths that were reset');
   assert.equal(r.gates.build.status, 'pass', show(r));
   assert.equal(r.gates.reproduces.status, 'pass', show(r));
 });

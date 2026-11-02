@@ -369,6 +369,18 @@ test('no protected path at the listed commit: nothing to reset, the checkout is 
   assert.equal(r.facts.protectedReset, 0);
 });
 
+test('R23-F1: a protected path is matched on its UTF-8 name (as the path gate does) but reset by its raw bytes', async () => {
+  // ls-tree prints café's bytes (c3 a9), read latin1 as "cafÃ©"; the glob is matched on the UTF-8 decode "café".
+  const cafeRaw = 'lib/cafÃ©.sol';
+  const sb = claimSandbox({ git: { 'ls-tree': () => ({ stdout: Buffer.from(`foundry.toml\0${cafeRaw}\0test/Vault.t.sol\0`, 'latin1') }) } });
+  // The `?` pattern matches the single UTF-8 character é, not the two latin1 bytes.
+  const r = await runClaim(sb, claimRequest({ spec: forgeSpec({ paths: { tests: ['test/**'], protected: ['lib/caf?.sol'] } }) }));
+  assert.equal(r.outcome, 'definitive', JSON.stringify(r.abstain || r.issues));
+  assert.equal(r.facts.protectedReset, 1, 'the UTF-8 name matched the glob');
+  const [checkout] = gitCalls(sb, 'checkout');
+  assert.deepEqual(checkout.stdin, Buffer.from(cafeRaw, 'latin1'), 'the pathspec is the original bytes, so git finds the file');
+});
+
 // -------------------------------------------------------------------- build
 
 test('build: the build command\'s exit code decides the gate (tier A); a failed build stops before the PoC', async () => {

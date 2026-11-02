@@ -412,9 +412,10 @@ function claimSteps(request, limits) {
     const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', state.prepared]);
     const all = tree.record.exitCode === 0 && !tree.out.truncated ? parseLsTreeZ(tree.out.bytes()) : null;
     if (!all) throw runnerError('reset:list', `the listed commit's files could not be listed (git exited ${tree.record.exitCode})`);
-    // Paths are latin1 (one char per byte); matchesAny's globs are ASCII, so a non-UTF-8 filename matches byte-wise,
-    // and the literal pathspec is written back as the same bytes (R22-F1).
-    const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(p, protectedGlobs)) : [];
+    // Each path is latin1 (one char per byte). The glob is matched on the path's UTF-8 decoding, so a UTF-8 filename
+    // matches the same way the path gate (testPathsOnly) matches it (R23-F1); the literal pathspec is written back as
+    // the original bytes (R22-F1). A non-UTF-8 byte decodes to U+FFFD in both, so they still agree.
+    const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(Buffer.from(p, 'latin1').toString('utf8'), protectedGlobs)) : [];
     if (protectedFiles.length) {
       const reset = await ctx.exec(git(['checkout', state.prepared, '--pathspec-from-file=-', '--pathspec-file-nul'], { env: { GIT_LITERAL_PATHSPECS: '1' } }), {
         name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0'), 'latin1')
