@@ -1089,7 +1089,7 @@ test('owner decision Q35: settlement can tell, from fields of verdikta.claim-rep
 });
 
 test('A3a R24-F1: a compiler a patch could replace is refused before any patch, since forge runs it from its first start: in the work tree by any form, or outside it through a place the sandbox can write', async () => {
-  for (const solc of ['test/solc', 'bin/solc', './bin/solc', '/work/test/solc', 'solc']) {
+  for (const solc of ['test/solc', 'bin/solc', './bin/solc', '/work/test/solc', 'solc', '0.8.31/solc', '00.8.31', '0.8.31-tools/solc']) {
     const sb = claimSandbox({ onBox: (box) => { box.configOver = { solc }; } });
     const r = await runClaim(sb);
     assert.equal(r.outcome, 'requester_error', `${solc}: ${show(r)}`);
@@ -1108,6 +1108,26 @@ test('A3a R24-F1: a compiler a patch could replace is refused before any patch, 
   assert.equal(viaRoot.outcome, 'requester_error', show(viaRoot));
   assert.deepEqual(viaRoot.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.equal(linked.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'apply').length, 0, 'no patch applied');
+  // Vyper's, which forge runs for a `.vy` file a patch adds.
+  const vyper = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { vyper: { path: 'test/vyper' } }; } }));
+  assert.equal(vyper.outcome, 'requester_error', show(vyper));
+  assert.match(vyper.issues[0].detail, /vyper\.path \(test\/vyper\) is in the work tree/);
+  // R25-F1: `extends` moves forge's configuration into a file a patch could change; a root file that is a link, the same.
+  for (const [seed, re] of [
+    [(box) => set(box, '/work/foundry.toml', '[profile.default]\nextends = "test/compiler.toml"\n'), /foundry\.toml uses `extends`/],
+    [(box) => set(box, '/work/foundry.toml', '"ext\\u0065nds" = 1\n'), /foundry\.toml uses `extends`, or an escape/],
+    [(box) => box.tree.set('/work/foundry.toml', { type: 'l', target: 'test/foundry.toml' }), /foundry\.toml is a link/],
+    [(box) => box.tree.set('/work/.env', { type: 'l', target: 'test/.env' }), /\.env is a link/]
+  ]) {
+    const refused = claimSandbox({ onBox: seed });
+    const out = await runClaim(refused);
+    assert.equal(out.outcome, 'requester_error', show(out));
+    assert.deepEqual(out.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(out.issues[0].detail, re);
+    assert.equal(refused.execs().filter((d) => d.forge).length, 0, 'forge never started');
+  }
+  const comment = await runClaim(claimSandbox({ onBox: (box) => set(box, '/work/foundry.toml', '[profile.default]\n# extends is not used here\n') }));
+  assert.notEqual(comment.outcome, 'requester_error', show(comment));
   // forge's configuration under paths.tests, which forge reads at its first start, and not protected: a patch's .env.
   const spec = forgeSpec({ paths: { tests: ['test/**', '.env'], protected: ['foundry.toml', 'lib/**'] } });
   const sb = claimSandbox();
@@ -1117,6 +1137,20 @@ test('A3a R24-F1: a compiler a patch could replace is refused before any patch, 
   assert.match(env.issues[0].detail, /\.env is under paths\.tests and not protected/);
   const safe = forgeSpec({ paths: { tests: ['test/**', '.env'], protected: ['foundry.toml', 'lib/**', '.env'] } });
   assert.equal((await runClaim(claimSandbox(), claimRequest({ spec: safe }))).gates.integrity.status, 'pass', 'protected: a patch cannot touch it');
+});
+
+test('A3a R25-F2: a fix that changes forge\'s own configuration is not built: a fact, a failed fixed build, and the PoC\'s gates stand', async () => {
+  const { FIX_PATCH } = require('../helpers/fakeClaim');
+  const sb = claimSandbox({ fix: { nameStatus: 'M\0foundry.toml\0', numstat: '1\t1\tfoundry.toml\0' } });
+  const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['lib/**'] } });
+  const r = await runClaim(sb, claimRequest({ spec, fixPatch: Buffer.from(FIX_PATCH) }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.equal(r.facts.fix.applies, 'pass', JSON.stringify(r.facts.fix.detail));
+  assert.equal(r.facts.fix.builds, 'fail');
+  assert.equal(r.facts.fix.pocPasses, null);
+  assert.match(r.facts.fix.detail.builds, /fix\.patch changes foundry\.toml, forge's own configuration/);
+  assert.equal(sb.execs().filter((d) => d.box === 2 && d.forge).length, 0, 'forge never ran on the fix');
 });
 
 test('A3a R23-F1: a listed Solidity file that sets a path by inline configuration is refused right after the checkout, before any patch; other inline settings are nothing', async () => {

@@ -45,7 +45,7 @@ test('parseFramework reads forge\'s path, PATH and `forge config --json` (out, c
   assert.deepEqual(p.pathDirs, ['/usr/local/bin', '/work/bin', '/work/bin']);
   assert.equal(p.configSha256, sha(config));
   assert.deepEqual(p.config, {
-    out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots',
+    out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots', vyperPath: null,
     runOutputs: [
       { setting: 'test_failures_file', value: 'cache/test-failures' }, { setting: 'fuzz.failure_persist_dir', value: 'cache/fuzz' }, { setting: 'invariant.failure_persist_dir', value: 'cache/invariant' }
     ]
@@ -718,7 +718,22 @@ test('the inline-configuration scan is hermetic, skips the runner\'s repository,
     fs.writeFileSync(at('.git/x/C.sol'), inline);
     fs.writeFileSync(at('test/notes.txt'), inline);
     fs.symlinkSync('A.t.sol', at('test/L.t.sol'));
-    const script = integrity.INLINE_CONFIG_SCRIPT.replace('find /work', `find ${root}`);
+    const script = integrity.INLINE_CONFIG_SCRIPT.replace(/\/work/g, root);
+    // foundry.toml as text: a comment is nothing; a key or a table of `extends`, or an escape, is reported; a link is named as one.
+    const scanToml = (text) => {
+      fs.writeFileSync(at('foundry.toml'), text);
+      const got = spawnSync(argv[0], [...argv.slice(1, argv.indexOf('/bin/sh')), '/bin/sh', '-c', script, 'vcr-inline-config']);
+      assert.equal(got.status, 0, got.stderr.toString());
+      fs.rmSync(at('foundry.toml'));
+      return got.stdout.toString('latin1').split('\0').includes(at('foundry.toml'));
+    };
+    for (const text of ['[profile.default]\nextends = "test/c.toml"\n', '[profile.default.extends]\npath = "x"\n', '"ext\\u0065nds" = 1\n', 'profile.default = { a = "#", extends = "x" }\n']) assert.equal(scanToml(text), true, text);
+    for (const text of ['[profile.default]\n# extends = "test/c.toml"\nsrc = "src"\n', '[profile.default]\nsrc = "src"\n']) assert.equal(scanToml(text), false, text);
+    fs.writeFileSync(at('real.toml'), 'x');
+    fs.symlinkSync('real.toml', at('.env'));
+    const linked = spawnSync(argv[0], [...argv.slice(1, argv.indexOf('/bin/sh')), '/bin/sh', '-c', script, 'vcr-inline-config']);
+    assert.ok(linked.stdout.toString('latin1').split('\0').includes(`link:${at('.env')}`));
+    fs.rmSync(at('.env'));
     const r = spawnSync(argv[0], [...argv.slice(1, argv.indexOf('/bin/sh')), '/bin/sh', '-c', script, 'vcr-inline-config']);
     assert.equal(r.status, 0, r.stderr.toString());
     assert.deepEqual(r.stdout.toString('latin1').split('\0').filter(Boolean).sort(), [at('lib/a b/B.sol'), at('test/A.t.sol'), at('test/L.t.sol')].sort());

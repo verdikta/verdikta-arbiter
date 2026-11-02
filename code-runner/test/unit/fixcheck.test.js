@@ -313,12 +313,12 @@ test('A3a R1-F2: fix.patch paths are matched by their own (UTF-8) names: a prote
 
 test('A3a R4-F2: a fix that leaves forge\'s configuration unreadable is a failed fixed build, not the requester\'s error; through the HTTP API the claim\'s gates stand', async (t) => {
   const { forgeConfig } = require('../helpers/fakeClaim');
-  // foundry.toml is not protected in this listing, so the fix may change it; with the fix, `forge config` fails.
+  // With the fix, `forge config` fails. (A fix that changes forge's own configuration is not built at all: R25-F2.)
   const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['lib/**'] } });
   const framework = (d, box) => (box.n === 2 && box.fixCommitted
     ? { exitCode: 1, stdout: 'vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n', stderr: 'Error: failed to parse foundry.toml: invalid TOML\n' }
     : { stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n${forgeConfig(box.tree)}` });
-  const fix = { nameStatus: 'M\0foundry.toml\0', numstat: '1\t1\tfoundry.toml\0' };
+  const fix = {};
   const r = await runClaim(claimSandbox({ fix, scripts: { 'vcr-framework': framework } }), claimRequest({ spec }));
   assert.equal(r.outcome, 'definitive', show(r));
   for (const g of CLAIM_GATES) assert.equal(r.gates[g].status, 'pass', g);

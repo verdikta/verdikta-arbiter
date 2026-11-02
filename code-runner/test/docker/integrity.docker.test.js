@@ -114,6 +114,18 @@ const VARIANTS = Object.freeze({
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "test/solc"') },
     setup: 'ln -s /opt/solc/solc test/solc'
   },
+  // R24-F1, round 25: a compiler path that starts like a release; R25-F1: the compiler in a file `extends` names.
+  solcversiondir: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "0.8.31/solc"') },
+    setup: 'mkdir -p 0.8.31 && ln -s /opt/solc/solc 0.8.31/solc'
+  },
+  // R25-F2: foundry.toml as a fix would change it, not protected.
+  fixconfig: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML() }
+  },
+  extendsconf: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'test/compiler.toml': '[profile.default]\nsolc = "/opt/solc/solc"\n', 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'extends = "test/compiler.toml"') }
+  },
   // R23-F1: a listed test contract that sets where forge writes by inline configuration, which `forge config` never shows.
   inlinepersist: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'test/Annotated.t.sol': ANNOTATED }
@@ -830,6 +842,24 @@ test('A3a R24-F1 under real forge: a compiler under paths.tests is refused befor
   assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.match(r.issues[0].detail, /solc \(test\/solc\) is in the work tree, where a patch could replace it/);
   assert.ok(!(r.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
+  // A path that starts like a release is a file to forge; `extends` is refused before forge starts.
+  for (const [variant, re] of [['solcversiondir', /solc \(0\.8\.31\/solc\) is in the work tree/], ['extendsconf', /foundry\.toml uses `extends`/]]) {
+    const refused = await run(t, claim(await fixture(variant), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+    assert.equal(refused.outcome, 'requester_error', `${variant}: ${show(refused)}`);
+    assert.deepEqual(refused.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(refused.issues[0].detail, re);
+    assert.ok(!(refused.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
+  }
+  // R25-F2: a fix that selects another compiler is a failed fixed build, a fact; the PoC's gates stand.
+  const fx = await fixture('fixconfig');
+  const toml = FOUNDRY_TOML();
+  const fixPatch = modifyPatch('foundry.toml', toml, toml.replace('solc = "/opt/solc/solc"', 'solc = "src/compiler"'));
+  const paths = { tests: ['test/**'], protected: ['lib/**', '.gitignore'] };
+  const fixed = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { fixPatch, paths }));
+  assert.equal(fixed.outcome, 'definitive', show(fixed));
+  assert.equal(fixed.gates.reproduces.status, 'pass', show(fixed));
+  assert.equal(fixed.facts.fix.builds, 'fail', JSON.stringify(fixed.facts.fix));
+  assert.match(fixed.facts.fix.detail.builds, /fix\.patch changes foundry\.toml/);
 });
 
 test('A3a R23-F1 under real forge: a listed contract whose inline configuration sets where forge writes is refused before any patch or claim code, so an honest invariant PoC added to it cannot be failed by its counterexample', { timeout: TIMEOUT }, async (t) => {

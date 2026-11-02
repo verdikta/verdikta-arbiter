@@ -149,6 +149,15 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   fact.applies = 'pass';
   fact.detail.applies = `${fix.detail}, touching ${paths.length} path${paths.length === 1 ? '' : 's'} outside paths.tests and paths.protected`;
 
+  // A fix that changes forge's own configuration could select another compiler, and forge would run it before the
+  // reference is taken (R25-F2): nothing here could tell what it compiled from what the fix says. A fact, never the claim's outcome.
+  const config = kit.sortedUnique(paths.filter((p) => integrity.FRAMEWORK_FILES.includes(p)));
+  if (config.length) {
+    fact.builds = 'fail';
+    fact.detail.builds = `fix.patch changes ${kit.listPaths(config)}, forge's own configuration, which can select another compiler: the runner does not build it`;
+    return finish();
+  }
+
   // The fixed build, from the reference the checksums compare with. A fix that applied is always built. The PoC's
   // sandbox read the same reference without the fix, so a reference that cannot be read here is the fix's doing
   // (a malformed foundry.toml, a forge it replaced): the fixed tree does not build, a fact, never the requester's

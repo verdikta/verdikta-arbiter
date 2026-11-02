@@ -175,11 +175,18 @@ const MANIFEST_SCRIPT = [
  * `forge config` never shows it. The key is on the comment's own line, in
  * whatever TOML form (dotted, an inline table); a backslash is a TOML escape
  * that could spell one. The over-match costs a requester error at the listing.
- * Exit 4: the image has no grep.
+ *
+ * It also reads the two root files that can name a compiler (R25-F1): `/work/
+ * foundry.toml` is reported when a line that is not a comment holds `extends`,
+ * which would move the configuration into a file a patch could change, or a
+ * backslash; and either file as `link:<path>` when it is a link, since a patch
+ * could change what it leads to. Exit 4: the image has no grep.
  */
 const INLINE_CONFIG_SCRIPT = [
   'command -v grep >/dev/null 2>&1 || exit 4',
   'find /work -name .git -prune -o -name "*.sol" \\( -type f -o -type l \\) -print0 2>/dev/null | xargs -0 -r grep -lZE -- \'forge-config:.*(_dir|_file|_path|\\\\)\' 2>/dev/null',
+  'grep -lZE -- \'^[[:space:]]*([^#[:space:]].*)?(extends|\\\\)\' /work/foundry.toml 2>/dev/null',
+  'for f in /work/foundry.toml /work/.env; do if [ -L "$f" ]; then printf "link:%s\\0" "$f"; fi; done',
   'exit 0'
 ].join('\n');
 
@@ -331,6 +338,7 @@ function parseFramework(buf) {
       solc: str(parsed.solc),
       broadcast: str(parsed.broadcast),
       snapshots: str(parsed.snapshots),
+      vyperPath: parsed.vyper && typeof parsed.vyper === 'object' ? str(parsed.vyper.path) : null,
       runOutputs: RUN_OUTPUT_SETTINGS.map((setting) => {
         const value = str(setting.split('.').reduce((o, k) => (o && typeof o === 'object' ? o[k] : null), parsed));
         return { setting, value };
@@ -1068,8 +1076,8 @@ async function forgeOutOfReach(ctx, name, { realPath, pathDirs }, { testGlobs, p
   if (problems.length) throw uncovered(problems);
 }
 
-/** A `solc` setting that names a release, which forge looks up itself, not a file. */
-const SOLC_RELEASE = /^\d+\.\d+\.\d+/;
+/** A `solc` setting that names a release, which forge looks up itself. Anything else is a file to forge (`0.8.31/solc`, R24-F1). */
+const SOLC_RELEASE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
 
 /**
  * R24-F1: the compiler is out of a patch's reach. forge runs a configured solc
@@ -1079,19 +1087,23 @@ const SOLC_RELEASE = /^\d+\.\d+\.\d+/;
  * after the forced checkout and before any patch: this is the listed image's
  * own forge and compiler. A file in the work tree is refused, whatever links it
  * goes through; the builder's tools folder is where a maker's compiler goes. One
- * outside it must not lead through a place the sandbox can write. forge itself
+ * outside it must not lead through a place the sandbox can write. Vyper's path is
+ * held to the same, as forge runs it for a `.vy` file a patch adds. forge itself
  * is held to forgeOutOfReach first, as at the reference.
  * @param {{testGlobs:string[], protectedGlobs:string[]}} globs
  * @throws {RequesterError} IMAGE_WATCH_ROOT_UNCOVERED, IMAGE_FORGE_MISSING, FORGE_CONFIG_INVALID
  */
 async function requireCompilerOutOfReach(ctx, globs, name = 'prepare:compiler') {
   const { config } = await readFramework(ctx, name, { before: (found) => forgeOutOfReach(ctx, name, found, globs) });
-  const { solc } = config;
-  if (typeof solc !== 'string' || solc === '' || SOLC_RELEASE.test(solc)) return;
-  if (!solc.startsWith('/') || within(solc, WORK)) {
-    throw uncovered([`solc (${solc}) is in the work tree, where a patch could replace it, and forge runs it even to print its configuration`]);
+  const paths = [
+    ['solc', typeof config.solc === 'string' && config.solc !== '' && !SOLC_RELEASE.test(config.solc) ? config.solc : null],
+    ['vyper.path', typeof config.vyperPath === 'string' && config.vyperPath !== '' ? config.vyperPath : null]
+  ].filter(([, value]) => value !== null);
+  const inTree = paths.filter(([, value]) => !value.startsWith('/') || within(value, WORK));
+  if (inTree.length) {
+    throw uncovered(inTree.map(([setting, value]) => `${setting} (${value}) is in the work tree, where a patch could replace it, and forge runs it even to print its configuration`));
   }
-  const problems = await walkRoots(ctx, `${name}:walk`, externalRoots([solc]));
+  const problems = await walkRoots(ctx, `${name}:walk`, externalRoots(paths.map(([, value]) => value)));
   if (problems.length) throw uncovered(problems);
 }
 
@@ -1110,9 +1122,13 @@ async function requirePlainInlineConfig(ctx, name = 'prepare:inline-config') {
   }
   if (record.exitCode !== 0) throw runnerError(name, `the inline configuration could not be read (exit ${record.exitCode})`);
   const files = out.bytes().toString('latin1').split('\0').filter(Boolean).sort();
-  if (files.length) {
-    throw uncovered(files.map((f) => `${displayPath(f.startsWith(`${WORK}/`) ? f.slice(WORK.length + 1) : f)} sets a path by inline configuration (forge-config), so forge could write where the runner cannot read`));
-  }
+  const shortName = (f) => displayPath(f.startsWith(`${WORK}/`) ? f.slice(WORK.length + 1) : f);
+  const problem = (f) => {
+    if (f.startsWith('link:')) return `${shortName(f.slice(5))} is a link, and a patch could change what it leads to before forge reads it`;
+    if (f === `${WORK}/foundry.toml`) return 'foundry.toml uses `extends`, or an escape that could spell it, so a file a patch could change might name another compiler';
+    return `${shortName(f)} sets a path by inline configuration (forge-config), so forge could write where the runner cannot read`;
+  };
+  if (files.length) throw uncovered(files.map(problem));
 }
 
 /**

@@ -616,9 +616,13 @@ function claimSandbox({
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
     'vcr-external-roots': (d, b) => ({ stdout: externalRootsOf(b.tree, d.stdin) }),
-    'vcr-inline-config': (d, b) => ({
-      stdout: Buffer.from([...b.tree].filter(([p, e]) => p.startsWith('/work/') && p.endsWith('.sol') && e.type === 'f' && /forge-config:.*(_dir|_file|_path|\\)/.test(String(e.content))).map(([p]) => `${p}\0`).join(''), 'latin1')
-    }),
+    'vcr-inline-config': (d, b) => {
+      const files = [...b.tree].filter(([p, e]) => p.startsWith('/work/') && p.endsWith('.sol') && e.type === 'f' && /forge-config:.*(_dir|_file|_path|\\)/.test(String(e.content))).map(([p]) => p);
+      const toml = b.tree.get('/work/foundry.toml');
+      if (toml && toml.type === 'f' && /^[ \t]*([^#\s].*)?(extends|\\)/m.test(String(toml.content))) files.push('/work/foundry.toml');
+      for (const f of ['/work/foundry.toml', '/work/.env']) if (b.tree.has(f) && b.tree.get(f).type === 'l') files.push(`link:${f}`);
+      return { stdout: Buffer.from(files.map((f) => `${f}\0`).join(''), 'latin1') };
+    },
     'vcr-poc': (d, b) => {
       b.pocRun += 1;
       // forge writes the failing tests' names to its cache on every run.
