@@ -250,14 +250,17 @@ function describe(e) {
  */
 function classify(entries, { protectedGlobs = [], config, forgePath = '', realPath = '', pathDirs = [] }) {
   const sets = { protected: new Map(), dependencies: new Map(), framework: new Map(), artifacts: new Map(), repository: new Map() };
-  const deps = [...new Set([...config.libs.map(plainDir).filter(Boolean), ...DEPENDENCY_DIRS])];
-  const out = plainDir(config.out);
-  const cache = plainDir(config.cachePath);
+  // The manifest's keys are the paths' bytes (read latin1); forge's config and PATH are text. Every configured path is
+  // turned into the same byte form before it is compared (R4-F1), so a directory with a non-ASCII name is watched.
+  const bytes = (p) => (p === null ? null : Buffer.from(p, 'utf8').toString('latin1'));
+  const deps = [...new Set([...config.libs.map(plainDir).filter(Boolean), ...DEPENDENCY_DIRS])].map(bytes);
+  const out = bytes(plainDir(config.out));
+  const cache = bytes(plainDir(config.cachePath));
   // forge's compile cache names the artifact files a later run loads instead of compiling: it is held like them.
   const filesCache = cache ? `${cache}/solidity-files-cache.json` : null;
   const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
-  const tools = [inWork(forgePath), inWork(realPath), config.solc && !config.solc.startsWith('/') ? plainDir(config.solc) : inWork(config.solc)].filter(Boolean);
-  const pathRoots = pathDirs.map((d) => (d === WORK ? '' : inWork(d))).filter((d) => d !== null);
+  const tools = [inWork(forgePath), inWork(realPath), config.solc && !config.solc.startsWith('/') ? plainDir(config.solc) : inWork(config.solc)].filter(Boolean).map(bytes);
+  const pathRoots = pathDirs.map((d) => (d === WORK ? '' : inWork(d))).filter((d) => d !== null).map(bytes);
   for (const p of [...entries.keys()].sort()) {
     const d = describe(entries.get(p));
     if (p === `${WORK}/.git` || p.startsWith(`${WORK}/.git/`)) {

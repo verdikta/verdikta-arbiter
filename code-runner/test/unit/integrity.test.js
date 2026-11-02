@@ -278,3 +278,22 @@ test('integrityOf: the report\'s Integrity shape; any failed check (or a tamper 
   assert.equal(dirty.integrity.dependenciesUnchanged, false);
   assert.match(integrity.integrityDetail(dirty.failures), /^summaryConsistent \(run 1: x has no forge suite summary\); exitConsistent \(run 1: exited 0\); dependenciesUnchanged \(run 2: lib\/a\.sol changed\); tamperFlags \(reporter-patched at test\/E\.t\.sol:3\)$/);
 });
+
+test('A3a R4-F1: configured directories with non-ASCII names (libs, out, cache_path, PATH, forge) are watched in the manifest\'s byte form', () => {
+  const b = (p) => Buffer.from(p, 'utf8').toString('latin1');
+  const tree = new Map();
+  for (const p of ['/work/dépendances/x/src/X.sol', '/work/résultats/X.sol/X.json', '/work/cäche/solidity-files-cache.json', '/work/cäche/test-failures', '/work/bïn/tool', '/work/outils/forgé']) {
+    tree.set(b(p), { type: 'f', mode: '644', content: 'x' });
+  }
+  const m = integrity.parseManifest(manifestOf(tree, ['/work']));
+  assert.equal(m.ok, true, m.reason);
+  const sets = integrity.classify(m.entries, {
+    protectedGlobs: [],
+    config: { out: 'résultats', cachePath: 'cäche', libs: ['dépendances'], solc: null },
+    forgePath: '/work/outils/forgé', realPath: '/work/outils/forgé', pathDirs: ['/work/bïn']
+  });
+  const keys = (x) => [...x.keys()].map(integrity.displayPath).sort();
+  assert.deepEqual(keys(sets.dependencies), ['dépendances/x/src/X.sol']);
+  assert.deepEqual(keys(sets.artifacts), ['cäche/solidity-files-cache.json', 'résultats/X.sol/X.json']);
+  assert.deepEqual(keys(sets.framework), ['bïn/tool', 'outils/forgé']);
+});

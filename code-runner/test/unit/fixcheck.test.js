@@ -309,3 +309,35 @@ test('A3a R1-F2: fix.patch paths are matched by their own (UTF-8) names: a prote
   const r2 = await runClaim(claimSandbox({ fix: { nameStatus: 'M\0tést/A.t.sol\0', numstat: '1\t1\ttést/A.t.sol\0' } }), claimRequest({ spec: spec2 }));
   assert.match(r2.facts.fix.detail.applies, /tést\/A\.t\.sol under paths\.tests/);
 });
+
+test('A3a R4-F2: a fix that leaves forge\'s configuration unreadable is a failed fixed build, not the requester\'s error; through the HTTP API the claim\'s gates stand', async (t) => {
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  // foundry.toml is not protected in this listing, so the fix may change it; with the fix, `forge config` fails.
+  const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['lib/**'] } });
+  const framework = (d, box) => (box.n === 2 && box.fixCommitted
+    ? { exitCode: 1, stdout: 'vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n', stderr: 'Error: failed to parse foundry.toml: invalid TOML\n' }
+    : { stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n${forgeConfig(box.tree)}` });
+  const fix = { nameStatus: 'M\0foundry.toml\0', numstat: '1\t1\tfoundry.toml\0' };
+  const r = await runClaim(claimSandbox({ fix, scripts: { 'vcr-framework': framework } }), claimRequest({ spec }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of CLAIM_GATES) assert.equal(r.gates[g].status, 'pass', g);
+  assert.deepEqual(fixFields(r.facts.fix), { present: true, applies: 'pass', builds: 'fail', pocPasses: null, regressions: [], regressionCount: 0, tier: 'B', integrity: null });
+  assert.match(r.facts.fix.detail.builds, /^with the fix, FORGE_CONFIG_INVALID: .*failed to parse foundry\.toml/);
+
+  // The same claim over HTTP: 200, the PoC's results, the fix recorded.
+  const { attestationFor } = require('../helpers/requests');
+  const sb = claimSandbox({ fix, scripts: { 'vcr-framework': framework } });
+  const runner = createServer({ config: testConfig(), docker: sb.docker, log: silent, statfs: async () => ({ bavail: 1e12, bsize: 1 }), meminfo: async () => ({ availableMb: 1e6, error: null }) });
+  const address = await runner.listen();
+  t.after(() => runner.close());
+  const req = claimRequest({ spec });
+  const body = {
+    listingCid: req.listingCid, bcid: req.bcid, spec, attestation: attestationFor(spec), pocPatch: req.pocPatch.toString('base64'),
+    fixPatch: req.fixPatch.toString('base64'), baseline: req.baseline, finding: req.finding, report: '# x\n', knownIssues: [], priorFindings: [],
+    eaGates: req.eaGates, deadline: 700000
+  };
+  const res = await httpRequest({ host: address.host, port: address.port }, { method: 'POST', path: '/v1/runs', body });
+  assert.equal(res.status, 200, res.raw);
+  assert.equal(res.body.gates.reproduces.status, 'pass');
+  assert.equal(res.body.facts.fix.builds, 'fail');
+});

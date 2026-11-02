@@ -870,7 +870,10 @@ admitted for. In it:
    `paths.protected` and nameable in a report (source allowed; tests and
    protected paths not). Committed (`fix.patch`). `fix.applies`.
 3. The reference snapshot, then `commands.build`. `fix.builds` (a fix that
-   applied is always built: `pass` or `fail`, never `not-run`).
+   applied is always built: `pass` or `fail`, never `not-run`). A reference
+   that cannot be read here (the fix broke `foundry.toml`, say) is the fix's
+   doing, since the PoC's sandbox read the same tree without it: `builds:
+   fail` with the reason, never the requester's error.
 4. The maker's full suite (`commands.test`, required with a fix) **once**,
    with the reporter flags, then a snapshot. `fix.pocPasses`: every test the
    patch added (as the PoC's own run 1 reported them, this run's when the

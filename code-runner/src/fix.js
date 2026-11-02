@@ -43,7 +43,7 @@ const { forceCheckout } = require('./checkout');
 const { matchesAny, pocPatchPathsGate } = require('./common');
 const { reportablePath } = require('./patch');
 const crypto = require('node:crypto');
-const { Abstain, ABSTAIN } = require('./result');
+const { Abstain, ABSTAIN, RequesterError } = require('./result');
 
 const MAX_REGRESSIONS = 200;
 const MAX_TESTS = 200;
@@ -148,9 +148,19 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   fact.applies = 'pass';
   fact.detail.applies = `${fix.detail}, touching ${paths.length} path${paths.length === 1 ? '' : 's'} outside paths.tests and paths.protected`;
 
-  // The fixed build, from the reference the checksums compare with. A fix that applied is always built.
+  // The fixed build, from the reference the checksums compare with. A fix that applied is always built. The PoC's
+  // sandbox read the same reference without the fix, so a reference that cannot be read here is the fix's doing
+  // (a malformed foundry.toml, a forge it replaced): the fixed tree does not build, a fact, never the requester's
+  // error and never the claim's outcome (R4-F2).
   const watch = new integrity.Watch({ protectedGlobs, prefix: 'integrity' });
-  await watch.reference(ctx);
+  try {
+    await watch.reference(ctx);
+  } catch (err) {
+    if (!(err instanceof RequesterError)) throw err;
+    fact.builds = 'fail';
+    fact.detail.builds = `with the fix, ${err.issues.map((i) => `${i.code}: ${i.detail}`).join('; ')}`;
+    return finish();
+  }
   const buildExit = await kit.runBuild(ctx, box, spec.commands.build, limits);
   fact.builds = buildExit === 0 ? 'pass' : 'fail';
   fact.detail.builds = `the build command exited ${buildExit} with the fix`;
