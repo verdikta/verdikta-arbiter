@@ -578,13 +578,14 @@ characters `COMMAND_INVALID`, a `testFiles` or `testIds` without its placeholder
 **How forge runs.** There is no shell around the maker's text. The step's argv is
 `/usr/bin/env -i PATH=<the image's PATH> TZ=UTC LANG=C.UTF-8 CI=true
 PYTHONHASHSEED=0 HOME=/home/sandbox XDG_DATA_HOME=/opt/verdikta/tools/share
-VERDIKTA_TOOLS=/opt/verdikta/tools FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
+VERDIKTA_TOOLS=/opt/verdikta/tools FOUNDRY_CONFIG=foundry.toml FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
 <flags…>`, in `/work`: forge at the real path the runner probed in the image
 (`command -v forge`; a forge path holding `=` or a control character, which env
 could not run as a program, is `IMAGE_FORGE_MISSING`). Each flag and its value are one
 argv element (`--name=value`). The launcher prints its start nonce and `exec`s
 that argv; nothing interprets it. Nothing of the image's `ENV` but `PATH` reaches
-forge, `FOUNDRY_*` included: the seed is the only `FOUNDRY_*` it sees. The two
+forge, `FOUNDRY_*` included: the seed is the only `FOUNDRY_*` it sees besides
+`FOUNDRY_CONFIG` at forge's own default, set so a `.env` cannot move its configuration. The two
 `/opt/verdikta` values are the builder's fixed `ENV`, set here as constants: forge
 finds the solc releases the maker's setup installed under `XDG_DATA_HOME`. The runner
 reads `forge config --json` through the same argv, so the configuration the
@@ -1155,6 +1156,8 @@ The routes the review raised, against that scope (each has its test):
 | `solc = "test/solc"` or `"0.8.31/solc"`, a patch replacing it with a wrapper, whose bytes would become the reference (R24-F1); `vyper.path` the same | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | Any compiler file in the work tree is refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. The tools folder is where a maker's compiler goes |
 | A patch changing what names the compiler: `extends` into a file under `paths.tests` (R25-F1), `foundry.toml` or `.env` a link, a root file forge reads under `paths.tests` and not protected | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED`: `extends` and the links right after the checkout, the rest before forge first runs |
 | `fix.patch` changing forge's own configuration to select a compiler it adds (R25-F2) | Yes: a hunter, where `foundry.toml` is not protected | **Blocks: hunter alone.** Closed | A failed fixed build, a fact; the fixed tree is never built, and the claim's outcome doesn't move |
+| A `.env` with `FOUNDRY_CONFIG` moving forge's configuration into a file a patch or a fix could change (R25-F1, R25-F2, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | forge's fixed environment sets `FOUNDRY_CONFIG` to its own default, and forge loads a `.env` without overriding what is set |
+| An installed release, named by version, that is a link through the work tree a patch could fill (R24-F1, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | What is directly in the tools folder's `svm/` is walked right after the checkout: `IMAGE_WATCH_ROOT_UNCOVERED` |
 | `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
 | A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error, a multi-line reason lost (R21-F2, R22-F2) | Yes: any honest claim | **Blocks: runner misreading, no maker's files.** Closed | Forge's campaign counts accepted within a range; the reason read up to forge's framing |
 | A `PATH` directory that cannot be listed (R16-F1) | No: the builder's `chmod -R a+rX` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` |

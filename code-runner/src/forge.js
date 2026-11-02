@@ -77,13 +77,15 @@ function reporterFlags() {
  * forge's whole environment: the image's PATH as the integrity reference
  * probed it (what forge's own children, ffi included, look commands up on),
  * the sandbox's fixed variables (§9.3: HOME, TZ, LANG, CI, PYTHONHASHSEED),
- * the builder's fixed values (BUILDER_ENV) and the fuzz seed. No other variable
- * of the image's environment, and no FOUNDRY_* but the seed.
+ * the builder's fixed values (BUILDER_ENV), the fuzz seed and FOUNDRY_CONFIG at
+ * forge's own default: forge loads /work/.env without overriding what is set, so
+ * a .env cannot move its configuration into a file a patch could change (R25-F1,
+ * round 26). No other variable of the image's environment, and no other FOUNDRY_*.
  * @param {string} path - the probed PATH
  */
 function forgeEnvironment(path) {
   if (typeof path !== 'string' || /[\0\n]/.test(path)) throw new TypeError('the probed PATH must be one line');
-  return { PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
+  return { PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_CONFIG: 'foundry.toml', FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
 }
 
 /**

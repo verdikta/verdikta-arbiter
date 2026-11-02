@@ -17,13 +17,15 @@ test('the reporter flags: JUnit on stdout and the fixed fuzz seed from @verdikta
   assert.deepEqual(forge.forgeEnvironment('/usr/bin:/bin'), {
     PATH: '/usr/bin:/bin', TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0', HOME: '/home/sandbox',
     // The builder's fixed ENV: forge finds the setup's solc releases under XDG_DATA_HOME (builder/src/dockerfile.js).
-    XDG_DATA_HOME: '/opt/verdikta/tools/share', VERDIKTA_TOOLS: '/opt/verdikta/tools', FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
+    XDG_DATA_HOME: '/opt/verdikta/tools/share', VERDIKTA_TOOLS: '/opt/verdikta/tools',
+    // forge's own default, so a .env cannot move its configuration (forge loads it without overriding what is set).
+    FOUNDRY_CONFIG: 'foundry.toml', FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
   });
 });
 
 test('attempt 3 (owner decision Q31): forge runs as the runner\'s argv, env -i with its fixed environment, the probed forge, then the arguments unchanged', () => {
   const tool = { realPath: '/usr/local/bin/forge', path: '/usr/bin:/bin' };
-  const env = ['PATH=/usr/bin:/bin', 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox', 'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`];
+  const env = ['PATH=/usr/bin:/bin', 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox', 'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`];
   assert.deepEqual(forge.forgeArgv(tool, ['build']), ['/usr/bin/env', '-i', ...env, '/usr/local/bin/forge', 'build']);
   // An argument that would mean something to a shell, or to env before the program, is just forge's argument here.
   const odd = ['test', '--no-match-contract=a; rm -rf / $(id) `x` > y', 'X=1', '-i', ...forge.reporterFlags()];

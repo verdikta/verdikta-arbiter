@@ -616,6 +616,11 @@ function claimSandbox({
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
     'vcr-external-roots': (d, b) => ({ stdout: externalRootsOf(b.tree, d.stdin) }),
+    'vcr-svm': (d, b) => {
+      const dir = d.argv[d.argv.length - 1];
+      const names = [...b.tree.keys()].filter((p) => p.startsWith(`${dir}/`)).map((p) => `${dir}/${p.slice(dir.length + 1).split('/')[0]}`);
+      return { stdout: Buffer.from(names.length ? [dir, ...new Set(names)].map((p) => `${p}\0`).join('') : '', 'latin1') };
+    },
     'vcr-inline-config': (d, b) => {
       const files = [...b.tree].filter(([p, e]) => p.startsWith('/work/') && p.endsWith('.sol') && e.type === 'f' && /forge-config:.*(_dir|_file|_path|\\)/.test(String(e.content))).map(([p]) => p);
       const toml = b.tree.get('/work/foundry.toml');

@@ -29,7 +29,7 @@ const PROBED_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bi
 /** forge's whole environment, in order: the probed PATH, the sandbox's fixed variables, the fuzz seed. */
 const FORGE_ENV = (path = PROBED_PATH) => [
   `PATH=${path}`, 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox',
-  'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`
+  'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`
 ];
 const REPORTER = ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED];
 
@@ -119,7 +119,7 @@ test('a claim: the build, each PoC run, the fix check\'s build and suite, and `f
   assertForgeArgv(sb, fix[1], ['build']);
   assertForgeArgv(sb, fix[2], ['test', ...REPORTER]);
   // forge's environment holds no variable but the fixed ones: no FOUNDRY_* but the seed.
-  for (const d of forge) assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_FUZZ_SEED']);
+  for (const d of forge) assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_FUZZ_SEED']);
 });
 
 test('the maker\'s allowlisted flags reach forge unchanged, each one argv element; a quoted value holding shell text stays one argument', async () => {
@@ -153,7 +153,7 @@ test('forge is the one the reference probed (its real path), with the image\'s P
   assert.equal(r.outcome, 'definitive', show(r));
   const forge = sb.execs().filter((d) => d.forge);
   assert.ok(forge.length >= 5);
-  for (const d of forge) assert.deepEqual(d.launched.slice(0, 12), ['/usr/bin/env', '-i', ...FORGE_ENV(path), '/opt/foundry/bin/forge-1.8.5']);
+  for (const d of forge) assert.deepEqual(d.launched.slice(0, 13), ['/usr/bin/env', '-i', ...FORGE_ENV(path), '/opt/foundry/bin/forge-1.8.5']);
   // The later probes run the reference's real path too (R1-F3).
   const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
   assert.deepEqual(probes.slice(2).map((d) => d.argv[4]), ['/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5']);

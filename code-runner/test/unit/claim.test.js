@@ -92,7 +92,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.build.basis, 'exit_code');
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
-    'vcr-procs', 'vcr-external-roots', ...PREPARE, 'vcr-inline-config', 'vcr-framework', 'forge-config', 'vcr-external-roots',
+    'vcr-procs', 'vcr-external-roots', ...PREPARE, 'vcr-inline-config', 'vcr-framework', 'forge-config', 'vcr-svm', 'vcr-external-roots',
     'vcr-freespace', 'git apply', 'git diff', 'git cat-file', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     // A3a: the integrity checks' reference (forge, its configuration, the watched files), then a snapshot after each run;

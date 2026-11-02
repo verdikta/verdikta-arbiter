@@ -119,6 +119,14 @@ const VARIANTS = Object.freeze({
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "0.8.31/solc"') },
     setup: 'mkdir -p 0.8.31 && ln -s /opt/solc/solc 0.8.31/solc'
   },
+  // Round 26: an installed release that is a link a patch could fill; a .env that moves forge's configuration.
+  svmlink: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc_version = "0.8.31"') },
+    setup: 'mkdir -p /opt/verdikta/tools/share/svm/0.8.31 && ln -s /work/test/solc /opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31 && chmod -R a+rX /opt/verdikta'
+  },
+  envredirect: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, '.env': 'FOUNDRY_CONFIG=/work/test/compiler.toml\n', 'test/compiler.toml': FOUNDRY_TOML().replace('out = "out"', 'out = "redirected"') }
+  },
   // R25-F2: foundry.toml as a fix would change it, not protected.
   fixconfig: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML() }
@@ -595,13 +603,13 @@ test('A3a R11-F1 (attempt 3) under real forge: the runner runs forge as an argv,
       testFiles: 'forge test -vvv --match-path $FILES --fuzz-runs 64 --isolate',
       testIds: 'forge test --mt $TEST_IDS --mp $FILES -vv'
     },
-    finding: finding({ command: 'forge test --match-test test_env', observable: 'test_env fails with "unset|unset|unset|/work"' })
+    finding: finding({ command: 'forge test --match-test test_env', observable: 'test_env fails with "unset|unset|foundry.toml|/work"' })
   }));
   assert.equal(r.outcome, 'definitive', show(r));
   for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
   assert.deepEqual(r.facts.poc.integrity, CLEAN);
   const byId = Object.fromEntries(r.facts.poc.tests.map((x) => [x.id, x]));
-  assert.equal(byId['test/Env.t.sol > EnvTest > test_env()'].message, 'unset|unset|unset|/work', show(r));
+  assert.equal(byId['test/Env.t.sol > EnvTest > test_env()'].message, 'unset|unset|foundry.toml|/work', show(r));
   assert.deepEqual(byId['test/Env.t.sol > EnvTest > test_env()'].runs, ['fail', 'fail', 'fail']);
   assert.deepEqual(byId[`test/Exploit.t.sol > ExploitTest > ${NAME}()`].runs, ['fail', 'fail', 'fail']);
 });
@@ -850,6 +858,16 @@ test('A3a R24-F1 under real forge: a compiler under paths.tests is refused befor
     assert.match(refused.issues[0].detail, re);
     assert.ok(!(refused.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
   }
+  // Round 26: an installed release named by version, a link through the work tree: refused before any patch.
+  const svm = await run(t, claim(await fixture('svmlink'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(svm.outcome, 'requester_error', show(svm));
+  assert.deepEqual(svm.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(svm.issues[0].detail, /svm\/0\.8\.31\/solc-0\.8\.31/);
+  assert.ok(!(svm.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
+  // A .env naming another configuration file moves nothing: forge reads the root's, and its output goes where that says.
+  const env = await run(t, claim(await fixture('envredirect'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(env.outcome, 'definitive', show(env));
+  for (const g of ['build', 'reproduces', 'integrity']) assert.equal(env.gates[g].status, 'pass', `${g}: ${show(env)}`);
   // R25-F2: a fix that selects another compiler is a failed fixed build, a fact; the PoC's gates stand.
   const fx = await fixture('fixconfig');
   const toml = FOUNDRY_TOML();

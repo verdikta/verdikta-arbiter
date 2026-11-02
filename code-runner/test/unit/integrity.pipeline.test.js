@@ -925,7 +925,8 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
   assert.ok(order.indexOf('vcr-external-roots') < order.indexOf('git init'));
   const config = order.indexOf('forge-config');
   assert.equal(order[config - 1], 'vcr-external-roots', 'PATH walked before forge first runs');
-  assert.equal(order[config + 1], 'vcr-external-roots', 'solc right after its configuration names it');
+  assert.equal(order[config + 1], 'vcr-svm', 'the installed releases are listed next');
+  assert.equal(order[config + 2], 'vcr-external-roots', 'solc right after its configuration names it');
   for (const bad of [() => ({ exitCode: 1 }), () => ({ stdout: Buffer.from('odd\0') }), () => ({ stdout: Buffer.from('p\0?\0') })]) {
     const r = await runClaim(claimSandbox({ scripts: { 'vcr-external-roots': bad } }));
     assert.equal(r.outcome, 'abstain', show(r));
@@ -1108,6 +1109,16 @@ test('A3a R24-F1: a compiler a patch could replace is refused before any patch, 
   assert.equal(viaRoot.outcome, 'requester_error', show(viaRoot));
   assert.deepEqual(viaRoot.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.equal(linked.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'apply').length, 0, 'no patch applied');
+  // R24-F1, round 26: a release named by version, installed as a link a patch could fill.
+  const svm = claimSandbox({ onBox: (box) => { box.configOver = { solc: '0.8.31' }; box.tree.set('/opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31', { type: 'l', target: '/work/test/solc' }); } });
+  const viaSvm = await runClaim(svm);
+  assert.equal(viaSvm.outcome, 'requester_error', show(viaSvm));
+  assert.deepEqual(viaSvm.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(viaSvm.issues[0].detail, /svm\/0\.8\.31\/solc-0\.8\.31 \(in PATH, the runner's tools or solc\) resolves through a place the sandbox can write/);
+  assert.equal(svm.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'apply').length, 0, 'no patch applied');
+  // A real file there is nothing.
+  const installed = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { solc: '0.8.31' }; set(box, '/opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31', 'ELF'); } }));
+  assert.equal(installed.gates.integrity.status, 'pass', show(installed));
   // Vyper's, which forge runs for a `.vy` file a patch adds.
   const vyper = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { vyper: { path: 'test/vyper' } }; } }));
   assert.equal(vyper.outcome, 'requester_error', show(vyper));

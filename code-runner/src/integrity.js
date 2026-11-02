@@ -190,6 +190,13 @@ const INLINE_CONFIG_SCRIPT = [
   'exit 0'
 ].join('\n');
 
+/**
+ * The directory of solc releases forge finds by version, and what is directly
+ * in it, NUL-separated (R24-F1, round 26): each is walked for links through a
+ * place the sandbox can write. Nothing when the image has none.
+ */
+const SVM_SCRIPT = 'if [ -d "$1" ]; then printf "%s\\0" "$1"; for d in "$1"/*; do if [ -e "$d" ] || [ -L "$d" ]; then printf "%s\\0" "$d"; fi; done; fi';
+
 const LINKS_SCRIPT = [
   'command -v realpath >/dev/null 2>&1 || exit 4',
   'exec xargs -0 -r sh -c \'',
@@ -985,6 +992,10 @@ function linksArgv() {
   return hermetic(LINKS_SCRIPT, 'vcr-links');
 }
 
+function svmArgv() {
+  return hermetic(SVM_SCRIPT, 'vcr-svm', [`${forge.BUILDER_ENV.XDG_DATA_HOME}/svm`]);
+}
+
 function externalRootsArgv() {
   return hermetic(EXTERNAL_ROOTS_SCRIPT, 'vcr-external-roots', [IMMUTABLE_CHECK]);
 }
@@ -1087,7 +1098,8 @@ const SOLC_RELEASE = /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/;
  * after the forced checkout and before any patch: this is the listed image's
  * own forge and compiler. A file in the work tree is refused, whatever links it
  * goes through; the builder's tools folder is where a maker's compiler goes. One
- * outside it must not lead through a place the sandbox can write. Vyper's path is
+ * outside it must not lead through a place the sandbox can write, and neither may
+ * an installed release forge would find by version. Vyper's path is
  * held to the same, as forge runs it for a `.vy` file a patch adds. forge itself
  * is held to forgeOutOfReach first, as at the reference.
  * @param {{testGlobs:string[], protectedGlobs:string[]}} globs
@@ -1103,7 +1115,12 @@ async function requireCompilerOutOfReach(ctx, globs, name = 'prepare:compiler') 
   if (inTree.length) {
     throw uncovered(inTree.map(([setting, value]) => `${setting} (${value}) is in the work tree, where a patch could replace it, and forge runs it even to print its configuration`));
   }
-  const problems = await walkRoots(ctx, `${name}:walk`, externalRoots(paths.map(([, value]) => value)));
+  // A release named by version, or found by a source's pragma, is a file too: the installed ones are the maker's.
+  const out = new Prefix(LINKS_MAX_BYTES);
+  const record = await ctx.exec(svmArgv(), { name: `${name}:svm`, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
+  if (record.exitCode !== 0 || out.truncated) throw runnerError(`${name}:svm`, `the installed compilers could not be listed (exit ${record.exitCode})`);
+  const installed = out.bytes().toString('latin1').split('\0').filter(Boolean);
+  const problems = await walkRoots(ctx, `${name}:walk`, externalRoots([...paths.map(([, value]) => value), ...installed]));
   if (problems.length) throw uncovered(problems);
 }
 
