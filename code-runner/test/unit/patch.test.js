@@ -157,8 +157,14 @@ test('git -z outputs: name-status and numstat, paths byte for byte', () => {
   assert.equal(parseNumstatZ(Buffer.from('x\t0\tp\0')), null);
 });
 
-test('ls-tree -z: paths of the listed commit', () => {
+test('ls-tree -z: paths of the listed commit, byte for byte (R22-F1: a non-UTF-8 name survives)', () => {
   assert.deepEqual(parseLsTreeZ(Buffer.from('foundry.toml\0lib/forge-std\0src/V.sol\0')), ['foundry.toml', 'lib/forge-std', 'src/V.sol']);
+  // A 0xff byte in a filename is kept as latin1 (U+00FF), not decoded to U+FFFD, so it re-encodes to the same byte.
+  const raw = parseLsTreeZ(Buffer.concat([Buffer.from('lib/x/'), Buffer.from([0xff]), Buffer.from('.txt\0')]));
+  assert.deepEqual(raw, ['lib/x/ÿ.txt']);
+  assert.deepEqual(Buffer.from(raw[0], 'latin1'), Buffer.concat([Buffer.from('lib/x/'), Buffer.from([0xff]), Buffer.from('.txt')]));
+  assert.equal(parseLsTreeZ(Buffer.from('')).length, 0);
+  assert.equal(parseLsTreeZ(Buffer.from('no-nul')), null);
 });
 
 test('added lines from a -U0 diff, per file, with new line numbers; hunk bodies are never read as headers', () => {

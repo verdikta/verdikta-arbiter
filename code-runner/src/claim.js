@@ -412,10 +412,12 @@ function claimSteps(request, limits) {
     const tree = await gitRead(ctx, 'reset:list', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', state.prepared]);
     const all = tree.record.exitCode === 0 && !tree.out.truncated ? parseLsTreeZ(tree.out.bytes()) : null;
     if (!all) throw runnerError('reset:list', `the listed commit's files could not be listed (git exited ${tree.record.exitCode})`);
+    // Paths are latin1 (one char per byte); matchesAny's globs are ASCII, so a non-UTF-8 filename matches byte-wise,
+    // and the literal pathspec is written back as the same bytes (R22-F1).
     const protectedFiles = protectedGlobs.length ? all.filter((p) => matchesAny(p, protectedGlobs)) : [];
     if (protectedFiles.length) {
       const reset = await ctx.exec(git(['checkout', state.prepared, '--pathspec-from-file=-', '--pathspec-file-nul'], { env: { GIT_LITERAL_PATHSPECS: '1' } }), {
-        name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0'))
+        name: 'reset:protected', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(protectedFiles.join('\0'), 'latin1')
       });
       if (reset.exitCode !== 0) throw runnerError('reset:protected', `the protected paths could not be reset: ${firstLine(reset.stderr.text)}`);
     }

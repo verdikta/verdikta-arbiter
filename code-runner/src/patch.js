@@ -151,10 +151,26 @@ function parseNumstatZ(buf) {
   return out;
 }
 
-/** `git ls-tree -r -z --name-only`: the paths. */
+/**
+ * `git ls-tree -r -z --name-only` (with core.quotePath=false): the paths,
+ * byte for byte, as latin1 strings (one character per byte). These are fed
+ * back to git as a literal pathspec, so a non-UTF-8 filename must survive
+ * unchanged — decoding as UTF-8 would turn `0xff` into U+FFFD and reset a
+ * different, nonexistent path (R22-F1). Returns null when the output is not
+ * NUL-terminated.
+ */
 function parseLsTreeZ(buf) {
-  const f = zFields(buf);
-  return f ? f.filter((p) => p !== '') : null;
+  if (buf.length === 0) return [];
+  if (buf[buf.length - 1] !== 0) return null;
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < buf.length; i += 1) {
+    if (buf[i] === 0) {
+      if (i > start) out.push(buf.toString('latin1', start, i));
+      start = i + 1;
+    }
+  }
+  return out;
 }
 
 const C_ESCAPES = Object.freeze({ a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 });

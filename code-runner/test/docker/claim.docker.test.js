@@ -184,6 +184,12 @@ const VARIANTS = Object.freeze({
   // link to blob B's file. Each object must keep its own bytes, in either name order of A and B.
   hardlink1: { setup: hardLinked('src/Vault.sol', 'test/Vault.t.sol') },
   hardlink2: { setup: hardLinked('test/Vault.t.sol', 'src/Vault.sol') },
+  // R22-F1: a protected file (lib/**) whose name holds a non-UTF-8 byte (0xff). It is created and amended into the
+  // base commit, so the listed commit tracks it; the reset must feed its exact bytes back to git, not a mangled name.
+  protnonutf8: {
+    setup: `mkdir -p lib/odd && printf x > "lib/odd/$(printf '\\377').txt" && git add -A`
+      + ` && ${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q --amend --no-edit`
+  },
   // A SHA-256 repository.
   sha256: { objectFormat: 'sha256' },
   // Objects in packs only (the superproject's and a submodule's), with a commit-graph and a multi-pack-index.
@@ -802,6 +808,16 @@ test('R13-F2: objects hard-linked across stores keep their own bytes, whichever 
     assert.equal(r.facts.checkout.corrected, 0, variant);
     for (const p of ['src/Vault.sol', 'test/Vault.t.sol']) assert.equal(fileText(seen, p), VAULT_REPO[p], `${variant}: ${p}`);
   }
+});
+
+test('R22-F1: a protected file with a non-UTF-8 name is reset byte-for-byte; an ordinary PoC reaches the build and reproduces', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('protnonutf8');
+  const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', show(r));
+  assert.ok(r.facts.protectedReset >= 1, 'the non-UTF-8 lib file is a protected path that was reset');
+  assert.equal(r.gates.build.status, 'pass', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
 });
 
 test('Q28: a binary change in poc.patch is refused host-side, before git sees it, with real git', { timeout: TIMEOUT }, async (t) => {
