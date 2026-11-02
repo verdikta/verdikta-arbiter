@@ -164,9 +164,12 @@ function commandIssues(commands, key, placeholder) {
   return [];
 }
 
-/** What the forge adapter needs from the request, checked before any claim code runs. */
-function checkClaim(request) {
-  const spec = request.spec || {};
+/**
+ * What the forge adapter needs from the listing spec: the framework, the
+ * base image, the commands it fills, the listed commit and the test paths.
+ * The listing check (listing.js) asks the same of a spec before it runs one.
+ */
+function checkForgeSpec(spec) {
   const issues = [];
   const commands = spec.commands && typeof spec.commands === 'object' ? spec.commands : {};
   if (commands.framework !== 'forge') issues.push(issue('FRAMEWORK_UNSUPPORTED', '/spec/commands/framework', 'this runner runs forge listings only (the Foundry MVP)'));
@@ -177,6 +180,12 @@ function checkClaim(request) {
   const globs = (v) => Array.isArray(v) && v.every((g) => typeof g === 'string' && g !== '');
   if (!paths || !globs(paths.tests) || paths.tests.length === 0) issues.push(issue('SCHEMA', '/spec/paths/tests', 'must be a non-empty list of globs'));
   else if (paths.protected !== undefined && !globs(paths.protected)) issues.push(issue('SCHEMA', '/spec/paths/protected', 'must be a list of globs'));
+  return issues;
+}
+
+/** What the forge adapter needs from the request, checked before any claim code runs. */
+function checkClaim(request) {
+  const issues = checkForgeSpec(request.spec || {});
   const baseline = request.baseline;
   if (!baseline || !Array.isArray(baseline.tests) || !baseline.tests.every((t) => t && typeof t.id === 'string')) {
     issues.push(issue('BASELINE_INVALID', '/baseline/tests', 'baseline.json must list the tests at the listed commit (tests[].id)'));
@@ -231,13 +240,35 @@ function applyFailureReason(abstain, applyTimeoutMs) {
 function claimSteps(request, limits) {
   const issues = checkClaim(request);
   if (issues.length) return [async () => { throw new RequesterError(issues); }];
+  const session = claimSession(request, limits);
+  return [session.prepare, session.applies, session.testPathsOnly, session.resetAndCommit, session.build, session.reproduces].map((step) => {
+    const wrapped = async (ctx) => { if (!session.state.done) await step(ctx); };
+    Object.defineProperty(wrapped, 'name', { value: step.name });
+    return wrapped;
+  });
+}
 
+/**
+ * The claim pipeline's steps as functions of a context, over one state
+ * (claimSteps runs them in order). The listing check (listing.js) runs the
+ * same functions on its harness probes: `adopt` takes the processes and the
+ * forced checkout of a session that already prepared this sandbox, so a
+ * probe is applied, gated, built and run exactly as a claim's PoC is.
+ * @param {object} request - spec, pocPatch, baseline (as checkClaim accepts them)
+ * @param {object} limits - the effective limits
+ * @param {{adopt?: {keep:string[], prepared:string}}} [o]
+ */
+function claimSession(request, limits, { adopt = null } = {}) {
   const spec = request.spec;
   const base = spec.baseCommit;
   const testGlobs = spec.paths.tests;
   const protectedGlobs = spec.paths.protected || [];
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
   const state = { done: false, keep: [], touched: null, prepared: null, pocCommit: null, leftovers: [] };
+  if (adopt) {
+    state.keep = [...adopt.keep];
+    state.prepared = adopt.prepared;
+  }
 
   /** Run a git command and read its stdout (capped); definitive or it throws. */
   async function gitRead(ctx, name, args, { stdin, env } = {}) {
@@ -444,11 +475,15 @@ function claimSteps(request, limits) {
     if (!ok) state.done = true;
   }
 
-  /** One PoC run: the JUnit read, the harness records failing in the PoC's suites. */
-  async function pocRun(ctx, index, command, env) {
+  /**
+   * One PoC run: the JUnit read, the harness records failing in the PoC's
+   * suites. `step` and `label` (the script's $0) name it; the listing check's
+   * suite runs pass their own.
+   */
+  async function pocRun(ctx, index, command, env, { step = `poc:${index}`, label = 'vcr-poc' } = {}) {
     const out = new Prefix(JUNIT_MAX_BYTES);
-    const name = `poc:${index}`;
-    const record = await ctx.exec(forge.commandArgv(command, { name: 'vcr-poc', append: forge.reporterFlags() }), {
+    const name = step;
+    const record = await ctx.exec(forge.commandArgv(command, { name: label, append: forge.reporterFlags() }), {
       name, timeoutMs: limits.testSeconds * 1000, env: { ...forge.forgeEnv(), ...env }, tee: out
     });
     await cleanup(ctx, name);
@@ -539,11 +574,7 @@ function claimSteps(request, limits) {
     done(...reproducesVerdict(runs, harness, ids, results));
   }
 
-  return [prepare, applies, testPathsOnly, resetAndCommit, build, reproduces].map((step) => {
-    const wrapped = async (ctx) => { if (!state.done) await step(ctx); };
-    Object.defineProperty(wrapped, 'name', { value: step.name });
-    return wrapped;
-  });
+  return { state, prepare, applies, testPathsOnly, resetAndCommit, build, reproduces, pocRun, cleanup };
 }
 
 const WORD = Object.freeze({ pass: 'passed', error: 'errored', skip: 'skipped', missing: 'missing', duplicate: 'duplicated' });
@@ -603,4 +634,4 @@ function pocFacts(entries, runs) {
   };
 }
 
-module.exports = { claimSteps, checkClaim, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS, FREE_SPACE_SCRIPT, RUNS };
+module.exports = { claimSteps, claimSession, checkClaim, checkForgeSpec, commandIssues, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS, FREE_SPACE_SCRIPT, FREE_SPACE_MARGIN_BYTES, RUNS };

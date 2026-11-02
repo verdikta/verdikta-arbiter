@@ -11,9 +11,11 @@ deadline and the result taxonomy; node A2a adds the forge claim pipeline:
 the `applies`, `testPathsOnly`, `build` and `reproduces` gates
 ([below](#the-forge-claim-pipeline)); node A1b the image pull by digest from
 a registry allowlist, the image cache and the slot and memory admission
-([below](#images-and-admission)). Later nodes add listing checks (A2b), the
-integrity checks and the fix check (A3a), the report and context pack (A3b)
-and the honesty flags (A3c). See [Seams](#seams).
+([below](#images-and-admission)); node A2b the listing check the
+attestation site runs before escrow opens
+([below](#post-v1listing-checks)). Later nodes add the integrity checks and
+the fix check (A3a), the report and context pack (A3b) and the honesty flags
+(A3c). See [Seams](#seams).
 
 ## Run it
 
@@ -171,6 +173,129 @@ it differs between arbiters. `gates` holds `{ status: "pass"|"fail", basis, deta
 a gate not reached is absent. `facts` holds what the steps observed (the
 patch, its flags, the PoC runs; see below). `report`, `reportSha256` and
 `contextPack` stay `null` until node A3b.
+
+### `POST /v1/listing-checks`
+
+The listing check (design §8.2 steps 2-3, §8.3; `src/listing.js`). The
+attestation site's validator (node P3a) calls it before it signs an
+attestation, so a listing is validated on the runner the arbiters use (build
+plan, assumption A4).
+
+```json
+{ "spec": { "…": "code_review.json, as drafted" }, "image": "ghcr.io/verdikta/stake-env@sha256:…", "deadline": 900000 }
+```
+
+`spec` needs what a claim's run needs (`baseCommit`, `env.from: "foundry"`,
+`commands` with `build`, `test`, `testFiles` with `$FILES` and `testIds`
+with `$TEST_IDS`, `paths.tests`), and may carry `limits` (the cpus and memory
+the check then measures with; time limits are compared with the measured
+defaults), `env.image` (must equal `image`), `env.platform`,
+`env.unpackedBytes` (the declared size the pull's disk check uses; the class
+maximum when absent) and `stake.scope`. Those three fields are the whole
+request: a claim field (`pocPatch`, `baseline`, `bcid`, …) is an unknown
+field, 400.
+
+It goes through the same engine as a run: the same admission (slots, memory,
+the maintenance lock, a deadline that must cover the check's own budget of
+720 s), the image pull through the cache, one sandbox with the same flags,
+the same step limits and deadline, the same abstain causes, and the same 400
+for the requester's broken package (an image without the listed commit's
+objects, `IMAGE_WORKDIR_FULL`, …). In that sandbox:
+
+| Step | What |
+|---|---|
+| image | The env image's unpacked size: the sum of its layer sizes as the runner's daemon lists them (`docker history`); above 6 GB is refused |
+| prepare | The claim pipeline's own prepare: the processes recorded, the forced checkout of the listed commit; the work tree's free space (a claim needs 50 MB + 64 MB, else `IMAGE_WORKDIR_FULL`); the listed commit's files, at least one of them in `stake.scope` |
+| build | `commands.build`, once, judged by its exit code |
+| suite | `commands.test` three times with the runner's `--junit --fuzz-seed 0x76657264696b7461` and `FOUNDRY_FUZZ_SEED`, no network, the tracked files reset to the listed commit before runs 2 and 3 |
+| baseline | Every test function the JUnit names (forge's identity, `<file> > <Contract> > <signature>`) with its result on each run, by the claim pipeline's classifier (missing or duplicated on a run = `error`); `stable` = passed all three, the rest `unstable` (common's `baselineSets`), checked with common's `validateBaseline` |
+| limits | The defaults (below); above the class caps is too heavy |
+| harness | The harness proof (below) |
+
+**Default limits.** From the measured wall-clock times, in ms: P (prepare,
+free space, the file list), B (the build and its cleanup), T (the longest
+suite run, with its reset and cleanup):
+
+```
+buildSeconds = ceil(3 B)
+testSeconds  = ceil(3 T)
+runSeconds   = ceil(3 (P + B + T)) + 2 testSeconds     # runs 2 and 3 of the repeat schedule
+```
+
+each at least 1, with the spec's (or the class's) `cpus`, `memoryMb` and
+`maxPatchBytes`. Defaults above the class's 90 s build or 360 s run make the
+repository **too heavy for v1** (`LISTING_TOO_HEAVY`). The check does not wait
+to find out: the build is stopped at 30 s (or less, after a long
+preparation), and each suite run at the time beyond which `runSeconds` could
+no longer fit 360 s (`(357 s - 3 (P + B)) / 9`). A measured step stopped by its
+own limit is that refusal, not an abstain: the time is the answer. The check's
+own budget, the deadline and every other limit event (OOM, pids, a dead
+sandbox) abstain as for `/v1/runs`. Limits `code_review.json` declares below
+the defaults are refused (`LIMITS_BELOW_DEFAULTS`): claims would run out of
+time and abstain.
+
+**The harness proof.** The runner's own probe files (fixed in
+`src/listing.js`, never the request's) go to one path under `paths.tests`
+(the glob's literal directory, or the glob with its wildcards filled:
+`test/VerdiktaHarness.t.sol` for `test/**`), outside `paths.protected` and
+off every tracked file. Each starts from the listed commit and is put in
+place exactly as a claim's PoC is, by the claim pipeline's own functions
+(`claimSession` in `src/claim.js`: `applies`, `testPathsOnly`, the protected
+reset, the commit), then judged by its `reproduces` gate under the default
+limits:
+
+| Probe | Expected |
+|---|---|
+| A trivially failing test, `assertEq(1, 2)` through the listing's `forge-std/Test.sol`; with a plain `revert` when that does not build | Built, and an **assertion** failure on all three runs of the fixed schedule |
+| A test that does not compile (an undeclared identifier), run straight through `testFiles` without the build | No readable JUnit: an **error** |
+| A test contract whose `setUp()` reverts | A `setUp()` failure in the JUnit: a **collection error** |
+
+Anything else refuses the listing, since `reproduces` (§10.1) depends on the
+distinction: `LEGACY_ASSERTIONS` (forge-std's `assertEq` failed without a
+reason, or passed: non-reverting assertions, or `assertions_revert = false`;
+a PoC written with them would be an error), `HARNESS_ASSERTION_NOT_REPORTED`
+(the failing test was not an assertion on every run: `testFiles` does not run
+the PoC's files, or the result is flaky), `HARNESS_ERROR_NOT_REPORTED`,
+`HARNESS_TOO_SLOW` (a probe past the default limits), `HARNESS_NO_PATH`,
+`HARNESS_PROBE_REJECTED`. A listing whose tests use `ds-test` directly,
+without forge-std, is proven with the plain revert only.
+
+The answer (200 when every step was definitive; 503 abstain and 400
+requester error as for runs):
+
+```json
+{
+  "outcome": "definitive", "kind": "listing-check", "checkId": "3f2a…",
+  "runner": { "version": "0.1.0", "runtime": "runsc", "platform": "linux/amd64" },
+  "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "testSeconds": 360, "runSeconds": 720, "…": "…" },
+  "abstain": null,
+  "image": { "ref": "ghcr.io/verdikta/stake-env@sha256:…", "cache": "pulled", "durationMs": 21000 },
+  "listing": {
+    "status": "accepted",
+    "refusals": [], "warnings": [],
+    "image": { "ref": "ghcr.io/verdikta/stake-env@sha256:…", "unpackedBytes": 1400000000 },
+    "checkout": { "…": "as facts.checkout of a run" },
+    "timings": { "prepareSeconds": 4.1, "buildSeconds": 14.2, "testSeconds": [21.5, 20.9, 22.1] },
+    "baseline": { "version": 1, "baseCommit": "7f3a9c…", "framework": "forge", "runs": 3, "tests": ["…"], "stable": ["…"], "unstable": ["…"], "timings": { "…": "…" } },
+    "limits": { "cpus": 2, "memoryMb": 4096, "buildSeconds": 43, "testSeconds": 67, "runSeconds": 255, "maxPatchBytes": 2000000 },
+    "suite": { "tests": 41, "stable": 40, "unstable": 1, "exitCodes": [1, 1, 1], "harnessErrors": [[], [], []] },
+    "harness": { "path": "test/VerdiktaHarness.t.sol", "probes": [ { "name": "fails", "variant": "forge-std", "verdict": "assertion", "gates": { "…": "…" } } ] },
+    "leftoverProcesses": []
+  },
+  "steps": [ "…" ]
+}
+```
+
+`listing.status` is `accepted` or `refused`; the check stops at its first
+refusal (`refusals[0]`, with `code` and `detail`). `limits` (top level) is
+what the check ran under; `listing.limits` the defaults for
+`code_review.json`, and `listing.baseline` the `baseline.json`. Warnings:
+`BASELINE_NO_STABLE_TESTS`, `SUITE_HARNESS_ERRORS` (a maker's test contract
+whose `setUp` fails: its tests are not in the baseline), `CHECKOUT_CORRECTED`.
+`listing` is `null` unless the outcome is definitive. A listing check has no
+`gates`, `facts`, report or context pack: the claim functions it reuses gate
+into the probes' own record, so nothing in its answer can pass for a claim's
+result, and the EA never calls it.
 
 ## Class hard limits
 
@@ -734,7 +859,7 @@ digest (the registry's log holds no request by tag), an unreachable or
 non-allowlisted registry, a digest the registry lacks, a corrupted blob,
 another platform, LRU eviction around a pinned, a held and a
 container-used image, and the slot limit.
-`claim.docker.test.js` builds fixture Foundry repositories as env images
+`claim.docker.test.js` and `listing.docker.test.js` build fixture Foundry repositories as env images
 locally (`forgeFixture.js`: FROM the pinned base, solc 0.8.31 by SHA-256,
 the repository at `/repo`); under Docker's classic image store, where a local
 build has no repository digest, it pushes them to a throwaway `registry:2`
@@ -753,9 +878,16 @@ under `runc` and under the pinned gVisor on the systrap platform.
   same flags, for the fix check), `ctx.remainingMs()` and `ctx.limits`.
 - **Forge adapter** (`src/forge.js`): reporter flags, the test identity,
   `classifyRecord`, `$FILES` and `$TEST_IDS`; A2b's baseline reuses them.
+- **Claim session** (`src/claim.js`): `claimSession(request, limits, { adopt })`
+  gives the claim pipeline's step functions over one state (`prepare`,
+  `applies`, `testPathsOnly`, `resetAndCommit`, `build`, `reproduces`,
+  `pocRun`, `cleanup`); `adopt` takes the processes and checkout of a session
+  that already prepared the sandbox. `claimSteps` runs them in order; the
+  listing check (`src/listing.js`) runs them on its probes, gating into a
+  scope of its own.
 - **Common** (`src/common.js`): `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`,
-  `pocPatchPathsGate`, `matchesAny` from `@verdikta/common` (A3b moves the
-  class limits there too).
+  `pocPatchPathsGate`, `matchesAny`, `baselineSets`, `validateBaseline` from
+  `@verdikta/common` (A3b moves the class limits there too).
 - **Launch** (`src/sandbox.js`): `createArgs`, `startArgs`, `execArgs`,
   `removeArgs` and the `Sandbox` class.
 - **Admission** (`src/admission.js`): `admitRun` (A1's checks) and
