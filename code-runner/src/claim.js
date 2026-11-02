@@ -178,21 +178,31 @@ function commandIssues(commands, key, placeholder) {
   return [];
 }
 
-/** What the forge adapter needs from the request, checked before any claim code runs. */
-function checkClaim(request) {
-  const spec = request.spec || {};
+/**
+ * What the forge adapter needs from the listing spec: the framework, the
+ * base image, the commands it fills, the listed commit and the test paths.
+ * The listing check (listing.js) asks the same of a spec before it runs one.
+ */
+function checkForgeSpec(spec) {
   const issues = [];
   const commands = spec.commands && typeof spec.commands === 'object' ? spec.commands : {};
   if (commands.framework !== 'forge') issues.push(issue('FRAMEWORK_UNSUPPORTED', '/spec/commands/framework', 'this runner runs forge listings only (the Foundry MVP)'));
   if (!spec.env || spec.env.from !== 'foundry') issues.push(issue('ENV_UNSUPPORTED', '/spec/env/from', 'this runner runs env images built FROM the pinned foundry base only'));
   issues.push(...commandIssues(commands, 'build', null), ...commandIssues(commands, 'testFiles', 'FILES'), ...commandIssues(commands, 'testIds', 'TEST_IDS'));
-  // The fix check runs the maker's full suite (§9.2 step 8).
-  if (request.fixPatch) issues.push(...commandIssues(commands, 'test', null));
   if (typeof spec.baseCommit !== 'string' || !COMMIT_HEX.test(spec.baseCommit)) issues.push(issue('SCHEMA', '/spec/baseCommit', 'must be a full commit hash'));
   const paths = spec.paths;
   const globs = (v) => Array.isArray(v) && v.every((g) => typeof g === 'string' && g !== '');
   if (!paths || !globs(paths.tests) || paths.tests.length === 0) issues.push(issue('SCHEMA', '/spec/paths/tests', 'must be a non-empty list of globs'));
   else if (paths.protected !== undefined && !globs(paths.protected)) issues.push(issue('SCHEMA', '/spec/paths/protected', 'must be a list of globs'));
+  return issues;
+}
+
+/** What the forge adapter needs from the request, checked before any claim code runs. */
+function checkClaim(request) {
+  const spec = request.spec || {};
+  const issues = checkForgeSpec(spec);
+  // The fix check runs the maker's full suite (§9.2 step 8).
+  if (request.fixPatch) issues.push(...commandIssues(spec.commands && typeof spec.commands === 'object' ? spec.commands : {}, 'test', null));
   const baseline = request.baseline;
   if (!baseline || !Array.isArray(baseline.tests) || !baseline.tests.every((t) => t && typeof t.id === 'string')) {
     issues.push(issue('BASELINE_INVALID', '/baseline/tests', 'baseline.json must list the tests at the listed commit (tests[].id)'));
@@ -497,7 +507,9 @@ const KIT = Object.freeze({
 // The PoC's sandbox.
 
 /**
- * The claim steps for a forge listing.
+ * The claim steps for a forge listing: the fix check's start, the claim
+ * session's steps in order (each skipped once a gate failed), the fix check's
+ * result.
  * @param {object} request - the validated POST /v1/runs request
  * @param {object} limits - the effective limits
  * @returns {Function[]}
@@ -505,17 +517,51 @@ const KIT = Object.freeze({
 function claimSteps(request, limits) {
   const issues = checkClaim(request);
   if (issues.length) return [async () => { throw new RequesterError(issues); }];
+  const session = claimSession(request, limits);
+  const steps = [session.prepare, session.applies, session.testPathsOnly, session.resetAndCommit, session.watch, session.build, session.reproduces].map((step) => {
+    const wrapped = async (ctx) => {
+      if (session.state.done) return;
+      try {
+        await step(ctx);
+      } catch (err) {
+        session.state.halted = true;
+        throw err;
+      }
+    };
+    Object.defineProperty(wrapped, 'name', { value: step.name });
+    return wrapped;
+  });
+  return [session.startFixCheck, ...steps, session.fixCheck];
+}
 
+/**
+ * The claim pipeline's steps as functions of a context, over one state
+ * (claimSteps runs them in order). The listing check (listing.js) runs the
+ * same functions on its harness probes: `adopt` takes the processes and the
+ * forced checkout of a session that already prepared this sandbox, so a
+ * probe is applied, gated, built and run exactly as a claim's PoC is. A
+ * session that never ran `watch` (a probe) gets every integrity check but
+ * the post-run checksums.
+ * @param {object} request - spec, pocPatch, baseline (as checkClaim accepts them), fixPatch and finding for a claim
+ * @param {object} limits - the effective limits
+ * @param {{adopt?: {keep:string[], prepared:string}}} [o]
+ */
+function claimSession(request, limits, { adopt = null } = {}) {
   const spec = request.spec;
   const base = spec.baseCommit;
   const testGlobs = spec.paths.tests;
   const protectedGlobs = spec.paths.protected || [];
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
-  const box = newBox();
+  // The state is the sandbox's box too (kit: the processes kept, the leftovers killed).
   const state = {
-    done: false, halted: false, touched: null, added: null, addedIds: null, prepared: null, pocCommit: null, watch: null,
+    done: false, halted: false, keep: [], leftovers: [], touched: null, added: null, addedIds: null, prepared: null, pocCommit: null, watch: null,
     fix: null, integrity: { tier: 'A', poc: null, fix: null }
   };
+  if (adopt) {
+    state.keep = [...adopt.keep];
+    state.prepared = adopt.prepared;
+  }
+  const box = state;
 
   /** The fix check (§9.2 step 8), started before the PoC's own steps and run beside them. */
   async function startFixCheck(ctx) {
@@ -591,20 +637,27 @@ function claimSteps(request, limits) {
     ctx.fact('commit', { tier: 'A', base, poc: state.pocCommit });
   }
 
-  async function build(ctx) {
-    // The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command.
+  /** The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command. */
+  async function watch(ctx) {
     state.watch = new integrity.Watch({ protectedGlobs });
     await state.watch.reference(ctx);
+  }
+
+  async function build(ctx) {
     const exitCode = await runBuild(ctx, box, spec.commands.build, limits);
     const ok = exitCode === 0;
     ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}`);
     if (!ok) state.done = true;
   }
 
-  /** One PoC run, then the snapshot the integrity checks compare (its processes are dead by then). */
-  async function pocRun(ctx, index, command, env) {
-    const run = await forgeRun(ctx, box, { name: `poc:${index}`, script: 'vcr-poc', command, env, timeoutMs: limits.testSeconds * 1000 });
-    await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
+  /**
+   * One PoC run, then the snapshot the integrity checks compare (its
+   * processes are dead by then). `step` and `label` (the script's $0) name
+   * it; the listing check's suite runs pass their own.
+   */
+  async function pocRun(ctx, index, command, env, { step = `poc:${index}`, label = 'vcr-poc' } = {}) {
+    const run = await forgeRun(ctx, box, { name: step, script: label, command, env, timeoutMs: limits.testSeconds * 1000 });
+    if (state.watch) await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
     return run;
   }
 
@@ -639,7 +692,7 @@ function claimSteps(request, limits) {
       const TEST_IDS = forge.testIdsRegex([...signatures.values()]);
       for (let k = 2; k <= RUNS; k += 1) {
         await resetHard(ctx, state.pocCommit, `poc:reset:${k}`);
-        await state.watch.afterReset(ctx, `run ${k}`);
+        if (state.watch) await state.watch.afterReset(ctx, `run ${k}`);
         runs.push({ command: 'testIds', ...(await pocRun(ctx, k, spec.commands.testIds, { FILES, TEST_IDS })) });
       }
     }
@@ -680,10 +733,10 @@ function claimSteps(request, limits) {
 
     const flags = integrity.tamperFlags({ added: state.added, touched: state.touched, commands: spec.commands });
     const checks = integrity.integrityOf({
-      identity, summary, exit, ...state.watch.failures, tamperFlags: flags
+      identity, summary, exit, ...(state.watch ? state.watch.failures : {}), tamperFlags: flags
     });
     ctx.fact('poc', { ...pocFacts(ids.map((id) => [id, results.get(id)]), runs), integrity: checks.integrity });
-    state.integrity.poc = { failures: checks.failures, changed: state.watch.changedFacts() };
+    state.integrity.poc = { failures: checks.failures, changed: state.watch ? state.watch.changedFacts() : null };
     ctx.fact('integrity', { ...state.integrity });
 
     let verdict;
@@ -721,20 +774,10 @@ function claimSteps(request, limits) {
     ctx.fact('integrity', { ...state.integrity });
   }
 
-  const steps = [prepare, applies, testPathsOnly, resetAndCommit, build, reproduces].map((step) => {
-    const wrapped = async (ctx) => {
-      if (state.done) return;
-      try {
-        await step(ctx);
-      } catch (err) {
-        state.halted = true;
-        throw err;
-      }
-    };
-    Object.defineProperty(wrapped, 'name', { value: step.name });
-    return wrapped;
-  });
-  return [startFixCheck, ...steps, fixCheck];
+  return {
+    state, startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, watch, build, reproduces, fixCheck, pocRun,
+    cleanup: (ctx, after) => cleanup(ctx, box, after)
+  };
 }
 
 const WORD = Object.freeze({ pass: 'passed', error: 'errored', skip: 'skipped', missing: 'missing', duplicate: 'duplicated' });
@@ -796,6 +839,6 @@ function pocFacts(entries, runs) {
 }
 
 module.exports = {
-  claimSteps, checkClaim, sandboxesFor, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS,
-  FREE_SPACE_SCRIPT, RUNS, KIT
+  claimSteps, claimSession, checkClaim, checkForgeSpec, commandIssues, sandboxesFor, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES,
+  PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS, FREE_SPACE_SCRIPT, FREE_SPACE_MARGIN_BYTES, RUNS, KIT
 };

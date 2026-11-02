@@ -345,10 +345,11 @@ function manifestOf(tree, findArgs) {
  * @param {Function} [o.onBox] - (box) => void, when a container's state is made (to seed its tree)
  * @param {object} [o.fix] - the fix check's container: { patch (bytes the fix apply carries; default FIX_PATCH),
  *   nameStatus, numstat, diff, raw, writtenBytes, applyExit, build (handler), suite (JUnit text or handler) }
+ * @param {object} [o.handlers] - more docker subcommand handlers (fakeDocker's), e.g. `history` for the listing check
  */
 function claimSandbox({
   image = defaultImage(), objects = (m) => m, corrected = [], freeBytes = 1024 * 1024 * 1024, writtenBytes = 120,
-  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF, onBox = null, fix = {}
+  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF, onBox = null, fix = {}, handlers = {}
 } = {}) {
   const hexLen = image.store.algo === 'sha256' ? 64 : 40;
   const imageObjects = objects(new Map(image.store.objects));
@@ -489,7 +490,7 @@ function claimSandbox({
     if (sub[0] === 'diff-files') return sub.includes('--quiet') ? 'diff-files --quiet' : 'diff-files --name-only';
     return sub[0];
   };
-  const docker = fakeDocker(healthyDaemon({
+  const docker = fakeDocker({ ...healthyDaemon({
     // The exec's own argv and stdin (with two sandboxes, the last call recorded may be the other one's).
     step: (args, opts) => {
       const d = decode({ args, stdin: opts && opts.stdin ? Buffer.from(opts.stdin) : null });
@@ -506,18 +507,20 @@ function claimSandbox({
       if (!h) throw new Error(`unexpected exec ${JSON.stringify(d.argv.slice(0, 4))}`);
       return h(d, b);
     }
-  }));
+  }), ...handlers });
   const decoded = () => docker.callsOf('exec').map(decode).filter((d) => d.kind && d.argv[3] !== 'vcr-probe' && d.argv[3] !== 'vcr-launcher-check');
-  /** The PoC sandbox's execs (the first container), in order. */
-  const execs = () => decoded().filter((d) => (d.box || 1) === 1);
-  /** The fix check's execs (the second container). */
+  /** Every container's execs, in order (a claim without a fix check, and the listing check's probes, use one at a time). */
+  const execs = () => decoded();
+  /** A claim's PoC sandbox's execs (the first container). */
+  const pocExecs = () => decoded().filter((d) => (d.box || 1) === 1);
+  /** A claim's fix check's execs (the second container). */
   const fixExecs = () => decoded().filter((d) => d.box === 2);
   const box = (n = 1) => {
     if (!boxes.has(n)) boxes.set(n, newBox(n));
     return boxes.get(n);
   };
   return {
-    docker, execs, fixExecs, image, box,
+    docker, execs, pocExecs, fixExecs, image, box,
     get repo() { return box(1).repo; }
   };
 }

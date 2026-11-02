@@ -151,6 +151,8 @@ async function executeRun({
   // for its own launch, so a container whose `docker create` was still pending is removed once it exists, and the
   // reservations stay held until then, however long after the answer that is (R1-F4).
   const launches = new Map();
+  /** Sandboxes their handle's close() removed. */
+  const closed = new Set();
   // The steps in flight (the fix check may run beside the PoC, §11), for
   // naming the step a run-level kill interrupted.
   const running = new Set();
@@ -186,8 +188,10 @@ async function executeRun({
 
   async function open() {
     // Admission held memory for `sandboxes` of them; a step may not open more.
-    if (opened.length >= sandboxes) {
-      throw new Abstain(ABSTAIN.RUNNER_ERROR, `a step opened sandbox ${opened.length + 1}, but the run was admitted for ${sandboxes} sandbox${sandboxes === 1 ? '' : 'es'}`, { step: 'launch' });
+    // Live ones count: a sandbox closed by its handle's close() (the listing check's probes) holds nothing.
+    const live = opened.filter((x) => !closed.has(x)).length;
+    if (live >= sandboxes) {
+      throw new Abstain(ABSTAIN.RUNNER_ERROR, `a step opened sandbox ${live + 1} at once, but the run was admitted for ${sandboxes} sandbox${sandboxes === 1 ? '' : 'es'}`, { step: 'launch' });
     }
     const name = `vcr-${runId}-${opened.length + 1}`;
     const sb = new Sandbox({ docker, name, runtime: config.runtime, log });
@@ -262,6 +266,28 @@ async function executeRun({
           run.signal.removeEventListener('abort', forward);
           running.delete(stepName);
         }
+      },
+      /**
+       * Remove this sandbox now, when the steps are done with it (the
+       * listing check opens a fresh one per probe, never two at once, so
+       * the memory admitted for one sandbox covers them). The teardown's own
+       * removal then finds nothing to remove.
+       */
+      async close() {
+        const stepName = `close:${sb.name}`;
+        const late = stopped(stepName);
+        if (late) throw late;
+        running.add(stepName);
+        let gone = false;
+        try {
+          gone = await sb.remove();
+        } catch (_) {
+          gone = false;
+        } finally {
+          running.delete(stepName);
+        }
+        if (!gone) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox could not be removed', { step: stepName });
+        closed.add(sb);
       }
     };
   }
@@ -290,8 +316,10 @@ async function executeRun({
       sandboxName: primary.name,
       exec: primary.exec,
       readFile: primary.readFile,
-      /** Another sandbox with the same flags (the fix check, §9.2 step 8). */
+      /** Another sandbox with the same flags (the fix check, §9.2 step 8), with exec, readFile, name and close(). */
       openSandbox: () => open(),
+      /** Remove the first sandbox now (its handle's close()); ctx.exec cannot be used after. */
+      closeSandbox: primary.close,
       /** Record a gate decided on a definitive basis (exit_code, junit, integrity, input). */
       gate(name, status, basis, detail) {
         result.gates[name] = makeGate(status, basis, detail);

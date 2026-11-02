@@ -3,8 +3,9 @@
 /**
  * The HTTP surface (design §7.2, §9.1):
  *
- *   GET  /health   → 200 when a run would be admitted, 503 otherwise
- *   POST /v1/runs  → 200 definitive | 503 abstain | 400 requester_error
+ *   GET  /health            → 200 when a run would be admitted, 503 otherwise
+ *   POST /v1/runs           → 200 definitive | 503 abstain | 400 requester_error
+ *   POST /v1/listing-checks → the same statuses, for a listing (listing.js, node A2b)
  *
  * Every request needs `Authorization: Bearer <token>`, checked before the
  * route or the body is looked at. The listener is 127.0.0.1 / ::1 or a Unix
@@ -23,6 +24,7 @@ const { checkSpec } = require('./classLimits');
 const { executeRun } = require('./pipeline');
 const { health } = require('./health');
 const { claimSteps } = require('./steps');
+const { validateListingRequest, listingSteps, imageUnpackedBytes } = require('./listing');
 const { checkClaim, sandboxesFor } = require('./claim');
 const { Capacity } = require('./admission');
 const { ImageCache } = require('./images');
@@ -90,18 +92,40 @@ function toResponse(result) {
 }
 
 /**
+ * A listing check's answer (listing.js): what the check found, never a
+ * claim's shape (no gates, no facts, no report).
+ */
+function toListingResponse(result) {
+  return {
+    outcome: result.outcome,
+    kind: 'listing-check',
+    checkId: result.runId,
+    runner: { version: RUNNER_VERSION, runtime: result.runtime, platform: result.platform },
+    limits: result.limits,
+    abstain: result.abstain,
+    image: result.image || null,
+    listing: result.outcome === OUTCOME.DEFINITIVE ? (result.facts && result.facts.listing) || null : null,
+    steps: result.steps
+  };
+}
+
+/**
  * @param {object} o
  * @param {object} o.config - loadConfig()
  * @param {object} o.docker - createDocker()
  * @param {Function} [o.stepsFor] - (request, limits) => steps (default: claimSteps)
  * @param {Function|null} [o.checkRequest] - request => issues the steps would refuse, checked before
  *   admission or any pull (default: the claim pipeline's checkClaim with the default steps)
+ * @param {Function} [o.listingStepsFor] - (request, limits, { imageSize }) => steps for a listing check (default: listingSteps)
  * @param {object} [o.log]
  * @param {Function} [o.statfs] - for /health and the pull's disk check
  * @param {Function} [o.meminfo] - the host's available memory, for admission (default /proc/meminfo)
  * @param {string[]} [o.pins] - digests the image cache never evicts (default: @verdikta/common's base images)
  */
-function createServer({ config, docker, stepsFor = claimSteps, checkRequest = stepsFor === claimSteps ? checkClaim : null, log = nullLog, statfs, meminfo, pins }) {
+function createServer({
+  config, docker, stepsFor = claimSteps, checkRequest = stepsFor === claimSteps ? checkClaim : null, listingStepsFor = listingSteps,
+  log = nullLog, statfs, meminfo, pins
+}) {
   /** Container names of live runs: the GC leaves them alone. */
   const active = new Set();
   /** Execution slots and the memory reserve (A1b). */
@@ -113,12 +137,13 @@ function createServer({ config, docker, stepsFor = claimSteps, checkRequest = st
   /** Set by close(): no new run is admitted. */
   let closing = false;
 
-  async function handleRun(req, res, receivedAt) {
+  /** Read a JSON body; answers (and resolves undefined) when it cannot. */
+  async function readJson(req, res) {
     const type = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
     if (type !== 'application/json') {
       req.resume();
       send(res, 415, { error: 'unsupported_media_type', detail: 'send application/json' }, { connection: 'close' });
-      return;
+      return undefined;
     }
     let raw;
     try {
@@ -127,57 +152,31 @@ function createServer({ config, docker, stepsFor = claimSteps, checkRequest = st
       // Drain (and drop) the rest; the connection closes after the answer.
       req.resume();
       send(res, err.status || 400, { error: err.status === 413 ? 'payload_too_large' : 'bad_request', detail: err.message }, { connection: 'close' });
-      return;
+      return undefined;
     }
-    let body;
     try {
-      body = JSON.parse(raw.toString('utf8'));
+      return JSON.parse(raw.toString('utf8'));
     } catch (_) {
       send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, issues: [{ code: 'INVALID_JSON', path: '/', detail: 'the body is not JSON' }] });
-      return;
+      return undefined;
     }
+  }
 
-    const v = validateRunRequest(body);
-    const issues = [...v.issues];
-    let limits = null;
-    if (body && typeof body === 'object' && body.spec && typeof body.spec === 'object' && !Array.isArray(body.spec)) {
-      const s = checkSpec(body.spec);
-      issues.push(...s.issues);
-      limits = s.limits;
-      if (s.ok) issues.push(...imageBindingIssues(body.spec, body.attestation));
-    }
-    const refuse = (list) => {
-      log.info('run refused: requester error', { codes: [...new Set(list.map((i) => i.code))] });
-      send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, issues: list });
-    };
-    if (issues.length) {
-      refuse(issues);
-      return;
-    }
-    const request = v.request;
-    // What the steps would find wrong in the request itself (an unsupported
-    // framework, a missing command, a broken baseline) is the requester's
-    // error now, before admission or any pull (§12). A step builder's own
-    // bug still reaches the engine and abstains (runner_error).
-    const early = checkRequest ? checkRequest(request) : [];
-    if (early.length) {
-      refuse(early);
-      return;
-    }
-    let steps;
-    try {
-      steps = stepsFor(request, limits);
-    } catch (err) {
-      if (err instanceof RequesterError) {
-        refuse(err.issues);
-        return;
-      }
-      steps = [async () => { throw err; }];
-    }
+  function refuse(res, list, what = 'run') {
+    log.info(`${what} refused: requester error`, { codes: [...new Set(list.map((i) => i.code))] });
+    send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, issues: list });
+  }
 
+  /**
+   * One run through the engine, as every route has it: refused while the
+   * runner stops, cancelled when the caller goes, admitted (slots, memory),
+   * the image pulled, the steps run, the sandboxes removed.
+   * @returns {Promise<object|null>} the run result (null when refused before it started)
+   */
+  async function runJob(req, res, receivedAt, { limits, image, attestedImage, unpackedBytes, deadlineMs, steps, sandboxes = 1 }) {
     if (closing) {
       send(res, 503, { outcome: OUTCOME.ABSTAIN, abstain: { cause: ABSTAIN.ADMISSION_REFUSED, step: 'admission', detail: 'the runner is shutting down' } });
-      return;
+      return null;
     }
     const runId = crypto.randomBytes(8).toString('hex');
     const controller = new AbortController();
@@ -188,32 +187,121 @@ function createServer({ config, docker, stepsFor = claimSteps, checkRequest = st
     let resolveDone;
     const done = new Promise((r) => { resolveDone = r; });
     runs.set(runId, { controller, done });
-    let result;
     try {
-      result = await executeRun({
-        docker, config, limits, image: request.spec.env.image, runId, steps,
-        receivedAt, deadlineAt: receivedAt + request.deadlineMs, signal: controller.signal, active, log,
+      return await executeRun({
+        docker, config, limits, image, runId, steps,
+        receivedAt, deadlineAt: receivedAt + deadlineMs, signal: controller.signal, active, log,
         admit: (o) => capacity.admit(o),
         images,
-        attestedImage: request.attestation.env.image,
-        unpackedBytes: request.spec.env.unpackedBytes,
-        // The fix check's sandbox runs beside the PoC's: admission holds memory for both (A3a).
-        sandboxes: sandboxesFor(request)
+        attestedImage,
+        unpackedBytes,
+        // A claim with a fix check has its second sandbox beside the PoC's: admission holds memory for both (A3a).
+        sandboxes
       });
     } finally {
       runs.delete(runId);
       resolveDone();
     }
+  }
+
+  async function handleRun(req, res, receivedAt) {
+    const body = await readJson(req, res);
+    if (body === undefined) return;
+
+    const v = validateRunRequest(body);
+    const issues = [...v.issues];
+    let limits = null;
+    if (body && typeof body === 'object' && body.spec && typeof body.spec === 'object' && !Array.isArray(body.spec)) {
+      const s = checkSpec(body.spec);
+      issues.push(...s.issues);
+      limits = s.limits;
+      if (s.ok) issues.push(...imageBindingIssues(body.spec, body.attestation));
+    }
+    if (issues.length) {
+      refuse(res, issues);
+      return;
+    }
+    const request = v.request;
+    // What the steps would find wrong in the request itself (an unsupported
+    // framework, a missing command, a broken baseline) is the requester's
+    // error now, before admission or any pull (§12). A step builder's own
+    // bug still reaches the engine and abstains (runner_error).
+    const early = checkRequest ? checkRequest(request) : [];
+    if (early.length) {
+      refuse(res, early);
+      return;
+    }
+    let steps;
+    try {
+      steps = stepsFor(request, limits);
+    } catch (err) {
+      if (err instanceof RequesterError) {
+        refuse(res, err.issues);
+        return;
+      }
+      steps = [async () => { throw err; }];
+    }
+
+    const result = await runJob(req, res, receivedAt, {
+      limits, image: request.spec.env.image, attestedImage: request.attestation.env.image,
+      unpackedBytes: request.spec.env.unpackedBytes, deadlineMs: request.deadlineMs, steps, sandboxes: sandboxesFor(request)
+    });
+    if (!result) return;
     log.info('run finished', {
-      runId, listingCid: request.listingCid, bcid: request.bcid, outcome: result.outcome,
+      runId: result.runId, listingCid: request.listingCid, bcid: request.bcid, outcome: result.outcome,
       cause: result.abstain ? result.abstain.cause : null, step: result.abstain ? result.abstain.step : null,
       image: result.image ? result.image.cache : null, ms: Date.now() - receivedAt
     });
     if (result.outcome === OUTCOME.REQUESTER_ERROR) {
-      send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, runId, issues: result.issues });
+      send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, runId: result.runId, issues: result.issues });
       return;
     }
     send(res, result.outcome === OUTCOME.DEFINITIVE ? 200 : 503, toResponse(result));
+  }
+
+  /**
+   * POST /v1/listing-checks (listing.js): a listing's build, suite x3,
+   * baseline, default limits and harness proof, through the same engine,
+   * admission, pull and isolation as a run. It takes no claim field, and its
+   * steps are only ever the listing check's.
+   */
+  async function handleListingCheck(req, res, receivedAt) {
+    const body = await readJson(req, res);
+    if (body === undefined) return;
+    const v = validateListingRequest(body);
+    if (!v.ok) {
+      refuse(res, v.issues, 'listing check');
+      return;
+    }
+    const request = v.request;
+    let steps;
+    try {
+      steps = listingStepsFor(request, v.limits, { imageSize: () => imageUnpackedBytes(docker, request.image) });
+    } catch (err) {
+      if (err instanceof RequesterError) {
+        refuse(res, err.issues, 'listing check');
+        return;
+      }
+      steps = [async () => { throw err; }];
+    }
+    const result = await runJob(req, res, receivedAt, {
+      limits: v.limits, image: request.image, attestedImage: request.image,
+      unpackedBytes: request.unpackedBytes, deadlineMs: request.deadlineMs, steps
+    });
+    if (!result) return;
+    const listing = result.facts && result.facts.listing;
+    log.info('listing check finished', {
+      checkId: result.runId, image: request.image, outcome: result.outcome,
+      status: result.outcome === OUTCOME.DEFINITIVE && listing ? listing.status : null,
+      refusals: result.outcome === OUTCOME.DEFINITIVE && listing ? listing.refusals.map((r) => r.code) : null,
+      cause: result.abstain ? result.abstain.cause : null, step: result.abstain ? result.abstain.step : null,
+      ms: Date.now() - receivedAt
+    });
+    if (result.outcome === OUTCOME.REQUESTER_ERROR) {
+      send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, kind: 'listing-check', checkId: result.runId, issues: result.issues });
+      return;
+    }
+    send(res, result.outcome === OUTCOME.DEFINITIVE ? 200 : 503, toListingResponse(result));
   }
 
   async function handler(req, res) {
@@ -242,6 +330,15 @@ function createServer({ config, docker, stepsFor = claimSteps, checkRequest = st
           return;
         }
         await handleRun(req, res, receivedAt);
+        return;
+      }
+      if (pathname === '/v1/listing-checks') {
+        if (req.method !== 'POST') {
+          req.resume();
+          send(res, 405, { error: 'method_not_allowed' }, { allow: 'POST' });
+          return;
+        }
+        await handleListingCheck(req, res, receivedAt);
         return;
       }
       req.resume();
