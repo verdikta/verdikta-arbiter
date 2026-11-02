@@ -671,3 +671,33 @@ test('the link script against the real kernel (Linux: dash, GNU coreutils): the 
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+test('A3a R8-F1: every configured root must be one the snapshots cover: out, cache_path and libs in the work tree; solc and PATH not in /tmp, a $HOME cache or through `..`', () => {
+  const roots = (over = {}, pathDirs = ['/usr/local/bin', '/usr/bin', '/bin'], tests = ['test/**']) => integrity.unwatchableRoots({ ...CONFIG, ...over }, pathDirs, tests);
+  assert.deepEqual(roots(), []);
+  // forge's defaults (absent settings), and plain forms of the same places.
+  assert.deepEqual(roots({ out: null, cachePath: null, libs: ['lib', './lib2', '/work/lib3', 'lib4/', 'node_modules'] }), []);
+  assert.deepEqual(roots({ out: '/tmp/forge-out', cachePath: '/tmp/forge-cache' }), [
+    'out (/tmp/forge-out) is not a plain path in the work tree', 'cache_path (/tmp/forge-cache) is not a plain path in the work tree'
+  ]);
+  assert.deepEqual(roots({ libs: ['lib', '../shared', '/opt/deps', 'lib/../vendor'] }), [
+    'libs (../shared) is not a plain path in the work tree', 'libs (/opt/deps) is not a plain path in the work tree', 'libs (lib/../vendor) is not a plain path in the work tree'
+  ]);
+  for (const solc of ['/opt/solc/solc', '/home/sandbox/.svm/0.8.31/solc-0.8.31', 'bin/solc', '/work/bin/solc', '0.8.31']) assert.deepEqual(roots({ solc }), [], solc);
+  for (const [solc, why] of [['/tmp/solc', /in \/tmp/], ['/home/sandbox/.cache/solc', /in a \$HOME cache/], ['/opt/../tmp/solc', /not a plain path/], ['../solc', /not a plain path in the work tree/]]) {
+    const got = roots({ solc });
+    assert.equal(got.length, 1, solc);
+    assert.match(got[0], why, solc);
+  }
+  for (const d of ['/work', '/work/bin', '/work/node_modules/.bin', '/home/sandbox/bin', '/usr/bin', '/opt/tools']) assert.deepEqual(roots({}, [d]), [], d);
+  const bad = {
+    '/tmp/bin': /in \/tmp/, '/home/sandbox/.foundry/cache/bin': /in a \$HOME cache/, '/usr/../tmp': /not a plain path/,
+    '/work/cache/bin': /in forge's cache directory/, '/work/out/bin': /in forge's out directory/, '/work/.git/hooks': /the runner's repository/,
+    '/work/test/bin': /under paths\.tests/
+  };
+  for (const [d, why] of Object.entries(bad)) {
+    const got = roots({}, [d]);
+    assert.equal(got.length, 1, d);
+    assert.match(got[0], why, d);
+  }
+});

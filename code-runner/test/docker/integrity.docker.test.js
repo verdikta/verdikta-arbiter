@@ -51,6 +51,11 @@ const VARIANTS = Object.freeze({
       'mkdir -p third_party/lib && printf "contract TP {}\\n" > third_party/lib/TP.sol && ln -s third_party deps'
     ].join(' && ')
   },
+  // R8-F1: forge's out and compile cache configured in /tmp, outside everything the snapshots list.
+  tmpout: {
+    toml: `${PLAIN_TOML}\nout = "/tmp/forge-out"\ncache_path = "/tmp/forge-cache"`,
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
+  },
   // Attempt 2: a dependency link into forge's cache directory (R6-F1, round 7).
   cachelink: {
     toml: PLAIN_TOML,
@@ -413,6 +418,15 @@ test('A3a R6-F1 (round 7) under real forge: a dependency link into forge\'s cach
   assert.equal(r.outcome, 'requester_error', show(r));
   assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
   assert.match(r.issues[0].detail, /lib\/cpkg -> \/work\/cache\/pkg \(forge's cache directory \(cache\)\)/);
+  assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
+});
+
+test('A3a R8-F1 under real forge: out and cache_path configured in /tmp are refused before any maker command (IMAGE_WATCH_ROOT_UNCOVERED)', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('tmpout');
+  const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /out \(\/tmp\/forge-out\) is not a plain path in the work tree; cache_path \(\/tmp\/forge-cache\)/);
   assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:)/.test(s.name)), 'no maker command and no claim code ran');
 });
 

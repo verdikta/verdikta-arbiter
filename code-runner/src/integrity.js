@@ -62,7 +62,10 @@
  * followed: what they reach is no more than an untracked file at their own
  * path would be. The work is linear in the listing and capped (MAX_ENTRIES,
  * MAX_WATCHED_LINKS, MAX_LINK_ROUNDS): beyond a cap the image is
- * IMAGE_WATCH_TOO_LARGE.
+ * IMAGE_WATCH_TOO_LARGE. And no configured root is dropped silently
+ * (unwatchableRoots, R8-F1): forge's out, cache_path and libs outside the
+ * work tree, or solc or a PATH directory where nothing is listed, is
+ * IMAGE_WATCH_ROOT_UNCOVERED.
  *
  * Not watched: the rest of forge's cache directory (`cache_path`: the ABI
  * cache, test-failures, fuzz failures, which forge rewrites on every run),
@@ -315,14 +318,73 @@ function describe(e) {
 function layout({ config, forgePath = '', realPath = '', pathDirs = [] }) {
   const bytes = (p) => (p === null ? null : Buffer.from(p, 'utf8').toString('latin1'));
   const deps = [...new Set([...config.libs.map(plainDir).filter(Boolean), ...DEPENDENCY_DIRS])].map(bytes);
-  const out = bytes(plainDir(config.out));
-  const cache = bytes(plainDir(config.cachePath));
+  // forge's defaults when its config names none.
+  const out = bytes(plainDir(typeof config.out === 'string' ? config.out : 'out'));
+  const cache = bytes(plainDir(typeof config.cachePath === 'string' ? config.cachePath : 'cache'));
   // forge's compile cache names the artifact files a later run loads instead of compiling: it is held like them.
   const filesCache = cache ? `${cache}/solidity-files-cache.json` : null;
   const inWork = (p) => (typeof p === 'string' && p.startsWith(`${WORK}/`) ? p.slice(WORK.length + 1) : null);
   const tools = [inWork(forgePath), inWork(realPath), config.solc && !config.solc.startsWith('/') ? plainDir(config.solc) : inWork(config.solc)].filter(Boolean).map(bytes);
   const pathRoots = pathDirs.map((d) => (d === WORK ? '' : inWork(d))).filter((d) => d !== null).map(bytes);
   return { deps, out, cache, filesCache, tools, pathRoots };
+}
+
+/**
+ * The configured places the snapshots could not cover (R8-F1), each as
+ * `setting (value) why`; the reference refuses any (IMAGE_WATCH_ROOT_UNCOVERED)
+ * rather than leave what lies there unwatched. The listing holds /work and
+ * $HOME only, so forge's out, cache_path and libs must be plain paths in the
+ * work tree (elsewhere they are unlisted: in /tmp writable too, on the
+ * read-only root a directory whose links are unseen). solc and the PATH
+ * directories may also be on the read-only root (immutable) or in $HOME
+ * (watched), but not in /tmp or a $HOME cache (both unlisted) or through
+ * `..`. A PATH directory in the work tree may not lie where builds and runs
+ * write (the runner's repository, forge's out, cache, broadcast and snapshots
+ * directories) or under paths.tests, where a patch's file would be a command.
+ * @param {object} config - parseFramework().config
+ * @param {string[]} pathDirs - PATH, as absolute directories
+ * @param {string[]} testGlobs - paths.tests
+ * @returns {string[]}
+ */
+function unwatchableRoots(config, pathDirs = [], testGlobs = []) {
+  const problems = [];
+  const outside = (abs) => {
+    if (abs.split('/').includes('..')) return 'is not a plain path (`..`)';
+    if (within(abs, '/tmp')) return 'is in /tmp, which the runner does not list';
+    if (HOME_CACHES.some((c) => within(abs, `${HOME}/${c.slice(2)}`))) return 'is in a $HOME cache, which the runner does not list';
+    return null;
+  };
+  const inWork = (setting, value) => {
+    if (plainDir(value) === null) problems.push(`${setting} (${value}) is not a plain path in the work tree`);
+  };
+  if (typeof config.out === 'string') inWork('out', config.out);
+  if (typeof config.cachePath === 'string') inWork('cache_path', config.cachePath);
+  for (const lib of config.libs) inWork('libs', lib);
+  if (typeof config.solc === 'string' && config.solc !== '') {
+    const s = config.solc;
+    const why = s.startsWith('/') && !s.startsWith(`${WORK}/`) ? outside(s) : plainDir(s) === null ? 'is not a plain path in the work tree' : null;
+    if (why) problems.push(`solc (${s}) ${why}`);
+  }
+  const named = (value, fallback) => plainDir(typeof value === 'string' ? value : fallback);
+  const areas = [['.git', 'the runner\'s repository'], [named(config.out, 'out'), 'forge\'s out directory'], [named(config.cachePath, 'cache'), 'forge\'s cache directory'],
+    [named(config.broadcast, 'broadcast'), 'forge\'s broadcast directory'], [named(config.snapshots, 'snapshots'), 'forge\'s snapshots directory']].filter(([d]) => d);
+  for (const d of pathDirs) {
+    if (d === WORK) continue;
+    if (!d.startsWith(`${WORK}/`)) {
+      const why = outside(d);
+      if (why) problems.push(`PATH directory ${d} ${why}`);
+      continue;
+    }
+    const rel = plainDir(d);
+    if (rel === null) {
+      problems.push(`PATH directory ${d} is not a plain path in the work tree`);
+      continue;
+    }
+    const area = areas.find(([dir]) => under(rel, dir));
+    if (area) problems.push(`PATH directory ${d} is in ${area[1]}, which builds and runs write`);
+    else if (testGlobs.length && matchesAny(rel, testGlobs)) problems.push(`PATH directory ${d} is under paths.tests, where a patch's file would be a command`);
+  }
+  return problems;
 }
 
 /**
@@ -806,6 +868,14 @@ class Watch {
         detail: `\`forge config --json\` failed at the listed commit (exit ${p.exitCode}): ${firstLine(p.stderr) || parsed.reason || ''}`.trim()
       }]);
     }
+    // Every place the sets are rooted at must be one the snapshots cover (R8-F1): none is dropped silently.
+    const uncoveredRoots = unwatchableRoots(parsed.config, parsed.pathDirs, this.testGlobs);
+    if (uncoveredRoots.length) {
+      throw new RequesterError([{
+        code: 'IMAGE_WATCH_ROOT_UNCOVERED', path: '/spec/env/image',
+        detail: `forge's configuration puts what the runner watches where its snapshots cannot cover it: ${shown(uncoveredRoots, 5, '; ')}`
+      }]);
+    }
     const tooLarge = (why) => new RequesterError([{
       code: 'IMAGE_WATCH_TOO_LARGE', path: '/spec/env/image', detail: `${why}: the runner cannot watch the work tree for changes during a run`
     }]);
@@ -1219,6 +1289,6 @@ function integrityDetail(failures) {
 module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
-  parseFramework, parseManifest, parseLinks, classify, watchRoots, watchLinks, WatchTooLarge, changedPaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
+  parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };

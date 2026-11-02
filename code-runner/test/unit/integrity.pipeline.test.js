@@ -679,3 +679,17 @@ test('with a watched link, its resolution is part of measuring the files: after 
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework'
   ]);
 });
+
+test('A3a R8-F1: forge\'s out and compile cache configured in /tmp (and a PATH directory there) are IMAGE_WATCH_ROOT_UNCOVERED before any maker command, never left unwatched', async () => {
+  const sb = claimSandbox({ onBox: (box) => { box.configOver = { out: '/tmp/forge-out', cache_path: '/tmp/forge-cache' }; } });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /out \(\/tmp\/forge-out\) is not a plain path in the work tree; cache_path \(\/tmp\/forge-cache\) is not a plain path in the work tree/);
+  assert.ok(!sb.execs().some((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc'), 'no maker command and no claim code ran');
+  const { forgeConfig } = require('../helpers/fakeClaim');
+  const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /tmp/bin:/usr/local/bin:/usr/bin\n${forgeConfig(box.tree)}` });
+  const p = await runClaim(claimSandbox({ scripts: { 'vcr-framework': framework } }));
+  assert.equal(p.outcome, 'requester_error', show(p));
+  assert.match(p.issues[0].detail, /PATH directory \/tmp\/bin is in \/tmp/);
+});
