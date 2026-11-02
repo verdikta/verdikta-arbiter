@@ -937,7 +937,6 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
 test('Q32: what changes a watched place during the build, before any claim code, is the image\'s doing: the requester\'s error, never a failed integrity check on an honest claim', async () => {
   for (const [what, write, re] of [
     ['a compiler that writes into lib/', (box) => set(box, '/work/lib/trap.sol', 'x'), /the build: lib\/trap\.sol added/],
-    ['out = "lib/out"', (box) => set(box, '/work/lib/out/Vault.json', '{}'), /the build: lib\/out\/Vault\.json added/],
     ['a program that rewrites foundry.toml', (box) => set(box, '/work/foundry.toml', '[profile.default]\nffi = true\n'), /the build: foundry\.toml changed/],
     ['a program that leaves a directory unlistable', (box) => box.tree.set('/work/anywhere', { type: 'd', mode: '111', content: '' }), /the build: anywhere cannot be read/]
   ]) {
@@ -949,12 +948,6 @@ test('Q32: what changes a watched place during the build, before any claim code,
     assert.equal(r.gates.integrity, undefined, 'no integrity gate is decided');
     assert.ok(!sb.execs().some((d) => d.kind === 'vcr-poc'), 'no claim code ran');
   }
-  // paths.protected over forge's out: every compile would change it.
-  const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', 'out/**'] } });
-  const p = await runClaim(claimSandbox(), claimRequest({ spec }));
-  assert.equal(p.outcome, 'requester_error', show(p));
-  assert.deepEqual(p.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD']);
-  assert.match(p.issues[0].detail, /the build: out\//);
   // A build that failed and wrote is the image's too; a build that failed and wrote nothing stays the build gate's.
   const failed = await runClaim(claimSandbox({ scripts: { 'vcr-build': (d, box) => { set(box, '/work/lib/trap.sol', 'x'); return { exitCode: 1 }; } } }));
   assert.equal(failed.outcome, 'requester_error', show(failed));
@@ -964,6 +957,33 @@ test('Q32: what changes a watched place during the build, before any claim code,
   // A run's own change is still the claim's: the same write in run 1 fails integrity.
   const inRun = (d, k, box) => { set(box, '/work/lib/trap.sol', 'x'); return { exitCode: 1, stdout: drainFails() }; };
   assertIntegrityFails(await runClaim(claimSandbox({ poc: [inRun, inRun, inRun] })), ['dependenciesUnchanged'], /run 1: lib\/trap\.sol added/);
+});
+
+test('A3a R21-F1: where forge itself writes is never held to the reference, whatever else names it: a protected glob over out/ or cache/, a `libs` entry holding out, a test\'s artifact compiled in run 1', async () => {
+  // `--skip test`: the build writes no test artifact; run 1 compiles the PoC. With a glob over that artifact the honest claim failed.
+  const compile = (d, k, box) => { if (k === 1) set(box, '/work/out/Exploit.t.sol/ExploitTest.json', '{"bytecode":"0x6081"}'); return { exitCode: 1, stdout: drainFails() }; };
+  for (const globs of [['out/Exploit.t.sol/**'], ['out/**'], ['**/*.json'], ['cache/**']]) {
+    const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', ...globs] }, commands: { build: 'forge build --skip test' } });
+    const r = await runClaim(claimSandbox({ poc: [compile, drainFails(), drainFails()] }), claimRequest({ spec }));
+    assert.equal(r.outcome, 'definitive', `${globs}: ${show(r)}`);
+    assert.equal(r.gates.integrity.status, 'pass', `${globs}: ${show(r)}`);
+    assert.equal(r.gates.reproduces.status, 'pass', `${globs}: ${show(r)}`);
+  }
+  // out = "lib/out": a dependency root holding forge's output.
+  const inLib = claimSandbox({
+    onBox: (box) => { box.configOver = { out: 'lib/out' }; },
+    scripts: { 'vcr-build': (d, box) => { set(box, '/work/lib/out/Vault.sol/Vault.json', '{}'); return { exitCode: 0 }; } }
+  });
+  const lib = await runClaim(inLib);
+  assert.equal(lib.gates.integrity.status, 'pass', show(lib));
+  // Still held: from run 1 on, as artifacts; and a real dependency beside it.
+  const later = (d, k, box) => { if (k === 2) set(box, '/work/out/Vault.sol/Vault.json', '{"bytecode":"0xfe"}'); return { exitCode: 1, stdout: drainFails() }; };
+  const specOut = forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', 'out/**'] } });
+  const tampered = await runClaim(claimSandbox({ poc: [later, later, later] }), claimRequest({ spec: specOut }));
+  assertIntegrityFails(tampered, ['frameworkUnchanged'], /run 2: out\/Vault\.sol\/Vault\.json changed/);
+  const dep = (d, k, box) => { set(box, '/work/lib/forge-std/src/Test.sol', 'changed'); return { exitCode: 1, stdout: drainFails() }; };
+  const depChanged = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { out: 'lib/out' }; }, poc: [dep, dep, dep] }));
+  assertIntegrityFails(depChanged, ['dependenciesUnchanged'], /run 1: lib\/forge-std\/src\/Test\.sol changed/);
 });
 
 test('Q32: in the fix check\'s sandbox a build that changes a watched place is a failed fixed build, a fact; the PoC\'s gates stand', async () => {

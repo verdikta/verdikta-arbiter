@@ -717,3 +717,43 @@ test('A3a R11-F2: PATH is read as the shell reads it from /work: `.bin` stays `.
   const leading = integrity.parseFramework(Buffer.from(`vcr-forge /usr/local/bin/forge\nvcr-path :/usr/bin:\n${config}`));
   assert.deepEqual(leading.pathDirs, ['/work', '/usr/bin', '/work']);
 });
+
+// ------------------------------------------------------- R21-F2: invariant campaigns
+
+/** A suite as forge 1.8.5 reports it: records, its summary line and the XML counts that follow the records. */
+function campaignDoc(cases, summary) {
+  const n = (o) => cases.filter((k) => k.outcome === o).length;
+  const counts = { tests: String(cases.length), failures: String(n('failure')), errors: String(n('error')), skipped: String(n('skipped')) };
+  return {
+    ok: true,
+    suites: [{ file: 'test/I.t.sol', contract: 'I', cases, counts, summaries: [`Suite result: ${summary}; finished in 1.00ms (1.00ms CPU time)`] }],
+    totals: counts
+  };
+}
+
+test('A3a R21-F2: forge counts an invariant campaign as one result and the JUnit expands it: forge 1.8.5\'s real reports are consistent, a forged count is not', () => {
+  const inv = (name, outcome = 'pass') => ({ name, outcome });
+  const pass = (name) => inv(name);
+  const fail = (name) => inv(name, 'failure');
+  const ok = (cases, summary) => assert.deepEqual(integrity.summaryConsistency(campaignDoc(cases, summary)), { ok: true, detail: null }, summary);
+  const no = (cases, summary) => assert.equal(integrity.summaryConsistency(campaignDoc(cases, summary)).ok, false, summary);
+  // As forge 1.8.5 printed them (the Docker test runs them).
+  ok([pass('invariant_a()'), pass('invariant_b()'), pass('test_unit()')], 'ok. 2 passed; 0 failed; 0 skipped');
+  ok([fail('invariant_a()'), fail('invariant_b()')], 'FAILED. 0 passed; 1 failed; 0 skipped');
+  ok([fail('invariant_bad()'), pass('invariant_ok()')], 'FAILED. 0 passed; 1 failed; 0 skipped');
+  // Separate campaigns (incompatible settings) count one each; a handler failure is a record of its campaign.
+  ok([pass('invariant_a()'), pass('invariant_b()')], 'ok. 2 passed; 0 failed; 0 skipped');
+  ok([fail('invariant_a()'), fail('invariant_b()')], 'FAILED. 0 passed; 2 failed; 0 skipped');
+  ok([pass('invariant_a()'), fail('handler boom()')], 'FAILED. 0 passed; 1 failed; 0 skipped');
+  ok([inv('invariant_a()', 'skipped'), pass('invariant_b()')], 'ok. 0 passed; 0 failed; 1 skipped');
+  // Outside those ranges it is not forge's report.
+  no([fail('invariant_a()'), fail('invariant_b()')], 'FAILED. 0 passed; 3 failed; 0 skipped');
+  no([fail('invariant_a()')], 'ok. 1 passed; 0 failed; 0 skipped');
+  no([pass('invariant_a()'), pass('invariant_b()')], 'ok. 3 passed; 0 failed; 0 skipped');
+  no([pass('invariant_a()'), pass('invariant_b()')], 'ok. 0 passed; 0 failed; 0 skipped');
+  no([inv('invariant_a()', 'skipped')], 'ok. 0 passed; 0 failed; 0 skipped');
+  // Everything else stays exact: two unit tests are never one result.
+  no([pass('test_a()'), pass('test_b()')], 'ok. 1 passed; 0 failed; 0 skipped');
+  no([fail('test_a()'), fail('test_b()')], 'FAILED. 0 passed; 1 failed; 0 skipped');
+  no([pass('invariant_a()'), pass('test_a()'), pass('test_b()')], 'ok. 2 passed; 0 failed; 0 skipped');
+});

@@ -131,6 +131,16 @@ function isTestFunction(name) {
   return typeof name === 'string' && TEST_FUNCTION.test(name);
 }
 
+/**
+ * Whether a JUnit record is part of an invariant campaign: a predicate
+ * (`invariant*`, `statefulFuzz*`), or a handler failure (`handler <name>`, a
+ * record of its own). forge 1.8.5 expands a campaign into these
+ * (add_junit_test_cases); its suite summary counts the campaign as one result.
+ */
+function isInvariantRecord(name) {
+  return typeof name === 'string' && (/^(?:invariant|statefulFuzz)[^()]*\(.*\)$/s.test(name) || name.startsWith('handler '));
+}
+
 /** The records forge writes for a suite that failed before its tests ran (or after its invariants). */
 const HARNESS_RECORDS = Object.freeze(['setUp()', 'constructor()', 'afterInvariant()']);
 
@@ -175,6 +185,24 @@ function bodyNeverRan(record, message) {
 }
 
 /**
+ * A failure's reason. forge writes it as the record's message, but for a
+ * campaign of one invariant predicate only in the record's own <system-out>,
+ * on the first line (TestResult keeps invariant reasons in invariant_failures,
+ * and only the expanded form sets the message). Read there for invariants
+ * alone: another test's failure without a message stays one.
+ */
+function recordReason(record) {
+  if (typeof record.message === 'string' && record.message !== '') return record.message;
+  if (!isInvariantRecord(record.name) || typeof record.out !== 'string') return record.message;
+  const line = record.out.split('\n', 1)[0];
+  if (!line.startsWith('[FAIL: ')) return record.message;
+  // `[FAIL: <reason>]` alone with a counterexample's sequence below it, else `[FAIL: <reason>] <name> (runs: …)`.
+  const tail = `] ${record.name} `;
+  const end = line.endsWith(']') ? line.length - 1 : line.lastIndexOf(tail);
+  return end > 7 ? line.slice(7, end) : record.message;
+}
+
+/**
  * Classify one JUnit record of a test function.
  * @param {{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out?:string}} record
  *   `out`: the record's <system-out>
@@ -186,7 +214,7 @@ function classifyRecord(record) {
     case 'skipped': return { result: 'skip', kind: null };
     case 'failure': {
       const error = { result: 'error', kind: 'error' };
-      const m = record.message;
+      const m = recordReason(record);
       if (typeof m !== 'string' || m === '') return error;
       if (FORGE_ERRORS.some((re) => re.test(m))) return error;
       if (bodyNeverRan(record, m)) return error;
@@ -242,6 +270,6 @@ function scanAddedLines(lines) {
 }
 
 module.exports = {
-  reporterFlags, forgeEnvironment, forgeArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, isTestFunction, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
+  reporterFlags, forgeEnvironment, forgeArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, isTestFunction, isInvariantRecord, recordReason, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
   scanAddedLines, FORGE_ERRORS, HARNESS_RECORDS, REFERENCES
 };

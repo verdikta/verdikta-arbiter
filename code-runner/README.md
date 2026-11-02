@@ -727,6 +727,8 @@ in code-unit order of identity.
 function ran and reverted (an assertion helper, a `require`, a revert from
 the code under test). That is an assertion failure, the same line the §8.2
 harness proof draws between a trivially failing and a trivially broken test.
+A campaign of one invariant predicate has no message on its record, only forge's
+`[FAIL: <reason>]` line, so for invariants the reason is read there (R21-F2).
 Errors are everything else: no JUnit (a compile error, such as an import that
 does not resolve), a failed `setUp()`, `constructor()` or `afterInvariant()`,
 a failure whose body never ran (no reason, as when a `beforeTestSetup` call
@@ -799,7 +801,12 @@ process of the run is dead:
    (`Suite result: ok|FAILED. P passed; F failed; S skipped; finished in …`)
    and counts on `<testsuite>` and `<testsuites>` (`tests`, `failures`,
    `errors`, `skipped`). They must agree with the records; a JUnit with no
-   summary is not forge's whole report.
+   summary is not forge's whole report. One allowance (R21-F2): forge's summary
+   counts an invariant campaign as one result, while the JUnit expands it into a
+   record per predicate and per handler failure, and which predicates share a campaign
+   is not in the JUnit. So for those records the summary is held to a range (at least
+   one failed result if any failed, at most one per record); everything else is exact,
+   as are the XML counts.
 3. **Exit-code consistency** (`exitConsistent`): the test command exits
    non-zero exactly when the JUnit records a failure. Without a readable JUnit
    only a non-zero exit is consistent (forge failed before its report, as on a
@@ -943,10 +950,15 @@ process of the run is dead:
    build` compiles and runs nothing of the claim's, so the files held to the
    reference are compared right after it. A change is the requester's error,
    `IMAGE_WATCH_CHANGED_BY_BUILD`, never a failed check on an honest claim: a compiler
-   in the image that writes into `lib/`, `out = "lib/out"`, `paths.protected` over
-   `out/`. A compiler that waits past the build is not caught this way: `forge test`
-   always compiles again, and forge runs `solc --version` on every start ([the
-   check's scope](#the-checks-scope)).
+   in the image that writes into `lib/`, say. A compiler that waits past the build is
+   not caught this way: `forge test` always compiles again, and forge runs `solc
+   --version` on every start ([the check's scope](#the-checks-scope)).
+
+   **Where forge itself writes is not held to the reference** (R21-F1), whatever else
+   names it: its `out` and `cache_path` are outside the protected and dependency sets
+   even under a protected glob (`out/**`, `**/*.json`) or a `libs` entry (`out =
+   "lib/out"`), since every honest compile would otherwise fail those checks. The
+   artifacts and the compile cache are held from run 1 on, as above.
 
    **What a snapshot cannot read is never unchanged** (R13-F1). A file with no
    hash (mode 000, say) has nothing to compare: in a watched set it fails that
@@ -1043,7 +1055,9 @@ The routes the review raised, against that scope (each has its test):
 | A runner's tool behind a link through the work tree; a dangling tool link a patch would fill (R16-F1) | No: those directories are the base's bytes | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
 | A patch's file as forge, or a `PATH` directory under `paths.tests` (R16-F1) | No: forge is the base's, first on `PATH` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` before forge first runs |
 | An image `ENV` of `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | No: the `ENV` is fixed | Fixed anyway | Empty on the container |
-| A compiler in the image that writes a watched place in the build; `out = "lib/out"`; `paths.protected` over `out/` | Yes: the maker's setup or `foundry.toml` | **Defect** | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error, never INVALID. A2c (#135) will refuse it at listing |
+| A compiler in the image that writes a watched place in the build | Yes: the maker's setup | **Defect** | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error, never INVALID. A2c (#135) will refuse it at listing |
+| `paths.protected` or `libs` over forge's own output (`out = "lib/out"`, `out/**`, a test's artifact with `--skip test`; R21-F1) | Yes: the maker's listing | **Defect** | Where forge writes is not held to the reference: the honest claim passes, and the artifacts are held from run 1 on |
+| A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error (R21-F2) | Yes: any honest claim | **Defect** | Forge's campaign counts accepted within a range; the reason read from forge's line |
 | A setup that makes a watched listing unreadable or too large, or a watched link uncovered | Links and size yes, modes no | **Defect** | The reference's requester errors, never INVALID. A2c (#135) will refuse it at listing |
 | A program the image ships (as `solc`) or repository code a PoC calls (ffi, cheatcodes) that writes a watched place during a run | Yes: the maker's setup or repository | **Defect, open** | Its check fails and the claim is INVALID: the runner cannot tell it from claim code. A2c (#135) will refuse one that fires on every run at listing (the harness proof gets the checksums), but not one that spares the proof's tests. With the owner |
 | A program on the read-only root that itself runs something a run can change, to help claim code | Yes: the maker's setup | Residual | Recorded above |
@@ -1076,6 +1090,8 @@ The routes the review raised, against that scope (each has its test):
 | forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
 | an image `ENV` naming a shared object at a path a run can write: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | empty on the container, so the launcher and every step inherit the empty value | unit `sandbox.test.js`, Docker "A3a R20-F1" |
 | a helper, `solc` or the runner's own tool (`find`, `sha256sum`) reached through a `PATH` directory or link on the read-only root whose way leads through the work tree, even back to the root, or a `PATH` directory that cannot be listed (R16-F1) | A1's launcher check walks each one before any claim code: `IMAGE_WATCH_ROOT_UNCOVERED` | pipeline and Docker "A3a R16-F1" |
+| a claim's write to an artifact in run 1, under a glob that also names `out/` (R21-F1) | what forge writes is held as an artifact from run 1 on, not to the reference; the residual below | unit, pipeline and Docker "A3a R21-F1" |
+| a forged summary on a suite with invariants (R21-F2) | outside the campaign range it fails `summaryConsistent`; the XML counts stay exact | unit and Docker "A3a R21-F2" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
 | bytes changed behind an unreadable file in a watched set or `out/`, or anything hidden by an unlistable directory, a watched root's ancestor or a link's target included (R13-F1) | what a snapshot cannot read is never unchanged: the check fails; at the reference, `IMAGE_WATCH_UNREADABLE` | unit, pipeline and Docker "A3a R13-F1" |
 

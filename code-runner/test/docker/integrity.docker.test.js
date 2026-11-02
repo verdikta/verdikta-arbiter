@@ -79,6 +79,8 @@ const VARIANTS = Object.freeze({
   outlib: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('out = "out"', 'out = "lib/out"') }
   },
+  // R21-F2: invariants, with reverting handlers allowed.
+  invariants: { toml: '[profile.default.invariant]\nruns = 3\ndepth = 4\nfail_on_revert = false', files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD } },
   solcsecond: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) [ ! -e /work/cache/solidity-files-cache.json ] || printf x > /work/lib/trap.sol ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
@@ -448,7 +450,7 @@ test('A3a R6-F1 (round 7) under real forge: the kernel resolves `lib/pkg -> ../b
   for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(plain.gates[g].status, 'pass', `${g}: ${show(plain)}`);
   assert.deepEqual(plain.facts.poc.integrity, CLEAN);
   const linkSteps = stepMs(plain, /^integrity:.*:links$/);
-  assert.equal(linkSteps.length, 4, 'the reference and one after each run');
+  assert.equal(linkSteps.length, 5, 'the reference, after the build and one after each run');
   for (const ms of linkSteps) assert.ok(ms < 60000, `${ms} ms in the sandbox`);
 
   // An ffi child edits vendor/payload/fixture.json on run 2: the kernel's answer for lib/pkg, watched.
@@ -653,14 +655,74 @@ test('an image as the attested builder makes it: forge finds the setup\'s solc u
   assert.equal(r.facts.poc.tests[0].message, 'helper-ran');
 });
 
-test('Q32 under real forge: a setup that makes an honest claim fail integrity during the build is the requester\'s error, not an INVALID: a compiler writing into lib/, forge\'s out inside lib/', { timeout: TIMEOUT }, async (t) => {
-  for (const [variant, re] of [['solctrap', /the build: lib\/trap\.sol added/], ['outlib', /the build: lib\/out\//]]) {
-    const r = await run(t, claim(await fixture(variant), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
-    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
-    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD']);
-    assert.match(r.issues[0].detail, re);
-    assert.ok(!(r.steps || []).some((s) => /^poc:/.test(s.name)), 'no claim code ran');
-  }
+test('Q32 under real forge: a compiler that writes into lib/ during the build is the requester\'s error, not an INVALID', { timeout: TIMEOUT }, async (t) => {
+  const r = await run(t, claim(await fixture('solctrap'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD']);
+  assert.match(r.issues[0].detail, /the build: lib\/trap\.sol added/);
+  assert.ok(!(r.steps || []).some((s) => /^poc:/.test(s.name)), 'no claim code ran');
+});
+
+test('A3a R21-F1 under real forge: where forge writes is not held to the reference, whatever else names it: a protected glob over a test\'s artifact with `--skip test`, and out inside lib/; honest claims pass', { timeout: TIMEOUT }, async (t) => {
+  const poc = addFilesPatch({ 'test/Exploit.t.sol': DRAIN });
+  const glob = await run(t, claim(await fixture(), poc, {
+    commands: { build: 'forge build --skip test' },
+    paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', '.gitignore', 'out/Exploit.t.sol/**', 'cache/**'] }
+  }));
+  assert.equal(glob.outcome, 'definitive', show(glob));
+  for (const g of ['build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(glob.gates[g].status, 'pass', `${g}: ${show(glob)}`);
+  assert.deepEqual(glob.facts.poc.integrity, CLEAN);
+  const lib = await run(t, claim(await fixture('outlib'), poc));
+  assert.equal(lib.outcome, 'definitive', show(lib));
+  for (const g of ['build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(lib.gates[g].status, 'pass', `${g}: ${show(lib)}`);
+  assert.deepEqual(lib.facts.poc.integrity, CLEAN);
+});
+
+test('A3a R21-F2 under real forge: invariant PoCs and suites: one predicate failing, two in one campaign failing, and a suite with a passing multi-predicate campaign in the fix check, whose summary counts the campaign as one', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('invariants');
+  // The vault credits one wei too many: 2 != 1, from the first check on; with the fix these predicates hold.
+  const setUp = 'function setUp() public { v = new Vault(); v.deposit(1); }';
+  const one = pocFile('InvOne', ['    Vault v;', `    ${setUp}`, '    function invariant_only() public { vm.assertEq(v.balanceOf(address(this)), 1); }']);
+  const r1 = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': one }), { finding: finding({ command: 'forge test --match-test invariant_only', observable: 'invariant_only fails' }) }));
+  assert.equal(r1.outcome, 'definitive', show(r1));
+  assert.equal(r1.facts.poc.integrity.summaryConsistent, true, show(r1));
+  assert.deepEqual(r1.facts.poc.tests[0].runs, ['fail', 'fail', 'fail'], show(r1));
+  assert.equal(r1.facts.poc.tests[0].kind, 'assertion', 'the reason from forge\'s line: an honest invariant PoC is no error');
+  assert.ok(r1.facts.poc.tests[0].message, show(r1));
+  const two = pocFile('InvTwo', ['    Vault v;', `    ${setUp}`,
+    '    function invariant_a() public { vm.assertEq(v.balanceOf(address(this)), 1); }', '    function invariant_b() public { vm.assertEq(v.balanceOf(address(this)), 1); }']);
+  const r2 = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': two }), { finding: finding({ command: 'forge test --match-test invariant_a', observable: 'invariant_a fails' }) }));
+  assert.equal(r2.outcome, 'definitive', show(r2));
+  assert.equal(r2.facts.poc.integrity.summaryConsistent, true, `one failed result, two failing records: ${show(r2)}`);
+  assert.equal(r2.facts.poc.testCount, 2);
+  // A fix under which a two-predicate PoC passes: the suite's summary counts the campaign once.
+  const vault = VAULT_REPO['src/Vault.sol'];
+  const fixPatch = modifyPatch('src/Vault.sol', vault, vault.replace('amount + 1', 'amount'));
+  const r3 = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': two }), { fixPatch, finding: finding({ command: 'forge test --match-test invariant_a', observable: 'invariant_a fails' }) }));
+  assert.equal(r3.outcome, 'definitive', show(r3));
+  assert.equal(r3.facts.fix.applies, 'pass', JSON.stringify(r3.facts.fix.detail));
+  assert.equal(r3.facts.fix.integrity.summaryConsistent, true, JSON.stringify(r3.facts.integrity.fix));
+  assert.equal(r3.facts.fix.pocPasses, true, JSON.stringify(r3.facts.fix.suite));
+  // A handler's failed assertion is a record of its own, beside a predicate that passes; forge's summary says one failed.
+  const handler = [
+    '// SPDX-License-Identifier: MIT',
+    'pragma solidity ^0.8.0;',
+    'import {Base} from "./Vm.sol";',
+    'contract H is Base { uint256 public x; function boom() public { x += 1; vm.assertEq(uint256(1), uint256(2)); } }',
+    'contract InvHandler is Base {',
+    '    H h;',
+    '    function setUp() public { h = new H(); }',
+    '    function invariant_holds() public pure {}',
+    '}',
+    ''
+  ].join('\n');
+  const r4 = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': handler }), { finding: finding({ command: 'forge test --match-test invariant_holds', observable: 'invariant_holds fails' }) }));
+  assert.equal(r4.outcome, 'definitive', show(r4));
+  assert.equal(r4.facts.poc.integrity.summaryConsistent, true, show(r4));
+  assert.equal(r4.facts.poc.integrity.exitConsistent, true, show(r4));
+  const report = r4.steps.find((s) => s.name === 'poc:1').stdout.text;
+  assert.match(report, /<testcase name="handler [^"]*"/, 'forge wrote the handler\'s record');
+  assert.match(report, /Suite result: FAILED\. 0 passed; 1 failed; 0 skipped/);
 });
 
 test('Q32, OPEN for the owner (pins today\'s behaviour, not a wanted one): a compiler in the image that waits for run 1 fails an honest claim\'s integrity; the runner cannot tell it from claim code', { timeout: TIMEOUT }, async (t) => {

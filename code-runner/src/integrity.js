@@ -526,14 +526,17 @@ function classify(entries, { protectedGlobs = [], config, forgePath = '', realPa
     const rel = inWork(p);
     if (rel === null) continue;
     const name = displayPath(rel);
-    if (protectedGlobs.length && matchesAny(name, protectedGlobs)) sets.protected.set(rel, d);
+    // Where forge itself writes is never held to the reference, whatever else names it (a protected glob over out/, a
+    // `libs` entry holding it): every honest compile would fail that check (R21-F1). The artifacts are held from run 1 on.
+    const output = (out && under(rel, out)) || (cache && under(rel, cache));
+    if (!output && protectedGlobs.length && matchesAny(name, protectedGlobs)) sets.protected.set(rel, d);
     // forge's executable and solc are the framework wherever they are, forge's cache directory included (R1-F3).
     if (tools.includes(rel)) sets.framework.set(rel, d);
     if (cache && under(rel, cache)) {
       if (rel === filesCache) sets.artifacts.set(rel, d);
       continue;
     }
-    const dep = deps.find((r) => under(rel, r));
+    const dep = output ? null : deps.find((r) => under(rel, r));
     let framework = FRAMEWORK_FILES.includes(rel) || tools.includes(rel) || pathRoots.some((r) => r === '' ? !rel.includes('/') : under(rel, r));
     if (dep) {
       sets.dependencies.set(rel, d);
@@ -1190,7 +1193,7 @@ class Watch {
    * After the maker's build, before any claim code has run: the files held to
    * the reference, compared with it. forge build compiles and runs nothing
    * else, so a change here is the image's doing (a compiler that writes into
-   * lib/, `out = "lib/out"`, paths.protected over out/): the requester's error,
+   * lib/, or rewrites foundry.toml): the requester's error,
    * never a failed integrity check held against an honest claim (owner decision
    * Q32). A patch that changed forge's configuration only reaches this where the
    * maker left that configuration outside paths.protected and under paths.tests.
@@ -1305,6 +1308,26 @@ function countRecords(cases) {
 }
 
 /**
+ * What forge's summary of a suite may say, given its records. forge 1.8.5
+ * counts results, and a contract's compatible invariant predicates share one
+ * result (a campaign), which the JUnit expands into a record per predicate and
+ * per handler failure (R21-F2). Which predicates share a campaign is not in the
+ * JUnit, so for those records the summary is held to a range: at least one
+ * failed result if any failed, at most one per record. Everything else is exact,
+ * and so are the XML counts, which follow the expanded records.
+ */
+function summaryRange(cases) {
+  const plain = countRecords(cases.filter((k) => !forge.isInvariantRecord(k.name)));
+  const campaign = countRecords(cases.filter((k) => forge.isInvariantRecord(k.name)));
+  const failed = campaign.failure + campaign.error;
+  return {
+    passed: [plain.pass + (failed === 0 && campaign.skipped === 0 ? Math.min(campaign.pass, 1) : 0), plain.pass + campaign.pass],
+    failed: [plain.failure + plain.error + Math.min(failed, 1), plain.failure + plain.error + failed],
+    skipped: plain.skipped + campaign.skipped
+  };
+}
+
+/**
  * Framework-summary consistency (§9.5 check 2) of one readable JUnit:
  * forge's summary of each suite and the counts it writes on <testsuite> and
  * <testsuites> agree with the records. A JUnit that could not be read has
@@ -1324,7 +1347,9 @@ function summaryConsistency(doc) {
     if (lines.length === 0) return bad(`${name} has no forge suite summary`);
     if (lines.length > 1 || s.summaries.length > 1) return bad(`${name} has more than one forge suite summary`);
     const [, word, passed, nFailed, skipped] = SUMMARY.exec(lines[0]);
-    if (Number(passed) !== c.pass || Number(nFailed) !== failed || Number(skipped) !== c.skipped) {
+    const range = summaryRange(s.cases);
+    const inRange = (v, [lo, hi]) => Number(v) >= lo && Number(v) <= hi;
+    if (!inRange(passed, range.passed) || !inRange(nFailed, range.failed) || Number(skipped) !== range.skipped) {
       return bad(`${name}: forge's summary says ${passed} passed, ${nFailed} failed, ${skipped} skipped; its records are ${c.pass} passed, ${failed} failed, ${c.skipped} skipped`);
     }
     if ((word === 'ok') !== (failed === 0)) return bad(`${name}: forge's summary says ${word} with ${failed} failed`);

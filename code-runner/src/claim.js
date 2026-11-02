@@ -493,7 +493,8 @@ function recordsById(suites, keep = () => true) {
 function entryOf(got) {
   if (!got || got.length === 0) return { result: 'missing', kind: null, message: null };
   if (got.length > 1) return { result: 'duplicate', kind: null, message: null, records: got.length };
-  return { ...forge.classifyRecord(got[0]), message: normaliseMessage(got[0].message), rawMessage: typeof got[0].message === 'string' ? got[0].message : null };
+  const reason = forge.recordReason(got[0]);
+  return { ...forge.classifyRecord(got[0]), message: normaliseMessage(reason), rawMessage: typeof reason === 'string' ? reason : null };
 }
 
 /** The consistency checks of one run (§9.5 checks 2 and 3), as `label: detail` failures. */
