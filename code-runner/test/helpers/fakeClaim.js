@@ -189,15 +189,19 @@ function catFile(objects, ids, check) {
  * @param {object} [o.image] - { store, base } (default: defaultImage())
  * @param {Function} [o.objects] - (a copy of the image's Map id → {type, content}) → the Map cat-file answers from
  * @param {string[]} [o.corrected] - the tracked paths `git diff-files` reports before the checkout
+ * @param {number} [o.freeBytes] - the work tree's free bytes `vcr-freespace` reports (default 1 GiB)
+ * @param {number} [o.writtenBytes] - the bytes the applied patch wrote, as the measurement sums (default 120)
  * @param {Function[]|string[]} [o.poc] - per PoC run (1-3): the JUnit text, or a handler returning { exitCode, stdout, stderr }
  * @param {object} [o.git] - overrides by git subcommand key (see `key` below)
- * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-dirs, vcr-clear, vcr-unstage, vcr-build, vcr-cleanup)
+ * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear, vcr-unstage, vcr-build, vcr-cleanup)
  */
 function claimSandbox({
-  image = defaultImage(), objects = (m) => m, corrected = [], poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF
+  image = defaultImage(), objects = (m) => m, corrected = [], freeBytes = 1024 * 1024 * 1024, writtenBytes = 120,
+  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF
 } = {}) {
   let committed = false;
   let pocRun = 0;
+  const hexLen = image.store.algo === 'sha256' ? 64 : 40;
   const imageObjects = objects(new Map(image.store.objects));
   // The runner's fresh repository, as the runner's packs fill it (every object hashed here, independently).
   const fresh = new GitStore(image.store.algo);
@@ -230,8 +234,10 @@ function claimSandbox({
     'diff-files --name-only': () => ({ stdout: Buffer.from(corrected.map((p) => `${p}\0`).join(''), 'latin1') }),
     'diff-files --quiet': () => ({ exitCode: 0 }),
     'checkout-index': () => ({ exitCode: 0 }),
-    'apply --numstat': () => ({ stdout: '3\t0\ttest/Exploit.t.sol\0' }),
     'apply --index': () => ({ exitCode: 0 }),
+    // The applied patch adds test/Exploit.t.sol: the measurement reads its postimage from the raw diff, then its size.
+    'diff --raw': () => ({ stdout: Buffer.from(`:000000 100644 ${'0'.repeat(hexLen)} ${'a'.repeat(hexLen)} A\0test/Exploit.t.sol\0`, 'latin1') }),
+    'cat-file --sizes': (d) => ({ stdout: d.stdin.toString('latin1').split('\n').filter(Boolean).map(() => `${writtenBytes}\n`).join('') }),
     'diff --name-status': () => ({ stdout: 'A\0test/Exploit.t.sol\0' }),
     'diff --numstat': () => ({ stdout: '3\t0\ttest/Exploit.t.sol\0' }),
     'diff -U0': () => ({ stdout: diff }),
@@ -243,6 +249,7 @@ function claimSandbox({
   const scriptDefaults = {
     'vcr-procs': () => ({ stdout: '1\n7\n' }),
     'vcr-stage': () => ({ stdout: 'vcr-git-entries 2\n' }),
+    'vcr-freespace': () => ({ stdout: `vcr-free ${freeBytes}\n` }),
     'vcr-dirs': () => ({ exitCode: 0 }),
     'vcr-clear': () => ({ exitCode: 0 }),
     'vcr-unstage': () => ({ exitCode: 0 }),
@@ -256,9 +263,15 @@ function claimSandbox({
     }
   };
   const key = (sub) => {
-    if (sub[0] === 'apply') return sub.includes('--numstat') ? 'apply --numstat' : 'apply --index';
-    if (sub[0] === 'diff') return sub.includes('--name-status') ? 'diff --name-status' : sub.includes('--numstat') ? 'diff --numstat' : 'diff -U0';
-    if (sub[0] === 'cat-file') return sub.includes('--batch-check') ? 'cat-file --batch-check' : 'cat-file --batch';
+    if (sub[0] === 'apply') return 'apply --index';
+    if (sub[0] === 'diff') {
+      if (sub.includes('--raw')) return 'diff --raw';
+      return sub.includes('--name-status') ? 'diff --name-status' : sub.includes('--numstat') ? 'diff --numstat' : 'diff -U0';
+    }
+    if (sub[0] === 'cat-file') {
+      if (sub.some((a) => a.startsWith('--batch-check=%(objectsize)'))) return 'cat-file --sizes';
+      return sub.includes('--batch-check') ? 'cat-file --batch-check' : 'cat-file --batch';
+    }
     if (sub[0] === 'diff-files') return sub.includes('--quiet') ? 'diff-files --quiet' : 'diff-files --name-only';
     return sub[0];
   };

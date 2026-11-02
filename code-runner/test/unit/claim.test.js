@@ -93,7 +93,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
     'vcr-procs', ...PREPARE,
-    'git apply', 'git apply', 'git diff', 'git diff', 'git diff',
+    'vcr-freespace', 'git apply', 'git diff', 'git cat-file', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     'vcr-build', 'vcr-cleanup',
     'vcr-poc', 'vcr-cleanup', 'git reset', 'vcr-poc', 'vcr-cleanup', 'git reset', 'vcr-poc', 'vcr-cleanup'
@@ -114,17 +114,16 @@ test('applies: git apply runs inside the sandbox against the listed commit, the 
   const sb = claimSandbox();
   await runClaim(sb);
   const applies = gitCalls(sb, 'apply');
-  assert.equal(applies.length, 2);
+  assert.equal(applies.length, 1, 'one apply (no host-side numstat pre-pass under attempt 3)');
   for (const a of applies) {
     assert.deepEqual(a.stdin, Buffer.from(POC_PATCH), 'the patch reaches git as stdin of docker exec');
     assert.ok(a.sub.includes('--whitespace=nowarn'));
+    assert.ok(a.sub.includes('--index'), 'applied to the index and the work tree');
     assert.equal(a.fixedEnv.GIT_DIR, '/work/.git');
     assert.equal(a.fixedEnv.GIT_WORK_TREE, '/work');
     assert.equal(a.fixedEnv.GIT_CONFIG_NOSYSTEM, '1');
     assert.equal(a.fixedEnv.GIT_CONFIG_GLOBAL, '/dev/null');
   }
-  assert.ok(applies[0].sub.includes('--numstat'), 'parsed by git first, nothing written');
-  assert.ok(applies[1].sub.includes('--index'), 'then applied to the index and the work tree');
   // Every git call is a docker exec into the sandbox: the host never runs git.
   for (const c of sb.docker.calls) assert.notEqual(c.args[0], 'git');
   // The fixed configuration on every git call: an empty environment first (nothing of the image's),
@@ -136,6 +135,26 @@ test('applies: git apply runs inside the sandbox against the listed commit, the 
     }
     assert.equal(call.fixedEnv.LC_ALL, 'C');
   }
+});
+
+test('applies: the free-space check, the apply, and the measurement of what was written', async () => {
+  const sb = claimSandbox({ writtenBytes: 4096 });
+  const r = await runClaim(sb);
+  assert.equal(r.gates.applies.status, 'pass', JSON.stringify(r.gates.applies));
+  assert.equal(r.gates.applies.basis, 'exit_code');
+  assert.match(r.gates.applies.detail, /writes 4096 bytes/);
+  assert.equal(r.facts.patch.expansionBytes, 4096, 'the measured figure, not a text count');
+  // The free-space check runs before the apply; the raw diff and the object sizes are read after it, in the main repo.
+  const order = sb.execs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
+  const free = order.indexOf('vcr-freespace');
+  const apply = order.indexOf('git apply');
+  assert.ok(free >= 0 && free < apply, 'free space is checked before the apply');
+  const measure = gitCalls(sb, 'diff').find((d) => d.sub.includes('--raw'));
+  assert.deepEqual(measure.sub, ['diff', '--cached', '--raw', '-z', '--no-renames', `--abbrev=${BASE.length}`, 'HEAD', '--']);
+  assert.equal(measure.fixedEnv.GIT_DIR, '/work/.git');
+  const sizes = gitCalls(sb, 'cat-file').find((d) => d.sub.some((a) => a.startsWith('--batch-check=%(objectsize)')));
+  assert.ok(sizes, 'the measurement sizes the touched postimages');
+  assert.equal(sizes.stdin.toString('utf8').trim(), 'a'.repeat(BASE.length));
 });
 
 test('applies: a patch above maxPatchBytes fails before git sees it', async () => {
@@ -150,16 +169,55 @@ test('applies: a patch above maxPatchBytes fails before git sees it', async () =
   assert.equal(pocRuns(sb).length, 0);
 });
 
-test('applies: a patch that expands past 50 MB (a binary literal bomb) fails before git sees it', async () => {
-  const bomb = Buffer.from([
-    'diff --git a/test/b.bin b/test/b.bin', 'new file mode 100644', 'index 0000000..1111111', 'GIT binary patch',
-    'literal 60000000', 'zcmeIuF#!Mo0K%a4Pi+Q3h&OqVfB^#r3>YwAz<>b*1`HT5V8DO@0|pEjFkrxd', '', 'literal 0', 'HcmV?d00001', '', ''
-  ].join('\n'));
-  const sb = claimSandbox();
-  const r = await runClaim(sb, claimRequest({ pocPatch: bomb }));
+test('applies: a patch that writes more than patchExpansionBytes fails by measurement (input), after git applies it', async () => {
+  const sb = claimSandbox({ writtenBytes: 60000001 });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'definitive');
   assert.equal(r.gates.applies.status, 'fail');
-  assert.match(r.gates.applies.detail, /expand to at least 60000000 bytes.*50000000/);
-  assert.equal(gitCalls(sb, 'apply').length, 0);
+  assert.equal(r.gates.applies.basis, 'input');
+  assert.match(r.gates.applies.detail, /wrote 60000001 bytes across 1 path.*50000000.*patchExpansionBytes/);
+  assert.equal(r.facts.patch.expansionBytes, 60000001);
+  assert.equal(gitCalls(sb, 'apply').length, 1, 'git applied it, then the runner measured');
+  for (const g of ['testPathsOnly', 'build', 'reproduces']) assert.equal(r.gates[g], undefined, `${g} is not run`);
+});
+
+test('applyFailureReason: OOM and the apply\'s own timeout blame the patch; the run\'s budget, deadline and cancel do not', () => {
+  const { applyFailureReason, APPLY_TIMEOUT_MS } = require('../../src/claim');
+  const Abstain = (cause, detail) => ({ cause, detail });
+  assert.match(applyFailureReason(Abstain('oom', 'the sandbox hit its memory limit (OOM kill)'), APPLY_TIMEOUT_MS), /exhausted the sandbox's memory/);
+  assert.match(applyFailureReason(Abstain('oom', 'a process in the sandbox was OOM-killed during the step'), APPLY_TIMEOUT_MS), /exhausted/);
+  assert.match(applyFailureReason(Abstain('step_timeout', 'the step reached its wall-clock limit and the sandbox was killed'), 90000), /did not finish applying within 90s/);
+  // The run's own aborts are not the patch: they map to STEP_TIMEOUT (run budget) or their own cause, and are rethrown.
+  assert.equal(applyFailureReason(Abstain('step_timeout', 'the run reached its wall-clock limit (runSeconds) and the sandbox was killed'), 90000), null);
+  assert.equal(applyFailureReason(Abstain('deadline', 'the deadline was reached and the sandbox was killed'), 90000), null);
+  assert.equal(applyFailureReason(Abstain('cancelled', 'the run was cancelled and the sandbox was killed'), 90000), null);
+  assert.equal(applyFailureReason(Abstain('docker_error', 'x'), 90000), null);
+  // The details applyFailureReason matches are result.js's own, pinned so a reword there breaks loudly here.
+  const result = require('fs').readFileSync(require('path').join(__dirname, '..', '..', 'src', 'result.js'), 'utf8');
+  assert.ok(result.includes('the step reached its wall-clock limit and the sandbox was killed'));
+  assert.ok(result.includes('the run reached its wall-clock limit (runSeconds) and the sandbox was killed'));
+});
+
+test('applies: out of memory or the apply\'s own time budget, with room confirmed, is the patch (input); the run\'s deadline is not', async () => {
+  const oom = claimSandbox({ git: { 'apply --index': () => ({ exitCode: 137 }) } });
+  const ro = await runClaim(oom);
+  assert.equal(ro.gates.applies.status, 'fail', JSON.stringify(ro.abstain));
+  assert.equal(ro.gates.applies.basis, 'input');
+  assert.match(ro.gates.applies.detail, /exhausted the sandbox's memory.*patchExpansionBytes/);
+  assert.equal(ro.outcome, 'definitive');
+
+  // ENOSPC, with the free-space check already passed: the patch overran the work tree.
+  const enospc = claimSandbox({ git: { 'apply --index': () => ({ exitCode: 1, stderr: "error: failed to write to 'big.bin': No space left on device\n" }) } });
+  const re = await runClaim(enospc);
+  assert.equal(re.gates.applies.status, 'fail');
+  assert.equal(re.gates.applies.basis, 'input');
+  assert.match(re.gates.applies.detail, /filled the work tree/);
+
+  // The apply's own wall-clock budget (the step reached its limit) is the patch; the run's deadline still abstains.
+  const slow = claimSandbox({ git: { 'apply --index': () => new Promise(() => {}) } });
+  const rs = await runClaim(slow, claimRequest(), { deadlineMs: 400 });
+  assert.equal(rs.outcome, 'abstain', JSON.stringify(rs));
+  assert.equal(rs.abstain.cause, 'deadline', 'a deadline during the apply is not the patch\'s fault');
 });
 
 test('applies: a patch git cannot apply to the listed commit fails with git\'s reason; nothing later runs', async () => {
@@ -173,16 +231,13 @@ test('applies: a patch git cannot apply to the listed commit fails with git\'s r
   assert.ok(!kinds(sb).includes('vcr-build'));
 });
 
-test('applies: a patch git cannot read, and one that changes a file twice, fail', async () => {
-  const garbage = claimSandbox({ git: { 'apply --numstat': () => ({ exitCode: 128, stderr: 'error: No valid patches in input (allow with "--allow-empty")\n' }) } });
-  const r1 = await runClaim(garbage);
-  assert.equal(r1.gates.applies.status, 'fail');
-  assert.match(r1.gates.applies.detail, /could not read poc\.patch.*No valid patches/);
-  const twice = claimSandbox({ git: { 'apply --numstat': () => ({ stdout: '1\t0\ttest/A.t.sol\0' + '1\t0\ttest/A.t.sol\0' }) } });
-  const r2 = await runClaim(twice);
-  assert.equal(r2.gates.applies.status, 'fail');
-  assert.match(r2.gates.applies.detail, /changes test\/A\.t\.sol more than once/);
-  assert.equal(gitCalls(twice, 'apply').length, 1, 'refused before git materialises it');
+test('applies: too little room in the work tree is the image, not the patch (a requester error before the apply)', async () => {
+  const sb = claimSandbox({ freeBytes: 40 * 1024 * 1024 });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'requester_error', JSON.stringify(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WORKDIR_FULL']);
+  assert.match(r.issues[0].detail, /leave only 41943040 bytes free.*patchExpansionBytes/);
+  assert.equal(gitCalls(sb, 'apply').length, 0, 'the patch never ran');
 });
 
 test('applies: binary changes count as stats only', async () => {
@@ -553,25 +608,16 @@ test('the requester\'s package: an unsupported framework or env, a command the a
 
 // The forced checkout (prepare) has its own tests: test/unit/checkout.test.js.
 
-test('R17-F1: the checkout\'s objects reach the expansion count: a binary patch naming an existing blob counts its size', async () => {
-  const sb = claimSandbox();
-  const vault = [...sb.image.store.objects].find(([, o]) => o.type === 'blob' && o.content.toString() === 'contract Vault {}\n')[0];
-  const patch = Buffer.from([1, 2, 3].map((i) => [
-    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${vault}`, `Binary files /dev/null and b/test/c${i}.bin differ`
-  ].join('\n')).join('\n') + '\n');
-  const r = await runClaim(sb, claimRequest({ pocPatch: patch }));
-  assert.equal(r.facts.patch.expansionBytes, 3 * 'contract Vault {}\n'.length);
-});
-
-test('facts: the patch\'s size, hash and expansion are recorded', async () => {
-  const sb = claimSandbox();
+test('facts: the patch\'s size, hash and measured expansion are recorded (expansion is the measurement, R17-F1 by it)', async () => {
+  const sb = claimSandbox({ writtenBytes: 7777 });
   const r = await runClaim(sb);
   const crypto = require('node:crypto');
   assert.deepEqual(r.facts.patch, {
     bytes: Buffer.byteLength(POC_PATCH),
     sha256: crypto.createHash('sha256').update(POC_PATCH).digest('hex'),
-    expansionBytes: r.facts.patch.expansionBytes,
+    expansionBytes: 7777,
     binaryHunks: 0
   });
-  assert.ok(r.facts.patch.expansionBytes > 0);
+  // A binary postimage reused at many paths (old R17-F1) is caught by measurement now: each path's bytes are summed
+  // from the index (claim.docker.test.js, the "big" fixture). No host-side existing-object count remains.
 });

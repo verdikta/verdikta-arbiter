@@ -43,14 +43,30 @@ const { forceCheckout, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES } = require('./checkou
 const forge = require('./forge');
 const { readForgeJUnit, JUNIT_MAX_BYTES } = require('./junit');
 const {
-  scanPatch, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, reportablePath
+  scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, reportablePath
 } = require('./patch');
 
 /** git's answers (paths, stats, the diff) are read up to this. */
 const GIT_OUTPUT_MAX = 16 * 1024 * 1024;
 const PREP_TIMEOUT_MS = 120000;
 const GIT_TIMEOUT_MS = 120000;
+/** The patch's own apply budget: a timeout here is the patch's fault, not the run's (§9.2 step 3, owner decision Q26). */
+const APPLY_TIMEOUT_MS = 90000;
 const CLEANUP_TIMEOUT_MS = 60000;
+/** The work tree (git.js WORK_TREE), and the headroom the apply needs beyond patchExpansionBytes, so ENOSPC is the patch's fault, not a full image's. */
+const WORK_TREE = '/work';
+const FREE_SPACE_MARGIN_BYTES = 64 * 1024 * 1024;
+/**
+ * Prints the work tree's free bytes as `vcr-free <bytes>`: GNU `stat -f` (free
+ * blocks x block size), falling back to `df` (POSIX 1K blocks) where statfs is
+ * not available. Both ship on the foundry base; one of them answers on every
+ * runtime (runc and gVisor).
+ */
+const FREE_SPACE_SCRIPT = [
+  `b=$(stat -f -c '%a %S' ${WORK_TREE} 2>/dev/null) && set -- $b && printf 'vcr-free %s\\n' "$(( $1 * $2 ))" && exit 0`,
+  `k=$(df -P -k ${WORK_TREE} 2>/dev/null | awk 'NR==2{print $4}') && [ -n "$k" ] && printf 'vcr-free %s\\n' "$(( k * 1024 ))" && exit 0`,
+  'exit 1'
+].join('\n');
 /** The fixed repeat schedule (§9.2 step 6): run 1 with testFiles, runs 2 and 3 with testIds. */
 const RUNS = 3;
 /** Lists in the facts keep the first entries in code-unit order (the report's bounds). */
@@ -187,6 +203,25 @@ function normaliseMessage(message) {
  * @param {object} limits - the effective limits
  * @returns {Function[]}
  */
+/**
+ * Why a failed `git apply` blames the patch (`input`, PATCH_EXPANSION) rather
+ * than the run, given the work tree's free space was confirmed first. An OOM
+ * kill or the apply's own wall-clock budget is then the patch materialising
+ * more than it may; the run's own deadline, budget or cancellation is not.
+ * @param {Abstain} abstain - the abstain ctx.exec threw for the apply step
+ * @param {number} applyTimeoutMs - the apply's own budget
+ * @returns {string|null} the gate detail when it is the patch, else null (rethrow)
+ */
+function applyFailureReason(abstain, applyTimeoutMs) {
+  if (abstain.cause === ABSTAIN.OOM) return 'poc.patch exhausted the sandbox\'s memory as git applied it (a hunk that inflates past the limit)';
+  // The step's own timer aborts with reason 'step'; the run's budget, deadline and cancel use other reasons. Both
+  // the step and the run budget map to STEP_TIMEOUT, so the apply's own timeout is told apart by its detail (result.js).
+  if (abstain.cause === ABSTAIN.STEP_TIMEOUT && /^the step reached its wall-clock limit/.test(abstain.detail || '')) {
+    return `poc.patch did not finish applying within ${Math.round(applyTimeoutMs / 1000)}s`;
+  }
+  return null;
+}
+
 function claimSteps(request, limits) {
   const issues = checkClaim(request);
   if (issues.length) return [async () => { throw new RequesterError(issues); }];
@@ -196,7 +231,7 @@ function claimSteps(request, limits) {
   const testGlobs = spec.paths.tests;
   const protectedGlobs = spec.paths.protected || [];
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
-  const state = { done: false, keep: [], touched: null, prepared: null, objects: new Map(), pocCommit: null, leftovers: [] };
+  const state = { done: false, keep: [], touched: null, prepared: null, pocCommit: null, leftovers: [] };
 
   /** Run a git command and read its stdout (capped); definitive or it throws. */
   async function gitRead(ctx, name, args, { stdin, env } = {}) {
@@ -231,47 +266,80 @@ function claimSteps(request, limits) {
     // Before any claim code runs: /work is the listed commit (checkout.js).
     const checkout = await forceCheckout(ctx, { base });
     state.prepared = checkout.commit;
-    state.objects = checkout.objects;
     ctx.fact('commit', { base, poc: null });
   }
 
+  /** The work tree's free bytes before the apply (its own value is definitive or it throws). */
+  async function freeBytes(ctx) {
+    const out = new Prefix(256);
+    const record = await ctx.exec(['/bin/sh', '-c', FREE_SPACE_SCRIPT, 'vcr-freespace'], { name: 'patch:space', timeoutMs: GIT_TIMEOUT_MS, tee: out });
+    const m = /vcr-free ([0-9]+)/.exec(out.bytes().toString('utf8'));
+    if (record.exitCode !== 0 || !m) throw runnerError('patch:space', `the work tree's free space could not be read (exit ${record.exitCode})`);
+    return Number(m[1]);
+  }
+
   async function applies(ctx) {
-    const scan = scanPatch(request.pocPatch, limits, { objects: state.objects });
-    ctx.fact('patch', { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: scan.expansionBytes, binaryHunks: scan.binaryHunks });
+    const scan = scanPatch(request.pocPatch, limits);
+    const patchFact = { bytes: scan.bytes, sha256: scan.sha256, expansionBytes: null, binaryHunks: scan.binaryHunks };
+    ctx.fact('patch', patchFact);
     if (!scan.ok) {
       ctx.gate('applies', 'fail', 'input', scan.reason);
       state.done = true;
       return;
     }
-    const parsed = await gitRead(ctx, 'patch:read', ['apply', '--numstat', '-z', '--whitespace=nowarn', '-'], { stdin: request.pocPatch });
-    if (parsed.record.exitCode !== 0) {
-      ctx.gate('applies', 'fail', 'exit_code', `git could not read poc.patch (exit ${parsed.record.exitCode}): ${firstLine(parsed.record.stderr.text)}`);
-      state.done = true;
+    const failExpansion = (reason) => { ctx.fact('patch', { ...patchFact }); ctx.gate('applies', 'fail', 'input', reason); state.done = true; };
+
+    // The measurement needs room to write patchExpansionBytes; without it, the image's checkout and dependencies left
+    // too little, which is the requester's package, not the hunter's patch (owner decision Q26).
+    const need = limits.patchExpansionBytes + FREE_SPACE_MARGIN_BYTES;
+    const free = await freeBytes(ctx);
+    if (free < need) {
+      throw new RequesterError([issue('IMAGE_WORKDIR_FULL', '/spec/env/image',
+        `the env image's checkout and installed dependencies leave only ${free} bytes free in the work tree; a claim needs room to write up to ${limits.patchExpansionBytes} (patchExpansionBytes) plus a ${FREE_SPACE_MARGIN_BYTES}-byte margin`)]);
+    }
+
+    // git applies the patch in the sandbox, in the runner's own repository, under its memory, pids and space limits
+    // and the apply's own time budget. Out of space or memory, or the budget, is then the patch's fault.
+    let applied;
+    try {
+      applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), {
+        name: 'patch:apply', timeoutMs: APPLY_TIMEOUT_MS, stdin: request.pocPatch
+      });
+    } catch (err) {
+      const reason = err instanceof Abstain ? applyFailureReason(err, APPLY_TIMEOUT_MS) : null;
+      if (!reason) throw err;
+      failExpansion(`${reason}; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`);
       return;
     }
-    const entries = parsed.out.truncated ? null : parseNumstatZ(parsed.out.bytes());
-    if (!entries) throw runnerError('patch:read', 'git\'s reading of poc.patch could not be parsed');
-    // git holds the result of every entry in memory before it writes; one
-    // file patched many times over would multiply a large file. git diff
-    // never writes a patch like that.
-    const seen = new Set();
-    for (const e of entries) {
-      if (seen.has(e.path)) {
-        ctx.gate('applies', 'fail', 'exit_code', `poc.patch changes ${e.path.slice(0, 300)} more than once`);
-        state.done = true;
+    if (applied.exitCode !== 0) {
+      // ENOSPC with the room confirmed above is the patch overrunning the work tree, not a full image.
+      if (/No space left on device|Disk quota exceeded/.test(applied.stderr.text)) {
+        failExpansion(`poc.patch filled the work tree as git applied it; the class allows ${limits.patchExpansionBytes} bytes written (patchExpansionBytes)`);
         return;
       }
-      seen.add(e.path);
-    }
-    const applied = await ctx.exec(git(['apply', '--index', '--whitespace=nowarn', '-']), {
-      name: 'patch:apply', timeoutMs: GIT_TIMEOUT_MS, stdin: request.pocPatch
-    });
-    if (applied.exitCode !== 0) {
       ctx.gate('applies', 'fail', 'exit_code', `poc.patch does not apply to the listed commit ${base} (exit ${applied.exitCode}): ${firstLine(applied.stderr.text)}`);
       state.done = true;
       return;
     }
-    ctx.gate('applies', 'pass', 'exit_code', `poc.patch applies to the listed commit ${base}`);
+
+    // Measure what git wrote: the postimage bytes of every path the patch created or modified, from the runner's index.
+    const raw = await gitRead(ctx, 'patch:measure', ['diff', '--cached', '--raw', '-z', '--no-renames', '--abbrev=' + base.length, 'HEAD', '--']);
+    const parsed = raw.record.exitCode === 0 && !raw.out.truncated ? parseRawZ(raw.out.bytes(), base.length) : null;
+    if (!parsed || !parsed.ok) throw runnerError('patch:measure', `the paths poc.patch wrote could not be read: ${parsed ? parsed.reason : `git exited ${raw.record.exitCode}`}`);
+    let written = 0;
+    if (parsed.ids.length) {
+      const sizes = await gitRead(ctx, 'patch:sizes', ['cat-file', '--batch-check=%(objectsize)'], { stdin: Buffer.from(parsed.ids.map((id) => `${id}\n`).join('')) });
+      const total = sizes.record.exitCode === 0 && !sizes.out.truncated ? sumObjectSizes(sizes.out.bytes().toString('utf8'), parsed.ids.length) : null;
+      if (total === null) throw runnerError('patch:sizes', `the sizes poc.patch wrote could not be read (git exited ${sizes.record.exitCode})`);
+      written = total;
+    }
+    patchFact.expansionBytes = written;
+    ctx.fact('patch', { ...patchFact });
+    if (written > limits.patchExpansionBytes) {
+      failExpansion(`poc.patch wrote ${written} bytes across ${parsed.paths} path${parsed.paths === 1 ? '' : 's'}; the class allows ${limits.patchExpansionBytes} (patchExpansionBytes)`);
+      return;
+    }
+    ctx.gate('applies', 'pass', 'exit_code', `poc.patch applies to the listed commit ${base} and writes ${written} bytes`);
   }
 
   async function testPathsOnly(ctx) {
@@ -525,4 +593,4 @@ function pocFacts(entries, runs) {
   };
 }
 
-module.exports = { claimSteps, checkClaim, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, RUNS };
+module.exports = { claimSteps, checkClaim, applyFailureReason, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES, PROCS_SCRIPT, CLEANUP_SCRIPT, APPLY_TIMEOUT_MS, FREE_SPACE_SCRIPT, RUNS };

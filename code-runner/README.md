@@ -344,8 +344,8 @@ failure.
 | Step | Gate | Decided on |
 |---|---|---|
 | Record the sandbox's processes (the init and the keepalive); force the checkout: `/work` becomes the listed commit in a fresh repository (below) | — (the requester's error when the image lacks the listed commit's objects) | |
-| `poc.patch` at most `maxPatchBytes`; what it would expand to at most 50 MB (below) | `applies` | `input` |
-| `git apply --numstat` (git reads it; a file changed twice fails), then `git apply --index` against the listed commit | `applies` | `exit_code` |
+| `poc.patch` at most `maxPatchBytes`, no NUL byte, no copy or rename header (below) | `applies` | `input` |
+| `git apply --index` against the listed commit, then the bytes it wrote measured against 50 MB (below) | `applies` | `exit_code` / `input` |
 | `git diff --cached --name-status --no-renames`: every touched path (a rename's source included) under `paths.tests`, none under `paths.protected`, each one a report can name | `testPathsOnly` | `exit_code` |
 | Protected files reset to `baseCommit`; the result committed (`Verdikta code runner <code-runner@verdikta.invalid>`, `1767225600 +0000`, message `poc.patch`) | — | |
 | `commands.build` | `build` | `exit_code` (tier A) |
@@ -410,8 +410,10 @@ The requester's errors, all before any claim code runs:
 `/usr/bin/env` or `git`), `IMAGE_CHECKOUT_UNREADABLE`,
 `IMAGE_OBJECTS_MISSING`, `IMAGE_OBJECT_INVALID` (also a path git will not
 check out under the runner's settings, such as `git~1` or a symbolic link
-named `.gitmodules`) and `IMAGE_CHECKOUT_TOO_LARGE`. An image whose checkout
-differs from the listed commit is corrected and run, not refused.
+named `.gitmodules`), `IMAGE_CHECKOUT_TOO_LARGE`, and `IMAGE_WORKDIR_FULL`
+(the checkout and dependencies leave too little room to apply a claim). An
+image whose checkout differs from the listed commit is corrected and run, not
+refused.
 
 Every git call and every checkout script starts with an empty environment
 (`/usr/bin/env -i`, then the runner's fixed variables), so nothing the image
@@ -434,29 +436,39 @@ driver runs: `.git/info/attributes`, the source above every
 a patched file can never be a clean or smudge filter, a textconv or a merge
 driver, and no conversion changes a file's bytes.
 
-**Expansion** (`src/patch.js`) is what git would have to materialise: every
-binary hunk, forward and reverse (git inflates both while it parses), at its
-declared size read as git's `strtoul` reads it, a forward delta's target at
-the size its header declares, and every added text line. A section whose
-`index` line names, as its postimage, an object the fresh repository already
-holds counts at that object's size, at every destination: for a binary
-section git loads that object instead of the hunk (`apply_binary`), so a
-summary-only `Binary files … differ` or a `literal 0` could otherwise copy a
-large blob to many paths. Which sections git reads as binary is not
-re-derived (it matches a summary line by its first and last bytes only):
-every section naming an existing object counts, a text one recreating a
-tracked file included. A patch holding a NUL byte fails too: no patch git
-writes does, and git reads a header field only up to one. It is counted from the patch's bytes and the checkout's object sizes
-before git sees the patch, so a compression bomb (a 60 KB patch declaring 60
-MB of zeros) fails `applies` instead of reaching git, which inflates every
-hunk in memory before it writes anything. A copy (`copy from`)
-fails too: it rebuilds a whole existing file from one header line, so the
-patch's size bounds nothing. So does a rename (`rename from` / `to`, and
-git's older `rename old` / `new`): git rebuilds a renamed file from the
-existing one, once for every rename of it, and its numstat names only the
-destinations. A moved file is a deletion and an addition (`git diff
---no-renames`). Binary changes count as stats only: their content
-is never read for flags.
+**Expansion is measured, not counted** (owner decision Q26). git applies the
+patch in the sandbox, in the fresh repository, under its memory, pids and time
+limits. The runner then reads from its own index what the patch wrote: the
+postimage bytes of every path it created or modified (`git diff --cached
+--raw`, then each blob's `%(objectsize)`), summed, counted once per path — so
+a blob the patch names many times, or a `Binary files … differ` section that
+makes git load an existing object (`apply_binary`), counts at every path it
+lands on. More than `patchExpansionBytes` is an `input` failure
+(`PATCH_EXPANSION`), the same as before; the measured figure is in the reason
+and in `facts.patch.expansionBytes`.
+
+Getting the blame right (§9.2 step 3): the patch is refused only when the
+patch is what ran out of room.
+- Before applying, the runner checks the work tree has `patchExpansionBytes`
+  plus a 64 MB margin free. If it does not, the image's checkout and
+  installed dependencies left too little room — the requester's package, not
+  the hunter's patch: `IMAGE_WORKDIR_FULL`, before any apply.
+- With that room confirmed, running out of space (`ENOSPC`) or memory (an OOM
+  kill) as git applies, or the apply's own 90 s budget, is the patch
+  materialising more than it may: `PATCH_EXPANSION`, `input`. A real
+  compression bomb (a 60 KB patch of 60 MB of zeros) applies and is caught by
+  the measurement; one that inflates past the sandbox's memory is caught by
+  the OOM kill. The run's own deadline, budget or cancellation during the
+  apply still abstains — it is not the patch's fault.
+
+**The host-side checks** (`src/patch.js`, before git sees the patch) no longer
+parse the patch's meaning: `maxPatchBytes`; no NUL byte (no patch git writes
+holds one, and git reads a header field only up to one); no copy (`copy
+from`) and no rename (`rename from` / `to`, and git's older `rename old` /
+`new`), each of which rebuilds a whole existing file from one header line, so
+the patch's bytes bound neither what git writes nor how often. A moved file is
+a deletion and an addition (`git diff --no-renames`). Binary changes count as
+stats only: their content is never read for flags.
 
 **Commands** run as written in the sandbox's `/bin/sh` with pathname expansion
 off (`set -f; <command>`). For `testFiles` and `testIds` the runner appends

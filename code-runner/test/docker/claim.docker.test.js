@@ -388,13 +388,16 @@ test('applies with real git: a patch that does not apply, one above maxPatchByte
   assert.equal(small.result.gates.applies.basis, 'input');
   assert.ok(!stepNames(small.result).some((n) => n.startsWith('patch:')), 'git never saw it');
 
-  const bomb = Buffer.from([
-    'diff --git a/test/b.bin b/test/b.bin', 'new file mode 100644', `index 0000000000000000000000000000000000000000..${'1'.repeat(40)}`,
-    'GIT binary patch', 'literal 60000000', 'zcmeIuF#!Mo0K%a4Pi+Q3h&OqVfB^#r3>YwAz<>b*1`HT5V8DO@0|pEjFkrxd', '', 'literal 0', 'HcmV?d00001', '', ''
-  ].join('\n'));
+  // A real compression bomb: a valid binary literal of 60 MB of zeros (a ~60 KB patch). git applies it, writing the
+  // 60 MB file; the measurement reads 60 MB from the index and refuses it on the input basis (owner decision Q26).
+  const bomb = binaryPatch('test/bomb.bin', Buffer.alloc(60 * 1000 * 1000));
+  assert.ok(bomb.length < 200000, 'the patch itself is small');
   const big = await run(t, claim(fx, bomb));
   assert.equal(big.result.gates.applies.status, 'fail', show(big.result));
-  assert.match(big.result.gates.applies.detail, /50000000/);
+  assert.equal(big.result.gates.applies.basis, 'input');
+  assert.match(big.result.gates.applies.detail, /wrote 60000000 bytes.*50000000.*patchExpansionBytes/);
+  assert.ok(stepNames(big.result).includes('patch:apply'), 'git applied it, then the runner measured');
+  assert.ok(!stepNames(big.result).includes('build'), 'nothing ran after the gate');
 
   // R15-F1: one file renamed to 60 names (git would reload it for each) fails the input gate before git sees it;
   // the same move written as a deletion and an addition (git diff --no-renames) applies.
@@ -833,9 +836,11 @@ test('R13-F2: objects hard-linked across stores keep their own bytes, whichever 
   }
 });
 
-test('R17-F1: binary patches naming an existing blob as their postimage (any summary form, a carriage return inside included) count its size at every destination, with real git', { timeout: TIMEOUT }, async (t) => {
+test('R17-F1: binary patches that reuse an existing blob as their postimage are measured, every destination (any summary form, a carriage return included), with real git', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('big');
-  // Round 18: git matches a summary by its first and last bytes only, so one with a carriage return inside is binary too.
+  // git loads the existing postimage object named by the index line (apply_binary) and writes it, whatever the hunk
+  // or summary holds. Attempt 3 measures what was written, so a reused blob counts at every path; which summary form
+  // marks the section binary (a carriage return inside included, round 18) no longer matters.
   const SUMMARY = {
     summary: (i) => [`Binary files /dev/null and b/test/c${i}.bin differ`],
     'summary-cr': (i) => [`Binary files /dev/null and b/test/c${i}\r.bin differ`],
@@ -855,19 +860,35 @@ test('R17-F1: binary patches naming an existing blob as their postimage (any sum
     `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${BIG_ID}`, ...SUMMARY[form](i)
   ].join('\n');
   for (const form of Object.keys(SUMMARY)) {
-    // 50 copies of 1.2 MB: past the 50 MB expansion, failed on the input basis before git loads anything.
+    // 50 copies of 1.2 MB: git writes 60 MB from the existing blob; the measurement refuses it on the input basis.
     const fifty = Buffer.from(Array.from({ length: 50 }, (_, i) => section(i, form)).join('\n') + '\n');
     const { result: r1 } = await run(t, claim(fx, fifty));
     assert.equal(r1.gates.applies.status, 'fail', `${form}: ${show(r1)}`);
     assert.equal(r1.gates.applies.basis, 'input', form);
-    assert.match(r1.gates.applies.detail, /would expand to at least [0-9]+ bytes; the class allows 50000000/, form);
-    assert.ok(!stepNames(r1).some((n) => n.startsWith('patch:')), `${form}: git never saw it`);
-    // Two copies: within the limit, counted at their real size; git applies them from the existing blob.
-    const two = Buffer.concat([Buffer.from([section(1, form), section(2, form), ''].join('\n')), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })]);
+    assert.match(r1.gates.applies.detail, /wrote 60000000 bytes across 50 paths; the class allows 50000000/, form);
+    assert.ok(stepNames(r1).includes('patch:apply'), `${form}: git applied it, then the runner measured`);
+    assert.ok(!stepNames(r1).includes('build'), `${form}: nothing ran after the gate`);
+    // Two copies: within the limit, measured at their real size; git applied them from the existing blob.
+    const two = Buffer.from([section(1, form), section(2, form), ''].join('\n'));
     const { result: r2 } = await run(t, claim(fx, two));
     assert.equal(r2.gates.applies.status, 'pass', `${form}: ${show(r2)}`);
-    assert.ok(r2.facts.patch.expansionBytes >= 2 * BIG_BLOB.length, `${form}: ${r2.facts.patch.expansionBytes}`);
+    assert.equal(r2.facts.patch.expansionBytes, 2 * BIG_BLOB.length, `${form}: ${r2.facts.patch.expansionBytes}`);
   }
+});
+
+test('attempt 3: a binary literal that inflates past the sandbox\'s memory is stopped by the OOM kill and refused as the patch (input), not an abstain', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  // 300 MB of zeros as a valid binary literal (a ~300 KB patch). git inflates it in memory to write the file; under a
+  // 256 MiB cap it is OOM-killed as it applies. Free space (a 1 GiB work tree) was confirmed first, so this is the
+  // patch overrunning memory, not an infrastructure failure: applies fails on the input basis, and nothing runs after.
+  const bomb = binaryPatch('test/bomb.bin', Buffer.alloc(300 * 1000 * 1000));
+  const { result: r } = await run(t, claim(fx, bomb, { limits: { memoryMb: 256 } }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'fail');
+  assert.equal(r.gates.applies.basis, 'input');
+  assert.match(r.gates.applies.detail, /memory|wrote [0-9]+ bytes|filled the work tree/);
+  assert.ok(stepNames(r).includes('patch:apply'), 'git tried to apply it');
+  assert.ok(!stepNames(r).includes('build'), 'nothing ran after the gate');
 });
 
 test('R1-F1 (round 2): an inline-config error with a reason of kilobytes is an error, not an assertion', { timeout: TIMEOUT }, async (t) => {

@@ -96,9 +96,18 @@ test('git runs only as src/git.js builds it: an empty environment, then the runn
   }
 });
 
-test('every git object the checkout uses is re-hashed by the runner: cat-file is read only in checkout.js, and only through the hash check', () => {
-  const readers = sources().filter((f) => /cat-file/.test(code(f))).map((f) => path.relative(SRC, f));
-  assert.deepEqual(readers, ['checkout.js']);
+test('every git object the checkout uses is re-hashed by the runner: object CONTENT is read only in checkout.js, and only through the hash check', () => {
+  // `cat-file --batch` (content) lives only in checkout.js; claim.js may read `--batch-check=%(objectsize)` (a size),
+  // but never object content, and only against the runner's own repository (not the image's staging store).
+  for (const f of sources()) {
+    const c = code(f);
+    const base = path.relative(SRC, f);
+    const content = /cat-file[^\n]*--batch(?!-check)|cat-file['"\s,\]]/.test(c) && !/--batch-check/.test(c.match(/cat-file[^\n]*/)[0] || '');
+    if (base !== 'checkout.js') assert.ok(!content, `${base} reads git object content`);
+    for (const m of c.match(/cat-file[^\n]*/g) || []) {
+      if (base === 'claim.js') assert.match(m, /--batch-check=%\(objectsize\)/, 'claim.js reads only object sizes');
+    }
+  }
   const text = code(path.join(SRC, 'checkout.js'));
   // One reader of git's object output, and every record with content goes through the runner's own hash before it is kept.
   assert.equal((text.match(/new BatchReader\(/g) || []).length, 1);

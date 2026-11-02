@@ -1,19 +1,21 @@
 'use strict';
 
-// Acceptance (applies, testPathsOnly): maxPatchBytes and the 50 MB expansion
-// are decided from the patch's own bytes before git sees them, so a
-// compression bomb can never make git materialise it; binary changes count
-// as stats only. These are the host-side checks and the readers of git's own
-// output (which runs inside the sandbox, never here).
+// The host-side checks of poc.patch and the readers of git's own output
+// (git runs inside the sandbox, never here). Attempt 3 (owner decision Q26):
+// the patch's expansion is no longer counted from its text; scanPatch keeps
+// only the checks that do not parse the patch's meaning (maxPatchBytes, no
+// NUL, no copy or rename), and the measurement is done after git applies the
+// patch, from the raw diff of the runner's own index (parseRawZ,
+// sumObjectSizes). The measurement end to end is in claim.test.js and
+// claim.docker.test.js.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const zlib = require('node:zlib');
 const {
-  scanPatch, encodeBase85Line, parseNameStatusZ, parseNumstatZ, parseAddedLines, unquoteCStyle, reportablePath, parseLsTreeZ
+  scanPatch, parseRawZ, sumObjectSizes, encodeBase85Line, parseNameStatusZ, parseNumstatZ, parseAddedLines, unquoteCStyle, reportablePath, parseLsTreeZ
 } = require('../../src/patch');
 
-const LIMITS = { maxPatchBytes: 2000000, patchExpansionBytes: 50000000 };
+const LIMITS = { maxPatchBytes: 2000000 };
 
 function textPatch(file = 'test/Exploit.t.sol', lines = ['// exploit']) {
   return Buffer.from([
@@ -29,87 +31,36 @@ function textPatch(file = 'test/Exploit.t.sol', lines = ['// exploit']) {
 
 const POC_TEXT = textPatch().toString('latin1');
 
-/** A git binary patch section, encoded the way git writes it (zlib, base85 lines of 52 bytes). */
-function binarySection(file, kind, size, payload) {
-  const z = zlib.deflateSync(payload, { level: 9 });
-  const lines = [];
-  for (let i = 0; i < z.length; i += 52) lines.push(encodeBase85Line(z.subarray(i, i + 52)));
-  return [
-    `diff --git a/${file} b/${file}`,
-    'new file mode 100644',
-    'index 0000000000000000000000000000000000000000..1111111111111111111111111111111111111111',
-    'GIT binary patch',
-    `${kind} ${size}`,
-    ...lines,
-    '',
-    'literal 0',
-    'HcmV?d00001',
-    '',
-    ''
-  ].join('\n');
-}
-
-/** A git delta: varint source size, varint target size, then one insert op. */
-function delta(sourceSize, targetSize) {
-  const varint = (n) => {
-    const out = [];
-    do { let b = n & 0x7f; n = Math.floor(n / 128); if (n) b |= 0x80; out.push(b); } while (n);
-    return out;
-  };
-  return Buffer.from([...varint(sourceSize), ...varint(targetSize), 1, 0x41]);
-}
-
-test('a small text patch passes; its size and expansion are reported', () => {
+test('a small patch passes; its size, hash and binary-hunk count are reported, no expansion yet', () => {
   const p = textPatch();
   const r = scanPatch(p, LIMITS);
   assert.equal(r.ok, true, r.reason);
   assert.equal(r.bytes, p.length);
-  assert.equal(r.expansionBytes, '// exploit\n'.length + `++ b/test/Exploit.t.sol\n`.length);
   assert.equal(r.binaryHunks, 0);
+  assert.equal(r.expansionBytes, undefined, 'the expansion is measured after the apply, not here');
   assert.match(r.sha256, /^[0-9a-f]{64}$/);
+  // A binary section is counted for the fact, but its size is not parsed.
+  const bin = scanPatch(Buffer.from(['diff --git a/test/f.bin b/test/f.bin', 'GIT binary patch', 'literal 999999999', 'HcmV?d00001', '', ''].join('\n')), LIMITS);
+  assert.equal(bin.ok, true, 'a huge declared size is not refused here; the apply measures what is written');
+  assert.equal(bin.binaryHunks, 1);
 });
 
 test('maxPatchBytes: one byte over the spec\'s limit fails, at the limit passes', () => {
   const p = textPatch();
-  assert.equal(scanPatch(p, { ...LIMITS, maxPatchBytes: p.length }).ok, true);
-  const r = scanPatch(p, { ...LIMITS, maxPatchBytes: p.length - 1 });
+  assert.equal(scanPatch(p, { maxPatchBytes: p.length }).ok, true);
+  const r = scanPatch(p, { maxPatchBytes: p.length - 1 });
   assert.equal(r.ok, false);
   assert.equal(r.code, 'PATCH_TOO_LARGE');
   assert.match(r.reason, new RegExp(`${p.length} bytes.*${p.length - 1}`));
 });
 
-test('50 MB expansion: a 60 MB binary literal of zeros (a 60 KB patch) fails before git sees it', () => {
-  const size = 60 * 1000 * 1000;
-  // The declared size is what git would allocate; the payload is a token.
-  const p = Buffer.from(binarySection('test/bomb.bin', 'literal', size, Buffer.alloc(1024)));
-  assert.ok(p.length < 100000);
-  const r = scanPatch(p, LIMITS);
-  assert.equal(r.ok, false);
-  assert.equal(r.code, 'PATCH_EXPANSION');
-  assert.ok(r.expansionBytes >= size);
-});
-
-test('a small binary literal passes and counts at its declared size', () => {
-  const p = Buffer.from(binarySection('test/fixture.bin', 'literal', 3000, Buffer.alloc(3000, 7)));
-  const r = scanPatch(p, LIMITS);
-  assert.equal(r.ok, true, r.reason);
-  assert.equal(r.binaryHunks, 1);
-  assert.equal(r.expansionBytes, 3000);
-});
-
-test('a binary delta counts the target size its header declares; an unreadable delta fails closed', () => {
-  const ok = scanPatch(Buffer.from(binarySection('test/f.bin', 'delta', 6, delta(3000, 3100))), LIMITS);
-  assert.equal(ok.ok, true, ok.reason);
-  assert.equal(ok.expansionBytes, 6 + 3100, "the inflated delta and the file it rebuilds");
-  const bomb = scanPatch(Buffer.from(binarySection('test/f.bin', 'delta', 9, delta(10, 80 * 1000 * 1000))), LIMITS);
-  assert.equal(bomb.ok, false);
-  assert.equal(bomb.code, 'PATCH_EXPANSION');
-  const garbled = Buffer.from([
-    'diff --git a/test/f.bin b/test/f.bin', 'GIT binary patch', 'delta 9', 'Hzzzzzzzzzzzzzz', '', ''
-  ].join('\n'));
-  const bad = scanPatch(garbled, LIMITS);
-  assert.equal(bad.ok, false);
-  assert.equal(bad.code, 'PATCH_BINARY_UNREADABLE');
+test('a NUL byte anywhere is refused (git reads a header field as a C string)', () => {
+  for (const at of [0, 10, POC_TEXT.length - 1]) {
+    const b = Buffer.from(POC_TEXT);
+    b[at] = 0;
+    assert.equal(scanPatch(b, LIMITS).code, 'PATCH_NUL', `a NUL at ${at}`);
+  }
+  assert.equal(scanPatch(textPatch(), LIMITS).ok, true);
 });
 
 test('copies are refused: a copy rebuilds a whole existing file from one header line', () => {
@@ -122,7 +73,6 @@ test('copies are refused: a copy rebuilds a whole existing file from one header 
 });
 
 test('R15-F1: renames are refused in every header form git reads, so no source can be rebuilt many times', () => {
-  // One source renamed to many names: git apply --numstat names only the destinations, and git reloads the source each time.
   const many = Buffer.from(Array.from({ length: 60 }, (_, i) => [
     `diff --git a/test/fixture.bin b/test/r${i}.bin`, 'similarity index 100%', 'rename from test/fixture.bin', `rename to test/r${i}.bin`
   ].join('\n')).join('\n') + '\n');
@@ -142,66 +92,40 @@ test('R15-F1: renames are refused in every header form git reads, so no source c
   assert.equal(scanPatch(moved, LIMITS).ok, true);
 });
 
-test('R17-F1: a binary section whose postimage is an object already in the repository counts at that object\'s size, every time', () => {
-  const big = 'ab'.repeat(20);
-  const objects = new Map([[big, 1024 * 1024]]);
-  const section = (i, form, id = big) => [
-    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${id}`,
-    ...(form === 'summary' ? [`Binary files /dev/null and b/test/c${i}.bin differ`] : ['GIT binary patch', 'literal 0', 'HcmV?d00001', '', 'literal 0', 'HcmV?d00001', ''])
-  ].join('\n');
-  for (const form of ['summary', 'literal']) {
-    const sixty = Buffer.from(Array.from({ length: 60 }, (_, i) => section(i, form)).join('\n') + '\n');
-    const r = scanPatch(sixty, LIMITS, { objects });
-    assert.equal(r.ok, false, form);
-    assert.equal(r.code, 'PATCH_EXPANSION', form);
-    // Without the object in the repository, git has nothing to load: the literal or summary is all there is.
-    assert.equal(scanPatch(sixty, LIMITS).ok, true, form);
-    const two = scanPatch(Buffer.from([section(1, form), section(2, form), ''].join('\n')), LIMITS, { objects });
-    assert.ok(two.ok);
-    assert.equal(two.expansionBytes, 2 * 1024 * 1024, form);
-  }
-  // git reads the id in any case and with a mode after it.
-  const upper = scanPatch(Buffer.from(section(1, 'summary', big.toUpperCase()).replace(`..${big.toUpperCase()}`, `..${big.toUpperCase()} 100644`) + '\n'), LIMITS, { objects });
-  assert.equal(upper.expansionBytes, 1024 * 1024);
-  // Round 18: git matches a summary by its first and last bytes only, so an embedded carriage return (or any other byte)
-  // still makes it binary. The count never asks: every section naming an existing object counts, marker or not.
-  for (const summary of ['Binary files /dev/null and b/test/c\r.bin differ', 'Files /dev/null\rand b/test/c.bin differ', 'no binary marker at all']) {
-    const sixty = Buffer.from(Array.from({ length: 60 }, (_, i) => [
-      `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${big}`, summary
-    ].join('\n')).join('\n') + '\n');
-    assert.equal(scanPatch(sixty, LIMITS, { objects }).code, 'PATCH_EXPANSION', JSON.stringify(summary));
-  }
-  // A text section whose postimage is an existing object (the patch recreates a tracked file) counts too: an over-count.
-  const text = scanPatch(Buffer.from(['diff --git a/test/t.sol b/test/t.sol', `index ${'0'.repeat(40)}..${big}`, '--- /dev/null', '+++ b/test/t.sol', '@@ -0,0 +1 @@', '+x', ''].join('\n')), LIMITS, { objects });
-  assert.ok(text.expansionBytes >= 1024 * 1024);
-  // Round 19: a NUL right after the id ends git's field there (a C string); a patch with any NUL is refused first.
-  const nul = Buffer.from(Array.from({ length: 600 }, (_, i) => [
-    `diff --git a/test/c${i}.bin b/test/c${i}.bin`, 'new file mode 100644', `index ${'0'.repeat(40)}..${big}\0`, `Binary files /dev/null and b/test/c${i}.bin differ`
-  ].join('\n')).join('\n') + '\n');
-  assert.equal(scanPatch(nul, { ...LIMITS, maxPatchBytes: 10 * 1000 * 1000 }, { objects }).code, 'PATCH_NUL');
-  for (const at of [0, 10, POC_TEXT.length - 1]) {
-    const b = Buffer.from(POC_TEXT);
-    b[at] = 0;
-    assert.equal(scanPatch(b, LIMITS).code, 'PATCH_NUL', `a NUL at ${at}`);
-  }
-  // An index line before any `diff --git` header is not one git reads.
-  assert.ok(scanPatch(Buffer.from(`index ${'0'.repeat(40)}..${big}\n`), LIMITS, { objects }).expansionBytes === 0);
+test('parseRawZ: the postimage ids of every created or modified blob, a deletion and a gitlink left out', () => {
+  const zero = '0'.repeat(40);
+  const a = 'a'.repeat(40);
+  const b = 'b'.repeat(40);
+  const c = 'c'.repeat(40);
+  const raw = [
+    `:000000 100644 ${zero} ${a} A`, 'test/new.sol',
+    `:100644 100644 ${b} ${c} M`, 'test/mod.sol',
+    `:100644 000000 ${b} ${zero} D`, 'test/gone.sol',
+    `:100644 100755 ${a} ${a} T`, 'run.sh',
+    `:000000 160000 ${zero} ${b} A`, 'lib/dep',
+    `:000000 120000 ${zero} ${c} A`, 'test/link'
+  ].join('\0') + '\0';
+  const r = parseRawZ(Buffer.from(raw, 'latin1'), 40);
+  assert.ok(r.ok, r.reason);
+  assert.equal(r.paths, 6, 'every touched path is counted');
+  assert.deepEqual(r.ids, [a, c, a, c], 'new, modified, type-changed and symlink blobs; not the deletion, not the gitlink');
+  // SHA-256 ids.
+  const s = parseRawZ(Buffer.from(`:000000 100644 ${'0'.repeat(64)} ${'f'.repeat(64)} A\0test/x\0`, 'latin1'), 64);
+  assert.deepEqual(s.ids, ['f'.repeat(64)]);
+  // Malformed records fail closed.
+  assert.equal(parseRawZ(Buffer.from('nope\0path\0', 'latin1'), 40).ok, false);
+  assert.equal(parseRawZ(Buffer.from(`:000000 100644 ${zero} ${a} A\0`, 'latin1'), 40).ok, false, 'a record without a path');
+  assert.deepEqual(parseRawZ(Buffer.from(''), 40), { ok: true, ids: [], paths: 0 });
 });
 
-test('added text counts toward expansion; many hunks of added text past 50 MB would fail', () => {
-  const r = scanPatch(textPatch('test/a.txt', ['x'.repeat(1000)]), { ...LIMITS, patchExpansionBytes: 900 });
-  assert.equal(r.ok, false);
-  assert.equal(r.code, 'PATCH_EXPANSION');
-});
-
-test('base85 lines decode the way git encodes them', () => {
-  const { decodeBase85Line } = require('../../src/patch');
-  for (const n of [1, 4, 5, 51, 52]) {
-    const bytes = Buffer.from(Array.from({ length: n }, (_, i) => (i * 37 + 11) & 0xff));
-    assert.deepEqual(decodeBase85Line(encodeBase85Line(bytes)), bytes);
-  }
-  assert.equal(decodeBase85Line('A!!!!'), null, 'a character outside git\'s alphabet');
-  assert.equal(decodeBase85Line('Z'), null, 'a length prefix with no data');
+test('sumObjectSizes: one line per id, summed, repeats counted; unreadable or missing fails closed', () => {
+  assert.equal(sumObjectSizes('10\n20\n30\n', 3), 60);
+  assert.equal(sumObjectSizes('5\n5\n5\n5\n', 4), 20, 'a repeated id counts every time');
+  assert.equal(sumObjectSizes('0\n', 1), 0);
+  assert.equal(sumObjectSizes('10\n20\n', 3), null, 'a line missing');
+  assert.equal(sumObjectSizes('10\n20\n30\n', 2), null, 'a line too many');
+  assert.equal(sumObjectSizes('10\nbbbb bbbb missing\n', 2), null, 'an object the measurement could not size');
+  assert.equal(sumObjectSizes('', 0), 0);
 });
 
 test('git -z outputs: name-status and numstat, paths byte for byte', () => {
@@ -224,6 +148,13 @@ test('git -z outputs: name-status and numstat, paths byte for byte', () => {
 
 test('ls-tree -z: paths of the listed commit', () => {
   assert.deepEqual(parseLsTreeZ(Buffer.from('foundry.toml\0lib/forge-std\0src/V.sol\0')), ['foundry.toml', 'lib/forge-std', 'src/V.sol']);
+});
+
+test('base85 encodes the way git writes it (fixtures build binary patches from it)', () => {
+  // 4 bytes -> a length prefix ('D' = 64 + 4) and one 5-char group; the value 1 is "00001".
+  assert.equal(encodeBase85Line(Buffer.from([0, 0, 0, 1])), 'D00001');
+  for (const n of [1, 4, 5, 52]) assert.equal(encodeBase85Line(Buffer.alloc(n, 7)).length, 1 + Math.ceil(n / 4) * 5);
+  assert.throws(() => encodeBase85Line(Buffer.alloc(53)), RangeError);
 });
 
 test('added lines from a -U0 diff, per file, with new line numbers; hunk bodies are never read as headers', () => {
@@ -283,22 +214,4 @@ test('reportable paths: what a report can carry (no whitespace, control characte
   for (const p of ['test/a b.sol', 'test/a\tb', 'test/a\\b', 'test/\u0001', '', 'x'.repeat(513), 'test/../x', '/abs']) {
     assert.equal(reportablePath(p), false, JSON.stringify(p));
   }
-});
-
-test('R1-F2: the reverse hunk counts too (git inflates both while it parses), and sizes read as git\'s strtoul reads them', () => {
-  // A small forward literal, then a reverse literal declaring 60 MB.
-  const reverse = Buffer.from([
-    'diff --git a/test/f.bin b/test/f.bin', 'index 1111111111111111111111111111111111111111..2222222222222222222222222222222222222222 100644',
-    'GIT binary patch', 'literal 3', 'IcmV?d00001', '', 'literal 60000000', 'zcmeIuF#!Mo0K%a4Pi+Q3h&OqVfB^#r3>YwAz<>b*1`HT5V8DO@0|pEjFkrxd', '', ''
-  ].join('\n'));
-  const r = scanPatch(reverse, LIMITS);
-  assert.equal(r.ok, false);
-  assert.equal(r.code, 'PATCH_EXPANSION');
-  for (const [size, expected] of [['+60000000', 60000000], ['  +60000000', 60000000], ['060000000', 60000000], ['-1', Number.MAX_SAFE_INTEGER], ['-0', 0], ['x', 0], ['99999999999999999999', Number.MAX_SAFE_INTEGER]]) {
-    const p = Buffer.from(['diff --git a/test/f.bin b/test/f.bin', 'GIT binary patch', `literal ${size}`, 'HcmV?d00001', '', ''].join('\n'));
-    assert.equal(scanPatch(p, { ...LIMITS, patchExpansionBytes: Number.MAX_SAFE_INTEGER }).expansionBytes, expected, size);
-  }
-  assert.equal(scanPatch(Buffer.from(['GIT binary patch', 'literal +60000000', ''].join('\n')), LIMITS).code, 'PATCH_EXPANSION');
-  // A CRLF patch reads the same.
-  assert.equal(scanPatch(Buffer.from(['GIT binary patch\r', 'literal 60000000\r', ''].join('\n')), LIMITS).code, 'PATCH_EXPANSION');
 });
