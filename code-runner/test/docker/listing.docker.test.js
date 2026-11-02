@@ -254,3 +254,28 @@ test('a custom test directory (foundry.toml test = "tests") and a broad paths.te
   assert.equal(r.facts.listing.harness.path, 'tests/VerdiktaHarness2.t.sol');
   assert.deepEqual(r.facts.listing.baseline.stable, ['tests/Vault.t.sol > VaultTest > test_deposit()']);
 });
+
+test('A3a R11-F1 (attempt 3) under real forge: a listing whose commands use the allowlisted flags (a quoted pattern with a space and |, --skip test, -vv, --fuzz-runs, --isolate) is accepted; a refused one never reaches a sandbox', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('vault');
+  const commands = {
+    build: 'forge build --skip test',
+    test: 'forge test -vv --no-match-contract \'Fork|Never Matches\' --fuzz-runs 64 --isolate',
+    testFiles: 'forge test --match-path $FILES -vvv --fuzz-runs 64',
+    testIds: 'forge test --match-test $TEST_IDS --match-path $FILES --isolate'
+  };
+  const r = await check(t, body(fx, { commands }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  assert.deepEqual(r.facts.listing.baseline.stable, ['test/Vault.t.sol > VaultTest > test_deposit()']);
+  assert.deepEqual(verdicts(r), [
+    ['fails', 'forge-std', 'not_run'],
+    ['fails', 'plain', 'assertion'],
+    ['compileError', null, 'no_junit'],
+    ['setUpError', null, 'harness_error']
+  ]);
+  // Refused at validation, before any sandbox (POST /v1/listing-checks answers 400 with this issue).
+  const v = validateListingRequest(body(fx, { commands: { test: 'FOUNDRY_PROFILE=ci forge test' } }));
+  assert.equal(v.ok, false);
+  assert.deepEqual(v.issues.map((i) => [i.code, i.path]), [['COMMAND_NOT_ALLOWED', '/spec/commands/test']]);
+  assert.match(v.issues[0].detail, /^commands\.test: "FOUNDRY_PROFILE=ci" is not allowed: an environment assignment/);
+});

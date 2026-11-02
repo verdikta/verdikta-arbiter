@@ -18,6 +18,17 @@
  * --json`). The build, the commit, the runs and the reset change the tree
  * the way forge and git do (out/ and cache/ written, the index rewritten);
  * a test changes it from a PoC handler to model a claim that tampers.
+ *
+ * Node A3a attempt 3: the runner runs forge itself, as an argv
+ * (`/usr/bin/env -i <forge's environment> <forge> <args>`, no shell).
+ * decode() names those execs by what forge was asked: `forge build` is
+ * `vcr-build`, `forge config` is `forge-config`, and `forge test` is
+ * `vcr-poc` when the runner's placeholders filled a matching flag
+ * (`--match-path=` or `--match-test=`: testFiles, testIds) and `vcr-suite`
+ * otherwise (commands.test). The framework probe is two execs: `vcr-framework`
+ * (where forge is, PATH) and `forge-config`; a `vcr-framework` handler still
+ * answers both at once (the header lines, then the configuration, with the
+ * configuration's exit code and stderr), called once per probe.
  */
 
 const crypto = require('node:crypto');
@@ -165,6 +176,15 @@ function hasFailure(text) {
   return /<(?:failure|error)\b/.test(String(text));
 }
 
+/** What forge was asked, by its argv after `env -i`: the fake's name for the exec (see the header), or null when it is not forge. */
+function forgeKind(argv) {
+  if (argv.length < 2 || !argv[0].startsWith('/')) return null;
+  if (argv[1] === 'build') return 'vcr-build';
+  if (argv[1] === 'config') return 'forge-config';
+  if (argv[1] === 'test') return argv.some((a) => a.startsWith('--match-path=') || a.startsWith('--match-test=')) ? 'vcr-poc' : 'vcr-suite';
+  return null;
+}
+
 /** `/usr/bin/env -i K=V ... <command>`: the command and the fixed environment it gets (null when it is not run that way). */
 function stripEnv(argv) {
   if (argv[0] !== '/usr/bin/env' || argv[1] !== '-i') return { argv, fixedEnv: null };
@@ -203,7 +223,13 @@ function decode(call) {
   }
   let kind = null;
   let sub = null;
-  if (argv[0] === 'git') {
+  let forge = false;
+  let workdir = null;
+  for (let j = 0; j < (i >= 0 ? i : args.length); j += 1) if (args[j] === '--workdir') workdir = args[j + 1];
+  if (fixedEnv && forgeKind(argv)) {
+    kind = forgeKind(argv);
+    forge = true;
+  } else if (argv[0] === 'git') {
     kind = 'git';
     let k = 1;
     while (argv[k] === '-c') k += 2;
@@ -214,7 +240,7 @@ function decode(call) {
     kind = 'cat';
   }
   const box = container ? Number(CONTAINER.exec(container)[1]) : null;
-  return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args), container, box, user };
+  return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args), container, box, user, forge, workdir };
 }
 
 const PACK_TYPES = Object.freeze({ 1: 'commit', 2: 'tree', 3: 'blob', 4: 'tag' });
@@ -332,6 +358,13 @@ function manifestOf(tree, findArgs) {
   return Buffer.concat([...meta, Buffer.from('vcr-hashes\0'), ...hashes]);
 }
 
+/** A `vcr-framework` handler's answer split into the discovery's header lines and forge config's output. */
+function splitProbe(r) {
+  const text = Buffer.isBuffer(r.stdout) ? r.stdout.toString('utf8') : String(r.stdout || '');
+  const m = /^vcr-forge [^\n]*\nvcr-path [^\n]*\n(?:vcr-real [^\n]*\n)?/.exec(text);
+  return { head: m ? m[0] : text, rest: m ? text.slice(m[0].length) : '', exitCode: r.exitCode || 0, stderr: r.stderr || '' };
+}
+
 /** Directories that exist in every sandbox whether or not the fake's tree has an entry under them. */
 const FAKE_DIRS = Object.freeze(['/', '/work', '/tmp', '/home', HOME]);
 
@@ -409,7 +442,8 @@ function linksOf(tree, stdin) {
  *   { exitCode, stdout, stderr }; a text's exit code is forge's (1 when it records a failure)
  * @param {object} [o.git] - overrides by git subcommand key (see `key` below), both containers
  * @param {object} [o.scripts] - overrides by runner script name (vcr-procs, vcr-stage, vcr-freespace, vcr-dirs, vcr-clear,
- *   vcr-unstage, vcr-build, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links, vcr-shim), both containers; a handler gets (d, box)
+ *   vcr-unstage, vcr-cleanup, vcr-framework, vcr-manifest, vcr-links) or forge exec (vcr-build, vcr-poc, vcr-suite; see
+ *   the header), both containers; a handler gets (d, box)
  * @param {Function} [o.onBox] - (box) => void, when a container's state is made (to seed its tree)
  * @param {object} [o.fix] - the fix check's container: { patch (bytes the fix apply carries; default FIX_PATCH),
  *   nameStatus, numstat, diff, raw, writtenBytes, applyExit, build (handler), suite (JUnit text or handler) }
@@ -531,8 +565,6 @@ function claimSandbox({
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
-    // The runner's forge (src/shim.js), written by the shim's user: kept as the box's.
-    'vcr-shim': (d, b) => { b.shim = { script: d.stdin ? Buffer.from(d.stdin).toString('utf8') : '', user: d.user }; return { exitCode: 0 }; },
     'vcr-poc': (d, b) => {
       b.pocRun += 1;
       // forge writes the failing tests' names to its cache on every run.
@@ -574,6 +606,15 @@ function claimSandbox({
         if (!h) throw new Error(`unexpected git ${d.sub.join(' ')}`);
         return h(d, b);
       }
+      // The framework probe: the discovery's exec answers with the handler's header lines; `forge config` with the rest.
+      if (d.kind === 'vcr-framework' || d.kind === 'forge-config') {
+        const h = scripts['vcr-framework'] || scriptDefaults['vcr-framework'];
+        if (d.kind === 'vcr-framework') b.probe = splitProbe(h(d, b));
+        const p = b.probe || splitProbe(h(d, b));
+        if (d.kind === 'forge-config') b.probe = null;
+        if (d.kind === 'vcr-framework') return { exitCode: p.exitCode === 3 || /^vcr-forge \n/.test(p.head) ? 3 : 0, stdout: p.head };
+        return { exitCode: p.exitCode, stdout: p.rest, stderr: p.stderr };
+      }
       const h = scripts[d.kind] || scriptDefaults[d.kind];
       if (!h) throw new Error(`unexpected exec ${JSON.stringify(d.argv.slice(0, 4))}`);
       return h(d, b);
@@ -597,6 +638,6 @@ function claimSandbox({
 }
 
 module.exports = {
-  BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv,
+  BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv, forgeKind, splitProbe,
   claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf, kernelResolver, linksOf
 };

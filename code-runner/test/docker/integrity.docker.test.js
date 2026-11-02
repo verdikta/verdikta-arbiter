@@ -56,6 +56,14 @@ const VARIANTS = Object.freeze({
     toml: 'ffi = true\n\n[profile.ci]\nout = "ci-out"\n\n[profile.opt]\noptimizer = true',
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD }
   },
+  // Attempt 3 (R11-F1, owner decision Q31): the image's own environment names another profile, out directory and
+  // configuration file. forge runs with the runner's environment, so none of them may reach it (FOUNDRY_CONFIG names
+  // no file: forge would fail if it did).
+  imageenv: {
+    toml: 'ffi = true\n\n[profile.ci]\nout = "ci-out"\ncache_path = "ci-cache"',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    env: ['FOUNDRY_PROFILE=ci', 'FOUNDRY_OUT=env-out', 'FOUNDRY_CONFIG=/nowhere/foundry.toml']
+  },
   // R8-F1: forge's out and compile cache configured in /tmp, outside everything the snapshots list.
   tmpout: {
     files: {
@@ -488,6 +496,55 @@ test('A3a R11-F1 under real forge: ordinary commands pass untouched through the 
   assert.equal(d.facts.poc.tests[0].message, 'denied', show(d));
   assert.deepEqual(d.facts.poc.tests[0].runs, ['fail', 'fail', 'fail'], 'runs 2 and 3 still went through the runner\'s forge, unchanged');
   assert.equal(d.gates.integrity.status, 'pass', show(d));
+});
+
+test('A3a R11-F1 (attempt 3) under real forge: the runner runs forge as an argv, with its own environment in /work (the image\'s FOUNDRY_PROFILE, FOUNDRY_OUT and FOUNDRY_CONFIG never reach it), and every allowlisted flag works', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('imageenv');
+  // An ffi child reports the environment forge gave it: the image's variables, and forge's working directory.
+  const report = 'printf "%s|%s|%s|%s" "${FOUNDRY_PROFILE-unset}" "${FOUNDRY_OUT-unset}" "${FOUNDRY_CONFIG-unset}" "$(pwd)"';
+  const env = pocFile('EnvTest', [
+    `    function test_env() public { ${ffiSh(report).replace('vm.ffi(c);', 'bytes memory got = vm.ffi(c); vm.assertTrue(false, string(got));')} }`
+  ]);
+  // Two PoC files: $FILES is a brace glob, which forge gets as one --match-path=… argument.
+  const patch = addFilesPatch({ 'test/Env.t.sol': env, 'test/Exploit.t.sol': DRAIN });
+  const r = await run(t, claim(fx, patch, {
+    commands: {
+      build: 'forge build --skip test',
+      testFiles: 'forge test -vvv --match-path $FILES --fuzz-runs 64 --isolate',
+      testIds: 'forge test --mt $TEST_IDS --mp $FILES -vv'
+    },
+    finding: finding({ command: 'forge test --match-test test_env', observable: 'test_env fails with "unset|unset|unset|/work"' })
+  }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.integrity, CLEAN);
+  const byId = Object.fromEntries(r.facts.poc.tests.map((x) => [x.id, x]));
+  assert.equal(byId['test/Env.t.sol > EnvTest > test_env()'].message, 'unset|unset|unset|/work', show(r));
+  assert.deepEqual(byId['test/Env.t.sol > EnvTest > test_env()'].runs, ['fail', 'fail', 'fail']);
+  assert.deepEqual(byId[`test/Exploit.t.sol > ExploitTest > ${NAME}()`].runs, ['fail', 'fail', 'fail']);
+});
+
+test('A3a R11-F1 (attempt 3) under real forge: the routes rounds 11 and 12 found are refused before any maker command, at claim time and at listing time, with the token named', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('imageenv');
+  const { validateListingRequest } = require('../../src/listing');
+  for (const [key, text, token] of [
+    ['testFiles', 'FOUNDRY_PROFILE=ci forge test --match-path $FILES', 'FOUNDRY_PROFILE=ci'],
+    ['testIds', 'env -u FOUNDRY_CONFIG FOUNDRY_PROFILE=ci /usr/local/bin/forge test --match-test $TEST_IDS', 'env'],
+    ['testFiles', 'forge test --match-path $FILES --compiler-version /work/toolchain/solc', '--compiler-version'],
+    ['build', 'forge build --config-path foundry.toml', '--config-path'],
+    ['build', '/usr/local/bin/forge build', '/usr/local/bin/forge'],
+    ['testFiles', '! forge test --match-path $FILES', '!']
+  ]) {
+    const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { commands: { [key]: text } }));
+    assert.equal(r.outcome, 'requester_error', `${text}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => [i.code, i.path]), [['COMMAND_NOT_ALLOWED', `/spec/commands/${key}`]]);
+    assert.ok(r.issues[0].detail.includes(JSON.stringify(token)), r.issues[0].detail);
+    assert.ok(!(r.steps || []).some((s) => /^(?:build|poc:|integrity)/.test(s.name)), 'nothing ran');
+    const spec = claimSpec(fx, { commands: { [key]: text } });
+    const listing = validateListingRequest({ spec: { ...spec, env: { from: 'foundry' }, limits: undefined, stake: { scope: { include: ['src/**'] } } }, image: fx.image, deadline: 900000 });
+    assert.equal(listing.ok, false, text);
+    assert.deepEqual(listing.issues, r.issues, `${text}: the listing check refuses it the same way`);
+  }
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {
