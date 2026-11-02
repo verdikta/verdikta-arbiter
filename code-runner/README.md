@@ -973,6 +973,12 @@ process of the run is dead:
    later runs are held to; and a link there or on the way there (`out -> build/x`), since
    forge writes through it to where no rule here names it.
 
+   **A compiler in the work tree is refused** right after the checkout, before any patch
+   (R24-F1, `IMAGE_WATCH_ROOT_UNCOVERED`): forge runs a configured `solc` even to print its
+   configuration, so a patch that replaced it would run before the reference is taken.
+   A maker's compiler goes in the builder's tools folder, and a release named by version
+   is forge's own to find.
+
    **A listed Solidity file that sets a path by inline configuration is refused** right
    after the checkout, before any patch (R23-F1, `IMAGE_WATCH_ROOT_UNCOVERED`): `///
    forge-config: default.invariant.failure_persist_dir = "lib/x"`. forge applies it when
@@ -1143,6 +1149,8 @@ The routes the review raised, against that scope (each has its test):
 |---|---|---|---|
 | A run leaves a watched file unreadable, or a directory unlistable, a watched root's ancestor included (R13-F1) | Yes: a hunter alone | **Blocks: hunter alone.** Closed | Its check fails |
 | `out = "lib"` beside `lib/pkg/fixture.json`, a run rewriting that dependency (R22-F1) | Yes: a hunter, on such a listing | **Blocks: hunter alone.** Closed | Refused before any claim code: no claim runs on that image |
+| `solc = "test/solc"`, a patch replacing it with a wrapper, whose bytes would become the reference (R24-F1) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | Any `solc` file in the work tree is refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. The tools folder is where a maker's compiler goes |
+| `paths.tests` over a file forge reads at its first start and not protected: a patch's `.env` could name another compiler (found while fixing R24-F1) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED`, before forge first runs |
 | `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
 | A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error, a multi-line reason lost (R21-F2, R22-F2) | Yes: any honest claim | **Blocks: runner misreading, no maker's files.** Closed | Forge's campaign counts accepted within a range; the reason read up to forge's framing |
 | A `PATH` directory that cannot be listed (R16-F1) | No: the builder's `chmod -R a+rX` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` |

@@ -1025,6 +1025,77 @@ async function probe(ctx, name, forgePath, { config = true, tool = null, before 
 }
 
 /**
+ * Forge and its configuration, as `forge config --json` prints them.
+ * @returns {Promise<object>} parseFramework()'s result
+ * @throws {RequesterError} IMAGE_FORGE_MISSING, FORGE_CONFIG_INVALID
+ */
+async function readFramework(ctx, name, options = {}) {
+  const p = await probe(ctx, name, '', options);
+  const parsed = p.truncated ? { ok: false, reason: 'more than 1 MiB' } : parseFramework(p.bytes);
+  const forgePath = parsed.forgePath !== undefined ? parsed.forgePath : null;
+  if (forgePath === '' || forgePath === null) {
+    throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: 'the env image has no forge on its PATH' }]);
+  }
+  if (p.unrunnable) {
+    throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: `the env image has no forge the runner can run: ${p.unrunnable}` }]);
+  }
+  if (p.exitCode !== 0 || !parsed.ok) {
+    throw new RequesterError([{
+      code: 'FORGE_CONFIG_INVALID', path: '/spec/env/image',
+      detail: `\`forge config --json\` failed at the listed commit (exit ${p.exitCode}): ${firstLine(p.stderr) || parsed.reason || ''}`.trim()
+    }]);
+  }
+  return parsed;
+}
+
+/**
+ * Before forge runs: a patch's file could not be forge, a command it looks up
+ * or its configuration (R16-F1, round 19; R24-F1). forge's real path, the PATH
+ * directories in the work tree and the root files it reads at its first start
+ * may not lie under paths.tests (those files may if protected, since a patch
+ * cannot touch them then), and the PATH directories elsewhere are walked.
+ * @throws {RequesterError} IMAGE_WATCH_ROOT_UNCOVERED
+ */
+async function forgeOutOfReach(ctx, name, { realPath, pathDirs }, { testGlobs, protectedGlobs }) {
+  const problems = [];
+  const inTests = (abs) => testGlobs.length && abs.startsWith(`${WORK}/`) && matchesAny(abs.slice(WORK.length + 1), testGlobs);
+  if (inTests(realPath)) problems.push(`forge (${realPath}) is under paths.tests, where a patch's file would be forge`);
+  for (const d of pathDirs) if (inTests(d)) problems.push(`PATH directory ${d} is under paths.tests, where a patch's file would be a command`);
+  for (const f of FRAMEWORK_FILES) {
+    if (inTests(`${WORK}/${f}`) && !matchesAny(f, protectedGlobs)) problems.push(`${f} is under paths.tests and not protected, where a patch's file would be forge's configuration`);
+  }
+  if (problems.length === 0) problems.push(...await walkRoots(ctx, `${name}:external-roots`, externalRoots(pathDirs)));
+  if (problems.length) throw uncovered(problems);
+}
+
+/** A `solc` setting that names a release, which forge looks up itself, not a file. */
+const SOLC_RELEASE = /^\d+\.\d+\.\d+/;
+
+/**
+ * R24-F1: the compiler is out of a patch's reach. forge runs a configured solc
+ * even to print its configuration, so a patch that replaced it (`solc =
+ * "test/solc"`, or a link on its way) would run before the reference is taken,
+ * and its bytes would be the reference's. So where it is gets read here, right
+ * after the forced checkout and before any patch: this is the listed image's
+ * own forge and compiler. A file in the work tree is refused, whatever links it
+ * goes through; the builder's tools folder is where a maker's compiler goes. One
+ * outside it must not lead through a place the sandbox can write. forge itself
+ * is held to forgeOutOfReach first, as at the reference.
+ * @param {{testGlobs:string[], protectedGlobs:string[]}} globs
+ * @throws {RequesterError} IMAGE_WATCH_ROOT_UNCOVERED, IMAGE_FORGE_MISSING, FORGE_CONFIG_INVALID
+ */
+async function requireCompilerOutOfReach(ctx, globs, name = 'prepare:compiler') {
+  const { config } = await readFramework(ctx, name, { before: (found) => forgeOutOfReach(ctx, name, found, globs) });
+  const { solc } = config;
+  if (typeof solc !== 'string' || solc === '' || SOLC_RELEASE.test(solc)) return;
+  if (!solc.startsWith('/') || within(solc, WORK)) {
+    throw uncovered([`solc (${solc}) is in the work tree, where a patch could replace it, and forge runs it even to print its configuration`]);
+  }
+  const problems = await walkRoots(ctx, `${name}:walk`, externalRoots([solc]));
+  if (problems.length) throw uncovered(problems);
+}
+
+/**
  * R23-F1: the listed checkout sets no path by inline configuration. Run right
  * after the forced checkout, before any patch: this is what the maker listed,
  * so a claim's own annotation stays the claim's (its write fails its own check),
@@ -1177,21 +1248,7 @@ class Watch {
    */
   async reference(ctx) {
     const name = `${this.prefix}:reference`;
-    const p = await probe(ctx, `${name}:framework`, '', { before: (found) => this.beforeForgeRuns(ctx, name, found) });
-    const parsed = p.truncated ? { ok: false, reason: 'more than 1 MiB' } : parseFramework(p.bytes);
-    const forgePath = parsed.forgePath !== undefined ? parsed.forgePath : null;
-    if (forgePath === '' || forgePath === null) {
-      throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: 'the env image has no forge on its PATH' }]);
-    }
-    if (p.unrunnable) {
-      throw new RequesterError([{ code: 'IMAGE_FORGE_MISSING', path: '/spec/env/image', detail: `the env image has no forge the runner can run: ${p.unrunnable}` }]);
-    }
-    if (p.exitCode !== 0 || !parsed.ok) {
-      throw new RequesterError([{
-        code: 'FORGE_CONFIG_INVALID', path: '/spec/env/image',
-        detail: `\`forge config --json\` failed at the listed commit (exit ${p.exitCode}): ${firstLine(p.stderr) || parsed.reason || ''}`.trim()
-      }]);
-    }
+    const parsed = await readFramework(ctx, `${name}:framework`, { before: (found) => this.beforeForgeRuns(ctx, name, found) });
     // Every place the sets are rooted at must be one the snapshots cover (R8-F1): none is dropped silently. What lies
     // outside the work tree as text is asked of the kernel (R16-F1).
     const uncoveredRoots = unwatchableRoots(parsed.config, parsed.pathDirs, this.testGlobs);
@@ -1260,13 +1317,8 @@ class Watch {
    * work tree may not lie under paths.tests, and the PATH directories elsewhere
    * are walked (a dangling link there could lead to a file the patch added).
    */
-  async beforeForgeRuns(ctx, name, { realPath, pathDirs }) {
-    const problems = [];
-    const inTests = (abs) => this.testGlobs.length && abs.startsWith(`${WORK}/`) && matchesAny(abs.slice(WORK.length + 1), this.testGlobs);
-    if (inTests(realPath)) problems.push(`forge (${realPath}) is under paths.tests, where a patch's file would be forge`);
-    for (const d of pathDirs) if (inTests(d)) problems.push(`PATH directory ${d} is under paths.tests, where a patch's file would be a command`);
-    if (problems.length === 0) problems.push(...await walkRoots(ctx, `${name}:external-roots`, externalRoots(pathDirs)));
-    if (problems.length) throw uncovered(problems);
+  beforeForgeRuns(ctx, name, found) {
+    return forgeOutOfReach(ctx, name, found, { testGlobs: this.testGlobs, protectedGlobs: this.protectedGlobs });
   }
 
   /**
@@ -1678,7 +1730,7 @@ function integrityDetail(failures) {
 }
 
 module.exports = {
-  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
+  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, requireCompilerOutOfReach, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   discoverForge, probe, requireImmutableTools, TOOL_DIRS, IMMUTABLE_CHECK,

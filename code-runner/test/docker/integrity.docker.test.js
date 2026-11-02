@@ -109,6 +109,11 @@ const VARIANTS = Object.freeze({
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: 'mkdir -p build/artifacts && ln -s build/artifacts out'
   },
+  // R24-F1: the compiler a link under paths.tests, as the review proposed it.
+  solcintests: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "test/solc"') },
+    setup: 'ln -s /opt/solc/solc test/solc'
+  },
   // R23-F1: a listed test contract that sets where forge writes by inline configuration, which `forge config` never shows.
   inlinepersist: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'test/Annotated.t.sol': ANNOTATED }
@@ -816,6 +821,15 @@ test('A3a under real forge: forge\'s other outputs (test_failures_file, failure_
   assert.equal(linked.outcome, 'requester_error', show(linked));
   assert.deepEqual(linked.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.match(linked.issues[0].detail, /out is a link/);
+});
+
+test('A3a R24-F1 under real forge: a compiler under paths.tests is refused before the patch that would replace it, so a wrapper never runs', { timeout: TIMEOUT }, async (t) => {
+  const wrapper = '#!/bin/sh\nprintf x > /work/state-wrapper-ran\nexec /opt/solc/solc "$@"\n';
+  const r = await run(t, claim(await fixture('solcintests'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN, 'test/solc.wrapper': wrapper })));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(r.issues[0].detail, /solc \(test\/solc\) is in the work tree, where a patch could replace it/);
+  assert.ok(!(r.steps || []).some((s) => /^(?:patch|build|poc:)/.test(s.name)), 'no patch, maker command or claim code ran');
 });
 
 test('A3a R23-F1 under real forge: a listed contract whose inline configuration sets where forge writes is refused before any patch or claim code, so an honest invariant PoC added to it cannot be failed by its counterexample', { timeout: TIMEOUT }, async (t) => {

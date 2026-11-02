@@ -983,7 +983,9 @@ run, is the image's doing and a requester error, never a failed check. Where for
 itself writes (its out and cache directories, and what else a plain run writes to)
 is forge's output, not held to the reference; it must be plain and hold nothing
 watched in the image, or the image is refused before any claim code. A listed
-Solidity file that sets a path by inline configuration is refused too.
+Solidity file that sets a path by inline configuration is refused too, and so is a
+`solc` file in the work tree, where a patch could replace it (right after the
+checkout, since forge runs a configured `solc` from its first start).
 
 **Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
 before mainnet. The code-runner README's route table has every route the review raised.

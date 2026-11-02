@@ -123,7 +123,7 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   // configuration is read as the maker's commands run forge (attempt 3: the same argv, environment and directory).
   const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
   assert.equal(probes[0].launched[0], '/bin/sh');
-  assert.deepEqual(probes.slice(1).map((p) => p.argv[4]), ['/usr/local/bin/forge', '/usr/local/bin/forge', '/usr/local/bin/forge']);
+  assert.deepEqual(probes.slice(2).map((p) => p.argv[4]), ['/usr/local/bin/forge', '/usr/local/bin/forge', '/usr/local/bin/forge'], 'before any patch and at the reference: discovery; then forge\'s own path');
   const [build] = sb.execs().filter((d) => d.kind === 'vcr-build');
   for (const config of sb.execs().filter((d) => d.kind === 'forge-config')) {
     assert.deepEqual(config.launched, [...build.launched.slice(0, -1), 'config', '--json']);
@@ -378,7 +378,7 @@ test('a snapshot that cannot be read before any claim code is the requester\'s p
   const r1 = await runClaim(claimSandbox({ scripts: { 'vcr-manifest': flood } }));
   assertIntegrityFails(r1, ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged'], /run 1: the watched paths exceed/);
   let p = 0;
-  const broken = (d, box) => { p += 1; return p === 1 ? { stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n${forgeConfig(initialTree())}` } : { exitCode: 1, stdout: 'vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n' }; };
+  const broken = (d, box) => { p += 1; return p <= 2 ? { stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n${forgeConfig(initialTree())}` } : { exitCode: 1, stdout: 'vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n' }; };
   const r2 = await runClaim(claimSandbox({ scripts: { 'vcr-framework': broken } }));
   assertIntegrityFails(r2, ['frameworkUnchanged'], /run 1: forge config exited 1/);
 });
@@ -510,9 +510,9 @@ test('A3a R1-F3 (round 2): the executable is checked by its own entry, wherever 
   assertIntegrityFails(r, ['frameworkUnchanged'], /run 2: cache\/tools\/forge changed/);
   assert.match(r.gates.integrity.detail, /forge's executable \/work\/cache\/tools\/forge changed; it was not run/);
   const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
-  assert.deepEqual(probes.slice(1).map((d) => d.argv[4]), [FORGE, FORGE, FORGE], 'later probes name the reference\'s real path, never the link a run could retarget');
+  assert.deepEqual(probes.slice(2).map((d) => d.argv[4]), [FORGE, FORGE, FORGE], 'later probes name the reference\'s real path, never the link a run could retarget');
   const configs = sb.execs().filter((d) => d.kind === 'forge-config');
-  assert.deepEqual(configs.map((d) => d.argv[0]), [FORGE, FORGE], 'forge config at the reference and after run 1; not at all once it changed');
+  assert.deepEqual(configs.map((d) => d.argv[0]), [FORGE, FORGE, FORGE], 'forge config before any patch, at the reference and after run 1; not at all once it changed');
   // A forge in the work tree the reference cannot hash (a listing it is pruned from, or unreadable) is refused before any claim code.
   for (const [where, seed] of [['/work/cache/solidity-files-cache.json.abi/forge', 'f'], ['/work/bin/forge', 'unreadable']]) {
     const sb2 = claimSandbox({
@@ -906,7 +906,7 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
   assert.equal(fine.outcome, 'definitive', show(fine));
   assert.equal(fine.gates.integrity.status, 'pass', show(fine));
   const asked = ok.execs().filter((d) => d.kind === 'vcr-external-roots');
-  assert.equal(asked.length, 3, 'the way there is out of the sandbox user\'s reach: no need to ask again after a run');
+  assert.equal(asked.length, 5, 'the way there is out of the sandbox user\'s reach: no need to ask again after a run');
   for (const a of asked) {
     assert.deepEqual(a.launched.slice(0, 2), ['/usr/bin/env', '-i']);
     assert.equal(a.argv[4], IMMUTABLE_CHECK);
@@ -1086,6 +1086,37 @@ test('owner decision Q35: settlement can tell, from fields of verdikta.claim-rep
   const noBuild = await runClaim(claimSandbox({ scripts: { 'vcr-build': () => ({ exitCode: 1, stderr: 'Compiler run failed' }) } }));
   assert.equal(noBuild.gates.build.status, 'fail', show(noBuild));
   assert.deepEqual(settlementFacts(noBuild), { valid: true, issues: [], integrity: 'not-run', tampered: false, failedChecks: [], reproduces: 'not-run', reproducesFailed: null });
+});
+
+test('A3a R24-F1: a compiler a patch could replace is refused before any patch, since forge runs it from its first start: in the work tree by any form, or outside it through a place the sandbox can write', async () => {
+  for (const solc of ['test/solc', 'bin/solc', './bin/solc', '/work/test/solc', 'solc']) {
+    const sb = claimSandbox({ onBox: (box) => { box.configOver = { solc }; } });
+    const r = await runClaim(sb);
+    assert.equal(r.outcome, 'requester_error', `${solc}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.match(r.issues[0].detail, /is in the work tree, where a patch could replace it/);
+    assert.equal(sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'apply').length, 0, `${solc}: no patch applied`);
+  }
+  // A release forge looks up itself, and a compiler on the read-only root, are nothing.
+  for (const solc of ['0.8.31', '/opt/solc/solc']) {
+    const r = await runClaim(claimSandbox({ onBox: (box) => { box.configOver = { solc }; } }));
+    assert.equal(r.gates.integrity.status, 'pass', `${solc}: ${show(r)}`);
+  }
+  // A dangling link there, to a file a patch would add, and any way through the work tree.
+  const linked = claimSandbox({ onBox: (box) => box.tree.set('/opt/solc/solc', { type: 'l', target: '/work/test/solc' }) });
+  const viaRoot = await runClaim(linked);
+  assert.equal(viaRoot.outcome, 'requester_error', show(viaRoot));
+  assert.deepEqual(viaRoot.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.equal(linked.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'apply').length, 0, 'no patch applied');
+  // forge's configuration under paths.tests, which forge reads at its first start, and not protected: a patch's .env.
+  const spec = forgeSpec({ paths: { tests: ['test/**', '.env'], protected: ['foundry.toml', 'lib/**'] } });
+  const sb = claimSandbox();
+  const env = await runClaim(sb, claimRequest({ spec }));
+  assert.equal(env.outcome, 'requester_error', show(env));
+  assert.deepEqual(env.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(env.issues[0].detail, /\.env is under paths\.tests and not protected/);
+  const safe = forgeSpec({ paths: { tests: ['test/**', '.env'], protected: ['foundry.toml', 'lib/**', '.env'] } });
+  assert.equal((await runClaim(claimSandbox(), claimRequest({ spec: safe }))).gates.integrity.status, 'pass', 'protected: a patch cannot touch it');
 });
 
 test('A3a R23-F1: a listed Solidity file that sets a path by inline configuration is refused right after the checkout, before any patch; other inline settings are nothing', async () => {

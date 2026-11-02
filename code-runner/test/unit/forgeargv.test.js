@@ -105,9 +105,10 @@ test('a claim: the build, each PoC run, the fix check\'s build and suite, and `f
   const forge = sb.execs().filter((d) => d.forge);
   const poc = forge.filter((d) => d.box === 1 || d.box === null);
   const fix = forge.filter((d) => d.box === 2);
-  // The PoC's sandbox: the reference's configuration, the build, then three runs each followed by a configuration read.
-  assert.deepEqual(poc.map((d) => d.kind), ['forge-config', 'vcr-build', 'vcr-poc', 'forge-config', 'vcr-poc', 'forge-config', 'vcr-poc', 'forge-config']);
-  const [ref, build, run1, , run2, , run3] = poc;
+  // The PoC's sandbox: the listed image's configuration before any patch, the reference's, the build, then three runs each followed by a configuration read.
+  assert.deepEqual(poc.map((d) => d.kind), ['forge-config', 'forge-config', 'vcr-build', 'vcr-poc', 'forge-config', 'vcr-poc', 'forge-config', 'vcr-poc', 'forge-config']);
+  const [listed, ref, build, run1, , run2, , run3] = poc;
+  assertForgeArgv(sb, listed, ['config', '--json']);
   assertForgeArgv(sb, ref, ['config', '--json']);
   assertForgeArgv(sb, build, ['build']);
   assertForgeArgv(sb, run1, ['test', '--match-path=test/Exploit.t.sol', ...REPORTER]);
@@ -155,7 +156,7 @@ test('forge is the one the reference probed (its real path), with the image\'s P
   for (const d of forge) assert.deepEqual(d.launched.slice(0, 12), ['/usr/bin/env', '-i', ...FORGE_ENV(path), '/opt/foundry/bin/forge-1.8.5']);
   // The later probes run the reference's real path too (R1-F3).
   const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
-  assert.deepEqual(probes.slice(1).map((d) => d.argv[4]), ['/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5']);
+  assert.deepEqual(probes.slice(2).map((d) => d.argv[4]), ['/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5', '/opt/foundry/bin/forge-1.8.5']);
 });
 
 test('a forge path the runner cannot pass to env as a program (one holding "=") is the image\'s error, before any maker command', async () => {

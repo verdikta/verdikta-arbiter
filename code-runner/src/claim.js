@@ -603,6 +603,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
     const checkout = await forceCheckout(ctx, { base });
     // The maker's own inline configuration, before a patch can touch it (R23-F1).
     await integrity.requirePlainInlineConfig(ctx);
+    // And where the compiler is, which forge runs from its first start on (R24-F1).
+    await integrity.requireCompilerOutOfReach(ctx, { testGlobs, protectedGlobs });
     state.prepared = checkout.commit;
     ctx.fact('commit', { tier: 'A', base, poc: null });
   }
