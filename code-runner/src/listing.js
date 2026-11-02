@@ -5,8 +5,8 @@
  * node A2b). The attestation site's validator (P3a) calls this, so a listing
  * is validated on the arbiters' own runner (build plan, assumption A4).
  *
- * In one sandbox, launched, limited and timed exactly as a claim's (the
- * same engine, admission, image pull and isolation; pipeline.js):
+ * In sandboxes launched, limited and timed exactly as a claim's (the same
+ * engine, admission, image pull and isolation; pipeline.js), one at a time:
  *
  *   image     the env image's unpacked size, from the runner's daemon
  *   prepare   the claim pipeline's own prepare (claim.js): the processes
@@ -22,11 +22,11 @@
  *   limits    defaults of 3x the measured times plus the repeat-schedule
  *             reserve (below); a listing whose limits would pass the class's
  *             90 s build or 360 s run cap is too heavy for v1
- *   harness   the harness proof: trivial tests under paths.tests, each put
- *             there as a claim's PoC is (applies, testPathsOnly, the
- *             protected reset, the commit) and run through testFiles under
- *             the default limits by the claim pipeline's own reproduces
- *             gate. The trivially failing test must fail as an assertion on
+ *   harness   the harness proof: trivial tests under paths.tests, each run
+ *             as a claim is, in a fresh sandbox of its own (the forced
+ *             checkout, then applies, testPathsOnly, the protected reset,
+ *             the commit) and through testFiles under the default limits by
+ *             the claim pipeline's own reproduces gate. The trivially failing test must fail as an assertion on
  *             all three runs; a trivially broken one (a compile error, a
  *             failing setUp) must be an error. Otherwise the listing cannot
  *             host claims (§10.1 depends on the distinction)
@@ -78,8 +78,8 @@ const MARGIN = 3;
  * limits). The deadline must leave this much, as runSeconds for a claim.
  */
 const LISTING_CHECK_SECONDS = 2 * CLASS_HARD_LIMITS.runSeconds;
-/** The probes' expansion budget: their files are a few hundred bytes. */
-const PROBE_EXPANSION_BYTES = 1024 * 1024;
+/** Other names a probe file may take when the first is taken: <stem>2.t.sol … <stem>9.t.sol. */
+const PROBE_ALTERNATES = 8;
 const GIT_TIMEOUT_MS = 120000;
 const FREE_SPACE_TIMEOUT_MS = 120000;
 const IMAGE_SIZE_TIMEOUT_MS = 30000;
@@ -180,8 +180,9 @@ function listed(items) {
  * listed commit, the paths, `env.from`, and optionally `limits` (cpus and
  * memory the check then runs with; time limits are checked against the
  * measured defaults), `env.image` (equal to `image`), `env.platform` and
- * `env.unpackedBytes` (the declared size the pull's disk check uses; the
- * class maximum when absent). `image` is the env image, pinned by digest.
+ * `env.unpackedBytes` (checked against the class maximum only: the draft's
+ * size is not attested, so the pull's disk check always reserves the class
+ * maximum). `image` is the env image, pinned by digest.
  * `deadline` is the remaining time in ms, as for /v1/runs.
  *
  * @param {unknown} body
@@ -264,7 +265,9 @@ function validateListingRequest(body) {
   return {
     ok: true,
     issues: [],
-    request: { spec, image: body.image, deadlineMs: body.deadline, unpackedBytes: effectiveEnv.unpackedBytes, specLimits },
+    // The pull's disk admission (images.js) reserves what a run declares; a draft's size is the maker's word, not an
+    // attested one, so a listing check always reserves the class maximum (R1-F1). The measured size is in the answer.
+    request: { spec, image: body.image, deadlineMs: body.deadline, unpackedBytes: CLASS_HARD_LIMITS.imageUnpackedBytes, specLimits },
     limits
   };
 }
@@ -373,7 +376,8 @@ function probeCandidates(glob) {
 /**
  * Where the probes go: the first candidate that is a plain Solidity path the
  * claim gates admit (under paths.tests, not protected) and that no tracked
- * file holds, sits under or sits on. forge's default test directory comes
+ * file holds, sits under or sits on. A candidate taken is tried again with
+ * a number (VerdiktaHarness2.t.sol, … 9). forge's default test directory comes
  * first (forge compiles and runs what is there; a glob such as `**` would
  * otherwise put the probe at the root, where forge looks for no test),
  * then glob by glob.
@@ -383,7 +387,10 @@ function probeCandidates(glob) {
  */
 function harnessPath(spec, tracked) {
   const files = new Set(tracked);
-  const candidates = [`${FORGE_TEST_DIR}/${PROBE_STEM}.t.sol`, ...spec.paths.tests.flatMap(probeCandidates)];
+  const first = [`${FORGE_TEST_DIR}/${PROBE_STEM}.t.sol`, ...spec.paths.tests.flatMap(probeCandidates)];
+  // Each candidate, then the same with a number, for a name the repository already uses (R1-F3).
+  const numbered = (p) => Array.from({ length: PROBE_ALTERNATES }, (_, i) => p.replace(/((?:\.t)?\.sol)$/, `${i + 2}$1`));
+  const candidates = [...first, ...first.flatMap(numbered)];
   for (const p of new Set(candidates)) {
     if (!p.endsWith('.sol') || !SAFE_PATH.test(p) || !reportablePath(p)) continue;
     if (!pocPatchPathsGate([p], spec).pass) continue;
@@ -490,7 +497,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     harness: null,
     leftoverProcesses: []
   };
-  const state = { stop: false, base: null, tracked: null, scope: null, prepareMs: 0, buildMs: 0, testMs: [], defaults: null };
+  const state = { stop: false, base: null, tracked: null, scope: null, prepareMs: 0, buildMs: 0, testMs: [], defaults: null, sandbox: null };
   const refuse = (code, detail) => {
     out.refusals.push({ code, detail });
     state.stop = true;
@@ -657,15 +664,33 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     }
   }
 
-  /** One probe, put in place and run as a claim's PoC, from the listed commit. */
+  /**
+   * A fresh sandbox from the image for the next probe (R1-F2): nothing the
+   * suite or an earlier probe left (in the work tree, $HOME or /tmp) can make
+   * a probe pass where a claim, which starts from a fresh sandbox, would not.
+   * The one in use is removed first, so there is never more than one: the
+   * memory admitted for the run covers them.
+   */
+  async function freshSandbox(ctx) {
+    if (state.sandbox) await state.sandbox.close();
+    else await ctx.closeSandbox();
+    state.sandbox = null;
+    state.sandbox = await ctx.openSandbox();
+    return { ...ctx, exec: state.sandbox.exec, readFile: state.sandbox.readFile, sandboxName: state.sandbox.name };
+  }
+
+  /**
+   * One probe, run as a claim is: a fresh sandbox, the claim pipeline's
+   * prepare (the forced checkout), the probe put in place as a PoC, then the
+   * claim's build and reproduces gate under the default limits.
+   */
   async function runProbe(ctx, probe, path, probeLimits) {
     const prefix = `harness:${probe.name}${probe.variant ? `:${probe.variant}` : ''}`;
-    await resetToListed(ctx, `${prefix}:reset`);
-    const scope = scoped(ctx, prefix);
-    const session = claimSession({ spec, pocPatch: probePatch(path, probe.lines), baseline: out.baseline }, probeLimits, { adopt: state.base });
+    const scope = scoped(await freshSandbox(ctx), prefix);
+    const session = claimSession({ spec, pocPatch: probePatch(path, probe.lines), baseline: out.baseline }, probeLimits);
     const steps = probe.build
-      ? ['applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces']
-      : ['applies', 'testPathsOnly', 'resetAndCommit', 'reproduces'];
+      ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces']
+      : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'reproduces'];
     let timedOut = null;
     for (const name of steps) {
       if (session.state.done) break;
@@ -713,7 +738,8 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
       return;
     }
     const d = state.defaults;
-    const probeLimits = { ...limits, buildSeconds: d.buildSeconds, testSeconds: d.testSeconds, patchExpansionBytes: PROBE_EXPANSION_BYTES };
+    // A claim's limits: the listing's defaults for its steps, the class's for everything else.
+    const probeLimits = Object.freeze({ ...limits, buildSeconds: d.buildSeconds, testSeconds: d.testSeconds });
     const probes = [];
     out.harness = { path, probes };
     const probe = async (p) => {
@@ -785,5 +811,5 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
 
 module.exports = {
   validateListingRequest, listingSteps, imageUnpackedBytes, deriveLimits, buildBudgetMs, suiteBudgetMs, minimumRunSeconds,
-  baselineOf, harnessPath, probeCandidates, probePatch, PROBES, LISTING_FIELDS, LISTING_CHECK_SECONDS, MARGIN, RUNS, PROBE_EXPANSION_BYTES
+  baselineOf, harnessPath, probeCandidates, probePatch, PROBES, LISTING_FIELDS, LISTING_CHECK_SECONDS, MARGIN, RUNS
 };

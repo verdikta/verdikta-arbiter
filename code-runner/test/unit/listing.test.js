@@ -28,7 +28,7 @@ const {
 } = require('../../src/listing');
 const { testConfig, request } = require('../helpers/http');
 const { IMAGE, runRequest, spec } = require('../helpers/requests');
-const { BASE, claimSandbox } = require('../helpers/fakeClaim');
+const { BASE, claimSandbox, decode } = require('../helpers/fakeClaim');
 const { never } = require('../helpers/fakeDocker');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
@@ -113,7 +113,7 @@ function probeKindOf(patch) {
  */
 function listingSandbox({
   suite = [vaultSuite(1), vaultSuite(2), vaultSuite(3)], forgeStd = 'modern', probeRun = {}, build = null,
-  history = () => ({ stdout: '400000000\n0\n600000000\n' }), git = {}, scripts = {}, ...rest
+  history = () => ({ stdout: '400000000\n0\n600000000\n' }), git = {}, scripts = {}, handlers = {}, ...rest
 } = {}) {
   let applied = null;
   let suiteRun = 0;
@@ -130,7 +130,7 @@ function listingSandbox({
   };
   const sb = claimSandbox({
     ...rest,
-    handlers: { history: (args) => history(args) },
+    handlers: { history: (args) => history(args), ...handlers },
     git: {
       'apply --index': (d) => { applied = d.stdin.toString('utf8'); return { exitCode: 0 }; },
       'diff --raw': () => ({ stdout: Buffer.from(`:000000 100644 ${'0'.repeat(hexLen)} ${'b'.repeat(hexLen)} A\0${pathOf()}\0`, 'latin1') }),
@@ -150,11 +150,13 @@ function listingSandbox({
       },
       'vcr-suite': (d, repo) => {
         suiteRun += 1;
+        d.container = containerOf(sb.docker.calls[sb.docker.calls.length - 1]);
         const h = suite[suiteRun - 1];
         if (typeof h === 'function') return h(d, suiteRun, repo);
         return { exitCode: 1, stdout: h === undefined ? '' : h };
       },
       'vcr-poc': (d, repo) => {
+        d.container = containerOf(sb.docker.calls[sb.docker.calls.length - 1]);
         const kind = probeKindOf(applied);
         const h = probeRun[kind] || probeDefaults[kind];
         if (!h) throw new Error(`no probe answer for ${kind}`);
@@ -425,6 +427,48 @@ test('harness proof: the trivially failing test fails as an assertion on all thr
   assert.equal(seq.slice(applies[1], applies[2]).filter((k) => k === 'vcr-build').length, 0);
 });
 
+/** The container a docker exec ran in. */
+const containerOf = (call) => call.args.find((a) => /^vcr-[0-9a-f]{16}-[0-9]+$/.test(a));
+
+test('harness proof: every probe runs as a claim does, in a fresh sandbox of its own, the previous one removed first (R1-F2)', async () => {
+  const sb = listingSandbox({ forgeStd: 'none' });
+  const r = await runListing(sb);
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  // The measurement's sandbox, then one per probe (forge-std, plain, compile, setUp).
+  const creates = sb.docker.callsOf('create').map((c) => c.args[c.args.indexOf('--name') + 1]);
+  assert.deepEqual(creates, [1, 2, 3, 4, 5].map((n) => `vcr-0123456789abcdef-${n}`));
+  // Never two at once: each sandbox is removed before the next is created.
+  const order = sb.docker.calls.filter((c) => c.args[0] === 'create' || c.args[0] === 'rm').map((c) => (c.args[0] === 'create' ? `create ${c.args[c.args.indexOf('--name') + 1]}` : `rm ${c.args[c.args.length - 1]}`));
+  for (let n = 1; n < 5; n += 1) {
+    assert.ok(order.indexOf(`rm vcr-0123456789abcdef-${n}`) < order.indexOf(`create vcr-0123456789abcdef-${n + 1}`), order.join(', '));
+  }
+  // Every one with the same flags (the claim's).
+  const flags = sb.docker.callsOf('create').map((c) => isolationOf(c.args));
+  for (const f of flags) assert.deepEqual(f, flags[0]);
+  // In each probe's sandbox the forced checkout comes first, then the probe's patch: the claim pipeline from its start.
+  for (let n = 2; n <= 5; n += 1) {
+    const name = `vcr-0123456789abcdef-${n}`;
+    const execs = sb.docker.callsOf('exec').filter((c) => containerOf(c) === name).map(decode)
+      .filter((d) => d.kind && d.argv[3] !== 'vcr-probe' && d.argv[3] !== 'vcr-launcher-check');
+    const ks = execs.map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
+    assert.deepEqual(ks.slice(0, 4), ['vcr-procs', 'git init', 'git init', 'vcr-stage'], name);
+    assert.equal(ks.filter((k) => k === 'git apply').length, 1, name);
+    assert.equal(ks.includes('vcr-suite'), false, `${name}: no suite run in a probe's sandbox`);
+  }
+});
+
+test('harness proof: what the suite leaves behind cannot make a probe pass (a prerequisite only commands.test creates)', async () => {
+  // commands.test leaves a file in its sandbox that testFiles needs; a claim's sandbox never ran commands.test.
+  const ready = new Set();
+  const suite = [1, 2, 3].map((k) => (d) => { ready.add(d.container); return { exitCode: 1, stdout: vaultSuite(k) }; });
+  const needsReady = (inner) => (d, repo, p) => (ready.has(d.container) ? inner(d, repo, p) : { exitCode: 1, stdout: '', stderr: 'missing /tmp/suite-ready\n' });
+  const ok = (d, repo, p) => ({ exitCode: 1, stdout: junitOf([{ suite: `${p}:VerdiktaHarnessFails`, cases: [{ name: 'test_verdiktaHarnessFails()', failure: 'x: 1 != 2' }] }]) });
+  const sb = listingSandbox({ suite, probeRun: { failsForgeStd: needsReady(ok), failsPlain: needsReady(ok) } });
+  const r = await runListing(sb);
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(codes(r), ['HARNESS_ASSERTION_NOT_REPORTED'], show(r));
+});
+
 test('harness proof without forge-std: the trivially failing test falls back to a plain revert', async () => {
   const r = await runListing(listingSandbox({ forgeStd: 'none' }));
   assert.equal(r.facts.listing.status, 'accepted', show(r));
@@ -486,7 +530,12 @@ test('harness proof: the probes go under paths.tests, never under paths.protecte
   assert.equal(harnessPath(spec(['**']), []), 'test/VerdiktaHarness.t.sol');
   assert.equal(harnessPath(spec(['tests/**']), []), 'tests/VerdiktaHarness.t.sol');
   assert.equal(harnessPath(spec(['test/*/Exploit*.sol']), []), 'test/VerdiktaHarness/ExploitVerdiktaHarness.sol');
-  assert.equal(harnessPath(spec(['test/poc/**']), ['test/poc/VerdiktaHarness.t.sol']), null, 'a tracked file at the path');
+  // A name the repository already uses: the same with a number (R1-F3), up to 9.
+  assert.equal(harnessPath(spec(['test/poc/**']), ['test/poc/VerdiktaHarness.t.sol']), 'test/poc/VerdiktaHarness2.t.sol');
+  assert.equal(harnessPath(spec(['test/**'], ['test/VerdiktaHarness.t.sol']), []), 'test/VerdiktaHarness2.t.sol', 'that one name protected');
+  const taken = ['', ...[2, 3, 4, 5, 6, 7, 8, 9]].map((n) => `test/VerdiktaHarness${n}.t.sol`);
+  assert.equal(harnessPath(spec(['test/**']), taken), null, 'all nine taken');
+  assert.equal(harnessPath(spec(['test/**']), taken.slice(0, 5)), 'test/VerdiktaHarness6.t.sol');
   assert.equal(harnessPath(spec(['test/**'], ['test/**']), []), null, 'protected');
   assert.equal(harnessPath(spec(['test/Exploit.t.sol']), []), 'test/Exploit.t.sol', 'a literal path is the one place a PoC may go');
   assert.equal(harnessPath(spec(['test/Exploit.t.sol']), ['test/Exploit.t.sol']), null);
@@ -519,9 +568,13 @@ test('the check runs under the class\'s limits, the spec\'s lower cpus and memor
     maxPatchBytes: 1000, patchExpansionBytes: CLASS_HARD_LIMITS.patchExpansionBytes, platform: 'linux/amd64'
   });
   assert.equal(LISTING_CHECK_SECONDS, 720);
-  assert.equal(v.request.unpackedBytes, CLASS_HARD_LIMITS.imageUnpackedBytes, 'no declared size: the pull is admitted for the class maximum');
-  const declared = validateListingRequest(listingBody({ spec: { env: { from: 'foundry', image: IMAGE, platform: 'linux/amd64', unpackedBytes: 1400000000 } } }));
-  assert.equal(declared.request.unpackedBytes, 1400000000);
+  assert.equal(v.request.unpackedBytes, CLASS_HARD_LIMITS.imageUnpackedBytes, 'the pull is admitted for the class maximum');
+  // A draft's size is not attested: whatever it declares, the pull reserves the class maximum (R1-F1).
+  for (const unpackedBytes of [1, 1400000000]) {
+    const declared = validateListingRequest(listingBody({ spec: { env: { from: 'foundry', image: IMAGE, platform: 'linux/amd64', unpackedBytes } } }));
+    assert.ok(declared.ok);
+    assert.equal(declared.request.unpackedBytes, CLASS_HARD_LIMITS.imageUnpackedBytes);
+  }
 });
 
 test('a listing check is a requester error before any work for the same spec problems /v1/runs refuses', () => {
@@ -658,6 +711,26 @@ test('over HTTP: a deadline that cannot cover the check\'s budget, and the maint
   assert.equal(locked.status, 503);
   assert.equal(locked.body.abstain.cause, 'admission_refused');
   assert.match(locked.body.abstain.detail, /maintenance lock/);
+  assert.equal(sb.docker.callsOf('create').length, 0);
+});
+
+test('over HTTP: a draft that understates its image size cannot admit a cold pull the disk has no room for (R1-F1)', async (t) => {
+  const sb = listingSandbox({
+    handlers: { image: (args) => (args[1] === 'inspect' ? { exitCode: 1, stderr: 'Error response from daemon: No such image\n' } : { stdout: '' }) }
+  });
+  // 7.5 GB free: room for the 1-byte image the draft declares, not for the class maximum the pull reserves.
+  const config = testConfig();
+  const runner = createServer({ config, docker: sb.docker, log: silent, statfs: async () => ({ bavail: 7500000000 / 4096, bsize: 4096 }), meminfo });
+  const address = await runner.listen();
+  t.after(() => runner.close());
+  const target = { host: address.host, port: address.port };
+  const body = listingBody({ spec: { env: { from: 'foundry', unpackedBytes: 1 } } });
+  const res = await request(target, { method: 'POST', path: '/v1/listing-checks', body });
+  assert.equal(res.status, 503, JSON.stringify(res.body));
+  assert.equal(res.body.abstain.cause, 'admission_refused');
+  assert.equal(res.body.abstain.step, 'pull');
+  assert.match(res.body.abstain.detail, /6000000000 unpacked/);
+  assert.equal(sb.docker.callsOf('pull').length, 0, 'no pull began');
   assert.equal(sb.docker.callsOf('create').length, 0);
 });
 

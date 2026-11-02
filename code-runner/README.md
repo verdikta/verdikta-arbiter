@@ -190,17 +190,19 @@ plan, assumption A4).
 with `$TEST_IDS`, `paths.tests`), and may carry `limits` (the cpus and memory
 the check then measures with; time limits are compared with the measured
 defaults), `env.image` (must equal `image`), `env.platform`,
-`env.unpackedBytes` (the declared size the pull's disk check uses; the class
-maximum when absent) and `stake.scope`. Those three fields are the whole
+`env.unpackedBytes` (checked against the class maximum only: a draft's size
+is not attested, so the pull's disk check always reserves the class
+maximum, and the answer gives the measured size) and `stake.scope`. Those three fields are the whole
 request: a claim field (`pocPatch`, `baseline`, `bcid`, …) is an unknown
 field, 400.
 
 It goes through the same engine as a run: the same admission (slots, memory,
 the maintenance lock, a deadline that must cover the check's own budget of
-720 s), the image pull through the cache, one sandbox with the same flags,
-the same step limits and deadline, the same abstain causes, and the same 400
-for the requester's broken package (an image without the listed commit's
-objects, `IMAGE_WORKDIR_FULL`, …). In that sandbox:
+720 s), the image pull through the cache, sandboxes with the same flags (one
+at a time, so the memory admitted for one covers them), the same step limits
+and deadline, the same abstain causes, and the same 400 for the requester's
+broken package (an image without the listed commit's objects,
+`IMAGE_WORKDIR_FULL`, …). In the first sandbox:
 
 | Step | What |
 |---|---|
@@ -239,11 +241,14 @@ time and abstain.
 outside `paths.protected` and off every tracked file: forge's default
 `test/VerdiktaHarness.t.sol` when a glob allows it (forge compiles and runs
 tests there), else the glob's literal directory or the glob with its
-wildcards filled. Each starts from the listed commit and is put in
-place exactly as a claim's PoC is, by the claim pipeline's own functions
-(`claimSession` in `src/claim.js`: `applies`, `testPathsOnly`, the protected
-reset, the commit), then judged by its `reproduces` gate under the default
-limits:
+wildcards filled, each tried again with a number (`VerdiktaHarness2.t.sol`
+… `9`) when the name is taken. Each probe runs as a claim does, in a fresh
+sandbox of its own (the previous one removed first): the claim pipeline's
+own functions (`claimSession` in `src/claim.js`: the forced checkout,
+`applies`, `testPathsOnly`, the protected reset, the commit) put it in
+place, and its `reproduces` gate judges it under the default limits.
+Nothing the suite or an earlier probe left in a work tree, `$HOME` or `/tmp`
+reaches a probe:
 
 | Probe | Expected |
 |---|---|
@@ -890,7 +895,10 @@ under `runc` and under the pinned gVisor on the systrap platform.
   `pocPatchPathsGate`, `matchesAny`, `baselineSets`, `validateBaseline` from
   `@verdikta/common` (A3b moves the class limits there too).
 - **Launch** (`src/sandbox.js`): `createArgs`, `startArgs`, `execArgs`,
-  `removeArgs` and the `Sandbox` class.
+  `removeArgs` and the `Sandbox` class. The engine's sandbox handles
+  (`ctx.openSandbox()`, and the first one) have `close()` (`ctx.closeSandbox()`
+  for the first): a step done with a sandbox removes it, as the listing
+  check does before each fresh probe sandbox.
 - **Admission** (`src/admission.js`): `admitRun` (A1's checks) and
   `Capacity` (slots, the memory reserve), whose ticket the engine releases
   once the run's sandboxes are gone. A3a: a run that opens a second sandbox

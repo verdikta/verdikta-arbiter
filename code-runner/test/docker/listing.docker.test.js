@@ -101,7 +101,7 @@ function body(fx, over = {}) {
   };
 }
 
-async function check(t, b, extraSteps = []) {
+async function check(t, b, { before = [] } = {}) {
   const config = dockerTestConfig();
   const docker = dockerFor(config);
   t.after(() => removeAll(docker, config.instance).catch(() => {}));
@@ -111,7 +111,7 @@ async function check(t, b, extraSteps = []) {
   const receivedAt = Date.now();
   const result = await executeRun({
     docker, config, limits: v.limits, image: v.request.image, runId: crypto.randomBytes(8).toString('hex'),
-    steps: [...steps, ...extraSteps], receivedAt, deadlineAt: receivedAt + v.request.deadlineMs, active: new Set(), log: silent
+    steps: [...before, ...steps], receivedAt, deadlineAt: receivedAt + v.request.deadlineMs, active: new Set(), log: silent
   });
   assert.deepEqual(await leftovers(docker, config.instance), [], 'the check removed its sandbox');
   return result;
@@ -133,7 +133,8 @@ test('a listing check on real forge: build once, suite x3 without network, the b
       ctx.sandboxName], { timeoutMs: 30000 });
     host.config = r.stdout.trim();
   };
-  const r = await check(t, body(fx), [inspect]);
+  // The first sandbox, before the check removes it for the probes' fresh ones (each created the same way).
+  const r = await check(t, body(fx), { before: [inspect] });
   assert.equal(r.outcome, 'definitive', show(r));
   const l = r.facts.listing;
   assert.equal(l.status, 'accepted', show(r));
@@ -222,4 +223,13 @@ test('a build that fails at the listed commit refuses the listing; a testFiles t
   const ignored = await check(t, body(fx, { commands: { testFiles: 'FILES=test/Vault.t.sol; forge test --match-path $FILES' } }));
   assert.equal(ignored.outcome, 'definitive', show(ignored));
   assert.deepEqual(ignored.facts.listing.refusals.map((x) => x.code), ['HARNESS_ASSERTION_NOT_REPORTED'], show(ignored));
+});
+
+test('what the suite leaves in its sandbox cannot make the harness proof pass: each probe gets a fresh one, as a claim does (R1-F2)', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('vault');
+  // commands.test leaves /tmp/suite-ready behind, and testFiles needs it: a claim, which never runs commands.test, would fail.
+  const r = await check(t, body(fx, { commands: { test: 'touch /tmp/suite-ready && forge test', testFiles: '[ -e /tmp/suite-ready ] && forge test --match-path $FILES' } }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['HARNESS_ASSERTION_NOT_REPORTED'], show(r));
+  assert.equal(r.facts.listing.baseline.stable.length, 1, 'the suite itself ran');
 });
