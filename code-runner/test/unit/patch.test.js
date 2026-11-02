@@ -217,6 +217,9 @@ test('C-style quoted paths', () => {
   assert.equal(unquoteCStyle('plain'), 'plain');
   assert.equal(unquoteCStyle('"unterminated'), null);
   assert.equal(unquoteCStyle('"bad\\q"'), null);
+  // R24-F2: a supplementary character left raw inside the quotes (core.quotePath=false) keeps its code point.
+  assert.equal(unquoteCStyle('"test/\u{1F600}.t.sol"'), 'test/\u{1F600}.t.sol');
+  assert.equal(unquoteCStyle('"\u{1F600}\\tx"'), '\u{1F600}\tx', 'a code point then an escape');
 });
 
 test('reportable paths: what a report can carry (no whitespace, control characters or backslash)', () => {

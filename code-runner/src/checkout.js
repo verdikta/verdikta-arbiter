@@ -157,9 +157,12 @@ const CLEAR_SCRIPT = [
   'xargs -0 -r -a "$list" sh -c \'',
   '  for p; do',
   '    p=./$p',
-  '    { [ -e "$p" ] || [ -L "$p" ]; } || continue',
-  '    { [ -L "$p" ] || chmod -R u+rwx -- "$p"; } && rm -rf -- "$p" || exit 1',
-  '    { [ -e "$p" ] || [ -L "$p" ]; } && exit 1',
+  '    if [ -e "$p" ] || [ -L "$p" ]; then',
+  // The `if` is the loop body's last statement, so a path that was cleared leaves exit status 0 (R24-F1): a
+  // read-only directory removed by the chmod fallback must not make xargs (and the whole script) fail.
+  '      { [ -L "$p" ] || chmod -R u+rwx -- "$p"; } && rm -rf -- "$p" || exit 1',
+  '      if [ -e "$p" ] || [ -L "$p" ]; then exit 1; fi',
+  '    fi',
   '  done\' vcr-clear || exit 5',
   'exit 0'
 ].join('\n');

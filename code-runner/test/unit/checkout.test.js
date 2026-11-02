@@ -232,7 +232,10 @@ test('item 2: the scripts replace, never write through: real directories on the 
   // permissions are opened only on a real directory (chmod -R never through a link).
   assert.match(CLEAR_SCRIPT, /xargs -0 -r -a "\$list" rm -rf --/);
   assert.match(CLEAR_SCRIPT, /\{ \[ -L "\$p" \] \|\| chmod -R u\+rwx -- "\$p"; \} && rm -rf -- "\$p" \|\| exit 1/);
-  assert.match(CLEAR_SCRIPT, /\{ \[ -e "\$p" \] \|\| \[ -L "\$p" \]; \} && exit 1/);
+  // R24-F1: the existence re-check is inside an `if`, so a path cleared by the chmod fallback leaves the loop body
+  // (and the whole xargs call) at exit status 0; a `… && exit 1` as the last statement would propagate its false test.
+  assert.match(CLEAR_SCRIPT, /if \[ -e "\$p" \] \|\| \[ -L "\$p" \]; then exit 1; fi\n {4}fi/);
+  assert.doesNotMatch(CLEAR_SCRIPT, /\} && exit 1/);
   // The copy: every .git entry (at any depth, any type), device node, socket and named pipe left out (R13-F1: a pipe
   // at .gitattributes would block git's attribute reader); everything else as the image has it.
   assert.match(STAGE_SCRIPT, /find \. -mindepth 1 \\\( -name \.git -o -type b -o -type c -o -type s -o -type p \\\) -prune -o -print0/);

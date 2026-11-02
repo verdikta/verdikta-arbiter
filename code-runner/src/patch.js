@@ -186,7 +186,11 @@ function unquoteCStyle(s) {
     const ch = body[i];
     if (ch === '"') return null;
     if (ch !== '\\') {
-      for (const b of Buffer.from(ch, 'utf8')) bytes.push(b);
+      // A whole code point: git with core.quotePath=false can leave a supplementary character (an emoji) raw inside
+      // the quotes, and indexing by code unit would split its surrogate pair into two replacement characters (R24-F2).
+      const cp = body.codePointAt(i);
+      for (const b of Buffer.from(String.fromCodePoint(cp), 'utf8')) bytes.push(b);
+      if (cp > 0xffff) i += 1;
       continue;
     }
     const next = body[i + 1];

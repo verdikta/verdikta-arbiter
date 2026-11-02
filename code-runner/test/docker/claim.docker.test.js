@@ -184,6 +184,13 @@ const VARIANTS = Object.freeze({
   // link to blob B's file. Each object must keep its own bytes, in either name order of A and B.
   hardlink1: { setup: hardLinked('src/Vault.sol', 'test/Vault.t.sol') },
   hardlink2: { setup: hardLinked('test/Vault.t.sol', 'src/Vault.sol') },
+  // R24-F1: the lexicographically-last tracked path (zzz.sol) replaced in the image by a non-empty, read-only (0555)
+  // directory. The checkout's pre-pass `rm` fails on it; the chmod fallback clears it, and that must not make the
+  // clear step (xargs) fail when it is the last path in the batch.
+  rodir: {
+    files: { ...VAULT_REPO, 'zzz.sol': '// placeholder\n' },
+    setup: 'rm zzz.sol && mkdir zzz.sol && echo x > zzz.sol/inner && chmod 0555 zzz.sol'
+  },
   // R22-F1 / R23-F1: protected files (lib/**) whose names hold a non-UTF-8 byte (0xff) and a UTF-8 character (café).
   // Both are amended into the base commit; the reset must feed each one's exact bytes back to git, and must match the
   // glob on the same UTF-8 decoding the path gate uses. Created with printf so the UTF-8 bytes are literal (c3 a9).
@@ -809,6 +816,18 @@ test('R13-F2: objects hard-linked across stores keep their own bytes, whichever 
     assert.equal(r.facts.checkout.corrected, 0, variant);
     for (const p of ['src/Vault.sol', 'test/Vault.t.sol']) assert.equal(fileText(seen, p), VAULT_REPO[p], `${variant}: ${p}`);
   }
+});
+
+test('R24-F1: a read-only directory at the last tracked path is cleared by the fallback without failing the clear step', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('rodir');
+  const seen = {};
+  const { result: r } = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': DRAIN })), [], { beforeBuild: inspector(seen, ['zzz.sol']) });
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.applies.status, 'pass', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  // The 0555 directory is corrected to the listed commit's regular file.
+  assert.equal(r.facts.checkout.correctedPaths.includes('zzz.sol'), true, JSON.stringify(r.facts.checkout));
+  assert.equal(fileText(seen, 'zzz.sol'), '// placeholder\n');
 });
 
 test('R22-F1 / R23-F1: protected files with a non-UTF-8 and a UTF-8 name are reset byte-for-byte; an ordinary PoC reaches the build and reproduces', { timeout: TIMEOUT }, async (t) => {
