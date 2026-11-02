@@ -334,7 +334,8 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   --tmpfs /home/sandbox:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001
   --ipc none --user 10001:10001 --pids-limit 4096 --memory 4096m --memory-swap 4096m --cpus 2
   --hostname sandbox --env TZ=UTC --env LANG=C.UTF-8 --env CI=true --env PYTHONHASHSEED=0
-  --env HOME=/home/sandbox --workdir /work
+  --env HOME=/home/sandbox --env LD_PRELOAD= --env LD_AUDIT= --env LD_LIBRARY_PATH=
+  --env GCONV_PATH= --workdir /work
   --log-driver none --init --entrypoint sleep <image@sha256:…> <keepalive seconds>
 ```
 
@@ -361,6 +362,13 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   and the runner's own empty `DOCKER_CONFIG`: no token, no operator credentials.
 - `test/unit/policy.test.js` fails the build if `src/` gains a shell, `eval`, a
   mount flag, the Docker socket, `docker cp` or a host file write.
+- The image's `ENV` cannot make the dynamic linker load a file a run can write
+  (R20-F1): `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GCONV_PATH` are empty on
+  the container, so the launcher's `/bin/sh`, which starts before any `env -i`, and
+  every exec inherit that. `LD_TRACE_LOADED_OBJECTS` and `LD_SHOW_AUXV` can't be
+  handled this way, since glibc acts on their names whatever the value, and they load
+  nothing: an image setting one fails the start nonce and the run abstains. The
+  builder's fixed `ENV` sets none of them.
 - The image needs a POSIX `/bin/sh` (the launcher's interpreter) on a path
   owned by root and not writable by uid 10001: checked at launch, before any
   claim code runs, else the run is the requester's error
@@ -569,13 +577,16 @@ characters `COMMAND_INVALID`, a `testFiles` or `testIds` without its placeholder
 
 **How forge runs.** There is no shell around the maker's text. The step's argv is
 `/usr/bin/env -i PATH=<the image's PATH> TZ=UTC LANG=C.UTF-8 CI=true
-PYTHONHASHSEED=0 HOME=/home/sandbox FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
+PYTHONHASHSEED=0 HOME=/home/sandbox XDG_DATA_HOME=/opt/verdikta/tools/share
+VERDIKTA_TOOLS=/opt/verdikta/tools FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
 <flags…>`, in `/work`: forge at the real path the runner probed in the image
 (`command -v forge`; a forge path holding `=` or a control character, which env
 could not run as a program, is `IMAGE_FORGE_MISSING`). Each flag and its value are one
 argv element (`--name=value`). The launcher prints its start nonce and `exec`s
 that argv; nothing interprets it. Nothing of the image's `ENV` but `PATH` reaches
-forge, `FOUNDRY_*` included: the seed is the only `FOUNDRY_*` it sees. The runner
+forge, `FOUNDRY_*` included: the seed is the only `FOUNDRY_*` it sees. The two
+`/opt/verdikta` values are the builder's fixed `ENV`, set here as constants: forge
+finds the solc releases the maker's setup installed under `XDG_DATA_HOME`. The runner
 reads `forge config --json` through the same argv, so the configuration the
 integrity checks watch is the one every command runs with. For a test run the
 runner appends `--junit --fuzz-seed 0x76657264696b7461` (the seed from
@@ -894,10 +905,12 @@ process of the run is dead:
    "Outside the work tree" is checked step by step (R16-F1): the read-only
    root protects a link there, not what it leads to. A1's launcher check walks
    each path one component at a time from `/`, and each symbolic link directly in
-   a directory it is given. One whose way meets anything the sandbox user owns or
-   can write is `IMAGE_WATCH_ROOT_UNCOVERED`, even when it ends back on the root (a
-   run could retarget the link on the way), as is a directory the sandbox cannot
-   list (mode 0111: a link inside it would go unseen). The order is the point:
+   a directory it is given. One whose way meets anything the sandbox user can write,
+   or owns on a mount it can write, is `IMAGE_WATCH_ROOT_UNCOVERED`, even when it
+   ends back on the root (a run could retarget the link on the way), as is a
+   directory the sandbox cannot list (mode 0111: a link inside it would go unseen).
+   `/repo` is the sandbox user's in a builder image, but on the read-only root, so a
+   tool that links into it passes. The order is the point:
    - first thing in a sandbox, before the forced checkout, while the work tree,
      `$HOME` and `/tmp` are empty: the directories the runner's own tools come from
      (a snapshot's `find` and `sha256sum`, `git`), so a dangling link to a file a
@@ -926,6 +939,15 @@ process of the run is dead:
    paths and one pass (attempt 1 scanned the listing once per link). Each
    path is resolved from `/work`, as forge resolves it.
 
+   **What the build changes is the image's doing** (owner decision Q32). `forge
+   build` compiles and runs nothing of the claim's, so the files held to the
+   reference are compared right after it. A change is the requester's error,
+   `IMAGE_WATCH_CHANGED_BY_BUILD`, never a failed check on an honest claim: a compiler
+   in the image that writes into `lib/`, `out = "lib/out"`, `paths.protected` over
+   `out/`. A compiler that waits past the build is not caught this way: `forge test`
+   always compiles again, and forge runs `solc --version` on every start ([the
+   check's scope](#the-checks-scope)).
+
    **What a snapshot cannot read is never unchanged** (R13-F1). A file with no
    hash (mode 000, say) has nothing to compare: in a watched set it fails that
    set's check as soon as a run leaves it ("run 1: out/payload.bin cannot be
@@ -944,7 +966,7 @@ process of the run is dead:
    files outside the sets go back to the PoC commit by the reset before each
    re-run. A reference that cannot be read is the requester's package, found
    before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
-   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_UNREADABLE`, `IMAGE_TOOL_MISSING`
+   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_UNREADABLE`, `IMAGE_WATCH_CHANGED_BY_BUILD` (after the build), `IMAGE_TOOL_MISSING`
    when the image has no `realpath`, `IMAGE_WATCH_TOO_LARGE`: a listing over
    64 MiB or over a cap above); after a run, the same is a definitive failure
    of the checks.
@@ -976,6 +998,56 @@ cheap signal a juror can read. Ordinary tests raise none: forge-std imports,
 inline fuzz or read-only file settings, a write to a scratch directory the
 maker or an inline grant allows, `console.log`, revert messages.
 
+### The check's scope
+
+**Scope of the post-run checksums (owner decision Q32).** The check assumes an
+env image from the attested builder, and the two facts that make that an
+assumption it can rely on are:
+
+- **Production trust accepts only images signed by the builder key.** The External
+  Adapter enforces this, not the runner: its front gates
+  (`external-adapter/src/codeReview/frontGates.js`) call `@verdikta/common`'s
+  `validateAttestation`, which checks the signature against the trusted-builder
+  set, the hashes of the files it binds, and the image digest, platform and size
+  against `code_review.json`. Anything else is a requester error before the runner
+  is called. The runner only compares the attestation's image with the spec's. Dev
+  trust exists only under `CODE_REVIEW_TRUST=dev`, only on the chains in
+  `DEV_TRUST_CHAIN_IDS` (Base Sepolia and a local node), and only for a statement
+  signed as dev, against `CODE_REVIEW_DEV_KEYS`.
+- **The image's final stage is fixed** (`stake-attestation/builder/src/dockerfile.js`
+  in verdikta-applications): `FROM` the pinned base, with a fixed `ENV` (`PATH`,
+  `XDG_DATA_HOME`, `VERDIKTA_TOOLS`) and no `RUN`. Only `/repo` and
+  `/opt/verdikta/tools` differ from the pinned base. Both are maker-controlled, and
+  the tools folder comes last on `PATH`.
+
+Within that:
+
+- **Routes a hunter can use alone are fully in scope.**
+- **A setup that makes an honest claim fail integrity, so the maker keeps the stake,
+  is a defect.**
+- **The residual** is only a trap the maker's setup plants that helps claim code win
+  (a program in the tools that itself runs something from the work tree, say: the
+  image's own text, which no check inside the sandbox can read). It is recorded, not
+  closed. It is not harmless to everyone but the maker: design §8.8 allows any repository
+  and nothing checks that a maker controls it, so a stranger may be able to stage a
+  valid finding against someone else's project. That is why it is written down here
+  as a residual, and that question is with the owner.
+
+The routes the review raised, against that scope (each has its test):
+
+| Route | Through the attested builder? | Side | What happens |
+|---|---|---|---|
+| A run leaves a watched file unreadable, or a directory unlistable, a watched root's ancestor included (R13-F1) | Yes: a hunter alone | In scope | Its check fails |
+| `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | Helps claim code; refused, so the refusal is what could hurt an honest hunter | `IMAGE_WATCH_ROOT_UNCOVERED`: a requester error (design: errored path, no commit), never INVALID. A2c (#135) will refuse it at listing |
+| A `PATH` directory that cannot be listed (R16-F1) | No: the builder's `chmod -R a+rX` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` |
+| A runner's tool behind a link through the work tree; a dangling tool link a patch would fill (R16-F1) | No: those directories are the base's bytes | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
+| A patch's file as forge, or a `PATH` directory under `paths.tests` (R16-F1) | No: forge is the base's, first on `PATH` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` before forge first runs |
+| An image `ENV` of `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | No: the `ENV` is fixed | Fixed anyway | Empty on the container |
+| A compiler in the image that writes a watched place in the build; `out = "lib/out"`; `paths.protected` over `out/` | Yes: the maker's setup or `foundry.toml` | **Defect** | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error, never INVALID. A2c (#135) will refuse it at listing |
+| A setup that makes a watched listing unreadable or too large, or a watched link uncovered | Links and size yes, modes no | **Defect** | The reference's requester errors, never INVALID. A2c (#135) will refuse it at listing |
+| A program the image ships (as `solc`) or repository code a PoC calls (ffi, cheatcodes) that writes a watched place during a run | Yes: the maker's setup or repository | **Defect, open** | Its check fails and the claim is INVALID: the runner cannot tell it from claim code. A2c (#135) will refuse one that fires on every run at listing (the harness proof gets the checksums), but not one that spares the proof's tests. With the owner |
+| A program on the read-only root that itself runs something a run can change, to help claim code | Yes: the maker's setup | Residual | Recorded above |
+
 ### Tamper routes under forge
 
 | Route | Check that closes it | Tests |
@@ -1002,6 +1074,7 @@ maker or an inline grant allows, `console.log`, revert messages.
 | a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
 | many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
 | forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
+| an image `ENV` naming a shared object at a path a run can write: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | empty on the container, so the launcher and every step inherit the empty value | unit `sandbox.test.js`, Docker "A3a R20-F1" |
 | a helper, `solc` or the runner's own tool (`find`, `sha256sum`) reached through a `PATH` directory or link on the read-only root whose way leads through the work tree, even back to the root, or a `PATH` directory that cannot be listed (R16-F1) | A1's launcher check walks each one before any claim code: `IMAGE_WATCH_ROOT_UNCOVERED` | pipeline and Docker "A3a R16-F1" |
 | a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
 | bytes changed behind an unreadable file in a watched set or `out/`, or anything hidden by an unlistable directory, a watched root's ancestor or a link's target included (R13-F1) | what a snapshot cannot read is never unchanged: the check fails; at the reference, `IMAGE_WATCH_UNREADABLE` | unit, pipeline and Docker "A3a R13-F1" |

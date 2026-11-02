@@ -11,7 +11,7 @@
  * shell ever reads them. forgeArgv() is forge's whole argv: `/usr/bin/env
  * -i`, forge's fixed environment (forgeEnvironment: the sandbox's fixed
  * variables, the image's PATH as the integrity reference probed it, the
- * fuzz seed, nothing else), the forge the reference probed (its real path),
+ * builder's fixed values, the fuzz seed, nothing else), the forge the reference probed (its real path),
  * then the parsed arguments, each one argv element. The launcher (A1) prints
  * its nonce and execs that argv without interpreting it; the runner runs it
  * in /work. `forge config --json` (the configuration the checks watch) is
@@ -57,6 +57,15 @@
 const { FORGE_FUZZ_SEED } = require('./common');
 const { SANDBOX_ENV } = require('./sandbox');
 
+/**
+ * The rest of the fixed ENV of the builder's final stage
+ * (stake-attestation/builder/src/dockerfile.js in verdikta-applications):
+ * forge finds the solc releases the maker's setup installed under
+ * XDG_DATA_HOME (without it, "can't install missing solc in offline mode").
+ * Fixed values, so an image's own ENV moves nothing.
+ */
+const BUILDER_ENV = Object.freeze({ XDG_DATA_HOME: '/opt/verdikta/tools/share', VERDIKTA_TOOLS: '/opt/verdikta/tools' });
+
 /** The work tree, where forge runs (forge reads /work/foundry.toml, as the reference probed it). */
 const FORGE_WORKDIR = '/work';
 
@@ -67,14 +76,14 @@ function reporterFlags() {
 /**
  * forge's whole environment: the image's PATH as the integrity reference
  * probed it (what forge's own children, ffi included, look commands up on),
- * the sandbox's fixed variables (§9.3: HOME, TZ, LANG, CI, PYTHONHASHSEED)
- * and the fuzz seed. No other variable of the image's environment, and no
- * FOUNDRY_* but the seed.
+ * the sandbox's fixed variables (§9.3: HOME, TZ, LANG, CI, PYTHONHASHSEED),
+ * the builder's fixed values (BUILDER_ENV) and the fuzz seed. No other variable
+ * of the image's environment, and no FOUNDRY_* but the seed.
  * @param {string} path - the probed PATH
  */
 function forgeEnvironment(path) {
   if (typeof path !== 'string' || /[\0\n]/.test(path)) throw new TypeError('the probed PATH must be one line');
-  return { PATH: path, ...SANDBOX_ENV, FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
+  return { PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
 }
 
 /**
@@ -233,6 +242,6 @@ function scanAddedLines(lines) {
 }
 
 module.exports = {
-  reporterFlags, forgeEnvironment, forgeArgv, toolProblem, FORGE_WORKDIR, testIdentity, isTestFunction, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
+  reporterFlags, forgeEnvironment, forgeArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, isTestFunction, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
   scanAddedLines, FORGE_ERRORS, HARNESS_RECORDS, REFERENCES
 };

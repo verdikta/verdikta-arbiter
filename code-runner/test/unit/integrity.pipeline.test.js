@@ -106,7 +106,7 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
-    'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup',
+    'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-manifest',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
@@ -116,7 +116,7 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   // Every snapshot is hermetic (nothing of the image's environment reaches find or sha256sum).
   for (const m of manifests) assert.deepEqual(m.launched.slice(0, 2), ['/usr/bin/env', '-i']);
   assert.deepEqual(manifests[0].argv.slice(4, 6), ['/work', '/home/sandbox']);
-  assert.deepEqual(manifests[2].argv.slice(4), ['/work/.git', '-xdev'], 'after a reset: the runner\'s repository only');
+  assert.deepEqual(manifests[3].argv.slice(4), ['/work/.git', '-xdev'], 'after a reset: the runner\'s repository only');
   // The framework probe's discovery reads the image's PATH, forge from the reference's own path afterwards; forge's
   // configuration is read as the maker's commands run forge (attempt 3: the same argv, environment and directory).
   const probes = sb.execs().filter((d) => d.kind === 'vcr-framework');
@@ -372,7 +372,7 @@ test('a snapshot that cannot be read before any claim code is the requester\'s p
   }
   // After a run: the listing overflows, or forge's configuration no longer loads.
   let n = 0;
-  const flood = (d, box) => { n += 1; if (n === 2) return { stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }; return { stdout: require('../helpers/fakeClaim').manifestOf(box.tree, d.argv.slice(4)) }; };
+  const flood = (d, box) => { n += 1; if (n === 3) return { stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }; return { stdout: require('../helpers/fakeClaim').manifestOf(box.tree, d.argv.slice(4)) }; };
   const r1 = await runClaim(claimSandbox({ scripts: { 'vcr-manifest': flood } }));
   assertIntegrityFails(r1, ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged'], /run 1: the watched paths exceed/);
   let p = 0;
@@ -578,7 +578,7 @@ test('A3a R6-F1 (round 7): `lib/pkg -> ../bridge/../payload` with `bridge -> ven
   assertIntegrityFails(r, ['dependenciesUnchanged'], /dependenciesUnchanged \(run 2: vendor\/payload\/fixture\.json changed/);
   // The runner asked the sandbox about the watched link only (bridge is in no set), the path on stdin, hermetically.
   const links = sb.execs().filter((d) => d.kind === 'vcr-links');
-  assert.equal(links.length, 4, 'the reference and after each run');
+  assert.equal(links.length, 5, 'the reference, after the build and after each run');
   for (const l of links) {
     assert.equal(l.stdin.toString('latin1'), '/work/lib/pkg\0');
     assert.deepEqual(l.launched.slice(0, 2), ['/usr/bin/env', '-i']);
@@ -637,7 +637,7 @@ test('A3a R7-F1: 20,000 links to `.` in the test paths are never resolved, and 2
   const r2 = await runClaim(lib);
   assert.equal(r2.gates.integrity.status, 'pass', show(r2));
   const links = lib.execs().filter((d) => d.kind === 'vcr-links');
-  assert.equal(links.length, 4);
+  assert.equal(links.length, 5);
   for (const l of links) assert.equal(l.stdin.toString('latin1').split('\0').filter(Boolean).length, N);
   const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.ok(ms < 60000, `${ms} ms for both claims (each builds its fake listings of ${N} links five times)`);
@@ -680,7 +680,7 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
-    'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup',
+    'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup', 'vcr-manifest', 'vcr-links',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config'
@@ -894,7 +894,8 @@ test('A3a R16-F1 (round 19): a file a patch adds cannot be a tool or forge: a da
 
 test('A3a R16-F1: links on the read-only root that stay there are fine (merged /usr, alternatives); asked once, hermetic, before the listing; the walk is A1\'s launcher check; a broken answer is the runner\'s', async () => {
   const { forgeConfig } = require('../helpers/fakeClaim');
-  const { LAUNCHER_CHECK } = require('../../src/launcher');
+  const { IMMUTABLE_CHECK } = require('../../src/integrity');
+  const { WALK_CHECK } = require('../../src/launcher');
   const framework = (d, box) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /work/.bin:/home/sandbox/bin:/opt/helpers:/bin:/usr/bin\n${forgeConfig(box.tree)}` });
   const ok = claimSandbox({
     onBox: (box) => { box.tree.set('/bin', { type: 'l', target: 'usr/bin' }); set(box, '/usr/bin/mawk', 'ELF'); box.tree.set('/usr/bin/awk', { type: 'l', target: '/etc/alternatives/awk' }); box.tree.set('/etc/alternatives/awk', { type: 'l', target: '/usr/bin/mawk' }); },
@@ -907,11 +908,14 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
   assert.equal(asked.length, 3, 'the way there is out of the sandbox user\'s reach: no need to ask again after a run');
   for (const a of asked) {
     assert.deepEqual(a.launched.slice(0, 2), ['/usr/bin/env', '-i']);
-    assert.equal(a.argv[4], LAUNCHER_CHECK);
+    assert.equal(a.argv[4], IMMUTABLE_CHECK);
   }
   // First the tools' directories, before the checkout; then the image's PATH outside them, the work tree and $HOME, before
   // forge first runs; then solc, which only forge's configuration names.
   const list = (a) => a.stdin.toString('latin1').split('\0').filter(Boolean);
+  // A1's walk; owning something counts only on the mounts the sandbox can write (the builder chowns /repo, on the read-only root).
+  assert.ok(IMMUTABLE_CHECK.endsWith(WALK_CHECK));
+  assert.match(IMMUTABLE_CHECK.split('\n')[0], /case \$1 in \/work\|\/work\/\*\|\/tmp\|\/tmp\/\*\|\/home\/sandbox\|\/home\/sandbox\/\*\) ;; \*\) return 0/);
   assert.deepEqual(list(asked[0]), ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin']);
   assert.deepEqual(list(asked[1]), ['/opt/helpers']);
   assert.deepEqual(list(asked[2]), ['/opt/solc/solc']);
@@ -926,4 +930,48 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
     assert.equal(r.outcome, 'abstain', show(r));
     assert.equal(r.abstain.cause, 'runner_error');
   }
+});
+
+// ------------------------------------------------ Q32: what the claim did not do is not held against it
+
+test('Q32: what changes a watched place during the build, before any claim code, is the image\'s doing: the requester\'s error, never a failed integrity check on an honest claim', async () => {
+  for (const [what, write, re] of [
+    ['a compiler that writes into lib/', (box) => set(box, '/work/lib/trap.sol', 'x'), /the build: lib\/trap\.sol added/],
+    ['out = "lib/out"', (box) => set(box, '/work/lib/out/Vault.json', '{}'), /the build: lib\/out\/Vault\.json added/],
+    ['a program that rewrites foundry.toml', (box) => set(box, '/work/foundry.toml', '[profile.default]\nffi = true\n'), /the build: foundry\.toml changed/],
+    ['a program that leaves a directory unlistable', (box) => box.tree.set('/work/anywhere', { type: 'd', mode: '111', content: '' }), /the build: anywhere cannot be read/]
+  ]) {
+    const sb = claimSandbox({ scripts: { 'vcr-build': (d, box) => { write(box); return { exitCode: 0 }; } } });
+    const r = await runClaim(sb);
+    assert.equal(r.outcome, 'requester_error', `${what}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD'], what);
+    assert.match(r.issues[0].detail, re);
+    assert.equal(r.gates.integrity, undefined, 'no integrity gate is decided');
+    assert.ok(!sb.execs().some((d) => d.kind === 'vcr-poc'), 'no claim code ran');
+  }
+  // paths.protected over forge's out: every compile would change it.
+  const spec = forgeSpec({ paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', 'out/**'] } });
+  const p = await runClaim(claimSandbox(), claimRequest({ spec }));
+  assert.equal(p.outcome, 'requester_error', show(p));
+  assert.deepEqual(p.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD']);
+  assert.match(p.issues[0].detail, /the build: out\//);
+  // A build that failed and wrote is the image's too; a build that failed and wrote nothing stays the build gate's.
+  const failed = await runClaim(claimSandbox({ scripts: { 'vcr-build': (d, box) => { set(box, '/work/lib/trap.sol', 'x'); return { exitCode: 1 }; } } }));
+  assert.equal(failed.outcome, 'requester_error', show(failed));
+  const plain = await runClaim(claimSandbox({ scripts: { 'vcr-build': () => ({ exitCode: 1 }) } }));
+  assert.equal(plain.outcome, 'definitive', show(plain));
+  assert.equal(plain.gates.build.status, 'fail');
+  // A run's own change is still the claim's: the same write in run 1 fails integrity.
+  const inRun = (d, k, box) => { set(box, '/work/lib/trap.sol', 'x'); return { exitCode: 1, stdout: drainFails() }; };
+  assertIntegrityFails(await runClaim(claimSandbox({ poc: [inRun, inRun, inRun] })), ['dependenciesUnchanged'], /run 1: lib\/trap\.sol added/);
+});
+
+test('Q32: in the fix check\'s sandbox a build that changes a watched place is a failed fixed build, a fact; the PoC\'s gates stand', async () => {
+  const { FIX_PATCH } = require('../helpers/fakeClaim');
+  const build = (d, box) => { set(box, '/work/lib/trap.sol', 'x'); return { exitCode: 0 }; };
+  const r = await runClaim(claimSandbox({ fix: { build } }), claimRequest({ fixPatch: Buffer.from(FIX_PATCH) }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.reproduces.status, 'pass', show(r));
+  assert.equal(r.facts.fix.builds, 'fail');
+  assert.match(r.facts.fix.detail.builds, /^with the fix, IMAGE_WATCH_CHANGED_BY_BUILD: .*the build: lib\/trap\.sol added/);
 });

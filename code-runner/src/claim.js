@@ -672,6 +672,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
 
   async function build(ctx) {
     const exitCode = await runBuild(ctx, box, await tool(ctx), command('build'), limits);
+    // Nothing of the claim has run yet: what changed here is the image's doing, not the claim's (Q32).
+    if (state.watch) await state.watch.afterBuild(ctx);
     const ok = exitCode === 0;
     ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}`);
     if (!ok) state.done = true;

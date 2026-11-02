@@ -49,6 +49,11 @@ test('docker create argv is exactly the §9.1 sandbox', () => {
     '--env', 'CI=true',
     '--env', 'PYTHONHASHSEED=0',
     '--env', 'HOME=/home/sandbox',
+    // R20-F1: what would make the linker load a file before the launcher's `env -i` is empty on the container.
+    '--env', 'LD_PRELOAD=',
+    '--env', 'LD_AUDIT=',
+    '--env', 'LD_LIBRARY_PATH=',
+    '--env', 'GCONV_PATH=',
     '--workdir', '/work',
     '--log-driver', 'none',
     '--init',

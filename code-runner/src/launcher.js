@@ -45,8 +45,9 @@ const NONCE = /^[0-9a-f]{32}$/;
  * link it cannot read, more than 40 links), 0 when the interpreter is safe.
  * Link targets are read byte for byte, trailing newlines included.
  */
-const LAUNCHER_CHECK = [
-  'own() { [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
+const OWNED_CHECK = 'own() { [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }';
+/** The walk itself, for a script that defines own() first (integrity.js: what the checks take for immutable). */
+const WALK_CHECK = [
   'wr() { [ -w "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }',
   'chk() { own "$1"; wr "$1"; }',
   // A literal newline: command substitution strips trailing newlines, which
@@ -74,6 +75,7 @@ const LAUNCHER_CHECK = [
   '  fi',
   'done'
 ].join('\n');
+const LAUNCHER_CHECK = `${OWNED_CHECK}\n${WALK_CHECK}`;
 
 /**
  * The cgroup counters probe: shell builtins only, so it still runs when the
@@ -158,6 +160,7 @@ module.exports = {
   LAUNCHER_ARG0,
   LAUNCHER_SCRIPT,
   LAUNCHER_CHECK,
+  WALK_CHECK,
   PROBE_SCRIPT,
   MARKER,
   newNonce,

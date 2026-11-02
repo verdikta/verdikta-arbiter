@@ -51,6 +51,38 @@ const VARIANTS = Object.freeze({
       'mkdir -p third_party/lib && printf "contract TP {}\\n" > third_party/lib/TP.sol && ln -s third_party deps'
     ].join(' && ')
   },
+  // An image as the builder makes it (stake-attestation/builder/src/dockerfile.js): the fixed ENV, the tools last on PATH,
+  // the setup's solc release under XDG_DATA_HOME (foundry.toml names a version, not a path), /repo owned by the sandbox
+  // user on the read-only root, and a tool that is a link into /repo.
+  builder: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML('ffi = true').replace('solc = "/opt/solc/solc"', 'solc_version = "0.8.31"') },
+    setup: [
+      'mkdir -p /opt/verdikta/tools/bin /opt/verdikta/tools/share/svm/0.8.31',
+      'cp /opt/solc/solc /opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31',
+      'printf "#!/bin/sh\\nprintf helper-ran\\n" > tool.sh && chmod 0755 tool.sh && ln -s /repo/tool.sh /opt/verdikta/tools/bin/tool',
+      'chmod -R a+rX /opt/verdikta && chown -R 10001:10001 /repo && git config --system --add safe.directory /repo'
+    ].join(' && '),
+    env: ['XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/verdikta/tools/bin']
+  },
+  // R20-F1: the image's own ENV names shared objects at paths a run can write.
+  loader: {
+    toml: 'ffi = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    env: ['LD_PRELOAD=/work/hook.so', 'LD_AUDIT=/work/hook.so', 'LD_LIBRARY_PATH=/work/libs', 'GCONV_PATH=/work/libs']
+  },
+  // Q32, an honest claim's defects: a compiler in the image that writes into lib/ whenever it compiles; forge's out inside
+  // lib/; and (open, below) a compiler that waits for the compile `forge test` always does after `forge build`.
+  solctrap: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) printf x > /work/lib/trap.sol ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+  },
+  outlib: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'foundry.toml': FOUNDRY_TOML().replace('out = "out"', 'out = "lib/out"') }
+  },
+  solcsecond: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) [ ! -e /work/cache/solidity-files-cache.json ] || printf x > /work/lib/trap.sol ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+  },
   // R16-F1: a PATH directory on the read-only root that is a link into the work tree, and a link into it in a read-only one.
   pathalias: {
     toml: 'ffi = true',
@@ -574,6 +606,72 @@ test('A3a R16-F1 under real forge: what the checks take for immutable, with real
   assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
   assert.match(r.issues[0].detail, /\/usr\/local\/bin\/find \(in PATH, the runner's tools or solc\) resolves through/);
   assert.ok(!(r.steps || []).some((s) => /^patch:/.test(s.name)), 'refused before the patch was applied');
+});
+
+test('A3a R20-F1 under real forge: the image\'s LD_PRELOAD and the like never reach a step: a library a run plants at the named path is not loaded, by the launcher or by anything after it', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('loader');
+  const { Prefix } = require('../../src/capture');
+  const config = dockerTestConfig();
+  const docker = dockerFor(config);
+  t.after(() => removeAll(docker, config.instance).catch(() => {}));
+  const said = {};
+  const steps = [async (ctx) => {
+    // As a run could: a real shared object appears at the paths the image's ENV names.
+    const plant = await ctx.exec(['/bin/sh', '-c', 'mkdir -p /work/libs && l=$(ls /lib/*/libdl.so.2 | head -n 1) && cp "$l" /work/hook.so && cp "$l" /work/libs/ && printf done'], { name: 'plant', timeoutMs: 60000 });
+    assert.equal(plant.exitCode, 0, plant.stderr.text);
+    // A later step: what the launcher's /bin/sh sees, and what is mapped into it and into a program it starts.
+    const out = new Prefix(64 * 1024);
+    const look = await ctx.exec(['/bin/sh', '-c', 'printf "[%s|%s|%s|%s]" "$LD_PRELOAD" "$LD_AUDIT" "$LD_LIBRARY_PATH" "$GCONV_PATH"; cat /proc/$$/maps /proc/self/maps'], { name: 'look', timeoutMs: 60000, tee: out });
+    said.text = out.bytes().toString('utf8');
+    said.stderr = look.stderr.text;
+  }];
+  const lim = checkSpec(claimSpec(fx));
+  const receivedAt = Date.now();
+  const result = await executeRun({ docker, config, limits: lim.limits, image: fx.image, runId: crypto.randomBytes(8).toString('hex'), steps, receivedAt, deadlineAt: receivedAt + 800000, active: new Set(), log: silent });
+  assert.equal(result.outcome, 'definitive', JSON.stringify({ abstain: result.abstain, issues: result.issues }));
+  assert.ok(said.text.startsWith('[|||]'), said.text.slice(0, 200));
+  assert.doesNotMatch(said.text, /\/work\/(?:hook\.so|libs)/, 'nothing from the work tree is mapped');
+  assert.doesNotMatch(said.stderr, /ld\.so/, said.stderr);
+  // The whole pipeline on that image, a PoC planting the library on run 1: an ordinary claim.
+  const plantPoc = pocFile('ExploitTest', [
+    `    function ${NAME}() public { ${ffiSh('cp "$(ls /lib/*/libdl.so.2 | head -n 1)" /work/hook.so')} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+  ]);
+  const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': plantPoc })));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+});
+
+test('an image as the attested builder makes it: forge finds the setup\'s solc under XDG_DATA_HOME, a tool that is a link into /repo (owned by the sandbox user, on the read-only root) passes the walk and runs last on PATH', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('builder');
+  const poc = pocFile('ExploitTest', [
+    `    function ${NAME}() public { ${ffiSh('tool').replace('vm.ffi(c);', 'bytes memory got = vm.ffi(c); vm.assertTrue(false, string(got));')} }`
+  ]);
+  const r = await run(t, claim(fx, addFilesPatch({ 'test/Exploit.t.sol': poc }), { finding: finding({ observable: `${NAME} fails with "helper-ran"` }) }));
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.integrity, CLEAN);
+  assert.equal(r.facts.poc.tests[0].message, 'helper-ran');
+});
+
+test('Q32 under real forge: a setup that makes an honest claim fail integrity during the build is the requester\'s error, not an INVALID: a compiler writing into lib/, forge\'s out inside lib/', { timeout: TIMEOUT }, async (t) => {
+  for (const [variant, re] of [['solctrap', /the build: lib\/trap\.sol added/], ['outlib', /the build: lib\/out\//]]) {
+    const r = await run(t, claim(await fixture(variant), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+    assert.equal(r.outcome, 'requester_error', `${variant}: ${show(r)}`);
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD']);
+    assert.match(r.issues[0].detail, re);
+    assert.ok(!(r.steps || []).some((s) => /^poc:/.test(s.name)), 'no claim code ran');
+  }
+});
+
+test('Q32, OPEN for the owner (pins today\'s behaviour, not a wanted one): a compiler in the image that waits for run 1 fails an honest claim\'s integrity; the runner cannot tell it from claim code', { timeout: TIMEOUT }, async (t) => {
+  // `forge test` always compiles again after `forge build` (other settings), and forge runs `solc --version` on every start,
+  // so a program the image ships as solc runs inside each PoC run. This one writes only once a compile cache exists.
+  const r = await run(t, claim(await fixture('solcsecond'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.build.status, 'pass', show(r));
+  assert.equal(r.gates.integrity.status, 'fail', show(r));
+  assert.equal(r.facts.poc.integrity.dependenciesUnchanged, false, show(r));
+  assert.match(r.gates.integrity.detail, /run 1: lib\/trap\.sol added/);
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {

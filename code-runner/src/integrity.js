@@ -79,7 +79,7 @@
 const crypto = require('node:crypto');
 const { matchesAny, normalizePath } = require('./common');
 const { hermetic, BASE_ENV } = require('./git');
-const { LAUNCHER_CHECK } = require('./launcher');
+const { WALK_CHECK } = require('./launcher');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
 const forge = require('./forge');
@@ -193,9 +193,9 @@ const LINKS_SCRIPT = [
  * Whether what the runner takes for immutable really is (R16-F1). The
  * read-only root protects a link on it, not what the link leads to, so each
  * path on stdin (NUL-separated) and each symbolic link directly in one that is
- * a directory is walked by A1's launcher check ($1, launcher.js LAUNCHER_CHECK:
- * one component at a time from /, every link followed where it sits, every
- * directory entered and entry looked up checked). Hermetic. One record per
+ * a directory is walked by A1's launcher walk ($1, IMMUTABLE_CHECK: one component
+ * at a time from /, every link followed where it sits, every directory entered
+ * and entry looked up checked). Hermetic. One record per
  * offender: `path\0w\0` when the walk meets anything the sandbox user owns or
  * can write (the check's exit 1), `path\0!\0` for a directory `find` could not
  * list completely (mode 0111: a link inside it would go unseen). Any other
@@ -206,6 +206,18 @@ const EXTERNAL_ROOTS_SCRIPT = [
   'check=$1',
   'xargs -0 -r sh -c \'for d do printf "%s\\0" "$d"; if [ -d "$d" ]; then find -H "$d" -mindepth 1 -maxdepth 1 -type l -print0 2>/dev/null || printf "!%s\\0" "$d"; fi; done\' vcr-list |',
   'xargs -0 -r sh -c \'c=$1; shift; for p do case $p in !*) printf "%s\\0!\\0" "${p#!}"; continue ;; esac; sh -c "$c" vcr-check "$p" >/dev/null 2>&1; [ $? -eq 1 ] && printf "%s\\0w\\0" "$p"; done; exit 0\' vcr-external-roots "$check"'
+].join('\n');
+
+/**
+ * A1's walk (launcher.js), asking what this check needs: can a run change it.
+ * The launcher check also refuses anything the sandbox user merely owns; here
+ * that counts only on the mounts it can write, since the root is read-only
+ * (checked at launch), and the builder chowns /repo to that user: a link from
+ * the tools into /repo is not a way in.
+ */
+const IMMUTABLE_CHECK = [
+  `own() { case $1 in ${WORK}|${WORK}/*|/tmp|/tmp/*|${HOME}|${HOME}/*) ;; *) return 0 ;; esac; [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }`,
+  WALK_CHECK
 ].join('\n');
 
 /** Thrown when what the check would watch is over one of its caps (IMAGE_WATCH_TOO_LARGE before claim code, a failure after). */
@@ -862,7 +874,7 @@ function linksArgv() {
 }
 
 function externalRootsArgv() {
-  return hermetic(EXTERNAL_ROOTS_SCRIPT, 'vcr-external-roots', [LAUNCHER_CHECK]);
+  return hermetic(EXTERNAL_ROOTS_SCRIPT, 'vcr-external-roots', [IMMUTABLE_CHECK]);
 }
 
 function runnerError(step, detail) {
@@ -1172,6 +1184,30 @@ class Watch {
   fail(category, detail, paths = []) {
     this.failures[category].push(detail);
     for (const p of paths) this.changed[category].add(displayPath(p));
+  }
+
+  /**
+   * After the maker's build, before any claim code has run: the files held to
+   * the reference, compared with it. forge build compiles and runs nothing
+   * else, so a change here is the image's doing (a compiler that writes into
+   * lib/, `out = "lib/out"`, paths.protected over out/): the requester's error,
+   * never a failed integrity check held against an honest claim (owner decision
+   * Q32). A patch that changed forge's configuration only reaches this where the
+   * maker left that configuration outside paths.protected and under paths.tests.
+   * @throws {RequesterError} IMAGE_WATCH_CHANGED_BY_BUILD
+   */
+  async afterBuild(ctx) {
+    const all = () => [...this.failures.protected, ...this.failures.dependencies, ...this.failures.framework];
+    // Only this comparison's: the reference may already hold the claim's own failure (a link its patch added in a set).
+    const before = new Set(all());
+    await this.compareFiles(ctx, `${this.prefix}:build`, 'the build', false);
+    const details = all().filter((d) => !before.has(d));
+    if (details.length) {
+      throw new RequesterError([{
+        code: 'IMAGE_WATCH_CHANGED_BY_BUILD', path: '/spec/env/image',
+        detail: `the build changed what the runner holds to the listed image, before any claim code ran: ${shown(details, 5, '; ')}`
+      }]);
+    }
   }
 
   /**
@@ -1497,6 +1533,6 @@ module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
-  discoverForge, probe, requireImmutableTools, TOOL_DIRS,
+  discoverForge, probe, requireImmutableTools, TOOL_DIRS, IMMUTABLE_CHECK,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };

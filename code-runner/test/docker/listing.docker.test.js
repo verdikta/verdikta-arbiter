@@ -72,6 +72,16 @@ const VARIANTS = Object.freeze({
   modern: { files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD.modern }, toml: REMAP },
   legacy: { files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD.legacy }, toml: REMAP },
   testsdir: { files: TESTS_DIR },
+  // An image as the attested builder makes it (builder/src/dockerfile.js): the setup's solc release under XDG_DATA_HOME,
+  // the fixed ENV, /repo owned by the sandbox user.
+  builder: {
+    files: {
+      ...VAULT_REPO,
+      'foundry.toml': '[profile.default]\nsrc = "src"\ntest = "test"\nout = "out"\ncache_path = "cache"\nsolc_version = "0.8.31"\noffline = true\n'
+    },
+    setup: 'mkdir -p /opt/verdikta/tools/bin /opt/verdikta/tools/share/svm/0.8.31 && cp /opt/solc/solc /opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31 && chmod -R a+rX /opt/verdikta && chown -R 10001:10001 /repo && git config --system --add safe.directory /repo',
+    env: ['XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/verdikta/tools/bin']
+  },
   // Attempt 3: a build slow enough to be stopped, with a plain `forge build`: forge's compiler takes its time.
   slowsolc: {
     setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) sleep 40 ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
@@ -315,4 +325,11 @@ test('A3a R11-F1 (attempt 3) under real forge: a listing whose commands use the 
   assert.equal(v.ok, false);
   assert.deepEqual(v.issues.map((i) => [i.code, i.path]), [['COMMAND_NOT_ALLOWED', '/spec/commands/test']]);
   assert.match(v.issues[0].detail, /^commands\.test: "FOUNDRY_PROFILE=ci" is not allowed: an environment assignment/);
+});
+
+test('an image as the attested builder makes it passes the listing check: forge finds the setup\'s solc under XDG_DATA_HOME in the build, the suite and every probe', { timeout: TIMEOUT }, async (t) => {
+  const r = await check(t, body(await fixture('builder')));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  assert.deepEqual(r.facts.listing.baseline.stable, ['test/Vault.t.sol > VaultTest > test_deposit()']);
 });

@@ -165,6 +165,14 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   }
   // forge as the PoC's sandbox runs it (commands.js, forge.forgeArgv): the reference's forge and configuration.
   const buildExit = await kit.runBuild(ctx, box, watch.tool(), kit.parsedCommand(spec, 'build'), limits);
+  try {
+    await watch.afterBuild(ctx);
+  } catch (err) {
+    if (!(err instanceof RequesterError)) throw err;
+    fact.builds = 'fail';
+    fact.detail.builds = `with the fix, ${err.issues.map((i) => `${i.code}: ${i.detail}`).join('; ')}`;
+    return finish();
+  }
   fact.builds = buildExit === 0 ? 'pass' : 'fail';
   fact.detail.builds = `the build command exited ${buildExit} with the fix`;
   if (fact.builds !== 'pass') return finish();

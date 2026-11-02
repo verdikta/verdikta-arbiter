@@ -900,6 +900,46 @@ because a legitimate exploit test sometimes needs an unusual fixture, but they
 are tier-A facts the jury must weigh under its fourth question, and the
 adversarial fixtures (§18) measure how often a manipulated PoC gets past both.
 
+**Scope of the post-run checksums (owner decision Q32).** The check assumes an
+env image from the attested builder, and the two facts that make that an
+assumption it can rely on are:
+
+- **Production trust accepts only images signed by the builder key.** The External
+  Adapter enforces this, not the runner: its front gates
+  (`external-adapter/src/codeReview/frontGates.js`) call `@verdikta/common`'s
+  `validateAttestation`, which checks the signature against the trusted-builder
+  set, the hashes of the files it binds, and the image digest, platform and size
+  against `code_review.json`. Anything else is a requester error before the runner
+  is called. The runner only compares the attestation's image with the spec's. Dev
+  trust exists only under `CODE_REVIEW_TRUST=dev`, only on the chains in
+  `DEV_TRUST_CHAIN_IDS` (Base Sepolia and a local node), and only for a statement
+  signed as dev, against `CODE_REVIEW_DEV_KEYS`.
+- **The image's final stage is fixed** (`stake-attestation/builder/src/dockerfile.js`
+  in verdikta-applications): `FROM` the pinned base, with a fixed `ENV` (`PATH`,
+  `XDG_DATA_HOME`, `VERDIKTA_TOOLS`) and no `RUN`. Only `/repo` and
+  `/opt/verdikta/tools` differ from the pinned base. Both are maker-controlled, and
+  the tools folder comes last on `PATH`.
+
+Within that:
+
+- **Routes a hunter can use alone are fully in scope.**
+- **A setup that makes an honest claim fail integrity, so the maker keeps the stake,
+  is a defect.**
+- **The residual** is only a trap the maker's setup plants that helps claim code win
+  (a program in the tools that itself runs something from the work tree, say: the
+  image's own text, which no check inside the sandbox can read). It is recorded, not
+  closed. It is not harmless to everyone but the maker: §8.8 allows any repository
+  and nothing checks that a maker controls it, so a stranger may be able to stage a
+  valid finding against someone else's project. That is why it is written down here
+  as a residual, and that question is with the owner.
+
+A change to a watched place during the maker's build, before any claim code has
+run, is the image's doing and a requester error, never a failed check. One open
+point stays with the owner: a program the image ships as `solc`, or repository code
+a PoC calls, runs inside the PoC's runs, so one that fails an honest claim's
+integrity only then cannot be told from claim code (code-runner README, "The check's
+scope").
+
 ### 9.6 What we borrow from verdikta-agents
 
 The verdikta-agents coding sandbox (`packages/sandbox-kit`, on its `origin/main`)
