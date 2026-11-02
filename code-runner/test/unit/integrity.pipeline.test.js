@@ -15,6 +15,7 @@ const { createServer } = require('../../src/server');
 const { testConfig, request: httpRequest } = require('../helpers/http');
 const { spec: baseSpec, IMAGE, attestationFor } = require('../helpers/requests');
 const { BASE, POC_PATCH, POC_DIFF, junit, drainFails, claimSandbox } = require('../helpers/fakeClaim');
+const { settlementFacts } = require('../helpers/settlementFacts');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const DRAIN = 'test/Exploit.t.sol > ExploitTest > test_drain()';
@@ -71,6 +72,7 @@ async function runClaim(sb, request = claimRequest()) {
 
 const show = (r) => JSON.stringify({ outcome: r.outcome, abstain: r.abstain, issues: r.issues, gates: r.gates, integrity: r.facts && r.facts.poc && r.facts.poc.integrity }, null, 1);
 const set = (box, p, content) => box.tree.set(p, { type: 'f', mode: '644', content });
+const hasFailureText = (text) => /<(?:failure|error)\b/.test(String(text));
 const label = (d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind);
 const CLEAN = Object.freeze({
   identityComplete: true, summaryConsistent: true, exitConsistent: true,
@@ -1044,6 +1046,46 @@ test('A3a R21-F1 (round 22): a protected root behind a link into forge\'s output
   assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
   assert.match(r.issues[0].detail, /artifact-alias\/Exploit\.t\.sol -> \/work\/out\/Exploit\.t\.sol \(forge's out directory \(out\)\)/);
   assert.equal(sb.execs().filter((d) => d.kind === 'vcr-build' || d.kind === 'vcr-poc').length, 0);
+});
+
+test('owner decision Q35: settlement can tell, from fields of verdikta.claim-report/1 alone, a tamper flag from any other failed check, and a reproduces failure only through integrity from one on its own', async () => {
+  const SUITE = 'test/Exploit.t.sol:ExploitTest';
+  const passes = junit([{ suite: SUITE, cases: [{ name: 'test_drain()' }] }]);
+  const skipped = junit([{ suite: SUITE, cases: [{ name: 'test_drain()', skipped: true }] }]);
+  const harness = junit([{ suite: SUITE, cases: [{ name: 'test_drain()', failure: 'vault drained' }] }, { suite: 'test/Exploit.t.sol:Helper', cases: [{ name: 'setUp()', failure: 'cannot deploy' }] }]);
+  const touch = (out) => (d, k, box) => { set(box, '/work/lib/forge-std/src/Test.sol', `changed ${k}`); return { exitCode: hasFailureText(out) ? 1 : 0, stdout: out }; };
+  const flagged = POC_DIFF.replace('+// end', '+// vm.writeFile("lib/forge-std/src/StdAssertions.sol", "")');
+  // forge-std is the framework's, a dependency, and under the spec's protected `lib/**`.
+  const held = ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged'];
+  const fails = drainFails();
+  for (const [name, over, want] of [
+    ['clean', {}, { integrity: 'pass', tampered: false, failedChecks: [], reproduces: 'pass', reproducesFailed: null }],
+    ['another check alone', { poc: [fails, touch(fails), fails] }, { integrity: 'fail', tampered: false, failedChecks: held, reproduces: 'fail', reproducesFailed: 'only-through-integrity' }],
+    ['a tamper flag alone', { diff: flagged }, { integrity: 'fail', tampered: true, failedChecks: [], reproduces: 'fail', reproducesFailed: 'only-through-integrity' }],
+    ['a tamper flag and another check', { diff: flagged, poc: [touch(fails), fails, fails] }, { integrity: 'fail', tampered: true, failedChecks: held, reproduces: 'fail', reproducesFailed: 'only-through-integrity' }],
+    ['the PoC passes on run 2', { poc: [fails, passes, fails] }, { integrity: 'pass', tampered: false, failedChecks: [], reproduces: 'fail', reproducesFailed: 'on-its-own' }],
+    ['the PoC passes on run 2, and another check', { poc: [fails, touch(passes), fails] }, { integrity: 'fail', tampered: false, failedChecks: held, reproduces: 'fail', reproducesFailed: 'on-its-own' }],
+    ['a harness record fails beside tests that all fail', { poc: [harness, harness, harness] }, { integrity: 'pass', tampered: false, failedChecks: [], reproduces: 'fail', reproducesFailed: 'on-its-own' }],
+    ['a harness record on run 2 only, and another check', { poc: [fails, touch(harness), fails] }, { integrity: 'fail', tampered: false, failedChecks: held, reproduces: 'fail', reproducesFailed: 'on-its-own' }],
+    ['a skip on run 2', { poc: [fails, skipped, fails] }, { integrity: 'fail', tampered: false, failedChecks: ['identityComplete'], reproduces: 'fail', reproducesFailed: 'on-its-own' }]
+  ]) {
+    const r = await runClaim(claimSandbox(over));
+    assert.equal(r.outcome, 'definitive', `${name}: ${show(r)}`);
+    const { valid, issues, ...got } = settlementFacts(r);
+    assert.deepEqual(issues, [], `${name}: common's validator`);
+    assert.equal(valid, true, name);
+    assert.deepEqual(got, want, name);
+    // The runner's own basis says the same, for a reader of its result.
+    assert.equal(r.gates.reproduces.basis === 'integrity', want.reproducesFailed === 'only-through-integrity', `${name}: ${r.gates.reproduces.basis}`);
+  }
+  // No JUnit, and so no test the patch added, is a failure on its own, whatever else.
+  const none = await runClaim(claimSandbox({ poc: [{ exitCode: 1, stdout: 'Compiler run failed' }, fails, fails] }));
+  assert.equal(settlementFacts(none).reproducesFailed, 'on-its-own', show(none));
+  assert.deepEqual(settlementFacts(none).issues, []);
+  // The build's failure is no PoC at all: a gate, INVALID.
+  const noBuild = await runClaim(claimSandbox({ scripts: { 'vcr-build': () => ({ exitCode: 1, stderr: 'Compiler run failed' }) } }));
+  assert.equal(noBuild.gates.build.status, 'fail', show(noBuild));
+  assert.deepEqual(settlementFacts(noBuild), { valid: true, issues: [], integrity: 'not-run', tampered: false, failedChecks: [], reproduces: 'not-run', reproducesFailed: null });
 });
 
 test('A3a R23-F1: a listed Solidity file that sets a path by inline configuration is refused right after the checkout, before any patch; other inline settings are nothing', async () => {

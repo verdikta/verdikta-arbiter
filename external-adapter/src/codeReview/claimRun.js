@@ -5,7 +5,8 @@
  * passed every gate the EA decides before any pull or model call. A4b
  * implements the rest: the single deadline (§11), the shared code-runner
  * call keyed by listing CID + bCID + runner and rule versions + the prior
- * findings (assumption A7), runner gates and integrity failures as INVALID,
+ * findings (assumption A7), runner gates and integrity failures settled by
+ * the rule in design §9.5,
  * and the AI Node handoff with the report and the context pack. It must
  * return a result of aiClient.evaluate's shape (scores over the listing's
  * outcomes, a justification) or throw; a throw is the errored path, no

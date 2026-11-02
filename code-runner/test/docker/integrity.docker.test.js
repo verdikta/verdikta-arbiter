@@ -14,6 +14,7 @@ const { executeRun } = require('../../src/pipeline');
 const { checkSpec } = require('../../src/classLimits');
 const { claimSteps } = require('../../src/steps');
 const { RUNTIME, silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll } = require('./helpers');
+const { settlementFacts } = require('../helpers/settlementFacts');
 const { VAULT_REPO, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile } = require('./forgeFixture');
 
 const TIMEOUT = 900000;
@@ -114,6 +115,19 @@ const VARIANTS = Object.freeze({
   },
   // R21-F2: invariants, with reverting handlers allowed.
   invariants: { toml: '[profile.default.invariant]\nruns = 3\ndepth = 4\nfail_on_revert = false', files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD } },
+  // Known limits (Q35): a fake solc that refuses any compile holding a test it has not seen; repository code that writes lib/.
+  solcunseen: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) in=$(cat); case "$in" in *Exploit*) echo "unsupported source" >&2; exit 1 ;; esac; printf "%%s" "$in" | exec /opt/solc/solc.real "$@" ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+  },
+  solclater: {
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
+    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) if [ -e /work/cache/solidity-files-cache.json ]; then echo "unsupported source" >&2; exit 1; fi ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+  },
+  repoffi: {
+    toml: 'ffi = true',
+    files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD, 'scripts/setup-fixture.sh': 'printf x > lib/trap.sol\n' }
+  },
   solcsecond: {
     files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': FORGE_STD },
     setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) [ ! -e /work/cache/solidity-files-cache.json ] || printf x > /work/lib/trap.sol ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
@@ -387,6 +401,11 @@ test('reporter-monkeypatched (forge form): a PoC rewrites forge-std\'s source wi
   assert.equal(r.facts.poc.integrity.frameworkUnchanged, false, 'the post-run checksum of the reporter module');
   assert.equal(r.facts.poc.integrity.dependenciesUnchanged, false);
   assert.match(r.gates.integrity.detail, /run 1: lib\/forge-std\/src\/Test\.sol changed/);
+  // Q35: a tamper flag beside another failed check, as settlement reads them.
+  const read = settlementFacts(r);
+  assert.deepEqual(read.issues, [], 'common\'s validator');
+  assert.equal(read.tampered, true);
+  assert.deepEqual(read.failedChecks, ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged']);
 });
 
 test('dependencies-edited-during-run (forge form): an ffi child edits an untracked lib/ dependency during run 2', { timeout: TIMEOUT }, async (t) => {
@@ -838,7 +857,7 @@ test('A3a R22-F2 under real forge: a one-predicate invariant whose reason spans 
   }
 });
 
-test('Q32, OPEN for the owner (pins today\'s behaviour, not a wanted one): a compiler in the image that waits for run 1 fails an honest claim\'s integrity; the runner cannot tell it from claim code', { timeout: TIMEOUT }, async (t) => {
+test('Known limit (Q35; pins today\'s behaviour, not a wanted one): a compiler in the image that waits for run 1 fails an honest claim\'s integrity; the runner cannot tell it from claim code', { timeout: TIMEOUT }, async (t) => {
   // `forge test` always compiles again after `forge build` (other settings), and forge runs `solc --version` on every start,
   // so a program the image ships as solc runs inside each PoC run. This one writes only once a compile cache exists.
   const r = await run(t, claim(await fixture('solcsecond'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN })));
@@ -847,6 +866,46 @@ test('Q32, OPEN for the owner (pins today\'s behaviour, not a wanted one): a com
   assert.equal(r.gates.integrity.status, 'fail', show(r));
   assert.equal(r.facts.poc.integrity.dependenciesUnchanged, false, show(r));
   assert.match(r.gates.integrity.detail, /run 1: lib\/trap\.sol added/);
+  // Settlement reads no tamper flag and no failure of reproduces on its own: bond back, no award, the check named.
+  const read = settlementFacts(r);
+  assert.deepEqual(read.issues, [], 'common\'s validator');
+  assert.equal(read.tampered, false);
+  assert.deepEqual(read.failedChecks, ['protectedPathsUnchanged', 'dependenciesUnchanged']);
+  assert.equal(read.reproducesFailed, 'only-through-integrity');
+});
+
+test('Known limit (Q35; pins today\'s behaviour, not a wanted one): repository code an honest proof calls through ffi and that writes a watched place: the same, no tamper flag', { timeout: TIMEOUT }, async (t) => {
+  const poc = pocFile('ExploitTest', [
+    `    function ${NAME}() public { ${ffiSh('sh scripts/setup-fixture.sh')} Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
+  ]);
+  const r = await run(t, claim(await fixture('repoffi'), addFilesPatch({ 'test/Exploit.t.sol': poc })));
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.gates.integrity.status, 'fail', show(r));
+  const read = settlementFacts(r);
+  assert.deepEqual(read.issues, [], 'common\'s validator');
+  assert.equal(read.tampered, false, JSON.stringify(r.facts.poc.integrity.tamperFlags));
+  assert.ok(read.failedChecks.includes('dependenciesUnchanged'), show(r));
+  assert.equal(read.reproducesFailed, 'only-through-integrity');
+});
+
+test('Known limit (Q35; pins today\'s behaviour, not a wanted one): a fake solc that exits with an error on a test it has not seen fails an honest claim at the build gate, or, waiting for the compile `forge test` does, at reproduces on its own: both stay INVALID', { timeout: TIMEOUT }, async (t) => {
+  const poc = addFilesPatch({ 'test/Exploit.t.sol': DRAIN });
+  const atBuild = await run(t, claim(await fixture('solcunseen'), poc));
+  assert.equal(atBuild.outcome, 'definitive', show(atBuild));
+  assert.equal(atBuild.gates.build.status, 'fail', show(atBuild));
+  assert.equal(atBuild.gates.reproduces, undefined, 'the PoC never ran');
+  const read = settlementFacts(atBuild);
+  assert.deepEqual(read.issues, [], 'common\'s validator');
+  assert.equal(read.integrity, 'not-run', 'no integrity failure for settlement to read: the build gate, INVALID');
+  const atRun = await run(t, claim(await fixture('solclater'), poc));
+  assert.equal(atRun.outcome, 'definitive', show(atRun));
+  assert.equal(atRun.gates.build.status, 'pass', show(atRun));
+  assert.equal(atRun.gates.reproduces.status, 'fail', show(atRun));
+  assert.match(atRun.gates.reproduces.detail, /no JUnit on run 1/);
+  const readRun = settlementFacts(atRun);
+  assert.deepEqual(readRun.issues, [], 'common\'s validator');
+  assert.equal(readRun.reproducesFailed, 'on-its-own', 'a false rejection at reproduces: INVALID');
+  // The honest PoC itself is good: the same claim on an image without the fake passes every gate (the ordinary-PoCs test).
 });
 
 test('A3a R7-F1 under real forge: a PoC patch adding 5,000 links to `.` under test/ is never followed, and the claim passes', { timeout: TIMEOUT }, async (t) => {

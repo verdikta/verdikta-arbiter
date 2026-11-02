@@ -753,7 +753,11 @@ function claimSession(request, limits, { adopt = null } = {}) {
       errors.sort((a, b) => (a.suite + a.name < b.suite + b.name ? -1 : 1));
       harness.push(errors);
       for (const id of ids) {
-        const entry = run.suites ? entryOf(records.get(id)) : { result: 'error', kind: null, message: null };
+        let entry = run.suites ? entryOf(records.get(id)) : { result: 'error', kind: null, message: null };
+        // A run with a failed harness record in the PoC's files reproduces nothing, as the gate says below. The report has
+        // no field for that record, so its run counts must say it: settlement tells a failure of reproduces on its own
+        // from one only through integrity by them alone (owner decision Q35), and common's rule derives the gate from them.
+        if (errors.length && entry.result === 'fail') entry = { ...entry, result: 'error', kind: 'error', message: errors[0].message };
         results.get(id).push(entry);
         // §9.5 check 1: exactly one record of every test the patch added, none skipped, on every run read.
         const gap = run.suites ? integrity.identityGap(id, entry) : null;
@@ -855,9 +859,11 @@ function pocFacts(entries, runs) {
   const tests = [];
   for (const [id, list] of entries) {
     for (const e of list) runCounts[e.result === 'not-run' ? 'notRun' : e.result] += 1;
-    const recorded = list.find((e) => (e.result === 'fail' || e.result === 'error') && e.kind);
+    // common's rule: any error on any run makes the test's kind `error`, else any failure `assertion`; the message that kind's first.
+    const worst = list.some((e) => e.result === 'error') ? 'error' : list.some((e) => e.result === 'fail') ? 'fail' : null;
+    const recorded = worst && list.find((e) => e.result === worst);
     if (tests.length < MAX_TESTS) {
-      tests.push({ id, runs: list.map((e) => e.result), kind: recorded ? recorded.kind : null, message: recorded ? recorded.message : null });
+      tests.push({ id, runs: list.map((e) => e.result), kind: worst === null ? null : worst === 'error' ? 'error' : 'assertion', message: recorded ? recorded.message : null });
     }
   }
   return {

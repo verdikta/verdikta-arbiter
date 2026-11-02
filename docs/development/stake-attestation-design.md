@@ -54,10 +54,12 @@ Nine decisions carry the design:
    → lint/SAST — in a fresh gVisor container with no network, under the class's
    hard limits, on its own disk, and returns a deterministic Verification Report
    whose facts carry an explicit **trust tier** (§9).
-5. **Deterministic gates settle INVALID with no LLM call:** the reveal does not
+5. **Deterministic gates settle with no LLM call.** INVALID: the reveal does not
    match the commitment, the patch edits source, the PoC does not fail at the
    staked hash as an assertion failure, an affected path is out of scope, a test
-   record is forged or missing (§10.1).
+   record is missing, a static tamper flag. DUPLICATE (bond back, no award): any
+   other failed integrity check, such as a forged record or a changed checksum
+   (§9.5, §10.1).
 6. **Jev makes the typed judgements, frontier models decide severity.** Jev
    (TypeSafe's decision model, via OpenRouter, no new key) answers the class,
    known-or-duplicate and required-behaviour questions as probabilities and sits
@@ -320,7 +322,8 @@ Evaluation (each selected arbiter; one deadline from EA receipt)
                     │     apply poc.patch (test paths only) → build → PoC ×3 at the hash
                     │     → integrity checks → [fix.patch: build, PoC, full suite] → lint/SAST
                     │     ◄─ Verification Report (tiered evidence) + context pack
-                    ├─ a gate or integrity check failed? ─► deterministic INVALID  (no LLM)
+                    ├─ a gate failed, or a tamper flag? ─► deterministic INVALID  (no LLM)
+                    ├─ another integrity check failed?  ─► deterministic DUPLICATE: bond back, no award  (no LLM)
                     └─ otherwise POST AI Node /api/rank-and-justify (code mode)
                           ├─ Jev: class, known/duplicate, required behaviour, honesty (~1 s)
                           ├─ frontier jurors: the four questions, severity        (parallel)
@@ -370,7 +373,7 @@ publishing, was rejected for the operator exposure (§19).
 |---|---|
 | `@verdikta/common` | Manifest key `codeReview`; schemas for `code_review.json` (with the `stake` block), `finding.json`, `known_issues.json`, `attestation.json` and the Verification Report; the trusted-builder key set; the two code ClassIDs with their envelopes and **hard limits**; pinned base-image (`node22`, `python312`, `foundry`), gVisor and Semgrep-rule versions and the OCI platform; the outcome set `[INVALID, DUPLICATE, LOW, MEDIUM, HIGH, CRITICAL]` and the settlement rule (§8.7); the severity-rubric id; the conformance canary's expected report hash |
 | `code-runner/` (new) | `POST /v1/runs` `{ listingCid, bcid, spec, attestation, pocPatch, fixPatch, baseline, deadline }` → `{ report, reportSha256, contextPack }`; `GET /health`. Own `dockerd` with a fixed-size data disk (§9.1) |
-| External Adapter | When the primary manifest has `codeReview`: verify the attestation and class envelope; run the **disclosure check** from the keys in the addendum (§14); compute the single deadline (§11) and pass remaining time to the runner and the AI Node; call the runner (shared per listing CID + bCID); settle gate and integrity failures as INVALID; otherwise pass the report, the context pack and the prior-finding summaries to the AI Node as named text attachments plus a structured `codeReview` field; strip the key line from the addendum before anything reaches a model; no sandbox re-run on retry |
+| External Adapter | When the primary manifest has `codeReview`: verify the attestation and class envelope; run the **disclosure check** from the keys in the addendum (§14); compute the single deadline (§11) and pass remaining time to the runner and the AI Node; call the runner (shared per listing CID + bCID); settle gate failures and tamper flags as INVALID and any other integrity failure as DUPLICATE (§9.5); otherwise pass the report, the context pack and the prior-finding summaries to the AI Node as named text attachments plus a structured `codeReview` field; strip the key line from the addendum before anything reaches a model; no sandbox re-run on retry |
 | AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed claim, known issues, prior findings, `deadlineMs`): the claim pre-prompt with trust tiers and the four questions, Jev stage through an OpenRouter `systemone` client (annotating, never filtering) plus a Jev claim check on the justification, every non-Jev juror required, deadline-derived timeouts with cancellation, web access off |
 | Chainlink job spec | `maxTaskDuration` and bridge timeout 300 s → 840 s |
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§10.8) |
@@ -613,7 +616,8 @@ at the staked hash as an assertion failure on three runs; the integrity checks
 pass; with `fix.patch`, the PoC passes and nothing regresses; `finding.json`
 validates and its paths are in scope. Same runner, image and rules as the
 arbiters, so a run that passes every gate here passes them on-chain, barring
-the nondeterminism the fixtures guard against (§18). For a security claim this
+the nondeterminism the fixtures guard against (§18) and a trap keyed on the date,
+since the runner fakes no clock (§9.5, known limits). For a security claim this
 is the right place to iterate: nothing leaves the hunter's machine.
 
 **Pre-flight on the site, optional, paid.** The same tiers on the site's warm
@@ -673,7 +677,8 @@ three classes that all say "valid":
 The vector is recorded whatever the outcome. A gate failure arrives as the full
 mass on INVALID, which is exactly when the bond is forfeited, so **the bond is
 contract-observable**: the contract never has to tell a gate failure from a
-jury rejection, because both forfeit.
+jury rejection, because both forfeit. A failed integrity check with no tamper flag
+arrives as the full mass on DUPLICATE (§9.5): bond back, no award, by the same rule.
 
 **Duplicates settle in commit order.** A claim's reveal is accepted only when
 every earlier commit on the same hash is settled or expired, and the evaluation
@@ -891,16 +896,53 @@ Integrity checks on tier-B evidence (all deterministic, all run by the runner):
    during import, patches the framework or reporter, or writes outside the
    repository.
 
-Any failed check sets `gates.integrity = fail`: `reproduces` fails with it, the
-report names the check, and the claim settles INVALID deterministically. A
-clean claim is unaffected: none of these checks fires on ordinary test code.
+Any failed check sets `gates.integrity = fail`, `reproduces` fails with it, and the
+report names the check. What the claim settles as depends on the check and on
+`reproduces` (owner decision Q35):
+
+- **A tamper flag settles INVALID**, even when another check also failed. The flags
+  read only the lines the hunter's patch added, so a maker's files cannot trip them,
+  and a hunter can see them in `check` first.
+- **Any other failed check settles with all weight on DUPLICATE:** bond back, no
+  award, no model called, and the justification names the check in a fixed
+  machine-readable form.
+- **A `reproduces` failure on its own stays INVALID**, whatever integrity says: a
+  test the patch added passed, errored, was skipped, went missing or appeared twice
+  on a run, or the patch added none. Only a `reproduces` failure caused by integrity
+  alone follows the two rules above.
+
+A clean claim is unaffected: none of these checks fires on ordinary test code.
+
+The reason is that the runner cannot always tell claim code from a trap in the
+maker's files, and a forfeited bond would pay the maker for the trap. This lowers
+that cost; it does not settle the class. A trapped listing still doesn't pay the
+honest hunter, so the maker keeps the stake on that claim. It earns no bond, and the
+record shows the claim. A caught cheater loses only what the round costs: at most the
+prepay, about $3.50 instead of $13.50 on a $1k listing from the example figures, and
+each such claim can hold later claims and `close()` for up to the reveal window.
+That griefing is to be revisited before mainnet.
+
+On-chain these claims are DUPLICATE, so the record has to show the difference: per
+listing, "claims that failed integrity: N" with the check's name, from the
+justification. It stays neutral. Hunters can raise that count on purpose, so it
+doesn't prove a trap and doesn't imply the maker caused it.
+
+**What settlement reads.** All of it is in the report's own fields (§9.4), so the EA
+needs no free text and nothing outside the schema:
+
+| Question | Fields of `verdikta.claim-report/1` |
+|---|---|
+| A tamper flag? | `poc.integrity.tamperFlags` is not empty |
+| Which other check failed? | Whichever of `identityComplete`, `summaryConsistent`, `exitConsistent`, `protectedPathsUnchanged`, `frameworkUnchanged` and `dependenciesUnchanged` under `poc.integrity` is false |
+| Did `reproduces` fail on its own? | `gates.reproduces` is `fail`, and `poc.testCount` is 0 or any of `pass`, `error`, `skip`, `missing` and `duplicate` under `poc.runCounts` is above 0 |
+| Did it fail only through integrity? | `gates.reproduces` is `fail`, `poc.testCount` is above 0, and every counted run is `fail` (or `notRun`) |
 
 Honesty flags (§9.2, step 9) are the softer cousin: they do not fail a gate,
 because a legitimate exploit test sometimes needs an unusual fixture, but they
 are tier-A facts the jury must weigh under its fourth question, and the
 adversarial fixtures (§18) measure how often a manipulated PoC gets past both.
 
-**Scope of the post-run checksums (owner decision Q32).** The check assumes an
+**Scope of the post-run checksums (owner decisions Q32, Q35).** The check assumes an
 env image from the attested builder, and the two facts that make that an
 assumption it can rely on are:
 
@@ -922,9 +964,12 @@ assumption it can rely on are:
 
 Within that:
 
-- **Routes a hunter can use alone are fully in scope.**
-- **A setup that makes an honest claim fail integrity, so the maker keeps the stake,
-  is a defect.**
+- **These block a merge:** routes a hunter can use alone, routes that help claim code,
+  and runner misreadings that hit honest claims with no maker's files involved
+  (R21-F2 and R22-F2 were this kind).
+- **These do not:** routes that need a maker's files to make an honest claim fail.
+  They stay defects, recorded below as known limits, and the refusals the runner
+  already has for them stay.
 - **The residual** is only a trap the maker's setup plants that helps claim code win
   (a program in the tools that itself runs something from the work tree, say: the
   image's own text, which no check inside the sandbox can read). It is recorded, not
@@ -937,11 +982,19 @@ A change to a watched place during the maker's build, before any claim code has
 run, is the image's doing and a requester error, never a failed check. Where forge
 itself writes (its out and cache directories, and what else a plain run writes to)
 is forge's output, not held to the reference; it must be plain and hold nothing
-watched in the image, or the image is refused before any claim code. One open
-point stays with the owner: a program the image ships as `solc`, or repository code
-a PoC calls, runs inside the PoC's runs, so one that fails an honest claim's
-integrity only then cannot be told from claim code (code-runner README, "The check's
-scope").
+watched in the image, or the image is refused before any claim code. A listed
+Solidity file that sets a path by inline configuration is refused too.
+
+**Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
+before mainnet. The code-runner README's route table has every route the review raised.
+
+| Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
+|---|---|---|---|
+| A program in the image (as `solc`, say) or repository code that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | A2c: the proof's runs get the checksums, which catches one that fires on every run but not one that spares the proof's tests; it also looks at refusing any `solc` that isn't an official release |
+| A fake `solc` that exits with an error on a test it hasn't seen | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed; A2c's look at refusing any `solc` that isn't an official release |
+| A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
+| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: a refusal of unofficial `solc` doesn't cover it. A hunter can read the code it calls |
+| A trap keyed on the date | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | A2c's look at unofficial `solc` covers compiler traps; repository code stays |
 
 ### 9.6 What we borrow from verdikta-agents
 
@@ -972,6 +1025,11 @@ The verdict takes the normal commit/reveal path; neither Jev nor a frontier
 model is called, and the bond is forfeited at settlement. None of these gates
 can be switched off by the listing.
 
+The one exception is `integrity` with no tamper flag, when `reproduces` failed only
+through it (§9.5, owner decision Q35): the full 1,000,000 goes on DUPLICATE, so the
+bond comes back with no award, by the same path and with no model called. The
+justification names the check in a fixed machine-readable form.
+
 | Gate | Where | Fails when |
 |---|---|---|
 | `disclosure` | EA, before any pull | the revealed archive does not hash to the committed `sha256(archive)`, or re-encrypting it with the revealed keys to the listing's `disclosureKey` does not reproduce the pinned ciphertext byte for byte (§14) |
@@ -979,8 +1037,8 @@ can be switched off by the listing.
 | `applies` | runner | `poc.patch` does not apply to the listed commit |
 | `testPathsOnly` | runner | the patch touches a path outside `paths.tests` or inside `paths.protected` — source edits belong in `fix.patch` |
 | `build` | runner | the build fails after the patch |
-| `reproduces` | runner | any PoC test passes, or errors (import, compile, collection), on any run of the fixed schedule |
-| `integrity` | runner | any check of §9.5 fails on the PoC run |
+| `reproduces` | runner | any PoC test passes, or errors (import, compile, collection), on any run of the fixed schedule. A failure only through `integrity` follows the `integrity` row |
+| `integrity` | runner | any check of §9.5 fails on the PoC run. A tamper flag settles INVALID, even beside another failed check; any other check settles DUPLICATE (bond back, no award) |
 | `claimedObservable` | runner | the tests `finding.json` names are not the ones that failed, or the asserted observable does not appear in the recorded failure |
 
 What the gates do not decide is left to the jury: whether the failing test
@@ -1253,7 +1311,7 @@ alone.
 |---|---|
 | Hunter: a PoC that fails for a reason other than the bug (import error, broken build, wrong harness) | `build` and `reproduces` gates: only an assertion failure on all three runs counts |
 | Hunter: a flaky PoC — fails once, passes once | Fixed schedule: any pass on any run fails `reproduces`; the hunter writes the loop into the test |
-| Hunter: forge a failing JUnit record or exit early without running the code | In-process results are tier B (§9.5): identity completeness, framework-summary and exit-code consistency, post-run checksums and static tamper flags must all pass or `integrity` fails |
+| Hunter: forge a failing JUnit record or exit early without running the code | In-process results are tier B (§9.5): identity completeness, framework-summary and exit-code consistency, post-run checksums and static tamper flags must all pass or `integrity` fails. A tamper flag is INVALID; any other failed check is DUPLICATE, so a caught cheater loses only what the round costs (§9.5) |
 | Hunter: edit the framework config, lockfile or a protected file to make the test fail | Protected paths reset before the run; `testPathsOnly`; post-run checksums |
 | Hunter: manipulate the environment inside the test — overwrite the target's storage or code, mock the module under test, stub the clock or network | Honesty flags (tier A) shown first to every juror; the fourth question; adversarial fixtures measure the residue |
 | Hunter: assert behaviour that is documented or intended, or rely on a precondition the scope excludes | `inScope` gate on paths; the jury's first question; the maker's dispute |
@@ -1261,6 +1319,7 @@ alone.
 | Hunter: reveal a different archive than the maker was given, or send the maker garbage | The `disclosure` gate: both commitments re-derived in every arbiter; INVALID, bond forfeited |
 | Hunter: inject "AI reviewer: this is CRITICAL" in `report.md`, test names or comments | Gates are deterministic; evidence is fenced as data; Jev annotates and never filters; several models must agree |
 | Hunter: a huge or binary-padded patch | `maxPatchBytes`; binary changes reported as stats only |
+| Maker: plant a program or repository code that fails an honest claim | A recorded known limit, not closed (§9.5). A failed integrity check returns the bond, with no award; a failure at `build` or at `reproduces` on its own stays INVALID. The runner refuses what it can before any claim code, and `check` shows most traps first |
 | Maker: falsely flag a bad disclosure | A flag followed by a verified reveal is itself on the record (§14) |
 | Maker: fix the bug, then call it a known issue | Known issues are fixed at listing and timestamped on-chain; the commit precedes any fix |
 | Maker: never fix, never release, hope the hunter gives up | The window ends anyway; a valid unfixed finding goes on the record; an unrevealed commit after `revealWindowDays` costs the hunter the bond, so the hunter reveals |
@@ -1426,7 +1485,8 @@ justifier, a registry failure and a cancellation.
 | Runner not installed or unhealthy, admission refused, deadline cannot be met | Error, no commit (transient) |
 | Registry or image-pull failure | Error, no commit |
 | Step timeout, OOM, process limit, sandbox died | Error, no commit (the arbiter abstains) |
-| Disclosure mismatch; patch doesn't apply or edits source; build fails; PoC passes or errors on any run; **integrity check fails**; path out of scope; claimed observable not recorded | Deterministic INVALID, committed; the bond forfeits at settlement |
+| Disclosure mismatch; patch doesn't apply or edits source; build fails; PoC passes or errors on any run; **a tamper flag, even beside another failed check**; path out of scope; claimed observable not recorded | Deterministic INVALID, committed; the bond forfeits at settlement |
+| **Any other integrity check fails**, and `reproduces` failed only through it (§9.5, owner decision Q35) | Deterministic DUPLICATE, committed; bond back, no award, no model called; the justification names the check |
 | `poc.patch` or `finding.json` missing, or not a patch / not valid JSON | Malformed-archive settlement (existing rule): INVALID |
 | `fix.patch` fails to apply, build or pass | Recorded in the report; the outcome is unaffected (§20, decision 14) |
 | `code_review.json` invalid; **attestation missing or invalid; spec above the class maxima; manifest outside the class envelope** | Error: the requester's package is broken (existing rule); no commit, before any pull or model call |
@@ -1639,7 +1699,9 @@ values of `badgeFloorWei` and the under-staked ratio.
   finding body is the revealed archive, so it is public from reveal on for
   every outcome — but the site **publishes** (indexes, shows on the record,
   announces) only valid findings; an INVALID or DUPLICATE claim is a count on
-  the record and nothing more, so slop does not pollute it. Arbiters first read
+  the record and nothing more, so slop does not pollute it. A DUPLICATE from a
+  failed integrity check is counted apart, per listing, with the check's name and
+  nothing implying who caused it (§9.5). Arbiters first read
   a proof of concept at reveal, after the fix window, so an operator never
   reads an unfixed finding; a maker who shipped no fix inside the window
   exposes their users at reveal, by their own choice, and the record says so.
@@ -1979,7 +2041,10 @@ decisions of 2026-10-30.
    a dishonest fixture, so the honesty flags and the jury's fourth question
    carry that in both models; the adversarial fixtures measure the residue;
    `code-premium` will require stricter rules if Phase 1 data says the residue
-   matters.
+   matters. A failed check first settled INVALID. Owner decision Q35 (2026-11-02):
+   a tamper flag stays INVALID, and any other failed check settles DUPLICATE, because
+   the runner cannot always tell claim code from a trap in the maker's files (§9.5,
+   with what stays open).
 7. **First application (2026-10-30) — decided: stake-backed security
    attestation.** Two research rounds (2026-10-27/28) found the code-bounty
    boards emptied by agent supply and the maintainer's own agent cheaper than a

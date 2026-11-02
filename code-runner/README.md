@@ -3,8 +3,8 @@
 The arbiter's code runner for stake-backed security attestation
 ([design](../docs/development/stake-attestation-design.md) §9). The External
 Adapter calls it for a claim; it runs the claim's proof of concept in a fresh,
-isolated container and reports what happened. It never judges: the EA turns
-gate failures into INVALID, and the jury reads the report.
+isolated container and reports what happened. It never judges: the EA settles
+failed gates ([below](#what-a-failed-check-settles-as)), and the jury reads the report.
 
 Node A1 of the build is the service shell, the isolation, the limits, the
 deadline and the result taxonomy; node A2a adds the forge claim pipeline:
@@ -146,7 +146,7 @@ before admission or any pull.
 
 | Status | `outcome` | Meaning for the EA |
 |---|---|---|
-| 200 | `definitive` | Every step ended in a fact the arbiters may settle on. A failed gate means INVALID; all passing goes to the jury. |
+| 200 | `definitive` | Every step ended in a fact the arbiters may settle on. A failed gate means INVALID, but for an integrity failure with no tamper flag ([below](#what-a-failed-check-settles-as)); all passing goes to the jury. |
 | 503 | `abstain` | Error, no commit. `abstain.cause` says why. |
 | 400 | `requester_error` | The requester's package is broken (§12): a malformed request, a spec above the class hard limits, an attestation that names another image, or an env image that declares volumes. No claim code ran. `issues[]` names each problem. |
 | 401 / 404 / 405 / 413 / 415 | — | Token, route, method, body size (16 MiB), content type. |
@@ -1039,9 +1039,56 @@ cheap signal a juror can read. Ordinary tests raise none: forge-std imports,
 inline fuzz or read-only file settings, a write to a scratch directory the
 maker or an inline grant allows, `console.log`, revert messages.
 
+### What a failed check settles as
+
+The runner only reports this; the settling is the EA's (node A4b). Owner decision Q35:
+
+- **A tamper flag settles INVALID**, even when another check also failed. The flags
+  read only the lines the hunter's patch added, so a maker's files cannot trip them,
+  and a hunter can see them in `check` first.
+- **Any other failed check settles with all weight on DUPLICATE:** bond back, no
+  award, no model called, and the justification names the check in a fixed
+  machine-readable form.
+- **A `reproduces` failure on its own stays INVALID**, whatever integrity says: a
+  test the patch added passed, errored, was skipped, went missing or appeared twice
+  on a run, or the patch added none. Only a `reproduces` failure caused by integrity
+  alone follows the two rules above.
+
+The reason is that the runner cannot always tell claim code from a trap in the
+maker's files, and a forfeited bond would pay the maker for the trap. This lowers
+that cost; it does not settle the class. A trapped listing still doesn't pay the
+honest hunter, so the maker keeps the stake on that claim. It earns no bond, and the
+record shows the claim. A caught cheater loses only what the round costs: at most the
+prepay, about $3.50 instead of $13.50 on a $1k listing from the example figures, and
+each such claim can hold later claims and `close()` for up to the reveal window.
+That griefing is to be revisited before mainnet.
+
+On-chain these claims are DUPLICATE, so the record has to show the difference: per
+listing, "claims that failed integrity: N" with the check's name, from the
+justification. It stays neutral. Hunters can raise that count on purpose, so it
+doesn't prove a trap and doesn't imply the maker caused it.
+
+**What settlement reads.** All of it is in fields of common's `verdikta.claim-report/1`,
+so the EA needs no `basis`, no `detail` and nothing outside the schema:
+
+| Question | Fields of `verdikta.claim-report/1` |
+|---|---|
+| A tamper flag? | `poc.integrity.tamperFlags` is not empty |
+| Which other check failed? | Whichever of `identityComplete`, `summaryConsistent`, `exitConsistent`, `protectedPathsUnchanged`, `frameworkUnchanged` and `dependenciesUnchanged` under `poc.integrity` is false |
+| Did `reproduces` fail on its own? | `gates.reproduces` is `fail`, and `poc.testCount` is 0 or any of `pass`, `error`, `skip`, `missing` and `duplicate` under `poc.runCounts` is above 0 |
+| Did it fail only through integrity? | `gates.reproduces` is `fail`, `poc.testCount` is above 0, and every counted run is `fail` (or `notRun`) |
+
+`facts.poc` carries these fields under the same names. `gates.reproduces.basis` agrees
+for a reader of the runner's result: `integrity` exactly when `reproduces` failed only
+through integrity. Two things in `src/claim.js` keep the fields sufficient, and common's
+rules hold on every run: a test's result is `error` on a run with a failed harness record in the
+PoC's files (the report has no field for that record, and the gate fails on it), and a
+test's `kind` is the one its three runs imply. `test/helpers/settlementFacts.js` lays
+each result out in the schema and reads these fields, for the unit and Docker tests.
+
 ### The check's scope
 
-**Scope of the post-run checksums (owner decision Q32).** The check assumes an
+**Scope of the post-run checksums (owner decisions Q32, Q35).** The check assumes an
 env image from the attested builder, and the two facts that make that an
 assumption it can rely on are:
 
@@ -1063,9 +1110,12 @@ assumption it can rely on are:
 
 Within that:
 
-- **Routes a hunter can use alone are fully in scope.**
-- **A setup that makes an honest claim fail integrity, so the maker keeps the stake,
-  is a defect.**
+- **These block a merge:** routes a hunter can use alone, routes that help claim code,
+  and runner misreadings that hit honest claims with no maker's files involved
+  (R21-F2 and R22-F2 were this kind).
+- **These do not:** routes that need a maker's files to make an honest claim fail.
+  They stay defects, recorded below as known limits, and the refusals the runner
+  already has for them stay.
 - **The residual** is only a trap the maker's setup plants that helps claim code win
   (a program in the tools that itself runs something from the work tree, say: the
   image's own text, which no check inside the sandbox can read). It is recorded, not
@@ -1074,26 +1124,42 @@ Within that:
   valid finding against someone else's project. That is why it is written down here
   as a residual, and that question is with the owner.
 
+**Known limits (Q35).** Open, recorded, and to be reviewed before mainnet. The tests named
+"Known limit" in `test/docker/integrity.docker.test.js` pin the first four rows as they
+are today, not as they are wanted. The runner has no clock faking: nothing in `src/`
+sets the sandbox's time.
+
+| Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
+|---|---|---|---|
+| A program in the image (as `solc`, say) or repository code that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | A2c: the proof's runs get the checksums, which catches one that fires on every run but not one that spares the proof's tests; it also looks at refusing any `solc` that isn't an official release |
+| A fake `solc` that exits with an error on a test it hasn't seen | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed; A2c's look at refusing any `solc` that isn't an official release |
+| A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
+| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: a refusal of unofficial `solc` doesn't cover it. A hunter can read the code it calls |
+| A trap keyed on the date | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | A2c's look at unofficial `solc` covers compiler traps; repository code stays |
+
 The routes the review raised, against that scope (each has its test):
 
 | Route | Through the attested builder? | Side | What happens |
 |---|---|---|---|
-| A run leaves a watched file unreadable, or a directory unlistable, a watched root's ancestor included (R13-F1) | Yes: a hunter alone | In scope | Its check fails |
-| `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | Helps claim code; refused, so the refusal is what could hurt an honest hunter | `IMAGE_WATCH_ROOT_UNCOVERED`: a requester error (design: errored path, no commit), never INVALID. A2c (#135) will refuse it at listing |
+| A run leaves a watched file unreadable, or a directory unlistable, a watched root's ancestor included (R13-F1) | Yes: a hunter alone | **Blocks: hunter alone.** Closed | Its check fails |
+| `out = "lib"` beside `lib/pkg/fixture.json`, a run rewriting that dependency (R22-F1) | Yes: a hunter, on such a listing | **Blocks: hunter alone.** Closed | Refused before any claim code: no claim runs on that image |
+| `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
+| A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error, a multi-line reason lost (R21-F2, R22-F2) | Yes: any honest claim | **Blocks: runner misreading, no maker's files.** Closed | Forge's campaign counts accepted within a range; the reason read up to forge's framing |
 | A `PATH` directory that cannot be listed (R16-F1) | No: the builder's `chmod -R a+rX` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` |
 | A runner's tool behind a link through the work tree; a dangling tool link a patch would fill (R16-F1) | No: those directories are the base's bytes | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
 | A patch's file as forge, or a `PATH` directory under `paths.tests` (R16-F1) | No: forge is the base's, first on `PATH` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` before forge first runs |
 | An image `ENV` of `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | No: the `ENV` is fixed | Fixed anyway | Empty on the container |
-| A compiler in the image that writes a watched place in the build | Yes: the maker's setup | **Defect** | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error, never INVALID. A2c (#135) will refuse it at listing |
-| `paths.protected` or `libs` over forge's own output, nothing there yet (`out = "lib/out"`, `out/**`, a test's artifact with `--skip test`; R21-F1) | Yes: the maker's listing | **Defect** | Where forge writes is not held to the reference: the honest claim passes, and the artifacts are held from run 1 on |
-| The same over what the image already has there (`out/**` over a prebuilt `out/`; R22-F1), through a link that leads there once forge has compiled (R21-F1, round 22), or forge's output behind a link | Yes: the maker's setup or listing | **Defect** | Refused before any maker command or claim code: `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_LINK_UNCOVERED`. A2c will refuse them at listing |
-| `[invariant] failure_persist_dir = "lib/persist"`: an honest invariant PoC writes a counterexample into a dependency directory on its first failure | Yes: the maker's `foundry.toml` | **Defect** | Forge's own output: the honest claim passes (found while fixing R22-F1, confirmed under real forge) |
-| The same by inline configuration in a listed contract (`/// forge-config: …failure_persist_dir`; R23-F1) | Yes: the maker's source | **Defect** | Refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. A2c will refuse it at listing |
-| `out = "lib"` beside `lib/pkg/fixture.json`, a run rewriting that dependency (R22-F1) | Yes: a hunter, on such a listing | **In scope** | The same refusal: no claim runs on that image |
-| A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error (R21-F2) | Yes: any honest claim | **Defect** | Forge's campaign counts accepted within a range; the reason read from forge's line |
-| A setup that makes a watched listing unreadable or too large, or a watched link uncovered | Links and size yes, modes no | **Defect** | The reference's requester errors, never INVALID. A2c (#135) will refuse it at listing |
-| A program the image ships (as `solc`) or repository code a PoC calls (ffi, cheatcodes) that writes a watched place during a run | Yes: the maker's setup or repository | **Defect, open** | Its check fails and the claim is INVALID: the runner cannot tell it from claim code. A2c (#135) will refuse one that fires on every run at listing (the harness proof gets the checksums), but not one that spares the proof's tests. With the owner |
-| A program on the read-only root that itself runs something a run can change, to help claim code | Yes: the maker's setup | Residual | Recorded above |
+| A compiler in the image that writes a watched place in the build | Yes: the maker's setup | Needs a maker's files. Refusal kept | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error. A2c (#135) will refuse it at listing |
+| `paths.protected` or `libs` over forge's own output, nothing there yet (`out = "lib/out"`, `out/**`, a test's artifact with `--skip test`; R21-F1) | Yes: the maker's listing | Needs a maker's files. Handled | Where forge writes is not held to the reference: the honest claim passes, and the artifacts are held from run 1 on |
+| The same over what the image already has there (`out/**` over a prebuilt `out/`; R22-F1), through a link that leads there once forge has compiled (R21-F1, round 22), or forge's output behind a link | Yes: the maker's setup or listing | Needs a maker's files. Refusal kept | Refused before any maker command or claim code: `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_LINK_UNCOVERED`. A2c will refuse them at listing |
+| `[invariant] failure_persist_dir = "lib/persist"`: an honest invariant PoC writes a counterexample into a dependency directory on its first failure | Yes: the maker's `foundry.toml` | Needs a maker's files. Handled | Forge's own output: the honest claim passes |
+| The same by inline configuration in a listed contract (`/// forge-config: …failure_persist_dir`; R23-F1) | Yes: the maker's source | Needs a maker's files. Refusal kept | Refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. A2c will refuse it at listing |
+| A setup that makes a watched listing unreadable or too large, or a watched link uncovered | Links and size yes, modes no | Needs a maker's files. Refusal kept | The reference's requester errors. A2c (#135) will refuse it at listing |
+| A program the image ships (as `solc`) or repository code a PoC calls (ffi, cheatcodes) that writes a watched place during a run | Yes: the maker's setup or repository | **Known limit** | A failed check with no tamper flag: bond back, no award. Pinned by Docker "Known limit" |
+| A fake `solc` that exits with an error on a test it has not seen | Yes: the maker's setup | **Known limit** | The `build` gate, or `reproduces` on its own: INVALID. Pinned by Docker "Known limit" |
+| A false rejection at `reproduces` | Yes: a trap, or a misreading not yet found | **Known limit** | INVALID. A misreading with no maker's files involved blocks a merge once found |
+| A trap keyed on the date | Yes: the maker's setup or repository | **Known limit** | As its effect, and `check` doesn't catch it: the runner fakes no clock |
+| A program on the read-only root that itself runs something a run can change, to help claim code | Yes: the maker's setup | Residual (Q32) | Recorded above |
 
 ### Tamper routes under forge
 
