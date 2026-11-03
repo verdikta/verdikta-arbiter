@@ -109,6 +109,9 @@ const AS_BUILDER = 'chown -R 10001:10001 /repo && git config --system --add safe
 /** What forge's own install leaves beside a release: these are no compilers (see the install test below). */
 const INSTALL_MARKERS = (...versions) => [`: > ${SVM}/.global-version`, ...versions.map((v) => `: > ${SVM}/${v}/.lock`)].join(' && ');
 
+/** Files in the near-cap fixture: each a find record and a hash line of about 3,900 bytes of path, about 7,900 bytes in all. */
+const NEAR_CAP_FILES = 8300;
+
 const VARIANTS = Object.freeze({
   // ------------------------------------------------- what a claim refuses, the same image as both
   forgeunwatched: {
@@ -184,6 +187,14 @@ const VARIANTS = Object.freeze({
     setup: 'mkdir -p /opt/verdikta/tools/bin && ln -s /opt/solc/solc /opt/verdikta/tools/bin/solc && chmod -R a+rX /opt/verdikta'
   },
   plainvault: {},
+  // Just under what a listing may hold (LISTING_RESERVE): long paths, no bytes, so the listing is large and the work tree small.
+  nearcap: {
+    setup: [
+      'p=pad; i=0; while [ $i -lt 15 ]; do p="$p/$(printf "%0250d" $i)"; i=$((i+1)); done',
+      'mkdir -p "$p"',
+      `i=0; while [ $i -lt ${NEAR_CAP_FILES} ]; do : > "$p/f$i"; i=$((i+1)); done`
+    ].join('; ')
+  },
   // A known limit: repository code only a proof would call, which nothing at listing runs.
   repoffi: { toml: 'ffi = true', files: { ...VAULT_REPO, 'lib/.keep': '', 'scripts/setup-fixture.sh': 'printf x > lib/trap.sol\n' } },
   // ------------------------------------------------- forge's lookup, with a compiler planted where it never looks
@@ -599,6 +610,30 @@ test('A2c under real forge: no false refusal: a listing that names no compiler, 
   assert.equal(r.outcome, 'definitive', show(r));
   assert.equal(r.facts.listing.status, 'accepted', show(r));
   assert.deepEqual(r.facts.listing.compilers.checked, ['0.8.31', '0.8.32'].map((v) => ({ path: `${SVM}/${v}/solc-${v}`, release: v })));
+});
+
+test('A2c under real forge (R1-F1): an image just under what a listing may hold passes, and a claim whose patch makes about 100,000 git objects, by a real apply and commit, is not refused for size: the reserve holds what the commit writes', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('nearcap');
+  const { MANIFEST_MAX_BYTES, LISTING_RESERVE } = require('../../src/integrity');
+  const listing = await check(t, body(fx));
+  assert.equal(listing.outcome, 'definitive', show(listing));
+  assert.equal(listing.facts.listing.status, 'accepted', show(listing));
+  const atListing = listing.steps.find((s) => s.name === 'integrity:reference:manifest').stdout.totalBytes;
+  assert.ok(atListing > 60 * 1024 * 1024 && atListing <= MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes, `the listing holds ${atListing} bytes`);
+  // 1,000 chains of 100 directories, each with a leaf of its own: a tree object per directory, a blob per leaf.
+  const chains = {};
+  for (let c = 0; c < 1000; c += 1) chains[`test/c${c}/${'d/'.repeat(100)}f`] = `${c}\n`;
+  const pocPatch = addFilesPatch({ 'test/Exploit.t.sol': DRAIN, ...chains });
+  assert.ok(pocPatch.length < 2000000, `the patch is ${pocPatch.length} bytes`);
+  const asClaim = await claim(t, fx, { pocPatch });
+  assert.equal(asClaim.outcome, 'definitive', show(asClaim));
+  assert.equal(asClaim.gates.applies.status, 'pass', show(asClaim));
+  assert.equal(asClaim.gates.reproduces.status, 'pass', show(asClaim));
+  assert.equal(asClaim.gates.integrity.status, 'pass', show(asClaim));
+  const atClaim = asClaim.steps.find((s) => s.name === 'integrity:reference:manifest').stdout.totalBytes;
+  assert.ok(atClaim - atListing > 15 * 1024 * 1024, `the commit's objects and the patch's files added ${atClaim - atListing} bytes`);
+  assert.ok(atClaim - atListing <= LISTING_RESERVE.bytes, 'within the reserve');
+  assert.ok(atClaim > MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes, 'past what a listing may hold, as the reserve is there for');
 });
 
 test('A2c: known limit, pinned: repository code only a proof would call through ffi passes the listing: nothing at listing runs it, and the look does not cover it', { timeout: TIMEOUT }, async (t) => {

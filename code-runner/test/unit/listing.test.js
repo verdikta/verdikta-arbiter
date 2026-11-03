@@ -831,7 +831,7 @@ const WATCH_REFUSALS = Object.freeze([
     scripts: { 'vcr-framework': framework('/work/bin/forge', '/work/bin:/usr/bin', '/work/cache/solidity-files-cache.json.abi/forge') }
   }, /which the runner cannot hash/],
   ['IMAGE_WATCH_LINK_UNCOVERED', { onBox: (box) => { box.tree.set('/work/lib/cpkg', { type: 'l', target: '../cache/pkg' }); put(box, '/work/cache/pkg/Dep.sol', 'contract Dep {}'); } }, /lib\/cpkg -> \/work\/cache\/pkg/],
-  ['IMAGE_WATCH_TOO_LARGE', { scripts: { 'vcr-manifest': () => ({ stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }) } }, /exceed/],
+  ['IMAGE_WATCH_TOO_LARGE', { scripts: { 'vcr-manifest': () => ({ stdout: Buffer.alloc(require('../../src/integrity').MANIFEST_MAX_BYTES + 1, 0x61) }) } }, /exceed/],
   ['IMAGE_WATCH_ROOT_UNCOVERED', { onBox: (box) => { box.configOver = { out: '/tmp/forge-out' }; } }, /out \(\/tmp\/forge-out\)/],
   ['IMAGE_WATCH_UNREADABLE', { onBox: (box) => box.tree.set('/work/lib/hidden', { type: 'd', mode: '0', content: '' }) }, /lib\/hidden/],
   ['IMAGE_TOOL_MISSING', { onBox: (box) => { box.tree.set('/work/lib/pkg', { type: 'l', target: '../vendor/pkg' }); put(box, '/work/vendor/pkg/X.sol', 'contract X {}'); }, scripts: { 'vcr-links': () => ({ exitCode: 4 }) } }, /realpath/],
@@ -1107,7 +1107,7 @@ test('A2c: the look reads everything under svm/ whichever release the listing na
   assert.ok(files[0].argv.includes(FAKE_SOLC.path) && files[0].argv.includes('/usr/local/bin/solc'), files[0].argv.join(' '));
   assert.equal(files[0].fixedEnv.PATH, require('../../src/git').BASE_ENV.PATH);
   // A flood under svm/ is the same refusal, not a host's work without end.
-  const flood = await runListing(listingSandbox({ scripts: { 'vcr-manifest': (d, box) => (d.argv[4] === SVM ? { stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) } : require('../helpers/fakeClaim').defaultManifest(d, box)) } }));
+  const flood = await runListing(listingSandbox({ scripts: { 'vcr-manifest': (d, box) => (d.argv[4] === SVM ? { stdout: Buffer.alloc(require('../../src/integrity').MANIFEST_MAX_BYTES + 1, 0x61) } : require('../helpers/fakeClaim').defaultManifest(d, box)) } }));
   assert.deepEqual(codes(flood), ['SOLC_NOT_OFFICIAL'], show(flood));
   assert.match(flood.facts.listing.refusals[0].detail, /could not be listed/);
   // An answer the runner cannot read abstains; it never passes.
@@ -1170,11 +1170,17 @@ test('A2c: over HTTP: the runner\'s platform reaches the look; a refusal is 200 
 
 // ----------------------------------------------------------- the caps, with room for a claim's patch
 
-test('A2c: a listing cannot sit just under a cap a claim\'s patch would cross: its reference keeps room for what a 2 MB patch can add, with a claim\'s code', async () => {
+test('A2c: a listing cannot sit just under a cap a claim\'s patch would cross: its reference keeps room for what any patch can add, its files and the git objects of its commit, with a claim\'s code', async () => {
   const { defaultManifest } = require('../helpers/fakeClaim');
   const { MAX_ENTRIES, MANIFEST_MAX_BYTES, LISTING_RESERVE } = require('../../src/integrity');
-  assert.ok(LISTING_RESERVE.entries >= 2000000 / 40, 'the shortest new file in a git patch takes 40 bytes');
-  assert.ok(LISTING_RESERVE.bytes >= 2 * 2000000 + 100 * LISTING_RESERVE.entries, 'a listing record and a hash line per file');
+  const { SCRATCH_MB } = require('../../src/sandbox');
+  // R1-F1. Every loose object takes a page of the work tree's tmpfs; the shortest new file in a git patch takes 40 bytes.
+  const objects = (SCRATCH_MB.work * 1024 * 1024) / 4096;
+  const files = CLASS_HARD_LIMITS.maxPatchBytes / 40;
+  assert.ok(LISTING_RESERVE.entries >= objects + files, 'every object and file a patch can bring is an entry');
+  const object = 73 + 127;
+  assert.ok(LISTING_RESERVE.bytes >= objects * object + CLASS_HARD_LIMITS.maxPatchBytes + files * 90, 'a find record and a hash line each, a file\'s path twice');
+  assert.ok(MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes >= 64 * 1024 * 1024, 'the room came from a claim\'s cap, not from what a listing may hold');
   // Over the room by entries: valid records, under the bytes cap. Not watched, so a claim on the same image goes on.
   const padded = (count, name = 'x') => (d, box) => {
     if (d.argv[4] !== '/work') return defaultManifest(d, box);
@@ -1199,4 +1205,15 @@ test('A2c: a listing cannot sit just under a cap a claim\'s patch would cross: i
   assert.equal(big.outcome, 'requester_error', show(big));
   assert.deepEqual(big.issues.map((i) => i.code), ['IMAGE_WATCH_TOO_LARGE']);
   assert.match(big.issues[0].detail, new RegExp(`exceed ${MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes} bytes`));
+  // The listing's later listings keep the same room: a build or a suite run that fills it is the image's, not a claim's surprise.
+  const after = (n) => (d, box) => {
+    if (d.argv[4] !== '/work') return defaultManifest(d, box);
+    box.listed = (box.listed || 0) + 1;
+    return box.listed === n ? padded(count, long)(d, box) : defaultManifest(d, box);
+  };
+  const atBuild = await runListing(listingSandbox({ scripts: { 'vcr-manifest': after(2) } }));
+  assert.deepEqual(atBuild.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD'], show(atBuild));
+  const atRun = await runListing(listingSandbox({ scripts: { 'vcr-manifest': after(3) } }));
+  assert.deepEqual(codes(atRun), ['IMAGE_WATCH_CHANGED_BY_SUITE'], show(atRun));
+  assert.match(atRun.facts.listing.refusals[0].detail, new RegExp(`run 1: the watched paths exceed ${MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes} bytes`));
 });

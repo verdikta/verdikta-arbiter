@@ -288,9 +288,13 @@ in every sandbox it opens, so there is one code path and nothing to keep in step
   `IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`, `IMAGE_FORGE_UNWATCHED`,
   `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_TOO_LARGE`, `IMAGE_WATCH_LINK_UNCOVERED`,
   `IMAGE_WATCH_UNREADABLE` and `IMAGE_TOOL_MISSING`, each pinned on real forge with a claim
-  on the same image. The first sandbox's reference has no patch in place, so it keeps room
-  under the caps for what a 2 MB patch can add (`LISTING_RESERVE`: 50,000 entries, 16 MiB of
-  listing): an image a claim's patch would take over a cap is refused here.
+  on the same image. A claim's listing also holds its patch's files and the git objects its
+  commit makes (a tree for each directory a path passes through), so the first sandbox's
+  listings keep room for what any patch can add: `LISTING_RESERVE`, 320,000 entries and 64 MiB of
+  listing under a claim's 1,000,000 and 128 MiB. The work tree's tmpfs bounds the objects (a page
+  each, so 262,144 at most), and more than that fails the commit, an abstain. So a listing may
+  hold 680,000 entries and 64 MiB, and any ≤ 2 MB patch on an image that passes stays under a
+  claim's caps. A real apply and commit is held to this on real forge.
 - **The build.** `Watch.afterBuild`: `IMAGE_WATCH_CHANGED_BY_BUILD`, as a claim's.
 - **The suite.** `Watch.afterRun` after each run, `Watch.afterReset` after the reset
   between runs. A run that changed a watched set is `IMAGE_WATCH_CHANGED_BY_SUITE` at the
@@ -1061,7 +1065,7 @@ process of the run is dead:
    before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
    `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_UNREADABLE`, `IMAGE_WATCH_CHANGED_BY_BUILD` (after the build), `IMAGE_TOOL_MISSING`
    when the image has no `realpath`, `IMAGE_WATCH_TOO_LARGE`: a listing over
-   64 MiB or over a cap above); after a run, the same is a definitive failure
+   128 MiB or over a cap above); after a run, the same is a definitive failure
    of the checks.
 
    A possible later hardening, not in this node: make the watched sets
@@ -1350,7 +1354,7 @@ The routes the review raised, against that scope (each has its test):
 | forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts` |
 | a maker's command runs a script under `paths.tests`, which the PoC rewrites | the command is `COMMAND_NOT_ALLOWED`: a command names no script (a pattern naming a test file is not a script, so a PoC editing that file raises no flag) | unit `commands.test.js`, tamper-flag tests |
 | a maker's command running forge with another configuration: `FOUNDRY_PROFILE`, `--config-path`, `--root`, a path flag, a hidden alias such as `--compiler-version`, through `env`, by an absolute path, `env -u` (R11-F1) | the grammar refuses every such command (`COMMAND_NOT_ALLOWED`, the token named) at claim and listing time; the runner runs forge itself, from `/work`, with its own environment; an image `ENV` of `FOUNDRY_*` never reaches it | unit `commands.test.js`, `forgeargv.test.js`, Docker "A3a R11-F1 (attempt 3)" |
-| a file flood that hides a change | a listing over 64 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`) | unit snapshot and cap tests |
+| a file flood that hides a change | a listing over 128 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`; at the listing check, over 64 MiB or 680,000 entries) | unit snapshot and cap tests |
 | a change behind a watched link (`lib/pkg -> ../vendor/pkg`, a symlinked `lib/`, a link inside the tree a link leads to) | the kernel resolves each watched link in the sandbox; its target joins the link's set, transitively | unit and Docker "A3a R6-F1" |
 | a set's root behind a link (`libs = ["deps/lib"]`, `deps -> third_party`; `cache` a link) | the kernel resolves the root itself; exactly what it leads to joins | unit "a link at or above a set's root", Docker "A3a R6-F1 (round 7)" |
 | `..` after a link in the middle (`lib/pkg -> ../bridge/../payload`, `bridge -> vendor/nested`) | the kernel's answer (`vendor/payload`) is what is watched, never a path computed from the link's text | unit and Docker "A3a R6-F1 (round 7)" |

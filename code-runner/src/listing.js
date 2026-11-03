@@ -644,8 +644,8 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
       }
     }
 
-    // A claim's reference, before any maker command: what it refuses is refused here with the same code. A claim's is
-    // taken with its patch in place, so this one keeps room under the caps for what a patch can add.
+    // A claim's reference, before any maker command: what it refuses is refused here with the same code. A claim's listings
+    // hold its patch and the git objects of its commit too, so these keep room under the caps for what any patch can add.
     await s0.watch(state.scope.ctx, { reserve: integrity.LISTING_RESERVE });
     state.prepareMs = Date.now() - t0;
     if (minimumRunSeconds(state.prepareMs) > caps.runSeconds) {

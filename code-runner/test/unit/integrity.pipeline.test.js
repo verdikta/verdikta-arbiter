@@ -366,7 +366,7 @@ test('a snapshot that cannot be read before any claim code is the requester\'s p
   const cases = [
     [{ 'vcr-framework': () => ({ exitCode: 3, stdout: 'vcr-forge \nvcr-path /usr/bin\n' }) }, 'IMAGE_FORGE_MISSING'],
     [{ 'vcr-framework': () => ({ exitCode: 1, stdout: 'vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n', stderr: 'Error: failed to parse foundry.toml' }) }, 'FORGE_CONFIG_INVALID'],
-    [{ 'vcr-manifest': () => ({ stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }) }, 'IMAGE_WATCH_TOO_LARGE']
+    [{ 'vcr-manifest': () => ({ stdout: Buffer.alloc(require('../../src/integrity').MANIFEST_MAX_BYTES + 1, 0x61) }) }, 'IMAGE_WATCH_TOO_LARGE']
   ];
   for (const [scripts, code] of cases) {
     const r = await runClaim(claimSandbox({ scripts }));
@@ -375,7 +375,7 @@ test('a snapshot that cannot be read before any claim code is the requester\'s p
   }
   // After a run: the listing overflows, or forge's configuration no longer loads.
   let n = 0;
-  const flood = (d, box) => { n += 1; if (n === 3) return { stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }; return { stdout: require('../helpers/fakeClaim').manifestOf(box.tree, d.argv.slice(4)) }; };
+  const flood = (d, box) => { n += 1; if (n === 3) return { stdout: Buffer.alloc(require('../../src/integrity').MANIFEST_MAX_BYTES + 1, 0x61) }; return { stdout: require('../helpers/fakeClaim').manifestOf(box.tree, d.argv.slice(4)) }; };
   const r1 = await runClaim(claimSandbox({ scripts: { 'vcr-manifest': flood } }));
   assertIntegrityFails(r1, ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged'], /run 1: the watched paths exceed/);
   let p = 0;

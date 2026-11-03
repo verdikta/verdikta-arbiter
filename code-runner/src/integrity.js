@@ -90,7 +90,8 @@ const forge = require('./forge');
 
 const WORK = '/work';
 const HOME = '/home/sandbox';
-const MANIFEST_MAX_BYTES = 64 * 1024 * 1024;
+/** What one listing of the watched paths may take at a claim; at the listing check, less LISTING_RESERVE. */
+const MANIFEST_MAX_BYTES = 128 * 1024 * 1024;
 /** Entries (files, links, anything but a directory) in one listing. */
 const MAX_ENTRIES = 1000000;
 /** Watched links the kernel is asked about, across a snapshot's rounds. */
@@ -102,12 +103,16 @@ const CONFIG_MAX_BYTES = 1024 * 1024;
 const SNAPSHOT_TIMEOUT_MS = 120000;
 const MAX_CHANGED = 100;
 /**
- * What the listing's reference keeps free under the caps, so that an image a claim's patch would take over one cannot pass
- * (a claim's reference holds the image plus the patch). A 2 MB patch adds at most 50,000 files, the shortest being
- * `diff --git a/x b/x\nnew file mode 100644\n` (40 bytes). In the listing each costs a find record and a hash line: its
- * path twice, which the patch's bytes bound, and about 100 bytes more.
+ * What the listing check keeps free under the caps, so that an image it passes stays under them with any patch a claim
+ * may bring. A claim's reference holds the image, the patch's files and the git objects its commit made (R1-F1): a tree
+ * for every directory a path passes through, so a 2 MB patch of deep paths can ask for hundreds of thousands. The work
+ * tree bounds those: a loose object takes at least a page of its 1,024 MiB tmpfs (sandbox.js), so at most 262,144 of
+ * them, each a 73-byte find record and a 127-byte hash line (52.5 MB; more and the commit fails, an abstain). The patch's
+ * own files are at most 50,000 (the shortest, `diff --git a/x b/x\nnew file mode 100644\n`, takes 40 bytes), each a path
+ * twice, which those 2 MB bound, and about 90 bytes (6.5 MB). So 312,144 entries and 59 MB; `test/unit/listing.test.js`
+ * holds these numbers to the constants, and a Docker test a real apply and commit to them.
  */
-const LISTING_RESERVE = Object.freeze({ entries: 50000, bytes: 16 * 1024 * 1024 });
+const LISTING_RESERVE = Object.freeze({ entries: 320000, bytes: 64 * 1024 * 1024 });
 
 /** The kinds of static tamper flag (the report's TamperFlag kinds, §9.5 check 5). */
 const TAMPER_FLAG_KINDS = Object.freeze([
@@ -1426,7 +1431,7 @@ class Watch {
    * @param {string[]} [o.testGlobs] - paths.tests (a watched link may not lead there)
    * @param {string[]} [o.patchPaths] - the work-tree paths the claim's patches add or change (git's names)
    * @param {string} [o.prefix] - exec names' prefix
-   * @param {{entries:number, bytes:number}} [o.reserve] - what the reference keeps free under the caps (the listing's, LISTING_RESERVE)
+   * @param {{entries:number, bytes:number}} [o.reserve] - what this watch's listings keep free under the caps (the listing check's, LISTING_RESERVE)
    */
   constructor({ protectedGlobs = [], testGlobs = [], patchPaths = [], prefix = 'integrity', solc, reserve = null } = {}) {
     if (typeof solc !== 'string') throw new TypeError('the watch runs forge with the compiler pinned: solc is not set');
@@ -1635,7 +1640,7 @@ class Watch {
   }
 
   async compareFiles(ctx, name, label, first) {
-    const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(this.ref.config));
+    const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(this.ref.config), this.reserve);
     const overflow = (reason) => {
       for (const c of ['protected', 'framework', 'dependencies']) this.fail(c, `${label}: ${reason}`);
       return null;

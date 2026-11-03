@@ -665,7 +665,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
 
   /**
    * The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command. The
-   * listing check takes it with no patch at all, keeping room under the caps for one (`reserve`).
+   * listing check takes it with no patch at all, keeping room under the caps for one, in its later listings too (`reserve`).
    */
   async function watch(ctx, { reserve = null } = {}) {
     const patchPaths = (state.touched || []).filter((t) => t.status !== 'D').map((t) => t.path);
