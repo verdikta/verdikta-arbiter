@@ -31,6 +31,7 @@ const { ImageCache } = require('./images');
 const { RUNNER_VERSION } = require('./version');
 const { OUTCOME, ABSTAIN, Abstain, RequesterError } = require('./result');
 const { finishClaim: defaultFinishClaim } = require('./report');
+const scanner = require('./scanner');
 
 const nullLog = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -177,7 +178,7 @@ function createServer({
    * the image pulled, the steps run, the sandboxes removed.
    * @returns {Promise<object|null>} the run result (null when refused before it started)
    */
-  async function runJob(req, res, receivedAt, { limits, image, attestedImage, unpackedBytes, deadlineMs, steps, sandboxes = 1 }) {
+  async function runJob(req, res, receivedAt, { limits, image, attestedImage, unpackedBytes, deadlineMs, steps, sandboxes = 1, minMemoryMb = 0, toolReserveMs = 0, preflight = null }) {
     if (closing) {
       send(res, 503, { outcome: OUTCOME.ABSTAIN, abstain: { cause: ABSTAIN.ADMISSION_REFUSED, step: 'admission', detail: 'the runner is shutting down' } });
       return null;
@@ -200,7 +201,10 @@ function createServer({
         attestedImage,
         unpackedBytes,
         // A claim with a fix check has its second sandbox beside the PoC's: admission holds memory for both (A3a).
-        sandboxes
+        sandboxes,
+        minMemoryMb,
+        toolReserveMs,
+        preflight
       });
     } finally {
       runs.delete(runId);
@@ -248,7 +252,9 @@ function createServer({
 
     const result = await runJob(req, res, receivedAt, {
       limits, image: request.spec.env.image, attestedImage: request.attestation.env.image,
-      unpackedBytes: request.spec.env.unpackedBytes, deadlineMs: request.deadlineMs, steps, sandboxes: sandboxesFor(request)
+      unpackedBytes: request.spec.env.unpackedBytes, deadlineMs: request.deadlineMs, steps, sandboxes: sandboxesFor(request),
+      // The claim's scan (A3c): its image and rules are checked before any work, and its sandbox's memory is held.
+      ...(stepsFor === claimSteps ? { minMemoryMb: scanner.SCAN_MEMORY_MB, toolReserveMs: scanner.SCAN_RESERVE_MS, preflight: scanner.requireScanner } : {})
     });
     if (!result) return;
     // A definitive run's report. One that cannot be built is the runner's own bug: an abstention, never an answer

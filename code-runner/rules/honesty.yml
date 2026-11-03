@@ -18,6 +18,7 @@ rules:
     message: storage-overwrite
     pattern-either:
       - pattern: vm.store
+      - pattern: Vm.store
       - pattern: $X.setArbitraryStorage
       - pattern: $X.copyStorage
       - pattern: $X.loadAllocs
@@ -31,8 +32,13 @@ rules:
     severity: WARNING
     message: store-shaped-call
     patterns:
-      - pattern: $X.store($A, $B, $C)
+      - pattern-either:
+          - pattern: $X.store($A, $B, $C)
+          - pattern: $X.store.selector
+          - pattern: abi.encodeCall($X.store, ...)
       - pattern-not: vm.store(...)
+      - pattern-not: Vm.store.selector
+      - pattern-not: abi.encodeCall(vm.store, ...)
 
   - id: verdikta.honesty.code-overwrite
     languages: [solidity]
@@ -42,6 +48,8 @@ rules:
       - pattern: $X.etch
       - pattern: deployCodeTo(...)
       - pattern: $X.deployCodeTo(...)
+      - pattern: $X.attachDelegation
+      - pattern: $X.signAndAttachDelegation
 
   - id: verdikta.honesty.call-mocked
     languages: [solidity]
@@ -109,6 +117,7 @@ rules:
       - pattern: $X.removeFile
       - pattern: $X.removeDir
       - pattern: $X.createDir
+      - pattern: $X.dumpState
 
   # The clock beyond the framework's: moving block time or numbers backwards, or to the end of the
   # type (no chain gets there), and reading or waiting on the host's own clock. Forward moves are
@@ -165,3 +174,4 @@ rules:
       - pattern: vm.setNonceUnsafe
       - pattern: vm.resetNonce
       - pattern: vm.setEnv
+      - pattern: vm.setEvmVersion

@@ -14,6 +14,7 @@ const { CLASS_HARD_LIMITS, GVISOR_RELEASE } = require('./common');
 const { dockerInfo } = require('./daemon');
 const { maintenanceLocked } = require('./admission');
 const { measureRuntime, runtimeProblem } = require('./runtime');
+const scanner = require('./scanner');
 
 /** DOCKER_HOST without any user or password it might carry. */
 function describeEndpoint(dockerHost) {
@@ -57,6 +58,13 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
   const problem = info.reachable && runtime ? runtimeProblem(config, measured) : null;
   if (problem) reasons.push(problem);
   if (maintenance) reasons.push('the maintenance lock is held');
+  // A claim's scan needs these, and the runner never pulls the image: the installer warms it (A3c, A8).
+  const scan = info.reachable
+    ? await scanner.imageStatus({ docker, platform: config.platform })
+    : { image: scanner.SEMGREP.reference, version: scanner.SEMGREP.version, rules: scanner.RULES_VERSION, present: false, digest: null, platform: null, problem: 'Docker unreachable' };
+  const rules = scanner.rulesProblem();
+  if (info.reachable && scan.problem) reasons.push(scan.problem);
+  if (rules) reasons.push(rules);
   let capacityStatus;
   if (capacity) {
     await capacity.measure();
@@ -78,6 +86,7 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
     runtimeArgs: runtime ? runtime.runtimeArgs : [],
     gvisor: measured.gvisor,
     gvisorPinned: GVISOR_RELEASE,
+    scanner: { ...scan, rulesProblem: rules },
     docker: {
       reachable: info.reachable,
       endpoint: describeEndpoint(config.dockerHost),

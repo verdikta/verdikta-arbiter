@@ -104,6 +104,27 @@ function parseRawZ(rawZ, hexLen) {
 }
 
 /**
+ * Every record of a raw diff between two commits: both modes, both ids, the
+ * status and the path, for the scanner's reads (src/scanner.js), by id.
+ * @param {Buffer} rawZ - `git diff --raw -z --no-renames` output
+ * @param {number} hexLen - the id length of the repository (40 or 64)
+ * @returns {{ok:true, entries:Array<{path:string, mode:string, id:string, oldMode:string, oldId:string, status:string}>} | {ok:false, reason:string}}
+ */
+function parseRawEntries(rawZ, hexLen) {
+  const fields = zFields(rawZ);
+  if (fields === null) return { ok: false, reason: 'the raw diff did not end with a NUL' };
+  if (fields.length % 2 !== 0) return { ok: false, reason: 'a raw record without a path' };
+  const record = new RegExp(`^:([0-7]{6}) ([0-7]{6}) ([0-9a-f]{${hexLen}}) ([0-9a-f]{${hexLen}}) ([A-Z])$`);
+  const entries = [];
+  for (let i = 0; i < fields.length; i += 2) {
+    const m = record.exec(fields[i]);
+    if (!m) return { ok: false, reason: `an unreadable raw record: ${fields[i].slice(0, 80)}` };
+    entries.push({ oldMode: m[1], mode: m[2], oldId: m[3], id: m[4], status: m[5], path: fields[i + 1] });
+  }
+  return { ok: true, entries };
+}
+
+/**
  * `git cat-file --batch-check='%(objectsize)'` over `ids`: one line each, a
  * decimal size or `<id> missing`. Returns the sum, counting each line (so a
  * repeated id sums repeatedly), or null when a line is unreadable or missing.
@@ -285,5 +306,5 @@ function reportablePath(p) {
 }
 
 module.exports = {
-  scanPatch, parseRawZ, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, unquoteCStyle, reportablePath
+  scanPatch, parseRawZ, parseRawEntries, sumObjectSizes, parseNameStatusZ, parseNumstatZ, parseLsTreeZ, parseAddedLines, unquoteCStyle, reportablePath
 };

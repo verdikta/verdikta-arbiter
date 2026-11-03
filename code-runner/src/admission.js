@@ -45,15 +45,15 @@ function maintenanceLocked(file, exists = fs.existsSync) {
  * @param {AbortSignal} [o.signal]
  * @throws {Abstain}
  */
-async function admitRun({ config, docker, limits, stopAt, now = Date.now(), signal, exists = fs.existsSync }) {
+async function admitRun({ config, docker, limits, stopAt, now = Date.now(), signal, exists = fs.existsSync, toolReserveMs = 0 }) {
   const refuse = (detail) => new Abstain(ABSTAIN.ADMISSION_REFUSED, detail, { step: 'admission' });
   if (maintenanceLocked(config.maintenanceFile, exists)) {
     throw refuse(`the maintenance lock ${config.maintenanceFile} is held (an install or upgrade is running)`);
   }
-  const needMs = limits.runSeconds * 1000;
+  const needMs = limits.runSeconds * 1000 + toolReserveMs;
   const haveMs = stopAt - now;
   if (haveMs < needMs) {
-    throw refuse(`the deadline leaves ${Math.max(0, haveMs)} ms; the run may need ${needMs} ms (runSeconds)`);
+    throw refuse(`the deadline leaves ${Math.max(0, haveMs)} ms; the run may need ${needMs} ms (runSeconds${toolReserveMs ? ' and the scan' : ''})`);
   }
   const info = await dockerInfo(docker, { timeoutMs: Math.min(10000, haveMs), signal });
   if (!info.reachable) throw new Abstain(ABSTAIN.DOCKER_UNREACHABLE, info.error, { step: 'admission' });
@@ -137,11 +137,12 @@ class Capacity {
    * ticket whose release() frees the slot and the memory (idempotent).
    * @throws {Abstain}
    */
-  async admit({ config = this.config, docker, limits, stopAt, now = Date.now(), signal, exists = fs.existsSync, sandboxes = 1 }) {
-    await admitRun({ config, docker, limits, stopAt, now, signal, exists });
+  async admit({ config = this.config, docker, limits, stopAt, now = Date.now(), signal, exists = fs.existsSync, sandboxes = 1, minMemoryMb = 0, toolReserveMs = 0 }) {
+    await admitRun({ config, docker, limits, stopAt, now, signal, exists, toolReserveMs });
     // A run with the fix check has two sandboxes open at once, each with the spec's memory limit (node A3a).
     const count = Number.isInteger(sandboxes) && sandboxes > 0 ? sandboxes : 1;
-    const memoryMb = limits.memoryMb * count;
+    // A tool's sandbox (the scanner, A3c) opens once the others are closed, with limits of its own: the run holds at least its memory.
+    const memoryMb = Math.max(limits.memoryMb * count, minMemoryMb);
     const mem = await this.measure();
     // From here on nothing is awaited: the check and the taking of the slot are one step.
     const refuse = (detail) => new Abstain(ABSTAIN.ADMISSION_REFUSED, detail, { step: 'admission' });

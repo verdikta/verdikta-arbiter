@@ -14,7 +14,8 @@
  * - A3b (pack.js, report.js): the context pack, read before any claim code
  *   runs and assembled once; the Verification Report and its hash are built
  *   from the facts when the run is definitive (server.js)
- * - A3c: honesty flags (Semgrep) and fix-mode lint
+ * - A3c (scanner.js): honesty flags and the fix's lint, in a sandbox of the pinned
+ *   Semgrep once the claim's are closed; tier A, never a gate
  */
 
 const { claimSteps } = require('./claim');

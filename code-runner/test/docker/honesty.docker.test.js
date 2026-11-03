@@ -129,8 +129,7 @@ test('a .semgrepignore, a .semgrep.yml, a .gitignore and inline nosem comments i
     entry('.gitignore', 'test/\n'),
     entry('.semgrepconfig', 'x\n')
   ]);
-  assert.deepEqual(summary(flags).filter((s) => s.includes('Exploit')), WANT);
-  assert.ok(!flags.some((f) => /hunter/.test(f.rule)), 'no rule of the hunter\'s runs');
+  assert.deepEqual(summary(flags), WANT, 'no rule of the hunter\'s runs, and its files raise nothing of their own');
 });
 
 test('on the same bytes with and without a hunter\'s configuration, the flags on the test are the same', { timeout: TIMEOUT }, async (t) => {

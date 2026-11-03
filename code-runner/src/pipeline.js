@@ -69,11 +69,17 @@ function delay(ms) {
  * @param {number} [o.reapFirstMs] - first retry of a removal that failed (the slot stays held meanwhile)
  * @param {number} [o.sandboxes] - how many sandboxes the run may have open at once (the fix check's beside the
  *   PoC's: 2), each with the spec's limits; admission holds memory for all of them (node A3a)
+ * @param {number} [o.minMemoryMb] - the least memory admission holds for the run, whatever the spec's limits: a tool's
+ *   sandbox (the scanner, node A3c) opens when the others are closed, with limits of its own
+ * @param {number} [o.toolReserveMs] - what admission and the pull's window leave beyond runSeconds for a tool's last step,
+ *   which has a timer of its own (ctx.beginToolBudget), bounded by the deadline
+ * @param {Function} [o.preflight] - async ({ docker, config, signal }) => void, after admission and before the env image:
+ *   what the steps will need, so a run that could not finish abstains before any work (the scanner's image and rules)
  * @returns {Promise<object>} the run result; never rejects
  */
 async function executeRun({
   docker, config, limits, image, runId, steps = [], receivedAt = Date.now(), deadlineAt,
-  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes, reapFirstMs = REAP_FIRST_MS, sandboxes = 1
+  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes, reapFirstMs = REAP_FIRST_MS, sandboxes = 1, minMemoryMb = 0, toolReserveMs = 0, preflight = null
 }) {
   const stopAt = deadlineAt - (config.deadlineReserveMs || 0);
   const result = {
@@ -110,7 +116,7 @@ async function executeRun({
   if (signal && signal.aborted) return abstainWith(new Abstain(ABSTAIN.CANCELLED, 'the run was cancelled before it started'));
   let ticket = null;
   try {
-    ticket = (await admit({ config, docker, limits, stopAt, now: Date.now(), signal, sandboxes })) || null;
+    ticket = (await admit({ config, docker, limits, stopAt, now: Date.now(), signal, sandboxes, minMemoryMb, toolReserveMs })) || null;
   } catch (err) {
     return abstainWith(asAbstain(err, 'admission'));
   }
@@ -130,6 +136,7 @@ async function executeRun({
     const problem = runtimeProblem(config, measured);
     if (problem) throw new Abstain(ABSTAIN.ADMISSION_REFUSED, problem, { step: 'admission' });
     result.gvisor = measured.gvisor;
+    if (preflight) await preflight({ docker, config, signal });
   } catch (err) {
     releaseAll();
     return abstainWith(asAbstain(err, 'admission'));
@@ -138,7 +145,7 @@ async function executeRun({
   // The env image (§9.2 step 2): pulled by digest if it is not cached, in
   // the time that still leaves runSeconds for the run.
   if (images) {
-    const runMs = limits.runSeconds * 1000;
+    const runMs = limits.runSeconds * 1000 + toolReserveMs;
     try {
       lease = await images.acquire({
         image, attestedImage: attestedImage === undefined ? image : attestedImage, platform: config.platform,
@@ -179,10 +186,8 @@ async function executeRun({
     run.abort(reason);
     for (const sb of opened) sb.kill();
   };
-  const timers = [
-    setTimeout(() => kill('deadline'), Math.max(0, stopAt - Date.now())),
-    setTimeout(() => kill('run'), limits.runSeconds * 1000)
-  ];
+  let runTimer = setTimeout(() => kill('run'), limits.runSeconds * 1000);
+  const deadlineTimer = setTimeout(() => kill('deadline'), Math.max(0, stopAt - Date.now()));
   const onCancel = () => kill('cancel');
   if (signal) signal.addEventListener('abort', onCancel, { once: true });
   const killed = new Promise((_, reject) => {
@@ -203,7 +208,11 @@ async function executeRun({
     return new Abstain(cause, detail, { step: stepName });
   }
 
-  async function open() {
+  /**
+   * A sandbox: the run's env image, or (`tool`) a tool's pinned image with limits of its own. The flags are the same.
+   * What launching a tool's image finds wrong is the runner's install, never the requester's package.
+   */
+  async function open({ image: toolImage = null, limits: toolLimits = null, tool = false } = {}) {
     // Admission held memory for `sandboxes` of them; a step may not open more.
     // Live ones count: a sandbox closed by its handle's close() (the listing check's probes) holds nothing.
     const live = opened.filter((x) => !closed.has(x)).length;
@@ -220,10 +229,15 @@ async function executeRun({
     if (late) throw late;
     const label = opened.length === 1 ? 'launch' : `launch:${name}`;
     running.add(label);
-    const launch = sb.launch({ image, platform: config.platform, limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
+    const launch = sb.launch({ image: toolImage || image, platform: config.platform, limits: toolLimits || limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
     launches.set(sb, launch.catch(() => {}));
     try {
       await launch;
+    } catch (err) {
+      if (tool && err instanceof RequesterError) {
+        throw new Abstain(ABSTAIN.RUNNER_ERROR, `the tool image ${toolImage} cannot run as a sandbox: ${err.message}`, { step: label });
+      }
+      throw err;
     } finally {
       running.delete(label);
     }
@@ -333,8 +347,17 @@ async function executeRun({
       sandboxName: primary.name,
       exec: primary.exec,
       readFile: primary.readFile,
-      /** Another sandbox with the same flags (the fix check, §9.2 step 8), with exec, readFile, name and close(). */
-      openSandbox: () => open(),
+      /** Another sandbox with the same flags (the fix check, §9.2 step 8; the scanner's tool image, A3c), with exec, readFile, name and close(). */
+      openSandbox: (o) => open(o),
+      /**
+       * The run's own timer starts over for a tool's last step (the scanner, A3c): claim code has finished, and what a
+       * hunter's file costs the tool must not turn a listing's run into an abstention. The deadline still bounds it.
+       */
+      beginToolBudget(ms) {
+        if (run.signal.aborted) return;
+        clearTimeout(runTimer);
+        runTimer = setTimeout(() => kill('run'), ms);
+      },
       /** Remove the first sandbox now (its handle's close()); ctx.exec cannot be used after. */
       closeSandbox: primary.close,
       /** Record a gate decided on a definitive basis (exit_code, junit, integrity, input). */
@@ -371,7 +394,8 @@ async function executeRun({
       await Promise.race([work.catch(() => {}), delay(Math.min(KILL_GRACE_MS, Math.max(0, deadlineAt - Date.now())))]);
     }
   } finally {
-    for (const t of timers) clearTimeout(t);
+    clearTimeout(runTimer);
+    clearTimeout(deadlineTimer);
     if (signal) signal.removeEventListener('abort', onCancel);
     // Remove every sandbox, each once its own launch has settled. The answer
     // waits for that until the deadline, never longer; a removal still

@@ -91,6 +91,9 @@ contract Idioms is Test {
     function test_names_a_contract_may_have() public {
         vault.store(1);
         vault.store(1, 2);
+        vault.deposit.selector;
+        abi.encodeCall(vault.deposit, (1));
+        abi.encodeWithSelector(Vault.deposit.selector, 1);
         store(1, 2, 3);
         stored = 1;
         pool.fee();

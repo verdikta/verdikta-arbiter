@@ -4,8 +4,20 @@ pragma solidity ^0.8.20;
 // Every line marked `flag:` must raise exactly the rules it names, and no other line may raise any.
 interface Cheat { function store(address a, bytes32 b, bytes32 c) external; }
 
+// Wherever code can run.
+function free() { vm.etch(address(1), hex"00"); } // flag: code-overwrite
+
+library Lib {
+    function l() internal { vm.etch(address(1), hex"00"); } // flag: code-overwrite
+}
+
 contract Positive {
     Vm constant other = Vm(HEVM_ADDRESS);
+
+    constructor() { vm.etch(address(1), hex"00"); } // flag: code-overwrite
+    receive() external payable { vm.etch(address(1), hex"00"); } // flag: code-overwrite
+    fallback() external { vm.etch(address(1), hex"00"); } // flag: code-overwrite
+    modifier m() { vm.etch(address(1), hex"00"); _; } // flag: code-overwrite
 
     function storage_() public {
         vm.store(address(1), bytes32(0), bytes32(0)); // flag: storage-overwrite
@@ -19,6 +31,8 @@ contract Positive {
         stdstore.target(address(1)).sig("x()").checked_write_int(int256(1)); // flag: storage-overwrite
         function(address, bytes32, bytes32) external f = vm.store; // flag: storage-overwrite
         abi.encodeCall(vm.store, (address(1), bytes32(0), bytes32(0))); // flag: storage-overwrite
+        target.call(abi.encodeWithSelector(Vm.store.selector, address(1), bytes32(0), bytes32(0))); // flag: storage-overwrite
+        try vm.store(address(1), bytes32(0), bytes32(0)) {} catch {} // flag: storage-overwrite
         unchecked { vm.store(address(1), bytes32(0), bytes32(0)); } // flag: storage-overwrite
     }
 
@@ -31,6 +45,8 @@ contract Positive {
         Cheat(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D).store(address(1), bytes32(0), bytes32(0)); // flag: store-shaped-call cheatcode-address
         Cheat(address(1)).store({a: address(1), b: bytes32(0), c: bytes32(0)}); // flag: store-named-arguments
         registry.store(address(1), 2, 3); // flag: store-shaped-call
+        target.call(abi.encodeWithSelector(Cheat.store.selector, address(1), bytes32(0), bytes32(0))); // flag: store-shaped-call
+        abi.encodeCall(cheat.store, (address(1), bytes32(0), bytes32(0))); // flag: store-shaped-call
     }
 
     function code() public {
@@ -39,6 +55,9 @@ contract Positive {
         deployCodeTo("Foo.sol", address(1)); // flag: code-overwrite
         deployCodeTo("Foo.sol", hex"", address(1)); // flag: code-overwrite
         stdCheats.deployCodeTo("Foo.sol", address(1)); // flag: code-overwrite
+        vm.attachDelegation(signed); // flag: code-overwrite
+        vm.signAndAttachDelegation(address(1), 1); // flag: code-overwrite
+        target.call(abi.encodeWithSelector(Vm.etch.selector, address(1), hex"00")); // flag: code-overwrite
     }
 
     function mocks() public {
@@ -92,6 +111,7 @@ contract Positive {
         vm.removeFile("a"); // flag: filesystem-write
         vm.removeDir("a", true); // flag: filesystem-write
         vm.createDir("a", true); // flag: filesystem-write
+        vm.dumpState("a"); // flag: filesystem-write
     }
 
     function reads() public {
@@ -136,5 +156,6 @@ contract Positive {
         vm.setNonceUnsafe(address(1), 1); // flag: block-environment
         vm.resetNonce(address(1)); // flag: block-environment
         vm.setEnv("A", "B"); // flag: block-environment
+        vm.setEvmVersion("cancun"); // flag: block-environment
     }
 }
