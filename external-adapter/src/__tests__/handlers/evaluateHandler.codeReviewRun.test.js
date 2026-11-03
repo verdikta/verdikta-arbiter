@@ -59,6 +59,7 @@ let runner;
 let ai;
 let saveSpy;
 let fetchDelayMs;
+let heldFetches; // CIDs whose IPFS fetch stays pending until the test says
 
 function useConfig(change = {}) {
   loadCodeReviewConfig({ ...BASE_ENV, CODE_RUNNER_URL: runner.url, AI_NODE_URL: ai.url, ...change });
@@ -91,6 +92,12 @@ function scenario(options = {}) {
 }
 
 const request = (cidString, id = 'job-1') => ({ id, data: { cid: cidString, aggId: '0xagg' } });
+function holdFetch(cid) {
+  let release;
+  const promise = new Promise((resolve) => { release = resolve; });
+  heldFetches.set(cid, { promise, release });
+  return release;
+}
 const hashOf = (commitment) => BigInt(commitment).toString(16).padStart(32, '0');
 
 beforeEach(async () => {
@@ -99,6 +106,7 @@ beforeEach(async () => {
   uploaded = [];
   logLines = [];
   fetchDelayMs = 0;
+  heldFetches = new Map();
   sharedRuns.clear();
   runner = await R.startRunner();
   ai = await R.startAiNode();
@@ -107,6 +115,7 @@ beforeEach(async () => {
   const { archiveService, ipfsClient, logger } = mockState.client;
   archiveService.getArchive.mockImplementation(async (c) => {
     if (fetchDelayMs) await sleep(fetchDelayMs);
+    if (heldFetches.has(c)) await heldFetches.get(c).promise;
     if (!archives[c]) throw new Error('Unable to fetch archive from IPFS.');
     return archives[c];
   });
@@ -889,6 +898,75 @@ describe('fixture: cancellation-at-deadline', () => {
     expectAbstain(res, /CODE_REVIEW_DEADLINE/);
     for (let i = 0; i < 40 && ai.state.cancelled === 0; i += 1) await sleep(25);
     expect(ai.state.cancelled).toBe(1);
+  });
+
+  describe('a fetch still pending at the deadline: the handler answers by then, errored, whatever the IPFS client does', () => {
+    const DEADLINE = 300;
+
+    async function expectBounded(s, heldCid) {
+      useConfig({ CODE_REVIEW_DEADLINE_MS: String(DEADLINE) });
+      const release = holdFetch(heldCid);
+      const before = Date.now();
+      const res = await evaluateHandler(request(s.cid(1)));
+      expect(Date.now() - before).toBeLessThan(DEADLINE + 5000);
+      expectAbstain(res, /CODE_REVIEW_DEADLINE/);
+      expect(runner.state.healthCalls).toBe(0);
+      return release;
+    }
+
+    it('the listing', async () => {
+      const s = scenario();
+      await expectBounded(s, s.cids.listing);
+    });
+
+    it('the claim', async () => {
+      const s = scenario();
+      await expectBounded(s, s.cids.claim);
+    });
+
+    it('a prior finding', async () => {
+      const s = scenario({ priorCids: [H.cid('PriorA')] });
+      await expectBounded(s, H.cid('PriorA'));
+    });
+
+    it('the ciphertext, at the disclosure gate', async () => {
+      const s = scenario();
+      await expectBounded(s, s.disclosure.fields.ciphertextCid);
+    });
+
+    it('the dispute statement', async () => {
+      const s = scenario({ dispute: 'The maker argues.' });
+      await expectBounded(s, H.cid('Statement'));
+    });
+
+    it('a fetch that finishes after the handler has answered starts nothing: no extraction into the removed folder, no runner', async () => {
+      const s = scenario();
+      const extract = jest.spyOn(mockState.client.archiveService, 'extractArchive');
+      const release = await expectBounded(s, s.cids.claim);
+      expect(extract).not.toHaveBeenCalled();
+      release();
+      await sleep(50);
+      expect(extract).not.toHaveBeenCalled();
+      expect(runner.state.healthCalls).toBe(0);
+      expect(saveSpy).not.toHaveBeenCalled();
+    });
+
+    it('a ciphertext that arrives after the deadline settles nothing, and no further fetch starts', async () => {
+      const s = scenario({ dispute: 'The maker argues.' });
+      const release = await expectBounded(s, H.cid('Statement'));
+      const fetches = mockState.client.archiveService.getArchive.mock.calls.length;
+      release();
+      await sleep(50);
+      expect(mockState.client.archiveService.getArchive.mock.calls.length).toBe(fetches);
+      expect(saveSpy).not.toHaveBeenCalled();
+    });
+
+    it('an arbiter that does not serve code review keeps the text path\'s fetches as they were: refused from the manifest, not by a deadline', async () => {
+      useConfig({ CODE_REVIEW_ENABLED: 'false', CODE_REVIEW_DEADLINE_MS: '1' });
+      fetchDelayMs = 20;
+      const s = scenario();
+      expectAbstain(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_DISABLED/);
+    });
   });
 
   it('a hung /health is bounded by the deadline too', async () => {
