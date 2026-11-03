@@ -1340,8 +1340,8 @@ Within that:
 
 **Known limits (Q35).** Open, recorded, and to be reviewed before mainnet. The tests named
 "Known limit" in `test/docker/integrity.docker.test.js` pin the claim pipeline's side of these as it
-is today, not as it is wanted; `test/docker/listing-integrity.docker.test.js` pins what the listing check
-does about them. The runner has no clock faking: nothing in `src/` sets the sandbox's time.
+is today, not as it is wanted; `test/docker/listing-integrity.docker.test.js` and `listing-vyper.docker.test.js` pin what
+the listing check does about them. The runner has no clock faking: nothing in `src/` sets the sandbox's time.
 
 Node A2c changed this table, and only as far as its tests show. On an image from the attested builder, a
 `solc` that isn't an official release no longer reaches a claim: it's refused at listing, by Docker tests on

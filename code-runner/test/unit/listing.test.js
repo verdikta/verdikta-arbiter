@@ -1292,12 +1292,13 @@ test('A2d: a PATH directory in the work tree is refused, with or without a vyper
     ['relative', 'tools:/usr/local/bin:/usr/bin', '/work/tools'],
     ['an empty entry, which is forge\'s own directory', ':/usr/local/bin:/usr/bin', '/work'],
     ['a trailing empty entry', '/usr/local/bin:/usr/bin:', '/work'],
-    ['`.`', '.:/usr/local/bin:/usr/bin', '/work']
+    ['`.`', '.:/usr/local/bin:/usr/bin', '/work'],
+    ['spelled with a dot', '/work/./tools:/usr/local/bin:/usr/bin', '/work/./tools']
   ]) {
     const sb = listingSandbox({ scripts: { 'vcr-framework': framework('/usr/local/bin/forge', path) } });
     const r = await runListing(sb);
     assert.deepEqual(codes(r), ['VYPER_NOT_SUPPORTED'], `${what}: ${show(r)}`);
-    assert.match(r.facts.listing.refusals[0].detail, new RegExp(`PATH directory ${dir} is in the work tree, where a patch or a fix could add a vyper`), what);
+    assert.match(r.facts.listing.refusals[0].detail, new RegExp(`PATH directory ${dir.replace(/\./g, '\\.')} is in the work tree, where a patch or a fix could add a vyper`), what);
     assert.ok(!ran(sb, 'vcr-build'), what);
   }
   // With one there, both are named.

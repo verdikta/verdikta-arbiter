@@ -2,35 +2,29 @@
 
 // Node A2c against real forge (the base pinned in @verdikta/common, v1.8.5): the listing check takes a claim's integrity
 // reference, holds its suite and its harness probes to a claim's post-run checksums, and refuses any solc in the image that
-// is not an official release. Node A2d: it also refuses a vyper on PATH and a vyper setting (owner Q40). One test per refusal
-// code; each code a claim gives is run as a claim too, on the same image, and must be the same code. Ordinary projects must
-// pass, and a claim on them must then pass. Under runc locally; CI runs this file on linux/amd64 under runc and under gVisor
-// (runsc). Every container and image is removed.
+// is not an official release. One test per refusal code; each code a claim gives is run as a claim too, on the same image,
+// and must be the same code. Ordinary projects must pass, and a claim on them must then pass. Under runc locally; CI runs
+// this file under runc and under gVisor (runsc). Every container and image is removed.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { executeRun } = require('../../src/pipeline');
-const { validateListingRequest, listingSteps, imageUnpackedBytes } = require('../../src/listing');
+const { validateListingRequest } = require('../../src/listing');
 const { officialList, makeList } = require('../../src/solcReleases');
 const { checkSpec } = require('../../src/classLimits');
-const { claimSteps } = require('../../src/steps');
 const { checkClaim, claimSession } = require('../../src/claim');
 const { svmEntryProblem, discoverForge } = require('../../src/integrity');
 const forgeLib = require('../../src/forge');
 const { runText } = require('../../src/docker');
-const { Prefix } = require('../../src/capture');
 const { PLATFORM, silent, instanceId, dockerTestConfig, dockerFor, ensureImage, leftovers, removeAll, smallLimits } = require('./helpers');
-const { VAULT_REPO, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, pocFile, foundryBase, forgeStdFiles } = require('./forgeFixture');
+const { VAULT_REPO, FOUNDRY_TOML, buildFixture, addFilesPatch, foundryBase, forgeStdFiles } = require('./forgeFixture');
+const { SVM, BASE_PATH, writeFile, COUNTER, BUILDER_ENV, AS_BUILDER, INSTALL_MARKERS, body, check, DRAIN, FINDING, claimOf, claim, show, stepNames } = require('./listingHarness');
 
 const TIMEOUT = 900000;
 const builder = dockerFor(dockerTestConfig());
 const fixtures = new Map();
-const SVM = '/opt/verdikta/tools/share/svm';
-const BASE_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
 
-/** A setup line writing `text` to `file` exactly, its bytes known to the test (its hash goes on a test's list). */
-const writeFile = (file, text) => `printf '%s' '${Buffer.from(text).toString('base64')}' | base64 -d > ${file} && chmod 0755 ${file}`;
 const sha256 = (text) => crypto.createHash('sha256').update(text).digest('hex');
 /** The official list for this platform, plus programs this test wants past the look so that it can see what comes after it. */
 const listWith = (...texts) => {
@@ -81,54 +75,9 @@ const FFI_TEST = (script) => [
 ].join('\n');
 const ONCE = (then) => `if [ -e state/once ]; then ${then}; fi; : > state/once`;
 
-/** An ordinary Foundry project (forge init's shape): real forge-std, a unit, fuzz and invariant test, console logging. */
-const COUNTER = Object.freeze({
-  'src/Counter.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.13;\ncontract Counter {\n    uint256 public number;\n    function setNumber(uint256 n) public { number = n; }\n    function increment() public { number += 1; }\n}\n',
-  'test/Counter.t.sol': [
-    '// SPDX-License-Identifier: MIT',
-    'pragma solidity ^0.8.13;',
-    'import {Test, console} from "forge-std/Test.sol";',
-    'import {Counter} from "../src/Counter.sol";',
-    'contract CounterTest is Test {',
-    '    Counter public counter;',
-    '    function setUp() public { counter = new Counter(); counter.setNumber(0); targetContract(address(counter)); }',
-    '    function test_Increment() public { counter.increment(); console.log("number", counter.number()); assertEq(counter.number(), 1); }',
-    '    function testFuzz_SetNumber(uint256 x) public { counter.setNumber(x); assertEq(counter.number(), x); }',
-    '    function invariant_ReadsBack() public view { assertEq(counter.number(), counter.number()); }',
-    '}',
-    ''
-  ].join('\n'),
-  'script/Counter.s.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.13;\nimport {Script} from "forge-std/Script.sol";\ncontract CounterScript is Script { function run() public {} }\n',
-  'remappings.txt': 'forge-std/=lib/forge-std/src/\n',
-  'foundry.lock': '{}\n',
-  '.gitignore': 'out/\ncache/\nbroadcast/\n.env\n',
-  '.gitmodules': '[submodule "lib/forge-std"]\n\tpath = lib/forge-std\n\turl = https://github.com/foundry-rs/forge-std\n',
-  'foundry.toml': '[profile.default]\nsrc = "src"\nout = "out"\nlibs = ["lib"]\nsolc_version = "0.8.31"\noffline = true\n\n[invariant]\nruns = 4\ndepth = 4\n'
-});
-/** The image shape the attested builder makes (builder/src/dockerfile.js). */
-const BUILDER_ENV = ['XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', `PATH=${BASE_PATH}:/opt/verdikta/tools/bin`];
-const AS_BUILDER = 'chown -R 10001:10001 /repo && git config --system --add safe.directory /repo';
-/** What forge's own install leaves beside a release: these are no compilers (see the install test below). */
-const INSTALL_MARKERS = (...versions) => [`: > ${SVM}/.global-version`, ...versions.map((v) => `: > ${SVM}/${v}/.lock`)].join(' && ');
 
 /** Files in the near-cap fixture: each a find record and a hash line of about 3,900 bytes of path, about 7,900 bytes in all. */
 const NEAR_CAP_FILES = 8300;
-
-// ---- Vyper (A2d, owner Q40): forge runs this for a .vy file, and nothing checks its bytes.
-const TOOLS_BIN = '/opt/verdikta/tools/bin';
-const VY = '# @version ^0.4.0\n@external\ndef fee() -> uint256:\n    return 1\n';
-const VY_NO_PRAGMA = '@external\ndef fee() -> uint256:\n    return 1\n';
-/** Valid Solidity in a file named .vy. */
-const SOL_IN_VY = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract Fee { function fee() public pure returns (uint256) { return 1; } }\n';
-/** A fake that answers forge, and writes a watched place when forge compiles with it, which the build's check sees. */
-const FAKE_VYPER = '#!/bin/sh\ncase " $* " in *" --version "*) echo "0.4.0+commit.e9db8d9f" ;; *) printf x > /work/lib/trap.sol; printf "{}" ;; esac\n';
-/** A fake that logs each run and does nothing else. */
-const LOGGING_VYPER = '#!/bin/sh\nprintf "%s\\n" "$*" >> /tmp/vyper-ran\ncase " $* " in *" --version "*) echo "0.4.0+commit.e9db8d9f" ;; *) cat >/dev/null; printf "{\\"contracts\\":{},\\"sources\\":{},\\"errors\\":[]}" ;; esac\n';
-const VY_REPO = Object.freeze({ ...VAULT_REPO, 'lib/.keep': '', 'src/Fee.vy': VY });
-const inTools = (text, mode = '0755') => `mkdir -p ${TOOLS_BIN} && ${writeFile(`${TOOLS_BIN}/vyper`, text)} && chmod -R a+rX /opt/verdikta && chmod ${mode} ${TOOLS_BIN}/vyper`;
-const SOL_PROBE = '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract Probe {}\n';
-const FAKE_NAMED = `mkdir -p /opt/fake && ${writeFile('/opt/fake/vyper', FAKE_VYPER)} && chmod -R a+rX /opt/fake`;
-const importing = (what) => VAULT_REPO['src/Vault.sol'].replace('contract Vault {', `import "${what}";\ncontract Vault {`);
 
 const VARIANTS = Object.freeze({
   // ------------------------------------------------- what a claim refuses, the same image as both
@@ -161,14 +110,6 @@ const VARIANTS = Object.freeze({
   noforge: { env: ['PATH=/usr/sbin:/usr/bin:/sbin:/bin'] },
   badconfig: { files: { ...VAULT_REPO, 'foundry.toml': '[profile.default\nthis is not toml\n' } },
   solctrap: { files: { ...VAULT_REPO, 'lib/.keep': '' }, setup: replaceSolc(SOLC_TRAP) },
-  vysetintree: { files: VY_REPO, toml: '[vyper]\npath = "test/vyper"' },
-  vysetthroughtree: { files: VY_REPO, toml: '[vyper]\npath = "/opt/x/vyper"', setup: 'mkdir -p /opt/x && ln -s /work/test/vyper /opt/x/vyper' },
-  vyperthroughtree: { files: VY_REPO, setup: `mkdir -p ${TOOLS_BIN} && ln -s /work/test/vyper ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta`, env: BUILDER_ENV },
-  // A PATH directory in the work tree by a way that does not start with /work/ (found on A2d's own attempt to get past the look).
-  vypathslash: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=//work/tools:${BASE_PATH}`] },
-  vypathdotdot: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/opt/../work/tools:${BASE_PATH}`] },
-  vypathproc: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/proc/self/cwd/tools:${BASE_PATH}`] },
-  vypathlink: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, setup: 'ln -s /work/tools /opt/x', env: [`PATH=/opt/x:${BASE_PATH}`] },
   // ------------------------------------------------- not an official release
   solcwrapper: { setup: replaceSolc(SOLC_WRAP.replace('/opt/solc/solc', '/opt/solc/solc.real')) },
   installedfake: { files: { ...VAULT_REPO, 'foundry.toml': NAMES_VERSION }, setup: tools(`mkdir -p ${SVM}/0.8.31`, writeFile(svmFile('0.8.31'), SOLC_WRAP)) },
@@ -194,85 +135,6 @@ const VARIANTS = Object.freeze({
   stdtrap: { toml: `ffi = true\n${REMAP}`, files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': STD.stub('printf x > lib/trap.sol') } },
   // The same, only from the second run on: the first of the testIds runs.
   stdtraplater: { toml: `ffi = true\n${REMAP}`, files: { ...VAULT_REPO, 'lib/forge-std/src/Test.sol': STD.stub(ONCE('printf x > lib/trap.sol')) } },
-  // ------------------------------------------------- a vyper or a vyper setting (A2d)
-  vyperonpath: { files: VY_REPO, setup: inTools(FAKE_VYPER), env: BUILDER_ENV },
-  vyperalone: { files: { ...VAULT_REPO, 'lib/.keep': '' }, setup: inTools(FAKE_VYPER), env: BUILDER_ENV },
-  vyperother: { files: VY_REPO, setup: `mkdir -p /opt/pathvyper && ${writeFile('/opt/pathvyper/vyper', FAKE_VYPER)} && chmod -R a+rX /opt/pathvyper`, env: [`PATH=/opt/pathvyper:${BASE_PATH}`] },
-  vyperlast: { files: VY_REPO, setup: `mkdir -p /opt/pathvyper && ${writeFile('/opt/pathvyper/vyper', FAKE_VYPER)} && chmod -R a+rX /opt/pathvyper`, env: [`PATH=${BASE_PATH}:/opt/pathvyper`] },
-  vyperlink: {
-    files: VY_REPO,
-    setup: `mkdir -p ${TOOLS_BIN} /opt/elsewhere && ${writeFile('/opt/elsewhere/v', FAKE_VYPER)} && ln -s /opt/elsewhere/v /opt/elsewhere/w && ln -s /opt/elsewhere/w ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta /opt/elsewhere`,
-    env: BUILDER_ENV
-  },
-  vyperdirlink: {
-    files: VY_REPO,
-    setup: `mkdir -p /opt/real && ${writeFile('/opt/real/vyper', FAKE_VYPER)} && ln -s /opt/real /opt/linked && chmod -R a+rX /opt/real`,
-    env: [`PATH=/opt/linked:${BASE_PATH}`]
-  },
-  vyperdangling: { files: VY_REPO, setup: `mkdir -p ${TOOLS_BIN} && ln -s /opt/nowhere/vyper ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta`, env: BUILDER_ENV },
-  vypernoexec: { files: VY_REPO, setup: inTools(FAKE_VYPER, '0644'), env: BUILDER_ENV },
-  vyperunreadable: { files: VY_REPO, setup: inTools(FAKE_VYPER, '0111'), env: BUILDER_ENV },
-  vyperpipe: { files: VY_REPO, setup: `mkdir -p ${TOOLS_BIN} && mkfifo ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta`, env: BUILDER_ENV },
-  // A PATH directory in the work tree, with nothing in it yet.
-  vyperintree: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/work/tools:${BASE_PATH}`] },
-  vyperrelative: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=tools:${BASE_PATH}`] },
-  vyperdotted: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/work/./tools:${BASE_PATH}`] },
-  vyperempty: { files: { ...VAULT_REPO, 'lib/.keep': '' }, env: [`PATH=${BASE_PATH}:`] },
-  vyperheld: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/vyper': FAKE_VYPER }, setup: 'chmod 0755 tools/vyper', env: [`PATH=/work/tools:${BASE_PATH}`] },
-  vysetpath: { files: VY_REPO, toml: '[vyper]\npath = "/opt/fake/vyper"', setup: FAKE_NAMED },
-  vysetoptimize: { files: VY_REPO, toml: '[vyper]\noptimize = "gas"' },
-  vysetcodegen: { files: VY_REPO, toml: '[vyper]\nexperimental_codegen = true' },
-  vysetnovy: { files: { ...VAULT_REPO, 'lib/.keep': '' }, toml: '[vyper]\npath = "/opt/fake/vyper"', setup: FAKE_NAMED },
-  vysetprofile: { files: VY_REPO, toml: '[profile.default.vyper]\npath = "/opt/fake/vyper"', setup: FAKE_NAMED },
-  vysetinline: { files: VY_REPO, toml: 'vyper = { path = "/opt/fake/vyper" }', setup: FAKE_NAMED },
-  vysetenv: { files: { ...VY_REPO, '.env': 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\n' }, setup: FAKE_NAMED },
-  vysetenvdict: { files: { ...VY_REPO, '.env': 'FOUNDRY_VYPER={path="/opt/fake/vyper"}\n' }, setup: FAKE_NAMED },
-  vysetenvdapp: { files: { ...VY_REPO, '.env': 'DAPP_VYPER={path="/opt/fake/vyper"}\n' }, setup: FAKE_NAMED },
-  vysetenvdot: { files: { ...VY_REPO, '.env': 'FOUNDRY_VYPER.PATH=/opt/fake/vyper\n' }, setup: FAKE_NAMED },
-  // Untracked, as an ignored .env in the image would be: the forced checkout leaves it, and forge reads it.
-  vysetenvuntracked: { files: VY_REPO, setup: `${FAKE_NAMED} && printf 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\\n' > .env` },
-  vysetenvprofile: { files: { ...VY_REPO, '.env': 'FOUNDRY_PROFILE=alt\n' }, toml: '[profile.alt.vyper]\npath = "/opt/fake/vyper"', setup: FAKE_NAMED },
-  // ------------------------------------------------- a .vy file and no vyper: forge's own answer, no rule here (A2d)
-  vyinsrc: { files: VY_REPO },
-  vyintest: { files: { ...VAULT_REPO, 'lib/.keep': '', 'test/Fee.vy': VY } },
-  vyinscript: { files: { ...VAULT_REPO, 'lib/.keep': '', 'script/Fee.vy': VY } },
-  vyinterface: { files: { ...VAULT_REPO, 'lib/.keep': '', 'src/IFee.vyi': '# an interface\n' } },
-  vyimportvyper: { files: { ...VAULT_REPO, 'lib/dep/Fee.vy': VY, 'src/Vault.sol': importing('../lib/dep/Fee.vy') } },
-  vyimportnopragma: { files: { ...VAULT_REPO, 'lib/dep/Fee.vy': VY_NO_PRAGMA, 'src/Vault.sol': importing('../lib/dep/Fee.vy') } },
-  vyimportsrc: { files: { ...VAULT_REPO, 'lib/.keep': '', 'src/Fee.vy': SOL_IN_VY, 'src/Vault.sol': importing('./Fee.vy') } },
-  vyimportsrcvyper: { files: { ...VAULT_REPO, 'lib/.keep': '', 'src/Fee.vy': VY, 'src/Vault.sol': importing('./Fee.vy') } },
-  // Places forge does not read a setting from, or that it reads too late for a compile, each naming a fake that writes a watched place.
-  vynotread: {
-    files: {
-      ...VY_REPO,
-      '.env.local': 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
-      '.envrc': 'export FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
-      'src/.env': 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
-      'test/.env': 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
-      'foundry.local.toml': '[vyper]\npath = "/opt/fake/vyper"\n',
-      'test/foundry.toml': '[vyper]\npath = "/opt/fake/vyper"\n',
-      'test/Vault.t.sol': VAULT_REPO['test/Vault.t.sol'].replace('contract VaultTest', '/// forge-config: default.vyper.path = "/opt/fake/vyper"\ncontract VaultTest')
-    },
-    setup: `${FAKE_NAMED} && mkdir -p /etc/foundry && printf 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\\n' > /.env && printf '[vyper]\\npath = "/opt/fake/vyper"\\n' > /foundry.toml && cp /foundry.toml /etc/foundry/foundry.toml`
-  },
-  // ------------------------------------------------- a .vy that must not be refused (A2d)
-  vylib: { files: { ...VAULT_REPO, 'lib/dep/src/Fee.vy': VY, 'lib/dep/src/IFee.vyi': '# an interface\n', 'lib/dep/test/Fee.t.vy': VY } },
-  vylibreal: {
-    files: null,
-    extra: { 'lib/vyper-dep/src/Token.vy': VY, 'lib/vyper-dep/src/interfaces/IToken.vyi': '# an interface\n', 'lib/forge-std/test/fixtures/Stub.vy': VY },
-    installed: ['0.8.31'],
-    setup: `${INSTALL_MARKERS('0.8.31')} && chmod -R a+rX /opt/verdikta && ${AS_BUILDER}`,
-    env: BUILDER_ENV
-  },
-  vyimportsol: { files: { ...VAULT_REPO, 'lib/dep/Fee.vy': SOL_IN_VY, 'src/Vault.sol': importing('../lib/dep/Fee.vy') } },
-  // Neither is a setting: forge answers `"vyper": {}` to an empty table with an unknown key, and to a profile nothing selects.
-  // A directory named vyper on PATH is no compiler.
-  vynosetting: {
-    files: { ...VAULT_REPO, 'lib/dep/Fee.vy': VY },
-    toml: '[vyper]\nunknown_key = 1\n\n[profile.ci.vyper]\npath = "/opt/fake/vyper"',
-    setup: `${FAKE_NAMED} && mkdir -p ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta`,
-    env: BUILDER_ENV
-  },
   // ------------------------------------------------- what must pass
   ordinary: { files: null, installed: ['0.8.31'], setup: `${INSTALL_MARKERS('0.8.31')} && chmod -R a+rX /opt/verdikta && ${AS_BUILDER}`, env: BUILDER_ENV },
   prebuilt: { setup: 'forge build' },
@@ -314,24 +176,14 @@ const VARIANTS = Object.freeze({
       'chmod -R a+rX /opt/pathsolc /opt/elsewhere'
     ),
     env: [`PATH=/opt/pathsolc:${BASE_PATH}`]
-  },
-  // ------------------------------------------------- forge's lookup of a vyper, with one planted where it never looks (A2d)
-  vyplanted: {
-    setup: [
-      ...['/opt/verdikta/tools/share/svm/vyper', '/opt/verdikta/tools/share/svm/0.4.0/vyper-0.4.0', '/opt/verdikta/tools/share/vvm/vyper', '/opt/verdikta/tools/share/vvm/0.4.0/vyper',
-        '/opt/verdikta/tools/share/vyper/vyper', '/opt/verdikta/tools/vyper', '/opt/verdikta/tools/libexec/vyper', '/usr/local/lib/vyper', '/usr/lib/vyper', '/usr/share/vyper/vyper', '/opt/solc/vyper', '/opt/vvm/vyper', '/opt/vvm/.vvm/vyper'
-      ].flatMap((f) => [`mkdir -p "$(dirname ${f})"`, writeFile(f, LOGGING_VYPER)]),
-      'chmod -R a+rX /opt/verdikta /opt/vvm /usr/share/vyper'
-    ].join(' && ')
   }
 });
 
 async function fixture(variant) {
   if (!fixtures.has(variant)) {
     const v = VARIANTS[variant];
-    const files = v.files === null ? { ...COUNTER, ...await forgeStdFiles(), ...(v.extra || {}) } : v.files;
-    const { extra: _extra, ...built } = v;
-    fixtures.set(variant, buildFixture(builder, { ...built, ...(files ? { files } : {}), instance: `${instanceId()}${variant}` }));
+    const files = v.files === null ? { ...COUNTER, ...await forgeStdFiles() } : v.files;
+    fixtures.set(variant, buildFixture(builder, { ...v, ...(files ? { files } : {}), instance: `${instanceId()}${variant}` }));
   }
   return fixtures.get(variant);
 }
@@ -342,83 +194,6 @@ test.after(async () => {
   }
 });
 
-const PATHS = { tests: ['test/**'], protected: ['foundry.toml', 'lib/**', '.gitignore'] };
-const COMMANDS = { framework: 'forge', build: 'forge build', test: 'forge test', testFiles: 'forge test --match-path $FILES', testIds: 'forge test --match-test $TEST_IDS' };
-
-function body(fx, over = {}) {
-  return {
-    spec: {
-      version: 1, kind: 'bug', repo: 'https://github.com/acme/vault', baseCommit: fx.baseCommit,
-      env: { from: 'foundry' }, commands: { ...COMMANDS, ...(over.commands || {}) },
-      paths: over.paths || PATHS, stake: { scope: { include: ['src/**'] } }, limits: { cpus: 1, memoryMb: 1024 }
-    },
-    image: fx.image,
-    deadline: 900000
-  };
-}
-
-async function check(t, b, { before = [], solcList = undefined } = {}) {
-  const config = dockerTestConfig();
-  const docker = dockerFor(config);
-  t.after(() => removeAll(docker, config.instance).catch(() => {}));
-  const v = validateListingRequest(b);
-  assert.ok(v.ok, JSON.stringify(v.issues));
-  const steps = listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(docker, v.request.image), platform: PLATFORM, ...(solcList ? { solcList } : {}) });
-  const receivedAt = Date.now();
-  const result = await executeRun({
-    docker, config, limits: v.limits, image: v.request.image, runId: crypto.randomBytes(8).toString('hex'),
-    steps: [...before, ...steps], receivedAt, deadlineAt: receivedAt + v.request.deadlineMs, active: new Set(), log: silent
-  });
-  assert.deepEqual(await leftovers(docker, config.instance), [], 'the check removed its sandbox');
-  return result;
-}
-
-const NAME = 'test_deposit_credits_exactly';
-const DRAIN = pocFile('ExploitTest', [
-  `    function ${NAME}() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }`
-]);
-const FINDING = (name = NAME) => ({
-  version: 1, claimedClass: 'HIGH', rootCause: 'A deposit credits one wei more than it receives, so balances overstate deposits.',
-  affectedPaths: ['src/Vault.sol'], poc: { command: `forge test --match-test ${name}`, observable: `${name} fails at the committed hash` }
-});
-
-function claimOf(fx, { pocPatch = addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), baseline = vaultBaseline(fx.baseCommit), limits, commands = {}, finding = FINDING(), paths = PATHS } = {}) {
-  return {
-    listingCid: 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG',
-    bcid: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
-    spec: {
-      version: 1, kind: 'bug', repo: 'https://github.com/acme/vault', baseCommit: fx.baseCommit,
-      env: { image: fx.image, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 2000000000 },
-      attestation: 'attestation.json', commands: { ...COMMANDS, ...commands }, paths,
-      limits: limits || { cpus: 1, memoryMb: 1024, buildSeconds: 90, testSeconds: 120, runSeconds: 360, maxPatchBytes: 2000000 }
-    },
-    attestation: {}, pocPatch, fixPatch: null, baseline, finding, report: '', knownIssues: [], priorFindings: [],
-    eaGates: { disclosure: 'pass', inScope: 'pass' }, deadlineMs: 800000
-  };
-}
-
-async function claim(t, fx, { before = [], ...over } = {}) {
-  const config = dockerTestConfig();
-  const docker = dockerFor(config);
-  t.after(() => removeAll(docker, config.instance).catch(() => {}));
-  const request = claimOf(fx, over);
-  const lim = checkSpec(request.spec);
-  assert.ok(lim.ok, JSON.stringify(lim.issues));
-  const receivedAt = Date.now();
-  const result = await executeRun({
-    docker, config, limits: lim.limits, image: fx.image, runId: crypto.randomBytes(8).toString('hex'),
-    steps: [...before, ...claimSteps(request, lim.limits)], receivedAt, deadlineAt: receivedAt + request.deadlineMs, active: new Set(), log: silent, sandboxes: 1
-  });
-  assert.deepEqual(await leftovers(docker, config.instance), [], 'the run removed its sandbox');
-  return result;
-}
-
-const show = (r) => JSON.stringify({
-  outcome: r.outcome, abstain: r.abstain, issues: r.issues, gates: r.gates,
-  listing: r.facts && r.facts.listing ? { ...r.facts.listing, baseline: undefined } : undefined,
-  step: r.abstain ? (r.steps || []).find((s) => s.name === r.abstain.step) : undefined
-}, null, 1);
-const stepNames = (r) => (r.steps || []).map((s) => s.name);
 
 // ---------------------------------------------------------- one test per code a claim gives: the same image, both ways
 
@@ -446,15 +221,7 @@ const SAME_CODE = Object.freeze([
   ['IMAGE_FORGE_MISSING', 'noforge', /no forge on its PATH/],
   ['FORGE_CONFIG_INVALID', 'badconfig', /forge config --json. failed at the listed commit/],
   // A compiler that writes a watched place in a build. The look would stop it first, so this list lets it by.
-  ['IMAGE_WATCH_CHANGED_BY_BUILD', 'solctrap', /the build: lib\/trap\.sol added/, { solcList: () => listWith(SOLC_TRAP) }],
-  // A2d: a vyper the sandbox could change keeps the code a claim gives: these come before the look, at listing and at a claim.
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vysetintree', /vyper\.path \(test\/vyper\) is in the work tree/],
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vysetthroughtree', /\/opt\/x\/vyper/],
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vyperthroughtree', /\/opt\/verdikta\/tools\/bin\/vyper/],
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathslash', /\/\/work\/tools/],
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathdotdot', /\/opt\/\.\.\/work\/tools/],
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathproc', /\/proc\/self\/cwd\/tools/],
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathlink', /\/opt\/x/]
+  ['IMAGE_WATCH_CHANGED_BY_BUILD', 'solctrap', /the build: lib\/trap\.sol added/, { solcList: () => listWith(SOLC_TRAP) }]
 ]);
 
 for (const [code, variant, detail, opts = {}] of SAME_CODE) {
@@ -590,273 +357,6 @@ test('A2c under real forge: where forge looks: planted compilers at every other 
   assert.equal(got.length, 14);
   for (const g of got) assert.equal(g.ran, false, `${JSON.stringify(g.solc)} with ${g.pragma} ran a planted compiler`);
   for (const g of got.filter((x) => x.pragma === '=0.8.31')) assert.equal(g.exit, 0, 'the real release compiled');
-});
-
-// ---------------------------------------------------------- VYPER_NOT_SUPPORTED (A2d, owner Q40)
-
-const VYPER_REFUSED = Object.freeze([
-  // A vyper on PATH.
-  ['a fake vyper in the tools folder, with no .vy anywhere: the rule is on the vyper', 'vyperalone', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) is a vyper/],
-  ['the first PATH directory', 'vyperother', /\/opt\/pathvyper\/vyper \(on PATH\) is a vyper/],
-  ['the last PATH directory', 'vyperlast', /\/opt\/pathvyper\/vyper \(on PATH\) is a vyper/],
-  ['behind a chain of links', 'vyperlink', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) is a vyper/],
-  ['in a PATH directory that is itself a link', 'vyperdirlink', /\/opt\/linked\/vyper \(on PATH\) is a vyper/],
-  ['a link that leads nowhere', 'vyperdangling', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) is a link that leads nowhere/],
-  ['a file forge would skip, not executable', 'vypernoexec', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) is a vyper/],
-  ['one the sandbox user can run but not read', 'vyperunreadable', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) cannot be read/],
-  ['a named pipe', 'vyperpipe', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) cannot be read/],
-  // A PATH directory in the work tree, where a patch or a fix could add one after the look.
-  ['a PATH directory in the work tree, empty', 'vyperintree', /PATH directory \/work\/tools is in the work tree/],
-  ['a relative PATH entry', 'vyperrelative', /PATH directory \/work\/tools is in the work tree/],
-  ['one spelled with a dot', 'vyperdotted', /PATH directory \/work\/\.\/tools is in the work tree/],
-  ['an empty PATH entry, forge\'s own directory', 'vyperempty', /PATH directory \/work is in the work tree/],
-  ['one holding a vyper', 'vyperheld', /\/work\/tools\/vyper \(on PATH\) is a vyper/],
-  // A vyper setting, wherever forge reads it from.
-  ['[vyper] path', 'vysetpath', /vyper\.path/],
-  ['[vyper] path, with no .vy anywhere', 'vysetnovy', /vyper\.path/],
-  ['[vyper] optimize, naming no compiler', 'vysetoptimize', /vyper\.optimize/],
-  ['[vyper] experimental_codegen', 'vysetcodegen', /vyper\.experimental_codegen/],
-  ['[profile.default.vyper]', 'vysetprofile', /vyper\.path/],
-  ['an inline table in the profile', 'vysetinline', /vyper\.path/],
-  ['FOUNDRY_VYPER_PATH in a .env', 'vysetenv', /vyper\.path/],
-  ['FOUNDRY_VYPER in a .env', 'vysetenvdict', /vyper\.path/],
-  ['DAPP_VYPER in a .env', 'vysetenvdapp', /vyper\.path/],
-  ['FOUNDRY_VYPER.PATH in a .env', 'vysetenvdot', /vyper\.path/],
-  ['a .env the commit does not track', 'vysetenvuntracked', /vyper\.path/],
-  ['the profile a .env selects', 'vysetenvprofile', /vyper\.path/]
-]);
-
-for (const [what, variant, detail] of VYPER_REFUSED) {
-  test(`A2d under real forge: VYPER_NOT_SUPPORTED: ${what}, before any build`, { timeout: TIMEOUT }, async (t) => {
-    const r = await check(t, body(await fixture(variant)));
-    assert.equal(r.outcome, 'definitive', show(r));
-    assert.equal(r.facts.listing.status, 'refused', show(r));
-    assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['VYPER_NOT_SUPPORTED'], show(r));
-    assert.match(r.facts.listing.refusals[0].detail, detail);
-    assert.match(r.facts.listing.refusals[0].detail, /no official list of release hashes/);
-    assert.ok(!stepNames(r).includes('build'), 'no build ran');
-    assert.equal(r.facts.listing.baseline, null);
-  });
-}
-
-test('A2d under real forge: the same images as a claim get no such refusal: a claim never reads the rule, and with no .vy in the tree forge never starts the fake', { timeout: TIMEOUT }, async (t) => {
-  for (const variant of ['vyperalone', 'vysetnovy']) {
-    const r = await claim(t, await fixture(variant));
-    assert.equal(r.outcome, 'definitive', `${variant}: ${show(r)}`);
-    assert.ok(!stepNames(r).includes('prepare:vyper'), variant);
-    assert.equal(r.gates.reproduces.status, 'pass', `${variant}: ${show(r)}`);
-    assert.equal(r.gates.integrity.status, 'pass', `${variant}: the fake did not run: ${show(r)}`);
-  }
-});
-
-const VY_BUILD_FAILS = Object.freeze([
-  ['a .vy in src/', 'vyinsrc', /Found Vyper sources, but no compiler versions are available for it/],
-  ['a .vy in test/', 'vyintest', /Found Vyper sources, but no compiler versions are available for it/],
-  ['a .vy in script/', 'vyinscript', /Found Vyper sources, but no compiler versions are available for it/],
-  ['a .vyi in src/', 'vyinterface', /Found Vyper sources, but no compiler versions are available for it/],
-  ['Solidity importing a .vy under lib/ holding Vyper with a version pragma: forge reads it as Solidity', 'vyimportvyper', /invalid compiler version in lib\/dep\/Fee\.vy/],
-  ['Solidity importing a .vy under lib/ holding Vyper with no pragma: solc reads it', 'vyimportnopragma', /Compiler run failed[\s\S]*lib\/dep\/Fee\.vy/],
-  ['Solidity importing a .vy in src/ holding Solidity: it is a Vyper source too', 'vyimportsrc', /Found Vyper sources, but no compiler versions are available for it/],
-  // forge's wording varies here from run to run (its graph is a hash map, by a probe of 30 builds); the failed build does not.
-  ['Solidity importing a .vy in src/ holding Vyper with a version pragma', 'vyimportsrcvyper', /invalid compiler version in src\/Fee\.vy|Found Vyper sources, but no compiler versions are available for it/],
-  ['a fake named only where forge reads no setting: other .env and toml files, one in test/, one on the root, inline configuration', 'vynotread', /Found Vyper sources, but no compiler versions are available for it/]
-]);
-
-for (const [what, variant, output] of VY_BUILD_FAILS) {
-  test(`A2d under real forge: no rule on a .vy file: ${what}, with no vyper: not this refusal, but forge's own failed build`, { timeout: TIMEOUT }, async (t) => {
-    const r = await check(t, body(await fixture(variant)));
-    assert.equal(r.outcome, 'definitive', show(r));
-    assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['BUILD_FAILED'], show(r));
-    assert.ok(stepNames(r).includes('prepare:vyper') && stepNames(r).includes('build'), 'past the look, to the build');
-    const build = r.steps.find((s) => s.name === 'build');
-    assert.match(`${build.stdout.text}\n${build.stderr.text}`, output, show(r));
-  });
-}
-
-test('A2d under real forge: no false refusal: a .vy and a .vyi only under lib/, no vyper: the listing is accepted, forge never needed a compiler for them, and a claim on it passes', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vylib');
-  const r = await check(t, body(fx));
-  assert.equal(r.outcome, 'definitive', show(r));
-  assert.equal(r.facts.listing.status, 'accepted', show(r));
-  assert.ok(r.facts.listing.baseline.stable.includes('test/Vault.t.sol > VaultTest > test_deposit()'), show(r));
-  const asClaim = await claim(t, fx);
-  assert.equal(asClaim.outcome, 'definitive', show(asClaim));
-  assert.equal(asClaim.gates.reproduces.status, 'pass', show(asClaim));
-  assert.equal(asClaim.gates.integrity.status, 'pass', show(asClaim));
-});
-
-test('A2d under real forge: no false refusal: an ordinary project (real forge-std, the builder\'s image shape) with a dependency that ships .vy files, no vyper: accepted', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vylibreal');
-  const r = await check(t, body(fx, { paths: { tests: ['test/**'], protected: ['foundry.toml', 'lib/**'] } }));
-  assert.equal(r.outcome, 'definitive', show(r));
-  assert.equal(r.facts.listing.status, 'accepted', show(r));
-  assert.ok(r.facts.listing.baseline.stable.length >= 3, show(r));
-});
-
-test('A2d under real forge: Solidity importing a .vy under lib/ that holds Solidity: forge compiles it with solc as Solidity, so no vyper is involved and nothing is refused', { timeout: TIMEOUT }, async (t) => {
-  const r = await check(t, body(await fixture('vyimportsol')));
-  assert.equal(r.outcome, 'definitive', show(r));
-  assert.equal(r.facts.listing.status, 'accepted', show(r));
-});
-
-test('A2d under real forge: what is not a setting and not a vyper: an empty table with an unknown key, a profile nothing selects, a directory named vyper on PATH: accepted', { timeout: TIMEOUT }, async (t) => {
-  const r = await check(t, body(await fixture('vynosetting')));
-  assert.equal(r.outcome, 'definitive', show(r));
-  assert.equal(r.facts.listing.status, 'accepted', show(r));
-});
-
-test('A2d under real forge: a hunter\'s patch adding a .vy on an image with no vyper fails the build gate, the hunter\'s own cost, however it is added', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('plainvault');
-  for (const [what, patch, output] of [
-    ['beside the proof', { 'test/Exploit.t.sol': DRAIN, 'test/Fee.vy': VY }, /Found Vyper sources, but no compiler versions are available for it/],
-    ['with no version pragma', { 'test/Exploit.t.sol': DRAIN, 'test/Fee.vy': VY_NO_PRAGMA }, /Found Vyper sources, but no compiler versions are available for it/],
-    ['imported by the proof', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': SOL_IN_VY }, /Found Vyper sources, but no compiler versions are available for it/],
-    ['imported by the proof, holding Vyper', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': VY }, /invalid compiler version in test\/Fee\.vy|Found Vyper sources, but no compiler versions are available for it/]
-  ]) {
-    const r = await claim(t, fx, { pocPatch: addFilesPatch(patch) });
-    assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
-    assert.equal(r.gates.applies.status, 'pass', what);
-    assert.equal(r.gates.testPathsOnly.status, 'pass', what);
-    assert.equal(r.gates.build.status, 'fail', `${what}: ${show(r)}`);
-    const build = r.steps.find((s) => s.name === 'build');
-    assert.match(`${build.stdout.text}\n${build.stderr.text}`, output, `${what}: ${show(r)}`);
-  }
-});
-
-test('A2d under real forge: why a PATH directory in the work tree is refused: a listing with no vyper, then a patch adds one and a .vy: forge runs the patch\'s compiler; refused at listing', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vyperintree');
-  // forgeOutOfReach refuses a PATH directory under paths.tests. This one is not: only the file a patch would add is.
-  const paths = { tests: ['test/**', 'tools/vyper'], protected: ['foundry.toml', 'lib/**', '.gitignore'] };
-  const listing = await check(t, body(fx, { paths }));
-  assert.deepEqual((listing.facts.listing || { refusals: [] }).refusals.map((x) => x.code), ['VYPER_NOT_SUPPORTED'], show(listing));
-  const pocPatch = Buffer.concat([addFilesPatch({ 'test/Exploit.t.sol': DRAIN, 'test/Fee.vy': VY }), addFilesPatch({ 'tools/vyper': FAKE_VYPER }, '100755')]);
-  const asClaim = await claim(t, fx, { pocPatch, paths });
-  assert.equal(asClaim.outcome, 'requester_error', show(asClaim));
-  assert.deepEqual(asClaim.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD'], `the fake wrote where the build's check sees it: ${show(asClaim)}`);
-  assert.match(asClaim.issues[0].detail, /lib\/trap\.sol added/);
-});
-
-test('A2d under real forge: where forge looks: what it reads as a vyper setting is what its build runs; a vyper planted at every other place never runs; its configuration read runs none; and what a Solidity import of a .vy does', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vyplanted');
-  const config = dockerTestConfig();
-  const docker = dockerFor(config);
-  t.after(() => removeAll(docker, config.instance).catch(() => {}));
-  const FAKE = '/opt/vvm/vyper';
-  const report = [];
-  const step = async (ctx) => {
-    const found = await discoverForge(ctx, 'find');
-    let n = 0;
-    const sh = (script) => { n += 1; return ctx.exec(['/bin/sh', '-c', script], { name: `s${n}`, timeoutMs: 60000 }); };
-    const forge = async (args, tool = found) => {
-      n += 1;
-      const out = new Prefix(1024 * 1024);
-      const record = await ctx.exec(forgeLib.forgeArgv({ ...tool, solc: '/opt/solc/solc' }, args), { name: `s${n}`, timeoutMs: 120000, workdir: forgeLib.FORGE_WORKDIR, tee: out });
-      return { exit: record.exitCode, stdout: out.bytes().toString('utf8'), output: `${out.bytes().toString('utf8')}\n${record.stderr ? record.stderr.text : ''}` };
-    };
-    const onPath = { ...found, path: `/opt/vvm:${found.path}` };
-    const project = async ({ toml = '', env = null, files = {} } = {}) => {
-      const lines = [
-        'cd /work && find . -mindepth 1 -delete; rm -rf /tmp/vyper-ran "$HOME/.foundry" "$HOME/.vvm" "$HOME/.vyper" "$HOME/.local" "$HOME/.cargo" "$HOME/.svm"; mkdir -p src test lib',
-        'printf \'[profile.default]\\nsrc = "src"\\ntest = "test"\\nout = "out"\\ncache_path = "cache"\\nlibs = ["lib"]\\noffline = true\\n\' > foundry.toml',
-        `printf '%s' '${Buffer.from(SOL_PROBE).toString('base64')}' | base64 -d > src/Probe.sol`
-      ];
-      if (toml) lines.push(`printf '%s' '${Buffer.from(toml).toString('base64')}' | base64 -d >> foundry.toml`);
-      if (env) lines.push(`printf '%s' '${Buffer.from(env).toString('base64')}' | base64 -d > .env`);
-      for (const [f, text] of Object.entries(files)) lines.push(`mkdir -p "$(dirname '${f}')"; printf '%s' '${Buffer.from(text).toString('base64')}' | base64 -d > '${f}'`);
-      const made = await sh(lines.join('\n'));
-      assert.equal(made.exitCode, 0, 'the project was written');
-    };
-    const ran = async () => {
-      n += 1;
-      const out = new Prefix(64 * 1024);
-      await ctx.exec(['/bin/sh', '-c', 'cat /tmp/vyper-ran 2>/dev/null; exit 0'], { name: `s${n}`, timeoutMs: 60000, tee: out });
-      return out.bytes().toString('utf8').split('\n').filter(Boolean);
-    };
-    const shownBy = async () => JSON.parse((await forge(['config', '--json'])).stdout).vyper;
-
-    // What forge reads as a setting is what its build runs: with a .vy in src/, each of these runs the fake it names.
-    for (const [what, form] of [
-      ['[vyper] path', { toml: `\n[vyper]\npath = "${FAKE}"\n` }],
-      ['[profile.default.vyper]', { toml: `\n[profile.default.vyper]\npath = "${FAKE}"\n` }],
-      ['.env FOUNDRY_VYPER_PATH', { env: `FOUNDRY_VYPER_PATH=${FAKE}\n` }],
-      ['.env FOUNDRY_VYPER', { env: `FOUNDRY_VYPER={path="${FAKE}"}\n` }],
-      ['.env DAPP_VYPER', { env: `DAPP_VYPER={path="${FAKE}"}\n` }],
-      ['.env FOUNDRY_VYPER.PATH', { env: `FOUNDRY_VYPER.PATH=${FAKE}\n` }],
-      ['.env FOUNDRY_PROFILE', { toml: `\n[profile.alt.vyper]\npath = "${FAKE}"\n`, env: 'FOUNDRY_PROFILE=alt\n' }],
-      ['$HOME/.foundry/foundry.toml', { files: { [`/home/sandbox/.foundry/foundry.toml`]: `[vyper]\npath = "${FAKE}"\n` } }]
-    ]) {
-      await project({ ...form, files: { ...(form.files || {}), 'src/Fee.vy': VY } });
-      assert.deepEqual(await shownBy(), { path: FAKE }, `${what}: forge config shows it`);
-      assert.deepEqual(await ran(), [], `${what}: reading the configuration ran nothing`);
-      await forge(['build']);
-      report.push({ what, ran: await ran() });
-    }
-
-    // A vyper on PATH: only a build that has a .vy to compile runs it, and forge config never does.
-    await project({ files: { 'src/Fee.vy': VY } });
-    await forge(['config', '--json'], onPath);
-    assert.deepEqual(await ran(), [], 'forge config ran no vyper on PATH');
-    await forge(['build'], onPath);
-    assert.deepEqual((await ran()).slice(0, 2), ['--version', '--standard-json'], 'on PATH with a .vy in src/, the control');
-    await project();
-    await forge(['build'], onPath);
-    assert.deepEqual(await ran(), [], 'on PATH with no .vy, not started');
-    await project({ files: { 'lib/dep/Fee.vy': VY } });
-    const libOnly = await forge(['build'], onPath);
-    assert.equal(libOnly.exit, 0, libOnly.output);
-    assert.deepEqual(await ran(), [], 'on PATH with a .vy only under lib/, not started');
-
-    // Solidity importing a .vy, with a vyper on PATH.
-    const imports = (what) => `// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\nimport "${what}";\ncontract Importer {}\n`;
-    await project({ files: { 'src/Importer.sol': imports('../lib/dep/Fee.vy'), 'lib/dep/Fee.vy': VY } });
-    const libVyper = await forge(['build'], onPath);
-    assert.notEqual(libVyper.exit, 0, libVyper.output);
-    assert.match(libVyper.output, /invalid compiler version in lib\/dep\/Fee\.vy/);
-    assert.deepEqual(await ran(), [], 'a .vy under lib/ that Solidity imports starts no vyper');
-    await project({ files: { 'src/Importer.sol': imports('../lib/dep/Fee.vy'), 'lib/dep/Fee.vy': SOL_IN_VY } });
-    const libSol = await forge(['build'], onPath);
-    assert.equal(libSol.exit, 0, libSol.output);
-    assert.deepEqual(await ran(), [], 'nor when it holds Solidity, which solc compiled');
-    await project({ files: { 'src/Importer.sol': imports('./Fee.vy'), 'src/Fee.vy': VY } });
-    const srcVyper = await forge(['build'], onPath);
-    assert.notEqual(srcVyper.exit, 0, srcVyper.output);
-    assert.deepEqual(await ran(), ['--version'], 'a .vy in src/ that Solidity imports starts it, to ask its version');
-
-    // Everything else: a vyper planted at every other place, then whatever a .env can say that forge does not read as a setting.
-    const planted = [
-      '$HOME/.vvm/vyper', '$HOME/.vvm/vyper-0.4.0', '$HOME/.vvm/0.4.0/vyper', '$HOME/.vvm/0.4.0/vyper-0.4.0', '$HOME/.vyper/vyper', '$HOME/.local/bin/vyper',
-      '$HOME/.foundry/bin/vyper', '$HOME/.cargo/bin/vyper', '$HOME/.svm/vyper', '/work/vyper', '/work/bin/vyper', '/work/.vyper/vyper', '/work/lib/vyper',
-      '/work/node_modules/.bin/vyper', '/work/src/vyper', '/tmp/vyper', '/tmp/bin/vyper'
-    ];
-    const plantAll = [
-      ...planted.map((p) => `mkdir -p "$(dirname "${p}")"; cp ${FAKE} "${p}"; chmod 0755 "${p}"`)
-    ].join('\n');
-    for (const [what, env] of [
-      ['nothing else', null],
-      ['DAPP_VYPER_PATH', `DAPP_VYPER_PATH=${FAKE}\n`],
-      ['FOUNDRY_VYPER__PATH', `FOUNDRY_VYPER__PATH=${FAKE}\n`],
-      ['lower case', `foundry_vyper_path=${FAKE}\n`],
-      ['other names', `VYPER=${FAKE}\nVYPER_PATH=${FAKE}\nFOUNDRY_VYPER_BIN=${FAKE}\n`],
-      ['PATH', 'PATH=/opt/vvm:/usr/bin:/bin\n'],
-      ['HOME and XDG_DATA_HOME', 'HOME=/opt/vvm\nXDG_DATA_HOME=/opt/vvm\n']
-    ]) {
-      await project({ env, files: { 'src/Fee.vy': VY } });
-      assert.equal((await sh(plantAll)).exitCode, 0, 'planted');
-      assert.deepEqual(await shownBy(), {}, `${what}: forge config shows no setting`);
-      const build = await forge(['build']);
-      assert.notEqual(build.exit, 0, `${what}: ${build.output}`);
-      assert.match(build.output, /Found Vyper sources, but no compiler versions are available for it/, what);
-      assert.deepEqual(await ran(), [], `${what}: nothing planted ran`);
-    }
-  };
-  const receivedAt = Date.now();
-  const r = await executeRun({
-    docker, config, limits: smallLimits({ memoryMb: 2048, cpus: 2, pids: 1024, runSeconds: 800, testSeconds: 240, buildSeconds: 240 }), image: fx.image, runId: crypto.randomBytes(8).toString('hex'),
-    steps: [step], receivedAt, deadlineAt: receivedAt + 850000, active: new Set(), log: silent
-  });
-  assert.equal(r.outcome, 'definitive', JSON.stringify(r.abstain));
-  assert.equal(report.length, 8, 'every form was run');
-  for (const g of report) assert.deepEqual(g.ran.slice(0, 2), ['--version', '--standard-json'], `${g.what}: forge's build ran what it read`);
 });
 
 test('A2c: what "official" means on this platform: what forge\'s own install leaves is what the look accepts, and on the class platform its bytes are the table\'s', { timeout: TIMEOUT }, async (t) => {
@@ -1055,19 +555,7 @@ test('A2c: known limit, pinned: repository code only a proof would call through 
   assert.equal(r.facts.listing.status, 'accepted', show(r));
 });
 
-test('A2d (a known limit of A2c until now): a fake `vyper` on PATH and a .vy file: the look refuses it before any build, and a claim, which never reads the rule, still runs it', { timeout: TIMEOUT }, async (t) => {
-  const fx = await fixture('vyperonpath');
-  const r = await check(t, body(fx));
-  assert.equal(r.outcome, 'definitive', show(r));
-  assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['VYPER_NOT_SUPPORTED'], show(r));
-  assert.ok(stepNames(r).includes('prepare:vyper'), 'the look ran');
-  assert.ok(!stepNames(r).includes('build'), 'forge compiled nothing, so the fake never ran');
-  // The route the look now stops, on an image that never went through it: it writes a watched place, and the build's check sees it.
-  const asClaim = await claim(t, fx);
-  assert.equal(asClaim.outcome, 'requester_error', show(asClaim));
-  assert.deepEqual(asClaim.issues.map((i) => i.code), ['IMAGE_WATCH_CHANGED_BY_BUILD'], show(asClaim));
-  assert.ok(!stepNames(asClaim).includes('prepare:vyper'), 'a claim does not look');
-});
+// A2c's other known limit here, a fake `vyper` on PATH and a .vy file, is a refusal now: test/docker/listing-vyper.docker.test.js (node A2d).
 
 test('A2c: the listing\'s timings count what a claim\'s run does: the reference in the preparation, the snapshots in the build and the suite', { timeout: TIMEOUT }, async (t) => {
   const r = await check(t, body(await fixture('plainvault')));
