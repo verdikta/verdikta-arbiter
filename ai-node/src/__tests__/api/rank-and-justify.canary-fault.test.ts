@@ -4,6 +4,7 @@
  * The mock is the test's stand-in for a provider only: the switch itself runs on real canaries
  * with real providers, and has nothing to do with it.
  */
+import crypto from 'crypto';
 import { POST } from '../../app/api/rank-and-justify/route';
 import { GET } from '../../app/api/health/route';
 import { MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, mockProviderCalls, resetMockProvider } from '../../lib/llm/mock-provider';
@@ -219,6 +220,48 @@ describe('it changes nothing that settles', () => {
       expect(call.prompt).not.toContain('canary');
     }
   }, 20000);
+});
+
+describe('the key reaches no log, prompt, response or health route', () => {
+  // Made here, per run: no key-shaped literal sits in the tests.
+  const SECRET = crypto.randomBytes(32).toString('hex');
+  const spoken = () => JSON.stringify([console.log, console.warn, console.error].flatMap(spy => (spy as unknown as jest.Mock).mock.calls));
+  const signed = (action: string) => directive(action, SECRET);
+
+  beforeEach(() => { env[CANARY_FAULT_KEY_ENV] = SECRET; });
+
+  test.each<[string, () => unknown, number]>([
+    ['no directive', () => undefined, 200],
+    ['a directive under another key', () => directive('hold-juror-answer', KEY), 200],
+    ['hold-juror-answer', () => signed('hold-juror-answer'), 200],
+    ['hold-justifier-answer', () => signed('hold-justifier-answer'), 200],
+    ['late-juror, which ends in the 503', () => signed('late-juror'), 503],
+  ])('%s', async (_name, sent, status) => {
+    const result = await post(body(sent()));
+    expect(result.status).toBe(status);
+    expect(spoken().length).toBeGreaterThan(2);
+    expect(spoken()).not.toContain(SECRET);
+    expect(JSON.stringify(result.body)).not.toContain(SECRET);
+    for (const call of mockProviderCalls()) expect(JSON.stringify(call)).not.toContain(SECRET);
+  }, 20000);
+
+  test('a response says what ran, and carries neither the key nor the MAC', async () => {
+    const sent = signed('hold-justifier-answer');
+    const result = await post(body(sent));
+    expect(Object.keys(result.body.codeReview.canaryFault).sort()).toEqual(['action', 'justifierMs', 'state']);
+    expect(JSON.stringify(result.body)).not.toContain(sent.mac);
+  }, 20000);
+
+  test.each<[string, string]>([
+    ['a usable key', 'armed'],
+    ['a key with a space in it', 'refused'],
+  ])('GET /api/health with %s: the state alone', async (name, state) => {
+    env[CANARY_FAULT_KEY_ENV] = name === 'a usable key' ? SECRET : `${SECRET} x`;
+    const health = await (await GET()).json();
+    expect(health.canary_fault).toEqual({ state });
+    expect(JSON.stringify(health)).not.toContain(SECRET);
+    expect(spoken()).not.toContain(SECRET);
+  });
 });
 
 describe('the text-mode route', () => {

@@ -11,7 +11,7 @@ const H = require('../../../test/helpers/codeReviewFixtures');
 const R = require('../../../test/helpers/codeReviewRun');
 const { startCanaryChain, OPERATOR, JOB_ID, AGG_ID } = require('../../../test/helpers/canaryChain');
 
-const TOKEN = 'runner-token-0123456789abcdef0123456789abcdef';
+const TOKEN = 'r'.repeat(48);
 const KEY = 'k'.repeat(48);
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const listingBuilt = H.makeListing({ builderKey: codeReview.createDevBuilderKey() });

@@ -110,7 +110,7 @@ Recording proxies sit between them, so a scenario asserts what really crossed.
 | `claim-fault-switch` | `slow-justifier` | A second adapter, armed against a stand-in Base Sepolia RPC: a request for 5555 is held for real in the real AI Node, about 40 s |
 | | `class-128` | The same claim, a request for 128: no directive, no hold, and the same justification and scores as the held run |
 | | `unnamed-claim` | A claim the plan does not name: no chain read, no directive |
-| | `refused-on-mainnet` | The same flag on a node configured for Base mainnet: `refused`, in `/health` and `/version` |
+| | `refused-on-mainnet` | The same flag on a node configured for Base mainnet: `refused`, in `/health` and `/version`. Then the fault key must be in no service's log, at `LOG_LEVEL=debug`, and on no route |
 
 Every verdict is also held to the L4 scenarios' own checks (`l4.claim.*`, `src/l4/claim-checks.js`), and the archives come from the builder L4's are pinned with, so what L4 reads is what the External Adapter writes.
 

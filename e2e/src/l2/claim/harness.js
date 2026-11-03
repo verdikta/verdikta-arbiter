@@ -166,12 +166,15 @@ async function startClaimHarness() {
       VERDIKTA_CANARY_FAULT_KEY: canaryFaultKey,
       VERDIKTA_CANARY_RPC_URL: rpcUrl,
       NETWORK_CHAIN_ID: '84532',
-      DEPLOYMENT_NETWORK: 'base_sepolia'
+      DEPLOYMENT_NETWORK: 'base_sepolia',
+      LOG_LEVEL: 'debug'
     });
     let armed = null;
     return {
       classPlatform,
       platform,
+      logDir,
+      canaryFaultKey,
       operator: OPERATOR,
       justifier: JUSTIFIER,
       hangingJuror: HANGING_JUROR,

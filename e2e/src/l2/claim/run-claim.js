@@ -395,6 +395,7 @@ async function faultSlowJustifier(h) {
     const json = await justificationOf(h, cid);
     h.heldVerdict = { justification: json.justification, scores: json.scores };
     checks.push(...l4Checks('slow-justifier', score, cid, json, claim.cid, h, { faultSwitch: ARMED }));
+    checks.push(A.assert('switch.keyNotInTheJustification', !JSON.stringify(json).includes(h.canaryFaultKey), 'the whole upload, its arbiter block included'));
   }
   return checks;
 }
@@ -436,13 +437,26 @@ async function faultUnnamedClaim(h) {
   ];
 }
 
+/** Every service's log so far, at the armed adapters' LOG_LEVEL=debug: where the fault key must not be. */
+function logsHolding(h, secret) {
+  return fs.readdirSync(h.logDir, { withFileTypes: true })
+    .filter((entry) => entry.isFile() && fs.readFileSync(path.join(h.logDir, entry.name), 'latin1').includes(secret))
+    .map((entry) => entry.name);
+}
+
 async function faultRefusedOnMainnet(h) {
   const adapter = await h.mainnetAdapter();
   const version = (await axios.get(`${adapter.url}/version`, { timeout: 5000 })).data;
+  const held = logsHolding(h, h.canaryFaultKey);
+  const armed = await h.armedAdapter();
+  const armedVersion = (await axios.get(`${armed.url}/version`, { timeout: 5000 })).data;
+  const shown = JSON.stringify([adapter.health, version, armed.health, armedVersion]);
   return [
     ...switchChecks(adapter.health, 'refused'),
     ...switchChecks(version, 'refused'),
-    A.assert('switch.saysWhy', /mainnet|8453/.test(adapter.health.canaryFault.problems.join(' ')), adapter.health.canaryFault.problems.join('; '))
+    A.assert('switch.saysWhy', /mainnet|8453/.test(adapter.health.canaryFault.problems.join(' ')), adapter.health.canaryFault.problems.join('; ')),
+    A.assert('switch.keyInNoLog', held.length === 0, held.length ? `in ${held.join(', ')}` : `in none of the ${fs.readdirSync(h.logDir).length} entries of the log directory, after every fault-switch mode`),
+    A.assert('switch.keyInNoRoute', !shown.includes(h.canaryFaultKey), '/health and /version, armed and refused')
   ];
 }
 
