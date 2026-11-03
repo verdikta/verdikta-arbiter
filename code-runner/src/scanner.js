@@ -915,8 +915,8 @@ async function fmtFindings(ctx, tool, { targets, unscanned }) {
     try {
       r = await ctx.exec(forge.forgeArgv(tool, ['fmt', '--check', `${forge.FORGE_WORKDIR}/${file}`]), { name: `fixscan:fmt:${i}`, timeoutMs: FMT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR });
     } catch (err) {
-      // A long sum or chain overflows its stack (exit 134): the file's doing, and a fix's lint decides nothing, so it must
-      // not abstain the claim. A memory kill or a timeout is the host's, and stays an abstention.
+      // A long sum or chain can overflow its stack (exit 134 on arm64): the file's doing, and a fix's lint decides nothing,
+      // so it must not abstain the claim. A memory kill or a timeout is the host's, and stays an abstention.
       if (!(err instanceof Abstain) || err.cause !== ABSTAIN.KILLED_BY_SIGNAL) throw err;
       out.push(fmtFinding('forge-fmt.unreadable', file, err.detail));
       continue;

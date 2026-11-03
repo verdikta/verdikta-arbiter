@@ -1685,8 +1685,8 @@ the hunter. The kept 50 go by severity, then the patch's own lines first.
 Facts only: the claim's gates are as they would be without it. Over the fix's Solidity files,
 read before any of its code runs: `forge fmt --check` through `forgeArgv` (one file a call:
 beside another file, one it cannot parse goes unreported; exit 1 means a diff or a parse
-failure, and what it printed says which; a long sum or chain aborts it with exit 134, which is
-a stated finding too, since a fix's lint must not abstain the claim), then Semgrep with the bug rules and
+failure, and what it printed says which; a long sum or chain can abort it with exit 134, seen on
+arm64, which is a stated finding too, since a fix's lint must not abstain the claim), then Semgrep with the bug rules and
 `--baseline-commit`, so what the listed commit already had is not the fix's. `commands.lint` is
 not read: the lint is the runner's own argv, and the grammar in `src/commands.js` is unchanged.
 A fix that changes forge's own configuration gets `forge-fmt.not-run`, never a clean answer. A
