@@ -256,10 +256,10 @@ class Node:
 # quoted value. Chainlink's DOT parser takes them all, so a job in another layout is the same job.
 ATTR = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s,;\]]+)')
 
-def task_blocks(dag):
-    """(start, end) of each [ ... ] attribute block, ignoring brackets in quoted values and comments."""
-    blocks = []
-    i, n, start, quoted = 0, len(dag), None, False
+def without_comments(dag):
+    """The DAG with its comments blanked, same length: DOT's //, # and /* */, outside quoted values."""
+    out = list(dag)
+    i, n, quoted = 0, len(dag), False
     while i < n:
         c = dag[i]
         if quoted:
@@ -269,9 +269,34 @@ def task_blocks(dag):
                 quoted = False
         elif c == '"':
             quoted = True
-        elif start is None and c == "/" and dag[i:i + 2] == "//":
+        elif c == "#" or dag[i:i + 2] == "//":
             nl = dag.find("\n", i)
-            i = n if nl < 0 else nl
+            end = n if nl < 0 else nl
+            out[i:end] = " " * (end - i)
+            i = end
+            continue
+        elif dag[i:i + 2] == "/*":
+            close = dag.find("*/", i + 2)
+            end = n if close < 0 else close + 2
+            out[i:end] = " " * (end - i)
+            i = end
+            continue
+        i += 1
+    return "".join(out)
+
+def task_blocks(code):
+    """(start, end) of each [ ... ] attribute block of a DAG with its comments blanked; brackets in quoted values do not count."""
+    blocks = []
+    i, n, start, quoted = 0, len(code), None, False
+    while i < n:
+        c = code[i]
+        if quoted:
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                quoted = False
+        elif c == '"':
+            quoted = True
         elif c == "[" and start is None:
             start = i + 1
         elif c == "]" and start is not None:
@@ -286,8 +311,9 @@ def unquoted(value):
 def bridge_timeouts(dag):
     """The verdikta-ai bridge tasks: for each, the span of its timeout value (quotes included) and the value, or None."""
     found = []
-    for start, end in task_blocks(dag):
-        attrs = {m.group(1): m for m in ATTR.finditer(dag, start, end)}
+    code = without_comments(dag)
+    for start, end in task_blocks(code):
+        attrs = {m.group(1): m for m in ATTR.finditer(code, start, end)}
         if unquoted(attrs["type"].group(2)) == "bridge" if "type" in attrs else False:
             if "name" in attrs and unquoted(attrs["name"].group(2)) == BRIDGE:
                 t = attrs.get("timeout")

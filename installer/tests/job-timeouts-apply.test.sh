@@ -459,6 +459,41 @@ has   "another layout: its bridge at 840 s" "$dag" 'timeout = "840s"'
 has   "another layout: another bridge's timeout untouched" "$dag" 'name="someone-else" timeout="1s"'
 hasnt "another layout: nothing left at 300 s" "$dag" '300s'
 
+# A commented-out timeout is not the timeout: DOT's //, # and /* */, with quotes and brackets inside them.
+for comment in '// timeout=\"840s\"' '# timeout=\"840s\"' '/* timeout=\"840s\" ] */' '// an odd \" quote, and a ] bracket; timeout=\"840s\"'; do
+    reset_stub
+    set_state "
+for j in s['jobs']:
+    if j['attributes']['type'] == 'directrequest':
+        j['attributes']['maxTaskDuration'] = '14m0s'
+for j in s['jobs']:
+    if j['id'] == '1':
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'fetch [type=\"bridge\" name=\"verdikta-ai\" timeout=\"300s\"\n $comment\n];\n'
+    elif j['id'] in ('2', '3'):
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'a [type=\"bridge\" name=\"verdikta-ai\" timeout=\"840s\"];\n'
+"
+    run_tool --check; is "a comment [$comment]: the active value is read" "$rc" 1
+    has "a comment [$comment]: says 300s" "$out" "bridge timeout 300s"
+    run_tool --apply; is "a comment [$comment]: replaced" "$rc" 0
+    dag=$(job_field $ID1 "['pipelineSpec']['dotDagSource']")
+    has   "a comment [$comment]: the active value moved" "$dag" 'name="verdikta-ai" timeout="840s"'
+    run_tool --check; is "a comment [$comment]: then measured fine" "$rc" 0
+done
+
+# The bridge's name or type in a comment does not make a bridge of ours; nor a value in a quoted string.
+reset_stub
+set_state "
+for j in s['jobs']:
+    if j['id'] == '1':
+        j['attributes']['name'] = 'Somebody else'
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'x [type=\"http\" url=\"http://x\" // type=\"bridge\" name=\"verdikta-ai\" timeout=\"1s\"\n];\ny [type=\"bridge\" name=\"other\" requestData=\"name=verdikta-ai timeout=1s\" timeout=\"1s\"];\n'
+    elif j['id'] == '2':
+        j['attributes']['maxTaskDuration'] = '14m0s'
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'a [type=\"bridge\" name=\"verdikta-ai\" timeout=\"840s\"];\n'
+"
+run_tool --apply; is "not ours: left alone" "$rc" 0
+is "not ours: no call for it" "$(state "[c for c in s['calls'] if c.get('id') == '1']")" "[]"
+
 # The arbiter's job by name, with no verdikta-ai bridge in it (a renamed bridge): never quietly left out.
 reset_stub
 set_state "
