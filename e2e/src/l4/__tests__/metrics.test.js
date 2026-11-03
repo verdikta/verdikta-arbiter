@@ -92,6 +92,14 @@ describe('summarize', () => {
     expect(metricChecks(few)[0].detail).toMatch(/no p95: 2 of the 20 rounds it needs, 1 never finished; slowest a round that never finished/);
   });
 
+  it('a round served a kept run is no latency sample: no pull and no sandbox in its time. It still tells σ', () => {
+    const summary = summarize([jury(100000), jury(5000, [50, 60, 70], { runReused: true })]);
+    expect(summary.latency).toMatchObject({ n: 1, maxMs: 100000, reused: 1 });
+    expect(summary.sigma.perRound).toHaveLength(2);
+    expect(metricChecks(summary)[0].detail).toMatch(/1 served a kept run left out/);
+    expect(metricChecks(summarize([jury(5000, [70, 70, 70], { runReused: true })]))[0].detail).toMatch(/no p95: no jury round with no fault injected; 1 served a kept run left out/);
+  });
+
   it('a fault round still tells σ: the switch cannot move a score', () => {
     const summary = summarize([jury(1, [50, 60, 70], { fault: true })]);
     expect(summary.sigma.perRound[0].sigma).toBeCloseTo(10, 6);

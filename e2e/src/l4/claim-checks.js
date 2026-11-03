@@ -142,7 +142,7 @@ function faultProblem(r, fault) {
   return `no rule for ${fault}`;
 }
 
-/** The runner's own fact, from each arbiter: pulled, or a pull another run on that host started. Never already there. */
+/** The runner's own fact, from each arbiter: pulled, or a pull another run on that host started. Never already there, and never a kept run of an earlier round (`reused`). */
 function coldChecks(fetched) {
   const imageOf = (r) => metadataOf(r).runner_image;
   const isCold = (r) => Boolean(imageOf(r)) && (imageOf(r).cache === 'pulled' || imageOf(r).cache === 'shared');
@@ -270,7 +270,7 @@ const VERDICT_BY_SOURCE = Object.freeze({ 'code-review-jury': 'jury', 'code-revi
  * jury round. Mixed or missing evidence is `unreadable`, and counts for nothing.
  *
  * @param {Array<{ json: object|null }>} reports - one per recorded reveal
- * @returns {{ verdict: string, faultSeen: boolean }}
+ * @returns {{ verdict: string, faultSeen: boolean, runReused: boolean }}
  */
 function observedRound(reports) {
   const sources = reports.map((r) => (r.json ? metadataOf(r).verdict_source : undefined));
@@ -279,7 +279,12 @@ function observedRound(reports) {
     const applied = r.json ? metadataOf(r).canary_fault : undefined;
     return Boolean(applied) && !applied.refused;
   });
-  return { verdict: known || 'unreadable', faultSeen };
+  // Served a kept run of an earlier round: no pull and no sandbox in this round's time.
+  const runReused = reports.some((r) => {
+    const image = r.json ? metadataOf(r).runner_image : undefined;
+    return Boolean(image) && image.cache === 'reused';
+  });
+  return { verdict: known || 'unreadable', faultSeen, runReused };
 }
 
 module.exports = { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, EXPECTED, VERDICT_BY_SOURCE };

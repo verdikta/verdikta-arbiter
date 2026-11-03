@@ -153,7 +153,7 @@
     "suite": "l4-claim",
     "claim": "registry-failure",
     "claimSet": "archives/l4-claim/claim-set.json",
-    "description": "A listing whose env image is a digest no registry holds: every arbiter abstains at the pull, so nobody commits. Then an out-of-scope claim on the same listing and the runner gate on the main listing must settle, which shows the arbiters, the runner and the registry were up. The round is left unfinalized (a finalize applies penalties); L4 prints the command. Refused on any other class; runs only by name.",
+    "description": "A listing whose env image is a digest no registry holds: every arbiter abstains at the pull, so nobody commits. Then an out-of-scope claim on the same listing and the runner gate on the main listing must settle, which shows the arbiters and the runner were up. A registry that is down fails the pull the same way, and counts as the same failure (design §12). The round is left unfinalized (a finalize applies penalties); L4 prints the command. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
     ],

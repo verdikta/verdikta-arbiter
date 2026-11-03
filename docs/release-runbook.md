@@ -213,7 +213,8 @@ changes a real host, so each is an operator's, by hand. No install or upgrade pa
 5. **Read the metrics** over all the runs' `l4-report` artifacts, once there are enough:
    `cd e2e && node scripts/l4-metrics.js results/*.json`. It exits non-zero on too few samples
    (20 jury rounds for p95, 5 with three reveals for σ), and p95 from fewer runs does not exist.
-   Repeat the plain scenarios until it can answer.
+   Repeat the plain scenarios until it can answer, at least 15 minutes apart for one claim: an
+   arbiter serves a repeat from its kept run, and that round is no latency sample.
 
 **A cold cache from an evicted digest (opt-in, off by default).** A fresh digest needs no change on
 a host, and each one is cold once. To reuse a digest instead, an operator removes it from the

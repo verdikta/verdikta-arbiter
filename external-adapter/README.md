@@ -257,9 +257,9 @@ End execution evidence
 
 The upload's `metadata` says the same: `verdict_source` (`code-review-gate`,
 `code-review-runner`, `code-review-integrity` or `code-review-jury`), `reportSha256`,
-and for an integrity failure `failedChecks`. A jury verdict's also has `runner_image` (how the env
-image was had, `{ cache: hit|pulled|shared, durationMs }`, or null) and, on a dispute,
-`dispute_statement`. Those differ between arbiters or rounds, and no settlement reads them. The text states what the checks found,
+and for an integrity failure `failedChecks`. A jury verdict's also has `runner_image` (how this round had the env
+image: `{ cache: hit|pulled|shared, durationMs }` from the runner, `{ cache: reused, durationMs: 0 }` when
+it was served a run an earlier round started, or null) and, on a dispute, `dispute_statement`. Those differ between arbiters or rounds, and no settlement reads them. The text states what the checks found,
 not who or what caused it.
 
 **Trust.** `production` (the default) verifies attestations against

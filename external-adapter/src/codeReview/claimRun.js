@@ -181,15 +181,26 @@ function aiSwitchStamp(answer) {
 }
 
 /**
+ * How this round had the env image. A kept run serves later rounds of the same claim for 15
+ * minutes (sharedRuns.js) with the first round's answer in it, and those rounds pulled nothing and
+ * ran no sandbox: they say `reused`, and say nothing about a pull's time. Jobs of one round share
+ * its fact. With no round id there is no telling, so no fact.
+ */
+function roundImage(run, roundId) {
+  if (!run.image || !roundId) return null;
+  return run.startedForRound === roundId ? run.image : { cache: 'reused', durationMs: 0 };
+}
+
+/**
  * What an L4 scenario reads off a jury verdict, in the upload's metadata, which no settlement
  * reads: the AI Node's switch, how the image was had, the dispute's statement, and what a
  * fault did. Enums, counts and CIDs only.
  */
-function verdictFacts(answer, run, context, { fault, attempts, earlier }) {
+function verdictFacts(answer, run, context, { fault, attempts, earlier, roundId }) {
   const stamp = aiSwitchStamp(answer);
   return {
     canary_fault_ai_node: stamp.state,
-    runner_image: run.image || null,
+    runner_image: roundImage(run, roundId),
     ...(context.dispute ? { dispute_statement: context.dispute.statementCid } : {}),
     ...(fault ? {
       canary_fault: fault.refused
@@ -234,6 +245,7 @@ async function runClaim(context, options) {
   const { config, deadline, runs = sharedRuns, runTag = '' } = options;
   const logger = options.logger || { info() {}, warn() {}, error() {}, debug() {} };
   const { listing, claim } = context;
+  const roundId = (options.canaryRequest && options.canaryRequest.aggId) || null;
   deadline.assertOpen('runner was called');
 
   const { version: runnerVersion } = await runnerHealth(config.runner, { deadline });
@@ -252,7 +264,7 @@ async function runClaim(context, options) {
     const remaining = deadline.remaining();
     if (remaining < 1) throw deadline.expired('runner was called');
     logger.info(`${runTag} code-review run start key=${key} runner=${runnerVersion} deadline=${remaining}${context.warnings && context.warnings.length ? ` warnings=${context.warnings.join(',')}` : ''}`);
-    return postRun(config.runner, buildRunRequest(context, remaining), { deadline });
+    return postRun(config.runner, buildRunRequest(context, remaining), { deadline }).then((answer) => ({ ...answer, startedForRound: roundId }));
   }), 'runner answered');
 
   assertReportIsThisClaims(run.report, context, { runnerVersion, rulesVersion });
@@ -269,7 +281,7 @@ async function runClaim(context, options) {
   // Only here, with the run settled for the jury: the switch never meets the runner or a gate.
   const fault = await faultForRequest({ bcid: claim.bcid, ...options.canaryRequest }, { config: options.canaryConfig, logger, runTag });
   const { answer, attempts, earlier } = await askJury(context, run, { config, deadline, logger, runTag, fault });
-  return juryResult(answer, run, verdictFacts(answer, run, context, { fault, attempts, earlier }));
+  return juryResult(answer, run, verdictFacts(answer, run, context, { fault, attempts, earlier, roundId }));
 }
 
 module.exports = { runClaim, assertReportIsThisClaims };

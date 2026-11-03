@@ -675,6 +675,15 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(json.cases[0].metrics.rounds[0].image).toEqual([{ cache: 'pulled', durationMs: 21000 }, { cache: 'pulled', durationMs: 21000 }, { cache: 'pulled', durationMs: 21000 }]);
     });
 
+    it('fails on a repeat within 15 minutes, which only an arbiter\'s kept run answered, and that round is no latency sample', async () => {
+      await startChain({ change: { coldCache: () => ({ json: { metadata: { verdict_source: 'code-review-jury', canary_fault_ai_node: 'off', runner_image: { cache: 'reused', durationMs: 0 } } } }) } });
+      const { code, out, json } = await reportOf('claim-l4-cold-cache');
+      expect(code).toBe(1);
+      expect(out).toMatch(/claim\.imageCold.*reused/);
+      expect(json.cases[0].metrics.rounds[0].runReused).toBe(true);
+      expect(summarize(json.cases[0].metrics.rounds).latency.n).toBe(0);
+    });
+
     it('fails on an image already there', async () => {
       await startChain({ change: { coldCache: () => ({ json: { metadata: { verdict_source: 'code-review-jury', canary_fault_ai_node: 'off', runner_image: { cache: 'hit', durationMs: 1 } } } }) } });
       const r = await run('claim-l4-cold-cache');

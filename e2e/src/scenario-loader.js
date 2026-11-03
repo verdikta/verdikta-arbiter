@@ -67,7 +67,9 @@ const L4_CLAIM_ENTRIES = Object.freeze({
  * A scenario that expects no commit, and the claims that must settle after it. An abstaining
  * arbiter uploads nothing, so each control rules out another reason for nobody committing.
  * registry-failure: arbiters down, or a listing they refuse (out of scope on that same listing);
- * a runner or registry that is down (a gate only the runner reaches, on a listing whose image pulls).
+ * a runner that is down (a gate only the runner reaches, on the main listing, whose image may
+ * well be cached: this does not say the registry is up, and needs not, since a registry that is
+ * down fails the pull just as an absent digest does: §12's "registry or image-pull failure").
  * cancellation: a runner or provider that is down (a valid claim, to the jury).
  */
 const ABSTAIN_CONTROLS = Object.freeze({

@@ -222,6 +222,43 @@ describe('the facts L4 reads off a verdict', () => {
     expect(result.metadata.runner_image).toEqual({ cache: 'pulled', durationMs: 21000 });
   });
 
+  describe('a kept run serves later rounds, and they pulled nothing', () => {
+    const pulling = (body) => {
+      const out = R.definitive(body);
+      out.json.image = { ref: body.spec.env.image, cache: 'pulled', durationMs: 21000 };
+      return out;
+    };
+    const runs = () => new SharedRuns();
+    const OTHER_ROUND = `0x${'b7'.repeat(32)}`;
+
+    it('the round that started it has the runner\'s fact; another round within the 15 minutes says reused', async () => {
+      runner.state.answer = pulling;
+      const shared = runs();
+      const first = await run(canaryFaultConfigFromEnv({}), { runs: shared });
+      const second = await run(canaryFaultConfigFromEnv({}), { runs: shared, canaryRequest: { aggId: OTHER_ROUND, jobId: JOB_ID } });
+      expect(runner.state.runs).toHaveLength(1);
+      expect(first.metadata.runner_image).toEqual({ cache: 'pulled', durationMs: 21000 });
+      expect(second.metadata.runner_image).toEqual({ cache: 'reused', durationMs: 0 });
+      expect(second.scores).toEqual(first.scores);
+      expect(second.justification).toBe(first.justification);
+    });
+
+    it('the jobs of one round share its fact, in flight or kept', async () => {
+      runner.state.answer = pulling;
+      const shared = runs();
+      const [a, b] = await Promise.all([run(canaryFaultConfigFromEnv({}), { runs: shared }), run(canaryFaultConfigFromEnv({}), { runs: shared })]);
+      const c = await run(canaryFaultConfigFromEnv({}), { runs: shared });
+      expect(runner.state.runs).toHaveLength(1);
+      for (const result of [a, b, c]) expect(result.metadata.runner_image).toEqual({ cache: 'pulled', durationMs: 21000 });
+    });
+
+    it('with no round id there is no telling: no fact', async () => {
+      runner.state.answer = pulling;
+      const result = await run(canaryFaultConfigFromEnv({}), { canaryRequest: { aggId: '', jobId: JOB_ID } });
+      expect(result.metadata.runner_image).toBeNull();
+    });
+  });
+
   it.each([
     ['an unknown cache word', { cache: 'HUNTER-TEXT', durationMs: 1 }],
     ['a time that is not a number', { cache: 'hit', durationMs: 'soon' }],

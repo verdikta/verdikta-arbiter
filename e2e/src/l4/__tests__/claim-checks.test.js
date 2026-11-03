@@ -260,6 +260,8 @@ describe('the cold cache', () => {
 
   it.each([
     ['an arbiter that already had it', [report(cold({ cache: 'pulled', durationMs: 1 })), report(cold({ cache: 'hit', durationMs: 1 }))], 'claim.imageCold'],
+    ['a repeat within 15 minutes, served the first round\'s kept run', [report(cold({ cache: 'reused', durationMs: 0 }))], 'claim.imageCold'],
+    ['one arbiter served a kept run, another pulling', [report(cold({ cache: 'pulled', durationMs: 1 })), report(cold({ cache: 'reused', durationMs: 0 }))], 'claim.imageCold'],
     ['nobody pulled: every arbiter shared', [report(cold({ cache: 'shared', durationMs: 1 }))], 'claim.imageCold'],
     ['no fact', [report(juror())], 'claim.imageCold'],
     ['a pull over the budget', [report(cold({ cache: 'pulled', durationMs: 90001 }))], 'claim.pullWithinBudget']
@@ -378,6 +380,12 @@ describe('what a round\'s uploads say happened, for its measurements', () => {
     ['nothing', [], 'unreadable']
   ])('%s: %s', (_name, reports, verdict) => {
     expect(observedRound(reports).verdict).toBe(verdict);
+  });
+
+  it('a kept run shows, on any arbiter', () => {
+    expect(observedRound([up('code-review-jury', { runner_image: { cache: 'pulled', durationMs: 1 } })]).runReused).toBe(false);
+    expect(observedRound([up('code-review-jury'), up('code-review-jury', { runner_image: { cache: 'reused', durationMs: 0 } })]).runReused).toBe(true);
+    expect(observedRound([up('code-review-jury', { runner_image: null })]).runReused).toBe(false);
   });
 
   it('a fault that ran shows, on any arbiter; one the switch refused did not run', () => {

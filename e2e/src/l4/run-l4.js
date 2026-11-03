@@ -200,6 +200,7 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
       ...expectedRound(latencyMs),
       verdict: seen.verdict,
       fault: Boolean(expected.fault) || seen.faultSeen,
+      runReused: seen.runReused,
       validMass: revealsAreComplete({ reveals, responseCount, error }) ? reveals.map((r) => validMassPoints(r.scores)) : [],
       ...(expected.cold ? { image: reports.map((r) => (r.json && r.json.metadata ? r.json.metadata.runner_image : null)) } : {}),
     };

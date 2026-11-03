@@ -54,13 +54,16 @@ function sigmaOf(values) {
  */
 function summarize(rounds, disputes = []) {
   const jury = rounds.filter((r) => r.verdict === 'jury');
-  // The typical path: no gate stopped it early and no delay was injected into it. A round that
-  // never finished counts as slower than any budget, or a network that loses rounds would look fast.
-  const timed = jury.filter((r) => !r.fault);
+  // The typical path: no gate stopped it early, no delay was injected into it, and it ran its own
+  // sandbox (an arbiter keeps a run for 15 minutes, and a later round of that claim is served it).
+  // A round that never finished counts as slower than any budget, or a network that loses rounds
+  // would look fast.
+  const timed = jury.filter((r) => !r.fault && !r.runReused);
   const latency = {
     ...p95Of(timed.map((r) => (r.unfinished ? Infinity : r.latencyMs))),
     budgetMs: LATENCY_BUDGET_MS,
-    unfinished: timed.filter((r) => r.unfinished).length
+    unfinished: timed.filter((r) => r.unfinished).length,
+    reused: jury.filter((r) => r.runReused && !r.fault).length
   };
   const perRound = jury.filter((r) => !r.unfinished).map((r) => ({ id: r.id, ...sigmaOf(r.validMass || []) }));
   const sigmas = perRound.filter((r) => r.sigma !== null).map((r) => r.sigma);
@@ -73,9 +76,10 @@ function summarize(rounds, disputes = []) {
   };
 }
 
-function latencyLine({ n, p95Ms, maxMs, budgetMs, unfinished }) {
-  if (n === 0) return 'no p95: no jury round with no fault injected';
-  const lost = unfinished > 0 ? `, ${unfinished} never finished` : '';
+function latencyLine({ n, p95Ms, maxMs, budgetMs, unfinished, reused }) {
+  const leftOut = reused > 0 ? `; ${reused} served a kept run left out` : '';
+  if (n === 0) return `no p95: no jury round with no fault injected${leftOut}`;
+  const lost = `${unfinished > 0 ? `, ${unfinished} never finished` : ''}${leftOut}`;
   if (p95Ms === null) return `no p95: ${n} of the ${P95_MIN_SAMPLES} rounds it needs${lost}; slowest ${seconds(maxMs)} of the ${seconds(budgetMs)} budget (§11)`;
   return `p95 ${seconds(p95Ms)} of the ${seconds(budgetMs)} budget (§11), ${n} rounds${lost}, slowest ${seconds(maxMs)}`;
 }
