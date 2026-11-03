@@ -32,7 +32,7 @@ describe('the flag is read in one place', () => {
   });
 
   it('that file reads process.env nowhere else in the module', () => {
-    const others = ['index.js', 'measure.js'].map((f) => fs.readFileSync(path.join(EA, 'src', 'canaryFault', f), 'utf8'));
+    const others = ['index.js', 'measure.js', 'constants.js'].map((f) => fs.readFileSync(path.join(EA, 'src', 'canaryFault', f), 'utf8'));
     for (const text of others) expect(text).not.toMatch(/process\.env/);
   });
 });
@@ -69,7 +69,7 @@ describe('it cannot reach what decides a claim', () => {
   it('the switch imports nothing of the code-review path', () => {
     for (const file of filesUnder(path.join(EA, 'src', 'canaryFault'))) {
       const requires = [...fs.readFileSync(file, 'utf8').matchAll(/require\('([^']+)'\)/g)].map((m) => m[1]);
-      for (const name of requires) expect(['axios', 'crypto', 'ethers', './config', './measure']).toContain(name);
+      for (const name of requires) expect(['axios', 'crypto', 'ethers', './config', './constants', './measure']).toContain(name);
     }
   });
 

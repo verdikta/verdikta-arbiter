@@ -28,6 +28,7 @@ const CODE = /^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/;
 const PRIOR_REPORT_MAX_CHARS = 4096;
 /** The pack's own token rule (code-runner/src/pack.js). */
 const BYTES_PER_PACK_TOKEN = 4;
+const IMAGE_CACHE = Object.freeze(['hit', 'pulled', 'shared']);
 
 const abstain = (code, detail) => new CodeReviewAbstain(code, detail);
 /** A code from an answer, only when it looks like one. */
@@ -122,6 +123,12 @@ function buildRunRequest(context, deadlineMs) {
   };
 }
 
+/** How the env image was had, the runner's operational fact: differs between arbiters, and never in the report. Or null. */
+function imageFact(image) {
+  if (!image || typeof image !== 'object' || !IMAGE_CACHE.includes(image.cache)) return null;
+  return Number.isSafeInteger(image.durationMs) && image.durationMs >= 0 ? { cache: image.cache, durationMs: image.durationMs } : null;
+}
+
 /**
  * Read POST /v1/runs's answer.
  * @param {number} status
@@ -163,7 +170,8 @@ function readRunAnswer(status, body) {
     report: JSON.parse(codeReview.canonicalReportJson(answer.report)),
     reportSha256: hash,
     warnings: checked.warnings.map((warning) => warning.code),
-    contextPack: answer.contextPack && typeof answer.contextPack === 'object' ? answer.contextPack : null
+    contextPack: answer.contextPack && typeof answer.contextPack === 'object' ? answer.contextPack : null,
+    image: imageFact(answer.image)
   };
 }
 

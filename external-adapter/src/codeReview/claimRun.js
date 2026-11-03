@@ -33,6 +33,7 @@ const { settleReport } = require('./settlement');
 const { buildExecutionEvidence } = require('./evidence');
 const { buildRunnerVerdict } = require('./verdict');
 const { buildCodeReviewAiRequest } = require('./aiRequest');
+const { faultForRequest } = require('../canaryFault');
 
 const AI_ROUTE = '/api/rank-and-justify';
 /** One retry (§11): the first call and one more. */
@@ -40,6 +41,9 @@ const AI_ATTEMPTS = 2;
 /** The most an AI Node's answer may hold: scores and a justification. */
 const MAX_AI_ANSWER_BYTES = 64 * 1024 * 1024;
 const CODE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
+/** What an AI Node may say about its fault switch (ai-node/src/lib/code-review/canary-fault.ts). */
+const AI_SWITCH_STATES = Object.freeze(['off', 'armed', 'refused']);
+const AI_SWITCH_ACTIONS = Object.freeze(['hold-juror-answer', 'late-juror', 'hold-justifier-answer']);
 
 const abstain = (code, detail) => new CodeReviewAbstain(code, detail);
 const sha256Hex = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
@@ -116,7 +120,7 @@ async function postToAiNode(aiNode, body, { deadline }) {
 }
 
 /** The jury's verdict, from the run held by this job: a retry never goes back to a sandbox. */
-async function askJury(context, run, { config, deadline, logger, runTag }) {
+async function askJury(context, run, { config, deadline, logger, runTag, fault }) {
   const { listing, claim } = context;
   const payload = (deadlineMs, attempt) => buildCodeReviewAiRequest({
     query: listing.query,
@@ -145,9 +149,11 @@ async function askJury(context, run, { config, deadline, logger, runTag }) {
       throw abstain('CODE_REVIEW_AI_REQUEST', `the request does not validate, so no model is called: ${issueCodes(checked.issues)}`);
     }
     logger.info(`${runTag} code-review jury attempt ${attempt}: report=${run.reportSha256} deadlineMs=${remaining} files=${body.attachments.length}`);
-    const response = await postToAiNode(config.aiNode, body, { deadline });
+    // Beside the request, never in it: the prompt, the report and the pack are as they were.
+    const directive = fault ? fault.directiveFor(attempt, { bcid: claim.bcid, reportSha256: run.reportSha256 }) : null;
+    const response = await postToAiNode(config.aiNode, directive ? { ...body, canaryFault: directive } : body, { deadline });
     const answer = response.data && typeof response.data === 'object' ? response.data : {};
-    if (response.status === 200) return answer;
+    if (response.status === 200) return { answer, attempts: attempt };
 
     const errorCode = typeof answer.errorCode === 'string' && CODE.test(answer.errorCode) ? answer.errorCode : 'unknown';
     logger.warn(`${runTag} code-review AI Node answered ${response.status} ${errorCode} (attempt ${attempt})`);
@@ -159,8 +165,40 @@ async function askJury(context, run, { config, deadline, logger, runTag }) {
   throw abstain('CODE_REVIEW_AI_ABSTAIN', 'the AI Node gave no verdict'); // the loop returns or throws
 }
 
+const wholeMs = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : null);
+
+/** What the AI Node said of its fault switch, as far as it is one of the words that can be said. */
+function aiSwitchStamp(answer) {
+  const stamp = answer.codeReview && answer.codeReview.canaryFault;
+  const said = stamp && typeof stamp === 'object' ? stamp : {};
+  return {
+    state: AI_SWITCH_STATES.includes(said.state) ? said.state : 'unknown',
+    action: AI_SWITCH_ACTIONS.includes(said.action) ? said.action : null,
+    justifierMs: wholeMs(said.justifierMs)
+  };
+}
+
+/**
+ * What an L4 scenario reads off a jury verdict, in the upload's metadata, which no settlement
+ * reads: the AI Node's switch, how the image was had, the dispute's statement, and what a
+ * fault did. Enums, counts and CIDs only.
+ */
+function verdictFacts(answer, run, context, { fault, attempts }) {
+  const stamp = aiSwitchStamp(answer);
+  return {
+    canary_fault_ai_node: stamp.state,
+    runner_image: run.image || null,
+    ...(context.dispute ? { dispute_statement: context.dispute.statementCid } : {}),
+    ...(fault ? {
+      canary_fault: fault.refused
+        ? { fault: fault.fault, refused: fault.refused }
+        : { fault: fault.fault, attempts, action: stamp.action, jurorTimeoutMs: wholeMs(answer.codeReview && answer.codeReview.jurorTimeoutMs), justifierMs: stamp.justifierMs }
+    } : {})
+  };
+}
+
 /** The jury's answer as the upload reads it, with the block first. */
-function juryResult(answer, run) {
+function juryResult(answer, run, facts) {
   const stamp = answer.codeReview && answer.codeReview.reportSha256;
   if (stamp !== run.reportSha256) {
     throw abstain('CODE_REVIEW_AI_ANSWER', 'the AI Node\'s verdict does not name this report');
@@ -171,7 +209,7 @@ function juryResult(answer, run) {
   return {
     scores: answer.scores.map((entry) => ({ outcome: entry && entry.outcome, score: entry && entry.score })),
     justification: `${buildExecutionEvidence(run.report, run.reportSha256)}\n\n${answer.justification}`,
-    metadata: { ...(answer.metadata && typeof answer.metadata === 'object' ? answer.metadata : {}), verdict_source: 'code-review-jury', reportSha256: run.reportSha256 },
+    metadata: { ...(answer.metadata && typeof answer.metadata === 'object' ? answer.metadata : {}), verdict_source: 'code-review-jury', reportSha256: run.reportSha256, ...facts },
     model_results: Array.isArray(answer.model_results) ? answer.model_results : [],
     warnings: Array.isArray(answer.warnings) ? answer.warnings : []
   };
@@ -185,6 +223,8 @@ function juryResult(answer, run) {
  * @param {object} [options.logger]
  * @param {string} [options.runTag]
  * @param {object} [options.runs] - the shared runs (default: the process's)
+ * @param {{ aggId?: string, jobId?: string }} [options.canaryRequest] - the bridge's ids, for the fault switch to measure this request
+ * @param {object} [options.canaryConfig] - the switch's configuration (default: the process's)
  * @returns {Promise<{ scores: { outcome: string, score: number }[], justification: string, metadata: object }>}
  * @throws {Error} the errored path, no commit
  */
@@ -224,8 +264,10 @@ async function runClaim(context, options) {
   if (settlement.kind !== 'jury') return buildRunnerVerdict(listing.outcomes, settlement, run);
 
   assertPack(run.contextPack, context);
-  const answer = await askJury(context, run, { config, deadline, logger, runTag });
-  return juryResult(answer, run);
+  // Only here, with the run settled for the jury: the switch never meets the runner or a gate.
+  const fault = await faultForRequest({ bcid: claim.bcid, ...options.canaryRequest }, { config: options.canaryConfig, logger, runTag });
+  const { answer, attempts } = await askJury(context, run, { config, deadline, logger, runTag, fault });
+  return juryResult(answer, run, verdictFacts(answer, run, context, { fault, attempts }));
 }
 
 module.exports = { runClaim, assertReportIsThisClaims };

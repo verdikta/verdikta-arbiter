@@ -17,6 +17,7 @@ const { codeReview } = require('@verdikta/common');
 const { startLocalIpfs } = require('./local-ipfs');
 const { startRecordingProxy } = require('./recording-proxy');
 const { startAiNode, startCodeRunner, startAdapter } = require('./services');
+const { startCanaryChain } = require('./canary-chain');
 const F = require('./fixtures');
 
 const CODE_RUNNER = path.join(__dirname, '..', '..', '..', '..', 'code-runner');
@@ -28,7 +29,9 @@ const HANGING_JUROR = Object.freeze({ provider: 'openai', model: 'gpt-6-luna' })
 /** The panel's replies, weights 0.5 and 0.5, so only both together give the average the scenario asserts. */
 const JUROR_SCORES = Object.freeze({
   'claude-sonnet-5-5': [0, 0, 0, 0, 800000, 200000],
-  'deepseek/deepseek-v4-pro-0813': [0, 0, 0, 0, 600000, 400000]
+  'deepseek/deepseek-v4-pro-0813': [0, 0, 0, 0, 600000, 400000],
+  // On the dispute panel, in the second juror's place.
+  'gpt-6-sol': [0, 0, 0, 0, 600000, 400000]
 });
 const JURY_AVERAGE = Object.freeze([0, 0, 0, 0, 700000, 300000]);
 const MOCK_SCRIPT = Object.freeze({
@@ -90,6 +93,7 @@ async function startClaimHarness() {
     const H = await step('loading the code runner\'s Docker fixtures (npm ci in code-runner/?)', async () => require(path.join(CODE_RUNNER, 'test/docker/helpers')));
     const runnerRepo = require(path.join(CODE_RUNNER, 'test/docker/forgeFixture'));
     const { buildFixture } = runnerRepo;
+    const { CANARY_IMAGE_OPTIONS } = require(path.join(CODE_RUNNER, 'test/docker/determinismPocs'));
     const { startRegistry } = require(path.join(CODE_RUNNER, 'test/docker/registry'));
 
     const platform = H.PLATFORM;
@@ -109,7 +113,7 @@ async function startClaimHarness() {
 
     const registry = await step('starting registry:2', () => startRegistry(docker, instance));
     closers.push(() => registry.remove());
-    const built = await step('building the Foundry fixture image', () => buildFixture(docker, { instance }));
+    const built = await step('building the Foundry fixture image', () => buildFixture(docker, { ...CANARY_IMAGE_OPTIONS, instance }));
     closers.push(() => built.remove());
     const image = await step('pushing the image to the registry', () => publishImage({ docker, runText, registry, built }));
     closers.push(() => runText(docker, ['image', 'rm', '--force', image], { timeoutMs: 120000 }));
@@ -120,13 +124,14 @@ async function startClaimHarness() {
     // The archives: the same builder L4's claim set comes from.
     const set = await F.makeClaimSet({ repo: runnerRepo, put: ipfs.put, image, baseCommit: built.baseCommit });
     const { listing, listingCid } = set;
-    const { valid, outOfScope, editsSource } = set.claims;
     const textCid = await ipfs.put(F.textArchive());
 
     // The services.
     const callLog = path.join(logDir, 'provider-calls.jsonl');
     const justifierModel = `${JUSTIFIER.provider}:${JUSTIFIER.model}`;
-    const aiNode = await step('starting the AI Node', () => startAiNode({ logDir, callLog, script: MOCK_SCRIPT, justifierModel }));
+    // The AI Node holds the fault switch's key throughout: with no directive from an armed adapter it does nothing, and that is asserted.
+    const canaryFaultKey = crypto.randomBytes(32).toString('hex');
+    const aiNode = await step('starting the AI Node', () => startAiNode({ logDir, callLog, script: MOCK_SCRIPT, justifierModel, canaryFaultKey }));
     closers.push(() => aiNode.close());
     const aiProxy = await step('starting the AI Node\'s proxy', () => startRecordingProxy(aiNode.url));
     closers.push(() => aiProxy.close());
@@ -153,6 +158,17 @@ async function startClaimHarness() {
     closers.push(() => adapter.close());
 
     const providerCalls = () => readCallLog(callLog);
+    const secondAdapter = (name, env, options = {}) => startAdapter({
+      logDir, aiNodeUrl: aiProxy.url, runnerUrl: runnerProxy.url, runnerToken, ipfsUrl: ipfs.url, pinKey: PIN_KEY, devKey: listing.builderPublicKey, operator: OPERATOR, name, env, ...options
+    });
+    const faultEnv = (rpcUrl) => ({
+      VERDIKTA_CANARY_FAULTS: F.faultPlan(set),
+      VERDIKTA_CANARY_FAULT_KEY: canaryFaultKey,
+      VERDIKTA_CANARY_RPC_URL: rpcUrl,
+      NETWORK_CHAIN_ID: '84532',
+      DEPLOYMENT_NETWORK: 'base_sepolia'
+    });
+    let armed = null;
     return {
       classPlatform,
       platform,
@@ -167,15 +183,36 @@ async function startClaimHarness() {
       ai: aiProxy,
       aiDirect: aiNode.url,
       runner: runnerProxy,
-      claims: { listingCid, listing: listing.buffer, valid, outOfScope, editsSource, textCid },
+      claims: { listingCid, listing: listing.buffer, ...set.claims, textCid },
+      /** A second adapter on the same services, with the fault switch armed against a stand-in Base Sepolia RPC. Started on first use. */
+      armedAdapter: async () => {
+        if (!armed) {
+          const chain = await startCanaryChain();
+          closers.push(() => chain.close());
+          const adapter = await secondAdapter('external-adapter-armed', faultEnv(chain.url));
+          closers.push(() => adapter.close());
+          armed = { chain, url: adapter.url, health: adapter.health };
+        }
+        return armed;
+      },
+      /** An adapter with the same flag set, on Base mainnet. It is only asked what it says of itself. */
+      mainnetAdapter: async () => {
+        const adapter = await secondAdapter('external-adapter-mainnet', { ...faultEnv('http://127.0.0.1:9'), NETWORK_CHAIN_ID: '8453', DEPLOYMENT_NETWORK: 'base_mainnet' }, { mustServe: false });
+        closers.push(() => adapter.close());
+        return adapter;
+      },
+      evaluateAt: async (url, cid, { aggId, jobId, timeoutMs = 300000 }) => {
+        const { data } = await axios.post(`${url}/evaluate`, { id: jobId, data: { cid, aggId } }, { timeout: timeoutMs });
+        return data;
+      },
       providerCalls,
       counts: () => ({
         aiCalls: aiProxy.post('/api/rank-and-justify').length,
         providerCalls: providerCalls().length,
         runnerCalls: runnerProxy.post('/v1/runs').length
       }),
-      evaluate: async (cid, { aggId = crypto.randomBytes(8).toString('hex'), timeoutMs = 700000 } = {}) => {
-        const { data } = await axios.post(`${adapter.url}/evaluate`, { id: `e2e-${crypto.randomBytes(4).toString('hex')}`, data: { cid, aggId } }, { timeout: timeoutMs });
+      evaluate: async (cid, { aggId = crypto.randomBytes(8).toString('hex'), timeoutMs = 700000, anyStatus = false } = {}) => {
+        const { data } = await axios.post(`${adapter.url}/evaluate`, { id: `e2e-${crypto.randomBytes(4).toString('hex')}`, data: { cid, aggId } }, { timeout: timeoutMs, ...(anyStatus ? { validateStatus: () => true } : {}) });
         return data;
       },
       serviceTails: () => {

@@ -155,7 +155,7 @@ Liveness, plus the code-review mode: `{ "status": "ok", "codeReview": { "enabled
 "ready", "runnerConfigured", "trust", "devKeyCount", "chainId", "network",
 "problems" } }`. `trust` is `production`, `dev`, `dev-refused` or `refused`.
 `GET /version` carries the same `codeReview` block. Neither shows the runner
-URL or token.
+URL or token. Both also carry `canaryFault`, the [fault switch](#the-canary-fault-switch)'s state.
 
 ## Code-review mode (stake attestation)
 
@@ -257,7 +257,9 @@ End execution evidence
 
 The upload's `metadata` says the same: `verdict_source` (`code-review-gate`,
 `code-review-runner`, `code-review-integrity` or `code-review-jury`), `reportSha256`,
-and for an integrity failure `failedChecks`. The text states what the checks found,
+and for an integrity failure `failedChecks`. A jury verdict's also has `runner_image` (how the env
+image was had, `{ cache: hit|pulled|shared, durationMs }`, or null) and, on a dispute,
+`dispute_statement`. Those differ between arbiters or rounds, and no settlement reads them. The text states what the checks found,
 not who or what caused it.
 
 **Trust.** `production` (the default) verifies attestations against
@@ -274,5 +276,59 @@ contents or the addendum's machine lines (an addendum carrying one is logged as
 an operator's logs never hold a copy of a claim or its keys. The operator
 switch and the CID count are checked from the listing's manifest alone, before
 any claim archive is extracted.
+
+### The canary fault switch
+
+For the canary conditions of design §11 on class 5555, on real canaries with real providers
+(decision D9; `src/canaryFault/`). It is unrelated to the AI Node's mock provider, which is
+test-only. It can delay or fail a request, and nothing else.
+
+**Off by default.** Off unless `VERDIKTA_CANARY_FAULTS` is set, in `src/canaryFault/config.js`,
+the one place the environment is read. No install or upgrade path sets it; the operator's step is
+in [`docs/release-runbook.md`](../docs/release-runbook.md) §3b.
+
+| Variable | |
+|---|---|
+| `VERDIKTA_CANARY_FAULTS` | `<claim CID>=<fault>,…`. Exact claims: there is no wildcard, and nothing in a request can ask for a fault. Faults: `near-limit-juror`, `provider-timeout`, `slow-justifier`, `cancellation` |
+| `VERDIKTA_CANARY_FAULT_KEY` | 32 or more printable characters, the same as the AI Node's. It signs what the adapter asks of the AI Node |
+| `VERDIKTA_CANARY_RPC_URL` | A Base Sepolia RPC, to measure each request |
+| `NETWORK_CHAIN_ID`, `DEPLOYMENT_NETWORK` | Must say Base Sepolia: 84532, and not naming mainnet. An unknown chain counts as mainnet |
+
+With a flag set and anything wrong, the state is `refused`, the reasons are in `problems`, and it
+acts on nothing. A bad entry refuses the whole plan.
+
+**What it acts on.** All of this, for each request:
+
+1. The flag names this claim's CID. A real claim's never is, so on an armed canary a real claim
+   makes no chain read and sees no fault.
+2. The chain says so, through that RPC: `eth_chainId` is 84532; the one `RequestAIEvaluation(aggId)`
+   log of the Base Sepolia aggregator (a constant in the code, not config) leads to a transaction
+   sent straight to that aggregator, whose decoded `requestedClass` is 5555; and the keeper that
+   aggregator names lists 5555 for this `OPERATOR_ADDR` and job. The bridge gives the adapter the
+   `aggId` and the job's id.
+
+A node may serve 5555 and 128 at once, as the canaries do: a request for 128 on it is refused here.
+A request sent through a contract has no calldata to read, so it is refused too, and that includes
+every real claim through `StakeAttestation`. Any failed read, unreadable answer or timeout (15 s in
+all) means no fault, and the claim is judged normally, with `metadata.canary_fault.refused` naming
+why on the verdict.
+
+**What it does.** It asks only once the run has settled for the jury, so the runner, the report and
+the gates never meet it; the modules that decide a verdict do not import it. It then adds a
+directive beside the AI Node request, never in it: `canaryFault: { action, mac }`, an HMAC over the
+action, the claim and the report.
+
+| Fault | Which attempts | What the AI Node does ([contract](../ai-node/API_RESPONSE_SPECIFICATION.md#the-canary-fault-switch)) |
+|---|---|---|
+| `near-limit-juror` | Every | Holds the first juror's real answer until 5 s before the jury deadline |
+| `provider-timeout` | The first | Starts the first juror's real call 3 s before the jury deadline, so the deadline aborts it on the wire: a real 503, a real retry from the same run |
+| `slow-justifier` | Every | Holds the real justification until 5 s before its reserve ends |
+| `cancellation` | Every | As `provider-timeout`, on both attempts: the arbiter abstains, no commit |
+
+**Visible.** `/health` and `/version` carry `canaryFault: { state, namedClaims, applied, refused,
+lastRefusal, problems }`, never the key, the URL or the CIDs. Every justification's `arbiter`
+block carries `canaryFault: { state }`, and a jury verdict's `metadata` carries
+`canary_fault_ai_node` and, for a named claim, `canary_fault`. No settlement reads any of it. An
+armed node says so at boot, and L4 fails a claim run unless the state is what the run named.
 
 For testing information, please refer to [TESTING.md](TESTING.md).

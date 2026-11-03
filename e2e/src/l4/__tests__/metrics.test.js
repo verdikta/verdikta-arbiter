@@ -116,7 +116,7 @@ describe('what a run prints', () => {
 
   it('prints it from 20', () => {
     const shown = details(summarize(times(20).map((t) => jury(t))));
-    expect(shown['metric.latencyP95']).toMatch(/p95 300 s of the 900 s budget, 20 rounds/);
+    expect(shown['metric.latencyP95']).toMatch(/p95 300 s of the 900 s budget \(§11\), 20 rounds/);
   });
 
   it('says there is no σ below three reveals', () => {

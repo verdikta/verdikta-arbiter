@@ -79,6 +79,7 @@ async function executeL4(cliOpts) {
     classId: cliOpts.classId,
     expectCommon: cliOpts.expectCommon || process.env.L4_EXPECT_COMMON || undefined,
     expectRelease: cliOpts.expectRelease || process.env.L4_EXPECT_RELEASE || undefined,
+    expectFaultSwitch: cliOpts.expectFaultSwitch || process.env.L4_EXPECT_FAULT_SWITCH || undefined,
   });
   reporter.printConsole();
 
@@ -133,6 +134,7 @@ program
   .option('--class-id <id>', 'requested class (default: L4_CLASS_ID env, then config.l4.classId; the testnet canary class is 5555, and a claim scenario runs on nothing else)')
   .option('--expect-common <version>', 'fail unless every revealing arbiter reports this @verdikta/common version (default: L4_EXPECT_COMMON env)')
   .option('--expect-release <commit>', 'fail unless every revealing arbiter reports this release commit, prefix match (default: L4_EXPECT_RELEASE env)')
+  .option('--expect-fault-switch <state>', 'a claim run: the canary fault switch every revealing arbiter must report, off (the default) or armed; a fault scenario needs armed (default: L4_EXPECT_FAULT_SWITCH env)')
   .option('--report <file>', 'write JSON report to file')
   .option('--junit <file>', 'write JUnit XML report to file')
   .action((opts) => executeL4(opts).catch((err) => {

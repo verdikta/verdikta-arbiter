@@ -10,7 +10,7 @@ const { ethers } = require('ethers');
 
 const AGGREGATOR = '0xe8a385E473EA710c5a88Cc72681a16a26fe380e4';
 const KEEPER = '0xE09821277D9af702F7910a57e85EaC6D83e4d794';
-const OPERATOR = '0x00000000000000000000000000000000000A6c01';
+const OPERATOR = '0x00000000000000000000000000000000000a6c01';
 /** A job's external id as the bridge sends it, and its id on-chain (arbiter-operator/scripts/register-oracle-cl.js). */
 const JOB_ID = '38f19572-c510-41ba-a5f2-dea284614590';
 const JOB_BYTES32 = ethers.utils.hexlify(ethers.utils.toUtf8Bytes('38f19572c51041baa5f2dea284614590'));

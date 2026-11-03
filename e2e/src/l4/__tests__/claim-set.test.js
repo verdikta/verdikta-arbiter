@@ -126,6 +126,21 @@ describe('makeClaimSet', () => {
     expect(Buffer.byteLength(ipfs.get(dispute.statementCid))).toBeLessThanOrEqual(codeReview.MAX_DISPUTE_STATEMENT_BYTES);
   });
 
+  it('the dispute round goes to the listing\'s dispute archive: the same members, common\'s dispute panel', async () => {
+    const { listing, claims } = await F.makeClaimSet({ image: IMAGE, baseCommit: BASE_COMMIT, repo, put: ipfs.put });
+    const read = (buffer) => Object.fromEntries(new AdmZip(buffer).getEntries().map((e) => [e.entryName, e.getData().toString('utf8')]));
+    const a = read(listing.buffer);
+    const b = read(ipfs.get(claims.dispute.disputeListingCid));
+    expect(Object.keys(b).sort()).toEqual(Object.keys(a).sort());
+    for (const name of Object.keys(a)) if (name !== 'manifest.json') expect(b[name]).toBe(a[name]);
+    expect(JSON.parse(a['manifest.json']).juryParameters).toEqual(JSON.parse(JSON.stringify(codeReview.CODE_STANDARD_PANEL)));
+    expect(JSON.parse(b['manifest.json']).juryParameters).toEqual(JSON.parse(JSON.stringify(codeReview.CODE_STANDARD_DISPUTE_PANEL)));
+    const { juryParameters, ...restA } = JSON.parse(a['manifest.json']);
+    const { juryParameters: _other, ...restB } = JSON.parse(b['manifest.json']);
+    expect(juryParameters).toBeDefined();
+    expect(restB).toEqual(restA);
+  });
+
   it('the claims are what their scenarios say: only the valid one is in scope and edits no source', async () => {
     const { claims } = await F.makeClaimSet({ image: IMAGE, baseCommit: BASE_COMMIT, repo, put: ipfs.put });
     const member = (claim, name) => new AdmZip(claim.buffer).getEntry(name).getData().toString('utf8');
@@ -175,7 +190,8 @@ describe('resolveL4Claim', () => {
   it('a dispute scenario carries its second round', async () => {
     const { set, file } = await setFile();
     const s = resolveL4Claim(scenarioIn(file, 'dispute'));
-    expect(s.disputeRound).toEqual({ cids: [set.listingCid, set.claims.dispute.cid], addendum: set.claims.dispute.disputeAddendum, statementCid: set.claims.dispute.statementCid });
+    expect(s.cids).toEqual([set.listingCid, set.claims.dispute.cid]);
+    expect(s.disputeRound).toEqual({ cids: [set.claims.dispute.disputeListingCid, set.claims.dispute.cid], addendum: set.claims.dispute.disputeAddendum, statementCid: set.claims.dispute.statementCid });
   });
 
   it('a cold-cache scenario on a set with no fresh image says how to get one', async () => {
@@ -302,8 +318,8 @@ describe('scripts/build-l4-claims.js', () => {
     expect(typeof value.builderPublicKey).toBe('string');
     expect(JSON.stringify(value)).not.toMatch(/privateKey|identity|AGE-SECRET/i);
     expect(r.out).not.toMatch(/privateKey|AGE-SECRET/i);
-    // The listing, 11 claims, 11 ciphertexts and the dispute statement; the registry listing, 2 claims and 2 ciphertexts.
-    expect(ipfs.pins).toHaveLength(29);
+    // The listing, 11 claims, 11 ciphertexts, the dispute archive and statement; the registry listing, 2 claims and 2 ciphertexts.
+    expect(ipfs.pins).toHaveLength(30);
     expect(r.out).toContain(`VERDIKTA_CANARY_FAULTS=${value.faultPlan}`);
     expect(value.faultPlan.split(',')).toHaveLength(4);
     for (const kind of ['valid', 'front-gate', 'runner-gate', 'flaky', 'registry-failure', 'dispute']) {
@@ -317,7 +333,7 @@ describe('scripts/build-l4-claims.js', () => {
     const out = path.join(dir, 'claim-set.json');
     const r = await runScript([...base, '--cold-image', COLD_IMAGE, '--out', out, '--pin'], { IPFS_PINNING_KEY: 'local-test-key', IPFS_PINNING_SERVICE: ipfs.url });
     expect(r.code).toBe(0);
-    expect(ipfs.pins).toHaveLength(32);
+    expect(ipfs.pins).toHaveLength(33);
     const s = resolveL4Claim(scenarioIn(out, 'cold-cache'));
     expect(ipfs.get(s.cids[0])).toBeDefined();
     expect(JSON.parse(fs.readFileSync(out, 'utf8')).claims.coldCache.image).toBe(COLD_IMAGE);

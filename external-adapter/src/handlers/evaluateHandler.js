@@ -25,6 +25,7 @@ const {
 const codeReviewMode = require('../codeReview');
 const { getCodeReviewConfig, devTrustActive } = require('../codeReview/config');
 const { addendumForLog, redactMachineLines } = require('../codeReview/addendum');
+const { describeCanaryFault } = require('../canaryFault');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -88,6 +89,12 @@ logger.info(`IPFS fetch cache: ttl=${fetchCache.ttlMs}ms maxEntries=${fetchCache
     logger.warn('Code review: CODE_REVIEW_TRUST=dev: attestations signed by caller-supplied dev builder keys are accepted (never on mainnet)');
   }
   logger.info(`Code review: ${codeReviewConfig.ready ? 'ready' : 'off'} (trust=${codeReviewConfig.trust.mode})`);
+  const canaryFault = describeCanaryFault();
+  if (canaryFault.state === 'armed') {
+    logger.warn(`CANARY FAULT SWITCH ARMED for ${canaryFault.namedClaims} named claim(s): it acts only on a request for class 5555, measured on Base Sepolia. Remove the flag when the canary run ends (docs/release-runbook.md, 3b).`);
+  } else if (canaryFault.state === 'refused') {
+    logger.error(`Canary fault switch refused, and it acts on nothing: ${canaryFault.problems.join('; ')}`);
+  }
 }
 
 /** The listing manifest of an extracted primary archive, or null when it cannot be read. */
@@ -295,7 +302,8 @@ const evaluate = async (request) => {
           config: getCodeReviewConfig(),
           deps: { archiveService, validator, logger },
           runTag,
-          receivedAt: t0 // the deadline runs from receipt: the fetches above count (design §11)
+          receivedAt: t0, // the deadline runs from receipt: the fetches above count (design §11)
+          canaryRequest: { aggId, jobId: id } // what the fault switch measures this request by; it reads nothing else of it
         });
         logger.info(`${runTag} code-review evaluation took ${Date.now() - t8}ms`);
       } else if (malformedBCIDs.length > 0) {

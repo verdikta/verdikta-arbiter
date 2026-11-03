@@ -14,10 +14,14 @@
  *  - release:        VERSION stamp written by installer/bin/install.sh and
  *                    upgrade-arbiter.sh at the install root (or EA root),
  *                    e.g. "b9a58e2 2026-07-06T21:20:25Z"
+ *  - canaryFault:    the canary fault switch's state ({ state: off|armed|refused }), so a
+ *                    canary cannot run with it unnoticed: L4 reads this from every
+ *                    justification it judges (decision D9)
  */
 
 const fs = require('fs');
 const path = require('path');
+const { canaryFaultBlock } = require('../canaryFault');
 
 const EA_ROOT = path.join(__dirname, '..', '..');
 
@@ -61,7 +65,7 @@ const packageVersions = {
  * report release=null until the next restart.
  */
 function collectVersionInfo() {
-  return { ...packageVersions, release: readReleaseStamp() };
+  return { ...packageVersions, release: readReleaseStamp(), canaryFault: canaryFaultBlock() };
 }
 
 module.exports = { collectVersionInfo };

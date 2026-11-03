@@ -260,9 +260,9 @@ describe('claim scenarios are their own suite (node A6a)', () => {
     expect(() => loadScenarios(scenariosFile([{ id: 'y', suite: 'claim', modes: ['0'] }]))).toThrow(/"y"/);
   });
 
-  it('the committed scenarios carry the three the build plan names', () => {
+  it('the committed scenarios carry the ones the build plan names', () => {
     const got = loadScenarios(DEFAULT_SCENARIOS, null, { suite: 'claim' });
-    expect(got.map((s) => s.id)).toEqual(['claim-valid', 'claim-gate-fail', 'claim-text-unaffected']);
+    expect(got.map((s) => s.id)).toEqual(['claim-valid', 'claim-gate-fail', 'claim-text-unaffected', 'claim-canary-fixtures', 'claim-fault-switch']);
     expect(got[0].modes).toEqual(['0', 'commit-reveal', 'juror-deadline', 'testing-tool']);
     expect(got[1].modes).toEqual(['front-gate', 'runner-gate', 'commit-reveal']);
     expect(loadScenarios(DEFAULT_SCENARIOS).map((s) => s.id)).not.toContain('claim-valid');

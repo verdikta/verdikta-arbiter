@@ -43,12 +43,34 @@ function adapterCid(cids, addendum) {
 }
 
 /** The kinds of claim scenario e2e/src/l2/claim/run-claim.js knows. They build their own archives, so they name no CID. */
-const CLAIM_KINDS = Object.freeze(['valid', 'gate-fail', 'text']);
+const CLAIM_KINDS = Object.freeze(['valid', 'gate-fail', 'text', 'canary', 'fault-switch']);
 
 const resolvedClaim = (s) => ({ ...s, cids: [], addendum: '', cid: '' });
 
 /** An L4 claim scenario's `claim`, and the entry of the claim set it sends (makeClaimSet's names). */
-const L4_CLAIM_ENTRIES = Object.freeze({ valid: 'valid', 'front-gate': 'outOfScope', 'runner-gate': 'editsSource' });
+const L4_CLAIM_ENTRIES = Object.freeze({
+  valid: 'valid',
+  'front-gate': 'outOfScope',
+  'runner-gate': 'editsSource',
+  'time-dependent': 'timeDependent',
+  'randomness-dependent': 'randomnessDependent',
+  flaky: 'flaky',
+  'registry-failure': 'registryFailure',
+  'near-limit-juror': 'faultNearLimit',
+  'provider-timeout': 'faultProviderTimeout',
+  'slow-justifier': 'faultSlowJustifier',
+  cancellation: 'faultCancellation',
+  'cold-cache': 'coldCache',
+  dispute: 'dispute'
+});
+/** A scenario that expects no commit, and the entry that shows the arbiters were there: an out-of-scope claim on the same listing. */
+const ABSTAIN_CONTROLS = Object.freeze({ 'registry-failure': 'registryControl', cancellation: 'outOfScope' });
+/** What a claim set may lack, with the flag of scripts/build-l4-claims.js that adds it: each needs a listing of its own. */
+const OPTIONAL_ENTRIES = Object.freeze({
+  registryFailure: '--registry-failure-listing-file (a listing signed elsewhere needs its own)',
+  registryControl: '--registry-failure-listing-file (a listing signed elsewhere needs its own)',
+  coldCache: '--cold-image <repo@sha256:…> (a digest the canaries have never pulled), or --cold-listing-file'
+});
 const CLAIM_OUTCOMES = codeReview.BUG_OUTCOMES.length;
 /** ReputationAggregator.sol: a longer value reverts the request. */
 const MAX_CID_BYTES = 100;
@@ -60,6 +82,9 @@ function validateL4ClaimScenario(s) {
   if (!Object.keys(L4_CLAIM_ENTRIES).includes(s.claim)) throw new Error(`Scenario "${s.id}": "claim" must be one of ${Object.keys(L4_CLAIM_ENTRIES).join(', ')}`);
   if (typeof s.claimSet !== 'string' || s.claimSet === '') throw new Error(`Scenario "${s.id}": an L4 claim scenario names its "claimSet" file`);
   if (s.minOutcomes !== CLAIM_OUTCOMES) throw new Error(`Scenario "${s.id}": a claim has ${CLAIM_OUTCOMES} outcomes, so "minOutcomes" is ${CLAIM_OUTCOMES}`);
+  const abstains = Object.prototype.hasOwnProperty.call(ABSTAIN_CONTROLS, s.claim);
+  if (abstains && !(Number.isInteger(s.watchSeconds) && s.watchSeconds > 0)) throw new Error(`Scenario "${s.id}" expects no commit: "watchSeconds" says how long to watch for one`);
+  if (!abstains && s.watchSeconds !== undefined) throw new Error(`Scenario "${s.id}": "watchSeconds" is for a scenario that expects no commit`);
 }
 
 /**
@@ -75,17 +100,27 @@ function validateClaimSet(value) {
     if (!isLikelyCid(cid) || Buffer.byteLength(cid) > MAX_CID_BYTES) throw bad(`${name} is not a CID the aggregator takes`);
   };
   cidIn(value.listingCid, 'listingCid');
-  for (const key of Object.values(L4_CLAIM_ENTRIES)) {
+  const lineWithin = (line, name) => {
+    if (typeof line !== 'string' || Buffer.byteLength(line) > MAX_ADDENDUM_BYTES) throw bad(`${name} is over the aggregator's ${MAX_ADDENDUM_BYTES} bytes`);
+    return codeReview.parseAddendum(line);
+  };
+  for (const key of [...new Set([...Object.values(L4_CLAIM_ENTRIES), ...Object.values(ABSTAIN_CONTROLS)])]) {
     const entry = value.claims && value.claims[key];
-    if (!entry) throw bad(`it has no entry for the ${key === 'valid' ? 'valid' : key} claim`);
-    cidIn(entry.cid, `claims.${key}.cid`);
-    if (entry.cid === value.listingCid) throw bad(`claims.${key}.cid is the listing's CID`);
-    if (typeof entry.addendum !== 'string' || Buffer.byteLength(entry.addendum) > MAX_ADDENDUM_BYTES) {
-      throw bad(`claims.${key}.addendum is over the aggregator's ${MAX_ADDENDUM_BYTES} bytes`);
+    if (!entry) {
+      if (Object.prototype.hasOwnProperty.call(OPTIONAL_ENTRIES, key)) continue;
+      throw bad(`it has no entry for the ${key === 'valid' ? 'valid' : key} claim`);
     }
-    const parsed = codeReview.parseAddendum(entry.addendum);
+    cidIn(entry.cid, `claims.${key}.cid`);
+    if (entry.listingCid !== undefined) cidIn(entry.listingCid, `claims.${key}.listingCid`);
+    if (entry.cid === value.listingCid || entry.cid === entry.listingCid) throw bad(`claims.${key}.cid is the listing's CID`);
+    const parsed = lineWithin(entry.addendum, `claims.${key}.addendum`);
     if (!parsed.ok || parsed.dispute !== null) throw bad(`claims.${key}.addendum is not one disclosure line`);
   }
+  const { dispute } = value.claims;
+  cidIn(dispute.disputeListingCid, 'claims.dispute.disputeListingCid');
+  if (dispute.disputeListingCid === value.listingCid) throw bad('claims.dispute.disputeListingCid is the listing\'s CID: a dispute goes to the dispute archive');
+  const second = lineWithin(dispute.disputeAddendum, 'claims.dispute.disputeAddendum');
+  if (!second.ok || !second.dispute || second.dispute.statementCid !== dispute.statementCid) throw bad('claims.dispute.disputeAddendum is not the disclosure line and the statement\'s');
   return value;
 }
 
@@ -118,9 +153,20 @@ function resolveL4Claim(scenario) {
   } catch (error) {
     throw new Error(`Scenario "${scenario.id}", ${file}: ${error.message}`);
   }
-  const entry = set.claims[L4_CLAIM_ENTRIES[scenario.claim]];
-  const cids = [set.listingCid, entry.cid];
-  return { ...scenario, cids, addendum: entry.addendum, cid: adapterCid(cids, entry.addendum) };
+  const entryKey = L4_CLAIM_ENTRIES[scenario.claim];
+  const missing = (key) => new Error(`Scenario "${scenario.id}": ${file} has no ${key} entry. Build it with scripts/build-l4-claims.js ${OPTIONAL_ENTRIES[key] || ''}`);
+  const entry = set.claims[entryKey];
+  if (!entry) throw missing(entryKey);
+  const requestOf = (e) => ({ cids: [e.listingCid || set.listingCid, e.cid], addendum: e.addendum });
+  const { cids, addendum } = requestOf(entry);
+  const resolved = { ...scenario, cids, addendum, cid: adapterCid(cids, addendum) };
+  const controlKey = ABSTAIN_CONTROLS[scenario.claim];
+  if (controlKey) {
+    if (!set.claims[controlKey]) throw missing(controlKey);
+    resolved.control = requestOf(set.claims[controlKey]);
+  }
+  if (scenario.claim === 'dispute') resolved.disputeRound = { cids: [entry.disputeListingCid, entry.cid], addendum: entry.disputeAddendum, statementCid: entry.statementCid };
+  return resolved;
 }
 
 function validateClaimScenario(s) {

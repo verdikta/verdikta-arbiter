@@ -141,7 +141,7 @@ async function prepareAnswers(requests, options) {
 const claimRequests = () => [set.claims.valid, set.claims.outOfScope, set.claims.editsSource].map((c) => [set.listingCid, c.cid]);
 const everyRequest = () => [
   ...Object.values(set.claims).map((c) => ({ cids: [c.listingCid || set.listingCid, c.cid], addendum: c.addendum })),
-  { cids: [set.listingCid, set.claims.dispute.cid], addendum: set.claims.dispute.disputeAddendum }
+  { cids: [set.claims.dispute.disputeListingCid, set.claims.dispute.cid], addendum: set.claims.dispute.disputeAddendum }
 ];
 
 async function startChain({ chainId, revertOnEstimate, requests = [], reporting, aiNode, change } = {}) {
@@ -633,7 +633,8 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(chain.sent).toHaveLength(2);
       expect(chain.sent[0].addendum).toBe(set.claims.dispute.addendum);
       expect(chain.sent[1].addendum).toBe(set.claims.dispute.disputeAddendum);
-      expect(chain.sent[0].cids).toEqual(chain.sent[1].cids);
+      expect(chain.sent[0].cids).toEqual([set.listingCid, set.claims.dispute.cid]);
+      expect(chain.sent[1].cids).toEqual([set.claims.dispute.disputeListingCid, set.claims.dispute.cid]);
       expect(chain.sent.map((tx) => tx.requestedClass)).toEqual([5555, 5555]);
       expect(json.cases[0].metrics.dispute).toMatchObject({ countable: true, flipped: true, before: 'HIGH', after: 'INVALID' });
     });

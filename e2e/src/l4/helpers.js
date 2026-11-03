@@ -102,6 +102,31 @@ function assertVersionsNamed(scenarios, { expectCommon, expectRelease } = {}) {
   }
 }
 
+/** The scenarios that need the fault switch armed on the canaries (decision D9). */
+const FAULT_KINDS = Object.freeze(['near-limit-juror', 'provider-timeout', 'slow-justifier', 'cancellation']);
+const FAULT_SWITCH_WORDS = Object.freeze(['off', 'armed']);
+
+/**
+ * What state the fault switch must be in on every revealing arbiter: named by the run, `off`
+ * unless it says otherwise, so a claim run fails while a canary is left armed. A fault scenario
+ * refuses without `armed`. A run with no claim scenario has nothing to say about it.
+ *
+ * @param {object[]} scenarios
+ * @param {{ expectFaultSwitch?: string }} [o]
+ * @returns {{ ea: string, aiNode: string }|null}
+ */
+function resolveFaultSwitch(scenarios, { expectFaultSwitch } = {}) {
+  if (!scenarios.some(isCanaryOnly)) return null;
+  const text = expectFaultSwitch === undefined || expectFaultSwitch === null ? '' : String(expectFaultSwitch).trim();
+  const word = text === '' ? 'off' : text;
+  if (!FAULT_SWITCH_WORDS.includes(word)) throw new Error(`Refused: --expect-fault-switch is ${FAULT_SWITCH_WORDS.join(' or ')}, not "${text}".`);
+  const faults = scenarios.filter((s) => FAULT_KINDS.includes(s.claim));
+  if (faults.length > 0 && word !== 'armed') {
+    throw new Error(`Refused: ${faults.map((s) => `"${s.id}"`).join(', ')} need the fault switch on the canaries: name it with --expect-fault-switch armed (or L4_EXPECT_FAULT_SWITCH).`);
+  }
+  return { ea: word, aiNode: word };
+}
+
 /** The aggregator returns the revealing oracles' justification CIDs joined by commas. */
 function splitJustificationCids(value) {
   return String(value || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -123,6 +148,7 @@ function arbiterVersion(justification) {
     aiNode: pick('aiNode'),
     verdiktaCommon: pick('verdiktaCommon'),
     release: pick('release'),
+    canaryFault: pick('canaryFault'),
   };
 }
 
@@ -240,6 +266,8 @@ module.exports = {
   resolveRunClass,
   assertCanaryChain,
   assertVersionsNamed,
+  resolveFaultSwitch,
+  FAULT_KINDS,
   gasLimitFor,
   requestArgs,
   resolveClassId,

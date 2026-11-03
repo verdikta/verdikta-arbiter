@@ -30,6 +30,12 @@ const SHORT_JURY_MS = 12000;
 const CODE_STANDARD_JUROR_TOKENS = 8000;
 const TESTING_TOOL = path.join(__dirname, '..', '..', '..', '..', 'testing-tool', 'src', 'index.js');
 
+/** The harness's AI Node holds the fault switch's key for the suite's armed adapter; the main adapter's flag is off. */
+const AI_NODE_HOLDS_THE_KEY = Object.freeze({ ea: 'off', aiNode: 'armed' });
+const ARMED = Object.freeze({ ea: 'armed', aiNode: 'armed' });
+/** A job's external id, as the bridge sends it. */
+const JOB_ID = '38f19572-c510-41ba-a5f2-dea284614590';
+
 const last = (list) => list[list.length - 1];
 
 async function justificationOf(h, cid) {
@@ -78,8 +84,8 @@ function juryChecks(h, before, marks) {
 const MARKERS = () => [F.REPORT_MARKER, F.POC_MARKER];
 
 /** What L4 will assert of this same verdict (src/l4/claim-checks.js), so its checks read what the EA really writes. */
-const l4Checks = (kind, scores, cid, json, claimCid, h) => claimVerdictChecks({
-  kind, scores, reports: [{ cid, json }], cids: [h.claims.listingCid, claimCid]
+const l4Checks = (kind, scores, cid, json, claimCid, h, { faultSwitch = AI_NODE_HOLDS_THE_KEY, statementCid = null, listingCid = h.claims.listingCid } = {}) => claimVerdictChecks({
+  kind, scores, reports: [{ cid, json }], cids: [listingCid, claimCid], faultSwitch, statementCid
 }).map((check) => ({ ...check, name: `l4.${check.name}` }));
 
 /** claim-valid, mode 0: the whole path to the jury, the verdict and its upload. */
@@ -103,6 +109,8 @@ async function validMode0(h) {
     checks.push(A.assert('justification.pinned', h.ipfs.pins.includes(cid), cid));
     checks.push(A.assert('justification.source', json.metadata && json.metadata.verdict_source === 'code-review-jury', `verdict_source=${json.metadata && json.metadata.verdict_source}`));
     checks.push(...l4Checks('valid', score, cid, json, h.claims.valid.cid, h));
+    // The first run pulled the image for real (pullChecks above): what the cold-cache scenario reads of it.
+    checks.push(...l4Checks('cold-cache', score, cid, json, h.claims.valid.cid, h).filter((c) => ['l4.claim.imageCold', 'l4.claim.pullWithinBudget'].includes(c.name)));
   }
   h.ranValid = checks.every((c) => c.ok);
   return checks;
@@ -299,6 +307,145 @@ async function textCommitReveal(h) {
   return checks;
 }
 
+/** One of A3b's PoCs under real forge, to the jury: what L4 reads of it. */
+async function juryFixture(h, claim, kind) {
+  const before = h.counts();
+  const resp = await h.evaluate(claim.requestCid);
+  const score = resp && resp.data && resp.data.aggregatedScore;
+  const after = h.counts();
+  const run = last(h.runner.post(RUN_ROUTE));
+  const checks = [
+    A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}${resp && resp.error ? `, ${resp.error}` : ''}`),
+    A.assert('runner.calls', after.runnerCalls === before.runnerCalls + 1, `${after.runnerCalls - before.runnerCalls} runner call(s)`),
+    A.assert('ai.called', after.aiCalls === before.aiCalls + 1, `${after.aiCalls - before.aiCalls} AI call(s)`),
+    ...C.runChecks(run && run.response, { classPlatform: h.classPlatform }),
+    C.gatesPassed(run && run.response && run.response.report),
+    ...C.scoreChecks(score, h.juryAverage),
+    ...C.ipfsChecks(h.ipfs)
+  ];
+  const cid = resp && resp.data && resp.data.justificationCid;
+  checks.push(A.cidAssertion('justificationCid.valid', cid));
+  if (A.isLikelyCid(cid)) checks.push(...l4Checks(kind, score, cid, await justificationOf(h, cid), claim.cid, h));
+  return checks;
+}
+
+/** A dispute round on the real pipeline: the statement reaches the jury, and the verdict names it. */
+async function disputeRound(h) {
+  const { dispute } = h.claims;
+  const before = h.counts();
+  const resp = await h.evaluate(dispute.disputeRequestCid);
+  const score = resp && resp.data && resp.data.aggregatedScore;
+  const provider = h.providerCalls().slice(before.providerCalls);
+  const panel = codeReview.CODE_STANDARD_DISPUTE_PANEL.AI_NODES;
+  const jurors = provider.filter((c) => panel.some((p) => p.AI_MODEL === c.model));
+  const checks = [
+    A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}${resp && resp.error ? `, ${resp.error}` : ''}`),
+    A.assert('dispute.thePanel', jurors.length === panel.length, `${jurors.map((c) => c.model).join(', ')}: the dispute archive's panel`),
+    A.assert('dispute.reachedTheJury', jurors.length === panel.length && jurors.every((c) => c.prompt.includes(F.DISPUTE_STATEMENT.trim())), `${jurors.length} juror(s)`),
+    A.assert('dispute.noKeysToAModel', provider.every((c) => !c.prompt.includes('verdikta-disclosure') && !c.prompt.includes('verdikta-dispute:')), 'the machine lines stay out of every prompt'),
+    ...C.scoreChecks(score, h.juryAverage),
+    ...C.ipfsChecks(h.ipfs)
+  ];
+  const cid = resp && resp.data && resp.data.justificationCid;
+  checks.push(A.cidAssertion('justificationCid.valid', cid));
+  if (A.isLikelyCid(cid)) checks.push(...l4Checks('dispute', score, cid, await justificationOf(h, cid), dispute.cid, h, { statementCid: dispute.statementCid, listingCid: dispute.disputeListingCid }));
+  return checks;
+}
+
+/** A listing on a digest the registry does not hold, in mode 1: the real pull fails, the arbiter abstains, nothing is committed. */
+async function registryFailure(h) {
+  const claim = h.claims.registryFailure;
+  const before = h.counts();
+  const resp = await h.evaluate(`1:${claim.requestCid}`, { anyStatus: true });
+  const after = h.counts();
+  const run = last(h.runner.post(RUN_ROUTE));
+  const answer = run && run.response;
+  return [
+    A.assert('abstain.errored', resp && resp.status === 'errored' && resp.statusCode === 500, `status=${resp && resp.status}, statusCode=${resp && resp.statusCode}`),
+    A.assert('abstain.named', /CODE_REVIEW_RUNNER_ABSTAIN/.test(String(resp && resp.error)) && /pull_failed/.test(String(resp && resp.error)), String(resp && resp.error).slice(0, 200)),
+    A.assert('abstain.noCommitment', Array.isArray(resp.data && resp.data.aggregatedScore) && Number(resp.data.aggregatedScore[0]) === 0, `aggregatedScore=${JSON.stringify(resp.data && resp.data.aggregatedScore)}`),
+    A.assert('runner.pullFailed', Boolean(answer) && answer.outcome === 'abstain' && answer.abstain.cause === 'pull_failed', `outcome=${answer && answer.outcome}, cause=${answer && answer.abstain && answer.abstain.cause}`),
+    ...C.noAiChecks(before, after)
+  ];
+}
+
+const switchChecks = (health, state) => [A.assert('switch.health', health.canaryFault && health.canaryFault.state === state, JSON.stringify(health.canaryFault))];
+
+/**
+ * The fault switch across real processes: a request for 5555, measured against the stand-in
+ * chain, with a real hold in the real AI Node. Every other way of asking leaves the verdict alone.
+ */
+async function faultSlowJustifier(h) {
+  const armed = await h.armedAdapter();
+  const claim = h.claims.faultSlowJustifier;
+  const before = h.counts();
+  const resp = await h.evaluateAt(armed.url, claim.requestCid, { aggId: armed.chain.request(5555), jobId: JOB_ID });
+  const score = resp && resp.data && resp.data.aggregatedScore;
+  const calls = h.ai.post(AI_ROUTE).slice(before.aiCalls);
+  const sent = calls[0] && calls[0].request;
+  const checks = [
+    ...switchChecks(armed.health, 'armed'),
+    A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}${resp && resp.error ? `, ${resp.error}` : ''}`),
+    A.assert('switch.directive', Boolean(sent) && Boolean(sent.canaryFault) && sent.canaryFault.action === 'hold-justifier-answer', JSON.stringify(sent && sent.canaryFault)),
+    ...C.scoreChecks(score, h.juryAverage)
+  ];
+  const cid = resp && resp.data && resp.data.justificationCid;
+  checks.push(A.cidAssertion('justificationCid.valid', cid));
+  if (A.isLikelyCid(cid)) {
+    const json = await justificationOf(h, cid);
+    h.heldVerdict = { justification: json.justification, scores: json.scores };
+    checks.push(...l4Checks('slow-justifier', score, cid, json, claim.cid, h, { faultSwitch: ARMED }));
+  }
+  return checks;
+}
+
+async function faultClass128(h) {
+  const armed = await h.armedAdapter();
+  const claim = h.claims.faultSlowJustifier;
+  const before = h.counts();
+  const started = Date.now();
+  const resp = await h.evaluateAt(armed.url, claim.requestCid, { aggId: armed.chain.request(128), jobId: JOB_ID });
+  const took = Date.now() - started;
+  const calls = h.ai.post(AI_ROUTE).slice(before.aiCalls);
+  const sent = calls[0] && calls[0].request;
+  const cid = resp && resp.data && resp.data.justificationCid;
+  const json = A.isLikelyCid(cid) ? await justificationOf(h, cid) : {};
+  const applied = json.metadata && json.metadata.canary_fault;
+  return [
+    A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}`),
+    A.assert('switch.noDirective', Boolean(sent) && sent.canaryFault === undefined, JSON.stringify(sent && sent.canaryFault)),
+    A.assert('switch.noHold', took < 30000, `${took} ms; the hold would be about 40,000`),
+    A.assert('switch.saysWhy', Boolean(applied) && /REQUEST_CLASS 128/.test(String(applied.refused)), JSON.stringify(applied)),
+    A.assert('switch.sameVerdictAsHeld', Boolean(h.heldVerdict) && json.justification === h.heldVerdict.justification && isDeepStrictEqual(json.scores, h.heldVerdict.scores), 'the same justification and scores, with and without the hold')
+  ];
+}
+
+async function faultUnnamedClaim(h) {
+  const armed = await h.armedAdapter();
+  const before = h.counts();
+  const chainCalls = armed.chain.calls();
+  const resp = await h.evaluateAt(armed.url, h.claims.valid.requestCid, { aggId: armed.chain.request(5555), jobId: JOB_ID });
+  const calls = h.ai.post(AI_ROUTE).slice(before.aiCalls);
+  const cid = resp && resp.data && resp.data.justificationCid;
+  const json = A.isLikelyCid(cid) ? await justificationOf(h, cid) : {};
+  return [
+    A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}`),
+    A.assert('switch.noDirective', calls.length === 1 && calls[0].request.canaryFault === undefined, `${calls.length} AI call(s)`),
+    A.assert('switch.noChainRead', armed.chain.calls() === chainCalls, `${armed.chain.calls() - chainCalls} RPC call(s)`),
+    A.assert('switch.noFaultOnTheVerdict', Boolean(json.metadata) && json.metadata.canary_fault === undefined, JSON.stringify(json.metadata && json.metadata.canary_fault))
+  ];
+}
+
+async function faultRefusedOnMainnet(h) {
+  const adapter = await h.mainnetAdapter();
+  const version = (await axios.get(`${adapter.url}/version`, { timeout: 5000 })).data;
+  return [
+    ...switchChecks(adapter.health, 'refused'),
+    ...switchChecks(version, 'refused'),
+    A.assert('switch.saysWhy', /mainnet|8453/.test(adapter.health.canaryFault.problems.join(' ')), adapter.health.canaryFault.problems.join('; '))
+  ];
+}
+
 const HANDLERS = Object.freeze({
   valid: { 0: validMode0, 'commit-reveal': validCommitReveal, 'juror-deadline': validJurorDeadline, 'testing-tool': validTestingTool },
   'gate-fail': {
@@ -306,7 +453,20 @@ const HANDLERS = Object.freeze({
     'runner-gate': (h) => gateFail(h, h.claims.editsSource.requestCid, 'testPathsOnly', { runnerCalls: 1, l4: { kind: 'runner-gate', claimCid: h.claims.editsSource.cid } }),
     'commit-reveal': gateFailCommitReveal
   },
-  text: { 0: textMode0, 'commit-reveal': textCommitReveal }
+  text: { 0: textMode0, 'commit-reveal': textCommitReveal },
+  canary: {
+    'time-dependent': (h) => juryFixture(h, h.claims.timeDependent, 'time-dependent'),
+    'randomness-dependent': (h) => juryFixture(h, h.claims.randomnessDependent, 'randomness-dependent'),
+    flaky: (h) => gateFail(h, h.claims.flaky.requestCid, 'reproduces', { runnerCalls: 1, l4: { kind: 'flaky', claimCid: h.claims.flaky.cid } }),
+    dispute: disputeRound,
+    'registry-failure': registryFailure
+  },
+  'fault-switch': {
+    'slow-justifier': faultSlowJustifier,
+    'class-128': faultClass128,
+    'unnamed-claim': faultUnnamedClaim,
+    'refused-on-mainnet': faultRefusedOnMainnet
+  }
 });
 
 function refuseAll(scenarios, reporter, error) {

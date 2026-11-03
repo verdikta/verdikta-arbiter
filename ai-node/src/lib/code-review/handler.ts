@@ -23,6 +23,7 @@ import { codeReview } from '@verdikta/common';
 import { buildClaimPrompt, buildCodeJustifierPrompt, PackFile } from './claim-prompt';
 import { JUSTIFIER_RESERVE_MS, justifierBudgetMs, planCodeReviewTimes } from './deadline';
 import { CODE_JUROR_EFFORT, CodeJuror, JurorResult, justifierModel, roundToTotal, runCodeJury, runCodeJustifier, weightedVector } from './jury';
+import { NO_HOLDS, canaryFaultState, holdsFor, readCanaryDirective } from './canary-fault';
 
 export const CODE_REVIEW_ERRORS = {
   INVALID: 'CODE_REVIEW_INVALID',
@@ -239,6 +240,12 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
   console.log(`⚖️ CODE_REVIEW_START: ${requestTag} class=${request.codeClass} report=${request.reportSha256} prompt=${promptSha256} deadlineMs=${request.deadlineMs} jurorTimeoutMs=${times.jurorTimeoutMs} panel=${jurors.map(j => `${j.provider}:${j.model}@${j.weight}`).join(',')}`);
   logPrompt(requestTag, prompt);
 
+  // The canary fault switch, when the EA minted a directive this node's key verifies: waits and
+  // nothing more (canary-fault.ts). The prompt above is already built without it.
+  const canaryAction = readCanaryDirective(body.canaryFault, { bcid: request.claim.bcid, reportSha256: request.reportSha256 });
+  const holds = canaryAction ? holdsFor(canaryAction, times) : NO_HOLDS;
+  if (canaryAction) console.warn(`⚠️ CANARY_FAULT: ${requestTag} ${canaryAction}, on the EA's measured directive`);
+
   // 5. The jury: every juror required.
   const jury = await runCodeJury({
     jurors,
@@ -246,6 +253,7 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
     outcomes,
     maxTokens: envelope.jurorOutputTokens,
     juryDeadlineAt: times.juryDeadlineAt,
+    holds,
   });
   if (jury.kind !== 'ok') {
     const culprit = jury.results.find(r => r.status === (jury.kind === 'timeout' ? 'timeout' : 'failed'))
@@ -266,12 +274,14 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
   const vector = roundToTotal(weightedVector(jury.results, jurors.map(j => j.weight)));
   const budget = justifierBudgetMs(times, Date.now());
   if (budget <= 0) return errorResponse('DEADLINE', 'the deadline passed before the justifier could start');
+  const justifierStartedAt = Date.now();
   const justifier = await runCodeJustifier(buildCodeJustifierPrompt({
     outcomes,
     scores: vector,
     jurors: jury.results.map(r => ({ juror: `${r.provider}:${r.model}`, justification: r.justification || '' })),
     reportSha256: request.reportSha256,
-  }), budget);
+  }), budget, holds);
+  const justifierMs = Date.now() - justifierStartedAt;
   if (justifier.kind === 'timeout') {
     return errorResponse('JUSTIFIER_TIMEOUT', `the justifier did not finish within its ${budget} ms; the arbiter abstains rather than publish a partial justification`);
   }
@@ -303,6 +313,7 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
         justifierReserveMs: JUSTIFIER_RESERVE_MS,
         maxTokens: envelope.jurorOutputTokens,
         effort: CODE_JUROR_EFFORT,
+        canaryFault: { state: canaryFaultState(), action: canaryAction, ...(canaryAction ? { justifierMs } : {}) },
       },
       ...(validation.warnings.length > 0 && {
         warnings: validation.warnings.map(w => ({ type: w.code, message: `${w.path}: ${w.detail ?? w.code}`, severity: 'warning' })),
