@@ -45,6 +45,7 @@ const { dockerInfo } = require('./daemon');
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { CLASS_HARD_LIMITS } = require('./common');
 const { BASE_IMAGE_PINS } = require('./common');
+const { SEMGREP } = require('./semgrepPin');
 
 const MIB = 1024 * 1024;
 const CONTROL_TIMEOUT_MS = 30000;
@@ -54,8 +55,11 @@ const LISTING_BYTES = 16 * MIB;
 /** One line per image. `index` reads a key the image may lack (Variant) without a template error. */
 const INSPECT_FORMAT = '{{json .Id}}\t{{json .RepoTags}}\t{{json .RepoDigests}}\t{{json .Os}}\t{{json .Architecture}}\t{{json (index . "Variant")}}\t{{json .Size}}';
 
-/** The base images pinned in @verdikta/common, by every digest they are known by: never evicted. */
-const DEFAULT_PINNED_DIGESTS = Object.freeze(Object.values(BASE_IMAGE_PINS).flatMap((p) => [p.digest, p.indexDigest].filter(Boolean)));
+/**
+ * The base images pinned in @verdikta/common, by every digest they are known by, and the scanner's image (a claim
+ * needs it and the runner never pulls it, src/scanner.js): never evicted.
+ */
+const DEFAULT_PINNED_DIGESTS = Object.freeze([...Object.values(BASE_IMAGE_PINS).flatMap((p) => [p.digest, p.indexDigest].filter(Boolean)), SEMGREP.indexDigest]);
 
 const nullLog = { info() {}, warn() {}, error() {}, debug() {} };
 const ABORTED = Symbol('aborted');
@@ -571,4 +575,4 @@ class ImageCache {
   }
 }
 
-module.exports = { ImageCache, needBytes, platformOf, DEFAULT_PINNED_DIGESTS, INSPECT_FORMAT };
+module.exports = { ImageCache, needBytes, platformOf, parseInspectLines, DEFAULT_PINNED_DIGESTS, INSPECT_FORMAT };

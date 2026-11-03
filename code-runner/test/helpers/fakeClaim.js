@@ -35,6 +35,7 @@ const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const { fakeDocker, healthyDaemon, nonceOf } = require('./fakeDocker');
 const { GitStore } = require('./gitStore');
+const { SEMGREP } = require('../../src/semgrepPin');
 const { makeList } = require('../../src/solcReleases');
 
 const POC = '9e1b2d0000000000000000000000000000000000';
@@ -182,6 +183,7 @@ function forgeKind(argv) {
   if (argv.length < 2 || !argv[0].startsWith('/')) return null;
   if (argv[1] === 'build') return 'vcr-build';
   if (argv[1] === 'config') return 'forge-config';
+  if (argv[1] === 'fmt') return 'forge-fmt';
   if (argv[1] === 'test') return argv.some((a) => a.startsWith('--match-path=') || a.startsWith('--match-test=')) ? 'vcr-poc' : 'vcr-suite';
   return null;
 }
@@ -239,6 +241,10 @@ function decode(call) {
     kind = argv[3] || 'sh';
   } else if (argv[0] === 'cat') {
     kind = 'cat';
+  } else if (argv[0] === SEMGREP.binary) {
+    kind = 'semgrep';
+  } else if (argv[0] === '/bin/tar') {
+    kind = 'tar';
   }
   const box = container ? Number(CONTAINER.exec(container)[1]) : null;
   return { launched, argv, env, fixedEnv, stdin: call.stdin, kind, sub, nonce: nonceOf(args), container, box, user, forge, workdir };
@@ -558,9 +564,36 @@ function compilersOf(tree, paths) {
  *   nameStatus, numstat, diff, raw, writtenBytes, applyExit, build (handler), suite (JUnit text or handler) }
  * @param {object} [o.handlers] - more docker subcommand handlers (fakeDocker's), e.g. `history` for the listing check
  */
+/**
+ * Semgrep's JSON (1.181.0) for a scan: clean over the targets it was given, unless the test's `semgrep`
+ * (argv, box) gives results, errors or scanned of its own, or a whole answer ({ exitCode, stdout }).
+ */
+function semgrepAnswer(d, over, box) {
+  const targets = d.argv.filter((a) => /^f[0-9]+\.sol$/.test(a));
+  const o = over ? over(d) || {} : {};
+  if (o.exitCode !== undefined || o.stdout !== undefined) {
+    if (o.stdout !== undefined) box.files = { ...(box.files || {}), [d.argv[d.argv.indexOf('--output') + 1]]: o.stdout };
+    return { exitCode: o.exitCode === undefined ? 0 : o.exitCode };
+  }
+  const json = JSON.stringify({
+    version: o.version || SEMGREP.version, results: o.results || [], errors: o.errors || [], paths: { scanned: o.scanned || targets }, engine_requested: 'OSS', skipped_rules: o.skipped || []
+  });
+  // It writes the answer to --output, as `--output` does; `cutAt` models a stream cut short.
+  box.files = { ...(box.files || {}), [d.argv[d.argv.indexOf('--output') + 1]]: o.cutAt ? json.slice(0, o.cutAt) : json };
+  return { exitCode: 0 };
+}
+
+/** A scanner result as Semgrep prints one. */
+function semgrepHit(rule, name = 'f0.sol', line = 1, end = line) {
+  return {
+    check_id: rule, path: name, start: { line, col: 1, offset: 0 }, end: { line: end, col: 2, offset: 1 },
+    extra: { message: 'text the runner must not read', severity: 'ERROR', lines: 'requires login', metadata: {}, fingerprint: 'requires login' }
+  };
+}
+
 function claimSandbox({
   image = defaultImage(), objects = (m) => m, corrected = [], freeBytes = 1024 * 1024 * 1024, writtenBytes = 120,
-  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF, onBox = null, fix = {}, handlers = {}
+  poc = [drainFails(), drainFails(), drainFails()], git = {}, scripts = {}, diff = POC_DIFF, onBox = null, fix = {}, handlers = {}, semgrep = null, blobs = {}
 } = {}) {
   const hexLen = image.store.algo === 'sha256' ? 64 : 40;
   const imageObjects = objects(new Map(image.store.objects));
@@ -585,12 +618,24 @@ function claimSandbox({
     return boxes.get(n);
   };
   const isFix = (b) => b.lastApply === 'fix';
+  /** The scanner's reads by id (src/scanner.js readChanged): what `diff --raw` below names, or a test's `blobs`. */
+  const scanBlob = (id) => {
+    if (blobs[id] !== undefined) return Buffer.from(blobs[id]);
+    if (id === 'a'.repeat(hexLen)) return Buffer.from(POC_DIFF.split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)).join('\n') + '\n');
+    if (id === 'b'.repeat(hexLen)) return Buffer.from('contract Vault { uint256 fixed; }\n');
+    if (id === '1'.repeat(hexLen)) return Buffer.from('contract Vault {}\n');
+    return null;
+  };
   const gitDefaults = {
     init: () => ({ exitCode: 0 }),
     'cat-file --batch': (d, b) => {
       const specs = d.stdin.toString('latin1').split('\n').filter(Boolean);
       // The pack's reads, `<commit>:<path>` (src/pack.js); the checkout's are object ids.
       if (specs.some((x) => x.includes(':'))) return { stdout: packBlobs(specs, b, diffText()) };
+      if (specs.some((x) => scanBlob(x))) {
+        const known = new Map(specs.map((id) => [id, { type: 'blob', content: scanBlob(id) || Buffer.alloc(0) }]));
+        return { stdout: catFile(known, specs, false) };
+      }
       return { stdout: catFile(imageObjects, specs, false) };
     },
     'diff -W': () => ({ stdout: diffText() }),
@@ -678,6 +723,15 @@ function claimSandbox({
       return { exitCode: 0, stdout: 'Compiling 3 files with Solc 0.8.31\n' };
     },
     'vcr-cleanup': () => ({ stdout: 'killed 0\n' }),
+    tar: () => ({ exitCode: 0 }),
+    semgrep: (d, b) => semgrepAnswer(d, semgrep, b),
+    cat: (d, b) => {
+      const content = (b.files || {})[d.argv[d.argv.length - 1]];
+      return content === undefined ? { exitCode: 1, stderr: 'cat: no such file\n' } : { stdout: content };
+    },
+    'vcr-scan-repo': () => ({ stdout: `vcr-base ${'c'.repeat(40)}\n` }),
+    'vcr-fmt-write': () => ({ exitCode: 0 }),
+    'forge-fmt': () => ({ exitCode: 0 }),
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
@@ -758,14 +812,17 @@ function claimSandbox({
   const execs = () => decoded();
   /** A claim's PoC sandbox's execs (the first container). */
   const pocExecs = () => decoded().filter((d) => (d.box || 1) === 1);
-  /** A claim's fix check's execs (the second container). */
-  const fixExecs = () => decoded().filter((d) => d.box === 2);
+  const isScan = (d) => ['tar', 'semgrep', 'vcr-scan-repo', 'vcr-fmt-write', 'forge-fmt'].includes(d.kind) || (d.kind === 'cat' && /^\/work\/(?:poc|fix)\.json$/.test(d.argv[d.argv.length - 1]));
+  /** A claim's fix check's execs (the second container; without a fix check the second is the scanner's). */
+  const fixExecs = () => decoded().filter((d) => d.box === 2 && !isScan(d));
+  /** The scanner's execs (the last container). */
+  const scanExecs = () => decoded().filter(isScan);
   const box = (n = 1) => {
     if (!boxes.has(n)) boxes.set(n, newBox(n));
     return boxes.get(n);
   };
   return {
-    docker, execs, pocExecs, fixExecs, image, box,
+    docker, execs, pocExecs, fixExecs, scanExecs, image, box,
     get repo() { return box(1).repo; }
   };
 }
@@ -773,5 +830,5 @@ function claimSandbox({
 module.exports = {
   BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv, forgeKind, splitProbe, externalRootsOf,
   claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf, kernelResolver, linksOf, compilersOf, fakeSolcList, FAKE_SOLC,
-  defaultManifest: (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) })
+  defaultManifest: (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }), semgrepHit, semgrepAnswer
 };

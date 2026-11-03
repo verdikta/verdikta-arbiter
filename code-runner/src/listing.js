@@ -812,8 +812,8 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
     const scope = scoped(await freshSandbox(ctx), prefix, { stopAt });
     const session = claimSession({ spec, pocPatch: probePatch(path, probe.lines), baseline: out.baseline }, probeLimits);
     const steps = probe.build
-      ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'packInputs', 'watch', 'build', 'reproduces']
-      : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'packInputs', 'watch', 'reproduces'];
+      ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'packInputs', 'scanInputs', 'watch', 'build', 'reproduces']
+      : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'packInputs', 'scanInputs', 'watch', 'reproduces'];
     let timedOut = null;
     for (const name of steps) {
       if (session.state.done || scope.overBudget) break;

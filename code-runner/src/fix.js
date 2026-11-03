@@ -44,6 +44,7 @@ const { matchesAny, pocPatchPathsGate } = require('./common');
 const { reportablePath } = require('./patch');
 const crypto = require('node:crypto');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
+const scanner = require('./scanner');
 
 const { REPORT_LIMITS } = require('./common');
 
@@ -97,10 +98,14 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     // git's stats once it applied fix.patch; zeros (applied: false) when it never did (the report's diff.fix is set whenever a fix is present).
     diff: { tier: 'A', files: 0, added: 0, removed: 0, binaryFiles: 0, applied: false }
   };
+  // What the lint needs (§9.2 step 9, node A3c): read before any claim code, scanned by the claim's last step.
+  let lint = null;
   const finish = (integrityFact = null) => {
     const done = {
       fact: { ...fact, checkout: facts.checkout, leftoverProcesses: facts.leftoverProcesses || { tier: 'A', steps: [] } },
-      integrity: integrityFact
+      integrity: integrityFact,
+      lint,
+      close: handle.close
     };
     // A check that ended before the suite has nothing left to settle.
     return { ...done, settle: () => done };
@@ -149,9 +154,18 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     fact.detail.applies = `fix.patch touches ${parts.join('; ')}: a fix may change source, not the tests or the protected paths`;
     return finish();
   }
-  await kit.commitTree(ctx, 'fix.patch', 'fixpatch');
+  const fixCommit = await kit.commitTree(ctx, 'fix.patch', 'fixpatch');
   fact.applies = 'pass';
   fact.detail.applies = `${fix.detail}, touching ${paths.length} path${paths.length === 1 ? '' : 's'} outside paths.tests and paths.protected`;
+
+  // The fixed files and their listed bytes, from git's objects, while no claim code has run.
+  lint = {
+    ...scanner.prepareFix(await scanner.readChanged(ctx, { step: 'fixscan:read', from: pocCommit, to: fixCommit, old: true })),
+    solc
+  };
+  const listed = await scanner.readListedConfig(ctx, checkout.commit);
+  lint.config = listed.config;
+  lint.configProblem = listed.problem;
 
   // A fix that changes forge's own configuration could select another compiler, and forge would run it before the
   // reference is taken (R25-F2): nothing here could tell what it compiled from what the fix says. A fact, never the claim's outcome.

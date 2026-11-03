@@ -97,12 +97,16 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
     // A3b: the context pack, from git's objects, before any maker command.
     'git diff', 'git cat-file', 'git ls-tree',
+    // A3c: what the honesty rules read, from git's objects, before any maker command.
+    'git diff', 'git cat-file',
     // A3a: the integrity checks' reference (forge, its configuration, the watched files), then a snapshot after each run;
     // forge's configuration is read by forge itself, run as the commands run it (attempt 3: `forge-config`).
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-manifest',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config', 'git reset', 'vcr-manifest',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config', 'git reset', 'vcr-manifest',
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config'
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
+    // A3c: the scan, last, in its own sandbox.
+    'tar', 'semgrep', 'cat'
   ]);
   const poc = r.facts.poc;
   assert.equal(poc.testCount, 1);

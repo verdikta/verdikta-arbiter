@@ -17,8 +17,9 @@ attestation site runs before escrow opens
 §9.5 with the evidence tiers, the `integrity` and `claimedObservable` gates
 ([below](#integrity-checks)) and the fix check
 ([below](#the-fix-check)); node A3b the Verification Report, its hash and the
-context pack ([below](#the-report-and-the-context-pack)). A later node adds the
-honesty flags (A3c). See [Seams](#seams).
+context pack ([below](#the-report-and-the-context-pack)); node A3c the honesty
+flags and the fix check's lint ([below](#honesty-flags-and-the-fix-checks-lint)).
+See [Seams](#seams).
 
 ## Run it
 
@@ -96,6 +97,8 @@ the answer is 401 whatever the route.
   "service": "verdikta-code-runner", "version": "0.1.0", "node": "v20.18.1",
   "runtime": "runsc", "runtimeAvailable": true, "runtimeArgs": ["--platform=systrap", "…"],
   "gvisor": "release-20260921.0", "gvisorPinned": "release-20260921.0",
+  "scanner": { "image": "docker.io/semgrep/semgrep@sha256:81474464…", "version": "1.181.0", "rules": "2026.10", "present": true,
+               "digest": "sha256:81474464…", "platform": "linux/amd64", "problem": null, "rulesProblem": null },
   "docker": { "reachable": true, "endpoint": "unix:///run/verdikta-code-runner/docker.sock", "serverVersion": "28.0.4", "osType": "linux", "architecture": "x86_64", "error": null },
   "dataRoot": { "path": "/var/lib/verdikta-code-runner/docker", "freeBytes": 38000000000, "error": null },
   "maintenance": false,
@@ -1582,6 +1585,212 @@ cannot close its block or open the next one's. File names are the runner's own
 inside the fence. Every text opens with the runner's own `# ` line, so none can start
 `data:`, which the AI Node would decode or refuse.
 
+## Honesty flags and the fix check's lint
+
+`src/scanner.js`, `src/semgrepPin.js`, `rules/` (design §9.2 step 9, §9.5, §10.6;
+node A3c). Tier-A facts about what a test does, for the jury's fourth question.
+They reach `poc.honestyFlags` and `findings`, never `poc.integrity` and never a
+gate: under the owner's Q35 a tamper flag settles INVALID, and these must not.
+
+### The pin
+
+| What | Where | Checked |
+|---|---|---|
+| `semgrep/semgrep` 1.181.0, by the index digest | `src/semgrepPin.js` | Digest and platform measured at each run and on `/health`; the version in Semgrep's answer |
+| The honesty rules (Semgrep) | `rules/honesty.yml`, rule set `2026.10` | SHA-256 before use |
+| The bug rules, byte for byte the builder's | `rules/solidity.yml`, rule set `2026.10` | SHA-256 before use |
+| The rules that read text | `TEXT_RULES` in `src/scanner.js` | Their hash, in the test below |
+
+A change to any of them needs a new `RUNNER_VERSION`: `inputs.runner` is what ties a
+report to them, and `test/unit/scanner.test.js` fails otherwise, by
+`test/fixtures/scanner-pin-history.json`. `@verdikta/common` pins the rule-set version,
+not this digest. The builder's baseline scan pins the same release in
+verdikta-applications, with no check between the two repositories. Nothing needs them
+to agree: what the builder finds goes to the maker privately and is never hashed.
+
+The runner never pulls this image. The installer warms it (node A8). Missing or wrong,
+`/health` says so under `scanner` and a claim abstains before any work
+(`image_unavailable`, `image_mismatch`). The image cache never evicts it.
+
+### What the runner forces
+
+| Semgrep's behaviour, measured on 1.181.0 | What the runner does |
+|---|---|
+| A directory target with a `.semgrepignore` of `*`: scans nothing, no error, exit 0 | Explicit targets, under names it chooses (`f0.sol`), with no other file in the tree; the bytes come on stdin |
+| With no ignore file, its own list skips `test/`: every ordinary PoC would scan nothing, and read as clean | The same |
+| `// nosemgrep`, `// nosem` drop a flag | `--disable-nosem` |
+| `.semgrep.yml`, `.semgrep/` | Never in the tree; `--config` names the runner's file |
+| `--baseline-commit` runs `core.fsmonitor` from `.git/config` | The repository is built in the scanner's sandbox from the runner's bytes: no `.git` a claim could have touched |
+| Past 10,000 matches of one rule in one file: **every** result of that file dropped, a warning, exit 0 | Read: the rule is stated, the file is stated unread, and its cheatcode names stay flags |
+| A `pattern-regex` rule also matches comments, so a comment could reach that cap | The rules that read text are not in Semgrep: they run in the runner, linear in what they read |
+| A wall-clock limit per rule | `--timeout 0`: a slow host must not change a flag |
+| **Under gVisor, stdout is cut at 65,536 bytes with exit 0** (runc: whole) | `--output` to a file, read with `cat`: whole under both |
+| A rule it skipped is listed in `skipped_rules` beside its results, and reads like one that found nothing | Any skipped rule, or another engine, abstains |
+| `solidity.yml`'s ellipsis rule used more than 2 GiB on a crafted 16 KiB file, killing the engine | `--max-memory 1024`: a per-file `Out of memory`, exit 0, a stated fact |
+| `--x-…` flags | Not used: Semgrep says they are not its API |
+
+The bytes are read from git's objects by id, before any claim code runs, and put in one
+form (`normaliseSource`): well-formed UTF-8, no NUL, every line end solc's documentation
+names a line feed, with a line number carried back to git's. Today this is a safeguard more than a
+fix: solc 0.8.31 runs code after a lone CR in a comment and refuses the other separators,
+and Semgrep's parser honours a CR too.
+
+forge compiles an import of any name (`import "./Helper.txt"` works), so every file the
+patch adds or changes goes to Semgrep as Solidity, `.sol` first. Only a `.sol` file's parse
+failure is stated: a JSON fixture that does not parse is not a scan that failed. A file past a
+limit is stated by any name, so padding a `.txt` hides nothing.
+
+### A scan that could not finish
+
+It must never read as "no flags", since a hunter gains from that.
+
+| Cause | In | Result |
+|---|---|---|
+| A parse failure, whole or partial | The file | `unread-file`, `unread-part` with its lines, on a `.sol` file; in a file not wholly read, a cheatcode's name on any line is `unread-reach`, whatever is around it and whatever the file's name, since what the parser lost can be wider than it says |
+| A rule past the match cap | The file | That rule, file-level; `unread-file`, by any name; the names stay flags |
+| Semgrep's memory bound (`Out of memory`) | The file | `unread-file`, by any name; the names stay flags |
+| Past a limit below, not a regular file, or not reported as read | The file | `not-scanned` with its reason, by any name; the names stay flags |
+| Any other error kind, a non-zero exit, an answer it cannot account for, a rule or a path it was not given | The tool | Abstain (`runner_error`, step `scan`) |
+| The step's timer, OOM, a dead sandbox | The host | Abstain, as for any step |
+| The image missing or wrong, or the rule files changed | The install | `/health`, and abstain before any work |
+
+Stated facts rank above every rule, so padding cannot push one out of the 50. A hunter
+can force one of them, but it costs a visible fact, and the names on the file's lines stay flags as
+far as text can tell.
+
+**The text rules' total is forced.** They run in the runner's own process, where running out of
+memory would take every run on the host with it. So none of them can backtrack (no pattern holds a
+quantifier, and what would need one is read token by token), and three bounds hold whatever a claim
+writes:
+
+- They read 2 MiB in all, charged to **every path, however many share a blob**, before any work on
+  its bytes. A patch that only changes a mode names a whole blob per line, so without this a repeated
+  fixture would multiply what they read.
+- The budget goes in a fixed order, so two hosts agree on which paths it reaches: what the patch
+  created, then what it edited, then what only changed mode; Solidity first in each; then by path.
+  What the patch created always fits, since its bytes are in the patch (at most 2,000,000), so padding
+  can push a listed file out of the budget but not a helper the patch brought. A path past the budget is
+  read by no rule and says so (`not-scanned`, "unread").
+- Past the kept 50 a flag is a count by rule, and is never built.
+
+Measured by `test/helpers/scanWorst.js` on an Apple M-series host, 25 paths sharing one blob:
+
+| | Text read | Flags | Heap | Event loop blocked |
+|---|---|---|---|---|
+| Before: 4 paths, 8 MiB budget | 8 MiB | 932,068 built | 208 MiB | 840 ms |
+| Before: 25 paths | 50 MiB | 5,825,425 built | 1,468 MiB | 5.57 s |
+| Now: 25 paths, `vm.store` on every line | 2 MiB | 50 kept, 232,992 counted | runs under a 24 MiB limit | 105 ms |
+| Now: 25 paths, `.ffi` on every line (the most flags) | 2 MiB | 50 kept, 419,406 counted | runs under a 32 MiB limit | 130 ms |
+| Now: 25 paths, a lone CR on every line (the line map) | 2 MiB | 25 | runs under a 96 MiB limit | 210 ms |
+
+A mode change does count against `patchExpansionBytes`: the gate reads the index, which names the
+whole blob at each path, so 25 paths of a 1.9 MB blob pass it and 27 are refused
+(`test/docker/honesty.docker.test.js`). The expansion limit alone would still let 50 MB through to the
+text rules, which is why the budget is charged per path.
+
+**Limits on Semgrep, and why these numbers.** It gets at most 64 files and 64 KiB in all. These limits
+are measured, not timed:
+
+| Shape, in one file (an Apple M-series host under load, runc, arm64) | 1 MiB | 128 KiB | 64 KiB |
+|---|---|---|---|
+| `x = a+a+a+…` | over 150 s | 56 s | 9 s |
+| `a.etch.etch.etch…` | | over 100 s | 36 s, then the match cap |
+| `a.etch;` flood | | 2 s, the match cap | 32 s, 8,194 flags |
+| `x = !!!!…a`, `a=a=a=…` | the engine is killed | 6 s, 3 s | 2 s, 2 s |
+| Nested `(((…)))` | 20 s | 2 s | 2 s |
+| Bug rules: `t.call{value: 1}("");x();y();z();` flood | | | 63 s |
+| Bug rules: `t.call{value: 1}("");m[t] = 1;` flood | | | `Out of memory` in 38 s |
+
+On a GitHub runner (amd64) the worst shape at 64 KiB, the `a.etch;` flood, took 69 s under runc and
+156 s under gVisor; the Docker tests print these on every run. A scan's timer is 240 s, and the
+scan's budget 420 s, outside `runSeconds`: a claim's run may spend all of `runSeconds`, and a
+listing's limits know nothing of a hunter's file, so this could otherwise turn any listing's run
+into an abstention. Admission and the pull's window leave only 60 s for it, an honest scan's
+(under 6 s under gVisor). Past that the one deadline bounds it, which only a hostile file on a
+listing near the class maximum can reach.
+
+The scanner's sandbox has every sandbox's flags, with fixed limits (2 CPUs, 2 GiB, 512
+pids) since a spec may ask for 256 MiB. It opens last, once the claim's sandboxes are closed,
+so admission holds at least its memory and no more sandboxes than before.
+
+### The rules
+
+| Rule (`verdikta.honesty.…`) | Severity | Reads |
+|---|---|---|
+| `storage-overwrite` | high | `vm.store`, `setArbitraryStorage`, `copyStorage`, `loadAllocs`, stdstore's `checked_write` |
+| `code-overwrite` | high | `etch`, `deployCodeTo` |
+| `call-mocked` | high | `mockCall`, `mockCallRevert`, `mockCalls`, `mockFunction` |
+| `process-started` | high | `ffi`, `tryFfi` |
+| `cheatcode-raw-call` | high | A low-level call on `address(vm)`, `VM_ADDRESS`, `HEVM_ADDRESS` |
+| `cheatcode-signature` (text) | high | A state-changing cheatcode's signature or selector |
+| `store-shaped-call`, `store-named-arguments` (text) | medium | `store` with three arguments on another receiver, or with named arguments |
+| `cheatcode-address` (text) | medium | The cheatcode address by value |
+| `network-reach` | medium | Forks, RPC, `transact` |
+| `filesystem-write` | medium | Writing, copying, removing files |
+| `clock` | medium | `rewind`, `warp`/`roll` backwards, to 0 or to `type(T).max`, `unixTime`, `sleep` |
+| `filesystem-read` | low | Reading files or their metadata |
+| `block-environment` | low | `setBlockhash`, `prevrandao`, `chainId`, `fee`, `coinbase` and the like, nonces, `setEnv` |
+
+**The clock.** The framework gives every test forward moves: `vm.warp`, `skip`, `vm.roll`.
+Beyond that: moving block time or numbers backwards or to the end of their type, which no
+chain does, and reading or waiting on the host's own clock, which makes a result depend on
+when it ran. A clock stubbed through a mock or a store is `call-mocked` or `storage-overwrite`.
+
+**`$X.store`, decided by fixtures.** `vm.store(...)` alone misses `Vm cheat = vm;
+cheat.store(...)`, `Vm(HEVM_ADDRESS).store(...)` and a hunter's own interface on the
+cheatcode address. `$X.store($A, $B, $C)` catches all of them, and also a contract's own
+three-argument `store`; `vault.store(1)` stays clean. These flags are facts for the jury and
+not gates, so a false positive costs a line a juror reads past, with the receiver in front of
+them, while a miss is what a dishonest hunter is looking for. So the wide form stays, under its
+own rule id, a severity below the literal one, in words that say it may be a contract's own
+function. Names that are common on contracts (`fee`, `chainId`, `exists`) stay on `vm` alone,
+and a call through an alias there is missed; they change little.
+
+**What a flag says of a hunter.** A flag's message says whether the patch added its lines. A
+file the patch changes is scanned whole, so a maker's `vm.store` in it is seen but not put on
+the hunter. The kept 50 go by severity, then the patch's own lines first.
+
+### The fix check's lint
+
+Facts only: the claim's gates are as they would be without it. Over the files the fix changed,
+read before any of its code runs, under the same limits as a PoC's.
+
+**`forge fmt --check`** on the `.sol` ones, last, once the claim's sandboxes are closed, in a fresh
+sandbox of the env image holding only the listed `foundry.toml` and the fixed bytes. No claim code
+has run there and none runs beside it, so a fix's own code cannot reach what it reads, a fix that
+changes `foundry.toml` changes nothing, and its time is the scan's budget, not the run's. It goes
+through `forgeArgv`, one file a call: beside another file, one it cannot parse goes unreported. Exit
+1 means a diff or a parse failure, and what it printed says which. A long sum or chain can abort it
+with exit 134, seen on arm64, which is a stated finding too, since a fix's lint must not abstain the
+claim. Its diff quotes source, so only the path is kept. A maker's `[fmt] ignore` globs do not match
+the runner's flat names, so a file they exempt can read as unformatted: a fact about formatting.
+If there is no forge in that sandbox (an image whose forge lives in the work tree), or the listed
+`foundry.toml` is over 1 MiB, it is `forge-fmt.not-run`: never clean, and never the requester's error.
+
+**Semgrep** with the bug rules and `--baseline-commit` over all of them, so what the listed commit
+already had is not the fix's. A listed version past the limits is not scanned, and
+`verdikta.scan.no-baseline` says its findings are not told apart from the listed commit's. A fact the
+runner states outlives the bound of 50.
+
+`commands.lint` is not read: the lint is the runner's own argv, and the grammar in `src/commands.js`
+is unchanged. A scan that fails on the host abstains, as every step of the fix check does.
+
+### Known limits
+
+- **A determined hunter can hide from static rules:** a cheatcode address computed at run time,
+  a signature built by `string.concat`, a call in assembly through a computed address. The rules
+  cannot follow these. The jury reads the test's source, and §10.6's adversarial fixtures measure
+  what is left.
+- **In a file no parser wholly read, what always stands is the stated fact.** The names on its lines
+  are a best effort on the text, which cannot follow every alias.
+- **The text rules read comments:** a test that names a cheatcode's signature in a comment is
+  flagged. The cost is small, since these strings have no business there.
+- **A crafted file at the edge of the memory bound** could read differently between hosts. No gate
+  reads it, and it is the same class as A3b's recorded limit on report hashes.
+- **`// forgefmt: disable-…`** in a fix makes forge fmt pass that code. It is a fact about
+  formatting, and nothing settles on it.
+- **Any runner that takes claims needs the image:** `/health` is not `ok` without it.
+
 ## The fix check
 
 `src/fix.js` (§9.2 step 8, §20 decision 14). Only when the claim carries
@@ -1716,7 +1925,9 @@ image-pull failure"), never a verdict.
 ## Time
 
 - Admission refuses a run whose deadline, less the reserve, cannot cover
-  `runSeconds`.
+  `runSeconds` and, for a claim, 60 s for its scan.
+- A claim's scan and a fix's `forge fmt` run last, with the run's timer restarted
+  at 420 s for them, outside `runSeconds` (A3c): claim code has finished by then.
 - Each step is bounded by its own limit, the run's `runSeconds` and the
   deadline less the reserve (5 s by default). The first to pass kills the
   container (`docker rm --force --volumes`) and the run abstains with that
@@ -1792,8 +2003,8 @@ CODE_RUNNER_RUNTIME=runc npm run test:docker    # needs a Docker daemon
 CODE_RUNNER_RUNTIME=runsc npm run test:docker   # Linux with gVisor registered as runsc
 ```
 
-The Docker tests pull `ubuntu:24.04` and the foundry base pinned in
-`@verdikta/common` by digest (for `CODE_RUNNER_PLATFORM`, which they set to
+The Docker tests pull `ubuntu:24.04`, the Semgrep image pinned in `src/semgrepPin.js` and the
+foundry base pinned in `@verdikta/common` by digest (for `CODE_RUNNER_PLATFORM`, which they set to
 `linux/arm64` on Apple silicon under runc, where the base's arm64 variant of
 the same release runs), run one test per abstain cause, check the real
 isolation of a container and remove everything they start.
@@ -1822,6 +2033,9 @@ under `runc` and under the pinned gVisor on the systrap platform.
 real forge: the same claim in two containers with other clocks and hostnames, one at
 `--cpus 0.25` (the test holds that forge really took longer), gives the same verdict,
 report hash and pack hash. Cross-host is G2's.
+`honesty.docker.test.js` holds the rules to the real Semgrep, line by line on
+`test/fixtures/honesty/`, and the scan's attacks and worst shapes, printing their times; a real
+claim and a real fix go through forge. On Apple silicon its image is the arm64 variant of the same index.
 
 ## Seams
 
@@ -1862,6 +2076,11 @@ report hash and pack hash. Cross-host is G2's.
   `REPORT_LIMITS`, `getCodeClass`, `pocPatchPathsGate`, `matchesAny`,
   `splitByStakeScope`, `baselineSets`, the validators and the report's hash. No
   local copy of any of them is left in `src/` (`test/unit/common.test.js`).
+- **Scanner** (`src/scanner.js`, `src/semgrepPin.js`): `readChanged` (a commit's changed files, by id),
+  `prepareTargets`, `prepareFix`, `openScanner`, `scanPoc`, `scanFix`, `fmtFindings`, and the pure parts
+  (`semgrepArgv`, `parseScan`, `honestyFlags`, `fixFindings`, `boundFlags`, `boundFindings`). The engine's
+  `ctx.openSandbox({ image, limits, tool })` runs a tool's image, `ctx.beginToolBudget(ms)` restarts the
+  run's timer for it, and `executeRun({ preflight, minMemoryMb, toolReserveMs })` checks and holds for it.
 - **Report** (`src/report.js`): `buildReport(result, request, { gvisor, platform })`,
   `assembleReport`, `finishClaim` (the server's), `pocReportForm` (the form `facts.poc.report`
   holds). A4b reads the report; `test/helpers/settlementFacts.js` is its mirror.

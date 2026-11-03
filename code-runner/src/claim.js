@@ -70,6 +70,7 @@ const { claimedObservable, functionName } = require('./observable');
 const { runFixCheck, notRunFix } = require('./fix');
 const { pocReportForm, boundedText } = require('./report');
 const { gatherPackInputs, assemblePack } = require('./pack');
+const scanner = require('./scanner');
 
 /** git's answers (paths, stats, the diff) are read up to this. */
 const GIT_OUTPUT_MAX = 16 * 1024 * 1024;
@@ -533,7 +534,7 @@ function claimSteps(request, limits) {
   const issues = checkClaim(request);
   if (issues.length) return [async () => { throw new RequesterError(issues); }];
   const session = claimSession(request, limits);
-  const steps = [session.prepare, session.applies, session.testPathsOnly, session.resetAndCommit, session.contextPack, session.watch, session.build, session.reproduces].map((step) => {
+  const steps = [session.prepare, session.applies, session.testPathsOnly, session.resetAndCommit, session.contextPack, session.scanInputs, session.watch, session.build, session.reproduces].map((step) => {
     const wrapped = async (ctx) => {
       if (session.state.done) return;
       try {
@@ -546,7 +547,7 @@ function claimSteps(request, limits) {
     Object.defineProperty(wrapped, 'name', { value: step.name });
     return wrapped;
   });
-  return [session.startFixCheck, ...steps, session.fixCheck];
+  return [session.startFixCheck, ...steps, session.fixCheck, session.scan];
 }
 
 /**
@@ -569,7 +570,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
   // The state is the sandbox's box too (kit: the processes kept, the leftovers killed).
   const state = {
     done: false, halted: false, keep: [], leftovers: [], touched: null, added: null, addedIds: null, prepared: null, pocCommit: null, watch: null,
-    solcPin: null, fix: null, integrity: { tier: 'A', poc: null, fix: null }
+    solcPin: null, fix: null, integrity: { tier: 'A', poc: null, fix: null }, scanInput: null, pocFact: null, fixLint: null, closeFix: null
   };
   if (adopt) {
     state.keep = [...adopt.keep];
@@ -679,6 +680,16 @@ function claimSession(request, limits, { adopt = null } = {}) {
    */
   async function contextPack(ctx) {
     ctx.contextPack(assemblePack({ request, inputs: await packInputs(ctx) }));
+  }
+
+  /**
+   * What the honesty rules read (§9.2 step 9): the files the PoC commit changed, from git's objects by id, while no
+   * claim code has run, so nothing a test does can change what it is judged on.
+   */
+  async function scanInputs(ctx) {
+    const entries = await scanner.readChanged(ctx, { step: 'scan:read', from: state.prepared, to: state.pocCommit });
+    for (const e of entries) e.added = new Set((state.added.get(e.path) || []).map((l) => l.line));
+    state.scanInput = scanner.prepareTargets(entries);
   }
 
   /**
@@ -796,7 +807,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
 
     const flags = integrity.tamperFlags({ added: state.added });
     const checks = integrity.integrityOf({ identity, summary, exit, ...state.watch.failures, tamperFlags: flags });
-    ctx.fact('poc', { ...pocFacts(ids.map((id) => [id, results.get(id)]), runs), integrity: checks.integrity });
+    state.pocFact = { ...pocFacts(ids.map((id) => [id, results.get(id)]), runs), integrity: checks.integrity };
+    ctx.fact('poc', state.pocFact);
     state.integrity.poc = { failures: checks.failures, changed: state.watch.changedFacts() };
     ctx.fact('integrity', { ...state.integrity });
 
@@ -830,13 +842,41 @@ function claimSession(request, limits, { adopt = null } = {}) {
       const settled = r.value.settle(state.addedIds);
       fix = settled.fact;
       state.integrity.fix = settled.integrity;
+      state.fixLint = settled.lint;
+      state.closeFix = r.value.close;
     }
     ctx.fact('fix', fix);
     ctx.fact('integrity', { ...state.integrity });
   }
 
+  /**
+   * The honesty flags and the fix's lint (§9.2 step 9, node A3c): last, in a
+   * sandbox of the pinned scanner, once the claim's sandboxes are closed. Tier-A
+   * facts, never a gate. A PoC that never ran has no `poc` to flag, and a claim
+   * stopped by a gate reads the same on every arbiter.
+   */
+  async function scan(ctx) {
+    const poc = state.pocFact && state.scanInput ? state.scanInput : null;
+    const fix = state.fixLint;
+    if (!poc && !fix) return;
+    // Claim code has finished: from here the run's timer is the scan's own, and nothing a hunter's file costs it is the run's.
+    ctx.beginToolBudget(scanner.SCAN_BUDGET_MS);
+    if (state.closeFix) await state.closeFix();
+    await ctx.closeSandbox();
+    const fmt = fix ? await scanner.fmtFindings(ctx, fix) : [];
+    const needs = (poc && poc.targets.length) || (fix && fix.targets.length);
+    const handle = needs ? await scanner.openScanner(ctx) : null;
+    if (poc) ctx.fact('poc', { ...state.pocFact, honestyFlags: await scanner.scanPoc(handle, poc) });
+    if (fix) ctx.fact('findings', scanner.boundFindings([...fmt, ...await scanner.scanFix(handle, fix)]));
+    ctx.fact('scan', {
+      tier: 'A', semgrep: scanner.SEMGREP.version, image: scanner.SEMGREP.indexDigest, rules: scanner.RULES_VERSION,
+      poc: poc ? { read: poc.targets.length, stated: poc.unscanned.length } : null,
+      fix: fix ? { read: fix.targets.length, stated: fix.unscanned.length } : null
+    });
+  }
+
   return {
-    state, startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, contextPack, packInputs, watch, build, reproduces, fixCheck, pocRun,
+    state, startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, contextPack, packInputs, scanInputs, watch, build, reproduces, fixCheck, scan, pocRun,
     cleanup: (ctx, after) => cleanup(ctx, box, after)
   };
 }
