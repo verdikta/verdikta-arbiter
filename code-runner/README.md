@@ -1618,7 +1618,8 @@ It must never read as "no flags", since a hunter gains from that.
 | The image missing or wrong, or the rule files changed | The install | `/health`, and abstain before any work |
 
 Stated facts rank above every rule, so padding cannot push one out of the 50. A hunter
-can force one of them, but it costs a visible fact and hides no name.
+can force one of them, but it costs a visible fact, and the names on the file's lines stay flags as
+far as text can tell.
 
 **Limits, and why these numbers.** Semgrep gets at most 64 files and 64 KiB in all; the text
 rules read 4 MiB a file and 16 MiB in all. They are measured, not timed:
@@ -1696,6 +1697,8 @@ through `forgeArgv`, one file a call: beside another file, one it cannot parse g
 with exit 134, seen on arm64, which is a stated finding too, since a fix's lint must not abstain the
 claim. Its diff quotes source, so only the path is kept. A maker's `[fmt] ignore` globs do not match
 the runner's flat names, so a file they exempt can read as unformatted: a fact about formatting.
+If there is no forge in that sandbox (an image whose forge lives in the work tree), or the listed
+`foundry.toml` is over 1 MiB, it is `forge-fmt.not-run`: never clean, and never the requester's error.
 
 **Semgrep** with the bug rules and `--baseline-commit` over all of them, so what the listed commit
 already had is not the fix's. A listed version past the limits is not scanned, and
@@ -1711,6 +1714,8 @@ is unchanged. A scan that fails on the host abstains, as every step of the fix c
   a signature built by `string.concat`, a call in assembly through a computed address. The rules
   cannot follow these. The jury reads the test's source, and §10.6's adversarial fixtures measure
   what is left.
+- **In a file no parser wholly read, what always stands is the stated fact.** The names on its lines
+  are a best effort on the text, which cannot follow every alias.
 - **The text rules read comments:** a test that names a cheatcode's signature in a comment is
   flagged. The cost is small, since these strings have no business there.
 - **A crafted file at the edge of the memory bound** could read differently between hosts. No gate

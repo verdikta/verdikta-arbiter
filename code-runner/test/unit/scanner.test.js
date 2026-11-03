@@ -474,11 +474,26 @@ test('R1-F1: every name a rule reads has its fallback: a parse failure cannot hi
   }
 });
 
-test('R1-F1: names common on contracts count on vm alone, as the rules read them', () => {
+test('R1-F1: names common on contracts count on vm alone, as the rules read them, however it is parenthesised', () => {
   const lines = (source) => readText([{ path: 'p', bytes: Buffer.from(source) }]).reach.get('p');
   for (const name of ['exists', 'isFile', 'isDir', 'sleep', 'fee', 'chainId', 'coinbase', 'setNonce', 'setEnv']) {
     assert.deepEqual(lines(`vm . /*a*/ ${name} (a);\n`), [1], name);
+    assert.deepEqual(lines(`(vm).${name}(a);\n`), [1], `(vm).${name}`);
+    assert.deepEqual(lines(`((vm)) . ${name}(a);\n`), [1], `((vm)).${name}`);
     assert.equal(lines(`registry.${name}(a);\n`), undefined, name);
+  }
+});
+
+test('R1-F1: the clock, on what no parser read: vm\'s warp and roll count whatever the argument, since their argument cannot be judged there; another receiver\'s by the rules\' arguments', () => {
+  const lines = (source) => readText([{ path: 'p', bytes: Buffer.from(source) }]).reach.get('p');
+  for (const source of ['vm.warp(0);', '(vm).warp(0);', 'vm.warp(block.timestamp - 1);', 'vm.roll(0);', 'vm . /*a*/ roll(type(uint256).max);']) {
+    assert.deepEqual(lines(`${source}\n`), [1], source);
+  }
+  for (const source of ['cheat.warp(0);', 'cheat.warp(type(uint64).max);', 'cheat . warp ( block . timestamp - 1 );', 'cheat.roll(0);', 'cheat.roll(block.number - 1);']) {
+    assert.deepEqual(lines(`${source}\n`), [1], source);
+  }
+  for (const source of ['vault.warp(1);', 'vault.roll(1);', 'cheat.warp(block.timestamp + 1);']) {
+    assert.equal(lines(`${source}\n`), undefined, source);
   }
 });
 

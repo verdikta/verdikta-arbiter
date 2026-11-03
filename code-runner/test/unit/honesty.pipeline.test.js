@@ -21,7 +21,7 @@ const { REPORT_MAX_LINE, BASE_IMAGE_PINS } = require('../../src/common');
 const {
   SEMGREP, RULE_FILES, HONESTY_RULES, FIX_RULES, SCAN_MEMORY_MB, SCAN_RESERVE_MS, SCAN_BUDGET_MS, ruleBytes, requireScanner
 } = require('../../src/scanner');
-const { claimSandbox, junit, drainFails, suitePasses, semgrepHit, semgrepAnswer, FIX_PATCH, BASE, POC_PATCH } = require('../helpers/fakeClaim');
+const { claimSandbox, junit, drainFails, suitePasses, semgrepHit, semgrepAnswer, forgeConfig, FIX_PATCH, BASE, POC_PATCH } = require('../helpers/fakeClaim');
 const { fakeDocker, healthyDaemon } = require('../helpers/fakeDocker');
 const { claimRequest, runClaim, forgeSpec, finding, DEPOSIT, IMAGE } = require('../helpers/claimRun');
 const { settlementFacts } = require('../helpers/settlementFacts');
@@ -551,6 +551,30 @@ test('R1-F4: forge fmt runs last, under the scan\'s budget: a crafted file costs
   const order = sb.execs().map((d) => d.kind);
   assert.ok(order.indexOf('forge-fmt') > order.lastIndexOf('vcr-poc'), 'after the PoC');
   assert.ok(order.indexOf('forge-fmt') > order.lastIndexOf('vcr-suite'), 'after the fix\'s suite');
+});
+
+test('R3-F1: forge in the work tree is not in the clean sandbox: forge fmt says it did not run, and the claim stands', async () => {
+  const scripts = { 'vcr-framework': (d, b) => (b.n > 2 ? { exitCode: 3, stdout: 'vcr-forge \nvcr-path /usr/bin\n' } : { stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }) };
+  const r = await runClaim(claimSandbox({ scripts }), withFix());
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.facts.findings.map((f) => [f.tool, f.rule, f.file]), [['forge-fmt', 'forge-fmt.not-run', 'src/Vault.sol']]);
+  assert.match(r.facts.findings[0].message, /work tree|no forge/);
+});
+
+test('R3-F2: a listed configuration past the bound is not quietly the defaults: forge fmt says it did not run', async () => {
+  const big = Buffer.concat([Buffer.from('[profile.default]\n# '), Buffer.alloc(1100000, 0x78), Buffer.from('\n')]);
+  const { readListedConfig } = require('../../src/scanner');
+  const ctxFor = (stdout) => ({ exec: async (argv, o) => { o.tee.write(Buffer.from(stdout)); return { exitCode: 0 }; } });
+  assert.deepEqual(await readListedConfig(ctxFor(Buffer.concat([Buffer.from(`${'f'.repeat(40)} blob ${big.length}\n`), big, Buffer.from('\n')])), BASE), { config: null, problem: 'too-large' });
+  assert.deepEqual(await readListedConfig(ctxFor(`${BASE}:foundry.toml missing\n`), BASE), { config: null, problem: null });
+  const ok = await readListedConfig(ctxFor(`${'f'.repeat(40)} blob 4\nabcd\n`), BASE);
+  assert.equal(ok.config.toString(), 'abcd');
+  assert.equal(ok.problem, null);
+  await assert.rejects(readListedConfig(ctxFor(`${'f'.repeat(40)} blob 40\nabcd\n`), BASE), (e) => /incomplete|foundry\.toml/.test(e.detail));
+  const { fmtFindings } = require('../../src/scanner');
+  const findings = await fmtFindings({ openSandbox: () => { throw new Error('no sandbox for a configuration past the bound'); } }, { targets: [{ name: 'f0.sol', path: 'src/A.sol', solidity: true, raw: Buffer.from('x') }], unscanned: [], config: null, configProblem: 'too-large', solc: '' });
+  assert.deepEqual(findings.map((f) => [f.rule, f.file]), [['forge-fmt.not-run', 'src/A.sol']]);
+  assert.match(findings[0].message, /foundry\.toml/);
 });
 
 test('R1-F4: forge fmt reads a clean tree: the listed foundry.toml and the fixed bytes, in a sandbox no claim code ran in', async () => {

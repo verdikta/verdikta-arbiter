@@ -161,9 +161,11 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   // The fixed files and their listed bytes, from git's objects, while no claim code has run.
   lint = {
     ...scanner.prepareFix(await scanner.readChanged(ctx, { step: 'fixscan:read', from: pocCommit, to: fixCommit, old: true })),
-    config: await scanner.readListedConfig(ctx, checkout.commit),
     solc
   };
+  const listed = await scanner.readListedConfig(ctx, checkout.commit);
+  lint.config = listed.config;
+  lint.configProblem = listed.problem;
 
   // A fix that changes forge's own configuration could select another compiler, and forge would run it before the
   // reference is taken (R25-F2): nothing here could tell what it compiled from what the fix says. A fact, never the claim's outcome.

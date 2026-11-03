@@ -55,7 +55,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { ABSTAIN, Abstain } = require('./result');
+const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { runText, isUnreachableText } = require('./docker');
 const { BatchReader, algorithmOf } = require('./objects');
 const { SEMGREP_RULES_VERSION, REPORT_LIMITS, REPORT_MAX_LINE, OCI_PLATFORM, CLASS_HARD_LIMITS } = require('./common');
@@ -167,12 +167,15 @@ const TEXT_RULES = Object.freeze({
 /**
  * A cheatcode's name as code uses it: a member (`x.store`, a call or a reference) or a call. A flag only in a file the
  * parser did not wholly read (a comment may say it anywhere else). Read on the text with its comments blanked, as solc reads them, so
- * a comment before the call hides nothing, and on the text as written.
+ * a comment before the call hides nothing, and on the text as written. A best effort beside the fact that always
+ * stands, that the file was not wholly read: text cannot follow every alias.
  */
 const REACH_NAMES = 'store|setArbitraryStorage|copyStorage|loadAllocs|checked_write|checked_write_int|etch|deployCodeTo|attachDelegation|signAndAttachDelegation|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|selectFork|rollFork|rpc|rpcUrl|rpcUrls|rpcUrlStructs|eth_getLogs|transact|writeFile|writeFileBinary|writeLine|writeJson|writeToml|copyFile|removeFile|removeDir|createDir|dumpState|readFile|readFileBinary|readLine|readDir|readLink|fsMetadata|unixTime|rewind';
 /** Common names on contracts, which the rules read on vm alone (rules/honesty.yml). */
 const REACH_ON_VM = 'exists|isFile|isDir|sleep|setBlockhash|prevrandao|difficulty|chainId|fee|coinbase|txGasPrice|blobBaseFee|blobhashes|setNonce|setNonceUnsafe|resetNonce|setEnv|setEvmVersion';
-const UNREAD_REACH = new RegExp(`\\.\\s*(?:${REACH_NAMES})\\b|\\b(?:${REACH_NAMES})\\s*[({]|\\bvm\\s*\\.\\s*(?:${REACH_ON_VM})\\b`, 'g');
+/** The clock on what no parser read: vm's warp and roll whatever the argument, which cannot be judged there; another receiver's by the rules' arguments. */
+const REACH_CLOCK = '\\.\\s*warp\\s*\\(\\s*(?:0\\s*\\)|type\\s*\\(|block\\s*\\.\\s*timestamp\\s*-)|\\.\\s*roll\\s*\\(\\s*(?:0\\s*\\)|type\\s*\\(|block\\s*\\.\\s*number\\s*-)';
+const UNREAD_REACH = new RegExp(`\\.\\s*(?:${REACH_NAMES})\\b|\\b(?:${REACH_NAMES})\\s*[({]|\\bvm\\s*\\)*\\s*\\.\\s*(?:${REACH_ON_VM}|warp|roll)\\b|${REACH_CLOCK}`, 'g');
 
 /** The bug rules: solidity.yml's severities and messages, word for word (test/unit/scanner.test.js). */
 const FIX_RULES = Object.freeze({
@@ -986,12 +989,23 @@ function fmtFinding(rule, file, more = '') {
  * @param {{targets:object[], unscanned:object[], config:Buffer|null, solc:string}} lint
  * @returns {Promise<object[]>} findings
  */
-async function fmtFindings(ctx, { targets, unscanned, config, solc }) {
+async function fmtFindings(ctx, { targets, unscanned, config, configProblem = null, solc }) {
   const out = unscanned.filter((u) => u.path.endsWith('.sol')).map((u) => fmtFinding('forge-fmt.not-run', u.path, UNSCANNED_WORDS[u.reason]));
   const files = targets.filter((t) => t.solidity);
   if (files.length === 0) return out;
+  const notRun = (why) => [...out, ...files.map((t) => fmtFinding('forge-fmt.not-run', t.path, why))];
+  if (configProblem) return notRun(`The listed foundry.toml is over the ${CONFIG_MAX_BYTES} bytes it reads, and its defaults would not be the listing's.`);
   const handle = await ctx.openSandbox();
-  const tool = { ...await discoverForge(handle, 'scan:fmt:forge'), solc };
+  let found;
+  try {
+    found = await discoverForge(handle, 'scan:fmt:forge');
+  } catch (err) {
+    // A forge in the work tree is in the claim's sandboxes and not here: a fact about this step, never the requester's error.
+    if (!(err instanceof RequesterError)) throw err;
+    await handle.close();
+    return notRun('This sandbox has no forge: the image\'s may live in the work tree, which it does not hold.');
+  }
+  const tool = { ...found, solc };
   const write = async (name, bytes) => {
     const r = await handle.exec(['/bin/sh', '-c', 'cat > "$1"', 'vcr-fmt-write', `${forge.FORGE_WORKDIR}/${name}`], { name: `scan:fmt:write:${name}`, timeoutMs: UNPACK_TIMEOUT_MS, stdin: bytes, workdir: forge.FORGE_WORKDIR });
     if (r.exitCode !== 0) throw toolFailed(`forge fmt's input could not be written (exit ${r.exitCode})`);
@@ -1017,7 +1031,12 @@ async function fmtFindings(ctx, { targets, unscanned, config, solc }) {
   return out;
 }
 
-/** The listed commit's foundry.toml, from git's objects, while no claim code has run: what forge fmt reads. Null when it has none. */
+/**
+ * The listed commit's foundry.toml, from git's objects, while no claim code has
+ * run: what forge fmt reads. `problem`: past the bound, which is not the same as
+ * none, since forge fmt would then read its defaults as the listing's.
+ * @returns {Promise<{config:Buffer|null, problem:string|null}>}
+ */
 async function readListedConfig(ctx, commit) {
   const out = new Prefix(CONFIG_MAX_BYTES + 256);
   const r = await ctx.exec(git(['cat-file', '--batch']), { name: 'fixscan:config', timeoutMs: READ_TIMEOUT_MS, stdin: Buffer.from(`${commit}:foundry.toml\n`), tee: out });
@@ -1025,8 +1044,11 @@ async function readListedConfig(ctx, commit) {
   const bytes = out.bytes();
   const nl = bytes.indexOf(0x0a);
   const m = nl < 0 ? null : /^[0-9a-f]+ blob ([0-9]+)$/.exec(bytes.subarray(0, nl).toString('latin1'));
-  if (!m || Number(m[1]) > CONFIG_MAX_BYTES) return null;
-  return Buffer.from(bytes.subarray(nl + 1, nl + 1 + Number(m[1])));
+  if (!m) return { config: null, problem: null };
+  const size = Number(m[1]);
+  if (size > CONFIG_MAX_BYTES) return { config: null, problem: 'too-large' };
+  if (bytes.length < nl + 1 + size) throw toolFailed('the listed foundry.toml came back incomplete');
+  return { config: Buffer.from(bytes.subarray(nl + 1, nl + 1 + size)), problem: null };
 }
 
 module.exports = {
