@@ -661,6 +661,58 @@ function assertSums(pack) {
   }
 }
 
+test('R4-F1: a schema-valid known issue larger than its tier\'s share stays, by what identifies it, and a padded PoC cannot push it out', () => {
+  const entry = { title: 'The owner can pause the vault', class: 'LOW', paths: Array.from({ length: 50 }, (_, i) => `src/${'é'.repeat(300)}${i}.sol`), description: 'Accepted: pausing is the owner\'s documented power during an incident.' };
+  const huge = { id: codeReview.knownIssueId(entry), ...entry };
+  const small = knownIssue(2);
+  assert.equal(codeReview.validateKnownIssues([huge, small]).ok, true);
+  assert.ok(Buffer.byteLength(codeReview.canonicalJson(huge)) > 28800, 'over the tier\'s share by itself');
+  const pack = assemblePack({
+    request: request({ knownIssues: [huge, small], report: 'pad '.repeat(500000) }),
+    inputs: inputs({ pocDiff: 'p'.repeat(2000000) })
+  });
+  const t = tierOf(pack, 'knownIssues');
+  assert.deepEqual([t.asked, t.delivered, t.omitted, t.cut, t.status], [2, 2, {}, 1, 'truncated']);
+  const lines = text(pack, 'knownIssues').split('\n').slice(1).map((l) => JSON.parse(l));
+  assert.equal(lines[0].id, huge.id, 'the id stays');
+  assert.equal(lines[0].title, entry.title);
+  assert.equal(lines[0].description, entry.description);
+  assert.ok(lines[0].paths.length < 50);
+  assert.equal(lines[1].id, small.id);
+  assertSums(pack);
+});
+
+test('R4-F1: every known issue stays one line of JSON within its bound, whatever its text escapes to, and the first ones always fit the share', () => {
+  const nasty = '"\\u0001'.repeat(1000);
+  const entry = { title: nasty.slice(0, 120), class: 'LOW', paths: Array.from({ length: 50 }, (_, i) => `src/${'\u0001'.repeat(400)}${i}`), description: nasty };
+  const worst = { id: codeReview.knownIssueId(entry), ...entry };
+  const pack = assemblePack({ request: request({ knownIssues: [worst, worst, worst, worst, worst] }), inputs: inputs({ pocDiff: 'p'.repeat(2000000) }) });
+  const t = tierOf(pack, 'knownIssues');
+  assert.ok(t.delivered >= 3, `${t.delivered} delivered`);
+  assert.equal(t.delivered + (t.omitted.overBudget || 0), 5);
+  for (const l of text(pack, 'knownIssues').split('\n').slice(1)) {
+    if (l.startsWith('[')) continue;
+    assert.ok(Buffer.byteLength(l) <= 8192, `${Buffer.byteLength(l)} bytes`);
+    assert.equal(JSON.parse(l).id, worst.id);
+  }
+  assertSums(pack);
+});
+
+test('R4-F1: an entry that does not fit does not stop a smaller one after it, and the count says what was left out', () => {
+  const issues = [knownIssue(1, 1900), knownIssue(2, 100)];
+  // The smallest budget that delivers anything of the tier: what is left of it fits the small entry, not the first.
+  const at = (budgetTokens) => assemblePack({ request: request({ knownIssues: issues, priorFindings: [], report: 'r', fixPatch: null }), inputs: inputs({ tree: '', callSites: [], sources: [] }), budgetTokens });
+  let budgetTokens = 800;
+  while (tierOf(at(budgetTokens), 'knownIssues').delivered === 0) budgetTokens += 10;
+  const pack = at(budgetTokens);
+  const t = tierOf(pack, 'knownIssues');
+  assert.deepEqual([t.asked, t.delivered, t.omitted, t.status], [2, 1, { overBudget: 1 }, 'truncated']);
+  const lines = text(pack, 'knownIssues').split('\n');
+  assert.equal(JSON.parse(lines[1]).id, issues[1].id, 'the smaller one, after the one that did not fit');
+  assert.match(lines[2], /left out 1 more/);
+  assertSums(pack);
+});
+
 test('the sum holds on every route: an ordinary pack, a full one, a padded one, small budgets, premium, no fix, nothing named', () => {
   const routes = [
     assemblePack({ request: request(), inputs: inputs() }),

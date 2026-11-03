@@ -91,6 +91,8 @@ const TIER_NAMES = Object.freeze(TIERS.map((t) => t.name));
 
 /** A prior finding's summary line at most, so that 8 of them always fit their tier's share. */
 const MAX_SUMMARY_BYTES = 5200;
+/** A known issue's line at most: a share of the tier, so that the listing's first ones always fit it, and a description of 2,000 characters fits this. */
+const MAX_KNOWN_ISSUE_BYTES = 8192;
 const SUMMARY_PATHS = 5;
 const SUMMARY_PATH_BYTES = 200;
 /** One read of git's at most; far above any budget, so a cut here is never in what the jury would have read. */
@@ -170,31 +172,46 @@ function summaryOf(prior) {
 }
 
 /**
- * One summary as one line of canonical JSON, within its bound, measured as it
- * is written (escapes included): the paths go first, last one first, then the
- * longest texts give way. `cut` says whether it holds less than the finding's.
+ * An entry as one line of canonical JSON, within its bound, measured as it is
+ * written (escapes included): the list goes first, last item first, then the
+ * texts give way in order. So what identifies an entry stays, and no single entry
+ * can use up its tier. `cut` says it holds less than the document's.
+ * @param {object} entry - a copy this may change
+ * @param {{max:number, list:string, texts:string[], cut?:boolean}} o
  * @returns {{text:string, cut:boolean}}
  */
-function summaryEntry(prior) {
-  const summary = wellFormedDeep(summaryOf(prior));
-  const f = prior.finding || {};
-  let cut = (Array.isArray(f.affectedPaths) ? f.affectedPaths : []).some((p, i) => i >= SUMMARY_PATHS || byteLength(String(p)) > SUMMARY_PATH_BYTES);
-  let line = canonicalJson(summary);
-  while (byteLength(line) > MAX_SUMMARY_BYTES && summary.affectedPaths.length > 0) {
-    summary.affectedPaths.pop();
+function boundedLine(entry, { max, list, texts, cut: alreadyCut = false }) {
+  let cut = alreadyCut;
+  let line = canonicalJson(entry);
+  while (byteLength(line) > max && entry[list].length > 0) {
+    entry[list].pop();
     cut = true;
-    line = canonicalJson(summary);
+    line = canonicalJson(entry);
   }
-  for (const field of ['rootCause', 'observable', 'title']) {
-    const over = byteLength(line) - MAX_SUMMARY_BYTES;
+  for (const field of texts) {
+    const over = byteLength(line) - max;
     if (over <= 0) break;
-    if (typeof summary[field] !== 'string') continue;
+    if (typeof entry[field] !== 'string') continue;
     // Each byte of text cut takes at least one byte of its escaped form with it.
-    summary[field] = cutBytes(summary[field], byteLength(summary[field]) - over);
+    entry[field] = cutBytes(entry[field], byteLength(entry[field]) - over);
     cut = true;
-    line = canonicalJson(summary);
+    line = canonicalJson(entry);
   }
   return { text: line, cut };
+}
+
+/** A prior finding's summary, as one line within its bound. */
+function summaryEntry(prior) {
+  const f = prior.finding || {};
+  const shortened = (Array.isArray(f.affectedPaths) ? f.affectedPaths : []).some((p, i) => i >= SUMMARY_PATHS || byteLength(String(p)) > SUMMARY_PATH_BYTES);
+  return boundedLine(wellFormedDeep(summaryOf(prior)), { max: MAX_SUMMARY_BYTES, list: 'affectedPaths', texts: ['rootCause', 'observable', 'title'], cut: shortened });
+}
+
+/** A known issue, as one line within its bound: its id, title and class stay, then what its description can keep. */
+function knownIssueEntry(issue) {
+  const copy = wellFormedDeep(issue);
+  if (!Array.isArray(copy.paths)) copy.paths = [];
+  return boundedLine(copy, { max: MAX_KNOWN_ISSUE_BYTES, list: 'paths', texts: ['description', 'title'] });
 }
 
 function summaryLine(prior) {
@@ -656,7 +673,7 @@ function tierAccounts(request, inputs) {
     knownIssues: {
       asked: known.length,
       omitted: {},
-      items: known.length ? [linesItem('known-issues', 'known_issues.json, one entry per line, written by the maker', known.map((k) => ({ text: canon(k) })))] : []
+      items: known.length ? [linesItem('known-issues', 'known_issues.json, one entry per line, written by the maker', known.map(knownIssueEntry))] : []
     },
     priorFindings: {
       asked: priors.length,
@@ -685,14 +702,15 @@ function allocate(budgetBytes, sizes) {
   return grants;
 }
 
-/** As many of a file's lines as fit in `left`: whole lines only, with a line saying how many did not. Null when none does. */
+/** The file's lines that fit in `left`: whole lines only, with a line saying how many did not. Null when none does. */
 function fitLines(item, left) {
   if (item.bytes <= left) return { ...item, text: [item.head, ...item.lines.map((l) => l.text)].join('\n'), kept: item.lines };
   let room = left - byteLength(item.head) - FILE_OVERHEAD_BYTES - LEFT_OUT_NOTE_BYTES;
   const kept = [];
+  // In order; one that does not fit does not stop a smaller one after it.
   for (const line of item.lines) {
     const need = 1 + byteLength(line.text);
-    if (need > room) break;
+    if (need > room) continue;
     kept.push(line);
     room -= need;
   }

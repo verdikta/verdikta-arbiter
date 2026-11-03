@@ -1415,7 +1415,7 @@ what was searched for (`found = withSites + noSites + overCap`).
 | 2 | `claim` | 10% | `finding.json` (canonical), `report.md` |
 | 3 | `source` | 24% | The in-scope files `finding.affectedPaths` names, at the listed commit |
 | 4 | `callSites` | 5% | At most 10 in-scope call sites of each of at most 16 symbols the PoC's added lines call (`.name(`, `.name{…}(`, `new Name`), without `vm.`, `console.` and the language's own, one per line: `symbol: path:line: text` |
-| 5 | `knownIssues` | 12% | `known_issues.json`, one entry per line |
+| 5 | `knownIssues` | 12% | `known_issues.json`, one entry per line, each within 8 KB: its id, title and class stay, then its paths and its description give way. A shortened entry counts in `cut` |
 | 6 | `priorFindings` | 19% | Up to 8 summaries, one per line: `bcid`, `title`, `claimedClass`, `rootCause`, 5 of `affectedPaths`, `observable`; never a prior `report.md`. A summary that lost paths or text to its bound counts in `cut` |
 | 7 | `fix` | | `fix.patch`, as text |
 | 8 | `tree` | | The listed commit's first two levels |
