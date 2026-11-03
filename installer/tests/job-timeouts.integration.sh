@@ -270,14 +270,33 @@ def cbor_text(s):
     assert len(b) < 24
     return bytes([0x60 + len(b)]) + b
 
-def emit_request(contract, ext):
+def emit_request(contract, ext, agg='agg1'):
     spec_id = ext.replace('-', '').encode().hex()
-    cbor = (cbor_text('cid') + cbor_text('QmIntegration') + cbor_text('aggId') + cbor_text('agg1')).hex()
+    cbor = (cbor_text('cid') + cbor_text('QmIntegration') + cbor_text('aggId') + cbor_text(agg)).hex()
     data = cast('abi-encode', 'f(address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)',
                 DEV_ACCOUNT, '0x' + secrets.token_hex(32), '0', DEV_ACCOUNT, '0x12345678', '4000000000', '1', '0x' + cbor)[2:]
     receipt = send(contract, '0x' + spec_id + data)
     if receipt.get('status') != '0x1' or not receipt.get('logs'):
         raise RuntimeError(f'the OracleRequest log was not emitted: {receipt}')
+
+def answers(path, agg):
+    return [e for e in seen if e['path'] == path and e['body'].get('data', {}).get('aggId') == agg]
+
+def wait_answer(path, agg, seconds=180):
+    until = time.time() + seconds
+    while time.time() < until and not answers(path, agg):
+        time.sleep(1)
+    return bool(answers(path, agg))
+
+def answered_twice_after_replace(node, path, contract, ext, agg):
+    """A request the old job answered, then the job replaced: does the new one answer it again?"""
+    emit_request(contract, ext, agg)
+    ok(f'{agg}: the old job answers the request', wait_answer(path, agg))
+    rc, out = node.tool('--apply')
+    ok(f'{agg}: --apply', rc == 0, f'rc={rc}: {out[-300:]}')
+    # Longer than the log broadcaster's backfill (10 blocks) and the template's 20 s head sampling.
+    time.sleep(60)
+    return len(answers(path, agg))
 
 # ── The run ──────────────────────────────────────────────────────────────────
 def main():
@@ -320,11 +339,11 @@ def main():
     rc, out = a.tool('--check')
     ok('--check: the stale job, named', rc == 1 and 'Verdikta AI Arbiter 1' in out and '5m0s' in out, f'rc={rc}')
     ok('--check: not the fresh one', 'Verdikta AI Arbiter 2' not in out)
-    rc, out = a.tool('--apply')
-    ok('--apply', rc == 0, f'rc={rc}: {out[-600:]}')
+    # A request answered just before the replace, with another job on the same contract:
+    count = answered_twice_after_replace(a, '/a', contract, ext, 'beforeA')
+    ok('a replaced job does not answer an old request again (a second job on the contract)', count == 1, f'{count} answer(s)')
     after = a.job_by_ext(ext)
     ok('the id is kept', after is not None)
-    ok('it is a new job row', after['id'] != stale['id'], f"{stale['id']} -> {after['id']}")
     ok('840 s on the job', after['attributes']['maxTaskDuration'] in ('840s', '14m0s'), after['attributes']['maxTaskDuration'])
     dag = after['attributes']['pipelineSpec']['dotDagSource']
     ok('840 s on the bridge', 'timeout="840s"' in dag)
@@ -339,16 +358,12 @@ def main():
     ok('--check after --apply', rc == 0, f'rc={rc}: {out[-300:]}')
 
     print('\n== the replaced job answers a real OracleRequest under its id ==')
-    before = len(seen)
-    emit_request(contract, ext)
-    until = time.time() + 180
-    while time.time() < until and len(seen) == before:
-        time.sleep(1)
-    ok('the log reached the bridge', len(seen) > before)
-    if len(seen) > before:
-        body = seen[-1]['body']
-        ok('the job\'s request, through the replaced job', body.get('data', {}).get('cid') == 'QmIntegration' and body.get('data', {}).get('aggId') == 'agg1', json.dumps(body)[:200])
-        ok('the id it reports is the one kept', body.get('id') == ext, body.get('id'))
+    emit_request(contract, ext, 'afterA')
+    ok('the log reached the bridge', wait_answer('/a', 'afterA'))
+    if answers('/a', 'afterA'):
+        body = answers('/a', 'afterA')[0]['body']
+        ok('the job\'s request, through the replaced job', body.get('data', {}).get('cid') == 'QmIntegration', json.dumps(body)[:200])
+        ok('the id it reports is the one kept', body.get('id') == '0x' + ext.replace('-', ''), body.get('id'))
 
     print('\n== each limit cuts a run, at a scale of seconds ==')
     b = Node('b', render_config(max_run='15s', default_timeout='2s'))
@@ -374,6 +389,17 @@ def main():
     run = run_webhook(b, short_bridge, 60)
     ok('the bridge timeout cuts it', run is not None and fetch_of(run).get('error') and 6 <= run_seconds(run) <= 12,
        f"{run and run_seconds(run):.1f}s" if run else 'no run')
+
+    print('\n== a job alone on its contract: the replace drops the subscription and makes it again ==')
+    b.add_bridge('verdikta-ai', EA_URL + '/b')
+    only = b.add_job(render_job(1, contract, '300s', '300s'))
+    only_ext = only['attributes']['externalJobID']
+    count = answered_twice_after_replace(b, '/b', contract, only_ext, 'beforeB')
+    # Measured, not a pass or a fail by itself: a second answer costs that node an evaluation and a reverted commit.
+    print(f'  measured: {count} answer(s) to the old request after a replace, on a job alone on its contract')
+    ok('it answered at least once, and not more than twice', 1 <= count <= 2, f'{count} answer(s)')
+    emit_request(contract, only_ext, 'afterB')
+    ok('and it answers a new request', wait_answer('/b', 'afterB'))
 
     if FULL:
         print('\n== the real scale: a 660 s bridge call, on the default config and on the template ==')

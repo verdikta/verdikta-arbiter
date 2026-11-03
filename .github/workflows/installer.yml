@@ -45,9 +45,11 @@ jobs:
   chainlink-2-23:
     name: Job timeouts on Chainlink 2.23.0
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@v4
 
       - name: Measure on the real binary
+        env:
+          JOB_TIMEOUTS_FULL: '1'
         run: bash installer/tests/job-timeouts.integration.sh
