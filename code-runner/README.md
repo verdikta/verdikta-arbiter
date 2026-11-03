@@ -227,7 +227,7 @@ broken package (an image without the listed commit's objects,
 |---|---|
 | image | The env image's unpacked size: the sum of its layer sizes as the runner's daemon lists them (`docker history`); above 6 GB is refused |
 | prepare | The claim pipeline's own prepare: the processes recorded, the forced checkout of the listed commit; the work tree's free space (a claim needs 50 MB + 64 MB, else `IMAGE_WORKDIR_FULL`); the listed commit's files, at least one of them in `stake.scope`; then a claim's integrity reference ([below](#the-integrity-reference-at-listing)) |
-| compilers | The look at any solc in the image, before any build ([below](#the-official-release-look)): anything that isn't an official release is `SOLC_NOT_OFFICIAL` |
+| compilers | The look at any solc in the image, before any build ([below](#the-official-release-look)): anything that isn't an official release is `SOLC_NOT_OFFICIAL`. The look at any vyper ([below](#vyper-is-refused-at-listing-for-now)): one on `PATH` or a `vyper` setting is `VYPER_NOT_SUPPORTED` |
 | build | `commands.build`, once, judged by its exit code, then compared with the reference as a claim's build is (every command as a claim runs it: [the forge commands](#the-forge-commands), the reference's forge with its pin) |
 | suite | `commands.test` three times with the runner's `--junit --fuzz-seed 0x76657264696b7461` and `FOUNDRY_FUZZ_SEED`, no network, the tracked files reset to the listed commit before runs 2 and 3; after each run a claim's post-run checksums |
 | baseline | Every test function the JUnit names (forge's identity, `<file> > <Contract> > <signature>`) with its result on each run, by the claim pipeline's classifier (missing or duplicated on a run = `error`); `stable` = passed all three, the rest `unstable` (common's `baselineSets`), checked with common's `validateBaseline` |
@@ -1148,7 +1148,8 @@ pick any installed release, so the walk covers all of them, not only one the lis
 "no patch or file in the tree can choose the compiler" holds only with the refusals above in
 place. It says nothing about what the installed bytes do: those are the maker's, and the listing
 check [reads them](#the-official-release-look). A
-`.vy` file's compiler is not covered by the variable, so `vyper.path` keeps its refusal.
+`.vy` file's compiler is not covered by the variable, so `vyper.path` keeps its refusal, and the
+listing check [refuses a `vyper`](#vyper-is-refused-at-listing-for-now).
 
 An external compiler adapter (`external_compilers`, which forge runs in every build) is a
 compiler the pin does not name. A listing that names one is refused before any patch, and
@@ -1216,9 +1217,41 @@ look covers more than the lookup needs, and a Docker test plants a compiler at e
 
 **What it doesn't cover.**
 - **Repository code a proof calls through ffi.** Recorded below.
-- **`vyper`.** A `.vy` file in the tree makes forge run `vyper` from `PATH` or `vyper.path` on every compile, and
-  there's no official hash list to read it against. Refusing every `vyper` would refuse real Vyper projects. A
-  fake `vyper` stays a compiler route, recorded below. `vyper.path` in the work tree keeps its refusal.
+- **`vyper`.** There's no official hash list to read it against. The next section refuses it instead.
+
+### Vyper is refused at listing, for now
+
+Owner decision Q40, node A2d (`integrity.vyperProblems`). Right after the official-release look and before any
+build, the listing check refuses with `VYPER_NOT_SUPPORTED`, in `listing.refusals`, every problem named.
+
+| What it reads | What it refuses |
+|---|---|
+| `vyper` in each directory of the `PATH` forge gets, in the sandbox, as the user forge runs as, through links | Anything but a plain directory: a file, executable or not; a link, to a file or leading nowhere; one it can't read. With or without a `.vy` anywhere |
+| forge's own `vyper` object, from `forge config --json` under the environment the maker's commands run with | Any key in it: `path`, `optimize`, `experimental_codegen`, wherever forge read it (`foundry.toml`, its default profile, a `.env` with `FOUNDRY_VYPER_PATH`, `FOUNDRY_VYPER`, `FOUNDRY_VYPER.PATH` or `DAPP_VYPER`, tracked or not, or a profile the `.env` selects) |
+| A `PATH` directory in the work tree | It is refused with or without a `vyper` in it: a patch or a fix could add one after the look (a Docker test shows forge running one a patch added). The attested builder's `ENV` never has such a directory |
+
+An empty `[vyper]` table, an unknown key under it, or `[profile.ci.vyper]` under a profile nothing selects isn't a setting: forge answers `{}`, and they change nothing. A `vyper.path` in the work tree, or a `vyper` that leads through a place the sandbox can write, keeps the refusal a claim gives, `IMAGE_WATCH_ROOT_UNCOVERED`, before the look.
+
+**Why it exists.** A `solc` can be read against an official list ([above](#the-official-release-look)). Vyper has no such list. So a fake `vyper` with a `.vy` file in the tree was a compiler route: forge runs it in every build. A hunter's patch could add the `.vy` too. This costs a real Vyper project a refusal for now.
+
+**What would lift it: an official hash list for Vyper.** The rule is one check (`integrity.vyperProblems`), its one call in `listing.js` and one code, so it can be replaced by a look like `solc`'s, or removed.
+
+**Only the listing reads it.** A claim never does, as with the official list, so arbiters on different runner versions can't split on it. A claim on an image that never went through a listing check still runs its `vyper` (a Docker test pins this). An image that passed the check is the same image at each claim, by digest.
+
+**A `.vy` file alone is no reason to refuse.** forge decides, at the build. With no `vyper`, on the listing path, on real forge, on `linux/amd64` (CI) and arm64:
+
+| A `.vy` or `.vyi` file | What forge does |
+|---|---|
+| In `src/`, `test/` or `script/` | The build fails: `Found Vyper sources, but no compiler versions are available for it`. At listing that is `BUILD_FAILED` |
+| Only under `lib/` | Ignored, and forge doesn't look for a `vyper` (with one on `PATH`, it doesn't start it). The listing passes, and a claim on it passes |
+| Under `lib/`, imported by Solidity | forge reads it as Solidity. Solidity text in it compiles with solc, and the listing passes. Vyper text fails the build: `Encountered invalid compiler version in lib/dep/Fee.vy` with a version pragma, a solc error without one. No `vyper` starts, with one on `PATH` or not |
+| In `src/`, imported by Solidity | It is a Vyper source too, and the build fails: as in the first row with Solidity text in it. With Vyper text and a version pragma, forge's wording varies from run to run, the first row's or `Encountered invalid compiler version in src/Fee.vy`; the exit code doesn't. With a `vyper` on `PATH` and that Vyper text, forge asks its version and then fails on it |
+
+**A hunter's patch** that adds a `.vy` file under `test/` on an image with no `vyper` fails the `build` gate, beside the proof or imported by it (Docker tests on real forge). That is the hunter's own cost, and `check` forecasts it: P5's `forecast.js` reads that gate and shows the build's output (read, not run with a real runner: the tool is in another repository).
+
+**What this leaves predicted.** That forge finds a `vyper` only through `vyper.path` or `PATH`. The sandbox can't watch what forge execs. On forge 1.8.5, `strace` shows `execve` of `<dir>/vyper --version` for each `PATH` directory and no other syscall naming a vyper, and none at all with no `.vy` (arm64, by hand). forge is pinned by digest, and a Docker test plants a `vyper` in 30 other places (`$HOME/.vvm`, `svm/`, `$XDG_DATA_HOME/vvm`, the work tree's root, …), with a `.env` naming it in the forms forge doesn't read as a setting, and shows it never runs. Another Docker test names a fake where forge reads no setting (`.env.local`, `foundry.local.toml`, `src/.env`, `test/foundry.toml`, `/.env`, `/foundry.toml`, `/etc/foundry/foundry.toml`, inline configuration): the build fails as it does with no `vyper`. The same test runs each form of setting on a real build, to show what `forge config` reports is what the build uses, and shows `forge config` itself starts no `vyper`. A forge pin bump re-runs it.
+
+This covers a `vyper` forge would find. It says nothing about another program in the image, or repository code a proof calls, which stay in the limits below.
 
 ### What a failed check settles as
 
@@ -1307,21 +1340,22 @@ Within that:
 
 **Known limits (Q35).** Open, recorded, and to be reviewed before mainnet. The tests named
 "Known limit" in `test/docker/integrity.docker.test.js` pin the claim pipeline's side of these as it
-is today, not as it is wanted; `test/docker/listing-integrity.docker.test.js` pins what the listing check
-does about them. The runner has no clock faking: nothing in `src/` sets the sandbox's time.
+is today, not as it is wanted; `test/docker/listing-integrity.docker.test.js` and `listing-vyper.docker.test.js` pin what
+the listing check does about them. The runner has no clock faking: nothing in `src/` sets the sandbox's time.
 
 Node A2c changed this table, and only as far as its tests show. On an image from the attested builder, a
 `solc` that isn't an official release no longer reaches a claim: it's refused at listing, by Docker tests on
-the named file, each installed release and `PATH`, with fake compilers of each kind below. No other program
+the named file, each installed release and `PATH`, with fake compilers of each kind below. Node A2d does the same
+for a `vyper` on `PATH` and a `vyper` setting, whatever the bytes ([above](#vyper-is-refused-at-listing-for-now)):
+what this table recorded about a fake `vyper` is now a refusal, by Docker tests on each form. No other program
 is covered.
 
 | Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
 |---|---|---|---|
-| A program in the image other than `solc` (`vyper`, on a `.vy` file), or repository code, that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | The listing's suite and probes get the checksums (`IMAGE_WATCH_CHANGED_BY_SUITE`, `HARNESS_INTEGRITY_FAILED`), which catches one that fires on what they run, not one that spares them |
-| A fake `vyper` that exits with an error on a test it hasn't seen, with a `.vy` file in the tree | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed. The look doesn't read `vyper`: there's no official list to read it against |
+| A program in the image other than `solc` or `vyper`, or repository code, that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | The listing's suite and probes get the checksums (`IMAGE_WATCH_CHANGED_BY_SUITE`, `HARNESS_INTEGRITY_FAILED`), which catches one that fires on what they run, not one that spares them |
 | A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
 | Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: the look doesn't cover it, and nothing at listing runs code only a proof would call. A hunter can read the code it calls |
-| A trap keyed on the date, in repository code or `vyper` | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | In `solc` it is refused at listing, whatever the date, because the bytes aren't official. Repository code and `vyper` stay |
+| A trap keyed on the date, in repository code | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | In `solc` it is refused at listing, whatever the date, because the bytes aren't official, and a `vyper` is refused whatever it does. Repository code stays |
 
 The routes the review raised, against that scope (each has its test):
 
@@ -1344,18 +1378,19 @@ The routes the review raised, against that scope (each has its test):
 | A patch's file as forge, or a `PATH` directory under `paths.tests` (R16-F1) | No: forge is the base's, first on `PATH` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` before forge first runs |
 | An image `ENV` of `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | No: the `ENV` is fixed | Fixed anyway | Empty on the container |
 | A `solc` in the image that isn't an official release: the named file, any installed release, `PATH` (A2c) | Yes: the maker's setup | Needs a maker's files. Refused at listing | `SOLC_NOT_OFFICIAL`, before any build. A claim never reads the list |
-| A `vyper` in the image, with a `.vy` file in the tree (A2c) | Yes: the maker's setup | **Known limit** | Not read by the look. What it writes shows at the build or the listing's runs if it fires there |
+| A `vyper` on `PATH`, with a `.vy` file in the tree, or a `vyper` setting (a known limit in A2c; A2d) | Yes: the maker's setup | Needs a maker's files. Refused at listing | `VYPER_NOT_SUPPORTED`, before any build. A claim never reads the rule |
+| A `PATH` directory in the work tree, where a patch or a fix adds a `vyper` and a `.vy` (found on A2d's probes) | No: the builder's `ENV` | Refused anyway | `VYPER_NOT_SUPPORTED`, with or without one there. A directory matching `paths.tests` is also `IMAGE_WATCH_ROOT_UNCOVERED`, first |
+| A hunter's patch adding a `.vy` on an image with no `vyper` (A2d) | Yes: a hunter alone | The hunter's own cost | The `build` gate fails, and `check` forecasts it |
 | A suite, or a trap in the listing's `forge-std`, that writes a watched place (A2c) | Yes: the maker's repository | Needs a maker's files. Refused at listing | `IMAGE_WATCH_CHANGED_BY_SUITE`, `HARNESS_INTEGRITY_FAILED`, the paths named |
-| A program in the image other than a `solc` the look refuses, that writes a watched place in the build | Yes: the maker's setup | Needs a maker's files. Refusal kept | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error, at listing and at a claim |
+| A program in the image other than a `solc` or `vyper` the listing refuses, that writes a watched place in the build | Yes: the maker's setup | Needs a maker's files. Refusal kept | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error, at listing and at a claim |
 | `paths.protected` or `libs` over forge's own output, nothing there yet (`out = "lib/out"`, `out/**`, a test's artifact with `--skip test`; R21-F1) | Yes: the maker's listing | Needs a maker's files. Handled | Where forge writes is not held to the reference: the honest claim passes, and the artifacts are held from run 1 on |
 | The same over what the image already has there (`out/**` over a prebuilt `out/`; R22-F1), through a link that leads there once forge has compiled (R21-F1, round 22), or forge's output behind a link | Yes: the maker's setup or listing | Needs a maker's files. Refusal kept | Refused before any maker command or claim code: `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_LINK_UNCOVERED`, at listing and at a claim |
 | `[invariant] failure_persist_dir = "lib/persist"`: an honest invariant PoC writes a counterexample into a dependency directory on its first failure | Yes: the maker's `foundry.toml` | Needs a maker's files. Handled | Forge's own output: the honest claim passes |
 | The same by inline configuration in a listed contract (`/// forge-config: …failure_persist_dir`; R23-F1) | Yes: the maker's source | Needs a maker's files. Refusal kept | Refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`, at listing and at a claim |
 | A setup that makes a watched listing unreadable or too large, or a watched link uncovered | Links and size yes, modes no | Needs a maker's files. Refusal kept | The reference's requester errors, at listing and at a claim. At listing the caps keep room for a claim's patch |
-| A program the image ships other than `solc` (`vyper`), or repository code a PoC calls (ffi, cheatcodes), that writes a watched place during a run | Yes: the maker's setup or repository | **Known limit** | A failed check with no tamper flag: bond back, no award. The claim side is pinned by Docker "Known limit" (with a fake `solc`, which the listing now refuses) |
-| A fake `vyper` that exits with an error on a test it has not seen | Yes: the maker's setup | **Known limit** | The `build` gate, or `reproduces` on its own: INVALID. The claim side is pinned by Docker "Known limit" (with a fake `solc`, which the listing now refuses) |
+| A program the image ships other than `solc` and `vyper`, or repository code a PoC calls (ffi, cheatcodes), that writes a watched place during a run | Yes: the maker's setup or repository | **Known limit** | A failed check with no tamper flag: bond back, no award. The claim side is pinned by Docker "Known limit" (with a fake `solc`, which the listing now refuses) |
 | A false rejection at `reproduces` | Yes: a trap, or a misreading not yet found | **Known limit** | INVALID. A misreading with no maker's files involved blocks a merge once found |
-| A trap keyed on the date, in repository code or `vyper` | Yes: the maker's setup or repository | **Known limit** | As its effect, and `check` doesn't catch it: the runner fakes no clock. In `solc` it is refused at listing |
+| A trap keyed on the date, in repository code | Yes: the maker's repository | **Known limit** | As its effect, and `check` doesn't catch it: the runner fakes no clock. In `solc` it is refused at listing, and a `vyper` is refused whatever it does |
 | A program on the read-only root that itself runs something a run can change, to help claim code | Yes: the maker's setup | Residual (Q32) | Recorded above |
 
 ### Tamper routes under forge

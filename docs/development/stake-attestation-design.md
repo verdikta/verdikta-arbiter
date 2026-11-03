@@ -537,7 +537,7 @@ claim:
   suite and harness probes to the same post-run checksums (§9.5), so an image a
   claim would refuse is refused here with the same code, and a maker can't list a
   stake no claim can settle. It also refuses any `solc` in the image that isn't an
-  official release (§9.5).
+  official release, and a `vyper` on `PATH` or a `vyper` setting, for now (§9.5).
 - **A cheap first pass for bugs.** Semgrep with Verdikta's pinned rules and a
   secret scan over the in-scope paths, then one inexpensive agent pass: a single
   model from the `code-standard` pool reads the in-scope source with the scope
@@ -1048,22 +1048,37 @@ list). The hashes are a table in the runner's repository, kept current by a scri
 check; a release newer than the table is refused until the table has it. A claim never reads the
 table, so arbiters on different runner versions can't split on a new release. That nothing else
 runs as solc rests on forge's lookup at the pinned version, which the runner can't watch: a test
-plants a compiler at each other place and shows it never runs. This covers `solc` only. A `vyper`
-has no official list to read against, and repository code a proof calls through ffi isn't a
-compiler; both stay in the limits below.
+plants a compiler at each other place and shows it never runs. This covers `solc` only, and
+repository code a proof calls through ffi isn't a compiler: it stays in the limits below.
+
+**The listing refuses a `vyper`, for now (owner Q40).** A `vyper` has no official list to read
+against, so a fake one with a `.vy` file in the tree was a compiler route forge runs in every
+build. Right after that look, the listing check refuses with `VYPER_NOT_SUPPORTED`: anything but a
+plain directory named `vyper` in a `PATH` directory, measured in the sandbox through links; any key
+in forge's own `vyper` configuration, from `forge config --json` under the maker's commands'
+environment; and a `PATH` directory in the work tree, where a patch or a fix could add one. A `.vy`
+file alone is no reason: with no `vyper`, forge's own build fails on one it would compile and ignores
+one only under `lib/`, and Solidity importing one under `lib/` reads it as Solidity, on real forge, on
+`linux/amd64` and arm64. So a hunter's patch adding one fails the `build` gate, which is the hunter's
+own cost and `check` forecasts it. A claim never reads the
+rule, so arbiters can't split on it. It is one check and one code, and an official hash list for
+Vyper would lift it. That forge finds a `vyper` only through `vyper.path` or `PATH` rests on forge's lookup at the
+pinned version, which the runner can't watch: `strace` shows that lookup, and a Docker test plants a
+`vyper` at each other place and shows it never runs. This says nothing about other programs in the image.
 
 **Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
 before mainnet. The code-runner README's route table has every route the review raised. On an
 image from the attested builder, a `solc` that isn't an official release no longer reaches a claim:
-that is what node A2c changed here, and only as far as its tests show. No other program is covered.
+that is what node A2c changed here, and only as far as its tests show. Node A2d does the same for a
+`vyper` on `PATH` and a `vyper` setting, whatever the bytes, so what this table recorded about a fake
+`vyper` is now a refusal, by Docker tests on each form. No other program is covered.
 
 | Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
 |---|---|---|---|
-| A program in the image other than `solc` (`vyper`, on a `.vy` file), or repository code, that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | The listing's suite and probes get the checksums, which catches one that fires on what they run but not one that spares them |
-| A fake `vyper` that exits with an error on a test it hasn't seen, with a `.vy` file in the tree | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed. The listing doesn't read `vyper`: there's no official list to read it against |
+| A program in the image other than `solc` or `vyper`, or repository code, that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | The listing's suite and probes get the checksums, which catches one that fires on what they run but not one that spares them |
 | A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
 | Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: the official-release refusal doesn't cover it, and nothing at listing runs code only a proof would call. A hunter can read the code it calls |
-| A trap keyed on the date, in repository code or `vyper` | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | In `solc` it is refused at listing, whatever the date, because the bytes aren't official. Repository code and `vyper` stay |
+| A trap keyed on the date, in repository code | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | In `solc` it is refused at listing, whatever the date, because the bytes aren't official, and a `vyper` is refused whatever it does. Repository code stays |
 
 ### 9.6 What we borrow from verdikta-agents
 

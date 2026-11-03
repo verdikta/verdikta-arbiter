@@ -77,7 +77,8 @@
  *
  * The listing check takes the same reference and the same snapshots (node A2c,
  * listing.js), and it also reads the compilers' bytes (officialCompilers, the
- * look at any solc in the image, owner Q35 condition 2). A claim never does that.
+ * look at any solc in the image, owner Q35 condition 2) and looks for a vyper
+ * (vyperProblems, owner Q40). A claim never does either.
  */
 
 const crypto = require('node:crypto');
@@ -366,6 +367,17 @@ function parsePathDirs(value) {
 }
 
 /**
+ * The vyper settings in forge's own answer. forge 1.8.5 prints `"vyper": {}` by default and a key per setting in effect,
+ * from wherever it read it. Anything but that object is not read as nothing.
+ * @returns {string[]} `vyper.<key>`, sorted
+ */
+function vyperSettings(value) {
+  if (value === null || value === undefined) return [];
+  if (typeof value !== 'object' || Array.isArray(value)) return ['vyper'];
+  return Object.keys(value).filter((key) => value[key] !== null).sort().map((key) => `vyper.${key}`);
+}
+
+/**
  * Read the framework probe's output.
  * @param {Buffer} buf
  * @returns {{ok:true, forgePath:string, path:string, pathDirs:string[], configSha256:string, config:{out:string|null, cachePath:string|null, libs:string[], solc:string|null}} | {ok:false, reason:string, forgePath?:string}}
@@ -401,6 +413,7 @@ function parseFramework(buf) {
       broadcast: str(parsed.broadcast),
       snapshots: str(parsed.snapshots),
       vyperPath: parsed.vyper && typeof parsed.vyper === 'object' ? str(parsed.vyper.path) : null,
+      vyperSettings: vyperSettings(parsed.vyper),
       externalCompilers: Array.isArray(parsed.external_compilers) ? parsed.external_compilers.length : 0,
       solverPrograms: solverPrograms(parsed.symbolic),
       runOutputs: RUN_OUTPUT_SETTINGS.map((setting) => {
@@ -1053,8 +1066,8 @@ function svmArgv() {
   return hermetic(SVM_SCRIPT, 'vcr-svm', [`${forge.BUILDER_ENV.XDG_DATA_HOME}/svm`]);
 }
 
-function compilersArgv(paths) {
-  return hermetic(COMPILERS_SCRIPT, 'vcr-compilers', paths);
+function compilersArgv(paths, script = 'vcr-compilers') {
+  return hermetic(COMPILERS_SCRIPT, script, paths);
 }
 
 function externalRootsArgv() {
@@ -1392,20 +1405,9 @@ async function officialCompilers(ctx, { pin, pathDirs, list, name = 'prepare:com
     }
   }
   const named = pin.startsWith('/') ? [pin] : [];
-  const onPath = [...new Set(pathDirs)].map((d) => (d === '/' ? '/solc' : `${d}/solc`));
-  const paths = [...new Set([...named, ...onPath])];
-  const out = new Prefix(CONFIG_MAX_BYTES);
-  const record = await ctx.exec(compilersArgv(paths), { name: `${name}:files`, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
-  const bytes = out.bytes();
-  const fields = bytes.toString('utf8').split('\0');
-  fields.pop();
-  if (record.exitCode !== 0 || out.truncated || fields.length % 3 !== 0 || (bytes.length > 0 && bytes[bytes.length - 1] !== 0)) {
-    throw runnerError(`${name}:files`, `the compilers could not be read (exit ${record.exitCode})`);
-  }
-  for (let i = 0; i < fields.length; i += 3) {
-    const [kind, p, sha] = fields.slice(i, i + 3);
-    const asked = paths.includes(p);
-    if (!asked || !['f', '!', '?'].includes(kind) || (kind === 'f' ? !/^[0-9a-f]{64}$/.test(sha) : sha !== '')) throw runnerError(`${name}:files`, 'the compilers could not be read');
+  const paths = [...new Set([...named, ...onPathDirs(pathDirs, 'solc')])];
+  const records = await compilerRecords(ctx, `${name}:files`, paths, compilersArgv(paths));
+  for (const { kind, path: p, sha } of records) {
     const what = named.includes(p) ? 'the compiler the listing names' : 'solc on PATH';
     if (kind === '?') problems.push(`${p} (${what}) is a link that leads nowhere`);
     else if (kind === '!') problems.push(`${p} (${what}) cannot be read, so its bytes could not be checked`);
@@ -1414,9 +1416,76 @@ async function officialCompilers(ctx, { pin, pathDirs, list, name = 'prepare:com
   }
   // forge just read the configuration with this file as its compiler. A look that cannot see it has read nothing.
   for (const p of named) {
-    if (!fields.includes(p)) problems.push(`${p} (the compiler the listing names) could not be found, so its bytes could not be checked`);
+    if (!records.some((r) => r.path === p)) problems.push(`${p} (the compiler the listing names) could not be found, so its bytes could not be checked`);
   }
   return { checked, problems };
+}
+
+/** `name` in each directory of a PATH, as the shell looks it up. */
+function onPathDirs(pathDirs, name) {
+  return [...new Set(pathDirs)].map((d) => (d === '/' ? `/${name}` : `${d}/${name}`));
+}
+
+/**
+ * COMPILERS_SCRIPT's records for `paths`, in the sandbox. An answer it cannot read is the runner's error, never a pass.
+ * @returns {Promise<Array<{kind:string, path:string, sha:string}>>}
+ */
+async function compilerRecords(ctx, step, paths, argv) {
+  const out = new Prefix(CONFIG_MAX_BYTES);
+  const record = await ctx.exec(argv, { name: step, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
+  const bytes = out.bytes();
+  const fields = bytes.toString('utf8').split('\0');
+  fields.pop();
+  if (record.exitCode !== 0 || out.truncated || fields.length % 3 !== 0 || (bytes.length > 0 && bytes[bytes.length - 1] !== 0)) {
+    throw runnerError(step, `the compilers could not be read (exit ${record.exitCode})`);
+  }
+  const records = [];
+  for (let i = 0; i < fields.length; i += 3) {
+    const [kind, p, sha] = fields.slice(i, i + 3);
+    if (!paths.includes(p) || !['f', '!', '?'].includes(kind) || (kind === 'f' ? !/^[0-9a-f]{64}$/.test(sha) : sha !== '')) throw runnerError(step, 'the compilers could not be read');
+    records.push({ kind, path: p, sha });
+  }
+  return records;
+}
+
+/**
+ * The look at any vyper (owner Q40, node A2d), the one place this rule lives: refused at listing for now, because Vyper has
+ * no official list of release hashes to read a compiler against, as solc has (officialCompilers). A fake `vyper` and a
+ * `.vy` file are a compiler route nothing else closes: forge runs it in every build. An official hash list for Vyper would
+ * lift this: replace this check with one like officialCompilers, or remove it and its one call in listing.js, whose
+ * refusal code is VYPER_NOT_SUPPORTED.
+ *
+ * Listing only: a claim never reads it, as with the official list of solc releases, so arbiters on different runner
+ * versions cannot split on it. There is no rule on a `.vy` file: on an image with none of this, forge's own build fails on
+ * a `.vy` it would compile, and ignores one only under `lib/`, the maker's or a hunter's to see in `check`.
+ *
+ * What it measures, in the sandbox, as the user forge runs as:
+ * - forge's own answer for its configuration, read under the environment the maker's commands run with (`config`, the
+ *   reference's), so every source forge reads is in it: `foundry.toml`, its profiles, a `.env`, `$HOME`;
+ * - `vyper` in each directory of the PATH forge gets, through links. A plain directory cannot run. Anything else counts,
+ *   whatever forge would make of it today: not executable, unreadable, a link leading nowhere;
+ * - a PATH directory in the work tree, with or without one in it, since a patch or a fix could add one after this look. The
+ *   attested builder's ENV never has such a directory.
+ *
+ * What it leaves predicted is that forge finds a vyper only through `vyper.path` or PATH: the sandbox cannot watch what
+ * forge execs. forge 1.8.5 is pinned by digest, and a Docker test plants a vyper at each other place and shows it never
+ * runs. A forge pin bump re-runs that test.
+ * @param {object} ctx
+ * @param {{config:object, pathDirs:string[]}} o - the reference's
+ * @returns {Promise<string[]>} the problems; none means no vyper for forge to find
+ */
+async function vyperProblems(ctx, { config, pathDirs, name = 'prepare:vyper' }) {
+  const problems = config.vyperSettings.length ? [`forge's configuration sets ${config.vyperSettings.join(', ')}`] : [];
+  const paths = onPathDirs(pathDirs, 'vyper');
+  for (const { kind, path: p, sha } of await compilerRecords(ctx, name, paths, compilersArgv(paths, 'vcr-vyper'))) {
+    if (kind === '?') problems.push(`${p} (on PATH) is a link that leads nowhere`);
+    else if (kind === '!') problems.push(`${p} (on PATH) cannot be read`);
+    else problems.push(`${p} (on PATH) is a vyper: its SHA-256 is ${sha}`);
+  }
+  for (const d of new Set(pathDirs)) {
+    if (within(d, WORK)) problems.push(`PATH directory ${d} is in the work tree, where a patch or a fix could add a vyper`);
+  }
+  return problems;
 }
 
 /**
@@ -1957,7 +2026,7 @@ function integrityDetail(failures) {
 }
 
 module.exports = {
-  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, COMPILERS_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, pinCompiler, officialCompilers, svmEntryProblem,
+  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, COMPILERS_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, pinCompiler, officialCompilers, vyperProblems, svmEntryProblem,
   MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES, LISTING_RESERVE,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,

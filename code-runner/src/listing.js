@@ -17,7 +17,10 @@
  *   compilers the look at any solc in the image (owner Q35 condition 2,
  *             integrity.officialCompilers): anything that is not an official
  *             release is SOLC_NOT_OFFICIAL, before any build. Listing only: a
- *             claim never reads the list (solcReleases.js)
+ *             claim never reads the list (solcReleases.js). And the look at
+ *             any vyper (owner Q40, integrity.vyperProblems): one on PATH or a
+ *             vyper setting is VYPER_NOT_SUPPORTED, before any build, also
+ *             listing only. A .vy file alone is no reason
  *   build     the declared build command, once, at the listed commit (every
  *             command is parsed by src/commands.js and run as forge's argv,
  *             the reference's forge with its pin, as a claim runs it), then
@@ -668,6 +671,11 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
     if (look.problems.length) {
       refuse('SOLC_NOT_OFFICIAL', `the env image holds a solc that is not an official release for ${official.platform}: ${listed(look.problems)}. `
         + `The runner's list comes from ${SOLC_SOURCE} (as of ${official.asOf}, newest ${official.newest}); a release newer than that waits for the runner's list`);
+    }
+    // One check and one code, easy to lift when Vyper has an official hash list: see integrity.vyperProblems.
+    const vyper = await integrity.vyperProblems(state.scope.ctx, { config: state.base.watch.ref.config, pathDirs: state.base.watch.ref.pathDirs });
+    if (vyper.length) {
+      refuse('VYPER_NOT_SUPPORTED', `Vyper is refused at listing for now: it has no official list of release hashes to read a compiler against, as solc has. ${vyper.join('; ')}`);
     }
   }
 
