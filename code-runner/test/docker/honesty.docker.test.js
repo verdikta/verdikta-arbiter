@@ -46,6 +46,8 @@ async function inScanner(t, fn) {
   const result = await executeRun({
     docker, config, limits: smallLimits({ memoryMb: 512, runSeconds: 120, testSeconds: 120 }), image: TEST_IMAGE, runId: crypto.randomBytes(8).toString('hex'),
     steps: [async (ctx) => {
+      // As the claim's scan step does: the scan's own budget, once the claim's sandboxes are closed.
+      ctx.beginToolBudget(scanner.SCAN_BUDGET_MS);
       await ctx.closeSandbox();
       answer = await fn(await openScanner(ctx), ctx);
     }],
