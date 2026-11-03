@@ -737,6 +737,7 @@ function claimSandbox({
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
     'vcr-external-roots': (d, b) => ({ stdout: externalRootsOf(b.tree, d.stdin) }),
     'vcr-compilers': (d, b) => ({ stdout: compilersOf(b.tree, d.argv.slice(4)) }),
+    'vcr-vyper': (d, b) => ({ stdout: compilersOf(b.tree, d.argv.slice(4)) }),
     'vcr-svm': (d, b) => {
       const dir = d.argv[d.argv.length - 1];
       const names = [...b.tree.keys()].filter((p) => p.startsWith(`${dir}/`)).map((p) => `${dir}/${p.slice(dir.length + 1).split('/')[0]}`);
