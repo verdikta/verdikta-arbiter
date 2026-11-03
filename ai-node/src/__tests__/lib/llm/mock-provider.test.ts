@@ -3,6 +3,7 @@
  */
 import { LLMFactory } from '../../../lib/llm/llm-factory';
 import {
+  MOCK_CALL_LOG_ENV,
   MOCK_PROVIDER_FLAG,
   MOCK_SCRIPT_ENV,
   MockProvider,
@@ -99,5 +100,54 @@ describe('mock provider (test-only)', () => {
     const [call] = mockProviderCalls();
     expect(call).toMatchObject({ provider: 'openrouter', model: 'hangs', outcome: 'aborted' });
     expect(call.options).toEqual({ webAccess: false, maxTokens: 8000, effort: 'high', signal: true });
+  }, 5000);
+});
+
+describe('the call log (the local pipeline reads the provider layer from another process)', () => {
+  const fs = jest.requireActual('fs') as typeof import('fs');
+  const os = jest.requireActual('os') as typeof import('os');
+  const path = jest.requireActual('path') as typeof import('path');
+  let dir: string;
+  const savedLog = env[MOCK_CALL_LOG_ENV];
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mock-provider-log-'));
+    env[MOCK_PROVIDER_FLAG] = '1';
+  });
+
+  afterEach(() => {
+    restore(MOCK_CALL_LOG_ENV, savedLog);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const lines = (file: string) => fs.readFileSync(file, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+
+  it('appends one JSON line per finished call: who was called, with what, and how it ended', async () => {
+    const file = path.join(dir, 'calls.jsonl');
+    env[MOCK_CALL_LOG_ENV] = file;
+    env[MOCK_SCRIPT_ENV] = JSON.stringify({ hangs: { hang: true } });
+    const provider = new MockProvider('openrouter');
+    await provider.generateResponse(SCORE_PROMPT, 'answers', { webAccess: false, maxTokens: 8000, effort: 'high', signal: new AbortController().signal });
+    const controller = new AbortController();
+    const pending = provider.generateResponse(SCORE_PROMPT, 'hangs', { signal: controller.signal });
+    controller.abort();
+    await expect(pending).rejects.toThrow(/aborted/i);
+
+    const [answered, aborted] = lines(file);
+    expect(answered).toMatchObject({
+      provider: 'openrouter', model: 'answers', prompt: SCORE_PROMPT, outcome: 'answered', signalAborted: false,
+      options: { webAccess: false, maxTokens: 8000, effort: 'high', signal: true },
+    });
+    expect(aborted).toMatchObject({ model: 'hangs', outcome: 'aborted', signalAborted: true });
+    expect(aborted.endedAt).toBeGreaterThanOrEqual(aborted.startedAt);
+  }, 5000);
+
+  it('writes nothing without the variable, and a log it cannot write never fails a call', async () => {
+    const provider = new MockProvider('anthropic');
+    delete env[MOCK_CALL_LOG_ENV];
+    await expect(provider.generateResponse(SCORE_PROMPT, 'm')).resolves.toContain('score');
+    expect(fs.readdirSync(dir)).toEqual([]);
+    env[MOCK_CALL_LOG_ENV] = path.join(dir, 'no', 'such', 'dir', 'calls.jsonl');
+    await expect(provider.generateResponse(SCORE_PROMPT, 'm')).resolves.toContain('score');
   }, 5000);
 });
