@@ -675,7 +675,7 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
     // One check and one code, easy to lift when Vyper has an official hash list: see integrity.vyperProblems.
     const vyper = await integrity.vyperProblems(state.scope.ctx, { config: state.base.watch.ref.config, pathDirs: state.base.watch.ref.pathDirs });
     if (vyper.length) {
-      refuse('VYPER_NOT_SUPPORTED', `Vyper is refused at listing for now: it has no official list of release hashes to read a compiler against, as solc has. ${listed(vyper)}`);
+      refuse('VYPER_NOT_SUPPORTED', `Vyper is refused at listing for now: it has no official list of release hashes to read a compiler against, as solc has. ${vyper.join('; ')}`);
     }
   }
 

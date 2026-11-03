@@ -1284,6 +1284,15 @@ test('A2d: the detail says why and what would lift it, and every problem is name
   const { detail } = r.facts.listing.refusals[0];
   for (const needle of [/\/usr\/bin\/vyper/, /\/bin\/vyper/, /vyper\.optimize/, /no official list of release hashes/, /for now/]) assert.match(detail, needle);
   assert.match(detail, /SHA-256 is [0-9a-f]{64}/, 'what it found, so a maker can tell which file');
+  // Every problem, however many: a maker is not sent back for the sixth.
+  const dirs = ['/opt/a', '/opt/b', '/opt/c', '/opt/d', '/opt/e', '/opt/f', '/opt/g'];
+  const many = await runListing(listingSandbox({
+    onBox: (box) => { for (const d of dirs) put(box, `${d}/vyper`, '#!/bin/sh\n'); box.configOver = { vyper: { path: '/opt/a/vyper', optimize: 'gas' } }; },
+    scripts: { 'vcr-framework': framework('/usr/local/bin/forge', `${dirs.join(':')}:/usr/local/bin:/usr/bin`) }
+  }));
+  assert.deepEqual(codes(many), ['VYPER_NOT_SUPPORTED'], show(many));
+  for (const d of dirs) assert.match(many.facts.listing.refusals[0].detail, new RegExp(`${d}/vyper \\(on PATH\\) is a vyper`), d);
+  assert.match(many.facts.listing.refusals[0].detail, /vyper\.optimize, vyper\.path/);
 });
 
 test('A2d: a PATH directory in the work tree is refused, with or without a vyper in it: a patch or a fix could add one after the look', async () => {
