@@ -18,6 +18,7 @@
  */
 
 const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
@@ -46,6 +47,12 @@ const SOLC_RELEASES = Object.freeze({
   })
 });
 
+/** forge-std v1.17.0, as GitHub's archive of the tag's commit, by SHA-256: the assertion library an ordinary project uses (A2c). */
+const FORGE_STD_ARCHIVE = Object.freeze({
+  url: 'https://codeload.github.com/foundry-rs/forge-std/tar.gz/f3dae6e6ee381f25eb6a246f7da9b85c91a68219',
+  sha256: 'e1eab5f0891018e368a0417bfe266d93f8b9af9484e5a15b15f87f1f4b7c50aa'
+});
+
 /** registry:2 (2.8.3), the multi-platform index pinned by digest. */
 const REGISTRY_IMAGE = 'registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373';
 
@@ -62,6 +69,38 @@ async function solcBytes(platform = PLATFORM, release = '0.8.31') {
   assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), pin.sha256, 'solc checksum');
   fs.writeFileSync(cached, bytes);
   return bytes;
+}
+
+/**
+ * forge-std's sources as `lib/forge-std/src/<path>` → text, for buildFixture's `files`.
+ * @returns {Promise<Record<string,string>>}
+ */
+async function forgeStdFiles() {
+  const cached = path.join(os.tmpdir(), `vcr-forge-std-${FORGE_STD_ARCHIVE.sha256.slice(0, 16)}.tgz`);
+  const good = (b) => crypto.createHash('sha256').update(b).digest('hex') === FORGE_STD_ARCHIVE.sha256;
+  if (!fs.existsSync(cached) || !good(fs.readFileSync(cached))) {
+    const res = await fetch(FORGE_STD_ARCHIVE.url);
+    assert.equal(res.status, 200, `GET ${FORGE_STD_ARCHIVE.url}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    assert.ok(good(bytes), 'forge-std checksum');
+    fs.writeFileSync(cached, bytes);
+  }
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-forge-std-'));
+  try {
+    execFileSync('tar', ['-xzf', cached, '-C', dir, '--strip-components=1']);
+    const files = {};
+    const walk = (rel) => {
+      for (const e of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+        const child = path.posix.join(rel, e.name);
+        if (e.isDirectory()) walk(child);
+        else if (e.isFile()) files[`lib/forge-std/${child}`] = fs.readFileSync(path.join(dir, child), 'utf8');
+      }
+    };
+    walk('src');
+    return files;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 const FOUNDRY_TOML = (extra = '') => [
@@ -314,5 +353,5 @@ function pocFile(contract, body) {
 }
 
 module.exports = {
-  foundryBase, solcBytes, SOLC, REGISTRY_IMAGE, VAULT_REPO, VM_SOL, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile
+  foundryBase, solcBytes, forgeStdFiles, SOLC, REGISTRY_IMAGE, VAULT_REPO, VM_SOL, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile
 };

@@ -28,7 +28,11 @@ const {
 } = require('../../src/listing');
 const { testConfig, request } = require('../helpers/http');
 const { IMAGE, runRequest, spec } = require('../helpers/requests');
-const { BASE, claimSandbox, decode } = require('../helpers/fakeClaim');
+const { BASE, claimSandbox, decode, fakeSolcList, FAKE_SOLC, forgeConfig, POC_PATCH } = require('../helpers/fakeClaim');
+const { makeList } = require('../../src/solcReleases');
+const { checkClaim } = require('../../src/claim');
+const { claimSteps } = require('../../src/steps');
+const { checkSpec } = require('../../src/classLimits');
 const { never } = require('../helpers/fakeDocker');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
@@ -161,11 +165,11 @@ function listingSandbox({
   return sb;
 }
 
-async function runListing(sb, body = listingBody(), { caps, deadlineMs = 900000, limitsOver = null, admit = noAdmission, extraSteps = [] } = {}) {
+async function runListing(sb, body = listingBody(), { caps, deadlineMs = 900000, limitsOver = null, admit = noAdmission, extraSteps = [], solcList = fakeSolcList() } = {}) {
   const v = validateListingRequest(body);
   assert.ok(v.ok, JSON.stringify(v.issues));
   const limits = limitsOver ? Object.freeze({ ...v.limits, ...limitsOver }) : v.limits;
-  const steps = listingSteps(v.request, limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image), ...(caps ? { caps } : {}) });
+  const steps = listingSteps(v.request, limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image), platform: 'linux/amd64', solcList, ...(caps ? { caps } : {}) });
   const receivedAt = Date.now();
   return executeRun({
     docker: sb.docker, config: testConfig(), limits, image: v.request.image, runId: '0123456789abcdef', steps: [...steps, ...extraSteps],
@@ -648,9 +652,11 @@ test('the run\'s own budget and the deadline abstain, as for /v1/runs (only a me
 // -------------------------------------------------------------- over HTTP
 
 async function start(sb, config = testConfig()) {
-  const runner = createServer({ config, docker: sb.docker, log: silent, statfs, meminfo });
+  const seen = [];
+  const listingStepsFor = (request, limits, o) => { seen.push(o.platform); return listingSteps(request, limits, { ...o, solcList: fakeSolcList() }); };
+  const runner = createServer({ config, docker: sb.docker, log: silent, statfs, meminfo, listingStepsFor });
   const address = await runner.listen();
-  return { runner, target: { host: address.host, port: address.port }, config };
+  return { runner, target: { host: address.host, port: address.port }, config, seen };
 }
 
 /** A container's create argv without what names one run (its name, run labels, keepalive). */
@@ -779,4 +785,393 @@ test('over HTTP: wrong method 405, wrong type 415, bad JSON 400, a requester err
   assert.equal(full.body.kind, 'listing-check');
   assert.match(full.body.checkId, /^[0-9a-f]{16}$/);
   assert.deepEqual(full.body.issues.map((i) => i.code), ['IMAGE_WORKDIR_FULL']);
+});
+
+// ------------------------------------------------------------------------ node A2c: the integrity reference at listing
+
+const SVM = '/opt/verdikta/tools/share/svm';
+const put = (box, p, content, extra = {}) => box.tree.set(p, { type: 'f', mode: '644', content, ...extra });
+const hashOf = (content) => require('node:crypto').createHash('sha256').update(content).digest('hex');
+const forgeSteps = (sb) => sb.execs().filter((d) => d.forge);
+const ran = (sb, kind) => sb.execs().some((d) => d.kind === kind);
+
+/** The same fake image as a claim: the spec the listing's body drafts, with what a claim adds. */
+async function asClaim(sb, draft = listingBody().spec) {
+  const spec = {
+    ...draft,
+    env: { image: IMAGE, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 2000000000 },
+    attestation: 'attestation.json',
+    limits: { cpus: 1, memoryMb: 512, buildSeconds: 30, testSeconds: 60, runSeconds: 300, maxPatchBytes: 2000000 }
+  };
+  const request = {
+    listingCid: 'QmYwAPJzv5CZsnA625s3Xf2nemtYgPpHdWEz79ojWnPbdG', bcid: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3efuylqabf3oclgtqy55fbzdi',
+    spec, attestation: {}, pocPatch: Buffer.from(POC_PATCH), fixPatch: null,
+    baseline: { version: 1, baseCommit: BASE, framework: 'forge', runs: 3, tests: [], stable: [], unstable: [] },
+    finding: null, report: '', knownIssues: [], priorFindings: [], eaGates: { disclosure: 'pass', inScope: 'pass' }, deadlineMs: 700000
+  };
+  const lim = checkSpec(spec);
+  assert.ok(lim.ok, JSON.stringify(lim.issues));
+  const receivedAt = Date.now();
+  return executeRun({
+    docker: sb.docker, config: testConfig(), limits: lim.limits, image: IMAGE, runId: '0123456789abcdef',
+    steps: claimSteps(request, lim.limits), receivedAt, deadlineAt: receivedAt + 700000, active: new Set(), log: silent, admit: noAdmission, sandboxes: 1
+  });
+}
+
+const framework = (forge, path, real = forge) => (d, box) => ({ stdout: `vcr-forge ${forge}\nvcr-path ${path}\nvcr-real ${real}\n${forgeConfig(box.tree, box.configOver)}` });
+
+/** Every watch refusal, by what makes it, as the same fake image gives it to a claim and to a listing. */
+const WATCH_REFUSALS = Object.freeze([
+  ['IMAGE_FORGE_MISSING', { scripts: { 'vcr-framework': () => ({ exitCode: 3, stdout: 'vcr-forge \nvcr-path /usr/bin\n' }) } }, /no forge on its PATH/],
+  ['FORGE_CONFIG_INVALID', { scripts: { 'vcr-framework': () => ({ exitCode: 1, stdout: 'vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n', stderr: 'Error: failed to parse foundry.toml' }) } }, /failed to parse foundry\.toml/],
+  ['IMAGE_FORGE_UNWATCHED', {
+    onBox: (box) => { put(box, '/work/cache/solidity-files-cache.json.abi/forge', 'ELF'); box.tree.set('/work/bin/forge', { type: 'l', target: '../cache/solidity-files-cache.json.abi/forge' }); },
+    scripts: { 'vcr-framework': framework('/work/bin/forge', '/work/bin:/usr/bin', '/work/cache/solidity-files-cache.json.abi/forge') }
+  }, /which the runner cannot hash/],
+  ['IMAGE_WATCH_LINK_UNCOVERED', { onBox: (box) => { box.tree.set('/work/lib/cpkg', { type: 'l', target: '../cache/pkg' }); put(box, '/work/cache/pkg/Dep.sol', 'contract Dep {}'); } }, /lib\/cpkg -> \/work\/cache\/pkg/],
+  ['IMAGE_WATCH_TOO_LARGE', { scripts: { 'vcr-manifest': () => ({ stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }) } }, /exceed/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', { onBox: (box) => { box.configOver = { out: '/tmp/forge-out' }; } }, /out \(\/tmp\/forge-out\)/],
+  ['IMAGE_WATCH_UNREADABLE', { onBox: (box) => box.tree.set('/work/lib/hidden', { type: 'd', mode: '0', content: '' }) }, /lib\/hidden/],
+  ['IMAGE_TOOL_MISSING', { onBox: (box) => { box.tree.set('/work/lib/pkg', { type: 'l', target: '../vendor/pkg' }); put(box, '/work/vendor/pkg/X.sol', 'contract X {}'); }, scripts: { 'vcr-links': () => ({ exitCode: 4 }) } }, /realpath/],
+  ['IMAGE_WATCH_CHANGED_BY_BUILD', { scripts: { 'vcr-build': (d, box) => { put(box, '/work/lib/trap.sol', 'x'); return { exitCode: 0 }; } } }, /the build: lib\/trap\.sol added/]
+]);
+
+for (const [code, options, detail] of WATCH_REFUSALS) {
+  test(`A2c: ${code}: an image a claim refuses is refused at listing with the same code, a 400's shape, the same words`, async () => {
+    const sb = listingSandbox(options);
+    const r = await runListing(sb);
+    assert.equal(r.outcome, 'requester_error', show(r));
+    assert.deepEqual(r.issues.map((i) => [i.code, i.path]), [[code, '/spec/env/image']]);
+    assert.match(r.issues[0].detail, detail);
+    if (code !== 'IMAGE_WATCH_CHANGED_BY_BUILD') assert.ok(!ran(sb, 'vcr-build'), 'no maker command ran');
+    assert.ok(!ran(sb, 'vcr-suite'), 'no suite ran');
+    const c = await asClaim(claimSandbox(options));
+    assert.equal(c.outcome, 'requester_error');
+    assert.deepEqual(c.issues.map((i) => [i.code, i.path, i.detail]), r.issues.map((i) => [i.code, i.path, i.detail]));
+  });
+}
+
+test('A2c: every forge a listing runs carries the pin and comes from the reference: the runner\'s argv, no shell, in every sandbox', async () => {
+  const sb = listingSandbox();
+  const r = await runListing(sb);
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  const forge = forgeSteps(sb);
+  assert.ok(forge.some((d) => d.kind === 'vcr-suite') && forge.some((d) => d.kind === 'vcr-poc') && forge.some((d) => d.kind === 'vcr-build'));
+  for (const d of forge) {
+    if (d.kind === 'forge-config' && !('FOUNDRY_SOLC' in d.fixedEnv)) continue; // the one read that decides the pin
+    assert.equal(d.fixedEnv.FOUNDRY_SOLC, '/opt/solc/solc', `${d.kind} carries the pin`);
+    assert.equal(d.fixedEnv.FOUNDRY_EXTERNAL_COMPILERS, '[]');
+    assert.equal(d.argv[0], '/usr/local/bin/forge');
+  }
+  const unpinned = forge.filter((d) => d.kind === 'forge-config' && !('FOUNDRY_SOLC' in d.fixedEnv));
+  assert.equal(unpinned.length, [...new Set(sb.execs().map((d) => d.container))].length, 'one per sandbox, right after its checkout');
+  assert.ok(!r.steps.some((s) => s.name.endsWith('forge:find')), 'forge is the reference\'s, never one found apart');
+});
+
+test('A2c: the order: the reference ends the preparation, then the look, then the build and its comparison, a snapshot after each suite run, the repository read again after each reset; each probe as a claim', async () => {
+  const sb = listingSandbox();
+  const r = await runListing(sb);
+  const names = r.steps.map((s) => s.name);
+  const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `${n} in\n${names.join('\n')}`); return i; };
+  assert.ok(at('prepare:compiler:config') < at('integrity:reference:framework'));
+  assert.ok(at('integrity:reference:manifest') < at('prepare:compilers:svm'));
+  assert.ok(at('prepare:compilers:files') < at('build'));
+  assert.ok(at('build') < at('integrity:build:manifest'));
+  assert.ok(at('suite:1') < at('integrity:run-1:manifest'));
+  assert.ok(at('integrity:run-1:manifest') < at('suite:reset:2'));
+  assert.ok(at('suite:reset:2') < at('integrity:repository:run-2:manifest'));
+  assert.ok(at('integrity:repository:run-2:manifest') < at('suite:2'));
+  assert.ok(at('suite:3') < at('integrity:run-3:manifest'));
+  for (const prefix of ['harness:fails:forge-std', 'harness:compileError', 'harness:setUpError']) {
+    assert.ok(at(`${prefix}:integrity:reference:manifest`) < at(`${prefix}:poc:1`), prefix);
+    assert.ok(at(`${prefix}:poc:1`) < at(`${prefix}:integrity:run-1:manifest`), prefix);
+  }
+  assert.ok(at('harness:fails:forge-std:integrity:reference:manifest') < at('harness:fails:forge-std:build'));
+  assert.ok(at('harness:fails:forge-std:poc:2') < at('harness:fails:forge-std:integrity:run-2:manifest'), 'a testIds run: the same snapshot');
+  assert.ok(at('harness:fails:forge-std:poc:3') < at('harness:fails:forge-std:integrity:run-3:manifest'));
+});
+
+test('A2c: the measured times count what a claim\'s run does: the reference in P, the build\'s comparison in B, the snapshot in T', async () => {
+  const slow = (key, ms) => ({ scripts: { 'vcr-manifest': async (d, box) => {
+    const { stdout } = await require('../helpers/fakeClaim').defaultManifest(d, box);
+    const name = sb.execs().length; void name; // the delay is by the step's place, below
+    if (key(d, box)) await delay(ms);
+    return { stdout };
+  } } });
+  let snapshots = 0;
+  const sb = listingSandbox(slow(() => { snapshots += 1; return snapshots === 1; }, 300));
+  const r = await runListing(sb);
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  assert.ok(r.facts.listing.timings.prepareSeconds >= 0.3, 'the reference is in the preparation');
+  let later = 0;
+  const sb2 = listingSandbox(slow(() => { later += 1; return later === 2; }, 300));
+  const r2 = await runListing(sb2);
+  assert.ok(r2.facts.listing.timings.buildSeconds >= 0.3, 'the build\'s comparison is in the build');
+  let third = 0;
+  const sb3 = listingSandbox(slow(() => { third += 1; return third === 3; }, 300));
+  const r3 = await runListing(sb3);
+  assert.ok(r3.facts.listing.timings.testSeconds[0] >= 0.3, 'the snapshot is in the suite run');
+});
+
+// ----------------------------------------------------------- a suite that writes what claims are held to
+
+const suiteWrites = (write, onRun = 1) => [1, 2, 3].map((k) => (d, n, box) => {
+  if (k === onRun) write(box);
+  return { exitCode: 1, stdout: vaultSuite(k) };
+});
+
+test('A2c: IMAGE_WATCH_CHANGED_BY_SUITE: a suite that writes a watched set is refused at the first run that did, the paths named, nothing further run', async () => {
+  const cases = [
+    ['a dependency', (box) => { put(box, '/work/lib/trap.sol', 'x'); put(box, '/work/lib/trap2.sol', 'y'); }, 1, /run 1: lib\/trap\.sol added, and 1 more/, ['lib/trap.sol', 'lib/trap2.sol']],
+    ['forge\'s configuration', (box) => put(box, '/work/foundry.toml', '# changed\n'), 1, /run 1: foundry\.toml changed/, ['foundry.toml']],
+    ['$HOME', (box) => put(box, '/home/sandbox/planted', 'x'), 2, /run 2: ~\/planted added/, ['~/planted']],
+    ['the runner\'s repository', (box) => put(box, '/work/.git/hooks/post-commit', 'x'), 3, /run 3: \.git\/hooks\/post-commit added/, ['.git/hooks/post-commit']]
+  ];
+  for (const [what, write, onRun, detail, paths] of cases) {
+    const sb = listingSandbox({ suite: suiteWrites(write, onRun) });
+    const r = await runListing(sb);
+    assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
+    assert.equal(r.facts.listing.status, 'refused', what);
+    assert.deepEqual(codes(r), ['IMAGE_WATCH_CHANGED_BY_SUITE'], what);
+    assert.match(r.facts.listing.refusals[0].detail, detail, what);
+    assert.deepEqual(r.facts.listing.refusals[0].paths, paths, what);
+    assert.equal(sb.execs().filter((d) => d.kind === 'vcr-suite').length, onRun, `${what}: stopped at that run`);
+    assert.equal(r.facts.listing.baseline, null);
+    assert.equal(r.facts.listing.harness, null);
+  }
+});
+
+test('A2c: what a suite may write: forge\'s outputs on the first run, its cache on every run, an untracked file, a tracked one the reset puts back', async () => {
+  const sb = listingSandbox({
+    suite: [1, 2, 3].map((k) => (d, n, box) => {
+      if (k === 1) put(box, '/work/out/Vault.t.sol/VaultTest.json', '{"bytecode":"0x60"}');
+      put(box, '/work/cache/test-failures', `run ${k}`);
+      put(box, '/work/cache/fuzz/failures', `run ${k}`);
+      put(box, `/home/sandbox/.foundry/cache/rpc-${k}`, 'x');
+      put(box, '/work/state/flag', `run ${k}`);
+      put(box, '/work/src/Vault.sol', `// run ${k}\n`);
+      return { exitCode: 1, stdout: vaultSuite(k) };
+    })
+  });
+  const r = await runListing(sb);
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+});
+
+test('A2c: the suite\'s later runs are held to the artifacts of its first, as a claim\'s are', async () => {
+  const sb = listingSandbox({ suite: [1, 2, 3].map((k) => (d, n, box) => { put(box, '/work/out/Vault.sol/Vault.json', `{"run":${k}}`); return { exitCode: 1, stdout: vaultSuite(k) }; }) });
+  const r = await runListing(sb);
+  assert.deepEqual(codes(r), ['IMAGE_WATCH_CHANGED_BY_SUITE'], show(r));
+  assert.match(r.facts.listing.refusals[0].detail, /run 2: out\/Vault\.sol\/Vault\.json changed/);
+});
+
+// ----------------------------------------------------------- a harness probe that trips the checksums
+
+test('A2c: HARNESS_INTEGRITY_FAILED: what a probe\'s run changes is refused, the check and the paths named, on a testFiles run and on a testIds run alike', async () => {
+  for (const [onRun, word] of [[1, 'run 1'], [2, 'run 2'], [3, 'run 3']]) {
+    const probeRun = {
+      failsForgeStd: (d, box, path) => {
+        box.probeRuns = (box.probeRuns || 0) + 1;
+        if (box.probeRuns === onRun) put(box, '/work/lib/trap.sol', 'x');
+        return { exitCode: 1, stdout: junitOf([{ suite: `${path}:VerdiktaHarnessFails`, cases: [{ name: 'test_verdiktaHarnessFails()', failure: 'verdikta harness: a trivially failing test: 1 != 2' }] }]) };
+      }
+    };
+    const sb = listingSandbox({ probeRun });
+    const r = await runListing(sb);
+    assert.equal(r.outcome, 'definitive', show(r));
+    assert.deepEqual(codes(r), ['HARNESS_INTEGRITY_FAILED'], show(r));
+    assert.match(r.facts.listing.refusals[0].detail, new RegExp(`dependenciesUnchanged \\(${word}: lib/trap\\.sol added`));
+    assert.deepEqual(r.facts.listing.refusals[0].paths, ['lib/trap.sol']);
+    assert.equal(r.facts.listing.harness.probes[0].verdict, 'integrity');
+    assert.ok(r.facts.listing.baseline, 'the suite passed before it');
+  }
+});
+
+test('A2c: the same on the probes that are meant to break: what a compile-error or a setUp probe changes is refused too', async () => {
+  for (const kind of ['compileError', 'setUpError']) {
+    const r = await runListing(listingSandbox({
+      probeRun: { [kind]: (d, box, path) => {
+        put(box, '/work/lib/trap.sol', 'x');
+        return kind === 'compileError'
+          ? { exitCode: 1, stdout: '', stderr: 'Error: Compiler run failed\n' }
+          : { exitCode: 1, stdout: junitOf([{ suite: `${path}:VerdiktaHarnessSetUpError`, cases: [{ name: 'setUp()', failure: 'broken' }] }]) };
+      } }
+    }));
+    assert.deepEqual(codes(r), ['HARNESS_INTEGRITY_FAILED'], `${kind}: ${show(r)}`);
+  }
+});
+
+// ----------------------------------------------------------- the grammar, as a claim
+
+test('A2c: Q31 (a): commands.build and commands.test parse under the grammar or are refused before any sandbox, with the issue a claim gives', () => {
+  const forms = [
+    [{ build: 'forge build; touch /tmp/x' }, 'COMMAND_NOT_ALLOWED'], [{ build: 'FOUNDRY_PROFILE=ci forge build' }, 'COMMAND_NOT_ALLOWED'], [{ build: 'env forge build' }, 'COMMAND_NOT_ALLOWED'],
+    [{ build: '/usr/local/bin/forge build' }, 'COMMAND_NOT_ALLOWED'], [{ build: 'forge build --use /tmp/solc' }, 'COMMAND_NOT_ALLOWED'], [{ build: 'forge test' }, 'COMMAND_NOT_ALLOWED'],
+    [{ test: 'forge test | tee x' }, 'COMMAND_NOT_ALLOWED'], [{ test: 'forge test --config-path x' }, 'COMMAND_NOT_ALLOWED'], [{ test: 'forge test --compiler-version 0.8.31' }, 'COMMAND_NOT_ALLOWED'],
+    [{ test: 'npm test' }, 'COMMAND_NOT_ALLOWED'], [{ test: `forge test ${'-v '.repeat(700)}` }, 'COMMAND_INVALID'], [{ build: '' }, 'COMMAND_MISSING'],
+    [{ testFiles: 'forge test' }, 'COMMAND_PLACEHOLDER'], [{ testIds: 'forge test --match-path $FILES' }, 'COMMAND_PLACEHOLDER']
+  ];
+  for (const [commands, code] of forms) {
+    const b = listingBody({ spec: { commands } });
+    const v = validateListingRequest(b);
+    assert.equal(v.ok, false, JSON.stringify(commands));
+    assert.deepEqual(v.issues.map((i) => i.code), [code], JSON.stringify(commands));
+    const c = checkClaim({ spec: b.spec, baseline: { tests: [] } });
+    assert.deepEqual(c, v.issues, `a claim gives the same issue for ${JSON.stringify(commands)}`);
+  }
+});
+
+// ----------------------------------------------------------- SOLC_NOT_OFFICIAL
+
+const OFFICIAL = hashOf(FAKE_SOLC.content);
+const installed = (...files) => (box) => { for (const [p, content, extra] of files) put(box, p, content, extra); };
+
+test('A2c: SOLC_NOT_OFFICIAL: everything under svm/, the named file and a solc on PATH, each refused for its own reason, before any build; the same image is no refusal for a claim', async () => {
+  const release = `${SVM}/0.8.31/solc-0.8.31`;
+  const cases = [
+    ['a named file that is a wrapper', (box) => put(box, FAKE_SOLC.path, '#!/bin/sh\n'), /\/opt\/solc\/solc .*is not an official solc release/],
+    ['a named file it cannot read', (box) => put(box, FAKE_SOLC.path, FAKE_SOLC.content, { unreadable: true }), /\/opt\/solc\/solc .*cannot be read/],
+    ['an installed release with other bytes', installed([release, '#!/bin/sh\n']), /svm\/0\.8\.31\/solc-0\.8\.31 .*is not official 0\.8\.31/],
+    ['an installed release with another release\'s bytes', installed([`${SVM}/0.8.30/solc-0.8.30`, FAKE_SOLC.content]), /svm\/0\.8\.30\/solc-0\.8\.30 .*0\.8\.30 is not on the list/],
+    ['an installed release it cannot read', installed([release, FAKE_SOLC.content, { unreadable: true }]), /svm\/0\.8\.31\/solc-0\.8\.31 .*cannot be read/],
+    ['a link under svm/', (box) => box.tree.set(release, { type: 'l', target: FAKE_SOLC.path }), /svm\/0\.8\.31\/solc-0\.8\.31 .*is a link/],
+    ['a release named as forge reads a version but not as it runs one', installed([`${SVM}/v0.8.31/solc-0.8.31`, FAKE_SOLC.content]), /svm\/v0\.8\.31\/solc-0\.8\.31 .*not a file forge's install leaves/],
+    ['a prerelease-named directory', installed([`${SVM}/0.8.31-pre.1/solc-0.8.31-pre.1`, FAKE_SOLC.content]), /not a file forge's install leaves/],
+    ['a helper beside a release', installed([release, FAKE_SOLC.content], [`${SVM}/0.8.31/helper`, 'x']), /svm\/0\.8\.31\/helper .*not a file forge's install leaves/],
+    ['a helper at the top', installed([`${SVM}/helper`, 'x']), /svm\/helper .*not a file forge's install leaves/],
+    ['a marker that is not a plain file', (box) => box.tree.set(`${SVM}/.global-version`, { type: 'l', target: FAKE_SOLC.path }), /svm\/\.global-version .*is a link/],
+    ['a marker in a directory that is no version', installed([`${SVM}/x/.lock`, '']), /svm\/x\/\.lock .*not a file forge's install leaves/],
+    ['a directory it cannot read', (box) => box.tree.set(`${SVM}/0.8.31`, { type: 'd', mode: '111', content: '' }), /svm\/0\.8\.31 .*cannot be read/],
+    ['svm/ itself a link', (box) => box.tree.set(SVM, { type: 'l', target: '/opt/elsewhere' }), /svm .*is a link/],
+    ['a solc on PATH', (box) => put(box, '/usr/local/bin/solc', '#!/bin/sh\n'), /\/usr\/local\/bin\/solc .*is not an official solc release/],
+    ['a dangling solc on PATH', (box) => box.tree.set('/usr/local/bin/solc', { type: 'l', target: '/nowhere' }), /\/usr\/local\/bin\/solc .*leads nowhere/]
+  ];
+  for (const [what, onBox, detail] of cases) {
+    const sb = listingSandbox({ onBox });
+    const r = await runListing(sb);
+    assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
+    assert.deepEqual(codes(r), ['SOLC_NOT_OFFICIAL'], `${what}: ${show(r)}`);
+    assert.match(r.facts.listing.refusals[0].detail, detail, what);
+    assert.ok(!ran(sb, 'vcr-build'), `${what}: no build`);
+    assert.equal(r.facts.listing.baseline, null);
+    // A claim never reads the list: an image past its listing, on any runner's list, gets the same answer on every arbiter.
+    const c = await asClaim(claimSandbox({ onBox }));
+    assert.equal(c.outcome, 'definitive', `${what}: ${JSON.stringify(c.issues)}`);
+  }
+});
+
+test('A2c: the detail names the list, its date and its newest release, so a maker on a release newer than the list knows why', async () => {
+  const list = makeList({ platform: 'linux/amd64', asOf: '2026-11-02', releases: { '0.8.9': OFFICIAL, '0.8.38': hashOf('other'), '0.8.100': hashOf('newest') } });
+  assert.equal(list.newest, '0.8.100', 'by number, not by text');
+  const r = await runListing(listingSandbox({ onBox: installed([`${SVM}/0.9.0/solc-0.9.0`, 'x']) }), listingBody(), { solcList: list });
+  assert.match(r.facts.listing.refusals[0].detail, /0\.9\.0 is not on the list/);
+  assert.match(r.facts.listing.refusals[0].detail, /binaries\.soliditylang\.org.*linux\/amd64.*as of 2026-11-02.*newest 0\.8\.100/);
+});
+
+test('A2c: what the look accepts: official bytes under their own version, forge\'s own markers as plain files, a named file through its links, a directory or nothing named solc on PATH; the answer lists what it read', async () => {
+  const release = `${SVM}/0.8.31/solc-0.8.31`;
+  const r = await runListing(listingSandbox({
+    onBox: (box) => {
+      put(box, release, FAKE_SOLC.content);
+      put(box, `${SVM}/0.8.31/.lock`, '');
+      put(box, `${SVM}/.global-version`, '');
+      box.configOver = { solc: '/opt/verdikta/tools/bin/solc' };
+      box.tree.set('/opt/verdikta/tools/bin/solc', { type: 'l', target: FAKE_SOLC.path });
+      put(box, '/usr/bin/solc/readme', 'a directory named solc');
+    }
+  }));
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  assert.deepEqual(r.facts.listing.compilers, {
+    platform: 'linux/amd64', listAsOf: '2026-11-02', newest: '0.8.31',
+    checked: [
+      { path: release, release: '0.8.31' },
+      { path: '/opt/verdikta/tools/bin/solc', release: '0.8.31' }
+    ]
+  });
+});
+
+test('A2c: the look reads everything under svm/ whichever release the listing names, by a listing of its own, hermetic; it holds its own limits', async () => {
+  const sb = listingSandbox({ onBox: installed([`${SVM}/0.8.31/solc-0.8.31`, FAKE_SOLC.content]) });
+  await runListing(sb);
+  const listing = sb.execs().filter((d) => d.kind === 'vcr-manifest' && d.argv[4] === SVM);
+  assert.equal(listing.length, 1, 'once, in the first sandbox');
+  const files = sb.execs().filter((d) => d.kind === 'vcr-compilers');
+  assert.equal(files.length, 1);
+  assert.ok(files[0].argv.includes(FAKE_SOLC.path) && files[0].argv.includes('/usr/local/bin/solc'), files[0].argv.join(' '));
+  assert.equal(files[0].fixedEnv.PATH, require('../../src/git').BASE_ENV.PATH);
+  // A flood under svm/ is the same refusal, not a host's work without end.
+  const flood = await runListing(listingSandbox({ scripts: { 'vcr-manifest': (d, box) => (d.argv[4] === SVM ? { stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) } : require('../helpers/fakeClaim').defaultManifest(d, box)) } }));
+  assert.deepEqual(codes(flood), ['SOLC_NOT_OFFICIAL'], show(flood));
+  assert.match(flood.facts.listing.refusals[0].detail, /could not be listed/);
+  // An answer the runner cannot read abstains; it never passes.
+  const garbled = await runListing(listingSandbox({ scripts: { 'vcr-compilers': () => ({ stdout: 'not a record' }) } }));
+  assert.equal(garbled.outcome, 'abstain', show(garbled));
+  const failed = await runListing(listingSandbox({ scripts: { 'vcr-compilers': () => ({ exitCode: 2 }) } }));
+  assert.equal(failed.outcome, 'abstain', show(failed));
+});
+
+test('A2c: a claim-refused image gets a claim\'s code even when its compiler is unofficial too: the reference comes first', async () => {
+  const r = await runListing(listingSandbox({
+    onBox: (box) => { put(box, FAKE_SOLC.path, '#!/bin/sh\n'); box.tree.set('/work/lib/cpkg', { type: 'l', target: '../cache/pkg' }); put(box, '/work/cache/pkg/Dep.sol', 'contract Dep {}'); }
+  }));
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
+});
+
+test('A2c: listingSteps needs the platform, and the list is the runner\'s for that platform; an unknown one is a programming error', () => {
+  const v = validateListingRequest(listingBody());
+  assert.throws(() => listingSteps(v.request, v.limits, { imageSize: async () => 1 }), /platform/);
+  assert.throws(() => listingSteps(v.request, v.limits, { imageSize: async () => 1, platform: 'linux/riscv64' }), /linux\/riscv64/);
+  assert.ok(listingSteps(v.request, v.limits, { imageSize: async () => 1, platform: 'linux/arm64' }).length > 0);
+});
+
+test('A2c: over HTTP: the runner\'s platform reaches the look; a refusal is 200 with listing.refusals; a claim\'s code is a 400', async (t) => {
+  const refused = listingSandbox({ onBox: (box) => put(box, FAKE_SOLC.path, '#!/bin/sh\n') });
+  const s1 = await start(refused);
+  t.after(() => s1.runner.close());
+  const res = await request(s1.target, { method: 'POST', path: '/v1/listing-checks', body: listingBody() });
+  assert.deepEqual(s1.seen, ['linux/amd64']);
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.listing.status, 'refused');
+  assert.equal(res.body.listing.refusals[0].code, 'SOLC_NOT_OFFICIAL');
+  const rejected = listingSandbox({ onBox: (box) => { box.tree.set('/work/lib/cpkg', { type: 'l', target: '../cache/pkg' }); put(box, '/work/cache/pkg/Dep.sol', 'contract Dep {}'); } });
+  const s2 = await start(rejected);
+  t.after(() => s2.runner.close());
+  const bad = await request(s2.target, { method: 'POST', path: '/v1/listing-checks', body: listingBody() });
+  assert.equal(bad.status, 400, JSON.stringify(bad.body));
+  assert.equal(bad.body.outcome, 'requester_error');
+  assert.deepEqual(bad.body.issues.map((i) => i.code), ['IMAGE_WATCH_LINK_UNCOVERED']);
+});
+
+// ----------------------------------------------------------- the caps, with room for a claim's patch
+
+test('A2c: a listing cannot sit just under a cap a claim\'s patch would cross: its reference keeps room for what a 2 MB patch can add, with a claim\'s code', async () => {
+  const { manifestOf, defaultManifest } = require('../helpers/fakeClaim');
+  void manifestOf;
+  const { MAX_ENTRIES, MANIFEST_MAX_BYTES, LISTING_RESERVE } = require('../../src/integrity');
+  assert.ok(LISTING_RESERVE.entries >= 2000000 / 40, 'the shortest new file in a git patch takes 40 bytes');
+  assert.ok(LISTING_RESERVE.bytes >= 2 * 2000000 + 100 * LISTING_RESERVE.entries, 'a listing record and a hash line per file');
+  // Over the room by entries: valid records, under the bytes cap. Not watched, so a claim on the same image goes on.
+  const padded = (count, name = 'x') => (d, box) => {
+    if (d.argv[4] !== '/work') return defaultManifest(d, box);
+    const pad = Buffer.alloc(count * Buffer.byteLength(`f\x00644\x000\x00/work/pad/${name}0000000\x00\x00`));
+    let pos = 0;
+    for (let i = 0; i < count; i += 1) pos += pad.write(`f\x00644\x000\x00/work/pad/${name}${String(i).padStart(7, '0')}\x00\x00`, pos, 'latin1');
+    const base = defaultManifest(d, box).stdout;
+    return { stdout: Buffer.concat([pad.subarray(0, pos), base]) };
+  };
+  const n = MAX_ENTRIES - LISTING_RESERVE.entries + 1;
+  const sb = listingSandbox({ scripts: { 'vcr-manifest': padded(n) } });
+  const r = await runListing(sb);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_TOO_LARGE']);
+  assert.match(r.issues[0].detail, new RegExp(`more than ${MAX_ENTRIES - LISTING_RESERVE.entries} entries`));
+  const c = await asClaim(claimSandbox({ scripts: { 'vcr-manifest': padded(n) } }));
+  assert.notEqual(c.outcome, 'requester_error', 'a claim keeps the plain cap');
+  // Over the room by bytes.
+  const count = Math.ceil((MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes) / 3000) + 1;
+  const long = `${'y'.repeat(2950)}`;
+  const big = await runListing(listingSandbox({ scripts: { 'vcr-manifest': padded(count, long) } }));
+  assert.equal(big.outcome, 'requester_error', show(big));
+  assert.deepEqual(big.issues.map((i) => i.code), ['IMAGE_WATCH_TOO_LARGE']);
+  assert.match(big.issues[0].detail, new RegExp(`exceed ${MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes} bytes`));
 });

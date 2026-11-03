@@ -14,7 +14,7 @@ const { claimSteps } = require('../../src/steps');
 const { createServer } = require('../../src/server');
 const { testConfig, request: httpRequest } = require('../helpers/http');
 const { spec: baseSpec, IMAGE, attestationFor } = require('../helpers/requests');
-const { BASE, POC_PATCH, POC_DIFF, junit, drainFails, claimSandbox } = require('../helpers/fakeClaim');
+const { BASE, POC_PATCH, POC_DIFF, junit, drainFails, claimSandbox, fakeSolcList } = require('../helpers/fakeClaim');
 const { settlementFacts } = require('../helpers/settlementFacts');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
@@ -887,7 +887,7 @@ test('A3a R16-F1 (round 19): a file a patch adds cannot be a tool or forge: a da
   const receivedAt = Date.now();
   const lr = await executeRun({
     docker: l.docker, config: testConfig(), limits: v.limits, image: IMAGE, runId: '0123456789abcdef',
-    steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(l.docker, IMAGE) }),
+    steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(l.docker, IMAGE), platform: 'linux/amd64', solcList: fakeSolcList() }),
     receivedAt, deadlineAt: receivedAt + 900000, active: new Set(), log: silent, admit: async () => {}
   });
   assert.equal(lr.outcome, 'requester_error', JSON.stringify(lr.abstain || lr.facts.listing));
