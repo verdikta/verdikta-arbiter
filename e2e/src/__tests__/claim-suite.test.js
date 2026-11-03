@@ -264,16 +264,21 @@ describe('the verdict checks', () => {
 });
 
 describe('the pull: from the registry, by digest', () => {
-  const image = `127.0.0.1:5000/vault@sha256:${'a'.repeat(64)}`;
-  const byDigest = [{ method: 'GET', repo: 'vault', reference: `sha256:${'a'.repeat(64)}` }];
+  const digest = `sha256:${'a'.repeat(64)}`;
+  const image = `127.0.0.1:5000/vault@${digest}`;
+  const push = [{ method: 'HEAD', repo: 'vault', reference: 'e2e' }, { method: 'PUT', repo: 'vault', reference: 'e2e' }];
+  const byDigest = [...push, { method: 'HEAD', repo: 'vault', reference: digest }, { method: 'GET', repo: 'vault', reference: digest }];
 
-  it('a run that pulled by digest passes', () => {
+  it('a run that pulled by digest passes, under either image store', () => {
     expect(allPass(C.pullChecks({ image: { cache: 'pulled' } }, byDigest, image))).toBe(true);
+    const containerd = [...push, { method: 'HEAD', repo: 'vault', reference: digest }, { method: 'GET', repo: 'vault', reference: `sha256-${'b'.repeat(12)}` }];
+    expect(allPass(C.pullChecks({ image: { cache: 'pulled' } }, containerd, image))).toBe(true);
   });
 
-  it('an image the daemon already had fails, and so does a pull by tag', () => {
+  it('an image the daemon already had fails, and so does a pull by tag or none at all', () => {
     expect(failed(C.pullChecks({ image: { cache: 'hit' } }, byDigest, image))).toEqual(['image.pulled']);
     expect(failed(C.pullChecks({ image: { cache: 'pulled' } }, [...byDigest, { method: 'GET', repo: 'vault', reference: 'e2e' }], image))).toEqual(['image.byDigest']);
+    expect(failed(C.pullChecks({ image: { cache: 'pulled' } }, push, image))).toEqual(['image.byDigest']);
     expect(failed(C.pullChecks({ image: { cache: 'pulled' } }, [], image))).toEqual(['image.byDigest']);
   });
 });

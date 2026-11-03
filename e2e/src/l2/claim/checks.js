@@ -118,15 +118,21 @@ function commitmentChecks(commitment, scores, cidWithSalt, operator) {
   return [assert('commit.recomputed', recomputed === String(commitment), `committed ${commitment}, the reveal hashes to ${recomputed}`)];
 }
 
-/** The env image came from the registry, by digest: not a tag, not what the daemon had. */
+/**
+ * The env image came from the registry, by digest: not by tag, not from what the daemon had.
+ * What follows the push is the pull. (Under Docker's containerd store it also asks for a
+ * `sha256-…` tag, the referrers fallback for that digest.)
+ */
 function pullChecks(run, manifestRequests, image) {
   const digest = String(image).split('@')[1];
   const repo = String(image).split('@')[0].split('/').slice(1).join('/');
   const requests = manifestRequests.filter((r) => r.repo === repo);
+  const pushedAt = requests.map((r) => r.method).lastIndexOf('PUT');
+  const pull = requests.slice(pushedAt + 1);
   return [
     assert('image.pulled', Boolean(run && run.image) && run.image.cache === 'pulled', `cache=${run && run.image && run.image.cache}`),
-    assert('image.byDigest', requests.some((r) => r.reference === digest) && requests.filter((r) => r.method === 'GET').every((r) => r.reference.startsWith('sha256:')),
-      `${requests.length} manifest request(s) to the registry for ${repo}: ${[...new Set(requests.map((r) => `${r.method} ${r.reference.slice(0, 19)}`))].join(', ')}`)
+    assert('image.byDigest', pull.some((r) => r.reference === digest) && pull.every((r) => r.reference.startsWith('sha256')),
+      `after the push, ${pull.length} manifest request(s) for ${repo}: ${[...new Set(pull.map((r) => `${r.method} ${r.reference.slice(0, 19)}`))].join(', ')}`)
   ];
 }
 
