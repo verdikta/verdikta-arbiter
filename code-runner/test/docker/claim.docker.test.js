@@ -273,7 +273,7 @@ async function run(t, request, extraSteps = [], { beforeBuild = null } = {}) {
   const receivedAt = Date.now();
   const result = await executeRun({
     docker, config, limits: lim.limits, image: request.spec.env.image, runId: crypto.randomBytes(8).toString('hex'),
-    steps: withBeforeBuild(claimSteps(request, lim.limits), beforeBuild).concat(extraSteps), receivedAt, deadlineAt: receivedAt + request.deadlineMs,
+    steps: beforeTheScan(withBeforeBuild(claimSteps(request, lim.limits), beforeBuild), extraSteps), receivedAt, deadlineAt: receivedAt + request.deadlineMs,
     active: new Set(), log: silent
   });
   assert.deepEqual(await leftovers(docker, config.instance), [], 'the run removed its sandbox');
@@ -281,6 +281,13 @@ async function run(t, request, extraSteps = [], { beforeBuild = null } = {}) {
 }
 
 /** Insert a step after the commit and before the build (claimSteps: startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, contextPack, watch, build, reproduces, fixCheck). */
+/** A test's reads of the sandbox go before the claim's last step: the scan closes the claim's sandboxes (A3c). */
+function beforeTheScan(steps, extra) {
+  const scan = steps[steps.length - 1];
+  assert.equal(scan.name, 'scan');
+  return [...steps.slice(0, -1), ...extra, scan];
+}
+
 function withBeforeBuild(steps, step) {
   if (!step) return steps;
   assert.deepEqual(steps.map((f) => f.name), ['startFixCheck', 'prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'contextPack', 'watch', 'build', 'reproduces', 'fixCheck']);
