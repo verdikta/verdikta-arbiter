@@ -1437,7 +1437,10 @@ regenerate_job_specs() {
         fi
     else
         echo -e "${RED}Error: Job specification regeneration failed!${NC}"
-        JOB_REGEN_FAILED="creating the new jobs failed (configure-node.sh exit $configure_rc); the node keeps its previous jobs, re-register them if they were deregistered"
+        # configure-node.sh deletes the old jobs before it creates the new ones, and may stop
+        # before it updates .contracts: that file may name jobs that are gone, and registering
+        # from it would lock stake on them.
+        JOB_REGEN_FAILED="creating the new jobs failed (configure-node.sh exit $configure_rc); the old jobs may already be deleted, and $TARGET_DIR/installer/.contracts may still name them. Do not register from it: fix the cause, run the job reconfiguration again, check the live job ids in the Chainlink UI, then run $TARGET_DIR/register-oracle.sh"
         
         # If job regeneration failed, still try to stop the arbiter
         echo -e "${BLUE}Stopping arbiter after failed job regeneration...${NC}"

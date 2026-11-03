@@ -149,6 +149,10 @@ contracts
 out=$(CONF_RC=1 regen_run)
 has   "configure fails: end"      "$out" "REACHED-END rc=0 regenerated=0"
 has   "configure fails: reported" "$out" "failed=\[.*configure-node"
+# configure-node.sh deletes the old jobs first: registering from the old .contracts would lock stake on jobs that are gone.
+has   "configure fails: no promise about the old jobs" "$out" "the old jobs may already be deleted"
+has   "configure fails: warns off the old file" "$out" "Do not register from it"
+hasnt "configure fails: no advice to re-register the old ids" "$out" "re-register them"
 hasnt "configure fails: no re-registration" "$out" "STUB-register"
 has   "configure fails: stops the arbiter" "$out" "STUB-stop-arbiter"
 hasnt "configure fails: no trap"  "$out" "TRAP-FIRED"
