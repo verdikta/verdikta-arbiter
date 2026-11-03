@@ -1591,8 +1591,8 @@ The runner never pulls this image. The installer warms it (node A8). Missing or 
 | `--x-…` flags | Not used: Semgrep says they are not its API |
 
 The bytes are read from git's objects by id, before any claim code runs, and put in one
-form (`normaliseSource`): well-formed UTF-8, no NUL, every line end solc honours a line
-feed, with a line number carried back to git's. Today this is a safeguard more than a
+form (`normaliseSource`): well-formed UTF-8, no NUL, every line end solc's documentation
+names a line feed, with a line number carried back to git's. Today this is a safeguard more than a
 fix: solc 0.8.31 runs code after a lone CR in a comment and refuses the other separators,
 and Semgrep's parser honours a CR too.
 

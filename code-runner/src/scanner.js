@@ -14,9 +14,11 @@
  *   nothing a hunter's patch holds can be a `.semgrepignore`, a `.semgrep.yml`
  *   or a path Semgrep's own ignore list skips (it skips `test/`). A flag's path
  *   comes back through the runner's own table.
- * - **A comment cannot hide code.** solc ends a line comment at any of LF, VF,
- *   FF, CR, NEL, LS and PS; Semgrep's parser only at LF. The bytes are put in
- *   one form first (normaliseSource), and a line number is carried back to git's.
+ * - **What solc reads, the scanner reads.** The bytes are put in one form first
+ *   (normaliseSource), and a line number is carried back to git's. solc's docs
+ *   end a line comment at any of LF, VF, FF, CR, NEL, LS and PS. Measured, solc
+ *   0.8.31 runs code after a lone CR and refuses the rest, and Semgrep's parser
+ *   honours a CR too, so today this is a safeguard: the solc is the maker's choice.
  * - **Only the rule id and the lines of an answer are read.** Severity and text
  *   come from the tables below, so nothing a test says reaches the report.
  * - **No wall-clock decision inside the tool** (`--timeout 0`), so a slow host
@@ -41,9 +43,10 @@
  * and exit 0. A pattern-regex rule matches comments too, where a hunter can
  * write that many cheaply, so one such rule could erase every flag in the file.
  *
- * Why the pin is here and not in @verdikta/common: common pins rule-set versions, not this digest (§7.2, §9.3). The
- * builder's baseline scan pins the same release in verdikta-applications, with
- * no check between the two repositories. That is acceptable because nothing
+ * Why the pin is here and not in @verdikta/common: common pins rule-set
+ * versions, not this digest (§7.2, §9.3). The builder's baseline scan pins the
+ * same release in verdikta-applications, with no check between the two
+ * repositories. That is acceptable because nothing
  * needs them to agree: what the builder finds goes to the maker privately and is
  * never hashed, and `inputs.runner` ties a report to this pin, which
  * test/unit/scanner.test.js holds to RUNNER_VERSION.
@@ -359,7 +362,7 @@ function scanTar(entries) {
 }
 
 const IDENTITY_LINE = (line) => line;
-/** Line ends solc honours and Semgrep's parser does not (CR alone; CRLF stays one line end). */
+/** The line ends solc's documentation names, other than a line feed (a lone CR; CRLF stays one line end). */
 const EXOTIC_LINE_END = /\r(?!\n)|[\v\f\u0085\u2028\u2029]/;
 const ANY_LINE_END = /\r\n|\n|\r|[\v\f\u0085\u2028\u2029]/g;
 
