@@ -2378,6 +2378,8 @@ fi
 # still needs this, so exit codes are read with `|| rc=$?`, never behind `set +e` (#97).
 JOB_TIMEOUTS_FAILED=""
 JOB_TIMEOUTS_ANSWER=""
+# This node's API credentials, not whichever network's the tool would find first.
+export VERDIKTA_CHAINLINK_API_FILE="${VERDIKTA_CHAINLINK_API_FILE:-$HOME/.chainlink-${NETWORK_TYPE}/.api}"
 if [ -f "$UTIL_DIR/apply-job-timeouts.sh" ]; then
     JOB_CONFIG_PATH="$HOME/.chainlink-${NETWORK_TYPE}/config.toml"
     JOB_CONFIG_CHECK_RC=0

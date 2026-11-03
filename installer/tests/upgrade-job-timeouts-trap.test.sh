@@ -85,7 +85,6 @@ run_blocks() {
     ' 2>&1
     echo "rc=$?"
 }
-export -f run_blocks 2>/dev/null || true
 
 # 1. The usual upgrade, unattended and unanswered: the canaries get the change.
 out=$(VERDIKTA_UNATTENDED=1 run_blocks "" "")

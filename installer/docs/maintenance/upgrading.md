@@ -185,7 +185,8 @@ starts, so a new template reaches neither. The upgrade therefore:
 3. Replaces each stale job with `PUT /v2/jobs/:id`, **keeping its job id**: nothing happens
    on-chain and no stake moves. Only the two timeouts change. The old specs are saved under
    `<install-dir>/chainlink-node/jobs/before-840s/`. A job that does not come back as it was
-   sent is put back.
+   sent is put back. The job's run history in the Chainlink UI goes with the old job; the
+   logs are untouched.
 
 The question is `VA_UPGRADE_JOB_TIMEOUTS`, default yes, unattended too. If the change cannot
 be applied, or cannot be measured, the upgrade still finishes and exits 3 with

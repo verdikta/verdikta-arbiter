@@ -112,6 +112,8 @@ async function startClaimHarness() {
     closers.push(() => built.remove());
     const image = await step('pushing the image to the registry', () => publishImage({ docker, runText, registry, built }));
     closers.push(() => runText(docker, ['image', 'rm', '--force', image], { timeoutMs: 120000 }));
+    // Off the daemon, so the runner has to pull it, by digest, from the registry alone.
+    await step('removing the fixture image from the daemon', () => built.remove());
     console.log(`[claim] env image ${image} (${platform})`);
 
     // The archives.
@@ -179,6 +181,8 @@ async function startClaimHarness() {
       juryAverage: [...JURY_AVERAGE],
       panel: codeReview.CODE_STANDARD_PANEL.AI_NODES.map((n) => ({ provider: n.AI_PROVIDER, model: n.AI_MODEL })),
       ipfs,
+      registry,
+      image,
       ai: aiProxy,
       aiDirect: aiNode.url,
       runner: runnerProxy,

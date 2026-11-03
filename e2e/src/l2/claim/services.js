@@ -2,8 +2,8 @@
 
 /**
  * Starts the real services of a claim run as child processes, each with its own small
- * environment: nothing of this shell's reaches them, so no real key can, and each setting
- * below is the whole of what it runs on.
+ * environment: nothing of this shell's reaches them, and each setting below is what the
+ * service runs on. A service's own .env file, on a developer's machine, still loads.
  */
 
 const { spawn } = require('child_process');

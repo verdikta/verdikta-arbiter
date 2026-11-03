@@ -39,6 +39,7 @@ RUN = 'job-timeouts-' + secrets.token_hex(3)
 EMAIL = 'it@example.test'
 PASSWORD = 'Zz9!Yy8@' + secrets.token_hex(16)
 KEYSTORE = 'Qq7#Ww6$' + secrets.token_hex(16)
+DB_PASSWORD = secrets.token_hex(16)
 FULL = os.environ.get('JOB_TIMEOUTS_FULL') == '1'
 OLD_LIMIT = 300
 
@@ -117,14 +118,15 @@ class Node:
         open(self.config_path, 'w').write(config)
         open(self.api_path, 'w').write(f'{EMAIL}\n{PASSWORD}\n')
         open(os.path.join(self.dir, 'secrets.toml'), 'w').write(
-            f"[Database]\nURL = 'postgresql://postgres:postgres@{self.pg}:5432/postgres?sslmode=disable'\nAllowSimplePasswords = true\n"
+            f"[Database]\nURL = 'postgresql://postgres:{DB_PASSWORD}@{self.pg}:5432/postgres?sslmode=disable'\n"
             f"[Password]\nKeystore = '{KEYSTORE}'\n")
         for f in os.listdir(self.dir):
             os.chmod(os.path.join(self.dir, f), 0o644)
         containers.append(self.pg)
-        sh('docker', 'run', '-d', '--name', self.pg, '--network', RUN, '-e', 'POSTGRES_PASSWORD=postgres', POSTGRES)
+        sh('docker', 'run', '-d', '--name', self.pg, '--network', RUN, '-e', f'POSTGRES_PASSWORD={DB_PASSWORD}', POSTGRES)
+        # Over TCP: the image's first, init-only server listens on the socket alone.
         for _ in range(60):
-            if sh('docker', 'exec', self.pg, 'pg_isready', '-U', 'postgres', check=False).returncode == 0:
+            if sh('docker', 'exec', self.pg, 'pg_isready', '-h', '127.0.0.1', '-U', 'postgres', check=False).returncode == 0:
                 break
             time.sleep(1)
         containers.append(self.name)
@@ -317,7 +319,7 @@ def main():
     ok('a restart does not reach a job', again['attributes']['maxTaskDuration'] == '5m0s', again['attributes']['maxTaskDuration'])
     rc, out = a.tool('--check')
     ok('--check: the stale job, named', rc == 1 and 'Verdikta AI Arbiter 1' in out and '5m0s' in out, f'rc={rc}')
-    ok('--check: not the fresh one', 'Verdikta AI Arbiter 2' not in out.split('stale')[0] if 'stale' in out else True)
+    ok('--check: not the fresh one', 'Verdikta AI Arbiter 2' not in out)
     rc, out = a.tool('--apply')
     ok('--apply', rc == 0, f'rc={rc}: {out[-600:]}')
     after = a.job_by_ext(ext)

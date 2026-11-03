@@ -118,11 +118,23 @@ function commitmentChecks(commitment, scores, cidWithSalt, operator) {
   return [assert('commit.recomputed', recomputed === String(commitment), `committed ${commitment}, the reveal hashes to ${recomputed}`)];
 }
 
+/** The env image came from the registry, by digest: not a tag, not what the daemon had. */
+function pullChecks(run, manifestRequests, image) {
+  const digest = String(image).split('@')[1];
+  const repo = String(image).split('@')[0].split('/').slice(1).join('/');
+  const requests = manifestRequests.filter((r) => r.repo === repo);
+  return [
+    assert('image.pulled', Boolean(run && run.image) && run.image.cache === 'pulled', `cache=${run && run.image && run.image.cache}`),
+    assert('image.byDigest', requests.some((r) => r.reference === digest) && requests.filter((r) => r.method === 'GET').every((r) => r.reference.startsWith('sha256:')),
+      `${requests.length} manifest request(s) to the registry for ${repo}: ${[...new Set(requests.map((r) => `${r.method} ${r.reference.slice(0, 19)}`))].join(', ')}`)
+  ];
+}
+
 /** Every CID a scenario fetched came from here. */
 function ipfsChecks(ipfs) {
   return [assert('ipfs.noMisses', ipfs.misses.length === 0, ipfs.misses.length ? `asked for what it does not hold: ${ipfs.misses.join(', ')}` : `${ipfs.fetches.length} fetch(es), ${ipfs.pins.length} pin(s)`)];
 }
 
 module.exports = {
-  SCORE_TOTAL, CLASS_PLATFORM, runChecks, gatesPassed, aiRequestChecks, providerChecks, scoreChecks, invalidScoreChecks, noAiChecks, commitmentChecks, ipfsChecks
+  SCORE_TOTAL, CLASS_PLATFORM, runChecks, gatesPassed, aiRequestChecks, providerChecks, scoreChecks, invalidScoreChecks, noAiChecks, commitmentChecks, pullChecks, ipfsChecks
 };

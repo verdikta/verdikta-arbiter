@@ -263,6 +263,21 @@ describe('the verdict checks', () => {
   });
 });
 
+describe('the pull: from the registry, by digest', () => {
+  const image = `127.0.0.1:5000/vault@sha256:${'a'.repeat(64)}`;
+  const byDigest = [{ method: 'GET', repo: 'vault', reference: `sha256:${'a'.repeat(64)}` }];
+
+  it('a run that pulled by digest passes', () => {
+    expect(allPass(C.pullChecks({ image: { cache: 'pulled' } }, byDigest, image))).toBe(true);
+  });
+
+  it('an image the daemon already had fails, and so does a pull by tag', () => {
+    expect(failed(C.pullChecks({ image: { cache: 'hit' } }, byDigest, image))).toEqual(['image.pulled']);
+    expect(failed(C.pullChecks({ image: { cache: 'pulled' } }, [...byDigest, { method: 'GET', repo: 'vault', reference: 'e2e' }], image))).toEqual(['image.byDigest']);
+    expect(failed(C.pullChecks({ image: { cache: 'pulled' } }, [], image))).toEqual(['image.byDigest']);
+  });
+});
+
 describe('the commitment: recomputed, not only well-formed', () => {
   const operator = '0x0000000000000000000000000000000000000001';
   const scores = [0, 0, 0, 0, 700000, 300000];

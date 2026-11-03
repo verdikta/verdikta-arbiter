@@ -75,10 +75,12 @@ async function validMode0(h) {
   const before = h.counts();
   const resp = await h.evaluate(h.claims.valid.requestCid);
   const score = resp && resp.data && resp.data.aggregatedScore;
+  const firstRun = last(h.runner.post(RUN_ROUTE));
   const checks = [
     A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}`),
     ...C.scoreChecks(score, h.juryAverage),
-    ...juryChecks(h, before, MARKERS())
+    ...juryChecks(h, before, MARKERS()),
+    ...C.pullChecks(firstRun && firstRun.response, await h.registry.manifestRequests(), h.image)
   ];
   const cid = resp && resp.data && resp.data.justificationCid;
   checks.push(A.cidAssertion('justificationCid.valid', cid));
