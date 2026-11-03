@@ -200,6 +200,12 @@ To check or do it by hand:
 <install-dir>/apply-job-timeouts.sh --apply
 ```
 
+A replaced job answers again a request it answered just before: Chainlink's record of the
+log it consumed goes with the old job, and its log broadcaster still holds the log, up to the
+chain's finality depth back. That costs one evaluation and a commit that reverts, and nothing
+changes on-chain. Right after the upgrade's restart that window is short. If you run
+`--apply` by hand on a busy node, pick a quiet moment.
+
 **What it changes for a text-mode request:** only the ceiling. The EA's and AI Node's own
 limits are the same (`AI_TIMEOUT`, `REQUEST_TIMEOUT_MS`, and the EA's retries). The one thing
 that moves is that an evaluation the bridge used to abandon at 300 s may now answer, up to

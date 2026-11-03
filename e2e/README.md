@@ -106,7 +106,7 @@ Recording proxies sit between them, so a scenario asserts what really crossed.
 
 **It fails, it never skips.** A harness that cannot start (no Docker, no `npm ci`, an AI Node that dies, a registry that will not come up, `/health` not ready) is a failed case for every scenario and mode, naming why, and exit 1. A case with no checks fails. A CID the local IPFS does not hold fails the scenario, so none can pass by reaching the public gateways.
 
-A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: about 3 minutes of installs and 1 minute for the suite.
+A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: 2.5 minutes in all, of which the suite is under a minute, pulls included.
 
 #### On Apple silicon
 

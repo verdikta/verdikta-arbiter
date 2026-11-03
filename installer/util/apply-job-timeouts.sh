@@ -19,6 +19,12 @@
 # config, and --apply compares what the node answers with what it sent; on any
 # difference it puts the old job back.
 #
+# A replaced job answers again a request it answered just before: the consumed-log record
+# goes with the old job and Chainlink's log broadcaster still holds the log (measured, up
+# to its finality depth back). That costs an evaluation and a commit that reverts, nothing
+# on-chain. Right after the upgrade's restart that window is short; on a busy running node,
+# run --apply when it is quiet.
+#
 # Usage:
 #   apply-job-timeouts.sh --config-check FILE    0 enough, 1 below or unreadable, 2 no file
 #   apply-job-timeouts.sh --config FILE          0 enough or set (the old file is kept as
