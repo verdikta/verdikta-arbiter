@@ -34,9 +34,6 @@
   "jest": {
     "modulePaths": [
       "<rootDir>/node_modules"
-    ],
-    "testPathIgnorePatterns": [
-      "/node_modules/"
     ]
   }
 }

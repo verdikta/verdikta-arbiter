@@ -6,6 +6,11 @@
  * test, and on the harness not starting: there is no skip.
  */
 
+const { spawn } = require('child_process');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const { isDeepStrictEqual } = require('util');
 const axios = require('axios');
 const chalk = require('chalk');
 const { codeReview } = require('@verdikta/common');
@@ -13,6 +18,7 @@ const A = require('../../assertions');
 const C = require('./checks');
 const F = require('./fixtures');
 const { fetchJustificationJson } = require('../../ipfs');
+const { claimVerdictChecks } = require('../../l4/claim-checks');
 
 const AI_ROUTE = '/api/rank-and-justify';
 const RUN_ROUTE = '/v1/runs';
@@ -22,6 +28,7 @@ const DEADLINE_LIMIT_MS = 780000;
 const SHORT_DEADLINE_MS = 57000;
 const SHORT_JURY_MS = 12000;
 const CODE_STANDARD_JUROR_TOKENS = 8000;
+const TESTING_TOOL = path.join(__dirname, '..', '..', '..', '..', 'testing-tool', 'src', 'index.js');
 
 const last = (list) => list[list.length - 1];
 
@@ -70,6 +77,11 @@ function juryChecks(h, before, marks) {
 
 const MARKERS = () => [F.REPORT_MARKER, F.POC_MARKER];
 
+/** What L4 will assert of this same verdict (src/l4/claim-checks.js), so its checks read what the EA really writes. */
+const l4Checks = (kind, scores, cid, json, claimCid, h) => claimVerdictChecks({
+  kind, scores, reports: [{ cid, json }], cids: [h.claims.listingCid, claimCid]
+}).map((check) => ({ ...check, name: `l4.${check.name}` }));
+
 /** claim-valid, mode 0: the whole path to the jury, the verdict and its upload. */
 async function validMode0(h) {
   const before = h.counts();
@@ -90,13 +102,14 @@ async function validMode0(h) {
     checks.push(...evidenceChecks(json, 'jury', run && run.response && run.response.reportSha256));
     checks.push(A.assert('justification.pinned', h.ipfs.pins.includes(cid), cid));
     checks.push(A.assert('justification.source', json.metadata && json.metadata.verdict_source === 'code-review-jury', `verdict_source=${json.metadata && json.metadata.verdict_source}`));
+    checks.push(...l4Checks('valid', score, cid, json, h.claims.valid.cid, h));
   }
   h.ranValid = checks.every((c) => c.ok);
   return checks;
 }
 
 /** Mode 1 then mode 2 on one claim, the commitment recomputed from the reveal. */
-async function commitReveal(h, requestCid, { expectScores, settlement }) {
+async function commitReveal(h, requestCid, { expectScores, settlement, l4 }) {
   const checks = [];
   const aggId = `agg${Date.now().toString(16)}`;
   const commit = await h.evaluate(`1:${requestCid}`, { aggId });
@@ -115,6 +128,7 @@ async function commitReveal(h, requestCid, { expectScores, settlement }) {
   if (typeof value === 'string' && value.includes(':')) {
     const json = await justificationOf(h, value.split(':')[0]);
     if (settlement) checks.push(...evidenceChecks(json, settlement));
+    if (l4) checks.push(...l4Checks(l4.kind, scores, value.split(':')[0], json, l4.claimCid, h));
   }
   return checks;
 }
@@ -122,7 +136,11 @@ async function commitReveal(h, requestCid, { expectScores, settlement }) {
 /** claim-valid, commit-reveal. Jury per job, one sandbox for the operator's jobs (§9.2). */
 async function validCommitReveal(h) {
   const before = h.counts();
-  const checks = await commitReveal(h, h.claims.valid.requestCid, { expectScores: (s) => C.scoreChecks(s, h.juryAverage), settlement: 'jury' });
+  const checks = await commitReveal(h, h.claims.valid.requestCid, {
+    expectScores: (s) => C.scoreChecks(s, h.juryAverage),
+    settlement: 'jury',
+    l4: { kind: 'valid', claimCid: h.claims.valid.cid }
+  });
   const after = h.counts();
   checks.push(A.assert('jury.perJob', after.aiCalls === before.aiCalls + 1, `${after.aiCalls - before.aiCalls} AI call(s) for the commit`));
   if (h.ranValid) checks.push(A.assert('run.shared', after.runnerCalls === before.runnerCalls, `${after.runnerCalls - before.runnerCalls} new sandbox run(s): the first job's is served from the shared run`));
@@ -155,8 +173,62 @@ async function validJurorDeadline(h) {
   ];
 }
 
+/**
+ * The testing tool's claim type on the real AI Node (node A6b): what the run recorded, as a
+ * scenario folder, through the tool's own CLI. Its body must be the EA's, but for the time
+ * left and the tag, and the AI Node must take it.
+ */
+async function validTestingTool(h) {
+  const sent = h.ai.post(AI_ROUTE).find((c) => c.status === 200 && c.request && c.request.codeReview && c.request.codeReview.claim.bcid === h.claims.valid.cid);
+  if (!sent) throw new Error('no code-mode request was recorded to compare: the valid claim did not reach the jury');
+  const answer = h.runner.post(RUN_ROUTE).map((c) => c.response).find((r) => r && r.report && r.report.inputs.bcid === h.claims.valid.cid);
+  if (!answer) throw new Error('no run of the valid claim was recorded');
+
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-claim-tool-'));
+  try {
+    const folder = path.join(dir, 'claims', 'e2e-valid');
+    fs.mkdirSync(folder, { recursive: true });
+    fs.writeFileSync(path.join(folder, 'scenario.json'), JSON.stringify({ id: 'e2e-valid', expected_outcome: 'HIGH' }));
+    fs.writeFileSync(path.join(folder, 'listing.zip'), h.claims.listing);
+    fs.writeFileSync(path.join(folder, 'claim.zip'), h.claims.valid.buffer);
+    fs.writeFileSync(path.join(folder, 'run.json'), JSON.stringify({ report: answer.report, reportSha256: answer.reportSha256, contextPack: answer.contextPack }));
+    const before = h.ai.post(AI_ROUTE).length;
+    const results = path.join(dir, 'results');
+    const run = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [TESTING_TOOL, 'test', '--type', 'claim', '--jury', 'real', '--claims-dir', path.join(dir, 'claims'), '--results-dir', results, '--ai-node-url', h.ai.url], { cwd: dir, env: { PATH: process.env.PATH } });
+      let out = '';
+      child.stdout.on('data', (c) => { out += c; });
+      child.stderr.on('data', (c) => { out += c; });
+      child.on('error', reject);
+      child.on('close', (code) => resolve({ code, out }));
+    });
+    const checks = [A.assert('tool.exit', run.code === 0, `exit ${run.code}: ${run.out.slice(-800)}`)];
+    const calls = h.ai.post(AI_ROUTE).slice(before);
+    checks.push(A.assert('tool.oneCall', calls.length === 1, `${calls.length} call(s) to the AI Node`));
+    if (calls.length === 1) {
+      const comparable = ({ requestTag, codeReview: field, ...rest }) => {
+        const { deadlineMs, ...kept } = field;
+        return { ...rest, codeReview: kept };
+      };
+      checks.push(A.assert('tool.sameRequestAsTheEa', isDeepStrictEqual(comparable(calls[0].request), comparable(sent.request)), 'the same request but for deadlineMs and requestTag'));
+      checks.push(A.assert('tool.aiNodeAnswered', calls[0].status === 200, `HTTP ${calls[0].status}`));
+    }
+    const runs = fs.existsSync(results) ? fs.readdirSync(results) : [];
+    const saved = runs.length === 1 ? JSON.parse(fs.readFileSync(path.join(results, runs[0], 'summary.json'), 'utf8')).results[0] : null;
+    checks.push(A.assert('tool.saved', Boolean(saved), `${runs.length} run(s) saved`));
+    if (saved) {
+      checks.push(...C.scoreChecks(saved.scores.map((s) => s.score), h.juryAverage));
+      checks.push(A.assert('tool.settled', saved.agrees === true, `settled ${saved.settled && saved.settled.outcome}, expected HIGH`));
+      checks.push(A.assert('tool.promptHash', /^[0-9a-f]{64}$/.test(String(saved.prompt_sha256)), `prompt_sha256=${saved.prompt_sha256}`));
+    }
+    return checks;
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 /** A gate-failing claim: all weight on INVALID, the gate named, no AI call. */
-async function gateFail(h, requestCid, gate, { runnerCalls }) {
+async function gateFail(h, requestCid, gate, { runnerCalls, l4 }) {
   const before = h.counts();
   const resp = await h.evaluate(requestCid);
   const after = h.counts();
@@ -173,13 +245,17 @@ async function gateFail(h, requestCid, gate, { runnerCalls }) {
     const json = await justificationOf(h, cid);
     checks.push(A.assert('justification.source', json.metadata && /^code-review-(gate|runner)$/.test(String(json.metadata.verdict_source)), `verdict_source=${json.metadata && json.metadata.verdict_source}`));
     checks.push(A.assert('justification.gate', String(json.justification).includes(gate), `the justification names ${gate}`));
+    checks.push(...l4Checks(l4.kind, resp.data.aggregatedScore, cid, json, l4.claimCid, h));
   }
   return checks;
 }
 
 async function gateFailCommitReveal(h) {
   const before = h.counts();
-  const checks = await commitReveal(h, h.claims.editsSource.requestCid, { expectScores: C.invalidScoreChecks });
+  const checks = await commitReveal(h, h.claims.editsSource.requestCid, {
+    expectScores: C.invalidScoreChecks,
+    l4: { kind: 'runner-gate', claimCid: h.claims.editsSource.cid }
+  });
   checks.push(...C.noAiChecks(before, h.counts()));
   return checks;
 }
@@ -224,10 +300,10 @@ async function textCommitReveal(h) {
 }
 
 const HANDLERS = Object.freeze({
-  valid: { 0: validMode0, 'commit-reveal': validCommitReveal, 'juror-deadline': validJurorDeadline },
+  valid: { 0: validMode0, 'commit-reveal': validCommitReveal, 'juror-deadline': validJurorDeadline, 'testing-tool': validTestingTool },
   'gate-fail': {
-    'front-gate': (h) => gateFail(h, h.claims.outOfScope.requestCid, 'inScope', { runnerCalls: 0 }),
-    'runner-gate': (h) => gateFail(h, h.claims.editsSource.requestCid, 'testPathsOnly', { runnerCalls: 1 }),
+    'front-gate': (h) => gateFail(h, h.claims.outOfScope.requestCid, 'inScope', { runnerCalls: 0, l4: { kind: 'front-gate', claimCid: h.claims.outOfScope.cid } }),
+    'runner-gate': (h) => gateFail(h, h.claims.editsSource.requestCid, 'testPathsOnly', { runnerCalls: 1, l4: { kind: 'runner-gate', claimCid: h.claims.editsSource.cid } }),
     'commit-reveal': gateFailCommitReveal
   },
   text: { 0: textMode0, 'commit-reveal': textCommitReveal }

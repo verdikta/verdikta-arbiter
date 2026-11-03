@@ -1,10 +1,13 @@
 'use strict';
 
 /**
- * The claim suite's archives: a listing of the code runner's fixture repository (a vault
- * whose deposit credits one wei too many), and the claims against it. Everything is made
- * per run with @verdikta/common's own helpers: a dev builder key, an age disclosure key
- * pair, a real disclosure of each claim. No key is committed.
+ * The claim archives: a listing of the code runner's fixture repository (a vault whose
+ * deposit credits one wei too many), and the claims against it. Everything is made per run
+ * with @verdikta/common's own helpers: a dev builder key, an age disclosure key pair, a real
+ * disclosure of each claim. No key is committed.
+ *
+ * One builder for both tiers: the L2 suite runs what makeClaimSet builds through the real
+ * pipeline on every PR, and scripts/build-l4-claims.js pins the same for L4.
  */
 
 const fs = require('fs');
@@ -133,6 +136,75 @@ async function discloseClaim(claimBuffer, recipient, ipfs) {
   });
 }
 
+/** A listing archive signed elsewhere, read for what claims against it need: its disclosure key. */
+function readListingArchive(buffer) {
+  const archive = new AdmZip(buffer);
+  const read = (name) => {
+    const entry = archive.getEntry(name);
+    if (!entry) throw new Error(`the listing archive has no ${name}`);
+    return JSON.parse(entry.getData().toString('utf8'));
+  };
+  const manifest = read('manifest.json');
+  if (typeof manifest.codeReview !== 'string') throw new Error('the archive\'s manifest has no codeReview key: it is not a listing');
+  const spec = read(manifest.codeReview);
+  return { buffer, spec, builderPublicKey: null, disclosure: { recipient: spec.stake.disclosureKey } };
+}
+
+/**
+ * A listing and the three claims: one valid, one out of the listing's scope (the EA's
+ * inScope gate, before any runner call), one whose PoC edits the code under test (the
+ * runner's testPathsOnly gate).
+ *
+ * @param {object} o
+ * @param {object} o.repo - the code runner's fixture repository (code-runner/test/docker/forgeFixture.js)
+ * @param {(bytes: Buffer) => Promise<string>} o.put - pins bytes and gives their CID
+ * @param {string} [o.image] - the env image, by digest (with baseCommit, for a listing made here)
+ * @param {string} [o.baseCommit]
+ * @param {object} [o.listing] - a listing already made (makeListing, readListingArchive)
+ * @returns {Promise<{ listing: object, listingCid: string, claims: Record<string, { buffer: Buffer, cid: string, addendum: string, requestCid: string }> }>}
+ */
+async function makeClaimSet({ repo, put, image, baseCommit, listing: given = null }) {
+  const listing = given || makeListing({ image, baseCommit, baseline: repo.vaultBaseline(baseCommit) });
+  const listingCid = await put(listing.buffer);
+  const poc = repo.addFilesPatch({
+    'test/Exploit.t.sol': repo.pocFile('ExploitTest', [
+      `    // ${POC_MARKER}`,
+      '    function test_deposit_credits_exactly() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
+    ])
+  });
+  const claimOf = async (buffer) => {
+    const cid = await put(buffer);
+    const addendum = await discloseClaim(buffer, listing.disclosure.recipient, { put });
+    return { buffer, cid, addendum, requestCid: `${listingCid},${cid}:${addendum}` };
+  };
+  const vault = repo.VAULT_REPO['src/Vault.sol'];
+  return {
+    listing,
+    listingCid,
+    claims: {
+      valid: await claimOf(makeClaim({ pocPatch: poc })),
+      outOfScope: await claimOf(makeClaim({ pocPatch: poc, name: 'e2e-out-of-scope', finding: { ...FINDING, affectedPaths: ['test/Vault.t.sol'] } })),
+      editsSource: await claimOf(makeClaim({
+        name: 'e2e-edits-source',
+        pocPatch: repo.modifyPatch('src/Vault.sol', vault, vault.replace('amount + 1', 'amount + 2'))
+      }))
+    }
+  };
+}
+
+/** What L4 reads (archives/l4-claim/claim-set.json): CIDs and lines, no archive and no private key. */
+function claimSetFile({ listing, listingCid, claims }) {
+  const entry = ({ cid, addendum }) => ({ cid, addendum });
+  return {
+    version: 1,
+    builderPublicKey: listing.builderPublicKey,
+    image: listing.spec.env.image,
+    baseCommit: listing.spec.baseCommit,
+    listingCid,
+    claims: Object.fromEntries(Object.entries(claims).map(([key, claim]) => [key, entry(claim)]))
+  };
+}
+
 /** The project's canonical text-mode archive (archives/contract-vuln), as scripts/build-archive.js zips it. */
 function textArchive() {
   const dir = path.join(__dirname, '..', '..', '..', 'archives', 'contract-vuln');
@@ -141,4 +213,4 @@ function textArchive() {
   return zip(files);
 }
 
-module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, makeListing, makeClaim, discloseClaim, textArchive };
+module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, makeListing, readListingArchive, makeClaim, makeClaimSet, claimSetFile, discloseClaim, textArchive };

@@ -10,10 +10,12 @@
 
 const fs = require('fs');
 const path = require('path');
+const AdmZip = require('adm-zip');
 const Hash = require('ipfs-only-hash');
 const { codeReview } = require('@verdikta/common');
 const F = require('../../../e2e/src/l2/claim/fixtures');
 const R = require('../../../external-adapter/test/helpers/codeReviewRun');
+const { assemblePack } = require('../../../code-runner/src/pack');
 
 const IMAGE = `registry.example/vault@sha256:${'b'.repeat(64)}`;
 const BASE_COMMIT = 'a'.repeat(40);
@@ -22,6 +24,16 @@ const BASELINE = Object.freeze({
   version: 1, baseCommit: BASE_COMMIT, framework: 'forge', runs: 3,
   tests: [{ id: 'test/Vault.t.sol > VaultTest > test_deposit()', results: ['pass', 'pass', 'pass'] }],
   stable: ['test/Vault.t.sol > VaultTest > test_deposit()'], unstable: []
+});
+
+/** What the runner reads from the sandbox for the pack (code-runner/src/pack.js, gatherPackInputs). */
+const listOf = (items) => ({ asked: items.length, items, omitted: {} });
+const PACK_INPUTS = Object.freeze({
+  pocDiff: POC_PATCH.toString('utf8'),
+  pocFiles: listOf([{ path: 'test/Exploit.t.sol', text: 'contract ExploitTest {}\n', bytes: 24, cut: false }]),
+  sources: listOf([{ path: 'src/Vault.sol', text: 'contract Vault {}\n', bytes: 18, cut: false }]),
+  callSites: { ...listOf([]), symbols: { found: 0, withSites: 0, noSites: 0, overCap: 0, longLines: 0 } },
+  tree: 'src/ (1 file)\ntest/ (2 files)\nfoundry.toml\n'
 });
 
 const priorFinding = (n) => ({
@@ -38,14 +50,20 @@ const priorFinding = (n) => ({
  * @param {number} [o.priors=2]
  * @param {object} [o.scenario] - scenario.json's other fields
  * @param {(run: object) => object} [o.changeRun] - rewrite run.json
+ * @param {object} [o.listingFiles] - listing members to replace, before its CID is taken
  * @param {object} [o.shape] - the report's shape (see codeReviewRun.reportFor)
  * @returns {Promise<object>} what went in: folder, listing, claim, priors, run, spec
  */
-async function writeClaimScenario(root, { id = 'vault-over-credit', priors = 2, scenario = {}, changeRun = (run) => run, shape } = {}) {
+async function writeClaimScenario(root, { id = 'vault-over-credit', priors = 2, scenario = {}, changeRun = (run) => run, shape, listingFiles = {} } = {}) {
   const folder = path.join(root, id);
   fs.mkdirSync(path.join(folder, 'priors'), { recursive: true });
 
   const listing = F.makeListing({ image: IMAGE, baseCommit: BASE_COMMIT, baseline: BASELINE });
+  if (Object.keys(listingFiles).length > 0) {
+    const zip = new AdmZip(listing.buffer);
+    for (const [name, value] of Object.entries(listingFiles)) zip.updateFile(name, Buffer.from(JSON.stringify(value)));
+    listing.buffer = zip.toBuffer();
+  }
   const claimBytes = F.makeClaim({ pocPatch: POC_PATCH });
   const listingCid = await Hash.of(listing.buffer);
   const bcid = await Hash.of(claimBytes);
@@ -72,7 +90,9 @@ async function writeClaimScenario(root, { id = 'vault-over-credit', priors = 2, 
     priorFindings: priorList
   };
   const answer = R.definitive(body, shape).json;
-  const run = changeRun({ report: answer.report, reportSha256: answer.reportSha256, contextPack: answer.contextPack });
+  // The runner's real pack, so what the tool reads of it is the runner's form.
+  const contextPack = assemblePack({ request: { ...body, knownIssues: [], codeClass: 'code-standard' }, inputs: PACK_INPUTS });
+  const run = changeRun({ report: answer.report, reportSha256: answer.reportSha256, contextPack });
 
   fs.writeFileSync(path.join(folder, 'listing.zip'), listing.buffer);
   fs.writeFileSync(path.join(folder, 'claim.zip'), claimBytes);

@@ -40,7 +40,7 @@ const scenarioIn = (file, claim = 'valid') => ({ id: `s-${claim}`, suite: 'l4-cl
 async function setFile() {
   const set = await F.makeClaimSet({ image: IMAGE, baseCommit: BASE_COMMIT, repo, put: ipfs.put });
   const file = path.join(dir, 'claim-set.json');
-  fs.writeFileSync(file, JSON.stringify(F.claimSetFile(set, { image: IMAGE, baseCommit: BASE_COMMIT })));
+  fs.writeFileSync(file, JSON.stringify(F.claimSetFile(set)));
   return { set, file };
 }
 

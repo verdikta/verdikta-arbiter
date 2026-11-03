@@ -29,6 +29,7 @@ describe('isCanaryOnly', () => {
     expect(isCanaryOnly({ id: 'x', cids: ['QmA', 'QmB'], addendum: 'verdikta-disclosure: 0x1 0x2 Qm 0x3 0x4' })).toBe(true);
     expect(isCanaryOnly({ id: 'x', cids: ['QmA', 'QmB'], addendum: 'x\nverdikta-dispute: Qm' })).toBe(true);
     expect(isCanaryOnly({ id: 'x', cids: ['QmA', 'QmB'], addendum: 'VERDIKTA-DISCLOSURE: 0x1' })).toBe(true);
+    expect(isCanaryOnly({ id: 'x', cid: 'QmA,QmB:verdikta-disclosure: 0x1', cids: ['QmA,QmB:verdikta-disclosure: 0x1'], addendum: '' })).toBe(true);
   });
 
   it('does not hold for a text scenario, whatever its addendum', () => {

@@ -126,7 +126,7 @@ beforeEach(async () => {
   set = await F.makeClaimSet({ image: IMAGE, baseCommit: BASE_COMMIT, repo, put: ipfs.put });
   claimKeyOf = new Map(Object.entries(set.claims).map(([key, c]) => [c.cid, key]));
   const claimSet = path.join(dir, 'claim-set.json');
-  fs.writeFileSync(claimSet, JSON.stringify(F.claimSetFile(set, { image: IMAGE, baseCommit: BASE_COMMIT })));
+  fs.writeFileSync(claimSet, JSON.stringify(F.claimSetFile(set)));
   // The committed scenarios, with their claim set in a file the test made.
   const committed = JSON.parse(fs.readFileSync(path.join(E2E, 'scenarios', 'scenarios.json'), 'utf8'));
   scenariosFile = path.join(dir, 'scenarios.json');
@@ -212,7 +212,7 @@ describe('L4 refuses a claim scenario on anything but the canary class: every fl
 });
 
 describe('with the canary class, the other refusals', () => {
-  const canary = ['--scenario', 'claim-l4-valid', '--class-id', '5555', '--scenarios', scenariosFile];
+  const canary = () => ['--scenario', 'claim-l4-valid', '--class-id', '5555', '--scenarios', scenariosFile];
 
   it.each([
     ['neither version', [], /--expect-common.*--expect-release/s],
@@ -220,7 +220,7 @@ describe('with the canary class, the other refusals', () => {
     ['no --expect-common', ['--expect-release', RELEASE], /--expect-common/]
   ])('%s: exit 1, no RPC call', async (_name, extra, message) => {
     await startChain();
-    const r = await l4([...canary, ...extra]);
+    const r = await l4([...canary(), ...extra]);
     expect(r.out).toMatch(message);
     expect(r.code).toBe(1);
     expect(chain.calls).toEqual([]);
@@ -228,7 +228,7 @@ describe('with the canary class, the other refusals', () => {
 
   it('another chain: the id is measured, and nothing is read or sent after it', async () => {
     await startChain({ chainId: 8453 });
-    const r = await l4([...canary, ...versions]);
+    const r = await l4([...canary(), ...versions]);
     expect(r.out).toMatch(/84532/);
     expect(r.code).toBe(1);
     expect(chain.sent).toEqual([]);
@@ -238,7 +238,7 @@ describe('with the canary class, the other refusals', () => {
 
   it('selection would revert: estimateGas fails, so nothing is sent', async () => {
     await startChain({ revertOnEstimate: true });
-    const r = await l4([...canary, ...versions]);
+    const r = await l4([...canary(), ...versions]);
     expect(r.out).toMatch(/estimat/i);
     expect(r.code).toBe(1);
     expect(chain.sent).toEqual([]);
@@ -266,7 +266,7 @@ describe('--class-id 5555 --expect-common --expect-release runs the claim scenar
     for (const tx of chain.sent) expect(codeReview.parseAddendum(tx.addendum).ok).toBe(true);
     expect(chain.sent.every((tx) => tx.to.toLowerCase() === chain.aggregator)).toBe(true);
     const json = JSON.parse(fs.readFileSync(report, 'utf8'));
-    expect(json.failed).toBe(0);
+    expect(json.summary).toMatchObject({ passed: 3, failed: 0, total: 3 });
     const names = json.cases.flatMap((c) => c.checks.map((x) => x.name));
     expect(names).toEqual(expect.arrayContaining(['arbiter.verdiktaCommon===expected', 'arbiter.release===expected', 'claim.verdictSource', 'claim.reportHashAgrees']));
   });
@@ -298,10 +298,8 @@ describe('--class-id 5555 --expect-common --expect-release runs the claim scenar
   });
 
   it('fails when the arbiters did not do what the scenario is for', async () => {
-    await startChain();
     // The valid claim's scenario, answered as if its gate had failed.
     claimKeyOf.set(set.claims.valid.cid, 'outOfScope');
-    await chain.close();
     await startChain();
     const r = await l4(['--scenario', 'claim-l4-valid', '--class-id', '5555', ...versions, '--scenarios', scenariosFile]);
     expect(r.code).toBe(1);

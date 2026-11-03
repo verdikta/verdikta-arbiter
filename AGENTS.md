@@ -253,7 +253,9 @@ cd testing-tool && npm install && npm start -- init && npm start -- test
 ```
 It reads scenarios from `testing-tool/scenarios/scenarios.csv` and juries from
 `testing-tool/config/juries/*.json`, calling `/api/rank-and-justify`. This is the
-closest existing thing to an automated functional test of the AI layer.
+closest existing thing to an automated functional test of the AI layer. Its `claim`
+type (`npm start -- test --type claim --jury real`, README "Claim scenarios") sends a
+stake claim with the External Adapter's own request builder.
 
 ### Tests
 ```bash
@@ -270,7 +272,10 @@ Backend changes go to the **class-5555** arbiters on the testnet VPS first
 request against 5555 and asserts every revealing arbiter's self-reported
 version (`--class-id 5555 --expect-common <ver> --expect-release <sha>`, or the
 `e2e.yml` dispatch inputs), and only then mainnet arbiters are upgraded. See
-`docs/release-runbook.md` §3b.
+`docs/release-runbook.md` §3b. L4's claim scenarios (`claim-l4-*`, `e2e/README.md`)
+run on class 5555 and nothing else: nothing on an arbiter stops a claim on another
+class, so L4 refuses it, with no `--class-id` too, before anything is sent. The nightly
+holds none of them and stays on class 128.
 
 ### Install / upgrade a full node (operator machine)
 ```bash

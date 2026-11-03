@@ -62,7 +62,7 @@ async function stubAiNode(answers = [{ status: 200, body: { scores: scoresOf(), 
 describe('the request is A4b\'s builder\'s', () => {
   it('is exactly buildCodeReviewAiRequest over the archives and the recorded run', async () => {
     const made = await writeClaimScenario(dir);
-    const scenario = loadClaimScenario(made.folder);
+    const scenario = await loadClaimScenario(made.folder);
     const body = buildClaimRequest(scenario, { deadlineMs: 285000, requestTag: '[tool]' });
     expect(body).toEqual(buildCodeReviewAiRequest({
       query: codeReview.buildClaimQuery(made.spec),
@@ -83,14 +83,14 @@ describe('the request is A4b\'s builder\'s', () => {
 
   it('goes through the builder: replace the builder and the request changes', async () => {
     const made = await writeClaimScenario(dir);
+    const scenario = await loadClaimScenario(made.folder);
     let viaMock;
     let seen;
     jest.isolateModules(() => {
       jest.doMock('../../../external-adapter/src/codeReview/aiRequest', () => ({
         buildCodeReviewAiRequest: (input) => { seen = input; return { marker: 'from-the-builder' }; }
       }));
-      const tool = require('../claim-scenarios');
-      viaMock = tool.buildClaimRequest(tool.loadClaimScenario(made.folder), { deadlineMs: 285000 });
+      viaMock = require('../claim-scenarios').buildClaimRequest(scenario, { deadlineMs: 285000 });
     });
     jest.dontMock('../../../external-adapter/src/codeReview/aiRequest');
     expect(viaMock).toEqual({ marker: 'from-the-builder' });
@@ -100,7 +100,7 @@ describe('the request is A4b\'s builder\'s', () => {
 
   it('the request validates with common, the way the EA and the AI Node hold it', async () => {
     const made = await writeClaimScenario(dir);
-    const body = buildClaimRequest(loadClaimScenario(made.folder), { deadlineMs: CLAIM_DEADLINE_MS });
+    const body = buildClaimRequest(await loadClaimScenario(made.folder), { deadlineMs: CLAIM_DEADLINE_MS });
     expect(codeReview.validateCodeReviewRequest(body.codeReview).ok).toBe(true);
     expect(codeReview.validateClassEnvelope({ AI_NODES: body.models.map((m) => ({ AI_PROVIDER: m.provider, AI_MODEL: m.model, NO_COUNTS: m.count, WEIGHT: m.weight })), ITERATIONS: body.iterations }, 'code-standard').ok).toBe(true);
     expect(body.outcomes).toEqual([...codeReview.BUG_OUTCOMES]);
@@ -108,7 +108,7 @@ describe('the request is A4b\'s builder\'s', () => {
 
   it('sends the pack in order and nothing beside it', async () => {
     const made = await writeClaimScenario(dir);
-    const body = buildClaimRequest(loadClaimScenario(made.folder), { deadlineMs: CLAIM_DEADLINE_MS });
+    const body = buildClaimRequest(await loadClaimScenario(made.folder), { deadlineMs: CLAIM_DEADLINE_MS });
     const files = made.run.contextPack.files;
     expect(body.attachments).toEqual(files.map((f) => f.text));
     expect(body.attachmentNames).toEqual(files.map((f) => f.name));
@@ -124,7 +124,7 @@ describe('the request is A4b\'s builder\'s', () => {
 describe('prior-finding archives', () => {
   it('reads each as { bcid, finding, report }, in file-name order, and sends only their ids in the field', async () => {
     const made = await writeClaimScenario(dir, { priors: 3 });
-    const scenario = loadClaimScenario(made.folder);
+    const scenario = await loadClaimScenario(made.folder);
     expect(scenario.input.priorFindings).toEqual(made.priors);
     const body = buildClaimRequest(scenario, { deadlineMs: CLAIM_DEADLINE_MS });
     expect(body.codeReview.priorFindings).toEqual(made.priors.map((p) => p.bcid));
@@ -134,14 +134,14 @@ describe('prior-finding archives', () => {
 
   it('takes only finding.json and report.md from one: nothing else in the archive reaches the input', async () => {
     const made = await writeClaimScenario(dir, { priors: 1 });
-    const scenario = loadClaimScenario(made.folder);
+    const scenario = await loadClaimScenario(made.folder);
     expect(Object.keys(scenario.input.priorFindings[0]).sort()).toEqual(['bcid', 'finding', 'report']);
   });
 
   it('works with none', async () => {
     const made = await writeClaimScenario(dir, { priors: 0 });
     fs.rmSync(path.join(made.folder, 'priors'), { recursive: true });
-    const body = buildClaimRequest(loadClaimScenario(made.folder), { deadlineMs: CLAIM_DEADLINE_MS });
+    const body = buildClaimRequest(await loadClaimScenario(made.folder), { deadlineMs: CLAIM_DEADLINE_MS });
     expect(body.codeReview.priorFindings).toEqual([]);
   });
 
@@ -149,14 +149,14 @@ describe('prior-finding archives', () => {
     const made = await writeClaimScenario(dir, {
       changeRun: (run) => ({ ...run, contextPack: { ...run.contextPack, files: run.contextPack.files.filter((f) => f.tier !== 'priorFindings') } })
     });
-    expect(() => loadClaimScenario(made.folder)).toThrow(/prior.*pack/is);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/prior.*pack/is);
     expect(made.priors).toHaveLength(2);
   });
 
   it('refuses a pack holding priors the scenario has no archive for', async () => {
     const made = await writeClaimScenario(dir);
     fs.rmSync(path.join(made.folder, 'priors', '02-prior.zip'));
-    expect(() => loadClaimScenario(made.folder)).toThrow(/prior.*pack/is);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/pack holds prior/);
   });
 
   it.each([
@@ -171,21 +171,28 @@ describe('prior-finding archives', () => {
     const zip = new AdmZip(file);
     change(zip);
     fs.writeFileSync(file, zip.toBuffer());
-    expect(() => loadClaimScenario(made.folder)).toThrow(message);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(message);
+  });
+
+  it('takes the most a request can carry, from the real pack', async () => {
+    const made = await writeClaimScenario(dir, { priors: codeReview.MAX_PRIOR_FINDINGS });
+    const scenario = await loadClaimScenario(made.folder);
+    expect(scenario.input.priorFindings).toHaveLength(8);
+    expect(made.run.contextPack.tiers.find((tier) => tier.name === 'priorFindings').delivered).toBe(8);
   });
 
   it('refuses more than the request can carry', async () => {
     const made = await writeClaimScenario(dir, { priors: codeReview.MAX_PRIOR_FINDINGS + 1 });
-    expect(() => loadClaimScenario(made.folder)).toThrow(/at most 8/);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/at most 8/);
   });
 
   it('refuses the claim as its own prior, and a prior twice', async () => {
     const made = await writeClaimScenario(dir, { priors: 1 });
     fs.writeFileSync(path.join(made.folder, 'priors', '09-self.zip'), made.claimBytes);
-    expect(() => loadClaimScenario(made.folder)).toThrow(/own prior|itself/);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/own prior|itself/);
     const other = await writeClaimScenario(dir, { id: 'other', priors: 1 });
     fs.copyFileSync(path.join(other.folder, 'priors', '01-prior.zip'), path.join(other.folder, 'priors', '02-again.zip'));
-    expect(() => loadClaimScenario(other.folder)).toThrow(/more than once/);
+    await expect(loadClaimScenario(other.folder)).rejects.toThrow(/more than once/);
   });
 });
 
@@ -195,18 +202,18 @@ describe('the recorded run is this claim\'s', () => {
     const cases = [['bcid', `Qm${'x'.repeat(44)}`, /bcid/], ['listingCid', `Qm${'x'.repeat(44)}`, /listingCid/], ['pocPatchSha256', 'f'.repeat(64), /pocPatchSha256/]];
     for (const [field, value, message] of cases) {
       const made = await writeClaimScenario(dir, { id: `swap-${field}`, changeRun: swap(field, value) });
-      expect(() => loadClaimScenario(made.folder)).toThrow(message);
+      await expect(loadClaimScenario(made.folder)).rejects.toThrow(message);
     }
   });
 
   it('refuses a hash that is not the report\'s', async () => {
     const made = await writeClaimScenario(dir, { changeRun: (run) => ({ ...run, reportSha256: 'e'.repeat(64) }) });
-    expect(() => loadClaimScenario(made.folder)).toThrow(/REQUEST_REPORT_HASH_MISMATCH|does not validate/);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/REQUEST_REPORT_HASH_MISMATCH|does not validate/);
   });
 
   it('refuses a run whose gates did not all pass: production calls no model on it', async () => {
     const made = await writeClaimScenario(dir, { shape: { stop: 'testPathsOnly' } });
-    expect(() => loadClaimScenario(made.folder)).toThrow(/testPathsOnly/);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/testPathsOnly/);
   });
 
   it.each([
@@ -216,7 +223,7 @@ describe('the recorded run is this claim\'s', () => {
     ['a file that would read as a data URI', (run) => ({ ...run, contextPack: { ...run.contextPack, files: [{ name: 'x', text: 'data:text/plain,hi' }] } }), /data/]
   ])('refuses %s', async (_name, changeRun, message) => {
     const made = await writeClaimScenario(dir, { priors: 0, changeRun });
-    expect(() => loadClaimScenario(made.folder)).toThrow(message);
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(message);
   });
 });
 
@@ -232,12 +239,12 @@ describe('the listing and the scenario file', () => {
     const a = await writeClaimScenario(dir, { id: 'a' });
     const listingA = path.join(a.folder, 'listing.zip');
     rewrite(listingA, 'manifest.json', { ...read(listingA, 'manifest.json'), juryParameters: { AI_NODES: [{ AI_PROVIDER: 'OpenAI', AI_MODEL: 'gpt-4o', NO_COUNTS: 1, WEIGHT: 1 }], ITERATIONS: 1 } });
-    expect(() => loadClaimScenario(a.folder)).toThrow(/envelope/);
+    await expect(loadClaimScenario(a.folder)).rejects.toThrow(/envelope/);
 
     const b = await writeClaimScenario(dir, { id: 'b' });
     const listingB = path.join(b.folder, 'listing.zip');
     rewrite(listingB, 'primary_query.json', { ...read(listingB, 'primary_query.json'), outcomes: ['Yes', 'No'] });
-    expect(() => loadClaimScenario(b.folder)).toThrow(/outcomes/);
+    await expect(loadClaimScenario(b.folder)).rejects.toThrow(/outcomes/);
   });
 
   it('refuses a listing with no codeReview key: that is a text scenario', async () => {
@@ -245,12 +252,22 @@ describe('the listing and the scenario file', () => {
     const listing = path.join(a.folder, 'listing.zip');
     const { codeReview: _dropped, ...manifest } = read(listing, 'manifest.json');
     rewrite(listing, 'manifest.json', manifest);
-    expect(() => loadClaimScenario(a.folder)).toThrow(/codeReview/);
+    await expect(loadClaimScenario(a.folder)).rejects.toThrow(/codeReview/);
   });
 
-  it('names known issues by id, from the listing', async () => {
-    const a = await writeClaimScenario(dir);
-    expect(loadClaimScenario(a.folder).input.knownIssues).toEqual([]);
+  it('names known issues by id, from the listing, and nothing of them in the field', async () => {
+    const none = await writeClaimScenario(dir, { id: 'none' });
+    expect((await loadClaimScenario(none.folder)).input.knownIssues).toEqual([]);
+
+    const entry = { title: 'Known rounding', class: 'LOW', paths: ['src/Vault.sol'], description: 'Accepted behaviour of the rounding.' };
+    const issue = { id: codeReview.knownIssueId(entry), ...entry };
+    const one = await writeClaimScenario(dir, { id: 'one', listingFiles: { 'known_issues.json': [issue] } });
+    const body = buildClaimRequest(await loadClaimScenario(one.folder), { deadlineMs: CLAIM_DEADLINE_MS });
+    expect(body.codeReview.knownIssues).toEqual([issue.id]);
+    expect(JSON.stringify(body.codeReview)).not.toContain('Accepted behaviour');
+
+    const bad = await writeClaimScenario(dir, { id: 'bad', listingFiles: { 'known_issues.json': [{ title: 'no id' }] } });
+    await expect(loadClaimScenario(bad.folder)).rejects.toThrow(/known_issues\.json/);
   });
 
   it('refuses a claim with no finding, and an expected outcome that does not exist', async () => {
@@ -258,16 +275,26 @@ describe('the listing and the scenario file', () => {
     const zip = new AdmZip(path.join(a.folder, 'claim.zip'));
     zip.deleteFile('finding.json');
     fs.writeFileSync(path.join(a.folder, 'claim.zip'), zip.toBuffer());
-    expect(() => loadClaimScenario(a.folder)).toThrow(/finding\.json/);
+    await expect(loadClaimScenario(a.folder)).rejects.toThrow(/finding\.json/);
 
     const b = await writeClaimScenario(dir, { id: 'b', scenario: { expected_outcome: 'SEVERE' } });
-    expect(() => loadClaimScenario(b.folder)).toThrow(/expected_outcome/);
+    await expect(loadClaimScenario(b.folder)).rejects.toThrow(/expected_outcome/);
   });
 
   it('a missing file is named', async () => {
     const a = await writeClaimScenario(dir);
     fs.rmSync(path.join(a.folder, 'run.json'));
-    expect(() => loadClaimScenario(a.folder)).toThrow(/run\.json/);
+    await expect(loadClaimScenario(a.folder)).rejects.toThrow(/run\.json/);
+  });
+});
+
+describe('a scenario.json that does not read', () => {
+  it('is named, filtered or not', async () => {
+    const made = await writeClaimScenario(dir);
+    fs.writeFileSync(path.join(made.folder, 'scenario.json'), 'nope');
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/scenario\.json is not valid JSON/);
+    await expect(loadClaimScenarios(dir, { scenarioIds: ['x'] })).rejects.toThrow(/scenario\.json is not valid JSON/);
+    await expect(loadClaimScenarios(dir, { tags: ['x'] })).rejects.toThrow(/scenario\.json is not valid JSON/);
   });
 });
 
@@ -276,19 +303,19 @@ describe('loadClaimScenarios', () => {
     await writeClaimScenario(dir, { id: 'b', scenario: { tags: ['x'] } });
     await writeClaimScenario(dir, { id: 'a', scenario: { tags: ['y'] } });
     fs.mkdirSync(path.join(dir, 'not-a-scenario'));
-    expect(loadClaimScenarios(dir).map((s) => s.scenario_id)).toEqual(['a', 'b']);
-    expect(loadClaimScenarios(dir, { scenarioIds: ['b'] }).map((s) => s.scenario_id)).toEqual(['b']);
-    expect(loadClaimScenarios(dir, { tags: ['y'] }).map((s) => s.scenario_id)).toEqual(['a']);
+    expect((await loadClaimScenarios(dir)).map((s) => s.scenario_id)).toEqual(['a', 'b']);
+    expect((await loadClaimScenarios(dir, { scenarioIds: ['b'] })).map((s) => s.scenario_id)).toEqual(['b']);
+    expect((await loadClaimScenarios(dir, { tags: ['y'] })).map((s) => s.scenario_id)).toEqual(['a']);
   });
 
   it('an id that is not there is an error, not an empty run', async () => {
     await writeClaimScenario(dir, { id: 'a' });
-    expect(() => loadClaimScenarios(dir, { scenarioIds: ['a', 'nope'] })).toThrow(/nope/);
+    await expect(loadClaimScenarios(dir, { scenarioIds: ['a', 'nope'] })).rejects.toThrow(/nope/);
   });
 
-  it('a directory with none is an error', () => {
-    expect(() => loadClaimScenarios(dir)).toThrow(/No claim scenarios/);
-    expect(() => loadClaimScenarios(path.join(dir, 'missing'))).toThrow(/No claim scenarios|not found/);
+  it('a directory with none is an error', async () => {
+    await expect(loadClaimScenarios(dir)).rejects.toThrow(/No claim scenarios/);
+    await expect(loadClaimScenarios(path.join(dir, 'missing'))).rejects.toThrow(/No claim scenarios/);
   });
 });
 
@@ -346,7 +373,7 @@ describe('calling the AI Node', () => {
 });
 
 describe('runClaimScenario', () => {
-  const run = async (node, made) => runClaimScenario(loadClaimScenario(made.folder), { aiNodeUrl: node.url });
+  const run = async (node, made) => runClaimScenario(await loadClaimScenario(made.folder), { aiNodeUrl: node.url });
 
   it('settles the verdict by the listing\'s stake and compares it with the expected outcome', async () => {
     const made = await writeClaimScenario(dir);
