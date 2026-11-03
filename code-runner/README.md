@@ -783,10 +783,11 @@ name before it is the process's own to choose, and before runs 2 and 3 the track
 to the PoC commit (`git reset --hard`). The number killed is in
 `facts.leftoverProcesses`.
 
-`facts` (A3b builds the report from them), each an object carrying its
-evidence tier (§9.5: `tier: "A"`, observed by the runner from outside the
-tested process; `tier: "B"`, reported by a process that ran claim code):
-`checkout` (A, above), `patch` (A: bytes, SHA-256, the measured expansion),
+`facts` (the report is built from them, [below](#the-report-and-the-context-pack)),
+each an object carrying its evidence tier (§9.5: `tier: "A"`, observed by the
+runner from outside the tested process; `tier: "B"`, reported by a process that ran
+claim code): `checkout` (A, above), `compiler` (A: `solc`, what forge is pinned to,
+[below](#the-compiler-is-pinned)), `patch` (A: bytes, SHA-256, the measured expansion),
 `commit` (A: `base`, `poc`), `diff` (A: files, added, removed, binary
 files), `testPaths` (A: outside, protected, unreportable), `flags` (A:
 `existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
@@ -794,7 +795,8 @@ files), `testPaths` (A: outside, protected, unreportable), `flags` (A:
 environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset` (A:
 `files`), `poc` (B: `testCount`, `runCounts`, the first 200 tests with their
 three results, kind and message, per run the command, JUnit status, exit code
-and failing harness records, and `integrity`, the report's Integrity object),
+and failing harness records, `integrity`, the report's Integrity object, and
+`report`, the form the report carries),
 `integrity` (A: per sandbox the failed checks with their evidence and the
 changed paths), `fix` (B, [below](#the-fix-check)) and `leftoverProcesses`
 (A: `steps`). A gate's basis gives its tier: `exit_code`, `input` and

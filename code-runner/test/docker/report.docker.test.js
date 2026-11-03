@@ -97,7 +97,11 @@ async function host(t, request, { hostname = null, cpus = null } = {}) {
   assert.equal(result.gvisor, RUNTIME === 'runsc' ? codeReview.GVISOR_RELEASE : 'runc');
   const built = buildReport(result, request, { gvisor: result.gvisor, platform: 'linux/amd64' });
   assert.equal(codeReview.validateClaimReport(built.report).ok, true);
-  return { result, ...built, ms: Date.now() - receivedAt };
+  const ms = Date.now() - receivedAt;
+  // What the pack's reads cost, which the listing check's limits do not measure.
+  const packMs = result.steps.filter((s) => s.name.startsWith('pack:')).reduce((n, s) => n + s.durationMs, 0);
+  t.diagnostic(`${hostname || 'sandbox'} cpus=${cpus || request.spec.limits.cpus}: ${ms} ms in all, the pack's reads ${packMs} ms`);
+  return { result, ...built, ms };
 }
 
 const gatesOf = (r) => Object.fromEntries(Object.entries(r.gates).map(([k, v]) => [k, v.status]));

@@ -340,7 +340,7 @@ test('symbolsOf: what the PoC calls, in order of first appearance, without the f
   const added = new Map([
     ['test/A.t.sol', [
       { line: 1, text: 'Vault v = new Vault();' },
-      { line: 2, text: 'vm.prank(alice); v.deposit(1); v.deposit(2);' },
+      { line: 2, text: 'vm.prank(alice); v.deposit{value: 1}(1); v.deposit(2);' },
       { line: 3, text: 'console.log(v.balanceOf(address(this)));' },
       { line: 4, text: 'token.transferFrom(a, b, 1); abi.encode(1); block.number; vm.assertEq(1, 2);' }
     ]],

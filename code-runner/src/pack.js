@@ -89,11 +89,11 @@ const BINARY_PROBE_BYTES = 8000;
 /** Receivers whose calls are the framework's or the language's, not the code under test. */
 const FRAMEWORK_RECEIVER = /^(?:vm|console|console2|stdJson|stdStorage|stdMath|stdError|abi|block|msg|tx|bytes|string|type|super|this)$/;
 /**
- * A call `<receiver>.<name>(`, or `new <Name>`. Anchored at the start of a word
+ * A call `<receiver>.<name>(` or `<receiver>.<name>{value: …}(`, or `new <Name>`. Anchored at the start of a word
  * and read over a bounded part of each line: the lines are the hunter's, and a
  * 2 MB identifier must not cost the runner quadratic time.
  */
-const SYMBOL = /(?<![A-Za-z0-9_$])(?:([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\.[ \t]*([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\(|new[ \t]+([A-Za-z_$][A-Za-z0-9_$]*))/g;
+const SYMBOL = /(?<![A-Za-z0-9_$])(?:([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\.[ \t]*([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*[({]|new[ \t]+([A-Za-z_$][A-Za-z0-9_$]*))/g;
 const MAX_SCANNED_LINE = 4096;
 
 function byteLength(text) {
@@ -329,7 +329,7 @@ function tierItems(request, inputs) {
       ...numbered(inputs.pocFiles, 'poc', 'poc-file', (f) => `poc file: ${f.path}`, blobBody)
     ],
     claim: [
-      fileItem('claim', 'finding', 'json', 'finding.json, written by the hunter', canon(request.finding || {})),
+      fileItem('claim', 'finding', 'txt', 'finding.json, written by the hunter', canon(request.finding || {})),
       fileItem('claim', 'report', 'txt', 'report.md, written by the hunter', typeof request.report === 'string' ? request.report : '')
     ],
     source: numbered(inputs.sources, 'source', 'source', (f) => `source file: ${f.path}`, blobBody),

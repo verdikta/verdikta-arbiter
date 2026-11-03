@@ -268,7 +268,8 @@ test('close() admits nothing new and waits for every run to remove its sandbox',
   const address = await runner.listen();
   const target = { host: address.host, port: address.port };
   const inFlight = request(target, { method: 'POST', path: '/v1/runs', body: runRequest() });
-  while (runner.runs.size === 0) await new Promise((r) => setTimeout(r, 10));
+  // The step is running, so its sandbox exists: a run cancelled in admission has nothing to remove.
+  while (!release) await new Promise((r) => setTimeout(r, 10));
   const closed = runner.close();
   const res = await inFlight;
   assert.equal(res.status, 503);
