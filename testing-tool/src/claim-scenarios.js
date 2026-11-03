@@ -204,7 +204,8 @@ async function loadClaimScenario(folder) {
   const fail = (what) => new Error(`Claim scenario "${label}": ${what}`);
 
   const meta = readMeta(folder, fail);
-  if (typeof meta.id !== 'string' || meta.id === '') throw fail(`${SCENARIO_FILE} names no id`);
+  // The id names a saved file (results-manager.js), so it stays one path segment.
+  if (typeof meta.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(meta.id)) throw fail(`${SCENARIO_FILE} needs an id of letters, digits, ".", "_" and "-"`);
   if (meta.expected_outcome !== undefined && !codeReview.BUG_OUTCOMES.includes(meta.expected_outcome)) {
     throw fail(`expected_outcome must be one of ${codeReview.BUG_OUTCOMES.join(', ')}`);
   }
@@ -254,9 +255,13 @@ async function loadClaimScenario(folder) {
  * @returns {Promise<object[]>}
  */
 async function loadClaimScenarios(dir, { scenarioIds, tags } = {}) {
-  const folders = fs.existsSync(dir)
-    ? fs.readdirSync(dir).sort().map((name) => path.join(dir, name)).filter((folder) => fs.existsSync(path.join(folder, SCENARIO_FILE)))
+  const entries = fs.existsSync(dir)
+    ? fs.readdirSync(dir, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => path.join(dir, entry.name)).sort()
     : [];
+  const folders = entries.filter((folder) => fs.existsSync(path.join(folder, SCENARIO_FILE)));
+  // Nothing leaves a measurement silently: a folder that is a scenario but for this file is an error.
+  const orphan = entries.find((folder) => !folders.includes(folder) && ['listing.zip', 'claim.zip', 'run.json'].some((name) => fs.existsSync(path.join(folder, name))));
+  if (orphan) throw new Error(`Claim scenario "${path.basename(orphan)}": ${SCENARIO_FILE} is missing`);
   if (folders.length === 0) throw new Error(`No claim scenarios in ${dir}: each is a folder with a ${SCENARIO_FILE} (README.md, "Claim scenarios")`);
 
   // Filters read scenario.json alone, so a filtered run does not depend on the other folders' archives.
@@ -272,6 +277,9 @@ async function loadClaimScenarios(dir, { scenarioIds, tags } = {}) {
 
   const scenarios = [];
   for (const folder of chosen) scenarios.push(await loadClaimScenario(folder));
+  const ids = scenarios.map((scenario) => scenario.scenario_id);
+  const repeated = ids.find((id, index) => ids.indexOf(id) !== index);
+  if (repeated) throw new Error(`Claim scenario id "${repeated}" is in more than one folder`);
   return scenarios;
 }
 

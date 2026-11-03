@@ -217,7 +217,7 @@ async function validTestingTool(h) {
     const saved = runs.length === 1 ? JSON.parse(fs.readFileSync(path.join(results, runs[0], 'summary.json'), 'utf8')).results[0] : null;
     checks.push(A.assert('tool.saved', Boolean(saved), `${runs.length} run(s) saved`));
     if (saved) {
-      checks.push(...C.scoreChecks(saved.scores.map((s) => s.score), h.juryAverage));
+      checks.push(...C.scoreChecks(saved.vector, h.juryAverage));
       checks.push(A.assert('tool.settled', saved.agrees === true, `settled ${saved.settled && saved.settled.outcome}, expected HIGH`));
       checks.push(A.assert('tool.promptHash', /^[0-9a-f]{64}$/.test(String(saved.prompt_sha256)), `prompt_sha256=${saved.prompt_sha256}`));
     }

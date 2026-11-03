@@ -75,10 +75,13 @@ async function runClaimScenario(scenario, { aiNodeUrl, deadlineMs = CLAIM_DEADLI
   try {
     const body = buildClaimRequest(scenario, { deadlineMs, requestTag: `[testing-tool ${scenario.scenario_id}]` });
     const answer = await callClaim(aiNodeUrl, body, { deadlineMs });
-    const settled = codeReview.settleBugOutcome(vectorOf(answer.scores), scenario.stake);
+    const vector = vectorOf(answer.scores);
+    const settled = codeReview.settleBugOutcome(vector, scenario.stake);
     return {
       ...base,
-      scores: answer.scores,
+      // Highest first, as results-manager.js reads a jury's winner: the AI Node's order is the listing's.
+      scores: [...answer.scores].sort((a, b) => b.score - a.score),
+      vector,
       justification: typeof answer.justification === 'string' ? answer.justification : '',
       execution_time_ms: Date.now() - started,
       settled: { outcome: settled.outcome, valid: settled.valid, class: settled.class, validMass: settled.validMass, classMass: settled.classMass },
@@ -90,6 +93,7 @@ async function runClaimScenario(scenario, { aiNodeUrl, deadlineMs = CLAIM_DEADLI
     return {
       ...base,
       scores: [],
+      vector: null,
       justification: '',
       execution_time_ms: Date.now() - started,
       settled: null,

@@ -308,6 +308,24 @@ describe('loadClaimScenarios', () => {
     expect((await loadClaimScenarios(dir, { tags: ['y'] })).map((s) => s.scenario_id)).toEqual(['a']);
   });
 
+  it('a folder that is a scenario but for its scenario.json is an error, not a claim left out', async () => {
+    const made = await writeClaimScenario(dir, { id: 'a' });
+    await writeClaimScenario(dir, { id: 'b' });
+    fs.rmSync(path.join(made.folder, 'scenario.json'));
+    await expect(loadClaimScenarios(dir)).rejects.toThrow(/"a".*scenario\.json is missing/);
+  });
+
+  it('the same id in two folders is an error: the saved results are named by it', async () => {
+    await writeClaimScenario(dir, { id: 'a' });
+    await writeClaimScenario(dir, { id: 'b', scenario: { id: 'a' } });
+    await expect(loadClaimScenarios(dir)).rejects.toThrow(/"a" is in more than one folder/);
+  });
+
+  it.each(['../escape', 'a/b', '', '.hidden', 7])('an id that is not one path segment is refused: %s', async (id) => {
+    const made = await writeClaimScenario(dir, { id: 'a', scenario: { id } });
+    await expect(loadClaimScenario(made.folder)).rejects.toThrow(/needs an id/);
+  });
+
   it('an id that is not there is an error, not an empty run', async () => {
     await writeClaimScenario(dir, { id: 'a' });
     await expect(loadClaimScenarios(dir, { scenarioIds: ['a', 'nope'] })).rejects.toThrow(/nope/);
@@ -511,8 +529,11 @@ describe('test --type claim', () => {
       const runs = fs.readdirSync(results);
       expect(runs).toHaveLength(1);
       const summary = JSON.parse(fs.readFileSync(path.join(results, runs[0], 'summary.json'), 'utf8'));
-      expect(summary.results[0]).toMatchObject({ scenario_id: made.id, agrees: true });
-      expect(summary.statistics).toMatchObject({ successfulTests: 1, failedTests: 0 });
+      expect(summary.results[0]).toMatchObject({ scenario_id: made.id, agrees: true, vector: VECTOR });
+      expect(summary.statistics).toMatchObject({ successfulTests: 1, failedTests: 0, compared: 1, agreed: 1 });
+      // The shared analysis reads scores[0] as the winner.
+      const analysis = JSON.parse(fs.readFileSync(path.join(results, runs[0], 'analysis', 'scenario-analysis.json'), 'utf8'));
+      expect(analysis[made.id].consensus_winner).toBe('HIGH');
     } finally {
       await node.close();
     }

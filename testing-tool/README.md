@@ -432,6 +432,7 @@ scenarios/claims/<id>/
 |---|---|
 | `expected_outcome` | Optional: `INVALID`, `DUPLICATE`, `LOW`, `MEDIUM`, `HIGH` or `CRITICAL`. The verdict is settled by the listing's stake (`settleBugOutcome`) and compared. A disagreement is a measurement: it is saved, and the run still exits 0 |
 | `codeClass` | Optional, default `code-standard` |
+| The saved run | `scores` highest first, which is how the shared analysis reads a winner; `vector` in the listing's order; `settled`, `agrees`, `report_sha256`, `prompt_sha256`. `statistics` adds `compared` and `agreed` |
 | `run.json` | The tool speaks only to the AI Node, so the run is recorded. The runner's harness writes this file |
 | A prior finding | Only `finding.json` and `report.md` are read (§13.3), as `{ bcid, finding, report }` |
 
