@@ -131,7 +131,10 @@ test('a .semgrepignore, a .semgrep.yml, a .gitignore and inline nosem comments i
     entry('.gitignore', 'test/\n'),
     entry('.semgrepconfig', 'x\n')
   ]);
-  assert.deepEqual(summary(flags), WANT, 'no rule of the hunter\'s runs, and its files raise nothing of their own');
+  assert.deepEqual(summary(flags).filter((f) => f.includes('Exploit')), WANT, 'its flags stand');
+  assert.ok(!flags.some((f) => /hunter/.test(f.rule)), 'no rule of the hunter\'s runs');
+  // Its rule file does not parse as Solidity, and it names vm.warp: the fallback's fact about that file, and nothing else.
+  assert.deepEqual([...new Set(flags.filter((f) => !f.file.includes('Exploit')).map((f) => f.rule))].filter((r) => r !== ID('unread-reach')), []);
 });
 
 test('on the same bytes with and without a hunter\'s configuration, the flags on the test are the same', { timeout: TIMEOUT }, async (t) => {
