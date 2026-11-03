@@ -260,6 +260,8 @@ closest existing thing to an automated functional test of the AI layer.
 cd ai-node && npm test
 cd external-adapter && npm test     # see external-adapter/TESTING.md (unit vs integration; integration hits IPFS/AI)
 cd arbiter-operator && npx hardhat test
+cd e2e && node src/index.js l2 --mock --boot-adapter --suite claim   # the claim pipeline, local; see e2e/README.md
+for t in installer/tests/*.test.sh; do bash "$t" || exit 1; done
 ```
 
 ### Release gate: testnet canaries before mainnet
@@ -445,6 +447,20 @@ Ollama runs locally and is unaffected by gateway settings.
   trap). The opt-in `installer/tests/*.integration.sh` scripts (need Docker) check
   the firewall rules with real iptables and packets, the unit under a real
   systemd, and the container recreate against real Docker.
+- **Inside a function the ERR trap does not fire at all** (no `errtrace`), but errexit
+  still does: a failing plain command in a function ends the upgrade with no "Upgrade
+  failed!" and no restart of the arbiter it stopped (measured on bash 5.2 and 3.2). Call
+  such a function with `fn || rc=$?`, which turns errexit off inside it, and check each
+  step in it. Do not add `set -E`: the trap would fire inside `run_echo_capture`'s subshell.
+  `upgrade-regenerate-jobs-trap.test.sh` and `upgrade-job-timeouts-trap.test.sh` run the
+  real functions and blocks with each step failing.
+- **A job spec and a Chainlink config change reach no running node by themselves.** A job
+  keeps the `maxTaskDuration` and DAG it was created with, and the upgrade's copy overwrites
+  the installed template, so a template diff never asks twice. Anything a live job must have
+  is measured from `GET /v2/jobs`, as `installer/util/apply-job-timeouts.sh` does for the 840 s
+  limits, and replaced with `PUT /v2/jobs/:id`, keeping `externalJobID` so nothing happens on
+  chain. `job-timeouts.integration.sh` runs this against the real 2.23.0 binary in CI
+  (`installer.yml`). The image is linux/amd64 only.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a

@@ -318,6 +318,8 @@ describe('a harness that cannot start fails every scenario, and never skips one'
     const reporter = new Reporter();
     let closed = false;
     const harness = {
+      claims: { valid: { requestCid: 'QmListing,QmClaim:line' } },
+      ai: { post: () => [] },
       evaluate: async () => { throw Object.assign(new Error('Request failed with status code 500'), { response: { status: 500, data: { statusCode: 500, error: 'CODE_REVIEW_REPORT_UNAVAILABLE' } } }); },
       counts: () => ({ aiCalls: 0, providerCalls: 0, runnerCalls: 0 }),
       close: async () => { closed = true; }

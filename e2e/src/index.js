@@ -42,7 +42,7 @@ async function executeL2(cliOpts) {
   const cfg = buildConfig(cliOpts);
   const mock = cliOpts.real ? false : true; // default to mock unless --real given
   const ids = cliOpts.scenario ? cliOpts.scenario.split(',').map((s) => s.trim()) : null;
-  const scenarios = loadScenarios(cliOpts.scenarios, ids);
+  const scenarios = loadScenarios(cliOpts.scenarios, ids, { allowClaim: true, suite: cliOpts.suite || null });
 
   console.log(chalk.bold(`\nVerdikta E2E — L2 (${mock ? 'mock' : 'real'} AI) — ${scenarios.length} scenario(s)\n`));
 
@@ -100,6 +100,7 @@ program
   .option('--adapter-url <url>', 'External Adapter base URL')
   .option('--scenario <ids>', 'comma-separated scenario ids to run')
   .option('--scenarios <file>', 'path to a scenarios JSON file')
+  .option('--suite <name>', 'run a whole suite instead of naming scenarios (claim: the local claim pipeline; needs Docker, no secret)')
   .option('--assert-winner', 'in --real mode, also assert the winning outcome index')
   .option('--report <file>', 'write JSON report to file')
   .option('--junit <file>', 'write JUnit XML report to file')

@@ -1,0 +1,53 @@
+name: Installer
+
+# The installer's tests, and what it renders measured on the real Chainlink binary
+# (installer/tests/job-timeouts.integration.sh, node A6a): the image is linux/amd64
+# only, so an amd64 runner is the one place that can. No secret.
+# claude/stake-attestation: the stake-attestation integration branch (issue #105).
+
+on:
+  pull_request:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['installer/**', 'chainlink-node/**', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
+  push:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['installer/**', 'chainlink-node/**', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Installer tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run every installer test
+        run: |
+          failed=0
+          for t in installer/tests/*.test.sh; do
+            if ! bash "$t" > /tmp/installer-test.out 2>&1; then
+              echo "::error::$t failed"
+              tail -40 /tmp/installer-test.out
+              failed=1
+            else
+              echo "ok $t: $(tail -1 /tmp/installer-test.out)"
+            fi
+          done
+          exit "$failed"
+
+  chainlink-2-23:
+    name: Job timeouts on Chainlink 2.23.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Measure on the real binary
+        run: bash installer/tests/job-timeouts.integration.sh

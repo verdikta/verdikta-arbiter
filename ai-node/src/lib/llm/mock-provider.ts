@@ -9,6 +9,9 @@
  * code-review panel (anthropic / openrouter / openai ids from the class pool)
  * runs end to end without a key or a network call.
  *
+ * VERDIKTA_TEST_MOCK_CALL_LOG names a file each finished call is appended to, one
+ * JSON line (who was called, the options, the prompt, how it ended).
+ *
  * Behaviour per model id comes from VERDIKTA_TEST_MOCK_SCRIPT (JSON), read on
  * every call:
  *
@@ -24,10 +27,13 @@
  */
 
 import crypto from 'crypto';
+import fs from 'fs';
 import { LLMProvider } from './llm-provider-interface';
 
 export const MOCK_PROVIDER_FLAG = 'VERDIKTA_TEST_MOCK_PROVIDER';
 export const MOCK_SCRIPT_ENV = 'VERDIKTA_TEST_MOCK_SCRIPT';
+/** A file to append each finished call to, one JSON line: how the local pipeline (e2e L2) reads this layer from another process. */
+export const MOCK_CALL_LOG_ENV = 'VERDIKTA_TEST_MOCK_CALL_LOG';
 
 export type MockProviderState = 'off' | 'on' | 'refused';
 
@@ -146,6 +152,17 @@ function wait(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function logCall(call: MockCall): void {
+  const file = process.env[MOCK_CALL_LOG_ENV];
+  if (!file) return;
+  try {
+    fs.appendFileSync(file, `${JSON.stringify(call)}\n`);
+  } catch (error) {
+    // A test reads the file and finds the call missing; the call itself is unaffected.
+    console.warn(`[MockProvider] could not write ${MOCK_CALL_LOG_ENV}: ${error}`);
+  }
+}
+
 export class MockProvider implements LLMProvider {
   constructor(private readonly providerName: string = 'mock') {}
 
@@ -185,6 +202,7 @@ export class MockProvider implements LLMProvider {
       call.outcome = outcome;
       call.signalAborted = !!signal?.aborted;
       call.endedAt = Date.now();
+      logCall(call);
     };
 
     const behaviour = behaviourFor(model, index);

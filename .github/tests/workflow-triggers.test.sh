@@ -72,11 +72,11 @@ is e2e.yml "w.dig('jobs', 'l4-testnet', 'if')" \
     "L4 now runs on other events"
 is e2e.yml "w.dig('jobs', 'l4-testnet', 'environment')" '"e2e"' "L4 left the e2e environment"
 
-# Unchanged: secrets stay out of fork PRs. L2 is the only PR job that reads one.
+# Unchanged: secrets stay out of fork PRs. l2-mock is the only PR job that reads one.
 is e2e.yml "w.dig('jobs', 'l2-mock', 'if')" \
     "\"github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository\"" \
     "L2's same-repo gate changed"
-is e2e.yml "w['jobs'].keys" '["l2-claim","l2-mock","l4-testnet"]' "jobs added or removed (check their secret gates)"
+is e2e.yml "w['jobs'].keys" '["l2-mock","l2-claim","l4-testnet"]' "jobs added or removed (check their secret gates)"
 
 # The claim suite (node A6a) needs no secret and runs for everyone, forks included:
 # no `if`, no secret anywhere in it, no way to pass by not running.
