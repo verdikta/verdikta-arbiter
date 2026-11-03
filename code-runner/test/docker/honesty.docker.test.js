@@ -193,7 +193,7 @@ test('a JSON fixture is no flag: it does not parse by design', { timeout: TIMEOU
 
 // ------------------------------------------------------- attack: a scan that could not finish never reads as no flags
 
-test('a parse failure is stated and the cheatcode names on the skipped lines stay flags', { timeout: TIMEOUT }, async (t) => {
+test('a parse failure is stated and the cheatcode names in the file stay flags', { timeout: TIMEOUT }, async (t) => {
   const source = 'pragma solidity ^0.8.20;\ncontract E { function t() public {\n  @@@ vm.etch(a, b); $$$ x.store(a, b, c); @@@\n} }\n';
   const flags = await flagsOf(t, [entry('test/E.sol', source)]);
   assert.ok(flags.some((f) => f.rule === ID('unread-part') || f.rule === ID('unread-file')), JSON.stringify(flags));

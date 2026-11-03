@@ -1609,7 +1609,7 @@ It must never read as "no flags", since a hunter gains from that.
 
 | Cause | In | Result |
 |---|---|---|
-| A parse failure, whole or partial | The file | `unread-file`, `unread-part` with its lines, on a `.sol` file; a cheatcode's name on a skipped line is `unread-reach`, whatever is around it and whatever the file's name |
+| A parse failure, whole or partial | The file | `unread-file`, `unread-part` with its lines, on a `.sol` file; in a file not wholly read, a cheatcode's name on any line is `unread-reach`, whatever is around it and whatever the file's name, since what the parser lost can be wider than it says |
 | A rule past the match cap | The file | That rule, file-level; `unread-file`, by any name; the names stay flags |
 | Semgrep's memory bound (`Out of memory`) | The file | `unread-file`, by any name; the names stay flags |
 | Past a limit below, not a regular file, or not reported as read | The file | `not-scanned` with its reason, by any name; the names stay flags |

@@ -33,7 +33,7 @@
  *   fixed rule id, the same on every host, ranked above every rule so padding
  *   cannot push it out. None of them hides a cheatcode's name: the text rules
  *   below run here, in the runner, over every file a rule can read, needing no
- *   parse, and on a line the parser skipped a cheatcode's name is a flag.
+ *   parse, and in a file the parser did not wholly read a cheatcode's name is a flag.
  * - The host or the tool is the cause: any other error kind, a non-zero exit,
  *   an answer the runner cannot account for, a step timeout, OOM, a missing
  *   image. The run abstains.
@@ -165,8 +165,8 @@ const TEXT_RULES = Object.freeze({
 });
 
 /**
- * A cheatcode's name as code uses it: a member (`x.store`, a call or a reference) or a call. A flag only on a line no
- * parser read (a comment may say it anywhere else). Read on the text with its comments blanked, as solc reads them, so
+ * A cheatcode's name as code uses it: a member (`x.store`, a call or a reference) or a call. A flag only in a file the
+ * parser did not wholly read (a comment may say it anywhere else). Read on the text with its comments blanked, as solc reads them, so
  * a comment before the call hides nothing, and on the text as written.
  */
 const REACH_NAMES = 'store|setArbitraryStorage|copyStorage|loadAllocs|checked_write|checked_write_int|etch|deployCodeTo|attachDelegation|signAndAttachDelegation|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|selectFork|rollFork|rpc|rpcUrl|rpcUrls|rpcUrlStructs|eth_getLogs|transact|writeFile|writeFileBinary|writeLine|writeJson|writeToml|copyFile|removeFile|removeDir|createDir|dumpState|readFile|readFileBinary|readLine|readDir|readLink|fsMetadata|unixTime|rewind';
@@ -191,7 +191,7 @@ const STATED = Object.freeze({
   'verdikta.honesty.not-scanned': { message: 'The honesty rules did not read this file.' },
   'verdikta.honesty.unread-file': { message: 'The rules that read code found nothing in this file because the scanner did not read it. The rules that read text still ran.' },
   'verdikta.honesty.unread-part': { message: 'The scanner could not parse part of this file, so a rule that reads code found nothing there. The rules that read text still ran.' },
-  'verdikta.honesty.unread-reach': { message: 'On a line the scanner could not parse, the text names a cheatcode that changes state or reaches outside the test.' },
+  'verdikta.honesty.unread-reach': { message: 'In a file the scanner could not wholly read, this line names a cheatcode that changes state or reaches outside the test.' },
   'verdikta.honesty.truncated': { message: 'More flags than the report lists.' },
   'verdikta.scan.not-scanned': { message: 'The bug rules did not read this fixed file.' },
   'verdikta.scan.unread-file': { message: 'The bug rules found nothing in this fixed file because the scanner did not read it.' },
@@ -681,17 +681,16 @@ function honestyFlags(scan, targets, unscanned = [], text = NO_TEXT, texts = tar
     put(hit.rule, t.path, reportLine(t, hit.line), `${TEXT_RULES[hit.rule].message} ${added ? ADDED_WORDS : EXISTING_WORDS}`, added);
   }
 
-  // Where the parser did not read: a cheatcode's name on such a line is a flag.
+  // Where the parser did not read the whole file, a cheatcode's name on any line is a flag: what it lost can be wider
+  // than the spans it reports, and a comment that names one in such a file costs a line a juror reads past.
   const read = new Set(targets.map((t) => t.path));
   for (const name of scan.unreadable.keys()) read.delete(byName.get(name).path);
+  for (const name of scan.partial.keys()) read.delete(byName.get(name).path);
   for (const name of scan.missing) read.delete(byName.get(name).path);
-  const spansOf = new Map([...scan.partial].map(([name, spans]) => [byName.get(name).path, spans]));
   for (const [file, lines] of text.reach) {
+    if (read.has(file)) continue;
     const t = byPath.get(file);
-    for (const line of lines) {
-      const skipped = !read.has(file) || (spansOf.get(file) || []).some(([s, e]) => line >= s && line <= e);
-      if (skipped) stated('verdikta.honesty.unread-reach', file, reportLine(t, line));
-    }
+    for (const line of lines) stated('verdikta.honesty.unread-reach', file, reportLine(t, line));
   }
 
   // What could not be read is stated by any name, but for a parse failure off `.sol`: a JSON fixture does not parse, by design.

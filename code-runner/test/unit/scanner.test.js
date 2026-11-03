@@ -344,11 +344,13 @@ test('a parse failure is a stated fact on the file, and the cheatcode names on i
   assert.match(flags.find((f) => f.rule === STATED_ID('unread-file')).message, /could not parse/);
 });
 
-test('a partial parse names its lines, and only a name inside them counts: a comment may say one anywhere else', () => {
+test('a partial parse names its lines, and in that file a name counts on any line: what the parser lost is wider than it says', () => {
   const { targets, text } = withText(nine);
   const partial = { type: ['PartialParsing', []], level: 'warn', path: 'f0.sol', spans: [{ start: { line: 4 }, end: { line: 5 } }, { start: { line: 8 }, end: { line: 8 } }] };
   const flags = honestyFlags(parsed(scanOf([hit(STORE, 'f0.sol', 2)], [partial]), targets), targets, [], text);
-  assert.deepEqual(flags.map((f) => [f.rule, f.line]).sort(), [[STATED_ID('unread-part'), 4], [STATED_ID('unread-reach'), 5], [STORE, 2]].sort());
+  assert.deepEqual(flags.map((f) => [f.rule, f.line]).sort(), [
+    [STATED_ID('unread-part'), 4], [STATED_ID('unread-reach'), 2], [STATED_ID('unread-reach'), 5], [STATED_ID('unread-reach'), 9], [STORE, 2]
+  ].sort());
   assert.match(flags.find((f) => f.rule === STATED_ID('unread-part')).message, /4 to 5.*8/);
 });
 
@@ -356,7 +358,7 @@ test('a span Semgrep gives inside its type is read too (its JSON has both forms)
   const { targets, text } = withText(nine);
   const partial = { type: ['PartialParsing', [{ path: 'f0.sol', start: { line: 5, col: 1, offset: 0 }, end: { line: 5, col: 2, offset: 1 } }]], level: 'warn', path: 'f0.sol' };
   const flags = honestyFlags(parsed(scanOf([], [partial]), targets), targets, [], text);
-  assert.deepEqual(flags.map((f) => [f.rule, f.line]).sort(), [[STATED_ID('unread-part'), 5], [STATED_ID('unread-reach'), 5]].sort());
+  assert.deepEqual(flags.filter((f) => f.rule === STATED_ID('unread-part')).map((f) => f.line), [5]);
 });
 
 test('a name on a file that parsed is no flag: the rules that read code judged it', () => {

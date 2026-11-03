@@ -992,8 +992,8 @@ defaults forced off. The rules that read text (a cheatcode's signature, selector
 address) run in the runner, where no match cap reaches them. **A scan that could not
 finish never reads as "no flags":** a cause in the file (a parse failure, a measured
 limit, a match cap, Semgrep's own per-file memory bound) is a stated fact with a fixed
-rule id, ranked above every rule, and a cheatcode's name on a line the parser skipped
-is still a flag; a cause in the host or the tool (any other error, a non-zero exit, a
+rule id, ranked above every rule, and a cheatcode's name in a file the parser did not
+wholly read is still a flag; a cause in the host or the tool (any other error, a non-zero exit, a
 timeout, a missing image) abstains. **The clock beyond the framework's** means moving
 block time or numbers backwards or to the end of their type, and reading or waiting on
 the host's own clock; forward moves (`vm.warp`, `skip`, `vm.roll`) are what the
