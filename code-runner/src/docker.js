@@ -3,8 +3,9 @@
 /**
  * The one place the runner starts a process: the docker CLI, with an argv
  * array and `shell: false` (design §9.1: "drives Docker with argv arrays,
- * never a shell"). Claim content never becomes a host command; it reaches the
- * sandbox as stdin of `docker exec`.
+ * never a shell"), and `<runtime> --version` for the runtime the daemon names
+ * (node A3b, runtimeVersion below). Claim content never becomes a host command;
+ * it reaches the sandbox as stdin of `docker exec`.
  *
  * The child environment is an allow-list. Nothing else the runner's process
  * holds (its bearer token, anything an operator exported) reaches Docker or a

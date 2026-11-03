@@ -75,6 +75,8 @@ const SUMMARY_PATH_BYTES = 200;
 /** One read of git's at most; far above any budget, so a cut here is never in what the jury would have read. */
 const READ_MAX_BYTES = 4 * 1024 * 1024;
 const GREP_MAX_BYTES = 1024 * 1024;
+/** The file names of a commit, as the protected reset reads them (claim.js). */
+const TREE_MAX_BYTES = 16 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 120000;
 const MAX_SYMBOLS = 16;
 const MAX_SITES_PER_SYMBOL = 10;
@@ -86,8 +88,13 @@ const BINARY_PROBE_BYTES = 8000;
 
 /** Receivers whose calls are the framework's or the language's, not the code under test. */
 const FRAMEWORK_RECEIVER = /^(?:vm|console|console2|stdJson|stdStorage|stdMath|stdError|abi|block|msg|tx|bytes|string|type|super|this)$/;
-/** A call `<receiver>.<name>(`, or `new <Name>`. */
-const SYMBOL = /(?:([A-Za-z_$][A-Za-z0-9_$]*)\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\()|(?:\bnew\s+([A-Za-z_$][A-Za-z0-9_$]*))/g;
+/**
+ * A call `<receiver>.<name>(`, or `new <Name>`. Anchored at the start of a word
+ * and read over a bounded part of each line: the lines are the hunter's, and a
+ * 2 MB identifier must not cost the runner quadratic time.
+ */
+const SYMBOL = /(?<![A-Za-z0-9_$])(?:([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\.[ \t]*([A-Za-z_$][A-Za-z0-9_$]*)[ \t]*\(|new[ \t]+([A-Za-z_$][A-Za-z0-9_$]*))/g;
+const MAX_SCANNED_LINE = 4096;
 
 function byteLength(text) {
   return Buffer.byteLength(text, 'utf8');
@@ -179,7 +186,7 @@ function symbolsOf(added) {
   const seen = new Set();
   for (const lines of added.values()) {
     for (const { text } of lines) {
-      for (const m of text.matchAll(SYMBOL)) {
+      for (const m of text.slice(0, MAX_SCANNED_LINE).matchAll(SYMBOL)) {
         const receiver = m[1];
         const name = m[2] || m[3];
         if (receiver && FRAMEWORK_RECEIVER.test(receiver)) continue;
@@ -283,8 +290,10 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
   const keep = scope ? (p) => splitByStakeScope([p], scope).inScope.length === 1 : (p) => !matchesAny(p, skip);
   const callSites = await readCallSites(ctx, listed, symbolsOf(added || new Map()), keep);
 
-  const tree = await read(ctx, 'pack:tree', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', listed]);
-  const names = tree.exitCode === 0 ? parseLsTreeZ(tree.bytes) : null;
+  const tree = await read(ctx, 'pack:tree', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', listed], { max: TREE_MAX_BYTES });
+  // A tree cut at the bound ends at its last whole name.
+  const whole = tree.truncated ? tree.bytes.subarray(0, tree.bytes.lastIndexOf(0) + 1) : tree.bytes;
+  const names = tree.exitCode === 0 ? parseLsTreeZ(whole) : null;
   if (!names) throw runnerError('pack:tree', `the listed commit's files could not be listed (git exited ${tree.exitCode})`);
 
   return {

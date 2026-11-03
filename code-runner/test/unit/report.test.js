@@ -236,6 +236,47 @@ test('R7: more tamper flags, paths and tests than the schema holds stay within i
   assert.ok(report.poc.integrity.tamperFlags.length <= 100);
 });
 
+// ------------------------------------------- attack: report-hash determinism
+
+test('attack: forge listing the tests in another order, with other durations and timestamps, changes nothing', async () => {
+  const request = claimRequest();
+  const cases = [{ name: 'test_a()', failure: 'a' }, { name: 'test_b()', failure: 'b' }, { name: 'test_c()', failure: 'c' }];
+  const fwd = junit([{ suite: SUITE, cases }]);
+  const rev = junit([{ suite: SUITE, cases: [...cases].reverse() }]).replace(/time="[^"]*"/g, 'time="9.999"').replace(/timestamp="[^"]*"/, 'timestamp="2031-01-01T00:00:00.000+00:00"');
+  const a = await runClaim(claimSandbox({ poc: [fwd, fwd, fwd] }), request);
+  const b = await runClaim(claimSandbox({ poc: [rev, rev, rev] }), request);
+  assert.equal(built(a, request).sha256, built(b, request).sha256);
+});
+
+test('attack: the report does not change with what the run records for operators: run id, steps, durations, image cache', async () => {
+  const request = claimRequest();
+  const r = await runClaim(claimSandbox(), request);
+  const hash = built(r, request).sha256;
+  const other = {
+    ...r, runId: 'ffffffffffffffff', steps: [], image: { ref: 'x', cache: 'pulled', durationMs: 99 },
+    gates: Object.fromEntries(Object.entries(r.gates).map(([k, v]) => [k, { ...v, detail: `${v.detail} on another host at another time` }])),
+    facts: { ...r.facts, checkout: { other: true }, leftoverProcesses: { tier: 'A', steps: [{ after: 'build', killed: 3 }] }, integrity: { tier: 'A', poc: null, fix: null } }
+  };
+  assert.equal(built(other, request).sha256, hash);
+});
+
+test('attack: the runtime and the patch move the hash, so the hash means what it says', async () => {
+  const request = claimRequest();
+  const r = await runClaim(claimSandbox(), request);
+  assert.notEqual(built(r, request, { gvisor: 'runc' }).sha256, built(r, request).sha256);
+  assert.notEqual(built(r, { ...request, pocPatch: Buffer.from('other') }).sha256, built(r, request).sha256);
+  assert.notEqual(built(r, { ...request, attestation: { version: 2 } }).sha256, built(r, request).sha256);
+});
+
+test('attack: a message a run\'s harness failure replaced is held to the same rule, and a flaky harness folds', async () => {
+  const withHarness = (msg) => junit([{ suite: SUITE, cases: [{ name: 'setUp()', failure: msg }, { name: 'test_drain()', failure: 'x' }] }]);
+  const request = claimRequest();
+  const a = await runClaim(claimSandbox({ poc: [one('x'), withHarness('setUp 1'), one('x')] }), request);
+  const b = await runClaim(claimSandbox({ poc: [withHarness('setUp 2'), one('x'), one('x')] }), request);
+  for (const r of [a, b]) assert.equal(codeReview.validateClaimReport(built(r, request).report).ok, true, show(r));
+  assert.deepEqual(built(a, request).report.poc.tests[0].runs, ['error', 'error', 'error']);
+});
+
 // ------------------------------------------- the three fixtures, on a fake forge (real forge: the Docker suite)
 
 /** Two hosts' JUnit for one run: what forge varies by host (times, timestamps) and what the PoC prints. */

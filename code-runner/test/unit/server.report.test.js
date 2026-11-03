@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const { codeReview } = require('@verdikta/common');
 const { createServer } = require('../../src/server');
 const { testConfig, request: httpRequest } = require('../helpers/http');
-const { attestationFor, IMAGE } = require('../helpers/requests');
+const { attestationFor } = require('../helpers/requests');
 const { claimSandbox, POC_PATCH, BASE } = require('../helpers/fakeClaim');
 const { forgeSpec, finding, DEPOSIT } = require('../helpers/claimRun');
 const { imageInspect } = require('../helpers/fakeDocker');
@@ -149,8 +149,16 @@ test('the documents the report and the pack read are refused before any work whe
 
 test('a stable test id the report could not carry is the requester\'s baseline, refused before any work', async (t) => {
   const { target } = await serve(t, claimSandbox());
-  const res = await post(target, body({ baseline: { version: 1, baseCommit: BASE, framework: 'forge', runs: 3, tests: [{ id: DEPOSIT, results: ['pass', 'pass', 'pass'] }], stable: [`bad\nid`], unstable: [] } }));
-  assert.equal(res.status, 400);
-  assert.ok(res.body.issues.some((i) => i.code === 'BASELINE_INVALID'), JSON.stringify(res.body.issues));
-  void IMAGE;
+  for (const bad of ['bad\nid', 'lone \ud83d surrogate', 'x'.repeat(1025)]) {
+    const res = await post(target, body({ baseline: { version: 1, baseCommit: BASE, framework: 'forge', runs: 3, tests: [{ id: DEPOSIT, results: ['pass', 'pass', 'pass'] }], stable: [bad], unstable: [] } }));
+    assert.equal(res.status, 400);
+    assert.ok(res.body.issues.some((i) => i.code === 'BASELINE_INVALID'), JSON.stringify(res.body.issues));
+  }
+});
+
+test('a lone surrogate a hunter wrote into finding.json by a JSON escape does not stop the run', async (t) => {
+  const { target } = await serve(t, claimSandbox());
+  const res = await post(target, body({ finding: finding({ rootCause: 'A root cause with a lone \ud83d surrogate in the text.' }) }));
+  assert.equal(res.status, 200, res.raw.slice(0, 300));
+  assert.ok(res.body.contextPack.files.every((f) => f.text.isWellFormed()));
 });

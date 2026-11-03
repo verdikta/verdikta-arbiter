@@ -170,7 +170,7 @@ const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 /** The report's bounds on a test id and on regressionCount (common's schema, as baseline.json holds them). */
 const MAX_TEST_ID = 1024;
 const MAX_REGRESSIONS_COUNT = 20000;
-const reportableTestId = (id) => typeof id === 'string' && id.length >= 1 && id.length <= MAX_TEST_ID && !/[\u0000-\u001f\u007f]/.test(id);
+const reportableTestId = (id) => typeof id === 'string' && id.length >= 1 && id.length <= MAX_TEST_ID && id.isWellFormed() && !/[\u0000-\u001f\u007f]/.test(id);
 
 function firstLine(text) {
   const line = String(text || '').split(/\r?\n/).find((l) => l.trim());
@@ -217,7 +217,7 @@ function checkClaim(request) {
     issues.push(issue('BASELINE_INVALID', '/baseline/stable', 'baseline.json must list its stable tests (stable[]) for the fix check'));
   } else if (Array.isArray(baseline.stable) && (baseline.stable.length > MAX_REGRESSIONS_COUNT || !baseline.stable.every(reportableTestId))) {
     // A regression names its stable test in the report, so a stable id it could not carry is the requester's (§12).
-    issues.push(issue('BASELINE_INVALID', '/baseline/stable', `at most ${MAX_REGRESSIONS_COUNT} stable tests, each an id of 1 to ${MAX_TEST_ID} characters without a control character`));
+    issues.push(issue('BASELINE_INVALID', '/baseline/stable', `at most ${MAX_REGRESSIONS_COUNT} stable tests, each an id of 1 to ${MAX_TEST_ID} well-formed characters without a control character`));
   }
   return issues;
 }

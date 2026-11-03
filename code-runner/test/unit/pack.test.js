@@ -355,6 +355,35 @@ test('symbolsOf: what the PoC calls, in order of first appearance, without the f
 const CALLS_DIFF = POC_DIFF.replace('@@ -0,0 +1,3 @@', '@@ -0,0 +1,4 @@').replace('+// end', '+// end\n+Vault v = new Vault(); v.deposit(1); v.withdraw(1);');
 const CALLS_PATCH = POC_PATCH.replace('@@ -0,0 +1,3 @@', '@@ -0,0 +1,4 @@').replace('+// end', '+// end\n+Vault v = new Vault(); v.deposit(1); v.withdraw(1);');
 
+test('attack: a 2 MB identifier in the PoC costs the runner no quadratic time', () => {
+  const added = new Map([['t.sol', [{ line: 1, text: `${'a'.repeat(2000000)} ${'b'.repeat(2000000)}.c(` }]]]);
+  const started = Date.now();
+  assert.deepEqual(symbolsOf(added), []);
+  assert.ok(Date.now() - started < 1000, `${Date.now() - started} ms`);
+});
+
+test('attack: a lone surrogate a JSON escape wrote into a document does not stop the pack', () => {
+  const req = request({
+    report: 'report \ud83d text',
+    finding: finding({ rootCause: 'A root cause with a lone \ud83d surrogate in the text.' }),
+    priorFindings: [prior(1, { rootCause: 'A prior root cause with a lone \ud83d surrogate here.' })]
+  });
+  const pack = assemblePack({ request: req, inputs: inputs() });
+  assert.match(pack.sha256, /^[0-9a-f]{64}$/);
+  for (const f of pack.files) assert.ok(f.text.isWellFormed(), f.name);
+});
+
+test('a hostile prior finding stays within its bound, whatever its text escapes to: control characters and quotes', () => {
+  const nasty = '"\u0001'.repeat(1000);
+  const pack = assemblePack({
+    request: request({ priorFindings: Array.from({ length: 8 }, (_, i) => prior(i, { rootCause: nasty, poc: { command: 'c', observable: nasty }, title: nasty.slice(0, 120) })) }),
+    inputs: inputs()
+  });
+  assert.equal(tierOf(pack, 'priorFindings').status, 'full');
+  for (const line of text(pack, 'priorFindings').split('\n').slice(1)) assert.ok(Buffer.byteLength(line) <= 5200, `${Buffer.byteLength(line)} bytes`);
+  for (const line of text(pack, 'priorFindings').split('\n').slice(1)) assert.ok(JSON.parse(line).bcid, 'a summary stays one line of JSON');
+});
+
 const packExecs = (sb) => sb.pocExecs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
 
 test('attack: everything the pack reads comes before any claim code runs, from git objects by commit id', async () => {

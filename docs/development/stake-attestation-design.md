@@ -852,7 +852,7 @@ the rules.
   "schema": "verdikta.claim-report/1",
   "inputs": { "listingCid": "Qm…", "bcid": "Qm…", "envImage": "sha256:…", "platform": "linux/amd64",
               "attestationSha256": "…", "baseCommit": "7f3a9c…", "pocPatchSha256": "…",
-              "fixPatchSha256": "…", "runner": "1.0.0", "gvisor": "20260928.0", "semgrepRules": "2026.10" },
+              "fixPatchSha256": "…", "runner": "1.0.0", "gvisor": "release-20260921.0", "semgrepRules": "2026.10" },
   "gates": { "disclosure": "pass", "applies": "pass", "testPathsOnly": "pass", "inScope": "pass",
              "build": "pass", "reproduces": "pass", "integrity": "pass", "claimedObservable": "pass" },
   "poc": {
