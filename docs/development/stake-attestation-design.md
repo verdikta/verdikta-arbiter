@@ -1536,7 +1536,12 @@ Changes needed:
   moves the point at which a stuck request may be force-finalized; ordinary
   requests are unaffected.
 - `maxTaskDuration` and the bridge timeout in `chainlink-node/basicJobSpec` go to
-  840 s. `upgrade-arbiter.sh` applies this when it regenerates job specs.
+  840 s, and `[JobPipeline] MaxRunDuration` in `chainlink-node/config_template.toml`
+  to 15 m (Chainlink 2.23.0's default of 10 m ends a run before an 840 s bridge call).
+  A running job keeps the values it was created with, so `upgrade-arbiter.sh`
+  measures each live job after its restart and replaces the stale ones with
+  `installer/util/apply-job-timeouts.sh`, keeping their job ids: no on-chain action
+  and no stake moves. A declined upgrade is asked again at the next one.
 - The EA's `SERVER_TIMEOUT` rises to match; the deadline propagation above.
 - The record page and the hunter tool poll a pending evaluation for up to
   15 minutes.
@@ -1565,7 +1570,9 @@ justifier, a registry failure and a cancellation.
 **Abstaining is not neutral.** A round that times out applies the configured
 timeliness penalty (−20 on mainnet) to every polled oracle that did not commit
 (`_applyTimeoutPenalties`), and an oracle that commits but is not among the first
-4 of 6 is also penalised −20. No fee is earned either way. Transient failures are
+4 of 6 is also penalised −20. The base fee is credited at dispatch, whatever the
+oracle then does; what it loses is the reputation and the bonus, which only clustered
+reveals earn. Transient failures are
 therefore an operator cost, which is why admission refuses early — before a pull,
 before a model call — rather than failing late, and why the envelope keeps the
 work inside the budget on ordinary hosts.
@@ -1997,7 +2004,9 @@ popular skills whose maintainers consent by naming Verdikta in their proof file
   whose disclosure key the maker cannot use (award still owed); an aggregator
   timeout followed by a re-trigger.
 - Run through `testing-tool` (a new `claim` scenario type) and the e2e L4 gate
-  against class 5555.
+  against class 5555. The local pipeline comes first: `e2e` L2's claim suite runs the
+  real External Adapter, AI Node (mock provider) and code runner against a local IPFS
+  gateway and pin service and a `registry:2`, with no secret, in CI (`e2e/README.md`).
 - Metrics: verdict accuracy and the **false-valid rate** on the adversarial
   claims (the number a maker cares about); class agreement with the source
   program on the severity boundaries; dispute-flip rate on canaries; spread of
