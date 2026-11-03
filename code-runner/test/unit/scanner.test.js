@@ -230,6 +230,16 @@ test('past the file count and the total bytes, the rest in path order is stated'
   assert.ok(r.unscanned.length >= 1 && r.unscanned.every((u) => u.reason === 'too-many-bytes'));
 });
 
+test('the limits measure the bytes Semgrep reads: invalid UTF-8 cannot grow a file past them', () => {
+  const invalid = Buffer.alloc(SCAN_LIMITS.fileBytes, 0xff);
+  const { targets, unscanned } = prepareTargets([entry('test/Grown.sol', '', { bytes: invalid, size: invalid.length })]);
+  assert.deepEqual(targets, []);
+  assert.deepEqual(unscanned, [{ path: 'test/Grown.sol', reason: 'too-large' }]);
+  const third = Buffer.alloc(Math.floor(SCAN_LIMITS.totalBytes / 3) - 1, 0xff);
+  const r = prepareTargets([entry('test/A.sol', '', { bytes: third, size: third.length }), entry('test/B.sol', '', { bytes: third, size: third.length })]);
+  assert.ok(r.targets.reduce((n, t) => n + t.bytes.length, 0) <= SCAN_LIMITS.totalBytes);
+});
+
 test('a deleted file is not a target; an empty one is', () => {
   const { targets, unscanned } = prepareTargets([entry('test/Gone.sol', '', { status: 'D', bytes: null, size: 0 }), entry('test/Empty.sol', '')]);
   assert.deepEqual(targets.map((t) => t.path), ['test/Empty.sol']);

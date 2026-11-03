@@ -311,6 +311,19 @@ test('exit 1 from forge fmt means a diff or a parse failure: what it printed say
   assert.deepEqual(r.facts.findings.map((f) => f.rule), ['forge-fmt.unreadable']);
 });
 
+test('forge fmt dying on a file is a stated finding: a fix\'s lint cannot abstain the claim (a long sum aborts it with exit 134)', async () => {
+  const r = await runClaim(claimSandbox({ scripts: { 'forge-fmt': () => ({ exitCode: 134 }) } }), withFix());
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.facts.findings.map((f) => [f.tool, f.rule, f.file]), [['forge-fmt', 'forge-fmt.unreadable', 'src/Vault.sol']]);
+  assert.match(r.facts.findings[0].message, /134/);
+});
+
+test('forge fmt killed for memory is the host\'s: it abstains, as any step', async () => {
+  const r = await runClaim(claimSandbox({ scripts: { 'forge-fmt': () => ({ exitCode: 137 }) } }), withFix());
+  assert.equal(r.outcome, 'abstain', show(r));
+  assert.equal(r.abstain.cause, 'oom');
+});
+
 test('a fixed file past the limits, or a fix that changes forge\'s configuration: forge fmt says it did not read it, never clean', async () => {
   const big = claimSandbox({ blobs: { ['b'.repeat(40)]: Buffer.alloc(70000, 0x20) } });
   const r = await runClaim(big, withFix());

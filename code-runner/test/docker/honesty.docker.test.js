@@ -404,6 +404,18 @@ test('a real fix: forge fmt --check and Semgrep --baseline-commit give what the 
   assert.equal(result.gates.reproduces.status, 'pass', 'the fix decides no gate');
 });
 
+test('a real forge fmt that aborts on a crafted file forge build never compiles (exit 134 on a long sum) is a stated finding, and the claim stands', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture();
+  const crafted = `pragma solidity ^0.8.0;\ncontract C { function f() public pure returns (uint256) { return ${'1+'.repeat(30000)}1; } }\n`;
+  assert.ok(crafted.length <= SCAN_LIMITS.fileBytes);
+  const { result, report } = await runReal(t, claimOf(fx, { fixPatch: addFilesPatch({ 'docs/Crafted.sol': crafted }) }));
+  assert.equal(result.facts.fix.applies, 'pass', JSON.stringify(result.facts.fix.detail));
+  assert.equal(result.facts.fix.builds, 'pass', JSON.stringify(result.facts.fix.detail));
+  assert.deepEqual(report.findings.map((f) => [f.tool, f.rule, f.file]), [['forge-fmt', 'forge-fmt.unreadable', 'docs/Crafted.sol']]);
+  assert.match(report.findings[0].message, /134/);
+  assert.equal(result.gates.reproduces.status, 'pass');
+});
+
 test('a fixed file that makes the bug rules use their whole memory bound is a stated finding, not a killed scan', { timeout: TIMEOUT }, async (t) => {
   const fill = (u, n) => u.repeat(Math.ceil(n / u.length)).slice(0, n);
   const body = fill('t.call{value: 1}("");m[t] = 1;\n', 32 * 1024);

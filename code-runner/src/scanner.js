@@ -41,8 +41,7 @@
  * and exit 0. A pattern-regex rule matches comments too, where a hunter can
  * write that many cheaply, so one such rule could erase every flag in the file.
  *
- * Why the pin is here and not in @verdikta/common (coordinator's decision on
- * A3c): common pins rule-set versions, not this digest (§7.2, §9.3). The
+ * Why the pin is here and not in @verdikta/common: common pins rule-set versions, not this digest (§7.2, §9.3). The
  * builder's baseline scan pins the same release in verdikta-applications, with
  * no check between the two repositories. That is acceptable because nothing
  * needs them to agree: what the builder finds goes to the maker privately and is
@@ -106,7 +105,8 @@ const SCAN_BUDGET_MS = 300000;
  */
 const SCAN_RESERVE_MS = 60000;
 const UNPACK_TIMEOUT_MS = 30000;
-const FMT_TIMEOUT_MS = 30000;
+/** forge fmt's timer: its worst shape at the limits above took 13 s. */
+const FMT_TIMEOUT_MS = 90000;
 const READ_TIMEOUT_MS = 60000;
 /** What Semgrep may print: far above what the limits above can make it print (about 350 bytes a result, at most 2 × 13,000 results). */
 const OUTPUT_MAX_BYTES = 64 * 1024 * 1024;
@@ -421,14 +421,15 @@ function prepareTargets(entries, { totalBytes = SCAN_LIMITS.totalBytes } = {}) {
     const { bytes, lineOf } = normaliseSource(e.bytes);
     const file = { path: e.path, bytes, lineOf, added: e.added || new Set(), solidity };
     texts.push(file);
-    if (e.size > SCAN_LIMITS.fileBytes) {
+    // What Semgrep reads: invalid UTF-8 grows threefold in the normal form.
+    if (bytes.length > SCAN_LIMITS.fileBytes) {
       state('too-large');
     } else if (targets.length >= SCAN_LIMITS.files) {
       state('too-many-files');
-    } else if (total + e.size > totalBytes) {
+    } else if (total + bytes.length > totalBytes) {
       state('too-many-bytes');
     } else {
-      total += e.size;
+      total += bytes.length;
       targets.push({ ...file, name: `f${targets.length}.sol` });
     }
   }
@@ -696,7 +697,7 @@ function flagRank(flag) {
  * At most 50 flags: by rule severity (what the runner states first), then the
  * lines the patch added, then canonically; the rest counted by rule in one note
  * with a fixed id, so padding cannot hide that a rule fired. Handed out in
- * common's canonical order: the schema holds no severity (coordinator's decision).
+ * common's canonical order: the schema holds no severity for a flag.
  */
 function boundFlags(flags) {
   const canonical = [...flags].sort(compareFlagsCanonically);
@@ -903,7 +904,16 @@ async function fmtFindings(ctx, tool, { targets, unscanned }) {
   const out = unscanned.map((u) => fmtFinding('forge-fmt.not-run', u.path, UNSCANNED_WORDS[u.reason]));
   for (let i = 0; i < targets.length; i += 1) {
     const { path: file } = targets[i];
-    const r = await ctx.exec(forge.forgeArgv(tool, ['fmt', '--check', `${forge.FORGE_WORKDIR}/${file}`]), { name: `fixscan:fmt:${i}`, timeoutMs: FMT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR });
+    let r;
+    try {
+      r = await ctx.exec(forge.forgeArgv(tool, ['fmt', '--check', `${forge.FORGE_WORKDIR}/${file}`]), { name: `fixscan:fmt:${i}`, timeoutMs: FMT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR });
+    } catch (err) {
+      // A long sum or chain overflows its stack (exit 134): the file's doing, and a fix's lint decides nothing, so it must
+      // not abstain the claim. A memory kill or a timeout is the host's, and stays an abstention.
+      if (!(err instanceof Abstain) || err.cause !== ABSTAIN.KILLED_BY_SIGNAL) throw err;
+      out.push(fmtFinding('forge-fmt.unreadable', file, err.detail));
+      continue;
+    }
     if (r.exitCode === 0) continue;
     if (/^Diff in /m.test(r.stdout.text)) out.push(fmtFinding('forge-fmt.unformatted', file));
     else out.push(fmtFinding('forge-fmt.unreadable', file, `forge fmt exited ${r.exitCode}.`));
