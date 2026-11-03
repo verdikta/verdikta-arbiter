@@ -958,18 +958,26 @@ describe('fixture: cancellation-at-deadline', () => {
       let release;
       const gate = new Promise((resolve) => { release = resolve; });
       const folders = [];
+      let extracted;
+      const extractionDone = new Promise((resolve) => { extracted = resolve; });
       const extract = jest.spyOn(archiveService, 'extractArchive').mockImplementation(async (data, name, destination) => {
         folders.push(destination);
         await gate; // the deadline passes here, after the fetches, with the extraction under way
-        return actual(data, name, destination);
+        const out = await actual(data, name, destination);
+        // the folder is back: the handler removed it when it answered, and this wrote into it again
+        expect(fs.readdirSync(destination).length).toBeGreaterThan(0);
+        extracted();
+        return out;
       });
       const s = scenario({ priorCids: [H.cid('PriorA')] });
       const res = await evaluateHandler(request(s.cid(1)));
       expectAbstain(res, /CODE_REVIEW_DEADLINE/);
       expect(extract).toHaveBeenCalledTimes(1); // the listing's
 
-      release();
       const tempDir = path.dirname(folders[0]);
+      expect(fs.existsSync(tempDir)).toBe(false); // removed when the handler answered
+      release();
+      await extractionDone;
       for (let i = 0; i < 200 && fs.existsSync(tempDir); i += 1) await sleep(10);
       expect(fs.existsSync(tempDir)).toBe(false);
       expect(extract).toHaveBeenCalledTimes(1);
