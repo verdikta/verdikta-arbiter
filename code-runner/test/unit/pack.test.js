@@ -533,6 +533,35 @@ test('the sandbox\'s reads fill the tiers: named source files from the listed co
   }
 });
 
+test('R3-F1: a path common\'s finding schema accepts is read, whatever a report could carry: 319 characters, 619 UTF-16 units', async () => {
+  const long = `src/${Array.from({ length: 6 }, () => '😀'.repeat(50)).join('/')}/V.sol`;
+  assert.ok(long.length > 512 && [...long].length <= 512);
+  assert.equal(codeReview.validateFinding(finding({ affectedPaths: [long] })).ok, true);
+  const items = new BlobSink([long]);
+  const content = Buffer.from('contract Long {}\n');
+  items.write(Buffer.concat([Buffer.from(`${'a'.repeat(40)} blob ${content.length}\n`), content, Buffer.from('\n')]));
+  const pack = assemblePack({ request: request(), inputs: inputs({ sources: items.items }) });
+  assert.ok(text(pack, 'source').includes(long));
+  assert.ok(text(pack, 'source').includes('contract Long'));
+});
+
+test('R3-F1: the gathering asks git for such a path, in scope, and leaves out only what is not one line', async () => {
+  const long = `src/${Array.from({ length: 6 }, () => '😀'.repeat(50)).join('/')}/V.sol`;
+  const stdins = [];
+  const sb = claimSandbox();
+  const docker = sb.docker;
+  const run = docker.run;
+  docker.run = (args, o) => {
+    if (o && o.stdin && args.includes('cat-file') && args.includes('--batch')) stdins.push(Buffer.from(o.stdin).toString('utf8'));
+    return run(args, o);
+  };
+  const spec = forgeSpec({ stake: { scope: { include: ['src/**'] } } });
+  await runClaim(sb, claimRequest({ spec, finding: finding({ affectedPaths: [long, 'src/Vault.sol'] }) }));
+  const asked = stdins.join('');
+  assert.ok(asked.includes(`:${long}\n`), 'the long path');
+  assert.ok(asked.includes(':src/Vault.sol\n'));
+});
+
 test('at most 10 call sites per symbol', async () => {
   const sb = claimSandbox({
     diff: CALLS_DIFF,

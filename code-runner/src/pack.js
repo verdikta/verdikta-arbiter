@@ -44,7 +44,7 @@ const { getCodeClass, canonicalJson, matchesAny, splitByStakeScope } = require('
 const { git } = require('./git');
 const { Prefix } = require('./capture');
 const { ABSTAIN, Abstain } = require('./result');
-const { reportablePath, parseLsTreeZ } = require('./patch');
+const { parseLsTreeZ } = require('./patch');
 
 const PACK_VERSION = 1;
 const PACK_SCHEMA = 'verdikta.context-pack/1';
@@ -300,6 +300,15 @@ class BlobSink {
   }
 }
 
+/**
+ * A path `git cat-file --batch` can be asked for: one line, no NUL. Nothing else
+ * is asked of a path here: what common's finding schema and the stake's scope
+ * accept is the jury's to read, and these paths never reach the report.
+ */
+function batchablePath(p) {
+  return typeof p === 'string' && p !== '' && !/[\r\n\0]/.test(p);
+}
+
 /** Blobs by `<commit>:<path>`, as items. */
 async function readBlobs(ctx, name, commit, paths) {
   if (paths.length === 0) return [];
@@ -391,7 +400,7 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
   const scope = spec.stake && spec.stake.scope ? spec.stake.scope : null;
   const named = request.finding && Array.isArray(request.finding.affectedPaths) ? request.finding.affectedPaths : [];
   const inScope = scope ? splitByStakeScope(named, scope).inScope : named;
-  const sources = await readBlobs(ctx, 'pack:source', listed, [...new Set(inScope)].filter(reportablePath));
+  const sources = await readBlobs(ctx, 'pack:source', listed, [...new Set(inScope)].filter(batchablePath));
 
   // Call sites in what the stake covers; without a scope, in anything but the tests and the framework's own paths.
   const skip = [...(spec.paths.tests || []), ...(spec.paths.protected || [])];
