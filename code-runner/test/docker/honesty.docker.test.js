@@ -78,13 +78,13 @@ test('every rule raises on its positives, on exactly those lines, under the real
   const { answer } = await inScanner(t, async (handle) => {
     const input = prepareTargets([entry('test/positive.sol', source)]);
     const { targets, texts } = input;
-    const out = new (require('../../src/capture').Prefix)(scanner.OUTPUT_MAX_BYTES);
     await handle.exec(['/bin/tar', '-xf', '-', '-C', '/work'], {
       name: 'unpack', timeoutMs: 30000, workdir: '/work',
       stdin: scanner.scanTar([{ name: 'rules/honesty.yml', bytes: scanner.ruleBytes('honesty') }, ...targets.map((x) => ({ name: `src/${x.name}`, bytes: x.bytes }))])
     });
-    const r = await handle.exec(scanner.semgrepArgv({ rules: 'honesty', targets: targets.map((x) => x.name) }), { name: 'scan', timeoutMs: SCAN_TIMEOUT_MS, workdir: '/work/src', tee: out });
-    const scan = scanner.parseScan({ stdout: out.bytes(), exitCode: r.exitCode, truncated: out.truncated }, targets, { table: scanner.HONESTY_RULES });
+    const r = await handle.exec(scanner.semgrepArgv({ rules: 'honesty', targets: targets.map((x) => x.name) }), { name: 'scan', timeoutMs: SCAN_TIMEOUT_MS, workdir: '/work/src' });
+    const out = await handle.readFile('/work/poc.json', { maxBytes: scanner.OUTPUT_MAX_BYTES, name: 'answer', timeoutMs: 30000 });
+    const scan = scanner.parseScan({ stdout: out.bytes, exitCode: r.exitCode, truncated: out.overLimit }, targets, { table: scanner.HONESTY_RULES });
     return scanner.honestyFlags(scan, targets, [], scanner.readText(texts), texts);
   });
   assert.deepEqual(summary(answer), expectedOf('test/positive.sol', source));
@@ -237,6 +237,7 @@ test('the limits hold on the worst shapes measured: each answers before the step
     'a long ternary': `x = ${fill('a?b:', room)}c;`,
     'an else-if ladder': `${fill('if(a){}else ', room)}{}`
   };
+  // 'many matches' is also the regression for gVisor: its answer of some 2.7 MB is cut at 64 KiB on stdout, with exit 0.
   for (const [name, body] of Object.entries(shapes)) {
     const t0 = Date.now();
     const flags = await flagsOf(t, [entry('test/E.sol', head + body + tail)]);
@@ -415,6 +416,17 @@ test('a real forge fmt on a crafted file forge build never compiles (a long sum 
   assert.deepEqual(report.findings.map((f) => [f.tool, f.file]), [['forge-fmt', 'docs/Crafted.sol']]);
   assert.ok(['forge-fmt.unreadable', 'forge-fmt.unformatted'].includes(report.findings[0].rule), report.findings[0].rule);
   assert.equal(result.gates.reproduces.status, 'pass');
+});
+
+test('the bug rules\' slowest shape, within the limits, answers before the step\'s timer', { timeout: TIMEOUT }, async (t) => {
+  const fill = (u, n) => u.repeat(Math.ceil(n / u.length)).slice(0, n);
+  const head = 'pragma solidity ^0.8.20;\ncontract A { mapping(address=>uint) m; function a(address t) external {\n';
+  const source = `${head}${fill('t.call{value: 1}("");x();y();z();\n', SCAN_LIMITS.fileBytes - 200)}\n} }\n`;
+  const t0 = Date.now();
+  const { answer } = await inScanner(t, (handle) => scanFix(handle, prepareFix([entry('src/Big.sol', source, { oldBytes: null })])));
+  t.diagnostic(`the bug rules' slowest shape: ${Date.now() - t0} ms under ${RUNTIME}`);
+  assert.ok(answer.length > 0);
+  assert.ok(Date.now() - t0 < SCAN_TIMEOUT_MS);
 });
 
 test('a fixed file that makes the bug rules use their whole memory bound is a stated finding, not a killed scan', { timeout: TIMEOUT }, async (t) => {

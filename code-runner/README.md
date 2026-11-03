@@ -1587,6 +1587,8 @@ The runner never pulls this image. The installer warms it (node A8). Missing or 
 | Past 10,000 matches of one rule in one file: **every** result of that file dropped, a warning, exit 0 | Read: the rule is stated, the file is stated unread, and its cheatcode names stay flags |
 | A `pattern-regex` rule also matches comments, so a comment could reach that cap | The rules that read text are not in Semgrep |
 | A wall-clock limit per rule | `--timeout 0`: a slow host must not change a flag |
+| **Under gVisor, stdout is cut at 65,536 bytes with exit 0** (runc: whole) | `--output` to a file, read with `cat`: whole under both |
+| A rule it skipped is listed in `skipped_rules` beside its results, and reads like one that found nothing | Any skipped rule, or another engine, abstains |
 | `solidity.yml`'s ellipsis rule used more than 2 GiB on a crafted 16 KiB file, killing the engine | `--max-memory 1024`: a per-file `Out of memory`, exit 0, a stated fact |
 | `--x-…` flags | Not used: Semgrep says they are not its API |
 
@@ -1617,11 +1619,10 @@ It must never read as "no flags", since a hunter gains from that.
 Stated facts rank above every rule, so padding cannot push one out of the 50. A hunter
 can force one of them, but it costs a visible fact and hides no name.
 
-**Limits, and why these numbers.** Semgrep gets at most 64 files, 64 KiB each and 128 KiB
-in all (a fix: 64 KiB in all, since the bug rules are slower); the text rules read 4 MiB a
-file and 16 MiB in all. They are measured, not timed:
+**Limits, and why these numbers.** Semgrep gets at most 64 files and 64 KiB in all; the text
+rules read 4 MiB a file and 16 MiB in all. They are measured, not timed:
 
-| Shape, in one file | 1 MiB | 128 KiB | 64 KiB |
+| Shape, in one file (an Apple M-series host under load, runc, arm64) | 1 MiB | 128 KiB | 64 KiB |
 |---|---|---|---|
 | `x = a+a+a+…` | over 150 s | 56 s | 9 s |
 | `a.etch.etch.etch…` | | over 100 s | 36 s, then the match cap |
@@ -1631,12 +1632,12 @@ file and 16 MiB in all. They are measured, not timed:
 | Bug rules: `t.call{value: 1}("");x();y();z();` flood | | | 63 s |
 | Bug rules: `t.call{value: 1}("");m[t] = 1;` flood | | | `Out of memory` in 38 s |
 
-(One Apple M-series host under load, runc, arm64.) So the worst case within the limits is about
-72 s for the honesty rules and 63 s for the bug rules. A scan's timer is 180 s, and the
-scan's budget 300 s, outside `runSeconds`: a claim's run may spend all of `runSeconds`, and
-a listing's limits know nothing of a hunter's file, so this could otherwise turn any
-listing's run into an abstention. Admission and the pull's window leave only 60 s for it,
-an honest scan's. Past that the one deadline bounds it, which only a hostile file on a
+On a GitHub runner (amd64) the worst shape at 64 KiB, the `a.etch;` flood, took 69 s under runc and
+156 s under gVisor; the Docker tests print these on every run. A scan's timer is 240 s, and the
+scan's budget 420 s, outside `runSeconds`: a claim's run may spend all of `runSeconds`, and a
+listing's limits know nothing of a hunter's file, so this could otherwise turn any listing's run
+into an abstention. Admission and the pull's window leave only 60 s for it, an honest scan's
+(under 6 s under gVisor). Past that the one deadline bounds it, which only a hostile file on a
 listing near the class maximum can reach.
 
 The scanner's sandbox has every sandbox's flags, with fixed limits (2 CPUs, 2 GiB, 512

@@ -137,6 +137,7 @@ test('Semgrep\'s argv is fixed: the runner\'s rule file, its flat names, every d
   assert.equal(value('--timeout'), '0', 'no wall-clock decision inside the tool: a slow host must not change a flag');
   assert.equal(value('--max-target-bytes'), '0');
   assert.deepEqual(argv.slice(-2), ['f0.sol', 'f1.sol']);
+  assert.equal(value('--output'), '/work/poc.json', 'under gVisor its stdout is cut at 64 KiB, with exit 0: the answer goes to a file');
   assert.ok(!argv.some((a) => a.startsWith('--x-')), 'not an --x- flag: Semgrep says they are not its API');
   assert.ok(!argv.includes('--baseline-commit'));
 });
@@ -146,6 +147,7 @@ test('a baseline scan adds only the commit the runner made, and takes the bug ru
   const argv = semgrepArgv({ rules: 'solidity', targets: ['f0.sol'], baseline: id });
   assert.equal(argv[argv.indexOf('--baseline-commit') + 1], id);
   assert.equal(argv[argv.indexOf('--config') + 1], `/work/rules/${RULE_FILES.solidity.file}`);
+  assert.equal(argv[argv.indexOf('--output') + 1], '/work/fix.json');
   assert.throws(() => semgrepArgv({ rules: 'solidity', targets: ['f0.sol'], baseline: '--config=/x' }), TypeError);
 });
 

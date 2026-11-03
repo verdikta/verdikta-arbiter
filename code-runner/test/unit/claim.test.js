@@ -106,7 +106,7 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config', 'git reset', 'vcr-manifest',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     // A3c: the scan, last, in its own sandbox.
-    'tar', 'semgrep'
+    'tar', 'semgrep', 'cat'
   ]);
   const poc = r.facts.poc;
   assert.equal(poc.testCount, 1);

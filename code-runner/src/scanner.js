@@ -75,17 +75,16 @@ const RULE_FILES = Object.freeze({
 });
 
 /**
- * The bounds on what Semgrep reads: measured, not timed. Semgrep's time on a
- * crafted file grows with its size squared, its memory on solidity.yml's ellipsis
- * rule without bound, and past 10,000 matches of one rule it drops the file's
- * results. At these sizes, on an Apple M-series host under load, the worst shape
- * took 36 s a file with the honesty rules (`a.etch.etch…`) and 63 s with the bug
- * rules, with `--max-memory` holding the ellipsis rule to a stated fact, and no
- * shape crashed it (README, "Honesty flags"). Past one of these a file is a stated fact.
+ * The bounds on what Semgrep reads: measured, not timed. Its time on a crafted
+ * file grows with size, and with each result it prints; its memory on
+ * solidity.yml's ellipsis rule has no bound of its own; past 10,000 matches of one
+ * rule it drops the file's results. At these sizes the worst shape took 156 s
+ * under gVisor on a GitHub runner (`a.etch;` over 64 KiB, about 8,000 flags) and
+ * 69 s under runc, with `--max-memory` holding the ellipsis rule to a stated fact,
+ * and no shape crashed it (README, "Honesty flags"). Past one of these a file is
+ * a stated fact, and the text rules still read it.
  */
-const SCAN_LIMITS = Object.freeze({ files: 64, fileBytes: 64 * 1024, totalBytes: 128 * 1024 });
-/** A fix's lint takes one worst-case file: it is informational, and the bug rules are the slower. */
-const FIX_TOTAL_BYTES = 64 * 1024;
+const SCAN_LIMITS = Object.freeze({ files: 64, fileBytes: 64 * 1024, totalBytes: 64 * 1024 });
 /** What the text rules read: past this a file is read by no rule, and says so. A patch cannot add this much (maxPatchBytes). */
 const TEXT_LIMITS = Object.freeze({ fileBytes: 4 * 1024 * 1024, totalBytes: 16 * 1024 * 1024 });
 /** Semgrep's own bound on a rule over a file (--max-memory, MiB): past it a per-file `Out of memory`, a stated fact. Below the container's. */
@@ -94,14 +93,14 @@ const SEMGREP_MAX_MEMORY_MB = 1024;
 const SCAN_MEMORY_MB = 2048;
 const SCAN_SANDBOX_LIMITS = Object.freeze({ cpus: CLASS_HARD_LIMITS.cpus, memoryMb: SCAN_MEMORY_MB, pids: 512 });
 /** One scan's timer: more than twice the worst case the limits allow, so reaching it says something about the host, and the run abstains. */
-const SCAN_TIMEOUT_MS = 180000;
+const SCAN_TIMEOUT_MS = 240000;
 /**
  * The scan's own budget, outside runSeconds: a claim's run may spend its whole
  * runSeconds, and a listing's derived limits know nothing of a hunter's file, so
  * a hostile file could otherwise turn any listing's run into an abstention. The
  * deadline still bounds it. An honest scan takes seconds.
  */
-const SCAN_BUDGET_MS = 300000;
+const SCAN_BUDGET_MS = 420000;
 /**
  * What admission and the pull's window leave for the scan: an honest one's seconds, with room. Holding the whole
  * budget would cost a large listing its cold pull, for a case only a hostile file reaches. The deadline bounds the rest.
@@ -111,7 +110,7 @@ const UNPACK_TIMEOUT_MS = 30000;
 /** forge fmt's timer: its worst shape at the limits above took 13 s. */
 const FMT_TIMEOUT_MS = 90000;
 const READ_TIMEOUT_MS = 60000;
-/** What Semgrep may print: far above what the limits above can make it print (about 350 bytes a result, at most 2 × 13,000 results). */
+/** What Semgrep may answer: far above what the limits above can make it (about 340 bytes a result, at most some 13,000 results). */
 const OUTPUT_MAX_BYTES = 64 * 1024 * 1024;
 const STEP = 'scan';
 
@@ -212,6 +211,11 @@ const CAPPED_WORDS = 'This rule had more matches than the scanner lists in one f
 const ADDED_WORDS = 'The patch added this line.';
 const EXISTING_WORDS = 'This line was already in the listed file; the patch changed others in it.';
 
+/**
+ * Where Semgrep writes its answer. Under gVisor its stdout is cut at 65,536 bytes
+ * with exit 0, and in a file it is whole (measured: 2.7 MB), so stdout is never read.
+ */
+const ANSWER_FILE = Object.freeze({ honesty: '/work/poc.json', solidity: '/work/fix.json' });
 const TARGET = /^f[0-9]+\.sol$/;
 const COMMIT = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const TAR_NAME = /^(?:rules|src|base|fixed)\/[A-Za-z0-9._-]+$/;
@@ -309,6 +313,7 @@ function semgrepArgv({ rules, targets, baseline = null }) {
     SEMGREP.binary, 'scan',
     '--config', `/work/rules/${pin.file}`,
     '--json', '--quiet',
+    '--output', ANSWER_FILE[rules],
     '--metrics', 'off',
     '--disable-version-check',
     '--disable-nosem',
@@ -399,11 +404,10 @@ function normaliseSource(source) {
  * stated fact: a JSON fixture is not a scan that failed. A name in a file nothing
  * parsed still counts (honestyFlags), and a file no rule read at all is stated by any name.
  * @param {Array<{path:string, mode:string, status:string, size:number, bytes:Buffer|null, added?:Set<number>}>} entries
- * @param {{totalBytes?:number}} [o]
  * @returns {{targets:object[], unscanned:Array<{path:string, reason:string}>, texts:object[]}}
  *   `targets`: what Semgrep reads, under the runner's names; `texts`: what the text rules read (every target and more)
  */
-function prepareTargets(entries, { totalBytes = SCAN_LIMITS.totalBytes } = {}) {
+function prepareTargets(entries) {
   const targets = [];
   const unscanned = [];
   const texts = [];
@@ -430,7 +434,7 @@ function prepareTargets(entries, { totalBytes = SCAN_LIMITS.totalBytes } = {}) {
       state('too-large');
     } else if (targets.length >= SCAN_LIMITS.files) {
       state('too-many-files');
-    } else if (total + bytes.length > totalBytes) {
+    } else if (total + bytes.length > SCAN_LIMITS.totalBytes) {
       state('too-many-bytes');
     } else {
       total += bytes.length;
@@ -814,9 +818,12 @@ async function unpack(handle, name, entries) {
 }
 
 async function runSemgrep(handle, name, { rules, targets, baseline = null, workdir, table }) {
-  const out = new Prefix(OUTPUT_MAX_BYTES);
-  const r = await handle.exec(semgrepArgv({ rules, targets: targets.map((t) => t.name), baseline }), { name, timeoutMs: SCAN_TIMEOUT_MS, workdir, tee: out });
-  return parseScan({ stdout: out.bytes(), exitCode: r.exitCode, truncated: out.truncated }, targets, { table });
+  const r = await handle.exec(semgrepArgv({ rules, targets: targets.map((t) => t.name), baseline }), { name, timeoutMs: SCAN_TIMEOUT_MS, workdir });
+  // A failed run leaves no answer to read: its exit code is the answer (parseScan).
+  if (r.exitCode !== 0) return parseScan({ stdout: Buffer.alloc(0), exitCode: r.exitCode, truncated: false }, targets, { table });
+  const answer = await handle.readFile(ANSWER_FILE[rules], { maxBytes: OUTPUT_MAX_BYTES, name: `${name}:answer`, timeoutMs: UNPACK_TIMEOUT_MS });
+  if (answer.exitCode !== 0 && !answer.overLimit) throw toolFailed(`its answer could not be read (cat exited ${answer.exitCode})`);
+  return parseScan({ stdout: answer.bytes, exitCode: 0, truncated: answer.overLimit }, targets, { table });
 }
 
 /**
@@ -888,7 +895,7 @@ async function scanFix(handle, { targets, unscanned, oldBytes }) {
  */
 function prepareFix(entries) {
   const sol = entries.filter((e) => e.path.endsWith('.sol'));
-  const { targets, unscanned } = prepareTargets(sol, { totalBytes: FIX_TOTAL_BYTES });
+  const { targets, unscanned } = prepareTargets(sol);
   const oldBytes = new Map();
   for (const e of sol) if (e.oldBytes) oldBytes.set(e.path, normaliseSource(e.oldBytes).bytes);
   return { targets, unscanned, oldBytes, sol: sol.filter((e) => e.status !== 'D').map((e) => e.path).sort() };
@@ -934,7 +941,7 @@ function fmtNotRun({ targets, unscanned }, why) {
 }
 
 module.exports = {
-  SEMGREP, RULES_VERSION, RULE_FILES, HONESTY_RULES, TEXT_RULES, FIX_RULES, STATED, SCAN_LIMITS, FIX_TOTAL_BYTES, TEXT_LIMITS, SCAN_MEMORY_MB, SEMGREP_MAX_MEMORY_MB, SCAN_SANDBOX_LIMITS, SCAN_TIMEOUT_MS, SCAN_BUDGET_MS, SCAN_RESERVE_MS, FMT_TIMEOUT_MS, OUTPUT_MAX_BYTES,
+  SEMGREP, RULES_VERSION, RULE_FILES, HONESTY_RULES, TEXT_RULES, FIX_RULES, STATED, SCAN_LIMITS, TEXT_LIMITS, SCAN_MEMORY_MB, SEMGREP_MAX_MEMORY_MB, SCAN_SANDBOX_LIMITS, SCAN_TIMEOUT_MS, SCAN_BUDGET_MS, SCAN_RESERVE_MS, FMT_TIMEOUT_MS, OUTPUT_MAX_BYTES,
   severityOf, ruleBytes, rulesProblem, imageStatus, requireScanner, semgrepArgv, scanTar, normaliseSource, prepareTargets, prepareFix, readText, textRulesSha256, parseScan, honestyFlags, fixFindings,
   boundFlags, boundFindings, readChanged, openScanner, scanPoc, scanFix, fmtFindings, fmtNotRun, BASELINE_REPO_SCRIPT
 };

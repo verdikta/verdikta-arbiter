@@ -200,6 +200,26 @@ test('a scan that fails on the host or in the tool abstains: no report that read
   }
 });
 
+test('the answer is read from the file Semgrep wrote, never its stdout: under gVisor stdout is cut at 64 KiB with exit 0', async () => {
+  const hit = semgrepHit(STORE, 'f0.sol', 2);
+  const sb = claimSandbox({ scripts: { semgrep: (d, b) => {
+    b.files = { ...(b.files || {}), [d.argv[d.argv.indexOf('--output') + 1]]: JSON.stringify({ version: SEMGREP.version, results: [hit], errors: [], paths: { scanned: ['f0.sol'] }, engine_requested: 'OSS', skipped_rules: [] }) };
+    return { stdout: '{"version":"1.181.0","results":[],"errors":[],"paths":{"scanned":["f0.sol"]},"engine_requested":"OSS","skipped_rules":[]}' };
+  } } });
+  const r = await runClaim(sb);
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.facts.poc.honestyFlags.map((f) => f.rule), [STORE], 'the file, not the clean stdout');
+  const cut = await runClaim(claimSandbox({ semgrep: () => ({ cutAt: 65536, results: Array.from({ length: 400 }, (_, i) => semgrepHit(STORE, 'f0.sol', i + 1)) }) }));
+  assert.equal(cut.outcome, 'abstain', 'an answer cut short is not JSON, and never reads as no flags');
+  assert.equal(cut.abstain.step, 'scan');
+});
+
+test('an answer over the bound is cut: the run abstains, it does not parse what it kept', async () => {
+  const r = await runClaim(claimSandbox({ scripts: { cat: () => ({ stdout: Buffer.alloc(70 * 1024 * 1024, 0x20) }) } }));
+  assert.equal(r.outcome, 'abstain', show(r));
+  assert.match(r.abstain.detail, /cut at/);
+});
+
 test('a Semgrep that hits the memory limit, or is killed, abstains like any step', async () => {
   const oom = await runClaim(claimSandbox({ semgrep: () => ({ exitCode: 137 }) }));
   assert.equal(oom.outcome, 'abstain', show(oom));
@@ -496,9 +516,9 @@ const execute = (sb, request) => {
 };
 
 test('a hostile file cannot turn a listing\'s run into an abstention: the scan has its own budget, outside runSeconds', async () => {
-  const slow = async (d) => {
+  const slow = async (d, box) => {
     await new Promise((resolve) => { setTimeout(resolve, 1500); });
-    return semgrepAnswer(d);
+    return semgrepAnswer(d, null, box);
   };
   const r = await execute(claimSandbox({ scripts: { semgrep: slow } }), smallRun(1));
   assert.equal(r.outcome, 'definitive', show(r));

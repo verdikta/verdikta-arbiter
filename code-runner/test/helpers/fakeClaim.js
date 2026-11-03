@@ -568,15 +568,19 @@ function compilersOf(tree, paths) {
  * Semgrep's JSON (1.181.0) for a scan: clean over the targets it was given, unless the test's `semgrep`
  * (argv, box) gives results, errors or scanned of its own, or a whole answer ({ exitCode, stdout }).
  */
-function semgrepAnswer(d, over) {
+function semgrepAnswer(d, over, box) {
   const targets = d.argv.filter((a) => /^f[0-9]+\.sol$/.test(a));
   const o = over ? over(d) || {} : {};
-  if (o.exitCode !== undefined || o.stdout !== undefined) return o;
-  return {
-    stdout: JSON.stringify({
-      version: o.version || SEMGREP.version, results: o.results || [], errors: o.errors || [], paths: { scanned: o.scanned || targets }, engine_requested: 'OSS', skipped_rules: o.skipped || []
-    })
-  };
+  if (o.exitCode !== undefined || o.stdout !== undefined) {
+    if (o.stdout !== undefined) box.files = { ...(box.files || {}), [d.argv[d.argv.indexOf('--output') + 1]]: o.stdout };
+    return { exitCode: o.exitCode === undefined ? 0 : o.exitCode };
+  }
+  const json = JSON.stringify({
+    version: o.version || SEMGREP.version, results: o.results || [], errors: o.errors || [], paths: { scanned: o.scanned || targets }, engine_requested: 'OSS', skipped_rules: o.skipped || []
+  });
+  // It writes the answer to --output, as `--output` does; `cutAt` models a stream cut short.
+  box.files = { ...(box.files || {}), [d.argv[d.argv.indexOf('--output') + 1]]: o.cutAt ? json.slice(0, o.cutAt) : json };
+  return { exitCode: 0 };
 }
 
 /** A scanner result as Semgrep prints one. */
@@ -720,7 +724,11 @@ function claimSandbox({
     },
     'vcr-cleanup': () => ({ stdout: 'killed 0\n' }),
     tar: () => ({ exitCode: 0 }),
-    semgrep: (d) => semgrepAnswer(d, semgrep),
+    semgrep: (d, b) => semgrepAnswer(d, semgrep, b),
+    cat: (d, b) => {
+      const content = (b.files || {})[d.argv[d.argv.length - 1]];
+      return content === undefined ? { exitCode: 1, stderr: 'cat: no such file\n' } : { stdout: content };
+    },
     'vcr-scan-repo': () => ({ stdout: `vcr-base ${'c'.repeat(40)}\n` }),
     'forge-fmt': () => ({ exitCode: 0 }),
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
@@ -802,7 +810,7 @@ function claimSandbox({
   const execs = () => decoded();
   /** A claim's PoC sandbox's execs (the first container). */
   const pocExecs = () => decoded().filter((d) => (d.box || 1) === 1);
-  const isScan = (d) => d.kind === 'tar' || d.kind === 'semgrep' || d.kind === 'vcr-scan-repo';
+  const isScan = (d) => ['tar', 'semgrep', 'vcr-scan-repo'].includes(d.kind) || (d.kind === 'cat' && /^\/work\/(?:poc|fix)\.json$/.test(d.argv[d.argv.length - 1]));
   /** A claim's fix check's execs (the second container; without a fix check the second is the scanner's). */
   const fixExecs = () => decoded().filter((d) => d.box === 2 && !isScan(d));
   /** The scanner's execs (the last container). */

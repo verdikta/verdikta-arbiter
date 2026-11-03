@@ -1524,7 +1524,7 @@ cheap classes — together they would roughly halve the prepay.
 | Disclosure check (hash + re-encrypt, EA) | ≤ 10 s |
 | Image pull (first use per operator, cached afterwards) | 0–90 s |
 | Apply → build → PoC ×3 → integrity → [fix check in parallel] | ≤ 360 s (`limits.runSeconds`, enforced at listing and by the class maximum) |
-| Lint/SAST | Seconds on an honest claim. Its own timer, at most 300 s, outside `runSeconds` so a hunter's file cannot turn a listing's run into an abstention; the one deadline still bounds it |
+| Lint/SAST | Seconds on an honest claim. Its own timer, at most 420 s, outside `runSeconds` so a hunter's file cannot turn a listing's run into an abstention; the one deadline still bounds it |
 | Jev | ~2 s |
 | Frontier jury (parallel), then justifier | ≤ 240 s + 45 s |
 | Commit transaction; reveal dispatch → reveal transaction | ~90 s |

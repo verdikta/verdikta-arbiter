@@ -118,7 +118,7 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
-    'tar', 'semgrep'
+    'tar', 'semgrep', 'cat'
   ]);
   const manifests = sb.execs().filter((d) => d.kind === 'vcr-manifest');
   // Every snapshot is hermetic (nothing of the image's environment reaches find or sha256sum).
@@ -669,7 +669,7 @@ test('with a watched link, its resolution is part of measuring the files: after 
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
-    'tar', 'semgrep'
+    'tar', 'semgrep', 'cat'
   ]);
 });
 
