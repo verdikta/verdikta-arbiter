@@ -186,6 +186,7 @@ async function executeRun({
     run.abort(reason);
     for (const sb of opened) sb.kill();
   };
+  let runEndsAt = Date.now() + limits.runSeconds * 1000;
   let runTimer = setTimeout(() => kill('run'), limits.runSeconds * 1000);
   const deadlineTimer = setTimeout(() => kill('deadline'), Math.max(0, stopAt - Date.now()));
   const onCancel = () => kill('cancel');
@@ -356,7 +357,25 @@ async function executeRun({
       beginToolBudget(ms) {
         if (run.signal.aborted) return;
         clearTimeout(runTimer);
+        runEndsAt = Date.now() + ms;
         runTimer = setTimeout(() => kill('run'), ms);
+      },
+      /**
+       * Stop the run's timer while a step that decides nothing runs beside the claim's (a fix's forge fmt, A3c), so what a
+       * hunter's file costs it is not the run's. Each of its execs has its own timer, and the deadline still bounds the run.
+       * @returns {Function} starts the timer again, with what was left
+       */
+      holdRunTimer() {
+        if (run.signal.aborted) return () => {};
+        const left = Math.max(0, runEndsAt - Date.now());
+        clearTimeout(runTimer);
+        let released = false;
+        return () => {
+          if (released || run.signal.aborted) return;
+          released = true;
+          runEndsAt = Date.now() + left;
+          runTimer = setTimeout(() => kill('run'), left);
+        };
       },
       /** Remove the first sandbox now (its handle's close()); ctx.exec cannot be used after. */
       closeSandbox: primary.close,

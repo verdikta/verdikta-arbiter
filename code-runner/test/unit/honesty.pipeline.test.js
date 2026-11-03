@@ -21,7 +21,7 @@ const { REPORT_MAX_LINE, BASE_IMAGE_PINS } = require('../../src/common');
 const {
   SEMGREP, RULE_FILES, HONESTY_RULES, FIX_RULES, SCAN_MEMORY_MB, SCAN_RESERVE_MS, SCAN_BUDGET_MS, ruleBytes, requireScanner
 } = require('../../src/scanner');
-const { claimSandbox, junit, drainFails, semgrepHit, semgrepAnswer, FIX_PATCH, BASE, POC_PATCH } = require('../helpers/fakeClaim');
+const { claimSandbox, junit, drainFails, suitePasses, semgrepHit, semgrepAnswer, FIX_PATCH, BASE, POC_PATCH } = require('../helpers/fakeClaim');
 const { fakeDocker, healthyDaemon } = require('../helpers/fakeDocker');
 const { claimRequest, runClaim, forgeSpec, finding, DEPOSIT, IMAGE } = require('../helpers/claimRun');
 const { settlementFacts } = require('../helpers/settlementFacts');
@@ -364,15 +364,30 @@ test('a fixed file past the limits, or a fix that changes forge\'s configuration
   assert.ok(c.facts.findings.some((f) => f.rule === 'forge-fmt.not-run' && f.file === 'src/Vault.sol'), JSON.stringify(c.facts.findings));
 });
 
-test('a fix\'s non-Solidity files are outside the rules\' language; a .semgrepignore in a fix has no effect', async () => {
-  const raw = `:000000 100644 ${'0'.repeat(40)} ${'d'.repeat(40)} A\0.semgrepignore\0:100644 100644 ${'1'.repeat(40)} ${'b'.repeat(40)} M\0src/Vault.sol\0`;
-  const sb = claimSandbox({ fix: { raw }, blobs: { ['d'.repeat(40)]: '*\n' } });
+test('R1-F2: a fix\'s file under another name is read as Solidity; forge fmt reads only .sol; a .semgrepignore in a fix has no effect', async () => {
+  const raw = `:000000 100644 ${'0'.repeat(40)} ${'d'.repeat(40)} A\0.semgrepignore\0:000000 100644 ${'0'.repeat(40)} ${'e'.repeat(40)} A\0src/Helper.txt\0:100644 100644 ${'1'.repeat(40)} ${'b'.repeat(40)} M\0src/Vault.sol\0`;
+  const sb = claimSandbox({
+    fix: { raw }, blobs: { ['d'.repeat(40)]: '*\n', ['e'.repeat(40)]: 'contract H { function h(address payable t) public { selfdestruct(t); } }\n' },
+    semgrep: (d) => (d.argv.includes('--baseline-commit') ? { results: [semgrepHit('verdikta.solidity.selfdestruct', 'f2.sol', 1)], errors: [{ type: 'Syntax error', level: 'warn', path: 'f1.sol' }] } : {})
+  });
   const r = await runClaim(sb, withFix());
   assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.facts.findings.map((f) => [f.rule, f.file]), [['verdikta.solidity.selfdestruct', 'src/Helper.txt']], 'a .semgrepignore that does not parse is no finding');
   const unpack = sb.scanExecs().filter((d) => d.kind === 'tar').pop();
-  assert.ok(!unpack.stdin.includes(Buffer.from('.semgrepignore')));
+  assert.ok(!unpack.stdin.includes(Buffer.from('.semgrepignore')), 'its name never reaches the sandbox');
   const base = sb.scanExecs().filter((d) => d.kind === 'semgrep').pop();
-  assert.deepEqual(base.argv.slice(-1), ['f0.sol']);
+  assert.deepEqual(base.argv.slice(-3), ['f0.sol', 'f1.sol', 'f2.sol']);
+  assert.deepEqual(sb.fixExecs().filter((d) => d.kind === 'forge-fmt').map((d) => d.argv[d.argv.length - 1]), ['/work/src/Vault.sol']);
+});
+
+test('R1-F3: a preimage past the limits never reaches Semgrep, and the finding says so', async () => {
+  const raw = `:100644 100644 ${'9'.repeat(40)} ${'b'.repeat(40)} M\0src/Vault.sol\0`;
+  const sb = claimSandbox({ fix: { raw }, blobs: { ['9'.repeat(40)]: Buffer.alloc(1024 * 1024, 0x20) } });
+  const r = await runClaim(sb, withFix());
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.deepEqual(r.facts.findings.map((f) => [f.rule, f.file]), [['verdikta.scan.no-baseline', 'src/Vault.sol']]);
+  const unpack = sb.scanExecs().filter((d) => d.kind === 'tar').pop();
+  assert.ok(unpack.stdin.length < 64 * 1024, `${unpack.stdin.length} bytes`);
 });
 
 test('a fix that does not apply has no lint and no finding: the fix check says so itself', async () => {
@@ -511,7 +526,7 @@ const execute = (sb, request) => {
   return executeRun({
     docker: sb.docker, config: testConfig(), limits: lim.limits, image: IMAGE, runId: '0123456789abcdef',
     steps: claimSteps(request, lim.limits), receivedAt, deadlineAt: receivedAt + 60000, active: new Set(), log: { info() {}, warn() {}, error() {}, debug() {} },
-    admit: async () => {}
+    admit: async () => {}, sandboxes: request.fixPatch ? 2 : 1
   });
 };
 
@@ -522,6 +537,25 @@ test('a hostile file cannot turn a listing\'s run into an abstention: the scan h
   };
   const r = await execute(claimSandbox({ scripts: { semgrep: slow } }), smallRun(1));
   assert.equal(r.outcome, 'definitive', show(r));
+});
+
+test('R1-F4: forge fmt\'s time is not the run\'s: a crafted file cannot use up runSeconds through a step that decides nothing', async () => {
+  const slow = async () => {
+    await new Promise((resolve) => { setTimeout(resolve, 1500); });
+    return { exitCode: 0 };
+  };
+  const spec = smallRun(1).spec;
+  const r = await execute(claimSandbox({ scripts: { 'forge-fmt': slow } }), withFix({ spec, sandboxes: 2 }));
+  assert.equal(r.outcome, 'definitive', show(r));
+});
+
+test('R1-F4: the hold ends with forge fmt: a suite past the runSeconds left still abstains', async () => {
+  const slow = async () => {
+    await new Promise((resolve) => { setTimeout(resolve, 1500); });
+    return { exitCode: 0, stdout: suitePasses() };
+  };
+  const r = await execute(claimSandbox({ fix: { suite: slow } }), withFix({ spec: smallRun(1).spec }));
+  assert.equal(r.outcome, 'abstain', show(r));
 });
 
 test('the budget is one claim code never had: a PoC past runSeconds still abstains', async () => {

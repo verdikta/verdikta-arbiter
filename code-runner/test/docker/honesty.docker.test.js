@@ -391,16 +391,18 @@ test('a real claim: the flags in a real PoC reach a valid report, on the patch\'
 
 test('a real fix: forge fmt --check and Semgrep --baseline-commit give what the fix brought in, and only that; a .semgrepignore in it has no effect', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture();
-  const fixPatch = Buffer.concat([modifyPatch('src/Legacy.sol', LEGACY, LEGACY_FIXED), addFilesPatch({ '.semgrepignore': '*\n' })]);
+  const helper = 'contract Helper { function h(address payable t) public { selfdestruct(t); } }\n';
+  const fixPatch = Buffer.concat([modifyPatch('src/Legacy.sol', LEGACY, LEGACY_FIXED), addFilesPatch({ '.semgrepignore': '*\n', 'src/Helper.txt': helper })]);
   const { result, report } = await runReal(t, claimOf(fx, { fixPatch }));
   assert.equal(result.facts.fix.applies, 'pass', JSON.stringify(result.facts.fix.detail));
   assert.equal(result.facts.fix.builds, 'pass', JSON.stringify(result.facts.fix.detail));
   assert.deepEqual(report.findings.map((f) => [f.tool, f.rule, f.file]).sort(), [
     ['forge-fmt', 'forge-fmt.unformatted', 'src/Legacy.sol'],
+    ['semgrep', 'verdikta.solidity.selfdestruct', 'src/Helper.txt'],
     ['semgrep', 'verdikta.solidity.selfdestruct', 'src/Legacy.sol']
   ].sort());
   const line = LEGACY_FIXED.split('\n').findIndex((l) => l.includes('selfdestruct')) + 1;
-  assert.equal(report.findings.find((f) => f.tool === 'semgrep').line, line);
+  assert.equal(report.findings.find((f) => f.tool === 'semgrep' && f.file === 'src/Legacy.sol').line, line);
   assert.ok(!report.findings.some((f) => f.rule === 'verdikta.solidity.tx-origin-auth'), 'the listed commit\'s own finding is the baseline\'s');
   assert.equal(result.gates.reproduces.status, 'pass', 'the fix decides no gate');
 });

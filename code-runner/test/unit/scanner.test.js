@@ -421,15 +421,40 @@ test('a data file that does not parse is not a scan that failed; a name in it st
   assert.deepEqual(flags.map((f) => [f.rule, f.file]).sort(), [[STORE, 'test/Helper.txt'], [STATED_ID('unread-reach'), 'test/notes.md']].sort());
 });
 
-test('a data file past Semgrep\'s limit is no flag, a Solidity file past it is, and a file no rule read says so whatever its name', () => {
+test('R1-F1: past Semgrep\'s limit a file is stated whatever its name: forge compiles an import of any name, so padding a .txt hides nothing', () => {
   const big = Buffer.alloc(SCAN_LIMITS.fileBytes + 1, 0x20);
   const input = prepareTargets([
-    entry('test/data.json', '', { bytes: big, size: big.length }),
+    entry('test/Helper.txt', '', { bytes: big, size: big.length }),
     entry('test/Big.sol', '', { bytes: big, size: big.length }),
-    entry('test/huge.txt', '', { bytes: null, size: TEXT_LIMITS.fileBytes + 1 })
+    entry('test/huge.txt', '', { bytes: null, size: TEXT_LIMITS.fileBytes + 1 }),
+    entry('test/link.txt', 'target', { mode: '120000' })
   ]);
   assert.deepEqual(input.targets, []);
-  assert.deepEqual(input.unscanned, [{ path: 'test/Big.sol', reason: 'too-large' }, { path: 'test/huge.txt', reason: 'unread' }]);
+  assert.deepEqual(input.unscanned, [
+    { path: 'test/Big.sol', reason: 'too-large' }, { path: 'test/Helper.txt', reason: 'too-large' },
+    { path: 'test/huge.txt', reason: 'unread' }, { path: 'test/link.txt', reason: 'not-a-file' }
+  ]);
+});
+
+test('R1-F1: on what no parser read, a cheatcode\'s name counts by itself: a comment before its call, or a reference without one, hides nothing', () => {
+  const padded = Buffer.concat([
+    Buffer.from('vm.store /* c */ (a, b, c);\nx = vm.store;\nvm /* c */ . /* d */ etch(a, b);\ncheat.mockCall // c\n (a, b, c);\nabi.encodeCall(vm.ffi, (a));\n'),
+    Buffer.alloc(SCAN_LIMITS.fileBytes, 0x20)
+  ]);
+  const input = prepareTargets([entry('test/Helper.txt', '', { bytes: padded, size: padded.length, added: new Set([1, 2, 3, 4, 5, 6]) })]);
+  const flags = honestyFlags({ hits: [], partial: new Map(), unreadable: new Map(), capped: [], missing: [] }, input.targets, input.unscanned, readText(input.texts), input.texts);
+  assert.deepEqual(flags.filter((f) => f.rule === STATED_ID('unread-reach')).map((f) => f.line).sort(), [1, 2, 3, 4, 6]);
+  assert.ok(flags.some((f) => f.rule === STATED_ID('not-scanned') && f.file === 'test/Helper.txt'));
+});
+
+test('the same name inside a string beside a comment marker still counts: the text is read as written and with comments out', () => {
+  const { reach } = readText([{ path: 'p', bytes: Buffer.from('string memory a = "//"; vm.store(x, y, z);\n') }]);
+  assert.deepEqual(reach.get('p'), [1]);
+});
+
+test('ordinary words on a line nobody parsed are not a cheatcode: a name needs its call or its member access', () => {
+  const { reach } = readText([{ path: 'p', bytes: Buffer.from('{"store": 1, "etch": "the rpc value"}\nwe store it and read files\n') }]);
+  assert.equal(reach.get('p'), undefined);
 });
 
 test('a file the tool does not say it read is stated: a clean answer about nothing is not a clean answer', () => {
@@ -567,16 +592,33 @@ test('the image is measured: its digest and platform, or why not', async () => {
   assert.match(noDaemon.problem, /could not be reached/);
 });
 
-test('a fix\'s lint reads its Solidity files only, with the listed bytes for the baseline, in the same form', () => {
+test('R1-F2: a fix\'s lint reads every file it changed as Solidity, since forge compiles an import of any name, with the listed bytes for the baseline', () => {
   const r = prepareFix([
     entry('docs/README.md', 'text'),
+    entry('src/Helper.txt', 'contract H {}\n'),
     entry('src/New.sol', 'contract N {}\n', { oldBytes: null }),
     entry('src/Vault.sol', '// a\u2028b\n', { status: 'M', oldBytes: Buffer.from('// c\u2028d\n') }),
     entry('src/Gone.sol', '', { status: 'D', bytes: null, size: 0 })
   ]);
-  assert.deepEqual(r.targets.map((t) => t.path), ['src/New.sol', 'src/Vault.sol']);
+  assert.deepEqual(r.targets.map((t) => t.path), ['src/New.sol', 'src/Vault.sol', 'docs/README.md', 'src/Helper.txt']);
   assert.deepEqual([...r.oldBytes.keys()], ['src/Vault.sol']);
   assert.equal(r.oldBytes.get('src/Vault.sol').toString('utf8'), '// c\nd\n');
+});
+
+test('R1-F3: the listed bytes are held to the same limits: a large preimage is not scanned, and the fix\'s findings say they are not told apart from it', () => {
+  const big = Buffer.alloc(SCAN_LIMITS.fileBytes + 1, 0x20);
+  const half = Buffer.alloc(SCAN_LIMITS.totalBytes / 2 + 10, 0x20);
+  const r = prepareFix([
+    entry('src/Shrunk.sol', 'contract S {}\n', { status: 'M', oldBytes: big }),
+    entry('src/Huge.sol', 'contract H {}\n', { status: 'M', oldBytes: null, oldTooLarge: true }),
+    entry('src/A.sol', 'contract A {}\n', { status: 'M', oldBytes: half }),
+    entry('src/B.sol', 'contract B {}\n', { status: 'M', oldBytes: half })
+  ]);
+  assert.deepEqual(r.targets.map((t) => t.path), ['src/A.sol', 'src/B.sol', 'src/Huge.sol', 'src/Shrunk.sol']);
+  assert.deepEqual([...r.oldBytes.keys()], ['src/A.sol'], 'within the file limit and the total, in the targets\' order');
+  assert.deepEqual(r.noBaseline, ['src/B.sol', 'src/Huge.sol', 'src/Shrunk.sol']);
+  const total = [...r.oldBytes.values()].reduce((n, b) => n + b.length, 0);
+  assert.ok(total <= SCAN_LIMITS.totalBytes);
 });
 
 test('the scanner\'s memory is a fixed bound, inside the class\'s, whatever the listing asks of its own sandboxes', () => {

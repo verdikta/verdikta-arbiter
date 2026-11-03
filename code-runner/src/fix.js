@@ -187,7 +187,13 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     return finish();
   }
   // forge fmt --check on the fixed files, before any of the fix's code runs: facts, never a gate (§9.2 step 9).
-  lint.fmt = await scanner.fmtFindings(ctx, watch.tool(), lint);
+  // Its time is not the run's: a crafted file must not use up runSeconds through a step that decides nothing (§11).
+  const release = parent.holdRunTimer();
+  try {
+    lint.fmt = await scanner.fmtFindings(ctx, watch.tool(), lint);
+  } finally {
+    release();
+  }
   // forge as the PoC's sandbox runs it (commands.js, forge.forgeArgv): the reference's forge and configuration.
   const buildExit = await kit.runBuild(ctx, box, watch.tool(), kit.parsedCommand(spec, 'build'), limits);
   try {

@@ -1600,7 +1600,8 @@ and Semgrep's parser honours a CR too.
 
 forge compiles an import of any name (`import "./Helper.txt"` works), so every file the
 patch adds or changes goes to Semgrep as Solidity, `.sol` first. Only a `.sol` file's parse
-failure or limit is stated: a JSON fixture is not a scan that failed.
+failure is stated: a JSON fixture that does not parse is not a scan that failed. A file past a
+limit is stated by any name, so padding a `.txt` hides nothing.
 
 ### A scan that could not finish
 
@@ -1608,7 +1609,7 @@ It must never read as "no flags", since a hunter gains from that.
 
 | Cause | In | Result |
 |---|---|---|
-| A parse failure, whole or partial | The file | `unread-file`, `unread-part` with its lines; a cheatcode's name on a skipped line is `unread-reach` |
+| A parse failure, whole or partial | The file | `unread-file`, `unread-part` with its lines (a `.sol` file's); a cheatcode's name on a skipped line is `unread-reach`, whatever is around it and whatever the file's name |
 | A rule past the match cap | The file | That rule, file-level; `unread-file`; the names stay flags |
 | Semgrep's memory bound (`Out of memory`) | The file | `unread-file`, the names stay flags |
 | Past a limit below, not a regular file, or not reported as read | The file | `not-scanned` with its reason, the names stay flags |
@@ -1683,12 +1684,15 @@ the hunter. The kept 50 go by severity, then the patch's own lines first.
 
 ### The fix check's lint
 
-Facts only: the claim's gates are as they would be without it. Over the fix's Solidity files,
-read before any of its code runs: `forge fmt --check` through `forgeArgv` (one file a call:
+Facts only: the claim's gates are as they would be without it. Over the files the fix changed,
+read before any of its code runs, under the same limits as a PoC's: `forge fmt --check` on the
+`.sol` ones, with the run's timer held so its time is not the run's, through `forgeArgv` (one file a call:
 beside another file, one it cannot parse goes unreported; exit 1 means a diff or a parse
 failure, and what it printed says which; a long sum or chain can abort it with exit 134, seen on
 arm64, which is a stated finding too, since a fix's lint must not abstain the claim), then Semgrep with the bug rules and
-`--baseline-commit`, so what the listed commit already had is not the fix's. `commands.lint` is
+`--baseline-commit` over all of them, so what the listed commit already had is not the fix's. A
+listed version past the limits is not scanned, and `verdikta.scan.no-baseline` says its findings are
+not told apart from the listed commit's. `commands.lint` is
 not read: the lint is the runner's own argv, and the grammar in `src/commands.js` is unchanged.
 A fix that changes forge's own configuration gets `forge-fmt.not-run`, never a clean answer. A
 scan that fails on the host abstains, as every step of the fix check does.

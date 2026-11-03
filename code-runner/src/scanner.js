@@ -162,8 +162,13 @@ const TEXT_RULES = Object.freeze({
   }
 });
 
-/** A cheatcode's name followed by its call: a flag only on a line the parser skipped (a comment may say it anywhere else). */
-const UNREAD_REACH = /\b(?:store|etch|setArbitraryStorage|copyStorage|loadAllocs|deployCodeTo|checked_write|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|rollFork|rpc|writeFile|writeFileBinary|readFile|readFileBinary|unixTime|rewind)\s*[({]/g;
+/**
+ * A cheatcode's name as code uses it: a member (`x.store`, a call or a reference) or a call. A flag only on a line no
+ * parser read (a comment may say it anywhere else). Read on the text as written and with its comments blanked, so a
+ * comment before the call hides nothing, and neither does a `//` inside a string.
+ */
+const REACH_NAMES = 'store|etch|setArbitraryStorage|copyStorage|loadAllocs|deployCodeTo|attachDelegation|signAndAttachDelegation|checked_write|checked_write_int|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|selectFork|rollFork|rpc|rpcUrl|writeFile|writeFileBinary|writeLine|copyFile|removeFile|removeDir|createDir|readFile|readFileBinary|unixTime|rewind';
+const UNREAD_REACH = new RegExp(`\\.\\s*(?:${REACH_NAMES})\\b|\\b(?:${REACH_NAMES})\\s*[({]`, 'g');
 
 /** The bug rules: solidity.yml's severities and messages, word for word (test/unit/scanner.test.js). */
 const FIX_RULES = Object.freeze({
@@ -187,6 +192,7 @@ const STATED = Object.freeze({
   'verdikta.scan.not-scanned': { message: 'The bug rules did not read this fixed file.' },
   'verdikta.scan.unread-file': { message: 'The bug rules found nothing in this fixed file because the scanner did not read it.' },
   'verdikta.scan.unread-part': { message: 'The scanner could not parse part of this fixed file, so the bug rules found nothing there.' },
+  'verdikta.scan.no-baseline': { message: 'The listed version of this fixed file is past what a scan reads, so what the bug rules find in it is not told apart from what the listed commit already had.' },
   'verdikta.scan.truncated': { message: 'More findings than the report lists.' },
   'forge-fmt.unformatted': { message: 'forge fmt --check would change this file.' },
   'forge-fmt.unreadable': { message: 'forge fmt could not parse this file.' },
@@ -400,9 +406,10 @@ function normaliseSource(source) {
  * Which files the rules read and which are stated, by the measured limits, in
  * an order that is a function of the claim alone: Solidity by path, then the
  * rest by path. forge compiles an imported file of any name, so a `Helper.txt`
- * is read as Solidity too, but only a `.sol` file's parse failure or limit is a
- * stated fact: a JSON fixture is not a scan that failed. A name in a file nothing
- * parsed still counts (honestyFlags), and a file no rule read at all is stated by any name.
+ * is read as Solidity too, but only a `.sol` file's
+ * parse failure is a stated fact: a JSON fixture that does not parse is not a scan
+ * that failed. A file past a limit is stated by any name, since padding a `.txt`
+ * must hide nothing, and a name in what no parser read still counts (honestyFlags).
  * @param {Array<{path:string, mode:string, status:string, size:number, bytes:Buffer|null, added?:Set<number>}>} entries
  * @returns {{targets:object[], unscanned:Array<{path:string, reason:string}>, texts:object[]}}
  *   `targets`: what Semgrep reads, under the runner's names; `texts`: what the text rules read (every target and more)
@@ -416,14 +423,13 @@ function prepareTargets(entries) {
   const list = entries.filter((e) => e.status !== 'D').sort((a, b) => Number(isSolidity(b)) - Number(isSolidity(a)) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   for (const e of list) {
     const solidity = isSolidity(e);
-    const state = (reason) => { if (solidity) unscanned.push({ path: e.path, reason }); };
+    const state = (reason) => unscanned.push({ path: e.path, reason });
     if (e.mode !== '100644' && e.mode !== '100755') {
       state('not-a-file');
       continue;
     }
     if (!e.bytes) {
-      // No rule read it, whatever its name: nothing else would say so.
-      unscanned.push({ path: e.path, reason: 'unread' });
+      state('unread');
       continue;
     }
     const { bytes, lineOf } = normaliseSource(e.bytes);
@@ -475,14 +481,38 @@ function readText(texts) {
   for (const file of texts) {
     const text = file.bytes.toString('utf8');
     const feeds = lineFeeds(text);
+    const forms = [text, blankComments(text)];
     for (const [rule, { pattern }] of Object.entries(TEXT_RULES)) {
-      for (const m of text.matchAll(pattern)) hits.push({ rule, path: file.path, line: lineAt(feeds, m.index) });
+      const lines = new Set();
+      for (const form of forms) for (const m of form.matchAll(pattern)) lines.add(`${m.index}`);
+      for (const at of lines) hits.push({ rule, path: file.path, line: lineAt(feeds, Number(at)) });
     }
-    const lines = [];
-    for (const m of text.matchAll(UNREAD_REACH)) lines.push(lineAt(feeds, m.index));
-    if (lines.length) reach.set(file.path, [...new Set(lines)]);
+    const lines = new Set();
+    for (const form of forms) for (const m of form.matchAll(UNREAD_REACH)) lines.add(lineAt(feeds, m.index));
+    if (lines.size) reach.set(file.path, [...lines].sort((x, y) => x - y));
   }
   return { hits, reach };
+}
+
+/** The text with its comments blanked, every offset and line feed kept. It knows no strings: readText reads the text as written too. */
+function blankComments(text) {
+  let out = '';
+  let from = 0;
+  for (let i = 0; i < text.length - 1; i += 1) {
+    if (text[i] !== '/' || (text[i + 1] !== '/' && text[i + 1] !== '*')) continue;
+    let end;
+    if (text[i + 1] === '/') {
+      end = text.indexOf('\n', i + 2);
+      if (end < 0) end = text.length;
+    } else {
+      end = text.indexOf('*/', i + 2);
+      end = end < 0 ? text.length : end + 2;
+    }
+    out += text.slice(from, i) + text.slice(i, end).replace(/[^\n]/g, ' ');
+    from = end;
+    i = end - 1;
+  }
+  return out + text.slice(from);
 }
 
 const NO_TEXT = Object.freeze({ hits: [], reach: new Map() });
@@ -679,10 +709,16 @@ function fixFindings(scan, targets, unscanned = []) {
   for (const { rule, name } of scan.capped) put('semgrep', rule, FIX_RULES[rule].severity, byName.get(name).path, null, `${FIX_RULES[rule].message} ${CAPPED_WORDS}`);
   for (const [name, spans] of scan.partial) {
     const t = byName.get(name);
-    stated('verdikta.scan.unread-part', t.path, reportLine(t, spans[0][0]), spansInWords(t, spans));
+    if (t.solidity !== false) stated('verdikta.scan.unread-part', t.path, reportLine(t, spans[0][0]), spansInWords(t, spans));
   }
-  for (const [name, why] of scan.unreadable) stated('verdikta.scan.unread-file', byName.get(name).path, null, UNREAD_WORDS[why]);
-  for (const name of scan.missing) stated('verdikta.scan.not-scanned', byName.get(name).path, null, UNSCANNED_WORDS['no-answer']);
+  for (const [name, why] of scan.unreadable) {
+    const t = byName.get(name);
+    if (t.solidity !== false) stated('verdikta.scan.unread-file', t.path, null, UNREAD_WORDS[why]);
+  }
+  for (const name of scan.missing) {
+    const t = byName.get(name);
+    if (t.solidity !== false) stated('verdikta.scan.not-scanned', t.path, null, UNSCANNED_WORDS['no-answer']);
+  }
   for (const u of unscanned) stated('verdikta.scan.not-scanned', u.path, null, UNSCANNED_WORDS[u.reason]);
   return [...out.values()];
 }
@@ -873,8 +909,9 @@ const BASELINE_REPO_SCRIPT = [
  * @param {{targets:object[], unscanned:object[], oldBytes:Map<string,Buffer>}} input
  * @returns {Promise<object[]>} the findings, unbounded
  */
-async function scanFix(handle, { targets, unscanned, oldBytes }) {
-  if (targets.length === 0) return fixFindings(NOTHING_SCANNED, targets, unscanned);
+async function scanFix(handle, { targets, unscanned, oldBytes, noBaseline = [] }) {
+  const stated = noBaseline.map((file) => ({ tool: 'semgrep', rule: 'verdikta.scan.no-baseline', severity: 'info', file, line: null, message: STATED['verdikta.scan.no-baseline'].message, triage: null }));
+  if (targets.length === 0) return [...stated, ...fixFindings(NOTHING_SCANNED, targets, unscanned)];
   await unpack(handle, 'scan:fix:unpack', [
     { name: `rules/${RULE_FILES.solidity.file}`, bytes: ruleBytes('solidity') },
     ...targets.filter((t) => oldBytes.has(t.path)).map((t) => ({ name: `base/${t.name}`, bytes: oldBytes.get(t.path) })),
@@ -885,20 +922,38 @@ async function scanFix(handle, { targets, unscanned, oldBytes }) {
   const m = /^vcr-base ([0-9a-f]{40})$/m.exec(out.bytes().toString('utf8'));
   if (r.exitCode !== 0 || !m) throw toolFailed(`the baseline's repository could not be built (exit ${r.exitCode})`);
   const scan = await runSemgrep(handle, 'scan:fix', { rules: 'solidity', targets, baseline: m[1], workdir: '/work/repo', table: FIX_RULES });
-  return fixFindings(scan, targets, unscanned);
+  return [...stated, ...fixFindings(scan, targets, unscanned)];
 }
 
 /**
- * What the lint reads of a fix: its Solidity files, in the normal form, with the
- * listed bytes for the baseline. Other files are outside the rules' language.
+ * What the lint reads of a fix: every file it changed, as a PoC's are read (forge
+ * compiles an import of any name), with the listed bytes for the baseline, held to
+ * the same limits. A preimage past them is not scanned: its findings then are not
+ * told apart from the listed commit's, and the report says so.
  * @param {object[]} entries - readChanged's answer, with `old`
+ * @returns {{targets:object[], unscanned:object[], oldBytes:Map<string,Buffer>, noBaseline:string[]}}
  */
 function prepareFix(entries) {
-  const sol = entries.filter((e) => e.path.endsWith('.sol'));
-  const { targets, unscanned } = prepareTargets(sol);
+  const { targets, unscanned } = prepareTargets(entries);
+  const byPath = new Map(entries.map((e) => [e.path, e]));
   const oldBytes = new Map();
-  for (const e of sol) if (e.oldBytes) oldBytes.set(e.path, normaliseSource(e.oldBytes).bytes);
-  return { targets, unscanned, oldBytes, sol: sol.filter((e) => e.status !== 'D').map((e) => e.path).sort() };
+  const noBaseline = [];
+  let total = 0;
+  for (const { path: p } of targets) {
+    const e = byPath.get(p);
+    if (e.oldTooLarge) {
+      noBaseline.push(p);
+    } else if (e.oldBytes) {
+      const bytes = normaliseSource(e.oldBytes).bytes;
+      if (bytes.length > SCAN_LIMITS.fileBytes || total + bytes.length > SCAN_LIMITS.totalBytes) {
+        noBaseline.push(p);
+      } else {
+        total += bytes.length;
+        oldBytes.set(p, bytes);
+      }
+    }
+  }
+  return { targets, unscanned, oldBytes, noBaseline: noBaseline.sort() };
 }
 
 function fmtFinding(rule, file, more = '') {
@@ -906,7 +961,8 @@ function fmtFinding(rule, file, more = '') {
 }
 
 /**
- * forge fmt --check over a fix's Solidity files: one file a call, since a file
+ * forge fmt --check over a fix's `.sol` files (a style fact: another name is not
+ * its business): one file a call, since a file
  * it cannot parse goes unreported beside another. Exit 1 says either; which one
  * is what it printed. Its diff quotes source, so only the path is kept.
  * @param {object} ctx - the fix check's sandbox, before any claim code
@@ -915,9 +971,10 @@ function fmtFinding(rule, file, more = '') {
  * @returns {Promise<object[]>} findings
  */
 async function fmtFindings(ctx, tool, { targets, unscanned }) {
-  const out = unscanned.map((u) => fmtFinding('forge-fmt.not-run', u.path, UNSCANNED_WORDS[u.reason]));
-  for (let i = 0; i < targets.length; i += 1) {
-    const { path: file } = targets[i];
+  const out = unscanned.filter((u) => u.path.endsWith('.sol')).map((u) => fmtFinding('forge-fmt.not-run', u.path, UNSCANNED_WORDS[u.reason]));
+  const files = targets.filter((t) => t.solidity);
+  for (let i = 0; i < files.length; i += 1) {
+    const { path: file } = files[i];
     let r;
     try {
       r = await ctx.exec(forge.forgeArgv(tool, ['fmt', '--check', `${forge.FORGE_WORKDIR}/${file}`]), { name: `fixscan:fmt:${i}`, timeoutMs: FMT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR });
@@ -937,7 +994,7 @@ async function fmtFindings(ctx, tool, { targets, unscanned }) {
 
 /** forge fmt did not run on a fix's files: `why` in fixed words, never read as clean. */
 function fmtNotRun({ targets, unscanned }, why) {
-  return [...targets.map((t) => t.path), ...unscanned.map((u) => u.path)].map((file) => fmtFinding('forge-fmt.not-run', file, why));
+  return [...targets.map((t) => t.path), ...unscanned.map((u) => u.path)].filter((p) => p.endsWith('.sol')).map((file) => fmtFinding('forge-fmt.not-run', file, why));
 }
 
 module.exports = {
