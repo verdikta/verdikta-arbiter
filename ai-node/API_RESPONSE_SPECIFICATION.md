@@ -253,6 +253,8 @@ duration_ms, message?, http_status? }`, status `success`, `failed`,
 | 504 | `CODE_REVIEW_DEADLINE` | false | `deadlineMs` leaves under 10 s of jury time after the reserve, or the deadline passed before the justifier |
 | 500 | `CODE_REVIEW_INTERNAL` | false | An unexpected error, or `JUSTIFIER_MODEL` is not set as `provider:model` |
 
+A 200's `codeReview` also holds `canaryFault`: [below](#the-canary-fault-switch).
+
 The EA may retry a `retryable` error once while at least the justifier reserve
 remains (node A4b); a 503 body never contains the provider-error wording the
 EA's text-mode retry check stops on. Nothing is committed on any error.
@@ -325,3 +327,39 @@ MIN_SUCCESSFUL_MODELS_PERCENT=0.5  # Default: 50%
 - `0.67` = At least 67% of models must succeed  
 - `1.0` = ALL models must succeed (no fallback tolerance)
 
+### The canary fault switch
+
+For the canary conditions of design §11, on real canaries with real providers (decision D9;
+`src/lib/code-review/canary-fault.ts`). It is unrelated to the mock provider, which is test-only.
+This process has no chain access, so it cannot measure a class. The External Adapter does
+(`external-adapter/README.md`, "The canary fault switch") and mints a directive for one attempt.
+
+A code-mode request may carry, beside `codeReview`:
+
+```json
+"canaryFault": { "action": "hold-juror-answer", "mac": "<64 hex>" }
+```
+
+`mac` is HMAC-SHA256 with the key `VERDIKTA_CANARY_FAULT_KEY` over
+`verdikta-canary-fault/1\n<action>\n<claim.bcid>\n<reportSha256>`. It is acted on only if it
+verifies with this node's key. With no key the field is ignored, so a direct POST to this port can
+do nothing on any node. A directive that does not verify, or a field beside the two, is ignored
+too, and the request is judged normally. A text-mode request never reads it. Read at each request
+under a computed name, so `next build` cannot inline the key. No install or upgrade path sets it.
+
+| Action | What happens |
+|---|---|
+| `hold-juror-answer` | The first juror's real answer is held until 5 s before the jury deadline, then the justifier follows |
+| `late-juror` | The first juror's real call starts 3 s before the jury deadline, so it is on the wire when the deadline aborts it, and an answer that came back anyway is held to the abort: the 503 `CODE_REVIEW_JUROR_TIMEOUT` |
+| `hold-justifier-answer` | The real justification is held until 5 s before its reserve ends |
+
+That is all it can do. A hold gets the abort signal and returns nothing, so it never sees a score,
+a justification or the prompt, and the prompt is built without the directive. A hold runs inside the
+raced work, like a provider call, so a stage's deadline ends it whatever it does.
+
+A 200 says what happened in `codeReview.canaryFault`: `{ "state", "action" }`, with `justifierMs`
+when an action ran. An error from the jury on (`CODE_REVIEW_JUROR_*`, `CODE_REVIEW_JUSTIFIER_*`, a
+deadline passed before the justifier) carries the same `canaryFault: { state, action }` at its top
+level, so a retry's verdict can say what caused the timeout before it. `state` is `off` (no key), `armed` (a usable key) or `refused` (a key of fewer
+than 32 printable characters, or with a space: it never acts). `action` is what verified, or null.
+`GET /api/health` carries `canary_fault: { state }`, and never the key.

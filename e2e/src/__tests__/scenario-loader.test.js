@@ -190,6 +190,37 @@ describe('L4 claim scenarios are their own suite (node A6b)', () => {
   });
 });
 
+describe('the kinds of L4 claim scenario (node A6c)', () => {
+  const l4Claim = (claim, over = {}) => ({ id: `claim-l4-${claim}`, suite: 'l4-claim', claim, claimSet: 'archives/l4-claim/claim-set.json', modes: ['commit-reveal'], minOutcomes: 6, ...over });
+  const load = (scenario) => () => loadScenarios(scenariosFile([{ id: 'p', cid: 'QmA' }, scenario]), [scenario.id], { allowL4Claim: true });
+
+  it.each(['time-dependent', 'randomness-dependent', 'flaky', 'near-limit-juror', 'provider-timeout', 'slow-justifier', 'cold-cache', 'dispute'])('%s is one', (kind) => {
+    expect(load(l4Claim(kind))).not.toThrow();
+  });
+
+  it('a scenario that expects no commit says how long to watch for one', () => {
+    for (const kind of ['registry-failure', 'cancellation']) {
+      expect(load(l4Claim(kind))).toThrow(/watchSeconds/);
+      expect(load(l4Claim(kind, { watchSeconds: 0 }))).toThrow(/watchSeconds/);
+      expect(load(l4Claim(kind, { watchSeconds: 1.5 }))).toThrow(/watchSeconds/);
+      expect(load(l4Claim(kind, { watchSeconds: 300 }))).not.toThrow();
+    }
+  });
+
+  it('no other kind takes one', () => {
+    expect(load(l4Claim('valid', { watchSeconds: 300 }))).toThrow(/watchSeconds/);
+  });
+
+  it('an unknown kind is refused', () => {
+    expect(load(l4Claim('near-limit'))).toThrow(/claim/);
+  });
+
+  it('the L2 kinds include the canary fixtures and the switch', () => {
+    const base = { suite: 'claim', modes: ['x'] };
+    expect(() => loadScenarios(scenariosFile([{ id: 'a', ...base, claim: 'canary' }, { id: 'b', ...base, claim: 'fault-switch' }]), null, { suite: 'claim' })).not.toThrow();
+  });
+});
+
 describe('claim scenarios are their own suite (node A6a)', () => {
   const claim = { id: 'claim-x', suite: 'claim', claim: 'valid', modes: ['0'] };
   const plain = { id: 'plain', cid: 'QmPlain', modes: ['0'] };
@@ -229,9 +260,9 @@ describe('claim scenarios are their own suite (node A6a)', () => {
     expect(() => loadScenarios(scenariosFile([{ id: 'y', suite: 'claim', modes: ['0'] }]))).toThrow(/"y"/);
   });
 
-  it('the committed scenarios carry the three the build plan names', () => {
+  it('the committed scenarios carry the ones the build plan names', () => {
     const got = loadScenarios(DEFAULT_SCENARIOS, null, { suite: 'claim' });
-    expect(got.map((s) => s.id)).toEqual(['claim-valid', 'claim-gate-fail', 'claim-text-unaffected']);
+    expect(got.map((s) => s.id)).toEqual(['claim-valid', 'claim-gate-fail', 'claim-text-unaffected', 'claim-canary-fixtures', 'claim-fault-switch']);
     expect(got[0].modes).toEqual(['0', 'commit-reveal', 'juror-deadline', 'testing-tool']);
     expect(got[1].modes).toEqual(['front-gate', 'runner-gate', 'commit-reveal']);
     expect(loadScenarios(DEFAULT_SCENARIOS).map((s) => s.id)).not.toContain('claim-valid');

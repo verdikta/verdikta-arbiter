@@ -17,23 +17,17 @@ const { checkSpec } = require('../../src/classLimits');
 const { claimSteps } = require('../../src/steps');
 const { buildReport } = require('../../src/report');
 const { RUNTIME, silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll } = require('./helpers');
-const { VAULT_REPO, VM_SOL, vaultBaseline, buildFixture, addFilesPatch, pocFile } = require('./forgeFixture');
+const { VAULT_REPO, vaultBaseline, buildFixture, addFilesPatch, pocFile } = require('./forgeFixture');
+const { VM, TIME_POC, RANDOM_POC, FLAKY_POC, FFI_TOML, STATE_TOML } = require('./determinismPocs');
 
 const TIMEOUT = 900000;
 const builder = dockerFor(dockerTestConfig());
 const fixtures = new Map();
 
-const VM = VM_SOL.replace('    function assume(bool c) external pure;', [
-  '    function assume(bool c) external pure;',
-  '    function unixTime() external view returns (uint256);',
-  '    function randomUint() external returns (uint256);',
-  '    function toString(uint256 v) external pure returns (string memory);'
-].join('\n'));
-
 const FIXED_DATES = 'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000"';
 const VARIANTS = Object.freeze({
-  plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
-  ffi: { toml: 'ffi = true' },
+  plain: { toml: STATE_TOML },
+  ffi: { toml: FFI_TOML },
   // R1-F2, R1-F3: a 4.5 MB binary the finding names first, and a 2 MB line that matches a symbol, out of scope, sorting before src/.
   bigfiles: {
     setup: 'head -c 4500000 /dev/zero > src/blob.bin && mkdir -p docs'
@@ -129,15 +123,6 @@ async function twoHosts(t, request) {
   return [a, b];
 }
 
-/** CPU work inside the test, so that the CPU schedule shows in forge's own time and not only in the runner's execs. */
-const BURN = '    function burn() internal pure { uint256 x; for (uint256 i = 0; i < 1000000; i++) { x += i; } require(x > 0, "burn"); }';
-
-const TIME_POC = pocFile('ClockTest', [
-  BURN,
-  '    function test_reads_the_clock() public { burn(); require(false, vm.toString(vm.unixTime())); }',
-  '    function test_deposit_credits_exactly() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
-]);
-
 test('time-dependent-poc-two-hosts: a test that reads the clock, in two containers with different clocks, hostnames and CPU schedules, gives the identical verdict and report hash', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('plain');
   const [a, b] = await twoHosts(t, claim(fx, { 'test/Clock.t.sol': TIME_POC }));
@@ -149,14 +134,6 @@ test('time-dependent-poc-two-hosts: a test that reads the clock, in two containe
   assert.equal(reported(a, 'credits_exactly').message, 'assertion failed: 2 != 1', 'a stable message stays');
   assert.equal(a.result.gates.reproduces.status, 'pass');
 });
-
-const RANDOM_POC = pocFile('RandomTest', [
-  BURN,
-  '    function sh(string memory c) internal returns (string memory) { string[] memory a = new string[](3); a[0] = "/bin/sh"; a[1] = "-c"; a[2] = c; return string(vm.ffi(a)); }',
-  '    function test_unseeded_random() public { burn(); require(false, sh("od -An -N8 -tx8 /dev/urandom")); }',
-  '    function test_run_directory() public { require(false, sh("mktemp -d")); }',
-  '    function test_seeded_random() public { require(false, vm.toString(vm.randomUint())); }'
-]);
 
 test('randomness-dependent-poc-two-hosts: a test that uses an unseeded RNG and a per-run directory, in two containers, gives the identical verdict and report hash', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('ffi');
@@ -170,20 +147,6 @@ test('randomness-dependent-poc-two-hosts: a test that uses an unseeded RNG and a
   assert.equal(raw(a, 'seeded_random'), raw(b, 'seeded_random'), '--fuzz-seed seeds vm.randomUint');
   assert.equal(reported('seeded_random').message, raw(a, 'seeded_random'), 'seeded, so it stays');
 });
-
-/** Fails on runs 1 and 3 or on run 2, by the clock's parity at run 1 (state/ keeps the run count): always mixed, and the phase follows the host. */
-const FLAKY_POC = pocFile('FlakyTest', [
-  BURN,
-  '    function test_alternates() public {',
-  '        burn();',
-  '        uint256 run = 0; uint256 phase = 0;',
-  '        if (vm.isFile("./state/run1")) { run = 1; phase = vm.isFile("./state/phase1") ? 1 : 0; }',
-  '        if (vm.isFile("./state/run2")) run = 2;',
-  '        if (run == 0) { phase = vm.unixTime() % 2000 < 1000 ? 0 : 1; if (phase == 1) vm.writeFile("./state/phase1", "1"); vm.writeFile("./state/run1", "1"); }',
-  '        if (run == 1) vm.writeFile("./state/run2", "1");',
-  '        require((run + phase) % 2 == 1, "this run fails");',
-  '    }'
-]);
 
 test('flaky-poc-two-schedules: a PoC that alternates, on a fast and a slow CPU schedule, is INVALID on both with the identical report hash', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('plain');

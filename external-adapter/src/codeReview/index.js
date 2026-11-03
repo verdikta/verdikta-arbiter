@@ -90,6 +90,7 @@ function boundFetches(config, receivedAt, triage, onStop) {
 /**
  * @param {object} input - see frontGates.runFrontGates
  * @param {number} [input.receivedAt] - when the adapter received the request, epoch ms (the deadline's start)
+ * @param {{ aggId?: string, jobId?: string }} [input.canaryRequest] - the bridge's ids
  * @returns {Promise<{ scores: object[], justification: string, metadata?: object }>}
  */
 async function evaluateCodeReview(input) {
@@ -106,7 +107,8 @@ async function evaluateCodeReview(input) {
       config: input.config,
       deadline,
       logger: input.deps.logger,
-      runTag: input.runTag
+      runTag: input.runTag,
+      canaryRequest: input.canaryRequest
     }), gates.context.listing.outcomes);
   }
   // Nothing is committed late (§11): whichever way the verdict was reached.

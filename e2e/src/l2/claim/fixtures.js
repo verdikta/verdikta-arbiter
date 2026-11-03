@@ -10,6 +10,7 @@
  * pipeline on every PR, and scripts/build-l4-claims.js pins the same for L4.
  */
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const AdmZip = require('adm-zip');
@@ -69,8 +70,7 @@ function specFor({ image, baseCommit, disclosureKey }) {
  * @param {object} o.baseline - the repository's baseline.json
  * @returns {{ buffer: Buffer, spec: object, builderPublicKey: string, disclosure: object }}
  */
-function makeListing({ image, baseCommit, baseline }) {
-  const builderKey = codeReview.createDevBuilderKey();
+function makeListing({ image, baseCommit, baseline, builderKey = codeReview.createDevBuilderKey() }) {
   const disclosure = codeReview.generateDisclosureKeyPair();
   const spec = specFor({ image, baseCommit, disclosureKey: disclosure.recipient });
   const specBytes = bytes(spec);
@@ -95,7 +95,7 @@ function makeListing({ image, baseCommit, baseline }) {
     'known_issues.json': knownIssuesBytes,
     'attestation.json': attestation
   });
-  return { buffer, spec, builderPublicKey: builderKey.publicKey, disclosure };
+  return { buffer, spec, builderPublicKey: builderKey.publicKey, disclosure, builderKey };
 }
 
 const FINDING = Object.freeze({
@@ -147,13 +147,61 @@ function readListingArchive(buffer) {
   const manifest = read('manifest.json');
   if (typeof manifest.codeReview !== 'string') throw new Error('the archive\'s manifest has no codeReview key: it is not a listing');
   const spec = read(manifest.codeReview);
-  return { buffer, spec, builderPublicKey: null, disclosure: { recipient: spec.stake.disclosureKey } };
+  return { buffer, spec, builderPublicKey: null, builderKey: null, disclosure: { recipient: spec.stake.disclosureKey } };
 }
 
 /**
- * A listing and the three claims: one valid, one out of the listing's scope (the EA's
- * inScope gate, before any runner call), one whose PoC edits the code under test (the
- * runner's testPathsOnly gate).
+ * A listing's dispute archive, cids[0] of a dispute request: the same members, with common's dispute
+ * panel (verdikta-applications/stake-attestation/server/src/listing/archives.js). The attestation
+ * covers the spec, the baseline and the known issues, so it stands for both.
+ */
+function disputeArchive(listingBuffer) {
+  const archive = new AdmZip(listingBuffer);
+  const files = {};
+  for (const entry of archive.getEntries()) files[entry.entryName] = entry.getData();
+  const manifest = JSON.parse(files['manifest.json'].toString('utf8'));
+  manifest.juryParameters = JSON.parse(JSON.stringify(codeReview.CODE_STANDARD_DISPUTE_PANEL));
+  return zip({ ...files, 'manifest.json': manifest });
+}
+
+/** The maker's argument in a dispute: pinned, and named by CID in the addendum's second line (erratum E2). */
+const DISPUTE_STATEMENT = 'The maker disputes this claim: the extra wei is documented behaviour of the fixture vault, not a defect.\n';
+
+/**
+ * A digest in the listing's own repository that no registry holds: the runner's allowlist takes
+ * it, the pull fails (design §12: registry or image-pull failure, error, no commit).
+ */
+function absentDigest(image) {
+  const repository = String(image).split('@')[0];
+  return `${repository}@sha256:${crypto.createHash('sha256').update(`verdikta-l4-registry-failure\n${image}`).digest('hex')}`;
+}
+
+/** The claims the fault plan names, and the fault each is for (the External Adapter's VERDIKTA_CANARY_FAULTS). */
+const FAULT_CLAIMS = Object.freeze({
+  faultNearLimit: 'near-limit-juror',
+  faultProviderTimeout: 'provider-timeout',
+  faultSlowJustifier: 'slow-justifier',
+  faultCancellation: 'cancellation'
+});
+
+/** The flag's value for this claim set: exact claims, no other way to name one. */
+function faultPlan({ claims }) {
+  return Object.entries(FAULT_CLAIMS).map(([key, fault]) => `${claims[key].cid}=${fault}`).join(',');
+}
+
+/**
+ * A listing and the claims against it:
+ *  - valid; out of the listing's scope (the EA's inScope gate, before any runner call); a PoC
+ *    that edits the code under test (the runner's testPathsOnly gate);
+ *  - A3b's PoCs, reused from code-runner/test/docker/determinismPocs.js: time-dependent,
+ *    randomness-dependent, flaky;
+ *  - four more of the valid PoC, each its own CID, for the fault plan to name;
+ *  - a dispute: the valid PoC again, the listing's dispute archive and the statement pinned, and
+ *    the addendum ClaimLogic.dispute composes;
+ *  - on a second listing, whose image digest no registry holds: a claim, and its control, out of scope;
+ *  - on a third, only when a fresh image is named: the cold-cache claim.
+ *
+ * Every claim on this set's listings is signed by one builder key, so the canaries trust one.
  *
  * @param {object} o
  * @param {object} o.repo - the code runner's fixture repository (code-runner/test/docker/forgeFixture.js)
@@ -161,46 +209,85 @@ function readListingArchive(buffer) {
  * @param {string} [o.image] - the env image, by digest (with baseCommit, for a listing made here)
  * @param {string} [o.baseCommit]
  * @param {object} [o.listing] - a listing already made (makeListing, readListingArchive)
- * @returns {Promise<{ listing: object, listingCid: string, claims: Record<string, { buffer: Buffer, cid: string, addendum: string, requestCid: string }> }>}
+ * @param {string} [o.coldImage] - an image the canaries have not pulled, for the cold-cache listing
+ * @param {object} [o.registryListing] - with a listing made elsewhere: its registry-failure listing, signed too
+ * @param {object} [o.coldListing] - with a listing made elsewhere: its cold-cache listing, signed too
+ * @returns {Promise<{ listing: object, listingCid: string, registryFailure: object|null, coldListing: object|null, claims: Record<string, { buffer: Buffer, cid: string, addendum: string, requestCid: string, listingCid?: string }> }>}
  */
-async function makeClaimSet({ repo, put, image, baseCommit, listing: given = null }) {
+async function makeClaimSet({ repo, put, image, baseCommit, listing: given = null, coldImage = null, registryListing = null, coldListing: givenCold = null }) {
   const listing = given || makeListing({ image, baseCommit, baseline: repo.vaultBaseline(baseCommit) });
   const listingCid = await put(listing.buffer);
+  const { TIME_POC, RANDOM_POC, FLAKY_POC } = require(path.join(__dirname, '..', '..', '..', '..', 'code-runner', 'test', 'docker', 'determinismPocs'));
   const poc = repo.addFilesPatch({
     'test/Exploit.t.sol': repo.pocFile('ExploitTest', [
       `    // ${POC_MARKER}`,
       '    function test_deposit_credits_exactly() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
     ])
   });
-  const claimOf = async (buffer) => {
+  const claimOn = async (on, onCid, buffer) => {
     const cid = await put(buffer);
-    const addendum = await discloseClaim(buffer, listing.disclosure.recipient, { put });
-    return { buffer, cid, addendum, requestCid: `${listingCid},${cid}:${addendum}` };
+    const addendum = await discloseClaim(buffer, on.disclosure.recipient, { put });
+    return { buffer, cid, addendum, requestCid: `${onCid},${cid}:${addendum}`, ...(on === listing ? {} : { listingCid: onCid }) };
   };
+  const claimOf = (buffer) => claimOn(listing, listingCid, buffer);
+  const pocClaim = (name) => claimOf(makeClaim({ pocPatch: poc, name }));
+  const outOfScope = { pocPatch: poc, name: 'e2e-out-of-scope', finding: { ...FINDING, affectedPaths: ['test/Vault.t.sol'] } };
   const vault = repo.VAULT_REPO['src/Vault.sol'];
-  return {
-    listing,
-    listingCid,
-    claims: {
-      valid: await claimOf(makeClaim({ pocPatch: poc })),
-      outOfScope: await claimOf(makeClaim({ pocPatch: poc, name: 'e2e-out-of-scope', finding: { ...FINDING, affectedPaths: ['test/Vault.t.sol'] } })),
-      editsSource: await claimOf(makeClaim({
-        name: 'e2e-edits-source',
-        pocPatch: repo.modifyPatch('src/Vault.sol', vault, vault.replace('amount + 1', 'amount + 2'))
-      }))
-    }
+  // The randomness PoC's messages all move, so the finding names the deposit test beside it.
+  const exploit = repo.pocFile('ExploitTest', ['    function test_deposit_credits_exactly() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }']);
+  const claims = {
+    valid: await claimOf(makeClaim({ pocPatch: poc })),
+    outOfScope: await claimOf(makeClaim(outOfScope)),
+    editsSource: await claimOf(makeClaim({
+      name: 'e2e-edits-source',
+      pocPatch: repo.modifyPatch('src/Vault.sol', vault, vault.replace('amount + 1', 'amount + 2'))
+    })),
+    timeDependent: await claimOf(makeClaim({ name: 'e2e-time-dependent', pocPatch: repo.addFilesPatch({ 'test/Clock.t.sol': TIME_POC }) })),
+    randomnessDependent: await claimOf(makeClaim({ name: 'e2e-randomness-dependent', pocPatch: repo.addFilesPatch({ 'test/Random.t.sol': RANDOM_POC, 'test/Exploit.t.sol': exploit }) })),
+    flaky: await claimOf(makeClaim({ name: 'e2e-flaky', pocPatch: repo.addFilesPatch({ 'test/Flaky.t.sol': FLAKY_POC }) })),
+    faultNearLimit: await pocClaim('e2e-fault-near-limit'),
+    faultProviderTimeout: await pocClaim('e2e-fault-provider-timeout'),
+    faultSlowJustifier: await pocClaim('e2e-fault-slow-justifier'),
+    faultCancellation: await pocClaim('e2e-fault-cancellation')
   };
+
+  const dispute = await pocClaim('e2e-dispute');
+  const disputeListingCid = await put(disputeArchive(listing.buffer));
+  const statementCid = await put(Buffer.from(DISPUTE_STATEMENT, 'utf8'));
+  const disputeAddendum = `${dispute.addendum}\n${codeReview.DISPUTE_LINE_PREFIX}${statementCid}`;
+  claims.dispute = { ...dispute, disputeListingCid, statementCid, disputeAddendum, disputeRequestCid: `${disputeListingCid},${dispute.cid}:${disputeAddendum}` };
+
+  const signed = (imageRef) => makeListing({ image: imageRef, baseCommit: listing.spec.baseCommit, baseline: repo.vaultBaseline(listing.spec.baseCommit), builderKey: listing.builderKey });
+  const registryFailure = registryListing || (listing.builderKey ? signed(absentDigest(listing.spec.env.image)) : null);
+  if (registryFailure) {
+    const cid = await put(registryFailure.buffer);
+    claims.registryFailure = await claimOn(registryFailure, cid, makeClaim({ pocPatch: poc, name: 'e2e-registry-failure' }));
+    claims.registryControl = await claimOn(registryFailure, cid, makeClaim({ ...outOfScope, name: 'e2e-registry-control' }));
+  }
+  const coldListing = givenCold || (coldImage && listing.builderKey ? signed(coldImage) : null);
+  if (coldListing) {
+    const cid = await put(coldListing.buffer);
+    claims.coldCache = { ...await claimOn(coldListing, cid, makeClaim({ pocPatch: poc, name: 'e2e-cold-cache' })), image: coldListing.spec.env.image };
+  }
+  return { listing, listingCid, registryFailure, coldListing, claims };
 }
 
 /** What L4 reads (archives/l4-claim/claim-set.json): CIDs and lines, no archive and no private key. */
-function claimSetFile({ listing, listingCid, claims }) {
-  const entry = ({ cid, addendum }) => ({ cid, addendum });
+function claimSetFile(set) {
+  const { listing, listingCid, claims } = set;
+  const OPTIONAL = ['listingCid', 'disputeListingCid', 'disputeAddendum', 'statementCid', 'image'];
+  const entry = (claim) => ({
+    cid: claim.cid,
+    addendum: claim.addendum,
+    ...Object.fromEntries(OPTIONAL.filter((field) => claim[field] !== undefined).map((field) => [field, claim[field]]))
+  });
   return {
     version: 1,
     builderPublicKey: listing.builderPublicKey,
     image: listing.spec.env.image,
     baseCommit: listing.spec.baseCommit,
     listingCid,
+    faultPlan: faultPlan(set),
     claims: Object.fromEntries(Object.entries(claims).map(([key, claim]) => [key, entry(claim)]))
   };
 }
@@ -213,4 +300,4 @@ function textArchive() {
   return zip(files);
 }
 
-module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, makeListing, readListingArchive, makeClaim, makeClaimSet, claimSetFile, discloseClaim, textArchive };
+module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, DISPUTE_STATEMENT, FAULT_CLAIMS, makeListing, readListingArchive, makeClaim, makeClaimSet, claimSetFile, faultPlan, absentDigest, disputeArchive, discloseClaim, textArchive };

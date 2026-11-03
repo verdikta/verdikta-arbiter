@@ -5,14 +5,22 @@
  * Build the archives the L4 claim scenarios send, and pin them: G2's preparation.
  *
  * The same builder as the L2 claim suite (src/l2/claim/fixtures.js), so what is pinned here
- * has been through the real pipeline in CI. It signs the listing with a dev builder key made
- * here, whose private half is dropped at once: the public half goes in the canaries'
+ * has been through the real pipeline in CI. It signs the listings with a dev builder key made
+ * here, whose private half is never written and dies with this process: the public half goes in the canaries'
  * CODE_REVIEW_DEV_KEYS (dev trust is refused off a test chain). A listing signed elsewhere,
  * by the production builder, comes in with --listing-file.
  *
  *   node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --dry-run
  *   IPFS_PINNING_KEY=<jwt> node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --pin
  *   IPFS_PINNING_KEY=<jwt> node scripts/build-l4-claims.js --listing-file <listing.zip> --pin
+ *
+ * --cold-image names a digest the canaries have never pulled, for claim-l4-cold-cache. With
+ * --listing-file nothing can be signed here, so --registry-failure-listing-file and
+ * --cold-listing-file bring those listings in; without them those two scenarios say what is
+ * missing, and the rest still run.
+ *
+ * It prints the fault plan: the value of VERDIKTA_CANARY_FAULTS for the canaries' adapters
+ * (docs/release-runbook.md, 3b). That value names claims and holds nothing secret.
  *
  * --dry-run touches neither the network nor a file. --pin writes --out (default
  * archives/l4-claim/claim-set.json), which holds CIDs, each claim's disclosure line and the
@@ -75,12 +83,16 @@ function pinner() {
 async function main(opts) {
   if (Boolean(opts.dryRun) === Boolean(opts.pin)) throw new Error('pass exactly one of --dry-run and --pin');
   let listing = null;
+  const listingFrom = (file) => F.readListingArchive(fs.readFileSync(path.resolve(file)));
   if (opts.listingFile) {
     if (opts.image || opts.baseCommit) throw new Error('--listing-file names the image and the commit itself: drop --image and --base-commit');
-    listing = F.readListingArchive(fs.readFileSync(path.resolve(opts.listingFile)));
+    if (opts.coldImage) throw new Error('--listing-file signs nothing here: bring the cold-cache listing with --cold-listing-file');
+    listing = listingFrom(opts.listingFile);
   } else {
     if (!IMAGE.test(opts.image || '')) throw new Error('--image must name the env image by digest: <repository>@sha256:<64 hex>');
     if (!COMMIT.test(opts.baseCommit || '')) throw new Error('--base-commit must be a whole commit hash');
+    if (opts.registryFailureListingFile || opts.coldListingFile) throw new Error('--registry-failure-listing-file and --cold-listing-file go with --listing-file');
+    if (opts.coldImage !== undefined && !IMAGE.test(opts.coldImage)) throw new Error('--cold-image must name a fresh image by digest: <repository>@sha256:<64 hex>');
   }
 
   const pin = opts.pin ? pinner() : null;
@@ -90,7 +102,10 @@ async function main(opts) {
       put: pin ? pin.put : (bytes) => Hash.of(bytes),
       image: opts.image,
       baseCommit: opts.baseCommit,
-      listing
+      listing,
+      coldImage: opts.coldImage || null,
+      registryListing: opts.registryFailureListingFile ? listingFrom(opts.registryFailureListingFile) : null,
+      coldListing: opts.coldListingFile ? listingFrom(opts.coldListingFile) : null
     });
     const spec = codeReview.validateCodeReviewSpec(set.listing.spec);
     if (!spec.ok) throw new Error(`the listing's spec does not validate: ${JSON.stringify(spec.issues)}`);
@@ -102,6 +117,8 @@ async function main(opts) {
       console.log('\nOn every canary, for dev trust (refused off a test chain):');
       console.log(`  CODE_REVIEW_DEV_KEYS=${value.builderPublicKey}`);
     }
+    console.log('\nFor the fault scenarios, on every canary\'s External Adapter (docs/release-runbook.md, 3b; remove it after):');
+    console.log(`  VERDIKTA_CANARY_FAULTS=${value.faultPlan}`);
     if (opts.dryRun) {
       console.log('\nDry run: nothing was pinned and no file was written.');
       return;
@@ -119,6 +136,9 @@ program
   .option('--image <ref>', 'the env image, by digest, where every canary\'s runner may pull it')
   .option('--base-commit <hash>', 'the fixture repository\'s commit in that image')
   .option('--listing-file <zip>', 'a listing archive signed elsewhere, instead of --image and --base-commit')
+  .option('--cold-image <ref>', 'an env image, by digest, the canaries have not pulled, for claim-l4-cold-cache')
+  .option('--registry-failure-listing-file <zip>', 'with --listing-file: a listing signed elsewhere whose image digest no registry holds')
+  .option('--cold-listing-file <zip>', 'with --listing-file: a listing signed elsewhere on an image the canaries have not pulled')
   .option('--out <file>', 'the claim set to write', DEFAULT_OUT)
   .option('--dry-run', 'build and check everything; pin nothing, write nothing')
   .option('--pin', 'pin every archive (needs IPFS_PINNING_KEY) and write the claim set')

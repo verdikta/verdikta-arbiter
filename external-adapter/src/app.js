@@ -4,7 +4,7 @@
  *
  *   POST /evaluate  the Chainlink bridge's call (handlers/evaluateHandler.js)
  *   GET  /version   version self-report for the doctor and debugging
- *   GET  /health    liveness and the code-review mode (trust, readiness)
+ *   GET  /health    liveness, the code-review mode (trust, readiness) and the canary fault switch
  */
 
 const http = require('http');
@@ -12,6 +12,7 @@ const express = require('express');
 const bodyParser = require('body-parser');
 const { collectVersionInfo } = require('./utils/versionInfo');
 const { getCodeReviewConfig, describeCodeReviewConfig } = require('./codeReview/config');
+const { describeCanaryFault } = require('./canaryFault');
 const { serverTimeoutMs } = require('./utils/serverTimeout');
 
 const SERVICE = 'verdikta-external-adapter';
@@ -34,7 +35,8 @@ function createApp(options = {}) {
       uptimeSeconds: Math.floor(process.uptime()),
       // #69: shared/cached IPFS fetches (hits, in-flight reuses, entries, bytes)
       ipfsFetchCache: evaluateHandler.fetchCache ? evaluateHandler.fetchCache.stats() : null,
-      codeReview: describeCodeReviewConfig(getCodeReviewConfig())
+      codeReview: describeCodeReviewConfig(getCodeReviewConfig()),
+      canaryFault: describeCanaryFault()
     });
   });
 
@@ -44,7 +46,8 @@ function createApp(options = {}) {
     res.json({
       status: 'ok',
       service: SERVICE,
-      codeReview: describeCodeReviewConfig(getCodeReviewConfig())
+      codeReview: describeCodeReviewConfig(getCodeReviewConfig()),
+      canaryFault: describeCanaryFault()
     });
   });
 

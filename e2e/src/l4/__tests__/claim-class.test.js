@@ -7,7 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const {
-  CANARY_CLASS_ID, CANARY_CHAIN_ID, isCanaryOnly, resolveRunClass, assertCanaryChain, assertVersionsNamed, resolveClassId
+  CANARY_CLASS_ID, CANARY_CHAIN_ID, isCanaryOnly, resolveRunClass, assertCanaryChain, assertVersionsNamed, resolveFaultSwitch, resolveClassId
 } = require('../helpers');
 const { loadScenarios, DEFAULT_SCENARIOS } = require('../../scenario-loader');
 
@@ -98,7 +98,13 @@ describe('resolveRunClass refuses a claim scenario on anything but the canary cl
 describe('the committed scenarios, through the same path the CLI takes', () => {
   const selected = (ids) => loadScenarios(DEFAULT_SCENARIOS, ids, { allowManualOnly: true, allowL4Claim: true });
 
-  it.each(['claim-l4-valid', 'claim-l4-front-gate', 'claim-l4-runner-gate'])('--scenario %s with no --class-id is refused', (id) => {
+  const ALL = [
+    'claim-l4-valid', 'claim-l4-front-gate', 'claim-l4-runner-gate', 'claim-l4-time-dependent', 'claim-l4-randomness-dependent', 'claim-l4-flaky',
+    'claim-l4-registry-failure', 'claim-l4-near-limit-juror', 'claim-l4-provider-timeout', 'claim-l4-slow-justifier', 'claim-l4-cancellation',
+    'claim-l4-cold-cache', 'claim-l4-dispute'
+  ];
+
+  it.each(ALL)('--scenario %s with no --class-id is refused', (id) => {
     expect(() => resolveRunClass({ env: '', config: CONFIG.l4.classId, scenarios: selected([id]) })).toThrow(new RegExp(`${id}.*5555`, 's'));
   });
 
@@ -134,5 +140,37 @@ describe('assertVersionsNamed', () => {
 
   it('asks nothing of a text scenario: the versions stay report-only there', () => {
     expect(() => assertVersionsNamed([plain], {})).not.toThrow();
+  });
+});
+
+describe('resolveFaultSwitch: a run names what state the switch must be in', () => {
+  const fault = { id: 'claim-l4-near-limit-juror', suite: 'l4-claim', claim: 'near-limit-juror' };
+
+  it.each(['near-limit-juror', 'provider-timeout', 'slow-justifier', 'cancellation'])('a %s scenario refuses without armed: it says what it needs', (kind) => {
+    const scenario = { id: `s-${kind}`, suite: 'l4-claim', claim: kind };
+    expect(() => resolveFaultSwitch([scenario], {})).toThrow(new RegExp(`s-${kind}.*--expect-fault-switch armed`, 's'));
+    expect(() => resolveFaultSwitch([scenario], { expectFaultSwitch: 'off' })).toThrow(/--expect-fault-switch armed/);
+    expect(() => resolveFaultSwitch([scenario], { expectFaultSwitch: '' })).toThrow(/--expect-fault-switch armed/);
+    expect(resolveFaultSwitch([scenario], { expectFaultSwitch: 'armed' })).toEqual({ ea: 'armed', aiNode: 'armed' });
+  });
+
+  it('any other claim run defaults to off', () => {
+    expect(resolveFaultSwitch([claim], {})).toEqual({ ea: 'off', aiNode: 'off' });
+    expect(resolveFaultSwitch([claim], { expectFaultSwitch: '  ' })).toEqual({ ea: 'off', aiNode: 'off' });
+    expect(resolveFaultSwitch([claim], { expectFaultSwitch: 'off' })).toEqual({ ea: 'off', aiNode: 'off' });
+  });
+
+  it('armed beside a fault scenario covers the whole run', () => {
+    expect(resolveFaultSwitch([claim, fault], { expectFaultSwitch: 'armed' })).toEqual({ ea: 'armed', aiNode: 'armed' });
+  });
+
+  it('another word is refused, not read as off', () => {
+    expect(() => resolveFaultSwitch([claim], { expectFaultSwitch: 'on' })).toThrow(/--expect-fault-switch/);
+    expect(() => resolveFaultSwitch([claim], { expectFaultSwitch: 'ARMED' })).toThrow(/--expect-fault-switch/);
+  });
+
+  it('asks nothing of a text scenario: the nightly never meets it', () => {
+    expect(resolveFaultSwitch([plain], { expectFaultSwitch: 'nonsense' })).toBeNull();
+    expect(resolveFaultSwitch([], {})).toBeNull();
   });
 });

@@ -89,7 +89,7 @@ It starts, each with its own small environment:
 | Local IPFS | A mock gateway and Pinata-compatible pin service (`src/l2/claim/local-ipfs.js`), with real CIDv0s, wired in by `IPFS_GATEWAY` / `IPFS_PINNING_SERVICE` and a key that means nothing |
 | `registry:2` | A throwaway one on the daemon's loopback, holding the code runner's Foundry fixture repository as an env image; the runner pulls it by digest, allowlisted by `CODE_RUNNER_REGISTRY_ALLOWLIST` |
 | External Adapter | The real one, `CODE_REVIEW_ENABLED=true`, `CODE_REVIEW_TRUST=dev` with a key made for this run, chain 31337. The harness fails unless `/health` says `ready` and `dev` |
-| AI Node | The real one under `next dev` (a production build refuses the mock provider), `VERDIKTA_TEST_MOCK_PROVIDER=1`, every call logged to `VERDIKTA_TEST_MOCK_CALL_LOG` |
+| AI Node | The real one under `next dev` (a production build refuses the mock provider), `VERDIKTA_TEST_MOCK_PROVIDER=1`, every call logged to `VERDIKTA_TEST_MOCK_CALL_LOG`. It holds the fault switch's key throughout, for `claim-fault-switch`: with no directive it does nothing, and the other scenarios run on that |
 | Code runner | The real one under `runc`; gVisor is `code-runner.yml`'s to test |
 
 Recording proxies sit between them, so a scenario asserts what really crossed.
@@ -104,12 +104,19 @@ Recording proxies sit between them, so a scenario asserts what really crossed.
 | | `runner-gate` | A PoC that edits source: the real runner's `testPathsOnly`, all weight on INVALID, no AI call |
 | | `commit-reveal` | The same verdict through mode 1 and mode 2 |
 | `claim-text-unaffected` | `0`, `commit-reveal` | The text-mode archive on that same arbiter: no runner call, no `codeReview`, no juror with code mode's options |
+| `claim-canary-fixtures` | `time-dependent`, `randomness-dependent`, `flaky` | A3b's PoCs under real forge, what the L4 scenarios read of them, so what G2 pins has been through the pipeline |
+| | `dispute` | A dispute round: the dispute archive's panel is called, the statement reaches every juror, the machine lines reach none, the verdict names the statement |
+| | `registry-failure` | A listing on a digest the registry does not hold, in mode 1: the real pull fails, `pull_failed`, errored, no commitment, no AI call |
+| `claim-fault-switch` | `slow-justifier` | A second adapter, armed against a stand-in Base Sepolia RPC: a request for 5555 is held for real in the real AI Node, about 40 s |
+| | `class-128` | The same claim, a request for 128: no directive, no hold, and the same justification and scores as the held run |
+| | `unnamed-claim` | A claim the plan does not name: no chain read, no directive |
+| | `refused-on-mainnet` | The same flag on a node configured for Base mainnet: `refused`, in `/health` and `/version`. Then the fault key must be in no service's log, at `LOG_LEVEL=debug`, and on no route |
 
 Every verdict is also held to the L4 scenarios' own checks (`l4.claim.*`, `src/l4/claim-checks.js`), and the archives come from the builder L4's are pinned with, so what L4 reads is what the External Adapter writes.
 
 **It fails, it never skips.** A harness that cannot start (no Docker, no `npm ci`, an AI Node that dies, a registry that will not come up, `/health` not ready) is a failed case for every scenario and mode, naming why, and exit 1. A case with no checks fails. A CID the local IPFS does not hold fails the scenario, so none can pass by reaching the public gateways.
 
-A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: 2.5 minutes in all, of which the suite is under a minute, pulls included.
+A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: about 6 minutes in all, of which the fault switch's real hold is 40 s.
 
 #### On Apple silicon
 
@@ -215,16 +222,32 @@ block per oracle. The release procedure that uses this is
 
 One real request each on the canaries, with `[listing, claim]` as `cids` and the disclosure line as the addendum: the request `StakeAttestation.reveal` will compose (design §13.3), sent from the e2e wallet. The arbiters cannot tell the difference. The contract, its bond and its own `commit` and `reveal` are not in this path.
 
-| Scenario | What the claim is | Asserts of every revealing arbiter |
+| Scenario | What the claim is | Asserts of every recorded reveal |
 |---|---|---|
 | `claim-l4-valid` | A valid claim on the fixture vault | The jury was reached (`verdict_source`, `Settlement: jury`), on this listing and claim, with one report hash. With `--assert-winner`, also that it settles valid. Real jurors decide that, so it is not asserted otherwise |
 | `claim-l4-front-gate` | Out of the listing's scope | All weight on `INVALID`, the EA's `inScope` gate named. No runner and no model, so it tells code mode from the sandbox |
 | `claim-l4-runner-gate` | A PoC that edits source | All weight on `INVALID`, the runner's `testPathsOnly`, one report hash. The image was pulled and the sandbox ran, with no model |
+| `claim-l4-time-dependent` | A PoC that reads the clock (A3b's fixture) | The jury was reached, with one report hash across hosts |
+| `claim-l4-randomness-dependent` | A PoC with unseeded randomness and a per-run directory (A3b's fixture) | The jury was reached, with one report hash across hosts |
+| `claim-l4-flaky` | A PoC that alternates (A3b's fixture) | All weight on `INVALID` at `reproduces` on every host, one report hash, no model |
+| `claim-l4-registry-failure` | A listing on a digest no registry holds | Nobody commits for `watchSeconds`. Then its controls settle (below) |
+| `claim-l4-near-limit-juror` | The fault switch holds the first juror's real answer | The jury was reached, a juror within 15 s of its limit, on one report hash |
+| `claim-l4-provider-timeout` | The fault switch times the first juror out, once | Two attempts: the first a `CODE_REVIEW_JUROR_TIMEOUT` on the action the AI Node verified, the second with no fault. A verdict from one run |
+| `claim-l4-slow-justifier` | The fault switch holds the real justification | The jury was reached, the justifier within 15 s of its 45 s |
+| `claim-l4-cancellation` | The fault switch times the first juror out on both attempts | Nobody commits for `watchSeconds`. Then its control settles (below) |
+| `claim-l4-cold-cache` | A valid claim on an image the canaries have not pulled | The jury was reached, each arbiter's `runner_image` is `pulled` or `shared` and at least one pulled, in at most 90 s (§11). An image already there fails, and so does a repeat within 15 minutes, which an arbiter serves from its kept run (`reused`) |
+| `claim-l4-dispute` | A claim round, then the dispute round `StakeAttestation.dispute` composes: the listing's dispute archive (the same members, common's dispute panel), the claim, the disclosure line and the statement by CID | Each round as a valid claim, the second naming the statement. The outcome before and after goes in the report. A flip is the contract's `Overturned`: real jurors decide it, so it is measured, not asserted. If the first outcome is not valid the contract would refuse a dispute: no second round and no sample |
 
 ```bash
 node src/index.js l4 --scenario claim-l4-valid,claim-l4-front-gate,claim-l4-runner-gate \
   --class-id 5555 --expect-common <version> --expect-release <commit> --junit results/l4.xml
 ```
+
+**Every recorded reveal, not the cluster.** `getEvaluation` names only the clustered arbiters (P = 2 of N = 3), the pair chosen for being closest, so a claim scenario reads each reveal from its transaction instead (`src/l4/reveals.js`): `NewOracleResponseRecorded` gives the transaction, and `fulfillOracleRequestV`'s calldata the vector and `cid:salt`. `claim.revealsComplete` holds them to the aggregator's own `responseCount`, so a lagging log index can't hide an arbiter, and `claim.revealMatchesUpload` holds each upload to what its arbiter revealed. The fourth arbiter asked to reveal, after the round finished, leaves no event, and is not compared.
+
+**`claim.reportHashAgrees` is strict.** A test's message steady on one host and different on another (limit P1, PR #137) gives two hashes, and this fails. No settlement reads `message`, so the verdict is not at stake, but §18's 100% is. If the evidence blocks agree on everything else, the failure says the difference is outside the block, so read the hosts' reports before calling it a defect.
+
+**An abstention has controls.** An abstaining arbiter uploads nothing, so no commit cannot say why. After the watch, L4 sends claims that must settle, each ruling out another reason: for a registry failure, an out-of-scope claim on the same listing (the arbiters are there and take it) and the runner gate on the main listing (the runner is up; its image may be cached, so this does not say the registry is, and it need not: a registry that is down fails the pull just as an absent digest does, and §12 counts them as one failure); for a cancellation, a valid claim to the jury (the runner and the providers are up), which spends the providers' keys once more. They are `control.<kind>.*` in the report. The cause itself is only in each operator's log (`CODE_REVIEW_RUNNER_ABSTAIN … pull_failed`, `CODE_REVIEW_AI_ABSTAIN`), and `applied` in the adapter's `/health` counts what the switch did. L4 does not finalize the round, since that applies the −20 timeliness penalty to each polled oracle (§12). It prints the `cast send` that would, and the prepay stays held until someone runs it.
 
 **The class is refused, never defaulted.** The bridge does not tell the External Adapter the requested class, so nothing on an arbiter stops a claim on class 128, and it would spend real money on real arbiters. So L4 refuses, with exit 1 and before it reads the wallet or calls an RPC, unless the class resolves to exactly 5555:
 
@@ -238,17 +261,33 @@ node src/index.js l4 --scenario claim-l4-valid,claim-l4-front-gate,claim-l4-runn
 
 Class 5555 alone is not enough: the run also refuses without both `--expect-common` and `--expect-release`, on any chain but Base Sepolia (the RPC's chain id, measured), and when `estimateGas` fails, since that means selection would revert. A text scenario keeps its fallback gas limit. A claim run also prints the aggregator's `responseTimeoutSeconds`. It does not fail on the value: §11 wants a canary to pass before the timeout moves to 900 as well as after.
 
+**The fault switch, as a run names it.** `--expect-fault-switch off|armed` (`L4_EXPECT_FAULT_SWITCH`, the `expect_fault_switch` dispatch input), default `off`. Every recorded reveal's `arbiter.canaryFault.state`, and on a jury verdict its AI Node's state, must be what the run named, so a claim run with the default fails while any canary is left armed. A fault scenario refuses without `armed`, before anything is sent. On an armed run a claim the plan does not name must show no fault. The switch itself: [`external-adapter/README.md`](../external-adapter/README.md#the-canary-fault-switch). Arming and disarming the canaries: [`docs/release-runbook.md`](../docs/release-runbook.md) §3b.
+
+**Metrics.** A claim run ends with a `claim-l4-metrics` case. It reports and never fails on a metric. The gate is over many runs' `--report` files (the workflow's `l4-report` artifact):
+
+```bash
+node scripts/l4-metrics.js results/*.json   # exit 0 only with enough samples, inside every limit
+```
+
+| Metric | One sample | Needs | Below that it says |
+|---|---|---|---|
+| p95 end-to-end latency, against §11's 900 s | A round whose uploads say the jury decided it, with no fault injected, from before the transaction to the poll that saw the result: at most one poll (20 s) late, never early. A round that started and never finished counts as slower than any budget | 20 rounds: nearest-rank p95 of fewer is the maximum | `no p95: n of the 20`, and the slowest |
+| σ of the valid mass in points (1 point = 10,000; §18: at most 5) | Sample standard deviation over one jury round's recorded reveals, from the vectors in their transactions. A gate verdict has none | 3 reveals for a number, which is rough, and 5 such rounds for the gate | `no σ` |
+| Dispute flips | A dispute round whose first verdict was valid | Always `k of n`; a rate from 10 | No percentage |
+
+A round with a fault injected counts for σ (the switch cannot move a score) and not for latency (the delay is the point of it). Samples come from what the uploads say happened, not from what the scenario expected: a valid claim answered by a gate fails its checks and is no jury sample, and mixed or missing evidence counts for nothing. A request that never started is no sample; one that started leaves one, whatever fails after. An arbiter keeps a run for 15 minutes, and a later round of the same claim is served it, with no pull and no sandbox in its time (`runner_image.cache: reused`): that is no latency sample, so space repeats of a scenario by 15 minutes, or mix scenarios.
+
 **Preparing them (once, an owner's step).** The scenarios read `archives/l4-claim/claim-set.json`. None is committed until then, and naming a scenario without one is an error.
 
-1. Build the fixture image on `linux/amd64` (`buildFixture` in `code-runner/test/docker/forgeFixture.js`, as the L2 harness does) and push it where every canary's runner may pull it (`CODE_RUNNER_REGISTRY_ALLOWLIST`). Keep the digest and the base commit.
+1. Build the fixture image on `linux/amd64` (`buildFixture` in `code-runner/test/docker/forgeFixture.js`, with `CANARY_IMAGE_OPTIONS` from `determinismPocs.js`, as the L2 harness does: A3b's PoCs need `ffi` and `./state`) and push it where every canary's runner may pull it (`CODE_RUNNER_REGISTRY_ALLOWLIST`). Keep the digest and the base commit. For the cold-cache scenario push a second one with `env: ['L4_COLD=<a word used once>']`: the same repository and commit, a digest no canary has.
 2. Check, then pin. `npm ci` in `code-runner/` first, for the fixture repository:
 
    ```bash
-   node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --dry-run
-   IPFS_PINNING_KEY=<pinata-jwt> node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --pin
+   node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --cold-image <repo@sha256:…> --dry-run
+   IPFS_PINNING_KEY=<pinata-jwt> node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --cold-image <repo@sha256:…> --pin
    ```
 
-   This signs the listing with a dev builder key it makes and drops. It prints the public half: set `CODE_REVIEW_TRUST=dev`, `CODE_REVIEW_DEV_KEYS=<that key>` and `NETWORK_CHAIN_ID=84532` on the canaries. A listing the production builder signed comes in with `--listing-file <listing.zip>` instead, and needs no dev trust.
+   This signs the listings with a dev builder key it makes and drops. It prints the public half: set `CODE_REVIEW_TRUST=dev`, `CODE_REVIEW_DEV_KEYS=<that key>` and `NETWORK_CHAIN_ID=84532` on the canaries. It also prints the fault plan for the switch. A listing the production builder signed comes in with `--listing-file <listing.zip>` instead, and needs no dev trust; then `--registry-failure-listing-file` and `--cold-listing-file` bring those two, and without them only those two scenarios are unavailable. A cold image is cold once: a second run on the same digest fails `claim.imageCold`, so it needs a new digest, or the eviction in the runbook.
 3. Commit `archives/l4-claim/claim-set.json` on the branch the run dispatches from. Its disclosure keys are a throwaway fixture's, and the same lines go on-chain in the clear.
 
 ## CI & secret handling
@@ -263,9 +302,9 @@ Class 5555 alone is not enough: the run also refuses without both `--expect-comm
 - **`l4-testnet`** — runs nightly (schedule, class 128) and via manual dispatch;
   needs `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
   scoped to the `e2e` GitHub Environment. Dispatch inputs: `class_id`
-  (default `5555`), `expect_common`, `expect_release`, `scenario` (the only
-  way to run a `manualOnly` scenario, see [Scenarios](#scenarios), or a
-  [claim scenario](#claim-scenarios-class-5555-only)):
+  (default `5555`), `expect_common`, `expect_release`, `expect_fault_switch`,
+  `scenario` (the only way to run a `manualOnly` scenario, see
+  [Scenarios](#scenarios), or a [claim scenario](#claim-scenarios-class-5555-only)):
 
   ```bash
   gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
