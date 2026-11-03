@@ -749,11 +749,12 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
    Node and the largest Ollama model; refuse while an install or upgrade runs;
    refuse when the remaining time (§11) cannot cover the run. When several of the
    operator's jobs are selected for the same request, they share one run, keyed
-   by **listing CID + claim bCID + runner version + rule-set version** — every
-   execution input (spec, baseline, image digest, patches) is content-addressed
-   by those two CIDs; the prior-finding archives in the request feed the jury,
-   not the run, and are not part of the key. This mirrors `cidFetchCache.js`
-   for IPFS downloads.
+   by **listing CID + claim bCID + runner version + rule-set version + a hash of
+   the prior findings** — every execution input (spec, baseline, image digest,
+   patches) is content-addressed by those two CIDs, and the prior findings'
+   summaries go into the context pack the run returns, so a different list is a
+   different run (build plan A7). This mirrors `cidFetchCache.js` for IPFS
+   downloads.
 2. **Pull** the env image by digest from the allow-listed registry into the
    runner's own disk, after the size admission check. Images are cached and
    evicted least-recently-used.
