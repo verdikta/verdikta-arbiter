@@ -81,7 +81,7 @@ function bodyOf(key, listingCid, claimCid, aiNode) {
     flaky: () => runner('reproduces'),
     coldCache: () => jury({ runner_image: { cache: 'pulled', durationMs: 21000 } }),
     faultNearLimit: () => jury({ canary_fault: { fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 240000, justifierMs: 3000 } }, { model_results: FAULT_RESULTS }),
-    faultProviderTimeout: () => jury({ canary_fault: { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 240000, justifierMs: 3000 } }),
+    faultProviderTimeout: () => jury({ canary_fault: { fault: 'provider-timeout', attempts: 2, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }], action: null, jurorTimeoutMs: 240000, justifierMs: 3000 } }),
     faultSlowJustifier: () => jury({ canary_fault: { fault: 'slow-justifier', attempts: 1, action: 'hold-justifier-answer', jurorTimeoutMs: 240000, justifierMs: 40500 } })
   }[key];
 }
@@ -117,7 +117,8 @@ async function justificationsFor(request, { reporting = arbiter, aiNode = 'off',
   return {
     scores: vector,
     justificationCid: cids.join(','),
-    reveals: [...cids.map((cid) => ({ cid, scores: vector })), { cid: thirdCid, scores: thirdVector }]
+    reveals: [...cids.map((cid) => ({ cid, scores: vector })), { cid: thirdCid, scores: thirdVector }],
+    ...(changed && changed.hiddenLogs ? { hiddenLogs: changed.hiddenLogs } : {})
   };
 }
 
@@ -145,11 +146,12 @@ const everyRequest = () => [
   { cids: [set.claims.dispute.disputeListingCid, set.claims.dispute.cid], addendum: set.claims.dispute.disputeAddendum }
 ];
 
-async function startChain({ chainId, revertOnEstimate, requests = [], reporting, aiNode, change } = {}) {
+async function startChain({ chainId, revertOnEstimate, estimatesBeforeRevert, requests = [], reporting, aiNode, change } = {}) {
   chain = await startStubChain({
     abi: AGGREGATOR_ABI,
     chainId,
     revertOnEstimate,
+    estimatesBeforeRevert,
     answer: await prepareAnswers([...everyRequest(), ...NIGHTLY_BEFORE.cids, ...requests], { reporting, aiNode, change })
   });
   return chain;
@@ -470,6 +472,15 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(r.out).toMatch(/P1/);
     });
 
+    it('fails when the logs leave out a reveal outside the cluster: the aggregator\'s count says there are three', async () => {
+      await startChain({ change: { valid: () => ({ hiddenLogs: 1 }) } });
+      const { code, out, json } = await reportOf('claim-l4-valid');
+      expect(code).toBe(1);
+      expect(out).toMatch(/claim\.revealsComplete.*recorded 3 response/);
+      expect(json.cases[0].metrics.rounds[0].validMass).toEqual([]);
+      expect(chain.reads).toContain('getAggregationStatus');
+    }, 60000);
+
     it('fails when an upload is not what the arbiter revealed on-chain', async () => {
       await startChain({ change: { outOfScope: () => ({ third: { revealVector: [0n, 1000000n, 0n, 0n, 0n, 0n] } }) } });
       const r = await run('claim-l4-front-gate');
@@ -702,6 +713,48 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(round).toMatchObject({ kind: 'valid', verdict: 'jury', unfinished: true, validMass: [] });
       expect(checks.find((c) => c.name === 'evaluation.fulfilled').ok).toBe(false);
       expect(summarize([round]).latency).toMatchObject({ n: 1, unfinished: 1, maxMs: Infinity });
+    });
+
+    it('a request whose read fails after it was mined is still a round: it counts against the budget', async () => {
+      await startChain();
+      chain.failReads.add('getEvaluation');
+      const provider = new ethers.JsonRpcProvider(chain.url);
+      const wallet = new ethers.Wallet(ethers.Wallet.createRandom().privateKey, provider);
+      const aggregator = new ethers.Contract(chain.aggregator, AGGREGATOR_ABI, wallet);
+      const config = JSON.parse(fs.readFileSync(path.join(E2E, 'config', 'e2e-config.json'), 'utf8'));
+      const ctx = { cfg: {}, provider, aggregator, l4: { ...config.l4, classId: 5555, pollIntervalMs: 1 }, expect: {}, opts: {}, faultSwitch: { ea: 'off', aiNode: 'off' } };
+      const request = { cids: [set.listingCid, set.claims.valid.cid], addendum: set.claims.valid.addendum };
+      const { round, checks } = await verdictRound(ctx, { id: 'x', minOutcomes: 6 }, request, { kind: 'valid', timeoutMs: 200 });
+      provider.destroy();
+      expect(round).toMatchObject({ verdict: 'jury', unfinished: true });
+      expect(checks.find((c) => c.name === 'evaluation.fulfilled').detail).toMatch(/last read/);
+    });
+
+    it('a dispute whose second request cannot start keeps the first round\'s measurement', async () => {
+      await startChain({ estimatesBeforeRevert: 1 });
+      const { code, out, json } = await reportOf('claim-l4-dispute');
+      expect(code).toBe(1);
+      expect(out).toMatch(/dispute\.started/);
+      expect(chain.sent).toHaveLength(1);
+      expect(json.cases[0].metrics.rounds).toHaveLength(1);
+      expect(json.cases[0].metrics.rounds[0]).toMatchObject({ verdict: 'jury' });
+      expect(json.cases[0].metrics.dispute).toBeUndefined();
+    });
+
+    it('a request that never started is no sample', async () => {
+      await startChain({ revertOnEstimate: true });
+      const { code, json } = await reportOf('claim-l4-valid');
+      expect(code).toBe(1);
+      expect(json.cases[0].metrics).toBeUndefined();
+    });
+
+    it('a valid claim answered by a gate fails, and is no jury sample: twenty of them cannot pass the gate', async () => {
+      claimKeyOf.set(set.claims.valid.cid, 'outOfScope');
+      await startChain();
+      const { code, json } = await reportOf('claim-l4-valid');
+      expect(code).toBe(1);
+      expect(json.cases[0].metrics.rounds[0]).toMatchObject({ kind: 'valid', verdict: 'gate', fault: false });
+      expect(summarize(Array.from({ length: 20 }, () => json.cases[0].metrics.rounds[0])).latency.n).toBe(0);
     });
 
     it('a text-only run has none', async () => {

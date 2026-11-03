@@ -358,6 +358,8 @@ a justification or the prompt, and the prompt is built without the directive. A 
 raced work, like a provider call, so a stage's deadline ends it whatever it does.
 
 A 200 says what happened in `codeReview.canaryFault`: `{ "state", "action" }`, with `justifierMs`
-when an action ran. `state` is `off` (no key), `armed` (a usable key) or `refused` (a key of fewer
+when an action ran. An error from the jury on (`CODE_REVIEW_JUROR_*`, `CODE_REVIEW_JUSTIFIER_*`, a
+deadline passed before the justifier) carries the same `canaryFault: { state, action }` at its top
+level, so a retry's verdict can say what caused the timeout before it. `state` is `off` (no key), `armed` (a usable key) or `refused` (a key of fewer
 than 32 printable characters, or with a space: it never acts). `action` is what verified, or null.
 `GET /api/health` carries `canary_fault: { state }`, and never the key.

@@ -40,9 +40,6 @@ const EXPECTED = Object.freeze({
   dispute: Object.freeze({ ...JURY, dispute: true })
 });
 
-/** A scenario that expects no commit from anyone (design §12): an abstaining arbiter uploads nothing, so it has no verdict to read. */
-const ABSTAIN_KINDS = Object.freeze(['registry-failure', 'cancellation']);
-
 /** §11: the image pull's budget. */
 const PULL_BUDGET_MS = 90000;
 /** The fault switch holds to 5 s under a limit; this leaves the rest for scheduling. */
@@ -133,7 +130,10 @@ function faultProblem(r, fault) {
     return slowest >= Number(applied.jurorTimeoutMs) - FAULT_NEAR_MS ? null : `slowest juror ${slowest} ms of ${applied.jurorTimeoutMs}`;
   }
   if (fault === 'provider-timeout') {
-    return applied.attempts === 2 && applied.action === null ? null : `attempts ${applied.attempts}, action ${applied.action}`;
+    if (applied.attempts !== 2 || applied.action !== null) return `attempts ${applied.attempts}, action ${applied.action}`;
+    // Any timeout gives two attempts: this one has to be the switch's, as the AI Node verified it.
+    const first = Array.isArray(applied.earlierAttempts) ? applied.earlierAttempts[0] : null;
+    return first && first.action === 'late-juror' && first.errorCode === 'CODE_REVIEW_JUROR_TIMEOUT' ? null : `the first attempt: ${JSON.stringify(first)}`;
   }
   if (fault === 'slow-justifier') {
     if (applied.action !== 'hold-justifier-answer') return `action ${applied.action}`;
@@ -219,12 +219,14 @@ function claimVerdictChecks({ kind, scores, reports, cids, assertWinner = false,
 /**
  * What the reveal transactions say against what the aggregator and the uploads say.
  * @param {object} o
- * @param {Array<{ cid: string, scores: number[] }>} o.reveals - from the chain
+ * @param {Array<{ slot: number, cid: string, scores: number[] }>} o.reveals - from the chain
+ * @param {number|null} o.responseCount - how many the aggregator recorded, null when that could not be read
  * @param {string|null} o.error - why they could not be read
  * @param {Array<{ cid: string, json: object|null }>} o.reports - the uploads
  * @param {string[]} o.combinedCids - getEvaluation's list, the cluster
  */
-function revealChecks({ reveals, error, reports, combinedCids }) {
+function revealChecks({ reveals, responseCount, error, reports, combinedCids }) {
+  const slots = new Set(reveals.map((r) => r.slot));
   const cids = new Set(reveals.map((r) => r.cid));
   const missing = combinedCids.filter((cid) => !cids.has(cid));
   const uploaded = new Map(reports.map((r) => [r.cid, r.json]));
@@ -235,6 +237,8 @@ function revealChecks({ reveals, error, reports, combinedCids }) {
   });
   return [
     assert('claim.revealsRead', error === null && reveals.length > 0, error === null ? `${reveals.length} recorded reveal(s), ${combinedCids.length} in the cluster` : error),
+    assert('claim.revealsComplete', Number.isInteger(responseCount) && responseCount > 0 && reveals.length === responseCount && slots.size === responseCount,
+      `the aggregator recorded ${responseCount === null ? 'an unreadable number of' : responseCount} response(s); read ${reveals.length} reveal(s) in ${slots.size} slot(s)`),
     assert('claim.clusterInReveals', reveals.length > 0 && missing.length === 0, missing.length ? `no reveal carries ${missing.map(short).join(', ')}` : 'every clustered justification is a recorded reveal'),
     assert('claim.revealMatchesUpload', reveals.length > 0 && different.length === 0, different.length ? `not what was uploaded: ${different.map((r) => short(r.cid)).join(', ')}` : 'each upload holds the vector revealed on-chain')
   ];
@@ -248,4 +252,24 @@ function abstainChecks({ status, commitReceived }) {
   ];
 }
 
-module.exports = { claimVerdictChecks, revealChecks, abstainChecks, firstEvidenceBlock, EXPECTED, ABSTAIN_KINDS };
+const VERDICT_BY_SOURCE = Object.freeze({ 'code-review-jury': 'jury', 'code-review-gate': 'gate', 'code-review-runner': 'runner' });
+
+/**
+ * What a round's uploads say happened, for its measurements. A scenario's expectation is not
+ * evidence: a valid claim answered by a gate fails its checks, and must not then count as a fast
+ * jury round. Mixed or missing evidence is `unreadable`, and counts for nothing.
+ *
+ * @param {Array<{ json: object|null }>} reports - one per recorded reveal
+ * @returns {{ verdict: string, faultSeen: boolean }}
+ */
+function observedRound(reports) {
+  const sources = reports.map((r) => (r.json ? metadataOf(r).verdict_source : undefined));
+  const known = sources.length > 0 && new Set(sources).size === 1 ? VERDICT_BY_SOURCE[sources[0]] : undefined;
+  const faultSeen = reports.some((r) => {
+    const applied = r.json ? metadataOf(r).canary_fault : undefined;
+    return Boolean(applied) && !applied.refused;
+  });
+  return { verdict: known || 'unreadable', faultSeen };
+}
+
+module.exports = { claimVerdictChecks, revealChecks, abstainChecks, observedRound, firstEvidenceBlock, EXPECTED, VERDICT_BY_SOURCE };

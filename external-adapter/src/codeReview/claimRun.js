@@ -138,6 +138,7 @@ async function askJury(context, run, { config, deadline, logger, runTag, fault }
     requestTag: `${runTag} attempt=${attempt}`
   });
 
+  const earlier = [];
   for (let attempt = 1; attempt <= AI_ATTEMPTS; attempt += 1) {
     const remaining = deadline.remaining();
     if (!juryWorthCalling(remaining)) {
@@ -153,10 +154,11 @@ async function askJury(context, run, { config, deadline, logger, runTag, fault }
     const directive = fault ? fault.directiveFor(attempt, { bcid: claim.bcid, reportSha256: run.reportSha256 }) : null;
     const response = await postToAiNode(config.aiNode, directive ? { ...body, canaryFault: directive } : body, { deadline });
     const answer = response.data && typeof response.data === 'object' ? response.data : {};
-    if (response.status === 200) return { answer, attempts: attempt };
+    if (response.status === 200) return { answer, attempts: attempt, earlier };
 
     const errorCode = typeof answer.errorCode === 'string' && CODE.test(answer.errorCode) ? answer.errorCode : 'unknown';
     logger.warn(`${runTag} code-review AI Node answered ${response.status} ${errorCode} (attempt ${attempt})`);
+    earlier.push({ action: aiSwitchStamp(answer).action, errorCode });
     const retryable = response.status === 503 && answer.retryable === true;
     if (!retryable || attempt === AI_ATTEMPTS) {
       throw abstain('CODE_REVIEW_AI_ABSTAIN', `the AI Node answered ${response.status} ${errorCode}`);
@@ -169,7 +171,7 @@ const wholeMs = (value) => (Number.isSafeInteger(value) && value >= 0 ? value : 
 
 /** What the AI Node said of its fault switch, as far as it is one of the words that can be said. */
 function aiSwitchStamp(answer) {
-  const stamp = answer.codeReview && answer.codeReview.canaryFault;
+  const stamp = (answer.codeReview && answer.codeReview.canaryFault) || answer.canaryFault;
   const said = stamp && typeof stamp === 'object' ? stamp : {};
   return {
     state: AI_SWITCH_STATES.includes(said.state) ? said.state : 'unknown',
@@ -183,7 +185,7 @@ function aiSwitchStamp(answer) {
  * reads: the AI Node's switch, how the image was had, the dispute's statement, and what a
  * fault did. Enums, counts and CIDs only.
  */
-function verdictFacts(answer, run, context, { fault, attempts }) {
+function verdictFacts(answer, run, context, { fault, attempts, earlier }) {
   const stamp = aiSwitchStamp(answer);
   return {
     canary_fault_ai_node: stamp.state,
@@ -192,7 +194,7 @@ function verdictFacts(answer, run, context, { fault, attempts }) {
     ...(fault ? {
       canary_fault: fault.refused
         ? { fault: fault.fault, refused: fault.refused }
-        : { fault: fault.fault, attempts, action: stamp.action, jurorTimeoutMs: wholeMs(answer.codeReview && answer.codeReview.jurorTimeoutMs), justifierMs: stamp.justifierMs }
+        : { fault: fault.fault, attempts, earlierAttempts: earlier, action: stamp.action, jurorTimeoutMs: wholeMs(answer.codeReview && answer.codeReview.jurorTimeoutMs), justifierMs: stamp.justifierMs }
     } : {})
   };
 }
@@ -266,8 +268,8 @@ async function runClaim(context, options) {
   assertPack(run.contextPack, context);
   // Only here, with the run settled for the jury: the switch never meets the runner or a gate.
   const fault = await faultForRequest({ bcid: claim.bcid, ...options.canaryRequest }, { config: options.canaryConfig, logger, runTag });
-  const { answer, attempts } = await askJury(context, run, { config, deadline, logger, runTag, fault });
-  return juryResult(answer, run, verdictFacts(answer, run, context, { fault, attempts }));
+  const { answer, attempts, earlier } = await askJury(context, run, { config, deadline, logger, runTag, fault });
+  return juryResult(answer, run, verdictFacts(answer, run, context, { fault, attempts, earlier }));
 }
 
 module.exports = { runClaim, assertReportIsThisClaims };

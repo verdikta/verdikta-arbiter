@@ -3,7 +3,7 @@
 // Nodes A6b, A6c: what an L4 claim scenario asserts, against what it must refuse. The same
 // functions run on the real pipeline's justifications in the L2 claim suite.
 
-const { claimVerdictChecks, revealChecks, abstainChecks, firstEvidenceBlock } = require('../claim-checks');
+const { claimVerdictChecks, revealChecks, abstainChecks, observedRound, firstEvidenceBlock } = require('../claim-checks');
 
 const allPass = (checks) => checks.length > 0 && checks.every((c) => c.ok);
 const failed = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
@@ -219,14 +219,21 @@ describe('the fault switch, as the run named it', () => {
   });
 
   describe('provider-timeout', () => {
-    const retried = { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 240000, justifierMs: 3000 };
+    const retried = { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 240000, justifierMs: 3000, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }] };
 
     it('passes on a second attempt with no directive', () => {
       expect(allPass(claimVerdictChecks(args('provider-timeout', [report(armedJuror(retried))], { faultSwitch: armed, scores: JURY_VECTOR })))).toBe(true);
     });
 
-    it('fails when there was no retry', () => {
-      expect(failed(claimVerdictChecks(args('provider-timeout', [report(armedJuror({ ...retried, attempts: 1 }))], { faultSwitch: armed, scores: JURY_VECTOR })))).toContain('claim.faultApplied');
+    it.each([
+      ['no retry', { attempts: 1 }],
+      ['a fault left on the retry', { action: 'late-juror' }],
+      ['no evidence of the first attempt', { earlierAttempts: undefined }],
+      ['no first attempt', { earlierAttempts: [] }],
+      ['a timeout the AI Node did not verify a directive for: keys that do not match, and an ordinary timeout', { earlierAttempts: [{ action: null, errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }] }],
+      ['an unrelated retryable timeout', { earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT' }] }]
+    ])('fails on %s', (_name, over) => {
+      expect(failed(claimVerdictChecks(args('provider-timeout', [report(armedJuror({ ...retried, ...over }))], { faultSwitch: armed, scores: JURY_VECTOR })))).toContain('claim.faultApplied');
     });
   });
 
@@ -282,20 +289,41 @@ describe('every recorded reveal, read from the chain', () => {
   const B = `Qm${'B'.repeat(44)}`;
   const C = `Qm${'C'.repeat(44)}`;
   const json = (vector) => ({ scores: vector.map((score, i) => ({ outcome: String(i), score })) });
-  const reveal = (cid, scores = JURY_VECTOR) => ({ cid, scores, slot: 0, operator: '0x1' });
+  let nextSlot = 0;
+  const reveal = (cid, scores = JURY_VECTOR, slot = (nextSlot += 1)) => ({ cid, scores, slot, operator: '0x1' });
 
   it('passes when the cluster is among them and each vector is what the arbiter uploaded', () => {
     const reveals = [reveal(A), reveal(B), reveal(C)];
     const reports = reveals.map((r) => ({ cid: r.cid, json: json(JURY_VECTOR) }));
-    expect(allPass(revealChecks({ reveals, error: null, reports, combinedCids: [A, B] }))).toBe(true);
+    expect(allPass(revealChecks({ reveals, responseCount: 3, error: null, reports, combinedCids: [A, B] }))).toBe(true);
+  });
+
+  it('fails when the log query leaves out a reveal outside the cluster, whatever else holds', () => {
+    const reveals = [reveal(A), reveal(B)];
+    const reports = reveals.map((r) => ({ cid: r.cid, json: json(JURY_VECTOR) }));
+    expect(failed(revealChecks({ reveals, responseCount: 3, error: null, reports, combinedCids: [A, B] }))).toEqual(['claim.revealsComplete']);
   });
 
   it.each([
-    ['a read that failed', { reveals: [], error: 'the RPC refused', reports: [], combinedCids: [A] }, 'claim.revealsRead'],
-    ['no reveal', { reveals: [], error: null, reports: [], combinedCids: [A] }, 'claim.revealsRead'],
-    ['a clustered CID that no reveal carries', { reveals: [reveal(A)], error: null, reports: [{ cid: A, json: json(JURY_VECTOR) }], combinedCids: [A, B] }, 'claim.clusterInReveals'],
-    ['an upload that is not what the chain got', { reveals: [reveal(A)], error: null, reports: [{ cid: A, json: json(INVALID_VECTOR) }], combinedCids: [A] }, 'claim.revealMatchesUpload'],
-    ['an upload with no scores', { reveals: [reveal(A)], error: null, reports: [{ cid: A, json: {} }], combinedCids: [A] }, 'claim.revealMatchesUpload']
+    ['a count it could not read', { responseCount: null }],
+    ['a count of none', { responseCount: 0 }]
+  ])('fails on %s', (_name, over) => {
+    const reveals = [reveal(A)];
+    expect(failed(revealChecks({ reveals, error: null, reports: [{ cid: A, json: json(JURY_VECTOR) }], combinedCids: [A], ...over }))).toContain('claim.revealsComplete');
+  });
+
+  it('fails when two logs name one slot: that is one reveal, not two', () => {
+    const reveals = [reveal(A, JURY_VECTOR, 1), reveal(B, JURY_VECTOR, 1)];
+    const reports = reveals.map((r) => ({ cid: r.cid, json: json(JURY_VECTOR) }));
+    expect(failed(revealChecks({ reveals, responseCount: 2, error: null, reports, combinedCids: [A] }))).toContain('claim.revealsComplete');
+  });
+
+  it.each([
+    ['a read that failed', { reveals: [], responseCount: 3, error: 'the RPC refused', reports: [], combinedCids: [A] }, 'claim.revealsRead'],
+    ['no reveal', { reveals: [], responseCount: 3, error: null, reports: [], combinedCids: [A] }, 'claim.revealsRead'],
+    ['a clustered CID that no reveal carries', { reveals: [reveal(A)], responseCount: 1, error: null, reports: [{ cid: A, json: json(JURY_VECTOR) }], combinedCids: [A, B] }, 'claim.clusterInReveals'],
+    ['an upload that is not what the chain got', { reveals: [reveal(A)], responseCount: 1, error: null, reports: [{ cid: A, json: json(INVALID_VECTOR) }], combinedCids: [A] }, 'claim.revealMatchesUpload'],
+    ['an upload with no scores', { reveals: [reveal(A)], responseCount: 1, error: null, reports: [{ cid: A, json: {} }], combinedCids: [A] }, 'claim.revealMatchesUpload']
   ])('fails on %s', (_name, input, name) => {
     expect(failed(revealChecks(input))).toContain(name);
   });
@@ -313,5 +341,29 @@ describe('an abstention', () => {
     ['a verdict', { status: 'fulfilled', commitReceived: 0 }, 'claim.noVerdict']
   ])('fails on %s', (_name, input, name) => {
     expect(failed(abstainChecks(input))).toContain(name);
+  });
+});
+
+describe('what a round\'s uploads say happened, for its measurements', () => {
+  const up = (source, over = {}) => ({ json: { metadata: { verdict_source: source, ...over } } });
+
+  it.each([
+    ['every arbiter\'s jury', [up('code-review-jury'), up('code-review-jury')], 'jury'],
+    ['every arbiter\'s gate', [up('code-review-gate')], 'gate'],
+    ['every arbiter\'s runner gate', [up('code-review-runner')], 'runner'],
+    ['arbiters that differ', [up('code-review-jury'), up('code-review-gate')], 'unreadable'],
+    ['one upload that could not be fetched', [up('code-review-jury'), { json: null }], 'unreadable'],
+    ['no source', [{ json: { metadata: {} } }], 'unreadable'],
+    ['a text-mode upload', [{ json: {} }], 'unreadable'],
+    ['a source nobody defined', [up('something-else')], 'unreadable'],
+    ['nothing', [], 'unreadable']
+  ])('%s: %s', (_name, reports, verdict) => {
+    expect(observedRound(reports).verdict).toBe(verdict);
+  });
+
+  it('a fault that ran shows, on any arbiter; one the switch refused did not run', () => {
+    expect(observedRound([up('code-review-jury')]).faultSeen).toBe(false);
+    expect(observedRound([up('code-review-jury', { canary_fault: { fault: 'near-limit-juror', refused: 'REQUEST_CLASS 128' } })]).faultSeen).toBe(false);
+    expect(observedRound([up('code-review-jury'), up('code-review-jury', { canary_fault: { fault: 'near-limit-juror', attempts: 1 } })]).faultSeen).toBe(true);
   });
 });

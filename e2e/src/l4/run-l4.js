@@ -6,7 +6,7 @@ const A = require('../assertions');
 const { fetchJustificationJson, justificationRetry } = require('../ipfs');
 const { resolveL4Claim } = require('../scenario-loader');
 const { codeReview } = require('@verdikta/common');
-const { claimVerdictChecks, revealChecks, abstainChecks, EXPECTED, ABSTAIN_KINDS } = require('./claim-checks');
+const { claimVerdictChecks, revealChecks, abstainChecks, observedRound, EXPECTED, VERDICT_BY_SOURCE } = require('./claim-checks');
 const { readReveals } = require('./reveals');
 const { validMassPoints, summarize, metricChecks } = require('./metrics');
 const {
@@ -49,17 +49,29 @@ function parseAggId(contract, receipt) {
   return null;
 }
 
-/** Poll getEvaluation until the result exists, the request fails, or we time out. */
-async function pollEvaluation(contract, aggId, { pollIntervalMs, timeoutMs }, onTick) {
+/**
+ * Poll getEvaluation until the result exists, the request fails, or we time out. With
+ * `tolerateReadErrors` a read that fails is a poll that saw nothing: a claim's round goes on for
+ * up to 15 minutes, and one refused read of a public RPC does not end it. A text scenario's throws.
+ */
+async function pollEvaluation(contract, aggId, { pollIntervalMs, timeoutMs, tolerateReadErrors = false }, onTick) {
   const deadline = Date.now() + timeoutMs;
+  let readError = null;
   while (Date.now() < deadline) {
-    const [scores, justificationCID, exists] = await contract.getEvaluation(aggId);
-    if (exists && scores.length > 0) return { status: 'fulfilled', scores, justificationCID };
-    if (await contract.isFailed(aggId)) return { status: 'failed', scores: [], justificationCID: '' };
+    try {
+      const [scores, justificationCID, exists] = await contract.getEvaluation(aggId);
+      if (exists && scores.length > 0) return { status: 'fulfilled', scores, justificationCID };
+      if (await contract.isFailed(aggId)) return { status: 'failed', scores: [], justificationCID: '' };
+      readError = null;
+    } catch (err) {
+      if (!tolerateReadErrors) throw err;
+      readError = err.shortMessage || err.message;
+      console.log(chalk.yellow(`[l4]   a read failed: ${readError}`));
+    }
     if (onTick) onTick(Math.max(0, deadline - Date.now()));
-    await sleep(pollIntervalMs);
+    await sleep(Math.min(pollIntervalMs, Math.max(0, deadline - Date.now())));
   }
-  return { status: 'timeout', scores: [], justificationCID: '' };
+  return { status: 'timeout', scores: [], justificationCID: '', readError };
 }
 
 /**
@@ -94,9 +106,12 @@ async function justificationChecks(cfg, justificationCID, expect) {
 
 /** Settlement's stake argument: only `outcome` and `valid` are read here. */
 const ANY_STAKE = Object.freeze({ awards: Object.freeze({ LOW: '0', MEDIUM: '0', HIGH: '0', CRITICAL: '0' }), lowestClassCounted: 'LOW' });
-const VERDICT_BY_SOURCE = Object.freeze({ 'code-review-jury': 'jury', 'code-review-gate': 'gate', 'code-review-runner': 'runner' });
 
-/** The request's transaction, as a claim sends it: never on a failed estimate, since that means selection would revert. */
+/**
+ * The request's transaction, as a claim sends it: never on a failed estimate, since that means
+ * selection would revert. A throw means the request did not start. Once it is broadcast this no
+ * longer throws, so a round that started always leaves a measurement.
+ */
 async function sendClaimRequest({ aggregator, l4 }, scenario, request) {
   const value = await aggregator.maxTotalFee(l4.fees.maxOracleFee);
   const args = requestArgs(request, l4.fees, l4.classId);
@@ -109,16 +124,20 @@ async function sendClaimRequest({ aggregator, l4 }, scenario, request) {
   const gasLimit = gasLimitFor(estimate, l4.gasLimit);
   console.log(chalk.gray(`[l4] ${scenario.id}: submitting ${args[0].length} CID(s) (value=${ethers.formatEther(value)} ETH, gasLimit=${gasLimit}, estimate=${estimate})…`));
   const tx = await aggregator.requestAIEvaluationWithApproval(...args, { value, gasLimit });
-  const receipt = await tx.wait(1);
-  const aggId = parseAggId(aggregator, receipt);
-  return {
-    aggId,
-    block: receipt.blockNumber,
-    checks: [
-      A.assert('tx.mined', receipt.status === 1, `tx=${tx.hash}`),
-      A.assert('event.RequestAIEvaluation', !!aggId, aggId ? `aggId=${aggId}` : 'RequestAIEvaluation not found'),
-    ],
-  };
+  try {
+    const receipt = await tx.wait(1);
+    const aggId = parseAggId(aggregator, receipt);
+    return {
+      aggId,
+      block: receipt.blockNumber,
+      checks: [
+        A.assert('tx.mined', receipt.status === 1, `tx=${tx.hash}`),
+        A.assert('event.RequestAIEvaluation', !!aggId, aggId ? `aggId=${aggId}` : 'RequestAIEvaluation not found'),
+      ],
+    };
+  } catch (err) {
+    return { aggId: null, block: null, checks: [A.assert('tx.mined', false, `tx=${tx.hash}: ${err.shortMessage || err.message}`)] };
+  }
 }
 
 /**
@@ -131,51 +150,63 @@ async function sendClaimRequest({ aggregator, l4 }, scenario, request) {
 async function verdictRound(ctx, scenario, request, { kind, statementCid = null, timeoutMs }) {
   const { cfg, provider, aggregator, l4, expect, opts, faultSwitch } = ctx;
   const start = Date.now();
+  const expected = EXPECTED[kind];
+  const expectedRound = (latencyMs) => ({ id: scenario.id, kind, verdict: VERDICT_BY_SOURCE[expected.source], fault: Boolean(expected.fault), latencyMs });
+  const unfinished = () => ({ ...expectedRound(Date.now() - start), unfinished: true, validMass: [] });
+
   const sent = await sendClaimRequest(ctx, scenario, request);
   const checks = [...sent.checks];
-  if (!sent.aggId) return { checks, round: null, vector: null };
+  if (!sent.aggId) return { checks, round: unfinished(), vector: null };
 
   console.log(chalk.gray(`[l4] ${scenario.id}: aggId=${sent.aggId}, polling getEvaluation…`));
   const result = await pollEvaluation(aggregator, sent.aggId, {
-    pollIntervalMs: l4.pollIntervalMs, timeoutMs: timeoutMs || l4.timeoutMs,
+    pollIntervalMs: l4.pollIntervalMs, timeoutMs: timeoutMs || l4.timeoutMs, tolerateReadErrors: true,
   }, (remainMs) => console.log(chalk.gray(`[l4]   waiting… ${Math.round(remainMs / 1000)}s left`)));
   const latencyMs = Date.now() - start;
-  checks.push(A.assert('evaluation.fulfilled', result.status === 'fulfilled', `status=${result.status}`));
-  const expected = EXPECTED[kind];
-  const baseRound = { id: scenario.id, kind, verdict: VERDICT_BY_SOURCE[expected.source], fault: Boolean(expected.fault), latencyMs };
-  if (result.status !== 'fulfilled') return { checks, round: { ...baseRound, unfinished: true, validMass: [] }, vector: null };
+  checks.push(A.assert('evaluation.fulfilled', result.status === 'fulfilled', `status=${result.status}${result.readError ? `, last read: ${result.readError}` : ''}`));
+  if (result.status !== 'fulfilled') return { checks, round: unfinished(), vector: null };
 
   const vector = [...result.scores].map(Number);
-  checks.push(...A.structuralScoreAssertions(result.scores, {
-    minOutcomes: scenario.minOutcomes || 2,
-    scoreSumTarget: cfg.tolerances.scoreSumTarget,
-    scoreSumSlack: cfg.tolerances.scoreSumSlack,
-  }));
-  const { reveals, error } = await readReveals(provider, aggregator, sent.aggId, sent.block);
-  const { checks: jChecks, reports } = await justificationChecks(cfg, reveals.map((r) => r.cid).join(','), expect);
-  const combinedCids = splitJustificationCids(result.justificationCID);
-  checks.push(...jChecks);
-  checks.push(...revealChecks({ reveals, error, reports, combinedCids }));
-  checks.push(...claimVerdictChecks({
-    kind,
-    scores: [...result.scores],
-    reports,
-    cids: request.cids,
-    assertWinner: opts.assertWinner,
-    faultSwitch,
-    statementCid,
-  }));
-  console.log(chalk.gray(`[l4] ${scenario.id}: fulfilled in ${Math.round(latencyMs / 1000)}s; ${reveals.length} recorded reveal(s), ${combinedCids.length} in the cluster`));
-  for (const r of reports) {
-    const v = r.version;
-    console.log(chalk.gray(`[l4]   ${r.cid}: ${v ? `common=${v.verdiktaCommon || '?'} adapter=${v.adapter || '?'} aiNode=${v.aiNode || '?'} release=${releaseCommit(v.release) || '?'} faultSwitch=${v.canaryFault ? v.canaryFault.state : '?'}` : 'justification fetch failed'}`));
+  try {
+    checks.push(...A.structuralScoreAssertions(result.scores, {
+      minOutcomes: scenario.minOutcomes || 2,
+      scoreSumTarget: cfg.tolerances.scoreSumTarget,
+      scoreSumSlack: cfg.tolerances.scoreSumSlack,
+    }));
+    const { reveals, responseCount, error } = await readReveals(provider, aggregator, sent.aggId, sent.block);
+    const { checks: jChecks, reports } = await justificationChecks(cfg, reveals.map((r) => r.cid).join(','), expect);
+    const combinedCids = splitJustificationCids(result.justificationCID);
+    checks.push(...jChecks);
+    checks.push(...revealChecks({ reveals, responseCount, error, reports, combinedCids }));
+    checks.push(...claimVerdictChecks({
+      kind,
+      scores: [...result.scores],
+      reports,
+      cids: request.cids,
+      assertWinner: opts.assertWinner,
+      faultSwitch,
+      statementCid,
+    }));
+    console.log(chalk.gray(`[l4] ${scenario.id}: fulfilled in ${Math.round(latencyMs / 1000)}s; ${reveals.length} recorded reveal(s), ${combinedCids.length} in the cluster`));
+    for (const r of reports) {
+      const v = r.version;
+      console.log(chalk.gray(`[l4]   ${r.cid}: ${v ? `common=${v.verdiktaCommon || '?'} adapter=${v.adapter || '?'} aiNode=${v.aiNode || '?'} release=${releaseCommit(v.release) || '?'} faultSwitch=${v.canaryFault ? v.canaryFault.state : '?'}` : 'justification fetch failed'}`));
+    }
+    // What the uploads say happened, not what the scenario hoped: a wrong path fails its checks, and must not count as a sample of the right one.
+    const seen = observedRound(reports);
+    const complete = Number.isInteger(responseCount) && reveals.length === responseCount;
+    const round = {
+      ...expectedRound(latencyMs),
+      verdict: seen.verdict,
+      fault: Boolean(expected.fault) || seen.faultSeen,
+      validMass: complete ? reveals.map((r) => validMassPoints(r.scores)) : [],
+      ...(expected.cold ? { image: reports.map((r) => (r.json && r.json.metadata ? r.json.metadata.runner_image : null)) } : {}),
+    };
+    return { checks, round, vector };
+  } catch (err) {
+    checks.push(A.assert('round.observed', false, `the round finished and could not be read: ${err.message}`));
+    return { checks, round: { ...expectedRound(latencyMs), verdict: 'unreadable', validMass: [] }, vector };
   }
-  const round = {
-    ...baseRound,
-    validMass: reveals.map((r) => validMassPoints(r.scores)),
-    ...(expected.cold ? { image: reports.map((r) => (r.json && r.json.metadata ? r.json.metadata.runner_image : null)) } : {}),
-  };
-  return { checks, round, vector };
 }
 
 /** Watch for a commit or a verdict until `watchMs` is up. A round already gone to either ends the watch: the answer is known. */
@@ -216,8 +247,12 @@ async function abstainRound(ctx, scenario) {
   checks.push(...abstainChecks(watched));
   // A finalize applies the timeliness penalty to each polled oracle (§12): an owner's call, not this run's.
   console.log(chalk.gray(`[l4] ${scenario.id}: left unfinalized. Once responseTimeoutSeconds has passed, anyone can reclaim the prepay, at a cost to the polled oracles' reputations: cast send ${l4.aggregatorAddress} 'finalizeEvaluationTimeout(bytes32)' ${sent.aggId}`));
-  const control = await verdictRound(ctx, scenario, scenario.control, { kind: 'front-gate', timeoutMs: watchMs });
-  checks.push(...control.checks.map((check) => ({ ...check, name: `control.${check.name}` })));
+  try {
+    const control = await verdictRound(ctx, scenario, scenario.control, { kind: 'front-gate', timeoutMs: watchMs });
+    checks.push(...control.checks.map((check) => ({ ...check, name: `control.${check.name}` })));
+  } catch (err) {
+    checks.push(A.assert('control.started', false, err.message));
+  }
   return { checks };
 }
 
@@ -230,7 +265,6 @@ async function abstainRound(ctx, scenario) {
 async function disputeRounds(ctx, scenario) {
   const first = await verdictRound(ctx, scenario, scenario, { kind: 'valid' });
   const settled = (vector) => codeReview.settleBugOutcome(vector, ANY_STAKE);
-  if (!first.round) return { checks: first.checks };
   const rounds = [first.round];
   if (!first.vector) return { checks: first.checks, metrics: { rounds } };
   const before = settled(first.vector);
@@ -238,9 +272,14 @@ async function disputeRounds(ctx, scenario) {
     console.log(chalk.yellow(`[l4] ${scenario.id}: the first round settled ${before.outcome}, not a valid outcome: the contract would refuse a dispute, so there is no second round and no sample`));
     return { checks: first.checks, metrics: { rounds, dispute: { countable: false, before: before.outcome } } };
   }
-  const second = await verdictRound(ctx, scenario, scenario.disputeRound, { kind: 'dispute', statementCid: scenario.disputeRound.statementCid });
+  let second;
+  try {
+    second = await verdictRound(ctx, scenario, scenario.disputeRound, { kind: 'dispute', statementCid: scenario.disputeRound.statementCid });
+  } catch (err) {
+    // The first round happened: its measurement stays.
+    return { checks: [...first.checks, A.assert('dispute.started', false, err.message)], metrics: { rounds } };
+  }
   const checks = [...first.checks, ...second.checks.map((check) => ({ ...check, name: `dispute.${check.name}` }))];
-  if (!second.round) return { checks, metrics: { rounds } };
   rounds.push(second.round);
   if (!second.vector) return { checks, metrics: { rounds } };
   const after = settled(second.vector);
@@ -250,10 +289,10 @@ async function disputeRounds(ctx, scenario) {
 
 /** One L4 claim scenario, by its kind. */
 async function runClaimScenario(ctx, scenario) {
-  if (ABSTAIN_KINDS.includes(scenario.claim)) return abstainRound(ctx, scenario);
+  if (scenario.control) return abstainRound(ctx, scenario);
   if (scenario.claim === 'dispute') return disputeRounds(ctx, scenario);
   const { checks, round } = await verdictRound(ctx, scenario, scenario, { kind: scenario.claim });
-  return { checks, metrics: round ? { rounds: [round] } : undefined };
+  return { checks, metrics: { rounds: [round] } };
 }
 
 function buildL4Config(cfg, scenarios, opts = {}) {

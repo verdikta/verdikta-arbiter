@@ -116,7 +116,7 @@ Every verdict is also held to the L4 scenarios' own checks (`l4.claim.*`, `src/l
 
 **It fails, it never skips.** A harness that cannot start (no Docker, no `npm ci`, an AI Node that dies, a registry that will not come up, `/health` not ready) is a failed case for every scenario and mode, naming why, and exit 1. A case with no checks fails. A CID the local IPFS does not hold fails the scenario, so none can pass by reaching the public gateways.
 
-A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: 2.5 minutes in all, of which the suite is under a minute, pulls included.
+A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: about 6 minutes in all, of which the fault switch's real hold is 40 s.
 
 #### On Apple silicon
 
@@ -232,7 +232,7 @@ One real request each on the canaries, with `[listing, claim]` as `cids` and the
 | `claim-l4-flaky` | A PoC that alternates (A3b's fixture) | All weight on `INVALID` at `reproduces` on every host, one report hash, no model |
 | `claim-l4-registry-failure` | A listing on a digest no registry holds | Nobody commits for `watchSeconds`. Then its control settles (below) |
 | `claim-l4-near-limit-juror` | The fault switch holds the first juror's real answer | The jury was reached, a juror within 15 s of its limit, on one report hash |
-| `claim-l4-provider-timeout` | The fault switch times the first juror out, once | Two attempts, the second with no fault, a verdict from one run |
+| `claim-l4-provider-timeout` | The fault switch times the first juror out, once | Two attempts: the first a `CODE_REVIEW_JUROR_TIMEOUT` on the action the AI Node verified, the second with no fault. A verdict from one run |
 | `claim-l4-slow-justifier` | The fault switch holds the real justification | The jury was reached, the justifier within 15 s of its 45 s |
 | `claim-l4-cancellation` | The fault switch times the first juror out on both attempts | Nobody commits for `watchSeconds`. Then its control settles |
 | `claim-l4-cold-cache` | A valid claim on an image the canaries have not pulled | The jury was reached, each arbiter's `runner_image` is `pulled` or `shared` and at least one pulled, in at most 90 s (§11). An image already there fails |
@@ -243,7 +243,7 @@ node src/index.js l4 --scenario claim-l4-valid,claim-l4-front-gate,claim-l4-runn
   --class-id 5555 --expect-common <version> --expect-release <commit> --junit results/l4.xml
 ```
 
-**Every recorded reveal, not the cluster.** `getEvaluation` names only the clustered arbiters (P = 2 of N = 3), the pair chosen for being closest, so a claim scenario reads each reveal from its transaction instead (`src/l4/reveals.js`): `NewOracleResponseRecorded` gives the transaction, and `fulfillOracleRequestV`'s calldata the vector and `cid:salt`. `claim.revealMatchesUpload` holds each upload to what its arbiter revealed. The fourth arbiter asked to reveal, after the round finished, leaves no event, and is not compared.
+**Every recorded reveal, not the cluster.** `getEvaluation` names only the clustered arbiters (P = 2 of N = 3), the pair chosen for being closest, so a claim scenario reads each reveal from its transaction instead (`src/l4/reveals.js`): `NewOracleResponseRecorded` gives the transaction, and `fulfillOracleRequestV`'s calldata the vector and `cid:salt`. `claim.revealsComplete` holds them to the aggregator's own `responseCount`, so a lagging log index can't hide an arbiter, and `claim.revealMatchesUpload` holds each upload to what its arbiter revealed. The fourth arbiter asked to reveal, after the round finished, leaves no event, and is not compared.
 
 **`claim.reportHashAgrees` is strict.** A test's message steady on one host and different on another (limit P1, PR #137) gives two hashes, and this fails. No settlement reads `message`, so the verdict is not at stake, but §18's 100% is. If the evidence blocks agree on everything else, the failure says the difference is outside the block, so read the hosts' reports before calling it a defect.
 
@@ -271,11 +271,11 @@ node scripts/l4-metrics.js results/*.json   # exit 0 only with enough samples, i
 
 | Metric | One sample | Needs | Below that it says |
 |---|---|---|---|
-| p95 end-to-end latency, against §11's 900 s | A jury round with no fault injected, from before the transaction to the poll that saw the result: at most one poll (20 s) late, never early | 20 rounds: nearest-rank p95 of fewer is the maximum | `no p95: n of the 20`, and the slowest |
+| p95 end-to-end latency, against §11's 900 s | A round whose uploads say the jury decided it, with no fault injected, from before the transaction to the poll that saw the result: at most one poll (20 s) late, never early. A round that started and never finished counts as slower than any budget | 20 rounds: nearest-rank p95 of fewer is the maximum | `no p95: n of the 20`, and the slowest |
 | σ of the valid mass in points (1 point = 10,000; §18: at most 5) | Sample standard deviation over one jury round's recorded reveals, from the vectors in their transactions. A gate verdict has none | 3 reveals for a number, which is rough, and 5 such rounds for the gate | `no σ` |
 | Dispute flips | A dispute round whose first verdict was valid | Always `k of n`; a rate from 10 | No percentage |
 
-A round with a fault injected counts for σ (the switch cannot move a score) and not for latency (the delay is the point of it).
+A round with a fault injected counts for σ (the switch cannot move a score) and not for latency (the delay is the point of it). Samples come from what the uploads say happened, not from what the scenario expected: a valid claim answered by a gate fails its checks and is no jury sample, and mixed or missing evidence counts for nothing. A request that never started is no sample; one that started leaves one, whatever fails after.
 
 **Preparing them (once, an owner's step).** The scenarios read `archives/l4-claim/claim-set.json`. None is committed until then, and naming a scenario without one is an error.
 
@@ -302,9 +302,9 @@ A round with a fault injected counts for σ (the switch cannot move a score) and
 - **`l4-testnet`** — runs nightly (schedule, class 128) and via manual dispatch;
   needs `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
   scoped to the `e2e` GitHub Environment. Dispatch inputs: `class_id`
-  (default `5555`), `expect_common`, `expect_release`, `scenario` (the only
-  way to run a `manualOnly` scenario, see [Scenarios](#scenarios), or a
-  [claim scenario](#claim-scenarios-class-5555-only)):
+  (default `5555`), `expect_common`, `expect_release`, `expect_fault_switch`,
+  `scenario` (the only way to run a `manualOnly` scenario, see
+  [Scenarios](#scenarios), or a [claim scenario](#claim-scenarios-class-5555-only)):
 
   ```bash
   gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \

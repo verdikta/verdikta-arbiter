@@ -93,16 +93,36 @@ describe('what the AI Node is sent', () => {
   });
 
   it('provider-timeout: attempt 1 with the directive, a retry with none, from the same run', async () => {
-    ai.state.answer = (body, state) => (state.calls.length === 1
-      ? R.aiError(503, 'CODE_REVIEW_JUROR_TIMEOUT', true)
-      : stamp(body, null));
+    const timeout = R.aiError(503, 'CODE_REVIEW_JUROR_TIMEOUT', true);
+    timeout.json.canaryFault = { state: 'armed', action: 'late-juror' };
+    ai.state.answer = (body, state) => (state.calls.length === 1 ? timeout : stamp(body, null));
     const result = await run(armed('provider-timeout'));
     expect(ai.state.calls).toHaveLength(2);
     expect(ai.state.calls[0].canaryFault.action).toBe('late-juror');
     expect(ai.state.calls[1].canaryFault).toBeUndefined();
     expect(runner.state.runs).toHaveLength(1);
-    expect(result.metadata.canary_fault).toMatchObject({ fault: 'provider-timeout', attempts: 2, action: null });
+    expect(result.metadata.canary_fault).toMatchObject({
+      fault: 'provider-timeout', attempts: 2, action: null,
+      earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }]
+    });
     expect(result.scores).toEqual(R.juryScores());
+  });
+
+  it('an unrelated timeout on an AI Node that did not verify the directive: the verdict says no action caused it', async () => {
+    const timeout = R.aiError(503, 'CODE_REVIEW_JUSTIFIER_TIMEOUT', true);
+    timeout.json.canaryFault = { state: 'armed', action: null };
+    ai.state.answer = (body, state) => (state.calls.length === 1 ? timeout : stamp(body, null));
+    const result = await run(armed('provider-timeout'));
+    expect(result.metadata.canary_fault.earlierAttempts).toEqual([{ action: null, errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT' }]);
+  });
+
+  it('an AI Node that says nothing on an error, and one that says something else: no action, and only a code', async () => {
+    const odd = R.aiError(503, 'CODE_REVIEW_JUROR_TIMEOUT HUNTER-TEXT', true);
+    odd.json.canaryFault = { state: 'armed', action: 'HUNTER-TEXT' };
+    ai.state.answer = (body, state) => (state.calls.length === 1 ? odd : stamp(body, null));
+    const result = await run(armed('provider-timeout'));
+    expect(result.metadata.canary_fault.earlierAttempts).toEqual([{ action: null, errorCode: 'unknown' }]);
+    expect(JSON.stringify(result.metadata)).not.toContain('HUNTER-TEXT');
   });
 
   it('cancellation: every attempt, then the arbiter abstains with no verdict', async () => {

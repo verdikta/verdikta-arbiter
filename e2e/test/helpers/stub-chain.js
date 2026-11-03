@@ -31,9 +31,10 @@ const SALT = 'a6c0a6c0a6c0a6c0a6c0';
  *   what the reveal transactions carry (default: one per CID of the cluster's list); or
  *   { abstain: true, commitReceived?: number } for a round nobody settles
  * @param {boolean} [o.revertOnEstimate] - estimateGas fails, as when selection would revert
+ * @param {number} [o.estimatesBeforeRevert] - estimateGas fails once this many requests have been sent
  * @returns {Promise<object>}
  */
-async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate = false }) {
+async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate = false, estimatesBeforeRevert = Infinity }) {
   const iface = new ethers.Interface(abi);
   const calls = [];
   const sent = [];
@@ -42,6 +43,8 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
   const evaluations = new Map();
   const revealLogs = [];
   const revealTxs = new Map();
+  /** Reads that answer an error, by function name, for a test to set. */
+  const failReads = new Set();
 
   const decodeRequest = (data) => {
     const args = iface.decodeFunctionData('requestAIEvaluationWithApproval', data);
@@ -65,6 +68,8 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
     evaluations.set(aggId, evaluation);
     if (!evaluation.abstain) {
       const reveals = evaluation.reveals || evaluation.justificationCid.split(',').map((cid) => ({ cid, scores: evaluation.scores }));
+      evaluation.responseCount = reveals.length;
+      // hiddenLogs: an RPC whose log index lags its state, or drops events.
       reveals.forEach(({ cid, scores }, slot) => {
         const requestId = HASH(9000 + slot);
         const hash = ethers.keccak256(ethers.concat([aggId, ethers.toBeHex(slot, 32)]));
@@ -75,6 +80,7 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
         });
         const operator = ethers.getAddress(ethers.zeroPadValue(ethers.toBeHex(0xa6c0 + slot), 20));
         const log = iface.encodeEventLog('NewOracleResponseRecorded', [requestId, slot, aggId, operator]);
+        if (slot >= reveals.length - (evaluation.hiddenLogs || 0)) return;
         revealLogs.push({
           address: AGGREGATOR,
           topics: log.topics,
@@ -121,6 +127,7 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
   const read = ({ data }) => {
     const parsed = iface.parseTransaction({ data });
     reads.push(parsed.name);
+    if (failReads.has(parsed.name)) throw new Error(`the stub refuses ${parsed.name}`);
     const output = {
       maxTotalFee: () => [parsed.args[0] * 12n],
       getEvaluation: () => {
@@ -132,7 +139,7 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
         const found = evaluations.get(parsed.args[0]);
         const done = Boolean(found) && !found.abstain;
         const commits = done ? 4 : ((found && found.commitReceived) || 0);
-        return [done, false, done, 6, commits, done ? 3 : 0, 3, 2, ethers.ZeroAddress, 1];
+        return [done, false, done, 6, commits, done ? found.responseCount : 0, 3, 2, ethers.ZeroAddress, 1];
       },
       responseTimeoutSeconds: () => [300n]
     }[parsed.name];
@@ -163,7 +170,7 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
       transactions: []
     }),
     eth_estimateGas: () => {
-      if (revertOnEstimate) {
+      if (revertOnEstimate || sent.length >= estimatesBeforeRevert) {
         const error = new Error('execution reverted: No active oracles available');
         error.rpcCode = 3;
         throw error;
@@ -206,6 +213,7 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
     calls,
     sent,
     reads,
+    failReads,
     close: () => new Promise((resolve) => {
       if (server.closeAllConnections) server.closeAllConnections();
       server.close(() => resolve());

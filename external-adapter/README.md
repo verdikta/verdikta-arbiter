@@ -328,7 +328,8 @@ action, the claim and the report.
 **Visible.** `/health` and `/version` carry `canaryFault: { state, namedClaims, applied, refused,
 lastRefusal, problems }`, never the key, the URL or the CIDs. Every justification's `arbiter`
 block carries `canaryFault: { state }`, and a jury verdict's `metadata` carries
-`canary_fault_ai_node` and, for a named claim, `canary_fault`. No settlement reads any of it. An
+`canary_fault_ai_node` and, for a named claim, `canary_fault`: the fault, the attempts, each earlier
+attempt's verified action and error code, and the last attempt's action. No settlement reads any of it. An
 armed node says so at boot, and L4 fails a claim run unless the state is what the run named.
 
 For testing information, please refer to [TESTING.md](TESTING.md).

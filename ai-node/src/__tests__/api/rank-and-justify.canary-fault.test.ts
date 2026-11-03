@@ -151,6 +151,7 @@ describe('armed: a key on this node', () => {
     const result = await post(body(directive('late-juror')));
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, scores: [], justification: '' });
+    expect(result.body.canaryFault).toEqual({ state: 'armed', action: 'late-juror' });
     expect(result.elapsedMs).toBeLessThanOrEqual(241000);
     const [call] = calls(SONNET);
     expect(call.outcome).toBe('aborted');
@@ -164,6 +165,17 @@ describe('armed: a key on this node', () => {
     expect(result.status).toBe(503);
     expect(result.body.errorCode).toBe('CODE_REVIEW_JUROR_TIMEOUT');
     expect(calls(JUSTIFIER)).toHaveLength(0);
+  }, 20000);
+
+  test('a timeout the switch did not cause says so: no action, whatever the state', async () => {
+    script({ [SONNET]: { hang: true } });
+    const result = await post(body());
+    expect(result.status).toBe(503);
+    expect(result.body.errorCode).toBe('CODE_REVIEW_JUROR_TIMEOUT');
+    expect(result.body.canaryFault).toEqual({ state: 'armed', action: null });
+    const mismatched = await post(body(directive('late-juror', `${KEY}x`)));
+    expect(mismatched.status).toBe(503);
+    expect(mismatched.body.canaryFault).toEqual({ state: 'armed', action: null });
   }, 20000);
 
   test('then the retry, with no directive, gives the verdict', async () => {

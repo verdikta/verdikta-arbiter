@@ -16,14 +16,38 @@ const OPERATOR = new ethers.Interface([
 ]);
 const CODER = ethers.AbiCoder.defaultAbiCoder();
 
+const READ_ATTEMPTS = 4;
+const READ_RETRY_MS = 2000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
 /**
+ * The aggregator's own count, once the round is complete, says how many there must be: a log
+ * index behind the state, or one that drops an event, would otherwise hide an arbiter.
+ *
  * @param {import('ethers').Provider} provider
  * @param {import('ethers').Contract} aggregator
  * @param {string} aggId
  * @param {number} fromBlock - the request's block
- * @returns {Promise<{ reveals: Array<{ slot: number, operator: string, cid: string, scores: number[] }>, error: string|null }>}
+ * @returns {Promise<{ reveals: Array<{ slot: number, operator: string, cid: string, scores: number[] }>, responseCount: number|null, error: string|null }>}
  */
 async function readReveals(provider, aggregator, aggId, fromBlock) {
+  let responseCount = null;
+  let read = { reveals: [], error: null };
+  for (let attempt = 1; attempt <= READ_ATTEMPTS; attempt += 1) {
+    try {
+      responseCount = Number((await aggregator.getAggregationStatus(aggId)).responseCount);
+    } catch (error) {
+      responseCount = null;
+      read = { reveals: read.reveals, error: `the aggregator's response count: ${error.shortMessage || error.message}` };
+    }
+    if (responseCount !== null) read = await readRevealLogs(provider, aggregator, aggId, fromBlock);
+    if (responseCount !== null && read.error === null && read.reveals.length >= responseCount) break;
+    if (attempt < READ_ATTEMPTS) await sleep(READ_RETRY_MS);
+  }
+  return { ...read, responseCount };
+}
+
+async function readRevealLogs(provider, aggregator, aggId, fromBlock) {
   try {
     const event = aggregator.interface.getEvent('NewOracleResponseRecorded');
     const logs = await provider.getLogs({
