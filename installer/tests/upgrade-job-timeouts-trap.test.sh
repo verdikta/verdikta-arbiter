@@ -32,11 +32,12 @@ echo "$after" | grep -q 'apply-job-timeouts.sh" --check' && ok || bad "after: do
 echo "$after" | grep -q 'apply-job-timeouts.sh" --apply' && ok || bad "after: does not call --apply"
 # The rule itself: no `$?` read after the fact in either block.
 for block in "$before" "$after"; do
-    echo "$block" | grep -E 'apply-job-timeouts\.sh"' | grep -vE '\|\| [A-Z_]+=\$\?' | grep -vE '^[[:space:]]*(#|echo)' \
+    echo "$block" | grep -E '^[[:space:]]*bash .*apply-job-timeouts\.sh"' | grep -vE '\|\| [A-Z_]+=\$\?$' \
         && bad "a call to the tool that does not read its exit code with || rc=\$?" || ok
 done
 # Both blocks are at the top level of the script: a function has no ERR trap at all.
-awk '/^[a-z_]+\(\) \{$/{f=1} f&&/Job timeouts, (before|after) the restart/{print "IN-FUNCTION"} /^}$/{f=0}' "$S" | grep -q IN-FUNCTION \
+# (`^}` also closes a heredoc's dict in check_chainlink_config, which is why it is only used to end.)
+awk '/^[a-zA-Z_]+\(\) \{$/{f=1} /^# Job timeouts, (before|after) the restart/{if (f) print "IN-FUNCTION"} /^}$/{f=0}' "$S" | grep -q IN-FUNCTION \
     && bad "a job-timeouts block sits inside a function" || ok
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -193,7 +194,7 @@ cp "$ROOT/util/apply-job-timeouts.sh" "$T/util/apply-job-timeouts.sh"
 cp "$ROOT/util/apply-job-timeouts.sh" "$T/install/apply-job-timeouts.sh"
 printf '[Log]\nLevel = "warn"\n' > "$T/home/.chainlink-testnet/config.toml"
 printf 'nobody@example.test\nnope\n' > "$T/home/.chainlink-testnet/.api"
-out=$(VERDIKTA_UNATTENDED=1 VERDIKTA_CHAINLINK_URL=http://127.0.0.1:9 run_blocks "" "")
+out=$(VERDIKTA_UNATTENDED=1 VERDIKTA_CHAINLINK_URL=http://127.0.0.1:9 VERDIKTA_JOB_CHECK_WAIT=1 run_blocks "" "")
 has   "real tool: config set"       "$out" "BEFORE-DONE"
 grep -q '^MaxRunDuration = "15m"$' "$T/home/.chainlink-testnet/config.toml" && ok || bad "real tool: MaxRunDuration was not set"
 has   "real tool, dead node: exit 3" "$out" "rc=3"

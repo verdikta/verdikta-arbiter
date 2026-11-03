@@ -55,6 +55,9 @@ MaxQueued = 64
 
 <EVM_NODES_BLOCK>
 
+[JobPipeline]
+MaxRunDuration = "15m"
+
 [JobPipeline.HTTPRequest]
 DefaultTimeout = "300s"
 

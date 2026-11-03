@@ -24,11 +24,14 @@ hasnt() { if echo "$2" | grep -q -- "$3"; then bad "$1: unexpected [$3] in: $2";
 fn_of() { awk -v name="$1" '$0 == name "() {" {p=1} p{print} p&&/^}$/{exit}' "$S"; }
 regen=$(fn_of regenerate_job_specs)
 check_template=$(fn_of check_job_spec_template)
-check_config=$(fn_of check_chainlink_config)
+without_timeouts=$(fn_of job_template_without_timeouts)
+# Its python heredoc has a `}` in the first column, so this one is taken up to its call.
+check_config=$(awk '/^check_chainlink_config\(\) \{$/{p=1} /^# Call the config check function/{p=0} p{print}' "$S")
 capture=$(fn_of run_echo_capture)
 call_template=$(grep -nE '^[[:space:]]*(JOB_TEMPLATE_RC=0|check_job_spec_template)' "$S" | head -3)
 [ -n "$regen" ] && ok || bad "could not extract regenerate_job_specs"
 [ -n "$check_template" ] && ok || bad "could not extract check_job_spec_template"
+[ -n "$without_timeouts" ] && ok || bad "could not extract job_template_without_timeouts"
 [ -n "$check_config" ] && ok || bad "could not extract check_chainlink_config"
 [ -n "$capture" ] && ok || bad "could not extract run_echo_capture"
 
@@ -55,7 +58,7 @@ STUB
 cat > "$BIN/docker" <<'STUB'
 #!/bin/bash
 case "$1" in
-  ps) if [ "${DOCKER_RUNNING:-1}" = 1 ]; then echo "abc chainlink"; fi ;;
+  ps) if [ "${2:-}" = "-a" ] || [ "${DOCKER_RUNNING:-1}" = 1 ]; then echo "abc chainlink"; fi ;;
   start) echo "STUB-DOCKER-START"; exit "${DOCKER_START_RC:-0}" ;;
 esac
 STUB
@@ -73,13 +76,14 @@ regen_run() {
     ( cd "$T" && PATH="$BIN:$PATH" TARGET_DIR="$I" SCRIPT_DIR="$SRC/bin" INSTALLER_DIR="$SRC" \
       REPO_CHAINLINK_NODE="$REPO_NODE" TARGET_CHAINLINK_NODE="$TARGET_NODE" JOBS_ALREADY_REGENERATED=0 \
       VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS="${ANSWER:-y}" \
-      REGEN="$regen" TEMPLATE="$check_template" CAPTURE="$capture" ROOT="$ROOT" \
+      REGEN="$regen" TEMPLATE="$check_template" WITHOUT="$without_timeouts" CAPTURE="$capture" ROOT="$ROOT" \
       bash -c '
         set -e
         trap "echo TRAP-FIRED; exit 9" ERR
         source "$ROOT/lib/prompts.sh"
         GREEN= YELLOW= RED= BLUE= NC=
         eval "$CAPTURE"
+        eval "$WITHOUT"
         eval "$REGEN"
         eval "$TEMPLATE"
         JOB_TEMPLATE_RC=0
@@ -203,11 +207,11 @@ has   "render fails: end"       "$out" "REACHED-END rc=1"
 cmp -s "$HOME_DIR/.chainlink-testnet/config.toml" "$T/config.was" && ok || bad "render fails: the config was changed"
 hasnt "render fails: no trap"   "$out" "TRAP-FIRED"
 
-# The backup fails (a directory where the backup would go is not writable): no half-replace.
-chmod 500 "$HOME_DIR/.chainlink-testnet"
-out=$(config_run)
-chmod 700 "$HOME_DIR/.chainlink-testnet"
+# The backup fails (a cp that cannot write): no half-replace.
+mkdir -p "$T/badcp"; printf '#!/bin/bash\nexit 1\n' > "$T/badcp/cp"; chmod +x "$T/badcp/cp"
+out=$(FAKE_PATH="$T/badcp:$PATH" config_run)
 has   "backup fails: end"     "$out" "REACHED-END rc=1"
 hasnt "backup fails: no trap" "$out" "TRAP-FIRED"
+cmp -s "$HOME_DIR/.chainlink-testnet/config.toml" "$T/config.was" && ok || bad "backup fails: the config was changed"
 
 echo "pass=$pass fail=$fail"; [ "$fail" = "0" ]
