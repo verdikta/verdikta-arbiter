@@ -249,7 +249,8 @@ const evaluate = async (request) => {
       // bCID archive is collected, because that is the one case every arbiter can
       // settle identically without an AI call (see utils/bcidValidation.js).
       const t7 = Date.now();
-      const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } = await fetchAndTriageArchives(
+      let stoppedWaiting = false;
+      const triage = fetchAndTriageArchives(
         cidArray, tempDir, {
           archiveService, validator, logger, runTag,
           // a code-review request on an arbiter that does not serve one, or with a
@@ -258,9 +259,20 @@ const evaluate = async (request) => {
             if (codeReviewMode.isCodeReviewManifest(manifest)) {
               codeReviewMode.assertCodeReviewRequest(getCodeReviewConfig(), cidArray);
             }
-          }
+          },
+          shouldStop: () => stoppedWaiting
         }
       );
+      const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } =
+        await codeReviewMode.boundFetches(getCodeReviewConfig(), t0, triage, () => {
+          stoppedWaiting = true;
+          // An extraction already under way may still write into tempDir after this
+          // job answers: remove it again once the triage settles, without waiting for that.
+          const sweep = () => archiveService.cleanup(tempDir).catch((cleanupError) => {
+            logger.error(`${runTag} Error cleaning up temporary directory: ${cleanupError.message}`);
+          });
+          triage.then(sweep, sweep);
+        });
       logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
       // Malformed archives are never kept: jobs fetching at the same moment shared
       // the bytes (and reach the same verdict), but no later job reuses them.
@@ -271,7 +283,8 @@ const evaluate = async (request) => {
         // Stake-attestation claim (cids = [listing, claim, prior findings…]): the
         // code-review front gates settle requester errors (thrown: errored, no
         // commit) and claim gate failures (a deterministic INVALID verdict) before
-        // any runner or model call; a claim that passes goes to the run (A4b).
+        // any runner or model call; a claim that passes goes to the run: the runner's
+        // gates, then the jury (A4b). Whatever it returns is a commitable vector or a throw.
         const t8 = Date.now();
         result = await codeReviewMode.evaluateCodeReview({
           cidArray,
@@ -281,7 +294,8 @@ const evaluate = async (request) => {
           addendum: addendumString,
           config: getCodeReviewConfig(),
           deps: { archiveService, validator, logger },
-          runTag
+          runTag,
+          receivedAt: t0 // the deadline runs from receipt: the fetches above count (design §11)
         });
         logger.info(`${runTag} code-review evaluation took ${Date.now() - t8}ms`);
       } else if (malformedBCIDs.length > 0) {

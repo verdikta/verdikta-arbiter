@@ -11,6 +11,9 @@
  *                                     the runner's bearer token, or a file holding it (not both)
  *   CODE_REVIEW_TRUST=production|dev  which builder keys verify attestation.json (default production)
  *   CODE_REVIEW_DEV_KEYS=<b64>,<b64>  dev trust only: caller-supplied builder public keys
+ *   CODE_REVIEW_DEADLINE_MS=780000    the single deadline, from receipt (design §11): at most 780 s
+ *   AI_NODE_URL=http://127.0.0.1:3000 the AI Node, as text mode reads it
+ *   SERVER_TIMEOUT=840000             must hold the deadline plus the 60 s commit reserve
  *   NETWORK_CHAIN_ID / DEPLOYMENT_NETWORK
  *                                     the chain this arbiter serves (as installer/.env names it)
  *
@@ -30,6 +33,8 @@
 const fs = require('fs');
 const path = require('path');
 const { codeReview } = require('@verdikta/common');
+const { DEFAULT_DEADLINE_MS, COMMIT_RESERVE_MS } = require('./time');
+const { serverTimeoutMs } = require('../utils/serverTimeout');
 
 const BASE_MAINNET_CHAIN_ID = 8453;
 /** Chains dev trust may run on: Base Sepolia and a local Hardhat/Anvil node. */
@@ -119,7 +124,42 @@ function runnerFromEnv(env, problems) {
   } else {
     problems.push('CODE_RUNNER_TOKEN (or CODE_RUNNER_TOKEN_FILE) is not set');
   }
-  return { configured: url !== null && token, url };
+  // Read at each call and never kept, so a rotated file takes effect and no copy sits on this object.
+  const readToken = () => (inline ? env.CODE_RUNNER_TOKEN : fs.readFileSync(env.CODE_RUNNER_TOKEN_FILE.trim(), 'utf8')).trim();
+  return { configured: url !== null && token, url, readToken };
+}
+
+function aiNodeFromEnv(env, problems) {
+  const text = present(env.AI_NODE_URL) ? env.AI_NODE_URL.trim() : 'http://localhost:3000';
+  try {
+    const parsed = new URL(text);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') return { url: parsed.toString() };
+  } catch (_error) {
+    // reported below
+  }
+  problems.push('AI_NODE_URL is not an http(s) URL');
+  return { url: null };
+}
+
+function deadlineFromEnv(env, problems) {
+  if (!present(env.CODE_REVIEW_DEADLINE_MS)) return DEFAULT_DEADLINE_MS;
+  const text = env.CODE_REVIEW_DEADLINE_MS.trim();
+  const value = /^[0-9]{1,7}$/.test(text) ? Number(text) : 0;
+  // Never above the job's 840 s less the commit reserve: a longer deadline could only commit late.
+  const most = codeReview.MAX_DEADLINE_MS - COMMIT_RESERVE_MS;
+  if (value < 1 || value > most) {
+    problems.push(`CODE_REVIEW_DEADLINE_MS must be a whole number of milliseconds from 1 to ${most}`);
+    return DEFAULT_DEADLINE_MS;
+  }
+  return value;
+}
+
+/** The server's socket closes at SERVER_TIMEOUT: the deadline and the commit must fit inside it. */
+function serverTimeoutProblem(env, deadlineMs) {
+  const timeoutMs = serverTimeoutMs(env);
+  return timeoutMs < deadlineMs + COMMIT_RESERVE_MS
+    ? `SERVER_TIMEOUT (${timeoutMs} ms) is below the deadline plus the commit reserve (${deadlineMs + COMMIT_RESERVE_MS} ms)`
+    : null;
 }
 
 function chainFromEnv(env) {
@@ -185,7 +225,8 @@ function trustFromEnv(env, chain) {
  * `options.versions`, for tests).
  * @param {object} env
  * @param {{ versions?: { pinned: string|null, installed: string|null, aiNode: string|null } }} [options]
- * @returns {{ enabled: boolean, ready: boolean, runner: { configured: boolean, url: string|null },
+ * @returns {{ enabled: boolean, ready: boolean, runner: { configured: boolean, url: string|null, readToken: () => string },
+ *   aiNode: { url: string|null }, deadlineMs: number,
  *   trust: { mode: string, devKeys: { publicKey: string }[], refused: string|null },
  *   chain: { chainId: number|null, network: string|null }, problems: string[] }}
  */
@@ -198,6 +239,13 @@ function codeReviewConfigFromEnv(env = {}, options = {}) {
   const runner = runnerFromEnv(env, runnerProblems);
   if (enabled) problems.push(...runnerProblems);
 
+  const runProblems = [];
+  const aiNode = aiNodeFromEnv(env, runProblems);
+  const deadlineMs = deadlineFromEnv(env, runProblems);
+  const timeoutProblem = serverTimeoutProblem(env, deadlineMs);
+  if (timeoutProblem) runProblems.push(timeoutProblem);
+  if (enabled) problems.push(...runProblems);
+
   const versions = options.versions || readCommonVersions();
   const libraryProblems = commonVersionProblems(versions);
   if (enabled) problems.push(...libraryProblems);
@@ -208,8 +256,10 @@ function codeReviewConfigFromEnv(env = {}, options = {}) {
 
   return {
     enabled,
-    ready: enabled && runner.configured && libraryProblems.length === 0 && trust.refused === null,
+    ready: enabled && runner.configured && runProblems.length === 0 && libraryProblems.length === 0 && trust.refused === null,
     runner,
+    aiNode,
+    deadlineMs,
     trust,
     chain: { chainId: chain.chainId, network: chain.network },
     commonVersion: versions.installed,
@@ -233,6 +283,7 @@ function describeCodeReviewConfig(config) {
     devKeyCount: config.trust.devKeys.length,
     chainId: config.chain.chainId,
     network: config.chain.network,
+    deadlineMs: config.deadlineMs,
     problems: [...config.problems]
   };
 }
