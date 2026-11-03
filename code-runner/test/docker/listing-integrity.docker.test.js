@@ -191,11 +191,11 @@ const VARIANTS = Object.freeze({
     files: { ...VAULT_REPO, 'foundry.toml': NAMES_NOTHING() },
     installed: ['0.8.31'],
     setup: tools(
-      ...[`${SVM}/v0.8.33/solc-0.8.33`, `${SVM}/0.8.34-fake/solc-0.8.34-fake`, `'${SVM}/0.8.35+fake/solc-0.8.35+fake'`, `${SVM}/0.8.36/solc`, `${SVM}/0.8.31/solc`, '/opt/pathsolc/solc'].flatMap((f) => [
+      ...[`${SVM}/v0.8.33/solc-0.8.33`, `${SVM}/0.8.34-fake/solc-0.8.34-fake`, `'${SVM}/0.8.35+fake/solc-0.8.35+fake'`, `${SVM}/0.8.36/solc`, `${SVM}/0.8.31/solc`, '/opt/pathsolc/solc', '/opt/elsewhere/svm/0.8.31/solc-0.8.31'].flatMap((f) => [
         `mkdir -p "$(dirname ${f})"`,
         writeFile(f, '#!/bin/sh\nprintf x > /tmp/planted-ran\nexec /opt/solc/solc "$@"\n')
       ]),
-      'chmod -R a+rX /opt/pathsolc'
+      'chmod -R a+rX /opt/pathsolc /opt/elsewhere'
     ),
     env: [`PATH=/opt/pathsolc:${BASE_PATH}`]
   }
@@ -431,16 +431,19 @@ test('A2c under real forge: where forge looks: planted compilers at every other 
     const found = await discoverForge(ctx, 'find');
     let n = 0;
     const sh = (script) => { n += 1; return ctx.exec(['/bin/sh', '-c', script], { name: `s${n}`, timeoutMs: 60000 }); };
+    // A .env that points forge's lookup elsewhere moves nothing: forge loads one without overriding what is set.
+    const relocate = "printf 'XDG_DATA_HOME=/opt/elsewhere\\nHOME=/opt/elsewhere\\n' > .env";
     for (const solc of ['', '0.8.31']) {
-      for (const pragma of ['=0.8.31', '^0.8.0', '=0.8.33', '=0.8.34', '=0.8.35', '=0.8.36']) {
+      for (const [pragma, extra] of [['=0.8.31', ''], ['^0.8.0', ''], ['=0.8.33', ''], ['=0.8.34', ''], ['=0.8.35', ''], ['=0.8.36', ''], ['=0.8.31', relocate]]) {
         await sh([
           'cd /work && find . -mindepth 1 -delete; mkdir -p src test',
           `printf '// SPDX-License-Identifier: MIT\\npragma solidity ${pragma};\\ncontract Probe {}\\n' > src/Probe.sol`,
-          'printf \'[profile.default]\\nsrc = "src"\\ntest = "test"\\nout = "out"\\ncache_path = "cache"\\noffline = true\\n\' > foundry.toml'
+          'printf \'[profile.default]\\nsrc = "src"\\ntest = "test"\\nout = "out"\\ncache_path = "cache"\\noffline = true\\n\' > foundry.toml',
+          extra
         ].join('\n'));
         n += 1;
         const build = await ctx.exec(forgeLib.forgeArgv({ ...found, solc }, ['build']), { name: `s${n}`, timeoutMs: 120000, workdir: forgeLib.FORGE_WORKDIR });
-        got.push({ solc, pragma, exit: build.exitCode, ran: (await sh('test -e /tmp/planted-ran')).exitCode === 0 });
+        got.push({ solc, pragma, extra, exit: build.exitCode, ran: (await sh('test -e /tmp/planted-ran')).exitCode === 0 });
       }
     }
   };
@@ -450,9 +453,9 @@ test('A2c under real forge: where forge looks: planted compilers at every other 
     steps: [step], receivedAt, deadlineAt: receivedAt + 800000, active: new Set(), log: silent
   });
   assert.equal(r.outcome, 'definitive', JSON.stringify(r.abstain));
-  assert.equal(got.length, 12);
+  assert.equal(got.length, 14);
   for (const g of got) assert.equal(g.ran, false, `${JSON.stringify(g.solc)} with ${g.pragma} ran a planted compiler`);
-  assert.equal(got.find((g) => g.solc === '' && g.pragma === '=0.8.31').exit, 0, 'the real release compiled');
+  for (const g of got.filter((x) => x.pragma === '=0.8.31')) assert.equal(g.exit, 0, 'the real release compiled');
 });
 
 test('A2c: what "official" means on this platform: what forge\'s own install leaves is what the look accepts, and on the class platform its bytes are the table\'s', { timeout: TIMEOUT }, async (t) => {

@@ -1185,8 +1185,8 @@ the sandbox can write (the walk in `pinCompiler`), and the attestation binds the
 **What this leaves predicted.** That nothing else runs as solc rests on forge's lookup at the pinned version: the
 pin's file, or `svm/x.y.z/solc-x.y.z`. The sandbox has no way to watch what forge execs. forge is pinned by digest, the
 look covers more than the lookup needs, and a Docker test plants a compiler at each other place (`v0.8.33/`,
-`0.8.34-fake/`, `0.8.35+fake/`, `0.8.36/solc`, `0.8.31/solc`, `solc` on `PATH`) and shows it never runs. A forge
-pin bump re-runs that test.
+`0.8.34-fake/`, `0.8.35+fake/`, `0.8.36/solc`, `0.8.31/solc`, `solc` on `PATH`, a `.env` moving `XDG_DATA_HOME` or
+`HOME`) and shows it never runs. A forge pin bump re-runs that test.
 
 **What it doesn't cover.**
 - **Repository code a proof calls through ffi.** Recorded below.
