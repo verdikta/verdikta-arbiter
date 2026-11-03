@@ -124,6 +124,8 @@ async function twoHosts(t, request) {
   assert.deepEqual(gatesOf(a.result), gatesOf(b.result), 'the same verdict');
   assert.equal(a.sha256, b.sha256, 'the same report hash');
   assert.equal(a.result.contextPack.sha256, b.result.contextPack.sha256, 'the same pack hash');
+  assert.deepEqual(a.result.contextPack.tiers, b.result.contextPack.tiers, 'the same counts');
+  assert.equal(a.result.contextPack.files[0].text, b.result.contextPack.files[0].text, 'the same manifest');
   return [a, b];
 }
 
@@ -215,10 +217,14 @@ test('R1-F2, R1-F3 on real git: a large binary the finding names first and a hug
   const { result } = await host(t, request);
   const pack = result.contextPack;
   const text = (name) => pack.files.filter((f) => f.tier === name).map((f) => f.text).join('\n');
-  assert.match(text('source'), /source file: src\/blob\.bin\n\[binary file: 4500000 bytes\]/);
   assert.match(text('source'), /source file: src\/Vault\.sol\n[^]*contract Vault/);
-  assert.match(text('callSites'), /symbol: deposit\nsrc\/Vault\.sol:5:/);
+  assert.match(text('callSites'), /deposit: src\/Vault\.sol:5:/);
   assert.ok(!text('callSites').includes('docs/vendor.txt'), 'out of scope');
+  // And what was left out is stated: the binary and the out-of-scope match, both facts, so the tiers stay full.
+  const tier = (name) => pack.tiers.find((x) => x.name === name);
+  assert.deepEqual([tier('source').asked, tier('source').delivered, tier('source').omitted, tier('source').status], [2, 1, { binary: 1 }, 'full']);
+  assert.ok(tier('callSites').omitted.outOfScope >= 1, JSON.stringify(tier('callSites')));
+  assert.equal(tier('callSites').asked, tier('callSites').delivered + Object.values(tier('callSites').omitted).reduce((n, c) => n + c, 0));
 });
 
 test('the pack on real git: the PoC with its function context and full text, the named source, call sites, a tree, and the same bytes in both containers', { timeout: TIMEOUT }, async (t) => {
@@ -230,8 +236,7 @@ test('the pack on real git: the PoC with its function context and full text, the
   assert.match(text('poc'), /index 0{40}\.\.[0-9a-f]{40}/, 'whole blob ids');
   assert.match(text('poc'), /poc file: test\/Clock\.t\.sol\n[^]*contract ClockTest/);
   assert.match(text('source'), /source file: src\/Vault\.sol\n[^]*contract Vault/);
-  assert.match(text('callSites'), /symbol: deposit/);
-  assert.match(text('callSites'), /src\/Vault\.sol:5:/);
+  assert.match(text('callSites'), /deposit: src\/Vault\.sol:5:/);
   assert.match(text('tree'), /src\//);
   assert.ok(pack.usedTokens <= pack.budgetTokens);
   for (const t2 of pack.tiers) assert.notEqual(t2.status, 'dropped', t2.name);
