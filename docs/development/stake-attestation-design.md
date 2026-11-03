@@ -798,17 +798,20 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
    fourth question; and, when `fix.patch` is present, the repository's linter
    and Semgrep (`--baseline-commit` = the listed commit) over the fixed files.
    All findings are kept, severity-ordered and bounded at 50; nothing downstream
-   removes them.
+   removes them. Honesty flags keep the report's canonical order (the schema has no
+   severity for them): the 50 kept are chosen by rule severity, and what falls off
+   is counted by rule in one note with a fixed id.
 10. **Report** and tear down at or before the deadline the EA passed in. A
     host-side GC timer removes anything a crash left behind.
 
 ### 9.3 Determinism rules
 
 - **Pinned:** env image digest, OCI platform (`linux/amd64`), runner version,
-  gVisor release, base images and Semgrep rules, all versioned in
-  `@verdikta/common`. The report records every input digest — listing CID, bCID,
-  image digest, attestation hash, tool and rule versions — so a published report
-  can be reproduced from its inputs.
+  gVisor release, base images and Semgrep rule versions, all versioned in
+  `@verdikta/common`. The Semgrep image digest and the rules' bytes are pinned in the
+  runner, so the runner's version in the report ties a report to them. The report
+  records every input digest — listing CID, bCID, image digest, attestation hash, tool
+  and rule versions — so a published report can be reproduced from its inputs.
 - **Fixed environment:** `TZ=UTC`, `LANG=C.UTF-8`, `CI=true`,
   `PYTHONHASHSEED=0`, a fixed hostname, and CPU/memory limits taken from the
   spec (within the class maxima), never from the host.
@@ -955,6 +958,24 @@ Honesty flags (§9.2, step 9) are the softer cousin: they do not fail a gate,
 because a legitimate exploit test sometimes needs an unusual fixture, but they
 are tier-A facts the jury must weigh under its fourth question, and the
 adversarial fixtures (§18) measure how often a manipulated PoC gets past both.
+
+**How the runner holds them (node A3c, build plan Q38).** Semgrep's defaults read a
+target tree: its own ignore list skips `test/`, a `.semgrepignore` empties a scan
+silently, an inline `// nosemgrep` drops a flag, and past 10,000 matches of one rule
+in one file it drops every result of that file with exit 0. So the runner reads the
+PoC's bytes out of git before any claim code runs and hands Semgrep only those bytes,
+on stdin, under names it chooses, in a sandbox with every sandbox's flags, with those
+defaults forced off. The rules that read text (a cheatcode's signature, selector or
+address) run in the runner, where no match cap reaches them. **A scan that could not
+finish never reads as "no flags":** a cause in the file (a parse failure, a measured
+limit, a match cap, Semgrep's own per-file memory bound) is a stated fact with a fixed
+rule id, ranked above every rule, and a cheatcode's name on a line the parser skipped
+is still a flag; a cause in the host or the tool (any other error, a non-zero exit, a
+timeout, a missing image) abstains. **The clock beyond the framework's** means moving
+block time or numbers backwards or to the end of their type, and reading or waiting on
+the host's own clock; forward moves (`vm.warp`, `skip`, `vm.roll`) are what the
+framework gives every test. `code-runner/README.md`, "Honesty flags and the fix
+check's lint", holds the rules and the measurements.
 
 **Scope of the post-run checksums (owner decisions Q32, Q35).** The check assumes an
 env image from the attested builder, and the two facts that make that an
@@ -1464,7 +1485,8 @@ cheap classes — together they would roughly halve the prepay.
 | Fetch archives (EA) | 30 s |
 | Disclosure check (hash + re-encrypt, EA) | ≤ 10 s |
 | Image pull (first use per operator, cached afterwards) | 0–90 s |
-| Apply → build → PoC ×3 → integrity → [fix check in parallel] → lint/SAST | ≤ 360 s (`limits.runSeconds`, enforced at listing and by the class maximum) |
+| Apply → build → PoC ×3 → integrity → [fix check in parallel] | ≤ 360 s (`limits.runSeconds`, enforced at listing and by the class maximum) |
+| Lint/SAST | Seconds on an honest claim. Its own timer, at most 300 s, outside `runSeconds` so a hunter's file cannot turn a listing's run into an abstention; the one deadline still bounds it |
 | Jev | ~2 s |
 | Frontier jury (parallel), then justifier | ≤ 240 s + 45 s |
 | Commit transaction; reveal dispatch → reveal transaction | ~90 s |
