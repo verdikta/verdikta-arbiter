@@ -1382,6 +1382,6 @@ test('A2d: one place, easy to lift: one check, one code, read by the listing che
   const read = (rel) => fs.readFileSync(path.join(__dirname, '../..', rel), 'utf8');
   for (const [file, text] of [['README.md', read('README.md')], ['the design', read('../docs/development/stake-attestation-design.md')]]) {
     assert.match(text, /VYPER_NOT_SUPPORTED/, file);
-    assert.match(text, /official (?:list of release hashes|hash list) for Vyper/, file);
+    assert.match(text, /official (?:list of release hashes|hash list)\s+for\s+Vyper/, file);
   }
 });

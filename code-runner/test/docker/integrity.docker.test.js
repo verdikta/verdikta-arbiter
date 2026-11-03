@@ -1177,7 +1177,8 @@ test('A3a R22-F2 under real forge: a one-predicate invariant whose reason spans 
 });
 
 // The fake compilers below run the claim pipeline alone. The listing check now refuses such an image (A2c, SOLC_NOT_OFFICIAL,
-// listing-integrity.docker.test.js), so on an attested image these show what another program in the image, or a fake `vyper`, does.
+// listing-integrity.docker.test.js), so on an attested image these show what another program in the image does. A `vyper` is
+// refused too (A2d, VYPER_NOT_SUPPORTED, the same file).
 test('Known limit (Q35; pins today\'s behaviour, not a wanted one): a compiler in the image that waits for run 1 fails an honest claim\'s integrity; the runner cannot tell it from claim code', { timeout: TIMEOUT }, async (t) => {
   // `forge test` always compiles again after `forge build` (other settings), and forge runs `solc --version` on every start,
   // so a program the image ships as solc runs inside each PoC run. This one writes only once a compile cache exists.
