@@ -831,6 +831,20 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
   bytes. The SHA-256 of the report's canonical JSON is logged and published in
   the justification.
 
+**How the runner holds these rules (node A3b, build plan Q38).** The report is
+built field by field from what the runner measured, so nothing else can reach it.
+The runtime is measured (`runsc --version` of the binary the runner's daemon
+names), and a run under gVisor other than the release pinned in
+`@verdikta/common` is refused at admission. A PoC test's `message` is kept only
+when it is byte-identical on all three runs of the schedule; a test whose runs
+disagree is reported as `error` on all three, whichever run passed, so a flaky
+PoC reads the same on a fast and a slow host while the response's `facts` keep
+what each run did. What a test prints that stays constant on one host and differs
+on another (a container id read through an inline `fs_permissions`, a clock
+rounded to the day) stays a known limit: no settlement reads it, and G2 measures
+honest claims. `code-runner/README.md`, "The report and the context pack", holds
+the rules.
+
 ### 9.4 Verification Report (abridged)
 
 ```json
@@ -838,7 +852,7 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
   "schema": "verdikta.claim-report/1",
   "inputs": { "listingCid": "Qm…", "bcid": "Qm…", "envImage": "sha256:…", "platform": "linux/amd64",
               "attestationSha256": "…", "baseCommit": "7f3a9c…", "pocPatchSha256": "…",
-              "fixPatchSha256": "…", "runner": "1.0.0", "gvisor": "20260928.0", "semgrepRules": "2026.10" },
+              "fixPatchSha256": "…", "runner": "1.0.0", "gvisor": "release-20260921.0", "semgrepRules": "2026.10" },
   "gates": { "disclosure": "pass", "applies": "pass", "testPathsOnly": "pass", "inScope": "pass",
              "build": "pass", "reproduces": "pass", "integrity": "pass", "claimedObservable": "pass" },
   "poc": {

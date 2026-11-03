@@ -45,8 +45,10 @@ const { reportablePath } = require('./patch');
 const crypto = require('node:crypto');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
 
-const MAX_REGRESSIONS = 200;
-const MAX_TESTS = 200;
+const { REPORT_LIMITS } = require('./common');
+
+const MAX_REGRESSIONS = REPORT_LIMITS.regressions;
+const MAX_TESTS = REPORT_LIMITS.pocTests;
 
 /** The fix facts when the claim has no fix.patch: every field at its not-run value. */
 function notRunFix() {

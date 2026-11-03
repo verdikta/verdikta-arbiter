@@ -26,6 +26,7 @@
 const { Sandbox } = require('./sandbox');
 const { ABSTAIN, OUTCOME, Abstain, RequesterError, makeGate } = require('./result');
 const { admitRun } = require('./admission');
+const { measureRuntime, runtimeProblem } = require('./runtime');
 
 /** Keepalive past the stop time, so a container outlives a dead runner only briefly. */
 const KEEPALIVE_MARGIN_SECONDS = 30;
@@ -86,7 +87,11 @@ async function executeRun({
     image: null,
     steps: [],
     gates: {},
-    facts: {}
+    facts: {},
+    // The sandbox runtime actually used, as measured (runtime.js): the report's inputs.gvisor (node A3b).
+    gvisor: null,
+    // The context pack a claim's steps assembled (pack.js, node A3b); never part of the facts.
+    contextPack: null
   };
   const abstainWith = (err) => {
     if (err instanceof RequesterError) {
@@ -117,6 +122,18 @@ async function executeRun({
     if (lease) lease.release();
     if (ticket && typeof ticket.release === 'function') ticket.release();
   };
+
+  // The runtime (§9.3): measured, per run, and under gVisor it must be the release common pins. A report never names a
+  // runtime it did not measure, and a host on another release does not run claims whose report could not match.
+  try {
+    const measured = await measureRuntime({ config, docker, signal });
+    const problem = runtimeProblem(config, measured);
+    if (problem) throw new Abstain(ABSTAIN.ADMISSION_REFUSED, problem, { step: 'admission' });
+    result.gvisor = measured.gvisor;
+  } catch (err) {
+    releaseAll();
+    return abstainWith(asAbstain(err, 'admission'));
+  }
 
   // The env image (§9.2 step 2): pulled by digest if it is not cached, in
   // the time that still leaves runSeconds for the run.
@@ -327,6 +344,10 @@ async function executeRun({
       /** Record a fact the steps observed (the patch, its flags, the PoC runs), for the report. */
       fact(name, value) {
         result.facts[name] = value;
+      },
+      /** The final context pack (pack.js): carried beside the facts, not among them. */
+      contextPack(pack) {
+        result.contextPack = pack;
       },
       /** Milliseconds until the run must stop. */
       remainingMs: () => Math.max(0, stopAt - Date.now()),

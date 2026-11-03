@@ -9,6 +9,8 @@
  * driven without Docker.
  */
 
+const { GVISOR_RELEASE } = require('@verdikta/common/src/codeReview/pins');
+
 const ABORTED = Symbol('aborted');
 const TIMED_OUT = Symbol('timedOut');
 
@@ -152,6 +154,8 @@ function fakeDocker(handlers = {}) {
   }
   return {
     run,
+    // The runtime's answer (runtime.js): the release common pins, unless a test replaces this.
+    runtimeVersion: async () => ({ exitCode: 0, stdout: `runsc version ${GVISOR_RELEASE}\nspec: 1.2.1\n`, stderr: '', spawnError: null }),
     calls,
     commands: () => calls.map((c) => c.args[0]),
     callsOf: (sub) => calls.filter((c) => c.args[0] === sub)
