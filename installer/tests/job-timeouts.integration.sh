@@ -246,18 +246,22 @@ def render_job(i, contract, max_task='840s', bridge='840s'):
     return re.sub(r'timeout="[^"]*"', f'timeout="{bridge}"', text)
 
 def cast(*args):
-    return sh('docker', 'exec', f'{RUN}-anvil', 'cast', *args, '--rpc-url', 'http://localhost:8545').stdout.strip()
+    return sh('docker', 'exec', f'{RUN}-anvil', 'cast', *args).stdout.strip()
+
+def send(*args):
+    # The options first: `--create` takes everything after it as the constructor's.
+    return json.loads(cast('send', '--rpc-url', 'http://localhost:8545', '--unlocked', '--from', DEV_ACCOUNT, '--json', *args))
 
 TOPIC0 = None
 def deploy_emitter():
     """A contract that logs OracleRequest: topic1 = the first 32 bytes of its calldata, data = the rest."""
     global TOPIC0
-    TOPIC0 = sh('docker', 'exec', f'{RUN}-anvil', 'cast', 'keccak', 'OracleRequest(bytes32,address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)').stdout.strip()[2:]
+    TOPIC0 = cast('keccak', 'OracleRequest(bytes32,address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)')[2:]
     runtime = '600035' + '7f' + TOPIC0 + '60203603' + '8060206000' + '37' + '6000' + 'a2' + '00'
     size = len(runtime) // 2
     init = '60' + format(size, '02x') + '80600b6000396000f3' + runtime
-    out = cast('send', '--unlocked', '--from', DEV_ACCOUNT, '--create', '0x' + init, '--json')
-    return json.loads(out)['contractAddress']
+    # EIP-55: a job's contractAddress must carry the checksum.
+    return cast('to-check-sum-address', send('--create', '0x' + init)['contractAddress'])
 
 def cbor_text(s):
     b = s.encode()
@@ -267,9 +271,11 @@ def cbor_text(s):
 def emit_request(contract, ext):
     spec_id = ext.replace('-', '').encode().hex()
     cbor = (cbor_text('cid') + cbor_text('QmIntegration') + cbor_text('aggId') + cbor_text('agg1')).hex()
-    data = sh('docker', 'exec', f'{RUN}-anvil', 'cast', 'abi-encode', 'f(address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)',
-              DEV_ACCOUNT, '0x' + secrets.token_hex(32), '0', DEV_ACCOUNT, '0x12345678', '4000000000', '1', '0x' + cbor).stdout.strip()[2:]
-    cast('send', '--unlocked', '--from', DEV_ACCOUNT, contract, '0x' + spec_id + data, '--json')
+    data = cast('abi-encode', 'f(address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)',
+                DEV_ACCOUNT, '0x' + secrets.token_hex(32), '0', DEV_ACCOUNT, '0x12345678', '4000000000', '1', '0x' + cbor)[2:]
+    receipt = send(contract, '0x' + spec_id + data)
+    if receipt.get('status') != '0x1' or not receipt.get('logs'):
+        raise RuntimeError(f'the OracleRequest log was not emitted: {receipt}')
 
 # ── The run ──────────────────────────────────────────────────────────────────
 def main():
