@@ -188,6 +188,64 @@ describe('code-review config', () => {
     });
   });
 
+  describe('the deadline and the server timeout (A4b)', () => {
+    it('the deadline is 780 s and the AI Node the default URL unless set', () => {
+      const config = codeReviewConfigFromEnv(READY);
+      expect(config.deadlineMs).toBe(780000);
+      expect(config.aiNode.url).toBe('http://localhost:3000/');
+      expect(config.ready).toBe(true);
+    });
+
+    it('CODE_REVIEW_DEADLINE_MS and AI_NODE_URL set them', () => {
+      const config = codeReviewConfigFromEnv({ ...READY, CODE_REVIEW_DEADLINE_MS: '600000', AI_NODE_URL: 'http://127.0.0.1:3000' });
+      expect(config.deadlineMs).toBe(600000);
+      expect(config.aiNode.url).toBe('http://127.0.0.1:3000/');
+      expect(config.ready).toBe(true);
+    });
+
+    it.each([
+      ['not a number', 'soon'],
+      ['zero', '0'],
+      ['negative', '-5'],
+      ['a fraction', '1.5'],
+      ['with a unit', '780s'],
+      ['past the job\'s 840 s less the commit reserve, whatever SERVER_TIMEOUT says', '780001']
+    ])('a deadline that is %s refuses code mode, never a guess', (_label, value) => {
+      const config = codeReviewConfigFromEnv({ ...READY, CODE_REVIEW_DEADLINE_MS: value, SERVER_TIMEOUT: '900000' });
+      expect(config.ready).toBe(false);
+      expect(config.problems.join(' ')).toMatch(/CODE_REVIEW_DEADLINE_MS/);
+    });
+
+    it('an AI_NODE_URL that is not a URL refuses code mode', () => {
+      const config = codeReviewConfigFromEnv({ ...READY, AI_NODE_URL: 'nope' });
+      expect(config.ready).toBe(false);
+      expect(config.problems.join(' ')).toMatch(/AI_NODE_URL/);
+    });
+
+    it('SERVER_TIMEOUT below the deadline plus the 60 s commit reserve refuses code mode: the socket would close first', () => {
+      const config = codeReviewConfigFromEnv({ ...READY, SERVER_TIMEOUT: '300000' });
+      expect(config.ready).toBe(false);
+      expect(config.problems.join(' ')).toMatch(/SERVER_TIMEOUT/);
+      expect(codeReviewConfigFromEnv({ ...READY, SERVER_TIMEOUT: '839999' }).ready).toBe(false);
+      expect(codeReviewConfigFromEnv({ ...READY, SERVER_TIMEOUT: '840000' }).ready).toBe(true);
+    });
+
+    it('a shorter deadline fits a shorter SERVER_TIMEOUT', () => {
+      expect(codeReviewConfigFromEnv({ ...READY, SERVER_TIMEOUT: '360000', CODE_REVIEW_DEADLINE_MS: '300000' }).ready).toBe(true);
+    });
+
+    it('none of it is a problem while code review is off', () => {
+      const config = codeReviewConfigFromEnv({ SERVER_TIMEOUT: '300000', CODE_REVIEW_DEADLINE_MS: 'soon' });
+      expect(config.problems).toEqual(['CODE_REVIEW_ENABLED is not true']);
+    });
+
+    it('the token is read at the call and never kept on the object', () => {
+      const config = codeReviewConfigFromEnv(READY);
+      expect(config.runner.readToken()).toBe(TOKEN);
+      expect(JSON.stringify(config)).not.toContain(TOKEN);
+    });
+  });
+
   describe('describeCodeReviewConfig (for /health)', () => {
     it('reports the trust mode, readiness and problems without secrets', () => {
       const description = describeCodeReviewConfig(codeReviewConfigFromEnv(DEV));
@@ -200,6 +258,7 @@ describe('code-review config', () => {
         devKeyCount: 1,
         chainId: 84532,
         network: null,
+        deadlineMs: 780000,
         problems: []
       });
       const text = JSON.stringify(description);

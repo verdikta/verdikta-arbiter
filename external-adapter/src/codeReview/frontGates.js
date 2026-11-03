@@ -4,10 +4,10 @@
  * §10.1, §10.4, §12, §13.3 with errata E1/E2, §14).
  *
  * Order, and why. Requester errors are decided before anything is held
- * against the claim, so a broken listing or a broken request never costs a
- * hunter the bond; static claim checks come before the one network fetch the
- * claim gates need, so an unreachable ciphertext cannot turn a malformed
- * claim into an abstention.
+ * against the claim, so a broken listing or a broken request never settles
+ * INVALID (no round settles at all: erratum E6 then decides the bond); static
+ * claim checks come before the one network fetch the claim gates need, so an
+ * unreachable ciphertext cannot turn a malformed claim into an abstention.
  *
  *  1. operator: code review enabled, runner configured, the pinned common
  *     release installed (here and in the AI Node), trust mode usable           → requester error
@@ -22,6 +22,8 @@
  *  6. disclosure: the E1 line, the ciphertext fetched by CID, verifyDisclosure
  *     with the listing's disclosureKey (BAD_DISCLOSURE_KEY is the listing's)  → INVALID
  *  7. inScope: validateFinding against the spec                              → INVALID
+ *  8. poc.patch over the listing's maxPatchBytes: the runner's own rule, which it
+ *     could not apply to a patch past its 16 MiB request limit                → INVALID
  *
  * Transient failures (IPFS, disk) propagate untouched: errored, no commit.
  * Every rule here is @verdikta/common's; this module only orders the calls
@@ -68,6 +70,15 @@ function sha256Hex0x(bytes) {
 function isContentRejection(error) {
   return error instanceof LibMalformedArchiveError
     || (error instanceof Error && /^(Invalid manifest:|Invalid JSON in primary file:|Invalid primary file content:|Primary file outcomes count)/.test(error.message));
+}
+
+/**
+ * The most a patch may be on this listing, as the runner reads it
+ * (code-runner/src/classLimits.js): the spec's limit, or the class maximum.
+ */
+function maxPatchBytes(spec) {
+  const named = spec.limits && spec.limits.maxPatchBytes;
+  return named === undefined ? codeReview.SPEC_LIMIT_MAXIMA.maxPatchBytes : named;
 }
 
 function jsonValue(bytes) {
@@ -227,6 +238,7 @@ async function readListing(root, cid, { validator, config, logger, runTag }) {
     cid,
     extractedPath: root,
     manifest,
+    query: primary.query,
     outcomes: primary.outcomes,
     juryParameters: manifest.juryParameters,
     spec,
@@ -270,7 +282,8 @@ async function readPriorFindings(priorCids, { extractedPaths, malformedBCIDs }) 
   return priors;
 }
 
-async function readDisputeStatement(statementCid, archiveService) {
+async function readDisputeStatement(statementCid, archiveService, assertInTime) {
+  assertInTime('the dispute statement was fetched');
   const bytes = await archiveService.getArchive(statementCid); // a fetch failure is transient
   if (bytes.length > codeReview.MAX_DISPUTE_STATEMENT_BYTES) {
     throw requester('CODE_REVIEW_DISPUTE',
@@ -338,12 +351,14 @@ async function readClaimMembers(root) {
  * @param {object} input.config - getCodeReviewConfig()
  * @param {{ archiveService: object, validator: object, logger: object }} input.deps
  * @param {string} [input.runTag]
+ * @param {object} [input.deadline] - time.createDeadline's: no fetch starts once it has passed
  * @returns {Promise<{ verdict: object } | { context: object }>} a deterministic INVALID verdict, or the run's context
  * @throws {CodeReviewRequesterError} the listing, the request or this arbiter's configuration is at fault
  */
 async function runFrontGates(input) {
   const { cidArray, extractedPaths, archiveData, malformedBCIDs, addendum, config, runTag = '' } = input;
   const { archiveService, validator, logger } = input.deps;
+  const assertInTime = (what) => { if (input.deadline) input.deadline.assertOpen(what); };
 
   // 1–2
   assertOperatorReady(config);
@@ -364,7 +379,7 @@ async function runFrontGates(input) {
     throw requester('CODE_REVIEW_DISPUTE', `the dispute line does not parse: ${issueCodes(machineLines.issues)}`);
   }
   const dispute = machineLines.dispute
-    ? await readDisputeStatement(machineLines.dispute.statementCid, archiveService)
+    ? await readDisputeStatement(machineLines.dispute.statementCid, archiveService, assertInTime)
     : null;
 
   // 5–7: from here on a failure is the claim's
@@ -394,6 +409,7 @@ async function runFrontGates(input) {
     });
   }
   const line = machineLines.disclosure;
+  assertInTime('the ciphertext was fetched');
   const ciphertext = await archiveService.getArchive(line.ciphertextCid); // a fetch failure is transient
   const disclosure = codeReview.verifyDisclosure({
     plaintext: u8(claimBytes),
@@ -423,6 +439,19 @@ async function runFrontGates(input) {
   }
   logger.info(`${runTag} code-review claim ${claimCid}: gates disclosure and inScope passed`);
 
+  // 8. The runner settles a patch over the limit as INVALID at its applies gate, but one
+  // past its request limit would never reach that gate: every arbiter would abstain.
+  const patchLimit = maxPatchBytes(listing.spec);
+  if (members.pocPatch.length > patchLimit) {
+    return invalid({
+      gate: 'applies',
+      check: 'PATCH_TOO_LARGE',
+      reason: `${codeReview.POC_PATCH_FILE} is ${members.pocPatch.length} bytes; the listing allows ${patchLimit} (maxPatchBytes)`
+    });
+  }
+  // fix.patch is informational (§20, decision 14): one over the limit is ignored, as an unsafe one is.
+  const fixOverLimit = members.fixPatch !== null && members.fixPatch.length > patchLimit;
+
   return {
     context: {
       codeClass: CODE_CLASS,
@@ -435,7 +464,7 @@ async function runFrontGates(input) {
         finding: members.finding,
         report: members.report,
         pocPatch: members.pocPatch,
-        fixPatch: members.fixPatch
+        fixPatch: fixOverLimit ? null : members.fixPatch
       },
       priorFindings,
       disclosure: {
@@ -447,7 +476,7 @@ async function runFrontGates(input) {
       // what of the addendum a model may see: '' for every addendum the contract writes
       addendumText: machineLines.text,
       eaGates: { disclosure: 'pass', inScope: 'pass' },
-      warnings: [...members.warnings, ...scope.warnings.map((warning) => warning.code)]
+      warnings: [...members.warnings, ...(fixOverLimit ? ['FIX_PATCH_OVER_LIMIT_IGNORED'] : []), ...scope.warnings.map((warning) => warning.code)]
     }
   };
 }
@@ -455,6 +484,7 @@ async function runFrontGates(input) {
 module.exports = {
   CODE_CLASS,
   maxCids,
+  maxPatchBytes,
   runFrontGates,
   refuseSingleCid,
   assertOperatorReady,

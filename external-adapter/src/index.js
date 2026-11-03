@@ -38,16 +38,14 @@ function validatePinataKey() {
 // better than total outage. Only reveals (mode 2) will fail at upload time.
 validatePinataKey();
 
-const { createApp } = require('./app');
+const { createApp, createHttpServer } = require('./app');
 const { listenArgs } = require('./utils/listenArgs');
 
 // Routes (POST /evaluate, GET /version, GET /health) live in app.js.
 const app = createApp();
 
-// Create HTTP server to set connection limits
-const server = require('http').createServer(app);
-server.maxConnections = 1000;        // Handle more concurrent connections
-server.timeout = parseInt(process.env.SERVER_TIMEOUT) || 300000;  // 5 minute timeout (configurable)
+// The connection limit and the socket timeout (SERVER_TIMEOUT, 840 s by default).
+const server = createHttpServer(app);
 
 // HOST is optional; unset = every interface, as always (see utils/listenArgs.js
 // for why that stays the default and what protects port 8080).

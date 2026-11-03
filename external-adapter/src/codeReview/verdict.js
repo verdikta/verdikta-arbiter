@@ -1,5 +1,6 @@
 /**
- * @fileoverview The deterministic INVALID verdict of a failed claim gate.
+ * @fileoverview The deterministic verdicts of a claim: INVALID from a failed
+ * gate, and DUPLICATE from a failed integrity check (owner decision Q35).
  *
  * Design §10.1: when a gate fails, the EA builds a verdict with the full
  * 1,000,000 on the first outcome (INVALID) and a justification naming the
@@ -17,8 +18,10 @@
  */
 
 const { codeReview } = require('@verdikta/common');
+const { buildExecutionEvidence } = require('./evidence');
 
 const REASON_MAX_CHARS = 1500;
+const DUPLICATE_INDEX = 1;
 
 const GATE_HELP = Object.freeze({
   'claim-archive': 'A claim archive is a ZIP following the submitted-work contract (manifest.json with a primary JSON file) '
@@ -29,7 +32,14 @@ const GATE_HELP = Object.freeze({
     + 'to the listing\'s disclosure key must reproduce that ciphertext byte for byte; the request\'s addendum '
     + 'carries these in one strictly formatted line (design §14, erratum E1).',
   inScope: 'finding.json must validate against the finding schema, and every affected path must be inside the '
-    + 'stake\'s scope (design §10.1).'
+    + 'stake\'s scope (design §10.1).',
+  applies: 'poc.patch must apply to the commit the listing names (design §10.1).',
+  testPathsOnly: 'poc.patch may touch only paths.tests and nothing inside paths.protected; a source edit belongs in fix.patch (design §10.1).',
+  build: 'A proof of concept that breaks the build demonstrates nothing (design §10.1).',
+  reproduces: 'Every test the patch added must fail by assertion on all three runs of the fixed schedule; a test that passes or errors on '
+    + 'any run, or is skipped, goes missing or appears twice, fails the gate (design §9.2, §9.5).',
+  integrity: 'A tamper flag is a fact about the lines the patch added; it overrides any recorded failure (design §9.5).',
+  claimedObservable: 'The tests finding.json names must be the ones that failed, and the asserted observable must appear in the recorded failure (design §10.1).'
 });
 
 function truncate(text, max = REASON_MAX_CHARS) {
@@ -73,4 +83,77 @@ function buildCodeReviewInvalidVerdict(outcomes, failure) {
   };
 }
 
-module.exports = { buildCodeReviewInvalidVerdict, GATE_HELP };
+function massOn(outcomes, index) {
+  return outcomes.map((outcome, i) => ({ outcome, score: i === index ? codeReview.OUTCOME_MASS_TOTAL : 0 }));
+}
+
+/**
+ * A verdict the runner's report decides, with no model called (design §10.1,
+ * §9.5). The justification is the Execution evidence block and fixed text around
+ * codes and counts, so it is a pure function of the report: every arbiter with
+ * the same report commits the same vector and uploads the same words. It says
+ * nothing about who or what caused a failed check (owner decision Q35).
+ *
+ * @param {string[]} outcomes - the listing's outcomes (validated: BUG_OUTCOMES)
+ * @param {object} settlement - settleReport's answer, not `jury`
+ * @param {{ report: object, reportSha256: string }} evidence
+ * @returns {{ scores: object[], justification: string, metadata: object }}
+ */
+function buildRunnerVerdict(outcomes, settlement, { report, reportSha256 }) {
+  const block = buildExecutionEvidence(report, reportSha256);
+  const claim = report.inputs.bcid;
+
+  if (settlement.kind === 'duplicate') {
+    const name = outcomes[DUPLICATE_INDEX];
+    return {
+      scores: massOn(outcomes, DUPLICATE_INDEX),
+      justification: [
+        block,
+        '',
+        `Verdict: ${name} (deterministic, not an AI judgement). All weight goes on "${name}" because that outcome returns the bond with no award; it does not say the finding repeats another.`,
+        '',
+        `The run of claim ${claim} did not pass the runner's integrity checks, so what it recorded is not trusted as evidence, and no model was called. `
+          + 'This states what the checks found. It does not say who or what caused it.',
+        '',
+        `Gate: ${settlement.gate}`,
+        `Check: ${settlement.check}`,
+        `Failed: ${settlement.failedChecks.join(',')}`
+      ].join('\n'),
+      metadata: {
+        verdict_source: 'code-review-integrity',
+        gate: settlement.gate,
+        check: settlement.check,
+        failedChecks: settlement.failedChecks,
+        claim,
+        reportSha256
+      }
+    };
+  }
+
+  const name = outcomes[0];
+  return {
+    scores: massOn(outcomes, 0),
+    justification: [
+      block,
+      '',
+      `Verdict: ${name} (deterministic, not an AI judgement).`,
+      '',
+      `The claim ${claim} failed a gate the runner decides, so the round settles on the first outcome ("${name}") and no model was called.`,
+      '',
+      `Gate: ${settlement.gate}`,
+      `Check: ${settlement.check}`,
+      `Reason: ${settlement.reason}`,
+      ...(GATE_HELP[settlement.gate] ? ['', GATE_HELP[settlement.gate]] : [])
+    ].join('\n'),
+    metadata: {
+      verdict_source: 'code-review-runner',
+      gate: settlement.gate,
+      check: settlement.check,
+      claim,
+      reportSha256,
+      ...(settlement.tamperFlagKinds ? { tamperFlagKinds: settlement.tamperFlagKinds } : {})
+    }
+  };
+}
+
+module.exports = { buildCodeReviewInvalidVerdict, buildRunnerVerdict, GATE_HELP };

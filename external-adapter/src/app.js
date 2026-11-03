@@ -7,10 +7,12 @@
  *   GET  /health    liveness and the code-review mode (trust, readiness)
  */
 
+const http = require('http');
 const express = require('express');
 const bodyParser = require('body-parser');
 const { collectVersionInfo } = require('./utils/versionInfo');
 const { getCodeReviewConfig, describeCodeReviewConfig } = require('./codeReview/config');
+const { serverTimeoutMs } = require('./utils/serverTimeout');
 
 const SERVICE = 'verdikta-external-adapter';
 
@@ -74,4 +76,17 @@ function createApp(options = {}) {
   return app;
 }
 
-module.exports = { createApp };
+/**
+ * The HTTP server around the app, with its connection limit and socket timeout.
+ * @param {import('express').Express} app
+ * @param {object} [env]
+ * @returns {import('http').Server}
+ */
+function createHttpServer(app, env = process.env) {
+  const server = http.createServer(app);
+  server.maxConnections = 1000;        // Handle more concurrent connections
+  server.timeout = serverTimeoutMs(env);
+  return server;
+}
+
+module.exports = { createApp, createHttpServer, serverTimeoutMs };

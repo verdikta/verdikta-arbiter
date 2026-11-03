@@ -9,7 +9,7 @@ jest.mock('../handlers/evaluateHandler', () => {
 
 const supertest = require('supertest');
 const { codeReview } = require('@verdikta/common');
-const { createApp } = require('../app');
+const { createApp, createHttpServer, serverTimeoutMs } = require('../app');
 const { loadCodeReviewConfig } = require('../codeReview/config');
 
 const DEV_KEY = codeReview.createDevBuilderKey();
@@ -24,6 +24,24 @@ const DEV_ENV = {
 };
 
 afterAll(() => loadCodeReviewConfig({}));
+
+describe('the HTTP server\'s socket timeout (A4b)', () => {
+  it('matches the 840 s job timeout by default', () => {
+    expect(serverTimeoutMs({})).toBe(840000);
+    const server = createHttpServer(createApp(), {});
+    expect(server.timeout).toBe(840000);
+    expect(server.maxConnections).toBe(1000);
+  });
+
+  it('SERVER_TIMEOUT sets it', () => {
+    expect(serverTimeoutMs({ SERVER_TIMEOUT: '900000' })).toBe(900000);
+    expect(createHttpServer(createApp(), { SERVER_TIMEOUT: '900000' }).timeout).toBe(900000);
+  });
+
+  it('a value that is not a number takes the default', () => {
+    expect(serverTimeoutMs({ SERVER_TIMEOUT: 'later' })).toBe(840000);
+  });
+});
 
 describe('GET /health', () => {
   it('reports production trust and code review off by default', async () => {
