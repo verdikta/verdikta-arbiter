@@ -98,10 +98,12 @@ async function host(t, request, { hostname = null, cpus = null } = {}) {
   const built = buildReport(result, request, { gvisor: result.gvisor, platform: 'linux/amd64' });
   assert.equal(codeReview.validateClaimReport(built.report).ok, true);
   const ms = Date.now() - receivedAt;
-  // What the pack's reads cost, which the listing check's limits do not measure.
-  const packMs = result.steps.filter((s) => s.name.startsWith('pack:')).reduce((n, s) => n + s.durationMs, 0);
-  t.diagnostic(`${hostname || 'sandbox'} cpus=${cpus || request.spec.limits.cpus}: ${ms} ms in all, the pack's reads ${packMs} ms`);
-  return { result, ...built, ms };
+  const stepMs = (re) => result.steps.filter((s) => re.test(s.name)).reduce((n, s) => n + s.durationMs, 0);
+  // What the pack's reads cost, which the listing check's limits do not measure; and forge's own time, which the CPU schedule moves.
+  const packMs = stepMs(/^pack:/);
+  const forgeMs = stepMs(/^(?:build|poc:[123])$/);
+  t.diagnostic(`${hostname || 'sandbox'} cpus=${cpus || request.spec.limits.cpus}: ${ms} ms in all, forge ${forgeMs} ms, the pack's reads ${packMs} ms`);
+  return { result, ...built, ms, forgeMs };
 }
 
 const gatesOf = (r) => Object.fromEntries(Object.entries(r.gates).map(([k, v]) => [k, v.status]));
@@ -111,14 +113,19 @@ async function twoHosts(t, request) {
   const a = await host(t, request);
   await new Promise((r) => setTimeout(r, 1100));
   const b = await host(t, request, { hostname: 'another-host', cpus: '0.25' });
+  assert.ok(b.forgeMs > 1.5 * a.forgeMs, `the slow schedule was slow: forge ${b.forgeMs} ms against ${a.forgeMs} ms`);
   assert.deepEqual(gatesOf(a.result), gatesOf(b.result), 'the same verdict');
   assert.equal(a.sha256, b.sha256, 'the same report hash');
   assert.equal(a.result.contextPack.sha256, b.result.contextPack.sha256, 'the same pack hash');
   return [a, b];
 }
 
+/** CPU work inside the test, so that the CPU schedule shows in forge's own time and not only in the runner's execs. */
+const BURN = '    function burn() internal pure { uint256 x; for (uint256 i = 0; i < 1000000; i++) { x += i; } require(x > 0, "burn"); }';
+
 const TIME_POC = pocFile('ClockTest', [
-  '    function test_reads_the_clock() public { require(false, vm.toString(vm.unixTime())); }',
+  BURN,
+  '    function test_reads_the_clock() public { burn(); require(false, vm.toString(vm.unixTime())); }',
   '    function test_deposit_credits_exactly() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
 ]);
 
@@ -135,8 +142,9 @@ test('time-dependent-poc-two-hosts: a test that reads the clock, in two containe
 });
 
 const RANDOM_POC = pocFile('RandomTest', [
+  BURN,
   '    function sh(string memory c) internal returns (string memory) { string[] memory a = new string[](3); a[0] = "/bin/sh"; a[1] = "-c"; a[2] = c; return string(vm.ffi(a)); }',
-  '    function test_unseeded_random() public { require(false, sh("od -An -N8 -tx8 /dev/urandom")); }',
+  '    function test_unseeded_random() public { burn(); require(false, sh("od -An -N8 -tx8 /dev/urandom")); }',
   '    function test_run_directory() public { require(false, sh("mktemp -d")); }',
   '    function test_seeded_random() public { require(false, vm.toString(vm.randomUint())); }'
 ]);
@@ -156,7 +164,9 @@ test('randomness-dependent-poc-two-hosts: a test that uses an unseeded RNG and a
 
 /** Fails on runs 1 and 3 or on run 2, by the clock's parity at run 1 (state/ keeps the run count): always mixed, and the phase follows the host. */
 const FLAKY_POC = pocFile('FlakyTest', [
+  BURN,
   '    function test_alternates() public {',
+  '        burn();',
   '        uint256 run = 0; uint256 phase = 0;',
   '        if (vm.isFile("./state/run1")) { run = 1; phase = vm.isFile("./state/phase1") ? 1 : 0; }',
   '        if (vm.isFile("./state/run2")) run = 2;',
