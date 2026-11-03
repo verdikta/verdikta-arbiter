@@ -294,7 +294,9 @@ in every sandbox it opens, so there is one code path and nothing to keep in step
   listing under a claim's 1,000,000 and 128 MiB. The work tree's tmpfs bounds the objects (a page
   each, so 262,144 at most), and more than that fails the commit, an abstain. So a listing may
   hold 680,000 entries and 64 MiB, and any ≤ 2 MB patch on an image that passes stays under a
-  claim's caps. A real apply and commit is held to this on real forge.
+  claim's caps. A real apply and commit is held to this on real forge. Such a patch can still
+  abstain on memory or time, since what it writes counts against `--memory`; that is an abstain,
+  not this refusal.
 - **The build.** `Watch.afterBuild`: `IMAGE_WATCH_CHANGED_BY_BUILD`, as a claim's.
 - **The suite.** `Watch.afterRun` after each run, `Watch.afterReset` after the reset
   between runs. A run that changed a watched set is `IMAGE_WATCH_CHANGED_BY_SUITE` at the

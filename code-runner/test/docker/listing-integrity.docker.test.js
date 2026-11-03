@@ -14,7 +14,7 @@ const { validateListingRequest, listingSteps, imageUnpackedBytes } = require('..
 const { officialList, makeList } = require('../../src/solcReleases');
 const { checkSpec } = require('../../src/classLimits');
 const { claimSteps } = require('../../src/steps');
-const { checkClaim } = require('../../src/claim');
+const { checkClaim, claimSession } = require('../../src/claim');
 const { svmEntryProblem, discoverForge } = require('../../src/integrity');
 const forgeLib = require('../../src/forge');
 const { runText } = require('../../src/docker');
@@ -612,28 +612,51 @@ test('A2c under real forge: no false refusal: a listing that names no compiler, 
   assert.deepEqual(r.facts.listing.compilers.checked, ['0.8.31', '0.8.32'].map((v) => ({ path: `${SVM}/${v}/solc-${v}`, release: v })));
 });
 
-test('A2c under real forge (R1-F1): an image just under what a listing may hold passes, and a claim whose patch makes about 100,000 git objects, by a real apply and commit, is not refused for size: the reserve holds what the commit writes', { timeout: TIMEOUT }, async (t) => {
+/** The first steps of a claim, up to and with its reference: the real apply and commit, without running the patch. */
+async function claimToReference(t, fx, pocPatch) {
+  const config = dockerTestConfig();
+  const docker = dockerFor(config);
+  t.after(() => removeAll(docker, config.instance).catch(() => {}));
+  const request = claimOf(fx, { pocPatch, limits: { cpus: 2, memoryMb: 4096, buildSeconds: 90, testSeconds: 120, runSeconds: 360, maxPatchBytes: 2000000 } });
+  const lim = checkSpec(request.spec);
+  assert.ok(lim.ok, JSON.stringify(lim.issues));
+  const session = claimSession(request, lim.limits);
+  const steps = ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'watch'].map((name) => (ctx) => session[name](ctx));
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config, limits: lim.limits, image: fx.image, runId: crypto.randomBytes(8).toString('hex'),
+    steps, receivedAt, deadlineAt: receivedAt + request.deadlineMs, active: new Set(), log: silent, sandboxes: 1
+  });
+  assert.deepEqual(await leftovers(docker, config.instance), [], 'the run removed its sandbox');
+  return result;
+}
+
+test('A2c under real forge (R1-F1): an image just under what a listing may hold passes, and a patch that makes about 100,000 git objects, by a real apply and commit, is not refused for size at a claim\'s reference; a claim with a smaller such patch passes every gate there', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('nearcap');
   const { MANIFEST_MAX_BYTES, LISTING_RESERVE } = require('../../src/integrity');
   const listing = await check(t, body(fx));
   assert.equal(listing.outcome, 'definitive', show(listing));
   assert.equal(listing.facts.listing.status, 'accepted', show(listing));
   const atListing = listing.steps.find((s) => s.name === 'integrity:reference:manifest').stdout.totalBytes;
-  assert.ok(atListing > 60 * 1024 * 1024 && atListing <= MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes, `the listing holds ${atListing} bytes`);
-  // 1,000 chains of 100 directories, each with a leaf of its own: a tree object per directory, a blob per leaf.
-  const chains = {};
-  for (let c = 0; c < 1000; c += 1) chains[`test/c${c}/${'d/'.repeat(100)}f`] = `${c}\n`;
-  const pocPatch = addFilesPatch({ 'test/Exploit.t.sol': DRAIN, ...chains });
-  assert.ok(pocPatch.length < 2000000, `the patch is ${pocPatch.length} bytes`);
-  const asClaim = await claim(t, fx, { pocPatch });
-  assert.equal(asClaim.outcome, 'definitive', show(asClaim));
-  assert.equal(asClaim.gates.applies.status, 'pass', show(asClaim));
-  assert.equal(asClaim.gates.reproduces.status, 'pass', show(asClaim));
-  assert.equal(asClaim.gates.integrity.status, 'pass', show(asClaim));
-  const atClaim = asClaim.steps.find((s) => s.name === 'integrity:reference:manifest').stdout.totalBytes;
+  const room = MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes;
+  assert.ok(atListing > 60 * 1024 * 1024 && atListing <= room, `the listing holds ${atListing} bytes`);
+  // Chains of 100 directories, each with a leaf of its own: a tree object per directory, a blob per leaf.
+  const chains = (n) => Object.fromEntries(Array.from({ length: n }, (_, c) => [`test/c${c}/${'d/'.repeat(100)}f`, `${c}\n`]));
+  const large = addFilesPatch({ 'test/Exploit.t.sol': DRAIN, ...chains(1000) });
+  assert.ok(large.length < 2000000, `the patch is ${large.length} bytes`);
+  const reference = await claimToReference(t, fx, large);
+  assert.equal(reference.outcome, 'definitive', show(reference));
+  assert.equal(reference.gates.applies.status, 'pass', show(reference));
+  assert.equal(reference.gates.testPathsOnly.status, 'pass', show(reference));
+  const atClaim = reference.steps.find((s) => s.name === 'integrity:reference:manifest').stdout.totalBytes;
   assert.ok(atClaim - atListing > 15 * 1024 * 1024, `the commit's objects and the patch's files added ${atClaim - atListing} bytes`);
   assert.ok(atClaim - atListing <= LISTING_RESERVE.bytes, 'within the reserve');
-  assert.ok(atClaim > MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes, 'past what a listing may hold, as the reserve is there for');
+  assert.ok(atClaim > room, 'past what a listing may hold, as the reserve is there for');
+  // The whole claim, with a patch small enough to run on every runtime under the test's limits.
+  const asClaim = await claim(t, fx, { pocPatch: addFilesPatch({ 'test/Exploit.t.sol': DRAIN, ...chains(100) }) });
+  assert.equal(asClaim.outcome, 'definitive', show(asClaim));
+  assert.equal(asClaim.gates.reproduces.status, 'pass', show(asClaim));
+  assert.equal(asClaim.gates.integrity.status, 'pass', show(asClaim));
 });
 
 test('A2c: known limit, pinned: repository code only a proof would call through ffi passes the listing: nothing at listing runs it, and the look does not cover it', { timeout: TIMEOUT }, async (t) => {
