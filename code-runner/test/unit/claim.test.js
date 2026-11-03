@@ -92,20 +92,24 @@ test('a PoC that fails as an assertion on all three runs passes applies, testPat
   assert.equal(r.gates.build.basis, 'exit_code');
   assert.equal(r.gates.reproduces.basis, 'junit');
   assert.deepEqual(kinds(sb), [
-    'vcr-procs', ...PREPARE,
+    'vcr-procs', 'vcr-external-roots', ...PREPARE, 'vcr-inline-config', 'vcr-framework', 'forge-config', 'vcr-svm', 'vcr-external-roots',
     'vcr-freespace', 'git apply', 'git diff', 'git cat-file', 'git diff', 'git diff', 'git diff',
     'git ls-tree', 'git checkout', 'git commit', 'git rev-parse',
-    'vcr-build', 'vcr-cleanup',
-    'vcr-poc', 'vcr-cleanup', 'git reset', 'vcr-poc', 'vcr-cleanup', 'git reset', 'vcr-poc', 'vcr-cleanup'
+    // A3a: the integrity checks' reference (forge, its configuration, the watched files), then a snapshot after each run;
+    // forge's configuration is read by forge itself, run as the commands run it (attempt 3: `forge-config`).
+    'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-manifest',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config', 'git reset', 'vcr-manifest',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config', 'git reset', 'vcr-manifest',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config'
   ]);
   const poc = r.facts.poc;
   assert.equal(poc.testCount, 1);
   assert.deepEqual(poc.tests, [{ id: 'test/Exploit.t.sol > ExploitTest > test_drain()', runs: ['fail', 'fail', 'fail'], kind: 'assertion', message: 'vault drained' }]);
   assert.deepEqual(poc.runCounts, { fail: 3, pass: 0, error: 0, skip: 0, missing: 0, duplicate: 0, notRun: 0 });
   assert.equal(poc.tier, 'B');
-  assert.deepEqual(r.facts.commit, { base: BASE, poc: POC });
+  assert.deepEqual(r.facts.commit, { tier: 'A', base: BASE, poc: POC });
   assert.equal(r.facts.checkout.commit, sb.repo.commit, 'the PoC commit sits on the checkout\'s commit of the listed tree');
-  assert.deepEqual(r.facts.diff, { files: 1, added: 3, removed: 0, binaryFiles: 0 });
+  assert.deepEqual(r.facts.diff, { tier: 'A', files: 1, added: 3, removed: 0, binaryFiles: 0 });
 });
 
 // ------------------------------------------------------------------ applies
@@ -273,7 +277,7 @@ test('applies: binary changes count as stats only', async () => {
   });
   const r = await runClaim(sb);
   assert.equal(r.gates.applies.status, 'pass');
-  assert.deepEqual(r.facts.diff, { files: 2, added: 3, removed: 0, binaryFiles: 1 });
+  assert.deepEqual(r.facts.diff, { tier: 'A', files: 2, added: 3, removed: 0, binaryFiles: 1 });
 });
 
 // ------------------------------------------------------------ testPathsOnly
@@ -327,6 +331,7 @@ test('testPathsOnly flags: existing tests modified, skip markers added, framewor
   const r = await runClaim(sb);
   assert.equal(r.gates.testPathsOnly.status, 'pass');
   assert.deepEqual(r.facts.flags, {
+    tier: 'A',
     existingTestsModified: ['test/Vault.t.sol'],
     skipMarkersAdded: ['test/Exploit.t.sol'],
     protectedPathsTouched: [],
@@ -348,7 +353,7 @@ test('protected paths are reset to the listed commit, then the result is committ
   assert.deepEqual(checkout.sub, ['checkout', sb.repo.commit, '--pathspec-from-file=-', '--pathspec-file-nul']);
   assert.equal(checkout.fixedEnv.GIT_LITERAL_PATHSPECS, '1');
   assert.deepEqual(checkout.stdin.toString('utf8').split('\0'), ['foundry.toml', 'lib/forge-std/src/Test.sol']);
-  assert.equal(r.facts.protectedReset, 2);
+  assert.deepEqual(r.facts.protectedReset, { tier: 'A', files: 2 });
   const [commit] = gitCalls(sb, 'commit');
   assert.deepEqual(commit.sub, ['commit', '--quiet', '--no-verify', '--no-gpg-sign', '--allow-empty', '--cleanup=whitespace', '--message', 'poc.patch']);
   assert.equal(commit.fixedEnv.GIT_AUTHOR_NAME, 'Verdikta code runner');
@@ -366,7 +371,7 @@ test('no protected path at the listed commit: nothing to reset, the checkout is 
   const sb = claimSandbox({ git: { 'ls-tree': () => ({ stdout: 'src/Vault.sol\0test/Vault.t.sol\0' }) } });
   const r = await runClaim(sb);
   assert.equal(gitCalls(sb, 'checkout').length, 0);
-  assert.equal(r.facts.protectedReset, 0);
+  assert.deepEqual(r.facts.protectedReset, { tier: 'A', files: 0 });
 });
 
 test('R23-F1: a protected path is matched on its UTF-8 name (as the path gate does) but reset by its raw bytes', async () => {
@@ -376,7 +381,7 @@ test('R23-F1: a protected path is matched on its UTF-8 name (as the path gate do
   // The `?` pattern matches the single UTF-8 character é, not the two latin1 bytes.
   const r = await runClaim(sb, claimRequest({ spec: forgeSpec({ paths: { tests: ['test/**'], protected: ['lib/caf?.sol'] } }) }));
   assert.equal(r.outcome, 'definitive', JSON.stringify(r.abstain || r.issues));
-  assert.equal(r.facts.protectedReset, 1, 'the UTF-8 name matched the glob');
+  assert.deepEqual(r.facts.protectedReset, { tier: 'A', files: 1 }, 'the UTF-8 name matched the glob');
   const [checkout] = gitCalls(sb, 'checkout');
   assert.deepEqual(checkout.stdin, Buffer.from(cafeRaw, 'latin1'), 'the pathspec is the original bytes, so git finds the file');
 });
@@ -389,9 +394,10 @@ test('build: the build command\'s exit code decides the gate (tier A); a failed 
   assert.equal(r.outcome, 'definitive');
   assert.deepEqual(r.gates.build, { status: 'fail', basis: 'exit_code', detail: 'the build command exited 1' });
   assert.equal(pocRuns(sb).length, 0);
+  // Attempt 3 (owner decision Q31): forge itself, as an argv, never the maker's text in a shell.
   const [build] = sb.execs().filter((d) => d.kind === 'vcr-build');
-  assert.deepEqual(build.argv, ['/bin/sh', '-c', 'set -f; forge build', 'vcr-build']);
-  assert.equal(build.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
+  assert.deepEqual(build.argv, ['/usr/local/bin/forge', 'build']);
+  assert.equal(build.fixedEnv.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
 });
 
 test('build: gates come only from definitive results; an OOM-killed build abstains with no build gate', async () => {
@@ -428,13 +434,12 @@ test('PoC runs: testFiles on the hunter\'s files, then testIds twice, each with 
   await runClaim(sb);
   const runs = pocRuns(sb);
   assert.equal(runs.length, 3);
-  assert.deepEqual(runs[0].argv, ['/bin/sh', '-c', 'set -f; forge test --match-path $FILES "$@"', 'vcr-poc', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-  assert.equal(runs[0].env.FILES, '{test/Exploit.t.sol,test/sub/More.t.sol}', 'the Solidity files the patch added or changed');
+  // $FILES: the Solidity files the patch added or changed, one argument (attempt 3: forge's argv, no shell).
+  assert.deepEqual(runs[0].argv, ['/usr/local/bin/forge', 'test', '--match-path={test/Exploit.t.sol,test/sub/More.t.sol}', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
   for (const run of runs.slice(1)) {
-    assert.deepEqual(run.argv, ['/bin/sh', '-c', 'set -f; forge test --match-test $TEST_IDS "$@"', 'vcr-poc', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-    assert.equal(run.env.TEST_IDS, '^(?:test_drain\\(\\))$');
+    assert.deepEqual(run.argv, ['/usr/local/bin/forge', 'test', '--match-test=^(?:test_drain\\(\\))$', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
   }
-  for (const run of runs) assert.equal(run.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
+  for (const run of runs) assert.equal(run.fixedEnv.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
 });
 
 test('reproduces: any pass on any run fails the gate, and the detail names the test and the run', async () => {
@@ -540,7 +545,7 @@ test('reproduces: the tests the patch added are the ones not in baseline.json; e
   const r2 = await runClaim(sb2);
   assert.equal(r2.gates.reproduces.status, 'fail');
   assert.equal(r2.gates.reproduces.detail, 'test/Exploit.t.sol > ExploitTest > test_b() passed on run 1');
-  assert.equal(pocRuns(sb2)[1].env.TEST_IDS, '^(?:test_a\\(\\)|test_b\\(\\))$');
+  assert.ok(pocRuns(sb2)[1].argv.includes('--match-test=^(?:test_a\\(\\)|test_b\\(\\))$'));
 });
 
 test('reproduces: a patch whose run shows no added test fails; runs 2 and 3 are not run', async () => {
@@ -597,7 +602,7 @@ test('claim processes that outlive a step are killed before the next one; the wo
   const cleanups = sb.execs().filter((d) => d.kind === 'vcr-cleanup');
   assert.equal(cleanups.length, 4, 'after the build and after each PoC run');
   for (const c of cleanups) assert.deepEqual(c.argv.slice(4), ['1', '7'], 'the processes found before any claim code ran are kept');
-  assert.deepEqual(r.facts.leftoverProcesses, [{ after: 'build', killed: 0 }, { after: 'poc:1', killed: 3 }, { after: 'poc:2', killed: 0 }, { after: 'poc:3', killed: 0 }]);
+  assert.deepEqual(r.facts.leftoverProcesses, { tier: 'A', steps: [{ after: 'build', killed: 0 }, { after: 'poc:1', killed: 3 }, { after: 'poc:2', killed: 0 }, { after: 'poc:3', killed: 0 }] });
   for (const reset of gitCalls(sb, 'reset')) assert.deepEqual(reset.sub, ['reset', '--quiet', '--hard', POC]);
 });
 
@@ -630,7 +635,9 @@ test('the requester\'s package: an unsupported framework or env, a command the a
     [claimRequest({ spec: forgeSpec({ env: { image: IMAGE, from: 'node22', platform: 'linux/amd64', unpackedBytes: 1 } }) }), 'ENV_UNSUPPORTED'],
     [claimRequest({ spec: forgeSpec({ commands: { testIds: undefined } }) }), 'COMMAND_MISSING'],
     [claimRequest({ spec: forgeSpec({ commands: { testFiles: 'forge test' } }) }), 'COMMAND_PLACEHOLDER'],
-    [claimRequest({ spec: forgeSpec({ commands: { build: 'forge build\u0000' } }) }), 'COMMAND_INVALID'],
+    // Attempt 3: a NUL (any control character) is the grammar's refusal; only the length is COMMAND_INVALID.
+    [claimRequest({ spec: forgeSpec({ commands: { build: 'forge build\u0000' } }) }), 'COMMAND_NOT_ALLOWED'],
+    [claimRequest({ spec: forgeSpec({ commands: { build: `forge build${' '.repeat(2000)}` } }) }), 'COMMAND_INVALID'],
     [claimRequest({ baseline: { tests: 'nope' } }), 'BASELINE_INVALID']
   ];
   for (const [request, code] of cases) {
@@ -649,6 +656,7 @@ test('facts: the patch\'s size, hash and measured expansion are recorded (expans
   const r = await runClaim(sb);
   const crypto = require('node:crypto');
   assert.deepEqual(r.facts.patch, {
+    tier: 'A',
     bytes: Buffer.byteLength(POC_PATCH),
     sha256: crypto.createHash('sha256').update(POC_PATCH).digest('hex'),
     expansionBytes: 7777

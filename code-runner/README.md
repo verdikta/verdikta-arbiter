@@ -3,8 +3,8 @@
 The arbiter's code runner for stake-backed security attestation
 ([design](../docs/development/stake-attestation-design.md) §9). The External
 Adapter calls it for a claim; it runs the claim's proof of concept in a fresh,
-isolated container and reports what happened. It never judges: the EA turns
-gate failures into INVALID, and the jury reads the report.
+isolated container and reports what happened. It never judges: the EA settles
+failed gates ([below](#what-a-failed-check-settles-as)), and the jury reads the report.
 
 Node A1 of the build is the service shell, the isolation, the limits, the
 deadline and the result taxonomy; node A2a adds the forge claim pipeline:
@@ -13,9 +13,11 @@ the `applies`, `testPathsOnly`, `build` and `reproduces` gates
 a registry allowlist, the image cache and the slot and memory admission
 ([below](#images-and-admission)); node A2b the listing check the
 attestation site runs before escrow opens
-([below](#post-v1listing-checks)). Later nodes add the integrity checks and
-the fix check (A3a), the report and context pack (A3b) and the honesty flags
-(A3c). See [Seams](#seams).
+([below](#post-v1listing-checks)); node A3a the five integrity checks of
+§9.5 with the evidence tiers, the `integrity` and `claimedObservable` gates
+([below](#integrity-checks)) and the fix check
+([below](#the-fix-check)). Later nodes add the report and context pack (A3b)
+and the honesty flags (A3c). See [Seams](#seams).
 
 ## Run it
 
@@ -139,12 +141,12 @@ runner stops at receipt + deadline minus `CODE_RUNNER_DEADLINE_RESERVE_MS`.
 `ATTESTATION_PLATFORM_MISMATCH`, `ATTESTATION_SIZE_MISMATCH`), and the image
 must be a reference Docker resolves exactly as written. These, and what the
 claim pipeline would refuse in the request itself (`FRAMEWORK_UNSUPPORTED`,
-`COMMAND_MISSING`, `BASELINE_INVALID`, …), are a 400 before admission or any
-pull.
+`COMMAND_MISSING`, `COMMAND_NOT_ALLOWED`, `BASELINE_INVALID`, …), are a 400
+before admission or any pull.
 
 | Status | `outcome` | Meaning for the EA |
 |---|---|---|
-| 200 | `definitive` | Every step ended in a fact the arbiters may settle on. A failed gate means INVALID; all passing goes to the jury. |
+| 200 | `definitive` | Every step ended in a fact the arbiters may settle on. A failed gate means INVALID, but for an integrity failure with no tamper flag ([below](#what-a-failed-check-settles-as)); all passing goes to the jury. |
 | 503 | `abstain` | Error, no commit. `abstain.cause` says why. |
 | 400 | `requester_error` | The requester's package is broken (§12): a malformed request, a spec above the class hard limits, an attestation that names another image, or an env image that declares volumes. No claim code ran. `issues[]` names each problem. |
 | 401 / 404 / 405 / 413 / 415 | — | Token, route, method, body size (16 MiB), content type. |
@@ -208,7 +210,7 @@ broken package (an image without the listed commit's objects,
 |---|---|
 | image | The env image's unpacked size: the sum of its layer sizes as the runner's daemon lists them (`docker history`); above 6 GB is refused |
 | prepare | The claim pipeline's own prepare: the processes recorded, the forced checkout of the listed commit; the work tree's free space (a claim needs 50 MB + 64 MB, else `IMAGE_WORKDIR_FULL`); the listed commit's files, at least one of them in `stake.scope` |
-| build | `commands.build`, once, judged by its exit code |
+| build | Forge found in the sandbox; `commands.build`, once, judged by its exit code (every command as a claim runs it: [the forge commands](#the-forge-commands)) |
 | suite | `commands.test` three times with the runner's `--junit --fuzz-seed 0x76657264696b7461` and `FOUNDRY_FUZZ_SEED`, no network, the tracked files reset to the listed commit before runs 2 and 3 |
 | baseline | Every test function the JUnit names (forge's identity, `<file> > <Contract> > <signature>`) with its result on each run, by the claim pipeline's classifier (missing or duplicated on a run = `error`); `stable` = passed all three, the rest `unstable` (common's `baselineSets`), checked with common's `validateBaseline` |
 | limits | The defaults (below); above the class caps is too heavy |
@@ -332,7 +334,8 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   --tmpfs /home/sandbox:rw,noexec,nosuid,nodev,size=256m,mode=0700,uid=10001,gid=10001
   --ipc none --user 10001:10001 --pids-limit 4096 --memory 4096m --memory-swap 4096m --cpus 2
   --hostname sandbox --env TZ=UTC --env LANG=C.UTF-8 --env CI=true --env PYTHONHASHSEED=0
-  --env HOME=/home/sandbox --workdir /work
+  --env HOME=/home/sandbox --env LD_PRELOAD= --env LD_AUDIT= --env LD_LIBRARY_PATH=
+  --env GCONV_PATH= --workdir /work
   --log-driver none --init --entrypoint sleep <image@sha256:…> <keepalive seconds>
 ```
 
@@ -359,6 +362,13 @@ docker create --pull never --platform linux/amd64 --name vcr-<run>-<n> --label v
   and the runner's own empty `DOCKER_CONFIG`: no token, no operator credentials.
 - `test/unit/policy.test.js` fails the build if `src/` gains a shell, `eval`, a
   mount flag, the Docker socket, `docker cp` or a host file write.
+- The image's `ENV` cannot make the dynamic linker load a file a run can write
+  (R20-F1): `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH` and `GCONV_PATH` are empty on
+  the container, so the launcher's `/bin/sh`, which starts before any `env -i`, and
+  every exec inherit that. `LD_TRACE_LOADED_OBJECTS` and `LD_SHOW_AUXV` can't be
+  handled this way, since glibc acts on their names whatever the value, and they load
+  nothing: an image setting one fails the start nonce and the run abstains. The
+  builder's fixed `ENV` sets none of them.
 - The image needs a POSIX `/bin/sh` (the launcher's interpreter) on a path
   owned by root and not writable by uid 10001: checked at launch, before any
   claim code runs, else the run is the requester's error
@@ -500,8 +510,8 @@ failure.
 
 ## The forge claim pipeline
 
-`src/claim.js` with `src/forge.js`, `src/git.js`, `src/patch.js` and
-`src/junit.js` (design §9.2 steps 3-6, §10.1). For a forge listing
+`src/claim.js` with `src/commands.js`, `src/forge.js`, `src/git.js`,
+`src/patch.js` and `src/junit.js` (design §9.2 steps 3-6, §10.1). For a forge listing
 (`commands.framework: "forge"`, `env.from: "foundry"`), in one sandbox:
 
 | Step | Gate | Decided on |
@@ -511,13 +521,83 @@ failure.
 | `git apply --index` against the listed commit, then the bytes it wrote measured against 50 MB (below) | `applies` | `exit_code` / `input` |
 | `git diff --cached --name-status --no-renames`: every touched path (a rename's source included) under `paths.tests`, none under `paths.protected`, each one a report can name | `testPathsOnly` | `exit_code` |
 | Protected files reset to `baseCommit`; the result committed (`Verdikta code runner <code-runner@verdikta.invalid>`, `1767225600 +0000`, message `poc.patch`) | — | |
-| `commands.build` | `build` | `exit_code` (tier A) |
-| Run 1: `commands.testFiles` on the PoC's files; runs 2 and 3: `commands.testIds` on the tests run 1 found | `reproduces` | `junit` |
+| The integrity checks' reference snapshot ([below](#integrity-checks)); then `commands.build` | `build` | `exit_code` (tier A) |
+| Run 1: `commands.testFiles` on the PoC's files; runs 2 and 3: `commands.testIds` on the tests run 1 found; a snapshot after each run | `reproduces` | `junit` (or `integrity`) |
+| The five checks of §9.5 on the three runs | `integrity` | `integrity` |
+| finding.json against the recorded failures (only once `reproduces` passed) | `claimedObservable` | `junit` |
+
+With `fix.patch`, the fix check runs beside these steps in a second sandbox
+and is recorded, never gated ([below](#the-fix-check)).
 
 A failed gate stops the pipeline; the gates after it are not run (absent).
 A step that hits a limit, dies or does not start abstains the run, and no
 gate is decided on it: an OOM-killed build is an abstain, never a `build`
 failure.
+
+### The forge commands
+
+`src/commands.js` (owner decision Q31, R11-F1). **The rule for makers:** a
+listing's `build` is `forge build`, and its `test`, `testFiles` and `testIds`
+are `forge test`, each followed only by the flags below. The runner parses
+the string and runs forge itself. Anything else (a script, an environment
+variable, `cd`, `&&`, any other flag) belongs in `commands.setup`, which runs
+only while the env image is built, and a forge setting belongs in the default
+profile of the repository's `foundry.toml`.
+
+| Command | Must be | May add |
+|---|---|---|
+| `build` | `forge build` | `--skip test` or `--skip script` |
+| `test` | `forge test` | `--match-test`/`--mt`, `--no-match-test`/`--nmt`, `--match-contract`/`--mc`, `--no-match-contract`/`--nmc`, `--match-path`/`--mp`, `--no-match-path`/`--nmp` (each a pattern); `-v` to `-vvvvv`; `--fuzz-runs <1-1000000>`; `--isolate` |
+| `testFiles` | `forge test --match-path $FILES` | `-v` to `-vvvvv`; `--fuzz-runs`; `--isolate` |
+| `testIds` | `forge test --match-test $TEST_IDS` | `--match-path $FILES`; `-v` to `-vvvvv`; `--fuzz-runs`; `--isolate` |
+
+The reasons: `--skip` leaves tests or scripts out of the build (they compile
+in run 1, where the artifact check allows it); the matching filters let the
+full suite leave out what cannot run in the sandbox (fork tests); `--fuzz-runs`
+fits a suite into its time limits; `--isolate` is a suite's own semantics;
+verbosity only adds logs to forge's report. In `testFiles` and `testIds` the
+runner chooses the tests, so another filter could only hide them.
+
+**The grammar.** Tokens separated by spaces. A token is unquoted (letters,
+digits, `_ . / : , + @ % = -`) or one whole value in single quotes (printable
+ASCII: a pattern with a space, a glob or a regex character, such as
+`--no-match-path 'test/fork/**'`). A value follows its flag as the next token
+or after `=`. `$FILES` and `$TEST_IDS` (or `${FILES}`, `${TEST_IDS}`) are whole
+unquoted tokens, only where the table has them. Each flag at most once. Patterns
+are 1 to 512 characters. No shell metacharacter outside a quoted value, no line
+break or control character anywhere, no environment assignment, no `env`, no path to
+forge, no other subcommand, no positional argument, no short option but
+verbosity, no flag the table does not list (a flag forge hides from its
+`--help` included), and never `--junit` or `--fuzz-seed`, which are the
+runner's. Everything else is `COMMAND_NOT_ALLOWED`, naming the command and the
+offending token, a requester error before any sandbox, at claim time and at
+listing time alike; a missing command is `COMMAND_MISSING`, one over 2,000
+characters `COMMAND_INVALID`, a `testFiles` or `testIds` without its placeholder
+`COMMAND_PLACEHOLDER`.
+
+**How forge runs.** There is no shell around the maker's text. The step's argv is
+`/usr/bin/env -i PATH=<the image's PATH> TZ=UTC LANG=C.UTF-8 CI=true
+PYTHONHASHSEED=0 HOME=/home/sandbox XDG_DATA_HOME=/opt/verdikta/tools/share
+VERDIKTA_TOOLS=/opt/verdikta/tools FOUNDRY_CONFIG=foundry.toml FOUNDRY_SOLC=<the pin>
+FOUNDRY_EXTERNAL_COMPILERS=[] FOUNDRY_FUZZ_SEED=<seed> <forge> <subcommand>
+<flags…>`, in `/work`: forge at the real path the runner probed in the image
+(`command -v forge`; a forge path holding `=` or a control character, which env
+could not run as a program, is `IMAGE_FORGE_MISSING`). Each flag and its value are one
+argv element (`--name=value`). The launcher prints its start nonce and `exec`s
+that argv; nothing interprets it. Nothing of the image's `ENV` but `PATH` reaches
+forge, `FOUNDRY_*` included. forge sees four `FOUNDRY_*`, all the runner's: the seed,
+`FOUNDRY_CONFIG` at forge's own default, so a `.env` cannot move its configuration,
+`FOUNDRY_SOLC`, the pinned compiler, and `FOUNDRY_EXTERNAL_COMPILERS` empty
+([below](#the-compiler-is-pinned)). The two
+`/opt/verdikta` values are the builder's fixed `ENV`, set here as constants: forge
+finds the solc releases the maker's setup installed under `XDG_DATA_HOME`. The runner
+reads `forge config --json` through the same argv, so the configuration the
+integrity checks watch is the one every command runs with. For a test run the
+runner appends `--junit --fuzz-seed 0x76657264696b7461` (the seed from
+`@verdikta/common`). `$FILES` is one forge glob over the Solidity files the patch
+added or changed (`{a.t.sol,b.t.sol}`, glob characters escaped); `$TEST_IDS` an
+anchored regex over the exact signatures forge matches `--match-test` against
+(`^(?:test_a\(\)|test_b\(uint256\))$`).
 
 ### The forced checkout
 
@@ -628,19 +708,13 @@ rebuilds a whole existing file from one header line; and no binary change (a
 `GIT binary patch` or `Binary files … differ` / `Files … differ` entry, owner
 decision Q28) — a PoC adds or edits text test files, and a binary postimage
 can name an existing object the patch's bytes do not bound. A moved file is a
-deletion and an addition (`git diff --no-renames`). (`fix.patch` may touch
-other kinds of file; that is A3a's question, not this node's.)
+deletion and an addition (`git diff --no-renames`). `fix.patch` gets the same
+host-side checks, binary changes included (node A3a's rule,
+[below](#the-fix-check)).
 
-**Commands** run as written in the sandbox's `/bin/sh` with pathname expansion
-off (`set -f; <command>`). For `testFiles` and `testIds` the runner appends
-`--junit --fuzz-seed 0x76657264696b7461` (the seed from `@verdikta/common`)
-as arguments (`"$@"`), and every build and test step gets
-`FOUNDRY_FUZZ_SEED` too. `$FILES` is one forge glob over the Solidity files
-the patch added or changed (`{a.t.sol,b.t.sol}`, glob characters escaped);
-`$TEST_IDS` an anchored regex over the exact signatures forge matches
-`--match-test` against (`^(?:test_a\(\)|test_b\(uint256\))$`). A listing
-must declare `build`, `testFiles` with `$FILES` and `testIds` with
-`$TEST_IDS` (`COMMAND_MISSING`, `COMMAND_PLACEHOLDER`, `COMMAND_INVALID`).
+**Commands** are plain forge commands the runner parses and runs itself
+([above](#the-forge-commands)). A listing must declare `build`, `testFiles`
+with `$FILES` and `testIds` with `$TEST_IDS`.
 
 **The schedule is fixed:** three runs whenever run 1 found a test the patch
 added, whatever run 1 showed and however much time is left. The tests the
@@ -657,6 +731,9 @@ in code-unit order of identity.
 function ran and reverted (an assertion helper, a `require`, a revert from
 the code under test). That is an assertion failure, the same line the §8.2
 harness proof draws between a trivially failing and a trivially broken test.
+A campaign of one invariant predicate has no message on its record, only forge's
+`[FAIL: <reason>]` text, so for invariants the reason is read there (R21-F2), up to
+forge's framing, whatever line breaks it holds (R22-F2).
 Errors are everything else: no JUnit (a compile error, such as an import that
 does not resolve), a failed `setUp()`, `constructor()` or `afterInvariant()`,
 a failure whose body never ran (no reason, as when a `beforeTestSetup` call
@@ -692,15 +769,586 @@ name before it is the process's own to choose, and before runs 2 and 3 the track
 to the PoC commit (`git reset --hard`). The number killed is in
 `facts.leftoverProcesses`.
 
-`facts` (A3b builds the report from them): `checkout` (above), `patch`
-(bytes, SHA-256, the measured expansion), `commit` (`base`, `poc`), `diff` (files, added,
-removed, binary files), `testPaths` (outside, protected, unreportable),
-`flags` (`existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
+`facts` (A3b builds the report from them), each an object carrying its
+evidence tier (§9.5: `tier: "A"`, observed by the runner from outside the
+tested process; `tier: "B"`, reported by a process that ran claim code):
+`checkout` (A, above), `patch` (A: bytes, SHA-256, the measured expansion),
+`commit` (A: `base`, `poc`), `diff` (A: files, added, removed, binary
+files), `testPaths` (A: outside, protected, unreportable), `flags` (A:
+`existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
 `frameworkReferences`: forge inline config, JUnit markup, file and
-environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset`, `poc`
-(`testCount`, `runCounts`, the first 200 tests with their three results,
-kind and message, and per run the command, JUnit status, exit code and
-failing harness records) and `leftoverProcesses`.
+environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset` (A:
+`files`), `poc` (B: `testCount`, `runCounts`, the first 200 tests with their
+three results, kind and message, per run the command, JUnit status, exit code
+and failing harness records, and `integrity`, the report's Integrity object),
+`integrity` (A: per sandbox the failed checks with their evidence and the
+changed paths), `fix` (B, [below](#the-fix-check)) and `leftoverProcesses`
+(A: `steps`). A gate's basis gives its tier: `exit_code`, `input` and
+`integrity` are A, `junit` is B.
+
+## Integrity checks
+
+`src/integrity.js` (design §9.5, §20 decision 6). gVisor separates the
+sandbox from the host, not the grader from the program inside it: forge,
+which writes the JUnit, runs the claim's code as the same user. So the PoC's
+results are trusted only when all five checks pass; any failure sets
+`gates.integrity` to `fail` (basis `integrity`, the detail names every
+failed check and its first evidence) and fails `reproduces` with it. The
+checks are measured by the runner wherever they can be, after every claim
+process of the run is dead:
+
+1. **Identity completeness** (`identityComplete`): every test the patch
+   added has exactly one record on every run whose JUnit was read, and none
+   is skipped. A missing record (renamed, skipped, never collected) is not a
+   demonstrated failure; a duplicated identity makes neither record trusted.
+2. **Framework-summary consistency** (`summaryConsistent`): forge 1.8.5
+   writes its own summary of each suite into the suite's `<system-out>`
+   (`Suite result: ok|FAILED. P passed; F failed; S skipped; finished in …`)
+   and counts on `<testsuite>` and `<testsuites>` (`tests`, `failures`,
+   `errors`, `skipped`). They must agree with the records; a JUnit with no
+   summary is not forge's whole report. One allowance (R21-F2): forge's summary
+   counts an invariant campaign as one result, while the JUnit expands it into a
+   record per predicate and per handler failure, and which predicates share a campaign
+   is not in the JUnit. So for those records the summary is held to a range (at least
+   one failed result if any failed, at most one per record); everything else is exact,
+   as are the XML counts.
+3. **Exit-code consistency** (`exitConsistent`): the test command exits
+   non-zero exactly when the JUnit records a failure. Without a readable JUnit
+   only a non-zero exit is consistent (forge failed before its report, as on a
+   compile error); an exit 0 there is an exit before forge's report.
+4. **Post-run checksums** (`protectedPathsUnchanged`, `frameworkUnchanged`,
+   `dependenciesUnchanged`). Before the build (the image plus the accepted
+   patch, before any maker command) the runner takes a reference: a framework
+   probe (`command -v forge` and `PATH` from the image's environment, then
+   `forge config --json` run exactly as the maker's commands run forge, the
+   same argv, environment and directory, so its output, which sees
+   `foundry.toml`, remappings, `.env` and the global
+   `~/.foundry/foundry.toml` alike, is the configuration every command runs
+   with), and a
+   hermetic manifest of `/work` and `$HOME` (GNU `find` records and `sha256sum
+   -z` of every file: type, mode, size, hash or link target). After each run
+   both are taken again and compared, the files first: forge runs for its
+   configuration only once they are measured; later probes run the
+   reference's real path (a link followed), never a link a run could
+   retarget; and a forge in the work tree is run only while its own manifest
+   entry is hashed and the reference's (one the reference cannot hash is
+   `IMAGE_FORGE_UNWATCHED`):
+   - protected: work-tree paths under `paths.protected`, tracked or not, and
+     the runner's own repository (`/work/.git`: config, attributes, index and
+     objects decide what the reset between runs writes; it is read again after
+     each of the runner's resets);
+   - dependencies: everything under forge's `libs`, `node_modules/` and
+     `dependencies/` (Soldeer), new files included;
+   - framework: forge's path and resolved configuration; the root
+     `foundry.toml`, `remappings.txt`, `.env`, `foundry.lock`, `soldeer.lock`;
+     `$HOME` but its caches (`~/.foundry/cache`, `~/.cache`); `PATH`
+     directories and solc inside the work tree; forge-std under the
+     dependencies (the assertion library, forge's "reporter module"); and the
+     build's artifacts (`out`, and forge's compile cache
+     `<cache_path>/solidity-files-cache.json`, which names the artifact files a
+     later run loads instead of compiling), which may change during the first
+     run (forge compiles what the build left out, e.g. after `forge build
+     --skip test`) and never after it.
+
+   **Symbolic links: the kernel resolves them** (R6-F1, R7-F1; node A3a's
+   attempt 2). The listing is physical (`find` never follows a link), so a
+   file listed in a set is reached through real directories only and a write
+   to it changes its hash. The ways to reach other bytes through a watched
+   path are a symbolic link in a set and one on the way to a set's root, and
+   only those are followed:
+   - every link in a set (the protected paths, the dependencies, the
+     framework, and the artifacts from run 1) is resolved by the kernel inside
+     the sandbox, in one hermetic exec per snapshot and level (`LINKS_SCRIPT`:
+     `cd -P` and `$PWD` for a directory, `realpath -e` for anything else; the
+     runner never computes a path from a link's text);
+   - the kernel's answer is part of the link's own entry (`=> d /work/vendor/pkg`,
+     `=> f …`, or `=> ?` when it resolves to nothing), so a link on the way
+     retargeted between runs, or a target a run creates, is a change;
+   - what a link leads to in the work tree joins the link's set (a directory
+     with everything listed under it, or the file), and its own links are
+     followed for that set in the next round: `lib/pkg -> ../bridge/../payload`
+     with `bridge -> vendor/nested` watches `vendor/payload/`, where the kernel
+     goes;
+   - a link at or above a set's root (`libs = ["deps/lib"]` with `deps` a
+     link, forge's `cache` directory a link, a protected glob's literal
+     directory a link) hides everything under the root from the listing, so
+     the kernel resolves the root itself, which then counts as a link of its
+     set: exactly what it leads to joins (for forge's cache, only the compile
+     cache). Tracked paths never lie behind a link: the forced checkout makes
+     every directory on the way to one real;
+   - a watched link whose real target is in, or (a directory) holds, a place
+     builds and runs write to is `IMAGE_WATCH_LINK_UNCOVERED`, naming the link
+     and its target: `/tmp`, `$HOME`, the work tree's root, the runner's
+     repository, forge's `out`, `cache`, `broadcast` and `snapshots`
+     directories (from `forge config`), `paths.tests`; so is one leading to a
+     directory outside the work tree, which is not listed (a link inside it
+     could lead back to where runs write, unseen). A file the set already
+     watches is fine where it is (forge's executable in its cache directory,
+     R1-F3), and an artifact link's target in `out/` is an artifact. A file
+     on the read-only root needs nothing watched: it never changes, and its
+     real path holds no link;
+   - links outside the sets are never followed. That is complete: a write
+     through any link lands on its real target, which the checksums see
+     whenever it is in a set, and the sets are closed under the links they
+     hold. A link outside them reaches nothing more than an untracked file at
+     the link's own path would, which the check never watched; a maker who
+     wants a linked source watched lists it under `paths.protected`;
+   - a link a patch adds cannot sit in a set while `paths.tests` stays out of
+     the sets (`testPathsOnly` admits only paths under it, and the protected
+     reset restores `paths.protected`). Where a maker's `paths.tests`
+     overlaps one (`**/*.t.sol` matches under `lib/`), such a link is the
+     claim's: its check fails (`the patch adds a link inside the
+     dependencies`), it is never followed, and the image is not refused.
+
+   **Every configured root is one the snapshots cover** (R8-F1): forge's
+   `out`, `cache_path` and every `libs` entry must be plain paths in the
+   work tree (the listing holds `/work` and `$HOME` only, so artifacts or
+   dependencies in `/tmp`, or a directory on the read-only root, would go
+   unwatched); `solc` and the `PATH` directories may also be on the read-only
+   root or in `$HOME`, but not in `/tmp`, a `$HOME` cache or through `..`;
+   `out` and the dependency directories may not lie in the runner's repository
+   or in forge's cache directory either (the snapshots sort those out first:
+   the cache is skipped but for its compile cache, so `out = "cache/artifacts"`
+   would be watched as nothing); and a `PATH` directory in the work tree may
+   not lie in the runner's repository, forge's `out`, `cache`, `broadcast`
+   or `snapshots` directories, or under `paths.tests` (a patch's file there
+   would be a command). Anything else is `IMAGE_WATCH_ROOT_UNCOVERED` before any maker
+   command, naming the setting and its value; nothing is dropped silently.
+   "Outside the work tree" is checked step by step (R16-F1): the read-only
+   root protects a link there, not what it leads to. A1's launcher check walks
+   each path one component at a time from `/`, and each symbolic link directly in
+   a directory it is given. One whose way meets anything the sandbox user can write,
+   or owns on a mount it can write, is `IMAGE_WATCH_ROOT_UNCOVERED`, even when it
+   ends back on the root (a run could retarget the link on the way), as is a
+   directory the sandbox cannot list (mode 0111: a link inside it would go unseen).
+   `/repo` is the sandbox user's in a builder image, but on the read-only root, so a
+   tool that links into it passes. The order is the point:
+   - first thing in a sandbox, before the forced checkout, while the work tree,
+     `$HOME` and `/tmp` are empty: the directories the runner's own tools come from
+     (a snapshot's `find` and `sha256sum`, `git`), so a dangling link to a file a
+     patch would later add is never a tool. Claims, the fix check and the listing
+     check alike;
+   - before forge first runs (for `forge config`, after the patch): the image's
+     `PATH` directories outside the work tree and `$HOME`; and forge's real path or a
+     `PATH` directory under `paths.tests` is refused there, since a patch's file
+     would be forge or a command;
+   - then `solc`, which only forge's configuration names.
+
+   What passes is out of the sandbox user's reach, so it needs no asking again
+   after a run. A program on the read-only root that itself runs something in the
+   work tree is the image's own text, which no walk can see.
+   `PATH` is read as the shell reads it from `/work`, where forge runs and
+   its children look commands up (R11-F2): an empty entry or `.` is `/work`, a relative entry
+   lies under it, and only a real `./` prefix is stripped (`.bin` is
+   `/work/.bin`).
+
+   The host's work is linear in the listing: the closure is deduplicated by
+   (set, link) and by (set, real tree) before anything is queued, and each
+   tree joins by one range of the sorted listing with a skip pointer per set,
+   so every listed entry is visited at most once per set. It is also capped:
+   at most 1,000,000 entries in a listing, 50,000 watched links, 16 levels of
+   linked trees (one exec each). 20,000 links to `.` are one batch of 20,000
+   paths and one pass (attempt 1 scanned the listing once per link). Each
+   path is resolved from `/work`, as forge resolves it.
+
+   **What the build changes is the image's doing** (owner decision Q32). `forge
+   build` compiles and runs nothing of the claim's, so the files held to the
+   reference are compared right after it. A change is the requester's error,
+   `IMAGE_WATCH_CHANGED_BY_BUILD`, never a failed check on an honest claim: a compiler
+   in the image that writes into `lib/`, say. A compiler that waits past the build is
+   not caught this way: `forge test` always compiles again, and forge runs `solc
+   --version` on every start ([the check's scope](#the-checks-scope)).
+
+   **Where forge itself writes is not held to the reference** (R21-F1), whatever else
+   names it: its `out` and `cache_path` are outside the protected and dependency sets
+   even under a protected glob (`out/**`, `**/*.json`) or a `libs` entry (`out =
+   "lib/out"`), since every honest compile would otherwise fail those checks. The
+   artifacts and the compile cache are held from run 1 on, as above. "Where forge
+   writes" also means the settings a plain run writes to besides those two
+   (`RUN_OUTPUT_SETTINGS`: an invariant's `failure_persist_dir` takes a counterexample
+   on an honest PoC's first failure, the corpus and frontier directories,
+   `test_failures_file`, `build_info_path`); outside the work tree they are refused.
+
+   That is for what appears there. **Forge's output must be plain and hold nothing
+   watched in the image the reference sees**, or the image is refused before any maker
+   command or claim code (R22-F1, `IMAGE_WATCH_ROOT_UNCOVERED`): a watched input already
+   there (`out = "lib"` beside `lib/pkg/`, `out/**` over a build the setup ran), since a
+   compile may rewrite it and a run's change to it must not become the artifact the
+   later runs are held to; and a link there or on the way there (`out -> build/x`), since
+   forge writes through it to where no rule here names it.
+
+   **The compiler is pinned** ([below](#the-compiler-is-pinned)). And **a compiler in the
+   work tree is refused** right after the checkout, before any patch (R24-F1,
+   `IMAGE_WATCH_ROOT_UNCOVERED`): forge runs a configured `solc` even to print its
+   configuration, so a patch that replaced it would run before the reference is taken.
+   A maker's compiler goes in the builder's tools folder, and a release named by version
+   is forge's own to find. `vyper.path` is held to the same, since the pin does not cover
+   it. `foundry.toml` may not use `extends` (R25-F1), it and `.env` may not be links, and a
+   root file forge reads may not lie under `paths.tests` unless protected. A `fix.patch`
+   that changes one is a failed fixed build, a fact (R25-F2).
+
+   **A listed Solidity file that sets a path by inline configuration is refused** right
+   after the checkout, before any patch (R23-F1, `IMAGE_WATCH_ROOT_UNCOVERED`): `///
+   forge-config: default.invariant.failure_persist_dir = "lib/x"`. forge applies it when
+   it runs a test and `forge config` never shows it. The scan is by text, of every
+   `*.sol` in the work tree: a `forge-config:` line naming a `_dir`, `_file` or `_path`
+   key, or holding a backslash, which could be a TOML escape spelling one. An over-match
+   costs a requester error at the listing. A claim's own annotation is its own: not
+   scanned, and its write fails its own check.
+
+   **A watched link that leads nowhere yet is judged by where it would land** (R21-F1,
+   round 22, `IMAGE_WATCH_LINK_UNCOVERED`): `alias -> out` with a protected
+   `alias/Exploit.t.sol/**`, or `lib/x -> /opt/y -> /work/out/…`. It resolves to nothing
+   until run 1 compiles, and then its entry would change on an honest claim. So a link
+   whose landing (`realpath -m`) is where builds and runs write is refused like one
+   that already resolves there.
+
+   **What a snapshot cannot read is never unchanged** (R13-F1). A file with no
+   hash (mode 000, say) has nothing to compare: in a watched set it fails that
+   set's check as soon as a run leaves it ("run 1: out/payload.bin cannot be
+   read"), even when an earlier snapshot could not read it either, so bytes
+   changed behind mode 000 are never accepted as run 1's artifact. A directory
+   `find` cannot list or enter can hide anything, on the way to a watched root
+   as well as under one (forge reaches `build/out` by its path through a
+   `build/` at mode 0111), and nothing honest makes one, so one anywhere in the
+   listing fails `frameworkUnchanged`. At the reference either is the image's
+   error, `IMAGE_WATCH_UNREADABLE`. A file outside the sets is not read by any
+   check.
+
+   Not watched: the rest of forge's cache directory (its ABI cache,
+   `test-failures`, fuzz failures, rewritten on every run), the `$HOME`
+   caches, `/tmp`, untracked files elsewhere (a state file the PoC writes). Tracked
+   files outside the sets go back to the PoC commit by the reset before each
+   re-run. A reference that cannot be read is the requester's package, found
+   before any claim code runs (`IMAGE_FORGE_MISSING`, `FORGE_CONFIG_INVALID`,
+   `IMAGE_FORGE_UNWATCHED`, `IMAGE_WATCH_LINK_UNCOVERED`, `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_UNREADABLE`, `IMAGE_WATCH_CHANGED_BY_BUILD` (after the build), `IMAGE_TOOL_MISSING`
+   when the image has no `realpath`, `IMAGE_WATCH_TOO_LARGE`: a listing over
+   64 MiB or over a cap above); after a run, the same is a definitive failure
+   of the checks.
+
+   A possible later hardening, not in this node: make the watched sets
+   unwritable to the sandbox user during the runs, with the checksums as the
+   backup. The sandbox runs as the files' owner without the capabilities to
+   change ownership, so that means restructuring A1's sandbox.
+5. **Static tamper flags** (`tamperFlags`), on the lines the patch added
+   (any file under `paths.tests`, shell helpers included), one per kind per
+   line, at most 100, in the report's order:
+
+   | Kind | forge form |
+   |---|---|
+   | `report-path-referenced` | `/proc/…`, `/dev/stdout`, `/dev/stderr`, `/dev/fd/…`, `/dev/tty` (forge's report is its stdout), or JUnit element markup (`<testsuites`, `<testsuite`, `<testcase`) |
+   | `exit-during-import` | ending forge's process from test code: `kill -<signal>`, `pkill`, `killall` (an ffi command) |
+   | `exit-handler-registered` | a shell `trap … EXIT`/`INT`/`TERM`/`HUP`/`QUIT` |
+   | `framework-patched` | a file cheatcode (`writeFile`, `writeFileBinary`, `writeLine`, `writeJson`, `writeToml`, `removeFile`, `removeDir`, `createDir`, `copyFile`) whose path names forge's configuration, the dependencies, `out`, `cache`, `.git` or `.foundry`; inline `fs_permissions` granting write access to the repository root, to those, or outside it |
+   | `reporter-patched` | a file cheatcode writing forge-std |
+   | `write-outside-repository` | a file cheatcode or an inline `fs_permissions` grant whose path is absolute, under `~` or climbs out (`..`) |
+
+   Solidity has no import-time code or exit handler of its own: a test can
+   end forge only through ffi (a signal death, which abstains: the runner runs
+   forge itself, so no maker's command can mask it) and the flags read those
+   commands' text.
+
+The measured checks are what close the routes; the static flags are the
+cheap signal a juror can read. Ordinary tests raise none: forge-std imports,
+inline fuzz or read-only file settings, a write to a scratch directory the
+maker or an inline grant allows, `console.log`, revert messages.
+
+### The compiler is pinned
+
+Owner decision Q37. A patch that changed what names the compiler would have forge run its
+compiler before the reference is taken, and refusing each way of naming one left the next.
+So the runner sets it: right after the forced checkout, before any patch, it reads `forge
+config --json` on the listing's own files, and every later forge run has `FOUNDRY_SOLC` in
+its fixed environment (`integrity.pinCompiler`, `forge.forgeEnvironment`). That read is the
+only forge run without the variable (`forge.listedConfigArgv`); `forge.forgeArgv` refuses to
+build any other without it. Each sandbox reads for itself, the fix check's too.
+
+| The listing names | `FOUNDRY_SOLC` |
+|---|---|
+| A release (`solc` or `solc_version`, a whole `x.y.z`) | That release |
+| A file outside the work tree | That absolute path, once walked: it may not lead through a place the sandbox can write |
+| A file in the work tree | Nothing: refused, `IMAGE_WATCH_ROOT_UNCOVERED` |
+| Nothing | Empty: the sources' pragmas pick among the installed releases, as forge does by itself |
+
+forge's environment beats `foundry.toml`, `extends`, a `.env` and `FOUNDRY_CONFIG`, so what a
+patch or a fix does to any of those no longer picks a compiler. Pinned on real forge, with a
+marker showing the planted compiler never ran and a control showing the same route runs it
+without the pin. With the variable empty, sources that need two real releases build and test
+offline, with or without an `offline` key, and `auto_detect_solc = false` does not send forge
+to `solc` on `PATH`.
+
+The pin does not stand alone. Under a release, or empty, forge runs whatever the installed
+release's path leads to: with `svm/0.8.32/solc-0.8.32` a link into `test/`, forge runs what a
+patch put there (the Docker test "why the walk stays"). And with the variable empty a pragma can
+pick any installed release, so the walk covers all of them, not only one the listing names. So
+"no patch or file in the tree can choose the compiler" holds only with the refusals above in
+place. It says nothing about what the installed bytes do: those are the maker's, the fake-`solc`
+known limit stays, and checking them against the official releases is A2c's to look at. A
+`.vy` file's compiler is not covered by the variable, so `vyper.path` keeps its refusal.
+
+An external compiler adapter (`external_compilers`, which forge runs in every build) is a
+compiler the pin does not name. A listing that names one is refused before any patch, and
+forge's fixed environment keeps the list empty, so no later file can add one (R24-F1, round
+27). A solver named by a path in the work tree is refused the same way, in `foundry.toml` or
+in a listed file's inline configuration: a patch could replace what the maker's own symbolic
+tests rely on. A program a proof's own test starts during a run (ffi, or a solver the proof's
+own inline configuration names) is not a compiler: it runs under the integrity checks, like
+any claim code.
+
+A proof whose pragma the listing's release cannot compile fails `build`, as it did before the
+pin: `check` shows it first.
+
+The comparisons read forge's configuration under the same pin as the reference, so the pin
+is no change: the reference confirms forge reads `solc` as the pin, and refuses otherwise. A
+`solc` a run writes no longer shows in that configuration, since the pin wins, so what holds
+such a write is the files themselves: `foundry.toml`, `.env` and `$HOME` are watched.
+
+### What a failed check settles as
+
+The runner only reports this; the settling is the EA's (node A4b). Owner decision Q35:
+
+- **A tamper flag settles INVALID**, even when another check also failed. The flags
+  read only the lines the hunter's patch added, so a maker's files cannot trip them,
+  and a hunter can see them in `check` first.
+- **Any other failed check settles with all weight on DUPLICATE:** bond back, no
+  award, no model called, and the justification names the check in a fixed
+  machine-readable form.
+- **A `reproduces` failure on its own stays INVALID**, whatever integrity says: a
+  test the patch added passed, errored, was skipped, went missing or appeared twice
+  on a run, or the patch added none. Only a `reproduces` failure caused by integrity
+  alone follows the two rules above.
+
+The reason is that the runner cannot always tell claim code from a trap in the
+maker's files, and a forfeited bond would pay the maker for the trap. This lowers
+that cost; it does not settle the class. A trapped listing still doesn't pay the
+honest hunter, so the maker keeps the stake on that claim. It earns no bond, and the
+record shows the claim. A caught cheater loses only what the round costs: at most the
+prepay, about $3.50 instead of $13.50 on a $1k listing from the example figures, and
+each such claim can hold later claims and `close()` for up to the reveal window.
+That griefing is to be revisited before mainnet.
+
+On-chain these claims are DUPLICATE, so the record has to show the difference: per
+listing, "claims that failed integrity: N" with the check's name, from the
+justification. It stays neutral. Hunters can raise that count on purpose, so it
+doesn't prove a trap and doesn't imply the maker caused it.
+
+**What settlement reads.** All of it is in fields of common's `verdikta.claim-report/1`,
+so the EA needs no `basis`, no `detail` and nothing outside the schema:
+
+| Question | Fields of `verdikta.claim-report/1` |
+|---|---|
+| A tamper flag? | `poc.integrity.tamperFlags` is not empty |
+| Which other check failed? | Whichever of `identityComplete`, `summaryConsistent`, `exitConsistent`, `protectedPathsUnchanged`, `frameworkUnchanged` and `dependenciesUnchanged` under `poc.integrity` is false |
+| Did `reproduces` fail on its own? | `gates.reproduces` is `fail`, and `poc.testCount` is 0 or any of `pass`, `error`, `skip`, `missing` and `duplicate` under `poc.runCounts` is above 0 |
+| Did it fail only through integrity? | `gates.reproduces` is `fail`, `poc.testCount` is above 0, and every counted run is `fail` (or `notRun`) |
+
+`facts.poc` carries these fields under the same names. `gates.reproduces.basis` agrees
+for a reader of the runner's result: `integrity` exactly when `reproduces` failed only
+through integrity. Two things in `src/claim.js` keep the fields sufficient, and common's
+rules hold on every run: a test's result is `error` on a run with a failed harness record in the
+PoC's files (the report has no field for that record, and the gate fails on it), and a
+test's `kind` is the one its three runs imply. `test/helpers/settlementFacts.js` lays
+each result out in the schema and reads these fields, for the unit and Docker tests.
+
+### The check's scope
+
+**Scope of the post-run checksums (owner decisions Q32, Q35).** The check assumes an
+env image from the attested builder, and the two facts that make that an
+assumption it can rely on are:
+
+- **Production trust accepts only images signed by the builder key.** The External
+  Adapter enforces this, not the runner: its front gates
+  (`external-adapter/src/codeReview/frontGates.js`) call `@verdikta/common`'s
+  `validateAttestation`, which checks the signature against the trusted-builder
+  set, the hashes of the files it binds, and the image digest, platform and size
+  against `code_review.json`. Anything else is a requester error before the runner
+  is called. The runner only compares the attestation's image with the spec's. Dev
+  trust exists only under `CODE_REVIEW_TRUST=dev`, only on the chains in
+  `DEV_TRUST_CHAIN_IDS` (Base Sepolia and a local node), and only for a statement
+  signed as dev, against `CODE_REVIEW_DEV_KEYS`.
+- **The image's final stage is fixed** (`stake-attestation/builder/src/dockerfile.js`
+  in verdikta-applications): `FROM` the pinned base, with a fixed `ENV` (`PATH`,
+  `XDG_DATA_HOME`, `VERDIKTA_TOOLS`) and no `RUN`. Only `/repo` and
+  `/opt/verdikta/tools` differ from the pinned base. Both are maker-controlled, and
+  the tools folder comes last on `PATH`.
+
+Within that:
+
+- **These block a merge:** routes a hunter can use alone, routes that help claim code,
+  and runner misreadings that hit honest claims with no maker's files involved
+  (R21-F2 and R22-F2 were this kind).
+- **These do not:** routes that need a maker's files to make an honest claim fail.
+  They stay defects, recorded below as known limits, and the refusals the runner
+  already has for them stay.
+- **The residual** is only a trap the maker's setup plants that helps claim code win
+  (a program in the tools that itself runs something from the work tree, say: the
+  image's own text, which no check inside the sandbox can read). It is recorded, not
+  closed. It is not harmless to everyone but the maker: design §8.8 allows any repository
+  and nothing checks that a maker controls it, so a stranger may be able to stage a
+  valid finding against someone else's project. That is why it is written down here
+  as a residual, and that question is with the owner.
+
+**Known limits (Q35).** Open, recorded, and to be reviewed before mainnet. The tests named
+"Known limit" in `test/docker/integrity.docker.test.js` pin the first four rows as they
+are today, not as they are wanted. The runner has no clock faking: nothing in `src/`
+sets the sandbox's time.
+
+| Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
+|---|---|---|---|
+| A program in the image (as `solc`, say) or repository code that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | A2c: the proof's runs get the checksums, which catches one that fires on every run but not one that spares the proof's tests; it also looks at refusing any `solc` that isn't an official release |
+| A fake `solc` that exits with an error on a test it hasn't seen | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed; A2c's look at refusing any `solc` that isn't an official release |
+| A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
+| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: a refusal of unofficial `solc` doesn't cover it. A hunter can read the code it calls |
+| A trap keyed on the date | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | A2c's look at unofficial `solc` covers compiler traps; repository code stays |
+
+The routes the review raised, against that scope (each has its test):
+
+| Route | Through the attested builder? | Side | What happens |
+|---|---|---|---|
+| A run leaves a watched file unreadable, or a directory unlistable, a watched root's ancestor included (R13-F1) | Yes: a hunter alone | **Blocks: hunter alone.** Closed | Its check fails |
+| `out = "lib"` beside `lib/pkg/fixture.json`, a run rewriting that dependency (R22-F1) | Yes: a hunter, on such a listing | **Blocks: hunter alone.** Closed | Refused before any claim code: no claim runs on that image |
+| `solc = "test/solc"` or `"0.8.31/solc"`, a patch replacing it with a wrapper, whose bytes would become the reference (R24-F1); `vyper.path` the same | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | Any compiler file in the work tree is refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. The tools folder is where a maker's compiler goes |
+| A patch changing what names the compiler: `extends` into a file under `paths.tests` (R25-F1), `foundry.toml` or `.env` a link, a root file forge reads under `paths.tests` and not protected | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED`: `extends` and the links right after the checkout, the rest before forge first runs |
+| `fix.patch` changing forge's own configuration to select a compiler it adds (R25-F2) | Yes: a hunter, where `foundry.toml` is not protected | **Blocks: hunter alone.** Closed | A failed fixed build, a fact; the fixed tree is never built, and the claim's outcome doesn't move |
+| A `.env` with `FOUNDRY_CONFIG` moving forge's configuration into a file a patch or a fix could change (R25-F1, R25-F2, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | forge's fixed environment sets `FOUNDRY_CONFIG` to its own default, and forge loads a `.env` without overriding what is set |
+| Any other way a patch or a fix changes what names the compiler (Q37) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed by the pin | `FOUNDRY_SOLC` wins over `foundry.toml`, `extends`, `.env` and `FOUNDRY_CONFIG`; the planted compiler never runs |
+| An external compiler adapter, or a solver named by a path, that a patch replaces (R24-F1, round 27) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | Refused before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. `FOUNDRY_EXTERNAL_COMPILERS` is fixed empty |
+| An installed release, named by version, that is a link through the work tree a patch could fill (R24-F1, round 26) | Yes: a hunter, on such a listing | **Blocks: helps claim code.** Closed | What is directly in the tools folder's `svm/` is walked right after the checkout: `IMAGE_WATCH_ROOT_UNCOVERED` |
+| `/opt/verdikta/tools/bin` itself, or a link in it, leads through the work tree, directly or by a chain back to the root (R16-F1) | Yes: the maker's setup | **Blocks: helps claim code.** Closed | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
+| A suite or PoC with invariants: a campaign's summary counted as a mismatch, a one-predicate failure read as an error, a multi-line reason lost (R21-F2, R22-F2) | Yes: any honest claim | **Blocks: runner misreading, no maker's files.** Closed | Forge's campaign counts accepted within a range; the reason read up to forge's framing |
+| A `PATH` directory that cannot be listed (R16-F1) | No: the builder's `chmod -R a+rX` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` |
+| A runner's tool behind a link through the work tree; a dangling tool link a patch would fill (R16-F1) | No: those directories are the base's bytes | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` first thing in a sandbox, listing included |
+| A patch's file as forge, or a `PATH` directory under `paths.tests` (R16-F1) | No: forge is the base's, first on `PATH` | Refused anyway | `IMAGE_WATCH_ROOT_UNCOVERED` before forge first runs |
+| An image `ENV` of `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | No: the `ENV` is fixed | Fixed anyway | Empty on the container |
+| A compiler in the image that writes a watched place in the build | Yes: the maker's setup | Needs a maker's files. Refusal kept | `IMAGE_WATCH_CHANGED_BY_BUILD`: a requester error. A2c (#135) will refuse it at listing |
+| `paths.protected` or `libs` over forge's own output, nothing there yet (`out = "lib/out"`, `out/**`, a test's artifact with `--skip test`; R21-F1) | Yes: the maker's listing | Needs a maker's files. Handled | Where forge writes is not held to the reference: the honest claim passes, and the artifacts are held from run 1 on |
+| The same over what the image already has there (`out/**` over a prebuilt `out/`; R22-F1), through a link that leads there once forge has compiled (R21-F1, round 22), or forge's output behind a link | Yes: the maker's setup or listing | Needs a maker's files. Refusal kept | Refused before any maker command or claim code: `IMAGE_WATCH_ROOT_UNCOVERED`, `IMAGE_WATCH_LINK_UNCOVERED`. A2c will refuse them at listing |
+| `[invariant] failure_persist_dir = "lib/persist"`: an honest invariant PoC writes a counterexample into a dependency directory on its first failure | Yes: the maker's `foundry.toml` | Needs a maker's files. Handled | Forge's own output: the honest claim passes |
+| The same by inline configuration in a listed contract (`/// forge-config: …failure_persist_dir`; R23-F1) | Yes: the maker's source | Needs a maker's files. Refusal kept | Refused right after the checkout, before any patch: `IMAGE_WATCH_ROOT_UNCOVERED`. A2c will refuse it at listing |
+| A setup that makes a watched listing unreadable or too large, or a watched link uncovered | Links and size yes, modes no | Needs a maker's files. Refusal kept | The reference's requester errors. A2c (#135) will refuse it at listing |
+| A program the image ships (as `solc`) or repository code a PoC calls (ffi, cheatcodes) that writes a watched place during a run | Yes: the maker's setup or repository | **Known limit** | A failed check with no tamper flag: bond back, no award. Pinned by Docker "Known limit" |
+| A fake `solc` that exits with an error on a test it has not seen | Yes: the maker's setup | **Known limit** | The `build` gate, or `reproduces` on its own: INVALID. Pinned by Docker "Known limit" |
+| A false rejection at `reproduces` | Yes: a trap, or a misreading not yet found | **Known limit** | INVALID. A misreading with no maker's files involved blocks a merge once found |
+| A trap keyed on the date | Yes: the maker's setup or repository | **Known limit** | As its effect, and `check` doesn't catch it: the runner fakes no clock |
+| A program on the read-only root that itself runs something a run can change, to help claim code | Yes: the maker's setup | Residual (Q32) | Recorded above |
+
+### Tamper routes under forge
+
+| Route | Check that closes it | Tests |
+|---|---|---|
+| ffi child prints a forged JUnit to forge's stdout (`/proc/$PPID/fd/1`) and kills forge; unmasked | the kill is a signal death: abstain | Docker `junit-forged-early-exit` |
+| the same, the maker's command masking the exit (`! forge test …`) | the command is `COMMAND_NOT_ALLOWED` (attempt 3); were forge's death masked, exit-code and framework-summary consistency, `report-path-referenced`, `exit-during-import` | Docker (refused) and unit `junit-forged-early-exit` |
+| the same, with forge's summary forged too, and the PoC's identity twice, behind a wrapper (`sh -c …`) | the wrapper is `COMMAND_NOT_ALLOWED`; identity completeness | Docker (refused) and unit `test-report-duplicate-identity` |
+| bytes a test writes into forge's stdout beside forge's own JUnit | the strict reader: unreadable JUnit, an error (A2a) | A2a's Docker inject test |
+| a test that skips itself or vanishes on later runs | identity completeness | Docker and unit `test-report-missing-identity` |
+| inline `fs_permissions` + `vm.writeFile` rewrites `foundry.toml` (e.g. `ffi = true`) during run 1 | protected and framework checksums, `forge config` fingerprint; `framework-patched` | Docker and unit `protected-file-modified-at-runtime` |
+| `vm.writeFile` patches forge-std (the assertion library) | framework and dependency checksums; `reporter-patched` | Docker and unit `reporter-monkeypatched` |
+| ffi edits an untracked `lib/` dependency (or `node_modules`) so a later run compiles it | dependency checksums (no static flag catches it: measured) | Docker and unit `dependencies-edited-during-run` |
+| `~/.foundry/foundry.toml`, `~/.gitconfig` or `.env` written for later runs | `$HOME`/config checksums, `forge config` fingerprint | unit `$HOME is watched` |
+| a `forge` (or another tool) planted on a writable `PATH` directory | `command -v forge` and the PATH directories in the work tree | unit `the forge executable` |
+| `.git/config` filter, a hook, a forged index or objects, so the runner's reset writes the claim's bytes | the runner's repository checksums | unit `the runner's repository is watched` |
+| forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts` |
+| a maker's command runs a script under `paths.tests`, which the PoC rewrites | the command is `COMMAND_NOT_ALLOWED`: a command names no script (a pattern naming a test file is not a script, so a PoC editing that file raises no flag) | unit `commands.test.js`, tamper-flag tests |
+| a maker's command running forge with another configuration: `FOUNDRY_PROFILE`, `--config-path`, `--root`, a path flag, a hidden alias such as `--compiler-version`, through `env`, by an absolute path, `env -u` (R11-F1) | the grammar refuses every such command (`COMMAND_NOT_ALLOWED`, the token named) at claim and listing time; the runner runs forge itself, from `/work`, with its own environment; an image `ENV` of `FOUNDRY_*` never reaches it | unit `commands.test.js`, `forgeargv.test.js`, Docker "A3a R11-F1 (attempt 3)" |
+| a file flood that hides a change | a listing over 64 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`) | unit snapshot and cap tests |
+| a change behind a watched link (`lib/pkg -> ../vendor/pkg`, a symlinked `lib/`, a link inside the tree a link leads to) | the kernel resolves each watched link in the sandbox; its target joins the link's set, transitively | unit and Docker "A3a R6-F1" |
+| a set's root behind a link (`libs = ["deps/lib"]`, `deps -> third_party`; `cache` a link) | the kernel resolves the root itself; exactly what it leads to joins | unit "a link at or above a set's root", Docker "A3a R6-F1 (round 7)" |
+| `..` after a link in the middle (`lib/pkg -> ../bridge/../payload`, `bridge -> vendor/nested`) | the kernel's answer (`vendor/payload`) is what is watched, never a path computed from the link's text | unit and Docker "A3a R6-F1 (round 7)" |
+| a watched link into forge's `cache/` (or `out/`, `broadcast/`, `snapshots/`, `.git`, `paths.tests`, `/tmp`, `$HOME`, the work tree's root, a directory outside the work tree) | `IMAGE_WATCH_LINK_UNCOVERED`, the link and its target named | unit and Docker "A3a R6-F1 (round 7)" |
+| a link on the way retargeted between runs, or a dangling watched link's target created | the kernel's answer is part of the link's entry: a change | unit "links whose targets change", Docker "A3a R6-F1 (round 7)" |
+| many links (20,000 to `.`) to make the host's work quadratic | deduplication before queueing, one range per tree, caps on links and levels: linear and bounded | unit and Docker "A3a R7-F1" |
+| forge's `out`/`cache_path` (or a `libs` entry, `solc`, a `PATH` directory) configured where the snapshots list nothing (`/tmp`), or `out`/a lib inside the cache directory or `.git` (R8-F1) | `IMAGE_WATCH_ROOT_UNCOVERED` before any maker command | unit, pipeline and Docker "A3a R8-F1" |
+| an image `ENV` naming a shared object at a path a run can write: `LD_PRELOAD`, `LD_AUDIT`, `LD_LIBRARY_PATH`, `GCONV_PATH` (R20-F1) | empty on the container, so the launcher and every step inherit the empty value | unit `sandbox.test.js`, Docker "A3a R20-F1" |
+| a helper, `solc` or the runner's own tool (`find`, `sha256sum`) reached through a `PATH` directory or link on the read-only root whose way leads through the work tree, even back to the root, or a `PATH` directory that cannot be listed (R16-F1) | A1's launcher check walks each one before any claim code: `IMAGE_WATCH_ROOT_UNCOVERED` | pipeline and Docker "A3a R16-F1" |
+| a claim's write to an artifact in run 1, under a glob that also names `out/` (R21-F1) | what forge writes is held as an artifact from run 1 on, not to the reference; the residual below | unit, pipeline and Docker "A3a R21-F1" |
+| a run rewriting an existing dependency or protected file that `out` or `cache_path` lies over (R22-F1) | `outputConflicts` refuses the image at the reference | unit, pipeline and Docker "A3a R21-F1 (round 22) and R22-F1" |
+| a watched link dangling into forge's output, /tmp or $HOME, resolved later (R21-F1, round 22) | `?` answers carry the landing; `watchLinks` refuses them like resolved ones | unit, pipeline and the same Docker test |
+| a forged summary on a suite with invariants (R21-F2) | outside the campaign range it fails `summaryConsistent`; the XML counts stay exact | unit and Docker "A3a R21-F2" |
+| a link the patch adds inside a watched set (only where `paths.tests` overlaps one) | that set's check fails; never followed, never the image's error | unit and Docker "a link the patch adds" |
+| bytes changed behind an unreadable file in a watched set or `out/`, or anything hidden by an unlistable directory, a watched root's ancestor or a link's target included (R13-F1) | what a snapshot cannot read is never unchanged: the check fails; at the reference, `IMAGE_WATCH_UNREADABLE` | unit, pipeline and Docker "A3a R13-F1" |
+
+Residual risk (decision 6): within run 1, claim code can still write a new
+artifact after forge's compile that runs 2-3 would execute. That does not
+change `reproduces`, which any PoC can satisfy with a trivially failing
+assertion: what the checks protect is that the recorded runs are the image's
+code under test, and the jury reads the PoC's source (and A3c's honesty
+flags).
+
+## claimedObservable
+
+`src/observable.js` (§10.1), decided only on a PoC that reproduced, from
+finding.json and the recorded failures alone:
+
+- **The tests finding.json names** are the identifiers in `poc.command` and
+  `poc.observable` that are the function name of a test the runner knows (a
+  test the patch added, a test of the PoC's files, a baseline test). At
+  least one must be named, and every one named must be a test the patch
+  added (which, the PoC having reproduced, failed on every run).
+- **The observable appears in the recorded failure**: each text in double
+  quotes in `poc.observable` appears in the failure message of a named test
+  on every run; or, when it quotes nothing, the message of a named test (the
+  same on every run) appears in the observable as written. The message is
+  forge's own, whole, or the form the report carries (repository-relative,
+  at most 2,000 characters): either matches. Whitespace runs compare as one
+  space.
+
+So a finding names its test and quotes what forge printed:
+`"observable": "test_withdraw_drains fails with \"vault balance 0 after one withdraw\""`.
+The hunter tool (P5) checks the same rule locally.
+
+## The fix check
+
+`src/fix.js` (§9.2 step 8, §20 decision 14). Only when the claim carries
+`fix.patch`; informational, never a gate. A second sandbox (`ctx.openSandbox`,
+the same flags) is started before the PoC's own steps and runs beside them;
+admission holds the spec's memory for both (`sandboxes: 2`, `src/server.js`),
+and the engine refuses a step that opens more sandboxes than the run was
+admitted for. In it:
+
+1. The forced checkout, then `poc.patch` with its `applies` and
+   `testPathsOnly` checks, protected paths reset, committed: the check runs
+   the PoC with the fix. A PoC that fails there fails the fix check.
+2. `fix.patch` on top: the same host-side checks as `poc.patch` (size, no
+   NUL, no rename or copy, **no binary change**), `git apply`, the measured
+   expansion, and every touched path outside `paths.tests` and
+   `paths.protected` and nameable in a report (source allowed; tests and
+   protected paths not). Committed (`fix.patch`). `fix.applies`.
+3. The reference snapshot, then `commands.build`. `fix.builds` (a fix that
+   applied is always built: `pass` or `fail`, never `not-run`). A reference
+   that cannot be read here (the fix broke `foundry.toml`, say) is the fix's
+   doing, since the PoC's sandbox read the same tree without it: `builds:
+   fail` with the reason, never the requester's error.
+4. The maker's full suite (`commands.test`, required with a fix) **once**,
+   with the reporter flags, then a snapshot. `fix.pocPasses`: every test the
+   patch added (as the PoC's own run 1 reported them, this run's when the
+   PoC's sandbox has none) has exactly one record and passes, and no PoC
+   suite failed before its tests ran (a `setUp` that now fails). `fix.regressions` /
+   `regressionCount`: every baseline `stable` test that does not pass (fails,
+   errors, is skipped, missing or duplicated), the first 200 in code-unit
+   order.
+5. The integrity checks on that run: identity (the PoC's tests and every
+   stable identity, each exactly once, none skipped, no PoC suite failing
+   before its tests), forge's summary, the
+   exit code, the checksums and the static flags of both patches.
+   `fix.integrity`.
+
+One run of the suite rather than the PoC and the suite apart: a second run in
+the same sandbox would execute what the first run's claim code left behind.
+A step that hits a limit abstains the whole run: an informational fact is
+still one every arbiter must agree on. `facts.fix` (tier B) carries
+`present`, `applies`, `builds`, `pocPasses`, `regressions`,
+`regressionCount`, `integrity` (the report's fields), `detail` (why it
+applied or not, how the build ended), `patch` and `diff` (tier A), the fix
+sandbox's `checkout` and `leftoverProcesses`, and `suite` (the run). Without
+`fix.patch` it takes the not-run values.
+
+**Binary changes in fix.patch are refused** (this node's rule, beside owner
+decision Q28 for poc.patch). A fix to Solidity source is text; a binary
+postimage can name an existing object whose size the patch's bytes do not
+bound; keeping one host-side scan for both patches means the measured
+expansion and the diff facts mean the same thing for both; and since the
+fix is informational, refusing one costs the hunter nothing: the report says
+`applies: fail` with the reason.
 
 ## Images and admission
 
@@ -789,7 +1437,9 @@ image-pull failure"), never a verdict.
   cause.
 - Teardown has until the deadline itself, never longer: the answer is sent by
   then, and a removal still running carries on in the background for the GC to
-  finish. A run is definitive only once every sandbox it started is gone; one
+  finish. Each sandbox's removal waits for its own launch (the fix check's may
+  still be in `docker create`), so its container is removed once it exists and
+  the slot and memory stay held until then (A3a). A run is definitive only once every sandbox it started is gone; one
   that could not be removed (or not by the deadline) abstains `docker_error`.
 - Every Docker control call has its own timeout, and the run stops at the
   deadline even if a step is stuck outside Docker.
@@ -873,7 +1523,10 @@ container-used image, and the slot limit.
 locally (`forgeFixture.js`: FROM the pinned base, solc 0.8.31 by SHA-256,
 the repository at `/repo`); under Docker's classic image store, where a local
 build has no repository digest, it pushes them to a throwaway `registry:2`
-on 127.0.0.1 first. CI
+on 127.0.0.1 first. `integrity.docker.test.js` runs every A3a fixture in
+its forge form against real forge (ffi and file-cheatcode attempts, stdout
+mimicking forge's JUnit, `lib/` edits), ordinary PoCs that must raise
+nothing, and the fix check. CI
 (`.github/workflows/code-runner.yml`) runs the unit tests, and the Docker tests
 under `runc` and under the pinned gVisor on the systrap platform.
 
@@ -886,15 +1539,30 @@ under `runc` and under the pinned gVisor on the systrap platform.
   it), `ctx.readFile(path, { maxBytes })`, `ctx.gate(name, status, basis, detail)`,
   `ctx.fact(name, value)`, `ctx.openSandbox()` (a second container with the
   same flags, for the fix check), `ctx.remainingMs()` and `ctx.limits`.
-- **Forge adapter** (`src/forge.js`): reporter flags, the test identity,
+- **Forge commands** (`src/commands.js`): `parseCommand(key, text)`,
+  `commandIssues(commands, key)`, `forgeArgs(parsed, values)`, the allowlists
+  (`COMMANDS`, `FLAGS`). The one grammar: `checkForgeSpec` (claims) and
+  `validateListingRequest` (the listing check, A2c) both use it.
+- **Forge adapter** (`src/forge.js`): `forgeArgv(tool, args)` (forge's whole
+  argv: `env -i`, its fixed environment, the probed forge), `forgeEnvironment`,
+  `toolProblem`, `FORGE_WORKDIR`, reporter flags, the test identity,
   `classifyRecord`, `$FILES` and `$TEST_IDS`; A2b's baseline reuses them.
 - **Claim session** (`src/claim.js`): `claimSession(request, limits, { adopt })`
   gives the claim pipeline's step functions over one state (`prepare`,
-  `applies`, `testPathsOnly`, `resetAndCommit`, `build`, `reproduces`,
-  `pocRun`, `cleanup`); `adopt` takes the processes and checkout of a session
-  that already prepared the sandbox. `claimSteps` runs them in order; the
-  listing check (`src/listing.js`) runs them on its probes, gating into a
-  scope of its own.
+  `applies`, `testPathsOnly`, `resetAndCommit`, `watch`, `build`,
+  `reproduces`, `pocRun`, `cleanup`); `adopt` takes the processes and
+  checkout of a session that already prepared the sandbox. `claimSteps` runs
+  them in order, with the fix check's start and end around them; the listing
+  check (`src/listing.js`) runs them on its probes, gating into a scope of its
+  own (without `watch`, a probe's runs get every integrity check but the
+  checksums; it finds forge itself, `integrity.discoverForge`, and runs it
+  through the same argv). `KIT` holds the steps both of a claim's sandboxes
+  run (apply and measure a patch, read what it touched, reset, commit, build,
+  a forge run), which `src/fix.js` reuses.
+- **Integrity** (`src/integrity.js`): `Watch` (the reference and post-run
+  snapshots of a sandbox; `tool()` is the forge the maker's commands run),
+  `discoverForge`, `summaryConsistency`, `exitConsistency`,
+  `identityGap`, `tamperFlags`, `integrityOf`.
 - **Common** (`src/common.js`): `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`,
   `pocPatchPathsGate`, `matchesAny`, `baselineSets`, `validateBaseline` from
   `@verdikta/common` (A3b moves the class limits there too).
@@ -905,8 +1573,10 @@ under `runc` and under the pinned gVisor on the systrap platform.
   check does before each fresh probe sandbox.
 - **Admission** (`src/admission.js`): `admitRun` (A1's checks) and
   `Capacity` (slots, the memory reserve), whose ticket the engine releases
-  once the run's sandboxes are gone. A3a: a run that opens a second sandbox
-  in parallel (the fix check) needs its memory admitted twice.
+  once the run's sandboxes are gone. `executeRun({ sandboxes })` passes how
+  many sandboxes the run opens at once to admission, which holds
+  `memoryMb` for each (A3a: 2 with a fix check), and the engine refuses a
+  step that opens more.
 - **Images** (`src/images.js`, `src/registry.js`): `ImageCache.acquire()`
   (allowlist, disk check, LRU eviction, pull, verify) gives a lease the
   engine releases with the ticket; `parseImageRef`, `parseAllowlist`,

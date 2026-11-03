@@ -13,6 +13,8 @@
  *             recorded and the forced checkout of the listed commit; then
  *             the work tree's free space and its tracked files
  *   build     the declared build command, once, at the listed commit
+ *             (forge found in the sandbox first; every command is parsed
+ *             by src/commands.js and run as forge's argv, as a claim runs it)
  *   suite     the declared test command three times, with the runner's
  *             reporter flags (--junit, the fixed --fuzz-seed) and no
  *             network; the tracked files reset to the listed commit before
@@ -58,7 +60,14 @@ const { Prefix } = require('./capture');
 const { runText, isUnreachableText } = require('./docker');
 const { git } = require('./git');
 const forge = require('./forge');
-const { claimSession, checkForgeSpec, commandIssues, FREE_SPACE_SCRIPT, FREE_SPACE_MARGIN_BYTES, RUNS: CLAIM_RUNS } = require('./claim');
+const { claimSession, checkForgeSpec, FREE_SPACE_SCRIPT, FREE_SPACE_MARGIN_BYTES, RUNS: CLAIM_RUNS } = require('./claim');
+const { commandIssues } = require('./commands');
+
+/** The leftover-process records of the claim steps' facts (A3a: a tier-A fact, `{ tier, steps }`). */
+function leftovers(facts) {
+  const f = facts.leftoverProcesses;
+  return f && Array.isArray(f.steps) ? f.steps : [];
+}
 const { checkSpec, CLASS_HARD_LIMITS, IMAGE_REF, OCI_PLATFORM } = require('./classLimits');
 const { parseImageRef } = require('./registry');
 const { matchesAny, normalizePath, pocPatchPathsGate, baselineSets, validateBaseline, BASELINE_RUNS } = require('./common');
@@ -249,8 +258,9 @@ function validateListingRequest(body) {
   const s = checkSpec({ env: effectiveEnv, ...(spec.limits !== undefined ? { limits: spec.limits } : {}) });
   for (const i of s.issues) if (i.path !== '/spec/env/image') issues.push(i);
 
-  // What the forge adapter needs (claim.js), and the full suite's command.
-  issues.push(...checkForgeSpec({ ...spec, env: isPlainObject(env) ? env : {} }), ...commandIssues(spec.commands, 'test', null));
+  // What the forge adapter needs (claim.js), and the full suite's command: one grammar (commands.js), so a listing is
+  // refused here for exactly the forms a claim would refuse.
+  issues.push(...checkForgeSpec({ ...spec, env: isPlainObject(env) ? env : {} }), ...commandIssues(spec.commands, 'test'));
 
   const stake = spec.stake;
   if (stake !== undefined && isPlainObject(stake) && stake.scope !== undefined) {
@@ -618,7 +628,9 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
       return;
     }
     state.buildMs = Date.now() - t0;
-    out.leftoverProcesses = state.scope.facts.leftoverProcesses || [];
+    // The forge the build found is the suite's too (the same sandbox).
+    state.base = { ...state.base, tool: s1.state.tool };
+    out.leftoverProcesses = leftovers(state.scope.facts);
     const gate = state.scope.gates.build;
     if (!gate || gate.status !== 'pass') {
       refuse('BUILD_FAILED', `at the listed commit, ${gate ? gate.detail : 'the build did not run'}`);
@@ -638,7 +650,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
       if (k > 1) await resetToListed(state.scope.ctx, `suite:reset:${k}`);
       let run;
       try {
-        run = await s2.pocRun(state.scope.ctx, k, spec.commands.test, {}, { step: `suite:${k}`, label: 'vcr-suite' });
+        run = await s2.pocRun(state.scope.ctx, k, 'test', {}, { step: `suite:${k}` });
       } catch (err) {
         if (!ownTimeout(err, (s) => s === `suite:${k}`)) throw err;
         refuse('LISTING_TOO_HEAVY', `suite run ${k} ran past ${seconds(budget)} s and was stopped: ${MARGIN * RUNS}x a run's time would pass the class's ${caps.runSeconds} s run`);
@@ -652,7 +664,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
       runs.push(run);
     }
     state.suiteFiles = [...new Set(runs.flatMap((r) => r.suites.map((x) => x.file)))].sort();
-    out.leftoverProcesses = state.scope.facts.leftoverProcesses || [];
+    out.leftoverProcesses = leftovers(state.scope.facts);
     out.timings = { prepareSeconds: seconds(state.prepareMs), buildSeconds: seconds(state.buildMs), testSeconds: state.testMs.map(seconds) };
 
     const { baseline, harness } = baselineOf(runs, {

@@ -5,14 +5,24 @@
  * the MVP is Foundry-only). What the runner adds to the maker's declared
  * commands, how it names a test, and how it reads a forge test result.
  *
- * Commands run only inside the sandbox, as written, in its /bin/sh with
- * pathname expansion off (`set -f`: $FILES is a forge glob, which the shell
- * must pass through untouched). The runner appends its reporter flags as
- * arguments: `--junit` (forge prints the JUnit on stdout, which the runner
- * reads as a capped stream) and the fixed `--fuzz-seed` from
- * @verdikta/common, so fuzz and invariant tests draw the same inputs on
- * every host and every run. Every forge invocation also gets the seed as
- * FOUNDRY_FUZZ_SEED.
+ * Commands (node A3a attempt 3, owner decision Q31): the runner runs forge
+ * itself. A listing's build and test commands are plain `forge build` /
+ * `forge test` with allowlisted flags (src/commands.js parses them); no
+ * shell ever reads them. forgeArgv() is forge's whole argv: `/usr/bin/env
+ * -i`, forge's fixed environment (forgeEnvironment: the sandbox's fixed
+ * variables, the image's PATH as the integrity reference probed it, the
+ * builder's fixed values, the fuzz seed, FOUNDRY_CONFIG at forge's default and
+ * FOUNDRY_SOLC at the pin, nothing else), the forge the reference probed (its real path),
+ * then the parsed arguments, each one argv element. The launcher (A1) prints
+ * its nonce and execs that argv without interpreting it; the runner runs it
+ * in /work. `forge config --json` (the configuration the checks watch) is
+ * read through the same forgeArgv, so it is the configuration every maker
+ * command runs with; listedConfigArgv is the one read without the pin, the one
+ * that decides it. The runner appends its reporter flags to a test run:
+ * `--junit` (forge prints the JUnit on stdout, which the runner reads as a
+ * capped stream) and the fixed `--fuzz-seed` from @verdikta/common, so fuzz
+ * and invariant tests draw the same inputs on every host and every run; the
+ * seed is also FOUNDRY_FUZZ_SEED in forge's environment.
  *
  * Assertion vs error (§10.1 `reproduces`). A forge test fails one way: the
  * test function ran and reverted (an assertion helper, a require, a revert
@@ -47,23 +57,94 @@
  */
 
 const { FORGE_FUZZ_SEED } = require('./common');
+const { SANDBOX_ENV } = require('./sandbox');
+
+/**
+ * The rest of the fixed ENV of the builder's final stage
+ * (stake-attestation/builder/src/dockerfile.js in verdikta-applications):
+ * forge finds the solc releases the maker's setup installed under
+ * XDG_DATA_HOME (without it, "can't install missing solc in offline mode").
+ * Fixed values, so an image's own ENV moves nothing.
+ */
+const BUILDER_ENV = Object.freeze({ XDG_DATA_HOME: '/opt/verdikta/tools/share', VERDIKTA_TOOLS: '/opt/verdikta/tools' });
+
+/** The work tree, where forge runs (forge reads /work/foundry.toml, as the reference probed it). */
+const FORGE_WORKDIR = '/work';
 
 function reporterFlags() {
   return ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED];
 }
 
-function forgeEnv() {
-  return { FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED };
+/**
+ * forge's whole environment: the image's PATH as the integrity reference
+ * probed it (what forge's own children, ffi included, look commands up on),
+ * the sandbox's fixed variables (§9.3: HOME, TZ, LANG, CI, PYTHONHASHSEED),
+ * the builder's fixed values (BUILDER_ENV), the fuzz seed, FOUNDRY_CONFIG at
+ * forge's own default, FOUNDRY_SOLC at the pin and FOUNDRY_EXTERNAL_COMPILERS
+ * empty, since an adapter is a compiler the pin does not name (R24-F1, round 27).
+ * forge loads /work/.env without overriding what is set, so a .env moves none of
+ * them (R25-F1, round 26; owner decision Q37). No other variable of the image's
+ * environment, and no other FOUNDRY_*.
+ * @param {string} path - the probed PATH
+ * @param {string} [solc] - the pin: a release, an absolute path, or empty to leave
+ *   the choice to the sources' pragmas among the installed releases (integrity.pinCompiler).
+ *   Left out only for the one read that decides it (listedConfigArgv).
+ */
+function forgeEnvironment(path, solc) {
+  if (typeof path !== 'string' || /[\0\n]/.test(path)) throw new TypeError('the probed PATH must be one line');
+  if (solc !== undefined && (typeof solc !== 'string' || /[\0\n]/.test(solc))) throw new TypeError('the pinned compiler must be one line');
+  return {
+    PATH: path, ...SANDBOX_ENV, ...BUILDER_ENV, FOUNDRY_CONFIG: 'foundry.toml', ...(solc === undefined ? {} : { FOUNDRY_SOLC: solc, FOUNDRY_EXTERNAL_COMPILERS: '[]' }), FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
+  };
 }
 
 /**
- * The argv that runs a declared command in the sandbox: the maker's text as
- * the script of /bin/sh -c, `name` as $0, and `append` passed as arguments
- * after it ("$@"), never spliced into the text.
+ * Why the runner cannot run this forge as an argv (null when it can): env
+ * reads an argument holding `=` before the program as an assignment, so the
+ * program's path must be absolute and hold no `=` and no control character.
+ * @param {{realPath:string, path:string}} tool
  */
-function commandArgv(command, { name, append = [] }) {
-  const script = append.length ? `set -f; ${command} "$@"` : `set -f; ${command}`;
-  return ['/bin/sh', '-c', script, name, ...append];
+function toolProblem(tool) {
+  if (!tool || typeof tool.realPath !== 'string' || !tool.realPath.startsWith('/')) return 'forge has no absolute path';
+  if (/[=\u0000-\u001f\u007f]/.test(tool.realPath)) return `forge's path ${JSON.stringify(tool.realPath)} holds "=" or a control character`;
+  if (typeof tool.path !== 'string' || /[\0\n]/.test(tool.path)) return 'the image\'s PATH is not one line';
+  return null;
+}
+
+/**
+ * The argv that runs forge in the sandbox (through ctx.exec, so through the
+ * launcher): `/usr/bin/env -i <forge's environment> <forge> <args…>`. `args`
+ * are forge's arguments, each one element, as commands.forgeArgs() gives
+ * them (plus the runner's reporter flags for a test run); no shell reads
+ * any of them.
+ * @param {{realPath:string, path:string}} tool - the forge the reference probed, and the image's PATH
+ * @param {string[]} args
+ */
+function forgeArgv(tool, args) {
+  const problem = toolProblem(tool);
+  if (problem) throw new TypeError(problem);
+  if (!Array.isArray(args) || args.length === 0 || !args.every((a) => typeof a === 'string' && !a.includes('\0'))) {
+    throw new TypeError('forge\'s arguments must be strings without NUL');
+  }
+  if (typeof tool.solc !== 'string') throw new TypeError('forge runs only with the compiler pinned: tool.solc is not set');
+  return envArgv(tool, tool.solc, args);
+}
+
+/**
+ * `forge config --json` as the listing's own files say it, with no pin: the one
+ * read that decides the pin (integrity.pinCompiler), right after the forced
+ * checkout, before any patch. Everything else goes through forgeArgv.
+ * @param {{realPath:string, path:string}} tool
+ */
+function listedConfigArgv(tool) {
+  const problem = toolProblem(tool);
+  if (problem) throw new TypeError(problem);
+  return envArgv(tool, undefined, ['config', '--json']);
+}
+
+function envArgv(tool, solc, args) {
+  const env = forgeEnvironment(tool.path, solc);
+  return ['/usr/bin/env', '-i', ...Object.entries(env).map(([k, v]) => `${k}=${v}`), tool.realPath, ...args];
 }
 
 /** The runner's test identity (baseline.json): file > contract > test, the test as forge names it (its signature). */
@@ -77,6 +158,16 @@ const TEST_FUNCTION = /^(?:test|invariant|statefulFuzz|table|check|prove)[^()]*\
 /** Whether a JUnit record is a test function. */
 function isTestFunction(name) {
   return typeof name === 'string' && TEST_FUNCTION.test(name);
+}
+
+/**
+ * Whether a JUnit record is part of an invariant campaign: a predicate
+ * (`invariant*`, `statefulFuzz*`), or a handler failure (`handler <name>`, a
+ * record of its own). forge 1.8.5 expands a campaign into these
+ * (add_junit_test_cases); its suite summary counts the campaign as one result.
+ */
+function isInvariantRecord(name) {
+  return typeof name === 'string' && (/^(?:invariant|statefulFuzz)[^()]*\(.*\)$/s.test(name) || name.startsWith('handler '));
 }
 
 /** The records forge writes for a suite that failed before its tests ran (or after its invariants). */
@@ -123,6 +214,23 @@ function bodyNeverRan(record, message) {
 }
 
 /**
+ * A failure's reason. forge writes it as the record's message, but for a
+ * campaign of one invariant predicate only in the record's own <system-out>
+ * (TestResult keeps invariant reasons in invariant_failures, and only the
+ * expanded form sets the message). Read there for invariants alone: another
+ * test's failure without a message stays one. forge inserts the reason as it
+ * is, line breaks included (R22-F2), so it ends at forge's framing: `]` then a
+ * counterexample's sequence, or `] <name>` then the report.
+ */
+function recordReason(record) {
+  if (typeof record.message === 'string' && record.message !== '') return record.message;
+  if (!isInvariantRecord(record.name) || typeof record.out !== 'string' || !record.out.startsWith('[FAIL: ')) return record.message;
+  const ends = [record.out.search(/\]\n\s*\[Sequence\] \(original: /), record.out.indexOf(`] ${record.name} `), record.out.indexOf(`] ${record.name}\n`)];
+  const end = Math.min(...ends.filter((i) => i > 7));
+  return Number.isFinite(end) ? record.out.slice(7, end) : record.message;
+}
+
+/**
  * Classify one JUnit record of a test function.
  * @param {{name:string, outcome:'pass'|'failure'|'error'|'skipped', message:string|null, out?:string}} record
  *   `out`: the record's <system-out>
@@ -134,7 +242,7 @@ function classifyRecord(record) {
     case 'skipped': return { result: 'skip', kind: null };
     case 'failure': {
       const error = { result: 'error', kind: 'error' };
-      const m = record.message;
+      const m = recordReason(record);
       if (typeof m !== 'string' || m === '') return error;
       if (FORGE_ERRORS.some((re) => re.test(m))) return error;
       if (bodyNeverRan(record, m)) return error;
@@ -190,6 +298,6 @@ function scanAddedLines(lines) {
 }
 
 module.exports = {
-  reporterFlags, forgeEnv, commandArgv, testIdentity, isTestFunction, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
+  reporterFlags, forgeEnvironment, forgeArgv, listedConfigArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, isTestFunction, isInvariantRecord, recordReason, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
   scanAddedLines, FORGE_ERRORS, HARNESS_RECORDS, REFERENCES
 };

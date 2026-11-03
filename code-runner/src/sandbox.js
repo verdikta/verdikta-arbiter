@@ -31,6 +31,19 @@ const WORK_DIR = '/work';
 const HOME_DIR = '/home/sandbox';
 /** Fixed environment (§9.3): never the host's. */
 const SANDBOX_ENV = Object.freeze({ TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0', HOME: HOME_DIR });
+/**
+ * Variables that make the dynamic linker or libc load a shared object from a
+ * path the image's ENV could name: set empty on the container, so every exec
+ * inherits the empty value (R20-F1). The launcher is a dynamically linked
+ * /bin/sh started in the container's environment, before any `env -i`: without
+ * this, an ENV naming a file a run can write would put claim code in every
+ * later step, snapshots included. Empty means unset to glibc for each of these
+ * (the pinned base runs with them). Two others cannot be handled this way, and
+ * load nothing: glibc acts on the name of LD_TRACE_LOADED_OBJECTS and
+ * LD_SHOW_AUXV whatever the value, so an image setting one fails the start
+ * nonce and the run abstains. The builder's fixed ENV sets none of them.
+ */
+const LOADER_ENV = Object.freeze({ LD_PRELOAD: '', LD_AUDIT: '', LD_LIBRARY_PATH: '', GCONV_PATH: '' });
 
 /**
  * The scratch: the root filesystem is read-only and these memory-backed
@@ -120,7 +133,7 @@ function createArgs({ name, image, runtime, platform = OCI_PLATFORM, limits, ins
   positiveInt(expiresAt, undefined, 'expiresAt');
   positiveInt(keepaliveSeconds, undefined, 'keepaliveSeconds');
 
-  const env = Object.entries(SANDBOX_ENV).flatMap(([k, v]) => ['--env', `${k}=${v}`]);
+  const env = Object.entries({ ...SANDBOX_ENV, ...LOADER_ENV }).flatMap(([k, v]) => ['--env', `${k}=${v}`]);
   return [
     'create', '--pull', 'never',
     '--platform', platform,
@@ -523,6 +536,7 @@ module.exports = {
   SCRATCH_MB,
   TMPFS,
   SANDBOX_ENV,
+  LOADER_ENV,
   RUNTIMES,
   PLATFORMS,
   LABEL,

@@ -14,13 +14,46 @@ const { FORGE_FUZZ_SEED } = require('../../src/common');
 test('the reporter flags: JUnit on stdout and the fixed fuzz seed from @verdikta/common', () => {
   assert.equal(FORGE_FUZZ_SEED, '0x76657264696b7461');
   assert.deepEqual(forge.reporterFlags(), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-  assert.deepEqual(forge.forgeEnv(), { FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED });
+  assert.deepEqual(forge.forgeEnvironment('/usr/bin:/bin'), {
+    PATH: '/usr/bin:/bin', TZ: 'UTC', LANG: 'C.UTF-8', CI: 'true', PYTHONHASHSEED: '0', HOME: '/home/sandbox',
+    // The builder's fixed ENV: forge finds the setup's solc releases under XDG_DATA_HOME (builder/src/dockerfile.js).
+    XDG_DATA_HOME: '/opt/verdikta/tools/share', VERDIKTA_TOOLS: '/opt/verdikta/tools',
+    // forge's own default, so a .env cannot move its configuration (forge loads it without overriding what is set).
+    FOUNDRY_CONFIG: 'foundry.toml', FOUNDRY_FUZZ_SEED: FORGE_FUZZ_SEED
+  });
+  // With the pin, FOUNDRY_SOLC is set, and no adapter can run beside it.
+  const pinned = forge.forgeEnvironment('/usr/bin:/bin', '0.8.31');
+  assert.equal(pinned.FOUNDRY_SOLC, '0.8.31');
+  assert.equal(pinned.FOUNDRY_EXTERNAL_COMPILERS, '[]');
+  assert.equal(forge.forgeEnvironment('/usr/bin:/bin', '').FOUNDRY_SOLC, '');
 });
 
-test('a declared command runs as written in the sandbox\'s /bin/sh, with the reporter flags appended as arguments', () => {
-  const argv = forge.commandArgv('forge test --match-path $FILES', { name: 'vcr-poc', append: forge.reporterFlags() });
-  assert.deepEqual(argv, ['/bin/sh', '-c', 'set -f; forge test --match-path $FILES "$@"', 'vcr-poc', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
-  assert.deepEqual(forge.commandArgv('forge build', { name: 'vcr-build' }), ['/bin/sh', '-c', 'set -f; forge build', 'vcr-build']);
+test('attempt 3 (owner decision Q31): forge runs as the runner\'s argv, env -i with its fixed environment, the probed forge, then the arguments unchanged', () => {
+  const tool = { realPath: '/usr/local/bin/forge', path: '/usr/bin:/bin', solc: '0.8.31' };
+  const env = ['PATH=/usr/bin:/bin', 'TZ=UTC', 'LANG=C.UTF-8', 'CI=true', 'PYTHONHASHSEED=0', 'HOME=/home/sandbox', 'XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'FOUNDRY_CONFIG=foundry.toml', 'FOUNDRY_SOLC=0.8.31', 'FOUNDRY_EXTERNAL_COMPILERS=[]', `FOUNDRY_FUZZ_SEED=${FORGE_FUZZ_SEED}`];
+  assert.deepEqual(forge.forgeArgv(tool, ['build']), ['/usr/bin/env', '-i', ...env, '/usr/local/bin/forge', 'build']);
+  // An argument that would mean something to a shell, or to env before the program, is just forge's argument here.
+  const odd = ['test', '--no-match-contract=a; rm -rf / $(id) `x` > y', 'X=1', '-i', ...forge.reporterFlags()];
+  assert.deepEqual(forge.forgeArgv(tool, odd).slice(env.length + 3), odd);
+  assert.equal(forge.FORGE_WORKDIR, '/work');
+  // A program env cannot be handed safely, or arguments that are not strings, are refused.
+  for (const bad of [{ realPath: 'forge', path: '/bin' }, { realPath: '/opt/a=b/forge', path: '/bin' }, { realPath: '/f\norge', path: '/bin' }, { realPath: '/f', path: 'a\nb' }, null]) {
+    assert.throws(() => forge.forgeArgv(bad, ['build']), TypeError, JSON.stringify(bad));
+    assert.ok(forge.toolProblem(bad), JSON.stringify(bad));
+  }
+  assert.equal(forge.toolProblem(tool), null);
+  assert.throws(() => forge.forgeArgv(tool, []), TypeError);
+  // Owner decision Q37: forge runs only with the compiler pinned, and the pin is one line; empty is a pin.
+  assert.throws(() => forge.forgeArgv({ realPath: tool.realPath, path: tool.path }, ['build']), /compiler pinned/);
+  assert.throws(() => forge.forgeArgv({ ...tool, solc: 'a\nb' }, ['build']), TypeError);
+  assert.ok(forge.forgeArgv({ ...tool, solc: '' }, ['build']).includes('FOUNDRY_SOLC='));
+  assert.ok(forge.forgeArgv({ ...tool, solc: '/opt/solc/solc' }, ['build']).includes('FOUNDRY_SOLC=/opt/solc/solc'));
+  // The one read without it, the read that decides it.
+  const listed = forge.listedConfigArgv({ realPath: tool.realPath, path: tool.path });
+  assert.deepEqual(listed.slice(-2), ['config', '--json']);
+  assert.ok(!listed.some((a) => a.startsWith('FOUNDRY_SOLC')), 'no pin in it');
+  assert.ok(listed.includes('FOUNDRY_CONFIG=foundry.toml'), 'FOUNDRY_CONFIG is fixed there too');
+  assert.throws(() => forge.forgeArgv(tool, ['test', 'a\0b']), TypeError);
 });
 
 test('test identity: file > contract > test, as baseline.json has it', () => {
@@ -140,4 +173,28 @@ test('R1-F1 (round 2): the kind report is read where forge writes it, however lo
   const fake = '] test_x() (gas: 0)';
   assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: fake, out: `[FAIL: ${fake}] test_x() (gas: 912)` }), { result: 'fail', kind: 'assertion' });
   assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: 'm', out: `[FAIL: m] test_x() (gas: 31)\nLogs:\n  [FAIL: m] test_x() (gas: 0)` }), { result: 'fail', kind: 'assertion' });
+});
+
+test('A3a R21-F2: a campaign of one invariant predicate has its reason only in its <system-out>: read there, for invariants alone, so an honest invariant PoC is an assertion failure', () => {
+  const out = '[FAIL: nonzero only]\n\t[Sequence] (original: 1, shrunk: 1)\n invariant_only() (runs: 1, calls: 1, reverts: 0)';
+  const record = { name: 'invariant_only()', outcome: 'failure', message: null, out };
+  assert.equal(forge.recordReason(record), 'nonzero only');
+  // Without a counterexample's sequence, forge's line goes on after the reason.
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: assertion failed: 2 != 1] invariant_only() (runs: 1, calls: 1, reverts: 0)' }), 'assertion failed: 2 != 1');
+  assert.deepEqual(forge.classifyRecord(record), { result: 'fail', kind: 'assertion' });
+  assert.deepEqual(forge.classifyRecord({ ...record, name: 'statefulFuzz_x()' }), { result: 'fail', kind: 'assertion' });
+  // R22-F2: forge inserts the reason as it is, line breaks included, in every form it writes.
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: expected balance\nactual balance] invariant_only() (runs: 1, calls: 1, reverts: 0)' }), 'expected balance\nactual balance');
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: expected zero\n\nactual more]\n\t[Sequence] (original: 1, shrunk: 1)\n\t\tsender=0x1 addr=[test/E.t.sol:H]0x2 calldata=boom() args=[]\n invariant_only() (runs: 1, calls: 1, reverts: 0)' }), 'expected zero\n\nactual more');
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: a\nb] invariant_only()\n\t[Sequence] (original: 1, shrunk: 1)\n invariant_only() (runs: 1)' }), 'a\nb');
+  assert.deepEqual(forge.classifyRecord({ ...record, out: '[FAIL: expected balance\nactual balance] invariant_only() (runs: 1)' }), { result: 'fail', kind: 'assertion' });
+  assert.equal(forge.recordReason({ ...record, out: '[FAIL: no framing at all\nanywhere' }), null, 'no framing, no reason');
+  // Forge's own errors, there as well, stay errors; so does no reason at all.
+  assert.deepEqual(forge.classifyRecord({ ...record, out: '[FAIL: vm.ffi: FFI is disabled]\n invariant_only() (runs: 1)' }), { result: 'error', kind: 'error' });
+  assert.deepEqual(forge.classifyRecord({ ...record, out: '[FAIL] invariant_only() (runs: 1)' }), { result: 'error', kind: 'error' });
+  // Any other test without a message stays an error: the listing check's rule for legacy assertions.
+  assert.deepEqual(forge.classifyRecord({ name: 'test_x()', outcome: 'failure', message: null, out: '[FAIL: x]\n' }), { result: 'error', kind: 'error' });
+  assert.equal(forge.isInvariantRecord('handler boom()'), true);
+  assert.equal(forge.isInvariantRecord('afterInvariant()'), false);
+  assert.equal(forge.isInvariantRecord('test_invariant()'), false);
 });

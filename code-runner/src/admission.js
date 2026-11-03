@@ -137,8 +137,11 @@ class Capacity {
    * ticket whose release() frees the slot and the memory (idempotent).
    * @throws {Abstain}
    */
-  async admit({ config = this.config, docker, limits, stopAt, now = Date.now(), signal, exists = fs.existsSync }) {
+  async admit({ config = this.config, docker, limits, stopAt, now = Date.now(), signal, exists = fs.existsSync, sandboxes = 1 }) {
     await admitRun({ config, docker, limits, stopAt, now, signal, exists });
+    // A run with the fix check has two sandboxes open at once, each with the spec's memory limit (node A3a).
+    const count = Number.isInteger(sandboxes) && sandboxes > 0 ? sandboxes : 1;
+    const memoryMb = limits.memoryMb * count;
     const mem = await this.measure();
     // From here on nothing is awaited: the check and the taking of the slot are one step.
     const refuse = (detail) => new Abstain(ABSTAIN.ADMISSION_REFUSED, detail, { step: 'admission' });
@@ -155,12 +158,12 @@ class Capacity {
         throw refuse(`the host's available memory could not be measured (${mem.error}), so the memory reserve cannot be kept`);
       }
       this.log.warn('the host\'s available memory could not be measured; admitting without the memory check (runc development)', { error: mem.error });
-    } else if (mem.availableMb - committed - limits.memoryMb < reserve.total) {
+    } else if (mem.availableMb - committed - memoryMb < reserve.total) {
       throw refuse(`the host has ${mem.availableMb} MiB available, ${committed} MiB held by runs in flight, and this run may use `
-        + `${limits.memoryMb} MiB; ${reserve.total} MiB stays reserved (chainlink ${reserve.chainlink}, postgres ${reserve.postgres}, `
+        + `${memoryMb} MiB${count > 1 ? ` (${count} sandboxes of ${limits.memoryMb} MiB)` : ''}; ${reserve.total} MiB stays reserved (chainlink ${reserve.chainlink}, postgres ${reserve.postgres}, `
         + `aiNode ${reserve.aiNode}, localModel ${reserve.localModel})`);
     }
-    const ticket = { memoryMb: limits.memoryMb, release: () => { this.tickets.delete(ticket); } };
+    const ticket = { memoryMb, release: () => { this.tickets.delete(ticket); } };
     this.tickets.add(ticket);
     return ticket;
   }

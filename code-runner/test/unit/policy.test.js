@@ -46,6 +46,19 @@ test('src/ has no shell, no eval, no mount, no docker cp', () => {
   }
 });
 
+test('A3a attempt 3 (owner decision Q31): no maker command reaches a shell, and only src/commands.js reads one', () => {
+  for (const file of sources()) {
+    const text = code(file);
+    const base = path.relative(SRC, file);
+    assert.doesNotMatch(text, /set -f|commandArgv/, `${base} builds a shell line from a maker's command`);
+    if (base !== 'commands.js') {
+      // The grammar's module takes the text; everyone else gets a parsed command (or only checks the framework's name).
+      assert.doesNotMatch(text, /commands\.(?:build|test|testFiles|testIds)\b/, `${base} reads a command's text`);
+    }
+  }
+  assert.doesNotMatch(code(path.join(SRC, 'forge.js')), /['"]\/bin\/sh['"]/, 'forge.js builds no shell argv');
+});
+
 test('only src/docker.js spawns processes, and it passes shell: false', () => {
   for (const file of sources()) {
     const text = code(file);

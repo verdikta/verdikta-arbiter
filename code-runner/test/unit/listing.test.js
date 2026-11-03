@@ -66,21 +66,13 @@ function listingBody(over = {}) {
   return { spec: draftSpec(over.spec || {}), image: IMAGE, deadline: 900000, ...(over.body || {}) };
 }
 
-/** forge's JUnit; a case is { name, failure (a message, or null for a failure without one), skipped, error }. */
+/**
+ * forge's JUnit; a case is { name, failure (a message, or null for a failure without one), skipped, error }. forge's own
+ * shape (test/helpers/fakeClaim.js): each suite's summary and counts follow its records, as the integrity checks
+ * (A3a), which a probe's runs get too, require.
+ */
 function junitOf(suites) {
-  const body = suites.map(({ suite, cases }) => [
-    `    <testsuite name="${suite}" tests="${cases.length}" skipped="0" errors="0" failures="0" time="0.001">`,
-    ...cases.map((c) => {
-      const inner = c.failure === null ? '<failure/>'
-        : c.failure !== undefined ? `<failure message="${c.failure}"/>`
-          : c.skipped ? '<skipped/>'
-            : c.error !== undefined ? `<error message="${c.error}"/>` : '';
-      return `        <testcase name="${c.name}" time="0.000">${inner}<system-out>[x] ${c.name} (gas: 1234)</system-out></testcase>`;
-    }),
-    '        <system-out>Suite result: ok.</system-out>',
-    '    </testsuite>'
-  ].join('\n')).join('\n');
-  return `<?xml version="1.0" encoding="UTF-8"?>\n<testsuites name="Test run" tests="1" skipped="0" failures="0" errors="0" time="0.003">\n${body}\n</testsuites>\n`;
+  return require('../helpers/fakeClaim').junit(suites);
 }
 
 /** The maker's suite on run k (1-3): test_deposit passes, test_flaky fails on run 2, test_broken always fails, test_skipped skips. */
@@ -199,9 +191,9 @@ test('a listing check builds once and runs the suite three times with --junit an
   const suites = sb.execs().filter((d) => d.kind === 'vcr-suite');
   assert.equal(suites.length, 3);
   for (const s of suites) {
-    assert.deepEqual(s.argv.slice(0, 3), ['/bin/sh', '-c', 'set -f; forge test "$@"'], 'the declared test command, as written');
-    assert.deepEqual(s.argv.slice(4), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED], 'the runner\'s reporter flags');
-    assert.equal(s.env.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
+    // Attempt 3 (owner decision Q31): the declared test command as forge's argv, with the runner's reporter flags.
+    assert.deepEqual(s.argv, ['/usr/local/bin/forge', 'test', '--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
+    assert.equal(s.fixedEnv.FOUNDRY_FUZZ_SEED, FORGE_FUZZ_SEED);
   }
   // Runs 2 and 3 start from the listed commit's tracked files (the checkout's commit of it), as a claim's re-runs do.
   const between = seq.slice(firstSuite, seq.lastIndexOf('vcr-suite') + 1);
@@ -209,7 +201,7 @@ test('a listing check builds once and runs the suite three times with --junit an
   const resets = sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'reset').slice(0, 2);
   for (const x of resets) assert.deepEqual(x.sub, ['reset', '--quiet', '--hard', sb.repo.commit]);
   // The forced checkout ran first, as for a claim: nothing of the image's checkout is used.
-  assert.deepEqual(seq.slice(0, 4), ['vcr-procs', 'git init', 'git init', 'vcr-stage']);
+  assert.deepEqual(seq.slice(0, 5), ['vcr-procs', 'vcr-external-roots', 'git init', 'git init', 'vcr-stage']);
 });
 
 test('the baseline: every test with its result on each run, stable = passed all three, unstable = everything else; valid baseline.json', async () => {
@@ -417,8 +409,8 @@ test('harness proof: the trivially failing test fails as an assertion on all thr
   const pocs = sb.execs().filter((d) => d.kind === 'vcr-poc');
   assert.equal(pocs.length, 5);
   for (const p of pocs) {
-    assert.equal(p.env.FILES, 'test/VerdiktaHarness.t.sol');
-    assert.deepEqual(p.argv.slice(4), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
+    assert.ok(p.argv.includes('--match-path=test/VerdiktaHarness.t.sol') || p.argv.some((a) => a.startsWith('--match-test=')), JSON.stringify(p.argv));
+    assert.deepEqual(p.argv.slice(-3), ['--junit', '--fuzz-seed', FORGE_FUZZ_SEED]);
   }
   // The compile probe goes straight to testFiles: no build between its apply and its run.
   const seq = kinds(sb);
@@ -451,7 +443,7 @@ test('harness proof: every probe runs as a claim does, in a fresh sandbox of its
     const execs = sb.docker.callsOf('exec').filter((c) => containerOf(c) === name).map(decode)
       .filter((d) => d.kind && d.argv[3] !== 'vcr-probe' && d.argv[3] !== 'vcr-launcher-check');
     const ks = execs.map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
-    assert.deepEqual(ks.slice(0, 4), ['vcr-procs', 'git init', 'git init', 'vcr-stage'], name);
+    assert.deepEqual(ks.slice(0, 5), ['vcr-procs', 'vcr-external-roots', 'git init', 'git init', 'vcr-stage'], name);
     assert.equal(ks.filter((k) => k === 'git apply').length, 1, name);
     assert.equal(ks.includes('vcr-suite'), false, `${name}: no suite run in a probe's sandbox`);
   }

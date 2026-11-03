@@ -25,7 +25,7 @@ const { executeRun } = require('./pipeline');
 const { health } = require('./health');
 const { claimSteps } = require('./steps');
 const { validateListingRequest, listingSteps, imageUnpackedBytes } = require('./listing');
-const { checkClaim } = require('./claim');
+const { checkClaim, sandboxesFor } = require('./claim');
 const { Capacity } = require('./admission');
 const { ImageCache } = require('./images');
 const { RUNNER_VERSION } = require('./version');
@@ -173,7 +173,7 @@ function createServer({
    * the image pulled, the steps run, the sandboxes removed.
    * @returns {Promise<object|null>} the run result (null when refused before it started)
    */
-  async function runJob(req, res, receivedAt, { limits, image, attestedImage, unpackedBytes, deadlineMs, steps }) {
+  async function runJob(req, res, receivedAt, { limits, image, attestedImage, unpackedBytes, deadlineMs, steps, sandboxes = 1 }) {
     if (closing) {
       send(res, 503, { outcome: OUTCOME.ABSTAIN, abstain: { cause: ABSTAIN.ADMISSION_REFUSED, step: 'admission', detail: 'the runner is shutting down' } });
       return null;
@@ -194,7 +194,9 @@ function createServer({
         admit: (o) => capacity.admit(o),
         images,
         attestedImage,
-        unpackedBytes
+        unpackedBytes,
+        // A claim with a fix check has its second sandbox beside the PoC's: admission holds memory for both (A3a).
+        sandboxes
       });
     } finally {
       runs.delete(runId);
@@ -242,7 +244,7 @@ function createServer({
 
     const result = await runJob(req, res, receivedAt, {
       limits, image: request.spec.env.image, attestedImage: request.attestation.env.image,
-      unpackedBytes: request.spec.env.unpackedBytes, deadlineMs: request.deadlineMs, steps
+      unpackedBytes: request.spec.env.unpackedBytes, deadlineMs: request.deadlineMs, steps, sandboxes: sandboxesFor(request)
     });
     if (!result) return;
     log.info('run finished', {
