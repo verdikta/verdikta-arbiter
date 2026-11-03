@@ -500,17 +500,18 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
   });
 
   describe('an abstention: nobody commits, and the control shows the arbiters are there', () => {
-    it('registry failure: the listing\'s digest, then its out-of-scope control on the same listing', async () => {
+    it('registry failure: the listing\'s digest, then what must settle: out of scope on that listing, and a runner gate', async () => {
       await startChain();
       const { code, out, json } = await reportOf('claim-l4-registry-failure');
       expect(out).not.toMatch(/FAIL/);
       expect(code).toBe(0);
       expect(chain.sent.map((tx) => tx.cids)).toEqual([
         [set.claims.registryFailure.listingCid, set.claims.registryFailure.cid],
-        [set.claims.registryControl.listingCid, set.claims.registryControl.cid]
+        [set.claims.registryControl.listingCid, set.claims.registryControl.cid],
+        [set.listingCid, set.claims.editsSource.cid]
       ]);
       const names = json.cases[0].checks.map((c) => c.name);
-      expect(names).toEqual(expect.arrayContaining(['claim.noCommit', 'claim.noVerdict', 'control.claim.gate']));
+      expect(names).toEqual(expect.arrayContaining(['claim.noCommit', 'claim.noVerdict', 'control.front-gate.claim.gate', 'control.runner-gate.claim.gate']));
       expect(names).not.toContain('evaluation.fulfilled');
     });
 
@@ -519,7 +520,7 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       const r = await run('claim-l4-registry-failure');
       expect(r.out).toMatch(/finalizeEvaluationTimeout/);
       expect(chain.reads).not.toContain('finalizeEvaluationTimeout');
-      expect(chain.sent).toHaveLength(2);
+      expect(chain.sent).toHaveLength(3);
     });
 
     it('fails when an arbiter committed', async () => {
@@ -529,11 +530,25 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(r.out).toMatch(/claim\.noCommit/);
     });
 
-    it('fails when the control did not settle: canaries that are down also commit nothing', async () => {
+    it('fails when the control on that listing did not settle: canaries that are down also commit nothing', async () => {
       await startChain({ change: { registryControl: () => ({ abstain: { abstain: true } }) } });
       const r = await reportOf('claim-l4-registry-failure', []);
       expect(r.code).toBe(1);
-      expect(r.out).toMatch(/control\./);
+      expect(r.out).toMatch(/control\.front-gate\.evaluation\.fulfilled/);
+    }, 60000);
+
+    it('fails when the runner gate did not settle: a runner that is down also commits nothing', async () => {
+      await startChain({ change: { editsSource: () => ({ abstain: { abstain: true } }) } });
+      const r = await reportOf('claim-l4-registry-failure', []);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/control\.runner-gate\.evaluation\.fulfilled/);
+    }, 60000);
+
+    it('a control that cannot start fails its scenario', async () => {
+      await startChain({ estimatesBeforeRevert: 1 });
+      const r = await reportOf('claim-l4-registry-failure', []);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/control\.front-gate\.started/);
     }, 60000);
 
     it('fails when a verdict came', async () => {
@@ -543,13 +558,20 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(r.out).toMatch(/claim\.no(Verdict|Commit)/);
     });
 
-    it('cancellation: armed, nobody commits, the standard out-of-scope claim is its control', async () => {
+    it('cancellation: armed, nobody commits, and a valid claim then reaches the jury: providers and the runner were up', async () => {
       await startArmed();
       const r = await run('claim-l4-cancellation', armed);
       expect(r.out).not.toMatch(/FAIL/);
       expect(r.code).toBe(0);
-      expect(chain.sent.map((tx) => tx.cids[1])).toEqual([set.claims.faultCancellation.cid, set.claims.outOfScope.cid]);
+      expect(chain.sent.map((tx) => tx.cids[1])).toEqual([set.claims.faultCancellation.cid, set.claims.valid.cid]);
     });
+
+    it('cancellation fails when the jury was not there to reach', async () => {
+      await startArmed({ change: { valid: () => ({ abstain: { abstain: true } }) } });
+      const r = await run('claim-l4-cancellation', armed);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/control\.valid\.evaluation\.fulfilled/);
+    }, 60000);
   });
 
   describe('the fault switch, as the run names it', () => {
@@ -667,11 +689,21 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(code).toBe(0);
     });
 
-    it('fails when the second round names no statement', async () => {
+    it('fails when the second round names no statement, and that round is no sample of a flip', async () => {
       await startChain({ change: { dispute: ({ disputed }) => (disputed ? { json: { metadata: { verdict_source: 'code-review-jury', canary_fault_ai_node: 'off' } } } : {}) } });
-      const r = await run('claim-l4-dispute');
-      expect(r.code).toBe(1);
-      expect(r.out).toMatch(/claim\.disputeStatement/);
+      const { code, out, json } = await reportOf('claim-l4-dispute');
+      expect(code).toBe(1);
+      expect(out).toMatch(/claim\.disputeStatement/);
+      expect(json.cases[0].metrics.dispute.countable).toBe(false);
+    });
+
+    it('a vector settlement cannot read fails the round, and the measurements stay', async () => {
+      await startChain({ change: { dispute: ({ disputed }) => (disputed ? { vector: [1n, 2n, 3n, 4n, 5n, 6n] } : {}) } });
+      const { code, out, json } = await reportOf('claim-l4-dispute');
+      expect(code).toBe(1);
+      expect(out).toMatch(/dispute\.secondSettles/);
+      expect(json.cases[0].metrics.rounds).toHaveLength(2);
+      expect(json.cases[0].metrics.dispute).toBeUndefined();
     });
   });
 

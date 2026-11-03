@@ -153,7 +153,7 @@
     "suite": "l4-claim",
     "claim": "registry-failure",
     "claimSet": "archives/l4-claim/claim-set.json",
-    "description": "A listing whose env image is a digest no registry holds: every arbiter abstains at the pull, so nobody commits. Then an out-of-scope claim on the same listing must settle, which shows the arbiters were there. The round is left unfinalized (a finalize applies penalties); L4 prints the command. Refused on any other class; runs only by name.",
+    "description": "A listing whose env image is a digest no registry holds: every arbiter abstains at the pull, so nobody commits. Then an out-of-scope claim on the same listing and the runner gate on the main listing must settle, which shows the arbiters, the runner and the registry were up. The round is left unfinalized (a finalize applies penalties); L4 prints the command. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
     ],
@@ -198,7 +198,7 @@
     "suite": "l4-claim",
     "claim": "cancellation",
     "claimSet": "archives/l4-claim/claim-set.json",
-    "description": "The fault switch makes the first juror's real call be on the wire at the jury deadline, on both attempts: cancelled, then the arbiter abstains and nobody commits. Then an out-of-scope claim must settle. Needs the switch on the canaries and --expect-fault-switch armed. Spends the canaries' provider keys. Refused on any other class; runs only by name.",
+    "description": "The fault switch makes the first juror's real call be on the wire at the jury deadline, on both attempts: cancelled, then the arbiter abstains and nobody commits. Then a valid claim must reach the jury, which shows the runner and the providers were up. Needs the switch on the canaries and --expect-fault-switch armed. Spends the canaries' provider keys. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
     ],

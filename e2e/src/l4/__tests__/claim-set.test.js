@@ -177,14 +177,16 @@ describe('resolveL4Claim', () => {
     }
   });
 
-  it('an abstention scenario carries its control: an out-of-scope claim on the same listing', async () => {
+  it('an abstention scenario carries its controls: what must settle, for no commit to mean anything', async () => {
     const { set, file } = await setFile();
     const registry = resolveL4Claim(scenarioIn(file, 'registry-failure'));
-    expect(registry.control.cids).toEqual([set.claims.registryControl.listingCid, set.claims.registryControl.cid]);
-    expect(registry.control.addendum).toBe(set.claims.registryControl.addendum);
+    expect(registry.controls).toEqual([
+      { kind: 'front-gate', cids: [set.claims.registryControl.listingCid, set.claims.registryControl.cid], addendum: set.claims.registryControl.addendum },
+      { kind: 'runner-gate', cids: [set.listingCid, set.claims.editsSource.cid], addendum: set.claims.editsSource.addendum }
+    ]);
     const cancel = resolveL4Claim(scenarioIn(file, 'cancellation'));
-    expect(cancel.control.cids).toEqual([set.listingCid, set.claims.outOfScope.cid]);
-    expect(resolveL4Claim(scenarioIn(file, 'valid')).control).toBeUndefined();
+    expect(cancel.controls).toEqual([{ kind: 'valid', cids: [set.listingCid, set.claims.valid.cid], addendum: set.claims.valid.addendum }]);
+    expect(resolveL4Claim(scenarioIn(file, 'valid')).controls).toBeUndefined();
   });
 
   it('a dispute scenario carries its second round', async () => {

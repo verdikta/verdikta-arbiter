@@ -63,8 +63,17 @@ const L4_CLAIM_ENTRIES = Object.freeze({
   'cold-cache': 'coldCache',
   dispute: 'dispute'
 });
-/** A scenario that expects no commit, and the entry that shows the arbiters were there: an out-of-scope claim on the same listing. */
-const ABSTAIN_CONTROLS = Object.freeze({ 'registry-failure': 'registryControl', cancellation: 'outOfScope' });
+/**
+ * A scenario that expects no commit, and the claims that must settle after it. An abstaining
+ * arbiter uploads nothing, so each control rules out another reason for nobody committing.
+ * registry-failure: arbiters down, or a listing they refuse (out of scope on that same listing);
+ * a runner or registry that is down (a gate only the runner reaches, on a listing whose image pulls).
+ * cancellation: a runner or provider that is down (a valid claim, to the jury).
+ */
+const ABSTAIN_CONTROLS = Object.freeze({
+  'registry-failure': Object.freeze([{ entry: 'registryControl', kind: 'front-gate' }, { entry: 'editsSource', kind: 'runner-gate' }]),
+  cancellation: Object.freeze([{ entry: 'valid', kind: 'valid' }])
+});
 /** What a claim set may lack, with the flag of scripts/build-l4-claims.js that adds it: each needs a listing of its own. */
 const OPTIONAL_ENTRIES = Object.freeze({
   registryFailure: '--registry-failure-listing-file (a listing signed elsewhere needs its own)',
@@ -104,7 +113,8 @@ function validateClaimSet(value) {
     if (typeof line !== 'string' || Buffer.byteLength(line) > MAX_ADDENDUM_BYTES) throw bad(`${name} is over the aggregator's ${MAX_ADDENDUM_BYTES} bytes`);
     return codeReview.parseAddendum(line);
   };
-  for (const key of [...new Set([...Object.values(L4_CLAIM_ENTRIES), ...Object.values(ABSTAIN_CONTROLS)])]) {
+  const controlEntries = Object.values(ABSTAIN_CONTROLS).flat().map((control) => control.entry);
+  for (const key of [...new Set([...Object.values(L4_CLAIM_ENTRIES), ...controlEntries])]) {
     const entry = value.claims && value.claims[key];
     if (!entry) {
       if (Object.prototype.hasOwnProperty.call(OPTIONAL_ENTRIES, key)) continue;
@@ -160,10 +170,12 @@ function resolveL4Claim(scenario) {
   const requestOf = (e) => ({ cids: [e.listingCid || set.listingCid, e.cid], addendum: e.addendum });
   const { cids, addendum } = requestOf(entry);
   const resolved = { ...scenario, cids, addendum, cid: adapterCid(cids, addendum) };
-  const controlKey = ABSTAIN_CONTROLS[scenario.claim];
-  if (controlKey) {
-    if (!set.claims[controlKey]) throw missing(controlKey);
-    resolved.control = requestOf(set.claims[controlKey]);
+  const controls = ABSTAIN_CONTROLS[scenario.claim];
+  if (controls) {
+    resolved.controls = controls.map(({ entry: key, kind }) => {
+      if (!set.claims[key]) throw missing(key);
+      return { kind, ...requestOf(set.claims[key]) };
+    });
   }
   if (scenario.claim === 'dispute') resolved.disputeRound = { cids: [entry.disputeListingCid, entry.cid], addendum: entry.disputeAddendum, statementCid: entry.statementCid };
   return resolved;

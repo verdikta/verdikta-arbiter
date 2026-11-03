@@ -193,7 +193,9 @@ changes a real host, so each is an operator's, by hand. No install or upgrade pa
      -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
    ```
 
-   The two abstention scenarios leave their rounds unfinalized and print the `cast send` that
+   The two abstention scenarios follow with claims that must settle, so a canary that is simply
+   down cannot pass them. The cause itself is only on the host: `grep -E 'CODE_REVIEW_(RUNNER|AI)_ABSTAIN'`
+   in the adapter's log, and `applied` in its `/health`. They leave their rounds unfinalized and print the `cast send` that
    would finalize them. A finalize returns the prepay and applies −20 timeliness to each polled
    oracle (§12), on identities that also serve class 128 on this testnet: finalize deliberately.
 

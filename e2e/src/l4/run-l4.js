@@ -151,10 +151,12 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
   const { cfg, provider, aggregator, l4, expect, opts, faultSwitch } = ctx;
   const start = Date.now();
   const expected = EXPECTED[kind];
-  const expectedRound = (latencyMs) => ({ id: scenario.id, kind, verdict: VERDICT_BY_SOURCE[expected.source], fault: Boolean(expected.fault), latencyMs });
+  let aggId = null;
+  const expectedRound = (latencyMs) => ({ id: scenario.id, aggId, kind, verdict: VERDICT_BY_SOURCE[expected.source], fault: Boolean(expected.fault), latencyMs });
   const unfinished = () => ({ ...expectedRound(Date.now() - start), unfinished: true, validMass: [] });
 
   const sent = await sendClaimRequest(ctx, scenario, request);
+  ({ aggId } = sent);
   const checks = [...sent.checks];
   if (!sent.aggId) return { checks, round: unfinished(), vector: null };
 
@@ -233,27 +235,32 @@ async function watchRound(aggregator, aggId, { pollIntervalMs, watchMs }) {
 
 /**
  * Nobody commits (design §12), and an abstaining arbiter uploads nothing, so canaries that are
- * down would look the same. So a control follows: an out-of-scope claim on the same listing, which
- * must settle at the EA's inScope gate. That shows the arbiters were there and take this listing.
+ * down, or a runner or a provider that is, would look the same. So controls follow: claims that
+ * must settle, each ruling out another reason for the silence (scenario-loader.js).
  */
 async function abstainRound(ctx, scenario) {
   const { aggregator, l4 } = ctx;
   const watchMs = scenario.watchSeconds * 1000;
   const sent = await sendClaimRequest(ctx, scenario, scenario);
   const checks = [...sent.checks];
+  const rounds = [];
   if (!sent.aggId) return { checks };
   console.log(chalk.gray(`[l4] ${scenario.id}: aggId=${sent.aggId}, watching ${scenario.watchSeconds}s for a commit, which must not come…`));
   const watched = await watchRound(aggregator, sent.aggId, { pollIntervalMs: l4.pollIntervalMs, watchMs });
   checks.push(...abstainChecks(watched));
   // A finalize applies the timeliness penalty to each polled oracle (§12): an owner's call, not this run's.
   console.log(chalk.gray(`[l4] ${scenario.id}: left unfinalized. Once responseTimeoutSeconds has passed, anyone can reclaim the prepay, at a cost to the polled oracles' reputations: cast send ${l4.aggregatorAddress} 'finalizeEvaluationTimeout(bytes32)' ${sent.aggId}`));
-  try {
-    const control = await verdictRound(ctx, scenario, scenario.control, { kind: 'front-gate', timeoutMs: watchMs });
-    checks.push(...control.checks.map((check) => ({ ...check, name: `control.${check.name}` })));
-  } catch (err) {
-    checks.push(A.assert('control.started', false, err.message));
+  for (const control of scenario.controls) {
+    const prefix = `control.${control.kind}`;
+    try {
+      const { checks: seen, round } = await verdictRound(ctx, scenario, control, { kind: control.kind, timeoutMs: watchMs });
+      checks.push(...seen.map((check) => ({ ...check, name: `${prefix}.${check.name}` })));
+      rounds.push(round);
+    } catch (err) {
+      checks.push(A.assert(`${prefix}.started`, false, err.message));
+    }
   }
-  return { checks };
+  return { checks, metrics: { rounds } };
 }
 
 /**
@@ -263,14 +270,22 @@ async function abstainRound(ctx, scenario) {
  * decide that, so it is recorded and not asserted. Only a valid first outcome may be disputed.
  */
 async function disputeRounds(ctx, scenario) {
+  const allHold = (checks) => checks.every((check) => check.ok);
+  const settled = (vector) => {
+    try {
+      return codeReview.settleBugOutcome(vector, ANY_STAKE);
+    } catch (err) {
+      return { failed: err.message };
+    }
+  };
   const first = await verdictRound(ctx, scenario, scenario, { kind: 'valid' });
-  const settled = (vector) => codeReview.settleBugOutcome(vector, ANY_STAKE);
   const rounds = [first.round];
   if (!first.vector) return { checks: first.checks, metrics: { rounds } };
   const before = settled(first.vector);
+  if (before.failed) return { checks: [...first.checks, A.assert('dispute.firstSettles', false, before.failed)], metrics: { rounds } };
   if (!before.valid) {
     console.log(chalk.yellow(`[l4] ${scenario.id}: the first round settled ${before.outcome}, not a valid outcome: the contract would refuse a dispute, so there is no second round and no sample`));
-    return { checks: first.checks, metrics: { rounds, dispute: { countable: false, before: before.outcome } } };
+    return { checks: first.checks, metrics: { rounds, dispute: { aggId: first.round.aggId, countable: false, before: before.outcome } } };
   }
   let second;
   try {
@@ -283,13 +298,17 @@ async function disputeRounds(ctx, scenario) {
   rounds.push(second.round);
   if (!second.vector) return { checks, metrics: { rounds } };
   const after = settled(second.vector);
-  console.log(chalk.gray(`[l4] ${scenario.id}: ${before.outcome} then ${after.outcome}: ${before.outcome === after.outcome ? 'held' : 'flipped'}`));
-  return { checks, metrics: { rounds, dispute: { countable: true, before: before.outcome, after: after.outcome, flipped: before.outcome !== after.outcome } } };
+  if (after.failed) return { checks: [...checks, A.assert('dispute.secondSettles', false, after.failed)], metrics: { rounds } };
+  // A flip counts only when both rounds were what they should be: real juries, on the statement.
+  const countable = allHold(first.checks) && allHold(second.checks) && first.round.verdict === 'jury' && second.round.verdict === 'jury';
+  const flipped = before.outcome !== after.outcome;
+  console.log(chalk.gray(`[l4] ${scenario.id}: ${before.outcome} then ${after.outcome}: ${flipped ? 'flipped' : 'held'}${countable ? '' : ' (not counted: a check failed)'}`));
+  return { checks, metrics: { rounds, dispute: { aggId: second.round.aggId, countable, before: before.outcome, after: after.outcome, flipped } } };
 }
 
 /** One L4 claim scenario, by its kind. */
 async function runClaimScenario(ctx, scenario) {
-  if (scenario.control) return abstainRound(ctx, scenario);
+  if (scenario.controls) return abstainRound(ctx, scenario);
   if (scenario.claim === 'dispute') return disputeRounds(ctx, scenario);
   const { checks, round } = await verdictRound(ctx, scenario, scenario, { kind: scenario.claim });
   return { checks, metrics: { rounds: [round] } };

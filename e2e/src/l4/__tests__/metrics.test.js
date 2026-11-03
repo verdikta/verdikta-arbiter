@@ -195,6 +195,18 @@ describe('scripts/l4-metrics.js', () => {
     expect(r.status).toBe(0);
   });
 
+  it('a report named twice is one measurement: a round is its request', () => {
+    const rounds = times(10).map((t, i) => jury(t, [70, 70, 70], { aggId: `0x${i}` }));
+    const a = reportFile('a.json', rounds, { aggId: '0xd', countable: true, flipped: true });
+    const copy = path.join(dir, 'copy.json');
+    fs.copyFileSync(a, copy);
+    const r = run(a, a, copy);
+    expect(r.stdout).toMatch(/10 round\(s\)/);
+    expect(r.stdout).toMatch(/no p95: 10 of the 20/);
+    expect(r.stdout).toMatch(/1 of 1 flipped/);
+    expect(r.status).toBe(1);
+  });
+
   it('exits 1 on too few, and says so', () => {
     const r = run(reportFile('a.json', [jury(100000)]));
     expect(r.status).toBe(1);
