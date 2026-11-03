@@ -113,6 +113,7 @@ function exampleKnownIssues() {
  *  - builderKey: the dev builder key that signs (default: a fresh one)
  *  - disclosure: { identity, recipient } (default: a fresh age key pair)
  *  - mutateSpec(spec): edit code_review.json before it is hashed and signed
+ *  - mutateBaseline(baseline): edit baseline.json before it is hashed and signed
  *  - juryParameters: the manifest's panel (default: common's CODE_STANDARD_PANEL)
  *  - outcomes: the primary file's outcomes (default: BUG_OUTCOMES)
  *  - attestation: 'signed' (default) | 'none' | 'tampered' (signed, then a byte of code_review.json changes)
@@ -126,7 +127,9 @@ function makeListing(options = {}) {
   const spec = exampleSpec(disclosure.recipient);
   if (options.mutateSpec) options.mutateSpec(spec);
   const specBytes = bytes(spec);
-  const baselineBytes = bytes(exampleBaseline(spec.baseCommit));
+  const baseline = exampleBaseline(spec.baseCommit);
+  if (options.mutateBaseline) options.mutateBaseline(baseline);
+  const baselineBytes = bytes(baseline);
   const knownIssuesBytes = bytes(exampleKnownIssues());
 
   let attestation;
@@ -264,6 +267,8 @@ module.exports = {
   zip,
   u8,
   exampleSpec,
+  exampleBaseline,
+  exampleKnownIssues,
   makeListing,
   makeClaim,
   makePrior,

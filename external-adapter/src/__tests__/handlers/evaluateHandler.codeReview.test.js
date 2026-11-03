@@ -218,14 +218,14 @@ describe('code review: request layout and operator switch', () => {
     expect(stored.result.justification).toBe('A4b result');
   });
 
-  it('when the run seam fails (no runner in this build) the arbiter abstains: errored, no commit', async () => {
-    claimRun.runClaim.mockImplementation(jest.requireActual('../../codeReview/claimRun').runClaim);
+  it('when the run throws the arbiter abstains: errored, no commit', async () => {
+    claimRun.runClaim.mockRejectedValue(new Error('CODE_REVIEW_TEST: the run failed'));
     const s = scenario();
     const res = await evaluateHandler(request(s.cid(1)));
     expect(res.statusCode).toBe(500);
     expect(res.status).toBe('errored');
     expect(res.data.aggregatedScore).toEqual([0]);
-    expect(res.error).toMatch(/CODE_REVIEW_RUN_UNAVAILABLE/);
+    expect(res.error).toMatch(/CODE_REVIEW_TEST/);
     expect(uploaded).toHaveLength(0);
   });
 
