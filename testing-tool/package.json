@@ -7,7 +7,7 @@
     "start": "node src/index.js",
     "test": "jest",
     "dev": "nodemon src/index.js",
-        "tool": "node src/index.js",
+    "tool": "node src/index.js",
     "run-tests": "node src/index.js test",
     "juries": "node src/index.js juries",
     "status": "node src/index.js status",
@@ -29,5 +29,13 @@
     "jest": "^29.7.0",
     "nodemon": "^3.0.0"
   },
-  "type": "commonjs"
-} 
+  "type": "commonjs",
+  "jest": {
+    "modulePaths": [
+      "<rootDir>/node_modules"
+    ],
+    "testPathIgnorePatterns": [
+      "/node_modules/"
+    ]
+  }
+}
