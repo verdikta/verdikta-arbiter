@@ -1573,6 +1573,9 @@ Typical evaluations are expected to take 3–6 minutes. Before the network timeo
 changes, a cold-image end-to-end canary on class 5555 must pass with a
 near-limit juror followed by justification, a provider timeout with retry, a slow
 justifier, a registry failure and a cancellation.
+These are L4 scenarios (`e2e/README.md`, "Claim scenarios"). Four of them use a fault
+switch that acts only on a named claim in a request for class 5555, measured on-chain
+(decision D9; `external-adapter/README.md`, "The canary fault switch").
 
 ## 12. Failure semantics
 

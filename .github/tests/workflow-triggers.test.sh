@@ -65,7 +65,7 @@ is code-runner.yml "w.dig('jobs', 'docker', 'strategy', 'matrix', 'runtime')" '[
 # Unchanged: the nightly L4 and the dispatch inputs.
 is e2e.yml "on['schedule']" '[{"cron":"0 7 * * *"}]' "nightly schedule changed"
 is e2e.yml "on.dig('workflow_dispatch', 'inputs').map { |k, v| [k, v['type'], v['default']] }" \
-    '[["run_l4","boolean",false],["class_id","string","5555"],["expect_common","string",""],["expect_release","string",""],["scenario","string",""]]' \
+    '[["run_l4","boolean",false],["class_id","string","5555"],["expect_common","string",""],["expect_release","string",""],["scenario","string",""],["expect_fault_switch","string",""]]' \
     "dispatch inputs changed"
 is e2e.yml "w.dig('jobs', 'l4-testnet', 'if')" \
     "\"github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_l4)\"" \

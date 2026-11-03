@@ -14,6 +14,7 @@ import { LLMFactory } from '../llm/llm-factory';
 import { parseRepairedScores, replyJustification } from '../../utils/repairModelResponse';
 import { buildCodeRepairPrompt } from './claim-prompt';
 import { CallAbortedError, raceAbort, timedController } from './deadline';
+import { CanaryHolds, NO_HOLDS } from './canary-fault';
 
 /** Every juror in the MVP panels is a frontier juror (no Jev): effort high (§10.3). */
 export const CODE_JUROR_EFFORT = 'high' as const;
@@ -116,7 +117,10 @@ export async function runCodeJury(input: {
   outcomes: string[];
   maxTokens: number;
   juryDeadlineAt: number;
+  /** The canary fault switch's waits, for the first juror (canary-fault.ts). They get a signal, and no value. */
+  holds?: CanaryHolds;
 }): Promise<JuryOutcome> {
+  const holds = input.holds ?? NO_HOLDS;
   const controllers = input.jurors.map(() => new AbortController());
   // What ended the jury first: a juror's failure or the deadline (set once).
   const state: { first: 'failed' | 'timeout' | null } = { first: null };
@@ -131,7 +135,13 @@ export async function runCodeJury(input: {
     const startedAt = Date.now();
     const base = { provider: juror.provider, model: juror.model };
     try {
-      const answer = await raceAbort(askJuror(juror, input.prompt, input.outcomes, signal, input.maxTokens), signal);
+      const work = async () => {
+        if (index === 0) await holds.beforeFirstJuror(signal);
+        const reply = await askJuror(juror, input.prompt, input.outcomes, signal, input.maxTokens);
+        if (index === 0) await holds.afterFirstJuror(signal);
+        return reply;
+      };
+      const answer = await raceAbort(work(), signal);
       return { ...base, status: 'success', duration_ms: Date.now() - startedAt, ...answer };
     } catch (error: any) {
       const duration_ms = Date.now() - startedAt;
@@ -180,15 +190,18 @@ export type JustifierOutcome =
   | { kind: 'failed'; message: string; httpStatus?: number };
 
 /** The justifier, cancelled after `budgetMs`. Code mode never falls back to the jurors' own text. */
-export async function runCodeJustifier(prompt: string, budgetMs: number): Promise<JustifierOutcome> {
+export async function runCodeJustifier(prompt: string, budgetMs: number, holds: CanaryHolds = NO_HOLDS): Promise<JustifierOutcome> {
   const target = justifierModel();
   if (!target) return { kind: 'failed', message: 'JUSTIFIER_MODEL is not set as provider:model' };
+  const endsAt = Date.now() + budgetMs;
   const { controller, clear } = timedController(budgetMs);
   try {
     // The reserve covers the provider's setup too (Ollama's initialization fetches its model list).
     const work = (async () => {
       const provider = await LLMFactory.getProvider(target.provider, { signal: controller.signal }) as any;
-      return provider.generateResponse(prompt, target.model, { webAccess: false, signal: controller.signal }) as Promise<string>;
+      const reply = await provider.generateResponse(prompt, target.model, { webAccess: false, signal: controller.signal }) as string;
+      await holds.afterJustifier(controller.signal, endsAt);
+      return reply;
     })();
     const text = stripThinkingBlocks(await raceAbort<string>(work, controller.signal, 'justifier reserve'));
     if (!text) return { kind: 'failed', message: `${target.provider}:${target.model} returned an empty justification` };

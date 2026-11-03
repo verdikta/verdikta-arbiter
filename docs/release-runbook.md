@@ -131,6 +131,9 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    an arbiter stops a claim on another class. They need a pinned claim set on that
    branch: [`e2e/README.md`](../e2e/README.md), "Claim scenarios (class 5555 only)".
 
+   The canary conditions of design §11 (G2) take more than the flags: see
+   [The canary conditions](#the-canary-conditions-11) below.
+
 4. **Gate.** Green means: the request was fulfilled, every revealing arbiter's
    justification reports the expected `verdiktaCommon` and `release`, and the
    justification is fetchable. `cd e2e && npm run audit-oracles -- <aggId>`
@@ -142,6 +145,84 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    `GET /version` on each (on the host, as above). There is no mainnet e2e wallet, so the mainnet check
    is the per-node version endpoint plus the next real request's justification
    (`audit-oracles` works against mainnet with `--rpc` / `--aggregator`).
+
+### The canary conditions (§11)
+
+Before the network timeout changes, a cold-image canary on class 5555 must pass with a
+near-limit juror, a provider timeout with retry, a slow justifier, a registry failure and a
+cancellation. Four of those need the fault switch
+([`external-adapter/README.md`](../external-adapter/README.md#the-canary-fault-switch)), which
+acts only on a named claim, in a request for class 5555, measured on Base Sepolia. Each step here
+changes a real host, so each is an operator's, by hand. No install or upgrade path does any of it.
+
+1. **Prepare the claim set**, with a fresh digest for the cold-cache scenario:
+   [`e2e/README.md`](../e2e/README.md), "Preparing them". It prints the plan.
+
+2. **Arm every identity in class 5555.** Selection picks K of them, and one that is not armed
+   answers first and fails `claim.faultSwitch`, so a partial arming is a failed run. On each
+   install, with a key made for this run (`openssl rand -hex 32`, the same for its adapter and
+   AI Node, kept out of git and of chat):
+
+   ```bash
+   # <install-dir>/external-adapter/.env
+   VERDIKTA_CANARY_FAULTS=<the plan build-l4-claims.js printed>
+   VERDIKTA_CANARY_FAULT_KEY=<the key>
+   VERDIKTA_CANARY_RPC_URL=<a Base Sepolia RPC URL>
+   NETWORK_CHAIN_ID=84532
+
+   # <install-dir>/ai-node/.env.local
+   VERDIKTA_CANARY_FAULT_KEY=<the same key>
+   ```
+
+   Restart (`<install-dir>/stop-arbiter.sh && <install-dir>/start-arbiter.sh`), then confirm, on
+   the host:
+
+   ```bash
+   curl -s http://localhost:<adapter-port>/health | jq .canaryFault   # state "armed", namedClaims 4, problems []
+   curl -s http://localhost:<ai-node-port>/api/health | jq .canary_fault   # state "armed"
+   ```
+
+   `refused` lists why in `problems`, and the switch then acts on nothing.
+
+3. **Run the scenarios**, with `expect_fault_switch=armed`. The first set takes minutes; the
+   cancellation watches for 15. Provider keys are spent, twice on a retry:
+
+   ```bash
+   gh workflow run e2e.yml --ref <branch> -f run_l4=true -f class_id=5555 -f expect_fault_switch=armed \
+     -f scenario=claim-l4-cold-cache,claim-l4-time-dependent,claim-l4-randomness-dependent,claim-l4-flaky,claim-l4-near-limit-juror,claim-l4-provider-timeout,claim-l4-slow-justifier,claim-l4-dispute,claim-l4-registry-failure,claim-l4-cancellation \
+     -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
+   ```
+
+   The two abstention scenarios follow with claims that must settle, so a canary that is simply
+   down cannot pass them. The cause itself is only on the host: `grep -E 'CODE_REVIEW_(RUNNER|AI)_ABSTAIN'`
+   in the adapter's log, and `applied` in its `/health`. They leave their rounds unfinalized and print the `cast send` that
+   would finalize them. A finalize returns the prepay and applies −20 timeliness to each polled
+   oracle (§12), on identities that also serve class 128 on this testnet: finalize deliberately.
+
+4. **Disarm, and prove it.** Remove those lines from every `.env` and `.env.local` (keep
+   `NETWORK_CHAIN_ID` if dev trust needs it) and restart. `upgrade-arbiter.sh` keeps a live `.env`,
+   so an upgrade does not do this for you. Then run a claim with the default:
+
+   ```bash
+   gh workflow run e2e.yml --ref <branch> -f run_l4=true -f class_id=5555 \
+     -f scenario=claim-l4-valid -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
+   ```
+
+   `claim.faultSwitch` and `claim.aiNodeFaultSwitch` fail unless every recorded reveal says `off`.
+
+5. **Read the metrics** over all the runs' `l4-report` artifacts, once there are enough:
+   `cd e2e && node scripts/l4-metrics.js results/*.json`. It exits non-zero on too few samples
+   (20 jury rounds for p95, 5 with three reveals for σ), and p95 from fewer runs does not exist.
+   Repeat the plain scenarios until it can answer, at least 15 minutes apart for one claim: an
+   arbiter serves a repeat from its kept run, and that round is no latency sample.
+
+**A cold cache from an evicted digest (opt-in, off by default).** A fresh digest needs no change on
+a host, and each one is cold once. To reuse a digest instead, an operator removes it from the
+runner's own daemon on each canary, between runs and with nothing running. L4 never does this:
+
+```bash
+DOCKER_HOST=unix:///run/verdikta-code-runner/docker.sock docker image rm <repo@sha256:…>
+```
 
 ## 4. Update deployment addresses
 

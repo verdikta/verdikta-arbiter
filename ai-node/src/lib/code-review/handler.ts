@@ -23,6 +23,7 @@ import { codeReview } from '@verdikta/common';
 import { buildClaimPrompt, buildCodeJustifierPrompt, PackFile } from './claim-prompt';
 import { JUSTIFIER_RESERVE_MS, justifierBudgetMs, planCodeReviewTimes } from './deadline';
 import { CODE_JUROR_EFFORT, CodeJuror, JurorResult, justifierModel, roundToTotal, runCodeJury, runCodeJustifier, weightedVector } from './jury';
+import { NO_HOLDS, canaryFaultState, holdsFor, readCanaryDirective } from './canary-fault';
 
 export const CODE_REVIEW_ERRORS = {
   INVALID: 'CODE_REVIEW_INVALID',
@@ -239,6 +240,14 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
   console.log(`⚖️ CODE_REVIEW_START: ${requestTag} class=${request.codeClass} report=${request.reportSha256} prompt=${promptSha256} deadlineMs=${request.deadlineMs} jurorTimeoutMs=${times.jurorTimeoutMs} panel=${jurors.map(j => `${j.provider}:${j.model}@${j.weight}`).join(',')}`);
   logPrompt(requestTag, prompt);
 
+  // The canary fault switch, when the EA minted a directive this node's key verifies: waits and
+  // nothing more (canary-fault.ts). The prompt above is already built without it.
+  const canaryAction = readCanaryDirective(body.canaryFault, { bcid: request.claim.bcid, reportSha256: request.reportSha256 });
+  const holds = canaryAction ? holdsFor(canaryAction, times) : NO_HOLDS;
+  if (canaryAction) console.warn(`⚠️ CANARY_FAULT: ${requestTag} ${canaryAction}, on the EA's measured directive`);
+  // Said on an error too: what a timeout was caused by is the only evidence a retry leaves.
+  const canaryStamp = { canaryFault: { state: canaryFaultState(), action: canaryAction } };
+
   // 5. The jury: every juror required.
   const jury = await runCodeJury({
     jurors,
@@ -246,6 +255,7 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
     outcomes,
     maxTokens: envelope.jurorOutputTokens,
     juryDeadlineAt: times.juryDeadlineAt,
+    holds,
   });
   if (jury.kind !== 'ok') {
     const culprit = jury.results.find(r => r.status === (jury.kind === 'timeout' ? 'timeout' : 'failed'))
@@ -256,27 +266,31 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
     return jury.kind === 'timeout'
       ? errorResponse('JUROR_TIMEOUT', `juror ${juror} did not answer within the ${times.jurorTimeoutMs} ms the deadline leaves the jury; every juror call was cancelled`, {
         jurors: jurorSummary(jury.results),
+        ...canaryStamp,
       })
       : errorResponse('JUROR_FAILED', `juror ${juror} ${what}; every juror is required in code mode`, {
         jurors: jurorSummary(jury.results),
+        ...canaryStamp,
       });
   }
 
   // 6. The vector, then the justifier within its reserve.
   const vector = roundToTotal(weightedVector(jury.results, jurors.map(j => j.weight)));
   const budget = justifierBudgetMs(times, Date.now());
-  if (budget <= 0) return errorResponse('DEADLINE', 'the deadline passed before the justifier could start');
+  if (budget <= 0) return errorResponse('DEADLINE', 'the deadline passed before the justifier could start', canaryStamp);
+  const justifierStartedAt = Date.now();
   const justifier = await runCodeJustifier(buildCodeJustifierPrompt({
     outcomes,
     scores: vector,
     jurors: jury.results.map(r => ({ juror: `${r.provider}:${r.model}`, justification: r.justification || '' })),
     reportSha256: request.reportSha256,
-  }), budget);
+  }), budget, holds);
+  const justifierMs = Date.now() - justifierStartedAt;
   if (justifier.kind === 'timeout') {
-    return errorResponse('JUSTIFIER_TIMEOUT', `the justifier did not finish within its ${budget} ms; the arbiter abstains rather than publish a partial justification`);
+    return errorResponse('JUSTIFIER_TIMEOUT', `the justifier did not finish within its ${budget} ms; the arbiter abstains rather than publish a partial justification`, canaryStamp);
   }
   if (justifier.kind === 'failed') {
-    return errorResponse('JUSTIFIER_FAILED', `the justifier failed: ${justifier.message}; the arbiter abstains rather than publish a partial justification`);
+    return errorResponse('JUSTIFIER_FAILED', `the justifier failed: ${justifier.message}; the arbiter abstains rather than publish a partial justification`, canaryStamp);
   }
 
   const totalMs = Date.now() - receivedAt;
@@ -303,6 +317,7 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
         justifierReserveMs: JUSTIFIER_RESERVE_MS,
         maxTokens: envelope.jurorOutputTokens,
         effort: CODE_JUROR_EFFORT,
+        canaryFault: { ...canaryStamp.canaryFault, ...(canaryAction ? { justifierMs } : {}) },
       },
       ...(validation.warnings.length > 0 && {
         warnings: validation.warnings.map(w => ({ type: w.code, message: `${w.path}: ${w.detail ?? w.code}`, severity: 'warning' })),

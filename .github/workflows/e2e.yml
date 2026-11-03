@@ -49,6 +49,10 @@ on:
         description: 'L4: comma-separated scenario ids (blank = all but manual and claim ones). claim-l4-* run only with class_id 5555 and both expect inputs.'
         type: string
         default: ''
+      expect_fault_switch:
+        description: 'L4, a claim run: the canary fault switch every revealing arbiter must report, off or armed (blank = off). Fault scenarios need armed. See docs/release-runbook.md 3b.'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -218,6 +222,7 @@ jobs:
           L4_EXPECT_COMMON: ${{ inputs.expect_common }}
           L4_EXPECT_RELEASE: ${{ inputs.expect_release }}
           L4_SCENARIO: ${{ inputs.scenario }}
+          L4_EXPECT_FAULT_SWITCH: ${{ inputs.expect_fault_switch }}
         run: |
           if [ -z "$E2E_WALLET_PRIVATE_KEY" ] || [ -z "$RPC_URL" ]; then
             echo "::error::L4 requires RPC_URL and E2E_WALLET_PRIVATE_KEY secrets."

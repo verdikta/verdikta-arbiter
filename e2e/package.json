@@ -15,6 +15,7 @@
     "build-archive": "node scripts/build-archive.js",
     "generate-wallet": "node scripts/generate-wallet.js",
     "audit-oracles": "node scripts/audit-oracles.js",
+    "l4-metrics": "node scripts/l4-metrics.js",
     "test": "jest"
   },
   "dependencies": {

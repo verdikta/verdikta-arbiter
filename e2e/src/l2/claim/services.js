@@ -106,7 +106,7 @@ async function waitUntil(proc, what, ready, timeoutMs) {
 const baseEnv = () => ({ PATH: process.env.PATH, HOME: process.env.HOME || os.homedir() });
 
 /** The real AI Node under `next dev`: the mock provider is refused in a production build (A5). */
-async function startAiNode({ logDir, callLog, script, justifierModel }) {
+async function startAiNode({ logDir, callLog, script, justifierModel, canaryFaultKey }) {
   assertInstalled(AI_DIR, 'the AI Node\'s');
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
@@ -120,6 +120,7 @@ async function startAiNode({ logDir, callLog, script, justifierModel }) {
       VERDIKTA_TEST_MOCK_SCRIPT: JSON.stringify(script),
       VERDIKTA_TEST_MOCK_CALL_LOG: callLog,
       JUSTIFIER_MODEL: justifierModel,
+      VERDIKTA_CANARY_FAULT_KEY: canaryFaultKey,
       LOG_LEVEL: 'warn'
     }
   });
@@ -160,12 +161,16 @@ async function startCodeRunner({ logDir, stateDir, token, platform, allowlist, c
   return { url, ...proc };
 }
 
-/** The real External Adapter, code review on, dev trust set explicitly, every IPFS call pointed here. */
-async function startAdapter({ logDir, aiNodeUrl, runnerUrl, runnerToken, ipfsUrl, pinKey, devKey, operator }) {
+/**
+ * The real External Adapter, code review on, dev trust set explicitly, every IPFS call pointed here.
+ * `env` is what a second adapter differs by, for the fault switch; with `mustServe: false` a
+ * node that refuses code mode is what the test wants to see.
+ */
+async function startAdapter({ logDir, aiNodeUrl, runnerUrl, runnerToken, ipfsUrl, pinKey, devKey, operator, name = 'external-adapter', env = {}, mustServe = true }) {
   assertInstalled(EA_DIR, 'the External Adapter\'s');
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
-  const proc = launch('external-adapter', [process.execPath, 'src/index.js'], {
+  const proc = launch(name, [process.execPath, 'src/index.js'], {
     cwd: EA_DIR,
     logDir,
     env: {
@@ -184,7 +189,8 @@ async function startAdapter({ logDir, aiNodeUrl, runnerUrl, runnerToken, ipfsUrl
       CODE_REVIEW_DEV_KEYS: devKey,
       NETWORK_CHAIN_ID: '31337',
       DEPLOYMENT_NETWORK: 'local',
-      LOG_LEVEL: 'info'
+      LOG_LEVEL: 'info',
+      ...env
     }
   });
   const health = await waitUntil(proc, 'waiting for /health', async () => {
@@ -192,7 +198,7 @@ async function startAdapter({ logDir, aiNodeUrl, runnerUrl, runnerToken, ipfsUrl
     return r.status === 200 ? r.data : false;
   }, 60000);
   const cr = health.codeReview || {};
-  if (!cr.ready || cr.trust !== 'dev') throw new Error(`the adapter is not in code mode with dev trust: ${JSON.stringify(cr)}\n${proc.tail()}`);
+  if (mustServe && (!cr.ready || cr.trust !== 'dev')) throw new Error(`the adapter is not in code mode with dev trust: ${JSON.stringify(cr)}\n${proc.tail()}`);
   return { url, health, ...proc };
 }
 
