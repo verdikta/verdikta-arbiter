@@ -1239,3 +1239,149 @@ test('A2c: a listing cannot sit just under a cap a claim\'s patch would cross: i
   assert.deepEqual(codes(atRun), ['IMAGE_WATCH_CHANGED_BY_SUITE'], show(atRun));
   assert.match(atRun.facts.listing.refusals[0].detail, new RegExp(`run 1: the watched paths exceed ${MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes} bytes`));
 });
+
+// ----------------------------------------------------------- VYPER_NOT_SUPPORTED (node A2d, owner Q40)
+
+const onPath = (p, content = '#!/bin/sh\n', extra = {}) => (box) => put(box, p, content, extra);
+const linkOnPath = (p, target) => (box) => box.tree.set(p, { type: 'l', target });
+const setting = (vyper) => (box) => { box.configOver = { vyper }; };
+
+test('A2d: VYPER_NOT_SUPPORTED: a vyper on PATH or a vyper setting, each refused for its own reason, before any build; the same image is no refusal for a claim', async () => {
+  const cases = [
+    ['a vyper on PATH', onPath('/usr/local/bin/vyper'), /\/usr\/local\/bin\/vyper \(on PATH\) is a vyper/],
+    ['in any PATH directory, not only the first', onPath('/bin/vyper'), /\/bin\/vyper \(on PATH\) is a vyper/],
+    ['however it is marked: forge would skip it, and it is still a vyper in the image', onPath('/usr/bin/vyper', 'not executable', { mode: '644' }), /\/usr\/bin\/vyper \(on PATH\) is a vyper/],
+    ['behind a link', (box) => { box.tree.set('/usr/bin/vyper', { type: 'l', target: '/opt/elsewhere/v' }); put(box, '/opt/elsewhere/v', '#!/bin/sh\n'); }, /\/usr\/bin\/vyper \(on PATH\) is a vyper/],
+    ['behind a chain of links', (box) => { box.tree.set('/usr/bin/vyper', { type: 'l', target: '/opt/a' }); box.tree.set('/opt/a', { type: 'l', target: '/opt/b' }); put(box, '/opt/b', '#!/bin/sh\n'); }, /\/usr\/bin\/vyper \(on PATH\) is a vyper/],
+    ['a link that leads nowhere on the read-only root', linkOnPath('/usr/bin/vyper', '/nowhere/vyper'), /\/usr\/bin\/vyper \(on PATH\) is a link that leads nowhere/],
+    ['one it cannot read', onPath('/usr/bin/vyper', '#!/bin/sh\n', { unreadable: true }), /\/usr\/bin\/vyper \(on PATH\) cannot be read/],
+    ['the path setting', setting({ path: '/opt/fake/vyper' }), /vyper\.path/],
+    ['the optimize setting, with no path', setting({ optimize: 'gas' }), /vyper\.optimize/],
+    ['the codegen setting', setting({ experimental_codegen: true }), /vyper\.experimental_codegen/],
+    ['an empty path, which is still set', setting({ path: '' }), /vyper\.path/]
+  ];
+  for (const [what, onBox, detail] of cases) {
+    const sb = listingSandbox({ onBox });
+    const r = await runListing(sb);
+    assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
+    assert.deepEqual(codes(r), ['VYPER_NOT_SUPPORTED'], `${what}: ${show(r)}`);
+    assert.match(r.facts.listing.refusals[0].detail, detail, what);
+    assert.ok(!ran(sb, 'vcr-build'), `${what}: no build`);
+    assert.equal(r.facts.listing.baseline, null);
+    // A claim never reads this rule, as with the official list: every arbiter gives an image past its listing the same answer.
+    const claimBox = claimSandbox({ onBox });
+    const c = await asClaim(claimBox);
+    assert.equal(c.outcome, 'definitive', `${what}: ${JSON.stringify(c.issues)}`);
+    assert.ok(!ran(claimBox, 'vcr-vyper'), `${what}: a claim does not look`);
+  }
+});
+
+test('A2d: the detail says why and what would lift it, and every problem is named', async () => {
+  const r = await runListing(listingSandbox({
+    onBox: (box) => { put(box, '/usr/bin/vyper', '#!/bin/sh\n'); put(box, '/bin/vyper', '#!/bin/sh\n'); box.configOver = { vyper: { optimize: 'gas' } }; }
+  }));
+  assert.deepEqual(codes(r), ['VYPER_NOT_SUPPORTED'], 'one code');
+  const { detail } = r.facts.listing.refusals[0];
+  for (const needle of [/\/usr\/bin\/vyper/, /\/bin\/vyper/, /vyper\.optimize/, /no official list of release hashes/, /for now/]) assert.match(detail, needle);
+  assert.match(detail, /SHA-256 is [0-9a-f]{64}/, 'what it found, so a maker can tell which file');
+});
+
+test('A2d: a PATH directory in the work tree is refused, with or without a vyper in it: a patch or a fix could add one after the look', async () => {
+  for (const [what, path, dir] of [
+    ['absolute', '/work/tools:/usr/local/bin:/usr/bin', '/work/tools'],
+    ['relative', 'tools:/usr/local/bin:/usr/bin', '/work/tools'],
+    ['an empty entry, which is forge\'s own directory', ':/usr/local/bin:/usr/bin', '/work'],
+    ['a trailing empty entry', '/usr/local/bin:/usr/bin:', '/work'],
+    ['`.`', '.:/usr/local/bin:/usr/bin', '/work']
+  ]) {
+    const sb = listingSandbox({ scripts: { 'vcr-framework': framework('/usr/local/bin/forge', path) } });
+    const r = await runListing(sb);
+    assert.deepEqual(codes(r), ['VYPER_NOT_SUPPORTED'], `${what}: ${show(r)}`);
+    assert.match(r.facts.listing.refusals[0].detail, new RegExp(`PATH directory ${dir} is in the work tree, where a patch or a fix could add a vyper`), what);
+    assert.ok(!ran(sb, 'vcr-build'), what);
+  }
+  // With one there, both are named.
+  const held = await runListing(listingSandbox({ onBox: onPath('/work/tools/vyper'), scripts: { 'vcr-framework': framework('/usr/local/bin/forge', '/work/tools:/usr/bin') } }));
+  assert.match(held.facts.listing.refusals[0].detail, /\/work\/tools\/vyper \(on PATH\) is a vyper/);
+  assert.match(held.facts.listing.refusals[0].detail, /PATH directory \/work\/tools is in the work tree/);
+  // A claim never reads it.
+  const c = await asClaim(claimSandbox({ scripts: { 'vcr-framework': framework('/usr/local/bin/forge', '/work/tools:/usr/bin') } }));
+  assert.equal(c.outcome, 'definitive', JSON.stringify(c.issues));
+});
+
+test('A2d: what the look lets by: no .vy rule, a directory named vyper, forge\'s default configuration', async () => {
+  for (const [what, onBox] of [
+    ['a .vy under lib/', (box) => put(box, '/work/lib/dep/src/Fee.vy', '@external\n')],
+    ['a .vy under src/: forge decides, at the build', (box) => put(box, '/work/src/Fee.vy', '@external\n')],
+    ['a .vy under test/', (box) => put(box, '/work/test/Fee.vy', '@external\n')],
+    ['a directory named vyper on PATH, which forge cannot run', (box) => put(box, '/usr/bin/vyper/readme', 'a directory')],
+    ['a link to a directory, the same', (box) => { box.tree.set('/usr/bin/vyper', { type: 'l', target: '/opt/docs' }); put(box, '/opt/docs/readme', 'a directory'); }],
+    ['a vyper not on PATH', (box) => put(box, '/opt/elsewhere/vyper', '#!/bin/sh\n')],
+    ['forge\'s default', setting({})],
+    ['an unset key', setting({ path: null, optimize: null })]
+  ]) {
+    const r = await runListing(listingSandbox({ onBox }));
+    assert.equal(r.facts.listing.status, 'accepted', `${what}: ${show(r)}`);
+  }
+});
+
+test('A2d: the look runs once, in the first sandbox, hermetic, after what forge left is killed and before the build; it asks about every PATH directory; an answer it cannot read abstains', async () => {
+  const sb = listingSandbox({ scripts: { 'vcr-framework': framework('/usr/local/bin/forge', '/usr/local/bin:/opt/pathvyper:/usr/bin:/usr/bin:/') } });
+  const r = await runListing(sb);
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  const looks = sb.execs().filter((d) => d.kind === 'vcr-vyper');
+  assert.equal(looks.length, 1, 'once, in the first sandbox; the harness probes run nothing like it');
+  assert.deepEqual(looks[0].argv.slice(4), ['/usr/local/bin/vyper', '/opt/pathvyper/vyper', '/usr/bin/vyper', '/vyper']);
+  assert.equal(looks[0].fixedEnv.PATH, require('../../src/git').BASE_ENV.PATH);
+  const names = r.steps.map((s) => s.name);
+  const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `${n} in\n${names.join('\n')}`); return i; };
+  assert.ok(at('integrity:reference:manifest') < at('cleanup:compilers'));
+  assert.ok(at('cleanup:compilers') < at('prepare:vyper'), 'nothing of the maker\'s is alive while it looks');
+  assert.ok(at('prepare:vyper') < at('build'));
+  const garbled = await runListing(listingSandbox({ scripts: { 'vcr-vyper': () => ({ stdout: 'not a record' }) } }));
+  assert.equal(garbled.outcome, 'abstain', show(garbled));
+  const failed = await runListing(listingSandbox({ scripts: { 'vcr-vyper': () => ({ exitCode: 2 }) } }));
+  assert.equal(failed.outcome, 'abstain', show(failed));
+  const stranger = await runListing(listingSandbox({ scripts: { 'vcr-vyper': () => ({ stdout: Buffer.from(`f\0/usr/bin/other\0${'0'.repeat(64)}\0`, 'latin1') }) } }));
+  assert.equal(stranger.outcome, 'abstain', 'a path it did not ask about');
+});
+
+test('A2d: a solc that is not official and a vyper are both named, so a maker is not sent back twice; a claim-refused image gets a claim\'s code first', async () => {
+  const both = await runListing(listingSandbox({ onBox: (box) => { put(box, FAKE_SOLC.path, '#!/bin/sh\n'); put(box, '/usr/bin/vyper', '#!/bin/sh\n'); } }));
+  assert.deepEqual(codes(both), ['SOLC_NOT_OFFICIAL', 'VYPER_NOT_SUPPORTED'], show(both));
+  // vyper.path in the work tree keeps the refusal a claim gives, the same words.
+  const onBox = setting({ path: 'test/vyper' });
+  const inTree = await runListing(listingSandbox({ onBox }));
+  assert.equal(inTree.outcome, 'requester_error', show(inTree));
+  assert.deepEqual(inTree.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  assert.match(inTree.issues[0].detail, /vyper\.path \(test\/vyper\) is in the work tree/);
+  const c = await asClaim(claimSandbox({ onBox }));
+  assert.deepEqual(c.issues.map((i) => [i.code, i.detail]), inTree.issues.map((i) => [i.code, i.detail]));
+});
+
+test('A2d: over HTTP: a refusal is 200 with listing.refusals, and the code is the listing\'s own', async (t) => {
+  const s = await start(listingSandbox({ onBox: onPath('/usr/bin/vyper') }));
+  t.after(() => s.runner.close());
+  const res = await request(s.target, { method: 'POST', path: '/v1/listing-checks', body: listingBody() });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(res.body.listing.status, 'refused');
+  assert.equal(res.body.listing.refusals[0].code, 'VYPER_NOT_SUPPORTED');
+});
+
+test('A2d: one place, easy to lift: one check, one code, read by the listing check alone; the check and the docs say why it exists and what would lift it', () => {
+  const dir = path.join(__dirname, '../../src');
+  const sources = Object.fromEntries(fs.readdirSync(dir).filter((f) => f.endsWith('.js')).map((f) => [f, fs.readFileSync(path.join(dir, f), 'utf8')]));
+  const holding = (needle) => Object.keys(sources).filter((f) => sources[f].includes(needle)).sort();
+  assert.deepEqual(holding('VYPER_NOT_SUPPORTED'), ['integrity.js', 'listing.js'], 'the code, and the comment on the check that names it');
+  assert.deepEqual(holding('vyperProblems'), ['integrity.js', 'listing.js']);
+  assert.equal(sources['listing.js'].match(/integrity\.vyperProblems\(/g).length, 1);
+  assert.equal(sources['listing.js'].match(/refuse\('VYPER_NOT_SUPPORTED'/g).length, 1);
+  const docs = /\* The look at any vyper[\s\S]*?\*\/\s*async function vyperProblems/.exec(sources['integrity.js']);
+  assert.ok(docs, 'the check says what it is');
+  for (const needle of [/owner Q40/, /official list of release hashes/, /[Ll]isting only/, /lift/]) assert.match(docs[0], needle);
+  const read = (rel) => fs.readFileSync(path.join(__dirname, '../..', rel), 'utf8');
+  for (const [file, text] of [['README.md', read('README.md')], ['the design', read('../docs/development/stake-attestation-design.md')]]) {
+    assert.match(text, /VYPER_NOT_SUPPORTED/, file);
+    assert.match(text, /official (?:list of release hashes|hash list) for Vyper/, file);
+  }
+});

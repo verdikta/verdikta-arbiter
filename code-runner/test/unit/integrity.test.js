@@ -45,13 +45,30 @@ test('parseFramework reads forge\'s path, PATH and `forge config --json` (out, c
   assert.deepEqual(p.pathDirs, ['/usr/local/bin', '/work/bin', '/work/bin']);
   assert.equal(p.configSha256, sha(config));
   assert.deepEqual(p.config, {
-    out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots', vyperPath: null, externalCompilers: 0, solverPrograms: [],
+    out: 'out', cachePath: 'cache', libs: ['lib'], solc: '/opt/solc/solc', broadcast: 'broadcast', snapshots: 'snapshots', vyperPath: null, vyperSettings: [], externalCompilers: 0, solverPrograms: [],
     runOutputs: [
       { setting: 'test_failures_file', value: 'cache/test-failures' }, { setting: 'fuzz.failure_persist_dir', value: 'cache/fuzz' }, { setting: 'invariant.failure_persist_dir', value: 'cache/invariant' }
     ]
   });
   assert.equal(integrity.parseFramework(Buffer.from('{}')).ok, false, 'no header lines');
   assert.equal(integrity.parseFramework(Buffer.from('vcr-forge /f\nvcr-path /b\nnot json')).ok, false);
+});
+
+test('A2d: parseFramework reads forge\'s own `vyper` object: a key with a value is a setting; forge\'s default `{}` is none', () => {
+  const settings = (vyper) => {
+    const p = integrity.parseFramework(Buffer.from(`vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/bin\n${JSON.stringify(vyper === undefined ? {} : { vyper })}`));
+    assert.equal(p.ok, true, p.reason);
+    return p.config.vyperSettings;
+  };
+  assert.deepEqual(settings({}), [], 'forge 1.8.5\'s default');
+  assert.deepEqual(settings(undefined), [], 'no such key');
+  assert.deepEqual(settings(null), []);
+  assert.deepEqual(settings({ path: null, optimize: null }), [], 'null is what an unset field would serialise as');
+  assert.deepEqual(settings({ path: '/opt/fake/vyper' }), ['vyper.path']);
+  assert.deepEqual(settings({ path: '' }), ['vyper.path'], 'an empty path is still set');
+  assert.deepEqual(settings({ optimize: 'gas', experimental_codegen: false }), ['vyper.experimental_codegen', 'vyper.optimize'], 'false is set, and the keys sort');
+  assert.deepEqual(settings({ a_key_a_later_forge_adds: 1 }), ['vyper.a_key_a_later_forge_adds']);
+  assert.deepEqual(settings('/opt/fake/vyper'), ['vyper'], 'anything that is not forge\'s object is not read as nothing');
 });
 
 // ------------------------------------------------------------- what is watched
