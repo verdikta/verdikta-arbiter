@@ -24,6 +24,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runText } = require('../../src/docker');
 const { BASE_IMAGE_PINS } = require('../../src/common');
+const { SEMGREP } = require('../../src/semgrepPin');
 const { PLATFORM, ensureImage } = require('./helpers');
 
 /** The pinned forge base for PLATFORM: the class's linux/amd64 manifest, or (runc on Apple silicon) the same release's arm64 variant. */
@@ -171,6 +172,8 @@ let built = 0;
 async function buildFixture(docker, { files = VAULT_REPO, toml = '', setup = '', listed = 'HEAD', objectFormat = null, env = [], installed = [], instance }) {
   const base = foundryBase();
   await ensureImage(docker, base);
+  // A claim's last step: the runner never pulls it, the installer warms it (A8), and here every claim test does.
+  await ensureImage(docker, SEMGREP.reference);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-fixture-'));
   const repo = path.join(dir, 'repo');
   const all = { 'foundry.toml': FOUNDRY_TOML(toml), ...files };

@@ -111,11 +111,14 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   assert.deepEqual(order.slice(from + 1), [
     // The context pack (A3b): from git's objects, before any maker command.
     'git diff', 'git cat-file', 'git cat-file', 'git ls-tree',
+    // What the honesty rules read (A3c): from git's objects, before any maker command.
+    'git diff', 'git cat-file',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-manifest',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config'
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
+    'tar', 'semgrep'
   ]);
   const manifests = sb.execs().filter((d) => d.kind === 'vcr-manifest');
   // Every snapshot is hermetic (nothing of the image's environment reaches find or sha256sum).
@@ -140,9 +143,11 @@ test('every fact carries its tier: A for what the runner observed from outside, 
   assert.equal(r.outcome, 'definitive', show(r));
   const want = {
     checkout: 'A', compiler: 'A', patch: 'A', commit: 'A', diff: 'A', testPaths: 'A', flags: 'A', protectedReset: 'A', leftoverProcesses: 'A',
-    poc: 'B', integrity: 'A', fix: 'B'
+    poc: 'B', integrity: 'A', fix: 'B', scan: 'A'
   };
-  assert.deepEqual(Object.keys(r.facts).sort(), Object.keys(want).sort());
+  // `findings` is a list the report carries as it is (tier A by §9.5): its entries name their tool.
+  assert.ok(Array.isArray(r.facts.findings));
+  assert.deepEqual(Object.keys(r.facts).filter((k) => k !== 'findings').sort(), Object.keys(want).sort());
   for (const [name, tier] of Object.entries(want)) assert.equal(r.facts[name].tier, tier, name);
   // Nested facts of the fix check carry their own tier.
   assert.equal(r.facts.fix.patch.tier, 'A');
@@ -659,10 +664,12 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
     'git diff', 'git cat-file', 'git cat-file', 'git ls-tree',
+    'git diff', 'git cat-file',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup', 'vcr-manifest', 'vcr-links',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
-    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config'
+    'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
+    'tar', 'semgrep'
   ]);
 });
 
