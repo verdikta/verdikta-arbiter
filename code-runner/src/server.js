@@ -29,7 +29,8 @@ const { checkClaim, sandboxesFor } = require('./claim');
 const { Capacity } = require('./admission');
 const { ImageCache } = require('./images');
 const { RUNNER_VERSION } = require('./version');
-const { OUTCOME, ABSTAIN, RequesterError } = require('./result');
+const { OUTCOME, ABSTAIN, Abstain, RequesterError } = require('./result');
+const { finishClaim: defaultFinishClaim } = require('./report');
 
 const nullLog = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -76,7 +77,7 @@ function toResponse(result) {
   return {
     outcome: result.outcome,
     runId: result.runId,
-    runner: { version: RUNNER_VERSION, runtime: result.runtime, platform: result.platform },
+    runner: { version: RUNNER_VERSION, runtime: result.runtime, platform: result.platform, gvisor: result.gvisor || null },
     limits: result.limits,
     abstain: result.abstain,
     // How the env image was had (A1b): { ref, cache: hit|pulled|shared, durationMs }; not part of the report.
@@ -84,10 +85,12 @@ function toResponse(result) {
     steps: result.steps,
     gates: result.gates,
     facts: result.facts || {},
-    // The Verification Report, its hash and the context pack arrive with node A3b.
-    report: null,
-    reportSha256: null,
-    contextPack: null
+    // The Verification Report and its hash (report.js) and the context pack (pack.js), only on a definitive answer.
+    report: result.report || null,
+    reportSha256: result.reportSha256 || null,
+    // Why a definitive run has no report: a development platform the schema has no value for.
+    reportUnavailable: result.reportUnavailable || null,
+    contextPack: result.outcome === OUTCOME.DEFINITIVE ? result.contextPack || null : null
   };
 }
 
@@ -121,10 +124,11 @@ function toListingResponse(result) {
  * @param {Function} [o.statfs] - for /health and the pull's disk check
  * @param {Function} [o.meminfo] - the host's available memory, for admission (default /proc/meminfo)
  * @param {string[]} [o.pins] - digests the image cache never evicts (default: @verdikta/common's base images)
+ * @param {Function|null} [o.finishClaim] - (result, request) sets the report on a definitive result (default: report.js's, with the default steps)
  */
 function createServer({
   config, docker, stepsFor = claimSteps, checkRequest = stepsFor === claimSteps ? checkClaim : null, listingStepsFor = listingSteps,
-  log = nullLog, statfs, meminfo, pins
+  log = nullLog, statfs, meminfo, pins, finishClaim = stepsFor === claimSteps ? defaultFinishClaim : null
 }) {
   /** Container names of live runs: the GC leaves them alone. */
   const active = new Set();
@@ -247,10 +251,23 @@ function createServer({
       unpackedBytes: request.spec.env.unpackedBytes, deadlineMs: request.deadlineMs, steps, sandboxes: sandboxesFor(request)
     });
     if (!result) return;
+    // A definitive run's report. One that cannot be built is the runner's own bug: an abstention, never an answer
+    // without its report, and nothing the requester or the hunter sent can cause it (report.js, request.js).
+    if (finishClaim && result.outcome === OUTCOME.DEFINITIVE) {
+      try {
+        finishClaim(result, request, { log });
+      } catch (err) {
+        log.error('the report could not be built', { runId: result.runId, error: err.message });
+        result.outcome = OUTCOME.ABSTAIN;
+        const abstain = new Abstain(ABSTAIN.RUNNER_ERROR, `the report could not be built: ${err.message}`, { step: 'report' });
+        result.abstain = { cause: abstain.cause, step: abstain.step, detail: abstain.detail };
+      }
+    }
     log.info('run finished', {
       runId: result.runId, listingCid: request.listingCid, bcid: request.bcid, outcome: result.outcome,
       cause: result.abstain ? result.abstain.cause : null, step: result.abstain ? result.abstain.step : null,
-      image: result.image ? result.image.cache : null, ms: Date.now() - receivedAt
+      image: result.image ? result.image.cache : null, ms: Date.now() - receivedAt,
+      reportSha256: result.reportSha256 || null, packSha256: result.outcome === OUTCOME.DEFINITIVE && result.contextPack ? result.contextPack.sha256 : null
     });
     if (result.outcome === OUTCOME.REQUESTER_ERROR) {
       send(res, 400, { outcome: OUTCOME.REQUESTER_ERROR, runId: result.runId, issues: result.issues });

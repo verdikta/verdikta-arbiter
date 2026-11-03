@@ -77,7 +77,7 @@
  */
 
 const crypto = require('node:crypto');
-const { matchesAny, normalizePath } = require('./common');
+const { matchesAny, normalizePath, REPORT_LIMITS } = require('./common');
 const { hermetic, BASE_ENV } = require('./git');
 const { WALK_CHECK } = require('./launcher');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
@@ -102,7 +102,7 @@ const MAX_CHANGED = 100;
 const TAMPER_FLAG_KINDS = Object.freeze([
   'report-path-referenced', 'exit-during-import', 'exit-handler-registered', 'framework-patched', 'reporter-patched', 'write-outside-repository'
 ]);
-const MAX_TAMPER_FLAGS = 100;
+const MAX_TAMPER_FLAGS = REPORT_LIMITS.tamperFlags;
 
 /** The checks of §9.5, in the order a report names them. */
 const CHECKS = Object.freeze([

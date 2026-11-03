@@ -62,16 +62,18 @@ runtime entry in that daemon's `daemon.json`:
 {
   "runtimes": {
     "runsc": {
-      "path": "/opt/gvisor/20260928.0/runsc",
+      "path": "/opt/gvisor/20260921.0/runsc",
       "runtimeArgs": ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]
     }
   }
 }
 ```
 
-- the pinned gVisor release (`20260928.0`, SHA-512-checked; see
-  `.github/workflows/code-runner.yml`), registered with `systemctl reload docker`,
-  never a restart;
+- the gVisor release `@verdikta/common` pins (`GVISOR_RELEASE`, today
+  `20260921.0`, SHA-512-checked; see `.github/workflows/code-runner.yml`),
+  registered with `systemctl reload docker`, never a restart. The runner asks that
+  binary its release on every run and refuses any other
+  ([below](#the-report-and-the-context-pack));
 - `--platform=systrap`: no KVM needed;
 - `--overlay2=root:dir=…,size=…` caps each container's writable layer (the `self`
   medium fails on kernel 5.4).

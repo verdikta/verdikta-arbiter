@@ -109,6 +109,8 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
+    // The context pack (A3b): from git's objects, before any maker command.
+    'git diff', 'git cat-file', 'git cat-file', 'git ls-tree',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-manifest',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
@@ -137,7 +139,7 @@ test('every fact carries its tier: A for what the runner observed from outside, 
   const r = await runClaim(sb, claimRequest({ fixPatch: Buffer.from(require('../helpers/fakeClaim').FIX_PATCH) }));
   assert.equal(r.outcome, 'definitive', show(r));
   const want = {
-    checkout: 'A', patch: 'A', commit: 'A', diff: 'A', testPaths: 'A', flags: 'A', protectedReset: 'A', leftoverProcesses: 'A',
+    checkout: 'A', compiler: 'A', patch: 'A', commit: 'A', diff: 'A', testPaths: 'A', flags: 'A', protectedReset: 'A', leftoverProcesses: 'A',
     poc: 'B', integrity: 'A', fix: 'B'
   };
   assert.deepEqual(Object.keys(r.facts).sort(), Object.keys(want).sort());
@@ -656,6 +658,7 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
+    'git diff', 'git cat-file', 'git cat-file', 'git ls-tree',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup', 'vcr-manifest', 'vcr-links',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',

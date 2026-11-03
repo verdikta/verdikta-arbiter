@@ -185,7 +185,8 @@ test('N1 covers runCounts past the 200 tests the report lists: the counts of a f
 // ------------------------------------------- R7: a hunter cannot make a report invalid
 
 test('R7: a test id over the schema\'s bound still makes a valid report, the same on every host, and two such ids stay apart', async () => {
-  const long = (c) => `test_${c.repeat(1100)}()`;
+  // forge's name fits the JUnit reader's 1,024; with the file and the contract the id does not fit the report's.
+  const long = (c) => `test_${c.repeat(1000)}()`;
   const suite = junit([{ suite: SUITE, cases: [{ name: long('a'), failure: 'x' }, { name: long('b'), failure: 'x' }] }]);
   const request = claimRequest();
   const r = await runClaim(claimSandbox({ poc: [suite, suite, suite] }), request);
@@ -195,28 +196,30 @@ test('R7: a test id over the schema\'s bound still makes a valid report, the sam
   assert.notEqual(report.poc.tests[0].id, report.poc.tests[1].id);
   for (const t of report.poc.tests) assert.ok(t.id.length <= 1024);
   assert.equal(built(r, request).sha256, hash);
+  assert.equal(r.gates.reproduces.status, 'pass', 'the long ids are still the tests that reproduced');
 });
 
-test('R7: a control character in a test id (forge\'s stdout forged) still makes a valid report', async () => {
-  const suite = junit([{ suite: SUITE, cases: [{ name: 'test_x(&#1;)', failure: 'x' }] }]);
-  const request = claimRequest();
-  const r = await runClaim(claimSandbox({ poc: [suite, suite, suite] }), request);
-  assert.equal(r.outcome, 'definitive', show(r));
-  assert.equal(codeReview.validateClaimReport(built(r, request).report).ok, true);
-});
-
-test('R7: a message with a lone surrogate, or cut through an emoji at the bound, still hashes', async () => {
-  const cases = ['lone &#xD83D; surrogate', `${'a'.repeat(1999)}😀tail`];
-  for (const message of cases) {
+test('R7: what the JUnit reader refuses (a control character, a surrogate) reads as no test, and still makes a valid report', async () => {
+  for (const suite of [junit([{ suite: SUITE, cases: [{ name: 'test_x(&#1;)', failure: 'x' }] }]), one('lone &#xD83D; surrogate')]) {
     const request = claimRequest();
-    const s = one(message);
-    const r = await runClaim(claimSandbox({ poc: [s, s, s] }), request);
+    const r = await runClaim(claimSandbox({ poc: [suite, suite, suite] }), request);
     assert.equal(r.outcome, 'definitive', show(r));
-    const { report, sha256: hash } = built(r, request);
+    assert.equal(r.gates.reproduces.status, 'fail');
+    const { report } = built(r, request);
+    assert.equal(report.poc.testCount, 0);
     assert.equal(codeReview.validateClaimReport(report).ok, true);
-    assert.match(hash, /^[0-9a-f]{64}$/);
-    assert.ok(report.poc.tests[0].message.length <= 2000);
   }
+});
+
+test('R7: a message cut at the bound keeps whole characters, and still hashes', async () => {
+  const request = claimRequest();
+  const s = one(`${'a'.repeat(1999)}😀tail`);
+  const r = await runClaim(claimSandbox({ poc: [s, s, s] }), request);
+  assert.equal(r.outcome, 'definitive', show(r));
+  const { report, sha256: hash } = built(r, request);
+  assert.equal(codeReview.validateClaimReport(report).ok, true);
+  assert.match(hash, /^[0-9a-f]{64}$/);
+  assert.equal(report.poc.tests[0].message, 'a'.repeat(1999));
 });
 
 test('R7: more tamper flags, paths and tests than the schema holds stay within its bounds, in canonical order', async () => {

@@ -13,7 +13,7 @@ const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { codeReview } = require('@verdikta/common');
 const { assemblePack, packTokens, symbolsOf, TIER_NAMES, summaryOf } = require('../../src/pack');
-const { claimSandbox, BASE, POC, FIX_PATCH } = require('../helpers/fakeClaim');
+const { claimSandbox, BASE, POC, POC_DIFF, POC_PATCH, FIX_PATCH } = require('../helpers/fakeClaim');
 const { claimRequest, finding, runClaim, forgeSpec } = require('../helpers/claimRun');
 
 const STANDARD = codeReview.getCodeClass('code-standard').envelope.contextPackTokens;
@@ -351,6 +351,10 @@ test('symbolsOf: what the PoC calls, in order of first appearance, without the f
   assert.equal(symbolsOf(many).length, 16);
 });
 
+/** The fake forge repo's PoC, with calls the pack can name. */
+const CALLS_DIFF = POC_DIFF.replace('@@ -0,0 +1,3 @@', '@@ -0,0 +1,4 @@').replace('+// end', '+// end\n+Vault v = new Vault(); v.deposit(1); v.withdraw(1);');
+const CALLS_PATCH = POC_PATCH.replace('@@ -0,0 +1,3 @@', '@@ -0,0 +1,4 @@').replace('+// end', '+// end\n+Vault v = new Vault(); v.deposit(1); v.withdraw(1);');
+
 const packExecs = (sb) => sb.pocExecs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));
 
 test('attack: everything the pack reads comes before any claim code runs, from git objects by commit id', async () => {
@@ -385,6 +389,7 @@ test('a patch that fails applies or testPathsOnly has no pack: no git read, and 
 test('the sandbox\'s reads fill the tiers: named source files from the listed commit, in scope only, call sites by word', async () => {
   const seen = { grep: [] };
   const sb = claimSandbox({
+    diff: CALLS_DIFF,
     git: {
       grep: (d) => {
         seen.grep.push(d.sub);
@@ -395,7 +400,7 @@ test('the sandbox\'s reads fill the tiers: named source files from the listed co
     }
   });
   const spec = forgeSpec({ stake: { scope: { include: ['src/**'] } } });
-  const req = claimRequest({ spec, finding: finding({ affectedPaths: ['src/Vault.sol', 'src/Missing.sol', 'outside/Other.sol'] }) });
+  const req = claimRequest({ spec, pocPatch: Buffer.from(CALLS_PATCH), finding: finding({ affectedPaths: ['src/Vault.sol', 'src/Missing.sol', 'outside/Other.sol'] }) });
   const r = await runClaim(sb, req);
   const pack = r.contextPack;
   assert.match(text(pack, 'source'), /source file: src\/Vault\.sol\ncontract Vault \{\}/);
@@ -412,6 +417,7 @@ test('the sandbox\'s reads fill the tiers: named source files from the listed co
 
 test('at most 10 call sites per symbol', async () => {
   const sb = claimSandbox({
+    diff: CALLS_DIFF,
     git: {
       grep: (d) => {
         const rev = d.sub[d.sub.indexOf('-e') + 2];
@@ -419,7 +425,7 @@ test('at most 10 call sites per symbol', async () => {
       }
     }
   });
-  const r = await runClaim(sb, claimRequest());
+  const r = await runClaim(sb, claimRequest({ pocPatch: Buffer.from(CALLS_PATCH) }));
   const lines = text(r.contextPack, 'callSites').split('\n').filter((l) => /src\/Vault\.sol:/.test(l));
   assert.ok(lines.length > 0);
   const perSymbol = new Map();

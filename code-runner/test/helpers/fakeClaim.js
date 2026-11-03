@@ -308,6 +308,36 @@ const HOME = '/home/sandbox';
 const TRACKED = /^\/work\/(?:\.gitmodules|foundry\.toml|lib\/forge-std\/|src\/|test\/)/;
 
 /** The watched files of a freshly forced checkout, as the integrity snapshots see them. */
+/**
+ * The pack's `git cat-file --batch` on `<commit>:<path>`: a listed file from the
+ * runner's repository, a PoC file from the patch's added lines, else missing.
+ */
+function packBlobs(specs, box, diff) {
+  const parts = [];
+  for (const spec of specs) {
+    const [commit, ...rest] = spec.split(':');
+    const p = rest.join(':');
+    let content = null;
+    if (commit === POC) {
+      const added = String(diff).split('\n');
+      const at = added.indexOf(`+++ b/${p}`);
+      if (at >= 0) {
+        const lines = [];
+        for (let i = at + 1; i < added.length && !added[i].startsWith('diff --git '); i += 1) {
+          if (added[i].startsWith('+')) lines.push(added[i].slice(1));
+        }
+        content = Buffer.from(`${lines.join('\n')}\n`);
+      }
+    } else {
+      const f = (box.repo.files || []).find((x) => x.path === p);
+      if (f && box.fresh.objects.has(f.id)) content = box.fresh.objects.get(f.id).content;
+    }
+    if (content === null) parts.push(Buffer.from(`${spec} missing\n`));
+    else parts.push(Buffer.from(`${crypto.createHash('sha1').update(content).digest('hex')} blob ${content.length}\n`), Buffer.from(content), Buffer.from('\n'));
+  }
+  return Buffer.concat(parts);
+}
+
 function initialTree() {
   const f = (content, mode = '644') => ({ type: 'f', mode, content });
   return new Map([
@@ -528,7 +558,14 @@ function claimSandbox({
   const isFix = (b) => b.lastApply === 'fix';
   const gitDefaults = {
     init: () => ({ exitCode: 0 }),
-    'cat-file --batch': (d) => ({ stdout: catFile(imageObjects, d.stdin.toString('latin1').split('\n').filter(Boolean), false) }),
+    'cat-file --batch': (d, b) => {
+      const specs = d.stdin.toString('latin1').split('\n').filter(Boolean);
+      // The pack's reads, `<commit>:<path>` (src/pack.js); the checkout's are object ids.
+      if (specs.some((x) => x.includes(':'))) return { stdout: packBlobs(specs, b, diffText()) };
+      return { stdout: catFile(imageObjects, specs, false) };
+    },
+    'diff -W': () => ({ stdout: diffText() }),
+    grep: () => ({ exitCode: 1 }),
     'cat-file --batch-check': (d) => ({ stdout: catFile(imageObjects, d.stdin.toString('latin1').split('\n').filter(Boolean), true) }),
     'index-pack': (d, b) => {
       const objs = parsePack(d.stdin, image.store.algo);
@@ -643,10 +680,12 @@ function claimSandbox({
       return { exitCode: hasFailure(h) ? 1 : 0, stdout: h };
     }
   };
+  const diffText = () => diff;
   const key = (sub) => {
     if (sub[0] === 'apply') return 'apply --index';
     if (sub[0] === 'diff') {
       if (sub.includes('--raw')) return 'diff --raw';
+      if (sub.includes('-W')) return 'diff -W';
       return sub.includes('--name-status') ? 'diff --name-status' : sub.includes('--numstat') ? 'diff --numstat' : 'diff -U0';
     }
     if (sub[0] === 'cat-file') {

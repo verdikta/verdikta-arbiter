@@ -10,9 +10,10 @@
 
 const fs = require('node:fs');
 const { RUNNER_VERSION } = require('./version');
-const { CLASS_HARD_LIMITS } = require('./classLimits');
+const { CLASS_HARD_LIMITS, GVISOR_RELEASE } = require('./common');
 const { dockerInfo } = require('./daemon');
 const { maintenanceLocked } = require('./admission');
+const { measureRuntime, runtimeProblem } = require('./runtime');
 
 /** DOCKER_HOST without any user or password it might carry. */
 function describeEndpoint(dockerHost) {
@@ -51,6 +52,10 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
   const reasons = [];
   if (!info.reachable) reasons.push(`Docker unreachable: ${info.error}`);
   else if (!runtime) reasons.push(`the Docker daemon has no ${config.runtime} runtime registered`);
+  // What a report would record (design §9.3): measured, and under gVisor it must be the pinned release.
+  const measured = info.reachable && runtime ? await measureRuntime({ config, docker }) : { gvisor: null, pinned: false, error: null };
+  const problem = info.reachable && runtime ? runtimeProblem(config, measured) : null;
+  if (problem) reasons.push(problem);
   if (maintenance) reasons.push('the maintenance lock is held');
   let capacityStatus;
   if (capacity) {
@@ -71,6 +76,8 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
     platform: config.platform,
     runtimeAvailable: Boolean(runtime),
     runtimeArgs: runtime ? runtime.runtimeArgs : [],
+    gvisor: measured.gvisor,
+    gvisorPinned: GVISOR_RELEASE,
     docker: {
       reachable: info.reachable,
       endpoint: describeEndpoint(config.dockerHost),

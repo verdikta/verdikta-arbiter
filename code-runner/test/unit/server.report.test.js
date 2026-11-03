@@ -13,6 +13,7 @@ const { testConfig, request: httpRequest } = require('../helpers/http');
 const { attestationFor, IMAGE } = require('../helpers/requests');
 const { claimSandbox, POC_PATCH, BASE } = require('../helpers/fakeClaim');
 const { forgeSpec, finding, DEPOSIT } = require('../helpers/claimRun');
+const { imageInspect } = require('../helpers/fakeDocker');
 
 function body(over = {}) {
   const spec = forgeSpec();
@@ -83,7 +84,8 @@ test('an abstaining run has no report and no pack', async (t) => {
 });
 
 test('R5: a development run on linux/arm64 has gates and a pack, and says why it has no report', async (t) => {
-  const { target } = await serve(t, claimSandbox(), { env: { CODE_RUNNER_PLATFORM: 'linux/arm64' } });
+  const handlers = { image: (args) => (args[1] === 'inspect' ? imageInspect(args, { platform: 'linux/arm64' }) : { stdout: '' }) };
+  const { target } = await serve(t, claimSandbox({ handlers }), { env: { CODE_RUNNER_PLATFORM: 'linux/arm64' } });
   const res = await post(target, body());
   assert.equal(res.status, 200, res.raw.slice(0, 500));
   assert.equal(res.body.report, null);

@@ -43,7 +43,7 @@ const { parseImageRef, allowedBy, pullArgs } = require('./registry');
 const { runText, isUnreachableText } = require('./docker');
 const { dockerInfo } = require('./daemon');
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
-const { CLASS_HARD_LIMITS } = require('./classLimits');
+const { CLASS_HARD_LIMITS } = require('./common');
 const { BASE_IMAGE_PINS } = require('./common');
 
 const MIB = 1024 * 1024;

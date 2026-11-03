@@ -56,7 +56,7 @@
 
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
-const { matchesAny, pocPatchPathsGate } = require('./common');
+const { matchesAny, pocPatchPathsGate, REPORT_LIMITS, POC_RUNS } = require('./common');
 const { git, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
 const { forceCheckout, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES } = require('./checkout');
 const forge = require('./forge');
@@ -68,6 +68,8 @@ const {
 const integrity = require('./integrity');
 const { claimedObservable, functionName } = require('./observable');
 const { runFixCheck, notRunFix } = require('./fix');
+const { pocReportForm, boundedText } = require('./report');
+const { gatherPackInputs, assemblePack } = require('./pack');
 
 /** git's answers (paths, stats, the diff) are read up to this. */
 const GIT_OUTPUT_MAX = 16 * 1024 * 1024;
@@ -97,12 +99,12 @@ const FREE_SPACE_SCRIPT = [
   'exit 1'
 ].join('\n');
 /** The fixed repeat schedule (§9.2 step 6): run 1 with testFiles, runs 2 and 3 with testIds. */
-const RUNS = 3;
+const RUNS = POC_RUNS;
 /** Lists in the facts keep the first entries in code-unit order (the report's bounds). */
-const MAX_PATHS = 1000;
-const MAX_TESTS = 200;
+const MAX_PATHS = REPORT_LIMITS.paths;
+const MAX_TESTS = REPORT_LIMITS.pocTests;
 const MAX_REFERENCES = 200;
-const MAX_MESSAGE = 2000;
+const MAX_MESSAGE = REPORT_LIMITS.text;
 
 /** Prints the PIDs in the sandbox other than its own: before any claim code runs, these are the init and the keepalive. */
 const PROCS_SCRIPT = [
@@ -165,6 +167,10 @@ const CLEANUP_SCRIPT = [
 ].join('\n');
 
 const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
+/** The report's bounds on a test id and on regressionCount (common's schema, as baseline.json holds them). */
+const MAX_TEST_ID = 1024;
+const MAX_REGRESSIONS_COUNT = 20000;
+const reportableTestId = (id) => typeof id === 'string' && id.length >= 1 && id.length <= MAX_TEST_ID && !/[\u0000-\u001f\u007f]/.test(id);
 
 function firstLine(text) {
   const line = String(text || '').split(/\r?\n/).find((l) => l.trim());
@@ -209,6 +215,9 @@ function checkClaim(request) {
     issues.push(issue('BASELINE_INVALID', '/baseline/tests', 'baseline.json must list the tests at the listed commit (tests[].id)'));
   } else if (request.fixPatch && (!Array.isArray(baseline.stable) || !baseline.stable.every((id) => typeof id === 'string'))) {
     issues.push(issue('BASELINE_INVALID', '/baseline/stable', 'baseline.json must list its stable tests (stable[]) for the fix check'));
+  } else if (Array.isArray(baseline.stable) && (baseline.stable.length > MAX_REGRESSIONS_COUNT || !baseline.stable.every(reportableTestId))) {
+    // A regression names its stable test in the report, so a stable id it could not carry is the requester's (§12).
+    issues.push(issue('BASELINE_INVALID', '/baseline/stable', `at most ${MAX_REGRESSIONS_COUNT} stable tests, each an id of 1 to ${MAX_TEST_ID} characters without a control character`));
   }
   return issues;
 }
@@ -231,10 +240,10 @@ function listPaths(paths) {
   return paths.length > 5 ? `${shown} and ${paths.length - 5} more` : shown;
 }
 
-/** A failure message as the report carries it: repository-relative, bounded. */
+/** A failure message as the report carries it: repository-relative, well-formed, bounded on a whole character. */
 function normaliseMessage(message) {
   if (typeof message !== 'string') return null;
-  return message.split('/work/').join('').slice(0, MAX_MESSAGE);
+  return boundedText(message.split('/work/').join(''), MAX_MESSAGE);
 }
 
 /**
@@ -526,7 +535,7 @@ function claimSteps(request, limits) {
   const issues = checkClaim(request);
   if (issues.length) return [async () => { throw new RequesterError(issues); }];
   const session = claimSession(request, limits);
-  const steps = [session.prepare, session.applies, session.testPathsOnly, session.resetAndCommit, session.watch, session.build, session.reproduces].map((step) => {
+  const steps = [session.prepare, session.applies, session.testPathsOnly, session.resetAndCommit, session.contextPack, session.watch, session.build, session.reproduces].map((step) => {
     const wrapped = async (ctx) => {
       if (session.state.done) return;
       try {
@@ -607,6 +616,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
     // Where the compiler is, which forge runs from its first start on (R24-F1), read from the listing's own files: every
     // later forge run is pinned to it (owner decision Q37).
     state.solcPin = await integrity.pinCompiler(ctx, { testGlobs, protectedGlobs });
+    // An input of the run the report has no field for (owner decision Q37): a function of the image and the listed commit.
+    ctx.fact('compiler', { tier: 'A', solc: state.solcPin });
     state.prepared = checkout.commit;
     ctx.fact('commit', { tier: 'A', base, poc: null });
   }
@@ -668,6 +679,16 @@ function claimSession(request, limits, { adopt = null } = {}) {
     ctx.fact('protectedReset', { tier: 'A', files });
     state.pocCommit = await commitTree(ctx, COMMIT_MESSAGE, 'patch');
     ctx.fact('commit', { tier: 'A', base, poc: state.pocCommit });
+  }
+
+  /**
+   * The context pack (§9.2 step 3, §10.3): read now, while no claim code has
+   * run, from git's objects by commit id, and assembled once. Nothing a later
+   * step does can reach it, so every arbiter's jury reads the same bytes.
+   */
+  async function contextPack(ctx) {
+    const inputs = await gatherPackInputs(ctx, { request, listed: state.prepared, poc: state.pocCommit, touched: state.touched, added: state.added });
+    ctx.contextPack(assemblePack({ request, inputs }));
   }
 
   /** The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command. */
@@ -816,7 +837,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
   }
 
   return {
-    state, startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, watch, build, reproduces, fixCheck, pocRun,
+    state, startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, contextPack, watch, build, reproduces, fixCheck, pocRun,
     cleanup: (ctx, after) => cleanup(ctx, box, after)
   };
 }
@@ -877,7 +898,9 @@ function pocFacts(entries, runs) {
     tests,
     runs: runs.map((run) => ({
       command: run.command, junit: run.junit, reason: run.reason, exitCode: run.exitCode, harnessErrors: run.harnessErrors || []
-    }))
+    })),
+    // The form the report carries (report.js): what stays the same on every host. `tests` above keeps what each run did.
+    report: pocReportForm(entries)
   };
 }
 

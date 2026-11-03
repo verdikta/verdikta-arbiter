@@ -15,6 +15,10 @@
 const { spawn } = require('node:child_process');
 const { Capped } = require('./capture');
 
+/** How long `<runtime> --version` may take, and how much of its answer is kept. */
+const RUNTIME_VERSION_TIMEOUT_MS = 10000;
+const RUNTIME_VERSION_BYTES = 4096;
+
 const PASS_THROUGH = ['PATH', 'HOME', 'DOCKER_TLS_VERIFY', 'DOCKER_CERT_PATH'];
 
 /** Control commands (inspect, info, ps, rm) never need more than this. */
@@ -121,7 +125,44 @@ function createDocker({ bin = 'docker', dockerHost = null, dockerConfigDir, base
     });
   }
 
-  return { run, env: Object.freeze({ ...env }) };
+  /**
+   * `<binary> --version`, for the runtime the daemon names (runtime.js): the
+   * runtime is the daemon's own binary, on this host, so the daemon's answer
+   * to which release it is cannot be had any other way (`docker info` has the
+   * path, not the release). No shell, an empty environment, a capped answer.
+   * Never throws.
+   * @param {string} binary - an absolute path
+   * @returns {Promise<{exitCode:number|null, stdout:string, stderr:string, spawnError:string|null}>}
+   */
+  function runtimeVersion(binary, { timeoutMs = RUNTIME_VERSION_TIMEOUT_MS } = {}) {
+    return new Promise((resolve) => {
+      const out = new Capped(RUNTIME_VERSION_BYTES);
+      let child;
+      let timer = null;
+      let settled = false;
+      const finish = (exitCode, spawnError) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        resolve({ exitCode, stdout: out.bytes().toString('utf8'), stderr: '', spawnError });
+      };
+      try {
+        child = spawnImpl(binary, ['--version'], { env: {}, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+      } catch (err) {
+        finish(null, err.message);
+        return;
+      }
+      child.on('error', (err) => finish(null, err.message));
+      child.on('close', (code) => finish(code, null));
+      child.stdout.on('data', (chunk) => { out.write(chunk); });
+      timer = setTimeout(() => {
+        try { child.kill('SIGKILL'); } catch (_) { /* already gone */ }
+        finish(null, `${binary} --version did not answer in time`);
+      }, Math.max(0, timeoutMs));
+    });
+  }
+
+  return { run, runtimeVersion, env: Object.freeze({ ...env }) };
 }
 
 /**
