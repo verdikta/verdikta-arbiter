@@ -95,6 +95,7 @@ the answer is 401 whatever the route.
   "ok": true, "reasons": [],
   "service": "verdikta-code-runner", "version": "0.1.0", "node": "v20.18.1",
   "runtime": "runsc", "runtimeAvailable": true, "runtimeArgs": ["--platform=systrap", "…"],
+  "gvisor": "release-20260921.0", "gvisorPinned": "release-20260921.0",
   "docker": { "reachable": true, "endpoint": "unix:///run/verdikta-code-runner/docker.sock", "serverVersion": "28.0.4", "osType": "linux", "architecture": "x86_64", "error": null },
   "dataRoot": { "path": "/var/lib/verdikta-code-runner/docker", "freeBytes": 38000000000, "error": null },
   "maintenance": false,
@@ -111,7 +112,9 @@ the answer is 401 whatever the route.
 
 Busy slots are reported, not a failure (they free up). Under `runsc`, a host
 whose available memory cannot be measured is not ok: every run would be
-refused.
+refused. So is a host whose `runsc` is not the release `@verdikta/common` pins,
+or whose release cannot be measured (`gvisor` is what `<path> --version` said,
+`null` when it could not be read; `runc` in local mode).
 
 ### `POST /v1/runs`
 
@@ -1634,6 +1637,10 @@ mimicking forge's JUnit, `lib/` edits), ordinary PoCs that must raise
 nothing, and the fix check. CI
 (`.github/workflows/code-runner.yml`) runs the unit tests, and the Docker tests
 under `runc` and under the pinned gVisor on the systrap platform.
+`report.docker.test.js` runs the catalogue's three determinism fixtures against
+real forge: the same claim in two containers with other clocks and hostnames, one at
+`--cpus 0.25` (the test holds that forge really took longer), gives the same verdict,
+report hash and pack hash. Cross-host is G2's.
 
 ## Seams
 
