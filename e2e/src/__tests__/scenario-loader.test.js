@@ -133,3 +133,51 @@ describe('committed scenarios.json', () => {
     expect(s.cid).toBe(BOUNTY_171.join(','));
   });
 });
+
+describe('claim scenarios are their own suite (node A6a)', () => {
+  const claim = { id: 'claim-x', suite: 'claim', claim: 'valid', modes: ['0'] };
+  const plain = { id: 'plain', cid: 'QmPlain', modes: ['0'] };
+
+  it('a full run leaves them out: they need Docker, the plain job needs Pinata', () => {
+    const file = scenariosFile([plain, claim]);
+    expect(loadScenarios(file).map((s) => s.id)).toEqual(['plain']);
+  });
+
+  it('--suite claim runs them and nothing else', () => {
+    const file = scenariosFile([plain, claim]);
+    const got = loadScenarios(file, null, { suite: 'claim' });
+    expect(got.map((s) => s.id)).toEqual(['claim-x']);
+    expect(got[0]).toMatchObject({ suite: 'claim', claim: 'valid', cids: [], cid: '' });
+  });
+
+  it('naming one runs it on L2, beside plain scenarios', () => {
+    const file = scenariosFile([plain, claim]);
+    expect(loadScenarios(file, ['claim-x', 'plain'], { allowClaim: true }).map((s) => s.id)).toEqual(['plain', 'claim-x']);
+  });
+
+  it('L4 never runs one: not in its nightly, and naming one is an error', () => {
+    const file = scenariosFile([plain, claim]);
+    expect(loadScenarios(file, null, { allowManualOnly: true }).map((s) => s.id)).toEqual(['plain']);
+    expect(() => loadScenarios(file, ['claim-x'], { allowManualOnly: true })).toThrow(/claim-x.*L2/);
+  });
+
+  it('a suite with no scenarios is an error, not an empty pass', () => {
+    const file = scenariosFile([plain]);
+    expect(() => loadScenarios(file, null, { suite: 'claim' })).toThrow(/claim/);
+    expect(() => loadScenarios(scenariosFile([plain, claim]), null, { suite: 'nope' })).toThrow(/nope/);
+  });
+
+  it('a claim scenario names no CID and a known kind', () => {
+    expect(() => loadScenarios(scenariosFile([{ ...claim, cid: 'QmNo' }]))).toThrow(/claim-x/);
+    expect(() => loadScenarios(scenariosFile([{ ...claim, claim: 'nonsense' }]))).toThrow(/claim-x/);
+    expect(() => loadScenarios(scenariosFile([{ id: 'y', suite: 'claim', modes: ['0'] }]))).toThrow(/"y"/);
+  });
+
+  it('the committed scenarios carry the three the build plan names', () => {
+    const got = loadScenarios(DEFAULT_SCENARIOS, null, { suite: 'claim' });
+    expect(got.map((s) => s.id)).toEqual(['claim-valid', 'claim-gate-fail', 'claim-text-unaffected']);
+    expect(got[0].modes).toEqual(['0', 'commit-reveal', 'juror-deadline']);
+    expect(got[1].modes).toEqual(['front-gate', 'runner-gate', 'commit-reveal']);
+    expect(loadScenarios(DEFAULT_SCENARIOS).map((s) => s.id)).not.toContain('claim-valid');
+  });
+});

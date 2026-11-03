@@ -7,6 +7,7 @@ const A = require('../assertions');
 const { startMockAiNode } = require('./mock-ai-node');
 const { bootAdapter } = require('./boot-adapter');
 const { fetchJustificationJson, justificationRetry } = require('../ipfs');
+const { runClaimSuite } = require('./claim/run-claim');
 
 /**
  * POST a request to the External Adapter's /evaluate endpoint.
@@ -110,9 +111,17 @@ async function assertAdapterReachable(adapterUrl) {
  * Run the L2 suite.
  * @param {object} cfg - merged config
  * @param {Array} scenarios
- * @param {object} opts - { mock: boolean, reporter }
+ * @param {object} opts - { mock: boolean, reporter, bootAdapter, assertWinner, startClaimHarness? }
  */
-async function runL2(cfg, scenarios, opts) {
+async function runL2(cfg, allScenarios, opts) {
+  const claim = allScenarios.filter((s) => s.suite === 'claim');
+  const scenarios = allScenarios.filter((s) => s.suite !== 'claim');
+  if (scenarios.length) await runPlainScenarios(cfg, scenarios, opts);
+  if (claim.length) await runClaimSuite(cfg, claim, { ...opts, startHarness: opts.startClaimHarness });
+}
+
+/** The pipeline against the bundled mock AI Node, Pinata and the public gateways. */
+async function runPlainScenarios(cfg, scenarios, opts) {
   const { mock, reporter } = opts;
   let mockAi = null;
   let adapter = null;

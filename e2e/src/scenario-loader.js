@@ -40,8 +40,25 @@ function adapterCid(cids, addendum) {
   return addendum ? `${cids.join(',')}:${addendum}` : cids.join(',');
 }
 
+/** The kinds of claim scenario e2e/src/l2/claim/run-claim.js knows. They build their own archives, so they name no CID. */
+const CLAIM_KINDS = Object.freeze(['valid', 'gate-fail', 'text']);
+
+const resolvedClaim = (s) => ({ ...s, cids: [], addendum: '', cid: '' });
+
+function validateClaimScenario(s) {
+  const sources = ['cid', 'cidFile', 'cids'].filter((k) => s[k] !== undefined);
+  if (sources.length) throw new Error(`Scenario "${s.id}" is a claim scenario: it builds its own archives, so no ${sources.join(' or ')}`);
+  if (!CLAIM_KINDS.includes(s.claim)) throw new Error(`Scenario "${s.id}": "claim" must be one of ${CLAIM_KINDS.join(', ')}`);
+  if (!Array.isArray(s.modes) || s.modes.length === 0) throw new Error(`Scenario "${s.id}": a claim scenario lists its modes`);
+}
+
 function validateScenario(s, i) {
   if (!s.id) throw new Error(`Scenario at index ${i} is missing "id"`);
+  if (s.suite !== undefined || s.claim !== undefined) {
+    if (s.suite !== 'claim') throw new Error(`Scenario "${s.id}": the only suite is "claim"`);
+    validateClaimScenario(s);
+    return;
+  }
   const sources = ['cid', 'cidFile', 'cids'].filter((k) => s[k] !== undefined);
   if (sources.length === 0) throw new Error(`Scenario "${s.id}" is missing "cid", "cids" or "cidFile"`);
   if (sources.length > 1) throw new Error(`Scenario "${s.id}" gives ${sources.join(' and ')}; use exactly one`);
@@ -69,10 +86,14 @@ function validateScenario(s, i) {
  *
  * @param {string} [file] - path to a scenarios JSON file
  * @param {string[]} [ids] - optional subset of scenario ids to keep
- * @param {{ allowManualOnly?: boolean }} [opts] - true for L4
+ * A scenario with `"suite": "claim"` needs Docker and the local harness, so a full run
+ * (L2's, which needs Pinata, or the nightly L4) leaves it out. `suite: 'claim'` runs that
+ * suite and nothing else; naming one runs it where `allowClaim` is set (L2); L4 never does.
+ *
+ * @param {{ allowManualOnly?: boolean, allowClaim?: boolean, suite?: string }} [opts]
  * @returns {Array<object>}
  */
-function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly = false } = {}) {
+function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly = false, allowClaim = false, suite = null } = {}) {
   if (!fs.existsSync(file)) {
     throw new Error(`Scenarios file not found: ${file}`);
   }
@@ -88,6 +109,14 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
 
   scenarios.forEach(validateScenario);
 
+  if (suite !== null) {
+    if (ids && ids.length) throw new Error('Name scenarios or a suite, not both');
+    if (suite !== 'claim') throw new Error(`Unknown suite: ${suite}`);
+    const members = scenarios.filter((s) => s.suite === 'claim');
+    if (members.length === 0) throw new Error('The claim suite has no scenarios in this file');
+    return members.map(resolvedClaim);
+  }
+
   const explicit = Boolean(ids && ids.length);
   if (explicit) {
     const wanted = new Set(ids);
@@ -99,7 +128,12 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
     if (manual.length && !allowManualOnly) {
       throw new Error(`Scenario(s) ${manual.map((s) => `"${s.id}"`).join(', ')} are manualOnly: run them with L4 (--scenario / L4_SCENARIO).`);
     }
+    const claims = scenarios.filter((s) => s.suite === 'claim');
+    if (claims.length && !allowClaim) {
+      throw new Error(`Scenario(s) ${claims.map((s) => `"${s.id}"`).join(', ')} are claim scenarios: run them with L2 (--scenario or --suite claim).`);
+    }
   } else {
+    scenarios = scenarios.filter((s) => s.suite !== 'claim');
     scenarios = scenarios.filter((s) => {
       if (s.manualOnly !== true) return true;
       console.warn(`[scenarios] skipping "${s.id}": manualOnly (run it by name with L4 --scenario / L4_SCENARIO).`);
@@ -112,6 +146,10 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
   //   - skip-with-warning during a full-suite run
   const resolved = [];
   for (const s of scenarios) {
+    if (s.suite === 'claim') {
+      resolved.push(resolvedClaim(s));
+      continue;
+    }
     const cids = resolveCids(s);
     if (cids) {
       const addendum = s.addendum || '';
