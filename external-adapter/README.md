@@ -90,7 +90,7 @@ LOG_LEVEL=info                 # error | warn | info | debug
 # CODE_RUNNER_TOKEN=<the runner's bearer token>   # or CODE_RUNNER_TOKEN_FILE=<path>, not both
 # CODE_REVIEW_TRUST=production                     # dev: test chains only, with CODE_REVIEW_DEV_KEYS
 # CODE_REVIEW_DEV_KEYS=<base64 Ed25519 public key>[,<key>…]
-# CODE_REVIEW_DEADLINE_MS=780000                  # the single deadline, from receipt (at most 840000)
+# CODE_REVIEW_DEADLINE_MS=780000                  # the single deadline, from receipt (at most 780000: the job's 840 s less the commit)
 # NETWORK_CHAIN_ID=84532                          # the chain served; dev trust needs 84532 or 31337
 ```
 

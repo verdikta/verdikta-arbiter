@@ -209,7 +209,7 @@ describe('code-review config', () => {
       ['negative', '-5'],
       ['a fraction', '1.5'],
       ['with a unit', '780s'],
-      ['over the schema\'s 840 s', '840001']
+      ['past the job\'s 840 s less the commit reserve, whatever SERVER_TIMEOUT says', '780001']
     ])('a deadline that is %s refuses code mode, never a guess', (_label, value) => {
       const config = codeReviewConfigFromEnv({ ...READY, CODE_REVIEW_DEADLINE_MS: value, SERVER_TIMEOUT: '900000' });
       expect(config.ready).toBe(false);

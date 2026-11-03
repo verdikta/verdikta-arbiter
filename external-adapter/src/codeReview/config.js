@@ -11,7 +11,7 @@
  *                                     the runner's bearer token, or a file holding it (not both)
  *   CODE_REVIEW_TRUST=production|dev  which builder keys verify attestation.json (default production)
  *   CODE_REVIEW_DEV_KEYS=<b64>,<b64>  dev trust only: caller-supplied builder public keys
- *   CODE_REVIEW_DEADLINE_MS=780000    the single deadline, from receipt (design §11)
+ *   CODE_REVIEW_DEADLINE_MS=780000    the single deadline, from receipt (design §11): at most 780 s
  *   AI_NODE_URL=http://127.0.0.1:3000 the AI Node, as text mode reads it
  *   SERVER_TIMEOUT=840000             must hold the deadline plus the 60 s commit reserve
  *   NETWORK_CHAIN_ID / DEPLOYMENT_NETWORK
@@ -145,8 +145,10 @@ function deadlineFromEnv(env, problems) {
   if (!present(env.CODE_REVIEW_DEADLINE_MS)) return DEFAULT_DEADLINE_MS;
   const text = env.CODE_REVIEW_DEADLINE_MS.trim();
   const value = /^[0-9]{1,7}$/.test(text) ? Number(text) : 0;
-  if (value < 1 || value > codeReview.MAX_DEADLINE_MS) {
-    problems.push(`CODE_REVIEW_DEADLINE_MS must be a whole number of milliseconds from 1 to ${codeReview.MAX_DEADLINE_MS}`);
+  // Never above the job's 840 s less the commit reserve: a longer deadline could only commit late.
+  const most = codeReview.MAX_DEADLINE_MS - COMMIT_RESERVE_MS;
+  if (value < 1 || value > most) {
+    problems.push(`CODE_REVIEW_DEADLINE_MS must be a whole number of milliseconds from 1 to ${most}`);
     return DEFAULT_DEADLINE_MS;
   }
   return value;
