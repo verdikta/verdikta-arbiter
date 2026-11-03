@@ -61,6 +61,7 @@ JOB_SECONDS = 840
 JOB_VALUE = "840s"
 RUN_SECONDS = 900
 BRIDGE = "verdikta-ai"
+ARBITER_NAME = "Verdikta AI Arbiter"
 # Byte for byte what the template holds: a patched config then has nothing to differ on.
 RUN_BLOCK = "[JobPipeline]\nMaxRunDuration = \"15m\"\n\n"
 OLD_COMMENT = re.compile(r"[ \t]*# increase timeout to \d+s")
@@ -251,28 +252,67 @@ class Node:
             raise NodeError("the node's effective config names no [JobPipeline] MaxRunDuration")
         return value
 
-def is_arbiter_job(job):
-    a = job.get("attributes") or {}
-    dag = (a.get("pipelineSpec") or {}).get("dotDagSource") or ""
-    return a.get("type") == "directrequest" and re.search(r"name=\"%s\"" % BRIDGE, dag) is not None
+# A DAG's task attributes, whatever their layout: spaces around `=`, any order, `]` or `=` in a
+# quoted value. Chainlink's DOT parser takes them all, so a job in another layout is the same job.
+ATTR = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*("(?:[^"\\]|\\.)*"|[^\s,;\]]+)')
 
-def bridge_attr(dag):
-    """The match of the bridge task's timeout attribute, or None."""
-    m = re.search(r"name=\"%s\"" % BRIDGE, dag)
-    if not m:
-        return None
-    return re.compile(r"timeout=\"([^\"]*)\"").search(dag, m.end(), dag.find("]", m.end()) if dag.find("]", m.end()) >= 0 else len(dag))
+def task_blocks(dag):
+    """(start, end) of each [ ... ] attribute block, ignoring brackets in quoted values and comments."""
+    blocks = []
+    i, n, start, quoted = 0, len(dag), None, False
+    while i < n:
+        c = dag[i]
+        if quoted:
+            if c == "\\":
+                i += 1
+            elif c == '"':
+                quoted = False
+        elif c == '"':
+            quoted = True
+        elif start is None and c == "/" and dag[i:i + 2] == "//":
+            nl = dag.find("\n", i)
+            i = n if nl < 0 else nl
+        elif c == "[" and start is None:
+            start = i + 1
+        elif c == "]" and start is not None:
+            blocks.append((start, i))
+            start = None
+        i += 1
+    return blocks
+
+def unquoted(value):
+    return value[1:-1] if value.startswith('"') else value
+
+def bridge_timeouts(dag):
+    """The verdikta-ai bridge tasks: for each, the span of its timeout value (quotes included) and the value, or None."""
+    found = []
+    for start, end in task_blocks(dag):
+        attrs = {m.group(1): m for m in ATTR.finditer(dag, start, end)}
+        if unquoted(attrs["type"].group(2)) == "bridge" if "type" in attrs else False:
+            if "name" in attrs and unquoted(attrs["name"].group(2)) == BRIDGE:
+                t = attrs.get("timeout")
+                found.append({"span": t.span(2), "value": unquoted(t.group(2))} if t else {"span": None, "value": None})
+    return found
+
+def is_arbiter_job(job):
+    """Ours: a direct-request job with a verdikta-ai bridge, or named as the installer names them."""
+    a = job.get("attributes") or {}
+    if a.get("type") != "directrequest":
+        return False
+    dag = (a.get("pipelineSpec") or {}).get("dotDagSource") or ""
+    return bool(bridge_timeouts(dag)) or ARBITER_NAME in (a.get("name") or "")
 
 def read_job(job):
     a = job["attributes"]
     dag = a["pipelineSpec"]["dotDagSource"]
-    timeout = bridge_attr(dag)
-    return {"id": job["id"], "name": a.get("name"), "external": a.get("externalJobID"),
-            "task": a.get("maxTaskDuration"), "bridge": timeout.group(1) if timeout else None, "dag": dag}
+    bridges = bridge_timeouts(dag)
+    return {"id": job["id"], "name": a.get("name"), "external": a.get("externalJobID"), "task": a.get("maxTaskDuration"),
+            "bridge": ", ".join(b["value"] or "none" for b in bridges) or None, "bridges": bridges, "dag": dag}
 
 def is_stale(job):
     j = read_job(job)
-    return not (enough(go_seconds(j["task"]), JOB_SECONDS) and enough(go_seconds(j["bridge"]), JOB_SECONDS))
+    bridges_ok = bool(j["bridges"]) and all(enough(go_seconds(b["value"]), JOB_SECONDS) for b in j["bridges"])
+    return not (enough(go_seconds(j["task"]), JOB_SECONDS) and bridges_ok)
 
 def toml_string(text):
     return json.dumps(text, ensure_ascii=False)
@@ -312,14 +352,21 @@ def toml_for(job, task, dag):
     return "\n".join(lines) + "\n"
 
 def new_dag(dag):
-    t = bridge_attr(dag)
-    if t is None:
+    """The DAG with each verdikta-ai bridge's timeout at the target, or None when one has none to change."""
+    bridges = bridge_timeouts(dag)
+    if not bridges or any(b["span"] is None for b in bridges):
         return None
-    head, tail = dag[:t.start()], dag[t.end():]
-    return head + f"timeout=\"{JOB_VALUE}\"" + OLD_COMMENT.sub("", tail, count=1)
+    out = dag
+    for b in sorted(bridges, key=lambda b: b["span"][0], reverse=True):
+        start, end = b["span"]
+        if enough(go_seconds(b["value"]), JOB_SECONDS):
+            continue
+        tail = OLD_COMMENT.sub("", out[end:], count=1) if OLD_COMMENT.match(out[end:]) else out[end:]
+        out = out[:start] + f'"{JOB_VALUE}"' + tail
+    return out
 
-def what_differs(sent, got, dag):
-    """Why the job the node answered with is not the one sent, or None."""
+def field_differences(sent, got):
+    """Every field a replace must keep, against what the node holds now."""
     a, b = sent["attributes"], got.get("attributes") or {}
     problems = []
     for key in ("name", "type", "schemaVersion", "externalJobID", "gasLimit", "forwardingAllowed"):
@@ -329,11 +376,24 @@ def what_differs(sent, got, dag):
     for key in SPEC_KEYS + ("evmChainID",):
         if was.get(key) != now.get(key):
             problems.append(f"directRequestSpec.{key} came back as {now.get(key)!r}")
+    return problems
+
+def what_differs(sent, got, dag):
+    """Why the job the node answered with is not the replacement that was sent, or None."""
+    b = got.get("attributes") or {}
+    problems = field_differences(sent, got)
     if ((b.get("pipelineSpec") or {}).get("dotDagSource")) != dag:
         problems.append("the DAG came back changed")
     if not enough(go_seconds(b.get("maxTaskDuration")), JOB_SECONDS):
         problems.append(f"maxTaskDuration came back as {b.get('maxTaskDuration')!r}")
     return "; ".join(problems) or None
+
+def is_original(job, got):
+    """Whether the node holds this job as it was before the replace: every field, its DAG, its own limit."""
+    a, b = job["attributes"], got.get("attributes") or {}
+    return (not field_differences(job, got)
+            and (b.get("pipelineSpec") or {}).get("dotDagSource") == a["pipelineSpec"]["dotDagSource"]
+            and go_seconds(b.get("maxTaskDuration")) == go_seconds(a.get("maxTaskDuration")))
 
 def backup_dir():
     return os.environ.get("VERDIKTA_JOB_BACKUP_DIR") or os.path.join(os.environ["SCRIPT_DIR"], "chainlink-node", "jobs", "before-840s")
@@ -362,7 +422,7 @@ def check(wait):
     stale = [j for j in jobs if is_stale(j)]
     for job in stale:
         j = read_job(job)
-        print(f"  stale: {j['name']} ({j['external']}): maxTaskDuration {j['task']}, bridge timeout {j['bridge'] or 'none'}; wanted {JOB_VALUE}")
+        print(f"  stale: {j['name']} ({j['external']}): maxTaskDuration {j['task']}, bridge timeout {j['bridge'] or 'none'} (bridge {BRIDGE}); wanted {JOB_VALUE}")
     if stale:
         rc = 1
     else:
@@ -429,8 +489,8 @@ def apply(wait):
             row = by_external(current, external)
             if row is None and answered:
                 row = next((j for j in current if j["id"] == answered.get("id")), None)
-            if row is not None and row["attributes"].get("externalJobID") == external:
-                if row["attributes"]["pipelineSpec"]["dotDagSource"] == old_dag:
+            if row is not None:
+                if is_original(job, row):
                     print(f"  {name}: unchanged on the node. Nothing else was tried.")
                     return 1
                 if what_differs(job, row, dag) is None:
@@ -443,8 +503,8 @@ def apply(wait):
             if code >= 300:
                 raise NodeError(f"the node answered HTTP {code}")
             back = by_external(node.jobs(), external)
-            if back is None or back["attributes"]["pipelineSpec"]["dotDagSource"] != old_dag:
-                raise NodeError("the node does not show it back")
+            if back is None or not is_original(job, back):
+                raise NodeError("the node does not show it back as it was")
         except NodeError as e:
             print(f"COULD NOT RESTORE {name} ({external}): {e}. Its old spec is {specs[job['id']]}: POST it to the node, or the on-chain registration of that job id goes unanswered. Directory: {saved}")
             return 3

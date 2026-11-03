@@ -68,6 +68,14 @@ cat > "$BIN/curl" <<'STUB'
 exit "${CURL_RC:-0}"
 STUB
 chmod +x "$BIN/curl"
+cat > "$BIN/cp" <<'STUB'
+#!/bin/bash
+case "${2:-}" in
+  *installer/.contracts) [ -n "${CP_CONTRACTS_FAILS:-}" ] && { echo "cp: cannot write $2" >&2; exit 1; } ;;
+esac
+exec /bin/cp "$@"
+STUB
+chmod +x "$BIN/cp"
 
 contracts() { printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="128"\n' > "$I/installer/.contracts"; }
 
@@ -144,6 +152,17 @@ has   "configure fails: reported" "$out" "failed=\[.*configure-node"
 hasnt "configure fails: no re-registration" "$out" "STUB-register"
 has   "configure fails: stops the arbiter" "$out" "STUB-stop-arbiter"
 hasnt "configure fails: no trap"  "$out" "TRAP-FIRED"
+
+# The new job ids cannot be copied into the install: registering from the old file would lock stake on jobs that no longer exist.
+contracts
+printf 'JOB_ID_1="new-job"\n' > "$SRC/.contracts"
+out=$(CP_CONTRACTS_FAILS=1 regen_run)
+rm -f "$SRC/.contracts"
+has   "contracts copy fails: end"      "$out" "REACHED-END rc=0 regenerated=0"
+has   "contracts copy fails: reported" "$out" "failed=\[.*\.contracts"
+hasnt "contracts copy fails: no re-registration" "$out" "STUB-register"
+has   "contracts copy fails: stops the arbiter" "$out" "STUB-stop-arbiter"
+hasnt "contracts copy fails: no trap"  "$out" "TRAP-FIRED"
 
 # Re-registration fails: the new jobs are in, and the operator is told to register them.
 contracts

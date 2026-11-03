@@ -1380,10 +1380,19 @@ regenerate_job_specs() {
     if [ "$configure_rc" -eq 0 ]; then
         echo -e "${GREEN}Job specifications regenerated successfully!${NC}"
         
-        # Update the target installation with the new contracts file
+        # Update the target installation with the new contracts file. register-oracle.sh reads
+        # that file: from a stale copy it would lock stake on job ids that no longer exist.
         if [ -f "$INSTALLER_DIR/.contracts" ]; then
-            cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts" || \
-                echo -e "${YELLOW}Warning: could not copy the new contracts file to $TARGET_DIR/installer/.contracts${NC}"
+            if ! cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"; then
+                echo -e "${RED}Error: could not copy the new contracts file to $TARGET_DIR/installer/.contracts. Not registering from the old one.${NC}"
+                JOB_REGEN_FAILED="the new jobs were created but $TARGET_DIR/installer/.contracts could not be updated from $INSTALLER_DIR/.contracts; copy it, then run $TARGET_DIR/register-oracle.sh"
+                cd "$TARGET_DIR" || return 1
+                if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
+                    bash "$TARGET_DIR/stop-arbiter.sh" || \
+                        echo -e "${YELLOW}Warning: stop-arbiter.sh failed.${NC}"
+                fi
+                return 1
+            fi
             echo -e "${GREEN}Updated contracts configuration copied to target installation${NC}"
         fi
         

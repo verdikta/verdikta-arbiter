@@ -195,6 +195,11 @@ class H(BaseHTTPRequestHandler):
         if mode == 'mangle-other':
             a['pipelineSpec']['dotDagSource'] = a['pipelineSpec']['dotDagSource'] + '\n// changed by the node\n'
             s['put'] = 'ok'
+        if mode == 'mangle-field':
+            a['directRequestSpec']['contractAddress'] = '0x00000000000000000000000000000000000000Bb'
+            s['put'] = 'ok'
+        if mode == 'mangle-field-always':
+            a['directRequestSpec']['contractAddress'] = '0x00000000000000000000000000000000000000Bb'
         s['next'] += 1
         s['jobs'].append({'id': str(s['next']), 'type': 'jobs', 'attributes': a})
         save(s)
@@ -383,6 +388,34 @@ set_state "s['put'] = 'mangle-other'"
 run_tool --apply; is "another DAG came back: failed" "$rc" 1
 is "another DAG came back: old job restored" "$(job_field $ID1 "['maxTaskDuration']")" "5m0s"
 
+# A job with only its maxTaskDuration stale: the old and the new DAG are the same bytes, so the DAG alone cannot tell.
+only_task_stale='
+for j in s["jobs"]:
+    if j["id"] == "1":
+        j["attributes"]["pipelineSpec"]["dotDagSource"] = next(x for x in s["jobs"] if x["id"] == "3")["attributes"]["pipelineSpec"]["dotDagSource"]
+'
+reset_stub
+set_state "$only_task_stale"
+set_state "s['put'] = 'mangle-field'"
+run_tool --apply; is "another contract came back, same DAG: failed" "$rc" 1
+has "another contract came back: says so" "$out" "contractAddress"
+is "another contract came back: old values restored" "$(job_field $ID1 "['maxTaskDuration']")" "5m0s"
+is "another contract came back: old contract restored" "$(job_field $ID1 "['directRequestSpec']['contractAddress']")" "0x00000000000000000000000000000000000000Aa"
+
+# ... and the restore comes back wrong too: not called restored.
+reset_stub
+set_state "$only_task_stale"
+set_state "s['put'] = 'mangle-field-always'"
+run_tool --apply; is "the restore comes back wrong: exit 3" "$rc" 3
+has "the restore comes back wrong: says so" "$out" "COULD NOT RESTORE"
+
+# The old job back but under another maxTaskDuration is not the old job.
+reset_stub
+set_state "$only_task_stale"
+set_state "s['put'] = 'gone'"
+run_tool --apply; is "only maxTaskDuration stale, deleted, restored: failed" "$rc" 1
+is "only maxTaskDuration stale: the restored job has its own value" "$(job_field $ID1 "['maxTaskDuration']")" "5m0s"
+
 # Job 1 done, job 2 fails: job 1 stays done, the rerun finishes the rest.
 reset_stub
 set_state "s['put'] = 'refuse'; s['put_after'] = 1"
@@ -409,6 +442,49 @@ run_tool --check; is "a bridge with no timeout: stale" "$rc" 1
 run_tool --apply; is "a bridge with no timeout: refuses" "$rc" 1
 has "a bridge with no timeout: says so" "$out" "Verdikta AI Arbiter 1"
 is "a bridge with no timeout: job untouched" "$(state "[c for c in s['calls'] if c.get('id') == '1']")" "[]"
+
+# A job in another layout is the same job: spaces in the attributes, another order, `]` in a value.
+reset_stub
+set_state "
+for j in s['jobs']:
+    if j['id'] == '1':
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'fetch [timeout = \"300s\", requestData=\"{\\\\\"a\\\\\": [1]}\", type = \"bridge\", name = \"verdikta-ai\"];\nother [type=\"bridge\" name=\"someone-else\" timeout=\"1s\"];\n'
+"
+run_tool --check; is "another layout: measured, and stale" "$rc" 1
+has "another layout: names the job" "$out" "Verdikta AI Arbiter 1"
+has "another layout: reads its timeout" "$out" "bridge timeout 300s"
+run_tool --apply; is "another layout: replaced" "$rc" 0
+dag=$(job_field $ID1 "['pipelineSpec']['dotDagSource']")
+has   "another layout: its bridge at 840 s" "$dag" 'timeout = "840s"'
+has   "another layout: another bridge's timeout untouched" "$dag" 'name="someone-else" timeout="1s"'
+hasnt "another layout: nothing left at 300 s" "$dag" '300s'
+
+# The arbiter's job by name, with no verdikta-ai bridge in it (a renamed bridge): never quietly left out.
+reset_stub
+set_state "
+for j in s['jobs']:
+    if j['id'] == '1':
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'fetch [type=\"bridge\" name=\"renamed\" timeout=\"300s\"];'
+"
+run_tool --check; is "a Verdikta job with no verdikta-ai bridge: not fine" "$rc" 1
+has "... named" "$out" "Verdikta AI Arbiter 1"
+run_tool --apply; is "... refused" "$rc" 1
+is "... untouched" "$(state "[c for c in s['calls'] if c.get('id') == '1']")" "[]"
+
+# Several bridge tasks of ours: all of them count, and all are replaced.
+reset_stub
+set_state "
+for j in s['jobs']:
+    if j['id'] == '1':
+        j['attributes']['maxTaskDuration'] = '14m0s'
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'a [type=\"bridge\" name=\"verdikta-ai\" timeout=\"840s\"];\nb [type=\"bridge\" name=\"verdikta-ai\" timeout=\"300s\"];\n'
+    elif j['attributes']['type'] == 'directrequest':
+        j['attributes']['maxTaskDuration'] = '14m0s'
+        j['attributes']['pipelineSpec']['dotDagSource'] = 'a [type=\"bridge\" name=\"verdikta-ai\" timeout=\"840s\"];\n'
+"
+run_tool --check; is "a second bridge task below target: stale" "$rc" 1
+run_tool --apply; is "a second bridge task: replaced" "$rc" 0
+hasnt "a second bridge task: at 840 s" "$(job_field $ID1 "['pipelineSpec']['dotDagSource']")" '300s'
 
 # ── Usage ────────────────────────────────────────────────────────────────────
 run_tool; [ "$rc" != "0" ] && ok || bad "no arguments must not succeed"
