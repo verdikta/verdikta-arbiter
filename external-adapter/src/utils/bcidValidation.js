@@ -260,9 +260,6 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
     logger.info(`${runTag} Fetching archive ${i + 1}/${cidArray.length}: ${cid}`);
     return archiveService.getArchive(cid);
   }));
-  // A caller that stopped waiting has removed tempDir: extract nothing back into it.
-  if (typeof shouldStop === 'function' && shouldStop()) throw new Error('the archives arrived after the caller stopped waiting');
-
   const archiveData = {};
   for (let i = 0; i < cidArray.length; i++) {
     if (outcomes[i].status === 'rejected') throw outcomes[i].reason;
@@ -271,6 +268,8 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
 
   const extractedPaths = {};
   const extractOne = async (cid, index) => {
+    // A caller that stopped waiting has removed tempDir: extract nothing back into it.
+    if (typeof shouldStop === 'function' && shouldStop()) throw new Error('the archives arrived after the caller stopped waiting');
     const subDir = path.join(tempDir, `archive_${index}_${cid.substring(0, 10)}`);
     await fs.promises.mkdir(subDir, { recursive: true });
     return archiveService.extractArchive(archiveData[cid], `archive_${cid}.zip`, subDir);

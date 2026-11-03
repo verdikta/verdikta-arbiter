@@ -264,7 +264,15 @@ const evaluate = async (request) => {
         }
       );
       const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } =
-        await codeReviewMode.boundFetches(getCodeReviewConfig(), t0, triage, () => { stoppedWaiting = true; });
+        await codeReviewMode.boundFetches(getCodeReviewConfig(), t0, triage, () => {
+          stoppedWaiting = true;
+          // An extraction already under way may still write into tempDir after this
+          // job answers: remove it again once the triage settles, without waiting for that.
+          const sweep = () => archiveService.cleanup(tempDir).catch((cleanupError) => {
+            logger.error(`${runTag} Error cleaning up temporary directory: ${cleanupError.message}`);
+          });
+          triage.then(sweep, sweep);
+        });
       logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
       // Malformed archives are never kept: jobs fetching at the same moment shared
       // the bytes (and reach the same verdict), but no later job reuses them.
