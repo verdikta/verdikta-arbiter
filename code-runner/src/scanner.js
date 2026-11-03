@@ -86,8 +86,15 @@ const RULE_FILES = Object.freeze({
  * a stated fact, and the text rules still read it.
  */
 const SCAN_LIMITS = Object.freeze({ files: 64, fileBytes: 64 * 1024, totalBytes: 64 * 1024 });
-/** What the text rules read: past this a file is read by no rule, and says so. A patch cannot add this much (maxPatchBytes). */
-const TEXT_LIMITS = Object.freeze({ fileBytes: 2 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 });
+/**
+ * What the text rules read in all, and so in a file: they run in the runner's own process, where running out of memory
+ * would take every run on the host with it. It holds what a patch can create (maxPatchBytes, 2,000,000), which is read
+ * first. Measured by test/helpers/scanWorst.js on an Apple M-series host: with a cheatcode's name on every line (`.ffi`, the
+ * most flags) it blocks the event loop for 130 ms and runs under a heap limit of 32 MiB; with a lone CR on every line (the
+ * line map) 210 ms and 96 MiB. At 8 MiB, with every flag built, it took 840 ms and 208 MiB.
+ */
+const TEXT_BYTES = 2 * 1024 * 1024;
+const TEXT_LIMITS = Object.freeze({ fileBytes: TEXT_BYTES, totalBytes: TEXT_BYTES });
 /** Semgrep's own bound on a rule over a file (--max-memory, MiB): past it a per-file `Out of memory`, a stated fact. Below the container's. */
 const SEMGREP_MAX_MEMORY_MB = 1024;
 /** The scanner's own sandbox, whatever the listing asks of its own (the spec may say 256 MiB); the flags are every sandbox's. */
@@ -204,7 +211,7 @@ const STATED = Object.freeze({
 
 const UNSCANNED_WORDS = Object.freeze({
   'too-large': `It is over the ${SCAN_LIMITS.fileBytes} bytes a file may have for the rules that read code. The rules that read text still ran.`,
-  'unread': `It is over the ${TEXT_LIMITS.fileBytes} bytes any rule reads in a file, or the files before it in path order use up what a scan reads.`,
+  'unread': `The files read before it (those the patch created, then those it edited, then those whose mode alone changed) use up the ${TEXT_LIMITS.totalBytes} bytes the rules read, or it is over that by itself.`,
   'not-a-file': 'It is not a regular file (a symbolic link or a submodule).',
   'too-many-files': `The patch has more than the ${SCAN_LIMITS.files} files a scan takes, and this one sorts after them.`,
   'too-many-bytes': `The files before it in path order use up the ${SCAN_LIMITS.totalBytes} bytes a scan takes.`,
@@ -405,6 +412,20 @@ function normaliseSource(source) {
   };
 }
 
+/** What the patch brought into a path: a whole file, an edit, or nothing (its mode alone changed). */
+const readRank = (e) => (e.status === 'A' ? 0 : e.modeOnly ? 2 : 1);
+
+/**
+ * The order the text budget goes in, a function of the claim alone, so two hosts agree on which paths it reaches: what the
+ * patch created, then what it edited, then what only changed mode; Solidity first in each; then by path. The first always
+ * fits, since its bytes are in the patch: padding can push a listed file out of the budget, not a helper the patch brought.
+ */
+function compareRead(a, b) {
+  return readRank(a) - readRank(b)
+    || Number(b.path.endsWith('.sol')) - Number(a.path.endsWith('.sol'))
+    || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+}
+
 /**
  * Which files the rules read and which are stated, by the measured limits, in
  * an order that is a function of the claim alone: Solidity by path, then the
@@ -413,7 +434,9 @@ function normaliseSource(source) {
  * parse failure is a stated fact: a JSON fixture that does not parse is not a scan
  * that failed. A file past a limit is stated by any name, since padding a `.txt`
  * must hide nothing, and a name in what no parser read still counts (honestyFlags).
- * @param {Array<{path:string, mode:string, status:string, size:number, bytes:Buffer|null, added?:Set<number>}>} entries
+ * What the text rules read is charged per path (compareRead), so a blob shared by many
+ * paths costs what git wrote: past the budget a path is read by no rule, and says so.
+ * @param {Array<{path:string, mode:string, status:string, size:number, bytes:Buffer|null, modeOnly?:boolean, added?:Set<number>}>} entries
  * @returns {{targets:object[], unscanned:Array<{path:string, reason:string}>, texts:object[]}}
  *   `targets`: what Semgrep reads, under the runner's names; `texts`: what the text rules read (every target and more)
  */
@@ -423,15 +446,28 @@ function prepareTargets(entries) {
   const texts = [];
   let total = 0;
   const isSolidity = (e) => e.path.endsWith('.sol');
-  const list = entries.filter((e) => e.status !== 'D').sort((a, b) => Number(isSolidity(b)) - Number(isSolidity(a)) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  const live = entries.filter((e) => e.status !== 'D');
+  const isFile = (e) => e.mode === '100644' || e.mode === '100755';
+
+  // The text budget, charged to every path however many share a blob, by a length alone: a path past it costs nothing.
+  const charged = new Set();
+  let spent = 0;
+  for (const e of [...live].sort(compareRead)) {
+    if (isFile(e) && e.bytes && spent + e.bytes.length <= TEXT_LIMITS.totalBytes) {
+      spent += e.bytes.length;
+      charged.add(e);
+    }
+  }
+
+  const list = live.sort((a, b) => Number(isSolidity(b)) - Number(isSolidity(a)) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   for (const e of list) {
     const solidity = isSolidity(e);
     const state = (reason) => unscanned.push({ path: e.path, reason });
-    if (e.mode !== '100644' && e.mode !== '100755') {
+    if (!isFile(e)) {
       state('not-a-file');
       continue;
     }
-    if (!e.bytes) {
+    if (!charged.has(e)) {
       state('unread');
       continue;
     }
@@ -452,6 +488,8 @@ function prepareTargets(entries) {
   }
   return { targets, unscanned, texts };
 }
+
+const byNumber = (x, y) => x - y;
 
 /** The offsets of a text's line feeds, for a match's line. */
 function lineFeeds(text) {
@@ -478,7 +516,7 @@ function lineAt(feeds, offset) {
  * text with its comments blanked, as solc reads them, so a comment before a call
  * hides nothing, and on the text as written.
  * @param {object[]} texts
- * @returns {{hits:Array<{rule:string, path:string, line:number}>, reach:Map<string, number[]>}} lines are scanned lines
+ * @returns {{hits:Array<{rule:string, path:string, lines:number[]}>, reach:Map<string, number[]>}} lines are scanned lines, in order, once each
  */
 function readText(texts) {
   const hits = [];
@@ -491,14 +529,14 @@ function readText(texts) {
     const lines = new Set();
     for (const form of forms) {
       for (const [rule, { pattern }] of Object.entries(TEXT_RULES)) {
-        if (pattern) for (const m of form.matchAll(pattern)) found.get(rule).add(m.index);
+        if (pattern) for (const m of form.matchAll(pattern)) found.get(rule).add(lineAt(feeds, m.index));
       }
       const code = scanCode(form);
-      for (const at of code.named) found.get('verdikta.honesty.store-named-arguments').add(at);
+      for (const at of code.named) found.get('verdikta.honesty.store-named-arguments').add(lineAt(feeds, at));
       for (const at of code.reach) lines.add(lineAt(feeds, at));
     }
-    for (const [rule, offsets] of found) for (const at of offsets) hits.push({ rule, path: file.path, line: lineAt(feeds, at) });
-    if (lines.size) reach.set(file.path, [...lines].sort((x, y) => x - y));
+    for (const [rule, at] of found) if (at.size) hits.push({ rule, path: file.path, lines: [...at].sort(byNumber) });
+    if (lines.size) reach.set(file.path, [...lines].sort(byNumber));
   }
   return { hits, reach };
 }
@@ -716,35 +754,29 @@ function spansInWords(target, spans) {
   return `Lines ${shown.join(', ')}${spans.length > 10 ? ` and ${spans.length - 10} more` : ''}.`;
 }
 
-/** Flags the kept-set order ranks first among equals: the patch added their lines (a side table: the schema holds only the report's fields). */
-const ADDED_FLAGS = new WeakSet();
-
 /**
- * The honesty flags of one scan, unbounded.
+ * The honesty flags of one scan, bounded (KeptFlags) and in common's canonical order.
  * @param {object} scan - parseScan's answer
  * @param {object[]} targets
  * @param {Array<{path:string, reason:string}>} [unscanned]
  * @param {object} [text] - readText's answer
  * @param {object[]} [texts] - what the text rules read, for its lines
+ * @param {KeptFlags} [kept] - where they go
  * @returns {Array<{rule:string, file:string, line:number|null, message:string}>}
  */
-function honestyFlags(scan, targets, unscanned = [], text = NO_TEXT, texts = targets) {
+function honestyFlags(scan, targets, unscanned = [], text = NO_TEXT, texts = targets, kept = new KeptFlags()) {
   const byName = new Map(targets.map((t) => [t.name, t]));
   const byPath = new Map(texts.map((t) => [t.path, t]));
-  const flags = new Map();
-  const put = (rule, file, line, message, added = false) => {
-    const key = `${rule}\u0000${file}\u0000${line}`;
-    const had = flags.get(key);
-    if (had) {
-      if (added) ADDED_FLAGS.add(had);
-      return;
-    }
-    const flag = { rule, file, line, message };
-    if (added) ADDED_FLAGS.add(flag);
-    flags.set(key, flag);
-  };
-  const stated = (id, file, line, more = '') => put(id, file, line, more ? `${STATED[id].message} ${more}` : STATED[id].message);
+  const stated = (id, file, line, more = '', added = false) => kept.add(id, file, line, added, more ? `${STATED[id].message} ${more}` : STATED[id].message);
 
+  // What Semgrep answered is bounded by what it read: one flag on a line per rule, whichever of its results there the patch wrote.
+  const answered = new Map();
+  const put = (rule, file, line, message, added) => {
+    const key = `${rule}\u0000${file}\u0000${line}`;
+    const had = answered.get(key);
+    if (!had) answered.set(key, { rule, file, line, message, added });
+    else if (added && !had.added) answered.set(key, { ...had, message, added });
+  };
   for (const hit of scan.hits) {
     const t = byName.get(hit.name);
     let added = false;
@@ -754,10 +786,22 @@ function honestyFlags(scan, targets, unscanned = [], text = NO_TEXT, texts = tar
   for (const { rule, name } of scan.capped) {
     put(rule, byName.get(name).path, null, `${HONESTY_RULES[rule].message} ${CAPPED_WORDS}`, true);
   }
+  for (const f of answered.values()) kept.add(f.rule, f.file, f.line, f.added, f.message);
+
+  // A line's flag, once: several scanned lines can be one of git's. Lines come in order, so the last one is all it takes to tell.
+  const eachLine = (t, lines, on) => {
+    let last;
+    for (const scanned of lines) {
+      const line = reportLine(t, scanned);
+      if (line !== last) on(line, t.added.has(t.lineOf(scanned)));
+      last = line;
+    }
+  };
   for (const hit of text.hits) {
     const t = byPath.get(hit.path);
-    const added = t.added.has(t.lineOf(hit.line));
-    put(hit.rule, t.path, reportLine(t, hit.line), `${TEXT_RULES[hit.rule].message} ${added ? ADDED_WORDS : EXISTING_WORDS}`, added);
+    eachLine(t, hit.lines, (line, added) => {
+      kept.add(hit.rule, t.path, line, added, () => `${TEXT_RULES[hit.rule].message} ${added ? ADDED_WORDS : EXISTING_WORDS}`);
+    });
   }
 
   // Where the parser did not read the whole file, a cheatcode's name on any line is a flag: what it lost can be wider
@@ -768,8 +812,7 @@ function honestyFlags(scan, targets, unscanned = [], text = NO_TEXT, texts = tar
   for (const name of scan.missing) read.delete(byName.get(name).path);
   for (const [file, lines] of text.reach) {
     if (read.has(file)) continue;
-    const t = byPath.get(file);
-    for (const line of lines) stated('verdikta.honesty.unread-reach', file, reportLine(t, line));
+    eachLine(byPath.get(file), lines, (line, added) => stated('verdikta.honesty.unread-reach', file, line, '', added));
   }
 
   // What could not be read is stated by any name, but for a parse failure off `.sol`: a JSON fixture does not parse, by design.
@@ -783,10 +826,9 @@ function honestyFlags(scan, targets, unscanned = [], text = NO_TEXT, texts = tar
   }
   for (const name of scan.missing) stated('verdikta.honesty.not-scanned', byName.get(name).path, null, UNSCANNED_WORDS['no-answer']);
   for (const u of unscanned) stated('verdikta.honesty.not-scanned', u.path, null, UNSCANNED_WORDS[u.reason]);
-  return [...flags.values()];
+  return kept.finish();
 }
 
-/** A fix's findings from one baseline scan, unbounded. */
 function fixFindings(scan, targets, unscanned = []) {
   const byName = new Map(targets.map((t) => [t.name, t]));
   const out = new Map();
@@ -823,36 +865,87 @@ function compareFlagsCanonically(a, b) {
   return compareText(a.file, b.file) || compareLine(a.line, b.line) || compareText(a.rule, b.rule) || compareText(a.message, b.message);
 }
 
-function flagRank(flag) {
-  if (STATED[flag.rule]) return 0;
-  const rule = HONESTY_RULES[flag.rule] || TEXT_RULES[flag.rule];
-  return rule ? SEVERITY_RANK[rule.severity] : SEVERITY_RANK.info;
+function flagRank(rule) {
+  if (STATED[rule]) return 0;
+  const known = HONESTY_RULES[rule] || TEXT_RULES[rule];
+  return known ? SEVERITY_RANK[known.severity] : SEVERITY_RANK.info;
 }
 
 /**
- * At most 50 flags: by rule severity (what the runner states first), then the
- * lines the patch added, then canonically; the rest counted by rule in one note
- * with a fixed id, so padding cannot hide that a rule fired. Handed out in
- * common's canonical order: the schema holds no severity for a flag.
+ * Whether a flag with these fields goes before a kept one: by rule severity (what the runner states first), then the lines
+ * the patch added, then canonically. No two flags share a rule, a file and a line, so this is a total order.
  */
-function boundFlags(flags) {
-  const canonical = [...flags].sort(compareFlagsCanonically);
-  if (canonical.length <= MAX_KEPT) return canonical;
-  const ranked = [...flags].sort((a, b) => flagRank(a) - flagRank(b)
-    || Number(ADDED_FLAGS.has(b)) - Number(ADDED_FLAGS.has(a))
-    || compareFlagsCanonically(a, b));
-  const kept = ranked.slice(0, MAX_KEPT - 1);
-  const dropped = ranked.slice(MAX_KEPT - 1);
-  const counts = new Map();
-  for (const f of dropped) counts.set(f.rule, (counts.get(f.rule) || 0) + 1);
-  const named = [...counts].sort(([a], [b]) => compareText(a, b)).map(([rule, n]) => `${rule}: ${n}`).join(', ');
-  const note = {
-    rule: 'verdikta.honesty.truncated',
-    file: [...dropped].sort(compareFlagsCanonically)[0].file,
-    line: null,
-    message: `${STATED['verdikta.honesty.truncated'].message} ${dropped.length} more are not listed, by rule: ${named}.`.slice(0, REPORT_LIMITS.text)
-  };
-  return [...kept, note].sort(compareFlagsCanonically);
+function goesBefore(rank, added, file, line, rule, kept) {
+  if (rank !== kept.rank) return rank < kept.rank;
+  if (added !== kept.added) return added;
+  return (compareText(file, kept.file) || compareLine(line, kept.line) || compareText(rule, kept.rule)) < 0;
+}
+
+/**
+ * The flags of one scan as they come: the best MAX_KEPT, and every other one a count by rule, so what this holds follows
+ * the bound and not the input, however many a file names. The order is total, so the kept set does not depend on the
+ * order they came in. finish() gives at most 50, with one note, of a fixed id, counting the rest by rule, so padding
+ * cannot hide that a rule fired; in common's canonical order, since the schema holds no severity for a flag.
+ */
+class KeptFlags {
+  /** @param {number} [limit] - the bound; a test of the rules themselves may ask for all of them */
+  constructor(limit = MAX_KEPT) {
+    this.limit = limit;
+    this.best = [];
+    this.seen = 0;
+    this.dropped = new Map();
+    this.firstDropped = null;
+  }
+
+  get size() {
+    return this.best.length;
+  }
+
+  drop(rule, file) {
+    this.dropped.set(rule, (this.dropped.get(rule) || 0) + 1);
+    if (this.firstDropped === null || compareText(file, this.firstDropped) < 0) this.firstDropped = file;
+  }
+
+  /**
+   * @param {string} rule
+   * @param {string} file
+   * @param {number|null} line
+   * @param {boolean} added - the patch wrote this line
+   * @param {string|function():string} message - a function is asked only of a flag that is kept
+   */
+  add(rule, file, line, added, message) {
+    this.seen += 1;
+    const rank = flagRank(rule);
+    const { best } = this;
+    if (best.length === this.limit && !goesBefore(rank, added, file, line, rule, best[best.length - 1])) {
+      this.drop(rule, file);
+      return;
+    }
+    let at = best.length;
+    while (at > 0 && goesBefore(rank, added, file, line, rule, best[at - 1])) at -= 1;
+    best.splice(at, 0, { rule, file, line, message: typeof message === 'function' ? message() : message, rank, added });
+    if (best.length > this.limit) {
+      const out = best.pop();
+      this.drop(out.rule, out.file);
+    }
+  }
+
+  finish() {
+    const over = this.seen > this.limit;
+    const list = over ? this.best.slice(0, this.limit - 1) : this.best;
+    if (over) this.drop(this.best[this.limit - 1].rule, this.best[this.limit - 1].file);
+    const flags = list.map(({ rule, file, line, message }) => ({ rule, file, line, message }));
+    if (over) {
+      const named = [...this.dropped].sort(([a], [b]) => compareText(a, b)).map(([rule, n]) => `${rule}: ${n}`).join(', ');
+      flags.push({
+        rule: 'verdikta.honesty.truncated',
+        file: this.firstDropped,
+        line: null,
+        message: `${STATED['verdikta.honesty.truncated'].message} ${this.seen - list.length} more are not listed, by rule: ${named}.`.slice(0, REPORT_LIMITS.text)
+      });
+    }
+    return flags.sort(compareFlagsCanonically);
+  }
 }
 
 function compareFindings(a, b) {
@@ -916,8 +1009,8 @@ async function readChanged(ctx, { step, from, to, old = false }) {
     }
     return map;
   };
-  // Solidity first, as prepareTargets reads them: what the text rules' total lets through must not depend on a fixture's name.
-  const entries = parsed.entries.sort((a, b) => Number(b.path.endsWith('.sol')) - Number(a.path.endsWith('.sol')) || (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  // In the order the budget goes (compareRead): what the patch created always fits what is kept, whatever else it touches.
+  const entries = parsed.entries.map((e) => ({ ...e, modeOnly: e.status === 'M' && e.id === e.oldId })).sort(compareRead);
   const isBlob = (mode) => mode === '100644' || mode === '100755';
   const news = await read(`${step}:read`, [...new Set(entries.filter((e) => e.status !== 'D' && isBlob(e.mode)).map((e) => e.id))]);
   const olds = old ? await read(`${step}:read-base`, [...new Set(entries.filter((e) => isBlob(e.oldMode) && !/^0+$/.test(e.oldId)).map((e) => e.oldId))]) : new Map();
@@ -925,7 +1018,7 @@ async function readChanged(ctx, { step, from, to, old = false }) {
     const r = news.get(e.id);
     const o = olds.get(e.oldId);
     return {
-      path: e.path, mode: e.mode, status: e.status, size: r && Number.isSafeInteger(r.size) ? r.size : 0, bytes: r && r.content ? r.content : null,
+      path: e.path, mode: e.mode, status: e.status, modeOnly: e.modeOnly, size: r && Number.isSafeInteger(r.size) ? r.size : 0, bytes: r && r.content ? r.content : null,
       ...(old ? { oldBytes: o && o.content ? o.content : null, oldTooLarge: Boolean(o && !o.content) } : {})
     };
   });
@@ -964,13 +1057,13 @@ async function runSemgrep(handle, name, { rules, targets, baseline = null, workd
  */
 async function scanPoc(handle, { targets, unscanned, texts }) {
   const text = readText(texts);
-  if (targets.length === 0) return boundFlags(honestyFlags(NOTHING_SCANNED, targets, unscanned, text, texts));
+  if (targets.length === 0) return honestyFlags(NOTHING_SCANNED, targets, unscanned, text, texts);
   await unpack(handle, 'scan:poc:unpack', [
     { name: `rules/${RULE_FILES.honesty.file}`, bytes: ruleBytes('honesty') },
     ...targets.map((t) => ({ name: `src/${t.name}`, bytes: t.bytes }))
   ]);
   const scan = await runSemgrep(handle, 'scan:poc', { rules: 'honesty', targets, workdir: '/work/src', table: HONESTY_RULES });
-  return boundFlags(honestyFlags(scan, targets, unscanned, text, texts));
+  return honestyFlags(scan, targets, unscanned, text, texts);
 }
 
 const NOTHING_SCANNED = Object.freeze({ hits: [], partial: new Map(), unreadable: new Map(), capped: [], missing: [] });
@@ -1130,5 +1223,5 @@ async function readListedConfig(ctx, commit) {
 module.exports = {
   SEMGREP, RULES_VERSION, RULE_FILES, HONESTY_RULES, TEXT_RULES, FIX_RULES, STATED, SCAN_LIMITS, TEXT_LIMITS, SCAN_MEMORY_MB, SEMGREP_MAX_MEMORY_MB, SCAN_SANDBOX_LIMITS, SCAN_TIMEOUT_MS, SCAN_BUDGET_MS, SCAN_RESERVE_MS, FMT_TIMEOUT_MS, OUTPUT_MAX_BYTES,
   severityOf, ruleBytes, rulesProblem, imageStatus, requireScanner, semgrepArgv, scanTar, normaliseSource, prepareTargets, prepareFix, readText, textRulesSha256, parseScan, honestyFlags, fixFindings,
-  boundFlags, boundFindings, readChanged, openScanner, scanPoc, scanFix, fmtFindings, readListedConfig, BASELINE_REPO_SCRIPT
+  KeptFlags, boundFindings, readChanged, openScanner, scanPoc, scanFix, fmtFindings, readListedConfig, BASELINE_REPO_SCRIPT
 };

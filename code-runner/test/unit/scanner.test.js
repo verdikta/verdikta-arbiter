@@ -16,9 +16,10 @@ const { IMAGE_REF } = require('../../src/classLimits');
 const scanner = require('../../src/scanner');
 const {
   SEMGREP, RULE_FILES, HONESTY_RULES, TEXT_RULES, FIX_RULES, STATED, SCAN_LIMITS, TEXT_LIMITS, SCAN_MEMORY_MB, ruleBytes, rulesProblem, semgrepArgv, scanTar, normaliseSource,
-  prepareTargets, prepareFix, readText, parseScan, honestyFlags, boundFlags, fixFindings, boundFindings, severityOf, imageStatus
+  prepareTargets, prepareFix, readText, readChanged, parseScan, honestyFlags, KeptFlags, fixFindings, boundFindings, severityOf, imageStatus
 } = scanner;
 const { fakeDocker, healthyDaemon } = require('../helpers/fakeDocker');
+const { execFileSync } = require('node:child_process');
 
 const sha256 = (b) => crypto.createHash('sha256').update(b).digest('hex');
 const RULES_DIR = path.join(__dirname, '..', '..', 'rules');
@@ -388,7 +389,7 @@ test('the text rules run over a file past Semgrep\'s limit, and on it a cheatcod
 });
 
 test('each text rule reads what Semgrep\'s Solidity patterns cannot, and no ordinary line', () => {
-  const lines = (source) => readText([{ path: 'p', bytes: Buffer.from(source) }]).hits.map((h) => [h.rule, h.line]);
+  const lines = (source) => readText([{ path: 'p', bytes: Buffer.from(source) }]).hits.flatMap((h) => h.lines.map((line) => [h.rule, line]));
   assert.deepEqual(lines('a();\nx.call(abi.encodeWithSignature("store(address,bytes32,bytes32)", a, b, c));\n'), [['verdikta.honesty.cheatcode-signature', 2]]);
   assert.deepEqual(lines('x.call(abi.encodeWithSelector(0xB4D6C782, a, b));\n'), [['verdikta.honesty.cheatcode-signature', 1]]);
   assert.deepEqual(lines('Vm v = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);\n'), [['verdikta.honesty.cheatcode-address', 1]]);
@@ -448,9 +449,187 @@ test('R4-F1: the bound on what the text rules read is what a patch can add, not 
   assert.ok(TEXT_LIMITS.totalBytes <= 4 * TEXT_LIMITS.fileBytes);
 });
 
+// ------------------------------------------------------------------ R6-F1: the total the text rules read
+
+const BLOB = Buffer.from('vm.store\n'.repeat(Math.floor(1900000 / 9)));
+const flipped = (i, over = {}) => entry(`test/p${String(i).padStart(2, '0')}.txt`, '', { status: 'M', modeOnly: true, bytes: BLOB, size: BLOB.length, ...over });
+
+test('R6-F1: the total is 2 MiB, and it holds everything a patch can create', () => {
+  const { CLASS_HARD_LIMITS } = require('../../src/common');
+  assert.equal(TEXT_LIMITS.totalBytes, 2 * 1024 * 1024);
+  assert.ok(TEXT_LIMITS.totalBytes >= CLASS_HARD_LIMITS.maxPatchBytes, 'the files a patch creates always fit: their bytes are in the patch');
+});
+
+test('R6-F1: the budget is charged per path: 25 paths sharing one blob read it once, and the rest say so', () => {
+  const list = [];
+  for (let i = 0; i < 25; i += 1) list.push(flipped(i));
+  const { texts, unscanned, targets } = prepareTargets(list);
+  assert.deepEqual(texts.map((t) => t.path), ['test/p00.txt']);
+  assert.ok(texts.reduce((n, t) => n + t.raw.length, 0) <= TEXT_LIMITS.totalBytes);
+  assert.deepEqual(targets, []);
+  assert.equal(unscanned.length, 25, 'one too large for Semgrep, 24 read by no rule: none of them silent');
+  assert.deepEqual(unscanned.filter((u) => u.reason === 'unread').map((u) => u.path), list.slice(1).map((e) => e.path));
+  assert.equal(unscanned.find((u) => u.path === 'test/p00.txt').reason, 'too-large');
+});
+
+test('R6-F1: which paths are read is a function of the claim: any order in, the same paths out', () => {
+  const list = [];
+  for (let i = 0; i < 25; i += 1) list.push(flipped(i, { bytes: Buffer.from(`${i}\n`.repeat(100000)), size: 0 }));
+  const shuffled = [...list].sort((a, b) => sha256(a.path).localeCompare(sha256(b.path)));
+  const a = prepareTargets(list);
+  const b = prepareTargets(shuffled);
+  assert.deepEqual(a.texts.map((t) => t.path), b.texts.map((t) => t.path));
+  assert.deepEqual(a.unscanned, b.unscanned);
+});
+
+test('R6-F1: padding cannot crowd out what the patch created: it is read first, whatever its name', () => {
+  const list = [];
+  for (let i = 0; i < 25; i += 1) list.push(flipped(i));
+  // A file the patch modified takes the budget before a mode change; a created helper before either.
+  const edited = entry('test/a-edited.txt', '', { status: 'M', bytes: BLOB, size: BLOB.length });
+  const helper = entry('test/zzz-helper.txt', 'vm.store(a, b, c);\n', { status: 'A' });
+  const { texts, unscanned } = prepareTargets([...list, edited, helper]);
+  assert.deepEqual(texts.map((t) => t.path).sort(), ['test/a-edited.txt', 'test/zzz-helper.txt']);
+  assert.equal(unscanned.find((u) => u.path === 'test/p00.txt').reason, 'unread');
+  assert.equal(unscanned.filter((u) => u.reason === 'unread').length, 25);
+});
+
+test('R6-F1: as much as a patch can create is always read, by any name, beside any padding', () => {
+  const { CLASS_HARD_LIMITS } = require('../../src/common');
+  const created = Buffer.alloc(CLASS_HARD_LIMITS.maxPatchBytes - 19, 0x20);
+  const list = [];
+  for (let i = 0; i < 25; i += 1) list.push(flipped(i));
+  list.push(entry('test/a.txt', '', { status: 'A', bytes: created, size: created.length }), entry('test/zzz.txt', 'vm.store(a, b, c);\n', { status: 'A' }));
+  assert.deepEqual(prepareTargets(list).texts.map((t) => t.path).sort(), ['test/a.txt', 'test/zzz.txt']);
+});
+
+test('R6-F1: Solidity goes first among what the patch changed: a data file cannot crowd one out', () => {
+  const data = entry('test/a.json', '', { status: 'M', bytes: BLOB, size: BLOB.length });
+  const big = Buffer.alloc(1500000, 0x20);
+  const sol = entry('test/z.sol', '', { status: 'M', bytes: big, size: big.length });
+  assert.deepEqual(prepareTargets([data, sol]).texts.map((t) => t.path), ['test/z.sol']);
+});
+
+test('R6-F1: past the kept bound a flag is counted and never built: its message is not even asked for', () => {
+  const kept = new KeptFlags();
+  let asked = 0;
+  for (let i = 1; i <= 200000; i += 1) {
+    kept.add(READ, 'test/F.sol', i, false, () => { asked += 1; return 'm'; });
+    assert.ok(kept.size <= 50);
+  }
+  assert.equal(asked, 50);
+  const flags = kept.finish();
+  assert.equal(flags.length, 50);
+  assert.match(flags.find((f) => f.rule === STATED_ID('truncated')).message, /199951 more/);
+});
+
+test('R6-F1: the sink keeps what a whole sort would: any order in, the same 49 and note out, and the note\'s file is the first dropped', () => {
+  const all = [];
+  for (let i = 1; i <= 1000; i += 1) {
+    const rule = [READ, STORE, ETCH, STATED_ID('not-scanned')][i % 4];
+    all.push({ rule, file: `test/F${i % 11}.sol`, line: i % 3 ? i : null, added: i % 5 === 0 });
+  }
+  const seen = new Set();
+  const unique = all.filter((f) => { const k = `${f.rule}|${f.file}|${f.line}`; if (seen.has(k)) return false; seen.add(k); return true; });
+  const rank = (f) => (f.rule === STATED_ID('not-scanned') ? 0 : HONESTY_RULES[f.rule].severity === 'high' ? 1 : HONESTY_RULES[f.rule].severity === 'medium' ? 2 : 3);
+  const text = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+  const line = (a, b) => (a === b ? 0 : a === null ? -1 : b === null ? 1 : a - b);
+  const sorted = [...unique].sort((a, b) => rank(a) - rank(b) || Number(b.added) - Number(a.added) || text(a.file, b.file) || line(a.line, b.line) || text(a.rule, b.rule));
+  const feed = (list) => {
+    const kept = new KeptFlags();
+    for (const f of list) kept.add(f.rule, f.file, f.line, f.added, 'm');
+    return kept.finish();
+  };
+  const a = feed(unique);
+  assert.deepEqual(a, feed([...unique].reverse()));
+  assert.deepEqual(a, feed([...unique].sort((x, y) => sha256(`${x.rule}${x.file}${x.line}`).localeCompare(sha256(`${y.rule}${y.file}${y.line}`)))));
+  const key = (f) => `${f.rule}|${f.file}|${f.line}`;
+  const note = a.find((f) => f.rule === STATED_ID('truncated'));
+  assert.deepEqual(a.filter((f) => f !== note).map(key).sort(), sorted.slice(0, 49).map(key).sort());
+  assert.equal(note.file, sorted.slice(49).map((f) => f.file).sort(text)[0]);
+  assert.match(note.message, new RegExp(`${sorted.length - 49} more`));
+});
+
+test('R6-F1: on a file no parser read, the patch\'s own lines are kept before the file\'s old ones', () => {
+  const lines = Array.from({ length: 120 }, (_, i) => `vm.store(a, b, c); // ${i}`).join('\n');
+  const added = new Set([100, 101]);
+  const input = prepareTargets([entry('test/Big.txt', Buffer.concat([Buffer.from(`${lines}\n`), Buffer.alloc(SCAN_LIMITS.fileBytes, 0x20)]), { added })]);
+  const flags = honestyFlags({ hits: [], partial: new Map(), unreadable: new Map(), capped: [], missing: [] }, input.targets, input.unscanned, readText(input.texts), input.texts);
+  assert.equal(flags.length, 50);
+  for (const l of added) assert.ok(flags.some((f) => f.line === l && f.rule === STATED_ID('unread-reach')), `the patch's line ${l} is kept`);
+});
+
+test('R6-F1: two results of a rule on one line are one flag, with the added words if the patch wrote either', () => {
+  const t = targetsOf('test/E.sol');
+  t[0].added = new Set([2]);
+  const flags = honestyFlags(parsed(scanOf([hit(STORE, 'f0.sol', 1, 1), hit(STORE, 'f0.sol', 1, 2)]), t), t);
+  assert.equal(flags.length, 1);
+  assert.match(flags[0].message, /The patch added this line/);
+});
+
+test('R6-F1: through readChanged too: one cat-file of the shared blob, every path charged', async () => {
+  const id = 'a'.repeat(40);
+  const created = 'b'.repeat(40);
+  const zero = '0'.repeat(40);
+  const records = [];
+  for (let i = 0; i < 25; i += 1) records.push(`:100644 100755 ${id} ${id} M\0test/p${String(i).padStart(2, '0')}.txt\0`);
+  records.push(`:000000 100644 ${zero} ${created} A\0test/zzz-helper.txt\0`);
+  const helper = Buffer.from('vm.store(a, b, c);\n');
+  const asked = [];
+  const ctx = {
+    exec: async (argv, { tee, stdin }) => {
+      if (argv.includes('--raw')) tee.write(Buffer.from(records.join(''), 'latin1'));
+      else {
+        asked.push(stdin.toString().trim().split('\n'));
+        for (const want of asked[asked.length - 1]) {
+          const bytes = want === id ? BLOB : helper;
+          tee.write(Buffer.concat([Buffer.from(`${want} blob ${bytes.length}\n`), bytes, Buffer.from('\n')]));
+        }
+      }
+      return { exitCode: 0 };
+    }
+  };
+  const entries = await readChanged(ctx, { step: 's', from: 'c'.repeat(40), to: 'd'.repeat(40) });
+  assert.deepEqual(asked, [[created, id]], 'what the patch created is asked for first, and the shared blob once');
+  assert.equal(entries.filter((e) => e.modeOnly).length, 25);
+  assert.equal(entries.find((e) => e.path === 'test/zzz-helper.txt').modeOnly, false);
+  const { texts, unscanned } = prepareTargets(entries);
+  assert.deepEqual(texts.map((t) => t.path), ['test/p00.txt', 'test/zzz-helper.txt']);
+  assert.equal(unscanned.filter((u) => u.reason === 'unread').length, 24);
+});
+
+test('R6-F1: the worst case holds in a small heap, in the time the README says: what it holds follows the bound, not the input', () => {
+  const script = path.join(__dirname, '..', 'helpers', 'scanWorst.js');
+  const run = (heapMiB, ...args) => JSON.parse(execFileSync(process.execPath, [`--max-old-space-size=${heapMiB}`, script, ...args], { encoding: 'utf8', timeout: 60000 }));
+  // 40 MiB could not hold these flags as objects: a flag is about 200 bytes, and there are hundreds of thousands.
+  const flood = run(40, 'vm.store\n', '25');
+  assert.equal(flood.read, 1);
+  assert.equal(flood.stated, 25);
+  assert.equal(flood.flags, 50);
+  assert.ok(flood.textBytes <= TEXT_LIMITS.totalBytes);
+  assert.ok(flood.notListed > 200000, JSON.stringify(flood));
+  assert.ok(flood.blockedMs < 5000, JSON.stringify(flood));
+  const dense = run(40, '.ffi\n', '25');
+  assert.ok(dense.notListed > 400000, JSON.stringify(dense));
+  assert.ok(dense.blockedMs < 5000, JSON.stringify(dense));
+  // 33,000 paths, about what a patch of 2,000,000 bytes can name by mode changes, each a stated fact or read: 50 flags kept.
+  const paths = run(40, '.ffi\n', '33000', '1024');
+  assert.equal(paths.flags, 50);
+  assert.ok(paths.read + paths.stated >= 33000, JSON.stringify(paths));
+  assert.ok(paths.blockedMs < 5000, JSON.stringify(paths));
+  // The same 33,000 sharing one 2 MB blob: a path past the budget costs a length, not a normal form of 2 MB (an instant to read, seconds to redo).
+  const shared = run(64, '.ffi\r', '33000', '2000000');
+  assert.equal(shared.read, 1);
+  assert.ok(shared.blockedMs < 5000, JSON.stringify(shared));
+  // The line map's worst shape, one line end a byte: the most it costs, and it is bounded too.
+  const ends = run(128, '\r', '25');
+  assert.equal(ends.read, 1);
+  assert.ok(ends.blockedMs < 5000, JSON.stringify(ends));
+});
+
 test('the text rules take the same bytes twice and answer the same: their patterns hold no state between files', () => {
   const file = { path: 'p', bytes: Buffer.from('f(0x70ca10bb); g(0x70ca10bb);\n') };
-  assert.deepEqual(readText([file, file]).hits.length, 4);
+  assert.deepEqual(readText([file, file]).hits.map((h) => h.lines), [[1], [1]]);
 });
 
 test('Semgrep\'s own memory bound on a file is a stated fact, measured, and the names on its lines stay flags', () => {
@@ -611,6 +790,11 @@ test('the same match twice is one flag, and two rules on a line stay two', () =>
 // ------------------------------------------------------------------ the bound
 
 const flagOf = (rule, file, line) => ({ rule, file, line, message: 'm' });
+function boundFlags(flags) {
+  const kept = new KeptFlags();
+  for (const f of flags) kept.add(f.rule, f.file, f.line, false, f.message);
+  return kept.finish();
+}
 
 test('under the bound everything stays', () => {
   const all = [];

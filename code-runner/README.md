@@ -1623,10 +1623,38 @@ Stated facts rank above every rule, so padding cannot push one out of the 50. A 
 can force one of them, but it costs a visible fact, and the names on the file's lines stay flags as
 far as text can tell.
 
-**Limits, and why these numbers.** Semgrep gets at most 64 files and 64 KiB in all; the text
-rules read 2 MiB a file (what a patch can add) and 8 MiB in all. They run in the runner's own
-process, so none of them can backtrack: no pattern holds a quantifier, and what would need one is
-read token by token. The limits on Semgrep are measured, not timed:
+**The text rules' total is forced.** They run in the runner's own process, where running out of
+memory would take every run on the host with it. So none of them can backtrack (no pattern holds a
+quantifier, and what would need one is read token by token), and three bounds hold whatever a claim
+writes:
+
+- They read 2 MiB in all, charged to **every path, however many share a blob**, before any work on
+  its bytes. A patch that only changes a mode names a whole blob per line, so without this a repeated
+  fixture would multiply what they read.
+- The budget goes in a fixed order, so two hosts agree on which paths it reaches: what the patch
+  created, then what it edited, then what only changed mode; Solidity first in each; then by path.
+  What the patch created always fits, since its bytes are in the patch (at most 2,000,000), so padding
+  can push a listed file out of the budget but not a helper the patch brought. A path past the budget is
+  read by no rule and says so (`not-scanned`, "unread").
+- Past the kept 50 a flag is a count by rule, and is never built.
+
+Measured by `test/helpers/scanWorst.js` on an Apple M-series host, 25 paths sharing one blob:
+
+| | Text read | Flags | Heap | Event loop blocked |
+|---|---|---|---|---|
+| Before: 4 paths, 8 MiB budget | 8 MiB | 932,068 built | 208 MiB | 840 ms |
+| Before: 25 paths | 50 MiB | 5,825,425 built | 1,468 MiB | 5.57 s |
+| Now: 25 paths, `vm.store` on every line | 2 MiB | 50 kept, 232,992 counted | runs under a 24 MiB limit | 105 ms |
+| Now: 25 paths, `.ffi` on every line (the most flags) | 2 MiB | 50 kept, 419,406 counted | runs under a 32 MiB limit | 130 ms |
+| Now: 25 paths, a lone CR on every line (the line map) | 2 MiB | 25 | runs under a 96 MiB limit | 210 ms |
+
+A mode change does count against `patchExpansionBytes`: the gate reads the index, which names the
+whole blob at each path, so 25 paths of a 1.9 MB blob pass it and 27 are refused
+(`test/docker/honesty.docker.test.js`). The expansion limit alone would still let 50 MB through to the
+text rules, which is why the budget is charged per path.
+
+**Limits on Semgrep, and why these numbers.** It gets at most 64 files and 64 KiB in all. These limits
+are measured, not timed:
 
 | Shape, in one file (an Apple M-series host under load, runc, arm64) | 1 MiB | 128 KiB | 64 KiB |
 |---|---|---|---|

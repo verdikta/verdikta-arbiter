@@ -87,7 +87,7 @@ test('every rule raises on its positives, on exactly those lines, under the real
     const r = await handle.exec(scanner.semgrepArgv({ rules: 'honesty', targets: targets.map((x) => x.name) }), { name: 'scan', timeoutMs: SCAN_TIMEOUT_MS, workdir: '/work/src' });
     const out = await handle.readFile('/work/poc.json', { maxBytes: scanner.OUTPUT_MAX_BYTES, name: 'answer', timeoutMs: 30000 });
     const scan = scanner.parseScan({ stdout: out.bytes, exitCode: r.exitCode, truncated: out.overLimit }, targets, { table: scanner.HONESTY_RULES });
-    return scanner.honestyFlags(scan, targets, [], scanner.readText(texts), texts);
+    return scanner.honestyFlags(scan, targets, [], scanner.readText(texts), texts, new scanner.KeptFlags(Infinity));
   });
   assert.deepEqual(summary(answer), expectedOf('test/positive.sol', source));
 });
@@ -392,6 +392,44 @@ test('a real claim: the flags in a real PoC reach a valid report, on the patch\'
 
   const again = await runReal(t, claimOf(fx));
   assert.equal(again.sha256, sha256, 'the same report hash on a second run');
+});
+
+test('R6-F1, a real mode-only patch through the gates: 25 paths share one blob, a mode change counts its whole size against the expansion, and the text rules read it once', { timeout: TIMEOUT }, async (t) => {
+  const blob = 'vm.store\n'.repeat(Math.floor(1900000 / 9));
+  const copies = {};
+  const name = (i) => `test/data/p${String(i).padStart(2, '0')}.txt`;
+  for (let i = 0; i < 27; i += 1) copies[name(i)] = blob;
+  const fx = await buildFixture(builder, { files: { ...VAULT_REPO, 'test/Vm.sol': VM, ...copies }, instance: `h${crypto.randomBytes(4).toString('hex')}` });
+  t.after(() => fx.remove().catch(() => {}));
+  const flip = (n) => Array.from({ length: n }, (_, i) => `diff --git a/${name(i)} b/${name(i)}\nold mode 100644\nnew mode 100755\n`).join('');
+  const helper = 'vm.store(address(1), bytes32(0), bytes32(0));\n';
+  const created = { 'test/Exploit.t.sol': POC, 'test/zzz-helper.txt': helper };
+  const pocPatch = (n) => Buffer.concat([Buffer.from(flip(n)), addFilesPatch(created)]);
+  const createdBytes = POC.length + helper.length;
+
+  // 27 of them are 51,300,000 bytes: a mode change counts, and the gate refuses it before any claim code.
+  const refused = await runReal(t, claimOf(fx, { pocPatch: pocPatch(27) }));
+  assert.equal(refused.result.gates.applies.status, 'fail', JSON.stringify(refused.result.gates));
+  assert.equal(refused.result.gates.applies.basis, 'input');
+  assert.match(refused.result.gates.applies.detail, /patchExpansionBytes/);
+  assert.equal(refused.result.facts.patch.expansionBytes, 27 * blob.length + createdBytes);
+
+  // 25 are 47,500,000 bytes: they pass, the claim runs, and the budget holds.
+  const { result, report } = await runReal(t, claimOf(fx, { pocPatch: pocPatch(25) }));
+  assert.equal(result.gates.applies.status, 'pass', JSON.stringify(result.gates));
+  assert.equal(result.facts.patch.expansionBytes, 25 * blob.length + createdBytes);
+  assert.equal(result.gates.reproduces.status, 'pass', JSON.stringify(result.gates));
+  assert.equal(result.gates.integrity.status, 'pass', JSON.stringify(result.gates));
+  assert.equal(codeReview.validateClaimReport(report).ok, true);
+  const flags = report.poc.honestyFlags;
+  assert.equal(flags.length, 50);
+  const note = flags.find((f) => f.rule === ID('truncated'));
+  assert.ok(note, 'the rest are counted');
+  assert.match(note.message, /not-scanned: \d+/, 'the paths past the budget are stated, counted where they are not listed');
+  assert.match(note.message, /storage-overwrite: \d+/, 'and the flags they could have hidden are named');
+  assert.ok(Number(/(\d+) more/.exec(note.message)[1]) > 200000, note.message);
+  assert.ok(flags.some((f) => f.rule === ID('not-scanned') && f.file.startsWith('test/data/')), JSON.stringify(flags.slice(0, 3)));
+  assert.ok(flags.some((f) => f.rule === ID('unread-reach') && f.file === 'test/zzz-helper.txt'), 'the helper the patch created is read, beside all that padding');
 });
 
 test('a real fix: forge fmt --check and Semgrep --baseline-commit give what the fix brought in, and only that; a .semgrepignore in it has no effect', { timeout: TIMEOUT }, async (t) => {
