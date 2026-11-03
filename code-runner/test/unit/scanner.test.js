@@ -281,7 +281,7 @@ test('a byte that is not UTF-8, and NUL, are replaced where they sit: a regex ru
 // ------------------------------------------------------------------ reading Semgrep's answer
 
 const scanOf = (results = [], errors = [], scanned = ['f0.sol'], over = {}) => Buffer.from(JSON.stringify({
-  version: SEMGREP.version, results, errors, paths: { scanned }, ...over
+  version: SEMGREP.version, results, errors, paths: { scanned }, engine_requested: 'OSS', skipped_rules: [], ...over
 }));
 const hit = (rule, file = 'f0.sol', line = 3, end = line) => ({
   check_id: rule, path: file, start: { line, col: 1, offset: 0 }, end: { line: end, col: 2, offset: 1 },
@@ -308,8 +308,11 @@ test('whatever the tool says, an answer the runner cannot account for abstains: 
   abstains(() => parseScan({ stdout: scanOf(), exitCode: 2, truncated: false }, t, { table: HONESTY_RULES }), /exited 2/);
   abstains(() => parseScan({ stdout: scanOf(), exitCode: 0, truncated: true }, t, { table: HONESTY_RULES }), /cut/);
   abstains(() => parsed(scanOf([], [], ['f0.sol'], { version: '1.180.0' })), /version/);
-  abstains(() => parsed(Buffer.from(JSON.stringify({ version: SEMGREP.version, results: [], errors: [] }))), /scanned/);
-  abstains(() => parsed(Buffer.from(JSON.stringify({ version: SEMGREP.version, errors: [], paths: { scanned: [] } }))), /results/);
+  abstains(() => parsed(scanOf([], [], ['f0.sol'], { skipped_rules: [{ rule_id: STORE, details: 'x' }] })), /skipped/);
+  abstains(() => parsed(scanOf([], [], ['f0.sol'], { skipped_rules: undefined })), /skipped/);
+  abstains(() => parsed(scanOf([], [], ['f0.sol'], { engine_requested: 'PRO' })), /engine/);
+  abstains(() => parsed(scanOf([], [], ['f0.sol'], { paths: undefined })), /scanned/);
+  abstains(() => parsed(scanOf(undefined, [], ['f0.sol'], { results: undefined })), /results/);
   abstains(() => parsed(scanOf([hit('hunter.planted')])), /rule/);
   abstains(() => parsed(scanOf([hit(STORE, 'test/Exploit.t.sol')])), /path/);
   abstains(() => parsed(scanOf([{ ...hit(STORE), start: { line: 'x' } }])), /line/);
@@ -416,11 +419,15 @@ test('a data file that does not parse is not a scan that failed; a name in it st
   assert.deepEqual(flags.map((f) => [f.rule, f.file]).sort(), [[STORE, 'test/Helper.txt'], [STATED_ID('unread-reach'), 'test/notes.md']].sort());
 });
 
-test('a data file past the limits is no flag at all; a Solidity file past them is', () => {
+test('a data file past Semgrep\'s limit is no flag, a Solidity file past it is, and a file no rule read says so whatever its name', () => {
   const big = Buffer.alloc(SCAN_LIMITS.fileBytes + 1, 0x20);
-  const input = prepareTargets([entry('test/data.json', '', { bytes: big, size: big.length }), entry('test/Big.sol', '', { bytes: big, size: big.length })]);
+  const input = prepareTargets([
+    entry('test/data.json', '', { bytes: big, size: big.length }),
+    entry('test/Big.sol', '', { bytes: big, size: big.length }),
+    entry('test/huge.txt', '', { bytes: null, size: TEXT_LIMITS.fileBytes + 1 })
+  ]);
   assert.deepEqual(input.targets, []);
-  assert.deepEqual(input.unscanned, [{ path: 'test/Big.sol', reason: 'too-large' }]);
+  assert.deepEqual(input.unscanned, [{ path: 'test/Big.sol', reason: 'too-large' }, { path: 'test/huge.txt', reason: 'unread' }]);
 });
 
 test('a file the tool does not say it read is stated: a clean answer about nothing is not a clean answer', () => {

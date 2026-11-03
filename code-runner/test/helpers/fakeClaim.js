@@ -574,7 +574,7 @@ function semgrepAnswer(d, over) {
   if (o.exitCode !== undefined || o.stdout !== undefined) return o;
   return {
     stdout: JSON.stringify({
-      version: o.version || SEMGREP.version, results: o.results || [], errors: o.errors || [], paths: { scanned: o.scanned || targets }, skipped_rules: []
+      version: o.version || SEMGREP.version, results: o.results || [], errors: o.errors || [], paths: { scanned: o.scanned || targets }, engine_requested: 'OSS', skipped_rules: o.skipped || []
     })
   };
 }

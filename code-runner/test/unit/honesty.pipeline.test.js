@@ -21,7 +21,7 @@ const { REPORT_MAX_LINE, BASE_IMAGE_PINS } = require('../../src/common');
 const {
   SEMGREP, RULE_FILES, HONESTY_RULES, FIX_RULES, SCAN_MEMORY_MB, SCAN_RESERVE_MS, SCAN_BUDGET_MS, ruleBytes, requireScanner
 } = require('../../src/scanner');
-const { claimSandbox, junit, drainFails, semgrepHit, FIX_PATCH, BASE, POC_PATCH } = require('../helpers/fakeClaim');
+const { claimSandbox, junit, drainFails, semgrepHit, semgrepAnswer, FIX_PATCH, BASE, POC_PATCH } = require('../helpers/fakeClaim');
 const { fakeDocker, healthyDaemon } = require('../helpers/fakeDocker');
 const { claimRequest, runClaim, forgeSpec, finding, DEPOSIT, IMAGE } = require('../helpers/claimRun');
 const { settlementFacts } = require('../helpers/settlementFacts');
@@ -187,7 +187,8 @@ test('a scan that fails on the host or in the tool abstains: no report that read
     'not JSON': () => ({ exitCode: 0, stdout: 'Traceback' }),
     'a version off the pin': () => ({ version: '1.180.0' }),
     'an error kind the runner does not know': () => ({ errors: [{ type: 'Timeout', level: 'warn', path: 'f0.sol' }] }),
-    'a rule it was not given': () => ({ results: [semgrepHit('hunter.planted')] })
+    'a rule it was not given': () => ({ results: [semgrepHit('hunter.planted')] }),
+    'a rule it skipped': () => ({ skipped: [{ rule_id: STORE, details: 'needs another engine' }] })
   };
   for (const [name, semgrep] of Object.entries(failures)) {
     await t.test(name, async () => {
@@ -497,7 +498,7 @@ const execute = (sb, request) => {
 test('a hostile file cannot turn a listing\'s run into an abstention: the scan has its own budget, outside runSeconds', async () => {
   const slow = async (d) => {
     await new Promise((resolve) => { setTimeout(resolve, 1500); });
-    return { stdout: JSON.stringify({ version: SEMGREP.version, results: [], errors: [], paths: { scanned: d.argv.filter((a) => /^f[0-9]+\.sol$/.test(a)) } }) };
+    return semgrepAnswer(d);
   };
   const r = await execute(claimSandbox({ scripts: { semgrep: slow } }), smallRun(1));
   assert.equal(r.outcome, 'definitive', show(r));
