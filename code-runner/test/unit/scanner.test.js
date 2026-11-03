@@ -394,7 +394,58 @@ test('each text rule reads what Semgrep\'s Solidity patterns cannot, and no ordi
   assert.deepEqual(lines('Vm v = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);\n'), [['verdikta.honesty.cheatcode-address', 1]]);
   assert.deepEqual(lines('assembly { let ok := call(gas(), 0x7109709ecfa91a80626ff3989d68f67f5b1dd12d, 0, 0, 0, 0, 0) }\n'), [['verdikta.honesty.cheatcode-address', 1]]);
   assert.deepEqual(lines('Cheat(a).store({a: b,\n c: d});\n'), [['verdikta.honesty.store-named-arguments', 1]]);
+  assert.deepEqual(lines('Cheat(a) . /*x*/ store /*y*/ ( /*z*/ {a: b, c: d});\n'), [['verdikta.honesty.store-named-arguments', 1]]);
+  assert.deepEqual(lines('vault.store(1);\nstore({a: 1});\nvault.storeAll({a: 1});\n'), []);
   assert.deepEqual(lines('vault.store(1); address(vault).call(hex"00"); uint256 fee = 0x70ca10bb00; string s = "store(uint256)"; 0x7109709ecfa91a80626ff3989d68f67f5b1dd12d00;\n'), []);
+});
+
+test('R4-F1: the text rules run in the runner\'s own process, so none of them can backtrack: no pattern holds a quantifier', () => {
+  for (const [id, rule] of Object.entries(TEXT_RULES)) {
+    if (!rule.pattern) continue;
+    const bare = rule.pattern.source.replace(/\\./g, 'x').replace(/\(\?:/g, '(');
+    assert.doesNotMatch(bare, /[*+?{]/, `${id} holds a quantifier`);
+  }
+});
+
+test('R4-F1: on what a hunter can write at the limit, the text rules take no time to speak of', () => {
+  const n = TEXT_LIMITS.fileBytes;
+  const fill = (u) => u.repeat(Math.ceil(n / u.length)).slice(0, n);
+  const shapes = {
+    'vm and spaces': `vm${' '.repeat(n)}!`,
+    'vm and spaces, again and again': fill(`vm${' '.repeat(1000)}!`),
+    'vm and closing parentheses': `vm${') '.repeat(n / 2)}!`,
+    'a dot and spaces': `.${' '.repeat(n)}!`,
+    'dots': fill('.'),
+    'dots and spaces': fill(`.${' '.repeat(1000)}`),
+    'a name and spaces': `store${' '.repeat(n)}!`,
+    'names and spaces': fill(`store${' '.repeat(1000)}`),
+    '.warp( and spaces': fill(`.warp(${' '.repeat(1000)}`),
+    '.store( and spaces': fill(`.store(${' '.repeat(1000)}`),
+    'block . block .': fill('.warp(block . '),
+    'open comments': fill('/*'),
+    'line comments': fill('//\n'),
+    'quotes': fill('"'),
+    'backslashes in a string': `"${fill('\\')}`,
+    'one long word': fill('a'),
+    'words': fill('a '),
+    'names': fill('.store '),
+    'hex': fill('0x'),
+    'store(': fill('store('),
+    'line feeds': fill('\n')
+  };
+  for (const [name, source] of Object.entries(shapes)) {
+    const bytes = Buffer.from(source);
+    const t0 = Date.now();
+    readText([{ path: 'p', bytes }]);
+    assert.ok(Date.now() - t0 < 5000, `${name}: ${Date.now() - t0} ms for ${bytes.length} bytes`);
+  }
+});
+
+test('R4-F1: the bound on what the text rules read is what a patch can add, not much more', () => {
+  const { CLASS_HARD_LIMITS } = require('../../src/common');
+  assert.ok(TEXT_LIMITS.fileBytes >= CLASS_HARD_LIMITS.maxPatchBytes, 'a file a patch adds is always read');
+  assert.ok(TEXT_LIMITS.fileBytes <= 2 * CLASS_HARD_LIMITS.maxPatchBytes);
+  assert.ok(TEXT_LIMITS.totalBytes <= 4 * TEXT_LIMITS.fileBytes);
 });
 
 test('the text rules take the same bytes twice and answer the same: their patterns hold no state between files', () => {

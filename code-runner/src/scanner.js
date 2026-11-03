@@ -87,7 +87,7 @@ const RULE_FILES = Object.freeze({
  */
 const SCAN_LIMITS = Object.freeze({ files: 64, fileBytes: 64 * 1024, totalBytes: 64 * 1024 });
 /** What the text rules read: past this a file is read by no rule, and says so. A patch cannot add this much (maxPatchBytes). */
-const TEXT_LIMITS = Object.freeze({ fileBytes: 4 * 1024 * 1024, totalBytes: 16 * 1024 * 1024 });
+const TEXT_LIMITS = Object.freeze({ fileBytes: 2 * 1024 * 1024, totalBytes: 8 * 1024 * 1024 });
 /** Semgrep's own bound on a rule over a file (--max-memory, MiB): past it a per-file `Out of memory`, a stated fact. Below the container's. */
 const SEMGREP_MAX_MEMORY_MB = 1024;
 /** The scanner's own sandbox, whatever the listing asks of its own (the spec may say 256 MiB); the flags are every sandbox's. */
@@ -139,9 +139,10 @@ const HONESTY_RULES = Object.freeze({
 });
 
 /**
- * The rules that read text, run by the runner over the normal form: no parse, no match cap, and
- * linear (each alternative starts with a literal). They read comments too, which costs little:
- * these strings have no business in a test's comments, and the flag says what the jury should read.
+ * The rules that read text, run in the runner's own process over the normal form, so what a hunter writes must not cost
+ * it time: a slow pattern would stop its deadline and cancellation timers. So no pattern holds a quantifier (a test holds
+ * that), and what needs one is read token by token (scanCode), which cannot backtrack. No parse, and no match cap. They read
+ * comments too, which costs little: these strings have no business in a test's comments, and the flag says what the jury should read.
  */
 const TEXT_RULES = Object.freeze({
   // A cheatcode's signature or selector: the raw route needs one of these, whatever names the address.
@@ -156,26 +157,21 @@ const TEXT_RULES = Object.freeze({
     message: 'Names the cheatcode address by value. Calls made through it may not be readable by cheatcode name.',
     pattern: /\b0x7109709ecfa91a80626ff3989d68f67f5b1dd12d\b/gi
   },
-  // store with named arguments, which Semgrep's Solidity patterns cannot spell.
+  // store with named arguments, which Semgrep's Solidity patterns cannot spell (scanCode).
   'verdikta.honesty.store-named-arguments': {
     severity: 'medium',
-    message: 'Calls store with named arguments: the vm.store cheatcode, through an alias or not, or a contract\'s own function. The test shows which.',
-    pattern: /\.\s*store\s*\(\s*\{/g
+    message: 'Calls store with named arguments: the vm.store cheatcode, through an alias or not, or a contract\'s own function. The test shows which.'
   }
 });
 
 /**
  * A cheatcode's name as code uses it: a member (`x.store`, a call or a reference) or a call. A flag only in a file the
- * parser did not wholly read (a comment may say it anywhere else). Read on the text with its comments blanked, as solc reads them, so
- * a comment before the call hides nothing, and on the text as written. A best effort beside the fact that always
- * stands, that the file was not wholly read: text cannot follow every alias.
+ * parser did not wholly read (a comment may say it anywhere else). A best effort beside the fact that always stands, that
+ * the file was not wholly read: text cannot follow every alias.
  */
-const REACH_NAMES = 'store|setArbitraryStorage|copyStorage|loadAllocs|checked_write|checked_write_int|etch|deployCodeTo|attachDelegation|signAndAttachDelegation|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|selectFork|rollFork|rpc|rpcUrl|rpcUrls|rpcUrlStructs|eth_getLogs|transact|writeFile|writeFileBinary|writeLine|writeJson|writeToml|copyFile|removeFile|removeDir|createDir|dumpState|readFile|readFileBinary|readLine|readDir|readLink|fsMetadata|unixTime|rewind';
-/** Common names on contracts, which the rules read on vm alone (rules/honesty.yml). */
-const REACH_ON_VM = 'exists|isFile|isDir|sleep|setBlockhash|prevrandao|difficulty|chainId|fee|coinbase|txGasPrice|blobBaseFee|blobhashes|setNonce|setNonceUnsafe|resetNonce|setEnv|setEvmVersion';
-/** The clock on what no parser read: vm's warp and roll whatever the argument, which cannot be judged there; another receiver's by the rules' arguments. */
-const REACH_CLOCK = '\\.\\s*warp\\s*\\(\\s*(?:0\\s*\\)|type\\s*\\(|block\\s*\\.\\s*timestamp\\s*-)|\\.\\s*roll\\s*\\(\\s*(?:0\\s*\\)|type\\s*\\(|block\\s*\\.\\s*number\\s*-)';
-const UNREAD_REACH = new RegExp(`\\.\\s*(?:${REACH_NAMES})\\b|\\b(?:${REACH_NAMES})\\s*[({]|\\bvm\\s*\\)*\\s*\\.\\s*(?:${REACH_ON_VM}|warp|roll)\\b|${REACH_CLOCK}`, 'g');
+const REACH_NAMES = new Set('store|setArbitraryStorage|copyStorage|loadAllocs|checked_write|checked_write_int|etch|deployCodeTo|attachDelegation|signAndAttachDelegation|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|selectFork|rollFork|rpc|rpcUrl|rpcUrls|rpcUrlStructs|eth_getLogs|transact|writeFile|writeFileBinary|writeLine|writeJson|writeToml|copyFile|removeFile|removeDir|createDir|dumpState|readFile|readFileBinary|readLine|readDir|readLink|fsMetadata|unixTime|rewind'.split('|'));
+/** Common names on contracts, which the rules read on vm alone (rules/honesty.yml). warp and roll count on vm whatever the argument, which cannot be judged here. */
+const REACH_ON_VM = new Set('exists|isFile|isDir|sleep|setBlockhash|prevrandao|difficulty|chainId|fee|coinbase|txGasPrice|blobBaseFee|blobhashes|setNonce|setNonceUnsafe|resetNonce|setEnv|setEvmVersion|warp|roll'.split('|'));
 
 /** The bug rules: solidity.yml's severities and messages, word for word (test/unit/scanner.test.js). */
 const FIX_RULES = Object.freeze({
@@ -478,7 +474,9 @@ function lineAt(feeds, offset) {
 
 /**
  * The text rules over what prepareTargets read: their hits, and every line that
- * names a cheatcode, which counts only where the parser did not read.
+ * names a cheatcode, which counts only where the parser did not read. Read on the
+ * text with its comments blanked, as solc reads them, so a comment before a call
+ * hides nothing, and on the text as written.
  * @param {object[]} texts
  * @returns {{hits:Array<{rule:string, path:string, line:number}>, reach:Map<string, number[]>}} lines are scanned lines
  */
@@ -489,16 +487,90 @@ function readText(texts) {
     const text = file.bytes.toString('utf8');
     const feeds = lineFeeds(text);
     const forms = [text, blankComments(text)];
-    for (const [rule, { pattern }] of Object.entries(TEXT_RULES)) {
-      const lines = new Set();
-      for (const form of forms) for (const m of form.matchAll(pattern)) lines.add(`${m.index}`);
-      for (const at of lines) hits.push({ rule, path: file.path, line: lineAt(feeds, Number(at)) });
-    }
+    const found = new Map(Object.keys(TEXT_RULES).map((rule) => [rule, new Set()]));
     const lines = new Set();
-    for (const form of forms) for (const m of form.matchAll(UNREAD_REACH)) lines.add(lineAt(feeds, m.index));
+    for (const form of forms) {
+      for (const [rule, { pattern }] of Object.entries(TEXT_RULES)) {
+        if (pattern) for (const m of form.matchAll(pattern)) found.get(rule).add(m.index);
+      }
+      const code = scanCode(form);
+      for (const at of code.named) found.get('verdikta.honesty.store-named-arguments').add(at);
+      for (const at of code.reach) lines.add(lineAt(feeds, at));
+    }
+    for (const [rule, offsets] of found) for (const at of offsets) hits.push({ rule, path: file.path, line: lineAt(feeds, at) });
     if (lines.size) reach.set(file.path, [...lines].sort((x, y) => x - y));
   }
   return { hits, reach };
+}
+
+const isSpace = (c) => c === 32 || (c >= 9 && c <= 13);
+const isWord = (c) => (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122) || c === 95 || c === 36;
+
+/**
+ * Where a cheatcode's name stands in code, token by token. One pass, and each look
+ * ahead stops at the next token or two, so its time is linear in the text whatever
+ * the text is: there is nothing to backtrack over.
+ * @param {string} text
+ * @returns {{reach:number[], named:number[]}} offsets
+ */
+function scanCode(text) {
+  const n = text.length;
+  const next = (from) => {
+    let i = from;
+    while (i < n && isSpace(text.charCodeAt(i))) i += 1;
+    return i;
+  };
+  const wordAt = (from) => {
+    let e = from;
+    while (e < n && isWord(text.charCodeAt(e))) e += 1;
+    return text.slice(from, e);
+  };
+  /** An argument of warp or roll the framework's forward move is not: 0, the end of a type, block.timestamp - x (block.number - x). */
+  const pastClock = (name, open) => {
+    const a = next(open + 1);
+    const w = wordAt(a);
+    if (w === '0') return text[next(a + 1)] === ')';
+    if (w === 'type') return text[next(a + 4)] === '(';
+    if (w !== 'block') return false;
+    const dot = next(a + 5);
+    if (text[dot] !== '.') return false;
+    const f = next(dot + 1);
+    const field = wordAt(f);
+    return field === (name === 'warp' ? 'timestamp' : 'number') && text[next(f + field.length)] === '-';
+  };
+  const reach = [];
+  const named = [];
+  let lastWord = '';
+  let onlyParens = false;
+  let member = false;
+  let memberOfVm = false;
+  let i = 0;
+  while (i < n) {
+    const c = text.charCodeAt(i);
+    if (isSpace(c)) {
+      i += 1;
+    } else if (isWord(c)) {
+      const word = wordAt(i);
+      const after = next(i + word.length);
+      const a = text[after];
+      if ((REACH_NAMES.has(word) && (member || a === '(' || a === '{'))
+        || (memberOfVm && REACH_ON_VM.has(word))
+        || (member && (word === 'warp' || word === 'roll') && a === '(' && pastClock(word, after))) reach.push(i);
+      if (word === 'store' && member && a === '(' && text[next(after + 1)] === '{') named.push(i);
+      lastWord = word;
+      onlyParens = true;
+      member = false;
+      memberOfVm = false;
+      i += word.length;
+    } else {
+      member = c === 46;
+      memberOfVm = member && onlyParens && lastWord === 'vm';
+      // `(vm).x`: closing parentheses keep the word as the receiver; anything else ends it.
+      if (c !== 41) onlyParens = false;
+      i += 1;
+    }
+  }
+  return { reach, named };
 }
 
 /**
@@ -539,7 +611,11 @@ const NO_TEXT = Object.freeze({ hits: [], reach: new Map() });
 
 /** The text rules' own hash: they live in this file, and a change to one is a change of the pin (test/unit/scanner.test.js). */
 function textRulesSha256() {
-  const form = { rules: Object.fromEntries(Object.entries(TEXT_RULES).map(([id, r]) => [id, [r.severity, r.message, r.pattern.source, r.pattern.flags]])), reach: [UNREAD_REACH.source, UNREAD_REACH.flags] };
+  const form = {
+    rules: Object.fromEntries(Object.entries(TEXT_RULES).map(([id, r]) => [id, [r.severity, r.message, r.pattern ? r.pattern.source : null, r.pattern ? r.pattern.flags : null]])),
+    names: [[...REACH_NAMES], [...REACH_ON_VM]],
+    code: [scanCode.toString(), blankComments.toString()]
+  };
   return crypto.createHash('sha256').update(JSON.stringify(form)).digest('hex');
 }
 

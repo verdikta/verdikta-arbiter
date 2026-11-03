@@ -1587,7 +1587,7 @@ The runner never pulls this image. The installer warms it (node A8). Missing or 
 | `.semgrep.yml`, `.semgrep/` | Never in the tree; `--config` names the runner's file |
 | `--baseline-commit` runs `core.fsmonitor` from `.git/config` | The repository is built in the scanner's sandbox from the runner's bytes: no `.git` a claim could have touched |
 | Past 10,000 matches of one rule in one file: **every** result of that file dropped, a warning, exit 0 | Read: the rule is stated, the file is stated unread, and its cheatcode names stay flags |
-| A `pattern-regex` rule also matches comments, so a comment could reach that cap | The rules that read text are not in Semgrep |
+| A `pattern-regex` rule also matches comments, so a comment could reach that cap | The rules that read text are not in Semgrep: they run in the runner, linear in what they read |
 | A wall-clock limit per rule | `--timeout 0`: a slow host must not change a flag |
 | **Under gVisor, stdout is cut at 65,536 bytes with exit 0** (runc: whole) | `--output` to a file, read with `cat`: whole under both |
 | A rule it skipped is listed in `skipped_rules` beside its results, and reads like one that found nothing | Any skipped rule, or another engine, abstains |
@@ -1624,7 +1624,9 @@ can force one of them, but it costs a visible fact, and the names on the file's 
 far as text can tell.
 
 **Limits, and why these numbers.** Semgrep gets at most 64 files and 64 KiB in all; the text
-rules read 4 MiB a file and 16 MiB in all. They are measured, not timed:
+rules read 2 MiB a file (what a patch can add) and 8 MiB in all. They run in the runner's own
+process, so none of them can backtrack: no pattern holds a quantifier, and what would need one is
+read token by token. The limits on Semgrep are measured, not timed:
 
 | Shape, in one file (an Apple M-series host under load, runc, arm64) | 1 MiB | 128 KiB | 64 KiB |
 |---|---|---|---|
