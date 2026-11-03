@@ -100,7 +100,7 @@ describe('the merged runner answers what the EA reads', () => {
 
   it('an abstaining run: the EA abstains', async () => {
     await startRunner(claimSandbox({ scripts: { 'vcr-build': () => ({ exitCode: 137 }) } }));
-    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_RUNNER_ABSTAIN.*oom/);
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_RUNNER_ABSTAIN.*cause oom, step build\b/);
     expect(ai.state.calls).toHaveLength(0);
   });
 
@@ -171,6 +171,82 @@ describe('the merged runner answers what the EA reads', () => {
     const body = buildRunRequest(context, 700000);
     expect(body.fixPatch).toBeNull();
     expect(validateRunRequest(body).ok).toBe(true);
+  });
+});
+
+describe('the runner\'s 16 MiB request limit', () => {
+  const { MAX_BODY_BYTES } = require(path.join(CODE_RUNNER, 'src/config'));
+  const { checkSpec } = require(path.join(CODE_RUNNER, 'src/classLimits'));
+  const { scanPatch } = require(path.join(CODE_RUNNER, 'src/patch'));
+  const { maxPatchBytes } = require('../../codeReview/frontGates');
+  const sized = (body) => Buffer.byteLength(JSON.stringify(body), 'utf8');
+
+  it('padded report.md and prior reports: the real server takes the request, the real pack cuts them, the jury judges', async () => {
+    await startRunner();
+    const padded = `REPORT-MD-TEXT\n${'padding '.repeat(3 * 1024 * 1024)}`;
+    expect(padded.length).toBeGreaterThan(MAX_BODY_BYTES);
+    const context = contextFor({
+      priorFindings: [{ bcid: 'QmPChd2hVbrJ6bfo3WBcTW4iZnpHm8TEzWkLHmLpXhF68A', finding: finding(), report: padded }]
+    });
+    context.claim.report = padded;
+    const result = await runClaim(context, options());
+    expect(result.scores).toEqual(R.juryScores());
+    expect(ai.state.calls[0].attachments.join('\n')).toContain('REPORT-MD-TEXT');
+    const pack = ai.state.calls[0].attachments.join('');
+    expect(Buffer.byteLength(pack)).toBeLessThanOrEqual(codeReview.getCodeClass('code-standard').envelope.contextPackTokens * 4);
+  });
+
+  it('what a claim and its priors can add, at the worst JSON escaping their schemas allow, stays under the limit', () => {
+    // every character a control character, which JSON writes as \\u00XX; a path may hold them
+    const worstText = (n) => '\u0001'.repeat(n);
+    const worstFinding = (over = {}) => ({
+      version: 1, title: worstText(120), claimedClass: 'CRITICAL', rootCause: worstText(2000),
+      affectedPaths: Array.from({ length: 200 }, (_, i) => `${i}${worstText(508)}`),
+      poc: { command: worstText(2000), observable: worstText(1000) }, fixIncluded: true, ...over
+    });
+    expect(codeReview.validateFinding(worstFinding()).ok).toBe(true);
+    const limit = codeReview.SPEC_LIMIT_MAXIMA.maxPatchBytes;
+    const context = contextFor({
+      priorFindings: Array.from({ length: 8 }, (_, i) => ({ bcid: `Qm${String(i + 1).repeat(44)}`, finding: worstFinding(), report: worstText(20 * 1024 * 1024) }))
+    });
+    context.claim.finding = worstFinding();
+    context.claim.report = worstText(20 * 1024 * 1024);
+    context.claim.pocPatch = Buffer.alloc(limit, 0xff);
+    context.claim.fixPatch = Buffer.alloc(limit, 0xff);
+    const listingOnly = sized(buildRunRequest(contextFor(), 700000));
+    const total = sized(buildRunRequest(context, 700000));
+    const claimsPart = total - listingOnly;
+    expect(total).toBeLessThan(MAX_BODY_BYTES);
+    // what is left of the limit is the listing's, and a listing check can hold it to that
+    expect(MAX_BODY_BYTES - claimsPart).toBeGreaterThan(3 * 1024 * 1024);
+  });
+
+  it('a listing alone over the limit: the real server answers 413, the EA abstains', async () => {
+    await startRunner();
+    const context = contextFor();
+    const id = 'x'.repeat(1024);
+    context.listing.baseline = {
+      ...context.listing.baseline,
+      tests: Array.from({ length: 20000 }, (_, i) => ({ id: `${id.slice(0, 1000)}${i}`, results: ['pass', 'pass', 'pass'] }))
+    };
+    expect(sized(buildRunRequest(context, 700000))).toBeGreaterThan(MAX_BODY_BYTES);
+    await expect(runClaim(context, options())).rejects.toThrow(/CODE_REVIEW_RUNNER_(ANSWER|UNREACHABLE)/);
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
+  it('the EA reads a listing\'s patch limit as the runner does, with one and without', () => {
+    const named = forgeSpec();
+    expect(maxPatchBytes(named)).toBe(checkSpec(named).limits.maxPatchBytes);
+    const none = forgeSpec();
+    delete none.limits;
+    expect(maxPatchBytes(none)).toBe(checkSpec(none).limits.maxPatchBytes);
+    expect(maxPatchBytes(none)).toBe(2000000);
+  });
+
+  it('and draws the line where the runner\'s applies gate does', () => {
+    const limits = { maxPatchBytes: 5000 };
+    expect(scanPatch(Buffer.alloc(5001, 0x20), limits).reason).toMatch(/5001 bytes.*5000/);
+    expect(scanPatch(Buffer.alloc(5000, 0x20), limits).reason || '').not.toMatch(/maxPatchBytes/);
   });
 });
 

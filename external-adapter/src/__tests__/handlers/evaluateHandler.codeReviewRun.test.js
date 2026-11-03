@@ -867,6 +867,143 @@ describe('acceptance 5: the retry', () => {
 });
 
 // ---------------------------------------------------------------------------
+describe('what a claim\'s own patch can cause (owner decisions Q12, Q28; erratum E6)', () => {
+  it.each([
+    ['a PoC past the memory limit', 'oom', 'poc:run-1'],
+    ['memory while the patch applies (Q28)', 'oom', 'patch:apply'],
+    ['memory at the reference', 'oom', 'reference:manifest'],
+    ['a PoC that never ends', 'step_timeout', 'poc:run-1'],
+    ['a build the patch makes too slow', 'step_timeout', 'build'],
+    ['a fork storm', 'pids_limit', 'poc:run-2'],
+    ['forge killed through ffi', 'killed_by_signal', 'poc:run-1'],
+    ['a sandbox the claim took down', 'sandbox_died', 'poc:run-3']
+  ])('%s abstains: errored, no commit, no model, the cause and the step named for the operator', async (_label, cause, step) => {
+    runner.state.answer = () => R.abstained(cause, step);
+    const res = await evaluateHandler(request(scenario().cid(1)));
+    expectAbstain(res, new RegExp(`CODE_REVIEW_RUNNER_ABSTAIN.*cause ${cause}, step ${step}\\b`));
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
+  it('it is never read as a verdict, in any mode: nothing reaches the chain or IPFS to say why', async () => {
+    runner.state.answer = () => R.abstained('oom', 'poc:run-1');
+    expectAbstain(await evaluateHandler(request(scenario().cid(0))));
+    expect(mockState.client.ipfsClient.uploadToIPFS).not.toHaveBeenCalled();
+  });
+
+  it('each round runs the sandbox again: a re-triggered round gets the same abstention, not a kept one', async () => {
+    runner.state.answer = () => R.abstained('oom', 'poc:run-1');
+    const s = scenario();
+    expectAbstain(await evaluateHandler(request(s.cid(1), 'round-1')));
+    expectAbstain(await evaluateHandler(request(s.cid(1), 'round-2')));
+    expect(runner.state.runs).toHaveLength(2);
+  });
+
+  it('a requester error the patch caused (a claim over a listing\'s watch caps) is errored too: no commit, the code named', async () => {
+    runner.state.answer = () => ({ status: 400, json: { outcome: 'requester_error', issues: [{ code: 'IMAGE_WATCH_TOO_LARGE', path: '/spec/env/image', detail: 'test/HUNTER-TEXT-IN-DETAIL' }] } });
+    const res = await evaluateHandler(request(scenario().cid(1)));
+    expectAbstain(res, /CODE_REVIEW_RUNNER_REFUSED.*IMAGE_WATCH_TOO_LARGE/);
+    expect(res.error).not.toContain('HUNTER-TEXT-IN-DETAIL');
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
+  describe('size: the runner\'s request limit (16 MiB) is not a route a hunter can use', () => {
+    const LIMIT = 1000;
+    const limited = { mutateSpec: (spec) => { spec.limits.maxPatchBytes = LIMIT; } };
+    const patchOf = (bytes) => `${H.POC_PATCH}+${'x'.repeat(bytes - H.POC_PATCH.length - 2)}\n`;
+
+    it('poc.patch over maxPatchBytes settles INVALID at the EA, as the runner\'s applies gate would, with no runner call', async () => {
+      const s = scenario({ listing: limited, claim: { pocPatch: patchOf(LIMIT + 1) } });
+      const out = await commitAndReveal(s);
+      expect(out.reveal.data.aggregatedScore).toEqual(INVALID);
+      expect(out.stored.result.metadata).toMatchObject({ verdict_source: 'code-review-gate', gate: 'applies', check: 'PATCH_TOO_LARGE' });
+      expect(out.justification.justification).toContain('Gate: applies');
+      expect(out.justification.justification).toContain(`${LIMIT + 1} bytes`);
+      expect(runner.state.healthCalls).toBe(0);
+      expect(ai.state.calls).toHaveLength(0);
+    });
+
+    it('exactly at the limit it goes to the runner', async () => {
+      const s = scenario({ listing: limited, claim: { pocPatch: patchOf(LIMIT) } });
+      await evaluateHandler(request(s.cid(1)));
+      expect(runner.state.runs).toHaveLength(1);
+      expect(Buffer.from(runner.state.runs[0].pocPatch, 'base64').length).toBe(LIMIT);
+    });
+
+    it('a listing that names no limit is held to the class\'s', async () => {
+      const over = codeReview.SPEC_LIMIT_MAXIMA.maxPatchBytes + 1;
+      const s = scenario({ listing: { mutateSpec: (spec) => { delete spec.limits; } }, claim: { pocPatch: patchOf(over) } });
+      const res = await evaluateHandler(request(s.cid(1)));
+      expect(res.statusCode).toBe(200);
+      expect(runner.state.healthCalls).toBe(0);
+    });
+
+    it('a poc.patch far past the body limit, which used to be a 413 and a stalled round, is that same INVALID', async () => {
+      const s = scenario({ claim: { pocPatch: patchOf(17 * 1024 * 1024) } });
+      const out = await commitAndReveal(s);
+      expect(out.reveal.data.aggregatedScore).toEqual(INVALID);
+      expect(runner.state.runs).toHaveLength(0);
+    });
+
+    it('the earlier gates keep their verdict: a bad disclosure on an oversized patch is still the disclosure gate', async () => {
+      const s = scenario({ listing: limited, claim: { pocPatch: patchOf(LIMIT + 1) } });
+      archives[s.disclosure.fields.ciphertextCid] = Buffer.from('not the ciphertext');
+      const out = await commitAndReveal(s);
+      expect(out.stored.result.metadata.gate).toBe('disclosure');
+    });
+
+    it('fix.patch over the limit is ignored, as an unsafe one is: informational, so the jury still judges', async () => {
+      const s = scenario({ listing: limited, claim: { fixPatch: patchOf(LIMIT + 1) } });
+      const res = await evaluateHandler(request(s.cid(1)));
+      expect(res.statusCode).toBe(200);
+      expect(runner.state.runs[0].fixPatch).toBeNull();
+      expect(ai.state.calls).toHaveLength(1);
+      expect(logLines.join('\n')).toContain('FIX_PATCH_OVER_LIMIT_IGNORED');
+    });
+
+    it('fix.patch at the limit goes to the runner', async () => {
+      const s = scenario({ listing: limited, claim: { fixPatch: patchOf(LIMIT) } });
+      await evaluateHandler(request(s.cid(1)));
+      expect(Buffer.from(runner.state.runs[0].fixPatch, 'base64').length).toBe(LIMIT);
+    });
+
+    it('a padded report.md goes as far as the whole pack could hold of it, and the jury still judges', async () => {
+      const budget = codeReview.getCodeClass('code-standard').envelope.contextPackTokens * 4;
+      const s = scenario({ claim: { report: `${H.REPORT_MARKER}\n${'padding '.repeat(3 * 1024 * 1024)}` } });
+      const res = await evaluateHandler(request(s.cid(1)));
+      expect(res.statusCode).toBe(200);
+      const sent = runner.state.runs[0].report;
+      expect(sent.length).toBe(budget);
+      expect(sent.startsWith(H.REPORT_MARKER)).toBe(true);
+    });
+
+    it('a report.md within that goes unchanged', async () => {
+      const s = scenario();
+      await evaluateHandler(request(s.cid(1)));
+      expect(runner.state.runs[0].report).toBe(`# Reentrancy\n\n${H.REPORT_MARKER}\n`);
+    });
+
+    it('a padded prior finding cannot cost a later hunter the round: its report.md, which the runner does not read, goes cut', async () => {
+      const padded = H.makeClaim({ report: `# Prior\n${'padding '.repeat(3 * 1024 * 1024)}` }).buffer;
+      const s = scenario({ priorBuffers: [padded] });
+      const res = await evaluateHandler(request(s.cid(1)));
+      expect(res.statusCode).toBe(200);
+      const [prior] = runner.state.runs[0].priorFindings;
+      expect(prior.report.startsWith('# Prior')).toBe(true);
+      expect(prior.report.length).toBeLessThanOrEqual(4096);
+    });
+
+    it('two prior lists that differ only past the cut are still two runs: the key covers what a finding says, not what is sent', async () => {
+      const body = 'padding '.repeat(4096);
+      const one = scenario({ priorBuffers: [H.makeClaim({ report: `# Prior\n${body}A` }).buffer] });
+      await evaluateHandler(request(one.cid(1), 'job-1'));
+      const two = scenario({ priorBuffers: [H.makeClaim({ report: `# Prior\n${body}B` }).buffer] });
+      await evaluateHandler(request(two.cid(1), 'job-2'));
+      expect(runner.state.runs).toHaveLength(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe('fixture: cancellation-at-deadline', () => {
   it('the runner is still working at the deadline: the run is cancelled, errored, nothing is committed late', async () => {
     useConfig({ CODE_REVIEW_DEADLINE_MS: '2000' });
