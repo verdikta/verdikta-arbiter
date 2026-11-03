@@ -452,7 +452,7 @@ function linksOf(tree, stdin) {
  * models the read-only root's links too (a `/opt/helpers` entry is never listed: the manifest holds /work and $HOME only).
  */
 function externalRootsOf(tree, stdin) {
-  const WRITABLE = ['/work', '/tmp', HOME];
+  const WRITABLE = ['/proc', '/work', '/tmp', HOME];
   const walksWritable = (p) => {
     let cur = [];
     let queue = p.split('/');

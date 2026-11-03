@@ -1117,6 +1117,24 @@ test('A2c: the look reads everything under svm/ whichever release the listing na
   assert.equal(failed.outcome, 'abstain', show(failed));
 });
 
+test('A2c: a compiler by a way through /proc is refused, by a claim and at listing: what it leads to depends on who asks, and to forge it is the work tree', async () => {
+  const { IMMUTABLE_CHECK } = require('../../src/integrity');
+  assert.match(IMMUTABLE_CHECK, /case \$1 in \/proc\|\/proc\/\*\) exit 1/, 'the walk refuses it before it reads a pid that is gone by the next step');
+  for (const onBox of [
+    (box) => { box.configOver = { solc: '/proc/self/cwd/test/solc' }; },
+    (box) => { box.configOver = { solc: '/opt/x/solc' }; box.tree.set('/opt/x/solc', { type: 'l', target: '/proc/self/cwd/test/solc' }); },
+    (box) => box.tree.set(`${SVM}/0.8.31/solc-0.8.31`, { type: 'l', target: '/proc/self/cwd/test/solc' })
+  ]) {
+    const sb = listingSandbox({ onBox });
+    const r = await runListing(sb);
+    assert.equal(r.outcome, 'requester_error', show(r));
+    assert.deepEqual(r.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+    assert.ok(!ran(sb, 'vcr-build'));
+    const c = await asClaim(claimSandbox({ onBox }));
+    assert.deepEqual(c.issues.map((i) => i.code), ['IMAGE_WATCH_ROOT_UNCOVERED']);
+  }
+});
+
 test('A2c: a claim-refused image gets a claim\'s code even when its compiler is unofficial too: the reference comes first', async () => {
   const r = await runListing(listingSandbox({
     onBox: (box) => { put(box, FAKE_SOLC.path, '#!/bin/sh\n'); box.tree.set('/work/lib/cpkg', { type: 'l', target: '../cache/pkg' }); put(box, '/work/cache/pkg/Dep.sol', 'contract Dep {}'); }

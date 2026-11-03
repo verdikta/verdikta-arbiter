@@ -273,9 +273,15 @@ const EXTERNAL_ROOTS_SCRIPT = [
  * that counts only on the mounts it can write, since the root is read-only
  * (checked at launch), and the builder chowns /repo to that user: a link from
  * the tools into /repo is not a way in.
+ *
+ * Anything through /proc is refused outright (A2c): what it leads to depends on
+ * the process that asks. `/proc/self/cwd/test/solc` is /work/test/solc to forge,
+ * and the walk could not follow it: /proc/self read here is the pid of the
+ * readlink that read it, gone by the next component, which looks like a missing
+ * path, and those are safe.
  */
 const IMMUTABLE_CHECK = [
-  `own() { case $1 in ${WORK}|${WORK}/*|/tmp|/tmp/*|${HOME}|${HOME}/*) ;; *) return 0 ;; esac; [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }`,
+  `own() { case $1 in /proc|/proc/*) exit 1 ;; ${WORK}|${WORK}/*|/tmp|/tmp/*|${HOME}|${HOME}/*) ;; *) return 0 ;; esac; [ -O "$1" ]; r=$?; [ "$r" -eq 0 ] && exit 1; [ "$r" -eq 1 ] || exit 2; }`,
   WALK_CHECK
 ].join('\n');
 

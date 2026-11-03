@@ -125,6 +125,15 @@ const VARIANTS = Object.freeze({
   // A compiler in the tree, by a path that does not start with /work/: forge's own directory through /proc, and a doubled slash.
   procself: { files: { ...VAULT_REPO, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "/proc/self/cwd/tools/solc"') }, setup: 'mkdir -p tools && ln -s /opt/solc/solc tools/solc' },
   doubleslash: { files: { ...VAULT_REPO, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "//work/tools/solc"') }, setup: 'mkdir -p tools && ln -s /opt/solc/solc tools/solc' },
+  // The same through a link on the read-only root, named or as an installed release: official bytes today, a patch's tomorrow.
+  proclinked: {
+    files: { ...VAULT_REPO, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "/opt/x/solc"') },
+    setup: 'mkdir -p /opt/x && ln -s /proc/self/cwd/test/solc /opt/x/solc && ln -s /opt/solc/solc test/solc'
+  },
+  procsvm: {
+    files: { ...VAULT_REPO, 'foundry.toml': NAMES_VERSION },
+    setup: tools(`mkdir -p ${SVM}/0.8.31`, `ln -s /proc/self/cwd/test/solc ${svmFile('0.8.31')}`, 'ln -s /opt/solc/solc test/solc')
+  },
   unreadable: {},
   nogrep: { setup: 'rm -f /usr/bin/grep' },
   norealpath: { setup: 'rm -f /usr/bin/realpath && mkdir -p lib/solady && ln -s solady lib/alias' },
@@ -303,6 +312,8 @@ const SAME_CODE = Object.freeze([
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'svmthroughtree', /svm\/0\.8\.31\/solc-0\.8\.31/],
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'procself', /\/proc\/self\/cwd\/tools\/solc/],
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'doubleslash', /\/\/work\/tools\/solc/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'proclinked', /\/opt\/x\/solc/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'procsvm', /svm\/0\.8\.31\/solc-0\.8\.31/],
   ['IMAGE_WATCH_UNREADABLE', 'unreadable', /lib\/hidden/, { before: [HIDDEN] }],
   ['IMAGE_TOOL_MISSING', 'nogrep', /no grep/],
   ['IMAGE_TOOL_MISSING', 'norealpath', /no realpath/],

@@ -917,7 +917,7 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
   const list = (a) => a.stdin.toString('latin1').split('\0').filter(Boolean);
   // A1's walk; owning something counts only on the mounts the sandbox can write (the builder chowns /repo, on the read-only root).
   assert.ok(IMMUTABLE_CHECK.endsWith(WALK_CHECK));
-  assert.match(IMMUTABLE_CHECK.split('\n')[0], /case \$1 in \/work\|\/work\/\*\|\/tmp\|\/tmp\/\*\|\/home\/sandbox\|\/home\/sandbox\/\*\) ;; \*\) return 0/);
+  assert.match(IMMUTABLE_CHECK.split('\n')[0], /case \$1 in \/proc\|\/proc\/\*\) exit 1 ;; \/work\|\/work\/\*\|\/tmp\|\/tmp\/\*\|\/home\/sandbox\|\/home\/sandbox\/\*\) ;; \*\) return 0/);
   assert.deepEqual(list(asked[0]), ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin']);
   assert.deepEqual(list(asked[1]), ['/opt/helpers']);
   assert.deepEqual(list(asked[2]), ['/opt/solc/solc']);
