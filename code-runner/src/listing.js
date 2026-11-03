@@ -36,7 +36,7 @@
  *   harness   the harness proof: trivial tests under paths.tests, each run
  *             as a claim is, in a fresh sandbox of its own (the forced
  *             checkout, then applies, testPathsOnly, the protected reset,
- *             the commit, the reference) and through testFiles and testIds
+ *             the commit, what a context pack reads, the reference) and through testFiles and testIds
  *             under the default limits by the claim pipeline's own reproduces
  *             gate, each run followed by the same snapshot. The trivially
  *             failing test must fail as an assertion on all three runs; a
@@ -53,7 +53,7 @@
  * pack, so nothing in it can be taken for a claim's result.
  *
  * Time. Measured wall-clock times, in ms: P (prepare, free space, tracked
- * files, the reference), B (the build, its cleanup and its comparison), T (the
+ * files, what a context pack reads, the reference), B (the build, its cleanup and its comparison), T (the
  * longest suite run, with its reset, its cleanup and its snapshot), so the
  * defaults count what a claim's run does. The look is not in them: a claim
  * does not run it. The defaults are
@@ -644,6 +644,8 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
       }
     }
 
+    // What a claim's context pack reads (no patch here, so the listed commit's side of it): in P, as it is in a claim's run.
+    await s0.packInputs(state.scope.ctx);
     // A claim's reference, before any maker command: what it refuses is refused here with the same code. A claim's listings
     // hold its patch and the git objects of its commit too, so these keep room under the caps for what any patch can add.
     await s0.watch(state.scope.ctx, { reserve: integrity.LISTING_RESERVE });
@@ -802,8 +804,8 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
     const scope = scoped(await freshSandbox(ctx), prefix, { stopAt });
     const session = claimSession({ spec, pocPatch: probePatch(path, probe.lines), baseline: out.baseline }, probeLimits);
     const steps = probe.build
-      ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'watch', 'build', 'reproduces']
-      : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'watch', 'reproduces'];
+      ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'packInputs', 'watch', 'build', 'reproduces']
+      : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'packInputs', 'watch', 'reproduces'];
     let timedOut = null;
     for (const name of steps) {
       if (session.state.done || scope.overBudget) break;

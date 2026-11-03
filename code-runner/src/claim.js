@@ -678,8 +678,15 @@ function claimSession(request, limits, { adopt = null } = {}) {
    * step does can reach it, so every arbiter's jury reads the same bytes.
    */
   async function contextPack(ctx) {
-    const inputs = await gatherPackInputs(ctx, { request, listed: state.prepared, poc: state.pocCommit, touched: state.touched, added: state.added });
-    ctx.contextPack(assemblePack({ request, inputs }));
+    ctx.contextPack(assemblePack({ request, inputs: await packInputs(ctx) }));
+  }
+
+  /**
+   * What the pack reads. The listing check runs these reads too and keeps nothing from them: they are part of a claim's
+   * run, so the limits it measures and the probes it holds to them must count them.
+   */
+  function packInputs(ctx) {
+    return gatherPackInputs(ctx, { request, listed: state.prepared, poc: state.pocCommit || state.prepared, touched: state.touched || [], added: state.added });
   }
 
   /**
@@ -829,7 +836,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
   }
 
   return {
-    state, startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, contextPack, watch, build, reproduces, fixCheck, pocRun,
+    state, startFixCheck, prepare, applies, testPathsOnly, resetAndCommit, contextPack, packInputs, watch, build, reproduces, fixCheck, pocRun,
     cleanup: (ctx, after) => cleanup(ctx, box, after)
   };
 }

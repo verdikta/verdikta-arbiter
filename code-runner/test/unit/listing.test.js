@@ -896,6 +896,28 @@ test('A2c: the order: the reference ends the preparation, then the look, then th
   assert.ok(at('harness:fails:forge-std:poc:3') < at('harness:fails:forge-std:integrity:run-3:manifest'));
 });
 
+test('A2c: what a claim\'s context pack reads is read at listing too, with the pack itself never made: in P, and in each probe where a claim reads it', async () => {
+  const sb = listingSandbox();
+  const r = await runListing(sb);
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  const names = r.steps.map((s) => s.name);
+  const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `${n} in\n${names.join('\n')}`); return i; };
+  assert.ok(at('prepare:files') < at('pack:diff') && at('pack:tree') < at('integrity:reference:framework'), 'in the preparation, before the reference, as in a claim');
+  for (const prefix of ['harness:fails:forge-std', 'harness:compileError', 'harness:setUpError']) {
+    assert.ok(at(`${prefix}:patch:head`) < at(`${prefix}:pack:diff`), prefix);
+    assert.ok(at(`${prefix}:pack:tree`) < at(`${prefix}:integrity:reference:framework`), prefix);
+  }
+  assert.equal(r.contextPack, null, 'a listing check makes no pack');
+  // A read that fails abstains, as a claim's does: it never passes for a clean one.
+  const failed = await runListing(listingSandbox({ git: { 'diff -W': () => ({ exitCode: 1, stderr: 'fatal: bad object\n' }) } }));
+  assert.equal(failed.outcome, 'abstain', show(failed));
+  assert.equal(failed.abstain.step, 'pack:diff');
+  // A slow read is in P.
+  const slow = await runListing(listingSandbox({ git: { 'diff -W': async () => { await delay(300); return { stdout: '' }; } } }));
+  assert.equal(slow.facts.listing.status, 'accepted', show(slow));
+  assert.ok(slow.facts.listing.timings.prepareSeconds >= 0.3, JSON.stringify(slow.facts.listing.timings));
+});
+
 test('A2c: the measured times count what a claim\'s run does: the reference in P, the build\'s comparison in B, the snapshot in T', async () => {
   const { defaultManifest } = require('../helpers/fakeClaim');
   // The nth listing of the watched places (the look's own, of svm/, does not count) takes its time.

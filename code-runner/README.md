@@ -235,10 +235,10 @@ broken package (an image without the listed commit's objects,
 | harness | The harness proof (below) |
 
 **Default limits.** From the measured wall-clock times, in ms: P (prepare,
-free space, the file list, the reference), B (the build, its cleanup and its
-comparison), T (the longest suite run, with its reset, cleanup and snapshot), so
-they count what a claim's run does. The look is not in them, since a claim
-doesn't run it:
+free space, the file list, what a context pack reads, the reference), B (the build,
+its cleanup and its comparison), T (the longest suite run, with its reset, cleanup
+and snapshot), so they count what a claim's run does. The look is not in them, since
+a claim doesn't run it:
 
 ```
 buildSeconds = ceil(3 B)
@@ -268,7 +268,8 @@ directory or the glob with its wildcards filled, each tried again with a number 
 … `9`) when the name is taken. Each probe runs as a claim does, in a fresh
 sandbox of its own (the previous one removed first): the claim pipeline's
 own functions (`claimSession` in `src/claim.js`: the forced checkout,
-`applies`, `testPathsOnly`, the protected reset, the commit, the reference) put it in
+`applies`, `testPathsOnly`, the protected reset, the commit, what a context pack reads,
+the reference) put it in
 place, and its `reproduces` gate judges it under the default limits, with a
 snapshot after each run: each
 step within its own `buildSeconds` or `testSeconds`, and the probe's whole

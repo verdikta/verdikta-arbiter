@@ -621,7 +621,7 @@ async function claimToReference(t, fx, pocPatch) {
   const lim = checkSpec(request.spec);
   assert.ok(lim.ok, JSON.stringify(lim.issues));
   const session = claimSession(request, lim.limits);
-  const steps = ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'watch'].map((name) => (ctx) => session[name](ctx));
+  const steps = ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'contextPack', 'watch'].map((name) => (ctx) => session[name](ctx));
   const receivedAt = Date.now();
   const result = await executeRun({
     docker, config, limits: lim.limits, image: fx.image, runId: crypto.randomBytes(8).toString('hex'),
@@ -685,6 +685,7 @@ test('A2c: the listing\'s timings count what a claim\'s run does: the reference 
   const r = await check(t, body(await fixture('plainvault')));
   const names = stepNames(r);
   const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `${n} in\n${names.join('\n')}`); return i; };
+  assert.ok(at('prepare:files') < at('pack:tree') && at('pack:tree') < at('integrity:reference:framework'), 'what a context pack reads, in the preparation');
   assert.ok(at('integrity:reference:manifest') < at('prepare:compilers:svm'), 'the reference, then the look');
   assert.ok(at('prepare:compilers:files') < at('build'), 'the look before any build');
   assert.ok(at('build') < at('integrity:build:manifest'), 'the build\'s comparison');
