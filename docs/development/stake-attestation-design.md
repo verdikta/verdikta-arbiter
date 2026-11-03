@@ -1058,8 +1058,9 @@ plain directory named `vyper` in a `PATH` directory, measured in the sandbox thr
 in forge's own `vyper` configuration, from `forge config --json` under the maker's commands'
 environment; and a `PATH` directory in the work tree, where a patch or a fix could add one. A `.vy`
 file alone is no reason: with no `vyper`, forge's own build fails on one it would compile and ignores
-one only under `lib/`, on real forge, on `linux/amd64` and arm64. So a hunter's patch adding one fails
-the `build` gate, which is the hunter's own cost and `check` forecasts it. A claim never reads the
+one only under `lib/`, and Solidity importing one under `lib/` reads it as Solidity, on real forge, on
+`linux/amd64` and arm64. So a hunter's patch adding one fails the `build` gate, which is the hunter's
+own cost and `check` forecasts it. A claim never reads the
 rule, so arbiters can't split on it. It is one check and one code, and an official hash list for
 Vyper would lift it. That forge finds a `vyper` only through `vyper.path` or `PATH` rests on forge's lookup at the
 pinned version, which the runner can't watch: `strace` shows that lookup, and a Docker test plants a

@@ -164,6 +164,11 @@ const VARIANTS = Object.freeze({
   vysetintree: { files: VY_REPO, toml: '[vyper]\npath = "test/vyper"' },
   vysetthroughtree: { files: VY_REPO, toml: '[vyper]\npath = "/opt/x/vyper"', setup: 'mkdir -p /opt/x && ln -s /work/test/vyper /opt/x/vyper' },
   vyperthroughtree: { files: VY_REPO, setup: `mkdir -p ${TOOLS_BIN} && ln -s /work/test/vyper ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta`, env: BUILDER_ENV },
+  // A PATH directory in the work tree by a way that does not start with /work/ (found on A2d's own attempt to get past the look).
+  vypathslash: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=//work/tools:${BASE_PATH}`] },
+  vypathdotdot: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/opt/../work/tools:${BASE_PATH}`] },
+  vypathproc: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/proc/self/cwd/tools:${BASE_PATH}`] },
+  vypathlink: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, setup: 'ln -s /work/tools /opt/x', env: [`PATH=/opt/x:${BASE_PATH}`] },
   // ------------------------------------------------- not an official release
   solcwrapper: { setup: replaceSolc(SOLC_WRAP.replace('/opt/solc/solc', '/opt/solc/solc.real')) },
   installedfake: { files: { ...VAULT_REPO, 'foundry.toml': NAMES_VERSION }, setup: tools(`mkdir -p ${SVM}/0.8.31`, writeFile(svmFile('0.8.31'), SOLC_WRAP)) },
@@ -207,9 +212,11 @@ const VARIANTS = Object.freeze({
   vyperdangling: { files: VY_REPO, setup: `mkdir -p ${TOOLS_BIN} && ln -s /opt/nowhere/vyper ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta`, env: BUILDER_ENV },
   vypernoexec: { files: VY_REPO, setup: inTools(FAKE_VYPER, '0644'), env: BUILDER_ENV },
   vyperunreadable: { files: VY_REPO, setup: inTools(FAKE_VYPER, '0111'), env: BUILDER_ENV },
+  vyperpipe: { files: VY_REPO, setup: `mkdir -p ${TOOLS_BIN} && mkfifo ${TOOLS_BIN}/vyper && chmod -R a+rX /opt/verdikta`, env: BUILDER_ENV },
   // A PATH directory in the work tree, with nothing in it yet.
   vyperintree: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/work/tools:${BASE_PATH}`] },
   vyperrelative: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=tools:${BASE_PATH}`] },
+  vyperdotted: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/.keep': '' }, env: [`PATH=/work/./tools:${BASE_PATH}`] },
   vyperempty: { files: { ...VAULT_REPO, 'lib/.keep': '' }, env: [`PATH=${BASE_PATH}:`] },
   vyperheld: { files: { ...VAULT_REPO, 'lib/.keep': '', 'tools/vyper': FAKE_VYPER }, setup: 'chmod 0755 tools/vyper', env: [`PATH=/work/tools:${BASE_PATH}`] },
   vysetpath: { files: VY_REPO, toml: '[vyper]\npath = "/opt/fake/vyper"', setup: FAKE_NAMED },
@@ -233,6 +240,21 @@ const VARIANTS = Object.freeze({
   vyimportvyper: { files: { ...VAULT_REPO, 'lib/dep/Fee.vy': VY, 'src/Vault.sol': importing('../lib/dep/Fee.vy') } },
   vyimportnopragma: { files: { ...VAULT_REPO, 'lib/dep/Fee.vy': VY_NO_PRAGMA, 'src/Vault.sol': importing('../lib/dep/Fee.vy') } },
   vyimportsrc: { files: { ...VAULT_REPO, 'lib/.keep': '', 'src/Fee.vy': SOL_IN_VY, 'src/Vault.sol': importing('./Fee.vy') } },
+  vyimportsrcvyper: { files: { ...VAULT_REPO, 'lib/.keep': '', 'src/Fee.vy': VY, 'src/Vault.sol': importing('./Fee.vy') } },
+  // Places forge does not read a setting from, or that it reads too late for a compile, each naming a fake that writes a watched place.
+  vynotread: {
+    files: {
+      ...VY_REPO,
+      '.env.local': 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
+      '.envrc': 'export FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
+      'src/.env': 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
+      'test/.env': 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\n',
+      'foundry.local.toml': '[vyper]\npath = "/opt/fake/vyper"\n',
+      'test/foundry.toml': '[vyper]\npath = "/opt/fake/vyper"\n',
+      'test/Vault.t.sol': VAULT_REPO['test/Vault.t.sol'].replace('contract VaultTest', '/// forge-config: default.vyper.path = "/opt/fake/vyper"\ncontract VaultTest')
+    },
+    setup: `${FAKE_NAMED} && mkdir -p /etc/foundry && printf 'FOUNDRY_VYPER_PATH=/opt/fake/vyper\\n' > /.env && printf '[vyper]\\npath = "/opt/fake/vyper"\\n' > /foundry.toml && cp /foundry.toml /etc/foundry/foundry.toml`
+  },
   // ------------------------------------------------- a .vy that must not be refused (A2d)
   vylib: { files: { ...VAULT_REPO, 'lib/dep/src/Fee.vy': VY, 'lib/dep/src/IFee.vyi': '# an interface\n', 'lib/dep/test/Fee.t.vy': VY } },
   vylibreal: {
@@ -428,7 +450,11 @@ const SAME_CODE = Object.freeze([
   // A2d: a vyper the sandbox could change keeps the code a claim gives: these come before the look, at listing and at a claim.
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'vysetintree', /vyper\.path \(test\/vyper\) is in the work tree/],
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'vysetthroughtree', /\/opt\/x\/vyper/],
-  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vyperthroughtree', /\/opt\/verdikta\/tools\/bin\/vyper/]
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vyperthroughtree', /\/opt\/verdikta\/tools\/bin\/vyper/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathslash', /\/\/work\/tools/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathdotdot', /\/opt\/\.\.\/work\/tools/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathproc', /\/proc\/self\/cwd\/tools/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'vypathlink', /\/opt\/x/]
 ]);
 
 for (const [code, variant, detail, opts = {}] of SAME_CODE) {
@@ -578,9 +604,11 @@ const VYPER_REFUSED = Object.freeze([
   ['a link that leads nowhere', 'vyperdangling', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) is a link that leads nowhere/],
   ['a file forge would skip, not executable', 'vypernoexec', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) is a vyper/],
   ['one the sandbox user can run but not read', 'vyperunreadable', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) cannot be read/],
+  ['a named pipe', 'vyperpipe', /\/opt\/verdikta\/tools\/bin\/vyper \(on PATH\) cannot be read/],
   // A PATH directory in the work tree, where a patch or a fix could add one after the look.
   ['a PATH directory in the work tree, empty', 'vyperintree', /PATH directory \/work\/tools is in the work tree/],
   ['a relative PATH entry', 'vyperrelative', /PATH directory \/work\/tools is in the work tree/],
+  ['one spelled with a dot', 'vyperdotted', /PATH directory \/work\/\.\/tools is in the work tree/],
   ['an empty PATH entry, forge\'s own directory', 'vyperempty', /PATH directory \/work is in the work tree/],
   ['one holding a vyper', 'vyperheld', /\/work\/tools\/vyper \(on PATH\) is a vyper/],
   // A vyper setting, wherever forge reads it from.
@@ -628,7 +656,9 @@ const VY_BUILD_FAILS = Object.freeze([
   ['a .vyi in src/', 'vyinterface', /Found Vyper sources, but no compiler versions are available for it/],
   ['Solidity importing a .vy under lib/ holding Vyper with a version pragma: forge reads it as Solidity', 'vyimportvyper', /invalid compiler version in lib\/dep\/Fee\.vy/],
   ['Solidity importing a .vy under lib/ holding Vyper with no pragma: solc reads it', 'vyimportnopragma', /Compiler run failed[\s\S]*lib\/dep\/Fee\.vy/],
-  ['Solidity importing a .vy in src/: it is a Vyper source too', 'vyimportsrc', /Found Vyper sources, but no compiler versions are available for it/]
+  ['Solidity importing a .vy in src/ holding Solidity: it is a Vyper source too', 'vyimportsrc', /Found Vyper sources, but no compiler versions are available for it/],
+  ['Solidity importing a .vy in src/ holding Vyper with a version pragma', 'vyimportsrcvyper', /invalid compiler version in src\/Fee\.vy/],
+  ['a fake named only where forge reads no setting: other .env and toml files, one in test/, one on the root, inline configuration', 'vynotread', /Found Vyper sources, but no compiler versions are available for it/]
 ]);
 
 for (const [what, variant, output] of VY_BUILD_FAILS) {
@@ -679,7 +709,8 @@ test('A2d under real forge: a hunter\'s patch adding a .vy on an image with no v
   for (const [what, patch, output] of [
     ['beside the proof', { 'test/Exploit.t.sol': DRAIN, 'test/Fee.vy': VY }, /Found Vyper sources, but no compiler versions are available for it/],
     ['with no version pragma', { 'test/Exploit.t.sol': DRAIN, 'test/Fee.vy': VY_NO_PRAGMA }, /Found Vyper sources, but no compiler versions are available for it/],
-    ['imported by the proof', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': SOL_IN_VY }, /Found Vyper sources, but no compiler versions are available for it/]
+    ['imported by the proof', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': SOL_IN_VY }, /Found Vyper sources, but no compiler versions are available for it/],
+    ['imported by the proof, holding Vyper', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': VY }, /invalid compiler version in test\/Fee\.vy/]
   ]) {
     const r = await claim(t, fx, { pocPatch: addFilesPatch(patch) });
     assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
