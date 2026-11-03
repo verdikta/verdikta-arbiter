@@ -448,7 +448,7 @@ test('A2c: what "official" means on this platform: what forge\'s own install lea
   const base = foundryBase();
   await ensureImage(builder, base);
   // The releases by platform: on the class platform forge downloads the official list; on arm64, below 0.8.31, another's builds
-  // (and its list of what it can install there holds only some of the official ones, so 0.8.37 rather than 0.8.31).
+  // (and what a pragma can pick from there lacks a few official ones, 0.8.31 among them, so 0.8.37 here).
   const official = PLATFORM === 'linux/amd64' ? '0.8.31' : '0.8.37';
   const versions = PLATFORM === 'linux/amd64' ? [official, '0.8.20'] : [official, '0.8.28'];
   const script = [
