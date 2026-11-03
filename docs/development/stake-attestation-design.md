@@ -1102,7 +1102,7 @@ justification names the check in a fixed machine-readable form.
 |---|---|---|
 | `disclosure` | EA, before any pull | the revealed archive does not hash to the committed `sha256(archive)`, or re-encrypting it with the revealed keys to the listing's `disclosureKey` does not reproduce the pinned ciphertext byte for byte (§14) |
 | `inScope` | EA, static | `finding.json` is invalid, or an affected path is outside `stake.scope` |
-| `applies` | runner | `poc.patch` does not apply to the listed commit |
+| `applies` | runner | `poc.patch` does not apply to the listed commit, or is over `maxPatchBytes` (the EA decides this one itself, since a patch past the runner's 16 MiB request limit would never reach the gate) |
 | `testPathsOnly` | runner | the patch touches a path outside `paths.tests` or inside `paths.protected` — source edits belong in `fix.patch` |
 | `build` | runner | the build fails after the patch |
 | `reproduces` | runner | any PoC test passes, or errors (import, compile, collection), on any run of the fixed schedule. A failure only through `integrity` follows the `integrity` row |
@@ -1573,6 +1573,34 @@ work inside the budget on ordinary hosts.
 Erratum E6 (2026-11-01, see §13.2) amends the last row of the table: the bond
 comes back only when the aggregator refused to start every attempt; a claim
 whose rounds ran but never settled a verdict forfeits it at expiry.
+
+**A claim can cause an abstention itself** (owner decisions Q12, Q28). A PoC or a
+patch past the memory, process or time limits, or one that kills forge through ffi,
+makes the runner abstain on every arbiter. Nothing separates that from a host's
+problem, so it stays an error with no commit, and the money follows E6:
+
+- Each failed round costs the hunter the base fees (K × the per-oracle fee, which the
+  aggregator credits at dispatch, whatever the oracle then does; about $1.75 of the
+  $3.50 standard prepay). The rest of the prepay comes back at `finalize`.
+- If no round settles, the bond goes to the maker at expiry. So it costs what an
+  INVALID costs, and it cannot get a bond back.
+- Until then the claim holds later claims and `close()`, for at most `revealWindow`
+  from its first failure plus one round. A maker's own claim gets its bond back this
+  way, so for a maker the hold costs only the base fees and gas. On the before-mainnet
+  list with the rest of the queue griefing (Q35).
+- Each failed round applies the −20 timeliness penalty to every polled oracle, and
+  `retrigger` has no count limit. To be reviewed with that list.
+- Nothing on-chain or on IPFS says why: `EvaluationFailed` carries no reason, and an
+  arbiter that abstains uploads nothing. The cause and step reach the Chainlink job and
+  the operator's log. A hunter's `check` runs the same pipeline, so it hits the same
+  limits first (§8.6), except where the host differs.
+
+The runner's 16 MiB request limit is not such a route. `poc.patch` over `maxPatchBytes`
+settles INVALID at the EA; `fix.patch` over it is ignored; `report.md` goes only as far
+as the whole pack could hold; a prior finding's `report.md`, which the runner does not
+read, goes cut, so one padded finding cannot cost a later hunter the round. What a claim
+and its prior findings can add stays under the limit at the worst escaping their schemas
+allow. The rest is the listing's, and a listing alone over it makes every claim abstain.
 
 ## 13. The `StakeAttestation` contract
 

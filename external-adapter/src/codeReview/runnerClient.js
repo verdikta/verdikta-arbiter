@@ -18,7 +18,16 @@ const HEALTH_TIMEOUT_MS = 15000;
 /** The most a runner's answer may hold: its logs, report and pack are far smaller. */
 const MAX_ANSWER_BYTES = 64 * 1024 * 1024;
 const VERSION = /^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/;
-const CODE = /^[A-Za-z_][A-Za-z0-9_.-]{0,63}$/;
+/** A cause, an issue code or a step (the runner names steps `patch:apply`, `poc:run-1`). */
+const CODE = /^[A-Za-z_][A-Za-z0-9_.:-]{0,63}$/;
+/**
+ * What of a prior finding's report.md goes to the runner, which does not read it
+ * (README, POST /v1/runs): the shape, and no way for one prior finding's padding to
+ * take a later claim's request over the runner's limit.
+ */
+const PRIOR_REPORT_MAX_CHARS = 4096;
+/** The pack's own token rule (code-runner/src/pack.js). */
+const BYTES_PER_PACK_TOKEN = 4;
 
 const abstain = (code, detail) => new CodeReviewAbstain(code, detail);
 /** A code from an answer, only when it looks like one. */
@@ -71,10 +80,22 @@ async function runnerHealth(runner, { deadline }) {
   return { version: body.version };
 }
 
+/** The text cut to at most `max` UTF-16 units, never through a character. */
+function cutText(text, max) {
+  if (text.length <= max) return text;
+  const last = text.charCodeAt(max - 1);
+  return text.slice(0, last >= 0xd800 && last <= 0xdbff ? max - 1 : max);
+}
+
 /**
  * POST /v1/runs's body for a claim that passed the EA's gates: a pure function
- * of the context and the time remaining. An empty fix.patch goes as absent, since
- * the runner refuses an empty field and a hunter must not be able to make it.
+ * of the context and the time remaining.
+ *
+ * Nothing the claim holds can take it over the runner's 16 MiB limit, which would
+ * make every arbiter abstain: the front gates have already settled a poc.patch over
+ * maxPatchBytes and dropped such a fix.patch, and report.md goes only as far as the
+ * whole pack could hold of it (each UTF-16 unit is at least a byte). An empty fix.patch
+ * goes as absent, since the runner refuses an empty field.
  *
  * @param {object} context - see frontGates.runFrontGates
  * @param {number} deadlineMs
@@ -82,6 +103,7 @@ async function runnerHealth(runner, { deadline }) {
  */
 function buildRunRequest(context, deadlineMs) {
   const { listing, claim } = context;
+  const reportMax = codeReview.getCodeClass(context.codeClass).envelope.contextPackTokens * BYTES_PER_PACK_TOKEN;
   return {
     listingCid: listing.cid,
     bcid: claim.bcid,
@@ -91,9 +113,9 @@ function buildRunRequest(context, deadlineMs) {
     fixPatch: claim.fixPatch && claim.fixPatch.length > 0 ? Buffer.from(claim.fixPatch).toString('base64') : null,
     baseline: listing.baseline,
     finding: claim.finding,
-    report: claim.report,
+    report: cutText(claim.report, reportMax),
     knownIssues: listing.knownIssues,
-    priorFindings: context.priorFindings,
+    priorFindings: context.priorFindings.map((prior) => ({ ...prior, report: cutText(prior.report, PRIOR_REPORT_MAX_CHARS) })),
     eaGates: context.eaGates,
     deadline: deadlineMs,
     codeClass: context.codeClass

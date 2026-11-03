@@ -177,6 +177,7 @@ call the adapter runs these gates, all from `@verdikta/common`
 | Claim (`cids[1]`) | the archive's structure (the submitted-work checks of `utils/bcidValidation.js`); then, in this order, `finding.json` a JSON object, `report.md` non-empty UTF-8 text, `poc.patch` a patch (a `diff --git` header or a unified-diff hunk); `fix.patch` optional and never gated | INVALID, naming the member |
 | `disclosure` | the line parses strictly; the ciphertext fetched by CID hashes to `ciphertextSha256`; `verifyDisclosure` with the listing's `disclosureKey` (`BAD_DISCLOSURE_KEY` is the listing's: requester error) | INVALID |
 | `inScope` | `validateFinding` against the spec | INVALID |
+| `applies`, for size only | `poc.patch` within the listing's `maxPatchBytes` (the runner's own rule, decided here because a patch past the runner's request limit would never reach it) | INVALID |
 
 A requester error is the errored path (HTTP 500, `aggregatedScore: [0]`) with
 no commit, in mode 1 too. An INVALID is the full 1,000,000 on `INVALID`
@@ -218,8 +219,18 @@ The jury is per job.
 | `reproduces` failed only through another failed integrity check | All weight on DUPLICATE: bond back, no award (owner decision Q35) |
 | Every gate passed | The jury |
 
-`fix.*` never changes the outcome. A padded claim that takes the request over the
-runner's 16 MiB limit abstains, on every arbiter.
+`fix.*` never changes the outcome.
+
+**What a claim's own patch can cause.** A PoC or a patch past the memory, process or
+time limits, or one that kills forge through ffi, makes the runner abstain, and the
+arbiter cannot tell that from a host's problem, so it abstains too: no commit (owner
+decisions Q12, Q28). Erratum E6 decides the money, and nothing on-chain or on IPFS says
+why: the error's cause and step reach the Chainlink job and the operator's log, and a
+hunter's local `check` runs the same pipeline. The runner's 16 MiB request limit is not
+such a route. `poc.patch` over `maxPatchBytes` settles INVALID here, the runner's own
+`applies` rule; `fix.patch` over it is ignored; `report.md` goes only as far as the whole
+pack could hold; a prior finding's `report.md`, which the runner does not read, goes cut.
+What is left of the limit is the listing's: a listing alone over it abstains.
 
 **The jury** (`src/codeReview/aiRequest.js`, `buildCodeReviewAiRequest`, a pure
 function). The context pack's files, in order, are the only attachments; the field

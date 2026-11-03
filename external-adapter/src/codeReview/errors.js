@@ -5,8 +5,9 @@
  * call (design §12):
  *  - requester error: the listing, the request's composition or this
  *    arbiter's configuration is at fault. Errored path (HTTP 500), no
- *    commit, in mode 1 too: the hunter must not forfeit a bond for a package
- *    they did not write. Thrown as CodeReviewRequesterError.
+ *    commit, in mode 1 too: never an INVALID against a hunter for a package
+ *    they did not write. Thrown as CodeReviewRequesterError. (No round settles,
+ *    so erratum E6 decides the bond: it follows the round.)
  *  - deterministic INVALID: the claim is at fault. A verdict with the full
  *    mass on INVALID through the normal commit/reveal tail (verdict.js).
  *  - transient: IPFS, disk, anything else. Errored path, no commit. Any other
