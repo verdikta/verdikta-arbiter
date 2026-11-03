@@ -8,6 +8,7 @@
 //    normal commit/reveal tail, no AI call, the Execution evidence block first.
 
 const fs = require('fs');
+const path = require('path');
 
 jest.mock('../../services/aiClient');
 
@@ -391,7 +392,6 @@ describe('acceptance 2: the shared run', () => {
 
   it('the token can come from CODE_RUNNER_TOKEN_FILE, read at the call', async () => {
     const os = require('os');
-    const path = require('path');
     const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ea-token-')), 'token');
     fs.writeFileSync(file, `${TOKEN}-file\n`);
     useConfig({ CODE_RUNNER_TOKEN: undefined, CODE_RUNNER_TOKEN_FILE: file });
@@ -949,6 +949,31 @@ describe('fixture: cancellation-at-deadline', () => {
       expect(extract).not.toHaveBeenCalled();
       expect(runner.state.healthCalls).toBe(0);
       expect(saveSpy).not.toHaveBeenCalled();
+    });
+
+    it('an extraction still running at the deadline: what it writes is removed when it settles, and nothing further is extracted', async () => {
+      useConfig({ CODE_REVIEW_DEADLINE_MS: String(DEADLINE) });
+      const { archiveService } = mockState.client;
+      const actual = archiveService.extractArchive.bind(archiveService);
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const folders = [];
+      const extract = jest.spyOn(archiveService, 'extractArchive').mockImplementation(async (data, name, destination) => {
+        folders.push(destination);
+        await gate; // the deadline passes here, after the fetches, with the extraction under way
+        return actual(data, name, destination);
+      });
+      const s = scenario({ priorCids: [H.cid('PriorA')] });
+      const res = await evaluateHandler(request(s.cid(1)));
+      expectAbstain(res, /CODE_REVIEW_DEADLINE/);
+      expect(extract).toHaveBeenCalledTimes(1); // the listing's
+
+      release();
+      const tempDir = path.dirname(folders[0]);
+      for (let i = 0; i < 200 && fs.existsSync(tempDir); i += 1) await sleep(10);
+      expect(fs.existsSync(tempDir)).toBe(false);
+      expect(extract).toHaveBeenCalledTimes(1);
+      expect(runner.state.healthCalls).toBe(0);
     });
 
     it('a dispute statement that arrives after the deadline settles nothing, and no further fetch starts', async () => {
