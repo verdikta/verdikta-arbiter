@@ -128,12 +128,25 @@ describe('the merged runner answers what the EA reads', () => {
 
   it('fixture: registry-failure, on the real runner: the pull fails, the EA abstains', async () => {
     const { imageInspect } = require(path.join(CODE_RUNNER, 'test/helpers/fakeDocker'));
+    const { SEMGREP } = require(path.join(CODE_RUNNER, 'src/semgrepPin'));
     const handlers = {
-      image: (args) => (args[1] === 'inspect' ? imageInspect(args, { present: () => false }) : { stdout: '' }),
+      // The env image is what is missing: the scanner's is warmed by the installer (A8), and the runner never pulls it.
+      image: (args) => (args[1] === 'inspect' ? imageInspect(args, { present: (ref) => ref === SEMGREP.reference }) : { stdout: '' }),
       pull: () => ({ exitCode: 1, stderr: 'dial tcp: lookup ghcr.io: no such host\n' })
     };
     await startRunner(claimSandbox({ handlers }));
     await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_RUNNER_ABSTAIN.*pull_failed/);
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
+  it('the scanner\'s image missing: the runner reports itself unhealthy, the EA abstains before any run', async () => {
+    const { imageInspect } = require(path.join(CODE_RUNNER, 'test/helpers/fakeDocker'));
+    const { SEMGREP } = require(path.join(CODE_RUNNER, 'src/semgrepPin'));
+    const handlers = { image: (args) => (args[1] === 'inspect' ? imageInspect(args, { present: (ref) => ref !== SEMGREP.reference }) : { stdout: '' }) };
+    const sb = claimSandbox({ handlers });
+    await startRunner(sb);
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_RUNNER_UNHEALTHY/);
+    expect(sb.docker.callsOf('create')).toHaveLength(0);
     expect(ai.state.calls).toHaveLength(0);
   });
 
