@@ -54,7 +54,7 @@ Create a `.env` file in the root directory. Values map to `src/config.js`:
 # Server
 PORT=8080
 HOST=0.0.0.0
-SERVER_TIMEOUT=300000          # HTTP server socket timeout (ms)
+SERVER_TIMEOUT=840000          # HTTP server socket timeout (ms): the job's 840 s; code mode is refused below its deadline + 60 s
 
 # AI Node
 AI_NODE_URL=http://localhost:3000
@@ -90,6 +90,7 @@ LOG_LEVEL=info                 # error | warn | info | debug
 # CODE_RUNNER_TOKEN=<the runner's bearer token>   # or CODE_RUNNER_TOKEN_FILE=<path>, not both
 # CODE_REVIEW_TRUST=production                     # dev: test chains only, with CODE_REVIEW_DEV_KEYS
 # CODE_REVIEW_DEV_KEYS=<base64 Ed25519 public key>[,<key>…]
+# CODE_REVIEW_DEADLINE_MS=780000                  # the single deadline, from receipt (at most 840000)
 # NETWORK_CHAIN_ID=84532                          # the chain served; dev trust needs 84532 or 31337
 ```
 
@@ -181,10 +182,69 @@ A requester error is the errored path (HTTP 500, `aggregatedScore: [0]`) with
 no commit, in mode 1 too. An INVALID is the full 1,000,000 on `INVALID`
 through the normal commit/reveal tail, with a justification naming the gate.
 IPFS or disk failures stay transient (errored, no commit). A claim that
-passes every gate goes to the code-review run (`src/codeReview/claimRun.js`),
-which this release does not have yet, so the arbiter abstains; whatever the run
-returns is committed only if it scores exactly the six outcomes with integers
-summing to 1,000,000.
+passes every gate goes to the code-review run (`src/codeReview/claimRun.js`);
+whatever comes out is committed only if it scores exactly the six outcomes with
+integers summing to 1,000,000, and only by the deadline.
+
+### The run
+
+**One deadline** (design §11). `deadline = receipt + CODE_REVIEW_DEADLINE_MS`
+(780 s: the job's 840 s less 60 s for the commit), and it counts the fetches. Each
+call is told what remains when it is sent: `deadline` to the runner, `deadlineMs`
+to the AI Node. Each call is cancelled at the deadline, and a verdict reached past
+it, front-gate verdicts included, is an error with no commit. `SERVER_TIMEOUT`
+defaults to the job's 840 s; below the deadline + 60 s, code mode is refused with
+the reason in `/health`.
+
+**One sandbox** (§9.2). Jobs of this operator share one runner call per listing
+CID + bCID + runner version (from `GET /health`) + rule version + code class + a
+hash of the prior findings. Failures are not kept. Definitive answers are kept for
+15 minutes, frozen. Each job then checks that the report's inputs are its own claim's.
+The jury is per job.
+
+**Settling** reads only the fields of `verdikta.claim-report/1`, after common's
+`validateClaimReport` and `reportSha256` (`src/codeReview/settlement.js`):
+
+| The report or the answer | Result |
+|---|---|
+| Runner unreachable or unhealthy, `outcome: abstain`, a report common refuses or that is not this claim's, `reportUnavailable` (`linux/arm64`), a production-trust listing run under another runtime than the pinned gVisor, anything else | Abstain: errored, no commit |
+| `400 requester_error` | Requester error: errored, no commit |
+| A tamper flag, even beside another failed check | INVALID (gate `integrity`) |
+| `applies`, `testPathsOnly`, `build` or `claimedObservable` failed | INVALID |
+| `reproduces` failed on its own: no test added, or any `pass`, `error`, `skip`, `missing` or `duplicate` run | INVALID |
+| `reproduces` failed only through another failed integrity check | All weight on DUPLICATE: bond back, no award (owner decision Q35) |
+| Every gate passed | The jury |
+
+`fix.*` never changes the outcome. A padded claim that takes the request over the
+runner's 16 MiB limit abstains, on every arbiter.
+
+**The jury** (`src/codeReview/aiRequest.js`, `buildCodeReviewAiRequest`, a pure
+function). The context pack's files, in order, are the only attachments; the field
+names known issues and prior findings by id. `validateCodeReviewRequest` runs before
+each send. On the AI Node's 503 with `retryable: true` there is one retry, from the
+same run, without touching the runner. Every AI call needs more than the justifier's
+45 s + a 60 s juror floor left. Every other error abstains, in every mode.
+
+**The justification** starts with the Execution evidence block
+(`src/codeReview/evidence.js`), a pure function of the report's fields. No test id,
+message, path or run `detail` reaches it: only enums, counts, CIDs and hashes. The
+first block in the upload's `justification` is the machine-readable form; jury text
+follows it and can say anything, so read only the first one:
+
+```
+Execution evidence v1
+Settlement: DUPLICATE (integrity)        (or: jury, or: INVALID (<gate>))
+Report-SHA256: <64 hex>
+…
+Integrity-Failed-Checks: frameworkUnchanged,dependenciesUnchanged        (or: none; names and order from common's INTEGRITY_CHECKS)
+…
+End execution evidence
+```
+
+The upload's `metadata` says the same: `verdict_source` (`code-review-gate`,
+`code-review-runner`, `code-review-integrity` or `code-review-jury`), `reportSha256`,
+and for an integrity failure `failedChecks`. The text states what the checks found,
+not who or what caused it.
 
 **Trust.** `production` (the default) verifies attestations against
 `@verdikta/common`'s trusted-builder set only. `CODE_REVIEW_TRUST=dev` also

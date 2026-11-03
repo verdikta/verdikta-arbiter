@@ -159,11 +159,20 @@ describe('the shape of a result', () => {
     expect(result.metadata.verdict_source).toBe('code-review-jury');
   });
 
-  it('a shared result is not changed by a job reading it', async () => {
+  it('a job reading a shared run leaves it as it was', async () => {
     const runs = new SharedRuns();
-    const one = await runClaim(contextFor(), options({ runs }));
-    const two = await runClaim(contextFor(), options({ runs }));
-    expect(runner.state.runs).toHaveLength(2); // two listings' worth of different attestations: no reuse
-    expect(two.scores).toEqual(one.scores);
+    const context = contextFor();
+    const one = await runClaim(context, options({ runs }));
+    const two = await runClaim(context, options({ runs }));
+    expect(runner.state.runs).toHaveLength(1);
+    expect(two).toEqual(one);
+  });
+
+  it('a kept run under one key is never settled on for other bytes under the same CIDs: the job abstains', async () => {
+    const runs = new SharedRuns();
+    await runClaim(contextFor(), options({ runs }));
+    // same CIDs, another attestation: a gateway that served other bytes
+    await expect(runClaim(contextFor(), options({ runs }))).rejects.toThrow(/CODE_REVIEW_RUN_MISMATCH.*attestationSha256/);
+    expect(runner.state.runs).toHaveLength(1);
   });
 });

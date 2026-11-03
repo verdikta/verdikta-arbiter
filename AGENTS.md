@@ -136,6 +136,15 @@ that verdict goes through the normal commit/reveal tail. Transient failures
 (IPFS, AI provider, disk) and problems in the **primary** archive still return
 the errored/500 response and never commit.
 
+**A stake-attestation claim settles from the runner's report**
+(`external-adapter/src/codeReview/`; its README has the table). One deadline runs
+from receipt (780 s), one runner call serves all of this operator's jobs on a
+claim, and only fields of a report common accepts decide: a failed gate or a tamper
+flag is a deterministic INVALID, a failed integrity check alone is all weight on
+DUPLICATE (bond back, owner decision Q35), every gate passing goes to the jury.
+Anything else abstains: errored, no commit. The uploaded justification starts with a
+deterministic Execution evidence block, which holds no text a hunter wrote.
+
 ---
 
 ## 4. Data contracts (get these right)
@@ -343,7 +352,9 @@ address); the firewall is its control. Doctor: `svc.public_ports`.
 `IPFS_PINNING_KEY` (Pinata **JWT**, **required** for reveals), `IPFS_GATEWAY`
 (optional comma-separated list of operator-preferred gateways, tried before the
 library's built-in ones), `IPFS_GATEWAY_TOKEN` (optional Pinata dedicated-gateway
-key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`, `HOST`
+key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`,
+`SERVER_TIMEOUT` (default 840000; code mode is refused below its deadline + 60 s),
+`CODE_REVIEW_DEADLINE_MS` (default 780000, from receipt), `HOST`
 (optional listen address; unset or a wildcard — `0.0.0.0`, `::`, which the
 installer has always written — = the default dual-stack listener, which Chainlink
 needs, see Port exposure).

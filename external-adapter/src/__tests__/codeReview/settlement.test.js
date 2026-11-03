@@ -143,7 +143,7 @@ describe('settleReport: a report that is no fact abstains rather than settling',
   };
 
   it('a gate named failed with no PoC to say why', () => {
-    refuse(R.reportFor(BODY, { gates: { reproduces: 'fail', integrity: 'not-run' }, stop: 'build' }));
+    refuse(R.reportFor(BODY, { stop: 'build', gates: { build: 'pass', reproduces: 'fail', integrity: 'fail' } }));
   });
 
   it('integrity failed with every check true and no flag', () => {

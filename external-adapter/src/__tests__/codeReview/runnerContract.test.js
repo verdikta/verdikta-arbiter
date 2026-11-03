@@ -3,7 +3,6 @@
 // and the real pack assembly at capacity. A runner change that breaks the EA's
 // reading of it fails here.
 
-const http = require('http');
 const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { runClaim } = require('../../codeReview/claimRun');
@@ -113,6 +112,31 @@ describe('the merged runner answers what the EA reads', () => {
     expect(ai.state.calls).toHaveLength(0);
   });
 
+  it('a development run on linux/arm64, with no report: the EA abstains', async () => {
+    const { imageInspect } = require(path.join(CODE_RUNNER, 'test/helpers/fakeDocker'));
+    const handlers = { image: (args) => (args[1] === 'inspect' ? imageInspect(args, { platform: 'linux/arm64' }) : { stdout: '' }) };
+    const sb = claimSandbox({ handlers });
+    server = createServer({
+      config: testConfig({ CODE_RUNNER_PLATFORM: 'linux/arm64' }), docker: sb.docker, log: silent,
+      meminfo: async () => ({ availableMb: 100000, error: null }),
+      statfs: async () => ({ bavail: 1e12, bsize: 1 })
+    });
+    target = await server.listen();
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_REPORT_UNAVAILABLE/);
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
+  it('fixture: registry-failure, on the real runner: the pull fails, the EA abstains', async () => {
+    const { imageInspect } = require(path.join(CODE_RUNNER, 'test/helpers/fakeDocker'));
+    const handlers = {
+      image: (args) => (args[1] === 'inspect' ? imageInspect(args, { present: () => false }) : { stdout: '' }),
+      pull: () => ({ exitCode: 1, stderr: 'dial tcp: lookup ghcr.io: no such host\n' })
+    };
+    await startRunner(claimSandbox({ handlers }));
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_RUNNER_ABSTAIN.*pull_failed/);
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
   it('the EA\'s request passes the runner\'s own validation, with a fix patch and prior findings', () => {
     const context = contextFor({
       priorFindings: [{ bcid: 'QmPChd2hVbrJ6bfo3WBcTW4iZnpHm8TEzWkLHmLpXhF68A', finding: finding(), report: '# prior\n' }]
@@ -122,6 +146,23 @@ describe('the merged runner answers what the EA reads', () => {
     expect(checked.issues).toEqual([]);
     expect(checked.request.deadlineMs).toBe(700000);
     expect(checked.request.fixPatch.toString('utf8')).toBe(FIX_PATCH);
+  });
+
+  it('known issues go as the listing has them, which the runner validates', () => {
+    const body = { title: 'Known', class: 'LOW', paths: ['src/Vault.sol'], description: 'An accepted rounding behaviour of the vault.' };
+    const context = contextFor();
+    context.listing.knownIssues = [{ id: codeReview.knownIssueId(body), ...body }];
+    expect(validateRunRequest(buildRunRequest(context, 700000)).issues).toEqual([]);
+  });
+
+  it('a lone surrogate in finding.json: the real runner takes it, and the AI Node\'s request holds a form with a canonical JSON', async () => {
+    await startRunner();
+    const context = contextFor();
+    context.claim.finding = finding({ title: 'Lone \ud83d surrogate' });
+    await runClaim(context, options());
+    const body = ai.state.calls[0];
+    expect(codeReview.validateCodeReviewRequest(body.codeReview).issues).toEqual([]);
+    expect(() => codeReview.canonicalJson(body.codeReview.claim.finding)).not.toThrow();
   });
 
   it('an empty fix patch goes as absent, which the runner accepts', () => {
@@ -207,6 +248,13 @@ describe('acceptance 4: the actual EA→AI Node payload at pack capacity', () =>
     expect(checked.issues).toEqual([]);
     expect(codeReview.validateBugOutcomes(body.outcomes).ok).toBe(true);
     expect(Object.keys(body).sort()).toEqual(['attachmentNames', 'attachments', 'codeReview', 'iterations', 'models', 'outcomes', 'prompt', 'requestTag']);
+    // the panel, read back as the AI Node reads it (ai-node/src/lib/code-review/handler.ts)
+    const juryParameters = {
+      NUMBER_OF_OUTCOMES: body.outcomes.length,
+      AI_NODES: body.models.map((m) => ({ AI_PROVIDER: m.provider, AI_MODEL: m.model, NO_COUNTS: m.count === undefined ? 1 : m.count, WEIGHT: m.weight })),
+      ITERATIONS: body.iterations
+    };
+    expect(codeReview.validateClassEnvelope(juryParameters, body.codeReview.codeClass).issues).toEqual([]);
 
     // the pack, whole, in order, and nothing beside it
     expect(body.attachments).toEqual(pack.files.map((f) => f.text));

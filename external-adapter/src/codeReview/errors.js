@@ -1,5 +1,5 @@
 /**
- * @fileoverview The requester error of code-review mode.
+ * @fileoverview The errors of code-review mode.
  *
  * A code-review request settles one of three ways before any runner or model
  * call (design §12):
@@ -11,6 +11,9 @@
  *    mass on INVALID through the normal commit/reveal tail (verdict.js).
  *  - transient: IPFS, disk, anything else. Errored path, no commit. Any other
  *    thrown error.
+ *
+ * From the run on (claimRun.js, node A4b) the arbiter abstains on anything it
+ * cannot read as a fact: CodeReviewAbstain, the same errored path, no commit.
  *
  * The message travels to the Chainlink node and into the adapter's log, so it
  * names codes and listing-level facts only: never claim contents, never key
@@ -30,6 +33,20 @@ class CodeReviewRequesterError extends Error {
   }
 }
 
+/** The arbiter abstains: errored path, no commit, in every mode. */
+class CodeReviewAbstain extends Error {
+  /**
+   * @param {string} code - e.g. CODE_REVIEW_DEADLINE, CODE_REVIEW_RUNNER_ABSTAIN
+   * @param {string} detail - codes and listing-level facts only
+   */
+  constructor(code, detail) {
+    super(`${code}: ${detail}`);
+    this.name = 'CodeReviewAbstain';
+    this.code = code;
+    this.detail = detail;
+  }
+}
+
 /** `code at path, …` for common's { code, path } issues, bounded. */
 function issueCodes(issues, max = 8) {
   const shown = issues.slice(0, max).map((issue) => (issue.path ? `${issue.code} at ${issue.path}` : issue.code));
@@ -37,4 +54,4 @@ function issueCodes(issues, max = 8) {
   return shown.join(', ');
 }
 
-module.exports = { CodeReviewRequesterError, issueCodes };
+module.exports = { CodeReviewRequesterError, CodeReviewAbstain, issueCodes };

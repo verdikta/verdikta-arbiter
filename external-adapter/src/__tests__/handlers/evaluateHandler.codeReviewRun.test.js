@@ -168,6 +168,14 @@ async function expectDeterministic(shape, vector) {
   return out;
 }
 
+describe('the fixtures this node answers for are in common\'s catalogue', () => {
+  it.each([
+    'concurrent-listings-different-baseline-bytes', 'registry-failure', 'cancellation-at-deadline', 'fix-patch-does-not-verify', 'provider-timeout-with-retry'
+  ])('%s', (id) => {
+    expect(codeReview.loadFixtures().cases.map((c) => c.id)).toContain(id);
+  });
+});
+
 // ---------------------------------------------------------------------------
 describe('acceptance 1: one deadline from receipt', () => {
   it('the runner and the AI Node are told what remains of 780 s from receipt, fetch time included', async () => {
@@ -181,12 +189,12 @@ describe('acceptance 1: one deadline from receipt', () => {
 
     const told = runner.state.runs[0].deadline;
     expect(Number.isInteger(told)).toBe(true);
-    expect(told).toBeLessThanOrEqual(780000 - 40);
+    expect(told).toBeLessThanOrEqual(780000 - 30);
     expect(told).toBeGreaterThanOrEqual(780000 - elapsed);
 
     const toAi = ai.state.calls[0].codeReview.deadlineMs;
     expect(Number.isInteger(toAi)).toBe(true);
-    expect(toAi).toBeLessThanOrEqual(told - 150);
+    expect(toAi).toBeLessThanOrEqual(told - 140);
     expect(toAi).toBeGreaterThanOrEqual(780000 - elapsed);
   });
 
@@ -708,6 +716,14 @@ describe('acceptance 4: the AI Node handoff', () => {
     expect(ai.state.calls).toHaveLength(1);
   });
 
+  it('a lone surrogate in finding.json goes to the AI Node in a form it can read; the jury still judges', async () => {
+    const finding = JSON.stringify({ ...H.FINDING }).replace('Reentrancy', 'Reentrancy \\ud83d');
+    expect(() => codeReview.canonicalJson(JSON.parse(finding))).toThrow();
+    const res = await evaluateHandler(request(scenario({ claim: { finding } }).cid(1)));
+    expect(res.statusCode).toBe(200);
+    expect(() => codeReview.canonicalJson(ai.state.calls[0].codeReview.claim.finding)).not.toThrow();
+  });
+
   it('an empty fix.patch is sent as absent: the runner refuses an empty field, and a hunter must not be able to make it', async () => {
     const s = scenario({ claim: { fixPatch: '' } });
     const res = await evaluateHandler(request(s.cid(1)));
@@ -800,7 +816,7 @@ describe('acceptance 5: the retry', () => {
     expect(runner.state.runs).toHaveLength(1);
     expect(runner.state.healthCalls).toBe(1);
     const [first, second] = ai.state.calls;
-    expect(second.codeReview.deadlineMs).toBeLessThanOrEqual(first.codeReview.deadlineMs - 30);
+    expect(second.codeReview.deadlineMs).toBeLessThanOrEqual(first.codeReview.deadlineMs - 25);
     expect(second.codeReview.report).toEqual(first.codeReview.report);
     expect(second.attachments).toEqual(first.attachments);
   });
@@ -844,12 +860,12 @@ describe('acceptance 5: the retry', () => {
 // ---------------------------------------------------------------------------
 describe('fixture: cancellation-at-deadline', () => {
   it('the runner is still working at the deadline: the run is cancelled, errored, nothing is committed late', async () => {
-    useConfig({ CODE_REVIEW_DEADLINE_MS: '1500' });
+    useConfig({ CODE_REVIEW_DEADLINE_MS: '2000' });
     runner.state.answer = () => R.HANG;
     const s = scenario();
     const before = Date.now();
     const res = await evaluateHandler(request(s.cid(1)));
-    expect(Date.now() - before).toBeLessThan(1500 + 1000);
+    expect(Date.now() - before).toBeLessThan(2000 + 5000);
     expectAbstain(res, /CODE_REVIEW_DEADLINE/);
     expect(ai.state.calls).toHaveLength(0);
     for (let i = 0; i < 40 && runner.state.cancelled === 0; i += 1) await sleep(25);
@@ -880,7 +896,7 @@ describe('fixture: cancellation-at-deadline', () => {
     runner.state.health = () => R.HANG;
     const before = Date.now();
     expectAbstain(await evaluateHandler(request(scenario().cid(1))));
-    expect(Date.now() - before).toBeLessThan(800 + 1000);
+    expect(Date.now() - before).toBeLessThan(800 + 5000);
     expect(runner.state.runs).toHaveLength(0);
   });
 

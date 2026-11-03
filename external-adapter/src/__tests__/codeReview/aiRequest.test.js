@@ -115,6 +115,20 @@ describe('buildCodeReviewAiRequest', () => {
     expect('iterations' in buildCodeReviewAiRequest(input({ juryParameters }))).toBe(false);
   });
 
+  it('a lone surrogate in finding.json (a JSON escape of the hunter\'s) cannot stop the jury: the AI Node reads a canonical form', () => {
+    const finding = { ...H.FINDING, rootCause: `${H.FINDING.rootCause} \ud83d lone`, title: 'Lone \udc00 surrogate' };
+    expect(() => codeReview.canonicalJson(finding)).toThrow();
+    const out = buildCodeReviewAiRequest(input({ claim: { bcid: H.cid('Claim'), finding } }));
+    expect(() => codeReview.canonicalJson(out.codeReview.claim.finding)).not.toThrow();
+    expect(out.codeReview.claim.finding.title).toBe('Lone \ufffd surrogate');
+    expect(codeReview.validateCodeReviewRequest(out.codeReview).ok).toBe(true);
+  });
+
+  it('a well-formed finding goes unchanged, a surrogate pair included', () => {
+    const finding = { ...H.FINDING, title: 'Pair \ud83d\ude00 here' };
+    expect(buildCodeReviewAiRequest(input({ claim: { bcid: H.cid('Claim'), finding } })).codeReview.claim.finding).toEqual(finding);
+  });
+
   it('needs nothing but its input: the module requires nothing outside itself, for the testing tool', () => {
     const fs = require('fs');
     const path = require('path');

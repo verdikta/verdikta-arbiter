@@ -227,6 +227,7 @@ async function readListing(root, cid, { validator, config, logger, runTag }) {
     cid,
     extractedPath: root,
     manifest,
+    query: primary.query,
     outcomes: primary.outcomes,
     juryParameters: manifest.juryParameters,
     spec,

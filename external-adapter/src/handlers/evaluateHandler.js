@@ -271,7 +271,8 @@ const evaluate = async (request) => {
         // Stake-attestation claim (cids = [listing, claim, prior findings…]): the
         // code-review front gates settle requester errors (thrown: errored, no
         // commit) and claim gate failures (a deterministic INVALID verdict) before
-        // any runner or model call; a claim that passes goes to the run (A4b).
+        // any runner or model call; a claim that passes goes to the run: the runner's
+        // gates, then the jury (A4b). Whatever it returns is a commitable vector or a throw.
         const t8 = Date.now();
         result = await codeReviewMode.evaluateCodeReview({
           cidArray,
@@ -281,7 +282,8 @@ const evaluate = async (request) => {
           addendum: addendumString,
           config: getCodeReviewConfig(),
           deps: { archiveService, validator, logger },
-          runTag
+          runTag,
+          receivedAt: t0 // the deadline runs from receipt: the fetches above count (design §11)
         });
         logger.info(`${runTag} code-review evaluation took ${Date.now() - t8}ms`);
       } else if (malformedBCIDs.length > 0) {

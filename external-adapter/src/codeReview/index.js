@@ -9,18 +9,21 @@
  *   front gates (frontGates.js) ── requester error ──► errored, no commit
  *        │                      ── claim INVALID  ──► verdict, committed
  *        ▼
- *   run (claimRun.js, node A4b) ──► runner + jury result, or errored
+ *   run (claimRun.js, node A4b) ──► a runner verdict or the jury's, or errored
  *
- * Whatever the run returns is checked before the handler may commit it: a
- * mode-1 commit carries a real commitment to a vector over the listing's six
- * outcomes, or the request errors (no commit).
+ * One deadline runs from receipt through all of it (§11, time.js). Whatever comes
+ * out is checked before the handler may commit it: a mode-1 commit carries a real
+ * commitment to a vector over the listing's six outcomes, made by the deadline,
+ * or the request errors (no commit).
  *
- * Design: docs/development/stake-attestation-design.md (§9.1, §10.1, §12, §14).
+ * Design: docs/development/stake-attestation-design.md (§9.1, §10.1, §11, §12, §14).
  */
 
 const { codeReview } = require('@verdikta/common');
 const { runFrontGates, refuseSingleCid, assertOperatorReady, assertRequestLayout } = require('./frontGates');
 const claimRun = require('./claimRun');
+const { createDeadline } = require('./time');
+const { buildCodeReviewAiRequest } = require('./aiRequest');
 
 /** Does this (unvalidated) manifest opt into code review? */
 function isCodeReviewManifest(manifest) {
@@ -63,13 +66,29 @@ function assertCodeReviewRequest(config, cidArray) {
 
 /**
  * @param {object} input - see frontGates.runFrontGates
+ * @param {number} [input.receivedAt] - when the adapter received the request, epoch ms (the deadline's start)
  * @returns {Promise<{ scores: object[], justification: string, metadata?: object }>}
  */
 async function evaluateCodeReview(input) {
+  const deadline = createDeadline({
+    receivedAt: input.receivedAt === undefined ? Date.now() : input.receivedAt,
+    deadlineMs: input.config.deadlineMs
+  });
   const gates = await runFrontGates(input);
-  if (gates.verdict) return gates.verdict;
-  const result = await claimRun.runClaim(gates.context, { logger: input.deps.logger, runTag: input.runTag });
-  return assertRunResult(result, gates.context.listing.outcomes);
+  let result;
+  if (gates.verdict) {
+    result = gates.verdict;
+  } else {
+    result = assertRunResult(await claimRun.runClaim(gates.context, {
+      config: input.config,
+      deadline,
+      logger: input.deps.logger,
+      runTag: input.runTag
+    }), gates.context.listing.outcomes);
+  }
+  // Nothing is committed late (§11): whichever way the verdict was reached.
+  deadline.assertOpen('verdict was ready to commit');
+  return result;
 }
 
-module.exports = { isCodeReviewManifest, assertCodeReviewRequest, evaluateCodeReview, refuseSingleCid, assertRunResult };
+module.exports = { isCodeReviewManifest, assertCodeReviewRequest, evaluateCodeReview, refuseSingleCid, assertRunResult, buildCodeReviewAiRequest };
