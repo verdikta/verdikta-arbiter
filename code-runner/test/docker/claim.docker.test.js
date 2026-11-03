@@ -290,7 +290,7 @@ function beforeTheScan(steps, extra) {
 
 function withBeforeBuild(steps, step) {
   if (!step) return steps;
-  assert.deepEqual(steps.map((f) => f.name), ['startFixCheck', 'prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'contextPack', 'watch', 'build', 'reproduces', 'fixCheck']);
+  assert.deepEqual(steps.map((f) => f.name), ['startFixCheck', 'prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'contextPack', 'scanInputs', 'watch', 'build', 'reproduces', 'fixCheck', 'scan']);
   return [...steps.slice(0, 6), step, ...steps.slice(6)];
 }
 
