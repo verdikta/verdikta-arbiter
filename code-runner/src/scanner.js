@@ -521,7 +521,7 @@ function parseScan({ stdout, exitCode, truncated }, targets, { table }) {
   if (!Array.isArray(doc.errors)) throw toolFailed('its answer has no errors list');
   if (!doc.paths || !Array.isArray(doc.paths.scanned)) throw toolFailed('its answer does not list what it scanned');
   // A rule it skipped found nothing, and says so only here: the same as "no flags" to anything that reads no further.
-  if (!Array.isArray(doc.skipped_rules) || doc.skipped_rules.length > 0) throw toolFailed(`it skipped rules: ${JSON.stringify(doc.skipped_rules).slice(0, 200)}`);
+  if (!Array.isArray(doc.skipped_rules) || doc.skipped_rules.length > 0) throw toolFailed(`it skipped rules: ${String(JSON.stringify(doc.skipped_rules)).slice(0, 200)}`);
   if (doc.engine_requested !== 'OSS') throw toolFailed(`it used the ${JSON.stringify(String(doc.engine_requested)).slice(0, 40)} engine, not the one pinned`);
 
   const names = new Set(targets.map((t) => t.name));
