@@ -691,7 +691,7 @@ minutes apart, the ordering costs little time.
 
 ### 8.8 Artifact kinds
 
-`repo` — any repository at a commit on a blessed image: `foundry` in the MVP,
+`repo` — a repository at a commit on a blessed image: `foundry` in the MVP,
 `node22` and `python312` from the second release (§17). `contract` — a `repo` plus a deployment address and chain id, with a
 verified-source check at listing (§8.2); the record page links the deployment.
 `skill` — a skills or MCP package (a `SKILL.md` or server manifest with its
@@ -699,6 +699,23 @@ scripts), judged on a harness image that runs the package's entry points in the
 sandbox and records attempted network, file and process activity as tier-A
 facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
 `skill` follows once the harness exists (§17).
+
+**A listing needs the project's proof (owner decision Q34: the project decides).**
+Every listing needs a file at the listed commit, `.verdikta/stake-control.json`,
+naming the listing's maker, on one of the repository's own branches or tags. A
+`contract` listing also needs a signature from the deployment's deployer or
+current owner. There is no allowlist and no exception for Verdikta: a sponsor can
+stake only if the project names it in the file. The builder refuses to sign
+without the proof, and the site and hunter tool refuse commits on listings the
+builder didn't sign. This reverses Q33's "third-party stakes stay allowed and
+labelled". There is no notice to projects and no bot account.
+
+**This protects a project's name and record, not its code.** Anyone can still
+stake on a fork or a copy and read findings that also apply upstream. The record
+labels a fork where the host says so; a plain copy can't be detected. Every listing
+warns at commit who reads the proof first (the staker's key) and that the code may
+exist elsewhere. Refused listing attempts are counted by reason, and the rule is
+revisited before mainnet.
 
 ## 9. The code runner
 
@@ -973,10 +990,10 @@ Within that:
 - **The residual** is only a trap the maker's setup plants that helps claim code win
   (a program in the tools that itself runs something from the work tree, say: the
   image's own text, which no check inside the sandbox can read). It is recorded, not
-  closed. It is not harmless to everyone but the maker: §8.8 allows any repository
-  and nothing checks that a maker controls it, so a stranger may be able to stage a
-  valid finding against someone else's project. That is why it is written down here
-  as a residual, and that question is with the owner.
+  closed. It is not harmless to everyone but the maker. Since owner decision Q34
+  (§8.8) a listing needs the project's proof, so a stranger can't stage a valid
+  finding on a project's own record that way, but they can on a fork or a copy,
+  which is why it stays written down here as a residual.
 
 A change to a watched place during the maker's build, before any claim code has
 run, is the image's doing and a requester error, never a failed check. Where forge
@@ -1776,9 +1793,14 @@ values of `badgeFloorWei` and the under-staked ratio.
   judged history, not scores. The chicken-and-egg (runtimes will not check
   until artifacts are staked; makers will not stake until runtimes check) is
   broken by **seeding**: Verdikta funds stakes on the most-installed skills and
-  MCP servers, discloses findings to their maintainers through the fix window,
-  and publishes the records — what the Internet Bug Bounty did for third-party
-  open source before it paused in March 2026. The need is live: Koi Security
+  MCP servers **whose maintainers agree**, discloses findings to them through
+  the fix window, and publishes the records — what the Internet Bug Bounty did
+  for third-party open source before it paused in March 2026. Seeding needs the
+  maintainers' consent (owner decision Q34, §8.8): Verdikta is a sponsor like any
+  other, so a project that doesn't name it in `.verdikta/stake-control.json` can't
+  be seeded. A finding goes to the staker's key, so telling the maintainers is
+  Verdikta's own step, by hand, for its own stakes; no protocol step or notice does
+  it for anyone else. The need is live: Koi Security
   found 341 malicious skills among 2,857 on ClawHub on 1 February 2026 (335
   shipping a macOS stealer), later audits report four-figure counts, and
   ClawHub's answer was scanner integration (VirusTotal, ClawScan). OpenAI added
@@ -1838,8 +1860,9 @@ scan, funded by the listing fee, as the floor of attention every record gets.
 Jev comes in Phase 2 on purpose: execution evidence is what makes the verdicts
 accurate, Jev is what makes them cheap, and every operator in the class needs
 the `systemone` client deployed before Jev can sit on the jury. Seeding
-(§14) starts on testnet in Phase 1 with Verdikta's own repositories and a
-handful of popular skills, so the feed is never empty when hunters arrive.
+(§14) starts on testnet in Phase 1 with Verdikta's own repositories and those
+popular skills whose maintainers consent by naming Verdikta in their proof file
+(§8.8, owner decision Q34), so the feed is never empty when hunters arrive.
 
 ## 18. Validation
 
