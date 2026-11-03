@@ -26,6 +26,7 @@ const INDEX = path.join(E2E, 'src', 'index.js');
 const COMMON = '1.9.0-attest.1';
 const RELEASE = 'abc1234def5678';
 const IMAGE = `registry.example/vault@sha256:${'b'.repeat(64)}`;
+const COLD_IMAGE = `registry.example/vault@sha256:${'e'.repeat(64)}`;
 const BASE_COMMIT = 'a'.repeat(40);
 const REPORT_HASH = 'c'.repeat(64);
 const CLAIM_IDS = ['claim-l4-valid', 'claim-l4-front-gate', 'claim-l4-runner-gate'];
@@ -50,49 +51,105 @@ let set;
 let scenariosFile;
 let claimKeyOf;
 
-const arbiter = { adapter: '0.1.0', aiNode: '0.1.0', verdiktaCommon: COMMON, release: `${RELEASE} 2026-11-03T00:00:00Z` };
-const evidence = (settlement, listingCid, claimCid) => [
-  'Execution evidence v1', `Settlement: ${settlement}`, `Report-SHA256: ${REPORT_HASH}`, `Listing: ${listingCid}`, `Claim: ${claimCid}`, 'End execution evidence'
+const arbiter = { adapter: '0.1.0', aiNode: '0.1.0', verdiktaCommon: COMMON, release: `${RELEASE} 2026-11-03T00:00:00Z`, canaryFault: { state: 'off' } };
+const armedArbiter = { ...arbiter, canaryFault: { state: 'armed' } };
+const JURY_VECTOR = [0n, 0n, 0n, 100000n, 700000n, 200000n];
+const INVALID_VECTOR = [1000000n, 0n, 0n, 0n, 0n, 0n];
+const evidence = (settlement, listingCid, claimCid, hash = REPORT_HASH) => [
+  'Execution evidence v1', `Settlement: ${settlement}`, `Report-SHA256: ${hash}`, `Listing: ${listingCid}`, `Claim: ${claimCid}`, 'End execution evidence'
 ].join('\n');
+const FAULT_RESULTS = [{ provider: 'p', model: 'm', status: 'success', duration_ms: 235500 }];
 
-/** What the arbiters would have uploaded, on the local IPFS. */
-async function justificationsFor(request, { reporting = arbiter } = {}) {
+/** What each claim's scenario expects the arbiters to have uploaded. */
+function bodyOf(key, listingCid, claimCid, aiNode) {
+  const jury = (metadata = {}, over = {}) => ({
+    justification: `${evidence('jury', listingCid, claimCid)}\n\nThe panel.`,
+    metadata: { verdict_source: 'code-review-jury', canary_fault_ai_node: aiNode, ...metadata },
+    ...over
+  });
+  const gate = () => ({ justification: 'Verdict: INVALID.\n\nGate: inScope', metadata: { verdict_source: 'code-review-gate', gate: 'inScope', claim: claimCid } });
+  const runner = (name) => ({ justification: `${evidence(`INVALID (${name})`, listingCid, claimCid)}\n\nGate: ${name}`, metadata: { verdict_source: 'code-review-runner', gate: name } });
+  return {
+    valid: () => jury(),
+    timeDependent: () => jury(),
+    randomnessDependent: () => jury(),
+    dispute: () => jury(),
+    outOfScope: gate,
+    registryControl: gate,
+    editsSource: () => runner('testPathsOnly'),
+    flaky: () => runner('reproduces'),
+    coldCache: () => jury({ runner_image: { cache: 'pulled', durationMs: 21000 } }),
+    faultNearLimit: () => jury({ canary_fault: { fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 240000, justifierMs: 3000 } }, { model_results: FAULT_RESULTS }),
+    faultProviderTimeout: () => jury({ canary_fault: { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 240000, justifierMs: 3000 } }),
+    faultSlowJustifier: () => jury({ canary_fault: { fault: 'slow-justifier', attempts: 1, action: 'hold-justifier-answer', jurorTimeoutMs: 240000, justifierMs: 40500 } })
+  }[key];
+}
+
+const JURY_KEYS = new Set(['valid', 'timeDependent', 'randomnessDependent', 'dispute', 'coldCache', 'faultNearLimit', 'faultProviderTimeout', 'faultSlowJustifier']);
+const ABSTAINING = new Set(['registryFailure', 'faultCancellation']);
+
+/** What the arbiters would have uploaded, on the local IPFS. `change` lets a test say otherwise, per claim. */
+async function justificationsFor(request, { reporting = arbiter, aiNode = 'off', change = {} } = {}) {
   const [listingCid, claimCid] = request.cids;
-  const kind = claimKeyOf.get(claimCid);
-  const scores = kind === 'valid' ? [0n, 0n, 0n, 100000n, 700000n, 200000n] : [1000000n, 0n, 0n, 0n, 0n, 0n];
-  const body = {
-    valid: { justification: `${evidence('jury', listingCid, claimCid)}\n\nThe panel.`, metadata: { verdict_source: 'code-review-jury' } },
-    outOfScope: { justification: `Verdict: INVALID.\n\nGate: inScope`, metadata: { verdict_source: 'code-review-gate', gate: 'inScope', claim: claimCid } },
-    editsSource: { justification: `${evidence('INVALID (testPathsOnly)', listingCid, claimCid)}\n\nGate: testPathsOnly`, metadata: { verdict_source: 'code-review-runner', gate: 'testPathsOnly' } }
-  }[kind] || { justification: 'A text-mode justification.', metadata: {} };
-  const json = { scores: [], arbiter: reporting, ...body };
+  const key = claimKeyOf.get(claimCid);
+  const disputed = /verdikta-dispute: /.test(request.addendum || '');
+  const changed = change[key] && change[key]({ disputed });
+  if (ABSTAINING.has(key) && !(changed && changed.answer)) return changed && changed.abstain ? changed.abstain : { abstain: true };
+  if (changed && changed.abstain) return changed.abstain;
+  const vector = (changed && changed.vector) || (JURY_KEYS.has(key) ? JURY_VECTOR : INVALID_VECTOR);
+  const build = key ? bodyOf(key, listingCid, claimCid, aiNode) : null;
+  const body = build ? build() : { justification: 'A text-mode justification.', metadata: {} };
+  if (disputed) body.metadata.dispute_statement = set.claims.dispute.statementCid;
+  const json = { arbiter: reporting, ...body, ...(changed && changed.json) };
+  const upload = async (nonce, over = {}) => ipfs.put(Buffer.from(JSON.stringify({
+    ...json,
+    scores: (over.vector || vector).map((score, i) => ({ outcome: String(i), score: Number(score) })),
+    nonce,
+    ...(over.justification ? { justification: over.justification } : {})
+  })));
   const cids = [];
-  for (let i = 0; i < 3; i += 1) cids.push(await ipfs.put(Buffer.from(JSON.stringify({ ...json, nonce: i }))));
-  return { scores: kind ? scores : [600000n, 400000n], justificationCid: cids.join(',') };
+  for (let i = 0; i < 2; i += 1) cids.push(await upload(i));
+  // The third recorded reveal is not in the aggregator's list: the cluster is two of three.
+  const third = (changed && changed.third) || {};
+  const thirdVector = third.revealVector || third.vector || vector;
+  const thirdCid = await upload(2, third);
+  return {
+    scores: vector,
+    justificationCid: cids.join(','),
+    reveals: [...cids.map((cid) => ({ cid, scores: vector })), { cid: thirdCid, scores: thirdVector }]
+  };
 }
 
 /**
  * Justifications must be pinned before the stub answers, and the stub's answer is
- * synchronous, so each is prepared ahead by the (cid list) it will be asked about.
+ * synchronous, so each is prepared ahead by the request it will be asked about.
  */
+const requestKey = (request) => `${request.cids.join(',')}|${/verdikta-dispute: /.test(request.addendum || '')}`;
 async function prepareAnswers(requests, options) {
   const answers = new Map();
-  for (const cids of requests) answers.set(cids.join(','), await justificationsFor({ cids }, options));
+  for (const request of requests) {
+    const normal = Array.isArray(request) ? { cids: request, addendum: '' } : request;
+    answers.set(requestKey(normal), await justificationsFor(normal, options));
+  }
   return (request) => {
-    const found = answers.get(request.cids.join(','));
+    const found = answers.get(requestKey(request));
     if (!found) throw new Error(`the stub was asked about an unexpected request: ${request.cids.join(',')}`);
     return found;
   };
 }
 
 const claimRequests = () => [set.claims.valid, set.claims.outOfScope, set.claims.editsSource].map((c) => [set.listingCid, c.cid]);
+const everyRequest = () => [
+  ...Object.values(set.claims).map((c) => ({ cids: [c.listingCid || set.listingCid, c.cid], addendum: c.addendum })),
+  { cids: [set.listingCid, set.claims.dispute.cid], addendum: set.claims.dispute.disputeAddendum }
+];
 
-async function startChain({ chainId, revertOnEstimate, requests = [], reporting } = {}) {
+async function startChain({ chainId, revertOnEstimate, requests = [], reporting, aiNode, change } = {}) {
   chain = await startStubChain({
     abi: AGGREGATOR_ABI,
     chainId,
     revertOnEstimate,
-    answer: await prepareAnswers([...claimRequests(), ...NIGHTLY_BEFORE.cids, ...requests], { reporting })
+    answer: await prepareAnswers([...everyRequest(), ...NIGHTLY_BEFORE.cids, ...requests], { reporting, aiNode, change })
   });
   return chain;
 }
@@ -123,7 +180,7 @@ const versions = ['--expect-common', COMMON, '--expect-release', RELEASE];
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-l4-cli-'));
   ipfs = await startLocalIpfs({ pinKey: 'local-test-key' });
-  set = await F.makeClaimSet({ image: IMAGE, baseCommit: BASE_COMMIT, repo, put: ipfs.put });
+  set = await F.makeClaimSet({ image: IMAGE, baseCommit: BASE_COMMIT, coldImage: COLD_IMAGE, repo, put: ipfs.put });
   claimKeyOf = new Map(Object.entries(set.claims).map(([key, c]) => [c.cid, key]));
   const claimSet = path.join(dir, 'claim-set.json');
   fs.writeFileSync(claimSet, JSON.stringify(F.claimSetFile(set)));
@@ -131,7 +188,7 @@ beforeEach(async () => {
   const committed = JSON.parse(fs.readFileSync(path.join(E2E, 'scenarios', 'scenarios.json'), 'utf8'));
   scenariosFile = path.join(dir, 'scenarios.json');
   fs.writeFileSync(scenariosFile, JSON.stringify(committed.map((s) => {
-    if (s.suite === 'l4-claim') return { ...s, claimSet };
+    if (s.suite === 'l4-claim') return { ...s, claimSet, ...(s.watchSeconds ? { watchSeconds: 1 } : {}) };
     if (s.cidFile) return { ...s, cidFile: path.join(E2E, s.cidFile) };
     return s;
   })));
@@ -269,7 +326,7 @@ describe('--class-id 5555 --expect-common --expect-release runs the claim scenar
     for (const tx of chain.sent) expect(codeReview.parseAddendum(tx.addendum).ok).toBe(true);
     expect(chain.sent.every((tx) => tx.to.toLowerCase() === chain.aggregator)).toBe(true);
     const json = JSON.parse(fs.readFileSync(report, 'utf8'));
-    expect(json.summary).toMatchObject({ passed: 3, failed: 0, total: 3 });
+    expect(json.summary).toMatchObject({ passed: 4, failed: 0, total: 4 });
     const names = json.cases.flatMap((c) => c.checks.map((x) => x.name));
     expect(names).toEqual(expect.arrayContaining(['arbiter.verdiktaCommon===expected', 'arbiter.release===expected', 'claim.verdictSource', 'claim.reportHashAgrees']));
   });
@@ -336,7 +393,9 @@ describe('the nightly is unchanged', () => {
     assertNightly();
     const json = JSON.parse(fs.readFileSync(path.join(dir, 'results', 'l4.json'), 'utf8'));
     expect(json.cases.map((c) => c.id)).toEqual(NIGHTLY_BEFORE.ids);
-    expect(json.cases.flatMap((c) => c.checks.map((x) => x.name)).filter((n) => n.startsWith('claim.'))).toEqual([]);
+    expect(json.cases.flatMap((c) => c.checks.map((x) => x.name)).filter((n) => n.startsWith('claim.') || n.startsWith('metric.'))).toEqual([]);
+    expect(chain.calls).not.toContain('eth_getLogs');
+    expect(chain.reads).not.toContain('getAggregationStatus');
   });
 
   it('the same once a claim set exists: a pinned claim set does not reach the nightly', async () => {
@@ -379,5 +438,272 @@ describe('the nightly is unchanged', () => {
       timeoutMs: 900000,
       gasLimit: 4000000
     });
+  });
+});
+
+describe('node A6c: the canary scenarios, through the CLI', () => {
+  const run = (ids, extra = []) => l4(['--scenario', ids, '--class-id', '5555', ...versions, '--scenarios', scenariosFile, ...extra]);
+  const armed = ['--expect-fault-switch', 'armed'];
+  const reportOf = async (ids, extra = []) => {
+    const file = path.join(dir, 'report.json');
+    const r = await run(ids, [...extra, '--report', file]);
+    return { ...r, json: JSON.parse(fs.readFileSync(file, 'utf8')) };
+  };
+  const startArmed = (o = {}) => startChain({ reporting: armedArbiter, aiNode: 'armed', ...o });
+
+  describe('every recorded reveal, not the cluster', () => {
+    it('reads the reveal transactions: the arbiter outside the cluster is compared too', async () => {
+      await startChain();
+      const r = await run('claim-l4-valid');
+      expect(r.out).not.toMatch(/FAIL/);
+      expect(r.code).toBe(0);
+      expect(r.out).toMatch(/3 recorded reveal/);
+      expect(chain.calls).toEqual(expect.arrayContaining(['eth_getLogs', 'eth_getTransactionByHash']));
+    });
+
+    it('fails when the third arbiter has another report hash, though the cluster agrees', async () => {
+      await startChain({ change: { valid: () => ({ third: { justification: `${evidence('jury', set.listingCid, set.claims.valid.cid, 'd'.repeat(64))}\n\nThe panel.` } }) } });
+      const r = await run('claim-l4-valid');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.reportHashAgrees.*2 report hash/);
+      expect(r.out).toMatch(/P1/);
+    });
+
+    it('fails when an upload is not what the arbiter revealed on-chain', async () => {
+      await startChain({ change: { outOfScope: () => ({ third: { revealVector: [0n, 1000000n, 0n, 0n, 0n, 0n] } }) } });
+      const r = await run('claim-l4-front-gate');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.revealMatchesUpload/);
+    });
+  });
+
+  describe('the determinism PoCs', () => {
+    it('time, randomness and flaky each pass on what their scenario says', async () => {
+      await startChain();
+      const r = await run('claim-l4-time-dependent,claim-l4-randomness-dependent,claim-l4-flaky');
+      expect(r.out).not.toMatch(/FAIL/);
+      expect(r.code).toBe(0);
+      expect(chain.sent.map((tx) => tx.cids[1])).toEqual([set.claims.timeDependent.cid, set.claims.randomnessDependent.cid, set.claims.flaky.cid]);
+    });
+  });
+
+  describe('an abstention: nobody commits, and the control shows the arbiters are there', () => {
+    it('registry failure: the listing\'s digest, then its out-of-scope control on the same listing', async () => {
+      await startChain();
+      const { code, out, json } = await reportOf('claim-l4-registry-failure');
+      expect(out).not.toMatch(/FAIL/);
+      expect(code).toBe(0);
+      expect(chain.sent.map((tx) => tx.cids)).toEqual([
+        [set.claims.registryFailure.listingCid, set.claims.registryFailure.cid],
+        [set.claims.registryControl.listingCid, set.claims.registryControl.cid]
+      ]);
+      const names = json.cases[0].checks.map((c) => c.name);
+      expect(names).toEqual(expect.arrayContaining(['claim.noCommit', 'claim.noVerdict', 'control.claim.gate']));
+      expect(names).not.toContain('evaluation.fulfilled');
+    });
+
+    it('says how to finalize, and does not: a finalize applies penalties, an owner\'s call', async () => {
+      await startChain();
+      const r = await run('claim-l4-registry-failure');
+      expect(r.out).toMatch(/finalizeEvaluationTimeout/);
+      expect(chain.reads).not.toContain('finalizeEvaluationTimeout');
+      expect(chain.sent).toHaveLength(2);
+    });
+
+    it('fails when an arbiter committed', async () => {
+      await startChain({ change: { registryFailure: () => ({ abstain: { abstain: true, commitReceived: 2 } }) } });
+      const r = await run('claim-l4-registry-failure');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.noCommit/);
+    });
+
+    it('fails when the control did not settle: canaries that are down also commit nothing', async () => {
+      await startChain({ change: { registryControl: () => ({ abstain: { abstain: true } }) } });
+      const r = await reportOf('claim-l4-registry-failure', []);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/control\./);
+    }, 60000);
+
+    it('fails when a verdict came', async () => {
+      await startChain({ change: { registryFailure: () => ({ answer: true }) } });
+      const r = await run('claim-l4-registry-failure');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.no(Verdict|Commit)/);
+    });
+
+    it('cancellation: armed, nobody commits, the standard out-of-scope claim is its control', async () => {
+      await startArmed();
+      const r = await run('claim-l4-cancellation', armed);
+      expect(r.out).not.toMatch(/FAIL/);
+      expect(r.code).toBe(0);
+      expect(chain.sent.map((tx) => tx.cids[1])).toEqual([set.claims.faultCancellation.cid, set.claims.outOfScope.cid]);
+    });
+  });
+
+  describe('the fault switch, as the run names it', () => {
+    it.each(['claim-l4-near-limit-juror', 'claim-l4-provider-timeout', 'claim-l4-slow-justifier', 'claim-l4-cancellation'])('%s refuses without --expect-fault-switch armed: exit 1, no RPC call', async (id) => {
+      await startChain();
+      const r = await run(id);
+      expect(r.out).toMatch(/--expect-fault-switch armed/);
+      expect(r.code).toBe(1);
+      expect(chain.calls).toEqual([]);
+    });
+
+    it('a mistyped state: exit 1, no RPC call', async () => {
+      await startChain();
+      const r = await run('claim-l4-valid', ['--expect-fault-switch', 'on']);
+      expect(r.code).toBe(1);
+      expect(chain.calls).toEqual([]);
+    });
+
+    it('still refuses on any other class first', async () => {
+      await startChain();
+      const r = await l4(['--scenario', 'claim-l4-near-limit-juror', '--class-id', '128', ...versions, ...armed, '--scenarios', scenariosFile]);
+      expect(r.out).toMatch(/run only on the canary class 5555/);
+      expect(r.code).toBe(1);
+      expect(chain.calls).toEqual([]);
+    });
+
+    it('near-limit, timeout with retry, slow justifier: each passes on what the verdict says happened', async () => {
+      await startArmed();
+      const r = await run('claim-l4-near-limit-juror,claim-l4-provider-timeout,claim-l4-slow-justifier', armed);
+      expect(r.out).not.toMatch(/FAIL/);
+      expect(r.code).toBe(0);
+    });
+
+    it('a fault the switch refused fails its scenario, naming why', async () => {
+      await startArmed({ change: { faultNearLimit: () => ({ json: { metadata: { verdict_source: 'code-review-jury', canary_fault_ai_node: 'armed', canary_fault: { fault: 'near-limit-juror', refused: 'REQUEST_CLASS 128' } } } }) } });
+      const r = await run('claim-l4-near-limit-juror', armed);
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.faultApplied.*REQUEST_CLASS/);
+    });
+
+    it('the dispatch form: L4_EXPECT_FAULT_SWITCH', async () => {
+      await startArmed();
+      const r = await l4(['--scenarios', scenariosFile], { L4_CLASS_ID: '5555', L4_SCENARIO: 'claim-l4-slow-justifier', L4_EXPECT_COMMON: COMMON, L4_EXPECT_RELEASE: RELEASE, L4_EXPECT_FAULT_SWITCH: 'armed' });
+      expect(r.code).toBe(0);
+    });
+
+    it('the default: a claim fails while any arbiter is armed, so a canary cannot be left that way', async () => {
+      await startChain({ reporting: armedArbiter });
+      const r = await run('claim-l4-valid');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.faultSwitch/);
+    });
+
+    it('the default: a claim fails while an AI Node keeps its key', async () => {
+      await startChain({ aiNode: 'armed' });
+      const r = await run('claim-l4-valid');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.aiNodeFaultSwitch/);
+    });
+
+    it('armed, a claim the plan does not name stays untouched', async () => {
+      await startArmed();
+      const r = await run('claim-l4-valid,claim-l4-near-limit-juror', armed);
+      expect(r.out).not.toMatch(/FAIL/);
+      expect(r.code).toBe(0);
+    });
+  });
+
+  describe('the cold cache', () => {
+    it('reports the pull from the runner\'s own fact', async () => {
+      await startChain();
+      const { code, out, json } = await reportOf('claim-l4-cold-cache');
+      expect(out).not.toMatch(/FAIL/);
+      expect(code).toBe(0);
+      expect(chain.sent[0].cids).toEqual([set.claims.coldCache.listingCid, set.claims.coldCache.cid]);
+      expect(json.cases[0].metrics.rounds[0].image).toEqual([{ cache: 'pulled', durationMs: 21000 }, { cache: 'pulled', durationMs: 21000 }, { cache: 'pulled', durationMs: 21000 }]);
+    });
+
+    it('fails on an image already there', async () => {
+      await startChain({ change: { coldCache: () => ({ json: { metadata: { verdict_source: 'code-review-jury', canary_fault_ai_node: 'off', runner_image: { cache: 'hit', durationMs: 1 } } } }) } });
+      const r = await run('claim-l4-cold-cache');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.imageCold/);
+    });
+  });
+
+  describe('a dispute', () => {
+    it('two rounds, as the contract composes them, and a flip is a fact it records', async () => {
+      await startChain({ change: { dispute: ({ disputed }) => (disputed ? { vector: INVALID_VECTOR } : {}) } });
+      const { code, out, json } = await reportOf('claim-l4-dispute');
+      expect(out).not.toMatch(/FAIL/);
+      expect(code).toBe(0);
+      expect(chain.sent).toHaveLength(2);
+      expect(chain.sent[0].addendum).toBe(set.claims.dispute.addendum);
+      expect(chain.sent[1].addendum).toBe(set.claims.dispute.disputeAddendum);
+      expect(chain.sent[0].cids).toEqual(chain.sent[1].cids);
+      expect(chain.sent.map((tx) => tx.requestedClass)).toEqual([5555, 5555]);
+      expect(json.cases[0].metrics.dispute).toMatchObject({ countable: true, flipped: true, before: 'HIGH', after: 'INVALID' });
+    });
+
+    it('a verdict that holds is a fact too', async () => {
+      await startChain();
+      const { code, json } = await reportOf('claim-l4-dispute');
+      expect(code).toBe(0);
+      expect(json.cases[0].metrics.dispute).toMatchObject({ countable: true, flipped: false });
+    });
+
+    it('a first verdict the contract would not let a maker dispute: no second round, no sample, and the run says so', async () => {
+      await startChain({ change: { dispute: () => ({ vector: INVALID_VECTOR }) } });
+      const { code, out, json } = await reportOf('claim-l4-dispute');
+      expect(chain.sent).toHaveLength(1);
+      expect(json.cases[0].metrics.dispute).toMatchObject({ countable: false });
+      expect(out).toMatch(/not a valid outcome/);
+      expect(code).toBe(0);
+    });
+
+    it('fails when the second round names no statement', async () => {
+      await startChain({ change: { dispute: ({ disputed }) => (disputed ? { json: { metadata: { verdict_source: 'code-review-jury', canary_fault_ai_node: 'off' } } } : {}) } });
+      const r = await run('claim-l4-dispute');
+      expect(r.code).toBe(1);
+      expect(r.out).toMatch(/claim\.disputeStatement/);
+    });
+  });
+
+  describe('the metrics', () => {
+    it('a claim run reports them: no p95 from a few rounds, and σ per round from the reveals', async () => {
+      await startChain();
+      const { code, out, json } = await reportOf('claim-l4-valid,claim-l4-front-gate');
+      expect(code).toBe(0);
+      expect(out).toMatch(/metric\.latencyP95.*no p95: 1 of the 20/);
+      const metrics = json.cases.find((c) => c.id === 'claim-l4-metrics');
+      expect(metrics.checks.map((c) => c.name)).toEqual(['metric.latencyP95', 'metric.validMassSigma', 'metric.disputeFlips']);
+      const [valid, gate] = json.cases;
+      expect(valid.metrics.rounds[0]).toMatchObject({ kind: 'valid', verdict: 'jury', fault: false, validMass: [100, 100, 100] });
+      expect(valid.metrics.rounds[0].latencyMs).toBeGreaterThan(0);
+      expect(gate.metrics.rounds[0]).toMatchObject({ kind: 'front-gate', verdict: 'gate' });
+    });
+
+    it('the gate reads the reports a run wrote', async () => {
+      await startChain();
+      const { json } = await reportOf('claim-l4-valid');
+      expect(json.cases[0].metrics).toBeDefined();
+      const gated = require('child_process').spawnSync(process.execPath, [path.join(E2E, 'scripts', 'l4-metrics.js'), path.join(dir, 'report.json')], { encoding: 'utf8' });
+      expect(gated.status).toBe(1);
+      expect(gated.stdout).toMatch(/no p95: 1 of the 20/);
+    });
+
+    it('a text-only run has none', async () => {
+      await startChain();
+      const file = path.join(dir, 'report.json');
+      const r = await l4(['--report', file, '--scenarios', scenariosFile], { L4_CLASS_ID: '' });
+      expect(r.code).toBe(0);
+      const json = JSON.parse(fs.readFileSync(file, 'utf8'));
+      expect(json.cases.map((c) => c.id)).toEqual(NIGHTLY_BEFORE.ids);
+      expect(json.cases.every((c) => c.metrics === undefined)).toBe(true);
+    });
+  });
+});
+
+describe('the switch\'s constants agree across the repository', () => {
+  it('the aggregator the EA measures against is the one L4 sends to on Base Sepolia', () => {
+    const { CANARY_AGGREGATOR, CANARY_CLASS_ID, CANARY_CHAIN_ID } = require('../../../external-adapter/src/canaryFault/constants');
+    const config = JSON.parse(fs.readFileSync(path.join(E2E, 'config', 'e2e-config.json'), 'utf8'));
+    const helpers = require('../l4/helpers');
+    expect(CANARY_AGGREGATOR).toBe(config.l4.aggregatorAddress);
+    expect(CANARY_CLASS_ID).toBe(helpers.CANARY_CLASS_ID);
+    expect(CANARY_CHAIN_ID).toBe(helpers.CANARY_CHAIN_ID);
   });
 });

@@ -16,10 +16,12 @@ describe('versionInfo', () => {
 
   it('has all expected keys, using null (not throwing) for missing sources', () => {
     const info = collectVersionInfo();
-    expect(Object.keys(info).sort()).toEqual(['adapter', 'aiNode', 'release', 'verdiktaCommon']);
-    for (const value of Object.values(info)) {
+    expect(Object.keys(info).sort()).toEqual(['adapter', 'aiNode', 'canaryFault', 'release', 'verdiktaCommon']);
+    const { canaryFault, ...versions } = info;
+    for (const value of Object.values(versions)) {
       expect(value === null || typeof value === 'string').toBe(true);
     }
+    expect(canaryFault).toEqual({ state: 'off' });
   });
 
   it('is JSON-serializable (goes into every justification upload)', () => {
