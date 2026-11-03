@@ -13,7 +13,8 @@ const { executeRun } = require('../../src/pipeline');
 const { validateListingRequest, listingSteps, imageUnpackedBytes } = require('../../src/listing');
 const { validateBaseline } = require('../../src/common');
 const { runText } = require('../../src/docker');
-const { silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll } = require('./helpers');
+const { officialList, makeList } = require('../../src/solcReleases');
+const { PLATFORM, silent, instanceId, dockerTestConfig, dockerFor, leftovers, removeAll } = require('./helpers');
 const { VAULT_REPO, buildFixture } = require('./forgeFixture');
 
 const TIMEOUT = 900000;
@@ -60,6 +61,9 @@ const FORGE_STD = {
 
 const REMAP = 'remappings = ["forge-std/=lib/forge-std/src/"]';
 
+/** The compiler of the too-heavy fixture: the real one, after 40 s of each compile. */
+const SLOW_SOLC = '#!/bin/sh\ncase " $* " in *" --standard-json "*) sleep 40 ;; esac\nexec /opt/solc/solc.real "$@"\n';
+
 /** The vault with foundry.toml's test directory named tests/ (R5-F1). */
 const TESTS_DIR = (() => {
   const files = {};
@@ -82,9 +86,10 @@ const VARIANTS = Object.freeze({
     setup: 'mkdir -p /opt/verdikta/tools/bin /opt/verdikta/tools/share/svm/0.8.31 && cp /opt/solc/solc /opt/verdikta/tools/share/svm/0.8.31/solc-0.8.31 && chmod -R a+rX /opt/verdikta && chown -R 10001:10001 /repo && git config --system --add safe.directory /repo',
     env: ['XDG_DATA_HOME=/opt/verdikta/tools/share', 'VERDIKTA_TOOLS=/opt/verdikta/tools', 'PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/opt/verdikta/tools/bin']
   },
-  // Attempt 3: a build slow enough to be stopped, with a plain `forge build`: forge's compiler takes its time.
+  // Attempt 3: a build slow enough to be stopped, with a plain `forge build`: forge's compiler takes its time. A wrapper is
+  // no official release, so the test that uses it gives the check a list holding its hash (A2c).
   slowsolc: {
-    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) sleep 40 ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+    setup: `mv /opt/solc/solc /opt/solc/solc.real && printf '%s' '${Buffer.from(SLOW_SOLC).toString('base64')}' | base64 -d > /opt/solc/solc && chmod 0755 /opt/solc/solc`
   },
   // A source that does not compile, at the listed commit.
   broken: { files: { ...VAULT_REPO, 'src/Broken.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\ncontract Broken { function f() public { undeclared(); } }\n' } },
@@ -146,13 +151,13 @@ function body(fx, over = {}) {
   };
 }
 
-async function check(t, b, { before = [] } = {}) {
+async function check(t, b, { before = [], solcList = undefined } = {}) {
   const config = dockerTestConfig();
   const docker = dockerFor(config);
   t.after(() => removeAll(docker, config.instance).catch(() => {}));
   const v = validateListingRequest(b);
   assert.ok(v.ok, JSON.stringify(v.issues));
-  const steps = listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(docker, v.request.image) });
+  const steps = listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(docker, v.request.image), platform: PLATFORM, ...(solcList ? { solcList } : {}) });
   const receivedAt = Date.now();
   const result = await executeRun({
     docker, config, limits: v.limits, image: v.request.image, runId: crypto.randomBytes(8).toString('hex'),
@@ -250,7 +255,9 @@ test('legacy, non-reverting assertions: the trivially failing test is an error, 
 test('too heavy: a build that runs past 30 s is stopped, and the listing refused (3x it passes the class\'s 90 s build)', { timeout: TIMEOUT }, async (t) => {
   const fx = await fixture('slowsolc');
   const t0 = Date.now();
-  const r = await check(t, body(fx));
+  const official = officialList(PLATFORM);
+  const solcList = makeList({ platform: PLATFORM, asOf: official.asOf, releases: { ...Object.fromEntries(official.releases), '0.8.31': crypto.createHash('sha256').update(SLOW_SOLC).digest('hex') } });
+  const r = await check(t, body(fx), { solcList });
   assert.equal(r.outcome, 'definitive', show(r));
   assert.deepEqual(r.facts.listing.refusals.map((x) => x.code), ['LISTING_TOO_HEAVY'], show(r));
   assert.match(r.facts.listing.refusals[0].detail, /the build ran past 30 s/);

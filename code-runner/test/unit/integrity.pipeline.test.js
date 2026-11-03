@@ -14,7 +14,7 @@ const { claimSteps } = require('../../src/steps');
 const { createServer } = require('../../src/server');
 const { testConfig, request: httpRequest } = require('../helpers/http');
 const { spec: baseSpec, IMAGE, attestationFor } = require('../helpers/requests');
-const { BASE, POC_PATCH, POC_DIFF, junit, drainFails, claimSandbox } = require('../helpers/fakeClaim');
+const { BASE, POC_PATCH, POC_DIFF, junit, drainFails, claimSandbox, fakeSolcList } = require('../helpers/fakeClaim');
 const { settlementFacts } = require('../helpers/settlementFacts');
 const { assembleReport } = require('../../src/report');
 
@@ -374,7 +374,7 @@ test('a snapshot that cannot be read before any claim code is the requester\'s p
   const cases = [
     [{ 'vcr-framework': () => ({ exitCode: 3, stdout: 'vcr-forge \nvcr-path /usr/bin\n' }) }, 'IMAGE_FORGE_MISSING'],
     [{ 'vcr-framework': () => ({ exitCode: 1, stdout: 'vcr-forge /usr/local/bin/forge\nvcr-path /usr/bin\n', stderr: 'Error: failed to parse foundry.toml' }) }, 'FORGE_CONFIG_INVALID'],
-    [{ 'vcr-manifest': () => ({ stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }) }, 'IMAGE_WATCH_TOO_LARGE']
+    [{ 'vcr-manifest': () => ({ stdout: Buffer.alloc(require('../../src/integrity').MANIFEST_MAX_BYTES + 1, 0x61) }) }, 'IMAGE_WATCH_TOO_LARGE']
   ];
   for (const [scripts, code] of cases) {
     const r = await runClaim(claimSandbox({ scripts }));
@@ -383,7 +383,7 @@ test('a snapshot that cannot be read before any claim code is the requester\'s p
   }
   // After a run: the listing overflows, or forge's configuration no longer loads.
   let n = 0;
-  const flood = (d, box) => { n += 1; if (n === 3) return { stdout: Buffer.alloc(64 * 1024 * 1024 + 1, 0x61) }; return { stdout: require('../helpers/fakeClaim').manifestOf(box.tree, d.argv.slice(4)) }; };
+  const flood = (d, box) => { n += 1; if (n === 3) return { stdout: Buffer.alloc(require('../../src/integrity').MANIFEST_MAX_BYTES + 1, 0x61) }; return { stdout: require('../helpers/fakeClaim').manifestOf(box.tree, d.argv.slice(4)) }; };
   const r1 = await runClaim(claimSandbox({ scripts: { 'vcr-manifest': flood } }));
   assertIntegrityFails(r1, ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged'], /run 1: the watched paths exceed/);
   let p = 0;
@@ -870,7 +870,7 @@ test('A3a R16-F1 (round 19): a file a patch adds cannot be a tool or forge: a da
   const receivedAt = Date.now();
   const lr = await executeRun({
     docker: l.docker, config: testConfig(), limits: v.limits, image: IMAGE, runId: '0123456789abcdef',
-    steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(l.docker, IMAGE) }),
+    steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(l.docker, IMAGE), platform: 'linux/amd64', solcList: fakeSolcList() }),
     receivedAt, deadlineAt: receivedAt + 900000, active: new Set(), log: silent, admit: async () => {}
   });
   assert.equal(lr.outcome, 'requester_error', JSON.stringify(lr.abstain || lr.facts.listing));
@@ -900,7 +900,7 @@ test('A3a R16-F1: links on the read-only root that stay there are fine (merged /
   const list = (a) => a.stdin.toString('latin1').split('\0').filter(Boolean);
   // A1's walk; owning something counts only on the mounts the sandbox can write (the builder chowns /repo, on the read-only root).
   assert.ok(IMMUTABLE_CHECK.endsWith(WALK_CHECK));
-  assert.match(IMMUTABLE_CHECK.split('\n')[0], /case \$1 in \/work\|\/work\/\*\|\/tmp\|\/tmp\/\*\|\/home\/sandbox\|\/home\/sandbox\/\*\) ;; \*\) return 0/);
+  assert.match(IMMUTABLE_CHECK.split('\n')[0], /case \$1 in \/proc\|\/proc\/\*\) exit 1 ;; \/work\|\/work\/\*\|\/tmp\|\/tmp\/\*\|\/home\/sandbox\|\/home\/sandbox\/\*\) ;; \*\) return 0/);
   assert.deepEqual(list(asked[0]), ['/usr/local/sbin', '/usr/local/bin', '/usr/sbin', '/usr/bin', '/sbin', '/bin']);
   assert.deepEqual(list(asked[1]), ['/opt/helpers']);
   assert.deepEqual(list(asked[2]), ['/opt/solc/solc']);

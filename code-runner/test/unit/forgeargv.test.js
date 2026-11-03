@@ -22,7 +22,7 @@ const { LAUNCHER_SCRIPT } = require('../../src/launcher');
 const { FORGE_FUZZ_SEED } = require('../../src/common');
 const { testConfig, request: httpRequest } = require('../helpers/http');
 const { spec: baseSpec, IMAGE, attestationFor } = require('../helpers/requests');
-const { BASE, POC_PATCH, FIX_PATCH, forgeConfig, initialTree, claimSandbox, junit } = require('../helpers/fakeClaim');
+const { BASE, POC_PATCH, FIX_PATCH, forgeConfig, initialTree, claimSandbox, junit, fakeSolcList } = require('../helpers/fakeClaim');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const PROBED_PATH = '/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin';
@@ -308,7 +308,7 @@ test('the listing check runs forge the same way: its build, its suite x3 and eve
   const receivedAt = Date.now();
   const r = await executeRun({
     docker: sb.docker, config: testConfig(), limits: v.limits, image: v.request.image, runId: '0123456789abcdef',
-    steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image) }),
+    steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image), platform: 'linux/amd64', solcList: fakeSolcList() }),
     receivedAt, deadlineAt: receivedAt + 900000, active: new Set(), log: silent, admit: async () => {}
   });
   assert.equal(r.outcome, 'definitive', JSON.stringify({ outcome: r.outcome, abstain: r.abstain, issues: r.issues }));
@@ -334,7 +334,7 @@ test('the listing check runs forge the same way: its build, its suite x3 and eve
   }
 });
 
-test('a session without an integrity reference (the listing check) finds forge itself: none on PATH, or one it cannot run, is the image\'s error', async () => {
+test('a listing check on an image with no forge on PATH, or one the runner cannot run, is the image\'s error, as at the integrity reference', async () => {
   const body = draft();
   const v = validateListingRequest(body);
   const run = async (framework) => {
@@ -342,7 +342,7 @@ test('a session without an integrity reference (the listing check) finds forge i
     const receivedAt = Date.now();
     const r = await executeRun({
       docker: sb.docker, config: testConfig(), limits: v.limits, image: v.request.image, runId: '0123456789abcdef',
-      steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image) }),
+      steps: listingSteps(v.request, v.limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image), platform: 'linux/amd64', solcList: fakeSolcList() }),
       receivedAt, deadlineAt: receivedAt + 900000, active: new Set(), log: silent, admit: async () => {}
     });
     return { r, sb };

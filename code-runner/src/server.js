@@ -120,7 +120,7 @@ function toListingResponse(result) {
  * @param {Function} [o.stepsFor] - (request, limits) => steps (default: claimSteps)
  * @param {Function|null} [o.checkRequest] - request => issues the steps would refuse, checked before
  *   admission or any pull (default: the claim pipeline's checkClaim with the default steps)
- * @param {Function} [o.listingStepsFor] - (request, limits, { imageSize }) => steps for a listing check (default: listingSteps)
+ * @param {Function} [o.listingStepsFor] - (request, limits, { imageSize, platform }) => steps for a listing check (default: listingSteps)
  * @param {object} [o.log]
  * @param {Function} [o.statfs] - for /health and the pull's disk check
  * @param {Function} [o.meminfo] - the host's available memory, for admission (default /proc/meminfo)
@@ -299,7 +299,7 @@ function createServer({
     const request = v.request;
     let steps;
     try {
-      steps = listingStepsFor(request, v.limits, { imageSize: () => imageUnpackedBytes(docker, request.image) });
+      steps = listingStepsFor(request, v.limits, { imageSize: () => imageUnpackedBytes(docker, request.image), platform: config.platform });
     } catch (err) {
       if (err instanceof RequesterError) {
         refuse(res, err.issues, 'listing check');
