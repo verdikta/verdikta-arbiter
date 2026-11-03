@@ -13,7 +13,8 @@ const os = require('os');
 const path = require('path');
 const { ethers } = require('ethers');
 const { codeReview } = require('@verdikta/common');
-const { AGGREGATOR_ABI } = require('../l4/run-l4');
+const { AGGREGATOR_ABI, verdictRound } = require('../l4/run-l4');
+const { summarize } = require('../l4/metrics');
 const { startLocalIpfs } = require('../l2/claim/local-ipfs');
 const F = require('../l2/claim/fixtures');
 const repo = require('../../../code-runner/test/docker/forgeFixture');
@@ -684,6 +685,23 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       const gated = require('child_process').spawnSync(process.execPath, [path.join(E2E, 'scripts', 'l4-metrics.js'), path.join(dir, 'report.json')], { encoding: 'utf8' });
       expect(gated.status).toBe(1);
       expect(gated.stdout).toMatch(/no p95: 1 of the 20/);
+    });
+
+    it('a jury round with no verdict is a sample against the budget, not a missing one', async () => {
+      await startChain({ change: { valid: () => ({ abstain: { abstain: true } }) } });
+      const provider = new ethers.JsonRpcProvider(chain.url);
+      const wallet = new ethers.Wallet(ethers.Wallet.createRandom().privateKey, provider);
+      const aggregator = new ethers.Contract(chain.aggregator, AGGREGATOR_ABI, wallet);
+      const config = JSON.parse(fs.readFileSync(path.join(E2E, 'config', 'e2e-config.json'), 'utf8'));
+      const l4Config = { ...config.l4, classId: 5555, pollIntervalMs: 1 };
+      const ctx = { cfg: {}, provider, aggregator, l4: l4Config, expect: {}, opts: {}, faultSwitch: { ea: 'off', aiNode: 'off' } };
+      const request = { cids: [set.listingCid, set.claims.valid.cid], addendum: set.claims.valid.addendum };
+      const { round, vector, checks } = await verdictRound(ctx, { id: 'x', minOutcomes: 6 }, request, { kind: 'valid', timeoutMs: 1 });
+      provider.destroy();
+      expect(vector).toBeNull();
+      expect(round).toMatchObject({ kind: 'valid', verdict: 'jury', unfinished: true, validMass: [] });
+      expect(checks.find((c) => c.name === 'evaluation.fulfilled').ok).toBe(false);
+      expect(summarize([round]).latency).toMatchObject({ n: 1, unfinished: 1, maxMs: Infinity });
     });
 
     it('a text-only run has none', async () => {

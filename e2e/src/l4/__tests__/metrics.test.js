@@ -78,6 +78,20 @@ describe('summarize', () => {
     expect(summary.sigma.perRound).toHaveLength(2);
   });
 
+  it('a jury round that never finished counts as slower than any budget, and has no σ', () => {
+    const lost = { id: 'x', kind: 'valid', verdict: 'jury', fault: false, latencyMs: 900000, validMass: [], unfinished: true };
+    const one = summarize([...times(19).map((t) => jury(t)), lost]);
+    expect(one.latency).toMatchObject({ n: 20, unfinished: 1, maxMs: Infinity });
+    expect(Number.isFinite(one.latency.p95Ms)).toBe(true);
+    expect(one.sigma.perRound).toHaveLength(19);
+    const two = summarize([...times(18).map((t) => jury(t)), lost, lost]);
+    expect(two.latency.p95Ms).toBe(Infinity);
+    expect(gate(two).ok).toBe(false);
+    expect(gate(two).lines.join('\n')).toMatch(/2 never finished/);
+    const few = summarize([jury(1000), lost]);
+    expect(metricChecks(few)[0].detail).toMatch(/no p95: 2 of the 20 rounds it needs, 1 never finished; slowest a round that never finished/);
+  });
+
   it('a fault round still tells σ: the switch cannot move a score', () => {
     const summary = summarize([jury(1, [50, 60, 70], { fault: true })]);
     expect(summary.sigma.perRound[0].sigma).toBeCloseTo(10, 6);

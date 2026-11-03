@@ -25,7 +25,8 @@ const MASS_PER_POINT = 10000;
 /** INVALID and DUPLICATE come first in the six outcomes; the rest is the valid mass. */
 const FIRST_VALID_OUTCOME = 2;
 
-const seconds = (ms) => `${Math.round(ms / 1000)} s`;
+/** A round that never finished is slower than any budget. */
+const seconds = (ms) => (Number.isFinite(ms) ? `${Math.round(ms / 1000)} s` : 'a round that never finished');
 
 function validMassPoints(vector) {
   return vector.slice(FIRST_VALID_OUTCOME).reduce((sum, value) => sum + Number(value), 0) / MASS_PER_POINT;
@@ -53,9 +54,15 @@ function sigmaOf(values) {
  */
 function summarize(rounds, disputes = []) {
   const jury = rounds.filter((r) => r.verdict === 'jury');
-  // The typical path: no gate stopped it early and no delay was injected into it.
-  const latency = { ...p95Of(jury.filter((r) => !r.fault).map((r) => r.latencyMs)), budgetMs: LATENCY_BUDGET_MS };
-  const perRound = jury.map((r) => ({ id: r.id, ...sigmaOf(r.validMass || []) }));
+  // The typical path: no gate stopped it early and no delay was injected into it. A round that
+  // never finished counts as slower than any budget, or a network that loses rounds would look fast.
+  const timed = jury.filter((r) => !r.fault);
+  const latency = {
+    ...p95Of(timed.map((r) => (r.unfinished ? Infinity : r.latencyMs))),
+    budgetMs: LATENCY_BUDGET_MS,
+    unfinished: timed.filter((r) => r.unfinished).length
+  };
+  const perRound = jury.filter((r) => !r.unfinished).map((r) => ({ id: r.id, ...sigmaOf(r.validMass || []) }));
   const sigmas = perRound.filter((r) => r.sigma !== null).map((r) => r.sigma);
   const counted = disputes.filter((d) => d.countable);
   const k = counted.filter((d) => d.flipped).length;
@@ -66,10 +73,11 @@ function summarize(rounds, disputes = []) {
   };
 }
 
-function latencyLine({ n, p95Ms, maxMs, budgetMs }) {
+function latencyLine({ n, p95Ms, maxMs, budgetMs, unfinished }) {
   if (n === 0) return 'no p95: no jury round with no fault injected';
-  if (p95Ms === null) return `no p95: ${n} of the ${P95_MIN_SAMPLES} rounds it needs; slowest ${seconds(maxMs)} of the ${seconds(budgetMs)} budget (§11)`;
-  return `p95 ${seconds(p95Ms)} of the ${seconds(budgetMs)} budget (§11), ${n} rounds, slowest ${seconds(maxMs)}`;
+  const lost = unfinished > 0 ? `, ${unfinished} never finished` : '';
+  if (p95Ms === null) return `no p95: ${n} of the ${P95_MIN_SAMPLES} rounds it needs${lost}; slowest ${seconds(maxMs)} of the ${seconds(budgetMs)} budget (§11)`;
+  return `p95 ${seconds(p95Ms)} of the ${seconds(budgetMs)} budget (§11), ${n} rounds${lost}, slowest ${seconds(maxMs)}`;
 }
 
 function sigmaLine({ perRound, usable, largest, limit }) {

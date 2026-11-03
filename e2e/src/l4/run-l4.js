@@ -141,7 +141,9 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
   }, (remainMs) => console.log(chalk.gray(`[l4]   waiting… ${Math.round(remainMs / 1000)}s left`)));
   const latencyMs = Date.now() - start;
   checks.push(A.assert('evaluation.fulfilled', result.status === 'fulfilled', `status=${result.status}`));
-  if (result.status !== 'fulfilled') return { checks, round: null, vector: null };
+  const expected = EXPECTED[kind];
+  const baseRound = { id: scenario.id, kind, verdict: VERDICT_BY_SOURCE[expected.source], fault: Boolean(expected.fault), latencyMs };
+  if (result.status !== 'fulfilled') return { checks, round: { ...baseRound, unfinished: true, validMass: [] }, vector: null };
 
   const vector = [...result.scores].map(Number);
   checks.push(...A.structuralScoreAssertions(result.scores, {
@@ -168,13 +170,8 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
     const v = r.version;
     console.log(chalk.gray(`[l4]   ${r.cid}: ${v ? `common=${v.verdiktaCommon || '?'} adapter=${v.adapter || '?'} aiNode=${v.aiNode || '?'} release=${releaseCommit(v.release) || '?'} faultSwitch=${v.canaryFault ? v.canaryFault.state : '?'}` : 'justification fetch failed'}`));
   }
-  const expected = EXPECTED[kind];
   const round = {
-    id: scenario.id,
-    kind,
-    verdict: VERDICT_BY_SOURCE[expected.source],
-    fault: Boolean(expected.fault),
-    latencyMs,
+    ...baseRound,
     validMass: reveals.map((r) => validMassPoints(r.scores)),
     ...(expected.cold ? { image: reports.map((r) => (r.json && r.json.metadata ? r.json.metadata.runner_image : null)) } : {}),
   };
@@ -235,6 +232,7 @@ async function disputeRounds(ctx, scenario) {
   const settled = (vector) => codeReview.settleBugOutcome(vector, ANY_STAKE);
   if (!first.round) return { checks: first.checks };
   const rounds = [first.round];
+  if (!first.vector) return { checks: first.checks, metrics: { rounds } };
   const before = settled(first.vector);
   if (!before.valid) {
     console.log(chalk.yellow(`[l4] ${scenario.id}: the first round settled ${before.outcome}, not a valid outcome: the contract would refuse a dispute, so there is no second round and no sample`));
@@ -244,6 +242,7 @@ async function disputeRounds(ctx, scenario) {
   const checks = [...first.checks, ...second.checks.map((check) => ({ ...check, name: `dispute.${check.name}` }))];
   if (!second.round) return { checks, metrics: { rounds } };
   rounds.push(second.round);
+  if (!second.vector) return { checks, metrics: { rounds } };
   const after = settled(second.vector);
   console.log(chalk.gray(`[l4] ${scenario.id}: ${before.outcome} then ${after.outcome}: ${before.outcome === after.outcome ? 'held' : 'flipped'}`));
   return { checks, metrics: { rounds, dispute: { countable: true, before: before.outcome, after: after.outcome, flipped: before.outcome !== after.outcome } } };
@@ -388,4 +387,4 @@ async function runL4(cfg, selected, opts) {
   }
 }
 
-module.exports = { runL4, AGGREGATOR_ABI, justificationChecks };
+module.exports = { runL4, AGGREGATOR_ABI, justificationChecks, verdictRound };
