@@ -402,7 +402,8 @@ test('R6-F1, a real mode-only patch through the gates: 25 paths share one blob, 
   const fx = await buildFixture(builder, { files: { ...VAULT_REPO, 'test/Vm.sol': VM, ...copies }, instance: `h${crypto.randomBytes(4).toString('hex')}` });
   t.after(() => fx.remove().catch(() => {}));
   const flip = (n) => Array.from({ length: n }, (_, i) => `diff --git a/${name(i)} b/${name(i)}\nold mode 100644\nnew mode 100755\n`).join('');
-  const helper = 'vm.store(address(1), bytes32(0), bytes32(0));\n';
+  // A helper past Semgrep's limit, so only the text rules can read it, named to sort after the padding.
+  const helper = `${' '.repeat(SCAN_LIMITS.fileBytes)}\nvm.store(address(1), bytes32(0), bytes32(0));\n`;
   const created = { 'test/Exploit.t.sol': POC, 'test/zzz-helper.txt': helper };
   const pocPatch = (n) => Buffer.concat([Buffer.from(flip(n)), addFilesPatch(created)]);
   const createdBytes = POC.length + helper.length;
@@ -429,7 +430,7 @@ test('R6-F1, a real mode-only patch through the gates: 25 paths share one blob, 
   assert.match(note.message, /storage-overwrite: \d+/, 'and the flags they could have hidden are named');
   assert.ok(Number(/(\d+) more/.exec(note.message)[1]) > 200000, note.message);
   assert.ok(flags.some((f) => f.rule === ID('not-scanned') && f.file.startsWith('test/data/')), JSON.stringify(flags.slice(0, 3)));
-  assert.ok(flags.some((f) => f.rule === ID('unread-reach') && f.file === 'test/zzz-helper.txt'), 'the helper the patch created is read, beside all that padding');
+  assert.ok(flags.some((f) => f.rule === ID('unread-reach') && f.file === 'test/zzz-helper.txt' && f.line === 2), 'the helper the patch created is read, beside all that padding');
 });
 
 test('a real fix: forge fmt --check and Semgrep --baseline-commit give what the fix brought in, and only that; a .semgrepignore in it has no effect', { timeout: TIMEOUT }, async (t) => {
