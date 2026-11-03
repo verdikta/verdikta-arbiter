@@ -532,7 +532,11 @@ claim:
 - **A listing check.** Steps 2–3 of the build above: the code builds, the suite
   runs and is stable, the scope and test paths exist, the harness reports
   assertion failures distinctly. Without this, hunters' proofs could not be
-  executed later.
+  executed later. It takes the same integrity reference as a claim and holds its
+  suite and harness probes to the same post-run checksums (§9.5), so an image a
+  claim would refuse is refused here with the same code, and a maker can't list a
+  stake no claim can settle. It also refuses any `solc` in the image that isn't an
+  official release (§9.5).
 - **A cheap first pass for bugs.** Semgrep with Verdikta's pinned rules and a
   secret scan over the in-scope paths, then one inexpensive agent pass: a single
   model from the `code-standard` pool reads the in-scope source with the scope
@@ -691,7 +695,7 @@ minutes apart, the ordering costs little time.
 
 ### 8.8 Artifact kinds
 
-`repo` — any repository at a commit on a blessed image: `foundry` in the MVP,
+`repo` — a repository at a commit on a blessed image: `foundry` in the MVP,
 `node22` and `python312` from the second release (§17). `contract` — a `repo` plus a deployment address and chain id, with a
 verified-source check at listing (§8.2); the record page links the deployment.
 `skill` — a skills or MCP package (a `SKILL.md` or server manifest with its
@@ -699,6 +703,23 @@ scripts), judged on a harness image that runs the package's entry points in the
 sandbox and records attempted network, file and process activity as tier-A
 facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
 `skill` follows once the harness exists (§17).
+
+**A listing needs the project's proof (owner decision Q34: the project decides).**
+Every listing needs a file at the listed commit, `.verdikta/stake-control.json`,
+naming the listing's maker, on one of the repository's own branches or tags. A
+`contract` listing also needs a signature from the deployment's deployer or
+current owner. There is no allowlist and no exception for Verdikta: a sponsor can
+stake only if the project names it in the file. The builder refuses to sign
+without the proof, and the site and hunter tool refuse commits on listings the
+builder didn't sign. This reverses Q33's "third-party stakes stay allowed and
+labelled". There is no notice to projects and no bot account.
+
+**This protects a project's name and record, not its code.** Anyone can still
+stake on a fork or a copy and read findings that also apply upstream. The record
+labels a fork where the host says so; a plain copy can't be detected. Every listing
+warns at commit who reads the proof first (the staker's key) and that the code may
+exist elsewhere. Refused listing attempts are counted by reason, and the rule is
+revisited before mainnet.
 
 ## 9. The code runner
 
@@ -988,10 +1009,10 @@ Within that:
 - **The residual** is only a trap the maker's setup plants that helps claim code win
   (a program in the tools that itself runs something from the work tree, say: the
   image's own text, which no check inside the sandbox can read). It is recorded, not
-  closed. It is not harmless to everyone but the maker: §8.8 allows any repository
-  and nothing checks that a maker controls it, so a stranger may be able to stage a
-  valid finding against someone else's project. That is why it is written down here
-  as a residual, and that question is with the owner.
+  closed. It is not harmless to everyone but the maker. Since owner decision Q34
+  (§8.8) a listing needs the project's proof, so a stranger can't stage a valid
+  finding on a project's own record that way, but they can on a fork or a copy,
+  which is why it stays written down here as a residual.
 
 A change to a watched place during the maker's build, before any claim code has
 run, is the image's doing and a requester error, never a failed check. Where forge
@@ -1012,20 +1033,36 @@ leaves the choice to the sources' pragmas among the installed releases. forge's 
 beats its configuration files, so what a patch or a fix does to them no longer picks a
 compiler. This holds only with the refusals above: forge still runs whatever an installed
 release's path leads to, and a pragma can pick any installed release. It says nothing about
-the installed bytes, which are the maker's, so the fake-`solc` limit below stays. A listing
+the installed bytes, which are the maker's; the listing check reads those, below. A listing
 that names an external compiler adapter is refused, since that is a compiler the pin does
 not name, and the runner keeps that list empty in forge's environment.
 
+**The listing refuses any `solc` that isn't an official release (owner Q35 condition 2).**
+Right after the reference and before any build, the listing check hashes everything under
+`svm/`, the file the pin names outside the work tree (owner Q37 condition 2: an official one
+stays pinned) and a `solc` in each `PATH` directory. Official means exactly: the SHA-256 that
+`binaries.soliditylang.org/<platform>/list.json` gives the build it names under `releases`, on
+the class platform `linux/amd64` (`linux/arm64` is a development setting, on that site's own
+list). The hashes are a table in the runner's repository, kept current by a script and a weekly
+check; a release newer than the table is refused until the table has it. A claim never reads the
+table, so arbiters on different runner versions can't split on a new release. That nothing else
+runs as solc rests on forge's lookup at the pinned version, which the runner can't watch: a test
+plants a compiler at each other place and shows it never runs. This covers `solc` only. A `vyper`
+has no official list to read against, and repository code a proof calls through ffi isn't a
+compiler; both stay in the limits below.
+
 **Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
-before mainnet. The code-runner README's route table has every route the review raised.
+before mainnet. The code-runner README's route table has every route the review raised. On an
+image from the attested builder, a `solc` that isn't an official release no longer reaches a claim:
+that is what node A2c changed here, and only as far as its tests show. No other program is covered.
 
 | Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
 |---|---|---|---|
-| A program in the image (as `solc`, say) or repository code that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | A2c: the proof's runs get the checksums, which catches one that fires on every run but not one that spares the proof's tests; it also looks at refusing any `solc` that isn't an official release |
-| A fake `solc` that exits with an error on a test it hasn't seen | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed; A2c's look at refusing any `solc` that isn't an official release |
+| A program in the image other than `solc` (`vyper`, on a `.vy` file), or repository code, that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | The listing's suite and probes get the checksums, which catches one that fires on what they run but not one that spares them |
+| A fake `vyper` that exits with an error on a test it hasn't seen, with a `.vy` file in the tree | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed. The listing doesn't read `vyper`: there's no official list to read it against |
 | A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
-| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: a refusal of unofficial `solc` doesn't cover it. A hunter can read the code it calls |
-| A trap keyed on the date | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | A2c's look at unofficial `solc` covers compiler traps; repository code stays |
+| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: the official-release refusal doesn't cover it, and nothing at listing runs code only a proof would call. A hunter can read the code it calls |
+| A trap keyed on the date, in repository code or `vyper` | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | In `solc` it is refused at listing, whatever the date, because the bytes aren't official. Repository code and `vyper` stay |
 
 ### 9.6 What we borrow from verdikta-agents
 
@@ -1791,9 +1828,14 @@ values of `badgeFloorWei` and the under-staked ratio.
   judged history, not scores. The chicken-and-egg (runtimes will not check
   until artifacts are staked; makers will not stake until runtimes check) is
   broken by **seeding**: Verdikta funds stakes on the most-installed skills and
-  MCP servers, discloses findings to their maintainers through the fix window,
-  and publishes the records — what the Internet Bug Bounty did for third-party
-  open source before it paused in March 2026. The need is live: Koi Security
+  MCP servers **whose maintainers agree**, discloses findings to them through
+  the fix window, and publishes the records — what the Internet Bug Bounty did
+  for third-party open source before it paused in March 2026. Seeding needs the
+  maintainers' consent (owner decision Q34, §8.8): Verdikta is a sponsor like any
+  other, so a project that doesn't name it in `.verdikta/stake-control.json` can't
+  be seeded. A finding goes to the staker's key, so telling the maintainers is
+  Verdikta's own step, by hand, for its own stakes; no protocol step or notice does
+  it for anyone else. The need is live: Koi Security
   found 341 malicious skills among 2,857 on ClawHub on 1 February 2026 (335
   shipping a macOS stealer), later audits report four-figure counts, and
   ClawHub's answer was scanner integration (VirusTotal, ClawScan). OpenAI added
@@ -1853,8 +1895,9 @@ scan, funded by the listing fee, as the floor of attention every record gets.
 Jev comes in Phase 2 on purpose: execution evidence is what makes the verdicts
 accurate, Jev is what makes them cheap, and every operator in the class needs
 the `systemone` client deployed before Jev can sit on the jury. Seeding
-(§14) starts on testnet in Phase 1 with Verdikta's own repositories and a
-handful of popular skills, so the feed is never empty when hunters arrive.
+(§14) starts on testnet in Phase 1 with Verdikta's own repositories and those
+popular skills whose maintainers consent by naming Verdikta in their proof file
+(§8.8, owner decision Q34), so the feed is never empty when hunters arrive.
 
 ## 18. Validation
 

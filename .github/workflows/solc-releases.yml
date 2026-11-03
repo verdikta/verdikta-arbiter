@@ -1,0 +1,27 @@
+name: Solc releases
+
+# The code runner's list of official solc releases (code-runner/src/solcReleases.json, read by the listing check's look at
+# the compilers in an image). A release newer than the list is refused at listing until the list has it, so this goes red
+# when binaries.soliditylang.org has one: run `node scripts/solc-releases.js --write` in code-runner/ and release the runner.
+# It also goes red if a release already on the list changed upstream, which is for a person to look at.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: The list holds every official release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Compare with binaries.soliditylang.org
+        working-directory: code-runner
+        run: node scripts/solc-releases.js --check

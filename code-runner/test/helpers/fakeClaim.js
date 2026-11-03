@@ -35,6 +35,7 @@ const crypto = require('node:crypto');
 const zlib = require('node:zlib');
 const { fakeDocker, healthyDaemon, nonceOf } = require('./fakeDocker');
 const { GitStore } = require('./gitStore');
+const { makeList } = require('../../src/solcReleases');
 
 const POC = '9e1b2d0000000000000000000000000000000000';
 const FIX_COMMIT = 'f1f1f10000000000000000000000000000000000';
@@ -307,6 +308,15 @@ const HOME = '/home/sandbox';
 /** The fake's tracked files (the listed commit's, and the patch's): what a reset --hard rewrites. */
 const TRACKED = /^\/work\/(?:\.gitmodules|foundry\.toml|lib\/forge-std\/|src\/|test\/)/;
 
+/** The compiler file the fake's `forge config` names (on the read-only root), and a runner's list that holds it. */
+const FAKE_SOLC = Object.freeze({ path: '/opt/solc/solc', content: 'an official solc\n' });
+function fakeSolcList(releases = {}) {
+  return makeList({
+    platform: 'linux/amd64', asOf: '2026-11-02',
+    releases: { '0.8.31': crypto.createHash('sha256').update(FAKE_SOLC.content).digest('hex'), ...releases }
+  });
+}
+
 /** The watched files of a freshly forced checkout, as the integrity snapshots see them. */
 /**
  * The pack's `git cat-file --batch` on `<commit>:<path>`: a listed file from the
@@ -341,6 +351,7 @@ function packBlobs(specs, box, diff) {
 function initialTree() {
   const f = (content, mode = '644') => ({ type: 'f', mode, content });
   return new Map([
+    [FAKE_SOLC.path, f(FAKE_SOLC.content, '755')],
     ['/work/.gitmodules', f('[submodule "lib/forge-std"]\n')],
     ['/work/foundry.toml', f('[profile.default]\n')],
     ['/work/lib/forge-std/src/Test.sol', f('// forge-std\n')],
@@ -471,7 +482,7 @@ function linksOf(tree, stdin) {
  * models the read-only root's links too (a `/opt/helpers` entry is never listed: the manifest holds /work and $HOME only).
  */
 function externalRootsOf(tree, stdin) {
-  const WRITABLE = ['/work', '/tmp', HOME];
+  const WRITABLE = ['/proc', '/work', '/tmp', HOME];
   const walksWritable = (p) => {
     let cur = [];
     let queue = p.split('/');
@@ -507,6 +518,24 @@ function externalRootsOf(tree, stdin) {
       const link = `${p}/${k.slice(r.real.length + 1)}`;
       if (walksWritable(link)) parts.push(`${link}\0w\0`);
     }
+  }
+  return Buffer.from(parts.join(''), 'latin1');
+}
+
+/**
+ * `vcr-compilers`' output for the paths in its arguments: `f\0path\0sha256\0` for a file (through its links), `!\0path\0\0`
+ * for one it cannot read, `?\0path\0\0` for a dangling link, nothing for anything else (a directory, or no such path).
+ */
+function compilersOf(tree, paths) {
+  const resolve = kernelResolver(tree);
+  const parts = [];
+  for (const p of paths) {
+    const r = resolve(p);
+    if (r.kind === 'f') {
+      const e = tree.get(r.real);
+      if (e.type !== 'f' || e.unreadable) parts.push(`!\0${p}\0\0`);
+      else parts.push(`f\0${p}\0${crypto.createHash('sha256').update(Buffer.isBuffer(e.content) ? e.content : Buffer.from(String(e.content), 'latin1')).digest('hex')}\0`);
+    } else if (r.kind === '?' && tree.has(p)) parts.push(`?\0${p}\0\0`);
   }
   return Buffer.from(parts.join(''), 'latin1');
 }
@@ -653,6 +682,7 @@ function claimSandbox({
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
     'vcr-external-roots': (d, b) => ({ stdout: externalRootsOf(b.tree, d.stdin) }),
+    'vcr-compilers': (d, b) => ({ stdout: compilersOf(b.tree, d.argv.slice(4)) }),
     'vcr-svm': (d, b) => {
       const dir = d.argv[d.argv.length - 1];
       const names = [...b.tree.keys()].filter((p) => p.startsWith(`${dir}/`)).map((p) => `${dir}/${p.slice(dir.length + 1).split('/')[0]}`);
@@ -741,5 +771,6 @@ function claimSandbox({
 
 module.exports = {
   BASE, POC, FIX_COMMIT, POC_PATCH, POC_DIFF, FIX_PATCH, FIX_DIFF, HOME, junit, drainFails, suitePasses, hasFailure, decode, stripEnv, forgeKind, splitProbe, externalRootsOf,
-  claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf, kernelResolver, linksOf
+  claimSandbox, defaultImage, parsePack, filesOf, initialTree, forgeConfig, manifestOf, kernelResolver, linksOf, compilersOf, fakeSolcList, FAKE_SOLC,
+  defaultManifest: (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) })
 };
