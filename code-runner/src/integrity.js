@@ -81,7 +81,7 @@
  */
 
 const crypto = require('node:crypto');
-const { matchesAny, normalizePath } = require('./common');
+const { matchesAny, normalizePath, REPORT_LIMITS, REPORT_MAX_LINE } = require('./common');
 const { hermetic, BASE_ENV } = require('./git');
 const { WALK_CHECK } = require('./launcher');
 const { Abstain, ABSTAIN, RequesterError } = require('./result');
@@ -118,7 +118,7 @@ const LISTING_RESERVE = Object.freeze({ entries: 320000, bytes: 64 * 1024 * 1024
 const TAMPER_FLAG_KINDS = Object.freeze([
   'report-path-referenced', 'exit-during-import', 'exit-handler-registered', 'framework-patched', 'reporter-patched', 'write-outside-repository'
 ]);
-const MAX_TAMPER_FLAGS = 100;
+const MAX_TAMPER_FLAGS = REPORT_LIMITS.tamperFlags;
 
 /** The checks of §9.5, in the order a report names them. */
 const CHECKS = Object.freeze([
@@ -1879,7 +1879,11 @@ function pathKinds(p) {
  */
 function tamperFlags({ added }) {
   const flags = new Map();
-  const flag = (kind, file, line) => flags.set(`${kind}\u0000${file}\u0000${line}`, { kind, file, line });
+  // A line past the report's bound (a padded test file) is a file-level flag: the report must still validate (A3b).
+  const flag = (kind, file, at) => {
+    const line = at <= REPORT_MAX_LINE ? at : null;
+    flags.set(`${kind}\u0000${file}\u0000${line}`, { kind, file, line });
+  };
   for (const [file, lines] of added) {
     for (const { line, text } of lines) {
       if (REPORT_PATH.test(text) || JUNIT_MARKUP.test(text)) flag('report-path-referenced', file, line);

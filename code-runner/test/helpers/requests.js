@@ -47,11 +47,14 @@ function runRequest(overrides = {}) {
     pocPatch: Buffer.from(POC_PATCH).toString('base64'),
     fixPatch: null,
     baseline: { stable: ['test/Vault.t.sol > test_deposit'], unstable: [] },
-    finding: { class: 'HIGH', rootCause: 'reentrancy in withdraw', paths: ['src/Vault.sol'] },
+    finding: {
+      version: 1, claimedClass: 'HIGH', rootCause: 'Reentrancy in withdraw drains the vault.', affectedPaths: ['src/Vault.sol'],
+      poc: { command: 'forge test --match-test test_drain', observable: 'test_drain fails with "vault drained"' }
+    },
     report: '# Reentrancy in withdraw\n',
     knownIssues: [],
     priorFindings: [],
-    eaGates: { disclosure: 'pass' },
+    eaGates: { disclosure: 'pass', inScope: 'pass' },
     deadline: 700000,
     ...overrides
   };

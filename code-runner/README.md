@@ -16,8 +16,9 @@ attestation site runs before escrow opens
 ([below](#post-v1listing-checks)); node A3a the five integrity checks of
 §9.5 with the evidence tiers, the `integrity` and `claimedObservable` gates
 ([below](#integrity-checks)) and the fix check
-([below](#the-fix-check)). Later nodes add the report and context pack (A3b)
-and the honesty flags (A3c). See [Seams](#seams).
+([below](#the-fix-check)); node A3b the Verification Report, its hash and the
+context pack ([below](#the-report-and-the-context-pack)). A later node adds the
+honesty flags (A3c). See [Seams](#seams).
 
 ## Run it
 
@@ -62,16 +63,18 @@ runtime entry in that daemon's `daemon.json`:
 {
   "runtimes": {
     "runsc": {
-      "path": "/opt/gvisor/20260928.0/runsc",
+      "path": "/opt/gvisor/20260921.0/runsc",
       "runtimeArgs": ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]
     }
   }
 }
 ```
 
-- the pinned gVisor release (`20260928.0`, SHA-512-checked; see
-  `.github/workflows/code-runner.yml`), registered with `systemctl reload docker`,
-  never a restart;
+- the gVisor release `@verdikta/common` pins (`GVISOR_RELEASE`, today
+  `20260921.0`, SHA-512-checked; see `.github/workflows/code-runner.yml`),
+  registered with `systemctl reload docker`, never a restart. The runner asks that
+  binary its release on every run and refuses any other
+  ([below](#the-report-and-the-context-pack));
 - `--platform=systrap`: no KVM needed;
 - `--overlay2=root:dir=…,size=…` caps each container's writable layer (the `self`
   medium fails on kernel 5.4).
@@ -92,6 +95,7 @@ the answer is 401 whatever the route.
   "ok": true, "reasons": [],
   "service": "verdikta-code-runner", "version": "0.1.0", "node": "v20.18.1",
   "runtime": "runsc", "runtimeAvailable": true, "runtimeArgs": ["--platform=systrap", "…"],
+  "gvisor": "release-20260921.0", "gvisorPinned": "release-20260921.0",
   "docker": { "reachable": true, "endpoint": "unix:///run/verdikta-code-runner/docker.sock", "serverVersion": "28.0.4", "osType": "linux", "architecture": "x86_64", "error": null },
   "dataRoot": { "path": "/var/lib/verdikta-code-runner/docker", "freeBytes": 38000000000, "error": null },
   "maintenance": false,
@@ -108,7 +112,9 @@ the answer is 401 whatever the route.
 
 Busy slots are reported, not a failure (they free up). Under `runsc`, a host
 whose available memory cannot be measured is not ok: every run would be
-refused.
+refused. So is a host whose `runsc` is not the release `@verdikta/common` pins,
+or whose release cannot be measured (`gvisor` is what `<path> --version` said,
+`null` when it could not be read; `runc` in local mode).
 
 ### `POST /v1/runs`
 
@@ -124,14 +130,21 @@ refused.
   "report": "<report.md>",
   "knownIssues": [],
   "priorFindings": [],
-  "eaGates": { "disclosure": "pass" },
-  "deadline": 700000
+  "eaGates": { "disclosure": "pass", "inScope": "pass" },
+  "deadline": 700000,
+  "codeClass": "code-standard"
 }
 ```
 
 This extends §7.2's abridged list with `finding`, `report`, `knownIssues`,
-`priorFindings` (at most 8) and `eaGates` (build plan, assumption A7: the EA
-shares runs; the runner needs these for the report and the context pack).
+`priorFindings` (at most 8, each `{ "bcid", "finding", "report" }`, its `report`
+unused) and `eaGates` (build plan, assumption A7: the EA shares runs; the runner
+needs these for the report and the context pack), and `codeClass` (optional,
+default `code-standard`), whose envelope sets the pack's budget. `eaGates` must be
+exactly `disclosure` and `inScope`, both `pass`; `finding`, `knownIssues` and each
+prior finding must pass `@verdikta/common`'s validators; the attestation must have
+a canonical JSON form. Anything else is a 400 before any work, so neither the report
+nor the pack can fail on what the requester sent.
 Patches are base64 so their bytes survive JSON. `deadline` is the **remaining
 time in milliseconds** when the EA sends the request (at most 900,000); the
 runner stops at receipt + deadline minus `CODE_RUNNER_DEADLINE_RESERVE_MS`.
@@ -165,7 +178,7 @@ A definitive or abstaining answer looks like:
                "cause": "oom", "detail": "…" } ],
   "gates": {},
   "facts": {},
-  "report": null, "reportSha256": null, "contextPack": null
+  "report": null, "reportSha256": null, "reportUnavailable": null, "contextPack": null
 }
 ```
 
@@ -173,8 +186,12 @@ A definitive or abstaining answer looks like:
 another run started); it is operational and never part of the report, since
 it differs between arbiters. `gates` holds `{ status: "pass"|"fail", basis, detail }` per gate decided;
 a gate not reached is absent. `facts` holds what the steps observed (the
-patch, its flags, the PoC runs; see below). `report`, `reportSha256` and
-`contextPack` stay `null` until node A3b.
+patch, its flags, the PoC runs; see below). A definitive answer carries
+`report` (`verdikta.claim-report/1`, canonical), `reportSha256` and `contextPack`
+([below](#the-report-and-the-context-pack)); an abstention has none of them. A
+definitive run on `linux/arm64` (development) has no report, because the schema's
+platform is the constant `linux/amd64`: `reportUnavailable` says so, and the gates
+and the pack are still there.
 
 ### `POST /v1/listing-checks`
 
@@ -355,10 +372,10 @@ result, and the EA never calls it.
 
 ## Class hard limits
 
-`src/classLimits.js` is a local copy of `@verdikta/common`'s
-`CLASS_HARD_LIMITS` (2 CPUs, 4,096 MB, 4,096 pids, 90 s build, 360 s run, 2 GB
-compressed / 6 GB unpacked image, 2 MB patch, 50 MB patch expansion,
-`linux/amd64`) until node A3b switches to the package. A spec may only lower
+`src/classLimits.js` applies `@verdikta/common`'s `CLASS_HARD_LIMITS` (2 CPUs,
+4,096 MB, 4,096 pids, 90 s build, 360 s run, 2 GB compressed / 6 GB unpacked
+image, 2 MB patch, 50 MB patch expansion, `linux/amd64`) and the bounds in its
+`code_review.v1.json`; it holds no values of its own. A spec may only lower
 `cpus`, `memoryMb`, `buildSeconds`, `testSeconds`, `runSeconds` and
 `maxPatchBytes`; anything above the class maximum, any other key, an image not
 pinned by digest, another platform or an unpacked size above 6 GB is a 400
@@ -813,10 +830,11 @@ name before it is the process's own to choose, and before runs 2 and 3 the track
 to the PoC commit (`git reset --hard`). The number killed is in
 `facts.leftoverProcesses`.
 
-`facts` (A3b builds the report from them), each an object carrying its
-evidence tier (§9.5: `tier: "A"`, observed by the runner from outside the
-tested process; `tier: "B"`, reported by a process that ran claim code):
-`checkout` (A, above), `patch` (A: bytes, SHA-256, the measured expansion),
+`facts` (the report is built from them, [below](#the-report-and-the-context-pack)),
+each an object carrying its evidence tier (§9.5: `tier: "A"`, observed by the
+runner from outside the tested process; `tier: "B"`, reported by a process that ran
+claim code): `checkout` (A, above), `compiler` (A: `solc`, what forge is pinned to,
+[below](#the-compiler-is-pinned)), `patch` (A: bytes, SHA-256, the measured expansion),
 `commit` (A: `base`, `poc`), `diff` (A: files, added, removed, binary
 files), `testPaths` (A: outside, protected, unreportable), `flags` (A:
 `existingTestsModified`, `skipMarkersAdded`, `protectedPathsTouched`,
@@ -824,7 +842,8 @@ files), `testPaths` (A: outside, protected, unreportable), `flags` (A:
 environment cheatcodes, `foundry.toml`, `ffi`), `protectedReset` (A:
 `files`), `poc` (B: `testCount`, `runCounts`, the first 200 tests with their
 three results, kind and message, per run the command, JUnit status, exit code
-and failing harness records, and `integrity`, the report's Integrity object),
+and failing harness records, `integrity`, the report's Integrity object, and
+`report`, the form the report carries),
 `integrity` (A: per sandbox the failed checks with their evidence and the
 changed paths), `fix` (B, [below](#the-fix-check)) and `leftoverProcesses`
 (A: `steps`). A gate's basis gives its tier: `exit_code`, `input` and
@@ -1402,6 +1421,131 @@ So a finding names its test and quotes what forge printed:
 `"observable": "test_withdraw_drains fails with \"vault balance 0 after one withdraw\""`.
 The hunter tool (P5) checks the same rule locally.
 
+## The report and the context pack
+
+`src/report.js`, `src/pack.js`, `src/runtime.js` (design §9.3, §9.4, §10.3 item 5,
+§10.4; node A3b).
+
+### The report
+
+Built field by field from what the run measured, validated and hashed by
+`@verdikta/common` (`validateClaimReport`, `reportSha256`), in its canonical form.
+So nothing else reaches it: no duration, host name, path or per-run directory. The
+same claim gives the same hash, under these rules:
+
+| Rule | How |
+|---|---|
+| Input digests | From the request's bytes: `pocPatchSha256`, `fixPatchSha256`, `attestationSha256` (SHA-256 of the attestation's canonical JSON), `envImage`, `listingCid`, `bcid`, `baseCommit`; `eaGates` as the EA sent them, which can only be both `pass` |
+| The runtime | Measured on every run: `<path> --version` of the binary `docker info` names, read as `runsc version release-YYYYMMDD.N`. Under `runsc`, any release but `GVISOR_RELEASE`, or one that cannot be measured (a relative path, a binary that fails), abstains `admission_refused` and fails `/health`. `runc` is recorded as `runc`, which common's validator warns about (local mode). The runner and its daemon share a host (§9.1), so the path is local |
+| A test's message | Only when byte-identical on all three runs of the schedule, else `null` (one failure beside two skipped records has nothing to agree with). A clock, an unseeded random value or a per-run directory moves between runs, and is measured doing so. The results stand either way; `facts.poc.tests` keeps forge's text |
+| A flaky test | A test whose results (`pass`, `fail`, `error`) disagree across the schedule is reported as `error` on all three runs with one fixed message, whichever run passed, in `runCounts` too (past the 200 tests the report lists). It disproved the claim either way, so what the settlement reads (`settlementFacts.js`) is unchanged; `facts.poc.tests` keeps what each run did. `skip`, `missing` and `duplicate` are integrity's, and stay |
+| What a hunter writes | Cannot make a report invalid, which would make every arbiter abstain: a test id over 1,024 characters becomes a prefix plus its SHA-256; messages are well-formed and cut on a whole character; a tamper flag past the report's last line number (a padded test file) is file-level. The JUnit reader already refuses control characters and surrogates in a record |
+| What a requester sends | Refused before any work: see the request above, and `BASELINE_INVALID` for a stable test id a regression could not name |
+
+**The report has no field for the compiler the run pinned** (owner decision Q37). It
+is a function of the image and the listed commit, which it records; the answer holds
+it as `facts.compiler`.
+
+**Known limits.** A message constant on one host and different on another stays
+in the report: a container id read through an inline `fs_permissions` (which works
+from a PoC without the listing's consent), a kernel string through ffi, a clock
+rounded to the day. Three runs on one host cannot see it, and Docker cannot fake
+`CLOCK_REALTIME`. That claim's hash differs between arbiters; no settlement reads a
+message. A PoC that happens to fail on all three runs on one host and not on another
+gives different verdicts: design §9.3, and G2's exit criterion. `fix.*` is one suite
+run and informational. `gates[…].detail` is not hashed and can name a run: it is for
+operators, not for anything every arbiter must agree on.
+
+### The context pack
+
+Read before any claim code runs, right after the patch's commit, from git's objects
+by commit id, never the work tree: `git diff -W --full-index <listed> <poc>`, `git
+cat-file --batch` on `<commit>:<path>`, `git grep -n -w -F -I -z -e <symbol> <listed>`
+(with the commit stripped from each line), `git ls-tree`. Then a pure function of those
+reads and the request's documents, so a later step cannot reach it. Nothing is
+assembled again. A patch that fails `applies` or `testPathsOnly` has no pack: no jury
+reads it. `cat-file` and `grep` are read as streams, record by record and line by
+line, so an early binary file or a huge match out of scope costs only what is kept of it
+and hides nothing after it.
+
+```json
+{
+  "version": 1, "codeClass": "code-standard", "budgetTokens": 60000, "usedTokens": 41200, "sha256": "…",
+  "tiers": [
+    { "rank": 3, "name": "source", "status": "full", "asked": 3, "delivered": 2, "omitted": { "outOfScope": 1 }, "cut": 0, "bytes": 9000, "bytesIncluded": 9000, "tokens": 2250 },
+    { "rank": 4, "name": "callSites", "status": "truncated", "asked": 31, "delivered": 12, "omitted": { "outOfScope": 9, "pastCap": 10 }, "cut": 0,
+      "symbols": { "found": 4, "withSites": 3, "noSites": 1, "overCap": 0, "longLines": 0 }, "bytes": 2400, "bytesIncluded": 2400, "tokens": 600 },
+    "…"
+  ],
+  "files": [ { "name": "00-manifest.json", "tier": "manifest", "text": "…" }, { "name": "01-poc-diff.patch", "tier": "poc", "text": "…" }, "…" ]
+}
+```
+
+`files` go to the AI Node in order, as named attachments (`attachments`,
+`attachmentNames`): A4b sends nothing of `report.md`, `finding.json`, the known
+issues or the prior findings beside them. The first is the manifest, which says what
+each tier kept.
+
+**Nothing leaves silently (measured).** Everything gathered from a list goes through
+one account (`Tally`): an item is delivered, or omitted with a reason from a fixed
+list, and an account that does not add up stops the run as a runner error. The
+manifest gives each tier `asked`, `delivered`, `omitted` and `cut` (what was delivered
+in part), with `asked = delivered + the sum of omitted`, counts and fixed codes only:
+no path, name or other text of the request. A tier's `status` is computed from them:
+
+| Status | When |
+|---|---|
+| `full` | Something was delivered, and nothing was lost |
+| `truncated` | Something was delivered, and something was lost |
+| `dropped` | Nothing was delivered, and something was lost |
+| `empty` | Nothing was delivered, and nothing was lost |
+
+*Lost* means left out for a cap, a read limit, a size bound or the budget: `overBudget`,
+`pastCap` (a site past 10 for its symbol), `unreadable` (a `git grep` line whose path
+did not fit what is read of a line), `unread` (a path git never answered for), anything in
+`cut`, a symbol past the 16 searched for, or a PoC line too long to read whole. The other
+reasons are facts about the request or the repository, which no larger limit would
+have changed, and they leave the status alone: `outOfScope`, `notInCommit`, `notAFile`,
+`notAskable` (a path that is not one line), `duplicate`, `noDiff`, and `binary`, since
+the jury reads text whatever the budget. A binary file gets no file of its own; a juror
+can see it was named in `finding.json`, and the count says one was left out.
+
+Each tier counts what it holds. `poc` and `source` count files, `claim`, `fix` and `tree`
+their one or two files, `knownIssues` and `priorFindings` entries (each whole or not at
+all). `callSites` counts the lines `git grep` answered with, and `symbols` beside them
+what was searched for (`found = withSites + noSites + overCap`).
+
+| Rank | Tier | Share | What |
+|---|---|---|---|
+| 1 | `poc` | 30% | `poc.patch` with function context; each PoC file's full text |
+| 2 | `claim` | 10% | `finding.json` (canonical), `report.md` |
+| 3 | `source` | 24% | The in-scope files `finding.affectedPaths` names, at the listed commit |
+| 4 | `callSites` | 5% | At most 10 in-scope call sites of each of at most 16 symbols the PoC's added lines call (`.name(`, `.name{…}(`, `new Name`), without `vm.`, `console.` and the language's own, one per line: `symbol: path:line: text` |
+| 5 | `knownIssues` | 12% | `known_issues.json`, one entry per line, each within 8 KB: its id, title and class stay, then its paths and its description give way. A shortened entry counts in `cut` |
+| 6 | `priorFindings` | 19% | Up to 8 summaries, one per line: `bcid`, `title`, `claimedClass`, `rootCause`, 5 of `affectedPaths`, `observable`; never a prior `report.md`. A summary that lost paths or text to its bound counts in `cut` |
+| 7 | `fix` | | `fix.patch`, as text |
+| 8 | `tree` | | The listed commit's first two levels |
+
+Each of tiers 1-6 first takes up to its share, in order. What is left goes back up in
+order, then to tiers 7 and 8. So a hunter who pads `poc.patch` or `report.md`, or names
+200 huge files, cannot push out the known issues and the prior findings a juror needs
+to find a duplicate, and 8 summaries always fit. Over budget the lowest tiers go first.
+A file is cut on a whole character, at a line end where that keeps at least half, with
+a line saying how much was shown; a tier of entries keeps whole entries.
+
+**A token** is `ceil(UTF-8 bytes / 4)`, plus 160 bytes per file for the AI Node's fence
+lines. On real files (cl100k): Solidity 4.2-4.9 bytes per token, prose 5.4, so a full
+pack is about the design's 60k. Hex, base64 and CJK cost more (1.4-2): text written to
+cost more can reach about 2.9 × on the hunter-written tiers, as operator spend. No
+tokenizer is pinned, and providers count differently.
+
+**Evidence stays data.** Each item is one file, so the AI Node's content-hash fence
+(`ai-node/src/lib/code-review/claim-prompt.ts`) wraps it alone, and a hostile item
+cannot close its block or open the next one's. File names are the runner's own
+(`03-source-001.txt`): a path or a word of the hunter's reaches no name, only the text
+inside the fence. Every text opens with the runner's own `# ` line, so none can start
+`data:`, which the AI Node would decode or refuse.
+
 ## The fix check
 
 `src/fix.js` (§9.2 step 8, §20 decision 14). Only when the claim carries
@@ -1638,6 +1782,10 @@ image), the official-release look by every route, and ordinary projects that mus
 with an honest claim on them. CI
 (`.github/workflows/code-runner.yml`) runs the unit tests, and the Docker tests
 under `runc` and under the pinned gVisor on the systrap platform.
+`report.docker.test.js` runs the catalogue's three determinism fixtures against
+real forge: the same claim in two containers with other clocks and hostnames, one at
+`--cpus 0.25` (the test holds that forge really took longer), gives the same verdict,
+report hash and pack hash. Cross-host is G2's.
 
 ## Seams
 
@@ -1672,9 +1820,19 @@ under `runc` and under the pinned gVisor on the systrap platform.
   snapshots of a sandbox; `tool()` is the forge the maker's commands run),
   `discoverForge`, `summaryConsistency`, `exitConsistency`,
   `identityGap`, `tamperFlags`, `integrityOf`.
-- **Common** (`src/common.js`): `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`,
-  `pocPatchPathsGate`, `matchesAny`, `baselineSets`, `validateBaseline` from
-  `@verdikta/common` (A3b moves the class limits there too).
+- **Common** (`src/common.js`): everything the runner reads from
+  `@verdikta/common`: `CLASS_HARD_LIMITS`, `SPEC_LIMIT_MAXIMA`, `OCI_PLATFORM`,
+  `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`, `GVISOR_RELEASE`, `SEMGREP_RULES_VERSION`,
+  `REPORT_LIMITS`, `getCodeClass`, `pocPatchPathsGate`, `matchesAny`,
+  `splitByStakeScope`, `baselineSets`, the validators and the report's hash. No
+  local copy of any of them is left in `src/` (`test/unit/common.test.js`).
+- **Report** (`src/report.js`): `buildReport(result, request, { gvisor, platform })`,
+  `assembleReport`, `finishClaim` (the server's), `pocReportForm` (the form `facts.poc.report`
+  holds). A4b reads the report; `test/helpers/settlementFacts.js` is its mirror.
+- **Pack** (`src/pack.js`): `gatherPackInputs(ctx, …)` (the sandbox's reads),
+  `assemblePack({ request, inputs })` (pure), `TIERS`, `symbolsOf`, `summaryOf`.
+  The engine's `ctx.contextPack(pack)` carries it beside the facts.
+- **Runtime** (`src/runtime.js`): `measureRuntime`, `runtimeProblem`; `docker.runtimeVersion(path)`.
 - **Launch** (`src/sandbox.js`): `createArgs`, `startArgs`, `execArgs`,
   `removeArgs` and the `Sandbox` class. The engine's sandbox handles
   (`ctx.openSandbox()`, and the first one) have `close()` (`ctx.closeSandbox()`

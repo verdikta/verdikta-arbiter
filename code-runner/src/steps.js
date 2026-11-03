@@ -11,8 +11,10 @@
  * - A3a (claim.js, integrity.js, observable.js, fix.js): the §9.5 integrity
  *   checks on the three runs, the integrity and claimedObservable gates, the
  *   fix check in a second sandbox run beside the PoC's (ctx.openSandbox)
+ * - A3b (pack.js, report.js): the context pack, read before any claim code
+ *   runs and assembled once; the Verification Report and its hash are built
+ *   from the facts when the run is definitive (server.js)
  * - A3c: honesty flags (Semgrep) and fix-mode lint
- * - A3b: the Verification Report, its hash and the context pack
  */
 
 const { claimSteps } = require('./claim');

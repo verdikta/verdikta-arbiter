@@ -5,54 +5,24 @@
  * whatever the spec says; a spec above them is the requester's broken package
  * (§12), refused before any pull or work.
  *
- * LOCAL COPY of @verdikta/common src/codeReview/constants.js
- * (CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA) and of the bounds in its
- * schemas/code_review.v1.json (Limits, Env). Node A3b replaces this module with
- * the package; until then the values must match it exactly
- * (test/unit/classLimits.test.js pins them). Byte sizes are decimal.
+ * The values are @verdikta/common's (CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA,
+ * OCI_PLATFORM, and the bounds in its schemas/code_review.v1.json); this module
+ * only applies them and computes a spec's effective limits, which the package
+ * has no function for. Byte sizes are decimal.
  *
  * Issues have common's shape, `{ code, path, detail }`, and its codes
- * (LIMIT_ABOVE_CLASS_MAX, IMAGE_ABOVE_CLASS_MAX, LIMIT_TEST_ABOVE_RUN), so the
- * EA's handling does not change when the source does.
+ * (LIMIT_ABOVE_CLASS_MAX, IMAGE_ABOVE_CLASS_MAX, LIMIT_TEST_ABOVE_RUN).
  */
 
-const OCI_PLATFORM = 'linux/amd64';
-
-const CLASS_HARD_LIMITS = Object.freeze({
-  cpus: 2,
-  memoryMb: 4096,
-  pids: 4096,
-  buildSeconds: 90,
-  runSeconds: 360,
-  imageCompressedBytes: 2000000000,
-  imageUnpackedBytes: 6000000000,
-  maxPatchBytes: 2000000,
-  patchExpansionBytes: 50000000,
-  platform: OCI_PLATFORM
-});
-
-/** Spec `limits` keys and the hard maximum each may not exceed. */
-const SPEC_LIMIT_MAXIMA = Object.freeze({
-  cpus: CLASS_HARD_LIMITS.cpus,
-  memoryMb: CLASS_HARD_LIMITS.memoryMb,
-  buildSeconds: CLASS_HARD_LIMITS.buildSeconds,
-  testSeconds: CLASS_HARD_LIMITS.runSeconds,
-  runSeconds: CLASS_HARD_LIMITS.runSeconds,
-  maxPatchBytes: CLASS_HARD_LIMITS.maxPatchBytes
-});
+const { CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA, OCI_PLATFORM, SPEC_SCHEMA } = require('./common');
 
 /** The schema's minimum for each spec limit. */
-const SPEC_LIMIT_MINIMA = Object.freeze({
-  cpus: 1,
-  memoryMb: 256,
-  buildSeconds: 1,
-  testSeconds: 1,
-  runSeconds: 1,
-  maxPatchBytes: 1
-});
+const SPEC_LIMIT_MINIMA = Object.freeze(Object.fromEntries(
+  Object.entries(SPEC_SCHEMA.definitions.Limits.properties).map(([key, bound]) => [key, bound.minimum])
+));
 
 /** common's Env.image pattern: a repository pinned by digest, nothing else. */
-const IMAGE_REF = /^[a-z0-9][a-z0-9._/-]*(?::[0-9]+)?(?:\/[a-z0-9._-]+)*@sha256:[0-9a-f]{64}$/;
+const IMAGE_REF = new RegExp(SPEC_SCHEMA.definitions.Env.properties.image.pattern);
 
 function isPlainObject(v) {
   return v !== null && typeof v === 'object' && !Array.isArray(v);

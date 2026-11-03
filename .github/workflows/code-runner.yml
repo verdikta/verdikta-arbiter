@@ -23,10 +23,11 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # The gVisor release verdikta-agents' sandbox-kit pins (GVISOR_RELEASE), and
-  # the SHA-512 of its x86_64 gvisor.tar.bz2.
-  GVISOR_VERSION: '20260928.0'
-  GVISOR_SHA512: c8d3a9fd4d4c4f5b8ff213caa4517356be128d18659ec4cde37828fe797f61a9725a602a846c81a8ed19c057a996515d31c081eba343ed4613a89951ba32ed59
+  # The gVisor release @verdikta/common pins (GVISOR_RELEASE, without its
+  # `release-`; test/unit/runtime.test.js ties the two), and the SHA-512 of its
+  # x86_64 gvisor.tar.bz2. The runner refuses any other release under runsc.
+  GVISOR_VERSION: '20260921.0'
+  GVISOR_SHA512: 7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e
 
 jobs:
   unit:

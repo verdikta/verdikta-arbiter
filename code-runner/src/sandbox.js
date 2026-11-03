@@ -16,7 +16,8 @@
  * anything a crash left behind.
  */
 
-const { IMAGE_REF, CLASS_HARD_LIMITS, OCI_PLATFORM } = require('./classLimits');
+const { IMAGE_REF } = require('./classLimits');
+const { CLASS_HARD_LIMITS, OCI_PLATFORM } = require('./common');
 const { runText, isUnreachableText } = require('./docker');
 const { HeadTail, Capped } = require('./capture');
 const { newNonce, launcherArgv, StartGate, LAUNCHER_CHECK, LAUNCHER_PATH, PROBE_SCRIPT } = require('./launcher');

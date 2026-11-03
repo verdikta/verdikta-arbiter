@@ -126,11 +126,14 @@ test('every git object the checkout uses is re-hashed by the runner: object CONT
     const c = code(f);
     const base = path.relative(SRC, f);
     const content = /cat-file[^\n]*--batch(?!-check)|cat-file['"\s,\]]/.test(c) && !/--batch-check/.test(c.match(/cat-file[^\n]*/)[0] || '');
-    if (base !== 'checkout.js') assert.ok(!content, `${base} reads git object content`);
+    if (base !== 'checkout.js' && base !== 'pack.js') assert.ok(!content, `${base} reads git object content`);
     for (const m of c.match(/cat-file[^\n]*/g) || []) {
       if (base === 'claim.js') assert.match(m, /--batch-check=%\(objectsize\)/, 'claim.js reads only object sizes');
     }
   }
+  // pack.js (A3b) reads `<commit>:<path>` for the pack: the runner's own repository, whose objects the checkout re-hashed
+  // or git wrote from the accepted patch, never the image's staging store.
+  assert.doesNotMatch(code(path.join(SRC, 'pack.js')), /STAGE_DIR|gitDir|IMAGE_CHECKOUT/);
   const text = code(path.join(SRC, 'checkout.js'));
   // One reader of git's object output, and every record with content goes through the runner's own hash before it is kept.
   assert.equal((text.match(/new BatchReader\(/g) || []).length, 1);

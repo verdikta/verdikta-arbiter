@@ -16,6 +16,7 @@ const { testConfig, request: httpRequest } = require('../helpers/http');
 const { spec: baseSpec, IMAGE, attestationFor } = require('../helpers/requests');
 const { BASE, POC_PATCH, POC_DIFF, junit, drainFails, claimSandbox, fakeSolcList } = require('../helpers/fakeClaim');
 const { settlementFacts } = require('../helpers/settlementFacts');
+const { assembleReport } = require('../../src/report');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const DRAIN = 'test/Exploit.t.sol > ExploitTest > test_drain()';
@@ -108,6 +109,8 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
+    // The context pack (A3b): from git's objects, before any maker command.
+    'git diff', 'git cat-file', 'git cat-file', 'git ls-tree',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-manifest',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
@@ -136,7 +139,7 @@ test('every fact carries its tier: A for what the runner observed from outside, 
   const r = await runClaim(sb, claimRequest({ fixPatch: Buffer.from(require('../helpers/fakeClaim').FIX_PATCH) }));
   assert.equal(r.outcome, 'definitive', show(r));
   const want = {
-    checkout: 'A', patch: 'A', commit: 'A', diff: 'A', testPaths: 'A', flags: 'A', protectedReset: 'A', leftoverProcesses: 'A',
+    checkout: 'A', compiler: 'A', patch: 'A', commit: 'A', diff: 'A', testPaths: 'A', flags: 'A', protectedReset: 'A', leftoverProcesses: 'A',
     poc: 'B', integrity: 'A', fix: 'B'
   };
   assert.deepEqual(Object.keys(r.facts).sort(), Object.keys(want).sort());
@@ -401,37 +404,9 @@ test('integrity is decided on every PoC that ran, also when reproduces fails on 
 
 // ------------------------------------------- the facts always make a valid report
 
-/**
- * The Verification Report the facts and gates make (A3b builds the real one): a test-only mapping, so
- * @verdikta/common's validator can check that no outcome of the gates and the fix check breaks the
- * report's one form (R6-F1: a fix that applied is never `builds: not-run`).
- */
+/** The real report (src/report.js): no outcome of the gates and the fix check breaks its one form (R6-F1: a fix that applied is never `builds: not-run`). */
 function toReport(r, request) {
-  const g = (name) => (r.gates[name] ? r.gates[name].status : 'not-run');
-  const f = r.facts;
-  const stat = (d) => (d ? { files: d.files, added: d.added, removed: d.removed } : { files: 0, added: 0, removed: 0 });
-  return {
-    schema: 'verdikta.claim-report/1',
-    inputs: {
-      listingCid: request.listingCid, bcid: request.bcid, envImage: `sha256:${'a'.repeat(64)}`, platform: 'linux/amd64',
-      attestationSha256: 'b'.repeat(64), baseCommit: request.spec.baseCommit, pocPatchSha256: f.patch.sha256,
-      fixPatchSha256: f.fix.present ? f.fix.patch.sha256 : null, runner: '0.1.0', gvisor: 'runc', semgrepRules: '2026.10',
-      eaGates: { disclosure: 'pass', inScope: 'pass' }
-    },
-    gates: Object.fromEntries(['applies', 'testPathsOnly', 'build', 'reproduces', 'integrity', 'claimedObservable'].map((k) => [k, g(k)])),
-    poc: f.poc ? {
-      tier: 'B', testCount: f.poc.testCount, runCounts: f.poc.runCounts, tests: f.poc.tests, integrity: f.poc.integrity, honestyFlags: []
-    } : null,
-    fix: {
-      present: f.fix.present, applies: f.fix.applies, builds: f.fix.builds, pocPasses: f.fix.pocPasses, regressions: f.fix.regressions,
-      regressionCount: f.fix.regressionCount, tier: 'B', integrity: f.fix.integrity
-    },
-    build: { status: g('build'), tier: 'A' },
-    findings: [],
-    flags: f.flags ? { existingTestsModified: f.flags.existingTestsModified, skipMarkersAdded: f.flags.skipMarkersAdded, protectedPathsTouched: f.flags.protectedPathsTouched }
-      : { existingTestsModified: [], skipMarkersAdded: [], protectedPathsTouched: [] },
-    diff: { poc: stat(f.diff), fix: f.fix.present ? stat(f.fix.diff) : null }
-  };
+  return assembleReport(r, { ...request, attestation: {} }, { gvisor: 'runc' });
 }
 
 test('the facts and gates make a valid verdikta.claim-report/1 on every outcome (common\'s validator), and tier-B trust follows integrity', async () => {
@@ -683,6 +658,7 @@ test('with a watched link, its resolution is part of measuring the files: after 
   const order = sb.execs().map(label);
   const from = order.indexOf('git rev-parse', order.indexOf('git commit'));
   assert.deepEqual(order.slice(from + 1), [
+    'git diff', 'git cat-file', 'git cat-file', 'git ls-tree',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup', 'vcr-manifest', 'vcr-links',
     'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
