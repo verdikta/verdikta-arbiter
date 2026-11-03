@@ -118,6 +118,19 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    cd e2e && node src/index.js l4 --class-id 5555 --expect-common <version> --expect-release <commit>
    ```
 
+   Once the canaries serve code review, add the claim scenarios by name:
+
+   ```bash
+   gh workflow run e2e.yml --ref <branch> -f run_l4=true -f class_id=5555 \
+     -f scenario=claim-l4-valid,claim-l4-front-gate,claim-l4-runner-gate \
+     -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
+   ```
+
+   They run on class 5555 and nothing else. L4 refuses them on any other class, with
+   no `class_id`, or without both versions, before anything is sent, because nothing on
+   an arbiter stops a claim on another class. They need a pinned claim set on that
+   branch: [`e2e/README.md`](../e2e/README.md), "Claim scenarios (class 5555 only)".
+
 4. **Gate.** Green means: the request was fulfilled, every revealing arbiter's
    justification reports the expected `verdiktaCommon` and `release`, and the
    justification is fetchable. `cd e2e && npm run audit-oracles -- <aggId>`

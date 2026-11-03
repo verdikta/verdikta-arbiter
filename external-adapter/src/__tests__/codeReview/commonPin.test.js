@@ -1,5 +1,5 @@
-// The External Adapter, the AI Node, the e2e harness and the code runner must
-// read the same @verdikta/common release: the code-review gates, schemas,
+// The External Adapter, the AI Node, the e2e harness, the code runner and the
+// testing tool must read the same @verdikta/common release: the code-review gates, schemas,
 // classes and sandbox pins are in it, and components on different versions
 // could judge one claim by two rule sets. They pin the stake-attestation
 // prerelease exactly.
@@ -9,7 +9,7 @@ const path = require('path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
 const PINNED = '1.9.0-attest.1';
-const PACKAGES = ['external-adapter', 'ai-node', 'e2e', 'code-runner'];
+const PACKAGES = ['external-adapter', 'ai-node', 'e2e', 'code-runner', 'testing-tool'];
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
 
@@ -25,7 +25,7 @@ describe('@verdikta/common pin', () => {
     expect(lock.packages['node_modules/@verdikta/common'].version).toBe(PINNED);
   });
 
-  it('the four packages agree with each other', () => {
+  it('the packages agree with each other', () => {
     const versions = PACKAGES.map((pkg) => readJson(path.join(REPO, pkg, 'package.json')).dependencies['@verdikta/common']);
     expect(new Set(versions).size).toBe(1);
   });

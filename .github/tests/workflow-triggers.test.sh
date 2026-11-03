@@ -91,6 +91,16 @@ is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?
 # It also keeps the contract test's route into code-runner/ working (A4b), and the harness's own tests.
 is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('runnerContract') }" true "the EA/runner contract test is not run"
 is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm test') && s['working-directory'] == 'e2e' }" true "the harness's unit tests are not run"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm test') && s['working-directory'] == 'testing-tool' }" true "the testing tool's unit tests are not run"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm ci') && s['working-directory'] == 'testing-tool' }" true "the claim suite's testing-tool mode needs the tool's deps"
+
+# Unchanged: the nightly names no class and no scenario, so it stays on config.l4.classId
+# (128) with no claim scenario, and the only route to one is a dispatch input.
+is e2e.yml "w.dig('jobs', 'l4-testnet', 'steps').find { |s| s['run'].to_s.include?('src/index.js l4') }['run'].lines.grep(/src\\/index\\.js l4/).map(&:strip)" \
+    '["node src/index.js l4 --junit results/l4.xml --report results/l4.json"]' \
+    "the L4 command line changed: the nightly must name no class and no scenario"
+is e2e.yml "w.dig('jobs', 'l4-testnet', 'steps').find { |s| s['run'].to_s.include?('src/index.js l4') }.dig('env', 'L4_CLASS_ID')" '"${{ inputs.class_id }}"' "L4_CLASS_ID is no longer only the dispatch input"
+is e2e.yml "w.dig('jobs', 'l4-testnet', 'steps').find { |s| s['run'].to_s.include?('src/index.js l4') }.dig('env', 'L4_SCENARIO')" '"${{ inputs.scenario }}"' "L4_SCENARIO is no longer only the dispatch input"
 
 # installer: every change to the installer or to what it renders runs its tests,
 # and the real Chainlink binary measures the job timeouts.

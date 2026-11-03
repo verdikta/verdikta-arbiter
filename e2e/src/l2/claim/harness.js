@@ -88,7 +88,8 @@ async function startClaimHarness() {
     process.env.CODE_RUNNER_RUNTIME = 'runc';
     const { runText } = require(path.join(CODE_RUNNER, 'src/docker'));
     const H = await step('loading the code runner\'s Docker fixtures (npm ci in code-runner/?)', async () => require(path.join(CODE_RUNNER, 'test/docker/helpers')));
-    const { buildFixture, vaultBaseline, addFilesPatch, modifyPatch, pocFile, VAULT_REPO } = require(path.join(CODE_RUNNER, 'test/docker/forgeFixture'));
+    const runnerRepo = require(path.join(CODE_RUNNER, 'test/docker/forgeFixture'));
+    const { buildFixture } = runnerRepo;
     const { startRegistry } = require(path.join(CODE_RUNNER, 'test/docker/registry'));
 
     const platform = H.PLATFORM;
@@ -116,30 +117,10 @@ async function startClaimHarness() {
     await step('removing the fixture image from the daemon', () => built.remove());
     console.log(`[claim] env image ${image} (${platform})`);
 
-    // The archives.
-    const baseline = vaultBaseline(built.baseCommit);
-    const listing = F.makeListing({ image, baseCommit: built.baseCommit, baseline });
-    const listingCid = await ipfs.put(listing.buffer);
-    const poc = addFilesPatch({
-      'test/Exploit.t.sol': pocFile('ExploitTest', [
-        `    // ${F.POC_MARKER}`,
-        '    function test_deposit_credits_exactly() public { Vault v = new Vault(); v.deposit(1); vm.assertEq(v.balanceOf(address(this)), 1); }'
-      ])
-    });
-    const claimOf = async (buffer) => {
-      const cid = await ipfs.put(buffer);
-      const line = await F.discloseClaim(buffer, listing.disclosure.recipient, ipfs);
-      return { cid, addendum: line, requestCid: `${listingCid},${cid}:${line}` };
-    };
-    const valid = await claimOf(F.makeClaim({ pocPatch: poc }));
-    // Out of the listing's scope: the EA's own inScope gate, before any runner call.
-    const outOfScope = await claimOf(F.makeClaim({ pocPatch: poc, name: 'e2e-out-of-scope', finding: { ...F.FINDING, affectedPaths: ['test/Vault.t.sol'] } }));
-    // A PoC that edits the code under test: the runner's testPathsOnly gate.
-    const vault = VAULT_REPO['src/Vault.sol'];
-    const editsSource = await claimOf(F.makeClaim({
-      name: 'e2e-edits-source',
-      pocPatch: modifyPatch('src/Vault.sol', vault, vault.replace('amount + 1', 'amount + 2'))
-    }));
+    // The archives: the same builder L4's claim set comes from.
+    const set = await F.makeClaimSet({ repo: runnerRepo, put: ipfs.put, image, baseCommit: built.baseCommit });
+    const { listing, listingCid } = set;
+    const { valid, outOfScope, editsSource } = set.claims;
     const textCid = await ipfs.put(F.textArchive());
 
     // The services.
@@ -186,7 +167,7 @@ async function startClaimHarness() {
       ai: aiProxy,
       aiDirect: aiNode.url,
       runner: runnerProxy,
-      claims: { listingCid, valid, outOfScope, editsSource, textCid },
+      claims: { listingCid, listing: listing.buffer, valid, outOfScope, editsSource, textCid },
       providerCalls,
       counts: () => ({
         aiCalls: aiProxy.post('/api/rank-and-justify').length,

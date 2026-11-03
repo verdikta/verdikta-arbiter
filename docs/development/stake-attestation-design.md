@@ -2005,7 +2005,8 @@ popular skills whose maintainers consent by naming Verdikta in their proof file
   whose disclosure key the maker cannot use (award still owed); an aggregator
   timeout followed by a re-trigger.
 - Run through `testing-tool` (a new `claim` scenario type) and the e2e L4 gate
-  against class 5555. The local pipeline comes first: `e2e` L2's claim suite runs the
+  against class 5555, which refuses a claim scenario on any other class (`e2e/README.md`).
+  The local pipeline comes first: `e2e` L2's claim suite runs the
   real External Adapter, AI Node (mock provider) and code runner against a local IPFS
   gateway and pin service and a `registry:2`, with no secret, in CI (`e2e/README.md`).
 - Metrics: verdict accuracy and the **false-valid rate** on the adversarial

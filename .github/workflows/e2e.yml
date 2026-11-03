@@ -46,7 +46,7 @@ on:
         type: string
         default: ''
       scenario:
-        description: 'L4: comma-separated scenario ids (blank = all)'
+        description: 'L4: comma-separated scenario ids (blank = all but manual and claim ones). claim-l4-* run only with class_id 5555 and both expect inputs.'
         type: string
         default: ''
 
@@ -133,12 +133,20 @@ jobs:
         working-directory: code-runner
         run: npm ci
 
+      - name: Install testing tool deps
+        working-directory: testing-tool
+        run: npm ci
+
       - name: Install E2E harness deps
         working-directory: e2e
         run: npm ci
 
       - name: Harness unit tests
         working-directory: e2e
+        run: npm test
+
+      - name: Testing tool unit tests
+        working-directory: testing-tool
         run: npm test
 
       # The EA reads the merged runner through jest's modulePaths (A4b).

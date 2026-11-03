@@ -50,11 +50,12 @@
     "id": "claim-valid",
     "suite": "claim",
     "claim": "valid",
-    "description": "A valid claim on a real Foundry repository: real External Adapter, real code runner (env image pulled by digest from a local registry:2), real AI Node with the mock provider, local IPFS. Passes only if the jury was reached with the report and the pack; an abstention fails. commit-reveal: mode 1 then mode 2, the commitment recomputed. juror-deadline: a hanging juror is cancelled at the deadline, at the provider layer.",
+    "description": "A valid claim on a real Foundry repository: real External Adapter, real code runner (env image pulled by digest from a local registry:2), real AI Node with the mock provider, local IPFS. Passes only if the jury was reached with the report and the pack; an abstention fails. commit-reveal: mode 1 then mode 2, the commitment recomputed. juror-deadline: a hanging juror is cancelled at the deadline, at the provider layer. testing-tool: the testing tool's claim type on what the run recorded: the same request as the EA's, and the real AI Node takes it.",
     "modes": [
       "0",
       "commit-reveal",
-      "juror-deadline"
+      "juror-deadline",
+      "testing-tool"
     ],
     "minOutcomes": 6
   },
@@ -80,5 +81,38 @@
       "commit-reveal"
     ],
     "minOutcomes": 2
+  },
+  {
+    "id": "claim-l4-valid",
+    "suite": "l4-claim",
+    "claim": "valid",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "A valid claim on the canaries: one real request on class 5555, [listing, claim] with its disclosure line. Every revealing arbiter must reach the jury, on this claim, with one report hash. Spends the request's fee, and the canaries' provider keys. Refused on any other class. Runs only by name, with --class-id 5555 --expect-common --expect-release, once the claim set is pinned (scripts/build-l4-claims.js).",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-front-gate",
+    "suite": "l4-claim",
+    "claim": "front-gate",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "A claim out of the listing's scope, on the canaries: the EA's inScope gate settles all weight on INVALID, with no runner call and no model. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-runner-gate",
+    "suite": "l4-claim",
+    "claim": "runner-gate",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "A PoC that edits source, on the canaries: the runner pulls the image and its testPathsOnly gate settles all weight on INVALID, with no model. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
   }
 ]
