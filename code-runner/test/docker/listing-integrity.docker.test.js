@@ -657,7 +657,8 @@ const VY_BUILD_FAILS = Object.freeze([
   ['Solidity importing a .vy under lib/ holding Vyper with a version pragma: forge reads it as Solidity', 'vyimportvyper', /invalid compiler version in lib\/dep\/Fee\.vy/],
   ['Solidity importing a .vy under lib/ holding Vyper with no pragma: solc reads it', 'vyimportnopragma', /Compiler run failed[\s\S]*lib\/dep\/Fee\.vy/],
   ['Solidity importing a .vy in src/ holding Solidity: it is a Vyper source too', 'vyimportsrc', /Found Vyper sources, but no compiler versions are available for it/],
-  ['Solidity importing a .vy in src/ holding Vyper with a version pragma', 'vyimportsrcvyper', /invalid compiler version in src\/Fee\.vy/],
+  // forge's wording varies here from run to run (its graph is a hash map, by a probe of 30 builds); the failed build does not.
+  ['Solidity importing a .vy in src/ holding Vyper with a version pragma', 'vyimportsrcvyper', /invalid compiler version in src\/Fee\.vy|Found Vyper sources, but no compiler versions are available for it/],
   ['a fake named only where forge reads no setting: other .env and toml files, one in test/, one on the root, inline configuration', 'vynotread', /Found Vyper sources, but no compiler versions are available for it/]
 ]);
 
@@ -710,7 +711,7 @@ test('A2d under real forge: a hunter\'s patch adding a .vy on an image with no v
     ['beside the proof', { 'test/Exploit.t.sol': DRAIN, 'test/Fee.vy': VY }, /Found Vyper sources, but no compiler versions are available for it/],
     ['with no version pragma', { 'test/Exploit.t.sol': DRAIN, 'test/Fee.vy': VY_NO_PRAGMA }, /Found Vyper sources, but no compiler versions are available for it/],
     ['imported by the proof', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': SOL_IN_VY }, /Found Vyper sources, but no compiler versions are available for it/],
-    ['imported by the proof, holding Vyper', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': VY }, /invalid compiler version in test\/Fee\.vy/]
+    ['imported by the proof, holding Vyper', { 'test/Exploit.t.sol': `import "./Fee.vy";\n${DRAIN}`, 'test/Fee.vy': VY }, /invalid compiler version in test\/Fee\.vy|Found Vyper sources, but no compiler versions are available for it/]
   ]) {
     const r = await claim(t, fx, { pocPatch: addFilesPatch(patch) });
     assert.equal(r.outcome, 'definitive', `${what}: ${show(r)}`);
