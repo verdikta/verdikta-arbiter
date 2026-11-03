@@ -94,7 +94,7 @@ jobs:
         working-directory: code-runner
         env:
           CODE_RUNNER_RUNTIME: ${{ matrix.runtime }}
-        run: npm run test:docker
+        run: node --test --test-concurrency=1 --test-timeout=1800000 test/docker/zz-probe.docker.test.js
 
       - name: No container left behind
         if: always()
