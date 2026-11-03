@@ -56,7 +56,7 @@
 
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { Prefix } = require('./capture');
-const { matchesAny, pocPatchPathsGate, REPORT_LIMITS, POC_RUNS } = require('./common');
+const { matchesAny, pocPatchPathsGate, REPORT_LIMITS, REPORT_MAX_TEST_ID, REPORT_MAX_REGRESSIONS, POC_RUNS } = require('./common');
 const { git, COMMIT_ENV, COMMIT_MESSAGE } = require('./git');
 const { forceCheckout, IMAGE_CHECKOUT, NEUTRAL_ATTRIBUTES } = require('./checkout');
 const forge = require('./forge');
@@ -167,10 +167,8 @@ const CLEANUP_SCRIPT = [
 ].join('\n');
 
 const COMMIT_HEX = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
-/** The report's bounds on a test id and on regressionCount (common's schema, as baseline.json holds them). */
-const MAX_TEST_ID = 1024;
-const MAX_REGRESSIONS_COUNT = 20000;
-const reportableTestId = (id) => typeof id === 'string' && id.length >= 1 && id.length <= MAX_TEST_ID && id.isWellFormed() && !/[\u0000-\u001f\u007f]/.test(id);
+/** A stable test id a regression can name in the report: common's TestId, whose maxLength counts characters, not UTF-16 units. */
+const reportableTestId = (id) => typeof id === 'string' && id !== '' && [...id].length <= REPORT_MAX_TEST_ID && id.isWellFormed() && !/[\u0000-\u001f\u007f]/.test(id);
 
 function firstLine(text) {
   const line = String(text || '').split(/\r?\n/).find((l) => l.trim());
@@ -215,9 +213,9 @@ function checkClaim(request) {
     issues.push(issue('BASELINE_INVALID', '/baseline/tests', 'baseline.json must list the tests at the listed commit (tests[].id)'));
   } else if (request.fixPatch && (!Array.isArray(baseline.stable) || !baseline.stable.every((id) => typeof id === 'string'))) {
     issues.push(issue('BASELINE_INVALID', '/baseline/stable', 'baseline.json must list its stable tests (stable[]) for the fix check'));
-  } else if (Array.isArray(baseline.stable) && (baseline.stable.length > MAX_REGRESSIONS_COUNT || !baseline.stable.every(reportableTestId))) {
+  } else if (Array.isArray(baseline.stable) && (baseline.stable.length > REPORT_MAX_REGRESSIONS || !baseline.stable.every(reportableTestId))) {
     // A regression names its stable test in the report, so a stable id it could not carry is the requester's (§12).
-    issues.push(issue('BASELINE_INVALID', '/baseline/stable', `at most ${MAX_REGRESSIONS_COUNT} stable tests, each an id of 1 to ${MAX_TEST_ID} well-formed characters without a control character`));
+    issues.push(issue('BASELINE_INVALID', '/baseline/stable', `at most ${REPORT_MAX_REGRESSIONS} stable tests, each an id of 1 to ${REPORT_MAX_TEST_ID} well-formed characters without a control character`));
   }
   return issues;
 }

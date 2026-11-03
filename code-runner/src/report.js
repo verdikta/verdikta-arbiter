@@ -29,7 +29,7 @@
 
 const crypto = require('node:crypto');
 const {
-  OCI_PLATFORM, SEMGREP_RULES_VERSION, REPORT_LIMITS, canonicalJson, validateClaimReport, canonicalReportJson, reportSha256
+  OCI_PLATFORM, SEMGREP_RULES_VERSION, REPORT_LIMITS, REPORT_MAX_TEST_ID, canonicalJson, validateClaimReport, canonicalReportJson, reportSha256
 } = require('./common');
 const { RUNNER_VERSION } = require('./version');
 
@@ -38,7 +38,6 @@ const GATES = Object.freeze(['applies', 'testPathsOnly', 'build', 'reproduces', 
 const FOLDED = Object.freeze(['pass', 'fail', 'error']);
 /** The fixed message of a test whose runs disagreed. */
 const SCHEDULE_DISAGREED = 'the runs of the fixed schedule disagreed';
-const MAX_TEST_ID = 1024;
 /** How much of a long or unprintable test id stays readable beside its hash. */
 const TEST_ID_PREFIX = 900;
 const RUN_COUNT_KEY = Object.freeze({ fail: 'fail', pass: 'pass', error: 'error', skip: 'skip', missing: 'missing', duplicate: 'duplicate', 'not-run': 'notRun' });
@@ -61,7 +60,7 @@ function boundedText(text, max) {
 /** A test id as the report can carry it (common's TestId): the same id when it can, else a readable prefix and its hash. */
 function reportTestId(id) {
   const clean = String(id).toWellFormed().replace(/[\u0000-\u001f\u007f]/g, '?');
-  if (clean === id && clean !== '' && [...clean].length <= MAX_TEST_ID) return id;
+  if (clean === id && clean !== '' && [...clean].length <= REPORT_MAX_TEST_ID) return id;
   return `${boundedText(clean, TEST_ID_PREFIX)} [sha256:${sha256(Buffer.from(String(id), 'utf16le'))}]`;
 }
 
@@ -75,7 +74,8 @@ function reportTestForm(list) {
   // common's rule: any error on any run makes the test's kind `error`, else any failure `assertion`.
   const worst = runs.includes('error') ? 'error' : runs.includes('fail') ? 'fail' : null;
   if (worst === null) return { runs, kind: null, message: null };
-  const messages = list.filter((e) => e.result === worst).map((e) => (typeof e.message === 'string' ? e.message : null));
+  // On all three runs, or not at all: one failure beside two skipped records has nothing to agree with.
+  const messages = list.map((e) => (typeof e.message === 'string' ? e.message : null));
   return { runs, kind: worst === 'error' ? 'error' : 'assertion', message: messages.every((m) => m === messages[0]) ? messages[0] : null };
 }
 

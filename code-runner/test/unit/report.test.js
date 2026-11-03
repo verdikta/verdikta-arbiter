@@ -184,6 +184,31 @@ test('N1 covers runCounts past the 200 tests the report lists: the counts of a f
 
 // ------------------------------------------- R7: a hunter cannot make a report invalid
 
+test('R6 (R1-F1): a message is kept only when all three runs agree: one failure beside two skipped records has nothing to agree with', async () => {
+  const skipped = junit([{ suite: SUITE, cases: [{ name: 'test_drain()', skipped: true }] }]);
+  const request = claimRequest();
+  const a = await runClaim(claimSandbox({ poc: [one('clock 1'), skipped, skipped] }), request);
+  const b = await runClaim(claimSandbox({ poc: [one('clock 2'), skipped, skipped] }), request);
+  assert.equal(built(a, request).report.poc.tests[0].message, null);
+  assert.equal(built(a, request).sha256, built(b, request).sha256);
+});
+
+test('R7 (R1-F4): a tamper flag past the report\'s last line number is file-level, and the report still validates', async () => {
+  const { tamperFlags } = require('../../src/integrity');
+  const flags = tamperFlags({ added: new Map([['test/a.t.sol', [{ line: 10000001, text: 'vm.writeFile("foundry.toml", "x");' }, { line: 10000000, text: 'vm.writeFile("foundry.toml", "y");' }]]]) });
+  assert.ok(flags.length >= 2);
+  assert.ok(flags.some((f) => f.line === null));
+  assert.ok(flags.some((f) => f.line === 10000000));
+  for (const f of flags) assert.ok(f.line === null || f.line <= 10000000);
+
+  const request = claimRequest();
+  const r = await runClaim(claimSandbox(), request);
+  const poc = { ...r.facts.poc, integrity: { ...r.facts.poc.integrity, tamperFlags: flags } };
+  const failed = { ...r, facts: { ...r.facts, poc }, gates: { ...r.gates, integrity: { ...r.gates.integrity, status: 'fail' }, reproduces: { ...r.gates.reproduces, status: 'fail' } } };
+  delete failed.gates.claimedObservable;
+  assert.equal(codeReview.validateClaimReport(built(failed, request).report).ok, true);
+});
+
 test('R7: a test id over the schema\'s bound still makes a valid report, the same on every host, and two such ids stay apart', async () => {
   // forge's name fits the JUnit reader's 1,024; with the file and the contract the id does not fit the report's.
   const long = (c) => `test_${c.repeat(1000)}()`;

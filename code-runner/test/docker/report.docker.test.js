@@ -30,9 +30,16 @@ const VM = VM_SOL.replace('    function assume(bool c) external pure;', [
   '    function toString(uint256 v) external pure returns (string memory);'
 ].join('\n'));
 
+const FIXED_DATES = 'GIT_AUTHOR_DATE="1700000000 +0000" GIT_COMMITTER_DATE="1700000000 +0000"';
 const VARIANTS = Object.freeze({
   plain: { toml: 'fs_permissions = [{ access = "read-write", path = "./state" }]' },
-  ffi: { toml: 'ffi = true' }
+  ffi: { toml: 'ffi = true' },
+  // R1-F2, R1-F3: a 4.5 MB binary the finding names first, and a 2 MB line that matches a symbol, out of scope, sorting before src/.
+  bigfiles: {
+    setup: 'head -c 4500000 /dev/zero > src/blob.bin && mkdir -p docs'
+      + ' && { printf "deposit "; head -c 2000000 /dev/zero | tr "\\0" x; printf "\\n"; } > docs/vendor.txt'
+      + ` && git add -A && ${FIXED_DATES} git -c user.name=f -c user.email=f@x commit -q --amend --no-edit`
+  }
 });
 
 function fixture(variant) {
@@ -198,6 +205,20 @@ test('R8: under the runner\'s own flags a PoC reads the same hostname in every c
   const b = await host(t, request);
   assert.equal(a.result.facts.poc.tests[0].message, 'sandbox');
   assert.equal(a.sha256, b.sha256);
+});
+
+test('R1-F2, R1-F3 on real git: a large binary the finding names first and a huge match out of scope hide nothing', { timeout: TIMEOUT }, async (t) => {
+  const fx = await fixture('bigfiles');
+  const request = claim(fx, { 'test/Clock.t.sol': TIME_POC });
+  request.spec = { ...request.spec, stake: { scope: { include: ['src/**'] } } };
+  request.finding = { ...request.finding, affectedPaths: ['src/blob.bin', 'src/Vault.sol'] };
+  const { result } = await host(t, request);
+  const pack = result.contextPack;
+  const text = (name) => pack.files.filter((f) => f.tier === name).map((f) => f.text).join('\n');
+  assert.match(text('source'), /source file: src\/blob\.bin\n\[binary file: 4500000 bytes\]/);
+  assert.match(text('source'), /source file: src\/Vault\.sol\n[^]*contract Vault/);
+  assert.match(text('callSites'), /symbol: deposit\nsrc\/Vault\.sol:5:/);
+  assert.ok(!text('callSites').includes('docs/vendor.txt'), 'out of scope');
 });
 
 test('the pack on real git: the PoC with its function context and full text, the named source, call sites, a tree, and the same bytes in both containers', { timeout: TIMEOUT }, async (t) => {

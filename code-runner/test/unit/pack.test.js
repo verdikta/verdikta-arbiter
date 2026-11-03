@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 const path = require('node:path');
 const { codeReview } = require('@verdikta/common');
-const { assemblePack, packTokens, symbolsOf, TIER_NAMES, summaryOf } = require('../../src/pack');
+const { assemblePack, packTokens, symbolsOf, TIER_NAMES, summaryOf, summaryLine, BlobSink, GrepSink } = require('../../src/pack');
 const { claimSandbox, BASE, POC, POC_DIFF, POC_PATCH, FIX_PATCH } = require('../helpers/fakeClaim');
 const { claimRequest, finding, runClaim, forgeSpec } = require('../helpers/claimRun');
 
@@ -382,6 +382,95 @@ test('a hostile prior finding stays within its bound, whatever its text escapes 
   assert.equal(tierOf(pack, 'priorFindings').status, 'full');
   for (const line of text(pack, 'priorFindings').split('\n').slice(1)) assert.ok(Buffer.byteLength(line) <= 5200, `${Buffer.byteLength(line)} bytes`);
   for (const line of text(pack, 'priorFindings').split('\n').slice(1)) assert.ok(JSON.parse(line).bcid, 'a summary stays one line of JSON');
+});
+
+test('R1-F3: a large binary blob first cannot use up the read: the files after it are still read', () => {
+  const big = Buffer.alloc(4500000);
+  const small = Buffer.from('contract Vault {}\n');
+  const record = (b) => [Buffer.from(`${'a'.repeat(40)} blob ${b.length}\n`), b, Buffer.from('\n')];
+  const bytes = Buffer.concat([...record(big), ...record(small)]);
+  const sink = new BlobSink(['src/blob.bin', 'src/Vault.sol']);
+  sink.write(bytes);
+  assert.deepEqual(sink.items.map((i) => [i.path, i.binary, i.bytes, i.cut]), [['src/blob.bin', true, 4500000, false], ['src/Vault.sol', false, small.length, false]]);
+  assert.equal(sink.items[1].text, small.toString());
+});
+
+test('R1-F3: a large text file first keeps only its share of the read, says so, and the files after it are still read', () => {
+  const big = Buffer.alloc(9000000, 'x');
+  const small = Buffer.from('contract Vault {}\n');
+  const record = (b) => [Buffer.from(`${'a'.repeat(40)} blob ${b.length}\n`), b, Buffer.from('\n')];
+  const sink = new BlobSink(['src/huge.sol', 'src/Vault.sol']);
+  sink.write(Buffer.concat([...record(big), ...record(small)]));
+  assert.equal(sink.items[0].cut, true);
+  assert.equal(sink.items[0].bytes, 9000000);
+  assert.equal(sink.items[0].text.length, 1024 * 1024);
+  assert.equal(sink.items[1].text, small.toString());
+  const pack = assemblePack({ request: request(), inputs: inputs({ sources: [{ ...sink.items[0], text: sink.items[0].text.slice(0, 1000) }] }) });
+  assert.match(text(pack, 'source'), /cut by the runner: the first 1000 of 9000000 bytes were read/);
+  assert.equal(tierOf(pack, 'source').status, 'truncated');
+});
+
+test('the stream readers give the same items however the bytes arrive: a chunk per byte, or one chunk', () => {
+  const records = [
+    Buffer.from(`${'a'.repeat(40)} blob 3\nabc\n`), Buffer.from('HEAD:src/none missing\n'), Buffer.from(`${'b'.repeat(40)} tree 4\nxxxx\n`),
+    Buffer.from(`${'c'.repeat(40)} blob 0\n\n`), Buffer.from(`${'d'.repeat(40)} blob 4\na\0bc\n`)
+  ];
+  const paths = ['a', 'none', 'dir', 'empty', 'bin'];
+  const whole = new BlobSink(paths);
+  whole.write(Buffer.concat(records));
+  const split = new BlobSink(paths);
+  for (const b of Buffer.concat(records)) split.write(Buffer.from([b]));
+  assert.deepEqual(split.items, whole.items);
+  assert.deepEqual(whole.items.map((i) => i.path), ['a', 'empty', 'bin']);
+  assert.equal(whole.items[0].text, 'abc');
+  assert.equal(whole.items[2].binary, true);
+
+  const lines = Buffer.from('R:src/A.sol\x005\x00  a.f(1);\nR:lib/B.sol\x001\x00 a.f(2);\nR:src/C.sol\x007\x00 a.f(3);\ntail without a line end');
+  const keep = (p) => p.startsWith('src/');
+  const g1 = new GrepSink('R:', keep);
+  g1.write(lines);
+  const g2 = new GrepSink('R:', keep);
+  for (const b of lines) g2.write(Buffer.from([b]));
+  assert.deepEqual(g2.sites, g1.sites);
+  assert.deepEqual(g1.sites.map((x) => [x.path, x.line, x.text]), [['src/A.sol', 5, 'a.f(1);'], ['src/C.sol', 7, 'a.f(3);']]);
+});
+
+test('R1-F2: a huge match in a file out of scope cannot hide the callers after it', () => {
+  const huge = `R:lib/vendor.sol\x001\x00 deposit ${'x'.repeat(3000000)}\n`;
+  const sink = new GrepSink('R:', (p) => p.startsWith('src/'));
+  sink.write(Buffer.from(`${huge}${huge}R:src/Vault.sol\x005\x00 v.deposit(1);\n`));
+  assert.deepEqual(sink.sites.map((x) => x.path), ['src/Vault.sol']);
+});
+
+test('the sink stops at 10 sites, and a site keeps a bounded text', () => {
+  const sink = new GrepSink('R:', () => true);
+  const lines = Array.from({ length: 30 }, (_, i) => `R:src/A.sol\x00${i + 1}\x00 ${'y'.repeat(5000)}\n`).join('');
+  sink.write(Buffer.from(lines));
+  assert.equal(sink.sites.length, 10);
+  for (const s of sink.sites) assert.ok(Buffer.byteLength(s.text) <= 300);
+});
+
+test('PB-F2, PC-F4: paths full of what JSON escapes cannot push a summary over its bound, so all 8 still fit', () => {
+  const nasty = `src/${'\u0001'.repeat(195)}`;
+  const worst = (i) => prior(i, {
+    title: 'é'.repeat(60), rootCause: `${i} ${'é'.repeat(1990)}`,
+    affectedPaths: Array.from({ length: 5 }, (_, p) => `${nasty}${p}`),
+    poc: { command: 'x', observable: 'é'.repeat(1000) }
+  });
+  for (let i = 0; i < 8; i += 1) {
+    const line = summaryLine(worst(i));
+    assert.ok(Buffer.byteLength(line) <= 5200, `${Buffer.byteLength(line)} bytes`);
+    assert.equal(JSON.parse(line).bcid, CID(i + 1));
+  }
+  const pack = assemblePack({ request: { ...fullRequest(), priorFindings: Array.from({ length: 8 }, (_, i) => worst(i)) }, inputs: fullInputs() });
+  assert.equal(tierOf(pack, 'priorFindings').status, 'full');
+  for (let i = 0; i < 8; i += 1) assert.ok(text(pack, 'priorFindings').includes(CID(i + 1)));
+});
+
+test('PB-F4: a lone surrogate a JSON escape wrote into a path does not stop the pack', () => {
+  const pack = assemblePack({ request: request(), inputs: inputs({ sources: [{ path: 'src/\ud83d.sol', text: 'contract X {}\n', bytes: 14, binary: false, cut: false }] }) });
+  assert.match(pack.sha256, /^[0-9a-f]{64}$/);
+  for (const f of pack.files) assert.ok(f.text.isWellFormed(), f.name);
 });
 
 const packExecs = (sb) => sb.pocExecs().map((d) => (d.kind === 'git' ? `git ${d.sub[0]}` : d.kind));

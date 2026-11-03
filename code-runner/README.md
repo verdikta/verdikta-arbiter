@@ -1331,9 +1331,9 @@ same claim gives the same hash, under these rules:
 |---|---|
 | Input digests | From the request's bytes: `pocPatchSha256`, `fixPatchSha256`, `attestationSha256` (SHA-256 of the attestation's canonical JSON), `envImage`, `listingCid`, `bcid`, `baseCommit`; `eaGates` as the EA sent them, which can only be both `pass` |
 | The runtime | Measured on every run: `<path> --version` of the binary `docker info` names, read as `runsc version release-YYYYMMDD.N`. Under `runsc`, any release but `GVISOR_RELEASE`, or one that cannot be measured (a relative path, a binary that fails), abstains `admission_refused` and fails `/health`. `runc` is recorded as `runc`, which common's validator warns about (local mode). The runner and its daemon share a host (§9.1), so the path is local |
-| A test's message | Only when byte-identical on all three runs of the schedule, else `null`. A clock, an unseeded random value or a per-run directory moves between runs, and is measured doing so. The results stand either way; `facts.poc.tests` keeps forge's text |
+| A test's message | Only when byte-identical on all three runs of the schedule, else `null` (one failure beside two skipped records has nothing to agree with). A clock, an unseeded random value or a per-run directory moves between runs, and is measured doing so. The results stand either way; `facts.poc.tests` keeps forge's text |
 | A flaky test | A test whose results (`pass`, `fail`, `error`) disagree across the schedule is reported as `error` on all three runs with one fixed message, whichever run passed, in `runCounts` too (past the 200 tests the report lists). It disproved the claim either way, so what the settlement reads (`settlementFacts.js`) is unchanged; `facts.poc.tests` keeps what each run did. `skip`, `missing` and `duplicate` are integrity's, and stay |
-| What a hunter writes | Cannot make a report invalid, which would make every arbiter abstain: a test id over 1,024 characters becomes a prefix plus its SHA-256; messages are well-formed and cut on a whole character. The JUnit reader already refuses control characters and surrogates in a record |
+| What a hunter writes | Cannot make a report invalid, which would make every arbiter abstain: a test id over 1,024 characters becomes a prefix plus its SHA-256; messages are well-formed and cut on a whole character; a tamper flag past the report's last line number (a padded test file) is file-level. The JUnit reader already refuses control characters and surrogates in a record |
 | What a requester sends | Refused before any work: see the request above, and `BASELINE_INVALID` for a stable test id a regression could not name |
 
 **The report has no field for the compiler the run pinned** (owner decision Q37). It
@@ -1358,7 +1358,9 @@ cat-file --batch` on `<commit>:<path>`, `git grep -n -w -F -I -z -e <symbol> <li
 (with the commit stripped from each line), `git ls-tree`. Then a pure function of those
 reads and the request's documents, so a later step cannot reach it. Nothing is
 assembled again. A patch that fails `applies` or `testPathsOnly` has no pack: no jury
-reads it.
+reads it. `cat-file` and `grep` are read as streams, record by record and line by
+line, so an early binary file or a huge match out of scope costs only what is kept of it
+and hides nothing after it.
 
 ```json
 {

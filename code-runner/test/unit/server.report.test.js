@@ -156,6 +156,17 @@ test('a stable test id the report could not carry is the requester\'s baseline, 
   }
 });
 
+test('R1-F5: a stable id is measured as common\'s schema measures it, in characters: a long one with astral characters is not refused', async (t) => {
+  const { target } = await serve(t, claimSandbox());
+  const id = `test/${'😀'.repeat(500)}.t.sol > T > test_x()`;
+  assert.ok(id.length > 1024);
+  assert.ok([...id].length <= 1024);
+  const accepted = await post(target, body({ baseline: { version: 1, baseCommit: BASE, framework: 'forge', runs: 3, tests: [{ id: DEPOSIT, results: ['pass', 'pass', 'pass'] }], stable: [id], unstable: [] } }));
+  assert.equal(accepted.status, 200, accepted.raw.slice(0, 300));
+  const refused = await post(target, body({ baseline: { version: 1, baseCommit: BASE, framework: 'forge', runs: 3, tests: [{ id: DEPOSIT, results: ['pass', 'pass', 'pass'] }], stable: ['😀'.repeat(1025)], unstable: [] } }));
+  assert.equal(refused.status, 400);
+});
+
 test('a lone surrogate a hunter wrote into finding.json by a JSON escape does not stop the run', async (t) => {
   const { target } = await serve(t, claimSandbox());
   const res = await post(target, body({ finding: finding({ rootCause: 'A root cause with a lone \ud83d surrogate in the text.' }) }));

@@ -25,6 +25,12 @@ const { canonicalJson } = require('@verdikta/common/src/codeReview/canonical');
 const { validateFinding, validateKnownIssues } = require('@verdikta/common/src/codeReview/validate');
 const { getCodeClass, CODE_CLASSES } = require('@verdikta/common/src/codeReview/classes');
 const SPEC_SCHEMA = require('@verdikta/common/schemas/code_review.v1.json');
+const REPORT_SCHEMA = require('@verdikta/common/schemas/claim_report.v1.json');
+
+/** The report's bounds its limits object does not name: a line number and a test id. */
+const REPORT_MAX_LINE = REPORT_SCHEMA.definitions.Line.oneOf[0].maximum;
+const REPORT_MAX_TEST_ID = REPORT_SCHEMA.definitions.TestId.maxLength;
+const REPORT_MAX_REGRESSIONS = REPORT_SCHEMA.properties.fix.properties.regressionCount.maximum;
 
 module.exports = {
   BASE_IMAGE_PINS,
@@ -42,6 +48,9 @@ module.exports = {
   SPEC_LIMIT_MAXIMA,
   OCI_PLATFORM,
   REPORT_LIMITS,
+  REPORT_MAX_LINE,
+  REPORT_MAX_TEST_ID,
+  REPORT_MAX_REGRESSIONS,
   POC_RUNS,
   validateClaimReport,
   canonicalReportJson,

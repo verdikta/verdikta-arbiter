@@ -74,7 +74,11 @@ const SUMMARY_PATHS = 5;
 const SUMMARY_PATH_BYTES = 200;
 /** One read of git's at most; far above any budget, so a cut here is never in what the jury would have read. */
 const READ_MAX_BYTES = 4 * 1024 * 1024;
-const GREP_MAX_BYTES = 1024 * 1024;
+/** What is kept of one file: above the largest budget. */
+const MAX_BLOB_BYTES = 1024 * 1024;
+const MAX_BATCH_HEADER_BYTES = 8192;
+/** What is read of one line of `git grep`: the path comes first, and a site keeps MAX_SITE_BYTES of its text. */
+const MAX_GREP_LINE_HEAD_BYTES = 8192;
 /** The file names of a commit, as the protected reset reads them (claim.js). */
 const TREE_MAX_BYTES = 16 * 1024 * 1024;
 const GIT_TIMEOUT_MS = 120000;
@@ -144,10 +148,18 @@ function summaryOf(prior) {
   };
 }
 
-/** One summary as one line of canonical JSON, within its bound: the longest texts give way, one by one. */
+/**
+ * One summary as one line of canonical JSON, within its bound, measured as it
+ * is written (escapes included): the paths go first, last one first, then the
+ * longest texts give way.
+ */
 function summaryLine(prior) {
   const summary = wellFormedDeep(summaryOf(prior));
   let line = canonicalJson(summary);
+  while (byteLength(line) > MAX_SUMMARY_BYTES && summary.affectedPaths.length > 0) {
+    summary.affectedPaths.pop();
+    line = canonicalJson(summary);
+  }
   for (const field of ['rootCause', 'observable', 'title']) {
     const over = byteLength(line) - MAX_SUMMARY_BYTES;
     if (over <= 0) break;
@@ -211,31 +223,136 @@ async function read(ctx, name, args, { stdin, max = READ_MAX_BYTES } = {}) {
 }
 
 /**
- * Blobs by `<commit>:<path>` through `git cat-file --batch`, as items. A path
- * the commit lacks, or that is not a file, is no item.
- * @returns {Promise<Array<{path:string, text:string|null, bytes:number, binary:boolean, cut:boolean}>>}
+ * `git cat-file --batch`'s answer on `<commit>:<path>` lines, read as a stream
+ * record by record: a blob of any size costs only what is kept of it, so an
+ * early large or binary file cannot use up the read and hide the ones after it.
+ * The same bytes make the same items however they arrive. A path the commit
+ * lacks, or that is not a file, is no item.
  */
+class BlobSink {
+  constructor(paths) {
+    this.paths = paths;
+    this.at = 0;
+    this.items = [];
+    this.textLeft = READ_MAX_BYTES;
+    this.header = [];
+    this.headerBytes = 0;
+    this.record = null;
+    this.endOfRecord = false;
+  }
+
+  write(chunk) {
+    let buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    while (buf.length > 0) {
+      if (this.record) {
+        const take = Math.min(this.record.left, buf.length);
+        const room = Math.min(this.record.keep - this.record.kept, take);
+        if (room > 0) {
+          this.record.chunks.push(Buffer.from(buf.subarray(0, room)));
+          this.record.kept += room;
+        }
+        this.record.left -= take;
+        buf = buf.subarray(take);
+        if (this.record.left === 0) this.finishRecord();
+      } else if (this.endOfRecord) {
+        // The line feed git writes after a record's content.
+        this.endOfRecord = false;
+        buf = buf.subarray(1);
+      } else {
+        const nl = buf.indexOf(0x0a);
+        const part = nl < 0 ? buf : buf.subarray(0, nl);
+        if (this.headerBytes < MAX_BATCH_HEADER_BYTES) {
+          this.header.push(Buffer.from(part));
+          this.headerBytes += part.length;
+        }
+        if (nl < 0) return true;
+        buf = buf.subarray(nl + 1);
+        const line = Buffer.concat(this.header).toString('latin1');
+        this.header = [];
+        this.headerBytes = 0;
+        this.startRecord(line);
+      }
+    }
+    return true;
+  }
+
+  startRecord(line) {
+    const path = this.paths[this.at];
+    this.at += 1;
+    const m = /^[0-9a-f]+ ([a-z]+) ([0-9]+)$/.exec(line);
+    if (!m) return; // `<spec> missing`
+    const size = Number(m[2]);
+    // At least what tells a binary file from a text, whatever the texts before it took.
+    const keep = Math.min(size, MAX_BLOB_BYTES, Math.max(BINARY_PROBE_BYTES, this.textLeft));
+    this.record = { path, type: m[1], size, left: size, keep, kept: 0, chunks: [] };
+    if (size === 0) this.finishRecord();
+  }
+
+  finishRecord() {
+    const { path, type, size, kept, chunks } = this.record;
+    this.record = null;
+    this.endOfRecord = true;
+    if (type !== 'blob') return;
+    const content = Buffer.concat(chunks);
+    const binary = content.subarray(0, BINARY_PROBE_BYTES).includes(0);
+    if (!binary) this.textLeft = Math.max(0, this.textLeft - kept);
+    this.items.push({ path, text: binary ? null : content.toString('utf8'), bytes: size, binary, cut: !binary && kept < size });
+  }
+}
+
+/** Blobs by `<commit>:<path>`, as items. */
 async function readBlobs(ctx, name, commit, paths) {
   if (paths.length === 0) return [];
-  const r = await read(ctx, name, ['cat-file', '--batch'], { stdin: Buffer.from(paths.map((p) => `${commit}:${p}\n`).join(''), 'utf8') });
-  if (r.exitCode !== 0) throw runnerError(name, `the pack's files could not be read (git exited ${r.exitCode})`);
-  const items = [];
-  let at = 0;
-  for (const p of paths) {
-    const nl = r.bytes.indexOf(0x0a, at);
-    if (nl < 0) break;
-    const header = r.bytes.subarray(at, nl).toString('latin1');
-    at = nl + 1;
-    const m = /^[0-9a-f]+ ([a-z]+) ([0-9]+)$/.exec(header);
-    if (!m) continue; // `<spec> missing`
-    const size = Number(m[2]);
-    const content = r.bytes.subarray(at, at + size);
-    at += size + 1;
-    if (m[1] !== 'blob') continue;
-    const binary = content.subarray(0, BINARY_PROBE_BYTES).includes(0);
-    items.push({ path: p, text: binary ? null : content.toString('utf8'), bytes: size, binary, cut: content.length < size });
+  const sink = new BlobSink(paths);
+  const record = await ctx.exec(git(['cat-file', '--batch']), {
+    name, timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(paths.map((p) => `${commit}:${p}\n`).join(''), 'utf8'), tee: sink
+  });
+  if (record.exitCode !== 0) throw runnerError(name, `the pack's files could not be read (git exited ${record.exitCode})`);
+  return sink.items;
+}
+
+/**
+ * `git grep -z -n`'s answer read as a stream, line by line: only the head of
+ * each line is kept, and only sites `keep` allows count, so a huge match in a
+ * file out of scope cannot hide the callers after it. The same bytes make the
+ * same sites however they arrive.
+ */
+class GrepSink {
+  constructor(prefix, keep) {
+    this.prefix = prefix;
+    this.keep = keep;
+    this.sites = [];
+    this.head = [];
+    this.headBytes = 0;
   }
-  return items;
+
+  write(chunk) {
+    let buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+    while (buf.length > 0 && this.sites.length < MAX_SITES_PER_SYMBOL) {
+      const nl = buf.indexOf(0x0a);
+      const part = nl < 0 ? buf : buf.subarray(0, nl);
+      const room = MAX_GREP_LINE_HEAD_BYTES - this.headBytes;
+      if (room > 0) {
+        const take = part.subarray(0, room);
+        this.head.push(Buffer.from(take));
+        this.headBytes += take.length;
+      }
+      if (nl < 0) return true;
+      buf = buf.subarray(nl + 1);
+      this.endLine(Buffer.concat(this.head).toString('utf8'));
+      this.head = [];
+      this.headBytes = 0;
+    }
+    return true;
+  }
+
+  endLine(raw) {
+    const parts = raw.split('\0');
+    if (parts.length < 3 || !parts[0].startsWith(this.prefix)) return;
+    const path = parts[0].slice(this.prefix.length);
+    if (!this.keep(path)) return;
+    this.sites.push({ path, line: Number(parts[1]), text: cutBytes(parts.slice(2).join(' ').trim(), MAX_SITE_BYTES) });
+  }
 }
 
 /** Up to MAX_SITES_PER_SYMBOL call sites of each symbol, in git's order, among the paths `keep` allows. */
@@ -244,19 +361,10 @@ async function readCallSites(ctx, listed, symbols, keep) {
   for (let i = 0; i < symbols.length; i += 1) {
     const symbol = symbols[i];
     const name = `pack:grep:${i + 1}`;
-    const r = await read(ctx, name, ['grep', '-n', '-w', '-F', '-I', '-z', '--no-color', '--full-name', '-e', symbol, listed, '--'], { max: GREP_MAX_BYTES });
-    if (r.exitCode !== 0 && r.exitCode !== 1) throw runnerError(name, `the call sites could not be read (git exited ${r.exitCode})`);
-    const sites = [];
-    const prefix = `${listed}:`;
-    for (const raw of r.bytes.toString('utf8').split('\n')) {
-      if (sites.length === MAX_SITES_PER_SYMBOL) break;
-      const parts = raw.split('\0');
-      if (parts.length < 3 || !parts[0].startsWith(prefix)) continue; // the cut last line
-      const path = parts[0].slice(prefix.length);
-      if (!keep(path)) continue;
-      sites.push({ path, line: Number(parts[1]), text: cutBytes(parts.slice(2).join(' ').trim(), MAX_SITE_BYTES) });
-    }
-    if (sites.length) out.push({ symbol, sites });
+    const sink = new GrepSink(`${listed}:`, keep);
+    const record = await ctx.exec(git(['grep', '-n', '-w', '-F', '-I', '-z', '--no-color', '--full-name', '-e', symbol, listed, '--']), { name, timeoutMs: GIT_TIMEOUT_MS, tee: sink });
+    if (record.exitCode !== 0 && record.exitCode !== 1) throw runnerError(name, `the call sites could not be read (git exited ${record.exitCode})`);
+    if (sink.sites.length) out.push({ symbol, sites: sink.sites });
   }
   return out;
 }
@@ -287,7 +395,11 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
 
   // Call sites in what the stake covers; without a scope, in anything but the tests and the framework's own paths.
   const skip = [...(spec.paths.tests || []), ...(spec.paths.protected || [])];
-  const keep = scope ? (p) => splitByStakeScope([p], scope).inScope.length === 1 : (p) => !matchesAny(p, skip);
+  const allowed = new Map();
+  const keep = (p) => {
+    if (!allowed.has(p)) allowed.set(p, scope ? splitByStakeScope([p], scope).inScope.length === 1 : !matchesAny(p, skip));
+    return allowed.get(p);
+  };
   const callSites = await readCallSites(ctx, listed, symbolsOf(added || new Map()), keep);
 
   const tree = await read(ctx, 'pack:tree', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', listed], { max: TREE_MAX_BYTES });
@@ -309,12 +421,14 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
 // ------------------------------------------------------------------ the assembly
 
 function fileItem(tier, slug, ext, header, body, cut = false) {
-  const text = `# ${header}\n${String(body).toWellFormed()}`;
+  // Well-formed as a whole: a path in the header can hold a lone surrogate a JSON escape wrote, as a body can.
+  const text = `# ${header}\n${body}`.toWellFormed();
   return { tier, slug, ext, text, bytes: byteLength(text) + FILE_OVERHEAD_BYTES, cut };
 }
 
 function blobBody(item) {
-  return item.binary ? `[binary file: ${item.bytes} bytes]` : item.text;
+  if (item.binary) return `[binary file: ${item.bytes} bytes]`;
+  return item.cut ? `${item.text}\n[cut by the runner: the first ${byteLength(item.text)} of ${item.bytes} bytes were read]` : item.text;
 }
 
 /** Every item of every tier, whole, in priority order. */
@@ -427,4 +541,4 @@ function assemblePack({ request, inputs, codeClass = request.codeClass || 'code-
   return { version: PACK_VERSION, codeClass, budgetTokens: budget, usedTokens, sha256, tiers, files: outFiles };
 }
 
-module.exports = { gatherPackInputs, assemblePack, packTokens, symbolsOf, summaryOf, shallowTree, TIER_NAMES, TIERS, BYTES_PER_TOKEN, FILE_OVERHEAD_BYTES };
+module.exports = { gatherPackInputs, assemblePack, packTokens, symbolsOf, summaryOf, summaryLine, shallowTree, BlobSink, GrepSink, TIER_NAMES, TIERS, BYTES_PER_TOKEN, FILE_OVERHEAD_BYTES };
