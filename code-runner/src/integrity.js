@@ -74,6 +74,10 @@
  * the $HOME caches, /tmp, untracked files elsewhere (a state file a PoC
  * writes). Tracked files outside the sets go back to the PoC commit by the
  * runner's reset before each re-run.
+ *
+ * The listing check takes the same reference and the same snapshots (node A2c,
+ * listing.js), and it also reads the compilers' bytes (officialCompilers, the
+ * look at any solc in the image, owner Q35 condition 2). A claim never does that.
  */
 
 const crypto = require('node:crypto');
@@ -97,6 +101,13 @@ const LINKS_MAX_BYTES = 64 * 1024 * 1024;
 const CONFIG_MAX_BYTES = 1024 * 1024;
 const SNAPSHOT_TIMEOUT_MS = 120000;
 const MAX_CHANGED = 100;
+/**
+ * What the listing's reference keeps free under the caps, so that an image a claim's patch would take over one cannot pass
+ * (a claim's reference holds the image plus the patch). A 2 MB patch adds at most 50,000 files, the shortest being
+ * `diff --git a/x b/x\nnew file mode 100644\n` (40 bytes). In the listing each costs a find record and a hash line: its
+ * path twice, which the patch's bytes bound, and about 100 bytes more.
+ */
+const LISTING_RESERVE = Object.freeze({ entries: 50000, bytes: 16 * 1024 * 1024 });
 
 /** The kinds of static tamper flag (the report's TamperFlag kinds, §9.5 check 5). */
 const TAMPER_FLAG_KINDS = Object.freeze([
@@ -196,6 +207,23 @@ const INLINE_CONFIG_SCRIPT = [
  * place the sandbox can write. Nothing when the image has none.
  */
 const SVM_SCRIPT = 'if [ -d "$1" ]; then printf "%s\\0" "$1"; for d in "$1"/*; do if [ -e "$d" ] || [ -L "$d" ]; then printf "%s\\0" "$d"; fi; done; fi';
+
+/**
+ * The bytes of the compiler files the look reads beyond svm/ ($@: absolute paths), hermetic, through any links, as forge
+ * would run them. One record each: `f\0path\0sha256\0` for a regular file, `!\0path\0\0` for one it cannot read (or a
+ * device or pipe, which it never opens), `?\0path\0\0` for a link that leads nowhere. Nothing for no such path or a directory.
+ */
+const COMPILERS_SCRIPT = [
+  'for p do',
+  '  if [ -f "$p" ]; then',
+  '    if h=$(sha256sum < "$p" 2>/dev/null); then printf "f\\0%s\\0%s\\0" "$p" "${h%% *}"; else printf "!\\0%s\\0\\0" "$p"; fi',
+  '  elif [ -d "$p" ]; then :',
+  '  elif [ -e "$p" ]; then printf "!\\0%s\\0\\0" "$p"',
+  '  elif [ -L "$p" ]; then printf "?\\0%s\\0\\0" "$p"',
+  '  fi',
+  'done',
+  'exit 0'
+].join('\n');
 
 const LINKS_SCRIPT = [
   'command -v realpath >/dev/null 2>&1 || exit 4',
@@ -1014,6 +1042,10 @@ function svmArgv() {
   return hermetic(SVM_SCRIPT, 'vcr-svm', [`${forge.BUILDER_ENV.XDG_DATA_HOME}/svm`]);
 }
 
+function compilersArgv(paths) {
+  return hermetic(COMPILERS_SCRIPT, 'vcr-compilers', paths);
+}
+
 function externalRootsArgv() {
   return hermetic(EXTERNAL_ROOTS_SCRIPT, 'vcr-external-roots', [IMMUTABLE_CHECK]);
 }
@@ -1245,8 +1277,8 @@ function externalRoots(paths) {
 }
 
 /**
- * Where forge is, for a session the integrity reference does not cover (the
- * listing check's build and suite, its harness probes): the discovery only.
+ * Where forge is, by the discovery alone, for what drives forge directly without a
+ * reference (only tests now: since A2c the listing check takes the reference too).
  * What it finds is the requester's when it cannot be run (no forge, or a
  * path the runner cannot pass as a program).
  * @returns {Promise<{forgePath:string, realPath:string, path:string}>}
@@ -1262,14 +1294,19 @@ async function discoverForge(ctx, name) {
   return tool;
 }
 
-/** The listing; `overflow` with its reason when it is over a cap (MANIFEST_MAX_BYTES, MAX_ENTRIES). */
-async function manifest(ctx, name, roots, prunes) {
-  const out = new Prefix(MANIFEST_MAX_BYTES);
+/**
+ * The listing; `overflow` with its reason when it is over a cap (MANIFEST_MAX_BYTES, MAX_ENTRIES, less what `reserve` keeps free).
+ * @param {{entries:number, bytes:number}} [reserve]
+ */
+async function manifest(ctx, name, roots, prunes, reserve = null) {
+  const maxBytes = MANIFEST_MAX_BYTES - (reserve ? reserve.bytes : 0);
+  const maxEntries = MAX_ENTRIES - (reserve ? reserve.entries : 0);
+  const out = new Prefix(maxBytes);
   const record = await ctx.exec(manifestArgv(roots, prunes), { name, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
   if (record.exitCode !== 0) throw runnerError(name, `the watched paths could not be listed (exit ${record.exitCode})`);
-  if (out.truncated) return { overflow: true, reason: `the watched paths exceed ${MANIFEST_MAX_BYTES} bytes of listing` };
-  const m = parseManifest(out.bytes());
-  if (!m.ok && m.tooLarge) return { overflow: true, reason: `the watched paths' listing has more than ${MAX_ENTRIES} entries` };
+  if (out.truncated) return { overflow: true, reason: `the watched paths exceed ${maxBytes} bytes of listing` };
+  const m = parseManifest(out.bytes(), { maxEntries });
+  if (!m.ok && m.tooLarge) return { overflow: true, reason: `the watched paths' listing has more than ${maxEntries} entries` };
   if (!m.ok) throw runnerError(name, `the watched paths' listing could not be read: ${m.reason}`);
   return { overflow: false, entries: m.entries };
 }
@@ -1277,6 +1314,98 @@ async function manifest(ctx, name, roots, prunes) {
 function firstLine(text) {
   const line = String(text || '').split(/\r?\n/).find((l) => l.trim());
   return line ? line.trim().slice(0, 200) : '';
+}
+
+/** What forge's own install leaves under svm/ that holds no compiler (see the Docker test of its install). */
+const SVM_RELEASE = '(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)';
+const SVM_MARKER = new RegExp(`^(?:\\.global-version|${SVM_RELEASE}/\\.lock)$`);
+/** The one place under svm/ forge runs a compiler from: `<x.y.z>/solc-<x.y.z>`. */
+const SVM_COMPILER = new RegExp(`^(${SVM_RELEASE})/solc-\\1$`);
+
+/**
+ * Why one entry under svm/ may not be there, or null. Nothing here depends on how forge picks among them, beyond the
+ * layout: every file is either what forge's install leaves, with the bytes of that release, or refused.
+ * @param {string} rel - the entry's path under svm/
+ * @param {{type:string, hash:string|null}} entry - find's type, and the SHA-256 when it could read a file
+ * @param {object} list - solcReleases.makeList()
+ * @returns {string|null}
+ */
+function svmEntryProblem(rel, entry, list) {
+  const named = SVM_COMPILER.exec(rel);
+  const known = named || SVM_MARKER.test(rel);
+  // A directory appears in the listing only when it cannot be read: what it holds is unseen.
+  if (entry.type === 'd') return 'cannot be read, so what it holds could not be checked';
+  if (!known) return 'is not a file forge\'s install leaves there';
+  if (entry.type === 'l') return 'is a link, and forge\'s install leaves none';
+  if (entry.type !== 'f') return 'is not a plain file';
+  if (!named) return null;
+  if (!entry.hash) return 'cannot be read, so its bytes could not be checked';
+  const want = list.releases.get(named[1]);
+  if (!want) return `holds a release, but ${named[1]} is not on the list`;
+  return entry.hash === want ? null : `is not official ${named[1]}: its SHA-256 is ${entry.hash}, the release's is ${want}`;
+}
+
+/**
+ * The look at any solc in the image (owner Q35 condition 2; listing only, a claim never reads the list). Measured in the
+ * sandbox, where these bytes sit on the read-only root with no way through a place the sandbox can write (the walk in
+ * pinCompiler, the same image by digest), so they stay what is read here:
+ *
+ * - everything under svm/, whichever release the listing names, since with the variable empty a pragma can pick any;
+ * - the file the pin names outside the work tree (owner Q37 condition 2), through its links, against any release;
+ * - a `solc` in each PATH directory, though forge does not look there under the pin, so that this does not rest on that.
+ *
+ * What runs as solc is the part this predicts: forge 1.8.5, pinned by digest, runs the pin's file or
+ * `<x.y.z>/solc-<x.y.z>`; the look covers more than that, and the Docker tests plant a compiler at each other place.
+ * @param {object} ctx
+ * @param {{pin:string, pathDirs:string[], list:object}} o
+ * @returns {Promise<{checked:Array<{path:string, release:string}>, problems:string[]}>}
+ */
+async function officialCompilers(ctx, { pin, pathDirs, list, name = 'prepare:compilers' }) {
+  const problems = [];
+  const checked = [];
+  const svm = `${forge.BUILDER_ENV.XDG_DATA_HOME}/svm`;
+  const root = Buffer.from(svm, 'utf8').toString('latin1');
+  const listed = await manifest(ctx, `${name}:svm`, [svm], []);
+  if (listed.overflow) problems.push(`${svm} could not be listed: ${listed.reason}`);
+  else {
+    for (const p of [...listed.entries.keys()].sort()) {
+      const e = listed.entries.get(p);
+      if (p === root) {
+        problems.push(`${svm} ${e.type === 'l' ? 'is a link, and forge\'s install leaves none' : e.type === 'd' ? 'cannot be read, so what it holds could not be checked' : 'is not a directory'}`);
+        continue;
+      }
+      const rel = displayPath(p.slice(root.length + 1));
+      const problem = svmEntryProblem(rel, e, list);
+      if (problem) problems.push(`${svm}/${rel} ${problem}`);
+      else if (SVM_COMPILER.test(rel)) checked.push({ path: `${svm}/${rel}`, release: SVM_COMPILER.exec(rel)[1] });
+    }
+  }
+  const named = pin.startsWith('/') ? [pin] : [];
+  const onPath = [...new Set(pathDirs)].map((d) => (d === '/' ? '/solc' : `${d}/solc`));
+  const paths = [...new Set([...named, ...onPath])];
+  const out = new Prefix(CONFIG_MAX_BYTES);
+  const record = await ctx.exec(compilersArgv(paths), { name: `${name}:files`, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
+  const bytes = out.bytes();
+  const fields = bytes.toString('utf8').split('\0');
+  fields.pop();
+  if (record.exitCode !== 0 || out.truncated || fields.length % 3 !== 0 || (bytes.length > 0 && bytes[bytes.length - 1] !== 0)) {
+    throw runnerError(`${name}:files`, `the compilers could not be read (exit ${record.exitCode})`);
+  }
+  for (let i = 0; i < fields.length; i += 3) {
+    const [kind, p, sha] = fields.slice(i, i + 3);
+    const asked = paths.includes(p);
+    if (!asked || !['f', '!', '?'].includes(kind) || (kind === 'f' ? !/^[0-9a-f]{64}$/.test(sha) : sha !== '')) throw runnerError(`${name}:files`, 'the compilers could not be read');
+    const what = named.includes(p) ? 'the compiler the listing names' : 'solc on PATH';
+    if (kind === '?') problems.push(`${p} (${what}) is a link that leads nowhere`);
+    else if (kind === '!') problems.push(`${p} (${what}) cannot be read, so its bytes could not be checked`);
+    else if (list.byHash.has(sha)) checked.push({ path: p, release: list.byHash.get(sha) });
+    else problems.push(`${p} (${what}) is not an official solc release: its SHA-256 is ${sha}`);
+  }
+  // forge just read the configuration with this file as its compiler. A look that cannot see it has read nothing.
+  for (const p of named) {
+    if (!fields.includes(p)) problems.push(`${p} (the compiler the listing names) could not be found, so its bytes could not be checked`);
+  }
+  return { checked, problems };
 }
 
 /**
@@ -1291,10 +1420,12 @@ class Watch {
    * @param {string[]} [o.testGlobs] - paths.tests (a watched link may not lead there)
    * @param {string[]} [o.patchPaths] - the work-tree paths the claim's patches add or change (git's names)
    * @param {string} [o.prefix] - exec names' prefix
+   * @param {{entries:number, bytes:number}} [o.reserve] - what the reference keeps free under the caps (the listing's, LISTING_RESERVE)
    */
-  constructor({ protectedGlobs = [], testGlobs = [], patchPaths = [], prefix = 'integrity', solc } = {}) {
+  constructor({ protectedGlobs = [], testGlobs = [], patchPaths = [], prefix = 'integrity', solc, reserve = null } = {}) {
     if (typeof solc !== 'string') throw new TypeError('the watch runs forge with the compiler pinned: solc is not set');
     this.solc = solc;
+    this.reserve = reserve;
     this.protectedGlobs = protectedGlobs;
     this.testGlobs = testGlobs;
     // In the manifest's byte form (its keys are the paths' bytes read latin1).
@@ -1338,7 +1469,7 @@ class Watch {
     const tooLarge = (why) => new RequesterError([{
       code: 'IMAGE_WATCH_TOO_LARGE', path: '/spec/env/image', detail: `${why}: the runner cannot watch the work tree for changes during a run`
     }]);
-    const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(parsed.config));
+    const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(parsed.config), this.reserve);
     if (m.overflow) throw tooLarge(m.reason);
     // `path` and `realPath` are the forge every maker command runs, with the configuration hashed here (forgeArgv).
     this.ref = {
@@ -1811,7 +1942,8 @@ function integrityDetail(failures) {
 }
 
 module.exports = {
-  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, pinCompiler, MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES,
+  FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, COMPILERS_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, pinCompiler, officialCompilers, svmEntryProblem,
+  MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES, LISTING_RESERVE,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
   parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
   discoverForge, probe, requireImmutableTools, TOOL_DIRS, IMMUTABLE_CHECK,

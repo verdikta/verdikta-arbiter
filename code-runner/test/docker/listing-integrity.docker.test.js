@@ -122,6 +122,9 @@ const VARIANTS = Object.freeze({
   outincache: { files: { ...VAULT_REPO, 'foundry.toml': FOUNDRY_TOML().replace('out = "out"', 'out = "cache/artifacts"') } },
   inlinepath: { files: { ...VAULT_REPO, 'test/Note.t.sol': '// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n/// forge-config: default.invariant.failure_persist_dir = "lib/persist"\ncontract Note { function test_n() public pure {} }\n' } },
   svmthroughtree: { files: { ...VAULT_REPO, 'foundry.toml': NAMES_VERSION }, setup: tools(`mkdir -p ${SVM}/0.8.31`, `ln -s /work/test/solc ${svmFile('0.8.31')}`) },
+  // A compiler in the tree, by a path that does not start with /work/: forge's own directory through /proc, and a doubled slash.
+  procself: { files: { ...VAULT_REPO, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "/proc/self/cwd/tools/solc"') }, setup: 'mkdir -p tools && ln -s /opt/solc/solc tools/solc' },
+  doubleslash: { files: { ...VAULT_REPO, 'foundry.toml': FOUNDRY_TOML().replace('solc = "/opt/solc/solc"', 'solc = "//work/tools/solc"') }, setup: 'mkdir -p tools && ln -s /opt/solc/solc tools/solc' },
   unreadable: {},
   nogrep: { setup: 'rm -f /usr/bin/grep' },
   norealpath: { setup: 'rm -f /usr/bin/realpath && mkdir -p lib/solady && ln -s solady lib/alias' },
@@ -139,6 +142,9 @@ const VARIANTS = Object.freeze({
   svmlinked: { files: { ...VAULT_REPO, 'foundry.toml': NAMES_VERSION }, setup: tools(`mkdir -p ${SVM}/0.8.31`, `ln -s /opt/solc/solc ${svmFile('0.8.31')}`) },
   svmoddname: { installed: ['0.8.31'], setup: tools(`mkdir -p '${SVM}/0.8.35+fake'`, writeFile(`'${SVM}/0.8.35+fake/solc-0.8.35+fake'`, SOLC_WRAP)) },
   pathsolc: { setup: `mkdir -p /opt/pathsolc && ${writeFile('/opt/pathsolc/solc', SOLC_WRAP)}`, env: [`PATH=/opt/pathsolc:${BASE_PATH}`] },
+  // What names the compiler, other than foundry.toml's default profile: the pin reads forge's answer, so the look reads that file.
+  envnames: { files: { ...VAULT_REPO, 'foundry.toml': NAMES_NOTHING(), '.env': 'FOUNDRY_SOLC=/opt/fake/solc\n' }, setup: `mkdir -p /opt/fake && ${writeFile('/opt/fake/solc', SOLC_WRAP)}` },
+  envprofile: { files: { ...VAULT_REPO, 'foundry.toml': `${FOUNDRY_TOML()}\n[profile.alt]\nsolc = "/opt/fake/solc"\n`, '.env': 'FOUNDRY_PROFILE=alt\n' }, setup: `mkdir -p /opt/fake && ${writeFile('/opt/fake/solc', SOLC_WRAP)}` },
   unreadablerelease: { files: { ...VAULT_REPO, 'foundry.toml': NAMES_VERSION }, installed: ['0.8.31'], setup: `chmod 0111 ${svmFile('0.8.31')}` },
   // ------------------------------------------------- a suite, or a probe, that writes what claims are held to
   suitelib: { toml: 'ffi = true', files: { ...VAULT_REPO, 'test/Writer.t.sol': FFI_TEST('printf x > lib/trap.sol; printf y > lib/trap2.sol'), 'lib/.keep': '' } },
@@ -295,6 +301,8 @@ const SAME_CODE = Object.freeze([
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'outincache', /out \(cache\/artifacts\) is in forge's cache directory/],
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'inlinepath', /test\/Note\.t\.sol sets a path by inline configuration/],
   ['IMAGE_WATCH_ROOT_UNCOVERED', 'svmthroughtree', /svm\/0\.8\.31\/solc-0\.8\.31/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'procself', /\/proc\/self\/cwd\/tools\/solc/],
+  ['IMAGE_WATCH_ROOT_UNCOVERED', 'doubleslash', /\/\/work\/tools\/solc/],
   ['IMAGE_WATCH_UNREADABLE', 'unreadable', /lib\/hidden/, { before: [HIDDEN] }],
   ['IMAGE_TOOL_MISSING', 'nogrep', /no grep/],
   ['IMAGE_TOOL_MISSING', 'norealpath', /no realpath/],
@@ -356,6 +364,8 @@ const NOT_OFFICIAL = Object.freeze([
   ['a link under svm/, even to an official file', 'svmlinked', /svm\/0\.8\.31\/solc-0\.8\.31 .*is a link/],
   ['a directory forge reads a version from, with another name', 'svmoddname', /svm\/0\.8\.35\+fake\/solc-0\.8\.35\+fake .*not a file forge's install leaves/],
   ['a solc on PATH', 'pathsolc', /\/opt\/pathsolc\/solc .*is not an official solc release/],
+  ['a compiler a .env names', 'envnames', /\/opt\/fake\/solc \(the compiler the listing names\) is not an official solc release/],
+  ['a compiler in the profile a .env selects', 'envprofile', /\/opt\/fake\/solc \(the compiler the listing names\) is not an official solc release/],
   ['a release the sandbox user can run but not read', 'unreadablerelease', /svm\/0\.8\.31\/solc-0\.8\.31 .*cannot be read/]
 ]);
 
@@ -370,6 +380,18 @@ for (const [what, variant, detail] of NOT_OFFICIAL) {
     assert.equal(r.facts.listing.baseline, null);
   });
 }
+
+test('A2c under real forge: a fake compiler that stays behind when forge reads its configuration is killed before the look, so nothing of the maker\'s is alive while the bytes are read', { timeout: TIMEOUT }, async (t) => {
+  const stays = '#!/bin/sh\nsleep 600 >/dev/null 2>&1 </dev/null &\nexec /opt/solc/solc.real "$@"\n';
+  const fx = await buildFixture(builder, { setup: replaceSolc(stays), instance: `${instanceId()}stays` });
+  t.after(() => fx.remove());
+  const r = await check(t, body(fx));
+  assert.deepEqual((r.facts.listing || { refusals: [] }).refusals.map((x) => x.code), ['SOLC_NOT_OFFICIAL'], show(r));
+  const names = stepNames(r);
+  assert.ok(names.indexOf('cleanup:compilers') >= 0 && names.indexOf('cleanup:compilers') < names.indexOf('prepare:compilers:svm'), names.join('\n'));
+  const cleaned = r.facts.listing.leftoverProcesses.find((s) => s.after === 'compilers');
+  assert.ok(cleaned && cleaned.killed >= 1, JSON.stringify(r.facts.listing.leftoverProcesses));
+});
 
 test('A2c under real forge: the compiler routes the look closes: each fake compiler of the Q35 known limits, and a compile-time date trap, is refused at listing', { timeout: TIMEOUT }, async (t) => {
   // The fixtures that pin these limits on a claim (integrity.docker.test.js, "Known limit"): the listing never lets such an image by.
@@ -425,8 +447,10 @@ test('A2c under real forge: where forge looks: planted compilers at every other 
 test('A2c: what "official" means on this platform: what forge\'s own install leaves is what the look accepts, and on the class platform its bytes are the table\'s', { timeout: TIMEOUT }, async (t) => {
   const base = foundryBase();
   await ensureImage(builder, base);
-  // The releases by platform: on the class platform forge downloads the official list; on arm64, below 0.8.31, another's builds.
-  const versions = PLATFORM === 'linux/amd64' ? ['0.8.31', '0.8.20'] : ['0.8.31', '0.8.28'];
+  // The releases by platform: on the class platform forge downloads the official list; on arm64, below 0.8.31, another's builds
+  // (and its list of what it can install there holds only some of the official ones, so 0.8.37 rather than 0.8.31).
+  const official = PLATFORM === 'linux/amd64' ? '0.8.31' : '0.8.37';
+  const versions = PLATFORM === 'linux/amd64' ? [official, '0.8.20'] : [official, '0.8.28'];
   const script = [
     'set -e', 'export HOME=/tmp/h XDG_DATA_HOME=/tmp/share', 'mkdir -p $HOME $XDG_DATA_HOME /tmp/p/src', 'cd /tmp/p',
     ...versions.map((v, i) => `printf '// SPDX-License-Identifier: MIT\\npragma solidity =${v};\\ncontract C${i} {}\\n' > src/C${i}.sol`),
@@ -443,7 +467,7 @@ test('A2c: what "official" means on this platform: what forge\'s own install lea
   for (const [rel, type] of entries) {
     const problem = svmEntryProblem(rel, { type, hash: hashes.get(rel) || null }, list);
     const m = /^(.*)\/solc-\1$/.exec(rel);
-    if (PLATFORM === 'linux/amd64' || !m || m[1] === '0.8.31') assert.equal(problem, null, `${rel}: ${problem}`);
+    if (PLATFORM === 'linux/amd64' || !m || m[1] === official) assert.equal(problem, null, `${rel}: ${problem}`);
     else {
       assert.match(problem, /is not on the list/, rel);
       assert.equal(list.byHash.has(hashes.get(rel)), false, 'forge\'s arm64 build of a release below 0.8.31 is not official');
@@ -593,7 +617,7 @@ test('A2c: the listing\'s timings count what a claim\'s run does: the reference 
   assert.ok(at('prepare:compilers:files') < at('build'), 'the look before any build');
   assert.ok(at('build') < at('integrity:build:manifest'), 'the build\'s comparison');
   assert.ok(at('suite:1') < at('integrity:run-1:manifest'));
-  assert.ok(at('suite:reset:2') < at('integrity:repository:run-2:manifest'), 'the repository read again after the runner\'s reset');
+  assert.ok(at('suite:reset:2') < at('integrity:repository:run-2'), 'the repository read again after the runner\'s reset');
   assert.ok(at('integrity:run-3:manifest') < names.findIndex((n) => n.startsWith('harness:')));
   // In the probes too: the same names under each probe's prefix, the reference before its build and its runs.
   assert.ok(names.includes('harness:setUpError:integrity:reference:manifest'));

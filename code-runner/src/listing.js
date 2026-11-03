@@ -11,14 +11,23 @@
  *   image     the env image's unpacked size, from the runner's daemon
  *   prepare   the claim pipeline's own prepare (claim.js): the processes
  *             recorded and the forced checkout of the listed commit; then
- *             the work tree's free space and its tracked files
- *   build     the declared build command, once, at the listed commit
- *             (forge found in the sandbox first; every command is parsed
- *             by src/commands.js and run as forge's argv, as a claim runs it)
+ *             the work tree's free space and its tracked files; then a
+ *             claim's integrity reference (node A2c): an image a claim would
+ *             refuse is refused here with the same code, as the same 400
+ *   compilers the look at any solc in the image (owner Q35 condition 2,
+ *             integrity.officialCompilers): anything that is not an official
+ *             release is SOLC_NOT_OFFICIAL, before any build. Listing only: a
+ *             claim never reads the list (solcReleases.js)
+ *   build     the declared build command, once, at the listed commit (every
+ *             command is parsed by src/commands.js and run as forge's argv,
+ *             the reference's forge with its pin, as a claim runs it), then
+ *             the same comparison as a claim's
  *   suite     the declared test command three times, with the runner's
  *             reporter flags (--junit, the fixed --fuzz-seed) and no
  *             network; the tracked files reset to the listed commit before
- *             runs 2 and 3. Every test the JUnit names, with its result on
+ *             runs 2 and 3; after each run a claim's post-run checksums, and a
+ *             run that changed a watched set is IMAGE_WATCH_CHANGED_BY_SUITE,
+ *             the paths named. Every test the JUnit names, with its result on
  *             each run, is baseline.json (common's rule: passed all three
  *             runs = stable, anything else unstable)
  *   limits    defaults of 3x the measured times plus the repeat-schedule
@@ -27,11 +36,14 @@
  *   harness   the harness proof: trivial tests under paths.tests, each run
  *             as a claim is, in a fresh sandbox of its own (the forced
  *             checkout, then applies, testPathsOnly, the protected reset,
- *             the commit) and through testFiles under the default limits by
- *             the claim pipeline's own reproduces gate. The trivially failing test must fail as an assertion on
- *             all three runs; a trivially broken one (a compile error, a
- *             failing setUp) must be an error. Otherwise the listing cannot
- *             host claims (§10.1 depends on the distinction)
+ *             the commit, the reference) and through testFiles and testIds
+ *             under the default limits by the claim pipeline's own reproduces
+ *             gate, each run followed by the same snapshot. The trivially
+ *             failing test must fail as an assertion on all three runs; a
+ *             trivially broken one (a compile error, a failing setUp) must be
+ *             an error. Otherwise the listing cannot host claims (§10.1 depends
+ *             on the distinction). A probe's run that changed a watched set is
+ *             HARNESS_INTEGRITY_FAILED, the paths named
  *
  * The check runs no claim. Its request has no patch, no baseline and no
  * claim fields (they are refused as unknown); the only patches it applies
@@ -41,8 +53,10 @@
  * pack, so nothing in it can be taken for a claim's result.
  *
  * Time. Measured wall-clock times, in ms: P (prepare, free space, tracked
- * files), B (the build and its cleanup), T (the longest suite run, with its
- * reset and cleanup). The defaults are
+ * files, the reference), B (the build, its cleanup and its comparison), T (the
+ * longest suite run, with its reset, its cleanup and its snapshot), so the
+ * defaults count what a claim's run does. The look is not in them: a claim
+ * does not run it. The defaults are
  *
  *   buildSeconds = ceil(3 B)
  *   testSeconds  = ceil(3 T)
@@ -60,6 +74,8 @@ const { Prefix } = require('./capture');
 const { runText, isUnreachableText } = require('./docker');
 const { git } = require('./git');
 const forge = require('./forge');
+const integrity = require('./integrity');
+const { officialList, SOURCE: SOLC_SOURCE } = require('./solcReleases');
 const { claimSession, checkForgeSpec, FREE_SPACE_SCRIPT, FREE_SPACE_MARGIN_BYTES, RUNS: CLAIM_RUNS } = require('./claim');
 const { commandIssues } = require('./commands');
 
@@ -98,6 +114,8 @@ const MAX_LISTED = 20;
 
 const OWN_TIMEOUT = /^the step reached its wall-clock limit/;
 const SAFE_PATH = /^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/;
+/** The checks that compare a snapshot with the reference: the ones a probe's own run can trip however its test ends. */
+const CHECKSUM_CHECKS = Object.freeze(['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged']);
 const PROBE_STEM = 'VerdiktaHarness';
 /** forge's default `test` directory (foundry.toml `test = "test"`). */
 const FORGE_TEST_DIR = 'test';
@@ -467,6 +485,19 @@ async function imageUnpackedBytes(docker, image, { timeoutMs = IMAGE_SIZE_TIMEOU
 
 // -------------------------------------------------------------------- steps
 
+/**
+ * What a suite run changed, from the reference's record: the failures in their words, every path it names.
+ * @param {{protected:string[], framework:string[], dependencies:string[]}} failures - Watch.failures
+ * @param {{protected:string[], framework:string[], dependencies:string[]}} changed - Watch.changedFacts()
+ * @returns {{detail:string, paths:string[]}|null}
+ */
+function watchedChanges(failures, changed) {
+  const all = [...failures.protected, ...failures.dependencies, ...failures.framework];
+  if (all.length === 0) return null;
+  const details = [...new Set(all)];
+  return { detail: listed(details), paths: [...new Set([...changed.protected, ...changed.dependencies, ...changed.framework])].sort() };
+}
+
 /** A step that ran into its own wall-clock limit (not the run's, not the deadline's). */
 function ownTimeout(err, isStep) {
   return err instanceof Abstain && err.cause === ABSTAIN.STEP_TIMEOUT && OWN_TIMEOUT.test(err.detail || '') && isStep(err.step || '');
@@ -516,17 +547,22 @@ function scoped(ctx, prefix = null, { stopAt = null } = {}) {
  * @param {object} limits - validateListingRequest().limits
  * @param {object} o
  * @param {Function} o.imageSize - async () => unpacked bytes (imageUnpackedBytes on the runner's docker)
+ * @param {string} o.platform - the runner's platform, whose official solc releases the look reads
+ * @param {object} [o.solcList] - another list than the runner's (solcReleases.makeList; tests only)
  * @param {object} [o.caps] - the class caps the defaults must fit (the class's hard limits)
  * @returns {Function[]}
  */
-function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } = {}) {
+function listingSteps(request, limits, { imageSize, platform, solcList = null, caps = CLASS_HARD_LIMITS } = {}) {
   if (typeof imageSize !== 'function') throw new TypeError('listingSteps needs imageSize');
+  if (typeof platform !== 'string') throw new TypeError('listingSteps needs the runner\'s platform');
+  const official = solcList || officialList(platform);
   const spec = request.spec;
   const out = {
     status: null,
     refusals: [],
     warnings: [],
     image: { ref: request.image, unpackedBytes: null },
+    compilers: null,
     checkout: null,
     timings: null,
     baseline: null,
@@ -535,9 +571,9 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     harness: null,
     leftoverProcesses: []
   };
-  const state = { stop: false, base: null, tracked: null, scope: null, prepareMs: 0, buildMs: 0, testMs: [], defaults: null, sandbox: null, suiteFiles: [] };
-  const refuse = (code, detail) => {
-    out.refusals.push({ code, detail });
+  const state = { stop: false, first: null, base: null, tracked: null, scope: null, prepareMs: 0, buildMs: 0, testMs: [], defaults: null, sandbox: null, suiteFiles: [] };
+  const refuse = (code, detail, extra = {}) => {
+    out.refusals.push({ code, detail, ...extra });
     state.stop = true;
   };
   const warn = (code, detail) => out.warnings.push({ code, detail });
@@ -562,6 +598,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     state.scope = scoped(ctx);
     const s0 = claimSession(stub, limits);
     await s0.prepare(state.scope.ctx);
+    state.first = s0;
     state.base = s0.state;
     out.checkout = state.scope.facts.checkout || null;
     if (out.checkout && out.checkout.corrected > 0) {
@@ -594,7 +631,6 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     const files = parseLsTreeZ(list.bytes());
     if (!files) throw runnerError('prepare:files', 'the listed commit\'s files could not be read');
     state.tracked = files;
-    state.prepareMs = Date.now() - t0;
 
     const scope = spec.stake && spec.stake.scope;
     if (scope && Array.isArray(scope.include)) {
@@ -607,8 +643,29 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
         return;
       }
     }
+
+    // A claim's reference, before any maker command: what it refuses is refused here with the same code. A claim's is
+    // taken with its patch in place, so this one keeps room under the caps for what a patch can add.
+    await s0.watch(state.scope.ctx, { reserve: integrity.LISTING_RESERVE });
+    state.prepareMs = Date.now() - t0;
     if (minimumRunSeconds(state.prepareMs) > caps.runSeconds) {
       refuse('LISTING_TOO_HEAVY', `preparing the sandbox took ${seconds(state.prepareMs)} s; ${MARGIN}x that alone is above the class's ${caps.runSeconds} s run`);
+    }
+  }
+
+  /**
+   * The look at any solc in the image, before the build can run one. forge has already started a configured compiler to
+   * read its configuration, so whatever that left running is killed first: nothing of the maker's is alive while the bytes
+   * are read and their hashes reported, as nothing of a claim's is at a snapshot.
+   */
+  async function compilers() {
+    await state.first.cleanup(state.scope.ctx, 'compilers');
+    out.leftoverProcesses = leftovers(state.scope.facts);
+    const look = await integrity.officialCompilers(state.scope.ctx, { pin: state.base.solcPin, pathDirs: state.base.watch.ref.pathDirs, list: official });
+    out.compilers = { platform: official.platform, listAsOf: official.asOf, newest: official.newest, checked: look.checked };
+    if (look.problems.length) {
+      refuse('SOLC_NOT_OFFICIAL', `the env image holds a solc that is not an official release for ${official.platform}: ${listed(look.problems)}. `
+        + `The runner's list comes from ${SOLC_SOURCE} (as of ${official.asOf}, newest ${official.newest}); a release newer than that waits for the runner's list`);
     }
   }
 
@@ -628,8 +685,6 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
       return;
     }
     state.buildMs = Date.now() - t0;
-    // The forge the build found is the suite's too (the same sandbox).
-    state.base = { ...state.base, tool: s1.state.tool };
     out.leftoverProcesses = leftovers(state.scope.facts);
     const gate = state.scope.gates.build;
     if (!gate || gate.status !== 'pass') {
@@ -647,7 +702,10 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     const runs = [];
     for (let k = 1; k <= RUNS; k += 1) {
       const t0 = Date.now();
-      if (k > 1) await resetToListed(state.scope.ctx, `suite:reset:${k}`);
+      if (k > 1) {
+        await resetToListed(state.scope.ctx, `suite:reset:${k}`);
+        await state.base.watch.afterReset(state.scope.ctx, `run ${k}`);
+      }
       let run;
       try {
         run = await s2.pocRun(state.scope.ctx, k, 'test', {}, { step: `suite:${k}` });
@@ -657,6 +715,12 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
         return;
       }
       state.testMs.push(Date.now() - t0);
+      // As a claim's run would be held: what this run changed is named, and nothing later could be taken for a clean result.
+      const changed = watchedChanges(state.base.watch.failures, state.base.watch.changedFacts());
+      if (changed) {
+        refuse('IMAGE_WATCH_CHANGED_BY_SUITE', `the suite changed what the runner holds claims to, before any claim: ${changed.detail}`, { paths: changed.paths });
+        return;
+      }
       if (!run.suites) {
         refuse('SUITE_JUNIT_UNREADABLE', `the test command gave no readable JUnit on run ${k} (exit ${run.exitCode}): ${run.reason}`);
         return;
@@ -738,8 +802,8 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     const scope = scoped(await freshSandbox(ctx), prefix, { stopAt });
     const session = claimSession({ spec, pocPatch: probePatch(path, probe.lines), baseline: out.baseline }, probeLimits);
     const steps = probe.build
-      ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'build', 'reproduces']
-      : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'reproduces'];
+      ? ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'watch', 'build', 'reproduces']
+      : ['prepare', 'applies', 'testPathsOnly', 'resetAndCommit', 'watch', 'reproduces'];
     let timedOut = null;
     for (const name of steps) {
       if (session.state.done || scope.overBudget) break;
@@ -770,6 +834,13 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     if (r.timedOut) return { ...base, verdict: 'too_slow', detail: r.timedOut };
     for (const g of ['applies', 'testPathsOnly']) {
       if (r.gates[g] && r.gates[g].status === 'fail') return { ...base, verdict: 'rejected', detail: `${g}: ${r.gates[g].detail}` };
+    }
+    // Whatever the probe's test did: a claim that ran this way would fail these checks.
+    const recorded = r.facts.integrity && r.facts.integrity.poc;
+    const tripped = recorded ? recorded.failures.filter((f) => CHECKSUM_CHECKS.includes(f.check)) : [];
+    if (tripped.length) {
+      const c = recorded.changed;
+      return { ...base, verdict: 'integrity', detail: tripped.map((f) => `${f.check} (${f.detail})`).join('; '), paths: [...new Set([...c.protected, ...c.framework, ...c.dependencies])].sort() };
     }
     if (r.gates.build && r.gates.build.status === 'fail') return { ...base, verdict: 'not_run', detail: r.gates.build.detail };
     const rep = r.gates.reproduces;
@@ -809,6 +880,10 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
       return true;
     };
     const rejected = (j) => {
+      if (j.verdict === 'integrity') {
+        refuse('HARNESS_INTEGRITY_FAILED', `a trivial test at ${path} changed what the runner holds claims to, so a claim run the same way would fail its integrity checks: ${j.detail}`, { paths: j.paths });
+        return true;
+      }
       if (j.verdict !== 'rejected') return false;
       refuse('HARNESS_PROBE_REJECTED', `the claim gates refused a test file at ${path}: ${j.detail}`);
       return true;
@@ -856,7 +931,7 @@ function listingSteps(request, limits, { imageSize, caps = CLASS_HARD_LIMITS } =
     ctx.fact('listing', out);
   }
 
-  const guarded = [image, prepare, build, suite, harness].map((step) => {
+  const guarded = [image, prepare, compilers, build, suite, harness].map((step) => {
     const wrapped = async (ctx) => { if (!state.stop) await step(ctx); };
     Object.defineProperty(wrapped, 'name', { value: step.name });
     return wrapped;

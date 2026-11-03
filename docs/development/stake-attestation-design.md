@@ -532,7 +532,11 @@ claim:
 - **A listing check.** Steps 2–3 of the build above: the code builds, the suite
   runs and is stable, the scope and test paths exist, the harness reports
   assertion failures distinctly. Without this, hunters' proofs could not be
-  executed later.
+  executed later. It takes the same integrity reference as a claim and holds its
+  suite and harness probes to the same post-run checksums (§9.5), so an image a
+  claim would refuse is refused here with the same code, and a maker can't list a
+  stake no claim can settle. It also refuses any `solc` in the image that isn't an
+  official release (§9.5).
 - **A cheap first pass for bugs.** Semgrep with Verdikta's pinned rules and a
   secret scan over the in-scope paths, then one inexpensive agent pass: a single
   model from the `code-standard` pool reads the in-scope source with the scope
@@ -1014,20 +1018,36 @@ leaves the choice to the sources' pragmas among the installed releases. forge's 
 beats its configuration files, so what a patch or a fix does to them no longer picks a
 compiler. This holds only with the refusals above: forge still runs whatever an installed
 release's path leads to, and a pragma can pick any installed release. It says nothing about
-the installed bytes, which are the maker's, so the fake-`solc` limit below stays. A listing
+the installed bytes, which are the maker's; the listing check reads those, below. A listing
 that names an external compiler adapter is refused, since that is a compiler the pin does
 not name, and the runner keeps that list empty in forge's environment.
 
+**The listing refuses any `solc` that isn't an official release (owner Q35 condition 2).**
+Right after the reference and before any build, the listing check hashes everything under
+`svm/`, the file the pin names outside the work tree (owner Q37 condition 2: an official one
+stays pinned) and a `solc` in each `PATH` directory. Official means exactly: the SHA-256 that
+`binaries.soliditylang.org/<platform>/list.json` gives the build it names under `releases`, on
+the class platform `linux/amd64` (`linux/arm64` is a development setting, on that site's own
+list). The hashes are a table in the runner's repository, kept current by a script and a weekly
+check; a release newer than the table is refused until the table has it. A claim never reads the
+table, so arbiters on different runner versions can't split on a new release. That nothing else
+runs as solc rests on forge's lookup at the pinned version, which the runner can't watch: a test
+plants a compiler at each other place and shows it never runs. This covers `solc` only. A `vyper`
+has no official list to read against, and repository code a proof calls through ffi isn't a
+compiler; both stay in the limits below.
+
 **Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
-before mainnet. The code-runner README's route table has every route the review raised.
+before mainnet. The code-runner README's route table has every route the review raised. On an
+image from the attested builder, a `solc` that isn't an official release no longer reaches a claim:
+that is what node A2c changed here, and only as far as its tests show. No other program is covered.
 
 | Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
 |---|---|---|---|
-| A program in the image (as `solc`, say) or repository code that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | A2c: the proof's runs get the checksums, which catches one that fires on every run but not one that spares the proof's tests; it also looks at refusing any `solc` that isn't an official release |
-| A fake `solc` that exits with an error on a test it hasn't seen | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed; A2c's look at refusing any `solc` that isn't an official release |
+| A program in the image other than `solc` (`vyper`, on a `.vy` file), or repository code, that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | The listing's suite and probes get the checksums, which catches one that fires on what they run but not one that spares them |
+| A fake `vyper` that exits with an error on a test it hasn't seen, with a `.vy` file in the tree | The `build` gate, or `reproduces` on its own if it waits for the compile `forge test` always does. Both stay INVALID | Bond to the maker, prepay spent, and the maker keeps the stake | `check` shows it first, unless it is date-keyed. The listing doesn't read `vyper`: there's no official list to read it against |
 | A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
-| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: a refusal of unofficial `solc` doesn't cover it. A hunter can read the code it calls |
-| A trap keyed on the date | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | A2c's look at unofficial `solc` covers compiler traps; repository code stays |
+| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: the official-release refusal doesn't cover it, and nothing at listing runs code only a proof would call. A hunter can read the code it calls |
+| A trap keyed on the date, in repository code or `vyper` | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | In `solc` it is refused at listing, whatever the date, because the bytes aren't official. Repository code and `vyper` stay |
 
 ### 9.6 What we borrow from verdikta-agents
 

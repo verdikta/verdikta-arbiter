@@ -545,15 +545,13 @@ function claimSteps(request, limits) {
 /**
  * The claim pipeline's steps as functions of a context, over one state
  * (claimSteps runs them in order). The listing check (listing.js) runs the
- * same functions on its harness probes: `adopt` takes the processes and the
- * forced checkout of a session that already prepared this sandbox, so a
- * probe is applied, gated, built and run exactly as a claim's PoC is. A
- * session that never ran `watch` (a probe) gets every integrity check but
- * the post-run checksums; it finds forge itself (integrity.discoverForge)
- * before the first forge it runs, and runs that forge the same way.
+ * same functions, on its suite and on its harness probes (node A2c): `adopt`
+ * takes the processes, the forced checkout and the integrity reference of a
+ * session that already prepared this sandbox, so every forge at listing is
+ * the reference's, with its pin, and a run is compared with it as a claim's is.
  * @param {object} request - spec, pocPatch, baseline (as checkClaim accepts them), fixPatch and finding for a claim
  * @param {object} limits - the effective limits
- * @param {{adopt?: {keep:string[], prepared:string, solcPin:string, tool?:object}}} [o]
+ * @param {{adopt?: {keep:string[], leftovers:object[], prepared:string, solcPin:string, watch:object}}} [o]
  */
 function claimSession(request, limits, { adopt = null } = {}) {
   const spec = request.spec;
@@ -564,29 +562,24 @@ function claimSession(request, limits, { adopt = null } = {}) {
   // The state is the sandbox's box too (kit: the processes kept, the leftovers killed).
   const state = {
     done: false, halted: false, keep: [], leftovers: [], touched: null, added: null, addedIds: null, prepared: null, pocCommit: null, watch: null,
-    tool: null, solcPin: null, fix: null, integrity: { tier: 'A', poc: null, fix: null }
+    solcPin: null, fix: null, integrity: { tier: 'A', poc: null, fix: null }
   };
   if (adopt) {
     state.keep = [...adopt.keep];
+    state.leftovers = adopt.leftovers;
     state.prepared = adopt.prepared;
     state.solcPin = adopt.solcPin;
-    if (adopt.tool) state.tool = adopt.tool;
+    state.watch = adopt.watch;
   }
   const box = state;
 
   /** A command of the spec, parsed (checkClaim and the listing check refused any other form before this). */
   const command = (key) => commands.parsedCommand(spec.commands, key, RequesterError);
 
-  /**
-   * The forge every maker command runs: the integrity reference's (its
-   * configuration is what the checks watch), or, in a session without one
-   * (the listing check's), the one found in this sandbox before the first
-   * forge runs.
-   */
-  async function tool(ctx) {
-    if (state.watch) return state.watch.tool();
-    if (!state.tool) state.tool = { ...await integrity.discoverForge(ctx, 'forge:find'), solc: state.solcPin };
-    return state.tool;
+  /** The forge every maker command runs: the integrity reference's (its configuration is what the checks watch). */
+  function tool() {
+    if (!state.watch) throw new TypeError('no maker command runs without the integrity reference');
+    return state.watch.tool();
   }
 
   /** The fix check (§9.2 step 8), started before the PoC's own steps and run beside them. */
@@ -670,17 +663,20 @@ function claimSession(request, limits, { adopt = null } = {}) {
     ctx.fact('commit', { tier: 'A', base, poc: state.pocCommit });
   }
 
-  /** The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command. */
-  async function watch(ctx) {
-    const patchPaths = state.touched.filter((t) => t.status !== 'D').map((t) => t.path);
-    state.watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths, solc: state.solcPin });
+  /**
+   * The reference the post-run checksums compare with: the image plus the accepted patch, before any maker command. The
+   * listing check takes it with no patch at all, keeping room under the caps for one (`reserve`).
+   */
+  async function watch(ctx, { reserve = null } = {}) {
+    const patchPaths = (state.touched || []).filter((t) => t.status !== 'D').map((t) => t.path);
+    state.watch = new integrity.Watch({ protectedGlobs, testGlobs, patchPaths, solc: state.solcPin, reserve });
     await state.watch.reference(ctx);
   }
 
   async function build(ctx) {
-    const exitCode = await runBuild(ctx, box, await tool(ctx), command('build'), limits);
+    const exitCode = await runBuild(ctx, box, tool(), command('build'), limits);
     // Nothing of the claim has run yet: what changed here is the image's doing, not the claim's (Q32).
-    if (state.watch) await state.watch.afterBuild(ctx);
+    await state.watch.afterBuild(ctx);
     const ok = exitCode === 0;
     ctx.gate('build', ok ? 'pass' : 'fail', 'exit_code', `the build command exited ${exitCode}`);
     if (!ok) state.done = true;
@@ -693,8 +689,8 @@ function claimSession(request, limits, { adopt = null } = {}) {
    * `step` names it; the listing check's suite runs pass their own.
    */
   async function pocRun(ctx, index, key, values, { step = `poc:${index}` } = {}) {
-    const run = await forgeRun(ctx, box, { name: step, tool: await tool(ctx), command: command(key), values, timeoutMs: limits.testSeconds * 1000 });
-    if (state.watch) await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
+    const run = await forgeRun(ctx, box, { name: step, tool: tool(), command: command(key), values, timeoutMs: limits.testSeconds * 1000 });
+    await state.watch.afterRun(ctx, `run ${index}`, { first: index === 1 });
     return run;
   }
 
@@ -729,7 +725,7 @@ function claimSession(request, limits, { adopt = null } = {}) {
       const TEST_IDS = forge.testIdsRegex([...signatures.values()]);
       for (let k = 2; k <= RUNS; k += 1) {
         await resetHard(ctx, state.pocCommit, `poc:reset:${k}`);
-        if (state.watch) await state.watch.afterReset(ctx, `run ${k}`);
+        await state.watch.afterReset(ctx, `run ${k}`);
         runs.push({ command: 'testIds', ...(await pocRun(ctx, k, 'testIds', { FILES, TEST_IDS })) });
       }
     }
@@ -773,11 +769,9 @@ function claimSession(request, limits, { adopt = null } = {}) {
     for (let r = runs.length; r < RUNS; r += 1) for (const id of ids) results.get(id).push({ result: 'not-run', kind: null, message: null });
 
     const flags = integrity.tamperFlags({ added: state.added });
-    const checks = integrity.integrityOf({
-      identity, summary, exit, ...(state.watch ? state.watch.failures : {}), tamperFlags: flags
-    });
+    const checks = integrity.integrityOf({ identity, summary, exit, ...state.watch.failures, tamperFlags: flags });
     ctx.fact('poc', { ...pocFacts(ids.map((id) => [id, results.get(id)]), runs), integrity: checks.integrity });
-    state.integrity.poc = { failures: checks.failures, changed: state.watch ? state.watch.changedFacts() : null };
+    state.integrity.poc = { failures: checks.failures, changed: state.watch.changedFacts() };
     ctx.fact('integrity', { ...state.integrity });
 
     let verdict;

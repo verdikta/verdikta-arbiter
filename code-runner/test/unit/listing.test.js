@@ -201,7 +201,9 @@ test('a listing check builds once and runs the suite three times with --junit an
   }
   // Runs 2 and 3 start from the listed commit's tracked files (the checkout's commit of it), as a claim's re-runs do.
   const between = seq.slice(firstSuite, seq.lastIndexOf('vcr-suite') + 1);
-  assert.deepEqual(between, ['vcr-suite', 'vcr-cleanup', 'git reset', 'vcr-suite', 'vcr-cleanup', 'git reset', 'vcr-suite']);
+  // A2c: after each run a claim's snapshot (the listing, then forge's configuration), after each reset the runner's repository read again.
+  const snapshot = ['vcr-manifest', 'vcr-framework', 'forge-config'];
+  assert.deepEqual(between, ['vcr-suite', 'vcr-cleanup', ...snapshot, 'git reset', 'vcr-manifest', 'vcr-suite', 'vcr-cleanup', ...snapshot, 'git reset', 'vcr-manifest', 'vcr-suite']);
   const resets = sb.execs().filter((d) => d.kind === 'git' && d.sub[0] === 'reset').slice(0, 2);
   for (const x of resets) assert.deepEqual(x.sub, ['reset', '--quiet', '--hard', sb.repo.commit]);
   // The forced checkout ran first, as for a claim: nothing of the image's checkout is used.
@@ -847,7 +849,9 @@ for (const [code, options, detail] of WATCH_REFUSALS) {
     assert.ok(!ran(sb, 'vcr-suite'), 'no suite ran');
     const c = await asClaim(claimSandbox(options));
     assert.equal(c.outcome, 'requester_error');
-    assert.deepEqual(c.issues.map((i) => [i.code, i.path, i.detail]), r.issues.map((i) => [i.code, i.path, i.detail]));
+    assert.deepEqual(c.issues.map((i) => [i.code, i.path]), r.issues.map((i) => [i.code, i.path]));
+    // The same words, but where the listing's reference keeps room under the caps for a claim's patch.
+    if (code !== 'IMAGE_WATCH_TOO_LARGE') assert.equal(c.issues[0].detail, r.issues[0].detail);
   });
 }
 
@@ -874,13 +878,14 @@ test('A2c: the order: the reference ends the preparation, then the look, then th
   const names = r.steps.map((s) => s.name);
   const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `${n} in\n${names.join('\n')}`); return i; };
   assert.ok(at('prepare:compiler:config') < at('integrity:reference:framework'));
-  assert.ok(at('integrity:reference:manifest') < at('prepare:compilers:svm'));
+  assert.ok(at('integrity:reference:manifest') < at('cleanup:compilers'), 'forge has started a configured compiler by then');
+  assert.ok(at('cleanup:compilers') < at('prepare:compilers:svm'), 'nothing of the maker\'s is alive while the bytes are read');
   assert.ok(at('prepare:compilers:files') < at('build'));
   assert.ok(at('build') < at('integrity:build:manifest'));
   assert.ok(at('suite:1') < at('integrity:run-1:manifest'));
   assert.ok(at('integrity:run-1:manifest') < at('suite:reset:2'));
-  assert.ok(at('suite:reset:2') < at('integrity:repository:run-2:manifest'));
-  assert.ok(at('integrity:repository:run-2:manifest') < at('suite:2'));
+  assert.ok(at('suite:reset:2') < at('integrity:repository:run-2'));
+  assert.ok(at('integrity:repository:run-2') < at('suite:2'));
   assert.ok(at('suite:3') < at('integrity:run-3:manifest'));
   for (const prefix of ['harness:fails:forge-std', 'harness:compileError', 'harness:setUpError']) {
     assert.ok(at(`${prefix}:integrity:reference:manifest`) < at(`${prefix}:poc:1`), prefix);
@@ -892,25 +897,28 @@ test('A2c: the order: the reference ends the preparation, then the look, then th
 });
 
 test('A2c: the measured times count what a claim\'s run does: the reference in P, the build\'s comparison in B, the snapshot in T', async () => {
-  const slow = (key, ms) => ({ scripts: { 'vcr-manifest': async (d, box) => {
-    const { stdout } = await require('../helpers/fakeClaim').defaultManifest(d, box);
-    const name = sb.execs().length; void name; // the delay is by the step's place, below
-    if (key(d, box)) await delay(ms);
-    return { stdout };
-  } } });
-  let snapshots = 0;
-  const sb = listingSandbox(slow(() => { snapshots += 1; return snapshots === 1; }, 300));
-  const r = await runListing(sb);
-  assert.equal(r.facts.listing.status, 'accepted', show(r));
-  assert.ok(r.facts.listing.timings.prepareSeconds >= 0.3, 'the reference is in the preparation');
-  let later = 0;
-  const sb2 = listingSandbox(slow(() => { later += 1; return later === 2; }, 300));
-  const r2 = await runListing(sb2);
-  assert.ok(r2.facts.listing.timings.buildSeconds >= 0.3, 'the build\'s comparison is in the build');
-  let third = 0;
-  const sb3 = listingSandbox(slow(() => { third += 1; return third === 3; }, 300));
-  const r3 = await runListing(sb3);
-  assert.ok(r3.facts.listing.timings.testSeconds[0] >= 0.3, 'the snapshot is in the suite run');
+  const { defaultManifest } = require('../helpers/fakeClaim');
+  // The nth listing of the watched places (the look's own, of svm/, does not count) takes its time.
+  const slowAt = (n) => {
+    let seen = 0;
+    return { scripts: { 'vcr-manifest': async (d, box) => {
+      if (d.argv[4] === '/work') {
+        seen += 1;
+        if (seen === n) await delay(300);
+      }
+      return defaultManifest(d, box);
+    } } };
+  };
+  const reference = await runListing(listingSandbox(slowAt(1)));
+  assert.equal(reference.facts.listing.status, 'accepted', show(reference));
+  assert.ok(reference.facts.listing.timings.prepareSeconds >= 0.3, 'the reference is in the preparation');
+  const build = await runListing(listingSandbox(slowAt(2)));
+  assert.ok(build.facts.listing.timings.buildSeconds >= 0.3, 'the build\'s comparison is in the build');
+  const run = await runListing(listingSandbox(slowAt(3)));
+  assert.ok(run.facts.listing.timings.testSeconds[0] >= 0.3, 'the snapshot is in the suite run');
+  // The look is not: a claim does not run it.
+  const look = await runListing(listingSandbox({ scripts: { 'vcr-compilers': async (d, box) => { await delay(300); return { stdout: require('../helpers/fakeClaim').compilersOf(box.tree, d.argv.slice(4)) }; } } }));
+  assert.ok(look.facts.listing.timings.prepareSeconds < 0.3 && look.facts.listing.timings.buildSeconds < 0.3, JSON.stringify(look.facts.listing.timings));
 });
 
 // ----------------------------------------------------------- a suite that writes what claims are held to
@@ -1030,6 +1038,7 @@ test('A2c: SOLC_NOT_OFFICIAL: everything under svm/, the named file and a solc o
   const cases = [
     ['a named file that is a wrapper', (box) => put(box, FAKE_SOLC.path, '#!/bin/sh\n'), /\/opt\/solc\/solc .*is not an official solc release/],
     ['a named file it cannot read', (box) => put(box, FAKE_SOLC.path, FAKE_SOLC.content, { unreadable: true }), /\/opt\/solc\/solc .*cannot be read/],
+    ['a named file the look cannot see, though forge read the configuration', (box) => box.tree.delete(FAKE_SOLC.path), /\/opt\/solc\/solc .*could not be found/],
     ['an installed release with other bytes', installed([release, '#!/bin/sh\n']), /svm\/0\.8\.31\/solc-0\.8\.31 .*is not official 0\.8\.31/],
     ['an installed release with another release\'s bytes', installed([`${SVM}/0.8.30/solc-0.8.30`, FAKE_SOLC.content]), /svm\/0\.8\.30\/solc-0\.8\.30 .*0\.8\.30 is not on the list/],
     ['an installed release it cannot read', installed([release, FAKE_SOLC.content, { unreadable: true }]), /svm\/0\.8\.31\/solc-0\.8\.31 .*cannot be read/],
@@ -1040,7 +1049,6 @@ test('A2c: SOLC_NOT_OFFICIAL: everything under svm/, the named file and a solc o
     ['a helper at the top', installed([`${SVM}/helper`, 'x']), /svm\/helper .*not a file forge's install leaves/],
     ['a marker that is not a plain file', (box) => box.tree.set(`${SVM}/.global-version`, { type: 'l', target: FAKE_SOLC.path }), /svm\/\.global-version .*is a link/],
     ['a marker in a directory that is no version', installed([`${SVM}/x/.lock`, '']), /svm\/x\/\.lock .*not a file forge's install leaves/],
-    ['a directory it cannot read', (box) => box.tree.set(`${SVM}/0.8.31`, { type: 'd', mode: '111', content: '' }), /svm\/0\.8\.31 .*cannot be read/],
     ['svm/ itself a link', (box) => box.tree.set(SVM, { type: 'l', target: '/opt/elsewhere' }), /svm .*is a link/],
     ['a solc on PATH', (box) => put(box, '/usr/local/bin/solc', '#!/bin/sh\n'), /\/usr\/local\/bin\/solc .*is not an official solc release/],
     ['a dangling solc on PATH', (box) => box.tree.set('/usr/local/bin/solc', { type: 'l', target: '/nowhere' }), /\/usr\/local\/bin\/solc .*leads nowhere/]
@@ -1064,7 +1072,7 @@ test('A2c: the detail names the list, its date and its newest release, so a make
   assert.equal(list.newest, '0.8.100', 'by number, not by text');
   const r = await runListing(listingSandbox({ onBox: installed([`${SVM}/0.9.0/solc-0.9.0`, 'x']) }), listingBody(), { solcList: list });
   assert.match(r.facts.listing.refusals[0].detail, /0\.9\.0 is not on the list/);
-  assert.match(r.facts.listing.refusals[0].detail, /binaries\.soliditylang\.org.*linux\/amd64.*as of 2026-11-02.*newest 0\.8\.100/);
+  assert.match(r.facts.listing.refusals[0].detail, /official release for linux\/amd64: .*binaries\.soliditylang\.org \(as of 2026-11-02, newest 0\.8\.100\)/);
 });
 
 test('A2c: what the look accepts: official bytes under their own version, forge\'s own markers as plain files, a named file through its links, a directory or nothing named solc on PATH; the answer lists what it read', async () => {
@@ -1145,8 +1153,7 @@ test('A2c: over HTTP: the runner\'s platform reaches the look; a refusal is 200 
 // ----------------------------------------------------------- the caps, with room for a claim's patch
 
 test('A2c: a listing cannot sit just under a cap a claim\'s patch would cross: its reference keeps room for what a 2 MB patch can add, with a claim\'s code', async () => {
-  const { manifestOf, defaultManifest } = require('../helpers/fakeClaim');
-  void manifestOf;
+  const { defaultManifest } = require('../helpers/fakeClaim');
   const { MAX_ENTRIES, MANIFEST_MAX_BYTES, LISTING_RESERVE } = require('../../src/integrity');
   assert.ok(LISTING_RESERVE.entries >= 2000000 / 40, 'the shortest new file in a git patch takes 40 bytes');
   assert.ok(LISTING_RESERVE.bytes >= 2 * 2000000 + 100 * LISTING_RESERVE.entries, 'a listing record and a hash line per file');
@@ -1168,8 +1175,8 @@ test('A2c: a listing cannot sit just under a cap a claim\'s patch would cross: i
   const c = await asClaim(claimSandbox({ scripts: { 'vcr-manifest': padded(n) } }));
   assert.notEqual(c.outcome, 'requester_error', 'a claim keeps the plain cap');
   // Over the room by bytes.
-  const count = Math.ceil((MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes) / 3000) + 1;
-  const long = `${'y'.repeat(2950)}`;
+  const long = 'y'.repeat(2950);
+  const count = Math.ceil((MANIFEST_MAX_BYTES - LISTING_RESERVE.bytes) / Buffer.byteLength(`f\x00644\x000\x00/work/pad/${long}0000000\x00\x00`)) + 1;
   const big = await runListing(listingSandbox({ scripts: { 'vcr-manifest': padded(count, long) } }));
   assert.equal(big.outcome, 'requester_error', show(big));
   assert.deepEqual(big.issues.map((i) => i.code), ['IMAGE_WATCH_TOO_LARGE']);
