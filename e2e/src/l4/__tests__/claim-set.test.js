@@ -134,10 +134,10 @@ describe('the committed scenarios', () => {
     expect(got.every((s) => s.suite === 'l4-claim' && s.minOutcomes === 6)).toBe(true);
   });
 
-  it('this repository holds no pinned claim set: that is G2\'s preparation', () => {
-    expect(fs.existsSync(path.join(E2E, 'archives', 'l4-claim', 'claim-set.json'))).toBe(false);
-    const [s] = loadScenarios(DEFAULT_SCENARIOS, ['claim-l4-valid'], { allowL4Claim: true });
-    expect(() => resolveL4Claim(s)).toThrow(/build-l4-claims/);
+  it('read the file the build script writes by default, relative to e2e/', () => {
+    const got = loadScenarios(DEFAULT_SCENARIOS, ids, { allowL4Claim: true });
+    expect(got.every((s) => s.claimSet === 'archives/l4-claim/claim-set.json')).toBe(true);
+    expect(fs.readFileSync(SCRIPT, 'utf8')).toContain("const DEFAULT_OUT = 'archives/l4-claim/claim-set.json';");
   });
 });
 

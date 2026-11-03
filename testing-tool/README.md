@@ -442,6 +442,8 @@ The body comes from `buildCodeReviewAiRequest` in `external-adapter/src/codeRevi
 
 A claim is called at most twice, and the second time only on a 503 with `retryable: true`, as the External Adapter does. Any other answer ends it with an error, because a repeat is another provider bill. The claim type does not use `timeoutMs` or `maxRetries` from `tool-config.json`.
 
+A 200 counts only if it is a verdict on this report: code mode's `reportSha256` must be the scenario's, with a justification and the six outcomes. An AI Node that ignores `codeReview` answers in text mode, and the tool records that as an error rather than a measurement.
+
 ### What it refuses
 
 A scenario that fails any of these does not run, and `--dry-run` reports it:

@@ -174,7 +174,7 @@ describe('L4 refuses a claim scenario on anything but the canary class: every fl
     expect(chain.sent).toEqual([]);
   });
 
-  it('the committed scenarios refuse on the class first, with no claim set in the repository', async () => {
+  it('the committed scenarios refuse on the class first, whether or not their claim set is pinned', async () => {
     await startChain();
     const r = await l4(['--scenario', 'claim-l4-valid']);
     expect(r.out).toMatch(/run only on the canary class 5555/);
@@ -244,9 +244,12 @@ describe('with the canary class, the other refusals', () => {
     expect(chain.sent).toEqual([]);
   });
 
-  it('the committed scenario with no claim set: exit 1, no RPC call, and how to build it', async () => {
+  it('no claim set at the path the scenario names: exit 1, no RPC call, and how to build it', async () => {
     await startChain();
-    const r = await l4(['--scenario', 'claim-l4-valid', '--class-id', '5555', ...versions]);
+    const file = path.join(dir, 'unpinned.json');
+    const committed = JSON.parse(fs.readFileSync(scenariosFile, 'utf8'));
+    fs.writeFileSync(file, JSON.stringify(committed.map((s) => (s.suite === 'l4-claim' ? { ...s, claimSet: path.join(dir, 'not-pinned-yet.json') } : s))));
+    const r = await l4(['--scenario', 'claim-l4-valid', '--class-id', '5555', ...versions, '--scenarios', file]);
     expect(r.out).toMatch(/build-l4-claims/);
     expect(r.code).toBe(1);
     expect(chain.calls).toEqual([]);

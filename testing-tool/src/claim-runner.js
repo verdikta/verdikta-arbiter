@@ -55,6 +55,18 @@ function vectorOf(scores) {
 }
 
 /**
+ * A verdict on this report, or a throw, as the External Adapter holds the answer before it
+ * may commit it (claimRun.js, juryResult). A 200 that is not code mode's, or is about another
+ * report, says nothing about this claim: an AI Node that ignores `codeReview` answers in text
+ * mode, and that is not a measurement of the jury on this run.
+ */
+function assertThisReport(answer, reportSha256) {
+  const stamp = answer && answer.codeReview && answer.codeReview.reportSha256;
+  if (stamp !== reportSha256) throw new Error(`the AI Node's answer is not about this report (code mode's reportSha256 is ${stamp || 'absent'})`);
+  if (typeof answer.justification !== 'string' || answer.justification.trim() === '') throw new Error('the AI Node\'s answer has no justification');
+}
+
+/**
  * One scenario, one result, in the shape results-manager.js saves, plus how the verdict
  * settles by the listing's stake. A disagreement with `expected_outcome` is a measurement,
  * not an error: only a request that did not give a verdict is an error.
@@ -75,6 +87,7 @@ async function runClaimScenario(scenario, { aiNodeUrl, deadlineMs = CLAIM_DEADLI
   try {
     const body = buildClaimRequest(scenario, { deadlineMs, requestTag: `[testing-tool ${scenario.scenario_id}]` });
     const answer = await callClaim(aiNodeUrl, body, { deadlineMs });
+    assertThisReport(answer, scenario.input.reportSha256);
     const vector = vectorOf(answer.scores);
     const settled = codeReview.settleBugOutcome(vector, scenario.stake);
     return {
@@ -82,7 +95,7 @@ async function runClaimScenario(scenario, { aiNodeUrl, deadlineMs = CLAIM_DEADLI
       // Highest first, as results-manager.js reads a jury's winner: the AI Node's order is the listing's.
       scores: [...answer.scores].sort((a, b) => b.score - a.score),
       vector,
-      justification: typeof answer.justification === 'string' ? answer.justification : '',
+      justification: answer.justification,
       execution_time_ms: Date.now() - started,
       settled: { outcome: settled.outcome, valid: settled.valid, class: settled.class, validMass: settled.validMass, classMass: settled.classMass },
       agrees: scenario.expected_outcome === undefined ? null : settled.outcome === scenario.expected_outcome,

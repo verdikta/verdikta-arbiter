@@ -30,8 +30,18 @@ let dir;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-claim-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-/** An AI Node on loopback: each POST takes the next scripted answer, the last repeating. */
-async function stubAiNode(answers = [{ status: 200, body: { scores: scoresOf(), justification: 'The panel.', metadata: {}, model_results: [], codeReview: { promptSha256: 'd'.repeat(64) } } }]) {
+/** Code mode's answer to a request, as the AI Node stamps it. */
+const juryAnswer = (over = {}) => (request) => ({
+  scores: scoresOf(),
+  justification: 'The panel.',
+  metadata: {},
+  model_results: [],
+  codeReview: { reportSha256: request.codeReview.reportSha256, promptSha256: 'd'.repeat(64) },
+  ...over
+});
+
+/** An AI Node on loopback: each POST takes the next scripted answer (a body, or a function of the request), the last repeating. */
+async function stubAiNode(answers = [{ status: 200, body: juryAnswer() }]) {
   const posts = [];
   const server = http.createServer((req, res) => {
     const chunks = [];
@@ -45,7 +55,7 @@ async function stubAiNode(answers = [{ status: 200, body: { scores: scoresOf(), 
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       posts.push({ path: req.url, body });
       const answer = answers[Math.min(posts.length - 1, answers.length - 1)];
-      return reply(answer.status, answer.body);
+      return reply(answer.status, typeof answer.body === 'function' ? answer.body(body) : answer.body);
     });
   });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -339,7 +349,7 @@ describe('loadClaimScenarios', () => {
 
 describe('calling the AI Node', () => {
   it('sends the builder\'s body to rank-and-justify once on success', async () => {
-    const node = await stubAiNode();
+    const node = await stubAiNode([{ status: 200, body: { scores: scoresOf(), justification: 'j' } }]);
     try {
       const body = { prompt: 'p' };
       const answer = await callClaim(node.url, body, { deadlineMs: 285000 });
@@ -442,10 +452,30 @@ describe('runClaimScenario', () => {
 
   it('an answer that is not the six outcomes is an error, not a verdict', async () => {
     const made = await writeClaimScenario(dir);
-    const node = await stubAiNode([{ status: 200, body: { scores: [{ outcome: 'Yes', score: 1000000 }], justification: 'j' } }]);
+    const node = await stubAiNode([{ status: 200, body: juryAnswer({ scores: [{ outcome: 'Yes', score: 1000000 }] }) }]);
     try {
       const result = await run(node, made);
       expect(result.error).toMatch(/outcomes/);
+    } finally {
+      await node.close();
+    }
+  });
+
+  it.each([
+    ['no codeReview at all: a text-mode answer from an AI Node that ignored the field', { codeReview: undefined }, /not about this report/],
+    ['another report\'s hash', { codeReview: { reportSha256: 'f'.repeat(64) } }, /not about this report/],
+    ['no justification', { justification: undefined }, /no justification/],
+    ['an empty justification', { justification: '  ' }, /no justification/]
+  ])('an answer with %s is an error, not a measurement', async (_name, over, message) => {
+    const made = await writeClaimScenario(dir);
+    const node = await stubAiNode([{ status: 200, body: juryAnswer(over) }]);
+    try {
+      const result = await run(node, made);
+      expect(result.error).toMatch(message);
+      expect(result.scores).toEqual([]);
+      expect(result.settled).toBeNull();
+      expect(result.agrees).toBeNull();
+      expect(node.posts).toHaveLength(1);
     } finally {
       await node.close();
     }
