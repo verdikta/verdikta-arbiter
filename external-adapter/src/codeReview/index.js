@@ -65,6 +65,29 @@ function assertCodeReviewRequest(config, cidArray) {
 }
 
 /**
+ * The archive fetches, held to the deadline on an arbiter that serves code review
+ * (§11). The request's mode is only known once they are done, since its manifest
+ * is in the archive being fetched, so a text-mode request on that arbiter gets the
+ * same bound. It only ever cuts a request off at 780 s or so, and the IPFS client
+ * gives up on each fetch long before. A fetch may be shared with another job:
+ * this leaves it running, and only this job stops waiting.
+ *
+ * @param {object} config - getCodeReviewConfig()
+ * @param {number} receivedAt - epoch ms
+ * @param {Promise<object>} triage - fetchAndTriageArchives's
+ * @param {() => void} onStop - called when this job stops waiting
+ * @returns {Promise<object>} what the triage resolves to
+ */
+function boundFetches(config, receivedAt, triage, onStop) {
+  if (!config.ready) return triage;
+  const deadline = createDeadline({ receivedAt, deadlineMs: config.deadlineMs });
+  return deadline.race(triage, 'archives were fetched').catch((error) => {
+    onStop();
+    throw error;
+  });
+}
+
+/**
  * @param {object} input - see frontGates.runFrontGates
  * @param {number} [input.receivedAt] - when the adapter received the request, epoch ms (the deadline's start)
  * @returns {Promise<{ scores: object[], justification: string, metadata?: object }>}
@@ -74,7 +97,7 @@ async function evaluateCodeReview(input) {
     receivedAt: input.receivedAt === undefined ? Date.now() : input.receivedAt,
     deadlineMs: input.config.deadlineMs
   });
-  const gates = await runFrontGates(input);
+  const gates = await deadline.race(runFrontGates({ ...input, deadline }), 'front gates finished');
   let result;
   if (gates.verdict) {
     result = gates.verdict;
@@ -91,4 +114,4 @@ async function evaluateCodeReview(input) {
   return result;
 }
 
-module.exports = { isCodeReviewManifest, assertCodeReviewRequest, evaluateCodeReview, refuseSingleCid, assertRunResult, buildCodeReviewAiRequest };
+module.exports = { isCodeReviewManifest, assertCodeReviewRequest, boundFetches, evaluateCodeReview, refuseSingleCid, assertRunResult, buildCodeReviewAiRequest };

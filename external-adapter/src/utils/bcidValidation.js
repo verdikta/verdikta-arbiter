@@ -250,7 +250,7 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
  * @returns {Promise<{extractedPaths: Object<string,string>, malformedBCIDs: MalformedArchiveError[],
  *   archiveData: Object<string,Buffer>, primaryManifestJson: object}>}
  */
-async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '', checkPrimary }) {
+async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '', checkPrimary, shouldStop }) {
   // --- fetch everything first, concurrently: a gateway failure must surface before
   // any verdict logic runs, and no archive should queue behind another archive's
   // gateway retries. allSettled so we return only once every fetch has finished
@@ -260,6 +260,9 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
     logger.info(`${runTag} Fetching archive ${i + 1}/${cidArray.length}: ${cid}`);
     return archiveService.getArchive(cid);
   }));
+  // A caller that stopped waiting has removed tempDir: extract nothing back into it.
+  if (typeof shouldStop === 'function' && shouldStop()) throw new Error('the archives arrived after the caller stopped waiting');
+
   const archiveData = {};
   for (let i = 0; i < cidArray.length; i++) {
     if (outcomes[i].status === 'rejected') throw outcomes[i].reason;

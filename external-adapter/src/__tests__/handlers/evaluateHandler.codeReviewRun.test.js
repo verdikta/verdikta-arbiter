@@ -951,7 +951,7 @@ describe('fixture: cancellation-at-deadline', () => {
       expect(saveSpy).not.toHaveBeenCalled();
     });
 
-    it('a ciphertext that arrives after the deadline settles nothing, and no further fetch starts', async () => {
+    it('a dispute statement that arrives after the deadline settles nothing, and no further fetch starts', async () => {
       const s = scenario({ dispute: 'The maker argues.' });
       const release = await expectBounded(s, H.cid('Statement'));
       const fetches = mockState.client.archiveService.getArchive.mock.calls.length;

@@ -249,7 +249,8 @@ const evaluate = async (request) => {
       // bCID archive is collected, because that is the one case every arbiter can
       // settle identically without an AI call (see utils/bcidValidation.js).
       const t7 = Date.now();
-      const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } = await fetchAndTriageArchives(
+      let stoppedWaiting = false;
+      const triage = fetchAndTriageArchives(
         cidArray, tempDir, {
           archiveService, validator, logger, runTag,
           // a code-review request on an arbiter that does not serve one, or with a
@@ -258,9 +259,12 @@ const evaluate = async (request) => {
             if (codeReviewMode.isCodeReviewManifest(manifest)) {
               codeReviewMode.assertCodeReviewRequest(getCodeReviewConfig(), cidArray);
             }
-          }
+          },
+          shouldStop: () => stoppedWaiting
         }
       );
+      const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } =
+        await codeReviewMode.boundFetches(getCodeReviewConfig(), t0, triage, () => { stoppedWaiting = true; });
       logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
       // Malformed archives are never kept: jobs fetching at the same moment shared
       // the bytes (and reach the same verdict), but no later job reuses them.

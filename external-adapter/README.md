@@ -191,8 +191,11 @@ integers summing to 1,000,000, and only by the deadline.
 **One deadline** (design §11). `deadline = receipt + CODE_REVIEW_DEADLINE_MS`
 (780 s: the job's 840 s less 60 s for the commit), and it counts the fetches. Each
 call is told what remains when it is sent: `deadline` to the runner, `deadlineMs`
-to the AI Node. Each call is cancelled at the deadline, and a verdict reached past
-it, front-gate verdicts included, is an error with no commit. `SERVER_TIMEOUT`
+to the AI Node. Each call is cancelled at the deadline, and the wait for any
+archive fetch ends at it. A verdict reached past it, front-gate verdicts included, is
+an error with no commit. On an arbiter serving code review the bound also covers a
+text-mode request's fetches, since the mode is only known once they are done; the IPFS
+client gives up on each fetch long before. `SERVER_TIMEOUT`
 defaults to the job's 840 s; below the deadline + 60 s, code mode is refused with
 the reason in `/health`.
 

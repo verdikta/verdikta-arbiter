@@ -271,7 +271,8 @@ async function readPriorFindings(priorCids, { extractedPaths, malformedBCIDs }) 
   return priors;
 }
 
-async function readDisputeStatement(statementCid, archiveService) {
+async function readDisputeStatement(statementCid, archiveService, assertInTime) {
+  assertInTime('the dispute statement was fetched');
   const bytes = await archiveService.getArchive(statementCid); // a fetch failure is transient
   if (bytes.length > codeReview.MAX_DISPUTE_STATEMENT_BYTES) {
     throw requester('CODE_REVIEW_DISPUTE',
@@ -339,12 +340,14 @@ async function readClaimMembers(root) {
  * @param {object} input.config - getCodeReviewConfig()
  * @param {{ archiveService: object, validator: object, logger: object }} input.deps
  * @param {string} [input.runTag]
+ * @param {object} [input.deadline] - time.createDeadline's: no fetch starts once it has passed
  * @returns {Promise<{ verdict: object } | { context: object }>} a deterministic INVALID verdict, or the run's context
  * @throws {CodeReviewRequesterError} the listing, the request or this arbiter's configuration is at fault
  */
 async function runFrontGates(input) {
   const { cidArray, extractedPaths, archiveData, malformedBCIDs, addendum, config, runTag = '' } = input;
   const { archiveService, validator, logger } = input.deps;
+  const assertInTime = (what) => { if (input.deadline) input.deadline.assertOpen(what); };
 
   // 1–2
   assertOperatorReady(config);
@@ -365,7 +368,7 @@ async function runFrontGates(input) {
     throw requester('CODE_REVIEW_DISPUTE', `the dispute line does not parse: ${issueCodes(machineLines.issues)}`);
   }
   const dispute = machineLines.dispute
-    ? await readDisputeStatement(machineLines.dispute.statementCid, archiveService)
+    ? await readDisputeStatement(machineLines.dispute.statementCid, archiveService, assertInTime)
     : null;
 
   // 5–7: from here on a failure is the claim's
@@ -395,6 +398,7 @@ async function runFrontGates(input) {
     });
   }
   const line = machineLines.disclosure;
+  assertInTime('the ciphertext was fetched');
   const ciphertext = await archiveService.getArchive(line.ciphertextCid); // a fetch failure is transient
   const disclosure = codeReview.verifyDisclosure({
     plaintext: u8(claimBytes),
