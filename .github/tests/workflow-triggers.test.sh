@@ -24,7 +24,7 @@ is() { # is FILE EXPR EXPECTED_JSON MESSAGE
     [ "$got" = "$3" ] && ok || bad "$1: $4 (got $got)"
 }
 
-for f in e2e.yml repo-policy.yml secret-scan.yml code-runner.yml; do
+for f in e2e.yml repo-policy.yml secret-scan.yml code-runner.yml installer.yml; do
     [ -f "$WF/$f" ] && ok || { bad "$f is missing"; continue; }
     for ev in pull_request push; do
         for b in main master "$INTEGRATION"; do
@@ -72,10 +72,46 @@ is e2e.yml "w.dig('jobs', 'l4-testnet', 'if')" \
     "L4 now runs on other events"
 is e2e.yml "w.dig('jobs', 'l4-testnet', 'environment')" '"e2e"' "L4 left the e2e environment"
 
-# Unchanged: secrets stay out of fork PRs. L2 is the only PR job that reads one.
+# Unchanged: secrets stay out of fork PRs. l2-mock is the only PR job that reads one.
 is e2e.yml "w.dig('jobs', 'l2-mock', 'if')" \
     "\"github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository\"" \
     "L2's same-repo gate changed"
-is e2e.yml "w['jobs'].keys" '["l2-mock","l4-testnet"]' "jobs added or removed (check their secret gates)"
+is e2e.yml "w['jobs'].keys" '["l2-mock","l2-claim","l4-testnet"]' "jobs added or removed (check their secret gates)"
+
+# The claim suite (node A6a) needs no secret and runs for everyone, forks included:
+# no `if`, no secret anywhere in it, no way to pass by not running.
+is e2e.yml "w.dig('jobs', 'l2-claim', 'if')" 'null' "the claim suite is gated: it must run whenever the workflow does"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'continue-on-error')" 'null' "the claim suite may fail without failing the workflow"
+is e2e.yml "JSON.generate(w.dig('jobs', 'l2-claim')).include?('secrets.')" false "the claim suite reads a secret"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['continue-on-error'] }" false "a claim suite step may fail silently"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('exit 0') }" false "a claim suite step exits 0 by itself, as l2-mock does without its secret"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'runs-on')" '"ubuntu-latest"' "the claim suite left the amd64 runner: a report exists only on linux/amd64"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').find { |s| s['run'].to_s.include?('--suite claim') }.dig('env', 'E2E_CLAIM_REQUIRE_CLASS_PLATFORM')" '"1"' "CI must refuse the local report substitution"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('src/index.js l2 --mock --boot-adapter --suite claim') }" true "the claim suite is not run"
+# It also keeps the contract test's route into code-runner/ working (A4b), and the harness's own tests.
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('runnerContract') }" true "the EA/runner contract test is not run"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm test') && s['working-directory'] == 'e2e' }" true "the harness's unit tests are not run"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm test') && s['working-directory'] == 'testing-tool' }" true "the testing tool's unit tests are not run"
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm ci') && s['working-directory'] == 'testing-tool' }" true "the claim suite's testing-tool mode needs the tool's deps"
+
+# Unchanged: the nightly names no class and no scenario, so it stays on config.l4.classId
+# (128) with no claim scenario, and the only route to one is a dispatch input.
+is e2e.yml "w.dig('jobs', 'l4-testnet', 'steps').find { |s| s['run'].to_s.include?('src/index.js l4') }['run'].lines.grep(/src\\/index\\.js l4/).map(&:strip)" \
+    '["node src/index.js l4 --junit results/l4.xml --report results/l4.json"]' \
+    "the L4 command line changed: the nightly must name no class and no scenario"
+is e2e.yml "w.dig('jobs', 'l4-testnet', 'steps').find { |s| s['run'].to_s.include?('src/index.js l4') }.dig('env', 'L4_CLASS_ID')" '"${{ inputs.class_id }}"' "L4_CLASS_ID is no longer only the dispatch input"
+is e2e.yml "w.dig('jobs', 'l4-testnet', 'steps').find { |s| s['run'].to_s.include?('src/index.js l4') }.dig('env', 'L4_SCENARIO')" '"${{ inputs.scenario }}"' "L4_SCENARIO is no longer only the dispatch input"
+
+# installer: every change to the installer or to what it renders runs its tests,
+# and the real Chainlink binary measures the job timeouts.
+for ev in pull_request push; do
+    for p in 'installer/**' 'chainlink-node/**' '.github/workflows/installer.yml'; do
+        is installer.yml "on.dig('$ev', 'paths').to_a.include?('$p')" true "$ev paths miss $p"
+    done
+done
+is installer.yml "w['jobs'].keys" '["tests","chainlink-2-23"]' "jobs added or removed (check their secret gates)"
+is installer.yml "JSON.generate(w['jobs']).include?('secrets.')" false "the installer jobs read a secret"
+is installer.yml "w.dig('jobs', 'chainlink-2-23', 'runs-on')" '"ubuntu-latest"' "the Chainlink measure left amd64: the image has no arm64 variant"
+is installer.yml "w.dig('jobs', 'chainlink-2-23', 'steps').any? { |s| s['run'].to_s.include?('job-timeouts.integration.sh') }" true "the Chainlink measure is not run"
 
 echo "pass=$pass fail=$fail"; [ "$fail" = "0" ]

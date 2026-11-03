@@ -42,7 +42,7 @@ async function executeL2(cliOpts) {
   const cfg = buildConfig(cliOpts);
   const mock = cliOpts.real ? false : true; // default to mock unless --real given
   const ids = cliOpts.scenario ? cliOpts.scenario.split(',').map((s) => s.trim()) : null;
-  const scenarios = loadScenarios(cliOpts.scenarios, ids);
+  const scenarios = loadScenarios(cliOpts.scenarios, ids, { allowClaim: true, suite: cliOpts.suite || null });
 
   console.log(chalk.bold(`\nVerdikta E2E — L2 (${mock ? 'mock' : 'real'} AI) — ${scenarios.length} scenario(s)\n`));
 
@@ -66,8 +66,9 @@ async function executeL4(cliOpts) {
   // CI passes the dispatch inputs as L4_* environment variables; flags win.
   const scenarioIds = cliOpts.scenario || process.env.L4_SCENARIO || '';
   const ids = scenarioIds ? scenarioIds.split(',').map((s) => s.trim()).filter(Boolean) : null;
-  // manualOnly scenarios (paid juries) run here only when named; the nightly names none.
-  const scenarios = loadScenarios(cliOpts.scenarios, ids, { allowManualOnly: true });
+  // manualOnly scenarios (paid juries) and L4 claim scenarios run here only when named; the
+  // nightly names none. runL4 holds a claim scenario to the canary class before anything else.
+  const scenarios = loadScenarios(cliOpts.scenarios, ids, { allowManualOnly: true, allowL4Claim: true });
 
   console.log(chalk.bold(`\nVerdikta E2E — L4 (live testnet) — ${scenarios.length} scenario(s)\n`));
 
@@ -100,6 +101,7 @@ program
   .option('--adapter-url <url>', 'External Adapter base URL')
   .option('--scenario <ids>', 'comma-separated scenario ids to run')
   .option('--scenarios <file>', 'path to a scenarios JSON file')
+  .option('--suite <name>', 'run a whole suite instead of naming scenarios (claim: the local claim pipeline; needs Docker, no secret)')
   .option('--assert-winner', 'in --real mode, also assert the winning outcome index')
   .option('--report <file>', 'write JSON report to file')
   .option('--junit <file>', 'write JUnit XML report to file')
@@ -128,7 +130,7 @@ program
   .option('--scenario <ids>', 'comma-separated scenario ids to run')
   .option('--scenarios <file>', 'path to a scenarios JSON file')
   .option('--assert-winner', 'also assert the winning outcome index (needs expectedWinnerIndex)')
-  .option('--class-id <id>', 'requested class (default: L4_CLASS_ID env, then config.l4.classId; the testnet canary class is 5555)')
+  .option('--class-id <id>', 'requested class (default: L4_CLASS_ID env, then config.l4.classId; the testnet canary class is 5555, and a claim scenario runs on nothing else)')
   .option('--expect-common <version>', 'fail unless every revealing arbiter reports this @verdikta/common version (default: L4_EXPECT_COMMON env)')
   .option('--expect-release <commit>', 'fail unless every revealing arbiter reports this release commit, prefix match (default: L4_EXPECT_RELEASE env)')
   .option('--report <file>', 'write JSON report to file')

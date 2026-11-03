@@ -72,6 +72,61 @@ In `--real` mode the winner is only asserted when a scenario declares
 `expectedWinnerIndex` **and** `--assert-winner` is passed (model output is
 nondeterministic); otherwise only structural invariants are checked.
 
+### The claim suite (`--suite claim`: local, no secret)
+
+A claim through the real pipeline, on one machine, with nothing from outside it:
+
+```bash
+# once: npm ci in external-adapter/, ai-node/, code-runner/, testing-tool/ and e2e/
+node src/index.js l2 --mock --boot-adapter --suite claim
+node src/index.js l2 --mock --boot-adapter --scenario claim-valid,claim-gate-fail   # or by name
+```
+
+It starts, each with its own small environment:
+
+| Service | How |
+|---|---|
+| Local IPFS | A mock gateway and Pinata-compatible pin service (`src/l2/claim/local-ipfs.js`), with real CIDv0s, wired in by `IPFS_GATEWAY` / `IPFS_PINNING_SERVICE` and a key that means nothing |
+| `registry:2` | A throwaway one on the daemon's loopback, holding the code runner's Foundry fixture repository as an env image; the runner pulls it by digest, allowlisted by `CODE_RUNNER_REGISTRY_ALLOWLIST` |
+| External Adapter | The real one, `CODE_REVIEW_ENABLED=true`, `CODE_REVIEW_TRUST=dev` with a key made for this run, chain 31337. The harness fails unless `/health` says `ready` and `dev` |
+| AI Node | The real one under `next dev` (a production build refuses the mock provider), `VERDIKTA_TEST_MOCK_PROVIDER=1`, every call logged to `VERDIKTA_TEST_MOCK_CALL_LOG` |
+| Code runner | The real one under `runc`; gVisor is `code-runner.yml`'s to test |
+
+Recording proxies sit between them, so a scenario asserts what really crossed.
+
+| Scenario | Mode | Asserts |
+|---|---|---|
+| `claim-valid` | `0` | The real run is definitive with a report and every gate passed. The AI Node gets `codeReview`, `deadlineMs` at most 780 s and the pack as attachments. Each juror of the panel is called once with web off, a signal, the class's tokens and effort high, on one prompt holding the report and the pack; the justifier once. The scores are the jurors' weighted average. The justification is on the local IPFS, starting with the evidence block |
+| | `commit-reveal` | Mode 1 then mode 2. The commitment is recomputed from what the reveal gives. A new jury call, no new sandbox |
+| | `juror-deadline` | The EA's request replayed to the AI Node with a 57 s deadline and a hanging juror: the call is aborted by its signal at 12 s, with a retryable 503 |
+| | `testing-tool` | The testing tool's [claim type](../testing-tool/README.md#claim-scenarios), through its CLI, on what the run recorded: the same request as the EA's but for the deadline and the tag, and the real AI Node takes it |
+| `claim-gate-fail` | `front-gate` | Out of the listing's scope: all weight on INVALID, naming `inScope`, no runner call, no AI call |
+| | `runner-gate` | A PoC that edits source: the real runner's `testPathsOnly`, all weight on INVALID, no AI call |
+| | `commit-reveal` | The same verdict through mode 1 and mode 2 |
+| `claim-text-unaffected` | `0`, `commit-reveal` | The text-mode archive on that same arbiter: no runner call, no `codeReview`, no juror with code mode's options |
+
+Every verdict is also held to the L4 scenarios' own checks (`l4.claim.*`, `src/l4/claim-checks.js`), and the archives come from the builder L4's are pinned with, so what L4 reads is what the External Adapter writes.
+
+**It fails, it never skips.** A harness that cannot start (no Docker, no `npm ci`, an AI Node that dies, a registry that will not come up, `/health` not ready) is a failed case for every scenario and mode, naming why, and exit 1. A case with no checks fails. A CID the local IPFS does not hold fails the scenario, so none can pass by reaching the public gateways.
+
+A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: 2.5 minutes in all, of which the suite is under a minute, pulls included.
+
+#### On Apple silicon
+
+A Verification Report exists only on `linux/amd64`: the schema's platform is a constant, so a run on `linux/arm64` answers `reportUnavailable` and the EA abstains. An abstention never passes: `claim-valid` passes only if the jury was reached. So on an arm64 host with no amd64 emulation the harness starts the runner through `src/l2/claim/dev-report-runner.js`, which builds the report through the runner's own `buildReport` with the class platform named, as `code-runner/test/docker/report.docker.test.js` does there. The `run.platform` check says so in its line.
+
+| | Local arm64 | CI (`linux/amd64`) |
+|---|---|---|
+| Real forge, gates, integrity checks, pack | Yes, on the image's arm64 variant | Yes, on the class platform |
+| Pull by digest from `registry:2` | Yes | Yes |
+| EA gates, settlement, commit/reveal, AI Node, provider layer | Yes | Yes |
+| The runner's real report path | No: the launcher names the platform | Yes |
+| `src/index.js` as the runner's entry point | No: the launcher | Yes |
+| `linux/amd64` forge, so the report's hash a production arbiter would give | No | Yes |
+| gVisor | No | No (`code-runner.yml`) |
+
+`E2E_CLAIM_REQUIRE_CLASS_PLATFORM=1`, which CI sets, makes the harness fail on anything but `linux/amd64`, so the launcher can never stand in for it there.
+
 ## `smoke` — post-deploy check
 
 Runs one scenario (mode 0) against the **live** running arbiter (real AI Node),
@@ -156,17 +211,61 @@ which identities were selected, committed and revealed, with the same version
 block per oracle. The release procedure that uses this is
 [`docs/release-runbook.md`](../docs/release-runbook.md) ("Testnet canary gate").
 
+### Claim scenarios (class 5555 only)
+
+One real request each on the canaries, with `[listing, claim]` as `cids` and the disclosure line as the addendum: the request `StakeAttestation.reveal` will compose (design §13.3), sent from the e2e wallet. The arbiters cannot tell the difference. The contract, its bond and its own `commit` and `reveal` are not in this path.
+
+| Scenario | What the claim is | Asserts of every revealing arbiter |
+|---|---|---|
+| `claim-l4-valid` | A valid claim on the fixture vault | The jury was reached (`verdict_source`, `Settlement: jury`), on this listing and claim, with one report hash. With `--assert-winner`, also that it settles valid. Real jurors decide that, so it is not asserted otherwise |
+| `claim-l4-front-gate` | Out of the listing's scope | All weight on `INVALID`, the EA's `inScope` gate named. No runner and no model, so it tells code mode from the sandbox |
+| `claim-l4-runner-gate` | A PoC that edits source | All weight on `INVALID`, the runner's `testPathsOnly`, one report hash. The image was pulled and the sandbox ran, with no model |
+
+```bash
+node src/index.js l4 --scenario claim-l4-valid,claim-l4-front-gate,claim-l4-runner-gate \
+  --class-id 5555 --expect-common <version> --expect-release <commit> --junit results/l4.xml
+```
+
+**The class is refused, never defaulted.** The bridge does not tell the External Adapter the requested class, so nothing on an arbiter stops a claim on class 128, and it would spend real money on real arbiters. So L4 refuses, with exit 1 and before it reads the wallet or calls an RPC, unless the class resolves to exactly 5555:
+
+| Run | Result |
+|---|---|
+| `--scenario claim-l4-valid`, no `--class-id` (config's 128) | Refused |
+| `--class-id 128`, or `L4_CLASS_ID=128`, or a blank `class_id` dispatch input | Refused |
+| A text scenario beside a claim, on any other class | Refused: nothing is sent |
+| Any scenario in any file carrying a `verdikta-disclosure:` or `verdikta-dispute:` addendum, on any other class | Refused: it is a claim |
+| The nightly, or any run that names no scenario | Holds no claim scenario, on any class |
+
+Class 5555 alone is not enough: the run also refuses without both `--expect-common` and `--expect-release`, on any chain but Base Sepolia (the RPC's chain id, measured), and when `estimateGas` fails, since that means selection would revert. A text scenario keeps its fallback gas limit. A claim run also prints the aggregator's `responseTimeoutSeconds`. It does not fail on the value: §11 wants a canary to pass before the timeout moves to 900 as well as after.
+
+**Preparing them (once, an owner's step).** The scenarios read `archives/l4-claim/claim-set.json`. None is committed until then, and naming a scenario without one is an error.
+
+1. Build the fixture image on `linux/amd64` (`buildFixture` in `code-runner/test/docker/forgeFixture.js`, as the L2 harness does) and push it where every canary's runner may pull it (`CODE_RUNNER_REGISTRY_ALLOWLIST`). Keep the digest and the base commit.
+2. Check, then pin. `npm ci` in `code-runner/` first, for the fixture repository:
+
+   ```bash
+   node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --dry-run
+   IPFS_PINNING_KEY=<pinata-jwt> node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --pin
+   ```
+
+   This signs the listing with a dev builder key it makes and drops. It prints the public half: set `CODE_REVIEW_TRUST=dev`, `CODE_REVIEW_DEV_KEYS=<that key>` and `NETWORK_CHAIN_ID=84532` on the canaries. A listing the production builder signed comes in with `--listing-file <listing.zip>` instead, and needs no dev trust.
+3. Commit `archives/l4-claim/claim-set.json` on the branch the run dispatches from. Its disclosure keys are a throwaway fixture's, and the same lines go on-chain in the clear.
+
 ## CI & secret handling
 
 `.github/workflows/e2e.yml`:
 
 - **`l2-mock`** — runs on PRs/pushes (same-repo) and manual dispatch; boots the
   adapter + mock AI and asserts the pipeline. Needs `IPFS_PINNING_KEY`.
+- **`l2-claim`** — the [claim suite](#the-claim-suite---suite-claim-local-no-secret)
+  and the testing tool's and harness's unit tests, on every PR, forks included;
+  needs no secret.
 - **`l4-testnet`** — runs nightly (schedule, class 128) and via manual dispatch;
   needs `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
   scoped to the `e2e` GitHub Environment. Dispatch inputs: `class_id`
   (default `5555`), `expect_common`, `expect_release`, `scenario` (the only
-  way to run a `manualOnly` scenario, see [Scenarios](#scenarios)):
+  way to run a `manualOnly` scenario, see [Scenarios](#scenarios), or a
+  [claim scenario](#claim-scenarios-class-5555-only)):
 
   ```bash
   gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
@@ -251,6 +350,9 @@ Optional fields:
   skip it. It runs only when named for L4 (`--scenario <id>` or the `scenario`
   dispatch input / `L4_SCENARIO`); naming it for L2 is an error. Use it for
   scenarios whose archive names a paid jury.
+- `suite` — `claim` for the [L2 claim suite](#the-claim-suite---suite-claim-local-no-secret),
+  `l4-claim` for the [L4 claim scenarios](#claim-scenarios-class-5555-only). Neither
+  is ever in a full-suite run, and each runs only on its own tier.
 
 `bounty-171-replay` is manual-only: it replays mainnet bounty 171 (issue #81),
 whose 2560×12268 px screenshot failed every jury model before the image

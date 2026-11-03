@@ -8,6 +8,7 @@
     "l2": "node src/index.js l2",
     "l2:mock": "node src/index.js l2 --mock",
     "l2:real": "node src/index.js l2 --real",
+    "l2:claim": "node src/index.js l2 --mock --boot-adapter --suite claim",
     "smoke": "node src/index.js smoke",
     "l4": "node src/index.js l4",
     "mock-ai": "node src/l2/mock-ai-node.js",
@@ -29,5 +30,10 @@
   },
   "devDependencies": {
     "jest": "^29.7.0"
+  },
+  "jest": {
+    "modulePaths": [
+      "<rootDir>/node_modules"
+    ]
   }
 }

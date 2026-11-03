@@ -4,9 +4,14 @@ const { ethers } = require('ethers');
 const chalk = require('chalk');
 const A = require('../assertions');
 const { fetchJustificationJson, justificationRetry } = require('../ipfs');
+const { resolveL4Claim } = require('../scenario-loader');
+const { claimVerdictChecks } = require('./claim-checks');
 const {
   gasLimitFor,
-  resolveClassId,
+  isCanaryOnly,
+  resolveRunClass,
+  assertCanaryChain,
+  assertVersionsNamed,
   splitJustificationCids,
   arbiterVersion,
   releaseCommit,
@@ -21,6 +26,7 @@ const AGGREGATOR_ABI = [
   'function getEvaluation(bytes32 aggRequestId) view returns (uint256[] scores, string justificationCID, bool exists)',
   'function isFailed(bytes32 aggRequestId) view returns (bool)',
   'function maxTotalFee(uint256 requestedMaxOracleFee) view returns (uint256)',
+  'function responseTimeoutSeconds() view returns (uint256)',
   'event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids)',
 ];
 
@@ -56,7 +62,7 @@ async function pollEvaluation(contract, aggId, { pollIntervalMs, timeoutMs }, on
  * (as before), and every arbiter's self-reported version is collected — and
  * asserted when `expect.expectCommon` / `expect.expectRelease` are given.
  *
- * @returns {Promise<{ checks: Array, reports: Array<{cid, version}> }>}
+ * @returns {Promise<{ checks: Array, reports: Array<{cid, version, json}> }>}
  */
 async function justificationChecks(cfg, justificationCID, expect) {
   const cids = splitJustificationCids(justificationCID);
@@ -74,16 +80,18 @@ async function justificationChecks(cfg, justificationCID, expect) {
         ? A.assert('justification.fetchableJson', true, `gateway=${gateway}, attempt=${attempt}, keys=${Object.keys(json).join(',')}`)
         : A.assert('justification.fetchableJson', false, `all gateways failed on ${attempt} attempt(s) — ${errors.join('; ')}`));
     }
-    reports.push({ cid, version: json ? arbiterVersion(json) : null });
+    reports.push({ cid, version: json ? arbiterVersion(json) : null, json });
   }
   checks.push(...versionChecks(reports, expect));
   return { checks, reports };
 }
 
-function buildL4Config(cfg, opts = {}) {
+function buildL4Config(cfg, scenarios, opts = {}) {
   const l4 = cfg.l4 || {};
-  // --class-id, then L4_CLASS_ID, then config; the canary gate requests class 5555.
-  const classId = resolveClassId({ cli: opts.classId, env: process.env.L4_CLASS_ID, config: l4.classId });
+  // --class-id, then L4_CLASS_ID, then config; the canary gate requests class 5555. A claim
+  // scenario on anything else stops here, before the wallet is read or an RPC is called.
+  const classId = resolveRunClass({ cli: opts.classId, env: process.env.L4_CLASS_ID, config: l4.classId, scenarios });
+  assertVersionsNamed(scenarios, opts);
   const rpcUrl = process.env.RPC_URL || l4.rpcUrl;
   const aggregatorAddress = process.env.AGGREGATOR_ADDRESS || l4.aggregatorAddress;
   const privateKey = process.env.E2E_WALLET_PRIVATE_KEY;
@@ -99,9 +107,10 @@ function buildL4Config(cfg, opts = {}) {
  * @param {Array} scenarios
  * @param {object} opts - { reporter, assertWinner, classId?, expectCommon?, expectRelease? }
  */
-async function runL4(cfg, scenarios, opts) {
+async function runL4(cfg, selected, opts) {
   const { reporter } = opts;
-  const l4 = buildL4Config(cfg, opts);
+  const l4 = buildL4Config(cfg, selected, opts);
+  const scenarios = selected.map(resolveL4Claim);
   const expect = { expectCommon: opts.expectCommon, expectRelease: opts.expectRelease };
 
   const provider = new ethers.JsonRpcProvider(l4.rpcUrl);
@@ -109,6 +118,7 @@ async function runL4(cfg, scenarios, opts) {
   const aggregator = new ethers.Contract(l4.aggregatorAddress, AGGREGATOR_ABI, wallet);
 
   const net = await provider.getNetwork();
+  assertCanaryChain(scenarios, net.chainId);
   const balance = await provider.getBalance(wallet.address);
   console.log(chalk.gray(`[l4] network=${l4.network} chainId=${net.chainId} aggregator=${l4.aggregatorAddress} classId=${l4.classId}`));
   if (expect.expectCommon || expect.expectRelease) {
@@ -117,6 +127,12 @@ async function runL4(cfg, scenarios, opts) {
       + `${expect.expectRelease ? ` release=${expect.expectRelease}` : ''}`));
   }
   console.log(chalk.gray(`[l4] wallet=${wallet.address} balance=${ethers.formatEther(balance)} ETH`));
+  if (scenarios.some(isCanaryOnly)) {
+    // Measured, not gated: it only says when anyone may force-finalize a stuck request, and §11
+    // wants a canary to pass before the timeout changes as well as after. G2 reads this line.
+    const timeout = await aggregator.responseTimeoutSeconds().catch(() => 'unreadable');
+    console.log(chalk.gray(`[l4] aggregator responseTimeoutSeconds=${timeout} (design §11: 900 once G2 has set it)`));
+  }
 
   const { maxOracleFee } = l4.fees;
 
@@ -132,6 +148,9 @@ async function runL4(cfg, scenarios, opts) {
       try {
         estimate = await aggregator.requestAIEvaluationWithApproval.estimateGas(...args, { value });
       } catch (err) {
+        // A claim's request is not sent on a guess: a failed estimate here means selection
+        // would revert (no job in the class at this fee), and a reverted request still pays gas.
+        if (isCanaryOnly(scenario)) throw new Error(`gas estimation failed (${err.shortMessage || err.message}): the request was not sent`);
         console.log(chalk.yellow(`[l4] ${scenario.id}: gas estimation failed (${err.shortMessage || err.message}); using configured gasLimit=${l4.gasLimit}`));
       }
       const gasLimit = gasLimitFor(estimate, l4.gasLimit);
@@ -163,6 +182,15 @@ async function runL4(cfg, scenarios, opts) {
           }
           const { checks: jChecks, reports } = await justificationChecks(cfg, result.justificationCID, expect);
           checks.push(...jChecks);
+          if (scenario.suite === 'l4-claim') {
+            checks.push(...claimVerdictChecks({
+              kind: scenario.claim,
+              scores: [...result.scores],
+              reports,
+              cids: scenario.cids,
+              assertWinner: opts.assertWinner
+            }));
+          }
           console.log(chalk.gray(`[l4] ${scenario.id}: fulfilled in ${Math.round((Date.now() - start) / 1000)}s; ${reports.length} revealing arbiter(s)`));
           for (const r of reports) {
             const v = r.version;

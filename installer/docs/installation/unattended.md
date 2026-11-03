@@ -83,6 +83,7 @@ The keys that matter most:
 | `VA_UPGRADE_BACKUP` | (upgrade) copy the install aside first | `y` |
 | `VA_UPGRADE_BACKUP_KEEP` | (upgrade) install backups to keep once the new one succeeded — older `<install>_backup_YYYYMMDD-HHMMSS` directories are removed; `0` keeps them all (also `--keep-backups N`) | `3` |
 | `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) regenerate job specs + re-register on-chain | `n` |
+| `VA_UPGRADE_JOB_TIMEOUTS` | (upgrade) the 840 s job limits: `MaxRunDuration` in `config.toml`, stale jobs replaced under the same job ids, no on-chain action (`apply-job-timeouts.sh`). `n` keeps the old limits; the next upgrade asks again | `y` |
 | `VA_UPGRADE_HARDEN_PORTS` | (upgrade) close 5432/6688/3000/8080 on the public interface (`arbiter-firewall.sh enable`; needs passwordless sudo). **Unattended default is `n`**: an unattended upgrade never changes networking by itself | `n` |
 | `VA_UPGRADE_BIND_CHAINLINK_LOCAL` | (upgrade) recreate the chainlink container with 6688 on `127.0.0.1` only (Chainlink restarts for about a minute) | `n` |
 
@@ -104,7 +105,7 @@ The operator tools copied into the install root accept the same flags:
 |---|---|
 | `0` | Success |
 | `1` | A step failed (see the log) |
-| `3` | `upgrade-arbiter.sh` only: the upgrade itself completed (services restarted, previous job specs preserved) but the job reconfiguration you asked for was cancelled or failed — the last line starts with `RECONFIGURE FAILED:` and says what happened and what to do (usually: run the same count change again) |
+| `3` | `upgrade-arbiter.sh` only: the upgrade itself completed (services restarted, previous job specs preserved) but the job reconfiguration you asked for was cancelled or failed — the last line starts with `RECONFIGURE FAILED:` and says what happened and what to do (usually: run the same count change again). Also when the longer job limits did not land or could not be measured (`JOB TIMEOUTS FAILED:`), or a job regeneration stopped part way (`JOB REGENERATION FAILED:`) |
 | `65` | An unattended answer is missing or was rejected; nothing further was run |
 
 ## Running over SSH

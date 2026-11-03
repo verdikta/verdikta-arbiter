@@ -87,6 +87,13 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    warning (a failed build falls back to `next dev`, which the canary request
    would not notice).
 
+   Exit 3 means the upgrade finished but a job step did not, and the last lines
+   say which. `JOB TIMEOUTS FAILED:` stops the release: a canary request finishes
+   well inside the old 300 s, so it would not notice a job left at the old limits.
+   Confirm each node with `<install-dir>/apply-job-timeouts.sh --check` (exit 0:
+   every live job allows 840 s and the node runs `MaxRunDuration` 15 m). Replacing a
+   stale job keeps its job id: no re-registration, no stake moves.
+
 2. **Check the e2e wallet.** The L4 run pays `maxTotalFee` (≈ 0.0018 ETH) plus
    gas per scenario from the wallet whose key lives in the `e2e` GitHub
    Environment; its address is printed as `[l4] wallet=` by every run. Top it up
@@ -110,6 +117,19 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    ```bash
    cd e2e && node src/index.js l4 --class-id 5555 --expect-common <version> --expect-release <commit>
    ```
+
+   Once the canaries serve code review, add the claim scenarios by name:
+
+   ```bash
+   gh workflow run e2e.yml --ref <branch> -f run_l4=true -f class_id=5555 \
+     -f scenario=claim-l4-valid,claim-l4-front-gate,claim-l4-runner-gate \
+     -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
+   ```
+
+   They run on class 5555 and nothing else. L4 refuses them on any other class, with
+   no `class_id`, or without both versions, before anything is sent, because nothing on
+   an arbiter stops a claim on another class. They need a pinned claim set on that
+   branch: [`e2e/README.md`](../e2e/README.md), "Claim scenarios (class 5555 only)".
 
 4. **Gate.** Green means: the request was fulfilled, every revealing arbiter's
    justification reports the expected `verdiktaCommon` and `release`, and the

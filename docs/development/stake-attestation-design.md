@@ -376,6 +376,7 @@ publishing, was rejected for the operator exposure (§19).
 | External Adapter | When the primary manifest has `codeReview`: verify the attestation and class envelope; run the **disclosure check** from the keys in the addendum (§14); compute the single deadline (§11) and pass remaining time to the runner and the AI Node; call the runner (shared per listing CID + bCID); settle gate failures and tamper flags as INVALID and any other integrity failure as DUPLICATE (§9.5); otherwise pass the report, the context pack and the prior-finding summaries to the AI Node as named text attachments plus a structured `codeReview` field; strip the key line from the addendum before anything reaches a model; no sandbox re-run on retry |
 | AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed claim, known issues, prior findings, `deadlineMs`): the claim pre-prompt with trust tiers and the four questions, Jev stage through an OpenRouter `systemone` client (annotating, never filtering) plus a Jev claim check on the justification, every non-Jev juror required, deadline-derived timeouts with cancellation, web access off |
 | Chainlink job spec | `maxTaskDuration` and bridge timeout 300 s → 840 s |
+| Chainlink config | `[JobPipeline] MaxRunDuration` default 10 m → 15 m |
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§10.8) |
 | `StakeAttestation` (new, verdikta-applications) | Escrow by award table bound to an artifact hash, with lineage; commit (archive hash + ciphertext CID) → fix window → reveal (bCID + keys); bond; bad-disclosure flag; release; dispute escalation; six-outcome settlement; `recordByHash`; the listing feed as events (§13) |
 | Attestation site (verdikta-applications, **a new site**) | A separate application with its own domain, API and contract, not an addition to the bounty site (§20, decision 18). Listing flow with the disclosure key and the award table; builder Action, fallback workflow, validation report and **attestation signing**; baseline scan; record page and badge; feed API; the maker's decrypt-and-check step; the dispute form; `@verdikta/attest-check` for runtimes (§14) |
@@ -1558,7 +1559,12 @@ Changes needed:
   moves the point at which a stuck request may be force-finalized; ordinary
   requests are unaffected.
 - `maxTaskDuration` and the bridge timeout in `chainlink-node/basicJobSpec` go to
-  840 s. `upgrade-arbiter.sh` applies this when it regenerates job specs.
+  840 s, and `[JobPipeline] MaxRunDuration` in `chainlink-node/config_template.toml`
+  to 15 m (Chainlink 2.23.0's default of 10 m ends a run before an 840 s bridge call).
+  A running job keeps the values it was created with, so `upgrade-arbiter.sh`
+  measures each live job after its restart and replaces the stale ones with
+  `installer/util/apply-job-timeouts.sh`, keeping their job ids: no on-chain action
+  and no stake moves. A declined upgrade is asked again at the next one.
 - The EA's `SERVER_TIMEOUT` rises to match; the deadline propagation above.
 - The record page and the hunter tool poll a pending evaluation for up to
   15 minutes.
@@ -1587,7 +1593,9 @@ justifier, a registry failure and a cancellation.
 **Abstaining is not neutral.** A round that times out applies the configured
 timeliness penalty (−20 on mainnet) to every polled oracle that did not commit
 (`_applyTimeoutPenalties`), and an oracle that commits but is not among the first
-4 of 6 is also penalised −20. No fee is earned either way. Transient failures are
+4 of 6 is also penalised −20. The base fee is credited at dispatch, whatever the
+oracle then does; what it loses is the reputation and the bonus, which only clustered
+reveals earn. Transient failures are
 therefore an operator cost, which is why admission refuses early — before a pull,
 before a model call — rather than failing late, and why the envelope keeps the
 work inside the budget on ordinary hosts.
@@ -2019,7 +2027,10 @@ popular skills whose maintainers consent by naming Verdikta in their proof file
   whose disclosure key the maker cannot use (award still owed); an aggregator
   timeout followed by a re-trigger.
 - Run through `testing-tool` (a new `claim` scenario type) and the e2e L4 gate
-  against class 5555.
+  against class 5555, which refuses a claim scenario on any other class (`e2e/README.md`).
+  The local pipeline comes first: `e2e` L2's claim suite runs the
+  real External Adapter, AI Node (mock provider) and code runner against a local IPFS
+  gateway and pin service and a `registry:2`, with no secret, in CI (`e2e/README.md`).
 - Metrics: verdict accuracy and the **false-valid rate** on the adversarial
   claims (the number a maker cares about); class agreement with the source
   program on the severity boundaries; dispute-flip rate on canaries; spread of

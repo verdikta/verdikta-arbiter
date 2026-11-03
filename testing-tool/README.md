@@ -104,6 +104,9 @@ npm start -- test --tags "energy,investment"
 
 # Dry run (validate without executing)
 npm start -- test --dry-run
+
+# Stake claims: see "Claim Scenarios"
+npm start -- test --type claim --dry-run
 ```
 
 **Alternative: Use new convenience scripts:**
@@ -392,6 +395,67 @@ Execution times, success rates, and error analysis.
 4. **Run tests**: Execute scenarios against all juries
 5. **Analyze results**: Review agreement patterns and performance
 6. **Iterate**: Refine juries based on findings
+
+## Claim Scenarios
+
+A second scenario type, for the stake-attestation calibration set (design `docs/development/stake-attestation-design.md`, §18). A claim scenario sends one claim's evaluation straight to the AI Node, with the request the External Adapter would send. It reaches no chain, no arbiter and no sandbox.
+
+```bash
+# Check every scenario: nothing is called
+npm start -- test --type claim --dry-run
+
+# Run them. This calls the listing's panel on the AI node's providers, which spends money
+npm start -- test --type claim --jury real
+
+# Filters and places
+npm start -- test --type claim --jury real --scenario-ids "vault-over-credit" --tags "adversarial"
+npm start -- test --type claim --jury real --claims-dir ../code-runner/calibration/claims --results-dir ./out --ai-node-url http://localhost:3000
+```
+
+Without `--dry-run`, a claim run needs `--jury real` and refuses to start otherwise. `--juries` does not apply: the panel is the listing's. A standard panel costs about $0.25 per claim.
+
+### A scenario is a folder
+
+```
+scenarios/claims/<id>/
+├── scenario.json     { "id": "<id>", "expected_outcome": "HIGH", "tags": [...], "notes": "..." }
+├── listing.zip       the listing archive: manifest.json with `codeReview` and `juryParameters`,
+│                     its primary file (query, the six outcomes), the spec, known issues
+├── claim.zip         the claim archive: finding.json, report.md, poc.patch
+├── priors/*.zip      prior-finding archives, read in file-name order, at most 8
+└── run.json          the code runner's answer for this claim: { report, reportSha256, contextPack }
+```
+
+`src/__tests__/` builds a complete one: see `test/helpers/claimFixture.js`.
+
+| Field or file | What the tool does with it |
+|---|---|
+| `expected_outcome` | Optional: `INVALID`, `DUPLICATE`, `LOW`, `MEDIUM`, `HIGH` or `CRITICAL`. The verdict is settled by the listing's stake (`settleBugOutcome`) and compared. A disagreement is a measurement: it is saved, and the run still exits 0 |
+| `codeClass` | Optional, default `code-standard` |
+| The saved run | `scores` highest first, which is how the shared analysis reads a winner; `vector` in the listing's order; `settled`, `agrees`, `report_sha256`, `prompt_sha256`. `statistics` adds `compared` and `agreed` |
+| `run.json` | The tool speaks only to the AI Node, so the run is recorded. The runner's harness writes this file |
+| A prior finding | Only `finding.json` and `report.md` are read (§13.3), as `{ bcid, finding, report }` |
+
+### The request is the External Adapter's
+
+The body comes from `buildCodeReviewAiRequest` in `external-adapter/src/codeReview/aiRequest.js`, not a copy of it. The context pack goes as `attachments` and `attachmentNames`, in order, with nothing beside it. Prior findings are named by id in the `codeReview` field: the jury reads them through the pack's own tier. The deadline is 285 s, which gives the jurors their 240 s and the justifier its 45 s.
+
+A claim is called at most twice, and the second time only on a 503 with `retryable: true`, as the External Adapter does. Any other answer ends it with an error, because a repeat is another provider bill. The claim type does not use `timeoutMs` or `maxRetries` from `tool-config.json`.
+
+A 200 counts only if it is a verdict on this report: code mode's `reportSha256` must be the scenario's, with a justification and the six outcomes. An AI Node that ignores `codeReview` answers in text mode, and the tool records that as an error rather than a measurement.
+
+### What it refuses
+
+A scenario that fails any of these does not run, and `--dry-run` reports it:
+
+- **The run is not this claim's:** the report's `listingCid`, `bcid` or `pocPatchSha256` differs from what the archives' bytes give. CIDs are computed from the bytes (CIDv0, as `ipfs add` gives).
+- **A prior the jury cannot read:** a prior finding whose CID is not in the pack's `priorFindings` tier, or a pack holding one with no archive here.
+- **A run with a failed gate:** production calls no model on it, so it belongs in the runner's harness.
+- **A pack that would not go:** another class's, over its budget, or a file that would read as a `data:` URI.
+- **A listing outside the class:** a panel outside the envelope, outcomes that are not the six, no `codeReview` key.
+- **Anything `validateCodeReviewRequest` refuses**, as the External Adapter holds its own request before sending it.
+
+The run exits 1 when a request gave no verdict, and when the AI node cannot be reached.
 
 ## Integration with Verdikta
 

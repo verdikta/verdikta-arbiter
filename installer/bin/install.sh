@@ -601,7 +601,8 @@ if [ -f "$UTIL_DIR/arbiter-boot-service.sh" ]; then
 fi
 # Port hardening (2026-10-21 port audit): firewall rules for 5432/6688/3000/8080 on
 # the public interface, and the optional recreate that publishes 6688 on loopback.
-for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh; do
+# And the tool that measures a live node's job limits (design §11).
+for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh apply-job-timeouts.sh; do
     if [ -f "$UTIL_DIR/$_hardening" ]; then
         cp "$UTIL_DIR/$_hardening" "$INSTALL_DIR/$_hardening"
         chmod +x "$INSTALL_DIR/$_hardening"

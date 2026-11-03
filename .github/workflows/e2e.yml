@@ -46,7 +46,7 @@ on:
         type: string
         default: ''
       scenario:
-        description: 'L4: comma-separated scenario ids (blank = all)'
+        description: 'L4: comma-separated scenario ids (blank = all but manual and claim ones). claim-l4-* run only with class_id 5555 and both expect inputs.'
         type: string
         default: ''
 
@@ -103,6 +103,87 @@ jobs:
         with:
           name: l2-mock-report
           path: e2e/results/
+          if-no-files-found: ignore
+
+  # ── L2: the local claim pipeline. No secret, no fork gate, no way out: a harness
+  # that cannot start fails it. The real External Adapter, AI Node (mock provider)
+  # and code runner, with a local IPFS and a registry:2. ubuntu-latest is linux/amd64,
+  # the only platform a Verification Report exists on, and the variable below makes
+  # the suite refuse anything else, so the valid claim really reaches the jury here.
+  l2-claim:
+    name: L2 claim pipeline (local, no secret)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install External Adapter deps
+        working-directory: external-adapter
+        run: npm ci
+
+      - name: Install AI Node deps
+        working-directory: ai-node
+        run: npm ci
+
+      - name: Install code runner deps
+        working-directory: code-runner
+        run: npm ci
+
+      - name: Install testing tool deps
+        working-directory: testing-tool
+        run: npm ci
+
+      - name: Install E2E harness deps
+        working-directory: e2e
+        run: npm ci
+
+      - name: Harness unit tests
+        working-directory: e2e
+        run: npm test
+
+      - name: Testing tool unit tests
+        working-directory: testing-tool
+        run: npm test
+
+      # The EA reads the merged runner through jest's modulePaths (A4b).
+      - name: EA against the merged runner
+        working-directory: external-adapter
+        run: npx jest src/__tests__/codeReview/runnerContract.test.js
+
+      - name: AI Node mock provider
+        working-directory: ai-node
+        run: npx jest src/__tests__/lib/llm/mock-provider.test.ts
+
+      - name: Run the claim suite
+        working-directory: e2e
+        env:
+          E2E_CLAIM_REQUIRE_CLASS_PLATFORM: '1'
+          E2E_CLAIM_LOG_DIR: ${{ runner.temp }}/claim-logs
+        run: |
+          node src/index.js l2 --mock --boot-adapter --suite claim \
+            --junit results/l2-claim.xml --report results/l2-claim.json
+
+      - name: No container left behind
+        if: always()
+        run: |
+          left=$(docker ps --all --format '{{.Names}}' | grep -E '^(vcr-|e2e)' || true)
+          if [ -n "$left" ]; then
+            echo "::error::containers left behind: $left"
+            exit 1
+          fi
+
+      - name: Upload the report and the service logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: l2-claim-report
+          path: |
+            e2e/results/
+            ${{ runner.temp }}/claim-logs/*.log
           if-no-files-found: ignore
 
   # ── L4: live testnet acceptance (Base Sepolia) ─────────────────────────────
