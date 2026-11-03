@@ -26,8 +26,17 @@
  * Tiers 1-6 first take up to their share, in order; what is left goes back up
  * in order, then to tiers 7 and 8. So a hunter who pads poc.patch or report.md,
  * or names 200 huge files, cannot push out the known issues and prior findings
- * a juror needs to find a duplicate. Over budget the lowest tiers go first, and
- * the manifest (the first file) says what each tier kept.
+ * a juror needs to find a duplicate. Over budget the lowest tiers go first.
+ *
+ * Nothing leaves silently (design review of the Q38 stop). Everything gathered
+ * from a list goes through one account (Tally): an item is delivered, or omitted
+ * with a reason from a fixed list. The manifest (the first file) gives each tier's
+ * `asked`, `delivered` and `omitted`, with asked = delivered + the sum of omitted,
+ * counts and fixed codes only, and a tier's status is computed from them: it cannot
+ * say `full` when something was left out for a cap, a read limit, a size bound or the
+ * budget. The other reasons are facts about the request or the repository, which no
+ * larger limit would have changed (out of scope, not in the commit, not a file, a
+ * binary file); they are counted and leave the status alone.
  *
  * A token is ceil(UTF-8 bytes / 4), plus a fixed allowance per file for the
  * AI Node's fence lines. Real Solidity costs a provider slightly less; text
@@ -51,10 +60,22 @@ const PACK_SCHEMA = 'verdikta.context-pack/1';
 const BYTES_PER_TOKEN = 4;
 const TOKEN_RULE = 'ceil(UTF-8 bytes / 4), with a fixed allowance per file';
 /** The manifest's room, and each file's for its fence lines (two lines with a hash and the file's name). */
-const MANIFEST_RESERVE_BYTES = 2048;
+const MANIFEST_RESERVE_BYTES = 3072;
 const FILE_OVERHEAD_BYTES = 160;
 /** A tier gets no file for less than this: a header and a few words help no one. */
 const MIN_ITEM_BYTES = 512;
+/** Room for the line that says how many entries of a list did not fit. */
+const LEFT_OUT_NOTE_BYTES = 64;
+
+/**
+ * Why something asked for is not in the pack. Facts about the request or the
+ * repository: no larger cap, read limit or budget would have delivered it. A binary
+ * file is here by that test: the jury reads text, whatever the budget.
+ */
+const FACT_REASONS = Object.freeze(['outOfScope', 'notInCommit', 'notAFile', 'notAskable', 'duplicate', 'binary', 'noDiff']);
+/** Left out for a cap, a read limit, a size bound or the budget: a tier with one of these is not `full`. */
+const LOSS_REASONS = Object.freeze(['overBudget', 'pastCap', 'unreadable', 'unread']);
+const REASONS = new Set([...FACT_REASONS, ...LOSS_REASONS]);
 
 const TIERS = Object.freeze([
   Object.freeze({ name: 'poc', share: 30 }),
@@ -151,13 +172,17 @@ function summaryOf(prior) {
 /**
  * One summary as one line of canonical JSON, within its bound, measured as it
  * is written (escapes included): the paths go first, last one first, then the
- * longest texts give way.
+ * longest texts give way. `cut` says whether it holds less than the finding's.
+ * @returns {{text:string, cut:boolean}}
  */
-function summaryLine(prior) {
+function summaryEntry(prior) {
   const summary = wellFormedDeep(summaryOf(prior));
+  const f = prior.finding || {};
+  let cut = (Array.isArray(f.affectedPaths) ? f.affectedPaths : []).some((p, i) => i >= SUMMARY_PATHS || byteLength(String(p)) > SUMMARY_PATH_BYTES);
   let line = canonicalJson(summary);
   while (byteLength(line) > MAX_SUMMARY_BYTES && summary.affectedPaths.length > 0) {
     summary.affectedPaths.pop();
+    cut = true;
     line = canonicalJson(summary);
   }
   for (const field of ['rootCause', 'observable', 'title']) {
@@ -166,9 +191,14 @@ function summaryLine(prior) {
     if (typeof summary[field] !== 'string') continue;
     // Each byte of text cut takes at least one byte of its escaped form with it.
     summary[field] = cutBytes(summary[field], byteLength(summary[field]) - over);
+    cut = true;
     line = canonicalJson(summary);
   }
-  return line;
+  return { text: line, cut };
+}
+
+function summaryLine(prior) {
+  return summaryEntry(prior).text;
 }
 
 /**
@@ -191,23 +221,31 @@ function shallowTree(paths) {
 
 /**
  * The symbols the PoC exercises: what its added lines call, in order of first
- * appearance, without the framework's own, at most MAX_SYMBOLS.
+ * appearance, without the framework's own, the first MAX_SYMBOLS of them, and
+ * how many went past that and how many lines were too long to read whole.
  * @param {Map<string, Array<{line:number, text:string}>>} added - the PoC's added lines, by file
+ * @returns {{symbols:string[], overCap:number, longLines:number}}
  */
-function symbolsOf(added) {
+function scanSymbols(added) {
   const seen = new Set();
+  let longLines = 0;
   for (const lines of added.values()) {
     for (const { text } of lines) {
+      if (text.length > MAX_SCANNED_LINE) longLines += 1;
       for (const m of text.slice(0, MAX_SCANNED_LINE).matchAll(SYMBOL)) {
         const receiver = m[1];
         const name = m[2] || m[3];
         if (receiver && FRAMEWORK_RECEIVER.test(receiver)) continue;
         seen.add(name);
-        if (seen.size === MAX_SYMBOLS) return [...seen];
       }
     }
   }
-  return [...seen];
+  const all = [...seen];
+  return { symbols: all.slice(0, MAX_SYMBOLS), overCap: Math.max(0, all.length - MAX_SYMBOLS), longLines };
+}
+
+function symbolsOf(added) {
+  return scanSymbols(added).symbols;
 }
 
 // ------------------------------------------------------------------ the sandbox's half
@@ -222,23 +260,61 @@ async function read(ctx, name, args, { stdin, max = READ_MAX_BYTES } = {}) {
   return { exitCode: record.exitCode, bytes: out.bytes(), truncated: out.truncated };
 }
 
+/** asked = delivered + the sum of omitted, or the account is the runner's own bug. */
+function checkAccount(what, asked, delivered, omitted) {
+  const sum = Object.values(omitted).reduce((n, c) => n + c, 0);
+  if (asked !== delivered + sum) throw new Error(`the pack's account of ${what} does not add up: asked ${asked}, delivered ${delivered}, omitted ${sum}`);
+}
+
+/**
+ * The account of one list: the one way an item leaves it. An item is delivered,
+ * or omitted with a reason from the fixed list; account() refuses a list that
+ * does not add up, so a filter cannot drop an item without naming why.
+ */
+class Tally {
+  constructor(asked) {
+    this.asked = asked;
+    this.items = [];
+    this.omitted = {};
+  }
+
+  deliver(item) {
+    this.items.push(item);
+  }
+
+  omit(reason, count = 1) {
+    if (!REASONS.has(reason)) throw new TypeError(`no such reason: ${reason}`);
+    if (count > 0) this.omitted[reason] = (this.omitted[reason] || 0) + count;
+  }
+
+  account() {
+    checkAccount('a list', this.asked, this.items.length, this.omitted);
+    return { asked: this.asked, items: this.items, omitted: { ...this.omitted } };
+  }
+}
+
 /**
  * `git cat-file --batch`'s answer on `<commit>:<path>` lines, read as a stream
  * record by record: a blob of any size costs only what is kept of it, so an
  * early large or binary file cannot use up the read and hide the ones after it.
- * The same bytes make the same items however they arrive. A path the commit
- * lacks, or that is not a file, is no item.
+ * The same bytes make the same account however they arrive. A text is delivered
+ * (`cut` when the read limit left part of it out); anything else is omitted with
+ * its reason.
  */
 class BlobSink {
-  constructor(paths) {
+  constructor(paths, tally = new Tally(paths.length)) {
     this.paths = paths;
+    this.tally = tally;
     this.at = 0;
-    this.items = [];
     this.textLeft = READ_MAX_BYTES;
     this.header = [];
     this.headerBytes = 0;
     this.record = null;
     this.endOfRecord = false;
+  }
+
+  get items() {
+    return this.tally.items;
   }
 
   write(chunk) {
@@ -280,7 +356,11 @@ class BlobSink {
     const path = this.paths[this.at];
     this.at += 1;
     const m = /^[0-9a-f]+ ([a-z]+) ([0-9]+)$/.exec(line);
-    if (!m) return; // `<spec> missing`
+    if (!m) {
+      // `<spec> missing`, or a gitlink's `<id> missing`.
+      this.tally.omit('notInCommit');
+      return;
+    }
     const size = Number(m[2]);
     // At least what tells a binary file from a text, whatever the texts before it took.
     const keep = Math.min(size, MAX_BLOB_BYTES, Math.max(BINARY_PROBE_BYTES, this.textLeft));
@@ -292,55 +372,95 @@ class BlobSink {
     const { path, type, size, kept, chunks } = this.record;
     this.record = null;
     this.endOfRecord = true;
-    if (type !== 'blob') return;
+    if (type !== 'blob') {
+      this.tally.omit('notAFile');
+      return;
+    }
     const content = Buffer.concat(chunks);
-    const binary = content.subarray(0, BINARY_PROBE_BYTES).includes(0);
-    if (!binary) this.textLeft = Math.max(0, this.textLeft - kept);
-    this.items.push({ path, text: binary ? null : content.toString('utf8'), bytes: size, binary, cut: !binary && kept < size });
+    if (content.subarray(0, BINARY_PROBE_BYTES).includes(0)) {
+      this.tally.omit('binary');
+      return;
+    }
+    this.textLeft = Math.max(0, this.textLeft - kept);
+    this.tally.deliver({ path, text: content.toString('utf8'), bytes: size, cut: kept < size });
+  }
+
+  /** The stream ended: a path git never answered for is named as such. */
+  finish() {
+    if (this.record) this.finishRecord();
+    this.tally.omit('unread', this.paths.length - this.at);
+    this.at = this.paths.length;
   }
 }
 
-/**
- * A path `git cat-file --batch` can be asked for: one line, no NUL. Nothing else
- * is asked of a path here: what common's finding schema and the stake's scope
- * accept is the jury's to read, and these paths never reach the report.
- */
-function batchablePath(p) {
+/** A path `git cat-file --batch` can be asked for: one line, no NUL. */
+function askablePath(p) {
   return typeof p === 'string' && p !== '' && !/[\r\n\0]/.test(p);
 }
 
-/** Blobs by `<commit>:<path>`, as items. */
-async function readBlobs(ctx, name, commit, paths) {
-  if (paths.length === 0) return [];
-  const sink = new BlobSink(paths);
-  const record = await ctx.exec(git(['cat-file', '--batch']), {
-    name, timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(paths.map((p) => `${commit}:${p}\n`).join(''), 'utf8'), tee: sink
-  });
-  if (record.exitCode !== 0) throw runnerError(name, `the pack's files could not be read (git exited ${record.exitCode})`);
-  return sink.items;
+/**
+ * The one gathering path for files: every path asked for ends delivered, or
+ * omitted with its reason. These paths never reach the report, so nothing else
+ * is asked of them: what common's finding schema and the stake's scope accept is
+ * the jury's to read.
+ * @param {object} ctx
+ * @param {string} name - the exec's name
+ * @param {string} commit
+ * @param {unknown[]} paths - what was asked for
+ * @param {Function} [inScope] - a path's one form when it is in scope, else null
+ * @returns {Promise<{asked:number, items:object[], omitted:object}>}
+ */
+async function gatherFiles(ctx, name, commit, paths, inScope = (p) => p) {
+  const tally = new Tally(paths.length);
+  const ask = new Set();
+  for (const raw of paths) {
+    if (!askablePath(raw)) {
+      tally.omit('notAskable');
+      continue;
+    }
+    const p = inScope(raw);
+    if (p === null) tally.omit('outOfScope');
+    else if (ask.has(p)) tally.omit('duplicate');
+    else ask.add(p);
+  }
+  if (ask.size > 0) {
+    const list = [...ask];
+    const sink = new BlobSink(list, tally);
+    const record = await ctx.exec(git(['cat-file', '--batch']), {
+      name, timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(list.map((p) => `${commit}:${p}\n`).join(''), 'utf8'), tee: sink
+    });
+    if (record.exitCode !== 0) throw runnerError(name, `the pack's files could not be read (git exited ${record.exitCode})`);
+    sink.finish();
+  }
+  return tally.account();
 }
 
 /**
  * `git grep -z -n`'s answer read as a stream, line by line: only the head of
- * each line is kept, and only sites `keep` allows count, so a huge match in a
- * file out of scope cannot hide the callers after it. The same bytes make the
- * same sites however they arrive.
+ * each line is kept, so a huge match costs nothing and hides nothing after it.
+ * Every line is accounted for: a site, past the cap, out of scope, or unreadable
+ * (a path longer than the head). The same bytes make the same account however they arrive.
  */
 class GrepSink {
   constructor(prefix, keep) {
     this.prefix = prefix;
     this.keep = keep;
     this.sites = [];
+    this.pastCap = 0;
+    this.outOfScope = 0;
+    this.unreadable = 0;
     this.head = [];
     this.headBytes = 0;
+    this.overflow = false;
   }
 
   write(chunk) {
     let buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    while (buf.length > 0 && this.sites.length < MAX_SITES_PER_SYMBOL) {
+    while (buf.length > 0) {
       const nl = buf.indexOf(0x0a);
       const part = nl < 0 ? buf : buf.subarray(0, nl);
       const room = MAX_GREP_LINE_HEAD_BYTES - this.headBytes;
+      if (part.length > room) this.overflow = true;
       if (room > 0) {
         const take = part.subarray(0, room);
         this.head.push(Buffer.from(take));
@@ -348,34 +468,74 @@ class GrepSink {
       }
       if (nl < 0) return true;
       buf = buf.subarray(nl + 1);
-      this.endLine(Buffer.concat(this.head).toString('utf8'));
-      this.head = [];
-      this.headBytes = 0;
+      this.endLine();
     }
     return true;
   }
 
-  endLine(raw) {
-    const parts = raw.split('\0');
-    if (parts.length < 3 || !parts[0].startsWith(this.prefix)) return;
+  endLine() {
+    const parts = Buffer.concat(this.head).toString('utf8').split('\0');
+    const overflow = this.overflow;
+    this.head = [];
+    this.headBytes = 0;
+    this.overflow = false;
+    if (parts.length < 3 || !parts[0].startsWith(this.prefix)) {
+      this.unreadable += 1;
+      return;
+    }
     const path = parts[0].slice(this.prefix.length);
-    if (!this.keep(path)) return;
-    this.sites.push({ path, line: Number(parts[1]), text: cutBytes(parts.slice(2).join(' ').trim(), MAX_SITE_BYTES) });
+    if (!this.keep(path)) {
+      this.outOfScope += 1;
+      return;
+    }
+    if (this.sites.length >= MAX_SITES_PER_SYMBOL) {
+      this.pastCap += 1;
+      return;
+    }
+    const whole = parts.slice(2).join(' ').trim();
+    const text = cutBytes(whole, MAX_SITE_BYTES);
+    this.sites.push({ path, line: Number(parts[1]), text, cut: overflow || text !== whole });
+  }
+
+  /** The stream ended: a last line without its line feed is not read as a site. */
+  finish() {
+    if (this.headBytes > 0) {
+      this.unreadable += 1;
+      this.head = [];
+      this.headBytes = 0;
+    }
   }
 }
 
-/** Up to MAX_SITES_PER_SYMBOL call sites of each symbol, in git's order, among the paths `keep` allows. */
-async function readCallSites(ctx, listed, symbols, keep) {
-  const out = [];
+/**
+ * The call sites, as an account of sites, with the symbols' own counts beside it:
+ * `symbols` are what was searched for, `asked` the lines git answered with.
+ * found = withSites + noSites + overCap.
+ */
+async function gatherCallSites(ctx, listed, added, keep) {
+  const { symbols, overCap, longLines } = scanSymbols(added);
+  const items = [];
+  const omitted = {};
+  const omit = (reason, n) => { if (n > 0) omitted[reason] = (omitted[reason] || 0) + n; };
+  let withSites = 0;
   for (let i = 0; i < symbols.length; i += 1) {
     const symbol = symbols[i];
     const name = `pack:grep:${i + 1}`;
     const sink = new GrepSink(`${listed}:`, keep);
     const record = await ctx.exec(git(['grep', '-n', '-w', '-F', '-I', '-z', '--no-color', '--full-name', '-e', symbol, listed, '--']), { name, timeoutMs: GIT_TIMEOUT_MS, tee: sink });
     if (record.exitCode !== 0 && record.exitCode !== 1) throw runnerError(name, `the call sites could not be read (git exited ${record.exitCode})`);
-    if (sink.sites.length) out.push({ symbol, sites: sink.sites });
+    sink.finish();
+    omit('pastCap', sink.pastCap);
+    omit('outOfScope', sink.outOfScope);
+    omit('unreadable', sink.unreadable);
+    if (sink.sites.length) withSites += 1;
+    for (const site of sink.sites) items.push({ symbol, ...site });
   }
-  return out;
+  const asked = items.length + Object.values(omitted).reduce((n, c) => n + c, 0);
+  return {
+    asked, items, omitted,
+    symbols: { found: symbols.length + overCap, withSites, noSites: symbols.length - withSites, overCap, longLines }
+  };
 }
 
 /**
@@ -394,13 +554,14 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
   if (diff.exitCode !== 0) throw runnerError('pack:diff', `the PoC's diff could not be read (git exited ${diff.exitCode})`);
 
   const pocPaths = touched.filter((t) => t.status !== 'D').map((t) => t.path);
-  const pocFiles = await readBlobs(ctx, 'pack:poc', poc, pocPaths);
+  const pocFiles = await gatherFiles(ctx, 'pack:poc', poc, pocPaths);
 
   const spec = request.spec;
   const scope = spec.stake && spec.stake.scope ? spec.stake.scope : null;
   const named = request.finding && Array.isArray(request.finding.affectedPaths) ? request.finding.affectedPaths : [];
-  const inScope = scope ? splitByStakeScope(named, scope).inScope : named;
-  const sources = await readBlobs(ctx, 'pack:source', listed, [...new Set(inScope)].filter(batchablePath));
+  const sources = await gatherFiles(ctx, 'pack:source', listed, named, scope
+    ? (p) => { const { inScope } = splitByStakeScope([p], scope); return inScope.length ? inScope[0] : null; }
+    : (p) => p);
 
   // Call sites in what the stake covers; without a scope, in anything but the tests and the framework's own paths.
   const skip = [...(spec.paths.tests || []), ...(spec.paths.protected || [])];
@@ -409,7 +570,7 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
     if (!allowed.has(p)) allowed.set(p, scope ? splitByStakeScope([p], scope).inScope.length === 1 : !matchesAny(p, skip));
     return allowed.get(p);
   };
-  const callSites = await readCallSites(ctx, listed, symbolsOf(added || new Map()), keep);
+  const callSites = await gatherCallSites(ctx, listed, added || new Map(), keep);
 
   const tree = await read(ctx, 'pack:tree', ['ls-tree', '-r', '-z', '--full-tree', '--name-only', '--end-of-options', listed], { max: TREE_MAX_BYTES });
   // A tree cut at the bound ends at its last whole name.
@@ -423,44 +584,87 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
     pocFiles,
     sources,
     callSites,
-    tree: shallowTree(names.map((p) => Buffer.from(p, 'latin1').toString('utf8')))
+    tree: shallowTree(names.map((p) => Buffer.from(p, 'latin1').toString('utf8'))),
+    treeCut: tree.truncated
   };
 }
 
 // ------------------------------------------------------------------ the assembly
 
-function fileItem(tier, slug, ext, header, body, cut = false) {
+function fileItem(slug, ext, header, body, cut = false) {
   // Well-formed as a whole: a path in the header can hold a lone surrogate a JSON escape wrote, as a body can.
   const text = `# ${header}\n${body}`.toWellFormed();
-  return { tier, slug, ext, text, bytes: byteLength(text) + FILE_OVERHEAD_BYTES, cut };
+  return { slug, ext, text, bytes: byteLength(text) + FILE_OVERHEAD_BYTES, cut };
+}
+
+/** A file of one entry per line, each whole or not at all, so what it delivers can be counted. `entries`: { text, cut }. */
+function linesItem(slug, header, entries) {
+  const head = `# ${header}`.toWellFormed();
+  const lines = entries.map((e) => ({ text: e.text.toWellFormed(), cut: e.cut === true }));
+  return { slug, ext: 'txt', head, lines, bytes: byteLength(head) + lines.reduce((n, l) => n + 1 + byteLength(l.text), 0) + FILE_OVERHEAD_BYTES };
 }
 
 function blobBody(item) {
-  if (item.binary) return `[binary file: ${item.bytes} bytes]`;
   return item.cut ? `${item.text}\n[cut by the runner: the first ${byteLength(item.text)} of ${item.bytes} bytes were read]` : item.text;
 }
 
-/** Every item of every tier, whole, in priority order. */
-function tierItems(request, inputs) {
+/** How many things a tier's items hold: a file is one, a file of lines holds one per line. */
+function unitsOf(item) {
+  return item.lines ? item.lines.length : 1;
+}
+
+/**
+ * Every tier, whole, in priority order: its items, and what its gathering already
+ * left out. Each tier's `asked` is in the units its items hold: files, or entries
+ * of a list, or (call sites) the lines git answered with.
+ */
+function tierAccounts(request, inputs) {
   const known = Array.isArray(request.knownIssues) ? request.knownIssues : [];
   const priors = Array.isArray(request.priorFindings) ? request.priorFindings : [];
-  const numbered = (list, tier, slug, header, body, ext = 'txt') => list.map((item, i) => fileItem(tier, `${slug}-${String(i + 1).padStart(3, '0')}`, ext, header(item), body(item), item.cut));
-  const callLines = inputs.callSites.flatMap(({ symbol, sites }) => [`symbol: ${symbol}`, ...sites.map((s) => `${s.path}:${s.line}: ${s.text}`)]);
+  const numbered = (list, slug, header) => list.items.map((f, i) => fileItem(`${slug}-${String(i + 1).padStart(3, '0')}`, 'txt', header(f), blobBody(f), f.cut === true));
+  const oneFile = (item) => ({ asked: 1, omitted: {}, items: [item] });
+  const none = { asked: 0, omitted: {}, items: [] };
+  const hasDiff = inputs.pocDiff !== '';
+  const sites = inputs.callSites;
   return {
-    poc: [
-      ...(inputs.pocDiff === '' ? [] : [fileItem('poc', 'poc-diff', 'patch', 'poc.patch with function context (git diff -W), written by the hunter', inputs.pocDiff, inputs.pocDiffCut === true)]),
-      ...numbered(inputs.pocFiles, 'poc', 'poc-file', (f) => `poc file: ${f.path}`, blobBody)
-    ],
-    claim: [
-      fileItem('claim', 'finding', 'txt', 'finding.json, written by the hunter', canon(request.finding || {})),
-      fileItem('claim', 'report', 'txt', 'report.md, written by the hunter', typeof request.report === 'string' ? request.report : '')
-    ],
-    source: numbered(inputs.sources, 'source', 'source', (f) => `source file: ${f.path}`, blobBody),
-    callSites: callLines.length ? [fileItem('callSites', 'call-sites', 'txt', `call sites of the symbols the PoC exercises (git grep -w on the listed commit, at most ${MAX_SITES_PER_SYMBOL} each)`, callLines.join('\n'))] : [],
-    knownIssues: known.length ? [fileItem('knownIssues', 'known-issues', 'txt', 'known_issues.json, one entry per line, written by the maker', known.map(canon).join('\n'))] : [],
-    priorFindings: priors.length ? [fileItem('priorFindings', 'prior-findings', 'txt', 'summaries of the prior valid findings on this listing, one per line, each written by its hunter', priors.map(summaryLine).join('\n'))] : [],
-    fix: request.fixPatch ? [fileItem('fix', 'fix-diff', 'patch', 'fix.patch, written by the hunter', Buffer.from(request.fixPatch).toString('utf8'))] : [],
-    tree: inputs.tree ? [fileItem('tree', 'tree', 'txt', `a shallow file tree of the listed commit (${TREE_DEPTH} levels)`, inputs.tree)] : []
+    poc: {
+      asked: 1 + inputs.pocFiles.asked,
+      omitted: { ...inputs.pocFiles.omitted, ...(hasDiff ? {} : { noDiff: 1 }) },
+      items: [
+        ...(hasDiff ? [fileItem('poc-diff', 'patch', 'poc.patch with function context (git diff -W), written by the hunter', inputs.pocDiff, inputs.pocDiffCut === true)] : []),
+        ...numbered(inputs.pocFiles, 'poc-file', (f) => `poc file: ${f.path}`)
+      ]
+    },
+    claim: {
+      asked: 2,
+      omitted: {},
+      items: [
+        fileItem('finding', 'txt', 'finding.json, written by the hunter', canon(request.finding || {})),
+        fileItem('report', 'txt', 'report.md, written by the hunter', typeof request.report === 'string' ? request.report : '')
+      ]
+    },
+    source: { asked: inputs.sources.asked, omitted: { ...inputs.sources.omitted }, items: numbered(inputs.sources, 'source', (f) => `source file: ${f.path}`) },
+    callSites: {
+      asked: sites.asked,
+      omitted: { ...sites.omitted },
+      symbols: sites.symbols,
+      // A symbol past the cap, and a line too long to read whole, are left out of what was searched for.
+      extraLoss: sites.symbols.overCap + sites.symbols.longLines,
+      items: sites.items.length ? [linesItem('call-sites', `call sites of the symbols the PoC exercises (git grep -w on the listed commit, at most ${MAX_SITES_PER_SYMBOL} each), one per line: symbol: path:line: text`,
+        sites.items.map((x) => ({ text: `${x.symbol}: ${x.path}:${x.line}: ${x.text}`, cut: x.cut })))] : []
+    },
+    knownIssues: {
+      asked: known.length,
+      omitted: {},
+      items: known.length ? [linesItem('known-issues', 'known_issues.json, one entry per line, written by the maker', known.map((k) => ({ text: canon(k) })))] : []
+    },
+    priorFindings: {
+      asked: priors.length,
+      omitted: {},
+      items: priors.length ? [linesItem('prior-findings', 'summaries of the prior valid findings on this listing, one per line, each written by its hunter', priors.map(summaryEntry))] : []
+    },
+    fix: request.fixPatch ? oneFile(fileItem('fix-diff', 'patch', 'fix.patch, written by the hunter', Buffer.from(request.fixPatch).toString('utf8'))) : none,
+    tree: inputs.tree ? oneFile(fileItem('tree', 'txt', `a shallow file tree of the listed commit (${TREE_DEPTH} levels)`, inputs.tree, inputs.treeCut === true)) : none
   };
 }
 
@@ -481,13 +685,48 @@ function allocate(budgetBytes, sizes) {
   return grants;
 }
 
-/** A tier's items within its grant: whole while they fit, then one cut, then none. */
+/** As many of a file's lines as fit in `left`: whole lines only, with a line saying how many did not. Null when none does. */
+function fitLines(item, left) {
+  if (item.bytes <= left) return { ...item, text: [item.head, ...item.lines.map((l) => l.text)].join('\n'), kept: item.lines };
+  let room = left - byteLength(item.head) - FILE_OVERHEAD_BYTES - LEFT_OUT_NOTE_BYTES;
+  const kept = [];
+  for (const line of item.lines) {
+    const need = 1 + byteLength(line.text);
+    if (need > room) break;
+    kept.push(line);
+    room -= need;
+  }
+  if (kept.length === 0) return null;
+  const text = [item.head, ...kept.map((l) => l.text), `[the runner left out ${item.lines.length - kept.length} more]`].join('\n');
+  return { ...item, text, bytes: byteLength(text) + FILE_OVERHEAD_BYTES, kept };
+}
+
+/**
+ * A tier's items within its grant: whole while they fit, then one cut (a file of
+ * lines by whole lines), then none.
+ * @returns {{kept:object[], delivered:number, cut:number}}
+ */
 function fillTier(items, grant) {
   const kept = [];
+  let delivered = 0;
+  let cut = 0;
   let left = grant;
   for (const item of items) {
+    if (item.lines) {
+      const fit = fitLines(item, left);
+      if (fit) {
+        kept.push(fit);
+        delivered += fit.kept.length;
+        cut += fit.kept.filter((l) => l.cut).length;
+        left -= fit.bytes;
+      }
+      if (!fit || fit.kept.length < item.lines.length) break;
+      continue;
+    }
     if (item.bytes <= left) {
       kept.push(item);
+      delivered += 1;
+      if (item.cut) cut += 1;
       left -= item.bytes;
       continue;
     }
@@ -496,17 +735,20 @@ function fillTier(items, grant) {
       const room = left - FILE_OVERHEAD_BYTES - byteLength(note(item.bytes));
       const head = cutBytes(item.text, room);
       const text = `${head}${note(byteLength(head))}`;
-      kept.push({ ...item, text, bytes: byteLength(text) + FILE_OVERHEAD_BYTES, cut: true, partial: true });
+      kept.push({ ...item, text, bytes: byteLength(text) + FILE_OVERHEAD_BYTES });
+      delivered += 1;
+      cut += 1;
     }
     break;
   }
-  return kept;
+  return { kept, delivered, cut };
 }
 
-function tierStatus(items, kept) {
-  if (items.length === 0) return 'empty';
-  if (kept.length === 0) return 'dropped';
-  return kept.length === items.length && kept.every((k) => !k.cut) ? 'full' : 'truncated';
+/** A tier's status, from its counts alone. */
+function tierStatus({ delivered, omitted, cut, extraLoss = 0 }) {
+  const lost = LOSS_REASONS.reduce((n, r) => n + (omitted[r] || 0), 0) + cut + extraLoss;
+  if (lost === 0) return delivered > 0 ? 'full' : 'empty';
+  return delivered > 0 ? 'truncated' : 'dropped';
 }
 
 /**
@@ -521,17 +763,22 @@ function tierStatus(items, kept) {
  */
 function assemblePack({ request, inputs, codeClass = request.codeClass || 'code-standard', budgetTokens }) {
   const budget = budgetTokens === undefined ? getCodeClass(codeClass).envelope.contextPackTokens : budgetTokens;
-  const items = tierItems(request, inputs);
-  const sizes = Object.fromEntries(TIER_NAMES.map((name) => [name, items[name].reduce((n, i) => n + i.bytes, 0)]));
+  const accounts = tierAccounts(request, inputs);
+  const sizes = Object.fromEntries(TIER_NAMES.map((name) => [name, accounts[name].items.reduce((n, i) => n + i.bytes, 0)]));
   const grants = allocate(budget * BYTES_PER_TOKEN, sizes);
   const files = [];
   const tiers = TIERS.map(({ name }, index) => {
-    const kept = fillTier(items[name], grants[name]);
+    const account = accounts[name];
+    const { kept, delivered, cut } = fillTier(account.items, grants[name]);
     const rank = index + 1;
     for (const k of kept) files.push({ name: `${String(rank).padStart(2, '0')}-${k.slug}.${k.ext}`, tier: name, text: k.text, bytes: k.bytes });
     const bytesIncluded = kept.reduce((n, k) => n + k.bytes, 0);
+    const overBudget = account.items.reduce((n, i) => n + unitsOf(i), 0) - delivered;
+    const omitted = { ...account.omitted, ...(overBudget > 0 ? { overBudget } : {}) };
+    checkAccount(name, account.asked, delivered, omitted);
     return {
-      rank, name, status: tierStatus(items[name], kept), items: items[name].length, itemsIncluded: kept.length,
+      rank, name, status: tierStatus({ delivered, omitted, cut, extraLoss: account.extraLoss }), asked: account.asked, delivered, omitted, cut,
+      ...(account.symbols ? { symbols: account.symbols } : {}),
       bytes: sizes[name], bytesIncluded, tokens: packTokens(bytesIncluded)
     };
   });
@@ -540,7 +787,7 @@ function assemblePack({ request, inputs, codeClass = request.codeClass || 'code-
     codeClass,
     budgetTokens: budget,
     tokenRule: TOKEN_RULE,
-    note: 'The pack\'s tiers, in priority order. A tier marked dropped or truncated did not fit the budget: what it left out is no evidence of anything.',
+    note: 'The pack\'s tiers, in priority order. For each: asked = delivered + the sum of omitted, and cut counts what was delivered in part. A tier marked dropped or truncated lost something to a cap, a read limit, a size bound or the budget; what it left out is no evidence of anything.',
     tiers
   });
   const usedBytes = files.reduce((n, f) => n + f.bytes, 0) + byteLength(manifest) + FILE_OVERHEAD_BYTES;
@@ -550,4 +797,7 @@ function assemblePack({ request, inputs, codeClass = request.codeClass || 'code-
   return { version: PACK_VERSION, codeClass, budgetTokens: budget, usedTokens, sha256, tiers, files: outFiles };
 }
 
-module.exports = { gatherPackInputs, assemblePack, packTokens, symbolsOf, summaryOf, summaryLine, shallowTree, BlobSink, GrepSink, TIER_NAMES, TIERS, BYTES_PER_TOKEN, FILE_OVERHEAD_BYTES };
+module.exports = {
+  gatherPackInputs, assemblePack, packTokens, symbolsOf, scanSymbols, summaryOf, summaryLine, shallowTree, Tally, BlobSink, GrepSink,
+  TIER_NAMES, TIERS, FACT_REASONS, LOSS_REASONS, BYTES_PER_TOKEN, FILE_OVERHEAD_BYTES, MANIFEST_RESERVE_BYTES
+};

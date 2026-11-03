@@ -1365,7 +1365,12 @@ and hides nothing after it.
 ```json
 {
   "version": 1, "codeClass": "code-standard", "budgetTokens": 60000, "usedTokens": 41200, "sha256": "…",
-  "tiers": [ { "rank": 1, "name": "poc", "status": "full", "items": 2, "itemsIncluded": 2, "bytes": 9000, "bytesIncluded": 9000, "tokens": 2250 }, "…" ],
+  "tiers": [
+    { "rank": 3, "name": "source", "status": "full", "asked": 3, "delivered": 2, "omitted": { "outOfScope": 1 }, "cut": 0, "bytes": 9000, "bytesIncluded": 9000, "tokens": 2250 },
+    { "rank": 4, "name": "callSites", "status": "truncated", "asked": 31, "delivered": 12, "omitted": { "outOfScope": 9, "pastCap": 10 }, "cut": 0,
+      "symbols": { "found": 4, "withSites": 3, "noSites": 1, "overCap": 0, "longLines": 0 }, "bytes": 2400, "bytesIncluded": 2400, "tokens": 600 },
+    "…"
+  ],
   "files": [ { "name": "00-manifest.json", "tier": "manifest", "text": "…" }, { "name": "01-poc-diff.patch", "tier": "poc", "text": "…" }, "…" ]
 }
 ```
@@ -1373,16 +1378,45 @@ and hides nothing after it.
 `files` go to the AI Node in order, as named attachments (`attachments`,
 `attachmentNames`): A4b sends nothing of `report.md`, `finding.json`, the known
 issues or the prior findings beside them. The first is the manifest, which says what
-each tier kept: `full`, `truncated`, `dropped` or `empty`.
+each tier kept.
+
+**Nothing leaves silently (measured).** Everything gathered from a list goes through
+one account (`Tally`): an item is delivered, or omitted with a reason from a fixed
+list, and an account that does not add up stops the run as a runner error. The
+manifest gives each tier `asked`, `delivered`, `omitted` and `cut` (what was delivered
+in part), with `asked = delivered + the sum of omitted`, counts and fixed codes only:
+no path, name or other text of the request. A tier's `status` is computed from them:
+
+| Status | When |
+|---|---|
+| `full` | Something was delivered, and nothing was lost |
+| `truncated` | Something was delivered, and something was lost |
+| `dropped` | Nothing was delivered, and something was lost |
+| `empty` | Nothing was delivered, and nothing was lost |
+
+*Lost* means left out for a cap, a read limit, a size bound or the budget: `overBudget`,
+`pastCap` (a site past 10 for its symbol), `unreadable` (a `git grep` line whose path
+did not fit what is read of a line), `unread` (a path git never answered for), anything in
+`cut`, a symbol past the 16 searched for, or a PoC line too long to read whole. The other
+reasons are facts about the request or the repository, which no larger limit would
+have changed, and they leave the status alone: `outOfScope`, `notInCommit`, `notAFile`,
+`notAskable` (a path that is not one line), `duplicate`, `noDiff`, and `binary`, since
+the jury reads text whatever the budget. A binary file gets no file of its own; a juror
+can see it was named in `finding.json`, and the count says one was left out.
+
+Each tier counts what it holds. `poc` and `source` count files, `claim`, `fix` and `tree`
+their one or two files, `knownIssues` and `priorFindings` entries (each whole or not at
+all). `callSites` counts the lines `git grep` answered with, and `symbols` beside them
+what was searched for (`found = withSites + noSites + overCap`).
 
 | Rank | Tier | Share | What |
 |---|---|---|---|
 | 1 | `poc` | 30% | `poc.patch` with function context; each PoC file's full text |
 | 2 | `claim` | 10% | `finding.json` (canonical), `report.md` |
 | 3 | `source` | 24% | The in-scope files `finding.affectedPaths` names, at the listed commit |
-| 4 | `callSites` | 5% | At most 10 in-scope call sites of each of at most 16 symbols the PoC's added lines call (`.name(`, `new Name`), without `vm.`, `console.` and the language's own |
+| 4 | `callSites` | 5% | At most 10 in-scope call sites of each of at most 16 symbols the PoC's added lines call (`.name(`, `.name{…}(`, `new Name`), without `vm.`, `console.` and the language's own, one per line: `symbol: path:line: text` |
 | 5 | `knownIssues` | 12% | `known_issues.json`, one entry per line |
-| 6 | `priorFindings` | 19% | Up to 8 summaries, one per line: `bcid`, `title`, `claimedClass`, `rootCause`, 5 of `affectedPaths`, `observable`; never a prior `report.md` |
+| 6 | `priorFindings` | 19% | Up to 8 summaries, one per line: `bcid`, `title`, `claimedClass`, `rootCause`, 5 of `affectedPaths`, `observable`; never a prior `report.md`. A summary that lost paths or text to its bound counts in `cut` |
 | 7 | `fix` | | `fix.patch`, as text |
 | 8 | `tree` | | The listed commit's first two levels |
 
@@ -1390,8 +1424,8 @@ Each of tiers 1-6 first takes up to its share, in order. What is left goes back 
 order, then to tiers 7 and 8. So a hunter who pads `poc.patch` or `report.md`, or names
 200 huge files, cannot push out the known issues and the prior findings a juror needs
 to find a duplicate, and 8 summaries always fit. Over budget the lowest tiers go first.
-A tier is cut on a whole character, at a line end where that keeps at least half, with
-a line saying how much was shown.
+A file is cut on a whole character, at a line end where that keeps at least half, with
+a line saying how much was shown; a tier of entries keeps whole entries.
 
 **A token** is `ceil(UTF-8 bytes / 4)`, plus 160 bytes per file for the AI Node's fence
 lines. On real files (cl100k): Solidity 4.2-4.9 bytes per token, prose 5.4, so a full
