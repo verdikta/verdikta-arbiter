@@ -6,7 +6,7 @@ const A = require('../assertions');
 const { fetchJustificationJson, justificationRetry } = require('../ipfs');
 const { resolveL4Claim } = require('../scenario-loader');
 const { codeReview } = require('@verdikta/common');
-const { claimVerdictChecks, revealChecks, abstainChecks, observedRound, EXPECTED, VERDICT_BY_SOURCE } = require('./claim-checks');
+const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, EXPECTED, VERDICT_BY_SOURCE } = require('./claim-checks');
 const { readReveals } = require('./reveals');
 const { validMassPoints, summarize, metricChecks } = require('./metrics');
 const {
@@ -196,12 +196,11 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
     }
     // What the uploads say happened, not what the scenario hoped: a wrong path fails its checks, and must not count as a sample of the right one.
     const seen = observedRound(reports);
-    const complete = Number.isInteger(responseCount) && reveals.length === responseCount;
     const round = {
       ...expectedRound(latencyMs),
       verdict: seen.verdict,
       fault: Boolean(expected.fault) || seen.faultSeen,
-      validMass: complete ? reveals.map((r) => validMassPoints(r.scores)) : [],
+      validMass: revealsAreComplete({ reveals, responseCount, error }) ? reveals.map((r) => validMassPoints(r.scores)) : [],
       ...(expected.cold ? { image: reports.map((r) => (r.json && r.json.metadata ? r.json.metadata.runner_image : null)) } : {}),
     };
     return { checks, round, vector };

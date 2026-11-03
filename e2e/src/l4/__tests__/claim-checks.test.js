@@ -3,7 +3,7 @@
 // Nodes A6b, A6c: what an L4 claim scenario asserts, against what it must refuse. The same
 // functions run on the real pipeline's justifications in the L2 claim suite.
 
-const { claimVerdictChecks, revealChecks, abstainChecks, observedRound, firstEvidenceBlock } = require('../claim-checks');
+const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock } = require('../claim-checks');
 
 const allPass = (checks) => checks.length > 0 && checks.every((c) => c.ok);
 const failed = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
@@ -326,6 +326,25 @@ describe('every recorded reveal, read from the chain', () => {
     ['an upload with no scores', { reveals: [reveal(A)], responseCount: 1, error: null, reports: [{ cid: A, json: {} }], combinedCids: [A] }, 'claim.revealMatchesUpload']
   ])('fails on %s', (_name, input, name) => {
     expect(failed(revealChecks(input))).toContain(name);
+  });
+});
+
+describe('revealsAreComplete: one test for the assertion and for the σ sample', () => {
+  const slots = (...list) => list.map((slot) => ({ slot }));
+
+  it('every recorded reveal, once each', () => {
+    expect(revealsAreComplete({ reveals: slots(0, 1, 2), responseCount: 3, error: null })).toBe(true);
+  });
+
+  it.each([
+    ['one missing', slots(0, 1), 3, null],
+    ['duplicate slots', slots(0, 0, 1), 3, null],
+    ['one too many', slots(0, 1, 2, 3), 3, null],
+    ['no count, as when no complete round was read', slots(0, 1, 2), null, null],
+    ['a read that failed', slots(0, 1, 2), 3, 'the RPC refused'],
+    ['nothing', [], 0, null]
+  ])('not on %s', (_name, reveals, responseCount, error) => {
+    expect(revealsAreComplete({ reveals, responseCount, error })).toBe(false);
   });
 });
 

@@ -217,6 +217,16 @@ function claimVerdictChecks({ kind, scores, reports, cids, assertWinner = false,
 }
 
 /**
+ * Is this every recorded reveal, once each? The one test, for the assertion and for whether a
+ * round's reveals may count as a measurement of the spread.
+ * @param {{ reveals: Array<{ slot: number }>, responseCount: number|null, error: string|null }} o
+ */
+function revealsAreComplete({ reveals, responseCount, error }) {
+  return error === null && Number.isInteger(responseCount) && responseCount > 0
+    && reveals.length === responseCount && new Set(reveals.map((r) => r.slot)).size === responseCount;
+}
+
+/**
  * What the reveal transactions say against what the aggregator and the uploads say.
  * @param {object} o
  * @param {Array<{ slot: number, cid: string, scores: number[] }>} o.reveals - from the chain
@@ -237,8 +247,8 @@ function revealChecks({ reveals, responseCount, error, reports, combinedCids }) 
   });
   return [
     assert('claim.revealsRead', error === null && reveals.length > 0, error === null ? `${reveals.length} recorded reveal(s), ${combinedCids.length} in the cluster` : error),
-    assert('claim.revealsComplete', Number.isInteger(responseCount) && responseCount > 0 && reveals.length === responseCount && slots.size === responseCount,
-      `the aggregator recorded ${responseCount === null ? 'an unreadable number of' : responseCount} response(s); read ${reveals.length} reveal(s) in ${slots.size} slot(s)`),
+    assert('claim.revealsComplete', revealsAreComplete({ reveals, responseCount, error }),
+      `${responseCount === null ? 'no complete round was read from the aggregator' : `the aggregator recorded ${responseCount} response(s)`}; read ${reveals.length} reveal(s) in ${slots.size} slot(s)`),
     assert('claim.clusterInReveals', reveals.length > 0 && missing.length === 0, missing.length ? `no reveal carries ${missing.map(short).join(', ')}` : 'every clustered justification is a recorded reveal'),
     assert('claim.revealMatchesUpload', reveals.length > 0 && different.length === 0, different.length ? `not what was uploaded: ${different.map((r) => short(r.cid)).join(', ')}` : 'each upload holds the vector revealed on-chain')
   ];
@@ -272,4 +282,4 @@ function observedRound(reports) {
   return { verdict: known || 'unreadable', faultSeen };
 }
 
-module.exports = { claimVerdictChecks, revealChecks, abstainChecks, observedRound, firstEvidenceBlock, EXPECTED, VERDICT_BY_SOURCE };
+module.exports = { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, EXPECTED, VERDICT_BY_SOURCE };

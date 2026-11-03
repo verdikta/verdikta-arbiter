@@ -29,7 +29,10 @@ const SALT = 'a6c0a6c0a6c0a6c0a6c0';
  * @param {(request: object) => object} o.answer - the evaluation for a decoded request:
  *   { scores: bigint[], justificationCid: string, reveals?: [{ cid, scores }] }, where reveals are
  *   what the reveal transactions carry (default: one per CID of the cluster's list); or
- *   { abstain: true, commitReceived?: number } for a round nobody settles
+ *   { abstain: true, commitReceived?: number } for a round nobody settles. And what a node behind
+ *   the chain shows: hiddenLogs (the last reveals' events are not returned), sameSlots (every reveal
+ *   event names slot 0), staleStatus (getAggregationStatus shows an open round with one response
+ *   fewer: true for every read, or how many reads)
  * @param {boolean} [o.revertOnEstimate] - estimateGas fails, as when selection would revert
  * @param {number} [o.estimatesBeforeRevert] - estimateGas fails once this many requests have been sent
  * @returns {Promise<object>}
@@ -79,7 +82,7 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
           input: OPERATOR.encodeFunctionData('fulfillOracleRequestV', [requestId, 0, AGGREGATOR, '0x12345678', 0, data])
         });
         const operator = ethers.getAddress(ethers.zeroPadValue(ethers.toBeHex(0xa6c0 + slot), 20));
-        const log = iface.encodeEventLog('NewOracleResponseRecorded', [requestId, slot, aggId, operator]);
+        const log = iface.encodeEventLog('NewOracleResponseRecorded', [requestId, evaluation.sameSlots ? 0 : slot, aggId, operator]);
         if (slot >= reveals.length - (evaluation.hiddenLogs || 0)) return;
         revealLogs.push({
           address: AGGREGATOR,
@@ -139,6 +142,10 @@ async function startStubChain({ abi, chainId = 84532, answer, revertOnEstimate =
         const found = evaluations.get(parsed.args[0]);
         const done = Boolean(found) && !found.abstain;
         const commits = done ? 4 : ((found && found.commitReceived) || 0);
+        if (done && found.staleStatus) {
+          if (typeof found.staleStatus === 'number') found.staleStatus -= 1;
+          return [false, false, true, 6, commits, found.responseCount - 1, 3, 2, ethers.ZeroAddress, 1];
+        }
         return [done, false, done, 6, commits, done ? found.responseCount : 0, 3, 2, ethers.ZeroAddress, 1];
       },
       responseTimeoutSeconds: () => [300n]

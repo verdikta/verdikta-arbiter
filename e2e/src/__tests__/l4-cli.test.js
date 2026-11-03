@@ -118,7 +118,7 @@ async function justificationsFor(request, { reporting = arbiter, aiNode = 'off',
     scores: vector,
     justificationCid: cids.join(','),
     reveals: [...cids.map((cid) => ({ cid, scores: vector })), { cid: thirdCid, scores: thirdVector }],
-    ...(changed && changed.hiddenLogs ? { hiddenLogs: changed.hiddenLogs } : {})
+    ...(changed && changed.node)
   };
 }
 
@@ -473,12 +473,37 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
     });
 
     it('fails when the logs leave out a reveal outside the cluster: the aggregator\'s count says there are three', async () => {
-      await startChain({ change: { valid: () => ({ hiddenLogs: 1 }) } });
+      await startChain({ change: { valid: () => ({ node: { hiddenLogs: 1 } }) } });
       const { code, out, json } = await reportOf('claim-l4-valid');
       expect(code).toBe(1);
       expect(out).toMatch(/claim\.revealsComplete.*recorded 3 response/);
       expect(json.cases[0].metrics.rounds[0].validMass).toEqual([]);
       expect(chain.reads).toContain('getAggregationStatus');
+    }, 60000);
+
+    it('fails when a node behind the chain shows an open round with two responses and logs to match: a count from an open round is no count', async () => {
+      await startChain({ change: { valid: () => ({ node: { hiddenLogs: 1, staleStatus: true } }) } });
+      const { code, out, json } = await reportOf('claim-l4-valid');
+      expect(code).toBe(1);
+      expect(out).toMatch(/claim\.revealsComplete.*no complete round was read/);
+      expect(json.cases[0].metrics.rounds[0].validMass).toEqual([]);
+    }, 60000);
+
+    it('a node that catches up within the retries is fine: the read waits for a complete round', async () => {
+      await startChain({ change: { valid: () => ({ node: { staleStatus: 1 } }) } });
+      const { code, out, json } = await reportOf('claim-l4-valid');
+      expect(out).not.toMatch(/FAIL/);
+      expect(code).toBe(0);
+      expect(json.cases[0].metrics.rounds[0].validMass).toEqual([100, 100, 100]);
+    }, 60000);
+
+    it('duplicate slots fail the check and give no σ: three logs of two arbiters are not three arbiters', async () => {
+      await startChain({ change: { valid: () => ({ node: { sameSlots: true } }) } });
+      const { code, out, json } = await reportOf('claim-l4-valid');
+      expect(code).toBe(1);
+      expect(out).toMatch(/claim\.revealsComplete.*in 1 slot/);
+      expect(json.cases[0].metrics.rounds[0].validMass).toEqual([]);
+      expect(summarize(json.cases[0].metrics.rounds).sigma.usable).toBe(0);
     }, 60000);
 
     it('fails when an upload is not what the arbiter revealed on-chain', async () => {
