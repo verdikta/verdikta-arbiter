@@ -97,6 +97,8 @@ the answer is 401 whatever the route.
   "service": "verdikta-code-runner", "version": "0.1.0", "node": "v20.18.1",
   "runtime": "runsc", "runtimeAvailable": true, "runtimeArgs": ["--platform=systrap", "…"],
   "gvisor": "release-20260921.0", "gvisorPinned": "release-20260921.0",
+  "scanner": { "image": "docker.io/semgrep/semgrep@sha256:81474464…", "version": "1.181.0", "rules": "2026.10", "present": true,
+               "digest": "sha256:81474464…", "platform": "linux/amd64", "problem": null, "rulesProblem": null },
   "docker": { "reachable": true, "endpoint": "unix:///run/verdikta-code-runner/docker.sock", "serverVersion": "28.0.4", "osType": "linux", "architecture": "x86_64", "error": null },
   "dataRoot": { "path": "/var/lib/verdikta-code-runner/docker", "freeBytes": 38000000000, "error": null },
   "maintenance": false,
@@ -1858,7 +1860,9 @@ image-pull failure"), never a verdict.
 ## Time
 
 - Admission refuses a run whose deadline, less the reserve, cannot cover
-  `runSeconds`.
+  `runSeconds` and, for a claim, 60 s for its scan.
+- A claim's scan and a fix's `forge fmt` run last, with the run's timer restarted
+  at 420 s for them, outside `runSeconds` (A3c): claim code has finished by then.
 - Each step is bounded by its own limit, the run's `runSeconds` and the
   deadline less the reserve (5 s by default). The first to pass kills the
   container (`docker rm --force --volumes`) and the run abstains with that
@@ -1934,8 +1938,8 @@ CODE_RUNNER_RUNTIME=runc npm run test:docker    # needs a Docker daemon
 CODE_RUNNER_RUNTIME=runsc npm run test:docker   # Linux with gVisor registered as runsc
 ```
 
-The Docker tests pull `ubuntu:24.04` and the foundry base pinned in
-`@verdikta/common` by digest (for `CODE_RUNNER_PLATFORM`, which they set to
+The Docker tests pull `ubuntu:24.04`, the Semgrep image pinned in `src/semgrepPin.js` and the
+foundry base pinned in `@verdikta/common` by digest (for `CODE_RUNNER_PLATFORM`, which they set to
 `linux/arm64` on Apple silicon under runc, where the base's arm64 variant of
 the same release runs), run one test per abstain cause, check the real
 isolation of a container and remove everything they start.
@@ -1964,6 +1968,9 @@ under `runc` and under the pinned gVisor on the systrap platform.
 real forge: the same claim in two containers with other clocks and hostnames, one at
 `--cpus 0.25` (the test holds that forge really took longer), gives the same verdict,
 report hash and pack hash. Cross-host is G2's.
+`honesty.docker.test.js` holds the rules to the real Semgrep, line by line on
+`test/fixtures/honesty/`, and the scan's attacks and worst shapes, printing their times; a real
+claim and a real fix go through forge. On Apple silicon its image is the arm64 variant of the same index.
 
 ## Seams
 
