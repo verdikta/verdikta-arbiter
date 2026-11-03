@@ -859,14 +859,15 @@ function claimSession(request, limits, { adopt = null } = {}) {
     const poc = state.pocFact && state.scanInput ? state.scanInput : null;
     const fix = state.fixLint;
     if (!poc && !fix) return;
-    let handle = null;
-    if ((poc && poc.targets.length) || (fix && fix.targets.length)) {
-      if (state.closeFix) await state.closeFix();
-      await ctx.closeSandbox();
-      handle = await scanner.openScanner(ctx);
-    }
+    // Claim code has finished: from here the run's timer is the scan's own, and nothing a hunter's file costs it is the run's.
+    ctx.beginToolBudget(scanner.SCAN_BUDGET_MS);
+    if (state.closeFix) await state.closeFix();
+    await ctx.closeSandbox();
+    const fmt = fix ? await scanner.fmtFindings(ctx, fix) : [];
+    const needs = (poc && poc.targets.length) || (fix && fix.targets.length);
+    const handle = needs ? await scanner.openScanner(ctx) : null;
     if (poc) ctx.fact('poc', { ...state.pocFact, honestyFlags: await scanner.scanPoc(handle, poc) });
-    if (fix) ctx.fact('findings', scanner.boundFindings([...fix.fmt, ...await scanner.scanFix(handle, fix)]));
+    if (fix) ctx.fact('findings', scanner.boundFindings([...fmt, ...await scanner.scanFix(handle, fix)]));
     ctx.fact('scan', {
       tier: 'A', semgrep: scanner.SEMGREP.version, image: scanner.SEMGREP.indexDigest, rules: scanner.RULES_VERSION,
       poc: poc ? { read: poc.targets.length, stated: poc.unscanned.length } : null,

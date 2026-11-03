@@ -159,7 +159,11 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   fact.detail.applies = `${fix.detail}, touching ${paths.length} path${paths.length === 1 ? '' : 's'} outside paths.tests and paths.protected`;
 
   // The fixed files and their listed bytes, from git's objects, while no claim code has run.
-  lint = { ...scanner.prepareFix(await scanner.readChanged(ctx, { step: 'fixscan:read', from: pocCommit, to: fixCommit, old: true })), fmt: [] };
+  lint = {
+    ...scanner.prepareFix(await scanner.readChanged(ctx, { step: 'fixscan:read', from: pocCommit, to: fixCommit, old: true })),
+    config: await scanner.readListedConfig(ctx, checkout.commit),
+    solc
+  };
 
   // A fix that changes forge's own configuration could select another compiler, and forge would run it before the
   // reference is taken (R25-F2): nothing here could tell what it compiled from what the fix says. A fact, never the claim's outcome.
@@ -167,7 +171,6 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   if (config.length) {
     fact.builds = 'fail';
     fact.detail.builds = `fix.patch changes ${kit.listPaths(config)}, forge's own configuration, which can select another compiler: the runner does not build it`;
-    lint.fmt = scanner.fmtNotRun(lint, 'The fix changes forge\'s own configuration, so the runner runs no forge with it.');
     return finish();
   }
 
@@ -183,16 +186,7 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
     if (!(err instanceof RequesterError)) throw err;
     fact.builds = 'fail';
     fact.detail.builds = `with the fix, ${err.issues.map((i) => `${i.code}: ${i.detail}`).join('; ')}`;
-    lint.fmt = scanner.fmtNotRun(lint, 'With the fix, forge\'s configuration could not be read.');
     return finish();
-  }
-  // forge fmt --check on the fixed files, before any of the fix's code runs: facts, never a gate (§9.2 step 9).
-  // Its time is not the run's: a crafted file must not use up runSeconds through a step that decides nothing (§11).
-  const release = parent.holdRunTimer();
-  try {
-    lint.fmt = await scanner.fmtFindings(ctx, watch.tool(), lint);
-  } finally {
-    release();
   }
   // forge as the PoC's sandbox runs it (commands.js, forge.forgeArgv): the reference's forge and configuration.
   const buildExit = await kit.runBuild(ctx, box, watch.tool(), kit.parsedCommand(spec, 'build'), limits);

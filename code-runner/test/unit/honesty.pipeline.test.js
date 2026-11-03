@@ -137,7 +137,7 @@ test('a scan runs when the claim\'s sandboxes are gone, within what admission he
   assert.equal(r.outcome, 'definitive', show(r));
   const order = sb.docker.calls.map((c) => c.args.slice(0, 3).join(' '));
   const created = order.map((c, i) => (c.startsWith('create') ? i : -1)).filter((i) => i >= 0);
-  assert.equal(created.length, 3, 'the PoC\'s, the fix check\'s, the scanner\'s');
+  assert.equal(created.length, 4, 'the PoC\'s, the fix check\'s, forge fmt\'s, the scanner\'s');
   const scanAt = created[2];
   const removedBefore = sb.docker.calls.slice(0, scanAt).filter((c) => c.args[0] === 'rm').flatMap((c) => c.args.filter((a) => /^vcr-/.test(a)));
   assert.ok(removedBefore.some((n) => n.endsWith('-1')) && removedBefore.some((n) => n.endsWith('-2')), removedBefore.join(' '));
@@ -303,8 +303,8 @@ test('with fix.patch: forge fmt --check through forge\'s own argv, then Semgrep 
     { tool: 'forge-fmt', rule: 'forge-fmt.unformatted', severity: 'info', file: 'src/Vault.sol', line: null, message: 'forge fmt --check would change this file.', triage: null }
   ]);
   assert.doesNotMatch(JSON.stringify(report), /secret line/, 'its diff quotes source: only the path is kept');
-  const fmt = sb.fixExecs().find((d) => d.kind === 'forge-fmt');
-  assert.deepEqual(fmt.argv.slice(1), ['fmt', '--check', '/work/src/Vault.sol']);
+  const fmt = sb.scanExecs().find((d) => d.kind === 'forge-fmt');
+  assert.deepEqual(fmt.argv.slice(1), ['fmt', '--check', '/work/f0.sol']);
   assert.ok(fmt.fixedEnv, 'through env -i, as every forge the runner starts');
   assert.ok('FOUNDRY_SOLC' in fmt.fixedEnv, 'with the pinned compiler');
   const base = sb.scanExecs().filter((d) => d.kind === 'semgrep').find((d) => d.argv.includes('--baseline-commit'));
@@ -345,7 +345,7 @@ test('forge fmt killed for memory is the host\'s: it abstains, as any step', asy
   assert.equal(r.abstain.cause, 'oom');
 });
 
-test('a fixed file past the limits, or a fix that changes forge\'s configuration: forge fmt says it did not read it, never clean', async () => {
+test('a fixed file past the limits: forge fmt says it did not read it, never clean; a fix that changes forge\'s configuration: it reads the listed one', async () => {
   const big = claimSandbox({ blobs: { ['b'.repeat(40)]: Buffer.alloc(70000, 0x20) } });
   const r = await runClaim(big, withFix());
   assert.equal(r.outcome, 'definitive', show(r));
@@ -361,7 +361,8 @@ test('a fixed file past the limits, or a fix that changes forge\'s configuration
   const c = await runClaim(config, withFix({ spec }));
   assert.equal(c.outcome, 'definitive', show(c));
   assert.equal(c.facts.fix.builds, 'fail');
-  assert.ok(c.facts.findings.some((f) => f.rule === 'forge-fmt.not-run' && f.file === 'src/Vault.sol'), JSON.stringify(c.facts.findings));
+  assert.deepEqual(c.facts.findings, [], 'forge fmt read the fixed file with the listed configuration, which the fix cannot reach');
+  assert.equal(config.scanExecs().filter((d) => d.kind === 'forge-fmt').length, 1);
 });
 
 test('R1-F2: a fix\'s file under another name is read as Solidity; forge fmt reads only .sol; a .semgrepignore in a fix has no effect', async () => {
@@ -377,7 +378,7 @@ test('R1-F2: a fix\'s file under another name is read as Solidity; forge fmt rea
   assert.ok(!unpack.stdin.includes(Buffer.from('.semgrepignore')), 'its name never reaches the sandbox');
   const base = sb.scanExecs().filter((d) => d.kind === 'semgrep').pop();
   assert.deepEqual(base.argv.slice(-3), ['f0.sol', 'f1.sol', 'f2.sol']);
-  assert.deepEqual(sb.fixExecs().filter((d) => d.kind === 'forge-fmt').map((d) => d.argv[d.argv.length - 1]), ['/work/src/Vault.sol']);
+  assert.deepEqual(sb.scanExecs().filter((d) => d.kind === 'forge-fmt').map((d) => d.argv[d.argv.length - 1]), ['/work/f0.sol'], 'the .sol file alone');
 });
 
 test('R1-F3: a preimage past the limits never reaches Semgrep, and the finding says so', async () => {
@@ -539,23 +540,31 @@ test('a hostile file cannot turn a listing\'s run into an abstention: the scan h
   assert.equal(r.outcome, 'definitive', show(r));
 });
 
-test('R1-F4: forge fmt\'s time is not the run\'s: a crafted file cannot use up runSeconds through a step that decides nothing', async () => {
+test('R1-F4: forge fmt runs last, under the scan\'s budget: a crafted file costs the claim\'s code no time and gives it none', async () => {
   const slow = async () => {
     await new Promise((resolve) => { setTimeout(resolve, 1500); });
     return { exitCode: 0 };
   };
-  const spec = smallRun(1).spec;
-  const r = await execute(claimSandbox({ scripts: { 'forge-fmt': slow } }), withFix({ spec, sandboxes: 2 }));
+  const sb = claimSandbox({ scripts: { 'forge-fmt': slow } });
+  const r = await execute(sb, withFix({ spec: smallRun(1).spec }));
   assert.equal(r.outcome, 'definitive', show(r));
+  const order = sb.execs().map((d) => d.kind);
+  assert.ok(order.indexOf('forge-fmt') > order.lastIndexOf('vcr-poc'), 'after the PoC');
+  assert.ok(order.indexOf('forge-fmt') > order.lastIndexOf('vcr-suite'), 'after the fix\'s suite');
 });
 
-test('R1-F4: the hold ends with forge fmt: a suite past the runSeconds left still abstains', async () => {
-  const slow = async () => {
-    await new Promise((resolve) => { setTimeout(resolve, 1500); });
-    return { exitCode: 0, stdout: suitePasses() };
-  };
-  const r = await execute(claimSandbox({ fix: { suite: slow } }), withFix({ spec: smallRun(1).spec }));
-  assert.equal(r.outcome, 'abstain', show(r));
+test('R1-F4: forge fmt reads a clean tree: the listed foundry.toml and the fixed bytes, in a sandbox no claim code ran in', async () => {
+  const sb = claimSandbox();
+  const r = await runClaim(sb, withFix());
+  assert.equal(r.outcome, 'definitive', show(r));
+  const box = sb.scanExecs().find((d) => d.kind === 'forge-fmt').box;
+  assert.ok(![1, 2].includes(box), 'neither the PoC\'s sandbox nor the fix check\'s');
+  const inBox = sb.execs().filter((d) => d.box === box).map((d) => d.kind);
+  assert.ok(!inBox.includes('vcr-build') && !inBox.includes('vcr-suite') && !inBox.includes('vcr-poc'), inBox.join(' '));
+  const writes = sb.scanExecs().filter((d) => d.kind === 'vcr-fmt-write');
+  assert.deepEqual(writes.map((d) => d.argv[d.argv.length - 1]), ['/work/foundry.toml', '/work/f0.sol']);
+  assert.equal(writes[0].stdin.toString(), '[profile.default]\n');
+  assert.equal(writes[1].stdin.toString(), 'contract Vault { uint256 fixed; }\n');
 });
 
 test('the budget is one claim code never had: a PoC past runSeconds still abstains', async () => {

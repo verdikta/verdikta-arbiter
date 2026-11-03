@@ -447,14 +447,56 @@ test('R1-F1: on what no parser read, a cheatcode\'s name counts by itself: a com
   assert.ok(flags.some((f) => f.rule === STATED_ID('not-scanned') && f.file === 'test/Helper.txt'));
 });
 
-test('the same name inside a string beside a comment marker still counts: the text is read as written and with comments out', () => {
-  const { reach } = readText([{ path: 'p', bytes: Buffer.from('string memory a = "//"; vm.store(x, y, z);\n') }]);
-  assert.deepEqual(reach.get('p'), [1]);
+test('R1-F1: comments are read as solc reads them: a // in a string is no comment, whatever follows it', () => {
+  const lines = (source) => readText([{ path: 'p', bytes: Buffer.from(source) }]).reach.get('p');
+  assert.deepEqual(lines('string memory a = "//"; vm.store(x, y, z);\n'), [1]);
+  assert.deepEqual(lines('string memory marker = "//"; vm. /*a*/ store /*b*/ (a, b, c);\n'), [1]);
+  assert.deepEqual(lines("string memory m = '/*'; vm. /*a*/ etch /*b*/ (a, b); string memory n = '*/';\n"), [1]);
+  assert.deepEqual(lines('string memory q = "\\"//"; vm. /*a*/ store(a, b, c);\n'), [1], 'an escaped quote does not end the string');
+  assert.deepEqual(lines('// "\nvm. /*a*/ store(a, b, c);\n'), [2], 'a quote in a comment opens no string');
+  assert.deepEqual(lines('/* " */ vm. /*a*/ store(a, b, c);\n'), [1]);
+});
+
+test('R1-F1: every name a rule reads has its fallback: a parse failure cannot hide one the rules would have flagged', () => {
+  // By name from the rule file, so a new rule cannot forget it. warp and roll count only with their arguments, on code.
+  const yaml = fs.readFileSync(path.join(RULES_DIR, RULE_FILES.honesty.file), 'utf8');
+  const names = new Set();
+  for (const line of yaml.split('\n')) {
+    const m = /^\s+- pattern: (?:\$[A-Z]\.|vm\.|Vm\.)?([A-Za-z_]+)(?:\(\.\.\.\))?$/.exec(line);
+    if (m) names.add(m[1]);
+  }
+  assert.ok(names.size > 40, String(names.size));
+  for (const name of names) {
+    const { reach } = readText([{ path: 'p', bytes: Buffer.from(`vm.${name}(a);\n`) }]);
+    assert.deepEqual(reach.get('p'), [1], name);
+  }
+});
+
+test('R1-F1: names common on contracts count on vm alone, as the rules read them', () => {
+  const lines = (source) => readText([{ path: 'p', bytes: Buffer.from(source) }]).reach.get('p');
+  for (const name of ['exists', 'isFile', 'isDir', 'sleep', 'fee', 'chainId', 'coinbase', 'setNonce', 'setEnv']) {
+    assert.deepEqual(lines(`vm . /*a*/ ${name} (a);\n`), [1], name);
+    assert.equal(lines(`registry.${name}(a);\n`), undefined, name);
+  }
 });
 
 test('ordinary words on a line nobody parsed are not a cheatcode: a name needs its call or its member access', () => {
   const { reach } = readText([{ path: 'p', bytes: Buffer.from('{"store": 1, "etch": "the rpc value"}\nwe store it and read files\n') }]);
   assert.equal(reach.get('p'), undefined);
+});
+
+test('R2-F1: only a parse failure is silent on another name: a memory bound, a cap or a file not reported read is stated by any name', () => {
+  const t = [{ name: 'f0.sol', path: 'test/Helper.txt', lineOf: (l) => l, added: new Set(), solidity: false }];
+  const flagsOn = (errors, scanned = ['f0.sol']) => honestyFlags(parsed(scanOf([], errors, scanned), t), t).map((f) => f.rule);
+  assert.deepEqual(flagsOn([{ type: 'Syntax error', level: 'warn', path: 'f0.sol' }]), []);
+  assert.deepEqual(flagsOn([{ type: ['PartialParsing', [{ start: { line: 1 }, end: { line: 1 } }]], level: 'warn', path: 'f0.sol' }]), []);
+  assert.deepEqual(flagsOn([{ type: 'Out of memory', level: 'warn', path: 'f0.sol' }]), [STATED_ID('unread-file')]);
+  assert.deepEqual(flagsOn([{ type: 'Too many matches', level: 'warn', path: 'f0.sol', rule_id: ETCH }]).sort(), [ETCH, STATED_ID('unread-file')].sort());
+  assert.deepEqual(flagsOn([], []), [STATED_ID('not-scanned')]);
+  const fixed = (errors, scanned = ['f0.sol']) => fixFindings(parseScan({ stdout: scanOf([], errors, scanned), exitCode: 0, truncated: false }, t, { table: FIX_RULES }), t).map((f) => f.rule);
+  assert.deepEqual(fixed([{ type: 'Syntax error', level: 'warn', path: 'f0.sol' }]), []);
+  assert.deepEqual(fixed([{ type: 'Out of memory', level: 'warn', path: 'f0.sol' }]), ['verdikta.scan.unread-file']);
+  assert.deepEqual(fixed([], []), ['verdikta.scan.not-scanned']);
 });
 
 test('a file the tool does not say it read is stated: a clean answer about nothing is not a clean answer', () => {
@@ -572,6 +614,19 @@ test('findings past the bound keep the most severe, with a note, and any order i
   assert.ok(note);
   assert.match(note.message, /22 more/);
   assert.deepEqual(kept, boundFindings([...all].reverse()));
+});
+
+test('R2-F2: what qualifies the findings outlives the bound: a stated fact is kept whatever its severity', () => {
+  const all = [];
+  for (let i = 1; i <= 70; i += 1) all.push({ tool: 'semgrep', rule: 'verdikta.solidity.selfdestruct', severity: 'high', file: 'src/A.sol', line: i, message: 'm', triage: null });
+  all.push({ tool: 'semgrep', rule: 'verdikta.scan.no-baseline', severity: 'medium', file: 'src/Z.sol', line: null, message: 'm', triage: null });
+  all.push({ tool: 'semgrep', rule: 'verdikta.scan.unread-file', severity: 'medium', file: 'src/Y.sol', line: null, message: 'm', triage: null });
+  const kept = boundFindings(all);
+  assert.equal(kept.length, 50);
+  assert.ok(kept.some((f) => f.rule === 'verdikta.scan.no-baseline'));
+  assert.ok(kept.some((f) => f.rule === 'verdikta.scan.unread-file'));
+  const sev = kept.filter((f) => f.rule !== 'verdikta.scan.truncated').map((f) => f.severity);
+  assert.deepEqual(sev, [...sev].sort((a, b) => ['critical', 'high', 'medium', 'low', 'info'].indexOf(a) - ['critical', 'high', 'medium', 'low', 'info'].indexOf(b)), 'common\'s order');
 });
 
 // ------------------------------------------------------------------ the image

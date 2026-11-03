@@ -730,6 +730,7 @@ function claimSandbox({
       return content === undefined ? { exitCode: 1, stderr: 'cat: no such file\n' } : { stdout: content };
     },
     'vcr-scan-repo': () => ({ stdout: `vcr-base ${'c'.repeat(40)}\n` }),
+    'vcr-fmt-write': () => ({ exitCode: 0 }),
     'forge-fmt': () => ({ exitCode: 0 }),
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
@@ -810,7 +811,7 @@ function claimSandbox({
   const execs = () => decoded();
   /** A claim's PoC sandbox's execs (the first container). */
   const pocExecs = () => decoded().filter((d) => (d.box || 1) === 1);
-  const isScan = (d) => ['tar', 'semgrep', 'vcr-scan-repo'].includes(d.kind) || (d.kind === 'cat' && /^\/work\/(?:poc|fix)\.json$/.test(d.argv[d.argv.length - 1]));
+  const isScan = (d) => ['tar', 'semgrep', 'vcr-scan-repo', 'vcr-fmt-write', 'forge-fmt'].includes(d.kind) || (d.kind === 'cat' && /^\/work\/(?:poc|fix)\.json$/.test(d.argv[d.argv.length - 1]));
   /** A claim's fix check's execs (the second container; without a fix check the second is the scanner's). */
   const fixExecs = () => decoded().filter((d) => d.box === 2 && !isScan(d));
   /** The scanner's execs (the last container). */

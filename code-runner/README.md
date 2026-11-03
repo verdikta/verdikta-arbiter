@@ -1609,10 +1609,10 @@ It must never read as "no flags", since a hunter gains from that.
 
 | Cause | In | Result |
 |---|---|---|
-| A parse failure, whole or partial | The file | `unread-file`, `unread-part` with its lines (a `.sol` file's); a cheatcode's name on a skipped line is `unread-reach`, whatever is around it and whatever the file's name |
-| A rule past the match cap | The file | That rule, file-level; `unread-file`; the names stay flags |
-| Semgrep's memory bound (`Out of memory`) | The file | `unread-file`, the names stay flags |
-| Past a limit below, not a regular file, or not reported as read | The file | `not-scanned` with its reason, the names stay flags |
+| A parse failure, whole or partial | The file | `unread-file`, `unread-part` with its lines, on a `.sol` file; a cheatcode's name on a skipped line is `unread-reach`, whatever is around it and whatever the file's name |
+| A rule past the match cap | The file | That rule, file-level; `unread-file`, by any name; the names stay flags |
+| Semgrep's memory bound (`Out of memory`) | The file | `unread-file`, by any name; the names stay flags |
+| Past a limit below, not a regular file, or not reported as read | The file | `not-scanned` with its reason, by any name; the names stay flags |
 | Any other error kind, a non-zero exit, an answer it cannot account for, a rule or a path it was not given | The tool | Abstain (`runner_error`, step `scan`) |
 | The step's timer, OOM, a dead sandbox | The host | Abstain, as for any step |
 | The image missing or wrong, or the rule files changed | The install | `/health`, and abstain before any work |
@@ -1685,17 +1685,25 @@ the hunter. The kept 50 go by severity, then the patch's own lines first.
 ### The fix check's lint
 
 Facts only: the claim's gates are as they would be without it. Over the files the fix changed,
-read before any of its code runs, under the same limits as a PoC's: `forge fmt --check` on the
-`.sol` ones, with the run's timer held so its time is not the run's, through `forgeArgv` (one file a call:
-beside another file, one it cannot parse goes unreported; exit 1 means a diff or a parse
-failure, and what it printed says which; a long sum or chain can abort it with exit 134, seen on
-arm64, which is a stated finding too, since a fix's lint must not abstain the claim), then Semgrep with the bug rules and
-`--baseline-commit` over all of them, so what the listed commit already had is not the fix's. A
-listed version past the limits is not scanned, and `verdikta.scan.no-baseline` says its findings are
-not told apart from the listed commit's. `commands.lint` is
-not read: the lint is the runner's own argv, and the grammar in `src/commands.js` is unchanged.
-A fix that changes forge's own configuration gets `forge-fmt.not-run`, never a clean answer. A
-scan that fails on the host abstains, as every step of the fix check does.
+read before any of its code runs, under the same limits as a PoC's.
+
+**`forge fmt --check`** on the `.sol` ones, last, once the claim's sandboxes are closed, in a fresh
+sandbox of the env image holding only the listed `foundry.toml` and the fixed bytes. No claim code
+has run there and none runs beside it, so a fix's own code cannot reach what it reads, a fix that
+changes `foundry.toml` changes nothing, and its time is the scan's budget, not the run's. It goes
+through `forgeArgv`, one file a call: beside another file, one it cannot parse goes unreported. Exit
+1 means a diff or a parse failure, and what it printed says which. A long sum or chain can abort it
+with exit 134, seen on arm64, which is a stated finding too, since a fix's lint must not abstain the
+claim. Its diff quotes source, so only the path is kept. A maker's `[fmt] ignore` globs do not match
+the runner's flat names, so a file they exempt can read as unformatted: a fact about formatting.
+
+**Semgrep** with the bug rules and `--baseline-commit` over all of them, so what the listed commit
+already had is not the fix's. A listed version past the limits is not scanned, and
+`verdikta.scan.no-baseline` says its findings are not told apart from the listed commit's. A fact the
+runner states outlives the bound of 50.
+
+`commands.lint` is not read: the lint is the runner's own argv, and the grammar in `src/commands.js`
+is unchanged. A scan that fails on the host abstains, as every step of the fix check does.
 
 ### Known limits
 
@@ -1707,8 +1715,8 @@ scan that fails on the host abstains, as every step of the fix check does.
   flagged. The cost is small, since these strings have no business there.
 - **A crafted file at the edge of the memory bound** could read differently between hosts. No gate
   reads it, and it is the same class as A3b's recorded limit on report hashes.
-- **`// forgefmt: disable-…`** in a fix, and `[fmt] ignore` in the maker's configuration, make forge
-  fmt pass that code. It is a fact about formatting, and nothing settles on it.
+- **`// forgefmt: disable-…`** in a fix makes forge fmt pass that code. It is a fact about
+  formatting, and nothing settles on it.
 - **Any runner that takes claims needs the image:** `/health` is not `ok` without it.
 
 ## The fix check

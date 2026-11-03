@@ -119,12 +119,11 @@ test('a claim: the build, each PoC run, the fix check\'s build and suite, and `f
   for (const run of [run2, run3]) assertForgeArgv(sb, run, ['test', '--match-test=^(?:test_drain\\(\\))$', ...REPORTER]);
   // The fix check's sandbox: its own reference, the fixed build, the maker's suite once.
   // In its own read of the listing, before either patch, its pin; then the same steps.
-  assert.deepEqual(fix.map((d) => d.kind), ['forge-config', 'forge-config', 'forge-fmt', 'vcr-build', 'vcr-suite', 'forge-config']);
+  assert.deepEqual(fix.map((d) => d.kind), ['forge-config', 'forge-config', 'vcr-build', 'vcr-suite', 'forge-config']);
   assert.ok(!fix[0].launched.some((a) => a.startsWith('FOUNDRY_SOLC')), JSON.stringify(fix[0].launched));
   assertForgeArgv(sb, fix[1], ['config', '--json']);
-  assertForgeArgv(sb, fix[2], ['fmt', '--check', '/work/src/Vault.sol']);
-  assertForgeArgv(sb, fix[3], ['build']);
-  assertForgeArgv(sb, fix[4], ['test', ...REPORTER]);
+  assertForgeArgv(sb, fix[2], ['build']);
+  assertForgeArgv(sb, fix[3], ['test', ...REPORTER]);
   // forge's environment holds no variable but the fixed ones: no FOUNDRY_* but these four.
   for (const d of forge.filter((x) => x !== listed && x !== fix[0])) {
     assert.deepEqual(Object.keys(d.fixedEnv), ['PATH', 'TZ', 'LANG', 'CI', 'PYTHONHASHSEED', 'HOME', 'XDG_DATA_HOME', 'VERDIKTA_TOOLS', 'FOUNDRY_CONFIG', 'FOUNDRY_SOLC', 'FOUNDRY_EXTERNAL_COMPILERS', 'FOUNDRY_FUZZ_SEED']);

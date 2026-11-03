@@ -65,6 +65,7 @@ const { platformOf, parseInspectLines, INSPECT_FORMAT } = require('./images');
 const { Prefix } = require('./capture');
 const { SEMGREP } = require('./semgrepPin');
 const forge = require('./forge');
+const { discoverForge } = require('./integrity');
 
 const RULES_VERSION = SEMGREP_RULES_VERSION;
 const RULES_DIR = path.join(__dirname, '..', 'rules');
@@ -110,6 +111,7 @@ const UNPACK_TIMEOUT_MS = 30000;
 /** forge fmt's timer: its worst shape at the limits above took 13 s. */
 const FMT_TIMEOUT_MS = 90000;
 const READ_TIMEOUT_MS = 60000;
+const CONFIG_MAX_BYTES = 1024 * 1024;
 /** What Semgrep may answer: far above what the limits above can make it (about 340 bytes a result, at most some 13,000 results). */
 const OUTPUT_MAX_BYTES = 64 * 1024 * 1024;
 const STEP = 'scan';
@@ -164,11 +166,13 @@ const TEXT_RULES = Object.freeze({
 
 /**
  * A cheatcode's name as code uses it: a member (`x.store`, a call or a reference) or a call. A flag only on a line no
- * parser read (a comment may say it anywhere else). Read on the text as written and with its comments blanked, so a
- * comment before the call hides nothing, and neither does a `//` inside a string.
+ * parser read (a comment may say it anywhere else). Read on the text with its comments blanked, as solc reads them, so
+ * a comment before the call hides nothing, and on the text as written.
  */
-const REACH_NAMES = 'store|etch|setArbitraryStorage|copyStorage|loadAllocs|deployCodeTo|attachDelegation|signAndAttachDelegation|checked_write|checked_write_int|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|selectFork|rollFork|rpc|rpcUrl|writeFile|writeFileBinary|writeLine|copyFile|removeFile|removeDir|createDir|readFile|readFileBinary|unixTime|rewind';
-const UNREAD_REACH = new RegExp(`\\.\\s*(?:${REACH_NAMES})\\b|\\b(?:${REACH_NAMES})\\s*[({]`, 'g');
+const REACH_NAMES = 'store|setArbitraryStorage|copyStorage|loadAllocs|checked_write|checked_write_int|etch|deployCodeTo|attachDelegation|signAndAttachDelegation|mockCall|mockCallRevert|mockCalls|mockFunction|ffi|tryFfi|createFork|createSelectFork|selectFork|rollFork|rpc|rpcUrl|rpcUrls|rpcUrlStructs|eth_getLogs|transact|writeFile|writeFileBinary|writeLine|writeJson|writeToml|copyFile|removeFile|removeDir|createDir|dumpState|readFile|readFileBinary|readLine|readDir|readLink|fsMetadata|unixTime|rewind';
+/** Common names on contracts, which the rules read on vm alone (rules/honesty.yml). */
+const REACH_ON_VM = 'exists|isFile|isDir|sleep|setBlockhash|prevrandao|difficulty|chainId|fee|coinbase|txGasPrice|blobBaseFee|blobhashes|setNonce|setNonceUnsafe|resetNonce|setEnv|setEvmVersion';
+const UNREAD_REACH = new RegExp(`\\.\\s*(?:${REACH_NAMES})\\b|\\b(?:${REACH_NAMES})\\s*[({]|\\bvm\\s*\\.\\s*(?:${REACH_ON_VM})\\b`, 'g');
 
 /** The bug rules: solidity.yml's severities and messages, word for word (test/unit/scanner.test.js). */
 const FIX_RULES = Object.freeze({
@@ -433,7 +437,7 @@ function prepareTargets(entries) {
       continue;
     }
     const { bytes, lineOf } = normaliseSource(e.bytes);
-    const file = { path: e.path, bytes, lineOf, added: e.added || new Set(), solidity };
+    const file = { path: e.path, bytes, raw: e.bytes, lineOf, added: e.added || new Set(), solidity };
     texts.push(file);
     // What Semgrep reads: invalid UTF-8 grows threefold in the normal form.
     if (bytes.length > SCAN_LIMITS.fileBytes) {
@@ -494,23 +498,36 @@ function readText(texts) {
   return { hits, reach };
 }
 
-/** The text with its comments blanked, every offset and line feed kept. It knows no strings: readText reads the text as written too. */
+/**
+ * The text with its comments blanked, every offset and line feed kept, as solc
+ * lexes them: a `//` or `/*` in a string opens no comment, a quote in a comment
+ * opens no string, a backslash escapes in a string, and a string ends at its line.
+ */
 function blankComments(text) {
   let out = '';
   let from = 0;
-  for (let i = 0; i < text.length - 1; i += 1) {
-    if (text[i] !== '/' || (text[i + 1] !== '/' && text[i + 1] !== '*')) continue;
-    let end;
-    if (text[i + 1] === '/') {
-      end = text.indexOf('\n', i + 2);
-      if (end < 0) end = text.length;
+  let i = 0;
+  while (i < text.length) {
+    const c = text[i];
+    if (c === '"' || c === "'") {
+      i += 1;
+      while (i < text.length && text[i] !== c && text[i] !== '\n') i += text[i] === '\\' ? 2 : 1;
+      i += 1;
+    } else if (c === '/' && (text[i + 1] === '/' || text[i + 1] === '*')) {
+      let end;
+      if (text[i + 1] === '/') {
+        end = text.indexOf('\n', i + 2);
+        if (end < 0) end = text.length;
+      } else {
+        end = text.indexOf('*/', i + 2);
+        end = end < 0 ? text.length : end + 2;
+      }
+      out += text.slice(from, i) + text.slice(i, end).replace(/[^\n]/g, ' ');
+      from = end;
+      i = end;
     } else {
-      end = text.indexOf('*/', i + 2);
-      end = end < 0 ? text.length : end + 2;
+      i += 1;
     }
-    out += text.slice(from, i) + text.slice(i, end).replace(/[^\n]/g, ' ');
-    from = end;
-    i = end - 1;
   }
   return out + text.slice(from);
 }
@@ -677,19 +694,16 @@ function honestyFlags(scan, targets, unscanned = [], text = NO_TEXT, texts = tar
     }
   }
 
-  // What could not be read is stated for Solidity. Only `.sol` is a scan that failed: a JSON fixture does not parse, by design.
+  // What could not be read is stated by any name, but for a parse failure off `.sol`: a JSON fixture does not parse, by design.
   for (const [name, spans] of scan.partial) {
     const t = byName.get(name);
     if (t.solidity !== false) stated('verdikta.honesty.unread-part', t.path, reportLine(t, spans[0][0]), spansInWords(t, spans));
   }
   for (const [name, why] of scan.unreadable) {
     const t = byName.get(name);
-    if (t.solidity !== false) stated('verdikta.honesty.unread-file', t.path, null, UNREAD_WORDS[why]);
+    if (why !== 'parse' || t.solidity !== false) stated('verdikta.honesty.unread-file', t.path, null, UNREAD_WORDS[why]);
   }
-  for (const name of scan.missing) {
-    const t = byName.get(name);
-    if (t.solidity !== false) stated('verdikta.honesty.not-scanned', t.path, null, UNSCANNED_WORDS['no-answer']);
-  }
+  for (const name of scan.missing) stated('verdikta.honesty.not-scanned', byName.get(name).path, null, UNSCANNED_WORDS['no-answer']);
   for (const u of unscanned) stated('verdikta.honesty.not-scanned', u.path, null, UNSCANNED_WORDS[u.reason]);
   return [...flags.values()];
 }
@@ -713,12 +727,9 @@ function fixFindings(scan, targets, unscanned = []) {
   }
   for (const [name, why] of scan.unreadable) {
     const t = byName.get(name);
-    if (t.solidity !== false) stated('verdikta.scan.unread-file', t.path, null, UNREAD_WORDS[why]);
+    if (why !== 'parse' || t.solidity !== false) stated('verdikta.scan.unread-file', t.path, null, UNREAD_WORDS[why]);
   }
-  for (const name of scan.missing) {
-    const t = byName.get(name);
-    if (t.solidity !== false) stated('verdikta.scan.not-scanned', t.path, null, UNSCANNED_WORDS['no-answer']);
-  }
+  for (const name of scan.missing) stated('verdikta.scan.not-scanned', byName.get(name).path, null, UNSCANNED_WORDS['no-answer']);
   for (const u of unscanned) stated('verdikta.scan.not-scanned', u.path, null, UNSCANNED_WORDS[u.reason]);
   return [...out.values()];
 }
@@ -771,12 +782,17 @@ function compareFindings(a, b) {
     || compareText(a.tool, b.tool) || compareText(a.rule, b.rule) || compareText(a.message, b.message);
 }
 
-/** At most 50 findings, in common's order (severity first), the rest counted in one note. */
+/**
+ * At most 50 findings: what qualifies the rest first (a fact the runner states), then by severity; the rest counted in
+ * one note. Handed out in common's order (severity first), which the report's hash puts them in anyway.
+ */
 function boundFindings(findings) {
   const sorted = [...findings].sort(compareFindings);
   if (sorted.length <= MAX_KEPT) return sorted;
-  const kept = sorted.slice(0, MAX_KEPT - 1);
-  const dropped = sorted.slice(MAX_KEPT - 1);
+  const stated = (f) => f.rule.startsWith('verdikta.scan.');
+  const ranked = [...sorted.filter(stated), ...sorted.filter((f) => !stated(f))];
+  const kept = ranked.slice(0, MAX_KEPT - 1);
+  const dropped = ranked.slice(MAX_KEPT - 1);
   const note = {
     tool: 'semgrep',
     rule: 'verdikta.scan.truncated',
@@ -786,7 +802,7 @@ function boundFindings(findings) {
     message: `${STATED['verdikta.scan.truncated'].message} ${dropped.length} more are not listed.`,
     triage: null
   };
-  return [...kept, note];
+  return [...kept.sort(compareFindings), note];
 }
 
 // ------------------------------------------------------------------ reading git, before any claim code
@@ -841,10 +857,9 @@ async function readChanged(ctx, { step, from, to, old = false }) {
 
 /**
  * The sandbox the scans share: the pinned image, every sandbox's flags, fixed
- * limits, never the run's env image. From here the run's timer is the scan's own.
+ * limits, never the run's env image.
  */
 function openScanner(ctx) {
-  ctx.beginToolBudget(SCAN_BUDGET_MS);
   return ctx.openSandbox({ image: SEMGREP.reference, limits: SCAN_SANDBOX_LIMITS, tool: true });
 }
 
@@ -910,7 +925,7 @@ const BASELINE_REPO_SCRIPT = [
  * @returns {Promise<object[]>} the findings, unbounded
  */
 async function scanFix(handle, { targets, unscanned, oldBytes, noBaseline = [] }) {
-  const stated = noBaseline.map((file) => ({ tool: 'semgrep', rule: 'verdikta.scan.no-baseline', severity: 'info', file, line: null, message: STATED['verdikta.scan.no-baseline'].message, triage: null }));
+  const stated = noBaseline.map((file) => ({ tool: 'semgrep', rule: 'verdikta.scan.no-baseline', severity: 'medium', file, line: null, message: STATED['verdikta.scan.no-baseline'].message, triage: null }));
   if (targets.length === 0) return [...stated, ...fixFindings(NOTHING_SCANNED, targets, unscanned)];
   await unpack(handle, 'scan:fix:unpack', [
     { name: `rules/${RULE_FILES.solidity.file}`, bytes: ruleBytes('solidity') },
@@ -962,43 +977,61 @@ function fmtFinding(rule, file, more = '') {
 
 /**
  * forge fmt --check over a fix's `.sol` files (a style fact: another name is not
- * its business): one file a call, since a file
- * it cannot parse goes unreported beside another. Exit 1 says either; which one
- * is what it printed. Its diff quotes source, so only the path is kept.
- * @param {object} ctx - the fix check's sandbox, before any claim code
- * @param {object} tool - the probed forge (integrity.Watch), run through forgeArgv like every other forge
- * @param {{targets:object[], unscanned:object[]}} input
+ * its business), last, in a fresh sandbox of the env image holding only the listed
+ * `foundry.toml` and the fixed bytes: no claim code has run there and none runs
+ * beside it, so a fix's own code cannot reach what forge fmt reads, and its time is
+ * not the run's. One file a call, since a file it cannot parse goes unreported
+ * beside another. Exit 1 says either; which one is what it printed. Its diff
+ * quotes source, so only the path is kept.
+ * @param {object} ctx - the run's context, with the claim's sandboxes closed
+ * @param {{targets:object[], unscanned:object[], config:Buffer|null, solc:string}} lint
  * @returns {Promise<object[]>} findings
  */
-async function fmtFindings(ctx, tool, { targets, unscanned }) {
+async function fmtFindings(ctx, { targets, unscanned, config, solc }) {
   const out = unscanned.filter((u) => u.path.endsWith('.sol')).map((u) => fmtFinding('forge-fmt.not-run', u.path, UNSCANNED_WORDS[u.reason]));
   const files = targets.filter((t) => t.solidity);
-  for (let i = 0; i < files.length; i += 1) {
-    const { path: file } = files[i];
+  if (files.length === 0) return out;
+  const handle = await ctx.openSandbox();
+  const tool = { ...await discoverForge(handle, 'scan:fmt:forge'), solc };
+  const write = async (name, bytes) => {
+    const r = await handle.exec(['/bin/sh', '-c', 'cat > "$1"', 'vcr-fmt-write', `${forge.FORGE_WORKDIR}/${name}`], { name: `scan:fmt:write:${name}`, timeoutMs: UNPACK_TIMEOUT_MS, stdin: bytes, workdir: forge.FORGE_WORKDIR });
+    if (r.exitCode !== 0) throw toolFailed(`forge fmt's input could not be written (exit ${r.exitCode})`);
+  };
+  if (config) await write('foundry.toml', config);
+  for (const t of files) await write(t.name, t.raw);
+  for (const t of files) {
     let r;
     try {
-      r = await ctx.exec(forge.forgeArgv(tool, ['fmt', '--check', `${forge.FORGE_WORKDIR}/${file}`]), { name: `fixscan:fmt:${i}`, timeoutMs: FMT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR });
+      r = await handle.exec(forge.forgeArgv(tool, ['fmt', '--check', `${forge.FORGE_WORKDIR}/${t.name}`]), { name: `scan:fmt:${t.name}`, timeoutMs: FMT_TIMEOUT_MS, workdir: forge.FORGE_WORKDIR });
     } catch (err) {
       // A long sum or chain can overflow its stack (exit 134 on arm64): the file's doing, and a fix's lint decides nothing,
       // so it must not abstain the claim. A memory kill or a timeout is the host's, and stays an abstention.
       if (!(err instanceof Abstain) || err.cause !== ABSTAIN.KILLED_BY_SIGNAL) throw err;
-      out.push(fmtFinding('forge-fmt.unreadable', file, err.detail));
+      out.push(fmtFinding('forge-fmt.unreadable', t.path, err.detail));
       continue;
     }
     if (r.exitCode === 0) continue;
-    if (/^Diff in /m.test(r.stdout.text)) out.push(fmtFinding('forge-fmt.unformatted', file));
-    else out.push(fmtFinding('forge-fmt.unreadable', file, `forge fmt exited ${r.exitCode}.`));
+    if (/^Diff in /m.test(r.stdout.text)) out.push(fmtFinding('forge-fmt.unformatted', t.path));
+    else out.push(fmtFinding('forge-fmt.unreadable', t.path, `forge fmt exited ${r.exitCode}.`));
   }
+  await handle.close();
   return out;
 }
 
-/** forge fmt did not run on a fix's files: `why` in fixed words, never read as clean. */
-function fmtNotRun({ targets, unscanned }, why) {
-  return [...targets.map((t) => t.path), ...unscanned.map((u) => u.path)].filter((p) => p.endsWith('.sol')).map((file) => fmtFinding('forge-fmt.not-run', file, why));
+/** The listed commit's foundry.toml, from git's objects, while no claim code has run: what forge fmt reads. Null when it has none. */
+async function readListedConfig(ctx, commit) {
+  const out = new Prefix(CONFIG_MAX_BYTES + 256);
+  const r = await ctx.exec(git(['cat-file', '--batch']), { name: 'fixscan:config', timeoutMs: READ_TIMEOUT_MS, stdin: Buffer.from(`${commit}:foundry.toml\n`), tee: out });
+  if (r.exitCode !== 0) throw toolFailed(`the listed foundry.toml could not be read (git exited ${r.exitCode})`);
+  const bytes = out.bytes();
+  const nl = bytes.indexOf(0x0a);
+  const m = nl < 0 ? null : /^[0-9a-f]+ blob ([0-9]+)$/.exec(bytes.subarray(0, nl).toString('latin1'));
+  if (!m || Number(m[1]) > CONFIG_MAX_BYTES) return null;
+  return Buffer.from(bytes.subarray(nl + 1, nl + 1 + Number(m[1])));
 }
 
 module.exports = {
   SEMGREP, RULES_VERSION, RULE_FILES, HONESTY_RULES, TEXT_RULES, FIX_RULES, STATED, SCAN_LIMITS, TEXT_LIMITS, SCAN_MEMORY_MB, SEMGREP_MAX_MEMORY_MB, SCAN_SANDBOX_LIMITS, SCAN_TIMEOUT_MS, SCAN_BUDGET_MS, SCAN_RESERVE_MS, FMT_TIMEOUT_MS, OUTPUT_MAX_BYTES,
   severityOf, ruleBytes, rulesProblem, imageStatus, requireScanner, semgrepArgv, scanTar, normaliseSource, prepareTargets, prepareFix, readText, textRulesSha256, parseScan, honestyFlags, fixFindings,
-  boundFlags, boundFindings, readChanged, openScanner, scanPoc, scanFix, fmtFindings, fmtNotRun, BASELINE_REPO_SCRIPT
+  boundFlags, boundFindings, readChanged, openScanner, scanPoc, scanFix, fmtFindings, readListedConfig, BASELINE_REPO_SCRIPT
 };
