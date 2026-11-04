@@ -57,7 +57,6 @@ const OWN_WORDS = [
   ['a substitution', 'forge test --mt test_drain --fork-url $(cat url)'],
   ['a default in an expansion', 'forge test --mt test_drain --fork-url ${RPC_URL:-http://localhost:8545}'],
   ['backquotes', 'forge test --mt test_drain --fork-url `cat url`'],
-  ['ANSI-C quoting', 'forge test --mt $\'^test_drain$\' --match-path test/Exploit.t.sol'],
   ['a path to a program', '/usr/local/bin/forge test --mt test_drain'],
   ['a path inside a directory called test', 'forge test --match-path a/test/Exploit.t.sol --mt test_drain'],
   ['a file called test', 'forge test --match-path test.t.sol --mt test_drain'],
@@ -68,18 +67,9 @@ const OWN_WORDS = [
   ['a continuation before a flag', 'forge test \\\n  --match-path test/E.t.sol \\\n  --match-test test_drain'],
   ['a continuation in CRLF', 'forge test --mp \\\r\n  test/E.t.sol --mt test_drain'],
   ['a continuation in a word', 'forge te\\\nst --mt test_drain'],
+  ['a continuation in a double-quoted flag', 'forge test "--match-\\\npath" test/E.t.sol --mt test_drain'],
   // R9-F1: inside single quotes a backslash and a line break are what they say: no test here.
   ['a backslash and a line break in a single-quoted filter', 'forge test --mt \'te\\\nst|test_drain\''],
-  // R7-F1, round 9: a `#` is a comment only where a shell starts one, `case` only as the word, and neither in quotes or `${…}`.
-  ['an expansion with a # before a path', 'forge test --fuzz-runs ${#SEEDS} --match-path test/E.t.sol --mt test_drain'],
-  ['a # in a word in a substitution', 'forge test --fuzz-runs $(printf a#b) --match-path test/E.t.sol --mt test_drain'],
-  ['a # in quotes in a substitution', 'forge test --fuzz-runs $(printf " #") --match-path test/E.t.sol --mt test_drain'],
-  ['a file called case in a substitution', 'forge test --fuzz-runs $(cat ./case) --match-path test/E.t.sol --mt test_drain'],
-  // R7-F1: a finished substitution changes nothing after it.
-  ['a path after a substitution', 'forge test --fork-url $(cat url) --match-path test/Exploit.t.sol --mt test_drain'],
-  ['a count from a substitution', 'forge test --fuzz-runs $(printf 256) --match-path test/E.t.sol --mt test_drain'],
-  ['a nested substitution', 'forge test --fork-url $(cat $(ls url)) --mp test/E.t.sol --mt test_drain'],
-  ['backquotes before a path', 'forge test --fork-url `cat url` --mp test/E.t.sol --mt test_drain'],
   ['a separator with no spaces', 'forge build&&forge test --mt test_drain;forge test --mp test/E.t.sol'],
   ['forge\'s shorthand for a path', 'forge test test/Exploit.t.sol --mt test_drain'],
   ['a variable beside a path', 'forge test --match-path test/Exploit.t.sol --fork-url $RPC_URL --mt test_drain'],
@@ -201,7 +191,15 @@ const NAMES_ANOTHER = [
   ['a path that spreads over words', 'forge test --mp {a/,--mt,test/?}', 'test'],
   ['the marker, after a pipe', 'forge test --mt test_drain|test', 'test'],
   ['the marker, after a semicolon, with no space', 'forge test --mt test_drain;test', 'test'],
-  // Only ever a failure: a hunter who writes this is told before committing.
+  // The comments and shifts a fuller lexer had to know (R4-F1, R7-F1, round 10): all read, so none of it matters.
+  ['a comment after a semicolon in a substitution', 'forge test --mt $(printf \'\';# )\nprintf \'%.0s%s\' --skip test\n)', 'test'],
+  // Only ever a failure, by design: from the first thing whose words aren't certain, all of it is read. Put it after the path.
+  ['a path after a substitution', 'forge test --fork-url $(cat url) --match-path test/Exploit.t.sol --mt test_drain', 'test'],
+  ['a path after a computed count', 'forge test --fuzz-runs $((1 << 8)) --match-path test/E.t.sol --mt test_drain', 'test'],
+  ['a path after an expansion with a #', 'forge test --fuzz-runs ${#SEEDS} --match-path test/E.t.sol --mt test_drain', 'test'],
+  ['a path after backquotes', 'forge test --fork-url `cat url` --mp test/E.t.sol --mt test_drain', 'test'],
+  ['a path after ANSI-C quoting', 'forge test --mt $\'^test_drain$\' --match-path test/Exploit.t.sol', 'test'],
+  ['a --match-test after a substitution', 'forge test --fork-url $(cat url) --match-test test_drain', 'test'],
   ['the marker, as a directory to change to', 'cd test && forge test --mt test_drain', 'test']
 ];
 

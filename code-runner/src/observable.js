@@ -21,9 +21,11 @@
  *   (--match-test), the choice in `--skip test`, and a directory or file of a
  *   path (`test/x.t.sol`, `a/test`, `test.t.sol`) in the value of --match-path
  *   or --no-match-path or the word right after `forge test` (forge's own
- *   shorthand for it), when nothing outside its quotes expands.
- *   Anywhere else it counts, as before; and it always counts as a test the
- *   patch added. Every other identifier is read wherever it is, so
+ *   shorthand for it), when nothing outside its quotes expands. Those places
+ *   hold only up to the first thing whose words aren't certain (PLAIN_START); from
+ *   there on the text says what it says. Anywhere else the word counts, as
+ *   before; and it always counts as a test the patch added. Every other
+ *   identifier is read wherever it is, so
  *   no way of quoting or placing any other name can hide it. No filter is
  *   evaluated: a name counts when it is spelled, a `$` after it being the
  *   regex's end.
@@ -52,10 +54,16 @@ const TEST_IN_PATH = /(?<![\w$])test\/|\/test(?![\w$])|(?<![\w$])test(?:\.t)?\.s
 const FORGE = /(?:^|\/)forge$/;
 /** forge's path flags: what their value holds is a path. */
 const PATH_FLAGS = Object.freeze(['--match-path', '--no-match-path']);
-/** What a shell reads inside `$(…)` by more than its quotes and parentheses, so its end isn't where they say: a `case` arm, a comment, a here-document. */
-const UNBALANCED = /(?<![\w$.\/-])case\s|[\s(]#|<</;
+/**
+ * How much of a command, from its start, a shell reads as this code does: plain text, single and double
+ * quotes, escapes, `$NAME` and `${NAME}`. It stops at `$'…'`, `$(…)`, `${…:-…}`, `$[…]`, `<(…)`, backquotes
+ * or a quote left open, whose words are more than a shell's quoting says.
+ */
+const PLAIN_START = /^(?:[^'"\\`$<>]|[<>](?!\()|\\[\s\S]|\$\{\w+\}|\$(?!['({[])|'[^']*'|"(?:[^"\\`$]|\\[\s\S]|\$\{\w+\}|\$(?![({[]))*")*/;
+/** A word of that part, as a shell splits it: a quoted span stays whole, with its escapes, and `; & | < > ( )` and white space end one. */
+const WORD = /(?:[^\s'"\\;&|<>()]+|\\[\s\S]?|'[^']*'|"(?:[^"\\]|\\[\s\S])*")+/g;
 /** What a shell expands outside quotes in what should be one path. */
-const EXPANDS = /[`${]|[<>]\(/;
+const EXPANDS = /[`${]/;
 
 /** A test identity's function name: `<file> > <Contract> > name(args)` → name. */
 function functionName(id) {
@@ -71,85 +79,6 @@ function functionName(id) {
  */
 function identifiers(text) {
   return [...String(text).matchAll(IDENTIFIER)].flatMap((m) => (m[0].endsWith('$') ? [m[0], m[0].replace(/\$+$/, '')] : [m[0]]));
-}
-
-/** The index after a span whose opener ends before `from`, closed by an unescaped `close`; the text's end if it never closes. */
-function closedBy(text, from, close) {
-  for (let i = from; i < text.length; i += 1) {
-    if (text[i] === '\\') i += 1;
-    else if (text[i] === close) return i + 1;
-  }
-  return text.length;
-}
-
-/** Whether a quoted or nested span opens at `i`. */
-function opensSpan(text, i) {
-  const c = text[i];
-  const next = text[i + 1];
-  return c === '\'' || c === '"' || c === '`' || (c === '$' && (next === '\'' || next === '(' || next === '{')) || ((c === '<' || c === '>') && next === '(');
-}
-
-/** The index after the span opening at `i` (opensSpan): the text's end if it never closes. */
-function spanEnd(text, i) {
-  const c = text[i];
-  if (c === '\'') {
-    const end = text.indexOf('\'', i + 1);
-    return end < 0 ? text.length : end + 1;
-  }
-  if (c === '`') return closedBy(text, i + 1, '`');
-  if (c === '$' && text[i + 1] === '\'') return closedBy(text, i + 2, '\'');
-  const open = c === '"' ? null : text[i + 1];
-  const close = c === '"' ? '"' : open === '{' ? '}' : ')';
-  let depth = 0;
-  let k = c === '"' ? i + 1 : i + 2;
-  while (k < text.length) {
-    const d = text[k];
-    // Inside double quotes only these still open a span; anywhere else, all of opensSpan.
-    const nested = c === '"' ? d === '`' || (d === '$' && (text[k + 1] === '(' || text[k + 1] === '{')) : opensSpan(text, k);
-    if (d === '\\') k += 2;
-    else if (d === close && depth === 0) return open === '(' && UNBALANCED.test(text.slice(i, k).replace(/'[^']*'|"[^"]*"/g, '')) ? text.length : k + 1;
-    else if (nested) k = spanEnd(text, k);
-    else {
-      if (open !== null && d === open) depth += 1;
-      if (open !== null && d === close) depth -= 1;
-      k += 1;
-    }
-  }
-  return text.length;
-}
-
-/**
- * A command's words, as a shell lexes them: quoted spans, escapes and everything a substitution or
- * expansion holds stay in their word, `; & | < > ( )` and white space end one, and outside a span a
- * line continuation is nothing. A span left open, or a `$(…)` whose end the shell finds by more
- * than its quotes and parentheses (UNBALANCED), takes the rest of the text.
- * @param {string} text
- * @returns {string[]}
- */
-function shellWords(text) {
-  const words = [];
-  let word = null;
-  let i = 0;
-  const end = () => {
-    if (word !== null) words.push(word);
-    word = null;
-  };
-  while (i < text.length) {
-    const c = text[i];
-    const continuation = /^\\\r?\n/.exec(text.slice(i, i + 3));
-    if (continuation) {
-      i += continuation[0].length;
-    } else if (!opensSpan(text, i) && (/\s/.test(c) || ';&|<>()'.includes(c))) {
-      end();
-      i += 1;
-    } else {
-      const next = c === '\\' ? Math.min(i + 2, text.length) : opensSpan(text, i) ? spanEnd(text, i) : i + 1;
-      word = (word === null ? '' : word) + text.slice(i, next);
-      i = next;
-    }
-  }
-  end();
-  return words;
 }
 
 /** A word without its quotes and escapes, as the program it reaches would read it. */
@@ -173,7 +102,11 @@ function plainValue(value) {
  * @returns {boolean}
  */
 function saysTestAsAName(command) {
-  const words = shellWords(command);
+  const start = PLAIN_START.exec(command)[0];
+  // From the first thing whose words aren't certain, all of it is read.
+  if (identifiers(command.slice(start.length)).includes('test')) return true;
+  // A line continuation is nothing to a shell, but what it says inside single quotes.
+  const words = start.replace(/'[^']*'|\\\r?\n/g, (m) => (m[0] === '\'' ? m : '')).match(WORD) || [];
   const plain = words.map(plainWord);
   return words.some((word, i) => {
     const before = i > 0 ? plain[i - 1] : '';

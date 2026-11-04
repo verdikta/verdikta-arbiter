@@ -1474,9 +1474,12 @@ finding.json and the recorded failures alone:
   (`--match-test`), the choice in `--skip test`, and a directory or file of a path
   (`test/x.t.sol`, `a/test`, `test.t.sol`) in the value of `--match-path` or
   `--no-match-path` or the word right after `forge test`, when nothing outside its
-  quotes expands. Words are a shell's: a quoted span or a whole substitution is one.
-  Anywhere else it counts: `--match-test test`, `--mt=-?test`, `forge test test`,
-  `--mt $(printf test/?)`. Every other identifier is read wherever it is, so no way of quoting or
+  quotes expands. Those places hold up to the first thing whose words a shell's
+  quoting doesn't settle: `$'…'`, `$(…)`, `${…:-…}`, `<(…)`, backquotes, a quote left
+  open. From there on, the text says what it says. Anywhere else the word counts:
+  `--match-test test`, `--mt=-?test`, `forge test test`, `--mt $(printf test/?)`,
+  and a `--match-path test/x.t.sol` after a substitution, so write the path first.
+  Every other identifier is read wherever it is, so no way of quoting or
   placing any other name can hide it. That includes a path: a directory with the
   very name of another baseline test (`invariant/` on a listing with `invariant()`)
   reads as naming it, and the hunter tool warns. A filter is not evaluated: a name
