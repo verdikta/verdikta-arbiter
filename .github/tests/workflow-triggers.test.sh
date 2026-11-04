@@ -24,7 +24,7 @@ is() { # is FILE EXPR EXPECTED_JSON MESSAGE
     [ "$got" = "$3" ] && ok || bad "$1: $4 (got $got)"
 }
 
-for f in e2e.yml repo-policy.yml secret-scan.yml code-runner.yml installer.yml; do
+for f in e2e.yml repo-policy.yml secret-scan.yml code-runner.yml code-runner-calibration.yml installer.yml; do
     [ -f "$WF/$f" ] && ok || { bad "$f is missing"; continue; }
     for ev in pull_request push; do
         for b in main master "$INTEGRATION"; do

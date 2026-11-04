@@ -111,7 +111,7 @@ test('repoLayer holds the files, the objects and what only the image has, owned 
     const { layer, commit } = repoLayer({ files: FILES, imageOnly: { 'lib/dep/Dep.sol': Buffer.from('contract Dep {}\n') } });
     const file = path.join(dir, 'layer.tar');
     fs.writeFileSync(file, layer);
-    const listed = execFileSync('tar', ['-tvnf', file], { encoding: 'utf8' });
+    const listed = execFileSync('tar', ['-tvf', file], { encoding: 'utf8' });
     assert.match(listed, /repo\/src\/Vault\.sol/);
     assert.match(listed, /repo\/lib\/dep\/Dep\.sol/);
     assert.match(listed, new RegExp(`repo/\\.git/objects/${commit.slice(0, 2)}/${commit.slice(2)}`));

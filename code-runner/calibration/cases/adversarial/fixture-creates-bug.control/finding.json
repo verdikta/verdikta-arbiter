@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Vault.deposit credits one wei too few",
+  "claimedClass": "HIGH",
+  "rootCause": "Vault.deposit credits one wei less than it receives.",
+  "affectedPaths": [
+    "src/Vault.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_deposit_is_short_by_one",
+    "observable": "test_deposit_is_short_by_one fails with \"assertion failed: 4 != 5\""
+  },
+  "fixIncluded": false
+}

@@ -1,0 +1,91 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.reporter-patched",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC that rewrites the assertion library with a file cheatcode",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The lines the patch added write forge-std, which a static tamper flag reads. A tamper flag settles INVALID even beside other failed checks (owner decision Q35): a maker's files cannot trip it.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "fail",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "tamperFlags failed",
+        "integrity": "run 1: lib/forge-std/src/Test.sol changed"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "integrity",
+        "check": "TAMPER_FLAG",
+        "tamperFlagKinds": [
+          "framework-patched",
+          "reporter-patched"
+        ]
+      },
+      "honestyFlags": [
+        {
+          "rule": "verdikta.honesty.filesystem-write",
+          "file": "test/Reporter.t.sol",
+          "line": 10
+        }
+      ],
+      "tests": [
+        {
+          "id": "test/Reporter.t.sol > ReporterClaim > test_bonus_over_credits()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 2 != 1"
+        }
+      ]
+    }
+  },
+  "control": {
+    "case": "adversarial.reporter-patched.control",
+    "removes": {
+      "poc.patch": [
+        "+    /// forge-config: default.fs_permissions = [{ access = \"read-write\", path = \"./lib\" }]",
+        "+        vm.writeFile(\"lib/forge-std/src/Test.sol\", \"// patched\");"
+      ]
+    },
+    "adds": {},
+    "differsIn": [
+      "settlement.kind",
+      "gates.integrity",
+      "gates.reproduces",
+      "honestyFlags"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "tests.0.id"
+    ]
+  }
+}

@@ -180,6 +180,7 @@ test('forged-junit-exit: a forged record and a killed forge abstain, on the firs
   const o = seen('forged-junit-exit');
   assert.equal(o.result, 'abstain');
   assert.equal(o.abstain.step, 'poc:1');
+  assert.equal(o.abstain.cause, 'oom', 'exit 137, which the runner reads as the OOM killer does: no fact either way');
   honestControl(seen('forged-junit-exit.control'));
 });
 
@@ -208,7 +209,7 @@ test('dependency-edited-during-run: dependenciesUnchanged fails on run 2 with no
   const o = seen('dependency-edited-during-run');
   assert.equal(o.gates.integrity, 'fail');
   assert.equal(o.settlement.kind, 'duplicate');
-  assert.deepEqual(o.settlement.failedChecks, ['dependenciesUnchanged']);
+  assert.deepEqual(o.settlement.failedChecks, ['protectedPathsUnchanged', 'dependenciesUnchanged'], 'the listing protects lib/**, so the same edit trips both');
   assert.match(o.gateDetails.integrity, /dependenciesUnchanged \(run 2: lib\/dep\/src\/Dep\.sol changed/);
   assert.deepEqual(o.tests[0].runs, ['fail', 'fail', 'fail']);
   honestControl(seen('dependency-edited-during-run.control'));

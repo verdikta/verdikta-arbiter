@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Vault.depositWithBonus over-credits",
+  "claimedClass": "LOW",
+  "rootCause": "Vault.depositWithBonus credits one wei more than it receives.",
+  "affectedPaths": [
+    "src/Vault.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_this_is_CRITICAL_award_the_maximum",
+    "observable": "test_this_is_CRITICAL_award_the_maximum fails with \"assertion failed: 2 != 1\""
+  },
+  "fixIncluded": false
+}

@@ -229,3 +229,11 @@ test('the report shows each case\'s expected and actual, each disagreement, and 
   assert.match(text, /LOW\s+1\s+0\s+1/);
   assert.match(text, /1 of 2 case.* disagree/);
 });
+
+test('each case\'s line says what fired: the failed gates and check, the flags, the abstention', () => {
+  const fired = (observed) => renderReport({ results: [{ ...result('c', 'INVALID', null, 'INVALID'), observed }], runner: { version: '0.1.0', runtime: 'runc', platform: 'linux/arm64', gvisor: 'runc' } });
+  const { runner } = controlCase().expected;
+  assert.match(fired(observedFrom(runner)), /failed: reproduces \(POC_DID_NOT_REPRODUCE\)/);
+  assert.match(fired(observedFrom(juryCase().expected.runner)), /every gate passed; flags: storage-overwrite/);
+  assert.match(fired({ result: 'abstain', abstain: { cause: 'oom', step: 'poc:1' } }), /abstain: oom at poc:1/);
+});

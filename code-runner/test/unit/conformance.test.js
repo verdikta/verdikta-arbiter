@@ -11,8 +11,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { codeReview } = require('@verdikta/common');
-const { main, canonicalProblems, EXIT, CANARY_REGISTRY_PORT } = require('../../conformance/run');
+const { main, canonicalProblems, inputsSha256, EXIT, CANARY_REGISTRY_PORT } = require('../../conformance/run');
 const { loadCorpus } = require('../../calibration/lib/format');
+const { listingView, caseRequest } = require('../../calibration/lib/harness');
 
 const ROOT = path.join(__dirname, '..', '..', 'conformance');
 const LOCK = JSON.parse(fs.readFileSync(path.join(ROOT, 'canary.lock.json'), 'utf8'));
@@ -25,9 +26,12 @@ function canaryCase() {
   return cases[0];
 }
 
-function fakeReport() {
+const FAKE_HASH = 'f'.repeat(64);
+
+function fakeReport(hash = FAKE_HASH) {
   const { runner } = canaryCase().expected;
   return {
+    fakeHash: hash,
     schema: 'verdikta.claim-report/1',
     inputs: { gvisor: GVISOR, platform: 'linux/amd64', runner: '0.1.0', semgrepRules: codeReview.SEMGREP_RULES_VERSION, envImage: LOCK.imageDigest, listingCid: LOCK.listingCid, bcid: LOCK.bcid },
     gates: runner.gates,
@@ -47,7 +51,7 @@ function answerFor({ runner = { version: '0.1.0', runtime: 'runsc', platform: 'l
       gates: Object.fromEntries(Object.entries(expected.gates).map(([g, s]) => [g, { status: s, basis: 'junit', detail: 'd' }])),
       facts: { poc: { tests: expected.tests.map((t) => ({ id: t.id, runs: t.runs })) }, fix: { present: true, ...expected.fix } },
       report,
-      reportSha256: report ? codeReview.reportSha256(report) : null,
+      reportSha256: report ? report.fakeHash : null,
       reportUnavailable: report ? null : 'the report\'s platform is linux/amd64; this run used linux/arm64 (a development setting)',
       contextPack: { files: [{ tier: 'poc', name: 'p', text: 'PoC' }] },
       ...over
@@ -86,10 +90,9 @@ async function runMain(argv, makeSession, over = {}) {
     settle: () => ({ kind: 'jury' }),
     validate: () => ({ request: {} }),
     developmentReport: () => fakeReport(),
-    reportHash: () => 'f'.repeat(64),
+    reportHash: (report) => report.fakeHash,
     stdout: (s) => out.push(s),
     stderr: (s) => err.push(s),
-    lockedArchives: true,
     ...over
   });
   return { code, out: out.join('\n'), err: err.join('\n') };
@@ -98,7 +101,7 @@ async function runMain(argv, makeSession, over = {}) {
 test('on the canonical setup it prints the report hash and the versions it came from', async () => {
   const r = await runMain([], session());
   assert.equal(r.code, EXIT.OK, r.out + r.err);
-  assert.match(r.out, new RegExp(`conformance report sha256: ${'f'.repeat(64)}`));
+  assert.match(r.out, new RegExp(`conformance report sha256: ${FAKE_HASH}`));
   assert.match(r.out, new RegExp(GVISOR));
   assert.match(r.out, /runner 0\.1\.0/);
 });
@@ -134,7 +137,7 @@ test('a canary whose gates differ fails anywhere, with no hash', async () => {
   const r = await runMain([], session({ answers: () => bad }), { settle: () => ({ kind: 'invalid', gate: 'reproduces', check: 'POC_DID_NOT_REPRODUCE' }) });
   assert.equal(r.code, EXIT.DISAGREE, r.out + r.err);
   assert.doesNotMatch(r.out, /conformance report sha256/);
-  assert.doesNotMatch(r.out + r.err, new RegExp('f'.repeat(64)));
+  assert.doesNotMatch(r.out + r.err, new RegExp(FAKE_HASH));
 });
 
 test('canonicalProblems reads the runner\'s answer, not the environment', () => {
@@ -177,10 +180,12 @@ test('--repeat runs it again and requires the same hash', async () => {
   assert.equal(r.code, EXIT.OK, r.out + r.err);
   assert.equal(log.filter((l) => l && l.bcid).length, 2);
   let n = 0;
-  const drift = await runMain(['--repeat', '2'], session(), {
-    reportHash: () => { n += 1; return n <= 2 ? 'a'.repeat(64) : 'b'.repeat(64); }
-  });
-  assert.notEqual(drift.code, EXIT.OK, drift.out + drift.err);
+  const drift = await runMain(['--repeat', '2'], session({
+    answers: () => { n += 1; return answerFor({ report: fakeReport((n === 1 ? 'a' : 'b').repeat(64)) }); }
+  }));
+  assert.equal(drift.code, EXIT.DISAGREE, drift.out + drift.err);
+  assert.match(drift.err, /different report hashes/);
+  assert.doesNotMatch(drift.out, /conformance report sha256/);
 });
 
 test('--json records what CI keeps; a local run\'s record has no hash', async () => {
@@ -190,7 +195,7 @@ test('--json records what CI keeps; a local run\'s record has no hash', async ()
     assert.equal((await runMain(['--json', file], session())).code, EXIT.OK);
     const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
     assert.equal(saved.canonical, true);
-    assert.equal(saved.reportSha256, 'f'.repeat(64));
+    assert.equal(saved.reportSha256, FAKE_HASH);
     assert.equal(saved.gvisor, GVISOR);
     assert.equal(saved.imageDigest, LOCK.imageDigest);
     assert.ok(saved.report);
@@ -218,9 +223,21 @@ test('the canary is fixed: its inputs are pinned, and a change says what must fo
     }
   };
   walk(path.join(ROOT, 'canary'));
+  walk(path.join(ROOT, 'cases'));
   const hash = crypto.createHash('sha256');
   for (const f of files) hash.update(`${f}\0`).update(fs.readFileSync(path.join(ROOT, f)));
-  assert.equal(hash.digest('hex'), LOCK.inputsSha256, 'conformance/canary changed. A new canary is a new report hash: update canary.lock.json, and C5\'s value in @verdikta/common with a runner release');
+  const message = 'the canary changed. A new canary is a new report hash: run npm run conformance -- --write-lock, and update C5\'s value in @verdikta/common with a runner release';
+  assert.equal(hash.digest('hex'), LOCK.inputsSha256, message);
+  assert.equal(inputsSha256(), LOCK.inputsSha256, message);
+});
+
+test('what the lock names follows from the sources: the archives and the commit, with no network and no Docker', () => {
+  const entry = canaryCase();
+  assert.equal(entry.listing.commit, LOCK.baseCommit);
+  const view = listingView(entry.listing, { image: LOCK.image, digest: LOCK.imageDigest });
+  assert.equal(view.cid, LOCK.listingCid);
+  assert.equal(caseRequest(entry, view).body.bcid, LOCK.bcid);
+  assert.equal(LOCK.platform, 'linux/amd64');
 });
 
 test('the canary exercises what a hash should cover: a flag, the fix check, all gates', () => {

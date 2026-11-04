@@ -263,6 +263,7 @@ cd ai-node && npm test
 cd external-adapter && npm test     # see external-adapter/TESTING.md (unit vs integration; integration hits IPFS/AI)
 cd arbiter-operator && npx hardhat test
 cd e2e && node src/index.js l2 --mock --boot-adapter --suite claim   # the claim pipeline, local; see e2e/README.md
+cd code-runner && npm run calibration -- --subset adversarial && npm run conformance   # the runner against its corpus and canary; see code-runner/README.md
 for t in installer/tests/*.test.sh; do bash "$t" || exit 1; done
 ```
 
