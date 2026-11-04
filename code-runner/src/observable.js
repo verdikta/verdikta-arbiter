@@ -13,6 +13,19 @@
  *   (a test the patch added, any test of the PoC's files, a baseline test).
  *   At least one must be named, and every one named must be a test the
  *   patch added (which, the PoC having reproduced, failed on every run).
+ * - Both fields are text. The runner never runs `poc.command`, so what counts
+ *   is what the text spells, and nothing here follows a shell (node A3d, a design
+ *   review under owner decision Q38).
+ * - A word that is exactly one of forge's test-function prefixes
+ *   (forge.TEST_FUNCTION_PREFIXES: test, invariant, statefulFuzz, table, check,
+ *   prove) names nothing in either field, unless the patch added a test of that
+ *   name. A fixture's `function test() external {}`, a coverage marker found on a
+ *   real repository, is a baseline test named `test`, and every forge command and
+ *   most prose say `test`. Every other identifier is read wherever it is.
+ * - In `poc.command` an identifier ending in `$` counts as itself and as what comes
+ *   before it, so `^test_x$`, the usual filter for one test, names test_x. In
+ *   `poc.observable` it counts as itself only: `$` belongs to a Solidity
+ *   identifier there.
  * - The observable appears in the recorded failure: the observable's text
  *   in double quotes, each fragment of it, appears in the failure message of
  *   a named test on every run; or, when it quotes nothing, the failure
@@ -26,6 +39,8 @@
  * message forge prints.
  */
 
+const { TEST_FUNCTION_PREFIXES } = require('./forge');
+
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
 
@@ -34,6 +49,16 @@ function functionName(id) {
   const sig = String(id).split(' > ').pop();
   const open = sig.indexOf('(');
   return open < 0 ? sig : sig.slice(0, open);
+}
+
+/** The identifiers a text spells. */
+function identifiers(text) {
+  return [...String(text).matchAll(IDENTIFIER)].map((m) => m[0]);
+}
+
+/** The identifiers `poc.command` spells: one ending in `$` is also what comes before it, a regex's end. */
+function commandIdentifiers(command) {
+  return identifiers(command).flatMap((t) => (t.endsWith('$') ? [t, t.replace(/\$+$/, '')] : [t]));
 }
 
 function squash(text) {
@@ -65,9 +90,10 @@ function claimedObservable({ finding, tests, knownNames }) {
     if (!added.has(name)) added.set(name, []);
     added.get(name).push(t);
   }
-  const known = new Set([...knownNames, ...added.keys()]);
-  const tokens = new Set([...`${command}\n${observable}`.matchAll(IDENTIFIER)].map((m) => m[0]));
-  const named = [...tokens].filter((t) => known.has(t)).sort();
+  // A prefix alone is no name, unless the patch added a test called that.
+  const known = new Set([...[...knownNames].filter((n) => !TEST_FUNCTION_PREFIXES.includes(n)), ...added.keys()]);
+  const spelled = new Set([...commandIdentifiers(command), ...identifiers(observable)]);
+  const named = [...spelled].filter((t) => known.has(t)).sort();
   if (named.length === 0) {
     return fail(`finding.json names none of the tests the patch added (${listNames([...added.keys()].sort())}) in poc.command or poc.observable`);
   }

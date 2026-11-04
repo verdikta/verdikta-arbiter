@@ -152,8 +152,13 @@ function testIdentity(file, contract, name) {
   return `${file} > ${contract} > ${name}`;
 }
 
-/** forge's test kinds (TestFunctionKind::classify): test*, invariant* / statefulFuzz*, table*, and check* / prove* when symbolic entry points are on. */
-const TEST_FUNCTION = /^(?:test|invariant|statefulFuzz|table|check|prove)[^()]*\(.*\)$/s;
+/**
+ * forge's test-function prefixes, as TestFunctionKind::classify has them at v1.8.5
+ * (crates/common/src/traits.rs): test, invariant, statefulFuzz, table, and check and prove
+ * when symbolic entry points are on. The one list: TEST_FUNCTION and claimedObservable read it.
+ */
+const TEST_FUNCTION_PREFIXES = Object.freeze(['test', 'invariant', 'statefulFuzz', 'table', 'check', 'prove']);
+const TEST_FUNCTION = new RegExp(`^(?:${TEST_FUNCTION_PREFIXES.join('|')})[^()]*\\(.*\\)$`, 's');
 
 /** Whether a JUnit record is a test function. */
 function isTestFunction(name) {
@@ -298,6 +303,6 @@ function scanAddedLines(lines) {
 }
 
 module.exports = {
-  reporterFlags, forgeEnvironment, forgeArgv, listedConfigArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, isTestFunction, isInvariantRecord, recordReason, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
+  reporterFlags, forgeEnvironment, forgeArgv, listedConfigArgv, toolProblem, FORGE_WORKDIR, BUILDER_ENV, testIdentity, TEST_FUNCTION_PREFIXES, isTestFunction, isInvariantRecord, recordReason, isHarnessRecord, classifyRecord, filesGlob, testIdsRegex,
   scanAddedLines, FORGE_ERRORS, HARNESS_RECORDS, REFERENCES
 };

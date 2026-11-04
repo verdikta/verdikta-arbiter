@@ -198,3 +198,17 @@ test('A3a R21-F2: a campaign of one invariant predicate has its reason only in i
   assert.equal(forge.isInvariantRecord('afterInvariant()'), false);
   assert.equal(forge.isInvariantRecord('test_invariant()'), false);
 });
+
+test('A3d: the test-function prefixes are forge\'s, at the version v1.8.5 pins, and the one list isTestFunction reads', () => {
+  // TestFunctionKind::classify, crates/common/src/traits.rs at foundry v1.8.5: `check` and `prove` when symbolic entry points are on.
+  assert.deepEqual([...forge.TEST_FUNCTION_PREFIXES], ['test', 'invariant', 'statefulFuzz', 'table', 'check', 'prove']);
+  assert.ok(Object.isFrozen(forge.TEST_FUNCTION_PREFIXES));
+  for (const prefix of forge.TEST_FUNCTION_PREFIXES) {
+    assert.equal(forge.isTestFunction(`${prefix}()`), true, prefix);
+    assert.equal(forge.isTestFunction(`${prefix}_x(uint256)`), true, prefix);
+    assert.equal(forge.isTestFunction(`${prefix}`), false, `${prefix}: no signature`);
+    assert.equal(forge.isTestFunction(`x${prefix}()`), false, `${prefix}: only at the start`);
+  }
+  // What classify gives other kinds.
+  for (const other of ['setUp()', 'afterInvariant()', 'fixtureAmount()', 'helper()']) assert.equal(forge.isTestFunction(other), false, other);
+});
