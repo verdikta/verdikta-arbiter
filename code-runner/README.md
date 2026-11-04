@@ -2085,7 +2085,7 @@ malformed case stops the run before any image; nothing is skipped. That covers J
 (`null`, a list) and a file nothing would read (a `fix.patch` the case does not name, a prior folder it
 does not list, a misspelled listing file).
 
-`repo.kind: "git"` is in the format, and the image step refuses it until A7b builds such images.
+`repo.kind: "git"` names a public repository at a commit, fetched at run time and never committed (node A7b; see [Public findings](#public-findings)).
 
 ### The harness
 
