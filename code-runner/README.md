@@ -1466,27 +1466,19 @@ finding.json and the recorded failures alone:
   test the patch added, a test of the PoC's files, a baseline test). At
   least one must be named, and every one named must be a test the patch
   added (which, the PoC having reproduced, failed on every run).
-- **The command's own uses of the word `test` name nothing** (node A3d). A
-  fixture's `function test() external {}`, a common coverage marker, is a baseline
-  test named `test`, and every forge command says `test`. A valid PoC settled
-  INVALID that way. So in `poc.command` the word does not count in exactly these
-  places: the subcommand of `forge test`, a flag of the listing's grammar
-  (`--match-test`), the choice in `--skip test`, and a directory or file of a path
-  (`test/x.t.sol`, `a/test`, `test.t.sol`) in the value of `--match-path` or
-  `--no-match-path` or the word right after `forge test`, when nothing outside its
-  quotes expands. Those places hold up to the first thing whose words a shell's
-  quoting doesn't settle: `$'…'`, `$(…)`, `${…:-…}`, `<(…)`, backquotes, a quote left
-  open. From there on, the text says what it says. Anywhere else the word counts:
-  `--match-test test`, `--mt=-?test`, `forge test test`, `--mt $(printf test/?)`,
-  and a `--match-path test/x.t.sol` after a substitution, so write the path first.
-  Every other identifier is read wherever it is, so no way of quoting or
-  placing any other name can hide it. That includes a path: a directory with the
-  very name of another baseline test (`invariant/` on a listing with `invariant()`)
-  reads as naming it, and the hunter tool warns. A filter is not evaluated: a name
-  counts when it is spelled, and a `$` after it is the regex's end (`^test_x$`
-  names `test_x`).
-- **`poc.observable` is read whole.** The word `test` in its prose still names
-  a baseline `test()`. The hunter tool warns of it before a claim is committed.
+- **Both fields are text.** The runner never runs `poc.command`, so what counts is
+  what the text spells, and nothing follows a shell (node A3d, a design review
+  under owner decision Q38).
+- **A word that is exactly one of forge's test-function prefixes names nothing** in
+  either field, unless the patch added a test of that name: `test`, `invariant`,
+  `statefulFuzz`, `table`, `check`, `prove` (`forge.TEST_FUNCTION_PREFIXES`, the list
+  `TestFunctionKind::classify` has at v1.8.5). A fixture's `function test() external
+  {}`, a common coverage marker, is a baseline test named `test`, and every forge
+  command and most prose say the word: a valid PoC settled INVALID that way. Every
+  other identifier is read wherever it is.
+- **`$`.** In `poc.command` an identifier ending in `$` counts as itself and as what
+  comes before it, so `--match-test '^test_x$'` names `test_x`. In `poc.observable` it
+  counts as itself only, since `$` belongs to a Solidity identifier there.
 - **The observable appears in the recorded failure**: each text in double
   quotes in `poc.observable` appears in the failure message of a named test
   on every run; or, when it quotes nothing, the message of a named test (the

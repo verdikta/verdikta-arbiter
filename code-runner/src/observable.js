@@ -13,22 +13,19 @@
  *   (a test the patch added, any test of the PoC's files, a baseline test).
  *   At least one must be named, and every one named must be a test the
  *   patch added (which, the PoC having reproduced, failed on every run).
- * - The command's own uses of the word `test` name nothing (node A3d). A
- *   fixture's `function test() external {}`, a coverage marker found on a real
- *   repository, is a baseline test named `test`, and every forge command says
- *   `test`. So in `poc.command` that word does not count in exactly these
- *   places: the subcommand of `forge test`, a flag of the listing's grammar
- *   (--match-test), the choice in `--skip test`, and a directory or file of a
- *   path (`test/x.t.sol`, `a/test`, `test.t.sol`) in the value of --match-path
- *   or --no-match-path or the word right after `forge test` (forge's own
- *   shorthand for it), when nothing outside its quotes expands. Those places
- *   hold only up to the first thing whose words aren't certain (PLAIN_START); from
- *   there on the text says what it says. Anywhere else the word counts, as
- *   before; and it always counts as a test the patch added. Every other
- *   identifier is read wherever it is, so
- *   no way of quoting or placing any other name can hide it. No filter is
- *   evaluated: a name counts when it is spelled, a `$` after it being the
- *   regex's end.
+ * - Both fields are text. The runner never runs `poc.command`, so what counts
+ *   is what the text spells, and nothing here follows a shell (node A3d, a design
+ *   review under owner decision Q38).
+ * - A word that is exactly one of forge's test-function prefixes
+ *   (forge.TEST_FUNCTION_PREFIXES: test, invariant, statefulFuzz, table, check,
+ *   prove) names nothing in either field, unless the patch added a test of that
+ *   name. A fixture's `function test() external {}`, a coverage marker found on a
+ *   real repository, is a baseline test named `test`, and every forge command and
+ *   most prose say `test`. Every other identifier is read wherever it is.
+ * - In `poc.command` an identifier ending in `$` counts as itself and as what comes
+ *   before it, so `^test_x$`, the usual filter for one test, names test_x. In
+ *   `poc.observable` it counts as itself only: `$` belongs to a Solidity
+ *   identifier there.
  * - The observable appears in the recorded failure: the observable's text
  *   in double quotes, each fragment of it, appears in the failure message of
  *   a named test on every run; or, when it quotes nothing, the failure
@@ -42,28 +39,10 @@
  * message forge prints.
  */
 
-const commands = require('./commands');
+const { TEST_FUNCTION_PREFIXES } = require('./forge');
 
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
-/** The grammar's flags whose value is matched against a test or its contract: a name written there is one. */
-const NAME_FLAGS = Object.freeze(['--match-test', '--no-match-test', '--match-contract', '--no-match-contract']);
-/** The word `test` as a directory or file of a path. */
-const TEST_IN_PATH = /(?<![\w$])test\/|\/test(?![\w$])|(?<![\w$])test(?:\.t)?\.sol(?![\w$])/g;
-/** The program: `forge`, or a path to it. */
-const FORGE = /(?:^|\/)forge$/;
-/** forge's path flags: what their value holds is a path. */
-const PATH_FLAGS = Object.freeze(['--match-path', '--no-match-path']);
-/**
- * How much of a command, from its start, a shell reads as this code does: plain text, single and double
- * quotes, escapes, `$NAME` and `${NAME}`. It stops at `$'…'`, `$(…)`, `${…:-…}`, `$[…]`, `<(…)`, backquotes
- * or a quote left open, whose words are more than a shell's quoting says.
- */
-const PLAIN_START = /^(?:[^'"\\`$<>]|[<>](?!\()|\\[\s\S]|\$\{\w+\}|\$(?!['({[])|'[^']*'|"(?:[^"\\`$]|\\[\s\S]|\$\{\w+\}|\$(?![({[]))*")*/;
-/** A word of that part, as a shell splits it: a quoted span stays whole, with its escapes, and `; & | < > ( )` and white space end one. */
-const WORD = /(?:[^\s'"\\;&|<>()]+|\\[\s\S]?|'[^']*'|"(?:[^"\\]|\\[\s\S])*")+/g;
-/** What a shell expands outside quotes in what should be one path. */
-const EXPANDS = /[`${]/;
 
 /** A test identity's function name: `<file> > <Contract> > name(args)` → name. */
 function functionName(id) {
@@ -72,66 +51,14 @@ function functionName(id) {
   return open < 0 ? sig : sig.slice(0, open);
 }
 
-/**
- * The identifiers in a text. `$` is a character of a Solidity identifier and the end of a
- * regex: `^test_x$`, the usual way to name one test to --match-test, names test_x, so an
- * identifier ending in it counts as itself and as what comes before it.
- */
+/** The identifiers a text spells. */
 function identifiers(text) {
-  return [...String(text).matchAll(IDENTIFIER)].flatMap((m) => (m[0].endsWith('$') ? [m[0], m[0].replace(/\$+$/, '')] : [m[0]]));
+  return [...String(text).matchAll(IDENTIFIER)].map((m) => m[0]);
 }
 
-/** A word without its quotes and escapes, as the program it reaches would read it. */
-function plainWord(word) {
-  return word.replace(/['"\\]/g, '');
-}
-
-/** The grammar's flag a word spells, or null. */
-function grammarFlag(name) {
-  return name.startsWith('--') && Object.hasOwn(commands.ALIASES, name) ? commands.ALIASES[name] : null;
-}
-
-/** Whether a value is one path as a shell reads it: nothing outside its quotes expands. */
-function plainValue(value) {
-  return !EXPANDS.test(value.replace(/'[^']*'|"[^"`$]*"/g, ''));
-}
-
-/**
- * Whether `poc.command` says the word `test` anywhere but the places its own uses are (the top of this file).
- * @param {string} command
- * @returns {boolean}
- */
-function saysTestAsAName(command) {
-  const start = PLAIN_START.exec(command)[0];
-  // From the first thing whose words aren't certain, all of it is read.
-  if (identifiers(command.slice(start.length)).includes('test')) return true;
-  // A line continuation is nothing to a shell, but what it says inside single quotes.
-  const words = start.replace(/'[^']*'|\\\r?\n/g, (m) => (m[0] === '\'' ? m : '')).match(WORD) || [];
-  const plain = words.map(plainWord);
-  return words.some((word, i) => {
-    const before = i > 0 ? plain[i - 1] : '';
-    if (plain[i] === 'test' && (FORGE.test(before) || before === '--skip')) return false;
-    const eq = plain[i].indexOf('=');
-    const flag = grammarFlag(eq < 0 ? plain[i] : plain[i].slice(0, eq));
-    if (flag !== null && eq < 0) return false;
-    const value = flag !== null ? word.slice(word.indexOf('=') + 1) : word;
-    const of = flag !== null ? flag : grammarFlag(before);
-    if (of === '--skip' && plainWord(value) === 'test') return false;
-    const positional = flag === null && i > 1 && before === 'test' && FORGE.test(plain[i - 2]);
-    const path = (PATH_FLAGS.includes(of) || positional) && plainValue(value);
-    return identifiers(path ? value.replace(TEST_IN_PATH, ' ') : value).includes('test');
-  });
-}
-
-/**
- * What of `poc.command` can name a test the patch did not add: every identifier in it, `test` only
- * when saysTestAsAName says so.
- * @param {string} command
- * @returns {string[]}
- */
-function namesInCommand(command) {
-  const names = identifiers(command).filter((t) => t !== 'test');
-  return saysTestAsAName(command) ? [...names, 'test'] : names;
+/** The identifiers `poc.command` spells: one ending in `$` is also what comes before it, a regex's end. */
+function commandIdentifiers(command) {
+  return identifiers(command).flatMap((t) => (t.endsWith('$') ? [t, t.replace(/\$+$/, '')] : [t]));
 }
 
 function squash(text) {
@@ -163,13 +90,10 @@ function claimedObservable({ finding, tests, knownNames }) {
     if (!added.has(name)) added.set(name, []);
     added.get(name).push(t);
   }
-  const known = new Set([...knownNames, ...added.keys()]);
-  const inObservable = identifiers(observable);
-  // A test the patch added is named wherever the text says it; any other only where a name can be written.
-  const named = [...new Set([
-    ...[...identifiers(command), ...inObservable].filter((t) => added.has(t)),
-    ...[...namesInCommand(command), ...inObservable].filter((t) => known.has(t))
-  ])].sort();
+  // A prefix alone is no name, unless the patch added a test called that.
+  const known = new Set([...[...knownNames].filter((n) => !TEST_FUNCTION_PREFIXES.includes(n)), ...added.keys()]);
+  const spelled = new Set([...commandIdentifiers(command), ...identifiers(observable)]);
+  const named = [...spelled].filter((t) => known.has(t)).sort();
   if (named.length === 0) {
     return fail(`finding.json names none of the tests the patch added (${listNames([...added.keys()].sort())}) in poc.command or poc.observable`);
   }

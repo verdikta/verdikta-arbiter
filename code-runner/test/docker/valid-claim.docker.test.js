@@ -6,7 +6,7 @@
 // 1. forge writes the mocks of its compile cache as an unordered list, and frameworkUnchanged held that file to the
 //    bytes of run 1: a valid PoC whose imports bring in two or more such files settled DUPLICATE, at random.
 // 2. A baseline test named test() (a fixture's coverage marker) made the word in `forge test` a test the finding names:
-//    a valid PoC settled INVALID, the bond forfeited.
+//    a valid PoC settled INVALID, the bond forfeited. Now a word that is exactly one of forge's prefixes names nothing.
 //
 // Each with what must still fail: a real change to the compile cache, a finding that names another test. Under runc
 // locally; CI runs this file under runc and under gVisor. Every container and image is removed.
@@ -239,15 +239,18 @@ test('a listing with a baseline test named test() has it on its baseline, as for
   assert.ok(r.facts.listing.baseline.stable.includes('test/Vault.t.sol > VaultTest > test()'), show(r));
 });
 
-for (const [what, command] of [
-  ['the plain command', `forge test --match-test ${NAME}`],
-  ['every word of the grammar', `forge test --match-path test/Exploit.t.sol --match-contract ExploitTest --match-test ${NAME} --fuzz-runs 256 --isolate -vvv`],
-  ['a command outside the grammar', `FOUNDRY_PROFILE=default forge test --mt ${NAME} --json`],
-  ['a path with a space in it', `forge test --match-path 'test/my test/Exploit.t.sol' --match-test ${NAME}`]
+// The rule (a design review under owner decision Q38): a word that is exactly one of forge's prefixes names nothing.
+for (const [what, poc] of [
+  ['the plain command', { command: `forge test --match-test ${NAME}` }],
+  ['every word of the grammar', { command: `forge test --match-path test/Exploit.t.sol --match-contract ExploitTest --match-test ${NAME} --fuzz-runs 256 --isolate -vvv` }],
+  ['a command outside the grammar', { command: `FOUNDRY_PROFILE=default forge test --mt ${NAME} --json` }],
+  ['a path with a space in it', { command: `forge test --match-path 'test/my test/Exploit.t.sol' --match-test ${NAME}` }],
+  ['the word as a filter', { command: 'forge test --match-test test' }],
+  ['the word in the observable\'s prose', { observable: `${NAME}: the test fails at the committed hash with "2 != 1"` }]
 ]) {
   test(`a valid PoC on a listing with a baseline test named test() reaches the jury: ${what}`, { timeout: TIMEOUT }, async (t) => {
     const fx = await fixture('marker');
-    const r = await claim(t, fx, { pocPatch: addFilesPatch({ 'test/Exploit.t.sol': PLAIN_POC }), baseline: markerBaseline(fx), finding: mockFinding({ command }) });
+    const r = await claim(t, fx, { pocPatch: addFilesPatch({ 'test/Exploit.t.sol': PLAIN_POC }), baseline: markerBaseline(fx), finding: mockFinding(poc) });
     assertReachesTheJury(r);
     assert.match(r.gates.claimedObservable.detail, new RegExp(`names ${NAME};`));
   });
@@ -255,12 +258,9 @@ for (const [what, command] of [
 
 for (const [what, poc, re] of [
   ['the filter names it', { command: 'forge test --match-test test_deposit' }, /names test_deposit, which is not a test the patch added that failed/],
-  ['the filter is the marker', { command: 'forge test --match-test test' }, /names test, which is not a test the patch added that failed/],
-  ['the filter is the marker, with =', { command: 'forge test --mt=test' }, /names test, which is not a test the patch added that failed/],
+  ['an anchored filter names it', { command: "forge test --match-test '^test_deposit$'" }, /names test_deposit, which is not a test the patch added that failed/],
   ['an argument names it', { command: 'forge test test_deposit' }, /names test_deposit, which is not a test the patch added that failed/],
-  ['a flag inside a quoted filter cannot swallow it', { command: `forge test --match-test '${NAME}|(?: --match-path )?test_deposit'` }, /names test_deposit, which is not a test the patch added that failed/],
   ['the observable names it', { observable: `test_deposit and ${NAME} fail at the committed hash with "2 != 1"` }, /names test_deposit, which is not a test the patch added that failed/],
-  ['the observable names the marker', { observable: `test() and ${NAME} fail with "2 != 1"` }, /names test, which is not a test the patch added that failed/],
   ['nothing names the added test', { command: 'forge test', observable: 'the deposit over-credits: "2 != 1"' }, /names none of the tests the patch added/]
 ]) {
   test(`review focus: a finding that names the wrong test still fails claimedObservable, on real forge: ${what}`, { timeout: TIMEOUT }, async (t) => {
