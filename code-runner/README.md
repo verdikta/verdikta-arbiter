@@ -2067,6 +2067,7 @@ verdict and class (null for Verdikta's own fixtures).
 | `gates` | Each of the six, `pass`, `fail` or `not-run` |
 | `gateDetails` | For each failed gate, words its stated reason must contain |
 | `settlement` | `settleReport`'s answer without its text: `kind`, and `gate`, `check`, `failedChecks`, `tamperFlagKinds` |
+| `integrityFailed`, `tamperFlags` | The checks that failed, and each tamper flag's `kind`, `file` and `line`. Left out: none, except that a DUPLICATE's checks are its settlement's |
 | `honestyFlags` | Each flag's `rule`, `file` and `line` |
 | `tests` | The report's form of each test: `id`, `runs`, `kind`, `message` |
 | `rawRuns` | What each run did, where the report folds it (a flaky test); left out, it must equal `tests[].runs` |
@@ -2080,7 +2081,9 @@ aside; every other claim file byte-identical) and that the expected results diff
 the case says, and the harness checks the same two lists on what the runner did.
 
 The loader reads every folder, whichever subset was asked for, and reports every problem at once. A
-malformed case stops the run before any image; nothing is skipped.
+malformed case stops the run before any image; nothing is skipped. That covers JSON of the wrong shape
+(`null`, a list) and a file nothing would read (a `fix.patch` the case does not name, a prior folder it
+does not list, a misspelled listing file).
 
 `repo.kind: "git"` is in the format, and the image step refuses it until A7b builds such images.
 
@@ -2123,8 +2126,13 @@ against what the runner really did. `--results` writes `verdikta.calibration-res
 `--export` writes the cases that reach the jury as the testing tool's scenario folders
 (`testing-tool/README.md`, "Claim Scenarios"): `listing.zip` and `claim.zip`, whose CIDv0 the report
 names, and `run.json`. The archives are ZIPs of stored members with a fixed date. A case whose gates
-failed is left out, because production calls no model on it. An archive over one IPFS chunk (256 KiB) is
+failed is left out, because production calls no model on it. Prior findings are numbered in the case's
+order, since the tool reads `priors/` by file name. An archive over one IPFS chunk (256 KiB) is
 refused, since its CID would be wrong without chunking.
+
+An export holds one run's scenarios. The tool reads every folder it finds, and an old one stays
+consistent with itself, so the earlier export is removed before any run and a run that disagrees leaves
+none. A directory holding anything but scenario folders stops the run, with nothing in it touched.
 
 ### The adversarial corpus
 

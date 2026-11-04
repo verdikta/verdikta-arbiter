@@ -70,6 +70,21 @@ function selfCheck(results, stdout) {
   return [];
 }
 
+/**
+ * An export holds one run's scenarios. The testing tool reads whatever folders it finds, and an old one stays
+ * consistent with itself, so it would be measured as if it were current: the earlier export goes before any run, and a
+ * run that disagrees leaves none. Only scenario folders are removed: anything else in the directory stops the run.
+ * @throws when the directory holds anything else
+ */
+function clearExport(dir) {
+  if (!fs.existsSync(dir)) return;
+  const entries = fs.readdirSync(dir, { withFileTypes: true });
+  const scenario = (e) => e.isDirectory() && fs.existsSync(path.join(dir, e.name, 'scenario.json'));
+  const other = entries.find((e) => !scenario(e));
+  if (other) throw new Error(`--export ${dir} holds ${other.name}, which is not a scenario folder: an export replaces what is there, so name a directory that holds only an earlier export`);
+  for (const e of entries) fs.rmSync(path.join(dir, e.name), { recursive: true, force: true });
+}
+
 /** One testing-tool scenario folder (testing-tool/README.md, "Claim Scenarios"). */
 function writeScenario(dir, r) {
   const folder = path.join(dir, r.id);
@@ -83,7 +98,7 @@ function writeScenario(dir, r) {
   fs.writeFileSync(path.join(folder, 'claim.zip'), r.request.archive);
   if (r.request.priors.length) {
     fs.mkdirSync(path.join(folder, 'priors'));
-    for (const prior of r.request.priors) fs.writeFileSync(path.join(folder, 'priors', `${prior.name}.zip`), prior.buffer);
+    for (const prior of r.request.priors) fs.writeFileSync(path.join(folder, 'priors', prior.file), prior.buffer);
   }
   const { report, reportSha256, contextPack } = r.answer;
   fs.writeFileSync(path.join(folder, 'run.json'), JSON.stringify({ report, reportSha256, contextPack }));
@@ -135,6 +150,14 @@ async function main(argv, deps = {}) {
     if (args.exportDir && session.platform !== codeReview.CLASS_HARD_LIMITS.platform) {
       stderr(`calibration: --export needs a report from the runner, and this host runs ${session.platform}; a report exists only on ${codeReview.CLASS_HARD_LIMITS.platform}`);
       return EXIT.MALFORMED;
+    }
+    if (args.exportDir) {
+      try {
+        clearExport(args.exportDir);
+      } catch (err) {
+        stderr(`calibration: ${err.message}`);
+        return EXIT.MALFORMED;
+      }
     }
     const views = new Map();
     for (const listing of new Set(chosen.map((c) => c.listing))) {

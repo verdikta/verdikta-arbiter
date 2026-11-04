@@ -60,19 +60,56 @@ function getPath(root, dotted) {
   return at;
 }
 
-function readJson(file, fail) {
+/**
+ * A file's JSON value, of the shape asked for. Anything else is a problem reported through `fail`, and null: a value
+ * that parses and is the wrong shape (null, a list, a string) is as malformed as one that does not parse.
+ * @param {string} file
+ * @param {Function} fail
+ * @param {{label?:string, shape?:'object'|'list'}} [o]
+ */
+function readJson(file, fail, { label = path.basename(file), shape = 'object' } = {}) {
   let raw;
   try {
     raw = fs.readFileSync(file, 'utf8');
   } catch (_) {
-    fail(`${path.basename(file)} is missing`);
+    fail(`${label} is missing`);
     return null;
   }
+  let value;
   try {
-    return JSON.parse(raw);
+    value = JSON.parse(raw);
   } catch (err) {
-    fail(`${path.basename(file)} is not JSON: ${err.message}`);
+    fail(`${label} is not JSON: ${err.message}`);
     return null;
+  }
+  const right = shape === 'list' ? Array.isArray(value) : isObject(value);
+  if (!right) {
+    fail(`${label} must be a JSON ${shape}`);
+    return null;
+  }
+  return value;
+}
+
+/** A path under the corpus (or under a case): relative, with no way out. */
+function insidePath(rel) {
+  return text(rel) && !path.isAbsolute(rel) && !rel.split('/').includes('..') && !rel.includes('\\');
+}
+
+/** Every file under a folder, relative to it. */
+function filesUnder(dir, rel = '') {
+  const out = [];
+  for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+    const child = rel ? `${rel}/${entry.name}` : entry.name;
+    if (entry.isDirectory()) out.push(...filesUnder(dir, child));
+    else out.push(child);
+  }
+  return out;
+}
+
+/** A file nothing reads would be a claim or a listing that is not what it looks like. */
+function noOtherFiles(dir, known, fail) {
+  for (const file of filesUnder(dir)) {
+    if (!known.has(file)) fail(`${file} is here and the format names no such file`);
   }
 }
 
@@ -115,7 +152,8 @@ function loadListing(root, rel, problems) {
   const dir = path.join(root, rel);
   const fail = (m) => problems.push(`listing ${rel}: ${m}`);
   const raw = readJson(path.join(dir, 'listing.json'), fail);
-  if (!isObject(raw)) return null;
+  if (raw === null) return null;
+  noOtherFiles(dir, new Set(['listing.json', 'code_review.json', 'baseline.json', 'known_issues.json']), fail);
   unknownFields(raw, ['format', 'id', 'repo', 'commit', 'source', 'solc'], fail);
   if (raw.format !== LISTING_FORMAT) fail(`format must be ${LISTING_FORMAT}`);
   if (!text(raw.id) || !/^[a-z0-9][a-z0-9-]*$/.test(raw.id)) fail('id must be a lower-case slug');
@@ -126,17 +164,20 @@ function loadListing(root, rel, problems) {
   if (!isObject(raw.repo) || !['fixture', 'git'].includes(raw.repo.kind)) {
     fail('repo must be { kind: "fixture", path } or { kind: "git", url }');
   } else if (raw.repo.kind === 'git') {
+    unknownFields(raw.repo, ['kind', 'url'], (m) => fail(`repo: ${m}`));
     if (!text(raw.repo.url) || !raw.repo.url.startsWith('https://')) fail('repo.url must be an https URL');
   } else {
-    if (!text(raw.repo.path)) {
-      fail('repo.path names the fixture repository under the corpus');
+    unknownFields(raw.repo, ['kind', 'path', 'imageOnly'], (m) => fail(`repo: ${m}`));
+    if (!insidePath(raw.repo.path)) {
+      fail('repo.path must name the fixture repository inside the corpus');
     } else if (!fs.existsSync(path.join(root, raw.repo.path))) {
       fail(`repo.path ${raw.repo.path} does not exist`);
     } else {
       listing.files = readTree(path.join(root, raw.repo.path), fail);
       listing.imageOnly = {};
       if (raw.repo.imageOnly !== undefined) {
-        if (!fs.existsSync(path.join(root, raw.repo.imageOnly))) fail(`repo.imageOnly ${raw.repo.imageOnly} does not exist`);
+        if (!insidePath(raw.repo.imageOnly)) fail('repo.imageOnly must be inside the corpus');
+        else if (!fs.existsSync(path.join(root, raw.repo.imageOnly))) fail(`repo.imageOnly ${raw.repo.imageOnly} does not exist`);
         else listing.imageOnly = readTree(path.join(root, raw.repo.imageOnly), fail);
       }
       const { commit } = gitObjects(listing.files);
@@ -146,7 +187,7 @@ function loadListing(root, rel, problems) {
   }
 
   const spec = readJson(path.join(dir, 'code_review.json'), fail);
-  if (isObject(spec)) {
+  if (spec !== null) {
     listing.spec = spec;
     if (spec.baseCommit !== raw.commit) fail(`code_review.json's baseCommit ${spec.baseCommit} is not the listing's commit`);
     if (!isObject(spec.env)) {
@@ -167,7 +208,7 @@ function loadListing(root, rel, problems) {
     if (!checked.ok) fail(`baseline.json is invalid: ${checked.issues.map((i) => `${i.code} at ${i.path}`).join(', ')}`);
     if (baseline.baseCommit !== raw.commit) fail('baseline.json\'s baseCommit is not the listing\'s commit');
   }
-  const knownIssues = readJson(path.join(dir, 'known_issues.json'), fail);
+  const knownIssues = readJson(path.join(dir, 'known_issues.json'), fail, { shape: 'list' });
   if (knownIssues !== null) {
     listing.knownIssues = knownIssues;
     const checked = codeReview.validateKnownIssues(knownIssues);
@@ -200,7 +241,7 @@ function checkRunner(runner, outcome, fail) {
     where('result must be definitive, abstain or requester_error');
     return;
   }
-  unknownFields(runner, ['result', 'gates', 'gateDetails', 'settlement', 'honestyFlags', 'tests', 'rawRuns', 'flags', 'findings', 'fix', 'pack'], where);
+  unknownFields(runner, ['result', 'gates', 'gateDetails', 'settlement', 'integrityFailed', 'tamperFlags', 'honestyFlags', 'tests', 'rawRuns', 'flags', 'findings', 'fix', 'pack'], where);
 
   const gates = isObject(runner.gates) ? runner.gates : {};
   for (const gate of RUNNER_GATES) {
@@ -259,7 +300,13 @@ function checkRunner(runner, outcome, fail) {
 
 /** What a case may leave out, in its one shape: left out it means none, so a slip here must not read as none. */
 function checkOptionalFacts(runner, where) {
-  const { rawRuns, flags, findings, fix, pack } = runner;
+  const { integrityFailed, tamperFlags, rawRuns, flags, findings, fix, pack } = runner;
+  if (integrityFailed !== undefined && (!Array.isArray(integrityFailed) || !integrityFailed.every((c) => codeReview.INTEGRITY_CHECKS.includes(c)))) {
+    where(`integrityFailed must list checks of the report: ${codeReview.INTEGRITY_CHECKS.join(', ')}`);
+  }
+  if (tamperFlags !== undefined && (!Array.isArray(tamperFlags) || !tamperFlags.every((f) => isObject(f) && text(f.kind) && text(f.file) && (Number.isInteger(f.line) || f.line === null)))) {
+    where('tamperFlags must list each flag\'s kind, file and line');
+  }
   if (rawRuns !== undefined) {
     const ok = isObject(rawRuns) && Object.values(rawRuns).every((runs) => Array.isArray(runs) && runs.length === 3 && runs.every(text));
     if (!ok) where('rawRuns must map each test\'s id to its three runs');
@@ -310,7 +357,7 @@ function loadCase(root, group, name, listings, problems) {
   const folderId = `${group}.${name}`;
   const fail = (m) => problems.push(`${folderId}: ${m}`);
   const raw = readJson(path.join(dir, 'case.json'), fail);
-  if (!isObject(raw)) return null;
+  if (raw === null) return null;
   unknownFields(raw, ['format', 'id', 'subsets', 'title', 'source', 'listing', 'claim', 'priorFindings', 'expected', 'control', 'controlOf'], fail);
   if (raw.format !== CASE_FORMAT) fail(`format must be ${CASE_FORMAT}, got ${JSON.stringify(raw.format)}`);
   if (raw.id !== folderId) fail(`id must be its folder, ${folderId}`);
@@ -320,8 +367,8 @@ function loadCase(root, group, name, listings, problems) {
   checkExpected(raw.expected, fail);
 
   let listing = null;
-  if (!text(raw.listing)) {
-    fail('listing must name a listing folder');
+  if (!insidePath(raw.listing)) {
+    fail('listing must name a listing folder inside the corpus');
   } else {
     if (!listings.has(raw.listing)) listings.set(raw.listing, loadListing(root, raw.listing, problems));
     listing = listings.get(raw.listing);
@@ -346,7 +393,7 @@ function loadCase(root, group, name, listings, problems) {
   if (reportBytes && loaded.report.trim() === '') fail('report.md is empty');
   if (loaded.poc && loaded.poc.length === 0) fail('poc.patch is empty');
   const readFinding = (file, label) => {
-    const finding = readJson(path.join(dir, file), () => fail(`${label} is missing or not JSON`));
+    const finding = readJson(path.join(dir, file), fail, { label });
     if (finding === null) return null;
     const checked = codeReview.validateFinding(finding);
     if (!checked.ok) fail(`${label} is invalid: ${checked.issues.map((i) => `${i.code} at ${i.path}`).join(', ')}`);
@@ -354,16 +401,27 @@ function loadCase(root, group, name, listings, problems) {
   };
   loaded.finding = readFinding('finding.json', 'finding.json');
 
+  // What this case names: any other file in its folder would be read by nothing.
+  const known = new Set(['case.json', 'finding.json', 'report.md', 'poc.patch']);
+  if (claim.fix) known.add('fix.patch');
   const priors = [];
-  if (!Array.isArray(raw.priorFindings)) {
-    fail('priorFindings must be a list of folders');
+  if (!Array.isArray(raw.priorFindings) || !raw.priorFindings.every(insidePath)) {
+    fail('priorFindings must be a list of folders inside the case');
   } else {
     if (raw.priorFindings.length > codeReview.MAX_PRIOR_FINDINGS) fail(`at most ${codeReview.MAX_PRIOR_FINDINGS} prior findings`);
+    const seen = new Set();
     for (const rel of raw.priorFindings) {
+      if (seen.has(rel)) fail(`priorFindings names ${rel} more than once`);
+      seen.add(rel);
+      known.add(`${rel}/finding.json`);
+      known.add(`${rel}/report.md`);
       const finding = readFinding(path.join(rel, 'finding.json'), `${rel}/finding.json`);
       const report = readFile(path.join(rel, 'report.md'));
       if (finding && report) priors.push({ name: path.basename(rel), finding, report: report.toString('utf8') });
     }
+  }
+  for (const file of filesUnder(dir)) {
+    if (!known.has(file)) fail(`${file} is in the folder, and the case names no such file`);
   }
 
   return {
@@ -500,7 +558,7 @@ function loadCorpus({ root }) {
     if (entry.controlOf !== undefined && !(byId.get(entry.controlOf) && byId.get(entry.controlOf).control)) {
       problems.push(`${entry.id}: controlOf names ${entry.controlOf}, which is not a case with a control`);
     }
-    if (entry.subsets.includes(SUBSET_NEEDING_CONTROLS) && entry.control === undefined && entry.controlOf === undefined) {
+    if (Array.isArray(entry.subsets) && entry.subsets.includes(SUBSET_NEEDING_CONTROLS) && entry.control === undefined && entry.controlOf === undefined) {
       problems.push(`${entry.id}: an adversarial case needs a control: the same PoC without the adversarial part`);
     }
   }

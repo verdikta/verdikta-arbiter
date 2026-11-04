@@ -49,9 +49,10 @@ function priorArchive(prior) {
 function caseRequest(entry, view) {
   const { listing, claim } = entry;
   const archive = claimArchive({ name: entry.id, finding: claim.finding, report: claim.report, poc: claim.poc, fix: claim.fix });
-  const priors = entry.priors.map((prior) => {
+  // The file names keep the case's order: the testing tool reads priors/ in file-name order, and the list is in commit order.
+  const priors = entry.priors.map((prior, i) => {
     const buffer = priorArchive(prior);
-    return { name: prior.name, buffer, bcid: cidV0(buffer), finding: prior.finding, report: prior.report };
+    return { file: `${String(i + 1).padStart(2, '0')}-${prior.name}.zip`, buffer, bcid: cidV0(buffer), finding: prior.finding, report: prior.report };
   });
   const body = {
     listingCid: view.cid,

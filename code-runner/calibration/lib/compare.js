@@ -10,12 +10,14 @@
  */
 
 const { isDeepStrictEqual } = require('node:util');
+const { codeReview } = require('@verdikta/common');
 const { getPath } = require('./format');
 
 const NO_FLAGS = Object.freeze({ existingTestsModified: [], skipMarkersAdded: [], protectedPathsTouched: [] });
 const CLASS_ORDER = Object.freeze(['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL', 'ABSTAIN', 'REQUESTER_ERROR']);
 
 const located = (list) => (list || []).map((f) => ({ rule: f.rule, file: f.file, line: f.line }));
+const placed = (list) => (list || []).map((f) => ({ kind: f.kind, file: f.file, line: f.line }));
 
 /**
  * The observation of one POST /v1/runs answer.
@@ -43,6 +45,7 @@ function observe(answer, request, { settle, developmentReport }) {
   }
   const poc = report.poc;
   const fix = report.fix;
+  const integrity = (poc && poc.integrity) || {};
   const factTests = answer.facts && answer.facts.poc && Array.isArray(answer.facts.poc.tests) ? answer.facts.poc.tests : [];
   return {
     result: 'definitive',
@@ -50,6 +53,8 @@ function observe(answer, request, { settle, developmentReport }) {
     gates: report.gates,
     gateDetails: Object.fromEntries(Object.entries(answer.gates || {}).map(([g, v]) => [g, v.detail])),
     settlement,
+    integrityFailed: codeReview.INTEGRITY_CHECKS.filter((check) => integrity[check] === false),
+    tamperFlags: placed(integrity.tamperFlags),
     honestyFlags: located(poc && poc.honestyFlags),
     tests: poc ? poc.tests : [],
     rawRuns: Object.fromEntries(factTests.map((t) => [t.id, t.runs])),
@@ -109,6 +114,8 @@ function compareCase(expected, observed) {
   for (const key of new Set([...Object.keys(expected.settlement), ...Object.keys(settled)])) {
     same(`settlement.${key}`, expected.settlement[key], settled[key]);
   }
+  same('integrityFailed', expected.integrityFailed || expected.settlement.failedChecks || [], observed.integrityFailed || []);
+  same('tamperFlags', placed(expected.tamperFlags), placed(observed.tamperFlags));
   same('honestyFlags', located(expected.honestyFlags), located(observed.honestyFlags));
   same('tests.length', expected.tests.length, (observed.tests || []).length);
   expected.tests.forEach((t, i) => {

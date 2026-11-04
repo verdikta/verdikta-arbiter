@@ -45,6 +45,23 @@
           "reporter-patched"
         ]
       },
+      "integrityFailed": [
+        "protectedPathsUnchanged",
+        "frameworkUnchanged",
+        "dependenciesUnchanged"
+      ],
+      "tamperFlags": [
+        {
+          "kind": "framework-patched",
+          "file": "test/Reporter.t.sol",
+          "line": 8
+        },
+        {
+          "kind": "reporter-patched",
+          "file": "test/Reporter.t.sol",
+          "line": 10
+        }
+      ],
       "honestyFlags": [
         {
           "rule": "verdikta.honesty.filesystem-write",

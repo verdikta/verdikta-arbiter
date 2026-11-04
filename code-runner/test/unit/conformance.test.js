@@ -188,6 +188,19 @@ test('--repeat runs it again and requires the same hash', async () => {
   assert.doesNotMatch(drift.out, /conformance report sha256/);
 });
 
+test('--repeat holds every run to the canonical conditions, not only the last', async () => {
+  let n = 0;
+  const r = await runMain(['--repeat', '2'], session({
+    answers: () => {
+      n += 1;
+      return n === 1 ? answerFor({ runner: { version: '0.1.0', runtime: 'runsc', platform: 'linux/amd64', gvisor: 'release-20200101.0' } }) : answerFor();
+    }
+  }));
+  assert.equal(r.code, EXIT.HARNESS, r.out + r.err);
+  assert.match(r.err, /gVisor/);
+  assert.doesNotMatch(r.out, /conformance report sha256/);
+});
+
 test('--json records what CI keeps; a local run\'s record has no hash', async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-conf-'));
   try {

@@ -191,6 +191,7 @@ test('protected-file-at-runtime: integrity fails on foundry.toml with no tamper 
   assert.ok(o.settlement.failedChecks.includes('protectedPathsUnchanged'), JSON.stringify(o.settlement));
   assert.ok(o.settlement.failedChecks.includes('frameworkUnchanged'), JSON.stringify(o.settlement));
   assert.deepEqual(o.tests[0].runs, ['fail', 'fail', 'fail'], 'the JUnit alone would have reproduced');
+  assert.deepEqual(o.tamperFlags, [], 'no static flag reads a shell string');
   assert.match(o.gateDetails.integrity, /run 1: foundry\.toml changed/);
   honestControl(seen('protected-file-at-runtime.control'));
 });
@@ -201,6 +202,8 @@ test('reporter-patched: a tamper flag settles INVALID, even beside other failed 
   assert.equal(o.settlement.kind, 'invalid');
   assert.equal(o.settlement.check, 'TAMPER_FLAG');
   assert.ok(o.settlement.tamperFlagKinds.includes('reporter-patched'), JSON.stringify(o.settlement));
+  assert.deepEqual(o.tamperFlags.filter((f) => f.kind === 'reporter-patched').map((f) => f.line), [pocLine('reporter-patched', 'vm.writeFile(')], 'on the line that writes forge-std');
+  assert.deepEqual(o.integrityFailed, ['protectedPathsUnchanged', 'frameworkUnchanged', 'dependenciesUnchanged'], 'the write is measured too');
   assert.match(o.gateDetails.integrity, /run 1: lib\/forge-std\/src\/Test\.sol changed/);
   honestControl(seen('reporter-patched.control'));
 });
@@ -210,6 +213,7 @@ test('dependency-edited-during-run: dependenciesUnchanged fails on run 2 with no
   assert.equal(o.gates.integrity, 'fail');
   assert.equal(o.settlement.kind, 'duplicate');
   assert.deepEqual(o.settlement.failedChecks, ['protectedPathsUnchanged', 'dependenciesUnchanged'], 'the listing protects lib/**, so the same edit trips both');
+  assert.deepEqual(o.tamperFlags, [], 'no static flag reads a shell string');
   assert.match(o.gateDetails.integrity, /dependenciesUnchanged \(run 2: lib\/dep\/src\/Dep\.sol changed/);
   assert.deepEqual(o.tests[0].runs, ['fail', 'fail', 'fail']);
   honestControl(seen('dependency-edited-during-run.control'));

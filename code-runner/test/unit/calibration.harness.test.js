@@ -356,8 +356,115 @@ test('prior findings reach the request and the export with the CID of their own 
     const body = seen.find((b) => b.priorFindings.length === 1);
     assert.equal(body.priorFindings[0].finding.title, 'An earlier finding');
     assert.equal(body.priorFindings[0].report, '# Earlier\n');
-    const zip = fs.readFileSync(path.join(dir, 'adversarial.store/priors/01.zip'));
+    const zip = fs.readFileSync(path.join(dir, 'adversarial.store/priors/01-01.zip'));
     assert.equal(body.priorFindings[0].bcid, cidV0(zip));
+  } finally {
+    corpus.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+function addPrior(corpus, rel, title) {
+  const { finding } = require('../helpers/calibrationCorpus');
+  const priorDir = path.join(corpus.casePath('store'), rel);
+  fs.mkdirSync(priorDir, { recursive: true });
+  fs.writeFileSync(path.join(priorDir, 'finding.json'), `${finding({ title })}\n`);
+  fs.writeFileSync(path.join(priorDir, 'report.md'), `# ${title}\n`);
+}
+
+test('R1-F2: prior findings stay in the case\'s order in the export: the testing tool reads them in file-name order', async () => {
+  const corpus = writeCorpus({ adversarial: { priorFindings: ['priors/02', 'priors/01', 'priors/03'] } });
+  const seen = [];
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-export-'));
+  const session = fakeSession();
+  try {
+    addPrior(corpus, 'priors/01', 'First by name');
+    addPrior(corpus, 'priors/02', 'Named second, listed first');
+    addPrior(corpus, 'priors/03', 'Third');
+    const wrap = () => {
+      const s = session();
+      const run = s.run;
+      s.run = (body) => { seen.push(body); return run(body); };
+      return s;
+    };
+    const r = await runMain(['--export', dir], corpus, wrap);
+    assert.equal(r.code, EXIT.OK, r.out + r.err);
+    const body = seen.find((b) => b.priorFindings.length === 3);
+    const inRequest = body.priorFindings.map((p) => p.bcid);
+    const folder = path.join(dir, 'adversarial.store/priors');
+    // As testing-tool/src/claim-scenarios.js reads them: .zip files, sorted by name.
+    const inExport = fs.readdirSync(folder).filter((n) => n.endsWith('.zip')).sort().map((n) => cidV0(fs.readFileSync(path.join(folder, n))));
+    assert.deepEqual(inExport, inRequest);
+    assert.equal(body.priorFindings[0].finding.title, 'Named second, listed first');
+  } finally {
+    corpus.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('R1-F2: two prior folders with one base name both reach the export', async () => {
+  const corpus = writeCorpus({ adversarial: { priorFindings: ['priors/a/x', 'priors/b/x'] } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-export-'));
+  try {
+    addPrior(corpus, 'priors/a/x', 'One');
+    addPrior(corpus, 'priors/b/x', 'Other');
+    const r = await runMain(['--export', dir], corpus, fakeSession());
+    assert.equal(r.code, EXIT.OK, r.out + r.err);
+    assert.equal(fs.readdirSync(path.join(dir, 'adversarial.store/priors')).length, 2);
+  } finally {
+    corpus.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('R1-F3: an export replaces the earlier one: a scenario that no longer reaches the jury does not stay behind', async () => {
+  const corpus = writeCorpus();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-export-'));
+  try {
+    const stale = path.join(dir, 'adversarial.revised');
+    fs.mkdirSync(stale);
+    fs.writeFileSync(path.join(stale, 'scenario.json'), '{"id":"adversarial.revised"}');
+    fs.writeFileSync(path.join(stale, 'run.json'), '{}');
+    const r = await runMain(['--export', dir], corpus, fakeSession());
+    assert.equal(r.code, EXIT.OK, r.out + r.err);
+    assert.deepEqual(fs.readdirSync(dir), ['adversarial.store']);
+  } finally {
+    corpus.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('R1-F3: a run that disagrees leaves no export at all: the last one no longer describes this corpus', async () => {
+  const corpus = writeCorpus({ adversarial: { expected: { ...juryCase().expected, runner: { ...juryCase().expected.runner, tests: [{ id: TEST_ID, runs: ['fail', 'fail', 'fail'], kind: 'assertion', message: 'not what forge said' }] } } } });
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-export-'));
+  try {
+    const stale = path.join(dir, 'adversarial.store');
+    fs.mkdirSync(stale);
+    fs.writeFileSync(path.join(stale, 'scenario.json'), '{"id":"adversarial.store"}');
+    const r = await runMain(['--export', dir], corpus, fakeSession());
+    assert.equal(r.code, EXIT.DISAGREE, r.out + r.err);
+    assert.deepEqual(fs.readdirSync(dir), []);
+  } finally {
+    corpus.cleanup();
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('R1-F3: an export directory holding anything but scenario folders is refused before any run, and nothing in it is touched', async () => {
+  const corpus = writeCorpus();
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-export-'));
+  const log = [];
+  try {
+    fs.writeFileSync(path.join(dir, 'notes.txt'), 'mine');
+    const other = path.join(dir, 'adversarial.old');
+    fs.mkdirSync(other);
+    fs.writeFileSync(path.join(other, 'scenario.json'), '{}');
+    const r = await runMain(['--export', dir], corpus, fakeSession({ log }));
+    assert.equal(r.code, EXIT.MALFORMED, r.out + r.err);
+    assert.match(r.err, /notes\.txt/);
+    assert.ok(!log.some((l) => l.startsWith('run')), 'nothing ran');
+    assert.equal(fs.readFileSync(path.join(dir, 'notes.txt'), 'utf8'), 'mine');
+    assert.ok(fs.existsSync(path.join(other, 'scenario.json')));
   } finally {
     corpus.cleanup();
     fs.rmSync(dir, { recursive: true, force: true });

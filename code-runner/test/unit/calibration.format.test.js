@@ -91,6 +91,134 @@ test('a folder that is not a case fails the whole load, whichever subset was ask
   }
 });
 
+for (const [name, bytes] of [['null', 'null\n'], ['a list', '[]\n'], ['a string', '"case"\n'], ['a number', '1\n']]) {
+  test(`R1-F1: a case.json that is ${name} fails the load, and is not skipped`, () => {
+    const corpus = writeCorpus();
+    try {
+      fs.writeFileSync(path.join(corpus.casePath('store.control'), 'case.json'), bytes);
+      assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /adversarial\.store\.control.*case\.json.*JSON object/.test(p)));
+    } finally {
+      corpus.cleanup();
+    }
+  });
+
+  test(`R1-F1: a listing.json that is ${name} fails the load`, () => {
+    const corpus = writeCorpus();
+    try {
+      fs.writeFileSync(path.join(corpus.root, 'listings/vault/listing.json'), bytes);
+      assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /listing\.json.*JSON object/.test(p)));
+    } finally {
+      corpus.cleanup();
+    }
+  });
+
+  test(`R1-F1: a code_review.json that is ${name} fails the load`, () => {
+    const corpus = writeCorpus();
+    try {
+      fs.writeFileSync(path.join(corpus.root, 'listings/vault/code_review.json'), bytes);
+      assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /code_review\.json.*JSON object/.test(p)));
+    } finally {
+      corpus.cleanup();
+    }
+  });
+
+  test(`R1-F1: a baseline.json that is ${name} fails the load`, () => {
+    const corpus = writeCorpus();
+    try {
+      fs.writeFileSync(path.join(corpus.root, 'listings/vault/baseline.json'), bytes);
+      assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /baseline\.json/.test(p)));
+    } finally {
+      corpus.cleanup();
+    }
+  });
+
+  test(`R1-F1: a finding.json that is ${name} fails the load`, () => {
+    const corpus = writeCorpus();
+    try {
+      fs.writeFileSync(path.join(corpus.casePath('store'), 'finding.json'), bytes);
+      assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /adversarial\.store: finding\.json.*JSON object/.test(p)));
+    } finally {
+      corpus.cleanup();
+    }
+  });
+
+  test(`R1-F1: a prior's finding.json that is ${name} fails the load, and the prior is not dropped`, () => {
+    const corpus = writeCorpus({ adversarial: { priorFindings: ['priors/01'] } });
+    try {
+      const dir = path.join(corpus.casePath('store'), 'priors/01');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'finding.json'), bytes);
+      fs.writeFileSync(path.join(dir, 'report.md'), '# Earlier\n');
+      assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /priors\/01\/finding\.json.*JSON object/.test(p)));
+    } finally {
+      corpus.cleanup();
+    }
+  });
+}
+
+test('known_issues.json must be a list', () => {
+  const corpus = writeCorpus();
+  try {
+    fs.writeFileSync(path.join(corpus.root, 'listings/vault/known_issues.json'), '{}\n');
+    assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /known_issues\.json.*JSON list/.test(p)));
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('a file in a case folder that the case does not name fails the load: a fix.patch left out of claim.fix would never run', () => {
+  const corpus = writeCorpus();
+  try {
+    fs.writeFileSync(path.join(corpus.casePath('store'), 'fix.patch'), 'diff\n');
+    assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /adversarial\.store.*fix\.patch.*names/.test(p)));
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('a prior folder the case does not name fails the load', () => {
+  const corpus = writeCorpus();
+  try {
+    const dir = path.join(corpus.casePath('store'), 'priors/01');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'finding.json'), '{}\n');
+    assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /priors\/01\/finding\.json.*names/.test(p)));
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('a file in a listing folder the format does not name fails the load', () => {
+  const corpus = writeCorpus();
+  try {
+    fs.writeFileSync(path.join(corpus.root, 'listings/vault/known-issues.json'), '[]\n');
+    assert.throws(() => loadCorpus({ root: corpus.root }), (e) => e instanceof CorpusError && e.problems.some((p) => /known-issues\.json/.test(p)));
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('subsets that are not a list are a problem to report, not a crash', () => {
+  assertRefused({ adversarial: { subsets: 'adversarial' } }, /adversarial\.store.*subsets/);
+});
+
+test('a prior listed twice, or not as a path, is refused', () => {
+  assertRefused({ adversarial: { priorFindings: ['priors/01', 'priors/01'] } }, /priors\/01.*more than once/);
+  assertRefused({ adversarial: { priorFindings: [1] } }, /priorFindings/);
+});
+
+test('a path that leaves the corpus is refused', () => {
+  assertRefused({ adversarial: { listing: '../outside' } }, /listing.*inside the corpus/);
+  assertRefused({ adversarial: { listing: '/etc' } }, /listing.*inside the corpus/);
+  assertRefused({ adversarial: { priorFindings: ['../other/priors/01'] } }, /priorFindings.*inside/);
+  assertRefused({ listing: { repo: { kind: 'fixture', path: '../outside' } } }, /repo\.path.*inside the corpus/);
+});
+
+test('a repo with a field of the other kind, or an unknown one, is refused', () => {
+  assertRefused({ listing: { repo: { kind: 'fixture', path: 'repos/vault', url: 'https://example.org/x' } } }, /repo: unknown field url/);
+  assertRefused({ listing: { repo: { kind: 'git', url: 'https://example.org/x', path: 'repos/vault' } } }, /repo: unknown field path/);
+});
+
 test('every problem is reported at once', () => {
   const problems = problemsOf({ adversarial: { format: 'x', source: undefined }, control: { title: '' } });
   assert.ok(problems.length >= 3, JSON.stringify(problems));
@@ -145,6 +273,8 @@ test('expected: a fix check missing a field', () => assertRefused({ adversarial:
 test('expected: a pack entry with no tier', () => assertRefused({ adversarial: withRunner(juryCase(), { pack: { contains: [{ text: 'x' }] } }) }, /pack\.contains/));
 test('expected: a pack with an unknown key', () => assertRefused({ adversarial: withRunner(juryCase(), { pack: { contain: [] } }) }, /pack: unknown field contain/));
 test('expected: too many prior findings', () => assertRefused({ adversarial: { priorFindings: Array.from({ length: 9 }, (_, i) => `priors/${i}`) } }, /at most 8/));
+test('expected: tamper flags must name their kind, file and line', () => assertRefused({ adversarial: withRunner(juryCase(), { tamperFlags: [{ kind: 'reporter-patched' }] }) }, /tamperFlags/));
+test('expected: integrityFailed must name the checks of the report', () => assertRefused({ adversarial: withRunner(juryCase(), { integrityFailed: ['noSuchCheck'] }) }, /integrityFailed/));
 test('expected: an abstention with a settlement is refused', () => {
   const c = juryCase();
   assertRefused({ adversarial: { expected: { ...c.expected, outcome: 'ABSTAIN', runner: { result: 'abstain', abstain: { cause: 'nonzero', step: 'poc:1' }, settlement: { kind: 'jury' } } } } }, /abstain/);

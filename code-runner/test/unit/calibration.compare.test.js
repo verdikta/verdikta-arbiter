@@ -127,6 +127,34 @@ test('an abstention where a verdict was expected says which, and why', () => {
   assert.match(one.actual, /abstain \(oom at build: exit 137\)/);
 });
 
+test('integrity: a failed check or a tamper flag no one expected disagrees, and each is located', () => {
+  const { runner } = juryCase().expected;
+  differs(runner, observedFrom(runner, { integrityFailed: ['frameworkUnchanged'] }), /^integrityFailed$/);
+  differs(runner, observedFrom(runner, { tamperFlags: [{ kind: 'reporter-patched', file: 'test/Claim.t.sol', line: 3 }] }), /^tamperFlags$/);
+  const tampered = { ...runner, tamperFlags: [{ kind: 'reporter-patched', file: 'test/Claim.t.sol', line: 3 }], integrityFailed: ['frameworkUnchanged'] };
+  assert.deepEqual(compareCase(tampered, observedFrom(tampered, { integrityFailed: ['frameworkUnchanged'], tamperFlags: tampered.tamperFlags })), []);
+  differs(tampered, observedFrom(tampered, { integrityFailed: ['frameworkUnchanged'], tamperFlags: [{ ...tampered.tamperFlags[0], line: 4 }] }), /^tamperFlags$/);
+});
+
+test('integrity: a duplicate\'s failed checks are its settlement\'s, with no need to say so twice', () => {
+  const settlement = { kind: 'duplicate', gate: 'integrity', check: 'INTEGRITY_CHECK_FAILED', failedChecks: ['dependenciesUnchanged'] };
+  const runner = { ...controlCase().expected.runner, settlement };
+  assert.deepEqual(compareCase(runner, observedFrom(runner, { integrityFailed: ['dependenciesUnchanged'] })), []);
+  differs(runner, observedFrom(runner, { integrityFailed: ['frameworkUnchanged'] }), /^integrityFailed$/);
+});
+
+test('observe reads the failed checks and the tamper flags from the report', () => {
+  const { runner } = controlCase().expected;
+  const report = {
+    gates: runner.gates, inputs: {},
+    poc: { tests: runner.tests, honestyFlags: [], integrity: { identityComplete: true, frameworkUnchanged: false, dependenciesUnchanged: false, tamperFlags: [{ kind: 'reporter-patched', file: 'f', line: 2 }] } },
+    fix: { present: false }, findings: [], flags: {}
+  };
+  const seen = observe({ outcome: 'definitive', report, reportSha256: 'a', runner: {}, gates: {}, facts: {} }, {}, { settle: () => ({ kind: 'invalid' }) });
+  assert.deepEqual(seen.integrityFailed, ['frameworkUnchanged', 'dependenciesUnchanged']);
+  assert.deepEqual(seen.tamperFlags, [{ kind: 'reporter-patched', file: 'f', line: 2 }]);
+});
+
 test('flags, findings and the fix check default to none, so an unexpected one disagrees', () => {
   const { runner } = juryCase().expected;
   differs(runner, observedFrom(runner, { flags: { existingTestsModified: ['test/Vault.t.sol'], skipMarkersAdded: [], protectedPathsTouched: [] } }), /^flags/);

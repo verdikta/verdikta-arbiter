@@ -165,9 +165,8 @@ async function main(argv, deps = {}) {
 
     const hashes = new Set();
     let answer = null;
-    let request = null;
     for (let i = 0; i < args.repeat; i += 1) {
-      request = caseRequest(entry, view);
+      const request = caseRequest(entry, view);
       const res = await session.run(request.body);
       answer = res.body;
       if (!answer || !answer.outcome) throw new HarnessError(`the runner answered HTTP ${res.status}`);
@@ -178,7 +177,14 @@ async function main(argv, deps = {}) {
         for (const d of disagreements) stdout(`  ${d.path}: expected ${JSON.stringify(d.expected)}, actual ${JSON.stringify(d.actual)}`);
         return EXIT.DISAGREE;
       }
-      if (answer.report) hashes.add(reportHash(answer.report));
+      if (session.runtime === 'runsc') {
+        const problems = canonicalProblems(answer, { lock, published, listingCid: view.cid, bcid: request.body.bcid, reportHash });
+        if (problems.length) {
+          stderr(`conformance: run ${i + 1} is not canonical, so this has no hash to print:\n  - ${problems.join('\n  - ')}`);
+          return EXIT.HARNESS;
+        }
+        hashes.add(answer.reportSha256);
+      }
     }
     stdout(`conformance: the canary reached its expected gates, flags and runs${args.repeat > 1 ? ` on all ${args.repeat} runs` : ''}`);
 
@@ -186,11 +192,6 @@ async function main(argv, deps = {}) {
       stdout(`conformance: LOCAL RUN, no report hash. This run used ${session.runtime} on ${session.platform}. The canonical hash exists only on ${CLASS_PLATFORM} under gVisor ${GVISOR}; CI records it there and @verdikta/common pins it (C5).`);
       if (args.json) fs.writeFileSync(args.json, `${JSON.stringify({ canonical: false, runtime: session.runtime, platform: session.platform }, null, 2)}\n`);
       return EXIT.OK;
-    }
-    const problems = canonicalProblems(answer, { lock, published, listingCid: view.cid, bcid: request.body.bcid, reportHash });
-    if (problems.length) {
-      stderr(`conformance: this run is not canonical, so it has no hash to print:\n  - ${problems.join('\n  - ')}`);
-      return EXIT.HARNESS;
     }
     if (hashes.size !== 1) {
       stderr(`conformance: the same canary gave ${hashes.size} different report hashes in ${args.repeat} runs on this host`);
