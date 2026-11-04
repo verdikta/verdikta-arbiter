@@ -10,14 +10,16 @@
 #     fill only that disk (40 GB by default);
 #   - the code runner, on loopback with a token of its own;
 #   - the pinned base and Semgrep images, warmed;
-#   - the conformance self-test: the canary's report hash against @verdikta/common's. A pass
-#     is what turns code review on in the adapter and lets the node register on a code class.
+#   - the conformance self-test: the canary's report hash against @verdikta/common's. A pass is
+#     what the runner needs before it admits a claim (CODE_RUNNER_CONFORMANCE_FILE, its own rule:
+#     code-runner/src/conformance.js), and what lets the node register on a code class.
 #
 # It never restarts, reloads or reconfigures the arbiter's Docker or its containerd, never
 # touches /etc/docker or a container of the arbiter's, and installs no package: apt can
 # restart Docker. A new gVisor release reaches a running daemon with `systemctl reload` of
 # the runner's own daemon. A first enable that fails removes what it made, the disk image
-# included. A failed refresh keeps what is there and turns code review off.
+# included. A failed refresh keeps what is there: the runner refuses claims with no pass for
+# what it is running, whichever way this ends, and nothing else on the node notices.
 #
 # Usage (from the install directory; root or sudo for the host parts):
 #   code-review-sandbox.sh enable [--disk-gb N]  # install or refresh; safe to run again
@@ -25,7 +27,6 @@
 #   code-review-sandbox.sh warm                  # pull the pinned images again
 #   code-review-sandbox.sh self-test             # run the canary again
 #   code-review-sandbox.sh disable [--purge]     # remove it; --purge also frees the disk image
-#   code-review-sandbox.sh hold                  # code review off in the adapter unless a pass stands
 #   code-review-sandbox.sh lock|unlock --pid N   # the maintenance lock, for an upgrade's whole run
 #   code-review-sandbox.sh print-config          # the units and daemon config (review)
 #
@@ -98,11 +99,11 @@ QUIET=0
 PURGE=0
 LOCK_PID=""
 
-usage() { sed -n '2,40p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,39p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        enable|status|warm|self-test|disable|hold|lock|unlock|print-config)
+        enable|status|warm|self-test|disable|lock|unlock|print-config)
             [ -n "$ACTION" ] && { echo "only one action, please" >&2; exit 64; }
             ACTION="$1"; shift ;;
         --install-dir) shift; [ -z "${1:-}" ] && { echo "--install-dir needs a directory" >&2; exit 64; }; INSTALL_DIR="$1"; shift ;;
@@ -389,29 +390,6 @@ lock_take() {
     esac
     own "$STATE_DIR" 2>/dev/null
 }
-# Code review could not be turned off, and no pass stands: the lock stays, with no pid, so no claim is
-# admitted whoever exits next. A later pass, with the adapter's settings written, ends what it was
-# for (lift_pin); so does an operator, after fixing what stopped the write.
-lift_pin() {
-    if grep -q '^code-review-sandbox kept: ' "$LOCK_FILE" 2>/dev/null; then
-        rm -f "$LOCK_FILE"
-        say "The maintenance lock kept for an earlier failed write is lifted: a pass stands, and the adapter's settings are written."
-    fi
-}
-pin_lock() {
-    local tmp="$LOCK_FILE.new.$$"
-    LOCK_MINE=0
-    if echo "code-review-sandbox kept: CODE_REVIEW_ENABLED could not be turned off in $ADAPTER_ENV at $(date -u +%Y-%m-%dT%H:%M:%SZ); remove this file after fixing that" > "$tmp" 2>/dev/null \
-        && mv -f "$tmp" "$LOCK_FILE" 2>/dev/null && grep -q ' kept: ' "$LOCK_FILE" 2>/dev/null; then
-        echo -e "${RED}Code review could not be turned off in $ADAPTER_ENV, so the maintenance lock $LOCK_FILE stays: the runner refuses every claim until you fix that and remove it.${NC}" >&2
-        return 0
-    fi
-    # The disk is full or read-only, then. The last thing left is that no runner answers: the adapter abstains.
-    rm -f "$tmp" 2>/dev/null
-    as_user bash "$RUNNER_DIR/stop.sh" >/dev/null 2>&1
-    echo -e "${RED}Code review could not be turned off in $ADAPTER_ENV and the lock $LOCK_FILE could not be written, so the code runner was STOPPED: claims abstain until you fix that. start-arbiter.sh starts it again.${NC}" >&2
-    return 1
-}
 # The way out of a run, however it comes: a signal after the disk was allocated still removes it.
 # bash runs a signal's trap when the foreground child ends, so the child is not left using the disk.
 ENABLE_RUNNING=0
@@ -641,6 +619,7 @@ CODE_RUNNER_PORT=$RUNNER_PORT
 CODE_RUNNER_TOKEN_FILE=$TOKEN_FILE
 CODE_RUNNER_STATE_DIR=$STATE_DIR
 CODE_RUNNER_DATA_ROOT=$MOUNT
+CODE_RUNNER_CONFORMANCE_FILE=$STATE_DIR/conformance.json
 CODE_RUNNER_REGISTRY_ALLOWLIST=ghcr.io/verdikta
 CODE_RUNNER_SLOTS=${VA_CODE_RUNNER_SLOTS:-1}
 CODE_RUNNER_RESERVE_LOCAL_MODEL_MB=$(local_model_mb)
@@ -764,8 +743,8 @@ adapter_env_on() {
 adapter_env_off() {
     [ -f "$ADAPTER_ENV" ] || return 0
     grep -q '^CODE_REVIEW_ENABLED=true' "$ADAPTER_ENV" || return 0
-    if ! set_env_line "$ADAPTER_ENV" CODE_REVIEW_ENABLED false || ! grep -q '^CODE_REVIEW_ENABLED=false' "$ADAPTER_ENV"; then
-        pin_lock
+    if ! set_env_line "$ADAPTER_ENV" CODE_REVIEW_ENABLED false; then
+        echo -e "${RED}Could not turn code review off in $ADAPTER_ENV.${NC}" >&2
         return 1
     fi
     own "$ADAPTER_ENV"
@@ -821,9 +800,7 @@ end_failed_enable() {
         rollback_fresh
         echo -e "${RED}The code-review sandbox was not installed. The rest of the arbiter was not touched.${NC}" >&2
     else
-        rm -f "$STATE_DIR/conformance.json"
-        adapter_env_off
-        echo -e "${RED}The code-review sandbox was not refreshed. It stays installed, code review is off until a pass, and the rest of the arbiter was not touched. Run: $0 enable${NC}" >&2
+        echo -e "${RED}The code-review sandbox was not refreshed. It stays installed; the runner refuses claims unless a pass for what it is running stands, and the rest of the arbiter was not touched. Run: $0 enable${NC}" >&2
     fi
 }
 failed() {
@@ -832,31 +809,19 @@ failed() {
     exit 1
 }
 
-# A node that has the sandbox, cannot refresh it and has no pass for what it now runs judges no claim.
-hold_without_a_pass() {
-    [ -f "$RUNNER_ENV" ] || return 0
-    node "$CHECK" conformance --install-dir "$INSTALL_DIR" >/dev/null 2>&1 && return 0
-    warn "No conformance pass for this release: code review goes off in the adapter until there is one."
-    adapter_env_off
-}
-refuse_enable() { # refuse_enable RC: before anything was changed
-    hold_without_a_pass
-    exit "$1"
-}
-
 check_host() {
     local problems
     problems=$(host_problems)
     if [ -n "$problems" ]; then
         echo -e "${RED}This host cannot run the code-review sandbox:${NC}" >&2
         printf '  - %s\n' "$problems" >&2
-        refuse_enable 4
+        exit 4
     fi
 }
 check_root() {
     if ! as_root true; then
         echo -e "${RED}The sandbox's host steps need root or passwordless sudo. Run as root: $0 $ACTION${NC}" >&2
-        refuse_enable 3
+        exit 3
     fi
 }
 
@@ -869,11 +834,11 @@ do_enable() {
     [ -f "$RUNNER_ENV" ] || FRESH=1
     local rc=0
     disk_preflight || rc=$?
-    [ "$rc" = "0" ] || refuse_enable "$rc"
+    [ "$rc" = "0" ] || exit "$rc"
     if ! node "$PIN_CHECK" --agree "$INSTALL_DIR" >/dev/null 2>&1; then
         echo -e "${RED}The AI Node, the External Adapter and the code runner do not pin one @verdikta/common release:${NC}" >&2
         node "$PIN_CHECK" --agree "$INSTALL_DIR" >&2
-        refuse_enable 1
+        exit 1
     fi
     lock_take
     ENABLE_RUNNING=1
@@ -890,10 +855,9 @@ do_enable() {
         self_test || failed
     fi
     adapter_env_on || failed
-    lift_pin
     ENABLE_RUNNING=0
     say "${GREEN}The code-review sandbox is ready: gVisor $GVISOR_VERSION, its own Docker on $SOCK, a conformance pass.${NC}"
-    say "Code review is on in the adapter. Turn it off with: $0 disable"
+    say "Code review is on in the adapter, and the runner holds it to a pass. Turn it off with: $0 disable"
 }
 
 do_status() {
@@ -928,14 +892,7 @@ do_warm() {
 do_self_test() {
     [ -f "$RUNNER_ENV" ] || { echo "The code-review sandbox is not installed." >&2; exit 1; }
     lock_take
-    if self_test; then
-        adapter_env_on || exit 1
-        lift_pin
-    else
-        rm -f "$STATE_DIR/conformance.json"
-        adapter_env_off
-        exit 1
-    fi
+    self_test || exit 1
 }
 
 do_disable() {
@@ -954,11 +911,6 @@ do_disable() {
     fi
     say "gVisor stays at $GVISOR_DIR: another sandbox on this host may use it."
     exit "$rc"
-}
-
-# What an upgrade calls once the new runner is in place, before anything starts it.
-do_hold() {
-    hold_without_a_pass
 }
 
 # The maintenance lock for an upgrade's whole run: the upgrade's own pid, so that a later operation
@@ -992,7 +944,6 @@ case "$ACTION" in
     warm) do_warm ;;
     self-test) do_self_test ;;
     disable) do_disable ;;
-    hold) do_hold ;;
     lock) do_lock ;;
     unlock) do_unlock ;;
     print-config) do_print_config ;;

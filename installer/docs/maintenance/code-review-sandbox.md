@@ -39,8 +39,9 @@ gVisor, then compares the report's hash with the one `@verdikta/common` publishe
 minutes, port 5987 on loopback, and needs `ghcr.io` and `binaries.soliditylang.org`. A pass is kept
 in `code-runner-state/conformance.json` and holds for that runner, gVisor and common release.
 
-Code review is on in the adapter only while a pass stands. `register-oracle.sh` refuses a code class,
-or 5555 with code review on, without one. It also refuses one job on both 133 and 134, which would make
+The runner holds itself to it: with no pass for its version, gVisor, common release and its own source, its
+`/health` is 503 and claims abstain. A new pass counts with no restart. Nothing else on the node notices: text
+requests never call the runner. `register-oracle.sh` refuses a code class, or 5555 with code review on, without a pass. It also refuses one job on both 133 and 134, which would make
 it eligible for both price tiers: `VA_REGISTER_JOB_IDS` names the jobs of a registration, so each
 class gets its own.
 
@@ -56,8 +57,8 @@ class gets its own.
 
 `arbiter-doctor.sh` reports `svc.code_runner`, `sandbox.runsc`, `sandbox.disk`, `sandbox.conformance`,
 `sandbox.trust` and `sandbox.registry`. `upgrade-arbiter.sh` holds the runner's maintenance lock while
-it runs and refreshes the sandbox when a new release has no pass yet. If a refresh fails, code review
-stays off, the arbiter keeps serving text requests, and the upgrade exits 3 saying what to run.
+it runs and refreshes the sandbox when a new release has no pass yet. If a refresh fails, claims abstain, the
+arbiter keeps serving text requests, and the upgrade exits 3 saying what to run.
 
 A disk image is never resized. For another size: `disable --purge`, then `enable --disk-gb N`.
 

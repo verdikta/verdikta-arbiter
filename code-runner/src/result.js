@@ -27,6 +27,8 @@ const ABSTAIN = Object.freeze({
    * data root for the pull.
    */
   ADMISSION_REFUSED: 'admission_refused',
+  /** CODE_RUNNER_CONFORMANCE_FILE holds no pass for what is running (A8): src/conformance.js. */
+  NO_CONFORMANCE_PASS: 'no_conformance_pass',
   /** The Docker daemon could not be reached. */
   DOCKER_UNREACHABLE: 'docker_unreachable',
   /** The daemon answered with an error the step did not cause. */

@@ -1167,17 +1167,17 @@ if ! ask_yes_no "Do you want to proceed with the upgrade?" "y" VA_UPGRADE_PROCEE
     exit 0
 fi
 
-# Hold the code runner's maintenance lock for the whole upgrade (design §9.6): while it exists the
-# runner admits no run and /health is 503, so the adapter refuses a claim rather than judge it on a
-# half-replaced runner. The EXIT trap lets it go however this script ends, the ERR path included,
-# which restarts the arbiter first, and only if it is still this run's. A sandbox operation still
+# Hold the code runner's maintenance lock for the whole upgrade (design §9.6), so that one maintenance
+# operation runs at a time: while it exists the runner admits no run and /health is 503. The EXIT trap
+# lets it go however this script ends, and only if it is still this run's. A sandbox operation still
 # running means no upgrade yet, or it would lift the lock from under this one. One an operator set
 # stays theirs. `kill -9` can leave it, and then code review refuses until it is removed (the doctor
-# names it). The tool holds the rules (`lock`): the repo's copy, since the installed one may be old.
+# names it). What keeps claims off a new release is not this: the runner holds itself to a conformance
+# pass for its own source, whichever way this script ends (code-runner/src/conformance.js).
+# The tool holds the lock's rules (`lock`): the repo's copy, since the installed one may be old.
 CODE_RUNNER_LOCK_HELD=0
-CODE_RUNNER_LOCK_KEEP=0
 release_code_runner_lock() {
-    if [ "$CODE_RUNNER_LOCK_HELD" = "1" ] && [ "$CODE_RUNNER_LOCK_KEEP" != "1" ]; then
+    if [ "$CODE_RUNNER_LOCK_HELD" = "1" ]; then
         bash "$UTIL_DIR/code-review-sandbox.sh" unlock --pid $$ --install-dir "$TARGET_DIR" || true
     fi
 }
@@ -1891,17 +1891,6 @@ if [ -f "$TARGET_CODE_RUNNER/.env" ]; then
     if [ "$CODE_RUNNER_DEPS_RC" != "0" ]; then
         echo -e "${YELLOW}Warning: npm ci failed in $TARGET_CODE_RUNNER (exit $CODE_RUNNER_DEPS_RC).${NC}"
         CODE_REVIEW_SANDBOX_FAILED="the code-runner's dependencies did not install (exit $CODE_RUNNER_DEPS_RC); run $TARGET_DIR/code-review-sandbox.sh enable"
-    fi
-    # A new release has no pass yet. However this upgrade ends, the adapter judges no claim on it
-    # until the refresh below, or a later one, has a pass.
-    CODE_REVIEW_HOLD_RC=0
-    bash "$TARGET_DIR/code-review-sandbox.sh" hold || CODE_REVIEW_HOLD_RC=$?
-    if [ "$CODE_REVIEW_HOLD_RC" != "0" ]; then
-        # No pass, and code review may still be on: this run's exit does not lift the lock, whichever
-        # way it ends, and whatever the tool could write. A later pass in this run can.
-        CODE_RUNNER_LOCK_KEEP=1
-        echo -e "${YELLOW}Warning: could not turn code review off in the adapter (exit $CODE_REVIEW_HOLD_RC). Check $TARGET_DIR/external-adapter/.env.${NC}"
-        CODE_REVIEW_SANDBOX_FAILED="code review could not be turned off for a release with no conformance pass; fix $TARGET_DIR/external-adapter/.env and remove $TARGET_DIR/code-runner-state/maintenance"
     fi
 fi
 
@@ -3226,8 +3215,9 @@ fi
 # of it stops the arbiter, so a node is back up first. It never restarts the arbiter's Docker. It is
 # the operator's call: interactive default no, and an unattended upgrade installs nothing unless
 # VA_UPGRADE_CODE_REVIEW_SANDBOX=y. On a node that has it (status 2: a new runner, gVisor or common
-# release has no pass yet) the refresh needs no question. A failure leaves the arbiter as it is, says
-# what to run and ends the upgrade with exit 3, as a job limit that did not land does. ERR-trap rule:
+# release has no pass yet, and the runner refuses claims until it does) the refresh needs no question.
+# A failure leaves the arbiter as it is, says what to run and ends the upgrade with exit 3, as a job
+# limit that did not land does. ERR-trap rule:
 # `status --quiet` exits non-zero on every node that has not opted in, so exit codes are read with
 # `|| rc=$?`, never behind `set +e` (#97).
 if [ -x "$TARGET_DIR/code-review-sandbox.sh" ]; then
@@ -3260,8 +3250,6 @@ if [ -x "$TARGET_DIR/code-review-sandbox.sh" ]; then
             echo -e "${YELLOW}Warning: the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC). The arbiter is not affected.${NC}"
             CODE_REVIEW_SANDBOX_FAILED="the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC); after fixing the cause run $TARGET_DIR/code-review-sandbox.sh enable"
         else
-            # A pass stands and the adapter's settings were written: nothing is left to hold the lock for.
-            CODE_RUNNER_LOCK_KEEP=0
             CODE_REVIEW_SANDBOX_FAILED=""
         fi
     fi

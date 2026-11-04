@@ -302,10 +302,13 @@ does not — it is read at runtime). A failed build falls back to `next dev`;
 `installer/util/code-review-sandbox.sh enable`, offered by `install.sh` and by
 `upgrade-arbiter.sh` (`VA_*_CODE_REVIEW_SANDBOX`, unattended default `n`): gVisor by SHA-512, a
 second `dockerd` and containerd of the runner's own on a fixed-size loop-mounted ext4 image (40 GB),
-warm images, the conformance self-test against `@verdikta/common`'s hash. **It never restarts,
+warm images, the conformance self-test against `@verdikta/common`'s hash. **The runner holds itself to the
+pass** (`CODE_RUNNER_CONFORMANCE_FILE`, `code-runner/src/conformance.js`): no pass for its version, gVisor,
+common, the published hash and a hash of its own `src/` and lockfile, and `/health` is 503 and claims abstain,
+however an upgrade ended. No installer step turns claims off, and text requests never call the runner. **It never restarts,
 reloads or configures the arbiter's Docker and installs no package** (apt can restart Docker): a new
 gVisor reaches a running daemon by `systemctl reload verdikta-code-runner-docker`. A first enable
-that fails removes what it made; a failed refresh keeps it and turns code review off. The runner's
+that fails removes what it made; a failed refresh keeps it. The runner's
 daemon has its own empty bridge `vcr0` and no iptables, so nothing there can publish a port: the
 self-test's registry uses the host network. **Never give a second dockerd `"bridge": "none"`: it deletes
 the host's `docker0` when it starts** (measured on Docker 29; `removeDefaultBridgeInterface`). A loop

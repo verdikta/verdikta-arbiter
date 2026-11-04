@@ -109,20 +109,20 @@ function codeClasses(installDir) {
   return ids;
 }
 
+/** The runner's own rule, from its own tree: one function decides for the runner, the gate and the doctor. */
+function runnerRule(p) {
+  try {
+    return require(path.join(p.runner, 'src', 'conformance.js'));
+  } catch (_error) {
+    return null;
+  }
+}
+
 /** Why there is no pass for what is installed now, or null when there is one. */
 function conformanceProblem(p) {
-  const common = runnerCommon(p);
-  if (!common) return `the code runner's @verdikta/common cannot be read (${p.common}); run code-review-sandbox.sh enable`;
-  const recorded = readJson(p.pass);
-  if (!recorded) return 'no conformance pass is recorded; run code-review-sandbox.sh self-test';
-  const runner = (readJson(path.join(p.runner, 'package.json')) || {}).version;
-  const want = common.codeReview.CONFORMANCE_CANARY.reportSha256;
-  if (recorded.pass !== true) return 'the recorded conformance result is not a pass; run code-review-sandbox.sh self-test';
-  if (recorded.reportSha256 !== want) return `the recorded conformance hash is not the one @verdikta/common ${common.version} publishes; run code-review-sandbox.sh self-test`;
-  if (recorded.runner !== runner) return `the recorded conformance pass is for runner ${recorded.runner}, and runner ${runner} is installed; run code-review-sandbox.sh self-test`;
-  if (recorded.gvisor !== common.codeReview.GVISOR_RELEASE) return `the recorded conformance pass is for gVisor ${recorded.gvisor}, and @verdikta/common pins ${common.codeReview.GVISOR_RELEASE}; run code-review-sandbox.sh self-test`;
-  if (recorded.commonVersion !== common.version) return `the recorded conformance pass is for @verdikta/common ${recorded.commonVersion}, and ${common.version} is installed; run code-review-sandbox.sh self-test`;
-  return null;
+  const rule = runnerRule(p);
+  if (!rule) return `no conformance pass can be checked: the code runner in ${p.runner} cannot be read; run code-review-sandbox.sh enable`;
+  return rule.passProblem(p.pass);
 }
 
 function cmdImages(o) {
@@ -142,30 +142,28 @@ function cmdConformance(o) {
   }
 }
 
-/** Keep a pass only for the hash common publishes; what ran stays in conformance-last.json either way. */
+/** Keep a pass only for the hash common publishes, written whole; what ran stays in conformance-last.json either way. */
 function cmdRecord(o) {
   const p = paths(o.installDir);
-  const common = runnerCommon(p);
+  const rule = runnerRule(p);
   const result = readJson(o.result);
-  fs.rmSync(p.pass, { force: true });
-  if (!common || !result) {
-    process.stderr.write(`the self-test left no result to compare (${o.result})\n`);
+  const refuse = (why) => {
+    fs.rmSync(p.pass, { force: true });
+    process.stderr.write(`${why}\n`);
     process.exit(1);
-  }
+  };
+  if (!rule || !result) refuse(`the self-test left no result to compare (${o.result})`);
   fs.writeFileSync(p.last, `${JSON.stringify(result, null, 2)}\n`);
-  const want = common.codeReview.CONFORMANCE_CANARY.reportSha256;
-  if (result.canonical !== true || result.reportSha256 !== want) {
-    process.stderr.write(`the canary's report hash is ${result.reportSha256 || '(none)'}; @verdikta/common ${common.version} publishes ${want}. Kept in ${p.last}\n`);
-    process.exit(1);
+  const want = rule.expectedPass();
+  if (result.canonical !== true || result.reportSha256 !== want.reportSha256) {
+    refuse(`the canary's report hash is ${result.reportSha256 || '(none)'}; @verdikta/common ${want.commonVersion} publishes ${want.reportSha256}. Kept in ${p.last}`);
   }
-  fs.writeFileSync(p.pass, `${JSON.stringify({
-    pass: true,
-    reportSha256: result.reportSha256,
-    runner: result.runner,
-    gvisor: result.gvisor,
-    commonVersion: common.version,
-    at: new Date().toISOString()
-  }, null, 2)}\n`);
+  if (result.sourceSha256 !== want.sourceSha256) {
+    refuse(`the self-test ran on other source (${result.sourceSha256}) than is installed (${want.sourceSha256})`);
+  }
+  const tmp = `${p.pass}.new.${process.pid}`;
+  fs.writeFileSync(tmp, `${JSON.stringify({ pass: true, ...want, at: new Date().toISOString() }, null, 2)}\n`);
+  fs.renameSync(tmp, p.pass);
 }
 
 function codeReviewOn(p) {
@@ -330,10 +328,27 @@ function doctorDisk(health, env) {
   finding('PASS', id, `ext4 on ${source}, ${size} at ${mount}${typeof free === 'number' ? `, ${(free / 1024 ** 3).toFixed(1)} GB free` : ''}`);
 }
 
-function doctorConformance(p) {
+function doctorConformance(health, p) {
+  const id = 'sandbox.conformance';
+  const hint = 'Claims abstain and registering on a code class is refused until it passes. Nothing else on this node is affected';
   const problem = conformanceProblem(p);
-  if (problem) finding('FAIL', 'sandbox.conformance', problem, 'Registering on a code class is refused until it passes');
-  else finding('PASS', 'sandbox.conformance', 'a pass for this runner, gVisor and @verdikta/common release');
+  if (problem) {
+    finding('FAIL', id, problem, hint);
+    return;
+  }
+  if (health.body) {
+    const block = health.body.conformance;
+    if (!block || block.required !== true) {
+      finding('FAIL', id, 'the runner is not asked to check its pass: CODE_RUNNER_CONFORMANCE_FILE is missing from code-runner/.env', 'code-review-sandbox.sh enable rewrites it');
+      return;
+    }
+    // It holds the source it started with, which can differ from what is on disk.
+    if (block.problem) {
+      finding('FAIL', id, `the running runner says: ${block.problem}`, 'Restart it, or: code-review-sandbox.sh self-test');
+      return;
+    }
+  }
+  finding('PASS', id, 'a pass for this runner, its source, gVisor and @verdikta/common release');
 }
 
 async function doctorTrust() {
@@ -351,7 +366,7 @@ async function doctorTrust() {
     return;
   }
   if (!block.enabled) {
-    finding('WARN', id, 'production trust, but code review is off in the adapter', 'It turns on with a conformance pass: code-review-sandbox.sh self-test');
+    finding('WARN', id, 'production trust, but code review is off in the adapter', 'code-review-sandbox.sh enable turns it on');
     return;
   }
   if (!block.ready) {
@@ -391,7 +406,7 @@ async function cmdDoctor(o) {
     doctorService(health, p, env);
     doctorRunsc(health, env);
     doctorDisk(health, env);
-    doctorConformance(p);
+    doctorConformance(health, p);
     await doctorTrust();
     doctorRegistry(health);
   }

@@ -549,6 +549,7 @@ decided on anything else. Everything else **abstains**:
 
 | `abstain.cause` | When |
 |---|---|
+| `no_conformance_pass` | `CODE_RUNNER_CONFORMANCE_FILE` is set and holds no pass for what is running ([below](#the-conformance-pass)) |
 | `admission_refused` | The maintenance lock is held; the deadline leaves less than `runSeconds` (also once the image is ready, or it ran out while the image was prepared); the runtime is not registered; every execution slot is in use; the run would cut into the memory reserve; the data root has no room for the pull, even after eviction |
 | `docker_unreachable` | The daemon cannot be reached (at admission or during the run) |
 | `docker_error` | The daemon refused something the step did not cause |
@@ -2019,6 +2020,7 @@ image-pull failure"), never a verdict.
 | `CODE_RUNNER_DATA_ROOT` | the daemon's `DockerRootDir` | Where `/health` measures free bytes. |
 | `CODE_RUNNER_STATE_DIR` | `code-runner/.state` | The runner's `DOCKER_CONFIG` and default lock file. |
 | `CODE_RUNNER_MAINTENANCE_FILE` | `<state>/maintenance` | The maintenance lock. |
+| `CODE_RUNNER_CONFORMANCE_FILE` | — | Asks for the [conformance pass](#the-conformance-pass). The installer sets it; unset means no check. |
 | `CODE_RUNNER_INSTANCE` | `default` | Label scope for the GC. |
 | `CODE_RUNNER_GC_INTERVAL_SECONDS` | `60` | `0` turns the timer off. |
 | `CODE_RUNNER_DEADLINE_RESERVE_MS` | `5000` | Time kept for teardown and the response. |
@@ -2341,6 +2343,24 @@ The installer's self-test (A8) runs this on the runner's own daemon, which has n
 publish a port with, so it sets `CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK=host`: the registry listens on the
 host's loopback itself. The reference is the same, so the hash is too. It checks that the images are warm
 first, since this pulls what is missing.
+
+### The conformance pass
+
+The installer sets `CODE_RUNNER_CONFORMANCE_FILE` (A8; `src/conformance.js`). `/health` is then 503, and every
+run and listing check abstains with `no_conformance_pass`, unless that file holds a pass for exactly what is running:
+`runner` (`RUNNER_VERSION`), `gvisor` (`GVISOR_RELEASE`), `commonVersion`, `reportSha256` (common's
+`CONFORMANCE_CANARY`) and `sourceSha256`.
+
+`sourceSha256` hashes a sorted walk of `src/` and the lockfile, taken when the process starts. It is there
+because `RUNNER_VERSION` need not move with the code: without it, a pass would survive an upgrade that changes it.
+
+The file is read on each check, so a new pass counts with no restart and a removed one fails closed. Missing,
+malformed and stale all mean refused. The threat is a mistaken or failed upgrade, not an operator editing their
+own pass, and it is what makes any way out of an upgrade safe: no step has to remember to turn claims off.
+
+Unset means no check: development, the tests, the site's listing runner, and the self-test's own in-process runner,
+which is what writes the pass. A refused runner harms nothing else: the adapter's `/health` check abstains the claim
+with `CODE_REVIEW_RUNNER_UNHEALTHY`, and text requests never call the runner.
 
 ### In CI
 
