@@ -163,7 +163,7 @@ if [ -f "$INSTALL_DIR/code-runner/.env" ]; then
     echo -e "  Port:   8090 (loopback)"
     echo -e "  PID:    $(cat "$INSTALL_DIR/code-runner/runner.pid" 2>/dev/null || echo none)"
     echo -e "  Docker: $(systemctl is-active verdikta-code-runner-docker 2>/dev/null) (its own daemon: verdikta-code-runner-docker)"
-    [ -e "$INSTALL_DIR/code-runner/.state/maintenance" ] && echo -e "  Lock:   ${YELLOW}the maintenance lock is held: runs are refused${NC}"
+    [ -e "$INSTALL_DIR/code-runner-state/maintenance" ] && echo -e "  Lock:   ${YELLOW}the maintenance lock is held: runs are refused${NC}"
     echo ""
 fi
 

@@ -1175,8 +1175,9 @@ fi
 # stays theirs. `kill -9` can leave it, and then code review refuses until it is removed (the doctor
 # names it). The tool holds the rules (`lock`): the repo's copy, since the installed one may be old.
 CODE_RUNNER_LOCK_HELD=0
+CODE_RUNNER_LOCK_KEEP=0
 release_code_runner_lock() {
-    if [ "$CODE_RUNNER_LOCK_HELD" = "1" ]; then
+    if [ "$CODE_RUNNER_LOCK_HELD" = "1" ] && [ "$CODE_RUNNER_LOCK_KEEP" != "1" ]; then
         bash "$UTIL_DIR/code-review-sandbox.sh" unlock --pid $$ --install-dir "$TARGET_DIR" || true
     fi
 }
@@ -1896,7 +1897,9 @@ if [ -f "$TARGET_CODE_RUNNER/.env" ]; then
     CODE_REVIEW_HOLD_RC=0
     bash "$TARGET_DIR/code-review-sandbox.sh" hold || CODE_REVIEW_HOLD_RC=$?
     if [ "$CODE_REVIEW_HOLD_RC" != "0" ]; then
-        # The tool left the lock on, as no pid's: this run's exit does not lift it.
+        # No pass, and code review may still be on: this run's exit does not lift the lock, whichever
+        # way it ends, and whatever the tool could write. A later pass in this run can.
+        CODE_RUNNER_LOCK_KEEP=1
         echo -e "${YELLOW}Warning: could not turn code review off in the adapter (exit $CODE_REVIEW_HOLD_RC). Check $TARGET_DIR/external-adapter/.env.${NC}"
         CODE_REVIEW_SANDBOX_FAILED="code review could not be turned off for a release with no conformance pass; fix $TARGET_DIR/external-adapter/.env and remove $TARGET_DIR/code-runner-state/maintenance"
     fi
@@ -3256,6 +3259,10 @@ if [ -x "$TARGET_DIR/code-review-sandbox.sh" ]; then
         if [ "$CODE_REVIEW_ENABLE_RC" != "0" ]; then
             echo -e "${YELLOW}Warning: the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC). The arbiter is not affected.${NC}"
             CODE_REVIEW_SANDBOX_FAILED="the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC); after fixing the cause run $TARGET_DIR/code-review-sandbox.sh enable"
+        else
+            # A pass stands and the adapter's settings were written: nothing is left to hold the lock for.
+            CODE_RUNNER_LOCK_KEEP=0
+            CODE_REVIEW_SANDBOX_FAILED=""
         fi
     fi
 fi

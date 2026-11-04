@@ -230,6 +230,37 @@ out=$(LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" UT
 has "a pinned lock outlives the upgrade" "$(cat "$T/install/code-runner-state/maintenance")" "kept:"
 rm -f "$T/install/code-runner-state/maintenance"
 
+# hold failed: the upgrade's own lock stays through the real error path and the real EXIT trap, so a
+# restarted runner admits no claim on a release with no pass; and a later pass in the run lifts it.
+rm -f "$T/install/code-runner-state/maintenance"; : > "$T/install/code-runner/.env"
+out=$(HOLD_RC=1 PATH="$T/bin:$PATH" NPM_RC=0 LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" TARGET_CODE_RUNNER="$T/install/code-runner" REAL_UTIL="$ROOT/util" bash -c '
+    set -e
+    GREEN= YELLOW= RED= BLUE= NC=
+    UTIL_DIR="$REAL_UTIL"
+    UPGRADE_IN_PROGRESS=1; BACKUP_DIR=""; ARBITER_WAS_RUNNING=1
+    eval "$1"
+    trap cleanup_on_error ERR
+    eval "$2"
+    eval "$3"
+    echo "HOLD-FAILED"
+    false
+' _ "$trapfn" "$lock" "$deps" 2>&1)
+has "hold failed, then the upgrade failed: the arbiter restarted" "$out" "STUB-START-ARBITER"
+has "hold failed, then the upgrade failed: the lock was held at the restart" "$out" "LOCK-HELD-AT-START"
+[ -f "$T/install/code-runner-state/maintenance" ] && ok || bad "hold failed, then the upgrade failed: the lock went"
+rm -f "$T/install/code-runner-state/maintenance"
+out=$(HOLD_RC=1 STATUS_RC=2 ENABLE_RC=0 VERDIKTA_UNATTENDED=1 PATH="$T/bin:$PATH" NPM_RC=0 LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" TARGET_CODE_RUNNER="$T/install/code-runner" UTIL_DIR="$ROOT/util" bash -c '
+    set -e
+    source "$4/lib/prompts.sh"
+    GREEN= YELLOW= RED= BLUE= NC=
+    eval "$1"
+    eval "$2"
+    eval "$3"
+    echo "FAILED=[${CODE_REVIEW_SANDBOX_FAILED:-}]"
+' _ "$lock" "$deps" "$offer" "$ROOT" 2>&1)
+has "hold failed, a pass after it: nothing failed" "$out" "FAILED=\[\]"
+[ ! -f "$T/install/code-runner-state/maintenance" ] && ok || bad "hold failed, a pass after it: the lock stayed"
+
 # The backup comes with this run's lock: restored, it would refuse every claim from then on.
 backup=$(awk '/^# Ask if user wants to create a backup/{p=1} /^# Mark that upgrade is in progress/{p=0} p{print}' "$S")
 [ -n "$backup" ] && ok || bad "could not extract the backup block"

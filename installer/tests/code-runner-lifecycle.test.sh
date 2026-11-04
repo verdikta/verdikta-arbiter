@@ -126,6 +126,8 @@ has "start-arbiter starts the runner" "$(cat "$S")" 'CODE_RUNNER_DIR/start.sh'
 has "start-arbiter only when installed" "$(cat "$S")" 'CODE_RUNNER_DIR/.env'
 has "stop-arbiter stops the runner"  "$(cat "$P")" 'CODE_RUNNER_DIR/stop.sh'
 has "status shows the runner"        "$(cat "$ST")" 'Code Runner'
+has "status reads the lock where it is" "$(cat "$ST")" 'code-runner-state/maintenance'
+hasnt "status reads no old path"     "$(cat "$ST")" 'code-runner/.state'
 has "rotate-logs rotates its logs"   "$(cat "$RL")" 'rotate_dir "$INSTALL_DIR/code-runner/logs"'
 # The real rotation over a real file.
 mkdir -p "$T/inst/ai-node" "$T/inst/external-adapter" "$T/inst/code-runner/logs" "$T/inst/util"
