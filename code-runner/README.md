@@ -2234,17 +2234,16 @@ of their text. Runs under 6 tokens are not measured. The numbers are printed on 
 - A proof fails to reproduce the bug only if it fails: the test asserts the safe property. Most contest tests pass while the bug is
   present, and can't be used as written.
 - A test cannot inherit a repository's test contract, or one with a `test()` of its own: every inherited test becomes one the patch
-  added, and `reproduces` needs each to fail. A helper with no test functions is fine. A subclass of a source contract, in the test
-  file, is one more entry in forge's mocks list (below), so use the real contract.
+  added, and `reproduces` needs each to fail. A helper with no test functions is fine.
 - A test's own run has to fit `testSeconds` under gVisor, and forge 1.8.5 is far slower with gas metering paused.
 - No more than five cases on one repository, so the set does not become one project's. A unit test holds that and the floor of 15.
-- `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`. Forge 1.8.5 writes the test
-  files it takes for mocks (a contract in a test file that inherits a source contract) into `cache/solidity-files-cache.json` as an
-  unordered list, so with two or more in scope the file differs between runs. At the listing check that is
-  `IMAGE_WATCH_CHANGED_BY_SUITE`. **At a claim it is `frameworkUnchanged`, so a valid PoC that imports two such files settles DUPLICATE:
-  a known runner problem, not fixed here.** `--skip test` keeps the list out of the listing's own runs.
-- A baseline holding a test named `test()` (a fixture's coverage marker, say) makes the word in `poc.command`'s `forge test` a test the
-  finding names, and `claimedObservable` fails: **a known runner problem, not fixed here.** Keep such a test out of `commands.test`.
+- `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`.
+- Forge 1.8.5 writes the test files it takes for mocks (a contract in a test file that inherits a source contract) into
+  `cache/solidity-files-cache.json` as an unordered list. The runner compares that file with the list in order, so the order fails
+  nothing, at a listing check or a claim (node A3d, "The compile cache is held byte for byte" above).
+- A baseline test named `test()` (a fixture's coverage marker, say) is no trouble for a finding: a word that is exactly one of forge's
+  test-function prefixes names nothing in `poc.command` or `poc.observable`, unless the patch added a test of that name (node A3d,
+  [claimedObservable](#claimedobservable)).
 - A class build must fit: 3 x the measured build within the class's 90 s, so 30 s on 2 CPUs under gVisor, with `P + B + 3T <= 120 s`
   overall. `commands.setup` is what makes a real repository fit.
 - `LEGACY_ASSERTIONS`: a forge-std from before the 2024 rewrite (`StdAssertions is DSTest`) records a failed `assertEq` with no reason on
