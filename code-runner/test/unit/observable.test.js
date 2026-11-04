@@ -68,6 +68,13 @@ const OWN_WORDS = [
   ['a continuation before a flag', 'forge test \\\n  --match-path test/E.t.sol \\\n  --match-test test_drain'],
   ['a continuation in CRLF', 'forge test --mp \\\r\n  test/E.t.sol --mt test_drain'],
   ['a continuation in a word', 'forge te\\\nst --mt test_drain'],
+  // R9-F1: inside single quotes a backslash and a line break are what they say: no test here.
+  ['a backslash and a line break in a single-quoted filter', 'forge test --mt \'te\\\nst|test_drain\''],
+  // R7-F1, round 9: a `#` is a comment only where a shell starts one, `case` only as the word, and neither in quotes or `${…}`.
+  ['an expansion with a # before a path', 'forge test --fuzz-runs ${#SEEDS} --match-path test/E.t.sol --mt test_drain'],
+  ['a # in a word in a substitution', 'forge test --fuzz-runs $(printf a#b) --match-path test/E.t.sol --mt test_drain'],
+  ['a # in quotes in a substitution', 'forge test --fuzz-runs $(printf " #") --match-path test/E.t.sol --mt test_drain'],
+  ['a file called case in a substitution', 'forge test --fuzz-runs $(cat ./case) --match-path test/E.t.sol --mt test_drain'],
   // R7-F1: a finished substitution changes nothing after it.
   ['a path after a substitution', 'forge test --fork-url $(cat url) --match-path test/Exploit.t.sol --mt test_drain'],
   ['a count from a substitution', 'forge test --fuzz-runs $(printf 256) --match-path test/E.t.sol --mt test_drain'],
@@ -184,6 +191,10 @@ const NAMES_ANOTHER = [
   ['a comment in a substitution', 'forge test --mt $(printf x # ) --skip test\n)', 'test'],
   ['a here-document in a substitution', 'forge test --mt $(cat <<E\n) --skip test\nE\n)', 'test'],
   ['a case arm in a process substitution', 'forge test --mt <(case x in x) printf --skip test ;; esac)', 'test'],
+  // R4-F1, round 9: a path flag's value that expands in any way is not a path.
+  ['a process substitution as a path', 'forge test --mt test_drain --mp <(forge te\'\'st --mt test/?)', 'test'],
+  ['an output substitution as a path', 'forge test --mt test_drain --mp >(forge te\'\'st --mt test/?)', 'test'],
+  ['an array as a path', 'forge test --mt test_drain --mp a=(--mt test/?)', 'test'],
   ['--skip test inside backquotes', 'forge test --mt `printf --skip test`', 'test'],
   ['--skip test inside a process substitution', 'forge test --mt <(printf --skip test)', 'test'],
   ['--skip test in a double-quoted substitution', 'forge test --mt "$(printf --skip test)"', 'test'],

@@ -52,10 +52,10 @@ const TEST_IN_PATH = /(?<![\w$])test\/|\/test(?![\w$])|(?<![\w$])test(?:\.t)?\.s
 const FORGE = /(?:^|\/)forge$/;
 /** forge's path flags: what their value holds is a path. */
 const PATH_FLAGS = Object.freeze(['--match-path', '--no-match-path']);
-/** What a shell reads inside a substitution by more than its quotes and parentheses, so its end isn't where they say: a `case` arm, a comment, a here-document. */
-const UNBALANCED = /(?<![\w$])case(?![\w$])|#|<</;
+/** What a shell reads inside `$(…)` by more than its quotes and parentheses, so its end isn't where they say: a `case` arm, a comment, a here-document. */
+const UNBALANCED = /(?<![\w$.\/-])case\s|[\s(]#|<</;
 /** What a shell expands outside quotes in what should be one path. */
-const EXPANDS = /[`${]/;
+const EXPANDS = /[`${]|[<>]\(/;
 
 /** A test identity's function name: `<file> > <Contract> > name(args)` → name. */
 function functionName(id) {
@@ -107,7 +107,7 @@ function spanEnd(text, i) {
     // Inside double quotes only these still open a span; anywhere else, all of opensSpan.
     const nested = c === '"' ? d === '`' || (d === '$' && (text[k + 1] === '(' || text[k + 1] === '{')) : opensSpan(text, k);
     if (d === '\\') k += 2;
-    else if (d === close && depth === 0) return open !== null && UNBALANCED.test(text.slice(i, k)) ? text.length : k + 1;
+    else if (d === close && depth === 0) return open === '(' && UNBALANCED.test(text.slice(i, k).replace(/'[^']*'|"[^"]*"/g, '')) ? text.length : k + 1;
     else if (nested) k = spanEnd(text, k);
     else {
       if (open !== null && d === open) depth += 1;
@@ -120,31 +120,32 @@ function spanEnd(text, i) {
 
 /**
  * A command's words, as a shell lexes them: quoted spans, escapes and everything a substitution or
- * expansion holds stay in their word, `; & | < > ( )` and white space end one, and a line
- * continuation is nothing. A span left open, or one whose end the shell finds by more than its
- * quotes and parentheses (UNBALANCED), takes the rest of the text.
- * @param {string} command
+ * expansion holds stay in their word, `; & | < > ( )` and white space end one, and outside a span a
+ * line continuation is nothing. A span left open, or a `$(…)` whose end the shell finds by more
+ * than its quotes and parentheses (UNBALANCED), takes the rest of the text.
+ * @param {string} text
  * @returns {string[]}
  */
-function shellWords(command) {
-  const text = command.replace(/\\\r?\n/g, '');
+function shellWords(text) {
   const words = [];
-  let start = -1;
+  let word = null;
   let i = 0;
   const end = () => {
-    if (start >= 0) words.push(text.slice(start, i));
-    start = -1;
+    if (word !== null) words.push(word);
+    word = null;
   };
   while (i < text.length) {
     const c = text[i];
-    if (!opensSpan(text, i) && (/\s/.test(c) || ';&|<>()'.includes(c))) {
+    const continuation = /^\\\r?\n/.exec(text.slice(i, i + 3));
+    if (continuation) {
+      i += continuation[0].length;
+    } else if (!opensSpan(text, i) && (/\s/.test(c) || ';&|<>()'.includes(c))) {
       end();
       i += 1;
     } else {
-      if (start < 0) start = i;
-      if (c === '\\') i = Math.min(i + 2, text.length);
-      else if (opensSpan(text, i)) i = spanEnd(text, i);
-      else i += 1;
+      const next = c === '\\' ? Math.min(i + 2, text.length) : opensSpan(text, i) ? spanEnd(text, i) : i + 1;
+      word = (word === null ? '' : word) + text.slice(i, next);
+      i = next;
     }
   }
   end();
