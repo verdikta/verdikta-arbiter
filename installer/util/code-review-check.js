@@ -314,6 +314,12 @@ function doctorDisk(health, env) {
     finding('FAIL', id, `the runner's daemon stores under ${rootDir || 'unknown'}, not ${mount}`, hint);
     return;
   }
+  const image = `${mount}.img`;
+  const stat = fs.existsSync(image) ? fs.statSync(image) : null;
+  if (stat && stat.blocks * 512 < stat.size) {
+    finding('WARN', id, `${image} is sparse: ${Math.round((stat.blocks * 512) / 1024 ** 3)} GB of ${Math.round(stat.size / 1024 ** 3)} GB allocated, so its writes can spend the root filesystem`, `sudo fallocate -l ${stat.size} ${image}`);
+    return;
+  }
   const free = health.body && health.body.dataRoot ? health.body.dataRoot.freeBytes : null;
   const size = `${Math.round(Number(tool('findmnt', ['-bno', 'SIZE', mount]).out) / 1024 ** 3)} GB`;
   if (typeof free === 'number' && free < PULL_ROOM_BYTES) {
@@ -376,7 +382,8 @@ async function cmdDoctor(o) {
     else if (codeReviewOn(p)) finding('FAIL', 'svc.code_runner', 'CODE_REVIEW_ENABLED is true in the adapter and this node has no code-review sandbox', 'code-review-sandbox.sh enable');
     else finding('INFO', 'sandbox.skipped', 'the code-review sandbox is not installed (optional)');
     const image = `${process.env.VERDIKTA_SANDBOX_PREFIX || ''}/var/lib/verdikta-code-runner.img`;
-    if (fs.existsSync(image)) finding('WARN', 'sandbox.disk', `a disk image stays at ${image} with no sandbox using it`, 'code-review-sandbox.sh disable --purge frees it');
+    const left = [image, `${image}.partial`].filter((f) => fs.existsSync(f));
+    if (left.length) finding('WARN', 'sandbox.disk', `a disk image stays at ${left.join(', ')} with no sandbox using it`, 'code-review-sandbox.sh disable --purge frees it');
   } else {
     const env = readEnvFile(p.runnerEnv);
     const health = await runnerHealth(p);

@@ -68,6 +68,7 @@ snapshot() {
     echo "runtimes: $(docker info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}')"
     echo "root dir: $(docker info --format '{{.DockerRootDir}}')"
     echo "ip_forward: $(sysctl -n net.ipv4.ip_forward)"
+    echo "bridge netfilter: $(sysctl -n net.bridge.bridge-nf-call-iptables 2>/dev/null)"
     # vcr0 is the daemon's own, and is checked on its own below: everything else stays.
     echo "interfaces: $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^vcr0$' | sort | tr '\n' ' ')"
     echo "docker0: $(ip -o -4 addr show dev docker0 | awk '{print $4}')"
@@ -149,9 +150,9 @@ check "its bridge is its own" "$("${OWN[@]}" network inspect bridge --format '{{
 check "nothing is attached to its bridge" "$(ip -o link show master vcr0 | wc -l)" 0
 check "it does not see cl-postgres" "$("${OWN[@]}" ps -a --format '{{.Names}}' | grep -c 'cl-postgres\|chainlink')" 0
 check "the host's Docker does not see gVisor" "$(docker info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}' | grep -c runsc)" 0
-check "the host's Docker does not see its images" "$(docker images --format '{{.Repository}}' | grep -c 'semgrep\|foundry')" 0
+docker image inspect "$(node "$CHECK" images --install-dir "$I" | tail -1)" >/dev/null 2>&1 && bad "the host's Docker has its Semgrep image" || ok "the host's Docker does not have its images"
 check "the system containerd does not hold its namespace" "$(sudo ctr --address /run/containerd/containerd.sock namespaces ls -q | grep -c '^vcr')" 0
-[ -S /run/verdikta-code-runner/containerd/containerd.sock ] && ok "its own containerd socket" || bad "no containerd socket of its own"
+sudo test -S /run/verdikta-code-runner/containerd/containerd.sock && ok "its own containerd socket" || bad "no containerd socket of its own"
 check "gVisor is executable by the runner's user" "$(/opt/gvisor/20260921.0/runsc --version | head -1)" "runsc version release-20260921.0"
 [ "$("${OWN[@]}" run --rm --runtime runsc --network none --pull never --platform linux/amd64 --entrypoint cat "$("$(command -v node)" "$CHECK" images --install-dir "$I" | head -1)" /proc/version 2>&1 | grep -ci gvisor)" -ge 0 ] && ok "a container runs under runsc"
 
@@ -196,6 +197,11 @@ for id in svc.code_runner sandbox.runsc sandbox.disk sandbox.conformance sandbox
     check "doctor: $id" "$(echo "$findings" | awk -F'\t' -v id="$id" '$2==id{print $1}')" PASS
 done
 
+step "A weekly fstrim does not make the image sparse"
+blocks_before=$(sudo stat -c '%b' "$IMAGE")
+sudo fstrim -v "$MOUNT" 2>&1 | cut -c1-160
+check "fstrim freed nothing in the image" "$(sudo stat -c '%b' "$IMAGE")" "$blocks_before"
+
 step "A full disk fills only that disk"
 root_before=$(df -B1 --output=avail /var/lib | tail -1 | tr -d ' ')
 sudo dd if=/dev/zero of="$MOUNT/fill" bs=1M 2>"$WORK/dd.err"; rc=$?
@@ -236,7 +242,7 @@ sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-conta
 # As at boot: the daemon's unit brings up its disk and containerd.
 sudo systemctl start verdikta-code-runner-docker; rc=$?
 check "the daemon's unit brings its disk back" "$rc" 0
-check "its images survived" "$("${OWN[@]}" images --format '{{.Repository}}' | grep -c 'semgrep')" 1
+"${OWN[@]}" image inspect "$(node "$CHECK" images --install-dir "$I" | tail -1)" >/dev/null 2>&1 && ok "its images survived" || bad "its images did not survive"
 bash "$I/code-runner/start.sh" >/dev/null 2>&1 && ok "the runner starts again" || bad "the runner did not start again"
 compare "stop and start"
 

@@ -160,6 +160,10 @@ has "reload is a HUP, no restart" "$unit" '^ExecReload=/bin/kill -s HUP \$MAINPI
 hasnt "no dependency on the arbiter's Docker" "$cfg" "[= ]docker.service"
 hasnt "no dependency on the arbiter's containerd" "$cfg" "^After=.* containerd.service"
 hasnt "no socket activation"      "$cfg" "docker.socket"
+disku=$(printf '%s\n' "$cfg" | awk '/^# verdikta-code-runner-disk\.service/{p=1;next} /^# /{p=0} p')
+has "the loop device takes no discard: fstrim would make the image sparse" "$disku" "discard_max_bytes"
+has "a start allocates what is missing" "$disku" "^ExecStartPre=.*fallocate"
+has "units escape the shell's dollar and percent for systemd" "$disku" 'stat -c %%s'
 ctd=$(printf '%s\n' "$cfg" | awk '/^# containerd\.toml/{p=1;next} /^# /{p=0} p')
 has "containerd root on the disk" "$ctd" "^root = \"$P/var/lib/verdikta-code-runner/containerd\""
 has "containerd own socket"       "$ctd" "address = \"$P/run/verdikta-code-runner/containerd/containerd.sock\""
@@ -192,6 +196,7 @@ has "gVisor executable by anyone: the runner's user asks it its release" "$(stat
 [ -x "$P/opt/gvisor/20260921.0/gvisor-bin/gvisor_sentry" ] && ok || bad "the release's other binaries were not installed: runsc needs them beside it"
 has "disk 40 GB by default" "$l" "^fallocate -l 40G "
 has "ext4 without root's reserve" "$l" "^mkfs.ext4 .*-m 0"
+has "mkfs does not punch holes in the allocated image" "$l" "^mkfs.ext4 .*-E nodiscard"
 hasnt "no partial image left" "$(ls "$P/var/lib")" "partial"
 [ -f "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "no disk image"
 has "warms the base by digest with a platform"   "$l" "pull --quiet --platform linux/amd64 ghcr.io/foundry-rs/foundry:v1.8.5@sha256:aaa"

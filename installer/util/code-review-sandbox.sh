@@ -207,6 +207,9 @@ disabled_plugins = ["io.containerd.grpc.v1.cri"]
 EOF
 }
 
+# Fixed means allocated, and a loop device passes discards on as holes in its file: fstrim.timer
+# would make the image sparse, and its writes would then spend the root filesystem. So the device
+# takes no discard, and each start allocates whatever is missing. The doctor measures the result.
 disk_unit() {
     cat <<EOF
 [Unit]
@@ -216,7 +219,9 @@ After=local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
+ExecStartPre=-/bin/sh -c 'mountpoint -q $MOUNT || fallocate -l "\$\$(stat -c %%s $IMAGE)" $IMAGE'
 ExecStart=/bin/sh -c 'mountpoint -q $MOUNT || mount -t ext4 -o loop,noatime,nodev,nosuid $IMAGE $MOUNT'
+ExecStartPost=-/bin/sh -c 'echo 0 > /sys/block/\$\$(basename "\$\$(findmnt -no SOURCE $MOUNT)")/queue/discard_max_bytes'
 ExecStop=/bin/umount $MOUNT
 
 [Install]
@@ -401,12 +406,13 @@ create_disk() {
     fi
     say "Creating the $DISK_GB GB disk image $IMAGE..."
     as_root rm -f "$IMAGE.partial"
-    # Allocated, not sparse: writes to it can never run the root filesystem out of space.
+    # Allocated, not sparse: writes to it can never run the root filesystem out of space. mkfs
+    # would discard it again, which on a file punches holes: -E nodiscard (measured, A8).
     if ! as_root fallocate -l "${DISK_GB}G" "$IMAGE.partial"; then
         as_root rm -f "$IMAGE.partial"
         echo -e "${RED}Could not allocate $DISK_GB GB at $IMAGE (fallocate).${NC}" >&2; return 1
     fi
-    if ! as_root mkfs.ext4 -F -q -m 0 -i 8192 -L vcr-docker "$IMAGE.partial"; then
+    if ! as_root mkfs.ext4 -F -q -m 0 -i 8192 -E nodiscard -L vcr-docker "$IMAGE.partial"; then
         as_root rm -f "$IMAGE.partial"
         echo -e "${RED}Could not format the disk image.${NC}" >&2; return 1
     fi

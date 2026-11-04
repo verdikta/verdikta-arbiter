@@ -136,6 +136,10 @@ good; out=$(STUB_SOURCE=/dev/sda1 run); is_sev "not a loop device" "$out" sandbo
 good; out=$(STUB_ROOTDIR=/var/lib/docker run); is_sev "the daemon stores elsewhere" "$out" sandbox.disk FAIL
 good; edit "$T/runner.json" 'd.dataRoot.freeBytes=1000000000'; out=$(run); is_sev "low space" "$out" sandbox.disk WARN
 
+# A sparse image, as fstrim would leave one: its writes spend the root filesystem.
+good; python3 -c 'import sys; f=open(sys.argv[1],"wb"); f.truncate(40*1024**3); f.close()' "$M.img" 2>/dev/null || truncate -s 40G "$M.img"
+out=$(run); is_sev "a sparse image" "$out" sandbox.disk WARN; has "a sparse image says what to run" "$out" "fallocate"; rm -f "$M.img"
+
 # --- sandbox.conformance
 good; rm -f "$I/code-runner/.state/conformance.json"; out=$(run); is_sev "no pass" "$out" sandbox.conformance FAIL
 good; sed -i.b 's/"reportSha256":"cafe/"reportSha256":"beef/' "$I/code-runner/.state/conformance.json"; out=$(run); is_sev "another hash" "$out" sandbox.conformance FAIL

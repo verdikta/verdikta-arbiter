@@ -308,7 +308,9 @@ gVisor reaches a running daemon by `systemctl reload verdikta-code-runner-docker
 that fails removes what it made; a failed refresh keeps it and turns code review off. The runner's
 daemon has its own empty bridge `vcr0` and no iptables, so nothing there can publish a port: the
 self-test's registry uses the host network. **Never give a second dockerd `"bridge": "none"`: it deletes
-the host's `docker0` when it starts** (measured on Docker 29; `removeDefaultBridgeInterface`). `register-oracle*.sh` refuse a code class, or 5555 with code review
+the host's `docker0` when it starts** (measured on Docker 29; `removeDefaultBridgeInterface`). A loop
+device turns a discard into a hole in its file, so `mkfs.ext4` gets `-E nodiscard` (it otherwise left
+40 GB `fallocate`d at 3 GB, measured) and the disk unit sets the device's `discard_max_bytes` to 0 for `fstrim`. `register-oracle*.sh` refuse a code class, or 5555 with code review
 on, without a pass, and one job on both code classes. `code-runner/start.sh` refuses any Docker
 endpoint but its own socket. Operator notes: `installer/docs/maintenance/code-review-sandbox.md`.
 
