@@ -141,7 +141,7 @@ async function main(argv, deps = {}) {
   }
   const lock = readLock();
   const makeSession = deps.makeSession || ((o) => require('../calibration/lib/session').createSession(o));
-  const settle = deps.settle || require('../calibration/lib/settle').settleReport;
+  const settle = deps.settle || require('../calibration/lib/settle').settleValidated;
   const validate = deps.validate || validateRunRequest;
   const assemble = deps.developmentReport || developmentReport;
   const reportHash = deps.reportHash || ((report) => codeReview.reportSha256(report));

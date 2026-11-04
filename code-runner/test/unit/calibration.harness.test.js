@@ -489,6 +489,13 @@ test('the settlement used by default is the External Adapter\'s own', () => {
   assert.equal(settleReport, fromEa);
 });
 
+test('the harness settles as the External Adapter does: only a report common\'s validator accepts', () => {
+  const { settleValidated } = require('../../calibration/lib/settle');
+  assert.throws(() => settleValidated({ schema: 'verdikta.claim-report/1', gates: {} }), /the runner's report does not validate/);
+  const compare = require('../../calibration/lib/compare');
+  assert.throws(() => compare.observe({ outcome: 'definitive', report: { schema: 'nope' } }, {}, { settle: settleValidated }), /does not validate/, 'a stop, not an observation');
+});
+
 test('GATES_PASS covers common\'s report gates, less the two the EA owns', () => {
   const { codeReview } = require('@verdikta/common');
   const runner = codeReview.REPORT_GATES.filter((g) => !['disclosure', 'inScope'].includes(g));

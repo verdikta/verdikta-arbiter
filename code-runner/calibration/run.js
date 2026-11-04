@@ -135,7 +135,7 @@ async function main(argv, deps = {}) {
     return EXIT.MALFORMED;
   }
   const makeSession = deps.makeSession || ((o) => require('./lib/session').createSession(o));
-  const settle = deps.settle || require('./lib/settle').settleReport;
+  const settle = deps.settle || require('./lib/settle').settleValidated;
   const validate = deps.validate || validateRunRequest;
   const assemble = deps.developmentReport || developmentReport;
 

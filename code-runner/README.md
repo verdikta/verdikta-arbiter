@@ -2108,7 +2108,8 @@ does not list, a misspelled listing file).
 4. **A real `POST /v1/listing-checks`** on every image must accept it, and its baseline must equal the
    listing's `baseline.json`.
 5. **Each case goes through `POST /v1/runs`**, and the answer is compared. `settleReport`
-   (`external-adapter/src/codeReview/settlement.js`) reads the report; on `linux/arm64`, where the
+   (`external-adapter/src/codeReview/settlement.js`) reads the report, once common's validator has
+   accepted it, as the External Adapter does; on `linux/arm64`, where the
    runner has none, it reads one the same function assembles with the class platform named, which is
    never exported and never hashed.
 6. **The report** gives each case's expected and actual, every disagreement, and a table per expected
@@ -2118,7 +2119,7 @@ does not list, a misspelled listing file).
 |---|---|
 | 0 | Every case agrees |
 | 1 | A disagreement: with a case's expected result, or between a case and its control. `--self-check` too |
-| 2 | The corpus or the command is malformed, or a subset is empty; nothing ran. `--export` on a host with no report |
+| 2 | The corpus or the command is malformed, or a subset is empty; nothing ran. `--export` on a host with no report, or to a directory holding anything but scenario folders |
 | 3 | The harness could not measure: no Docker, a listing the runner refuses, a baseline that differs |
 
 `--self-check` alters every expected value, one at a time, and requires the comparison to notice

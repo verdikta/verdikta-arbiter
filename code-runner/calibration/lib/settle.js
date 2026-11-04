@@ -17,6 +17,19 @@ if (!current.includes(OURS)) {
   Module._initPaths();
 }
 
+const { codeReview } = require('@verdikta/common');
 const { settleReport } = require('../../../external-adapter/src/codeReview/settlement');
 
-module.exports = { settleReport };
+/**
+ * As the External Adapter reads a report: settleReport's rule holds only on one common's validator accepted, so a
+ * report that fails it is the runner's bug, and the harness stops rather than reading it as a verdict.
+ */
+function settleValidated(report) {
+  const checked = codeReview.validateClaimReport(report);
+  if (!checked.ok) {
+    throw new Error(`the runner's report does not validate: ${checked.issues.slice(0, 5).map((i) => `${i.code} at ${i.path}`).join(', ')}`);
+  }
+  return settleReport(report);
+}
+
+module.exports = { settleReport, settleValidated };
