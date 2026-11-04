@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const PINNED = '1.9.0-attest.1';
+const PINNED = '1.9.0-attest.2';
 const PACKAGES = ['external-adapter', 'ai-node', 'e2e', 'code-runner', 'testing-tool'];
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));

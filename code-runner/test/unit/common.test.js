@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const common = require('../../src/common');
 
-const PINNED = '1.9.0-attest.1';
+const PINNED = '1.9.0-attest.2';
 const ROOT = path.join(__dirname, '..', '..');
 
 test('package.json pins @verdikta/common exactly, and the lockfile resolves that version', () => {

@@ -19,6 +19,6 @@
     "test:calibration:clear-valid": "node --test --test-concurrency=1 --test-timeout=600000 test/calibration/clear-valid.test.js"
   },
   "dependencies": {
-    "@verdikta/common": "1.9.0-attest.1"
+    "@verdikta/common": "1.9.0-attest.2"
   }
 }
