@@ -216,7 +216,8 @@ pid_before=$(systemctl show verdikta-code-runner-docker -p MainPID --value)
 sudo mkdir -p /opt/gvisor/reload-test && sudo cp /opt/gvisor/20260921.0/runsc /opt/gvisor/reload-test/runsc
 sudo sed -i 's#/opt/gvisor/20260921.0/runsc#/opt/gvisor/reload-test/runsc#' /etc/verdikta-code-runner/daemon.json
 sudo systemctl reload verdikta-code-runner-docker
-sleep 2
+# A reload is a signal, taken in the daemon's own time.
+for _ in $(seq 1 30); do [ "$("${OWN[@]}" info --format '{{(index .Runtimes "runsc").Path}}')" = /opt/gvisor/reload-test/runsc ] && break; sleep 1; done
 check "the daemon took the new path" "$("${OWN[@]}" info --format '{{(index .Runtimes "runsc").Path}}')" /opt/gvisor/reload-test/runsc
 check "same PID: no restart" "$(systemctl show verdikta-code-runner-docker -p MainPID --value)" "$pid_before"
 VERDIKTA_UNATTENDED=1 bash "$TOOL" enable --disk-gb "$DISK_GB" --install-dir "$I" 2>&1 | tail -2 | cut -c1-200; rc=${PIPESTATUS[0]}

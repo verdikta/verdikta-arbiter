@@ -498,10 +498,17 @@ bring_up() {
     as_root systemctl start "$CONTAINERD_UNIT" || { echo -e "${RED}Could not start containerd. See: journalctl -u $CONTAINERD_UNIT${NC}" >&2; return 1; }
     as_root systemctl start "$DOCKER_UNIT" || { echo -e "${RED}Could not start the runner's Docker daemon. See: journalctl -u $DOCKER_UNIT${NC}" >&2; return 1; }
     daemon_wait || return 1
-    # A setting a reload does not take shows up here; its own daemon restarts once for it.
-    if ! daemon_verify 2>/dev/null && [ "$was_active" = "1" ] && [ "$config_changed" = "1" ]; then
-        as_root systemctl restart "$DOCKER_UNIT" || return 1
-        daemon_wait || return 1
+    # A reload is a signal: the daemon takes it in its own time. A setting a reload cannot take shows
+    # up after that wait, and only then does its own daemon restart, once.
+    if [ "$was_active" = "1" ] && [ "$config_changed" = "1" ]; then
+        local waited=0
+        until daemon_verify 2>/dev/null || [ "$waited" -ge "${CODE_REVIEW_RELOAD_WAIT_SECS:-30}" ]; do
+            sleep 1; waited=$((waited+1))
+        done
+        if ! daemon_verify 2>/dev/null; then
+            as_root systemctl restart "$DOCKER_UNIT" || return 1
+            daemon_wait || return 1
+        fi
     fi
     daemon_verify
 }

@@ -38,7 +38,10 @@ stub docker 'echo "docker DOCKER_HOST=${DOCKER_HOST:-} $*" >> "$STUB_LOG"
 case "$*" in
   *"info --format {{.DockerRootDir}}"*) echo "${STUB_ROOTDIR:-$VERDIKTA_SANDBOX_PREFIX/var/lib/verdikta-code-runner/docker}" ;;
   *"info --format {{.Driver}}"*) echo "${STUB_DRIVER:-overlay2}" ;;
-  *"(index .Runtimes"*) if [ -n "${STUB_RUNSC_PATH_FILE:-}" ] && [ -f "$STUB_RUNSC_PATH_FILE" ]; then cat "$STUB_RUNSC_PATH_FILE"; else echo "${STUB_RUNSC_PATH:-$VERDIKTA_SANDBOX_PREFIX/opt/gvisor/20260921.0/runsc}"; fi ;;
+  *"(index .Runtimes"*)
+     # STUB_RELOAD_LAG: the old path this many times: a reload is a signal, taken in the daemon'"'"'s own time.
+     n=$(cat "$STUB_STATE/runtimes-asked" 2>/dev/null || echo 0); echo $((n+1)) > "$STUB_STATE/runtimes-asked"
+     if [ "$n" -lt "${STUB_RELOAD_LAG:-0}" ]; then echo /opt/gvisor/old/runsc; else echo "${STUB_RUNSC_PATH:-$VERDIKTA_SANDBOX_PREFIX/opt/gvisor/20260921.0/runsc}"; fi ;;
   *" version "*) echo 28.0.4 ;;
   *" pull "*) if [ -n "${STUB_LOCK:-}" ] && [ -f "$STUB_LOCK" ]; then echo "lock-held-during-pull" >> "$STUB_LOG"; fi
      [ "${STUB_PULL_FAIL:-0}" = 1 ] && exit 1 ;;
@@ -254,11 +257,19 @@ hasnt "re-enable: no self-test on a standing pass" "$(log)" "^conformance"
 printf '%s\n' "$P/opt/gvisor/old/runsc" > "$P/state/runsc-old"
 sed -i.bak "s#$P/opt/gvisor/20260921.0/runsc#$P/opt/gvisor/old/runsc#" "$P/etc/verdikta-code-runner/daemon.json"; rm -f "$P/etc/verdikta-code-runner/daemon.json.bak"
 : > "$P/log"
-out=$(run enable 2>&1); rc=$?
+rm -f "$P/state/runtimes-asked"
+out=$(STUB_RELOAD_LAG=2 run enable 2>&1); rc=$?
 is "gVisor change rc" "$rc" 0
 has "reload of its own daemon" "$(log)" "^systemctl reload verdikta-code-runner-docker"
-hasnt "no restart on a gVisor change" "$(log)" "restart"
+hasnt "no restart on a gVisor change, even when the reload takes a moment" "$(log)" "restart"
 hasnt "the arbiter's Docker is not reloaded" "$(log)" "^systemctl reload docker"
+# A setting a reload cannot take: its own daemon restarts, once, and never the arbiter's.
+sed -i.bak "s#$P/opt/gvisor/20260921.0/runsc#$P/opt/gvisor/old/runsc#" "$P/etc/verdikta-code-runner/daemon.json"; rm -f "$P/etc/verdikta-code-runner/daemon.json.bak"
+: > "$P/log"; rm -f "$P/state/runtimes-asked"
+out=$(CODE_REVIEW_RELOAD_WAIT_SECS=1 STUB_RELOAD_LAG=3 run enable 2>&1); rc=$?
+is "a reload that does not take: rc" "$rc" 0
+has "its own daemon restarts" "$(log)" "^systemctl restart verdikta-code-runner-docker"
+hasnt "the arbiter's Docker does not" "$(log)" "restart docker"
 
 # --- a release missing its binaries is installed again, whatever runsc says
 rm -rf "$P/opt/gvisor/20260921.0/gvisor-bin"
