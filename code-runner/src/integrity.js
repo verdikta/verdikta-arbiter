@@ -1788,10 +1788,10 @@ class Watch {
     compare('protected', this.repository, sets.repository);
     compare('dependencies', this.ref.sets.dependencies, sets.dependencies);
     compare('framework', this.ref.sets.framework, sets.framework);
+    // Only what a later run is compared with, or a later run's: nothing compares the build's compile cache, or the fix check's.
+    if ((first && !only) || (!first && this.artifacts)) await this.compileCacheEntry(ctx, name, m.entries, sets.artifacts, first);
     // The first run's artifacts are what the later ones are held to (none when its listing overflowed: already a
     // failure), so an artifact it left unreadable fails here: nothing later could tell a change in it (R13-F1).
-    // What a later run's are compared with, or are being compared: nothing reads the build's, or a last run's first.
-    if ((first && !only) || (!first && this.artifacts)) await this.compileCacheEntry(ctx, name, m.entries, sets.artifacts, first);
     if (first) {
       this.artifacts = sets.artifacts;
       compare('framework', new Map(), new Map([...sets.artifacts].filter(([, d]) => isUnreadable(d))));
