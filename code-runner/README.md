@@ -2250,8 +2250,9 @@ of their text. Runs under 6 tokens are not measured. The numbers are printed on 
   [claimedObservable](#claimedobservable)).
 - A class build must fit: 3 x the measured build within the class's 90 s, so 30 s on 2 CPUs under gVisor, with `P + B + 3T <= 120 s`
   overall. `commands.setup` is what makes a real repository fit.
-- A repository that tracks its forge cache (`cache/solidity-files-cache.json` in git) is refused, `HARNESS_INTEGRITY_FAILED`: each run's reset
-  restores the file and forge rewrites it. That is the right answer, and no allowed flag moves the cache, so a maker untracks it. 2024-05-gamma-staking is out for that.
+- A repository that tracks its forge cache may be refused. `2024-05-gamma-staking` holds `cache/solidity-files-cache.json` in git, and the listing
+  check stops it with `HARNESS_INTEGRITY_FAILED`, `frameworkUnchanged` on that file, on a trivial test. No allowed flag moves the cache. Bare forge
+  with the same resets gives the same bytes, so what changes the file under the runner isn't pinned down. A maker would untrack it.
 - `LEGACY_ASSERTIONS`: a forge-std from before the 2024 rewrite (`StdAssertions is DSTest`) records a failed `assertEq` with no reason on
   forge 1.x. The listing check refuses that repository, as it must.
 
