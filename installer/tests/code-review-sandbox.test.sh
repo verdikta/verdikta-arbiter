@@ -43,7 +43,8 @@ case "$*" in
      n=$(cat "$STUB_STATE/runtimes-asked" 2>/dev/null || echo 0); echo $((n+1)) > "$STUB_STATE/runtimes-asked"
      if [ "$n" -lt "${STUB_RELOAD_LAG:-0}" ]; then echo /opt/gvisor/old/runsc; else echo "${STUB_RUNSC_PATH:-$VERDIKTA_SANDBOX_PREFIX/opt/gvisor/20260921.0/runsc}"; fi ;;
   *" version "*) echo 28.0.4 ;;
-  *" pull "*) if [ -n "${STUB_LOCK:-}" ] && [ -f "$STUB_LOCK" ]; then echo "lock-held-during-pull" >> "$STUB_LOG"; fi
+  *" pull "*) if [ "${STUB_SLOW_PULL:-0}" = 1 ]; then : > "$STUB_STATE/pull-began"; sleep 1; fi
+     if [ -n "${STUB_LOCK:-}" ] && [ -f "$STUB_LOCK" ]; then echo "lock-held-during-pull" >> "$STUB_LOG"; fi
      [ "${STUB_PULL_FAIL:-0}" = 1 ] && exit 1 ;;
   *"image inspect"*) [ "${STUB_NOT_WARM:-0}" = 1 ] && exit 1 ;;
   *"ps -aq --filter name=vcr-cal-registry-"*) echo "${STUB_STALE_REGISTRY:-}" ;;
@@ -108,7 +109,8 @@ J
     (cd "$I/code-runner" && sed -i.bak 's#^echo "runner-start.*#echo "runner-start" >> "$STUB_LOG"; exit "${STUB_RUNNER_START_RC:-0}"#' start.sh && rm -f start.sh.bak)
     printf '#!/bin/bash\necho runner-stop >> "$STUB_LOG"; exit 0\n' > "$I/code-runner/stop.sh"
     printf '#!/bin/bash\necho adapter-stop >> "$STUB_LOG"; exit 0\n' > "$I/external-adapter/stop.sh"
-    printf '#!/bin/bash\necho adapter-start >> "$STUB_LOG"; exit 0\n' > "$I/external-adapter/start.sh"
+    # STUB_ADAPTER_FAILS: this many starts fail.
+    printf '#!/bin/bash\necho adapter-start >> "$STUB_LOG"; n=$(cat "$STUB_STATE/adapter-starts" 2>/dev/null || echo 0); echo $((n+1)) > "$STUB_STATE/adapter-starts"; [ "$n" -lt "${STUB_ADAPTER_FAILS:-0}" ] && exit 1; exit 0\n' > "$I/external-adapter/start.sh"
     printf 'OPERATOR_ADDR=0xabc\nIPFS_PINNING_KEY=not-a-real-key\n' > "$I/external-adapter/.env"
     printf 'DEPLOYMENT_NETWORK="base_sepolia"\nNETWORK_CHAIN_ID="84532"\nPRIVATE_KEY="not-a-real-key"\n' > "$I/installer/.env"
     : > "$P/state/.keep"
@@ -166,7 +168,8 @@ hasnt "no dependency on the arbiter's containerd" "$cfg" "^After=.* containerd.s
 hasnt "no socket activation"      "$cfg" "docker.socket"
 disku=$(printf '%s\n' "$cfg" | awk '/^# verdikta-code-runner-disk\.service/{p=1;next} /^# /{p=0} p')
 has "the loop device takes no discard: fstrim would make the image sparse" "$disku" "discard_max_bytes"
-has "a start allocates what is missing" "$disku" "^ExecStartPre=.*fallocate"
+has "a start allocates what is missing, or does not start" "$disku" "^ExecStartPre=/bin/sh .*fallocate .*-ge"
+hasnt "an allocation that fails is not ignored" "$disku" "^ExecStartPre=-"
 has "units escape the shell's dollar and percent for systemd" "$disku" 'stat -c %%s'
 ctd=$(printf '%s\n' "$cfg" | awk '/^# containerd\.toml/{p=1;next} /^# /{p=0} p')
 has "containerd root on the disk" "$ctd" "^root = \"$P/var/lib/verdikta-code-runner/containerd\""
@@ -364,6 +367,80 @@ has "failed refresh: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_R
 [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "a failed refresh left the lock"
 out=$(run status --quiet 2>&1); is "status after a failed refresh" "$?" 2
 
+# --- a refresh refused before it starts leaves no release judging claims unchecked
+stale_install() { fresh; run enable >/dev/null 2>&1; printf '{"bogus":1}' > "$I/code-runner/.state/conformance.json"; : > "$P/log"; rm -f "$P/state/adapter-starts"; }
+stale_install
+out=$(STUB_ARCH=aarch64 run enable 2>&1); is "refused refresh, host: rc" "$?" 4
+has "refused refresh, host: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+[ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "refused refresh, host: the disk went"
+if [ "$(id -u)" != 0 ]; then
+    stale_install
+    out=$(STUB_NO_SUDO=1 run enable 2>&1); is "refused refresh, no sudo: rc" "$?" 3
+    has "refused refresh, no sudo: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+fi
+stale_install
+sed -i.b 's/9.9.9-test/9.9.8-test/' "$I/ai-node/package.json"
+out=$(run enable 2>&1); is "refused refresh, pins disagree: rc" "$?" 1
+has "refused refresh, pins disagree: names them" "$out" "ai-node:9.9.8-test"
+has "refused refresh, pins disagree: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+# A standing pass is still a pass: a refused re-run takes nothing away.
+fresh; run enable >/dev/null 2>&1
+out=$(STUB_ARCH=aarch64 run enable 2>&1); is "refused re-run with a pass: rc" "$?" 4
+has "refused re-run with a pass: code mode stays on" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
+
+# --- hold: what an upgrade calls once the new runner is in place
+fresh; run enable >/dev/null 2>&1
+out=$(run hold 2>&1); is "hold with a pass: rc" "$?" 0
+has "hold with a pass: stays on" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
+printf '{"bogus":1}' > "$I/code-runner/.state/conformance.json"
+out=$(run hold 2>&1); is "hold without a pass: rc" "$?" 0
+has "hold without a pass: off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+fresh; out=$(run hold 2>&1); is "hold with no sandbox: rc" "$?" 0
+hasnt "hold with no sandbox: the adapter is left alone" "$(cat "$I/external-adapter/.env")" "CODE_REVIEW_ENABLED"
+
+# --- an adapter that does not come back is the arbiter's problem, and it is said: exit 1, old settings
+fresh
+out=$(STUB_ADAPTER_FAILS=1 run enable 2>&1); rc=$?
+is "adapter does not restart: rc" "$rc" 1
+has "adapter does not restart: says so" "$out" "Going back to the old ones"
+hasnt "adapter does not restart: old settings" "$(cat "$I/external-adapter/.env")" "CODE_REVIEW_ENABLED=true"
+is "adapter does not restart: started again" "$(grep -c '^adapter-start$' "$P/log")" 2
+[ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "adapter does not restart: the disk stayed"
+fresh
+out=$(STUB_ADAPTER_FAILS=2 run enable 2>&1); rc=$?
+is "adapter stays down: rc" "$rc" 1
+has "adapter stays down: says so, loudly" "$out" "is DOWN"
+# Turning it off is a restart too.
+fresh; run enable >/dev/null 2>&1; rm -f "$P/state/adapter-starts"
+out=$(STUB_ADAPTER_FAILS=1 run disable 2>&1); is "disable, adapter does not restart: rc" "$?" 1
+has "disable, adapter does not restart: says so" "$out" "is DOWN"
+
+# --- a signal is a failure too: a first enable removes what it made, a refresh turns code mode off
+term_during_pull() { # sends SIGTERM once the pull has begun
+    : > "$P/state/pull-began"; rm -f "$P/state/pull-began"
+    PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
+    STUB_LOCK="$I/code-runner/.state/maintenance" VERDIKTA_UNATTENDED=1 STUB_SLOW_PULL=1 \
+    bash "$TOOL" enable --install-dir "$I" --user "$(id -un)" >"$P/state/out" 2>&1 &
+    pid=$!
+    for _ in $(seq 1 100); do [ -e "$P/state/pull-began" ] && break; sleep 0.1; done
+    kill -TERM "$pid"
+    wait "$pid"; rc=$?
+}
+fresh
+term_during_pull
+is "SIGTERM on a first enable: rc" "$rc" 143
+[ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM: the disk image stayed"
+[ ! -e "$P/etc/systemd/system/verdikta-code-runner-docker.service" ] && ok || bad "SIGTERM: a unit stayed"
+[ ! -e "$I/code-runner/.env" ] && ok || bad "SIGTERM: the runner env stayed"
+[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "SIGTERM: the lock stayed"
+has "SIGTERM: says what became of it" "$(cat "$P/state/out")" "was not installed"
+stale_install
+term_during_pull
+is "SIGTERM on a refresh: rc" "$rc" 143
+[ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM on a refresh: the disk went"
+has "SIGTERM on a refresh: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "SIGTERM on a refresh: the lock stayed"
+
 # --- the self-test refuses a cold host: its own pull would hide it
 fresh
 run enable >/dev/null 2>&1
@@ -383,14 +460,38 @@ out=$(STUB_STALE_REGISTRY=abc123 run self-test 2>&1); rc=$?
 is "stale registry rc" "$rc" 0
 has "stale registry removed, on its own daemon" "$(log)" "docker DOCKER_HOST=.*--host unix://$P/run/verdikta-code-runner/docker.sock rm -f --volumes abc123"
 
-# --- a lock somebody else holds is not taken from them
+# --- the lock: one operation at a time, or the first to end lifts it from under the second
+# An operator's (no pid) stays theirs.
 fresh
 run enable >/dev/null 2>&1
 echo "by hand" > "$I/code-runner/.state/maintenance"
 rm -f "$I/code-runner/.state/conformance.json"
 out=$(run enable 2>&1); rc=$?
-is "with another's lock rc" "$rc" 0
-is "another's lock stays" "$(cat "$I/code-runner/.state/maintenance")" "by hand"
+is "with an operator's lock rc" "$rc" 0
+is "an operator's lock stays" "$(cat "$I/code-runner/.state/maintenance")" "by hand"
+# Another live operation: refused, and its lock stays.
+sleep 60 & live=$!
+echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$I/code-runner/.state/maintenance"
+rm -f "$I/code-runner/.state/conformance.json"; : > "$P/log"
+out=$(run enable 2>&1); rc=$?
+is "with a live holder: enable rc" "$rc" 1
+has "with a live holder: names it" "$out" "pid $live"
+hasnt "with a live holder: nothing ran" "$(log)" "^conformance"
+has "with a live holder: its lock stays" "$(cat "$I/code-runner/.state/maintenance")" "$live"
+out=$(run self-test 2>&1); is "with a live holder: self-test rc" "$?" 1
+out=$(run warm 2>&1);      is "with a live holder: warm rc" "$?" 1
+out=$(run disable 2>&1);   is "with a live holder: disable rc" "$?" 1
+[ -e "$I/code-runner/.env" ] && ok || bad "with a live holder: disable went ahead"
+# The upgrade that started this run hands its own down, and keeps it.
+out=$(CODE_REVIEW_LOCK_PARENT=$live run enable 2>&1); rc=$?
+is "the parent's lock: enable rc" "$rc" 0
+has "the parent's lock: it stays" "$(cat "$I/code-runner/.state/maintenance")" "$live"
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+# A dead holder's file is stale: taken over, and let go at the end.
+rm -f "$I/code-runner/.state/conformance.json"
+out=$(run enable 2>&1); rc=$?
+is "a dead holder: enable rc" "$rc" 0
+[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "a dead holder's lock stayed"
 
 # --- status exit codes
 fresh

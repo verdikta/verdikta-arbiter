@@ -3,11 +3,14 @@
 # waits until each has removed its sandboxes. Its own Docker daemon stays up, idle: the disk and
 # the warm images are what the next start needs, and nothing of the arbiter's depends on it.
 cd "$(dirname "$0")" || exit 1
+HERE="$(pwd -P)"
 
 [ -f runner.pid ] || { echo "Code runner is not running (no runner.pid)."; exit 0; }
 pid=$(cat runner.pid)
-# Only ever the runner: a stale pid file can name anything by now.
-if ! ps -p "$pid" -o args= 2>/dev/null | grep -q 'src/index.js'; then
+# Only ever this runner: a stale pid file can name anything by now, the adapter included, which also
+# runs as `node src/index.js`. Its working directory decides.
+cwd=$(readlink "/proc/$pid/cwd" 2>/dev/null) || cwd=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+if [ "$cwd" != "$HERE" ] || ! ps -p "$pid" -o args= 2>/dev/null | grep -q 'src/index.js'; then
     echo "Code runner is not running (stale runner.pid)."
     rm -f runner.pid
     exit 0

@@ -1170,8 +1170,10 @@ fi
 # Hold the code runner's maintenance lock for the whole upgrade (design §9.6): while it exists the
 # runner admits no run and /health is 503, so the adapter refuses a claim rather than judge it on a
 # half-replaced runner. The EXIT trap lets it go however this script ends, the ERR path included,
-# which restarts the arbiter first. A lock this script did not take stays its holder's: noclobber.
-# `kill -9` can leave it, and then code review refuses until it is removed (the doctor names it).
+# which restarts the arbiter first. The file says who holds it (`<holder> <pid> <time>`): a sandbox
+# operation still running means no upgrade yet, or it would lift the lock from under this one; a dead
+# holder's file is taken over; one with no pid is an operator's, and stays theirs. `kill -9` can leave
+# it, and then code review refuses until it is removed (the doctor names it).
 CODE_RUNNER_LOCK="$TARGET_DIR/code-runner/.state/maintenance"
 CODE_RUNNER_LOCK_MINE=0
 release_code_runner_lock() {
@@ -1180,11 +1182,22 @@ release_code_runner_lock() {
     fi
 }
 trap release_code_runner_lock EXIT
+export CODE_REVIEW_LOCK_PARENT=$$
 if [ -f "$TARGET_DIR/code-runner/.env" ]; then
     if ( set -C; echo "upgrade-arbiter $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CODE_RUNNER_LOCK" ) 2>/dev/null; then
         CODE_RUNNER_LOCK_MINE=1
     else
-        echo -e "${YELLOW}The code runner's maintenance lock is already held ($CODE_RUNNER_LOCK): leaving it.${NC}"
+        CODE_RUNNER_LOCK_HOLDER=$(awk '{print $2; exit}' "$CODE_RUNNER_LOCK" 2>/dev/null || true)
+        if [[ "$CODE_RUNNER_LOCK_HOLDER" =~ ^[0-9]+$ ]]; then
+            if kill -0 "$CODE_RUNNER_LOCK_HOLDER" 2>/dev/null; then
+                echo -e "${RED}A code-review sandbox operation is running (pid $CODE_RUNNER_LOCK_HOLDER, $CODE_RUNNER_LOCK). Nothing was changed: run the upgrade when it ends.${NC}"
+                exit 1
+            fi
+            echo "upgrade-arbiter $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CODE_RUNNER_LOCK"
+            CODE_RUNNER_LOCK_MINE=1
+        else
+            echo -e "${YELLOW}The code runner's maintenance lock is held by hand ($CODE_RUNNER_LOCK): leaving it.${NC}"
+        fi
     fi
 fi
 
@@ -1207,6 +1220,10 @@ if ask_yes_no "Would you like to create a backup before upgrading? (Recommended 
     create_backup "$TARGET_DIR"
     if [ $? -ne 0 ]; then
         exit 1
+    fi
+    # The copy came with this run's lock. Restored, it would refuse every claim from then on.
+    if [ -n "$BACKUP_DIR" ]; then
+        rm -f "$BACKUP_DIR/code-runner/.state/maintenance"
     fi
     # Only now that the new copy exists: keep the newest N, drop the rest (#47).
     prune_old_backups "$TARGET_DIR" "$(resolve_backup_keep)"
@@ -1306,6 +1323,14 @@ regenerate_job_specs() {
     
     if [ -f "$TARGET_DIR/installer/.contracts" ]; then
         source "$TARGET_DIR/installer/.contracts"
+
+        # Jobs registered on separate classes (VA_REGISTER_JOB_IDS): this path registers every new job
+        # on one class, which would put a stake's tiers together. Refused before anything is touched.
+        if [ "${REGISTRATION_SPLIT:-}" = "true" ]; then
+            echo -e "${RED}This node's jobs are registered on separate classes, and regeneration would register every new job on one. Nothing was changed.${NC}"
+            JOB_REGEN_FAILED="this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts), so they were not regenerated; unregister them, run configure-node.sh and register each class with VA_REGISTER_JOB_IDS"
+            return 1
+        fi
         
         if [ -n "$AGGREGATOR_ADDRESS" ]; then
             aggregator_addr="$AGGREGATOR_ADDRESS"
@@ -1872,6 +1897,13 @@ if [ -f "$TARGET_CODE_RUNNER/.env" ]; then
     if [ "$CODE_RUNNER_DEPS_RC" != "0" ]; then
         echo -e "${YELLOW}Warning: npm ci failed in $TARGET_CODE_RUNNER (exit $CODE_RUNNER_DEPS_RC).${NC}"
         CODE_REVIEW_SANDBOX_FAILED="the code-runner's dependencies did not install (exit $CODE_RUNNER_DEPS_RC); run $TARGET_DIR/code-review-sandbox.sh enable"
+    fi
+    # A new release has no pass yet. However this upgrade ends, the adapter judges no claim on it
+    # until the refresh below, or a later one, has a pass.
+    CODE_REVIEW_HOLD_RC=0
+    bash "$TARGET_DIR/code-review-sandbox.sh" hold || CODE_REVIEW_HOLD_RC=$?
+    if [ "$CODE_REVIEW_HOLD_RC" != "0" ]; then
+        echo -e "${YELLOW}Warning: could not turn code review off in the adapter (exit $CODE_REVIEW_HOLD_RC). Check $TARGET_DIR/external-adapter/.env.${NC}"
     fi
 fi
 

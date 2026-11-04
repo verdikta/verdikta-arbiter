@@ -23,7 +23,12 @@ cp "$REPO/code-runner/start.sh" "$REPO/code-runner/stop.sh" "$R/"
 cat > "$R/src/index.js" <<'E'
 const fs = require('fs'), http = require('http');
 fs.writeFileSync(process.env.TEST_ENV_FILE_FIXED || `${__dirname}/../env.seen`, JSON.stringify(process.env));
-const s = http.createServer((q, a) => { a.statusCode = 401; a.end(); });
+const token = fs.readFileSync(process.env.CODE_RUNNER_TOKEN_FILE, 'utf8').trim();
+const s = http.createServer((q, a) => {
+  if (q.headers.authorization !== `Bearer ${token}`) { a.statusCode = 401; return a.end(); }
+  a.statusCode = 503; a.end(JSON.stringify({ ok: false, service: 'verdikta-code-runner' }));
+});
+s.on('error', () => process.exit(1));
 s.listen(Number(process.env.CODE_RUNNER_PORT), '127.0.0.1');
 process.on('SIGTERM', () => { fs.writeFileSync(`${__dirname}/../stopped`, 'yes'); s.close(); process.exit(0); });
 E
@@ -38,7 +43,8 @@ CODE_RUNNER_TOKEN_FILE=$R/.state/token
 E
 }
 # A socket the wait can see: start.sh waits, bounded, for the daemon's socket at boot.
-mkdir -p "$T/run"; : > "$T/run/docker.sock"
+mkdir -p "$T/run" "$R/.state"; : > "$T/run/docker.sock"
+printf '%s\n' "$(printf 'tok1%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)" > "$R/.state/token"
 start() { env PRIVATE_KEY=not-a-real-key INFURA_API_KEY=not-a-real-key IPFS_PINNING_KEY=not-a-real-key CODE_RUNNER_DAEMON_WAIT_SECS=1 CODE_RUNNER_START_TIMEOUT_SECS=15 bash "$R/start.sh" 2>&1; }
 
 # --- no .env: nothing to start
@@ -84,6 +90,35 @@ out=$(bash "$R/stop.sh" 2>&1)
 kill -0 "$other" 2>/dev/null && ok || bad "stop killed a process that is not the runner"
 kill "$other" 2>/dev/null; wait "$other" 2>/dev/null
 [ ! -f "$R/runner.pid" ] && ok || bad "stop kept a stale pid file"
+# The adapter runs as `node src/index.js` too: a stale pid file can name it, and it is not the runner.
+mkdir -p "$T/adapter/src"; printf 'setInterval(() => {}, 1000);\n' > "$T/adapter/src/index.js"
+(cd "$T/adapter" && exec node src/index.js) & adapter=$!
+sleep 0.5
+echo "$adapter" > "$R/runner.pid"
+out=$(bash "$R/stop.sh" 2>&1)
+kill -0 "$adapter" 2>/dev/null && ok || bad "stop killed the adapter through a stale pid file"
+[ ! -f "$R/runner.pid" ] && ok || bad "stop kept a pid file naming the adapter"
+echo "$adapter" > "$R/runner.pid"
+out=$(start); rc=$?
+[ "$rc" = 0 ] && ok || bad "start with a pid file naming the adapter: exit $rc: $out"
+hasnt "start does not take the adapter for the runner" "$out" "already running"
+[ "$(cat "$R/runner.pid")" != "$adapter" ] && ok || bad "start kept the adapter's pid"
+bash "$R/stop.sh" >/dev/null 2>&1
+kill "$adapter" 2>/dev/null; wait "$adapter" 2>/dev/null
+# Another service on the port: refused, whatever it answers, and no runner is left behind.
+node -e 'require("http").createServer((q,a)=>{a.end("{}")}).listen(Number(process.argv[1]),"127.0.0.1")' "$PORT" & holder=$!
+sleep 0.5
+out=$(start); rc=$?
+[ "$rc" != 0 ] && ok || bad "start with the port taken: exit 0: $out"
+has "start with the port taken: says so" "$out" "already answers"
+[ ! -f "$R/runner.pid" ] && ok || bad "start with the port taken left a pid file"
+kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
+# A runner that dies at once is a failure, however soon the port answered before.
+mv "$R/src/index.js" "$R/src/index.keep"; printf 'process.exit(3);\n' > "$R/src/index.js"
+out=$(start); rc=$?
+[ "$rc" != 0 ] && ok || bad "start of a runner that exits: exit 0"
+has "start of a runner that exits: says so" "$out" "exited before it answered"
+mv "$R/src/index.keep" "$R/src/index.js"
 
 # --- start-arbiter.sh / stop-arbiter.sh / status / rotate call it, and only when installed
 S="$ROOT/util/start-arbiter.sh"; P="$ROOT/util/stop-arbiter.sh"; ST="$ROOT/util/arbiter-status.sh"; RL="$ROOT/util/rotate-logs.sh"

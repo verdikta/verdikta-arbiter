@@ -240,11 +240,33 @@ check "dockerd is not active" "$(systemctl is-active verdikta-code-runner-docker
 check "nothing was written under the mount point" "$(sudo ls -A "$MOUNT" | wc -l)" 0
 sudo mv "$IMAGE.away" "$IMAGE"
 sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-containerd verdikta-code-runner-docker 2>/dev/null
+# Holes in the image: a start fills them, or does not start.
+sudo fallocate --punch-hole --keep-size -o 8G -l 1G "$IMAGE"
+[ "$(( $(sudo stat -c '%b' "$IMAGE") * 512 ))" -lt "$(sudo stat -c '%s' "$IMAGE")" ] && ok "the image has a hole" || bad "no hole was punched"
+sudo chattr +i "$IMAGE"
+sudo systemctl start verdikta-code-runner-docker 2>/dev/null; rc=$?
+[ "$rc" != 0 ] && ok "holes it cannot fill: no daemon" || bad "the daemon started on an image with holes it could not fill"
+mountpoint -q "$MOUNT" && bad "holes it cannot fill: mounted anyway" || ok "holes it cannot fill: not mounted"
+sudo chattr -i "$IMAGE"
+sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-containerd verdikta-code-runner-docker 2>/dev/null
 # As at boot: the daemon's unit brings up its disk and containerd.
 sudo systemctl start verdikta-code-runner-docker; rc=$?
 check "the daemon's unit brings its disk back" "$rc" 0
+[ "$(( $(sudo stat -c '%b' "$IMAGE") * 512 ))" -ge "$(sudo stat -c '%s' "$IMAGE")" ] && ok "the start filled the holes" || bad "the image still has holes after a start"
 "${OWN[@]}" image inspect "$(node "$CHECK" images --install-dir "$I" | tail -1)" >/dev/null 2>&1 && ok "its images survived" || bad "its images did not survive"
 bash "$I/code-runner/start.sh" >/dev/null 2>&1 && ok "the runner starts again" || bad "the runner did not start again"
+# The adapter is `node src/index.js` too: a pid file naming it is stale, and it stays up.
+cp "$I/code-runner/runner.pid" "$WORK/runner.pid"; cat "$I/external-adapter/adapter.pid" >/dev/null 2>&1
+adapter_pid=$(pgrep -f "^node src/index.js" | while read -r p; do [ "$(readlink "/proc/$p/cwd")" = "$(cd "$I/external-adapter" && pwd -P)" ] && echo "$p"; done | head -1)
+if [ -n "$adapter_pid" ]; then
+    bash "$I/code-runner/stop.sh" >/dev/null 2>&1
+    echo "$adapter_pid" > "$I/code-runner/runner.pid"
+    bash "$I/code-runner/stop.sh" >/dev/null 2>&1
+    kill -0 "$adapter_pid" 2>/dev/null && ok "a stale pid file does not kill the adapter" || bad "a stale pid file killed the adapter"
+    bash "$I/code-runner/start.sh" >/dev/null 2>&1 && ok "the runner starts after that" || bad "the runner did not start after that"
+else
+    bad "the adapter's process was not found"
+fi
 compare "stop and start"
 
 step "Disable and purge"

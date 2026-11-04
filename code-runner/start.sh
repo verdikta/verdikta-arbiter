@@ -4,7 +4,7 @@
 # secrets, and refuses to start when its environment looks as if it does. It refuses any Docker
 # endpoint but a runner's own socket: the arbiter's Docker holds cl-postgres and chainlink.
 cd "$(dirname "$0")" || exit 1
-HERE="$(pwd)"
+HERE="$(pwd -P)"
 
 export NVM_DIR="$HOME/.nvm"
 [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
@@ -52,18 +52,36 @@ word_value() { # word_value KEY DEFAULT
 PORT="$(word_value CODE_RUNNER_PORT 8090)"
 BIND="$(word_value CODE_RUNNER_HOST 127.0.0.1)"
 
-runner_answers() { # any HTTP status: without a token it is a 401, and that is an answer
-    local code
-    code=$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://$BIND:$PORT/health" 2>/dev/null) && [ "$code" != "000" ]
+TOKEN_FILE="$(word_value CODE_RUNNER_TOKEN_FILE "$HERE/.state/token")"
+# Anything on the port at all, whatever it is.
+port_answers() {
+    [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://$BIND:$PORT/health" 2>/dev/null)" != "000" ]
+}
+# This runner: it takes this token and names itself, 503 and all (the lock). The token goes on stdin, never argv.
+runner_answers() {
+    printf 'header = "Authorization: Bearer %s"\n' "$(cat "$TOKEN_FILE" 2>/dev/null)" \
+        | curl -s -m 2 -K - "http://$BIND:$PORT/health" 2>/dev/null | grep -q '"service":"verdikta-code-runner"'
+}
+# The adapter runs as `node src/index.js` too, so a stale pid file can name it: the working directory decides.
+is_this_runner() {
+    local cwd
+    cwd=$(readlink "/proc/$1/cwd" 2>/dev/null) || cwd=$(lsof -a -p "$1" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')
+    [ "$cwd" = "$HERE" ] && ps -p "$1" -o args= 2>/dev/null | grep -q 'src/index.js'
 }
 
 if [ -f runner.pid ]; then
     pid=$(cat runner.pid)
-    if ps -p "$pid" -o args= 2>/dev/null | grep -q 'src/index.js'; then
+    if is_this_runner "$pid"; then
         echo "Code runner is already running with PID $pid"
         exit 0
     fi
     rm -f runner.pid
+fi
+
+# Something else on the port would answer for a runner that exits on EADDRINUSE.
+if port_answers; then
+    echo "Error: something already answers on $BIND:$PORT, and it is not this runner. Stop it, or change CODE_RUNNER_PORT." >&2
+    exit 1
 fi
 
 if ! command -v node >/dev/null 2>&1; then

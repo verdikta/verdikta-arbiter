@@ -63,7 +63,7 @@ dispatcher() { # dispatcher CLASSES [more env]
         bash "$I/installer/bin/register-oracle-dispatcher.sh" 2>&1
 }
 standalone() { # the install root's script
-    env REG_LOG="$T/reg.log" VERDIKTA_UNATTENDED=1 VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS=0x4444444444444444444444444444444444444444 NEW_AGGREGATOR_ADDRESS=0x4444444444444444444444444444444444444444 VA_CLASS_IDS="$1" "${@:2}" \
+    env REG_LOG="$T/reg.log" VERDIKTA_UNATTENDED=1 VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS=0x4444444444444444444444444444444444444444 VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="$1" "${@:2}" \
         bash "$I/register-oracle.sh" --unattended 2>&1
 }
 refused() { # refused NAME OUT RC [TEXT]
@@ -105,6 +105,14 @@ for script in dispatcher standalone; do
     has "$script names that job" "$(cat "$T/reg.log")" "--jobids aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --classes"
     hasnt "$script leaves the other" "$(cat "$T/reg.log")" "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     tree; good_pass; out=$($script 133 VA_REGISTER_JOB_IDS=cccccccccccccccccccccccccccccccc); rc=$?; refused "$script an unknown job" "$out" $rc "not one of this node's jobs"
+    # A split is remembered: CLASSES_ID holds one registration's, and a later one on every job would lose it.
+    tree; good_pass; out=$($script 133 VA_REGISTER_JOB_IDS=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa); rc=$?; went "$script first part" "$out" $rc
+    has "$script remembers the split" "$(cat "$I/installer/.contracts")" '^REGISTRATION_SPLIT="true"$'
+    : > "$T/reg.log"; out=$($script 133); rc=$?; refused "$script all jobs after a split" "$out" $rc "VA_REGISTER_JOB_IDS"
+    : > "$T/reg.log"; out=$($script 134 VA_REGISTER_JOB_IDS=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb); rc=$?; went "$script second part" "$out" $rc
+    # Naming every job is no split.
+    tree; good_pass; out=$($script 133 VA_REGISTER_JOB_IDS=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb); rc=$?; went "$script every job named" "$out" $rc
+    hasnt "$script every job named: no split" "$(cat "$I/installer/.contracts")" 'REGISTRATION_SPLIT'
     # A class id that hides the digits is not a way round.
     tree; out=$($script "0133"); rc=$?; refused "$script 0133" "$out" $rc "conformance"
     # The helper missing: code classes refused, text still goes.

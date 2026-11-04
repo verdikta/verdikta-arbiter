@@ -25,6 +25,7 @@
 #   code-review-sandbox.sh warm                  # pull the pinned images again
 #   code-review-sandbox.sh self-test             # run the canary again
 #   code-review-sandbox.sh disable [--purge]     # remove it; --purge also frees the disk image
+#   code-review-sandbox.sh hold                  # code review off in the adapter unless a pass stands
 #   code-review-sandbox.sh print-config          # the units and daemon config (review)
 #
 # Options: --install-dir DIR (default: this script's directory)
@@ -95,11 +96,11 @@ DISK_GB="${VA_CODE_REVIEW_DISK_GB:-}"
 QUIET=0
 PURGE=0
 
-usage() { sed -n '2,38p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,39p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        enable|status|warm|self-test|disable|print-config)
+        enable|status|warm|self-test|disable|hold|print-config)
             [ -n "$ACTION" ] && { echo "only one action, please" >&2; exit 64; }
             ACTION="$1"; shift ;;
         --install-dir) shift; [ -z "${1:-}" ] && { echo "--install-dir needs a directory" >&2; exit 64; }; INSTALL_DIR="$1"; shift ;;
@@ -209,7 +210,8 @@ EOF
 
 # Fixed means allocated, and a loop device passes discards on as holes in its file: fstrim.timer
 # would make the image sparse, and its writes would then spend the root filesystem. So the device
-# takes no discard, and each start allocates whatever is missing. The doctor measures the result.
+# takes no discard, and each start allocates whatever is missing, or does not start: an image with
+# holes it cannot fill would spend the root filesystem. The doctor measures the result too.
 disk_unit() {
     cat <<EOF
 [Unit]
@@ -219,7 +221,7 @@ After=local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=-/bin/sh -c 'mountpoint -q $MOUNT || fallocate -l "\$\$(stat -c %%s $IMAGE)" $IMAGE'
+ExecStartPre=/bin/sh -c 'mountpoint -q $MOUNT || { fallocate -l "\$\$(stat -c %%s $IMAGE)" $IMAGE && [ "\$\$(( \$\$(stat -c %%b $IMAGE) * 512 ))" -ge "\$\$(stat -c %%s $IMAGE)" ]; }'
 ExecStart=/bin/sh -c 'mountpoint -q $MOUNT || mount -t ext4 -o loop,noatime,nodev,nosuid $IMAGE $MOUNT'
 ExecStartPost=-/bin/sh -c 'echo 0 > /sys/block/\$\$(basename "\$\$(findmnt -no SOURCE $MOUNT)")/queue/discard_max_bytes'
 ExecStop=/bin/umount $MOUNT
@@ -335,21 +337,49 @@ own_docker() { # the runner's daemon, with no operator credentials
 ############################################
 # The lock, and what happens on the way out
 ############################################
+# The lock file says who holds it: `<holder> <pid> <time>`. Maintenance operations are one at a time,
+# or the first to finish would lift the lock from under the second. So another live holder is a
+# refusal; the upgrade that started this run hands its own down (CODE_REVIEW_LOCK_PARENT), and keeps
+# it; a dead holder's file is stale and taken over; one with no pid is an operator's, and stays theirs.
 LOCK_MINE=0
 TMP_DIR=""
+lock_write() { echo "code-review-sandbox $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_FILE"; }
 lock_take() {
+    local holder
     mkdir -p "$STATE_DIR" 2>/dev/null
-    # noclobber: a lock someone else holds (an upgrade, an operator) stays theirs.
-    if ( set -C; echo "code-review-sandbox $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_FILE" ) 2>/dev/null; then
+    if ( set -C; lock_write ) 2>/dev/null; then
         LOCK_MINE=1
+    else
+        holder=$(awk '{print $2; exit}' "$LOCK_FILE" 2>/dev/null)
+        if [[ "$holder" =~ ^[0-9]+$ ]]; then
+            if [ "$holder" = "${CODE_REVIEW_LOCK_PARENT:-}" ]; then
+                :
+            elif kill -0 "$holder" 2>/dev/null; then
+                echo -e "${RED}Another maintenance operation holds $LOCK_FILE (pid $holder): $(cat "$LOCK_FILE"). Wait for it, or remove the file if it is gone.${NC}" >&2
+                exit 1
+            else
+                lock_write && LOCK_MINE=1
+            fi
+        fi
     fi
     own "$STATE_DIR" 2>/dev/null
 }
+# The way out of a run, however it comes: a signal after the disk was allocated still removes it.
+# bash runs a signal's trap when the foreground child ends, so the child is not left using the disk.
+ENABLE_RUNNING=0
 on_exit() {
+    trap '' TERM INT HUP
+    if [ "$ENABLE_RUNNING" = "1" ]; then
+        ENABLE_RUNNING=0
+        end_failed_enable
+    fi
     if [ "$LOCK_MINE" = "1" ]; then rm -f "$LOCK_FILE"; fi
     if [ -n "$TMP_DIR" ]; then rm -rf "$TMP_DIR"; fi
 }
 trap on_exit EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
+trap 'exit 129' HUP
 
 TMP_DIR=$(mktemp -d)
 DOCKER_CONFIG_DIR="$TMP_DIR/docker-config"
@@ -625,17 +655,17 @@ adapter_up() { curl -fsS --max-time 3 http://127.0.0.1:8080/version >/dev/null 2
 
 # The adapter reads .env when it starts. A node that does not run it yet reads this at its next start.
 restart_adapter_if_up() {
-    if adapter_up; then
-        say "Restarting the External Adapter so it reads its new settings..."
-        as_user bash "$ADAPTER_DIR/stop.sh" >/dev/null 2>&1
-        (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1) || warn "The External Adapter did not restart: run $ADAPTER_DIR/start.sh"
-    fi
+    adapter_up || return 0
+    say "Restarting the External Adapter so it reads its new settings..."
+    as_user bash "$ADAPTER_DIR/stop.sh" >/dev/null 2>&1
+    (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1)
 }
 
 # Dev trust is never written here: it is for a developer's hand, on a test chain.
 adapter_env_on() {
     local before chain network
     before=$(cat "$ADAPTER_ENV" 2>/dev/null)
+    cp -p "$ADAPTER_ENV" "$TMP_DIR/adapter.env.before" 2>/dev/null
     network=$(env_value "$INSTALL_DIR/installer/.env" DEPLOYMENT_NETWORK)
     chain=$(env_value "$INSTALL_DIR/installer/.env" NETWORK_CHAIN_ID)
     case "$chain:$network" in
@@ -649,7 +679,19 @@ adapter_env_on() {
     [ -n "$chain" ] && { set_env_line "$ADAPTER_ENV" NETWORK_CHAIN_ID "$chain" || return 1; }
     [ -n "$network" ] && { set_env_line "$ADAPTER_ENV" DEPLOYMENT_NETWORK "$network" || return 1; }
     own "$ADAPTER_ENV"
-    [ "$before" = "$(cat "$ADAPTER_ENV")" ] || restart_adapter_if_up
+    [ "$before" != "$(cat "$ADAPTER_ENV")" ] || return 0
+    restart_adapter_if_up && return 0
+    # Text requests are what that stopped: back to what it ran, and say so.
+    echo -e "${RED}The External Adapter did not restart on its new settings. Going back to the old ones.${NC}" >&2
+    if [ -f "$TMP_DIR/adapter.env.before" ]; then
+        cp -p "$TMP_DIR/adapter.env.before" "$ADAPTER_ENV"
+    else
+        rm -f "$ADAPTER_ENV"
+    fi
+    own "$ADAPTER_ENV"
+    (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1) \
+        || echo -e "${RED}The External Adapter is DOWN: run $ADAPTER_DIR/start.sh${NC}" >&2
+    return 1
 }
 
 adapter_env_off() {
@@ -657,7 +699,9 @@ adapter_env_off() {
     grep -q '^CODE_REVIEW_ENABLED=true' "$ADAPTER_ENV" || return 0
     set_env_line "$ADAPTER_ENV" CODE_REVIEW_ENABLED false
     own "$ADAPTER_ENV"
-    restart_adapter_if_up
+    restart_adapter_if_up && return 0
+    echo -e "${RED}The External Adapter did not restart after code review went off: it is DOWN. Run $ADAPTER_DIR/start.sh${NC}" >&2
+    return 1
 }
 
 # What a failed first enable made goes again. The arbiter's Docker is not in this list.
@@ -701,16 +745,33 @@ rollback_fresh() {
     adapter_env_off
 }
 
-failed() { # failed: the end of a failed enable, by what it was
+# The end of an enable that did not finish, by what it was: a failed step, or a signal.
+end_failed_enable() {
     if [ "$FRESH" = "1" ]; then
         rollback_fresh
-        echo -e "${RED}The code-review sandbox was not installed. The arbiter was not touched.${NC}" >&2
+        echo -e "${RED}The code-review sandbox was not installed. The rest of the arbiter was not touched.${NC}" >&2
     else
         rm -f "$STATE_DIR/conformance.json"
         adapter_env_off
-        echo -e "${RED}The code-review sandbox was not refreshed. It stays installed, code review is off until a pass, and the arbiter was not touched. Run: $0 enable${NC}" >&2
+        echo -e "${RED}The code-review sandbox was not refreshed. It stays installed, code review is off until a pass, and the rest of the arbiter was not touched. Run: $0 enable${NC}" >&2
     fi
+}
+failed() {
+    ENABLE_RUNNING=0
+    end_failed_enable
     exit 1
+}
+
+# A node that has the sandbox, cannot refresh it and has no pass for what it now runs judges no claim.
+hold_without_a_pass() {
+    [ -f "$RUNNER_ENV" ] || return 0
+    node "$CHECK" conformance --install-dir "$INSTALL_DIR" >/dev/null 2>&1 && return 0
+    warn "No conformance pass for this release: code review goes off in the adapter until there is one."
+    adapter_env_off
+}
+refuse_enable() { # refuse_enable RC: before anything was changed
+    hold_without_a_pass
+    exit "$1"
 }
 
 check_host() {
@@ -719,13 +780,13 @@ check_host() {
     if [ -n "$problems" ]; then
         echo -e "${RED}This host cannot run the code-review sandbox:${NC}" >&2
         printf '  - %s\n' "$problems" >&2
-        exit 4
+        refuse_enable 4
     fi
 }
 check_root() {
     if ! as_root true; then
         echo -e "${RED}The sandbox's host steps need root or passwordless sudo. Run as root: $0 $ACTION${NC}" >&2
-        exit 3
+        refuse_enable 3
     fi
 }
 
@@ -738,13 +799,14 @@ do_enable() {
     [ -f "$RUNNER_ENV" ] || FRESH=1
     local rc=0
     disk_preflight || rc=$?
-    [ "$rc" = "0" ] || exit "$rc"
+    [ "$rc" = "0" ] || refuse_enable "$rc"
     if ! node "$PIN_CHECK" --agree "$INSTALL_DIR" >/dev/null 2>&1; then
         echo -e "${RED}The AI Node, the External Adapter and the code runner do not pin one @verdikta/common release:${NC}" >&2
         node "$PIN_CHECK" --agree "$INSTALL_DIR" >&2
-        exit 1
+        refuse_enable 1
     fi
     lock_take
+    ENABLE_RUNNING=1
     if [ -e "$IMAGE" ] && [ "$DISK_GB" != "$DEFAULT_DISK_GB" ]; then
         say "The disk image is kept as it is, and never resized. For another size: $0 disable --purge, then enable --disk-gb $DISK_GB"
     fi
@@ -758,6 +820,7 @@ do_enable() {
         self_test || failed
     fi
     adapter_env_on || failed
+    ENABLE_RUNNING=0
     say "${GREEN}The code-review sandbox is ready: gVisor $GVISOR_VERSION, its own Docker on $SOCK, a conformance pass.${NC}"
     say "Code review is on in the adapter. Turn it off with: $0 disable"
 }
@@ -807,7 +870,8 @@ do_disable() {
     check_root
     lock_take
     [ -f "$RUNNER_DIR/stop.sh" ] && as_user bash "$RUNNER_DIR/stop.sh" >/dev/null 2>&1
-    adapter_env_off
+    local rc=0
+    adapter_env_off || rc=1
     remove_own_units
     rm -f "$RUNNER_ENV" "$STATE_DIR/conformance.json"
     if [ "$PURGE" = "1" ]; then
@@ -817,6 +881,12 @@ do_disable() {
         say "${GREEN}The code-review sandbox is off.${NC} The disk image stays at $IMAGE; to free it: $0 disable --purge"
     fi
     say "gVisor stays at $GVISOR_DIR: another sandbox on this host may use it."
+    exit "$rc"
+}
+
+# What an upgrade calls once the new runner is in place, before anything starts it.
+do_hold() {
+    hold_without_a_pass
 }
 
 do_print_config() {
@@ -833,5 +903,6 @@ case "$ACTION" in
     warm) do_warm ;;
     self-test) do_self_test ;;
     disable) do_disable ;;
+    hold) do_hold ;;
     print-config) do_print_config ;;
 esac

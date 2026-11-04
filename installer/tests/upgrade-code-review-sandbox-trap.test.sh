@@ -43,6 +43,7 @@ cat > "$T/install/code-review-sandbox.sh" <<'STUB'
 case "$1" in
   status) exit "${STATUS_RC:-1}" ;;
   enable) echo "STUB-ENABLE-CALLED"; exit "${ENABLE_RC:-0}" ;;
+  hold) echo "STUB-HOLD-CALLED"; exit "${HOLD_RC:-0}" ;;
   *) echo "STUB: unexpected $*" >&2; exit 99 ;;
 esac
 STUB
@@ -164,6 +165,62 @@ has "another's lock stays" "$out" "LOCK-AFTER=present"
 has "another's lock: finished" "$out" "REACHED-END"
 out=$(run_lock 1 1 1)
 has "another's lock stays after a failure" "$out" "LOCK-AFTER=present"
+# A sandbox operation still running: no upgrade yet, or it would lift the lock from under this one.
+sleep 60 & live=$!
+rm -f "$T/install/code-runner/.state/maintenance"; : > "$T/install/code-runner/.env"
+echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner/.state/maintenance"
+out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" bash -c '
+    set -e
+    trap "echo TRAP-FIRED; exit 9" ERR
+    GREEN= YELLOW= RED= BLUE= NC=
+    eval "$1"
+    echo "STOPPED-THE-ARBITER"
+' _ "$lock" 2>&1); rc=$?
+[ "$rc" = 1 ] && ok || bad "a live holder: upgrade exit $rc"
+has   "a live holder: says so" "$out" "pid $live"
+hasnt "a live holder: nothing stopped" "$out" "STOPPED-THE-ARBITER"
+hasnt "a live holder: trap" "$out" "TRAP-FIRED"
+has   "a live holder: its lock stays" "$(cat "$T/install/code-runner/.state/maintenance")" "$live"
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+# A dead holder's file is taken over, and let go.
+echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner/.state/maintenance"
+out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" bash -c '
+    set -e
+    GREEN= YELLOW= RED= BLUE= NC=
+    eval "$1"
+    echo "HOLDER=$(cat "$LOCK")"
+    echo "PARENT=$CODE_REVIEW_LOCK_PARENT PID=$$"
+    echo "REACHED-END"
+' _ "$lock" 2>&1)
+has "a dead holder: taken over" "$out" "HOLDER=upgrade-arbiter"
+has "a dead holder: finished" "$out" "REACHED-END"
+[ ! -f "$T/install/code-runner/.state/maintenance" ] && ok || bad "a dead holder's lock stayed"
+# The tool hears whose lock it is.
+pid_line=$(printf '%s\n' "$out" | grep '^PARENT=')
+parent=${pid_line#PARENT=}; parent=${parent%% *}
+[ -n "$parent" ] && [ "$parent" = "${pid_line##*PID=}" ] && ok || bad "the upgrade does not hand its pid down: $pid_line"
+
+# The backup comes with this run's lock: restored, it would refuse every claim from then on.
+backup=$(awk '/^# Ask if user wants to create a backup/{p=1} /^# Mark that upgrade is in progress/{p=0} p{print}' "$S")
+[ -n "$backup" ] && ok || bad "could not extract the backup block"
+: > "$T/install/code-runner/.env"; echo "upgrade-arbiter 1 x" > "$T/install/code-runner/.state/maintenance"
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_BACKUP=y TARGET_DIR="$T/install" BACKUP_TO="$T/backup" bash -c '
+    set -e
+    trap "echo TRAP-FIRED; exit 9" ERR
+    source "$1/lib/prompts.sh"
+    GREEN= YELLOW= RED= BLUE= NC=
+    create_backup() { cp -r "$1" "$BACKUP_TO"; BACKUP_DIR="$BACKUP_TO"; }
+    resolve_backup_keep() { echo 3; }
+    prune_old_backups() { :; }
+    eval "$2"
+    echo "REACHED-END"
+' _ "$ROOT" "$backup" 2>&1)
+has "backup: finished" "$out" "REACHED-END"
+[ -f "$T/backup/code-runner/.env" ] && ok || bad "backup: nothing was copied"
+[ ! -e "$T/backup/code-runner/.state/maintenance" ] && ok || bad "backup: the copy holds the lock"
+[ -e "$T/install/code-runner/.state/maintenance" ] && ok || bad "backup: the live lock went"
+rm -f "$T/install/code-runner/.state/maintenance"
+
 # A signal: bash runs the EXIT trap on the way out. Only kill -9 can leave the lock, and then the doctor names it.
 rm -f "$T/install/code-runner/.state/maintenance"; : > "$T/install/code-runner/.env"
 LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" bash -c '
@@ -191,8 +248,14 @@ run_deps() { # run_deps INSTALLED NPM_RC
 out=$(run_deps 1 0)
 has   "deps: installed exactly" "$out" "npm ci"
 has   "deps: finished" "$out" "REACHED-END"
+has   "deps: no claim on a release with no pass" "$out" "STUB-HOLD-CALLED"
+out=$(HOLD_RC=1 run_deps 1 0)
+has   "hold fails: says so" "$out" "could not turn code review off"
+has   "hold fails: finished" "$out" "REACHED-END"
+hasnt "hold fails: trap" "$out" "TRAP-FIRED"
 out=$(run_deps 0 0)
 hasnt "deps: not on a node without the sandbox" "$out" "npm ci"
+hasnt "deps: no hold on a node without the sandbox" "$out" "STUB-HOLD-CALLED"
 out=$(run_deps 1 1)
 has   "deps fail: reason kept" "$out" "FAILED=\[.*code-runner"
 has   "deps fail: finished" "$out" "REACHED-END"

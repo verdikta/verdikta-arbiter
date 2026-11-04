@@ -122,6 +122,15 @@ hasnt "timeouts only: trap"               "$out" "TRAP-FIRED"
 
 # ── Any other template change still offers the path, and the rule holds in it ─
 printf '# another change\n' >> "$REPO_NODE/basicJobSpec"
+# A node registered in parts: this path would register every new job on one class. Refused untouched.
+printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="134"\nREGISTRATION_SPLIT="true"\n' > "$I/installer/.contracts"
+out=$(ANSWER=y regen_run)
+hasnt "split: no deregistration"  "$out" "STUB-unregister"
+hasnt "split: no configure-node"  "$out" "STUB-CONFIGURE"
+hasnt "split: no re-registration" "$out" "STUB-register"
+has   "split: reported"           "$out" "failed=\[.*separate classes"
+hasnt "split: trap"               "$out" "TRAP-FIRED"
+contracts
 out=$(ANSWER=n regen_run)
 has   "other change, declined: asked"  "$out" "VA_UPGRADE_REGENERATE_JOBS"
 hasnt "other change, declined: nothing runs" "$out" "STUB-unregister"

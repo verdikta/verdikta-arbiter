@@ -169,6 +169,11 @@ fi
 # Use ALL job IDs for registration (space-separated)
 # VA_REGISTER_JOB_IDS names the jobs of this registration, when not all of them: how two code
 # classes stay on jobs of their own (a job on both would be eligible for both price tiers).
+# One registration on every job would lose that split: it is refused until the jobs are named.
+if [ "${REGISTRATION_SPLIT:-}" = "true" ] && [ -z "${VA_REGISTER_JOB_IDS:-}" ]; then
+    echo -e "${RED}Error: this node's jobs were registered on separate classes (REGISTRATION_SPLIT in .contracts). Name the jobs of this registration with VA_REGISTER_JOB_IDS.${NC}"
+    exit 1
+fi
 if [ -n "${VA_REGISTER_JOB_IDS:-}" ]; then
     SELECTED_JOB_IDS=()
     for wanted in $(echo "$VA_REGISTER_JOB_IDS" | tr ',' ' '); do
@@ -179,6 +184,7 @@ if [ -n "${VA_REGISTER_JOB_IDS:-}" ]; then
         fi
         SELECTED_JOB_IDS+=("$wanted")
     done
+    [ "${#SELECTED_JOB_IDS[@]}" -lt "${#JOB_IDS_AVAILABLE[@]}" ] && REGISTERED_A_SUBSET=1
     JOB_IDS_AVAILABLE=("${SELECTED_JOB_IDS[@]}")
 fi
 
@@ -452,6 +458,12 @@ if [ $? -eq 0 ]; then
         echo 'AGGREGATOR_REGISTRATION_ACTIVE="true"' >> "$CONTRACTS_FILE"
     fi
     echo -e "${GREEN}Dispatcher registration marked active in installer/.contracts${NC}"
+
+    # CLASSES_ID above holds one registration's classes. Regeneration reads it for every new job,
+    # so a node registered in parts says so, and regeneration leaves it alone.
+    if [ "${REGISTERED_A_SUBSET:-0}" = "1" ] && ! grep -q '^REGISTRATION_SPLIT=' "$CONTRACTS_FILE"; then
+        echo 'REGISTRATION_SPLIT="true"' >> "$CONTRACTS_FILE"
+    fi
     
     echo ""
     echo -e "${BLUE}Registration Complete!${NC}"
