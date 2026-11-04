@@ -47,14 +47,14 @@
       "honestyFlags": [],
       "tests": [
         {
-          "id": "test/UnlockCheckpointClaim.t.sol > UnlockCheckpointClaim > test_the_second_unlock_costs_what_the_first_did()",
+          "id": "test/UnlockCheckpointClaim.t.sol > UnlockCheckpointClaim > test_the_second_unlock_costs_no_less_than_the_first()",
           "runs": [
             "fail",
             "fail",
             "fail"
           ],
           "kind": "assertion",
-          "message": "the second unlock price equals the first: 402055890410801920 != 402485479451875840"
+          "message": "the second unlock costs no less than the first: 402055890410801920 < 402485479451875840"
         }
       ],
       "pack": {
@@ -71,12 +71,12 @@
     "case": "clear-valid.flayer-unlock-checkpoint.control",
     "removes": {
       "poc.patch": [
-        "+        assertEq(protectedListings.unlockPrice(address(erc721a), 1), first, \"the second unlock price equals the first\");"
+        "+        assertGe(protectedListings.unlockPrice(address(erc721a), 1), first, \"the second unlock costs no less than the first\");"
       ]
     },
     "adds": {
       "poc.patch": [
-        "+        assertLt(protectedListings.unlockPrice(address(erc721a), 1), first, \"the second unlock price equals the first\");"
+        "+        assertLt(protectedListings.unlockPrice(address(erc721a), 1), first, \"the second unlock costs no less than the first\");"
       ]
     },
     "differsIn": [

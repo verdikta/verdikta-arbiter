@@ -5,7 +5,7 @@
   "runs": 3,
   "tests": [
     {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > test()",
+      "id": "test/unit/permissions/BitmaskVerifier.t.sol > BitmaskVerifierTest > testInvalid()",
       "results": [
         "pass",
         "pass",
@@ -13,79 +13,7 @@
       ]
     },
     {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testAccountInfo()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testAllocateShares()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testClaimShares()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testCreate()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testFlags()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testIsDepositorWhitelisted()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testMintBurn()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testSetVault()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testTargetLockup()",
-      "results": [
-        "pass",
-        "pass",
-        "pass"
-      ]
-    },
-    {
-      "id": "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testUpdateChecks()",
+      "id": "test/unit/permissions/BitmaskVerifier.t.sol > BitmaskVerifierTest > testValid()",
       "results": [
         "pass",
         "pass",
@@ -94,17 +22,8 @@
     }
   ],
   "stable": [
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > test()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testAccountInfo()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testAllocateShares()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testClaimShares()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testCreate()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testFlags()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testIsDepositorWhitelisted()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testMintBurn()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testSetVault()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testTargetLockup()",
-    "test/unit/managers/ShareManager.t.sol > ShareManagerTest > testUpdateChecks()"
+    "test/unit/permissions/BitmaskVerifier.t.sol > BitmaskVerifierTest > testInvalid()",
+    "test/unit/permissions/BitmaskVerifier.t.sol > BitmaskVerifierTest > testValid()"
   ],
   "unstable": []
 }

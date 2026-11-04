@@ -29,7 +29,7 @@ const RESTATED = Object.freeze({
   'mellow-fee-per-period': { cls: 'HIGH', words: '331000000000000000000 != 100000000000000000000' },
   'magicsea-renew-rewards': { cls: 'MEDIUM', words: '!= 0' },
   'magicsea-add-to-position': { cls: 'MEDIUM', words: '604800 != 1209600' },
-  'flayer-unlock-checkpoint': { cls: 'HIGH', words: '402055890410801920 != 402485479451875840' },
+  'flayer-unlock-checkpoint': { cls: 'HIGH', words: '402055890410801920 < 402485479451875840' },
   'flayer-adjust-position': { cls: 'HIGH', words: '0 != 2055890410801920' },
   'basin-upgrade-access': { cls: 'HIGH', words: 'the implementation stays the one the owner chose' },
   'basin-reserve-at-ratio': { cls: 'MEDIUM', words: 'Non convergence: calcLpTokenSupply' },

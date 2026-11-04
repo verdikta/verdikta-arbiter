@@ -52,7 +52,7 @@
       "honestyFlags": [],
       "tests": [
         {
-          "id": "test/UnlockCheckpointClaim.t.sol > UnlockCheckpointClaim > test_the_second_unlock_costs_what_the_first_did()",
+          "id": "test/UnlockCheckpointClaim.t.sol > UnlockCheckpointClaim > test_the_second_unlock_costs_no_less_than_the_first()",
           "runs": [
             "pass",
             "pass",

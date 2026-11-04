@@ -16,7 +16,7 @@
     "framework": "forge",
     "setup": "forge build --skip test",
     "build": "forge build --skip test",
-    "test": "forge test --match-path test/library/FenwickTreeTest.t.sol",
+    "test": "forge test --match-path test/stake/NativeTokenStakingTest.t.sol",
     "testFiles": "forge test --match-path $FILES",
     "testIds": "forge test --match-test $TEST_IDS"
   },

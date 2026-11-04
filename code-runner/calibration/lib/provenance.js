@@ -27,7 +27,7 @@ const { cacheRoot } = require('./prebuild');
 
 /** Runs shorter than this are not measured. */
 const GRAM = 6;
-const LIMITS = Object.freeze({ prose: 14, code: 48 });
+const LIMITS = Object.freeze({ prose: 14, code: 40 });
 const TEXT_FILE = /\.(?:sol|md|txt|toml|ya?ml)$/i;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const FETCH_ATTEMPTS = 3;

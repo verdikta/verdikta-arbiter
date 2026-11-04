@@ -7,8 +7,8 @@
     "src/contracts/ProtectedListings.sol"
   ],
   "poc": {
-    "command": "forge test --match-test test_the_second_unlock_costs_what_the_first_did",
-    "observable": "test_the_second_unlock_costs_what_the_first_did fails with \"the second unlock price equals the first: 402055890410801920 != 402485479451875840\""
+    "command": "forge test --match-test test_the_second_unlock_costs_no_less_than_the_first",
+    "observable": "test_the_second_unlock_costs_no_less_than_the_first fails with \"the second unlock costs no less than the first: 402055890410801920 < 402485479451875840\""
   },
   "fixIncluded": false
 }

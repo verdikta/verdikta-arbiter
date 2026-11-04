@@ -10,7 +10,7 @@ new file mode 100644
 +import {Deployers} from '@uniswap/v4-core/test/utils/Deployers.sol';
 +import {FlayerTest} from './lib/FlayerTest.sol';
 +
-+/// Two listings created together, for the same amount, cost the same to unlock.
++/// Two listings created together, for the same amount, have accrued the same: taking one out cannot make the other cheaper.
 +contract UnlockCheckpointClaim is Deployers, FlayerTest {
 +    constructor() {
 +        _deployPlatform();
@@ -19,7 +19,7 @@ new file mode 100644
 +        _addLiquidityToPool(address(erc721a), 10 ether, int(0.00001 ether), false);
 +    }
 +
-+    function test_the_second_unlock_costs_what_the_first_did() public {
++    function test_the_second_unlock_costs_no_less_than_the_first() public {
 +        erc721a.mint(address(this), 0);
 +        erc721a.mint(address(this), 1);
 +        erc721a.setApprovalForAll(address(protectedListings), true);
@@ -40,6 +40,6 @@ new file mode 100644
 +        locker.collectionToken(address(erc721a)).approve(address(protectedListings), first);
 +        protectedListings.unlockProtectedListing(address(erc721a), 0, true);
 +
-+        assertLt(protectedListings.unlockPrice(address(erc721a), 1), first, "the second unlock price equals the first");
++        assertLt(protectedListings.unlockPrice(address(erc721a), 1), first, "the second unlock costs no less than the first");
 +    }
 +}

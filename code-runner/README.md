@@ -2196,7 +2196,7 @@ A case on such a listing records `source`: `url` (the finding), `licence` (as fo
 
 **Provenance is measured.** Before any image, the harness fetches each repository and report and measures the longest run of tokens
 each claim file shares with them (`lib/provenance.js`). A token is a word or identifier, without case, punctuation or layout, so
-reformatting hides nothing. Over the limit (14 tokens for prose, 48 for code) the run stops with exit 2, and the message quotes none
+reformatting hides nothing. Over the limit (14 tokens for prose, 40 for code) the run stops with exit 2, and the message quotes none
 of their text. Runs under 6 tokens are not measured. The numbers are printed on every run. Close rewording is the reviewer's to catch.
 
 **Writing a case.** What a real repository taught:

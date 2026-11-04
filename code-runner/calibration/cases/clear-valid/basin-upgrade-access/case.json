@@ -54,7 +54,7 @@
             "fail"
           ],
           "kind": "assertion",
-          "message": "PLACEHOLDER"
+          "message": "the implementation stays the one the owner chose: 0xe113279C63d25109B477E8D5D0c3974F7B6dA30C != 0x104fBc016F4bb334D775a19E8A6510109AC63E00"
         }
       ],
       "pack": {
