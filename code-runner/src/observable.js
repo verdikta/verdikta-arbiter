@@ -52,6 +52,8 @@ const TEST_IN_PATH = /(?<![\w$])test\/|\/test(?![\w$])|(?<![\w$])test(?:\.t)?\.s
 const FORGE = /(?:^|\/)forge$/;
 /** forge's path flags: what their value holds is a path. */
 const PATH_FLAGS = Object.freeze(['--match-path', '--no-match-path']);
+/** What a shell reads inside a substitution by more than its quotes and parentheses, so its end isn't where they say: a `case` arm, a comment, a here-document. */
+const UNBALANCED = /(?<![\w$])case(?![\w$])|#|<</;
 /** What a shell expands outside quotes in what should be one path. */
 const EXPANDS = /[`${]/;
 
@@ -105,7 +107,7 @@ function spanEnd(text, i) {
     // Inside double quotes only these still open a span; anywhere else, all of opensSpan.
     const nested = c === '"' ? d === '`' || (d === '$' && (text[k + 1] === '(' || text[k + 1] === '{')) : opensSpan(text, k);
     if (d === '\\') k += 2;
-    else if (d === close && depth === 0) return k + 1;
+    else if (d === close && depth === 0) return open !== null && UNBALANCED.test(text.slice(i, k)) ? text.length : k + 1;
     else if (nested) k = spanEnd(text, k);
     else {
       if (open !== null && d === open) depth += 1;
@@ -118,12 +120,14 @@ function spanEnd(text, i) {
 
 /**
  * A command's words, as a shell lexes them: quoted spans, escapes and everything a substitution or
- * expansion holds stay in their word, and `; & | < > ( )` and white space end one. A span left open
- * takes the rest of the text.
- * @param {string} text
+ * expansion holds stay in their word, `; & | < > ( )` and white space end one, and a line
+ * continuation is nothing. A span left open, or one whose end the shell finds by more than its
+ * quotes and parentheses (UNBALANCED), takes the rest of the text.
+ * @param {string} command
  * @returns {string[]}
  */
-function shellWords(text) {
+function shellWords(command) {
+  const text = command.replace(/\\\r?\n/g, '');
   const words = [];
   let start = -1;
   let i = 0;

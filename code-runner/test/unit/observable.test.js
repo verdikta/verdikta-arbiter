@@ -62,6 +62,12 @@ const OWN_WORDS = [
   ['a path inside a directory called test', 'forge test --match-path a/test/Exploit.t.sol --mt test_drain'],
   ['a file called test', 'forge test --match-path test.t.sol --mt test_drain'],
   ['a substitution after a path', 'forge test --match-path test/Exploit.t.sol --mt test_drain --fork-url $(cat url)'],
+  // R8-F1: a line continuation is nothing.
+  ['a continuation inside the command', 'forge test --match-path \\\n  test/E.t.sol --mt test_drain'],
+  ['a continuation between forge and test', 'forge \\\n  test --mt test_drain'],
+  ['a continuation before a flag', 'forge test \\\n  --match-path test/E.t.sol \\\n  --match-test test_drain'],
+  ['a continuation in CRLF', 'forge test --mp \\\r\n  test/E.t.sol --mt test_drain'],
+  ['a continuation in a word', 'forge te\\\nst --mt test_drain'],
   // R7-F1: a finished substitution changes nothing after it.
   ['a path after a substitution', 'forge test --fork-url $(cat url) --match-path test/Exploit.t.sol --mt test_drain'],
   ['a count from a substitution', 'forge test --fuzz-runs $(printf 256) --match-path test/E.t.sol --mt test_drain'],
@@ -173,6 +179,11 @@ const NAMES_ANOTHER = [
   ['forge test inside a substitution', 'forge test --mt $(printf \'%.0s%s\' forge test )', 'test'],
   ['a flag inside nested substitutions', 'forge test --mt $(printf $(printf --mt) test )', 'test'],
   ['a closing parenthesis inside quotes in a substitution', 'forge test --mt $(printf \')\' --skip test )', 'test'],
+  // R4-F1, round 8: what ends a substitution by more than its parentheses takes the rest of the text.
+  ['a case arm in a substitution', 'forge test --mt $(case x in x) printf \'%.0s%s\' --skip test ;; esac)', 'test'],
+  ['a comment in a substitution', 'forge test --mt $(printf x # ) --skip test\n)', 'test'],
+  ['a here-document in a substitution', 'forge test --mt $(cat <<E\n) --skip test\nE\n)', 'test'],
+  ['a case arm in a process substitution', 'forge test --mt <(case x in x) printf --skip test ;; esac)', 'test'],
   ['--skip test inside backquotes', 'forge test --mt `printf --skip test`', 'test'],
   ['--skip test inside a process substitution', 'forge test --mt <(printf --skip test)', 'test'],
   ['--skip test in a double-quoted substitution', 'forge test --mt "$(printf --skip test)"', 'test'],
