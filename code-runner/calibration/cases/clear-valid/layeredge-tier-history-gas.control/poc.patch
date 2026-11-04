@@ -2,7 +2,7 @@ diff --git a/test/stake/TierHistoryGasClaim.t.sol b/test/stake/TierHistoryGasCla
 new file mode 100644
 --- /dev/null
 +++ b/test/stake/TierHistoryGasClaim.t.sol
-@@ -0,0 +1,57 @@
+@@ -0,0 +1,59 @@
 +// SPDX-License-Identifier: MIT
 +pragma solidity ^0.8.20;
 +
@@ -16,15 +16,17 @@ new file mode 100644
 +contract TierHistoryGasClaim is Test {
 +    uint256 private constant STAKE = 3000e18;
 +    uint256 private constant BLOCK_GAS = 30_000_000;
++    uint256 private constant VISITS = 2_200;
 +
 +    function test_a_stakers_withdrawal_fits_in_a_block() public {
++        // The set-up is the visits, not what is measured, and it costs more gas than a test is given.
 +        vm.pauseGasMetering();
 +        (LayerEdgeStaking staking, HelperConfig config) = new DeployLayerEdgeStaking().run();
 +        NetworkConfig memory network = config.getActiveNetworkConfig();
 +        LayerEdgeToken token = LayerEdgeToken(network.stakingToken);
 +        address attacker = address(0xBAD);
 +        vm.startPrank(network.owner);
-+        token.transfer(attacker, STAKE * 4_000);
++        token.transfer(attacker, STAKE * VISITS);
 +        address[] memory stakers = new address[](9);
 +        for (uint256 i = 0; i < stakers.length; i++) {
 +            stakers[i] = address(uint160(0x1000 + i));
@@ -39,7 +41,7 @@ new file mode 100644
 +        }
 +
 +        // Each stake and exit by a new account, an hour apart, takes the count across a tier boundary and back.
-+        for (uint256 i = 0; i < 4_000; i++) {
++        for (uint256 i = 0; i < VISITS; i++) {
 +            address passing = address(uint160(0x100000 + i));
 +            vm.prank(attacker);
 +            token.transfer(passing, STAKE);

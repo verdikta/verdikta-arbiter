@@ -54,7 +54,7 @@
             "fail"
           ],
           "kind": "assertion",
-          "message": "gas for the withdrawal: 34332666 >= 30000000"
+          "message": "gas for the withdrawal: 32419017 >= 30000000"
         }
       ],
       "pack": {
