@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A plain transfer to a wallet never reaches its implementation",
+  "claimedClass": "MEDIUM",
+  "rootCause": "The wallet proxy in src/Wallet.sol returns at once on a call with value and no calldata, so the receive function of its implementation never runs, and an implementation that needs to act on incoming money cannot.",
+  "affectedPaths": [
+    "src/Wallet.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_plain_transfer_reaches_the_implementation",
+    "observable": "test_a_plain_transfer_reaches_the_implementation fails with \"what the implementation heard of the transfer: 0 != 1\""
+  },
+  "fixIncluded": false
+}

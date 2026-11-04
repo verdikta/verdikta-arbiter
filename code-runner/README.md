@@ -2206,8 +2206,11 @@ of their text. Runs under 6 tokens are not measured. The numbers are printed on 
 - A test cannot inherit a repository's test contract, or one with a `test()` of its own: every inherited test becomes one the patch
   added, and `reproduces` needs each to fail. A helper with no test functions is fine. A subclass of a source contract, in the test
   file, is one more entry in forge's mocks list (below), so use the real contract.
-- A test's own run has to fit `testSeconds` under gVisor, and forge 1.8.5 is far slower with gas metering paused.
-- No more than five cases on one repository, so the set does not become one project's. A unit test holds that and the floor of 15.
+- A test's own run has to fit `testSeconds` under gVisor. Forge 1.8.5 slows down as one transaction gets long, more than in proportion, so
+  a long set-up belongs half in `setUp()`, its own transaction: `layeredge-tier-history-gas` went from 17 s to under 3 s that way.
+- Check a test on the fix as well as on the bug. A test that stops at the first failure can run out of gas when the fix removes the
+  failure, so bound what it walks: `basin-reserve-at-ratio` needed that.
+- No more than five cases on one repository in a subset, so a subset does not become one project's. A unit test holds that and the floor of 15.
 - `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`. Forge 1.8.5 writes the test
   files it takes for mocks (a contract in a test file that inherits a source contract) into `cache/solidity-files-cache.json` as an
   unordered list, so with two or more in scope the file differs between runs. At the listing check that is
@@ -2217,6 +2220,8 @@ of their text. Runs under 6 tokens are not measured. The numbers are printed on 
   finding names, and `claimedObservable` fails: **a known runner problem, not fixed here.** Keep such a test out of `commands.test`.
 - A class build must fit: 3 x the measured build within the class's 90 s, so 30 s on 2 CPUs under gVisor, with `P + B + 3T <= 120 s`
   overall. `commands.setup` is what makes a real repository fit.
+- A repository that tracks its forge cache (`cache/solidity-files-cache.json` in git) is refused, `HARNESS_INTEGRITY_FAILED`: each run's reset
+  restores the file and forge rewrites it. That is the right answer, and no allowed flag moves the cache, so a maker untracks it. 2024-05-gamma-staking is out for that.
 - `LEGACY_ASSERTIONS`: a forge-std from before the 2024 rewrite (`StdAssertions is DSTest`) records a failed `assertEq` with no reason on
   forge 1.x. The listing check refuses that repository, as it must.
 
@@ -2226,6 +2231,46 @@ anything is fetched, exit 3, and says so; pick others with `--listing` or `--cas
 their own files change. It does not run on `code-runner/src/**`: the adversarial subset and the canary do, and a runner change that
 could move these needs a dispatch. `--measured <dir>` writes each listing check's baseline and times. Only results leave a job: the
 export's context packs hold repository source, so it stays in the job's temporary folder for the testing tool's dry run.
+
+### The second batch
+
+`calibration/cases/batch-2/` (node A7c): 16 claims on 4 repositories, each with its control, in the subset `batch-2` and in one of
+`clear-invalid`, `duplicate`, `known-issue`, `severity-boundary`. They differ from the first batch in what the runner can say about
+them: **nothing**. A test that asserts intended behaviour, restates a known bug or overstates a class fails just as a valid one does, so
+all six gates pass and every case goes to the jury, which A7d measures. Here the harness holds that each reaches the jury for the
+reason it states, and that its label can be checked.
+
+`label` says what a case is and whose call that is:
+
+| Field | Holds |
+|---|---|
+| `kind` | `clear-invalid.intended-behaviour`, `.outside-scope`, `.excluded-precondition`; `duplicate.rephrased`, `.entry-point`, `.victim`; `known-issue.before`, `.after`; `severity-boundary`. The kind fixes the outcome: INVALID, DUPLICATE, VALID with the program's class |
+| `basis` | `program`: the source program's verdict. `listing`: a claim built here, whose reason is in the listing's own text. Open to a clear invalid outside the scope or behind an excluded precondition and to a known issue listed before. A duplicate or a class is always the program's call |
+| `why` | What the program recorded, or which text gives the reason |
+| `duplicateOf` | The `url` of the finding it duplicates and how the program `recorded` that. That finding is among the case's `priorFindings`, written here, and its title is in the pack's `priorFindings` tier |
+| `boundary` | The two adjacent `classes`, lower first, the program's `call`, and who `moved` it from where. `finding.claimedClass` is what was submitted, on one side or the other |
+| `knownIssue` | The entry's `title`, `listed` (`before` or `after`), `how`, and `twin` |
+
+The loader refuses a case that breaks any of this, one with no control, and, on any `git` listing, a finding the `inScope` gate would
+fail: the harness tells the runner that gate passed, so it has to be true. A finding that names an out-of-scope path is settled by the
+External Adapter before any runner, with tests of its own, so `clear-invalid.outside-scope` names the in-scope caller instead, the form
+only a jury can settle. Prior findings and known issues reach the jury, so they are held to the rules of a claim file: no source named,
+and measured for provenance. On a labelled case that measure also reads the finding's own page and the page of the finding it
+duplicates, since a rejected claim is in no report.
+
+**A known issue has no date.** `known_issues.json` is fixed in the listing archive and common's schema refuses any other field, so
+"listed before the commit" is only ever which archive the commit names: another list is another archive, with another CID, and the
+contract stores the ids at listing. `mellow-cancel-listed-before` and `-after` show that: one claim, byte for byte, on two listings that
+differ only in that file. The loader checks both, and `test/calibration/batch-2.test.js` requires the same gates and runs on both, with
+only the pack different. A later publication reaches neither the request nor the pack, so a jury that finds the issue on the first
+should settle DUPLICATE, and on the second the program's class.
+
+**What a listing cannot say.** `stake.scope` is paths. A program's ruling on a trust assumption ("the team is trusted") or a token
+assumption has no field: the rubric's "no privilege the scope excludes" has nothing to read but paths and the source, and a known issue
+would settle DUPLICATE, not INVALID. `basin-third-token-swap` and `mellow-stale-report` carry the program's ruling in `label.why` and
+leave the jury only what the source says. A7d will show whether that is enough.
+
+The set is 45 claims with A7a's 12 and A7b's 17. CI: `.github/workflows/code-runner-calibration-batch-2.yml`, as for the first batch.
 
 ### The conformance canary
 

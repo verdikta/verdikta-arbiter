@@ -1,0 +1,102 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.mellow-fee-on-falling-price",
+  "subsets": [
+    "batch-2",
+    "clear-invalid"
+  ],
+  "title": "The performance fee is charged when the price falls",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/17",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/17",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test, only steps.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/4bcbdcfe643761c67d7dd862ca5909168c3ad859/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-07-mellow-flexible-vaults",
+      "verdict": "Invalid: labelled Invalid in the judging repository on 2025-07-28, and not in the final report. Submitted as critical. No judge comment on the issue.",
+      "class": null
+    }
+  },
+  "listing": "listings/mellow",
+  "label": {
+    "kind": "clear-invalid.intended-behaviour",
+    "basis": "program",
+    "why": "The program recorded the label and no reason. The reason here is read from the program's own report: H-5 treats the price as shares per asset, so a falling price is a gain, and a fee on the fall is what the contract means to do. H-5 is about how much that fee is, not whether it is charged."
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The program ruled it invalid, and the reason is that a falling price here is a gain. Every gate passes, because the test does fail; that the behaviour it asserts was never required is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/FeeOnFallingPriceClaim.t.sol > FeeOnFallingPriceClaim > test_a_falling_price_charges_no_performance_fee()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the performance fee when the price falls by a tenth: 10000000000000000000 != 0"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "calculateFee"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.mellow-fee-on-falling-price.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(charged, 0, \"the performance fee when the price falls by a tenth\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertEq(charged, 10e18, \"the performance fee when the price falls by a tenth\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

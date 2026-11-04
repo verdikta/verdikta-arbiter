@@ -1,9 +1,0 @@
-{
-  "version": 1,
-  "baseCommit": "25f5b48e1a58875c2d231d59325268934a3f6e8d",
-  "framework": "forge",
-  "runs": 3,
-  "tests": [],
-  "stable": [],
-  "unstable": []
-}

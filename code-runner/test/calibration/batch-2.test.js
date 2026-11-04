@@ -34,13 +34,11 @@ const RESTATED = Object.freeze({
   'kleidi-pause-gas': { kind: 'severity-boundary', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: '>= 30000000' },
   'kleidi-expired-revival': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: 'still expired after the setting changes' },
   'kleidi-spell-before-answer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: 'the spell waits for the answer from the owners' },
-  'gamma-empty-lock-rewards': { kind: 'clear-invalid.excluded-precondition', outcome: 'INVALID', basis: 'program', words: '1000000000000000000000 != 0' },
-  'gamma-reward-sandwich': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: '500000000000000000000 != 0' },
-  'gamma-exit-cooldown': { kind: 'duplicate.entry-point', outcome: 'DUPLICATE', basis: 'program', words: '2591940 > 180' },
-  'gamma-dust-withdrawal': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: '>= 30000000' },
-  'gamma-penalty-after-lock': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: '48833000000000000000 > 26666000000000000000' },
   'mellow-cancel-listed-before': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: 'IndexOutOfBounds()' },
   'mellow-cancel-listed-after': { kind: 'known-issue.after', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: 'IndexOutOfBounds()' },
+  'mellow-fee-on-falling-price': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: '10000000000000000000 != 0' },
+  'mellow-stale-report': { kind: 'clear-invalid.excluded-precondition', outcome: 'INVALID', basis: 'program', words: 'a price checked against a report a year old is not valid' },
+  'sequence-plain-transfer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: '0 != 1' },
   'sequence-simulator-open-call': { kind: 'clear-invalid.outside-scope', outcome: 'INVALID', basis: 'listing', words: '0 != 1000000000000000000' }
 });
 
