@@ -39,7 +39,7 @@ check_port() {
 
 # Stop the Code Runner first: on SIGTERM it cancels its runs and removes their sandboxes. Its own
 # Docker daemon stays up, idle: nothing of the arbiter's depends on it, and it holds no claim.
-if [ -f "$CODE_RUNNER_DIR/stop.sh" ]; then
+if [ -f "$CODE_RUNNER_DIR/stop.sh" ] && { [ -f "$CODE_RUNNER_DIR/.env" ] || [ -f "$CODE_RUNNER_DIR/runner.pid" ]; }; then
     echo -e "${BLUE}Stopping Code Runner...${NC}"
     bash "$CODE_RUNNER_DIR/stop.sh" || echo -e "${YELLOW}The Code Runner did not stop cleanly; see $CODE_RUNNER_DIR/logs/.${NC}"
 fi

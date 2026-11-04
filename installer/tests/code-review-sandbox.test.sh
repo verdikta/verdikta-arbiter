@@ -43,6 +43,7 @@ case "$*" in
   *" pull "*) if [ -n "${STUB_LOCK:-}" ] && [ -f "$STUB_LOCK" ]; then echo "lock-held-during-pull" >> "$STUB_LOG"; fi
      [ "${STUB_PULL_FAIL:-0}" = 1 ] && exit 1 ;;
   *"image inspect"*) [ "${STUB_NOT_WARM:-0}" = 1 ] && exit 1 ;;
+  *"ps -aq --filter name=vcr-cal-registry-"*) echo "${STUB_STALE_REGISTRY:-}" ;;
 esac
 exit 0'
 stub dockerd 'echo "dockerd $*" >> "$STUB_LOG"; exit 0'
@@ -361,6 +362,15 @@ out=$(STUB_NOT_WARM=1 run self-test 2>&1); rc=$?
 is "cold host rc" "$rc" 1
 has "cold host says so" "$out" "warm"
 hasnt "cold host: the canary never ran" "$(log)" "^conformance"
+
+# --- a killed self-test's registry is removed first: it would hold the canary's port
+fresh
+run enable >/dev/null 2>&1
+rm -f "$I/code-runner/.state/conformance.json"
+: > "$P/log"
+out=$(STUB_STALE_REGISTRY=abc123 run self-test 2>&1); rc=$?
+is "stale registry rc" "$rc" 0
+has "stale registry removed, on its own daemon" "$(log)" "docker DOCKER_HOST=.*--host unix://$P/run/verdikta-code-runner/docker.sock rm -f --volumes abc123"
 
 # --- a lock somebody else holds is not taken from them
 fresh

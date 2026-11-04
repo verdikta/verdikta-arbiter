@@ -592,6 +592,11 @@ self_test() {
     done
     say "Running the conformance self-test (a few minutes; it needs ghcr.io and binaries.soliditylang.org, and port 5987 on loopback)..."
     rm -f "$result"
+    # A killed self-test's registry would still hold the canary's port. Only this daemon's, by its name.
+    local stale
+    stale=$(own_docker ps -aq --filter name=vcr-cal-registry- 2>/dev/null)
+    # shellcheck disable=SC2086
+    [ -z "$stale" ] || own_docker rm -f --volumes $stale >/dev/null 2>&1
     # Its downloads and its image go on the fixed disk, and it gets no key: env -i.
     (cd "$RUNNER_DIR" && as_user env -i PATH="$PATH" HOME="$RUN_HOME" \
         DOCKER_HOST="unix://$SOCK" CODE_RUNNER_RUNTIME=runsc CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK=host TMPDIR="$MOUNT/selftest" \
@@ -686,6 +691,7 @@ rollback_fresh() {
         [ -e "$IMAGE" ] && warn "The disk image from before stays at $IMAGE: $0 disable --purge frees it."
     fi
     rm -f "$RUNNER_ENV" "$STATE_DIR/conformance.json"
+    adapter_env_off
 }
 
 failed() { # failed: the end of a failed enable, by what it was
