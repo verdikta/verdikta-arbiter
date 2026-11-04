@@ -2,7 +2,7 @@ diff --git a/test/PauseUnderManyProposalsClaim.t.sol b/test/PauseUnderManyPropos
 new file mode 100644
 --- /dev/null
 +++ b/test/PauseUnderManyProposalsClaim.t.sol
-@@ -0,0 +1,30 @@
+@@ -0,0 +1,33 @@
 +// SPDX-License-Identifier: MIT
 +pragma solidity 0.8.25;
 +
@@ -21,7 +21,10 @@ new file mode 100644
 +
 +        vm.startPrank(address(safe));
 +        for (uint256 salt = 1; salt <= 2500; salt++) {
-+            timelock.schedule(address(timelock), 0, hex"01", bytes32(salt), MIN_DELAY);
++            // A limit on what can be queued would answer this as well.
++            try timelock.schedule(address(timelock), 0, hex"01", bytes32(salt), MIN_DELAY) {} catch {
++                break;
++            }
 +        }
 +        vm.stopPrank();
 +
