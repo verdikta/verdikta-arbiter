@@ -2205,9 +2205,13 @@ of their text. Runs under 6 tokens are not measured. The numbers are printed on 
   present, and can't be used as written.
 - A test cannot inherit a repository's test contract, or one with a `test()` of its own: every inherited test becomes one the patch
   added, and `reproduces` needs each to fail. A helper with no test functions is fine.
-- `commands.build` and `commands.setup` here are `forge build --skip test`. Forge 1.8.5 writes the test files it thinks hold mocks
-  into `cache/solidity-files-cache.json` as an unordered list, so with two or more the file differs on every run, and the listing
-  check refuses that with `IMAGE_WATCH_CHANGED_BY_SUITE`. A narrow `commands.test` keeps the list short, and the suite's time down.
+- `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`. Forge 1.8.5 writes the test
+  files it takes for mocks (a contract in a test file that inherits a source contract) into `cache/solidity-files-cache.json` as an
+  unordered list, so with two or more in scope the file differs between runs. At the listing check that is
+  `IMAGE_WATCH_CHANGED_BY_SUITE`. **At a claim it is `frameworkUnchanged`, so a valid PoC that imports two such files settles DUPLICATE:
+  a known runner problem, not fixed here.** `--skip test` keeps the list out of the listing's own runs.
+- A baseline holding a test named `test()` (a fixture's coverage marker, say) makes the word in `poc.command`'s `forge test` a test the
+  finding names, and `claimedObservable` fails: **a known runner problem, not fixed here.** Keep such a test out of `commands.test`.
 - A class build must fit: 3 x the measured build within the class's 90 s, so 30 s on 2 CPUs under gVisor, with `P + B + 3T <= 120 s`
   overall. `commands.setup` is what makes a real repository fit.
 - `LEGACY_ASSERTIONS`: a forge-std from before the 2024 rewrite (`StdAssertions is DSTest`) records a failed `assertEq` with no reason on
