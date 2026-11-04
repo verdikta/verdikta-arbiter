@@ -1,0 +1,110 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.gamma-dust-withdrawal",
+  "subsets": [
+    "batch-2",
+    "severity-boundary"
+  ],
+  "title": "Dust stakes from a stranger can price a staker out of withdrawAllUnlockedToken",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-05-gamma-staking-judging/issues/214",
+    "licence": "StakingV2/LICENSE: BSD 2-Clause, Copyright (c) 2023 Gamma Strategies. No licence file at the repository root (GitHub licence null). Source SPDX in src/Lock.sol: MIT. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2024-05-gamma-staking-judging/issues/214",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test. This one measures the withdrawal with 400 dust locks, and has its own deployment, since the repository's fixture forks a chain.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2024-05-gamma-staking-judging/434af60b6ed3445bef8a432d6af629d9415f5dc4/001-M/214-best.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2024-05-gamma-staking",
+      "verdict": "Valid at the lower class: the lead judge ruled it low severity, and Sherlock pays nothing for that. Labels Non-Reward, Sponsor Confirmed, Will Fix; the fix was signed off.",
+      "class": "LOW"
+    }
+  },
+  "listing": "listings/gamma",
+  "label": {
+    "kind": "severity-boundary",
+    "basis": "program",
+    "why": "The lead judge reassessed it: a stake can still be withdrawn by id, so no core function is blocked, and that is low severity. A request to escalate it back to Medium was made in the comments, and the labels did not move.",
+    "boundary": {
+      "classes": [
+        "LOW",
+        "MEDIUM"
+      ],
+      "call": "LOW",
+      "moved": "Labelled Medium on 2024-05-25. Lead judge santipu03 removed the label on 2024-05-29 and added Non-Reward."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "LOW",
+    "reason": "The program judged it valid at the lower side of a boundary it moved, so Low, against the Medium claimed. Every gate passes, and the class is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/DustLocksClaim.t.sol > DustLocksClaim > test_a_strangers_dust_does_not_price_the_victim_out_of_a_withdrawal()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "gas for the victim to withdraw: 179209853 >= 30000000"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "withdrawAllUnlockedToken"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.gamma-dust-withdrawal.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertLt(spent, 30_000_000, \"gas for the victim to withdraw\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertGe(spent, 30_000_000, \"gas for the victim to withdraw\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

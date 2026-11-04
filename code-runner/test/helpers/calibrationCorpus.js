@@ -348,7 +348,7 @@ function batch2Case(kind, over = {}) {
     ...base,
     id: 'batch-2.one',
     subsets: ['batch-2', kind.split('.')[0]],
-    source: publicSource({ program: { ...publicSource().program, class: cls } }),
+    source: publicSource({ program: { ...publicSource().program, class: kind.startsWith('duplicate.') ? 'HIGH' : cls } }),
     priorFindings: kind.startsWith('duplicate.') ? ['priors/1'] : [],
     label: batch2Label(kind),
     control: {

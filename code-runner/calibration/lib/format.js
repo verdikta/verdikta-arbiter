@@ -275,8 +275,10 @@ function checkLabel(raw, loaded, listing, fail) {
   const claimed = loaded.finding ? loaded.finding.claimedClass : undefined;
   if (want === 'VALID' && isObject(expected)) {
     if (expected.class !== programClass) fail(`expected.class ${expected.class} is not the program's class, ${programClass}`);
-  } else if (want !== 'VALID' && label.basis === 'program' && programClass !== null && programClass !== undefined) {
-    fail('source.program.class is null on a claim the program did not class as valid');
+  } else if (family === 'duplicate') {
+    if (!CLASSES.includes(programClass)) fail('a duplicate is a finding the program judged valid: source.program.class is the class it gave');
+  } else if (label.basis === 'program' && programClass !== null && programClass !== undefined) {
+    fail('source.program.class is null on a claim the program rejected');
   }
 
   const forKind = (field, on) => {

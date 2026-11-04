@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "An early exit landing after the cycle ends pays the top penalty",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Lock.earlyExitById takes its penalty from the time left in the cycle when it is mined, and accepts no limit from the caller, so an exit sent as a cycle ends and mined just after it pays close to the highest penalty.",
+  "affectedPaths": [
+    "src/Lock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_an_early_exit_landing_late_pays_what_it_saw",
+    "observable": "test_an_early_exit_landing_late_pays_what_it_saw fails with \"the penalty paid, against the one seen: 49999000000000000000 > 15000000000000000000\""
+  },
+  "fixIncluded": false
+}

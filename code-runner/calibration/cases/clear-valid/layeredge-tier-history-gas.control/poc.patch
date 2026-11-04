@@ -2,7 +2,7 @@ diff --git a/test/stake/TierHistoryGasClaim.t.sol b/test/stake/TierHistoryGasCla
 new file mode 100644
 --- /dev/null
 +++ b/test/stake/TierHistoryGasClaim.t.sol
-@@ -0,0 +1,59 @@
+@@ -0,0 +1,73 @@
 +// SPDX-License-Identifier: MIT
 +pragma solidity ^0.8.20;
 +
@@ -18,18 +18,23 @@ new file mode 100644
 +    uint256 private constant BLOCK_GAS = 30_000_000;
 +    uint256 private constant VISITS = 2_200;
 +
-+    function test_a_stakers_withdrawal_fits_in_a_block() public {
-+        // The set-up is the visits, not what is measured, and it costs more gas than a test is given.
++    LayerEdgeStaking private staking;
++    LayerEdgeToken private token;
++    address private attacker = address(0xBAD);
++    address[] private stakers;
++    uint256 private visitor = 0x100000;
++
++    /// The visits are the set-up, not what is measured. Half run here, which keeps each transaction's bookkeeping short.
++    function setUp() public {
 +        vm.pauseGasMetering();
-+        (LayerEdgeStaking staking, HelperConfig config) = new DeployLayerEdgeStaking().run();
++        (LayerEdgeStaking deployed, HelperConfig config) = new DeployLayerEdgeStaking().run();
++        staking = deployed;
 +        NetworkConfig memory network = config.getActiveNetworkConfig();
-+        LayerEdgeToken token = LayerEdgeToken(network.stakingToken);
-+        address attacker = address(0xBAD);
++        token = LayerEdgeToken(network.stakingToken);
 +        vm.startPrank(network.owner);
 +        token.transfer(attacker, STAKE * VISITS);
-+        address[] memory stakers = new address[](9);
-+        for (uint256 i = 0; i < stakers.length; i++) {
-+            stakers[i] = address(uint160(0x1000 + i));
++        for (uint256 i = 0; i < 9; i++) {
++            stakers.push(address(uint160(0x1000 + i)));
 +            token.transfer(stakers[i], STAKE);
 +        }
 +        vm.stopPrank();
@@ -39,10 +44,14 @@ new file mode 100644
 +            staking.stake(STAKE);
 +            vm.stopPrank();
 +        }
++        visit(VISITS / 2);
++        vm.resumeGasMetering();
++    }
 +
-+        // Each stake and exit by a new account, an hour apart, takes the count across a tier boundary and back.
-+        for (uint256 i = 0; i < VISITS; i++) {
-+            address passing = address(uint160(0x100000 + i));
++    /// Each stake and exit by a new account, an hour apart, takes the count across a tier boundary and back.
++    function visit(uint256 times) private {
++        for (uint256 i = 0; i < times; i++) {
++            address passing = address(uint160(visitor++));
 +            vm.prank(attacker);
 +            token.transfer(passing, STAKE);
 +            vm.startPrank(passing);
@@ -52,6 +61,11 @@ new file mode 100644
 +            vm.stopPrank();
 +            skip(1 hours);
 +        }
++    }
++
++    function test_a_stakers_withdrawal_fits_in_a_block() public {
++        vm.pauseGasMetering();
++        visit(VISITS / 2);
 +        vm.resumeGasMetering();
 +
 +        vm.prank(stakers[1]);

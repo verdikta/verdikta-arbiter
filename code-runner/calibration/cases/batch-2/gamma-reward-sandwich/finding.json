@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A stake placed in front of a reward payment takes its share",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Lock pays rewards at once to whoever is locked when notifyUnseenReward runs, so a stake made just before a payment gets a full share, and the owner of that stake can exit straight after for less than the reward is worth.",
+  "affectedPaths": [
+    "src/Lock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_stepping_in_front_of_a_reward_payment_earns_nothing",
+    "observable": "test_stepping_in_front_of_a_reward_payment_earns_nothing fails with \"the reward taken by a stake one block old: 500000000000000000000 != 0\""
+  },
+  "fixIncluded": false
+}

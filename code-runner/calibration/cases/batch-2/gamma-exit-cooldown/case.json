@@ -1,0 +1,112 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.gamma-exit-cooldown",
+  "subsets": [
+    "batch-2",
+    "duplicate"
+  ],
+  "title": "An exit landing just after the cycle ends waits a whole new lock",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-05-gamma-staking-judging/issues/212",
+    "licence": "StakingV2/LICENSE: BSD 2-Clause, Copyright (c) 2023 Gamma Strategies. No licence file at the repository root (GitHub licence null). Source SPDX in src/Lock.sol: MIT. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2024-05-gamma-staking-judging/issues/212",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test. A refusal counts as an answer, since a limit from the caller is the finding's fix.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2024-05-gamma-staking-judging/434af60b6ed3445bef8a432d6af629d9415f5dc4/003-M/212.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2024-05-gamma-staking",
+      "verdict": "Valid, recorded as a duplicate: labels Medium, Duplicate, Reward. Folder 003-M, under #65, Result Medium, Has duplicates, published as M-1.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/gamma",
+  "label": {
+    "kind": "duplicate.entry-point",
+    "basis": "program",
+    "why": "The same hunter filed both: #209 for the penalty through earlyExitById and #212 for the wait through exitLateById. The program put both in the family of #65, one root cause through two entry points.",
+    "duplicateOf": {
+      "url": "https://github.com/sherlock-audit/2024-05-gamma-staking-judging/issues/209",
+      "recorded": "#212 and #209 are both labelled Medium, Duplicate, in folder 003-M, whose best report is #65 (Result: Medium, Has duplicates; published as M-1). The prior finding here is #209, which names only earlyExitById."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [
+    "priors/early-exit-across-the-cycle"
+  ],
+  "expected": {
+    "outcome": "DUPLICATE",
+    "class": null,
+    "reason": "The program counted this with the finding in front of it as one root cause through another entry point, so a DUPLICATE here. Every gate passes, and telling that it is the same root cause is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ExitAcrossTheCycleClaim.t.sol > ExitAcrossTheCycleClaim > test_an_exit_landing_two_minutes_late_does_not_wait_a_month()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the wait the staker gets, against the one it saw: 2591940 > 180"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "exitLateById"
+          },
+          {
+            "tier": "priorFindings",
+            "text": "An early exit landing after the cycle ends pays the top penalty"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.gamma-exit-cooldown.control",
+    "removes": {
+      "poc.patch": [
+        "+            assertLe(waitNow, seenWhenSent + 2 minutes, \"the wait the staker gets, against the one it saw\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+            assertGt(waitNow, seenWhenSent + 2 minutes, \"the wait the staker gets, against the one it saw\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

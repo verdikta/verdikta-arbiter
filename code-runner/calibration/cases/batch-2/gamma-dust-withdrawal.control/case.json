@@ -1,0 +1,69 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.gamma-dust-withdrawal.control",
+  "subsets": [
+    "batch-2",
+    "severity-boundary"
+  ],
+  "title": "Dust stakes from a stranger can price a staker out of withdrawAllUnlockedToken: the same test with its assertion turned around",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-05-gamma-staking-judging/issues/214",
+    "licence": "StakingV2/LICENSE: BSD 2-Clause, Copyright (c) 2023 Gamma Strategies. No licence file at the repository root (GitHub licence null). Source SPDX in src/Lock.sol: MIT. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2024-05-gamma-staking-judging/issues/214",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test. This one measures the withdrawal with 400 dust locks, and has its own deployment, since the repository's fixture forks a chain.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2024-05-gamma-staking-judging/434af60b6ed3445bef8a432d6af629d9415f5dc4/001-M/214-best.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2024-05-gamma-staking",
+      "verdict": "Valid at the lower class: the lead judge ruled it low severity, and Sherlock pays nothing for that. Labels Non-Reward, Sponsor Confirmed, Will Fix; the fix was signed off.",
+      "class": "LOW"
+    }
+  },
+  "listing": "listings/gamma",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with its assertion turned around passes on all three runs, so its case fails on what it says it does, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/DustLocksClaim.t.sol > DustLocksClaim > test_a_strangers_dust_does_not_price_the_victim_out_of_a_withdrawal()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "batch-2.gamma-dust-withdrawal"
+}

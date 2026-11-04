@@ -21,7 +21,7 @@ new file mode 100644
 +        ratios[1] = 1e18;
 +
 +        string memory stoppedBy = "";
-+        for (uint256 step = 0; step < 10_000 && bytes(stoppedBy).length == 0; step++) {
++        for (uint256 step = 0; step < 2_200 && bytes(stoppedBy).length == 0; step++) {
 +            ratios[0] = 1e18 + step * 0.003e18;
 +            try stable.calcReserveAtRatioLiquidity(reserves, 0, ratios, abi.encode(18, 18)) returns (uint256) {}
 +            catch Error(string memory why) {

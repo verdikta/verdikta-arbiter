@@ -1,0 +1,29 @@
+[
+  {
+    "id": "sha256:62b436ad77a1f4d2f47832de744e15d24e392571fdc85edbcce2306178326f72",
+    "title": "Getting in front of a reward payment is an accepted risk",
+    "class": "MEDIUM",
+    "paths": [
+      "src/Lock.sol"
+    ],
+    "description": "Payments of rewards reach the mempool, and someone can stake ahead of them. The team treats this as acceptable, given that the lowest lock runs for about thirty days and that it sends through MEV blockers."
+  },
+  {
+    "id": "sha256:cd4bca331415f9da190206ad14b58c89946495de462ecd7367025a3c4a171aa8",
+    "title": "Adding back a removed reward token corrupts its data",
+    "class": "MEDIUM",
+    "paths": [
+      "src/Lock.sol"
+    ],
+    "description": "Once removed, a reward token keeps its stored reward data, so adding it again would read stale numbers. The team will not add one back."
+  },
+  {
+    "id": "sha256:5429aa0a87078ae98bcbb43507074bd691e70674f3c6ee65e68ef0533fdad5cd",
+    "title": "A compromised multisig can set the early-exit penalties to zero",
+    "class": "MEDIUM",
+    "paths": [
+      "src/Lock.sol"
+    ],
+    "description": "Whoever holds the owner role can change the penalties, and the team accepts that risk for its multisig."
+  }
+]

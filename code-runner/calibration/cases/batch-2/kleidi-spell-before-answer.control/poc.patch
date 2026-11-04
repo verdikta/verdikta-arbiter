@@ -1,0 +1,46 @@
+diff --git a/test/SpellAgainstTimelockClaim.t.sol b/test/SpellAgainstTimelockClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/SpellAgainstTimelockClaim.t.sol
+@@ -0,0 +1,41 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {RecoverySpell} from "src/RecoverySpell.sol";
++import {Timelock} from "src/Timelock.sol";
++import {MIN_DELAY} from "src/utils/Constants.sol";
++import {MockSafe} from "test/mock/MockSafe.sol";
++
++/// The owners answer a bad spell with a timelocked proposal that removes it, so the spell must not be able to run first.
++contract SpellAgainstTimelockClaim is Test {
++    function test_a_spell_cannot_run_before_the_owners_can_answer_it() public {
++        vm.warp(1_000_000);
++        MockSafe safe = new MockSafe();
++        safe.setExecTransactionModuleSuccess(true);
++        address[] memory current = new address[](1);
++        current[0] = address(0xA);
++        safe.setOwners(current);
++
++        Timelock timelock = new Timelock(address(safe), 20 days, 5 days, address(0x11111), 10 days, new address[](0));
++
++        address[] memory incoming = new address[](1);
++        incoming[0] = address(0xBAD);
++        RecoverySpell spell = new RecoverySpell(incoming, address(safe), 1, 0, 10 days);
++
++        // The moment the spell appears, the owners queue the removal, and it needs the whole 20 days.
++        bytes memory removal = abi.encodeWithSignature("disableModule(address,address)", address(1), address(spell));
++        vm.prank(address(safe));
++        timelock.schedule(address(safe), 0, removal, bytes32(0), 20 days);
++        bytes32 id = timelock.hashOperation(address(safe), 0, removal, bytes32(0));
++
++        vm.warp(block.timestamp + 10 days + 1);
++        assertFalse(timelock.isOperationReady(id));
++
++        (bool ran,) = address(spell).call(
++            abi.encodeCall(RecoverySpell.executeRecovery, (address(1), new uint8[](0), new bytes32[](0), new bytes32[](0)))
++        );
++
++        assertTrue(ran, "the spell waits for the answer from the owners");
++    }
++}

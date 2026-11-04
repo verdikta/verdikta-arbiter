@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "An exit landing just after the cycle ends waits a whole new lock",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Lock.exitLateById takes the wait from calcRemainUnlockPeriod when it is mined, and accepts no limit from the caller, so an exit sent just before a cycle ends and mined just after it waits for a whole new cycle.",
+  "affectedPaths": [
+    "src/Lock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_an_exit_landing_two_minutes_late_does_not_wait_a_month",
+    "observable": "test_an_exit_landing_two_minutes_late_does_not_wait_a_month fails with \"the wait the staker gets, against the one it saw: 2591940 > 180\""
+  },
+  "fixIncluded": false
+}

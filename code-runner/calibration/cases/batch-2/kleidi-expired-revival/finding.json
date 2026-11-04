@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Raising the expiration period brings expired operations back",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Timelock.isOperationExpired and isOperationReady compare with the current expirationPeriod and not the one in force when the operation was scheduled, so raising it makes operations that have already expired executable again.",
+  "affectedPaths": [
+    "src/Timelock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_an_expired_operation_stays_expired",
+    "observable": "test_an_expired_operation_stays_expired fails with \"still expired after the setting changes\""
+  },
+  "fixIncluded": false
+}

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Staying past the lock costs more than leaving during it",
+  "claimedClass": "HIGH",
+  "rootCause": "Lock.calcPenaltyAmount takes the penalty from the time left in the current cycle, so a staker who stayed for the whole lock and exits a day into the next cycle pays more than one who left two thirds of the way through.",
+  "affectedPaths": [
+    "src/Lock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_staying_longer_does_not_cost_a_larger_penalty",
+    "observable": "test_staying_longer_does_not_cost_a_larger_penalty fails with \"the penalty after 31 days, against the one after 20: 48833000000000000000 > 26666000000000000000\""
+  },
+  "fixIncluded": false
+}

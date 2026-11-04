@@ -1,0 +1,110 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.kleidi-expired-revival",
+  "subsets": [
+    "batch-2",
+    "severity-boundary"
+  ],
+  "title": "Raising the expiration period brings expired operations back",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/44",
+    "licence": "Repository LICENSE: Business Source License 1.1 (GitHub API: NOASSERTION). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/44",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding points at an existing test, which does not assert this; this one schedules an operation, lets it expire, raises the period, and reads it again.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-10-kleidi-findings/bbb702a3e1c601e8ffb3b16170353f4130ed4cf0/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-10-kleidi",
+      "verdict": "Valid at the lower class: labelled QA (Quality Assurance), downgraded by judge, duplicate-21, grade-b, Q-10. The program's word is QA, its class for Low and Non-Critical, which this case reads as LOW.",
+      "class": "LOW"
+    }
+  },
+  "listing": "listings/kleidi",
+  "label": {
+    "kind": "severity-boundary",
+    "basis": "program",
+    "why": "On #21, which it duplicates, the judge wrote that a careful owner would avoid this, so QA. Other wardens argued in the comments on #9 about the line between the two.",
+    "boundary": {
+      "classes": [
+        "LOW",
+        "MEDIUM"
+      ],
+      "call": "LOW",
+      "moved": "Submitted as 2 (Med Risk). Judge GalloDaSballo changed it to QA on 2024-10-30, as with #21."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "LOW",
+    "reason": "The program judged it valid at the lower side of a boundary it moved, so Low, against the Medium claimed. Every gate passes, and the class is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ExpiredOperationClaim.t.sol > ExpiredOperationClaim > test_an_expired_operation_stays_expired()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "still expired after the setting changes"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "isOperationExpired"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.kleidi-expired-revival.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertTrue(timelock.isOperationExpired(oldId), \"still expired after the setting changes\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertFalse(timelock.isOperationExpired(oldId), \"still expired after the setting changes\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

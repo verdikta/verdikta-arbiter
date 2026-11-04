@@ -1,0 +1,113 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.kleidi-shorter-expiry",
+  "subsets": [
+    "batch-2",
+    "duplicate"
+  ],
+  "title": "A proposal to shorten the window can stop executing while it reads as ready",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/42",
+    "licence": "Repository LICENSE: Business Source License 1.1 (GitHub API: NOASSERTION). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/42",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. It builds the timelock directly, not through the repository's fixture, and does not expect the revert.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-10-kleidi-findings/bbb702a3e1c601e8ffb3b16170353f4130ed4cf0/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-10-kleidi",
+      "verdict": "Valid, recorded as a duplicate: labelled duplicate-9, 2 (Med Risk), satisfactory.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/kleidi",
+  "label": {
+    "kind": "duplicate.rephrased",
+    "basis": "program",
+    "why": "Both findings have the same function, the same check and the same revert, written up differently: #9 as a function that cannot lower the period, #42 as a proposal that stops being executable early.",
+    "duplicateOf": {
+      "url": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/9",
+      "recorded": "#42 is labelled duplicate-9 and satisfactory. #9 is primary, sponsor confirmed, selected for report, published as M-03. Both went to QA on 2024-10-30 and back to Medium on 2024-11-09."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [
+    "priors/lowering-the-period-reverts"
+  ],
+  "expected": {
+    "outcome": "DUPLICATE",
+    "class": null,
+    "reason": "The program counted this with #9 as the same root cause, so a DUPLICATE here, and #9 is in front of the jury as the prior finding. Every gate passes, and telling that it is the same root cause under other words is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ShorterExpiryProposalClaim.t.sol > ShorterExpiryProposalClaim > test_a_ready_proposal_to_shorten_the_window_runs()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "Timelock: operation is not ready"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "_afterCall"
+          },
+          {
+            "tier": "priorFindings",
+            "text": "updateExpirationPeriod reverts when it lowers the period too far"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.kleidi-shorter-expiry.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(timelock.expirationPeriod(), 3 days);"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        vm.expectRevert(\"Timelock: operation is not ready\");",
+        "+        assertEq(timelock.expirationPeriod(), 5 days);"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

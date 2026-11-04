@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "One wei staked into an empty lock takes all the rewards",
+  "claimedClass": "HIGH",
+  "rootCause": "Lock._notifyReward shares rewards among whoever is locked at that moment, so rewards that reach an empty lock all go to the first staker, who can stake one wei, call notifyUnseenReward, claim, and exit with no penalty.",
+  "affectedPaths": [
+    "src/Lock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_one_wei_staked_for_a_moment_takes_nothing",
+    "observable": "test_one_wei_staked_for_a_moment_takes_nothing fails with \"what the attacker leaves with: 1000000000000000000000 != 0\""
+  },
+  "fixIncluded": false
+}

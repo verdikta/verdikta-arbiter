@@ -26,14 +26,22 @@ const batch = cases.filter((c) => c.subsets.includes('batch-2'));
 const RESTATED = Object.freeze({
   'basin-third-token-swap': { kind: 'clear-invalid.excluded-precondition', outcome: 'INVALID', basis: 'program', words: 'what the swap takes in for the third token: 0 <= 0' },
   'basin-rate-across-decimals': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: 'the rate between the two tokens: 452252694 != 1000000' },
-  'basin-supply-without-convergence': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: 'how far the supply it returned moves on one more step: 341995 > 1' },
+  'basin-supply-without-convergence': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: 'moves on one more step: 341995 > 1' },
   'basin-upgrade-and-call': { kind: 'duplicate.entry-point', outcome: 'DUPLICATE', basis: 'program', words: 'the proxy still points where the owner set it' },
   'basin-upgrade-token-order': { kind: 'duplicate.victim', outcome: 'DUPLICATE', basis: 'program', words: 'the first reserve still belongs to the first token' },
   'kleidi-partial-whitelist': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: 'an amount the owners never whitelisted is refused' },
   'kleidi-shorter-expiry': { kind: 'duplicate.rephrased', outcome: 'DUPLICATE', basis: 'program', words: 'Timelock: operation is not ready' },
-  'kleidi-pause-gas': { kind: 'severity-boundary', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: 'gas for the guardian\'s pause' },
+  'kleidi-pause-gas': { kind: 'severity-boundary', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: '>= 30000000' },
   'kleidi-expired-revival': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: 'still expired after the setting changes' },
-  'kleidi-spell-before-answer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: 'the spell waits for the owners\' answer' }
+  'kleidi-spell-before-answer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: 'the spell waits for the answer from the owners' },
+  'gamma-empty-lock-rewards': { kind: 'clear-invalid.excluded-precondition', outcome: 'INVALID', basis: 'program', words: '1000000000000000000000 != 0' },
+  'gamma-reward-sandwich': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: '500000000000000000000 != 0' },
+  'gamma-exit-cooldown': { kind: 'duplicate.entry-point', outcome: 'DUPLICATE', basis: 'program', words: '2591940 > 180' },
+  'gamma-dust-withdrawal': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: '>= 30000000' },
+  'gamma-penalty-after-lock': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: '48833000000000000000 > 26666000000000000000' },
+  'mellow-cancel-listed-before': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: 'IndexOutOfBounds()' },
+  'mellow-cancel-listed-after': { kind: 'known-issue.after', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: 'IndexOutOfBounds()' },
+  'sequence-simulator-open-call': { kind: 'clear-invalid.outside-scope', outcome: 'INVALID', basis: 'listing', words: '0 != 1000000000000000000' }
 });
 
 test('every batch-2 case has a result: nothing was skipped', () => {

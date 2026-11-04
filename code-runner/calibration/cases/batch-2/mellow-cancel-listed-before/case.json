@@ -1,0 +1,114 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.mellow-cancel-listed-before",
+  "subsets": [
+    "batch-2",
+    "known-issue"
+  ],
+  "title": "A pending deposit cannot be cancelled once a price is reported",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/246",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/246",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test, only steps. A stand-in vault answers what the queue asks, since what fails is in the queue.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/4bcbdcfe643761c67d7dd862ca5909168c3ad859/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-07-mellow-flexible-vaults",
+      "verdict": "Valid. Published in the final report as Issue M-5. The program saw no known-issue list holding it: that part is built here.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/mellow-cancel-listed",
+  "label": {
+    "kind": "known-issue.before",
+    "basis": "listing",
+    "why": "Built here, and not the program's call: the program judged this finding valid, with no list of known issues holding it. The label is the listing's own text: this listing holds the entry before the commit, and §8.4 settles a matching root cause as DUPLICATE. Its twin is the same claim on a listing that does not hold it.",
+    "knownIssue": {
+      "title": "Cancelling a pending deposit reverts once a price has been reported",
+      "listed": "before",
+      "twin": "batch-2.mellow-cancel-listed-after",
+      "how": "Listed here: listings/mellow-cancel-listed is listings/mellow with this one entry in known_issues.json, fixed in the archive before the commit, whose id is what the contract stores."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "DUPLICATE",
+    "class": null,
+    "reason": "The list this commit saw holds the issue, so it settles DUPLICATE if the jury matches it to that entry, which A7d measures, with its twin the same claim where the list does not. Every gate passes: the runner reads no known issue.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/CancelPendingDepositClaim.t.sol > CancelPendingDepositClaim > test_a_pending_deposit_can_be_cancelled_after_a_report()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "IndexOutOfBounds()"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "cancelDepositRequest"
+          },
+          {
+            "tier": "knownIssues",
+            "text": "Cancelling a pending deposit reverts once a price has been reported"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.mellow-cancel-listed-before.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(asset.balanceOf(depositor), 100 ether);"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+import {FenwickTreeLibrary} from \"src/libraries/FenwickTreeLibrary.sol\";",
+        "+        vm.expectRevert(FenwickTreeLibrary.IndexOutOfBounds.selector);",
+        "+        assertEq(asset.balanceOf(depositor), 0);"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

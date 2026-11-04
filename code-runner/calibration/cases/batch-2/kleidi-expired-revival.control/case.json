@@ -1,0 +1,69 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.kleidi-expired-revival.control",
+  "subsets": [
+    "batch-2",
+    "severity-boundary"
+  ],
+  "title": "Raising the expiration period brings expired operations back: the same test with its assertion turned around",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/44",
+    "licence": "Repository LICENSE: Business Source License 1.1 (GitHub API: NOASSERTION). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/44",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding points at an existing test, which does not assert this; this one schedules an operation, lets it expire, raises the period, and reads it again.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-10-kleidi-findings/bbb702a3e1c601e8ffb3b16170353f4130ed4cf0/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-10-kleidi",
+      "verdict": "Valid at the lower class: labelled QA (Quality Assurance), downgraded by judge, duplicate-21, grade-b, Q-10. The program's word is QA, its class for Low and Non-Critical, which this case reads as LOW.",
+      "class": "LOW"
+    }
+  },
+  "listing": "listings/kleidi",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with its assertion turned around passes on all three runs, so its case fails on what it says it does, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ExpiredOperationClaim.t.sol > ExpiredOperationClaim > test_an_expired_operation_stays_expired()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "batch-2.kleidi-expired-revival"
+}

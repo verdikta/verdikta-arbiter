@@ -110,9 +110,12 @@ test('a boundary names two adjacent classes, the program\'s call and who made it
   assert.deepEqual(problemsOf('severity-boundary', { finding: { claimedClass: 'HIGH' } }), [], 'the upper side, what the hunter submitted');
 });
 
-test('the class of a valid case is the program\'s; a claim it never classed as valid carries none', () => {
+test('the class of a valid case is the program\'s; a duplicate keeps the class of the family; a rejected claim has none', () => {
   assertRefused('severity-boundary', { entry: { source: publicSource({ program: { ...publicSource().program, class: 'HIGH' } }) } }, /expected\.class MEDIUM is not the program's class, HIGH/);
-  assertRefused('clear-invalid.intended-behaviour', { entry: { source: publicSource() } }, /source\.program\.class is null/);
+  assertRefused('clear-invalid.intended-behaviour', { entry: { source: publicSource() } }, /source\.program\.class is null on a claim the program rejected/);
+  assertRefused('known-issue.before', { entry: { source: publicSource() } }, /source\.program\.class is null on a claim the program rejected/);
+  assertRefused('duplicate.entry-point', { entry: { source: publicSource({ program: { ...publicSource().program, class: null } }) } }, /a duplicate is a finding the program judged valid/);
+  assert.deepEqual(problemsOf('known-issue.before', { entry: { source: publicSource(), label: batch2Label('known-issue.before', { basis: 'listing' }) } }), [], 'the program judged it valid; the list is what is built here');
 });
 
 test('a known issue listed before the commit is in the list the commit saw, and in front of the jury', () => {

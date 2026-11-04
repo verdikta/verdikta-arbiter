@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Queued proposals can price the guardian out of pausing",
+  "claimedClass": "HIGH",
+  "rootCause": "Timelock.pause cancels every live proposal in one loop, so whoever holds the signer keys can schedule enough of them that a pause costs more gas than a block holds, and the guardian cannot stop what was queued.",
+  "affectedPaths": [
+    "src/Timelock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_the_guardian_can_still_pause_inside_one_block",
+    "observable": "test_the_guardian_can_still_pause_inside_one_block fails with \"gas for the pause by the guardian: 44441215 >= 30000000\""
+  },
+  "fixIncluded": false
+}
