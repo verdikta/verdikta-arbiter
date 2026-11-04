@@ -17,9 +17,16 @@
  * The new layers are uncompressed tar with fixed metadata, in byte order, and the git objects
  * use stored deflate blocks: no zlib or gzip version shows in the bytes. Nothing here reads a
  * clock, a host name or the file system.
+ *
+ * A listing of kind `git` (node A7b) has the same two layers, from a fetched repository: the
+ * repository's own objects as one pack written here (gitRepoLayer), and, when its spec has a
+ * `commands.setup`, a third layer of what that build wrote (prebuiltLayer). That third layer comes
+ * from running forge, so such an image's digest is not a function of pinned inputs. Nothing rests on
+ * it: no such case pins a report hash.
  */
 
 const crypto = require('node:crypto');
+const { crc32 } = require('./archives');
 
 /** The fixed author, date and message of a fixture's listed commit. */
 const COMMIT_WHO = 'Verdikta calibration <calibration@verdikta.invalid> 1700000000 +0000';
@@ -37,6 +44,11 @@ const ENV = Object.freeze([
   `XDG_DATA_HOME=${TOOLS}/share`,
   `VERDIKTA_TOOLS=${TOOLS}`
 ]);
+
+/** A root commit over `tree`, with the fixed author, date and message. */
+function commitContent(tree) {
+  return Buffer.from(`tree ${tree}\nauthor ${COMMIT_WHO}\ncommitter ${COMMIT_WHO}\n\n${COMMIT_MESSAGE}`);
+}
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const digestOf = (bytes) => `sha256:${sha256(bytes)}`;
@@ -99,11 +111,11 @@ function gitObjects(files) {
     return put('tree', Buffer.concat(entries.flatMap((e) => [Buffer.from(`${e.isTree ? '40000' : '100644'} ${e.name}\0`), Buffer.from(e.id, 'hex')])));
   };
   const tree = writeTree(root);
-  const commit = put('commit', Buffer.from(`tree ${tree}\nauthor ${COMMIT_WHO}\ncommitter ${COMMIT_WHO}\n\n${COMMIT_MESSAGE}`));
+  const commit = put('commit', commitContent(tree));
   return { commit, tree, objects };
 }
 
-function tarHeader(entryPath, { mode, size, type, uid, gid }) {
+function tarHeader(entryPath, { mode, size, type, uid, gid, link = null }) {
   let name = Buffer.from(entryPath);
   let prefix = Buffer.alloc(0);
   if (name.length > 100) {
@@ -125,6 +137,10 @@ function tarHeader(entryPath, { mode, size, type, uid, gid }) {
   octal(0, 136, 11); // mtime
   head.write('        ', 148, 8, 'latin1');
   head.write(type, 156, 1, 'latin1');
+  if (link !== null) {
+    if (Buffer.byteLength(link) > 100) throw new Error(`the link ${entryPath} leads to a path too long for a tar header`);
+    head.write(link, 157, 100, 'utf8');
+  }
   head.write('ustar\0' + '00', 257, 8, 'latin1');
   prefix.copy(head, 345);
   let sum = 0;
@@ -135,7 +151,7 @@ function tarHeader(entryPath, { mode, size, type, uid, gid }) {
 
 /**
  * An uncompressed tar of `entries`, in byte order of path, with mtime 0.
- * @param {Array<{path:string, dir?:boolean, bytes?:Buffer, mode:number, uid:number, gid:number}>} entries
+ * @param {Array<{path:string, dir?:boolean, link?:string, bytes?:Buffer, mode:number, uid:number, gid:number}>} entries
  */
 function tarLayer(entries) {
   const sorted = [...entries].sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
@@ -143,6 +159,8 @@ function tarLayer(entries) {
   for (const e of sorted) {
     if (e.dir) {
       parts.push(tarHeader(`${e.path}/`, { mode: e.mode, size: 0, type: '5', uid: e.uid, gid: e.gid }));
+    } else if (e.link !== undefined) {
+      parts.push(tarHeader(e.path, { mode: e.mode, size: 0, type: '2', uid: e.uid, gid: e.gid, link: e.link }));
     } else {
       parts.push(tarHeader(e.path, { mode: e.mode, size: e.bytes.length, type: '0', uid: e.uid, gid: e.gid }), e.bytes);
       const pad = (512 - (e.bytes.length % 512)) % 512;
@@ -190,15 +208,189 @@ function repoLayer({ files, imageOnly = {} }) {
 }
 
 /**
- * The tools: an official solc where the builder's setup installs it, under XDG_DATA_HOME.
+ * The tools: official solc releases where the builder's setup installs them, under XDG_DATA_HOME.
  * @param {object} o
- * @param {string} o.release - e.g. 0.8.31
- * @param {Buffer} o.bytes - the release's binary, checked by SHA-256 by whoever fetched it
+ * @param {string} [o.release] - one release, e.g. 0.8.31
+ * @param {Buffer} [o.bytes] - its binary, checked by SHA-256 by whoever fetched it
+ * @param {Array<{release:string, bytes:Buffer}>} [o.releases] - or several
  * @returns {Buffer}
  */
-function toolsLayer({ release, bytes }) {
+function toolsLayer({ release, bytes, releases = null }) {
   const tools = TOOLS.slice(1);
-  return tarLayer(entriesOf({ [`${tools}/share/svm/${release}/solc-${release}`]: bytes }, { uid: 0, gid: 0, fileMode: 0o755, dirs: [`${tools}/bin`] }));
+  const list = releases || [{ release, bytes }];
+  const files = Object.fromEntries(list.map((r) => [`${tools}/share/svm/${r.release}/solc-${r.release}`, r.bytes]));
+  return tarLayer(entriesOf(files, { uid: 0, gid: 0, fileMode: 0o755, dirs: [`${tools}/bin`] }));
+}
+
+/**
+ * The listed commit of a project in a subfolder: a root commit over the subfolder's own tree, a pure function of the tree's id.
+ * @param {string} tree
+ * @returns {{id:string, content:Buffer}}
+ */
+function rootedCommit(tree) {
+  const content = commitContent(tree);
+  const id = crypto.createHash('sha1').update(Buffer.concat([Buffer.from(`commit ${content.length}\0`), content])).digest('hex');
+  return { id, content };
+}
+
+const PACK_TYPE = Object.freeze({ commit: 1, tree: 2, blob: 3 });
+
+/**
+ * One pack and its index of `objects`, by id, with stored deflate blocks: the same objects give the same bytes on every
+ * host. One pack and not loose objects: a repository holds thousands, and the runner copies each file into every sandbox.
+ * @param {Map<string,{type:string,content:Buffer}>} objects - SHA-1 id → object
+ * @returns {{name:string, pack:Buffer, idx:Buffer}}
+ */
+function packFiles(objects) {
+  const ids = [...objects.keys()].sort();
+  const head = Buffer.alloc(12);
+  head.write('PACK', 0, 'latin1');
+  head.writeUInt32BE(2, 4);
+  head.writeUInt32BE(ids.length, 8);
+  const parts = [head];
+  const crcs = [];
+  const offsets = [];
+  let at = head.length;
+  for (const id of ids) {
+    const { type, content } = objects.get(id);
+    if (!PACK_TYPE[type]) throw new TypeError(`no pack type for ${type}`);
+    const sizeBytes = [];
+    let size = content.length;
+    let b = (PACK_TYPE[type] << 4) | (size & 0x0f);
+    size = Math.floor(size / 16);
+    while (size > 0) {
+      sizeBytes.push(b | 0x80);
+      b = size & 0x7f;
+      size = Math.floor(size / 128);
+    }
+    sizeBytes.push(b);
+    const entry = Buffer.concat([Buffer.from(sizeBytes), storedDeflate(content)]);
+    offsets.push(at);
+    crcs.push(crc32(entry));
+    parts.push(entry);
+    at += entry.length;
+  }
+  if (at >= 0x80000000) throw new Error('a pack over 2 GiB needs 64-bit offsets, which this harness does not write');
+  const body = Buffer.concat(parts);
+  const trailer = crypto.createHash('sha1').update(body).digest();
+  const pack = Buffer.concat([body, trailer]);
+
+  const fanout = Buffer.alloc(256 * 4);
+  let seen = 0;
+  for (let i = 0; i < 256; i += 1) {
+    while (seen < ids.length && parseInt(ids[seen].slice(0, 2), 16) <= i) seen += 1;
+    fanout.writeUInt32BE(seen, i * 4);
+  }
+  const u32s = (list) => {
+    const out = Buffer.alloc(list.length * 4);
+    list.forEach((v, i) => out.writeUInt32BE(v, i * 4));
+    return out;
+  };
+  const idxBody = Buffer.concat([
+    Buffer.from([0xff, 0x74, 0x4f, 0x63, 0, 0, 0, 2]), fanout, Buffer.concat(ids.map((id) => Buffer.from(id, 'hex'))), u32s(crcs), u32s(offsets), trailer
+  ]);
+  const idx = Buffer.concat([idxBody, crypto.createHash('sha1').update(idxBody).digest()]);
+  return { name: `pack-${trailer.toString('hex')}`, pack, idx };
+}
+
+/**
+ * /repo of a listing of kind `git`: the work tree with its modes and links, the objects as one pack, an empty folder for a
+ * submodule left out (the runner's checkout makes the same), owned by the sandbox user.
+ * @param {object} o
+ * @param {string} o.commit - the listed commit
+ * @param {Map<string,{type:string,content:Buffer}>} o.objects
+ * @param {Array<{path:string, mode:number, bytes?:Buffer, link?:string}>} o.files
+ * @param {string[]} [o.emptyDirs]
+ * @returns {{layer:Buffer, commit:string}}
+ */
+function gitRepoLayer({ commit, objects, files, emptyDirs = [] }) {
+  const { name, pack, idx } = packFiles(objects);
+  const owner = { uid: SANDBOX_UID, gid: SANDBOX_UID };
+  const plain = {
+    [`repo/.git/objects/pack/${name}.pack`]: pack,
+    [`repo/.git/objects/pack/${name}.idx`]: idx,
+    'repo/.git/HEAD': Buffer.from('ref: refs/heads/main\n'),
+    'repo/.git/config': Buffer.from('[core]\n\trepositoryformatversion = 0\n\tfilemode = true\n\tbare = false\n'),
+    'repo/.git/refs/heads/main': Buffer.from(`${commit}\n`)
+  };
+  const dirs = new Set(['repo', ...emptyDirs.map((d) => `repo/${d}`)]);
+  const entries = [...files.map((f) => (f.link !== undefined
+    ? { path: `repo/${f.path}`, link: f.link, mode: 0o777, ...owner }
+    : { path: `repo/${f.path}`, bytes: f.bytes, mode: f.mode, ...owner }))];
+  for (const e of [...entries, ...Object.keys(plain).map((p) => ({ path: p }))]) {
+    const parts = e.path.split('/');
+    for (let i = 1; i < parts.length; i += 1) dirs.add(parts.slice(0, i).join('/'));
+  }
+  for (const dir of [...dirs]) {
+    const parts = dir.split('/');
+    for (let i = 1; i < parts.length; i += 1) dirs.add(parts.slice(0, i).join('/'));
+  }
+  return {
+    commit,
+    layer: tarLayer([
+      ...[...dirs].map((dir) => ({ path: dir, dir: true, mode: 0o755, ...owner })),
+      ...entries,
+      ...Object.entries(plain).map(([p, bytes]) => ({ path: p, bytes, mode: 0o644, ...owner }))
+    ])
+  };
+}
+
+/** A tar's entries: plain files, folders and links, a GNU or pax long name read as the name. */
+function parseTar(buffer) {
+  const out = [];
+  let at = 0;
+  let longName = null;
+  const text = (from, width) => {
+    const slice = buffer.subarray(from, from + width);
+    const end = slice.indexOf(0);
+    return slice.toString('utf8', 0, end < 0 ? width : end);
+  };
+  while (at + 512 <= buffer.length) {
+    const head = buffer.subarray(at, at + 512);
+    if (head.every((b) => b === 0)) break;
+    const size = parseInt(text(at + 124, 12).trim() || '0', 8);
+    const type = String.fromCharCode(head[156] || 0x30);
+    const bytes = buffer.subarray(at + 512, at + 512 + size);
+    at += 512 + Math.ceil(size / 512) * 512;
+    if (type === 'L') {
+      longName = bytes.toString('utf8').replace(/\0+$/, '');
+      continue;
+    }
+    if (type === 'x') {
+      const m = /(?:^|\n)\d+ path=([^\n]*)\n/.exec(bytes.toString('utf8'));
+      if (m) longName = m[1];
+      continue;
+    }
+    if (type === 'K' || type === 'g') continue;
+    const prefix = text(at - 512 - Math.ceil(size / 512) * 512 + 345, 155);
+    const name = longName || (prefix ? `${prefix}/${text(at - 512 - Math.ceil(size / 512) * 512, 100)}` : text(at - 512 - Math.ceil(size / 512) * 512, 100));
+    longName = null;
+    const clean = name.replace(/^\.\//, '').replace(/\/$/, '');
+    if (clean === '' || clean === '.') continue;
+    if (type === '5') out.push({ path: clean, type: 'dir' });
+    else if (type === '0' || type === '\0') out.push({ path: clean, type: 'file', bytes });
+    else out.push({ path: clean, type: `other:${type}` });
+  }
+  return out;
+}
+
+/**
+ * What the listing's `commands.setup` wrote, as the attested builder's image keeps it (out/, cache/ in /repo): a tar from
+ * the container, rewritten with fixed metadata, under /repo, owned by the sandbox user.
+ * @param {Buffer} tarBytes
+ * @returns {Buffer}
+ * @throws {Error} a path that leaves the folder, a link or device, or nothing at all
+ */
+function prebuiltLayer(tarBytes) {
+  const entries = parseTar(tarBytes);
+  const files = {};
+  for (const e of entries) {
+    if (e.path.startsWith('/') || e.path.split('/').includes('..')) throw new Error(`the build's output has a path that leaves its folder: ${e.path.slice(0, 120)}`);
+    if (e.type === 'file') files[`repo/${e.path}`] = e.bytes;
+    else if (e.type !== 'dir') throw new Error(`the build's output has something other than a file or folder at ${e.path.slice(0, 120)}`);
+  }
+  if (Object.keys(files).length === 0) throw new Error('the build wrote nothing');
+  return tarLayer(entriesOf(files, { uid: SANDBOX_UID, gid: SANDBOX_UID }));
 }
 
 /**
@@ -236,5 +428,6 @@ function parseBaseIndex(index, platform) {
 }
 
 module.exports = {
-  ENV, MANIFEST_MEDIA_TYPE, SANDBOX_UID, sha256, digestOf, storedDeflate, gitObjects, tarLayer, repoLayer, toolsLayer, assembleImage, parseBaseIndex
+  ENV, MANIFEST_MEDIA_TYPE, SANDBOX_UID, sha256, digestOf, storedDeflate, gitObjects, tarLayer, repoLayer, toolsLayer, assembleImage, parseBaseIndex,
+  rootedCommit, packFiles, gitRepoLayer, parseTar, prebuiltLayer
 };

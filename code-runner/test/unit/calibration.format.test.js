@@ -7,7 +7,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { loadCorpus, selectCases, CorpusError, CASE_FORMAT } = require('../../calibration/lib/format');
-const { writeCorpus, juryCase, controlCase, ADVERSARIAL_LINE, patch, POC_LINES, GATES_PASS } = require('../helpers/calibrationCorpus');
+const {
+  writeCorpus, juryCase, controlCase, ADVERSARIAL_LINE, patch, POC_LINES, GATES_PASS,
+  writePublicCorpus, publicCase, publicSource, publicSpec, PUBLIC_POC, PUBLIC_MESSAGE, UPSTREAM, UPSTREAM_COMMIT, FINDING_URL
+} = require('../helpers/calibrationCorpus');
 
 const CALIBRATION = path.join(__dirname, '..', '..', 'calibration');
 
@@ -219,6 +222,203 @@ test('a repo with a field of the other kind, or an unknown one, is refused', () 
   assertRefused({ listing: { repo: { kind: 'git', url: 'https://example.org/x', path: 'repos/vault' } } }, /repo: unknown field path/);
 });
 
+// ------------------------------------------------------------------- A7b: public findings
+
+function publicProblems(over) {
+  const corpus = writePublicCorpus(over);
+  try {
+    return loadCorpus({ root: corpus.root, layout: true }) && [];
+  } catch (err) {
+    assert.ok(err instanceof CorpusError, err.stack);
+    return err.problems;
+  } finally {
+    corpus.cleanup();
+  }
+}
+
+function assertPublicRefused(over, pattern) {
+  const problems = publicProblems(over);
+  assert.ok(problems.some((p) => pattern.test(p)), `expected a problem matching ${pattern}, got: ${JSON.stringify(problems, null, 1)}`);
+}
+
+test('a public finding on a git listing loads, with its provenance', () => {
+  assert.deepEqual(publicProblems({}), []);
+  assert.deepEqual(publicProblems({ subdir: true }), []);
+  const corpus = writePublicCorpus({ subdir: true });
+  try {
+    const { byId } = loadCorpus({ root: corpus.root, layout: true });
+    const c = byId.get('clear-valid.one');
+    assert.equal(c.listing.repo.kind, 'git');
+    assert.equal(c.listing.commit, corpus.commit);
+    assert.deepEqual(c.listing.solcReleases, ['0.8.23']);
+    assert.equal(c.listing.setup, 'forge build');
+    assert.equal(c.source.program.class, 'HIGH');
+    assert.equal(c.source.adaptedFrom, FINDING_URL);
+    assert.equal(c.listing.files, undefined, 'nothing of the repository is in the tree');
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('a git listing pins its repository: the commit, and for a subfolder the tree and the commit written over it', () => {
+  assertPublicRefused({ listing: { repo: { kind: 'git', url: UPSTREAM } } }, /repo\.commit must be a full commit id/);
+  assertPublicRefused({ listing: { repo: { kind: 'git', url: 'http://example.org/x', commit: UPSTREAM_COMMIT } } }, /repo\.url must be an https URL/);
+  assertPublicRefused({ listing: { repo: { kind: 'git', url: 'https://example.org/other', commit: UPSTREAM_COMMIT } } }, /code_review\.json's repo .* is not the listing's/);
+  assertPublicRefused({ listing: { commit: 'c'.repeat(40) } }, /the listing's commit .* is not repo\.commit/);
+  assertPublicRefused({ listing: { repo: { kind: 'git', url: UPSTREAM, commit: UPSTREAM_COMMIT, subdir: 'project' } } }, /repo\.tree/);
+  assertPublicRefused({ listing: { repo: { kind: 'git', url: UPSTREAM, commit: UPSTREAM_COMMIT, tree: 'b'.repeat(40) } } }, /repo\.tree.*subdir/);
+  assertPublicRefused({ subdir: true, listing: { commit: 'c'.repeat(40) } }, /written over the tree/);
+  assertPublicRefused({ subdir: true, listing: { repo: { kind: 'git', url: UPSTREAM, commit: UPSTREAM_COMMIT, subdir: '../up', tree: 'b'.repeat(40) } } }, /repo\.subdir must be a folder inside the repository/);
+});
+
+test('solc is one official release or a list of them, on the class platform', () => {
+  assert.deepEqual(publicProblems({ listing: { solc: ['0.8.20', '0.8.23'] } }), []);
+  assertPublicRefused({ listing: { solc: '0.8.999' } }, /solc 0\.8\.999 is not an official release/);
+  assertPublicRefused({ listing: { solc: [] } }, /solc must name/);
+  assertPublicRefused({ listing: { solc: ['0.8.20', '0.8.20'] } }, /solc names 0\.8\.20 twice/);
+});
+
+test('commands.setup is forge build with allowed flags and nothing else, and a fixture has none', () => {
+  assert.deepEqual(publicProblems({ spec: { commands: { ...publicSpec('a'.repeat(40)).commands, setup: 'forge build --skip test' } } }), []);
+  for (const setup of ['forge install', 'forge build && curl x', 'npm ci', 'forge build --force']) {
+    assertPublicRefused({ spec: { commands: { ...publicSpec('a'.repeat(40)).commands, setup } } }, /commands\.setup/);
+  }
+  const fixture = writeCorpus();
+  try {
+    const file = path.join(fixture.root, 'listings/vault/code_review.json');
+    const spec = JSON.parse(fs.readFileSync(file, 'utf8'));
+    spec.commands.setup = 'forge build';
+    fs.writeFileSync(file, JSON.stringify(spec));
+    assert.throws(() => loadCorpus({ root: fixture.root }), /a fixture listing has no commands\.setup/);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test('a public case records where it comes from: the finding, the licence, what it does with it, the program\'s verdict and class', () => {
+  for (const missing of ['url', 'licence', 'licenceUse', 'adaptedFrom', 'adaptedHow', 'report', 'program']) {
+    const source = publicSource();
+    delete source[missing];
+    assertPublicRefused({ entry: { source } }, new RegExp(`source(?:\\.| has no )${missing === 'url' ? '(?:url|source)' : missing}|source\\.${missing}`));
+  }
+  for (const missing of ['name', 'contest', 'verdict', 'class']) {
+    const program = { ...publicSource().program };
+    delete program[missing];
+    assertPublicRefused({ entry: { source: publicSource({ program }) } }, /source\.program/);
+  }
+  assertPublicRefused({ entry: { source: publicSource({ program: { ...publicSource().program, class: 'SEVERE' } }) } }, /source\.program\.class/);
+  assertPublicRefused({ entry: { source: publicSource({ licence: '' }) } }, /licence/);
+  assertPublicRefused({ entry: { source: publicSource({ report: 'http://example.org' }) } }, /source\.report/);
+});
+
+test('a clear-valid case states the program\'s class, reaches the jury and passes every gate', () => {
+  const expected = publicCase().expected;
+  assertPublicRefused({ entry: { expected: { ...expected, class: 'MEDIUM' } } }, /expected\.class .* the program's class/);
+  assertPublicRefused({ finding: { claimedClass: 'CRITICAL' } }, /claimedClass .* the program's class/);
+  const failing = { ...expected, outcome: 'INVALID', class: null, runner: { ...expected.runner, gates: { ...GATES_PASS, reproduces: 'fail', claimedObservable: 'not-run' }, gateDetails: { reproduces: 'passed' }, settlement: { kind: 'invalid', gate: 'reproduces', check: 'POC_DID_NOT_REPRODUCE' } } };
+  assertPublicRefused({ entry: { expected: failing } }, /a clear-valid case's outcome is VALID/);
+  assertPublicRefused({ entry: { expected: { ...expected, runner: { ...expected.runner, gates: { ...GATES_PASS, claimedObservable: 'not-run' } } } } }, /every gate passes/);
+});
+
+test('poc.patch only adds files: a context or removal line is how a diff carries someone\'s code', () => {
+  const edit = [
+    'diff --git a/test/Base.t.sol b/test/Base.t.sol',
+    '--- a/test/Base.t.sol',
+    '+++ b/test/Base.t.sol',
+    '@@ -1,2 +1,2 @@',
+    ' contract Theirs {',
+    '-    uint256 theirs;',
+    '+    uint256 ours;',
+    ''
+  ].join('\n');
+  assertPublicRefused({ poc: edit }, /poc\.patch.*only add new files/);
+  const short = PUBLIC_POC.replace('@@ -0,0 +1,5 @@', '@@ -0,0 +1,4 @@');
+  assertPublicRefused({ poc: short }, /poc\.patch/);
+  const exec = PUBLIC_POC.replace('new file mode 100644', 'new file mode 100755');
+  assertPublicRefused({ poc: exec }, /poc\.patch/);
+  assert.deepEqual(publicProblems({ poc: PUBLIC_POC }), []);
+});
+
+test('fix.patch is refused on a git listing: its removed lines would be someone\'s code', () => {
+  const corpus = writePublicCorpus({ entry: { claim: { finding: 'finding.json', report: 'report.md', poc: 'poc.patch', fix: 'fix.patch' } } });
+  try {
+    fs.writeFileSync(path.join(corpus.dir, 'fix.patch'), 'diff --git a/src/A.sol b/src/A.sol\n');
+    assert.throws(() => loadCorpus({ root: corpus.root }), /fix\.patch.*git listing/);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('the claim files say nothing of the label: they reach the jury, and A7d measures the jury', () => {
+  assertPublicRefused({ report: `# X\n\nSee ${FINDING_URL}\n` }, /report\.md names the source/);
+  assertPublicRefused({ report: '# X\n\nThe exampleprogram judges agreed.\n' }, /report\.md names the source/);
+  assertPublicRefused({ finding: { rootCause: 'Seen in 2031-01-project.' } }, /finding\.json names the source/);
+  assertPublicRefused({ poc: PUBLIC_POC.replace('contract ClaimTest {', 'contract ClaimTest { // 2031-01-project') }, /poc\.patch names the source/);
+});
+
+test('poc.observable names the test and quotes the failure the case expects', () => {
+  assertPublicRefused({ finding: { poc: { command: 'forge test', observable: `it fails with "${PUBLIC_MESSAGE}"` } } }, /poc\.observable must name/);
+  assertPublicRefused({ finding: { poc: { command: 'forge test', observable: 'test_interest_is_paid fails' } } }, /poc\.observable must quote/);
+});
+
+test('a clear-valid control is the case with its assertion turned around: it passes, and reproduces fails on its own', () => {
+  const corpus = writePublicCorpus({ entry: {
+    control: {
+      case: 'clear-valid.one.control',
+      removes: { 'poc.patch': ['+        revert("interest is paid: 1 != 2");'] },
+      adds: { 'poc.patch': ['+        require(true, "interest is paid: 1 != 2");'] },
+      differsIn: ['settlement.kind', 'gates.reproduces', 'tests.0.runs'],
+      sameIn: ['gates.applies', 'gates.build']
+    }
+  } });
+  try {
+    const dir = path.join(corpus.root, 'cases/clear-valid/one.control');
+    fs.mkdirSync(dir);
+    const base = publicCase();
+    const control = {
+      ...base,
+      id: 'clear-valid.one.control',
+      title: 'The same test with its assertion turned around',
+      controlOf: 'clear-valid.one',
+      expected: {
+        outcome: 'INVALID', class: null, reason: 'It passes on all three runs, so the original fails where it says it does.',
+        runner: {
+          result: 'definitive',
+          gates: { ...GATES_PASS, reproduces: 'fail', claimedObservable: 'not-run' },
+          gateDetails: { reproduces: 'passed on run 1' },
+          settlement: { kind: 'invalid', gate: 'reproduces', check: 'POC_DID_NOT_REPRODUCE' },
+          honestyFlags: [],
+          tests: [{ id: base.expected.runner.tests[0].id, runs: ['pass', 'pass', 'pass'], kind: null, message: null }]
+        }
+      }
+    };
+    fs.writeFileSync(path.join(dir, 'case.json'), JSON.stringify(control));
+    for (const f of ['finding.json', 'report.md']) fs.copyFileSync(path.join(corpus.dir, f), path.join(dir, f));
+    fs.writeFileSync(path.join(dir, 'poc.patch'), PUBLIC_POC.replace('revert("interest is paid: 1 != 2");', 'require(true, "interest is paid: 1 != 2");'));
+    assert.equal(loadCorpus({ root: corpus.root, layout: true }).cases.length, 2);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('nothing lies around: a folder under repos/ or listings/ that nothing names, and anything unknown at the top', () => {
+  assertPublicRefused({ extra: { 'repos/vendored/Thing.sol': 'contract Thing {}\n' } }, /repos\/vendored .* no listing names/);
+  assertPublicRefused({ extra: { 'listings/stale/listing.json': '{}' } }, /listings\/stale .* no case names/);
+  assertPublicRefused({ extra: { 'candidates.json': '[]' } }, /candidates\.json .* the format names no such/);
+  assert.deepEqual(publicProblems({ extra: { 'lib/any.js': '', 'run.js': '' } }), []);
+});
+
+test('selectCases takes one listing\'s cases, for one CI job per repository', () => {
+  const corpus = writePublicCorpus();
+  try {
+    const loaded = loadCorpus({ root: corpus.root });
+    assert.equal(selectCases(loaded, { listing: 'project' }).length, 1);
+    assert.throws(() => selectCases(loaded, { subset: 'clear-valid', listing: 'nothing' }), /no case .* listing nothing/);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
 test('every problem is reported at once', () => {
   const problems = problemsOf({ adversarial: { format: 'x', source: undefined }, control: { title: '' } });
   assert.ok(problems.length >= 3, JSON.stringify(problems));
@@ -359,9 +559,9 @@ test('the real corpus holds the required counterexamples of design §18 in forge
   }
 });
 
-test('the fixture repository is Verdikta\'s: every case says so and carries a licence', () => {
+test('the fixture repository is Verdikta\'s: every adversarial case says so and carries a licence', () => {
   const { cases } = loadCorpus({ root: CALIBRATION });
-  for (const c of cases) {
+  for (const c of cases.filter((x) => x.group === 'adversarial')) {
     assert.match(c.source.url, /^https:\/\/github\.com\/verdikta\//, c.id);
     assert.equal(c.source.licence, 'MIT', c.id);
     assert.equal(c.listing.repo.kind, 'fixture', c.id);

@@ -10,7 +10,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { codeReview } = require('@verdikta/common');
-const { gitObjects } = require('../../calibration/lib/image');
+const { gitObjects, rootedCommit } = require('../../calibration/lib/image');
 
 const REPO = Object.freeze({
   'foundry.toml': '[profile.default]\nsolc = "0.8.31"\n',
@@ -185,4 +185,127 @@ function writeCorpus({ adversarial = {}, control = {}, listing = {}, spec = {}, 
   return { root, commit, casePath, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
-module.exports = { writeCorpus, juryCase, controlCase, specFor, baselineFor, GATES_PASS, TEST_ID, ADVERSARIAL_LINE, finding, patch, POC_LINES };
+// ------------------------------------------------------------- A7b: a public finding on a listing of kind `git`
+
+const UPSTREAM = 'https://github.com/example-contests/2031-01-project';
+const UPSTREAM_COMMIT = 'a'.repeat(40);
+const FINDING_URL = 'https://github.com/example-contests/2031-01-project-judging/issues/7';
+const PUBLIC_TEST_ID = 'test/Claim.t.sol > ClaimTest > test_interest_is_paid()';
+const PUBLIC_MESSAGE = 'interest is paid: 1 != 2';
+
+function publicSource(over = {}) {
+  return {
+    url: FINDING_URL,
+    licence: 'Repository: none found. Source SPDX: MIT.',
+    licenceUse: 'Fetched at run time at the pinned commit, never committed. The claim files here are Verdikta\'s own.',
+    adaptedFrom: FINDING_URL,
+    adaptedHow: 'A test of our own that asserts the safe property, from the finding\'s description.',
+    report: 'https://raw.githubusercontent.com/example-contests/2031-01-project-judging/abc/README.md',
+    program: { name: 'ExampleProgram', contest: '2031-01-project', verdict: 'Valid, published as H-1', class: 'HIGH' },
+    ...over
+  };
+}
+
+const PUBLIC_POC = Object.freeze([
+  'diff --git a/test/Claim.t.sol b/test/Claim.t.sol',
+  'new file mode 100644',
+  '--- /dev/null',
+  '+++ b/test/Claim.t.sol',
+  '@@ -0,0 +1,5 @@',
+  '+contract ClaimTest {',
+  '+    function test_interest_is_paid() public {',
+  '+        revert("interest is paid: 1 != 2");',
+  '+    }',
+  '+}',
+  ''
+].join('\n'));
+
+function publicFinding(over = {}) {
+  return {
+    version: 1,
+    title: 'Interest is short by a tier',
+    claimedClass: 'HIGH',
+    rootCause: 'The tier boundary uses the old count, so a staker is paid at the lower rate.',
+    affectedPaths: ['src/Staking.sol'],
+    poc: { command: 'forge test --match-test test_interest_is_paid', observable: `test_interest_is_paid fails with "${PUBLIC_MESSAGE}"` },
+    fixIncluded: false,
+    ...over
+  };
+}
+
+function publicCase(over = {}) {
+  return {
+    format: 'verdikta.calibration-case/1',
+    id: 'clear-valid.one',
+    subsets: ['clear-valid'],
+    title: 'Interest short by a tier',
+    source: publicSource(),
+    listing: 'listings/project',
+    claim: { finding: 'finding.json', report: 'report.md', poc: 'poc.patch', fix: null },
+    priorFindings: [],
+    expected: {
+      outcome: 'VALID',
+      class: 'HIGH',
+      reason: 'The program judged it High; the jury is A7d\'s. Here every gate passes.',
+      runner: {
+        result: 'definitive',
+        gates: { ...GATES_PASS },
+        settlement: { kind: 'jury' },
+        honestyFlags: [],
+        tests: [{ id: PUBLIC_TEST_ID, runs: ['fail', 'fail', 'fail'], kind: 'assertion', message: PUBLIC_MESSAGE }]
+      }
+    },
+    ...over
+  };
+}
+
+function publicSpec(commit, over = {}) {
+  const spec = specFor(commit);
+  return {
+    ...spec,
+    repo: UPSTREAM,
+    artifact: { kind: 'repo' },
+    commands: { ...spec.commands, setup: 'forge build' },
+    ...over
+  };
+}
+
+/**
+ * A corpus with one public finding on a `git` listing. No network: nothing here fetches.
+ * @param {object} [o]
+ * @param {object} [o.listing] - overrides for listing.json
+ * @param {object} [o.spec] - overrides for code_review.json
+ * @param {object} [o.entry] - overrides for case.json
+ * @param {object} [o.finding] - overrides for finding.json
+ * @param {string} [o.report]
+ * @param {string} [o.poc]
+ * @param {boolean} [o.subdir] - the project sits in a subfolder of the upstream
+ */
+function writePublicCorpus({ listing = {}, spec = {}, entry = {}, finding: findingOver = {}, report = '# Interest is short by a tier\n\nThe tier boundary uses the old count.\n', poc = PUBLIC_POC, subdir = false, extra = {} } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-public-corpus-'));
+  const tree = 'b'.repeat(40);
+  const commit = subdir ? rootedCommit(tree).id : UPSTREAM_COMMIT;
+  writeJson(path.join(root, 'listings/project/listing.json'), {
+    format: 'verdikta.calibration-listing/1', id: 'project',
+    repo: { kind: 'git', url: UPSTREAM, commit: UPSTREAM_COMMIT, ...(subdir ? { subdir: 'project', tree } : {}) },
+    commit,
+    source: { url: UPSTREAM, licence: 'Repository: none found.', program: null },
+    solc: '0.8.23',
+    ...listing
+  });
+  writeJson(path.join(root, 'listings/project/code_review.json'), publicSpec(commit, spec));
+  writeJson(path.join(root, 'listings/project/baseline.json'), baselineFor(commit));
+  writeJson(path.join(root, 'listings/project/known_issues.json'), []);
+  const dir = path.join(root, 'cases/clear-valid/one');
+  writeJson(path.join(dir, 'case.json'), publicCase(entry));
+  writeJson(path.join(dir, 'finding.json'), publicFinding(findingOver));
+  writeJson(path.join(dir, 'report.md'), report);
+  writeJson(path.join(dir, 'poc.patch'), poc);
+  for (const [rel, text] of Object.entries(extra)) writeJson(path.join(root, rel), text);
+  return { root, commit, dir, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
+}
+
+module.exports = {
+  writePublicCorpus, publicCase, publicFinding, publicSource, publicSpec, PUBLIC_POC, PUBLIC_MESSAGE, PUBLIC_TEST_ID, UPSTREAM, UPSTREAM_COMMIT, FINDING_URL
+};
+module.exports = { ...module.exports, writeCorpus, juryCase, controlCase, specFor, baselineFor, GATES_PASS, TEST_ID, ADVERSARIAL_LINE, finding, patch, POC_LINES };

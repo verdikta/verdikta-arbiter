@@ -74,7 +74,7 @@ function caseRequest(entry, view) {
 }
 
 /** The real listing check must accept the fixture, and measure the baseline the listing commits to. */
-async function checkListing(session, listing, published, view) {
+async function checkListing(session, listing, published, view, { onMeasured = null } = {}) {
   const res = await session.listingCheck(published, listing, view);
   const answer = res.body || {};
   if (answer.outcome !== 'definitive') {
@@ -85,6 +85,7 @@ async function checkListing(session, listing, published, view) {
     throw new HarnessError(`the listing check refused ${listing.id}: ${JSON.stringify(found.refusals).slice(0, 800)}`);
   }
   const { timings: _measured, ...baseline } = found.baseline;
+  if (onMeasured) onMeasured({ baseline, timings: found.timings, limits: found.limits, warnings: found.warnings, image: found.image, checkout: found.checkout });
   if (!isDeepStrictEqual(baseline, listing.baseline)) {
     throw new HarnessError(`${listing.id}: the listing check measured another baseline than baseline.json: ${JSON.stringify(baseline).slice(0, 800)}`);
   }

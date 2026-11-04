@@ -11,6 +11,12 @@
  * and names a listing folder: listing.json (repo@commit, source, solc), code_review.json (the
  * spec, with no image: the harness fills it in), baseline.json, known_issues.json.
  *
+ * A listing's repo is a Verdikta fixture in the tree (`fixture`), or a public repository at a
+ * commit (`git`, node A7b), fetched at run time and never committed. A case on a `git` listing is
+ * held to more: where it comes from, a label that is the program's, a claim that does not carry its
+ * label, and a poc.patch that only adds files, so no context or removed line carries someone's code.
+ * The harness then measures its text against the real sources (provenance.js).
+ *
  * The rule is that nothing is skipped. loadCorpus reads every folder whichever subset was asked
  * for and reports every problem at once, before any image or run. What can be checked without
  * running is checked: an expected result that contradicts itself, a control that is more than
@@ -21,13 +27,19 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { isDeepStrictEqual } = require('node:util');
 const { codeReview } = require('@verdikta/common');
-const { gitObjects } = require('./image');
+const { gitObjects, rootedCommit } = require('./image');
 const { checkSpec } = require('../../src/classLimits');
+const { parseCommand } = require('../../src/commands');
+const { officialList } = require('../../src/solcReleases');
 const { ABSTAIN } = require('../../src/result');
+const { functionName } = require('../../src/observable');
 
 const CASE_FORMAT = 'verdikta.calibration-case/1';
 const LISTING_FORMAT = 'verdikta.calibration-listing/1';
 const SUBSET_NEEDING_CONTROLS = 'adversarial';
+const SUBSET_CLEAR_VALID = 'clear-valid';
+/** The class platform's official releases: a release must exist there, wherever this harness runs. */
+const OFFICIAL_SOLC = officialList(codeReview.CLASS_HARD_LIMITS.platform);
 
 const OUTCOMES = Object.freeze(['VALID', 'INVALID', 'DUPLICATE', 'ABSTAIN', 'REQUESTER_ERROR']);
 const CLASSES = Object.freeze(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
@@ -124,13 +136,106 @@ function checkSource(source, fail) {
     fail('has no source (url, licence, and the program\'s verdict or null)');
     return;
   }
-  unknownFields(source, ['url', 'licence', 'program'], (m) => fail(`source: ${m}`));
+  unknownFields(source, ['url', 'licence', 'program', 'licenceUse', 'adaptedFrom', 'adaptedHow', 'report'], (m) => fail(`source: ${m}`));
   if (!text(source.url) || !source.url.startsWith('https://')) fail('source.url must be an https URL');
   if (!text(source.licence)) fail('source.licence is required');
   if (source.program !== null && source.program !== undefined) {
     if (!isObject(source.program) || !text(source.program.name) || !text(source.program.verdict)) {
       fail('source.program must be null, or name the program and its verdict (and class, if it gave one)');
+    } else {
+      unknownFields(source.program, ['name', 'contest', 'verdict', 'class'], (m) => fail(`source.program: ${m}`));
     }
+  }
+}
+
+/** A public finding's provenance: everything a reader needs to check the label, in the case itself. */
+function checkPublicSource(source, fail) {
+  if (!isObject(source)) return;
+  const url = (v) => text(v) && v.startsWith('https://');
+  if (!text(source.licenceUse)) fail('source.licenceUse must say what the case does with the licence');
+  if (!url(source.adaptedFrom)) fail('source.adaptedFrom must be the URL the PoC was written from');
+  if (!text(source.adaptedHow)) fail('source.adaptedHow must say how the PoC differs from the finding\'s');
+  if (!url(source.report)) fail('source.report must be the https URL of the program\'s report, which the run compares the claim with');
+  const p = source.program;
+  if (!isObject(p) || !text(p.name) || !text(p.contest) || !text(p.verdict) || !text(p.class)) {
+    fail('source.program must name the program, the contest, the verdict and the class');
+  } else if (!CLASSES.includes(p.class)) {
+    fail(`source.program.class must be one of ${CLASSES.join(', ')}`);
+  }
+}
+
+/**
+ * poc.patch on a `git` listing only adds files. A context or removed line is how a diff carries someone's code.
+ * @param {Buffer} bytes
+ * @returns {string[]} problems
+ */
+function addOnlyProblems(bytes) {
+  const lines = bytes.toString('utf8').split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  const refused = (at, why) => [`poc.patch must only add new files, as a patch of new-file sections: line ${at + 1} ${why}`];
+  let i = 0;
+  if (lines.length === 0) return refused(0, 'is missing');
+  while (i < lines.length) {
+    const head = /^diff --git a\/(\S+) b\/(\S+)$/.exec(lines[i]);
+    if (!head || head[1] !== head[2]) return refused(i, 'should start a section for one file');
+    i += 1;
+    if (lines[i] !== 'new file mode 100644') return refused(i, 'should be new file mode 100644');
+    i += 1;
+    if (/^index [0-9a-f]+\.\.[0-9a-f]+$/.test(lines[i] || '')) i += 1;
+    if (lines[i] !== '--- /dev/null') return refused(i, 'should be --- /dev/null');
+    i += 1;
+    if (lines[i] !== `+++ b/${head[1]}`) return refused(i, `should be +++ b/${head[1]}`);
+    i += 1;
+    const hunk = /^@@ -0,0 \+1(?:,([0-9]+))? @@$/.exec(lines[i] || '');
+    if (!hunk) return refused(i, 'should be the one hunk of a new file');
+    i += 1;
+    const count = hunk[1] === undefined ? 1 : Number(hunk[1]);
+    for (let k = 0; k < count; k += 1, i += 1) {
+      if (!(lines[i] || '').startsWith('+')) return refused(i, 'should be an added line');
+    }
+    if (lines[i] === '\\ No newline at end of file') i += 1;
+  }
+  return [];
+}
+
+/** What a claim must not name: those files reach the jury, and A7d measures the jury. */
+function labelNeedles(source) {
+  const p = isObject(source) && isObject(source.program) ? source.program : {};
+  return [source && source.url, source && source.adaptedFrom, source && source.report, p.name, p.contest].filter(text);
+}
+
+/** The rules of a case on a listing of kind `git`. */
+function checkPublicCase(raw, loaded, fail) {
+  checkPublicSource(raw.source, fail);
+  if (raw.claim && raw.claim.fix) fail('fix.patch is refused on a git listing: its removed lines would be someone\'s code');
+  if (loaded.poc && loaded.poc.length) for (const m of addOnlyProblems(loaded.poc)) fail(m);
+  const files = { 'report.md': loaded.report, 'finding.json': loaded.finding ? JSON.stringify(loaded.finding) : null, 'poc.patch': loaded.poc ? loaded.poc.toString('utf8') : null };
+  for (const [file, content] of Object.entries(files)) {
+    if (content === null) continue;
+    const found = labelNeedles(raw.source).find((needle) => content.toLowerCase().includes(needle.toLowerCase()));
+    if (found) fail(`${file} names the source (${found}): the claim files reach the jury, and the label must not`);
+  }
+  if (!Array.isArray(raw.subsets) || !raw.subsets.includes(SUBSET_CLEAR_VALID) || !isObject(raw.expected) || !isObject(raw.expected.runner)) return;
+  const { expected } = raw;
+  const { runner } = expected;
+  if (raw.controlOf !== undefined) {
+    const s = runner.settlement;
+    if (!isObject(s) || s.check !== 'POC_DID_NOT_REPRODUCE') fail('a clear-valid control passes where its case fails, so reproduces fails on its own');
+    return;
+  }
+  const programClass = isObject(raw.source) && isObject(raw.source.program) ? raw.source.program.class : undefined;
+  if (expected.outcome !== 'VALID') fail('a clear-valid case\'s outcome is VALID');
+  if (expected.class !== programClass) fail(`expected.class ${expected.class} is not the program's class, ${programClass}`);
+  if (loaded.finding && loaded.finding.claimedClass !== programClass) fail(`finding.json's claimedClass ${loaded.finding.claimedClass} is not the program's class, ${programClass}`);
+  const gates = isObject(runner.gates) ? runner.gates : {};
+  if (RUNNER_GATES.some((g) => gates[g] !== 'pass') || !isObject(runner.settlement) || runner.settlement.kind !== 'jury') {
+    fail('a clear-valid case reaches the jury: every gate passes');
+  }
+  const first = Array.isArray(runner.tests) ? runner.tests[0] : null;
+  const poc = loaded.finding && isObject(loaded.finding.poc) ? loaded.finding.poc : null;
+  if (first && poc && typeof poc.observable === 'string') {
+    if (!poc.observable.includes(functionName(first.id))) fail(`poc.observable must name the test, ${functionName(first.id)}`);
+    if (typeof first.message !== 'string' || !poc.observable.includes(`"${first.message}"`)) fail('poc.observable must quote the failure the case expects, in double quotes');
   }
 }
 
@@ -159,13 +264,38 @@ function loadListing(root, rel, problems) {
   if (!text(raw.id) || !/^[a-z0-9][a-z0-9-]*$/.test(raw.id)) fail('id must be a lower-case slug');
   checkSource(raw.source, fail);
   if (typeof raw.commit !== 'string' || !COMMIT.test(raw.commit)) fail('commit must be a full commit id');
-  const listing = { id: raw.id, dir, rel, repo: raw.repo, commit: raw.commit, source: raw.source, solc: raw.solc };
+  const listing = { id: raw.id, dir, rel, repo: raw.repo, commit: raw.commit, source: raw.source, solc: raw.solc, solcReleases: [raw.solc], setup: null, repoPaths: [] };
 
   if (!isObject(raw.repo) || !['fixture', 'git'].includes(raw.repo.kind)) {
-    fail('repo must be { kind: "fixture", path } or { kind: "git", url }');
+    fail('repo must be { kind: "fixture", path } or { kind: "git", url, commit }');
   } else if (raw.repo.kind === 'git') {
-    unknownFields(raw.repo, ['kind', 'url'], (m) => fail(`repo: ${m}`));
-    if (!text(raw.repo.url) || !raw.repo.url.startsWith('https://')) fail('repo.url must be an https URL');
+    unknownFields(raw.repo, ['kind', 'url', 'commit', 'subdir', 'tree'], (m) => fail(`repo: ${m}`));
+    const { url, commit, subdir, tree } = raw.repo;
+    if (!text(url) || !url.startsWith('https://')) fail('repo.url must be an https URL');
+    if (typeof commit !== 'string' || !COMMIT.test(commit)) fail('repo.commit must be a full commit id, the upstream\'s');
+    if (subdir === undefined) {
+      if (tree !== undefined) fail('repo.tree goes with repo.subdir: the tree of that folder at the upstream commit');
+      if (raw.commit !== commit) fail(`the listing's commit ${raw.commit} is not repo.commit, ${commit}`);
+    } else {
+      if (!insidePath(subdir) || subdir.includes('//') || subdir.endsWith('/')) fail('repo.subdir must be a folder inside the repository');
+      if (typeof tree !== 'string' || !COMMIT.test(tree)) {
+        fail('repo.tree must be the full id of that folder\'s tree at the upstream commit');
+      } else if (raw.commit !== rootedCommit(tree).id) {
+        fail(`the listing's commit ${raw.commit} is not the one written over the tree ${tree}, ${rootedCommit(tree).id}`);
+      }
+    }
+    const releases = Array.isArray(raw.solc) ? raw.solc : [raw.solc];
+    if (releases.length === 0 || !releases.every(text)) {
+      fail('solc must name the official release the image installs, or a list of them');
+    } else {
+      const seen = new Set();
+      for (const release of releases) {
+        if (seen.has(release)) fail(`solc names ${release} twice`);
+        seen.add(release);
+        if (!OFFICIAL_SOLC.releases.has(release)) fail(`solc ${release} is not an official release for ${OFFICIAL_SOLC.platform}`);
+      }
+    }
+    listing.solcReleases = releases;
   } else {
     unknownFields(raw.repo, ['kind', 'path', 'imageOnly'], (m) => fail(`repo: ${m}`));
     if (!insidePath(raw.repo.path)) {
@@ -179,7 +309,9 @@ function loadListing(root, rel, problems) {
         if (!insidePath(raw.repo.imageOnly)) fail('repo.imageOnly must be inside the corpus');
         else if (!fs.existsSync(path.join(root, raw.repo.imageOnly))) fail(`repo.imageOnly ${raw.repo.imageOnly} does not exist`);
         else listing.imageOnly = readTree(path.join(root, raw.repo.imageOnly), fail);
+        listing.repoPaths.push(raw.repo.imageOnly);
       }
+      listing.repoPaths.push(raw.repo.path);
       const { commit } = gitObjects(listing.files);
       if (commit !== raw.commit) fail(`the repository's files make commit ${commit}, and listing.json names ${raw.commit}`);
     }
@@ -190,6 +322,19 @@ function loadListing(root, rel, problems) {
   if (spec !== null) {
     listing.spec = spec;
     if (spec.baseCommit !== raw.commit) fail(`code_review.json's baseCommit ${spec.baseCommit} is not the listing's commit`);
+    const isGit = isObject(raw.repo) && raw.repo.kind === 'git';
+    if (isGit && spec.repo !== raw.repo.url) fail(`code_review.json's repo ${spec.repo} is not the listing's, ${raw.repo.url}`);
+    const setup = isObject(spec.commands) ? spec.commands.setup : undefined;
+    if (setup !== undefined) {
+      if (!isGit) {
+        fail('a fixture listing has no commands.setup: nothing would run it');
+      } else {
+        // What the harness runs before the sandbox, on the same grammar as the listing's build: plain forge, allowed flags.
+        const parsed = parseCommand('build', setup);
+        if (!parsed.ok) fail(`commands.setup must be forge build with allowed flags: ${parsed.issue.detail}`);
+        else listing.setup = setup;
+      }
+    }
     if (!isObject(spec.env)) {
       fail('code_review.json has no env');
     } else {
@@ -423,6 +568,7 @@ function loadCase(root, group, name, listings, problems) {
   for (const file of filesUnder(dir)) {
     if (!known.has(file)) fail(`${file} is in the folder, and the case names no such file`);
   }
+  if (listing && isObject(listing.repo) && listing.repo.kind === 'git') checkPublicCase(raw, loaded, fail);
 
   return {
     id: raw.id, group, dir, raw,
@@ -527,12 +673,36 @@ function checkControl(entry, byId, problems) {
   }
 }
 
+/** What lies in the corpus and nothing reads: a vendored repository in repos/ would be third-party code in this public repo. */
+function layoutProblems(root, listings) {
+  const out = [];
+  const allowedTop = new Set(['cases', 'listings', 'repos', 'lib', 'run.js']);
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (!allowedTop.has(entry.name)) out.push(`${entry.name} is at the top of the corpus, and the format names no such thing`);
+  }
+  const named = [...listings.values()].filter(Boolean);
+  const repos = new Set(named.flatMap((l) => l.repoPaths));
+  const reposDir = path.join(root, 'repos');
+  if (fs.existsSync(reposDir)) {
+    for (const entry of fs.readdirSync(reposDir)) {
+      if (!repos.has(`repos/${entry}`)) out.push(`repos/${entry} is here, and no listing names it`);
+    }
+  }
+  const listingsDir = path.join(root, 'listings');
+  if (fs.existsSync(listingsDir)) {
+    for (const entry of fs.readdirSync(listingsDir)) {
+      if (!listings.has(`listings/${entry}`)) out.push(`listings/${entry} is here, and no case names it`);
+    }
+  }
+  return out;
+}
+
 /**
  * Read every case under `root`/cases. Throws CorpusError with every problem found: nothing is ever skipped.
- * @param {{root:string}} o
+ * @param {{root:string, layout?:boolean}} o - `layout` also holds what lies around the cases to the format (calibration/'s, not the canary's)
  * @returns {{cases:object[], byId:Map<string,object>}}
  */
-function loadCorpus({ root }) {
+function loadCorpus({ root, layout = false }) {
   const problems = [];
   const listings = new Map();
   const cases = [];
@@ -562,6 +732,7 @@ function loadCorpus({ root }) {
       problems.push(`${entry.id}: an adversarial case needs a control: the same PoC without the adversarial part`);
     }
   }
+  if (layout) problems.push(...layoutProblems(root, listings));
   if (problems.length) throw new CorpusError(problems);
   return { cases, byId };
 }
@@ -569,13 +740,17 @@ function loadCorpus({ root }) {
 /**
  * The cases to run, each with its control or its case: a relation needs both ends.
  * @param {{cases:object[], byId:Map}} corpus
- * @param {{subset?:string, cases?:string[]}} o
+ * @param {{subset?:string, cases?:string[], listing?:string}} o
  */
-function selectCases(corpus, { subset, cases: ids }) {
+function selectCases(corpus, { subset, cases: ids, listing }) {
   let chosen = corpus.cases;
   if (subset !== undefined) {
     chosen = chosen.filter((c) => c.subsets.includes(subset));
     if (chosen.length === 0) throw new Error(`no case is in the subset ${subset}: nothing to measure`);
+  }
+  if (listing !== undefined) {
+    chosen = chosen.filter((c) => c.listing && c.listing.id === listing);
+    if (chosen.length === 0) throw new Error(`no case${subset === undefined ? '' : ` in the subset ${subset}`} is on the listing ${listing}: nothing to measure`);
   }
   if (ids !== undefined && ids.length > 0) {
     for (const id of ids) if (!corpus.byId.has(id)) throw new Error(`no case is called ${id}`);

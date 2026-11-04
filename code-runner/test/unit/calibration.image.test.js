@@ -190,3 +190,168 @@ test('the arm64 manifest is found in the pinned index; an index without it is an
   assert.equal(parseBaseIndex(index, 'linux/arm64'), `sha256:${'e'.repeat(64)}`);
   assert.throws(() => parseBaseIndex({ manifests: [] }, 'linux/arm64'), /linux\/arm64/);
 });
+
+// ------------------------------------------------------------------------- A7b: a public repository's image
+
+const { packFiles, rootedCommit, gitRepoLayer, prebuiltLayer, parseTar } = require('../../calibration/lib/image');
+
+/** Objects as real git holds them, in a real repository. */
+function objectsOf(dir, commit) {
+  const ids = git(dir, 'rev-list', '--objects', commit).trim().split('\n').map((l) => l.split(' ')[0]);
+  const out = new Map();
+  for (const id of ids) {
+    const type = git(dir, 'cat-file', '-t', id).trim();
+    const content = execFileSync('git', ['-C', dir, 'cat-file', type, id], { env: GIT_ENV, maxBuffer: 1 << 26 });
+    out.set(id, { type, content });
+  }
+  return out;
+}
+
+function realRepo(dir) {
+  git(dir, 'init', '-q', '-b', 'main');
+  for (const [rel, bytes] of Object.entries(FILES)) {
+    fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
+    fs.writeFileSync(path.join(dir, rel), bytes);
+  }
+  git(dir, 'add', '-A');
+  git(dir, '-c', 'user.name=x', '-c', 'user.email=x@x.invalid', 'commit', '-q', '-m', 'upstream');
+  return git(dir, 'rev-parse', 'HEAD').trim();
+}
+
+test('packFiles writes a pack and index real git verifies and reads, and the same objects always give the same bytes', () => {
+  withTmp((dir) => {
+    const src = path.join(dir, 'src');
+    fs.mkdirSync(src);
+    const commit = realRepo(src);
+    const objects = objectsOf(src, commit);
+    objects.set('0'.repeat(40), undefined);
+    objects.delete('0'.repeat(40));
+    const { pack, idx, name } = packFiles(objects);
+    const { pack: pack2, idx: idx2 } = packFiles(new Map([...objects].reverse()));
+    assert.ok(pack.equals(pack2) && idx.equals(idx2), 'by id, whatever the order given');
+    const dst = path.join(dir, 'dst');
+    fs.mkdirSync(dst);
+    git(dst, 'init', '-q', '-b', 'main');
+    fs.writeFileSync(path.join(dst, '.git/objects/pack', `${name}.pack`), pack);
+    fs.writeFileSync(path.join(dst, '.git/objects/pack', `${name}.idx`), idx);
+    git(dst, 'verify-pack', path.join(dst, '.git/objects/pack', `${name}.idx`));
+    git(dst, 'update-ref', 'refs/heads/main', commit);
+    git(dst, 'fsck', '--strict', '--no-dangling');
+    assert.equal(git(dst, 'show', `${commit}:src/Vault.sol`), 'contract Vault {}\n');
+    assert.equal(git(dst, 'count-objects', '-v').match(/in-pack: (\d+)/)[1], String(objects.size));
+  });
+});
+
+test('rootedCommit is a pure function of the tree, and real git reads it', () => {
+  withTmp((dir) => {
+    const commit = realRepo(dir);
+    const tree = git(dir, 'rev-parse', `${commit}^{tree}`).trim();
+    const a = rootedCommit(tree);
+    assert.equal(a.id, rootedCommit(tree).id);
+    assert.notEqual(a.id, rootedCommit('a'.repeat(40)).id);
+    const made = execFileSync('git', ['-C', dir, 'hash-object', '-t', 'commit', '-w', '--stdin'], { input: a.content, env: GIT_ENV, encoding: 'utf8' }).trim();
+    assert.equal(made, a.id);
+    assert.equal(git(dir, 'rev-parse', `${a.id}^{tree}`).trim(), tree);
+  });
+});
+
+test('gitRepoLayer holds the work tree with its modes and links, the objects as one pack, and a folder for an unpopulated submodule, owned by the sandbox user', () => {
+  withTmp((dir) => {
+    const src = path.join(dir, 'src');
+    fs.mkdirSync(src);
+    const commit = realRepo(src);
+    const objects = objectsOf(src, commit);
+    const files = [
+      { path: 'foundry.toml', mode: 0o644, bytes: Buffer.from('[profile.default]\n') },
+      { path: 'run.sh', mode: 0o755, bytes: Buffer.from('#!/bin/sh\n') },
+      { path: 'src/Link.sol', mode: 0o777, link: 'Vault.sol' }
+    ];
+    const { layer } = gitRepoLayer({ commit, objects, files, emptyDirs: ['lib/empty'] });
+    const again = gitRepoLayer({ commit, objects, files: [...files].reverse(), emptyDirs: ['lib/empty'] });
+    assert.ok(layer.equals(again.layer), 'byte-stable');
+    fs.writeFileSync(path.join(dir, 'layer.tar'), layer);
+    const x = path.join(dir, 'x');
+    fs.mkdirSync(x);
+    execFileSync('tar', ['-xf', path.join(dir, 'layer.tar'), '-C', x]);
+    assert.equal(fs.readlinkSync(path.join(x, 'repo/src/Link.sol')), 'Vault.sol');
+    assert.ok(fs.statSync(path.join(x, 'repo/lib/empty')).isDirectory());
+    assert.equal(fs.statSync(path.join(x, 'repo/run.sh')).mode & 0o777, 0o755);
+    assert.equal(git(path.join(x, 'repo'), 'cat-file', '-t', commit).trim(), 'commit');
+    assert.equal(git(path.join(x, 'repo'), 'rev-parse', 'HEAD').trim(), commit);
+    git(path.join(x, 'repo'), 'fsck', '--strict', '--no-dangling');
+    const listed = execFileSync('tar', ['--numeric-owner', '-tvf', path.join(dir, 'layer.tar')], { encoding: 'utf8' }).trim().split('\n');
+    for (const line of listed) assert.match(line, /\s10001(?:\/|\s+)10001\s/, line);
+    assert.ok(!listed.some((l) => /\.git\/objects\/[0-9a-f]{2}\//.test(l)), 'no loose object: thousands of files would slow every prepare');
+  });
+});
+
+test('toolsLayer installs several releases, and one release alone is the bytes the canary pins', () => {
+  withTmp((dir) => {
+    const one = toolsLayer({ release: '0.8.31', bytes: Buffer.from('a') });
+    assert.ok(one.equals(toolsLayer({ releases: [{ release: '0.8.31', bytes: Buffer.from('a') }] })));
+    const two = toolsLayer({ releases: [{ release: '0.8.20', bytes: Buffer.from('a') }, { release: '0.8.31', bytes: Buffer.from('b') }] });
+    fs.writeFileSync(path.join(dir, 'l.tar'), two);
+    const listed = execFileSync('tar', ['-tf', path.join(dir, 'l.tar')], { encoding: 'utf8' });
+    assert.match(listed, /share\/svm\/0\.8\.20\/solc-0\.8\.20/);
+    assert.match(listed, /share\/svm\/0\.8\.31\/solc-0\.8\.31/);
+  });
+});
+
+test('prebuiltLayer rewrites what forge built with fixed metadata under /repo, and a long name survives; an entry that leaves the folder stops it', () => {
+  withTmp((dir) => {
+    const work = path.join(dir, 'w');
+    const long = `out/${'a'.repeat(120)}.sol/${'b'.repeat(120)}.json`;
+    fs.mkdirSync(path.join(work, path.dirname(long)), { recursive: true });
+    fs.writeFileSync(path.join(work, long), '{"artifact":1}');
+    fs.mkdirSync(path.join(work, 'cache'));
+    fs.writeFileSync(path.join(work, 'cache/solidity-files-cache.json'), '{}');
+    const tarEnv = { ...process.env, COPYFILE_DISABLE: '1' };
+    execFileSync('tar', ['--format=pax', '-cf', path.join(dir, 'pax.tar'), '-C', work, 'out', 'cache'], { env: tarEnv });
+    const entries = parseTar(fs.readFileSync(path.join(dir, 'pax.tar')));
+    assert.ok(entries.some((e) => e.path === long && e.bytes.toString() === '{"artifact":1}'), 'a pax long name is read');
+    // GNU tar, in the image, writes an 'L' entry before the file.
+    const gnuHead = (name, size, type) => {
+      const h = Buffer.alloc(512);
+      h.write(name, 0, 100, 'latin1');
+      h.write(`${size.toString(8).padStart(11, '0')}\0`, 124, 12, 'latin1');
+      h.write(type, 156, 1, 'latin1');
+      return h;
+    };
+    const longName = Buffer.from(`${long}\0`);
+    const gnu = Buffer.concat([
+      gnuHead('././@LongLink', longName.length, 'L'), longName, Buffer.alloc(512 - (longName.length % 512)),
+      gnuHead(long.slice(0, 100), 2, '0'), Buffer.from('{}'), Buffer.alloc(510), Buffer.alloc(1024)
+    ]);
+    assert.deepEqual(parseTar(gnu).map((e) => [e.path, e.bytes.toString()]), [[long, '{}']], 'a GNU long name is read');
+    assert.throws(() => prebuiltLayer(gnu), /too long/, 'a name no header can hold is loud');
+    fs.rmSync(path.join(work, 'out'), { recursive: true });
+    fs.mkdirSync(path.join(work, 'out/A.sol'), { recursive: true });
+    fs.writeFileSync(path.join(work, 'out/A.sol/A.json'), '{"artifact":1}');
+    execFileSync('tar', ['-cf', path.join(dir, 'from.tar'), '-C', work, 'out', 'cache'], { env: tarEnv });
+    const from = fs.readFileSync(path.join(dir, 'from.tar'));
+    const layer = prebuiltLayer(from);
+    assert.ok(layer.equals(prebuiltLayer(from)));
+    fs.writeFileSync(path.join(dir, 'to.tar'), layer);
+    const listed = execFileSync('tar', ['--numeric-owner', '-tvf', path.join(dir, 'to.tar')], { encoding: 'utf8' });
+    assert.match(listed, /10001(?:\/|\s+)10001.*repo\/cache\/solidity-files-cache\.json/);
+    assert.ok(!/\s(?:\.\.\/|\/)/.test(listed));
+    const bad = tarLayer([{ path: '../evil', bytes: Buffer.from('x'), mode: 0o644, uid: 0, gid: 0 }]);
+    assert.throws(() => prebuiltLayer(bad), /leaves/);
+    const empty = tarLayer([]);
+    assert.throws(() => prebuiltLayer(empty), /nothing/);
+  });
+});
+
+test('solcBytes finds any official release by soliditylang\'s list, checks it against the runner\'s table, and refuses what is not official', async () => {
+  const { solcBytes } = require('../../test/docker/forgeFixture');
+  const { officialList } = require('../../src/solcReleases');
+  await assert.rejects(solcBytes('linux/arm64', '0.8.23', { fetchImpl: () => { throw new Error('fetched'); } }), /no official build for linux\/arm64/);
+  await assert.rejects(solcBytes('linux/amd64', '0.8.999', { fetchImpl: () => { throw new Error('fetched'); } }), /no official build/);
+  const asked = [];
+  const answer = (bytes) => ({ status: 200, arrayBuffer: async () => bytes, json: async () => ({ releases: { '0.8.23': 'solc-linux-amd64-v0.8.23+commit.fake' } }) });
+  const fetchImpl = async (url) => { asked.push(url); return answer(Buffer.from('not the release')); };
+  await assert.rejects(solcBytes('linux/amd64', '0.8.23', { fetchImpl }), /solc checksum/);
+  assert.equal(asked[0], 'https://binaries.soliditylang.org/linux-amd64/list.json');
+  assert.equal(asked[1], 'https://binaries.soliditylang.org/linux-amd64/solc-linux-amd64-v0.8.23+commit.fake');
+  assert.equal(officialList('linux/amd64').releases.get('0.8.23').length, 64);
+});

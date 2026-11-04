@@ -26,6 +26,7 @@ const path = require('node:path');
 const { runText } = require('../../src/docker');
 const { BASE_IMAGE_PINS } = require('../../src/common');
 const { SEMGREP } = require('../../src/semgrepPin');
+const { officialList, SOURCE: SOLC_SOURCE } = require('../../src/solcReleases');
 const { PLATFORM, ensureImage } = require('./helpers');
 
 /** The pinned forge base for PLATFORM: the class's linux/amd64 manifest, or (runc on Apple silicon) the same release's arm64 variant. */
@@ -57,14 +58,31 @@ const FORGE_STD_ARCHIVE = Object.freeze({
 /** registry:2 (2.8.3), the multi-platform index pinned by digest. */
 const REGISTRY_IMAGE = 'registry@sha256:a3d8aaa63ed8681a604f1dea0aa03f100d5895b6a58ace528858a7b332415373';
 
-async function solcBytes(platform = PLATFORM, release = '0.8.31') {
-  const pin = release === '0.8.31' ? SOLC[platform] : SOLC_RELEASES[release][platform];
+/**
+ * Any official release (A7b: the public repositories' 0.8.13 to 0.8.28): the file name from soliditylang's own list for the
+ * platform, the SHA-256 from the runner's table (src/solcReleases.json), so the list only says where to look.
+ * @throws {Error} a release with no official build for the platform
+ */
+async function officialPin(platform, release, { fetchImpl = fetch } = {}) {
+  const sha256 = officialList(platform).releases.get(release);
+  if (!sha256) throw new Error(`solc ${release} has no official build for ${platform}`);
+  const dir = platform.replace('/', '-');
+  const res = await fetchImpl(`${SOLC_SOURCE}/${dir}/list.json`);
+  if (res.status !== 200) throw new Error(`GET ${SOLC_SOURCE}/${dir}/list.json answered ${res.status}`);
+  const file = (await res.json()).releases[release];
+  if (typeof file !== 'string' || !/^solc-[A-Za-z0-9.+-]+$/.test(file)) throw new Error(`the list for ${platform} names no file for ${release}`);
+  return { url: `${SOLC_SOURCE}/${dir}/${file}`, sha256 };
+}
+
+async function solcBytes(platform = PLATFORM, release = '0.8.31', { fetchImpl = fetch } = {}) {
+  const known = release === '0.8.31' ? SOLC[platform] : SOLC_RELEASES[release] && SOLC_RELEASES[release][platform];
+  const pin = known || await officialPin(platform, release, { fetchImpl });
   const cached = path.join(os.tmpdir(), `vcr-${path.basename(pin.url)}`);
   if (fs.existsSync(cached)) {
     const bytes = fs.readFileSync(cached);
     if (crypto.createHash('sha256').update(bytes).digest('hex') === pin.sha256) return bytes;
   }
-  const res = await fetch(pin.url);
+  const res = await fetchImpl(pin.url);
   assert.equal(res.status, 200, `GET ${pin.url}`);
   const bytes = Buffer.from(await res.arrayBuffer());
   assert.equal(crypto.createHash('sha256').update(bytes).digest('hex'), pin.sha256, 'solc checksum');
