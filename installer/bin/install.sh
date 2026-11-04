@@ -693,7 +693,7 @@ if [ -d "$CODE_RUNNER_SRC_DIR" ]; then
     echo -e "${BLUE}Copying Code Runner...${NC}"
     mkdir -p "$INSTALL_DIR/code-runner"
     cp -r "$CODE_RUNNER_SRC_DIR/." "$INSTALL_DIR/code-runner/"
-    rm -rf "$INSTALL_DIR/code-runner/.state" "$INSTALL_DIR/code-runner/logs"
+    rm -rf "$INSTALL_DIR/code-runner/.state" "$INSTALL_DIR/code-runner/logs"  # a development run's
     chmod +x "$INSTALL_DIR/code-runner/start.sh" "$INSTALL_DIR/code-runner/stop.sh"
 else
     echo -e "${YELLOW}Warning: Code Runner source directory not found at $CODE_RUNNER_SRC_DIR${NC}"

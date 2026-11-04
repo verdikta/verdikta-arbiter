@@ -52,7 +52,7 @@ word_value() { # word_value KEY DEFAULT
 PORT="$(word_value CODE_RUNNER_PORT 8090)"
 BIND="$(word_value CODE_RUNNER_HOST 127.0.0.1)"
 
-TOKEN_FILE="$(word_value CODE_RUNNER_TOKEN_FILE "$HERE/.state/token")"
+TOKEN_FILE="$(word_value CODE_RUNNER_TOKEN_FILE "$HERE/../code-runner-state/token")"
 # Anything on the port at all, whatever it is.
 port_answers() {
     [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' "http://$BIND:$PORT/health" 2>/dev/null)" != "000" ]
@@ -97,7 +97,7 @@ until [ -e "$socket" ] || [ "$waited" -ge "${CODE_RUNNER_DAEMON_WAIT_SECS:-60}" 
 done
 [ -e "$socket" ] || echo "Warning: the runner's Docker socket $socket is not there yet." >&2
 
-mkdir -p logs .state
+mkdir -p logs
 LOG_FILE="$HERE/logs/runner_$(date +%Y%m%d_%H%M%S).log"
 # Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
 nohup env -i PATH="$PATH" HOME="$HOME" NODE_ENV=production "${ARGS[@]}" node src/index.js >> "$LOG_FILE" 2>&1 &

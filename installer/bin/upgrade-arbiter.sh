@@ -1215,7 +1215,7 @@ if ask_yes_no "Would you like to create a backup before upgrading? (Recommended 
     fi
     # The copy came with this run's lock. Restored, it would refuse every claim from then on.
     if [ -n "$BACKUP_DIR" ]; then
-        rm -f "$BACKUP_DIR/code-runner/.state/maintenance"
+        rm -f "$BACKUP_DIR/code-runner-state/maintenance"
     fi
     # Only now that the new copy exists: keep the newest N, drop the rest (#47).
     prune_old_backups "$TARGET_DIR" "$(resolve_backup_keep)"
@@ -1762,8 +1762,9 @@ fi
 
 # Upgrade the Code Runner. Its files reach every node, so the same-version check below and a
 # later `code-review-sandbox.sh enable` have them; a node without the sandbox runs none of it.
+# Its state, the maintenance lock with it, sits outside the replaced tree (code-runner-state/).
 if [ -d "$REPO_CODE_RUNNER" ]; then
-    upgrade_component "$REPO_CODE_RUNNER" "$TARGET_CODE_RUNNER" "Code Runner" ".env .state logs node_modules *.pid"
+    upgrade_component "$REPO_CODE_RUNNER" "$TARGET_CODE_RUNNER" "Code Runner" ".env logs node_modules *.pid"
 fi
 
 # Update management scripts
@@ -1897,7 +1898,7 @@ if [ -f "$TARGET_CODE_RUNNER/.env" ]; then
     if [ "$CODE_REVIEW_HOLD_RC" != "0" ]; then
         # The tool left the lock on, as no pid's: this run's exit does not lift it.
         echo -e "${YELLOW}Warning: could not turn code review off in the adapter (exit $CODE_REVIEW_HOLD_RC). Check $TARGET_DIR/external-adapter/.env.${NC}"
-        CODE_REVIEW_SANDBOX_FAILED="code review could not be turned off for a release with no conformance pass; fix $TARGET_DIR/external-adapter/.env and remove $TARGET_DIR/code-runner/.state/maintenance"
+        CODE_REVIEW_SANDBOX_FAILED="code review could not be turned off for a release with no conformance pass; fix $TARGET_DIR/external-adapter/.env and remove $TARGET_DIR/code-runner-state/maintenance"
     fi
 fi
 

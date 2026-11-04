@@ -39,12 +39,12 @@ DOCKER_HOST=${1:-unix://$T/run/docker.sock}
 CODE_RUNNER_RUNTIME=runsc
 CODE_RUNNER_PORT=$PORT
 CODE_RUNNER_HOST=127.0.0.1
-CODE_RUNNER_TOKEN_FILE=$R/.state/token
+CODE_RUNNER_TOKEN_FILE=$T/code-runner-state/token
 E
 }
 # A socket the wait can see: start.sh waits, bounded, for the daemon's socket at boot.
-mkdir -p "$T/run" "$R/.state"; : > "$T/run/docker.sock"
-printf '%s\n' "$(printf 'tok1%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)" > "$R/.state/token"
+mkdir -p "$T/run" "$T/code-runner-state"; : > "$T/run/docker.sock"
+printf '%s\n' "$(printf 'tok1%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)" > "$T/code-runner-state/token"
 start() { env PRIVATE_KEY=not-a-real-key INFURA_API_KEY=not-a-real-key IPFS_PINNING_KEY=not-a-real-key CODE_RUNNER_DAEMON_WAIT_SECS=1 CODE_RUNNER_START_TIMEOUT_SECS=15 bash "$R/start.sh" 2>&1; }
 
 # --- no .env: nothing to start
@@ -145,7 +145,7 @@ for tool in code-review-sandbox.sh code-review-check.js; do
     grep -qE "^ *${tool//./\\.}( \\\\|; do)\$" "$ROOT/bin/upgrade-arbiter.sh" && ok || bad "$tool is not in upgrade's copy loop"
     grep -q "$tool" "$ROOT/bin/install.sh" && ok || bad "$tool is not deployed by install.sh"
 done
-has "upgrade carries the component" "$(cat "$ROOT/bin/upgrade-arbiter.sh")" 'upgrade_component "$REPO_CODE_RUNNER" "$TARGET_CODE_RUNNER" "Code Runner" ".env .state logs node_modules \*.pid"'
+has "upgrade carries the component" "$(cat "$ROOT/bin/upgrade-arbiter.sh")" 'upgrade_component "$REPO_CODE_RUNNER" "$TARGET_CODE_RUNNER" "Code Runner" ".env logs node_modules \*.pid"'
 has "install copies the component"  "$(cat "$ROOT/bin/install.sh")" 'CODE_RUNNER_SRC_DIR'
 # The same-version check covers the runner on both paths.
 has "install: same-version check" "$(cat "$ROOT/bin/install.sh")" 'common-pin.js" --agree'

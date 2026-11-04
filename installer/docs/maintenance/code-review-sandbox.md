@@ -14,7 +14,7 @@ code review on); text-mode requests never use it. [Design](../../../docs/develop
 | gVisor, the release `@verdikta/common` pins, SHA-512 checked | `/opt/gvisor/<release>/runsc` |
 | A disk image, 40 GB by default (`--disk-gb`, at least 12), allocated up front | `/var/lib/verdikta-code-runner.img`, mounted at `/var/lib/verdikta-code-runner` |
 | Its own Docker daemon and containerd: units `verdikta-code-runner-disk`, `-containerd`, `-docker`, on at boot | `/etc/verdikta-code-runner/`, socket `/run/verdikta-code-runner/docker.sock` |
-| The code runner, on `127.0.0.1:8090` with a token; started and stopped with the arbiter | `<install>/code-runner/` (`.env`, `.state/`, `logs/`) |
+| The code runner, on `127.0.0.1:8090` with a token; started and stopped with the arbiter | `<install>/code-runner/` (`.env`, `logs/`) and `<install>/code-runner-state/` (token, pass, lock) |
 | The pinned Foundry base and Semgrep images, on its daemon | the disk |
 | `CODE_REVIEW_*`, `CODE_RUNNER_*` and `NETWORK_CHAIN_ID` | `<install>/external-adapter/.env` |
 
@@ -37,7 +37,7 @@ arbiter process they touch.
 `enable` warms the images and runs a fixed canary listing and claim through the real runner under
 gVisor, then compares the report's hash with the one `@verdikta/common` publishes. It takes a few
 minutes, port 5987 on loopback, and needs `ghcr.io` and `binaries.soliditylang.org`. A pass is kept
-in `code-runner/.state/conformance.json` and holds for that runner, gVisor and common release.
+in `code-runner-state/conformance.json` and holds for that runner, gVisor and common release.
 
 Code review is on in the adapter only while a pass stands. `register-oracle.sh` refuses a code class,
 or 5555 with code review on, without one. It also refuses one job on both 133 and 134, which would make

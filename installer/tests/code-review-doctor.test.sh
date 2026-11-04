@@ -23,9 +23,9 @@ cleanup() { [ -n "$SRV" ] && kill "$SRV" 2>/dev/null; rm -rf "$T"; }
 trap cleanup EXIT
 HASH=$(printf 'cafe%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
 TOKEN=$(printf 'tok1%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
-I="$T/i"; M="$T/mnt"; mkdir -p "$I/code-runner/.state" "$I/code-runner/node_modules/@verdikta/common" "$I/external-adapter" "$I/installer" "$T/bin" "$M"
+I="$T/i"; M="$T/mnt"; mkdir -p "$I/code-runner-state" "$I/code-runner/node_modules/@verdikta/common" "$I/external-adapter" "$I/installer" "$T/bin" "$M"
 cp "$ROOT/util/code-review-check.js" "$I/"
-printf '%s\n' "$TOKEN" > "$I/code-runner/.state/token"; chmod 600 "$I/code-runner/.state/token"
+printf '%s\n' "$TOKEN" > "$I/code-runner-state/token"; chmod 600 "$I/code-runner-state/token"
 cat > "$I/code-runner/package.json" <<'J'
 { "name": "verdikta-code-runner", "version": "0.1.0", "dependencies": { "@verdikta/common": "9.9.9-test" } }
 J
@@ -75,7 +75,7 @@ done
 cat > "$I/code-runner/.env" <<E
 DOCKER_HOST=unix://$T/run/docker.sock
 CODE_RUNNER_DATA_ROOT=$M
-CODE_RUNNER_TOKEN_FILE=$I/code-runner/.state/token
+CODE_RUNNER_TOKEN_FILE=$I/code-runner-state/token
 CODE_RUNNER_HOST=127.0.0.1
 CODE_RUNNER_PORT=$RP
 E
@@ -88,7 +88,7 @@ cat > "$T/runner.json" <<E
 E
 }
 good_adapter() { echo '{ "status": "ok", "codeReview": { "enabled": true, "ready": true, "trust": "production", "problems": [] } }' > "$T/adapter.json"; }
-good_pass() { printf '{"pass":true,"reportSha256":"%s","runner":"0.1.0","gvisor":"release-20260921.0","commonVersion":"9.9.9-test","at":"2026-11-04T00:00:00Z"}\n' "$HASH" > "$I/code-runner/.state/conformance.json"; }
+good_pass() { printf '{"pass":true,"reportSha256":"%s","runner":"0.1.0","gvisor":"release-20260921.0","commonVersion":"9.9.9-test","at":"2026-11-04T00:00:00Z"}\n' "$HASH" > "$I/code-runner-state/conformance.json"; }
 good() { good_runner; good_adapter; good_pass; }
 edit() { # edit FILE 'js expression over d'
     node -e 'const fs=require("fs");const f=process.argv[1];const d=JSON.parse(fs.readFileSync(f));eval(process.argv[2]);fs.writeFileSync(f,JSON.stringify(d));' "$1" "$2"
@@ -118,7 +118,7 @@ is_sev "503" "$out" svc.code_runner FAIL; has "503 names the reason" "$out" "mai
 good; rm -f "$T/runner.json"; out=$(run); is_sev "no answer" "$out" svc.code_runner FAIL
 good; edit "$T/runner.json" 'd.docker.endpoint="unix:///var/run/docker.sock"'; out=$(run)
 is_sev "the arbiter's Docker" "$out" svc.code_runner FAIL; has "the arbiter's Docker named" "$out" "not its own"
-good; printf 'not-the-token\n' > "$I/code-runner/.state/token"; out=$(run); is_sev "wrong token" "$out" svc.code_runner FAIL; printf '%s\n' "$TOKEN" > "$I/code-runner/.state/token"
+good; printf 'not-the-token\n' > "$I/code-runner-state/token"; out=$(run); is_sev "wrong token" "$out" svc.code_runner FAIL; printf '%s\n' "$TOKEN" > "$I/code-runner-state/token"
 
 # --- sandbox.runsc
 good; edit "$T/runner.json" 'd.runtime="runc"'; out=$(run); is_sev "runc" "$out" sandbox.runsc FAIL
@@ -141,9 +141,9 @@ good; python3 -c 'import sys; f=open(sys.argv[1],"wb"); f.truncate(40*1024**3); 
 out=$(run); is_sev "a sparse image" "$out" sandbox.disk WARN; has "a sparse image says what to run" "$out" "fallocate"; rm -f "$M.img"
 
 # --- sandbox.conformance
-good; rm -f "$I/code-runner/.state/conformance.json"; out=$(run); is_sev "no pass" "$out" sandbox.conformance FAIL
-good; sed -i.b 's/"reportSha256":"cafe/"reportSha256":"beef/' "$I/code-runner/.state/conformance.json"; out=$(run); is_sev "another hash" "$out" sandbox.conformance FAIL
-good; sed -i.b 's/"runner":"0.1.0"/"runner":"0.0.9"/' "$I/code-runner/.state/conformance.json"; out=$(run); is_sev "another runner" "$out" sandbox.conformance FAIL
+good; rm -f "$I/code-runner-state/conformance.json"; out=$(run); is_sev "no pass" "$out" sandbox.conformance FAIL
+good; sed -i.b 's/"reportSha256":"cafe/"reportSha256":"beef/' "$I/code-runner-state/conformance.json"; out=$(run); is_sev "another hash" "$out" sandbox.conformance FAIL
+good; sed -i.b 's/"runner":"0.1.0"/"runner":"0.0.9"/' "$I/code-runner-state/conformance.json"; out=$(run); is_sev "another runner" "$out" sandbox.conformance FAIL
 
 # --- sandbox.trust: anything but production fails
 for t in dev dev-refused refused unknown; do
@@ -160,7 +160,7 @@ good; edit "$T/runner.json" 'd.images.allowlist.push({entry:"127.0.0.1:5000",dev
 is_sev "dev entry" "$out" sandbox.registry FAIL; has "dev entry named" "$out" "127.0.0.1:5000"
 
 # --- not installed: one INFO, and no noise for a text-only arbiter
-good; mv "$I/code-runner/.env" "$T/env.off"; rm -f "$I/code-runner/.state/conformance.json"; out=$(run)
+good; mv "$I/code-runner/.env" "$T/env.off"; rm -f "$I/code-runner-state/conformance.json"; out=$(run)
 is_sev "not installed" "$out" sandbox.skipped INFO
 hasnt "not installed: no FAIL" "$out" "^FAIL"
 # ... and a disk image with no sandbox is 40 GB nobody is using.

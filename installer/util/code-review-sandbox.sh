@@ -129,7 +129,8 @@ warn() { echo -e "${YELLOW}$*${NC}" >&2; }
 INSTALL_DIR="${INSTALL_DIR:-$SCRIPT_DIR}"
 INSTALL_DIR="$(cd "$INSTALL_DIR" 2>/dev/null && pwd)" || { echo "install directory not found: $INSTALL_DIR" >&2; exit 64; }
 RUNNER_DIR="$INSTALL_DIR/code-runner"
-STATE_DIR="$RUNNER_DIR/.state"
+# Outside code-runner/, which an upgrade replaces: the lock must not leave while its holder works.
+STATE_DIR="$INSTALL_DIR/code-runner-state"
 LOCK_FILE="$STATE_DIR/maintenance"
 TOKEN_FILE="$STATE_DIR/token"
 RUNNER_ENV="$RUNNER_DIR/.env"
@@ -351,21 +352,26 @@ TMP_DIR=""
 lock_line() { echo "code-review-sandbox $1 $(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
 lock_holder() { awk '{print $2; exit}' "$LOCK_FILE" 2>/dev/null; }
 pid_alive() { kill -0 "$1" 2>/dev/null || [ -d "/proc/$1" ]; }
-# 0 this pid holds it, 1 another live holder, 2 an operator's stays, 3 the parent's, kept by the parent.
+# 0 this pid holds it, 1 another live holder, 2 an operator's stays, 3 the parent's, kept by the parent,
+# 4 it could not be established. Published whole by a hard link, which fails if the file is there, so
+# nobody ever reads half of one: a file with no pid is one an operator made, `touch` included.
 acquire_lock() {
-    local pid="$1" holder rc=1
+    local pid="$1" holder rc=1 tmp="$LOCK_FILE.new.$1"
     mkdir -p "$STATE_DIR" 2>/dev/null
-    if ( set -C; lock_line "$pid" > "$LOCK_FILE" ) 2>/dev/null; then return 0; fi
+    lock_line "$pid" > "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 4; }
+    if ln "$tmp" "$LOCK_FILE" 2>/dev/null; then rm -f "$tmp"; return 0; fi
+    if [ ! -f "$LOCK_FILE" ] || [ ! -r "$LOCK_FILE" ]; then rm -f "$tmp"; return 4; fi
     holder=$(lock_holder)
-    [[ "$holder" =~ ^[0-9]+$ ]] || return 2
-    [ "$holder" = "$pid" ] && return 0
-    [ "$holder" = "${CODE_REVIEW_LOCK_PARENT:-}" ] && return 3
-    pid_alive "$holder" && return 1
+    if ! [[ "$holder" =~ ^[0-9]+$ ]]; then rm -f "$tmp"; return 2; fi
+    if [ "$holder" = "$pid" ]; then rm -f "$tmp"; return 0; fi
+    if [ "$holder" = "${CODE_REVIEW_LOCK_PARENT:-}" ]; then rm -f "$tmp"; return 3; fi
+    if pid_alive "$holder"; then rm -f "$tmp"; return 1; fi
     # mkdir is atomic: of two seeing the same dead holder, one goes on.
-    mkdir "$LOCK_FILE.takeover" 2>/dev/null || return 1
-    if [ "$(lock_holder)" = "$holder" ] && lock_line "$pid" > "$LOCK_FILE.new.$pid" && mv -f "$LOCK_FILE.new.$pid" "$LOCK_FILE"; then rc=0; fi
-    rm -f "$LOCK_FILE.new.$pid"
-    rmdir "$LOCK_FILE.takeover"
+    if mkdir "$LOCK_FILE.takeover" 2>/dev/null; then
+        if [ "$(lock_holder)" = "$holder" ] && mv -f "$tmp" "$LOCK_FILE"; then rc=0; fi
+        rmdir "$LOCK_FILE.takeover"
+    fi
+    rm -f "$tmp"
     return "$rc"
 }
 release_lock() { # release_lock PID: only its own
@@ -378,15 +384,26 @@ lock_take() {
         0) LOCK_MINE=1 ;;
         1) echo -e "${RED}Another maintenance operation holds $LOCK_FILE: $(cat "$LOCK_FILE" 2>/dev/null). Wait for it, or remove the file if it is gone.${NC}" >&2
            exit 1 ;;
+        4) echo -e "${RED}Could not write the maintenance lock $LOCK_FILE: nothing was changed.${NC}" >&2
+           exit 1 ;;
     esac
     own "$STATE_DIR" 2>/dev/null
 }
 # Code review could not be turned off, and no pass stands: the lock stays, with no pid, so no claim is
 # admitted whoever exits next. An operator lifts it after fixing what stopped the write.
 pin_lock() {
-    echo "code-review-sandbox kept: CODE_REVIEW_ENABLED could not be turned off in $ADAPTER_ENV at $(date -u +%Y-%m-%dT%H:%M:%SZ); remove this file after fixing that" > "$LOCK_FILE"
+    local tmp="$LOCK_FILE.new.$$"
     LOCK_MINE=0
-    echo -e "${RED}Code review could not be turned off in $ADAPTER_ENV, so the maintenance lock $LOCK_FILE stays: the runner refuses every claim until you fix that and remove it.${NC}" >&2
+    if echo "code-review-sandbox kept: CODE_REVIEW_ENABLED could not be turned off in $ADAPTER_ENV at $(date -u +%Y-%m-%dT%H:%M:%SZ); remove this file after fixing that" > "$tmp" 2>/dev/null \
+        && mv -f "$tmp" "$LOCK_FILE" 2>/dev/null && grep -q ' kept: ' "$LOCK_FILE" 2>/dev/null; then
+        echo -e "${RED}Code review could not be turned off in $ADAPTER_ENV, so the maintenance lock $LOCK_FILE stays: the runner refuses every claim until you fix that and remove it.${NC}" >&2
+        return 0
+    fi
+    # The disk is full or read-only, then. The last thing left is that no runner answers: the adapter abstains.
+    rm -f "$tmp" 2>/dev/null
+    as_user bash "$RUNNER_DIR/stop.sh" >/dev/null 2>&1
+    echo -e "${RED}Code review could not be turned off in $ADAPTER_ENV and the lock $LOCK_FILE could not be written, so the code runner was STOPPED: claims abstain until you fix that. start-arbiter.sh starts it again.${NC}" >&2
+    return 1
 }
 # The way out of a run, however it comes: a signal after the disk was allocated still removes it.
 # bash runs a signal's trap when the foreground child ends, so the child is not left using the disk.

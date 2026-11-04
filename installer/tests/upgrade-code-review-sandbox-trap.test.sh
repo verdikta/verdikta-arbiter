@@ -37,7 +37,7 @@ l3=$(grep -n '^# Ask if user wants to restart the arbiter' "$S" | cut -d: -f1); 
 [ -n "$l3" ] && [ -n "$l4" ] && [ "$l3" -lt "$l4" ] && ok || bad "the offer does not follow the restart ($l3, $l4)"
 
 T=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$T"' EXIT
-mkdir -p "$T/install/code-runner/.state" "$T/bin"
+mkdir -p "$T/install/code-runner-state" "$T/install/code-runner" "$T/bin"
 cat > "$T/install/code-review-sandbox.sh" <<'STUB'
 #!/bin/bash
 case "$1" in
@@ -131,10 +131,10 @@ grep -q 'CODE_REVIEW_SANDBOX_FAILED' <<< "$tail_block" && ok || bad "the tail do
 
 # --- the lock. run_lock: the real lock block, then the real trap handler on a failure, in real script order.
 run_lock() { # run_lock INSTALLED(1|0) PRE_HELD(1|0) FAIL_AFTER(1|0)
-    rm -f "$T/install/code-runner/.state/maintenance" "$T/install/code-runner/.env"
+    rm -f "$T/install/code-runner-state/maintenance" "$T/install/code-runner/.env"
     [ "$1" = 1 ] && : > "$T/install/code-runner/.env"
-    [ "$2" = 1 ] && echo "by hand" > "$T/install/code-runner/.state/maintenance"
-    LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" FAIL_AFTER="$3" REAL_UTIL="$ROOT/util" bash -c '
+    [ "$2" = 1 ] && echo "by hand" > "$T/install/code-runner-state/maintenance"
+    LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" FAIL_AFTER="$3" REAL_UTIL="$ROOT/util" bash -c '
         set -e
         GREEN= YELLOW= RED= BLUE= NC=
         UTIL_DIR="$REAL_UTIL"
@@ -147,7 +147,7 @@ run_lock() { # run_lock INSTALLED(1|0) PRE_HELD(1|0) FAIL_AFTER(1|0)
         echo "REACHED-END"
     ' _ "$trapfn" "$lock" 2>&1
     echo "rc=$?"
-    echo "LOCK-AFTER=$([ -f "$T/install/code-runner/.state/maintenance" ] && echo present || echo gone)"
+    echo "LOCK-AFTER=$([ -f "$T/install/code-runner-state/maintenance" ] && echo present || echo gone)"
 }
 out=$(run_lock 1 0 0)
 has "lock: held during the upgrade" "$out" "HELD-DURING-UPGRADE=yes"
@@ -168,9 +168,9 @@ out=$(run_lock 1 1 1)
 has "another's lock stays after a failure" "$out" "LOCK-AFTER=present"
 # A sandbox operation still running: no upgrade yet, or it would lift the lock from under this one.
 sleep 60 & live=$!
-rm -f "$T/install/code-runner/.state/maintenance"; : > "$T/install/code-runner/.env"
-echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner/.state/maintenance"
-out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
+rm -f "$T/install/code-runner-state/maintenance"; : > "$T/install/code-runner/.env"
+echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner-state/maintenance"
+out=$(LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
     set -e
     trap "echo TRAP-FIRED; exit 9" ERR
     GREEN= YELLOW= RED= BLUE= NC=
@@ -181,11 +181,11 @@ out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" U
 has   "a live holder: says so" "$out" "$live"
 hasnt "a live holder: nothing stopped" "$out" "STOPPED-THE-ARBITER"
 hasnt "a live holder: trap" "$out" "TRAP-FIRED"
-has   "a live holder: its lock stays" "$(cat "$T/install/code-runner/.state/maintenance")" "$live"
+has   "a live holder: its lock stays" "$(cat "$T/install/code-runner-state/maintenance")" "$live"
 kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 # A dead holder's file is taken over, and let go.
-echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner/.state/maintenance"
-out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
+echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner-state/maintenance"
+out=$(LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
     set -e
     GREEN= YELLOW= RED= BLUE= NC=
     eval "$1"
@@ -195,27 +195,45 @@ out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" U
 ' _ "$lock" 2>&1)
 has "a dead holder: taken over" "$out" "HOLDER=code-review-sandbox [0-9]"
 has "a dead holder: finished" "$out" "REACHED-END"
-[ ! -f "$T/install/code-runner/.state/maintenance" ] && ok || bad "a dead holder's lock stayed"
+[ ! -f "$T/install/code-runner-state/maintenance" ] && ok || bad "a dead holder's lock stayed"
 # The tool hears whose lock it is.
 pid_line=$(printf '%s\n' "$out" | grep '^PARENT=')
 parent=${pid_line#PARENT=}; parent=${parent%% *}
 [ -n "$parent" ] && [ "$parent" = "${pid_line##*PID=}" ] && ok || bad "the upgrade does not hand its pid down: $pid_line"
 
+# The lock is outside what an upgrade replaces: a second operation stays refused all the way through.
+component=$(awk '/^upgrade_component\(\) \{/{p=1} p{print} p&&/^}/{exit}' "$S")
+[ -n "$component" ] && ok || bad "could not extract upgrade_component"
+mkdir -p "$T/newrunner"; echo new > "$T/newrunner/file"
+echo "code-review-sandbox $$ x" > "$T/install/code-runner-state/maintenance"; mkdir -p "$T/install/code-runner"; echo old > "$T/install/code-runner/old"
+out=$(TARGET_DIR="$T/install" SRC="$T/newrunner" bash -c '
+    set -e
+    GREEN= YELLOW= RED= BLUE= NC=
+    eval "$1"
+    upgrade_component "$SRC" "$TARGET_DIR/code-runner" "Code Runner" ".env logs node_modules *.pid"
+    echo "REACHED-END"
+' _ "$component" 2>&1)
+has "the replacement ran" "$out" "REACHED-END"
+[ -f "$T/install/code-runner/file" ] && [ ! -e "$T/install/code-runner/old" ] && ok || bad "the replacement did not replace"
+has "the lock did not move" "$(cat "$T/install/code-runner-state/maintenance")" "sandbox $$ "
+rm -f "$T/install/code-runner-state/maintenance"
+mkdir -p "$T/install/code-runner"; : > "$T/install/code-runner/.env"
+
 # What the tool pinned is no pid's: the upgrade's exit does not lift it.
-rm -f "$T/install/code-runner/.state/maintenance"
-out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
+rm -f "$T/install/code-runner-state/maintenance"
+out=$(LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
     set -e
     GREEN= YELLOW= RED= BLUE= NC=
     eval "$1"
     echo "code-review-sandbox kept: pinned" > "$LOCK"
 ' _ "$lock" 2>&1)
-has "a pinned lock outlives the upgrade" "$(cat "$T/install/code-runner/.state/maintenance")" "kept:"
-rm -f "$T/install/code-runner/.state/maintenance"
+has "a pinned lock outlives the upgrade" "$(cat "$T/install/code-runner-state/maintenance")" "kept:"
+rm -f "$T/install/code-runner-state/maintenance"
 
 # The backup comes with this run's lock: restored, it would refuse every claim from then on.
 backup=$(awk '/^# Ask if user wants to create a backup/{p=1} /^# Mark that upgrade is in progress/{p=0} p{print}' "$S")
 [ -n "$backup" ] && ok || bad "could not extract the backup block"
-: > "$T/install/code-runner/.env"; echo "upgrade-arbiter 1 x" > "$T/install/code-runner/.state/maintenance"
+: > "$T/install/code-runner/.env"; echo "upgrade-arbiter 1 x" > "$T/install/code-runner-state/maintenance"
 out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_BACKUP=y TARGET_DIR="$T/install" BACKUP_TO="$T/backup" bash -c '
     set -e
     trap "echo TRAP-FIRED; exit 9" ERR
@@ -229,19 +247,19 @@ out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_BACKUP=y TARGET_DIR="$T/install" BACKUP_T
 ' _ "$ROOT" "$backup" 2>&1)
 has "backup: finished" "$out" "REACHED-END"
 [ -f "$T/backup/code-runner/.env" ] && ok || bad "backup: nothing was copied"
-[ ! -e "$T/backup/code-runner/.state/maintenance" ] && ok || bad "backup: the copy holds the lock"
-[ -e "$T/install/code-runner/.state/maintenance" ] && ok || bad "backup: the live lock went"
-rm -f "$T/install/code-runner/.state/maintenance"
+[ ! -e "$T/backup/code-runner-state/maintenance" ] && ok || bad "backup: the copy holds the lock"
+[ -e "$T/install/code-runner-state/maintenance" ] && ok || bad "backup: the live lock went"
+rm -f "$T/install/code-runner-state/maintenance"
 
 # A signal: bash runs the EXIT trap on the way out. Only kill -9 can leave the lock, and then the doctor names it.
-rm -f "$T/install/code-runner/.state/maintenance"; : > "$T/install/code-runner/.env"
-LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
+rm -f "$T/install/code-runner-state/maintenance"; : > "$T/install/code-runner/.env"
+LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
     GREEN= YELLOW= RED= BLUE= NC=
     eval "$1"
     kill -TERM $$
     sleep 5
 ' _ "$lock" >/dev/null 2>&1
-[ ! -f "$T/install/code-runner/.state/maintenance" ] && ok || bad "SIGTERM left the lock"
+[ ! -f "$T/install/code-runner-state/maintenance" ] && ok || bad "SIGTERM left the lock"
 
 # --- the dependencies, under the trap: npm failing warns, it does not end the upgrade
 mkdir -p "$T/bin"

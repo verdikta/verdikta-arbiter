@@ -82,7 +82,7 @@ stub env 'if [ "$1" = "-i" ]; then echo "env -i" >> "$STUB_LOG"; shift; exec /us
 
 fresh() { # a new prefix and install tree; sets P, I
     rm -rf "$T/p"; P="$T/p"; I="$T/p/install"
-    mkdir -p "$P/etc/docker" "$P/var/lib" "$P/run" "$P/opt" "$I/installer" "$I/external-adapter" "$I/code-runner/.state" "$I/code-runner/node_modules/@verdikta/common" "$I/code-runner/src" "$I/code-runner/conformance" "$P/state" "$P/etc/systemd/system"
+    mkdir -p "$P/etc/docker" "$P/var/lib" "$P/run" "$P/opt" "$I/installer" "$I/external-adapter" "$I/code-runner" "$I/code-runner/node_modules/@verdikta/common" "$I/code-runner/src" "$I/code-runner/conformance" "$P/state" "$P/etc/systemd/system"
     echo '{"live-restore":false}' > "$P/etc/docker/daemon.json"
     : > "$P/log"
     cp "$ROOT/util/code-review-check.js" "$ROOT/util/common-pin.js" "$I/"
@@ -123,7 +123,7 @@ J
 }
 run() { # run ARGS... (the environment passes through)
     PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
-    STUB_LOCK="$I/code-runner/.state/maintenance" VERDIKTA_UNATTENDED=1 \
+    STUB_LOCK="$I/code-runner-state/maintenance" VERDIKTA_UNATTENDED=1 \
     bash "$TOOL" "$@" --install-dir "$I" --user "$(id -un)"
 }
 log()  { cat "$P/log"; }
@@ -218,31 +218,31 @@ pull_line=$(printf '%s\n' "$l" | grep -n ' pull ' | tail -1 | cut -d: -f1); self
 [ -n "$self_line" ] && [ "$pull_line" -lt "$self_line" ] && ok || bad "warm then self-test: pull $pull_line, self-test $self_line"
 has "the lock is held during the pull"      "$l" "lock-held-during-pull"
 has "the lock is held during the self-test" "$l" "lock-held-during-self-test"
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "the lock was not let go"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "the lock was not let go"
 has "self-test drives the runner's daemon" "$l" "^conformance DOCKER_HOST=unix://$P/run/verdikta-code-runner/docker.sock "
 has "self-test's registry on the host network: the daemon cannot publish a port" "$l" "REGNET=host"
 has "self-test under gVisor"   "$l" "RUNTIME=runsc"
 has "self-test's temp files on the fixed disk" "$l" "TMPDIR=$P/var/lib/verdikta-code-runner/selftest"
-[ -f "$I/code-runner/.state/conformance.json" ] && ok || bad "no pass recorded"
+[ -f "$I/code-runner-state/conformance.json" ] && ok || bad "no pass recorded"
 # The runner's environment.
 envf=$(cat "$I/code-runner/.env")
 has "runner env: own daemon" "$envf" "^DOCKER_HOST=unix://$P/run/verdikta-code-runner/docker.sock$"
 has "runner env: gVisor"     "$envf" "^CODE_RUNNER_RUNTIME=runsc$"
 has "runner env: the disk"   "$envf" "^CODE_RUNNER_DATA_ROOT=$P/var/lib/verdikta-code-runner$"
-has "runner env: token file" "$envf" "^CODE_RUNNER_TOKEN_FILE=$I/code-runner/.state/token$"
+has "runner env: token file" "$envf" "^CODE_RUNNER_TOKEN_FILE=$I/code-runner-state/token$"
 has "runner env: allowlist"  "$envf" "^CODE_RUNNER_REGISTRY_ALLOWLIST=ghcr.io/verdikta$"
 has "runner env: slots"      "$envf" "^CODE_RUNNER_SLOTS=1$"
 has "runner env: model reserve" "$envf" "^CODE_RUNNER_RESERVE_LOCAL_MODEL_MB=0$"
 hasnt "runner env: no key"   "$envf" "PRIVATE_KEY"
-tok=$(cat "$I/code-runner/.state/token"); is "token length" "${#tok}" 64
-is "token mode" "$(stat -c '%a' "$I/code-runner/.state/token" 2>/dev/null || stat -f '%Lp' "$I/code-runner/.state/token")" 600
+tok=$(cat "$I/code-runner-state/token"); is "token length" "${#tok}" 64
+is "token mode" "$(stat -c '%a' "$I/code-runner-state/token" 2>/dev/null || stat -f '%Lp' "$I/code-runner-state/token")" 600
 hasnt "token never in the log or output" "$l$out" "$tok"
 # The adapter's environment.
 ea=$(cat "$I/external-adapter/.env")
 has "adapter: on"      "$ea" "^CODE_REVIEW_ENABLED=true$"
 has "adapter: production trust" "$ea" "^CODE_REVIEW_TRUST=production$"
 has "adapter: runner url" "$ea" "^CODE_RUNNER_URL=http://127.0.0.1:8090$"
-has "adapter: token file" "$ea" "^CODE_RUNNER_TOKEN_FILE=$I/code-runner/.state/token$"
+has "adapter: token file" "$ea" "^CODE_RUNNER_TOKEN_FILE=$I/code-runner-state/token$"
 has "adapter: chain"   "$ea" "^NETWORK_CHAIN_ID=84532$"
 has "adapter: network" "$ea" "^DEPLOYMENT_NETWORK=base_sepolia$"
 has "adapter: keeps its own lines" "$ea" "^OPERATOR_ADDR=0xabc$"
@@ -295,7 +295,7 @@ has "bad SHA says so" "$out" "SHA-512"
 [ ! -e "$P/opt/gvisor/20260921.0/runsc" ] && ok || bad "a binary of the wrong hash was installed"
 hasnt "the arbiter's bridge is never named" "$(log)" "ip link del docker0"
 [ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "a disk was made after a bad SHA"
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "lock left after a bad SHA"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "lock left after a bad SHA"
 
 # --- disk preflight, before anything is allocated
 fresh
@@ -325,8 +325,8 @@ fail_case() { # NAME ENV=VAL
     [ ! -e "$P/var/lib/verdikta-code-runner.img.partial" ] && ok || bad "$1: a partial image stayed"
     [ ! -e "$P/etc/systemd/system/verdikta-code-runner-docker.service" ] && ok || bad "$1: a unit stayed"
     [ ! -e "$I/code-runner/.env" ] && ok || bad "$1: the runner env stayed"
-    [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "$1: the lock stayed"
-    [ ! -e "$I/code-runner/.state/conformance.json" ] && ok || bad "$1: a pass stayed"
+    [ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "$1: the lock stayed"
+    [ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "$1: a pass stayed"
     hasnt "$1: adapter stays off" "$(cat "$I/external-adapter/.env")" "CODE_REVIEW_ENABLED=true"
     is "$1: /etc/docker untouched" "$(cat "$P/etc/docker/daemon.json")" "$DAEMON_BEFORE"
     hasnt "$1: no Docker restart on the way out" "$(log)" "restart docker"
@@ -361,19 +361,19 @@ has "status names the image" "$out" "A disk image stays"
 # --- a failed refresh (an upgrade's) keeps what is there, and code mode goes off
 fresh
 run enable >/dev/null 2>&1
-printf '{"bogus":1}' > "$I/code-runner/.state/conformance.json"
+printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"
 : > "$P/log"
 out=$(STUB_CANARY_EXIT=1 run enable 2>&1); rc=$?
 is "failed refresh rc" "$rc" 1
 [ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "a refresh removed the disk"
 [ -e "$I/code-runner/.env" ] && ok || bad "a refresh removed the runner env"
-[ ! -e "$I/code-runner/.state/conformance.json" ] && ok || bad "a failed refresh kept a pass"
+[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "a failed refresh kept a pass"
 has "failed refresh: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "a failed refresh left the lock"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "a failed refresh left the lock"
 out=$(run status --quiet 2>&1); is "status after a failed refresh" "$?" 2
 
 # --- a refresh refused before it starts leaves no release judging claims unchecked
-stale_install() { fresh; run enable >/dev/null 2>&1; printf '{"bogus":1}' > "$I/code-runner/.state/conformance.json"; : > "$P/log"; rm -f "$P/state/adapter-starts"; }
+stale_install() { fresh; run enable >/dev/null 2>&1; printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"; : > "$P/log"; rm -f "$P/state/adapter-starts"; }
 stale_install
 out=$(STUB_ARCH=aarch64 run enable 2>&1); is "refused refresh, host: rc" "$?" 4
 has "refused refresh, host: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
@@ -397,7 +397,7 @@ has "refused re-run with a pass: code mode stays on" "$(cat "$I/external-adapter
 fresh; run enable >/dev/null 2>&1
 out=$(run hold 2>&1); is "hold with a pass: rc" "$?" 0
 has "hold with a pass: stays on" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
-printf '{"bogus":1}' > "$I/code-runner/.state/conformance.json"
+printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"
 out=$(run hold 2>&1); is "hold without a pass: rc" "$?" 0
 has "hold without a pass: off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
 fresh; out=$(run hold 2>&1); is "hold with no sandbox: rc" "$?" 0
@@ -424,7 +424,7 @@ has "disable, adapter does not restart: says so" "$out" "is DOWN"
 term_at() { # term_at STUB_VAR: SIGTERM when that stub says signal-now
     rm -f "$P/state/signal-now"
     env "$1=1" PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
-    STUB_LOCK="$I/code-runner/.state/maintenance" VERDIKTA_UNATTENDED=1 \
+    STUB_LOCK="$I/code-runner-state/maintenance" VERDIKTA_UNATTENDED=1 \
     bash "$TOOL" enable --install-dir "$I" --user "$(id -un)" >"$P/state/out" 2>&1 &
     pid=$!
     for _ in $(seq 1 100); do [ -e "$P/state/signal-now" ] && break; sleep 0.1; done
@@ -438,14 +438,14 @@ is "SIGTERM on a first enable: rc" "$rc" 143
 [ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM: the disk image stayed"
 [ ! -e "$P/etc/systemd/system/verdikta-code-runner-docker.service" ] && ok || bad "SIGTERM: a unit stayed"
 [ ! -e "$I/code-runner/.env" ] && ok || bad "SIGTERM: the runner env stayed"
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "SIGTERM: the lock stayed"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "SIGTERM: the lock stayed"
 has "SIGTERM: says what became of it" "$(cat "$P/state/out")" "was not installed"
 stale_install
 term_during_pull
 is "SIGTERM on a refresh: rc" "$rc" 143
 [ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM on a refresh: the disk went"
 has "SIGTERM on a refresh: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "SIGTERM on a refresh: the lock stayed"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "SIGTERM on a refresh: the lock stayed"
 
 # ... during the final rename too: the image is this run's before it has its name.
 fresh
@@ -470,26 +470,35 @@ is "adapter env not copied: rc" "$rc" 1
 has "adapter env not copied: says so" "$out" "Could not copy"
 is "adapter env not copied: unchanged" "$(cat "$I/external-adapter/.env")" "$before"
 
+# --- no pass, code review can't be turned off, and the lock can't be written either: the runner stops
+stale_install
+rm -f "$I/code-runner-state/maintenance"; mkdir "$I/code-runner-state/maintenance"
+: > "$P/log"
+out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1); is "neither can be written: rc" "$?" 1
+has "neither can be written: the runner stops" "$(log)" "^runner-stop$"
+has "neither can be written: says so" "$out" "STOPPED"
+hasnt "neither can be written: does not claim a lock" "$out" "maintenance lock .* stays"
+rmdir "$I/code-runner-state/maintenance"
 # --- no pass, and code review can't be turned off: the lock stays, whoever exits next
 stale_install
 out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1); is "off cannot be written: rc" "$?" 1
 has "off cannot be written: says so" "$out" "the maintenance lock"
-has "off cannot be written: the lock stays" "$(cat "$I/code-runner/.state/maintenance")" "kept:"
+has "off cannot be written: the lock stays" "$(cat "$I/code-runner-state/maintenance")" "kept:"
 has "off cannot be written: it says true still" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
-rm -f "$I/code-runner/.state/maintenance"
+rm -f "$I/code-runner-state/maintenance"
 stale_install
 out=$(STUB_ENV_WRITE_FAIL=1 STUB_ARCH=aarch64 run enable 2>&1); is "off cannot be written, refused refresh: rc" "$?" 4
-[ -e "$I/code-runner/.state/maintenance" ] && ok || bad "off cannot be written, refused refresh: no lock"
-rm -f "$I/code-runner/.state/maintenance"
+[ -e "$I/code-runner-state/maintenance" ] && ok || bad "off cannot be written, refused refresh: no lock"
+rm -f "$I/code-runner-state/maintenance"
 stale_install
 out=$(STUB_ENV_WRITE_FAIL=1 STUB_PULL_FAIL=1 run enable 2>&1); is "off cannot be written, failed refresh: rc" "$?" 1
-has "off cannot be written, failed refresh: the lock stays" "$(cat "$I/code-runner/.state/maintenance")" "kept:"
-rm -f "$I/code-runner/.state/maintenance"
+has "off cannot be written, failed refresh: the lock stays" "$(cat "$I/code-runner-state/maintenance")" "kept:"
+rm -f "$I/code-runner-state/maintenance"
 
 # --- the self-test refuses a cold host: its own pull would hide it
 fresh
 run enable >/dev/null 2>&1
-rm -f "$I/code-runner/.state/conformance.json"
+rm -f "$I/code-runner-state/conformance.json"
 : > "$P/log"
 out=$(STUB_NOT_WARM=1 run self-test 2>&1); rc=$?
 is "cold host rc" "$rc" 1
@@ -499,7 +508,7 @@ hasnt "cold host: the canary never ran" "$(log)" "^conformance"
 # --- a killed self-test's registry is removed first: it would hold the canary's port
 fresh
 run enable >/dev/null 2>&1
-rm -f "$I/code-runner/.state/conformance.json"
+rm -f "$I/code-runner-state/conformance.json"
 : > "$P/log"
 out=$(STUB_STALE_REGISTRY=abc123 run self-test 2>&1); rc=$?
 is "stale registry rc" "$rc" 0
@@ -509,20 +518,20 @@ has "stale registry removed, on its own daemon" "$(log)" "docker DOCKER_HOST=.*-
 # An operator's (no pid) stays theirs.
 fresh
 run enable >/dev/null 2>&1
-echo "by hand" > "$I/code-runner/.state/maintenance"
-rm -f "$I/code-runner/.state/conformance.json"
+echo "by hand" > "$I/code-runner-state/maintenance"
+rm -f "$I/code-runner-state/conformance.json"
 out=$(run enable 2>&1); rc=$?
 is "with an operator's lock rc" "$rc" 0
-is "an operator's lock stays" "$(cat "$I/code-runner/.state/maintenance")" "by hand"
+is "an operator's lock stays" "$(cat "$I/code-runner-state/maintenance")" "by hand"
 # Another live operation: refused, and its lock stays.
 sleep 60 & live=$!
-echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$I/code-runner/.state/maintenance"
-rm -f "$I/code-runner/.state/conformance.json"; : > "$P/log"
+echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$I/code-runner-state/maintenance"
+rm -f "$I/code-runner-state/conformance.json"; : > "$P/log"
 out=$(run enable 2>&1); rc=$?
 is "with a live holder: enable rc" "$rc" 1
 has "with a live holder: names it" "$out" "$live"
 hasnt "with a live holder: nothing ran" "$(log)" "^conformance"
-has "with a live holder: its lock stays" "$(cat "$I/code-runner/.state/maintenance")" "$live"
+has "with a live holder: its lock stays" "$(cat "$I/code-runner-state/maintenance")" "$live"
 out=$(run self-test 2>&1); is "with a live holder: self-test rc" "$?" 1
 out=$(run warm 2>&1);      is "with a live holder: warm rc" "$?" 1
 out=$(run disable 2>&1);   is "with a live holder: disable rc" "$?" 1
@@ -530,40 +539,61 @@ out=$(run disable 2>&1);   is "with a live holder: disable rc" "$?" 1
 # The upgrade that started this run hands its own down, and keeps it.
 out=$(CODE_REVIEW_LOCK_PARENT=$live run enable 2>&1); rc=$?
 is "the parent's lock: enable rc" "$rc" 0
-has "the parent's lock: it stays" "$(cat "$I/code-runner/.state/maintenance")" "$live"
+has "the parent's lock: it stays" "$(cat "$I/code-runner-state/maintenance")" "$live"
 kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 # A dead holder's file is stale: taken over, and let go at the end.
-rm -f "$I/code-runner/.state/conformance.json"
+rm -f "$I/code-runner-state/conformance.json"
 out=$(run enable 2>&1); rc=$?
 is "a dead holder: enable rc" "$rc" 0
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "a dead holder's lock stayed"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "a dead holder's lock stayed"
+# A lock that can't be written is no lock, and no operation goes on without one.
+mv "$I/code-runner-state" "$I/code-runner-state.away"; : > "$I/code-runner-state"
+: > "$P/log"
+out=$(run warm 2>&1); is "a lock it cannot write: warm rc" "$?" 1
+has "a lock it cannot write: says so" "$out" "Could not write the maintenance lock"
+hasnt "a lock it cannot write: nothing ran" "$(log)" " pull "
+out=$(run lock --pid $$ 2>&1); is "a lock it cannot write: lock rc" "$?" 4
+rm -f "$I/code-runner-state"; mv "$I/code-runner-state.away" "$I/code-runner-state"
+# An operator's touch is an operator's: the file is empty, and no writer here leaves one half-written.
+: > "$I/code-runner-state/maintenance"
+out=$(run lock --pid $$ 2>&1); is "an operator's empty file: lock rc" "$?" 2
+[ -e "$I/code-runner-state/maintenance" ] && ok || bad "an operator's empty file went"
+rm -f "$I/code-runner-state/maintenance"
+# Published whole: two at once, one holds it, and no temporary file stays.
+holders=(); for n in 1 2 3 4 5 6 7 8; do sleep 30 & holders+=($!); done
+racers=(); for h in "${holders[@]}"; do ( run lock --pid "$h" >/dev/null 2>&1; echo "$?" >> "$P/state/racers" ) & racers+=($!); done
+wait "${racers[@]}"
+is "two at once: one winner" "$(grep -c '^0$' "$P/state/racers")" 1
+is "two at once: no temp left" "$(ls -A "$I/code-runner-state" | grep -c 'maintenance.new')" 0
+kill "${holders[@]}" 2>/dev/null; wait "${holders[@]}" 2>/dev/null
+rm -f "$I/code-runner-state/maintenance" "$P/state/racers"
 # A live holder this user cannot signal is still live: kill -0 says EPERM, /proc says it is there.
 if [ -d /proc/1 ] && [ "$(id -u)" != 0 ]; then
-    echo "code-review-sandbox 1 2026-11-04T00:00:00Z" > "$I/code-runner/.state/maintenance"
+    echo "code-review-sandbox 1 2026-11-04T00:00:00Z" > "$I/code-runner-state/maintenance"
     out=$(run warm 2>&1); is "another user's live holder: rc" "$?" 1
-    has "another user's live holder: its lock stays" "$(cat "$I/code-runner/.state/maintenance")" "sandbox 1 "
-    rm -f "$I/code-runner/.state/maintenance"
+    has "another user's live holder: its lock stays" "$(cat "$I/code-runner-state/maintenance")" "sandbox 1 "
+    rm -f "$I/code-runner-state/maintenance"
 fi
 # Of two seeing the same dead holder, one goes on.
 sleep 0 & dead=$!; wait "$dead"
-echo "code-review-sandbox $dead 2026-11-04T00:00:00Z" > "$I/code-runner/.state/maintenance"
-mkdir "$I/code-runner/.state/maintenance.takeover"
+echo "code-review-sandbox $dead 2026-11-04T00:00:00Z" > "$I/code-runner-state/maintenance"
+mkdir "$I/code-runner-state/maintenance.takeover"
 out=$(run warm 2>&1); is "a takeover in progress: rc" "$?" 1
-has "a takeover in progress: the file is unchanged" "$(cat "$I/code-runner/.state/maintenance")" "sandbox $dead "
-rmdir "$I/code-runner/.state/maintenance.takeover"
-rm -f "$I/code-runner/.state/maintenance"
+has "a takeover in progress: the file is unchanged" "$(cat "$I/code-runner-state/maintenance")" "sandbox $dead "
+rmdir "$I/code-runner-state/maintenance.takeover"
+rm -f "$I/code-runner-state/maintenance"
 # Nobody removes a lock that is not their pid's: a run whose lock was taken from it leaves the new holder's.
 sleep 60 & live=$!
-echo "code-review-sandbox $live x" > "$I/code-runner/.state/maintenance"
+echo "code-review-sandbox $live x" > "$I/code-runner-state/maintenance"
 out=$(run unlock --pid 12345 2>&1); is "unlock of another's: rc" "$?" 0
-has "unlock of another's: it stays" "$(cat "$I/code-runner/.state/maintenance")" "$live"
+has "unlock of another's: it stays" "$(cat "$I/code-runner-state/maintenance")" "$live"
 out=$(run unlock --pid "$live" 2>&1)
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "unlock of its own: it stayed"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "unlock of its own: it stayed"
 kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 out=$(run lock --pid $$ 2>&1); is "lock: rc" "$?" 0
-has "lock: names the pid given" "$(cat "$I/code-runner/.state/maintenance")" "sandbox $$ "
+has "lock: names the pid given" "$(cat "$I/code-runner-state/maintenance")" "sandbox $$ "
 out=$(run lock 2>&1); is "lock needs a pid" "$?" 64
-out=$(run unlock --pid $$ 2>&1); [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "unlock left the lock"
+out=$(run unlock --pid $$ 2>&1); [ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "unlock left the lock"
 
 # --- status exit codes
 fresh
@@ -587,7 +617,7 @@ is "disable rc" "$rc" 0
 has "disable says how to reclaim the disk" "$out" "disable --purge"
 [ ! -e "$P/etc/systemd/system/verdikta-code-runner-docker.service" ] && ok || bad "disable left a unit"
 [ ! -e "$I/code-runner/.env" ] && ok || bad "disable left the runner env"
-[ ! -e "$I/code-runner/.state/conformance.json" ] && ok || bad "disable left the pass"
+[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "disable left the pass"
 has "disable: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
 odd=$(log | grep '^systemctl ' | grep -vE '^systemctl (daemon-reload|is-active|is-enabled)' | grep -vE "^systemctl [a-z-]+( --[a-z]+)*( $own_units(\\.service)?)+$")
 is "disable names own units only" "$odd" ""

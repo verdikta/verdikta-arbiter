@@ -90,7 +90,7 @@ cat "$WORK/before" | sed -n 1,3p
 step "An install tree"
 mkdir -p "$I/installer" "$I/ai-node"
 cp "$ROOT/util/code-review-sandbox.sh" "$ROOT/util/code-review-check.js" "$ROOT/util/common-pin.js" "$I/"
-cp -r "$REPO/code-runner" "$I/code-runner"; rm -rf "$I/code-runner/node_modules" "$I/code-runner/.state" "$I/code-runner/.env"
+cp -r "$REPO/code-runner" "$I/code-runner"; rm -rf "$I/code-runner/node_modules" "$I/code-runner-state" "$I/code-runner/.env"
 cp -r "$REPO/external-adapter" "$I/external-adapter"; rm -rf "$I/external-adapter/node_modules"
 cp "$REPO/ai-node/package.json" "$I/ai-node/package.json"
 printf 'DEPLOYMENT_NETWORK="base_sepolia"\nNETWORK_CHAIN_ID="84532"\n' > "$I/installer/.env"
@@ -120,7 +120,7 @@ mountpoint -q "$MOUNT" && bad "failed enable: still mounted" || ok "failed enabl
 [ ! -e /etc/systemd/system/verdikta-code-runner-docker.service ] && ok "failed enable: no units" || bad "failed enable: a unit stayed"
 ip link show vcr0 >/dev/null 2>&1 && bad "failed enable: its bridge stayed" || ok "failed enable: no bridge"
 [ ! -e "$I/code-runner/.env" ] && ok "failed enable: no runner env" || bad "failed enable: the runner env stayed"
-[ ! -e "$I/code-runner/.state/maintenance" ] && ok "failed enable: the lock is gone" || bad "failed enable: the lock stayed"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok "failed enable: the lock is gone" || bad "failed enable: the lock stayed"
 grep -q '^CODE_REVIEW_ENABLED=true' "$I/external-adapter/.env" && bad "failed enable: code review on" || ok "failed enable: code review off"
 compare "failed enable"
 
@@ -172,7 +172,7 @@ curl -s -o /dev/null -m 5 -w '%{http_code}' "http://$(hostname -I | awk '{print 
 
 step "Conformance"
 want=$(cd "$I/code-runner" && node -p 'require("@verdikta/common").codeReview.CONFORMANCE_CANARY.reportSha256')
-got=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).reportSha256' "$I/code-runner/.state/conformance.json")
+got=$(node -p 'JSON.parse(require("fs").readFileSync(process.argv[1])).reportSha256' "$I/code-runner-state/conformance.json")
 check "the report hash is common's" "$got" "$want"
 echo "conformance report sha256: $got (common: $want)"
 node "$CHECK" gate --install-dir "$I" --classes 133 && ok "gate: 133 with a pass" || bad "gate refused 133 with a pass"

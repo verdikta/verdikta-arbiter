@@ -18,7 +18,7 @@ HASH=$(printf 'cafe%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
 
 tree() { # a repo-shaped tree and an install-shaped tree, in one directory $I
     rm -rf "$T/i"; I="$T/i"
-    mkdir -p "$I/installer/bin" "$I/installer/lib" "$I/installer/util" "$I/arbiter-operator/scripts" "$I/arbiter-operator/node_modules" "$I/external-adapter" "$I/code-runner/.state" "$I/code-runner/node_modules/@verdikta/common"
+    mkdir -p "$I/installer/bin" "$I/installer/lib" "$I/installer/util" "$I/arbiter-operator/scripts" "$I/arbiter-operator/node_modules" "$I/external-adapter" "$I/code-runner-state" "$I/code-runner/node_modules/@verdikta/common"
     cp "$ROOT/bin/register-oracle-dispatcher.sh" "$I/installer/bin/"
     cp "$ROOT/lib/prompts.sh" "$I/installer/lib/"
     cp "$ROOT/util/code-review-check.js" "$I/installer/util/"
@@ -56,7 +56,7 @@ J
     : > "$T/reg.log"
 }
 good_pass() {
-    printf '{"pass":true,"reportSha256":"%s","runner":"0.1.0","gvisor":"release-20260921.0","commonVersion":"9.9.9-test","at":"2026-11-04T00:00:00Z"}\n' "$HASH" > "$I/code-runner/.state/conformance.json"
+    printf '{"pass":true,"reportSha256":"%s","runner":"0.1.0","gvisor":"release-20260921.0","commonVersion":"9.9.9-test","at":"2026-11-04T00:00:00Z"}\n' "$HASH" > "$I/code-runner-state/conformance.json"
 }
 dispatcher() { # dispatcher CLASSES [more env]
     env REG_LOG="$T/reg.log" VERDIKTA_UNATTENDED=1 VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS=0x4444444444444444444444444444444444444444 VA_CLASS_IDS="$1" "${@:2}" \
@@ -87,11 +87,11 @@ for script in dispatcher standalone; do
     tree; good_pass; out=$($script 133); rc=$?; went "$script 133, pass" "$out" $rc
     has "$script 133, pass: the classes reach the script" "$(cat "$T/reg.log")" "--classes 133"
     # A pass is for this release: another hash, runner or common is none.
-    tree; good_pass; sed -i.b 's/"reportSha256":"cafe/"reportSha256":"beef/' "$I/code-runner/.state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, another hash" "$out" $rc "conformance"
-    tree; good_pass; sed -i.b 's/"runner":"0.1.0"/"runner":"0.0.9"/' "$I/code-runner/.state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, older runner's pass" "$out" $rc "conformance"
-    tree; good_pass; sed -i.b 's/"commonVersion":"9.9.9-test"/"commonVersion":"1.0.0"/' "$I/code-runner/.state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, older common's pass" "$out" $rc "conformance"
-    tree; good_pass; sed -i.b 's/"pass":true/"pass":false/' "$I/code-runner/.state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, recorded fail" "$out" $rc "conformance"
-    tree; echo 'not json' > "$I/code-runner/.state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, unreadable pass" "$out" $rc "conformance"
+    tree; good_pass; sed -i.b 's/"reportSha256":"cafe/"reportSha256":"beef/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, another hash" "$out" $rc "conformance"
+    tree; good_pass; sed -i.b 's/"runner":"0.1.0"/"runner":"0.0.9"/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, older runner's pass" "$out" $rc "conformance"
+    tree; good_pass; sed -i.b 's/"commonVersion":"9.9.9-test"/"commonVersion":"1.0.0"/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, older common's pass" "$out" $rc "conformance"
+    tree; good_pass; sed -i.b 's/"pass":true/"pass":false/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, recorded fail" "$out" $rc "conformance"
+    tree; echo 'not json' > "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, unreadable pass" "$out" $rc "conformance"
     # 5555: the canary class, text until code review is on.
     tree; out=$($script 5555); rc=$?; went "$script 5555, code review off" "$out" $rc
     tree; echo 'CODE_REVIEW_ENABLED=false' > "$I/external-adapter/.env"; out=$($script 5555); rc=$?; went "$script 5555, code review false" "$out" $rc

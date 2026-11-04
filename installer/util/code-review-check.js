@@ -72,12 +72,13 @@ function readEnvFile(file) {
 
 function paths(installDir) {
   const runner = path.join(installDir, 'code-runner');
+  const state = path.join(installDir, 'code-runner-state');
   return {
     runner,
-    state: path.join(runner, '.state'),
-    pass: path.join(runner, '.state', 'conformance.json'),
-    last: path.join(runner, '.state', 'conformance-last.json'),
-    token: path.join(runner, '.state', 'token'),
+    state,
+    pass: path.join(state, 'conformance.json'),
+    last: path.join(state, 'conformance-last.json'),
+    token: path.join(state, 'token'),
     runnerEnv: path.join(runner, '.env'),
     adapterEnv: path.join(installDir, 'external-adapter', '.env'),
     contracts: path.join(installDir, 'installer', '.contracts'),

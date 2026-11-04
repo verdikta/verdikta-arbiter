@@ -1997,6 +1997,8 @@ image-pull failure"), never a verdict.
   `code-runner/.state/maintenance`). While it exists, runs are refused and
   `/health` is 503. The installer holds it during install and upgrade (A8);
   remove a stale one by hand.
+- An arbiter's install keeps this state outside the replaced tree, `CODE_RUNNER_STATE_DIR=<install>/code-runner-state`,
+  so the lock stays in place while an upgrade replaces `code-runner/`.
 - `start.sh` and `stop.sh` are how an arbiter runs it
   ([operator notes](../installer/docs/maintenance/code-review-sandbox.md)). `start.sh` reads `.env`
   as data, starts the runner with `env -i`, and refuses any Docker endpoint but the runner's own
