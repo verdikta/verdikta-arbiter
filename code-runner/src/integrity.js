@@ -44,7 +44,8 @@
  *   forge's "reporter module"), and the build's artifacts (`out`, and forge's
  *   compile cache, which names the artifact files a later run loads), which
  *   may change during the first test run (forge compiles what the build left
- *   out) and never after it.
+ *   out) and never after it. The compile cache's every byte is held but the
+ *   order of its one unordered list (compileCacheOrderFree, node A3d).
  *
  * Symbolic links in those sets (watchLinks(); attempt 2 of R6-F1/R7-F1): the
  * listing is physical (find never follows a link), so a file listed in a set
@@ -101,6 +102,8 @@ const MAX_WATCHED_LINKS = 50000;
 const MAX_LINK_ROUNDS = 16;
 const LINKS_MAX_BYTES = 64 * 1024 * 1024;
 const CONFIG_MAX_BYTES = 1024 * 1024;
+/** What the runner reads of forge's compile cache to compare it; beyond this it holds the file to its bytes (compileCacheOrderFree). */
+const COMPILE_CACHE_MAX_BYTES = 64 * 1024 * 1024;
 const SNAPSHOT_TIMEOUT_MS = 120000;
 const MAX_CHANGED = 100;
 /**
@@ -170,6 +173,13 @@ const MANIFEST_SCRIPT = [
   'find "$@" -type f -print0 2>/dev/null | xargs -0 -r sha256sum -z -- 2>/dev/null',
   'exit 0'
 ].join('\n');
+
+/**
+ * The bytes of forge's compile cache, hermetic ($1: its path), read only after the
+ * listing found a regular file there and every claim process is dead. `cat` is on the
+ * PATH requireImmutableTools held, as find and sha256sum are.
+ */
+const COMPILE_CACHE_SCRIPT = 'exec cat -- "$1"';
 
 /**
  * The kernel's answer for each watched link, hermetic: absolute paths on
@@ -617,6 +627,38 @@ function watchRoots({ protectedGlobs = [], ...w }) {
 }
 
 /**
+ * forge's compile cache with the one thing in it that has no order put in order
+ * (node A3d). forge 1.8.5 keeps `mocks` as a HashSet and writes it as it iterates, so
+ * the list moves on every write of a file that holds two or more. Measured on real
+ * repositories: nothing else in the file moves between runs. forge only asks whether a
+ * path is in that set, and it writes another order itself on every run, so nothing a
+ * later run does can rest on the order: there is nothing to protect in it.
+ *
+ * Everything else stays as it is, byte for byte. forge writes the file compact, so it is
+ * exactly what JSON.stringify writes back of its own parse, and only such a file is put
+ * in order: then bytes and value are one and the same, and the only thing rewritten is the
+ * top-level list's order. So two files give the same answer exactly when one is the other
+ * with that list reordered. A key written twice, another escape, a space, a line added, a
+ * number written another way or a list elsewhere is a different file, or none of this form.
+ *
+ * @param {Buffer} bytes - the file
+ * @returns {Buffer|null} the same bytes with the list in order, or null when they are not that
+ *   form with a top-level `mocks` of strings. The caller then holds the file to its own bytes.
+ *   Those can't equal another file's answer: an answer is of that form, so it would have one.
+ */
+function compileCacheOrderFree(bytes) {
+  try {
+    const parsed = JSON.parse(bytes.toString('utf8'));
+    if (!parsed || !Array.isArray(parsed.mocks) || !parsed.mocks.every((m) => typeof m === 'string')) return null;
+    if (!Buffer.from(JSON.stringify(parsed), 'utf8').equals(bytes)) return null;
+    return Buffer.from(JSON.stringify({ ...parsed, mocks: [...parsed.mocks].sort() }), 'utf8');
+  } catch (_) {
+    // Not JSON, or nested past what JSON.stringify can walk (R2-F1): a file a run left, which a read must not turn into an abstain.
+    return null;
+  }
+}
+
+/**
  * Sort a manifest into the watched sets.
  * @param {Map} entries - parseManifest().entries
  * @param {object} w
@@ -1060,6 +1102,10 @@ function inlineConfigArgv() {
 
 function linksArgv() {
   return hermetic(LINKS_SCRIPT, 'vcr-links');
+}
+
+function compileCacheArgv(file) {
+  return hermetic(COMPILE_CACHE_SCRIPT, 'vcr-compile-cache', [file]);
 }
 
 function svmArgv() {
@@ -1514,6 +1560,8 @@ class Watch {
     this.ref = null;
     this.repository = null;
     this.artifacts = null;
+    /** The compile cache as run 1 left it: its bytes' hash, and its entry as compared (compileCacheEntry). */
+    this.compileCache = null;
     this.failures = { protected: [], framework: [], dependencies: [] };
     this.changed = { protected: new Set(), framework: new Set(), dependencies: new Set() };
   }
@@ -1683,13 +1731,14 @@ class Watch {
   /**
    * A snapshot after run `label` (`run 1`, `the suite`…), compared with the
    * reference; `first` is the sandbox's first test run, whose compile may
-   * write `out`, and whose artifacts the later runs are then held to.
+   * write `out`, and whose artifacts the later runs are then held to; `only`, a first
+   * run with none after it (the fix check's suite).
    */
-  async afterRun(ctx, label, { first }) {
+  async afterRun(ctx, label, { first, only = false }) {
     const name = `${this.prefix}:${label.replace(/\s+/g, '-')}`;
     // The files first: forge runs (for its configuration) only once they are measured, and never when it is a file in
     // the work tree whose bytes the run changed (R1-F3): a replaced forge could restore what the listing would see.
-    const listed = await this.compareFiles(ctx, name, label, first);
+    const listed = await this.compareFiles(ctx, name, label, first, only);
     let runnable = true;
     if (this.ref.forgeEntry !== null) {
       // The executable's own entry, hashed in both listings and the same (never a set it might be skipped from).
@@ -1708,7 +1757,7 @@ class Watch {
     else if (parsed.configSha256 !== this.ref.configSha256) this.fail('framework', `${label}: forge's resolved configuration changed (\`forge config --json\`)`);
   }
 
-  async compareFiles(ctx, name, label, first) {
+  async compareFiles(ctx, name, label, first, only = false) {
     const m = await manifest(ctx, `${name}:manifest`, [WORK, HOME], this.prunes(this.ref.config), this.reserve);
     const overflow = (reason) => {
       for (const c of ['protected', 'framework', 'dependencies']) this.fail(c, `${label}: ${reason}`);
@@ -1734,6 +1783,8 @@ class Watch {
     compare('protected', this.repository, sets.repository);
     compare('dependencies', this.ref.sets.dependencies, sets.dependencies);
     compare('framework', this.ref.sets.framework, sets.framework);
+    // Only what a later run is compared with, or a later run's: nothing compares the build's compile cache, or the fix check's.
+    if ((first && !only) || (!first && this.artifacts)) await this.compileCacheEntry(ctx, name, m.entries, sets.artifacts, first);
     // The first run's artifacts are what the later ones are held to (none when its listing overflowed: already a
     // failure), so an artifact it left unreadable fails here: nothing later could tell a change in it (R13-F1).
     if (first) {
@@ -1748,6 +1799,33 @@ class Watch {
       this.changed[category].add(u.link);
     }
     return m.entries;
+  }
+
+  /**
+   * The compile cache's entry among the artifacts as they are compared: its hash is the hash of
+   * the file with its list in order (compileCacheOrderFree), its type, mode and size as listed.
+   * The file is read once at run 1, and again only when its bytes differ from run 1's. Anything
+   * short of a good read (a link or nothing there, a file over the cap, a failed read, bytes
+   * other than the listing hashed) leaves the entry as the listing gave it, held to its bytes.
+   */
+  async compileCacheEntry(ctx, name, entries, artifacts, first) {
+    const rel = layout(this.watchArgs()).filesCache;
+    const e = rel === null ? undefined : entries.get(`${WORK}/${rel}`);
+    if (!e || e.type !== 'f' || !e.hash || !artifacts.has(rel)) return;
+    if (!first && this.compileCache && e.hash === this.compileCache.hash && describe(e) === this.compileCache.listed) {
+      artifacts.set(rel, this.compileCache.compared);
+      return;
+    }
+    let compared = describe(e);
+    if (Number(e.size) <= COMPILE_CACHE_MAX_BYTES) {
+      const out = new Prefix(COMPILE_CACHE_MAX_BYTES);
+      const record = await ctx.exec(compileCacheArgv(`${WORK}/${displayPath(rel)}`), { name: `${name}:compile-cache`, timeoutMs: SNAPSHOT_TIMEOUT_MS, tee: out });
+      const bytes = out.bytes();
+      const orderFree = record.exitCode === 0 && !out.truncated && sha256(bytes) === e.hash ? compileCacheOrderFree(bytes) : null;
+      if (orderFree) compared = describe({ ...e, hash: sha256(orderFree) });
+    }
+    if (first) this.compileCache = { hash: e.hash, listed: describe(e), compared };
+    artifacts.set(rel, compared);
   }
 
   /** After the runner's own reset: its repository is read again, as the next run's reference for it. */
@@ -2027,9 +2105,9 @@ function integrityDetail(failures) {
 
 module.exports = {
   FRAMEWORK_SCRIPT, MANIFEST_SCRIPT, LINKS_SCRIPT, EXTERNAL_ROOTS_SCRIPT, INLINE_CONFIG_SCRIPT, COMPILERS_SCRIPT, inlineConfigArgv, requirePlainInlineConfig, pinCompiler, officialCompilers, vyperProblems, svmEntryProblem,
-  MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES, LISTING_RESERVE,
+  MANIFEST_MAX_BYTES, MAX_ENTRIES, MAX_WATCHED_LINKS, MAX_LINK_ROUNDS, CONFIG_MAX_BYTES, COMPILE_CACHE_MAX_BYTES, LISTING_RESERVE,
   TAMPER_FLAG_KINDS, CHECKS, FRAMEWORK_FILES, DEPENDENCY_DIRS,
-  parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, Watch,
+  parseFramework, parseManifest, parseLinks, classify, outputConflicts, watchRoots, unwatchableRoots, watchLinks, WatchTooLarge, changedPaths, unreadablePaths, displayPath, frameworkArgv, manifestArgv, linksArgv, compileCacheArgv, compileCacheOrderFree, Watch,
   discoverForge, probe, requireImmutableTools, TOOL_DIRS, IMMUTABLE_CHECK,
   summaryConsistency, exitConsistency, identityGap, tamperFlags, integrityOf, integrityDetail, plainDir
 };

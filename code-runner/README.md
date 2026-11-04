@@ -918,6 +918,23 @@ process of the run is dead:
      run (forge compiles what the build left out, e.g. after `forge build
      --skip test`) and never after it.
 
+   **The compile cache is held byte for byte, but for the order of one list**
+   (node A3d). forge 1.8.5 keeps the test files it takes for mocks (a contract in
+   a test file that inherits a source contract) in a `HashSet`, and writes its
+   `mocks` list in whatever order that gives, on every run. So a file with two or
+   more differs between runs, and a valid PoC that imports them settled DUPLICATE
+   at random. The runner reads the file at run 1, and again when its bytes differ
+   from run 1's, and compares its hash with that one list in order
+   (`compileCacheOrderFree`). forge writes the file compact, so it is exactly what
+   `JSON.stringify` writes back of its own parse, and only such a file is put in
+   order. So two files compare the same exactly when one is the other with the
+   top-level list reordered: a mock added or dropped, an artifact pointed
+   elsewhere, a key written twice, a space, a list of that name elsewhere, all
+   stay differences. Measured on a real repository: nothing else in the file
+   moves between runs. What isn't of that form, or can't be read (over 64 MiB, a
+   failed read, bytes other than the listing hashed), is held to its bytes, as
+   before.
+
    **Symbolic links: the kernel resolves them** (R6-F1, R7-F1; node A3a's
    attempt 2). The listing is physical (`find` never follows a link), so a
    file listed in a set is reached through real directories only and a write
@@ -1412,7 +1429,7 @@ The routes the review raised, against that scope (each has its test):
 | `~/.foundry/foundry.toml`, `~/.gitconfig` or `.env` written for later runs | `$HOME`/config checksums, `forge config` fingerprint | unit `$HOME is watched` |
 | a `forge` (or another tool) planted on a writable `PATH` directory | `command -v forge` and the PATH directories in the work tree | unit `the forge executable` |
 | `.git/config` filter, a hook, a forged index or objects, so the runner's reset writes the claim's bytes | the runner's repository checksums | unit `the runner's repository is watched` |
-| forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts` |
+| forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts`; compile cache also Docker `valid-claim` |
 | a maker's command runs a script under `paths.tests`, which the PoC rewrites | the command is `COMMAND_NOT_ALLOWED`: a command names no script (a pattern naming a test file is not a script, so a PoC editing that file raises no flag) | unit `commands.test.js`, tamper-flag tests |
 | a maker's command running forge with another configuration: `FOUNDRY_PROFILE`, `--config-path`, `--root`, a path flag, a hidden alias such as `--compiler-version`, through `env`, by an absolute path, `env -u` (R11-F1) | the grammar refuses every such command (`COMMAND_NOT_ALLOWED`, the token named) at claim and listing time; the runner runs forge itself, from `/work`, with its own environment; an image `ENV` of `FOUNDRY_*` never reaches it | unit `commands.test.js`, `forgeargv.test.js`, Docker "A3a R11-F1 (attempt 3)" |
 | a file flood that hides a change | a listing over 128 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`; at the listing check, over 64 MiB or 680,000 entries) | unit snapshot and cap tests |
@@ -1449,6 +1466,19 @@ finding.json and the recorded failures alone:
   test the patch added, a test of the PoC's files, a baseline test). At
   least one must be named, and every one named must be a test the patch
   added (which, the PoC having reproduced, failed on every run).
+- **Both fields are text.** The runner never runs `poc.command`, so what counts is
+  what the text spells, and nothing follows a shell (node A3d, a design review
+  under owner decision Q38).
+- **A word that is exactly one of forge's test-function prefixes names nothing** in
+  either field, unless the patch added a test of that name: `test`, `invariant`,
+  `statefulFuzz`, `table`, `check`, `prove` (`forge.TEST_FUNCTION_PREFIXES`, the list
+  `TestFunctionKind::classify` has at v1.8.5). A fixture's `function test() external
+  {}`, a common coverage marker, is a baseline test named `test`, and every forge
+  command and most prose say the word: a valid PoC settled INVALID that way. Every
+  other identifier is read wherever it is.
+- **`$`.** In `poc.command` an identifier ending in `$` counts as itself and as what
+  comes before it, so `--match-test '^test_x$'` names `test_x`. In `poc.observable` it
+  counts as itself only, since `$` belongs to a Solidity identifier there.
 - **The observable appears in the recorded failure**: each text in double
   quotes in `poc.observable` appears in the failure message of a named test
   on every run; or, when it quotes nothing, the message of a named test (the
@@ -2204,17 +2234,16 @@ of their text. Runs under 6 tokens are not measured. The numbers are printed on 
 - A proof fails to reproduce the bug only if it fails: the test asserts the safe property. Most contest tests pass while the bug is
   present, and can't be used as written.
 - A test cannot inherit a repository's test contract, or one with a `test()` of its own: every inherited test becomes one the patch
-  added, and `reproduces` needs each to fail. A helper with no test functions is fine. A subclass of a source contract, in the test
-  file, is one more entry in forge's mocks list (below), so use the real contract.
+  added, and `reproduces` needs each to fail. A helper with no test functions is fine.
 - A test's own run has to fit `testSeconds` under gVisor, and forge 1.8.5 is far slower with gas metering paused.
 - No more than five cases on one repository, so the set does not become one project's. A unit test holds that and the floor of 15.
-- `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`. Forge 1.8.5 writes the test
-  files it takes for mocks (a contract in a test file that inherits a source contract) into `cache/solidity-files-cache.json` as an
-  unordered list, so with two or more in scope the file differs between runs. At the listing check that is
-  `IMAGE_WATCH_CHANGED_BY_SUITE`. **At a claim it is `frameworkUnchanged`, so a valid PoC that imports two such files settles DUPLICATE:
-  a known runner problem, not fixed here.** `--skip test` keeps the list out of the listing's own runs.
-- A baseline holding a test named `test()` (a fixture's coverage marker, say) makes the word in `poc.command`'s `forge test` a test the
-  finding names, and `claimedObservable` fails: **a known runner problem, not fixed here.** Keep such a test out of `commands.test`.
+- `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`.
+- Forge 1.8.5 writes the test files it takes for mocks (a contract in a test file that inherits a source contract) into
+  `cache/solidity-files-cache.json` as an unordered list. The runner compares that file with the list in order, so the order fails
+  nothing, at a listing check or a claim (node A3d, "The compile cache is held byte for byte" above).
+- A baseline test named `test()` (a fixture's coverage marker, say) is no trouble for a finding: a word that is exactly one of forge's
+  test-function prefixes names nothing in `poc.command` or `poc.observable`, unless the patch added a test of that name (node A3d,
+  [claimedObservable](#claimedobservable)).
 - A class build must fit: 3 x the measured build within the class's 90 s, so 30 s on 2 CPUs under gVisor, with `P + B + 3T <= 120 s`
   overall. `commands.setup` is what makes a real repository fit.
 - `LEGACY_ASSERTIONS`: a forge-std from before the 2024 rewrite (`StdAssertions is DSTest`) records a failed `assertEq` with no reason on

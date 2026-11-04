@@ -994,6 +994,19 @@ test('A2c: the suite\'s later runs are held to the artifacts of its first, as a 
   assert.match(r.facts.listing.refusals[0].detail, /run 2: out\/Vault\.sol\/Vault\.json changed/);
 });
 
+test('A3d: a suite whose forge writes its mocks list in another order is accepted; a real change to the compile cache is still refused, and names the file', async () => {
+  const cache = (order, artifact = 'Vault.sol/Vault.json') => JSON.stringify({ files: { 'src/Vault.sol': { artifacts: { Vault: { path: artifact } } } }, mocks: order });
+  const a = '/work/test/A.t.sol';
+  const b = '/work/test/B.t.sol';
+  const orders = { 1: [a, b], 2: [b, a], 3: [a, b] };
+  const ok = await runListing(listingSandbox({ suite: [1, 2, 3].map((k) => (d, n, box) => { put(box, '/work/cache/solidity-files-cache.json', cache(orders[k])); return { exitCode: 1, stdout: vaultSuite(k) }; }) }));
+  assert.equal(ok.facts.listing.status, 'accepted', show(ok));
+  const forged = await runListing(listingSandbox({ suite: [1, 2, 3].map((k) => (d, n, box) => { put(box, '/work/cache/solidity-files-cache.json', cache(orders[k], k === 2 ? '../test/x.json' : 'Vault.sol/Vault.json')); return { exitCode: 1, stdout: vaultSuite(k) }; }) }));
+  assert.deepEqual(codes(forged), ['IMAGE_WATCH_CHANGED_BY_SUITE'], show(forged));
+  assert.match(forged.facts.listing.refusals[0].detail, /run 2: cache\/solidity-files-cache\.json changed/);
+  assert.deepEqual(forged.facts.listing.refusals[0].paths, ['cache/solidity-files-cache.json']);
+});
+
 // ----------------------------------------------------------- a harness probe that trips the checksums
 
 test('A2c: HARNESS_INTEGRITY_FAILED: what a probe\'s run changes is refused, the check and the paths named, on a testFiles run and on a testIds run alike', async () => {
