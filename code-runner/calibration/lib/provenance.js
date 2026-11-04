@@ -91,14 +91,37 @@ function htmlToText(html) {
     .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&#x27;|&#39;/g, '\'');
 }
 
-/** What the jury reads of a claim, file by file: the patch's added lines without its marks. */
+/**
+ * What the jury reads of a case, file by file: the patch's added lines without its marks, and what else this repository
+ * commits in Verdikta's words for the jury to compare: the prior findings, and the listing's known issues.
+ */
 function claimTexts(entry) {
   const poc = entry.claim.poc.toString('utf8').split('\n').filter((l) => l.startsWith('+') && !l.startsWith('+++')).map((l) => l.slice(1)).join('\n');
-  return [
+  const out = [
     { file: 'report.md', text: entry.claim.report, kind: 'prose' },
     { file: 'finding.json', text: JSON.stringify(entry.claim.finding), kind: 'prose' },
     { file: 'poc.patch', text: poc, kind: 'code' }
   ];
+  for (const prior of entry.priors || []) {
+    out.push({ file: `${prior.name}/report.md`, text: prior.report, kind: 'prose' });
+    out.push({ file: `${prior.name}/finding.json`, text: JSON.stringify(prior.finding), kind: 'prose' });
+  }
+  const issues = entry.listing && Array.isArray(entry.listing.knownIssues) ? entry.listing.knownIssues : [];
+  if (issues.length) out.push({ file: 'known_issues.json', text: issues.map((i) => `${i.title}. ${i.description}`).join('\n'), kind: 'prose' });
+  return out;
+}
+
+/**
+ * Every program text a case is measured against: the report, and on a labelled case the finding's own page and the page of the
+ * finding it duplicates. A claim the program rejected appears in no report, so its page is the only text there is to copy.
+ */
+function programUrls(entry) {
+  const urls = [entry.source.report];
+  if (entry.label) {
+    urls.push(entry.source.url);
+    if (entry.label.duplicateOf) urls.push(entry.label.duplicateOf.url);
+  }
+  return [...new Set(urls)];
 }
 
 /**
@@ -162,7 +185,7 @@ async function checkCases(cases, { stdout = () => {}, cacheDir = cacheRoot(), fe
       const texts = repo.files.filter((f) => f.bytes && f.bytes.length <= MAX_FILE_BYTES && TEXT_FILE.test(f.path)).map((f) => f.bytes.toString('utf8'));
       repos.set(entry.listing, indexTexts(texts));
     }
-    const report = indexTexts([await reportText(entry.source.report, { cacheDir, fetchImpl })]);
+    const report = indexTexts(await Promise.all(programUrls(entry).map((url) => reportText(url, { cacheDir, fetchImpl }))));
     const measured = [];
     problems.push(...claimProblems(entry, { report, repo: repos.get(entry.listing) }, { measured }));
     stdout(`calibration: provenance ${entry.id}: ${measured.map((m) => `${m.file} ${m.report}/${m.repo} (limit ${m.limit})`).join(', ')}`);
@@ -170,4 +193,4 @@ async function checkCases(cases, { stdout = () => {}, cacheDir = cacheRoot(), fe
   return problems;
 }
 
-module.exports = { tokens, indexTexts, longestSharedRun, htmlToText, claimProblems, checkCases, reportText, LIMITS, GRAM };
+module.exports = { tokens, indexTexts, longestSharedRun, htmlToText, claimTexts, programUrls, claimProblems, checkCases, reportText, LIMITS, GRAM };
