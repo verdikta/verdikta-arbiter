@@ -167,6 +167,21 @@ if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ]; then
 fi
 
 # Use ALL job IDs for registration (space-separated)
+# VA_REGISTER_JOB_IDS names the jobs of this registration, when not all of them: how two code
+# classes stay on jobs of their own (a job on both would be eligible for both price tiers).
+if [ -n "${VA_REGISTER_JOB_IDS:-}" ]; then
+    SELECTED_JOB_IDS=()
+    for wanted in $(echo "$VA_REGISTER_JOB_IDS" | tr ',' ' '); do
+        wanted="${wanted//-/}"
+        if [[ " ${JOB_IDS_AVAILABLE[*]} " != *" $wanted "* ]]; then
+            echo -e "${RED}Error: job $wanted in VA_REGISTER_JOB_IDS is not one of this node's jobs.${NC}"
+            exit 1
+        fi
+        SELECTED_JOB_IDS+=("$wanted")
+    done
+    JOB_IDS_AVAILABLE=("${SELECTED_JOB_IDS[@]}")
+fi
+
 REGISTRATION_JOB_IDS=$(printf '"%s" ' "${JOB_IDS_AVAILABLE[@]}")
 REGISTRATION_JOB_IDS=${REGISTRATION_JOB_IDS% }  # Remove trailing space
 
@@ -355,6 +370,25 @@ fi
 
 # Create space-separated string for command
 NEW_CLASSES_STR="${VALIDATED_CLASSES[*]}"
+
+# A code class, or the canary class with code review on, needs a conformance pass on this node,
+# and a job on both code classes is refused (design §16; code-review-check.js).
+if [ -f "$INSTALL_DIR/code-review-check.js" ]; then
+    GATE_RC=0
+    node "$INSTALL_DIR/code-review-check.js" gate --install-dir "$INSTALL_DIR" --classes "$NEW_CLASSES_STR" || GATE_RC=$?
+    if [ "$GATE_RC" != "0" ]; then
+        echo -e "${RED}Oracle registration refused. Register on another class, or run $INSTALL_DIR/code-review-sandbox.sh enable first.${NC}"
+        exit 1
+    fi
+else
+    for class_id in $NEW_CLASSES_STR; do
+        case "$((10#$class_id))" in
+            133|134|5555)
+                echo -e "${RED}Error: class $class_id needs the conformance check, and code-review-check.js is missing from $INSTALL_DIR. Run upgrade-arbiter.sh first.${NC}"
+                exit 1 ;;
+        esac
+    done
+fi
 
 # Construct the registration command with ALL job IDs
 REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-cl.js \

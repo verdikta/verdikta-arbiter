@@ -95,7 +95,7 @@ has "rotate-logs rotates its logs"   "$(cat "$RL")" 'rotate_dir "$INSTALL_DIR/co
 # The real rotation over a real file.
 mkdir -p "$T/inst/ai-node" "$T/inst/external-adapter" "$T/inst/code-runner/logs" "$T/inst/util"
 cp "$RL" "$T/inst/util/rotate-logs.sh"
-echo old > "$T/inst/code-runner/logs/runner_old.log"; touch -t 202001010000 "$T/inst/code-runner/logs/runner_old.log"
+echo old > "$T/inst/code-runner/logs/runner_old.log"; touch -t "$(date -d '2 days ago' +%Y%m%d%H%M 2>/dev/null || date -v-2d +%Y%m%d%H%M)" "$T/inst/code-runner/logs/runner_old.log"
 HOME="$T/nohome" bash "$T/inst/util/rotate-logs.sh" >/dev/null 2>&1
 [ -f "$T/inst/code-runner/logs/runner_old.log.gz" ] && ok || bad "rotate-logs did not compress the runner's finished log"
 

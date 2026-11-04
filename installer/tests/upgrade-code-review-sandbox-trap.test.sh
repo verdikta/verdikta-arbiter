@@ -124,6 +124,7 @@ out=$(CODE_REVIEW_SANDBOX_FAILED="the sandbox: run code-review-sandbox.sh enable
     echo "FOLLOWUP=$JOB_FOLLOWUP_FAILED"
 ' _ "$tail_block" 2>&1); rc=$?
 has   "tail: names it"  "$out" "code-review-sandbox.sh enable"
+[ "$rc" = 3 ] && ok || bad "tail: exit $rc, expected 3"
 hasnt "tail: trap"      "$out" "TRAP-FIRED"
 grep -q 'CODE_REVIEW_SANDBOX_FAILED' <<< "$tail_block" && ok || bad "the tail does not read CODE_REVIEW_SANDBOX_FAILED"
 

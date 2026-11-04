@@ -144,7 +144,8 @@ else
         VA_UPGRADE_REGENERATE_JOBS VA_UPGRADE_SWITCH_COMMON_LATEST \
         VA_UPGRADE_INTEGRATE_MODELS VA_UPGRADE_RECONFIGURE_JOBS \
         VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG VA_UPGRADE_DOCKER_LOG_ROTATION \
-        VA_UPGRADE_HARDEN_PORTS VA_UPGRADE_BIND_CHAINLINK_LOCAL VA_UPGRADE_JOB_TIMEOUTS
+        VA_UPGRADE_HARDEN_PORTS VA_UPGRADE_BIND_CHAINLINK_LOCAL VA_UPGRADE_JOB_TIMEOUTS \
+        VA_UPGRADE_CODE_REVIEW_SANDBOX
     if [ -n "${VA_UPGRADE_BACKUP_KEEP:-}" ] && ! [[ "$VA_UPGRADE_BACKUP_KEEP" =~ ^[0-9]{1,3}$ ]]; then
         problem "VA_UPGRADE_BACKUP_KEEP='$VA_UPGRADE_BACKUP_KEEP' must be a whole number (install backups to keep; 0 keeps them all, default 3)"
     fi
@@ -157,6 +158,12 @@ else
     if is_yes "${VA_UPGRADE_UPDATE_RPC:-}" && [ -z "${VA_RPC_HTTP_URLS:-}" ] && [ -z "${VA_INFURA_API_KEY:-}" ]; then
         problem "VA_UPGRADE_UPDATE_RPC=y needs VA_RPC_HTTP_URLS + VA_RPC_WS_URLS, or VA_INFURA_API_KEY"
     fi
+fi
+
+# ---- the code-review sandbox (install and upgrade) ----------------------------
+check_yes_no_keys VA_INSTALL_CODE_REVIEW_SANDBOX
+if [ -n "${VA_CODE_REVIEW_DISK_GB:-}" ] && { ! [[ "$VA_CODE_REVIEW_DISK_GB" =~ ^[0-9]{1,5}$ ]] || [ "$VA_CODE_REVIEW_DISK_GB" -lt 12 ]; }; then
+    problem "VA_CODE_REVIEW_DISK_GB='$VA_CODE_REVIEW_DISK_GB' must be a whole number of GB, at least 12"
 fi
 
 if [ "$PROBLEMS" -gt 0 ]; then

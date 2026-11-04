@@ -444,11 +444,13 @@ REPO_AI_NODE="$REPO_ROOT/ai-node"
 REPO_EXTERNAL_ADAPTER="$REPO_ROOT/external-adapter"
 REPO_CHAINLINK_NODE="$REPO_ROOT/chainlink-node"
 REPO_OPERATOR="$REPO_ROOT/arbiter-operator"
+REPO_CODE_RUNNER="$REPO_ROOT/code-runner"
 
 TARGET_AI_NODE="$TARGET_DIR/ai-node"
 TARGET_EXTERNAL_ADAPTER="$TARGET_DIR/external-adapter"
 TARGET_CHAINLINK_NODE="$TARGET_DIR/chainlink-node"
 TARGET_OPERATOR="$TARGET_DIR/contracts"
+TARGET_CODE_RUNNER="$TARGET_DIR/code-runner"
 
 # Function to comprehensively check if a service is running (like arbiter-status.sh)
 check_service_status() {
@@ -1165,6 +1167,27 @@ if ! ask_yes_no "Do you want to proceed with the upgrade?" "y" VA_UPGRADE_PROCEE
     exit 0
 fi
 
+# Hold the code runner's maintenance lock for the whole upgrade (design §9.6): while it exists the
+# runner admits no run and /health is 503, so the adapter refuses a claim rather than judge it on a
+# half-replaced runner. The EXIT trap lets it go however this script ends, the ERR path included,
+# which restarts the arbiter first. A lock this script did not take stays its holder's: noclobber.
+# `kill -9` can leave it, and then code review refuses until it is removed (the doctor names it).
+CODE_RUNNER_LOCK="$TARGET_DIR/code-runner/.state/maintenance"
+CODE_RUNNER_LOCK_MINE=0
+release_code_runner_lock() {
+    if [ "$CODE_RUNNER_LOCK_MINE" = "1" ]; then
+        rm -f "$CODE_RUNNER_LOCK" || true
+    fi
+}
+trap release_code_runner_lock EXIT
+if [ -f "$TARGET_DIR/code-runner/.env" ]; then
+    if ( set -C; echo "upgrade-arbiter $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CODE_RUNNER_LOCK" ) 2>/dev/null; then
+        CODE_RUNNER_LOCK_MINE=1
+    else
+        echo -e "${YELLOW}The code runner's maintenance lock is already held ($CODE_RUNNER_LOCK): leaving it.${NC}"
+    fi
+fi
+
 # If arbiter is running, stop it
 if [ $ARBITER_RUNNING -eq 1 ]; then
     echo -e "${BLUE}Stopping arbiter...${NC}"
@@ -1720,6 +1743,12 @@ else
     echo -e "${YELLOW}Warning: arbiter-operator source directory not found at $REPO_OPERATOR${NC}"
 fi
 
+# Upgrade the Code Runner. Its files reach every node, so the same-version check below and a
+# later `code-review-sandbox.sh enable` have them; a node without the sandbox runs none of it.
+if [ -d "$REPO_CODE_RUNNER" ]; then
+    upgrade_component "$REPO_CODE_RUNNER" "$TARGET_CODE_RUNNER" "Code Runner" ".env .state logs node_modules *.pid"
+fi
+
 # Update management scripts
 echo -e "${BLUE}Updating management scripts...${NC}"
 # Shared prompt library + answers validator (used by the root/util scripts)
@@ -1762,6 +1791,9 @@ for _util in \
     arbiter-boot-service.sh \
     arbiter-firewall.sh \
     apply-job-timeouts.sh \
+    common-pin.js \
+    code-review-sandbox.sh \
+    code-review-check.js \
     apply-chainlink-loopback.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
@@ -1829,6 +1861,20 @@ if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
     echo -e "${GREEN}External Adapter dependencies installed.${NC}"
 fi
 
+# Code Runner dependencies, on a node that runs it. A failure here is the sandbox's, never the
+# upgrade's: the arbiter does not need it for a text request, and the runner's /health and the
+# adapter refuse a claim without it. Read with `|| rc=$?` under the ERR trap (#97).
+CODE_REVIEW_SANDBOX_FAILED=""
+if [ -f "$TARGET_CODE_RUNNER/.env" ]; then
+    echo -e "${BLUE}Installing Code Runner dependencies...${NC}"
+    CODE_RUNNER_DEPS_RC=0
+    (cd "$TARGET_CODE_RUNNER" && npm ci --omit=dev --no-audit --no-fund) || CODE_RUNNER_DEPS_RC=$?
+    if [ "$CODE_RUNNER_DEPS_RC" != "0" ]; then
+        echo -e "${YELLOW}Warning: npm ci failed in $TARGET_CODE_RUNNER (exit $CODE_RUNNER_DEPS_RC).${NC}"
+        CODE_REVIEW_SANDBOX_FAILED="the code-runner's dependencies did not install (exit $CODE_RUNNER_DEPS_RC); run $TARGET_DIR/code-review-sandbox.sh enable"
+    fi
+fi
+
 # Update @verdikta/common library to get latest ClassID data for both components
 # NOTE: This must happen AFTER npm install to avoid being downgraded by package.json versions
 echo -e "${BLUE}Updating @verdikta/common library to latest version for ClassID model pools...${NC}"
@@ -1865,6 +1911,14 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
     fi
 else
     echo -e "${YELLOW}@verdikta/common update utility not found, skipping library update.${NC}"
+fi
+
+# The same-version check: the AI Node, the External Adapter and the Code Runner read one
+# @verdikta/common release. Code mode refuses otherwise; text mode is unaffected, so this warns.
+COMMON_AGREE_RC=0
+node "$UTIL_DIR/common-pin.js" --agree "$TARGET_DIR" || COMMON_AGREE_RC=$?
+if [ "$COMMON_AGREE_RC" != "0" ]; then
+    echo -e "${YELLOW}Warning: the components do not pin one @verdikta/common release (above). Code review stays refused until they do.${NC}"
 fi
 
 # Synchronize ClassID model pools with models.ts
@@ -3137,6 +3191,48 @@ if [ -x "$TARGET_DIR/apply-job-timeouts.sh" ]; then
     fi
 fi
 
+# The code-review sandbox, after the restart: gVisor, a Docker daemon of its own, a fixed-size disk,
+# warm images and the conformance self-test (design §16). It takes minutes and the network, and none
+# of it stops the arbiter, so a node is back up first. It never restarts the arbiter's Docker. It is
+# the operator's call: interactive default no, and an unattended upgrade installs nothing unless
+# VA_UPGRADE_CODE_REVIEW_SANDBOX=y. On a node that has it (status 2: a new runner, gVisor or common
+# release has no pass yet) the refresh needs no question. A failure leaves the arbiter as it is, says
+# what to run and ends the upgrade with exit 3, as a job limit that did not land does. ERR-trap rule:
+# `status --quiet` exits non-zero on every node that has not opted in, so exit codes are read with
+# `|| rc=$?`, never behind `set +e` (#97).
+if [ -x "$TARGET_DIR/code-review-sandbox.sh" ]; then
+    CODE_REVIEW_STATUS_RC=0
+    bash "$TARGET_DIR/code-review-sandbox.sh" status --quiet || CODE_REVIEW_STATUS_RC=$?
+    CODE_REVIEW_WANTED=0
+    case "$CODE_REVIEW_STATUS_RC" in
+        0|4) ;;
+        2) echo -e "${BLUE}Refreshing the code-review sandbox (no conformance pass for this release yet)...${NC}"
+           CODE_REVIEW_WANTED=1 ;;
+        *)
+            echo
+            echo -e "${BLUE}Code-review sandbox (optional; needed only to judge stake claims): gVisor, a separate${NC}"
+            echo -e "${BLUE}Docker daemon on a fixed-size ${VA_CODE_REVIEW_DISK_GB:-40} GB disk image, the code runner, and a conformance${NC}"
+            echo -e "${BLUE}self-test. It takes about +2 vCPU and +4 GB of RAM while judging. It needs sudo, does not${NC}"
+            echo -e "${BLUE}restart Docker and does not touch Chainlink or Postgres. Remove it with:${NC}"
+            echo -e "${BLUE}  $TARGET_DIR/code-review-sandbox.sh disable --purge${NC}"
+            echo -e "${BLUE}Unattended runs skip this unless VA_UPGRADE_CODE_REVIEW_SANDBOX=y.${NC}"
+            if ask_yes_no "Install the code-review sandbox?" "n" VA_UPGRADE_CODE_REVIEW_SANDBOX "n"; then
+                CODE_REVIEW_WANTED=1
+            else
+                echo -e "${BLUE}Skipped. Install it later with: $TARGET_DIR/code-review-sandbox.sh enable${NC}"
+            fi
+            ;;
+    esac
+    if [ "$CODE_REVIEW_WANTED" = "1" ]; then
+        CODE_REVIEW_ENABLE_RC=0
+        bash "$TARGET_DIR/code-review-sandbox.sh" enable || CODE_REVIEW_ENABLE_RC=$?
+        if [ "$CODE_REVIEW_ENABLE_RC" != "0" ]; then
+            echo -e "${YELLOW}Warning: the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC). The arbiter is not affected.${NC}"
+            CODE_REVIEW_SANDBOX_FAILED="the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC); after fixing the cause run $TARGET_DIR/code-review-sandbox.sh enable"
+        fi
+    fi
+fi
+
 # Post-upgrade health check. Best-effort, advisory only.
 # Skipped if services weren't (re)started — otherwise every service check
 # would FAIL purely because nothing is listening.
@@ -3233,6 +3329,10 @@ if [ -n "${JOB_REGEN_FAILED:-}" ]; then
 fi
 if [ -n "${JOB_TIMEOUTS_FAILED:-}" ]; then
     echo -e "${RED}JOB TIMEOUTS FAILED: ${JOB_TIMEOUTS_FAILED}${NC}"
+    JOB_FOLLOWUP_FAILED=1
+fi
+if [ -n "${CODE_REVIEW_SANDBOX_FAILED:-}" ]; then
+    echo -e "${RED}CODE-REVIEW SANDBOX FAILED: ${CODE_REVIEW_SANDBOX_FAILED}${NC}"
     JOB_FOLLOWUP_FAILED=1
 fi
 if [ "$JOB_FOLLOWUP_FAILED" -eq 1 ] && [ "${RECONF_FAILED:-0}" -ne 1 ]; then

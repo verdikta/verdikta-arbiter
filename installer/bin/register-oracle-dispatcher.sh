@@ -98,6 +98,21 @@ if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ]; then
     exit 1
 fi
 
+# VA_REGISTER_JOB_IDS names the jobs of this registration, when not all of them: how two code
+# classes stay on jobs of their own (a job on both would be eligible for both price tiers).
+if [ -n "${VA_REGISTER_JOB_IDS:-}" ]; then
+    SELECTED_JOB_IDS=()
+    for wanted in $(echo "$VA_REGISTER_JOB_IDS" | tr ',' ' '); do
+        wanted="${wanted//-/}"
+        if [[ " ${JOB_IDS_AVAILABLE[*]} " != *" $wanted "* ]]; then
+            echo -e "${RED}Error: job $wanted in VA_REGISTER_JOB_IDS is not one of this node's jobs.${NC}"
+            exit 1
+        fi
+        SELECTED_JOB_IDS+=("$wanted")
+    done
+    JOB_IDS_AVAILABLE=("${SELECTED_JOB_IDS[@]}")
+fi
+
 # Use ALL job IDs for registration (space-separated)
 REGISTRATION_JOB_IDS=$(printf '"%s" ' "${JOB_IDS_AVAILABLE[@]}")
 REGISTRATION_JOB_IDS=${REGISTRATION_JOB_IDS% }  # Remove trailing space
@@ -190,6 +205,26 @@ if ! [[ "$CLASSES_ID" =~ ^[0-9]+([[:space:]]+[0-9]+)*$ ]]; then
     echo -e "${RED}Error: Classes ID must be one or more numbers separated by spaces.${NC}"
     echo -e "${RED}Examples: 128 or 128 888 999${NC}"
     exit 1
+fi
+
+# A code class, or the canary class with code review on, needs a conformance pass on this
+# node, and a job on both code classes is refused (design §16; code-review-check.js). This
+# runs in the source tree during an install, before the sandbox can be: the install directory
+# is where a pass would be.
+GATE_DIR="${INSTALL_DIR:-$(dirname "$INSTALLER_DIR")}"
+if [ -f "$INSTALLER_DIR/util/code-review-check.js" ]; then
+    if ! node "$INSTALLER_DIR/util/code-review-check.js" gate --install-dir "$GATE_DIR" --classes "$CLASSES_ID"; then
+        echo -e "${RED}Oracle registration refused. Register on another class, or finish the install, run $GATE_DIR/code-review-sandbox.sh enable and then $GATE_DIR/register-oracle.sh${NC}"
+        exit 1
+    fi
+else
+    for class_id in $CLASSES_ID; do
+        case "$((10#$class_id))" in
+            133|134|5555)
+                echo -e "${RED}Error: class $class_id needs the conformance check, and code-review-check.js is missing from $INSTALLER_DIR/util.${NC}"
+                exit 1 ;;
+        esac
+    done
 fi
 
 # Construct the registration command with ALL job IDs

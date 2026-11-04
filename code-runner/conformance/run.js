@@ -148,7 +148,9 @@ async function main(argv, deps = {}) {
 
   let session;
   try {
-    session = await makeSession({ registryPort: CANARY_REGISTRY_PORT });
+    // The installer's self-test runs on the runner's own daemon, which has no bridge to publish a port on (A8).
+    const registryHostNetwork = process.env.CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK === 'host';
+    session = await makeSession({ registryPort: CANARY_REGISTRY_PORT, registryHostNetwork });
   } catch (err) {
     stderr(`conformance: the runner session did not start: ${err.message}`);
     return EXIT.HARNESS;

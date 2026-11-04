@@ -1997,6 +1997,10 @@ image-pull failure"), never a verdict.
   `code-runner/.state/maintenance`). While it exists, runs are refused and
   `/health` is 503. The installer holds it during install and upgrade (A8);
   remove a stale one by hand.
+- `start.sh` and `stop.sh` are how an arbiter runs it
+  ([operator notes](../installer/docs/maintenance/code-review-sandbox.md)). `start.sh` reads `.env`
+  as data, starts the runner with `env -i`, and refuses any Docker endpoint but the runner's own
+  socket.
 
 ## Configuration
 
@@ -2283,6 +2287,11 @@ the canary uses a fixed loopback port (5987) and stops if it is taken. A change 
 hash. `npm run conformance -- --write-lock` writes the new lock (it needs ghcr.io and
 binaries.soliditylang.org, not Docker), and C5's value in `@verdikta/common` follows with a runner
 release.
+
+The installer's self-test (A8) runs this on the runner's own daemon, which has no bridge to publish a
+port on, so it sets `CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK=host`: the registry listens on the
+host's loopback itself. The reference is the same, so the hash is too. It checks that the images are warm
+first, since this pulls what is missing.
 
 ### In CI
 

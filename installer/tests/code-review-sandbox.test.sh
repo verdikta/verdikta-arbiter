@@ -66,6 +66,8 @@ stub timeout 'shift; "$@"'
 stub sudo 'if [ "${STUB_NO_SUDO:-0}" = 1 ]; then exit 1; fi; [ "$1" = "-n" ] && shift; "$@"'
 # chown as a stub: the tests run as one user.
 stub chown 'exit 0'
+# env -i stays env -i, and is logged: only what a test's stand-in needs to report goes through it.
+stub env 'if [ "$1" = "-i" ]; then echo "env -i" >> "$STUB_LOG"; shift; exec /usr/bin/env -i STUB_LOG="$STUB_LOG" STUB_LOCK="$STUB_LOCK" STUB_CANARY_EXIT="${STUB_CANARY_EXIT:-}" STUB_HASH="${STUB_HASH:-}" "$@"; fi; exec /usr/bin/env "$@"'
 
 fresh() { # a new prefix and install tree; sets P, I
     rm -rf "$T/p"; P="$T/p"; I="$T/p/install"
@@ -93,7 +95,7 @@ J
 const fs = require('fs');
 const a = process.argv; const out = a[a.indexOf('--json') + 1];
 if (process.env.STUB_LOCK && fs.existsSync(process.env.STUB_LOCK)) fs.appendFileSync(process.env.STUB_LOG, 'lock-held-during-self-test\n');
-fs.appendFileSync(process.env.STUB_LOG, `conformance DOCKER_HOST=${process.env.DOCKER_HOST} REGNET=${process.env.CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK} RUNTIME=${process.env.CODE_RUNNER_RUNTIME} TMPDIR=${process.env.TMPDIR} KEY=${process.env.STUB_SECRET_MARK || ''}\n`);
+fs.appendFileSync(process.env.STUB_LOG, `conformance DOCKER_HOST=${process.env.DOCKER_HOST} REGNET=${process.env.CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK} RUNTIME=${process.env.CODE_RUNNER_RUNTIME} TMPDIR=${process.env.TMPDIR} KEY=${process.env.STUB_SECRET_KEY || 'none'}\n`);
 if (process.env.STUB_CANARY_EXIT) process.exit(Number(process.env.STUB_CANARY_EXIT));
 fs.writeFileSync(out, JSON.stringify({ canonical: true, reportSha256: process.env.STUB_HASH || 'cafe'.repeat(16), runner: '0.1.0', gvisor: 'release-20260921.0' }));
 J
@@ -152,7 +154,7 @@ has "dockerd uses its own config" "$unit" "dockerd --config-file $P/etc/verdikta
 has "dockerd bound to the disk"   "$unit" "^BindsTo=.*verdikta-code-runner-disk.service"
 has "dockerd refuses an unmounted disk" "$unit" "^AssertPathIsMountPoint=$P/var/lib/verdikta-code-runner$"
 has "reload is a HUP, no restart" "$unit" '^ExecReload=/bin/kill -s HUP \$MAINPID'
-hasnt "no dependency on the arbiter's Docker" "$cfg" "docker.service$"
+hasnt "no dependency on the arbiter's Docker" "$cfg" "[= ]docker.service"
 hasnt "no dependency on the arbiter's containerd" "$cfg" "^After=.* containerd.service"
 hasnt "no socket activation"      "$cfg" "docker.socket"
 ctd=$(printf '%s\n' "$cfg" | awk '/^# containerd\.toml/{p=1;next} /^# /{p=0} p')
@@ -162,8 +164,10 @@ hasnt "containerd never the system socket" "$ctd" '"/run/containerd'
 
 # --- enable on a fresh host
 fresh
-out=$(run enable 2>&1); rc=$?
+out=$(STUB_SECRET_KEY=leaked run enable 2>&1); rc=$?
 is "enable rc" "$rc" 0
+has "self-test: nothing of the caller's environment" "$(log)" "^conformance .*KEY=none$"
+has "self-test: env -i" "$(log)" "^env -i$"
 is "/etc/docker untouched" "$(cat "$P/etc/docker/daemon.json")" "$DAEMON_BEFORE"
 # Only this phase's own units, whatever the verb; the arbiter's Docker and containerd never.
 l=$(log)
@@ -181,13 +185,13 @@ dockers=$(printf '%s\n' "$l" | grep '^docker ')
 strays=$(printf '%s\n' "$dockers" | grep -v -- "--host unix://$P/run/verdikta-code-runner/docker.sock" | grep -v "DOCKER_HOST=unix://$P/run/verdikta-code-runner/docker.sock")
 is "every docker call names the runner's socket" "$strays" ""
 has "SHA-512 checked" "$(cat "$P/state/sha-input")" "^7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e  "
-has "gVisor executable by anyone: the runner's user asks it its release" "$(stat -f '%Lp' "$P/opt/gvisor/20260921.0/runsc" 2>/dev/null || stat -c '%a' "$P/opt/gvisor/20260921.0/runsc")" "755"
+has "gVisor executable by anyone: the runner's user asks it its release" "$(stat -c '%a' "$P/opt/gvisor/20260921.0/runsc" 2>/dev/null || stat -f '%Lp' "$P/opt/gvisor/20260921.0/runsc")" "755"
 has "disk 40 GB by default" "$l" "^fallocate -l 40G "
 has "ext4 without root's reserve" "$l" "^mkfs.ext4 .*-m 0"
 hasnt "no partial image left" "$(ls "$P/var/lib")" "partial"
 [ -f "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "no disk image"
-has "warms the base by digest with a platform"   "$l" "pull --platform linux/amd64 ghcr.io/foundry-rs/foundry:v1.8.5@sha256:aaa"
-has "warms Semgrep by digest with a platform"    "$l" "pull --platform linux/amd64 docker.io/semgrep/semgrep@sha256:bbb"
+has "warms the base by digest with a platform"   "$l" "pull --quiet --platform linux/amd64 ghcr.io/foundry-rs/foundry:v1.8.5@sha256:aaa"
+has "warms Semgrep by digest with a platform"    "$l" "pull --quiet --platform linux/amd64 docker.io/semgrep/semgrep@sha256:bbb"
 # Warm before the self-test: the self-test's own pull could hide a cold host.
 pull_line=$(printf '%s\n' "$l" | grep -n ' pull ' | tail -1 | cut -d: -f1); self_line=$(printf '%s\n' "$l" | grep -n '^conformance ' | head -1 | cut -d: -f1)
 [ -n "$self_line" ] && [ "$pull_line" -lt "$self_line" ] && ok || bad "warm then self-test: pull $pull_line, self-test $self_line"
@@ -210,7 +214,7 @@ has "runner env: slots"      "$envf" "^CODE_RUNNER_SLOTS=1$"
 has "runner env: model reserve" "$envf" "^CODE_RUNNER_RESERVE_LOCAL_MODEL_MB=0$"
 hasnt "runner env: no key"   "$envf" "PRIVATE_KEY"
 tok=$(cat "$I/code-runner/.state/token"); is "token length" "${#tok}" 64
-is "token mode" "$(stat -f '%Lp' "$I/code-runner/.state/token" 2>/dev/null || stat -c '%a' "$I/code-runner/.state/token")" 600
+is "token mode" "$(stat -c '%a' "$I/code-runner/.state/token" 2>/dev/null || stat -f '%Lp' "$I/code-runner/.state/token")" 600
 hasnt "token never in the log or output" "$l$out" "$tok"
 # The adapter's environment.
 ea=$(cat "$I/external-adapter/.env")
@@ -233,7 +237,7 @@ is "re-enable rc" "$rc" 0
 hasnt "re-enable: no new image" "$(log)" "^fallocate"
 hasnt "re-enable: no mkfs"      "$(log)" "^mkfs.ext4"
 hasnt "re-enable: no restart when nothing changed" "$(log)" "restart"
-hasnt "re-enable: no gVisor download"  "$(log)" "^curl"
+hasnt "re-enable: no gVisor download"  "$(log)" "gvisor.tar.bz2"
 hasnt "re-enable: no self-test on a standing pass" "$(log)" "^conformance"
 
 # --- a new gVisor path on a running daemon is a reload of its own daemon, no restart
@@ -372,7 +376,7 @@ is "purge rc" "$rc" 0
 code=$(grep -vE '^[[:space:]]*#' "$TOOL")
 hasnt "never restarts docker"  "$code" "restart docker"
 hasnt "never reloads docker"   "$code" "reload docker"
-hasnt "no package manager: apt can restart Docker" "$code" "apt-get\|apt \|dpkg\|yum \|dnf "
+hasnt "no package manager: apt can restart Docker" "$code" "apt-get\|apt install\|dpkg\|yum \|dnf "
 hasnt "never names cl-postgres" "$code" "cl-postgres"
 hasnt "no default-socket docker path" "$code" "/var/run/docker.sock"
 # The installer never writes dev trust, anywhere.

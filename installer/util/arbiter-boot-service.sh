@@ -136,8 +136,8 @@ unit_text() {
 [Unit]
 Description=Verdikta Arbiter node (AI Node, External Adapter, Chainlink node)
 Documentation=https://github.com/verdikta/verdikta-arbiter
-After=network-online.target docker.service containerd.service
-Wants=network-online.target docker.service
+After=network-online.target docker.service containerd.service verdikta-code-runner-docker.service
+Wants=network-online.target docker.service verdikta-code-runner-docker.service
 
 [Service]
 Type=oneshot

@@ -151,6 +151,22 @@ else
 fi
 echo ""
 
+# Check the Code Runner, where the code-review sandbox is installed. Any HTTP status is an
+# answer: without its token the runner says 401. arbiter-doctor.sh reads its /health.
+if [ -f "$INSTALL_DIR/code-runner/.env" ]; then
+    echo -e "${BLUE}Code Runner Status:${NC}"
+    if [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:8090/health 2>/dev/null)" != "000" ]; then
+        echo -e "  Status: ${GREEN}Running${NC}"
+    else
+        echo -e "  Status: ${RED}Not Running${NC}"
+    fi
+    echo -e "  Port:   8090 (loopback)"
+    echo -e "  PID:    $(cat "$INSTALL_DIR/code-runner/runner.pid" 2>/dev/null || echo none)"
+    echo -e "  Docker: $(systemctl is-active verdikta-code-runner-docker 2>/dev/null || echo unknown) (its own daemon: verdikta-code-runner-docker)"
+    [ -e "$INSTALL_DIR/code-runner/.state/maintenance" ] && echo -e "  Lock:   ${YELLOW}the maintenance lock is held: runs are refused${NC}"
+    echo ""
+fi
+
 # Check External Adapter
 echo -e "${BLUE}External Adapter Status:${NC}"
 ADAPTER_RUNNING=false

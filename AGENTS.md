@@ -298,6 +298,19 @@ does not — it is read at runtime). A failed build falls back to `next dev`;
 `arbiter-status.sh` and the doctor's `svc.ai_node_mode`. Operator notes:
 `installer/docs/maintenance/upgrading.md`, "AI Node production build".
 
+### The code-review sandbox (optional)
+`installer/util/code-review-sandbox.sh enable`, offered by `install.sh` and by
+`upgrade-arbiter.sh` (`VA_*_CODE_REVIEW_SANDBOX`, unattended default `n`): gVisor by SHA-512, a
+second `dockerd` and containerd of the runner's own on a fixed-size loop-mounted ext4 image (40 GB),
+warm images, the conformance self-test against `@verdikta/common`'s hash. **It never restarts,
+reloads or configures the arbiter's Docker and installs no package** (apt can restart Docker): a new
+gVisor reaches a running daemon by `systemctl reload verdikta-code-runner-docker`. A first enable
+that fails removes what it made; a failed refresh keeps it and turns code review off. The runner's
+daemon has `bridge: none` and no iptables, so nothing there can publish a port: the self-test's
+registry uses the host network. `register-oracle*.sh` refuse a code class, or 5555 with code review
+on, without a pass, and one job on both code classes. `code-runner/start.sh` refuses any Docker
+endpoint but its own socket. Operator notes: `installer/docs/maintenance/code-review-sandbox.md`.
+
 ### Runtime management (post-install, in the install dir)
 `start-arbiter.sh`, `stop-arbiter.sh`, `arbiter-status.sh`, `arbiter-doctor.sh`
 (health check + `--fix`), `register-oracle.sh` / `unregister-oracle.sh`,

@@ -264,3 +264,12 @@ test('the canary exercises what a hash should cover: a flag, the fix check, all 
   assert.equal(c.listing.repo.path, 'canary/repo', 'its own repository: a new calibration case cannot move it');
   assert.equal(runner.fix.pocPasses, true);
 });
+
+test('A8: the installer\'s self-test runs the registry on the host network, because the runner\'s daemon has no bridge', async () => {
+  const { registryArgs } = require('../../calibration/lib/session');
+  assert.deepEqual(registryArgs('r', 5987, false).slice(0, 6), ['run', '--detach', '--name', 'r', '--publish', '127.0.0.1:5987:5000']);
+  const host = registryArgs('r', 5987, true);
+  assert.deepEqual(host.slice(4, 8), ['--network', 'host', '--env', 'REGISTRY_HTTP_ADDR=127.0.0.1:5987']);
+  assert.ok(!host.includes('--publish'));
+  assert.equal(registryArgs('r', 5987, false).at(-1), host.at(-1), 'the same image either way');
+});

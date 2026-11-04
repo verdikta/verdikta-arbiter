@@ -16,6 +16,7 @@ INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
 # Define component directories relative to $INSTALL_DIR
 AI_NODE_DIR="$INSTALL_DIR/ai-node"
 ADAPTER_DIR="$INSTALL_DIR/external-adapter"
+CODE_RUNNER_DIR="$INSTALL_DIR/code-runner"
 
 echo -e "${BLUE}Stopping Verdikta Arbiter services located in $INSTALL_DIR...${NC}"
 
@@ -35,6 +36,13 @@ check_port() {
         return 1
     fi
 }
+
+# Stop the Code Runner first: on SIGTERM it cancels its runs and removes their sandboxes. Its own
+# Docker daemon stays up, idle: nothing of the arbiter's depends on it, and it holds no claim.
+if [ -f "$CODE_RUNNER_DIR/stop.sh" ]; then
+    echo -e "${BLUE}Stopping Code Runner...${NC}"
+    bash "$CODE_RUNNER_DIR/stop.sh" || echo -e "${YELLOW}The Code Runner did not stop cleanly; see $CODE_RUNNER_DIR/logs/.${NC}"
+fi
 
 # Stop AI Node
 echo -e "${BLUE}Stopping AI Node...${NC}"

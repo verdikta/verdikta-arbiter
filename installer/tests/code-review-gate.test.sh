@@ -30,6 +30,7 @@ NETWORK_NAME="Base Sepolia"
 NETWORK_TYPE="testnet"
 PRIVATE_KEY="not-a-real-key"
 INSTALL_DIR="$I"
+BASE_SEPOLIA_RPC_HTTP_URLS="http://127.0.0.1:1"
 E
     cat > "$I/installer/.contracts" <<'E'
 OPERATOR_ADDR="0x1111111111111111111111111111111111111111"
