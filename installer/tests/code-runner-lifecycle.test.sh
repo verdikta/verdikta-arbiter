@@ -122,6 +122,7 @@ for key in VA_INSTALL_CODE_REVIEW_SANDBOX VA_UPGRADE_CODE_REVIEW_SANDBOX; do
     grep -q "$key" "$ROOT/docs/installation/unattended.md" && ok || bad "$key not in unattended.md"
 done
 grep -q 'VA_CODE_REVIEW_DISK_GB' "$ROOT/bin/validate-answers.sh" && ok || bad "VA_CODE_REVIEW_DISK_GB not validated"
+grep -q 'VA_CODE_RUNNER_SLOTS' "$ROOT/bin/validate-answers.sh" && ok || bad "VA_CODE_RUNNER_SLOTS not validated"
 grep -q 'VA_REGISTER_JOB_IDS' "$ROOT/docs/installation/unattended.md" && ok || bad "VA_REGISTER_JOB_IDS not documented"
 
 echo "code-runner-lifecycle: pass=$pass fail=$fail"; [ "$fail" = 0 ]

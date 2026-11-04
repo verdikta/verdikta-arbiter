@@ -164,7 +164,15 @@ has "another's lock stays" "$out" "LOCK-AFTER=present"
 has "another's lock: finished" "$out" "REACHED-END"
 out=$(run_lock 1 1 1)
 has "another's lock stays after a failure" "$out" "LOCK-AFTER=present"
-# A killed upgrade (SIGTERM) lets go too: the EXIT trap runs for it only if something handles it; a kill -9 cannot, and the doctor names a stale lock.
+# A signal: bash runs the EXIT trap on the way out. Only kill -9 can leave the lock, and then the doctor names it.
+rm -f "$T/install/code-runner/.state/maintenance"; : > "$T/install/code-runner/.env"
+LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" bash -c '
+    GREEN= YELLOW= RED= BLUE= NC=
+    eval "$1"
+    kill -TERM $$
+    sleep 5
+' _ "$lock" >/dev/null 2>&1
+[ ! -f "$T/install/code-runner/.state/maintenance" ] && ok || bad "SIGTERM left the lock"
 
 # --- the dependencies, under the trap: npm failing warns, it does not end the upgrade
 mkdir -p "$T/bin"

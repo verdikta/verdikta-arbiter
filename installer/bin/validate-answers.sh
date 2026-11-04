@@ -165,6 +165,9 @@ check_yes_no_keys VA_INSTALL_CODE_REVIEW_SANDBOX
 if [ -n "${VA_CODE_REVIEW_DISK_GB:-}" ] && { ! [[ "$VA_CODE_REVIEW_DISK_GB" =~ ^[0-9]{1,5}$ ]] || [ "$VA_CODE_REVIEW_DISK_GB" -lt 12 ]; }; then
     problem "VA_CODE_REVIEW_DISK_GB='$VA_CODE_REVIEW_DISK_GB' must be a whole number of GB, at least 12"
 fi
+if [ -n "${VA_CODE_RUNNER_SLOTS:-}" ] && { ! [[ "$VA_CODE_RUNNER_SLOTS" =~ ^[0-9]{1,2}$ ]] || [ "$VA_CODE_RUNNER_SLOTS" -lt 1 ] || [ "$VA_CODE_RUNNER_SLOTS" -gt 16 ]; }; then
+    problem "VA_CODE_RUNNER_SLOTS='$VA_CODE_RUNNER_SLOTS' must be a whole number from 1 to 16"
+fi
 
 if [ "$PROBLEMS" -gt 0 ]; then
     echo "$PROBLEMS problem(s) found in the unattended answers." >&2
