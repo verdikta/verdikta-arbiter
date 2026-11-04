@@ -1,0 +1,110 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.basin-supply-without-convergence",
+  "subsets": [
+    "batch-2",
+    "severity-boundary"
+  ],
+  "title": "calcLpTokenSupply returns a number when it has not converged",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-07-basin-findings/issues/19",
+    "licence": "Repository LICENSE.txt: MIT, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-07-basin-findings/issues/19",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test. This one uses reserves extreme enough that the function runs out of steps, and allows a revert, the fix the finding asks for.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-07-basin-findings/12468792fc3c89de5ea1353ddb83b7ce5f7d5b21/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-07-basin",
+      "verdict": "Valid at the lower class: labelled QA (Quality Assurance), downgraded by judge, sponsor confirmed, grade-c, unsatisfactory. The judge calls it QA (L).",
+      "class": "LOW"
+    }
+  },
+  "listing": "listings/basin-2024-07-scope",
+  "label": {
+    "kind": "severity-boundary",
+    "basis": "program",
+    "why": "The sponsor agreed that it should revert, and asked for low severity. The judge wrote that it needs extreme values, so a QA (L) submission. A fix was made upstream.",
+    "boundary": {
+      "classes": [
+        "LOW",
+        "MEDIUM"
+      ],
+      "call": "LOW",
+      "moved": "Submitted as 2 (Med Risk). Judge alex-ppg downgraded it to QA on 2024-08-21 and kept that on a post-judging challenge."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "LOW",
+    "reason": "The program judged it valid at the lower side of a boundary it moved, so Low, against the Medium claimed. Every gate passes, and the class is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/SupplyWithoutConvergenceClaim.t.sol > SupplyWithoutConvergenceClaim > test_a_supply_that_comes_back_has_converged()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "how far the supply it returned moves on one more step: 341995 > 1"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "calcLpTokenSupply"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.basin-supply-without-convergence.control",
+    "removes": {
+      "poc.patch": [
+        "+            assertLe(step > supply ? step - supply : supply - step, 1, \"how far the supply it returned moves on one more step\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+            assertGt(step > supply ? step - supply : supply - step, 1, \"how far the supply it returned moves on one more step\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

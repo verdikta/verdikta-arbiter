@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A pending deposit cannot be cancelled once a price is reported",
+  "claimedClass": "MEDIUM",
+  "rootCause": "DepositQueue.cancelDepositRequest takes its index from the price checkpoints, whose value is a price and not a position, and passes it to the requests tree, so the call reverts with IndexOutOfBounds once any report has been processed.",
+  "affectedPaths": [
+    "src/queues/DepositQueue.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_pending_deposit_can_be_cancelled_after_a_report",
+    "observable": "test_a_pending_deposit_can_be_cancelled_after_a_report fails with \"IndexOutOfBounds()\""
+  },
+  "fixIncluded": false
+}

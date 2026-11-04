@@ -1,0 +1,50 @@
+diff --git a/test/TokenOrderAcrossUpgradeClaim.t.sol b/test/TokenOrderAcrossUpgradeClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/TokenOrderAcrossUpgradeClaim.t.sol
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {ERC1967Proxy} from "oz/proxy/ERC1967/ERC1967Proxy.sol";
++import {IERC20} from "oz/token/ERC20/IERC20.sol";
++import {Call} from "src/Well.sol";
++import {WellUpgradeable} from "src/WellUpgradeable.sol";
++import {Aquifer} from "src/Aquifer.sol";
++import {ConstantProduct2} from "src/functions/ConstantProduct2.sol";
++import {LibWellUpgradeableConstructor} from "src/libraries/LibWellUpgradeableConstructor.sol";
++import {WellDeployer} from "script/helpers/WellDeployer.sol";
++import {MockToken} from "mocks/tokens/MockToken.sol";
++import {MockWellUpgradeable} from "mocks/wells/MockWellUpgradeable.sol";
++
++/// Reserves sit in storage by position, so a liquidity provider's balance means what it meant only while the token order stands.
++contract TokenOrderAcrossUpgradeClaim is Test, WellDeployer {
++    function test_an_upgrade_keeps_the_tokens_a_provider_deposited() public {
++        address aquifer = address(new Aquifer());
++
++        IERC20[] memory tokens = new IERC20[](2);
++        tokens[0] = new MockToken("ONE", "ONE", 18);
++        tokens[1] = new MockToken("TWO", "TWO", 18);
++        Call memory curve = Call(address(new ConstantProduct2()), abi.encode("first"));
++
++        WellUpgradeable first =
++            encodeAndBoreWellUpgradeable(aquifer, address(new WellUpgradeable()), tokens, curve, new Call[](0), bytes32(0));
++        vm.prank(address(0xA11CE));
++        address proxy = address(
++            new ERC1967Proxy(address(first), LibWellUpgradeableConstructor.encodeWellInitFunctionCall(tokens, curve))
++        );
++
++        IERC20[] memory reversed = new IERC20[](2);
++        reversed[0] = tokens[1];
++        reversed[1] = tokens[0];
++        WellUpgradeable second = encodeAndBoreWellUpgradeable(
++            aquifer, address(new MockWellUpgradeable()), reversed, curve, new Call[](0), bytes32(uint256(7))
++        );
++
++        vm.prank(address(0xBAD));
++        try WellUpgradeable(payable(proxy)).upgradeTo(address(second)) {} catch {}
++
++        assertEq(address(WellUpgradeable(payable(proxy)).tokens()[0]), address(tokens[0]), "the first reserve still belongs to the first token");
++    }
++}

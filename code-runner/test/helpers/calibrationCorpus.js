@@ -307,7 +307,155 @@ function writePublicCorpus({ listing = {}, spec = {}, entry = {}, finding: findi
   return { root, commit, dir, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
+// ------------------------------------------------------------- A7c: a labelled case in the subset batch-2
+
+const KNOWN_TITLE = 'Interest is short at a tier boundary';
+
+function knownIssue(over = {}) {
+  const entry = { title: KNOWN_TITLE, class: 'MEDIUM', paths: ['src/Staking.sol'], description: 'The rate at a boundary follows the old count. The maker accepts it.', ...over };
+  return { id: codeReview.knownIssueId(entry), ...entry };
+}
+
+const PRIOR = Object.freeze({
+  version: 1,
+  title: 'A staker is paid the lower rate',
+  claimedClass: 'HIGH',
+  rootCause: 'The boundary follows the old count, so the staker stays in the lower tier.',
+  affectedPaths: ['src/Staking.sol'],
+  poc: { command: 'forge test --match-test test_rate', observable: 'test_rate fails with "the rate: 1 != 2"' },
+  fixIncluded: false
+});
+
+/** What each kind's case.json needs on top of a public case. */
+function batch2Label(kind, over = {}) {
+  const base = { kind, basis: 'program', why: 'The program ruled on this in its own words.' };
+  if (kind.startsWith('duplicate.')) base.duplicateOf = { url: 'https://github.com/example-contests/2031-01-project-judging/issues/3', recorded: 'Labelled a duplicate of it.' };
+  if (kind === 'severity-boundary') base.boundary = { classes: ['MEDIUM', 'HIGH'], call: 'MEDIUM', moved: 'The judge moved it down from High.' };
+  if (kind === 'known-issue.before') base.knownIssue = { title: KNOWN_TITLE, listed: 'before', how: 'In the list the commit saw.' };
+  if (kind === 'known-issue.after') base.knownIssue = { title: KNOWN_TITLE, listed: 'after', how: 'Published after the commit, in no list it saw.', twin: 'batch-2.twin' };
+  return { ...base, ...over };
+}
+
+function batch2Case(kind, over = {}) {
+  const outcome = { 'clear-invalid': 'INVALID', duplicate: 'DUPLICATE', 'severity-boundary': 'VALID' }[kind.split('.')[0]] || (kind === 'known-issue.before' ? 'DUPLICATE' : 'VALID');
+  const valid = outcome === 'VALID';
+  const cls = valid ? 'MEDIUM' : null;
+  const pack = kind.startsWith('duplicate.') ? { contains: [{ tier: 'priorFindings', text: PRIOR.title }] }
+    : kind === 'known-issue.before' ? { contains: [{ tier: 'knownIssues', text: KNOWN_TITLE }] }
+      : kind === 'known-issue.after' ? { absent: [KNOWN_TITLE] } : undefined;
+  const base = publicCase();
+  return {
+    ...base,
+    id: 'batch-2.one',
+    subsets: ['batch-2', kind.split('.')[0]],
+    source: publicSource({ program: { ...publicSource().program, class: kind.startsWith('duplicate.') ? 'HIGH' : cls } }),
+    priorFindings: kind.startsWith('duplicate.') ? ['priors/1'] : [],
+    label: batch2Label(kind),
+    control: {
+      case: 'batch-2.one.control',
+      removes: { 'poc.patch': ['+        revert("interest is paid: 1 != 2");'] },
+      adds: { 'poc.patch': ['+        require(true, "interest is paid: 1 != 2");'] },
+      differsIn: ['settlement.kind', 'gates.reproduces', 'tests.0.runs'],
+      sameIn: ['gates.applies', 'gates.build']
+    },
+    expected: {
+      outcome,
+      class: cls,
+      reason: 'Every gate passes, and the rest is the jury\'s.',
+      runner: { ...base.expected.runner, ...(pack ? { pack } : {}) }
+    },
+    ...over
+  };
+}
+
+function batch2Control(entry) {
+  return {
+    ...entry,
+    id: `${entry.id}.control`,
+    title: 'The same test with its assertion turned around',
+    controlOf: entry.id,
+    control: undefined,
+    label: undefined,
+    expected: {
+      outcome: 'INVALID',
+      class: null,
+      reason: 'It passes on all three runs, so its case fails on what it says it does.',
+      runner: {
+        result: 'definitive',
+        gates: { ...GATES_PASS, reproduces: 'fail', claimedObservable: 'not-run' },
+        gateDetails: { reproduces: 'passed on run 1' },
+        settlement: { kind: 'invalid', gate: 'reproduces', check: 'POC_DID_NOT_REPRODUCE' },
+        honestyFlags: [],
+        tests: [{ id: PUBLIC_TEST_ID, runs: ['pass', 'pass', 'pass'], kind: null, message: null }]
+      }
+    }
+  };
+}
+
+/**
+ * A corpus with one labelled case and its control, in Verdikta's own words. `kind` picks the label and what it needs; a twin, when
+ * asked for, is the same claim on a second listing.
+ * @param {string} kind
+ * @param {object} [o]
+ * @param {object} [o.entry] - overrides for case.json
+ * @param {object} [o.finding] - overrides for finding.json
+ * @param {object} [o.spec] - overrides for code_review.json
+ * @param {object[]} [o.knownIssues] - known_issues.json; by default the entry when the case is listed before
+ * @param {object} [o.prior] - overrides for the prior's finding.json
+ * @param {string} [o.priorReport]
+ * @param {object} [o.twin] - a twin case: { entry, knownIssues, report, spec, baseline }
+ */
+function writeBatch2Corpus(kind, { entry = {}, finding: findingOver = {}, spec = {}, knownIssues = null, prior = {}, priorReport = '# A prior\n\nThe staker stays in the lower tier.\n', twin = null } = {}) {
+  const corpus = writePublicCorpus({ spec, finding: findingOver });
+  const { root } = corpus;
+  fs.rmSync(path.join(root, 'cases'), { recursive: true });
+  const list = knownIssues !== null ? knownIssues : (kind === 'known-issue.before' ? [knownIssue()] : []);
+  writeJson(path.join(root, 'listings/project/known_issues.json'), list);
+  const dir = path.join(root, 'cases/batch-2/one');
+  const main = batch2Case(kind, entry);
+  const writeOne = (d, json, poc) => {
+    writeJson(path.join(d, 'case.json'), json);
+    writeJson(path.join(d, 'finding.json'), publicFinding(findingOver));
+    writeJson(path.join(d, 'report.md'), '# Interest is short by a tier\n\nThe tier boundary uses the old count.\n');
+    writeJson(path.join(d, 'poc.patch'), poc);
+  };
+  const flipped = PUBLIC_POC.replace('revert("interest is paid: 1 != 2");', 'require(true, "interest is paid: 1 != 2");');
+  writeOne(dir, main, PUBLIC_POC);
+  writeOne(`${dir}.control`, batch2Control(main), flipped);
+  for (const rel of main.priorFindings || []) {
+    for (const d of [dir, `${dir}.control`]) {
+      writeJson(path.join(d, rel, 'finding.json'), { ...PRIOR, ...prior });
+      writeJson(path.join(d, rel, 'report.md'), priorReport);
+    }
+  }
+  if (twin) {
+    const t = path.join(root, 'cases/batch-2/twin');
+    const twinEntry = {
+      ...batch2Case('known-issue.before'),
+      id: 'batch-2.twin',
+      listing: 'listings/project-listed',
+      label: batch2Label('known-issue.before', { knownIssue: { title: KNOWN_TITLE, listed: 'before', how: 'In the list the commit saw.', twin: 'batch-2.one' } }),
+      control: { ...batch2Case('known-issue.before').control, case: 'batch-2.twin.control' },
+      ...twin.entry
+    };
+    writeOne(t, twinEntry, PUBLIC_POC);
+    writeOne(`${t}.control`, batch2Control(twinEntry), flipped);
+    if (twin.report) fs.writeFileSync(path.join(t, 'report.md'), twin.report);
+    fs.cpSync(path.join(root, 'listings/project'), path.join(root, 'listings/project-listed'), { recursive: true });
+    const listingFile = path.join(root, 'listings/project-listed/listing.json');
+    writeJson(listingFile, { ...JSON.parse(fs.readFileSync(listingFile, 'utf8')), id: 'project-listed' });
+    writeJson(path.join(root, 'listings/project-listed/known_issues.json'), twin.knownIssues || [knownIssue()]);
+    if (twin.spec) {
+      const specFile = path.join(root, 'listings/project-listed/code_review.json');
+      writeJson(specFile, { ...JSON.parse(fs.readFileSync(specFile, 'utf8')), ...twin.spec });
+    }
+    if (twin.baseline) writeJson(path.join(root, 'listings/project-listed/baseline.json'), twin.baseline);
+  }
+  return { ...corpus, dir };
+}
+
 module.exports = {
+  writeBatch2Corpus, batch2Case, batch2Label, knownIssue, KNOWN_TITLE, PRIOR,
   writePublicCorpus, publicCase, publicFinding, publicSource, publicSpec, PUBLIC_POC, PUBLIC_MESSAGE, PUBLIC_TEST_ID, UPSTREAM, UPSTREAM_COMMIT, FINDING_URL
 };
 module.exports = { ...module.exports, writeCorpus, juryCase, controlCase, specFor, baselineFor, GATES_PASS, TEST_ID, ADVERSARIAL_LINE, finding, patch, POC_LINES };

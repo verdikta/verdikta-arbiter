@@ -1,0 +1,16 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "kleidi",
+  "repo": {
+    "kind": "git",
+    "url": "https://github.com/code-423n4/2024-10-kleidi",
+    "commit": "ab89bcb443249e1524496b694ddb19e298dca799"
+  },
+  "commit": "ab89bcb443249e1524496b694ddb19e298dca799",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-10-kleidi",
+    "licence": "Repository LICENSE: Business Source License 1.1 (GitHub API: NOASSERTION). Findings repository: no licence file.",
+    "program": null
+  },
+  "solc": "0.8.25"
+}
