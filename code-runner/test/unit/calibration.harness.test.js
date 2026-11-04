@@ -314,6 +314,26 @@ test('a request to the runner carries the archives\' CIDs and the listing\'s own
   }
 });
 
+test('a fix.patch reaches the request and the claim archive; the case\'s fix result is compared', async () => {
+  const { loadCorpus } = require('../../calibration/lib/format');
+  const { listingView, caseRequest } = require('../../calibration/lib/harness');
+  const corpus = writeCorpus();
+  try {
+    const { byId } = loadCorpus({ root: corpus.root });
+    const entry = byId.get('adversarial.store');
+    const view = listingView(entry.listing, { image: `127.0.0.1:5000/verdikta/calibration/vault@sha256:${'e'.repeat(64)}`, digest: `sha256:${'e'.repeat(64)}` });
+    const without = caseRequest(entry, view);
+    assert.equal(without.body.fixPatch, null);
+    const fix = Buffer.from('diff --git a/src/Vault.sol b/src/Vault.sol\n');
+    const withFix = caseRequest({ ...entry, claim: { ...entry.claim, fix } }, view);
+    assert.equal(withFix.body.fixPatch, fix.toString('base64'));
+    assert.notEqual(withFix.body.bcid, without.body.bcid, 'the archive holds the fix');
+    assert.ok(withFix.archive.includes(fix));
+  } finally {
+    corpus.cleanup();
+  }
+});
+
 test('prior findings reach the request and the export with the CID of their own archive', async () => {
   const corpus = writeCorpus({ adversarial: { priorFindings: ['priors/01'] } });
   const seen = [];

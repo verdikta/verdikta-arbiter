@@ -132,6 +132,19 @@ test('expected: a duplicate settlement must name the checks that failed', () => 
 test('expected: an honesty flag with no line is refused', () => assertRefused({ adversarial: withRunner(juryCase(), { honestyFlags: [{ rule: 'verdikta.honesty.storage-overwrite', file: 'test/Claim.t.sol' }] }) }, /honestyFlags/));
 test('expected: a rule outside the rule set', () => assertRefused({ adversarial: withRunner(juryCase(), { honestyFlags: [{ rule: 'storage-overwrite', file: 'test/Claim.t.sol', line: 3 }] }) }, /honestyFlags/));
 test('expected: no tests where the PoC ran', () => assertRefused({ adversarial: withRunner(juryCase(), { tests: [] }) }, /tests/));
+test('source.program: null, or the program and its verdict', () => {
+  const source = { url: 'https://example.org/a', licence: 'CC-BY-4.0' };
+  assertRefused({ adversarial: { source: { ...source, program: { name: 'A contest' } } } }, /source\.program/);
+  assert.deepEqual(problemsOf({ adversarial: { source: { ...source, program: { name: 'A contest', verdict: 'valid', class: 'HIGH' } } } }), []);
+});
+test('expected: a test with no kind is refused', () => assertRefused({ adversarial: withRunner(juryCase(), { tests: [{ id: 'x', runs: ['fail', 'fail', 'fail'], message: 'm' }] }) }, /tests/));
+test('expected: raw runs of the wrong shape', () => assertRefused({ adversarial: withRunner(juryCase(), { rawRuns: { x: ['fail'] } }) }, /rawRuns/));
+test('expected: flags that do not name all three lists', () => assertRefused({ adversarial: withRunner(juryCase(), { flags: { skipMarkersAdded: [] } }) }, /flags/));
+test('expected: findings with no line', () => assertRefused({ adversarial: withRunner(juryCase(), { findings: [{ rule: 'r', file: 'f' }] }) }, /findings/));
+test('expected: a fix check missing a field', () => assertRefused({ adversarial: withRunner(juryCase(), { fix: { applies: 'pass' } }) }, /fix must hold/));
+test('expected: a pack entry with no tier', () => assertRefused({ adversarial: withRunner(juryCase(), { pack: { contains: [{ text: 'x' }] } }) }, /pack\.contains/));
+test('expected: a pack with an unknown key', () => assertRefused({ adversarial: withRunner(juryCase(), { pack: { contain: [] } }) }, /pack: unknown field contain/));
+test('expected: too many prior findings', () => assertRefused({ adversarial: { priorFindings: Array.from({ length: 9 }, (_, i) => `priors/${i}`) } }, /at most 8/));
 test('expected: an abstention with a settlement is refused', () => {
   const c = juryCase();
   assertRefused({ adversarial: { expected: { ...c.expected, outcome: 'ABSTAIN', runner: { result: 'abstain', abstain: { cause: 'nonzero', step: 'poc:1' }, settlement: { kind: 'jury' } } } } }, /abstain/);
@@ -162,6 +175,9 @@ test('a control whose expected result does not differ where the case says', () =
 });
 test('a control whose expected result differs where the case says it is the same', () => {
   assertRefused({ adversarial: { control: { ...juryCase().control, sameIn: ['settlement.kind'] } } }, /sameIn.*settlement\.kind/);
+});
+test('a sameIn path that names nothing is refused: it would agree with itself whatever happened', () => {
+  assertRefused({ adversarial: { control: { ...juryCase().control, sameIn: ['gates.aplies'] } } }, /sameIn gates\.aplies/);
 });
 test('a control with no differsIn is refused', () => assertRefused({ adversarial: { control: { ...juryCase().control, differsIn: [] } } }, /differsIn/));
 

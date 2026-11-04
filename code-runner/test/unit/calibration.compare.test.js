@@ -112,6 +112,21 @@ test('an abstention where a verdict was expected disagrees, and the other way ro
   differs(abstaining, observedFrom(runner), /^result$/);
 });
 
+test('a refusal where a verdict was expected names its code, and the codes are compared', () => {
+  const { runner } = juryCase().expected;
+  const refused = { result: 'requester_error', issues: ['COMMAND_NOT_ALLOWED'] };
+  const [one] = compareCase(runner, refused);
+  assert.equal(one.path, 'result');
+  assert.match(one.actual, /COMMAND_NOT_ALLOWED/);
+  assert.deepEqual(compareCase({ result: 'requester_error', issues: ['COMMAND_NOT_ALLOWED'] }, refused), []);
+  differs({ result: 'requester_error', issues: ['BASELINE_INVALID'] }, refused, /^issues$/);
+});
+
+test('an abstention where a verdict was expected says which, and why', () => {
+  const [one] = compareCase(juryCase().expected.runner, { result: 'abstain', abstain: { cause: 'oom', step: 'build' }, detail: 'exit 137' });
+  assert.match(one.actual, /abstain \(oom at build: exit 137\)/);
+});
+
 test('flags, findings and the fix check default to none, so an unexpected one disagrees', () => {
   const { runner } = juryCase().expected;
   differs(runner, observedFrom(runner, { flags: { existingTestsModified: ['test/Vault.t.sol'], skipMarkersAdded: [], protectedPathsTouched: [] } }), /^flags/);

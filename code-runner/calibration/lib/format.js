@@ -248,7 +248,46 @@ function checkRunner(runner, outcome, fail) {
     where('tests must list each test the patch added: where the PoC ran there is at least one');
   } else {
     for (const t of runner.tests) {
-      if (!isObject(t) || !text(t.id) || !Array.isArray(t.runs) || t.runs.length !== 3) where('each of tests must have an id and its three runs');
+      const form = isObject(t) && text(t.id) && Array.isArray(t.runs) && t.runs.length === 3 && t.runs.every(text);
+      if (!form || ![null, 'assertion', 'error'].includes(t.kind) || !(t.message === null || typeof t.message === 'string')) {
+        where('each of tests must have an id, its three runs, a kind (assertion, error or null) and a message (or null)');
+      }
+    }
+  }
+  checkOptionalFacts(runner, where);
+}
+
+/** What a case may leave out, in its one shape: left out it means none, so a slip here must not read as none. */
+function checkOptionalFacts(runner, where) {
+  const { rawRuns, flags, findings, fix, pack } = runner;
+  if (rawRuns !== undefined) {
+    const ok = isObject(rawRuns) && Object.values(rawRuns).every((runs) => Array.isArray(runs) && runs.length === 3 && runs.every(text));
+    if (!ok) where('rawRuns must map each test\'s id to its three runs');
+  }
+  if (flags !== undefined) {
+    const keys = ['existingTestsModified', 'skipMarkersAdded', 'protectedPathsTouched'];
+    if (!isObject(flags) || !isDeepStrictEqual(Object.keys(flags).sort(), [...keys].sort()) || !keys.every((k) => Array.isArray(flags[k]))) {
+      where(`flags must list ${keys.join(', ')}`);
+    }
+  }
+  if (findings !== undefined) {
+    if (!Array.isArray(findings) || !findings.every((f) => isObject(f) && text(f.rule) && text(f.file) && (Number.isInteger(f.line) || f.line === null))) {
+      where('findings must list each finding\'s rule, file and line');
+    }
+  }
+  if (fix !== undefined) {
+    const keys = ['applies', 'builds', 'pocPasses', 'regressionCount'];
+    if (!isObject(fix) || !isDeepStrictEqual(Object.keys(fix).sort(), [...keys].sort())) where(`fix must hold ${keys.join(', ')}`);
+  }
+  if (pack !== undefined) {
+    if (!isObject(pack)) {
+      where('pack must hold contains and absent');
+    } else {
+      unknownFields(pack, ['contains', 'absent'], (m) => where(`pack: ${m}`));
+      if (pack.contains !== undefined && (!Array.isArray(pack.contains) || !pack.contains.every((p) => isObject(p) && text(p.tier) && text(p.text)))) {
+        where('pack.contains must list a tier and a text for each');
+      }
+      if (pack.absent !== undefined && (!Array.isArray(pack.absent) || !pack.absent.every(text))) where('pack.absent must list texts');
     }
   }
 }
@@ -421,7 +460,10 @@ function checkControl(entry, byId, problems) {
       fail('sameIn must list what the adversarial part leaves alone');
     } else if (entry.expected && control.expected) {
       for (const p of c.sameIn) {
-        if (!isDeepStrictEqual(getPath(entry.expected.runner, p), getPath(control.expected.runner, p))) fail(`sameIn ${p}: the two expected results differ there`);
+        const a = getPath(entry.expected.runner, p);
+        // A path that names nothing would agree with itself, on every run, whatever happened.
+        if (a === undefined) fail(`sameIn ${p}: the case's expected result has nothing there`);
+        else if (!isDeepStrictEqual(a, getPath(control.expected.runner, p))) fail(`sameIn ${p}: the two expected results differ there`);
       }
     }
   }
