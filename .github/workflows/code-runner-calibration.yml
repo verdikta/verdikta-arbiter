@@ -44,6 +44,7 @@ jobs:
   calibration:
     name: Adversarial subset and conformance canary (runsc)
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     env:
       CODE_RUNNER_RUNTIME: runsc
     steps:

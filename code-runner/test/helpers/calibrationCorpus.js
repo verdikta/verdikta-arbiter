@@ -9,6 +9,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { codeReview } = require('@verdikta/common');
 const { gitObjects } = require('../../calibration/lib/image');
 
 const REPO = Object.freeze({
@@ -141,7 +142,7 @@ function specFor(commit, over = {}) {
       scope: { include: ['src/**'], exclude: ['test/**'] },
       knownIssues: 'known_issues.json',
       severityRubric: 'immunefi-v2.3',
-      disclosureKey: 'age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p',
+      disclosureKey: codeReview.generateDisclosureKeyPair().recipient,
       valueAtRiskUsd: 1000
     },
     ...over

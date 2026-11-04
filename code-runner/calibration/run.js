@@ -138,13 +138,15 @@ async function main(argv, deps = {}) {
     }
     const views = new Map();
     for (const listing of new Set(chosen.map((c) => c.listing))) {
+      stdout(`calibration: publishing ${listing.id}'s image, then the real listing check`);
       const published = await session.publish(listing);
       const view = listingView(listing, published);
       await checkListing(session, listing, published, view);
       views.set(listing, view);
     }
     const results = [];
-    for (const entry of chosen) {
+    for (const [i, entry] of chosen.entries()) {
+      stdout(`calibration: [${i + 1}/${chosen.length}] ${entry.id}`);
       const view = views.get(entry.listing);
       const request = caseRequest(entry, view);
       const started = Date.now();

@@ -150,7 +150,11 @@ async function createSession({ registryPort = 0, log = silent } = {}) {
   fs.mkdirSync(dockerConfigDir, { recursive: true, mode: 0o700 });
   const docker = createDocker({ dockerHost, dockerConfigDir, baseEnv: process.env });
   const closers = [() => fs.rmSync(tmp, { recursive: true, force: true })];
+  // Ctrl-C leaves nothing behind either: the registry and a run's sandboxes go with the session.
+  const onSignal = (signal) => { close().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143)); };
   const close = async () => {
+    process.removeListener('SIGINT', onSignal);
+    process.removeListener('SIGTERM', onSignal);
     while (closers.length) {
       try {
         await closers.pop()();
@@ -159,6 +163,8 @@ async function createSession({ registryPort = 0, log = silent } = {}) {
       }
     }
   };
+  process.once('SIGINT', onSignal);
+  process.once('SIGTERM', onSignal);
   try {
     await ensureImage(docker, SEMGREP.reference);
     await ensureImage(docker, REGISTRY_IMAGE);

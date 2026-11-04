@@ -83,8 +83,12 @@ function compareCase(expected, observed) {
   const same = (at, want, got) => {
     if (!isDeepStrictEqual(want, got)) out.push({ path: at, expected: want === undefined ? null : want, actual: got === undefined ? null : got });
   };
-  same('result', expected.result, observed.result);
-  if (expected.result !== observed.result) return out;
+  if (expected.result !== observed.result) {
+    // Which abstention, or which refusal: the first thing a reader of this line needs.
+    const why = observed.result === 'abstain' ? ` (${observed.abstain.cause} at ${observed.abstain.step}: ${observed.detail})` : observed.result === 'requester_error' ? ` (${observed.issues.join(', ')})` : '';
+    out.push({ path: 'result', expected: expected.result, actual: `${observed.result}${why}` });
+    return out;
+  }
   if (expected.result === 'abstain') {
     same('abstain.cause', expected.abstain.cause, observed.abstain.cause);
     same('abstain.step', expected.abstain.step, observed.abstain.step);
