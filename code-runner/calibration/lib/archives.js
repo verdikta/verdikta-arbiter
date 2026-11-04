@@ -153,4 +153,4 @@ function claimArchive({ name, finding, report, poc, fix = null }) {
   });
 }
 
-module.exports = { storedZip, cidV0, listingArchive, claimArchive, MAX_CID_BYTES };
+module.exports = { storedZip, cidV0, listingArchive, claimArchive, crc32, MAX_CID_BYTES };

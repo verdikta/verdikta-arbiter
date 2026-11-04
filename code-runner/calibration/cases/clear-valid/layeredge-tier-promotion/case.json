@@ -1,0 +1,96 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.layeredge-tier-promotion",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "A staker promoted when the tree grows keeps being paid at the lower rate",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-05-layeredge-judging/issues/230",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/stake/LayerEdgeStaking.sol: MIT. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-05-layeredge-judging/issues/230",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test asserts nothing and logs both rates.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-05-layeredge-judging/e9716aebbc59170273aea6c58d3f17f4e05b7cd7/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-05-layeredge",
+      "verdict": "Valid. Published in the final report as Issue H-2.",
+      "class": "HIGH"
+    }
+  },
+  "listing": "listings/layeredge",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "HIGH",
+    "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/stake/TierPromotionClaim.t.sol > TierPromotionClaim > test_staker_is_paid_the_rate_it_is_told()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "interest paid at the stated rate: 20000000000000000000 != 35000000000000000000"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "_checkBoundariesAndRecord"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.layeredge-tier-promotion.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(paid, stated, \"interest paid at the stated rate\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertTrue(paid != stated, \"interest paid at the stated rate\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

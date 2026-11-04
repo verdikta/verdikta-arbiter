@@ -2085,11 +2085,11 @@ malformed case stops the run before any image; nothing is skipped. That covers J
 (`null`, a list) and a file nothing would read (a `fix.patch` the case does not name, a prior folder it
 does not list, a misspelled listing file).
 
-`repo.kind: "git"` is in the format, and the image step refuses it until A7b builds such images.
+`repo.kind: "git"` names a public repository at a commit, fetched at run time and never committed (node A7b; see [Public findings](#public-findings)).
 
 ### The harness
 
-`npm run calibration [-- --subset <name>] [--case <id>]... [--self-check] [--results <file>] [--export <dir>]`
+`npm run calibration [-- --subset <name>] [--listing <id>] [--case <id>]... [--self-check] [--results <file>] [--export <dir>] [--measured <dir>]`
 
 1. **The image is written, not built** (`calibration/lib/image.js`), because the report's hash
    covers the image's digest and a `docker build` cannot give one digest on every host. It is the
@@ -2158,6 +2158,74 @@ credits one wei too many.
 The injected-text case is the one control with the same verdict: nothing in the runner reads that
 text, so a different verdict would be the bug. `test/calibration/adversarial.test.js` restates each row
 apart from the case files.
+
+### Public findings
+
+`calibration/cases/clear-valid/` (node A7b): findings a public contest judged valid, each with a test Verdikta wrote, on the
+repository at the commit the contest judged. **Nothing of a third party is in this tree**: many of these repositories have no
+licence, others are GPL, AGPL or BUSL, and a report is its authors'. A case holds a URL and a commit, fetched at run time.
+
+A listing of kind `git`:
+
+| Field | Holds |
+|---|---|
+| `repo.url`, `repo.commit` | The public repository at the upstream's commit. https only; a submodule's URL is held to that too |
+| `repo.subdir`, `repo.tree` | A project in a subfolder (a Sherlock contest's layout), and that folder's tree id at the commit. A listing's forge runs at the root of the listed commit and `--root` is not an allowed flag, so `commit` is one written here over that tree (`image.rootedCommit`): the loader recomputes it, and the fetch checks the tree, so the files are the upstream's byte for byte |
+| `solc` | One official release or a list, each in `src/solcReleases.json` |
+| `code_review.json` | No image and no `stake.disclosureKey`: the harness fills both in. Nothing here encrypts to that key, and each run makes its own, so nothing key-shaped is committed |
+
+The image is the same recipe as a fixture's: the base's manifest, solc at the builder's place, and `/repo` owned by the sandbox
+user, with the objects as one pack with stored deflate blocks (a repository holds thousands of objects, and the runner copies each
+file into every sandbox) and each submodule's objects in the same store, which the runner's checkout reads and re-hashes. A
+submodule that cannot be fetched stops the run, exit 3: an image with a folder quietly empty would not be the listing's repository.
+A third layer holds what `commands.setup` wrote: the harness runs it before any sandbox, with no
+network, as the sandbox user, as the attested builder runs a maker's. The loader holds it to `forge build` with allowed flags. The
+fetched repositories, reports and third layers are kept under `$VCR_CALIBRATION_CACHE`.
+
+A case on such a listing records `source`: `url` (the finding), `licence` (as found), `licenceUse` (what the case does with it),
+`adaptedFrom`, `adaptedHow`, `report` (the program's report, for the check below) and `program` (`name`, `contest`, `verdict`,
+`class`). The loader refuses:
+
+- a `poc.patch` that does anything but add new files: a context or removed line is how a diff carries someone's code. So there is
+  no `fix.patch` on these listings either;
+- a claim file that names its source, program or contest: those files reach the jury, and the label must not;
+- on a clear-valid case: a class other than the program's, in `expected.class` or `finding.claimedClass`; an outcome other than
+  VALID; a gate other than `pass`; a `poc.observable` that does not name the test and quote the expected failure;
+- a folder under `repos/` no listing names, a folder under `listings/` no case names, and anything unknown at the top of
+  `calibration/`.
+
+**Provenance is measured.** Before any image, the harness fetches each repository and report and measures the longest run of tokens
+each claim file shares with them (`lib/provenance.js`). A token is a word or identifier, without case, punctuation or layout, so
+reformatting hides nothing. Over the limit (14 tokens for prose, 40 for code) the run stops with exit 2, and the message quotes none
+of their text. Runs under 6 tokens are not measured. The numbers are printed on every run. Close rewording is the reviewer's to catch.
+
+**Writing a case.** What a real repository taught:
+
+- A proof fails to reproduce the bug only if it fails: the test asserts the safe property. Most contest tests pass while the bug is
+  present, and can't be used as written.
+- A test cannot inherit a repository's test contract, or one with a `test()` of its own: every inherited test becomes one the patch
+  added, and `reproduces` needs each to fail. A helper with no test functions is fine. A subclass of a source contract, in the test
+  file, is one more entry in forge's mocks list (below), so use the real contract.
+- A test's own run has to fit `testSeconds` under gVisor, and forge 1.8.5 is far slower with gas metering paused.
+- No more than five cases on one repository, so the set does not become one project's. A unit test holds that and the floor of 15.
+- `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`. Forge 1.8.5 writes the test
+  files it takes for mocks (a contract in a test file that inherits a source contract) into `cache/solidity-files-cache.json` as an
+  unordered list, so with two or more in scope the file differs between runs. At the listing check that is
+  `IMAGE_WATCH_CHANGED_BY_SUITE`. **At a claim it is `frameworkUnchanged`, so a valid PoC that imports two such files settles DUPLICATE:
+  a known runner problem, not fixed here.** `--skip test` keeps the list out of the listing's own runs.
+- A baseline holding a test named `test()` (a fixture's coverage marker, say) makes the word in `poc.command`'s `forge test` a test the
+  finding names, and `claimedObservable` fails: **a known runner problem, not fixed here.** Keep such a test out of `commands.test`.
+- A class build must fit: 3 x the measured build within the class's 90 s, so 30 s on 2 CPUs under gVisor, with `P + B + 3T <= 120 s`
+  overall. `commands.setup` is what makes a real repository fit.
+- `LEGACY_ASSERTIONS`: a forge-std from before the 2024 rewrite (`StdAssertions is DSTest`) records a failed `assertEq` with no reason on
+  forge 1.x. The listing check refuses that repository, as it must.
+
+**Where they run.** Official `solc` on `linux/arm64` starts at 0.8.31, so a listing that needs an older release stops the run before
+anything is fetched, exit 3, and says so; pick others with `--listing` or `--case`. The rest run on `linux/amd64` in
+`.github/workflows/code-runner-calibration-clear-valid.yml`, one job per listing (`--listing`, `--list-listings`), on dispatch and when
+their own files change. It does not run on `code-runner/src/**`: the adversarial subset and the canary do, and a runner change that
+could move these needs a dispatch. `--measured <dir>` writes each listing check's baseline and times. Only results leave a job: the
+export's context packs hold repository source, so it stays in the job's temporary folder for the testing tool's dry run.
 
 ### The conformance canary
 

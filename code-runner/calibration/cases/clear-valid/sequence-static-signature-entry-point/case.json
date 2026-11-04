@@ -1,0 +1,94 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.sequence-static-signature-entry-point",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "A static signature bound to the entry point cannot validate a user operation",
+  "source": {
+    "url": "https://code4rena.com/reports/2025-10-sequence#m-02-static-signatures-bound-to-caller-revert-under-erc-4337-causing-dos",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6). Findings repository: returns 404; the report page is the source.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://code4rena.com/reports/2025-10-sequence#m-02-static-signatures-bound-to-caller-revert-under-erc-4337-causing-dos",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test needs a local server through vm.rpc and expects the revert; this one builds the wallet directly and needs neither.",
+    "report": "https://code4rena.com/reports/2025-10-sequence",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2025-10-sequence",
+      "verdict": "Valid. Listed under Medium Risk Findings as M-02 in the published report; no judge or sponsor comment on the page.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/sequence",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "MEDIUM",
+    "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/StaticSignatureEntryPointClaim.t.sol > StaticSignatureEntryPointClaim > test_a_static_signature_bound_to_the_entry_point_validates()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "InvalidStaticSignatureWrongCaller(0xc74abb9a787fc0ee1acdaec030905a117fcf0954ba3e8bb58639519eee51d444, 0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f, 0x00000000000000000000000000000000000e4337)"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "InvalidStaticSignatureWrongCaller"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.sequence-static-signature-entry-point.control",
+    "removes": {
+      "poc.patch": []
+    },
+    "adds": {
+      "poc.patch": [
+        "+    vm.expectRevert();"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

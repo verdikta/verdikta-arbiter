@@ -1,0 +1,68 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.layeredge-tier-history-gas.control",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "Others coming and going can price a staker out of withdrawing: the same test with its assertion turned around",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-05-layeredge-judging/issues/194",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/stake/LayerEdgeStaking.sol: MIT. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-05-layeredge-judging/issues/194",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test needs a raised --gas-limit, which a listing's commands cannot set, and only logs the gas; this one pauses gas metering for its set-up and asserts the limit.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-05-layeredge-judging/e9716aebbc59170273aea6c58d3f17f4e05b7cd7/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-05-layeredge",
+      "verdict": "Valid. Published in the final report as Issue M-1.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/layeredge",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with the assertion turned around passes on all three runs, so its case fails on what it says it does, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/stake/TierHistoryGasClaim.t.sol > TierHistoryGasClaim > test_a_stakers_withdrawal_fits_in_a_block()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "clear-valid.layeredge-tier-history-gas"
+}

@@ -28,8 +28,10 @@ const { RUNNER_VERSION } = require('../../src/version');
 const { request } = require('../../test/helpers/http');
 const { RUNTIME, PLATFORM, ensureImage, removeAll } = require('../../test/docker/helpers');
 const { REGISTRY_IMAGE, solcBytes } = require('../../test/docker/forgeFixture');
-const { MANIFEST_MEDIA_TYPE, repoLayer, toolsLayer, assembleImage } = require('./image');
+const { MANIFEST_MEDIA_TYPE, repoLayer, gitRepoLayer, toolsLayer, assembleImage } = require('./image');
 const { fetchBase } = require('./base');
+const { fetchListedRepo } = require('./gitRepo');
+const { prebuild, cacheRoot } = require('./prebuild');
 const { DEADLINE_MS } = require('./harness');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
@@ -37,24 +39,37 @@ const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const PULL_TIMEOUT_SECONDS = 600;
 
 /**
- * What a listing's image is made of.
- * @throws when the format allows the listing and this harness cannot build it yet
+ * What a fixture listing's image is made of: its files, from the tree.
+ * @throws {Error} a listing of kind `git` has none here: it is fetched at run time, and never committed
  */
 function imageInputs(listing) {
   if (listing.repo.kind !== 'fixture') {
-    throw new Error(`listing ${listing.id}: a repo of kind ${listing.repo.kind} (git) is in the format for public findings, and building its image is node A7b's`);
+    throw new Error(`listing ${listing.id}: a repository of kind ${listing.repo.kind} is fetched at run time and has no files in the tree`);
   }
   return { files: listing.files, imageOnly: listing.imageOnly || {}, solc: listing.solc };
 }
 
-/** The image of a listing on `platform`: the written layers and manifest, with the base's blobs to publish beside them. */
-async function buildImage(listing, platform) {
-  const { files, imageOnly, solc } = imageInputs(listing);
+/** The layers a listing's commit gives, on the pinned base: the tools, then /repo. */
+async function imageParts(listing, platform) {
   const base = await fetchBase(platform);
+  if (listing.repo.kind === 'git') {
+    const repo = await fetchListedRepo(listing, { cacheDir: cacheRoot() });
+    const releases = await Promise.all(listing.solcReleases.map(async (release) => ({ release, bytes: await solcBytes(platform, release) })));
+    const { layer } = gitRepoLayer(repo);
+    return { base, layers: [toolsLayer({ releases }), layer] };
+  }
+  const { files, imageOnly, solc } = imageInputs(listing);
   const { layer, commit } = repoLayer({ files, imageOnly });
   if (commit !== listing.commit) throw new Error(`listing ${listing.id}: its files make commit ${commit}, and it names ${listing.commit}`);
-  const tools = toolsLayer({ release: solc, bytes: await solcBytes(platform, solc) });
-  return { ...assembleImage({ baseManifest: base.manifest, baseConfig: base.config, layers: [tools, layer] }), base };
+  return { base, layers: [toolsLayer({ release: solc, bytes: await solcBytes(platform, solc) }), layer] };
+}
+
+const assembled = (parts, layers) => ({ ...assembleImage({ baseManifest: parts.base.manifest, baseConfig: parts.base.config, layers }), base: parts.base });
+
+/** The image of a listing on `platform`: the written layers and manifest, with the base's blobs to publish beside them. */
+async function buildImage(listing, platform) {
+  const parts = await imageParts(listing, platform);
+  return assembled(parts, parts.layers);
 }
 
 function send(port, method, target, { body = null, headers = {} } = {}) {
@@ -202,7 +217,15 @@ async function createSession({ registryPort = 0, log = silent } = {}) {
       classPlatform: OCI_PLATFORM,
       runner: { version: RUNNER_VERSION, runtime: RUNTIME, platform: PLATFORM, gvisor: health.body.gvisor },
       async publish(listing, { repository = `verdikta/calibration/${listing.id}` } = {}) {
-        const image = await buildImage(listing, PLATFORM);
+        const parts = await imageParts(listing, PLATFORM);
+        let image = assembled(parts, parts.layers);
+        if (listing.setup) {
+          // The listing's commands.setup, as the attested builder runs it: its out/ and cache/ stay in the image.
+          await publishImage(registry.port, repository, image);
+          const before = `${host}/${repository}@${image.digest}`;
+          const layer = await prebuild(docker, before, listing.setup, { digest: image.digest, platform: PLATFORM, instance });
+          image = assembled(parts, [...parts.layers, layer]);
+        }
         await publishImage(registry.port, repository, image);
         const ref = `${host}/${repository}@${image.digest}`;
         published.add(ref);
