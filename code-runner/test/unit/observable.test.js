@@ -62,6 +62,12 @@ const OWN_WORDS = [
   ['a path inside a directory called test', 'forge test --match-path a/test/Exploit.t.sol --mt test_drain'],
   ['a file called test', 'forge test --match-path test.t.sol --mt test_drain'],
   ['a substitution after a path', 'forge test --match-path test/Exploit.t.sol --mt test_drain --fork-url $(cat url)'],
+  // R7-F1: a finished substitution changes nothing after it.
+  ['a path after a substitution', 'forge test --fork-url $(cat url) --match-path test/Exploit.t.sol --mt test_drain'],
+  ['a count from a substitution', 'forge test --fuzz-runs $(printf 256) --match-path test/E.t.sol --mt test_drain'],
+  ['a nested substitution', 'forge test --fork-url $(cat $(ls url)) --mp test/E.t.sol --mt test_drain'],
+  ['backquotes before a path', 'forge test --fork-url `cat url` --mp test/E.t.sol --mt test_drain'],
+  ['a separator with no spaces', 'forge build&&forge test --mt test_drain;forge test --mp test/E.t.sol'],
   ['forge\'s shorthand for a path', 'forge test test/Exploit.t.sol --mt test_drain'],
   ['a variable beside a path', 'forge test --match-path test/Exploit.t.sol --fork-url $RPC_URL --mt test_drain'],
   ['a choice with =', 'forge build --skip=test && forge test --mt test_drain'],
@@ -162,8 +168,18 @@ const NAMES_ANOTHER = [
   ['a path that expands', 'forge test --mp $(echo a)/test/?', 'test'],
   ['a path in a word no flag takes', 'forge test --mt test_drain test/?', 'test'],
   ['the path flag\'s word, not its value', 'forge test --mp a/b test/?', 'test'],
+  // R4-F1, round 7: a substitution is one word, whatever it holds.
+  ['--skip test inside a substitution', 'forge test --mt $(printf \'%.0s%s\' --skip test )', 'test'],
+  ['forge test inside a substitution', 'forge test --mt $(printf \'%.0s%s\' forge test )', 'test'],
+  ['a flag inside nested substitutions', 'forge test --mt $(printf $(printf --mt) test )', 'test'],
+  ['a closing parenthesis inside quotes in a substitution', 'forge test --mt $(printf \')\' --skip test )', 'test'],
+  ['--skip test inside backquotes', 'forge test --mt `printf --skip test`', 'test'],
+  ['--skip test inside a process substitution', 'forge test --mt <(printf --skip test)', 'test'],
+  ['--skip test in a double-quoted substitution', 'forge test --mt "$(printf --skip test)"', 'test'],
+  ['a path that spreads over words', 'forge test --mp {a/,--mt,test/?}', 'test'],
+  ['the marker, after a pipe', 'forge test --mt test_drain|test', 'test'],
+  ['the marker, after a semicolon, with no space', 'forge test --mt test_drain;test', 'test'],
   // Only ever a failure: a hunter who writes this is told before committing.
-  ['a path after a substitution', 'forge test --fork-url $(cat url) --match-path test/Exploit.t.sol --mt test_drain', 'test'],
   ['the marker, as a directory to change to', 'cd test && forge test --mt test_drain', 'test']
 ];
 

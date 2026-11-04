@@ -21,7 +21,7 @@
  *   (--match-test), the choice in `--skip test`, and a directory or file of a
  *   path (`test/x.t.sol`, `a/test`, `test.t.sol`) in the value of --match-path
  *   or --no-match-path or the word right after `forge test` (forge's own
- *   shorthand for it), when nothing about it is a shell's to read otherwise.
+ *   shorthand for it), when nothing outside its quotes expands.
  *   Anywhere else it counts, as before; and it always counts as a test the
  *   patch added. Every other identifier is read wherever it is, so
  *   no way of quoting or placing any other name can hide it. No filter is
@@ -46,18 +46,14 @@ const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
 /** The grammar's flags whose value is matched against a test or its contract: a name written there is one. */
 const NAME_FLAGS = Object.freeze(['--match-test', '--no-match-test', '--match-contract', '--no-match-contract']);
-/** A word of a command, as a shell splits it: a quoted span stays whole, with its escapes, `$'…'` included. */
-const WORD = /(?:[^\s'"\\$]+|\$(?!')|\\[\s\S]?|\$'(?:[^'\\]|\\[\s\S])*'|'[^']*'|"(?:[^"\\]|\\[\s\S])*"|['"])+/g;
 /** The word `test` as a directory or file of a path. */
 const TEST_IN_PATH = /(?<![\w$])test\/|\/test(?![\w$])|(?<![\w$])test(?:\.t)?\.sol(?![\w$])/g;
 /** The program: `forge`, or a path to it. */
 const FORGE = /(?:^|\/)forge$/;
 /** forge's path flags: what their value holds is a path. */
 const PATH_FLAGS = Object.freeze(['--match-path', '--no-match-path']);
-/** What a shell acts on outside quotes in what should be a path. */
-const SHELL_SYNTAX = /[;&|<>()`$]/;
-/** What holds words of its own that this split can't see. */
-const SUBSTITUTION = /`|\$\(|[<>]\(|\$\{[^}]*$/;
+/** What a shell expands outside quotes in what should be one path. */
+const EXPANDS = /[`${]/;
 
 /** A test identity's function name: `<file> > <Contract> > name(args)` → name. */
 function functionName(id) {
@@ -75,6 +71,82 @@ function identifiers(text) {
   return [...String(text).matchAll(IDENTIFIER)].flatMap((m) => (m[0].endsWith('$') ? [m[0], m[0].replace(/\$+$/, '')] : [m[0]]));
 }
 
+/** The index after a span whose opener ends before `from`, closed by an unescaped `close`; the text's end if it never closes. */
+function closedBy(text, from, close) {
+  for (let i = from; i < text.length; i += 1) {
+    if (text[i] === '\\') i += 1;
+    else if (text[i] === close) return i + 1;
+  }
+  return text.length;
+}
+
+/** Whether a quoted or nested span opens at `i`. */
+function opensSpan(text, i) {
+  const c = text[i];
+  const next = text[i + 1];
+  return c === '\'' || c === '"' || c === '`' || (c === '$' && (next === '\'' || next === '(' || next === '{')) || ((c === '<' || c === '>') && next === '(');
+}
+
+/** The index after the span opening at `i` (opensSpan): the text's end if it never closes. */
+function spanEnd(text, i) {
+  const c = text[i];
+  if (c === '\'') {
+    const end = text.indexOf('\'', i + 1);
+    return end < 0 ? text.length : end + 1;
+  }
+  if (c === '`') return closedBy(text, i + 1, '`');
+  if (c === '$' && text[i + 1] === '\'') return closedBy(text, i + 2, '\'');
+  const open = c === '"' ? null : text[i + 1];
+  const close = c === '"' ? '"' : open === '{' ? '}' : ')';
+  let depth = 0;
+  let k = c === '"' ? i + 1 : i + 2;
+  while (k < text.length) {
+    const d = text[k];
+    // Inside double quotes only these still open a span; anywhere else, all of opensSpan.
+    const nested = c === '"' ? d === '`' || (d === '$' && (text[k + 1] === '(' || text[k + 1] === '{')) : opensSpan(text, k);
+    if (d === '\\') k += 2;
+    else if (d === close && depth === 0) return k + 1;
+    else if (nested) k = spanEnd(text, k);
+    else {
+      if (open !== null && d === open) depth += 1;
+      if (open !== null && d === close) depth -= 1;
+      k += 1;
+    }
+  }
+  return text.length;
+}
+
+/**
+ * A command's words, as a shell lexes them: quoted spans, escapes and everything a substitution or
+ * expansion holds stay in their word, and `; & | < > ( )` and white space end one. A span left open
+ * takes the rest of the text.
+ * @param {string} text
+ * @returns {string[]}
+ */
+function shellWords(text) {
+  const words = [];
+  let start = -1;
+  let i = 0;
+  const end = () => {
+    if (start >= 0) words.push(text.slice(start, i));
+    start = -1;
+  };
+  while (i < text.length) {
+    const c = text[i];
+    if (!opensSpan(text, i) && (/\s/.test(c) || ';&|<>()'.includes(c))) {
+      end();
+      i += 1;
+    } else {
+      if (start < 0) start = i;
+      if (c === '\\') i = Math.min(i + 2, text.length);
+      else if (opensSpan(text, i)) i = spanEnd(text, i);
+      else i += 1;
+    }
+  }
+  end();
+  return words;
+}
+
 /** A word without its quotes and escapes, as the program it reaches would read it. */
 function plainWord(word) {
   return word.replace(/['"\\]/g, '');
@@ -85,9 +157,9 @@ function grammarFlag(name) {
   return name.startsWith('--') && Object.hasOwn(commands.ALIASES, name) ? commands.ALIASES[name] : null;
 }
 
-/** Whether a value is a path as a shell reads it: nothing outside its quotes starts another command, redirects or expands. */
+/** Whether a value is one path as a shell reads it: nothing outside its quotes expands. */
 function plainValue(value) {
-  return !SHELL_SYNTAX.test(value.replace(/'[^']*'|"[^"`$]*"/g, ''));
+  return !EXPANDS.test(value.replace(/'[^']*'|"[^"`$]*"/g, ''));
 }
 
 /**
@@ -96,14 +168,11 @@ function plainValue(value) {
  * @returns {boolean}
  */
 function saysTestAsAName(command) {
-  const words = command.match(WORD) || [];
+  const words = shellWords(command);
   const plain = words.map(plainWord);
-  let certain = true;
   return words.some((word, i) => {
     const before = i > 0 ? plain[i - 1] : '';
     if (plain[i] === 'test' && (FORGE.test(before) || before === '--skip')) return false;
-    // From a substitution on, a shell's words are not the ones here (they could be one filter's text).
-    if (SUBSTITUTION.test(word.replace(/'[^']*'/g, ''))) certain = false;
     const eq = plain[i].indexOf('=');
     const flag = grammarFlag(eq < 0 ? plain[i] : plain[i].slice(0, eq));
     if (flag !== null && eq < 0) return false;
@@ -111,7 +180,7 @@ function saysTestAsAName(command) {
     const of = flag !== null ? flag : grammarFlag(before);
     if (of === '--skip' && plainWord(value) === 'test') return false;
     const positional = flag === null && i > 1 && before === 'test' && FORGE.test(plain[i - 2]);
-    const path = certain && (PATH_FLAGS.includes(of) || positional) && plainValue(value);
+    const path = (PATH_FLAGS.includes(of) || positional) && plainValue(value);
     return identifiers(path ? value.replace(TEST_IN_PATH, ' ') : value).includes('test');
   });
 }
