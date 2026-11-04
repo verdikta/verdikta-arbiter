@@ -355,3 +355,11 @@ test('solcBytes finds any official release by soliditylang\'s list, checks it ag
   assert.equal(asked[1], 'https://binaries.soliditylang.org/linux-amd64/solc-linux-amd64-v0.8.23+commit.fake');
   assert.equal(officialList('linux/amd64').releases.get('0.8.23').length, 64);
 });
+
+test('a prebuilt layer is kept by the image it was built on and the command that built it: a new setup is a new build', () => {
+  const { prebuiltCacheName } = require('../../calibration/lib/prebuild');
+  const digest = `sha256:${'a'.repeat(64)}`;
+  assert.equal(prebuiltCacheName(digest, 'forge build'), prebuiltCacheName(digest, 'forge build'));
+  assert.notEqual(prebuiltCacheName(digest, 'forge build'), prebuiltCacheName(digest, 'forge build --skip test'));
+  assert.notEqual(prebuiltCacheName(digest, 'forge build'), prebuiltCacheName(`sha256:${'b'.repeat(64)}`, 'forge build'));
+});

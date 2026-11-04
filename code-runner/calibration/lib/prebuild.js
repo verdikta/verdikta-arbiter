@@ -11,9 +11,10 @@
  *
  * What it wrote comes back as a third layer. It comes from running solc and forge, so unlike the
  * fixtures' images this digest is not a function of pinned inputs; no case pins a report hash. It is
- * kept by the digest of the image it was built on, which names every input.
+ * kept by the digest of the image it was built on and the command, which together name every input.
  */
 
+const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -31,6 +32,11 @@ const STDERR_KEPT = 4000;
 /** Fetched repositories, reports and prebuilt layers, kept between runs (CI's cache, by commit). */
 function cacheRoot() {
   return process.env.VCR_CALIBRATION_CACHE || path.join(os.tmpdir(), 'vcr-calibration-cache');
+}
+
+/** Where a build's output is kept: the same image and the same command give the same build. */
+function prebuiltCacheName(digest, setup) {
+  return `${crypto.createHash('sha256').update(`${digest}\n${setup}`).digest('hex')}.tar`;
 }
 
 function setupScript(args) {
@@ -58,7 +64,7 @@ function setupScript(args) {
  * @throws {Error} the build failed: the listing cannot be built in the image
  */
 async function prebuild(docker, image, setup, { digest, platform }) {
-  const file = path.join(cacheRoot(), 'prebuilt', `${digest.replace(':', '-')}.tar`);
+  const file = path.join(cacheRoot(), 'prebuilt', prebuiltCacheName(digest, setup));
   if (fs.existsSync(file)) return prebuiltLayer(fs.readFileSync(file));
   const parsed = parseCommand('build', setup);
   if (!parsed.ok) throw new Error(`commands.setup: ${parsed.issue.detail}`);
@@ -90,4 +96,4 @@ async function prebuild(docker, image, setup, { digest, platform }) {
   return prebuiltLayer(fs.readFileSync(file));
 }
 
-module.exports = { prebuild, cacheRoot, setupScript };
+module.exports = { prebuild, cacheRoot, setupScript, prebuiltCacheName };

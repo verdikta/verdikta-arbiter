@@ -199,9 +199,9 @@ function addOnlyProblems(bytes) {
   return [];
 }
 
-/** The account in a URL's path: the contest's organisation, for one. */
+/** The account in a GitHub URL's path: the contest's organisation. Elsewhere a path's first segment can be any word. */
 function urlOwner(url) {
-  const m = text(url) ? /^https:\/\/[^/]+\/([^/#?]+)/.exec(url) : null;
+  const m = text(url) ? /^https:\/\/(?:github\.com|raw\.githubusercontent\.com)\/([^/#?]+)/.exec(url) : null;
   return m ? m[1] : null;
 }
 

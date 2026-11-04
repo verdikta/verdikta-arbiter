@@ -346,6 +346,7 @@ function parseTar(buffer) {
     return slice.toString('utf8', 0, end < 0 ? width : end);
   };
   while (at + 512 <= buffer.length) {
+    const headAt = at;
     const head = buffer.subarray(at, at + 512);
     if (head.every((b) => b === 0)) break;
     const size = parseInt(text(at + 124, 12).trim() || '0', 8);
@@ -362,8 +363,8 @@ function parseTar(buffer) {
       continue;
     }
     if (type === 'K' || type === 'g') continue;
-    const prefix = text(at - 512 - Math.ceil(size / 512) * 512 + 345, 155);
-    const name = longName || (prefix ? `${prefix}/${text(at - 512 - Math.ceil(size / 512) * 512, 100)}` : text(at - 512 - Math.ceil(size / 512) * 512, 100));
+    const prefix = text(headAt + 345, 155);
+    const name = longName || (prefix ? `${prefix}/${text(headAt, 100)}` : text(headAt, 100));
     longName = null;
     const clean = name.replace(/^\.\//, '').replace(/\/$/, '');
     if (clean === '' || clean === '.') continue;

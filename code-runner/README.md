@@ -2204,7 +2204,10 @@ of their text. Runs under 6 tokens are not measured. The numbers are printed on 
 - A proof fails to reproduce the bug only if it fails: the test asserts the safe property. Most contest tests pass while the bug is
   present, and can't be used as written.
 - A test cannot inherit a repository's test contract, or one with a `test()` of its own: every inherited test becomes one the patch
-  added, and `reproduces` needs each to fail. A helper with no test functions is fine.
+  added, and `reproduces` needs each to fail. A helper with no test functions is fine. A subclass of a source contract, in the test
+  file, is one more entry in forge's mocks list (below), so use the real contract.
+- A test's own run has to fit `testSeconds` under gVisor, and forge 1.8.5 is far slower with gas metering paused.
+- No more than five cases on one repository, so the set does not become one project's. A unit test holds that and the floor of 15.
 - `commands.build` and `commands.setup` here are `forge build --skip test`, with a narrow `commands.test`. Forge 1.8.5 writes the test
   files it takes for mocks (a contract in a test file that inherits a source contract) into `cache/solidity-files-cache.json` as an
   unordered list, so with two or more in scope the file differs between runs. At the listing check that is

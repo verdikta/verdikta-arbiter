@@ -366,6 +366,9 @@ test('the claim files say nothing of the label: they reach the jury, and A7d mea
   assertPublicRefused({ finding: { rootCause: 'Seen in 2031-01-project.' } }, /finding\.json names the source/);
   assertPublicRefused({ poc: PUBLIC_POC.replace('contract ClaimTest {', 'contract ClaimTest { // 2031-01-project') }, /poc\.patch names the source/);
   assertPublicRefused({ report: '# X\n\nAs example-contests said.\n' }, /report\.md names the source \(example-contests\)/);
+  // A path's first segment names an organisation on GitHub only: elsewhere it can be any word.
+  const elsewhere = 'https://contest-site.example/reports/2031-01-project#m-01';
+  assert.deepEqual(publicProblems({ entry: { source: publicSource({ url: elsewhere, adaptedFrom: elsewhere }) }, report: '# X\n\nThe oracle reports a price.\n' }), []);
 });
 
 test('poc.observable names the test and quotes the failure the case expects', () => {
