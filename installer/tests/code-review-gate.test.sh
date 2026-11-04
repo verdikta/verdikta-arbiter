@@ -53,10 +53,17 @@ J
 module.exports = { codeReview: { CODE_CLASS_IDS: [133, 134], GVISOR_RELEASE: 'release-20260921.0',
   CONFORMANCE_CANARY: { reportSha256: '$HASH', runner: '0.1.0' } } };
 J
+    # The rule is real; what it compares with comes from this fake's pins.
+    mkdir -p "$I/code-runner/src"
+    cp "$ROOT/../code-runner/src/conformance.js" "$ROOT/../code-runner/src/version.js" "$I/code-runner/src/"
+    cat > "$I/code-runner/src/common.js" <<J
+module.exports = { GVISOR_RELEASE: 'release-20260921.0', COMMON_VERSION: '9.9.9-test', CONFORMANCE_CANARY: { reportSha256: '$HASH' } };
+J
+    echo '{"lock":1}' > "$I/code-runner/package-lock.json"
     : > "$T/reg.log"
 }
 good_pass() {
-    printf '{"pass":true,"reportSha256":"%s","runner":"0.1.0","gvisor":"release-20260921.0","commonVersion":"9.9.9-test","at":"2026-11-04T00:00:00Z"}\n' "$HASH" > "$I/code-runner-state/conformance.json"
+    node -e 'const c=require(process.argv[1]);require("fs").writeFileSync(process.argv[2],JSON.stringify({pass:true,...c.expectedPass(),at:"2026-11-04T00:00:00Z"}))' "$I/code-runner/src/conformance.js" "$I/code-runner-state/conformance.json"
 }
 dispatcher() { # dispatcher CLASSES [more env]
     env REG_LOG="$T/reg.log" VERDIKTA_UNATTENDED=1 VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS=0x4444444444444444444444444444444444444444 VA_CLASS_IDS="$1" "${@:2}" \
@@ -90,6 +97,7 @@ for script in dispatcher standalone; do
     tree; good_pass; sed -i.b 's/"reportSha256":"cafe/"reportSha256":"beef/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, another hash" "$out" $rc "conformance"
     tree; good_pass; sed -i.b 's/"runner":"0.1.0"/"runner":"0.0.9"/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, older runner's pass" "$out" $rc "conformance"
     tree; good_pass; sed -i.b 's/"commonVersion":"9.9.9-test"/"commonVersion":"1.0.0"/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, older common's pass" "$out" $rc "conformance"
+    tree; good_pass; echo '// a change' >> "$I/code-runner/src/version.js"; out=$($script 133); rc=$?; refused "$script 133, the pass of other source" "$out" $rc "conformance"
     tree; good_pass; sed -i.b 's/"pass":true/"pass":false/' "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, recorded fail" "$out" $rc "conformance"
     tree; echo 'not json' > "$I/code-runner-state/conformance.json"; out=$($script 133); rc=$?; refused "$script 133, unreadable pass" "$out" $rc "conformance"
     # 5555: the canary class, text until code review is on.

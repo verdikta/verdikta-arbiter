@@ -36,6 +36,13 @@ cat > "$I/code-runner/node_modules/@verdikta/common/index.js" <<J
 module.exports = { codeReview: { CODE_CLASS_IDS: [133, 134], GVISOR_RELEASE: 'release-20260921.0',
   CONFORMANCE_CANARY: { reportSha256: '$HASH', runner: '0.1.0' } } };
 J
+# The rule is real; what it compares with comes from this fake's pins.
+mkdir -p "$I/code-runner/src"
+cp "$ROOT/../code-runner/src/conformance.js" "$ROOT/../code-runner/src/version.js" "$I/code-runner/src/"
+cat > "$I/code-runner/src/common.js" <<J
+module.exports = { GVISOR_RELEASE: 'release-20260921.0', COMMON_VERSION: '9.9.9-test', CONFORMANCE_CANARY: { reportSha256: '$HASH' } };
+J
+echo '{"lock":1}' > "$I/code-runner/package-lock.json"
 cat > "$T/bin/mountpoint" <<'E'
 #!/bin/bash
 [ "${STUB_UNMOUNTED:-0}" != 1 ]
@@ -84,11 +91,12 @@ cat > "$T/runner.json" <<E
 { "ok": true, "reasons": [], "service": "verdikta-code-runner", "version": "0.1.0", "runtime": "runsc", "runtimeAvailable": true,
   "runtimeArgs": ["--platform=systrap", "--overlay2=root:dir=$M/scratch,size=4g"], "gvisor": "release-20260921.0", "gvisorPinned": "release-20260921.0",
   "docker": { "reachable": true, "endpoint": "unix://$T/run/docker.sock" }, "dataRoot": { "path": "$M", "freeBytes": 38000000000, "error": null },
-  "maintenance": false, "images": { "allowlist": [{ "entry": "ghcr.io/verdikta", "dev": false }] } }
+  "maintenance": false, "images": { "allowlist": [{ "entry": "ghcr.io/verdikta", "dev": false }] },
+  "conformance": { "required": true, "problem": null } }
 E
 }
 good_adapter() { echo '{ "status": "ok", "codeReview": { "enabled": true, "ready": true, "trust": "production", "problems": [] } }' > "$T/adapter.json"; }
-good_pass() { printf '{"pass":true,"reportSha256":"%s","runner":"0.1.0","gvisor":"release-20260921.0","commonVersion":"9.9.9-test","at":"2026-11-04T00:00:00Z"}\n' "$HASH" > "$I/code-runner-state/conformance.json"; }
+good_pass() { node -e 'const c=require(process.argv[1]);require("fs").writeFileSync(process.argv[2],JSON.stringify({pass:true,...c.expectedPass(),at:"2026-11-04T00:00:00Z"}))' "$I/code-runner/src/conformance.js" "$I/code-runner-state/conformance.json"; }
 good() { good_runner; good_adapter; good_pass; }
 edit() { # edit FILE 'js expression over d'
     node -e 'const fs=require("fs");const f=process.argv[1];const d=JSON.parse(fs.readFileSync(f));eval(process.argv[2]);fs.writeFileSync(f,JSON.stringify(d));' "$1" "$2"
@@ -144,6 +152,14 @@ out=$(run); is_sev "a sparse image" "$out" sandbox.disk WARN; has "a sparse imag
 good; rm -f "$I/code-runner-state/conformance.json"; out=$(run); is_sev "no pass" "$out" sandbox.conformance FAIL
 good; sed -i.b 's/"reportSha256":"cafe/"reportSha256":"beef/' "$I/code-runner-state/conformance.json"; out=$(run); is_sev "another hash" "$out" sandbox.conformance FAIL
 good; sed -i.b 's/"runner":"0.1.0"/"runner":"0.0.9"/' "$I/code-runner-state/conformance.json"; out=$(run); is_sev "another runner" "$out" sandbox.conformance FAIL
+
+good; sed -i.b 's/"commonVersion":"9.9.9-test"/"commonVersion":"1.0.0"/' "$I/code-runner-state/conformance.json"; out=$(run); is_sev "another common" "$out" sandbox.conformance FAIL
+good; cp "$I/code-runner/src/version.js" "$T/v.keep"; echo '// a change' >> "$I/code-runner/src/version.js"; out=$(run); is_sev "other source" "$out" sandbox.conformance FAIL; cp "$T/v.keep" "$I/code-runner/src/version.js"
+# A runner that isn't asked to check would run claims on anything: code-runner/.env lost the setting.
+good; edit "$T/runner.json" 'd.conformance.required=false'; out=$(run); is_sev "the runner does not check" "$out" sandbox.conformance FAIL; has "the runner does not check: names the setting" "$out" "CODE_RUNNER_CONFORMANCE_FILE"
+good; edit "$T/runner.json" 'delete d.conformance'; out=$(run); is_sev "a runner with no such block" "$out" sandbox.conformance FAIL
+# What the runner itself says of the pass counts: it holds the source it started with.
+good; edit "$T/runner.json" 'd.ok=false;d.reasons=["no pass"];d.conformance.problem="the pass is for other source"'; out=$(run); is_sev "the runner disagrees" "$out" sandbox.conformance FAIL; has "the runner disagrees: says why" "$out" "other source"
 
 # --- sandbox.trust: anything but production fails
 for t in dev dev-refused refused unknown; do

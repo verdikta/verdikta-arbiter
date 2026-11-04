@@ -101,6 +101,12 @@ J
     cat > "$I/code-runner/src/semgrepPin.js" <<'J'
 module.exports = { SEMGREP: { reference: 'docker.io/semgrep/semgrep@sha256:bbb' } };
 J
+    # The rule itself is real; what it compares with comes from this fake's pins.
+    cp "$REPO/code-runner/src/conformance.js" "$REPO/code-runner/src/version.js" "$I/code-runner/src/"
+    cat > "$I/code-runner/src/common.js" <<'J'
+module.exports = { GVISOR_RELEASE: 'release-20260921.0', COMMON_VERSION: '9.9.9-test', CONFORMANCE_CANARY: { reportSha256: 'cafe'.repeat(16) } };
+J
+    echo '{"lock":1}' > "$I/code-runner/package-lock.json"
     # The conformance entry point: writes what the real one writes, or fails on demand.
     cat > "$I/code-runner/conformance/run.js" <<'J'
 const fs = require('fs');
@@ -108,7 +114,7 @@ const a = process.argv; const out = a[a.indexOf('--json') + 1];
 if (process.env.STUB_LOCK && fs.existsSync(process.env.STUB_LOCK)) fs.appendFileSync(process.env.STUB_LOG, 'lock-held-during-self-test\n');
 fs.appendFileSync(process.env.STUB_LOG, `conformance DOCKER_HOST=${process.env.DOCKER_HOST} REGNET=${process.env.CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK} RUNTIME=${process.env.CODE_RUNNER_RUNTIME} TMPDIR=${process.env.TMPDIR} KEY=${process.env.STUB_SECRET_KEY || 'none'}\n`);
 if (process.env.STUB_CANARY_EXIT) process.exit(Number(process.env.STUB_CANARY_EXIT));
-fs.writeFileSync(out, JSON.stringify({ canonical: true, reportSha256: process.env.STUB_HASH || 'cafe'.repeat(16), runner: '0.1.0', gvisor: 'release-20260921.0' }));
+fs.writeFileSync(out, JSON.stringify({ canonical: true, reportSha256: process.env.STUB_HASH || 'cafe'.repeat(16), runner: '0.1.0', gvisor: 'release-20260921.0', sourceSha256: require('../src/conformance').sourceSha256() }));
 J
     printf '#!/bin/bash\necho "runner-start DOCKER_HOST=$(grep ^DOCKER_HOST= .env 2>/dev/null)" >> "$STUB_LOG"; exit "${STUB_RUNNER_START_RC:-0}"\n' > "$I/code-runner/start.sh"
     (cd "$I/code-runner" && sed -i.bak 's#^echo "runner-start.*#echo "runner-start" >> "$STUB_LOG"; exit "${STUB_RUNNER_START_RC:-0}"#' start.sh && rm -f start.sh.bak)
@@ -224,12 +230,15 @@ has "self-test's registry on the host network: the daemon cannot publish a port"
 has "self-test under gVisor"   "$l" "RUNTIME=runsc"
 has "self-test's temp files on the fixed disk" "$l" "TMPDIR=$P/var/lib/verdikta-code-runner/selftest"
 [ -f "$I/code-runner-state/conformance.json" ] && ok || bad "no pass recorded"
+is "the pass is the rule's own: the runner reads it as good" "$(node -p 'require(process.argv[1]).passProblem(process.argv[2])' "$I/code-runner/src/conformance.js" "$I/code-runner-state/conformance.json")" "null"
+is "written whole: no temp left" "$(ls -A "$I/code-runner-state" | grep -c 'conformance.json.new')" 0
 # The runner's environment.
 envf=$(cat "$I/code-runner/.env")
 has "runner env: own daemon" "$envf" "^DOCKER_HOST=unix://$P/run/verdikta-code-runner/docker.sock$"
 has "runner env: gVisor"     "$envf" "^CODE_RUNNER_RUNTIME=runsc$"
 has "runner env: the disk"   "$envf" "^CODE_RUNNER_DATA_ROOT=$P/var/lib/verdikta-code-runner$"
 has "runner env: token file" "$envf" "^CODE_RUNNER_TOKEN_FILE=$I/code-runner-state/token$"
+has "runner env: the check is asked for" "$envf" "^CODE_RUNNER_CONFORMANCE_FILE=$I/code-runner-state/conformance.json$"
 has "runner env: allowlist"  "$envf" "^CODE_RUNNER_REGISTRY_ALLOWLIST=ghcr.io/verdikta$"
 has "runner env: slots"      "$envf" "^CODE_RUNNER_SLOTS=1$"
 has "runner env: model reserve" "$envf" "^CODE_RUNNER_RESERVE_LOCAL_MODEL_MB=0$"
@@ -358,50 +367,64 @@ hasnt "no second allocation over a kept image" "$(log)" "^fallocate"
 out=$(run status 2>&1); is "status: not installed, an image stays" "$?" 1
 has "status names the image" "$out" "A disk image stays"
 
-# --- a failed refresh (an upgrade's) keeps what is there, and code mode goes off
-fresh
-run enable >/dev/null 2>&1
-printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"
-: > "$P/log"
+# --- a failed refresh (an upgrade's) keeps what is there, touches no adapter, and leaves no pass
+stale_install() { fresh; run enable >/dev/null 2>&1; printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"; : > "$P/log"; rm -f "$P/state/adapter-starts"; }
+adapter_untouched() { # NAME: the adapter's settings and process, as enable left them
+    has "$1: code review stays set: the runner refuses" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
+    hasnt "$1: no adapter restart" "$(log)" "^adapter-"
+}
+stale_install
 out=$(STUB_CANARY_EXIT=1 run enable 2>&1); rc=$?
 is "failed refresh rc" "$rc" 1
+has "failed refresh: says what it means" "$out" "refuses claims"
 [ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "a refresh removed the disk"
 [ -e "$I/code-runner/.env" ] && ok || bad "a refresh removed the runner env"
-[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "a failed refresh kept a pass"
-has "failed refresh: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "a failed self-test kept a pass"
+adapter_untouched "failed refresh"
 [ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "a failed refresh left the lock"
 out=$(run status --quiet 2>&1); is "status after a failed refresh" "$?" 2
+# A failed step with a pass that still stands: what the pass says is still true, so it stays.
+fresh; run enable >/dev/null 2>&1; : > "$P/log"
+out=$(STUB_PULL_FAIL=1 run enable 2>&1); is "failed re-run with a pass: rc" "$?" 1
+[ -e "$I/code-runner-state/conformance.json" ] && ok || bad "a failed pull removed a pass that stands"
+out=$(run status --quiet 2>&1); is "status with a pass that stands" "$?" 0
+# A self-test whose hash is another's leaves none.
+stale_install
+out=$(STUB_HASH=$(printf 'beef%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16) run self-test 2>&1); is "another hash: rc" "$?" 1
+[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "another hash left a pass"
+is "another hash: no temp left" "$(ls -A "$I/code-runner-state" | grep -c 'conformance.json.new')" 0
+adapter_untouched "another hash"
+# A new source is no pass: the same version, common and gVisor, and one changed byte.
+fresh; run enable >/dev/null 2>&1
+out=$(run status --quiet 2>&1); is "status before a source change" "$?" 0
+echo '// a change' >> "$I/code-runner/src/version.js"
+out=$(run status --quiet 2>&1); is "status after a source change" "$?" 2
+: > "$P/log"
+out=$(run enable 2>&1); is "enable after a source change: rc" "$?" 0
+has "enable after a source change: the canary runs again" "$(log)" "^conformance "
+out=$(run status --quiet 2>&1); is "status after that" "$?" 0
 
-# --- a refresh refused before it starts leaves no release judging claims unchecked
-stale_install() { fresh; run enable >/dev/null 2>&1; printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"; : > "$P/log"; rm -f "$P/state/adapter-starts"; }
+# --- a refresh refused before it starts changes nothing: the runner holds the rule
 stale_install
 out=$(STUB_ARCH=aarch64 run enable 2>&1); is "refused refresh, host: rc" "$?" 4
-has "refused refresh, host: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+adapter_untouched "refused refresh, host"
 [ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "refused refresh, host: the disk went"
 if [ "$(id -u)" != 0 ]; then
     stale_install
     out=$(STUB_NO_SUDO=1 run enable 2>&1); is "refused refresh, no sudo: rc" "$?" 3
-    has "refused refresh, no sudo: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+    adapter_untouched "refused refresh, no sudo"
 fi
 stale_install
 sed -i.b 's/9.9.9-test/9.9.8-test/' "$I/ai-node/package.json"
 out=$(run enable 2>&1); is "refused refresh, pins disagree: rc" "$?" 1
 has "refused refresh, pins disagree: names them" "$out" "ai-node:9.9.8-test"
-has "refused refresh, pins disagree: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
-# A standing pass is still a pass: a refused re-run takes nothing away.
-fresh; run enable >/dev/null 2>&1
-out=$(STUB_ARCH=aarch64 run enable 2>&1); is "refused re-run with a pass: rc" "$?" 4
-has "refused re-run with a pass: code mode stays on" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
+adapter_untouched "refused refresh, pins disagree"
 
-# --- hold: what an upgrade calls once the new runner is in place
-fresh; run enable >/dev/null 2>&1
-out=$(run hold 2>&1); is "hold with a pass: rc" "$?" 0
-has "hold with a pass: stays on" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
-printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"
-out=$(run hold 2>&1); is "hold without a pass: rc" "$?" 0
-has "hold without a pass: off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
-fresh; out=$(run hold 2>&1); is "hold with no sandbox: rc" "$?" 0
-hasnt "hold with no sandbox: the adapter is left alone" "$(cat "$I/external-adapter/.env")" "CODE_REVIEW_ENABLED"
+# --- what a design review removed stays removed: the runner holds this rule, not a sequence of steps
+out=$(run hold 2>&1); is "there is no hold" "$?" 64
+code=$(grep -vE '^[[:space:]]*#' "$TOOL")
+hasnt "no pin"  "$code" "pin_lock\|lift_pin"
+hasnt "no hold" "$code" "hold_without_a_pass\|refuse_enable"
 
 # --- an adapter that does not come back is the arbiter's problem, and it is said: exit 1, old settings
 fresh
@@ -420,7 +443,7 @@ fresh; run enable >/dev/null 2>&1; rm -f "$P/state/adapter-starts"
 out=$(STUB_ADAPTER_FAILS=1 run disable 2>&1); is "disable, adapter does not restart: rc" "$?" 1
 has "disable, adapter does not restart: says so" "$out" "is DOWN"
 
-# --- a signal is a failure too: a first enable removes what it made, a refresh turns code mode off
+# --- a signal is a failure too: a first enable removes what it made, a refresh changes nothing else
 term_at() { # term_at STUB_VAR: SIGTERM when that stub says signal-now
     rm -f "$P/state/signal-now"
     env "$1=1" PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
@@ -431,9 +454,8 @@ term_at() { # term_at STUB_VAR: SIGTERM when that stub says signal-now
     kill -TERM "$pid"
     wait "$pid"; rc=$?
 }
-term_during_pull() { term_at STUB_SLOW_PULL; }
 fresh
-term_during_pull
+term_at STUB_SLOW_PULL
 is "SIGTERM on a first enable: rc" "$rc" 143
 [ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM: the disk image stayed"
 [ ! -e "$P/etc/systemd/system/verdikta-code-runner-docker.service" ] && ok || bad "SIGTERM: a unit stayed"
@@ -441,12 +463,11 @@ is "SIGTERM on a first enable: rc" "$rc" 143
 [ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "SIGTERM: the lock stayed"
 has "SIGTERM: says what became of it" "$(cat "$P/state/out")" "was not installed"
 stale_install
-term_during_pull
+term_at STUB_SLOW_PULL
 is "SIGTERM on a refresh: rc" "$rc" 143
 [ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM on a refresh: the disk went"
-has "SIGTERM on a refresh: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
+adapter_untouched "SIGTERM on a refresh"
 [ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "SIGTERM on a refresh: the lock stayed"
-
 # ... during the final rename too: the image is this run's before it has its name.
 fresh
 term_at STUB_SLOW_RENAME
@@ -469,51 +490,6 @@ out=$(STUB_ENV_COPY_FAIL=1 run enable 2>&1); rc=$?
 is "adapter env not copied: rc" "$rc" 1
 has "adapter env not copied: says so" "$out" "Could not copy"
 is "adapter env not copied: unchanged" "$(cat "$I/external-adapter/.env")" "$before"
-
-# --- no pass, code review can't be turned off, and the lock can't be written either: the runner stops
-stale_install
-rm -f "$I/code-runner-state/maintenance"; mkdir "$I/code-runner-state/maintenance"
-: > "$P/log"
-out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1); is "neither can be written: rc" "$?" 1
-has "neither can be written: the runner stops" "$(log)" "^runner-stop$"
-has "neither can be written: says so" "$out" "STOPPED"
-hasnt "neither can be written: does not claim a lock" "$out" "maintenance lock .* stays"
-rmdir "$I/code-runner-state/maintenance"
-# --- no pass, and code review can't be turned off: the lock stays, whoever exits next
-stale_install
-out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1); is "off cannot be written: rc" "$?" 1
-has "off cannot be written: says so" "$out" "the maintenance lock"
-has "off cannot be written: the lock stays" "$(cat "$I/code-runner-state/maintenance")" "kept:"
-has "off cannot be written: it says true still" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
-rm -f "$I/code-runner-state/maintenance"
-stale_install
-out=$(STUB_ENV_WRITE_FAIL=1 STUB_ARCH=aarch64 run enable 2>&1); is "off cannot be written, refused refresh: rc" "$?" 4
-[ -e "$I/code-runner-state/maintenance" ] && ok || bad "off cannot be written, refused refresh: no lock"
-rm -f "$I/code-runner-state/maintenance"
-stale_install
-out=$(STUB_ENV_WRITE_FAIL=1 STUB_PULL_FAIL=1 run enable 2>&1); is "off cannot be written, failed refresh: rc" "$?" 1
-has "off cannot be written, failed refresh: the lock stays" "$(cat "$I/code-runner-state/maintenance")" "kept:"
-rm -f "$I/code-runner-state/maintenance"
-
-# A later pass ends what the pin was for; an operator's own lock stays through the same thing.
-stale_install
-out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1)
-has "the pin is there" "$(cat "$I/code-runner-state/maintenance")" "kept:"
-out=$(run enable 2>&1); rc=$?
-is "a pass after a pin: rc" "$rc" 0
-has "a pass after a pin: code review on" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
-[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "a pass after a pin: the lock stayed, and claims with it"
-stale_install
-out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1)
-out=$(run self-test 2>&1); rc=$?
-is "self-test after a pin: rc" "$rc" 0
-[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "self-test after a pin: the lock stayed"
-stale_install
-out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1)
-out=$(STUB_PULL_FAIL=1 run enable 2>&1); rc=$?
-is "a failed refresh after a pin: rc" "$rc" 1
-has "a failed refresh after a pin: the lock stays" "$(cat "$I/code-runner-state/maintenance")" "kept:"
-rm -f "$I/code-runner-state/maintenance"
 
 # --- the self-test refuses a cold host: its own pull would hide it
 fresh

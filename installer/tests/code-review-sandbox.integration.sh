@@ -181,6 +181,30 @@ check "self-test left no temp files on the disk" "$(sudo ls -A "$MOUNT/selftest"
 check "self-test left no registry" "$("${OWN[@]}" ps -a --format '{{.Names}}' | grep -c vcr-)" 0
 check "status: ready" "$(bash "$TOOL" status --quiet --install-dir "$I" >/dev/null 2>&1; echo $?)" 0
 
+step "The rule, in the running runner: no pass, no claims, and a new pass counts with no restart"
+pass_file="$I/code-runner-state/conformance.json"
+runner_pid=$(cat "$I/code-runner/runner.pid")
+cp "$pass_file" "$WORK/pass.keep"; rm -f "$pass_file"
+health=$(node "$CHECK" runner-health --install-dir "$I")
+check "no pass: /health not ok" "$(field ok)" false
+check "no pass: names it" "$(field conformance.required)" true
+printf '%s' "$health" | grep -q 'no conformance pass' && ok "no pass: says so" || bad "no pass: /health does not say so"
+cp "$WORK/pass.keep" "$pass_file"
+health=$(node "$CHECK" runner-health --install-dir "$I")
+check "the pass back: /health ok, no restart" "$(field ok)" true
+check "the same process" "$(cat "$I/code-runner/runner.pid")" "$runner_pid"
+# A changed byte in its source, the same version: its start takes the new hash, and the pass isn't for that.
+keep_src=$(mktemp -p "$WORK"); cp "$I/code-runner/src/version.js" "$keep_src"
+echo '// a change' >> "$I/code-runner/src/version.js"
+bash "$I/code-runner/stop.sh" >/dev/null 2>&1; bash "$I/code-runner/start.sh" >/dev/null 2>&1
+health=$(node "$CHECK" runner-health --install-dir "$I")
+check "new source, old pass: /health not ok" "$(field ok)" false
+printf '%s' "$health" | grep -q 'sourceSha256' && ok "new source, old pass: says which" || bad "new source, old pass: does not say which"
+cp "$keep_src" "$I/code-runner/src/version.js"
+bash "$I/code-runner/stop.sh" >/dev/null 2>&1; bash "$I/code-runner/start.sh" >/dev/null 2>&1
+health=$(node "$CHECK" runner-health --install-dir "$I")
+check "the source back: /health ok" "$(field ok)" true
+
 step "The real adapter, on what enable wrote"
 (cd "$I/external-adapter" && bash ./start.sh >/dev/null 2>&1) || bad "the adapter did not start"
 cr=$(curl -s -m 10 http://127.0.0.1:8080/health)
@@ -190,6 +214,15 @@ check "adapter: production trust" "$(crf trust)" '"production"'
 check "adapter: ready" "$(crf ready)" true
 check "adapter: chain" "$(crf chainId)" 84532
 [ "$(crf ready)" = "true" ] || echo "adapter problems: $(crf problems)"
+# No pass harms nothing else: the adapter answers as before, and only the runner says no.
+rm -f "$pass_file"
+health=$(node "$CHECK" runner-health --install-dir "$I")
+check "no pass: the runner refuses" "$(field ok)" false
+adapter_status=$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/health)
+check "no pass: the adapter's /health is 200" "$adapter_status" 200
+check "no pass: the adapter still says ready: it asks the runner per claim" "$(curl -s -m 10 http://127.0.0.1:8080/health | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>console.log(JSON.parse(s).codeReview.ready))')" true
+compare "no pass"
+cp "$WORK/pass.keep" "$pass_file"
 
 step "The doctor, for real"
 findings=$(node "$CHECK" doctor --install-dir "$I"); echo "$findings" | cut -f1-3 | cut -c1-160

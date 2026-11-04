@@ -29,6 +29,9 @@ has "the offer reads enable"         "$offer" 'code-review-sandbox.sh" enable ||
 has "the unattended default is no"   "$offer" 'VA_UPGRADE_CODE_REVIEW_SANDBOX "n"'
 code=$(printf '%s\n' "$offer$lock$deps" | grep -vE '^[[:space:]]*#')
 hasnt "no set +e" "$code" "set +e"
+# The runner holds the rule on a release with no pass: no step of the upgrade does.
+hasnt "no hold step" "$code" " hold "
+hasnt "no lock kept past the run" "$(grep -vE '^[[:space:]]*#' "$S")" "CODE_RUNNER_LOCK_KEEP"
 # The lock goes before the stop: nothing is admitted between them.
 l1=$(grep -n "^# Hold the code runner.s maintenance lock" "$S" | cut -d: -f1); l2=$(grep -n '^# If arbiter is running, stop it' "$S" | cut -d: -f1)
 [ -n "$l1" ] && [ -n "$l2" ] && [ "$l1" -lt "$l2" ] && ok || bad "the lock is not taken before the stop ($l1, $l2)"
@@ -43,7 +46,6 @@ cat > "$T/install/code-review-sandbox.sh" <<'STUB'
 case "$1" in
   status) exit "${STATUS_RC:-1}" ;;
   enable) echo "STUB-ENABLE-CALLED"; exit "${ENABLE_RC:-0}" ;;
-  hold) echo "STUB-HOLD-CALLED"; exit "${HOLD_RC:-0}" ;;
   *) echo "STUB: unexpected $*" >&2; exit 99 ;;
 esac
 STUB
@@ -219,48 +221,6 @@ has "the lock did not move" "$(cat "$T/install/code-runner-state/maintenance")" 
 rm -f "$T/install/code-runner-state/maintenance"
 mkdir -p "$T/install/code-runner"; : > "$T/install/code-runner/.env"
 
-# What the tool pinned is no pid's: the upgrade's exit does not lift it.
-rm -f "$T/install/code-runner-state/maintenance"
-out=$(LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
-    set -e
-    GREEN= YELLOW= RED= BLUE= NC=
-    eval "$1"
-    echo "code-review-sandbox kept: pinned" > "$LOCK"
-' _ "$lock" 2>&1)
-has "a pinned lock outlives the upgrade" "$(cat "$T/install/code-runner-state/maintenance")" "kept:"
-rm -f "$T/install/code-runner-state/maintenance"
-
-# hold failed: the upgrade's own lock stays through the real error path and the real EXIT trap, so a
-# restarted runner admits no claim on a release with no pass; and a later pass in the run lifts it.
-rm -f "$T/install/code-runner-state/maintenance"; : > "$T/install/code-runner/.env"
-out=$(HOLD_RC=1 PATH="$T/bin:$PATH" NPM_RC=0 LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" TARGET_CODE_RUNNER="$T/install/code-runner" REAL_UTIL="$ROOT/util" bash -c '
-    set -e
-    GREEN= YELLOW= RED= BLUE= NC=
-    UTIL_DIR="$REAL_UTIL"
-    UPGRADE_IN_PROGRESS=1; BACKUP_DIR=""; ARBITER_WAS_RUNNING=1
-    eval "$1"
-    trap cleanup_on_error ERR
-    eval "$2"
-    eval "$3"
-    echo "HOLD-FAILED"
-    false
-' _ "$trapfn" "$lock" "$deps" 2>&1)
-has "hold failed, then the upgrade failed: the arbiter restarted" "$out" "STUB-START-ARBITER"
-has "hold failed, then the upgrade failed: the lock was held at the restart" "$out" "LOCK-HELD-AT-START"
-[ -f "$T/install/code-runner-state/maintenance" ] && ok || bad "hold failed, then the upgrade failed: the lock went"
-rm -f "$T/install/code-runner-state/maintenance"
-out=$(HOLD_RC=1 STATUS_RC=2 ENABLE_RC=0 VERDIKTA_UNATTENDED=1 PATH="$T/bin:$PATH" NPM_RC=0 LOCK="$T/install/code-runner-state/maintenance" TARGET_DIR="$T/install" TARGET_CODE_RUNNER="$T/install/code-runner" UTIL_DIR="$ROOT/util" bash -c '
-    set -e
-    source "$4/lib/prompts.sh"
-    GREEN= YELLOW= RED= BLUE= NC=
-    eval "$1"
-    eval "$2"
-    eval "$3"
-    echo "FAILED=[${CODE_REVIEW_SANDBOX_FAILED:-}]"
-' _ "$lock" "$deps" "$offer" "$ROOT" 2>&1)
-has "hold failed, a pass after it: nothing failed" "$out" "FAILED=\[\]"
-[ ! -f "$T/install/code-runner-state/maintenance" ] && ok || bad "hold failed, a pass after it: the lock stayed"
-
 # The backup comes with this run's lock: restored, it would refuse every claim from then on.
 backup=$(awk '/^# Ask if user wants to create a backup/{p=1} /^# Mark that upgrade is in progress/{p=0} p{print}' "$S")
 [ -n "$backup" ] && ok || bad "could not extract the backup block"
@@ -309,15 +269,8 @@ run_deps() { # run_deps INSTALLED NPM_RC
 out=$(run_deps 1 0)
 has   "deps: installed exactly" "$out" "npm ci"
 has   "deps: finished" "$out" "REACHED-END"
-has   "deps: no claim on a release with no pass" "$out" "STUB-HOLD-CALLED"
-out=$(HOLD_RC=1 run_deps 1 0)
-has   "hold fails: says so" "$out" "could not turn code review off"
-has   "hold fails: ends the upgrade with exit 3" "$out" "FAILED=\[code review could not be turned off"
-has   "hold fails: finished" "$out" "REACHED-END"
-hasnt "hold fails: trap" "$out" "TRAP-FIRED"
 out=$(run_deps 0 0)
 hasnt "deps: not on a node without the sandbox" "$out" "npm ci"
-hasnt "deps: no hold on a node without the sandbox" "$out" "STUB-HOLD-CALLED"
 out=$(run_deps 1 1)
 has   "deps fail: reason kept" "$out" "FAILED=\[.*code-runner"
 has   "deps fail: finished" "$out" "REACHED-END"

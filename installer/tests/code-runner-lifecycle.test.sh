@@ -142,6 +142,10 @@ has "boot: ordered after its daemon" "$unit" '^After=.*verdikta-code-runner-dock
 has "boot: wants its daemon"         "$unit" '^Wants=.*verdikta-code-runner-docker.service'
 hasnt "boot: requires nothing more"  "$unit" '^Requires=.*code-runner'
 
+# --- no pass harms nothing else: the watchdog neither checks the runner nor restarts for it
+hasnt "the watchdog is not about the runner" "$(grep -vE '^[[:space:]]*#' "$ROOT/util/chainlink-health-watchdog.sh")" "code-runner\|code_runner\|8090\|code-review"
+# start.sh takes a 503 as an answer (above, the stand-in answers 503): a runner with no pass still starts.
+
 # --- deployed by both
 for tool in code-review-sandbox.sh code-review-check.js; do
     grep -qE "^ *${tool//./\\.}( \\\\|; do)\$" "$ROOT/bin/upgrade-arbiter.sh" && ok || bad "$tool is not in upgrade's copy loop"
