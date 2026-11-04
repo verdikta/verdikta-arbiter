@@ -1,0 +1,61 @@
+diff --git a/test/stake/TierHistoryGasClaim.t.sol b/test/stake/TierHistoryGasClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/stake/TierHistoryGasClaim.t.sol
+@@ -0,0 +1,56 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {LayerEdgeStaking} from "@src/stake/LayerEdgeStaking.sol";
++import {LayerEdgeToken} from "@test/mock/LayerEdgeToken.sol";
++import {DeployLayerEdgeStaking} from "@script/DeployLayerEdgeStaking.s.sol";
++import {NetworkConfig, HelperConfig} from "@script/HelperConfig.s.sol";
++
++/// However often others come and go, a staker's own call to withdraw still fits in a block.
++contract TierHistoryGasClaim is Test {
++    uint256 private constant STAKE = 3000e18;
++    uint256 private constant BLOCK_GAS = 30_000_000;
++
++    function test_a_stakers_withdrawal_fits_in_a_block() public {
++        vm.pauseGasMetering();
++        (LayerEdgeStaking staking, HelperConfig config) = new DeployLayerEdgeStaking().run();
++        NetworkConfig memory network = config.getActiveNetworkConfig();
++        LayerEdgeToken token = LayerEdgeToken(network.stakingToken);
++        address attacker = address(0xBAD);
++        vm.startPrank(network.owner);
++        token.transfer(attacker, STAKE * 20_000);
++        address[] memory stakers = new address[](9);
++        for (uint256 i = 0; i < stakers.length; i++) {
++            stakers[i] = address(uint160(0x1000 + i));
++            token.transfer(stakers[i], STAKE);
++        }
++        vm.stopPrank();
++        for (uint256 i = 0; i < stakers.length; i++) {
++            vm.startPrank(stakers[i]);
++            token.approve(address(staking), STAKE);
++            staking.stake(STAKE);
++            vm.stopPrank();
++        }
++
++        // Each stake and exit by a new account takes the count across a tier boundary and back.
++        for (uint256 i = 0; i < 20_000; i++) {
++            address passing = address(uint160(0x100000 + i));
++            vm.prank(attacker);
++            token.transfer(passing, STAKE);
++            vm.startPrank(passing);
++            token.approve(address(staking), STAKE);
++            staking.stake(STAKE);
++            staking.unstake(STAKE);
++            vm.stopPrank();
++        }
++        vm.resumeGasMetering();
++
++        vm.prank(stakers[1]);
++        uint256 before = gasleft();
++        staking.unstake(STAKE);
++        uint256 spent = before - gasleft();
++
++        assertLt(spent, BLOCK_GAS, "gas for the withdrawal");
++    }
++}

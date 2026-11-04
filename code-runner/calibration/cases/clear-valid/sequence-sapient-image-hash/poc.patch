@@ -1,0 +1,51 @@
+diff --git a/test/SapientImageHashClaim.t.sol b/test/SapientImageHashClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/SapientImageHashClaim.t.sol
+@@ -0,0 +1,46 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.27;
++
++import { Test } from "forge-std/Test.sol";
++import { BaseAuth } from "../src/modules/auth/BaseAuth.sol";
++import { BaseSig } from "../src/modules/auth/BaseSig.sol";
++import { Payload } from "../src/modules/Payload.sol";
++
++contract AcceptingWallet is BaseAuth {
++
++  function _updateImageHash(
++    bytes32
++  ) internal override { }
++
++  function _isValidImage(
++    bytes32
++  ) internal view override returns (bool) {
++    return true;
++  }
++
++}
++
++contract SignatureReader {
++
++  function imageHashOf(Payload.Decoded memory payload, bytes calldata signature) external view returns (bytes32 imageHash) {
++    (,, imageHash,,) = BaseSig.recover(payload, signature, false, address(0));
++  }
++
++}
++
++/// A sapient signer answers with its image hash, which is what the parent wallet's own image hash is built from.
++contract SapientImageHashClaim is Test {
++
++  function test_a_wallet_answers_as_a_sapient_signer_with_its_image_hash() public {
++    AcceptingWallet wallet = new AcceptingWallet();
++    SignatureReader reader = new SignatureReader();
++    Payload.Decoded memory payload;
++    // No checkpoint or chain id, and a threshold of zero: an empty configuration that any wallet accepts.
++    bytes memory signature = hex"0000";
++
++    bytes32 imageHash = reader.imageHashOf(payload, signature);
++
++    assertEq(wallet.recoverSapientSignature(payload, signature), imageHash, "the answer is the image hash of the signer");
++  }
++
++}

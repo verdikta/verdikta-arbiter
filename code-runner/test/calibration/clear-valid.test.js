@@ -24,6 +24,16 @@ const { cases } = loadCorpus({ root: path.join(CODE_RUNNER, 'calibration') });
 const clearValid = cases.filter((c) => c.subsets.includes('clear-valid'));
 
 const RESTATED = Object.freeze({
+  'mellow-consensus-threshold': { cls: 'HIGH', words: 'one signer does not count twice' },
+  'mellow-performance-fee': { cls: 'HIGH', words: '900000000000000000000 != 10000000000000000000' },
+  'mellow-fee-recipient-lockup': { cls: 'MEDIUM', words: 'the lock on the recipient after a fee payment' },
+  'layeredge-tier-demotion': { cls: 'HIGH', words: '2 != 3' },
+  'layeredge-tier-history-gas': { cls: 'MEDIUM', words: '>= 30000000' },
+  'basin-well-data-decimals': { cls: 'HIGH', words: '0 != 18' },
+  'basin-swap-ratio-no-reserve': { cls: 'MEDIUM', words: '0 <= 0' },
+  'basin-liquidity-ratio-underflow': { cls: 'MEDIUM', words: 'panic: arithmetic underflow or overflow (0x11)' },
+  'sequence-static-signature-entry-point': { cls: 'MEDIUM', words: 'InvalidStaticSignatureWrongCaller(' },
+  'sequence-sapient-image-hash': { cls: 'MEDIUM', words: '0x0000000000000000000000000000000000000000000000000000000000000001 != ' },
   'layeredge-tier-promotion': { cls: 'HIGH', words: '20000000000000000000 != 35000000000000000000' },
   'mellow-transfer-whitelist': { cls: 'MEDIUM', words: 'TransferNotAllowed(' },
   'mellow-fee-per-period': { cls: 'HIGH', words: '331000000000000000000 != 100000000000000000000' },

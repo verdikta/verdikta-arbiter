@@ -1,0 +1,68 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.mellow-consensus-threshold.control",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "One signer sent twice meets a threshold of two: the same test with its assertion turned around",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/13",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/13",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding has no test; this one calls checkSignatures directly.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/4bcbdcfe643761c67d7dd862ca5909168c3ad859/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-07-mellow-flexible-vaults",
+      "verdict": "Valid. Published in the final report as Issue H-1, with a fix PR linked.",
+      "class": "HIGH"
+    }
+  },
+  "listing": "listings/mellow",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with the assertion turned around passes on all three runs, so its case fails on what it says it does, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ConsensusThresholdClaim.t.sol > ConsensusThresholdClaim > test_one_signer_twice_does_not_meet_a_threshold_of_two()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "clear-valid.mellow-consensus-threshold"
+}
