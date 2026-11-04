@@ -18,8 +18,9 @@ attestation site runs before escrow opens
 ([below](#integrity-checks)) and the fix check
 ([below](#the-fix-check)); node A3b the Verification Report, its hash and the
 context pack ([below](#the-report-and-the-context-pack)); node A3c the honesty
-flags and the fix check's lint ([below](#honesty-flags-and-the-fix-checks-lint)).
-See [Seams](#seams).
+flags and the fix check's lint ([below](#honesty-flags-and-the-fix-checks-lint)); node A7a the
+calibration harness, the adversarial corpus and the conformance canary
+([below](#calibration-and-conformance)). See [Seams](#seams).
 
 ## Run it
 
@@ -2036,6 +2037,162 @@ report hash and pack hash. Cross-host is G2's.
 `honesty.docker.test.js` holds the rules to the real Semgrep, line by line on
 `test/fixtures/honesty/`, and the scan's attacks and worst shapes, printing their times; a real
 claim and a real fix go through forge. On Apple silicon its image is the arm64 variant of the same index.
+
+## Calibration and conformance
+
+`calibration/`, `conformance/` (design §16, §18; node A7a). Runner only: no jury, no chain, no
+provider, no pin service. Of the External Adapter only its pure `settleReport` is used.
+
+```bash
+npm run calibration -- --subset adversarial     # needs a Docker daemon
+npm run conformance
+```
+
+### The format
+
+`verdikta.calibration-case/1`. A case is a folder, `calibration/cases/<group>/<name>/`, id
+`<group>.<name>`: `case.json`, and the claim as a hunter submits it, `finding.json`, `report.md`,
+`poc.patch` and an optional `fix.patch`, with prior findings under `priors/<n>/`. `case.json` names
+its `listing`, a folder under `calibration/listings/`: `listing.json` (`repo`, `commit`, `source`,
+`solc`), `code_review.json` (with no image: the harness publishes one), `baseline.json` and
+`known_issues.json`. Both carry `source`: `url`, `licence`, and `program`, the source program's
+verdict and class (null for Verdikta's own fixtures).
+
+`expected` has `outcome` and `class` (what the whole system should settle), `reason` in words, and
+`runner`, compared exactly:
+
+| Field | Holds |
+|---|---|
+| `result` | `definitive`, or `abstain` with `abstain.cause` and `.step`, or `requester_error` with `issues` |
+| `gates` | Each of the six, `pass`, `fail` or `not-run` |
+| `gateDetails` | For each failed gate, words its stated reason must contain |
+| `settlement` | `settleReport`'s answer without its text: `kind`, and `gate`, `check`, `failedChecks`, `tamperFlagKinds` |
+| `integrityFailed`, `tamperFlags` | The checks that failed, and each tamper flag's `kind`, `file` and `line`. Left out: none, except that a DUPLICATE's checks are its settlement's |
+| `honestyFlags` | Each flag's `rule`, `file` and `line` |
+| `tests` | The report's form of each test: `id`, `runs`, `kind`, `message` |
+| `rawRuns` | What each run did, where the report folds it (a flaky test); left out, it must equal `tests[].runs` |
+| `flags`, `findings`, `fix` | Left out: none. `fix` holds `applies`, `builds`, `pocPasses`, `regressionCount` |
+| `pack` | `contains` (`tier`, `text`), `absent`: what the context pack must and must not hold |
+
+A case that reaches the jury expects `settlement.kind: "jury"`, and its `outcome` is a prediction
+until A7d measures it. An adversarial case needs a `control`: `{ case, removes, adds, differsIn,
+sameIn }`. The loader checks that the control is its case minus the named lines (a patch's hunk headers
+aside; every other claim file byte-identical) and that the expected results differ and agree where
+the case says, and the harness checks the same two lists on what the runner did.
+
+The loader reads every folder, whichever subset was asked for, and reports every problem at once. A
+malformed case stops the run before any image; nothing is skipped. That covers JSON of the wrong shape
+(`null`, a list) and a file nothing would read (a `fix.patch` the case does not name, a prior folder it
+does not list, a misspelled listing file).
+
+`repo.kind: "git"` is in the format, and the image step refuses it until A7b builds such images.
+
+### The harness
+
+`npm run calibration [-- --subset <name>] [--case <id>]... [--self-check] [--results <file>] [--export <dir>]`
+
+1. **The image is written, not built** (`calibration/lib/image.js`), because the report's hash
+   covers the image's digest and a `docker build` cannot give one digest on every host. It is the
+   pinned base's own manifest with two layers appended, the attested builder's final stage: solc at
+   the builder's place, and `/repo` with the listed commit's objects, owned by uid 10001, with the
+   builder's fixed `ENV` and no `RUN`. The layers are uncompressed tar with fixed metadata, and the
+   objects use stored deflate blocks. The listed commit is computed from the fixture's files and
+   must be the one `listing.json` names.
+2. **It is published to a throwaway `registry:2`** on a loopback port, the runner's only allowlisted
+   registry. The base's blobs come from ghcr.io by digest (`calibration/lib/base.js`), kept in the
+   temporary directory.
+3. **The runner runs in the harness's process**, over its HTTP surface, with a random bearer token and
+   nothing of the caller's environment in its configuration: `/health` must be ok, and the runner's
+   own cache pulls the image by digest. `DOCKER_HOST`, `CODE_RUNNER_RUNTIME` and
+   `CODE_RUNNER_PLATFORM` choose the daemon and the runtime, as for the Docker tests.
+4. **A real `POST /v1/listing-checks`** on every image must accept it, and its baseline must equal the
+   listing's `baseline.json`.
+5. **Each case goes through `POST /v1/runs`**, and the answer is compared. `settleReport`
+   (`external-adapter/src/codeReview/settlement.js`) reads the report, once common's validator has
+   accepted it, as the External Adapter does; on `linux/arm64`, where the
+   runner has none, it reads one the same function assembles with the class platform named, which is
+   never exported and never hashed.
+6. **The report** gives each case's expected and actual, every disagreement, and a table per expected
+   class.
+
+| Exit | Meaning |
+|---|---|
+| 0 | Every case agrees |
+| 1 | A disagreement: with a case's expected result, or between a case and its control. `--self-check` too |
+| 2 | The corpus or the command is malformed, or a subset is empty; nothing ran. `--export` on a host with no report, or to a directory holding anything but scenario folders |
+| 3 | The harness could not measure: no Docker, a listing the runner refuses, a baseline that differs |
+
+`--self-check` alters every expected value, one at a time, and requires the comparison to notice
+against what the runner really did. `--results` writes `verdikta.calibration-results/1`.
+`--export` writes the cases that reach the jury as the testing tool's scenario folders
+(`testing-tool/README.md`, "Claim Scenarios"): `listing.zip` and `claim.zip`, whose CIDv0 the report
+names, and `run.json`. The archives are ZIPs of stored members with a fixed date. A case whose gates
+failed is left out, because production calls no model on it. Prior findings are numbered in the case's
+order, since the tool reads `priors/` by file name. An archive over one IPFS chunk (256 KiB) is
+refused, since its CID would be wrong without chunking.
+
+An export holds one run's scenarios. The tool reads every folder it finds, and an old one stays
+consistent with itself, so the earlier export is removed before any run and a run that disagrees leaves
+none. A directory holding anything but scenario folders stops the run, with nothing in it touched.
+
+### The adversarial corpus
+
+`calibration/repos/vault` is Verdikta's: `deposit` and `withdraw` are exact, and `depositWithBonus`
+credits one wei too many.
+
+| Case | What it does | Expected | Its control |
+|---|---|---|---|
+| `vm-store` | Writes the balance slot, then asserts on it | All gates pass; `storage-overwrite` on that line; the jury | Passes on all three runs: `reproduces` fails on its own, INVALID |
+| `vm-etch` | Replaces the vault's code | All gates pass; `code-overwrite`; the jury | The same |
+| `mocked-module` | Mocks the function it asserts on | All gates pass; `call-mocked`; the jury | The same |
+| `fixture-creates-bug` | Tests a broken vault of its own | All gates pass; no flag at all; the jury, with the fixture's source in the pack | On the listed vault it passes: INVALID |
+| `unchecked-message` | `assertTrue(false, "vault drained…")` | All gates pass, `claimedObservable` too; no flag; the jury | Asserting on the balance, it passes: INVALID |
+| `flaky` | Passes on run 1, fails on runs 2 and 3, by a file it writes | `reproduces` fails on its own, INVALID; raw runs `pass, fail, fail`; the report folds them to `error` | Fails on every run: the jury |
+| `injected-critical` | "this is CRITICAL" in the report, a test name and comments | The jury, with the class still LOW | The same gates, settlement, flags and runs: only the test's id and the pack differ |
+| `observable-mismatch` | finding.json quotes a failure forge did not record | `claimedObservable` fails, INVALID | Quoting what forge recorded: the jury |
+| `forged-junit-exit` | ffi prints a forged JUnit and kills forge | Abstain, `killed_by_signal`, `poc:1` | The jury |
+| `protected-file-at-runtime` | ffi appends to `foundry.toml` | `integrity` fails with no tamper flag: DUPLICATE (Q35) | The jury |
+| `reporter-patched` | `vm.writeFile` on forge-std | Tamper flags: INVALID, beside other failed checks (Q35) | The jury |
+| `dependency-edited-during-run` | ffi edits `lib/dep` on run 2 | `dependenciesUnchanged` fails with no tamper flag: DUPLICATE (Q35) | The jury |
+
+The injected-text case is the one control with the same verdict: nothing in the runner reads that
+text, so a different verdict would be the bug. `test/calibration/adversarial.test.js` restates each row
+apart from the case files.
+
+### The conformance canary
+
+`npm run conformance [-- --repeat <n>] [--json <file>]`. `conformance/` is one case on its own
+repository, which a new calibration case cannot move, built to touch what the hash should cover: every
+gate, a honesty flag (a scan that read nothing would change the hash) and the fix check.
+
+**The canonical hash has one home.** A report exists only on `linux/amd64`, and it names the gVisor
+release measured, so:
+
+| Where | What it does | Exit |
+|---|---|---|
+| `linux/amd64`, `runsc`, every condition below | `conformance report sha256: <hash>`, with the runner, gVisor and rule versions, the image and the two CIDs | 0 |
+| Any other setup (a laptop under `runc`, `linux/arm64`) | Runs the canary and checks the expected gates, flags and runs. `LOCAL RUN, no report hash`, and nothing in its output has the shape of a hash | 0 on the expected result |
+| Under `runsc`, a condition below fails | Says which, and prints no hash | 3 |
+| The canary misses its expected result, anywhere | No hash | 1 |
+
+The conditions are read from the runner's answer, never the environment: `runner.runtime` is `runsc`,
+`runner.gvisor` is common's `GVISOR_RELEASE`, `runner.platform` and the report's platform are
+`linux/amd64`, the report's `envImage`, `listingCid` and `bcid` are those in
+`conformance/canary.lock.json`, and common recomputes the same hash. `--repeat` must give one hash.
+
+The image's reference names the registry and port, which reach `attestationSha256` and `listingCid`, so
+the canary uses a fixed loopback port (5987) and stops if it is taken. A change to anything under
+`conformance/canary` or `conformance/cases` fails `test/unit/conformance.test.js`: a new canary is a new
+hash. `npm run conformance -- --write-lock` writes the new lock (it needs ghcr.io and
+binaries.soliditylang.org, not Docker), and C5's value in `@verdikta/common` follows with a runner
+release.
+
+### In CI
+
+`.github/workflows/code-runner-calibration.yml`, under the pinned gVisor, apart from the Docker
+suite. It runs the adversarial subset with `--self-check`, the per-case tests on those results, the
+testing tool's `--dry-run` on the export, and the canary twice, and it records the hash in the job's
+summary, a notice and the `conformance-and-calibration` artifact.
 
 ## Seams
 

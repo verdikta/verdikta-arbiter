@@ -2049,6 +2049,16 @@ popular skills whose maintainers consent by naming Verdikta in their proof file
   The local pipeline comes first: `e2e` L2's claim suite runs the
   real External Adapter, AI Node (mock provider) and code runner against a local IPFS
   gateway and pin service and a `registry:2`, with no secret, in CI (`e2e/README.md`).
+- **How the harness holds these (node A7a, build plan Q38).** Each adversarial case
+  states its expected result in a versioned file, naming the gate, check or flag that
+  fires, and has a control: the same PoC without the adversarial part, checked line by
+  line before any run. So a case cannot pass for an incidental reason. The injected-text
+  case is the one control with the same verdict, since nothing in the runner reads that
+  text. The runner-only harness settles with the External Adapter's own rule. The fixture
+  image is written rather than built, as the base's own manifest with two layers appended,
+  because the report's hash covers the image's digest: this is what makes one canary hash
+  possible across hosts. A run off the class platform, or off the pinned gVisor, prints no
+  hash at all. `code-runner/README.md`, "Calibration and conformance", holds the rules.
 - Metrics: verdict accuracy and the **false-valid rate** on the adversarial
   claims (the number a maker cares about); class agreement with the source
   program on the severity boundaries; dispute-flip rate on canaries; spread of

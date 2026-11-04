@@ -1,0 +1,69 @@
+{
+  "version": 1,
+  "kind": "bug",
+  "repo": "https://github.com/verdikta/verdikta-arbiter",
+  "baseCommit": "0fe12d9058254dde6768f212c70db4cc30d64f0c",
+  "artifact": {
+    "kind": "contract",
+    "address": "0x1234567890abcdef1234567890ABCDEF12345678",
+    "chainId": 31337
+  },
+  "env": {
+    "from": "foundry",
+    "platform": "linux/amd64",
+    "unpackedBytes": 1000000000
+  },
+  "attestation": "attestation.json",
+  "commands": {
+    "framework": "forge",
+    "build": "forge build",
+    "test": "forge test",
+    "testFiles": "forge test --match-path $FILES",
+    "testIds": "forge test --match-test $TEST_IDS"
+  },
+  "baseline": "baseline.json",
+  "paths": {
+    "tests": [
+      "test/**"
+    ],
+    "protected": [
+      "foundry.toml",
+      "lib/**",
+      ".gitignore"
+    ]
+  },
+  "limits": {
+    "cpus": 1,
+    "memoryMb": 1024,
+    "buildSeconds": 90,
+    "testSeconds": 180,
+    "runSeconds": 360,
+    "maxPatchBytes": 2000000
+  },
+  "stake": {
+    "awards": {
+      "LOW": "0",
+      "MEDIUM": "0.1 ETH",
+      "HIGH": "0.4 ETH",
+      "CRITICAL": "2 ETH"
+    },
+    "lowestClassCounted": "MEDIUM",
+    "bondWei": "20000000000000000",
+    "fixWindowDays": 30,
+    "disputeWindowHours": 72,
+    "disclosureGraceHours": 48,
+    "revealWindowDays": 7,
+    "scope": {
+      "include": [
+        "src/**"
+      ],
+      "exclude": [
+        "test/**"
+      ]
+    },
+    "knownIssues": "known_issues.json",
+    "severityRubric": "immunefi-v2.3",
+    "disclosureKey": "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
+    "valueAtRiskUsd": 1000
+  }
+}

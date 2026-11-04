@@ -1,0 +1,19 @@
+diff --git a/test/Mocked.t.sol b/test/Mocked.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/Mocked.t.sol
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract MockedClaim is Base {
++    function test_deposit_is_lost() public {
++        Vault v = new Vault();
++        v.deposit(5);
++        vm.mockCall(address(v), abi.encodeWithSignature("balanceOf(address)", address(this)), abi.encode(uint256(0)));
++        vm.assertEq(v.balanceOf(address(this)), 5);
++    }
++}

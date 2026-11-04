@@ -1,0 +1,54 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.observable-mismatch.control",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "The same PoC with a finding that quotes what forge recorded",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "LOW",
+    "reason": "The honest PoC on the planted bug: it fails on all three runs through the code under test, so every gate passes and the jury judges it.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/Observable.t.sol > ObservableClaim > test_bonus_over_credits()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 2 != 1"
+        }
+      ]
+    }
+  },
+  "controlOf": "adversarial.observable-mismatch"
+}
