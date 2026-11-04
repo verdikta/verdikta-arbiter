@@ -495,6 +495,26 @@ out=$(STUB_ENV_WRITE_FAIL=1 STUB_PULL_FAIL=1 run enable 2>&1); is "off cannot be
 has "off cannot be written, failed refresh: the lock stays" "$(cat "$I/code-runner-state/maintenance")" "kept:"
 rm -f "$I/code-runner-state/maintenance"
 
+# A later pass ends what the pin was for; an operator's own lock stays through the same thing.
+stale_install
+out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1)
+has "the pin is there" "$(cat "$I/code-runner-state/maintenance")" "kept:"
+out=$(run enable 2>&1); rc=$?
+is "a pass after a pin: rc" "$rc" 0
+has "a pass after a pin: code review on" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "a pass after a pin: the lock stayed, and claims with it"
+stale_install
+out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1)
+out=$(run self-test 2>&1); rc=$?
+is "self-test after a pin: rc" "$rc" 0
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "self-test after a pin: the lock stayed"
+stale_install
+out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1)
+out=$(STUB_PULL_FAIL=1 run enable 2>&1); rc=$?
+is "a failed refresh after a pin: rc" "$rc" 1
+has "a failed refresh after a pin: the lock stays" "$(cat "$I/code-runner-state/maintenance")" "kept:"
+rm -f "$I/code-runner-state/maintenance"
+
 # --- the self-test refuses a cold host: its own pull would hide it
 fresh
 run enable >/dev/null 2>&1

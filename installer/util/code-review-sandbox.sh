@@ -390,7 +390,14 @@ lock_take() {
     own "$STATE_DIR" 2>/dev/null
 }
 # Code review could not be turned off, and no pass stands: the lock stays, with no pid, so no claim is
-# admitted whoever exits next. An operator lifts it after fixing what stopped the write.
+# admitted whoever exits next. A later pass, with the adapter's settings written, ends what it was
+# for (lift_pin); so does an operator, after fixing what stopped the write.
+lift_pin() {
+    if grep -q '^code-review-sandbox kept: ' "$LOCK_FILE" 2>/dev/null; then
+        rm -f "$LOCK_FILE"
+        say "The maintenance lock kept for an earlier failed write is lifted: a pass stands, and the adapter's settings are written."
+    fi
+}
 pin_lock() {
     local tmp="$LOCK_FILE.new.$$"
     LOCK_MINE=0
@@ -883,6 +890,7 @@ do_enable() {
         self_test || failed
     fi
     adapter_env_on || failed
+    lift_pin
     ENABLE_RUNNING=0
     say "${GREEN}The code-review sandbox is ready: gVisor $GVISOR_VERSION, its own Docker on $SOCK, a conformance pass.${NC}"
     say "Code review is on in the adapter. Turn it off with: $0 disable"
@@ -922,6 +930,7 @@ do_self_test() {
     lock_take
     if self_test; then
         adapter_env_on || exit 1
+        lift_pin
     else
         rm -f "$STATE_DIR/conformance.json"
         adapter_env_off
