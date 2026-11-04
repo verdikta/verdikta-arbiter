@@ -2,7 +2,7 @@ diff --git a/test/stake/TierHistoryGasClaim.t.sol b/test/stake/TierHistoryGasCla
 new file mode 100644
 --- /dev/null
 +++ b/test/stake/TierHistoryGasClaim.t.sol
-@@ -0,0 +1,56 @@
+@@ -0,0 +1,57 @@
 +// SPDX-License-Identifier: MIT
 +pragma solidity ^0.8.20;
 +
@@ -24,7 +24,7 @@ new file mode 100644
 +        LayerEdgeToken token = LayerEdgeToken(network.stakingToken);
 +        address attacker = address(0xBAD);
 +        vm.startPrank(network.owner);
-+        token.transfer(attacker, STAKE * 20_000);
++        token.transfer(attacker, STAKE * 4_000);
 +        address[] memory stakers = new address[](9);
 +        for (uint256 i = 0; i < stakers.length; i++) {
 +            stakers[i] = address(uint160(0x1000 + i));
@@ -38,8 +38,8 @@ new file mode 100644
 +            vm.stopPrank();
 +        }
 +
-+        // Each stake and exit by a new account takes the count across a tier boundary and back.
-+        for (uint256 i = 0; i < 20_000; i++) {
++        // Each stake and exit by a new account, an hour apart, takes the count across a tier boundary and back.
++        for (uint256 i = 0; i < 4_000; i++) {
 +            address passing = address(uint160(0x100000 + i));
 +            vm.prank(attacker);
 +            token.transfer(passing, STAKE);
@@ -48,6 +48,7 @@ new file mode 100644
 +            staking.stake(STAKE);
 +            staking.unstake(STAKE);
 +            vm.stopPrank();
++            skip(1 hours);
 +        }
 +        vm.resumeGasMetering();
 +

@@ -7,7 +7,7 @@
   "title": "calcReserveAtRatioLiquidity reverts for ratios its table covers: the same test with its assertion turned around",
   "source": {
     "url": "https://github.com/code-423n4/2024-08-basin-findings/issues/5",
-    "licence": "Repository LICENSE.txt: MIT License, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1).",
+    "licence": "Repository LICENSE.txt: MIT License, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
     "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
     "adaptedFrom": "https://github.com/code-423n4/2024-08-basin-findings/issues/5",
     "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test also fails on the revert, as a loop with no assertion; this one states the property.",

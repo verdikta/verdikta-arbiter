@@ -200,7 +200,6 @@ async function main(argv, deps = {}) {
     for (const listing of new Set(chosen.map((c) => c.listing))) {
       stdout(`calibration: publishing ${listing.id}'s image, then the real listing check`);
       const published = await session.publish(listing);
-      for (const left of published.missing || []) stdout(`calibration: ${listing.id}: ${left.path} (${left.commit}) is left out: ${left.reason}`);
       const view = listingView(listing, published);
       const measured = (m) => {
         stdout(`calibration: ${listing.id}: listing check: ${JSON.stringify(m.timings)}, derived limits ${JSON.stringify(m.limits)}, image ${m.image ? m.image.unpackedBytes : '?'} bytes`);

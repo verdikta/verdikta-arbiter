@@ -2177,8 +2177,8 @@ A listing of kind `git`:
 The image is the same recipe as a fixture's: the base's manifest, solc at the builder's place, and `/repo` owned by the sandbox
 user, with the objects as one pack with stored deflate blocks (a repository holds thousands of objects, and the runner copies each
 file into every sandbox) and each submodule's objects in the same store, which the runner's checkout reads and re-hashes. A
-submodule that cannot be fetched is printed and left out; the runner leaves it an empty folder, as git does, and a build that needs
-it fails at the listing check. A third layer holds what `commands.setup` wrote: the harness runs it before any sandbox, with no
+submodule that cannot be fetched stops the run, exit 3: an image with a folder quietly empty would not be the listing's repository.
+A third layer holds what `commands.setup` wrote: the harness runs it before any sandbox, with no
 network, as the sandbox user, as the attested builder runs a maker's. The loader holds it to `forge build` with allowed flags. The
 fetched repositories, reports and third layers are kept under `$VCR_CALIBRATION_CACHE`.
 

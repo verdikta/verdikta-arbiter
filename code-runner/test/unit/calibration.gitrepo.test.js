@@ -10,7 +10,7 @@ const crypto = require('node:crypto');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { fetchRepo, resolveSubmoduleUrl, hermeticGitEnv } = require('../../calibration/lib/gitRepo');
+const { fetchRepo, fetchListedRepo, resolveSubmoduleUrl, hermeticGitEnv } = require('../../calibration/lib/gitRepo');
 const { rootedCommit } = require('../../calibration/lib/image');
 
 const GIT_ENV = {
@@ -133,6 +133,54 @@ test('a commit the remote does not have stops the fetch, and a submodule\'s is r
       fetchRepo({ url: top.url, commit: 'c'.repeat(40) }, { cacheDir: path.join(root, 'cache2'), allowFile: true }),
       /could not be fetched/
     );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a store with a submodule left out is not kept: a fetch that failed once is tried again', async () => {
+  const root = tmp();
+  try {
+    const dep = makeRepo(root, 'dep', { 'Dep.sol': 'contract Dep {}\n' });
+    const url = `file://${path.join(root, 'dep-later')}`;
+    const top = makeRepo(root, 'top', { 'foundry.toml': 'x\n', '.gitmodules': gitmodules([['lib/dep', url]]) }, { 'lib/dep': dep.commit });
+    const cacheDir = path.join(root, 'cache');
+    assert.equal((await fetchRepo({ url: top.url, commit: top.commit }, { cacheDir, allowFile: true })).missing.length, 1);
+    fs.renameSync(dep.dir, path.join(root, 'dep-later'));
+    const second = await fetchRepo({ url: top.url, commit: top.commit }, { cacheDir, allowFile: true });
+    assert.deepEqual(second.missing, []);
+    assert.ok(second.objects.has(dep.commit));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a listing\'s repository comes whole, and is the commit it names: otherwise nothing is built from it', async () => {
+  const root = tmp();
+  try {
+    const top = makeRepo(root, 'top', { 'foundry.toml': 'x\n', '.gitmodules': gitmodules([['lib/gone', `file://${path.join(root, 'nowhere')}`]]) }, { 'lib/gone': 'b'.repeat(40) });
+    const o = { cacheDir: path.join(root, 'cache'), allowFile: true };
+    await assert.rejects(fetchListedRepo({ id: 'x', commit: top.commit, repo: { url: top.url, commit: top.commit } }, o), /lib\/gone .* could not be fetched/);
+    const whole = makeRepo(root, 'whole', { 'foundry.toml': 'x\n' });
+    assert.equal((await fetchListedRepo({ id: 'x', commit: whole.commit, repo: { url: whole.url, commit: whole.commit } }, o)).commit, whole.commit);
+    await assert.rejects(fetchListedRepo({ id: 'x', commit: 'c'.repeat(40), repo: { url: whole.url, commit: whole.commit } }, o), /makes commit/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('a tree whose paths leave the repository, or hold .git, stops the fetch', async () => {
+  const root = tmp();
+  try {
+    const top = makeRepo(root, 'top', { 'foundry.toml': 'x\n' });
+    // A tree real git would not check out: only hash-object --literally writes it.
+    const blob = git(top.dir, 'rev-parse', `${top.commit}:foundry.toml`);
+    const entry = (name) => Buffer.concat([Buffer.from(`100644 ${name}\0`), Buffer.from(blob, 'hex')]);
+    for (const name of ['..', '.git']) {
+      const tree = execFileSync('git', ['-C', top.dir, 'hash-object', '-t', 'tree', '-w', '--stdin', '--literally'], { input: entry(name), env: GIT_ENV, encoding: 'utf8' }).trim();
+      const commit = execFileSync('git', ['-C', top.dir, 'commit-tree', tree, '-m', 'x'], { env: GIT_ENV, encoding: 'utf8' }).trim();
+      await assert.rejects(fetchRepo({ url: top.url, commit }, { cacheDir: path.join(root, `cache-${name}`), allowFile: true }), /path/, name);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

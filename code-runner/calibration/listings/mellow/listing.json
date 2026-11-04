@@ -11,7 +11,7 @@
   "commit": "9ac8ee1372c2b1c80834f04bd8b81cee9b2bb93a",
   "source": {
     "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults",
-    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED.",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
     "program": null
   },
   "solc": "0.8.25"

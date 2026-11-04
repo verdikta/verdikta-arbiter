@@ -9,7 +9,7 @@
   "commit": "7e08ff591df0a2ade7d5618113dda2621cd899bc",
   "source": {
     "url": "https://github.com/code-423n4/2024-08-basin",
-    "licence": "Repository LICENSE.txt: MIT License, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1).",
+    "licence": "Repository LICENSE.txt: MIT License, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
     "program": null
   },
   "solc": "0.8.31"

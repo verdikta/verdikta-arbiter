@@ -15,9 +15,9 @@
  * Git runs as data: no user or system configuration, no prompt, no checkout and so no filter or
  * hook of the repository's, one bare store. `.gitmodules` is read only for its paths and URLs, and
  * a URL that is not https (or the ssh form of a public host, read as https) is not fetched. A
- * submodule that cannot be fetched is recorded and left out: the runner's checkout leaves it an
- * empty directory, as git leaves an unpopulated one, and a build that needs it fails loudly at
- * the listing check.
+ * submodule that cannot be fetched is recorded, and fetchListedRepo stops on it: an image with a
+ * folder quietly empty would not be the listing's repository. A store with one is not kept, so a
+ * fetch that failed once is tried again.
  */
 
 const { execFileSync, spawnSync } = require('node:child_process');
@@ -124,6 +124,11 @@ function readObjects(store, env, ids, into) {
   }
 }
 
+/** What a tree may hold: a path written into a layer stays under /repo, and git's own folder is the runner's. */
+function badPath(p) {
+  return p.startsWith('/') || p.split('/').some((part) => part === '..' || part === '.' || part === '' || part.toLowerCase() === '.git');
+}
+
 /**
  * @param {{url:string, commit:string, subdir?:string, tree?:string}} repo - a listing's repo
  * @param {object} o
@@ -180,6 +185,7 @@ async function fetchRepo(repo, { cacheDir, allowFile = false }) {
   const walk = (ownCommit, ownUrl, treeish, at, inRepo, depth) => {
     const modules = readGitmodules(g, ownCommit);
     for (const e of parseLsTree(g(['ls-tree', '-r', '-t', '-z', treeish]))) {
+      if (badPath(e.path)) throw new Error(`${ownUrl} at ${ownCommit} has a path this harness will not write: ${JSON.stringify(e.path).slice(0, 120)}`);
       const whole = at ? `${at}/${e.path}` : e.path;
       if (e.type === 'tree') {
         ids.add(e.id);
@@ -244,8 +250,23 @@ async function fetchRepo(repo, { cacheDir, allowFile = false }) {
     }
   }
   files.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
-  fs.writeFileSync(marker, 'complete\n');
+  if (missing.length === 0) fs.writeFileSync(marker, 'complete\n');
   return { commit: listedCommit, tree, objects, files, emptyDirs: emptyDirs.sort(), missing };
 }
 
-module.exports = { fetchRepo, resolveSubmoduleUrl, hermeticGitEnv, MAX_SUBMODULES };
+/**
+ * A listing's repository, whole, and the commit it names.
+ * @param {{id:string, commit:string, repo:object}} listing
+ * @param {object} o - as fetchRepo
+ * @throws {Error} a submodule that could not be fetched, or another commit
+ */
+async function fetchListedRepo(listing, o) {
+  const repo = await fetchRepo(listing.repo, o);
+  if (repo.missing.length) {
+    throw new Error(`listing ${listing.id}: ${repo.missing.map((m) => `${m.path} (${m.commit}) could not be fetched: ${m.reason}`).join('; ')}`);
+  }
+  if (repo.commit !== listing.commit) throw new Error(`listing ${listing.id}: its repository makes commit ${repo.commit}, and it names ${listing.commit}`);
+  return repo;
+}
+
+module.exports = { fetchRepo, fetchListedRepo, resolveSubmoduleUrl, hermeticGitEnv, MAX_SUBMODULES };

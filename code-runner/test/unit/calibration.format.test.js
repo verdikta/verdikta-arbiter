@@ -365,6 +365,7 @@ test('the claim files say nothing of the label: they reach the jury, and A7d mea
   assertPublicRefused({ report: '# X\n\nThe exampleprogram judges agreed.\n' }, /report\.md names the source/);
   assertPublicRefused({ finding: { rootCause: 'Seen in 2031-01-project.' } }, /finding\.json names the source/);
   assertPublicRefused({ poc: PUBLIC_POC.replace('contract ClaimTest {', 'contract ClaimTest { // 2031-01-project') }, /poc\.patch names the source/);
+  assertPublicRefused({ report: '# X\n\nAs example-contests said.\n' }, /report\.md names the source \(example-contests\)/);
 });
 
 test('poc.observable names the test and quotes the failure the case expects', () => {
@@ -410,6 +411,16 @@ test('a clear-valid control is the case with its assertion turned around: it pas
   } finally {
     corpus.cleanup();
   }
+});
+
+test('the real calibration folder holds nothing the format does not name, and at most five public cases on a repository', () => {
+  const { cases } = loadCorpus({ root: CALIBRATION, layout: true });
+  const perListing = new Map();
+  for (const c of cases.filter((x) => x.listing.repo.kind === 'git' && x.controlOf === undefined)) {
+    perListing.set(c.listing.id, (perListing.get(c.listing.id) || 0) + 1);
+  }
+  for (const [id, n] of perListing) assert.ok(n <= 5, `${id} has ${n} cases`);
+  assert.ok([...perListing.values()].reduce((a, b) => a + b, 0) >= 15, 'the node asks for at least 15');
 });
 
 test('nothing lies around: a folder under repos/ or listings/ that nothing names, and anything unknown at the top', () => {

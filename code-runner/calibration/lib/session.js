@@ -30,7 +30,7 @@ const { RUNTIME, PLATFORM, ensureImage, removeAll } = require('../../test/docker
 const { REGISTRY_IMAGE, solcBytes } = require('../../test/docker/forgeFixture');
 const { MANIFEST_MEDIA_TYPE, repoLayer, gitRepoLayer, toolsLayer, assembleImage } = require('./image');
 const { fetchBase } = require('./base');
-const { fetchRepo } = require('./gitRepo');
+const { fetchListedRepo } = require('./gitRepo');
 const { prebuild, cacheRoot } = require('./prebuild');
 const { DEADLINE_MS } = require('./harness');
 
@@ -49,20 +49,19 @@ function imageInputs(listing) {
   return { files: listing.files, imageOnly: listing.imageOnly || {}, solc: listing.solc };
 }
 
-/** The layers a listing's commit gives, on the pinned base: the tools, then /repo. A `git` listing's also say what was fetched. */
+/** The layers a listing's commit gives, on the pinned base: the tools, then /repo. */
 async function imageParts(listing, platform) {
   const base = await fetchBase(platform);
   if (listing.repo.kind === 'git') {
-    const repo = await fetchRepo(listing.repo, { cacheDir: cacheRoot() });
-    if (repo.commit !== listing.commit) throw new Error(`listing ${listing.id}: its repository makes commit ${repo.commit}, and it names ${listing.commit}`);
+    const repo = await fetchListedRepo(listing, { cacheDir: cacheRoot() });
     const releases = await Promise.all(listing.solcReleases.map(async (release) => ({ release, bytes: await solcBytes(platform, release) })));
     const { layer } = gitRepoLayer(repo);
-    return { base, layers: [toolsLayer({ releases }), layer], missing: repo.missing };
+    return { base, layers: [toolsLayer({ releases }), layer] };
   }
   const { files, imageOnly, solc } = imageInputs(listing);
   const { layer, commit } = repoLayer({ files, imageOnly });
   if (commit !== listing.commit) throw new Error(`listing ${listing.id}: its files make commit ${commit}, and it names ${listing.commit}`);
-  return { base, layers: [toolsLayer({ release: solc, bytes: await solcBytes(platform, solc) }), layer], missing: [] };
+  return { base, layers: [toolsLayer({ release: solc, bytes: await solcBytes(platform, solc) }), layer] };
 }
 
 const assembled = (parts, layers) => ({ ...assembleImage({ baseManifest: parts.base.manifest, baseConfig: parts.base.config, layers }), base: parts.base });
@@ -230,7 +229,7 @@ async function createSession({ registryPort = 0, log = silent } = {}) {
         await publishImage(registry.port, repository, image);
         const ref = `${host}/${repository}@${image.digest}`;
         published.add(ref);
-        return { image: ref, digest: image.digest, missing: parts.missing };
+        return { image: ref, digest: image.digest };
       },
       async listingCheck(publishedImage, listing, view) {
         const res = await ask({ method: 'POST', path: '/v1/listing-checks', body: { spec: view.spec, image: publishedImage.image, deadline: DEADLINE_MS } });

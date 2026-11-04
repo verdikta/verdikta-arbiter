@@ -120,10 +120,12 @@ jobs:
 
       - name: The listing's cases, each with its control
         working-directory: code-runner
+        env:
+          LISTING: ${{ matrix.listing }}
         run: |
           mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/measured"
-          npm run calibration -- --subset clear-valid --listing "${{ matrix.listing }}" --self-check \
-            --results "$RUNNER_TEMP/results/${{ matrix.listing }}.json" --measured "$RUNNER_TEMP/measured" --export "$RUNNER_TEMP/claims"
+          npm run calibration -- --subset clear-valid --listing "$LISTING" --self-check \
+            --results "$RUNNER_TEMP/results/$LISTING.json" --measured "$RUNNER_TEMP/measured" --export "$RUNNER_TEMP/claims"
 
       - name: The export is what the testing tool reads (A6b)
         working-directory: testing-tool

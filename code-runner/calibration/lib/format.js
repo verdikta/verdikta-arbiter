@@ -199,21 +199,28 @@ function addOnlyProblems(bytes) {
   return [];
 }
 
+/** The account in a URL's path: the contest's organisation, for one. */
+function urlOwner(url) {
+  const m = text(url) ? /^https:\/\/[^/]+\/([^/#?]+)/.exec(url) : null;
+  return m ? m[1] : null;
+}
+
 /** What a claim must not name: those files reach the jury, and A7d measures the jury. */
-function labelNeedles(source) {
-  const p = isObject(source) && isObject(source.program) ? source.program : {};
-  return [source && source.url, source && source.adaptedFrom, source && source.report, p.name, p.contest].filter(text);
+function labelNeedles(source, repoUrl) {
+  const s = isObject(source) ? source : {};
+  const p = isObject(s.program) ? s.program : {};
+  return [s.url, s.adaptedFrom, s.report, p.name, p.contest, urlOwner(s.url), urlOwner(repoUrl)].filter(text);
 }
 
 /** The rules of a case on a listing of kind `git`. */
-function checkPublicCase(raw, loaded, fail) {
+function checkPublicCase(raw, loaded, repoUrl, fail) {
   checkPublicSource(raw.source, fail);
   if (raw.claim && raw.claim.fix) fail('fix.patch is refused on a git listing: its removed lines would be someone\'s code');
   if (loaded.poc && loaded.poc.length) for (const m of addOnlyProblems(loaded.poc)) fail(m);
   const files = { 'report.md': loaded.report, 'finding.json': loaded.finding ? JSON.stringify(loaded.finding) : null, 'poc.patch': loaded.poc ? loaded.poc.toString('utf8') : null };
   for (const [file, content] of Object.entries(files)) {
     if (content === null) continue;
-    const found = labelNeedles(raw.source).find((needle) => content.toLowerCase().includes(needle.toLowerCase()));
+    const found = labelNeedles(raw.source, repoUrl).find((needle) => content.toLowerCase().includes(needle.toLowerCase()));
     if (found) fail(`${file} names the source (${found}): the claim files reach the jury, and the label must not`);
   }
   if (!Array.isArray(raw.subsets) || !raw.subsets.includes(SUBSET_CLEAR_VALID) || !isObject(raw.expected) || !isObject(raw.expected.runner)) return;
@@ -574,7 +581,7 @@ function loadCase(root, group, name, listings, problems) {
   for (const file of filesUnder(dir)) {
     if (!known.has(file)) fail(`${file} is in the folder, and the case names no such file`);
   }
-  if (listing && isObject(listing.repo) && listing.repo.kind === 'git') checkPublicCase(raw, loaded, fail);
+  if (listing && isObject(listing.repo) && listing.repo.kind === 'git') checkPublicCase(raw, loaded, listing.repo.url, fail);
 
   return {
     id: raw.id, group, dir, raw,

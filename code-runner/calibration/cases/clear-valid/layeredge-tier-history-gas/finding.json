@@ -8,7 +8,7 @@
   ],
   "poc": {
     "command": "forge test --match-test test_a_stakers_withdrawal_fits_in_a_block",
-    "observable": "test_a_stakers_withdrawal_fits_in_a_block fails with \"gas for the withdrawal: 35820118 >= 30000000\""
+    "observable": "test_a_stakers_withdrawal_fits_in_a_block fails with \"gas for the withdrawal: 34332666 >= 30000000\""
   },
   "fixIncluded": false
 }

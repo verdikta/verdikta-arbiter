@@ -7,7 +7,7 @@
   "title": "A wallet answers as a sapient signer with a constant: the same test with its assertion turned around",
   "source": {
     "url": "https://code4rena.com/reports/2025-10-sequence#m-03-baseauthrecoversapientsignature-returns-a-constant-instead-of-signer-image-hash-breaking-sapient-signer-flows",
-    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6).",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6). Findings repository: returns 404; the report page is the source.",
     "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
     "adaptedFrom": "https://code4rena.com/reports/2025-10-sequence#m-03-baseauthrecoversapientsignature-returns-a-constant-instead-of-signer-image-hash-breaking-sapient-signer-flows",
     "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test pins the constant; this one compares the answer with the image hash the same signature recovers.",

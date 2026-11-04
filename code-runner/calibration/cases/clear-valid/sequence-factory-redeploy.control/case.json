@@ -7,7 +7,7 @@
   "title": "The factory reverts instead of answering with an existing account: the same test with its assertion turned around",
   "source": {
     "url": "https://code4rena.com/reports/2025-10-sequence#m-04-factory-deploy-reverts-instead-of-returning-address-when-account-already-exists",
-    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6).",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6). Findings repository: returns 404; the report page is the source.",
     "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
     "adaptedFrom": "https://code4rena.com/reports/2025-10-sequence#m-04-factory-deploy-reverts-instead-of-returning-address-when-account-already-exists",
     "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test expects the revert; this one states what the factory should answer.",

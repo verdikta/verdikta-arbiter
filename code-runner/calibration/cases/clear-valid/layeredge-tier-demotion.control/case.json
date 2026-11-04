@@ -7,7 +7,7 @@
   "title": "A staker who should fall to tier 3 stays recorded in tier 2: the same test with its assertion turned around",
   "source": {
     "url": "https://github.com/sherlock-audit/2025-05-layeredge-judging/issues/83",
-    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/stake/LayerEdgeStaking.sol: MIT.",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/stake/LayerEdgeStaking.sol: MIT. Findings repository: no licence file.",
     "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
     "adaptedFrom": "https://github.com/sherlock-audit/2025-05-layeredge-judging/issues/83",
     "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test edits the source to get past another issue and adds a getter; this one needs no source edit: it reaches the same state through an exit from sixteen stakers.",

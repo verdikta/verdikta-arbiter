@@ -22,7 +22,7 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { fetchRepo } = require('./gitRepo');
+const { fetchListedRepo } = require('./gitRepo');
 const { cacheRoot } = require('./prebuild');
 
 /** Runs shorter than this are not measured. */
@@ -158,7 +158,7 @@ async function checkCases(cases, { stdout = () => {}, cacheDir = cacheRoot(), fe
   const problems = [];
   for (const entry of publicCases) {
     if (!repos.has(entry.listing)) {
-      const repo = await fetchRepo(entry.listing.repo, { cacheDir });
+      const repo = await fetchListedRepo(entry.listing, { cacheDir });
       const texts = repo.files.filter((f) => f.bytes && f.bytes.length <= MAX_FILE_BYTES && TEXT_FILE.test(f.path)).map((f) => f.bytes.toString('utf8'));
       repos.set(entry.listing, indexTexts(texts));
     }
