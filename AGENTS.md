@@ -306,8 +306,9 @@ warm images, the conformance self-test against `@verdikta/common`'s hash. **It n
 reloads or configures the arbiter's Docker and installs no package** (apt can restart Docker): a new
 gVisor reaches a running daemon by `systemctl reload verdikta-code-runner-docker`. A first enable
 that fails removes what it made; a failed refresh keeps it and turns code review off. The runner's
-daemon has `bridge: none` and no iptables, so nothing there can publish a port: the self-test's
-registry uses the host network. `register-oracle*.sh` refuse a code class, or 5555 with code review
+daemon has its own empty bridge `vcr0` and no iptables, so nothing there can publish a port: the
+self-test's registry uses the host network. **Never give a second dockerd `"bridge": "none"`: it deletes
+the host's `docker0` when it starts** (measured on Docker 29; `removeDefaultBridgeInterface`). `register-oracle*.sh` refuse a code class, or 5555 with code review
 on, without a pass, and one job on both code classes. `code-runner/start.sh` refuses any Docker
 endpoint but its own socket. Operator notes: `installer/docs/maintenance/code-review-sandbox.md`.
 

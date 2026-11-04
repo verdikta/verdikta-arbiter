@@ -2288,8 +2288,8 @@ hash. `npm run conformance -- --write-lock` writes the new lock (it needs ghcr.i
 binaries.soliditylang.org, not Docker), and C5's value in `@verdikta/common` follows with a runner
 release.
 
-The installer's self-test (A8) runs this on the runner's own daemon, which has no bridge to publish a
-port on, so it sets `CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK=host`: the registry listens on the
+The installer's self-test (A8) runs this on the runner's own daemon, which has no iptables or proxy to
+publish a port with, so it sets `CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK=host`: the registry listens on the
 host's loopback itself. The reference is the same, so the hash is too. It checks that the images are warm
 first, since this pulls what is missing.
 

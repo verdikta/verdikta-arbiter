@@ -265,7 +265,7 @@ test('the canary exercises what a hash should cover: a flag, the fix check, all 
   assert.equal(runner.fix.pocPasses, true);
 });
 
-test('A8: the installer\'s self-test runs the registry on the host network, because the runner\'s daemon has no bridge', async () => {
+test('A8: the installer\'s self-test runs the registry on the host network, because the runner\'s daemon cannot publish a port', async () => {
   const { registryArgs } = require('../../calibration/lib/session');
   assert.deepEqual(registryArgs('r', 5987, false).slice(0, 6), ['run', '--detach', '--name', 'r', '--publish', '127.0.0.1:5987:5000']);
   const host = registryArgs('r', 5987, true);

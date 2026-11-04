@@ -62,6 +62,7 @@ stub df 'echo "Avail"; echo "${STUB_AVAIL:-500000000000}"'
 stub uname 'if [ "$1" = "-m" ]; then echo "${STUB_ARCH:-x86_64}"; else /usr/bin/uname "$@"; fi'
 stub runuser 'shift 2; [ "$1" = "--" ] && shift; "$@"'
 stub npm 'echo "npm $*" >> "$STUB_LOG"; exit 0'
+stub ip 'echo "ip $*" >> "$STUB_LOG"; exit 0'
 stub timeout 'shift; "$@"'
 stub sudo 'if [ "${STUB_NO_SUDO:-0}" = 1 ]; then exit 1; fi; [ "$1" = "-n" ] && shift; "$@"'
 # chown as a stub: the tests run as one user.
@@ -130,7 +131,9 @@ out.push(`snapshotter=${d.features&&d.features["containerd-snapshotter"]}`);
 out.push(`hosts=${d.hosts.join(",")}`); out.push(`data-root=${d["data-root"]}`); out.push(`exec-root=${d["exec-root"]}`); out.push(`pidfile=${d.pidfile}`);
 out.push(`containerd=${d.containerd}`); out.push(`ns=${d["containerd-namespace"]}`); out.push(`pns=${d["containerd-plugins-namespace"]}`); out.push(`runsc=${d.runtimes.runsc.path}`); out.push(`args=${d.runtimes.runsc.runtimeArgs.join(" ")}`);
 console.log(out.join("\n"));')
-has "no default bridge"    "$parsed" "^bridge=none$"
+# `"bridge": "none"` makes dockerd delete the host's docker0 when it starts: measured, on Docker 29.
+has "its own bridge, never none" "$parsed" "^bridge=vcr0$"
+has "the bridge is made before the daemon" "$cfg" "^ExecStartPre=.*ip link add vcr0 type bridge"
 has "no iptables"          "$parsed" "^iptables=false$"
 has "no ip6tables"         "$parsed" "^ip6tables=false$"
 has "no ip forward change" "$parsed" "^ip-forward=false$"
@@ -142,8 +145,8 @@ has "data root on the disk" "$parsed" "^data-root=$P/var/lib/verdikta-code-runne
 has "own exec root"        "$parsed" "^exec-root=$P/run/verdikta-code-runner/exec$"
 has "own pid file"         "$parsed" "^pidfile=$P/run/verdikta-code-runner/docker.pid$"
 has "own containerd"       "$parsed" "^containerd=$P/run/verdikta-code-runner/containerd/containerd.sock$"
-has "own containerd namespace" "$parsed" "^ns=verdikta-code-runner$"
-has "own plugins namespace" "$parsed" "^pns=verdikta-code-runner-plugins$"
+has "own containerd namespace" "$parsed" "^ns=vcr$"
+has "own plugins namespace" "$parsed" "^pns=vcr-plugins$"
 has "gVisor at an absolute pinned path" "$parsed" "^runsc=$P/opt/gvisor/20260921.0/runsc$"
 has "systrap" "$parsed" "^args=--platform=systrap "
 has "the scratch overlay is on the fixed disk, not the root filesystem" "$parsed" "overlay2=root:dir=$P/var/lib/verdikta-code-runner/scratch,size=4g"
@@ -199,7 +202,7 @@ has "the lock is held during the pull"      "$l" "lock-held-during-pull"
 has "the lock is held during the self-test" "$l" "lock-held-during-self-test"
 [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "the lock was not let go"
 has "self-test drives the runner's daemon" "$l" "^conformance DOCKER_HOST=unix://$P/run/verdikta-code-runner/docker.sock "
-has "self-test's registry on the host network: the daemon has no bridge" "$l" "REGNET=host"
+has "self-test's registry on the host network: the daemon cannot publish a port" "$l" "REGNET=host"
 has "self-test under gVisor"   "$l" "RUNTIME=runsc"
 has "self-test's temp files on the fixed disk" "$l" "TMPDIR=$P/var/lib/verdikta-code-runner/selftest"
 [ -f "$I/code-runner/.state/conformance.json" ] && ok || bad "no pass recorded"
@@ -256,6 +259,7 @@ out=$(STUB_SHA_FAIL=1 run enable 2>&1); rc=$?
 is "bad SHA rc" "$rc" 1
 has "bad SHA says so" "$out" "SHA-512"
 [ ! -e "$P/opt/gvisor/20260921.0/runsc" ] && ok || bad "a binary of the wrong hash was installed"
+hasnt "the arbiter's bridge is never named" "$(log)" "ip link del docker0"
 [ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "a disk was made after a bad SHA"
 [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "lock left after a bad SHA"
 
@@ -306,6 +310,19 @@ fail_case "another hash"      "STUB_HASH=$(printf 'beef%.0s' 1 2 3 4 5 6 7 8 9 1
 fresh
 out=$(STUB_ROOTDIR=/var/lib/docker run enable 2>&1)
 has "wrong data root explained" "$out" "/var/lib/docker"
+
+# --- a failed enable keeps an image it did not make: an earlier disable kept it on purpose
+fresh
+run enable >/dev/null 2>&1
+run disable >/dev/null 2>&1
+: > "$P/log"
+out=$(STUB_PULL_FAIL=1 run enable 2>&1); rc=$?
+is "enable over a kept image, failing: rc" "$rc" 1
+[ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "a failed enable removed an image it did not make"
+has "and says where it is" "$out" "disable --purge"
+hasnt "no second allocation over a kept image" "$(log)" "^fallocate"
+out=$(run status 2>&1); is "status: not installed, an image stays" "$?" 1
+has "status names the image" "$out" "A disk image stays"
 
 # --- a failed refresh (an upgrade's) keeps what is there, and code mode goes off
 fresh
@@ -366,6 +383,7 @@ has "disable says how to reclaim the disk" "$out" "disable --purge"
 has "disable: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
 odd=$(log | grep '^systemctl ' | grep -vE '^systemctl (daemon-reload|is-active|is-enabled)' | grep -vE "^systemctl [a-z-]+( --[a-z]+)*( $own_units(\\.service)?)+$")
 is "disable names own units only" "$odd" ""
+has "disable removes its bridge" "$(log)" "^ip link del vcr0$"
 [ -e "$P/opt/gvisor/20260921.0/runsc" ] && ok || bad "disable removed gVisor (another sandbox may share it)"
 is "disable: /etc/docker untouched" "$(cat "$P/etc/docker/daemon.json")" "$DAEMON_BEFORE"
 out=$(run disable --purge 2>&1); rc=$?

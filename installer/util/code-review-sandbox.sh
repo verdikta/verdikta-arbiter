@@ -5,9 +5,9 @@
 # Optional. Installs what a node needs to judge stake claims, beside a live arbiter and
 # without touching it:
 #   - gVisor, the release @verdikta/common pins, checked by SHA-512, at an absolute path;
-#   - a Docker daemon of its own: its own containerd, socket, exec root and data root, no
-#     default bridge and no iptables, storing on a fixed-size loop-mounted ext4 image, so
-#     pulls and scratch can fill only that disk (40 GB by default);
+#   - a Docker daemon of its own: its own containerd, socket, exec root, data root and bridge,
+#     no iptables, storing on a fixed-size loop-mounted ext4 image, so pulls and scratch can
+#     fill only that disk (40 GB by default);
 #   - the code runner, on loopback with a token of its own;
 #   - the pinned base and Semgrep images, warmed;
 #   - the conformance self-test: the canary's report hash against @verdikta/common's. A pass
@@ -81,6 +81,12 @@ CONTAINERD_UNIT=verdikta-code-runner-containerd
 DOCKER_UNIT=verdikta-code-runner-docker
 OWN_UNITS="$DOCKER_UNIT $CONTAINERD_UNIT $DISK_UNIT"
 RUNNER_PORT=8090
+# The daemon's own bridge. No container attaches to it (every sandbox is --network none), but a
+# daemon must have one: `"bridge": "none"` makes dockerd DELETE the host's docker0 when it starts,
+# which is the arbiter's Docker's interface (measured on Docker 29, installer.yml, A8). A link-local
+# /30, so it routes nothing anyone uses; no iptables rule or forwarding goes with it.
+BRIDGE=vcr0
+BRIDGE_ADDRESS=169.254.77.1/30
 
 ACTION=""
 INSTALL_DIR=""
@@ -159,9 +165,9 @@ daemon_json() {
   "hosts": ["unix://$SOCK"],
   "group": "$RUN_GROUP",
   "containerd": "$CONTAINERD_SOCK",
-  "containerd-namespace": "verdikta-code-runner",
-  "containerd-plugins-namespace": "verdikta-code-runner-plugins",
-  "bridge": "none",
+  "containerd-namespace": "vcr",
+  "containerd-plugins-namespace": "vcr-plugins",
+  "bridge": "$BRIDGE",
   "iptables": false,
   "ip6tables": false,
   "ip-forward": false,
@@ -254,6 +260,8 @@ AssertPathIsMountPoint=$MOUNT
 
 [Service]
 Type=notify
+ExecStartPre=/bin/sh -c 'ip link show $BRIDGE >/dev/null 2>&1 || ip link add $BRIDGE type bridge'
+ExecStartPre=/bin/sh -c 'ip -4 addr show dev $BRIDGE | grep -q "${BRIDGE_ADDRESS%/*}/" || ip addr add $BRIDGE_ADDRESS dev $BRIDGE'
 ExecStart=$(command -v dockerd || echo /usr/bin/dockerd) --config-file $ETC/daemon.json
 ExecReload=/bin/kill -s HUP \$MAINPID
 TimeoutStartSec=120
@@ -310,7 +318,7 @@ host_problems() {
     arch=$(uname -m)
     [ "$arch" = "x86_64" ] || echo "the class platform is linux/amd64, and this host is $arch"
     have_systemd || echo "no systemd: the runner's daemon and disk are systemd units"
-    for tool in dockerd containerd docker curl tar bzip2 sha512sum fallocate mkfs.ext4 mount umount mountpoint df node npm; do
+    for tool in dockerd containerd docker ip curl tar bzip2 sha512sum fallocate mkfs.ext4 mount umount mountpoint df node npm; do
         command -v "$tool" >/dev/null 2>&1 || echo "$tool is not on PATH (this script installs no package: apt can restart Docker)"
     done
 }
@@ -644,6 +652,7 @@ remove_own_units() {
     done
     as_root systemctl daemon-reload 2>/dev/null
     as_root rm -rf "$ETC"
+    if ip link show "$BRIDGE" >/dev/null 2>&1; then as_root ip link del "$BRIDGE"; fi
 }
 
 purge_disk() {
@@ -654,11 +663,19 @@ purge_disk() {
     as_root rm -rf "$MOUNT"
 }
 
+# An image this run did not make stays, unmounted: an earlier `disable` kept it on purpose.
 rollback_fresh() {
     warn "Removing what this enable made..."
     [ -f "$RUNNER_DIR/stop.sh" ] && as_user bash "$RUNNER_DIR/stop.sh" >/dev/null 2>&1
     remove_own_units
-    purge_disk
+    if [ "$DISK_CREATED" = "1" ]; then
+        purge_disk
+    else
+        as_root rm -f "$IMAGE.partial"
+        if mountpoint -q "$MOUNT" 2>/dev/null; then as_root umount "$MOUNT"; fi
+        [ -e "$IMAGE" ] || as_root rm -rf "$MOUNT"
+        [ -e "$IMAGE" ] && warn "The disk image from before stays at $IMAGE: $0 disable --purge frees it."
+    fi
     rm -f "$RUNNER_ENV" "$STATE_DIR/conformance.json"
 }
 
@@ -732,6 +749,7 @@ do_status() {
             exit 4
         fi
         say "The code-review sandbox is not installed."
+        if [ -e "$IMAGE" ]; then say "A disk image stays at $IMAGE: $0 disable --purge frees it."; fi
         exit 1
     fi
     for u in $OWN_UNITS; do

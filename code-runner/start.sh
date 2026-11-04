@@ -74,7 +74,7 @@ fi
 # At boot its daemon may still be starting. The runner starts anyway: /health says what is missing.
 socket="${host_value#unix://}"
 waited=0
-until [ -S "$socket" ] || [ -e "$socket" ] || [ "$waited" -ge "${CODE_RUNNER_DAEMON_WAIT_SECS:-60}" ]; do
+until [ -e "$socket" ] || [ "$waited" -ge "${CODE_RUNNER_DAEMON_WAIT_SECS:-60}" ]; do
     sleep 2; waited=$((waited+2))
 done
 [ -e "$socket" ] || echo "Warning: the runner's Docker socket $socket is not there yet." >&2

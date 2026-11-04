@@ -68,7 +68,10 @@ snapshot() {
     echo "runtimes: $(docker info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}')"
     echo "root dir: $(docker info --format '{{.DockerRootDir}}')"
     echo "ip_forward: $(sysctl -n net.ipv4.ip_forward)"
-    echo "interfaces: $(ip -o link show | awk -F': ' '{print $2}' | sort | tr '\n' ' ')"
+    # vcr0 is the daemon's own, and is checked on its own below: everything else stays.
+    echo "interfaces: $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^vcr0$' | sort | tr '\n' ' ')"
+    echo "docker0: $(ip -o -4 addr show dev docker0 | awk '{print $4}')"
+    echo "routes: $(ip route | grep -v 'dev vcr0' | sort | tr '\n' ';')"
     echo "--- iptables"; sudo iptables-save | sed -E 's/\[[0-9]+:[0-9]+\]//; /^#/d'
     echo "--- ip6tables"; sudo ip6tables-save 2>/dev/null | sed -E 's/\[[0-9]+:[0-9]+\]//; /^#/d'
 }
@@ -105,7 +108,7 @@ python3 -m http.server --bind 127.0.0.1 5987 >/dev/null 2>&1 & PORT_HOLDER=$!
 sleep 1
 start=$SECONDS
 out=$(VERDIKTA_UNATTENDED=1 bash "$TOOL" enable --disk-gb "$DISK_GB" --install-dir "$I" 2>&1); rc=$?
-echo "$out" | tail -8 | cut -c1-200
+echo "$out" | tail -8 | cut -c1-2000
 echo "(failed enable took $((SECONDS - start)) s)"
 kill "$PORT_HOLDER" 2>/dev/null; wait "$PORT_HOLDER" 2>/dev/null; PORT_HOLDER=""
 check "failed enable: exit 1" "$rc" 1
@@ -114,6 +117,7 @@ check "failed enable: exit 1" "$rc" 1
 mountpoint -q "$MOUNT" && bad "failed enable: still mounted" || ok "failed enable: not mounted"
 [ -z "$(losetup -j "$IMAGE" 2>/dev/null)" ] && ok "failed enable: no loop device" || bad "failed enable: a loop device stayed"
 [ ! -e /etc/systemd/system/verdikta-code-runner-docker.service ] && ok "failed enable: no units" || bad "failed enable: a unit stayed"
+ip link show vcr0 >/dev/null 2>&1 && bad "failed enable: its bridge stayed" || ok "failed enable: no bridge"
 [ ! -e "$I/code-runner/.env" ] && ok "failed enable: no runner env" || bad "failed enable: the runner env stayed"
 [ ! -e "$I/code-runner/.state/maintenance" ] && ok "failed enable: the lock is gone" || bad "failed enable: the lock stayed"
 grep -q '^CODE_REVIEW_ENABLED=true' "$I/external-adapter/.env" && bad "failed enable: code review on" || ok "failed enable: code review off"
@@ -121,7 +125,7 @@ compare "failed enable"
 
 step "Enable"
 start=$SECONDS
-VERDIKTA_UNATTENDED=1 bash "$TOOL" enable --disk-gb "$DISK_GB" --install-dir "$I" 2>&1 | cut -c1-200; rc=${PIPESTATUS[0]}
+VERDIKTA_UNATTENDED=1 bash "$TOOL" enable --disk-gb "$DISK_GB" --install-dir "$I" 2>&1 | cut -c1-2000; rc=${PIPESTATUS[0]}
 echo "(enable took $((SECONDS - start)) s)"
 check "enable: exit 0" "$rc" 0
 [ "$rc" = 0 ] || exit 1
@@ -141,11 +145,12 @@ step "The runner's daemon"
 check "its data root"  "$("${OWN[@]}" info --format '{{.DockerRootDir}}')" "$MOUNT/docker"
 check "overlay2, so layers are on the disk" "$("${OWN[@]}" info --format '{{.Driver}}')" overlay2
 check "its gVisor"     "$("${OWN[@]}" info --format '{{(index .Runtimes "runsc").Path}}')" "/opt/gvisor/20260921.0/runsc"
-check "no bridge network" "$("${OWN[@]}" network ls --format '{{.Name}}' | grep -c '^bridge$')" 0
+check "its bridge is its own" "$("${OWN[@]}" network inspect bridge --format '{{index .Options "com.docker.network.bridge.name"}}')" vcr0
+check "nothing is attached to its bridge" "$(ip -o link show master vcr0 | wc -l)" 0
 check "it does not see cl-postgres" "$("${OWN[@]}" ps -a --format '{{.Names}}' | grep -c 'cl-postgres\|chainlink')" 0
 check "the host's Docker does not see gVisor" "$(docker info --format '{{range $k, $v := .Runtimes}}{{$k}} {{end}}' | grep -c runsc)" 0
 check "the host's Docker does not see its images" "$(docker images --format '{{.Repository}}' | grep -c 'semgrep\|foundry')" 0
-check "the system containerd does not hold its namespace" "$(sudo ctr --address /run/containerd/containerd.sock namespaces ls -q | grep -c verdikta)" 0
+check "the system containerd does not hold its namespace" "$(sudo ctr --address /run/containerd/containerd.sock namespaces ls -q | grep -c '^vcr')" 0
 [ -S /run/verdikta-code-runner/containerd/containerd.sock ] && ok "its own containerd socket" || bad "no containerd socket of its own"
 check "gVisor is executable by the runner's user" "$(/opt/gvisor/20260921.0/runsc --version | head -1)" "runsc version release-20260921.0"
 [ "$("${OWN[@]}" run --rm --runtime runsc --network none --pull never --platform linux/amd64 --entrypoint cat "$("$(command -v node)" "$CHECK" images --install-dir "$I" | head -1)" /proc/version 2>&1 | grep -ci gvisor)" -ge 0 ] && ok "a container runs under runsc"
@@ -245,6 +250,7 @@ VERDIKTA_UNATTENDED=1 bash "$TOOL" disable --purge --install-dir "$I" 2>&1 | cut
 [ ! -e "$MOUNT" ] && ok "purge removes the mount point" || bad "purge left $MOUNT"
 [ -z "$(losetup -j "$IMAGE" 2>/dev/null)" ] && ok "purge leaves no loop device" || bad "purge left a loop device"
 [ ! -e /etc/verdikta-code-runner ] && ok "no config left" || bad "config left"
+ip link show vcr0 >/dev/null 2>&1 && bad "purge left its bridge" || ok "its bridge is gone"
 [ -e /opt/gvisor/20260921.0/runsc ] && ok "gVisor stays: another sandbox may share it" || bad "purge removed gVisor"
 root_end=$(df -B1 --output=avail /var/lib | tail -1 | tr -d ' ')
 [ $(( ROOT_FREE_0 - root_end )) -lt $(( 2 * 1024 * 1024 * 1024 )) ] && ok "the disk's space came back ($(( (ROOT_FREE_0 - root_end) / 1024 / 1024 )) MB net)" || bad "$(( (ROOT_FREE_0 - root_end) / 1024 / 1024 )) MB did not come back"

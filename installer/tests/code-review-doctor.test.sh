@@ -159,6 +159,10 @@ is_sev "dev entry" "$out" sandbox.registry FAIL; has "dev entry named" "$out" "1
 good; mv "$I/code-runner/.env" "$T/env.off"; rm -f "$I/code-runner/.state/conformance.json"; out=$(run)
 is_sev "not installed" "$out" sandbox.skipped INFO
 hasnt "not installed: no FAIL" "$out" "^FAIL"
+# ... and a disk image with no sandbox is 40 GB nobody is using.
+mkdir -p "$T/prefix/var/lib"; : > "$T/prefix/var/lib/verdikta-code-runner.img"
+out=$(VERDIKTA_SANDBOX_PREFIX="$T/prefix" run); is_sev "an orphan image" "$out" sandbox.disk WARN
+rm -rf "$T/prefix"
 # ... but a node registered on a code class without it is broken.
 printf 'CLASSES_ID="128 133"\n' > "$I/installer/.contracts"; out=$(run)
 is_sev "registered without a sandbox" "$out" svc.code_runner FAIL

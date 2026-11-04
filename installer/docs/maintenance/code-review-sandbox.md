@@ -24,10 +24,10 @@ It needs root or passwordless sudo, the free disk (the image plus 10 GB left ove
 ## What it leaves alone
 
 The arbiter's Docker: it never restarts or reloads `docker.service` or `containerd.service`, never
-reads or writes `/etc/docker`, and never touches `cl-postgres` or `chainlink`. Its daemon has no default
-bridge and no iptables rules, so `arbiter-firewall.sh` and Docker's own rules are unaffected. It cannot
-see the arbiter's containers or images, and the arbiter's Docker cannot see its. Pulls and scratch can
-fill only its disk.
+reads or writes `/etc/docker`, and never touches `cl-postgres` or `chainlink`. Its daemon adds no iptables
+rules, so `arbiter-firewall.sh` and Docker's own rules are unaffected. It adds one host interface, `vcr0`,
+a bridge with a link-local address and nothing attached. It cannot see the arbiter's containers or images,
+and the arbiter's Docker cannot see its. Pulls and scratch can fill only its disk.
 
 `disable` and `enable` restart the External Adapter, only if its settings changed. That is the one
 arbiter process they touch.

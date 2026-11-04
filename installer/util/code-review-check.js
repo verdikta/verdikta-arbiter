@@ -375,6 +375,8 @@ async function cmdDoctor(o) {
     if (tier !== undefined) finding('FAIL', 'svc.code_runner', `this node is registered on code class ${tier} and has no code-review sandbox`, 'code-review-sandbox.sh enable');
     else if (codeReviewOn(p)) finding('FAIL', 'svc.code_runner', 'CODE_REVIEW_ENABLED is true in the adapter and this node has no code-review sandbox', 'code-review-sandbox.sh enable');
     else finding('INFO', 'sandbox.skipped', 'the code-review sandbox is not installed (optional)');
+    const image = `${process.env.VERDIKTA_SANDBOX_PREFIX || ''}/var/lib/verdikta-code-runner.img`;
+    if (fs.existsSync(image)) finding('WARN', 'sandbox.disk', `a disk image stays at ${image} with no sandbox using it`, 'code-review-sandbox.sh disable --purge frees it');
   } else {
     const env = readEnvFile(p.runnerEnv);
     const health = await runnerHealth(p);

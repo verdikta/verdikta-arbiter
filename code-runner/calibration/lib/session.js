@@ -128,7 +128,7 @@ function freePort() {
 
 /**
  * @param {boolean} [hostNetwork] - the installer's self-test (A8): the runner's own daemon has no
- *   bridge, so nothing can publish a port there. The registry listens on the host's loopback itself,
+ *   iptables and no proxy, so nothing can publish a port there. The registry listens on the host's loopback itself,
  *   which is where that daemon pulls from. The image's reference does not change, so neither does a hash.
  */
 function registryArgs(name, port, hostNetwork) {
