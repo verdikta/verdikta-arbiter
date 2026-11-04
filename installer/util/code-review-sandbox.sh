@@ -395,7 +395,8 @@ lock_take() {
 ENABLE_RUNNING=0
 ADAPTER_DOWN_BY_US=0
 on_exit() {
-    trap '' TERM INT HUP
+    # A no-op handler, not an ignore: what starts from here must not inherit SIG_IGN.
+    trap ':' TERM INT HUP
     if [ "$ENABLE_RUNNING" = "1" ]; then
         ENABLE_RUNNING=0
         end_failed_enable

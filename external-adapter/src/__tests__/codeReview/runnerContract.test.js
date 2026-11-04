@@ -3,6 +3,7 @@
 // and the real pack assembly at capacity. A runner change that breaks the EA's
 // reading of it fails here.
 
+const os = require('os');
 const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { runClaim } = require('../../codeReview/claimRun');
