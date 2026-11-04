@@ -12,8 +12,8 @@ const { claimedObservable, functionName } = require('../../src/observable');
 const ADDED = 'test/Exploit.t.sol > ExploitTest > test_drain()';
 const MESSAGE = 'vault drained';
 const tests = [{ id: ADDED, messages: [MESSAGE, MESSAGE, MESSAGE], recorded: [MESSAGE, MESSAGE, MESSAGE] }];
-/** Every word a forge command is made of as a baseline test, besides the fixture's `test()` and an ordinary test. */
-const BASELINE = ['test', 'test_deposit', 'forge', 'match', 'path', 'contract', 'no', 'mt', 'mp', 'mc', 'nmt', 'nmp', 'nmc', 'fuzz', 'runs', 'isolate', 'skip', 'script', 'build', 'v', 'vvv', 't', 'sol', 'invariant', 'check'];
+/** A listing's tests: the fixture's coverage marker and an ordinary test. */
+const BASELINE = ['test', 'test_deposit'];
 const OBSERVABLE = 'test_drain fails at the committed hash with "vault drained"';
 
 function run(command, observable = OBSERVABLE, { added = tests, known = BASELINE } = {}) {
@@ -27,7 +27,7 @@ function namedBefore(command, observable, known, added) {
   return [...tokens].filter((t) => names.has(t)).sort();
 }
 
-// The first acceptance's other half: a valid PoC on a listing with a baseline test named test() reaches the jury.
+// The second acceptance: a valid PoC on a listing with a baseline test named test() reaches the jury.
 const OWN_WORDS = [
   ['the plain command', 'forge test --match-test test_drain'],
   ['an alias', 'forge test --mt test_drain'],
@@ -40,7 +40,9 @@ const OWN_WORDS = [
   ['a path with a space', 'forge test --match-path \'test/my test/Exploit.t.sol\' --mt test_drain'],
   ['a path with a space, double-quoted', 'forge test --mp "test/my test/Exploit.t.sol" --mt test_drain'],
   ['a path with a space, with =', 'forge test --match-path=\'test/my test/Exploit.t.sol\' --mt test_drain'],
-  ['a path to skip', 'forge test --no-match-path test/invariant/Old.t.sol --mt test_drain'],
+  ['parentheses in a path', 'forge test --match-path \'test/unit (old)/Exploit.t.sol\' --mt test_drain'],
+  ['an escaped space in a path', 'forge test --match-path test/my\\ test/Exploit.t.sol --mt test_drain'],
+  ['a path to skip', 'forge test --no-match-path test/Old.t.sol --mt test_drain'],
   ['a contract', 'forge test --match-contract ExploitTest --match-test test_drain'],
   ['every switch', 'forge test --match-test test_drain --fuzz-runs 256 --isolate -vvvvv'],
   ['verbosity first', 'forge test -vvv --match-test test_drain'],
@@ -50,29 +52,23 @@ const OWN_WORDS = [
   ['a flag the grammar refuses', 'forge test --match-test test_drain --json'],
   ['an environment variable', 'FOUNDRY_PROFILE=ci forge test --mt test_drain'],
   ['a directory first', 'cd contracts && forge test --mt test_drain'],
-  ['a quoted choice', 'forge build --skip \'test\' && forge test --mt test_drain'],
-  ['a double-quoted choice', 'forge build --skip "test" && forge test --mt test_drain'],
-  ['a choice with =', 'forge build --skip=test && forge test --mt test_drain'],
-  ['a file on its own', 'forge test --match-path Exploit.t.sol --mt test_drain'],
-  ['a glob', 'forge test --match-path \'test/*\' --mt test_drain'],
-  ['a set of files', 'forge test --match-path \'{test/A.t.sol,test/B.t.sol}\' --mt test_drain'],
-  ['a path with non-ASCII in it', 'forge test --match-path test/écoles/Exploit.t.sol --mt test_drain'],
-  // R3-F1: a path's characters are its own, in a command whose words are certain.
-  ['parentheses in a path', 'forge test --match-path \'test/unit (old)/Exploit.t.sol\' --mt test_drain'],
-  ['parentheses in a path, double-quoted', 'forge test --mp "test/unit (old)/Exploit.t.sol" --mt test_drain'],
-  ['an escaped space in a path', 'forge test --match-path test/my\\ test/Exploit.t.sol --mt test_drain'],
-  ['what a regex would act on, in a path', 'forge test --match-path \'test/a|b^c=d#e!f/Exploit.t.sol\' --mt test_drain'],
-  ['an anchored filter beside a path', 'forge test --match-test \'^test_drain$\' --match-path test/Exploit.t.sol'],
-  ['an environment variable as a value', 'forge test --mt test_drain --fork-url $RPC_URL --match-path test/Exploit.t.sol'],
-  ['an environment variable in braces', 'forge test --mt test_drain --fork-url ${RPC_URL} --mp test/Exploit.t.sol'],
+  ['a directory called test', 'cd test && forge test --mt test_drain'],
   ['a build first', 'forge build --skip test && forge test --mt test_drain'],
+  ['a quoted choice', 'forge build --skip \'test\' && forge test --mt test_drain'],
+  ['a substitution', 'forge test --mt test_drain --fork-url $(cat url)'],
+  ['a default in an expansion', 'forge test --mt test_drain --fork-url ${RPC_URL:-http://localhost:8545}'],
+  ['backquotes', 'forge test --mt test_drain --fork-url `cat url`'],
+  ['ANSI-C quoting', 'forge test --mt $\'^test_drain$\' --match-path test/Exploit.t.sol'],
+  ['a path to a program', '/usr/local/bin/forge test --mt test_drain'],
   // Named only in the observable.
   ['no filter at all', 'forge test'],
-  ['the path alone', 'forge test --match-path test/Exploit.t.sol']
+  ['the path alone', 'forge test --match-path test/Exploit.t.sol'],
+  ['a word on its own', 'forge test test'],
+  ['another command', 'npx hardhat test']
 ];
 
 for (const [label, command] of OWN_WORDS) {
-  test(`the words of the forge command are not test names: ${label}`, () => {
+  test(`the word test in a command is no test's name: ${label}`, () => {
     const r = run(command);
     assert.equal(r.status, 'pass', `${command}: ${r.detail}`);
     assert.deepEqual(r.named, ['test_drain']);
@@ -91,34 +87,28 @@ const NAMES_ANOTHER = [
   ['an anchored regex, double-quoted', 'forge test --mt "^test_deposit$"', 'test_deposit'],
   ['an anchored regex, with =', 'forge test --mt=\'^test_deposit$\'', 'test_deposit'],
   ['a regex beside the added test', 'forge test --match-test \'test_drain|test_deposit\'', 'test_deposit'],
-  // R1-F1: words inside a quoted value are not flags, so none can swallow the word after it.
+  // R1-F1, R4-F1: every identifier is read, so nothing a shell would do with the words matters.
   ['a flag inside a quoted value', 'forge test --match-test \'test_drain|(?: --match-path )?test_deposit\'', 'test_deposit'],
   ['a flag inside a double-quoted value', 'forge test --match-test "test_drain|(?: --match-path )?test_deposit"', 'test_deposit'],
   ['a flag inside a quoted value, with =', 'forge test --mt=\'test_drain|(?: --mp )?test_deposit\'', 'test_deposit'],
   ['a quoted word that spells a flag', 'forge test \'--match-path\' test_deposit', 'test_deposit'],
-  // R1-F1, round 2: however a filter is quoted, a word that only looks like a path's value is read.
+  ['a quote that never closes', 'forge test --match-test \'test_drain --match-path test/x.sol test_deposit', 'test_deposit'],
   ['an escaped quote inside a double-quoted value', 'forge test --match-test "test_drain|(?: \\" --match-path )?test_deposit"', 'test_deposit'],
-  ['a quote this split does not know', 'forge test --match-test $\'test_drain|(?: \\\' --match-path )?test_deposit\'', 'test_deposit'],
+  ['ANSI-C quoting', 'forge test --match-test $\'(?x)test_drain|[\\\' --mp ]{0}[/]?test_deposit \'', 'test_deposit'],
   ['an escaped space', 'forge test --match-test test_drain\\ --match-path\\ test_deposit', 'test_deposit'],
+  ['a separator after a path', 'forge test --mt test_drain --mp test/E.t.sol;forge${IFS}test${IFS}--mt${IFS}test_deposit', 'test_deposit'],
   ['a substitution', 'forge test --match-path $(echo test_deposit)', 'test_deposit'],
-  ['a name as a path, unquoted', 'forge test --match-path test_deposit', 'test_deposit'],
+  ['backquotes', 'forge test --match-path `echo a/test_deposit`', 'test_deposit'],
+  ['a default in an expansion', 'forge test --match-path ${X:-"a/ --mp b/test_deposit"}', 'test_deposit'],
+  ['a brace expansion', 'forge test --mp {a/,--mt,test_deposit}', 'test_deposit'],
+  ['a name as a path', 'forge test --match-path test_deposit', 'test_deposit'],
+  ['a name inside a path', 'forge test --match-path a/test_deposit/?', 'test_deposit'],
   ['a name as a path, quoted', 'forge test --mp \'test_deposit\'', 'test_deposit'],
   ['a name as a path, with =', 'forge test --no-match-path=test_deposit', 'test_deposit'],
-  // R1-F1, round 3: what this split can't model is read whole, however its words would fall.
-  ['ANSI-C quoting around a word that reads as a path', 'forge test --match-test $\'(?x)test_drain|[\\\' --mp ]{0}[/]?test_deposit \'', 'test_deposit'],
-  ['the same with the marker', 'forge test --match-test $\'(?x)test_drain|[\\\' --mp ]{0}[/]?test \'', 'test'],
-  ['a backquoted substitution', 'forge test --match-path `echo a/test_deposit`', 'test_deposit'],
-  ['a substitution inside double quotes', 'forge test --match-path "$(echo "a/ --mp b/test_deposit")"', 'test_deposit'],
-  ['a default in an expansion', 'forge test --match-path ${X:-"a/ --mp b/test_deposit"}', 'test_deposit'],
-  ['the marker as a path', 'forge test --match-path test', 'test'],
-  ['a choice forge does not have, quoted', 'forge test --skip \'test_deposit\'', 'test_deposit'],
-  ['a quote that never closes', 'forge test --match-test \'test_drain --match-path test/x.sol test_deposit', 'test_deposit'],
   ['--no-match-test', 'forge test --no-match-test test_deposit', 'test_deposit'],
   ['--nmt=', 'forge test --nmt=test_deposit', 'test_deposit'],
   ['--match-contract', 'forge test --match-contract test_deposit', 'test_deposit'],
   ['--no-match-contract', 'forge test --nmc test_deposit', 'test_deposit'],
-  ['the fixture\'s test, as the value of --match-test', 'forge test --match-test test', 'test'],
-  ['the fixture\'s test, with =', 'forge test --mt=test', 'test'],
   ['a test name as an argument', 'forge test test_deposit', 'test_deposit'],
   ['a test name as a flag forge does not have', 'forge test --test_deposit', 'test_deposit'],
   ['a test name as the value of a flag forge does not have', 'forge test --only=test_deposit', 'test_deposit'],
@@ -126,22 +116,36 @@ const NAMES_ANOTHER = [
   ['a test name as the value of a switch', 'forge test --isolate test_deposit', 'test_deposit'],
   ['a test name as a count', 'forge test --fuzz-runs test_deposit', 'test_deposit'],
   ['a test name as a choice', 'forge test --skip test_deposit', 'test_deposit'],
-  ['the words twice', 'forge test test', 'test'],
-  ['forge alone', 'forge --match-test test', 'test'],
-  ['test before forge', 'test forge test', 'test'],
-  ['a path flag followed by a filter, not its value', 'forge test --match-path --match-test test_deposit', 'test_deposit'],
-  ['another command', 'npx hardhat test', 'test']
+  ['another command', 'npx hardhat test --grep test_deposit', 'test_deposit'],
+  // The fixture's own test, where a name is written.
+  ['the marker, as the value of --match-test', 'forge test --match-test test', 'test'],
+  ['the marker, with =', 'forge test --mt=test', 'test'],
+  ['the marker, quoted', 'forge test --match-test \'test\'', 'test'],
+  ['the marker, anchored', 'forge test --mt \'^test$\'', 'test'],
+  ['the marker, anchored, with =', 'forge test --mt=\'^test$\'', 'test'],
+  ['the marker beside the added test', 'forge test --mt \'test_drain|test\'', 'test'],
+  ['the marker, ANSI-C quoted', 'forge test --mt $\'test\'', 'test'],
+  ['the marker, to --no-match-test', 'forge test --no-match-test test', 'test'],
+  ['the marker, to --match-contract', 'forge test --match-contract test', 'test'],
+  ['the marker, with no forge test before it', 'forge --match-test test', 'test']
 ];
 
 for (const [label, command, name] of NAMES_ANOTHER) {
   test(`a finding that names another test fails: ${label}`, () => {
-    // A real baseline: the fixture's marker and an ordinary test (a function called `match` is not a forge test).
-    const r = run(command, OBSERVABLE, { known: ['test', 'test_deposit'] });
+    const r = run(command);
     assert.equal(r.status, 'fail', `${command}: ${r.detail}`);
-    assert.match(r.detail, /names \S+, which is not a test the patch added that failed/);
+    assert.match(r.detail, new RegExp(`names ${name}, which is not a test the patch added that failed`));
     assert.ok(r.named.includes(name), JSON.stringify(r.named));
   });
 }
+
+test('a path through a directory named like another baseline test reads as naming it: a known limit, only ever a failure, which the hunter tool warns of', () => {
+  const r = run('forge test --match-path test/invariant/Exploit.t.sol --mt test_drain', OBSERVABLE, { known: ['test', 'invariant'] });
+  assert.equal(r.status, 'fail');
+  assert.match(r.detail, /names invariant, which is not a test the patch added that failed/);
+  // The filter alone reaches the jury.
+  assert.equal(run('forge test --mt test_drain', OBSERVABLE, { known: ['test', 'invariant'] }).status, 'pass');
+});
 
 test('the observable is read whole: a test named there fails, whatever the command says', () => {
   for (const observable of [
@@ -171,7 +175,7 @@ test('naming nothing still fails: the words of the command name no test on their
 });
 
 test('a test the patch added is named wherever the command says it: nothing that passed before fails now', () => {
-  // An added test called test() and a plain `forge test`, or an added test's name inside a path: both passed before A3d.
+  // An added test called test() and a plain `forge test`, and an added test's name inside a path: both passed before A3d.
   const own = 'test/Exploit.t.sol > ExploitTest > test()';
   const added = [{ id: own, messages: [MESSAGE, MESSAGE, MESSAGE], recorded: [MESSAGE, MESSAGE, MESSAGE] }];
   const plain = run('forge test', 'fails with "vault drained"', { added });
@@ -182,7 +186,7 @@ test('a test the patch added is named wherever the command says it: nothing that
   assert.deepEqual(inPath.named, ['test_drain']);
 });
 
-test('the fix only turns a failure into a pass, where the other name was a word of the command (an anchored name apart)', () => {
+test('the fix only turns a failure into a pass, where the other name was the word test (an anchored name apart)', () => {
   const observables = [OBSERVABLE, 'fails with "vault drained"', 'test_drain shows "no such text"', 'test_deposit fails with "vault drained"', 'test: "vault drained"'];
   const commands = [...OWN_WORDS.map(([, c]) => c), ...NAMES_ANOTHER.map(([, c]) => c), 'forge test --mp test/test_drain.t.sol', ''];
   for (const command of commands) {
@@ -201,7 +205,7 @@ test('the fix only turns a failure into a pass, where the other name was a word 
         assert.equal(now.status, 'pass', `passed before: ${JSON.stringify(command)} ${JSON.stringify(observable)}: ${now.detail}`);
       }
       if (now.status === 'fail' && /names .*, which is not/.test(now.detail)) {
-        // Named by the text that can name: never a word only the command's own grammar put there.
+        // Named by the text that can name: nothing the rule before did not read.
         const other = /names (\S+), which/.exec(now.detail)[1];
         if (!/\$/.test(command)) assert.ok(otherBefore.includes(other), `${other} was not named before: ${JSON.stringify(command)}`);
       }
@@ -215,18 +219,6 @@ test('a finding with no text to read still fails closed', () => {
   // No command: the observable alone can name the test.
   assert.equal(claimedObservable({ finding: { poc: { observable: OBSERVABLE } }, tests, knownNames: BASELINE }).status, 'pass');
   assert.equal(claimedObservable({ finding: { poc: { command: 42, observable: OBSERVABLE } }, tests, knownNames: BASELINE }).status, 'pass');
-});
-
-test('a command this split cannot model reads as every command read before: its own words count too', () => {
-  for (const command of ['forge test --mt $\'test_drain\'', 'forge test --mt `echo test_drain`', 'forge test --mt test_drain --fork-url $(cat url)', 'forge test --mt \'test_drain', 'forge test --mt test_drain --fork-url ${X:-y}']) {
-    const r = run(command, OBSERVABLE, { known: ['test'] });
-    assert.equal(r.status, 'fail', command);
-    assert.match(r.detail, /names test, which is not a test the patch added that failed/, command);
-  }
-  // Over the grammar's length too, which keeps both patterns' work bounded on a text nothing else limits.
-  const long = `forge test --mt test_drain ${'x'.repeat(2001)}`;
-  assert.equal(run(long, OBSERVABLE, { known: ['test'] }).status, 'fail');
-  assert.equal(run(`forge test --mt test_drain ${'x'.repeat(1900)}`, OBSERVABLE, { known: ['test'] }).status, 'pass');
 });
 
 test('an anchored regex names the test it anchors: the only thing this node adds to what can name one', () => {

@@ -420,5 +420,5 @@ function parsedCommand(commands, key, RequesterError) {
 
 module.exports = {
   parseCommand, commandIssues, forgeArgs, parsedCommand, tokenize, allowedText,
-  COMMANDS, FLAGS, ALIASES, KNOWN, VERBOSITY, MAX_LENGTH, MAX_PATTERN, MAX_FUZZ_RUNS, MAX_VERBOSITY
+  COMMANDS, FLAGS, ALIASES, KNOWN, MAX_LENGTH, MAX_PATTERN, MAX_FUZZ_RUNS, MAX_VERBOSITY
 };

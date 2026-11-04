@@ -1466,22 +1466,19 @@ finding.json and the recorded failures alone:
   test the patch added, a test of the PoC's files, a baseline test). At
   least one must be named, and every one named must be a test the patch
   added (which, the PoC having reproduced, failed on every run).
-- **The words of the forge command name nothing else** (node A3d). A fixture's
+- **The word `test` is not a name in itself** (node A3d). A fixture's
   `function test() external {}`, a common coverage marker, is a baseline test
-  named `test`, and the word in `forge test` read as naming it: a valid PoC
-  settled INVALID. `forge test`, the flags of the listing's grammar
-  (`src/commands.js`) and their path values and fixed choices now count only as
-  the name of a test the patch added. Everything else is read: the values of
-  `--match-test`, `--no-match-test`, `--match-contract` and `--no-match-contract`,
-  and any word the grammar does not know, since the command is the hunter's text
-  and need not fit it. So `forge test --match-test test` still names `test()`.
-  A quoted span is one word, so what is inside one is not a flag. A path flag's
-  value goes unread when it reads as a path: it holds a `/` or ends in `.sol`. A
+  named `test`, and every forge command says `test`: in `forge test`, in
+  `--match-test`, in `test/Exploit.t.sol`. A valid PoC settled INVALID that way.
+  So in `poc.command` the word counts only as a test the patch added, or where a
+  test's name is written: the value of `--match-test`, `--no-match-test`,
+  `--match-contract` or `--no-match-contract`. So `forge test --match-test test`
+  still names `test()`. Every other identifier in the command is read, wherever
+  it is, so no way of quoting or placing a name can hide it. That includes a
+  path: a directory with the very name of another baseline test (`invariant/` on
+  a listing with `invariant()`) reads as naming it, and the hunter tool warns. A
   filter is not evaluated: a name counts when it is spelled, and a `$` after it is
-  the regex's end (`^test_x$` names `test_x`). All of this holds where a shell's
-  words are certain: plain text, quotes, escapes, `$NAME`, `${NAME}`. A command with
-  `$'…'`, `$(…)`, `${…:-…}` or backquotes, or a quote left open, is read whole, as
-  every command was before this rule.
+  the regex's end (`^test_x$` names `test_x`).
 - **`poc.observable` is read whole.** The word `test` in its prose still names
   a baseline `test()`. The hunter tool warns of it before a claim is committed.
 - **The observable appears in the recorded failure**: each text in double
