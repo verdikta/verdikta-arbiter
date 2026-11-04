@@ -37,6 +37,9 @@ const OWN_WORDS = [
   ['a path alias', 'forge test --mp test/Exploit.t.sol --mt test_drain'],
   ['a path with =', 'forge test --match-path=test/Exploit.t.sol --mt test_drain'],
   ['a quoted glob', 'forge test --match-path \'test/**/*.t.sol\' --mt test_drain'],
+  ['a path with a space', 'forge test --match-path \'test/my test/Exploit.t.sol\' --mt test_drain'],
+  ['a path with a space, double-quoted', 'forge test --mp "test/my test/Exploit.t.sol" --mt test_drain'],
+  ['a path with a space, with =', 'forge test --match-path=\'test/my test/Exploit.t.sol\' --mt test_drain'],
   ['a path to skip', 'forge test --no-match-path test/invariant/Old.t.sol --mt test_drain'],
   ['a contract', 'forge test --match-contract ExploitTest --match-test test_drain'],
   ['every switch', 'forge test --match-test test_drain --fuzz-runs 256 --isolate -vvvvv'],
@@ -73,6 +76,12 @@ const NAMES_ANOTHER = [
   ['an anchored regex, double-quoted', 'forge test --mt "^test_deposit$"', 'test_deposit'],
   ['an anchored regex, with =', 'forge test --mt=\'^test_deposit$\'', 'test_deposit'],
   ['a regex beside the added test', 'forge test --match-test \'test_drain|test_deposit\'', 'test_deposit'],
+  // R1-F1: words inside a quoted value are not flags, so none can swallow the word after it.
+  ['a flag inside a quoted value', 'forge test --match-test \'test_drain|(?: --match-path )?test_deposit\'', 'test_deposit'],
+  ['a flag inside a double-quoted value', 'forge test --match-test "test_drain|(?: --match-path )?test_deposit"', 'test_deposit'],
+  ['a flag inside a quoted value, with =', 'forge test --mt=\'test_drain|(?: --mp )?test_deposit\'', 'test_deposit'],
+  ['a quoted word that spells a flag', 'forge test \'--match-path\' test_deposit', 'test_deposit'],
+  ['a quote that never closes', 'forge test --match-test \'test_drain --match-path test/x.sol test_deposit', 'test_deposit'],
   ['--no-match-test', 'forge test --no-match-test test_deposit', 'test_deposit'],
   ['--nmt=', 'forge test --nmt=test_deposit', 'test_deposit'],
   ['--match-contract', 'forge test --match-contract test_deposit', 'test_deposit'],
@@ -87,7 +96,7 @@ const NAMES_ANOTHER = [
   ['a test name as a count', 'forge test --fuzz-runs test_deposit', 'test_deposit'],
   ['a test name as a choice', 'forge test --skip test_deposit', 'test_deposit'],
   ['the words twice', 'forge test test', 'test'],
-  ['forge alone', 'forge --match-test test', 'forge'],
+  ['forge alone', 'forge --match-test test', 'test'],
   ['test before forge', 'test forge test', 'test'],
   ['a path flag followed by a filter, not its value', 'forge test --match-path --match-test test_deposit', 'test_deposit'],
   ['another command', 'npx hardhat test', 'test']
@@ -95,7 +104,8 @@ const NAMES_ANOTHER = [
 
 for (const [label, command, name] of NAMES_ANOTHER) {
   test(`a finding that names another test fails: ${label}`, () => {
-    const r = run(command);
+    // A real baseline: the fixture's marker and an ordinary test (a function called `match` is not a forge test).
+    const r = run(command, OBSERVABLE, { known: ['test', 'test_deposit'] });
     assert.equal(r.status, 'fail', `${command}: ${r.detail}`);
     assert.match(r.detail, new RegExp(`names ${name}, which is not a test the patch added that failed`));
     assert.ok(r.named.includes(name));

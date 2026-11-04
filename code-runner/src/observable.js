@@ -43,6 +43,8 @@ const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
 /** The grammar's flags whose value is matched against a test or its contract: a name written there is one. */
 const NAME_FLAGS = Object.freeze(['--match-test', '--no-match-test', '--match-contract', '--no-match-contract']);
+/** A word of a command, as a shell would split it: a quoted span stays whole, so what is inside one is never taken for a flag. */
+const WORD = /(?:[^\s'"]+|'[^']*'|"[^"]*"|['"])+/g;
 /** forge's subcommands in the grammar: `forge test` is a command, not a test. */
 const SUBCOMMANDS = Object.freeze([...new Set(Object.values(commands.COMMANDS).map((c) => c.subcommand))]);
 
@@ -77,7 +79,7 @@ function ownValue(flag, value) {
  * @returns {string[]} the words kept
  */
 function namingWords(command) {
-  const words = command.split(/\s+/).filter(Boolean);
+  const words = command.match(WORD) || [];
   const kept = [];
   for (let i = 0; i < words.length; i += 1) {
     const w = words[i];

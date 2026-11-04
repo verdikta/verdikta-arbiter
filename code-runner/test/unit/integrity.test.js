@@ -975,9 +975,35 @@ test('A3d: what the comparison cannot read as forge\'s file it leaves to the byt
     ['the list spread over lines', '{"mocks":[\n"b",\n"a"\n]}'],
     ['the list written with spaces', '{"mocks": ["b","a"]}'],
     ['an escape forge does not write', '{"mocks":["\\u0062","a"]}'],
-    ['the same list written twice', '{"x":{"mocks":["b","a"]},"mocks":["b","a"]}']
+    ['the same list written twice', '{"x":1,"mocks":["b","a"],"mocks":["b","a"]}'],
+    ['the list spaced, with a list of that name elsewhere', '{"mocks" : ["b","a"],"extra":{"mocks":["b","a"]}}'],
+    ['a line at the end', '{"mocks":["b","a"]}\n'],
+    ['a key JSON.parse moves', '{"b":1,"1":2,"mocks":["b","a"]}'],
+    ['a key written twice', '{"x":1,"x":1,"mocks":["b","a"]}'],
+    ['a number written another way', '{"x":1.0,"mocks":["b","a"]}'],
+    ['an empty file\'s worth of spaces', ' '],
+    ['null', 'null']
   ];
   for (const [what, bytes] of unreadable) assert.equal(orderFree(bytes), null, what);
+});
+
+test('A3d R1-F2: only the top-level list moves: a list of that name elsewhere is an ordinary field, whichever form the file is in', () => {
+  const held = (top, nested) => JSON.stringify({ mocks: top, extra: { mocks: nested } });
+  const a = orderFree(held(['b', 'a'], ['b', 'a']));
+  const b = orderFree(held(['b', 'a'], ['a', 'b']));
+  assert.ok(a && b && !a.equals(b), 'the nested list is compared as written');
+  assert.deepEqual(orderFree(held(['a', 'b'], ['b', 'a'])), a, 'the top-level one is not');
+  // The same files with the top-level list spaced are not forge's form, so each is held to its own bytes, which differ.
+  const spaced = (nested) => `{"mocks" : ["b","a"],"extra":{"mocks":${JSON.stringify(nested)}}}`;
+  assert.equal(orderFree(spaced(['b', 'a'])), null);
+  assert.equal(orderFree(spaced(['a', 'b'])), null);
+  // And no file held to its own bytes can equal another file's answer: an answer is always of a form that has one.
+  for (const raw of [spaced(['b', 'a']), spaced(['a', 'b']), '{"mocks":["a","b"]}\n', 'not json']) {
+    const answer = orderFree(raw);
+    assert.ok(answer === null || answer.equals(Buffer.from(raw)));
+  }
+  const answer = orderFree(held(['b', 'a'], ['b', 'a']));
+  assert.deepEqual(orderFree(answer), answer, 'an answer answers to itself');
 });
 
 test('A3d: names that look like the rest of the file cannot be used to move a change into the list', () => {

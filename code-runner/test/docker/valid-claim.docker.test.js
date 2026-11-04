@@ -242,7 +242,8 @@ test('a listing with a baseline test named test() has it on its baseline, as for
 for (const [what, command] of [
   ['the plain command', `forge test --match-test ${NAME}`],
   ['every word of the grammar', `forge test --match-path test/Exploit.t.sol --match-contract ExploitTest --match-test ${NAME} --fuzz-runs 256 --isolate -vvv`],
-  ['a command outside the grammar', `FOUNDRY_PROFILE=default forge test --mt ${NAME} --json`]
+  ['a command outside the grammar', `FOUNDRY_PROFILE=default forge test --mt ${NAME} --json`],
+  ['a path with a space in it', `forge test --match-path 'test/my test/Exploit.t.sol' --match-test ${NAME}`]
 ]) {
   test(`a valid PoC on a listing with a baseline test named test() reaches the jury: ${what}`, { timeout: TIMEOUT }, async (t) => {
     const fx = await fixture('marker');
@@ -257,6 +258,7 @@ for (const [what, poc, re] of [
   ['the filter is the marker', { command: 'forge test --match-test test' }, /names test, which is not a test the patch added that failed/],
   ['the filter is the marker, with =', { command: 'forge test --mt=test' }, /names test, which is not a test the patch added that failed/],
   ['an argument names it', { command: 'forge test test_deposit' }, /names test_deposit, which is not a test the patch added that failed/],
+  ['a flag inside a quoted filter cannot swallow it', { command: `forge test --match-test '${NAME}|(?: --match-path )?test_deposit'` }, /names test_deposit, which is not a test the patch added that failed/],
   ['the observable names it', { observable: `test_deposit and ${NAME} fail at the committed hash with "2 != 1"` }, /names test_deposit, which is not a test the patch added that failed/],
   ['the observable names the marker', { observable: `test() and ${NAME} fail with "2 != 1"` }, /names test, which is not a test the patch added that failed/],
   ['nothing names the added test', { command: 'forge test', observable: 'the deposit over-credits: "2 != 1"' }, /names none of the tests the patch added/]

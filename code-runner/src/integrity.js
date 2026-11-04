@@ -634,33 +634,28 @@ function watchRoots({ protectedGlobs = [], ...w }) {
  * path is in that set, and it writes another order itself on every run, so nothing a
  * later run does can rest on the order: there is nothing to protect in it.
  *
- * Everything else stays as it is, byte for byte: this finds the list by its whole text
- * and rewrites only the order of its elements. So two files give the same answer
- * exactly when one is the other with that list reordered. The file is read as JSON only
- * to learn which text that is, never to compare values: a value written another way, a
- * key written twice, a line added or a field forge does not write is a difference.
+ * Everything else stays as it is, byte for byte. forge writes the file compact, so it is
+ * exactly what JSON.stringify writes back of its own parse, and only such a file is put
+ * in order: then bytes and value are one and the same, and the only thing rewritten is the
+ * top-level list's order. So two files give the same answer exactly when one is the other
+ * with that list reordered. A key written twice, another escape, a space, a line added, a
+ * number written another way or a list elsewhere is a different file, or none of this form.
  *
  * @param {Buffer} bytes - the file
- * @returns {Buffer|null} the same bytes with the list in order, or null when they are not
- *   UTF-8 JSON whose top-level `mocks` is a list of strings written as forge writes it, once:
- *   the caller then holds the file to its own bytes, which can only find more changes
+ * @returns {Buffer|null} the same bytes with the list in order, or null when they are not that
+ *   form with a top-level `mocks` of strings. The caller then holds the file to its own bytes.
+ *   Those can't equal another file's answer: an answer is of that form, so it would have one.
  */
 function compileCacheOrderFree(bytes) {
-  const text = bytes.toString('utf8');
-  if (!Buffer.from(text, 'utf8').equals(bytes)) return null;
   let parsed;
   try {
-    parsed = JSON.parse(text);
+    parsed = JSON.parse(bytes.toString('utf8'));
   } catch (_) {
     return null;
   }
-  if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.mocks) || !parsed.mocks.every((m) => typeof m === 'string')) return null;
-  const list = JSON.stringify(parsed.mocks);
-  const key = '"mocks":';
-  const at = text.indexOf(`${key}${list}`);
-  if (at < 0 || text.lastIndexOf(`${key}${list}`) !== at) return null;
-  const start = at + key.length;
-  return Buffer.from(`${text.slice(0, start)}${JSON.stringify([...parsed.mocks].sort())}${text.slice(start + list.length)}`, 'utf8');
+  if (!parsed || !Array.isArray(parsed.mocks) || !parsed.mocks.every((m) => typeof m === 'string')) return null;
+  if (!Buffer.from(JSON.stringify(parsed), 'utf8').equals(bytes)) return null;
+  return Buffer.from(JSON.stringify({ ...parsed, mocks: [...parsed.mocks].sort() }), 'utf8');
 }
 
 /**

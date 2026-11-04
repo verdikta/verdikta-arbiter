@@ -925,14 +925,15 @@ process of the run is dead:
    more differs between runs, and a valid PoC that imports them settled DUPLICATE
    at random. The runner reads the file at run 1, and again when its bytes differ
    from run 1's, and compares its hash with that one list in order
-   (`compileCacheOrderFree`). The list is found by its whole text and only its
-   elements move, so two files compare the same exactly when one is the other
-   with the list reordered: a mock added or dropped, an artifact pointed
-   elsewhere, a key written twice, a space, all stay differences. Measured on a
-   real repository: nothing else in the file moves between runs. What can't be
-   read as forge's file (not UTF-8 JSON, the list written any other way, over
-   64 MiB, a failed read, bytes other than the listing hashed) is held to its
-   bytes, as before.
+   (`compileCacheOrderFree`). forge writes the file compact, so it is exactly what
+   `JSON.stringify` writes back of its own parse, and only such a file is put in
+   order. So two files compare the same exactly when one is the other with the
+   top-level list reordered: a mock added or dropped, an artifact pointed
+   elsewhere, a key written twice, a space, a list of that name elsewhere, all
+   stay differences. Measured on a real repository: nothing else in the file
+   moves between runs. What isn't of that form, or can't be read (over 64 MiB, a
+   failed read, bytes other than the listing hashed), is held to its bytes, as
+   before.
 
    **Symbolic links: the kernel resolves them** (R6-F1, R7-F1; node A3a's
    attempt 2). The listing is physical (`find` never follows a link), so a
@@ -1473,10 +1474,11 @@ finding.json and the recorded failures alone:
   the name of a test the patch added. Everything else is read: the values of
   `--match-test`, `--no-match-test`, `--match-contract` and `--no-match-contract`,
   and any word the grammar does not know, since the command is the hunter's text
-  and need not fit it. So `forge test --match-test test` still names `test()`. A
-  filter is not evaluated: a name counts when it is spelled, and a `$` after it
-  is the regex's end (`^test_x$` names `test_x`). A path is not a name, even
-  spelled like one.
+  and need not fit it. So `forge test --match-test test` still names `test()`.
+  A quoted span is one word, so what is inside one is never a flag. A filter is
+  not evaluated: a name counts when it is spelled, and a `$` after it is the
+  regex's end (`^test_x$` names `test_x`). A path is not a name, even spelled
+  like one.
 - **`poc.observable` is read whole.** The word `test` in its prose still names
   a baseline `test()`. The hunter tool warns of it before a claim is committed.
 - **The observable appears in the recorded failure**: each text in double
