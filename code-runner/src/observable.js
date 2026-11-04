@@ -17,13 +17,14 @@
  *   real repository, whose fixture has `function test() external {}`, a
  *   coverage marker): `forge test`, the flags of the listing's grammar
  *   (src/commands.js), and what those flags hold that is no test's name, a
- *   path (a value that can only be one) or a choice. So they count only as the name of a test the patch
+ *   path or a choice. So they count only as the name of a test the patch
  *   added, as before; anything else in the command is read: the values of
  *   --match-test, --no-match-test, --match-contract and --no-match-contract,
  *   and every word the grammar does not know (the command is the hunter's text,
- *   which the runner never runs, so it may well be outside the grammar). No
- *   filter is evaluated: a name counts when it is spelled, a `$` after it being
- *   the regex's end.
+ *   which the runner never runs, so it may well be outside the grammar). This
+ *   holds where a shell's words are known for certain (PLAIN_SHELL); any
+ *   other command is read whole. No filter is evaluated: a name counts when it
+ *   is spelled, a `$` after it being the regex's end.
  * - The observable appears in the recorded failure: the observable's text
  *   in double quotes, each fragment of it, appears in the failure message of
  *   a named test on every run; or, when it quotes nothing, the failure
@@ -44,13 +45,17 @@ const QUOTED = /"([^"]*)"/g;
 /** The grammar's flags whose value is matched against a test or its contract: a name written there is one. */
 const NAME_FLAGS = Object.freeze(['--match-test', '--no-match-test', '--match-contract', '--no-match-contract']);
 /**
- * A word of a command, as a shell would split it: a quoted span stays whole, with its escapes,
- * so what is inside one is not taken for a flag. This only has to be right for an honest
- * command to read as it should: what hides a word is PATH_VALUE, below, not this.
+ * A word of a command, as a shell splits it: a quoted span stays whole, with its escapes, so
+ * what is inside one is not a flag.
  */
 const WORD = /(?:[^\s'"\\]+|\\[\s\S]?|'[^']*'|"(?:[^"\\]|\\[\s\S])*"|['"])+/g;
-/** A path pattern's characters: nothing a shell acts on, and nothing a regex needs to leave a path out of what it matches. */
-const PATH_CHARACTERS = /^[^'"\\$`()|;&<>^#!=]+$/;
+/**
+ * The commands WORD splits exactly as a shell does: plain text, single and double quotes,
+ * backslash escapes, `$NAME` and `${NAME}`. Not `$'…'`, `$(…)`, `${…:-…}` or backquotes, whose
+ * own quoting is more than it knows, nor a quote left open. Such a command is read whole,
+ * as all commands were before node A3d, so nothing rests on guessing where its words end.
+ */
+const PLAIN_SHELL = /^(?:[^'"\\`$]|\\[\s\S]|\$\{\w+\}|\$(?!['({])|'[^']*'|"(?:[^"\\`$]|\\[\s\S]|\$\{\w+\}|\$(?![({]))*")*$/;
 /** forge's subcommands in the grammar: `forge test` is a command, not a test. */
 const SUBCOMMANDS = Object.freeze([...new Set(Object.values(commands.COMMANDS).map((c) => c.subcommand))]);
 
@@ -78,16 +83,15 @@ function unquoted(value) {
 
 /**
  * Whether a flag's value is a word of the command rather than a name: one of a flag's fixed
- * choices, or, for --match-path and --no-match-path, what can only be a path: it holds a `/` or
- * ends in `.sol`, and nothing else a shell or a regex would act on. Anything else is read, so a
- * word that only looks like a value (a flag met inside a quoted filter, however it is quoted) hides nothing.
+ * choices, or, for --match-path and --no-match-path, what reads as a path: it holds a `/` or ends
+ * in `.sol`. (A word alone, `--match-path test_x`, is read.)
  */
 function ownValue(flag, value) {
   const spec = commands.FLAGS[flag];
   if (NAME_FLAGS.includes(flag)) return false;
   const v = unquoted(value);
   if (spec.value === 'choice') return spec.choices.includes(v);
-  return spec.value === 'pattern' && PATH_CHARACTERS.test(v) && /\/|\.sol$/.test(v);
+  return spec.value === 'pattern' && /\/|\.sol$/.test(v);
 }
 
 /**
@@ -98,6 +102,7 @@ function ownValue(flag, value) {
  * @returns {string[]} the words kept
  */
 function namingWords(command) {
+  if (command.length > commands.MAX_LENGTH || !PLAIN_SHELL.test(command)) return [command];
   const words = command.match(WORD) || [];
   const kept = [];
   for (let i = 0; i < words.length; i += 1) {

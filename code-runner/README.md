@@ -1475,11 +1475,13 @@ finding.json and the recorded failures alone:
   `--match-test`, `--no-match-test`, `--match-contract` and `--no-match-contract`,
   and any word the grammar does not know, since the command is the hunter's text
   and need not fit it. So `forge test --match-test test` still names `test()`.
-  A quoted span is one word, so what is inside one is not a flag. A filter is
-  not evaluated: a name counts when it is spelled, and a `$` after it is the
-  regex's end (`^test_x$` names `test_x`). A path flag's value goes unread only
-  when it can only be a path: it holds a `/` or ends in `.sol`, and nothing a
-  shell or a regex would act on. So `--match-path test_deposit` names it.
+  A quoted span is one word, so what is inside one is not a flag. A path flag's
+  value goes unread when it reads as a path: it holds a `/` or ends in `.sol`. A
+  filter is not evaluated: a name counts when it is spelled, and a `$` after it is
+  the regex's end (`^test_x$` names `test_x`). All of this holds where a shell's
+  words are certain: plain text, quotes, escapes, `$NAME`, `${NAME}`. A command with
+  `$'…'`, `$(…)`, `${…:-…}` or backquotes, or a quote left open, is read whole, as
+  every command was before this rule.
 - **`poc.observable` is read whole.** The word `test` in its prose still names
   a baseline `test()`. The hunter tool warns of it before a claim is committed.
 - **The observable appears in the recorded failure**: each text in double
