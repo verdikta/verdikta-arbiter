@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Two neighbouring arguments cannot both be whitelisted",
+  "claimedClass": "HIGH",
+  "rootCause": "Timelock._addCalldataCheck refuses a byte range that starts where another ends, as a partial overlap, although the two do not overlap, so owners cannot whitelist neighbouring arguments of a call and have to leave some of them unchecked.",
+  "affectedPaths": [
+    "src/Timelock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_two_neighbouring_arguments_can_both_be_whitelisted",
+    "observable": "test_two_neighbouring_arguments_can_both_be_whitelisted fails with \"CalldataList: Partial check overlap\""
+  },
+  "fixIncluded": false
+}

@@ -1,0 +1,35 @@
+diff --git a/test/SupplyWithoutConvergenceClaim.t.sol b/test/SupplyWithoutConvergenceClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/SupplyWithoutConvergenceClaim.t.sol
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {Stable2} from "src/functions/Stable2.sol";
++import {Stable2LUT1} from "src/functions/StableLUT/Stable2LUT1.sol";
++
++/// When the supply's iteration runs out of steps there is no answer. The call should revert, as calcReserve does, and not return the last guess.
++contract SupplyWithoutConvergenceClaim is Test {
++    function test_a_supply_that_comes_back_has_converged() public {
++        Stable2LUT1 table = new Stable2LUT1();
++        Stable2 stable = new Stable2(address(table));
++        uint256[] memory reserves = new uint256[](2);
++        reserves[0] = 1000e18;
++        reserves[1] = 100;
++
++        try stable.calcLpTokenSupply(reserves, abi.encode(18, 18)) returns (uint256 supply) {
++            uint256 step = oneMoreStep(supply, reserves[0], reserves[1], table.getAParameter() * 4);
++            assertGt(step > supply ? step - supply : supply - step, 1, "how far the supply it returned moves on one more step");
++        } catch {
++            // A revert is the answer asked for.
++        }
++    }
++
++    /// The step the function repeats, in the same order of operations.
++    function oneMoreStep(uint256 d, uint256 x, uint256 y, uint256 ann) private pure returns (uint256) {
++        uint256 dp = d * d / (x * 2) * d / (y * 2);
++        return (ann * (x + y) / 100 + dp * 2) * d / ((ann - 100) * d / 100 + 3 * dp);
++    }
++}

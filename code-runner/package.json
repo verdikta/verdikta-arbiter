@@ -16,7 +16,8 @@
     "calibration": "node calibration/run.js",
     "conformance": "node conformance/run.js",
     "test:calibration": "node --test --test-concurrency=1 --test-timeout=3600000 test/calibration/adversarial.test.js",
-    "test:calibration:clear-valid": "node --test --test-concurrency=1 --test-timeout=600000 test/calibration/clear-valid.test.js"
+    "test:calibration:clear-valid": "node --test --test-concurrency=1 --test-timeout=600000 test/calibration/clear-valid.test.js",
+    "test:calibration:batch-2": "node --test --test-concurrency=1 --test-timeout=600000 test/calibration/batch-2.test.js"
   },
   "dependencies": {
     "@verdikta/common": "1.9.0-attest.2"

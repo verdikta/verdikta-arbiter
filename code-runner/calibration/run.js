@@ -175,7 +175,7 @@ async function main(argv, deps = {}) {
   try {
     const needed = noBuildHere(chosen, session.platform);
     if (needed.length) {
-      stderr(`calibration: ${needed.join('; ')}. The listing check refuses a solc that is not official, so these cases run on ${codeReview.CLASS_HARD_LIMITS.platform} (CI's code-runner-calibration-clear-valid workflow), or pick others with --case or --listing`);
+      stderr(`calibration: ${needed.join('; ')}. The listing check refuses a solc that is not official, so these cases run on ${codeReview.CLASS_HARD_LIMITS.platform} (CI's code-runner-calibration workflows, one per subset), or pick others with --case or --listing`);
       return EXIT.HARNESS;
     }
     if (args.exportDir && session.platform !== codeReview.CLASS_HARD_LIMITS.platform) {

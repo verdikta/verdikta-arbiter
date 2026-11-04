@@ -1,0 +1,102 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.basin-rate-across-decimals",
+  "subsets": [
+    "batch-2",
+    "clear-invalid"
+  ],
+  "title": "calcRate gets the rate wrong across decimals",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-07-basin-findings/issues/13",
+    "licence": "Repository LICENSE.txt: MIT, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-07-basin-findings/issues/13",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. It keeps the finding's numbers, because those are what the program ruled on. The control uses reserves of equal value, the correction the sponsor gave, and passes.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-07-basin-findings/12468792fc3c89de5ea1353ddb83b7ce5f7d5b21/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-07-basin",
+      "verdict": "Invalid: labelled unsatisfactory, reason Invalid; sponsor disputed. Submitted as 2 (Med Risk).",
+      "class": null
+    }
+  },
+  "listing": "listings/basin-2024-07-scope",
+  "label": {
+    "kind": "clear-invalid.intended-behaviour",
+    "basis": "program",
+    "why": "The sponsor answered that the test is wrong: reserves of 10,000 and 10 are not equal in value, and with equal reserves the rate is one to one. The judge agreed that the discrepancy does not exist: the 18 passed to the supply calculation is right, because the reserves were already scaled."
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The program ruled that nothing is wrong and that the test expects a rate the code was never meant to give. Every gate passes, because the test does fail; that the expected number is the error is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/RateAcrossDecimalsClaim.t.sol > RateAcrossDecimalsClaim > test_a_six_decimal_token_prices_at_one_to_one()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the rate between the two tokens: 452252694 != 1000000"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "calcRate"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.basin-rate-across-decimals.control",
+    "removes": {
+      "poc.patch": [
+        "+        reserves[0] = 10_000e6;"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        reserves[0] = 10e6;"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

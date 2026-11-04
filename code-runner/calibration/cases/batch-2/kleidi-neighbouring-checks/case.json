@@ -1,0 +1,111 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.kleidi-neighbouring-checks",
+  "subsets": [
+    "batch-2",
+    "severity-boundary"
+  ],
+  "title": "Two neighbouring arguments cannot both be whitelisted",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/35",
+    "licence": "Repository LICENSE: Business Source License 1.1 (GitHub API: NOASSERTION). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/35",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding's test expects the revert, on two ranges of two bytes; this one whitelists the two arguments of a lending deposit and states what should happen. The upstream fix makes endIndex inclusive, so on the fix the same test passes with its ends one lower.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-10-kleidi-findings/bbb702a3e1c601e8ffb3b16170353f4130ed4cf0/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-10-kleidi",
+      "verdict": "Valid at the lower class: labelled 2 (Med Risk), downgraded by judge, satisfactory, duplicate-17. #17 is published as M-02.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/kleidi",
+  "label": {
+    "kind": "severity-boundary",
+    "basis": "program",
+    "why": "The judge moved this family of reports on the check indices to Medium, and then counted them under #17, a report the sponsor had called a valid medium.",
+    "boundary": {
+      "classes": [
+        "MEDIUM",
+        "HIGH"
+      ],
+      "call": "MEDIUM",
+      "moved": "Submitted as 3 (High Risk). Judge GalloDaSballo changed it to 2 (Med Risk) on 2024-11-04, and made it a duplicate of #17 on 2024-11-10."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "MEDIUM",
+    "reason": "The program judged it valid at the lower side of a boundary it moved, so Medium, against the High claimed. Every gate passes, and the class is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/NeighbouringChecksClaim.t.sol > NeighbouringChecksClaim > test_two_neighbouring_arguments_can_both_be_whitelisted()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "CalldataList: Partial check overlap"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "_addCalldataCheck"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.kleidi-neighbouring-checks.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(timelock.getCalldataChecks(address(lending), MockLending.deposit.selector).length, 2, \"the checks on the call\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        vm.expectRevert(\"CalldataList: Partial check overlap\");",
+        "+        assertEq(timelock.getCalldataChecks(address(lending), MockLending.deposit.selector).length, 0, \"the checks on the call\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

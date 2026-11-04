@@ -2066,6 +2066,12 @@ popular skills whose maintainers consent by naming Verdikta in their proof file
   commit, fetched at run time, and a test Verdikta wrote that asserts the safe property. Nothing of a third party is
   committed: the harness measures each claim file against the real repository and report before any image. A project
   in a subfolder lists a commit written over that folder's own tree. `code-runner/README.md`, "Public findings".
+- **What the second batch is (node A7c).** 16 claims on 4 repositories: clear invalids, duplicates, known issues and
+  severity boundaries, each with a label that is the source program's verdict or, where the case says so, the listing's
+  own text. The runner cannot tell these from a valid claim, since the test fails either way, so every gate passes and
+  all of them reach the jury: the harness holds only that each does so for the reason it states. A known issue has no
+  date: "listed before the commit" is which archive the commit names. A trust or token assumption in a program's ruling
+  has no field in a listing, whose scope is paths. `code-runner/README.md`, "The second batch".
 - Metrics: verdict accuracy and the **false-valid rate** on the adversarial
   claims (the number a maker cares about); class agreement with the source
   program on the severity boundaries; dispute-flip rate on canaries; spread of

@@ -17,6 +17,11 @@
  * label, and a poc.patch that only adds files, so no context or removed line carries someone's code.
  * The harness then measures its text against the real sources (provenance.js).
  *
+ * A case in the subset batch-2 (node A7c) says what kind of case it is and where its label comes from
+ * (`label`): a clear invalid, a duplicate, a known issue or a severity boundary. Its gates all pass,
+ * and the jury it reaches decides the rest, so what the loader holds is the label against the
+ * program's record or the listing's own text.
+ *
  * The rule is that nothing is skipped. loadCorpus reads every folder whichever subset was asked
  * for and reports every problem at once, before any image or run. What can be checked without
  * running is checked: an expected result that contradicts itself, a control that is more than
@@ -38,6 +43,21 @@ const CASE_FORMAT = 'verdikta.calibration-case/1';
 const LISTING_FORMAT = 'verdikta.calibration-listing/1';
 const SUBSET_NEEDING_CONTROLS = 'adversarial';
 const SUBSET_CLEAR_VALID = 'clear-valid';
+const SUBSET_BATCH_2 = 'batch-2';
+/** Each kind's outcome: what the design's rule settles it as (§8.4, §8.7, §18), which the jury is asked to reach. */
+const LABEL_KINDS = Object.freeze({
+  'clear-invalid.intended-behaviour': 'INVALID',
+  'clear-invalid.outside-scope': 'INVALID',
+  'clear-invalid.excluded-precondition': 'INVALID',
+  'duplicate.rephrased': 'DUPLICATE',
+  'duplicate.entry-point': 'DUPLICATE',
+  'duplicate.victim': 'DUPLICATE',
+  'known-issue.before': 'DUPLICATE',
+  'known-issue.after': 'VALID',
+  'severity-boundary': 'VALID'
+});
+/** A label from the listing's own text rather than the program's record is open to these only: a duplicate or a class is the program's call. */
+const LISTING_BASIS_KINDS = Object.freeze(['clear-invalid.outside-scope', 'clear-invalid.excluded-precondition', 'known-issue.before']);
 const RUN_RECIPIENT = codeReview.generateDisclosureKeyPair().recipient;
 /** The class platform's official releases: a release must exist there, wherever this harness runs. */
 const OFFICIAL_SOLC = officialList(codeReview.CLASS_HARD_LIMITS.platform);
@@ -150,7 +170,7 @@ function checkSource(source, fail) {
 }
 
 /** A public finding's provenance: everything a reader needs to check the label, in the case itself. */
-function checkPublicSource(source, fail) {
+function checkPublicSource(source, fail, { classOptional = false } = {}) {
   if (!isObject(source)) return;
   const url = (v) => text(v) && v.startsWith('https://');
   if (!text(source.licenceUse)) fail('source.licenceUse must say what the case does with the licence');
@@ -158,9 +178,10 @@ function checkPublicSource(source, fail) {
   if (!text(source.adaptedHow)) fail('source.adaptedHow must say how the PoC differs from the finding\'s');
   if (!url(source.report)) fail('source.report must be the https URL of the program\'s report, which the run compares the claim with');
   const p = source.program;
-  if (!isObject(p) || !text(p.name) || !text(p.contest) || !text(p.verdict) || !text(p.class)) {
-    fail('source.program must name the program, the contest, the verdict and the class');
-  } else if (!CLASSES.includes(p.class)) {
+  const noClass = classOptional && isObject(p) && p.class === null;
+  if (!isObject(p) || !text(p.name) || !text(p.contest) || !text(p.verdict) || (!text(p.class) && !noClass)) {
+    fail(`source.program must name the program, the contest, the verdict and the class${classOptional ? ' (null where the program gave none)' : ''}`);
+  } else if (!noClass && !CLASSES.includes(p.class)) {
     fail(`source.program.class must be one of ${CLASSES.join(', ')}`);
   }
 }
@@ -212,32 +233,146 @@ function labelNeedles(source, repoUrl) {
   return [s.url, s.adaptedFrom, s.report, p.name, p.contest, urlOwner(s.url), urlOwner(repoUrl)].filter(text);
 }
 
+/** What the jury would read of a case besides its claim: the prior findings, and the listing's known issues. */
+function juryTexts(loaded, listing) {
+  const out = {
+    'report.md': loaded.report,
+    'finding.json': loaded.finding ? JSON.stringify(loaded.finding) : null,
+    'poc.patch': loaded.poc ? loaded.poc.toString('utf8') : null
+  };
+  for (const prior of loaded.priors) {
+    out[`${prior.name}/report.md`] = prior.report;
+    out[`${prior.name}/finding.json`] = JSON.stringify(prior.finding);
+  }
+  if (Array.isArray(listing.knownIssues)) out[`${listing.rel}/known_issues.json`] = JSON.stringify(listing.knownIssues);
+  return out;
+}
+
+/**
+ * A case in batch-2 says what kind it is and where its label comes from. So a reader can check it against the program's text, and
+ * a label inferred here cannot pass for the program's.
+ */
+function checkLabel(raw, loaded, listing, fail) {
+  const { label, expected } = raw;
+  if (!isObject(label)) {
+    fail('a case in batch-2 needs a label: its kind, its basis, why, and what its kind asks for');
+    return;
+  }
+  unknownFields(label, ['kind', 'basis', 'why', 'duplicateOf', 'boundary', 'knownIssue'], (m) => fail(`label: ${m}`));
+  const want = LABEL_KINDS[label.kind];
+  if (want === undefined) {
+    fail(`label.kind must be one of ${Object.keys(LABEL_KINDS).join(', ')}`);
+    return;
+  }
+  const family = label.kind.split('.')[0];
+  if (!Array.isArray(raw.subsets) || !raw.subsets.includes(family)) fail(`a ${label.kind} case is also in the subset ${family}`);
+  if (!['program', 'listing'].includes(label.basis)) fail('label.basis must be program or listing: whose call the label is');
+  if (label.basis === 'listing' && !LISTING_BASIS_KINDS.includes(label.kind)) fail(`label.basis listing is not open to ${label.kind}: that call is the program's`);
+  if (!text(label.why)) fail('label.why must say what the program recorded, or which of the listing\'s text gives the reason');
+  if (isObject(expected) && expected.outcome !== want) fail(`a ${label.kind} case's outcome is ${want}, what the design settles it as`);
+
+  const programClass = isObject(raw.source) && isObject(raw.source.program) ? raw.source.program.class : undefined;
+  const claimed = loaded.finding ? loaded.finding.claimedClass : undefined;
+  if (want === 'VALID' && isObject(expected)) {
+    if (expected.class !== programClass) fail(`expected.class ${expected.class} is not the program's class, ${programClass}`);
+  } else if (family === 'duplicate') {
+    if (!CLASSES.includes(programClass)) fail('a duplicate is a finding the program judged valid: source.program.class is the class it gave');
+  } else if (label.basis === 'program' && programClass !== null && programClass !== undefined) {
+    fail('source.program.class is null on a claim the program rejected');
+  }
+
+  const forKind = (field, on) => {
+    if (on && !isObject(label[field])) fail(`a ${label.kind} case needs label.${field}`);
+    if (!on && label[field] !== undefined) fail(`label.${field} does not go with ${label.kind}`);
+    return on && isObject(label[field]);
+  };
+  const packed = isObject(expected) && isObject(expected.runner) && isObject(expected.runner.pack) ? expected.runner.pack : {};
+  const contains = (tier, words) => Array.isArray(packed.contains) && packed.contains.some((p) => isObject(p) && p.tier === tier && typeof p.text === 'string' && p.text.includes(words));
+
+  if (forKind('duplicateOf', family === 'duplicate')) {
+    const d = label.duplicateOf;
+    unknownFields(d, ['url', 'recorded'], (m) => fail(`label.duplicateOf: ${m}`));
+    if (!text(d.url) || !d.url.startsWith('https://')) fail('label.duplicateOf.url must be the https URL of the finding it duplicates');
+    if (!text(d.recorded)) fail('label.duplicateOf.recorded must say how the program recorded it');
+    if (loaded.priors.length === 0) fail('a duplicate needs the finding it duplicates among its prior findings: that is what the jury compares');
+    const named = loaded.priors.map((p) => p.finding && p.finding.title).find(text);
+    if (named && !contains('priorFindings', named)) fail('expected.runner.pack.contains must hold the prior finding\'s title in the tier priorFindings');
+  }
+  if (forKind('boundary', family === 'severity-boundary')) {
+    const b = label.boundary;
+    unknownFields(b, ['classes', 'call', 'moved'], (m) => fail(`label.boundary: ${m}`));
+    const [low, high] = Array.isArray(b.classes) ? b.classes : [];
+    if (!Array.isArray(b.classes) || b.classes.length !== 2 || CLASSES.indexOf(high) - CLASSES.indexOf(low) !== 1 || !CLASSES.includes(low)) {
+      fail('label.boundary.classes must be two adjacent classes, lower first');
+    } else {
+      if (!b.classes.includes(b.call)) fail('label.boundary.call must be one of the two classes');
+      if (isObject(expected) && expected.class !== b.call) fail(`expected.class ${expected.class} is not the program's call, ${b.call}`);
+      if (claimed !== undefined && !b.classes.includes(claimed)) fail(`finding.json's claimedClass ${claimed} is on neither side of the boundary`);
+    }
+    if (!text(b.moved)) fail('label.boundary.moved must say who moved it, and from where');
+  }
+  if (forKind('knownIssue', family === 'known-issue')) {
+    const k = label.knownIssue;
+    unknownFields(k, ['title', 'listed', 'twin', 'how'], (m) => fail(`label.knownIssue: ${m}`));
+    const before = label.kind === 'known-issue.before';
+    if (k.listed !== (before ? 'before' : 'after')) fail(`label.knownIssue.listed must be ${before ? 'before' : 'after'}`);
+    if (!text(k.how)) fail('label.knownIssue.how must say where the entry comes from, and when it was listed');
+    if (!text(k.title)) {
+      fail('label.knownIssue.title must name the entry');
+    } else if (Array.isArray(listing.knownIssues)) {
+      const listed = listing.knownIssues.some((e) => isObject(e) && e.title === k.title);
+      if (before && !listed) fail(`the listing's known_issues.json holds no entry titled ${JSON.stringify(k.title)}: a known issue listed before the commit is in the list the commit saw`);
+      if (!before && listed) fail(`the listing's known_issues.json holds ${JSON.stringify(k.title)}: an issue listed after the commit cannot be in the list the commit saw`);
+      if (before && !contains('knownIssues', k.title)) fail('expected.runner.pack.contains must hold the entry\'s title in the tier knownIssues');
+      if (!before && !(Array.isArray(packed.absent) && packed.absent.includes(k.title))) fail('expected.runner.pack.absent must hold the entry\'s title');
+    }
+    if (!before && !text(k.twin)) fail('a known issue listed after the commit names its twin: the same claim on the listing that holds it');
+    if (k.twin !== undefined && (!text(k.twin) || !/^batch-2\./.test(k.twin))) fail('label.knownIssue.twin must name a case in batch-2');
+  }
+}
+
 /** The rules of a case on a listing of kind `git`. */
-function checkPublicCase(raw, loaded, repoUrl, fail) {
-  checkPublicSource(raw.source, fail);
+function checkPublicCase(raw, loaded, listing, fail) {
+  const subsets = Array.isArray(raw.subsets) ? raw.subsets : [];
+  const repoUrl = listing.repo.url;
+  const batch2 = subsets.includes(SUBSET_BATCH_2);
+  checkPublicSource(raw.source, fail, { classOptional: batch2 });
   if (raw.claim && raw.claim.fix) fail('fix.patch is refused on a git listing: its removed lines would be someone\'s code');
   if (loaded.poc && loaded.poc.length) for (const m of addOnlyProblems(loaded.poc)) fail(m);
-  const files = { 'report.md': loaded.report, 'finding.json': loaded.finding ? JSON.stringify(loaded.finding) : null, 'poc.patch': loaded.poc ? loaded.poc.toString('utf8') : null };
-  for (const [file, content] of Object.entries(files)) {
+  for (const [file, content] of Object.entries(juryTexts(loaded, listing))) {
     if (content === null) continue;
     const found = labelNeedles(raw.source, repoUrl).find((needle) => content.toLowerCase().includes(needle.toLowerCase()));
     if (found) fail(`${file} names the source (${found}): the claim files reach the jury, and the label must not`);
   }
-  if (!Array.isArray(raw.subsets) || !raw.subsets.includes(SUBSET_CLEAR_VALID) || !isObject(raw.expected) || !isObject(raw.expected.runner)) return;
+  // The harness tells the runner the External Adapter's gates passed, so that has to be true: a finding naming a path out of scope never reaches a runner.
+  if (loaded.finding && listing.spec && isObject(listing.spec.stake)) {
+    const inScope = codeReview.validateFinding(loaded.finding, listing.spec);
+    if (!inScope.ok) fail(`finding.json would fail the inScope gate, and the harness tells the runner it passed: ${inScope.issues.map((i) => i.detail).join('; ')}`);
+  }
+  if (raw.label !== undefined && !batch2) fail('label goes with the subset batch-2');
+  if (!subsets.includes(SUBSET_CLEAR_VALID) && !batch2) return;
+  if (!isObject(raw.expected) || !isObject(raw.expected.runner)) return;
   const { expected } = raw;
   const { runner } = expected;
   if (raw.controlOf !== undefined) {
+    if (raw.label !== undefined) fail('a control has no label: it is its case with the assertion turned around');
     const s = runner.settlement;
-    if (!isObject(s) || s.check !== 'POC_DID_NOT_REPRODUCE') fail('a clear-valid control passes where its case fails, so reproduces fails on its own');
+    if (!isObject(s) || s.check !== 'POC_DID_NOT_REPRODUCE') fail('a control on a public finding passes where its case fails, so reproduces fails on its own');
     return;
   }
-  const programClass = isObject(raw.source) && isObject(raw.source.program) ? raw.source.program.class : undefined;
-  if (expected.outcome !== 'VALID') fail('a clear-valid case\'s outcome is VALID');
-  if (expected.class !== programClass) fail(`expected.class ${expected.class} is not the program's class, ${programClass}`);
-  if (loaded.finding && loaded.finding.claimedClass !== programClass) fail(`finding.json's claimedClass ${loaded.finding.claimedClass} is not the program's class, ${programClass}`);
+  const what = batch2 ? 'a batch-2 case' : 'a clear-valid case';
+  if (batch2) {
+    checkLabel(raw, loaded, listing, fail);
+    if (typeof expected.reason !== 'string' || !/\bjury\b/.test(expected.reason)) fail('expected.reason must say plainly what is left to the jury');
+  } else {
+    const programClass = isObject(raw.source) && isObject(raw.source.program) ? raw.source.program.class : undefined;
+    if (expected.outcome !== 'VALID') fail('a clear-valid case\'s outcome is VALID');
+    if (expected.class !== programClass) fail(`expected.class ${expected.class} is not the program's class, ${programClass}`);
+    if (loaded.finding && loaded.finding.claimedClass !== programClass) fail(`finding.json's claimedClass ${loaded.finding.claimedClass} is not the program's class, ${programClass}`);
+  }
   const gates = isObject(runner.gates) ? runner.gates : {};
   if (RUNNER_GATES.some((g) => gates[g] !== 'pass') || !isObject(runner.settlement) || runner.settlement.kind !== 'jury') {
-    fail('a clear-valid case reaches the jury: every gate passes');
+    fail(`${what} reaches the jury: every gate passes`);
   }
   const first = Array.isArray(runner.tests) ? runner.tests[0] : null;
   const poc = loaded.finding && isObject(loaded.finding.poc) ? loaded.finding.poc : null;
@@ -245,6 +380,40 @@ function checkPublicCase(raw, loaded, repoUrl, fail) {
     if (!poc.observable.includes(functionName(first.id))) fail(`poc.observable must name the test, ${functionName(first.id)}`);
     if (typeof first.message !== 'string' || !poc.observable.includes(`"${first.message}"`)) fail('poc.observable must quote the failure the case expects, in double quotes');
   }
+}
+
+/**
+ * A known issue listed after the commit and its twin: one claim, byte for byte, on two listings of one repository at one commit
+ * that differ only in known_issues.json. So whatever the jury does differently between them, the list is why.
+ */
+function checkTwin(entry, byId, problems) {
+  const twinId = entry.raw.label && isObject(entry.raw.label.knownIssue) ? entry.raw.label.knownIssue.twin : undefined;
+  if (twinId === undefined) return;
+  const fail = (m) => problems.push(`${entry.id}: twin: ${m}`);
+  const twin = byId.get(twinId);
+  if (!twin) {
+    fail(`${twinId} does not exist`);
+    return;
+  }
+  const back = twin.raw.label && isObject(twin.raw.label.knownIssue) ? twin.raw.label.knownIssue : {};
+  if (back.twin !== entry.id) fail(`${twinId} must name this case as its twin`);
+  if (back.title !== entry.raw.label.knownIssue.title) fail(`${twinId} names another entry`);
+  for (const file of CLAIM_FILES) {
+    const a = claimFile(entry, file);
+    const b = claimFile(twin, file);
+    if ((a === null) !== (b === null) || (a && !a.equals(b))) fail(`${file} differs from ${twinId}'s`);
+  }
+  const [mine, theirs] = [entry.listing, twin.listing];
+  if (!mine || !theirs) return;
+  if (mine === theirs) {
+    fail('it is on the same listing: only the list can differ');
+    return;
+  }
+  if (!isDeepStrictEqual(mine.repo, theirs.repo) || mine.commit !== theirs.commit) fail('it is on another repository or commit');
+  if (!isDeepStrictEqual(mine.baseline, theirs.baseline)) fail('the two listings hold different baselines');
+  const { disclosureKey: _a, ...stakeA } = isObject(mine.spec) && isObject(mine.spec.stake) ? mine.spec.stake : {};
+  const { disclosureKey: _b, ...stakeB } = isObject(theirs.spec) && isObject(theirs.spec.stake) ? theirs.spec.stake : {};
+  if (!isDeepStrictEqual({ ...mine.spec, stake: stakeA }, { ...theirs.spec, stake: stakeB })) fail('the two listings hold different specs');
 }
 
 function readTree(dir, fail) {
@@ -516,7 +685,7 @@ function loadCase(root, group, name, listings, problems) {
   const fail = (m) => problems.push(`${folderId}: ${m}`);
   const raw = readJson(path.join(dir, 'case.json'), fail);
   if (raw === null) return null;
-  unknownFields(raw, ['format', 'id', 'subsets', 'title', 'source', 'listing', 'claim', 'priorFindings', 'expected', 'control', 'controlOf'], fail);
+  unknownFields(raw, ['format', 'id', 'subsets', 'title', 'source', 'listing', 'claim', 'priorFindings', 'expected', 'control', 'controlOf', 'label'], fail);
   if (raw.format !== CASE_FORMAT) fail(`format must be ${CASE_FORMAT}, got ${JSON.stringify(raw.format)}`);
   if (raw.id !== folderId) fail(`id must be its folder, ${folderId}`);
   if (!Array.isArray(raw.subsets) || raw.subsets.length === 0 || !raw.subsets.every(text)) fail('subsets must name at least one subset');
@@ -581,13 +750,14 @@ function loadCase(root, group, name, listings, problems) {
   for (const file of filesUnder(dir)) {
     if (!known.has(file)) fail(`${file} is in the folder, and the case names no such file`);
   }
-  if (listing && isObject(listing.repo) && listing.repo.kind === 'git') checkPublicCase(raw, loaded, listing.repo.url, fail);
+  loaded.priors = priors;
+  if (listing && isObject(listing.repo) && listing.repo.kind === 'git') checkPublicCase(raw, loaded, listing, fail);
 
   return {
     id: raw.id, group, dir, raw,
     subsets: raw.subsets, title: raw.title, source: raw.source,
     listing, claim: loaded, priors, expected: raw.expected,
-    control: raw.control, controlOf: raw.controlOf
+    control: raw.control, controlOf: raw.controlOf, label: raw.label
   };
 }
 
@@ -744,6 +914,10 @@ function loadCorpus({ root, layout = false }) {
     if (Array.isArray(entry.subsets) && entry.subsets.includes(SUBSET_NEEDING_CONTROLS) && entry.control === undefined && entry.controlOf === undefined) {
       problems.push(`${entry.id}: an adversarial case needs a control: the same PoC without the adversarial part`);
     }
+    if (Array.isArray(entry.subsets) && entry.subsets.includes(SUBSET_BATCH_2)) {
+      if (entry.control === undefined && entry.controlOf === undefined) problems.push(`${entry.id}: a batch-2 case needs a control: the same test with its assertion turned around`);
+      checkTwin(entry, byId, problems);
+    }
   }
   if (layout) problems.push(...layoutProblems(root, listings));
   if (problems.length) throw new CorpusError(problems);
@@ -774,5 +948,5 @@ function selectCases(corpus, { subset, cases: ids, listing }) {
 }
 
 module.exports = {
-  CASE_FORMAT, LISTING_FORMAT, RUNNER_GATES, CLAIM_FILES, CorpusError, loadCorpus, selectCases, getPath
+  CASE_FORMAT, LISTING_FORMAT, RUNNER_GATES, CLAIM_FILES, LABEL_KINDS, CorpusError, loadCorpus, selectCases, getPath
 };

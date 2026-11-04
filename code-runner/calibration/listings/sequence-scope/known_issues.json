@@ -1,0 +1,20 @@
+[
+  {
+    "id": "sha256:fe5f97dd4b75791ac01774eb583df7c46deba7b8963763be63a93e576b8f48f1",
+    "title": "A call carrying only value stops at the proxy",
+    "class": "LOW",
+    "paths": [
+      "src/Wallet.sol"
+    ],
+    "description": "When a call has value and no calldata, the wallet proxy returns at once, and the implementation does not run. That is deliberate, and it saves gas on plain deposits."
+  },
+  {
+    "id": "sha256:50d37ab8c63425da35aa9dce12eb1ffe5e5392abc1dc6db8f3942e079f45af4d",
+    "title": "Changing a rule starts its usage limit again",
+    "class": "LOW",
+    "paths": [
+      "src/extensions/sessions/explicit/ExplicitSessionManager.sol"
+    ],
+    "description": "What a session has used under a permission does not carry over to a changed rule. The authors know about it and accept it."
+  }
+]

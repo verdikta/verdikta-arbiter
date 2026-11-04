@@ -10,7 +10,7 @@
     "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/stake/LayerEdgeStaking.sol: MIT. Findings repository: no licence file.",
     "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
     "adaptedFrom": "https://github.com/sherlock-audit/2025-05-layeredge-judging/issues/194",
-    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test needs a raised --gas-limit, which a listing's commands cannot set, and only logs the gas; this one pauses gas metering for its set-up and asserts the limit.",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test needs a raised --gas-limit, which a listing's commands cannot set, and only logs the gas; this one pauses gas metering for its set-up, runs half the visits in setUp and half in the test, since a long transaction makes forge 1.8.5 slow, and asserts the limit.",
     "report": "https://raw.githubusercontent.com/sherlock-audit/2025-05-layeredge-judging/e9716aebbc59170273aea6c58d3f17f4e05b7cd7/README.md",
     "program": {
       "name": "Sherlock",
@@ -54,7 +54,7 @@
             "fail"
           ],
           "kind": "assertion",
-          "message": "gas for the withdrawal: 32419017 >= 30000000"
+          "message": "gas for the withdrawal: 32419203 >= 30000000"
         }
       ],
       "pack": {

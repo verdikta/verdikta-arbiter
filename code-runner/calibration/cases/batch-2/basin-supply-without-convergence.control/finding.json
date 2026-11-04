@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "calcLpTokenSupply returns a number when it has not converged",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Stable2.calcLpTokenSupply ends its 255 steps without a revert when the iteration has not settled, so a caller gets the last guess as the supply, where calcReserve in the same contract reverts on that condition.",
+  "affectedPaths": [
+    "src/functions/Stable2.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_supply_that_comes_back_has_converged",
+    "observable": "test_a_supply_that_comes_back_has_converged fails with \"how far the supply it returned moves on one more step: 341995 > 1\""
+  },
+  "fixIncluded": false
+}

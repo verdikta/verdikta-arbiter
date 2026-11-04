@@ -416,14 +416,16 @@ test('a clear-valid control is the case with its assertion turned around: it pas
   }
 });
 
-test('the real calibration folder holds nothing the format does not name, and at most five public cases on a repository', () => {
+test('the real calibration folder holds nothing the format does not name, and at most five public cases on a repository in a subset', () => {
   const { cases } = loadCorpus({ root: CALIBRATION, layout: true });
-  const perListing = new Map();
-  for (const c of cases.filter((x) => x.listing.repo.kind === 'git' && x.controlOf === undefined)) {
-    perListing.set(c.listing.id, (perListing.get(c.listing.id) || 0) + 1);
+  const publicCases = cases.filter((x) => x.listing.repo.kind === 'git' && x.controlOf === undefined);
+  // The cap keeps a subset from becoming one project's. Each subset is measured on its own, so it counts within one.
+  for (const subset of ['clear-valid', 'batch-2']) {
+    const perRepo = new Map();
+    for (const c of publicCases.filter((x) => x.subsets.includes(subset))) perRepo.set(c.listing.repo.url, (perRepo.get(c.listing.repo.url) || 0) + 1);
+    for (const [url, n] of perRepo) assert.ok(n <= 5, `${subset}: ${url} has ${n} cases`);
+    assert.ok([...perRepo.values()].reduce((a, b) => a + b, 0) >= 15, `${subset}: the node asks for at least 15`);
   }
-  for (const [id, n] of perListing) assert.ok(n <= 5, `${id} has ${n} cases`);
-  assert.ok([...perListing.values()].reduce((a, b) => a + b, 0) >= 15, 'the node asks for at least 15');
 });
 
 test('nothing lies around: a folder under repos/ or listings/ that nothing names, and anything unknown at the top', () => {
