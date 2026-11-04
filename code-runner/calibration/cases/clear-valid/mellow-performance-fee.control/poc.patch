@@ -1,0 +1,32 @@
+diff --git a/test/PerformanceFeeClaim.t.sol b/test/PerformanceFeeClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/PerformanceFeeClaim.t.sol
+@@ -0,0 +1,27 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
++import {FeeManager} from "src/managers/FeeManager.sol";
++
++/// A price in shares per asset falls as a share gains value. A ten percent fee on that gain takes ten percent of the gain, in shares.
++contract PerformanceFeeClaim is Test {
++    function test_a_performance_fee_takes_its_share_of_the_gain() public {
++        address vault = address(0xBA);
++        address asset = address(0xCC);
++        FeeManager fees = FeeManager(
++            address(new TransparentUpgradeableProxy(address(new FeeManager("Calibration", 1)), address(0xAD), new bytes(0)))
++        );
++        fees.initialize(abi.encode(address(this), address(this), uint24(0), uint24(0), uint24(1e5), uint24(0)));
++        fees.setBaseAsset(vault, asset);
++
++        vm.prank(vault);
++        fees.updateState(asset, 100e18);
++
++        // From 100 shares per asset to 90: one share gains a ninth of its value, and a tenth of that is one ninetieth.
++        uint256 charged = fees.calculateFee(vault, asset, 90e18, 900e18);
++
++        assertEq(charged, 900e18, "the fee in shares");
++    }
++}

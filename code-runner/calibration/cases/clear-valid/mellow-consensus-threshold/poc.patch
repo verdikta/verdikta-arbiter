@@ -1,0 +1,35 @@
+diff --git a/test/ConsensusThresholdClaim.t.sol b/test/ConsensusThresholdClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/ConsensusThresholdClaim.t.sol
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test, Vm} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
++import {IConsensus} from "src/interfaces/permissions/IConsensus.sol";
++import {Consensus} from "src/permissions/Consensus.sol";
++
++/// A threshold of two means two signers: one signer's signature, sent twice, is not enough.
++contract ConsensusThresholdClaim is Test {
++    function test_one_signer_twice_does_not_meet_a_threshold_of_two() public {
++        Consensus consensus = Consensus(
++            address(new TransparentUpgradeableProxy(address(new Consensus("Calibration", 1)), address(0xAD), new bytes(0)))
++        );
++        consensus.initialize(abi.encode(address(this)));
++
++        Vm.Wallet memory first = vm.createWallet("first signer");
++        Vm.Wallet memory second = vm.createWallet("second signer");
++        consensus.addSigner(first.addr, 1, IConsensus.SignatureType.EIP712);
++        consensus.addSigner(second.addr, 2, IConsensus.SignatureType.EIP712);
++
++        bytes32 order = keccak256("an order only one signer saw");
++        (uint8 v, bytes32 r, bytes32 s) = vm.sign(first.privateKey, order);
++        IConsensus.Signature[] memory signatures = new IConsensus.Signature[](2);
++        signatures[0] = IConsensus.Signature({signer: first.addr, signature: abi.encodePacked(r, s, v)});
++        signatures[1] = signatures[0];
++
++        assertFalse(consensus.checkSignatures(order, signatures), "one signer does not count twice");
++    }
++}

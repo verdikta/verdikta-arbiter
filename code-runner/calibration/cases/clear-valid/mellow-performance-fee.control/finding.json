@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "The performance fee can take the whole supply",
+  "claimedClass": "HIGH",
+  "rootCause": "FeeManager.calculateFee multiplies the fall in price directly by the supply and scales by a constant, leaving out the current price, so the result is not a share of the gain and scales with the size of the price.",
+  "affectedPaths": [
+    "src/managers/FeeManager.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_performance_fee_takes_its_share_of_the_gain",
+    "observable": "test_a_performance_fee_takes_its_share_of_the_gain fails with \"the fee in shares: 900000000000000000000 != 10000000000000000000\""
+  },
+  "fixIncluded": false
+}

@@ -9,7 +9,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { main, EXIT } = require('../../calibration/run');
-const { writeCorpus, juryCase, controlCase, GATES_PASS, TEST_ID } = require('../helpers/calibrationCorpus');
+const { writeCorpus, juryCase, controlCase, GATES_PASS, TEST_ID, writePublicCorpus } = require('../helpers/calibrationCorpus');
 const { cidV0 } = require('../../calibration/lib/archives');
 
 const RUNNER = Object.freeze({ version: '0.1.0', runtime: 'runsc', platform: 'linux/amd64', gvisor: 'release-20260921.0' });
@@ -471,13 +471,70 @@ test('R1-F3: an export directory holding anything but scenario folders is refuse
   }
 });
 
-test('a listing whose repo is a public git URL is accepted by the format and refused by this node\'s image step, loudly', async () => {
-  const corpus = writeCorpus({ listing: { repo: { kind: 'git', url: 'https://github.com/example/project' } } });
+test('a fixture\'s image inputs are its files; a git listing has no files here', () => {
+  const corpus = writePublicCorpus();
   try {
     const { imageInputs } = require('../../calibration/lib/session');
-    const { loadCorpus } = require('../../calibration/lib/format');
-    const { cases } = loadCorpus({ root: corpus.root });
-    assert.throws(() => imageInputs(cases[0].listing), /git.*A7b/);
+    const { cases } = require('../../calibration/lib/format').loadCorpus({ root: corpus.root });
+    assert.equal(cases[0].listing.files, undefined);
+    assert.throws(() => imageInputs(cases[0].listing), /fetched/);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('a listing that needs a solc with no official build on this platform stops the run before any image, exit 3, saying so', async () => {
+  const corpus = writePublicCorpus();
+  const log = [];
+  try {
+    const code = await main(['--subset', 'clear-valid'], {
+      root: corpus.root,
+      makeSession: fakeSession({ platform: 'linux/arm64', log }),
+      stdout: (s) => log.push(s),
+      stderr: (s) => log.push(s),
+      provenance: async () => { log.push('provenance'); return []; }
+    });
+    assert.equal(code, EXIT.HARNESS);
+    assert.ok(log.some((l) => /0\.8\.23/.test(l) && /linux\/arm64/.test(l) && /linux\/amd64/.test(l)), log.join('\n'));
+    assert.ok(!log.includes('provenance'), 'nothing fetched');
+    assert.ok(!log.some((l) => l.startsWith('publish')), 'no image');
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('a claim file that shares too much with its source stops the run before any image, exit 2; a source that cannot be read is exit 3', async () => {
+  const corpus = writePublicCorpus();
+  const log = [];
+  const deps = (provenance) => ({
+    root: corpus.root,
+    makeSession: fakeSession({ log }),
+    stdout: (s) => log.push(s),
+    stderr: (s) => log.push(s),
+    provenance
+  });
+  try {
+    assert.equal(await main(['--subset', 'clear-valid'], deps(async () => ['clear-valid.one: report.md shares a run of 40 tokens with the report'])), EXIT.MALFORMED);
+    assert.ok(log.some((l) => /shares a run of 40 tokens/.test(l)));
+    assert.equal(await main(['--subset', 'clear-valid'], deps(async () => { throw new Error('no route'); })), EXIT.HARNESS);
+    assert.ok(!log.some((l) => l.startsWith('publish')), 'no image');
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('--list-listings prints the listings of a subset, for CI\'s matrix, and starts nothing', async () => {
+  const corpus = writePublicCorpus();
+  const out = [];
+  try {
+    const code = await main(['--subset', 'clear-valid', '--list-listings'], {
+      root: corpus.root,
+      makeSession: async () => { throw new Error('no session'); },
+      stdout: (s) => out.push(s),
+      stderr: (s) => out.push(s)
+    });
+    assert.equal(code, EXIT.OK);
+    assert.deepEqual(JSON.parse(out.join('')), ['project']);
   } finally {
     corpus.cleanup();
   }

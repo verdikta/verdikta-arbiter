@@ -2,7 +2,7 @@
   "name": "verdikta-code-runner",
   "version": "0.1.0",
   "private": true,
-  "description": "Verdikta arbiter code runner: executes a claim's proof of concept in a fresh gVisor container and reports what happened (stake-attestation design §9)",
+  "description": "Verdikta arbiter code runner: executes a claim's proof of concept in a fresh gVisor container and reports what happened (stake-attestation design \u00a79)",
   "main": "src/index.js",
   "type": "commonjs",
   "license": "MIT",
@@ -15,7 +15,8 @@
     "test:docker": "node --test --test-concurrency=1 --test-timeout=1800000 test/docker/",
     "calibration": "node calibration/run.js",
     "conformance": "node conformance/run.js",
-    "test:calibration": "node --test --test-concurrency=1 --test-timeout=3600000 test/calibration/"
+    "test:calibration": "node --test --test-concurrency=1 --test-timeout=3600000 test/calibration/adversarial.test.js",
+    "test:calibration:clear-valid": "node --test --test-concurrency=1 --test-timeout=600000 test/calibration/clear-valid.test.js"
   },
   "dependencies": {
     "@verdikta/common": "1.9.0-attest.1"

@@ -2059,6 +2059,12 @@ popular skills whose maintainers consent by naming Verdikta in their proof file
   because the report's hash covers the image's digest: this is what makes one canary hash
   possible across hosts. A run off the class platform, or off the pinned gVisor, prints no
   hash at all. `code-runner/README.md`, "Calibration and conformance", holds the rules.
+- **What the clear-valid set is (node A7b).** 17 public findings on 5 repositories, at most 5 on one, narrower than
+  planned: most contest repositories from before 2024 hold a forge-std whose failed assertions carry no reason, which
+  the listing check refuses, and others are out on the compile-cache problem node A3d fixes. A case holds a URL and a
+  commit, fetched at run time, and a test Verdikta wrote that asserts the safe property. Nothing of a third party is
+  committed: the harness measures each claim file against the real repository and report before any image. A project
+  in a subfolder lists a commit written over that folder's own tree. `code-runner/README.md`, "Public findings".
 - Metrics: verdict accuracy and the **false-valid rate** on the adversarial
   claims (the number a maker cares about); class agreement with the source
   program on the severity boundaries; dispute-flip rate on canaries; spread of
