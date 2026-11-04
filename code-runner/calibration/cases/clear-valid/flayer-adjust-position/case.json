@@ -1,0 +1,96 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.flayer-adjust-position",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "Paying back the principal through adjustPosition wipes the interest",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-08-flayer-judging/issues/269",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/contracts/ProtectedListings.sol: MIT.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2024-08-flayer-judging/issues/269",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test pins the zero price with an assertion that passes.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2024-08-flayer-judging/8128d9655d35f71857f999f83686fc9ae298e636/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2024-08-flayer",
+      "verdict": "Valid. Published in the final report as Issue H-11.",
+      "class": "HIGH"
+    }
+  },
+  "listing": "listings/flayer",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "HIGH",
+    "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/AdjustPositionClaim.t.sol > AdjustPositionClaim > test_repaying_the_principal_leaves_the_interest()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the unlock price keeps the accrued interest: 0 != 2055890410801920"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "adjustPosition"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.flayer-adjust-position.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(protectedListings.unlockPrice(address(erc721a), 0), owed - 0.4 ether, \"the unlock price keeps the accrued interest\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertEq(protectedListings.unlockPrice(address(erc721a), 0), 0, \"the unlock price keeps the accrued interest\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

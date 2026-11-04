@@ -1,0 +1,26 @@
+diff --git a/test/FactorySecondDeployClaim.t.sol b/test/FactorySecondDeployClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/FactorySecondDeployClaim.t.sol
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.27;
++
++import { Test } from "forge-std/Test.sol";
++import { Factory } from "../src/Factory.sol";
++
++/// A deterministic account factory answers with the account's address when the account already exists.
++contract FactorySecondDeployClaim is Test {
++
++  function test_a_second_deploy_answers_with_the_address() public {
++    Factory factory = new Factory();
++    address mainModule = address(0x1000);
++    bytes32 salt = bytes32(uint256(7));
++
++    address first = factory.deploy(mainModule, salt);
++    address second = factory.deploy(mainModule, salt);
++
++    assertEq(second, first, "the second deploy gives the same address");
++  }
++
++}

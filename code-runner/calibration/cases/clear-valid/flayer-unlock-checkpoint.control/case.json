@@ -1,0 +1,68 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.flayer-unlock-checkpoint.control",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "Unlocking one protected listing makes the next one cheaper: the same test with its assertion turned around",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-08-flayer-judging/issues/243",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/contracts/ProtectedListings.sol: MIT.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2024-08-flayer-judging/issues/243",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test pins both prices as they are.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2024-08-flayer-judging/8128d9655d35f71857f999f83686fc9ae298e636/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2024-08-flayer",
+      "verdict": "Valid. Published in the final report as Issue H-7; labels Sponsor Confirmed, Will Fix.",
+      "class": "HIGH"
+    }
+  },
+  "listing": "listings/flayer",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with the assertion turned around passes on all three runs, so its case fails on what it says it does, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/UnlockCheckpointClaim.t.sol > UnlockCheckpointClaim > test_the_second_unlock_costs_what_the_first_did()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "clear-valid.flayer-unlock-checkpoint"
+}

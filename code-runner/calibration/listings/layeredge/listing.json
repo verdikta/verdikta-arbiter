@@ -1,0 +1,18 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "layeredge",
+  "repo": {
+    "kind": "git",
+    "url": "https://github.com/sherlock-audit/2025-05-layeredge",
+    "commit": "708c5b5345ed50cd0bde7b0a8a548c8936639683",
+    "subdir": "edgen-staking",
+    "tree": "572715140fa8463a8a8d4cfd9c20d71862fc8c04"
+  },
+  "commit": "adf3e8423344d7aaed3350e3012606cfe15d93db",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-05-layeredge",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/stake/LayerEdgeStaking.sol: MIT.",
+    "program": null
+  },
+  "solc": "0.8.23"
+}

@@ -261,8 +261,10 @@ function publicCase(over = {}) {
 
 function publicSpec(commit, over = {}) {
   const spec = specFor(commit);
+  const { disclosureKey: _filled, ...stake } = spec.stake;
   return {
     ...spec,
+    stake,
     repo: UPSTREAM,
     artifact: { kind: 'repo' },
     commands: { ...spec.commands, setup: 'forge build' },

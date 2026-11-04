@@ -271,6 +271,17 @@ test('a git listing pins its repository: the commit, and for a subfolder the tre
   assertPublicRefused({ subdir: true, listing: { repo: { kind: 'git', url: UPSTREAM, commit: UPSTREAM_COMMIT, subdir: '../up', tree: 'b'.repeat(40) } } }, /repo\.subdir must be a folder inside the repository/);
 });
 
+test('a git listing names no disclosure key: the harness fills a public one in, so nothing key-shaped is committed', () => {
+  const spec = publicSpec('a'.repeat(40));
+  assertPublicRefused({ spec: { stake: { ...spec.stake, disclosureKey: 'age1notakey' } } }, /must not name a disclosureKey/);
+  const corpus = writePublicCorpus();
+  try {
+    assert.match(loadCorpus({ root: corpus.root }).cases[0].listing.spec.stake.disclosureKey, /^age1/);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
 test('solc is one official release or a list of them, on the class platform', () => {
   assert.deepEqual(publicProblems({ listing: { solc: ['0.8.20', '0.8.23'] } }), []);
   assertPublicRefused({ listing: { solc: '0.8.999' } }, /solc 0\.8\.999 is not an official release/);

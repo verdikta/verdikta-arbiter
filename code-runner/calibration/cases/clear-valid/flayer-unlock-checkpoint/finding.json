@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Unlocking one protected listing makes the next one cheaper",
+  "claimedClass": "HIGH",
+  "rootCause": "ProtectedListings.unlockProtectedListing lowers listingCount before it writes the checkpoint, so the checkpoint is computed from a utilization rate that is already too low, and later unlocks pay less interest.",
+  "affectedPaths": [
+    "src/contracts/ProtectedListings.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_the_second_unlock_costs_what_the_first_did",
+    "observable": "test_the_second_unlock_costs_what_the_first_did fails with \"the second unlock price equals the first: 402055890410801920 != 402485479451875840\""
+  },
+  "fixIncluded": false
+}

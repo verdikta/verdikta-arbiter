@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Anyone can upgrade an upgradeable well",
+  "claimedClass": "HIGH",
+  "rootCause": "WellUpgradeable._authorizeUpgrade checks what the new implementation is and how it is called, and never who is calling, so upgradeTo works for any account.",
+  "affectedPaths": [
+    "src/WellUpgradeable.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_stranger_cannot_move_the_proxy",
+    "observable": "test_a_stranger_cannot_move_the_proxy fails with \"PLACEHOLDER\""
+  },
+  "fixIncluded": false
+}

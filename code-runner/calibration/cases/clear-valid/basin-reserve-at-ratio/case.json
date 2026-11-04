@@ -1,0 +1,96 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.basin-reserve-at-ratio",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "calcReserveAtRatioLiquidity reverts for ratios its table covers",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-08-basin-findings/issues/5",
+    "licence": "Repository LICENSE.txt: MIT License, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1).",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-08-basin-findings/issues/5",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test also fails on the revert, as a loop with no assertion; this one states the property.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-08-basin-findings/e492f98f24f26b514578b45610fcbb6e195649d2/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-08-basin",
+      "verdict": "Valid. Published as M-01; labels 2 (Med Risk), selected for report, sponsor confirmed.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/basin-2024-08",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "MEDIUM",
+    "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ReserveAtRatioClaim.t.sol > ReserveAtRatioClaim > test_every_ratio_in_the_table_gets_an_answer()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "no ratio stops the calculation: Non convergence: calcLpTokenSupply != "
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "calcLpTokenSupply"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.basin-reserve-at-ratio.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(stoppedBy, \"\", \"no ratio stops the calculation\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertEq(stoppedBy, \"Non convergence: calcLpTokenSupply\", \"no ratio stops the calculation\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

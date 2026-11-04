@@ -1,0 +1,18 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "flayer",
+  "repo": {
+    "kind": "git",
+    "url": "https://github.com/sherlock-audit/2024-08-flayer",
+    "commit": "0ec252cf9ef0f3470191dcf8318f6835f5ef688c",
+    "subdir": "flayer",
+    "tree": "311a08f8dd407663d4433cf25a31e0218d22d9ee"
+  },
+  "commit": "695ea1c5497e98838815488af3a1e2bb5fb63fde",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-08-flayer",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/contracts/ProtectedListings.sol: MIT.",
+    "program": null
+  },
+  "solc": "0.8.26"
+}

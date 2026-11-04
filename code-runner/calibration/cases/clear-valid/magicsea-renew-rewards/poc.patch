@@ -1,0 +1,48 @@
+diff --git a/test/RenewRewardsClaim.t.sol b/test/RenewRewardsClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/RenewRewardsClaim.t.sol
+@@ -0,0 +1,43 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy2Step, ProxyAdmin2Step} from "../src/transparent/TransparentUpgradeableProxy2Step.sol";
++import {MlumStaking} from "../src/MlumStaking.sol";
++import {ERC20Mock} from "./mocks/ERC20.sol";
++
++/// Rewards a position has earned belong to its owner, whoever renews its lock.
++contract RenewRewardsClaim is Test {
++    function test_rewards_stay_with_the_owner_when_a_spender_renews() public {
++        address admin = address(0xD0);
++        address owner = address(0xA);
++        address spender = address(0xB);
++
++        ERC20Mock stakeToken = new ERC20Mock("Stake", "STK", 18);
++        ERC20Mock rewardToken = new ERC20Mock("Reward", "RWD", 6);
++        MlumStaking staking = MlumStaking(
++            address(
++                new TransparentUpgradeableProxy2Step(
++                    address(new MlumStaking(stakeToken, rewardToken)),
++                    ProxyAdmin2Step(address(1)),
++                    abi.encodeCall(MlumStaking.initialize, (admin))
++                )
++            )
++        );
++
++        rewardToken.mint(address(staking), 100_000e6);
++        stakeToken.mint(owner, 100e18);
++        vm.startPrank(owner);
++        stakeToken.approve(address(staking), 100e18);
++        staking.createPosition(100e18, 1 days);
++        staking.approve(spender, 1);
++        vm.stopPrank();
++
++        skip(1 hours);
++
++        vm.prank(spender);
++        staking.renewLockPosition(1);
++
++        assertEq(rewardToken.balanceOf(spender), 0, "the spender keeps none of the rewards");
++    }
++}

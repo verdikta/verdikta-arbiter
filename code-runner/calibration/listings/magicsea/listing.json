@@ -1,0 +1,18 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "magicsea",
+  "repo": {
+    "kind": "git",
+    "url": "https://github.com/sherlock-audit/2024-06-magicsea",
+    "commit": "42e799446595c542eff9519353d3becc50cdba63",
+    "subdir": "magicsea-staking",
+    "tree": "30e42c80cdaa7c5d94cbc9a9766d669183f60de1"
+  },
+  "commit": "1c87d30d3c517a050bb5b1f7a4abfd8aaf63496a",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-06-magicsea",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/MlumStaking.sol: MIT.",
+    "program": null
+  },
+  "solc": "0.8.20"
+}

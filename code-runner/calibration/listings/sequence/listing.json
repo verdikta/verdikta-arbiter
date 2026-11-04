@@ -1,0 +1,16 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "sequence",
+  "repo": {
+    "kind": "git",
+    "url": "https://github.com/code-423n4/2025-10-sequence",
+    "commit": "b0e5fb15bf6735ec9aaba02f5eca28a7882d815d"
+  },
+  "commit": "b0e5fb15bf6735ec9aaba02f5eca28a7882d815d",
+  "source": {
+    "url": "https://github.com/code-423n4/2025-10-sequence",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6).",
+    "program": null
+  },
+  "solc": "0.8.28"
+}

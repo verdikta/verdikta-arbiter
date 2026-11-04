@@ -1,0 +1,68 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.sequence-factory-redeploy.control",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "The factory reverts instead of answering with an existing account: the same test with its assertion turned around",
+  "source": {
+    "url": "https://code4rena.com/reports/2025-10-sequence#m-04-factory-deploy-reverts-instead-of-returning-address-when-account-already-exists",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6).",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://code4rena.com/reports/2025-10-sequence#m-04-factory-deploy-reverts-instead-of-returning-address-when-account-already-exists",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test expects the revert; this one states what the factory should answer.",
+    "report": "https://code4rena.com/reports/2025-10-sequence",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2025-10-sequence",
+      "verdict": "Valid. Listed under Medium Risk Findings as M-04 in the published report; no judge or sponsor comment on the page.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/sequence",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with the assertion turned around passes on all three runs, so its case fails on what it says it does, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/FactorySecondDeployClaim.t.sol > FactorySecondDeployClaim > test_a_second_deploy_answers_with_the_address()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "clear-valid.sequence-factory-redeploy"
+}

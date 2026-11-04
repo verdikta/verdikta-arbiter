@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "baseCommit": "adf3e8423344d7aaed3350e3012606cfe15d93db",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/library/FenwickTreeTest.t.sol > FenwickTreeTest > test_FenwickTree_query()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/library/FenwickTreeTest.t.sol > FenwickTreeTest > test_FenwickTree_update()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/library/FenwickTreeTest.t.sol > FenwickTreeTest > test_FenwickTree_query()",
+    "test/library/FenwickTreeTest.t.sol > FenwickTreeTest > test_FenwickTree_update()"
+  ],
+  "unstable": []
+}

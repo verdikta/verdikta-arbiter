@@ -38,6 +38,7 @@ const CASE_FORMAT = 'verdikta.calibration-case/1';
 const LISTING_FORMAT = 'verdikta.calibration-listing/1';
 const SUBSET_NEEDING_CONTROLS = 'adversarial';
 const SUBSET_CLEAR_VALID = 'clear-valid';
+const RUN_RECIPIENT = codeReview.generateDisclosureKeyPair().recipient;
 /** The class platform's official releases: a release must exist there, wherever this harness runs. */
 const OFFICIAL_SOLC = officialList(codeReview.CLASS_HARD_LIMITS.platform);
 
@@ -324,6 +325,11 @@ function loadListing(root, rel, problems) {
     if (spec.baseCommit !== raw.commit) fail(`code_review.json's baseCommit ${spec.baseCommit} is not the listing's commit`);
     const isGit = isObject(raw.repo) && raw.repo.kind === 'git';
     if (isGit && spec.repo !== raw.repo.url) fail(`code_review.json's repo ${spec.repo} is not the listing's, ${raw.repo.url}`);
+    if (isGit && isObject(spec.stake)) {
+      // A public recipient, and nothing here encrypts to it: each run makes its own, so no key-shaped text is committed for the secret scan to read.
+      if (spec.stake.disclosureKey !== undefined) fail('code_review.json must not name a disclosureKey: the harness fills one in for the run');
+      else spec.stake = { ...spec.stake, disclosureKey: RUN_RECIPIENT };
+    }
     const setup = isObject(spec.commands) ? spec.commands.setup : undefined;
     if (setup !== undefined) {
       if (!isGit) {

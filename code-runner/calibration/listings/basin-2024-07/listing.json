@@ -1,0 +1,16 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "basin-2024-07",
+  "repo": {
+    "kind": "git",
+    "url": "https://github.com/code-423n4/2024-07-basin",
+    "commit": "7d5aacbb144d0ba0bc358dfde6e0cc913d25310e"
+  },
+  "commit": "7d5aacbb144d0ba0bc358dfde6e0cc913d25310e",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-07-basin",
+    "licence": "Repository LICENSE.txt: MIT (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1).",
+    "program": null
+  },
+  "solc": "0.8.20"
+}

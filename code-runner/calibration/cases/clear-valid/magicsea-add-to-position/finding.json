@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Anyone can add dust to a position and shorten its lock",
+  "claimedClass": "MEDIUM",
+  "rootCause": "MlumStaking._requireOnlyOperatorOrOwnerOf passes msg.sender as both the owner and the spender it asks about, so the check always holds, and addToPosition recomputes the lock from what is left of it.",
+  "affectedPaths": [
+    "src/MlumStaking.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_stranger_cannot_shorten_a_lock",
+    "observable": "test_a_stranger_cannot_shorten_a_lock fails with \"the lock stays as its owner set it: 604800 != 1209600\""
+  },
+  "fixIncluded": false
+}

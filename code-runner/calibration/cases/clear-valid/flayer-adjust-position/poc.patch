@@ -1,0 +1,43 @@
+diff --git a/test/AdjustPositionClaim.t.sol b/test/AdjustPositionClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/AdjustPositionClaim.t.sol
+@@ -0,0 +1,38 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.22;
++
++import {IProtectedListings} from '@flayer/ProtectedListings.sol';
++import {Deployers} from '@uniswap/v4-core/test/utils/Deployers.sol';
++import {FlayerTest} from './lib/FlayerTest.sol';
++
++/// Paying back what a listing took leaves the interest it has accrued still owed.
++contract AdjustPositionClaim is Deployers, FlayerTest {
++    constructor() {
++        _deployPlatform();
++        locker.createCollection(address(erc721a), 'Test A', 'A', 0);
++        _initializeCollection(erc721a, SQRT_PRICE_1_2);
++        _addLiquidityToPool(address(erc721a), 10 ether, int(0.00001 ether), false);
++    }
++
++    function test_repaying_the_principal_leaves_the_interest() public {
++        erc721a.mint(address(this), 0);
++        erc721a.setApprovalForAll(address(protectedListings), true);
++
++        uint[] memory ids = new uint[](1);
++        IProtectedListings.CreateListing[] memory create = new IProtectedListings.CreateListing[](1);
++        create[0] = IProtectedListings.CreateListing({
++            collection: address(erc721a),
++            tokenIds: ids,
++            listing: IProtectedListings.ProtectedListing({owner: payable(address(this)), tokenTaken: 0.4 ether, checkpoint: 0})
++        });
++        protectedListings.createListings(create);
++
++        vm.warp(block.timestamp + 7 days);
++
++        uint owed = protectedListings.unlockPrice(address(erc721a), 0);
++        locker.collectionToken(address(erc721a)).approve(address(protectedListings), 0.4 ether);
++        protectedListings.adjustPosition(address(erc721a), 0, -0.4 ether);
++
++        assertEq(protectedListings.unlockPrice(address(erc721a), 0), owed - 0.4 ether, "the unlock price keeps the accrued interest");
++    }
++}

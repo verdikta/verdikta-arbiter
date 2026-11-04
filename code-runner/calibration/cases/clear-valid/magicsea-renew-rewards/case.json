@@ -1,0 +1,96 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.magicsea-renew-rewards",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "An approved spender takes the rewards when it renews a position",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2024-06-magicsea-judging/issues/207",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/MlumStaking.sol: MIT.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2024-06-magicsea-judging/issues/207",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test asserts the bad outcome.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2024-06-magicsea-judging/afdfd5f321b566cf08f311ad5629e41e0bd8e164/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2024-06-magicsea",
+      "verdict": "Valid. Published in the final report as Issue M-4; labels Medium, Sponsor Confirmed, Will Fix; fix signed off.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/magicsea",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "MEDIUM",
+    "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/RenewRewardsClaim.t.sol > RenewRewardsClaim > test_rewards_stay_with_the_owner_when_a_spender_renews()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the spender keeps none of the rewards: 99999999999 != 0"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "_lockPosition"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.magicsea-renew-rewards.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(rewardToken.balanceOf(spender), 0, \"the spender keeps none of the rewards\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertGt(rewardToken.balanceOf(spender), 0, \"the spender keeps none of the rewards\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}
