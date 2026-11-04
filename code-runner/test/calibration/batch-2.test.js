@@ -32,7 +32,7 @@ const RESTATED = Object.freeze({
   'kleidi-partial-whitelist': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: 'an amount the owners never whitelisted is refused' },
   'kleidi-shorter-expiry': { kind: 'duplicate.rephrased', outcome: 'DUPLICATE', basis: 'program', words: 'Timelock: operation is not ready' },
   'kleidi-pause-gas': { kind: 'severity-boundary', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: '>= 30000000' },
-  'kleidi-expired-revival': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: 'still expired after the setting changes' },
+  'kleidi-neighbouring-checks': { kind: 'severity-boundary', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: 'CalldataList: Partial check overlap' },
   'kleidi-spell-before-answer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: 'the spell waits for the answer from the owners' },
   'mellow-cancel-listed-before': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: 'IndexOutOfBounds()' },
   'mellow-cancel-listed-after': { kind: 'known-issue.after', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: 'IndexOutOfBounds()' },
