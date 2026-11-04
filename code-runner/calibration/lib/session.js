@@ -223,7 +223,7 @@ async function createSession({ registryPort = 0, log = silent } = {}) {
           // The listing's commands.setup, as the attested builder runs it: its out/ and cache/ stay in the image.
           await publishImage(registry.port, repository, image);
           const before = `${host}/${repository}@${image.digest}`;
-          const layer = await prebuild(docker, before, listing.setup, { digest: image.digest, platform: PLATFORM });
+          const layer = await prebuild(docker, before, listing.setup, { digest: image.digest, platform: PLATFORM, instance });
           image = assembled(parts, [...parts.layers, layer]);
         }
         await publishImage(registry.port, repository, image);

@@ -106,6 +106,26 @@ test('a project in a subfolder: the listed commit is written over the subfolder\
   }
 });
 
+test('two subfolders of one commit keep their own stores: each fetches its own submodules', async () => {
+  const root = tmp();
+  try {
+    const depA = makeRepo(root, 'depA', { 'A.sol': 'contract A {}\n' });
+    const depB = makeRepo(root, 'depB', { 'B.sol': 'contract B {}\n' });
+    const top = makeRepo(root, 'mono', {
+      'a/foundry.toml': 'x\n', 'b/foundry.toml': 'y\n',
+      '.gitmodules': gitmodules([['a/lib/dep', depA.url], ['b/lib/dep', depB.url]])
+    }, { 'a/lib/dep': depA.commit, 'b/lib/dep': depB.commit });
+    const cacheDir = path.join(root, 'cache');
+    const one = await fetchRepo({ url: top.url, commit: top.commit, subdir: 'a', tree: git(top.dir, 'rev-parse', `${top.commit}:a`) }, { cacheDir, allowFile: true });
+    const two = await fetchRepo({ url: top.url, commit: top.commit, subdir: 'b', tree: git(top.dir, 'rev-parse', `${top.commit}:b`) }, { cacheDir, allowFile: true });
+    assert.deepEqual(one.missing, []);
+    assert.deepEqual(two.missing, []);
+    assert.ok(two.files.some((f) => f.path === 'lib/dep/B.sol'));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a subfolder whose tree is not the one pinned stops the fetch', async () => {
   const root = tmp();
   try {

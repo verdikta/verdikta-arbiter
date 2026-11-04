@@ -2,7 +2,7 @@
   "version": 1,
   "title": "Well data decoding tests the wrong decimal for token one",
   "claimedClass": "HIGH",
-  "rootCause": "Stable2.decodeWellData tests decimal0 twice, so token one's zero is never replaced by 18, and when decimal0 is zero a real value for token one is overwritten with 18. Every scaling that follows uses the wrong decimals.",
+  "rootCause": "Stable2.decodeWellData tests decimal0 a second time where it should test decimal1. decimal0 has already been given a value by then, so the branch never runs and a zero for token one stays zero, which every scaling that follows then uses.",
   "affectedPaths": [
     "src/functions/Stable2.sol"
   ],

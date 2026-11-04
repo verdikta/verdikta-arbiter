@@ -143,7 +143,8 @@ async function fetchRepo(repo, { cacheDir, allowFile = false }) {
   const { url, commit, subdir = null, tree: pinned = null } = repo;
   if (!url.startsWith('https://') && !(allowFile && url.startsWith('file://'))) throw new Error(`a listing's repository is fetched over https only: ${url}`);
   if (!COMMIT.test(commit)) throw new Error(`a listing's repository names a full commit id: ${commit}`);
-  const key = crypto.createHash('sha256').update(`${url}@${commit}`).digest('hex');
+  // By folder too: a store holds the submodules of the tree it walked, and is complete for that tree only.
+  const key = crypto.createHash('sha256').update(`${url}@${commit}:${subdir || ''}`).digest('hex');
   const store = path.join(cacheDir, 'repos', `${key}.git`);
   const marker = path.join(store, 'vcr-fetched');
   const cached = fs.existsSync(marker);

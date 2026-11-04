@@ -20,6 +20,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { runText } = require('../../src/docker');
 const forge = require('../../src/forge');
+const { LABEL, LABEL_INSTANCE } = require('../../src/sandbox');
 const { parseCommand, forgeArgs } = require('../../src/commands');
 const { ensureImage } = require('../../test/docker/helpers');
 const { prebuiltLayer, ENV } = require('./image');
@@ -59,11 +60,11 @@ function setupScript(args) {
  * @param {object} docker - the session's
  * @param {string} image - the listing's image so far, by digest, in the session's registry
  * @param {string} setup - commands.setup, which the loader already parsed
- * @param {{digest:string, platform:string}} o
+ * @param {{digest:string, platform:string, instance:string}} o - `instance`: the session's, whose close removes what carries it
  * @returns {Promise<Buffer>} the third layer
  * @throws {Error} the build failed: the listing cannot be built in the image
  */
-async function prebuild(docker, image, setup, { digest, platform }) {
+async function prebuild(docker, image, setup, { digest, platform, instance }) {
   const file = path.join(cacheRoot(), 'prebuilt', prebuiltCacheName(digest, setup));
   if (fs.existsSync(file)) return prebuiltLayer(fs.readFileSync(file));
   const parsed = parseCommand('build', setup);
@@ -74,10 +75,14 @@ async function prebuild(docker, image, setup, { digest, platform }) {
   const out = fs.openSync(partial, 'w');
   let stderr = Buffer.alloc(0);
   const tmpfs = (dir, size) => ['--tmpfs', `${dir}:rw,exec,size=${size},uid=${UID},gid=${UID},mode=0755`];
+  // The CLI's timeout kills the CLI, and --rm removes a container only once it exits. So it has a name to remove it by, here
+  // whatever happened, and the session's labels, for a close from Ctrl-C and CI's check that nothing is left.
+  const name = `vcr-cal-setup-${instance}-${crypto.randomBytes(4).toString('hex')}`;
   let result;
   try {
     result = await docker.run([
-      'run', '--rm', '--pull', 'never', '--network', 'none', '--platform', platform, '--user', `${UID}:${UID}`, '--read-only',
+      'run', '--rm', '--name', name, '--label', `${LABEL}=1`, '--label', `${LABEL_INSTANCE}=${instance}`,
+      '--pull', 'never', '--network', 'none', '--platform', platform, '--user', `${UID}:${UID}`, '--read-only',
       ...tmpfs('/work', '4g'), ...tmpfs('/tmp', '1g'), ...tmpfs('/home/sandbox', '1g'), '--entrypoint', '/bin/sh', image, '-c', setupScript(forgeArgs(parsed))
     ], {
       timeoutMs: TIMEOUT_MS,
@@ -86,6 +91,7 @@ async function prebuild(docker, image, setup, { digest, platform }) {
     });
   } finally {
     fs.closeSync(out);
+    await runText(docker, ['rm', '--force', name], { timeoutMs: 60000 });
   }
   await runText(docker, ['image', 'rm', '--force', image], { timeoutMs: 120000 });
   if (result.exitCode !== 0) {

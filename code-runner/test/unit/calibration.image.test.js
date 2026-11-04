@@ -363,3 +363,54 @@ test('a prebuilt layer is kept by the image it was built on and the command that
   assert.notEqual(prebuiltCacheName(digest, 'forge build'), prebuiltCacheName(digest, 'forge build --skip test'));
   assert.notEqual(prebuiltCacheName(digest, 'forge build'), prebuiltCacheName(`sha256:${'b'.repeat(64)}`, 'forge build'));
 });
+
+// A setup that outlives the CLI must not outlive the harness: --rm removes a container only after it exits.
+function fakeSetupDocker({ exitCode = 0, timedOut = false } = {}) {
+  const calls = [];
+  const { LABEL, LABEL_INSTANCE } = require('../../src/sandbox');
+  return {
+    calls, LABEL, LABEL_INSTANCE,
+    run: async (args, o = {}) => {
+      calls.push(args);
+      if (args.includes('/bin/sh') && o.stdout) {
+        o.stdout.write(tarLayer([{ path: 'out/A.json', bytes: Buffer.from('{}'), mode: 0o644, uid: 0, gid: 0 }]));
+        return { exitCode, signal: null, timedOut, aborted: false, spawnError: null, durationMs: 1 };
+      }
+      return { exitCode: 0, signal: null, timedOut: false, aborted: false, spawnError: null, durationMs: 1 };
+    }
+  };
+}
+
+async function runSetup(docker, instance = 'calabc') {
+  const { prebuild } = require('../../calibration/lib/prebuild');
+  const before = process.env.VCR_CALIBRATION_CACHE;
+  const cache = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-setup-test-'));
+  process.env.VCR_CALIBRATION_CACHE = cache;
+  try {
+    return await prebuild(docker, '127.0.0.1:5000/x@sha256:' + 'a'.repeat(64), 'forge build --skip test', { digest: `sha256:${'a'.repeat(64)}`, platform: 'linux/amd64', instance });
+  } finally {
+    if (before === undefined) delete process.env.VCR_CALIBRATION_CACHE;
+    else process.env.VCR_CALIBRATION_CACHE = before;
+    fs.rmSync(cache, { recursive: true, force: true });
+  }
+}
+
+test('a setup container carries the session\'s labels and a name, so closing the session and CI\'s check both find it', async () => {
+  const docker = fakeSetupDocker();
+  await runSetup(docker);
+  const setup = docker.calls.find((a) => a.includes('/bin/sh'));
+  const label = (key) => setup.some((v, i) => setup[i - 1] === '--label' && v.startsWith(`${key}=`));
+  assert.ok(label(docker.LABEL), 'the runner\'s label');
+  assert.ok(setup.includes(`${docker.LABEL_INSTANCE}=calabc`), 'the session\'s instance');
+  const name = setup[setup.indexOf('--name') + 1];
+  assert.match(name, /^vcr-cal-setup-calabc-/);
+  assert.ok(docker.calls.some((a) => a[0] === 'rm' && a.includes('--force') && a.includes(name)), 'removed, whatever happened');
+});
+
+test('a setup that times out has its container removed, and says so', async () => {
+  const docker = fakeSetupDocker({ exitCode: null, timedOut: true });
+  await assert.rejects(runSetup(docker), /timed out/);
+  const setup = docker.calls.find((a) => a.includes('/bin/sh'));
+  const name = setup[setup.indexOf('--name') + 1];
+  assert.ok(docker.calls.some((a) => a[0] === 'rm' && a.includes('--force') && a.includes(name)));
+});
