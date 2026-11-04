@@ -51,7 +51,7 @@ stub curl 'echo "curl $*" >> "$STUB_LOG"
 while [ $# -gt 0 ]; do [ "$1" = "-o" ] && { shift; : > "$1"; }; shift; done; [ "${STUB_CURL_FAIL:-0}" = 1 ] && exit 22; exit 0'
 stub sha512sum 'cat > "$STUB_STATE/sha-input"; [ "${STUB_SHA_FAIL:-0}" = 1 ] && exit 1; exit 0'
 stub tar 'echo "tar $*" >> "$STUB_LOG"
-while [ $# -gt 0 ]; do if [ "$1" = "-C" ]; then shift; printf "#!/bin/bash\necho runsc version release-20260921.0\n" > "$1/runsc"; chmod +x "$1/runsc"; fi; shift; done; exit 0'
+while [ $# -gt 0 ]; do if [ "$1" = "-C" ]; then shift; printf "#!/bin/bash\necho runsc version release-20260921.0\n" > "$1/runsc"; chmod +x "$1/runsc"; mkdir -p "$1/gvisor-bin"; printf "#!/bin/bash\n" > "$1/gvisor-bin/gvisor_sentry"; chmod +x "$1/gvisor-bin/gvisor_sentry"; fi; shift; done; exit 0'
 stub bzip2 'exit 0'
 stub fallocate 'echo "fallocate $*" >> "$STUB_LOG"; [ "${STUB_FALLOCATE_FAIL:-0}" = 1 ] && exit 1; for last; do :; done; : > "$last"; exit 0'
 stub mkfs.ext4 'echo "mkfs.ext4 $*" >> "$STUB_LOG"; [ "${STUB_MKFS_FAIL:-0}" = 1 ] && exit 1; exit 0'
@@ -189,6 +189,7 @@ strays=$(printf '%s\n' "$dockers" | grep -v -- "--host unix://$P/run/verdikta-co
 is "every docker call names the runner's socket" "$strays" ""
 has "SHA-512 checked" "$(cat "$P/state/sha-input")" "^7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e  "
 has "gVisor executable by anyone: the runner's user asks it its release" "$(stat -c '%a' "$P/opt/gvisor/20260921.0/runsc" 2>/dev/null || stat -f '%Lp' "$P/opt/gvisor/20260921.0/runsc")" "755"
+[ -x "$P/opt/gvisor/20260921.0/gvisor-bin/gvisor_sentry" ] && ok || bad "the release's other binaries were not installed: runsc needs them beside it"
 has "disk 40 GB by default" "$l" "^fallocate -l 40G "
 has "ext4 without root's reserve" "$l" "^mkfs.ext4 .*-m 0"
 hasnt "no partial image left" "$(ls "$P/var/lib")" "partial"
@@ -252,6 +253,14 @@ is "gVisor change rc" "$rc" 0
 has "reload of its own daemon" "$(log)" "^systemctl reload verdikta-code-runner-docker"
 hasnt "no restart on a gVisor change" "$(log)" "restart"
 hasnt "the arbiter's Docker is not reloaded" "$(log)" "^systemctl reload docker"
+
+# --- a release missing its binaries is installed again, whatever runsc says
+rm -rf "$P/opt/gvisor/20260921.0/gvisor-bin"
+: > "$P/log"
+out=$(run enable 2>&1); rc=$?
+is "partial release rc" "$rc" 0
+has "partial release: downloaded again" "$(log)" "gvisor.tar.bz2"
+[ -x "$P/opt/gvisor/20260921.0/gvisor-bin/gvisor_sentry" ] && ok || bad "a partial release stayed partial"
 
 # --- SHA-512 mismatch: nothing installed, no disk made
 fresh

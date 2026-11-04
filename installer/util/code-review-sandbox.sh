@@ -357,7 +357,8 @@ FRESH=0
 DISK_CREATED=0
 
 install_gvisor() {
-    if [ -x "$RUNSC" ] && "$RUNSC" --version 2>/dev/null | grep -q "release-$GVISOR_VERSION\$"; then
+    # The sandbox's binaries sit beside runsc in the release (gvisor-bin/): the whole release, or none.
+    if [ -x "$RUNSC" ] && [ -x "$GVISOR_DIR/gvisor-bin/gvisor_sentry" ] && "$RUNSC" --version 2>/dev/null | grep -q "release-$GVISOR_VERSION\$"; then
         say "gVisor $GVISOR_VERSION is already at $RUNSC."
         return 0
     fi
@@ -371,9 +372,11 @@ install_gvisor() {
     mkdir -p "$TMP_DIR/gvisor"
     tar -xjf "$TMP_DIR/gvisor.tar.bz2" -C "$TMP_DIR/gvisor" || { echo -e "${RED}Could not unpack gVisor.${NC}" >&2; return 1; }
     # Executable by anyone, up the whole path: the runner's user asks this binary its release.
-    as_root mkdir -p "$GVISOR_DIR" && as_root chmod 0755 "$(dirname "$GVISOR_DIR")" "$GVISOR_DIR" \
-        && as_root cp "$TMP_DIR/gvisor/runsc" "$RUNSC.new" && as_root chmod 0755 "$RUNSC.new" && as_root mv -f "$RUNSC.new" "$RUNSC" \
-        || { echo -e "${RED}Could not install gVisor at $RUNSC.${NC}" >&2; return 1; }
+    as_root mkdir -p "$(dirname "$GVISOR_DIR")" && as_root chmod 0755 "$(dirname "$GVISOR_DIR")" \
+        && as_root rm -rf "$GVISOR_DIR.new" && as_root cp -R "$TMP_DIR/gvisor" "$GVISOR_DIR.new" \
+        && as_root chown -R root:root "$GVISOR_DIR.new" && as_root chmod -R a+rX,go-w "$GVISOR_DIR.new" \
+        && as_root rm -rf "$GVISOR_DIR" && as_root mv -f "$GVISOR_DIR.new" "$GVISOR_DIR" \
+        || { echo -e "${RED}Could not install gVisor at $GVISOR_DIR.${NC}" >&2; return 1; }
 }
 
 disk_preflight() {
