@@ -1472,9 +1472,11 @@ finding.json and the recorded failures alone:
   INVALID that way. So in `poc.command` the word does not count in exactly these
   places: the subcommand of `forge test`, a flag of the listing's grammar
   (`--match-test`), the choice in `--skip test`, and a directory or file of a path
-  (`test/x.t.sol`, `a/test`, `test.t.sol`) outside the value of a flag that takes a
-  name. Anywhere else it counts: `--match-test test`, `--mt=-?test`, `forge test
-  test`. Every other identifier is read wherever it is, so no way of quoting or
+  (`test/x.t.sol`, `a/test`, `test.t.sol`) in the value of `--match-path` or
+  `--no-match-path` or the word right after `forge test`, when nothing there is a
+  shell's to read otherwise, and no substitution came before it. Anywhere else it
+  counts: `--match-test test`, `--mt=-?test`, `forge test test`, `--mt $(printf
+  test/?)`. Every other identifier is read wherever it is, so no way of quoting or
   placing any other name can hide it. That includes a path: a directory with the
   very name of another baseline test (`invariant/` on a listing with `invariant()`)
   reads as naming it, and the hunter tool warns. A filter is not evaluated: a name

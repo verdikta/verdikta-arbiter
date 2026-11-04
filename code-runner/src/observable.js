@@ -19,9 +19,11 @@
  *   `test`. So in `poc.command` that word does not count in exactly these
  *   places: the subcommand of `forge test`, a flag of the listing's grammar
  *   (--match-test), the choice in `--skip test`, and a directory or file of a
- *   path (`test/x.t.sol`, `a/test`, `test.t.sol`) outside the value of a flag
- *   that takes a name. Anywhere else it counts, as before; and it always counts
- *   as a test the patch added. Every other identifier is read wherever it is, so
+ *   path (`test/x.t.sol`, `a/test`, `test.t.sol`) in the value of --match-path
+ *   or --no-match-path or the word right after `forge test` (forge's own
+ *   shorthand for it), when nothing about it is a shell's to read otherwise.
+ *   Anywhere else it counts, as before; and it always counts as a test the
+ *   patch added. Every other identifier is read wherever it is, so
  *   no way of quoting or placing any other name can hide it. No filter is
  *   evaluated: a name counts when it is spelled, a `$` after it being the
  *   regex's end.
@@ -50,6 +52,12 @@ const WORD = /(?:[^\s'"\\$]+|\$(?!')|\\[\s\S]?|\$'(?:[^'\\]|\\[\s\S])*'|'[^']*'|
 const TEST_IN_PATH = /(?<![\w$])test\/|\/test(?![\w$])|(?<![\w$])test(?:\.t)?\.sol(?![\w$])/g;
 /** The program: `forge`, or a path to it. */
 const FORGE = /(?:^|\/)forge$/;
+/** forge's path flags: what their value holds is a path. */
+const PATH_FLAGS = Object.freeze(['--match-path', '--no-match-path']);
+/** What a shell acts on outside quotes in what should be a path. */
+const SHELL_SYNTAX = /[;&|<>()`$]/;
+/** What holds words of its own that this split can't see. */
+const SUBSTITUTION = /`|\$\(|[<>]\(|\$\{[^}]*$/;
 
 /** A test identity's function name: `<file> > <Contract> > name(args)` → name. */
 function functionName(id) {
@@ -77,9 +85,9 @@ function grammarFlag(name) {
   return name.startsWith('--') && Object.hasOwn(commands.ALIASES, name) ? commands.ALIASES[name] : null;
 }
 
-/** Whether text says `test`: a path's directories and files apart, unless it is where a name is written. */
-function saysTest(text, whereANameIs) {
-  return identifiers(whereANameIs ? text : text.replace(TEST_IN_PATH, ' ')).includes('test');
+/** Whether a value is a path as a shell reads it: nothing outside its quotes starts another command, redirects or expands. */
+function plainValue(value) {
+  return !SHELL_SYNTAX.test(value.replace(/'[^']*'|"[^"`$]*"/g, ''));
 }
 
 /**
@@ -89,16 +97,22 @@ function saysTest(text, whereANameIs) {
  */
 function saysTestAsAName(command) {
   const words = command.match(WORD) || [];
+  const plain = words.map(plainWord);
+  let certain = true;
   return words.some((word, i) => {
-    const plain = plainWord(word);
-    const before = i > 0 ? plainWord(words[i - 1]) : '';
-    if (plain === 'test' && (FORGE.test(before) || before === '--skip')) return false;
-    const eq = plain.indexOf('=');
-    const flag = grammarFlag(eq < 0 ? plain : plain.slice(0, eq));
-    if (flag === null) return saysTest(word, NAME_FLAGS.includes(grammarFlag(before)));
-    if (eq < 0) return false;
-    const value = plain.slice(eq + 1);
-    return !(flag === '--skip' && value === 'test') && saysTest(value, NAME_FLAGS.includes(flag));
+    const before = i > 0 ? plain[i - 1] : '';
+    if (plain[i] === 'test' && (FORGE.test(before) || before === '--skip')) return false;
+    // From a substitution on, a shell's words are not the ones here (they could be one filter's text).
+    if (SUBSTITUTION.test(word.replace(/'[^']*'/g, ''))) certain = false;
+    const eq = plain[i].indexOf('=');
+    const flag = grammarFlag(eq < 0 ? plain[i] : plain[i].slice(0, eq));
+    if (flag !== null && eq < 0) return false;
+    const value = flag !== null ? word.slice(word.indexOf('=') + 1) : word;
+    const of = flag !== null ? flag : grammarFlag(before);
+    if (of === '--skip' && plainWord(value) === 'test') return false;
+    const positional = flag === null && i > 1 && before === 'test' && FORGE.test(plain[i - 2]);
+    const path = certain && (PATH_FLAGS.includes(of) || positional) && plainValue(value);
+    return identifiers(path ? value.replace(TEST_IN_PATH, ' ') : value).includes('test');
   });
 }
 

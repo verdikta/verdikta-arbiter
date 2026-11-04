@@ -61,6 +61,9 @@ const OWN_WORDS = [
   ['a path to a program', '/usr/local/bin/forge test --mt test_drain'],
   ['a path inside a directory called test', 'forge test --match-path a/test/Exploit.t.sol --mt test_drain'],
   ['a file called test', 'forge test --match-path test.t.sol --mt test_drain'],
+  ['a substitution after a path', 'forge test --match-path test/Exploit.t.sol --mt test_drain --fork-url $(cat url)'],
+  ['forge\'s shorthand for a path', 'forge test test/Exploit.t.sol --mt test_drain'],
+  ['a variable beside a path', 'forge test --match-path test/Exploit.t.sol --fork-url $RPC_URL --mt test_drain'],
   ['a choice with =', 'forge build --skip=test && forge test --mt test_drain'],
   // Named only in the observable.
   ['no filter at all', 'forge test'],
@@ -148,7 +151,19 @@ const NAMES_ANOTHER = [
   ['the marker, as a count', 'forge test --fuzz-runs test', 'test'],
   ['the marker, as a flag forge does not have', 'forge test --test', 'test'],
   ['the marker, to another program', 'npx hardhat test', 'test'],
+  // R4-F1, round 6: a path is the value of a path flag, and only where a shell's words are certain.
+  ['the marker, from a substitution', 'forge test --mt $(printf \'test/?\')', 'test'],
+  ['the same, unquoted', 'forge test --mt $(printf test/?)', 'test'],
+  ['the same, from backquotes', 'forge test --mt `printf test/?`', 'test'],
+  ['a path flag inside a substitution', 'forge test --mt $(printf %s --mp test/? )', 'test'],
+  ['a path flag inside backquotes', 'forge test --mt ` --mp test/? `', 'test'],
+  ['a path flag inside an expansion', 'forge test --mt ${X:- --mp test/? }', 'test'],
+  ['a path with another command after it', 'forge test --mt test_drain --mp test/E.t.sol;forge${IFS}te""st${IFS}--mt${IFS}test/?', 'test'],
+  ['a path that expands', 'forge test --mp $(echo a)/test/?', 'test'],
+  ['a path in a word no flag takes', 'forge test --mt test_drain test/?', 'test'],
+  ['the path flag\'s word, not its value', 'forge test --mp a/b test/?', 'test'],
   // Only ever a failure: a hunter who writes this is told before committing.
+  ['a path after a substitution', 'forge test --fork-url $(cat url) --match-path test/Exploit.t.sol --mt test_drain', 'test'],
   ['the marker, as a directory to change to', 'cd test && forge test --mt test_drain', 'test']
 ];
 
