@@ -17,6 +17,7 @@ const { spec: baseSpec, IMAGE, attestationFor } = require('../helpers/requests')
 const { BASE, POC_PATCH, POC_DIFF, junit, drainFails, claimSandbox, fakeSolcList } = require('../helpers/fakeClaim');
 const { settlementFacts } = require('../helpers/settlementFacts');
 const { assembleReport } = require('../../src/report');
+const integrity = require('../../src/integrity');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const DRAIN = 'test/Exploit.t.sol > ExploitTest > test_drain()';
@@ -115,7 +116,8 @@ test('an ordinary claim passes every integrity check: forge\'s out/, cache/ and 
     'git diff', 'git cat-file',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-build', 'vcr-cleanup', 'vcr-manifest',
     // After a run: the files are measured first, then forge runs for its configuration (R1-F3).
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
+    // Run 1's compile cache is read once, as what the later runs' are compared with (A3d); unchanged bytes need no second read.
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-compile-cache', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-framework', 'forge-config',
     'tar', 'semgrep', 'cat'
@@ -366,6 +368,100 @@ test('artifacts: out/ and forge\'s compile cache may change during run 1 (forge 
   const point = (d, k, box) => { if (k === 2) set(box, '/work/cache/solidity-files-cache.json', '{"files":{"src/Vault.sol":{"artifacts":"../test/x.json"}}}'); set(box, '/work/cache/test-failures', `run ${k}`); return { exitCode: 1, stdout: drainFails() }; };
   const r2 = await runClaim(claimSandbox({ poc: [point, point, point] }));
   assertIntegrityFails(r2, ['frameworkUnchanged'], /run 2: cache\/solidity-files-cache\.json changed/);
+});
+
+// ------------------------------------------------- forge's compile cache (node A3d)
+
+const CACHE = '/work/cache/solidity-files-cache.json';
+const MOCKS = ['/work/test/A.t.sol', '/work/test/B.t.sol', '/work/test/C.t.sol', '/work/test/D.t.sol'];
+/** The file as forge writes it: `order` picks the mocks list's order (forge's HashSet), `over` anything else. */
+const cacheText = (order = [0, 1, 2, 3], over = {}) => JSON.stringify({
+  _format: '', paths: { artifacts: 'out' }, files: { 'src/Vault.sol': { contentHash: 'aa', artifacts: { Vault: { '0.8.31': { default: { path: 'Vault.sol/Vault.json', build_id: 'b1' } } } } } },
+  builds: ['b1'], profiles: {}, preprocessed: true, mocks: order.map((i) => MOCKS[i]), native_dependencies: {}, ...over
+});
+/** forge's three runs, writing what `write(k)` answers into the compile cache, the last thing a run does here. */
+const writesCache = (write) => [1, 2, 3].map((k) => (d, n, box) => {
+  const content = write(k, box);
+  if (content !== undefined) set(box, CACHE, content);
+  return { exitCode: 1, stdout: drainFails() };
+});
+const SHUFFLED = { 1: [2, 0, 3, 1], 2: [1, 3, 0, 2], 3: [3, 2, 1, 0] };
+const reads = (sb) => sb.execs().filter((d) => d.kind === 'vcr-compile-cache');
+
+test('A3d: forge writing its mocks list in another order on each run fails nothing, and a claim with no such difference reads the file once', async () => {
+  const sb = claimSandbox({ poc: writesCache((k) => cacheText(SHUFFLED[k])) });
+  const r = await runClaim(sb);
+  for (const g of ['build', 'reproduces', 'integrity', 'claimedObservable']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.integrity, CLEAN);
+  // Run 1 is the reference, and each run that wrote another order had to be read.
+  assert.deepEqual(reads(sb).map((d) => d.argv[d.argv.length - 1]), [CACHE, CACHE, CACHE]);
+
+  const same = claimSandbox({ poc: writesCache(() => cacheText()) });
+  const r2 = await runClaim(same);
+  assert.equal(r2.gates.integrity.status, 'pass', show(r2));
+  assert.equal(reads(same).length, 1, 'bytes that did not change are not read again');
+});
+
+test('A3d: a real change to the compile cache still fails frameworkUnchanged, in any order of its mocks list (the review focus)', async () => {
+  const pointed = { files: { 'src/Vault.sol': { contentHash: 'aa', artifacts: { Vault: { '0.8.31': { default: { path: '../test/x.json', build_id: 'b1' } } } } } } };
+  const attacks = [
+    ['an artifact pointed at another file', cacheText(SHUFFLED[2], pointed)],
+    ['the same in the same order', cacheText(SHUFFLED[1], pointed)],
+    ['a mock added', JSON.stringify({ ...JSON.parse(cacheText(SHUFFLED[2])), mocks: [...MOCKS, '/work/src/Vault.sol'] })],
+    ['a mock removed', JSON.stringify({ ...JSON.parse(cacheText(SHUFFLED[2])), mocks: MOCKS.slice(1) })],
+    ['the list emptied', JSON.stringify({ ...JSON.parse(cacheText(SHUFFLED[2])), mocks: [] })],
+    ['the source compiled anew', cacheText(SHUFFLED[2], { builds: ['b2'] })],
+    ['forge told to read it another way', cacheText(SHUFFLED[2], { preprocessed: false })],
+    ['nonsense', 'not json'],
+    ['empty', '']
+  ];
+  for (const [what, later] of attacks) {
+    const r = await runClaim(claimSandbox({ poc: writesCache((k) => (k === 2 ? later : k === 1 ? cacheText(SHUFFLED[1]) : undefined)) }));
+    assertIntegrityFails(r, ['frameworkUnchanged'], /run 2: cache\/solidity-files-cache\.json changed/);
+    assert.equal(r.facts.poc.integrity.frameworkUnchanged, false, what);
+  }
+  // The file's own entry is compared too: its mode, a link in its place, the file gone.
+  const mode = await runClaim(claimSandbox({ poc: writesCache((k, box) => { if (k === 1) return cacheText(SHUFFLED[1]); if (k === 2) box.tree.set(CACHE, { type: 'f', mode: '600', content: cacheText(SHUFFLED[2]) }); return undefined; }) }));
+  assertIntegrityFails(mode, ['frameworkUnchanged'], /run 2: cache\/solidity-files-cache\.json changed/);
+  const link = await runClaim(claimSandbox({ poc: writesCache((k, box) => { if (k === 1) return cacheText(SHUFFLED[1]); if (k === 2) { set(box, '/work/state/forged.json', cacheText(SHUFFLED[1])); box.tree.set(CACHE, { type: 'l', mode: '777', target: '../state/forged.json' }); } return undefined; }) }));
+  assertIntegrityFails(link, ['frameworkUnchanged'], /cache\/solidity-files-cache\.json/);
+  const gone = await runClaim(claimSandbox({ poc: writesCache((k, box) => { if (k === 1) return cacheText(SHUFFLED[1]); if (k === 2) box.tree.delete(CACHE); return undefined; }) }));
+  assertIntegrityFails(gone, ['frameworkUnchanged'], /run 2: cache\/solidity-files-cache\.json removed/);
+});
+
+test('A3d: a compile cache the runner cannot read is held to its bytes: only the same bytes pass', async () => {
+  const keep = (k) => cacheText(SHUFFLED[k]);
+  // The read fails, or answers other bytes than the listing hashed: never a file taken for unchanged.
+  for (const [what, read] of [
+    ['exit 1', () => ({ exitCode: 1 })],
+    ['other bytes', (d, b) => ({ stdout: `${b.tree.get(CACHE).content} ` })],
+    ['nothing', () => ({ stdout: '' })]
+  ]) {
+    const sb = claimSandbox({ poc: writesCache(keep), scripts: { 'vcr-compile-cache': read } });
+    const r = await runClaim(sb);
+    assertIntegrityFails(r, ['frameworkUnchanged'], /run 2: cache\/solidity-files-cache\.json changed/);
+    assert.ok(r.gates.integrity.detail, what);
+    const same = await runClaim(claimSandbox({ poc: writesCache(() => cacheText()), scripts: { 'vcr-compile-cache': read } }));
+    assert.equal(same.gates.integrity.status, 'pass', `${what}: ${show(same)}`);
+  }
+  // Over the cap it is not read at all, however it would compare.
+  const big = 'x'.repeat(integrity.COMPILE_CACHE_MAX_BYTES + 1);
+  const over = claimSandbox({ poc: writesCache((k) => JSON.stringify({ pad: big, mocks: SHUFFLED[k].map((i) => MOCKS[i]) })) });
+  assertIntegrityFails(await runClaim(over), ['frameworkUnchanged'], /run 2: cache\/solidity-files-cache\.json changed/);
+  assert.equal(reads(over).length, 0);
+  const exactly = claimSandbox({ poc: writesCache(() => JSON.stringify({ pad: big, mocks: MOCKS })) });
+  assert.equal((await runClaim(exactly)).gates.integrity.status, 'pass');
+  assert.equal(reads(exactly).length, 0);
+});
+
+test('A3d: the build\'s compile cache is not read: only the first run\'s and later ones are compared', async () => {
+  const sb = claimSandbox({ poc: writesCache(() => undefined) });
+  const r = await runClaim(sb);
+  assert.equal(r.gates.integrity.status, 'pass', show(r));
+  assert.equal(reads(sb).length, 1);
+  // An unreadable file at run 1 stays what it was: the check that names it is R13-F1's.
+  const r2 = await runClaim(claimSandbox({ poc: writesCache((k, box) => { if (k === 1) box.tree.set(CACHE, { type: 'f', mode: '000', content: '{}', unreadable: true }); return undefined; }) }));
+  assertIntegrityFails(r2, ['frameworkUnchanged'], /run 1: cache\/solidity-files-cache\.json cannot be read/);
 });
 
 test('a snapshot that cannot be read before any claim code is the requester\'s package; after a run it is a definitive integrity failure', async () => {
@@ -666,7 +762,7 @@ test('with a watched link, its resolution is part of measuring the files: after 
     'git diff', 'git cat-file', 'git cat-file', 'git ls-tree',
     'git diff', 'git cat-file',
     'vcr-framework', 'forge-config', 'vcr-external-roots', 'vcr-manifest', 'vcr-links', 'vcr-build', 'vcr-cleanup', 'vcr-manifest', 'vcr-links',
-    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
+    'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-compile-cache', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'git reset', 'vcr-manifest', 'vcr-poc', 'vcr-cleanup', 'vcr-manifest', 'vcr-links', 'vcr-framework', 'forge-config',
     'tar', 'semgrep', 'cat'

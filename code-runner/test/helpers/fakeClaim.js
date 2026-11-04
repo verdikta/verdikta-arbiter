@@ -734,6 +734,10 @@ function claimSandbox({
     'forge-fmt': () => ({ exitCode: 0 }),
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
+    'vcr-compile-cache': (d, b) => {
+      const e = b.tree.get(d.argv[d.argv.length - 1]);
+      return e && e.type === 'f' ? { stdout: e.content } : { exitCode: 1, stderr: 'cat: no such file\n' };
+    },
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
     'vcr-external-roots': (d, b) => ({ stdout: externalRootsOf(b.tree, d.stdin) }),
     'vcr-compilers': (d, b) => ({ stdout: compilersOf(b.tree, d.argv.slice(4)) }),

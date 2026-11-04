@@ -887,3 +887,107 @@ test('A3a R21-F2: forge counts an invariant campaign as one result and the JUnit
   no([fail('test_a()'), fail('test_b()')], 'FAILED. 0 passed; 1 failed; 0 skipped');
   no([pass('invariant_a()'), pass('test_a()'), pass('test_b()')], 'ok. 2 passed; 0 failed; 0 skipped');
 });
+
+// ------------------------------------------------- forge's compile cache (node A3d)
+
+/** The file as forge 1.8.5 writes it (compact, its fields in this order), as measured on a real repository. */
+function compileCache({ mocks = ['/work/test/A.t.sol', '/work/test/B.t.sol', '/work/test/C.t.sol'], ...over } = {}) {
+  const fields = {
+    _format: '',
+    paths: { artifacts: 'out', build_infos: 'out/build-info', sources: 'src', tests: 'test', scripts: 'script', libraries: ['lib'] },
+    files: {
+      'src/Vault.sol': {
+        lastModificationDate: 1793770028062, contentHash: '6f3a6f93872b8615', interfaceReprHash: '1f74aee81a0da884', sourceName: 'src/Vault.sol', imports: [],
+        versionRequirement: '^0.8.0', artifacts: { Vault: { '0.8.31': { default: { path: 'Vault.sol/Vault.json', build_id: '78600e45e2f8679d' } } } }, seenByCompiler: true
+      }
+    },
+    builds: ['78600e45e2f8679d'],
+    profiles: { default: { solc: { optimizer: { enabled: true, runs: 200 } } } },
+    preprocessed: true,
+    preprocessor_version: 8,
+    preprocessor_source_units: ['src/Vault.sol'],
+    remappings: ['forge-std/=/work/lib/forge-std/src/'],
+    mocks,
+    native_dependencies: { 'test/A.t.sol': { '0.8.31': { default: { kind: 'known', dependencies: ['src/Vault.sol'] } } } },
+    ...over
+  };
+  return Buffer.from(JSON.stringify(fields));
+}
+const orderFree = (bytes) => integrity.compileCacheOrderFree(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes));
+
+test('A3d: forge\'s compile cache compares the same in any order of its mocks list', () => {
+  const orders = [
+    ['/work/test/A.t.sol', '/work/test/B.t.sol', '/work/test/C.t.sol'],
+    ['/work/test/C.t.sol', '/work/test/A.t.sol', '/work/test/B.t.sol'],
+    ['/work/test/B.t.sol', '/work/test/C.t.sol', '/work/test/A.t.sol']
+  ];
+  const forms = orders.map((mocks) => orderFree(compileCache({ mocks })).toString('latin1'));
+  assert.equal(new Set(forms).size, 1);
+  // The list in order is the file itself, so nothing else was rewritten on the way.
+  assert.equal(forms[0], compileCache({ mocks: orders[0] }).toString('latin1'));
+  // Nothing to put in order: the bytes as they are.
+  for (const mocks of [[], ['/work/test/A.t.sol']]) assert.deepEqual(orderFree(compileCache({ mocks })), compileCache({ mocks }));
+});
+
+test('A3d: every other difference in the compile cache stays one, in any order of its mocks list (the review focus: a real change hidden by the comparison)', () => {
+  const held = orderFree(compileCache());
+  const shuffled = ['/work/test/C.t.sol', '/work/test/A.t.sol', '/work/test/B.t.sol'];
+  const text = compileCache({ mocks: shuffled }).toString('utf8');
+  const artifact = (path) => ({ 'src/Vault.sol': { artifacts: { Vault: { '0.8.31': { default: { path, build_id: '78600e45e2f8679d' } } } } } });
+  const changed = [
+    ['a mock added', compileCache({ mocks: [...shuffled, '/work/test/D.t.sol'] })],
+    ['a mock removed', compileCache({ mocks: shuffled.slice(0, 2) })],
+    ['a mock renamed', compileCache({ mocks: ['/work/test/C.t.sol', '/work/test/A.t.sol', '/work/test/Z.t.sol'] })],
+    ['a mock doubled in place of another', compileCache({ mocks: ['/work/test/A.t.sol', '/work/test/A.t.sol', '/work/test/B.t.sol'] })],
+    ['the list emptied', compileCache({ mocks: [] })],
+    ['an artifact pointed elsewhere', compileCache({ mocks: shuffled, files: artifact('../test/x.json') })],
+    ['the paths', compileCache({ mocks: shuffled, paths: { artifacts: 'forged' } })],
+    ['the builds', compileCache({ mocks: shuffled, builds: ['0000000000000000'] })],
+    ['the profiles', compileCache({ mocks: shuffled, profiles: {} })],
+    ['preprocessed', compileCache({ mocks: shuffled, preprocessed: false })],
+    ['the remappings', compileCache({ mocks: shuffled, remappings: [] })],
+    ['the native dependencies', compileCache({ mocks: shuffled, native_dependencies: {} })],
+    ['the source units', compileCache({ mocks: shuffled, preprocessor_source_units: [] })],
+    ['a field added', compileCache({ mocks: shuffled, extra: 1 })],
+    ['a line added at the end', `${text}\n`],
+    ['a space added', text.replace('"mocks":', '"mocks": ')],
+    ['a key written twice, the first the forger\'s', text.replace('{"_format":""', '{"files":{},"_format":""')],
+    ['a list written twice, the first the forger\'s', text.replace('"mocks":', '"mocks":["/work/forged.sol"],"mocks":')],
+    ['a list written twice, the last the forger\'s', text.replace('"native_dependencies":', '"mocks":["/work/forged.sol"],"native_dependencies":')],
+    ['another escape of the same path', text.replace('/work/test/C.t.sol', '\\/work\\/test\\/C.t.sol')],
+    ['a value read another way', text.replace('"preprocessed":true', '"preprocessed":1')]
+  ];
+  for (const [what, bytes] of changed) {
+    const form = orderFree(bytes);
+    assert.ok(form === null || !form.equals(held), what);
+  }
+});
+
+test('A3d: what the comparison cannot read as forge\'s file it leaves to the bytes', () => {
+  const unreadable = [
+    ['not JSON', '{"mocks":["a","b"]'],
+    ['an array', '["mocks"]'],
+    ['nothing', ''],
+    ['a list of something else', '{"mocks":[1,2]}'],
+    ['not a list', '{"mocks":"a"}'],
+    ['no list', '{"files":{}}'],
+    ['not UTF-8', Buffer.concat([Buffer.from('{"mocks":["a","b"],"x":"'), Buffer.from([0xff]), Buffer.from('"}')])],
+    ['the list spread over lines', '{"mocks":[\n"b",\n"a"\n]}'],
+    ['the list written with spaces', '{"mocks": ["b","a"]}'],
+    ['an escape forge does not write', '{"mocks":["\\u0062","a"]}'],
+    ['the same list written twice', '{"x":{"mocks":["b","a"]},"mocks":["b","a"]}']
+  ];
+  for (const [what, bytes] of unreadable) assert.equal(orderFree(bytes), null, what);
+});
+
+test('A3d: names that look like the rest of the file cannot be used to move a change into the list', () => {
+  // A path with quotes in it, as forge escapes one: the list is found by its whole text, not by a search for a word.
+  const mocks = ['/work/test/"mocks":[].t.sol', '/work/test/A.t.sol'];
+  const a = compileCache({ mocks });
+  const b = compileCache({ mocks: [...mocks].reverse() });
+  assert.deepEqual(orderFree(a), orderFree(b));
+  // A test contract called mocks has an object there, so it does not count as the list.
+  const c = compileCache({ mocks: ['/work/test/B.t.sol', '/work/test/A.t.sol'], files: { 'x.sol': { artifacts: { mocks: { '0.8.31': {} } } } } });
+  const d = compileCache({ mocks: ['/work/test/A.t.sol', '/work/test/B.t.sol'], files: { 'x.sol': { artifacts: { mocks: { '0.8.31': {} } } } } });
+  assert.deepEqual(orderFree(c), orderFree(d));
+});
