@@ -413,7 +413,9 @@ test('A3d: a real change to the compile cache still fails frameworkUnchanged, in
     ['the source compiled anew', cacheText(SHUFFLED[2], { builds: ['b2'] })],
     ['forge told to read it another way', cacheText(SHUFFLED[2], { preprocessed: false })],
     ['nonsense', 'not json'],
-    ['empty', '']
+    ['empty', ''],
+    // R2-F1: valid JSON that JSON.stringify cannot walk is a change, not an abstain.
+    ['nested past what JSON.stringify can walk', `{"mocks":["a","b"],"x":${'['.repeat(100000)}${']'.repeat(100000)}}`]
   ];
   for (const [what, later] of attacks) {
     const r = await runClaim(claimSandbox({ poc: writesCache((k) => (k === 2 ? later : k === 1 ? cacheText(SHUFFLED[1]) : undefined)) }));

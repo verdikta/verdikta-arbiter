@@ -982,7 +982,8 @@ test('A3d: what the comparison cannot read as forge\'s file it leaves to the byt
     ['a key written twice', '{"x":1,"x":1,"mocks":["b","a"]}'],
     ['a number written another way', '{"x":1.0,"mocks":["b","a"]}'],
     ['an empty file\'s worth of spaces', ' '],
-    ['null', 'null']
+    ['null', 'null'],
+    ['nested past what JSON.stringify can walk (R2-F1)', `{"mocks":["b","a"],"x":${'['.repeat(100000)}${']'.repeat(100000)}}`]
   ];
   for (const [what, bytes] of unreadable) assert.equal(orderFree(bytes), null, what);
 });

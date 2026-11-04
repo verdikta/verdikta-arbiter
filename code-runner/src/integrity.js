@@ -647,15 +647,15 @@ function watchRoots({ protectedGlobs = [], ...w }) {
  *   Those can't equal another file's answer: an answer is of that form, so it would have one.
  */
 function compileCacheOrderFree(bytes) {
-  let parsed;
   try {
-    parsed = JSON.parse(bytes.toString('utf8'));
+    const parsed = JSON.parse(bytes.toString('utf8'));
+    if (!parsed || !Array.isArray(parsed.mocks) || !parsed.mocks.every((m) => typeof m === 'string')) return null;
+    if (!Buffer.from(JSON.stringify(parsed), 'utf8').equals(bytes)) return null;
+    return Buffer.from(JSON.stringify({ ...parsed, mocks: [...parsed.mocks].sort() }), 'utf8');
   } catch (_) {
+    // Not JSON, or nested past what JSON.stringify can walk (R2-F1): a file a run left, which a read must not turn into an abstain.
     return null;
   }
-  if (!parsed || !Array.isArray(parsed.mocks) || !parsed.mocks.every((m) => typeof m === 'string')) return null;
-  if (!Buffer.from(JSON.stringify(parsed), 'utf8').equals(bytes)) return null;
-  return Buffer.from(JSON.stringify({ ...parsed, mocks: [...parsed.mocks].sort() }), 'utf8');
 }
 
 /**

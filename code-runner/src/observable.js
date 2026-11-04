@@ -17,7 +17,7 @@
  *   real repository, whose fixture has `function test() external {}`, a
  *   coverage marker): `forge test`, the flags of the listing's grammar
  *   (src/commands.js), and what those flags hold that is no test's name, a
- *   path or a choice. So they count only as the name of a test the patch
+ *   path (a value that can only be one) or a choice. So they count only as the name of a test the patch
  *   added, as before; anything else in the command is read: the values of
  *   --match-test, --no-match-test, --match-contract and --no-match-contract,
  *   and every word the grammar does not know (the command is the hunter's text,
@@ -43,8 +43,14 @@ const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
 /** The grammar's flags whose value is matched against a test or its contract: a name written there is one. */
 const NAME_FLAGS = Object.freeze(['--match-test', '--no-match-test', '--match-contract', '--no-match-contract']);
-/** A word of a command, as a shell would split it: a quoted span stays whole, so what is inside one is never taken for a flag. */
-const WORD = /(?:[^\s'"]+|'[^']*'|"[^"]*"|['"])+/g;
+/**
+ * A word of a command, as a shell would split it: a quoted span stays whole, with its escapes,
+ * so what is inside one is not taken for a flag. This only has to be right for an honest
+ * command to read as it should: what hides a word is PATH_VALUE, below, not this.
+ */
+const WORD = /(?:[^\s'"\\]+|\\[\s\S]?|'[^']*'|"(?:[^"\\]|\\[\s\S])*"|['"])+/g;
+/** A path pattern's characters: nothing a shell acts on, and nothing a regex needs to leave a path out of what it matches. */
+const PATH_CHARACTERS = /^[^'"\\$`()|;&<>^#!=]+$/;
 /** forge's subcommands in the grammar: `forge test` is a command, not a test. */
 const SUBCOMMANDS = Object.freeze([...new Set(Object.values(commands.COMMANDS).map((c) => c.subcommand))]);
 
@@ -64,11 +70,24 @@ function identifiers(text) {
   return [...String(text).matchAll(IDENTIFIER)].flatMap((m) => (m[0].endsWith('$') ? [m[0], m[0].replace(/\$+$/, '')] : [m[0]]));
 }
 
-/** Whether a flag's value is a word of the command rather than a name: a path pattern, or one of a flag's fixed choices. */
+/** A value without the one pair of quotes around it, if that is all the quoting it has. */
+function unquoted(value) {
+  const m = /^(?:'([^']*)'|"([^"\\]*)")$/.exec(value);
+  return m ? (m[1] !== undefined ? m[1] : m[2]) : value;
+}
+
+/**
+ * Whether a flag's value is a word of the command rather than a name: one of a flag's fixed
+ * choices, or, for --match-path and --no-match-path, what can only be a path: it holds a `/` or
+ * ends in `.sol`, and nothing else a shell or a regex would act on. Anything else is read, so a
+ * word that only looks like a value (a flag met inside a quoted filter, however it is quoted) hides nothing.
+ */
 function ownValue(flag, value) {
   const spec = commands.FLAGS[flag];
   if (NAME_FLAGS.includes(flag)) return false;
-  return spec.value === 'pattern' || (spec.value === 'choice' && spec.choices.includes(value));
+  const v = unquoted(value);
+  if (spec.value === 'choice') return spec.choices.includes(v);
+  return spec.value === 'pattern' && PATH_CHARACTERS.test(v) && /\/|\.sol$/.test(v);
 }
 
 /**
