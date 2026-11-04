@@ -918,6 +918,22 @@ process of the run is dead:
      run (forge compiles what the build left out, e.g. after `forge build
      --skip test`) and never after it.
 
+   **The compile cache is held byte for byte, but for the order of one list**
+   (node A3d). forge 1.8.5 keeps the test files it takes for mocks (a contract in
+   a test file that inherits a source contract) in a `HashSet`, and writes its
+   `mocks` list in whatever order that gives, on every run. So a file with two or
+   more differs between runs, and a valid PoC that imports them settled DUPLICATE
+   at random. The runner reads the file at run 1, and again when its bytes differ
+   from run 1's, and compares its hash with that one list in order
+   (`compileCacheOrderFree`). The list is found by its whole text and only its
+   elements move, so two files compare the same exactly when one is the other
+   with the list reordered: a mock added or dropped, an artifact pointed
+   elsewhere, a key written twice, a space, all stay differences. Measured on a
+   real repository: nothing else in the file moves between runs. What can't be
+   read as forge's file (not UTF-8 JSON, the list written any other way, over
+   64 MiB, a failed read, bytes other than the listing hashed) is held to its
+   bytes, as before.
+
    **Symbolic links: the kernel resolves them** (R6-F1, R7-F1; node A3a's
    attempt 2). The listing is physical (`find` never follows a link), so a
    file listed in a set is reached through real directories only and a write
@@ -1412,7 +1428,7 @@ The routes the review raised, against that scope (each has its test):
 | `~/.foundry/foundry.toml`, `~/.gitconfig` or `.env` written for later runs | `$HOME`/config checksums, `forge config` fingerprint | unit `$HOME is watched` |
 | a `forge` (or another tool) planted on a writable `PATH` directory | `command -v forge` and the PATH directories in the work tree | unit `the forge executable` |
 | `.git/config` filter, a hook, a forged index or objects, so the runner's reset writes the claim's bytes | the runner's repository checksums | unit `the runner's repository is watched` |
-| forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts` |
+| forged artifacts in `out/` for runs 2-3 to execute without recompiling, or a compile cache pointing a source at another artifact file | artifacts and the compile cache held to run 1's | unit `artifacts`; compile cache also Docker `valid-claim` |
 | a maker's command runs a script under `paths.tests`, which the PoC rewrites | the command is `COMMAND_NOT_ALLOWED`: a command names no script (a pattern naming a test file is not a script, so a PoC editing that file raises no flag) | unit `commands.test.js`, tamper-flag tests |
 | a maker's command running forge with another configuration: `FOUNDRY_PROFILE`, `--config-path`, `--root`, a path flag, a hidden alias such as `--compiler-version`, through `env`, by an absolute path, `env -u` (R11-F1) | the grammar refuses every such command (`COMMAND_NOT_ALLOWED`, the token named) at claim and listing time; the runner runs forge itself, from `/work`, with its own environment; an image `ENV` of `FOUNDRY_*` never reaches it | unit `commands.test.js`, `forgeargv.test.js`, Docker "A3a R11-F1 (attempt 3)" |
 | a file flood that hides a change | a listing over 128 MiB or 1,000,000 entries is a definitive failure (before any claim code: `IMAGE_WATCH_TOO_LARGE`; at the listing check, over 64 MiB or 680,000 entries) | unit snapshot and cap tests |
@@ -1449,6 +1465,20 @@ finding.json and the recorded failures alone:
   test the patch added, a test of the PoC's files, a baseline test). At
   least one must be named, and every one named must be a test the patch
   added (which, the PoC having reproduced, failed on every run).
+- **The words of the forge command name nothing else** (node A3d). A fixture's
+  `function test() external {}`, a common coverage marker, is a baseline test
+  named `test`, and the word in `forge test` read as naming it: a valid PoC
+  settled INVALID. `forge test`, the flags of the listing's grammar
+  (`src/commands.js`) and their path values and fixed choices now count only as
+  the name of a test the patch added. Everything else is read: the values of
+  `--match-test`, `--no-match-test`, `--match-contract` and `--no-match-contract`,
+  and any word the grammar does not know, since the command is the hunter's text
+  and need not fit it. So `forge test --match-test test` still names `test()`. A
+  filter is not evaluated: a name counts when it is spelled, and a `$` after it
+  is the regex's end (`^test_x$` names `test_x`). A path is not a name, even
+  spelled like one.
+- **`poc.observable` is read whole.** The word `test` in its prose still names
+  a baseline `test()`. The hunter tool warns of it before a claim is committed.
 - **The observable appears in the recorded failure**: each text in double
   quotes in `poc.observable` appears in the failure message of a named test
   on every run; or, when it quotes nothing, the message of a named test (the

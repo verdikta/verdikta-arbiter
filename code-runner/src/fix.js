@@ -206,7 +206,7 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
 
   // The maker's suite, once.
   const run = await kit.forgeRun(ctx, box, { name: 'suite', tool: watch.tool(), command: kit.parsedCommand(spec, 'test'), timeoutMs: limits.testSeconds * 1000 });
-  await watch.afterRun(ctx, 'the suite', { first: true });
+  await watch.afterRun(ctx, 'the suite', { first: true, only: true });
 
   const baselineIds = new Set(request.baseline.tests.map((t) => t.id));
   const pocFiles = new Set(pocTouched.touched.filter((t) => t.status !== 'D' && t.path.endsWith('.sol')).map((t) => t.path));

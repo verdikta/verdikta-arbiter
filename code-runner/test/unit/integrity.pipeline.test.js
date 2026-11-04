@@ -454,6 +454,18 @@ test('A3d: a compile cache the runner cannot read is held to its bytes: only the
   assert.equal(reads(exactly).length, 0);
 });
 
+test('A3d: a cache_path of any name is read by its text and matched by its bytes', async () => {
+  const dir = 'cäche';
+  const key = (p) => Buffer.from(p, 'utf8').toString('latin1');
+  const sb = claimSandbox({
+    onBox: (box) => { box.configOver = { cache_path: dir }; },
+    poc: writesCache((k, box) => { set(box, key(`/work/${dir}/solidity-files-cache.json`), cacheText(SHUFFLED[k])); return undefined; })
+  });
+  const r = await runClaim(sb);
+  assert.equal(r.gates.integrity.status, 'pass', show(r));
+  assert.deepEqual(reads(sb).map((d) => d.argv[d.argv.length - 1]), [1, 2, 3].map(() => `/work/${dir}/solidity-files-cache.json`));
+});
+
 test('A3d: the build\'s compile cache is not read: only the first run\'s and later ones are compared', async () => {
   const sb = claimSandbox({ poc: writesCache(() => undefined) });
   const r = await runClaim(sb);

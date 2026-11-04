@@ -13,6 +13,17 @@
  *   (a test the patch added, any test of the PoC's files, a baseline test).
  *   At least one must be named, and every one named must be a test the
  *   patch added (which, the PoC having reproduced, failed on every run).
+ * - The words of the forge command name nothing else (node A3d; found on a
+ *   real repository, whose fixture has `function test() external {}`, a
+ *   coverage marker): `forge test`, the flags of the listing's grammar
+ *   (src/commands.js), and what those flags hold that is no test's name, a
+ *   path or a choice. So they count only as the name of a test the patch
+ *   added, as before; anything else in the command is read: the values of
+ *   --match-test, --no-match-test, --match-contract and --no-match-contract,
+ *   and every word the grammar does not know (the command is the hunter's text,
+ *   which the runner never runs, so it may well be outside the grammar). No
+ *   filter is evaluated: a name counts when it is spelled, a `$` after it being
+ *   the regex's end.
  * - The observable appears in the recorded failure: the observable's text
  *   in double quotes, each fragment of it, appears in the failure message of
  *   a named test on every run; or, when it quotes nothing, the failure
@@ -26,14 +37,64 @@
  * message forge prints.
  */
 
+const commands = require('./commands');
+
 const IDENTIFIER = /[A-Za-z_$][A-Za-z0-9_$]*/g;
 const QUOTED = /"([^"]*)"/g;
+/** The grammar's flags whose value is matched against a test or its contract: a name written there is one. */
+const NAME_FLAGS = Object.freeze(['--match-test', '--no-match-test', '--match-contract', '--no-match-contract']);
+/** forge's subcommands in the grammar: `forge test` is a command, not a test. */
+const SUBCOMMANDS = Object.freeze([...new Set(Object.values(commands.COMMANDS).map((c) => c.subcommand))]);
 
 /** A test identity's function name: `<file> > <Contract> > name(args)` → name. */
 function functionName(id) {
   const sig = String(id).split(' > ').pop();
   const open = sig.indexOf('(');
   return open < 0 ? sig : sig.slice(0, open);
+}
+
+/**
+ * The identifiers in a text. `$` is a character of a Solidity identifier and the end of a
+ * regex: `^test_x$`, the usual way to name one test to --match-test, names test_x, so an
+ * identifier ending in it counts as itself and as what comes before it.
+ */
+function identifiers(text) {
+  return [...String(text).matchAll(IDENTIFIER)].flatMap((m) => (m[0].endsWith('$') ? [m[0], m[0].replace(/\$+$/, '')] : [m[0]]));
+}
+
+/** Whether a flag's value is a word of the command rather than a name: a path pattern, or one of a flag's fixed choices. */
+function ownValue(flag, value) {
+  const spec = commands.FLAGS[flag];
+  if (NAME_FLAGS.includes(flag)) return false;
+  return spec.value === 'pattern' || (spec.value === 'choice' && spec.choices.includes(value));
+}
+
+/**
+ * What of `poc.command` can name a test the patch did not add: the command less
+ * its own words (the top of this file). Anything that is not exactly one of them
+ * stays, so a name cannot be hidden by spelling a flag another way.
+ * @param {string} command
+ * @returns {string[]} the words kept
+ */
+function namingWords(command) {
+  const words = command.split(/\s+/).filter(Boolean);
+  const kept = [];
+  for (let i = 0; i < words.length; i += 1) {
+    const w = words[i];
+    if (w === 'forge' && SUBCOMMANDS.includes(words[i + 1])) { i += 1; continue; }
+    if (commands.VERBOSITY.test(w)) continue;
+    const eq = w.indexOf('=');
+    const flag = w.startsWith('--') && Object.hasOwn(commands.ALIASES, eq < 0 ? w : w.slice(0, eq)) ? commands.ALIASES[eq < 0 ? w : w.slice(0, eq)] : null;
+    if (flag === null) { kept.push(w); continue; }
+    if (eq >= 0) {
+      const value = w.slice(eq + 1);
+      if (!ownValue(flag, value)) kept.push(value);
+    } else if (i + 1 < words.length && !words[i + 1].startsWith('-') && ownValue(flag, words[i + 1])) {
+      i += 1; // as the grammar reads it: a value does not start with `-`
+    }
+    // The next word, when it is any other value, is read on its own turn.
+  }
+  return kept;
 }
 
 function squash(text) {
@@ -66,8 +127,12 @@ function claimedObservable({ finding, tests, knownNames }) {
     added.get(name).push(t);
   }
   const known = new Set([...knownNames, ...added.keys()]);
-  const tokens = new Set([...`${command}\n${observable}`.matchAll(IDENTIFIER)].map((m) => m[0]));
-  const named = [...tokens].filter((t) => known.has(t)).sort();
+  const inObservable = identifiers(observable);
+  // A test the patch added is named wherever the text says it; any other only where a name can be written.
+  const named = [...new Set([
+    ...[...identifiers(command), ...inObservable].filter((t) => added.has(t)),
+    ...[...identifiers(namingWords(command).join('\n')), ...inObservable].filter((t) => known.has(t))
+  ])].sort();
   if (named.length === 0) {
     return fail(`finding.json names none of the tests the patch added (${listNames([...added.keys()].sort())}) in poc.command or poc.observable`);
   }

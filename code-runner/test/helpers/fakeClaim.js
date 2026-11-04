@@ -735,7 +735,8 @@ function claimSandbox({
     'vcr-framework': (d, b) => ({ stdout: `vcr-forge /usr/local/bin/forge\nvcr-path /usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin\n${forgeConfig(b.tree, b.configOver)}` }),
     'vcr-manifest': (d, b) => ({ stdout: manifestOf(b.tree, d.argv.slice(4)) }),
     'vcr-compile-cache': (d, b) => {
-      const e = b.tree.get(d.argv[d.argv.length - 1]);
+      // The tree's keys are a path's bytes read latin1, as the listing's are; the argument is its text.
+      const e = b.tree.get(Buffer.from(d.argv[d.argv.length - 1], 'utf8').toString('latin1'));
       return e && e.type === 'f' ? { stdout: e.content } : { exitCode: 1, stderr: 'cat: no such file\n' };
     },
     'vcr-links': (d, b) => ({ stdout: linksOf(b.tree, d.stdin) }),
