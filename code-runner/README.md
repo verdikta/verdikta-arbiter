@@ -1466,19 +1466,20 @@ finding.json and the recorded failures alone:
   test the patch added, a test of the PoC's files, a baseline test). At
   least one must be named, and every one named must be a test the patch
   added (which, the PoC having reproduced, failed on every run).
-- **The word `test` is not a name in itself** (node A3d). A fixture's
-  `function test() external {}`, a common coverage marker, is a baseline test
-  named `test`, and every forge command says `test`: in `forge test`, in
-  `--match-test`, in `test/Exploit.t.sol`. A valid PoC settled INVALID that way.
-  So in `poc.command` the word counts only as a test the patch added, or where a
-  test's name is written: the value of `--match-test`, `--no-match-test`,
-  `--match-contract` or `--no-match-contract`. So `forge test --match-test test`
-  still names `test()`. Every other identifier in the command is read, wherever
-  it is, so no way of quoting or placing a name can hide it. That includes a
-  path: a directory with the very name of another baseline test (`invariant/` on
-  a listing with `invariant()`) reads as naming it, and the hunter tool warns. A
-  filter is not evaluated: a name counts when it is spelled, and a `$` after it is
-  the regex's end (`^test_x$` names `test_x`).
+- **The command's own uses of the word `test` name nothing** (node A3d). A
+  fixture's `function test() external {}`, a common coverage marker, is a baseline
+  test named `test`, and every forge command says `test`. A valid PoC settled
+  INVALID that way. So in `poc.command` the word does not count in exactly these
+  places: the subcommand of `forge test`, a flag of the listing's grammar
+  (`--match-test`), the choice in `--skip test`, and a directory or file of a path
+  (`test/x.t.sol`, `a/test`, `test.t.sol`) outside the value of a flag that takes a
+  name. Anywhere else it counts: `--match-test test`, `--mt=-?test`, `forge test
+  test`. Every other identifier is read wherever it is, so no way of quoting or
+  placing any other name can hide it. That includes a path: a directory with the
+  very name of another baseline test (`invariant/` on a listing with `invariant()`)
+  reads as naming it, and the hunter tool warns. A filter is not evaluated: a name
+  counts when it is spelled, and a `$` after it is the regex's end (`^test_x$`
+  names `test_x`).
 - **`poc.observable` is read whole.** The word `test` in its prose still names
   a baseline `test()`. The hunter tool warns of it before a claim is committed.
 - **The observable appears in the recorded failure**: each text in double

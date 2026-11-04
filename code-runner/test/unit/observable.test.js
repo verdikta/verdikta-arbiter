@@ -52,7 +52,6 @@ const OWN_WORDS = [
   ['a flag the grammar refuses', 'forge test --match-test test_drain --json'],
   ['an environment variable', 'FOUNDRY_PROFILE=ci forge test --mt test_drain'],
   ['a directory first', 'cd contracts && forge test --mt test_drain'],
-  ['a directory called test', 'cd test && forge test --mt test_drain'],
   ['a build first', 'forge build --skip test && forge test --mt test_drain'],
   ['a quoted choice', 'forge build --skip \'test\' && forge test --mt test_drain'],
   ['a substitution', 'forge test --mt test_drain --fork-url $(cat url)'],
@@ -60,11 +59,12 @@ const OWN_WORDS = [
   ['backquotes', 'forge test --mt test_drain --fork-url `cat url`'],
   ['ANSI-C quoting', 'forge test --mt $\'^test_drain$\' --match-path test/Exploit.t.sol'],
   ['a path to a program', '/usr/local/bin/forge test --mt test_drain'],
+  ['a path inside a directory called test', 'forge test --match-path a/test/Exploit.t.sol --mt test_drain'],
+  ['a file called test', 'forge test --match-path test.t.sol --mt test_drain'],
+  ['a choice with =', 'forge build --skip=test && forge test --mt test_drain'],
   // Named only in the observable.
   ['no filter at all', 'forge test'],
-  ['the path alone', 'forge test --match-path test/Exploit.t.sol'],
-  ['a word on its own', 'forge test test'],
-  ['another command', 'npx hardhat test']
+  ['the path alone', 'forge test --match-path test/Exploit.t.sol']
 ];
 
 for (const [label, command] of OWN_WORDS) {
@@ -127,14 +127,36 @@ const NAMES_ANOTHER = [
   ['the marker, ANSI-C quoted', 'forge test --mt $\'test\'', 'test'],
   ['the marker, to --no-match-test', 'forge test --no-match-test test', 'test'],
   ['the marker, to --match-contract', 'forge test --match-contract test', 'test'],
-  ['the marker, with no forge test before it', 'forge --match-test test', 'test']
+  ['the marker, with no forge test before it', 'forge --match-test test', 'test'],
+  // R4-F1, R5-F1: anywhere but the command's own uses, the word counts.
+  ['the marker, after a separator', 'forge test --mt test_drain --mp test/E.t.sol;forge${IFS}test${IFS}--mt${IFS}test', 'test'],
+  ['the marker, to a quoted flag', 'forge test "--mt" test', 'test'],
+  ['the marker, to a flag quoted in part', 'forge test --m\'t\' test', 'test'],
+  ['the marker, to a quoted flag, with =', 'forge test \'--mt=test\'', 'test'],
+  ['the marker, after = and a hyphen', 'forge test --match-test=-?test', 'test'],
+  ['the marker, after a hyphen', 'forge test --mt -?test', 'test'],
+  ['the marker, as a filter that reads like a path', 'forge test --mt test/?', 'test'],
+  ['the same, quoted', 'forge test --mt \'test/?\'', 'test'],
+  ['the same, with =', 'forge test --mt=test/?', 'test'],
+  ['the marker, ANSI-C quoted around a path flag', 'forge test --mt $\'(?x)test_drain|[\\\' --mp ]{0}[/]?test \'', 'test'],
+  ['the marker, ANSI-C quoted around a comment', 'forge test --mt $\'(?x)test_drain|#\\\' forge \n test \'', 'test'],
+  ['the marker, as a word on its own', 'forge test test', 'test'],
+  ['the marker, before forge', 'test forge test', 'test'],
+  ['the marker, as a path with no slash', 'forge test --match-path test', 'test'],
+  ['the marker, as a path with =', 'forge test --mp=test', 'test'],
+  ['the marker, as a switch\'s value', 'forge test --isolate=test', 'test'],
+  ['the marker, as a count', 'forge test --fuzz-runs test', 'test'],
+  ['the marker, as a flag forge does not have', 'forge test --test', 'test'],
+  ['the marker, to another program', 'npx hardhat test', 'test'],
+  // Only ever a failure: a hunter who writes this is told before committing.
+  ['the marker, as a directory to change to', 'cd test && forge test --mt test_drain', 'test']
 ];
 
 for (const [label, command, name] of NAMES_ANOTHER) {
   test(`a finding that names another test fails: ${label}`, () => {
     const r = run(command);
     assert.equal(r.status, 'fail', `${command}: ${r.detail}`);
-    assert.match(r.detail, new RegExp(`names ${name}, which is not a test the patch added that failed`));
+    assert.match(r.detail, /names \S+, which is not a test the patch added that failed/);
     assert.ok(r.named.includes(name), JSON.stringify(r.named));
   });
 }
