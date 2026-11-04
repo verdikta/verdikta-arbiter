@@ -234,7 +234,7 @@ function labelNeedles(source, repoUrl) {
 }
 
 /** What the jury would read of a case besides its claim: the prior findings, and the listing's known issues. */
-function juryTexts(raw, loaded, listing) {
+function juryTexts(loaded, listing) {
   const out = {
     'report.md': loaded.report,
     'finding.json': loaded.finding ? JSON.stringify(loaded.finding) : null,
@@ -339,7 +339,7 @@ function checkPublicCase(raw, loaded, listing, fail) {
   checkPublicSource(raw.source, fail, { classOptional: batch2 });
   if (raw.claim && raw.claim.fix) fail('fix.patch is refused on a git listing: its removed lines would be someone\'s code');
   if (loaded.poc && loaded.poc.length) for (const m of addOnlyProblems(loaded.poc)) fail(m);
-  for (const [file, content] of Object.entries(juryTexts(raw, loaded, listing))) {
+  for (const [file, content] of Object.entries(juryTexts(loaded, listing))) {
     if (content === null) continue;
     const found = labelNeedles(raw.source, repoUrl).find((needle) => content.toLowerCase().includes(needle.toLowerCase()));
     if (found) fail(`${file} names the source (${found}): the claim files reach the jury, and the label must not`);

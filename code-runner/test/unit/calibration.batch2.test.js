@@ -12,9 +12,7 @@ const { codeReview } = require('@verdikta/common');
 const { loadCorpus, selectCases, CorpusError, LABEL_KINDS } = require('../../calibration/lib/format');
 const { listingView, caseRequest } = require('../../calibration/lib/harness');
 const { claimTexts, programUrls, claimProblems, indexTexts, LIMITS } = require('../../calibration/lib/provenance');
-const {
-  writeBatch2Corpus, batch2Label, knownIssue, KNOWN_TITLE, PRIOR, publicSource
-} = require('../helpers/calibrationCorpus');
+const { writeBatch2Corpus, batch2Label, knownIssue, KNOWN_TITLE, publicSource } = require('../helpers/calibrationCorpus');
 
 const CALIBRATION = path.join(__dirname, '..', '..', 'calibration');
 const FAMILIES = Object.freeze(['clear-invalid.intended-behaviour', 'clear-invalid.outside-scope', 'clear-invalid.excluded-precondition', 'duplicate.rephrased', 'duplicate.entry-point', 'duplicate.victim', 'known-issue.before', 'known-issue.after', 'severity-boundary']);
@@ -228,16 +226,23 @@ test('the provenance check reads what batch-2 adds: the prior findings, the know
     assert.deepEqual(urls, [entry.source.report, entry.source.url, entry.label.duplicateOf.url]);
     assert.deepEqual(programUrls({ source: { report: 'https://r', url: 'https://u' } }), ['https://r'], 'a clear-valid case stays measured against its report');
 
-    const words = PRIOR.rootCause.split(/\s+/);
     const sources = { report: indexTexts([`${KNOWN_TITLE}. ${knownIssue().description} More words to make a longer run of tokens than the limit that this file holds to`]), repo: indexTexts([]) };
     const measured = [];
     const problems = claimProblems(entry, sources, { measured });
     assert.ok(measured.some((m) => m.file === 'known_issues.json' && m.report > LIMITS.prose), JSON.stringify(measured));
     assert.ok(problems.some((p) => /known_issues\.json shares a run/.test(p)), JSON.stringify(problems));
-    const copiedPrior = { report: indexTexts([`${words.join(' ')} ${'and this goes on for some time in the words of whoever wrote it'}`]), repo: indexTexts([]) };
-    assert.deepEqual(claimProblems({ ...entry, listing: { ...entry.listing, knownIssues: [] } }, copiedPrior), [], 'a run under the limit passes');
   } finally {
     corpus.cleanup();
+  }
+  const theirs = 'The tier boundary follows the old count at every step so that a staker who should move up stays in the lower tier from then on and is paid the lower rate for as long as it stays';
+  const copied = writeBatch2Corpus('duplicate.rephrased', { prior: { rootCause: theirs } });
+  try {
+    const entry = loadCorpus({ root: copied.root, layout: true }).byId.get('batch-2.one');
+    const problems = claimProblems(entry, { report: indexTexts([theirs]), repo: indexTexts([]) });
+    assert.equal(problems.length, 1, JSON.stringify(problems));
+    assert.match(problems[0], /1\/finding\.json shares a run of \d+ tokens with the program's report/);
+  } finally {
+    copied.cleanup();
   }
 });
 

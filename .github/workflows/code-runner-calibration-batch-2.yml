@@ -21,6 +21,7 @@ on:
       - 'code-runner/calibration/listings/**'
       - 'code-runner/calibration/lib/**'
       - 'code-runner/calibration/run.js'
+      - 'code-runner/test/calibration/batch-2.test.js'
       - '.github/workflows/code-runner-calibration-batch-2.yml'
   push:
     branches: [main, master, claude/stake-attestation]
@@ -29,6 +30,7 @@ on:
       - 'code-runner/calibration/listings/**'
       - 'code-runner/calibration/lib/**'
       - 'code-runner/calibration/run.js'
+      - 'code-runner/test/calibration/batch-2.test.js'
       - '.github/workflows/code-runner-calibration-batch-2.yml'
 
 permissions:
