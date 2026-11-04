@@ -26,6 +26,7 @@
 #   code-review-sandbox.sh self-test             # run the canary again
 #   code-review-sandbox.sh disable [--purge]     # remove it; --purge also frees the disk image
 #   code-review-sandbox.sh hold                  # code review off in the adapter unless a pass stands
+#   code-review-sandbox.sh lock|unlock --pid N   # the maintenance lock, for an upgrade's whole run
 #   code-review-sandbox.sh print-config          # the units and daemon config (review)
 #
 # Options: --install-dir DIR (default: this script's directory)
@@ -95,12 +96,13 @@ RUN_USER=""
 DISK_GB="${VA_CODE_REVIEW_DISK_GB:-}"
 QUIET=0
 PURGE=0
+LOCK_PID=""
 
-usage() { sed -n '2,39p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,40p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'; }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        enable|status|warm|self-test|disable|hold|print-config)
+        enable|status|warm|self-test|disable|hold|lock|unlock|print-config)
             [ -n "$ACTION" ] && { echo "only one action, please" >&2; exit 64; }
             ACTION="$1"; shift ;;
         --install-dir) shift; [ -z "${1:-}" ] && { echo "--install-dir needs a directory" >&2; exit 64; }; INSTALL_DIR="$1"; shift ;;
@@ -108,6 +110,7 @@ while [ $# -gt 0 ]; do
         --disk-gb) shift; [ -z "${1:-}" ] && { echo "--disk-gb needs a size" >&2; exit 64; }; DISK_GB="$1"; shift ;;
         --quiet|-q) QUIET=1; shift ;;
         --purge) PURGE=1; shift ;;
+        --pid) shift; LOCK_PID="${1:-}"; shift ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown argument: $1" >&2; usage >&2; exit 64 ;;
     esac
@@ -339,41 +342,68 @@ own_docker() { # the runner's daemon, with no operator credentials
 ############################################
 # The lock file says who holds it: `<holder> <pid> <time>`. Maintenance operations are one at a time,
 # or the first to finish would lift the lock from under the second. So another live holder is a
-# refusal; the upgrade that started this run hands its own down (CODE_REVIEW_LOCK_PARENT), and keeps
-# it; a dead holder's file is stale and taken over; one with no pid is an operator's, and stays theirs.
+# refusal, whoever's process it is: an upgrade as the install's user can't signal a root one, which
+# is not the same as its being gone. The upgrade that started this run hands its own down
+# (CODE_REVIEW_LOCK_PARENT) and keeps it. A dead holder's file is stale, and one process takes it over.
+# One with no pid is an operator's and stays theirs. Nobody removes a lock that isn't their pid's.
 LOCK_MINE=0
 TMP_DIR=""
-lock_write() { echo "code-review-sandbox $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$LOCK_FILE"; }
-lock_take() {
-    local holder
+lock_line() { echo "code-review-sandbox $1 $(date -u +%Y-%m-%dT%H:%M:%SZ)"; }
+lock_holder() { awk '{print $2; exit}' "$LOCK_FILE" 2>/dev/null; }
+pid_alive() { kill -0 "$1" 2>/dev/null || [ -d "/proc/$1" ]; }
+# 0 this pid holds it, 1 another live holder, 2 an operator's stays, 3 the parent's, kept by the parent.
+acquire_lock() {
+    local pid="$1" holder rc=1
     mkdir -p "$STATE_DIR" 2>/dev/null
-    if ( set -C; lock_write ) 2>/dev/null; then
-        LOCK_MINE=1
-    else
-        holder=$(awk '{print $2; exit}' "$LOCK_FILE" 2>/dev/null)
-        if [[ "$holder" =~ ^[0-9]+$ ]]; then
-            if [ "$holder" = "${CODE_REVIEW_LOCK_PARENT:-}" ]; then
-                :
-            elif kill -0 "$holder" 2>/dev/null; then
-                echo -e "${RED}Another maintenance operation holds $LOCK_FILE (pid $holder): $(cat "$LOCK_FILE"). Wait for it, or remove the file if it is gone.${NC}" >&2
-                exit 1
-            else
-                lock_write && LOCK_MINE=1
-            fi
-        fi
-    fi
+    if ( set -C; lock_line "$pid" > "$LOCK_FILE" ) 2>/dev/null; then return 0; fi
+    holder=$(lock_holder)
+    [[ "$holder" =~ ^[0-9]+$ ]] || return 2
+    [ "$holder" = "$pid" ] && return 0
+    [ "$holder" = "${CODE_REVIEW_LOCK_PARENT:-}" ] && return 3
+    pid_alive "$holder" && return 1
+    # mkdir is atomic: of two seeing the same dead holder, one goes on.
+    mkdir "$LOCK_FILE.takeover" 2>/dev/null || return 1
+    if [ "$(lock_holder)" = "$holder" ] && lock_line "$pid" > "$LOCK_FILE.new.$pid" && mv -f "$LOCK_FILE.new.$pid" "$LOCK_FILE"; then rc=0; fi
+    rm -f "$LOCK_FILE.new.$pid"
+    rmdir "$LOCK_FILE.takeover"
+    return "$rc"
+}
+release_lock() { # release_lock PID: only its own
+    if [ "$(lock_holder)" = "$1" ]; then rm -f "$LOCK_FILE"; fi
+}
+lock_take() {
+    local rc=0
+    acquire_lock $$ || rc=$?
+    case "$rc" in
+        0) LOCK_MINE=1 ;;
+        1) echo -e "${RED}Another maintenance operation holds $LOCK_FILE: $(cat "$LOCK_FILE" 2>/dev/null). Wait for it, or remove the file if it is gone.${NC}" >&2
+           exit 1 ;;
+    esac
     own "$STATE_DIR" 2>/dev/null
+}
+# Code review could not be turned off, and no pass stands: the lock stays, with no pid, so no claim is
+# admitted whoever exits next. An operator lifts it after fixing what stopped the write.
+pin_lock() {
+    echo "code-review-sandbox kept: CODE_REVIEW_ENABLED could not be turned off in $ADAPTER_ENV at $(date -u +%Y-%m-%dT%H:%M:%SZ); remove this file after fixing that" > "$LOCK_FILE"
+    LOCK_MINE=0
+    echo -e "${RED}Code review could not be turned off in $ADAPTER_ENV, so the maintenance lock $LOCK_FILE stays: the runner refuses every claim until you fix that and remove it.${NC}" >&2
 }
 # The way out of a run, however it comes: a signal after the disk was allocated still removes it.
 # bash runs a signal's trap when the foreground child ends, so the child is not left using the disk.
 ENABLE_RUNNING=0
+ADAPTER_DOWN_BY_US=0
 on_exit() {
     trap '' TERM INT HUP
     if [ "$ENABLE_RUNNING" = "1" ]; then
         ENABLE_RUNNING=0
         end_failed_enable
     fi
-    if [ "$LOCK_MINE" = "1" ]; then rm -f "$LOCK_FILE"; fi
+    # A signal between the adapter's stop and its start: it was running, so it runs again.
+    if [ "$ADAPTER_DOWN_BY_US" = "1" ]; then
+        (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1) \
+            || echo -e "${RED}The External Adapter is DOWN: run $ADAPTER_DIR/start.sh${NC}" >&2
+    fi
+    if [ "$LOCK_MINE" = "1" ]; then release_lock $$; fi
     if [ -n "$TMP_DIR" ]; then rm -rf "$TMP_DIR"; fi
 }
 trap on_exit EXIT
@@ -435,6 +465,8 @@ create_disk() {
         return 0
     fi
     say "Creating the $DISK_GB GB disk image $IMAGE..."
+    # Ours from here on: a signal during the rename below still removes it.
+    DISK_CREATED=1
     as_root rm -f "$IMAGE.partial"
     # Allocated, not sparse: writes to it can never run the root filesystem out of space. mkfs
     # would discard it again, which on a file punches holes: -E nodiscard (measured, A8).
@@ -448,7 +480,6 @@ create_disk() {
     fi
     as_root chmod 0600 "$IMAGE.partial"
     as_root mv -f "$IMAGE.partial" "$IMAGE" || { as_root rm -f "$IMAGE.partial"; return 1; }
-    DISK_CREATED=1
 }
 
 # Installs stdin at DEST as root. 0 when it changed, 1 when it was already that, 2 on failure.
@@ -655,17 +686,26 @@ adapter_up() { curl -fsS --max-time 3 http://127.0.0.1:8080/version >/dev/null 2
 
 # The adapter reads .env when it starts. A node that does not run it yet reads this at its next start.
 restart_adapter_if_up() {
-    adapter_up || return 0
+    adapter_up || [ "$ADAPTER_DOWN_BY_US" = "1" ] || return 0
     say "Restarting the External Adapter so it reads its new settings..."
+    ADAPTER_DOWN_BY_US=1
     as_user bash "$ADAPTER_DIR/stop.sh" >/dev/null 2>&1
-    (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1)
+    (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1) || return 1
+    ADAPTER_DOWN_BY_US=0
 }
 
 # Dev trust is never written here: it is for a developer's hand, on a test chain.
 adapter_env_on() {
-    local before chain network
+    local before chain network had_env=0
     before=$(cat "$ADAPTER_ENV" 2>/dev/null)
-    cp -p "$ADAPTER_ENV" "$TMP_DIR/adapter.env.before" 2>/dev/null
+    # Its keys are in that file: no copy, no change. A copy that fails is not a file that wasn't there.
+    if [ -f "$ADAPTER_ENV" ]; then
+        if ! cp -p "$ADAPTER_ENV" "$TMP_DIR/adapter.env.before" || ! cmp -s "$ADAPTER_ENV" "$TMP_DIR/adapter.env.before"; then
+            echo -e "${RED}Could not copy $ADAPTER_ENV aside; it was not changed.${NC}" >&2
+            return 1
+        fi
+        had_env=1
+    fi
     network=$(env_value "$INSTALL_DIR/installer/.env" DEPLOYMENT_NETWORK)
     chain=$(env_value "$INSTALL_DIR/installer/.env" NETWORK_CHAIN_ID)
     case "$chain:$network" in
@@ -683,21 +723,27 @@ adapter_env_on() {
     restart_adapter_if_up && return 0
     # Text requests are what that stopped: back to what it ran, and say so.
     echo -e "${RED}The External Adapter did not restart on its new settings. Going back to the old ones.${NC}" >&2
-    if [ -f "$TMP_DIR/adapter.env.before" ]; then
+    if [ "$had_env" = "1" ]; then
         cp -p "$TMP_DIR/adapter.env.before" "$ADAPTER_ENV"
     else
         rm -f "$ADAPTER_ENV"
     fi
     own "$ADAPTER_ENV"
-    (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1) \
-        || echo -e "${RED}The External Adapter is DOWN: run $ADAPTER_DIR/start.sh${NC}" >&2
+    if (cd "$ADAPTER_DIR" && as_user bash ./start.sh >/dev/null 2>&1); then
+        ADAPTER_DOWN_BY_US=0
+    else
+        echo -e "${RED}The External Adapter is DOWN: run $ADAPTER_DIR/start.sh${NC}" >&2
+    fi
     return 1
 }
 
 adapter_env_off() {
     [ -f "$ADAPTER_ENV" ] || return 0
     grep -q '^CODE_REVIEW_ENABLED=true' "$ADAPTER_ENV" || return 0
-    set_env_line "$ADAPTER_ENV" CODE_REVIEW_ENABLED false
+    if ! set_env_line "$ADAPTER_ENV" CODE_REVIEW_ENABLED false || ! grep -q '^CODE_REVIEW_ENABLED=false' "$ADAPTER_ENV"; then
+        pin_lock
+        return 1
+    fi
     own "$ADAPTER_ENV"
     restart_adapter_if_up && return 0
     echo -e "${RED}The External Adapter did not restart after code review went off: it is DOWN. Run $ADAPTER_DIR/start.sh${NC}" >&2
@@ -889,6 +935,23 @@ do_hold() {
     hold_without_a_pass
 }
 
+# The maintenance lock for an upgrade's whole run: the upgrade's own pid, so that a later operation
+# of this tool sees whose it is. Exit codes as acquire_lock's.
+do_lock() {
+    local rc=0
+    [[ "$LOCK_PID" =~ ^[0-9]+$ ]] || { echo "lock needs --pid" >&2; exit 64; }
+    acquire_lock "$LOCK_PID" || rc=$?
+    own "$STATE_DIR" 2>/dev/null
+    if [ "$rc" = "1" ]; then
+        echo -e "${RED}A code-review sandbox operation holds $LOCK_FILE: $(cat "$LOCK_FILE" 2>/dev/null).${NC}" >&2
+    fi
+    exit "$rc"
+}
+do_unlock() {
+    [[ "$LOCK_PID" =~ ^[0-9]+$ ]] || { echo "unlock needs --pid" >&2; exit 64; }
+    release_lock "$LOCK_PID"
+}
+
 do_print_config() {
     echo "# daemon.json"; daemon_json
     echo "# containerd.toml"; containerd_toml
@@ -904,5 +967,7 @@ case "$ACTION" in
     self-test) do_self_test ;;
     disable) do_disable ;;
     hold) do_hold ;;
+    lock) do_lock ;;
+    unlock) do_unlock ;;
     print-config) do_print_config ;;
 esac

@@ -134,9 +134,10 @@ run_lock() { # run_lock INSTALLED(1|0) PRE_HELD(1|0) FAIL_AFTER(1|0)
     rm -f "$T/install/code-runner/.state/maintenance" "$T/install/code-runner/.env"
     [ "$1" = 1 ] && : > "$T/install/code-runner/.env"
     [ "$2" = 1 ] && echo "by hand" > "$T/install/code-runner/.state/maintenance"
-    LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" FAIL_AFTER="$3" bash -c '
+    LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" FAIL_AFTER="$3" REAL_UTIL="$ROOT/util" bash -c '
         set -e
         GREEN= YELLOW= RED= BLUE= NC=
+        UTIL_DIR="$REAL_UTIL"
         UPGRADE_IN_PROGRESS=1; BACKUP_DIR=""; ARBITER_WAS_RUNNING=1
         eval "$1"
         trap cleanup_on_error ERR
@@ -169,7 +170,7 @@ has "another's lock stays after a failure" "$out" "LOCK-AFTER=present"
 sleep 60 & live=$!
 rm -f "$T/install/code-runner/.state/maintenance"; : > "$T/install/code-runner/.env"
 echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner/.state/maintenance"
-out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" bash -c '
+out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
     set -e
     trap "echo TRAP-FIRED; exit 9" ERR
     GREEN= YELLOW= RED= BLUE= NC=
@@ -177,14 +178,14 @@ out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" b
     echo "STOPPED-THE-ARBITER"
 ' _ "$lock" 2>&1); rc=$?
 [ "$rc" = 1 ] && ok || bad "a live holder: upgrade exit $rc"
-has   "a live holder: says so" "$out" "pid $live"
+has   "a live holder: says so" "$out" "$live"
 hasnt "a live holder: nothing stopped" "$out" "STOPPED-THE-ARBITER"
 hasnt "a live holder: trap" "$out" "TRAP-FIRED"
 has   "a live holder: its lock stays" "$(cat "$T/install/code-runner/.state/maintenance")" "$live"
 kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
 # A dead holder's file is taken over, and let go.
 echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$T/install/code-runner/.state/maintenance"
-out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" bash -c '
+out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
     set -e
     GREEN= YELLOW= RED= BLUE= NC=
     eval "$1"
@@ -192,13 +193,24 @@ out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" b
     echo "PARENT=$CODE_REVIEW_LOCK_PARENT PID=$$"
     echo "REACHED-END"
 ' _ "$lock" 2>&1)
-has "a dead holder: taken over" "$out" "HOLDER=upgrade-arbiter"
+has "a dead holder: taken over" "$out" "HOLDER=code-review-sandbox [0-9]"
 has "a dead holder: finished" "$out" "REACHED-END"
 [ ! -f "$T/install/code-runner/.state/maintenance" ] && ok || bad "a dead holder's lock stayed"
 # The tool hears whose lock it is.
 pid_line=$(printf '%s\n' "$out" | grep '^PARENT=')
 parent=${pid_line#PARENT=}; parent=${parent%% *}
 [ -n "$parent" ] && [ "$parent" = "${pid_line##*PID=}" ] && ok || bad "the upgrade does not hand its pid down: $pid_line"
+
+# What the tool pinned is no pid's: the upgrade's exit does not lift it.
+rm -f "$T/install/code-runner/.state/maintenance"
+out=$(LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
+    set -e
+    GREEN= YELLOW= RED= BLUE= NC=
+    eval "$1"
+    echo "code-review-sandbox kept: pinned" > "$LOCK"
+' _ "$lock" 2>&1)
+has "a pinned lock outlives the upgrade" "$(cat "$T/install/code-runner/.state/maintenance")" "kept:"
+rm -f "$T/install/code-runner/.state/maintenance"
 
 # The backup comes with this run's lock: restored, it would refuse every claim from then on.
 backup=$(awk '/^# Ask if user wants to create a backup/{p=1} /^# Mark that upgrade is in progress/{p=0} p{print}' "$S")
@@ -223,7 +235,7 @@ rm -f "$T/install/code-runner/.state/maintenance"
 
 # A signal: bash runs the EXIT trap on the way out. Only kill -9 can leave the lock, and then the doctor names it.
 rm -f "$T/install/code-runner/.state/maintenance"; : > "$T/install/code-runner/.env"
-LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" bash -c '
+LOCK="$T/install/code-runner/.state/maintenance" TARGET_DIR="$T/install" UTIL_DIR="$ROOT/util" bash -c '
     GREEN= YELLOW= RED= BLUE= NC=
     eval "$1"
     kill -TERM $$
@@ -251,6 +263,7 @@ has   "deps: finished" "$out" "REACHED-END"
 has   "deps: no claim on a release with no pass" "$out" "STUB-HOLD-CALLED"
 out=$(HOLD_RC=1 run_deps 1 0)
 has   "hold fails: says so" "$out" "could not turn code review off"
+has   "hold fails: ends the upgrade with exit 3" "$out" "FAILED=\[code review could not be turned off"
 has   "hold fails: finished" "$out" "REACHED-END"
 hasnt "hold fails: trap" "$out" "TRAP-FIRED"
 out=$(run_deps 0 0)

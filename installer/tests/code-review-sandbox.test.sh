@@ -43,7 +43,7 @@ case "$*" in
      n=$(cat "$STUB_STATE/runtimes-asked" 2>/dev/null || echo 0); echo $((n+1)) > "$STUB_STATE/runtimes-asked"
      if [ "$n" -lt "${STUB_RELOAD_LAG:-0}" ]; then echo /opt/gvisor/old/runsc; else echo "${STUB_RUNSC_PATH:-$VERDIKTA_SANDBOX_PREFIX/opt/gvisor/20260921.0/runsc}"; fi ;;
   *" version "*) echo 28.0.4 ;;
-  *" pull "*) if [ "${STUB_SLOW_PULL:-0}" = 1 ]; then : > "$STUB_STATE/pull-began"; sleep 1; fi
+  *" pull "*) if [ "${STUB_SLOW_PULL:-0}" = 1 ]; then : > "$STUB_STATE/signal-now"; sleep 1; fi
      if [ -n "${STUB_LOCK:-}" ] && [ -f "$STUB_LOCK" ]; then echo "lock-held-during-pull" >> "$STUB_LOG"; fi
      [ "${STUB_PULL_FAIL:-0}" = 1 ] && exit 1 ;;
   *"image inspect"*) [ "${STUB_NOT_WARM:-0}" = 1 ] && exit 1 ;;
@@ -73,6 +73,11 @@ stub sudo 'if [ "${STUB_NO_SUDO:-0}" = 1 ]; then exit 1; fi; [ "$1" = "-n" ] && 
 # chown as a stub: the tests run as one user.
 stub chown 'exit 0'
 # env -i stays env -i, and is logged: only what a test's stand-in needs to report goes through it.
+# mv and cp, failing on demand for one kind of destination; mv can also be slow, for a signal to land in.
+stub mv 'case "$*" in *.env.new.*) [ "${STUB_ENV_WRITE_FAIL:-0}" = 1 ] && exit 1 ;; esac
+if [ "${STUB_SLOW_RENAME:-0}" = 1 ]; then case "$*" in *verdikta-code-runner.img.partial*) : > "$STUB_STATE/signal-now"; sleep 1 ;; esac; fi
+exec /bin/mv "$@"'
+stub cp 'case "$*" in *adapter.env.before*) [ "${STUB_ENV_COPY_FAIL:-0}" = 1 ] && exit 1 ;; esac; exec /bin/cp "$@"'
 stub env 'if [ "$1" = "-i" ]; then echo "env -i" >> "$STUB_LOG"; shift; exec /usr/bin/env -i STUB_LOG="$STUB_LOG" STUB_LOCK="$STUB_LOCK" STUB_CANARY_EXIT="${STUB_CANARY_EXIT:-}" STUB_HASH="${STUB_HASH:-}" "$@"; fi; exec /usr/bin/env "$@"'
 
 fresh() { # a new prefix and install tree; sets P, I
@@ -416,16 +421,17 @@ out=$(STUB_ADAPTER_FAILS=1 run disable 2>&1); is "disable, adapter does not rest
 has "disable, adapter does not restart: says so" "$out" "is DOWN"
 
 # --- a signal is a failure too: a first enable removes what it made, a refresh turns code mode off
-term_during_pull() { # sends SIGTERM once the pull has begun
-    : > "$P/state/pull-began"; rm -f "$P/state/pull-began"
-    PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
-    STUB_LOCK="$I/code-runner/.state/maintenance" VERDIKTA_UNATTENDED=1 STUB_SLOW_PULL=1 \
+term_at() { # term_at STUB_VAR: SIGTERM when that stub says signal-now
+    rm -f "$P/state/signal-now"
+    env "$1=1" PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
+    STUB_LOCK="$I/code-runner/.state/maintenance" VERDIKTA_UNATTENDED=1 \
     bash "$TOOL" enable --install-dir "$I" --user "$(id -un)" >"$P/state/out" 2>&1 &
     pid=$!
-    for _ in $(seq 1 100); do [ -e "$P/state/pull-began" ] && break; sleep 0.1; done
+    for _ in $(seq 1 100); do [ -e "$P/state/signal-now" ] && break; sleep 0.1; done
     kill -TERM "$pid"
     wait "$pid"; rc=$?
 }
+term_during_pull() { term_at STUB_SLOW_PULL; }
 fresh
 term_during_pull
 is "SIGTERM on a first enable: rc" "$rc" 143
@@ -440,6 +446,45 @@ is "SIGTERM on a refresh: rc" "$rc" 143
 [ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM on a refresh: the disk went"
 has "SIGTERM on a refresh: code mode off" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=false$"
 [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "SIGTERM on a refresh: the lock stayed"
+
+# ... during the final rename too: the image is this run's before it has its name.
+fresh
+term_at STUB_SLOW_RENAME
+is "SIGTERM during the rename: rc" "$rc" 143
+[ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM during the rename: the image stayed"
+[ ! -e "$P/var/lib/verdikta-code-runner.img.partial" ] && ok || bad "SIGTERM during the rename: the partial image stayed"
+# ... and between the adapter's stop and its start: it was running, so it runs again.
+fresh
+printf '#!/bin/bash\necho adapter-stop >> "$STUB_LOG"; [ "${STUB_SLOW_ADAPTER_STOP:-0}" = 1 ] && { : > "$STUB_STATE/signal-now"; sleep 1; }; exit 0\n' > "$I/external-adapter/stop.sh"
+term_at STUB_SLOW_ADAPTER_STOP
+is "SIGTERM during the adapter's stop: rc" "$rc" 143
+is "SIGTERM during the adapter's stop: started again" "$(grep -c '^adapter-start$' "$P/log")" 1
+hasnt "SIGTERM during the adapter's stop: not left on" "$(cat "$I/external-adapter/.env")" "CODE_REVIEW_ENABLED=true"
+[ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM during the adapter's stop: the disk stayed"
+
+# --- the adapter's settings: no copy, no change, and a failed copy destroys nothing
+fresh
+before=$(cat "$I/external-adapter/.env")
+out=$(STUB_ENV_COPY_FAIL=1 run enable 2>&1); rc=$?
+is "adapter env not copied: rc" "$rc" 1
+has "adapter env not copied: says so" "$out" "Could not copy"
+is "adapter env not copied: unchanged" "$(cat "$I/external-adapter/.env")" "$before"
+
+# --- no pass, and code review can't be turned off: the lock stays, whoever exits next
+stale_install
+out=$(STUB_ENV_WRITE_FAIL=1 run hold 2>&1); is "off cannot be written: rc" "$?" 1
+has "off cannot be written: says so" "$out" "the maintenance lock"
+has "off cannot be written: the lock stays" "$(cat "$I/code-runner/.state/maintenance")" "kept:"
+has "off cannot be written: it says true still" "$(cat "$I/external-adapter/.env")" "^CODE_REVIEW_ENABLED=true$"
+rm -f "$I/code-runner/.state/maintenance"
+stale_install
+out=$(STUB_ENV_WRITE_FAIL=1 STUB_ARCH=aarch64 run enable 2>&1); is "off cannot be written, refused refresh: rc" "$?" 4
+[ -e "$I/code-runner/.state/maintenance" ] && ok || bad "off cannot be written, refused refresh: no lock"
+rm -f "$I/code-runner/.state/maintenance"
+stale_install
+out=$(STUB_ENV_WRITE_FAIL=1 STUB_PULL_FAIL=1 run enable 2>&1); is "off cannot be written, failed refresh: rc" "$?" 1
+has "off cannot be written, failed refresh: the lock stays" "$(cat "$I/code-runner/.state/maintenance")" "kept:"
+rm -f "$I/code-runner/.state/maintenance"
 
 # --- the self-test refuses a cold host: its own pull would hide it
 fresh
@@ -475,7 +520,7 @@ echo "code-review-sandbox $live 2026-11-04T00:00:00Z" > "$I/code-runner/.state/m
 rm -f "$I/code-runner/.state/conformance.json"; : > "$P/log"
 out=$(run enable 2>&1); rc=$?
 is "with a live holder: enable rc" "$rc" 1
-has "with a live holder: names it" "$out" "pid $live"
+has "with a live holder: names it" "$out" "$live"
 hasnt "with a live holder: nothing ran" "$(log)" "^conformance"
 has "with a live holder: its lock stays" "$(cat "$I/code-runner/.state/maintenance")" "$live"
 out=$(run self-test 2>&1); is "with a live holder: self-test rc" "$?" 1
@@ -492,6 +537,33 @@ rm -f "$I/code-runner/.state/conformance.json"
 out=$(run enable 2>&1); rc=$?
 is "a dead holder: enable rc" "$rc" 0
 [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "a dead holder's lock stayed"
+# A live holder this user cannot signal is still live: kill -0 says EPERM, /proc says it is there.
+if [ -d /proc/1 ] && [ "$(id -u)" != 0 ]; then
+    echo "code-review-sandbox 1 2026-11-04T00:00:00Z" > "$I/code-runner/.state/maintenance"
+    out=$(run warm 2>&1); is "another user's live holder: rc" "$?" 1
+    has "another user's live holder: its lock stays" "$(cat "$I/code-runner/.state/maintenance")" "sandbox 1 "
+    rm -f "$I/code-runner/.state/maintenance"
+fi
+# Of two seeing the same dead holder, one goes on.
+sleep 0 & dead=$!; wait "$dead"
+echo "code-review-sandbox $dead 2026-11-04T00:00:00Z" > "$I/code-runner/.state/maintenance"
+mkdir "$I/code-runner/.state/maintenance.takeover"
+out=$(run warm 2>&1); is "a takeover in progress: rc" "$?" 1
+has "a takeover in progress: the file is unchanged" "$(cat "$I/code-runner/.state/maintenance")" "sandbox $dead "
+rmdir "$I/code-runner/.state/maintenance.takeover"
+rm -f "$I/code-runner/.state/maintenance"
+# Nobody removes a lock that is not their pid's: a run whose lock was taken from it leaves the new holder's.
+sleep 60 & live=$!
+echo "code-review-sandbox $live x" > "$I/code-runner/.state/maintenance"
+out=$(run unlock --pid 12345 2>&1); is "unlock of another's: rc" "$?" 0
+has "unlock of another's: it stays" "$(cat "$I/code-runner/.state/maintenance")" "$live"
+out=$(run unlock --pid "$live" 2>&1)
+[ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "unlock of its own: it stayed"
+kill "$live" 2>/dev/null; wait "$live" 2>/dev/null
+out=$(run lock --pid $$ 2>&1); is "lock: rc" "$?" 0
+has "lock: names the pid given" "$(cat "$I/code-runner/.state/maintenance")" "sandbox $$ "
+out=$(run lock 2>&1); is "lock needs a pid" "$?" 64
+out=$(run unlock --pid $$ 2>&1); [ ! -e "$I/code-runner/.state/maintenance" ] && ok || bad "unlock left the lock"
 
 # --- status exit codes
 fresh

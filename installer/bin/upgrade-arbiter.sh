@@ -1170,35 +1170,27 @@ fi
 # Hold the code runner's maintenance lock for the whole upgrade (design §9.6): while it exists the
 # runner admits no run and /health is 503, so the adapter refuses a claim rather than judge it on a
 # half-replaced runner. The EXIT trap lets it go however this script ends, the ERR path included,
-# which restarts the arbiter first. The file says who holds it (`<holder> <pid> <time>`): a sandbox
-# operation still running means no upgrade yet, or it would lift the lock from under this one; a dead
-# holder's file is taken over; one with no pid is an operator's, and stays theirs. `kill -9` can leave
-# it, and then code review refuses until it is removed (the doctor names it).
-CODE_RUNNER_LOCK="$TARGET_DIR/code-runner/.state/maintenance"
-CODE_RUNNER_LOCK_MINE=0
+# which restarts the arbiter first, and only if it is still this run's. A sandbox operation still
+# running means no upgrade yet, or it would lift the lock from under this one. One an operator set
+# stays theirs. `kill -9` can leave it, and then code review refuses until it is removed (the doctor
+# names it). The tool holds the rules (`lock`): the repo's copy, since the installed one may be old.
+CODE_RUNNER_LOCK_HELD=0
 release_code_runner_lock() {
-    if [ "$CODE_RUNNER_LOCK_MINE" = "1" ]; then
-        rm -f "$CODE_RUNNER_LOCK" || true
+    if [ "$CODE_RUNNER_LOCK_HELD" = "1" ]; then
+        bash "$UTIL_DIR/code-review-sandbox.sh" unlock --pid $$ --install-dir "$TARGET_DIR" || true
     fi
 }
 trap release_code_runner_lock EXIT
 export CODE_REVIEW_LOCK_PARENT=$$
 if [ -f "$TARGET_DIR/code-runner/.env" ]; then
-    if ( set -C; echo "upgrade-arbiter $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CODE_RUNNER_LOCK" ) 2>/dev/null; then
-        CODE_RUNNER_LOCK_MINE=1
-    else
-        CODE_RUNNER_LOCK_HOLDER=$(awk '{print $2; exit}' "$CODE_RUNNER_LOCK" 2>/dev/null || true)
-        if [[ "$CODE_RUNNER_LOCK_HOLDER" =~ ^[0-9]+$ ]]; then
-            if kill -0 "$CODE_RUNNER_LOCK_HOLDER" 2>/dev/null; then
-                echo -e "${RED}A code-review sandbox operation is running (pid $CODE_RUNNER_LOCK_HOLDER, $CODE_RUNNER_LOCK). Nothing was changed: run the upgrade when it ends.${NC}"
-                exit 1
-            fi
-            echo "upgrade-arbiter $$ $(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$CODE_RUNNER_LOCK"
-            CODE_RUNNER_LOCK_MINE=1
-        else
-            echo -e "${YELLOW}The code runner's maintenance lock is held by hand ($CODE_RUNNER_LOCK): leaving it.${NC}"
-        fi
-    fi
+    CODE_RUNNER_LOCK_RC=0
+    bash "$UTIL_DIR/code-review-sandbox.sh" lock --pid $$ --install-dir "$TARGET_DIR" || CODE_RUNNER_LOCK_RC=$?
+    case "$CODE_RUNNER_LOCK_RC" in
+        0) CODE_RUNNER_LOCK_HELD=1 ;;
+        2) echo -e "${YELLOW}The code runner's maintenance lock was set by hand: leaving it.${NC}" ;;
+        *) echo -e "${RED}Nothing was changed: run the upgrade when that operation ends (exit $CODE_RUNNER_LOCK_RC).${NC}"
+           exit 1 ;;
+    esac
 fi
 
 # If arbiter is running, stop it
@@ -1903,7 +1895,9 @@ if [ -f "$TARGET_CODE_RUNNER/.env" ]; then
     CODE_REVIEW_HOLD_RC=0
     bash "$TARGET_DIR/code-review-sandbox.sh" hold || CODE_REVIEW_HOLD_RC=$?
     if [ "$CODE_REVIEW_HOLD_RC" != "0" ]; then
+        # The tool left the lock on, as no pid's: this run's exit does not lift it.
         echo -e "${YELLOW}Warning: could not turn code review off in the adapter (exit $CODE_REVIEW_HOLD_RC). Check $TARGET_DIR/external-adapter/.env.${NC}"
+        CODE_REVIEW_SANDBOX_FAILED="code review could not be turned off for a release with no conformance pass; fix $TARGET_DIR/external-adapter/.env and remove $TARGET_DIR/code-runner/.state/maintenance"
     fi
 fi
 
