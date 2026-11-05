@@ -427,6 +427,13 @@ Ollama runs locally and is unaffected by gateway settings.
   `anthropicControlParams`) and gives models outside its table only 2048 output
   tokens, so modern models get `maxTokens` set explicitly. Do not re-add a
   blanket `temperature`.
+- **Above 21,333 max tokens the Anthropic SDK needs a client timeout.** The SDK nested
+  under `@langchain/anthropic` (0.71.2; the top-level 0.27.3 has no such check) refuses a
+  non-streaming request above that, with no request sent, unless the client has a timeout
+  of its own, and LangChain then retries the refusal for one to two minutes. Code mode's
+  jurors pass `deadlineAt`, and `anthropicClientOptions` sets the timeout to the time left;
+  text mode and the justifier keep the SDK's default. `anthropic-sdk-limit.test.ts` runs the
+  real client against a local stub, so bump the SDK with that test in view.
 - **Images are fitted to provider limits before the jury sees them.**
   `ai-node/src/lib/attachments/normalizeImages.ts` (sharp, pinned exactly) runs
   once per request: images within every limit (8000 px/side, 30,000 OpenAI

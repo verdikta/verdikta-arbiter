@@ -4,8 +4,13 @@
  * behaves exactly as before.
  */
 export interface CallControlOptions {
-  /** Aborts the provider request. The caller owns the deadline: no provider timer applies. */
+  /** Aborts the provider request. The caller owns the deadline: this is what cancels a call. */
   signal?: AbortSignal;
+  /**
+   * When the caller will abort this call (epoch ms). A client that needs a timeout of
+   * its own to take the request (Anthropic's, anthropicClientOptions) gets the time left.
+   */
+  deadlineAt?: number;
   /** Output-token ceiling: the code class envelope's juror output. */
   maxTokens?: number;
   /** Reasoning effort for a frontier juror (code mode sends 'high'). */
@@ -14,7 +19,7 @@ export interface CallControlOptions {
 
 /** true when a call carries any code-mode control. */
 export function hasCallControls(options?: CallControlOptions | null): boolean {
-  return !!options && (options.signal !== undefined || options.maxTokens !== undefined || options.effort !== undefined);
+  return !!options && (options.signal !== undefined || options.deadlineAt !== undefined || options.maxTokens !== undefined || options.effort !== undefined);
 }
 
 /**
