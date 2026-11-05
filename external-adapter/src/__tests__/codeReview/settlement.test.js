@@ -208,3 +208,20 @@ describe('settleReport against common\'s validator: every accepted shape settles
     expect(accepted).toBeGreaterThan(50);
   });
 });
+
+// C5's catalogue carries, for each case that a report decides, the report's facts and what
+// they settle as (Q35): the rule's own table, held to the adapter's real settleReport.
+describe("settleReport against common's catalogue: every case with a report field", () => {
+  const SETTLES = { INVALID: 'invalid', DUPLICATE: 'duplicate' };
+  const cases = codeReview.loadFixtures().cases.filter((item) => item.report);
+
+  it('the catalogue has such cases', () => {
+    expect(cases.length).toBeGreaterThan(0);
+  });
+
+  it.each(cases.map((item) => [item.id, item]))('%s', (_id, item) => {
+    expect(Object.keys(SETTLES)).toContain(item.settles);
+    const settled = settleReport(report(item.report));
+    expect(settled.kind).toBe(SETTLES[item.settles]);
+  });
+});

@@ -4,7 +4,7 @@
  * The exact @verdikta/common pin of a component (AI Node, External Adapter).
  *
  * A component that pins @verdikta/common to one exact version (for example
- * the stake-attestation prerelease 1.9.0-attest.1, which carries the
+ * the stake-attestation prerelease 1.9.0-attest.2, which carries the
  * code-review gates) needs exactly that release, and its AI Node and adapter
  * must agree on it. The installer's version preference (VERDIKTA_COMMON_VERSION,
  * `latest` by default) only applies to components that pin a range: an exact

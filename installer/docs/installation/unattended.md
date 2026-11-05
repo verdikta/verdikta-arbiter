@@ -85,6 +85,11 @@ The keys that matter most:
 | `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) regenerate job specs + re-register on-chain | `n` |
 | `VA_UPGRADE_JOB_TIMEOUTS` | (upgrade) the 840 s job limits: `MaxRunDuration` in `config.toml`, stale jobs replaced under the same job ids, no on-chain action (`apply-job-timeouts.sh`). `n` keeps the old limits; the next upgrade asks again | `y` |
 | `VA_UPGRADE_HARDEN_PORTS` | (upgrade) close 5432/6688/3000/8080 on the public interface (`arbiter-firewall.sh enable`; needs passwordless sudo). **Unattended default is `n`**: an unattended upgrade never changes networking by itself | `n` |
+| `VA_UPGRADE_CODE_REVIEW_SANDBOX` | (upgrade) install the [code-review sandbox](../maintenance/code-review-sandbox.md); needs passwordless sudo. **Unattended default is `n`** | `n` |
+| `VA_INSTALL_CODE_REVIEW_SANDBOX` | (install) the same, at install time | `n` |
+| `VA_CODE_REVIEW_DISK_GB` | the fixed size of the sandbox's disk image, at least 12; a first enable only | `40` |
+| `VA_CODE_RUNNER_SLOTS` | claims judged at once, each up to 2 vCPU and 4 GB of RAM | `1` |
+| `VA_REGISTER_JOB_IDS` | register these jobs only (default: all of them). Each code class needs jobs of its own: a job on both 133 and 134 is refused | |
 | `VA_UPGRADE_BIND_CHAINLINK_LOCAL` | (upgrade) recreate the chainlink container with 6688 on `127.0.0.1` only (Chainlink restarts for about a minute) | `n` |
 
 Yes/no keys accept `y`/`n`, `yes`/`no`, `true`/`false`, `1`/`0`.

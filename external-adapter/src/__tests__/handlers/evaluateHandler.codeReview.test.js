@@ -257,6 +257,23 @@ describe('code review: request layout and operator switch', () => {
     expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_DISABLED/);
   });
 
+  it('a text request never reaches the run: a runner with no pass harms nothing else (A8)', async () => {
+    const cid = H.cid('TextListing');
+    archives[cid] = H.zip({
+      'manifest.json': JSON.stringify({
+        version: '1.0',
+        primary: { filename: 'primary_query.json' },
+        juryParameters: { NUMBER_OF_OUTCOMES: 2, AI_NODES: [{ AI_PROVIDER: 'OpenAI', AI_MODEL: 'gpt-4o', NO_COUNTS: 1, WEIGHT: 1 }], ITERATIONS: 1 }
+      }),
+      'primary_query.json': JSON.stringify({ query: 'Is this text?', outcomes: ['DONT_FUND', 'FUND'], references: [] })
+    });
+    const res = await evaluateHandler(request(cid));
+    expect(res.statusCode).toBe(200);
+    expect(res.data.aggregatedScore).toEqual([250000, 750000]);
+    expect(claimRun.runClaim).not.toHaveBeenCalled();
+    expect(aiClient.evaluate).toHaveBeenCalledTimes(1);
+  });
+
   it('with code review disabled no claim archive is even extracted', async () => {
     loadCodeReviewConfig({});
     const s = scenario({ priors: 1 });

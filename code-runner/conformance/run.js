@@ -26,6 +26,7 @@ const { observe, compareCase } = require('../calibration/lib/compare');
 const { EXIT, HarnessError, listingView, caseRequest, checkListing } = require('../calibration/lib/harness');
 const { developmentReport } = require('../calibration/run');
 const { validateRunRequest } = require('../src/request');
+const { expectedPass } = require('../src/conformance');
 
 const ROOT = __dirname;
 const LOCK_FILE = path.join(ROOT, 'canary.lock.json');
@@ -148,7 +149,9 @@ async function main(argv, deps = {}) {
 
   let session;
   try {
-    session = await makeSession({ registryPort: CANARY_REGISTRY_PORT });
+    // The installer's self-test runs on the runner's own daemon, which cannot publish a port (A8).
+    const registryHostNetwork = process.env.CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK === 'host';
+    session = await makeSession({ registryPort: CANARY_REGISTRY_PORT, registryHostNetwork });
   } catch (err) {
     stderr(`conformance: the runner session did not start: ${err.message}`);
     return EXIT.HARNESS;
@@ -213,6 +216,8 @@ async function main(argv, deps = {}) {
         baseCommit: inputs.baseCommit,
         listingCid: inputs.listingCid,
         bcid: inputs.bcid,
+        // What the installer's self-test records: the source this run was made by (A8).
+        sourceSha256: expectedPass().sourceSha256,
         runs: args.repeat,
         report: answer.report
       }, null, 2)}\n`);
