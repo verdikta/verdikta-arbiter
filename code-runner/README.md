@@ -2323,6 +2323,8 @@ Node A7d: the 45 claims through the runner and the AI Node with `CODE_STANDARD_P
 
 The four jury-layer catalogue cases are named results over the claims that are their instances (`CATALOGUE`). A missed bar is a result: nothing here changes a prompt, a rubric, a label, a case or a threshold to reach it.
 
+**The measurement of 2026-11-05 missed the bar** (`calibration/results/2026-11-05-jury.md`): 20 of the 39 claims that reached the jury have no verdict, since the DeepSeek juror reached its 8,000 output tokens. No false valid on the adversarial claims.
+
 ### The conformance canary
 
 `npm run conformance [-- --repeat <n>] [--json <file>]`. `conformance/` is one case on its own
