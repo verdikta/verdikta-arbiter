@@ -8,6 +8,7 @@ import {
   SAMPLING_FREE_PARAMS,
   acceptsSamplingParams,
   anthropicChatParams,
+  anthropicClientOptions,
   anthropicControlParams,
   extractTextContent,
   isSamplingParamRejection,
@@ -66,7 +67,7 @@ export class AnthropicProvider implements LLMProvider {
     return this.invokeText(model, prompt, options);
   }
 
-  private createChat(model: string, params: AnthropicChatParams): ChatAnthropic {
+  private createChat(model: string, params: AnthropicChatParams, controls?: CallControlOptions): ChatAnthropic {
     // Sampling parameters are chosen per model (anthropic-request-params.ts):
     // Claude ≤ 4.6 gets temperature 0.7 as always; Opus 4.7+ / Claude 5 reject
     // temperature, top_p and top_k with a 400, so they get none. LangChain only
@@ -75,6 +76,7 @@ export class AnthropicProvider implements LLMProvider {
       anthropicApiKey: this.apiKey,
       modelName: model,
       ...params,
+      ...anthropicClientOptions(controls),
     });
   }
 
@@ -92,14 +94,14 @@ export class AnthropicProvider implements LLMProvider {
     const invoke = (chat: ChatAnthropic) =>
       controls?.signal ? chat.invoke(input, { signal: controls.signal }) : chat.invoke(input);
     try {
-      const response = await invoke(this.createChat(model, params));
+      const response = await invoke(this.createChat(model, params, controls));
       return extractTextContent(response.content);
     } catch (error: any) {
       if (params.temperature === undefined || !isSamplingParamRejection(error)) {
         throw error;
       }
       console.warn(`[${this.providerName}] ${model} rejected a sampling parameter (${error.message}); retrying without sampling parameters`);
-      const response = await invoke(this.createChat(model, { ...SAMPLING_FREE_PARAMS, ...controlParams }));
+      const response = await invoke(this.createChat(model, { ...SAMPLING_FREE_PARAMS, ...controlParams }, controls));
       return extractTextContent(response.content);
     }
   }

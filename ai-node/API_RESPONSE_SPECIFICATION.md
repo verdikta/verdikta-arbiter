@@ -200,7 +200,10 @@ its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
   the provider's HTTP request (Anthropic, OpenAI, OpenRouter, xAI; Hyperbolic
   and Ollama too, as justifiers: Ollama through its own `/api/chat`). The
   deadline covers the provider's setup as well, and the route answers at the
-  deadline even if a provider ignores the signal.
+  deadline even if a provider ignores the signal. A Claude juror's client also gets
+  the time left as its own timeout, because the Anthropic SDK refuses a non-streaming
+  request above 21,333 max tokens without one (`anthropicClientOptions`). The signal
+  is still what cancels the call.
 - A body read that does not finish within `REQUEST_TIMEOUT_MS` is the text-mode
   408, in either mode.
 - Every juror runs with web access off, `maxTokens` = the class envelope's
