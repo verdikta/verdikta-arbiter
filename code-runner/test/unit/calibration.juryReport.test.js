@@ -151,6 +151,21 @@ test('an error is a claim with no verdict: not agreeing, and its code, never its
   assert.equal(render(a, { date: '2026-11-05' }).includes(SECRET), false);
 });
 
+test('claims with no verdict are listed, each with what any juror that answered said, and counted beside the misses', () => {
+  const vector = vectorFor('MEDIUM');
+  const a = analyse(world({
+    'clear-valid.mellow-fee-per-period': { error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null, jurors: [{ model: 'claude-sonnet-5-5', vector }, { model: 'deepseek/deepseek-v4-pro-0813', vector: null }], spend: { usd: 0.1 } }
+  }));
+  assert.equal(a.bar.rows.find((r) => r.class === 'HIGH').noVerdict, 1);
+  const text = render(a, { date: '2026-11-05', notes: { headline: 'A headline of ours.', noVerdict: 'Why, in our words.' } });
+  assert.match(text, /## Claims with no verdict/);
+  assert.match(text, /1 of the 45 claims have no verdict/);
+  assert.match(text, /claude-sonnet-5-5: MEDIUM \(valid 100%\); deepseek\/deepseek-v4-pro-0813: unread/);
+  assert.match(text, /A headline of ours\./);
+  assert.match(text, /Why, in our words\./);
+  assert.doesNotMatch(render(analyse(world()), { date: '2026-11-05' }), /## Claims with no verdict/);
+});
+
 test('a claim with no result leaves the bar undecided, whatever the rest says', () => {
   const a = analyse(world({ 'clear-valid.mellow-fee-per-period': null }));
   assert.equal(a.complete, false);
@@ -219,6 +234,7 @@ test('spend per model, the worst-case calls apart', () => {
   const sonnet = a.spend.models.find((m) => m.model === 'claude-sonnet-5-5');
   assert.deepEqual([sonnet.calls, sonnet.inputTokens, sonnet.worstCaseCalls], [3, 100, 1]);
   assert.equal(a.spend.models.find((m) => m.model.startsWith('deepseek')).reportedUsd, 0.09);
+  assert.deepEqual(a.spend.providers.map((p) => [p.provider, p.calls]), [['Anthropic', 3], ['OpenRouter', 1]]);
   const text = render(a, { date: '2026-11-05', estimateUsd: 7 });
   assert.match(text, /\$1\.50/);
   assert.match(text, /estimate of \$7\.00/);

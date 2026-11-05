@@ -8,8 +8,8 @@
  *   node calibration/report/jury.js --batch <dir> --results <dir> --date <YYYY-MM-DD> --out <dir> [--notes <file>] [--estimate-usd <n>]
  *
  * --batch is the testing tool's batch directory (claims/, ledger.jsonl), --results the harness's --results files, one per
- * listing. --notes is a JSON file of what only a person can say: { "reasons": { "<case id>": "words" }, "runtime": "...",
- * "deviations": ["..."] }, in the writer's own words.
+ * listing. --notes is a JSON file of what only a person can say: { "headline": "...", "noVerdict": "...", "reasons":
+ * { "<case id>": "words" }, "runtime": "...", "deviations": ["..."] }, in the writer's own words.
  *
  * It reads a juror's justification nowhere: a report holds ids, verdicts, masses, tokens and dollars, and the notes.
  * Exit 0 when the Phase 1 bar is met on the whole set; 1 when it is missed; 2 when the set is incomplete or the command wrong.
@@ -67,6 +67,7 @@ const family = (label) => (isValidClass(label) ? 'VALID' : label);
 const expectedOf = (entry) => entry.expected.class || entry.expected.outcome;
 const pct = (n, d) => (d === 0 ? 'n/a' : `${Math.round((n / d) * 1000) / 10}%`);
 const usd = (n) => `$${n.toFixed(2)}`;
+const providerOf = (model) => (model.startsWith('claude-') ? 'Anthropic' : 'OpenRouter');
 const errorCodeOf = (message) => {
   const found = /CODE_REVIEW_[A-Z_]+/.exec(String(message));
   return found ? found[0] : 'an error';
@@ -86,7 +87,7 @@ function standing(entry, { jury, runner }) {
   if (ran.packSha256 && result.pack_sha256 !== ran.packSha256) {
     throw new Error(`${entry.id}: the verdict is on pack ${result.pack_sha256}, and the runner's results name ${ran.packSha256}`);
   }
-  if (result.error) return { outcome: 'NO VERDICT', by: 'jury', error: errorCodeOf(result.error), usd: result.spend ? result.spend.usd : 0 };
+  if (result.error) return { outcome: 'NO VERDICT', by: 'jury', error: errorCodeOf(result.error), jurors: result.jurors || [], usd: result.spend ? result.spend.usd : 0 };
   return {
     outcome: result.settled.outcome,
     by: 'jury',
@@ -114,7 +115,7 @@ function row(entry, stands) {
 }
 
 function tally(rows) {
-  return { cases: rows.length, agreed: rows.filter((r) => r.agrees).length, validityAgreed: rows.filter((r) => r.agreesValidity).length };
+  return { cases: rows.length, agreed: rows.filter((r) => r.agrees).length, validityAgreed: rows.filter((r) => r.agreesValidity).length, noVerdict: rows.filter((r) => r.outcome === 'NO VERDICT').length };
 }
 
 function perClass(rows) {
@@ -193,7 +194,15 @@ function analyse({ cases, jury, runner, ledger }) {
     weaker: rows.filter((r) => r.weaker),
     comparisons: COMPARISONS.map((c) => ({ ...c, rows: c.cases.map((id) => byId.get(id)).filter(Boolean) })),
     noVerdict: rows.filter((r) => r.outcome === 'NO VERDICT'),
-    spend: { totalUsd: ledger.totalUsd, openCalls: ledger.open, models: [...models.values()] }
+    spend: {
+      totalUsd: ledger.totalUsd,
+      openCalls: ledger.open,
+      models: [...models.values()],
+      providers: [...new Set([...models.values()].map((m) => providerOf(m.model)))].map((provider) => {
+        const own = [...models.values()].filter((m) => providerOf(m.model) === provider);
+        return { provider, calls: own.reduce((n, m) => n + m.calls, 0), usd: own.reduce((n, m) => n + m.usd, 0) };
+      })
+    }
   };
 }
 
@@ -231,6 +240,7 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     '',
     headline,
     '',
+    ...(notes.headline ? [notes.headline, ''] : []),
     '## The Phase 1 bar',
     '',
     `No false valid on the adversarial claims, and at least ${BAR * 100}% agreement on the clear cases, per class. A class short of it is reported for withdrawal.`,
@@ -239,7 +249,7 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     '',
     'Agreement is the settled outcome equalling the expected one, class included. "Clear" is §18\'s clear valid and clear invalid. A claim with no verdict counts as not agreeing. The weaker labels count in these rows, and are also shown apart below.',
     '',
-    table(['Class', 'Clear cases', 'Agree', 'Rate', 'Valid/invalid/duplicate agrees', 'Meets the bar'], a.bar.rows.map((c) => [c.class, c.cases, c.agreed, pct(c.agreed, c.cases), `${c.validityAgreed} of ${c.cases}`, c.meets ? 'yes' : '**NO: reported for withdrawal**'])),
+    table(['Class', 'Clear cases', 'Agree', 'No verdict', 'Rate', 'Valid/invalid/duplicate agrees', 'Meets the bar'], a.bar.rows.map((c) => [c.class, c.cases, c.agreed, c.noVerdict, pct(c.agreed, c.cases), `${c.validityAgreed} of ${c.cases}`, c.meets ? 'yes' : '**NO: reported for withdrawal**'])),
     '',
     'For comparison, without the weaker labels. This decides nothing:',
     '',
@@ -249,8 +259,17 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     '',
     '## Every claim, per expected class',
     '',
-    table(['Class', 'Claims', 'By runner', 'By jury', 'Agree', 'Rate'], a.allClasses.map((c) => [c.class, c.cases, c.byRunner, c.byJury, c.agreed, pct(c.agreed, c.cases)])),
+    table(['Class', 'Claims', 'By runner', 'By jury', 'Agree', 'No verdict', 'Rate'], a.allClasses.map((c) => [c.class, c.cases, c.byRunner, c.byJury, c.agreed, c.noVerdict, pct(c.agreed, c.cases)])),
     '',
+    ...(a.noVerdict.length ? [
+      '## Claims with no verdict',
+      '',
+      `${a.noVerdict.length} of the ${a.rows.length} claims have no verdict, ${a.rows.filter((r) => r.by === 'jury').length} having reached the jury. Every juror is required, so one juror's failure leaves the arbiter abstaining. What a juror that did answer said is shown for reading only: it is no settlement, and it never would be one.`,
+      '',
+      ...(notes.noVerdict ? [notes.noVerdict, ''] : []),
+      table(['Case', 'Expected', 'Error', 'Jurors'], a.noVerdict.map((r) => [`\`${r.id}\``, r.expected, r.error, (r.jurors || []).map(jurorMass).join('; ')])),
+      ''
+    ] : []),
     '## The four catalogue cases',
     '',
     ...a.catalogue.flatMap((c) => [
@@ -292,6 +311,8 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     '## Spend',
     '',
     `Total **${usd(a.spend.totalUsd)}** at list price${pricesAsOf ? ` (prices of ${pricesAsOf})` : ''}${estimateUsd === null ? '' : `, against an estimate of ${usd(estimateUsd)}`}${a.spend.openCalls ? `; ${a.spend.openCalls} call(s) never answered, counted at their worst case` : ''}.`,
+    '',
+    table(['Provider', 'Calls', 'USD'], a.spend.providers.map((p) => [p.provider, p.calls, usd(p.usd)])),
     '',
     table(['Model', 'Calls', 'Input tokens', 'Output tokens', 'List-price USD', 'Provider-reported USD', 'Counted at worst case'], a.spend.models.map((m) => [`\`${m.model}\``, m.calls, m.inputTokens, m.outputTokens, usd(m.usd), m.reportedUsd ? usd(m.reportedUsd) : 'not reported', m.worstCaseCalls])),
     ''
