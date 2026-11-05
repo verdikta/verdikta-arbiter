@@ -260,6 +260,10 @@ check "still the same PID: enable reloaded" "$(systemctl show verdikta-code-runn
 sudo rm -rf /opt/gvisor/reload-test
 compare "reload"
 
+# A hole where a trim would make one: free blocks. The image's tail is the last group's free space, while
+# 8 GiB in holds a flex group's inode tables, and zeroing those is corruption, not what a trim does (measured).
+punch_free_hole() { sudo fallocate --punch-hole --keep-size -o "$(( $(sudo stat -c '%s' "$IMAGE") - 1048576 ))" -l 1048576 "$IMAGE"; }
+
 step "An unmounted disk starts no daemon, and writes nothing to the root filesystem"
 bash "$I/code-runner/stop.sh" >/dev/null 2>&1
 check "the runner left no sandbox" "$("${OWN[@]}" ps -a --format '{{.Names}}' | grep -c '^vcr-')" 0
@@ -274,7 +278,7 @@ check "nothing was written under the mount point" "$(sudo ls -A "$MOUNT" | wc -l
 sudo mv "$IMAGE.away" "$IMAGE"
 sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-containerd verdikta-code-runner-docker 2>/dev/null
 # Holes in the image: a start fills them, or does not start.
-sudo fallocate --punch-hole --keep-size -o 8G -l 1G "$IMAGE"
+punch_free_hole
 [ "$(( $(sudo stat -c '%b' "$IMAGE") * 512 ))" -lt "$(sudo stat -c '%s' "$IMAGE")" ] && ok "the image has a hole" || bad "no hole was punched"
 sudo chattr +i "$IMAGE"
 sudo systemctl start verdikta-code-runner-docker 2>/dev/null; rc=$?
@@ -296,7 +300,7 @@ sudo systemctl daemon-reload
 sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-containerd verdikta-code-runner-docker 2>/dev/null
 # Mounted by hand with a hole in it: the start checks the allocation mounted or not, and fills it.
 sudo mount -t ext4 -o loop "$IMAGE" "$MOUNT"
-sudo fallocate --punch-hole --keep-size -o 8G -l 1G "$IMAGE"
+punch_free_hole
 [ "$(( $(sudo stat -c '%b' "$IMAGE") * 512 ))" -lt "$(sudo stat -c '%s' "$IMAGE")" ] && ok "mounted, with a hole" || bad "no hole was punched in the mounted image"
 # As at boot: the daemon's unit brings up its disk and containerd.
 sudo systemctl start verdikta-code-runner-docker; rc=$?
