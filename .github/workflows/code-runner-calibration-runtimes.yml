@@ -1,0 +1,125 @@
+name: Code Runner Calibration (runc against gVisor)
+
+# Node A7d: is what the jury reads the same under runc as under the pinned gVisor? Each listing runs twice on one job, once
+# under each runtime, and the two exports are compared by the requests the testing tool would send, and the two results by
+# what the runner observed. A real-jury measurement on a host with no gVisor rests on this.
+#
+# Paths, hashes, lengths and the runtime's name are all that leaves the job: the exports hold repository source, and stay
+# in its temporary directory (testing-tool/src/claim-diff.js).
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, master, claude/stake-attestation, 'claude/sa-*']
+    paths:
+      - 'testing-tool/src/claim-diff.js'
+      - '.github/workflows/code-runner-calibration-runtimes.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-runner-calibration-runtimes-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # As in code-runner.yml and code-runner-calibration.yml (test/unit/runtime.test.js ties them to @verdikta/common).
+  GVISOR_VERSION: '20260921.0'
+  GVISOR_SHA512: 7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e
+
+jobs:
+  plan:
+    name: The listings
+    runs-on: ubuntu-latest
+    outputs:
+      listings: ${{ steps.listings.outputs.listings }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        working-directory: code-runner
+        run: npm ci
+      - id: listings
+        name: List
+        working-directory: code-runner
+        run: |
+          set -euo pipefail
+          listings=$(node calibration/run.js --list-listings)
+          echo "$listings"
+          echo "listings=$listings" >> "$GITHUB_OUTPUT"
+
+  compare:
+    name: ${{ matrix.listing }}
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        listing: ${{ fromJSON(needs.plan.outputs.listings) }}
+    env:
+      VCR_CALIBRATION_CACHE: ${{ github.workspace }}/.vcr-calibration-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform)
+        run: |
+          set -euo pipefail
+          url="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}/x86_64/gvisor.tar.bz2"
+          curl -fsSL -o gvisor.tar.bz2 "$url"
+          echo "${GVISOR_SHA512}  gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${GVISOR_VERSION}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf gvisor.tar.bz2 -C "$dest"
+          "$dest/runsc" --version
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo systemctl reload docker
+          for i in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc'
+
+      - name: Install
+        run: |
+          (cd code-runner && npm ci)
+          (cd testing-tool && npm ci)
+
+      - name: Under gVisor
+        working-directory: code-runner
+        env:
+          CODE_RUNNER_RUNTIME: runsc
+          LISTING: ${{ matrix.listing }}
+        run: npm run calibration -- --listing "$LISTING" --results "$RUNNER_TEMP/runsc.json" --export "$RUNNER_TEMP/runsc"
+
+      - name: Under runc
+        working-directory: code-runner
+        env:
+          CODE_RUNNER_RUNTIME: runc
+          LISTING: ${{ matrix.listing }}
+        run: npm run calibration -- --listing "$LISTING" --results "$RUNNER_TEMP/runc.json" --export "$RUNNER_TEMP/runc"
+
+      - name: What the jury reads, and what the runner observed
+        working-directory: testing-tool
+        run: node src/claim-diff.js "$RUNNER_TEMP/runsc" "$RUNNER_TEMP/runc" --results "$RUNNER_TEMP/runsc.json" "$RUNNER_TEMP/runc.json" --json "$RUNNER_TEMP/diff.json"
+
+      - name: The runc export is what the testing tool reads
+        working-directory: testing-tool
+        run: npm start -- test --type claim --dry-run --claims-dir "$RUNNER_TEMP/runc"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: runtimes-${{ matrix.listing }}
+          path: ${{ runner.temp }}/diff.json
+          if-no-files-found: warn

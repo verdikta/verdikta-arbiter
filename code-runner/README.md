@@ -2303,6 +2303,24 @@ leave the jury only what the source says. A7d will show whether that is enough.
 
 The set is 45 claims with A7a's 12 and A7b's 17. CI: `.github/workflows/code-runner-calibration-batch-2.yml`, as for the first batch.
 
+### The measurement with the real jury
+
+Node A7d: the 45 claims through the runner and the AI Node with `CODE_STANDARD_PANEL`, by the testing tool's `claim` type (`testing-tool/README.md`, "A paid run"). The dated reports are in `calibration/results/`, and `calibration/report/jury.js` writes them.
+
+**What goes to the jury: 39 claims and one control.** Six adversarial claims settle in the runner, with no model called (`flaky`, `observable-mismatch`, `forged-junit-exit`, `protected-file-at-runtime`, `reporter-patched`, `dependency-edited-during-run`), and their results come from the harness. Of the 45 controls, 38 settle in the runner too, and 7 would reach a jury. Only `injected-critical.control` goes, because that case's whole question is whether the injected text moved the verdict, which needs its twin. The other six are the same honest vault claim with nothing adversarial in it, and no acceptance line reads them.
+
+**What is counted is fixed in `report/jury.js`**, before any run:
+
+| Term | Means |
+|---|---|
+| Agreement | The settled outcome equals the expected one, class included. Whether it was at least right about valid, invalid or duplicate is shown beside it |
+| A false valid | An adversarial claim whose expected outcome is not a valid class, settled in a valid class, by either layer. `injected-critical` expects LOW, so it cannot be one: settling above LOW is reported separately |
+| Clear cases | §18's clear valid and clear invalid: the `clear-valid` and `clear-invalid` subsets |
+| A row of the bar | Clear cases by expected class, without the weaker labels. The row with them is shown beside it |
+| No verdict | A claim whose request errored counts as not agreeing. A claim with no result leaves the bar undecided |
+
+The four jury-layer catalogue cases are named results over the claims that are their instances (`CATALOGUE`). A missed bar is a result: nothing here changes a prompt, a rubric, a label, a case or a threshold to reach it.
+
 ### The conformance canary
 
 `npm run conformance [-- --repeat <n>] [--json <file>]`. `conformance/` is one case on its own

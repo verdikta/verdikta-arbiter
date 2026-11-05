@@ -859,7 +859,7 @@ function checkControl(entry, byId, problems) {
 /** What lies in the corpus and nothing reads: a vendored repository in repos/ would be third-party code in this public repo. */
 function layoutProblems(root, listings) {
   const out = [];
-  const allowedTop = new Set(['cases', 'listings', 'repos', 'lib', 'run.js']);
+  const allowedTop = new Set(['cases', 'listings', 'repos', 'lib', 'run.js', 'report', 'results']);
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     if (!allowedTop.has(entry.name)) out.push(`${entry.name} is at the top of the corpus, and the format names no such thing`);
   }

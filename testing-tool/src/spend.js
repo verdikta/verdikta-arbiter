@@ -1,0 +1,220 @@
+'use strict';
+
+/**
+ * What a real-jury run spends (node A7d): list prices, a call's worst case, and an append-only ledger.
+ *
+ * The ledger is the record and the stop. A call is reserved at its worst case and written to disk before it is
+ * forwarded, and replaced by what the provider reported when it answers. A call that never answered stays at its
+ * reservation, across a restart too, so the total can only be over what was spent, never under.
+ */
+
+const crypto = require('crypto');
+const fs = require('fs');
+
+const M = 1000000;
+
+/**
+ * List prices, USD per million tokens. Nothing here is a default: a model with no row cannot be counted, so the meter
+ * refuses it. Sources, read on the date: OpenRouter's public /api/v1/models for all three, and Anthropic's own table
+ * for the two Claude models and Haiku's price past 100K input tokens. The AI Node sends no cache_control, so the cache
+ * rows are there only so that a surprise is not counted as free.
+ */
+const PRICES = Object.freeze({
+  asOf: '2026-11-05',
+  source: 'openrouter.ai/api/v1/models; Anthropic API price table',
+  models: Object.freeze({
+    'claude-sonnet-5-5': Object.freeze({ inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 }),
+    'claude-haiku-5-5': Object.freeze({ inputPerM: 0.1, outputPerM: 0.5, cacheReadPerM: 0.01, cacheWritePerM: 0.125, above: Object.freeze({ inputTokens: 100000, inputPerM: 0.5, outputPerM: 2.5 }) }),
+    'deepseek/deepseek-v4-pro-0813': Object.freeze({ inputPerM: 0.115, outputPerM: 4.6, cacheReadPerM: 0.11, cacheWritePerM: 0.115 })
+  })
+});
+
+/** The input a body could hold: hex, base64 and CJK reach about 2 bytes a token (code-runner README, "A token"). */
+const BYTES_PER_TOKEN_WORST = 2;
+/** What a call that names no ceiling is reserved at. */
+const NO_CEILING_TOKENS = 64000;
+/** A repair call quotes one reply (at most the juror's output, four bytes a token at most in UTF-8) plus its instructions. */
+const REPAIR_PROMPT_BYTES = 40000;
+/** The justifier quotes every juror's answer. */
+const JUSTIFIER_PROMPT_BYTES_PER_JUROR = 45000;
+/** @langchain/anthropic's ceiling on a modern model (ai-node, MODERN_MAX_TOKENS): the justifier sets none of its own. */
+const JUSTIFIER_MAX_TOKENS = 8192;
+/** As the External Adapter: a second attempt, on a retryable answer only. */
+const ATTEMPTS = 2;
+
+function priceOf(model) {
+  const price = PRICES.models[model];
+  if (!price) throw new Error(`no list price for model ${model}: a call to it could not be counted`);
+  return price;
+}
+
+const isCount = (value) => Number.isInteger(value) && value >= 0;
+const optional = (value) => (value === undefined || value === null ? 0 : value);
+
+/**
+ * What a provider's answer says it used, at list price. Anthropic: usage.input_tokens, output_tokens and the cache
+ * pair. OpenRouter: usage.prompt_tokens, completion_tokens and, when present, cost. `usd` is the larger of the list
+ * price and a reported cost, since the stop has to hold against the bill.
+ * @param {string} model
+ * @param {object|null} body - the provider's parsed JSON
+ * @returns {{inputTokens:number, outputTokens:number, cacheReadTokens:number, cacheWriteTokens:number, listUsd:number, reportedUsd:number|null, usd:number}|null} null: nothing readable
+ * @throws {Error} a model with no price
+ */
+function usageOf(model, body) {
+  const price = priceOf(model);
+  const usage = body && typeof body === 'object' ? body.usage : null;
+  if (!usage || typeof usage !== 'object') return null;
+  const inputTokens = usage.input_tokens === undefined ? usage.prompt_tokens : usage.input_tokens;
+  const outputTokens = usage.output_tokens === undefined ? usage.completion_tokens : usage.output_tokens;
+  const cacheReadTokens = optional(usage.cache_read_input_tokens);
+  const cacheWriteTokens = optional(usage.cache_creation_input_tokens);
+  if (![inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens].every(isCount)) return null;
+  const rate = price.above && inputTokens > price.above.inputTokens ? price.above : price;
+  const listUsd = (inputTokens * rate.inputPerM + outputTokens * rate.outputPerM
+    + cacheReadTokens * price.cacheReadPerM + cacheWriteTokens * price.cacheWritePerM) / M;
+  const reportedUsd = typeof usage.cost === 'number' && usage.cost >= 0 ? usage.cost : null;
+  return { inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, listUsd, reportedUsd, usd: Math.max(listUsd, reportedUsd === null ? 0 : reportedUsd) };
+}
+
+/**
+ * A call's worst case.
+ * @param {string} model
+ * @param {number} bodyBytes - the request body's length
+ * @param {number} [maxTokens] - the call's output ceiling
+ * @returns {number} USD
+ * @throws {Error} a model with no price
+ */
+function reservationUsd(model, bodyBytes, maxTokens) {
+  const price = priceOf(model);
+  const inputTokens = Math.ceil(bodyBytes / BYTES_PER_TOKEN_WORST);
+  const outputTokens = Number.isInteger(maxTokens) && maxTokens > 0 ? maxTokens : NO_CEILING_TOKENS;
+  const rate = price.above && inputTokens > price.above.inputTokens ? price.above : price;
+  return (inputTokens * rate.inputPerM + outputTokens * rate.outputPerM) / M;
+}
+
+/**
+ * The most one claim could add: each juror and a repair call, the justifier, and all of it again for the one retry.
+ * Asked before a claim starts, so a run stops short of the limit rather than at a provider error.
+ * @param {object} o
+ * @param {number} o.promptBytes
+ * @param {{AI_NODES: Array<{AI_MODEL:string}>}} o.juryParameters
+ * @param {string} o.justifierModel
+ * @param {number} o.jurorOutputTokens
+ * @returns {number} USD
+ */
+function worstCaseClaimUsd({ promptBytes, juryParameters, justifierModel, jurorOutputTokens }) {
+  const jurors = juryParameters.AI_NODES.map((node) => node.AI_MODEL);
+  const jury = jurors.reduce((sum, model) => sum + reservationUsd(model, promptBytes, jurorOutputTokens) + reservationUsd(model, REPAIR_PROMPT_BYTES, jurorOutputTokens), 0);
+  const justifier = reservationUsd(justifierModel, JUSTIFIER_PROMPT_BYTES_PER_JUROR * jurors.length, JUSTIFIER_MAX_TOKENS);
+  return ATTEMPTS * (jury + justifier);
+}
+
+function parseRows(file) {
+  if (!fs.existsSync(file)) return [];
+  const lines = fs.readFileSync(file, 'utf8').split('\n');
+  if (lines[lines.length - 1] === '') lines.pop();
+  const rows = [];
+  lines.forEach((line, i) => {
+    try {
+      rows.push(JSON.parse(line));
+    } catch (_error) {
+      // A row is synced before the call it records goes out, so a torn last line is a write that never finished.
+      if (i !== lines.length - 1) throw new Error(`the ledger ${file} is damaged at line ${i + 1}`);
+    }
+  });
+  return rows;
+}
+
+function summarize(rows) {
+  const reserved = new Map();
+  const calls = [];
+  const refused = [];
+  for (const row of rows) {
+    if (row.kind === 'reserve') reserved.set(row.id, row);
+    else if (row.kind === 'refused') refused.push(row);
+    else if (row.kind === 'settle') {
+      const start = reserved.get(row.id);
+      if (!start) throw new Error(`the ledger settles a call it never reserved: ${row.id}`);
+      reserved.delete(row.id);
+      calls.push({ ...row, model: start.model, reservedUsd: start.usd });
+    }
+  }
+  const openUsd = [...reserved.values()].reduce((sum, row) => sum + row.usd, 0);
+  const totalUsd = calls.reduce((sum, row) => sum + row.usd, openUsd);
+  return { totalUsd, openUsd, open: reserved.size, calls, refused };
+}
+
+/**
+ * The ledger as a reader sees it.
+ * @param {string} file
+ * @returns {{totalUsd:number, openUsd:number, open:number, calls:object[], refused:object[]}}
+ */
+function readLedger(file) {
+  return summarize(parseRows(file));
+}
+
+/** The writer. One process holds it: the meter. */
+class Ledger {
+  /**
+   * @param {string} file
+   * @param {{stopUsd:number}} o - no reservation may take the total past this
+   */
+  constructor(file, { stopUsd }) {
+    this.stopUsd = stopUsd;
+    const rows = parseRows(file);
+    const earlier = summarize(rows);
+    const settled = new Set(earlier.calls.map((call) => call.id));
+    this.settledUsd = earlier.totalUsd - earlier.openUsd;
+    this.openCalls = new Map(rows.filter((row) => row.kind === 'reserve' && !settled.has(row.id)).map((row) => [row.id, row.usd]));
+    this.refusedAny = false;
+    this.fd = fs.openSync(file, 'a', 0o600);
+  }
+
+  write(row) {
+    fs.writeSync(this.fd, `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
+    fs.fsyncSync(this.fd);
+  }
+
+  totalUsd() {
+    let total = this.settledUsd;
+    for (const usd of this.openCalls.values()) total += usd;
+    return total;
+  }
+
+  stopped() {
+    return this.refusedAny;
+  }
+
+  /**
+   * @param {{usd:number, model:string}} o
+   * @returns {string|null} the call's id, or null when it would take the total past the stop
+   */
+  reserve({ usd, model }) {
+    if (this.totalUsd() + usd > this.stopUsd + 1e-9) {
+      this.refusedAny = true;
+      this.write({ kind: 'refused', model, usd, totalUsd: this.totalUsd(), stopUsd: this.stopUsd });
+      return null;
+    }
+    const id = crypto.randomBytes(8).toString('hex');
+    this.write({ kind: 'reserve', id, model, usd });
+    this.openCalls.set(id, usd);
+    return id;
+  }
+
+  /**
+   * @param {string} id
+   * @param {object} fields - usd, basis, status and what the provider reported; no text
+   */
+  settle(id, fields) {
+    if (!this.openCalls.has(id)) throw new Error(`settling an unknown call: ${id}`);
+    this.openCalls.delete(id);
+    this.settledUsd += fields.usd;
+    this.write({ ...fields, kind: 'settle', id });
+  }
+
+  close() {
+    fs.closeSync(this.fd);
+  }
+}
+
+module.exports = { PRICES, usageOf, reservationUsd, worstCaseClaimUsd, Ledger, readLedger, JUSTIFIER_MAX_TOKENS };

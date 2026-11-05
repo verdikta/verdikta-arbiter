@@ -1,8 +1,10 @@
 const path = require('path');
+const axios = require('axios');
 const chalk = require('chalk');
 const { loadClaimScenarios } = require('./claim-scenarios');
 const { runClaimScenario } = require('./claim-runner');
 const resultsManager = require('./results-manager');
+const { runClaimBatch } = require('./claim-batch');
 const TestRunner = require('./test-runner');
 
 const DEFAULT_CLAIMS_DIR = path.join(__dirname, '../scenarios/claims');
@@ -28,6 +30,12 @@ async function runClaimCommand(options, toolConfig) {
     return refuse('A claim calls the listing\'s panel on the AI Node\'s providers, which spends money: pass --jury real, or --dry-run to validate without calling anything');
   }
 
+  const batchFlags = [options.batchDir, options.meterUrl, options.stopUsd].filter((flag) => flag !== undefined).length;
+  if (batchFlags !== 0 && batchFlags !== 3) return refuse('A batch run needs all of --batch-dir, --meter-url and --stop-usd (README, "A paid run")');
+  const stopUsd = Number(options.stopUsd);
+  if (options.batchDir && (!Number.isFinite(stopUsd) || stopUsd <= 0)) return refuse('--stop-usd must be a positive number of dollars');
+  if (options.retryErrored && !options.batchDir) return refuse('--retry-errored applies to a batch run');
+
   const dir = options.claimsDir ? path.resolve(options.claimsDir) : DEFAULT_CLAIMS_DIR;
   const scenarios = await loadClaimScenarios(dir, {
     scenarioIds: options.scenarioIds ? list(options.scenarioIds) : undefined,
@@ -46,6 +54,23 @@ async function runClaimCommand(options, toolConfig) {
 
   const runner = new TestRunner(toolConfig);
   if (!await runner.testConnection()) return refuse(`Cannot connect to the AI node at ${toolConfig.aiNodeUrl}`);
+
+  if (options.batchDir) {
+    const batchDir = path.resolve(options.batchDir);
+    const meterUrl = options.meterUrl.replace(/\/+$/, '');
+    try {
+      return await runClaimBatch(scenarios, {
+        batchDir,
+        ledgerFile: path.join(batchDir, 'ledger.jsonl'),
+        stopUsd,
+        aiNodeUrl: toolConfig.aiNodeUrl,
+        retryErrored: options.retryErrored === true,
+        meterHealth: async () => (await axios.get(`${meterUrl}/health`, { timeout: 10000, proxy: false })).data
+      });
+    } catch (error) {
+      return refuse(error.message);
+    }
+  }
 
   const results = [];
   for (const scenario of scenarios) {

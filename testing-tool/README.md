@@ -457,6 +457,45 @@ A scenario that fails any of these does not run, and `--dry-run` reports it:
 
 The run exits 1 when a request gave no verdict, and when the AI node cannot be reached.
 
+### A paid run
+
+`--batch-dir` runs the claims so that nothing depends on the session that started them. Node A7d's measurement uses it; `code-runner/README.md`, "The measurement with the real jury", says what is measured.
+
+```bash
+# The runner's half, no provider and no key: <work>/results, exports, claims. Packs hold third-party source and stay there.
+CODE_RUNNER_RUNTIME=runc scripts/jury-prepare.sh <work>
+
+# The paid half, detached. <work>/run/done appears when it ends, however it ends. Run it again to resume.
+setsid nohup scripts/jury-run.sh <work> <key file> --scenario-ids a,b > <work>/run/driver.log 2>&1 < /dev/null &
+```
+
+`<work>/repo` is this repository and `<work>/node/bin` the Node to use; everything written stays under `<work>`.
+
+**The meter** (`src/meter.js`) is a loopback proxy between the AI Node and its providers, set through `ANTHROPIC_BASE_URL` and `OPENROUTER_BASE_URL`, so the AI Node being measured is not changed and every HTTP attempt is counted: LangChain's retries, repair calls, the justifier, a juror cancelled at its deadline. It forwards two routes and the models in `src/spend.js`'s dated price table, and refuses a streamed call, since its usage could not be read. It holds no key: the AI Node's headers pass through, and none is logged or stored.
+
+**The ledger** (`<work>/run/ledger.jsonl`) reserves each call at its worst case (2 bytes a token, the whole output ceiling) and syncs that to disk before the call goes out, then replaces it with what the provider reported. A cost the provider reports above the list price counts instead. A 200 with no readable usage, a call cancelled, or one that never answered stays at its reservation, across a restart too, so the total can be over what was spent and never under.
+
+**It stops by itself**, with the reason in `<work>/run/summary.json` and the exit code:
+
+| Exit | Reason | When |
+|---|---|---|
+| 0 | `finished` | Every chosen claim has a verdict |
+| 1 | `finished` | Every chosen claim has a result, and some are errors |
+| 4 | `budget` | A claim's worst case could pass `--stop-usd`, or the meter refused a call (a 402 no provider saw). That claim has no result |
+| 5 | `errors-in-a-row` | Three claims in a row errored: an outage or a key, not a measurement |
+| 6 | `ai-node-gone` | The AI Node could not be reached. That claim has no result |
+| 7 | `unmetered` | A verdict arrived with no provider call in the ledger: the money is not going through the meter |
+
+A batch does not start without the meter, with a meter whose limit is above `--stop-usd`, or with one writing another ledger.
+
+**One result per claim** (`<work>/run/claims/<id>.json`, written whole): the saved run's fields, each juror's vector, read from the saved provider answers, since the AI Node's answer holds only the average, and the claim's calls and cost. A re-run skips a claim with a result. A claim is called as the External Adapter calls it, so an errored claim has had its retry; `--retry-errored` runs it once more and moves the earlier result to `attempts/`.
+
+**The keys** go into one subshell, which becomes the AI Node, with only the panel's providers: the meter and the testing tool start from `env -i`. `scripts/jury-check-no-keys.sh <key file> <path>...` greps for the values, reading them on stdin, and prints file names only. The AI Node's logs, `run/calls/` and the claim files hold what jurors wrote and the prompts, which can quote repository source, so they stay where the run is.
+
+**Without spending:** `npm run test:jury-e2e` runs all of this with a production build of the AI Node and stub providers on loopback, so it proves what a unit test cannot: the calls do go through the meter, unstreamed, each with its own provider's key.
+
+`src/claim-diff.js <dir A> <dir B> [--results <A> <B>]` compares two exports by the requests the tool would send, naming paths and hashes and never a pack's text: `.github/workflows/code-runner-calibration-runtimes.yml` uses it to compare `runc` with gVisor.
+
 ## Integration with Verdikta
 
 The testing tool leverages the existing Verdikta architecture:

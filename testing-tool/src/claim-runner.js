@@ -16,6 +16,8 @@ const AI_ATTEMPTS = 2;
 /** What the HTTP wait adds to the deadline: the AI Node answers at its deadline, and the answer has to arrive. */
 const HTTP_MARGIN_MS = 15000;
 
+const UNREACHABLE = ['ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENOTFOUND'];
+
 const claimHttpTimeoutMs = (deadlineMs) => deadlineMs + HTTP_MARGIN_MS;
 
 /**
@@ -112,7 +114,9 @@ async function runClaimScenario(scenario, { aiNodeUrl, deadlineMs = CLAIM_DEADLI
       settled: null,
       agrees: null,
       prompt_sha256: null,
-      error: error.message
+      error: error.message,
+      // No HTTP answer and no connection: nothing was measured, and the batch stops rather than count it (claim-batch.js).
+      ...(UNREACHABLE.includes(error.code) ? { transport: true } : {})
     };
   }
 }
