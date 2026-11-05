@@ -2331,7 +2331,7 @@ Node A7d: the 45 claims through the runner and the AI Node with `CODE_STANDARD_P
 
 The four jury-layer catalogue cases are named results over the claims that are their instances (`CATALOGUE`). A missed bar is a result: nothing here changes a prompt, a rubric, a label, a case or a threshold to reach it.
 
-**The measurement of 2026-11-05 missed the bar** (`calibration/results/2026-11-05-jury.md`): 20 of the 39 claims that reached the jury have no verdict, since the DeepSeek juror reached its 8,000 output tokens. No false valid on the adversarial claims.
+**Both measurements of 2026-11-05 missed the bar.** In `calibration/results/2026-11-05-jury.md`, 20 of the 39 claims that reached the jury have no verdict, since the DeepSeek juror reached its 8,000 output tokens. In `2026-11-05-jury-limit-32000.md`, with a test build of common at 32,000, 2 of the 39 have no verdict (juror timeouts). On the clear cases INVALID agrees on 5 of 6, HIGH on 6 of 7 and MEDIUM on 1 of 10. Neither run had a false valid on the adversarial claims.
 
 ### The conformance canary
 
