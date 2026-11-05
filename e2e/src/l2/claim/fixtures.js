@@ -357,4 +357,4 @@ function textArchive() {
   return zip(files);
 }
 
-module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, DISPUTE_STATEMENT, FAULT_CLAIMS, makeListing, unsignedListing, listingMembers, listingArchive, readListingArchive, verifyProductionTrust, makeClaim, makeClaimSet, claimSetFile, faultPlan, absentDigest, disputeArchive, discloseClaim, textArchive };
+module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, DISPUTE_STATEMENT, FAULT_CLAIMS, bytes, specFor, makeListing, unsignedListing, listingMembers, listingArchive, readListingArchive, verifyProductionTrust, makeClaim, makeClaimSet, claimSetFile, faultPlan, absentDigest, disputeArchive, discloseClaim, textArchive };
