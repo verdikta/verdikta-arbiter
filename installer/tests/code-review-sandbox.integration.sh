@@ -289,9 +289,15 @@ sudo systemctl daemon-reload
 sudo systemctl start verdikta-code-runner-docker 2>/dev/null; rc=$?
 [ "$rc" != 0 ] && ok "no way to turn discard off: no daemon" || bad "the daemon started with discard on"
 check "no way to turn discard off: dockerd is not active" "$(systemctl is-active verdikta-code-runner-docker >/dev/null 2>&1 && echo active || echo down)" down
+mountpoint -q "$MOUNT" && bad "no way to turn discard off: still mounted" || ok "no way to turn discard off: nothing stays mounted"
+[ -z "$(losetup -j "$IMAGE")" ] && ok "no way to turn discard off: no loop device" || bad "no way to turn discard off: a loop device stayed"
 sudo rm -rf /etc/systemd/system/verdikta-code-runner-disk.service.d
 sudo systemctl daemon-reload
 sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-containerd verdikta-code-runner-docker 2>/dev/null
+# Mounted by hand with a hole in it: the start checks the allocation mounted or not, and fills it.
+sudo mount -t ext4 -o loop "$IMAGE" "$MOUNT"
+sudo fallocate --punch-hole --keep-size -o 8G -l 1G "$IMAGE"
+[ "$(( $(sudo stat -c '%b' "$IMAGE") * 512 ))" -lt "$(sudo stat -c '%s' "$IMAGE")" ] && ok "mounted, with a hole" || bad "no hole was punched in the mounted image"
 # As at boot: the daemon's unit brings up its disk and containerd.
 sudo systemctl start verdikta-code-runner-docker; rc=$?
 check "the daemon's unit brings its disk back" "$rc" 0

@@ -217,7 +217,8 @@ EOF
 # would make the image sparse, and its writes would then spend the root filesystem. So the device
 # takes no discard, and each start allocates whatever is missing. Either failing fails the start, and
 # BindsTo keeps its daemons down: an image with holes, or one a trim can make holes in, would spend
-# the root filesystem. The doctor measures the result too.
+# the root filesystem. A start that fails leaves nothing mounted (systemd skips ExecStop then, not
+# ExecStopPost), and the allocation is checked mounted or not. The doctor measures the result too.
 disk_unit() {
     cat <<EOF
 [Unit]
@@ -227,10 +228,11 @@ After=local-fs.target
 [Service]
 Type=oneshot
 RemainAfterExit=yes
-ExecStartPre=/bin/sh -c 'mountpoint -q $MOUNT || { fallocate -l "\$\$(stat -c %%s $IMAGE)" $IMAGE && [ "\$\$(( \$\$(stat -c %%b $IMAGE) * 512 ))" -ge "\$\$(stat -c %%s $IMAGE)" ]; }'
+ExecStartPre=/bin/sh -c 'fallocate -l "\$\$(stat -c %%s $IMAGE)" $IMAGE && [ "\$\$(( \$\$(stat -c %%b $IMAGE) * 512 ))" -ge "\$\$(stat -c %%s $IMAGE)" ]'
 ExecStart=/bin/sh -c 'mountpoint -q $MOUNT || mount -t ext4 -o loop,noatime,nodev,nosuid $IMAGE $MOUNT'
 ExecStartPost=/bin/sh -c 'f=/sys/block/\$\$(basename "\$\$(findmnt -no SOURCE $MOUNT)")/queue/discard_max_bytes; echo 0 > "\$\$f" && [ "\$\$(cat "\$\$f")" = 0 ]'
 ExecStop=/bin/umount $MOUNT
+ExecStopPost=/bin/sh -c 'if mountpoint -q $MOUNT; then umount $MOUNT; fi'
 
 [Install]
 WantedBy=multi-user.target

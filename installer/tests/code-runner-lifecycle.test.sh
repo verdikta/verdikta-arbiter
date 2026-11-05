@@ -71,6 +71,20 @@ has "start with no conformance setting: says why" "$out" "CODE_RUNNER_CONFORMANC
 write_env; sed -i.b 's/^CODE_RUNNER_CONFORMANCE_FILE=.*/CODE_RUNNER_CONFORMANCE_FILE=/' "$R/.env"
 out=$(start); rc=$?
 [ "$rc" != 0 ] && ok || bad "start with an empty conformance setting: exit 0"
+write_env; sed -i.b 's/^CODE_RUNNER_CONFORMANCE_FILE=.*/CODE_RUNNER_CONFORMANCE_FILE=   /' "$R/.env"
+out=$(start); rc=$?
+[ "$rc" != 0 ] && ok || bad "start with a blank conformance setting: exit 0"
+# What the runner would see is the last assignment: an empty one after a good one is empty.
+write_env; echo 'CODE_RUNNER_CONFORMANCE_FILE=' >> "$R/.env"
+out=$(start); rc=$?
+[ "$rc" != 0 ] && ok || bad "start with an empty assignment last: exit 0"
+[ ! -f "$R/runner.pid" ] && ok || bad "start with an empty assignment last started something"
+# A last line with no newline is a line: the setting there reaches the runner.
+write_env; grep -v '^CODE_RUNNER_CONFORMANCE_FILE=' "$R/.env" > "$R/.env.x"; printf 'CODE_RUNNER_CONFORMANCE_FILE=%s' "$T/code-runner-state/conformance.json" >> "$R/.env.x"; mv "$R/.env.x" "$R/.env"
+out=$(start); rc=$?
+[ "$rc" = 0 ] && ok || bad "start with no final newline: exit $rc: $out"
+has "start with no final newline: the runner gets the setting" "$(cat "$R/env.seen" 2>/dev/null)" "\"CODE_RUNNER_CONFORMANCE_FILE\":\"$T/code-runner-state/conformance.json\""
+bash "$R/stop.sh" >/dev/null 2>&1; rm -f "$R/env.seen" "$R/stopped"
 
 # --- a clean start: nothing of the caller's environment
 write_env

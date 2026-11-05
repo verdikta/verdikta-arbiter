@@ -26,14 +26,19 @@ while IFS= read -r line; do
         exit 1
     fi
     ARGS+=("$line")
-done < .env
+done < <(cat .env; echo)
 
-host_value=""
-for word in "${ARGS[@]}"; do
-    case "$word" in DOCKER_HOST=*) host_value="${word#DOCKER_HOST=}" ;; esac
-done
+# What the runner will see: the last assignment, as env takes it.
+word_value() { # word_value KEY DEFAULT
+    local word value="$2"
+    for word in "${ARGS[@]}"; do
+        case "$word" in "$1"=*) value="${word#"$1"=}" ;; esac
+    done
+    echo "$value"
+}
+host_value="$(word_value DOCKER_HOST "")"
 # This script is how an arbiter runs it, and an arbiter's runner holds itself to a conformance pass.
-if ! grep -qE '^CODE_RUNNER_CONFORMANCE_FILE=.' .env; then
+if [[ "$(word_value CODE_RUNNER_CONFORMANCE_FILE "")" =~ ^[[:space:]]*$ ]]; then
     echo "Error: $HERE/.env does not set CODE_RUNNER_CONFORMANCE_FILE, so this runner would admit claims with no pass. Run code-review-sandbox.sh enable" >&2
     exit 1
 fi
@@ -47,13 +52,6 @@ case "$host_value" in
         exit 1 ;;
 esac
 
-word_value() { # word_value KEY DEFAULT
-    local word
-    for word in "${ARGS[@]}"; do
-        case "$word" in "$1"=*) echo "${word#"$1"=}"; return ;; esac
-    done
-    echo "$2"
-}
 PORT="$(word_value CODE_RUNNER_PORT 8090)"
 BIND="$(word_value CODE_RUNNER_HOST 127.0.0.1)"
 

@@ -180,6 +180,8 @@ hasnt "no socket activation"      "$cfg" "docker.socket"
 disku=$(printf '%s\n' "$cfg" | awk '/^# verdikta-code-runner-disk\.service/{p=1;next} /^# /{p=0} p')
 has "the loop device takes no discard: fstrim would make the image sparse" "$disku" "discard_max_bytes"
 has "a start allocates what is missing, or does not start" "$disku" "^ExecStartPre=/bin/sh .*fallocate .*-ge"
+hasnt "and checks it, mounted or not" "$(printf '%s\n' "$disku" | grep '^ExecStartPre')" "mountpoint"
+has "a start that fails leaves nothing mounted" "$disku" "^ExecStopPost=/bin/sh .*mountpoint .*umount"
 hasnt "an allocation that fails is not ignored" "$disku" "^ExecStartPre=-"
 has "units escape the shell's dollar and percent for systemd" "$disku" 'stat -c %%s'
 has "no discard is verified, not assumed" "$disku" '^ExecStartPost=/bin/sh .*discard_max_bytes.*= 0'
