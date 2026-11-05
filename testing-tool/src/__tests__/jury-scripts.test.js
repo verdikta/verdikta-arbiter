@@ -134,6 +134,8 @@ describe('jury-run.sh', () => {
 
 describe('jury-prepare.sh', () => {
   /** A repository holding the paths its fingerprint reads, and a harness that records each run and writes one scenario. */
+  const slow = { on: false };
+  beforeEach(() => { slow.on = false; });
   function prepareWork() {
     const work = path.join(dir, 'work');
     const repo = path.join(work, 'repo');
@@ -164,7 +166,7 @@ describe('jury-prepare.sh', () => {
     expect(git('commit', '-q', '-m', 'x').status).toBe(0);
     fs.mkdirSync(path.join(work, 'node'));
     fs.symlinkSync(path.dirname(process.execPath), path.join(work, 'node', 'bin'));
-    const run = (runtime, ...listings) => spawnSync('bash', [path.join(SCRIPTS, 'jury-prepare.sh'), work, ...listings], { encoding: 'utf8', env: { PATH: process.env.PATH, CODE_RUNNER_RUNTIME: runtime } });
+    const run = (runtime, ...listings) => spawnSync('bash', [path.join(SCRIPTS, 'jury-prepare.sh'), work, ...listings], { encoding: 'utf8', env: { PATH: process.env.PATH, CODE_RUNNER_RUNTIME: runtime, ...(slow.on ? { SLOW_HOST: '1' } : {}) } });
     const runs = () => (fs.existsSync(path.join(work, 'runs.txt')) ? fs.readFileSync(path.join(work, 'runs.txt'), 'utf8').trim().split('\n') : []);
     return { work, repo, git, run, runs };
   }
@@ -201,6 +203,22 @@ describe('jury-prepare.sh', () => {
     fs.rmSync(path.join(work, 'fail-now'));
     run('runsc');
     expect(runs()).toEqual(['one runsc', 'two runsc', 'one runc', 'one runsc']);
+  });
+
+  test('a listing prepared with SLOW_HOST is done only with SLOW_HOST: a stricter run does it again', () => {
+    const { work, run, runs } = prepareWork();
+    slow.on = true;
+    run('runsc', 'one');
+    expect(fs.readFileSync(path.join(work, 'prepared', 'one'), 'utf8')).toMatch(/ slow-host\n$/);
+    slow.on = false;
+    run('runsc', 'two');
+    slow.on = true;
+    expect(run('runsc').status).toBe(0);
+    expect(runs()).toEqual(['one runsc', 'two runsc']);
+    expect(fs.existsSync(path.join(work, 'claims'))).toBe(true);
+    slow.on = false;
+    run('runsc');
+    expect(runs()).toEqual(['one runsc', 'two runsc', 'one runsc']);
   });
 
   test('one writer of claims/: while another holds it, nothing is touched', () => {

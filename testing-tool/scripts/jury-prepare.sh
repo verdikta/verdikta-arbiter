@@ -17,7 +17,8 @@
 # how a box with CPUs to spare gets through the set. Keep listings on one repository in one process: they share a fetch in
 # the cache. claims/ is written by whichever finds every listing done.
 #
-# SLOW_HOST=1 passes --slow-host: see code-runner/calibration/run.js. The results files name each listing it let through.
+# SLOW_HOST=1 passes --slow-host: see code-runner/calibration/run.js. The results files name each listing it let through. A
+# listing prepared that way counts as done only with SLOW_HOST set, so a stricter run does not reuse it.
 set -uo pipefail
 set +x
 
@@ -30,7 +31,10 @@ CALIBRATION="$WORK/repo/code-runner/calibration/run.js"
 JURY_CONTROLS=" adversarial.injected-critical.control "
 
 MARK="$RUNTIME $(git -C "$WORK/repo" rev-parse HEAD:code-runner/src HEAD:code-runner/calibration/cases HEAD:code-runner/calibration/listings HEAD:code-runner/calibration/repos HEAD:code-runner/calibration/lib HEAD:code-runner/calibration/run.js | tr '\n' ' ')"
-current() { [ "$(cat "$WORK/prepared/$1" 2>/dev/null)" = "$MARK" ]; }
+current() {
+  held=$(cat "$WORK/prepared/$1" 2>/dev/null)
+  [ "$held" = "$MARK" ] || { [ -n "${SLOW_HOST:-}" ] && [ "$held" = "$MARK slow-host" ]; }
+}
 TMP="$WORK/tmp/prepare-$$"
 mkdir -p "$WORK/results" "$WORK/exports" "$WORK/measured" "$TMP" "$WORK/cache" "$WORK/prepared"
 run() {
@@ -51,7 +55,7 @@ for listing in ${*:-$listings}; do
   code=0
   run --listing "$listing" --results "$WORK/results/$listing.json" --measured "$WORK/measured" --export "$WORK/exports/$listing" ${SLOW_HOST:+--slow-host} || code=$?
   echo "jury-prepare: $listing exit $code"
-  if [ "$code" -eq 0 ]; then echo "$MARK" > "$WORK/prepared/$listing"; else failed=1; fi
+  if [ "$code" -eq 0 ]; then echo "$MARK${SLOW_HOST:+ slow-host}" > "$WORK/prepared/$listing"; else failed=1; fi
 done
 rm -rf "$TMP"
 [ "$failed" -eq 0 ] || { echo "jury-prepare: a listing did not agree, so claims/ is not written"; exit 1; }

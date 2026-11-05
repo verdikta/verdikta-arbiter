@@ -186,6 +186,20 @@ test('--slow-host: any other refusal stops the run as ever', async () => {
   }
 });
 
+test('--slow-host: a refusal for time after a whole measurement is still held to its baseline', async () => {
+  const corpus = writeCorpus();
+  try {
+    const refusals = [{ code: 'LISTING_TOO_HEAVY', detail: 'from the measured times' }];
+    const r = await runMain(['--slow-host'], corpus, fakeSession({ listingStatus: 'refused', refusals, baseline: { version: 1, different: true } }));
+    assert.equal(r.code, EXIT.HARNESS);
+    assert.match(r.err, /another baseline/);
+    const same = await runMain(['--slow-host'], corpus, fakeSession({ listingStatus: 'refused', refusals }));
+    assert.equal(same.code, EXIT.OK, same.err);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
 test('--slow-host leaves an accepted listing\'s baseline check alone', async () => {
   const corpus = writeCorpus();
   try {

@@ -73,6 +73,13 @@ function caseRequest(entry, view) {
   return { body, archive, priors };
 }
 
+function assertBaseline(listing, measured) {
+  const { timings: _measured, ...baseline } = measured;
+  if (!isDeepStrictEqual(baseline, listing.baseline)) {
+    throw new HarnessError(`${listing.id}: the listing check measured another baseline than baseline.json: ${JSON.stringify(baseline).slice(0, 800)}`);
+  }
+}
+
 /**
  * The real listing check must accept the fixture, and measure the baseline the listing commits to.
  *
@@ -90,15 +97,15 @@ async function checkListing(session, listing, published, view, { onMeasured = nu
   if (found.status !== 'accepted') {
     const refusals = Array.isArray(found.refusals) ? found.refusals : [];
     if (slowHost && refusals.length > 0 && refusals.every((refusal) => refusal.code === 'LISTING_TOO_HEAVY')) {
+      // A refusal from the derived limits comes after the whole measurement: what it measured still has to be the listing's.
+      if (found.baseline) assertBaseline(listing, found.baseline);
       return { refusedForTime: refusals.map((refusal) => refusal.detail) };
     }
     throw new HarnessError(`the listing check refused ${listing.id}: ${JSON.stringify(found.refusals).slice(0, 800)}`);
   }
   const { timings: _measured, ...baseline } = found.baseline;
   if (onMeasured) onMeasured({ baseline, timings: found.timings, limits: found.limits, warnings: found.warnings, image: found.image, checkout: found.checkout });
-  if (!isDeepStrictEqual(baseline, listing.baseline)) {
-    throw new HarnessError(`${listing.id}: the listing check measured another baseline than baseline.json: ${JSON.stringify(baseline).slice(0, 800)}`);
-  }
+  assertBaseline(listing, found.baseline);
   return found;
 }
 
