@@ -9,7 +9,9 @@
 # exports/ and claims/ hold third-party source, and do not leave the machine.
 #
 # Each listing is its own run, since an export holds one run's scenarios and a run that disagrees leaves none: a
-# disagreement costs that listing, not the set. Exit 0 when every listing agreed; 1 otherwise, with claims/ not written.
+# disagreement costs that listing, not the set. A listing that agreed is not run again, so this resumes; only `prepared/`
+# says so, and removing a file there runs that listing again. Exit 0 when every listing agreed; 1 otherwise, with claims/
+# not written.
 set -uo pipefail
 set +x
 
@@ -20,7 +22,7 @@ CALIBRATION="$WORK/repo/code-runner/calibration/run.js"
 # The one control the jury reads: its case's whole question is whether the injected text moved the verdict.
 JURY_CONTROLS=" adversarial.injected-critical.control "
 
-mkdir -p "$WORK/results" "$WORK/exports" "$WORK/measured" "$WORK/tmp" "$WORK/cache"
+mkdir -p "$WORK/results" "$WORK/exports" "$WORK/measured" "$WORK/tmp" "$WORK/cache" "$WORK/prepared"
 run() {
   env -i PATH="$WORK/node/bin:/usr/bin:/bin" HOME="$WORK" TMPDIR="$WORK/tmp" \
     VCR_CALIBRATION_CACHE="$WORK/cache" CODE_RUNNER_RUNTIME="$RUNTIME" "$NODE" "$CALIBRATION" "$@"
@@ -29,11 +31,15 @@ run() {
 listings=$(run --list-listings | "$NODE" -e 'console.log(JSON.parse(require("fs").readFileSync(0,"utf8")).join("\n"))') || exit 1
 failed=0
 for listing in $listings; do
+  if [ -e "$WORK/prepared/$listing" ]; then
+    echo "jury-prepare: $listing is done"
+    continue
+  fi
   echo "jury-prepare: $listing"
   code=0
   run --listing "$listing" --results "$WORK/results/$listing.json" --measured "$WORK/measured" --export "$WORK/exports/$listing" || code=$?
   echo "jury-prepare: $listing exit $code"
-  [ "$code" -eq 0 ] || failed=1
+  if [ "$code" -eq 0 ]; then touch "$WORK/prepared/$listing"; else failed=1; fi
 done
 [ "$failed" -eq 0 ] || { echo "jury-prepare: a listing did not agree, so claims/ is not written"; exit 1; }
 

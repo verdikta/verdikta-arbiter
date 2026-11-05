@@ -168,7 +168,7 @@ async function fetchRepo(repo, { cacheDir, allowFile = false }) {
     if (has(id)) return true;
     if (cached) return false;
     try {
-      g(['-c', `protocol.file.allow=${allowFile ? 'always' : 'never'}`, 'fetch', '-q', '--depth', '1', '--no-tags', '--no-write-fetch-head', '--', from, id], { timeout: FETCH_TIMEOUT_MS });
+      g(['-c', `protocol.file.allow=${allowFile ? 'always' : 'never'}`, 'fetch', '-q', '--depth', '1', '--no-tags', '--', from, id], { timeout: FETCH_TIMEOUT_MS });
     } catch (_) {
       return false;
     }
