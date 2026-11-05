@@ -277,18 +277,41 @@ node scripts/l4-metrics.js results/*.json   # exit 0 only with enough samples, i
 
 A round with a fault injected counts for σ (the switch cannot move a score) and not for latency (the delay is the point of it). Samples come from what the uploads say happened, not from what the scenario expected: a valid claim answered by a gate fails its checks and is no jury sample, and mixed or missing evidence counts for nothing. A request that never started is no sample; one that started leaves one, whatever fails after. An arbiter keeps a run for 15 minutes, and a later round of the same claim is served it, with no pull and no sandbox in its time (`runner_image.cache: reused`): that is no latency sample, so space repeats of a scenario by 15 minutes, or mix scenarios.
 
-**Preparing them (once, an owner's step).** The scenarios read `archives/l4-claim/claim-set.json`. None is committed until then, and naming a scenario without one is an error.
+**Preparing them (once, an owner's step).** The scenarios read `archives/l4-claim/claim-set.json`. None is committed until then, and naming a scenario without one is an error. The canaries run in production trust, so the three listings are signed with the production builder key. That key signs only in its own service, and `scripts/prepare-l4-listings.js` writes what it must sign and takes the answers back. `npm ci` in `code-runner/` and here first.
 
-1. Build the fixture image on `linux/amd64` (`buildFixture` in `code-runner/test/docker/forgeFixture.js`, with `CANARY_IMAGE_OPTIONS` from `determinismPocs.js`, as the L2 harness does: A3b's PoCs need `ffi` and `./state`) and push it where every canary's runner may pull it (`CODE_RUNNER_REGISTRY_ALLOWLIST`). Keep the digest and the base commit. For the cold-cache scenario push a second one with `env: ['L4_COLD=<a word used once>']`: the same repository and commit, a digest no canary has.
-2. Check, then pin. `npm ci` in `code-runner/` first, for the fixture repository:
+1. Build the images and push them, on a `linux/amd64` host (or one that emulates it), logged in to the registry. Every canary's runner must be able to pull them with no credentials, so make the package public. The fixture has what A3b's PoCs need (`ffi`, `./state`):
 
    ```bash
-   node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --cold-image <repo@sha256:…> --dry-run
-   IPFS_PINNING_KEY=<pinata-jwt> node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --cold-image <repo@sha256:…> --pin
+   node scripts/prepare-l4-listings.js images --repository ghcr.io/verdikta/<name>
    ```
 
-   This signs the listings with a dev builder key it makes and drops. It prints the public half: set `CODE_REVIEW_TRUST=dev`, `CODE_REVIEW_DEV_KEYS=<that key>` and `NETWORK_CHAIN_ID=84532` on the canaries. It also prints the fault plan for the switch. A listing the production builder signed comes in with `--listing-file <listing.zip>` instead, and needs no dev trust; then `--registry-failure-listing-file` and `--cold-listing-file` bring those two, and without them only those two scenarios are unavailable. A cold image is cold once: a second run on the same digest fails `claim.imageCold`, so it needs a new digest, or the eviction in the runbook.
-3. Commit `archives/l4-claim/claim-set.json` on the branch the run dispatches from. Its disclosure keys are a throwaway fixture's, and the same lines go on-chain in the clear.
+   It prints the `--image`, `--cold-image` and `--base-commit` the next step takes. The cold-cache image has a fresh digest in the same repository, at the same commit.
+2. Write the three listings and what to sign: the fixture image, the same repository on a digest no registry holds, and the fresh digest. Each has its own disclosure key, whose private half is never written, and names Verdikta's own fixture repository and chain 31337. Images outside `ghcr.io/verdikta` are refused, because a default arbiter will not pull them.
+
+   ```bash
+   node scripts/prepare-l4-listings.js prepare --image <repo@sha256:…> --cold-image <repo@sha256:…> --base-commit <hash> --out <new-dir>
+   ```
+
+3. Run `<new-dir>/sign-in-cloudshell.sh` where the key can sign, with `BUILDER_KEY` set to its name. The script holds the bytes, about 900 for each listing, and no key name. Bring back the `signatures.json` it writes, into `<new-dir>`.
+4. Put them in. This holds every listing to production trust against `@verdikta/common`'s builder set, and writes all three archives or none:
+
+   ```bash
+   node scripts/prepare-l4-listings.js attach --dir <new-dir>
+   ```
+
+5. Check, then pin. Every `--listing-file` is held to production trust again, so a dev-signed archive is refused here:
+
+   ```bash
+   node scripts/build-l4-claims.js --listing-file <new-dir>/listing.zip --registry-failure-listing-file <new-dir>/registry-failure.zip --cold-listing-file <new-dir>/cold-cache.zip --dry-run
+   IPFS_PINNING_KEY=<pinata-jwt> node scripts/build-l4-claims.js --listing-file <new-dir>/listing.zip --registry-failure-listing-file <new-dir>/registry-failure.zip --cold-listing-file <new-dir>/cold-cache.zip --pin
+   ```
+
+   It prints the fault plan for the switch. Without the last two files, only those two scenarios are unavailable.
+6. Commit `archives/l4-claim/claim-set.json` on the branch the run dispatches from. Its disclosure keys are a throwaway fixture's, and the same lines go on-chain in the clear.
+
+A production signature has no end date: these listings verify on any arbiter while the key is trusted. A request against one is paid for by whoever sends it, and it names no real contract. A cold image is cold once: a second run on the same digest fails `claim.imageCold`, so it needs a new digest and a new signature for that listing, or the eviction in the runbook.
+
+**Dev trust, off the canaries' production path.** `node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> [--cold-image <repo@sha256:…>] --dry-run|--pin` signs the listings with a dev builder key it makes and drops, as the L2 suite does, and prints the public half. That needs `CODE_REVIEW_TRUST=dev`, `CODE_REVIEW_DEV_KEYS=<that key>` and `NETWORK_CHAIN_ID=84532` on every arbiter it is sent to, and nothing from it passes production trust.
 
 ## CI & secret handling
 

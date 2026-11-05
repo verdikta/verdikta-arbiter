@@ -8,7 +8,8 @@
  * has been through the real pipeline in CI. It signs the listings with a dev builder key made
  * here, whose private half is never written and dies with this process: the public half goes in the canaries'
  * CODE_REVIEW_DEV_KEYS (dev trust is refused off a test chain). A listing signed elsewhere,
- * by the production builder, comes in with --listing-file.
+ * by the production builder (scripts/prepare-l4-listings.js), comes in with --listing-file, and
+ * every file named that way is held to production trust before anything is pinned.
  *
  *   node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --dry-run
  *   IPFS_PINNING_KEY=<jwt> node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --pin
@@ -83,7 +84,15 @@ function pinner() {
 async function main(opts) {
   if (Boolean(opts.dryRun) === Boolean(opts.pin)) throw new Error('pass exactly one of --dry-run and --pin');
   let listing = null;
-  const listingFrom = (file) => F.readListingArchive(fs.readFileSync(path.resolve(file)));
+  const listingFrom = (file) => {
+    const buffer = fs.readFileSync(path.resolve(file));
+    const verified = F.verifyProductionTrust(buffer);
+    if (!verified.ok) {
+      throw new Error(`${file} does not verify in production trust: ${verified.issues.map((i) => i.code).join(', ')}. A listing file is one the production builder signed`);
+    }
+    for (const warning of verified.warnings) console.log(`${file}: ${warning.code}: ${warning.detail}`);
+    return F.readListingArchive(buffer);
+  };
   if (opts.listingFile) {
     if (opts.image || opts.baseCommit) throw new Error('--listing-file names the image and the commit itself: drop --image and --base-commit');
     if (opts.coldImage) throw new Error('--listing-file signs nothing here: bring the cold-cache listing with --cold-listing-file');
@@ -116,6 +125,8 @@ async function main(opts) {
     if (value.builderPublicKey) {
       console.log('\nOn every canary, for dev trust (refused off a test chain):');
       console.log(`  CODE_REVIEW_DEV_KEYS=${value.builderPublicKey}`);
+    } else {
+      console.log('\nEvery listing verifies in production trust: the canaries need no dev keys.');
     }
     console.log('\nFor the fault scenarios, on every canary\'s External Adapter (docs/release-runbook.md, 3b; remove it after):');
     console.log(`  VERDIKTA_CANARY_FAULTS=${value.faultPlan}`);
