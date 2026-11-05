@@ -6,7 +6,7 @@
  * and generating responses to prompts.
  */
 
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { ChatOllama } from "@langchain/ollama";
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png']; // Most Ollama vision models support these formats
@@ -23,6 +23,8 @@ export class OllamaProvider implements LLMProvider {
   private readonly providerName = 'Ollama';
   private models: Array<{ name: string; supportsImages: boolean; supportsAttachments: boolean }> = [];
   private modelsInitialized: Promise<void>;
+  /** Aborts model discovery when a code-mode caller's deadline passes (initialize(signal)). */
+  private readonly discovery = new AbortController();
 
   /**
    * Constructor for OllamaProvider
@@ -34,13 +36,17 @@ export class OllamaProvider implements LLMProvider {
     this.modelsInitialized = this.initializeModels();
   }
 
-  async initialize(): Promise<void> {
+  async initialize(signal?: AbortSignal): Promise<void> {
+    if (signal) {
+      if (signal.aborted) this.discovery.abort();
+      else signal.addEventListener('abort', () => this.discovery.abort(), { once: true });
+    }
     await this.modelsInitialized;
   }
 
   private async initializeModels() {
     try {
-      const response = await fetch(`${this.baseUrl}/api/tags`);
+      const response = await fetch(`${this.baseUrl}/api/tags`, { signal: this.discovery.signal });
       console.log('Ollama - Fetching models response:', response.status);
       
       if (!response.ok) {
@@ -97,7 +103,10 @@ export class OllamaProvider implements LLMProvider {
    * @returns A promise that resolves to a string containing the generated response.
    * @throws Will throw an error if the model invocation fails.
    */
-  async generateResponse(prompt: string, model: string): Promise<string> {
+  async generateResponse(prompt: string, model: string, options?: CallControlOptions): Promise<string> {
+    if (options?.signal) {
+      return this.generateCancellable(prompt, model, options.signal);
+    }
     try {
       const ollama = new ChatOllama({
         baseUrl: this.baseUrl,
@@ -150,6 +159,29 @@ export class OllamaProvider implements LLMProvider {
         throw new Error(`Failed to generate response: ${error.message}`);
       }
     }
+  }
+
+  /**
+   * A code-mode call (a justifier): Ollama's own /api/chat with the caller's
+   * signal on the HTTP request, which the pinned @langchain/ollama does not pass
+   * on. The caller owns the deadline, so the MODEL_TIMEOUT_MS wrapper does not apply.
+   */
+  private async generateCancellable(prompt: string, model: string, signal: AbortSignal): Promise<string> {
+    const response = await fetch(`${this.baseUrl}/api/chat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, messages: [{ role: 'user', content: prompt }], stream: false }),
+      signal,
+    });
+    if (!response.ok) {
+      throw new Error(`[${this.providerName}] HTTP ${response.status}: ${await response.text()}`);
+    }
+    const data = await response.json();
+    const content = data?.message?.content;
+    if (typeof content !== 'string' || !content) {
+      throw new Error(`[${this.providerName}] Invalid response payload: missing message.content`);
+    }
+    return content;
   }
 
   async generateResponseWithImage(prompt: string, model: string, base64Image: string, mediaType: string = 'image/jpeg'): Promise<string> {

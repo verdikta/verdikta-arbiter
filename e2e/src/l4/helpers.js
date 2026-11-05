@@ -9,16 +9,32 @@
 const A = require('../assertions');
 
 /**
- * Resolve the class the on-chain request is made for.
- * Precedence: CLI `--class-id`, then `L4_CLASS_ID` in the environment, then
- * `config.l4.classId`. The value must be a non-negative integer (uint64 on
- * chain; anything beyond Number.MAX_SAFE_INTEGER is rejected rather than
- * silently rounded).
- *
- * @param {{ cli?: any, env?: any, config?: any }} sources
- * @returns {number}
+ * The canary class and its chain (docs/release-runbook.md, §3b): arbiters we control and
+ * upgrade first, on Base Sepolia. Constants, not config: nothing a run reads can move them.
  */
-function resolveClassId({ cli, env, config } = {}) {
+const CANARY_CLASS_ID = 5555;
+const CANARY_CHAIN_ID = 84532;
+
+/** The addendum's machine lines (external-adapter/src/codeReview/addendum.js), as they mark a claim's request. */
+const MACHINE_LINE = /verdikta-(?:disclosure|dispute)/i;
+
+/**
+ * Must this scenario stay on the canary class? An L4 claim scenario must, and so must any
+ * scenario in any file that carries a claim's machine line. (A plain scenario naming a listing
+ * with no such line cannot be told without fetching its archives, which the nightly must not
+ * start doing. The EA's disclosure gate settles that one INVALID, with no runner and no model.) Nothing on an arbiter stops a
+ * claim on another class (the bridge does not tell the EA the class), so a claim on class 128
+ * would spend real money on real arbiters.
+ */
+function isCanaryOnly(scenario) {
+  if (scenario.suite === 'l4-claim') return true;
+  // In the addendum, or written into a CID field in the adapter's `cids:addendum` form.
+  return [scenario.addendum, scenario.cid, ...(Array.isArray(scenario.cids) ? scenario.cids : [])]
+    .some((text) => typeof text === 'string' && MACHINE_LINE.test(text));
+}
+
+/** The class and where it came from: `--class-id`, then `L4_CLASS_ID`, then the config. */
+function pickClass({ cli, env, config } = {}) {
   const candidates = [
     ['--class-id', cli],
     ['L4_CLASS_ID', env],
@@ -30,9 +46,85 @@ function resolveClassId({ cli, env, config } = {}) {
     if (!/^\d+$/.test(text) || Number(text) > Number.MAX_SAFE_INTEGER) {
       throw new Error(`Invalid class id from ${source}: "${value}" (expected a non-negative integer)`);
     }
-    return Number(text);
+    return { classId: Number(text), source };
   }
   throw new Error('No class id: pass --class-id, set L4_CLASS_ID, or set config.l4.classId');
+}
+
+/**
+ * Resolve the class the on-chain request is made for.
+ * Precedence: CLI `--class-id`, then `L4_CLASS_ID` in the environment, then
+ * `config.l4.classId`. The value must be a non-negative integer (uint64 on
+ * chain; anything beyond Number.MAX_SAFE_INTEGER is rejected rather than
+ * silently rounded).
+ *
+ * @param {{ cli?: any, env?: any, config?: any }} sources
+ * @returns {number}
+ */
+function resolveClassId(sources) {
+  return pickClass(sources).classId;
+}
+
+const named = (scenarios) => scenarios.filter(isCanaryOnly).map((s) => `"${s.id}"`).join(', ');
+
+/**
+ * The class of this run, or a refusal. The one place L4 resolves it. A claim scenario on
+ * anything but the canary class is refused rather than moved there: a run that silently went
+ * to 5555 would hide a mistyped dispatch, and the default is 128. It refuses the whole run,
+ * so a text scenario named beside a claim is not sent either.
+ *
+ * @param {{ cli?: any, env?: any, config?: any, scenarios?: object[] }} o
+ * @returns {number}
+ */
+function resolveRunClass({ cli, env, config, scenarios = [] } = {}) {
+  const { classId, source } = pickClass({ cli, env, config });
+  if (scenarios.some(isCanaryOnly) && classId !== CANARY_CLASS_ID) {
+    throw new Error(`Refused: ${named(scenarios)} run only on the canary class ${CANARY_CLASS_ID}, and this run resolved to class ${classId} (from ${source}). `
+      + `A claim on another class would spend real money on real arbiters. Name the class: --class-id ${CANARY_CLASS_ID}.`);
+  }
+  return classId;
+}
+
+/** A claim run's chain, measured: the canary class is registered on Base Sepolia alone (runbook §3b). */
+function assertCanaryChain(scenarios, chainId) {
+  if (scenarios.some(isCanaryOnly) && BigInt(chainId) !== BigInt(CANARY_CHAIN_ID)) {
+    throw new Error(`Refused: ${named(scenarios)} run only on Base Sepolia (chain ${CANARY_CHAIN_ID}), and this RPC is chain ${chainId}.`);
+  }
+}
+
+/** A claim run is a release gate, and one that does not say which build it is judging answers nothing. */
+function assertVersionsNamed(scenarios, { expectCommon, expectRelease } = {}) {
+  if (!scenarios.some(isCanaryOnly)) return;
+  const blank = (value) => value === undefined || value === null || String(value).trim() === '';
+  const missing = [...(blank(expectCommon) ? ['--expect-common'] : []), ...(blank(expectRelease) ? ['--expect-release'] : [])];
+  if (missing.length > 0) {
+    throw new Error(`Refused: ${named(scenarios)} are a release gate, and need ${missing.join(' and ')} (or L4_EXPECT_COMMON / L4_EXPECT_RELEASE).`);
+  }
+}
+
+/** The scenarios that need the fault switch armed on the canaries (decision D9). */
+const FAULT_KINDS = Object.freeze(['near-limit-juror', 'provider-timeout', 'slow-justifier', 'cancellation']);
+const FAULT_SWITCH_WORDS = Object.freeze(['off', 'armed']);
+
+/**
+ * What state the fault switch must be in on every revealing arbiter: named by the run, `off`
+ * unless it says otherwise, so a claim run fails while a canary is left armed. A fault scenario
+ * refuses without `armed`. A run with no claim scenario has nothing to say about it.
+ *
+ * @param {object[]} scenarios
+ * @param {{ expectFaultSwitch?: string }} [o]
+ * @returns {{ ea: string, aiNode: string }|null}
+ */
+function resolveFaultSwitch(scenarios, { expectFaultSwitch } = {}) {
+  if (!scenarios.some(isCanaryOnly)) return null;
+  const text = expectFaultSwitch === undefined || expectFaultSwitch === null ? '' : String(expectFaultSwitch).trim();
+  const word = text === '' ? 'off' : text;
+  if (!FAULT_SWITCH_WORDS.includes(word)) throw new Error(`Refused: --expect-fault-switch is ${FAULT_SWITCH_WORDS.join(' or ')}, not "${text}".`);
+  const faults = scenarios.filter((s) => FAULT_KINDS.includes(s.claim));
+  if (faults.length > 0 && word !== 'armed') {
+    throw new Error(`Refused: ${faults.map((s) => `"${s.id}"`).join(', ')} need the fault switch on the canaries: name it with --expect-fault-switch armed (or L4_EXPECT_FAULT_SWITCH).`);
+  }
+  return { ea: word, aiNode: word };
 }
 
 /** The aggregator returns the revealing oracles' justification CIDs joined by commas. */
@@ -56,6 +148,7 @@ function arbiterVersion(justification) {
     aiNode: pick('aiNode'),
     verdiktaCommon: pick('verdiktaCommon'),
     release: pick('release'),
+    canaryFault: pick('canaryFault'),
   };
 }
 
@@ -167,6 +260,14 @@ function requestArgs(scenario, fees, classId) {
 }
 
 module.exports = {
+  CANARY_CLASS_ID,
+  CANARY_CHAIN_ID,
+  isCanaryOnly,
+  resolveRunClass,
+  assertCanaryChain,
+  assertVersionsNamed,
+  resolveFaultSwitch,
+  FAULT_KINDS,
   gasLimitFor,
   requestArgs,
   resolveClassId,

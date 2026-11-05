@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A session signature for one wallet also validates for another",
+  "claimedClass": "MEDIUM",
+  "rootCause": "SessionSig.hashCallWithReplayProtection hashes the chain, space, nonce, call index and call, and not the wallet, so a session key's signature recovers the same way whichever wallet presents it.",
+  "affectedPaths": [
+    "src/extensions/sessions/SessionSig.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_session_signature_is_good_for_one_wallet_only",
+    "observable": "test_a_session_signature_is_good_for_one_wallet_only fails with \"the signature is not good for the other wallet\""
+  },
+  "fixIncluded": false
+}

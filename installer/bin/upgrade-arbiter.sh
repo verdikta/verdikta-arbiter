@@ -444,11 +444,13 @@ REPO_AI_NODE="$REPO_ROOT/ai-node"
 REPO_EXTERNAL_ADAPTER="$REPO_ROOT/external-adapter"
 REPO_CHAINLINK_NODE="$REPO_ROOT/chainlink-node"
 REPO_OPERATOR="$REPO_ROOT/arbiter-operator"
+REPO_CODE_RUNNER="$REPO_ROOT/code-runner"
 
 TARGET_AI_NODE="$TARGET_DIR/ai-node"
 TARGET_EXTERNAL_ADAPTER="$TARGET_DIR/external-adapter"
 TARGET_CHAINLINK_NODE="$TARGET_DIR/chainlink-node"
 TARGET_OPERATOR="$TARGET_DIR/contracts"
+TARGET_CODE_RUNNER="$TARGET_DIR/code-runner"
 
 # Function to comprehensively check if a service is running (like arbiter-status.sh)
 check_service_status() {
@@ -1165,6 +1167,33 @@ if ! ask_yes_no "Do you want to proceed with the upgrade?" "y" VA_UPGRADE_PROCEE
     exit 0
 fi
 
+# Hold the code runner's maintenance lock for the whole upgrade (design §9.6), so that one maintenance
+# operation runs at a time: while it exists the runner admits no run and /health is 503. The EXIT trap
+# lets it go however this script ends, and only if it is still this run's. A sandbox operation still
+# running means no upgrade yet, or it would lift the lock from under this one. One an operator set
+# stays theirs. `kill -9` can leave it, and then code review refuses until it is removed (the doctor
+# names it). What keeps claims off a new release is not this: the runner holds itself to a conformance
+# pass for its own source, whichever way this script ends (code-runner/src/conformance.js).
+# The tool holds the lock's rules (`lock`): the repo's copy, since the installed one may be old.
+CODE_RUNNER_LOCK_HELD=0
+release_code_runner_lock() {
+    if [ "$CODE_RUNNER_LOCK_HELD" = "1" ]; then
+        bash "$UTIL_DIR/code-review-sandbox.sh" unlock --pid $$ --install-dir "$TARGET_DIR" || true
+    fi
+}
+trap release_code_runner_lock EXIT
+export CODE_REVIEW_LOCK_PARENT=$$
+if [ -f "$TARGET_DIR/code-runner/.env" ]; then
+    CODE_RUNNER_LOCK_RC=0
+    bash "$UTIL_DIR/code-review-sandbox.sh" lock --pid $$ --install-dir "$TARGET_DIR" || CODE_RUNNER_LOCK_RC=$?
+    case "$CODE_RUNNER_LOCK_RC" in
+        0) CODE_RUNNER_LOCK_HELD=1 ;;
+        2) echo -e "${YELLOW}The code runner's maintenance lock was set by hand: leaving it.${NC}" ;;
+        *) echo -e "${RED}Nothing was changed: run the upgrade when that operation ends (exit $CODE_RUNNER_LOCK_RC).${NC}"
+           exit 1 ;;
+    esac
+fi
+
 # If arbiter is running, stop it
 if [ $ARBITER_RUNNING -eq 1 ]; then
     echo -e "${BLUE}Stopping arbiter...${NC}"
@@ -1184,6 +1213,10 @@ if ask_yes_no "Would you like to create a backup before upgrading? (Recommended 
     create_backup "$TARGET_DIR"
     if [ $? -ne 0 ]; then
         exit 1
+    fi
+    # The copy came with this run's lock. Restored, it would refuse every claim from then on.
+    if [ -n "$BACKUP_DIR" ]; then
+        rm -f "$BACKUP_DIR/code-runner-state/maintenance"
     fi
     # Only now that the new copy exists: keep the newest N, drop the rest (#47).
     prune_old_backups "$TARGET_DIR" "$(resolve_backup_keep)"
@@ -1205,6 +1238,11 @@ UPGRADE_IN_PROGRESS=1
 
 # Check for job specification template changes BEFORE component upgrades
 echo -e "${BLUE}Checking for job specification template changes...${NC}"
+
+# A job template with its two timeouts blanked, to tell a change in them from any other.
+job_template_without_timeouts() {
+    sed -E 's/^maxTaskDuration = "[^"]*"/maxTaskDuration = "N"/; s/timeout="[^"]*"([[:space:]]*#.*)?$/timeout="N"/' "$1"
+}
 
 # Function to check and regenerate job specs if needed (following the pattern of check_chainlink_config)
 check_job_spec_template() {
@@ -1232,6 +1270,13 @@ check_job_spec_template() {
     
     # Compare the templates directly (no normalization needed since both are templates)
     if ! diff -q "$repo_job_spec" "$target_job_spec" > /dev/null 2>&1; then
+        # A template that differs only in the two job timeouts needs no new job ids:
+        # apply-job-timeouts.sh replaces the live jobs under the same ids after the
+        # restart (the "Job timeouts, after the restart" block), with no on-chain action.
+        if [ "$(job_template_without_timeouts "$repo_job_spec")" = "$(job_template_without_timeouts "$target_job_spec")" ]; then
+            echo -e "${BLUE}The job template differs only in its timeouts: apply-job-timeouts.sh applies them after the restart, keeping the job ids.${NC}"
+            return 0
+        fi
         echo -e "${YELLOW}The job specification template has been updated since your last installation.${NC}"
         echo -e "${YELLOW}This may include timeout changes, new tasks, or other job improvements.${NC}"
         
@@ -1241,10 +1286,17 @@ check_job_spec_template() {
         echo
         
         if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)" "y" VA_UPGRADE_REGENERATE_JOBS n; then
-            # Handle the job spec regeneration with proper aggregator management
-            regenerate_job_specs
-            # Set flag to indicate jobs have been regenerated
-            JOBS_ALREADY_REGENERATED=1
+            # Handle the job spec regeneration with proper aggregator management. It reads
+            # its own steps' exit codes: a function has no ERR trap, and errexit would end
+            # the upgrade in silence with the arbiter stopped.
+            REGEN_RC=0
+            regenerate_job_specs || REGEN_RC=$?
+            if [ "$REGEN_RC" -eq 0 ]; then
+                # Set flag to indicate jobs have been regenerated
+                JOBS_ALREADY_REGENERATED=1
+            elif [ -z "${JOB_REGEN_FAILED:-}" ]; then
+                JOB_REGEN_FAILED="job regeneration stopped (exit $REGEN_RC); see the messages above"
+            fi
         else
             echo -e "${BLUE}Keeping existing job specifications.${NC}"
         fi
@@ -1264,6 +1316,14 @@ regenerate_job_specs() {
     
     if [ -f "$TARGET_DIR/installer/.contracts" ]; then
         source "$TARGET_DIR/installer/.contracts"
+
+        # Jobs registered on separate classes (VA_REGISTER_JOB_IDS): this path registers every new job
+        # on one class, which would put a stake's tiers together. Refused before anything is touched.
+        if [ "${REGISTRATION_SPLIT:-}" = "true" ]; then
+            echo -e "${RED}This node's jobs are registered on separate classes, and regeneration would register every new job on one. Nothing was changed.${NC}"
+            JOB_REGEN_FAILED="this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts), so they were not regenerated; unregister them, run configure-node.sh and register each class with VA_REGISTER_JOB_IDS"
+            return 1
+        fi
         
         if [ -n "$AGGREGATOR_ADDRESS" ]; then
             aggregator_addr="$AGGREGATOR_ADDRESS"
@@ -1282,17 +1342,25 @@ regenerate_job_specs() {
         fi
     fi
     
-    # Step 1: Unregister if needed
+    # Step 1: Unregister if needed. The stake stays locked on the old ids until they are
+    # deregistered (#35), so a failure here stops before any job changes.
     if [ $need_reregister -eq 1 ]; then
         echo -e "${BLUE}Step 1: Unregistering from aggregator...${NC}"
         if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
-            cd "$TARGET_DIR"
+            cd "$TARGET_DIR" || return 1
             # Use the existing unregister script non-interactively
-            echo -e "y\n$aggregator_addr\ny" | bash unregister-oracle.sh
-            if [ $? -eq 0 ]; then
+            local unregister_rc=0
+            if unattended_mode; then
+                VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" bash unregister-oracle.sh --unattended || unregister_rc=$?
+            else
+                bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$aggregator_addr")" || unregister_rc=$?
+            fi
+            if [ "$unregister_rc" -eq 0 ]; then
                 echo -e "${GREEN}Successfully unregistered from aggregator${NC}"
             else
-                echo -e "${YELLOW}Warning: Unregistration may have failed, but continuing...${NC}"
+                echo -e "${RED}Unregistration failed (exit $unregister_rc). The jobs and the stake on them are unchanged.${NC}"
+                JOB_REGEN_FAILED="deregistration failed (unregister-oracle.sh exit $unregister_rc); the jobs and the stake on them are unchanged"
+                return 1
             fi
         else
             echo -e "${YELLOW}Warning: unregister-oracle.sh not found. Continuing with job regeneration...${NC}"
@@ -1306,14 +1374,20 @@ regenerate_job_specs() {
     # Check if Chainlink node is running
     if ! docker ps | grep -q "chainlink"; then
         echo -e "${BLUE}Starting Chainlink node temporarily for job regeneration...${NC}"
-        cd "$TARGET_DIR"
+        cd "$TARGET_DIR" || return 1
         if [ -f "$TARGET_DIR/start-arbiter.sh" ]; then
             # Start just the Chainlink node (not the full arbiter)
+            local start_rc=0
             if docker ps -a | grep -q "chainlink"; then
-                docker start chainlink
+                docker start chainlink || start_rc=$?
             else
                 echo -e "${YELLOW}Warning: Chainlink container not found. Starting full arbiter...${NC}"
-                bash "$TARGET_DIR/start-arbiter.sh"
+                bash "$TARGET_DIR/start-arbiter.sh" || start_rc=$?
+            fi
+            if [ "$start_rc" -ne 0 ]; then
+                echo -e "${RED}Error: could not start the Chainlink node (exit $start_rc).${NC}"
+                JOB_REGEN_FAILED="the Chainlink node would not start for the regeneration (exit $start_rc); re-register the old job ids if they were deregistered"
+                return 1
             fi
             
             # Wait for Chainlink node to be ready
@@ -1325,12 +1399,14 @@ regenerate_job_specs() {
                 fi
                 if [ $i -eq 30 ]; then
                     echo -e "${RED}Error: Chainlink node failed to start within 60 seconds${NC}"
+                    JOB_REGEN_FAILED="the Chainlink node did not answer within 60 seconds; re-register the old job ids if they were deregistered"
                     return 1
                 fi
                 sleep 2
             done
         else
             echo -e "${RED}Error: start-arbiter.sh not found at $TARGET_DIR${NC}"
+            JOB_REGEN_FAILED="start-arbiter.sh not found at $TARGET_DIR"
             return 1
         fi
     else
@@ -1338,15 +1414,26 @@ regenerate_job_specs() {
     fi
     
     # Now run the job configuration
-    cd "$SCRIPT_DIR"
-    bash "$SCRIPT_DIR/configure-node.sh"
+    cd "$SCRIPT_DIR" || return 1
+    local configure_rc=0
+    bash "$SCRIPT_DIR/configure-node.sh" || configure_rc=$?
     
-    if [ $? -eq 0 ]; then
+    if [ "$configure_rc" -eq 0 ]; then
         echo -e "${GREEN}Job specifications regenerated successfully!${NC}"
         
-        # Update the target installation with the new contracts file
+        # Update the target installation with the new contracts file. register-oracle.sh reads
+        # that file: from a stale copy it would lock stake on job ids that no longer exist.
         if [ -f "$INSTALLER_DIR/.contracts" ]; then
-            cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"
+            if ! cp "$INSTALLER_DIR/.contracts" "$TARGET_DIR/installer/.contracts"; then
+                echo -e "${RED}Error: could not copy the new contracts file to $TARGET_DIR/installer/.contracts. Not registering from the old one.${NC}"
+                JOB_REGEN_FAILED="the new jobs were created but $TARGET_DIR/installer/.contracts could not be updated from $INSTALLER_DIR/.contracts; copy it, then run $TARGET_DIR/register-oracle.sh"
+                cd "$TARGET_DIR" || return 1
+                if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
+                    bash "$TARGET_DIR/stop-arbiter.sh" || \
+                        echo -e "${YELLOW}Warning: stop-arbiter.sh failed.${NC}"
+                fi
+                return 1
+            fi
             echo -e "${GREEN}Updated contracts configuration copied to target installation${NC}"
         fi
         
@@ -1354,20 +1441,22 @@ regenerate_job_specs() {
         if [ $need_reregister -eq 1 ]; then
             echo -e "${BLUE}Step 3: Re-registering with aggregator using new job IDs...${NC}"
             if [ -f "$TARGET_DIR/register-oracle.sh" ]; then
-                cd "$TARGET_DIR"
+                cd "$TARGET_DIR" || return 1
                 # Use the existing register script non-interactively
                 # Input sequence: y (register?), aggregator_addr, y (continue if already registered?), classes_id, y (confirm registration?)
                 # (Unattended runs ignore the pipe and take the same answers from the VA_* variables.)
-                echo -e "y\n$aggregator_addr\ny\n$classes_id\ny" | \
+                local register_rc=0
+                printf 'y\n%s\ny\n%s\ny\n' "$aggregator_addr" "$classes_id" | \
                     VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" \
                     VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="$classes_id" \
-                    bash register-oracle.sh
-                if [ $? -eq 0 ]; then
+                    bash register-oracle.sh || register_rc=$?
+                if [ "$register_rc" -eq 0 ]; then
                     echo -e "${GREEN}Successfully re-registered with aggregator using new job IDs!${NC}"
                     echo -e "${GREEN}Job specification regeneration completed successfully!${NC}"
                 else
                     echo -e "${RED}Warning: Re-registration failed. You may need to manually register.${NC}"
                     echo -e "${YELLOW}You can run: $TARGET_DIR/register-oracle.sh${NC}"
+                    JOB_REGEN_FAILED="the new jobs were created but registering them failed (register-oracle.sh exit $register_rc); run $TARGET_DIR/register-oracle.sh"
                 fi
             else
                 echo -e "${YELLOW}Warning: register-oracle.sh not found.${NC}"
@@ -1377,35 +1466,57 @@ regenerate_job_specs() {
         
         # Stop the arbiter again since the upgrade script will handle restart later
         echo -e "${BLUE}Stopping arbiter to continue with upgrade process...${NC}"
-        cd "$TARGET_DIR"
+        cd "$TARGET_DIR" || return 1
         if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
-            bash "$TARGET_DIR/stop-arbiter.sh"
-            echo -e "${GREEN}Arbiter stopped. Upgrade will continue.${NC}"
+            if bash "$TARGET_DIR/stop-arbiter.sh"; then
+                echo -e "${GREEN}Arbiter stopped. Upgrade will continue.${NC}"
+            else
+                echo -e "${YELLOW}Warning: stop-arbiter.sh failed. The upgrade continues; check the services after it.${NC}"
+            fi
         else
             echo -e "${YELLOW}Warning: stop-arbiter.sh not found. You may need to manually stop services.${NC}"
         fi
     else
         echo -e "${RED}Error: Job specification regeneration failed!${NC}"
+        # configure-node.sh deletes the old jobs before it creates the new ones, and may stop
+        # before it updates .contracts: that file may name jobs that are gone, and registering
+        # from it would lock stake on them.
+        JOB_REGEN_FAILED="creating the new jobs failed (configure-node.sh exit $configure_rc); the old jobs may already be deleted, and $TARGET_DIR/installer/.contracts may still name them. Do not register from it: fix the cause, run the job reconfiguration again, check the live job ids in the Chainlink UI, then run $TARGET_DIR/register-oracle.sh"
         
         # If job regeneration failed, still try to stop the arbiter
         echo -e "${BLUE}Stopping arbiter after failed job regeneration...${NC}"
-        cd "$TARGET_DIR"
+        cd "$TARGET_DIR" || return 1
         if [ -f "$TARGET_DIR/stop-arbiter.sh" ]; then
-            bash "$TARGET_DIR/stop-arbiter.sh"
+            bash "$TARGET_DIR/stop-arbiter.sh" || \
+                echo -e "${YELLOW}Warning: stop-arbiter.sh failed.${NC}"
         fi
         return 1
     fi
 }
 
-# Call the job spec template check function (before component upgrades)
-check_job_spec_template
+# Call the job spec template check function (before component upgrades). Its exit code
+# is read: a failing command in a function does not fire the ERR trap, errexit would just
+# end the upgrade with the arbiter stopped and nothing said.
+JOB_TEMPLATE_RC=0
+check_job_spec_template || JOB_TEMPLATE_RC=$?
+if [ "$JOB_TEMPLATE_RC" -ne 0 ] && [ -z "${JOB_REGEN_FAILED:-}" ]; then
+    JOB_REGEN_FAILED="the job template check stopped (exit $JOB_TEMPLATE_RC); see the messages above"
+fi
 
 # Pre-upgrade: Force fresh install of @verdikta/common in DEV folder to ensure latest ClassID data
 echo -e "${BLUE}Pre-upgrade: Forcing fresh install of @verdikta/common in dev folder...${NC}"
 echo -e "${BLUE}Note: This bypasses npm cache to ensure latest ClassID data (including new ClassIDs)${NC}"
 
-# Force reinstall in DEV AI Node
-if [ -d "$REPO_AI_NODE" ]; then
+# Force reinstall in DEV AI Node, unless its package.json pins one exact
+# release (installer/util/common-pin.js): that pin wins over `latest`, so the
+# upgrade never replaces it (the stake-attestation prerelease carries the
+# code-review gates, and the AI Node and adapter must agree on it).
+if [ -d "$REPO_AI_NODE" ] && DEV_COMMON_PIN=$(node "$UTIL_DIR/common-pin.js" "$REPO_AI_NODE"); then
+    echo -e "${BLUE}DEV AI Node pins @verdikta/common@${DEV_COMMON_PIN}; installing exactly that release.${NC}"
+    cd "$REPO_AI_NODE"
+    npm install "@verdikta/common@${DEV_COMMON_PIN}" --save-exact
+    cd "$SCRIPT_DIR"
+elif [ -d "$REPO_AI_NODE" ]; then
     echo -e "${BLUE}Updating DEV AI Node @verdikta/common...${NC}"
     cd "$REPO_AI_NODE"
     
@@ -1429,8 +1540,13 @@ else
     echo -e "${YELLOW}DEV AI Node directory not found, skipping update${NC}"
 fi
 
-# Force reinstall in DEV External Adapter
-if [ -d "$REPO_EXTERNAL_ADAPTER" ]; then
+# Force reinstall in DEV External Adapter, unless it pins one exact release (as above)
+if [ -d "$REPO_EXTERNAL_ADAPTER" ] && DEV_COMMON_PIN=$(node "$UTIL_DIR/common-pin.js" "$REPO_EXTERNAL_ADAPTER"); then
+    echo -e "${BLUE}DEV External Adapter pins @verdikta/common@${DEV_COMMON_PIN}; installing exactly that release.${NC}"
+    cd "$REPO_EXTERNAL_ADAPTER"
+    npm install "@verdikta/common@${DEV_COMMON_PIN}" --save-exact
+    cd "$SCRIPT_DIR"
+elif [ -d "$REPO_EXTERNAL_ADAPTER" ]; then
     echo -e "${BLUE}Updating DEV External Adapter @verdikta/common...${NC}"
     cd "$REPO_EXTERNAL_ADAPTER"
     npm cache clean --force 2>/dev/null || true
@@ -1645,6 +1761,13 @@ else
     echo -e "${YELLOW}Warning: arbiter-operator source directory not found at $REPO_OPERATOR${NC}"
 fi
 
+# Upgrade the Code Runner. Its files reach every node, so the same-version check below and a
+# later `code-review-sandbox.sh enable` have them; a node without the sandbox runs none of it.
+# Its state, the maintenance lock with it, sits outside the replaced tree (code-runner-state/).
+if [ -d "$REPO_CODE_RUNNER" ]; then
+    upgrade_component "$REPO_CODE_RUNNER" "$TARGET_CODE_RUNNER" "Code Runner" ".env logs node_modules *.pid"
+fi
+
 # Update management scripts
 echo -e "${BLUE}Updating management scripts...${NC}"
 # Shared prompt library + answers validator (used by the root/util scripts)
@@ -1686,6 +1809,10 @@ for _util in \
     apply-docker-log-rotation.sh \
     arbiter-boot-service.sh \
     arbiter-firewall.sh \
+    apply-job-timeouts.sh \
+    common-pin.js \
+    code-review-sandbox.sh \
+    code-review-check.js \
     apply-chainlink-loopback.sh; do
     if [ -f "$UTIL_DIR/$_util" ]; then
         cp "$UTIL_DIR/$_util" "$TARGET_DIR/$_util"
@@ -1753,6 +1880,20 @@ if [ -f "$TARGET_EXTERNAL_ADAPTER/package.json" ]; then
     echo -e "${GREEN}External Adapter dependencies installed.${NC}"
 fi
 
+# Code Runner dependencies, on a node that runs it. A failure here is the sandbox's, never the
+# upgrade's: the arbiter does not need it for a text request, and the runner's /health and the
+# adapter refuse a claim without it. Read with `|| rc=$?` under the ERR trap (#97).
+CODE_REVIEW_SANDBOX_FAILED=""
+if [ -f "$TARGET_CODE_RUNNER/.env" ]; then
+    echo -e "${BLUE}Installing Code Runner dependencies...${NC}"
+    CODE_RUNNER_DEPS_RC=0
+    (cd "$TARGET_CODE_RUNNER" && npm ci --omit=dev --no-audit --no-fund) || CODE_RUNNER_DEPS_RC=$?
+    if [ "$CODE_RUNNER_DEPS_RC" != "0" ]; then
+        echo -e "${YELLOW}Warning: npm ci failed in $TARGET_CODE_RUNNER (exit $CODE_RUNNER_DEPS_RC).${NC}"
+        CODE_REVIEW_SANDBOX_FAILED="the code-runner's dependencies did not install (exit $CODE_RUNNER_DEPS_RC); run $TARGET_DIR/code-review-sandbox.sh enable"
+    fi
+fi
+
 # Update @verdikta/common library to get latest ClassID data for both components
 # NOTE: This must happen AFTER npm install to avoid being downgraded by package.json versions
 echo -e "${BLUE}Updating @verdikta/common library to latest version for ClassID model pools...${NC}"
@@ -1789,6 +1930,14 @@ if [ -f "$UTIL_DIR/update-verdikta-common.js" ]; then
     fi
 else
     echo -e "${YELLOW}@verdikta/common update utility not found, skipping library update.${NC}"
+fi
+
+# The same-version check: the AI Node, the External Adapter and the Code Runner read one
+# @verdikta/common release. Code mode refuses otherwise; text mode is unaffected, so this warns.
+COMMON_AGREE_RC=0
+node "$UTIL_DIR/common-pin.js" --agree "$TARGET_DIR" || COMMON_AGREE_RC=$?
+if [ "$COMMON_AGREE_RC" != "0" ]; then
+    echo -e "${YELLOW}Warning: the components do not pin one @verdikta/common release (above). Code review stays refused until they do.${NC}"
 fi
 
 # Synchronize ClassID model pools with models.ts
@@ -2304,6 +2453,41 @@ else
 fi
 fi
 
+# Job timeouts, before the restart (design §11). A code-review job's bridge call runs up
+# to 840 s, and Chainlink 2.23.0's [JobPipeline] MaxRunDuration default of 10 m ends the
+# run at 600 s. The node reads config.toml when it starts, so the key goes in here, and the
+# jobs are measured and replaced after the restart below. It sets the one key, leaving the
+# rest of the file to the operator's own regeneration question next. One question for both
+# steps; unattended default yes: it only raises ceilings, and the canaries are upgraded
+# unattended (AGENTS.md §6). ERR-trap rule: `--config-check` exits 1 on every node that
+# still needs this, so exit codes are read with `|| rc=$?`, never behind `set +e` (#97).
+JOB_TIMEOUTS_FAILED=""
+JOB_TIMEOUTS_ANSWER=""
+# This node's API credentials, not whichever network's the tool would find first.
+export VERDIKTA_CHAINLINK_API_FILE="${VERDIKTA_CHAINLINK_API_FILE:-$HOME/.chainlink-${NETWORK_TYPE}/.api}"
+if [ -f "$UTIL_DIR/apply-job-timeouts.sh" ]; then
+    JOB_CONFIG_PATH="$HOME/.chainlink-${NETWORK_TYPE}/config.toml"
+    JOB_CONFIG_CHECK_RC=0
+    bash "$UTIL_DIR/apply-job-timeouts.sh" --config-check "$JOB_CONFIG_PATH" || JOB_CONFIG_CHECK_RC=$?
+    if [ "$JOB_CONFIG_CHECK_RC" = "1" ]; then
+        echo -e "${BLUE}Code review (stake attestation) needs longer job limits: the job's bridge call and${NC}"
+        echo -e "${BLUE}task at 840 s, the node's run limit at 15 m. Existing jobs are replaced in place with${NC}"
+        echo -e "${BLUE}the same job ids (no on-chain action, no stake moves). Text-mode requests keep their${NC}"
+        echo -e "${BLUE}own limits and just get the longer ceiling.${NC}"
+        if ask_yes_no "Apply the longer job limits?" "y" VA_UPGRADE_JOB_TIMEOUTS y; then
+            JOB_TIMEOUTS_ANSWER=y
+            JOB_CONFIG_RC=0
+            bash "$UTIL_DIR/apply-job-timeouts.sh" --config "$JOB_CONFIG_PATH" || JOB_CONFIG_RC=$?
+            if [ "$JOB_CONFIG_RC" != "0" ]; then
+                echo -e "${YELLOW}Warning: could not set MaxRunDuration in $JOB_CONFIG_PATH (exit $JOB_CONFIG_RC).${NC}"
+                JOB_TIMEOUTS_FAILED="MaxRunDuration was not set in $JOB_CONFIG_PATH (exit $JOB_CONFIG_RC); run $TARGET_DIR/apply-job-timeouts.sh --config $JOB_CONFIG_PATH and restart the arbiter"
+            fi
+        else
+            JOB_TIMEOUTS_ANSWER=n
+        fi
+    fi
+fi
+
 # Check and optionally regenerate Chainlink configuration
 echo -e "${BLUE}Checking Chainlink configuration...${NC}"
 
@@ -2422,7 +2606,9 @@ HTTPURL=\"${http_entry}\"
     # Generate what the new config would look like with ALL placeholders populated
     local temp_config=$(mktemp)
     export chain_id network_name tip_cap_default fee_cap_default evm_nodes_block template_file temp_config
-    python3 - << 'PY'
+    # The call site reads this function's exit code, which also turns errexit off in here: each
+    # step that can leave the config half done is checked.
+    if ! python3 - << 'PY'
 import os
 
 template_path = os.environ["template_file"]
@@ -2445,6 +2631,11 @@ for key, value in replacements.items():
 with open(output_path, "w", encoding="utf-8") as f:
     f.write(content)
 PY
+    then
+        echo -e "${YELLOW}Could not render the config template. Keeping the existing Chainlink configuration.${NC}"
+        rm -f "$temp_config"
+        return 1
+    fi
     
     # Create filtered versions for comparison (excluding dynamic/environment-specific lines)
     local current_filtered=$(mktemp)
@@ -2476,11 +2667,19 @@ PY
         if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)" "n" VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG; then
             # Create backup of current config
             local config_backup="${current_config}.backup.$(date +%Y%m%d-%H%M%S)"
-            cp "$current_config" "$config_backup"
+            if ! cp "$current_config" "$config_backup"; then
+                echo -e "${YELLOW}Could not back up $current_config. Keeping the existing Chainlink configuration.${NC}"
+                rm -f "$temp_config" "$current_filtered" "$temp_filtered"
+                return 1
+            fi
             echo -e "${BLUE}Current config backed up to: $config_backup${NC}"
             
             # Replace with new config
-            cp "$temp_config" "$current_config"
+            if ! cp "$temp_config" "$current_config"; then
+                echo -e "${YELLOW}Could not write $current_config. The backup is $config_backup.${NC}"
+                rm -f "$temp_config" "$current_filtered" "$temp_filtered"
+                return 1
+            fi
             echo -e "${GREEN}Chainlink configuration regenerated from template.${NC}"
             echo -e "${YELLOW}Note: You may need to restart the Chainlink node for changes to take effect.${NC}"
         else
@@ -2494,8 +2693,12 @@ PY
     rm -f "$temp_config" "$current_filtered" "$temp_filtered"
 }
 
-# Call the config check function
-check_chainlink_config
+# Call the config check function. Its exit code is read: see check_job_spec_template's call.
+CHAINLINK_CONFIG_RC=0
+check_chainlink_config || CHAINLINK_CONFIG_RC=$?
+if [ "$CHAINLINK_CONFIG_RC" -ne 0 ]; then
+    echo -e "${YELLOW}Warning: the Chainlink configuration check stopped (exit $CHAINLINK_CONFIG_RC). The existing configuration stays.${NC}"
+fi
 
 # P2-A (July 2026 incident): docker log options are fixed at container
 # creation, so containers created by older installers keep an unbounded
@@ -2950,6 +3153,108 @@ if [ -x "$TARGET_DIR/apply-chainlink-loopback.sh" ]; then
     fi
 fi
 
+# Job timeouts, after the restart (design §11). A running job keeps the maxTaskDuration and
+# the bridge timeout it was created with, so each live job is measured here, on every
+# upgrade: one declined now is asked about again next time, which a template diff could not
+# do (the copy above has already replaced the installed template). Stale jobs are replaced
+# under the same ids. It runs after the loopback recreate above, which restarts Chainlink,
+# and at the top level of the script: a function has no ERR trap. ERR-trap rule: `--check`
+# exits 1 on every node that still needs this, so exit codes are read with `|| rc=$?`, never
+# behind `set +e` (#97). A failure ends the upgrade with exit 3 and a last line saying so, as
+# a failed reconfigure does: not measuring is a failure too, or a 300 s job would ride past
+# the canary, whose requests finish well inside it.
+if [ -x "$TARGET_DIR/apply-job-timeouts.sh" ]; then
+    if [ "$SERVICES_STARTED_FOR_DOCTOR" != "1" ]; then
+        echo -e "${BLUE}Job limits: once the arbiter is running, measure them with $TARGET_DIR/apply-job-timeouts.sh --check${NC}"
+        echo -e "${BLUE}and replace any stale job with $TARGET_DIR/apply-job-timeouts.sh --apply${NC}"
+    else
+        JOB_CHECK_RC=0
+        bash "$TARGET_DIR/apply-job-timeouts.sh" --check --wait "${VERDIKTA_JOB_CHECK_WAIT:-180}" || JOB_CHECK_RC=$?
+        case "$JOB_CHECK_RC" in
+            0) ;;
+            1)
+                if [ -z "$JOB_TIMEOUTS_ANSWER" ]; then
+                    if ask_yes_no "Replace the stale jobs with the longer limits, keeping their job ids?" "y" VA_UPGRADE_JOB_TIMEOUTS y; then
+                        JOB_TIMEOUTS_ANSWER=y
+                    else
+                        JOB_TIMEOUTS_ANSWER=n
+                    fi
+                fi
+                if [ "$JOB_TIMEOUTS_ANSWER" = "y" ]; then
+                    JOB_APPLY_RC=0
+                    bash "$TARGET_DIR/apply-job-timeouts.sh" --apply || JOB_APPLY_RC=$?
+                    case "$JOB_APPLY_RC" in
+                        0)
+                            JOB_RECHECK_RC=0
+                            bash "$TARGET_DIR/apply-job-timeouts.sh" --check || JOB_RECHECK_RC=$?
+                            if [ "$JOB_RECHECK_RC" != "0" ]; then
+                                JOB_TIMEOUTS_FAILED="${JOB_TIMEOUTS_FAILED:-the node still measures below the longer limits (exit $JOB_RECHECK_RC); run $TARGET_DIR/apply-job-timeouts.sh --check}"
+                            fi
+                            ;;
+                        3)
+                            JOB_TIMEOUTS_FAILED="a job was removed and could not be restored (apply-job-timeouts.sh exit 3): its old spec is named above; POST it to the node, or that job id goes unanswered"
+                            ;;
+                        *)
+                            JOB_TIMEOUTS_FAILED="the jobs were not all replaced (apply-job-timeouts.sh exit $JOB_APPLY_RC); the rest keep their old limits. Run $TARGET_DIR/apply-job-timeouts.sh --apply"
+                            ;;
+                    esac
+                else
+                    echo -e "${BLUE}Skipped: the node keeps its old job limits, which a code-review request does not fit. The next${NC}"
+                    echo -e "${BLUE}upgrade asks again; do it any time with: $TARGET_DIR/apply-job-timeouts.sh --apply${NC}"
+                fi
+                ;;
+            *)
+                JOB_TIMEOUTS_FAILED="${JOB_TIMEOUTS_FAILED:-the job limits could not be measured (apply-job-timeouts.sh exit $JOB_CHECK_RC); run $TARGET_DIR/apply-job-timeouts.sh --check once the node answers}"
+                ;;
+        esac
+    fi
+fi
+
+# The code-review sandbox, after the restart: gVisor, a Docker daemon of its own, a fixed-size disk,
+# warm images and the conformance self-test (design §16). It takes minutes and the network, and none
+# of it stops the arbiter, so a node is back up first. It never restarts the arbiter's Docker. It is
+# the operator's call: interactive default no, and an unattended upgrade installs nothing unless
+# VA_UPGRADE_CODE_REVIEW_SANDBOX=y. On a node that has it (status 2: a new runner, gVisor or common
+# release has no pass yet, and the runner refuses claims until it does) the refresh needs no question.
+# A failure leaves the arbiter as it is, says what to run and ends the upgrade with exit 3, as a job
+# limit that did not land does. ERR-trap rule:
+# `status --quiet` exits non-zero on every node that has not opted in, so exit codes are read with
+# `|| rc=$?`, never behind `set +e` (#97).
+if [ -x "$TARGET_DIR/code-review-sandbox.sh" ]; then
+    CODE_REVIEW_STATUS_RC=0
+    bash "$TARGET_DIR/code-review-sandbox.sh" status --quiet || CODE_REVIEW_STATUS_RC=$?
+    CODE_REVIEW_WANTED=0
+    case "$CODE_REVIEW_STATUS_RC" in
+        0|4) ;;
+        2) echo -e "${BLUE}Refreshing the code-review sandbox (no conformance pass for this release yet)...${NC}"
+           CODE_REVIEW_WANTED=1 ;;
+        *)
+            echo
+            echo -e "${BLUE}Code-review sandbox (optional; needed only to judge stake claims): gVisor, a separate${NC}"
+            echo -e "${BLUE}Docker daemon on a fixed-size ${VA_CODE_REVIEW_DISK_GB:-40} GB disk image, the code runner, and a conformance${NC}"
+            echo -e "${BLUE}self-test. It takes about +2 vCPU and +4 GB of RAM while judging. It needs sudo, does not${NC}"
+            echo -e "${BLUE}restart Docker and does not touch Chainlink or Postgres. Remove it with:${NC}"
+            echo -e "${BLUE}  $TARGET_DIR/code-review-sandbox.sh disable --purge${NC}"
+            echo -e "${BLUE}Unattended runs skip this unless VA_UPGRADE_CODE_REVIEW_SANDBOX=y.${NC}"
+            if ask_yes_no "Install the code-review sandbox?" "n" VA_UPGRADE_CODE_REVIEW_SANDBOX "n"; then
+                CODE_REVIEW_WANTED=1
+            else
+                echo -e "${BLUE}Skipped. Install it later with: $TARGET_DIR/code-review-sandbox.sh enable${NC}"
+            fi
+            ;;
+    esac
+    if [ "$CODE_REVIEW_WANTED" = "1" ]; then
+        CODE_REVIEW_ENABLE_RC=0
+        bash "$TARGET_DIR/code-review-sandbox.sh" enable || CODE_REVIEW_ENABLE_RC=$?
+        if [ "$CODE_REVIEW_ENABLE_RC" != "0" ]; then
+            echo -e "${YELLOW}Warning: the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC). The arbiter is not affected.${NC}"
+            CODE_REVIEW_SANDBOX_FAILED="the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC); after fixing the cause run $TARGET_DIR/code-review-sandbox.sh enable"
+        else
+            CODE_REVIEW_SANDBOX_FAILED=""
+        fi
+    fi
+fi
+
 # Post-upgrade health check. Best-effort, advisory only.
 # Skipped if services weren't (re)started — otherwise every service check
 # would FAIL purely because nothing is listening.
@@ -3035,6 +3340,26 @@ echo
 echo "For troubleshooting, consult the documentation in the installer/docs directory."
 echo
 echo "Thank you for using Verdikta Arbiter Node!"
+
+# Job timeouts that were asked for and did not land, and a job regeneration that
+# stopped part way: the upgrade itself is done, so exit 3, as below, with the reason
+# near the last line.
+JOB_FOLLOWUP_FAILED=0
+if [ -n "${JOB_REGEN_FAILED:-}" ]; then
+    echo -e "${RED}JOB REGENERATION FAILED: ${JOB_REGEN_FAILED}${NC}"
+    JOB_FOLLOWUP_FAILED=1
+fi
+if [ -n "${JOB_TIMEOUTS_FAILED:-}" ]; then
+    echo -e "${RED}JOB TIMEOUTS FAILED: ${JOB_TIMEOUTS_FAILED}${NC}"
+    JOB_FOLLOWUP_FAILED=1
+fi
+if [ -n "${CODE_REVIEW_SANDBOX_FAILED:-}" ]; then
+    echo -e "${RED}CODE-REVIEW SANDBOX FAILED: ${CODE_REVIEW_SANDBOX_FAILED}${NC}"
+    JOB_FOLLOWUP_FAILED=1
+fi
+if [ "$JOB_FOLLOWUP_FAILED" -eq 1 ] && [ "${RECONF_FAILED:-0}" -ne 1 ]; then
+    exit 3
+fi
 
 # A cancelled or failed job reconfiguration is not a successful upgrade for
 # whoever asked for the count change: say so on the last line and exit 3.

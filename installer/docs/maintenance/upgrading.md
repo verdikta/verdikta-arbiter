@@ -166,6 +166,52 @@ If you accept and an aggregator registration exists, it attempts:
 2. Regenerate jobs (`configure-node.sh`)
 3. Re-register oracle with new job IDs
 
+A failure at any of these no longer ends the upgrade with the node down. The upgrade
+finishes, restarts the services, and exits 3 with `JOB REGENERATION FAILED:` naming the step.
+A template that differs only in the two job timeouts does not ask at all (next section).
+
+### Job timeouts (840 s)
+
+A code-review (stake attestation) evaluation runs up to 780 s behind the bridge, so three
+limits must allow it: each job's `maxTaskDuration` and bridge `timeout`, and the node's
+`[JobPipeline] MaxRunDuration` (Chainlink 2.23.0's default of 10 minutes ends a run at 600 s).
+A running job keeps the values it was created with, and the node reads `config.toml` when it
+starts, so a new template reaches neither. The upgrade therefore:
+
+1. Sets `MaxRunDuration` in `~/.chainlink-<network>/config.toml`, that one key, before it
+   restarts the arbiter. The old file is kept as `config.toml.backup.<time>`.
+2. After the restart, measures each live job and the node's effective config, on every
+   upgrade: one you declined is asked about again next time.
+3. Replaces each stale job with `PUT /v2/jobs/:id`, **keeping its job id**: nothing happens
+   on-chain and no stake moves. Only the two timeouts change. The old specs are saved under
+   `<install-dir>/chainlink-node/jobs/before-840s/`. A job that does not come back as it was
+   sent is put back. The job's run history in the Chainlink UI goes with the old job; the
+   logs are untouched.
+
+The question is `VA_UPGRADE_JOB_TIMEOUTS`, default yes, unattended too. If the change cannot
+be applied, or cannot be measured, the upgrade still finishes and exits 3 with
+`JOB TIMEOUTS FAILED:`.
+
+To check or do it by hand:
+
+```bash
+<install-dir>/apply-job-timeouts.sh --check     # 0 fine, 1 stale, 2 could not measure
+<install-dir>/apply-job-timeouts.sh --config ~/.chainlink-<network>/config.toml   # then restart the arbiter
+<install-dir>/apply-job-timeouts.sh --apply
+```
+
+A replaced job answers again a request it answered just before: Chainlink's record of the
+log it consumed goes with the old job, and its log broadcaster still holds the log, up to the
+chain's finality depth back. That costs one evaluation and a commit that reverts, and nothing
+changes on-chain. Right after the upgrade's restart that window is short. If you run
+`--apply` by hand on a busy node, pick a quiet moment.
+
+**What it changes for a text-mode request:** only the ceiling. The EA's and AI Node's own
+limits are the same (`AI_TIMEOUT`, `REQUEST_TIMEOUT_MS`, and the EA's retries). The one thing
+that moves is that an evaluation the bridge used to abandon at 300 s may now answer, up to
+840 s. A commit after its round closed reverts with `AggregationComplete`, which costs that
+oracle's key the gas; one inside a round nobody has finalized is accepted.
+
 ### Optional job/key reconfiguration
 
 If jobs were not already regenerated due to template changes, the script can still optionally re-run full job/key configuration.
@@ -185,7 +231,10 @@ This helps pick up template-level improvements safely.
 During upgrade, the script:
 
 - runs `npm install` in AI Node and External Adapter
-- updates `@verdikta/common` (with version handling via `VERDIKTA_COMMON_VERSION`)
+- updates `@verdikta/common` (with version handling via `VERDIKTA_COMMON_VERSION`);
+  a component whose `package.json` pins one exact release (the stake-attestation
+  prerelease, for example) keeps it whatever `VERDIKTA_COMMON_VERSION` says
+  (`installer/util/common-pin.js`)
 - can auto-integrate ClassID model pool updates into AI Node config
 - can check/download missing Ollama models (optional)
 

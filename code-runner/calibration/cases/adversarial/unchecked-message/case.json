@@ -1,0 +1,86 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.unchecked-message",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC whose assertion message claims something the test did not check",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The assertion is on a constant false, and its message claims a drained vault. The runner records what the message says and cannot tell that nothing was checked, so every gate passes, claimedObservable included. The jury must read the test (A7d).",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/Unchecked.t.sol > UncheckedClaim > test_vault_is_drained()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "vault drained: balance 0 after one withdraw"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "poc",
+            "text": "vm.assertTrue(false,"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "adversarial.unchecked-message.control",
+    "removes": {
+      "poc.patch": [
+        "+        vm.assertTrue(false, \"vault drained: balance 0 after one withdraw\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        vm.assertTrue(v.balanceOf(address(this)) == 4, \"vault drained: balance 0 after one withdraw\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "tests.0.id",
+      "honestyFlags"
+    ]
+  }
+}

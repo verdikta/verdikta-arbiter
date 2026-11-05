@@ -1,0 +1,743 @@
+'use strict';
+
+// Acceptance: every step bounded; at the deadline the container is killed and
+// the run abstains; the result taxonomy decides definitive vs abstain; a
+// maintenance lock refuses runs. These drive the run engine against a fake
+// Docker; test/docker/ runs the same paths against a real daemon.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const { executeRun } = require('../../src/pipeline');
+const { checkSpec } = require('../../src/classLimits');
+const { fakeDocker, healthyDaemon, healthyInfo, runningState, never } = require('../helpers/fakeDocker');
+const { testConfig } = require('../helpers/http');
+const { spec, IMAGE } = require('../helpers/requests');
+
+const silent = { info() {}, warn() {}, error() {}, debug() {} };
+const noAdmission = async () => {};
+
+function limits(over = {}) {
+  const r = checkSpec(spec({ limits: { cpus: 1, memoryMb: 512, buildSeconds: 30, testSeconds: 60, runSeconds: 60, ...over } }));
+  assert.ok(r.ok, JSON.stringify(r.issues));
+  return r.limits;
+}
+
+function run({ docker, steps = [], deadlineMs = 600000, config = testConfig(), signal, admit, lim = limits(), active = new Set(), sandboxes } = {}) {
+  const receivedAt = Date.now();
+  return executeRun({
+    docker, config, limits: lim, image: IMAGE, runId: '0123456789abcdef', steps,
+    receivedAt, deadlineAt: receivedAt + deadlineMs, signal, active, log: silent, ...(admit ? { admit } : {}), ...(sandboxes ? { sandboxes } : {})
+  }).then((result) => ({ result, active }));
+}
+
+function removed(docker) {
+  return docker.callsOf('rm').flatMap((c) => c.args.slice(3));
+}
+
+test('no steps: the sandbox starts and is torn down, the run is definitive', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const { result, active } = await run({ docker });
+  assert.equal(result.outcome, 'definitive');
+  assert.equal(result.abstain, null);
+  assert.deepEqual(result.steps, []);
+  const name = docker.callsOf('create')[0].args[docker.callsOf('create')[0].args.indexOf('--name') + 1];
+  assert.match(name, /^vcr-0123456789abcdef-1$/);
+  assert.ok(removed(docker).includes(name));
+  assert.equal(active.size, 0);
+});
+
+test('a definitive step is recorded with its exit code, capped logs and gates', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: () => ({ exitCode: 3, stdout: 'a'.repeat(100 * 1024), stderr: 'warn\n' })
+  }));
+  const steps = [async (ctx) => {
+    const r = await ctx.exec(['forge', 'build'], { name: 'build', timeoutMs: 5000 });
+    assert.equal(r.exitCode, 3);
+    ctx.gate('build', r.exitCode === 0 ? 'pass' : 'fail', 'exit_code', `exit ${r.exitCode}`);
+  }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.outcome, 'definitive');
+  assert.equal(result.steps.length, 1);
+  const s = result.steps[0];
+  assert.equal(s.name, 'build');
+  assert.equal(s.outcome, 'definitive');
+  assert.equal(s.exitCode, 3);
+  assert.equal(s.stdout.totalBytes, 100 * 1024);
+  assert.equal(s.stdout.omittedBytes, 100 * 1024 - 64 * 1024);
+  assert.equal(s.stderr.text, 'warn\n');
+  assert.deepEqual(result.gates, { build: { status: 'fail', basis: 'exit_code', detail: 'exit 3' } });
+  const exec = docker.callsOf('exec').find((c) => c.args.includes('forge'));
+  assert.deepEqual(exec.args.slice(-2), ['forge', 'build']);
+});
+
+test('admission: the maintenance lock refuses before any Docker call', async () => {
+  const config = testConfig();
+  fs.mkdirSync(path.dirname(config.maintenanceFile), { recursive: true });
+  fs.writeFileSync(config.maintenanceFile, '');
+  const docker = fakeDocker(healthyDaemon());
+  const { result } = await run({ docker, config });
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.cause, 'admission_refused');
+  assert.match(result.abstain.detail, /maintenance/);
+  assert.equal(docker.calls.length, 0);
+});
+
+test('admission: a deadline shorter than runSeconds is refused before any Docker call', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const { result } = await run({ docker, deadlineMs: 30000, lim: limits({ runSeconds: 60 }) });
+  assert.equal(result.abstain.cause, 'admission_refused');
+  assert.match(result.abstain.detail, /deadline/);
+  assert.equal(docker.calls.length, 0);
+});
+
+test('admission: Docker unreachable, or the runtime not registered', async () => {
+  const unreachable = fakeDocker(healthyDaemon({ info: () => ({ exitCode: 1, stderr: 'Cannot connect to the Docker daemon at unix:///x.sock.' }) }));
+  assert.equal((await run({ docker: unreachable })).result.abstain.cause, 'docker_unreachable');
+  const spawnFail = fakeDocker(healthyDaemon({ info: () => ({ spawnError: 'spawn docker ENOENT' }) }));
+  assert.equal((await run({ docker: spawnFail })).result.abstain.cause, 'docker_unreachable');
+  const noRuntime = fakeDocker(healthyDaemon({ info: () => ({ stdout: healthyInfo({ Runtimes: { runc: {} } }) }) }));
+  const config = testConfig({ CODE_RUNNER_RUNTIME: 'runsc' });
+  const r = (await run({ docker: noRuntime, config })).result;
+  assert.equal(r.abstain.cause, 'admission_refused');
+  assert.match(r.abstain.detail, /runsc/);
+  assert.equal(noRuntime.callsOf('create').length, 0);
+});
+
+test('launch failures abstain and leave nothing behind', async () => {
+  const cases = [
+    [() => ({ exitCode: 125, stderr: 'docker: Error response from daemon: No such image: ghcr.io/x@sha256:aa' }), 'image_unavailable'],
+    [() => ({ exitCode: 1, stderr: 'Cannot connect to the Docker daemon at unix:///x.sock.' }), 'docker_unreachable'],
+    [() => ({ exitCode: 125, stderr: 'docker: Error response from daemon: unknown or invalid runtime name: runsc' }), 'docker_error']
+  ];
+  for (const [launch, expected] of cases) {
+    const docker = fakeDocker(healthyDaemon({ create: launch }));
+    const { result, active } = await run({ docker });
+    assert.equal(result.abstain.cause, expected);
+    assert.equal(result.abstain.step, 'launch');
+    assert.ok(removed(docker).includes('vcr-0123456789abcdef-1'), 'a half-created container is removed');
+    assert.equal(active.size, 0);
+  }
+});
+
+test('a step past its own wall-clock limit kills the container and abstains', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: never }));
+  const started = Date.now();
+  const steps = [async (ctx) => { await ctx.exec(['sleep', '1000'], { name: 'poc', timeoutMs: 100 }); }];
+  const { result, active } = await run({ docker, steps });
+  assert.ok(Date.now() - started < 3000);
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.cause, 'step_timeout');
+  assert.equal(result.abstain.step, 'poc');
+  assert.equal(result.steps[0].outcome, 'abstain');
+  assert.ok(removed(docker).includes('vcr-0123456789abcdef-1'));
+  assert.equal(active.size, 0);
+});
+
+test('the run budget (runSeconds) bounds steps that set no limit of their own', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: never }));
+  const lim = limits({ runSeconds: 1, testSeconds: 1 });
+  const steps = [async (ctx) => { await ctx.exec(['sleep', '1000'], { name: 'suite' }); }];
+  const { result } = await run({ docker, steps, lim, deadlineMs: 60000 });
+  assert.equal(result.abstain.cause, 'step_timeout');
+  assert.match(result.abstain.detail, /runSeconds/);
+});
+
+test('at the deadline the container is killed and the run abstains', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: never }));
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const started = Date.now();
+  const steps = [async (ctx) => { await ctx.exec(['sleep', '1000'], { name: 'poc', timeoutMs: 60000 }); }];
+  const { result, active } = await run({ docker, steps, config, deadlineMs: 300, admit: noAdmission });
+  assert.ok(Date.now() - started < 3000);
+  assert.equal(result.abstain.cause, 'deadline');
+  assert.ok(removed(docker).includes('vcr-0123456789abcdef-1'));
+  assert.equal(active.size, 0);
+});
+
+test('the deadline also stops a step that is busy outside Docker', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const steps = [async () => { await never(); }];
+  const started = Date.now();
+  const { result } = await run({ docker, steps, config, deadlineMs: 200, admit: noAdmission });
+  assert.ok(Date.now() - started < 3000);
+  assert.equal(result.abstain.cause, 'deadline');
+  assert.ok(removed(docker).includes('vcr-0123456789abcdef-1'));
+});
+
+test('a step that starts after the deadline never reaches Docker', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const steps = [
+    async () => { await new Promise((r) => setTimeout(r, 300)); },
+    async (ctx) => { await ctx.exec(['true'], { name: 'late' }); }
+  ];
+  const { result } = await run({ docker, steps, config, deadlineMs: 100, admit: noAdmission });
+  assert.equal(result.abstain.cause, 'deadline');
+  assert.equal(docker.callsOf('exec').filter((c) => c.args.includes('true')).length, 0);
+});
+
+test('the reserve keeps time for teardown and the response', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: never }));
+  const config = testConfig();
+  config.deadlineReserveMs = 400;
+  const steps = [async (ctx) => { await ctx.exec(['sleep', '1000'], { name: 'poc', timeoutMs: 60000 }); }];
+  const started = Date.now();
+  const { result } = await run({ docker, steps, config, deadlineMs: 600, admit: noAdmission });
+  const elapsed = Date.now() - started;
+  assert.equal(result.abstain.cause, 'deadline');
+  assert.ok(elapsed < 590, `stopped at ${elapsed} ms`);
+});
+
+test('cancellation (the caller went away) kills the container', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: never }));
+  const ac = new AbortController();
+  setTimeout(() => ac.abort(), 100);
+  const steps = [async (ctx) => { await ctx.exec(['sleep', '1000'], { name: 'poc' }); }];
+  const { result, active } = await run({ docker, steps, signal: ac.signal });
+  assert.equal(result.abstain.cause, 'cancelled');
+  assert.ok(removed(docker).includes('vcr-0123456789abcdef-1'));
+  assert.equal(active.size, 0);
+});
+
+test('a bug in a step abstains (runner_error) and still tears down', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const steps = [async () => { throw new TypeError('oops'); }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.abstain.cause, 'runner_error');
+  assert.ok(removed(docker).includes('vcr-0123456789abcdef-1'));
+});
+
+test('after each step the sandbox is inspected: an OOM behind a clean exit abstains', async () => {
+  let reads = 0;
+  const docker = fakeDocker(healthyDaemon({
+    step: () => ({ exitCode: 1, stderr: 'solc: Killed' }),
+    counters: () => {
+      reads += 1;
+      const n = reads > 1 ? 1 : 0;
+      return { stdout: `==> /sys/fs/cgroup/memory.events <==\noom_kill ${n}\n\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n` };
+    }
+  }));
+  const steps = [async (ctx) => { await ctx.exec(['forge', 'build'], { name: 'build' }); }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.abstain.cause, 'oom');
+  assert.equal(result.abstain.step, 'build');
+});
+
+test('a sandbox that died during the step abstains', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: () => ({ exitCode: 137 }),
+    inspect: () => ({ stdout: runningState({ Running: false, Status: 'exited', ExitCode: 137 }) })
+  }));
+  const steps = [async (ctx) => { await ctx.exec(['forge', 'test'], { name: 'poc' }); }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.abstain.cause, 'sandbox_died');
+});
+
+test('readFile reads through a cap with cat inside the container', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: (args) => (args.includes('cat') ? { stdout: 'x'.repeat(5000) } : { exitCode: 0 }) }));
+  let got;
+  const steps = [async (ctx) => { got = await ctx.readFile('/tmp/junit.xml', { maxBytes: 1000 }); }];
+  const { result } = await run({ docker, steps });
+  assert.equal(result.outcome, 'definitive');
+  assert.equal(got.overLimit, true);
+  assert.equal(got.bytes.length, 1000);
+  const cat = docker.callsOf('exec').find((c) => c.args.includes('cat'));
+  assert.deepEqual(cat.args.slice(-3), ['cat', '--', '/tmp/junit.xml']);
+  const relative = await run({ docker, steps: [async (ctx) => { await ctx.readFile('relative/path', { maxBytes: 10 }); }] });
+  assert.equal(relative.result.abstain.cause, 'runner_error');
+});
+
+test('a second sandbox (the fix check) gets the same flags and is torn down too', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const steps = [async (ctx) => {
+    const fix = await ctx.openSandbox('fix');
+    await fix.exec(['true'], { name: 'fix-build' });
+  }];
+  // A3a: the run is admitted for two sandboxes (the fix check's beside the PoC's).
+  const { result, active } = await run({ docker, steps, sandboxes: 2 });
+  assert.equal(result.outcome, 'definitive');
+  const launches = docker.callsOf('create');
+  assert.equal(launches.length, 2);
+  const flags = (a) => a.filter((x) => x.startsWith('--'));
+  assert.deepEqual(flags(launches[1].args), flags(launches[0].args));
+  const names = launches.map((c) => c.args[c.args.indexOf('--name') + 1]);
+  assert.deepEqual(names, ['vcr-0123456789abcdef-1', 'vcr-0123456789abcdef-2']);
+  for (const n of names) assert.ok(removed(docker).includes(n), n);
+  assert.equal(active.size, 0);
+});
+
+test('A3a R1-F4: a step that fails while another sandbox is still launching: the teardown waits for that launch and removes its container', async () => {
+  const events = [];
+  const docker = fakeDocker(healthyDaemon({
+    create: (args) => {
+      if (!args.includes('vcr-0123456789abcdef-2')) return { stdout: 'c1\n' };
+      return new Promise((resolve) => setTimeout(() => { events.push('create 2 done'); resolve({ stdout: 'c2\n' }); }, 300));
+    },
+    rm: (args) => { events.push(`rm ${args.slice(3).join(' ')}`); return { stdout: '' }; }
+  }));
+  const { Abstain } = require('../../src/result');
+  const steps = [async (ctx) => {
+    ctx.openSandbox().catch(() => {});
+    await new Promise((r) => setTimeout(r, 20));
+    throw new Abstain('docker_error', 'the PoC\'s step failed', { step: 'poc' });
+  }];
+  const { result, active } = await run({ docker, steps, sandboxes: 2 });
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.detail, 'the PoC\'s step failed');
+  const created = events.indexOf('create 2 done');
+  const removed2 = events.findIndex((e) => e.startsWith('rm ') && e.includes('vcr-0123456789abcdef-2'));
+  assert.ok(created >= 0, JSON.stringify(events));
+  assert.ok(removed2 > created, `the second container is removed after its create returned: ${JSON.stringify(events)}`);
+  assert.equal(active.size, 0);
+});
+
+test('A3a R1-F4 (round 2): a launch that outlives the answer\'s deadline is still removed once it exists, and the reservations are held until then', async () => {
+  const events = [];
+  const docker = fakeDocker(healthyDaemon({
+    create: (args) => {
+      if (!args.includes('vcr-0123456789abcdef-2')) return { stdout: 'c1\n' };
+      return new Promise((resolve) => setTimeout(() => { events.push('create 2 done'); resolve({ stdout: 'c2\n' }); }, 1500));
+    },
+    rm: (args) => { events.push(`rm ${args.slice(3).join(' ')}`); return { stdout: '' }; }
+  }));
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const { Abstain } = require('../../src/result');
+  const steps = [async (ctx) => {
+    ctx.openSandbox().catch(() => {});
+    await new Promise((r) => setTimeout(r, 20));
+    throw new Abstain('docker_error', 'the PoC\'s step failed', { step: 'poc' });
+  }];
+  let released = null;
+  const admit = async () => ({ release: () => { released = events.length; events.push('released'); } });
+  const t0 = Date.now();
+  const { result } = await run({ docker, steps, sandboxes: 2, deadlineMs: 600, config, admit });
+  assert.ok(Date.now() - t0 < 1400, 'the answer does not wait past the deadline');
+  assert.equal(result.outcome, 'abstain');
+  await new Promise((r) => setTimeout(r, 2500));
+  const created = events.indexOf('create 2 done');
+  const removed2 = events.lastIndexOf(events.filter((e) => e.startsWith('rm ') && e.includes('vcr-0123456789abcdef-2')).pop());
+  assert.ok(created >= 0 && removed2 > created, `removed after it was created: ${JSON.stringify(events)}`);
+  assert.ok(released !== null && released > removed2, `the reservations are released after that removal: ${JSON.stringify(events)}`);
+});
+
+test('the keepalive and the GC label outlive the deadline only by a margin', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const before = Math.floor(Date.now() / 1000);
+  await run({ docker, deadlineMs: 600000 });
+  const args = docker.callsOf('create')[0].args;
+  const keepalive = Number(args[args.length - 1]);
+  assert.ok(keepalive >= 600 && keepalive <= 660, `keepalive ${keepalive}`);
+  const expires = Number(args.find((a) => a.startsWith('verdikta.code-runner.expires=')).split('=')[1]);
+  assert.ok(expires >= before + 600 && expires <= before + 661, `expires ${expires - before}`);
+});
+
+test('claim content enters the sandbox on stdin, never through a host file', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const steps = [async (ctx) => { await ctx.exec(['git', 'apply', '-'], { name: 'apply', stdin: Buffer.from('diff --git a/x b/x\n') }); }];
+  await run({ docker, steps });
+  const apply = docker.callsOf('exec').find((c) => c.args.includes('apply'));
+  assert.ok(apply.args.includes('--interactive'));
+  assert.equal(apply.stdin.toString(), 'diff --git a/x b/x\n');
+});
+
+test('a removal that hangs does not hold the answer past the deadline', async () => {
+  const docker = fakeDocker(healthyDaemon({
+    step: never,
+    rm: () => new Promise((resolve) => setTimeout(() => resolve({}), 3000))
+  }));
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const active = new Set();
+  const started = Date.now();
+  const steps = [async (ctx) => { await ctx.exec(['sleep', '1000'], { name: 'poc', timeoutMs: 60000 }); }];
+  const { result } = await run({ docker, steps, config, deadlineMs: 500, admit: noAdmission, active });
+  const elapsed = Date.now() - started;
+  assert.equal(result.abstain.cause, 'deadline');
+  assert.ok(elapsed < 1500, `answered after ${elapsed} ms`);
+  // The removal carries on; the live-run set keeps the name until it is done.
+  assert.ok(active.has('vcr-0123456789abcdef-1'));
+});
+
+test('a definitive run whose sandbox is still there at the deadline abstains', async () => {
+  const docker = fakeDocker(healthyDaemon({ rm: () => new Promise((resolve) => setTimeout(() => resolve({}), 3000)) }));
+  const config = testConfig();
+  config.deadlineReserveMs = 900;
+  const started = Date.now();
+  const { result } = await run({ docker, config, deadlineMs: 1100, lim: limits({ runSeconds: 1, testSeconds: 1 }), admit: noAdmission });
+  const elapsed = Date.now() - started;
+  assert.ok(elapsed < 1600, `answered after ${elapsed} ms, past the 1100 ms deadline`);
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.equal(result.abstain.step, 'teardown');
+});
+
+test('a definitive run whose sandbox cannot be removed abstains', async () => {
+  const docker = fakeDocker(healthyDaemon({ rm: () => ({ exitCode: 1, stderr: 'Error response from daemon: removal of container vcr-0123456789abcdef-1 is already in progress' }) }));
+  const { result } = await run({ docker });
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.equal(result.abstain.step, 'teardown');
+});
+
+test('an image that declares volumes is a requester error; it is removed with its volumes and never started', async () => {
+  const docker = fakeDocker(healthyDaemon({ mounts: () => ({ stdout: '[{"Type":"volume","Destination":"/var/lib/data"}]' }) }));
+  const { result, active } = await run({ docker });
+  assert.equal(result.outcome, 'requester_error');
+  assert.equal(result.issues[0].code, 'IMAGE_DECLARES_VOLUMES');
+  assert.equal(docker.callsOf('start').length, 0);
+  assert.deepEqual(docker.callsOf('rm')[0].args, ['rm', '--force', '--volumes', 'vcr-0123456789abcdef-1']);
+  assert.equal(active.size, 0);
+});
+
+test('the platform is the class platform, passed to docker create', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const { result } = await run({ docker });
+  const args = docker.callsOf('create')[0].args;
+  assert.equal(args[args.indexOf('--platform') + 1], 'linux/amd64');
+  assert.equal(result.platform, 'linux/amd64');
+});
+
+test('a run-level kill answers by the deadline even when the step never returns', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const started = Date.now();
+  const { result } = await run({
+    docker, config, deadlineMs: 1100, lim: limits({ runSeconds: 1, testSeconds: 1 }), admit: noAdmission,
+    steps: [async () => { await never(); }]
+  });
+  const elapsed = Date.now() - started;
+  assert.equal(result.abstain.cause, 'step_timeout');
+  assert.ok(elapsed < 1400, `answered after ${elapsed} ms, past the 1100 ms deadline`);
+});
+
+
+const SPAWN_FAILED = 'OCI runtime exec failed: exec failed: unable to start container process: error executing setns process: exit status 1; runc init error(s): nsexec-0[3524]: unable to spawn stage-1: Resource temporarily unavailable\r\n';
+const COUNTERS_V2 = '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n==> /sys/fs/cgroup/pids.events <==\nmax 0\n';
+
+function withProbes(step, after, extra = {}) {
+  let probes = 0;
+  return fakeDocker({
+    ...healthyDaemon({
+      step,
+      // The probe at launch works; `after` answers the one after the step.
+      counters: (...a) => { probes += 1; return probes === 1 ? { stdout: COUNTERS_V2 } : after(...a); }
+    }),
+    ...extra
+  });
+}
+
+const buildStep = [async (ctx) => {
+  const r = await ctx.exec(['forge', 'build'], { name: 'build' });
+  ctx.gate('build', r.exitCode === 0 ? 'pass' : 'fail', 'exit_code');
+}];
+
+test('every exec goes through the launcher with a fresh nonce, and the start line is not the program\'s output', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: () => ({ exitCode: 0, stdout: 'built\n' }) }));
+  let record;
+  const { result } = await run({ docker, steps: [async (ctx) => {
+    record = await ctx.exec(['forge', 'build'], { name: 'build' });
+    await ctx.exec(['forge', 'build'], { name: 'again' });
+  }] });
+  assert.equal(result.outcome, 'definitive');
+  assert.equal(record.stdout.text, 'built\n');
+  assert.equal(record.started, true);
+  const execs = docker.callsOf('exec').map((c) => c.args);
+  for (const args of execs) {
+    const i = args.indexOf('/bin/sh');
+    assert.deepEqual(args.slice(i, i + 4), ['/bin/sh', '-c', 'printf "vcr-start %s\\n" "$1" && shift && exec "$@"', 'vcr-launch'], args.join(' '));
+    assert.match(args[i + 4], /^[0-9a-f]{32}$/);
+  }
+  const nonces = execs.map((a) => a[a.indexOf('vcr-launch') + 1]);
+  assert.equal(new Set(nonces).size, nonces.length, 'a new nonce for every exec');
+  const steps = execs.filter((a) => a.includes('forge'));
+  assert.deepEqual(steps[0].slice(-2), ['forge', 'build'], 'the step argv follows the nonce unchanged');
+});
+
+test('R4-F1 form 1: a spawn failure (exit 128, Docker on stdout) never decides a gate', async () => {
+  const docker = withProbes(() => ({ started: false, exitCode: 128, stdout: SPAWN_FAILED }), () => ({ stdout: COUNTERS_V2 }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.abstain.cause, 'step_not_started');
+  assert.equal(result.abstain.step, 'build');
+  assert.match(result.abstain.detail, /unable to spawn stage-1/);
+  assert.deepEqual(result.gates, {});
+  assert.equal(result.steps[0].started, false);
+});
+
+test('R4-F1 form 2: the runtime helper missing, with a 127, never decides a gate', async () => {
+  const docker = withProbes(() => ({ started: false, exitCode: 127, stderr: 'OCI runtime exec failed: exec failed: unable to start container process: error starting setns process: fork/exec /proc/self/exe: no such file or directory: unknown\r\n' }), () => ({ stdout: COUNTERS_V2 }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.abstain.cause, 'step_not_started');
+  assert.deepEqual(result.gates, {});
+});
+
+test('R4-F1 form 3: a capped read whose bytes are Docker\'s diagnostic is never returned', async () => {
+  const docker = withProbes((args) => (args.includes('cat') ? { started: false, exitCode: 128, stdout: SPAWN_FAILED } : { exitCode: 0 }), () => ({ stdout: COUNTERS_V2 }));
+  let got = null;
+  const { result } = await run({ docker, steps: [async (ctx) => {
+    got = await ctx.readFile('/tmp/junit.xml', { maxBytes: 64 });
+    ctx.gate('integrity', 'fail', 'integrity', 'never reached');
+  }] });
+  assert.equal(got, null);
+  assert.equal(result.abstain.cause, 'step_not_started');
+  assert.equal(result.abstain.step, 'read:/tmp/junit.xml');
+  assert.deepEqual(result.gates, {});
+});
+
+test('Docker printing nothing unusual does not make a step count: the nonce must be there', async () => {
+  const docker = withProbes(() => ({ started: false, exitCode: 1 }), () => ({ stdout: COUNTERS_V2 }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.abstain.cause, 'step_not_started');
+  assert.match(result.abstain.detail, /Docker said: nothing/);
+  assert.deepEqual(result.gates, {});
+});
+
+test('with the nonce, a capped read is the file\'s bytes, the start line stripped', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: (args) => (args.includes('cat') ? { exitCode: 0, stdout: '<testsuites>' + 'x'.repeat(5000) } : { exitCode: 0 }) }));
+  let got;
+  const { result } = await run({ docker, steps: [async (ctx) => { got = await ctx.readFile('/tmp/junit.xml', { maxBytes: 12 }); }] });
+  assert.equal(result.outcome, 'definitive');
+  assert.equal(got.bytes.toString(), '<testsuites>');
+  assert.equal(got.overLimit, true);
+});
+
+test('the image\'s own answer: the launcher started and exec found no program (127) is definitive', async () => {
+  const docker = fakeDocker(healthyDaemon({ step: () => ({ exitCode: 127, stderr: 'vcr-launch: 1: exec: forge: not found\n' }) }));
+  const { result } = await run({ docker, steps: buildStep });
+  assert.equal(result.outcome, 'definitive');
+  assert.deepEqual(result.gates.build, { status: 'fail', basis: 'exit_code', detail: null });
+});
+
+test('a probe that does not start after a step: pids_limit when the pid table is full, docker_error otherwise', async () => {
+  const notStarted = () => ({ started: false, exitCode: 128, stdout: SPAWN_FAILED });
+  const full = withProbes(() => ({ exitCode: 2, stderr: 'sh: 0: Cannot fork\n' }), notStarted, { stats: () => ({ stdout: '4095\n' }) });
+  const r1 = (await run({ docker: full, steps: buildStep })).result;
+  assert.equal(r1.abstain.cause, 'pids_limit');
+  assert.match(r1.steps[0].probe, /did not start/);
+  assert.deepEqual(full.callsOf('stats')[0].args, ['stats', '--no-stream', '--format', '{{.PIDs}}', 'vcr-0123456789abcdef-1']);
+  const room = withProbes(() => ({ exitCode: 0 }), notStarted, { stats: () => ({ stdout: '12\n' }) });
+  assert.equal((await run({ docker: room, steps: buildStep })).result.abstain.cause, 'docker_error');
+});
+
+test('a probe that started but did not finish cleanly is not a pass', async () => {
+  const cases = [
+    // Exit 4: PROBE_SCRIPT found a counter file it cannot read (sandbox.docker.test.js runs it for real).
+    [() => ({ exitCode: 4, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n' }), 'docker_error'],
+    [() => ({ exitCode: 3, stdout: '==> /sys/fs/cgroup/memory.events <==\noom_kill 0\n' }), 'docker_error'],
+    [() => ({ exitCode: 137 }), 'docker_error'],
+    [() => ({ spawnError: 'spawn docker ENOENT' }), 'docker_unreachable']
+  ];
+  for (const [after, expected] of cases) {
+    const docker = withProbes(() => ({ exitCode: 1 }), after);
+    const { result } = await run({ docker, steps: buildStep });
+    assert.equal(result.abstain.cause, expected);
+    assert.equal(result.abstain.step, 'build');
+  }
+});
+
+test('counter files that do not exist (gVisor, or the other cgroup version) are not a problem', async () => {
+  for (const out of ['', COUNTERS_V2]) {
+    const docker = withProbes(() => ({ exitCode: 1 }), () => ({ exitCode: 0, stdout: out }));
+    const { result } = await run({ docker, steps: buildStep });
+    assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+    assert.equal(result.gates.build.status, 'fail');
+  }
+});
+
+test('at launch: an image whose launcher the sandbox user could replace is the requester\'s error', async () => {
+  const docker = fakeDocker(healthyDaemon({ launcherCheck: () => ({ exitCode: 1 }) }));
+  const { result } = await run({ docker });
+  const checkArgs = docker.callsOf('exec').find((c) => c.args.includes('vcr-launcher-check')).args;
+  assert.deepEqual(checkArgs.slice(-2), ['vcr-launcher-check', '/bin/sh'], 'the check is given the launcher\'s path');
+  assert.equal(docker.callsOf('start').length, 1);
+  assert.equal(result.outcome, 'requester_error');
+  assert.equal(result.issues[0].code, 'IMAGE_LAUNCHER_WRITABLE');
+  const notStarted = fakeDocker(healthyDaemon({ launcherCheck: () => ({ started: false, exitCode: 126, stderr: 'OCI runtime exec failed: exec: "/bin/sh": stat /bin/sh: no such file or directory' }) }));
+  const r2 = (await run({ docker: notStarted })).result;
+  assert.equal(r2.abstain.cause, 'step_not_started');
+  assert.equal(r2.abstain.step, 'launch');
+  // A check that cannot be made (exit 2: a test the shell lacks) abstains, it does not pass.
+  const unsure = fakeDocker(healthyDaemon({ launcherCheck: () => ({ exitCode: 2 }) }));
+  assert.equal((await run({ docker: unsure })).result.abstain.cause, 'docker_error');
+});
+
+test('a sandbox whose root the daemon did not make read-only abstains before anything runs', async () => {
+  const docker = fakeDocker(healthyDaemon({ mounts: () => ({ stdout: '{"mounts":[],"readOnly":false}' }) }));
+  const { result } = await run({ docker });
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.match(result.abstain.detail, /read-only/);
+  assert.equal(docker.callsOf('start').length, 0);
+});
+
+// ---- A1b: slots and memory (the admission ticket), and the image ----------
+
+/** An image cache stand-in that records what it was asked and when. */
+function fakeImages(events, { acquire } = {}) {
+  const asked = [];
+  return {
+    asked,
+    async acquire(o) {
+      asked.push(o);
+      events.push('acquire');
+      if (acquire) await acquire(o);
+      return { ref: o.image, cache: 'pulled', durationMs: 7, release: () => events.push('release image') };
+    }
+  };
+}
+
+function ticketAdmit(events, { fail } = {}) {
+  return async () => {
+    events.push('admit');
+    if (fail) throw fail;
+    return { release: () => events.push('release slot') };
+  };
+}
+
+function tracingDaemon(events, over = {}) {
+  const h = healthyDaemon(over);
+  return fakeDocker({
+    ...h,
+    create: (...a) => { events.push('create'); return h.create(...a); },
+    rm: (...a) => { events.push('rm'); return h.rm(...a); }
+  });
+}
+
+test('A1b: the image is acquired after admission and before any sandbox, and released with the slot only once the sandbox is gone', async () => {
+  const events = [];
+  const docker = tracingDaemon(events);
+  const images = fakeImages(events);
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1400000000
+  });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+  assert.deepEqual(events.slice(0, 3), ['admit', 'acquire', 'create']);
+  const lastRm = events.lastIndexOf('rm');
+  assert.ok(events.indexOf('release image') > lastRm && events.indexOf('release slot') > lastRm, events.join(', '));
+  assert.equal(events.filter((e) => e.startsWith('release')).length, 2);
+  // What the cache is asked for: the spec's image and the attestation's, the platform that runs,
+  // the attested size and a window that leaves runSeconds for the run.
+  const [o] = images.asked;
+  assert.equal(o.image, IMAGE);
+  assert.equal(o.attestedImage, IMAGE);
+  assert.equal(o.platform, 'linux/amd64');
+  assert.equal(o.unpackedBytes, 1400000000);
+  assert.ok(o.windowMs <= 600000 - 5000 - 60000 && o.windowMs > 600000 - 5000 - 60000 - 5000, String(o.windowMs));
+  assert.deepEqual(result.image, { ref: IMAGE, cache: 'pulled', durationMs: 7 });
+});
+
+test('A1b: an image that cannot be had abstains before any sandbox and frees the slot', async () => {
+  const { Abstain } = require('../../src/result');
+  const events = [];
+  const docker = tracingDaemon(events);
+  const images = fakeImages(events, { acquire: async () => { throw new Abstain('pull_failed', 'connection refused', { step: 'pull' }); } });
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1
+  });
+  assert.equal(result.outcome, 'abstain');
+  assert.deepEqual(result.abstain, { cause: 'pull_failed', step: 'pull', detail: 'connection refused' });
+  assert.deepEqual(events, ['admit', 'acquire', 'release slot']);
+  assert.equal(docker.callsOf('create').length, 0);
+});
+
+test('A1b: a refused admission takes no slot and asks for no image', async () => {
+  const { Abstain } = require('../../src/result');
+  const events = [];
+  const images = fakeImages(events);
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker: tracingDaemon(events), config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events, { fail: new Abstain('admission_refused', 'all 1 execution slots are in use', { step: 'admission' }) }),
+    images, attestedImage: IMAGE, unpackedBytes: 1
+  });
+  assert.equal(result.abstain.cause, 'admission_refused');
+  assert.deepEqual(events, ['admit']);
+});
+
+test('A1b: time spent getting the image that leaves less than runSeconds abstains before any sandbox', async () => {
+  const events = [];
+  const images = fakeImages(events, { acquire: () => new Promise((r) => setTimeout(r, 400)) });
+  const receivedAt = Date.now();
+  const config = testConfig();
+  config.deadlineReserveMs = 0;
+  const result = await executeRun({
+    docker: tracingDaemon(events), config, limits: limits({ runSeconds: 1, testSeconds: 1 }), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 1200, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1
+  });
+  assert.equal(result.abstain.cause, 'admission_refused');
+  assert.match(result.abstain.detail, /deadline/);
+  assert.ok(!events.includes('create'));
+  assert.deepEqual(events.filter((e) => e.startsWith('release')).sort(), ['release image', 'release slot']);
+});
+
+test('R1-F1: a sandbox that could not be removed keeps the slot, the memory and the image held until a retry removes it', async () => {
+  const events = [];
+  let failures = 3;
+  const h = healthyDaemon();
+  const docker = fakeDocker({
+    ...h,
+    rm: (...a) => {
+      events.push('rm');
+      if (failures > 0) {
+        failures -= 1;
+        return { exitCode: 1, stderr: 'Error response from daemon: driver "overlay2" failed to remove root filesystem' };
+      }
+      return h.rm(...a);
+    }
+  });
+  const images = fakeImages(events);
+  const receivedAt = Date.now();
+  const result = await executeRun({
+    docker, config: testConfig(), limits: limits(), image: IMAGE, runId: '0123456789abcdef', steps: [],
+    receivedAt, deadlineAt: receivedAt + 600000, active: new Set(), log: silent,
+    admit: ticketAdmit(events), images, attestedImage: IMAGE, unpackedBytes: 1, reapFirstMs: 20
+  });
+  assert.equal(result.outcome, 'abstain');
+  assert.equal(result.abstain.cause, 'docker_error');
+  assert.ok(!events.some((e) => e.startsWith('release')), 'nothing is released while the sandbox is still there');
+  const until = Date.now() + 5000;
+  while (events.filter((e) => e.startsWith('release')).length < 2 && Date.now() < until) await new Promise((r) => setTimeout(r, 10));
+  assert.deepEqual(events.slice(-2).sort(), ['release image', 'release slot']);
+  assert.equal(events.filter((e) => e === 'rm').length, 4, 'three failed removals, then one that worked');
+  const lastRm = events.lastIndexOf('rm');
+  assert.ok(events.indexOf('release image') > lastRm && events.indexOf('release slot') > lastRm, events.join(', '));
+});
+
+test('close(): a step removes a sandbox it is done with (the first one too), then opens a fresh one; a removal that fails abstains', async () => {
+  const docker = fakeDocker(healthyDaemon());
+  let second = null;
+  const steps = [async (ctx) => {
+    await ctx.closeSandbox();
+    const sb = await ctx.openSandbox();
+    second = sb.name;
+    const r = await sb.exec(['true'], { name: 'in-second', timeoutMs: 5000 });
+    assert.equal(r.exitCode, 0);
+    await sb.close();
+  }];
+  const { result, active } = await run({ docker, steps });
+  assert.equal(result.outcome, 'definitive', JSON.stringify(result.abstain));
+  assert.equal(second, 'vcr-0123456789abcdef-2');
+  // The first was removed before the second was created.
+  const order = docker.calls.filter((c) => c.args[0] === 'create' || c.args[0] === 'rm').map((c) => `${c.args[0]} ${c.args[0] === 'create' ? c.args[c.args.indexOf('--name') + 1] : c.args[c.args.length - 1]}`);
+  assert.ok(order.indexOf('rm vcr-0123456789abcdef-1') < order.indexOf('create vcr-0123456789abcdef-2'), order.join(', '));
+  assert.equal(active.size, 0);
+
+  const failing = fakeDocker(healthyDaemon({ rm: () => ({ exitCode: 1, stderr: 'Error response from daemon: busy\n' }) }));
+  const { result: r2 } = await run({ docker: failing, steps: [async (ctx) => { await ctx.closeSandbox(); }] });
+  assert.equal(r2.outcome, 'abstain');
+  assert.equal(r2.abstain.cause, 'docker_error');
+  assert.equal(r2.abstain.step, 'close:vcr-0123456789abcdef-1');
+});

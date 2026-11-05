@@ -1,0 +1,38 @@
+diff --git a/test/OpenCallClaim.t.sol b/test/OpenCallClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/OpenCallClaim.t.sol
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.27;
++
++import { Test } from "forge-std/Test.sol";
++import { Simulator } from "../src/Simulator.sol";
++import { Payload } from "../src/modules/Payload.sol";
++
++/// Calls made by a wallet need the wallet's signers. A stranger should not be able to spend what the wallet holds.
++contract OpenCallClaim is Test {
++
++  function test_a_stranger_cannot_spend_from_the_wallet() public {
++    Simulator wallet = new Simulator(address(0xE4337));
++    vm.deal(address(wallet), 1 ether);
++    address stranger = address(0xBAD);
++
++    Payload.Call[] memory calls = new Payload.Call[](1);
++    calls[0] = Payload.Call({
++      to: stranger,
++      value: 1 ether,
++      data: "",
++      gasLimit: 0,
++      delegateCall: false,
++      onlyFallback: false,
++      behaviorOnError: 0
++    });
++
++    vm.prank(stranger);
++    wallet.simulate(calls);
++
++    assertEq(address(wallet).balance, 1 ether, "what the wallet holds after the call by a stranger");
++  }
++
++}

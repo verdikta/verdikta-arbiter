@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "calcRate gets the rate wrong across decimals",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Stable2.calcRate passes 18 as both decimals to calcLpTokenSupply whatever the decimals of the tokens are, so the supply it works from is wrong for a token with fewer, and the rate it returns between two such tokens is off.",
+  "affectedPaths": [
+    "src/functions/Stable2.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_six_decimal_token_prices_at_one_to_one",
+    "observable": "test_a_six_decimal_token_prices_at_one_to_one fails with \"the rate between the two tokens: 452252694 != 1000000\""
+  },
+  "fixIncluded": false
+}

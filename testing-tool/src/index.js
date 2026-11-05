@@ -13,6 +13,7 @@ const attachmentHandler = require('./attachment-handler');
 const TestRunner = require('./test-runner');
 const resultsManager = require('./results-manager');
 const logger = require('./logger');
+const { runClaimCommand } = require('./claim-command');
 
 // CLI Setup
 const program = new Command();
@@ -114,15 +115,29 @@ program
   .option('--scenario-ids <ids>', 'Comma-separated scenario IDs to test (default: all)')
   .option('--tags <tags>', 'Comma-separated tags to filter scenarios')
   .option('--dry-run', 'Validate setup without executing tests')
+  .option('--type <type>', 'Scenario type: text (the CSV) or claim (a stake claim, README "Claim scenarios")', 'text')
+  .option('--jury <kind>', 'With --type claim: "real" calls the panel the listing names, on the AI node\'s providers, which spends money')
+  .option('--claims-dir <dir>', 'With --type claim: the directory of claim scenario folders (default: scenarios/claims)')
+  .option('--results-dir <dir>', 'With --type claim: where to save the run (default: results)')
+  .option('--ai-node-url <url>', 'AI node URL (default: config/tool-config.json)')
   .action(async (options) => {
     // Debug: log the parsed options
     logger.debug('Parsed command options:', options);
     try {
       console.log(chalk.blue('🧪 Starting Verdikta Testing Tool...'));
       
+      if (options.type !== 'text' && options.type !== 'claim') {
+        throw new Error(`Unknown scenario type "${options.type}": the types are text and claim`);
+      }
+
       // Initialize configuration
       await configManager.initialize();
       const toolConfig = await configManager.getToolConfig();
+      if (options.aiNodeUrl) toolConfig.aiNodeUrl = options.aiNodeUrl;
+
+      if (options.type === 'claim') {
+        process.exit(await runClaimCommand(options, toolConfig));
+      }
       
       // Load scenarios
       console.log(chalk.cyan('📋 Loading scenarios...'));

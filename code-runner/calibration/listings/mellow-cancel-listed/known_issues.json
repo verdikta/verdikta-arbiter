@@ -1,0 +1,11 @@
+[
+  {
+    "id": "sha256:92ca36474d3bf87dc43b26356969dc7a28e3b350dec68763bfc233112dc3b00c",
+    "title": "Cancelling a pending deposit reverts once a price has been reported",
+    "class": "MEDIUM",
+    "paths": [
+      "src/queues/DepositQueue.sol"
+    ],
+    "description": "After the first price report a depositor who changes their mind cannot take a deposit back: the call reverts and the deposit waits in the queue until a report makes it claimable. Nothing is lost, and the maker will not change this version."
+  }
+]

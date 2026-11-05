@@ -2,6 +2,8 @@
 
 const fs = require('fs');
 const path = require('path');
+const { codeReview } = require('@verdikta/common');
+const { isLikelyCid } = require('./assertions');
 
 const E2E_ROOT = path.join(__dirname, '..');
 const DEFAULT_SCENARIOS = path.join(E2E_ROOT, 'scenarios', 'scenarios.json');
@@ -40,8 +42,162 @@ function adapterCid(cids, addendum) {
   return addendum ? `${cids.join(',')}:${addendum}` : cids.join(',');
 }
 
+/** The kinds of claim scenario e2e/src/l2/claim/run-claim.js knows. They build their own archives, so they name no CID. */
+const CLAIM_KINDS = Object.freeze(['valid', 'gate-fail', 'text', 'canary', 'fault-switch']);
+
+const resolvedClaim = (s) => ({ ...s, cids: [], addendum: '', cid: '' });
+
+/** An L4 claim scenario's `claim`, and the entry of the claim set it sends (makeClaimSet's names). */
+const L4_CLAIM_ENTRIES = Object.freeze({
+  valid: 'valid',
+  'front-gate': 'outOfScope',
+  'runner-gate': 'editsSource',
+  'time-dependent': 'timeDependent',
+  'randomness-dependent': 'randomnessDependent',
+  flaky: 'flaky',
+  'registry-failure': 'registryFailure',
+  'near-limit-juror': 'faultNearLimit',
+  'provider-timeout': 'faultProviderTimeout',
+  'slow-justifier': 'faultSlowJustifier',
+  cancellation: 'faultCancellation',
+  'cold-cache': 'coldCache',
+  dispute: 'dispute'
+});
+/**
+ * A scenario that expects no commit, and the claims that must settle after it. An abstaining
+ * arbiter uploads nothing, so each control rules out another reason for nobody committing.
+ * registry-failure: arbiters down, or a listing they refuse (out of scope on that same listing);
+ * a runner that is down (a gate only the runner reaches, on the main listing, whose image may
+ * well be cached: this does not say the registry is up, and needs not, since a registry that is
+ * down fails the pull just as an absent digest does: §12's "registry or image-pull failure").
+ * cancellation: a runner or provider that is down (a valid claim, to the jury).
+ */
+const ABSTAIN_CONTROLS = Object.freeze({
+  'registry-failure': Object.freeze([{ entry: 'registryControl', kind: 'front-gate' }, { entry: 'editsSource', kind: 'runner-gate' }]),
+  cancellation: Object.freeze([{ entry: 'valid', kind: 'valid' }])
+});
+/** What a claim set may lack, with the flag of scripts/build-l4-claims.js that adds it: each needs a listing of its own. */
+const OPTIONAL_ENTRIES = Object.freeze({
+  registryFailure: '--registry-failure-listing-file (a listing signed elsewhere needs its own)',
+  registryControl: '--registry-failure-listing-file (a listing signed elsewhere needs its own)',
+  coldCache: '--cold-image <repo@sha256:…> (a digest the canaries have never pulled), or --cold-listing-file'
+});
+const CLAIM_OUTCOMES = codeReview.BUG_OUTCOMES.length;
+/** ReputationAggregator.sol: a longer value reverts the request. */
+const MAX_CID_BYTES = 100;
+const MAX_ADDENDUM_BYTES = 1000;
+
+function validateL4ClaimScenario(s) {
+  const sources = ['cid', 'cidFile', 'cids', 'addendum'].filter((k) => s[k] !== undefined);
+  if (sources.length) throw new Error(`Scenario "${s.id}" is an L4 claim scenario: its request comes from its claim set, so no ${sources.join(' or ')}`);
+  if (!Object.keys(L4_CLAIM_ENTRIES).includes(s.claim)) throw new Error(`Scenario "${s.id}": "claim" must be one of ${Object.keys(L4_CLAIM_ENTRIES).join(', ')}`);
+  if (typeof s.claimSet !== 'string' || s.claimSet === '') throw new Error(`Scenario "${s.id}": an L4 claim scenario names its "claimSet" file`);
+  if (s.minOutcomes !== CLAIM_OUTCOMES) throw new Error(`Scenario "${s.id}": a claim has ${CLAIM_OUTCOMES} outcomes, so "minOutcomes" is ${CLAIM_OUTCOMES}`);
+  const abstains = Object.prototype.hasOwnProperty.call(ABSTAIN_CONTROLS, s.claim);
+  if (abstains && !(Number.isInteger(s.watchSeconds) && s.watchSeconds > 0)) throw new Error(`Scenario "${s.id}" expects no commit: "watchSeconds" says how long to watch for one`);
+  if (!abstains && s.watchSeconds !== undefined) throw new Error(`Scenario "${s.id}": "watchSeconds" is for a scenario that expects no commit`);
+}
+
+/**
+ * A claim set as L4 will send it, or a throw naming what is wrong: nothing here reaches the
+ * chain unread. Exported for scripts/build-l4-claims.js, which holds a new set to the same.
+ * @param {object} value - a parsed claim-set.json
+ * @returns {object} the same value
+ */
+function validateClaimSet(value) {
+  const bad = (what) => new Error(`the claim set is not usable: ${what}`);
+  if (!value || typeof value !== 'object' || value.version !== 1) throw bad('its version is not 1');
+  const cidIn = (cid, name) => {
+    if (!isLikelyCid(cid) || Buffer.byteLength(cid) > MAX_CID_BYTES) throw bad(`${name} is not a CID the aggregator takes`);
+  };
+  cidIn(value.listingCid, 'listingCid');
+  const lineWithin = (line, name) => {
+    if (typeof line !== 'string' || Buffer.byteLength(line) > MAX_ADDENDUM_BYTES) throw bad(`${name} is over the aggregator's ${MAX_ADDENDUM_BYTES} bytes`);
+    return codeReview.parseAddendum(line);
+  };
+  const controlEntries = Object.values(ABSTAIN_CONTROLS).flat().map((control) => control.entry);
+  for (const key of [...new Set([...Object.values(L4_CLAIM_ENTRIES), ...controlEntries])]) {
+    const entry = value.claims && value.claims[key];
+    if (!entry) {
+      if (Object.prototype.hasOwnProperty.call(OPTIONAL_ENTRIES, key)) continue;
+      throw bad(`it has no entry for the ${key === 'valid' ? 'valid' : key} claim`);
+    }
+    cidIn(entry.cid, `claims.${key}.cid`);
+    if (entry.listingCid !== undefined) cidIn(entry.listingCid, `claims.${key}.listingCid`);
+    if (entry.cid === value.listingCid || entry.cid === entry.listingCid) throw bad(`claims.${key}.cid is the listing's CID`);
+    const parsed = lineWithin(entry.addendum, `claims.${key}.addendum`);
+    if (!parsed.ok || parsed.dispute !== null) throw bad(`claims.${key}.addendum is not one disclosure line`);
+  }
+  const { dispute } = value.claims;
+  cidIn(dispute.disputeListingCid, 'claims.dispute.disputeListingCid');
+  if (dispute.disputeListingCid === value.listingCid) throw bad('claims.dispute.disputeListingCid is the listing\'s CID: a dispute goes to the dispute archive');
+  const second = lineWithin(dispute.disputeAddendum, 'claims.dispute.disputeAddendum');
+  if (!second.ok || !second.dispute || second.dispute.statementCid !== dispute.statementCid) throw bad('claims.dispute.disputeAddendum is not the disclosure line and the statement\'s');
+  return value;
+}
+
+/**
+ * The request of an L4 claim scenario, from its claim set: [listing, claim] and the
+ * disclosure line, as StakeAttestation.reveal composes them (design §13.3). Any other
+ * scenario comes back as it is.
+ *
+ * Apart from loadScenarios so that L4 decides the class first: a run on the wrong class is
+ * refused for that, whether or not the claim set has been pinned yet.
+ *
+ * @param {object} scenario
+ * @returns {object}
+ */
+function resolveL4Claim(scenario) {
+  if (scenario.suite !== 'l4-claim') return scenario;
+  const file = path.resolve(E2E_ROOT, scenario.claimSet);
+  if (!fs.existsSync(file)) {
+    throw new Error(`Scenario "${scenario.id}" has no claim set at ${file}: build and pin it first with scripts/build-l4-claims.js (e2e/README.md)`);
+  }
+  let value;
+  try {
+    value = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (_error) {
+    throw new Error(`Scenario "${scenario.id}": ${file} is not JSON`);
+  }
+  let set;
+  try {
+    set = validateClaimSet(value);
+  } catch (error) {
+    throw new Error(`Scenario "${scenario.id}", ${file}: ${error.message}`);
+  }
+  const entryKey = L4_CLAIM_ENTRIES[scenario.claim];
+  const missing = (key) => new Error(`Scenario "${scenario.id}": ${file} has no ${key} entry. Build it with scripts/build-l4-claims.js ${OPTIONAL_ENTRIES[key] || ''}`);
+  const entry = set.claims[entryKey];
+  if (!entry) throw missing(entryKey);
+  const requestOf = (e) => ({ cids: [e.listingCid || set.listingCid, e.cid], addendum: e.addendum });
+  const { cids, addendum } = requestOf(entry);
+  const resolved = { ...scenario, cids, addendum, cid: adapterCid(cids, addendum) };
+  const controls = ABSTAIN_CONTROLS[scenario.claim];
+  if (controls) {
+    resolved.controls = controls.map(({ entry: key, kind }) => {
+      if (!set.claims[key]) throw missing(key);
+      return { kind, ...requestOf(set.claims[key]) };
+    });
+  }
+  if (scenario.claim === 'dispute') resolved.disputeRound = { cids: [entry.disputeListingCid, entry.cid], addendum: entry.disputeAddendum, statementCid: entry.statementCid };
+  return resolved;
+}
+
+function validateClaimScenario(s) {
+  const sources = ['cid', 'cidFile', 'cids'].filter((k) => s[k] !== undefined);
+  if (sources.length) throw new Error(`Scenario "${s.id}" is a claim scenario: it builds its own archives, so no ${sources.join(' or ')}`);
+  if (!CLAIM_KINDS.includes(s.claim)) throw new Error(`Scenario "${s.id}": "claim" must be one of ${CLAIM_KINDS.join(', ')}`);
+  if (!Array.isArray(s.modes) || s.modes.length === 0) throw new Error(`Scenario "${s.id}": a claim scenario lists its modes`);
+}
+
 function validateScenario(s, i) {
   if (!s.id) throw new Error(`Scenario at index ${i} is missing "id"`);
+  if (s.suite !== undefined || s.claim !== undefined) {
+    if (s.suite === 'l4-claim') validateL4ClaimScenario(s);
+    else if (s.suite === 'claim') validateClaimScenario(s);
+    else throw new Error(`Scenario "${s.id}": the suites are "claim" and "l4-claim"`);
+    return;
+  }
   const sources = ['cid', 'cidFile', 'cids'].filter((k) => s[k] !== undefined);
   if (sources.length === 0) throw new Error(`Scenario "${s.id}" is missing "cid", "cids" or "cidFile"`);
   if (sources.length > 1) throw new Error(`Scenario "${s.id}" gives ${sources.join(' and ')}; use exactly one`);
@@ -69,10 +225,18 @@ function validateScenario(s, i) {
  *
  * @param {string} [file] - path to a scenarios JSON file
  * @param {string[]} [ids] - optional subset of scenario ids to keep
- * @param {{ allowManualOnly?: boolean }} [opts] - true for L4
+ * A scenario with `"suite": "claim"` needs Docker and the local harness, so a full run
+ * (L2's, which needs Pinata, or the nightly L4) leaves it out. `suite: 'claim'` runs that
+ * suite and nothing else; naming one runs it where `allowClaim` is set (L2); L4 never does.
+ *
+ * A scenario with `"suite": "l4-claim"` is a real request on the canary class. No full run
+ * holds one, whatever the class. Naming one runs it where `allowL4Claim` is set (L4), which
+ * then holds it to class 5555 (src/l4/helpers.js) before reading its claim set (resolveL4Claim).
+ *
+ * @param {{ allowManualOnly?: boolean, allowClaim?: boolean, allowL4Claim?: boolean, suite?: string }} [opts]
  * @returns {Array<object>}
  */
-function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly = false } = {}) {
+function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly = false, allowClaim = false, allowL4Claim = false, suite = null } = {}) {
   if (!fs.existsSync(file)) {
     throw new Error(`Scenarios file not found: ${file}`);
   }
@@ -88,6 +252,14 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
 
   scenarios.forEach(validateScenario);
 
+  if (suite !== null) {
+    if (ids && ids.length) throw new Error('Name scenarios or a suite, not both');
+    if (suite !== 'claim') throw new Error(`Unknown suite: ${suite}`);
+    const members = scenarios.filter((s) => s.suite === 'claim');
+    if (members.length === 0) throw new Error('The claim suite has no scenarios in this file');
+    return members.map(resolvedClaim);
+  }
+
   const explicit = Boolean(ids && ids.length);
   if (explicit) {
     const wanted = new Set(ids);
@@ -99,7 +271,16 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
     if (manual.length && !allowManualOnly) {
       throw new Error(`Scenario(s) ${manual.map((s) => `"${s.id}"`).join(', ')} are manualOnly: run them with L4 (--scenario / L4_SCENARIO).`);
     }
+    const claims = scenarios.filter((s) => s.suite === 'claim');
+    if (claims.length && !allowClaim) {
+      throw new Error(`Scenario(s) ${claims.map((s) => `"${s.id}"`).join(', ')} are claim scenarios: run them with L2 (--scenario or --suite claim).`);
+    }
+    const l4Claims = scenarios.filter((s) => s.suite === 'l4-claim');
+    if (l4Claims.length && !allowL4Claim) {
+      throw new Error(`Scenario(s) ${l4Claims.map((s) => `"${s.id}"`).join(', ')} are L4 claim scenarios: run them with L4 on the canary class (--scenario, --class-id 5555).`);
+    }
   } else {
+    scenarios = scenarios.filter((s) => s.suite === undefined);
     scenarios = scenarios.filter((s) => {
       if (s.manualOnly !== true) return true;
       console.warn(`[scenarios] skipping "${s.id}": manualOnly (run it by name with L4 --scenario / L4_SCENARIO).`);
@@ -112,6 +293,10 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
   //   - skip-with-warning during a full-suite run
   const resolved = [];
   for (const s of scenarios) {
+    if (s.suite !== undefined) {
+      resolved.push(resolvedClaim(s));
+      continue;
+    }
     const cids = resolveCids(s);
     if (cids) {
       const addendum = s.addendum || '';
@@ -129,4 +314,4 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
   return resolved;
 }
 
-module.exports = { loadScenarios, adapterCid, DEFAULT_SCENARIOS };
+module.exports = { loadScenarios, resolveL4Claim, validateClaimSet, adapterCid, DEFAULT_SCENARIOS };

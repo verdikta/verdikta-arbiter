@@ -1,0 +1,19 @@
+diff --git a/test/Unchecked.t.sol b/test/Unchecked.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/Unchecked.t.sol
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract UncheckedClaim is Base {
++    function test_vault_is_drained() public {
++        Vault v = new Vault();
++        v.deposit(5);
++        v.withdraw(1);
++        vm.assertTrue(v.balanceOf(address(this)) == 4, "vault drained: balance 0 after one withdraw");
++    }
++}

@@ -1,0 +1,96 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.sequence-sapient-image-hash",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "A wallet answers as a sapient signer with a constant",
+  "source": {
+    "url": "https://code4rena.com/reports/2025-10-sequence#m-03-baseauthrecoversapientsignature-returns-a-constant-instead-of-signer-image-hash-breaking-sapient-signer-flows",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6). Findings repository: returns 404; the report page is the source.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://code4rena.com/reports/2025-10-sequence#m-03-baseauthrecoversapientsignature-returns-a-constant-instead-of-signer-image-hash-breaking-sapient-signer-flows",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test pins the constant; this one compares the answer with the image hash the same signature recovers.",
+    "report": "https://code4rena.com/reports/2025-10-sequence",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2025-10-sequence",
+      "verdict": "Valid. Listed under Medium Risk Findings as M-03 in the published report; no judge or sponsor comment on the page.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/sequence",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "MEDIUM",
+    "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/SapientImageHashClaim.t.sol > SapientImageHashClaim > test_a_wallet_answers_as_a_sapient_signer_with_its_image_hash()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the answer is the image hash of the signer: 0x0000000000000000000000000000000000000000000000000000000000000001 != 0xb047ca9be06213f7ee0226ecd492cf0a8956987351a55e54be184bd97c3167c9"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "recoverSapientSignature"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.sequence-sapient-image-hash.control",
+    "removes": {
+      "poc.patch": [
+        "+    assertEq(wallet.recoverSapientSignature(payload, signature), imageHash, \"the answer is the image hash of the signer\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+    assertEq(wallet.recoverSapientSignature(payload, signature), bytes32(uint256(1)), \"the answer is the image hash of the signer\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

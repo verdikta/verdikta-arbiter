@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "title": "calcReserveAtRatioLiquidity underflows on a ratio inside its table",
+  "claimedClass": "MEDIUM",
+  "rootCause": "For this price range Stable2LUT1.getRatiosFromPriceLiquidity returns a very large lowPriceJ and bounds far apart, so Stable2.updateReserve takes a correction larger than the reserve, and calcReserveAtRatioLiquidity reverts with an arithmetic panic.",
+  "affectedPaths": [
+    "src/functions/Stable2.sol",
+    "src/functions/StableLUT/Stable2LUT1.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_price_in_the_table_does_not_underflow",
+    "observable": "test_a_price_in_the_table_does_not_underflow fails with \"panic: arithmetic underflow or overflow (0x11)\""
+  },
+  "fixIncluded": false
+}

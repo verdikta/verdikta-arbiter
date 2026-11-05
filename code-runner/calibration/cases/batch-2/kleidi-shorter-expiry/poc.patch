@@ -1,0 +1,33 @@
+diff --git a/test/ShorterExpiryProposalClaim.t.sol b/test/ShorterExpiryProposalClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/ShorterExpiryProposalClaim.t.sol
+@@ -0,0 +1,28 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {Timelock} from "src/Timelock.sol";
++import {MIN_DELAY} from "src/utils/Constants.sol";
++import {MockSafe} from "test/mock/MockSafe.sol";
++
++/// A proposal that isOperationReady calls ready is one anyone can execute, so executing it cannot fail on its own effect.
++contract ShorterExpiryProposalClaim is Test {
++    function test_a_ready_proposal_to_shorten_the_window_runs() public {
++        vm.warp(1_000_000);
++        MockSafe safe = new MockSafe();
++        Timelock timelock = new Timelock(address(safe), MIN_DELAY, 5 days, address(0x11111), 10 days, new address[](0));
++
++        bytes memory shorten = abi.encodeCall(Timelock.updateExpirationPeriod, (3 days));
++        vm.prank(address(safe));
++        timelock.schedule(address(timelock), 0, shorten, bytes32(0), MIN_DELAY);
++
++        // Four days into a five-day window.
++        vm.warp(block.timestamp + MIN_DELAY + 4 days);
++        assertTrue(timelock.isOperationReady(timelock.hashOperation(address(timelock), 0, shorten, bytes32(0))));
++
++        timelock.execute(address(timelock), 0, shorten, bytes32(0));
++
++        assertEq(timelock.expirationPeriod(), 3 days);
++    }
++}

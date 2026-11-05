@@ -1,0 +1,26 @@
+diff --git a/test/Fixture.t.sol b/test/Fixture.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/Fixture.t.sol
+@@ -0,0 +1,21 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract FixtureVault {
++    mapping(address => uint256) public balanceOf;
++
++    function deposit(uint256 amount) external {
++        balanceOf[msg.sender] += amount - 1;
++    }
++}
++
++contract FixtureClaim is Base {
++    function test_deposit_is_short_by_one() public {
++        FixtureVault v = new FixtureVault();
++        v.deposit(5);
++        vm.assertEq(v.balanceOf(address(this)), 5);
++    }
++}

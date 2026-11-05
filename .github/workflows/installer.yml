@@ -1,0 +1,80 @@
+name: Installer
+
+# The installer's tests, and what it renders measured on the real Chainlink binary
+# (installer/tests/job-timeouts.integration.sh, node A6a): the image is linux/amd64
+# only, so an amd64 runner is the one place that can. And the code-review sandbox, on a real
+# systemd, dockerd and gVisor with the real canary (code-review-sandbox.integration.sh, node A8):
+# a hosted runner is a Linux host nothing else needs. No secret.
+# claude/stake-attestation: the stake-attestation integration branch (issue #105).
+
+on:
+  pull_request:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['installer/**', 'chainlink-node/**', 'code-runner/**', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
+  push:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['installer/**', 'chainlink-node/**', 'code-runner/**', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: installer-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    name: Installer tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run every installer test
+        run: |
+          failed=0
+          for t in installer/tests/*.test.sh; do
+            if ! bash "$t" > /tmp/installer-test.out 2>&1; then
+              echo "::error::$t failed"
+              tail -40 /tmp/installer-test.out
+              failed=1
+            else
+              echo "ok $t: $(tail -1 /tmp/installer-test.out)"
+            fi
+          done
+          exit "$failed"
+
+  chainlink-2-23:
+    name: Job timeouts on Chainlink 2.23.0
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Measure on the real binary
+        run: bash installer/tests/job-timeouts.integration.sh
+
+  code-review-sandbox:
+    name: Code-review sandbox on a real host
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Room for the disk image
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup
+          df -h /
+
+      - name: Install, self-test, fill, reload, unmount and purge on the host
+        run: bash installer/tests/code-review-sandbox.integration.sh 2>&1 | tee "$RUNNER_TEMP/code-review-sandbox.log"; exit "${PIPESTATUS[0]}"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: code-review-sandbox-log
+          path: ${{ runner.temp }}/code-review-sandbox.log

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "baseCommit": "7e08ff591df0a2ade7d5618113dda2621cd899bc",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidityExtreme()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_diff_diff()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_diff_equal()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_equal_diff()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_equal_equal()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_fuzz(uint256[2],uint256[2])",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_invalidJ()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidityExtreme()",
+    "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_diff_diff()",
+    "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_diff_equal()",
+    "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_equal_diff()",
+    "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_equal_equal()",
+    "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_fuzz(uint256[2],uint256[2])",
+    "test/beanstalk/BeanstalkStable2.calcReserveAtRatioLiquidity.t.sol > BeanstalkStable2LiquidityTest > test_calcReserveAtRatioLiquidity_invalidJ()"
+  ],
+  "unstable": []
+}

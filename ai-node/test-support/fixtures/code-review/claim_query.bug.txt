@@ -1,0 +1,24 @@
+Verdikta stake listing: judge one security claim (claim query version 1).
+
+Artifact: the contract deployed at 0x1234567890abcdef1234567890ABCDEF12345678 on chain id 8453, built from the repository https://github.com/acme/vault at commit 9c1e4f0a3b7d2e5c8f1a4b6d9e0c3f5a7b2d4e6f.
+
+Scope: a finding may name only files that match a glob in ["contracts/**"] and no glob in ["test/**","script/**"]. Globs are repository-relative: ** crosses directories; * and ? stay within one path segment.
+
+Awards by severity class, in wei:
+- CRITICAL: 2000000000000000000 (2 ETH), counted
+- HIGH: 400000000000000000 (0.4 ETH), counted
+- MEDIUM: 100000000000000000 (0.1 ETH), counted
+- LOW: 0 (0 ETH), not counted
+
+Lowest class counted: MEDIUM. A valid finding below MEDIUM is published and pays nothing.
+
+Severity classes: Verdikta's definitions, version 1, for the rubric immunefi-v2.3, after the Immunefi Vulnerability Severity Classification System v2.3 (https://immunefi.com/immunefi-vulnerability-severity-classification-system-v2-3/). The listing binds deployed contracts and their source: judge the consequence for the deployment and its users. Classify by the consequence the proof of concept demonstrates, or that follows from it by a concrete line of reasoning tied to a file and line; a finding takes the highest class whose definition that consequence meets.
+- CRITICAL: Assets are lost or locked for good. The proof of concept shows that an attacker, using no privilege the scope excludes, can take principal that users or the protocol hold in the contracts or move through them; take NFTs that users own; lock funds or NFTs so that nobody can ever recover them; mint assets, or change what an NFT represents, without authority; win principal or NFTs through a source of randomness it can foresee or bias; make a governance decision carry out something other than what was voted; or leave the protocol owing more than it holds.
+- HIGH: Value is taken or frozen, short of losing principal for good. The proof of concept shows that an attacker can take yield or royalties that have accrued but have not been claimed, lock such yield or royalties for good, or lock users' funds or NFTs for a period after which they can be recovered.
+- MEDIUM: The contract is harmed but no value is taken. The proof of concept shows that an attacker can stop the contract working as specified (for example by leaving it without the token balance it needs, or by filling blocks so that a time-bound call cannot be included in time), harm users or the protocol with no gain to the attacker, make users pay gas they should not have to, or make the gas a call needs grow without bound.
+- LOW: A promise is broken but no value is lost. The proof of concept shows that the contract falls short of what it promises, such as a documented rate of return, while every user's principal stays intact.
+
+Outcomes, in this order: INVALID, DUPLICATE, LOW, MEDIUM, HIGH, CRITICAL.
+- INVALID: not a finding. The behaviour the proof of concept asserts is not required of the code, the proof is not faithful, or a gate failed.
+- DUPLICATE: the root cause is a listed known issue or a finding already valid on this listing.
+- LOW, MEDIUM, HIGH, CRITICAL: a valid finding of that class.

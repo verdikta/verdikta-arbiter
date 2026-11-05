@@ -1193,6 +1193,31 @@ check_ai_node() {
 ############################################
 # Fix mode
 ############################################
+# The code-review sandbox (node A8; design §16): svc.code_runner, sandbox.runsc, sandbox.disk,
+# sandbox.conformance, sandbox.trust, sandbox.registry. code-review-check.js reads the JSON and
+# the token (never in argv), and says what it found, one finding a line.
+check_code_review() {
+    section_header "Code review sandbox"
+    local helper="$INSTALL_DIR/code-review-check.js" out sev id msg hint
+    if [ ! -f "$helper" ]; then
+        emit INFO sandbox.skipped "code-review-check.js is not installed (upgrade-arbiter.sh deploys it)" ""
+        return 0
+    fi
+    if ! command -v node >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1
+        nvm use 20.18.1 >/dev/null 2>&1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        emit WARN sandbox.skipped "node is not on PATH: the code-review checks did not run" "Run the doctor where Node.js is loaded"
+        return 0
+    fi
+    out=$(node "$helper" doctor --install-dir "$INSTALL_DIR" 2>/dev/null)
+    while IFS=$'\t' read -r sev id msg hint; do
+        [ -n "$id" ] && emit "$sev" "$id" "$msg" "$hint"
+    done <<< "$out"
+}
+
 prompt_yes_no() {
     local prompt="$1"
     if [ "$ASSUME_YES" = "1" ]; then
@@ -1430,6 +1455,7 @@ check_onchain
 check_chainlink_txm
 check_external_adapter
 check_ai_node
+check_code_review
 
 print_summary
 

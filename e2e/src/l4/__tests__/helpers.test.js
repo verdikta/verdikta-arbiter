@@ -41,8 +41,8 @@ describe('splitJustificationCids', () => {
 describe('arbiterVersion / releaseCommit / commitMatches', () => {
   it('reads the arbiter block and tolerates its absence', () => {
     expect(arbiterVersion({ arbiter: { adapter: '1.0.0', aiNode: '0.1.0', verdiktaCommon: '1.7.0', release: 'b9a58e2 2026-07-06T21:20:25Z' } }))
-      .toEqual({ adapter: '1.0.0', aiNode: '0.1.0', verdiktaCommon: '1.7.0', release: 'b9a58e2 2026-07-06T21:20:25Z' });
-    expect(arbiterVersion({ scores: [] })).toEqual({ adapter: null, aiNode: null, verdiktaCommon: null, release: null });
+      .toEqual({ adapter: '1.0.0', aiNode: '0.1.0', verdiktaCommon: '1.7.0', release: 'b9a58e2 2026-07-06T21:20:25Z', canaryFault: null });
+    expect(arbiterVersion({ scores: [] })).toEqual({ adapter: null, aiNode: null, verdiktaCommon: null, release: null, canaryFault: null });
     expect(arbiterVersion(null).verdiktaCommon).toBeNull();
   });
 
