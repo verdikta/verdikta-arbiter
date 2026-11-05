@@ -264,7 +264,7 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     ...(a.noVerdict.length ? [
       '## Claims with no verdict',
       '',
-      `${a.noVerdict.length} of the ${a.rows.length} claims have no verdict, ${a.rows.filter((r) => r.by === 'jury').length} having reached the jury. Every juror is required, so one juror's failure leaves the arbiter abstaining. What a juror that did answer said is shown for reading only: it is no settlement, and it never would be one.`,
+      `${a.noVerdict.length} of the ${a.rows.filter((r) => r.by === 'jury').length} claims that reached the jury have no verdict. Every juror is required, so one juror's failure leaves the arbiter abstaining. What a juror that did answer said is shown for reading only: it is no settlement, and it never would be one.`,
       '',
       ...(notes.noVerdict ? [notes.noVerdict, ''] : []),
       table(['Case', 'Expected', 'Error', 'Jurors'], a.noVerdict.map((r) => [`\`${r.id}\``, r.expected, r.error, (r.jurors || []).map(jurorMass).join('; ')])),

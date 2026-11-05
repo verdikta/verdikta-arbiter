@@ -159,7 +159,7 @@ test('claims with no verdict are listed, each with what any juror that answered 
   assert.equal(a.bar.rows.find((r) => r.class === 'HIGH').noVerdict, 1);
   const text = render(a, { date: '2026-11-05', notes: { headline: 'A headline of ours.', noVerdict: 'Why, in our words.' } });
   assert.match(text, /## Claims with no verdict/);
-  assert.match(text, /1 of the 45 claims have no verdict/);
+  assert.match(text, /1 of the 39 claims that reached the jury have no verdict/);
   assert.match(text, /claude-sonnet-5-5: MEDIUM \(valid 100%\); deepseek\/deepseek-v4-pro-0813: unread/);
   assert.match(text, /A headline of ours\./);
   assert.match(text, /Why, in our words\./);
