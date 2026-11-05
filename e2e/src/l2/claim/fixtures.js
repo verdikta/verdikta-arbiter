@@ -29,14 +29,14 @@ function zip(files) {
   return archive.toBuffer();
 }
 
-function specFor({ image, baseCommit, disclosureKey, repo }) {
+function specFor({ image, baseCommit, disclosureKey, repo, unpackedBytes }) {
   return {
     version: 1,
     kind: 'bug',
     repo,
     baseCommit,
     artifact: { kind: 'contract', address: '0x1234567890abcdef1234567890ABCDEF12345678', chainId: 31337 },
-    env: { image, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 2000000000 },
+    env: { image, from: 'foundry', platform: 'linux/amd64', unpackedBytes },
     attestation: 'attestation.json',
     commands: {
       framework: 'forge', build: 'forge build', test: 'forge test',
@@ -72,11 +72,12 @@ function specFor({ image, baseCommit, disclosureKey, repo }) {
  * @param {'production'|'dev'} o.trust - the trust set the statement is for
  * @param {string} o.runner - the runner version the statement names
  * @param {string} [o.repo]
+ * @param {number} [o.unpackedBytes] - the image's unpacked size, as measured
  * @returns {{ spec: object, disclosure: object, members: Record<string, Buffer>, statement: object }}
  */
-function unsignedListing({ image, baseCommit, baseline, trust, runner, repo = 'https://github.com/acme/vault' }) {
+function unsignedListing({ image, baseCommit, baseline, trust, runner, repo = 'https://github.com/acme/vault', unpackedBytes = 2000000000 }) {
   const disclosure = codeReview.generateDisclosureKeyPair();
-  const spec = specFor({ image, baseCommit, disclosureKey: disclosure.recipient, repo });
+  const spec = specFor({ image, baseCommit, disclosureKey: disclosure.recipient, repo, unpackedBytes });
   const specBytes = bytes(spec);
   const baselineBytes = bytes(baseline);
   const knownIssuesBytes = bytes([]);
@@ -85,7 +86,19 @@ function unsignedListing({ image, baseCommit, baseline, trust, runner, repo = 'h
     trust,
     tools: { runner }
   });
-  const members = {
+  const members = listingMembers({ codeReview: specBytes, baseline: baselineBytes, knownIssues: knownIssuesBytes });
+  return { spec, disclosure, members, statement };
+}
+
+/**
+ * A listing's members, from the three files its statement binds. The manifest and the query are
+ * not bound, so they are made here from the spec rather than kept anywhere they could change.
+ * @param {{ codeReview: Buffer, baseline: Buffer, knownIssues: Buffer }} files - the exact bytes
+ * @returns {Record<string, Buffer>}
+ */
+function listingMembers(files) {
+  const spec = JSON.parse(files.codeReview.toString('utf8'));
+  return {
     'manifest.json': bytes({
       version: '1.0',
       primary: { filename: 'primary_query.json' },
@@ -93,11 +106,10 @@ function unsignedListing({ image, baseCommit, baseline, trust, runner, repo = 'h
       codeReview: 'code_review.json'
     }),
     'primary_query.json': bytes({ query: codeReview.buildClaimQuery(spec), outcomes: [...codeReview.BUG_OUTCOMES], references: [] }),
-    'code_review.json': specBytes,
-    'baseline.json': baselineBytes,
-    'known_issues.json': knownIssuesBytes
+    'code_review.json': files.codeReview,
+    'baseline.json': files.baseline,
+    'known_issues.json': files.knownIssues
   };
-  return { spec, disclosure, members, statement };
 }
 
 /** The listing archive: its members and the signed statement. */
@@ -167,7 +179,7 @@ function readListingArchive(buffer) {
 function listingFiles(buffer) {
   const archive = new AdmZip(buffer);
   const member = (name) => {
-    const entry = archive.getEntry(name);
+    const entry = typeof name === 'string' ? archive.getEntry(name) : null;
     return entry ? entry.getData() : undefined;
   };
   const read = (name) => {
@@ -179,7 +191,7 @@ function listingFiles(buffer) {
   if (typeof manifest.codeReview !== 'string') throw new Error('the archive\'s manifest has no codeReview key: it is not a listing');
   const specBytes = read(manifest.codeReview);
   const spec = JSON.parse(specBytes.toString('utf8'));
-  return { spec, member, files: { codeReview: specBytes, baseline: member(spec.baseline), knownIssues: member(spec.stake.knownIssues) } };
+  return { spec, member, files: { codeReview: specBytes, baseline: member(spec.baseline), knownIssues: member(spec.stake && spec.stake.knownIssues) } };
 }
 
 /**
@@ -345,4 +357,4 @@ function textArchive() {
   return zip(files);
 }
 
-module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, DISPUTE_STATEMENT, FAULT_CLAIMS, makeListing, unsignedListing, listingArchive, readListingArchive, verifyProductionTrust, makeClaim, makeClaimSet, claimSetFile, faultPlan, absentDigest, disputeArchive, discloseClaim, textArchive };
+module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, DISPUTE_STATEMENT, FAULT_CLAIMS, makeListing, unsignedListing, listingMembers, listingArchive, readListingArchive, verifyProductionTrust, makeClaim, makeClaimSet, claimSetFile, faultPlan, absentDigest, disputeArchive, discloseClaim, textArchive };

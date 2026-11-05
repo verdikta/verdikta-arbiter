@@ -8,10 +8,12 @@
  *   images   builds the fixture image and a second one with a fresh digest (the cold-cache
  *            scenario), for linux/amd64, and pushes both. Needs `docker login` to the registry.
  *   prepare  makes the three listings (the fixture image; the same repository on a digest no
- *            registry holds; the fresh digest) and, for each, the exact bytes to sign. It also
- *            writes sign-in-cloudshell.sh, which holds those bytes and no key name.
+ *            registry holds; the fresh digest), holds each to what an arbiter's front gates
+ *            check, and writes the exact bytes to sign. It also writes sign-in-cloudshell.sh,
+ *            which holds those bytes and no key name.
  *   attach   puts the signatures in, holds every listing to production trust, and writes the
- *            archives scripts/build-l4-claims.js takes. All of them or none.
+ *            archives scripts/build-l4-claims.js takes. All of them or none. An archive holds
+ *            the three files the statement binds, and a manifest and query made here from them.
  *
  * Nothing here holds or asks for a private key, and no signature is checked against anything but
  * @verdikta/common's builder set. A listing's disclosure key is its own: the private half is never
@@ -37,6 +39,9 @@ const SIGNING_MESSAGE_LIMIT = 4096;
 /** A production signature on a fixture stays valid while the key is trusted: it names Verdikta's own, and chain 31337 in the spec. */
 const FIXTURE_REPO = 'https://github.com/verdikta/stake-attestation-l4-fixture';
 const LISTINGS = Object.freeze(['listing', 'registry-failure', 'cold-cache']);
+/** The files a statement binds, by their names in the listing. */
+const BOUND_FILES = Object.freeze(['code_review.json', 'baseline.json', 'known_issues.json']);
+const CODE_CLASS = 'code-standard';
 const IMAGE = /^[^@\s]+@sha256:[0-9a-f]{64}$/;
 const COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const REPOSITORY = /^[a-z0-9.:/_-]+$/;
@@ -51,16 +56,24 @@ function runnerRepo() {
   }
 }
 
-/** Push `image` under `target` with the caller's own docker login, and give its digest in that repository. */
-function push(image, target) {
+/**
+ * Push `image` under `target` with the caller's own docker login. Gives its digest in that
+ * repository and its unpacked size: the sum of its layers as the daemon lists them, as the builder
+ * and the runner's listing check measure it. The statement says this number was measured.
+ */
+function push(image, target, platform) {
   const repository = target.slice(0, target.lastIndexOf(':'));
   const run = (args) => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'inherit'] });
   run(['tag', image, target]);
+  const built = run(['image', 'inspect', '--format', '{{.Os}}/{{.Architecture}}', target]).trim();
+  if (built !== platform) throw new Error(`${target} is ${built}, not ${platform}`);
+  const layers = run(['history', '--human=false', '--no-trunc', '--format', '{{.Size}}', target]).split('\n').map((l) => l.trim()).filter(Boolean);
+  if (!layers.length || !layers.every((l) => /^[0-9]{1,15}$/.test(l))) throw new Error(`docker history did not list the layer sizes of ${target}`);
   run(['push', target]);
   const digests = JSON.parse(run(['image', 'inspect', '--format', '{{json .RepoDigests}}', target]).trim() || '[]') || [];
   const found = digests.find((d) => d.startsWith(`${repository}@sha256:`));
   if (!found) throw new Error(`the push of ${target} left no digest in ${repository}: ${JSON.stringify(digests)}`);
-  return found;
+  return { image: found, unpackedBytes: layers.reduce((n, l) => n + Number(l), 0) };
 }
 
 async function images(opts) {
@@ -78,7 +91,7 @@ async function images(opts) {
   const publish = async (options, tag) => {
     const built = await buildFixture(docker, { ...CANARY_IMAGE_OPTIONS, instance, ...options });
     try {
-      return { baseCommit: built.baseCommit, image: push(built.image, `${opts.repository}:${tag}`) };
+      return { baseCommit: built.baseCommit, ...push(built.image, `${opts.repository}:${tag}`, PLATFORM) };
     } finally {
       await built.remove();
     }
@@ -90,6 +103,8 @@ async function images(opts) {
   console.log(`--image ${main.image}`);
   console.log(`--cold-image ${cold.image}`);
   console.log(`--base-commit ${main.baseCommit}`);
+  // The cold image differs by an ENV line, which adds no layer bytes: the larger, so neither is understated.
+  console.log(`--unpacked-bytes ${Math.max(main.unpackedBytes, cold.unpackedBytes)}`);
 }
 
 /** The script to run where the key can sign. It holds the bytes; the key's name comes from its environment. */
@@ -100,6 +115,7 @@ function signingScript(messages) {
     '# It holds the bytes to sign, which are public, and no key name or secret.',
     '#   BUILDER_KEY=<the key id or ARN> bash sign-in-cloudshell.sh',
     'set -euo pipefail',
+    'shopt -s inherit_errexit 2>/dev/null || true',
     ': "${BUILDER_KEY:?set BUILDER_KEY to the builder key}"',
     'work=$(mktemp -d)',
     'trap \'rm -rf "$work"\' EXIT',
@@ -117,11 +133,27 @@ function signingScript(messages) {
   return lines.join('\n');
 }
 
+/** What an arbiter's front gates hold a listing to, before anyone signs what they would refuse. */
+function assertFrontGates(name, { spec, members }, baseline) {
+  const checks = {
+    spec: codeReview.validateCodeReviewSpec(spec),
+    baseline: codeReview.validateBaseline(baseline, spec),
+    'known issues': codeReview.validateKnownIssues(JSON.parse(members['known_issues.json'].toString('utf8'))),
+    panel: codeReview.validateClassEnvelope(JSON.parse(members['manifest.json'].toString('utf8')).juryParameters, CODE_CLASS)
+  };
+  for (const [what, result] of Object.entries(checks)) {
+    if (!result.ok) throw new Error(`the ${name} listing's ${what} would be refused: ${JSON.stringify(result.issues)}`);
+  }
+}
+
 function prepare(opts) {
   if (!IMAGE.test(opts.image || '')) throw new Error('--image must name the env image by digest: <repository>@sha256:<64 hex>');
   if (!IMAGE.test(opts.coldImage || '')) throw new Error('--cold-image must name a fresh image by digest: <repository>@sha256:<64 hex>');
   if (opts.image === opts.coldImage) throw new Error('--cold-image must be another digest than --image');
   if (!COMMIT.test(opts.baseCommit || '')) throw new Error('--base-commit must be a whole commit hash');
+  const unpackedBytes = Number(opts.unpackedBytes);
+  if (!/^[0-9]+$/.test(opts.unpackedBytes || '') || !Number.isSafeInteger(unpackedBytes) || unpackedBytes < 1) throw new Error('--unpacked-bytes must be the size images printed, a whole number of bytes');
+  if (unpackedBytes > codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes) throw new Error(`--unpacked-bytes is over the class limit of ${codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes}`);
   // A signature on a listing a default arbiter will not pull is wasted, and would settle a claim as an abstention.
   for (const image of [opts.image, opts.coldImage]) {
     if (!image.startsWith(`${DEFAULT_REGISTRY_ALLOWLIST}/`)) throw new Error(`${image} is outside ${DEFAULT_REGISTRY_ALLOWLIST}, the only registry an arbiter pulls from by default`);
@@ -136,9 +168,8 @@ function prepare(opts) {
   const imageOf = { listing: opts.image, 'registry-failure': F.absentDigest(opts.image), 'cold-cache': opts.coldImage };
   const prepared = {};
   for (const name of LISTINGS) {
-    const unsigned = F.unsignedListing({ image: imageOf[name], baseCommit: opts.baseCommit, baseline, trust: 'production', runner: RUNNER_VERSION, repo: FIXTURE_REPO });
-    const spec = codeReview.validateCodeReviewSpec(unsigned.spec);
-    if (!spec.ok) throw new Error(`the ${name} listing's spec does not validate: ${JSON.stringify(spec.issues)}`);
+    const unsigned = F.unsignedListing({ image: imageOf[name], baseCommit: opts.baseCommit, baseline, trust: 'production', runner: RUNNER_VERSION, repo: FIXTURE_REPO, unpackedBytes });
+    assertFrontGates(name, unsigned, baseline);
     const message = codeReview.attestationSigningBytes(unsigned.statement);
     if (message.length > SIGNING_MESSAGE_LIMIT) throw new Error(`the ${name} listing's statement is ${message.length} bytes; the signing service takes ${SIGNING_MESSAGE_LIMIT}`);
     prepared[name] = { ...unsigned, message };
@@ -148,7 +179,7 @@ function prepare(opts) {
   for (const [name, { members, statement, message }] of Object.entries(prepared)) {
     const dir = path.join(out, name);
     fs.mkdirSync(path.join(dir, 'members'), { recursive: true });
-    for (const [file, bytes] of Object.entries(members)) fs.writeFileSync(path.join(dir, 'members', file), bytes);
+    for (const file of BOUND_FILES) fs.writeFileSync(path.join(dir, 'members', file), members[file]);
     fs.writeFileSync(path.join(dir, 'statement.json'), `${JSON.stringify(statement, null, 2)}\n`);
     fs.writeFileSync(path.join(dir, 'signing-bytes.bin'), message);
     messages[name] = message;
@@ -181,8 +212,8 @@ function attach(opts) {
     if (!codeReview.attestationSigningBytes(statement).equals(fs.readFileSync(path.join(dir, name, 'signing-bytes.bin')))) {
       throw new Error(`${name}: statement.json is not the statement signing-bytes.bin came from`);
     }
-    const members = {};
-    for (const file of fs.readdirSync(path.join(dir, name, 'members'))) members[file] = fs.readFileSync(path.join(dir, name, 'members', file));
+    const member = (file) => fs.readFileSync(path.join(dir, name, 'members', file));
+    const members = F.listingMembers({ codeReview: member('code_review.json'), baseline: member('baseline.json'), knownIssues: member('known_issues.json') });
     const buffer = F.listingArchive(members, { ...statement, signature: { algorithm: codeReview.ATTESTATION_SIGNATURE_ALGORITHM, keyId, value } });
     const verified = F.verifyProductionTrust(buffer);
     if (!verified.ok) throw new Error(`${name} does not verify in production trust: ${verified.issues.map((i) => `${i.code} (${i.detail})`).join('; ')}`);
@@ -215,6 +246,7 @@ program.command('prepare')
   .option('--image <ref>', 'the env image, by digest')
   .option('--cold-image <ref>', 'the fresh digest, for claim-l4-cold-cache')
   .option('--base-commit <hash>', 'the fixture repository\'s commit in those images')
+  .option('--unpacked-bytes <n>', 'the images\' unpacked size, as images printed it')
   .option('--out <dir>', 'a new directory')
   .action(guarded(prepare));
 program.command('attach')

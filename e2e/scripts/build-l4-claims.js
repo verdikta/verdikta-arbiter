@@ -91,7 +91,10 @@ async function main(opts) {
       throw new Error(`${file} does not verify in production trust: ${verified.issues.map((i) => i.code).join(', ')}. A listing file is one the production builder signed`);
     }
     for (const warning of verified.warnings) console.log(`${file}: ${warning.code}: ${warning.detail}`);
-    return F.readListingArchive(buffer);
+    const listing = F.readListingArchive(buffer);
+    const spec = codeReview.validateCodeReviewSpec(listing.spec);
+    if (!spec.ok) throw new Error(`${file}: the spec does not validate: ${JSON.stringify(spec.issues)}`);
+    return listing;
   };
   if (opts.listingFile) {
     if (opts.image || opts.baseCommit) throw new Error('--listing-file names the image and the commit itself: drop --image and --base-commit');

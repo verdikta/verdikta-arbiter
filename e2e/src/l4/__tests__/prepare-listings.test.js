@@ -24,6 +24,7 @@ const PRELOAD = path.join(E2E, 'test', 'helpers', 'production-key-preload.js');
 const IMAGE = `ghcr.io/verdikta/l4-fixture@sha256:${'b'.repeat(64)}`;
 const COLD_IMAGE = `ghcr.io/verdikta/l4-fixture@sha256:${'c'.repeat(64)}`;
 const BASE_COMMIT = 'a'.repeat(40);
+const UNPACKED = 1234567890;
 const LISTINGS = ['listing', 'registry-failure', 'cold-cache'];
 /** age's documented example recipient: its private half is public, so no real listing may use it (A7a). */
 const AGE_EXAMPLE = 'age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p';
@@ -53,7 +54,7 @@ function run(command, args, env = {}) {
   });
 }
 const script = (file, args, env) => run(process.execPath, [file, ...args], env);
-const prepare = (extra = [], env) => script(PREPARE, ['prepare', '--image', IMAGE, '--cold-image', COLD_IMAGE, '--base-commit', BASE_COMMIT, '--out', out, ...extra], env);
+const prepare = (extra = [], env) => script(PREPARE, ['prepare', '--image', IMAGE, '--cold-image', COLD_IMAGE, '--base-commit', BASE_COMMIT, '--unpacked-bytes', String(UNPACKED), '--out', out, ...extra], env);
 const attach = (env) => script(PREPARE, ['attach', '--dir', out], env);
 const bytesOf = (name) => fs.readFileSync(path.join(out, name, 'signing-bytes.bin'));
 const signWith = (key) => {
@@ -84,6 +85,8 @@ describe('prepare', () => {
       expect(statement.trust).toBe('production');
       expect(statement.signature).toBeUndefined();
       expect(statement.tools.runner).toBe(RUNNER_VERSION);
+      expect(statement.env.unpackedBytes).toBe(UNPACKED);
+      expect(JSON.parse(fs.readFileSync(path.join(out, name, 'members', 'code_review.json'), 'utf8')).env.unpackedBytes).toBe(UNPACKED);
       expect(bytesOf(name).equals(codeReview.attestationSigningBytes(statement))).toBe(true);
       expect(bytesOf(name).length).toBeLessThan(4096);
       expect(r.out).toContain(`${bytesOf(name).length} bytes to sign`);
@@ -113,12 +116,22 @@ describe('prepare', () => {
     ['a cold image by tag', ['--cold-image', 'ghcr.io/verdikta/l4-fixture:cold'], /--cold-image/],
     ['the same digest twice', ['--cold-image', IMAGE], /another digest/],
     ['an image an arbiter would not pull', ['--image', `registry.example/vault@sha256:${'b'.repeat(64)}`], /outside ghcr\.io\/verdikta/],
-    ['a short commit', ['--base-commit', 'abc'], /--base-commit/]
+    ['a short commit', ['--base-commit', 'abc'], /--base-commit/],
+    ['a size that is not a number', ['--unpacked-bytes', '2GB'], /--unpacked-bytes/],
+    ['a size of nothing', ['--unpacked-bytes', '0'], /--unpacked-bytes/],
+    ['a size over the class limit', ['--unpacked-bytes', String(codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes + 1)], /over the class limit/]
   ])('refuses %s, and writes nothing', async (_label, extra, message) => {
     const r = await prepare(extra);
     expect(r.code).toBe(1);
     expect(r.out).toMatch(message);
     expect(fs.existsSync(out)).toBe(false);
+  });
+
+  it('keeps only what the statement binds: the manifest and query are made from them at attach', async () => {
+    expect((await prepare()).code).toBe(0);
+    for (const name of LISTINGS) {
+      expect(fs.readdirSync(path.join(out, name, 'members')).sort()).toEqual(['baseline.json', 'code_review.json', 'known_issues.json']);
+    }
   });
 
   it('refuses a directory holding anything: signatures from another run could not verify', async () => {
@@ -205,6 +218,21 @@ describe('attach', () => {
     expect(built.out).toMatch(/production trust/);
     expect(built.out).not.toMatch(/CODE_REVIEW_DEV_KEYS/);
     expect(built.code).toBe(0);
+  });
+
+  it('an archive is exactly the bound files and what is made from them, whatever else is in the directory', async () => {
+    await preparedAndSigned();
+    fs.writeFileSync(path.join(out, 'listing', 'members', '.DS_Store'), 'x');
+    fs.writeFileSync(path.join(out, 'listing', 'members', 'manifest.json'), '{"juryParameters":"changed"}');
+    expect((await attach(TRUST_TEST_KEY)).code).toBe(0);
+    const archive = new AdmZip(zipOf('listing'));
+    expect(archive.getEntries().map((e) => e.entryName).sort()).toEqual(['attestation.json', 'baseline.json', 'code_review.json', 'known_issues.json', 'manifest.json', 'primary_query.json']);
+    const manifest = JSON.parse(archive.getEntry('manifest.json').getData().toString('utf8'));
+    expect(manifest.juryParameters).toEqual(codeReview.CODE_STANDARD_PANEL);
+    expect(manifest.codeReview).toBe('code_review.json');
+    expect(codeReview.validateClassEnvelope(manifest.juryParameters, 'code-standard').ok).toBe(true);
+    const spec = JSON.parse(archive.getEntry('code_review.json').getData().toString('utf8'));
+    expect(JSON.parse(archive.getEntry('primary_query.json').getData().toString('utf8')).query).toBe(codeReview.buildClaimQuery(spec));
   });
 
   it('with the real builder set, a signature from another key is refused and no archive is written', async () => {
