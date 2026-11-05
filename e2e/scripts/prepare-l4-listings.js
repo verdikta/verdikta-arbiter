@@ -149,7 +149,8 @@ function assertFrontGates(name, { spec, members }, baseline) {
 function prepare(opts) {
   if (!IMAGE.test(opts.image || '')) throw new Error('--image must name the env image by digest: <repository>@sha256:<64 hex>');
   if (!IMAGE.test(opts.coldImage || '')) throw new Error('--cold-image must name a fresh image by digest: <repository>@sha256:<64 hex>');
-  if (opts.image === opts.coldImage) throw new Error('--cold-image must be another digest than --image');
+  // The digest is what a runner caches by, so the same digest under another name is not cold.
+  if (opts.image.split('@')[1] === opts.coldImage.split('@')[1]) throw new Error('--cold-image must be another digest than --image');
   if (!COMMIT.test(opts.baseCommit || '')) throw new Error('--base-commit must be a whole commit hash');
   const unpackedBytes = Number(opts.unpackedBytes);
   if (!/^[0-9]+$/.test(opts.unpackedBytes || '') || !Number.isSafeInteger(unpackedBytes) || unpackedBytes < 1) throw new Error('--unpacked-bytes must be the size images printed, a whole number of bytes');

@@ -115,6 +115,7 @@ describe('prepare', () => {
     ['an image by tag', ['--image', 'ghcr.io/verdikta/l4-fixture:latest'], /--image/],
     ['a cold image by tag', ['--cold-image', 'ghcr.io/verdikta/l4-fixture:cold'], /--cold-image/],
     ['the same digest twice', ['--cold-image', IMAGE], /another digest/],
+    ['the same digest under another name', ['--cold-image', IMAGE.replace('@', '-cold@')], /another digest/],
     ['an image an arbiter would not pull', ['--image', `registry.example/vault@sha256:${'b'.repeat(64)}`], /outside ghcr\.io\/verdikta/],
     ['a short commit', ['--base-commit', 'abc'], /--base-commit/],
     ['a size that is not a number', ['--unpacked-bytes', '2GB'], /--unpacked-bytes/],
