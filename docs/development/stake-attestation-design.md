@@ -2233,7 +2233,7 @@ decisions of 2026-10-30.
    arbiter, then switch the builder; the old key stays valid for what it attested. A
    compromised key is removed instead, which fails every listing it attested. Steps:
    common's `docs/CODE_REVIEW_SPECIFICATION.md`, "Trusted-builder keys". Sigstore
-   keyless signing and a multi-builder list remain possible later and are not planned.
+   keyless signing and a multi-builder list remain alternatives for later.
 6. **In-process test evidence — decided: allow tier B with the integrity
    checks.** Black-box observation protects against forged results, not against
    a dishonest fixture, so the honesty flags and the jury's fourth question
