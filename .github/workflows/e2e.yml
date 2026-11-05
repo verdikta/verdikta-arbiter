@@ -162,6 +162,11 @@ jobs:
         working-directory: ai-node
         run: npx jest src/__tests__/lib/llm/mock-provider.test.ts
 
+      # The Anthropic SDK's non-streaming limit: the real client against a local stub (A10).
+      - name: AI Node Claude juror at the class output
+        working-directory: ai-node
+        run: npx jest src/__tests__/lib/llm/anthropic-sdk-limit.test.ts
+
       - name: Run the claim suite
         working-directory: e2e
         env:

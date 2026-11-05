@@ -94,9 +94,10 @@ async function askJuror(
   outcomes: string[],
   signal: AbortSignal,
   maxTokens: number,
+  deadlineAt: number,
 ): Promise<{ vector: number[]; justification: string }> {
   const provider = await LLMFactory.getProvider(juror.provider, { signal }) as any;
-  const options = { webAccess: false, signal, maxTokens, effort: CODE_JUROR_EFFORT };
+  const options = { webAccess: false, signal, deadlineAt, maxTokens, effort: CODE_JUROR_EFFORT };
   const reply = stripThinkingBlocks(await provider.generateResponse(prompt, juror.model, options));
   console.log(`⚖️ CODE_JUROR_REPLY: ${juror.provider}:${juror.model} (${reply.length} chars)\n${reply}`);
   const answer = parseCodeJurorReply(reply, outcomes);
@@ -137,7 +138,7 @@ export async function runCodeJury(input: {
     try {
       const work = async () => {
         if (index === 0) await holds.beforeFirstJuror(signal);
-        const reply = await askJuror(juror, input.prompt, input.outcomes, signal, input.maxTokens);
+        const reply = await askJuror(juror, input.prompt, input.outcomes, signal, input.maxTokens, input.juryDeadlineAt);
         if (index === 0) await holds.afterFirstJuror(signal);
         return reply;
       };

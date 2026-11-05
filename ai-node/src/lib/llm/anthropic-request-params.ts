@@ -75,6 +75,7 @@ export function anthropicChatParams(model: string): AnthropicChatParams {
 /** The code-mode controls this module reads (llm-provider-interface.ts, CallControlOptions). */
 export interface AnthropicCallControls {
   signal?: AbortSignal;
+  deadlineAt?: number;
   maxTokens?: number;
   effort?: 'low' | 'medium' | 'high';
 }
@@ -91,7 +92,7 @@ export interface AnthropicCallControls {
  * and Haiku 4.5 reject it). Text mode passes no controls and gets {}.
  */
 export function anthropicControlParams(model: string, controls?: AnthropicCallControls): AnthropicChatParams {
-  if (!controls || (controls.signal === undefined && controls.maxTokens === undefined && controls.effort === undefined)) {
+  if (!controls || (controls.signal === undefined && controls.deadlineAt === undefined && controls.maxTokens === undefined && controls.effort === undefined)) {
     return {};
   }
   const params: AnthropicChatParams = {};
@@ -104,6 +105,26 @@ export function anthropicControlParams(model: string, controls?: AnthropicCallCo
     };
   }
   return params;
+}
+
+/**
+ * The client options for a call with a deadline: the SDK client's own timeout, set to
+ * the time left. A call with no deadline gets {} and the SDK's default, as text mode
+ * always has. The value is read once per client, so call this when creating the client.
+ *
+ * @anthropic-ai/sdk 0.71.2 (nested under @langchain/anthropic) refuses a non-streaming
+ * request above 21,333 max tokens, before sending anything, because it estimates such a
+ * request could take over ten minutes, unless the client has a timeout of its own. Code
+ * mode's 32,000 output tokens need one, and the jury's 240 s ceiling keeps the call far
+ * from ten minutes. The call's AbortSignal is still what cancels it.
+ */
+export function anthropicClientOptions(
+  controls?: AnthropicCallControls,
+  now: number = Date.now(),
+): { clientOptions?: { timeout: number } } {
+  if (controls?.deadlineAt === undefined) return {};
+  // At least 1 ms: a past deadline means the signal has fired or is about to.
+  return { clientOptions: { timeout: Math.max(1, controls.deadlineAt - now) } };
 }
 
 /**
