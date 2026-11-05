@@ -48,13 +48,19 @@ stop_pid() {
   kill -9 "$1" 2>/dev/null || true
 }
 
+clear_lock() {
+  [ -n "$2" ] && [ -e "$1" ] && [ "$(cat "$1")" = "$2" ] && rm -f "$1"
+  return 0
+}
+
 finish() {
   code=$?
   stop_pid "$BATCH_PID"
   stop_pid "$AI_PID"
   stop_pid "$METER_PID"
-  # Theirs, and they are stopped: a child that was killed outright must not hold up the next run.
-  rm -f "$RUN/batch.lock" "$RUN/ledger.jsonl.lock"
+  # A child killed outright must not hold up the next run. Only a lock naming a child of this driver, which is now stopped.
+  clear_lock "$RUN/batch.lock" "$BATCH_PID"
+  clear_lock "$RUN/ledger.jsonl.lock" "$METER_PID"
   printf '{"exit":%d,"at":"%s"}\n' "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN/done.partial"
   rm -rf "$LOCK"
   mv "$RUN/done.partial" "$RUN/done"

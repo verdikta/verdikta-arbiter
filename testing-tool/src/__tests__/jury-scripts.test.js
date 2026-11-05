@@ -3,8 +3,9 @@
 // Node A7d: the shell around a paid run. The whole chain, with the real AI Node and stub providers, is the opt-in
 // test/integration/jury-run.e2e.js; here, what can be held without it.
 
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 
@@ -94,7 +95,33 @@ describe('jury-run.sh', () => {
   });
 
   test('it clears its children\'s locks only after stopping them', () => {
-    expect(text.indexOf('stop_pid "$METER_PID"')).toBeLessThan(text.indexOf('rm -f "$RUN/batch.lock" "$RUN/ledger.jsonl.lock"'));
+    expect(text.indexOf('stop_pid "$METER_PID"')).toBeLessThan(text.indexOf('clear_lock "$RUN/batch.lock"'));
+  });
+
+  test('a driver that stops at the start touches no one else\'s lock, and still marks its end', async () => {
+    const work = path.join(dir, 'work');
+    fs.mkdirSync(path.join(work, 'run'), { recursive: true });
+    fs.mkdirSync(path.join(work, 'node'));
+    fs.symlinkSync(path.dirname(process.execPath), path.join(work, 'node', 'bin'));
+    const lock = path.join(work, 'run', 'ledger.jsonl.lock');
+    fs.writeFileSync(lock, '12345\n');
+    fs.writeFileSync(path.join(work, 'run', 'batch.lock'), '12346\n');
+    const taken = http.createServer((_req, res) => res.end('another service'));
+    await new Promise((resolve) => { taken.listen(0, '127.0.0.1', resolve); });
+    const out = await new Promise((resolve) => {
+      const child = spawn('bash', [path.join(SCRIPTS, 'jury-run.sh'), work, path.join(dir, 'keys.env')], { env: { PATH: process.env.PATH, METER_PORT: String(taken.address().port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+      let text2 = '';
+      child.stdout.on('data', (c) => { text2 += c; });
+      child.on('exit', (code) => resolve({ code, text: text2 }));
+    });
+    taken.closeAllConnections();
+    await new Promise((resolve) => { taken.close(resolve); });
+    expect(out.code).toBe(8);
+    expect(out.text).toMatch(/is taken/);
+    expect(fs.readFileSync(lock, 'utf8')).toBe('12345\n');
+    expect(fs.readFileSync(path.join(work, 'run', 'batch.lock'), 'utf8')).toBe('12346\n');
+    expect(JSON.parse(fs.readFileSync(path.join(work, 'run', 'done'), 'utf8')).exit).toBe(8);
+    expect(fs.existsSync(path.join(work, 'run', 'driver.lock'))).toBe(false);
   });
 
   test('it marks its end however it ends, and stops only what it started', () => {
@@ -102,5 +129,80 @@ describe('jury-run.sh', () => {
     expect(text).toMatch(/stop_pid "\$AI_PID"/);
     expect(text).toMatch(/stop_pid "\$METER_PID"/);
     expect(text).not.toMatch(/pkill|killall/);
+  });
+});
+
+describe('jury-prepare.sh', () => {
+  /** A repository holding the paths its fingerprint reads, and a harness that records each run and writes one scenario. */
+  function prepareWork() {
+    const work = path.join(dir, 'work');
+    const repo = path.join(work, 'repo');
+    const calibration = path.join(repo, 'code-runner', 'calibration');
+    for (const sub of ['cases', 'listings', 'repos', 'lib']) {
+      fs.mkdirSync(path.join(calibration, sub), { recursive: true });
+      fs.writeFileSync(path.join(calibration, sub, 'x'), 'x\n');
+    }
+    fs.mkdirSync(path.join(repo, 'code-runner', 'src'));
+    fs.writeFileSync(path.join(repo, 'code-runner', 'src', 'x'), 'x\n');
+    fs.writeFileSync(path.join(calibration, 'run.js'), `
+      const fs = require('fs');
+      const path = require('path');
+      const args = process.argv.slice(2);
+      if (args[0] === '--list-listings') { console.log(JSON.stringify(['one', 'two'])); process.exit(0); }
+      const at = (flag) => args[args.indexOf(flag) + 1];
+      const listing = at('--listing');
+      fs.appendFileSync(path.join(process.env.HOME, 'runs.txt'), listing + ' ' + process.env.CODE_RUNNER_RUNTIME + '\\n');
+      for (const id of ['adversarial.' + listing, 'adversarial.' + listing + '.control', 'adversarial.injected-critical.control']) {
+        fs.mkdirSync(path.join(at('--export'), id), { recursive: true });
+        fs.writeFileSync(path.join(at('--export'), id, 'scenario.json'), '{}');
+      }
+    `);
+    const git = (...args) => spawnSync('git', ['-C', repo, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' });
+    expect(git('init', '-q').status).toBe(0);
+    git('add', '-A');
+    expect(git('commit', '-q', '-m', 'x').status).toBe(0);
+    fs.mkdirSync(path.join(work, 'node'));
+    fs.symlinkSync(path.dirname(process.execPath), path.join(work, 'node', 'bin'));
+    const run = (runtime, ...listings) => spawnSync('bash', [path.join(SCRIPTS, 'jury-prepare.sh'), work, ...listings], { encoding: 'utf8', env: { PATH: process.env.PATH, CODE_RUNNER_RUNTIME: runtime } });
+    const runs = () => (fs.existsSync(path.join(work, 'runs.txt')) ? fs.readFileSync(path.join(work, 'runs.txt'), 'utf8').trim().split('\n') : []);
+    return { work, repo, git, run, runs };
+  }
+
+  test('claims/ waits for every listing, then holds the claims and the one control', () => {
+    const { work, run } = prepareWork();
+    expect(run('runsc', 'one').status).toBe(0);
+    expect(fs.existsSync(path.join(work, 'claims'))).toBe(false);
+    expect(run('runsc', 'two').status).toBe(0);
+    expect(fs.readdirSync(path.join(work, 'claims')).sort()).toEqual(['adversarial.injected-critical.control', 'adversarial.one', 'adversarial.two']);
+  });
+
+  test('a listing that agreed is not run again', () => {
+    const { run, runs } = prepareWork();
+    run('runsc');
+    run('runsc');
+    expect(runs()).toEqual(['one runsc', 'two runsc']);
+  });
+
+  test('another runtime runs every listing again: nothing is mixed', () => {
+    const { work, run, runs } = prepareWork();
+    run('runc', 'one');
+    expect(run('runsc').status).toBe(0);
+    expect(runs()).toEqual(['one runc', 'one runsc', 'two runsc']);
+    expect(fs.readFileSync(path.join(work, 'prepared', 'one'), 'utf8')).toMatch(/^runsc /);
+  });
+
+  test('a change to the corpus or the runner runs them again; a change elsewhere does not', () => {
+    const { repo, git, run, runs } = prepareWork();
+    run('runsc');
+    fs.writeFileSync(path.join(repo, 'README.md'), 'words\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'docs');
+    run('runsc');
+    expect(runs()).toHaveLength(2);
+    fs.writeFileSync(path.join(repo, 'code-runner', 'calibration', 'cases', 'x'), 'changed\n');
+    git('add', '-A');
+    git('commit', '-q', '-m', 'a case');
+    run('runsc');
+    expect(runs()).toHaveLength(4);
   });
 });

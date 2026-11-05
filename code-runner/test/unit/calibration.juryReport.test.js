@@ -261,6 +261,20 @@ test('main holds a verdict to the report the results name', () => {
   }
 });
 
+test('results from two runners are refused: one report is about one', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jury-report-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'results'));
+    fs.writeFileSync(path.join(dir, 'results', 'a.json'), JSON.stringify({ runner: { runtime: 'runsc' }, cases: [] }));
+    fs.writeFileSync(path.join(dir, 'results', 'b.json'), JSON.stringify({ runner: { runtime: 'runc' }, cases: [] }));
+    assert.throws(() => main(['--batch', dir, '--results', path.join(dir, 'results'), '--date', '2026-11-05', '--out', path.join(dir, 'out')], {
+      root: CALIBRATION, readLedger: () => ({ calls: [], totalUsd: 0, open: 0 }), stdout: () => {}
+    }), /another runner/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('the command refuses what it does not know', () => {
   assert.throws(() => main(['--batch', 'b'], { readLedger: () => ({}) }), /--results/);
   assert.throws(() => main(['--batch', 'b', '--results', 'r', '--date', 'today', '--out', 'o'], { readLedger: () => ({}) }), /--date/);

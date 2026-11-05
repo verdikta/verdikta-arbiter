@@ -322,6 +322,8 @@ function readRunnerResults(dir) {
   let info = null;
   for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.json')).sort()) {
     const file = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
+    // One report is about one runner: results from two would be mixed under the first one's name.
+    if (info && file.runner && JSON.stringify(info) !== JSON.stringify(file.runner)) throw new Error(`${name} comes from another runner than the other results: ${JSON.stringify(file.runner)} and ${JSON.stringify(info)}`);
     info = info || file.runner;
     for (const entry of file.cases) if (!runner.has(entry.id)) runner.set(entry.id, { actual: entry.actual, disagreements: entry.disagreements, reportSha256: entry.observed ? entry.observed.reportSha256 : null, packSha256: entry.observed ? entry.observed.packSha256 : null });
   }
