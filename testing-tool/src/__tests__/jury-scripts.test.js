@@ -152,6 +152,7 @@ describe('jury-prepare.sh', () => {
       const at = (flag) => args[args.indexOf(flag) + 1];
       const listing = at('--listing');
       fs.appendFileSync(path.join(process.env.HOME, 'runs.txt'), listing + ' ' + process.env.CODE_RUNNER_RUNTIME + '\\n');
+      if (fs.existsSync(path.join(process.env.HOME, 'fail-now'))) process.exit(1);
       for (const id of ['adversarial.' + listing, 'adversarial.' + listing + '.control', 'adversarial.injected-critical.control']) {
         fs.mkdirSync(path.join(at('--export'), id), { recursive: true });
         fs.writeFileSync(path.join(at('--export'), id, 'scenario.json'), '{}');
@@ -189,6 +190,33 @@ describe('jury-prepare.sh', () => {
     expect(run('runsc').status).toBe(0);
     expect(runs()).toEqual(['one runc', 'one runsc', 'two runsc']);
     expect(fs.readFileSync(path.join(work, 'prepared', 'one'), 'utf8')).toMatch(/^runsc /);
+  });
+
+  test('a run that fails leaves no marker: going back to the first runtime runs it again', () => {
+    const { work, run, runs } = prepareWork();
+    run('runsc');
+    fs.writeFileSync(path.join(work, 'fail-now'), '');
+    expect(run('runc', 'one').status).toBe(1);
+    expect(fs.existsSync(path.join(work, 'prepared', 'one'))).toBe(false);
+    fs.rmSync(path.join(work, 'fail-now'));
+    run('runsc');
+    expect(runs()).toEqual(['one runsc', 'two runsc', 'one runc', 'one runsc']);
+  });
+
+  test('one writer of claims/: while another holds it, nothing is touched', () => {
+    const { work, run } = prepareWork();
+    run('runsc');
+    const before = fs.readdirSync(path.join(work, 'claims')).sort();
+    fs.mkdirSync(path.join(work, 'claims.lock'));
+    fs.rmSync(path.join(work, 'claims', before[0]), { recursive: true });
+    const out = run('runsc');
+    expect(out.status).toBe(0);
+    expect(out.stdout).toMatch(/another process is writing/);
+    expect(fs.readdirSync(path.join(work, 'claims')).sort()).toEqual(before.slice(1));
+    fs.rmSync(path.join(work, 'claims.lock'), { recursive: true });
+    run('runsc');
+    expect(fs.readdirSync(path.join(work, 'claims')).sort()).toEqual(before);
+    expect(fs.readdirSync(work).filter((name) => name.startsWith('claims.'))).toEqual([]);
   });
 
   test('a change to the corpus or the runner runs them again; a change elsewhere does not', () => {

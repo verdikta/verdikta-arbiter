@@ -44,6 +44,8 @@ for listing in ${*:-$listings}; do
     continue
   fi
   echo "jury-prepare: $listing"
+  # The run replaces what the marker vouches for, so the marker goes first: a run that fails leaves none.
+  rm -f "$WORK/prepared/$listing"
   code=0
   run --listing "$listing" --results "$WORK/results/$listing.json" --measured "$WORK/measured" --export "$WORK/exports/$listing" || code=$?
   echo "jury-prepare: $listing exit $code"
@@ -55,13 +57,21 @@ for listing in $listings; do
   current "$listing" || { echo "jury-prepare: $listing is not done yet, so claims/ is not written"; exit 0; }
 done
 
-rm -rf "$WORK/claims"
-mkdir -p "$WORK/claims"
+# One writer, and claims/ appears whole: the batch reads whatever is there.
+if ! mkdir "$WORK/claims.lock" 2>/dev/null; then
+  echo "jury-prepare: another process is writing claims/ ($WORK/claims.lock)"
+  exit 0
+fi
+NEW="$WORK/claims.new.$$"
+trap 'rm -rf "$WORK/claims.lock" "$NEW"' EXIT
+mkdir "$NEW" || exit 1
 for folder in "$WORK"/exports/*/*/; do
   id=$(basename "$folder")
   case "$id" in
     *.control) case "$JURY_CONTROLS" in *" $id "*) ;; *) continue ;; esac ;;
   esac
-  cp -R "$folder" "$WORK/claims/$id"
+  cp -R "${folder%/}" "$NEW/$id" || { echo "jury-prepare: $id could not be copied, so claims/ is not written"; exit 1; }
 done
+rm -rf "$WORK/claims"
+mv "$NEW" "$WORK/claims" || exit 1
 echo "jury-prepare: $(ls "$WORK/claims" | wc -l) scenario(s) in claims/"
