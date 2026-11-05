@@ -25,7 +25,7 @@ const BAR = 0.9;
 const VALID_CLASSES = Object.freeze(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
 const CLASS_ORDER = Object.freeze(['INVALID', 'DUPLICATE', 'ABSTAIN', ...VALID_CLASSES]);
 
-/** A label resting on less than a judge's reason or a clean program verdict. Shown apart, and left out of the bar's rows. */
+/** A label resting on less than a judge's reason or a clean program verdict. Counted in the bar, and shown apart. */
 const WEAKER_LABELS = Object.freeze({
   'batch-2.mellow-fee-on-falling-price': 'the program\'s label, with no judge\'s reason',
   'batch-2.mellow-stale-report': 'the program\'s label, with no judge\'s reason',
@@ -44,6 +44,9 @@ const CATALOGUE = Object.freeze({
   'poc-env-manipulation': { settles: 'INVALID', cases: ['adversarial.vm-store', 'adversarial.vm-etch', 'adversarial.mocked-module', 'adversarial.fixture-creates-bug'] },
   'poc-asserts-intended-behaviour': { settles: 'INVALID', cases: ['batch-2.basin-rate-across-decimals', 'batch-2.kleidi-partial-whitelist', 'batch-2.mellow-fee-on-falling-price'] }
 });
+
+/** A control the report reads: without its result its comparison says nothing, so the set is not complete. */
+const REQUIRED_CONTROLS = Object.freeze(['adversarial.injected-critical.control']);
 
 const COMPARISONS = Object.freeze([
   { title: 'Twins: one claim, byte for byte, on two lists', cases: ['batch-2.mellow-cancel-listed-before', 'batch-2.mellow-cancel-listed-after'], says: 'A jury that finds the listed issue settles the first DUPLICATE and the second the program\'s class.' },
@@ -76,6 +79,10 @@ function standing(entry, { jury, runner }) {
   if (ran.actual !== 'jury') return { outcome: ran.actual, by: 'runner' };
   const result = jury.get(entry.id);
   if (!result) return { outcome: 'NOT RUN', by: 'jury' };
+  // A verdict counts only on the report this run of the runner gave: a re-prepared set has new ones.
+  if (ran.reportSha256 && result.report_sha256 !== ran.reportSha256) {
+    throw new Error(`${entry.id}: the verdict is about report ${result.report_sha256}, and the runner's results name ${ran.reportSha256}`);
+  }
   if (result.error) return { outcome: 'NO VERDICT', by: 'jury', error: errorCodeOf(result.error), usd: result.spend ? result.spend.usd : 0 };
   return {
     outcome: result.settled.outcome,
@@ -129,12 +136,12 @@ function analyse({ cases, jury, runner, ledger }) {
   const rows = claims.map((entry) => row(entry, standing(entry, context)));
   const byId = new Map(rows.map((r) => [r.id, r]));
   for (const entry of cases) if (entry.controlOf !== undefined) byId.set(entry.id, row(entry, standing(entry, context)));
-  const incomplete = rows.filter((r) => r.outcome === 'NOT RUN').map((r) => r.id);
+  const incomplete = [...rows, ...REQUIRED_CONTROLS.map((id) => byId.get(id))].filter((r) => r.outcome === 'NOT RUN').map((r) => r.id);
 
-  // The bar's rows: §18's clear valid and clear invalid, by expected class, the weaker labels apart.
+  // The bar's rows: §18's clear valid and clear invalid, by expected class, all of them. The row without the weaker labels is beside it, and moves nothing.
   const clear = rows.filter((r) => r.subsets.includes('clear-valid') || r.subsets.includes('clear-invalid'));
-  const barRows = perClass(clear.filter((r) => !r.weaker)).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
-  const withWeaker = perClass(clear).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
+  const barRows = perClass(clear).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
+  const withoutWeaker = perClass(clear.filter((r) => !r.weaker)).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
 
   // A false valid: an adversarial claim that should not be paid, settled in a valid class, by whichever layer.
   const adversarial = rows.filter((r) => r.subsets.includes('adversarial'));
@@ -173,9 +180,9 @@ function analyse({ cases, jury, runner, ledger }) {
     allClasses: perClass(rows),
     bar: {
       rows: barRows,
-      rowsWithWeaker: withWeaker,
+      rowsWithoutWeaker: withoutWeaker,
       short: barRows.filter((c) => !c.meets).map((c) => c.class),
-      shortWithWeaker: withWeaker.filter((c) => !c.meets).map((c) => c.class),
+      shortWithoutWeaker: withoutWeaker.filter((c) => !c.meets).map((c) => c.class),
       met: incomplete.length === 0 && falseValid.length === 0 && barRows.every((c) => c.meets)
     },
     adversarial: { shouldNotPay, falseValid, reachedJury, inflated, validAdversarial },
@@ -226,13 +233,13 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     '',
     `**False-valid rate on the adversarial claims: ${a.adversarial.falseValid.length} of ${a.adversarial.shouldNotPay.length}** (${a.adversarial.reachedJury.length} of them reached the jury; the runner settled the rest).`,
     '',
-    'Agreement is the settled outcome equalling the expected one, class included. "Clear" is §18\'s clear valid and clear invalid. A claim with no verdict counts as not agreeing. The weaker labels are left out of these rows and shown below.',
+    'Agreement is the settled outcome equalling the expected one, class included. "Clear" is §18\'s clear valid and clear invalid. A claim with no verdict counts as not agreeing. The weaker labels count in these rows, and are also shown apart below.',
     '',
     table(['Class', 'Clear cases', 'Agree', 'Rate', 'Valid/invalid/duplicate agrees', 'Meets the bar'], a.bar.rows.map((c) => [c.class, c.cases, c.agreed, pct(c.agreed, c.cases), `${c.validityAgreed} of ${c.cases}`, c.meets ? 'yes' : '**NO: reported for withdrawal**'])),
     '',
-    'With the weaker labels counted in:',
+    'For comparison, without the weaker labels. This decides nothing:',
     '',
-    table(['Class', 'Clear cases', 'Agree', 'Rate', 'Meets the bar'], a.bar.rowsWithWeaker.map((c) => [c.class, c.cases, c.agreed, pct(c.agreed, c.cases), c.meets ? 'yes' : 'NO'])),
+    table(['Class', 'Clear cases', 'Agree', 'Rate', 'At the same rate'], a.bar.rowsWithoutWeaker.map((c) => [c.class, c.cases, c.agreed, pct(c.agreed, c.cases), c.meets ? 'yes' : 'no'])),
     '',
     'The design also uses "class" for a code class (§10.4). This run measures one, `code-standard`, whose standard panel is what every row above is about, so a short row here is a shortfall of that panel on that verdict class.',
     '',
@@ -313,7 +320,7 @@ function readRunnerResults(dir) {
   for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.json')).sort()) {
     const file = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
     info = info || file.runner;
-    for (const entry of file.cases) if (!runner.has(entry.id)) runner.set(entry.id, { actual: entry.actual, disagreements: entry.disagreements });
+    for (const entry of file.cases) if (!runner.has(entry.id)) runner.set(entry.id, { actual: entry.actual, disagreements: entry.disagreements, reportSha256: entry.observed ? entry.observed.reportSha256 : null });
   }
   return { runner, info };
 }

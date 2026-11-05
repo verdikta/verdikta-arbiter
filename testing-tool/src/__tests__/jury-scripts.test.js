@@ -36,6 +36,23 @@ describe('jury-check-no-keys.sh', () => {
     expect(`${out.stdout}${out.stderr}`).not.toContain(value);
   });
 
+  test('a path that does not exist is no pass', () => {
+    const out = check(path.join(dir, 'nowhere'));
+    expect(out.status).toBe(3);
+    expect(out.stdout).toMatch(/nothing is known/);
+  });
+
+  test('a scan that fails is no pass', () => {
+    const noRead = path.join(dir, 'logs', 'c.log');
+    fs.writeFileSync(noRead, 'text\n');
+    const bin = path.join(dir, 'bin');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'grep'), `#!/bin/bash\nif [[ "$*" == *-rlF* ]]; then exit 2; fi\nexec /usr/bin/grep "$@"\n`, { mode: 0o755 });
+    const out = spawnSync('bash', [path.join(SCRIPTS, 'jury-check-no-keys.sh'), path.join(dir, 'keys.env'), path.join(dir, 'logs')], { encoding: 'utf8', env: { PATH: `${bin}:${process.env.PATH}` } });
+    expect(out.status).toBe(3);
+    expect(out.stdout).toMatch(/scan failed/);
+  });
+
   test('a key file with nothing in it is not a pass', () => {
     fs.writeFileSync(path.join(dir, 'keys.env'), '# empty\n');
     expect(check(path.join(dir, 'logs')).status).toBe(2);
@@ -65,6 +82,15 @@ describe('jury-run.sh', () => {
       expect(lines.filter((line) => /set -x|^\s*env\s*$|\bprintenv\b(?!.*"\$name")/.test(line))).toEqual([]);
       expect(lines).toContain('set +x');
     }
+  });
+
+  test('a TERM stops the batch first: it runs in the background and is waited for', () => {
+    expect(text).toMatch(/--ai-node-url "http:\/\/127\.0\.0\.1:\$AI_PORT" "\$@" &\nBATCH_PID=\$!\nwait "\$BATCH_PID"/);
+    expect(text.indexOf('stop_pid "$BATCH_PID"')).toBeLessThan(text.indexOf('stop_pid "$AI_PID"'));
+  });
+
+  test('a second driver stops before it touches the first one\'s marker', () => {
+    expect(text.indexOf('mkdir "$LOCK"')).toBeLessThan(text.indexOf('rm -f "$RUN/done"'));
   });
 
   test('it marks its end however it ends, and stops only what it started', () => {

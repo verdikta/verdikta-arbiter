@@ -90,7 +90,12 @@ function createMeter({ ledgerFile, callsDir, stopUsd, upstreams = DEFAULT_UPSTRE
       // Past close() the reservation stands, which is the worst case the call could have cost.
       if (settled || closing) return;
       settled = true;
-      ledger.settle(id, fields);
+      try {
+        ledger.settle(id, fields);
+      } catch (error) {
+        // The call stays at its reservation, and the ledger now refuses every call.
+        process.stderr.write(`meter: the ledger could not record a call's cost: ${error.message}\n`);
+      }
     };
     const client = upstream.protocol === 'https:' ? https : http;
     const out = client.request({
@@ -151,7 +156,13 @@ function createMeter({ ledgerFile, callsDir, stopUsd, upstreams = DEFAULT_UPSTRE
       } catch (_error) {
         return refuse(res, 400, 'meter_refused', `no list price for ${parsed.model}, so this call cannot be counted`);
       }
-      const id = ledger.reserve({ usd: reservedUsd, model: parsed.model });
+      let id;
+      try {
+        id = ledger.reserve({ usd: reservedUsd, model: parsed.model });
+      } catch (error) {
+        process.stderr.write(`meter: a call was refused: ${error.message}\n`);
+        return refuse(res, 402, 'spend_stop', 'the ledger could not record this call, so it is not sent');
+      }
       if (id === null) return refuse(res, 402, 'spend_stop', `this call could take the run past its limit of USD ${stopUsd}`);
       return forward(req, res, route, parsed.model, reservedUsd, id, body);
     });

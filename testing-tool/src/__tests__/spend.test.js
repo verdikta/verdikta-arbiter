@@ -49,12 +49,17 @@ describe('usageOf', () => {
 });
 
 describe('reservationUsd', () => {
-  test('two bytes a token and the whole output ceiling: at least what the call could cost', () => {
-    expect(reservationUsd('claude-sonnet-5-5', 200000, 8000)).toBeCloseTo((100000 * 2) / 1e6 + (8000 * 10) / 1e6, 6);
+  test('one byte a token and the whole output ceiling: no input could cost more', () => {
+    expect(reservationUsd('claude-sonnet-5-5', 200000, 8000)).toBeCloseTo((200000 * 2) / 1e6 + (8000 * 10) / 1e6, 6);
+  });
+
+  test.each([['constructor'], ['__proto__'], ['toString'], ['hasOwnProperty']])('%s is no model: it has no price, and so never a NaN', (model) => {
+    expect(() => reservationUsd(model, 10, 10)).toThrow(/price/);
+    expect(() => usageOf(model, { usage: { input_tokens: 1, output_tokens: 1 } })).toThrow(/price/);
   });
 
   test('Haiku past 100K input tokens reserves at its higher price', () => {
-    expect(reservationUsd('claude-haiku-5-5', 400000, 1000)).toBeCloseTo((200000 * 0.5) / 1e6 + (1000 * 2.5) / 1e6, 6);
+    expect(reservationUsd('claude-haiku-5-5', 200000, 1000)).toBeCloseTo((200000 * 0.5) / 1e6 + (1000 * 2.5) / 1e6, 6);
   });
 
   test('a call that names no ceiling reserves the large default, never nothing', () => {
@@ -138,6 +143,68 @@ describe('Ledger', () => {
     expect(readLedger(file()).totalUsd).toBeCloseTo(0.5, 6);
     fs.appendFileSync(file(), '\n{"kind":"reserve","id":"x","usd":0.1,"model":"b"}\n');
     expect(() => readLedger(file())).toThrow(/line 2/);
+  });
+
+  test('a restart cuts a torn tail off, so a new row is not joined to it', () => {
+    const first = new Ledger(file(), { stopUsd: 1 });
+    first.reserve({ usd: 0.5, model: 'a' });
+    first.close();
+    fs.appendFileSync(file(), '{"kind":"settle","id":');
+    const second = new Ledger(file(), { stopUsd: 1 });
+    second.reserve({ usd: 0.25, model: 'b' });
+    second.close();
+    const read = readLedger(file());
+    expect(read.totalUsd).toBeCloseTo(0.75, 6);
+    expect(read.open).toBe(2);
+  });
+
+  test('a write that fails stops the ledger: the call is not authorised, then or later', () => {
+    const ledger = new Ledger(file(), { stopUsd: 1 });
+    const real = fs.writeSync;
+    const spy = jest.spyOn(fs, 'writeSync').mockImplementationOnce(() => { throw Object.assign(new Error('no space'), { code: 'ENOSPC' }); });
+    expect(() => ledger.reserve({ usd: 0.1, model: 'a' })).toThrow(/no space/);
+    spy.mockRestore();
+    expect(fs.writeSync).toBe(real);
+    expect(() => ledger.reserve({ usd: 0.1, model: 'a' })).toThrow(/nothing further/);
+    ledger.close();
+  });
+
+  test('a short write is finished, and is one whole row', () => {
+    const ledger = new Ledger(file(), { stopUsd: 1 });
+    const real = fs.writeSync;
+    const spy = jest.spyOn(fs, 'writeSync').mockImplementation((fd, bytes, at) => real(fd, bytes, at, Math.min(7, bytes.length - at)));
+    ledger.reserve({ usd: 0.1, model: 'a' });
+    spy.mockRestore();
+    ledger.close();
+    expect(readLedger(file()).open).toBe(1);
+  });
+
+  test('NaN cannot be reserved: it would disable the limit for everything after it', () => {
+    const ledger = new Ledger(file(), { stopUsd: 1 });
+    expect(() => ledger.reserve({ usd: NaN, model: 'a' })).toThrow(/cannot be counted/);
+    expect(ledger.totalUsd()).toBe(0);
+    ledger.close();
+  });
+
+  test('settling that fails leaves the call at its reservation', () => {
+    const ledger = new Ledger(file(), { stopUsd: 1 });
+    const id = ledger.reserve({ usd: 0.5, model: 'a' });
+    const spy = jest.spyOn(fs, 'writeSync').mockImplementationOnce(() => { throw new Error('no space'); });
+    expect(() => ledger.settle(id, { usd: 0.1, basis: 'reported', status: 200 })).toThrow(/no space/);
+    spy.mockRestore();
+    expect(ledger.totalUsd()).toBeCloseTo(0.5, 6);
+    ledger.close();
+  });
+
+  test('a second writer is refused while the first lives, and takes over from a dead one', () => {
+    const ledger = new Ledger(file(), { stopUsd: 1 });
+    expect(() => new Ledger(file(), { stopUsd: 1 })).toThrow(/already held by process/);
+    ledger.close();
+    fs.writeFileSync(`${file()}.lock`, '99999999\n');
+    const next = new Ledger(file(), { stopUsd: 1 });
+    expect(fs.readFileSync(`${file()}.lock`, 'utf8').trim()).toBe(String(process.pid));
+    next.close();
+    expect(fs.existsSync(`${file()}.lock`)).toBe(false);
   });
 
   test('a missing ledger is an empty one', () => {

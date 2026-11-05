@@ -14,7 +14,8 @@
  * It stops by itself, and the reason is in the summary and the exit code: before a claim whose worst case would pass
  * the limit; when the meter has refused a call; after errors in a row, which is an outage or a key rather than a
  * measurement; when the AI Node cannot be reached; and when a verdict arrives with no provider call in the ledger,
- * which means the money is not going through the meter.
+ * which means the money is not going through the meter. A result about another report than the scenario's stops it too:
+ * re-preparing makes new reports, and a verdict on the old one is not a verdict on this one.
  */
 
 const fs = require('fs');
@@ -22,9 +23,9 @@ const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { buildClaimRequest, CLAIM_DEADLINE_MS } = require('./claim-scenarios');
 const { runClaimScenario } = require('./claim-runner');
-const { readLedger, worstCaseClaimUsd } = require('./spend');
+const { acquireLock, readLedger, worstCaseClaimUsd } = require('./spend');
 
-const EXIT = Object.freeze({ FINISHED: 0, WITH_ERRORS: 1, BUDGET: 4, ERRORS_IN_A_ROW: 5, AI_NODE_GONE: 6, UNMETERED: 7 });
+const EXIT = Object.freeze({ FINISHED: 0, WITH_ERRORS: 1, BUDGET: 4, ERRORS_IN_A_ROW: 5, AI_NODE_GONE: 6, UNMETERED: 7, STALE_RESULT: 8 });
 const MAX_ERRORS_IN_A_ROW = 3;
 const OUTCOME_MASS = 1000000;
 
@@ -35,50 +36,78 @@ function writeWhole(file, value) {
   fs.renameSync(partial, file);
 }
 
-/** The reply's text, from either provider's answer. */
+/** The reply's text, from either provider's answer, as the AI Node reads it: without thinking blocks (jury.ts). */
 function replyText(body) {
   if (!body || typeof body !== 'object') return null;
-  if (Array.isArray(body.content)) return body.content.filter((block) => block && block.type === 'text').map((block) => block.text).join('');
-  const content = body.choices && body.choices[0] && body.choices[0].message && body.choices[0].message.content;
-  return typeof content === 'string' ? content : null;
+  let text = null;
+  if (Array.isArray(body.content)) text = body.content.filter((block) => block && block.type === 'text').map((block) => block.text).join('');
+  else if (body.choices && body.choices[0] && body.choices[0].message && typeof body.choices[0].message.content === 'string') text = body.choices[0].message.content;
+  return text === null ? null : text.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
 }
 
-/** One juror's scores from one reply: the JSON object code mode asks for, bare or in one fence, on any scale (a repair's). */
-function scoresIn(text) {
+/** A juror's first reply, as parseCodeJurorReply takes it: one JSON object, bare or in one fence, of integers summing to the total. */
+function strictScores(text) {
   if (typeof text !== 'string') return null;
-  const fenced = /^```(?:json)?[ \t]*\n([\s\S]*?)\n?```$/i.exec(text.trim());
+  const fenced = /^```(?:json)?[ \t]*\n([\s\S]*?)\n?```$/i.exec(text);
   let parsed;
   try {
-    parsed = JSON.parse(fenced ? fenced[1] : text.trim());
+    parsed = JSON.parse(fenced ? fenced[1] : text);
   } catch (_error) {
     return null;
   }
   const score = parsed && parsed.score;
-  if (!Array.isArray(score) || score.length !== codeReview.BUG_OUTCOMES.length || !score.every((v) => typeof v === 'number' && v >= 0)) return null;
+  if (!Array.isArray(score) || score.length !== codeReview.BUG_OUTCOMES.length || typeof parsed.justification !== 'string') return null;
+  if (!score.every((v) => Number.isInteger(v) && v >= 0) || score.reduce((a, b) => a + b, 0) !== OUTCOME_MASS) return null;
+  return score;
+}
+
+/** A repair call's reply, as parseRepairedScores takes it: the last score list in it, on any scale. */
+function repairedScores(text) {
+  if (typeof text !== 'string') return null;
+  const found = Array.from(text.matchAll(/"score"\s*:\s*\[([^\]]*)\]/g));
+  if (found.length === 0) return null;
+  const score = found[found.length - 1][1].split(',').map((item) => Number(item.trim()));
+  if (score.length !== codeReview.BUG_OUTCOMES.length || !score.every((v) => Number.isFinite(v) && v >= 0)) return null;
   const sum = score.reduce((a, b) => a + b, 0);
-  if (sum <= 0) return null;
-  return sum === OUTCOME_MASS ? score : score.map((v) => Math.round((v * OUTCOME_MASS) / sum));
+  return sum > 0 ? score.map((v) => Math.round((v * OUTCOME_MASS) / sum)) : null;
 }
 
 /**
- * What each juror said, for the report: the AI Node gives only the panel's average. The last readable answer of the
- * model counts: a repair call follows prose, and a retry repeats the jury.
+ * What each juror said, for the report: the AI Node gives only the panel's average. A reply it could not read is followed
+ * by a repair call, and a retry repeats the jury, so the last answer that was read counts. The average is the check: if
+ * these vectors do not give the claim's vector, they are not what was used, and none is reported.
  * @param {object[]} calls - this claim's ledger rows
- * @param {{AI_NODES: Array<{AI_MODEL:string}>}} juryParameters
+ * @param {{AI_NODES: Array<{AI_MODEL:string, WEIGHT:number}>}} juryParameters
  * @param {string} callsDir
+ * @param {number[]|null} [claimVector]
  * @returns {Array<{model:string, vector:number[]|null}>}
  */
-function jurorVectors(calls, juryParameters, callsDir) {
-  return juryParameters.AI_NODES.map(({ AI_MODEL: model }) => {
+function jurorVectors(calls, juryParameters, callsDir, claimVector = null) {
+  const jurors = juryParameters.AI_NODES.map(({ AI_MODEL: model }) => {
     let vector = null;
+    let repairNext = false;
     for (const call of calls) {
       if (call.model !== model || !call.response) continue;
       const saved = JSON.parse(fs.readFileSync(path.join(callsDir, call.response), 'utf8'));
-      const scores = scoresIn(replyText(saved.body));
-      if (scores) vector = scores;
+      if (saved.status < 200 || saved.status >= 300) continue;
+      const text = replyText(saved.body);
+      if (repairNext) {
+        vector = repairedScores(text);
+        repairNext = false;
+      } else {
+        vector = strictScores(text);
+        repairNext = vector === null;
+      }
     }
     return { model, vector };
   });
+  if (!claimVector || jurors.some((juror) => !juror.vector)) return jurors;
+  const total = juryParameters.AI_NODES.reduce((sum, node) => sum + node.WEIGHT, 0);
+  const consistent = claimVector.every((mass, i) => {
+    const mean = juryParameters.AI_NODES.reduce((sum, node, j) => sum + (jurors[j].vector[i] * node.WEIGHT) / total, 0);
+    return Math.abs(mean - mass) <= 2;
+  });
+  return consistent ? jurors : jurors.map(({ model }) => ({ model, vector: null }));
 }
 
 const costOf = (calls) => calls.reduce((sum, call) => sum + call.usd, 0);
@@ -114,6 +143,16 @@ async function runClaimBatch(scenarios, {
   runOne = (scenario) => runClaimScenario(scenario, { aiNodeUrl }), log = (line) => process.stdout.write(`${line}\n`)
 }) {
   await assertMeter(meterHealth, { stopUsd, ledgerFile });
+  fs.mkdirSync(batchDir, { recursive: true });
+  const releaseLock = acquireLock(path.join(batchDir, 'batch.lock'), 'this batch directory');
+  try {
+    return await runLocked(scenarios, { batchDir, ledgerFile, stopUsd, retryErrored, justifierModel, runOne, log });
+  } finally {
+    releaseLock();
+  }
+}
+
+async function runLocked(scenarios, { batchDir, ledgerFile, stopUsd, retryErrored, justifierModel, runOne, log }) {
   const callsDir = path.join(batchDir, 'calls');
   const fileOf = (id) => path.join(batchDir, 'claims', `${id}.json`);
   const readResult = (id) => (fs.existsSync(fileOf(id)) ? JSON.parse(fs.readFileSync(fileOf(id), 'utf8')) : null);
@@ -139,6 +178,10 @@ async function runClaimBatch(scenarios, {
   for (const scenario of scenarios) {
     const id = scenario.scenario_id;
     const earlier = readResult(id);
+    if (earlier && earlier.report_sha256 !== scenario.input.reportSha256) {
+      log(`claim batch: ${id}: its saved result is about report ${earlier.report_sha256}, and this scenario's is ${scenario.input.reportSha256}`);
+      return finish('stale-result', EXIT.STALE_RESULT);
+    }
     if (earlier && !(earlier.error && retryErrored)) continue;
 
     const request = buildClaimRequest(scenario, { deadlineMs: CLAIM_DEADLINE_MS });
@@ -181,7 +224,7 @@ async function runClaimBatch(scenarios, {
     }
     writeWhole(fileOf(id), {
       ...result,
-      jurors: jurorVectors(calls, scenario.input.juryParameters, callsDir),
+      jurors: jurorVectors(calls, scenario.input.juryParameters, callsDir, result.vector),
       spend: {
         usd: costOf(calls),
         calls: calls.map(({ model, status, basis, usd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reportedUsd }) => ({ model, status, basis, usd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reportedUsd }))
@@ -199,4 +242,4 @@ async function runClaimBatch(scenarios, {
   return finish('finished', anyError ? EXIT.WITH_ERRORS : EXIT.FINISHED);
 }
 
-module.exports = { runClaimBatch, jurorVectors, scoresIn, EXIT, MAX_ERRORS_IN_A_ROW };
+module.exports = { runClaimBatch, jurorVectors, EXIT, MAX_ERRORS_IN_A_ROW };

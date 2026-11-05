@@ -114,6 +114,7 @@ describe('forwarding', () => {
 
   test.each([
     ['a model with no price', { model: 'gpt-6-sol', max_tokens: 10 }],
+    ['a model named after an inherited property', { model: 'constructor', max_tokens: 10 }],
     ['a body that is not JSON', 'not json'],
     ['a streamed call, whose usage this meter could not read', { ...SONNET, stream: true }]
   ])('%s is refused and never sent', async (_name, body) => {
@@ -234,11 +235,27 @@ describe('the hard stop', () => {
     expect(provider.seen).toHaveLength(1);
   });
 
+  test('a ledger that cannot be written sends nothing', async () => {
+    const { provider, port } = await start();
+    const spy = jest.spyOn(fs, 'writeSync').mockImplementationOnce(() => { throw new Error('no space'); });
+    const stderr = jest.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    const res = await post(port, '/anthropic/v1/messages', SONNET);
+    spy.mockRestore();
+    stderr.mockRestore();
+    expect(res.status).toBe(402);
+    expect(provider.seen).toHaveLength(0);
+  });
+
+  test('a second meter on one ledger does not start', async () => {
+    const { ledgerFile, callsDir } = await start();
+    expect(() => createMeter({ ledgerFile, callsDir, stopUsd: 10 })).toThrow(/already held/);
+  });
+
   test('the total survives a restart of the meter', async () => {
-    const { port, meter } = await start({ stopUsd: 0.1 });
+    const { port, meter } = await start({ stopUsd: 0.2 });
     await post(port, '/anthropic/v1/messages', SONNET);
     await meter.close();
-    const again = createMeter({ ledgerFile: path.join(dir, 'ledger.jsonl'), callsDir: path.join(dir, 'calls'), stopUsd: 0.083, upstreams: { anthropic: 'http://127.0.0.1:1', openrouter: 'http://127.0.0.1:1' } });
+    const again = createMeter({ ledgerFile: path.join(dir, 'ledger.jsonl'), callsDir: path.join(dir, 'calls'), stopUsd: 0.08, upstreams: { anthropic: 'http://127.0.0.1:1', openrouter: 'http://127.0.0.1:1' } });
     const { port: next } = await again.listen(0);
     closers.push(() => again.close());
     const res = await post(next, '/anthropic/v1/messages', SONNET);

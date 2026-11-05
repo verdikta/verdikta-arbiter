@@ -89,11 +89,11 @@ test('every claim as labelled meets the bar', () => {
   for (const c of a.catalogue) assert.equal(c.holds, true, c.name);
 });
 
-test('the bar\'s rows leave out the weaker labels: clear valid and clear invalid, 14 and 3 after them', () => {
+test('the bar\'s rows hold every clear case; the rows without the weaker labels decide nothing', () => {
   const a = analyse(world());
   const sum = (rows) => rows.reduce((n, r) => n + r.cases, 0);
-  assert.equal(sum(a.bar.rows), 14 + 3);
-  assert.equal(sum(a.bar.rowsWithWeaker), 17 + 6);
+  assert.equal(sum(a.bar.rows), 17 + 6);
+  assert.equal(sum(a.bar.rowsWithoutWeaker), 14 + 3);
   assert.equal(a.weaker.length, 8);
 });
 
@@ -117,10 +117,11 @@ test('a miss on a clear class short of 90% reports that class for withdrawal; 7 
   assert.equal(high.validityAgreed, high.cases, 'the verdict was right about validity: it says so beside the class');
 });
 
-test('a miss on a weaker label alone leaves the bar, and shows in the row with them', () => {
+test('a miss on a weaker label counts against the bar, and is shown apart', () => {
   const a = analyse(world({ 'batch-2.mellow-stale-report': verdict('MEDIUM') }));
-  assert.equal(a.bar.met, true);
-  assert.deepEqual(a.bar.shortWithWeaker, ['INVALID']);
+  assert.equal(a.bar.met, false);
+  assert.deepEqual(a.bar.short, ['INVALID']);
+  assert.deepEqual(a.bar.shortWithoutWeaker, []);
   const row = a.weaker.find((r) => r.id === 'batch-2.mellow-stale-report');
   assert.equal(row.agrees, false);
   assert.match(render(a, { date: '2026-11-05' }), /mellow-stale-report/);
@@ -156,6 +157,22 @@ test('a claim with no result leaves the bar undecided, whatever the rest says', 
   assert.equal(a.bar.met, false);
   assert.deepEqual(a.incomplete, ['clear-valid.mellow-fee-per-period']);
   assert.match(render(a, { date: '2026-11-05' }), /Incomplete: 1 claim/);
+});
+
+test('the injection control is required: without it the comparison says nothing, and the set is not complete', () => {
+  const a = analyse(world({ 'adversarial.injected-critical.control': null }));
+  assert.equal(a.complete, false);
+  assert.deepEqual(a.incomplete, ['adversarial.injected-critical.control']);
+  assert.equal(a.bar.met, false);
+});
+
+test('a verdict about another report than the runner\'s results name is refused, not counted', () => {
+  const w = world();
+  w.runner.set('adversarial.vm-store', { actual: 'jury', reportSha256: 'aa' });
+  w.jury.set('adversarial.vm-store', verdict('INVALID', { report_sha256: 'bb' }));
+  assert.throws(() => analyse(w), /the verdict is about report bb/);
+  w.jury.set('adversarial.vm-store', verdict('INVALID', { report_sha256: 'aa' }));
+  assert.equal(analyse(w).byId.get('adversarial.vm-store').outcome, 'INVALID');
 });
 
 test('the runner\'s settlements count: a claim the runner settled needs no jury result', () => {
@@ -221,6 +238,21 @@ test('main writes the dated report and exits by the bar', () => {
     assert.match(text, /ran under runc/);
     assert.match(text, /under `runc`/);
     assert.ok(fs.existsSync(path.join(out, '2026-11-05-jury.json')));
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('main holds a verdict to the report the results name', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jury-report-'));
+  try {
+    fs.mkdirSync(path.join(dir, 'batch', 'claims'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'results'));
+    fs.writeFileSync(path.join(dir, 'batch', 'claims', 'adversarial.vm-store.json'), JSON.stringify(verdict('INVALID', { report_sha256: 'bb' })));
+    fs.writeFileSync(path.join(dir, 'results', 'all.json'), JSON.stringify({ cases: [{ id: 'adversarial.vm-store', actual: 'jury', observed: { reportSha256: 'aa' } }] }));
+    assert.throws(() => main(['--batch', path.join(dir, 'batch'), '--results', path.join(dir, 'results'), '--date', '2026-11-05', '--out', path.join(dir, 'out')], {
+      root: CALIBRATION, readLedger: () => ({ calls: [], totalUsd: 0, open: 0 }), stdout: () => {}
+    }), /the verdict is about report bb/);
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }

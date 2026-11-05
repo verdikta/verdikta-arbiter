@@ -29,8 +29,8 @@ const PRICES = Object.freeze({
   })
 });
 
-/** The input a body could hold: hex, base64 and CJK reach about 2 bytes a token (code-runner README, "A token"). */
-const BYTES_PER_TOKEN_WORST = 2;
+/** The input a body could hold. Hex, base64 and CJK reach 1.4-2 bytes a token (code-runner README, "A token"), and no token holds less than a byte. */
+const BYTES_PER_TOKEN_WORST = 1;
 /** What a call that names no ceiling is reserved at. */
 const NO_CEILING_TOKENS = 64000;
 /** A repair call quotes one reply (at most the juror's output, four bytes a token at most in UTF-8) plus its instructions. */
@@ -43,7 +43,8 @@ const JUSTIFIER_MAX_TOKENS = 8192;
 const ATTEMPTS = 2;
 
 function priceOf(model) {
-  const price = PRICES.models[model];
+  // Own rows only: "constructor" is no model.
+  const price = Object.hasOwn(PRICES.models, model) ? PRICES.models[model] : null;
   if (!price) throw new Error(`no list price for model ${model}: a call to it could not be counted`);
   return price;
 }
@@ -153,7 +154,50 @@ function readLedger(file) {
   return summarize(parseRows(file));
 }
 
-/** The writer. One process holds it: the meter. */
+/**
+ * One holder at a time: the file names a PID, and a holder that has died gives the lock up. Two meters on one ledger
+ * would each check the limit against its own total, and two batches would write the same result files.
+ * @param {string} file
+ * @param {string} what - for the message
+ * @returns {() => void} release
+ * @throws {Error} a live process holds it
+ */
+function acquireLock(file, what) {
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try {
+      const fd = fs.openSync(file, 'wx', 0o600);
+      fs.writeSync(fd, `${process.pid}\n`);
+      fs.closeSync(fd);
+      return () => fs.rmSync(file, { force: true });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const pid = Number(fs.readFileSync(file, 'utf8').trim());
+      let alive = false;
+      try {
+        process.kill(pid, 0);
+        alive = true;
+      } catch (signalError) {
+        alive = signalError.code === 'EPERM';
+      }
+      if (alive) throw new Error(`${what} is already held by process ${pid} (${file})`);
+      fs.rmSync(file, { force: true });
+    }
+  }
+  throw new Error(`${what}: the lock ${file} could not be taken`);
+}
+
+/**
+ * Cut a torn last line off: the write never finished, so its call was never sent, and the next row must not join it.
+ * @param {string} file
+ */
+function dropTornTail(file) {
+  if (!fs.existsSync(file)) return;
+  const bytes = fs.readFileSync(file);
+  const end = bytes.lastIndexOf(0x0a) + 1;
+  if (end !== bytes.length) fs.truncateSync(file, end);
+}
+
+/** The writer. One process holds it, by lock: the meter. */
 class Ledger {
   /**
    * @param {string} file
@@ -161,6 +205,8 @@ class Ledger {
    */
   constructor(file, { stopUsd }) {
     this.stopUsd = stopUsd;
+    this.release = acquireLock(`${file}.lock`, 'the ledger');
+    dropTornTail(file);
     const rows = parseRows(file);
     const earlier = summarize(rows);
     const settled = new Set(earlier.calls.map((call) => call.id));
@@ -170,9 +216,17 @@ class Ledger {
     this.fd = fs.openSync(file, 'a', 0o600);
   }
 
+  /** Whole and on disk, or it throws, and every later write throws too: past a failed write the file's end is unknown. */
   write(row) {
-    fs.writeSync(this.fd, `${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
-    fs.fsyncSync(this.fd);
+    if (this.broken) throw new Error('the ledger could not be written earlier, so nothing further is authorised');
+    const bytes = Buffer.from(`${JSON.stringify({ ts: new Date().toISOString(), ...row })}\n`);
+    try {
+      for (let at = 0; at < bytes.length;) at += fs.writeSync(this.fd, bytes, at);
+      fs.fsyncSync(this.fd);
+    } catch (error) {
+      this.broken = true;
+      throw error;
+    }
   }
 
   totalUsd() {
@@ -188,8 +242,10 @@ class Ledger {
   /**
    * @param {{usd:number, model:string}} o
    * @returns {string|null} the call's id, or null when it would take the total past the stop
+   * @throws {Error} the reservation could not be recorded, or is not a number: the call must not go out
    */
   reserve({ usd, model }) {
+    if (!Number.isFinite(usd) || usd < 0) throw new Error(`a reservation of ${usd} for ${model} cannot be counted`);
     if (this.totalUsd() + usd > this.stopUsd + 1e-9) {
       this.refusedAny = true;
       this.write({ kind: 'refused', model, usd, totalUsd: this.totalUsd(), stopUsd: this.stopUsd });
@@ -207,14 +263,18 @@ class Ledger {
    */
   settle(id, fields) {
     if (!this.openCalls.has(id)) throw new Error(`settling an unknown call: ${id}`);
+    // Written first: if it fails, the call stays at its reservation, here and on disk.
+    this.write({ ...fields, kind: 'settle', id });
     this.openCalls.delete(id);
     this.settledUsd += fields.usd;
-    this.write({ ...fields, kind: 'settle', id });
   }
 
   close() {
+    if (this.fd === null) return;
     fs.closeSync(this.fd);
+    this.fd = null;
+    this.release();
   }
 }
 
-module.exports = { PRICES, usageOf, reservationUsd, worstCaseClaimUsd, Ledger, readLedger, JUSTIFIER_MAX_TOKENS };
+module.exports = { PRICES, usageOf, reservationUsd, worstCaseClaimUsd, Ledger, readLedger, acquireLock, JUSTIFIER_MAX_TOKENS };

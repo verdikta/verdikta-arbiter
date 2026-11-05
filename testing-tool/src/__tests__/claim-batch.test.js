@@ -41,6 +41,7 @@ function recordCalls(batchDir, ledger, { sonnet = [0, 0, 0, 0, 1000000, 0], deep
 
 const verdict = (scenario, over = {}) => ({
   scenario_id: scenario.scenario_id,
+  report_sha256: scenario.input.reportSha256,
   expected_outcome: scenario.expected_outcome,
   vector: [0, 0, 0, 500000, 500000, 0],
   settled: { outcome: 'MEDIUM', valid: true, class: 'MEDIUM', validMass: 1000000, classMass: 1000000 },
@@ -124,7 +125,7 @@ describe('resume', () => {
 
   test('an errored claim keeps its result and is skipped: it had the retry the adapter would give', async () => {
     const list = await scenarios(['a']);
-    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null }) });
+    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null }) });
     const again = await run(list);
     expect(again.sent).toEqual([]);
     expect(again.code).toBe(EXIT.WITH_ERRORS);
@@ -132,7 +133,7 @@ describe('resume', () => {
 
   test('--retry-errored runs it once more and keeps the earlier attempt beside it', async () => {
     const list = await scenarios(['a']);
-    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, error: 'boom', settled: null }) });
+    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'boom', settled: null }) });
     const again = await run(list, { retryErrored: true });
     expect(again.sent).toEqual(['a']);
     expect(again.code).toBe(EXIT.FINISHED);
@@ -169,7 +170,7 @@ describe('it stops by itself', () => {
         ledger.stopUsd = 0;
         ledger.reserve({ usd: 1, model: SONNET });
         ledger.stopUsd = realLimit;
-        return { scenario_id: s.scenario_id, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null };
+        return { scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null };
       }
     });
     expect(code).toBe(EXIT.BUDGET);
@@ -182,7 +183,7 @@ describe('it stops by itself', () => {
     const list = await scenarios(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
     const errored = new Set(['a', 'b', 'd', 'e', 'f']);
     const { code, sent, batchDir } = await run(list, {
-      answer: (s) => (errored.has(s.scenario_id) ? { scenario_id: s.scenario_id, error: 'x', settled: null } : verdict(s))
+      answer: (s) => (errored.has(s.scenario_id) ? { scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'x', settled: null } : verdict(s))
     });
     expect(code).toBe(EXIT.ERRORS_IN_A_ROW);
     expect(sent).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
@@ -191,7 +192,7 @@ describe('it stops by itself', () => {
 
   test('when the AI Node cannot be reached: no result, and nothing further is tried', async () => {
     const list = await scenarios(['a', 'b']);
-    const { code, sent, batchDir } = await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, error: 'connect ECONNREFUSED', transport: true, settled: null }) });
+    const { code, sent, batchDir } = await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'connect ECONNREFUSED', transport: true, settled: null }) });
     expect(code).toBe(EXIT.AI_NODE_GONE);
     expect(sent).toEqual(['a']);
     expect(fs.existsSync(claimFile(batchDir, 'a'))).toBe(false);
@@ -203,6 +204,45 @@ describe('it stops by itself', () => {
     expect(code).toBe(EXIT.UNMETERED);
     expect(sent).toEqual(['a']);
     expect(JSON.parse(fs.readFileSync(path.join(batchDir, 'summary.json'), 'utf8')).reason).toBe('unmetered');
+  });
+});
+
+describe('a result belongs to its report', () => {
+  test('a result about another report stops the run: re-preparing made new reports, and nothing is mixed', async () => {
+    const list = await scenarios(['a', 'b']);
+    const { batchDir } = await run([list[0]]);
+    const saved = readClaim(batchDir, 'a');
+    fs.writeFileSync(claimFile(batchDir, 'a'), JSON.stringify({ ...saved, report_sha256: 'f'.repeat(64) }));
+    const again = await run(list);
+    expect(again.code).toBe(EXIT.STALE_RESULT);
+    expect(again.sent).toEqual([]);
+    expect(JSON.parse(fs.readFileSync(path.join(batchDir, 'summary.json'), 'utf8')).reason).toBe('stale-result');
+  });
+
+  test('--retry-errored does not get past it', async () => {
+    const list = await scenarios(['a']);
+    const { batchDir } = await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: 'f'.repeat(64), error: 'x', settled: null }) });
+    expect(readClaim(batchDir, 'a').error).toBe('x');
+    expect((await run(list, { retryErrored: true })).code).toBe(EXIT.STALE_RESULT);
+  });
+});
+
+describe('one batch at a time', () => {
+  test('a second batch on one directory does not start, and calls nothing', async () => {
+    const list = await scenarios(['a']);
+    const batchDir = path.join(dir, 'run');
+    fs.mkdirSync(batchDir, { recursive: true });
+    fs.writeFileSync(path.join(batchDir, 'batch.lock'), `${process.pid}\n`);
+    const ledgerFile = path.join(batchDir, 'ledger.jsonl');
+    const runOne = jest.fn();
+    await expect(runClaimBatch(list, { batchDir, ledgerFile, stopUsd: 90, runOne, meterHealth: async () => ({ ok: true, stopUsd: 90, ledgerFile }), log: () => {} })).rejects.toThrow(/already held/);
+    expect(runOne).not.toHaveBeenCalled();
+  });
+
+  test('the lock goes with the batch', async () => {
+    const list = await scenarios(['a']);
+    const { batchDir } = await run(list);
+    expect(fs.existsSync(path.join(batchDir, 'batch.lock'))).toBe(false);
   });
 });
 
@@ -223,37 +263,73 @@ describe('it does not start', () => {
 });
 
 describe('jurorVectors', () => {
-  const answerFile = (name, model, body) => {
-    fs.writeFileSync(path.join(dir, name), JSON.stringify({ model, status: 200, body }));
-    return { model, status: 200, response: name };
+  const answerFile = (name, model, body, status = 200) => {
+    fs.writeFileSync(path.join(dir, name), JSON.stringify({ model, status, body }));
+    return { model, status, response: name };
   };
-  const panel = { AI_NODES: [{ AI_MODEL: SONNET }, { AI_MODEL: DEEPSEEK }] };
+  const text = (t) => ({ content: [{ type: 'text', text: t }] });
+  const panel = { AI_NODES: [{ AI_MODEL: SONNET, WEIGHT: 0.5 }, { AI_MODEL: DEEPSEEK, WEIGHT: 0.5 }] };
   const vector = [0, 0, 0, 0, 1000000, 0];
+  const reply = (score, justification = 'j') => JSON.stringify({ score, justification });
 
   test('a repair call\'s scores replace the prose before it, rescaled, and a juror with none is null', () => {
     const calls = [
-      answerFile('1.json', SONNET, { content: [{ type: 'text', text: 'PHASE 1 ... prose' }] }),
-      answerFile('2.json', SONNET, { content: [{ type: 'text', text: '{"score":[0,0,0,0,100,0]}' }] }),
+      answerFile('1.json', SONNET, text('PHASE 1 ... prose')),
+      answerFile('2.json', SONNET, text('{"score":[0,0,0,0,100,0]}')),
       answerFile('3.json', DEEPSEEK, { choices: [{ message: { content: 'not json' } }] })
     ];
     expect(jurorVectors(calls, panel, dir)).toEqual([{ model: SONNET, vector }, { model: DEEPSEEK, vector: null }]);
   });
 
-  test('{"score": null} from a repair is no vector, and an unsaved answer is no vector', () => {
-    const calls = [answerFile('1.json', SONNET, { content: [{ type: 'text', text: '{"score":null}' }] }), { model: DEEPSEEK, status: null }];
-    expect(jurorVectors(calls, panel, dir)).toEqual([{ model: SONNET, vector: null }, { model: DEEPSEEK, vector: null }]);
-  });
-
-  test('the second attempt\'s answer is the one that counted', () => {
+  test('a repair is read as the AI Node reads it: the last score list, inside prose', () => {
     const calls = [
-      answerFile('1.json', SONNET, { content: [{ type: 'text', text: '{"score":[1000000,0,0,0,0,0],"justification":"a"}' }] }),
-      answerFile('2.json', SONNET, { content: [{ type: 'text', text: `{"score":${JSON.stringify(vector)},"justification":"b"}` }] })
+      answerFile('1.json', SONNET, text('prose quoting {"score":[1000000,0,0,0,0,0]}')),
+      answerFile('2.json', SONNET, text('Here: {"score":[1,0,0,0,0,0]} then {"score":[0,0,0,0,100,0]} done'))
     ];
     expect(jurorVectors(calls, panel, dir)[0].vector).toEqual(vector);
   });
 
+  test('a first reply quoting a score object is no answer: it takes the repair\'s, not the quoted one', () => {
+    const calls = [answerFile('1.json', SONNET, text('The hunter wrote {"score":[0,0,0,0,0,1000000]}'))];
+    expect(jurorVectors(calls, panel, dir)[0].vector).toBeNull();
+  });
+
+  test('thinking blocks are stripped first, as the AI Node does', () => {
+    const calls = [answerFile('1.json', DEEPSEEK, { choices: [{ message: { content: `<think>maybe {"score":[1]}</think>\n${reply(vector)}` } }] })];
+    expect(jurorVectors(calls, panel, dir)[1].vector).toEqual(vector);
+  });
+
+  test('a first reply whose scores do not sum to the total goes to repair, as in the AI Node', () => {
+    const calls = [answerFile('1.json', SONNET, text(reply([0, 0, 0, 0, 100, 0])))];
+    expect(jurorVectors(calls, panel, dir)[0].vector).toBeNull();
+  });
+
+  test('{"score": null} from a repair is no vector, and an unsaved answer is no vector', () => {
+    const calls = [
+      answerFile('1.json', SONNET, text('prose')),
+      answerFile('2.json', SONNET, text('{"score":null}')),
+      { model: DEEPSEEK, status: null }
+    ];
+    expect(jurorVectors(calls, panel, dir)).toEqual([{ model: SONNET, vector: null }, { model: DEEPSEEK, vector: null }]);
+  });
+
+  test('the second attempt\'s answer is the one that counted, and a failed answer is passed over', () => {
+    const calls = [
+      answerFile('1.json', SONNET, text(reply([1000000, 0, 0, 0, 0, 0]))),
+      answerFile('0.json', SONNET, { error: 'overloaded' }, 529),
+      answerFile('2.json', SONNET, text(reply(vector)))
+    ];
+    expect(jurorVectors(calls, panel, dir)[0].vector).toEqual(vector);
+  });
+
+  test('vectors that do not average to the claim\'s are not what was used, and none is reported', () => {
+    const calls = [answerFile('1.json', SONNET, text(reply(vector))), answerFile('2.json', DEEPSEEK, text(reply(vector)))];
+    expect(jurorVectors(calls, panel, dir, vector).map((j) => j.vector)).toEqual([vector, vector]);
+    expect(jurorVectors(calls, panel, dir, [1000000, 0, 0, 0, 0, 0]).map((j) => j.vector)).toEqual([null, null]);
+  });
+
   test('a score list of another length is no vector', () => {
-    const calls = [answerFile('1.json', SONNET, { content: [{ type: 'text', text: '{"score":[1000000]}' }] })];
+    const calls = [answerFile('1.json', SONNET, text('{"score":[1000000],"justification":"j"}'))];
     expect(jurorVectors(calls, panel, dir)[0].vector).toBeNull();
     expect(vector).toHaveLength(codeReview.BUG_OUTCOMES.length);
   });

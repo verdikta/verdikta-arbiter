@@ -23,9 +23,24 @@ JUSTIFIER_MODEL_NAME=${JUSTIFIER_MODEL_NAME:-anthropic:claude-haiku-5-5}
 
 mkdir -p "$RUN"
 chmod 700 "$RUN"
+
+# One driver at a time, taken before anything of the other's is touched: a second one must not move its done marker.
+LOCK="$RUN/driver.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  holder=$(cat "$LOCK/pid" 2>/dev/null || echo "")
+  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
+    echo "jury-run: process $holder is already running this batch"
+    exit 8
+  fi
+  rm -rf "$LOCK"
+  mkdir "$LOCK" || { echo "jury-run: the lock could not be taken"; exit 8; }
+fi
+echo "$$" > "$LOCK/pid"
+
 rm -f "$RUN/done"
 METER_PID=""
 AI_PID=""
+BATCH_PID=""
 
 stop_pid() {
   [ -n "$1" ] || return 0
@@ -39,9 +54,11 @@ stop_pid() {
 
 finish() {
   code=$?
+  stop_pid "$BATCH_PID"
   stop_pid "$AI_PID"
   stop_pid "$METER_PID"
   printf '{"exit":%d,"at":"%s"}\n' "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN/done.partial"
+  rm -rf "$LOCK"
   mv "$RUN/done.partial" "$RUN/done"
 }
 trap finish EXIT
@@ -88,6 +105,10 @@ AI_PID=$!
 wait_for "http://127.0.0.1:$AI_PORT/api/health" 120 || { echo "jury-run: the AI Node did not start"; exit 9; }
 
 cd "$REPO/testing-tool" || exit 1
+# In the background and waited for: bash runs a trap only between commands, so a TERM must not have to wait for the batch.
 env -i PATH="$NODE_BIN:/usr/bin:/bin" HOME="$WORK" "$NODE_BIN/node" src/index.js test --type claim --jury real \
   --claims-dir "${CLAIMS_DIR:-$WORK/claims}" --batch-dir "$RUN" --meter-url "http://127.0.0.1:$METER_PORT" --stop-usd "$STOP_USD" \
-  --ai-node-url "http://127.0.0.1:$AI_PORT" "$@"
+  --ai-node-url "http://127.0.0.1:$AI_PORT" "$@" &
+BATCH_PID=$!
+wait "$BATCH_PID"
+exit $?

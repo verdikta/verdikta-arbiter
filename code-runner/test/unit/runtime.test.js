@@ -132,7 +132,7 @@ test('docker.runtimeVersion runs the binary with --version, no shell and an empt
 });
 
 test('CI installs the gVisor release common pins, so the Docker suite\'s reports carry it', () => {
-  for (const file of ['code-runner.yml', 'code-runner-calibration.yml', 'code-runner-calibration-clear-valid.yml', 'code-runner-calibration-batch-2.yml', 'code-runner-calibration-runtimes.yml']) {
+  for (const file of ['code-runner.yml', 'code-runner-calibration.yml', 'code-runner-calibration-clear-valid.yml', 'code-runner-calibration-batch-2.yml']) {
     const workflow = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', file), 'utf8');
     const m = /GVISOR_VERSION: '([0-9]{8}\.[0-9]+)'/.exec(workflow);
     assert.ok(m, `${file} names its release`);
