@@ -11,7 +11,8 @@
     "run-tests": "node src/index.js test",
     "juries": "node src/index.js juries",
     "status": "node src/index.js status",
-    "results": "node src/index.js results"
+    "results": "node src/index.js results",
+    "test:jury-e2e": "NODE_PATH=node_modules node test/integration/jury-run.e2e.js"
   },
   "dependencies": {
     "@verdikta/common": "1.9.0-attest.2",

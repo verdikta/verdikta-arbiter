@@ -620,3 +620,16 @@ describe('docs', () => {
     }
   });
 });
+
+describe('an error keeps its code and each juror\'s state', () => {
+  test('a timeout, retried once as the adapter does, says so', async () => {
+    await writeClaimScenario(dir);
+    const scenario = await loadClaimScenario(path.join(dir, 'vault-over-credit'));
+    const jurors = [{ juror: 'openrouter:x', status: 'timeout', duration_ms: 240000 }, { juror: 'anthropic:y', status: 'success', duration_ms: 90000 }];
+    const node = await stubAiNode([{ status: 503, body: { error: 'juror x', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, jurors, scores: [], justification: '' } }]);
+    const result = await runClaimScenario(scenario, { aiNodeUrl: node.url, deadlineMs: CLAIM_DEADLINE_MS });
+    await node.close();
+    expect(result).toMatchObject({ error_code: 'CODE_REVIEW_JUROR_TIMEOUT', attempts: 2, juror_states: jurors });
+    expect(result.error).toMatch(/after 2 call/);
+  });
+});
