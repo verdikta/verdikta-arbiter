@@ -207,7 +207,7 @@ its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
 - A body read that does not finish within `REQUEST_TIMEOUT_MS` is the text-mode
   408, in either mode.
 - Every juror runs with web access off, `maxTokens` = the class envelope's
-  juror output (8,000 on `code-standard`, 12,000 on `code-premium`) and effort
+  juror output (32,000 on `code-standard`, 12,000 on `code-premium`) and effort
   `high` (Claude 5: `output_config.effort` with adaptive thinking; OpenAI:
   `reasoning_effort`; OpenRouter: `reasoning.effort`; xAI: none, Grok 4 takes
   no `reasoning_effort`). A juror's answer is its reply only when the reply is
@@ -234,7 +234,7 @@ units settlement allows for the aggregator's own rounding. Plus:
   "deadlineMs": 285000,
   "jurorTimeoutMs": 240000,
   "justifierReserveMs": 45000,
-  "maxTokens": 8000,
+  "maxTokens": 32000,
   "effort": "high"
 }
 ```

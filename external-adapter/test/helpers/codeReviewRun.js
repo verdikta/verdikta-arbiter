@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const http = require('http');
 const { codeReview } = require('@verdikta/common');
 
-const RUNNER_VERSION = '0.1.0';
+const RUNNER_VERSION = '0.2.0';
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const CLEAN = Object.freeze({
   identityComplete: true, summaryConsistent: true, exitConsistent: true,

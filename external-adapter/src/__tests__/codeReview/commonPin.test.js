@@ -8,7 +8,7 @@ const fs = require('fs');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..', '..', '..', '..');
-const PINNED = '1.9.0-attest.2';
+const PINNED = '1.9.0-attest.3';
 const PACKAGES = ['external-adapter', 'ai-node', 'e2e', 'code-runner', 'testing-tool'];
 
 const readJson = (file) => JSON.parse(fs.readFileSync(file, 'utf8'));
@@ -28,6 +28,11 @@ describe('@verdikta/common pin', () => {
   it('the packages agree with each other', () => {
     const versions = PACKAGES.map((pkg) => readJson(path.join(REPO, pkg, 'package.json')).dependencies['@verdikta/common']);
     expect(new Set(versions).size).toBe(1);
+  });
+
+  it('the release trusts the production builder key, and no other', () => {
+    const { codeReview } = require('@verdikta/common');
+    expect(codeReview.PRODUCTION_BUILDER_KEYS.map((key) => key.keyId)).toEqual(['c400af59dc75cf7cb0bc2430833d29047955ae99c18a1d007700588a84b45b13']);
   });
 
   it('the adapter runs the pinned version', () => {
