@@ -4,7 +4,7 @@
 /**
  * npm run calibration: every case through the real code runner, its result against what the case says.
  *
- *   npm run calibration [-- --subset <name>] [--listing <id>] [--case <id>]... [--self-check] [--results <file>] [--export <dir>] [--measured <dir>]
+ *   npm run calibration [-- --subset <name>] [--listing <id>] [--case <id>]... [--self-check] [--results <file>] [--export <dir>] [--measured <dir>] [--slow-host]
  *   npm run calibration -- --subset <name> --list-listings     the listings' ids, as JSON, and nothing else
  *
  * Runner only: no jury, no chain, no provider, no pin service. Exit 0 when every case agrees;
@@ -20,6 +20,9 @@
  * A case on a listing of kind `git` runs only where its solc has an official build: on linux/arm64
  * that stops the run before anything is fetched, exit 3. The listing check refuses what is not
  * official, and that is not weakened here.
+ *
+ * --slow-host: on a host too slow for the class's time caps, a listing check refused for time and nothing else does not
+ * stop the run. Every case is still compared exactly, and the results file names the listing.
  */
 
 const fs = require('node:fs');
@@ -51,6 +54,7 @@ function parseArgs(argv) {
     else if (arg === '--results') o.results = value();
     else if (arg === '--export') o.exportDir = value();
     else if (arg === '--self-check') o.selfCheck = true;
+    else if (arg === '--slow-host') o.slowHost = true;
     else throw new Error(`unknown option ${arg}`);
   }
   return o;
@@ -114,10 +118,11 @@ function writeScenario(dir, r) {
   fs.writeFileSync(path.join(folder, 'run.json'), JSON.stringify({ report, reportSha256, contextPack }));
 }
 
-function resultsFile({ results, runner }) {
+function resultsFile({ results, runner, refusedForTime }) {
   return {
     format: 'verdikta.calibration-results/1',
     runner,
+    ...(refusedForTime.length ? { listingChecksRefusedForTime: refusedForTime } : {}),
     agreement: agreement(results),
     cases: results.map((r) => {
       const { pack: _text, ...observed } = r.observed;
@@ -197,6 +202,7 @@ async function main(argv, deps = {}) {
       return EXIT.MALFORMED;
     }
     const views = new Map();
+    const refusedForTime = [];
     for (const listing of new Set(chosen.map((c) => c.listing))) {
       stdout(`calibration: publishing ${listing.id}'s image, then the real listing check`);
       const published = await session.publish(listing);
@@ -209,7 +215,11 @@ async function main(argv, deps = {}) {
           fs.writeFileSync(path.join(args.measured, `${listing.id}.json`), `${JSON.stringify(m, null, 2)}\n`);
         }
       };
-      await checkListing(session, listing, published, view, { onMeasured: measured });
+      const checked = await checkListing(session, listing, published, view, { onMeasured: measured, slowHost: args.slowHost === true });
+      if (checked.refusedForTime) {
+        refusedForTime.push({ listing: listing.id, detail: checked.refusedForTime });
+        stdout(`calibration: ${listing.id}: --slow-host: the listing check refused it for time alone, and every case is still compared: ${checked.refusedForTime.join('; ').slice(0, 300)}`);
+      }
       views.set(listing, view);
     }
     const results = [];
@@ -240,7 +250,7 @@ async function main(argv, deps = {}) {
       ? `the runner gives no report on ${session.platform}; settlement read one assembled with the class platform named, never exported, and no hash of it is shown`
       : null;
     stdout(renderReport({ results, runner: session.runner, note }));
-    if (args.results) fs.writeFileSync(args.results, `${JSON.stringify(resultsFile({ results, runner: session.runner }), null, 2)}\n`);
+    if (args.results) fs.writeFileSync(args.results, `${JSON.stringify(resultsFile({ results, runner: session.runner, refusedForTime }), null, 2)}\n`);
     const disagreed = results.filter((r) => r.disagreements.length).length;
     if (disagreed) return EXIT.DISAGREE;
     if (args.selfCheck) {

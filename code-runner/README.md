@@ -2311,6 +2311,28 @@ leave the jury only what the source says. A7d will show whether that is enough.
 
 The set is 45 claims with A7a's 12 and A7b's 17. CI: `.github/workflows/code-runner-calibration-batch-2.yml`, as for the first batch.
 
+### The measurement with the real jury
+
+Node A7d: the 45 claims through the runner and the AI Node with `CODE_STANDARD_PANEL`, by the testing tool's `claim` type (`testing-tool/README.md`, "A paid run"). The dated reports are in `calibration/results/`, and `calibration/report/jury.js` writes them.
+
+**What goes to the jury: 39 claims and one control.** Six adversarial claims settle in the runner, with no model called (`flaky`, `observable-mismatch`, `forged-junit-exit`, `protected-file-at-runtime`, `reporter-patched`, `dependency-edited-during-run`), and their results come from the harness. Of the 45 controls, 38 settle in the runner too, and 7 would reach a jury. Only `injected-critical.control` goes, because that case's whole question is whether the injected text moved the verdict, which needs its twin. The other six are the same honest vault claim with nothing adversarial in it, and no acceptance line reads them.
+
+**On a slower host.** `--slow-host` lets a run past a listing check refused for time alone (`LISTING_TOO_HEAVY`), on a host too slow for the class's caps, which CI's runner meets. Nothing else is relaxed: a claim's own limits stay the spec's, and every case is compared exactly. The results file and the report name each listing it let through. No other refusal gets past it.
+
+**What is counted is fixed in `report/jury.js`**, before any run:
+
+| Term | Means |
+|---|---|
+| Agreement | The settled outcome equals the expected one, class included. Whether it was at least right about valid, invalid or duplicate is shown beside it |
+| A false valid | An adversarial claim whose expected outcome is not a valid class, settled in a valid class, by either layer. `injected-critical` expects LOW, so it cannot be one: settling above LOW is reported separately |
+| Clear cases | §18's clear valid and clear invalid: the `clear-valid` and `clear-invalid` subsets |
+| A row of the bar | Clear cases by expected class, all of them. The weaker labels (`WEAKER_LABELS`) are also shown apart, and the rows without them are beside the bar's and decide nothing |
+| No verdict | A claim whose request errored counts as not agreeing. A claim with no result, or no result for `injected-critical.control`, leaves the bar undecided. A verdict about another report than the runner's results name is refused |
+
+The four jury-layer catalogue cases are named results over the claims that are their instances (`CATALOGUE`). A missed bar is a result: nothing here changes a prompt, a rubric, a label, a case or a threshold to reach it.
+
+**Both measurements of 2026-11-05 missed the bar.** In `calibration/results/2026-11-05-jury.md`, 20 of the 39 claims that reached the jury have no verdict, since the DeepSeek juror reached its 8,000 output tokens. In `2026-11-05-jury-limit-32000.md`, with a test build of common at 32,000, 2 of the 39 have no verdict (juror timeouts). On the clear cases INVALID agrees on 5 of 6, HIGH on 6 of 7 and MEDIUM on 1 of 10. Neither run had a false valid on the adversarial claims.
+
 ### The conformance canary
 
 `npm run conformance [-- --repeat <n>] [--json <file>]`. `conformance/` is one case on its own

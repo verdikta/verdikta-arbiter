@@ -119,6 +119,10 @@ program
   .option('--jury <kind>', 'With --type claim: "real" calls the panel the listing names, on the AI node\'s providers, which spends money')
   .option('--claims-dir <dir>', 'With --type claim: the directory of claim scenario folders (default: scenarios/claims)')
   .option('--results-dir <dir>', 'With --type claim: where to save the run (default: results)')
+  .option('--batch-dir <dir>', 'With --type claim: one result file per claim, resumable, stopping by itself (README "A paid run")')
+  .option('--meter-url <url>', 'With --batch-dir: the meter the AI node\'s provider calls go through')
+  .option('--stop-usd <usd>', 'With --batch-dir: the spend the run stops short of')
+  .option('--retry-errored', 'With --batch-dir: run a claim that errored once more, keeping the earlier attempt')
   .option('--ai-node-url <url>', 'AI node URL (default: config/tool-config.json)')
   .action(async (options) => {
     // Debug: log the parsed options

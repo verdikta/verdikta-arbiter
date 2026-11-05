@@ -457,6 +457,47 @@ A scenario that fails any of these does not run, and `--dry-run` reports it:
 
 The run exits 1 when a request gave no verdict, and when the AI node cannot be reached.
 
+### A paid run
+
+`--batch-dir` runs the claims so that nothing depends on the session that started them. Node A7d's measurement uses it; `code-runner/README.md`, "The measurement with the real jury", says what is measured.
+
+```bash
+# The runner's half, no provider and no key: <work>/results, exports, claims. Packs hold third-party source and stay there.
+CODE_RUNNER_RUNTIME=runsc scripts/jury-prepare.sh <work>
+
+# The paid half, detached. <work>/run/done appears when it ends, however it ends. Run it again to resume.
+setsid nohup scripts/jury-run.sh <work> <key file> --scenario-ids a,b > <work>/run/driver.log 2>&1 < /dev/null &
+```
+
+`<work>/repo` is this repository and `<work>/node/bin` the Node to use; everything written stays under `<work>`.
+
+**The meter** (`src/meter.js`) is a loopback proxy between the AI Node and its providers, set through `ANTHROPIC_BASE_URL` and `OPENROUTER_BASE_URL`, so the AI Node being measured is not changed and every HTTP attempt is counted: LangChain's retries, repair calls, the justifier, a juror cancelled at its deadline. It forwards two routes and the models in `src/spend.js`'s dated price table, and refuses a streamed call, since its usage could not be read. It holds no key: the AI Node's headers pass through, and none is logged or stored.
+
+**The record of a call** holds the output ceiling it asked for (`maxTokens`), how it ended (`finishReason`, `reasoningTokens`) and how long it took (`durationMs`), with no text. So a no-verdict claim can be read by cause: an output limit, a timeout, or anything else.
+
+**The ledger** (`<work>/run/ledger.jsonl`) reserves each call at its worst case (one byte a token, the whole output ceiling) and syncs that to disk before the call goes out, then replaces it with what the provider reported. A cost the provider reports above the list price counts instead. A 200 with no readable usage, a call cancelled, or one that never answered stays at its reservation, across a restart too, so the total can be over what was spent and never under.
+
+**It stops by itself**, with the reason in `<work>/run/summary.json` and the exit code:
+
+| Exit | Reason | When |
+|---|---|---|
+| 0 | `finished` | Every chosen claim has a verdict |
+| 1 | `finished` | Every chosen claim has a result, and some are errors |
+| 4 | `budget` | A claim's worst case could pass `--stop-usd`, or the meter refused a call (a 402 no provider saw). That claim has no result |
+| 5 | `errors-in-a-row` | Three claims in a row errored: an outage or a key, not a measurement |
+| 6 | `ai-node-gone` | The AI Node could not be reached. That claim has no result |
+| 7 | `unmetered` | A verdict arrived with no provider call in the ledger: the money is not going through the meter |
+| 8 | `stale-result` | A saved result is on another request than the scenario's. The request is everything the jury reads, and re-preparing makes new ones, so a verdict on an old one is not a verdict on this one. Point at another batch directory, or remove the old results |
+| 9 | `meter-stopped` | The meter can no longer record a call, or stopped answering. That claim has no result |
+
+A batch does not start without the meter, with a meter whose limit is above `--stop-usd`, or with one writing another ledger. One meter holds a ledger and one batch a directory, by a lock naming a PID. No lock is ever taken over: a holder removes its own, `jury-run.sh` removes its children's once it has stopped them, and after anything else a person does, as the message says. A write to the ledger that fails stops every later call.
+
+**One result per claim** (`<work>/run/claims/<id>.json`, written whole): the saved run's fields, each juror's vector, read from the saved provider answers, since the AI Node's answer holds only the average, and the claim's calls and cost. A re-run skips a claim with a result. A claim is called as the External Adapter calls it, so an errored claim has had its retry; `--retry-errored` runs it once more and moves the earlier result to `attempts/`.
+
+**The keys** go into one subshell, which becomes the AI Node, with only the panel's providers: the meter and the testing tool start from `env -i`. `scripts/jury-check-no-keys.sh <key file> <path>...` greps for the values, reading them on stdin, and prints file names only. The AI Node's logs, `run/calls/` and the claim files hold what jurors wrote and the prompts, which can quote repository source, so they stay where the run is.
+
+**Without spending:** `npm run test:jury-e2e` runs all of this with a production build of the AI Node and stub providers on loopback, so it proves what a unit test cannot: the calls do go through the meter, unstreamed, each with its own provider's key.
+
 ## Integration with Verdikta
 
 The testing tool leverages the existing Verdikta architecture:
