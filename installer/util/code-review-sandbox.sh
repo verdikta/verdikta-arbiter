@@ -678,13 +678,17 @@ self_test() {
     stale=$(own_docker ps -aq --filter name=vcr-cal-registry- 2>/dev/null)
     # shellcheck disable=SC2086
     [ -z "$stale" ] || own_docker rm -f --volumes $stale >/dev/null 2>&1
+    # The old pass goes before the canary runs, not after: only a new one stands once this has begun,
+    # whatever ends it, a signal included.
+    if ! rm -f "$STATE_DIR/conformance.json" || [ -e "$STATE_DIR/conformance.json" ]; then
+        echo -e "${RED}Could not remove the old pass $STATE_DIR/conformance.json: the self-test did not run.${NC}" >&2; return 1
+    fi
     # Its downloads and its image go on the fixed disk, and it gets no key: env -i.
     (cd "$RUNNER_DIR" && as_user env -i PATH="$PATH" HOME="$RUN_HOME" \
         DOCKER_HOST="unix://$SOCK" CODE_RUNNER_RUNTIME=runsc CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK=host TMPDIR="$MOUNT/selftest" \
         node conformance/run.js --json "$result") || rc=$?
     as_user find "$MOUNT/selftest" -mindepth 1 -delete 2>/dev/null
     if [ "$rc" != "0" ]; then
-        rm -f "$STATE_DIR/conformance.json"
         echo -e "${RED}The conformance self-test failed (exit $rc). Its output is above.${NC}" >&2; return 1
     fi
     rc=0

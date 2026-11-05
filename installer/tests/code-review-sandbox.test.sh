@@ -78,7 +78,7 @@ stub mv 'case "$*" in *.env.new.*) [ "${STUB_ENV_WRITE_FAIL:-0}" = 1 ] && exit 1
 if [ "${STUB_SLOW_RENAME:-0}" = 1 ]; then case "$*" in *verdikta-code-runner.img.partial*) : > "$STUB_STATE/signal-now"; sleep 1 ;; esac; fi
 exec /bin/mv "$@"'
 stub cp 'case "$*" in *adapter.env.before*) [ "${STUB_ENV_COPY_FAIL:-0}" = 1 ] && exit 1 ;; esac; exec /bin/cp "$@"'
-stub env 'if [ "$1" = "-i" ]; then echo "env -i" >> "$STUB_LOG"; shift; exec /usr/bin/env -i STUB_LOG="$STUB_LOG" STUB_LOCK="$STUB_LOCK" STUB_CANARY_EXIT="${STUB_CANARY_EXIT:-}" STUB_HASH="${STUB_HASH:-}" "$@"; fi; exec /usr/bin/env "$@"'
+stub env 'if [ "$1" = "-i" ]; then echo "env -i" >> "$STUB_LOG"; shift; exec /usr/bin/env -i STUB_LOG="$STUB_LOG" STUB_LOCK="$STUB_LOCK" STUB_STATE="$STUB_STATE" STUB_CANARY_EXIT="${STUB_CANARY_EXIT:-}" STUB_HASH="${STUB_HASH:-}" STUB_SLOW_CANARY="${STUB_SLOW_CANARY:-}" "$@"; fi; exec /usr/bin/env "$@"'
 
 fresh() { # a new prefix and install tree; sets P, I
     rm -rf "$T/p"; P="$T/p"; I="$T/p/install"
@@ -113,6 +113,7 @@ const fs = require('fs');
 const a = process.argv; const out = a[a.indexOf('--json') + 1];
 if (process.env.STUB_LOCK && fs.existsSync(process.env.STUB_LOCK)) fs.appendFileSync(process.env.STUB_LOG, 'lock-held-during-self-test\n');
 fs.appendFileSync(process.env.STUB_LOG, `conformance DOCKER_HOST=${process.env.DOCKER_HOST} REGNET=${process.env.CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK} RUNTIME=${process.env.CODE_RUNNER_RUNTIME} TMPDIR=${process.env.TMPDIR} KEY=${process.env.STUB_SECRET_KEY || 'none'}\n`);
+if (process.env.STUB_SLOW_CANARY === '1') { fs.writeFileSync(`${process.env.STUB_STATE}/signal-now`, ''); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); process.exit(1); }
 if (process.env.STUB_CANARY_EXIT) process.exit(Number(process.env.STUB_CANARY_EXIT));
 fs.writeFileSync(out, JSON.stringify({ canonical: true, reportSha256: process.env.STUB_HASH || 'cafe'.repeat(16), runner: '0.1.0', gvisor: 'release-20260921.0', sourceSha256: require('../src/conformance').sourceSha256() }));
 J
@@ -387,6 +388,14 @@ has "failed refresh: says what it means" "$out" "refuses claims"
 adapter_untouched "failed refresh"
 [ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "a failed refresh left the lock"
 out=$(run status --quiet 2>&1); is "status after a failed refresh" "$?" 2
+# The old pass can't be removed: the canary does not run on it, and that is a failure.
+fresh; run enable >/dev/null 2>&1
+rm -f "$I/code-runner-state/conformance.json"; mkdir "$I/code-runner-state/conformance.json"; touch "$I/code-runner-state/conformance.json/x"
+: > "$P/log"
+out=$(run self-test 2>&1); is "the old pass can't be removed: rc" "$?" 1
+has "the old pass can't be removed: says so" "$out" "Could not remove the old pass"
+hasnt "the old pass can't be removed: no canary" "$(log)" "^conformance "
+rm -rf "$I/code-runner-state/conformance.json"
 # A failed step with a pass that still stands: what the pass says is still true, so it stays.
 fresh; run enable >/dev/null 2>&1; : > "$P/log"
 out=$(STUB_PULL_FAIL=1 run enable 2>&1); is "failed re-run with a pass: rc" "$?" 1
@@ -478,11 +487,11 @@ out=$(STUB_ADAPTER_FAILS=1 run disable 2>&1); is "disable, adapter does not rest
 has "disable, adapter does not restart: says so" "$out" "is DOWN"
 
 # --- a signal is a failure too: a first enable removes what it made, a refresh changes nothing else
-term_at() { # term_at STUB_VAR: SIGTERM when that stub says signal-now
+term_at() { # term_at STUB_VAR [ACTION]: SIGTERM when that stub says signal-now
     rm -f "$P/state/signal-now"
     env "$1=1" PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
     STUB_LOCK="$I/code-runner-state/maintenance" VERDIKTA_UNATTENDED=1 \
-    bash "$TOOL" enable --install-dir "$I" --user "$(id -un)" >"$P/state/out" 2>&1 &
+    bash "$TOOL" "${2:-enable}" --install-dir "$I" --user "$(id -un)" >"$P/state/out" 2>&1 &
     pid=$!
     for _ in $(seq 1 100); do [ -e "$P/state/signal-now" ] && break; sleep 0.1; done
     kill -TERM "$pid"
@@ -502,6 +511,13 @@ is "SIGTERM on a refresh: rc" "$rc" 143
 [ -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "SIGTERM on a refresh: the disk went"
 adapter_untouched "SIGTERM on a refresh"
 [ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "SIGTERM on a refresh: the lock stayed"
+# ... during a self-test, on a node with a good pass: from the moment it begins, only a new pass stands.
+fresh; run enable >/dev/null 2>&1
+[ -e "$I/code-runner-state/conformance.json" ] && ok || bad "no pass to begin with"
+term_at STUB_SLOW_CANARY self-test
+is "SIGTERM during a self-test: rc" "$rc" 143
+[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "SIGTERM during a self-test: the old pass stayed, and claims with it"
+[ ! -e "$I/code-runner-state/maintenance" ] && ok || bad "SIGTERM during a self-test: the lock stayed"
 # ... during the final rename too: the image is this run's before it has its name.
 fresh
 term_at STUB_SLOW_RENAME
