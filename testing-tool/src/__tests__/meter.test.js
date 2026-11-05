@@ -210,6 +210,42 @@ describe('the ledger', () => {
   });
 });
 
+describe('the record of each call', () => {
+  test('what it asked for, how it ended and how long it took, and no text', async () => {
+    const { port, ledgerFile } = await start({
+      answer: () => ({ status: 200, body: { choices: [{ finish_reason: 'length', message: { content: 'SECRET-REPLY' } }], usage: { prompt_tokens: 10, completion_tokens: 32000, completion_tokens_details: { reasoning_tokens: 31000 } } } })
+    });
+    await post(port, '/openrouter/api/v1/chat/completions', { ...DEEPSEEK, max_tokens: 32000 });
+    const [call] = readLedger(ledgerFile).calls;
+    expect(call).toMatchObject({ maxTokens: 32000, finishReason: 'length', reasoningTokens: 31000 });
+    expect(call.durationMs).toBeGreaterThanOrEqual(0);
+    expect(fs.readFileSync(ledgerFile, 'utf8')).not.toContain('SECRET-REPLY');
+  });
+
+  test('Anthropic says why it stopped in another field', async () => {
+    const { port, ledgerFile } = await start({ answer: () => ({ status: 200, body: { stop_reason: 'end_turn', usage: USAGE, content: [] } }) });
+    await post(port, '/anthropic/v1/messages', SONNET);
+    expect(readLedger(ledgerFile).calls[0]).toMatchObject({ maxTokens: 8000, finishReason: 'end_turn', reasoningTokens: null });
+  });
+
+  test('a cancelled call has its time too', async () => {
+    const provider = await stubProvider(() => null);
+    const ledgerFile = path.join(dir, 'ledger.jsonl');
+    const meter = createMeter({ ledgerFile, callsDir: path.join(dir, 'calls'), stopUsd: 10, upstreams: { anthropic: provider.url, openrouter: provider.url } });
+    const { port } = await meter.listen(0);
+    closers.push(() => meter.close());
+    const text = JSON.stringify(SONNET);
+    const req = http.request({ host: '127.0.0.1', port, method: 'POST', path: '/anthropic/v1/messages', headers: { 'content-length': Buffer.byteLength(text) } });
+    req.on('error', () => {});
+    req.end(text);
+    for (let i = 0; i < 100 && provider.seen.length === 0; i += 1) await new Promise((r) => setTimeout(r, 10));
+    req.destroy();
+    for (let i = 0; i < 100 && readLedger(ledgerFile).calls.length === 0; i += 1) await new Promise((r) => setTimeout(r, 10));
+    expect(readLedger(ledgerFile).calls[0]).toMatchObject({ basis: 'aborted' });
+    expect(readLedger(ledgerFile).calls[0].durationMs).toBeGreaterThanOrEqual(0);
+  });
+});
+
 describe('the hard stop', () => {
   test('a call whose worst case would pass the limit is refused with a 402 and never sent', async () => {
     const { provider, port, ledgerFile } = await start({ stopUsd: 0.01 });

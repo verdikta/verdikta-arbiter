@@ -137,7 +137,7 @@ function summarize(rows) {
       const start = reserved.get(row.id);
       if (!start) throw new Error(`the ledger settles a call it never reserved: ${row.id}`);
       reserved.delete(row.id);
-      calls.push({ ...row, model: start.model, reservedUsd: start.usd });
+      calls.push({ ...row, model: start.model, maxTokens: start.maxTokens, reservedUsd: start.usd });
     }
   }
   const openUsd = [...reserved.values()].reduce((sum, row) => sum + row.usd, 0);
@@ -243,11 +243,11 @@ class Ledger {
   }
 
   /**
-   * @param {{usd:number, model:string}} o
+   * @param {{usd:number, model:string, maxTokens?:number}} o - maxTokens: the output ceiling the call asked for, for the record
    * @returns {string|null} the call's id, or null when it would take the total past the stop
    * @throws {Error} the reservation could not be recorded, or is not a number: the call must not go out
    */
-  reserve({ usd, model }) {
+  reserve({ usd, model, maxTokens }) {
     if (!Number.isFinite(usd) || usd < 0) throw new Error(`a reservation of ${usd} for ${model} cannot be counted`);
     if (this.totalUsd() + usd > this.stopUsd + 1e-9) {
       this.refusedAny = true;
@@ -255,7 +255,7 @@ class Ledger {
       return null;
     }
     const id = crypto.randomBytes(8).toString('hex');
-    this.write({ kind: 'reserve', id, model, usd });
+    this.write({ kind: 'reserve', id, model, usd, maxTokens });
     this.openCalls.set(id, usd);
     return id;
   }

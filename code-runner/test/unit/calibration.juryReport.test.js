@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { loadCorpus } = require('../../calibration/lib/format');
-const { analyse, render, jsonOf, main, WEAKER_LABELS, CATALOGUE, COMPARISONS } = require('../../calibration/report/jury');
+const { analyse, compareRuns, render, jsonOf, main, WEAKER_LABELS, CATALOGUE, COMPARISONS } = require('../../calibration/report/jury');
 
 const CALIBRATION = path.join(__dirname, '..', '..', 'calibration');
 const { cases, byId } = loadCorpus({ root: CALIBRATION, layout: true });
@@ -164,6 +164,77 @@ test('claims with no verdict are listed, each with what any juror that answered 
   assert.match(text, /A headline of ours\./);
   assert.match(text, /Why, in our words\./);
   assert.doesNotMatch(render(analyse(world()), { date: '2026-11-05' }), /## Claims with no verdict/);
+});
+
+test('no verdict by cause: a timeout, the output limit and anything else, with each call\'s tokens and time', () => {
+  const call = (model, over) => ({ model, status: 200, basis: 'reported', inputTokens: 100, outputTokens: 500, maxTokens: 32000, finishReason: 'stop', durationMs: 90000, ...over });
+  const failed = (code, calls, over = {}) => ({ error: `the AI Node answered 400 ${code} after 1 call(s): ${SECRET}`, settled: null, jurors: [], execution_time_ms: 240000, spend: { usd: 0.1, calls }, ...over });
+  const a = analyse(world({
+    'clear-valid.mellow-fee-per-period': failed('CODE_REVIEW_JUROR_TIMEOUT', [call('deepseek/deepseek-v4-pro-0813', { status: null, basis: 'aborted', inputTokens: undefined, outputTokens: undefined, finishReason: undefined, durationMs: 240000 })], { attempts: 2, juror_states: [{ juror: 'openrouter:deepseek', status: 'timeout', duration_ms: 240000, message: SECRET }] }),
+    'clear-valid.mellow-performance-fee': failed('CODE_REVIEW_JUROR_FAILED', [call('deepseek/deepseek-v4-pro-0813', { outputTokens: 32000, reasoningTokens: 32000, finishReason: 'length' })]),
+    'clear-valid.mellow-consensus-threshold': failed('CODE_REVIEW_JUROR_FAILED', [call('claude-sonnet-5-5', {})], { juror_states: [{ juror: 'anthropic:x', status: 'failed', http_status: 400 }] }),
+    'clear-valid.basin-upgrade-access': failed('CODE_REVIEW_JUSTIFIER_FAILED', [call('claude-haiku-5-5', {})]),
+    'clear-valid.layeredge-tier-demotion': failed('CODE_REVIEW_JUROR_FAILED', [{ model: 'deepseek/deepseek-v4-pro-0813', status: 200, basis: 'reported', inputTokens: 1, outputTokens: 8000 }])
+  }));
+  const causes = Object.fromEntries(a.noVerdict.map((r) => [r.id.split('.')[1], r.cause]));
+  assert.deepEqual(causes, {
+    'mellow-fee-per-period': 'juror timeout',
+    'mellow-performance-fee': 'output limit',
+    'mellow-consensus-threshold': 'juror failed (HTTP 400)',
+    'basin-upgrade-access': 'code_review_justifier_failed',
+    'layeredge-tier-demotion': 'output limit'
+  });
+  const text = render(a, { date: '2026-11-05' });
+  assert.match(text, /\| juror timeout \| 1 \|/);
+  assert.match(text, /32000 of 32000 out \(32000 reasoning\), length, 90 s/);
+  assert.match(text, /no usage, aborted, 240 s/);
+  assert.equal(text.includes(SECRET), false);
+  assert.equal(JSON.stringify(jsonOf(a, '2026-11-05')).includes(SECRET), false);
+});
+
+test('two runs compared: what gained a verdict, what lost one, what moved', () => {
+  const noVerdict = { error: 'x CODE_REVIEW_JUROR_FAILED', settled: null, spend: { usd: 0, calls: [] } };
+  const first = analyse(world({
+    'clear-valid.mellow-fee-per-period': noVerdict,
+    'batch-2.kleidi-neighbouring-checks': verdict('LOW')
+  }));
+  const second = analyse(world({
+    'clear-valid.mellow-performance-fee': noVerdict,
+    'batch-2.kleidi-neighbouring-checks': verdict('HIGH')
+  }));
+  const earlier = JSON.parse(JSON.stringify(jsonOf(first, '2026-11-05')));
+  const c = compareRuns(second, earlier);
+  assert.deepEqual(c.arrived.map((r) => r.id), ['clear-valid.mellow-fee-per-period']);
+  assert.deepEqual(c.lost.map((r) => r.id), ['clear-valid.mellow-performance-fee']);
+  assert.deepEqual(c.moved.map((r) => [r.id, r.before, r.after]), [['batch-2.kleidi-neighbouring-checks', 'LOW', 'HIGH']]);
+  assert.equal(c.verdictsBefore, 44);
+  assert.equal(c.verdictsNow, 44);
+  const text = render(second, { date: '2026-11-06', comparison: c });
+  assert.match(text, /## Against the run of 2026-11-05/);
+  assert.match(text, /1 claim\(s\) gained a verdict and 1 lost one/);
+  assert.match(text, /False valid on the adversarial claims: 0 then, 0 now/);
+  assert.match(text, /Verdicts that moved:/);
+});
+
+test('a label names the files, and the first report is not overwritten', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jury-report-'));
+  try {
+    const w = world();
+    fs.mkdirSync(path.join(dir, 'batch', 'claims'), { recursive: true });
+    fs.mkdirSync(path.join(dir, 'results'));
+    for (const [id, result] of w.jury) fs.writeFileSync(path.join(dir, 'batch', 'claims', `${id}.json`), JSON.stringify(result));
+    fs.writeFileSync(path.join(dir, 'results', 'all.json'), JSON.stringify({ cases: [...w.runner].map(([id, r]) => ({ id, actual: r.actual, disagreements: [] })) }));
+    const out = path.join(dir, 'out');
+    const args = ['--batch', path.join(dir, 'batch'), '--results', path.join(dir, 'results'), '--date', '2026-11-05', '--out', out];
+    const deps = { root: CALIBRATION, readLedger: () => ({ calls: [], totalUsd: 0, open: 0 }), stdout: () => {} };
+    assert.equal(main(args, deps), 0);
+    assert.equal(main([...args, '--label', 'limit-32000', '--previous', path.join(out, '2026-11-05-jury.json')], deps), 0);
+    assert.deepEqual(fs.readdirSync(out).sort(), ['2026-11-05-jury-limit-32000.json', '2026-11-05-jury-limit-32000.md', '2026-11-05-jury.json', '2026-11-05-jury.md']);
+    assert.match(fs.readFileSync(path.join(out, '2026-11-05-jury-limit-32000.md'), 'utf8'), /Against the run of 2026-11-05/);
+    assert.throws(() => main([...args, '--label', '../up'], deps), /--label/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('a claim with no result leaves the bar undecided, whatever the rest says', () => {

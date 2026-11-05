@@ -247,7 +247,7 @@ async function runLocked(scenarios, { batchDir, ledgerFile, stopUsd, meterHealth
       jurors: jurorVectors(calls, scenario.input.juryParameters, callsDir, result.vector),
       spend: {
         usd: costOf(calls),
-        calls: calls.map(({ model, status, basis, usd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reportedUsd }) => ({ model, status, basis, usd, inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reportedUsd }))
+        calls: calls.map(({ model, status, basis, usd, inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens, reportedUsd, maxTokens, finishReason, durationMs }) => ({ model, status, basis, usd, inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens, reportedUsd, maxTokens, finishReason, durationMs }))
       }
     });
     log(`claim batch: ${id}: ${result.error ? `error: ${result.error}` : `settles ${result.settled.outcome}`}; USD ${costOf(calls).toFixed(4)}`);

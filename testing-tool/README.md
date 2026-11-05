@@ -473,6 +473,8 @@ setsid nohup scripts/jury-run.sh <work> <key file> --scenario-ids a,b > <work>/r
 
 **The meter** (`src/meter.js`) is a loopback proxy between the AI Node and its providers, set through `ANTHROPIC_BASE_URL` and `OPENROUTER_BASE_URL`, so the AI Node being measured is not changed and every HTTP attempt is counted: LangChain's retries, repair calls, the justifier, a juror cancelled at its deadline. It forwards two routes and the models in `src/spend.js`'s dated price table, and refuses a streamed call, since its usage could not be read. It holds no key: the AI Node's headers pass through, and none is logged or stored.
 
+**The record of a call** holds the output ceiling it asked for (`maxTokens`), how it ended (`finishReason`, `reasoningTokens`) and how long it took (`durationMs`), with no text. So a no-verdict claim can be read by cause: an output limit, a timeout, or anything else.
+
 **The ledger** (`<work>/run/ledger.jsonl`) reserves each call at its worst case (one byte a token, the whole output ceiling) and syncs that to disk before the call goes out, then replaces it with what the provider reported. A cost the provider reports above the list price counts instead. A 200 with no readable usage, a call cancelled, or one that never answered stays at its reservation, across a restart too, so the total can be over what was spent and never under.
 
 **It stops by itself**, with the reason in `<work>/run/summary.json` and the exit code:

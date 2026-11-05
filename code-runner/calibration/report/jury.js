@@ -5,11 +5,13 @@
  * The dated report of a real-jury measurement (node A7d; design §17 Phase 1 exit, §18 metrics). What it counts is fixed
  * here, in code, before a dollar is spent, so that a result cannot move it.
  *
- *   node calibration/report/jury.js --batch <dir> --results <dir> --date <YYYY-MM-DD> --out <dir> [--notes <file>] [--estimate-usd <n>]
+ *   node calibration/report/jury.js --batch <dir> --results <dir> --date <YYYY-MM-DD> --out <dir> [--notes <file>] [--estimate-usd <n>] [--previous <report.json>] [--label <word>]
  *
  * --batch is the testing tool's batch directory (claims/, ledger.jsonl), --results the harness's --results files, one per
  * listing. --notes is a JSON file of what only a person can say: { "headline": "...", "noVerdict": "...", "reasons":
  * { "<case id>": "words" }, "runtime": "...", "deviations": ["..."] }, in the writer's own words.
+ *
+ * --previous is an earlier report's JSON, to compare this run with, and --label names this one's files beside it.
  *
  * It reads a juror's justification nowhere: a report holds ids, verdicts, masses, tokens and dollars, and the notes.
  * Exit 0 when the Phase 1 bar is met on the whole set; 1 when it is missed; 2 when the set is incomplete or the command wrong.
@@ -68,10 +70,46 @@ const expectedOf = (entry) => entry.expected.class || entry.expected.outcome;
 const pct = (n, d) => (d === 0 ? 'n/a' : `${Math.round((n / d) * 1000) / 10}%`);
 const usd = (n) => `$${n.toFixed(2)}`;
 const providerOf = (model) => (model.startsWith('claude-') ? 'Anthropic' : 'OpenRouter');
+const seconds = (ms) => (Number.isFinite(ms) ? `${Math.round(ms / 1000)} s` : '');
 const errorCodeOf = (message) => {
   const found = /CODE_REVIEW_[A-Z_]+/.exec(String(message));
   return found ? found[0] : 'an error';
 };
+
+/**
+ * Why a claim has no verdict. A juror that timed out is the deadline's; one that used its whole output limit is the
+ * limit's, whether its reply was empty or cut off; anything else is named by its code.
+ */
+function causeOf(result, code) {
+  if (code === 'CODE_REVIEW_JUROR_TIMEOUT') return 'juror timeout';
+  if (code === 'CODE_REVIEW_JUSTIFIER_TIMEOUT') return 'justifier timeout';
+  const calls = result.spend && Array.isArray(result.spend.calls) ? result.spend.calls : [];
+  if (code === 'CODE_REVIEW_JUROR_FAILED') {
+    const failed = (result.juror_states || []).find((juror) => juror.status === 'failed' || juror.status === 'parsing_error');
+    const atLimit = calls.some((call) => call.finishReason === 'length' || call.finishReason === 'max_tokens'
+      || (Number.isInteger(call.maxTokens) ? call.outputTokens === call.maxTokens : call.outputTokens === 8000));
+    if (atLimit) return 'output limit';
+    if (failed && failed.http_status) return `juror failed (HTTP ${failed.http_status})`;
+    return 'juror failed';
+  }
+  return code.toLowerCase();
+}
+
+/** What each provider call did, without a word of what it said: for reading a claim with no verdict. */
+function callsOf(result) {
+  const calls = result.spend && Array.isArray(result.spend.calls) ? result.spend.calls : [];
+  return calls.map((call) => ({
+    model: call.model,
+    status: call.status,
+    basis: call.basis,
+    inputTokens: call.inputTokens,
+    outputTokens: call.outputTokens,
+    reasoningTokens: call.reasoningTokens,
+    maxTokens: call.maxTokens,
+    finishReason: call.finishReason,
+    durationMs: call.durationMs
+  }));
+}
 
 /** Where a claim stands. */
 function standing(entry, { jury, runner }) {
@@ -87,13 +125,28 @@ function standing(entry, { jury, runner }) {
   if (ran.packSha256 && result.pack_sha256 !== ran.packSha256) {
     throw new Error(`${entry.id}: the verdict is on pack ${result.pack_sha256}, and the runner's results name ${ran.packSha256}`);
   }
-  if (result.error) return { outcome: 'NO VERDICT', by: 'jury', error: errorCodeOf(result.error), jurors: result.jurors || [], usd: result.spend ? result.spend.usd : 0 };
+  if (result.error) {
+    const error = errorCodeOf(result.error);
+    return {
+      outcome: 'NO VERDICT',
+      by: 'jury',
+      error,
+      cause: causeOf(result, error),
+      attempts: result.attempts,
+      calls: callsOf(result),
+      jurorStates: (result.juror_states || []).map(({ juror, status, duration_ms: durationMs }) => ({ juror, status, durationMs })),
+      jurors: result.jurors || [],
+      usd: result.spend ? result.spend.usd : 0,
+      ms: result.execution_time_ms
+    };
+  }
   return {
     outcome: result.settled.outcome,
     by: 'jury',
     validMass: result.settled.validMass,
     vector: result.vector,
     jurors: result.jurors || [],
+    calls: callsOf(result),
     usd: result.spend ? result.spend.usd : 0,
     ms: result.execution_time_ms
   };
@@ -206,6 +259,36 @@ function analyse({ cases, jury, runner, ledger }) {
   };
 }
 
+/**
+ * This run against an earlier report's JSON: which verdicts arrived, and which moved.
+ * @param {object} a - analyse()'s
+ * @param {object} earlier - a report's JSON
+ */
+function compareRuns(a, earlier) {
+  const before = new Map((earlier.rows || []).map((r) => [r.id, r]));
+  const rows = a.rows.map((r) => {
+    const was = before.get(r.id);
+    return { id: r.id, expected: r.expected, before: was ? was.outcome : 'absent', after: r.outcome, agreedBefore: was ? was.agrees : false, agreesNow: r.agrees };
+  });
+  const noVerdict = (label) => label === 'NO VERDICT' || label === 'NOT RUN' || label === 'absent';
+  const both = rows.filter((r) => !noVerdict(r.before) && !noVerdict(r.after));
+  return {
+    date: earlier.date,
+    rows,
+    verdictsBefore: rows.filter((r) => !noVerdict(r.before)).length,
+    verdictsNow: rows.filter((r) => !noVerdict(r.after)).length,
+    arrived: rows.filter((r) => noVerdict(r.before) && !noVerdict(r.after)),
+    lost: rows.filter((r) => !noVerdict(r.before) && noVerdict(r.after)),
+    moved: both.filter((r) => r.before !== r.after),
+    same: both.filter((r) => r.before === r.after).length,
+    barBefore: earlier.bar ? earlier.bar.rows : [],
+    falseValidBefore: earlier.adversarial ? earlier.adversarial.falseValid.length : null,
+    spendBefore: earlier.spend ? earlier.spend.totalUsd : null
+  };
+}
+
+const callLine = (c) => `${c.model}: ${Number.isInteger(c.outputTokens) ? `${c.outputTokens} of ${c.maxTokens === undefined ? '?' : c.maxTokens} out` : 'no usage'}${Number.isInteger(c.reasoningTokens) ? ` (${c.reasoningTokens} reasoning)` : ''}, ${c.finishReason || c.basis}${c.durationMs === undefined ? '' : `, ${seconds(c.durationMs)}`}`;
+
 const massOf = (r) => (r.validMass === undefined ? '' : `${Math.round(r.validMass / 10000)}%`);
 const jurorMass = (j) => {
   if (!j.vector) return `${j.model}: unread`;
@@ -227,8 +310,9 @@ const CASE_HEADER = ['Case', 'Expected', 'Actual', 'Settled by', 'Valid mass', '
  * @param {object} [o.runnerInfo]
  * @param {string} [o.pricesAsOf]
  * @param {string[]} [o.refusedForTime] - listings run past a listing check refused for time alone
+ * @param {object} [o.comparison] - compareRuns()'s
  */
-function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pricesAsOf = null, refusedForTime = [] }) {
+function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pricesAsOf = null, refusedForTime = [], comparison = null }) {
   const reasons = notes.reasons || {};
   const headline = !a.complete
     ? `**Incomplete: ${a.incomplete.length} claim(s) have no result, so the bar is not decided.**`
@@ -267,8 +351,25 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
       `${a.noVerdict.length} of the ${a.rows.filter((r) => r.by === 'jury').length} claims that reached the jury have no verdict. Every juror is required, so one juror's failure leaves the arbiter abstaining. What a juror that did answer said is shown for reading only: it is no settlement, and it never would be one.`,
       '',
       ...(notes.noVerdict ? [notes.noVerdict, ''] : []),
-      table(['Case', 'Expected', 'Error', 'Jurors'], a.noVerdict.map((r) => [`\`${r.id}\``, r.expected, r.error, (r.jurors || []).map(jurorMass).join('; ')])),
+      table(['Cause', 'Claims'], [...new Set(a.noVerdict.map((r) => r.cause))].map((cause) => [cause, a.noVerdict.filter((r) => r.cause === cause).length])),
+      '',
+      table(['Case', 'Expected', 'Cause', 'Took', 'Provider calls', 'Jurors'], a.noVerdict.map((r) => [`\`${r.id}\``, r.expected, r.cause, seconds(r.ms), (r.calls || []).map(callLine).join('; '), (r.jurors || []).map(jurorMass).join('; ')])),
       ''
+    ] : []),
+    ...(comparison ? [
+      `## Against the run of ${comparison.date}`,
+      '',
+      `Verdicts: ${comparison.verdictsBefore} then, ${comparison.verdictsNow} now, of ${comparison.rows.length} claims, the runner's settlements included. ${comparison.arrived.length} claim(s) gained a verdict and ${comparison.lost.length} lost one. Of the ${comparison.same + comparison.moved.length} that had one both times, ${comparison.same} kept the same outcome.`,
+      '',
+      ...(comparison.falseValidBefore === null ? [] : [`False valid on the adversarial claims: ${comparison.falseValidBefore} then, ${a.adversarial.falseValid.length} now.`, '']),
+      table(['Class, clear cases', 'Agree then', 'Agree now', 'No verdict then', 'No verdict now'], a.bar.rows.map((c) => {
+        const was = comparison.barBefore.find((row) => row.class === c.class) || {};
+        return [c.class, `${was.agreed === undefined ? '?' : was.agreed} of ${c.cases}`, `${c.agreed} of ${c.cases}`, was.noVerdict === undefined ? '?' : was.noVerdict, c.noVerdict];
+      })),
+      '',
+      ...(comparison.moved.length ? ['Verdicts that moved:', '', table(['Case', 'Expected', 'Then', 'Now'], comparison.moved.map((r) => [`\`${r.id}\``, r.expected, r.before, r.after])), ''] : []),
+      ...(comparison.lost.length ? ['Verdicts lost:', '', table(['Case', 'Expected', 'Then', 'Now'], comparison.lost.map((r) => [`\`${r.id}\``, r.expected, r.before, r.after])), ''] : []),
+      ...(comparison.arrived.length ? ['Verdicts gained:', '', table(['Case', 'Expected', 'Now', 'Agrees'], comparison.arrived.map((r) => [`\`${r.id}\``, r.expected, r.after, r.agreesNow ? 'yes' : 'NO'])), ''] : [])
     ] : []),
     '## The four catalogue cases',
     '',
@@ -330,13 +431,14 @@ function jsonOf(a, date) {
 
 function parseArgs(argv) {
   const o = {};
-  const names = { '--batch': 'batch', '--results': 'results', '--date': 'date', '--out': 'out', '--notes': 'notes', '--estimate-usd': 'estimateUsd' };
+  const names = { '--batch': 'batch', '--results': 'results', '--date': 'date', '--out': 'out', '--notes': 'notes', '--estimate-usd': 'estimateUsd', '--previous': 'previous', '--label': 'label' };
   for (let i = 0; i < argv.length; i += 2) {
     if (!names[argv[i]] || argv[i + 1] === undefined) throw new Error(`unknown option or missing value: ${argv[i]}`);
     o[names[argv[i]]] = argv[i + 1];
   }
   for (const key of ['batch', 'results', 'date', 'out']) if (!o[key]) throw new Error(`--${key} is required`);
   if (!/^\d{4}-\d{2}-\d{2}$/.test(o.date)) throw new Error('--date must be YYYY-MM-DD');
+  if (o.label !== undefined && !/^[a-z0-9][a-z0-9-]*$/.test(o.label)) throw new Error('--label must be lower-case letters, digits and hyphens');
   return o;
 }
 
@@ -368,10 +470,12 @@ function main(argv, { root = ROOT, readLedger, pricesAsOf, stdout = (s) => proce
   const { runner, info, refusedForTime } = readRunnerResults(o.results);
   const a = analyse({ cases, jury: readJury(path.join(o.batch, 'claims')), runner, ledger: readLedger(path.join(o.batch, 'ledger.jsonl')) });
   const notes = o.notes ? JSON.parse(fs.readFileSync(o.notes, 'utf8')) : {};
-  const text = render(a, { date: o.date, notes, refusedForTime, estimateUsd: o.estimateUsd === undefined ? null : Number(o.estimateUsd), runnerInfo: info, pricesAsOf });
+  const comparison = o.previous ? compareRuns(a, JSON.parse(fs.readFileSync(o.previous, 'utf8'))) : null;
+  const text = render(a, { date: o.date, notes, refusedForTime, comparison, estimateUsd: o.estimateUsd === undefined ? null : Number(o.estimateUsd), runnerInfo: info, pricesAsOf });
   fs.mkdirSync(o.out, { recursive: true });
-  fs.writeFileSync(path.join(o.out, `${o.date}-jury.md`), text);
-  fs.writeFileSync(path.join(o.out, `${o.date}-jury.json`), `${JSON.stringify(jsonOf(a, o.date), null, 2)}\n`);
+  const name = `${o.date}-jury${o.label ? `-${o.label}` : ''}`;
+  fs.writeFileSync(path.join(o.out, `${name}.md`), text);
+  fs.writeFileSync(path.join(o.out, `${name}.json`), `${JSON.stringify(jsonOf(a, o.date), null, 2)}\n`);
   stdout(`jury report: ${a.complete ? (a.bar.met ? 'bar met' : `bar MISSED: false valid ${a.adversarial.falseValid.length}, short ${a.bar.short.join(', ') || 'none'}`) : `incomplete: ${a.incomplete.length}`}; USD ${a.spend.totalUsd.toFixed(2)}`);
   if (!a.complete) return 2;
   return a.bar.met ? 0 : 1;
@@ -388,4 +492,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { analyse, render, jsonOf, parseArgs, main, WEAKER_LABELS, CATALOGUE, COMPARISONS, BAR };
+module.exports = { analyse, compareRuns, render, jsonOf, parseArgs, main, WEAKER_LABELS, CATALOGUE, COMPARISONS, BAR };

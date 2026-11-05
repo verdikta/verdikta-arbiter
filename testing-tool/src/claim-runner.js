@@ -42,7 +42,11 @@ async function callClaim(aiNodeUrl, body, { deadlineMs }) {
     const retryable = response.status === 503 && answer.retryable === true;
     if (!retryable || attempt === AI_ATTEMPTS) {
       const detail = typeof answer.error === 'string' ? `: ${answer.error}` : '';
-      throw new Error(`the AI Node answered ${response.status} ${answer.errorCode || 'with no error code'} after ${attempt} call(s)${detail}`);
+      throw Object.assign(new Error(`the AI Node answered ${response.status} ${answer.errorCode || 'with no error code'} after ${attempt} call(s)${detail}`), {
+        errorCode: answer.errorCode,
+        jurorStates: Array.isArray(answer.jurors) ? answer.jurors : undefined,
+        attempts: attempt
+      });
     }
   }
 }
@@ -115,6 +119,8 @@ async function runClaimScenario(scenario, { aiNodeUrl, deadlineMs = CLAIM_DEADLI
       agrees: null,
       prompt_sha256: null,
       error: error.message,
+      ...(error.errorCode ? { error_code: error.errorCode, attempts: error.attempts } : {}),
+      ...(error.jurorStates ? { juror_states: error.jurorStates } : {}),
       // No HTTP answer and no connection: nothing was measured, and the batch stops rather than count it (claim-batch.js).
       ...(UNREACHABLE.includes(error.code) ? { transport: true } : {})
     };

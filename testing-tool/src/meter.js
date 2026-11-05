@@ -30,6 +30,15 @@ const MAX_BODY_BYTES = 32 * 1024 * 1024;
 /** Sent on from the caller: nothing else. */
 const DROPPED_HEADERS = new Set(['host', 'connection', 'content-length', 'accept-encoding', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-authorization', 'te', 'trailer']);
 
+/** Why the provider stopped, and how much of the output was reasoning, for the record: neither holds text. */
+function endOf(body) {
+  const choice = body && Array.isArray(body.choices) ? body.choices[0] : null;
+  const details = body && body.usage ? body.usage.completion_tokens_details : null;
+  const reasoningTokens = details && Number.isInteger(details.reasoning_tokens) ? details.reasoning_tokens : null;
+  const finishReason = choice && typeof choice.finish_reason === 'string' ? choice.finish_reason : (body && typeof body.stop_reason === 'string' ? body.stop_reason : null);
+  return { finishReason, reasoningTokens };
+}
+
 /** The two calls this run makes, and nothing else. */
 function routeOf(url) {
   const [pathname, query] = url.split('?');
@@ -85,13 +94,14 @@ function createMeter({ ledgerFile, callsDir, stopUsd, upstreams = DEFAULT_UPSTRE
     // The answer is read here, so it comes as plain JSON.
     headers['accept-encoding'] = 'identity';
 
+    const startedAt = Date.now();
     let settled = false;
     const settle = (fields) => {
       // Past close() the reservation stands, which is the worst case the call could have cost.
       if (settled || closing) return;
       settled = true;
       try {
-        ledger.settle(id, fields);
+        ledger.settle(id, { ...fields, durationMs: Date.now() - startedAt });
       } catch (error) {
         // The call stays at its reservation, and the ledger now refuses every call.
         process.stderr.write(`meter: the ledger could not record a call's cost: ${error.message}\n`);
@@ -112,12 +122,13 @@ function createMeter({ ledgerFile, callsDir, stopUsd, upstreams = DEFAULT_UPSTRE
         const parsed = parseJson(bytes);
         const usage = usageOf(model, parsed);
         const response = saveAnswer(id, model, answer.statusCode, bytes);
+        const end = endOf(parsed);
         if (usage) {
-          settle({ ...usage, basis: 'reported', status: answer.statusCode, response });
+          settle({ ...usage, ...end, basis: 'reported', status: answer.statusCode, response });
         } else if (answer.statusCode >= 200 && answer.statusCode < 300) {
-          settle({ usd: reservedUsd, basis: 'worst-case', status: answer.statusCode, response });
+          settle({ ...end, usd: reservedUsd, basis: 'worst-case', status: answer.statusCode, response });
         } else {
-          settle({ usd: 0, basis: 'error-answer', status: answer.statusCode, response });
+          settle({ ...end, usd: 0, basis: 'error-answer', status: answer.statusCode, response });
         }
         const { 'content-length': _length, 'transfer-encoding': _encoding, connection: _connection, ...passed } = answer.headers;
         res.writeHead(answer.statusCode, { ...passed, 'content-length': bytes.length });
@@ -158,7 +169,7 @@ function createMeter({ ledgerFile, callsDir, stopUsd, upstreams = DEFAULT_UPSTRE
       }
       let id;
       try {
-        id = ledger.reserve({ usd: reservedUsd, model: parsed.model });
+        id = ledger.reserve({ usd: reservedUsd, model: parsed.model, maxTokens: parsed.max_tokens });
       } catch (error) {
         process.stderr.write(`meter: a call was refused: ${error.message}\n`);
         return refuse(res, 402, 'spend_stop', 'the ledger could not record this call, so it is not sent');
