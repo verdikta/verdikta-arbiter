@@ -192,6 +192,12 @@ test('nothing a juror wrote reaches the report or its JSON', () => {
   assert.equal(JSON.stringify(jsonOf(a, '2026-11-05')).includes(SECRET), false);
 });
 
+test('a listing run past a refusal for time is said, by name', () => {
+  const text = render(analyse(world()), { date: '2026-11-05', refusedForTime: ['sequence', 'sequence-scope'] });
+  assert.match(text, /too slow for the class's time caps on `sequence`, `sequence-scope`/);
+  assert.doesNotMatch(render(analyse(world()), { date: '2026-11-05' }), /too slow/);
+});
+
 test('the report never uses the words the product avoids', () => {
   const text = render(analyse(world()), { date: '2026-11-05' });
   assert.equal(/certif/i.test(text), false);

@@ -2309,6 +2309,8 @@ Node A7d: the 45 claims through the runner and the AI Node with `CODE_STANDARD_P
 
 **What goes to the jury: 39 claims and one control.** Six adversarial claims settle in the runner, with no model called (`flaky`, `observable-mismatch`, `forged-junit-exit`, `protected-file-at-runtime`, `reporter-patched`, `dependency-edited-during-run`), and their results come from the harness. Of the 45 controls, 38 settle in the runner too, and 7 would reach a jury. Only `injected-critical.control` goes, because that case's whole question is whether the injected text moved the verdict, which needs its twin. The other six are the same honest vault claim with nothing adversarial in it, and no acceptance line reads them.
 
+**On a slower host.** `--slow-host` lets a run past a listing check refused for time alone (`LISTING_TOO_HEAVY`), on a host too slow for the class's caps, which CI's runner meets. Nothing else is relaxed: a claim's own limits stay the spec's, and every case is compared exactly. The results file and the report name each listing it let through. No other refusal gets past it.
+
 **What is counted is fixed in `report/jury.js`**, before any run:
 
 | Term | Means |

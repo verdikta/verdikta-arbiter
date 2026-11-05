@@ -33,7 +33,7 @@ function reportFor(runner, body) {
 }
 
 /** A session that answers each claim as `answers` says, by the PoC's text. */
-function fakeSession({ platform = 'linux/amd64', answer = null, listingStatus = 'accepted', baseline = null, log = [] } = {}) {
+function fakeSession({ platform = 'linux/amd64', answer = null, listingStatus = 'accepted', refusals = [], baseline = null, log = [] } = {}) {
   const expectedFor = (body) => {
     const poc = Buffer.from(body.pocPatch, 'base64').toString('utf8');
     return poc.includes('vm.store') ? juryCase().expected.runner : controlCase().expected.runner;
@@ -51,7 +51,7 @@ function fakeSession({ platform = 'linux/amd64', answer = null, listingStatus = 
     },
     async listingCheck(published, listing) {
       log.push(`check ${listing.id}`);
-      return { status: 200, body: { outcome: 'definitive', listing: { status: listingStatus, refusals: [], baseline: baseline || { ...listing.baseline, timings: { buildSeconds: 1 } } } } };
+      return { status: 200, body: { outcome: 'definitive', listing: { status: listingStatus, refusals, baseline: baseline || { ...listing.baseline, timings: { buildSeconds: 1 } } } } };
     },
     async run(body) {
       log.push(`run ${body.bcid}`);
@@ -150,6 +150,47 @@ test('an unknown option is refused', async () => {
     const r = await runMain(['--subsett', 'adversarial'], corpus, fakeSession());
     assert.equal(r.code, EXIT.MALFORMED);
     assert.match(r.err, /--subsett/);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('--slow-host: a refusal for time alone does not stop the run, every case is compared, and the results name the listing', async () => {
+  const corpus = writeCorpus();
+  const results = path.join(corpus.root, 'results.json');
+  try {
+    const refusals = [{ code: 'LISTING_TOO_HEAVY', detail: 'suite run 1 ran past 30 s' }];
+    const refused = await runMain([], corpus, fakeSession({ listingStatus: 'refused', refusals }));
+    assert.equal(refused.code, EXIT.HARNESS, 'without the flag it stops');
+    const log = [];
+    const r = await runMain(['--slow-host', '--results', results], corpus, fakeSession({ listingStatus: 'refused', refusals, log }));
+    assert.equal(r.code, EXIT.OK);
+    assert.ok(log.some((line) => line.startsWith('run ')), 'the cases ran');
+    assert.match(r.out, /--slow-host: the listing check refused it for time alone/);
+    const file = JSON.parse(fs.readFileSync(results, 'utf8'));
+    assert.deepEqual(file.listingChecksRefusedForTime.map((entry) => entry.detail), [['suite run 1 ran past 30 s']]);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('--slow-host: any other refusal stops the run as ever', async () => {
+  const corpus = writeCorpus();
+  try {
+    for (const refusals of [[{ code: 'HARNESS_INTEGRITY_FAILED', detail: 'x' }], [{ code: 'LISTING_TOO_HEAVY', detail: 'x' }, { code: 'LEGACY_ASSERTIONS', detail: 'y' }], []]) {
+      const r = await runMain(['--slow-host'], corpus, fakeSession({ listingStatus: 'refused', refusals }));
+      assert.equal(r.code, EXIT.HARNESS, JSON.stringify(refusals));
+    }
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('--slow-host leaves an accepted listing\'s baseline check alone', async () => {
+  const corpus = writeCorpus();
+  try {
+    const r = await runMain(['--slow-host'], corpus, fakeSession({ baseline: { version: 1, different: true } }));
+    assert.equal(r.code, EXIT.HARNESS);
   } finally {
     corpus.cleanup();
   }

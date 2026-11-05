@@ -16,6 +16,8 @@
 # Naming listings runs those only, and lets several of these run at once, each with its own temporary directory, which is
 # how a box with CPUs to spare gets through the set. Keep listings on one repository in one process: they share a fetch in
 # the cache. claims/ is written by whichever finds every listing done.
+#
+# SLOW_HOST=1 passes --slow-host: see code-runner/calibration/run.js. The results files name each listing it let through.
 set -uo pipefail
 set +x
 
@@ -47,7 +49,7 @@ for listing in ${*:-$listings}; do
   # The run replaces what the marker vouches for, so the marker goes first: a run that fails leaves none.
   rm -f "$WORK/prepared/$listing"
   code=0
-  run --listing "$listing" --results "$WORK/results/$listing.json" --measured "$WORK/measured" --export "$WORK/exports/$listing" || code=$?
+  run --listing "$listing" --results "$WORK/results/$listing.json" --measured "$WORK/measured" --export "$WORK/exports/$listing" ${SLOW_HOST:+--slow-host} || code=$?
   echo "jury-prepare: $listing exit $code"
   if [ "$code" -eq 0 ]; then echo "$MARK" > "$WORK/prepared/$listing"; else failed=1; fi
 done

@@ -217,8 +217,9 @@ const CASE_HEADER = ['Case', 'Expected', 'Actual', 'Settled by', 'Valid mass', '
  * @param {number} [o.estimateUsd]
  * @param {object} [o.runnerInfo]
  * @param {string} [o.pricesAsOf]
+ * @param {string[]} [o.refusedForTime] - listings run past a listing check refused for time alone
  */
-function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pricesAsOf = null }) {
+function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pricesAsOf = null, refusedForTime = [] }) {
   const reasons = notes.reasons || {};
   const headline = !a.complete
     ? `**Incomplete: ${a.incomplete.length} claim(s) have no result, so the bar is not decided.**`
@@ -286,6 +287,7 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     '',
     ...CAVEATS.map((c) => `- ${c}`),
     ...(notes.runtime ? [`- ${notes.runtime}`] : []),
+    ...(refusedForTime.length ? [`- This host is too slow for the class's time caps on ${refusedForTime.map((id) => `\`${id}\``).join(', ')}, so the real listing check refused those for time alone and the run went on past it (\`--slow-host\`). Their cases were still compared exactly with what each says, and CI's own run accepts them.`] : []),
     '',
     '## Spend',
     '',
@@ -320,14 +322,16 @@ function parseArgs(argv) {
 function readRunnerResults(dir) {
   const runner = new Map();
   let info = null;
+  const refusedForTime = [];
   for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.json')).sort()) {
     const file = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
     // One report is about one runner: results from two would be mixed under the first one's name.
     if (info && file.runner && JSON.stringify(info) !== JSON.stringify(file.runner)) throw new Error(`${name} comes from another runner than the other results: ${JSON.stringify(file.runner)} and ${JSON.stringify(info)}`);
     info = info || file.runner;
+    refusedForTime.push(...(file.listingChecksRefusedForTime || []).map((entry) => entry.listing));
     for (const entry of file.cases) if (!runner.has(entry.id)) runner.set(entry.id, { actual: entry.actual, disagreements: entry.disagreements, reportSha256: entry.observed ? entry.observed.reportSha256 : null, packSha256: entry.observed ? entry.observed.packSha256 : null });
   }
-  return { runner, info };
+  return { runner, info, refusedForTime };
 }
 
 function readJury(dir) {
@@ -340,10 +344,10 @@ function readJury(dir) {
 function main(argv, { root = ROOT, readLedger, pricesAsOf, stdout = (s) => process.stdout.write(`${s}\n`) } = {}) {
   const o = parseArgs(argv);
   const { cases } = loadCorpus({ root, layout: false });
-  const { runner, info } = readRunnerResults(o.results);
+  const { runner, info, refusedForTime } = readRunnerResults(o.results);
   const a = analyse({ cases, jury: readJury(path.join(o.batch, 'claims')), runner, ledger: readLedger(path.join(o.batch, 'ledger.jsonl')) });
   const notes = o.notes ? JSON.parse(fs.readFileSync(o.notes, 'utf8')) : {};
-  const text = render(a, { date: o.date, notes, estimateUsd: o.estimateUsd === undefined ? null : Number(o.estimateUsd), runnerInfo: info, pricesAsOf });
+  const text = render(a, { date: o.date, notes, refusedForTime, estimateUsd: o.estimateUsd === undefined ? null : Number(o.estimateUsd), runnerInfo: info, pricesAsOf });
   fs.mkdirSync(o.out, { recursive: true });
   fs.writeFileSync(path.join(o.out, `${o.date}-jury.md`), text);
   fs.writeFileSync(path.join(o.out, `${o.date}-jury.json`), `${JSON.stringify(jsonOf(a, o.date), null, 2)}\n`);
