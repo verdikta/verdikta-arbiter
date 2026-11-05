@@ -24,7 +24,7 @@ is() { # is FILE EXPR EXPECTED_JSON MESSAGE
     [ "$got" = "$3" ] && ok || bad "$1: $4 (got $got)"
 }
 
-for f in e2e.yml repo-policy.yml secret-scan.yml code-runner.yml code-runner-calibration.yml installer.yml; do
+for f in e2e.yml repo-policy.yml secret-scan.yml code-runner.yml code-runner-calibration.yml installer.yml external-adapter.yml; do
     [ -f "$WF/$f" ] && ok || { bad "$f is missing"; continue; }
     for ev in pull_request push; do
         for b in main master "$INTEGRATION"; do
@@ -105,11 +105,15 @@ is e2e.yml "w.dig('jobs', 'l4-testnet', 'steps').find { |s| s['run'].to_s.includ
 # installer: every change to the installer or to what it renders runs its tests,
 # and the real Chainlink binary measures the job timeouts.
 for ev in pull_request push; do
-    for p in 'installer/**' 'chainlink-node/**' '.github/workflows/installer.yml'; do
+    for p in 'installer/**' 'chainlink-node/**' 'code-runner/**' '.github/workflows/installer.yml'; do
         is installer.yml "on.dig('$ev', 'paths').to_a.include?('$p')" true "$ev paths miss $p"
     done
 done
-is installer.yml "w['jobs'].keys" '["tests","chainlink-2-23"]' "jobs added or removed (check their secret gates)"
+is installer.yml "w['jobs'].keys" '["tests","chainlink-2-23","code-review-sandbox"]' "jobs added or removed (check their secret gates)"
+is installer.yml "w.dig('jobs', 'code-review-sandbox', 'runs-on')" '"ubuntu-latest"' "the sandbox's run left the Linux host"
+is installer.yml "w.dig('jobs', 'code-review-sandbox', 'steps').any? { |s| s['run'].to_s.include?('code-review-sandbox.integration.sh') }" true "the sandbox's integration test is not run"
+is external-adapter.yml "w['jobs'].keys" '["unit"]' "jobs added or removed (check their secret gates)"
+is external-adapter.yml "JSON.generate(w['jobs']).include?('secrets.')" false "the adapter's unit tests read a secret"
 is installer.yml "JSON.generate(w['jobs']).include?('secrets.')" false "the installer jobs read a secret"
 is installer.yml "w.dig('jobs', 'chainlink-2-23', 'runs-on')" '"ubuntu-latest"' "the Chainlink measure left amd64: the image has no arm64 variant"
 is installer.yml "w.dig('jobs', 'chainlink-2-23', 'steps').any? { |s| s['run'].to_s.include?('job-timeouts.integration.sh') }" true "the Chainlink measure is not run"

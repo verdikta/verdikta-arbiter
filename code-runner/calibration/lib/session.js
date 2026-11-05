@@ -126,11 +126,23 @@ function freePort() {
   });
 }
 
-async function startRegistry(docker, instance, wantedPort) {
+/**
+ * @param {boolean} [hostNetwork] - the installer's self-test (A8): the runner's own daemon has no
+ *   iptables and no proxy, so nothing can publish a port there. The registry listens on the host's loopback itself,
+ *   which is where that daemon pulls from. The image's reference does not change, so neither does a hash.
+ */
+function registryArgs(name, port, hostNetwork) {
+  const place = hostNetwork
+    ? ['--network', 'host', '--env', `REGISTRY_HTTP_ADDR=127.0.0.1:${port}`]
+    : ['--publish', `127.0.0.1:${port}:5000`];
+  return ['run', '--detach', '--name', name, ...place, REGISTRY_IMAGE];
+}
+
+async function startRegistry(docker, instance, wantedPort, hostNetwork = false) {
   const name = `vcr-cal-registry-${instance}`;
   const port = wantedPort || await freePort();
-  const publish = `127.0.0.1:${port}:5000`;
-  const up = await runText(docker, ['run', '--detach', '--name', name, '--publish', publish, REGISTRY_IMAGE], { timeoutMs: 120000 });
+  const publish = `127.0.0.1:${port}`;
+  const up = await runText(docker, registryArgs(name, port, hostNetwork), { timeoutMs: 120000 });
   if (up.exitCode !== 0) {
     await runText(docker, ['rm', '--force', '--volumes', name], { timeoutMs: 60000 });
     throw new Error(`the local registry did not start on ${publish}: ${up.stderr.trim().slice(0, 400)}`);
@@ -154,9 +166,10 @@ async function startRegistry(docker, instance, wantedPort) {
 /**
  * @param {object} [o]
  * @param {number} [o.registryPort] - a fixed loopback port (the canary's); default: whichever is free
+ * @param {boolean} [o.registryHostNetwork] - see registryArgs
  * @param {object} [o.log]
  */
-async function createSession({ registryPort = 0, log = silent } = {}) {
+async function createSession({ registryPort = 0, registryHostNetwork = false, log = silent } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'vcr-calibration-'));
   const instance = `cal${crypto.randomBytes(5).toString('hex')}`;
   const token = crypto.randomBytes(32).toString('hex');
@@ -183,7 +196,7 @@ async function createSession({ registryPort = 0, log = silent } = {}) {
   try {
     await ensureImage(docker, SEMGREP.reference);
     await ensureImage(docker, REGISTRY_IMAGE);
-    const registry = await startRegistry(docker, instance, registryPort);
+    const registry = await startRegistry(docker, instance, registryPort, registryHostNetwork);
     closers.push(registry.stop);
     const host = `127.0.0.1:${registry.port}`;
     const config = loadConfig({
@@ -247,4 +260,4 @@ async function createSession({ registryPort = 0, log = silent } = {}) {
   }
 }
 
-module.exports = { createSession, buildImage, imageInputs };
+module.exports = { createSession, buildImage, imageInputs, registryArgs };

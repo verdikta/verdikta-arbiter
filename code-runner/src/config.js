@@ -141,6 +141,7 @@ function loadConfig(env = process.env, { root = CODE_RUNNER_ROOT, readFile = (p)
   const stateDir = absolute('CODE_RUNNER_STATE_DIR', path.join(root, '.state'));
   const maintenanceFile = absolute('CODE_RUNNER_MAINTENANCE_FILE', path.join(stateDir, 'maintenance'));
   const dataRoot = absolute('CODE_RUNNER_DATA_ROOT', null);
+  const conformanceFile = absolute('CODE_RUNNER_CONFORMANCE_FILE', null);
 
   const number = (name, fallback, min, max) => {
     if (blank(env[name])) return fallback;
@@ -179,6 +180,7 @@ function loadConfig(env = process.env, { root = CODE_RUNNER_ROOT, readFile = (p)
     stateDir,
     dockerConfigDir: path.join(stateDir, 'docker-config'),
     maintenanceFile,
+    conformanceFile,
     dataRoot,
     gcIntervalMs,
     deadlineReserveMs,

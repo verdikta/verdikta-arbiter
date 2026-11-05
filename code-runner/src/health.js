@@ -3,8 +3,9 @@
 /**
  * GET /health: what the EA and the doctor need to decide whether this runner
  * can take a claim. `ok` is false when a run would be refused anyway: Docker
- * unreachable, the configured runtime missing, the maintenance lock held, or
- * (under runsc) the host's memory not measurable. Busy slots are reported
+ * unreachable, the configured runtime missing, the maintenance lock held, no
+ * conformance pass where one is asked for, or (under runsc) the host's memory
+ * not measurable. Busy slots are reported
  * (`capacity`), not a failure: they free up.
  */
 
@@ -13,6 +14,7 @@ const { RUNNER_VERSION } = require('./version');
 const { CLASS_HARD_LIMITS, GVISOR_RELEASE } = require('./common');
 const { dockerInfo } = require('./daemon');
 const { maintenanceLocked } = require('./admission');
+const { passProblem, expectedPass } = require('./conformance');
 const { measureRuntime, runtimeProblem } = require('./runtime');
 const scanner = require('./scanner');
 
@@ -58,6 +60,8 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
   const problem = info.reachable && runtime ? runtimeProblem(config, measured) : null;
   if (problem) reasons.push(problem);
   if (maintenance) reasons.push('the maintenance lock is held');
+  const noPass = config.conformanceFile ? passProblem(config.conformanceFile) : null;
+  if (noPass) reasons.push(noPass);
   // A claim's scan needs these, and the runner never pulls the image: the installer warms it (A3c, A8).
   const scan = info.reachable
     ? await scanner.imageStatus({ docker, platform: config.platform })
@@ -97,6 +101,7 @@ async function health({ config, docker, statfs = fs.promises.statfs, exists = fs
     },
     dataRoot: { path: dataRootPath || null, freeBytes: disk.freeBytes, error: disk.error },
     maintenance,
+    conformance: { required: Boolean(config.conformanceFile), problem: noPass, sourceSha256: expectedPass().sourceSha256 },
     ...(capacity ? { capacity: capacityStatus } : {}),
     ...(images ? { images: { ...images.status(), diskReserveMb: config.diskReserveMb, pullTimeoutMs: config.pullTimeoutMs } } : {}),
     limits: CLASS_HARD_LIMITS

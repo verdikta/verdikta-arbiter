@@ -298,6 +298,26 @@ does not — it is read at runtime). A failed build falls back to `next dev`;
 `arbiter-status.sh` and the doctor's `svc.ai_node_mode`. Operator notes:
 `installer/docs/maintenance/upgrading.md`, "AI Node production build".
 
+### The code-review sandbox (optional)
+`installer/util/code-review-sandbox.sh enable`, offered by `install.sh` and by
+`upgrade-arbiter.sh` (`VA_*_CODE_REVIEW_SANDBOX`, unattended default `n`): gVisor by SHA-512, a
+second `dockerd` and containerd of the runner's own on a fixed-size loop-mounted ext4 image (40 GB),
+warm images, the conformance self-test against `@verdikta/common`'s hash. **The runner holds itself to the
+pass** (`CODE_RUNNER_CONFORMANCE_FILE`, `code-runner/src/conformance.js`): no pass for its version, gVisor,
+common, the published hash and a hash of its own `src/` and lockfile, and `/health` is 503 and claims abstain,
+however an upgrade ended. No installer step turns claims off, and text requests never call the runner. **It never restarts,
+reloads or configures the arbiter's Docker and installs no package** (apt can restart Docker): a new
+gVisor reaches a running daemon by `systemctl reload verdikta-code-runner-docker`. A first enable
+that fails removes what it made; a failed refresh keeps it. The runner's
+daemon has its own empty bridge `vcr0` and no iptables, so nothing there can publish a port: the
+self-test's registry uses the host network. **Never give a second dockerd `"bridge": "none"`: it deletes
+the host's `docker0` when it starts** (measured on Docker 29; `removeDefaultBridgeInterface`). A loop
+device turns a discard into a hole in its file, so `mkfs.ext4` gets `-E nodiscard` (it otherwise left
+40 GB `fallocate`d at 3 GB, measured) and the disk unit sets the device's `discard_max_bytes` to 0 for `fstrim`. `register-oracle*.sh` refuse a code class, or 5555 with code review
+on, without a pass, and one job on both code classes. `code-runner/start.sh` refuses any Docker
+endpoint but its own socket. The token, the pass and the lock are in `<install>/code-runner-state/`, outside
+what an upgrade replaces. Operator notes: `installer/docs/maintenance/code-review-sandbox.md`.
+
 ### Runtime management (post-install, in the install dir)
 `start-arbiter.sh`, `stop-arbiter.sh`, `arbiter-status.sh`, `arbiter-doctor.sh`
 (health check + `--fix`), `register-oracle.sh` / `unregister-oracle.sh`,
@@ -407,6 +427,13 @@ Ollama runs locally and is unaffected by gateway settings.
   `anthropicControlParams`) and gives models outside its table only 2048 output
   tokens, so modern models get `maxTokens` set explicitly. Do not re-add a
   blanket `temperature`.
+- **Above 21,333 max tokens the Anthropic SDK needs a client timeout.** The SDK nested
+  under `@langchain/anthropic` (0.71.2; the top-level 0.27.3 has no such check) refuses a
+  non-streaming request above that, with no request sent, unless the client has a timeout
+  of its own, and LangChain then retries the refusal for one to two minutes. Code mode's
+  jurors pass `deadlineAt`, and `anthropicClientOptions` sets the timeout to the time left;
+  text mode and the justifier keep the SDK's default. `anthropic-sdk-limit.test.ts` runs the
+  real client against a local stub, so bump the SDK with that test in view.
 - **Images are fitted to provider limits before the jury sees them.**
   `ai-node/src/lib/attachments/normalizeImages.ts` (sharp, pinned exactly) runs
   once per request: images within every limit (8000 px/side, 30,000 OpenAI

@@ -3,6 +3,7 @@
 // and the real pack assembly at capacity. A runner change that breaks the EA's
 // reading of it fails here.
 
+const os = require('os');
 const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { runClaim } = require('../../codeReview/claimRun');
@@ -57,9 +58,9 @@ let server;
 let target;
 let ai;
 
-async function startRunner(sb = claimSandbox()) {
+async function startRunner(sb = claimSandbox(), env = {}) {
   server = createServer({
-    config: testConfig(), docker: sb.docker, log: silent,
+    config: testConfig(env), docker: sb.docker, log: silent,
     meminfo: async () => ({ availableMb: 100000, error: null }),
     statfs: async () => ({ bavail: 1e12, bsize: 1 })
   });
@@ -136,6 +137,14 @@ describe('the merged runner answers what the EA reads', () => {
     };
     await startRunner(claimSandbox({ handlers }));
     await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_RUNNER_ABSTAIN.*pull_failed/);
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
+  it('no conformance pass: the runner reports itself unhealthy, the EA abstains before any run (A8)', async () => {
+    const sb = claimSandbox();
+    await startRunner(sb, { CODE_RUNNER_CONFORMANCE_FILE: path.join(os.tmpdir(), `vcr-no-pass-${process.pid}.json`) });
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_RUNNER_UNHEALTHY/);
+    expect(sb.docker.callsOf('create')).toHaveLength(0);
     expect(ai.state.calls).toHaveLength(0);
   });
 

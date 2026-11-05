@@ -6,8 +6,8 @@
  * commit), which costs the operator the timeliness penalty, so each check is
  * one the run could not survive.
  *
- * admitRun() (node A1) checks the maintenance lock, the deadline and the
- * daemon. Capacity (node A1b) adds, after those:
+ * admitRun() (node A1) checks the maintenance lock, the conformance pass where
+ * one is asked for (node A8), the deadline and the daemon. Capacity (node A1b) adds, after those:
  *
  * - **Execution slots** (CODE_RUNNER_SLOTS, default 1): at most that many
  *   runs hold a slot at once, from admission until their sandboxes are gone.
@@ -27,6 +27,7 @@
 const fs = require('node:fs');
 const { ABSTAIN, Abstain } = require('./result');
 const { dockerInfo } = require('./daemon');
+const { passProblem } = require('./conformance');
 
 const nullLog = { info() {}, warn() {}, error() {}, debug() {} };
 
@@ -50,6 +51,8 @@ async function admitRun({ config, docker, limits, stopAt, now = Date.now(), sign
   if (maintenanceLocked(config.maintenanceFile, exists)) {
     throw refuse(`the maintenance lock ${config.maintenanceFile} is held (an install or upgrade is running)`);
   }
+  const noPass = config.conformanceFile ? passProblem(config.conformanceFile) : null;
+  if (noPass) throw new Abstain(ABSTAIN.NO_CONFORMANCE_PASS, noPass, { step: 'admission' });
   const needMs = limits.runSeconds * 1000 + toolReserveMs;
   const haveMs = stopAt - now;
   if (haveMs < needMs) {

@@ -16,6 +16,7 @@ INSTALL_DIR="$(dirname "$(readlink -f "$0")")"
 # Define component directories relative to $INSTALL_DIR
 AI_NODE_DIR="$INSTALL_DIR/ai-node"
 ADAPTER_DIR="$INSTALL_DIR/external-adapter"
+CODE_RUNNER_DIR="$INSTALL_DIR/code-runner"
 
 echo -e "${BLUE}Starting Verdikta Arbiter from $INSTALL_DIR...${NC}"
 
@@ -155,6 +156,15 @@ else
     fi
 fi
 
+# Code runner: only where the code-review sandbox is installed (code-review-sandbox.sh enable
+# writes its .env). Its own Docker daemon and disk are systemd units that come back on their
+# own. A runner that does not start is reported, never a non-zero exit: callers run under set -e,
+# and the rest of the arbiter does not depend on it.
+if [ -f "$CODE_RUNNER_DIR/.env" ]; then
+    echo -e "${BLUE}Starting Code Runner...${NC}"
+    bash "$CODE_RUNNER_DIR/start.sh" || echo -e "${RED}Failed to start the Code Runner. Check logs at $CODE_RUNNER_DIR/logs/runner_*.log${NC}"
+fi
+
 # Containers. After a host reboot Docker brings both back on its own when they
 # carry --restart unless-stopped (installs since the 2026-10-18 reboot wave;
 # arbiter-boot-service.sh sets it on older ones), possibly still starting when
@@ -228,6 +238,14 @@ echo -e "${BLUE}Verdikta Arbiter Status:${NC}"
 echo -e "  AI Node:          $(ai_node_status)"
 echo -e "  External Adapter: $(adapter_status)"
 echo -e "  Chainlink Node:   $(chainlink_status)"
+if [ -f "$CODE_RUNNER_DIR/.env" ]; then
+    # Any HTTP status is an answer: without its token the runner says 401.
+    if [ "$(curl -s -o /dev/null -m 2 -w '%{http_code}' http://127.0.0.1:8090/health 2>/dev/null)" != "000" ]; then
+        echo -e "  Code Runner:      ${GREEN}Running${NC}"
+    else
+        echo -e "  Code Runner:      ${RED}Not Running${NC}"
+    fi
+fi
 
 echo -e "${GREEN}Verdikta Arbiter startup completed.${NC}"
 echo -e "Access your services at:"
