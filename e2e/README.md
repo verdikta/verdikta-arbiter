@@ -312,14 +312,14 @@ You need a `linux/amd64` host with Docker (a host that can't run amd64 images st
    node scripts/prepare-l4-listings.js specs --images ~/l4-images.json --out ~/l4-signing
    ```
 
-4. Run the runner's listing check in CI with the `gh workflow run e2e.yml … -f l4_listing_requests=…` command `specs` printed, then find the run and wait for it. The job "L4 listing check (runsc)" starts the runner at this branch's `RUNNER_VERSION`, under gVisor at the release `@verdikta/common` pins, and checks each image: its size, the build, the suite three times, the harness proof. Every listing must be accepted and the run must succeed. It needs no secret.
+4. Run the runner's listing check in CI with the `gh workflow run e2e.yml … -f l4_listing_requests=…` command `specs` printed, then find the run and wait for it. The job "L4 listing check (runsc)" starts the runner at this branch's `RUNNER_VERSION`, under gVisor at the release `@verdikta/common` pins, and checks each image: that it is built on the Foundry base `@verdikta/common` pins (the base's layers are its first), its size, the build, the suite three times, the harness proof. Every listing must be accepted and the run must succeed. It needs no secret.
 
    ```bash
    gh run list -R verdikta/verdikta-arbiter --workflow e2e.yml --event workflow_dispatch --branch claude/stake-attestation --limit 1
    gh run watch <run id> -R verdikta/verdikta-arbiter
    ```
 
-5. Write what to sign, from that run. `prepare` checks that the run is `e2e.yml`, dispatched on `claude/stake-attestation`, and a success; that it checked exactly the requests in `~/l4-signing`, with this checkout's runner, `@verdikta/common` and gVisor; and that the runner accepted each listing at the image and size its spec names. Each statement's baseline is the one the runner measured, and its `tools` are the runner and the gVisor that ran. It prints the size of each message, which must fit the signing service's 4,096 bytes.
+5. Write what to sign, from that run. `prepare` checks that the run is `e2e.yml`, dispatched on `claude/stake-attestation`, and a success; that it checked exactly the requests in `~/l4-signing`, with this checkout's runner, `@verdikta/common` and gVisor and this checkout's code (the runner's source hash, this script, its fixtures and lockfile, and `e2e.yml`; if the branch moved since the run, check out the run's commit); and that the runner accepted each listing at the image and size its spec names, on the pinned base. Each statement's baseline is the one the runner measured, its `env.base` the base the run found, and its `tools` the runner and the gVisor that ran. It prints the size of each message, which must fit the signing service's 4,096 bytes.
 
    ```bash
    node scripts/prepare-l4-listings.js prepare --dir ~/l4-signing --run <run id>

@@ -16,6 +16,7 @@ const { version: COMMON_VERSION } = require('@verdikta/common/package.json');
 const F = require('../../l2/claim/fixtures');
 const repo = require('../../../../code-runner/test/docker/forgeFixture');
 const { RUNNER_VERSION } = require('../../../../code-runner/src/version');
+const { sourceSha256 } = require('../../../../code-runner/src/conformance');
 
 jest.setTimeout(60000);
 
@@ -42,6 +43,16 @@ const measuredBaseline = (baseCommit = BASE_COMMIT) => ({
   tests: [{ id: DEPOSIT, results: ['pass', 'pass', 'pass'] }, { id: FLAKY, results: ['pass', 'fail', 'pass'] }],
   stable: [DEPOSIT], unstable: [FLAKY]
 });
+const BASE = codeReview.BASE_IMAGE_PINS.foundry.reference;
+const hashOf = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
+/** The code the check ran, as prepare computes it for this checkout. */
+const CODE = {
+  runnerSource: sourceSha256(),
+  harness: hashOf(path.join(__dirname, '..', '..', '..', 'scripts', 'prepare-l4-listings.js')),
+  fixtures: hashOf(path.join(__dirname, '..', '..', 'l2', 'claim', 'fixtures.js')),
+  lockfile: hashOf(path.join(__dirname, '..', '..', '..', 'package-lock.json')),
+  workflow: hashOf(path.join(__dirname, '..', '..', '..', '..', '.github', 'workflows', 'e2e.yml'))
+};
 /** age's documented example recipient: its private half is public, so no real listing may use it (A7a). */
 const AGE_EXAMPLE = 'age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p';
 
@@ -133,6 +144,7 @@ function writeMeasurement(change = (m) => m) {
     const body = requests.listings[name];
     listings[name] = {
       image: body.image,
+      base: { reference: BASE, layers: 5 },
       httpStatus: 200,
       response: {
         outcome: 'definitive', kind: 'listing-check', checkId: `c-${name}`,
@@ -146,6 +158,7 @@ function writeMeasurement(change = (m) => m) {
     requestsSha256: crypto.createHash('sha256').update(requestBytes()).digest('hex'),
     repo: requests.repo, baseCommit: requests.baseCommit, fixture: { branch: FIXTURE_BRANCH, commit: requests.baseCommit },
     runner: { version: RUNNER_VERSION, common: COMMON_VERSION, runtime: 'runsc', platform: 'linux/amd64' },
+    code: CODE,
     gvisor: codeReview.GVISOR_RELEASE,
     semgrepRules: { pinned: codeReview.SEMGREP_RULES_VERSION, ran: false },
     github: { runId: RUN_ID, sha: HEAD_SHA, ref: 'refs/heads/claude/stake-attestation' },
@@ -257,6 +270,7 @@ describe('prepare', () => {
       expect(statement.baseCommit).toBe(BASE_COMMIT);
       expect(statement.env.image).toBe(IMAGES[name]);
       expect(statement.env.unpackedBytes).toBe(UNPACKED);
+      expect(statement.env.base).toBe(BASE);
       expect(statement.tools).toEqual({ runner: RUNNER_VERSION, gvisor: codeReview.GVISOR_RELEASE, semgrepRules: codeReview.SEMGREP_RULES_VERSION });
       const baseline = fs.readFileSync(path.join(out, name, 'members', 'baseline.json'));
       expect(JSON.parse(baseline.toString('utf8'))).toEqual(measuredBaseline());
@@ -299,6 +313,12 @@ describe('prepare', () => {
     ['another common', (m) => ({ ...m, runner: { ...m.runner, common: '1.9.0-attest.2' } }), /ran @verdikta\/common 1\.9\.0-attest\.2/],
     ['runc', (m) => ({ ...m, runner: { ...m.runner, runtime: 'runc' } }), /ran under runc/],
     ['another gVisor', (m) => ({ ...m, gvisor: 'release-20260101.0' }), /ran gVisor release-20260101\.0/],
+    ['other runner source at the same version', (m) => ({ ...m, code: { ...m.code, runnerSource: '0'.repeat(64) } }), /ran another runnerSource than this checkout's .*check out the run's commit e+/],
+    ['another check script', (m) => ({ ...m, code: { ...m.code, harness: '0'.repeat(64) } }), /ran another harness than this checkout's/],
+    ['another workflow file', (m) => ({ ...m, code: { ...m.code, workflow: '0'.repeat(64) } }), /ran another workflow than this checkout's/],
+    ['no code fingerprint', (m) => ({ ...m, code: undefined }), /ran another runnerSource/],
+    ['an image on another base', answer('cold-cache', (l) => ({ ...l, base: { reference: 'ghcr.io/foundry-rs/foundry:v1.0.0@sha256:' + '1'.repeat(64), layers: 5 } })), /cold-cache: the run did not find the image built on ghcr\.io\/foundry-rs\/foundry:v1\.8\.5/],
+    ['no base check', answer('listing', (l) => ({ ...l, base: undefined })), /listing: the run did not find the image built on/],
     ['another commit', (m) => ({ ...m, baseCommit: 'f'.repeat(40) }), /checked ffff/],
     ['a listing it did not check', (m) => ({ ...m, listings: { listing: m.listings.listing, 'cold-cache': m.listings['cold-cache'] } }), /measured no registry-failure listing/],
     ['a refused listing', answer('cold-cache', listingOf((l) => ({ ...l, status: 'refused', refusals: [{ code: 'BUILD_FAILED' }] }))), /cold-cache: the runner did not accept it: .*BUILD_FAILED/],

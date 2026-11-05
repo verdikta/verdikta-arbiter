@@ -79,6 +79,13 @@ const PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
 const FIXTURE_DATE = '1700000000 +0000';
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+/** What decides a check's answer besides the runner itself: this script, the fixtures it builds specs with, their lockfile, the job. */
+const CODE_FILES = Object.freeze({
+  harness: path.join(__dirname, 'prepare-l4-listings.js'),
+  fixtures: path.join(__dirname, '..', 'src', 'l2', 'claim', 'fixtures.js'),
+  lockfile: path.join(__dirname, '..', 'package-lock.json'),
+  workflow: path.join(__dirname, '..', '..', '.github', 'workflows', 'e2e.yml')
+});
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const digestOf = (image) => image.slice(image.indexOf('@') + 1);
 
@@ -143,6 +150,17 @@ function fixtureCommit() {
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * The code a check ran, as hashes: the runner's own source hash (src/ and its lockfile, as a conformance pass
+ * binds it) and CODE_FILES. prepare takes a run only when this checkout gives the same.
+ */
+function codeFingerprint() {
+  const { sourceSha256 } = require(path.join(CODE_RUNNER, 'src', 'conformance'));
+  const files = {};
+  for (const [name, file] of Object.entries(CODE_FILES)) files[name] = sha256(fs.readFileSync(file));
+  return { runnerSource: sourceSha256(), ...files };
 }
 
 /** The commit the fixture branch holds, as anyone reads it. */
@@ -403,6 +421,34 @@ async function startRunner({ runtime, platform, allowlist, logFile }) {
   }
 }
 
+/** The base image an env image says it is built FROM: common's pin for env.from, for this platform. */
+function basePin(from, platform) {
+  const pin = RUNNER_COMMON.BASE_IMAGE_PINS[from];
+  if (!pin) throw new Error(`@verdikta/common pins no base image for ${from}`);
+  return { reference: pin.reference, pull: platform === pin.platform ? `${pin.repository}@${pin.digest}` : `${pin.repository}@${pin.indexDigest}` };
+}
+
+/**
+ * That `image` is built on `from`'s pinned base: the base's layers are the image's first layers, by their
+ * uncompressed digests. Both are pulled by digest here, so what is compared is what the registry serves.
+ */
+function verifiedBase(image, from, platform) {
+  const pin = basePin(from, platform);
+  const docker = (args) => execFileSync('docker', args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+  const layers = (ref) => {
+    docker(['pull', '--quiet', '--platform', platform, ref]);
+    const list = JSON.parse(docker(['image', 'inspect', '--format', '{{json .RootFS.Layers}}', ref]).trim() || 'null');
+    if (!Array.isArray(list) || !list.length) throw new Error(`docker listed no layers for ${ref}`);
+    return list;
+  };
+  const base = layers(pin.pull);
+  const own = layers(image);
+  if (base.length >= own.length || !base.every((digest, i) => own[i] === digest)) {
+    throw new Error(`${image} is not built on ${pin.reference}: its first ${base.length} layers are not the base's`);
+  }
+  return { reference: pin.reference, layers: base.length };
+}
+
 /** The gVisor release docker's runsc is. */
 function runscRelease() {
   const runtimes = JSON.parse(execFileSync('docker', ['info', '--format', '{{json .Runtimes}}'], { encoding: 'utf8' }));
@@ -461,12 +507,18 @@ async function check(opts) {
     const gvisor = runtime === 'runsc' ? runscRelease() : null;
     if (runtime === 'runsc' && gvisor !== RUNNER_COMMON.GVISOR_RELEASE) throw new Error(`docker's runsc is ${gvisor}; the runner pins ${RUNNER_COMMON.GVISOR_RELEASE}`);
 
+    const bases = {};
+    for (const [name, body] of Object.entries(requests.listings)) {
+      bases[name] = verifiedBase(body.image, body.spec.env.from, platform);
+      console.log(`${name}: built on ${bases[name].reference} (its first ${bases[name].layers} layers)`);
+    }
+
     const runner = await startRunner({ runtime, platform, allowlist, logFile: `${outFile}.runner.log` });
     cleanup.push(runner.stop);
     const listings = {};
     for (const [name, body] of Object.entries(requests.listings)) {
       console.log(`${name}: checking ${body.image}`);
-      listings[name] = { image: body.image, ...(await request(runner, 'POST', '/v1/listing-checks', body, body.deadline + 120000)) };
+      listings[name] = { image: body.image, base: bases[name], ...(await request(runner, 'POST', '/v1/listing-checks', body, body.deadline + 120000)) };
       const r = listings[name].response || {};
       console.log(`${name}: ${listings[name].httpStatus} ${r.outcome || ''} ${r.listing ? r.listing.status : ''} ${r.listing ? JSON.stringify(r.listing.refusals) : listings[name].text || ''}`);
     }
@@ -479,6 +531,7 @@ async function check(opts) {
       baseCommit: requests.baseCommit,
       fixture: { branch: FIXTURE_BRANCH, commit: published },
       runner: { version: RUNNER_VERSION, common: RUNNER_COMMON.COMMON_VERSION, runtime, platform },
+      code: codeFingerprint(),
       gvisor,
       // Semgrep runs on a claim's PoC, not in a listing check: this is the rule set the release in this run pins.
       semgrepRules: { pinned: RUNNER_COMMON.SEMGREP_RULES_VERSION, ran: false },
@@ -549,6 +602,8 @@ function checkMeasurement(m, { run, requestsSha256, requests }) {
     [runner.version === RUNNER_VERSION, `ran runner ${runner.version}; this checkout's is ${RUNNER_VERSION}`],
     [runner.common === COMMON_VERSION, `ran @verdikta/common ${runner.common}; this checkout's is ${COMMON_VERSION}`],
     [runner.runtime === 'runsc' && runner.platform === PLATFORM, `ran under ${runner.runtime} on ${runner.platform}, not runsc on ${PLATFORM}`],
+    ...Object.entries(codeFingerprint()).map(([part, hash]) => [Boolean(m.code) && m.code[part] === hash,
+      `ran another ${part} than this checkout's (${m.code && m.code[part]}, here ${hash}): check out the run's commit ${run.head_sha}, with nothing changed`]),
     [m.gvisor === codeReview.GVISOR_RELEASE, `ran gVisor ${m.gvisor}; @verdikta/common pins ${codeReview.GVISOR_RELEASE}`],
     [Boolean(m.semgrepRules) && m.semgrepRules.pinned === codeReview.SEMGREP_RULES_VERSION, 'names another Semgrep rule set than @verdikta/common pins'],
     [m.baseCommit === requests.baseCommit && Boolean(m.fixture) && m.fixture.commit === requests.baseCommit, `checked ${m.baseCommit}, not ${requests.baseCommit}`]
@@ -568,7 +623,9 @@ function measuredBaseline(name, m, spec) {
     [listing.status === 'accepted' && Array.isArray(listing.refusals) && listing.refusals.length === 0, `the runner did not accept it: ${JSON.stringify(listing.refusals)}`],
     [Boolean(r.runner) && r.runner.version === RUNNER_VERSION && r.runner.runtime === 'runsc' && r.runner.platform === PLATFORM, `the runner answered as ${JSON.stringify(r.runner)}`],
     [l.image === spec.env.image && image.ref === spec.env.image, `the runner checked ${image.ref}, not ${spec.env.image}`],
-    [image.unpackedBytes === spec.env.unpackedBytes, `the runner measured ${image.unpackedBytes} bytes unpacked, and the spec says ${spec.env.unpackedBytes}`]
+    [image.unpackedBytes === spec.env.unpackedBytes, `the runner measured ${image.unpackedBytes} bytes unpacked, and the spec says ${spec.env.unpackedBytes}`],
+    [Boolean(l.base) && l.base.reference === basePin(spec.env.from, PLATFORM).reference && Number.isInteger(l.base.layers) && l.base.layers > 0,
+      `the run did not find the image built on ${basePin(spec.env.from, PLATFORM).reference}: ${JSON.stringify(l.base)}`]
   ];
   for (const [ok, what] of facts) if (!ok) throw new Error(`${name}: ${what}`);
   const baseline = listing.baseline;
@@ -645,6 +702,7 @@ function prepare(opts) {
     const statement = codeReview.createAttestationStatement({
       files,
       trust: 'production',
+      base: measurement.listings[name].base.reference,
       tools: { runner: measurement.runner.version, gvisor: measurement.gvisor, semgrepRules: measurement.semgrepRules.pinned }
     });
     assertFrontGates(name, { spec, members: F.listingMembers(files) }, baseline);
