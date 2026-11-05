@@ -93,6 +93,10 @@ describe('jury-run.sh', () => {
     expect(text.indexOf('mkdir "$LOCK"')).toBeLessThan(text.indexOf('rm -f "$RUN/done"'));
   });
 
+  test('it clears its children\'s locks only after stopping them', () => {
+    expect(text.indexOf('stop_pid "$METER_PID"')).toBeLessThan(text.indexOf('rm -f "$RUN/batch.lock" "$RUN/ledger.jsonl.lock"'));
+  });
+
   test('it marks its end however it ends, and stops only what it started', () => {
     expect(text).toMatch(/trap finish EXIT/);
     expect(text).toMatch(/stop_pid "\$AI_PID"/);

@@ -12,12 +12,13 @@
  * twice, and the second only on a retryable 503), so an errored claim has had its retry, and goes again only when asked.
  *
  * It stops by itself, and the reason is in the summary and the exit code: before a claim whose worst case would pass
- * the limit; when the meter has refused a call; after errors in a row, which is an outage or a key rather than a
+ * the limit; when the meter has refused a call, or can no longer record one; after errors in a row, which is an outage or a key rather than a
  * measurement; when the AI Node cannot be reached; and when a verdict arrives with no provider call in the ledger,
- * which means the money is not going through the meter. A result about another report than the scenario's stops it too:
- * re-preparing makes new reports, and a verdict on the old one is not a verdict on this one.
+ * which means the money is not going through the meter. A result on another request than the scenario's stops it too:
+ * the request is everything the jury reads, and a verdict on an old one is not a verdict on this one.
  */
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { codeReview } = require('@verdikta/common');
@@ -25,7 +26,7 @@ const { buildClaimRequest, CLAIM_DEADLINE_MS } = require('./claim-scenarios');
 const { runClaimScenario } = require('./claim-runner');
 const { acquireLock, readLedger, worstCaseClaimUsd } = require('./spend');
 
-const EXIT = Object.freeze({ FINISHED: 0, WITH_ERRORS: 1, BUDGET: 4, ERRORS_IN_A_ROW: 5, AI_NODE_GONE: 6, UNMETERED: 7, STALE_RESULT: 8 });
+const EXIT = Object.freeze({ FINISHED: 0, WITH_ERRORS: 1, BUDGET: 4, ERRORS_IN_A_ROW: 5, AI_NODE_GONE: 6, UNMETERED: 7, STALE_RESULT: 8, METER_STOPPED: 9 });
 const MAX_ERRORS_IN_A_ROW = 3;
 const OUTCOME_MASS = 1000000;
 
@@ -61,15 +62,23 @@ function strictScores(text) {
   return score;
 }
 
-/** A repair call's reply, as parseRepairedScores takes it: the last score list in it, on any scale. */
+function rescale(values, sum) {
+  const scaled = values.map((v) => Math.floor((v * OUTCOME_MASS) / sum));
+  scaled[values.indexOf(Math.max(...values))] += OUTCOME_MASS - scaled.reduce((a, b) => a + b, 0);
+  return scaled;
+}
+
+/** A repair call's reply, as parseRepairedScores takes it (ai-node/src/utils/repairModelResponse.ts): the last score list in it, rescaled the same way. */
 function repairedScores(text) {
   if (typeof text !== 'string') return null;
   const found = Array.from(text.matchAll(/"score"\s*:\s*\[([^\]]*)\]/g));
   if (found.length === 0) return null;
-  const score = found[found.length - 1][1].split(',').map((item) => Number(item.trim()));
+  const items = found[found.length - 1][1].split(',').map((item) => item.trim()).filter((item) => item !== '');
+  const score = items.map(Number);
   if (score.length !== codeReview.BUG_OUTCOMES.length || !score.every((v) => Number.isFinite(v) && v >= 0)) return null;
   const sum = score.reduce((a, b) => a + b, 0);
-  return sum > 0 ? score.map((v) => Math.round((v * OUTCOME_MASS) / sum)) : null;
+  if (sum <= 0) return null;
+  return rescale(score, sum);
 }
 
 /**
@@ -105,12 +114,14 @@ function jurorVectors(calls, juryParameters, callsDir, claimVector = null) {
   const total = juryParameters.AI_NODES.reduce((sum, node) => sum + node.WEIGHT, 0);
   const consistent = claimVector.every((mass, i) => {
     const mean = juryParameters.AI_NODES.reduce((sum, node, j) => sum + (jurors[j].vector[i] * node.WEIGHT) / total, 0);
-    return Math.abs(mean - mass) <= 2;
+    return Math.abs(mean - mass) <= 1;
   });
   return consistent ? jurors : jurors.map(({ model }) => ({ model, vector: null }));
 }
 
 const costOf = (calls) => calls.reduce((sum, call) => sum + call.usd, 0);
+
+const requestDigest = (request) => crypto.createHash('sha256').update(JSON.stringify(request)).digest('hex');
 
 async function assertMeter(meterHealth, { stopUsd, ledgerFile }) {
   let health;
@@ -120,6 +131,7 @@ async function assertMeter(meterHealth, { stopUsd, ledgerFile }) {
     throw new Error(`the meter did not answer (${error.message}): a real-jury batch does not run unmetered`);
   }
   if (!health || health.ok !== true) throw new Error('the meter is not healthy: a real-jury batch does not run unmetered');
+  if (health.stopped) throw new Error('the meter has stopped: it refused a call, or cannot record one');
   if (!(health.stopUsd <= stopUsd)) throw new Error(`the meter's limit is USD ${health.stopUsd}, over the USD ${stopUsd} this run was given`);
   if (path.resolve(health.ledgerFile) !== path.resolve(ledgerFile)) throw new Error(`the meter writes another ledger than ${ledgerFile}`);
 }
@@ -146,13 +158,13 @@ async function runClaimBatch(scenarios, {
   fs.mkdirSync(batchDir, { recursive: true });
   const releaseLock = acquireLock(path.join(batchDir, 'batch.lock'), 'this batch directory');
   try {
-    return await runLocked(scenarios, { batchDir, ledgerFile, stopUsd, retryErrored, justifierModel, runOne, log });
+    return await runLocked(scenarios, { batchDir, ledgerFile, stopUsd, meterHealth, retryErrored, justifierModel, runOne, log });
   } finally {
     releaseLock();
   }
 }
 
-async function runLocked(scenarios, { batchDir, ledgerFile, stopUsd, retryErrored, justifierModel, runOne, log }) {
+async function runLocked(scenarios, { batchDir, ledgerFile, stopUsd, meterHealth, retryErrored, justifierModel, runOne, log }) {
   const callsDir = path.join(batchDir, 'calls');
   const fileOf = (id) => path.join(batchDir, 'claims', `${id}.json`);
   const readResult = (id) => (fs.existsSync(fileOf(id)) ? JSON.parse(fs.readFileSync(fileOf(id), 'utf8')) : null);
@@ -178,13 +190,14 @@ async function runLocked(scenarios, { batchDir, ledgerFile, stopUsd, retryErrore
   for (const scenario of scenarios) {
     const id = scenario.scenario_id;
     const earlier = readResult(id);
-    if (earlier && earlier.report_sha256 !== scenario.input.reportSha256) {
-      log(`claim batch: ${id}: its saved result is about report ${earlier.report_sha256}, and this scenario's is ${scenario.input.reportSha256}`);
+    const request = buildClaimRequest(scenario, { deadlineMs: CLAIM_DEADLINE_MS });
+    const requestSha256 = requestDigest(request);
+    if (earlier && earlier.request_sha256 !== requestSha256) {
+      log(`claim batch: ${id}: its saved result is on request ${earlier.request_sha256}, and this scenario's is ${requestSha256}`);
       return finish('stale-result', EXIT.STALE_RESULT);
     }
     if (earlier && !(earlier.error && retryErrored)) continue;
 
-    const request = buildClaimRequest(scenario, { deadlineMs: CLAIM_DEADLINE_MS });
     const worstCase = worstCaseClaimUsd({
       promptBytes: Buffer.byteLength(JSON.stringify(request)),
       juryParameters: scenario.input.juryParameters,
@@ -206,6 +219,11 @@ async function runLocked(scenarios, { batchDir, ledgerFile, stopUsd, retryErrore
       log(`claim batch: ${id}: the meter refused a call, so this claim has no result`);
       return finish('budget', EXIT.BUDGET);
     }
+    const health = await meterHealth().catch(() => null);
+    if (!health || health.stopped) {
+      log(`claim batch: ${id}: the meter ${health ? 'has stopped' : 'did not answer'}, so this claim has no result`);
+      return finish('meter-stopped', EXIT.METER_STOPPED);
+    }
     if (result.transport) {
       log(`claim batch: ${id}: the AI Node could not be reached: ${result.error}`);
       return finish('ai-node-gone', EXIT.AI_NODE_GONE);
@@ -224,6 +242,8 @@ async function runLocked(scenarios, { batchDir, ledgerFile, stopUsd, retryErrore
     }
     writeWhole(fileOf(id), {
       ...result,
+      request_sha256: requestSha256,
+      pack_sha256: scenario.input.contextPack.sha256,
       jurors: jurorVectors(calls, scenario.input.juryParameters, callsDir, result.vector),
       spend: {
         usd: costOf(calls),

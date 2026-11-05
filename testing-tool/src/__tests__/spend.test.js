@@ -196,15 +196,35 @@ describe('Ledger', () => {
     ledger.close();
   });
 
-  test('a second writer is refused while the first lives, and takes over from a dead one', () => {
+  test('a second writer is refused, and a failed write counts as stopped', () => {
     const ledger = new Ledger(file(), { stopUsd: 1 });
-    expect(() => new Ledger(file(), { stopUsd: 1 })).toThrow(/already held by process/);
+    expect(() => new Ledger(file(), { stopUsd: 1 })).toThrow(new RegExp(`already held by process ${process.pid}`));
+    expect(ledger.stopped()).toBe(false);
+    const spy = jest.spyOn(fs, 'writeSync').mockImplementationOnce(() => { throw new Error('no space'); });
+    expect(() => ledger.reserve({ usd: 0.1, model: 'a' })).toThrow(/no space/);
+    spy.mockRestore();
+    expect(ledger.stopped()).toBe(true);
     ledger.close();
-    fs.writeFileSync(`${file()}.lock`, '99999999\n');
-    const next = new Ledger(file(), { stopUsd: 1 });
-    expect(fs.readFileSync(`${file()}.lock`, 'utf8').trim()).toBe(String(process.pid));
-    next.close();
     expect(fs.existsSync(`${file()}.lock`)).toBe(false);
+  });
+
+  test('a lock is never taken over: a dead holder\'s is left for a person, and says so', () => {
+    fs.writeFileSync(`${file()}.lock`, '99999999\n');
+    expect(() => new Ledger(file(), { stopUsd: 1 })).toThrow(/99999999, which no longer runs/);
+    expect(fs.readFileSync(`${file()}.lock`, 'utf8').trim()).toBe('99999999');
+    fs.rmSync(`${file()}.lock`);
+    new Ledger(file(), { stopUsd: 1 }).close();
+  });
+
+  test('a lock file naming nothing is a holder it cannot read, and no process 0', () => {
+    fs.writeFileSync(`${file()}.lock`, '');
+    expect(() => new Ledger(file(), { stopUsd: 1 })).toThrow(/an unknown process/);
+  });
+
+  test('a lock leaves no working file behind', () => {
+    const ledger = new Ledger(file(), { stopUsd: 1 });
+    expect(fs.readdirSync(dir).sort()).toEqual(['ledger.jsonl', 'ledger.jsonl.lock']);
+    ledger.close();
   });
 
   test('a missing ledger is an empty one', () => {

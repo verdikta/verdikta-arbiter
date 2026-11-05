@@ -173,6 +173,9 @@ test('a verdict about another report than the runner\'s results name is refused,
   assert.throws(() => analyse(w), /the verdict is about report bb/);
   w.jury.set('adversarial.vm-store', verdict('INVALID', { report_sha256: 'aa' }));
   assert.equal(analyse(w).byId.get('adversarial.vm-store').outcome, 'INVALID');
+  w.runner.set('adversarial.vm-store', { actual: 'jury', reportSha256: 'aa', packSha256: 'cc' });
+  w.jury.set('adversarial.vm-store', verdict('INVALID', { report_sha256: 'aa', pack_sha256: 'dd' }));
+  assert.throws(() => analyse(w), /the verdict is on pack dd/);
 });
 
 test('the runner\'s settlements count: a claim the runner settled needs no jury result', () => {

@@ -41,7 +41,6 @@ function recordCalls(batchDir, ledger, { sonnet = [0, 0, 0, 0, 1000000, 0], deep
 
 const verdict = (scenario, over = {}) => ({
   scenario_id: scenario.scenario_id,
-  report_sha256: scenario.input.reportSha256,
   expected_outcome: scenario.expected_outcome,
   vector: [0, 0, 0, 500000, 500000, 0],
   settled: { outcome: 'MEDIUM', valid: true, class: 'MEDIUM', validMass: 1000000, classMass: 1000000 },
@@ -125,7 +124,7 @@ describe('resume', () => {
 
   test('an errored claim keeps its result and is skipped: it had the retry the adapter would give', async () => {
     const list = await scenarios(['a']);
-    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null }) });
+    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null }) });
     const again = await run(list);
     expect(again.sent).toEqual([]);
     expect(again.code).toBe(EXIT.WITH_ERRORS);
@@ -133,7 +132,7 @@ describe('resume', () => {
 
   test('--retry-errored runs it once more and keeps the earlier attempt beside it', async () => {
     const list = await scenarios(['a']);
-    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'boom', settled: null }) });
+    await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, error: 'boom', settled: null }) });
     const again = await run(list, { retryErrored: true });
     expect(again.sent).toEqual(['a']);
     expect(again.code).toBe(EXIT.FINISHED);
@@ -170,7 +169,7 @@ describe('it stops by itself', () => {
         ledger.stopUsd = 0;
         ledger.reserve({ usd: 1, model: SONNET });
         ledger.stopUsd = realLimit;
-        return { scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null };
+        return { scenario_id: s.scenario_id, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null };
       }
     });
     expect(code).toBe(EXIT.BUDGET);
@@ -183,7 +182,7 @@ describe('it stops by itself', () => {
     const list = await scenarios(['a', 'b', 'c', 'd', 'e', 'f', 'g']);
     const errored = new Set(['a', 'b', 'd', 'e', 'f']);
     const { code, sent, batchDir } = await run(list, {
-      answer: (s) => (errored.has(s.scenario_id) ? { scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'x', settled: null } : verdict(s))
+      answer: (s) => (errored.has(s.scenario_id) ? { scenario_id: s.scenario_id, error: 'x', settled: null } : verdict(s))
     });
     expect(code).toBe(EXIT.ERRORS_IN_A_ROW);
     expect(sent).toEqual(['a', 'b', 'c', 'd', 'e', 'f']);
@@ -192,7 +191,7 @@ describe('it stops by itself', () => {
 
   test('when the AI Node cannot be reached: no result, and nothing further is tried', async () => {
     const list = await scenarios(['a', 'b']);
-    const { code, sent, batchDir } = await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: s.input.reportSha256, error: 'connect ECONNREFUSED', transport: true, settled: null }) });
+    const { code, sent, batchDir } = await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, error: 'connect ECONNREFUSED', transport: true, settled: null }) });
     expect(code).toBe(EXIT.AI_NODE_GONE);
     expect(sent).toEqual(['a']);
     expect(fs.existsSync(claimFile(batchDir, 'a'))).toBe(false);
@@ -207,12 +206,14 @@ describe('it stops by itself', () => {
   });
 });
 
-describe('a result belongs to its report', () => {
-  test('a result about another report stops the run: re-preparing made new reports, and nothing is mixed', async () => {
+describe('a result belongs to its request', () => {
+  test('a result on another request stops the run: nothing is mixed, whatever changed in what the jury reads', async () => {
     const list = await scenarios(['a', 'b']);
     const { batchDir } = await run([list[0]]);
     const saved = readClaim(batchDir, 'a');
-    fs.writeFileSync(claimFile(batchDir, 'a'), JSON.stringify({ ...saved, report_sha256: 'f'.repeat(64) }));
+    expect(saved.request_sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(saved.pack_sha256).toBe(list[0].input.contextPack.sha256);
+    list[0].input.contextPack.files[0].text += '\nsomething else in the pack, under the same report';
     const again = await run(list);
     expect(again.code).toBe(EXIT.STALE_RESULT);
     expect(again.sent).toEqual([]);
@@ -221,9 +222,42 @@ describe('a result belongs to its report', () => {
 
   test('--retry-errored does not get past it', async () => {
     const list = await scenarios(['a']);
-    const { batchDir } = await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, report_sha256: 'f'.repeat(64), error: 'x', settled: null }) });
+    const { batchDir } = await run(list, { answer: (s) => ({ scenario_id: s.scenario_id, error: 'x', settled: null }) });
     expect(readClaim(batchDir, 'a').error).toBe('x');
+    list[0].input.contextPack.files[0].text += '\nanother pack';
     expect((await run(list, { retryErrored: true })).code).toBe(EXIT.STALE_RESULT);
+  });
+});
+
+describe('a meter that stops', () => {
+  test('a claim whose calls it could not record has no result, and the run stops', async () => {
+    const list = await scenarios(['a', 'b']);
+    let asked = 0;
+    const { code, sent, batchDir } = await run(list, {
+      answer: (s) => ({ scenario_id: s.scenario_id, error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null }),
+      health: async () => {
+        asked += 1;
+        return { ok: true, stopUsd: 90, ledgerFile: path.join(dir, 'run', 'ledger.jsonl'), stopped: asked > 1 };
+      }
+    });
+    expect(code).toBe(EXIT.METER_STOPPED);
+    expect(sent).toEqual(['a']);
+    expect(fs.existsSync(claimFile(batchDir, 'a'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(path.join(batchDir, 'summary.json'), 'utf8')).reason).toBe('meter-stopped');
+  });
+
+  test('a meter that no longer answers stops it too', async () => {
+    const list = await scenarios(['a', 'b']);
+    let asked = 0;
+    const { code, sent } = await run(list, {
+      health: async () => {
+        asked += 1;
+        if (asked > 1) throw new Error('ECONNREFUSED');
+        return { ok: true, stopUsd: 90, ledgerFile: path.join(dir, 'run', 'ledger.jsonl') };
+      }
+    });
+    expect(code).toBe(EXIT.METER_STOPPED);
+    expect(sent).toEqual(['a']);
   });
 });
 
@@ -250,7 +284,8 @@ describe('it does not start', () => {
   test.each([
     ['no meter', async () => { throw new Error('ECONNREFUSED'); }, /meter/],
     ['a meter with a higher limit than asked', async ({ stopUsd, ledgerFile }) => ({ ok: true, stopUsd: stopUsd + 1, ledgerFile }), /limit/],
-    ['a meter writing another ledger', async ({ stopUsd }) => ({ ok: true, stopUsd, ledgerFile: '/elsewhere' }), /ledger/]
+    ['a meter writing another ledger', async ({ stopUsd }) => ({ ok: true, stopUsd, ledgerFile: '/elsewhere' }), /ledger/],
+    ['a meter that has stopped', async ({ stopUsd, ledgerFile }) => ({ ok: true, stopUsd, ledgerFile, stopped: true }), /has stopped/]
   ])('with %s', async (_name, meterHealth, message) => {
     const list = await scenarios(['a']);
     const batchDir = path.join(dir, 'run');
@@ -270,6 +305,7 @@ describe('jurorVectors', () => {
   const text = (t) => ({ content: [{ type: 'text', text: t }] });
   const panel = { AI_NODES: [{ AI_MODEL: SONNET, WEIGHT: 0.5 }, { AI_MODEL: DEEPSEEK, WEIGHT: 0.5 }] };
   const vector = [0, 0, 0, 0, 1000000, 0];
+  const RESCALED = [166670, 166666, 166666, 166666, 166666, 166666];
   const reply = (score, justification = 'j') => JSON.stringify({ score, justification });
 
   test('a repair call\'s scores replace the prose before it, rescaled, and a juror with none is null', () => {
@@ -279,6 +315,11 @@ describe('jurorVectors', () => {
       answerFile('3.json', DEEPSEEK, { choices: [{ message: { content: 'not json' } }] })
     ];
     expect(jurorVectors(calls, panel, dir)).toEqual([{ model: SONNET, vector }, { model: DEEPSEEK, vector: null }]);
+  });
+
+  test('a repair is rescaled as the AI Node rescales it', () => {
+    const calls = [answerFile('1.json', SONNET, text('prose')), answerFile('2.json', SONNET, text('{"score":[1,1,1,1,1,1]}'))];
+    expect(jurorVectors(calls, panel, dir)[0].vector).toEqual(RESCALED);
   });
 
   test('a repair is read as the AI Node reads it: the last score list, inside prose', () => {

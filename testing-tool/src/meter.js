@@ -170,7 +170,7 @@ function createMeter({ ledgerFile, callsDir, stopUsd, upstreams = DEFAULT_UPSTRE
 
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
-      return send(res, 200, { ok: true, stopUsd, totalUsd: ledger.totalUsd(), stopped: ledger.stopped(), ledgerFile });
+      return send(res, 200, { ok: true, stopUsd, totalUsd: ledger.totalUsd(), stopped: ledger.stopped(), ledgerFile: path.resolve(ledgerFile) });
     }
     const route = req.method === 'POST' ? routeOf(req.url) : null;
     if (!route) {

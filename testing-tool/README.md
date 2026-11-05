@@ -485,9 +485,10 @@ setsid nohup scripts/jury-run.sh <work> <key file> --scenario-ids a,b > <work>/r
 | 5 | `errors-in-a-row` | Three claims in a row errored: an outage or a key, not a measurement |
 | 6 | `ai-node-gone` | The AI Node could not be reached. That claim has no result |
 | 7 | `unmetered` | A verdict arrived with no provider call in the ledger: the money is not going through the meter |
-| 8 | `stale-result` | A saved result is about another report than the scenario's: re-preparing makes new reports, and a verdict on an old one is not a verdict on this one. Point at another batch directory, or remove the old results |
+| 8 | `stale-result` | A saved result is on another request than the scenario's. The request is everything the jury reads, and re-preparing makes new ones, so a verdict on an old one is not a verdict on this one. Point at another batch directory, or remove the old results |
+| 9 | `meter-stopped` | The meter can no longer record a call, or stopped answering. That claim has no result |
 
-A batch does not start without the meter, with a meter whose limit is above `--stop-usd`, or with one writing another ledger. One meter holds a ledger and one batch a directory, by a lock naming a PID, which a dead holder gives up. A write to the ledger that fails stops every later call.
+A batch does not start without the meter, with a meter whose limit is above `--stop-usd`, or with one writing another ledger. One meter holds a ledger and one batch a directory, by a lock naming a PID. No lock is ever taken over: a holder removes its own, `jury-run.sh` removes its children's once it has stopped them, and after anything else a person does, as the message says. A write to the ledger that fails stops every later call.
 
 **One result per claim** (`<work>/run/claims/<id>.json`, written whole): the saved run's fields, each juror's vector, read from the saved provider answers, since the AI Node's answer holds only the average, and the claim's calls and cost. A re-run skips a claim with a result. A claim is called as the External Adapter calls it, so an errored claim has had its retry; `--retry-errored` runs it once more and moves the earlier result to `attempts/`.
 

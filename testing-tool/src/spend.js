@@ -155,35 +155,37 @@ function readLedger(file) {
 }
 
 /**
- * One holder at a time: the file names a PID, and a holder that has died gives the lock up. Two meters on one ledger
- * would each check the limit against its own total, and two batches would write the same result files.
+ * One holder at a time. The lock appears whole, naming a PID, or not at all: it is written beside its place and linked
+ * in, which fails if one is there. Nothing here takes a lock over: two processes that both saw a dead holder could each
+ * remove the other's new lock, and two meters would then check the limit against two totals. The holder removes its own
+ * lock, also on a TERM, and jury-run.sh removes those of the children it has stopped. After anything else, a person does.
  * @param {string} file
  * @param {string} what - for the message
  * @returns {() => void} release
- * @throws {Error} a live process holds it
+ * @throws {Error} a lock is there
  */
 function acquireLock(file, what) {
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    try {
-      const fd = fs.openSync(file, 'wx', 0o600);
-      fs.writeSync(fd, `${process.pid}\n`);
-      fs.closeSync(fd);
-      return () => fs.rmSync(file, { force: true });
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      const pid = Number(fs.readFileSync(file, 'utf8').trim());
-      let alive = false;
+  const partial = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}`;
+  fs.writeFileSync(partial, `${process.pid}\n`, { mode: 0o600 });
+  try {
+    fs.linkSync(partial, file);
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    const pid = Number(fs.readFileSync(file, 'utf8').trim());
+    let state = 'an unknown process';
+    if (Number.isInteger(pid) && pid > 0) {
       try {
         process.kill(pid, 0);
-        alive = true;
+        state = `process ${pid}`;
       } catch (signalError) {
-        alive = signalError.code === 'EPERM';
+        state = signalError.code === 'EPERM' ? `process ${pid}` : `process ${pid}, which no longer runs, so removing that file goes on`;
       }
-      if (alive) throw new Error(`${what} is already held by process ${pid} (${file})`);
-      fs.rmSync(file, { force: true });
     }
+    throw new Error(`${what} is already held by ${state} (${file})`);
+  } finally {
+    fs.rmSync(partial, { force: true });
   }
-  throw new Error(`${what}: the lock ${file} could not be taken`);
+  return () => fs.rmSync(file, { force: true });
 }
 
 /**
@@ -235,8 +237,9 @@ class Ledger {
     return total;
   }
 
+  /** A call has been refused, or the ledger can no longer record one: either way, nothing further goes out. */
   stopped() {
-    return this.refusedAny;
+    return this.refusedAny || this.broken === true;
   }
 
   /**

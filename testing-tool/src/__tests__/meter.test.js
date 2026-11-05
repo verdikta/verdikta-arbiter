@@ -244,6 +244,14 @@ describe('the hard stop', () => {
     stderr.mockRestore();
     expect(res.status).toBe(402);
     expect(provider.seen).toHaveLength(0);
+    const health = await new Promise((resolve) => {
+      http.get({ host: '127.0.0.1', port, path: '/health' }, (r) => {
+        const chunks = [];
+        r.on('data', (c) => chunks.push(c));
+        r.on('end', () => resolve(JSON.parse(Buffer.concat(chunks).toString('utf8'))));
+      });
+    });
+    expect(health.stopped).toBe(true);
   });
 
   test('a second meter on one ledger does not start', async () => {

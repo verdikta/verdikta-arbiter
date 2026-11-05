@@ -79,9 +79,12 @@ function standing(entry, { jury, runner }) {
   if (ran.actual !== 'jury') return { outcome: ran.actual, by: 'runner' };
   const result = jury.get(entry.id);
   if (!result) return { outcome: 'NOT RUN', by: 'jury' };
-  // A verdict counts only on the report this run of the runner gave: a re-prepared set has new ones.
+  // A verdict counts only on what this run of the runner gave the jury: a re-prepared set has new reports and packs.
   if (ran.reportSha256 && result.report_sha256 !== ran.reportSha256) {
     throw new Error(`${entry.id}: the verdict is about report ${result.report_sha256}, and the runner's results name ${ran.reportSha256}`);
+  }
+  if (ran.packSha256 && result.pack_sha256 !== ran.packSha256) {
+    throw new Error(`${entry.id}: the verdict is on pack ${result.pack_sha256}, and the runner's results name ${ran.packSha256}`);
   }
   if (result.error) return { outcome: 'NO VERDICT', by: 'jury', error: errorCodeOf(result.error), usd: result.spend ? result.spend.usd : 0 };
   return {
@@ -320,7 +323,7 @@ function readRunnerResults(dir) {
   for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.json')).sort()) {
     const file = JSON.parse(fs.readFileSync(path.join(dir, name), 'utf8'));
     info = info || file.runner;
-    for (const entry of file.cases) if (!runner.has(entry.id)) runner.set(entry.id, { actual: entry.actual, disagreements: entry.disagreements, reportSha256: entry.observed ? entry.observed.reportSha256 : null });
+    for (const entry of file.cases) if (!runner.has(entry.id)) runner.set(entry.id, { actual: entry.actual, disagreements: entry.disagreements, reportSha256: entry.observed ? entry.observed.reportSha256 : null, packSha256: entry.observed ? entry.observed.packSha256 : null });
   }
   return { runner, info };
 }

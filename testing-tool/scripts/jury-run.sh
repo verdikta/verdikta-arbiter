@@ -24,16 +24,12 @@ JUSTIFIER_MODEL_NAME=${JUSTIFIER_MODEL_NAME:-anthropic:claude-haiku-5-5}
 mkdir -p "$RUN"
 chmod 700 "$RUN"
 
-# One driver at a time, taken before anything of the other's is touched: a second one must not move its done marker.
+# One driver at a time, taken before anything of the other's is touched: a second one must not move its done marker. A
+# driver that was killed outright leaves this behind, and a person removes it: nothing here takes a lock over.
 LOCK="$RUN/driver.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
-  holder=$(cat "$LOCK/pid" 2>/dev/null || echo "")
-  if [ -n "$holder" ] && kill -0 "$holder" 2>/dev/null; then
-    echo "jury-run: process $holder is already running this batch"
-    exit 8
-  fi
-  rm -rf "$LOCK"
-  mkdir "$LOCK" || { echo "jury-run: the lock could not be taken"; exit 8; }
+  echo "jury-run: $LOCK is here, naming process $(cat "$LOCK/pid" 2>/dev/null || echo unknown). If that process no longer runs, remove the directory to go on"
+  exit 8
 fi
 echo "$$" > "$LOCK/pid"
 
@@ -57,6 +53,8 @@ finish() {
   stop_pid "$BATCH_PID"
   stop_pid "$AI_PID"
   stop_pid "$METER_PID"
+  # Theirs, and they are stopped: a child that was killed outright must not hold up the next run.
+  rm -f "$RUN/batch.lock" "$RUN/ledger.jsonl.lock"
   printf '{"exit":%d,"at":"%s"}\n' "$code" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$RUN/done.partial"
   rm -rf "$LOCK"
   mv "$RUN/done.partial" "$RUN/done"
