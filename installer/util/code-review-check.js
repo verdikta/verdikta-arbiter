@@ -142,21 +142,26 @@ function cmdConformance(o) {
   }
 }
 
-/** Keep a pass only for the hash common publishes, written whole; what ran stays in conformance-last.json either way. */
+/** Keep a pass only for the hash common publishes, written whole. The old one goes first, whatever happens next. */
 function cmdRecord(o) {
   const p = paths(o.installDir);
+  fs.rmSync(p.pass, { force: true });
   const rule = runnerRule(p);
   const result = readJson(o.result);
   const refuse = (why) => {
-    fs.rmSync(p.pass, { force: true });
     process.stderr.write(`${why}\n`);
     process.exit(1);
   };
   if (!rule || !result) refuse(`the self-test left no result to compare (${o.result})`);
-  fs.writeFileSync(p.last, `${JSON.stringify(result, null, 2)}\n`);
+  // What ran, for whoever reads this next. A diagnostic: it decides nothing, and failing here changes nothing.
+  try {
+    fs.writeFileSync(p.last, `${JSON.stringify(result, null, 2)}\n`);
+  } catch (error) {
+    process.stderr.write(`could not keep the result in ${p.last} (${error.code})\n`);
+  }
   const want = rule.expectedPass();
   if (result.canonical !== true || result.reportSha256 !== want.reportSha256) {
-    refuse(`the canary's report hash is ${result.reportSha256 || '(none)'}; @verdikta/common ${want.commonVersion} publishes ${want.reportSha256}. Kept in ${p.last}`);
+    refuse(`the canary's report hash is ${result.reportSha256 || '(none)'}; @verdikta/common ${want.commonVersion} publishes ${want.reportSha256}. See ${p.last}`);
   }
   if (result.sourceSha256 !== want.sourceSha256) {
     refuse(`the self-test ran on other source (${result.sourceSha256}) than is installed (${want.sourceSha256})`);

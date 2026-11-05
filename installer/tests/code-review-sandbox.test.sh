@@ -182,6 +182,8 @@ has "the loop device takes no discard: fstrim would make the image sparse" "$dis
 has "a start allocates what is missing, or does not start" "$disku" "^ExecStartPre=/bin/sh .*fallocate .*-ge"
 hasnt "an allocation that fails is not ignored" "$disku" "^ExecStartPre=-"
 has "units escape the shell's dollar and percent for systemd" "$disku" 'stat -c %%s'
+has "no discard is verified, not assumed" "$disku" '^ExecStartPost=/bin/sh .*discard_max_bytes.*= 0'
+hasnt "a discard that can't be turned off is not ignored" "$disku" "^ExecStartPost=-"
 ctd=$(printf '%s\n' "$cfg" | awk '/^# containerd\.toml/{p=1;next} /^# /{p=0} p')
 has "containerd root on the disk" "$ctd" "^root = \"$P/var/lib/verdikta-code-runner/containerd\""
 has "containerd own socket"       "$ctd" "address = \"$P/run/verdikta-code-runner/containerd/containerd.sock\""
@@ -403,6 +405,36 @@ out=$(run status --quiet 2>&1); is "status after a source change" "$?" 2
 out=$(run enable 2>&1); is "enable after a source change: rc" "$?" 0
 has "enable after a source change: the canary runs again" "$(log)" "^conformance "
 out=$(run status --quiet 2>&1); is "status after that" "$?" 0
+
+# A write of the runner's settings that fails leaves the old ones, and no half of them.
+fresh; run enable >/dev/null 2>&1
+before=$(cat "$I/code-runner/.env")
+printf '{"bogus":1}' > "$I/code-runner-state/conformance.json"
+mkdir "$I/code-runner/.env.new"
+out=$(run enable 2>&1); rc=$?
+is "the runner's settings can't be written: rc" "$rc" 1
+has "the runner's settings can't be written: says so" "$out" "Could not write"
+is "the runner's settings can't be written: unchanged" "$(cat "$I/code-runner/.env")" "$before"
+[ ! -e "$I/code-runner/.env.new" ] && ok || bad "the runner's settings can't be written: the temp stayed"
+# A mismatching canary with a pass already there, and a diagnostic that can't be written: no pass stays.
+fresh; run enable >/dev/null 2>&1
+rm -rf "$I/code-runner-state/conformance-last.json"; mkdir "$I/code-runner-state/conformance-last.json"
+out=$(STUB_HASH=$(printf 'beef%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16) run self-test 2>&1); is "a rejected result, its diagnostic unwritable: rc" "$?" 1
+[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "a rejected result left the old pass"
+has "a rejected result: says why" "$out" "publishes"
+has "a rejected result: and that the diagnostic went" "$out" "could not keep"
+# A good result, its diagnostic unwritable: the pass doesn't depend on it.
+out=$(run self-test 2>&1); is "a good result, its diagnostic unwritable: rc" "$?" 0
+[ -e "$I/code-runner-state/conformance.json" ] && ok || bad "a good result was lost to a diagnostic"
+# A recorder that can't run at all leaves no pass either: the tool removes it.
+fresh; run enable >/dev/null 2>&1
+cp "$I/code-review-check.js" "$I/check.keep.js"
+cat > "$I/code-review-check.js" <<'J'
+if (process.argv[2] === 'record') process.exit(7);
+require(process.argv[1].replace('code-review-check.js', 'check.keep.js'));
+J
+out=$(run self-test 2>&1); is "a recorder that fails: rc" "$?" 1
+[ ! -e "$I/code-runner-state/conformance.json" ] && ok || bad "a recorder that fails left the old pass"
 
 # --- a refresh refused before it starts changes nothing: the runner holds the rule
 stale_install

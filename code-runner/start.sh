@@ -32,6 +32,11 @@ host_value=""
 for word in "${ARGS[@]}"; do
     case "$word" in DOCKER_HOST=*) host_value="${word#DOCKER_HOST=}" ;; esac
 done
+# This script is how an arbiter runs it, and an arbiter's runner holds itself to a conformance pass.
+if ! grep -qE '^CODE_RUNNER_CONFORMANCE_FILE=.' .env; then
+    echo "Error: $HERE/.env does not set CODE_RUNNER_CONFORMANCE_FILE, so this runner would admit claims with no pass. Run code-review-sandbox.sh enable" >&2
+    exit 1
+fi
 case "$host_value" in
     unix:///var/run/docker.sock|unix:///run/docker.sock|'')
         echo "Error: DOCKER_HOST in $HERE/.env is [$host_value]: the runner never drives the arbiter's Docker. Run code-review-sandbox.sh enable" >&2

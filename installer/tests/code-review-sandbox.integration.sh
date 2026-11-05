@@ -282,6 +282,16 @@ sudo systemctl start verdikta-code-runner-docker 2>/dev/null; rc=$?
 mountpoint -q "$MOUNT" && bad "holes it cannot fill: mounted anyway" || ok "holes it cannot fill: not mounted"
 sudo chattr -i "$IMAGE"
 sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-containerd verdikta-code-runner-docker 2>/dev/null
+# A discard that can't be turned off stops it too. The unit's own failing step, by a drop-in.
+sudo mkdir -p /etc/systemd/system/verdikta-code-runner-disk.service.d
+printf '[Service]\nExecStartPost=\nExecStartPost=/bin/false\n' | sudo tee /etc/systemd/system/verdikta-code-runner-disk.service.d/test.conf >/dev/null
+sudo systemctl daemon-reload
+sudo systemctl start verdikta-code-runner-docker 2>/dev/null; rc=$?
+[ "$rc" != 0 ] && ok "no way to turn discard off: no daemon" || bad "the daemon started with discard on"
+check "no way to turn discard off: dockerd is not active" "$(systemctl is-active verdikta-code-runner-docker >/dev/null 2>&1 && echo active || echo down)" down
+sudo rm -rf /etc/systemd/system/verdikta-code-runner-disk.service.d
+sudo systemctl daemon-reload
+sudo systemctl reset-failed verdikta-code-runner-disk verdikta-code-runner-containerd verdikta-code-runner-docker 2>/dev/null
 # As at boot: the daemon's unit brings up its disk and containerd.
 sudo systemctl start verdikta-code-runner-docker; rc=$?
 check "the daemon's unit brings its disk back" "$rc" 0

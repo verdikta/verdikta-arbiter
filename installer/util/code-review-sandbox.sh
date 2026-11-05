@@ -215,8 +215,9 @@ EOF
 
 # Fixed means allocated, and a loop device passes discards on as holes in its file: fstrim.timer
 # would make the image sparse, and its writes would then spend the root filesystem. So the device
-# takes no discard, and each start allocates whatever is missing, or does not start: an image with
-# holes it cannot fill would spend the root filesystem. The doctor measures the result too.
+# takes no discard, and each start allocates whatever is missing. Either failing fails the start, and
+# BindsTo keeps its daemons down: an image with holes, or one a trim can make holes in, would spend
+# the root filesystem. The doctor measures the result too.
 disk_unit() {
     cat <<EOF
 [Unit]
@@ -228,7 +229,7 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStartPre=/bin/sh -c 'mountpoint -q $MOUNT || { fallocate -l "\$\$(stat -c %%s $IMAGE)" $IMAGE && [ "\$\$(( \$\$(stat -c %%b $IMAGE) * 512 ))" -ge "\$\$(stat -c %%s $IMAGE)" ]; }'
 ExecStart=/bin/sh -c 'mountpoint -q $MOUNT || mount -t ext4 -o loop,noatime,nodev,nosuid $IMAGE $MOUNT'
-ExecStartPost=-/bin/sh -c 'echo 0 > /sys/block/\$\$(basename "\$\$(findmnt -no SOURCE $MOUNT)")/queue/discard_max_bytes'
+ExecStartPost=/bin/sh -c 'f=/sys/block/\$\$(basename "\$\$(findmnt -no SOURCE $MOUNT)")/queue/discard_max_bytes; echo 0 > "\$\$f" && [ "\$\$(cat "\$\$f")" = 0 ]'
 ExecStop=/bin/umount $MOUNT
 
 [Install]
@@ -612,7 +613,8 @@ configure_runner() {
         ( umask 077; node -e 'process.stdout.write(require("crypto").randomBytes(32).toString("hex")+"\n")' > "$TOKEN_FILE" ) || return 1
     fi
     chmod 0600 "$TOKEN_FILE"
-    cat > "$RUNNER_ENV.new" <<EOF
+    # Whole, or not at all: start.sh refuses an .env that doesn't ask for the conformance check.
+    if ! cat > "$RUNNER_ENV.new" <<EOF
 DOCKER_HOST=unix://$SOCK
 CODE_RUNNER_RUNTIME=runsc
 CODE_RUNNER_HOST=127.0.0.1
@@ -626,6 +628,11 @@ CODE_RUNNER_SLOTS=${VA_CODE_RUNNER_SLOTS:-1}
 CODE_RUNNER_RESERVE_LOCAL_MODEL_MB=$(local_model_mb)
 LOG_LEVEL=info
 EOF
+    then
+        rm -rf "$RUNNER_ENV.new"
+        echo -e "${RED}Could not write $RUNNER_ENV.${NC}" >&2
+        return 1
+    fi
     mv -f "$RUNNER_ENV.new" "$RUNNER_ENV" || return 1
     own "$STATE_DIR" "$RUNNER_ENV"
     local pinned installed
@@ -682,7 +689,10 @@ self_test() {
     node "$CHECK" record --install-dir "$INSTALL_DIR" --result "$result" || rc=$?
     rm -f "$result"
     own "$STATE_DIR"
-    [ "$rc" = "0" ] || return 1
+    if [ "$rc" != "0" ]; then
+        rm -f "$STATE_DIR/conformance.json"
+        return 1
+    fi
     say "${GREEN}Conformance self-test passed.${NC}"
 }
 

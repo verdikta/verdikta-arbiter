@@ -40,6 +40,7 @@ CODE_RUNNER_RUNTIME=runsc
 CODE_RUNNER_PORT=$PORT
 CODE_RUNNER_HOST=127.0.0.1
 CODE_RUNNER_TOKEN_FILE=$T/code-runner-state/token
+CODE_RUNNER_CONFORMANCE_FILE=$T/code-runner-state/conformance.json
 E
 }
 # A socket the wait can see: start.sh waits, bounded, for the daemon's socket at boot.
@@ -60,6 +61,16 @@ for host in unix:///var/run/docker.sock unix:///run/docker.sock tcp://127.0.0.1:
     has "start on [$host] says why" "$out" "DOCKER_HOST"
     [ ! -f "$R/runner.pid" ] && ok || bad "start on [$host] started something"
 done
+
+# --- an .env that doesn't ask for the pass: this is how an arbiter runs it, so it does not start
+write_env; sed -i.b '/^CODE_RUNNER_CONFORMANCE_FILE=/d' "$R/.env"
+out=$(start); rc=$?
+[ "$rc" != 0 ] && ok || bad "start with no conformance setting: exit 0"
+has "start with no conformance setting: says why" "$out" "CODE_RUNNER_CONFORMANCE_FILE"
+[ ! -f "$R/runner.pid" ] && ok || bad "start with no conformance setting started something"
+write_env; sed -i.b 's/^CODE_RUNNER_CONFORMANCE_FILE=.*/CODE_RUNNER_CONFORMANCE_FILE=/' "$R/.env"
+out=$(start); rc=$?
+[ "$rc" != 0 ] && ok || bad "start with an empty conformance setting: exit 0"
 
 # --- a clean start: nothing of the caller's environment
 write_env
