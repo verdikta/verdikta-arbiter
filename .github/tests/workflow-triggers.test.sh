@@ -65,7 +65,7 @@ is code-runner.yml "w.dig('jobs', 'docker', 'strategy', 'matrix', 'runtime')" '[
 # Unchanged: the nightly L4 and the dispatch inputs.
 is e2e.yml "on['schedule']" '[{"cron":"0 7 * * *"}]' "nightly schedule changed"
 is e2e.yml "on.dig('workflow_dispatch', 'inputs').map { |k, v| [k, v['type'], v['default']] }" \
-    '[["run_l4","boolean",false],["class_id","string","5555"],["expect_common","string",""],["expect_release","string",""],["scenario","string",""],["expect_fault_switch","string",""]]' \
+    '[["run_l4","boolean",false],["class_id","string","5555"],["expect_common","string",""],["expect_release","string",""],["scenario","string",""],["expect_fault_switch","string",""],["l4_listing_requests","string",""]]' \
     "dispatch inputs changed"
 is e2e.yml "w.dig('jobs', 'l4-testnet', 'if')" \
     "\"github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.run_l4)\"" \
@@ -76,7 +76,19 @@ is e2e.yml "w.dig('jobs', 'l4-testnet', 'environment')" '"e2e"' "L4 left the e2e
 is e2e.yml "w.dig('jobs', 'l2-mock', 'if')" \
     "\"github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository\"" \
     "L2's same-repo gate changed"
-is e2e.yml "w['jobs'].keys" '["l2-mock","l2-claim","l4-testnet"]' "jobs added or removed (check their secret gates)"
+is e2e.yml "w['jobs'].keys" '["l2-mock","l2-claim","l4-listings","l4-testnet"]' "jobs added or removed (check their secret gates)"
+
+# The L4 listings' check (node A9): no secret, no environment, and never on the nightly. A dispatch runs it
+# only with requests; it measures what a production statement says, so it runs the runner under runsc.
+is e2e.yml "w.dig('jobs', 'l4-listings', 'if')" \
+    "\"github.event_name == 'pull_request' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.l4_listing_requests != '')\"" \
+    "the listing check runs on other events"
+is e2e.yml "JSON.generate(w.dig('jobs', 'l4-listings')).include?('secrets.')" false "the listing check reads a secret"
+is e2e.yml "w.dig('jobs', 'l4-listings', 'environment')" 'null' "the listing check runs in an environment"
+is e2e.yml "w.dig('jobs', 'l4-listings', 'env', 'CODE_RUNNER_RUNTIME')" '"runsc"' "the listing check left gVisor"
+is e2e.yml "w.dig('jobs', 'l4-listings', 'runs-on')" '"ubuntu-latest"' "the listing check left the amd64 runner"
+is e2e.yml "w.dig('jobs', 'l4-listings', 'steps').any? { |s| s.dig('with', 'name') == 'l4-listing-measurement' }" true "the measurement is not uploaded under the name prepare downloads"
+is e2e.yml "w.dig('jobs', 'l4-listings', 'steps').find { |s| s['run'].to_s.include?('check --requests') }.dig('env', 'REQUESTS')" '"${{ inputs.l4_listing_requests }}"' "the requests reach the script other than through the environment"
 
 # The claim suite (node A6a) needs no secret and runs for everyone, forks included:
 # no `if`, no secret anywhere in it, no way to pass by not running.

@@ -177,10 +177,10 @@ describe('code mode: the class envelope', () => {
     expect(calls(SONNET)[0].prompt).toContain(`\n${text}\n<<<END DATA`);
   }, 20000);
 
-  test('each juror\'s maxTokens comes from the envelope: 8,000 on code-standard, 12,000 on code-premium', async () => {
+  test('each juror\'s maxTokens comes from the envelope: 32,000 on code-standard, 12,000 on code-premium', async () => {
     await post(codeModeBody());
     expect(calls(SONNET)[0].options.maxTokens).toBe(codeReview.CODE_CLASSES['code-standard'].envelope.jurorOutputTokens);
-    expect(calls(DEEPSEEK)[0].options.maxTokens).toBe(8000);
+    expect(calls(DEEPSEEK)[0].options.maxTokens).toBe(32000);
 
     resetMockProvider();
     script({ 'claude-opus-5-5': { scores: HIGH }, 'gpt-6-astra': { scores: HIGH } });
@@ -271,7 +271,7 @@ describe('code mode: every juror is required (no Jev in the MVP)', () => {
     expect(result.status).toBe(200);
     expect(result.body.scores.map((s: any) => s.score)).toEqual(HIGH);
     const repair = calls(SONNET)[1];
-    expect(repair.options).toEqual({ webAccess: false, maxTokens: 8000, effort: 'low', signal: true });
+    expect(repair.options).toEqual({ webAccess: false, maxTokens: 32000, effort: 'low', signal: true });
     expect(repair.prompt).toContain('<<<BEGIN DATA');
     expect(repair.prompt).not.toContain('=== END OF REPLY ===');
   }, 20000);

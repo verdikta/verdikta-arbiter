@@ -15,7 +15,7 @@
     "test:jury-e2e": "NODE_PATH=node_modules node test/integration/jury-run.e2e.js"
   },
   "dependencies": {
-    "@verdikta/common": "1.9.0-attest.2",
+    "@verdikta/common": "1.9.0-attest.3",
     "adm-zip": "^0.5.10",
     "axios": "^1.6.7",
     "chalk": "^4.1.2",

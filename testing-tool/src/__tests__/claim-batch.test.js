@@ -153,8 +153,9 @@ describe('resume', () => {
 describe('it stops by itself', () => {
   test('before a claim whose worst case would pass the limit, with nothing sent for it', async () => {
     const list = await scenarios(['a', 'b']);
-    // The fixture's prompt is small: a worst case under USD 1, and the first claim's calls leave too little.
-    const { code, sent, batchDir } = await run(list, { stopUsd: 1, record: (b, l) => recordCalls(b, l, { usd: 0.3 }) });
+    // The fixture's prompt is small: at code-standard's 32,000 juror tokens a worst case near USD 2, under the
+    // limit of 10, and the first claim's three calls (USD 4 each) take the ledger past it.
+    const { code, sent, batchDir } = await run(list, { stopUsd: 10, record: (b, l) => recordCalls(b, l, { usd: 4 }) });
     expect(code).toBe(EXIT.BUDGET);
     expect(sent).toEqual(['a']);
     const summary = JSON.parse(fs.readFileSync(path.join(batchDir, 'summary.json'), 'utf8'));

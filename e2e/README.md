@@ -230,7 +230,7 @@ One real request each on the canaries, with `[listing, claim]` as `cids` and the
 | `claim-l4-time-dependent` | A PoC that reads the clock (A3b's fixture) | The jury was reached, with one report hash across hosts |
 | `claim-l4-randomness-dependent` | A PoC with unseeded randomness and a per-run directory (A3b's fixture) | The jury was reached, with one report hash across hosts |
 | `claim-l4-flaky` | A PoC that alternates (A3b's fixture) | All weight on `INVALID` at `reproduces` on every host, one report hash, no model |
-| `claim-l4-registry-failure` | A listing on a digest no registry holds | Nobody commits for `watchSeconds`. Then its controls settle (below) |
+| `claim-l4-registry-failure` | A validated listing whose image was removed from the registry after it was signed | Nobody commits for `watchSeconds`. Then its controls settle (below) |
 | `claim-l4-near-limit-juror` | The fault switch holds the first juror's real answer | The jury was reached, a juror within 15 s of its limit, on one report hash |
 | `claim-l4-provider-timeout` | The fault switch times the first juror out, once | Two attempts: the first a `CODE_REVIEW_JUROR_TIMEOUT` on the action the AI Node verified, the second with no fault. A verdict from one run |
 | `claim-l4-slow-justifier` | The fault switch holds the real justification | The jury was reached, the justifier within 15 s of its 45 s |
@@ -277,18 +277,92 @@ node scripts/l4-metrics.js results/*.json   # exit 0 only with enough samples, i
 
 A round with a fault injected counts for σ (the switch cannot move a score) and not for latency (the delay is the point of it). Samples come from what the uploads say happened, not from what the scenario expected: a valid claim answered by a gate fails its checks and is no jury sample, and mixed or missing evidence counts for nothing. A request that never started is no sample; one that started leaves one, whatever fails after. An arbiter keeps a run for 15 minutes, and a later round of the same claim is served it, with no pull and no sandbox in its time (`runner_image.cache: reused`): that is no latency sample, so space repeats of a scenario by 15 minutes, or mix scenarios.
 
-**Preparing them (once, an owner's step).** The scenarios read `archives/l4-claim/claim-set.json`. None is committed until then, and naming a scenario without one is an error.
+**Preparing them (once, an owner's step).** The scenarios read `archives/l4-claim/claim-set.json`. None is committed until then, and naming a scenario without one is an error. The canaries run in production trust, so three listings are signed with the production builder key: the fixture image, a fresh digest for the cold-cache scenario, and an image that is removed from the registry once it is signed, for the registry-failure scenario. The key signs only in its own service, and what it signs must be true when it is signed (design §8.2): the runner validated the listing under gVisor, at a commit anyone can read. So `scripts/prepare-l4-listings.js` builds each statement from a measurement, the runner's own listing check run by `e2e.yml` on the pushed images. It writes what to sign and takes the signatures back. Nothing in a statement is written by hand.
 
-1. Build the fixture image on `linux/amd64` (`buildFixture` in `code-runner/test/docker/forgeFixture.js`, with `CANARY_IMAGE_OPTIONS` from `determinismPocs.js`, as the L2 harness does: A3b's PoCs need `ffi` and `./state`) and push it where every canary's runner may pull it (`CODE_RUNNER_REGISTRY_ALLOWLIST`). Keep the digest and the base commit. For the cold-cache scenario push a second one with `env: ['L4_COLD=<a word used once>']`: the same repository and commit, a digest no canary has.
-2. Check, then pin. `npm ci` in `code-runner/` first, for the fixture repository:
+**The fixture repository is a branch of this repository**, `claude/stake-attestation-l4-fixture`: one commit, `43679c1856fbafe0dfe8d24c6e3c883511695002`, the conformance canary's tree committed as the image build commits it (`node scripts/prepare-l4-listings.js fixture-repo --out <dir>` writes it again, to the same hash). Every statement names `https://github.com/verdikta/verdikta-arbiter` and that commit, and `images`, `specs`, `check` and `prepare` each read the branch with `git ls-remote` and refuse another commit. **Never delete or move that branch.** The signed statements point at it for as long as the key is trusted.
+
+You need a `linux/amd64` host with Docker (a host that can't run amd64 images stops with `exec format error`), `gh` signed in with a GitHub token that has `write:packages` (and `delete:packages` for step 9), and a Pinata JWT.
+
+1. Set up from `claude/stake-attestation`, not a PR branch: the check runs there, and `prepare` refuses a run from anywhere else.
 
    ```bash
-   node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --cold-image <repo@sha256:…> --dry-run
-   IPFS_PINNING_KEY=<pinata-jwt> node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> --cold-image <repo@sha256:…> --pin
+   git clone --branch claude/stake-attestation https://github.com/verdikta/verdikta-arbiter.git
+   cd verdikta-arbiter
+   (cd code-runner && npm ci) && (cd e2e && npm ci)
+   cd e2e
+   docker login ghcr.io -u <github-user>
    ```
 
-   This signs the listings with a dev builder key it makes and drops. It prints the public half: set `CODE_REVIEW_TRUST=dev`, `CODE_REVIEW_DEV_KEYS=<that key>` and `NETWORK_CHAIN_ID=84532` on the canaries. It also prints the fault plan for the switch. A listing the production builder signed comes in with `--listing-file <listing.zip>` instead, and needs no dev trust; then `--registry-failure-listing-file` and `--cold-listing-file` bring those two, and without them only those two scenarios are unavailable. A cold image is cold once: a second run on the same digest fails `claim.imageCold`, so it needs a new digest, or the eviction in the runbook.
-3. Commit `archives/l4-claim/claim-set.json` on the branch the run dispatches from. Its disclosure keys are a throwaway fixture's, and the same lines go on-chain in the clear.
+2. Build and push the three images of the fixture commit. This refuses if the branch holds another commit than this checkout's fixture, or an image's repository is at another commit. The fixture has what A3b's PoCs need (`ffi`, `./state`).
+
+   ```bash
+   node scripts/prepare-l4-listings.js images --repository ghcr.io/verdikta/stake-attestation-l4-fixture --out ~/l4-images.json
+   ```
+
+   It prints each image's digest, tag and size, and keeps them in `~/l4-images.json`. In the package's GitHub settings, set the visibility to Public, because the check and the canaries pull with no credentials. Then check that each of the three pulls with no login:
+
+   ```bash
+   docker logout ghcr.io
+   docker pull --platform linux/amd64 <each image it printed>
+   ```
+
+3. Write the specs and the check's requests. Each listing gets its own disclosure key, whose private half is never written. This refuses an image outside `ghcr.io/verdikta`, which a default arbiter won't pull, two listings on one digest, and a spec an arbiter would refuse.
+
+   ```bash
+   node scripts/prepare-l4-listings.js specs --images ~/l4-images.json --out ~/l4-signing
+   ```
+
+4. Run the runner's listing check in CI with the `gh workflow run e2e.yml … -f l4_listing_requests=…` command `specs` printed, then find the run and wait for it. The job "L4 listing check (runsc)" starts the runner at this branch's `RUNNER_VERSION`, under gVisor at the release `@verdikta/common` pins, and checks each image: that it is built on the Foundry base `@verdikta/common` pins (the base's layers are its first), its size, the build, the suite three times, the harness proof. Every listing must be accepted and the run must succeed. It needs no secret.
+
+   ```bash
+   gh run list -R verdikta/verdikta-arbiter --workflow e2e.yml --event workflow_dispatch --branch claude/stake-attestation --limit 1
+   gh run watch <run id> -R verdikta/verdikta-arbiter
+   ```
+
+5. Write what to sign, from that run. `prepare` checks that the run is `e2e.yml`, dispatched on `claude/stake-attestation`, and a success; that it checked exactly the requests in `~/l4-signing`, with this checkout's runner, `@verdikta/common` and gVisor and this checkout's code (the runner's source hash, this script, its fixtures and lockfile, and `e2e.yml`; if the branch moved since the run, check out the run's commit); and that the runner accepted each listing at the image and size its spec names, on the pinned base. Each statement's baseline is the one the runner measured, its `env.base` the base the run found, and its `tools` the runner and the gVisor that ran. It prints the size of each message, which must fit the signing service's 4,096 bytes.
+
+   ```bash
+   node scripts/prepare-l4-listings.js prepare --dir ~/l4-signing --run <run id>
+   ```
+
+6. Sign. Open AWS CloudShell, use Actions, Upload file, and pick `~/l4-signing/sign-in-cloudshell.sh`. It holds the bytes to sign and no key name. Then:
+
+   ```bash
+   export BUILDER_KEY=<the key id or ARN>
+   bash sign-in-cloudshell.sh
+   ```
+
+   For each listing it runs `aws kms sign --key-id "$BUILDER_KEY" --message-type RAW --signing-algorithm ED25519_SHA_512 --message fileb://<bytes> --query Signature --output text`. It writes and prints `signatures.json`, which isn't secret. Save that file as `~/l4-signing/signatures.json` on the first host.
+
+7. Put the signatures in. This holds every listing to production trust against `@verdikta/common`'s builder set and writes all three archives or none. Each listing should say `verifies in production trust`.
+
+   ```bash
+   node scripts/prepare-l4-listings.js attach --dir ~/l4-signing
+   ```
+
+8. Check, then pin. Every `--listing-file` is held to production trust again, so a dev-signed archive is refused here. It prints the fault plan for the switch (`docs/release-runbook.md`, 3b), so keep that too.
+
+   ```bash
+   A="--listing-file $HOME/l4-signing/listing.zip --registry-failure-listing-file $HOME/l4-signing/registry-failure.zip --cold-listing-file $HOME/l4-signing/cold-cache.zip"
+   node scripts/build-l4-claims.js $A --dry-run
+   IPFS_PINNING_KEY=<pinata-jwt> node scripts/build-l4-claims.js $A --pin
+   ```
+
+9. Make the registry-failure image unreachable. In the package's settings, delete the version tagged `l4-gone-…` (its tag and digest are under `registry-failure` in `~/l4-images.json`). Then check that its digest no longer pulls:
+
+   ```bash
+   docker pull --platform linux/amd64 <the registry-failure image>   # must fail: manifest unknown
+   ```
+
+   The order is on purpose. Its statement was true when it was signed, because the runner checked that image; the scenario then tests a validated listing whose image the registry no longer serves. Every canary's pull fails (`pull_failed`) and nobody commits, as for a registry that is down.
+
+10. Commit `e2e/archives/l4-claim/claim-set.json` on `claude/stake-attestation`. Its disclosure keys are a throwaway fixture's, whose private halves were never written, and the same lines go on-chain in the clear.
+
+If a step fails: `attach` writes nothing when any signature is wrong, so sign again and re-run it. If the check refuses a listing, `measurement.json` in the run's `l4-listing-measurement` artifact holds what the runner answered. If `specs` has to run again, use a new directory and run the check again, because each run makes new disclosure keys and `prepare` takes only the run that checked those specs.
+
+**What a signature here means.** Each statement is true when signed: the runner at this release checked that image, at that commit of this repository's fixture branch, under the pinned gVisor, and measured the baseline it carries. `tools.semgrepRules` is the rule set the release pins: Semgrep runs on a claim's PoC, not in a listing check, and the measurement says so (`ran: false`). A signature has no end date: these listings verify on any arbiter while the key is trusted, and removing the key fails every listing it attested. So they name Verdikta's own fixture and chain 31337, and no real contract, and whoever sends a request against one pays for it. A cold image is cold once: a second run on the same digest fails `claim.imageCold`, so it needs a new digest and a new signature, or the eviction in the runbook.
+
+**Dev trust, off the canaries' production path.** `node scripts/build-l4-claims.js --image <repo@sha256:…> --base-commit <hash> [--cold-image <repo@sha256:…>] --dry-run|--pin` signs the listings with a dev builder key it makes and drops, as the L2 suite does, and prints the public half. That needs `CODE_REVIEW_TRUST=dev`, `CODE_REVIEW_DEV_KEYS=<that key>` and `NETWORK_CHAIN_ID=84532` on every arbiter it is sent to, and nothing from it passes production trust.
 
 ## CI & secret handling
 

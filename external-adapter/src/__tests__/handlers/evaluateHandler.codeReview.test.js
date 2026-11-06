@@ -459,7 +459,7 @@ describe('code review: trust mode', () => {
     loadCodeReviewConfig({ ...READY_ENV, CODE_REVIEW_TRUST: undefined });
     const spy = jest.spyOn(codeReview, 'validateAttestation');
     const s = scenario({ listing: { trust: 'production' } });
-    // PRODUCTION_BUILDER_KEYS is empty until the production key ships (C6)
+    // Signed for production by a key PRODUCTION_BUILDER_KEYS does not hold: the set has the builder's key alone
     expectRequesterError(await evaluateHandler(request(s.cid(1))), /ATTESTATION_UNTRUSTED_KEY/);
     expect(spy).toHaveBeenCalledTimes(1);
     expect(spy.mock.calls[0][1].trust).toBeUndefined();

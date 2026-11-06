@@ -95,7 +95,7 @@ the answer is 401 whatever the route.
 ```json
 {
   "ok": true, "reasons": [],
-  "service": "verdikta-code-runner", "version": "0.1.0", "node": "v20.18.1",
+  "service": "verdikta-code-runner", "version": "0.2.0", "node": "v20.18.1",
   "runtime": "runsc", "runtimeAvailable": true, "runtimeArgs": ["--platform=systrap", "…"],
   "gvisor": "release-20260921.0", "gvisorPinned": "release-20260921.0",
   "scanner": { "image": "docker.io/semgrep/semgrep@sha256:81474464…", "version": "1.181.0", "rules": "2026.10", "present": true,
@@ -173,7 +173,7 @@ A definitive or abstaining answer looks like:
 ```json
 {
   "outcome": "abstain", "runId": "3f2a…",
-  "runner": { "version": "0.1.0", "runtime": "runsc", "platform": "linux/amd64" },
+  "runner": { "version": "0.2.0", "runtime": "runsc", "platform": "linux/amd64" },
   "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "testSeconds": 180, "runSeconds": 360, "maxPatchBytes": 2000000, "patchExpansionBytes": 50000000, "platform": "linux/amd64" },
   "abstain": { "cause": "oom", "step": "build", "detail": "a process in the sandbox was OOM-killed during the step" },
   "image": { "ref": "ghcr.io/verdikta/env@sha256:…", "cache": "hit", "durationMs": 41 },
@@ -343,7 +343,7 @@ requester error as for runs):
 ```json
 {
   "outcome": "definitive", "kind": "listing-check", "checkId": "3f2a…",
-  "runner": { "version": "0.1.0", "runtime": "runsc", "platform": "linux/amd64" },
+  "runner": { "version": "0.2.0", "runtime": "runsc", "platform": "linux/amd64" },
   "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "testSeconds": 360, "runSeconds": 720, "…": "…" },
   "abstain": null,
   "image": { "ref": "ghcr.io/verdikta/stake-env@sha256:…", "cache": "pulled", "durationMs": 21000 },

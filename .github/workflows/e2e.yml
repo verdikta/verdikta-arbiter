@@ -53,6 +53,10 @@ on:
         description: 'L4, a claim run: the canary fault switch every revealing arbiter must report, off or armed (blank = off). Fault scenarios need armed. See docs/release-runbook.md 3b.'
         type: string
         default: ''
+      l4_listing_requests:
+        description: 'L4 listings (e2e/README.md, Preparing them): the base64 of check-requests.json from prepare-l4-listings.js specs. Set, the listing check runs on those requests and uploads what the runner measured.'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -194,6 +198,102 @@ jobs:
             e2e/results/
             ${{ runner.temp }}/claim-logs/*.log
           if-no-files-found: ignore
+
+  # ── L4 listings: the runner's own listing check, under gVisor ────────────────
+  # A production signature on an L4 listing says the runner validated it (design
+  # §8.2), so prepare-l4-listings.js builds each statement from this job's
+  # measurement, taken by run id (e2e/README.md, "Preparing them"). Dispatched
+  # with l4_listing_requests, it checks those requests on the pushed images; on
+  # pull requests and pushes it builds the fixture and checks it through a local
+  # registry, a run prepare never takes. No secret.
+  l4-listings:
+    name: L4 listing check (runsc)
+    if: >-
+      github.event_name == 'pull_request' || github.event_name == 'push' ||
+      (github.event_name == 'workflow_dispatch' && inputs.l4_listing_requests != '')
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      # As code-runner.yml: the release @verdikta/common pins and its SHA-512
+      # (code-runner/test/unit/runtime.test.js ties them).
+      GVISOR_VERSION: '20260921.0'
+      GVISOR_SHA512: 7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e
+      CODE_RUNNER_RUNTIME: runsc
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform)
+        run: |
+          set -euo pipefail
+          url="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}/x86_64/gvisor.tar.bz2"
+          curl -fsSL -o gvisor.tar.bz2 "$url"
+          echo "${GVISOR_SHA512}  gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${GVISOR_VERSION}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf gvisor.tar.bz2 -C "$dest"
+          "$dest/runsc" --version
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo systemctl reload docker
+          for i in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc'
+
+      - name: Install code runner deps
+        working-directory: code-runner
+        run: npm ci
+
+      - name: Install harness deps
+        working-directory: e2e
+        run: npm ci
+
+      - name: The listing check on the requests (dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: e2e
+        env:
+          REQUESTS: ${{ inputs.l4_listing_requests }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/l4"
+          printf '%s' "$REQUESTS" | base64 -d > "$RUNNER_TEMP/l4/check-requests.json"
+          sha256sum "$RUNNER_TEMP/l4/check-requests.json"
+          node scripts/prepare-l4-listings.js check --requests "$RUNNER_TEMP/l4/check-requests.json" --out "$RUNNER_TEMP/l4/measurement.json"
+
+      - name: The listing check on the fixture, through a local registry (self-check)
+        if: github.event_name != 'workflow_dispatch'
+        working-directory: e2e
+        run: |
+          mkdir -p "$RUNNER_TEMP/l4"
+          node scripts/prepare-l4-listings.js check --self-check --out "$RUNNER_TEMP/l4/measurement.json"
+
+      - name: Upload what the runner measured
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: l4-listing-measurement
+          path: |
+            ${{ runner.temp }}/l4/measurement.json
+            ${{ runner.temp }}/l4/measurement.json.runner.log
+          if-no-files-found: ignore
+
+      - name: No container left behind
+        if: always()
+        run: |
+          left=$(docker ps --all --filter label=verdikta.code-runner --format '{{.Names}}')
+          if [ -n "$left" ]; then
+            echo "::error::containers left behind: $left"
+            exit 1
+          fi
 
   # ── L4: live testnet acceptance (Base Sepolia) ─────────────────────────────
   l4-testnet:

@@ -2,8 +2,9 @@
 
 // The conformance pass, enforced in the runner (node A8, from a design review): with
 // CODE_RUNNER_CONFORMANCE_FILE set, /health is 503 and every run is refused unless that file holds a
-// pass for what is running. The threat is a mistaken or failed upgrade, and RUNNER_VERSION has stayed
-// 0.1.0 across every commit, so the pass names a hash of the installed source too.
+// pass for what is running. The threat is a mistaken or failed upgrade, and RUNNER_VERSION need not
+// move with the code (it stayed 0.1.0 across every commit up to A9), so the pass names a hash of the
+// installed source too.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');

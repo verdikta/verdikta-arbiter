@@ -1340,10 +1340,10 @@ registered at the standard fee and hand it the premium panel's bill.
 |---|---|---|
 | Pool | `typesafe/jev-1.13`, `deepseek-v4-pro`, `kimi-k2.7-code`, `qwen3-coder`, `glm-5.3`, `mimo-v2.6-pro`, `gpt-oss-120b`, `claude-haiku-5-5`, `gpt-6-luna`, `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra`, `grok-4.7` | the standard pool plus `claude-opus-5-5`, `gpt-6-astra` |
 | Panel | ≤ 3 models, `NO_COUNTS` 1, `ITERATIONS` 1 | same |
-| Context pack / juror output | 60k / 8k tokens | 120k / 12k tokens |
+| Context pack / juror output | 60k / 32k tokens | 120k / 12k tokens |
 | Sandbox | class hard limits (§9.1) | same |
 | Serves | listings whose top award is up to ≈ $1k; disputes on them | listings above ≈ $1k; disputes escalated from standard |
-| Operator spend per evaluation | ≈ $0.25 (dispute panel ≈ $0.45) | ≈ $1.40–2.00 |
+| Operator spend per evaluation, worst case (§10.7) | ≈ $0.60 (dispute panel ≈ $0.95) | ≈ $1.40–2.00 |
 | Registered fee (indicative) | 0.00012 ETH ≈ $0.29 | 0.0007 ETH ≈ $1.70 (above today's ceiling, §10.8) |
 | Hunter prepay (12×) | ≈ $3.50 | ≈ $20 |
 
@@ -1359,21 +1359,22 @@ claims as accurately as the frontier pair is exactly what the calibration set
 measures per class (§18), and a class whose accuracy falls short is withdrawn,
 not discounted.
 
-Per-juror cost, OpenRouter list prices on 2026-10-19:
+Per-juror cost at the envelope's limits, OpenRouter list prices on 2026-10-19
+(`deepseek-v4-pro-0813`, the standard panel's juror: 2026-11-05):
 
-| Model in the pools | $/M in / out | 60k in / 8k out | 120k in / 12k out | Role |
+| Model in the pools | $/M in / out | 60k in / 32k out | 120k in / 12k out | Role |
 |---|---|---|---|---|
 | `gpt-6-astra` | 10 / 50 | — | $1.80 | Premium deep review |
 | `claude-opus-5-5` | 4 / 20 | — | $0.72 | Premium deep review |
-| `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | 2 / 10–12 | ~$0.20 | ~$0.38 | Standard deep review; dispute panel |
-| `grok-4.7` | 2 / 6 | $0.17 | $0.31 | Standard, third opinion |
-| `kimi-k2.7-code` | 0.67 / 3.35 | $0.067 | $0.12 | Open-weight code review |
-| `deepseek-v4-pro` | 0.42 / 0.84 | $0.032 | $0.06 | Open-weight code review |
-| `mimo-v2.6-pro` | 0.43 / 0.87 | $0.033 | $0.06 | Open-weight code review |
-| `qwen3-coder` | 0.30 / 1.00 | $0.026 | $0.05 | Open-weight code specialist |
-| `glm-5.3` | 0.08 / 1.40 | $0.016 | $0.03 | Open-weight code review |
-| `gpt-oss-120b` | 0.15 / 0.60 | $0.014 | $0.03 | Open-weight, third opinion |
-| `claude-haiku-5-5`, `gpt-6-luna` | 0.1 / 0.5 | $0.010 | $0.02 | Justifier; cheap juror |
+| `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | 2 / 10–12 | $0.44–0.50 | ~$0.38 | Standard deep review; dispute panel |
+| `grok-4.7` | 2 / 6 | $0.31 | $0.31 | Standard, third opinion |
+| `kimi-k2.7-code` | 0.67 / 3.35 | $0.15 | $0.12 | Open-weight code review |
+| `deepseek-v4-pro-0813` | 0.103 / 4.11 | $0.14 | $0.06 | Open-weight code review; standard panel |
+| `mimo-v2.6-pro` | 0.43 / 0.87 | $0.05 | $0.06 | Open-weight code review |
+| `qwen3-coder` | 0.30 / 1.00 | $0.05 | $0.05 | Open-weight code specialist |
+| `glm-5.3` | 0.08 / 1.40 | $0.05 | $0.03 | Open-weight code review |
+| `gpt-oss-120b` | 0.15 / 0.60 | $0.03 | $0.03 | Open-weight, third opinion |
+| `claude-haiku-5-5`, `gpt-6-luna` | 0.1 / 0.5 | $0.02 | $0.02 | Justifier; cheap juror |
 | `typesafe/jev-1.13` | 0.042 / free | <$0.01 | <$0.01 | Rubric juror, triage, claim check |
 
 Panels the site offers, each bound to its class. A listing pins two archives at
@@ -1382,8 +1383,8 @@ difference is the panel:
 
 | Panel | Class | Models | Operator spend per arbiter |
 |---|---|---|---|
-| Standard | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `deepseek-v4-pro` 0.4 | ≈ $0.25 |
-| Standard dispute | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `gpt-6-sol` 0.4, effort `high` | ≈ $0.45 |
+| Standard | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `deepseek-v4-pro-0813` 0.4 | ≈ $0.60 at worst (§10.7) |
+| Standard dispute | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `gpt-6-sol` 0.4, effort `high` | ≈ $0.95 at worst (§10.7) |
 | Premium | `code-premium` | Jev 0.2, `claude-opus-5-5` 0.4, `gpt-6-astra` 0.4 | ≈ $1.40 |
 | Premium dispute | `code-premium` | Jev 0.2, `claude-opus-5-5` 0.4, `gpt-6-astra` 0.4, `ITERATIONS` 2 where the envelope allows, else effort `max` | ≈ $2.00 |
 
@@ -1440,14 +1441,20 @@ Standard panel, worst case:
 | Item | Tokens | Cost |
 |---|---|---|
 | Jev, ~10 small fan-out calls + claim check | ~60k in, total | ~$0.003 |
-| `claude-sonnet-5-5` juror ($2 / $10 per million tokens) | 60k in / 8k out | ~$0.20 |
-| `deepseek-v4-pro` juror ($0.42 / $0.84) | 60k in / 8k out | ~$0.03 |
+| `claude-sonnet-5-5` juror ($2 / $10 per million tokens) | 60k in / 32k out | ~$0.44 |
+| `deepseek-v4-pro-0813` juror ($0.103 / $4.11, read from OpenRouter on 2026-11-05) | 60k in / 32k out | ~$0.14 |
 | Justifier (`claude-haiku-5-5`, $0.10 / $0.50) | 15k in / 2k out | <$0.01 |
 | Sandbox compute (2 vCPU × ≤ 6 min at ≈ $0.03 per vCPU-hour; two containers with a fix) | | <$0.01 |
-| **Total** | | **≈ $0.25**; a claim that fails a gate ≈ $0.01 |
+| **Total** | | **≈ $0.60**; a claim that fails a gate ≈ $0.01 |
 
-The standard dispute panel (`gpt-6-sol` in place of `deepseek-v4-pro`) ≈
-**$0.45**. Premium (`claude-opus-5-5` $0.72 + `gpt-6-astra` $1.80 on a 120k pack
+That is the most a run can cost, with every juror using its whole limit. The measured
+cost was about $0.09 per evaluation under the earlier 8k limit, when many of those
+replies came back empty or cut off (assumption 3), so it is not a figure for this limit.
+§10.8's fees were set from the 8k worst case and are not re-derived here; they need
+re-checking against this table before a class is registered at them.
+
+The standard dispute panel (`gpt-6-sol` in place of `deepseek-v4-pro-0813`) ≈
+**$0.95**. Premium (`claude-opus-5-5` $0.72 + `gpt-6-astra` $1.80 on a 120k pack
 + Jev) is bounded at ≈ **$2.60** and expected around $1.40–2.00 on packs that
 rarely fill the budget.
 
@@ -1460,12 +1467,16 @@ rarely fill the budget.
 2. **60k input tokens** is a claim whose named source files fill most of the
    standard pack budget. A PoC against one contract file produces 15–25k.
    Pricing is at the cap; the average is lower.
-3. **8k output tokens** per juror covers the four answers with file:line
-   reasoning. Premium allows 12k.
+3. **32k output tokens** per juror on `code-standard`. On a model that reasons at
+   high effort the reasoning counts against this limit: at 8k, `deepseek-v4-pro-0813`
+   used it up on many calibration claims, which then got no verdict, since every juror
+   is required (owner decision, 2026-11-05). The limit is per class, so Claude's worst
+   case rises with it. `code-premium` stays at 12k, is not enabled until Phase 3 and
+   has not been measured.
 4. **Every claim reaches the jury.** Gate failures cost ≈ $0.01 (sandbox
    only), so the average falls with the gate-failure rate; the local check
    (§8.6) pushes most sure-failures out before anyone pays.
-5. **List prices on OpenRouter, 2026-10-19**, no caching (the two jurors are
+5. **List prices on OpenRouter, 2026-10-19** (`deepseek-v4-pro-0813`: 2026-11-05), no caching (the two jurors are
    different providers; nothing repeats within an arbiter) and no batch pricing
    (batch latency does not fit a 15-minute round).
 6. **Operators price at worst case plus ≈ 20%**, since the on-chain fee cannot
@@ -1486,7 +1497,7 @@ rounded; prepay = fee × 12; dollars at $2,420/ETH.
 | | Per-oracle fee | Prepay (12×) | Under the ceiling? |
 |---|---|---|---|
 | Today's default (text bounties) | 0.00002 ETH ≈ $0.05 | 0.00024 ETH ≈ $0.58 | yes |
-| `code-standard` (≈ $0.25; dispute ≈ $0.45) | 0.00012 ETH ≈ $0.29 (dispute 0.0002 ETH ≈ $0.48) | 0.00144 ETH ≈ $3.50 (dispute ≈ $5.80) | yes (ceiling 0.0004 ETH ≈ $0.97) |
+| `code-standard` (at the 8k limit: ≈ $0.25; dispute ≈ $0.45) | 0.00012 ETH ≈ $0.29 (dispute 0.0002 ETH ≈ $0.48) | 0.00144 ETH ≈ $3.50 (dispute ≈ $5.80) | yes (ceiling 0.0004 ETH ≈ $0.97) |
 | `code-premium` (≈ $1.40–2.60) | 0.0007 ETH ≈ $1.70 | 0.0084 ETH ≈ $20 | no — needs `setMaxOracleFee` (aggregator owner) |
 
 The payment path pays each selected job its **registered** fee, so raising the
@@ -1963,7 +1974,7 @@ scan, funded by the listing fee, as the floor of attention every record gets.
 
 | Phase | Delivers | Exit criteria |
 |---|---|---|
-| 0. Decisions and schemas | Timeout change approved and hunter-pays confirmed (§20); the two ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (deferred: a single Verdikta key is the placeholder); OpenRouter `systemone` access verified from a canary; `code_review.json` with the `stake` block, `finding.json`, `known_issues.json`, `attestation.json` and the report schema in `@verdikta/common`; the outcome set and settlement rule as a shared helper; the `StakeAttestation` spec (§13) agreed | Schemas merged **and** the fixtures of §18 written as failing tests: forged, missing or duplicate test reports, runtime tampering, an unattested image and an over-limit direct request cannot yield trusted evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another; the settlement rule's cases (median class, below-threshold split, duplicate vs invalid) as unit tests |
+| 0. Decisions and schemas | Timeout change approved and hunter-pays confirmed (§20); the two ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (decision 5); OpenRouter `systemone` access verified from a canary; `code_review.json` with the `stake` block, `finding.json`, `known_issues.json`, `attestation.json` and the report schema in `@verdikta/common`; the outcome set and settlement rule as a shared helper; the `StakeAttestation` spec (§13) agreed | Schemas merged **and** the fixtures of §18 written as failing tests: forged, missing or duplicate test reports, runtime tampering, an unattested image and an over-limit direct request cannot yield trusted evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another; the settlement rule's cases (median class, below-threshold split, duplicate vs invalid) as unit tests |
 | 1. MVP: execution evidence and the record, **Foundry only** | `code-runner` (local mode, own `dockerd` and disk); the `foundry` image and the `forge` adapter only (§20, decision 17: one toolchain, native JUnit output, a ready calibration set); builder Action with validation, the harness proof and attestation; the baseline scan; the hunter tool (`check`, `commit`, `reveal`); the `disclosure` gate and the claim gates of §10.1; deadline propagation; report and context pack fed to the existing jury with the four questions; `StakeAttestation` on testnet behind the **new attestation site**: record page, badge and feed; `code-standard` on class 5555 canaries | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; on the Solidity calibration set (§18) no false valid on the adversarial claims and ≥ 90% agreement on the clear cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end round with slow jurors, justifier delay, registry failure and cancellation; every contract fixture of §18 passes (bond, dispute, release, embargo, lineage, duplicate order, expiry, depletion); p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
 | 2. Languages, cheap and sharp | `node22` and `python312` images with the `vitest`, `jest`, `mocha` and `pytest` adapters and their calibration cases; `systemone` client, Jev typed questions and rubric juror, claim check on the justification; Jev readiness in the pre-flight (tier 1b) and Jev at listing (§8.6); Semgrep honesty rules and secret scan tuned on the fixtures; cost logging; **published accuracy**: precision and recall per class from on-chain verdicts and dispute outcomes | Identical report hashes on the Node and Python fixtures across hosts and the per-class accuracy bar met on their calibration cases; ≤ $0.30 per arbiter per evaluation on `code-standard`; accuracy no worse than Phase 1; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures; the accuracy page live |
 | 3. Breadth | the `skill` harness image and its activity-log report (§8.8); enclave or permissioned-class evaluation for closed-source stakes (§14); remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised; yield-bearing escrow if Phase 1 shows the capital lock deters makers; **juror exploration** — first a local read/grep tool in the AI Node over the runner's checkout (tier-A facts, no container cost), then for `code-premium` an optional provider-hosted shell on a copy of the post-patch tree where the juror can grep callers beyond the context pack, read files and, when the repository's dependencies install inside a minute from an allowlisted registry, write and run its own probe tests (§19; ≈ +$0.5–2 per arbiter, priced into the premium fee) | A canary gate per feature; juror-exploration findings labelled as the juror's own observations, never as report facts; mainnet rollout per `docs/release-runbook.md` §3b |
@@ -1974,6 +1985,13 @@ the `systemone` client deployed before Jev can sit on the jury. Seeding
 (§14) starts on testnet in Phase 1 with Verdikta's own repositories and those
 popular skills whose maintainers consent by naming Verdikta in their proof file
 (§8.8, owner decision Q34), so the feed is never empty when hunters arrive.
+
+**Phase 1's accuracy bar was missed, and testnet goes ahead.** On the Solidity
+calibration set, `code-standard` did not reach the ≥ 90% agreement on the clear cases
+that Phase 1's exit criteria ask for, including after the juror output limit was raised
+to 32k (§10.7, assumption 3). The owner decided on 2026-11-05 to go on to testnet with
+the bar recorded as missed, and **mainnet stays closed**. Testnet holds no real money.
+The exit criterion is unchanged.
 
 ## 18. Validation
 
@@ -2206,12 +2224,16 @@ decisions of 2026-10-30.
    (≈ $20 prepay) waits for the fee ceiling to be raised to about 0.001 ETH
    (Phase 3). Per-class K/M/N and a lower bonus multiplier for cheap classes
    go on the dispatcher roadmap.
-5. **Trusted-builder keys — deferred.** Placeholder for planning: a single
-   Verdikta-held Ed25519 key with its id in `@verdikta/common`, rotated by adding
-   a key and keeping the old one valid for listings it attested. Sigstore keyless
-   signing and a multi-builder list are the alternatives to weigh when the
-   decision is taken; it must land before Phase 1's canaries, because the
-   runner refuses unattested listings.
+5. **Trusted-builder keys — decided: one Verdikta-held Ed25519 key.** It lives in a
+   key-management service that signs and never releases it. Its public half and id
+   ship in `@verdikta/common`'s production set from `1.9.0-attest.3`, so every
+   arbiter on that release accepts what it signs and nothing else (key id
+   `c400af59dc75cf7cb0bc2430833d29047955ae99c18a1d007700588a84b45b13`). Rotation is a
+   coordinated release, in this order: add the new key, release, upgrade every
+   arbiter, then switch the builder; the old key stays valid for what it attested. A
+   compromised key is removed instead, which fails every listing it attested. Steps:
+   common's `docs/CODE_REVIEW_SPECIFICATION.md`, "Trusted-builder keys". Sigstore
+   keyless signing and a multi-builder list remain alternatives for later.
 6. **In-process test evidence — decided: allow tier B with the integrity
    checks.** Black-box observation protects against forged results, not against
    a dishonest fixture, so the honesty flags and the jury's fourth question
@@ -2339,8 +2361,7 @@ decisions of 2026-10-30.
 risk; Verdikta's take (listing fee only in v1; a share of awards is an option);
 the launch values of `badgeFloorWei` (≈ $100 proposed) and the under-staked
 ratio; the listing fee amount; closed-source stakes (enclave or permissioned
-class, Phase 3); builder-key custody (decision 5); whether late claims on
-closed hashes see any use.
+class, Phase 3); whether late claims on closed hashes see any use.
 
 ## Appendix A. Code bounties (not in scope)
 

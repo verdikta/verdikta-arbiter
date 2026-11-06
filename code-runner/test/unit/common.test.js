@@ -12,7 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const common = require('../../src/common');
 
-const PINNED = '1.9.0-attest.2';
+const PINNED = '1.9.0-attest.3';
 const ROOT = path.join(__dirname, '..', '..');
 
 test('package.json pins @verdikta/common exactly, and the lockfile resolves that version', () => {
@@ -22,6 +22,20 @@ test('package.json pins @verdikta/common exactly, and the lockfile resolves that
   assert.equal(lock.packages[''].dependencies['@verdikta/common'], PINNED);
   assert.equal(lock.packages['node_modules/@verdikta/common'].version, PINNED);
   assert.equal(require('@verdikta/common/package.json').version, PINNED);
+});
+
+test('common\'s canary pin is for this runner and this canary: a pin that disagrees would refuse every claim', () => {
+  const { RUNNER_VERSION } = require('../../src/version');
+  const lock = require('../../conformance/canary.lock.json');
+  const pin = common.CONFORMANCE_CANARY;
+  assert.equal(pin.runner, RUNNER_VERSION);
+  assert.equal(pin.gvisor, common.GVISOR_RELEASE);
+  assert.equal(pin.semgrepRules, common.SEMGREP_RULES_VERSION);
+  assert.equal(pin.platform, lock.platform);
+  assert.equal(pin.imageDigest, lock.imageDigest);
+  assert.equal(pin.baseCommit, lock.baseCommit);
+  assert.equal(pin.listingCid, lock.listingCid);
+  assert.equal(pin.bcid, lock.bcid);
 });
 
 test('the values are the package\'s own (the deep imports are what the package exports)', () => {

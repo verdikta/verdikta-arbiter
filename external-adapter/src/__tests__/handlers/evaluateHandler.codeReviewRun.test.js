@@ -339,8 +339,8 @@ describe('acceptance 2: the shared run', () => {
   it('a new runner version is a new run', async () => {
     const s = scenario();
     await evaluateHandler(request(s.cid(1), 'job-1'));
-    runner.state.health = () => ({ status: 200, json: { ok: true, reasons: [], version: '0.2.0' } });
-    runner.state.answer = (body) => R.definitive(body, { runner: '0.2.0' });
+    runner.state.health = () => ({ status: 200, json: { ok: true, reasons: [], version: '0.3.0' } });
+    runner.state.answer = (body) => R.definitive(body, { runner: '0.3.0' });
     await evaluateHandler(request(s.cid(1), 'job-2'));
     expect(runner.state.runs).toHaveLength(2);
   });

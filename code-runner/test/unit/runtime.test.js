@@ -132,12 +132,18 @@ test('docker.runtimeVersion runs the binary with --version, no shell and an empt
 });
 
 test('CI installs the gVisor release common pins, so the Docker suite\'s reports carry it', () => {
-  for (const file of ['code-runner.yml', 'code-runner-calibration.yml', 'code-runner-calibration-clear-valid.yml', 'code-runner-calibration-batch-2.yml']) {
+  const sha512 = new Set();
+  // e2e.yml: the L4 listings' check (node A9), whose release a production statement names.
+  for (const file of ['code-runner.yml', 'code-runner-calibration.yml', 'code-runner-calibration-clear-valid.yml', 'code-runner-calibration-batch-2.yml', 'e2e.yml']) {
     const workflow = fs.readFileSync(path.join(__dirname, '..', '..', '..', '.github', 'workflows', file), 'utf8');
     const m = /GVISOR_VERSION: '([0-9]{8}\.[0-9]+)'/.exec(workflow);
     assert.ok(m, `${file} names its release`);
     assert.equal(`release-${m[1]}`, PINNED, file);
+    const sum = /GVISOR_SHA512: ([0-9a-f]{128})\b/.exec(workflow);
+    assert.ok(sum, `${file} checks the release's SHA-512`);
+    sha512.add(sum[1]);
   }
+  assert.equal(sha512.size, 1, 'every workflow checks the release against one SHA-512');
 });
 
 test('the README and its example name the pinned release', () => {

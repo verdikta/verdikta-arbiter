@@ -280,6 +280,17 @@ function runScript(args, env = {}) {
   });
 }
 
+/** A listing the production builder would sign, under a test key only the child process's builder set holds. */
+const productionKey = codeReview.createDevBuilderKey();
+const PRODUCTION_ENV = {
+  NODE_OPTIONS: `--require "${path.join(E2E, 'test', 'helpers', 'production-key-preload.js')}"`,
+  E2E_TEST_PRODUCTION_KEY: JSON.stringify({ keyId: productionKey.keyId, publicKey: productionKey.publicKey })
+};
+function productionListing(image) {
+  const u = F.unsignedListing({ image, baseCommit: BASE_COMMIT, baseline: repo.vaultBaseline(BASE_COMMIT), trust: 'production', runner: '0.2.0' });
+  return { buffer: F.listingArchive(u.members, codeReview.signAttestation(u.statement, productionKey.privateKey)) };
+}
+
 describe('scripts/build-l4-claims.js', () => {
   const base = ['--image', IMAGE, '--base-commit', BASE_COMMIT];
 
@@ -351,29 +362,29 @@ describe('scripts/build-l4-claims.js', () => {
     const listing = path.join(dir, 'listing.zip');
     const registry = path.join(dir, 'registry.zip');
     const cold = path.join(dir, 'cold.zip');
-    const fixture = (image) => F.makeListing({ image, baseCommit: BASE_COMMIT, baseline: repo.vaultBaseline(BASE_COMMIT) }).buffer;
+    const fixture = (image) => productionListing(image).buffer;
     fs.writeFileSync(listing, fixture(IMAGE));
     fs.writeFileSync(registry, fixture(`registry.example/vault@sha256:${'d'.repeat(64)}`));
     fs.writeFileSync(cold, fixture(COLD_IMAGE));
     const out = path.join(dir, 'claim-set.json');
-    const r = await runScript(['--listing-file', listing, '--registry-failure-listing-file', registry, '--cold-listing-file', cold, '--out', out, '--pin'], { IPFS_PINNING_KEY: 'local-test-key', IPFS_PINNING_SERVICE: ipfs.url });
+    const r = await runScript(['--listing-file', listing, '--registry-failure-listing-file', registry, '--cold-listing-file', cold, '--out', out, '--pin'], { ...PRODUCTION_ENV, IPFS_PINNING_KEY: 'local-test-key', IPFS_PINNING_SERVICE: ipfs.url });
     expect(r.code).toBe(0);
     const value = JSON.parse(fs.readFileSync(out, 'utf8'));
     expect(value.claims.registryFailure.listingCid).toBe(await Hash.of(fs.readFileSync(registry)));
     expect(value.claims.coldCache.listingCid).toBe(await Hash.of(fs.readFileSync(cold)));
     // Without them those scenarios say what is missing, and the rest still run.
     const plain = path.join(dir, 'plain.json');
-    expect((await runScript(['--listing-file', listing, '--out', plain, '--pin'], { IPFS_PINNING_KEY: 'local-test-key', IPFS_PINNING_SERVICE: ipfs.url })).code).toBe(0);
+    expect((await runScript(['--listing-file', listing, '--out', plain, '--pin'], { ...PRODUCTION_ENV, IPFS_PINNING_KEY: 'local-test-key', IPFS_PINNING_SERVICE: ipfs.url })).code).toBe(0);
     expect(() => resolveL4Claim(scenarioIn(plain, 'registry-failure'))).toThrow(/--registry-failure-listing-file/);
     expect(resolveL4Claim(scenarioIn(plain, 'valid')).cids).toHaveLength(2);
   });
 
   it('--listing-file builds claims against a listing it did not sign', async () => {
     const listing = path.join(dir, 'listing.zip');
-    const elsewhere = F.makeListing({ image: IMAGE, baseCommit: BASE_COMMIT, baseline: repo.vaultBaseline(BASE_COMMIT) });
+    const elsewhere = productionListing(IMAGE);
     fs.writeFileSync(listing, elsewhere.buffer);
     const out = path.join(dir, 'claim-set.json');
-    const r = await runScript(['--listing-file', listing, '--out', out, '--pin'], { IPFS_PINNING_KEY: 'local-test-key', IPFS_PINNING_SERVICE: ipfs.url });
+    const r = await runScript(['--listing-file', listing, '--out', out, '--pin'], { ...PRODUCTION_ENV, IPFS_PINNING_KEY: 'local-test-key', IPFS_PINNING_SERVICE: ipfs.url });
     expect(r.code).toBe(0);
     const value = JSON.parse(fs.readFileSync(out, 'utf8'));
     expect(value.builderPublicKey).toBeNull();

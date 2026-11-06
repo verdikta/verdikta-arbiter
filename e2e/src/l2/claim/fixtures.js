@@ -29,14 +29,14 @@ function zip(files) {
   return archive.toBuffer();
 }
 
-function specFor({ image, baseCommit, disclosureKey }) {
+function specFor({ image, baseCommit, disclosureKey, repo, unpackedBytes }) {
   return {
     version: 1,
     kind: 'bug',
-    repo: 'https://github.com/acme/vault',
+    repo,
     baseCommit,
     artifact: { kind: 'contract', address: '0x1234567890abcdef1234567890ABCDEF12345678', chainId: 31337 },
-    env: { image, from: 'foundry', platform: 'linux/amd64', unpackedBytes: 2000000000 },
+    env: { image, from: 'foundry', platform: 'linux/amd64', unpackedBytes },
     attestation: 'attestation.json',
     commands: {
       framework: 'forge', build: 'forge build', test: 'forge test',
@@ -63,6 +63,61 @@ function specFor({ image, baseCommit, disclosureKey }) {
 }
 
 /**
+ * A listing before anyone signs it: its members and the statement to sign. The disclosure key is
+ * its own, and its private half goes no further than what this returns.
+ * @param {object} o
+ * @param {string} o.image - the env image, by digest
+ * @param {string} o.baseCommit
+ * @param {object} o.baseline - the repository's baseline.json
+ * @param {'production'|'dev'} o.trust - the trust set the statement is for
+ * @param {string} o.runner - the runner version the statement names
+ * @param {string} [o.repo]
+ * @param {number} [o.unpackedBytes] - the image's unpacked size, as measured
+ * @returns {{ spec: object, disclosure: object, members: Record<string, Buffer>, statement: object }}
+ */
+function unsignedListing({ image, baseCommit, baseline, trust, runner, repo = 'https://github.com/acme/vault', unpackedBytes = 2000000000 }) {
+  const disclosure = codeReview.generateDisclosureKeyPair();
+  const spec = specFor({ image, baseCommit, disclosureKey: disclosure.recipient, repo, unpackedBytes });
+  const specBytes = bytes(spec);
+  const baselineBytes = bytes(baseline);
+  const knownIssuesBytes = bytes([]);
+  const statement = codeReview.createAttestationStatement({
+    files: { codeReview: specBytes, baseline: baselineBytes, knownIssues: knownIssuesBytes },
+    trust,
+    tools: { runner }
+  });
+  const members = listingMembers({ codeReview: specBytes, baseline: baselineBytes, knownIssues: knownIssuesBytes });
+  return { spec, disclosure, members, statement };
+}
+
+/**
+ * A listing's members, from the three files its statement binds. The manifest and the query are
+ * not bound, so they are made here from the spec rather than kept anywhere they could change.
+ * @param {{ codeReview: Buffer, baseline: Buffer, knownIssues: Buffer }} files - the exact bytes
+ * @returns {Record<string, Buffer>}
+ */
+function listingMembers(files) {
+  const spec = JSON.parse(files.codeReview.toString('utf8'));
+  return {
+    'manifest.json': bytes({
+      version: '1.0',
+      primary: { filename: 'primary_query.json' },
+      juryParameters: JSON.parse(JSON.stringify(codeReview.CODE_STANDARD_PANEL)),
+      codeReview: 'code_review.json'
+    }),
+    'primary_query.json': bytes({ query: codeReview.buildClaimQuery(spec), outcomes: [...codeReview.BUG_OUTCOMES], references: [] }),
+    'code_review.json': files.codeReview,
+    'baseline.json': files.baseline,
+    'known_issues.json': files.knownIssues
+  };
+}
+
+/** The listing archive: its members and the signed statement. */
+function listingArchive(members, attestation) {
+  return zip({ ...members, 'attestation.json': attestation });
+}
+
+/**
  * A listing signed for dev trust.
  * @param {object} o
  * @param {string} o.image - the env image, by digest
@@ -71,30 +126,8 @@ function specFor({ image, baseCommit, disclosureKey }) {
  * @returns {{ buffer: Buffer, spec: object, builderPublicKey: string, disclosure: object }}
  */
 function makeListing({ image, baseCommit, baseline, builderKey = codeReview.createDevBuilderKey() }) {
-  const disclosure = codeReview.generateDisclosureKeyPair();
-  const spec = specFor({ image, baseCommit, disclosureKey: disclosure.recipient });
-  const specBytes = bytes(spec);
-  const baselineBytes = bytes(baseline);
-  const knownIssuesBytes = bytes([]);
-  const statement = codeReview.createAttestationStatement({
-    files: { codeReview: specBytes, baseline: baselineBytes, knownIssues: knownIssuesBytes },
-    trust: 'dev',
-    tools: { runner: '1.0.0' }
-  });
-  const attestation = codeReview.signAttestation(statement, builderKey.privateKey);
-  const buffer = zip({
-    'manifest.json': {
-      version: '1.0',
-      primary: { filename: 'primary_query.json' },
-      juryParameters: JSON.parse(JSON.stringify(codeReview.CODE_STANDARD_PANEL)),
-      codeReview: 'code_review.json'
-    },
-    'primary_query.json': { query: codeReview.buildClaimQuery(spec), outcomes: [...codeReview.BUG_OUTCOMES], references: [] },
-    'code_review.json': specBytes,
-    'baseline.json': baselineBytes,
-    'known_issues.json': knownIssuesBytes,
-    'attestation.json': attestation
-  });
+  const { spec, disclosure, members, statement } = unsignedListing({ image, baseCommit, baseline, trust: 'dev', runner: '1.0.0' });
+  const buffer = listingArchive(members, codeReview.signAttestation(statement, builderKey.privateKey));
   return { buffer, spec, builderPublicKey: builderKey.publicKey, disclosure, builderKey };
 }
 
@@ -138,16 +171,40 @@ async function discloseClaim(claimBuffer, recipient, ipfs) {
 
 /** A listing archive signed elsewhere, read for what claims against it need: its disclosure key. */
 function readListingArchive(buffer) {
-  const archive = new AdmZip(buffer);
-  const read = (name) => {
-    const entry = archive.getEntry(name);
-    if (!entry) throw new Error(`the listing archive has no ${name}`);
-    return JSON.parse(entry.getData().toString('utf8'));
-  };
-  const manifest = read('manifest.json');
-  if (typeof manifest.codeReview !== 'string') throw new Error('the archive\'s manifest has no codeReview key: it is not a listing');
-  const spec = read(manifest.codeReview);
+  const { spec } = listingFiles(buffer);
   return { buffer, spec, builderPublicKey: null, builderKey: null, disclosure: { recipient: spec.stake.disclosureKey } };
+}
+
+/** A listing archive's spec and the exact bytes of what its attestation binds. */
+function listingFiles(buffer) {
+  const archive = new AdmZip(buffer);
+  const member = (name) => {
+    const entry = typeof name === 'string' ? archive.getEntry(name) : null;
+    return entry ? entry.getData() : undefined;
+  };
+  const read = (name) => {
+    const data = member(name);
+    if (!data) throw new Error(`the listing archive has no ${name}`);
+    return data;
+  };
+  const manifest = JSON.parse(read('manifest.json').toString('utf8'));
+  if (typeof manifest.codeReview !== 'string') throw new Error('the archive\'s manifest has no codeReview key: it is not a listing');
+  const specBytes = read(manifest.codeReview);
+  const spec = JSON.parse(specBytes.toString('utf8'));
+  return { spec, member, files: { codeReview: specBytes, baseline: member(spec.baseline), knownIssues: member(spec.stake && spec.stake.knownIssues) } };
+}
+
+/**
+ * Hold a listing archive to production trust, as the External Adapter's front gates do on an
+ * arbiter with no dev keys: @verdikta/common's builder set and nothing else, no option a caller
+ * could use to widen it.
+ * @param {Buffer} buffer
+ * @returns {{ ok: boolean, issues: object[], warnings: object[] }}
+ */
+function verifyProductionTrust(buffer) {
+  const { spec, member, files } = listingFiles(buffer);
+  const data = member(typeof spec.attestation === 'string' ? spec.attestation : codeReview.ATTESTATION_FILE);
+  return codeReview.validateAttestation(data ? JSON.parse(data.toString('utf8')) : undefined, { files });
 }
 
 /**
@@ -300,4 +357,4 @@ function textArchive() {
   return zip(files);
 }
 
-module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, DISPUTE_STATEMENT, FAULT_CLAIMS, makeListing, readListingArchive, makeClaim, makeClaimSet, claimSetFile, faultPlan, absentDigest, disputeArchive, discloseClaim, textArchive };
+module.exports = { REPORT_MARKER, POC_MARKER, POC_TEST_ID, FINDING, DISPUTE_STATEMENT, FAULT_CLAIMS, bytes, specFor, makeListing, unsignedListing, listingMembers, listingArchive, readListingArchive, verifyProductionTrust, makeClaim, makeClaimSet, claimSetFile, faultPlan, absentDigest, disputeArchive, discloseClaim, textArchive };

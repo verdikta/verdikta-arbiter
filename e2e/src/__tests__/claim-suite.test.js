@@ -120,7 +120,7 @@ const PACK_MARKER = 'PACK-MARKER-5678';
 function jurorCall(p, over = {}) {
   return {
     provider: p.provider, model: p.model, prompt: `... ${REPORT_SHA} ... ${MARKER} ... ${PACK_MARKER} ...`,
-    options: { webAccess: false, maxTokens: 8000, effort: 'high', signal: true },
+    options: { webAccess: false, maxTokens: 32000, effort: 'high', signal: true },
     outcome: 'answered', signalAborted: false, startedAt: 1, endedAt: 2, ...over
   };
 }
@@ -130,7 +130,7 @@ const justifierCall = (over = {}) => ({
 });
 
 describe('the provider layer checks: every juror, web off, the signal', () => {
-  const expected = { panel, justifier: { provider: 'openai', model: 'mock-justifier' }, reportSha256: REPORT_SHA, markers: [MARKER, PACK_MARKER], maxTokens: 8000 };
+  const expected = { panel, justifier: { provider: 'openai', model: 'mock-justifier' }, reportSha256: REPORT_SHA, markers: [MARKER, PACK_MARKER], maxTokens: 32000 };
 
   it('pass on what a real run records', () => {
     expect(failed(C.providerChecks([...panel.map((p) => jurorCall(p)), justifierCall()], expected))).toEqual([]);
@@ -141,12 +141,12 @@ describe('the provider layer checks: every juror, web off, the signal', () => {
   });
 
   it('a juror called with web access on fails', () => {
-    const calls = [jurorCall(panel[0], { options: { webAccess: true, maxTokens: 8000, effort: 'high', signal: true } }), jurorCall(panel[1]), justifierCall()];
+    const calls = [jurorCall(panel[0], { options: { webAccess: true, maxTokens: 32000, effort: 'high', signal: true } }), jurorCall(panel[1]), justifierCall()];
     expect(failed(C.providerChecks(calls, expected))).toEqual(expect.arrayContaining(['provider.webOff']));
   });
 
   it('a call with no abort signal fails: the deadline could not reach it', () => {
-    const calls = [jurorCall(panel[0], { options: { webAccess: false, maxTokens: 8000, effort: 'high', signal: false } }), jurorCall(panel[1]), justifierCall()];
+    const calls = [jurorCall(panel[0], { options: { webAccess: false, maxTokens: 32000, effort: 'high', signal: false } }), jurorCall(panel[1]), justifierCall()];
     expect(failed(C.providerChecks(calls, expected))).toEqual(expect.arrayContaining(['provider.signal']));
   });
 
@@ -162,7 +162,7 @@ describe('the provider layer checks: every juror, web off, the signal', () => {
 
   it('no justifier call fails, and a lower effort fails', () => {
     expect(failed(C.providerChecks(panel.map((p) => jurorCall(p)), expected))).toEqual(expect.arrayContaining(['provider.justifier']));
-    expect(failed(C.providerChecks([jurorCall(panel[0], { options: { webAccess: false, maxTokens: 8000, effort: 'low', signal: true } }), jurorCall(panel[1]), justifierCall()], expected)))
+    expect(failed(C.providerChecks([jurorCall(panel[0], { options: { webAccess: false, maxTokens: 32000, effort: 'low', signal: true } }), jurorCall(panel[1]), justifierCall()], expected)))
       .toEqual(expect.arrayContaining(['provider.envelope']));
   });
 });

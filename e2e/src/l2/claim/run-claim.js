@@ -27,7 +27,7 @@ const DEADLINE_LIMIT_MS = 780000;
 /** A deadline of 57 s leaves the jury 12 s after the justifier's 45 s. */
 const SHORT_DEADLINE_MS = 57000;
 const SHORT_JURY_MS = 12000;
-const CODE_STANDARD_JUROR_TOKENS = 8000;
+const CODE_STANDARD_JUROR_TOKENS = 32000;
 const TESTING_TOOL = path.join(__dirname, '..', '..', '..', '..', 'testing-tool', 'src', 'index.js');
 
 /** The harness's AI Node holds the fault switch's key for the suite's armed adapter; the main adapter's flag is off. */
