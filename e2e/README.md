@@ -299,27 +299,27 @@ You need a `linux/amd64` host with Docker (a host that can't run amd64 images st
    node scripts/prepare-l4-listings.js images --repository ghcr.io/verdikta/stake-attestation-l4-fixture --out ~/l4-images.json
    ```
 
-   It prints each image's digest, tag and size, and keeps them in `~/l4-images.json`. In the package's GitHub settings, set the visibility to Public, because the check and the canaries pull with no credentials. Then check that each of the three pulls with no login:
+   It prints each image's digest, tag and size, and keeps them in `~/l4-images.json`. That size is this host's daemon's figure, a note: daemons differ (one measured 620,331,192 bytes where CI's runner measured 641,318,912 for the same digest), so the size a spec states is the runner's, measured in step 4. In the package's GitHub settings, set the visibility to Public, because the check and the canaries pull with no credentials. Then check that each of the three pulls with no login:
 
    ```bash
    docker logout ghcr.io
    docker pull --platform linux/amd64 <each image it printed>
    ```
 
-3. Write the specs and the check's requests. Each listing gets its own disclosure key, whose private half is never written. This refuses an image outside `ghcr.io/verdikta`, which a default arbiter won't pull, two listings on one digest, and a spec an arbiter would refuse.
+3. Write the specs and the check's requests. Each listing gets its own disclosure key, whose private half is never written. A spec states no size yet: the class maximum stands in until the runner measures. This refuses an image outside `ghcr.io/verdikta`, which a default arbiter won't pull, two listings on one digest, and a spec an arbiter would refuse.
 
    ```bash
    node scripts/prepare-l4-listings.js specs --images ~/l4-images.json --out ~/l4-signing
    ```
 
-4. Run the runner's listing check in CI with the `gh workflow run e2e.yml … -f l4_listing_requests=…` command `specs` printed, then find the run and wait for it. The job "L4 listing check (runsc)" starts the runner at this branch's `RUNNER_VERSION`, under gVisor at the release `@verdikta/common` pins, and checks each image: that it is built on the Foundry base `@verdikta/common` pins (the base's layers are its first), its size, the build, the suite three times, the harness proof. Every listing must be accepted and the run must succeed. It needs no secret.
+4. Run the runner's listing check in CI with the `gh workflow run e2e.yml … -f l4_listing_requests=…` command `specs` printed, then find the run and wait for it. The job "L4 listing check (runsc)" starts the runner at this branch's `RUNNER_VERSION`, under gVisor at the release `@verdikta/common` pins, and checks each image: that it is built on the Foundry base `@verdikta/common` pins (the base's layers are its first), its size, the build, the suite three times, the harness proof. It runs the check twice: the first pass measures each image's size, and the second checks each spec at that size, exactly as it will be signed. Every listing must be accepted and the run must succeed. It needs no secret.
 
    ```bash
    gh run list -R verdikta/verdikta-arbiter --workflow e2e.yml --event workflow_dispatch --branch claude/stake-attestation --limit 1
    gh run watch <run id> -R verdikta/verdikta-arbiter
    ```
 
-5. Write what to sign, from that run. `prepare` checks that the run is `e2e.yml`, dispatched on `claude/stake-attestation`, and a success; that it checked exactly the requests in `~/l4-signing`, with this checkout's runner, `@verdikta/common` and gVisor and this checkout's code (the runner's source hash, this script, its fixtures and lockfile, and `e2e.yml`; if the branch moved since the run, check out the run's commit); and that the runner accepted each listing at the image and size its spec names, on the pinned base. Each statement's baseline is the one the runner measured, its `env.base` the base the run found, and its `tools` the runner and the gVisor that ran. It prints the size of each message, which must fit the signing service's 4,096 bytes.
+5. Write what to sign, from that run. `prepare` writes each `code_review.json` as the run's second pass checked it: your spec, at the size the runner measured, byte for byte. It checks that the run is `e2e.yml`, dispatched on `claude/stake-attestation`, and a success; that it checked exactly the requests in `~/l4-signing`, with this checkout's runner, `@verdikta/common` and gVisor and this checkout's code (the runner's source hash, this script, its fixtures and lockfile, and `e2e.yml`; if the branch moved since the run, check out the run's commit); and that the runner accepted each listing at the image and size its spec names, on the pinned base. Each statement's baseline is the one the runner measured, its `env.base` the base the run found, and its `tools` the runner and the gVisor that ran. It prints the size of each message, which must fit the signing service's 4,096 bytes.
 
    ```bash
    node scripts/prepare-l4-listings.js prepare --dir ~/l4-signing --run <run id>

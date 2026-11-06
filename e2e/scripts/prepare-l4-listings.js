@@ -13,13 +13,16 @@
  *   images        builds three images of that commit for linux/amd64 and pushes them: the fixture
  *                 image, a fresh digest for the cold-cache scenario, and one the owner removes from
  *                 the registry once it is signed (the registry-failure scenario). Writes images.json.
- *   specs         makes the three specs from images.json, each with its own disclosure key, and the
- *                 listing-check requests that e2e.yml takes (dispatch input l4_listing_requests).
+ *   specs         makes the three specs from images.json, each with its own disclosure key, as the
+ *                 listing-check requests that e2e.yml takes (dispatch input l4_listing_requests). A spec
+ *                 states no size yet: the class maximum stands in, and images.json's size is a note.
  *   check         (CI) starts the runner and runs its own listing check on each request under runsc,
- *                 and writes what it measured. --self-check builds the fixture and checks it through a
- *                 local registry; prepare never takes that.
+ *                 twice: the first pass measures each image's size, the second checks the specs at that
+ *                 size, exactly as they will be signed. Writes what it measured. --self-check builds the
+ *                 fixture and checks it through a local registry; prepare never takes that.
  *   prepare       takes that CI run by id: e2e.yml, dispatched on the L4 branch, a success, these
- *                 requests, these versions. Builds each statement from what the runner measured and
+ *                 requests, these versions. Writes the spec its second pass checked (these requests at the
+ *                 measured size, byte for byte), builds each statement from what the runner measured, and
  *                 writes the bytes to sign and sign-in-cloudshell.sh.
  *   attach        puts the signatures in, holds every listing to production trust, and writes the
  *                 archives scripts/build-l4-claims.js takes. All of them or none.
@@ -75,6 +78,11 @@ const REPOSITORY = /^[a-z0-9.:/_-]+$/;
 const SIGNATURE = /^[A-Za-z0-9+/]{86}==$/;
 const RUN_ID = /^[1-9][0-9]{0,19}$/;
 const PLATFORM = codeReview.CLASS_HARD_LIMITS.platform;
+/**
+ * The size a spec declares before the runner has measured its image: the class maximum, which the listing check
+ * takes for an undeclared one (listing.js). No statement can carry it: prepare holds a spec's size to the runner's.
+ */
+const UNMEASURED = codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes;
 /** forgeFixture.js commits the image's repository with these dates. */
 const FIXTURE_DATE = '1700000000 +0000';
 
@@ -136,7 +144,9 @@ function writeFixtureRepo(dir) {
     fs.mkdirSync(path.dirname(path.join(dir, rel)), { recursive: true });
     fs.writeFileSync(path.join(dir, rel), content, { mode: 0o644 });
   }
-  git(['init', '-q', '-b', 'main'], { cwd: dir });
+  // Not `init -b`, which git before 2.28 does not have: the branch's name is in no object, so the commit is the same.
+  git(['init', '-q'], { cwd: dir });
+  git(['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: dir });
   git(['add', '-A'], { cwd: dir });
   git(['-c', 'user.name=fixture', '-c', 'user.email=fixture@verdikta.invalid', '-c', 'commit.gpgsign=false', 'commit', '-q', '--no-verify', '-m', 'base'],
     { cwd: dir, env: { GIT_AUTHOR_DATE: FIXTURE_DATE, GIT_COMMITTER_DATE: FIXTURE_DATE } });
@@ -262,8 +272,7 @@ function readImages(file) {
     // The digest is what a runner caches by, so one digest under two names is one image.
     if (digests.has(digestOf(l.image))) throw new Error(`${file}: each listing needs a digest of its own, and ${name} repeats one`);
     digests.add(digestOf(l.image));
-    if (!Number.isSafeInteger(l.unpackedBytes) || l.unpackedBytes < 1) throw new Error(`${file}: the ${name} image's size must be the bytes images measured`);
-    if (l.unpackedBytes > codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes) throw new Error(`${file}: the ${name} image is over the class limit of ${codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes} bytes`);
+    // Its unpackedBytes is what this host's daemon said, a note: the size a spec states is the runner's (check).
   }
   return { baseCommit, listings: record.listings };
 }
@@ -279,10 +288,11 @@ function specs(opts) {
   const files = {};
   for (const name of LISTINGS) {
     const { recipient } = codeReview.generateDisclosureKeyPair();
-    const spec = F.specFor({ image: listings[name].image, baseCommit, disclosureKey: recipient, repo: FIXTURE_REPO, unpackedBytes: listings[name].unpackedBytes });
+    const spec = F.specFor({ image: listings[name].image, baseCommit, disclosureKey: recipient, repo: FIXTURE_REPO, unpackedBytes: UNMEASURED });
     const valid = codeReview.validateCodeReviewSpec(spec);
     if (!valid.ok) throw new Error(`the ${name} spec would be refused: ${JSON.stringify(valid.issues)}`);
-    files[name] = { 'code_review.json': F.bytes(spec), 'known_issues.json': F.bytes([]) };
+    // code_review.json comes later: prepare writes the spec the run checked, at the size the runner measured.
+    files[name] = { 'known_issues.json': F.bytes([]) };
     requests.listings[name] = { spec, image: spec.env.image, deadline: CHECK_DEADLINE_MS };
   }
   const requestBytes = Buffer.from(`${JSON.stringify(requests)}\n`);
@@ -295,7 +305,7 @@ function specs(opts) {
   }
   const requestsFile = path.join(out, REQUESTS);
   fs.writeFileSync(requestsFile, requestBytes);
-  console.log(`Wrote ${out}: three specs, and ${REQUESTS} (sha256 ${sha256(requestBytes)}).\n`);
+  console.log(`Wrote ${out}: ${REQUESTS} (sha256 ${sha256(requestBytes)}), three specs whose size the check measures.\n`);
   console.log('Run the runner\'s listing check on them in CI, then take that run:');
   console.log(`  gh workflow run e2e.yml -R ${GITHUB_REPO} --ref ${L4_BRANCH} -f l4_listing_requests="$(base64 < ${requestsFile} | tr -d '\\n')"`);
   console.log(`  gh run list -R ${GITHUB_REPO} --workflow e2e.yml --event workflow_dispatch --branch ${L4_BRANCH} --limit 1`);
@@ -471,7 +481,7 @@ async function selfCheckRequests(cleanup, platform) {
   if (built.baseCommit !== local) throw new Error(`the image's repository is at ${built.baseCommit}, and the fixture written here commits as ${local}`);
   const spec = F.specFor({
     image: built.image, baseCommit: built.baseCommit, disclosureKey: codeReview.generateDisclosureKeyPair().recipient,
-    repo: FIXTURE_REPO, unpackedBytes: unpackedBytes(built.image, platform)
+    repo: FIXTURE_REPO, unpackedBytes: UNMEASURED
   });
   const requests = { version: 1, repo: FIXTURE_REPO, baseCommit: built.baseCommit, listings: { listing: { spec, image: built.image, deadline: CHECK_DEADLINE_MS } } };
   return { requests: readRequests(requests, { selfCheck: true }), allowlist: built.image.slice(0, built.image.indexOf('/')) };
@@ -515,13 +525,28 @@ async function check(opts) {
 
     const runner = await startRunner({ runtime, platform, allowlist, logFile: `${outFile}.runner.log` });
     cleanup.push(runner.stop);
-    const listings = {};
+    const pass = async (label, all) => {
+      const answers = {};
+      for (const [name, body] of Object.entries(all.listings)) {
+        console.log(`${name}: ${label} ${body.image} at ${body.spec.env.unpackedBytes} bytes`);
+        answers[name] = { image: body.image, base: bases[name], specSha256: sha256(F.bytes(body.spec)), ...(await request(runner, 'POST', '/v1/listing-checks', body, body.deadline + 120000)) };
+        const r = answers[name].response || {};
+        console.log(`${name}: ${answers[name].httpStatus} ${r.outcome || ''} ${r.listing ? r.listing.status : ''} ${r.listing ? JSON.stringify(r.listing.refusals) : answers[name].text || ''}`);
+      }
+      return answers;
+    };
+    // First pass: the runner measures each image. Second: the specs at that size, the bytes prepare will sign.
+    const first = await pass('measuring', requests);
+    const sizing = {};
+    const checked = { ...requests, listings: {} };
     for (const [name, body] of Object.entries(requests.listings)) {
-      console.log(`${name}: checking ${body.image}`);
-      listings[name] = { image: body.image, base: bases[name], ...(await request(runner, 'POST', '/v1/listing-checks', body, body.deadline + 120000)) };
-      const r = listings[name].response || {};
-      console.log(`${name}: ${listings[name].httpStatus} ${r.outcome || ''} ${r.listing ? r.listing.status : ''} ${r.listing ? JSON.stringify(r.listing.refusals) : listings[name].text || ''}`);
+      const r = first[name].response || {};
+      const measured = r.listing && r.listing.image ? r.listing.image.unpackedBytes : null;
+      if (!Number.isSafeInteger(measured) || measured < 1) throw new Error(`${name}: the runner measured no size: ${JSON.stringify(first[name]).slice(0, 2000)}`);
+      sizing[name] = { declared: body.spec.env.unpackedBytes, measured };
+      checked.listings[name] = { ...body, spec: { ...body.spec, env: { ...body.spec.env, unpackedBytes: measured } } };
     }
+    const listings = await pass('checking', checked);
     const measurement = {
       version: 1,
       kind: 'l4-listing-check',
@@ -536,6 +561,8 @@ async function check(opts) {
       // Semgrep runs on a claim's PoC, not in a listing check: this is the rule set the release in this run pins.
       semgrepRules: { pinned: RUNNER_COMMON.SEMGREP_RULES_VERSION, ran: false },
       github: { runId: process.env.GITHUB_RUN_ID || null, sha: process.env.GITHUB_SHA || null, ref: process.env.GITHUB_REF || null },
+      sizing,
+      checked,
       listings
     };
     fs.writeFileSync(outFile, `${JSON.stringify(measurement, null, 2)}\n`);
@@ -543,7 +570,7 @@ async function check(opts) {
     if (refused.length) throw new Error(`not accepted: ${refused.join(', ')}. What the runner answered is in ${outFile}`);
     if (opts.selfCheck && runtime === 'runsc' && platform === PLATFORM) {
       // What prepare holds each answer to, against a real runner's: the size, the image, the baseline.
-      for (const [name, body] of Object.entries(requests.listings)) {
+      for (const [name, body] of Object.entries(checked.listings)) {
         const baseline = measuredBaseline(name, measurement, body.spec);
         console.log(`${name}: prepare would take it: ${baseline.stable.length} stable, ${baseline.unstable.length} unstable, at ${baseline.baseCommit}`);
       }
@@ -691,13 +718,20 @@ function prepare(opts) {
   const measurement = JSON.parse(bytes.toString('utf8'));
   checkMeasurement(measurement, { run, requestsSha256: sha256(requestBytes), requests });
 
+  // What the second pass checked: these requests, each spec at the size the first pass measured, and nothing else.
+  const checked = readRequests(measurement.checked);
+  if (checked.baseCommit !== requests.baseCommit) throw new Error(`the run checked ${checked.baseCommit}, not ${requests.baseCommit}`);
   const prepared = {};
   for (const name of LISTINGS) {
     const member = (file) => fs.readFileSync(path.join(dir, name, 'members', file));
-    const codeReviewBytes = member('code_review.json');
-    const spec = JSON.parse(codeReviewBytes.toString('utf8'));
-    if (!isDeepStrictEqual(spec, requests.listings[name].spec)) throw new Error(`${name}: code_review.json is not the spec the run checked`);
+    const spec = checked.listings[name].spec;
+    const asked = requests.listings[name].spec;
+    if (!isDeepStrictEqual({ ...spec, env: { ...spec.env, unpackedBytes: asked.env.unpackedBytes } }, asked)) {
+      throw new Error(`${name}: the run checked another spec than specs wrote, not only another size`);
+    }
     const baseline = measuredBaseline(name, measurement, spec);
+    const codeReviewBytes = F.bytes(spec);
+    if (sha256(codeReviewBytes) !== measurement.listings[name].specSha256) throw new Error(`${name}: the run checked other bytes than these for code_review.json`);
     const files = { codeReview: codeReviewBytes, baseline: F.bytes(baseline), knownIssues: member('known_issues.json') };
     const statement = codeReview.createAttestationStatement({
       files,
@@ -708,11 +742,12 @@ function prepare(opts) {
     assertFrontGates(name, { spec, members: F.listingMembers(files) }, baseline);
     const message = codeReview.attestationSigningBytes(statement);
     if (message.length > SIGNING_MESSAGE_LIMIT) throw new Error(`the ${name} listing's statement is ${message.length} bytes; the signing service takes ${SIGNING_MESSAGE_LIMIT}`);
-    prepared[name] = { baseline: files.baseline, statement, message };
+    prepared[name] = { codeReview: files.codeReview, baseline: files.baseline, statement, message };
   }
 
   const messages = {};
-  for (const [name, { baseline, statement, message }] of Object.entries(prepared)) {
+  for (const [name, { codeReview: specBytes, baseline, statement, message }] of Object.entries(prepared)) {
+    fs.writeFileSync(path.join(dir, name, 'members', 'code_review.json'), specBytes);
     fs.writeFileSync(path.join(dir, name, 'members', 'baseline.json'), baseline);
     fs.writeFileSync(path.join(dir, name, 'statement.json'), `${JSON.stringify(statement, null, 2)}\n`);
     fs.writeFileSync(path.join(dir, name, 'signing-bytes.bin'), message);
