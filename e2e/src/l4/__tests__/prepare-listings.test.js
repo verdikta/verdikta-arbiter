@@ -28,7 +28,13 @@ const IMAGE = `ghcr.io/verdikta/l4-fixture@sha256:${'b'.repeat(64)}`;
 const GONE_IMAGE = `ghcr.io/verdikta/l4-fixture@sha256:${'d'.repeat(64)}`;
 const COLD_IMAGE = `ghcr.io/verdikta/l4-fixture@sha256:${'c'.repeat(64)}`;
 const BASE_COMMIT = 'a'.repeat(40);
-const UNPACKED = 1234567890;
+/** What images measured on its own daemon: a note in images.json, which decides nothing (A9b). */
+const LOCAL_SIZE = 620331192;
+/** What the runner measured in CI: the size a signed spec states. */
+const MEASURED = 641318912;
+/** The size specs declares before anything is measured: the class maximum, which the check assumes for an undeclared one. */
+const PLACEHOLDER = codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes;
+const FIXTURE_COMMIT = '43679c1856fbafe0dfe8d24c6e3c883511695002';
 const LISTINGS = ['listing', 'registry-failure', 'cold-cache'];
 const IMAGES = { listing: IMAGE, 'registry-failure': GONE_IMAGE, 'cold-cache': COLD_IMAGE };
 const FIXTURE_REPO = 'https://github.com/verdikta/verdikta-arbiter';
@@ -74,7 +80,7 @@ function branchHolds(commit) {
 
 function writeImages(change = (r) => r) {
   const listings = {};
-  for (const name of LISTINGS) listings[name] = { image: IMAGES[name], unpackedBytes: UNPACKED, tag: name };
+  for (const name of LISTINGS) listings[name] = { image: IMAGES[name], unpackedBytes: LOCAL_SIZE, tag: name };
   const record = { version: 1, repository: 'ghcr.io/verdikta/l4-fixture', fixture: { repo: FIXTURE_REPO, branch: FIXTURE_BRANCH, commit: BASE_COMMIT }, listings };
   fs.writeFileSync(imagesFile, JSON.stringify(change(record)));
 }
@@ -90,6 +96,8 @@ beforeEach(() => {
     '#!/usr/bin/env bash',
     'here=$(cd "$(dirname "$0")" && pwd)',
     'if [ "$1" = "ls-remote" ]; then echo "$*" >> "$here/git.log"; cat "$here/branch.txt" 2>/dev/null; exit 0; fi',
+    // git before 2.28 has no `init -b`.
+    'if [ -e "$here/old-git" ] && [ "$1" = "init" ]; then for a in "$@"; do if [ "$a" = "-b" ]; then echo "error: unknown switch b" >&2; exit 129; fi; done; fi',
     `exec "${REAL_GIT}" "$@"`, ''
   ].join('\n'), { mode: 0o755 });
   // gh: the run is run.json beside it, and the artifact is measurement.json.
@@ -125,6 +133,10 @@ const attach = (env) => script(PREPARE, ['attach', '--dir', out], env);
 const bytesOf = (name) => fs.readFileSync(path.join(out, name, 'signing-bytes.bin'));
 const requestBytes = () => fs.readFileSync(path.join(out, 'check-requests.json'));
 const specOf = (name) => JSON.parse(fs.readFileSync(path.join(out, name, 'members', 'code_review.json'), 'utf8'));
+const requestOf = (name) => JSON.parse(requestBytes().toString('utf8')).listings[name];
+/** A request's spec at the size the runner measured: what the check's second pass posts. */
+const sized = (spec, size = MEASURED) => ({ ...spec, env: { ...spec.env, unpackedBytes: size } });
+const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 
 /** The CI run, as the API gives it. */
 function writeRun(change = (r) => r) {
@@ -139,17 +151,22 @@ function writeRun(change = (r) => r) {
 /** What the check job uploads for the requests specs wrote: the runner's own answers. */
 function writeMeasurement(change = (m) => m) {
   const requests = JSON.parse(requestBytes().toString('utf8'));
+  const checked = { ...requests, listings: {} };
+  const sizing = {};
   const listings = {};
   for (const name of LISTINGS) {
-    const body = requests.listings[name];
+    const body = { ...requests.listings[name], spec: sized(requests.listings[name].spec) };
+    checked.listings[name] = body;
+    sizing[name] = { declared: requests.listings[name].spec.env.unpackedBytes, measured: MEASURED };
     listings[name] = {
       image: body.image,
       base: { reference: BASE, layers: 5 },
+      specSha256: sha256(F.bytes(body.spec)),
       httpStatus: 200,
       response: {
         outcome: 'definitive', kind: 'listing-check', checkId: `c-${name}`,
         runner: { version: RUNNER_VERSION, runtime: 'runsc', platform: 'linux/amd64' },
-        listing: { status: 'accepted', refusals: [], warnings: [], image: { ref: body.image, unpackedBytes: UNPACKED }, baseline: measuredBaseline(requests.baseCommit) }
+        listing: { status: 'accepted', refusals: [], warnings: [], image: { ref: body.image, unpackedBytes: MEASURED }, baseline: measuredBaseline(requests.baseCommit) }
       }
     };
   }
@@ -162,6 +179,8 @@ function writeMeasurement(change = (m) => m) {
     gvisor: codeReview.GVISOR_RELEASE,
     semgrepRules: { pinned: codeReview.SEMGREP_RULES_VERSION, ran: false },
     github: { runId: RUN_ID, sha: HEAD_SHA, ref: 'refs/heads/claude/stake-attestation' },
+    sizing,
+    checked,
     listings
   };
   fs.writeFileSync(path.join(bin, 'measurement.json'), JSON.stringify(change(measurement)));
@@ -191,21 +210,23 @@ function walk(root) {
 }
 
 describe('specs', () => {
-  it('writes three specs on Verdikta\'s fixture branch, each with its own disclosure key, and the requests that check them', async () => {
+  it('writes the requests for three specs on Verdikta\'s fixture branch, each with its own disclosure key, and no size of its own', async () => {
     const r = await specs();
     expect(r.code).toBe(0);
     const requests = JSON.parse(requestBytes().toString('utf8'));
     expect(requests).toMatchObject({ version: 1, repo: FIXTURE_REPO, baseCommit: BASE_COMMIT });
     const keys = [];
     for (const name of LISTINGS) {
-      const spec = specOf(name);
+      const { spec } = requests.listings[name];
       expect(spec.repo).toBe(FIXTURE_REPO);
       expect(spec.baseCommit).toBe(BASE_COMMIT);
       expect(spec.env.image).toBe(IMAGES[name]);
-      expect(spec.env.unpackedBytes).toBe(UNPACKED);
+      // The local daemon's figure decides nothing: the check measures, and checks the spec at what it measured.
+      expect(spec.env.unpackedBytes).toBe(PLACEHOLDER);
       expect(spec.artifact.chainId).toBe(31337);
       expect(requests.listings[name]).toEqual({ spec, image: IMAGES[name], deadline: 900000 });
-      expect(fs.readdirSync(path.join(out, name, 'members')).sort()).toEqual(['code_review.json', 'known_issues.json']);
+      // No code_review.json until prepare writes the one the run checked.
+      expect(fs.readdirSync(path.join(out, name, 'members')).sort()).toEqual(['known_issues.json']);
       keys.push(spec.stake.disclosureKey);
     }
     expect(new Set(keys).size).toBe(3);
@@ -224,9 +245,6 @@ describe('specs', () => {
     ['an image an arbiter would not pull', listing('cold-cache', { image: `registry.example/vault@sha256:${'c'.repeat(64)}` }), /outside ghcr\.io\/verdikta/],
     ['the same digest twice', listing('cold-cache', { image: IMAGE }), /digest of its own/],
     ['the same digest under another name', listing('registry-failure', { image: IMAGE.replace('@', '-gone@') }), /digest of its own/],
-    ['a size that is not a number', listing('listing', { unpackedBytes: '2GB' }), /size must be the bytes/],
-    ['a size of nothing', listing('listing', { unpackedBytes: 0 }), /size must be the bytes/],
-    ['a size over the class limit', listing('listing', { unpackedBytes: codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes + 1 }), /over the class limit/],
     ['a short commit', (r) => ({ ...r, fixture: { ...r.fixture, commit: 'abc' } }), /whole commit hash/],
     ['a listing missing', (r) => ({ ...r, listings: { listing: r.listings.listing, 'cold-cache': r.listings['cold-cache'] } }), /registry-failure image/]
   ])('refuses %s, and writes nothing', async (_label, change, message) => {
@@ -246,6 +264,12 @@ describe('specs', () => {
     expect(r.code).toBe(1);
     expect(r.out).toMatch(message);
     expect(fs.existsSync(out)).toBe(false);
+  });
+
+  it('takes images.json as A9\'s images wrote it, whatever size it noted', async () => {
+    writeImages((r) => ({ ...r, listings: Object.fromEntries(Object.entries(r.listings).map(([n, l]) => [n, { ...l, unpackedBytes: 1 }])) }));
+    expect((await specs()).code).toBe(0);
+    for (const name of LISTINGS) expect(requestOf(name).spec.env.unpackedBytes).toBe(PLACEHOLDER);
   });
 
   it('refuses a directory holding anything: each run makes new disclosure keys', async () => {
@@ -269,8 +293,13 @@ describe('prepare', () => {
       expect(statement.repo).toBe(FIXTURE_REPO);
       expect(statement.baseCommit).toBe(BASE_COMMIT);
       expect(statement.env.image).toBe(IMAGES[name]);
-      expect(statement.env.unpackedBytes).toBe(UNPACKED);
+      expect(statement.env.unpackedBytes).toBe(MEASURED);
       expect(statement.env.base).toBe(BASE);
+      // The spec signed is the one the run checked, at the size the runner measured, byte for byte.
+      const spec = fs.readFileSync(path.join(out, name, 'members', 'code_review.json'));
+      expect(JSON.parse(spec.toString('utf8'))).toEqual(sized(requestOf(name).spec));
+      expect(sha256(spec)).toBe(statement.sha256.codeReview);
+      expect(sha256(spec)).toBe(JSON.parse(fs.readFileSync(path.join(bin, 'measurement.json'), 'utf8')).listings[name].specSha256);
       expect(statement.tools).toEqual({ runner: RUNNER_VERSION, gvisor: codeReview.GVISOR_RELEASE, semgrepRules: codeReview.SEMGREP_RULES_VERSION });
       const baseline = fs.readFileSync(path.join(out, name, 'members', 'baseline.json'));
       expect(JSON.parse(baseline.toString('utf8'))).toEqual(measuredBaseline());
@@ -325,7 +354,11 @@ describe('prepare', () => {
     ['an abstention', answer('listing', (l) => ({ ...l, httpStatus: 503, response: { ...l.response, outcome: 'abstain', listing: null } })), /listing: the check did not finish: 503 abstain/],
     ['an answer from runc', answer('listing', (l) => ({ ...l, response: { ...l.response, runner: { ...l.response.runner, runtime: 'runc' } } })), /listing: the runner answered as/],
     ['another image', answer('registry-failure', listingOf((l) => ({ ...l, image: { ...l.image, ref: IMAGE } }))), /registry-failure: the runner checked ghcr\.io\/verdikta\/l4-fixture@sha256:b+, not/],
-    ['another size', answer('listing', listingOf((l) => ({ ...l, image: { ...l.image, unpackedBytes: UNPACKED + 1 } }))), /listing: the runner measured 1234567891 bytes unpacked, and the spec says 1234567890/],
+    ['another size', answer('listing', listingOf((l) => ({ ...l, image: { ...l.image, unpackedBytes: MEASURED + 1 } }))), /listing: the runner measured 641318913 bytes unpacked, and the spec says 641318912/],
+    ['the placeholder checked as the size', (m) => ({ ...m, checked: { ...m.checked, listings: { ...m.checked.listings, listing: { ...m.checked.listings.listing, spec: sized(m.checked.listings.listing.spec, PLACEHOLDER) } } } }), /listing: the runner measured 641318912 bytes unpacked, and the spec says/],
+    ['a checked spec that differs in more than its size', (m) => ({ ...m, checked: { ...m.checked, listings: { ...m.checked.listings, 'cold-cache': { ...m.checked.listings['cold-cache'], spec: { ...m.checked.listings['cold-cache'].spec, stake: { ...m.checked.listings['cold-cache'].spec.stake, valueAtRiskUsd: 1001 } } } } } }), /cold-cache: the run checked another spec than specs wrote/],
+    ['no checked requests', (m) => ({ ...m, checked: undefined }), /the requests are not what specs wrote/],
+    ['other bytes for the checked spec', answer('registry-failure', (l) => ({ ...l, specSha256: '0'.repeat(64) })), /registry-failure: the run checked other bytes than these/],
     ['a baseline of another commit', answer('listing', listingOf((l) => ({ ...l, baseline: measuredBaseline('f'.repeat(40)) }))), /listing: the measured baseline/],
     ['a baseline that does not validate', answer('listing', listingOf((l) => ({ ...l, baseline: { ...l.baseline, runs: 2 } }))), /listing: the measured baseline does not validate/]
   ])('refuses a measurement of %s, and writes no statement', async (_label, change, message) => {
@@ -335,15 +368,15 @@ describe('prepare', () => {
     for (const name of LISTINGS) expect(fs.existsSync(path.join(out, name, 'statement.json'))).toBe(false);
   });
 
-  it('refuses a spec changed after the check', async () => {
+  it('refuses requests changed after the check', async () => {
     expect((await specs()).code).toBe(0);
     writeRun();
     writeMeasurement();
-    const file = path.join(out, 'listing', 'members', 'code_review.json');
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"valueAtRiskUsd": 1000', '"valueAtRiskUsd": 1001'));
+    const file = path.join(out, 'check-requests.json');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('"valueAtRiskUsd":1000', '"valueAtRiskUsd":1001'));
     const r = await prepareRun();
     expect(r.code).toBe(1);
-    expect(r.out).toMatch(/listing: code_review\.json is not the spec the run checked/);
+    expect(r.out).toMatch(/checked other requests than this directory's check-requests\.json/);
   });
 
   it('refuses once the fixture branch holds another commit', async () => {
@@ -364,6 +397,19 @@ describe('prepare', () => {
     const bad = await script(PREPARE, ['prepare', '--dir', out, '--run', '12; rm -rf /']);
     expect(bad.code).toBe(1);
     expect(bad.out).toMatch(/--run must be the id/);
+  });
+});
+
+describe('fixture-repo', () => {
+  it.each([
+    ['this git', false],
+    ['a git before 2.28, which has no init -b', true]
+  ])('writes the published fixture commit with %s', async (_label, old) => {
+    if (old) fs.writeFileSync(path.join(bin, 'old-git'), '');
+    const r = await script(PREPARE, ['fixture-repo', '--out', path.join(dir, 'fixture')]);
+    expect(r.out.split('\n')[0]).toBe(FIXTURE_COMMIT);
+    expect(r.code).toBe(0);
+    expect(execFileSync(REAL_GIT, ['-C', path.join(dir, 'fixture'), 'symbolic-ref', 'HEAD'], { encoding: 'utf8' }).trim()).toBe('refs/heads/main');
   });
 });
 
