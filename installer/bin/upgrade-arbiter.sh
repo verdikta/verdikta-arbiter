@@ -18,6 +18,12 @@ if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
     exit 1
 fi
 source "$INSTALLER_DIR/lib/prompts.sh"
+# env_file_value / env_file_set: provider keys into ai-node/.env.local, values taken literally
+if [ ! -f "$INSTALLER_DIR/lib/env-file.sh" ]; then
+    echo "Error: env-file library not found at $INSTALLER_DIR/lib/env-file.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/env-file.sh"
 
 # Command line arguments
 ANSWERS_FILE=""
@@ -533,6 +539,9 @@ echo -e "${YELLOW}Native keys (OpenAI, Anthropic, etc.) connect directly to prov
 echo -e "${YELLOW}OpenRouter is optional — it fills gaps for any providers you don't have native keys for.${NC}"
 echo
 
+# Provider keys the operator removes in the review below ("blank to remove"): the
+# only keys the AI Node step later clears from .env.local (see apply_env_key).
+API_KEYS_REMOVED=""
 if ask_yes_no "Would you like to review and update your API keys?" "n" VA_UPGRADE_REVIEW_API_KEYS; then
     # Load existing keys
     if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
@@ -568,6 +577,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n" VA_UPGRAD
             read_secret "Enter new OpenAI API Key (blank to remove): " new_key
             OPENAI_API_KEY="$new_key"
             [ -n "$OPENAI_API_KEY" ] && echo -e "${GREEN}OpenAI API Key updated.${NC}" || echo -e "${YELLOW}OpenAI API Key removed.${NC}"
+            [ -n "$OPENAI_API_KEY" ] || API_KEYS_REMOVED="$API_KEYS_REMOVED OPENAI_API_KEY"
         fi
     else
         read_secret "Enter OpenAI API Key (leave blank to skip): " OPENAI_API_KEY
@@ -579,6 +589,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n" VA_UPGRAD
             read_secret "Enter new Anthropic API Key (blank to remove): " new_key
             ANTHROPIC_API_KEY="$new_key"
             [ -n "$ANTHROPIC_API_KEY" ] && echo -e "${GREEN}Anthropic API Key updated.${NC}" || echo -e "${YELLOW}Anthropic API Key removed.${NC}"
+            [ -n "$ANTHROPIC_API_KEY" ] || API_KEYS_REMOVED="$API_KEYS_REMOVED ANTHROPIC_API_KEY"
         fi
     else
         read_secret "Enter Anthropic API Key (leave blank to skip): " ANTHROPIC_API_KEY
@@ -590,6 +601,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n" VA_UPGRAD
             read_secret "Enter new Hyperbolic API Key (blank to remove): " new_key
             HYPERBOLIC_API_KEY="$new_key"
             [ -n "$HYPERBOLIC_API_KEY" ] && echo -e "${GREEN}Hyperbolic API Key updated.${NC}" || echo -e "${YELLOW}Hyperbolic API Key removed.${NC}"
+            [ -n "$HYPERBOLIC_API_KEY" ] || API_KEYS_REMOVED="$API_KEYS_REMOVED HYPERBOLIC_API_KEY"
         fi
     else
         echo -e "${BLUE}Hyperbolic provides cost-effective serverless inference for open-source models.${NC}"
@@ -603,6 +615,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n" VA_UPGRAD
             read_secret "Enter new xAI API Key (blank to remove): " new_key
             XAI_API_KEY="$new_key"
             [ -n "$XAI_API_KEY" ] && echo -e "${GREEN}xAI API Key updated.${NC}" || echo -e "${YELLOW}xAI API Key removed.${NC}"
+            [ -n "$XAI_API_KEY" ] || API_KEYS_REMOVED="$API_KEYS_REMOVED XAI_API_KEY"
         fi
     else
         echo -e "${BLUE}xAI provides access to Grok models (grok-4, grok-4.1, etc.) for advanced reasoning.${NC}"
@@ -622,6 +635,7 @@ if ask_yes_no "Would you like to review and update your API keys?" "n" VA_UPGRAD
             read_secret "Enter new OpenRouter API Key (blank to remove): " new_key
             OPENROUTER_API_KEY="$new_key"
             [ -n "$OPENROUTER_API_KEY" ] && echo -e "${GREEN}OpenRouter API Key updated.${NC}" || echo -e "${YELLOW}OpenRouter API Key removed.${NC}"
+            [ -n "$OPENROUTER_API_KEY" ] || API_KEYS_REMOVED="$API_KEYS_REMOVED OPENROUTER_API_KEY"
         fi
     else
         read_secret "Enter OpenRouter API Key (leave blank to skip): " OPENROUTER_API_KEY
@@ -1618,44 +1632,73 @@ fi
 # Update AI Node API keys in .env.local if they were configured
 echo -e "${BLUE}Updating AI Node API keys...${NC}"
 
-# Helper: set or clear a key in .env.local
+# apply_env_key KEY VALUE ENV_FILE LABEL — one provider key from installer/.api_keys
+# into the AI Node's .env.local:
+#   - a value in .api_keys wins, written literally (`/`, `&` and `\` included);
+#   - a key removed in this run's key review (API_KEYS_REMOVED) is cleared;
+#   - otherwise an empty one leaves .env.local as it is. A key set there only is kept,
+#     with a warning that names it and never prints it. The upgrade used to clear it:
+#     on the testnet canary that took OPENROUTER_API_KEY, and every claim abstained.
+#     .env.local is read as the AI Node reads it (env_file_value); if it cannot be
+#     read, it is still left as it is.
+# Returns 1 when ENV_FILE could not be written. A function gets no ERR trap, and
+# errexit inside one would end the upgrade with no message, so it is called as
+# `apply_env_key … || …` (AGENTS.md §8) and checks each step itself.
 apply_env_key() {
-    local key_name="$1"
-    local key_value="$2"
-    local env_file="$3"
-    local label="$4"
-    
+    local key_name="$1" key_value="$2" env_file="$3" label="$4" current read_rc=0
+
     if [ -n "$key_value" ]; then
-        if grep -q "^${key_name}=" "$env_file"; then
-            sed -i.bak "s/^${key_name}=.*/${key_name}=${key_value}/" "$env_file"
-        else
-            echo "${key_name}=${key_value}" >> "$env_file"
-        fi
+        env_file_set "$key_name" "$key_value" "$env_file" || return 1
         echo -e "${GREEN}✓ ${label} set in AI Node${NC}"
-    else
-        if grep -q "^${key_name}=" "$env_file"; then
-            sed -i.bak "s/^${key_name}=.*/${key_name}=/" "$env_file"
-            echo -e "${YELLOW}✓ ${label} cleared in AI Node${NC}"
-        fi
+        return 0
     fi
+    case " ${API_KEYS_REMOVED:-} " in
+        *" ${key_name} "*)
+            env_file_set "$key_name" "" "$env_file" || return 1
+            echo -e "${YELLOW}✓ ${label} removed from AI Node (removed in the key review)${NC}"
+            return 0
+            ;;
+    esac
+    current=$(env_file_value "$key_name" "$env_file") || read_rc=$?
+    if [ "$read_rc" -ne 0 ]; then
+        echo -e "${YELLOW}⚠ Could not read ${key_name} from $env_file (it is read with python3); left as it is.${NC}"
+        return 0
+    fi
+    [ -n "$current" ] || return 0
+    echo -e "${YELLOW}⚠ ${key_name} is set in ai-node/.env.local but not in installer/.api_keys. Kept.${NC}"
+    echo -e "${YELLOW}  Add it to $TARGET_DIR/installer/.api_keys, where the upgrade keeps provider keys.${NC}"
+    echo -e "${YELLOW}  To remove it instead, delete its line from $env_file.${NC}"
+    return 0
 }
 
 if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
     source "$TARGET_DIR/installer/.api_keys"
-    
-    apply_env_key "OPENAI_API_KEY" "$OPENAI_API_KEY" "$TARGET_AI_NODE/.env.local" "OpenAI API Key"
-    apply_env_key "ANTHROPIC_API_KEY" "$ANTHROPIC_API_KEY" "$TARGET_AI_NODE/.env.local" "Anthropic API Key"
-    apply_env_key "HYPERBOLIC_API_KEY" "$HYPERBOLIC_API_KEY" "$TARGET_AI_NODE/.env.local" "Hyperbolic API Key"
-    apply_env_key "XAI_API_KEY" "$XAI_API_KEY" "$TARGET_AI_NODE/.env.local" "xAI API Key"
-    apply_env_key "OPENROUTER_API_KEY" "$OPENROUTER_API_KEY" "$TARGET_AI_NODE/.env.local" "OpenRouter API Key"
-    
-    echo -e "${GREEN}AI Node API keys updated successfully.${NC}"
+
+    API_KEYS_NOT_WRITTEN=""
+    apply_env_key "OPENAI_API_KEY" "$OPENAI_API_KEY" "$TARGET_AI_NODE/.env.local" "OpenAI API Key" || API_KEYS_NOT_WRITTEN="$API_KEYS_NOT_WRITTEN OPENAI_API_KEY"
+    apply_env_key "ANTHROPIC_API_KEY" "$ANTHROPIC_API_KEY" "$TARGET_AI_NODE/.env.local" "Anthropic API Key" || API_KEYS_NOT_WRITTEN="$API_KEYS_NOT_WRITTEN ANTHROPIC_API_KEY"
+    apply_env_key "HYPERBOLIC_API_KEY" "$HYPERBOLIC_API_KEY" "$TARGET_AI_NODE/.env.local" "Hyperbolic API Key" || API_KEYS_NOT_WRITTEN="$API_KEYS_NOT_WRITTEN HYPERBOLIC_API_KEY"
+    apply_env_key "XAI_API_KEY" "$XAI_API_KEY" "$TARGET_AI_NODE/.env.local" "xAI API Key" || API_KEYS_NOT_WRITTEN="$API_KEYS_NOT_WRITTEN XAI_API_KEY"
+    apply_env_key "OPENROUTER_API_KEY" "$OPENROUTER_API_KEY" "$TARGET_AI_NODE/.env.local" "OpenRouter API Key" || API_KEYS_NOT_WRITTEN="$API_KEYS_NOT_WRITTEN OPENROUTER_API_KEY"
+
+    if [ -z "$API_KEYS_NOT_WRITTEN" ]; then
+        echo -e "${GREEN}AI Node API keys updated successfully.${NC}"
+    else
+        # The upgrade carries on (the AI Node keeps the values it had for these keys)
+        # and ends on exit 3 with this near the last line.
+        API_KEYS_FAILED="could not write${API_KEYS_NOT_WRITTEN} to $TARGET_AI_NODE/.env.local; the AI Node keeps its old values for them. Fix the file's permissions or space, set them there, and restart the AI Node"
+        echo -e "${RED}✗ ${API_KEYS_FAILED}${NC}"
+    fi
 
     # Validate the keys and apply native-first routing. Native keys are always
     # preferred; any native key that fails validation is routed via OpenRouter
     # (when available) until a working key is added. GLOBAL_PREF (set earlier if
     # the operator reviewed keys) can override everything to OpenRouter.
-    if [ -f "$UTIL_DIR/validate-api-keys.sh" ]; then
+    # Not after a key write failed: routing rewrites .env.local too, and the keys it
+    # would route on are not the ones the file holds.
+    if [ -n "$API_KEYS_NOT_WRITTEN" ]; then
+        echo -e "${YELLOW}Skipping key validation and provider routing: .env.local could not be written.${NC}"
+    elif [ -f "$UTIL_DIR/validate-api-keys.sh" ]; then
         echo -e "${BLUE}Validating API keys and applying provider routing (native-first)...${NC}"
         bash "$UTIL_DIR/validate-api-keys.sh" \
             --api-keys-file "$TARGET_DIR/installer/.api_keys" \
@@ -3342,8 +3385,8 @@ echo
 echo "Thank you for using Verdikta Arbiter Node!"
 
 # Job timeouts that were asked for and did not land, and a job regeneration that
-# stopped part way: the upgrade itself is done, so exit 3, as below, with the reason
-# near the last line.
+# stopped part way (and the sandbox, and provider keys .env.local did not take): the
+# upgrade itself is done, so exit 3, as below, with the reason near the last line.
 JOB_FOLLOWUP_FAILED=0
 if [ -n "${JOB_REGEN_FAILED:-}" ]; then
     echo -e "${RED}JOB REGENERATION FAILED: ${JOB_REGEN_FAILED}${NC}"
@@ -3355,6 +3398,10 @@ if [ -n "${JOB_TIMEOUTS_FAILED:-}" ]; then
 fi
 if [ -n "${CODE_REVIEW_SANDBOX_FAILED:-}" ]; then
     echo -e "${RED}CODE-REVIEW SANDBOX FAILED: ${CODE_REVIEW_SANDBOX_FAILED}${NC}"
+    JOB_FOLLOWUP_FAILED=1
+fi
+if [ -n "${API_KEYS_FAILED:-}" ]; then
+    echo -e "${RED}API KEYS FAILED: ${API_KEYS_FAILED}${NC}"
     JOB_FOLLOWUP_FAILED=1
 fi
 if [ "$JOB_FOLLOWUP_FAILED" -eq 1 ] && [ "${RECONF_FAILED:-0}" -ne 1 ]; then

@@ -87,12 +87,25 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    warning (a failed build falls back to `next dev`, which the canary request
    would not notice).
 
-   Exit 3 means the upgrade finished but a job step did not, and the last lines
-   say which. `JOB TIMEOUTS FAILED:` stops the release: a canary request finishes
-   well inside the old 300 s, so it would not notice a job left at the old limits.
-   Confirm each node with `<install-dir>/apply-job-timeouts.sh --check` (exit 0:
-   every live job allows 840 s and the node runs `MaxRunDuration` 15 m). Replacing a
-   stale job keeps its job id: no re-registration, no stake moves.
+   Exit 3 means the upgrade finished but a job step (or the provider-key step) did
+   not, and the last lines say which. `JOB TIMEOUTS FAILED:` stops the release: a
+   canary request finishes well inside the old 300 s, so it would not notice a job
+   left at the old limits. Confirm each node with
+   `<install-dir>/apply-job-timeouts.sh --check` (exit 0: every live job allows
+   840 s and the node runs `MaxRunDuration` 15 m). Replacing a stale job keeps its
+   job id: no re-registration, no stake moves. `API KEYS FAILED:` means
+   `ai-node/.env.local` could not be written: the AI Node kept the keys it had, and
+   key validation and routing were skipped.
+
+   Provider keys belong in `<install-dir>/installer/.api_keys`. Every upgrade
+   writes them from there into `ai-node/.env.local`. A key that is set only in
+   `.env.local` is kept, and the upgrade warns
+   `<KEY> is set in ai-node/.env.local but not in installer/.api_keys. Kept.`
+   Move that key into `.api_keys`. (Releases before this change cleared such a key: on
+   the testnet canary that was `OPENROUTER_API_KEY`.) A canary that serves claims
+   needs `OPENROUTER_API_KEY`, because the code-standard panel has an OpenRouter
+   juror (`deepseek/deepseek-v4-pro-0813`). Without that key every claim abstains,
+   and the AI Node logs `[OpenRouter] OPENROUTER_API_KEY not configured`.
 
 2. **Check the e2e wallet.** The L4 run pays `maxTotalFee` (≈ 0.0018 ETH) plus
    gas per scenario from the wallet whose key lives in the `e2e` GitHub

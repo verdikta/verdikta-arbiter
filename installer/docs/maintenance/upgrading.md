@@ -86,6 +86,7 @@ If you choose `y`, the script shows current key status and lets you update/add:
 - Anthropic
 - Hyperbolic
 - xAI
+- OpenRouter (optional gateway for providers without a native key)
 - Infura (optional fallback only)
 - Pinata JWT
 
@@ -93,6 +94,32 @@ Keys are saved to both:
 
 - `<install-dir>/installer/.api_keys`
 - `installer/.api_keys` (in the source repo installer folder)
+
+Provider keys belong in `<install-dir>/installer/.api_keys`. Whether or not you
+review them, every upgrade writes the provider keys (OpenAI, Anthropic,
+Hyperbolic, xAI, OpenRouter) from that file into `ai-node/.env.local`:
+
+- A key with a value in `.api_keys` replaces the one in `.env.local`. The value
+  is written as it is, `/`, `&` and `\` included.
+- A key that `.api_keys` leaves empty leaves `.env.local` as it is. If
+  `.env.local` has a value for it, the key is kept, and the upgrade warns
+  `<KEY> is set in ai-node/.env.local but not in installer/.api_keys. Kept.`
+  without printing the value. Add the key to `.api_keys`, or, to remove it,
+  delete its line from `.env.local`. Releases before this change cleared such a key.
+- A key you remove in the review (blank at "blank to remove") is removed from
+  `.env.local` too.
+
+`.env.local` is read as the AI Node reads it (dotenv's rules: quotes, a
+trailing `# comment`, `export`), with `python3`. If it cannot be read, it is
+left as it is, and the upgrade says so.
+
+If `.env.local` cannot be written, the upgrade carries on, the AI Node keeps
+the keys it had, key validation and provider routing are skipped (they rewrite
+`.env.local` too), and the upgrade ends with `API KEYS FAILED:` and exit 3.
+
+A node that serves code-review claims needs `OPENROUTER_API_KEY`: the
+code-standard panel has an OpenRouter juror. See
+[The code-review sandbox](code-review-sandbox.md#provider-keys).
 
 ### 2) Optional RPC endpoint updates
 

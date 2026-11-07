@@ -27,3 +27,10 @@ c49f57a25f0d8bfba0501e239eafce6fae18d043:installer/docs/docs/installation/prompt
 3b69c4dbc0aa56678cf485a330abb5917a618d4d:code-runner/calibration/listings/vault/code_review.json:generic-api-key:66
 3b69c4dbc0aa56678cf485a330abb5917a618d4d:code-runner/conformance/canary/listing/code_review.json:generic-api-key:66
 237adb4ed3d254b8e9c94ad2f8f223ecb0405106:code-runner/test/helpers/calibrationCorpus.js:generic-api-key:144
+
+# Provider-key upgrade test (node A8c), history only. Not a secret: the scan read the variable
+# name on the next line (ANTHROPIC_API_KEY) as the value of an empty OPENAI_API_KEY= fixture line.
+# The next commit writes those fixtures from NAME VALUE pairs, so the current tree has no such line;
+# this commit stays on the PR branch because the branch is never force-pushed.
+bdce7d7ef6fb97fb041f036aec3965c516c94871:installer/tests/upgrade-api-keys-trap.test.sh:generic-api-key:114
+bdce7d7ef6fb97fb041f036aec3965c516c94871:installer/tests/upgrade-api-keys-trap.test.sh:generic-api-key:160
