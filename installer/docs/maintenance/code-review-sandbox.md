@@ -69,6 +69,19 @@ Several seconds, or repeats that swing widely, point to a slow or shared CPU. Th
 | A shared-CPU 4-vCPU VPS | 186 s | 1.9 to 11 s | fails |
 | An 8-vCPU VPS, on the same kernel (5.4) as the one that failed | not recorded | about 0.5 s | passes |
 
+## Provider keys
+
+The sandbox runs the claim; the AI Node's jurors judge it, with the node's provider keys. The
+code-standard evaluation panel (`CODE_STANDARD_PANEL` in `@verdikta/common`) has an OpenRouter juror,
+`deepseek/deepseek-v4-pro-0813`, so a node that serves claims needs `OPENROUTER_API_KEY`. Its Claude
+juror uses `ANTHROPIC_API_KEY`, or OpenRouter when that key is missing. Without the OpenRouter key every
+claim abstains, and the AI Node logs `[OpenRouter] OPENROUTER_API_KEY not configured`.
+
+Put provider keys in `<install>/installer/.api_keys`. Every upgrade writes them from there into
+`ai-node/.env.local`. A key that is set only in `.env.local` is kept, and the upgrade warns
+`<KEY> is set in ai-node/.env.local but not in installer/.api_keys. Kept.` until the key is added to
+`.api_keys`. Releases before this change cleared such a key.
+
 ## What it leaves alone
 
 The arbiter's Docker: it never restarts or reloads `docker.service` or `containerd.service`, never

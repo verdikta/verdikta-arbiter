@@ -85,6 +85,26 @@ if [ -n "$API_KEYS_FILE" ] && [ -f "$API_KEYS_FILE" ]; then
     set +u; source "$API_KEYS_FILE"; set +u 2>/dev/null || true
 fi
 
+# A key the keys file leaves empty but the env file sets is the one the AI Node
+# runs with (the upgrade keeps such a key, with a warning), so check and route on
+# that one. Its value is never printed.
+if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
+    _env_lib="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)/env-file.sh"
+    if [ -f "$_env_lib" ]; then
+        # shellcheck disable=SC1090
+        source "$_env_lib"
+        _keys_src="${API_KEYS_FILE:+$(basename "$API_KEYS_FILE")}"
+        for _k in OPENAI_API_KEY ANTHROPIC_API_KEY XAI_API_KEY HYPERBOLIC_API_KEY OPENROUTER_API_KEY; do
+            [ -z "${!_k:-}" ] || continue
+            _v=$(env_file_value "$_k" "$ENV_FILE")
+            [ -n "$_v" ] || continue
+            printf -v "$_k" '%s' "$_v"
+            say "${C_DIM}${_k}: none in ${_keys_src:-the environment}, checking the one in $(basename "$ENV_FILE")${C_NC}"
+        done
+        unset _v _k _keys_src
+    fi
+fi
+
 # xAI accepts either variable name.
 XAI_EFFECTIVE_KEY="${XAI_API_KEY:-${GROK_API_KEY:-}}"
 
