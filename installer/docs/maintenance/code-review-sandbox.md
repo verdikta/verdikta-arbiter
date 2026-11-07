@@ -65,7 +65,7 @@ Several seconds, or repeats that swing widely, point to a slow or shared CPU. Th
 
 | Host | Preparation | Quick check | Self-test |
 |---|---|---|---|
-| A dedicated 4-vCPU CI VM | not recorded | not recorded | passes |
+| A dedicated 4-vCPU CI VM | not recorded | about 0.2 s (CI logs it each run) | passes |
 | A shared-CPU 4-vCPU VPS | 186 s | 1.9 to 11 s | fails |
 | An 8-vCPU VPS, on the same kernel (5.4) as the one that failed | not recorded | about 0.5 s | passes |
 
