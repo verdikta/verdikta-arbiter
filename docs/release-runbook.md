@@ -118,6 +118,11 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    cd e2e && node src/index.js l4 --class-id 5555 --expect-common <version> --expect-release <commit>
    ```
 
+   A canary serves code review only once `code-review-sandbox.sh enable` has passed its
+   self-test there. That needs a host with dedicated vCPUs (4 or more, not shared or
+   burstable) and 8 GB of RAM; a shared-CPU host can fail the self-test for time
+   (`LISTING_TOO_HEAVY`). See [Host requirements](../installer/docs/maintenance/code-review-sandbox.md#host-requirements).
+
    Once the canaries serve code review, add the claim scenarios by name:
 
    ```bash
@@ -158,6 +163,10 @@ changes a real host, so each is an operator's, by hand. No install or upgrade pa
 1. **Prepare the claim set**, with a fresh digest for the cold-cache scenario:
    [`e2e/README.md`](../e2e/README.md), "Preparing them". It prints the plan.
 
+   Take `VERDIKTA_CANARY_FAULTS` below from the `faultPlan` field of the committed
+   `e2e/archives/l4-claim/claim-set.json`, which is what `--pin` printed. Not from a dry run:
+   the claim CIDs change between a dry run and the pin.
+
 2. **Arm every identity in class 5555.** Selection picks K of them, and one that is not armed
    answers first and fails `claim.faultSwitch`, so a partial arming is a failed run. On each
    install, with a key made for this run (`openssl rand -hex 32`, the same for its adapter and
@@ -165,7 +174,7 @@ changes a real host, so each is an operator's, by hand. No install or upgrade pa
 
    ```bash
    # <install-dir>/external-adapter/.env
-   VERDIKTA_CANARY_FAULTS=<the plan build-l4-claims.js printed>
+   VERDIKTA_CANARY_FAULTS=<faultPlan of the committed e2e/archives/l4-claim/claim-set.json>
    VERDIKTA_CANARY_FAULT_KEY=<the key>
    VERDIKTA_CANARY_RPC_URL=<a Base Sepolia RPC URL>
    NETWORK_CHAIN_ID=84532
