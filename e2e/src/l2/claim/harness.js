@@ -190,7 +190,7 @@ async function startClaimHarness() {
       /** A second adapter on the same services, with the fault switch armed against a stand-in Base Sepolia RPC. Started on first use. */
       armedAdapter: async () => {
         if (!armed) {
-          const chain = await startCanaryChain();
+          const chain = await startCanaryChain({ operator: OPERATOR });
           closers.push(() => chain.close());
           const adapter = await secondAdapter('external-adapter-armed', faultEnv(chain.url));
           closers.push(() => adapter.close());

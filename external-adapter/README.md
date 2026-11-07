@@ -305,7 +305,11 @@ acts on nothing. A bad entry refuses the whole plan.
    log of the Base Sepolia aggregator (a constant in the code, not config) leads to a transaction
    sent straight to that aggregator, whose decoded `requestedClass` is 5555; and the keeper that
    aggregator names lists 5555 for this `OPERATOR_ADDR` and job. The bridge gives the adapter the
-   `aggId` and the job's id.
+   `aggId` and the job's id. Chainlink 2.23.0 sends that id as `0x` and the external job id's 32 hex
+   digits (`0x38f19572c51041baa5f2dea284614590`, not the UUID with dashes its API shows), and the
+   keeper's key for the job is those 32 digits as UTF-8, as
+   `arbiter-operator/scripts/register-oracle-cl.js` registered it. The UUID with dashes and the bare
+   32 digits read the same; any other id is refused as `JOB_ID_UNREADABLE`.
 
 A node may serve 5555 and 128 at once, as the canaries do: a request for 128 on it is refused here.
 A request sent through a contract has no calldata to read, so it is refused too, and that includes

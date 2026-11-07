@@ -107,7 +107,7 @@ Recording proxies sit between them, so a scenario asserts what really crossed.
 | `claim-canary-fixtures` | `time-dependent`, `randomness-dependent`, `flaky` | A3b's PoCs under real forge, what the L4 scenarios read of them, so what G2 pins has been through the pipeline |
 | | `dispute` | A dispute round: the dispute archive's panel is called, the statement reaches every juror, the machine lines reach none, the verdict names the statement |
 | | `registry-failure` | A listing on a digest the registry does not hold, in mode 1: the real pull fails, `pull_failed`, errored, no commitment, no AI call |
-| `claim-fault-switch` | `slow-justifier` | A second adapter, armed against a stand-in Base Sepolia RPC: a request for 5555 is held for real in the real AI Node, about 40 s |
+| `claim-fault-switch` | `slow-justifier` | A second adapter, armed against a stand-in Base Sepolia RPC: a request for 5555 is held for real in the real AI Node, about 40 s. The request carries the job id as Chainlink 2.23.0's bridge sends it (`0x` and 32 hex digits), and the stand-in's keeper lists classes only under the key registration writes for it |
 | | `class-128` | The same claim, a request for 128: no directive, no hold, and the same justification and scores as the held run |
 | | `unnamed-claim` | A claim the plan does not name: no chain read, no directive |
 | | `refused-on-mainnet` | The same flag on a node configured for Base mainnet: `refused`, in `/health` and `/version`. Then the fault key must be in no service's log, at `LOG_LEVEL=debug`, and on no route |

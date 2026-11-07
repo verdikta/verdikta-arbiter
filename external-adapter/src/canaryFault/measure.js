@@ -40,14 +40,19 @@ function normalAggId(aggId) {
 }
 
 /**
- * A job's on-chain id from its external id: the 32 characters without dashes, as UTF-8,
- * as arbiter-operator/scripts/register-oracle-cl.js registers it. Or null.
+ * A job's on-chain id from its external id: the 32 hex digits, as UTF-8, as
+ * arbiter-operator/scripts/register-oracle-cl.js registers JOB_ID_<n>_NO_HYPHENS. Or null.
+ *
+ * The bridge sends the id as Chainlink 2.23.0 renders `$(jobSpec.externalJobID)`: 0x and the 32
+ * digits. The run's inputs are stored as JSON before the pipeline runs, and that storage writes a
+ * byte array, which the UUID is, as 0x-hex. The UUID with dashes and the bare 32 digits read the same.
  */
 function jobIdBytes32(jobId) {
   if (typeof jobId !== 'string') return null;
-  const text = jobId.trim().replace(/-/g, '').toLowerCase();
-  if (!/^[0-9a-f]{32}$/.test(text)) return null;
-  return ethers.utils.hexlify(ethers.utils.toUtf8Bytes(text));
+  const text = jobId.trim().toLowerCase();
+  const digits = text.startsWith('0x') ? text.slice(2) : text.replace(/-/g, '');
+  if (!/^[0-9a-f]{32}$/.test(digits)) return null;
+  return ethers.utils.hexlify(ethers.utils.toUtf8Bytes(digits));
 }
 
 class ReadFailed extends Error {}

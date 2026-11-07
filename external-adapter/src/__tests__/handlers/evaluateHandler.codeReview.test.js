@@ -209,6 +209,13 @@ describe('code review: request layout and operator switch', () => {
     expect(claimRun.runClaim.mock.calls[0][0].priorFindings).toEqual([]);
   });
 
+  it('the fault switch gets the bridge\'s job id as Chainlink sent it, and the aggId', async () => {
+    const s = scenario();
+    const jobId = '0x38f19572c51041baa5f2dea284614590';
+    await evaluateHandler(request(s.cid(1), jobId));
+    expect(claimRun.runClaim.mock.calls[0][1].canaryRequest).toEqual({ aggId: '0xagg', jobId });
+  });
+
   it('a gate-passing claim commits only what the run seam returns (a real commitment)', async () => {
     const s = scenario();
     const res = await evaluateHandler(request(s.cid(1)));
