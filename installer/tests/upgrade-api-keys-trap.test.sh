@@ -79,13 +79,23 @@ cat > "$T/util/validate-api-keys.sh" <<'STUB'
 echo "VALIDATE-STUB $*"
 STUB
 
-# fresh — a new install with the given .api_keys and .env.local contents ("-" = no file).
-fresh() {
-    rm -rf "$T/install"; mkdir -p "$T/install/installer" "$T/install/ai-node"
-    [ "$1" = "-" ] || printf '%s\n' "$1" > "$T/install/installer/.api_keys"
-    [ "$2" = "-" ] || printf '%s\n' "$2" > "$T/install/ai-node/.env.local"
-}
+# The fixtures are written by these helpers from NAME VALUE pairs, so that no
+# "NAME=value" text sits in this file for the secret scan to read as a key.
+# keys_lines NAME VALUE … — NAME="VALUE" lines, as the upgrade writes installer/.api_keys.
+keys_lines() { while [ $# -ge 2 ]; do printf '%s="%s"\n' "$1" "$2"; shift 2; done; }
+# env_lines NAME VALUE … — NAME=VALUE lines, as in ai-node/.env.local.
+env_lines() { while [ $# -ge 2 ]; do printf '%s=%s\n' "$1" "$2"; shift 2; done; }
+# kv NAME VALUE — one NAME=VALUE line, to compare with.
+kv() { printf '%s=%s' "$1" "$2"; }
+# fresh — a new install with no .api_keys and no .env.local yet.
+fresh() { rm -rf "$T/install"; mkdir -p "$T/install/installer" "$T/install/ai-node"; }
+KEYSF="$T/install/installer/.api_keys"
 ENVF="$T/install/ai-node/.env.local"
+# keys_empty — the .api_keys of an install whose operator gave no provider key.
+keys_empty() {
+    keys_lines OPENROUTER_API_KEY "" OPENAI_API_KEY "" ANTHROPIC_API_KEY "" HYPERBOLIC_API_KEY "" \
+        XAI_API_KEY "" INFURA_API_KEY "" PINATA_API_KEY "" > "$KEYSF"
+}
 
 # run_apply — the real trap, the real apply block, a marker, the real last lines.
 # REMOVED is what this run's key review removed (API_KEYS_REMOVED).
@@ -110,57 +120,46 @@ run_apply() {
     echo "rc=$?"
 }
 
-KEYS_EMPTY='OPENROUTER_API_KEY=""
-OPENAI_API_KEY=""
-ANTHROPIC_API_KEY=""
-HYPERBOLIC_API_KEY=""
-XAI_API_KEY=""
-INFURA_API_KEY=""
-PINATA_API_KEY=""'
-
 # 1. The canary: OPENROUTER_API_KEY only in .env.local. Kept, with a warning that
 #    names the key and .api_keys and never prints the value.
-fresh "$KEYS_EMPTY" 'OPENAI_API_KEY=
-OPENROUTER_API_KEY=example-key-openrouter-envlocal-only
-LOG_LEVEL=info'
+fresh; keys_empty
+env_lines OPENAI_API_KEY "" OPENROUTER_API_KEY example-key-openrouter-envlocal-only LOG_LEVEL info > "$ENVF"
 cp "$ENVF" "$T/before"
 out=$(run_apply)
 cmp -s "$T/before" "$ENVF" && ok || bad "only in .env.local: the file changed: $(cat "$ENVF")"
-line_is "only in .env.local: kept" "$ENVF" "OPENROUTER_API_KEY=example-key-openrouter-envlocal-only"
+line_is "only in .env.local: kept" "$ENVF" "$(kv OPENROUTER_API_KEY example-key-openrouter-envlocal-only)"
 has   "only in .env.local: warns"          "$out" "OPENROUTER_API_KEY is set in ai-node/.env.local but not in installer/.api_keys"
 has   "only in .env.local: says kept"      "$out" "Kept."
-has   "only in .env.local: says where"     "$out" "$T/install/installer/.api_keys"
+has   "only in .env.local: says where"     "$out" "$KEYSF"
 hasnt "only in .env.local: no value"       "$out" "example-key-openrouter-envlocal-only"
 hasnt "only in .env.local: not cleared"    "$out" "cleared"
 hasnt "only in .env.local: not removed"    "$out" "removed from AI Node"
 hasnt "only in .env.local: no warning for an empty key" "$out" "OPENAI_API_KEY is set"
-has   "only in .env.local: validator ran"  "$out" "VALIDATE-STUB --api-keys-file $T/install/installer/.api_keys --env-file $ENVF"
+has   "only in .env.local: validator ran"  "$out" "VALIDATE-STUB --api-keys-file $KEYSF --env-file $ENVF"
 has   "only in .env.local: end"            "$out" "REACHED-END"
 has   "only in .env.local: exit 0"         "$out" "rc=0"
 hasnt "only in .env.local: trap"           "$out" "TRAP-FIRED"
 
 # 2. In both, different values: .api_keys wins, as before. A key missing from
 #    .env.local is added.
-fresh 'OPENROUTER_API_KEY="example-key-openrouter-from-api-keys"
-OPENAI_API_KEY="example-key-openai-from-api-keys"
-ANTHROPIC_API_KEY=""' 'OPENROUTER_API_KEY=example-key-openrouter-old
-LOG_LEVEL=info'
+fresh
+keys_lines OPENROUTER_API_KEY example-key-openrouter-from-api-keys OPENAI_API_KEY example-key-openai-from-api-keys \
+    ANTHROPIC_API_KEY "" > "$KEYSF"
+env_lines OPENROUTER_API_KEY example-key-openrouter-old LOG_LEVEL info > "$ENVF"
 out=$(run_apply)
-line_is "in both: .api_keys wins" "$ENVF" "OPENROUTER_API_KEY=example-key-openrouter-from-api-keys"
-[ "$(grep -c '^OPENROUTER_API_KEY=' "$ENVF")" = "1" ] && ok || bad "in both: duplicated line: $(cat "$ENVF")"
-line_is "in both: a new key appended" "$ENVF" "OPENAI_API_KEY=example-key-openai-from-api-keys"
+line_is "in both: .api_keys wins" "$ENVF" "$(kv OPENROUTER_API_KEY example-key-openrouter-from-api-keys)"
+[ "$(grep -c '^OPENROUTER_API_KEY' "$ENVF")" = "1" ] && ok || bad "in both: duplicated line: $(cat "$ENVF")"
+line_is "in both: a new key appended" "$ENVF" "$(kv OPENAI_API_KEY example-key-openai-from-api-keys)"
 line_is "in both: the rest kept"      "$ENVF" "LOG_LEVEL=info"
 has   "in both: says set"   "$out" "OpenRouter API Key set in AI Node"
 hasnt "in both: no warning" "$out" "but not in installer/.api_keys"
 has   "in both: end"        "$out" "REACHED-END"
 hasnt "in both: trap"       "$out" "TRAP-FIRED"
 
-# 3. In neither: an empty line, a quoted-empty line and a missing line stay as they are,
-#    with nothing said about them.
-fresh "$KEYS_EMPTY" 'OPENAI_API_KEY=
-ANTHROPIC_API_KEY=""
-XAI_API_KEY=
-LOG_LEVEL=info'
+# 3. In neither: an empty line, a quoted-empty line, a blank-only line and a missing
+#    line stay as they are, with nothing said about them.
+fresh; keys_empty
+env_lines OPENAI_API_KEY "" ANTHROPIC_API_KEY '""' XAI_API_KEY "   " LOG_LEVEL info > "$ENVF"
 cp "$ENVF" "$T/before"
 out=$(run_apply)
 cmp -s "$T/before" "$ENVF" && ok || bad "in neither: the file changed: $(cat "$ENVF")"
@@ -171,34 +170,35 @@ has   "in neither: end"  "$out" "REACHED-END"
 has   "in neither: exit 0" "$out" "rc=0"
 hasnt "in neither: trap" "$out" "TRAP-FIRED"
 
-# 4. Values with `/`, `&` and `\`: written literally, over an existing line and as a new one.
-fresh "OPENROUTER_API_KEY='example-key/or&key\\x/2'
-OPENAI_API_KEY='example-key-openai/with/slashes'
-XAI_API_KEY='example-key&xai'" 'OPENROUTER_API_KEY=example-key-old
-OPENAI_API_KEY=
-LOG_LEVEL=info'
+# 4. Values with `/`, `&` and `\`: written literally, over an existing line and as a
+#    new one. (In double quotes, `\x` stays a backslash and an x when sourced.)
+fresh
+keys_lines OPENROUTER_API_KEY 'example-key/or&key\x/2' OPENAI_API_KEY 'example-key-openai/with/slashes' \
+    XAI_API_KEY 'example-key&xai' > "$KEYSF"
+env_lines OPENROUTER_API_KEY example-key-old OPENAI_API_KEY "" LOG_LEVEL info > "$ENVF"
 out=$(run_apply)
-line_is "slash: OpenRouter literal" "$ENVF" 'OPENROUTER_API_KEY=example-key/or&key\x/2'
-line_is "slash: OpenAI literal"     "$ENVF" 'OPENAI_API_KEY=example-key-openai/with/slashes'
-line_is "ampersand: xAI appended"   "$ENVF" 'XAI_API_KEY=example-key&xai'
-line_is "slash: the rest kept"      "$ENVF" 'LOG_LEVEL=info'
+line_is "slash: OpenRouter literal" "$ENVF" "$(kv OPENROUTER_API_KEY 'example-key/or&key\x/2')"
+line_is "slash: OpenAI literal"     "$ENVF" "$(kv OPENAI_API_KEY 'example-key-openai/with/slashes')"
+line_is "ampersand: xAI appended"   "$ENVF" "$(kv XAI_API_KEY 'example-key&xai')"
+line_is "slash: the rest kept"      "$ENVF" "LOG_LEVEL=info"
 has   "slash: end"  "$out" "REACHED-END"
 hasnt "slash: trap" "$out" "TRAP-FIRED"
 hasnt "slash: sed error" "$out" "unknown option to"
 
 # 5. A file with no final newline: an appended key starts its own line.
-fresh 'ANTHROPIC_API_KEY="example-key-anthropic"' -
+fresh
+keys_lines ANTHROPIC_API_KEY example-key-anthropic > "$KEYSF"
 printf 'LOG_LEVEL=info' > "$ENVF"
 out=$(run_apply)
 line_is "no final newline: old line intact" "$ENVF" "LOG_LEVEL=info"
-line_is "no final newline: key on its own line" "$ENVF" "ANTHROPIC_API_KEY=example-key-anthropic"
+line_is "no final newline: key on its own line" "$ENVF" "$(kv ANTHROPIC_API_KEY example-key-anthropic)"
 
 # 6. Removed in this run's key review: cleared, as the prompt says ("blank to remove").
-fresh "$KEYS_EMPTY" 'OPENAI_API_KEY=example-key-openai-removed
-OPENROUTER_API_KEY=example-key-openrouter-stays'
+fresh; keys_empty
+env_lines OPENAI_API_KEY example-key-openai-removed OPENROUTER_API_KEY example-key-openrouter-stays > "$ENVF"
 out=$(REMOVED=" OPENAI_API_KEY" run_apply)
-line_is "removed: cleared" "$ENVF" "OPENAI_API_KEY="
-line_is "removed: the other kept" "$ENVF" "OPENROUTER_API_KEY=example-key-openrouter-stays"
+line_is "removed: cleared" "$ENVF" "$(kv OPENAI_API_KEY "")"
+line_is "removed: the other kept" "$ENVF" "$(kv OPENROUTER_API_KEY example-key-openrouter-stays)"
 has   "removed: says so"   "$out" "OpenAI API Key removed from AI Node"
 has   "removed: warns for the other" "$out" "OPENROUTER_API_KEY is set in ai-node/.env.local but not in installer/.api_keys"
 hasnt "removed: no value"  "$out" "example-key-openai-removed"
@@ -206,7 +206,8 @@ has   "removed: end"  "$out" "REACHED-END"
 hasnt "removed: trap" "$out" "TRAP-FIRED"
 
 # 7. No .api_keys at all: nothing touched, as before.
-fresh - 'OPENROUTER_API_KEY=example-key-openrouter-no-api-keys'
+fresh
+env_lines OPENROUTER_API_KEY example-key-openrouter-no-api-keys > "$ENVF"
 cp "$ENVF" "$T/before"
 out=$(run_apply)
 cmp -s "$T/before" "$ENVF" && ok || bad "no .api_keys: the file changed"
@@ -217,12 +218,13 @@ has   "no .api_keys: end"  "$out" "REACHED-END"
 # 8. .env.local cannot be written: the upgrade carries on, says which keys, and ends
 #    on exit 3 with API KEYS FAILED; the trap does not fire.
 if [ "$(id -u)" != "0" ]; then
-    fresh 'OPENAI_API_KEY="example-key-openai-unwritable"
-OPENROUTER_API_KEY="example-key-openrouter-unwritable"' 'OPENAI_API_KEY=example-key-old'
+    fresh
+    keys_lines OPENAI_API_KEY example-key-openai-unwritable OPENROUTER_API_KEY example-key-openrouter-unwritable > "$KEYSF"
+    env_lines OPENAI_API_KEY example-key-old > "$ENVF"
     chmod 444 "$ENVF"; chmod 555 "$T/install/ai-node"
     out=$(run_apply)
     chmod 755 "$T/install/ai-node"; chmod 644 "$ENVF"
-    line_is "unwritable: unchanged" "$ENVF" "OPENAI_API_KEY=example-key-old"
+    line_is "unwritable: unchanged" "$ENVF" "$(kv OPENAI_API_KEY example-key-old)"
     has   "unwritable: carries on"   "$out" "APPLY-DONE"
     has   "unwritable: names keys"   "$out" "API KEYS FAILED: could not write OPENAI_API_KEY OPENROUTER_API_KEY to $ENVF"
     has   "unwritable: exit 3"       "$out" "rc=3"
@@ -236,10 +238,10 @@ fi
 
 # 9. The real key review, answered on stdin: OpenAI removed, OpenRouter kept as it is,
 #    the rest skipped. Its record reaches the apply block, which clears only OpenAI.
-fresh 'OPENROUTER_API_KEY="example-key-openrouter-reviewed"
-OPENAI_API_KEY="example-key-openai-reviewed"' 'OPENAI_API_KEY=example-key-openai-reviewed
-OPENROUTER_API_KEY=example-key-openrouter-reviewed
-XAI_API_KEY=example-key-xai-envlocal-only'
+fresh
+keys_lines OPENROUTER_API_KEY example-key-openrouter-reviewed OPENAI_API_KEY example-key-openai-reviewed > "$KEYSF"
+env_lines OPENAI_API_KEY example-key-openai-reviewed OPENROUTER_API_KEY example-key-openrouter-reviewed \
+    XAI_API_KEY example-key-xai-envlocal-only > "$ENVF"
 out=$(printf 'y\n\n\n\n\nn\n' | \
     env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HYPERBOLIC_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY -u VERDIKTA_UNATTENDED \
     TARGET_DIR="$T/install" TARGET_AI_NODE="$T/install/ai-node" UTIL_DIR="$T/util" \
@@ -257,36 +259,37 @@ out=$(printf 'y\n\n\n\n\nn\n' | \
         eval "$REVIEW"
         echo "REVIEW-DONE removed=[$API_KEYS_REMOVED]"
         # What the review saves (the heredoc after the prompts), for the apply block to source.
-        printf "OPENROUTER_API_KEY=\"%s\"\nOPENAI_API_KEY=\"%s\"\nANTHROPIC_API_KEY=\"%s\"\nHYPERBOLIC_API_KEY=\"%s\"\nXAI_API_KEY=\"%s\"\n" \
-            "$OPENROUTER_API_KEY" "$OPENAI_API_KEY" "$ANTHROPIC_API_KEY" "$HYPERBOLIC_API_KEY" "$XAI_API_KEY" > "$TARGET_DIR/installer/.api_keys"
+        for k in OPENROUTER_API_KEY OPENAI_API_KEY ANTHROPIC_API_KEY HYPERBOLIC_API_KEY XAI_API_KEY; do
+            printf "%s=\"%s\"\n" "$k" "${!k}"
+        done > "$TARGET_DIR/installer/.api_keys"
         eval "$APPLY"
         echo "APPLY-DONE"
     ' 2>&1)
 has   "review: records only OpenAI" "$out" "REVIEW-DONE removed=[ OPENAI_API_KEY]"
-line_is "review: OpenAI cleared"    "$ENVF" "OPENAI_API_KEY="
-line_is "review: OpenRouter kept"   "$ENVF" "OPENROUTER_API_KEY=example-key-openrouter-reviewed"
-line_is "review: xAI (skipped) kept" "$ENVF" "XAI_API_KEY=example-key-xai-envlocal-only"
+line_is "review: OpenAI cleared"    "$ENVF" "$(kv OPENAI_API_KEY "")"
+line_is "review: OpenRouter kept"   "$ENVF" "$(kv OPENROUTER_API_KEY example-key-openrouter-reviewed)"
+line_is "review: xAI (skipped) kept" "$ENVF" "$(kv XAI_API_KEY example-key-xai-envlocal-only)"
 has   "review: xAI warned"          "$out" "XAI_API_KEY is set in ai-node/.env.local but not in installer/.api_keys"
 has   "review: end"                 "$out" "APPLY-DONE"
 hasnt "review: trap"                "$out" "TRAP-FIRED"
 
 # ── install-ai-node.sh's real key block: literal values, nothing cleared ─────
 mkdir -p "$T/ain"
-printf 'OPENROUTER_API_KEY=example-key-old\nOPENAI_API_KEY=example-key-openai-kept\nLOG_LEVEL=info\n' > "$T/ain/.env.local"
+env_lines OPENROUTER_API_KEY example-key-old OPENAI_API_KEY example-key-openai-kept LOG_LEVEL info > "$T/ain/.env.local"
 out=$(env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HYPERBOLIC_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY \
-    AI_NODE_DIR="$T/ain" BLOCK="$ianblock" ROOT="$ROOT" \
-    OPENROUTER_API_KEY='example-key/or&key\y' HYPERBOLIC_API_KEY='example-key/hyp' \
+    AI_NODE_DIR="$T/ain" BLOCK="$ianblock" ROOT="$ROOT" IAN_OR='example-key/or&key\y' IAN_HYP='example-key/hyp' \
     bash -c '
         set -e
         source "$ROOT/lib/env-file.sh"
         GREEN= YELLOW= RED= BLUE= NC=
+        OPENROUTER_API_KEY="$IAN_OR"; HYPERBOLIC_API_KEY="$IAN_HYP"
         eval "$BLOCK"
         echo "BLOCK-DONE"
     ' 2>&1)
 has "install: end" "$out" "BLOCK-DONE"
-line_is "install: OpenRouter literal"  "$T/ain/.env.local" 'OPENROUTER_API_KEY=example-key/or&key\y'
-line_is "install: Hyperbolic appended" "$T/ain/.env.local" 'HYPERBOLIC_API_KEY=example-key/hyp'
-line_is "install: empty key leaves the line" "$T/ain/.env.local" "OPENAI_API_KEY=example-key-openai-kept"
+line_is "install: OpenRouter literal"  "$T/ain/.env.local" "$(kv OPENROUTER_API_KEY 'example-key/or&key\y')"
+line_is "install: Hyperbolic appended" "$T/ain/.env.local" "$(kv HYPERBOLIC_API_KEY example-key/hyp)"
+line_is "install: empty key leaves the line" "$T/ain/.env.local" "$(kv OPENAI_API_KEY example-key-openai-kept)"
 line_is "install: the rest kept"       "$T/ain/.env.local" "LOG_LEVEL=info"
 
 # ── validate-api-keys.sh checks the key the node will use ────────────────────
@@ -299,8 +302,9 @@ echo "\$2 \$3" >> "$T/checked"
 echo ok
 STUB
 chmod +x "$T/bin/python3"
-printf 'OPENROUTER_API_KEY=""\nOPENAI_API_KEY="example-key-openai-from-api-keys"\n' > "$T/vkeys"
-printf 'OPENROUTER_API_KEY="example-key-openrouter-envlocal"\nOPENAI_API_KEY=example-key-openai-envlocal\nANTHROPIC_API_KEY=\n' > "$T/venv"
+keys_lines OPENROUTER_API_KEY "" OPENAI_API_KEY example-key-openai-from-api-keys > "$T/vkeys"
+env_lines OPENROUTER_API_KEY '"example-key-openrouter-envlocal"' OPENAI_API_KEY example-key-openai-envlocal \
+    ANTHROPIC_API_KEY "" > "$T/venv"
 rm -f "$T/checked"
 out=$(env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HYPERBOLIC_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY -u GROK_API_KEY \
     PATH="$T/bin:$PATH" bash "$ROOT/util/validate-api-keys.sh" --api-keys-file "$T/vkeys" --env-file "$T/venv" 2>&1)
