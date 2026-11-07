@@ -85,9 +85,9 @@ if [ -n "$API_KEYS_FILE" ] && [ -f "$API_KEYS_FILE" ]; then
     set +u; source "$API_KEYS_FILE"; set +u 2>/dev/null || true
 fi
 
-# A key the keys file leaves empty but the env file sets is the one the AI Node
-# runs with (the upgrade keeps such a key, with a warning), so check and route on
-# that one. Its value is never printed.
+# A key the keys file leaves empty but the env file sets is the one the AI Node runs
+# with (the upgrade keeps such a key, with a warning), so check and route on that one,
+# read with dotenv's rules (env_file_value). Its value is never printed.
 if [ -n "$ENV_FILE" ] && [ -f "$ENV_FILE" ]; then
     _env_lib="$(cd "$(dirname "$0")/../lib" 2>/dev/null && pwd)/env-file.sh"
     if [ -f "$_env_lib" ]; then
@@ -188,23 +188,35 @@ fi
 ############################################
 # .env.local writers
 ############################################
+# Both build the new file in FILE.vtmp and move it over FILE only once it is complete.
+# They used to move it whatever grep said, so a write that failed half way (a full
+# disk) replaced .env.local, provider keys and all, with a partial or empty copy.
+# grep -v exits 1 when it keeps no line, which is a complete copy; 2 is an error.
+_kv_failed() {
+    rm -f "$2.vtmp"
+    say "${C_RED}  Could not update $(basename "$2") for $1; it is left as it was.${C_NC}"
+    return 1
+}
+
 set_kv() {
-    local k="$1" v="$2" f="$3"
-    [ -f "$f" ] || touch "$f"
-    grep -v "^${k}=" "$f" > "${f}.vtmp" 2>/dev/null || true
-    mv "${f}.vtmp" "$f"
-    if [ -s "$f" ] && [ -n "$(tail -c1 "$f")" ]; then
-        printf '\n' >> "$f"
+    local k="$1" v="$2" f="$3" rc=0
+    [ -f "$f" ] || touch "$f" || return 1
+    grep -v "^${k}=" "$f" > "${f}.vtmp" 2>/dev/null || rc=$?
+    [ "$rc" -le 1 ] || { _kv_failed "$k" "$f"; return 1; }
+    if [ -s "${f}.vtmp" ] && [ -n "$(tail -c1 "${f}.vtmp")" ]; then
+        printf '\n' >> "${f}.vtmp" || { _kv_failed "$k" "$f"; return 1; }
     fi
-    printf '%s=%s\n' "$k" "$v" >> "$f"
+    printf '%s=%s\n' "$k" "$v" >> "${f}.vtmp" || { _kv_failed "$k" "$f"; return 1; }
+    mv "${f}.vtmp" "$f" || { _kv_failed "$k" "$f"; return 1; }
 }
 
 remove_kv() {
-    local k="$1" f="$2"
+    local k="$1" f="$2" rc=0
     [ -f "$f" ] || return 0
     if grep -q "^${k}=" "$f" 2>/dev/null; then
-        grep -v "^${k}=" "$f" > "${f}.vtmp" 2>/dev/null || true
-        mv "${f}.vtmp" "$f"
+        grep -v "^${k}=" "$f" > "${f}.vtmp" 2>/dev/null || rc=$?
+        [ "$rc" -le 1 ] || { _kv_failed "$k" "$f"; return 1; }
+        mv "${f}.vtmp" "$f" || { _kv_failed "$k" "$f"; return 1; }
     fi
 }
 

@@ -109,8 +109,13 @@ Hyperbolic, xAI, OpenRouter) from that file into `ai-node/.env.local`:
 - A key you remove in the review (blank at "blank to remove") is removed from
   `.env.local` too.
 
+`.env.local` is read as the AI Node reads it (dotenv's rules: quotes, a
+trailing `# comment`, `export`), with `python3`. If it cannot be read, it is
+left as it is, and the upgrade says so.
+
 If `.env.local` cannot be written, the upgrade carries on, the AI Node keeps
-the keys it had, and the upgrade ends with `API KEYS FAILED:` and exit 3.
+the keys it had, key validation and provider routing are skipped (they rewrite
+`.env.local` too), and the upgrade ends with `API KEYS FAILED:` and exit 3.
 
 A node that serves code-review claims needs `OPENROUTER_API_KEY`: the
 code-standard panel has an OpenRouter juror. See

@@ -91,6 +91,38 @@ kv() { printf '%s=%s' "$1" "$2"; }
 fresh() { rm -rf "$T/install"; mkdir -p "$T/install/installer" "$T/install/ai-node"; }
 KEYSF="$T/install/installer/.api_keys"
 ENVF="$T/install/ai-node/.env.local"
+# Stub tools. python3: a provider check (`python3 - <provider> <key>`) answers "ok",
+# or "bad" for a provider named in STUB_BAD, and logs "<provider> <key>" to
+# $T/checked, so no request leaves the host; any other call (env_file_value) runs the
+# real python3. sed: -i fails, as on a full disk. grep: -v writes half a line and
+# fails, as on a full disk. nopy: a python3 that does not run.
+REAL_PY=$(command -v python3); REAL_SED=$(command -v sed); REAL_GREP=$(command -v grep)
+mkdir -p "$T/pystub" "$T/sedfail" "$T/grepfail" "$T/nopy"
+cat > "$T/pystub/python3" <<STUB
+#!/bin/bash
+if [ "\$1" = "-" ] && [ \$# -eq 3 ]; then
+    case "\$2" in openai|anthropic|xai|hyperbolic|openrouter)
+        cat > /dev/null
+        echo "\$2 \$3" >> "$T/checked"
+        case " \${STUB_BAD:-} " in *" \$2 "*) echo bad ;; *) echo ok ;; esac
+        exit 0 ;;
+    esac
+fi
+exec "$REAL_PY" "\$@"
+STUB
+cat > "$T/sedfail/sed" <<STUB
+#!/bin/bash
+for a in "\$@"; do case "\$a" in -i*) echo "sed: couldn't write: No space left on device" >&2; exit 4 ;; esac; done
+exec "$REAL_SED" "\$@"
+STUB
+cat > "$T/grepfail/grep" <<STUB
+#!/bin/bash
+for a in "\$@"; do [ "\$a" = "-v" ] && { printf 'LOG_LE'; exit 2; }; done
+exec "$REAL_GREP" "\$@"
+STUB
+printf '#!/bin/bash\nexit 127\n' > "$T/nopy/python3"
+chmod +x "$T/pystub/python3" "$T/sedfail/sed" "$T/grepfail/grep" "$T/nopy/python3"
+
 # keys_empty — the .api_keys of an install whose operator gave no provider key.
 keys_empty() {
     keys_lines OPENROUTER_API_KEY "" OPENAI_API_KEY "" ANTHROPIC_API_KEY "" HYPERBOLIC_API_KEY "" \
@@ -98,12 +130,13 @@ keys_empty() {
 }
 
 # run_apply — the real trap, the real apply block, a marker, the real last lines.
-# REMOVED is what this run's key review removed (API_KEYS_REMOVED).
+# REMOVED is what this run's key review removed (API_KEYS_REMOVED); XPATH goes in
+# front of PATH (stub tools); VUTIL replaces the stub validator's directory.
 run_apply() {
     env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HYPERBOLIC_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY \
-    REMOVED="${REMOVED-}" TARGET_DIR="$T/install" TARGET_AI_NODE="$T/install/ai-node" UTIL_DIR="$T/util" \
+    REMOVED="${REMOVED-}" TARGET_DIR="$T/install" TARGET_AI_NODE="$T/install/ai-node" UTIL_DIR="${VUTIL:-$T/util}" \
     UPGRADE_IN_PROGRESS=1 BACKUP_DIR="" ARBITER_WAS_RUNNING=0 RECONF_FAILED=0 \
-    APPLY="$apply" LAST="$lastlines" TRAPFN="$trapfn" ROOT="$ROOT" \
+    APPLY="$apply" LAST="$lastlines" TRAPFN="$trapfn" ROOT="$ROOT" PATH="${XPATH:+$XPATH:}$PATH" \
     bash -c '
         set -e
         eval "$TRAPFN"
@@ -236,6 +269,34 @@ else
     echo "skip: running as root, file modes do not stop writes"
 fi
 
+# 8b. The disk fills while a key is written (sed fails, .env.local intact): the real
+#     validator does not run, because its routing would rewrite .env.local too.
+#     Here it would remove OPENAI_CLASS_PROVIDER, so a changed file means it ran.
+fresh
+keys_lines OPENAI_API_KEY example-key-openai-new > "$KEYSF"
+env_lines OPENAI_API_KEY example-key-openai-old OPENAI_CLASS_PROVIDER openrouter LOG_LEVEL info > "$ENVF"
+cp "$ENVF" "$T/before"; rm -f "$T/checked"
+out=$(XPATH="$T/sedfail:$T/pystub" VUTIL="$ROOT/util" run_apply)
+cmp -s "$T/before" "$ENVF" && ok || bad "full disk: .env.local changed: $(cat "$ENVF")"
+[ -f "$T/checked" ] && bad "full disk: the validator checked keys: $(cat "$T/checked")" || ok
+has   "full disk: routing skipped" "$out" "Skipping key validation and provider routing: .env.local could not be written."
+has   "full disk: says so last"    "$out" "API KEYS FAILED: could not write OPENAI_API_KEY to $ENVF"
+has   "full disk: exit 3"          "$out" "rc=3"
+hasnt "full disk: trap"            "$out" "TRAP-FIRED"
+
+# 8c. python3 does not run: .env.local cannot be read the AI Node's way, so it is left
+#     as it is, with a line that says so; nothing fails.
+fresh; keys_empty
+env_lines OPENROUTER_API_KEY example-key-openrouter-nopy > "$ENVF"
+cp "$ENVF" "$T/before"
+out=$(XPATH="$T/nopy" run_apply)
+cmp -s "$T/before" "$ENVF" && ok || bad "no python3: the file changed"
+has   "no python3: says so" "$out" "Could not read OPENROUTER_API_KEY from $ENVF (it is read with python3); left as it is."
+hasnt "no python3: no value" "$out" "example-key-openrouter-nopy"
+has   "no python3: end"     "$out" "REACHED-END"
+has   "no python3: exit 0"  "$out" "rc=0"
+hasnt "no python3: trap"    "$out" "TRAP-FIRED"
+
 # 9. The real key review, answered on stdin: OpenAI removed, OpenRouter kept as it is,
 #    the rest skipped. Its record reaches the apply block, which clears only OpenAI.
 fresh
@@ -293,31 +354,44 @@ line_is "install: empty key leaves the line" "$T/ain/.env.local" "$(kv OPENAI_AP
 line_is "install: the rest kept"       "$T/ain/.env.local" "LOG_LEVEL=info"
 
 # ── validate-api-keys.sh checks the key the node will use ────────────────────
-# A stub python3 answers every check "ok" and logs what it was asked, so the test
-# makes no network call.
-cat > "$T/bin/python3" <<STUB
-#!/bin/bash
-cat > /dev/null
-echo "\$2 \$3" >> "$T/checked"
-echo ok
-STUB
-chmod +x "$T/bin/python3"
-keys_lines OPENROUTER_API_KEY "" OPENAI_API_KEY example-key-openai-from-api-keys > "$T/vkeys"
-env_lines OPENROUTER_API_KEY '"example-key-openrouter-envlocal"' OPENAI_API_KEY example-key-openai-envlocal \
-    ANTHROPIC_API_KEY "" > "$T/venv"
+# The real validator with the python3 stub: no request leaves the host.
+run_validate() { # run_validate ARGS… — the real validator, python3 stubbed, keys unset
+    env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HYPERBOLIC_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY -u GROK_API_KEY \
+        PATH="${XPATH:+$XPATH:}$T/pystub:$PATH" bash "$ROOT/util/validate-api-keys.sh" "$@" 2>&1
+}
+# A quoted key with a comment after it (R1-F1): the credential checked is the one
+# dotenv loads, without its quotes, and routing follows its result.
+keys_lines OPENROUTER_API_KEY "" OPENAI_API_KEY example-key-openai-from-api-keys ANTHROPIC_API_KEY "" > "$T/vkeys"
+env_lines OPENROUTER_API_KEY 'example-key-or-envlocal # fallback' OPENAI_API_KEY example-key-openai-envlocal \
+    ANTHROPIC_API_KEY '"example-key-anthropic-envlocal" # production' XAI_API_KEY "" > "$T/venv"
 rm -f "$T/checked"
-out=$(env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HYPERBOLIC_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY -u GROK_API_KEY \
-    PATH="$T/bin:$PATH" bash "$ROOT/util/validate-api-keys.sh" --api-keys-file "$T/vkeys" --env-file "$T/venv" 2>&1)
-grep -qxF "openrouter example-key-openrouter-envlocal" "$T/checked" && ok || bad "validate: the .env.local-only OpenRouter key was not checked: $(cat "$T/checked" 2>/dev/null)"
+out=$(STUB_BAD=anthropic run_validate --api-keys-file "$T/vkeys" --env-file "$T/venv")
+grep -qxF "anthropic example-key-anthropic-envlocal" "$T/checked" && ok || bad "validate: the quoted, commented Anthropic key was not checked as dotenv reads it: $(cat "$T/checked" 2>/dev/null)"
+grep -qxF "openrouter example-key-or-envlocal" "$T/checked" && ok || bad "validate: the commented OpenRouter key was not checked as dotenv reads it: $(cat "$T/checked" 2>/dev/null)"
 grep -qxF "openai example-key-openai-from-api-keys" "$T/checked" && ok || bad "validate: .api_keys no longer wins for OpenAI: $(cat "$T/checked" 2>/dev/null)"
-grep -q "^anthropic " "$T/checked" && bad "validate: an empty key was checked" || ok
+grep -q "^xai " "$T/checked" && bad "validate: an empty key was checked" || ok
+line_is "validate: a failing native key is routed via the kept OpenRouter key" "$T/venv" "ANTHROPIC_CLASS_PROVIDER=openrouter"
+line_is "validate: the key lines stay" "$T/venv" "$(kv ANTHROPIC_API_KEY '"example-key-anthropic-envlocal" # production')"
 has   "validate: says where the key is" "$out" "OPENROUTER_API_KEY: none in vkeys, checking the one in venv"
-hasnt "validate: no value printed"      "$out" "example-key-openrouter-envlocal"
+hasnt "validate: no value printed"      "$out" "example-key-or-envlocal"
+hasnt "validate: no value printed (2)"  "$out" "example-key-anthropic-envlocal"
 # Without --env-file it reads .api_keys only, as before.
 rm -f "$T/checked"
-out=$(env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HYPERBOLIC_API_KEY -u XAI_API_KEY -u OPENROUTER_API_KEY -u GROK_API_KEY \
-    PATH="$T/bin:$PATH" bash "$ROOT/util/validate-api-keys.sh" --api-keys-file "$T/vkeys" 2>&1)
+out=$(run_validate --api-keys-file "$T/vkeys")
 grep -q "^openrouter " "$T/checked" && bad "validate without --env-file: checked an OpenRouter key" || ok
+# A routing write that fails half way (R1-F2): .env.local is left as it was, not
+# replaced by the partial copy, and the run says so.
+keys_lines OPENAI_API_KEY example-key-openai-routing > "$T/vkeys"
+env_lines OPENAI_API_KEY example-key-openai-routing OPENAI_CLASS_PROVIDER openrouter LOG_LEVEL info > "$T/venv"
+cp "$T/venv" "$T/venv.before"
+out=$(XPATH="$T/grepfail" run_validate --api-keys-file "$T/vkeys" --env-file "$T/venv")
+cmp -s "$T/venv.before" "$T/venv" && ok || bad "validate, failed write: .env.local was replaced: $(cat "$T/venv")"
+[ -e "$T/venv.vtmp" ] && bad "validate, failed write: the partial copy was left behind" || ok
+has "validate, failed write: says so" "$out" "Could not update venv for OPENAI_CLASS_PROVIDER; it is left as it was."
+# The same write that succeeds removes the override, as before.
+out=$(run_validate --api-keys-file "$T/vkeys" --env-file "$T/venv")
+grep -q '^OPENAI_CLASS_PROVIDER=' "$T/venv" && bad "validate: a working native key kept its override" || ok
+line_is "validate: the rest kept" "$T/venv" "LOG_LEVEL=info"
 
 # ── installer/lib/env-file.sh on its own ─────────────────────────────────────
 # shellcheck disable=SC1090
@@ -333,6 +407,19 @@ printf 'A=1\nKEY="quoted value"\nE=""\nS=  \nC= # a comment\nD=first\nD=last\nQ=
 [ -z "$(env_file_value MISSING "$T/lib.env")" ] && ok || bad "lib: missing key"
 [ -z "$(env_file_value A "$T/nope.env")" ] && ok || bad "lib: missing file"
 env_file_value A "$T/nope.env" && ok || bad "lib: missing file returns non-zero"
+# dotenv's grammar: a quoted value with a comment, export, blanks around =, # inside quotes.
+printf '%s\n' 'DQC="dq-value" # production' "SQC='sq-value'   # note" 'export EXP=exported' 'SPC = spaced-eq' \
+    "SQH='a#b'" 'UQH=a#b' 'BQ=`bq-value`' 'CR=cr-value' > "$T/dotenv.env"
+printf 'CRLF=crlf-value\r\n' >> "$T/dotenv.env"
+[ "$(env_file_value DQC "$T/dotenv.env")" = "dq-value" ] && ok || bad "lib: a double-quoted value with a comment: [$(env_file_value DQC "$T/dotenv.env")]"
+[ "$(env_file_value SQC "$T/dotenv.env")" = "sq-value" ] && ok || bad "lib: a single-quoted value with a comment"
+[ "$(env_file_value EXP "$T/dotenv.env")" = "exported" ] && ok || bad "lib: export"
+[ "$(env_file_value SPC "$T/dotenv.env")" = "spaced-eq" ] && ok || bad "lib: blanks around ="
+[ "$(env_file_value SQH "$T/dotenv.env")" = "a#b" ] && ok || bad "lib: # inside quotes"
+[ "$(env_file_value UQH "$T/dotenv.env")" = "a" ] && ok || bad "lib: # ends an unquoted value"
+[ "$(env_file_value BQ "$T/dotenv.env")" = "bq-value" ] && ok || bad "lib: backticks"
+[ "$(env_file_value CRLF "$T/dotenv.env")" = "crlf-value" ] && ok || bad "lib: CRLF"
+PATH="$T/nopy:$PATH" env_file_value DQC "$T/dotenv.env" >/dev/null && bad "lib: no python3 returned 0" || ok
 env_file_set A 'x/y&z\w' "$T/lib.env" && ok || bad "lib: set failed"
 grep -qxF 'A=x/y&z\w' "$T/lib.env" && ok || bad "lib: literal set: $(grep '^A=' "$T/lib.env")"
 env_file_set D 'one' "$T/lib.env" && [ "$(grep -c '^D=one$' "$T/lib.env")" = "2" ] && ok || bad "lib: every KEY= line is set"

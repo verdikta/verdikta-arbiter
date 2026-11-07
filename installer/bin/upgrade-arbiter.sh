@@ -1635,23 +1635,23 @@ echo -e "${BLUE}Updating AI Node API keys...${NC}"
 # apply_env_key KEY VALUE ENV_FILE LABEL — one provider key from installer/.api_keys
 # into the AI Node's .env.local:
 #   - a value in .api_keys wins, written literally (`/`, `&` and `\` included);
-#   - an empty one leaves .env.local as it is. A key set there only is kept, with a
-#     warning that names it and never prints it. The upgrade used to clear it: on the
-#     testnet canary that took OPENROUTER_API_KEY, and every claim abstained;
-#   - only a key removed in this run's key review (API_KEYS_REMOVED) is cleared.
+#   - a key removed in this run's key review (API_KEYS_REMOVED) is cleared;
+#   - otherwise an empty one leaves .env.local as it is. A key set there only is kept,
+#     with a warning that names it and never prints it. The upgrade used to clear it:
+#     on the testnet canary that took OPENROUTER_API_KEY, and every claim abstained.
+#     .env.local is read as the AI Node reads it (env_file_value); if it cannot be
+#     read, it is still left as it is.
 # Returns 1 when ENV_FILE could not be written. A function gets no ERR trap, and
 # errexit inside one would end the upgrade with no message, so it is called as
 # `apply_env_key … || …` (AGENTS.md §8) and checks each step itself.
 apply_env_key() {
-    local key_name="$1" key_value="$2" env_file="$3" label="$4" current
+    local key_name="$1" key_value="$2" env_file="$3" label="$4" current read_rc=0
 
     if [ -n "$key_value" ]; then
         env_file_set "$key_name" "$key_value" "$env_file" || return 1
         echo -e "${GREEN}✓ ${label} set in AI Node${NC}"
         return 0
     fi
-    current=$(env_file_value "$key_name" "$env_file")
-    [ -n "$current" ] || return 0
     case " ${API_KEYS_REMOVED:-} " in
         *" ${key_name} "*)
             env_file_set "$key_name" "" "$env_file" || return 1
@@ -1659,6 +1659,12 @@ apply_env_key() {
             return 0
             ;;
     esac
+    current=$(env_file_value "$key_name" "$env_file") || read_rc=$?
+    if [ "$read_rc" -ne 0 ]; then
+        echo -e "${YELLOW}⚠ Could not read ${key_name} from $env_file (it is read with python3); left as it is.${NC}"
+        return 0
+    fi
+    [ -n "$current" ] || return 0
     echo -e "${YELLOW}⚠ ${key_name} is set in ai-node/.env.local but not in installer/.api_keys. Kept.${NC}"
     echo -e "${YELLOW}  Add it to $TARGET_DIR/installer/.api_keys, where the upgrade keeps provider keys.${NC}"
     echo -e "${YELLOW}  To remove it instead, delete its line from $env_file.${NC}"
@@ -1688,7 +1694,11 @@ if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
     # preferred; any native key that fails validation is routed via OpenRouter
     # (when available) until a working key is added. GLOBAL_PREF (set earlier if
     # the operator reviewed keys) can override everything to OpenRouter.
-    if [ -f "$UTIL_DIR/validate-api-keys.sh" ]; then
+    # Not after a key write failed: routing rewrites .env.local too, and the keys it
+    # would route on are not the ones the file holds.
+    if [ -n "$API_KEYS_NOT_WRITTEN" ]; then
+        echo -e "${YELLOW}Skipping key validation and provider routing: .env.local could not be written.${NC}"
+    elif [ -f "$UTIL_DIR/validate-api-keys.sh" ]; then
         echo -e "${BLUE}Validating API keys and applying provider routing (native-first)...${NC}"
         bash "$UTIL_DIR/validate-api-keys.sh" \
             --api-keys-file "$TARGET_DIR/installer/.api_keys" \

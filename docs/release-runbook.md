@@ -94,7 +94,8 @@ register 5555 on mainnet or on nodes you do not upgrade first.
    `<install-dir>/apply-job-timeouts.sh --check` (exit 0: every live job allows
    840 s and the node runs `MaxRunDuration` 15 m). Replacing a stale job keeps its
    job id: no re-registration, no stake moves. `API KEYS FAILED:` means
-   `ai-node/.env.local` could not be written, and the AI Node kept the keys it had.
+   `ai-node/.env.local` could not be written: the AI Node kept the keys it had, and
+   key validation and routing were skipped.
 
    Provider keys belong in `<install-dir>/installer/.api_keys`. Every upgrade
    writes them from there into `ai-node/.env.local`. A key that is set only in

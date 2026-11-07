@@ -3,35 +3,43 @@
 #
 # The install and the upgrade used to write a provider key with
 # `sed "s/^KEY=.*/KEY=$value/"`, so a value with `/`, `&` or `\` broke the
-# expression or was written wrong. These helpers read and write one key, with the
-# value taken literally. Which side wins (installer/.api_keys or .env.local) is
-# the caller's decision: see apply_env_key in bin/upgrade-arbiter.sh.
+# expression or was written wrong. These helpers read a key the way the AI Node
+# reads it and write one with the value taken literally. Which side wins
+# (installer/.api_keys or .env.local) is the caller's decision: see apply_env_key
+# in bin/upgrade-arbiter.sh.
 #
-#   env_file_value KEY FILE        -> prints the value FILE gives KEY
+#   env_file_value KEY FILE        -> prints the value the AI Node would load for KEY
 #   env_file_set   KEY VALUE FILE  -> sets KEY to VALUE in FILE
 
-# env_file_value KEY FILE — prints the value of the last `KEY=` line of FILE (the
-# one dotenv keeps), with the blanks around it and one pair of matching quotes
-# removed. An unquoted value ends at `#`, as in dotenv. Prints nothing when FILE
-# or the line is missing or the value is empty. Always returns 0.
+# env_file_value KEY FILE — prints the value FILE gives KEY, as the AI Node loads
+# it: @next/env reads .env.local with dotenv's parse(), and the Python below is that
+# function (dotenv 16, lib/main.js) with its LINE expression and value clean-up
+# unchanged, so a quoted value, a trailing `# comment`, `export KEY=` and blanks
+# around `=` read as they do there. The last line for KEY wins, as in dotenv. Not
+# applied: dotenv-expand's `$VAR` expansion. Prints nothing when FILE or KEY is
+# missing or the value is empty.
+# Returns 0 when it could read FILE (or FILE is missing), and non-zero when it could
+# not (no python3, an unreadable file): the caller then knows nothing about KEY.
 env_file_value() {
-    local key="$1" file="$2" line value
+    local key="$1" file="$2"
     [ -f "$file" ] || return 0
-    line=$(grep -- "^${key}=" "$file" 2>/dev/null | tail -n 1) || line=""
-    value="${line#*=}"
-    value="${value%$'\r'}"
-    value="${value#"${value%%[![:space:]]*}"}"
-    value="${value%"${value##*[![:space:]]}"}"
-    case "$value" in
-        \"*\") value="${value#\"}"; value="${value%\"}" ;;
-        \'*\') value="${value#\'}"; value="${value%\'}" ;;
-        *)
-            value="${value%%#*}"
-            value="${value%"${value##*[![:space:]]}"}"
-            ;;
-    esac
-    printf '%s' "$value"
-    return 0
+    python3 - "$key" "$file" <<'PY'
+import re, sys
+key, path = sys.argv[1], sys.argv[2]
+with open(path, 'rb') as f:
+    src = f.read().decode('utf-8', 'replace')
+LINE = re.compile(r'''(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)''', re.M)
+lines = re.sub(r'\r\n?', '\n', src)
+parsed = {}
+for match in LINE.finditer(lines):
+    value = (match.group(2) or '').strip()
+    maybe_quote = value[:1]
+    value = re.sub(r'''^(['"`])([\s\S]*)\1$''', r'\2', value, flags=re.M)
+    if maybe_quote == '"':
+        value = value.replace('\\n', '\n').replace('\\r', '\r')
+    parsed[match.group(1)] = value
+sys.stdout.write(parsed.get(key, ''))
+PY
 }
 
 # env_file_set KEY VALUE FILE — writes VALUE, literally, on every `KEY=` line of
