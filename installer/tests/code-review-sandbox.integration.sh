@@ -10,7 +10,9 @@
 #   - the adapter's real /health on what enable wrote, and the doctor's real findings;
 #   - a full disk fills only that disk; an unmounted disk starts no daemon;
 #   - a gVisor change is a reload of the same daemon PID;
-#   - a failed first enable and a purge leave no image, mount or unit behind.
+#   - a failed first enable and a purge leave no image, mount or unit behind, and nothing mounted under
+#     the runner daemon's exec root (#126), while the arbiter's /run/docker mounts stay as they were;
+#   - the documented host quick check (runsc do, 3,000 files) runs.
 #
 # It changes the host: it refuses to run anywhere but CI unless VERDIKTA_SANDBOX_IT=1.
 # Run: VERDIKTA_SANDBOX_IT=1 bash installer/tests/code-review-sandbox.integration.sh
@@ -33,7 +35,10 @@ step() { echo; echo "=== $1"; }
 WORK=$(mktemp -d); I="$WORK/install"
 TOOL="$I/code-review-sandbox.sh"; CHECK="$I/code-review-check.js"
 MOUNT=/var/lib/verdikta-code-runner; IMAGE=/var/lib/verdikta-code-runner.img; SOCK=/run/verdikta-code-runner/docker.sock
+EXEC_ROOT=/run/verdikta-code-runner/exec
 OWN=(docker --host "unix://$SOCK")
+# What is mounted at or below the runner daemon's exec root, from findmnt.
+exec_mounts() { findmnt -rn -o TARGET | awk -v r="$EXEC_ROOT" '$0 == r || index($0, r "/") == 1'; }
 PORT_HOLDER=""
 cleanup() {
     [ -n "$PORT_HOLDER" ] && kill "$PORT_HOLDER" 2>/dev/null
@@ -60,6 +65,7 @@ snapshot() {
     echo "daemon.json: $(sudo sha256sum /etc/docker/daemon.json 2>/dev/null | cut -d' ' -f1)"
     echo "/etc/docker: $(sudo ls -A /etc/docker | tr '\n' ' ')"
     echo "/run/docker: $(sudo ls -A /run/docker 2>/dev/null | tr '\n' ' ')"
+    echo "/run/docker mounts: $(findmnt -rn -o TARGET | grep '^/run/docker/' | sort | tr '\n' ' ')"
     for c in cl-postgres chainlink; do
         echo "$c: $(docker inspect --format '{{.Id}} {{.State.StartedAt}} {{.State.Running}} {{.RestartCount}}' "$c")"
     done
@@ -119,6 +125,7 @@ mountpoint -q "$MOUNT" && bad "failed enable: still mounted" || ok "failed enabl
 [ -z "$(losetup -j "$IMAGE" 2>/dev/null)" ] && ok "failed enable: no loop device" || bad "failed enable: a loop device stayed"
 [ ! -e /etc/systemd/system/verdikta-code-runner-docker.service ] && ok "failed enable: no units" || bad "failed enable: a unit stayed"
 ip link show vcr0 >/dev/null 2>&1 && bad "failed enable: its bridge stayed" || ok "failed enable: no bridge"
+check "failed enable: nothing mounted under the daemon's exec root" "$(exec_mounts | tr '\n' ' ')" ""
 [ ! -e "$I/code-runner/.env" ] && ok "failed enable: no runner env" || bad "failed enable: the runner env stayed"
 [ ! -e "$I/code-runner-state/maintenance" ] && ok "failed enable: the lock is gone" || bad "failed enable: the lock stayed"
 grep -q '^CODE_REVIEW_ENABLED=true' "$I/external-adapter/.env" && bad "failed enable: code review on" || ok "failed enable: code review off"
@@ -155,6 +162,19 @@ check "the system containerd does not hold its namespace" "$(sudo ctr --address 
 sudo test -S /run/verdikta-code-runner/containerd/containerd.sock && ok "its own containerd socket" || bad "no containerd socket of its own"
 check "gVisor is executable by the runner's user" "$(/opt/gvisor/20260921.0/runsc --version | head -1)" "runsc version release-20260921.0"
 [ "$("${OWN[@]}" run --rm --runtime runsc --network none --pull never --platform linux/amd64 --entrypoint cat "$("$(command -v node)" "$CHECK" images --install-dir "$I" | head -1)" /proc/version 2>&1 | grep -ci gvisor)" -ge 0 ] && ok "a container runs under runsc"
+# What a rollback and disable must take away once the daemon stops: without it the checks after them prove nothing.
+echo "mounted under $EXEC_ROOT: $(exec_mounts | tr '\n' ' ')"
+[ -n "$(exec_mounts)" ] && ok "the daemon mounts under its exec root" || bad "nothing mounted under $EXEC_ROOT: the unmount checks are empty"
+
+step "The quick check in the host requirements (code-review-sandbox.md)"
+# Timed for the log; the self-test above is the gate, so only that it runs is checked here.
+for n in 1 2 3; do
+    qc=$(sudo /opt/gvisor/20260921.0/runsc --platform=systrap --network=none do /bin/bash -c \
+        'd=$(mktemp -d); time (for i in $(seq 3000); do echo x > "$d/$i"; done); rm -rf "$d"' 2>&1); rc=$?
+    echo "run $n: $(printf '%s\n' "$qc" | grep '^real')"
+    check "quick check run $n: exit 0" "$rc" 0
+    [ "$rc" = 0 ] || { printf '%s\n' "$qc" | tail -5; break; }
+done
 
 step "The runner"
 health=$(node "$CHECK" runner-health --install-dir "$I"); rc=$?
@@ -327,10 +347,12 @@ bash "$I/external-adapter/stop.sh" >/dev/null 2>&1
 VERDIKTA_UNATTENDED=1 bash "$TOOL" disable --install-dir "$I" 2>&1 | cut -c1-200
 [ -e "$IMAGE" ] && ok "disable keeps the image" || bad "disable removed the image"
 grep -q '^CODE_REVIEW_ENABLED=false' "$I/external-adapter/.env" && ok "disable: code review off" || bad "disable: code review on"
+check "disable: nothing mounted under the daemon's exec root" "$(exec_mounts | tr '\n' ' ')" ""
 VERDIKTA_UNATTENDED=1 bash "$TOOL" disable --purge --install-dir "$I" 2>&1 | cut -c1-200
 [ ! -e "$IMAGE" ] && ok "purge frees the image" || bad "purge left the image"
 [ ! -e "$MOUNT" ] && ok "purge removes the mount point" || bad "purge left $MOUNT"
 [ -z "$(losetup -j "$IMAGE" 2>/dev/null)" ] && ok "purge leaves no loop device" || bad "purge left a loop device"
+check "purge: nothing mounted under the daemon's exec root" "$(exec_mounts | tr '\n' ' ')" ""
 [ ! -e /etc/verdikta-code-runner ] && ok "no config left" || bad "config left"
 ip link show vcr0 >/dev/null 2>&1 && bad "purge left its bridge" || ok "its bridge is gone"
 [ -e /opt/gvisor/20260921.0/runsc ] && ok "gVisor stays: another sandbox may share it" || bad "purge removed gVisor"

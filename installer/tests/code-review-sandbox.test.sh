@@ -23,12 +23,17 @@ T=$(cd "$(mktemp -d)" && pwd -P); trap 'rm -rf "$T"' EXIT
 STUBS="$T/stubs"; mkdir -p "$STUBS"
 stub() { printf '#!/bin/bash\n%s\n' "$2" > "$STUBS/$1"; chmod +x "$STUBS/$1"; }
 
-# systemctl: every call logged; is-active follows a state dir; start marks active.
+# systemctl: every call logged; is-active follows a state dir; start marks active. The runner's
+# dockerd mounts two files in its exec root when it starts and leaves them when it stops (measured on
+# a canary host, #126): a start of its unit adds them to the mount table findmnt reads.
 stub systemctl 'echo "systemctl $*" >> "$STUB_LOG"
 verb="$1"; shift
 case "$verb" in
-  start|restart) for u in "$@"; do if [ "${STUB_UNIT_FAIL:-}" = "${u%.service}" ]; then exit 1; fi; : > "$STUB_STATE/active-${u%.service}"; done ;;
-  stop) for u in "$@"; do rm -f "$STUB_STATE/active-${u%.service}"; done ;;
+  start|restart) for u in "$@"; do if [ "${STUB_UNIT_FAIL:-}" = "${u%.service}" ]; then exit 1; fi; : > "$STUB_STATE/active-${u%.service}"
+       if [ "${u%.service}" = verdikta-code-runner-docker ]; then for m in netns/default runtime-runc/vcr/null-netns; do
+         grep -qxF "$VERDIKTA_SANDBOX_PREFIX/run/verdikta-code-runner/exec/$m" "$STUB_STATE/mounts" 2>/dev/null || echo "$VERDIKTA_SANDBOX_PREFIX/run/verdikta-code-runner/exec/$m" >> "$STUB_STATE/mounts"
+       done; fi; done ;;
+  stop) for u in "$@"; do if [ "${STUB_STOP_FAIL:-}" = "${u%.service}" ]; then exit 1; fi; rm -f "$STUB_STATE/active-${u%.service}"; done ;;
   is-active) shift_q=0; [ "$1" = "--quiet" ] && shift; [ -f "$STUB_STATE/active-${1%.service}" ]; exit $? ;;
   is-enabled) [ "$1" = "--quiet" ] && shift; exit 1 ;;
 esac
@@ -61,7 +66,21 @@ stub bzip2 'exit 0'
 stub fallocate 'echo "fallocate $*" >> "$STUB_LOG"; [ "${STUB_FALLOCATE_FAIL:-0}" = 1 ] && exit 1; for last; do :; done; : > "$last"; exit 0'
 stub mkfs.ext4 'echo "mkfs.ext4 $*" >> "$STUB_LOG"; [ "${STUB_MKFS_FAIL:-0}" = 1 ] && exit 1; exit 0'
 stub mount 'echo "mount $*" >> "$STUB_LOG"; exit 0'
-stub umount 'echo "umount $*" >> "$STUB_LOG"; : ; rm -f "$STUB_STATE/mounted"; exit 0'
+# umount: a target with a mount below it is busy, as the kernel says; so is STUB_UMOUNT_FAIL.
+# What it unmounts leaves the table findmnt reads.
+stub umount 'echo "umount $*" >> "$STUB_LOG"
+for t; do :; done
+if [ -f "$STUB_STATE/mounts" ] && { [ "$t" = "${STUB_UMOUNT_FAIL:-}" ] || awk -v t="$t" "index(\$0, t \"/\") == 1 {f=1} END {exit !f}" "$STUB_STATE/mounts"; }; then
+  echo "umount: $t: target is busy." >&2; exit 32
+fi
+rm -f "$STUB_STATE/mounted"
+if [ -f "$STUB_STATE/mounts" ]; then grep -vxF -- "$t" "$STUB_STATE/mounts" > "$STUB_STATE/mounts.new"; /bin/mv "$STUB_STATE/mounts.new" "$STUB_STATE/mounts"; fi
+exit 0'
+# findmnt: the mount table, one target per line, for the one question the script asks of it.
+stub findmnt 'echo "findmnt $*" >> "$STUB_LOG"
+[ "${STUB_FINDMNT_FAIL:-0}" = 1 ] && exit 1
+[ "$*" = "-rn -o TARGET" ] || { echo "findmnt stub: unexpected arguments: $*" >&2; exit 64; }
+cat "$STUB_STATE/mounts"'
 stub mountpoint '[ -f "$STUB_STATE/active-verdikta-code-runner-disk" ]'
 stub df 'echo "Avail"; echo "${STUB_AVAIL:-500000000000}"'
 stub uname 'if [ "$1" = "-m" ]; then echo "${STUB_ARCH:-x86_64}"; else /usr/bin/uname "$@"; fi'
@@ -78,7 +97,7 @@ stub mv 'case "$*" in *.env.new.*) [ "${STUB_ENV_WRITE_FAIL:-0}" = 1 ] && exit 1
 if [ "${STUB_SLOW_RENAME:-0}" = 1 ]; then case "$*" in *verdikta-code-runner.img.partial*) : > "$STUB_STATE/signal-now"; sleep 1 ;; esac; fi
 exec /bin/mv "$@"'
 stub cp 'case "$*" in *adapter.env.before*) [ "${STUB_ENV_COPY_FAIL:-0}" = 1 ] && exit 1 ;; esac; exec /bin/cp "$@"'
-stub env 'if [ "$1" = "-i" ]; then echo "env -i" >> "$STUB_LOG"; shift; exec /usr/bin/env -i STUB_LOG="$STUB_LOG" STUB_LOCK="$STUB_LOCK" STUB_STATE="$STUB_STATE" STUB_CANARY_EXIT="${STUB_CANARY_EXIT:-}" STUB_HASH="${STUB_HASH:-}" STUB_SLOW_CANARY="${STUB_SLOW_CANARY:-}" "$@"; fi; exec /usr/bin/env "$@"'
+stub env 'if [ "$1" = "-i" ]; then echo "env -i" >> "$STUB_LOG"; shift; exec /usr/bin/env -i STUB_LOG="$STUB_LOG" STUB_LOCK="$STUB_LOCK" STUB_STATE="$STUB_STATE" STUB_CANARY_EXIT="${STUB_CANARY_EXIT:-}" STUB_CANARY_SAY="${STUB_CANARY_SAY:-}" STUB_HASH="${STUB_HASH:-}" STUB_SLOW_CANARY="${STUB_SLOW_CANARY:-}" "$@"; fi; exec /usr/bin/env "$@"'
 
 fresh() { # a new prefix and install tree; sets P, I
     rm -rf "$T/p"; P="$T/p"; I="$T/p/install"
@@ -114,6 +133,7 @@ const a = process.argv; const out = a[a.indexOf('--json') + 1];
 if (process.env.STUB_LOCK && fs.existsSync(process.env.STUB_LOCK)) fs.appendFileSync(process.env.STUB_LOG, 'lock-held-during-self-test\n');
 fs.appendFileSync(process.env.STUB_LOG, `conformance DOCKER_HOST=${process.env.DOCKER_HOST} REGNET=${process.env.CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK} RUNTIME=${process.env.CODE_RUNNER_RUNTIME} TMPDIR=${process.env.TMPDIR} KEY=${process.env.STUB_SECRET_KEY || 'none'}\n`);
 if (process.env.STUB_SLOW_CANARY === '1') { fs.writeFileSync(`${process.env.STUB_STATE}/signal-now`, ''); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000); process.exit(1); }
+if (process.env.STUB_CANARY_SAY) process.stderr.write(`${process.env.STUB_CANARY_SAY}\n`);
 if (process.env.STUB_CANARY_EXIT) process.exit(Number(process.env.STUB_CANARY_EXIT));
 fs.writeFileSync(out, JSON.stringify({ canonical: true, reportSha256: process.env.STUB_HASH || 'cafe'.repeat(16), runner: '0.1.0', gvisor: 'release-20260921.0', sourceSha256: require('../src/conformance').sourceSha256() }));
 J
@@ -127,6 +147,11 @@ J
     printf 'DEPLOYMENT_NETWORK="base_sepolia"\nNETWORK_CHAIN_ID="84532"\nPRIVATE_KEY="not-a-real-key"\n' > "$I/installer/.env"
     : > "$P/state/.keep"
     DAEMON_BEFORE=$(cat "$P/etc/docker/daemon.json")
+    # The host's other mounts: the arbiter's Docker's netns, a sibling whose name starts like the exec
+    # root's, and the runner's own state outside it. Not one of them is the sandbox's to unmount.
+    printf '%s\n' / /run /run/docker/netns/default "$P/run/docker/netns/default" "$P/run/docker/netns/0123abcd" \
+        "$P/run/verdikta-code-runner/execution/keep" "$P/run/verdikta-code-runner/containerd-state/keep" > "$P/state/mounts"
+    OTHER_MOUNTS=$(cat "$P/state/mounts")
 }
 run() { # run ARGS... (the environment passes through)
     PATH="$STUBS:$PATH" VERDIKTA_SANDBOX_PREFIX="$P" VERDIKTA_SYSTEMD_UNIT_DIR="$P/etc/systemd/system" STUB_LOG="$P/log" STUB_STATE="$P/state" \
@@ -135,6 +160,16 @@ run() { # run ARGS... (the environment passes through)
 }
 log()  { cat "$P/log"; }
 own_units='verdikta-code-runner-(disk|containerd|docker)'
+# The mount table, split at the runner daemon's exec root: at or below it, and everything else.
+exec_mounts()  { awk -v r="$P/run/verdikta-code-runner/exec" '$0 == r || index($0, r "/") == 1' "$P/state/mounts"; }
+other_mounts() { awk -v r="$P/run/verdikta-code-runner/exec" '!($0 == r || index($0, r "/") == 1)' "$P/state/mounts"; }
+# Every umount names the disk's mount point or a path at or below the exec root: printed, the others.
+umount_strays() {
+    log | awk -v m="$P/var/lib/verdikta-code-runner" -v r="$P/run/verdikta-code-runner/exec" \
+        '$1 == "umount" { t = substr($0, 8); if (t != m && t != r && index(t, r "/") != 1) print }'
+}
+logged() { if log | grep -qxF -- "$2"; then ok; else bad "$1: no line [$2] in the log"; fi; }
+EXEC="$T/p/run/verdikta-code-runner/exec"
 
 # --- print-config: the isolation, as text a reviewer can read
 fresh
@@ -344,6 +379,9 @@ fail_case() { # NAME ENV=VAL
     hasnt "$1: adapter stays off" "$(cat "$I/external-adapter/.env")" "CODE_REVIEW_ENABLED=true"
     is "$1: /etc/docker untouched" "$(cat "$P/etc/docker/daemon.json")" "$DAEMON_BEFORE"
     hasnt "$1: no Docker restart on the way out" "$(log)" "restart docker"
+    is "$1: nothing stays mounted under the daemon's exec root" "$(exec_mounts)" ""
+    is "$1: every other mount stays" "$(other_mounts)" "$OTHER_MOUNTS"
+    is "$1: umount names only its own" "$(umount_strays)" ""
 }
 fail_case "fallocate fails"   "STUB_FALLOCATE_FAIL=1"
 fail_case "mkfs fails"        "STUB_MKFS_FAIL=1"
@@ -358,6 +396,117 @@ fail_case "another hash"      "STUB_HASH=$(printf 'beef%.0s' 1 2 3 4 5 6 7 8 9 1
 fresh
 out=$(STUB_ROOTDIR=/var/lib/docker run enable 2>&1)
 has "wrong data root explained" "$out" "/var/lib/docker"
+
+# --- the runner daemon's exec root: what its dockerd mounted there goes once it has stopped (#126)
+# The rollback, after the daemon ran: both of its mounts, each after the units stopped.
+fresh
+out=$(STUB_PULL_FAIL=1 run enable 2>&1)
+logged "rollback: netns/default" "umount $EXEC/netns/default"
+logged "rollback: null-netns"    "umount $EXEC/runtime-runc/vcr/null-netns"
+after_stop=$(log | awk '/^systemctl stop verdikta-code-runner-containerd$/ {s=1} s && /^umount .*\/exec\// {print "ok"; exit}')
+is "rollback: unmounts after its daemons stopped" "$after_stop" "ok"
+before_stop=$(log | awk '/^umount .*\/exec\// {u=1} u && /^systemctl stop verdikta-code-runner-(docker|containerd)$/ {print "early"; exit}')
+is "rollback: no unmount while a daemon still runs" "$before_stop" ""
+# Deepest first: a mount below another goes before it (the stub, as the kernel, refuses a parent first).
+fresh
+printf '%s\n' "$EXEC" "$EXEC/netns" >> "$P/state/mounts"
+out=$(STUB_PULL_FAIL=1 run enable 2>&1)
+order=$(log | awk -v r="$EXEC" '$1 == "umount" && ($2 == r || index($2, r "/") == 1) {print $2}')
+is "deepest first" "$order" "$(printf '%s\n' "$EXEC/runtime-runc/vcr/null-netns" "$EXEC/netns/default" "$EXEC/netns" "$EXEC")"
+is "deepest first: all of them go" "$(exec_mounts)" ""
+is "deepest first: the rest stays" "$(other_mounts)" "$OTHER_MOUNTS"
+hasnt "deepest first: no busy target" "$out" "target is busy"
+# disable, after a working enable.
+fresh
+run enable >/dev/null 2>&1
+is "enable: the daemon's mounts are there" "$(exec_mounts | wc -l | tr -d ' ')" 2
+: > "$P/log"
+out=$(run disable 2>&1); rc=$?
+is "disable: rc" "$rc" 0
+is "disable: nothing under the exec root" "$(exec_mounts)" ""
+is "disable: every other mount stays" "$(other_mounts)" "$OTHER_MOUNTS"
+is "disable: umount names only its own" "$(umount_strays)" ""
+hasnt "disable: never the arbiter's /run/docker" "$(log | grep '^umount ')" "/run/docker"
+# What an earlier rollback left on a host with no units at all: disable takes it away.
+fresh
+printf '%s\n' "$EXEC/netns/default" "$EXEC/runtime-runc/vcr/null-netns" >> "$P/state/mounts"
+out=$(run disable 2>&1); rc=$?
+is "leftovers, nothing installed: disable rc" "$rc" 0
+is "leftovers, nothing installed: gone" "$(exec_mounts)" ""
+is "leftovers, nothing installed: the rest stays" "$(other_mounts)" "$OTHER_MOUNTS"
+# A daemon that did not stop keeps what it mounted, and disable says so.
+fresh
+run enable >/dev/null 2>&1
+: > "$P/log"
+out=$(STUB_STOP_FAIL=verdikta-code-runner-docker run disable 2>&1); rc=$?
+is "a daemon still running: disable rc" "$rc" 1
+is "a daemon still running: its mounts stay" "$(exec_mounts | wc -l | tr -d ' ')" 2
+hasnt "a daemon still running: no umount under the exec root" "$(log | grep '^umount ')" "/exec"
+has "a daemon still running: says so" "$out" "still running"
+fresh
+run enable >/dev/null 2>&1
+: > "$P/log"
+out=$(STUB_STOP_FAIL=verdikta-code-runner-containerd run disable 2>&1); rc=$?
+is "containerd still running: disable rc" "$rc" 1
+is "containerd still running: the mounts stay" "$(exec_mounts | wc -l | tr -d ' ')" 2
+hasnt "containerd still running: no umount under the exec root" "$(log | grep '^umount ')" "/exec"
+# A mount that will not go: the others still go, disable exits 1 and names it.
+fresh
+run enable >/dev/null 2>&1
+: > "$P/log"
+out=$(STUB_UMOUNT_FAIL="$EXEC/netns/default" run disable 2>&1); rc=$?
+is "a busy mount: disable rc" "$rc" 1
+is "a busy mount: the other one goes" "$(exec_mounts)" "$EXEC/netns/default"
+has "a busy mount: names what stays" "$out" "$EXEC/netns/default"
+# No list from findmnt: nothing is unmounted, and it is said.
+fresh
+run enable >/dev/null 2>&1
+: > "$P/log"
+out=$(STUB_FINDMNT_FAIL=1 run disable 2>&1); rc=$?
+is "no mount list: disable rc" "$rc" 1
+hasnt "no mount list: no umount under the exec root" "$(log | grep '^umount ')" "/exec"
+has "no mount list: says so" "$out" "findmnt"
+# The rollback with a daemon that did not stop: its mounts stay, the rest is removed as before.
+fresh
+out=$(STUB_PULL_FAIL=1 STUB_STOP_FAIL=verdikta-code-runner-docker run enable 2>&1); rc=$?
+is "rollback, a daemon still running: rc" "$rc" 1
+hasnt "rollback, a daemon still running: no umount under the exec root" "$(log | grep '^umount ')" "/exec"
+has "rollback, a daemon still running: says so" "$out" "still running"
+[ ! -e "$P/var/lib/verdikta-code-runner.img" ] && ok || bad "rollback, a daemon still running: the image stayed"
+
+# --- a self-test that ran out of time points to the host requirements; any other failure does not
+hint="Host requirements"
+fresh
+out=$(STUB_CANARY_EXIT=3 STUB_CANARY_SAY="conformance: the listing check refused canary: [{\"code\":\"LISTING_TOO_HEAVY\",\"detail\":\"preparing the sandbox took 186 s; 3x that alone is above the class's 360 s run\"}]" run enable 2>&1); rc=$?
+is "too heavy: rc" "$rc" 1
+has "too heavy: the canary's own words are shown" "$out" "preparing the sandbox took 186 s"
+has "too heavy: points to the host requirements" "$out" "$hint"
+is "too heavy: one line" "$(printf '%s\n' "$out" | grep -c "$hint")" 1
+fresh
+out=$(STUB_CANARY_EXIT=3 STUB_CANARY_SAY='conformance: the listing check of canary did not finish (HTTP 200): {"cause":"step_timeout","step":"prepare:tools","detail":"the step ran past its limit"}' run enable 2>&1)
+has "a prepare step timeout: points to the host requirements" "$out" "$hint"
+fresh
+out=$(STUB_CANARY_EXIT=3 STUB_CANARY_SAY='conformance: the listing check of canary did not finish (HTTP 200): {"cause":"step_timeout","step":"integrity:reference:manifest","detail":"the step ran past its limit"}' run enable 2>&1)
+has "a reference watch timeout: points to the host requirements" "$out" "$hint"
+fresh
+out=$(STUB_CANARY_EXIT=3 STUB_CANARY_SAY='conformance: the listing check of canary did not finish (HTTP 200): {"cause":"step_timeout","step":"suite:1","detail":"the step ran past its limit"}' run enable 2>&1)
+hasnt "a timeout outside preparation: no pointer" "$out" "$hint"
+fresh
+out=$(STUB_CANARY_EXIT=3 STUB_CANARY_SAY='conformance: the runner session did not start: listen EADDRINUSE 127.0.0.1:5987' run enable 2>&1)
+hasnt "another failure: no pointer" "$out" "$hint"
+has "another failure: the canary's own words are shown" "$out" "EADDRINUSE"
+fresh; run enable >/dev/null 2>&1
+out=$(STUB_CANARY_EXIT=3 STUB_CANARY_SAY='conformance: the listing check refused canary: [{"code":"LISTING_TOO_HEAVY","detail":"x"}]' run self-test 2>&1); rc=$?
+is "self-test action, too heavy: rc" "$rc" 1
+has "self-test action, too heavy: points to the host requirements" "$out" "$hint"
+# The section it names is there.
+grep -qxF "## $hint" "$ROOT/docs/maintenance/code-review-sandbox.md" && ok || bad "the doc has no section \"## $hint\", which the pointer names"
+# The quick check CI runs on a real host (code-review-sandbox.integration.sh) is the one the doc gives.
+qc() { tr '\n\\' '  ' < "$1" | tr -s ' ' | grep -o "runsc --platform=systrap --network=none do /bin/bash -c 'd=[^']*'"; }
+doc_qc=$(qc "$ROOT/docs/maintenance/code-review-sandbox.md")
+it_qc=$(qc "$ROOT/tests/code-review-sandbox.integration.sh")
+[ -n "$doc_qc" ] && ok || bad "the doc's quick check was not found"
+is "CI runs the documented quick check" "$it_qc" "$doc_qc"
 
 # --- a failed enable keeps an image it did not make: an earlier disable kept it on purpose
 fresh
@@ -681,6 +830,9 @@ hasnt "never reloads docker"   "$code" "reload docker"
 hasnt "no package manager: apt can restart Docker" "$code" "apt-get\|apt install\|dpkg\|yum \|dnf "
 hasnt "never names cl-postgres" "$code" "cl-postgres"
 hasnt "no default-socket docker path" "$code" "/var/run/docker.sock"
+hasnt "the mount table is findmnt's to read, not the script's" "$code" "/proc/self/mount\|/proc/mounts\|/etc/mtab\|mountinfo"
+hasnt "umount is never lazy or forced: what stays is said" "$code" "umount -[a-zA-Z]*[lf]"
+has "findmnt is a tool the host must have" "$(grep -n 'for tool in' "$TOOL")" " findmnt "
 # The installer never writes dev trust, anywhere.
 hits=$(grep -rnE 'CODE_REVIEW_TRUST=.?dev|CODE_REVIEW_DEV_KEYS' "$ROOT/bin" "$ROOT/util" "$ROOT/lib" "$ROOT/config" | grep -v '^[^:]*:[0-9]*:[[:space:]]*#' )
 is "the installer never writes dev trust" "$hits" ""
