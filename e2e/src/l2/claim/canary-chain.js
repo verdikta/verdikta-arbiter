@@ -3,7 +3,9 @@
 /**
  * A stand-in for a Base Sepolia RPC, on loopback, for the fault switch in the claim suite: it
  * answers what the External Adapter measures a request by. A test says which class each request
- * was for. It keeps no chain, and it counts its calls.
+ * was for. It keeps no chain, and it counts its calls. Its keeper lists classes only for the one
+ * job registered here, under the key registration writes, so a request whose job id the adapter
+ * reads into another key is refused, as on the chain.
  */
 
 const http = require('http');
@@ -19,7 +21,24 @@ const aggregator = new ethers.Interface([
 const keeper = new ethers.Interface(['function getOracleClassesByKey(address _oracle, bytes32 _jobId) view returns (uint64[])']);
 const hash = (n) => ethers.zeroPadValue(ethers.toBeHex(n), 32);
 
-async function startCanaryChain({ classes = [128, 5555] } = {}) {
+/**
+ * A job's id as the bridge sends it to the adapter: Chainlink 2.23.0 renders
+ * `$(jobSpec.externalJobID)` as 0x and the UUID's 32 hex digits, not as the UUID with dashes its
+ * API shows (38f19572-c510-41ba-a5f2-dea284614590 here).
+ */
+const JOB_ID = '0x38f19572c51041baa5f2dea284614590';
+/**
+ * The key that job is registered under on the keeper: arbiter-operator/scripts/register-oracle-cl.js
+ * writes JOB_ID_<n>_NO_HYPHENS, the 32 digits, as UTF-8 (installer/bin/register-oracle-dispatcher.sh).
+ */
+const REGISTERED_JOB_KEY = ethers.hexlify(ethers.toUtf8Bytes('38f19572c51041baa5f2dea284614590'));
+
+/**
+ * @param {object} [o]
+ * @param {number[]} [o.classes=[128, 5555]] - what the keeper lists for (operator, REGISTERED_JOB_KEY)
+ * @param {string} [o.operator] - the adapter's OPERATOR_ADDR; unset, any oracle address
+ */
+async function startCanaryChain({ classes = [128, 5555], operator } = {}) {
   const requests = new Map();
   let calls = 0;
   const methods = {
@@ -37,7 +56,9 @@ async function startCanaryChain({ classes = [128, 5555] } = {}) {
     }),
     eth_call: ([call]) => {
       if (call.to.toLowerCase() === CANARY_AGGREGATOR.toLowerCase()) return aggregator.encodeFunctionResult('reputationKeeper', [KEEPER]);
-      return keeper.encodeFunctionResult('getOracleClassesByKey', [classes]);
+      const [oracle, jobKey] = keeper.decodeFunctionData('getOracleClassesByKey', call.data);
+      const registered = jobKey === REGISTERED_JOB_KEY && (!operator || oracle.toLowerCase() === operator.toLowerCase());
+      return keeper.encodeFunctionResult('getOracleClassesByKey', [registered ? classes : []]);
     }
   };
   const server = http.createServer((req, res) => {
@@ -67,4 +88,4 @@ async function startCanaryChain({ classes = [128, 5555] } = {}) {
   };
 }
 
-module.exports = { startCanaryChain };
+module.exports = { startCanaryChain, JOB_ID, REGISTERED_JOB_KEY };

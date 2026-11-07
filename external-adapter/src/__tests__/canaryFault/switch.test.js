@@ -8,7 +8,10 @@ const {
   CANARY_CLASS_ID, CANARY_CHAIN_ID, CANARY_AGGREGATOR, FAULTS, directiveMac,
   canaryFaultConfigFromEnv, describeCanaryFault, faultForRequest
 } = require('../../canaryFault');
-const { startCanaryChain, requestInput, AGGREGATOR, OPERATOR, JOB_ID, AGG_ID } = require('../../../test/helpers/canaryChain');
+const { jobIdBytes32 } = require('../../canaryFault/measure');
+const {
+  startCanaryChain, requestInput, AGGREGATOR, OPERATOR, JOB_ID, JOB_EXTERNAL_ID, JOB_BYTES32, AGG_ID
+} = require('../../../test/helpers/canaryChain');
 
 const CLAIM = `Qm${'C'.repeat(44)}`;
 const OTHER_CLAIM = `Qm${'D'.repeat(44)}`;
@@ -183,7 +186,14 @@ describe('refused by measurement: the claim is judged normally, with no directiv
     ['a short aggId', { aggId: '0xabc' }, 'AGG_ID'],
     ['an aggId that is not hex', { aggId: `0x${'z'.repeat(64)}` }, 'AGG_ID'],
     ['no job id', { jobId: undefined }, 'JOB_ID'],
-    ['a job id that is not one', { jobId: 'e2e-1234' }, 'JOB_ID']
+    ['a job id that is not one', { jobId: 'e2e-1234' }, 'JOB_ID'],
+    ['0x and nothing', { jobId: '0x' }, 'JOB_ID'],
+    ['0x and 31 digits', { jobId: JOB_ID.slice(0, -1) }, 'JOB_ID'],
+    ['0x and 33 digits', { jobId: `${JOB_ID}0` }, 'JOB_ID'],
+    ['0x and a bytes32: the key, not the job id', { jobId: JOB_BYTES32 }, 'JOB_ID'],
+    ['0x and the UUID with dashes', { jobId: `0x${JOB_EXTERNAL_ID}` }, 'JOB_ID'],
+    ['0x and something that is not hex', { jobId: `0x${'g'.repeat(32)}` }, 'JOB_ID'],
+    ['0x twice', { jobId: `0x${JOB_ID}`.slice(0, 34) }, 'JOB_ID']
   ])('%s, before any read', async (_name, request, code) => {
     const fault = await ask(armedEnv(), request);
     expect(fault.refused).toMatch(R(code));
@@ -201,6 +211,39 @@ describe('refused by measurement: the claim is judged normally, with no directiv
   it('an aggId in capitals or without 0x reads the same request', async () => {
     const fault = await ask(armedEnv(), { aggId: AGG_ID.slice(2).toUpperCase() });
     expect(fault.refused).toBeNull();
+  });
+});
+
+// The canary run of issue #126 refused every request with JOB_ID_UNREADABLE: the bridge sends the
+// job id as Chainlink 2.23.0 renders it, 0x and 32 hex digits, and the switch read only the UUID.
+describe('the job id as the bridge sends it, and the key it was registered under', () => {
+  it('Chainlink 2.23.0\'s form, 0x and the 32 digits, is the key registration wrote', () => {
+    expect(JOB_ID).toMatch(/^0x[0-9a-f]{32}$/);
+    expect(jobIdBytes32(JOB_ID)).toBe(JOB_BYTES32);
+    // register-oracle-cl.js's toBytes32 of JOB_ID_<n>_NO_HYPHENS: the 32 characters as UTF-8, no padding.
+    expect(JOB_BYTES32).toBe('0x3338663139353732633531303431626161356632646561323834363134353930');
+  });
+
+  it.each([
+    ['0x, as Chainlink sends it', JOB_ID],
+    ['0X and capitals', `0X${JOB_ID.slice(2).toUpperCase()}`],
+    ['surrounding space', ` ${JOB_ID}\n`],
+    ['the UUID with dashes', JOB_EXTERNAL_ID],
+    ['the 32 digits alone, as installer/.contracts holds them', JOB_EXTERNAL_ID.replace(/-/g, '')]
+  ])('%s: the same key', (_name, jobId) => {
+    expect(jobIdBytes32(jobId)).toBe(JOB_BYTES32);
+  });
+
+  it('a request with the job id as Chainlink sends it is measured, and acted on', async () => {
+    const fault = await ask(armedEnv(), { jobId: JOB_ID });
+    expect(fault.refused).toBeNull();
+    expect(chain.calls).toContain('eth_call');
+    expect(fault.directiveFor(1, { bcid: CLAIM, reportSha256: 'a'.repeat(64) })).toMatchObject({ action: 'hold-juror-answer' });
+  });
+
+  it('another job of the same operator, registered on no class: the keeper lists nothing for it', async () => {
+    const fault = await ask(armedEnv(), { jobId: '0x39515f75ac2947beb7f2eeae4d8eaf3e' });
+    expect(fault.refused).toMatch(/IDENTITY_NOT_IN_CLASS/);
   });
 });
 

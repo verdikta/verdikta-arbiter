@@ -19,6 +19,7 @@ const C = require('./checks');
 const F = require('./fixtures');
 const { fetchJustificationJson } = require('../../ipfs');
 const { claimVerdictChecks } = require('../../l4/claim-checks');
+const { JOB_ID } = require('./canary-chain');
 
 const AI_ROUTE = '/api/rank-and-justify';
 const RUN_ROUTE = '/v1/runs';
@@ -33,8 +34,6 @@ const TESTING_TOOL = path.join(__dirname, '..', '..', '..', '..', 'testing-tool'
 /** The harness's AI Node holds the fault switch's key for the suite's armed adapter; the main adapter's flag is off. */
 const AI_NODE_HOLDS_THE_KEY = Object.freeze({ ea: 'off', aiNode: 'armed' });
 const ARMED = Object.freeze({ ea: 'armed', aiNode: 'armed' });
-/** A job's external id, as the bridge sends it. */
-const JOB_ID = '38f19572-c510-41ba-a5f2-dea284614590';
 
 const last = (list) => list[list.length - 1];
 

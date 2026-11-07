@@ -11,8 +11,15 @@ const { ethers } = require('ethers');
 const AGGREGATOR = '0xe8a385E473EA710c5a88Cc72681a16a26fe380e4';
 const KEEPER = '0xE09821277D9af702F7910a57e85EaC6D83e4d794';
 const OPERATOR = '0x00000000000000000000000000000000000a6c01';
-/** A job's external id as the bridge sends it, and its id on-chain (arbiter-operator/scripts/register-oracle-cl.js). */
-const JOB_ID = '38f19572-c510-41ba-a5f2-dea284614590';
+/** A job's external id, as Chainlink's API, the job spec and installer/.contracts show it. */
+const JOB_EXTERNAL_ID = '38f19572-c510-41ba-a5f2-dea284614590';
+/**
+ * The same id as the bridge sends it: Chainlink 2.23.0 renders `$(jobSpec.externalJobID)` as 0x and
+ * the UUID's 32 hex digits (the pipeline run's inputs are stored as JSON first, and that writes a
+ * byte array as 0x-hex), as every `[EA <id> …]` log line on a real node shows.
+ */
+const JOB_ID = '0x38f19572c51041baa5f2dea284614590';
+/** Its key on-chain: the 32 digits as UTF-8, as arbiter-operator/scripts/register-oracle-cl.js registers JOB_ID_<n>_NO_HYPHENS. */
 const JOB_BYTES32 = ethers.utils.hexlify(ethers.utils.toUtf8Bytes('38f19572c51041baa5f2dea284614590'));
 const AGG_ID = `0x${'a6'.repeat(32)}`;
 
@@ -115,4 +122,4 @@ async function startCanaryChain(o = {}) {
   };
 }
 
-module.exports = { startCanaryChain, requestInput, AGGREGATOR, KEEPER, OPERATOR, JOB_ID, JOB_BYTES32, AGG_ID };
+module.exports = { startCanaryChain, requestInput, AGGREGATOR, KEEPER, OPERATOR, JOB_ID, JOB_EXTERNAL_ID, JOB_BYTES32, AGG_ID };
