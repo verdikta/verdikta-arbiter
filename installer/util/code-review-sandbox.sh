@@ -17,8 +17,9 @@
 # It never restarts, reloads or reconfigures the arbiter's Docker or its containerd, never
 # touches /etc/docker or a container of the arbiter's, and installs no package: apt can
 # restart Docker. A new gVisor release reaches a running daemon with `systemctl reload` of
-# the runner's own daemon. A first enable that fails removes what it made, the disk image
-# included. A failed refresh keeps what is there: the runner refuses claims with no pass for
+# the runner's own daemon. A first enable that fails removes what it made, the disk image and
+# what its daemon mounted under its exec root included; so does disable. A failed refresh keeps
+# what is there: the runner refuses claims with no pass for
 # what it is running, whichever way this ends, and nothing else on the node notices.
 #
 # Usage (from the install directory; root or sudo for the host parts):
@@ -76,6 +77,8 @@ MOUNT="$P/var/lib/verdikta-code-runner"
 IMAGE="$P/var/lib/verdikta-code-runner.img"
 ETC="$P/etc/verdikta-code-runner"
 RUNDIR="$P/run/verdikta-code-runner"
+# The daemon's exec root: never /run/docker, the arbiter's.
+EXEC_ROOT="$RUNDIR/exec"
 SOCK="$RUNDIR/docker.sock"
 CONTAINERD_SOCK="$RUNDIR/containerd/containerd.sock"
 UNIT_DIR="${VERDIKTA_SYSTEMD_UNIT_DIR:-/etc/systemd/system}"
@@ -166,7 +169,7 @@ daemon_json() {
     cat <<EOF
 {
   "data-root": "$MOUNT/docker",
-  "exec-root": "$RUNDIR/exec",
+  "exec-root": "$EXEC_ROOT",
   "pidfile": "$RUNDIR/docker.pid",
   "hosts": ["unix://$SOCK"],
   "group": "$RUN_GROUP",
@@ -333,7 +336,7 @@ host_problems() {
     arch=$(uname -m)
     [ "$arch" = "x86_64" ] || echo "the class platform is linux/amd64, and this host is $arch"
     have_systemd || echo "no systemd: the runner's daemon and disk are systemd units"
-    for tool in dockerd containerd docker ip curl tar bzip2 sha512sum fallocate mkfs.ext4 mount umount mountpoint df node npm; do
+    for tool in dockerd containerd docker ip curl tar bzip2 sha512sum fallocate mkfs.ext4 mount umount mountpoint findmnt df node npm; do
         command -v "$tool" >/dev/null 2>&1 || echo "$tool is not on PATH (this script installs no package: apt can restart Docker)"
     done
 }
@@ -683,13 +686,22 @@ self_test() {
     if ! rm -f "$STATE_DIR/conformance.json" || [ -e "$STATE_DIR/conformance.json" ]; then
         echo -e "${RED}Could not remove the old pass $STATE_DIR/conformance.json: the self-test did not run.${NC}" >&2; return 1
     fi
-    # Its downloads and its image go on the fixed disk, and it gets no key: env -i.
+    # Its downloads and its image go on the fixed disk, and it gets no key: env -i. Its output is shown as
+    # it runs and kept, to say below whether it ran out of time.
+    local said="$TMP_DIR/self-test.out"
     (cd "$RUNNER_DIR" && as_user env -i PATH="$PATH" HOME="$RUN_HOME" \
         DOCKER_HOST="unix://$SOCK" CODE_RUNNER_RUNTIME=runsc CODE_RUNNER_CONFORMANCE_REGISTRY_NETWORK=host TMPDIR="$MOUNT/selftest" \
-        node conformance/run.js --json "$result") || rc=$?
+        node conformance/run.js --json "$result") 2>&1 | tee "$said"
+    rc=${PIPESTATUS[0]}
     as_user find "$MOUNT/selftest" -mindepth 1 -delete 2>/dev/null
     if [ "$rc" != "0" ]; then
-        echo -e "${RED}The conformance self-test failed (exit $rc). Its output is above.${NC}" >&2; return 1
+        echo -e "${RED}The conformance self-test failed (exit $rc). Its output is above.${NC}" >&2
+        # The listing check's own words when the measured times do not fit the class's (code-runner/src/listing.js),
+        # or a step of the preparation (prepare:*, the reference watch's integrity:reference:*) ran past its limit.
+        if grep -qE 'LISTING_TOO_HEAVY|"cause":"step_timeout","step":"(prepare|integrity:reference):' "$said" 2>/dev/null; then
+            echo -e "${YELLOW}It ran out of time: this host may be too slow for the sandbox. See \"Host requirements\" in installer/docs/maintenance/code-review-sandbox.md${NC}" >&2
+        fi
+        return 1
     fi
     rc=0
     node "$CHECK" record --install-dir "$INSTALL_DIR" --result "$result" || rc=$?
@@ -770,12 +782,46 @@ adapter_env_off() {
     return 1
 }
 
+# The mounts at or below the daemon's exec root, deepest first: a path below another sorts after it,
+# so a reverse byte order unmounts it first. findmnt's raw list, one target per line; this only picks.
+# Raw output hex-escapes a blank in a path: the daemon makes none, and one would be named as staying.
+exec_root_mounts() {
+    findmnt -rn -o TARGET | while IFS= read -r t; do
+        case "$t" in "$EXEC_ROOT"|"$EXEC_ROOT"/*) printf '%s\n' "$t" ;; esac
+    done | LC_ALL=C sort -r
+}
+
+# The runner's dockerd leaves mounts in its exec root when it stops: netns/default and
+# runtime-runc/vcr/null-netns (measured on a canary host, #126). They go once its daemon and containerd
+# are down, and only those: nothing outside the exec root is named to umount. 1 when any stays, said.
+unmount_exec_root() {
+    local list t
+    if systemctl is-active --quiet "$DOCKER_UNIT" 2>/dev/null || systemctl is-active --quiet "$CONTAINERD_UNIT" 2>/dev/null; then
+        warn "The runner's Docker daemon or its containerd is still running: what it mounted under $EXEC_ROOT stays."
+        return 1
+    fi
+    if ! list=$(exec_root_mounts); then
+        warn "findmnt could not list the mounts: any under $EXEC_ROOT stay."
+        return 1
+    fi
+    [ -n "$list" ] || return 0
+    while IFS= read -r t; do
+        as_root umount "$t" < /dev/null
+    done <<< "$list"
+    list=$(exec_root_mounts) || list="(findmnt could not list them again)"
+    [ -n "$list" ] || return 0
+    warn "Still mounted under $EXEC_ROOT, for umount by hand once nothing uses them: $(printf '%s' "$list" | tr '\n' ' ')"
+    return 1
+}
+
 # What a failed first enable made goes again. The arbiter's Docker is not in this list.
+# 1 when something of its daemon stays mounted (unmount_exec_root says what).
 remove_own_units() {
-    local u
+    local u rc=0
     for u in $OWN_UNITS; do
         as_root systemctl stop "$u" 2>/dev/null
     done
+    unmount_exec_root || rc=1
     # shellcheck disable=SC2086
     as_root systemctl disable $OWN_UNITS >/dev/null 2>&1
     for u in $OWN_UNITS; do
@@ -784,6 +830,7 @@ remove_own_units() {
     as_root systemctl daemon-reload 2>/dev/null
     as_root rm -rf "$ETC"
     if ip link show "$BRIDGE" >/dev/null 2>&1; then as_root ip link del "$BRIDGE"; fi
+    return "$rc"
 }
 
 purge_disk() {
@@ -918,7 +965,7 @@ do_disable() {
     [ -f "$RUNNER_DIR/stop.sh" ] && as_user bash "$RUNNER_DIR/stop.sh" >/dev/null 2>&1
     local rc=0
     adapter_env_off || rc=1
-    remove_own_units
+    remove_own_units || rc=1
     rm -f "$RUNNER_ENV" "$STATE_DIR/conformance.json"
     if [ "$PURGE" = "1" ]; then
         purge_disk || exit 1

@@ -19,7 +19,55 @@ code review on); text-mode requests never use it. [Design](../../../docs/develop
 | `CODE_REVIEW_*`, `CODE_RUNNER_*` and `NETWORK_CHAIN_ID` | `<install>/external-adapter/.env` |
 
 It needs root or passwordless sudo, the free disk (the image plus 10 GB left over), and about +2 vCPU and
-+4 GB of RAM while judging. It installs no package: if something is missing, it says what.
++4 GB of RAM while judging, on a host that meets the [host requirements](#host-requirements). It installs
+no package: if something is missing, it says what.
+
+## Host requirements
+
+- **Dedicated vCPUs, 4 or more**, not shared or burstable.
+- **8 GB of RAM.**
+- **An SSD**, with room for the disk image (above).
+
+The conformance self-test that `enable` runs is the gate. A host that passes it can judge claims, and
+one that fails it cannot, whatever its figures. The list above comes from the few hosts measured below.
+
+**Why a host fails.** Before any claim, the runner prepares the sandbox inside gVisor. Part of that is
+two walks over many small files: the runner's own tool directories (`integrity.requireImmutableTools`,
+the step `prepare:tools`), then the work tree and the image's other watched paths (the reference
+`watch`, steps `integrity:reference:*`). Every file costs gVisor system calls, and on a slow or shared CPU those add up. The listing
+check times the whole preparation and refuses the listing as `LISTING_TOO_HEAVY` when 3 × the
+preparation + 2 s is above the class's 360 s run (`minimumRunSeconds` in `code-runner/src/listing.js`;
+the 360 s is `CLASS_HARD_LIMITS.runSeconds` in `@verdikta/common`). So a preparation over about 119 s
+fails on its own, and one close to that leaves too little time for the build and the suite, which the
+check refuses the same way. The self-test's canary goes through this check, so a slow host fails
+`enable` with:
+
+```
+preparing the sandbox took N s; 3x that alone is above the class's 360 s run
+```
+
+or with a `step_timeout` in a step of the preparation, such as `prepare:tools`. `enable` then prints a
+line pointing to this section.
+
+**A quick check (optional).** It times 3,000 small file writes in a gVisor sandbox. gVisor is installed
+first thing in `enable` and stays after a failed one (`ls /opt/gvisor` shows the release). Run it a few
+times:
+
+```bash
+sudo /opt/gvisor/<release>/runsc --platform=systrap --network=none do /bin/bash -c \
+  'd=$(mktemp -d); time (for i in $(seq 3000); do echo x > "$d/$i"; done); rm -rf "$d"'
+```
+
+On the hosts that passed, `real` was about 1 s or less, and the repeats stayed close to each other.
+Several seconds, or repeats that swing widely, point to a slow or shared CPU. The self-test still decides.
+
+**What has been measured.** Only a few hosts so far, so take these as a hint, not a benchmark:
+
+| Host | Preparation | Quick check | Self-test |
+|---|---|---|---|
+| A dedicated 4-vCPU CI VM | not recorded | about 0.2 s (CI logs it each run) | passes |
+| A shared-CPU 4-vCPU VPS | 186 s | 1.9 to 11 s | fails |
+| An 8-vCPU VPS, on the same kernel (5.4) as the one that failed | not recorded | about 0.5 s | passes |
 
 ## What it leaves alone
 
@@ -54,6 +102,11 @@ class gets its own.
 | `code-review-sandbox.sh warm` | Pull the pinned images again |
 | `code-review-sandbox.sh disable` | Off; the disk image stays |
 | `code-review-sandbox.sh disable --purge` | Off, and the disk image is freed. gVisor stays: another sandbox may share it |
+
+The runner's Docker daemon leaves mounts in its exec root, `/run/verdikta-code-runner/exec`, when it stops.
+A first enable that fails, and `disable`, unmount everything there once that daemon and its containerd have
+stopped, and nothing outside it (never `/run/docker`, the arbiter's). Anything that stays is named, and
+`disable` then exits 1. On a host where an earlier release left them, `disable` removes them.
 
 `arbiter-doctor.sh` reports `svc.code_runner`, `sandbox.runsc`, `sandbox.disk`, `sandbox.conformance`,
 `sandbox.trust` and `sandbox.registry`. `upgrade-arbiter.sh` holds the runner's maintenance lock while
