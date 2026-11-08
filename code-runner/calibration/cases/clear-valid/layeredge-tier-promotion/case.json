@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "HIGH",
+    "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows a staker paid 20% for a year while getUserAPY states 35%. The shortfall stays in the contract and the stake is intact: the contract fails to deliver the return it promises without losing value, Immunefi's Low.",
     "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

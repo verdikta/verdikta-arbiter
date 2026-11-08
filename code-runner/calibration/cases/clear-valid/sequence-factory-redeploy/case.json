@@ -30,6 +30,9 @@
   "expected": {
     "outcome": "VALID",
     "class": "MEDIUM",
+    "rubric": "immunefi-v2.3",
+    "impact": "griefing",
+    "classReason": "The PoC shows a second deploy with the same salt reverting instead of answering with the address. Factory.deploy is open to anyone, so a stranger can deploy a user's wallet first and make the user's own deployment revert, at the user's gas and for no gain: griefing, Medium.",
     "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

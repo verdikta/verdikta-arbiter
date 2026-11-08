@@ -44,6 +44,9 @@
   "expected": {
     "outcome": "VALID",
     "class": "MEDIUM",
+    "rubric": "immunefi-v2.3",
+    "impact": "unbounded-gas-consumption",
+    "classReason": "The PoC shows the guardian's pause needing more than a 30 million gas block once 2,500 proposals are queued: Timelock.pause walks every live proposal, so the safe's signers can make its gas grow without bound. A theft would also need stolen signer keys and a guardian that waits while the queue grows over several blocks, which the PoC does not show: unbounded gas consumption, Medium.",
     "reason": "The program judged it valid at the lower side of a boundary it moved, so Medium, against the High claimed. Every gate passes, and the class is left to the jury, which A7d measures.",
     "runner": {
       "result": "definitive",

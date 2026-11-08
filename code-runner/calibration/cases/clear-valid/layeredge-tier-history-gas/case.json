@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "MEDIUM",
+    "class": "CRITICAL",
+    "rubric": "immunefi-v2.3",
+    "impact": "permanent-freezing-of-funds",
+    "classReason": "The PoC shows other accounts' stakes and exits pushing a staker's own unstake past a 30 million gas block. Every exit walks the staker's whole tier history (calculateUnclaimedInterest) and nothing ever shortens it, so anyone can keep that stake from leaving for good; only an owner upgrade could release it. Permanent freezing of funds, Critical.",
     "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

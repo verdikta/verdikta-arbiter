@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "HIGH",
+    "class": "CRITICAL",
+    "rubric": "immunefi-v2.3",
+    "impact": "theft-of-funds",
+    "classReason": "The PoC shows a stranger's upgradeTo moving the proxy to another well. Aquifer.boreWell clones any implementation it is given, so a stranger can point the proxy at code of its own and take the tokens the proxy holds: direct theft of user funds, Critical.",
     "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

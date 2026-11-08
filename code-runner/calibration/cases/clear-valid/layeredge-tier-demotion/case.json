@@ -30,6 +30,9 @@
   "expected": {
     "outcome": "VALID",
     "class": "HIGH",
+    "rubric": "immunefi-v2.3",
+    "impact": "theft-of-unclaimed-yield",
+    "classReason": "The PoC shows the seventh staker left on a tier 2 record after it ranks in tier 3. calculateUnclaimedInterest pays by that record, so the staker accrues tier 2's rate from the rewards reserve that pays every staker's interest: yield it is not owed, taken from what the others claim. Theft of unclaimed yield, High.",
     "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

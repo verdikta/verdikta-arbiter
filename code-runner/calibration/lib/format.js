@@ -22,6 +22,10 @@
  * and the jury it reaches decides the rest, so what the loader holds is the label against the
  * program's record or the listing's own text.
  *
+ * A valid case's class is the one under its listing's rubric, as the jury is asked to judge it (node
+ * A7e): `expected.class` with `expected.rubric`, the `expected.impact` it matches and `expected.classReason`.
+ * The program's own class stays in `source.program`, and in the claim, which claims what the hunter did.
+ *
  * The rule is that nothing is skipped. loadCorpus reads every folder whichever subset was asked
  * for and reports every problem at once, before any image or run. What can be checked without
  * running is checked: an expected result that contradicts itself, a control that is more than
@@ -64,6 +68,39 @@ const OFFICIAL_SOLC = officialList(codeReview.CLASS_HARD_LIMITS.platform);
 
 const OUTCOMES = Object.freeze(['VALID', 'INVALID', 'DUPLICATE', 'ABSTAIN', 'REQUESTER_ERROR']);
 const CLASSES = Object.freeze(['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+/**
+ * A valid case's class is the one under its listing's rubric (node A7e): `expected.rubric` names the rubric, `expected.impact`
+ * the impact the case matches, and `expected.classReason` says why. Each impact has one class, so the same impact cannot get two.
+ * Keys are ours, one per impact the rubric's source lists for smart contracts (the page named in common's SEVERITY_RUBRICS).
+ */
+const RUBRIC_IMPACTS = Object.freeze({
+  'immunefi-v2.3': Object.freeze({
+    'governance-vote-manipulation': 'CRITICAL',
+    'theft-of-funds': 'CRITICAL',
+    'theft-of-nfts': 'CRITICAL',
+    'permanent-freezing-of-funds': 'CRITICAL',
+    'permanent-freezing-of-nfts': 'CRITICAL',
+    'unauthorized-nft-minting': 'CRITICAL',
+    'rng-manipulation': 'CRITICAL',
+    'nft-content-alteration': 'CRITICAL',
+    'protocol-insolvency': 'CRITICAL',
+    'theft-of-unclaimed-yield': 'HIGH',
+    'theft-of-unclaimed-royalties': 'HIGH',
+    'permanent-freezing-of-unclaimed-yield': 'HIGH',
+    'permanent-freezing-of-unclaimed-royalties': 'HIGH',
+    'temporary-freezing-of-funds': 'HIGH',
+    'temporary-freezing-of-nfts': 'HIGH',
+    'unable-to-operate-for-lack-of-token-funds': 'MEDIUM',
+    'block-stuffing': 'MEDIUM',
+    griefing: 'MEDIUM',
+    'theft-of-gas': 'MEDIUM',
+    'unbounded-gas-consumption': 'MEDIUM',
+    'fails-to-deliver-promised-returns': 'LOW'
+  })
+});
+/** The subsets the real-jury measurement reads (§18): a valid case in one carries its class under the rubric. */
+const RUBRIC_LABELLED_SUBSETS = Object.freeze(['adversarial', 'clear-valid', 'batch-2']);
+const RUBRIC_FIELDS = Object.freeze(['rubric', 'impact', 'classReason']);
 const GATE_STATUSES = Object.freeze(['pass', 'fail', 'not-run']);
 const RUNNER_GATES = Object.freeze([...codeReview.REPORT_GATES]);
 const CLAIM_FILES = Object.freeze(['finding.json', 'report.md', 'poc.patch', 'fix.patch']);
@@ -273,8 +310,9 @@ function checkLabel(raw, loaded, listing, fail) {
 
   const programClass = isObject(raw.source) && isObject(raw.source.program) ? raw.source.program.class : undefined;
   const claimed = loaded.finding ? loaded.finding.claimedClass : undefined;
-  if (want === 'VALID' && isObject(expected)) {
-    if (expected.class !== programClass) fail(`expected.class ${expected.class} is not the program's class, ${programClass}`);
+  // A valid case's class is the rubric's (expected.class, node A7e); the program's stays in source.program, beside it.
+  if (want === 'VALID') {
+    if (!CLASSES.includes(programClass)) fail('a valid case is a finding the program judged valid: source.program.class is the class it gave');
   } else if (family === 'duplicate') {
     if (!CLASSES.includes(programClass)) fail('a duplicate is a finding the program judged valid: source.program.class is the class it gave');
   } else if (label.basis === 'program' && programClass !== null && programClass !== undefined) {
@@ -306,7 +344,7 @@ function checkLabel(raw, loaded, listing, fail) {
       fail('label.boundary.classes must be two adjacent classes, lower first');
     } else {
       if (!b.classes.includes(b.call)) fail('label.boundary.call must be one of the two classes');
-      if (isObject(expected) && expected.class !== b.call) fail(`expected.class ${expected.class} is not the program's call, ${b.call}`);
+      if (b.call !== programClass) fail(`label.boundary.call ${b.call} is not the program's class, ${programClass}`);
       if (claimed !== undefined && !b.classes.includes(claimed)) fail(`finding.json's claimedClass ${claimed} is on neither side of the boundary`);
     }
     if (!text(b.moved)) fail('label.boundary.moved must say who moved it, and from where');
@@ -367,7 +405,7 @@ function checkPublicCase(raw, loaded, listing, fail) {
   } else {
     const programClass = isObject(raw.source) && isObject(raw.source.program) ? raw.source.program.class : undefined;
     if (expected.outcome !== 'VALID') fail('a clear-valid case\'s outcome is VALID');
-    if (expected.class !== programClass) fail(`expected.class ${expected.class} is not the program's class, ${programClass}`);
+    // expected.class is the class under the listing's rubric (node A7e); the claim, as a hunter submitted it, claims the program's.
     if (loaded.finding && loaded.finding.claimedClass !== programClass) fail(`finding.json's claimedClass ${loaded.finding.claimedClass} is not the program's class, ${programClass}`);
   }
   const gates = isObject(runner.gates) ? runner.gates : {};
@@ -671,12 +709,42 @@ function checkExpected(expected, fail) {
     fail('expected is required');
     return;
   }
-  unknownFields(expected, ['outcome', 'class', 'reason', 'runner'], (m) => fail(`expected: ${m}`));
+  unknownFields(expected, ['outcome', 'class', ...RUBRIC_FIELDS, 'reason', 'runner'], (m) => fail(`expected: ${m}`));
   if (!OUTCOMES.includes(expected.outcome)) fail(`expected.outcome must be one of ${OUTCOMES.join(', ')}`);
   if (expected.outcome === 'VALID' && !CLASSES.includes(expected.class)) fail(`expected.class must be one of ${CLASSES.join(', ')} when the outcome is VALID`);
   if (expected.outcome !== 'VALID' && expected.class !== null) fail('expected.class is null unless the outcome is VALID');
   if (!text(expected.reason)) fail('expected.reason must say why, in words');
   checkRunner(expected.runner, expected.outcome, fail);
+}
+
+/**
+ * A valid case's class under its listing's rubric (node A7e): the rubric the listing names, an impact of that rubric whose class is
+ * expected.class, and why in words. Required where the real jury is measured; a rejected or duplicate claim has no class, so none.
+ */
+function checkRubricLabel(raw, listing, fail) {
+  const expected = isObject(raw.expected) ? raw.expected : {};
+  const named = RUBRIC_FIELDS.filter((f) => expected[f] !== undefined);
+  if (expected.outcome !== 'VALID') {
+    if (named.length) fail('expected.rubric, impact and classReason go with a VALID outcome: a claim with no class has no class to explain');
+    return;
+  }
+  const measured = Array.isArray(raw.subsets) && raw.subsets.some((s) => RUBRIC_LABELLED_SUBSETS.includes(s));
+  if (!measured && named.length === 0) return;
+  const listed = listing && isObject(listing.spec) && isObject(listing.spec.stake) ? listing.spec.stake.severityRubric : undefined;
+  if (!text(expected.rubric)) {
+    fail(`expected.rubric must name the rubric the class is under, the listing's ${listed}`);
+  } else if (expected.rubric !== listed) {
+    fail(`expected.rubric ${expected.rubric} is not the listing's rubric, ${listed}`);
+  }
+  const impacts = Object.prototype.hasOwnProperty.call(RUBRIC_IMPACTS, expected.rubric) ? RUBRIC_IMPACTS[expected.rubric] : undefined;
+  if (impacts && !Object.prototype.hasOwnProperty.call(impacts, expected.impact)) {
+    fail(`expected.impact must be one of ${expected.rubric}'s impacts: ${Object.keys(impacts).join(', ')}`);
+  } else if (impacts && impacts[expected.impact] !== expected.class) {
+    fail(`expected.impact ${expected.impact} is a ${impacts[expected.impact]} impact under ${expected.rubric}, and expected.class is ${expected.class}`);
+  } else if (!impacts && expected.impact === undefined) {
+    fail('expected.impact must name the impact the class matches');
+  }
+  if (!text(expected.classReason)) fail('expected.classReason must say, in words, which impact the proof of concept shows and how');
 }
 
 function loadCase(root, group, name, listings, problems) {
@@ -752,6 +820,7 @@ function loadCase(root, group, name, listings, problems) {
   }
   loaded.priors = priors;
   if (listing && isObject(listing.repo) && listing.repo.kind === 'git') checkPublicCase(raw, loaded, listing, fail);
+  checkRubricLabel(raw, listing, fail);
 
   return {
     id: raw.id, group, dir, raw,
@@ -948,5 +1017,5 @@ function selectCases(corpus, { subset, cases: ids, listing }) {
 }
 
 module.exports = {
-  CASE_FORMAT, LISTING_FORMAT, RUNNER_GATES, CLAIM_FILES, LABEL_KINDS, CorpusError, loadCorpus, selectCases, getPath
+  CASE_FORMAT, LISTING_FORMAT, RUNNER_GATES, CLAIM_FILES, LABEL_KINDS, RUBRIC_IMPACTS, CorpusError, loadCorpus, selectCases, getPath
 };

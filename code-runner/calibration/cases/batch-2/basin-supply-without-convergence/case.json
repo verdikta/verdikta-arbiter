@@ -44,6 +44,9 @@
   "expected": {
     "outcome": "VALID",
     "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows calcLpTokenSupply returning a value that moves by 341,995 on one more step, at reserves of 1000e18 and 100 wei, where calcReserve would revert. A wrong answer at an extreme pool state, with no funds taken or locked and no attacker shown: the contract falls short of what it promises, Low.",
     "reason": "The program judged it valid at the lower side of a boundary it moved, so Low, against the Medium claimed. Every gate passes, and the class is left to the jury, which A7d measures.",
     "runner": {
       "result": "definitive",

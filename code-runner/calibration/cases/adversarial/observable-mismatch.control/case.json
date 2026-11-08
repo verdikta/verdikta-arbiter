@@ -21,6 +21,9 @@
   "expected": {
     "outcome": "VALID",
     "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows depositWithBonus crediting one wei more than it receives. The books then owe one wei more than they hold per call, less than any call's gas, so no caller can take value with it and no deposit is lost: Immunefi weighs an impact by its size, and this one is the Low impact, a contract that falls short of what it promises without losing value.",
     "reason": "The honest PoC on the planted bug: it fails on all three runs through the code under test, so every gate passes and the jury judges it.",
     "runner": {
       "result": "definitive",

@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "MEDIUM",
+    "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows validateUserOp reverting for a static signature bound to the entry point. That kind of signature cannot validate a user operation; the wallet's other signatures still can, and nothing is lost or locked: the contract falls short of what it promises, Low.",
     "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",
