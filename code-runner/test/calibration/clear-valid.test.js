@@ -40,7 +40,7 @@ const RESTATED = Object.freeze({
   'mellow-fee-per-period': { program: 'HIGH', cls: 'CRITICAL', words: '331000000000000000000 != 100000000000000000000' },
   'basin-upgrade-access': { program: 'HIGH', cls: 'CRITICAL', words: 'the implementation stays the one the owner chose' },
   'basin-reserve-at-ratio': { program: 'MEDIUM', cls: 'LOW', words: 'Non convergence: calcLpTokenSupply' },
-  'sequence-session-replay': { program: 'MEDIUM', cls: 'MEDIUM', words: 'the signature is not good for the other wallet' },
+  'sequence-session-replay': { program: 'MEDIUM', cls: 'LOW', words: 'the signature is not good for the other wallet' },
   'sequence-factory-redeploy': { program: 'MEDIUM', cls: 'MEDIUM', words: 'DeployFailed(' }
 });
 
