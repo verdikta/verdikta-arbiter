@@ -220,6 +220,12 @@ const PUBLIC_POC = Object.freeze([
   ''
 ].join('\n'));
 
+/** A valid fixture's class under the listing's rubric (A7e): the rubric, an impact of that class, and why. */
+function rubricLabel(cls) {
+  const impact = { LOW: 'fails-to-deliver-promised-returns', MEDIUM: 'griefing', HIGH: 'temporary-freezing-of-funds', CRITICAL: 'theft-of-funds' }[cls];
+  return { rubric: 'immunefi-v2.3', impact, classReason: `The proof of concept shows a harm of the ${cls} class.` };
+}
+
 function publicFinding(over = {}) {
   return {
     version: 1,
@@ -246,6 +252,7 @@ function publicCase(over = {}) {
     expected: {
       outcome: 'VALID',
       class: 'HIGH',
+      ...rubricLabel('HIGH'),
       reason: 'The program judged it High; the jury is A7d\'s. Here every gate passes.',
       runner: {
         result: 'definitive',
@@ -361,6 +368,7 @@ function batch2Case(kind, over = {}) {
     expected: {
       outcome,
       class: cls,
+      ...(valid ? rubricLabel(cls) : {}),
       reason: 'Every gate passes, and the rest is the jury\'s.',
       runner: { ...base.expected.runner, ...(pack ? { pack } : {}) }
     },
@@ -456,6 +464,6 @@ function writeBatch2Corpus(kind, { entry = {}, finding: findingOver = {}, spec =
 
 module.exports = {
   writeBatch2Corpus, batch2Case, batch2Label, knownIssue, KNOWN_TITLE, PRIOR,
-  writePublicCorpus, publicCase, publicFinding, publicSource, publicSpec, PUBLIC_POC, PUBLIC_MESSAGE, PUBLIC_TEST_ID, UPSTREAM, UPSTREAM_COMMIT, FINDING_URL
+  writePublicCorpus, publicCase, publicFinding, publicSource, publicSpec, rubricLabel, PUBLIC_POC, PUBLIC_MESSAGE, PUBLIC_TEST_ID, UPSTREAM, UPSTREAM_COMMIT, FINDING_URL
 };
 module.exports = { ...module.exports, writeCorpus, juryCase, controlCase, specFor, baselineFor, GATES_PASS, TEST_ID, ADVERSARIAL_LINE, finding, patch, POC_LINES };

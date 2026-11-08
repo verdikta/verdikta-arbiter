@@ -6,7 +6,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { loadCorpus, selectCases, CorpusError, CASE_FORMAT } = require('../../calibration/lib/format');
+const { codeReview } = require('@verdikta/common');
+const { loadCorpus, selectCases, CorpusError, CASE_FORMAT, RUBRIC_IMPACTS } = require('../../calibration/lib/format');
 const {
   writeCorpus, juryCase, controlCase, ADVERSARIAL_LINE, patch, POC_LINES, GATES_PASS,
   writePublicCorpus, publicCase, publicSource, publicSpec, PUBLIC_POC, PUBLIC_MESSAGE, UPSTREAM, UPSTREAM_COMMIT, FINDING_URL
@@ -322,9 +323,9 @@ test('a public case records where it comes from: the finding, the licence, what 
   assertPublicRefused({ entry: { source: publicSource({ report: 'http://example.org' }) } }, /source\.report/);
 });
 
-test('a clear-valid case states the program\'s class, reaches the jury and passes every gate', () => {
+test('a clear-valid case keeps the program\'s class in source.program and the claim, reaches the jury and passes every gate', () => {
   const expected = publicCase().expected;
-  assertPublicRefused({ entry: { expected: { ...expected, class: 'MEDIUM' } } }, /expected\.class .* the program's class/);
+  assert.deepEqual(publicProblems({ entry: { expected: { ...expected, class: 'MEDIUM', impact: 'griefing' } } }), [], 'expected.class is the rubric\'s, and may differ from the program\'s');
   assertPublicRefused({ finding: { claimedClass: 'CRITICAL' } }, /claimedClass .* the program's class/);
   const failing = { ...expected, outcome: 'INVALID', class: null, runner: { ...expected.runner, gates: { ...GATES_PASS, reproduces: 'fail', claimedObservable: 'not-run' }, gateDetails: { reproduces: 'passed' }, settlement: { kind: 'invalid', gate: 'reproduces', check: 'POC_DID_NOT_REPRODUCE' } } };
   assertPublicRefused({ entry: { expected: failing } }, /a clear-valid case's outcome is VALID/);
@@ -561,6 +562,71 @@ test('selecting one case brings its control or its case', () => {
     assert.throws(() => selectCases(loaded, { cases: ['adversarial.nothing'] }), /adversarial\.nothing/);
   } finally {
     corpus.cleanup();
+  }
+});
+
+// --------------------------------------------------- A7e: the class under the listing's rubric
+
+test('a valid case the jury is measured on names its rubric, the impact its class matches, and why', () => {
+  const expected = publicCase().expected;
+  const without = (field) => {
+    const { [field]: _gone, ...rest } = expected;
+    return rest;
+  };
+  assert.deepEqual(publicProblems({}), []);
+  for (const field of ['rubric', 'impact', 'classReason']) assertPublicRefused({ entry: { expected: without(field) } }, new RegExp(`expected\\.${field}`));
+  assertPublicRefused({ entry: { expected: { ...expected, rubric: 'immunefi-v2.2' } } }, /expected\.rubric immunefi-v2\.2 is not the listing's rubric, immunefi-v2\.3/);
+  assertPublicRefused({ entry: { expected: { ...expected, impact: 'loss-of-funds' } } }, /expected\.impact must be one of immunefi-v2\.3's impacts/);
+  assertPublicRefused({ entry: { expected: { ...expected, impact: 'griefing' } } }, /expected\.impact griefing is a MEDIUM impact under immunefi-v2\.3, and expected\.class is HIGH/);
+  assertPublicRefused({ entry: { expected: { ...expected, classReason: ' ' } } }, /expected\.classReason must say/);
+});
+
+test('a rubric label goes with a valid outcome only', () => {
+  assertRefused({ adversarial: { expected: { ...juryCase().expected, rubric: 'immunefi-v2.3', impact: 'griefing', classReason: 'A reason.' } } }, /expected\.rubric, impact and classReason go with a VALID outcome/);
+});
+
+test('a valid case outside the measured subsets may go without a rubric label: the conformance canary is not re-labelled', () => {
+  const corpus = writeCorpus({ adversarial: { subsets: ['conformance'], control: undefined, expected: { ...juryCase().expected, outcome: 'VALID', class: 'LOW' } } });
+  try {
+    let problems = [];
+    try {
+      loadCorpus({ root: corpus.root });
+    } catch (err) {
+      assert.ok(err instanceof CorpusError, err.stack);
+      problems = err.problems;
+    }
+    assert.deepEqual(problems.filter((p) => /rubric|impact|classReason/.test(p)), []);
+  } finally {
+    corpus.cleanup();
+  }
+});
+
+test('immunefi-v2.3\'s impacts: each has one class, and every class has at least one', () => {
+  const impacts = RUBRIC_IMPACTS['immunefi-v2.3'];
+  assert.ok(Object.isFrozen(impacts));
+  assert.deepEqual([...new Set(Object.values(impacts))].sort(), ['CRITICAL', 'HIGH', 'LOW', 'MEDIUM']);
+  assert.equal(impacts['theft-of-funds'], 'CRITICAL');
+  assert.equal(impacts['permanent-freezing-of-funds'], 'CRITICAL');
+  assert.equal(impacts['theft-of-unclaimed-yield'], 'HIGH');
+  assert.equal(impacts['temporary-freezing-of-funds'], 'HIGH');
+  assert.equal(impacts.griefing, 'MEDIUM');
+  assert.equal(impacts['unbounded-gas-consumption'], 'MEDIUM');
+  assert.equal(impacts['fails-to-deliver-promised-returns'], 'LOW');
+  assert.deepEqual(Object.keys(RUBRIC_IMPACTS), Object.keys(codeReview.SEVERITY_DEFINITIONS), 'one table per rubric common defines');
+});
+
+test('the real corpus: every valid claim and every severity boundary has its class under immunefi-v2.3, with the impact and why', () => {
+  const { cases } = loadCorpus({ root: CALIBRATION });
+  const labelled = cases.filter((c) => c.expected.outcome === 'VALID' || (c.label && c.label.kind === 'severity-boundary'));
+  assert.equal(labelled.length, 29, '17 clear-valid, 4 in batch-2 and 8 adversarial');
+  for (const c of labelled) {
+    assert.equal(c.expected.outcome, 'VALID', c.id);
+    assert.equal(c.expected.rubric, 'immunefi-v2.3', c.id);
+    assert.equal(RUBRIC_IMPACTS['immunefi-v2.3'][c.expected.impact], c.expected.class, `${c.id}: the class is its impact's`);
+    assert.ok(c.expected.classReason.length > 40, c.id);
+  }
+  for (const c of cases.filter((x) => x.expected.outcome !== 'VALID')) {
+    assert.deepEqual([c.expected.rubric, c.expected.impact, c.expected.classReason], [undefined, undefined, undefined], c.id);
   }
 });
 

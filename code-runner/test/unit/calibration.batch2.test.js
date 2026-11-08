@@ -12,7 +12,7 @@ const { codeReview } = require('@verdikta/common');
 const { loadCorpus, selectCases, CorpusError, LABEL_KINDS } = require('../../calibration/lib/format');
 const { listingView, caseRequest } = require('../../calibration/lib/harness');
 const { claimTexts, programUrls, claimProblems, indexTexts, LIMITS } = require('../../calibration/lib/provenance');
-const { writeBatch2Corpus, batch2Label, knownIssue, KNOWN_TITLE, publicSource } = require('../helpers/calibrationCorpus');
+const { writeBatch2Corpus, batch2Case, batch2Label, knownIssue, KNOWN_TITLE, publicSource, rubricLabel } = require('../helpers/calibrationCorpus');
 
 const CALIBRATION = path.join(__dirname, '..', '..', 'calibration');
 const FAMILIES = Object.freeze(['clear-invalid.intended-behaviour', 'clear-invalid.outside-scope', 'clear-invalid.excluded-precondition', 'duplicate.rephrased', 'duplicate.entry-point', 'duplicate.victim', 'known-issue.before', 'known-issue.after', 'severity-boundary']);
@@ -101,15 +101,19 @@ test('a boundary names two adjacent classes, the program\'s call and who made it
   assertRefused('severity-boundary', boundary({ classes: ['HIGH', 'MEDIUM'] }), /two adjacent classes/);
   assertRefused('severity-boundary', boundary({ classes: ['HIGH'] }), /two adjacent classes/);
   assertRefused('severity-boundary', boundary({ call: 'LOW' }), /call must be one of the two classes/);
-  assertRefused('severity-boundary', boundary({ call: 'HIGH' }), /expected\.class MEDIUM is not the program's call, HIGH/);
+  assertRefused('severity-boundary', boundary({ call: 'HIGH' }), /label\.boundary\.call HIGH is not the program's class, MEDIUM/);
   assertRefused('severity-boundary', boundary({ moved: '' }), /boundary\.moved/);
   assertRefused('severity-boundary', { finding: { claimedClass: 'CRITICAL' } }, /on neither side of the boundary/);
   assert.deepEqual(problemsOf('severity-boundary', { finding: { claimedClass: 'MEDIUM' } }), [], 'the lower side');
   assert.deepEqual(problemsOf('severity-boundary', { finding: { claimedClass: 'HIGH' } }), [], 'the upper side, what the hunter submitted');
 });
 
-test('the class of a valid case is the program\'s; a duplicate keeps the class of the family; a rejected claim has none', () => {
-  assertRefused('severity-boundary', { entry: { source: publicSource({ program: { ...publicSource().program, class: 'HIGH' } }) } }, /expected\.class MEDIUM is not the program's class, HIGH/);
+test('a valid case\'s program class stays in source.program, and its class is the rubric\'s; a duplicate keeps the class of the family; a rejected claim has none', () => {
+  assertRefused('severity-boundary', { entry: { source: publicSource({ program: { ...publicSource().program, class: 'HIGH' } }) } }, /label\.boundary\.call MEDIUM is not the program's class, HIGH/);
+  assertRefused('known-issue.after', { ...twinned, entry: { source: publicSource({ program: { ...publicSource().program, class: null } }) } }, /a valid case is a finding the program judged valid: source\.program\.class is the class it gave/);
+  const underTheRubric = (kind) => ({ entry: { expected: { ...batch2Case(kind).expected, class: 'LOW', ...rubricLabel('LOW') } } });
+  assert.deepEqual(problemsOf('severity-boundary', underTheRubric('severity-boundary')), [], 'the rubric\'s class may leave the boundary the program drew');
+  assert.deepEqual(problemsOf('known-issue.after', { ...twinned, ...underTheRubric('known-issue.after') }), [], 'and may differ from the program\'s class');
   assertRefused('clear-invalid.intended-behaviour', { entry: { source: publicSource() } }, /source\.program\.class is null on a claim the program rejected/);
   assertRefused('known-issue.before', { entry: { source: publicSource() } }, /source\.program\.class is null on a claim the program rejected/);
   assertRefused('duplicate.entry-point', { entry: { source: publicSource({ program: { ...publicSource().program, class: null } }) } }, /a duplicate is a finding the program judged valid/);
