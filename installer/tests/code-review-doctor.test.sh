@@ -128,6 +128,60 @@ good; edit "$T/runner.json" 'd.docker.endpoint="unix:///var/run/docker.sock"'; o
 is_sev "the arbiter's Docker" "$out" svc.code_runner FAIL; has "the arbiter's Docker named" "$out" "not its own"
 good; printf 'not-the-token\n' > "$I/code-runner-state/token"; out=$(run); is_sev "wrong token" "$out" svc.code_runner FAIL; printf '%s\n' "$TOKEN" > "$I/code-runner-state/token"
 
+# --- the maintenance lock (#126, node A8d): the post-upgrade doctor ran while the upgrade held it, so
+# svc.code_runner FAILed after every upgrade. The upgrade's own lock (its pid in the file, the same pid
+# exported as CODE_REVIEW_LOCK_PARENT, still alive) is INFO when it is the runner's only reason;
+# a lock anyone else holds still FAILs.
+LOCKF="$I/code-runner-state/maintenance"
+locked() { good; edit "$T/runner.json" "d.ok=false;d.maintenance=true;d.reasons=$1"; }
+holds() { echo "code-review-sandbox $1 2026-11-07T00:00:00Z" > "$LOCKF"; }
+sleep 300 & OTHER=$!                     # a live process that is not the upgrade
+sleep 0 & GONE=$!; wait "$GONE"          # one that is gone
+locked '["the maintenance lock is held"]'; holds $$
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run)
+is_sev "the upgrade's own lock" "$out" svc.code_runner INFO; has "own lock: says whose" "$out" "this upgrade's own maintenance lock (pid $$)"
+hasnt "own lock: no FAIL" "$out" "^FAIL"
+out=$(run); is_sev "the same lock, no upgrade running the doctor" "$out" svc.code_runner FAIL; has "no upgrade: names the file" "$out" "stale: remove $LOCKF"
+holds "$OTHER"; out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "another process's lock" "$out" svc.code_runner FAIL
+hasnt "another's lock: not called the upgrade's" "$out" "this upgrade's own"
+echo "operator" > "$LOCKF"; out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "an operator's lock (no pid)" "$out" svc.code_runner FAIL
+: > "$LOCKF"; out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "a touched lock (empty)" "$out" svc.code_runner FAIL
+holds "$GONE"; out=$(CODE_REVIEW_LOCK_PARENT=$GONE run); is_sev "a killed upgrade's lock" "$out" svc.code_runner FAIL
+holds $$; out=$(CODE_REVIEW_LOCK_PARENT="$$x" run); is_sev "a malformed parent" "$out" svc.code_runner FAIL
+rm -f "$LOCKF"; out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "no lock file" "$out" svc.code_runner FAIL
+# The upgrade's lock and another reason: FAIL, with the other reason, and the lock not called stale.
+locked '["the maintenance lock is held","no conformance pass for this release"]'; holds $$
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "own lock and another reason" "$out" svc.code_runner FAIL
+has "own lock and another reason: the reason" "$out" "no conformance pass for this release"
+has "own lock and another reason: whose lock" "$out" "this upgrade's own, pid $$"
+hasnt "own lock and another reason: not stale" "$out" "stale"
+# Another reason and no lock: FAIL even with the variable set.
+good; edit "$T/runner.json" 'd.ok=false;d.reasons=["Docker unreachable"]'; holds $$
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "no maintenance, the variable set" "$out" svc.code_runner FAIL
+kill "$OTHER" 2>/dev/null; wait "$OTHER" 2>/dev/null; rm -f "$LOCKF"
+
+# The same through the REAL lock block of upgrade-arbiter.sh, as the upgrade runs it: it takes the lock
+# and exports its pid, its post-upgrade doctor is a child process, and its EXIT trap lets the lock go.
+UPG="$ROOT/bin/upgrade-arbiter.sh"
+lockblk=$(awk '/^# Hold the code runner.s maintenance lock/{p=1} /^# If arbiter is running, stop it/{p=0} p{print}' "$UPG")
+[ -n "$lockblk" ] && ok || bad "could not extract the lock block from $UPG"
+locked '["the maintenance lock is held"]'
+out=$(PATH="$T/bin:$PATH" TARGET_DIR="$I" UTIL_DIR="$ROOT/util" INSTALL_DIR="$I" CODE_RUNNER_ADAPTER_URL="http://127.0.0.1:$AP" STUB_MOUNT="$M" bash -c '
+    set -e
+    GREEN= YELLOW= RED= BLUE= NC=
+    eval "$1"
+    echo "HOLDER=$(cat "$TARGET_DIR/code-runner-state/maintenance")"
+    bash -c '\''emit() { printf "%s %s %s | %s\n" "$1" "$2" "$3" "${4:-}"; }; section_header() { :; }; eval "$1"; check_code_review'\'' _ "$2"
+' _ "$lockblk" "$fn" 2>&1)
+has "the upgrade block took the lock" "$out" "HOLDER=code-review-sandbox [0-9]"
+is_sev "the post-upgrade doctor, under the upgrade's lock" "$out" svc.code_runner INFO
+hasnt "the post-upgrade doctor: no FAIL" "$out" "^FAIL"
+[ ! -f "$LOCKF" ] && ok || bad "the upgrade's EXIT trap left the lock: $(cat "$LOCKF")"
+# The upgrade exports its pid before the post-upgrade doctor runs.
+l_export=$(grep -n '^export CODE_REVIEW_LOCK_PARENT=\$\$$' "$UPG" | cut -d: -f1)
+l_doctor=$(grep -n '"\$TARGET_DIR/arbiter-doctor.sh" --quiet; then' "$UPG" | cut -d: -f1)
+[ -n "$l_export" ] && [ -n "$l_doctor" ] && [ "$l_export" -lt "$l_doctor" ] && ok || bad "CODE_REVIEW_LOCK_PARENT is not exported before the post-upgrade doctor ($l_export, $l_doctor)"
+
 # --- sandbox.runsc
 good; edit "$T/runner.json" 'd.runtime="runc"'; out=$(run); is_sev "runc" "$out" sandbox.runsc FAIL
 good; edit "$T/runner.json" 'd.runtimeAvailable=false'; out=$(run); is_sev "no runtime" "$out" sandbox.runsc FAIL
