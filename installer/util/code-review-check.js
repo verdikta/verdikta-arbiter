@@ -257,6 +257,48 @@ function finding(sev, id, msg, hint = '') {
   emitters.push([sev, id, String(msg).replace(/[\t\n]+/g, ' '), String(hint).replace(/[\t\n]+/g, ' ')].join('\t'));
 }
 
+/**
+ * The file the runner reads as its maintenance lock: code-runner/src/config.js's rule over
+ * code-runner/.env (CODE_RUNNER_MAINTENANCE_FILE, else CODE_RUNNER_STATE_DIR/maintenance, else
+ * code-runner/.state/maintenance; a blank value counts as unset).
+ */
+function runnerMaintenanceFile(p, env) {
+  const set = (name) => (env[name] === undefined || String(env[name]).trim() === '' ? null : String(env[name]).trim());
+  const stateDir = set('CODE_RUNNER_STATE_DIR') || path.join(p.runner, '.state');
+  return set('CODE_RUNNER_MAINTENANCE_FILE') || path.join(stateDir, 'maintenance');
+}
+
+/**
+ * The pid of the upgrade that runs this doctor, when the maintenance lock is that upgrade's own
+ * (#126, node A8d). upgrade-arbiter.sh takes the lock with its pid (`code-review-sandbox.sh lock
+ * --pid $$`, which writes <install>/code-runner-state/maintenance), exports the same pid as
+ * CODE_REVIEW_LOCK_PARENT, and runs its post-upgrade doctor before its EXIT trap lets the lock go.
+ * Null for anything else: no such variable; a runner that reads another file than the one the
+ * upgrade locks (its own override), or a relative one; a lock that names no pid (an operator's)
+ * or another pid; or a holder that is gone (a killed upgrade's).
+ */
+function ownUpgradeLock(p, env) {
+  const parent = process.env.CODE_REVIEW_LOCK_PARENT || '';
+  if (!/^[1-9][0-9]*$/.test(parent)) return null;
+  const upgradeFile = path.join(p.state, 'maintenance');
+  const runnerFile = runnerMaintenanceFile(p, env);
+  let holder;
+  try {
+    if (!path.isAbsolute(runnerFile) || fs.realpathSync(runnerFile) !== fs.realpathSync(upgradeFile)) return null;
+    // `<holder> <pid> <time>`, as code-review-sandbox.sh's lock_line writes it.
+    holder = fs.readFileSync(upgradeFile, 'utf8').split('\n')[0].trim().split(/\s+/)[1];
+  } catch (_error) {
+    return null;
+  }
+  if (holder !== parent) return null;
+  try {
+    process.kill(Number(parent), 0);
+  } catch (error) {
+    if (error.code !== 'EPERM') return null;
+  }
+  return parent;
+}
+
 function doctorService(health, p, env) {
   const id = 'svc.code_runner';
   const hint = 'Check code-runner/logs/, then start-arbiter.sh';
@@ -270,8 +312,18 @@ function doctorService(health, p, env) {
     return;
   }
   if (!b.ok) {
-    const lock = b.maintenance ? ` (a lock no install or upgrade holds is stale: remove ${path.join(p.state, 'maintenance')})` : '';
-    finding('FAIL', id, `the runner would refuse a claim: ${(b.reasons || []).join('; ') || 'no reason given'}${lock}`, hint);
+    const reasons = b.reasons || [];
+    const own = b.maintenance === true ? ownUpgradeLock(p, env) : null;
+    // The lock adds one reason to /health. When it is the only one, nothing but the lock of the
+    // upgrade running this check refuses a claim, and that upgrade releases it when it exits.
+    if (own && reasons.length === 1) {
+      finding('INFO', id, `refusing claims only for this upgrade's own maintenance lock (pid ${own}), which the upgrade releases when it exits`);
+      return;
+    }
+    let lock = '';
+    if (own) lock = ` (the maintenance lock is this upgrade's own, pid ${own}, and goes when it exits; the rest stays)`;
+    else if (b.maintenance) lock = ` (a lock no install or upgrade holds is stale: remove ${runnerMaintenanceFile(p, env)})`;
+    finding('FAIL', id, `the runner would refuse a claim: ${reasons.join('; ') || 'no reason given'}${lock}`, hint);
     return;
   }
   finding('PASS', id, `answering on ${runnerAddress(p).host}:${runnerAddress(p).port} (runner ${b.version}, /health ok)`);

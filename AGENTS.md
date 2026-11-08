@@ -328,6 +328,16 @@ what an upgrade replaces. Operator notes: `installer/docs/maintenance/code-revie
 `arbiter-boot-service.sh` (start at boot, below), `arbiter-firewall.sh` and
 `apply-chainlink-loopback.sh` (port exposure, below).
 
+**The doctor's log text goes through `redact_log`.** Chainlink logs to stderr,
+with its RPC URLs whole and the provider keys in their paths; the doctor once
+read it as `2>&1 > file`, which pasted it into its own output, and the 2026-11-07
+canary upgrade printed RPC keys into its log that way (#126). Everything the
+doctor prints, saves or bundles from a log, a config file or the TXM tables now
+passes `redact_log` (`arbiter-doctor.sh`; `remote-doctor.sh` holds a byte-identical
+copy): URLs keep scheme and host only, key/token/Bearer values and JWTs go. Route
+any new excerpt through it. Its post-upgrade run shows the upgrade's own code-runner
+maintenance lock as INFO (`CODE_REVIEW_LOCK_PARENT`), any other lock as FAIL.
+
 **Boot behaviour.** A node comes back on its own after a host reboot (the
 2026-10-18 provider reboots left every arbiter down for hours): `setup-docker.sh`
 and `setup-chainlink.sh` create `cl-postgres` and `chainlink` with

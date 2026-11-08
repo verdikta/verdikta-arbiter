@@ -3301,6 +3301,9 @@ fi
 # Post-upgrade health check. Best-effort, advisory only.
 # Skipped if services weren't (re)started — otherwise every service check
 # would FAIL purely because nothing is listening.
+# It runs while this upgrade still holds the code runner's maintenance lock and
+# inherits CODE_REVIEW_LOCK_PARENT (exported above): svc.code_runner shows this
+# run's own lock as INFO, and any other lock as FAIL (#126).
 if [ -x "$TARGET_DIR/arbiter-doctor.sh" ]; then
     if [ "$SERVICES_STARTED_FOR_DOCTOR" = "1" ]; then
         # Brief additional settling time; start-arbiter.sh has already waited
