@@ -32,7 +32,7 @@
     "class": "MEDIUM",
     "rubric": "immunefi-v2.3",
     "impact": "griefing",
-    "classReason": "The PoC shows a session signature made for one wallet accepted when another wallet presents it: the signed hash names no wallet. Anyone can make a second wallet that holds the same session configuration repeat calls signed for the first, calls its own session permissions already allow, without its say and for no gain to the replayer. The PoC sets up no such second wallet: griefing, Medium.",
+    "classReason": "The PoC shows a session signature made for one wallet accepted when another wallet presents it: the signed hash names no wallet. Anyone holding such a signature can make a second wallet with the same session configuration and nonce repeat the calls signed for the first, within that wallet's own session permissions and without its say. The PoC sets up no such wallet, and a theft would also need calls that pay the replayer: griefing, Medium.",
     "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",
