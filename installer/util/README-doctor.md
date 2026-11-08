@@ -125,7 +125,9 @@ transaction's error):
 
 - an `http(s)://` or `ws(s)://` URL keeps its scheme and host, and its userinfo,
   path and query become `/<redacted>`: providers put the API key there (Infura
-  `/v3/<key>`, blockpi `/v1/rpc/<key>`), and Chainlink logs its RPC URLs whole;
+  `/v3/<key>`, blockpi `/v1/rpc/<key>`), and Chainlink logs its RPC URLs whole.
+  A URL ends at white space, a quote, a backslash, `<`, `>` or `|` (the `db/`
+  files' column separator);
 - another scheme's `user:password@` becomes `<redacted>@`;
 - a value of 16 or more token characters after `key=`, `token=` (so `apikey=`,
   `api_key=`, `access_token=`), a quoted `...key":"` / `...token: '`, or

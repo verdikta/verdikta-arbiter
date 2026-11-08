@@ -267,14 +267,15 @@ except Exception: sys.exit(1)
 #   - a value of 16+ token characters after key= or token= (apikey=, api_key=,
 #     access_token=, ...), after a quoted "...key": / ...token: '...', or after Bearer
 #   - a JWT anywhere (eyJ....eyJ....sig)
-# A URL ends at white space, a quote, a backslash (JSON's \") or an angle bracket.
+# A URL ends at white space, a quote, a backslash (JSON's \"), an angle bracket or a |
+# (psql -At's column separator): none of them is part of a URL.
 # LC_ALL=C: a log can hold bytes that are not UTF-8, and sed must not stop on them.
 # remote-doctor.sh carries a byte-identical copy (installer/tests/doctor-redact.test.sh).
 redact_log() {
     LC_ALL=C sed -E \
-        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://([^/?#[:space:]"'\''\\<>@]+)[/?#][^[:space:]"'\''\\<>]*%\1://\2/<redacted>%g' \
-        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://[^/?#[:space:]"'\''\\<>]*@([^/?#[:space:]"'\''\\<>@]+)([/?#][^[:space:]"'\''\\<>]*)?%\1://\2/<redacted>%g' \
-        -e 's%([A-Za-z][A-Za-z0-9+.-]*)://[^/?#[:space:]"'\''\\<>]*@%\1://<redacted>@%g' \
+        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://([^/?#[:space:]"'\''\\<>|@]+)[/?#][^[:space:]"'\''\\<>|]*%\1://\2/<redacted>%g' \
+        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://[^/?#[:space:]"'\''\\<>|]*@([^/?#[:space:]"'\''\\<>|@]+)([/?#][^[:space:]"'\''\\<>|]*)?%\1://\2/<redacted>%g' \
+        -e 's%([A-Za-z][A-Za-z0-9+.-]*)://[^/?#[:space:]"'\''\\<>|]*@%\1://<redacted>@%g' \
         -e 's%(([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])=["'\'']?)[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
         -e 's%(([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])["'\'']?[[:space:]]*:[[:space:]]*["'\''])[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
         -e 's%([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \

@@ -126,8 +126,8 @@ stopped, and nothing outside it (never `/run/docker`, the arbiter's). Anything t
 it runs and refreshes the sandbox when a new release has no pass yet. If a refresh fails, claims abstain, the
 arbiter keeps serving text requests, and the upgrade exits 3 saying what to run. Its post-upgrade health check
 runs before the lock goes, so there `svc.code_runner` is INFO when the upgrade's own lock (its pid, which it
-exports as `CODE_REVIEW_LOCK_PARENT`) is the runner's only reason to refuse a claim. Any other lock, or any
-other reason, is still a FAIL.
+exports as `CODE_REVIEW_LOCK_PARENT`, in the file the runner reads) is the runner's only reason to refuse a
+claim. Any other lock, a runner whose `.env` points at another lock file, or any other reason is still a FAIL.
 
 A disk image is never resized. For another size: `disable --purge`, then `enable --disk-gb N`.
 
