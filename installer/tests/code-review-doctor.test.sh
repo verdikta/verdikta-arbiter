@@ -83,6 +83,7 @@ cat > "$I/code-runner/.env" <<E
 DOCKER_HOST=unix://$T/run/docker.sock
 CODE_RUNNER_DATA_ROOT=$M
 CODE_RUNNER_TOKEN_FILE=$I/code-runner-state/token
+CODE_RUNNER_STATE_DIR=$I/code-runner-state
 CODE_RUNNER_HOST=127.0.0.1
 CODE_RUNNER_PORT=$RP
 E
@@ -158,6 +159,26 @@ hasnt "own lock and another reason: not stale" "$out" "stale"
 # Another reason and no lock: FAIL even with the variable set.
 good; edit "$T/runner.json" 'd.ok=false;d.reasons=["Docker unreachable"]'; holds $$
 out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "no maintenance, the variable set" "$out" svc.code_runner FAIL
+# The lock must be the file the runner reads (code-runner/src/config.js: CODE_RUNNER_MAINTENANCE_FILE, else
+# CODE_RUNNER_STATE_DIR/maintenance, else code-runner/.state/maintenance). The upgrade locks
+# code-runner-state/maintenance; when the runner reads another file, the lock it reports is not the upgrade's.
+cp "$I/code-runner/.env" "$T/env.keep"
+renv() { cp "$T/env.keep" "$I/code-runner/.env"; [ -n "${1:-}" ] && printf '%s\n' "$1" >> "$I/code-runner/.env"; return 0; }
+locked '["the maintenance lock is held"]'; holds $$
+renv "CODE_RUNNER_MAINTENANCE_FILE=$T/operator-maintenance"; echo operator > "$T/operator-maintenance"
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "the runner reads an operator's file elsewhere" "$out" svc.code_runner FAIL
+has "elsewhere: names the runner's file" "$out" "stale: remove $T/operator-maintenance"
+mkdir -p "$T/state-elsewhere"; renv "CODE_RUNNER_STATE_DIR=$T/state-elsewhere"
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "the runner's state dir is elsewhere" "$out" svc.code_runner FAIL
+grep -v '^CODE_RUNNER_STATE_DIR=' "$T/env.keep" > "$I/code-runner/.env"
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "no state dir: the runner reads code-runner/.state" "$out" svc.code_runner FAIL
+renv "CODE_RUNNER_MAINTENANCE_FILE=$LOCKF"
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "the runner names the upgrade's file" "$out" svc.code_runner INFO
+ln -s "$I/code-runner-state" "$T/state-link"; renv "CODE_RUNNER_STATE_DIR=$T/state-link"
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "the same file through a link" "$out" svc.code_runner INFO
+renv "CODE_RUNNER_MAINTENANCE_FILE=code-runner-state/maintenance"
+out=$(CODE_REVIEW_LOCK_PARENT=$$ run); is_sev "a relative file" "$out" svc.code_runner FAIL
+renv; rm -f "$T/operator-maintenance" "$T/state-link"
 kill "$OTHER" 2>/dev/null; wait "$OTHER" 2>/dev/null; rm -f "$LOCKF"
 
 # The same through the REAL lock block of upgrade-arbiter.sh, as the upgrade runs it: it takes the lock

@@ -68,6 +68,11 @@ printf '%s' "$out" | python3 -c 'import json,sys; json.loads(sys.stdin.read().sp
 out=$(r "BASE_SEPOLIA_RPC_HTTP_URLS=\"https://a.example/v3/$K32,https://b.example/rpc/$K64\"")
 hasnt "list: first key" "$out" "$K32"; hasnt "list: second key" "$out" "$K64"
 has   "list: first host" "$out" "https://a.example/<redacted>"
+# psql -At separates columns with |, which is never part of a URL: the next column stays.
+out=$(r "1|0|fatal_error|Post https://rpc.example.net/v3/$K32|2026-11-07 12:00:00+00")
+[ "$out" = "1|0|fatal_error|Post https://rpc.example.net/<redacted>|2026-11-07 12:00:00+00" ] && ok || bad "a psql row: [$out]"
+out=$(r "x|https://user:$PW@rpc.example.net|y")
+[ "$out" = "x|https://rpc.example.net/<redacted>|y" ] && ok || bad "a psql row, userinfo: [$out]"
 # Node's util.inspect quotes with '.
 out=$(r "{ url: 'https://gw.example.net/ipfs/Qm1?pinataGatewayToken=$K32', x: 1 }")
 [ "$out" = "{ url: 'https://gw.example.net/<redacted>', x: 1 }" ] && ok || bad "single-quoted url: [$out]"
@@ -128,7 +133,8 @@ case "\$1" in
       *pg_isready*) exit 0 ;;
       *"DISTINCT error"*) echo "Post \"https://base-sepolia.infura.io/v3/$K32\": context deadline exceeded" ;;
       *"fatal_error' AND created_at > now()"*) echo 1 ;;
-      *"FROM evm.txes ORDER BY id"*) echo "1|0|fatal_error|Post \"https://base-sepolia.blockpi.network/v1/rpc/$K64\": EOF|2026-11-07" ;;
+      *"FROM evm.txes ORDER BY id"*) echo "1|0|fatal_error|Post \"https://base-sepolia.blockpi.network/v1/rpc/$K64\": EOF|2026-11-07"
+                                     echo "2|1|fatal_error|dial https://base-sepolia.infura.io/v3/$K32|2026-11-07 12:00:00+00" ;;
       *"key_states WHERE"*) echo "84532|f" ;;
       *COALESCE*) echo -1 ;;
       *) echo 0 ;;
@@ -185,6 +191,7 @@ has "bundle: and its stdout"                "$cl" "STDOUT-MARKER"
 has "bundle: the wss host stays"            "$cl" "wss://base-sepolia.infura.io/<redacted>"
 has "bundle: env keeps the variable names"  "$(cat "$B/env.sanitized")" "BASE_SEPOLIA_RPC_WS_URLS=\"wss://base-sepolia.infura.io/<redacted>\""
 has "bundle: the tx error keeps its host"   "$(cat "$B/db/evm_txes.tsv")" "https://base-sepolia.blockpi.network/<redacted>"
+has "bundle: the next column stays"         "$(cat "$B/db/evm_txes.tsv")" "https://base-sepolia.infura.io/<redacted>|2026-11-07 12:00:00+00"
 has "bundle: the contracts stay"            "$(cat "$B/contracts.snapshot")" "0x2222222222222222222222222222222222222222"
 
 echo "doctor-redact: pass=$pass fail=$fail"; [ "$fail" = 0 ]
