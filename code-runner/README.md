@@ -2333,7 +2333,8 @@ The program's own verdict and class stay in `source.program`, and `finding.claim
 jury report (`report/jury.js`) keeps its bar and exit codes on `expected.class`, and reports beside them, deciding nothing: per class,
 agreement and validity agreement against both label sets side by side; and class distance against each (exact, one off, two or
 more, and the mean signed distance, negative when the jury is below the label), on the clear cases and on every claim. The program's
-label is `source.program.class` where it judged the claim valid, and otherwise the outcome the case expects.
+label is `source.program.class` where it judged the claim valid, and otherwise the outcome the case expects. `--previous` scores the
+earlier run's verdicts against today's labels too, so a report from before the re-label is compared on the same footing.
 
 ### The measurement with the real jury
 

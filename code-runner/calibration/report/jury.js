@@ -192,6 +192,8 @@ function tally(rows) {
 }
 
 const byClassOrder = (a, b) => CLASS_ORDER.indexOf(a) - CLASS_ORDER.indexOf(b);
+/** §18's clear valid and clear invalid: the bar's claims. */
+const isClear = (r) => r.subsets.includes('clear-valid') || r.subsets.includes('clear-invalid');
 
 function perClass(rows) {
   const classes = [...new Set(rows.map((r) => r.expected))].sort(byClassOrder);
@@ -265,7 +267,7 @@ function analyse({ cases, jury, runner, ledger }) {
   const incomplete = [...rows, ...REQUIRED_CONTROLS.map((id) => byId.get(id))].filter((r) => r.outcome === 'NOT RUN').map((r) => r.id);
 
   // The bar's rows: §18's clear valid and clear invalid, by expected class, all of them. The row without the weaker labels is beside it, and moves nothing.
-  const clear = rows.filter((r) => r.subsets.includes('clear-valid') || r.subsets.includes('clear-invalid'));
+  const clear = rows.filter(isClear);
   const barRows = perClass(clear).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
   const withoutWeaker = perClass(clear.filter((r) => !r.weaker)).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
   // Beside the bar, deciding nothing: the programs' labels, and how far the settled classes are from each set's.
@@ -344,9 +346,16 @@ function analyse({ cases, jury, runner, ledger }) {
  */
 function compareRuns(a, earlier) {
   const before = new Map((earlier.rows || []).map((r) => [r.id, r]));
+  // Then is read against today's labels, as now is: an earlier report may predate a re-label (node A7e), and its own
+  // agreement and bar rows were against the labels of its day.
   const rows = a.rows.map((r) => {
     const was = before.get(r.id);
-    return { id: r.id, expected: r.expected, before: was ? was.outcome : 'absent', after: r.outcome, agreedBefore: was ? was.agrees : false, agreesNow: r.agrees };
+    return { id: r.id, expected: r.expected, before: was ? was.outcome : 'absent', after: r.outcome, agreedBefore: was ? was.outcome === r.expected : false, agreesNow: r.agrees };
+  });
+  const compared = new Map(rows.map((r) => [r.id, r]));
+  const barBefore = a.bar.rows.map((c) => {
+    const inClass = a.rows.filter((r) => isClear(r) && r.expected === c.class).map((r) => compared.get(r.id));
+    return { class: c.class, cases: inClass.length, agreed: inClass.filter((r) => r.agreedBefore).length, noVerdict: inClass.filter((r) => r.before === 'NO VERDICT').length };
   });
   const noVerdict = (label) => label === 'NO VERDICT' || label === 'NOT RUN' || label === 'absent';
   const both = rows.filter((r) => !noVerdict(r.before) && !noVerdict(r.after));
@@ -359,7 +368,7 @@ function compareRuns(a, earlier) {
     lost: rows.filter((r) => !noVerdict(r.before) && noVerdict(r.after)),
     moved: both.filter((r) => r.before !== r.after),
     same: both.filter((r) => r.before === r.after).length,
-    barBefore: earlier.bar ? earlier.bar.rows : [],
+    barBefore,
     falseValidBefore: earlier.adversarial ? earlier.adversarial.falseValid.length : null,
     spendBefore: earlier.spend ? earlier.spend.totalUsd : null
   };
@@ -452,7 +461,7 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     ...(comparison ? [
       `## Against the run of ${comparison.date}`,
       '',
-      `Verdicts: ${comparison.verdictsBefore} then, ${comparison.verdictsNow} now, of ${comparison.rows.length} claims, the runner's settlements included. ${comparison.arrived.length} claim(s) gained a verdict and ${comparison.lost.length} lost one. Of the ${comparison.same + comparison.moved.length} that had one both times, ${comparison.same} kept the same outcome.`,
+      `Verdicts: ${comparison.verdictsBefore} then, ${comparison.verdictsNow} now, of ${comparison.rows.length} claims, the runner's settlements included. ${comparison.arrived.length} claim(s) gained a verdict and ${comparison.lost.length} lost one. Of the ${comparison.same + comparison.moved.length} that had one both times, ${comparison.same} kept the same outcome. Then and now are both scored against today's labels.`,
       '',
       ...(comparison.falseValidBefore === null ? [] : [`False valid on the adversarial claims: ${comparison.falseValidBefore} then, ${a.adversarial.falseValid.length} now.`, '']),
       table(['Class, clear cases', 'Agree then', 'Agree now', 'No verdict then', 'No verdict now'], a.bar.rows.map((c) => {

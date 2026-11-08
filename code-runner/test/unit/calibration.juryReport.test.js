@@ -302,6 +302,22 @@ test('two runs compared: what gained a verdict, what lost one, what moved', () =
   assert.match(text, /Verdicts that moved:/);
 });
 
+test('A7e: an earlier report is scored again against today\'s labels, not its own', () => {
+  const first = analyse(world({ 'clear-valid.mellow-fee-per-period': verdict('HIGH') }));
+  const earlier = JSON.parse(JSON.stringify(jsonOf(first, '2026-11-05')));
+  // As a report from before the re-label recorded it: its label was the program's High, so the High verdict agreed.
+  const old = earlier.rows.find((r) => r.id === 'clear-valid.mellow-fee-per-period');
+  Object.assign(old, { expected: 'HIGH', agrees: true });
+  earlier.bar.rows = [{ class: 'HIGH', cases: 7, agreed: 7, noVerdict: 0 }];
+  const c = compareRuns(analyse(world()), earlier);
+  assert.equal(c.rows.find((r) => r.id === 'clear-valid.mellow-fee-per-period').agreedBefore, false, 'High is not today\'s Critical');
+  assert.deepEqual(c.barBefore.find((r) => r.class === 'CRITICAL'), { class: 'CRITICAL', cases: 5, agreed: 4, noVerdict: 0 });
+  assert.deepEqual(c.barBefore.find((r) => r.class === 'HIGH'), { class: 'HIGH', cases: 2, agreed: 2, noVerdict: 0 });
+  const text = render(analyse(world()), { date: '2026-11-08', comparison: c });
+  assert.match(text, /\| CRITICAL \| 4 of 5 \| 5 of 5 \| 0 \| 0 \|/);
+  assert.match(text, /scored against today's labels/);
+});
+
 test('a label names the files, and the first report is not overwritten', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'jury-report-'));
   try {
