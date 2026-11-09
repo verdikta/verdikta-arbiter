@@ -22,7 +22,8 @@ hasnt() { if echo "$2" | grep -q -- "$3"; then bad "$1: unexpected [$3] in: $2";
 
 block=$(awk '/^# Chainlink config from the template\. Every setting checked in to/{p=1} /^# Finality tolerance \(July 2026 incident, P0-A\)/{p=0} p{print}' "$S")
 [ -n "$block" ] && ok || bad "could not extract the template block from $S"
-echo "$block" | grep -q '^check_chainlink_config$' && ok || bad "block does not call check_chainlink_config"
+# The call may read the exit code (`check_chainlink_config || CHAINLINK_CONFIG_RC=$?`).
+echo "$block" | grep -qE '^check_chainlink_config( |$)' && ok || bad "block does not call check_chainlink_config"
 grep -qE '^    regenerate-chainlink-config.sh \\$' "$S" && ok || bad "regenerate-chainlink-config.sh is not in the _util copy loop"
 grep -q 'regenerate-chainlink-config.sh' "$ROOT/bin/install.sh" && ok || bad "install.sh does not copy regenerate-chainlink-config.sh"
 grep -q '^#VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG="y"' "$ROOT/config/unattended.env.example" && ok || bad "unattended.env.example does not document the default y"
@@ -115,7 +116,7 @@ has   "script absent: finished" "$out" "REACHED-END"
 mv "$T/off" "$T/util/regenerate-chainlink-config.sh"
 
 # Placement: before the finality fallback, and before the arbiter is restarted.
-c=$(grep -n '^check_chainlink_config$' "$S" | head -1 | cut -d: -f1)
+c=$(grep -nE '^check_chainlink_config( |$)' "$S" | head -1 | cut -d: -f1)
 f=$(grep -n '^# Finality tolerance (July 2026 incident, P0-A)' "$S" | head -1 | cut -d: -f1)
 r=$(grep -n 'Do you want to restart the arbiter now' "$S" | head -1 | cut -d: -f1)
 { [ -n "$c" ] && [ -n "$f" ] && [ -n "$r" ] && [ "$c" -lt "$f" ] && [ "$f" -lt "$r" ]; } && ok || bad "order is not template (line ${c:-?}) < finality (line ${f:-?}) < restart (line ${r:-?})"

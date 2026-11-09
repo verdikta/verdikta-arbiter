@@ -109,7 +109,7 @@ mv "$T/off" "$T/util/apply-chainlink-finality-tolerance.sh"
 
 # Placement: right after the template regeneration (whatever its answer), before the
 # arbiter is restarted, so a stopped Chainlink starts on the new settings.
-c=$(grep -n '^check_chainlink_config$' "$S" | head -1 | cut -d: -f1)
+c=$(grep -nE '^check_chainlink_config( |$)' "$S" | head -1 | cut -d: -f1)
 blk=$(grep -n '^# Finality tolerance (July 2026 incident, P0-A)' "$S" | head -1 | cut -d: -f1)
 r=$(grep -n 'Do you want to restart the arbiter now' "$S" | head -1 | cut -d: -f1)
 { [ -n "$c" ] && [ -n "$blk" ] && [ -n "$r" ] && [ "$c" -lt "$blk" ] && [ "$blk" -lt "$r" ]; } && ok || bad "block is not between check_chainlink_config (line ${c:-?}) and the restart (line ${r:-?}): line ${blk:-?}"
