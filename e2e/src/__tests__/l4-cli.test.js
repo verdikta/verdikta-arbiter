@@ -81,7 +81,7 @@ function bodyOf(key, listingCid, claimCid, aiNode) {
     flaky: () => runner('reproduces'),
     coldCache: () => jury({ runner_image: { cache: 'pulled', durationMs: 21000 } }),
     faultNearLimit: () => jury({ canary_fault: { fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 480000, justifierMs: 3000 } }, { model_results: FAULT_RESULTS }),
-    faultProviderTimeout: () => jury({ canary_fault: { fault: 'provider-timeout', attempts: 2, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }], action: null, jurorTimeoutMs: 480000, justifierMs: 3000 } }),
+    faultProviderTimeout: () => jury({ canary_fault: { fault: 'provider-timeout', attempts: 2, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', deadlineMs: 105000 }], action: null, jurorTimeoutMs: 480000, justifierMs: 3000 } }),
     faultSlowJustifier: () => jury({ canary_fault: { fault: 'slow-justifier', attempts: 1, action: 'hold-justifier-answer', jurorTimeoutMs: 480000, justifierMs: 40500 } })
   }[key];
 }

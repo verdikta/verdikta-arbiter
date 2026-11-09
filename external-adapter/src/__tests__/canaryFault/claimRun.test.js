@@ -2,10 +2,12 @@
 // AI Node and a stand-in chain: what the AI Node is sent on each attempt, what stays the same
 // with the switch on and off, and that a verdict's bytes do not depend on it.
 
+const fs = require('fs');
+const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { runClaim } = require('../../codeReview/claimRun');
 const { SharedRuns } = require('../../codeReview/sharedRuns');
-const { createDeadline } = require('../../codeReview/time');
+const { createDeadline, JUSTIFIER_RESERVE_MS, JUROR_FLOOR_MS } = require('../../codeReview/time');
 const { canaryFaultConfigFromEnv, directiveMac } = require('../../canaryFault');
 const H = require('../../../test/helpers/codeReviewFixtures');
 const R = require('../../../test/helpers/codeReviewRun');
@@ -113,7 +115,7 @@ describe('what the AI Node is sent', () => {
     timeout.json.canaryFault = { state: 'armed', action: null };
     ai.state.answer = (body, state) => (state.calls.length === 1 ? timeout : stamp(body, null));
     const result = await run(armed('provider-timeout'));
-    expect(result.metadata.canary_fault.earlierAttempts).toEqual([{ action: null, errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT' }]);
+    expect(result.metadata.canary_fault.earlierAttempts).toEqual([{ action: null, errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT', deadlineMs: 105000 }]);
   });
 
   it('an AI Node that says nothing on an error, and one that says something else: no action, and only a code', async () => {
@@ -121,7 +123,7 @@ describe('what the AI Node is sent', () => {
     odd.json.canaryFault = { state: 'armed', action: 'HUNTER-TEXT' };
     ai.state.answer = (body, state) => (state.calls.length === 1 ? odd : stamp(body, null));
     const result = await run(armed('provider-timeout'));
-    expect(result.metadata.canary_fault.earlierAttempts).toEqual([{ action: null, errorCode: 'unknown' }]);
+    expect(result.metadata.canary_fault.earlierAttempts).toEqual([{ action: null, errorCode: 'unknown', deadlineMs: 105000 }]);
     expect(JSON.stringify(result.metadata)).not.toContain('HUNTER-TEXT');
   });
 
@@ -160,6 +162,109 @@ describe('what the AI Node is sent', () => {
     expect(ai.state.calls).toHaveLength(0);
     expect(result.scores[0].score).toBe(1000000);
     expect(result.metadata.canary_fault).toBeUndefined();
+  });
+});
+
+// Node A13: provider-timeout's first attempt times out early, so its retry has what a claim with
+// no fault has, whatever the panel's speed. Against a first attempt that ran to the cap, a retry
+// gets 255 s less the runner, or nothing (src/__tests__/codeReview/claimRun.test.js).
+describe('provider-timeout: an early first attempt, so the retry has a claim\'s whole jury', () => {
+  // The AI Node's plan (ai-node/src/lib/code-review/deadline.ts), with its cap read from there.
+  const aiNodeSource = fs.readFileSync(path.join(__dirname, '../../../../ai-node/src/lib/code-review/deadline.ts'), 'utf8');
+  const CAP = Number(/CODE_JURY_MAX_MS = ([0-9]+)/.exec(aiNodeSource)[1]);
+  const juryOf = (deadlineMs) => Math.min(CAP, deadlineMs - JUSTIFIER_RESERVE_MS);
+  const lateTimeout = () => {
+    const timeout = R.aiError(503, 'CODE_REVIEW_JUROR_TIMEOUT', true);
+    timeout.json.canaryFault = { state: 'armed', action: 'late-juror' };
+    return timeout;
+  };
+
+  /** A run of `runnerMs` from receipt; each attempt that carries late-juror times out at its own jury deadline. */
+  function timeline(runnerMs) {
+    const sentAt = [];
+    runner.state.answer = (body) => { t = runnerMs; return R.definitive(body); };
+    ai.state.answer = (body) => {
+      sentAt.push(t);
+      if (!body.canaryFault) return stamp(body, null);
+      t += juryOf(body.codeReview.deadlineMs);
+      return lateTimeout();
+    };
+    return sentAt;
+  }
+
+  const withinTheDeadline = (sentAt) => ai.state.calls.forEach((call, i) => {
+    expect(sentAt[i] + call.codeReview.deadlineMs).toBeLessThanOrEqual(780000);
+  });
+
+  it('the first attempt is told 105 s, a jury of 60 s, the juror floor; the retry is told what is left, the whole cap', async () => {
+    const sentAt = timeline(30000);
+    const result = await run(armed('provider-timeout'));
+    expect(ai.state.calls.map((c) => c.codeReview.deadlineMs)).toEqual([105000, 690000]);
+    expect(juryOf(105000)).toBe(JUROR_FLOOR_MS);
+    expect(juryOf(690000)).toBe(CAP);
+    expect(ai.state.calls[0].canaryFault.action).toBe('late-juror');
+    expect(ai.state.calls[1].canaryFault).toBeUndefined();
+    expect(runner.state.runs).toHaveLength(1);
+    expect(result.metadata.canary_fault).toMatchObject({
+      fault: 'provider-timeout', attempts: 2, action: null,
+      earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', deadlineMs: 105000 }]
+    });
+    expect(result.scores).toEqual(R.juryScores());
+    withinTheDeadline(sentAt);
+  });
+
+  it.each([0, 60000, 120000, 195000, 255000, 400000, 614999])('a runner of %i ms: the retry\'s jury is a claim\'s with no fault, less at most the 60 s, and the whole cap up to 195 s', async (runnerMs) => {
+    const sentAt = timeline(runnerMs);
+    await run(armed('provider-timeout'));
+    expect(ai.state.calls).toHaveLength(2);
+    const retryJury = juryOf(ai.state.calls[1].codeReview.deadlineMs);
+    const noFaultJury = juryOf(780000 - runnerMs);
+    expect(retryJury).toBeGreaterThanOrEqual(noFaultJury - JUROR_FLOOR_MS);
+    if (runnerMs <= 195000) expect(retryJury).toBe(CAP);
+    withinTheDeadline(sentAt);
+  });
+
+  it('a runner of 615 s or more leaves no retry after even the early attempt: abstain', async () => {
+    const sentAt = timeline(615000);
+    await expect(run(armed('provider-timeout'))).rejects.toThrow(/CODE_REVIEW_DEADLINE/);
+    expect(ai.state.calls).toHaveLength(1);
+    withinTheDeadline(sentAt);
+  });
+
+  it.each([
+    ['cancellation', ['late-juror', 'late-juror']],
+    ['near-limit-juror', ['hold-juror-answer']],
+    ['slow-justifier', ['hold-justifier-answer']]
+  ])('%s is told what is left on every attempt: only provider-timeout\'s first attempt is shorter', async (fault, actions) => {
+    const sentAt = [];
+    runner.state.answer = (body) => { t = 30000; return R.definitive(body); };
+    ai.state.answer = (body) => {
+      sentAt.push(t);
+      if (fault !== 'cancellation') return stamp(body, body.canaryFault.action);
+      t += juryOf(body.codeReview.deadlineMs);
+      return lateTimeout();
+    };
+    const done = run(armed(fault));
+    if (fault === 'cancellation') await expect(done).rejects.toThrow(/CODE_REVIEW_AI_ABSTAIN/);
+    else await done;
+    expect(ai.state.calls.map((c) => c.canaryFault.action)).toEqual(actions);
+    ai.state.calls.forEach((call, i) => expect(call.codeReview.deadlineMs).toBe(780000 - sentAt[i]));
+    expect(ai.state.calls[0].codeReview.deadlineMs).toBe(750000);
+  });
+
+  it('a fault the chain refused is told what is left: no directive, no shorter deadline', async () => {
+    chain.state.requestedClass = 128;
+    runner.state.answer = (body) => { t = 30000; return R.definitive(body); };
+    await run(armed('provider-timeout'));
+    expect(ai.state.calls).toHaveLength(1);
+    expect(ai.state.calls[0].canaryFault).toBeUndefined();
+    expect(ai.state.calls[0].codeReview.deadlineMs).toBe(750000);
+  });
+
+  it('the switch off: the same claim is told what is left', async () => {
+    runner.state.answer = (body) => { t = 30000; return R.definitive(body); };
+    await run(canaryFaultConfigFromEnv({}));
+    expect(ai.state.calls[0].codeReview.deadlineMs).toBe(750000);
   });
 });
 

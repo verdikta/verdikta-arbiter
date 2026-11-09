@@ -399,6 +399,55 @@ async function faultSlowJustifier(h) {
   return checks;
 }
 
+/** What the switch tells provider-timeout's first attempt (external-adapter/src/canaryFault/constants.js): a 60 s jury. */
+const PROVIDER_TIMEOUT_FIRST_DEADLINE_MS = 105000;
+const FIRST_JURY_MS = PROVIDER_TIMEOUT_FIRST_DEADLINE_MS - 45000;
+const CODE_JURY_CAP_MS = 480000;
+
+/**
+ * provider-timeout across real processes: the first attempt is told the switch's 105 s, so the
+ * real AI Node cancels every juror call at its 60 s jury deadline and answers the retryable 503;
+ * the retry, from the same run with no directive, is told what is left, which here is the whole
+ * cap. About a minute: the first attempt waits for its real deadline.
+ */
+async function faultProviderTimeout(h) {
+  const armed = await h.armedAdapter();
+  const claim = h.claims.faultProviderTimeout;
+  const before = h.counts();
+  const started = Date.now();
+  const resp = await h.evaluateAt(armed.url, claim.requestCid, { aggId: armed.chain.request(5555), jobId: JOB_ID });
+  const took = Date.now() - started;
+  const score = resp && resp.data && resp.data.aggregatedScore;
+  const calls = h.ai.post(AI_ROUTE).slice(before.aiCalls);
+  const [first, retry] = calls;
+  const told = (call) => call && call.request && call.request.codeReview && call.request.codeReview.deadlineMs;
+  const runs = h.counts().runnerCalls - before.runnerCalls;
+  const checks = [
+    ...switchChecks(armed.health, 'armed'),
+    A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}${resp && resp.error ? `, ${resp.error}` : ''}`),
+    A.assert('retry.twoAttempts', calls.length === 2, `${calls.length} AI call(s)`),
+    A.assert('retry.firstEarly', Boolean(first) && Boolean(first.request.canaryFault) && first.request.canaryFault.action === 'late-juror' && told(first) === PROVIDER_TIMEOUT_FIRST_DEADLINE_MS,
+      `action=${first && first.request.canaryFault && first.request.canaryFault.action}, deadlineMs=${told(first)}`),
+    A.assert('retry.firstTimedOut', Boolean(first) && first.status === 503 && Boolean(first.response) && first.response.errorCode === 'CODE_REVIEW_JUROR_TIMEOUT' && first.response.retryable === true,
+      `${first && first.status} ${first && first.response && first.response.errorCode}`),
+    A.assert('retry.atItsDeadline', took >= FIRST_JURY_MS, `${took} ms in all; the first attempt's jury deadline is ${FIRST_JURY_MS} ms`),
+    A.assert('retry.noDirective', Boolean(retry) && retry.request.canaryFault === undefined, JSON.stringify(retry && retry.request.canaryFault)),
+    A.assert('retry.toldWhatIsLeft', Boolean(retry) && told(retry) >= DEADLINE_LIMIT_MS - took && told(retry) <= DEADLINE_LIMIT_MS - FIRST_JURY_MS,
+      `deadlineMs=${told(retry)}, ${took} ms in all`),
+    A.assert('retry.wholeCap', Boolean(retry) && retry.status === 200 && Boolean(retry.response) && retry.response.codeReview.jurorTimeoutMs === CODE_JURY_CAP_MS,
+      `jurorTimeoutMs=${retry && retry.response && retry.response.codeReview && retry.response.codeReview.jurorTimeoutMs}`),
+    A.assert('retry.sameRun', runs === 1, `${runs} runner call(s): the retry is served the first attempt's run`),
+    ...C.scoreChecks(score, h.juryAverage)
+  ];
+  const cid = resp && resp.data && resp.data.justificationCid;
+  checks.push(A.cidAssertion('justificationCid.valid', cid));
+  if (A.isLikelyCid(cid)) {
+    const json = await justificationOf(h, cid);
+    checks.push(...l4Checks('provider-timeout', score, cid, json, claim.cid, h, { faultSwitch: ARMED }));
+  }
+  return checks;
+}
+
 async function faultClass128(h) {
   const armed = await h.armedAdapter();
   const claim = h.claims.faultSlowJustifier;
@@ -476,6 +525,7 @@ const HANDLERS = Object.freeze({
   },
   'fault-switch': {
     'slow-justifier': faultSlowJustifier,
+    'provider-timeout': faultProviderTimeout,
     'class-128': faultClass128,
     'unnamed-claim': faultUnnamedClaim,
     'refused-on-mainnet': faultRefusedOnMainnet

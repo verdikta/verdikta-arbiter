@@ -207,6 +207,64 @@ describe('armed: a key on this node', () => {
   }, 20000);
 });
 
+// Node A13: the retry the EA sends after a timed-out first attempt, with the deadline it then
+// tells (external-adapter/src/codeReview/claimRun.js: what is left of 780 s from its receipt).
+// The juror delays are the evaluation panel's measured answers, Gemini 4 Argon's p95 (211 s) and
+// slowest (262 s), and GPT-6 Luna's slowest (145 s); the mock stands in for both.
+describe('armed: the retry after a timed-out first attempt', () => {
+  const EA_DEADLINE = 780000;
+  const RUNNER_MS = 30000;
+  const at = (deadlineMs: number, canaryFault?: unknown) => ({
+    ...codeModeBody({ codeReview: codeReviewField({ deadlineMs }) }),
+    ...(canaryFault === undefined ? {} : { canaryFault }),
+  });
+  const slowPanel = (firstMs: number) => script({ [SONNET]: { scores: HIGH, delayMs: firstMs }, [DEEPSEEK]: { scores: MEDIUM, delayMs: 145000 } });
+
+  beforeEach(() => { env[CANARY_FAULT_KEY_ENV] = KEY; });
+
+  test('provider-timeout\'s first attempt, told 105 s: every juror call cancelled at its 60 s jury deadline, the first on the wire, the retryable 503', async () => {
+    script({ [SONNET]: { scores: HIGH, delayMs: 30000 }, [DEEPSEEK]: { scores: MEDIUM, delayMs: 121000 } });
+    const t0 = Date.now();
+    const first = await post(at(105000, directive('late-juror')));
+    expect(first.status).toBe(503);
+    expect(first.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, canaryFault: { state: 'armed', action: 'late-juror' } });
+    expect(first.body.error).toMatch(/within the 60000 ms/);
+    expect(first.elapsedMs).toBeLessThanOrEqual(61000);
+    const [late] = calls(SONNET);
+    expect(late.outcome).toBe('aborted');
+    expect(late.startedAt - t0).toBeGreaterThanOrEqual(56000);
+    expect(calls(DEEPSEEK)[0].outcome).toBe('aborted');
+    expect(calls(JUSTIFIER)).toHaveLength(0);
+  }, 30000);
+
+  test('then the retry, told what is left after a 30 s runner and that minute, has the whole 480 s: the slowest measured answer, 262 s, gives the verdict', async () => {
+    const first = await post(at(105000, directive('late-juror')));
+    expect(first.status).toBe(503);
+    slowPanel(262000);
+    const retry = await post(at(EA_DEADLINE - RUNNER_MS - first.elapsedMs));
+    expect(retry.status).toBe(200);
+    expect(retry.body.codeReview.jurorTimeoutMs).toBe(JURY_MS);
+    expect(retry.body.codeReview.canaryFault).toEqual({ state: 'armed', action: null });
+    expect(retry.body.model_results.find((m: any) => m.model === SONNET).duration_ms).toBeGreaterThanOrEqual(262000);
+  }, 30000);
+
+  test.each<[number, number, number]>([
+    [30000, 262000, 225000],
+    [60000, 211000, 195000],
+  ])('after a first attempt at the cap, a runner of %i ms leaves the retry 255 s less the runner: a %i ms answer misses its %i ms', async (runnerMs, answerMs, retryJuryMs) => {
+    const first = await post(at(EA_DEADLINE - runnerMs, directive('late-juror')));
+    expect(first.status).toBe(503);
+    expect(first.body.error).toMatch(new RegExp(`within the ${JURY_MS} ms`));
+    expect(first.elapsedMs).toBeGreaterThanOrEqual(JURY_MS);
+    slowPanel(answerMs);
+    const retry = await post(at(EA_DEADLINE - runnerMs - JURY_MS));
+    expect(retry.status).toBe(503);
+    expect(retry.body.errorCode).toBe('CODE_REVIEW_JUROR_TIMEOUT');
+    expect(retry.body.error).toMatch(new RegExp(`within the ${retryJuryMs} ms`));
+    expect(retry.body.canaryFault).toEqual({ state: 'armed', action: null });
+  }, 30000);
+});
+
 describe('it changes nothing that settles', () => {
   test.each(['hold-juror-answer', 'hold-justifier-answer'])('%s: scores, justification, prompt hash and every provider prompt are the same bytes', async (action) => {
     env[CANARY_FAULT_KEY_ENV] = KEY;
