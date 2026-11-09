@@ -167,6 +167,33 @@ describe('the provider layer checks: every juror, web off, the signal', () => {
   });
 });
 
+describe('the deposit rule checks: the vault\'s documentation reached the jury (A15)', () => {
+  const RULE = '/// @notice Credits the caller with exactly `amount`.';
+  const vault = `# source file: src/Vault.sol\ncontract Vault {\n    ${RULE}\n    function deposit(uint256 amount) external {}\n}\n`;
+  const packOf = (text) => ({ files: [{ name: '00-manifest.json', tier: 'manifest', text: '{}' }, { name: '03-source-001.txt', tier: 'source', text }] });
+  const holding = (p) => jurorCall(p, { prompt: `... ${vault} ...` });
+  const expected = { panel, rule: RULE };
+
+  it('pass when the pack\'s src/Vault.sol carries the line and every juror read it', () => {
+    expect(failed(C.depositRuleChecks(packOf(vault), [...panel.map(holding), justifierCall()], expected))).toEqual([]);
+  });
+
+  it('a pack whose source has no such line fails, and so does one without src/Vault.sol', () => {
+    expect(failed(C.depositRuleChecks(packOf(vault.replace(RULE, '')), panel.map(holding), expected))).toEqual(expect.arrayContaining(['pack.depositRule']));
+    expect(failed(C.depositRuleChecks(packOf(vault.replace('src/Vault.sol', 'src/Other.sol')), panel.map(holding), expected))).toEqual(expect.arrayContaining(['pack.depositRule']));
+    expect(failed(C.depositRuleChecks(null, panel.map(holding), expected))).toEqual(expect.arrayContaining(['pack.depositRule']));
+  });
+
+  it('a juror whose prompt lacks it fails, and so does a missing juror', () => {
+    expect(failed(C.depositRuleChecks(packOf(vault), [holding(panel[0]), jurorCall(panel[1])], expected))).toEqual(['provider.depositRule']);
+    expect(failed(C.depositRuleChecks(packOf(vault), [holding(panel[0])], expected))).toEqual(['provider.depositRule']);
+  });
+
+  it('no rule to look for fails: nothing passes on an empty string', () => {
+    expect(failed(C.depositRuleChecks(packOf(vault), panel.map(holding), { panel, rule: '' }))).toEqual(['pack.depositRule', 'provider.depositRule']);
+  });
+});
+
 describe('the run checks: no pass by abstaining', () => {
   const definitive = {
     outcome: 'definitive', runner: { platform: 'linux/amd64', runtime: 'runc' }, reportUnavailable: null,
