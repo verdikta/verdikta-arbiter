@@ -20,11 +20,23 @@ describe('code-review deadline plan (§11)', () => {
     expect(times.juryDeadlineAt).toBe(56000);
   });
 
-  test('caps the jury at the 240 s budget when the deadline is further away', () => {
-    expect(CODE_JURY_MAX_MS).toBe(240000);
+  test('caps the jury at the 480 s budget when the deadline is further away', () => {
+    expect(CODE_JURY_MAX_MS).toBe(480000);
     const times = planCodeReviewTimes(840000, 0)!;
-    expect(times.jurorTimeoutMs).toBe(240000);
+    expect(times.jurorTimeoutMs).toBe(480000);
     expect(times.deadlineAt).toBe(840000);
+  });
+
+  test('the cap only lowers what the deadline leaves: the jury and the justifier still end by deadlineMs', () => {
+    // The EA's whole deadline (780 s from its receipt) when nothing came before the jury.
+    const far = planCodeReviewTimes(780000, 0)!;
+    expect(far.jurorTimeoutMs).toBe(480000);
+    // A deadline closer than cap + reserve: the jury gets what is left after the reserve.
+    for (const deadlineMs of [525000, 500000, 300000, 100000]) {
+      const times = planCodeReviewTimes(deadlineMs, 0)!;
+      expect(times.jurorTimeoutMs).toBe(Math.min(480000, deadlineMs - JUSTIFIER_RESERVE_MS));
+      expect(times.juryDeadlineAt + JUSTIFIER_RESERVE_MS).toBeLessThanOrEqual(times.deadlineAt);
+    }
   });
 
   test('refuses a deadline that leaves no jury time after the justifier reserve', () => {

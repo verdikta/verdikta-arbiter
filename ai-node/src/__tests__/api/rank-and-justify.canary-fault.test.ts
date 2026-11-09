@@ -27,6 +27,8 @@ const JUSTIFIER = 'mock-justifier';
 const HIGH = [0, 0, 0, 0, 1000000, 0];
 const MEDIUM = [0, 0, 0, 1000000, 0, 0];
 const DEADLINE = 600000;
+/** What DEADLINE leaves the jury: the 480 s cap (deadline.ts, CODE_JURY_MAX_MS). */
+const JURY_MS = 480000;
 
 function script(entries: Record<string, unknown> = {}) {
   env[MOCK_SCRIPT_ENV] = JSON.stringify({
@@ -130,8 +132,8 @@ describe('armed: a key on this node', () => {
     expect(result.body.codeReview.canaryFault).toMatchObject({ state: 'armed', action: 'hold-juror-answer' });
     const first = result.body.model_results.find((m: any) => m.model === SONNET);
     expect(first.status).toBe('success');
-    expect(first.duration_ms).toBeGreaterThanOrEqual(234000);
-    expect(first.duration_ms).toBeLessThan(240000);
+    expect(first.duration_ms).toBeGreaterThanOrEqual(JURY_MS - 6000);
+    expect(first.duration_ms).toBeLessThan(JURY_MS);
     const other = result.body.model_results.find((m: any) => m.model === DEEPSEEK);
     expect(other.duration_ms).toBeLessThan(5000);
     expect(calls(JUSTIFIER)).toHaveLength(1);
@@ -139,11 +141,11 @@ describe('armed: a key on this node', () => {
   }, 20000);
 
   test('a juror that takes longer than the hold is not held further', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: 237000 } });
+    script({ [SONNET]: { scores: HIGH, delayMs: JURY_MS - 3000 } });
     const result = await post(body(directive('hold-juror-answer')));
     expect(result.status).toBe(200);
     const first = result.body.model_results.find((m: any) => m.model === SONNET);
-    expect(first.duration_ms).toBeLessThan(238500);
+    expect(first.duration_ms).toBeLessThan(JURY_MS - 1500);
   }, 20000);
 
   test('late-juror: the real call is on the wire when the deadline aborts it, the retryable 503 of a real timeout', async () => {
@@ -152,11 +154,11 @@ describe('armed: a key on this node', () => {
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, scores: [], justification: '' });
     expect(result.body.canaryFault).toEqual({ state: 'armed', action: 'late-juror' });
-    expect(result.elapsedMs).toBeLessThanOrEqual(241000);
+    expect(result.elapsedMs).toBeLessThanOrEqual(JURY_MS + 1000);
     const [call] = calls(SONNET);
     expect(call.outcome).toBe('aborted');
     expect(call.signalAborted).toBe(true);
-    expect(call.startedAt).toBeGreaterThanOrEqual(236000);
+    expect(call.startedAt).toBeGreaterThanOrEqual(JURY_MS - 4000);
     expect(calls(JUSTIFIER)).toHaveLength(0);
   }, 20000);
 
