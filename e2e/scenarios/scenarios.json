@@ -245,9 +245,10 @@
     "id": "claim-fault-switch",
     "suite": "claim",
     "claim": "fault-switch",
-    "description": "The fault switch across real processes: a second External Adapter armed against a stand-in Base Sepolia RPC, the real AI Node with the key. A request for 5555 is held for real and changes nothing else; a request for 128 and a claim the plan does not name are untouched; a node on another chain says refused.",
+    "description": "The fault switch across real processes: a second External Adapter armed against a stand-in Base Sepolia RPC, the real AI Node with the key. A request for 5555 is held for real and changes nothing else; provider-timeout's first attempt times out for real at its early deadline and the retry gives the verdict; a request for 128 and a claim the plan does not name are untouched; a node on another chain says refused.",
     "modes": [
       "slow-justifier",
+      "provider-timeout",
       "class-128",
       "unnamed-claim",
       "refused-on-mainnet"

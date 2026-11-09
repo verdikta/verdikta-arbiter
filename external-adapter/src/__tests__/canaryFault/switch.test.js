@@ -9,6 +9,7 @@ const {
   canaryFaultConfigFromEnv, describeCanaryFault, faultForRequest
 } = require('../../canaryFault');
 const { jobIdBytes32 } = require('../../canaryFault/measure');
+const { JUSTIFIER_RESERVE_MS, JUROR_FLOOR_MS } = require('../../codeReview/time');
 const {
   startCanaryChain, requestInput, AGGREGATOR, OPERATOR, JOB_ID, JOB_EXTERNAL_ID, JOB_BYTES32, AGG_ID
 } = require('../../../test/helpers/canaryChain');
@@ -139,6 +140,14 @@ describe('a request for 5555, measured: the two cases the design decided', () =>
     expect(fault.refused).toMatch(/REQUEST_CLASS/);
     expect(fault.directiveFor(1, { bcid: CLAIM, reportSha256: 'a'.repeat(64) })).toBeNull();
   });
+
+  it('a provider-timeout refused for 128 shortens nothing either', async () => {
+    chain.state.classes = [128, 5555];
+    chain.state.requestedClass = 128;
+    const fault = await ask(armedEnv({ VERDIKTA_CANARY_FAULTS: `${CLAIM}=provider-timeout` }));
+    expect(fault.refused).toMatch(/REQUEST_CLASS/);
+    expect(fault.deadlineFor(1)).toBeNull();
+  });
 });
 
 describe('refused by measurement: the claim is judged normally, with no directive', () => {
@@ -267,6 +276,25 @@ describe('the plan: what each fault asks of each attempt', () => {
     const two = await directive(name, 2);
     if (second === null) expect(two).toBeNull();
     else expect(two.action).toBe(second);
+  });
+
+  it.each([
+    ['near-limit-juror', null],
+    ['provider-timeout', JUSTIFIER_RESERVE_MS + JUROR_FLOOR_MS],
+    ['slow-justifier', null],
+    ['cancellation', null]
+  ])('%s: attempt 1 is told at most %s ms (null: what is left), every later attempt what is left', async (name, first) => {
+    const fault = await ask(armedEnv({ VERDIKTA_CANARY_FAULTS: `${CLAIM}=${name}` }));
+    expect(fault.deadlineFor(1)).toBe(first);
+    expect(fault.deadlineFor(2)).toBeNull();
+  });
+
+  it('provider-timeout\'s first attempt has the least jury the adapter ever calls: the justifier\'s reserve and the 60 s juror floor, 105 s', () => {
+    expect(FAULTS['provider-timeout'].firstAttemptDeadlineMs).toBe(105000);
+    expect(FAULTS['provider-timeout'].firstAttemptDeadlineMs).toBe(JUSTIFIER_RESERVE_MS + JUROR_FLOOR_MS);
+    for (const [name, fault] of Object.entries(FAULTS)) {
+      if (name !== 'provider-timeout') expect(fault.firstAttemptDeadlineMs).toBeNull();
+    }
   });
 
   it('a directive holds an action and a MAC and nothing else: no key, no value', async () => {

@@ -45,6 +45,13 @@ const PULL_BUDGET_MS = 90000;
 /** The fault switch holds to 5 s under a limit; this leaves the rest for scheduling. */
 const FAULT_NEAR_MS = 15000;
 const JUSTIFIER_RESERVE_MS = 45000;
+/**
+ * What the switch tells provider-timeout's first attempt (external-adapter/src/canaryFault/constants.js):
+ * a 60 s jury, so its real timeout comes early and the retry has a claim's whole jury. A first
+ * attempt at the time left would run to the 480 s cap and leave the retry 255 s less the run, or
+ * none, and the scenario would measure the panel's speed instead of the retry (A13).
+ */
+const PROVIDER_TIMEOUT_FIRST_DEADLINE_MS = 105000;
 
 /**
  * The first Execution evidence block's fields, or null unless the justification opens with
@@ -131,9 +138,12 @@ function faultProblem(r, fault) {
   }
   if (fault === 'provider-timeout') {
     if (applied.attempts !== 2 || applied.action !== null) return `attempts ${applied.attempts}, action ${applied.action}`;
-    // Any timeout gives two attempts: this one has to be the switch's, as the AI Node verified it.
+    // Any timeout gives two attempts: this one has to be the switch's, as the AI Node verified it,
+    // at the switch's early deadline, so the retry was not left to the panel's speed.
     const first = Array.isArray(applied.earlierAttempts) ? applied.earlierAttempts[0] : null;
-    return first && first.action === 'late-juror' && first.errorCode === 'CODE_REVIEW_JUROR_TIMEOUT' ? null : `the first attempt: ${JSON.stringify(first)}`;
+    return first && first.action === 'late-juror' && first.errorCode === 'CODE_REVIEW_JUROR_TIMEOUT' && first.deadlineMs === PROVIDER_TIMEOUT_FIRST_DEADLINE_MS
+      ? null
+      : `the first attempt: ${JSON.stringify(first)}`;
   }
   if (fault === 'slow-justifier') {
     if (applied.action !== 'hold-justifier-answer') return `action ${applied.action}`;
@@ -287,4 +297,4 @@ function observedRound(reports) {
   return { verdict: known || 'unreadable', faultSeen, runReused };
 }
 
-module.exports = { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, EXPECTED, VERDICT_BY_SOURCE };
+module.exports = { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, EXPECTED, VERDICT_BY_SOURCE, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS };

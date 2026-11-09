@@ -108,7 +108,8 @@ Recording proxies sit between them, so a scenario asserts what really crossed.
 | | `dispute` | A dispute round: the dispute archive's panel is called, the statement reaches every juror, the machine lines reach none, the verdict names the statement |
 | | `registry-failure` | A listing on a digest the registry does not hold, in mode 1: the real pull fails, `pull_failed`, errored, no commitment, no AI call |
 | `claim-fault-switch` | `slow-justifier` | A second adapter, armed against a stand-in Base Sepolia RPC: a request for 5555 is held for real in the real AI Node, about 40 s. The request carries the job id as Chainlink 2.23.0's bridge sends it (`0x` and 32 hex digits), and the stand-in's keeper lists classes only under the key registration writes for it |
-| | `class-128` | The same claim, a request for 128: no directive, no hold, and the same justification and scores as the held run |
+| | `provider-timeout` | Its own claim, a request for 5555: the first AI call carries `late-juror` and a 105 s deadline, its first juror's call starts about 57 s after the rest of the panel, and the real AI Node answers the retryable 503 `CODE_REVIEW_JUROR_TIMEOUT` at its 60 s jury deadline; the second carries no directive and the time left, starts every juror at once, gets the whole 480 s, and gives the verdict from the one run. L4's provider-timeout checks hold. The mock jurors answer at once, so no call is pending at the deadline: the abort on the wire is the AI Node's route test (`rank-and-justify.canary-fault.test.ts`) |
+| | `class-128` | The same claim as `slow-justifier`, a request for 128: no directive, no hold, and the same justification and scores as the held run |
 | | `unnamed-claim` | A claim the plan does not name: no chain read, no directive |
 | | `refused-on-mainnet` | The same flag on a node configured for Base mainnet: `refused`, in `/health` and `/version`. Then the fault key must be in no service's log, at `LOG_LEVEL=debug`, and on no route |
 
@@ -116,7 +117,7 @@ Every verdict is also held to the L4 scenarios' own checks (`l4.claim.*`, `src/l
 
 **It fails, it never skips.** A harness that cannot start (no Docker, no `npm ci`, an AI Node that dies, a registry that will not come up, `/health` not ready) is a failed case for every scenario and mode, naming why, and exit 1. A case with no checks fails. A CID the local IPFS does not hold fails the scenario, so none can pass by reaching the public gateways.
 
-A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: about 6 minutes in all, of which the fault switch's real hold is 40 s.
+A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: about 6 minutes in all before `provider-timeout`, of which the fault switch's real hold is 40 s; `provider-timeout` adds about 72 s, its first attempt's real 60 s with the rest.
 
 #### On Apple silicon
 
@@ -232,9 +233,9 @@ One real request each on the canaries, with `[listing, claim]` as `cids` and the
 | `claim-l4-flaky` | A PoC that alternates (A3b's fixture) | All weight on `INVALID` at `reproduces` on every host, one report hash, no model |
 | `claim-l4-registry-failure` | A validated listing whose image was removed from the registry after it was signed | Nobody commits for `watchSeconds`. Then its controls settle (below) |
 | `claim-l4-near-limit-juror` | The fault switch holds the first juror's real answer | The jury was reached, a juror within 15 s of its limit, on one report hash |
-| `claim-l4-provider-timeout` | The fault switch times the first juror out, once | Two attempts: the first a `CODE_REVIEW_JUROR_TIMEOUT` on the action the AI Node verified, the second with no fault. A verdict from one run |
+| `claim-l4-provider-timeout` | The fault switch times the first juror out, once, early: the first attempt is told 105 s, a 60 s jury | Two attempts: the first a `CODE_REVIEW_JUROR_TIMEOUT` on the action the AI Node verified, told the switch's 105 s; the second with no fault, told what is left. A verdict from one run. Why early: below the table |
 | `claim-l4-slow-justifier` | The fault switch holds the real justification | The jury was reached, the justifier within 15 s of its 45 s |
-| `claim-l4-cancellation` | The fault switch times the first juror out on both attempts | Nobody commits for `watchSeconds`. Then its control settles (below) |
+| `claim-l4-cancellation` | The fault switch times the first juror out at the jury deadline the time left gives, on every attempt | Nobody commits for `watchSeconds`. Then its control settles (below) |
 | `claim-l4-cold-cache` | A valid claim on an image the canaries have not pulled | The jury was reached, each arbiter's `runner_image` is `pulled` or `shared` and at least one pulled, in at most 90 s (§11). An image already there fails, and so does a repeat within 15 minutes, which an arbiter serves from its kept run (`reused`) |
 | `claim-l4-dispute` | A claim round, then the dispute round `StakeAttestation.dispute` composes: the listing's dispute archive (the same members, common's dispute panel), the claim, the disclosure line and the statement by CID | Each round as a valid claim, the second naming the statement. The outcome before and after goes in the report. A flip is the contract's `Overturned`: real jurors decide it, so it is measured, not asserted. If the first outcome is not valid the contract would refuse a dispute: no second round and no sample |
 
@@ -242,6 +243,8 @@ One real request each on the canaries, with `[listing, claim]` as `cids` and the
 node src/index.js l4 --scenario claim-l4-valid,claim-l4-front-gate,claim-l4-runner-gate \
   --class-id 5555 --expect-common <version> --expect-release <commit> --junit results/l4.xml
 ```
+
+**Why the provider timeout comes early.** The EA retries a timed-out jury once, in what is left of its 780 s (design §11). A first attempt that runs to the 480 s jury cap after a run of R seconds leaves the retry a jury of 255 − R s, and none from R = 195 s. Both panels of 2026-11-09 hold Gemini 4 Argon (p95 211 s, slowest 262 s per answer), so with the first attempt at the cap this scenario would pass only on a fast run and a fast draw: the p95 fits only after a run of at most 44 s, the slowest answer never. So the switch tells the first attempt 105 s. The AI Node's real 60 s jury deadline aborts the first juror's real call on the wire, and the retry is told what is left: the whole 480 s for any run up to 195 s, and at most 60 s less than a claim with no fault after that. It passes when `claim-l4-valid` would on the same run. `claim.faultApplied` fails a first attempt told anything else, such as an adapter from before this (A13). The cancellation keeps its first attempt at the deadline the time left gives; after a capped first attempt it makes a second only on a run under 195 s, and nobody commits either way.
 
 **Every recorded reveal, not the cluster.** `getEvaluation` names only the clustered arbiters (P = 2 of N = 3), the pair chosen for being closest, so a claim scenario reads each reveal from its transaction instead (`src/l4/reveals.js`): `NewOracleResponseRecorded` gives the transaction, and `fulfillOracleRequestV`'s calldata the vector and `cid:salt`. `claim.revealsComplete` holds them to the aggregator's own `responseCount`, so a lagging log index can't hide an arbiter, and `claim.revealMatchesUpload` holds each upload to what its arbiter revealed. The fourth arbiter asked to reveal, after the round finished, leaves no event, and is not compared.
 

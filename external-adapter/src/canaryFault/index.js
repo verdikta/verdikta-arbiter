@@ -12,8 +12,10 @@
  *
  * What it does then is mint a directive for the AI Node, signed with a key the AI Node holds
  * too. The AI Node waits: it holds a real answer or starts a real call late, inside the raced
- * work, so a stage's deadline still ends it. Nothing here sees a score, a report or a gate: the
- * run has settled for the jury before this is asked, and its answer is only the directive.
+ * work, so a stage's deadline still ends it. For provider-timeout's first attempt it also names a
+ * shorter deadline (constants.js), so that attempt's real timeout comes early. Nothing here sees a
+ * score, a report or a gate: the run has settled for the jury before this is asked, and its
+ * answer is only the directive and that deadline.
  */
 
 const crypto = require('crypto');
@@ -31,8 +33,9 @@ function directiveMac(key, action, bcid, reportSha256) {
  *
  * @param {{ bcid: string, aggId?: string, jobId?: string }} request
  * @param {{ config?: object, logger?: object, runTag?: string }} [options]
- * @returns {Promise<null|{ fault: string, refused: string|null, directiveFor: (attempt: number, binding: { bcid: string, reportSha256: string }) => ({ action: string, mac: string }|null) }>}
- *   null when the switch has nothing to say: off, refused, or a claim the plan does not name
+ * @returns {Promise<null|{ fault: string, refused: string|null, directiveFor: (attempt: number, binding: { bcid: string, reportSha256: string }) => ({ action: string, mac: string }|null), deadlineFor: (attempt: number) => number|null }>}
+ *   null when the switch has nothing to say: off, refused, or a claim the plan does not name.
+ *   deadlineFor is the most an attempt is told, or null for what is left.
  */
 async function faultForRequest({ bcid, aggId, jobId }, options = {}) {
   const config = options.config || getCanaryFaultConfig();
@@ -47,18 +50,19 @@ async function faultForRequest({ bcid, aggId, jobId }, options = {}) {
     config.counts.refused += 1;
     config.counts.lastRefusal = refused;
     logger.warn(`${runTag} canary fault ${fault} refused for ${bcid}: ${refused}; the claim is judged normally`);
-    return { fault, refused, directiveFor: () => null };
+    return { fault, refused, directiveFor: () => null, deadlineFor: () => null };
   }
   config.counts.applied += 1;
   logger.warn(`${runTag} CANARY FAULT ${fault} applies to ${bcid}: a request for class ${CANARY_CLASS_ID}, measured`);
-  const { action, firstAttemptOnly } = FAULTS[fault];
+  const { action, firstAttemptOnly, firstAttemptDeadlineMs } = FAULTS[fault];
   return {
     fault,
     refused: null,
     directiveFor: (attempt, binding) => {
       if (firstAttemptOnly && attempt > 1) return null;
       return { action, mac: directiveMac(config.key, action, binding.bcid, binding.reportSha256) };
-    }
+    },
+    deadlineFor: (attempt) => (attempt === 1 ? firstAttemptDeadlineMs : null)
   };
 }
 

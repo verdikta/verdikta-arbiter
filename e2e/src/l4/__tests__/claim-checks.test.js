@@ -3,7 +3,9 @@
 // Nodes A6b, A6c: what an L4 claim scenario asserts, against what it must refuse. The same
 // functions run on the real pipeline's justifications in the L2 claim suite.
 
-const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock } = require('../claim-checks');
+const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS } = require('../claim-checks');
+// The adapter's fault plan, in this repository: constants only, it requires nothing.
+const { FAULTS: EA_FAULTS } = require('../../../../external-adapter/src/canaryFault/constants');
 
 const allPass = (checks) => checks.length > 0 && checks.every((c) => c.ok);
 const failed = (checks) => checks.filter((c) => !c.ok).map((c) => c.name);
@@ -219,10 +221,16 @@ describe('the fault switch, as the run named it', () => {
   });
 
   describe('provider-timeout', () => {
-    const retried = { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 480000, justifierMs: 3000, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }] };
+    const early = { action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', deadlineMs: 105000 };
+    const retried = { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 480000, justifierMs: 3000, earlierAttempts: [early] };
 
-    it('passes on a second attempt with no directive', () => {
+    it('passes on a second attempt with no directive, after the switch\'s early first attempt', () => {
       expect(allPass(claimVerdictChecks(args('provider-timeout', [report(armedJuror(retried))], { faultSwitch: armed, scores: JURY_VECTOR })))).toBe(true);
+    });
+
+    it('the early first attempt is the adapter\'s own: 105 s, the justifier\'s reserve and the juror floor (external-adapter/src/canaryFault/constants.js)', () => {
+      expect(PROVIDER_TIMEOUT_FIRST_DEADLINE_MS).toBe(105000);
+      expect(PROVIDER_TIMEOUT_FIRST_DEADLINE_MS).toBe(EA_FAULTS['provider-timeout'].firstAttemptDeadlineMs);
     });
 
     it.each([
@@ -230,8 +238,10 @@ describe('the fault switch, as the run named it', () => {
       ['a fault left on the retry', { action: 'late-juror' }],
       ['no evidence of the first attempt', { earlierAttempts: undefined }],
       ['no first attempt', { earlierAttempts: [] }],
-      ['a timeout the AI Node did not verify a directive for: keys that do not match, and an ordinary timeout', { earlierAttempts: [{ action: null, errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }] }],
-      ['an unrelated retryable timeout', { earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT' }] }]
+      ['a timeout the AI Node did not verify a directive for: keys that do not match, and an ordinary timeout', { earlierAttempts: [{ ...early, action: null }] }],
+      ['an unrelated retryable timeout', { earlierAttempts: [{ ...early, errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT' }] }],
+      ['a first attempt at the jury deadline the time left gives, not the switch\'s 105 s: an adapter from before A13', { earlierAttempts: [{ ...early, deadlineMs: 750000 }] }],
+      ['a first attempt that says nothing of its deadline', { earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }] }]
     ])('fails on %s', (_name, over) => {
       expect(failed(claimVerdictChecks(args('provider-timeout', [report(armedJuror({ ...retried, ...over }))], { faultSwitch: armed, scores: JURY_VECTOR })))).toContain('claim.faultApplied');
     });

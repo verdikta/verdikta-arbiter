@@ -18,7 +18,7 @@ const A = require('../../assertions');
 const C = require('./checks');
 const F = require('./fixtures');
 const { fetchJustificationJson } = require('../../ipfs');
-const { claimVerdictChecks } = require('../../l4/claim-checks');
+const { claimVerdictChecks, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS } = require('../../l4/claim-checks');
 const { JOB_ID } = require('./canary-chain');
 
 const AI_ROUTE = '/api/rank-and-justify';
@@ -399,6 +399,72 @@ async function faultSlowJustifier(h) {
   return checks;
 }
 
+/** The jury the AI Node plans for that first attempt (less the justifier's 45 s), and its cap (ai-node/src/lib/code-review/deadline.ts). */
+const FIRST_JURY_MS = PROVIDER_TIMEOUT_FIRST_DEADLINE_MS - 45000;
+const CODE_JURY_CAP_MS = 480000;
+/** late-juror starts the first juror's call 3 s before the jury deadline; this leaves a second for scheduling. */
+const LATE_START_MS = FIRST_JURY_MS - 4000;
+
+/**
+ * provider-timeout across real processes: the first attempt is told the switch's 105 s, so the
+ * real AI Node plans a 60 s jury, starts the first juror's call 3 s before its end, and answers
+ * the retryable 503 at that real deadline; the retry, from the same run with no directive, is
+ * told what is left, which here is the whole cap. About a minute: the first attempt waits for
+ * its real deadline. The harness's mock jurors answer at once, so no provider call is still
+ * pending when the deadline fires: the abort on the wire is the AI Node's route test
+ * (ai-node/src/__tests__/api/rank-and-justify.canary-fault.test.ts, "the retry after a
+ * timed-out first attempt"), with jurors slower than the deadline.
+ */
+async function faultProviderTimeout(h) {
+  const armed = await h.armedAdapter();
+  const claim = h.claims.faultProviderTimeout;
+  const before = h.counts();
+  const started = Date.now();
+  const resp = await h.evaluateAt(armed.url, claim.requestCid, { aggId: armed.chain.request(5555), jobId: JOB_ID });
+  const took = Date.now() - started;
+  const score = resp && resp.data && resp.data.aggregatedScore;
+  const calls = h.ai.post(AI_ROUTE).slice(before.aiCalls);
+  const [first, retry] = calls;
+  const told = (call) => call && call.request && call.request.codeReview && call.request.codeReview.deadlineMs;
+  const runs = h.counts().runnerCalls - before.runnerCalls;
+  // The panel's calls in start order: the first juror's (late-juror's) and the others', per attempt.
+  const [lateJuror] = h.panel;
+  const isLate = (c) => c.model === lateJuror.model && c.provider === lateJuror.provider;
+  const isOther = (c) => !isLate(c) && h.panel.some((p) => p.model === c.model && p.provider === c.provider);
+  const byStart = (list) => [...list].sort((a, b) => a.startedAt - b.startedAt);
+  const provider = h.providerCalls().slice(before.providerCalls);
+  const late = byStart(provider.filter(isLate));
+  const others = byStart(provider.filter(isOther));
+  const otherPerAttempt = h.panel.length - 1;
+  const lateBy = (i) => (late[i] && others[i * otherPerAttempt] ? late[i].startedAt - others[i * otherPerAttempt].startedAt : null);
+  const checks = [
+    ...switchChecks(armed.health, 'armed'),
+    A.assert('response.success', resp && resp.status === 'success', `status=${resp && resp.status}${resp && resp.error ? `, ${resp.error}` : ''}`),
+    A.assert('retry.twoAttempts', calls.length === 2, `${calls.length} AI call(s)`),
+    A.assert('retry.firstEarly', Boolean(first) && Boolean(first.request.canaryFault) && first.request.canaryFault.action === 'late-juror' && told(first) === PROVIDER_TIMEOUT_FIRST_DEADLINE_MS,
+      `action=${first && first.request.canaryFault && first.request.canaryFault.action}, deadlineMs=${told(first)}`),
+    A.assert('retry.firstTimedOut', Boolean(first) && first.status === 503 && Boolean(first.response) && first.response.errorCode === 'CODE_REVIEW_JUROR_TIMEOUT' && first.response.retryable === true,
+      `${first && first.status} ${first && first.response && first.response.errorCode}`),
+    A.assert('retry.atItsDeadline', took >= FIRST_JURY_MS, `${took} ms in all; the first attempt's jury deadline is ${FIRST_JURY_MS} ms`),
+    A.assert('retry.lateStartOnlyFirst', late.length === 2 && others.length === 2 * otherPerAttempt && lateBy(0) >= LATE_START_MS && lateBy(1) < LATE_START_MS,
+      `${lateJuror.model} started ${lateBy(0)} ms after the rest of the panel on the first attempt and ${lateBy(1)} ms on the retry; ${late.length} and ${others.length} call(s)`),
+    A.assert('retry.noDirective', Boolean(retry) && retry.request.canaryFault === undefined, JSON.stringify(retry && retry.request.canaryFault)),
+    A.assert('retry.toldWhatIsLeft', Boolean(retry) && told(retry) >= DEADLINE_LIMIT_MS - took && told(retry) <= DEADLINE_LIMIT_MS - FIRST_JURY_MS,
+      `deadlineMs=${told(retry)}, ${took} ms in all`),
+    A.assert('retry.wholeCap', Boolean(retry) && retry.status === 200 && Boolean(retry.response) && retry.response.codeReview.jurorTimeoutMs === CODE_JURY_CAP_MS,
+      `jurorTimeoutMs=${retry && retry.response && retry.response.codeReview && retry.response.codeReview.jurorTimeoutMs}`),
+    A.assert('retry.sameRun', runs === 1, `${runs} runner call(s): the retry is served the first attempt's run`),
+    ...C.scoreChecks(score, h.juryAverage)
+  ];
+  const cid = resp && resp.data && resp.data.justificationCid;
+  checks.push(A.cidAssertion('justificationCid.valid', cid));
+  if (A.isLikelyCid(cid)) {
+    const json = await justificationOf(h, cid);
+    checks.push(...l4Checks('provider-timeout', score, cid, json, claim.cid, h, { faultSwitch: ARMED }));
+  }
+  return checks;
+}
+
 async function faultClass128(h) {
   const armed = await h.armedAdapter();
   const claim = h.claims.faultSlowJustifier;
@@ -476,6 +542,7 @@ const HANDLERS = Object.freeze({
   },
   'fault-switch': {
     'slow-justifier': faultSlowJustifier,
+    'provider-timeout': faultProviderTimeout,
     'class-128': faultClass128,
     'unnamed-claim': faultUnnamedClaim,
     'refused-on-mainnet': faultRefusedOnMainnet

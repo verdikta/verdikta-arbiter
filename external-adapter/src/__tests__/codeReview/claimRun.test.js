@@ -1,6 +1,8 @@
 // Node A4b: the run on a clock the test moves, for what real timers cannot hit
 // exactly: the retry's boundary, the arithmetic and the runtime rule.
 
+const fs = require('fs');
+const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { runClaim } = require('../../codeReview/claimRun');
 const { SharedRuns } = require('../../codeReview/sharedRuns');
@@ -123,6 +125,64 @@ describe('the juror floor, before every AI call', () => {
     expect(ai.state.calls).toHaveLength(2);
     expect(ai.state.calls[1].codeReview.deadlineMs).toBe(LIMIT + 1);
     expect(runner.state.runs).toHaveLength(1);
+  });
+});
+
+// Node A13: what a retried jury gets after a first attempt that ran to the AI Node's jury cap.
+describe('the retry after a first attempt that runs to the jury cap (§11)', () => {
+  // The AI Node's own plan (ai-node/src/lib/code-review/deadline.ts): the jury gets the smaller of
+  // its cap and what deadlineMs leaves after the justifier's reserve. The cap is read from there.
+  const aiNodeSource = fs.readFileSync(path.join(__dirname, '../../../../ai-node/src/lib/code-review/deadline.ts'), 'utf8');
+  const CAP = Number(/CODE_JURY_MAX_MS = ([0-9]+)/.exec(aiNodeSource)[1]);
+  const juryOf = (deadlineMs) => Math.min(CAP, deadlineMs - JUSTIFIER_RESERVE_MS);
+
+  /** A run of `runnerMs` from receipt, then an AI Node whose first attempt times out at its own jury deadline. */
+  function timeline(runnerMs) {
+    const sentAt = [];
+    runner.state.answer = (body) => { t = runnerMs; return R.definitive(body); };
+    ai.state.answer = (body, state) => {
+      sentAt.push(t);
+      if (state.calls.length > 1) return R.juryAnswer(body);
+      t += juryOf(body.codeReview.deadlineMs);
+      return R.aiError(503, 'CODE_REVIEW_JUROR_TIMEOUT', true);
+    };
+    return sentAt;
+  }
+
+  /** Every call's jury and justifier end by the EA's deadline, receipt + 780 s. */
+  const withinTheDeadline = (sentAt) => ai.state.calls.forEach((call, i) => {
+    expect(sentAt[i] + call.codeReview.deadlineMs).toBeLessThanOrEqual(780000);
+  });
+
+  it('the cap is the AI Node\'s 480 s', () => {
+    expect(CAP).toBe(480000);
+  });
+
+  it.each([
+    [0, 300000, 255000],
+    [30000, 270000, 225000],
+    [60000, 240000, 195000],
+    [120000, 180000, 135000],
+    [194999, 105001, 60001]
+  ])('a runner of %i ms: the first attempt gets the whole cap, the retry is told %i ms, a jury of %i ms (255 s less the runner)', async (runnerMs, told, jury) => {
+    const sentAt = timeline(runnerMs);
+    const result = await runClaim(contextFor(), options());
+    expect(result.scores).toEqual(R.juryScores());
+    expect(ai.state.calls).toHaveLength(2);
+    expect(juryOf(ai.state.calls[0].codeReview.deadlineMs)).toBe(CAP);
+    expect(ai.state.calls[1].codeReview.deadlineMs).toBe(told);
+    expect(juryOf(told)).toBe(jury);
+    expect(jury).toBe(780000 - CAP - JUSTIFIER_RESERVE_MS - runnerMs);
+    expect(runner.state.runs).toHaveLength(1);
+    withinTheDeadline(sentAt);
+  });
+
+  it.each([195000, 255000, 300000, 400000])('a runner of %i ms: the first attempt leaves reserve + floor or less, so there is no retry: abstain, no second call', async (runnerMs) => {
+    const sentAt = timeline(runnerMs);
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_DEADLINE/);
+    expect(ai.state.calls).toHaveLength(1);
+    expect(780000 - t).toBeLessThanOrEqual(LIMIT);
+    withinTheDeadline(sentAt);
   });
 });
 
