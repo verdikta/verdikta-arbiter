@@ -343,6 +343,12 @@ describe('the juror\'s AbortController still ends the call at the jury deadline'
 });
 
 describe('the dispatcher of a juror\'s call', () => {
+  test('is undici of the major this Node bundles, which its fetch is written against', () => {
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const pinned: string = require('undici/package.json').version;
+    expect(pinned.split('.')[0]).toBe(String(process.versions.undici).split('.')[0]);
+  });
+
   test('its limits sit above the window, the grace past the deadline', () => {
     const now = 1_000_000;
     expect(jurorTransport.JUROR_TRANSPORT_GRACE_MS).toBeGreaterThan(0);
