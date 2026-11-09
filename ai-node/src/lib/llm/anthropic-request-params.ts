@@ -109,22 +109,28 @@ export function anthropicControlParams(model: string, controls?: AnthropicCallCo
 
 /**
  * The client options for a call with a deadline: the SDK client's own timeout, set to
- * the time left. A call with no deadline gets {} and the SDK's default, as text mode
- * always has. The value is read once per client, so call this when creating the client.
+ * the time left, and the juror's dispatcher when there is one. A call with no deadline
+ * gets {} and the SDK's defaults, as text mode always has. The values are read once per
+ * client, so call this when creating the client.
  *
  * @anthropic-ai/sdk 0.71.2 (nested under @langchain/anthropic) refuses a non-streaming
  * request above 21,333 max tokens, before sending anything, because it estimates such a
  * request could take over ten minutes, unless the client has a timeout of its own. Code
- * mode's 32,000 output tokens need one, and the jury's 240 s ceiling keeps the call far
- * from ten minutes. The call's AbortSignal is still what cancels it.
+ * mode's 32,000 output tokens need one, and the jury's 480 s ceiling keeps the call below
+ * ten minutes. The SDK sends through Node's fetch, which by itself gives up after 300 s
+ * without response headers, so a juror's client also gets the call's own dispatcher
+ * (juror-transport.ts) as `fetchOptions.dispatcher`. The call's AbortSignal is still what
+ * cancels it.
  */
 export function anthropicClientOptions(
   controls?: AnthropicCallControls,
   now: number = Date.now(),
-): { clientOptions?: { timeout: number } } {
+  dispatcher?: unknown,
+): { clientOptions?: { timeout: number; fetchOptions?: { dispatcher: unknown } } } {
   if (controls?.deadlineAt === undefined) return {};
   // At least 1 ms: a past deadline means the signal has fired or is about to.
-  return { clientOptions: { timeout: Math.max(1, controls.deadlineAt - now) } };
+  const timeout = Math.max(1, controls.deadlineAt - now);
+  return { clientOptions: dispatcher === undefined ? { timeout } : { timeout, fetchOptions: { dispatcher } } };
 }
 
 /**

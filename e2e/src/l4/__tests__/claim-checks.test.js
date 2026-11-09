@@ -199,18 +199,18 @@ describe('the fault switch, as the run named it', () => {
   });
 
   describe('near-limit-juror', () => {
-    const held = { fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 240000, justifierMs: 3000 };
-    const good = () => report(withResults(armedJuror(held), 235000));
+    const held = { fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 480000, justifierMs: 3000 };
+    const good = () => report(withResults(armedJuror(held), 475000));
 
     it('passes when every arbiter held a juror just under its limit and the jury still answered', () => {
       expect(allPass(claimVerdictChecks(args('near-limit-juror', [good(), good(), good()], { faultSwitch: armed, scores: JURY_VECTOR })))).toBe(true);
     });
 
     it.each([
-      ['no fault at all', () => report(withResults(armedJuror(), 235000))],
-      ['the switch refused it', () => report(withResults(armedJuror({ fault: 'near-limit-juror', refused: 'REQUEST_CLASS 128' }), 235000))],
-      ['the AI Node did not hold', () => report(withResults(armedJuror({ ...held, action: null }), 235000))],
-      ['another fault', () => report(withResults(armedJuror({ ...held, fault: 'slow-justifier' }), 235000))],
+      ['no fault at all', () => report(withResults(armedJuror(), 475000))],
+      ['the switch refused it', () => report(withResults(armedJuror({ fault: 'near-limit-juror', refused: 'REQUEST_CLASS 128' }), 475000))],
+      ['the AI Node did not hold', () => report(withResults(armedJuror({ ...held, action: null }), 475000))],
+      ['another fault', () => report(withResults(armedJuror({ ...held, fault: 'slow-justifier' }), 475000))],
       ['no juror near the limit', () => report(withResults(armedJuror(held), 60000))],
       ['no model results', () => report(armedJuror(held))]
     ])('fails on %s', (_name, build) => {
@@ -219,7 +219,7 @@ describe('the fault switch, as the run named it', () => {
   });
 
   describe('provider-timeout', () => {
-    const retried = { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 240000, justifierMs: 3000, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }] };
+    const retried = { fault: 'provider-timeout', attempts: 2, action: null, jurorTimeoutMs: 480000, justifierMs: 3000, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }] };
 
     it('passes on a second attempt with no directive', () => {
       expect(allPass(claimVerdictChecks(args('provider-timeout', [report(armedJuror(retried))], { faultSwitch: armed, scores: JURY_VECTOR })))).toBe(true);
@@ -238,7 +238,7 @@ describe('the fault switch, as the run named it', () => {
   });
 
   describe('slow-justifier', () => {
-    const slow = { fault: 'slow-justifier', attempts: 1, action: 'hold-justifier-answer', jurorTimeoutMs: 240000, justifierMs: 40500 };
+    const slow = { fault: 'slow-justifier', attempts: 1, action: 'hold-justifier-answer', jurorTimeoutMs: 480000, justifierMs: 40500 };
 
     it('passes when the justifier ran near its reserve', () => {
       expect(allPass(claimVerdictChecks(args('slow-justifier', [report(armedJuror(slow))], { faultSwitch: armed, scores: JURY_VECTOR })))).toBe(true);

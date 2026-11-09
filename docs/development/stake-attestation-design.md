@@ -1553,9 +1553,25 @@ cheap classes — together they would roughly halve the prepay.
 | Apply → build → PoC ×3 → integrity → [fix check in parallel] | ≤ 360 s (`limits.runSeconds`, enforced at listing and by the class maximum) |
 | Lint/SAST | Seconds on an honest claim. Its own timer, at most 420 s, outside `runSeconds` so a hunter's file cannot turn a listing's run into an abstention; the one deadline still bounds it |
 | Jev | ~2 s |
-| Frontier jury (parallel), then justifier | ≤ 240 s + 45 s |
+| Frontier jury (parallel), then justifier | ≤ 480 s + 45 s, within the one deadline |
 | Commit transaction; reveal dispatch → reveal transaction | ~90 s |
 | **Worst case** | **≈ 14 min, so `responseTimeoutSeconds` = 900 s** |
+
+The stages up to the justifier do not add up to the worst case: the one deadline below
+(receipt + 780 s) bounds them together, so the worst case is that deadline plus the commit
+and reveal, ≈ 870 s. The jury gets the smaller of 480 s and what the deadline leaves after
+the justifier's 45 s, so a long run before it leaves it less. A timed-out jury is retried
+only in what then remains, and only while more than the reserve and the EA's 60 s juror
+floor are left: with the larger cap a retry has less time than it had under 240 s, or none.
+The cap was 240 s until 2026-11-09 (A11): the owner put a juror's accuracy and cost ahead
+of its speed, and slower jurors ran up to and past 240 s in tuning.
+
+A juror's HTTP call holds for its whole window. Node's fetch (undici) gives up after 300 s
+without response headers, and a non-streaming reasoning reply sends none until it is
+complete, so each juror call has a dispatcher of its own whose limits are the time left
+plus 15 s (`ai-node/src/lib/llm/juror-transport.ts`); the juror's AbortSignal still ends it
+at the deadline. The 480 s cap reaches the canaries only after `setResponseTimeout(900)`
+(`docs/release-runbook.md`, 3b).
 
 **One deadline, propagated.** Raising the outer timeouts is not enough: the AI
 Node has its own 240 s whole-request timer (`REQUEST_TIMEOUT_MS`, covering

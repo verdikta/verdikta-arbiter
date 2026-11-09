@@ -8,7 +8,7 @@
  *    else is a requester error before any model is called.
  * 2. The attachments (the context pack, report.md) must be text.
  * 3. The deadline plan (deadline.ts): jurors until deadlineMs less the 45 s
- *    justifier reserve (at most 240 s), then the justifier for its reserve.
+ *    justifier reserve (at most 480 s), then the justifier for its reserve.
  * 4. Every juror is required; a juror timeout is the retryable 503, a provider
  *    error or unusable reply the non-retryable 400. The justifier's failure
  *    abstains too: code mode never publishes a partial justification.

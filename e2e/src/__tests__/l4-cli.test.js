@@ -59,7 +59,7 @@ const INVALID_VECTOR = [1000000n, 0n, 0n, 0n, 0n, 0n];
 const evidence = (settlement, listingCid, claimCid, hash = REPORT_HASH) => [
   'Execution evidence v1', `Settlement: ${settlement}`, `Report-SHA256: ${hash}`, `Listing: ${listingCid}`, `Claim: ${claimCid}`, 'End execution evidence'
 ].join('\n');
-const FAULT_RESULTS = [{ provider: 'p', model: 'm', status: 'success', duration_ms: 235500 }];
+const FAULT_RESULTS = [{ provider: 'p', model: 'm', status: 'success', duration_ms: 475500 }];
 
 /** What each claim's scenario expects the arbiters to have uploaded. */
 function bodyOf(key, listingCid, claimCid, aiNode) {
@@ -80,9 +80,9 @@ function bodyOf(key, listingCid, claimCid, aiNode) {
     editsSource: () => runner('testPathsOnly'),
     flaky: () => runner('reproduces'),
     coldCache: () => jury({ runner_image: { cache: 'pulled', durationMs: 21000 } }),
-    faultNearLimit: () => jury({ canary_fault: { fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 240000, justifierMs: 3000 } }, { model_results: FAULT_RESULTS }),
-    faultProviderTimeout: () => jury({ canary_fault: { fault: 'provider-timeout', attempts: 2, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }], action: null, jurorTimeoutMs: 240000, justifierMs: 3000 } }),
-    faultSlowJustifier: () => jury({ canary_fault: { fault: 'slow-justifier', attempts: 1, action: 'hold-justifier-answer', jurorTimeoutMs: 240000, justifierMs: 40500 } })
+    faultNearLimit: () => jury({ canary_fault: { fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 480000, justifierMs: 3000 } }, { model_results: FAULT_RESULTS }),
+    faultProviderTimeout: () => jury({ canary_fault: { fault: 'provider-timeout', attempts: 2, earlierAttempts: [{ action: 'late-juror', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT' }], action: null, jurorTimeoutMs: 480000, justifierMs: 3000 } }),
+    faultSlowJustifier: () => jury({ canary_fault: { fault: 'slow-justifier', attempts: 1, action: 'hold-justifier-answer', jurorTimeoutMs: 480000, justifierMs: 40500 } })
   }[key];
 }
 

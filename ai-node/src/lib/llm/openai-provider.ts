@@ -14,6 +14,7 @@ import { modelConfig } from '../../config/models';
 import { AttachmentContext, attachmentRequestError } from './attachment-errors';
 import { WebAccessOption, openAIModelSupportsWebSearch, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
 import { WebRetrieval, summarizeOpenAIWebSearch, webToolsOff } from './web-retrieval';
+import { jurorTransportFor } from './juror-transport';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -166,9 +167,16 @@ export class OpenAIProvider implements LLMProvider {
     model: string,
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
+    // A juror's call (a deadline) holds past undici's 300 s default limits, and past the SDK's
+    // own 600 s timeout, with a dispatcher and timeout above its window (juror-transport.ts).
+    const transport = jurorTransportFor(options);
     try {
       const { OpenAI } = await import('openai');
-      const client = new OpenAI({ apiKey: this.apiKey });
+      const client = new OpenAI({
+        apiKey: this.apiKey,
+        // fetchOptions is typed for every runtime's RequestInit at once; this one is Node's.
+        ...(transport && { timeout: transport.timeoutMs, fetchOptions: { dispatcher: transport.dispatcher } as any }),
+      });
 
       const maxCompletionTokens = options?.maxTokens ?? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000');
       
@@ -208,6 +216,8 @@ export class OpenAIProvider implements LLMProvider {
     } catch (error: any) {
       console.error(`[${this.providerName}] Native client error for model ${model}:`, error.message);
       throw error;
+    } finally {
+      transport?.close();
     }
   }
 

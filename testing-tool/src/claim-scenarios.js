@@ -28,8 +28,8 @@ const { buildCodeReviewAiRequest } = require('../../external-adapter/src/codeRev
  * runner's harness writes run.json.
  */
 
-/** Jurors get at most 240 s and the justifier 45 s after them (design §11): this gives each its whole budget. */
-const CLAIM_DEADLINE_MS = 285000;
+/** Jurors get at most 480 s and the justifier 45 s after them (design §11): this gives each its whole budget. */
+const CLAIM_DEADLINE_MS = 525000;
 /** As the EA's front gates hold it, whatever class the request came on (assumption A8). */
 const DEFAULT_CODE_CLASS = 'code-standard';
 const SCENARIO_FILE = 'scenario.json';

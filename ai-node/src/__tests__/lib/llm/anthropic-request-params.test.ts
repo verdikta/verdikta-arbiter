@@ -128,8 +128,19 @@ describe('anthropic-request-params', () => {
     });
 
     test('a deadline: the time left to it', () => {
-      expect(anthropicClientOptions({ deadlineAt: NOW + 240000 }, NOW)).toEqual({ clientOptions: { timeout: 240000 } });
+      expect(anthropicClientOptions({ deadlineAt: NOW + 480000 }, NOW)).toEqual({ clientOptions: { timeout: 480000 } });
       expect(anthropicClientOptions({ deadlineAt: NOW + 1 }, NOW)).toEqual({ clientOptions: { timeout: 1 } });
+    });
+
+    test('a deadline and a juror\'s dispatcher: the dispatcher goes to the SDK\'s fetch', () => {
+      const dispatcher = { name: 'the call\'s own' };
+      expect(anthropicClientOptions({ deadlineAt: NOW + 480000 }, NOW, dispatcher)).toEqual({
+        clientOptions: { timeout: 480000, fetchOptions: { dispatcher } },
+      });
+    });
+
+    test('no deadline: a dispatcher is not passed on either', () => {
+      expect(anthropicClientOptions({ signal: new AbortController().signal }, NOW, { name: 'x' })).toEqual({});
     });
 
     test('a deadline already passed: 1 ms, never zero or negative', () => {

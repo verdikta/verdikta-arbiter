@@ -438,7 +438,7 @@ scenarios/claims/<id>/
 
 ### The request is the External Adapter's
 
-The body comes from `buildCodeReviewAiRequest` in `external-adapter/src/codeReview/aiRequest.js`, not a copy of it. The context pack goes as `attachments` and `attachmentNames`, in order, with nothing beside it. Prior findings are named by id in the `codeReview` field: the jury reads them through the pack's own tier. The deadline is 285 s, which gives the jurors their 240 s and the justifier its 45 s.
+The body comes from `buildCodeReviewAiRequest` in `external-adapter/src/codeReview/aiRequest.js`, not a copy of it. The context pack goes as `attachments` and `attachmentNames`, in order, with nothing beside it. Prior findings are named by id in the `codeReview` field: the jury reads them through the pack's own tier. The deadline is 525 s, which gives the jurors their 480 s and the justifier its 45 s.
 
 A claim is called at most twice, and the second time only on a 503 with `retryable: true`, as the External Adapter does. Any other answer ends it with an error, because a repeat is another provider bill. The claim type does not use `timeoutMs` or `maxRetries` from `tool-config.json`.
 

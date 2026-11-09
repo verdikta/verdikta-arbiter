@@ -22,7 +22,9 @@ import http from 'http';
 import type { AddressInfo, Socket } from 'net';
 import { Agent } from 'undici';
 import { runCodeJury, runCodeJustifier } from '../../../lib/code-review/jury';
+import { CODE_JURY_MAX_MS, planCodeReviewTimes } from '../../../lib/code-review/deadline';
 import { LLMFactory } from '../../../lib/llm/llm-factory';
+import * as jurorTransport from '../../../lib/llm/juror-transport';
 
 const REAL = process.env.VERDIKTA_REAL_UNDICI_LIMIT === '1';
 /** The default dispatcher's two limits: 300 s in production, scaled here. */
@@ -337,6 +339,64 @@ describe('the juror\'s AbortController still ends the call at the jury deadline'
     expect(requests).toHaveLength(1);
     expect(requests[0].closedAt).not.toBeNull();
     expect(requests[0].closedAt! - outcome.deadline).toBeLessThan(SLACK_MS);
+  });
+});
+
+describe('the dispatcher of a juror\'s call', () => {
+  test('its limits sit above the window, the grace past the deadline', () => {
+    const now = 1_000_000;
+    expect(jurorTransport.JUROR_TRANSPORT_GRACE_MS).toBeGreaterThan(0);
+    expect(jurorTransport.jurorTransportTimeoutMs(now + CODE_JURY_MAX_MS, now)).toBe(CODE_JURY_MAX_MS + jurorTransport.JUROR_TRANSPORT_GRACE_MS);
+    expect(jurorTransport.jurorTransportTimeoutMs(now - 5000, now)).toBe(jurorTransport.JUROR_TRANSPORT_GRACE_MS);
+  });
+
+  test('a call with no deadline gets none', () => {
+    expect(jurorTransport.jurorTransportFor(undefined)).toBeNull();
+    expect(jurorTransport.jurorTransportFor({})).toBeNull();
+    const init = { method: 'POST' };
+    expect(jurorTransport.withDispatcher(init, null)).toBe(init);
+  });
+
+  test.each(PATHS.map(p => [p.provider, p] as const))('%s: on the full 480 s window each juror call names its own, with limits above the window', async (_provider, path) => {
+    fetched = [];
+    const times = planCodeReviewTimes(780000, Date.now())!;
+    expect(times.jurorTimeoutMs).toBe(480000);
+    const caseId = `${path.provider}-window`;
+
+    const outcome = await runCodeJury({
+      jurors: [{ provider: path.provider, model: path.model, weight: 1 }],
+      prompt: prompt('now', caseId),
+      outcomes: OUTCOMES,
+      maxTokens: CLASS_OUTPUT_TOKENS,
+      juryDeadlineAt: times.juryDeadlineAt,
+    });
+
+    expect(outcome.kind).toBe('ok');
+    const calls = fetched.filter(f => f.caseId === caseId);
+    expect(calls).toHaveLength(1);
+    const dispatcher = calls[0].dispatcher as jurorTransport.JurorAgent;
+    expect(dispatcher).toBeInstanceOf(jurorTransport.JurorAgent);
+    expect(dispatcher.limitMs).toBeGreaterThan(times.jurorTimeoutMs);
+    expect(dispatcher.limitMs).toBeLessThanOrEqual(times.jurorTimeoutMs + jurorTransport.JUROR_TRANSPORT_GRACE_MS);
+    // Destroyed with the call: nothing can be sent on it afterwards.
+    expect(dispatcher.destroyed).toBe(true);
+  });
+
+  test('two juror calls never share one', async () => {
+    fetched = [];
+    const outcome = await runCodeJury({
+      jurors: PATHS.slice(0, 2).map(path => ({ provider: path.provider, model: path.model, weight: 1 })),
+      prompt: prompt('now', 'pair'),
+      outcomes: OUTCOMES,
+      maxTokens: CLASS_OUTPUT_TOKENS,
+      juryDeadlineAt: Date.now() + 5000,
+    });
+    expect(outcome.kind).toBe('ok');
+    const dispatchers = fetched.filter(f => f.caseId === 'pair').map(f => f.dispatcher);
+    expect(dispatchers).toHaveLength(2);
+    expect(dispatchers[0]).toBeInstanceOf(jurorTransport.JurorAgent);
+    expect(dispatchers[1]).toBeInstanceOf(jurorTransport.JurorAgent);
+    expect(dispatchers[0]).not.toBe(dispatchers[1]);
   });
 });
 

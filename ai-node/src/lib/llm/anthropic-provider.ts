@@ -15,6 +15,7 @@ import {
 } from './anthropic-request-params';
 import { attachmentRequestError } from './attachment-errors';
 import { CallControlOptions } from './llm-provider-interface';
+import { JurorTransport, jurorTransportFor } from './juror-transport';
 import { WebAccessOption, anthropicModelSupportsWebTools, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
 import { WebRetrieval, WebRetrievalListener, summarizeAnthropicWebBlocks, webToolsOff } from './web-retrieval';
 
@@ -67,17 +68,19 @@ export class AnthropicProvider implements LLMProvider {
     return this.invokeText(model, prompt, options);
   }
 
-  private createChat(model: string, params: AnthropicChatParams, controls?: CallControlOptions): ChatAnthropic {
+  private createChat(model: string, params: AnthropicChatParams, controls?: CallControlOptions, transport?: JurorTransport | null): ChatAnthropic {
     // Sampling parameters are chosen per model (anthropic-request-params.ts):
     // Claude ≤ 4.6 gets temperature 0.7 as always; Opus 4.7+ / Claude 5 reject
     // temperature, top_p and top_k with a 400, so they get none. LangChain only
     // sends a field when it is set, so nothing else has to be "disabled" here.
-    return new ChatAnthropic({
+    const fields = {
       anthropicApiKey: this.apiKey,
       modelName: model,
       ...params,
-      ...anthropicClientOptions(controls),
-    });
+      ...anthropicClientOptions(controls, Date.now(), transport?.dispatcher),
+    };
+    // The SDK types fetchOptions for every runtime's RequestInit at once; the dispatcher is Node's.
+    return new ChatAnthropic(fields as ConstructorParameters<typeof ChatAnthropic>[0]);
   }
 
   /**
@@ -93,16 +96,21 @@ export class AnthropicProvider implements LLMProvider {
     const params = { ...anthropicChatParams(model), ...controlParams };
     const invoke = (chat: ChatAnthropic) =>
       controls?.signal ? chat.invoke(input, { signal: controls.signal }) : chat.invoke(input);
+    // A juror's call holds past undici's 300 s default limits (juror-transport.ts); the
+    // sampling-parameter retry below shares it, inside the same deadline.
+    const transport = jurorTransportFor(controls);
     try {
-      const response = await invoke(this.createChat(model, params, controls));
+      const response = await invoke(this.createChat(model, params, controls, transport));
       return extractTextContent(response.content);
     } catch (error: any) {
       if (params.temperature === undefined || !isSamplingParamRejection(error)) {
         throw error;
       }
       console.warn(`[${this.providerName}] ${model} rejected a sampling parameter (${error.message}); retrying without sampling parameters`);
-      const response = await invoke(this.createChat(model, { ...SAMPLING_FREE_PARAMS, ...controlParams }, controls));
+      const response = await invoke(this.createChat(model, { ...SAMPLING_FREE_PARAMS, ...controlParams }, controls, transport));
       return extractTextContent(response.content);
+    } finally {
+      transport?.close();
     }
   }
 
