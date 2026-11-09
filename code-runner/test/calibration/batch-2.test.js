@@ -36,7 +36,7 @@ const RESTATED = Object.freeze({
   'kleidi-neighbouring-checks': { kind: 'severity-boundary', outcome: 'VALID', program: 'MEDIUM', cls: 'LOW', basis: 'program', words: 'CalldataList: Partial check overlap' },
   'kleidi-spell-before-answer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: 'the spell waits for the answer from the owners' },
   'mellow-cancel-listed-before': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: 'IndexOutOfBounds()' },
-  'mellow-cancel-listed-after': { kind: 'known-issue.after', outcome: 'VALID', program: 'MEDIUM', cls: 'LOW', basis: 'program', words: 'IndexOutOfBounds()' },
+  'mellow-cancel-listed-after': { kind: 'known-issue.after', outcome: 'VALID', program: 'MEDIUM', cls: 'HIGH', basis: 'program', words: 'IndexOutOfBounds()' },
   'mellow-fee-on-falling-price': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: '10000000000000000000 != 0' },
   'mellow-stale-report': { kind: 'clear-invalid.excluded-precondition', outcome: 'INVALID', basis: 'program', words: 'a price checked against a report a year old is not valid' },
   'sequence-plain-transfer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: '0 != 1' },

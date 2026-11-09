@@ -41,10 +41,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "LOW",
+    "class": "HIGH",
     "rubric": "immunefi-v2.3",
-    "impact": "fails-to-deliver-promised-returns",
-    "classReason": "The PoC shows cancelDepositRequest reverting with IndexOutOfBounds once a report has been handled. A depositor cannot take back a pending request; the next report still turns it into shares at the reported price, so nothing is lost and no attacker is needed: the contract falls short of what it promises, Low.",
+    "impact": "temporary-freezing-of-funds",
+    "classReason": "The PoC shows cancelDepositRequest reverting with IndexOutOfBounds once a report has been handled, with the depositor's 100 tokens held in the queue. The depositor cannot take them back, and until a later report covers the request they are not claimable either (DepositQueue.claimableOf and _claim answer nothing before then); that report turns them into shares at its price. Funds locked for a period after which they can be recovered: temporary freezing of funds, High.",
     "reason": "The list this commit saw does not hold the issue, whatever the maker published later, so the program's Medium stands. Every gate passes, and the verdict is left to the jury, which A7d measures, with its twin the same claim where the list does hold it.",
     "runner": {
       "result": "definitive",
