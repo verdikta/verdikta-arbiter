@@ -244,7 +244,7 @@ const juryAnswer = (body, over = {}) => ({
       reportSha256: body.codeReview.reportSha256,
       promptSha256: 'c'.repeat(64),
       deadlineMs: body.codeReview.deadlineMs,
-      jurorTimeoutMs: 240000,
+      jurorTimeoutMs: 480000,
       justifierReserveMs: 45000,
       maxTokens: 8000,
       effort: 'high'

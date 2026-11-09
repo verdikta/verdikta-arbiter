@@ -3,7 +3,7 @@
  *
  * Every provider is the deterministic mock provider (test-only flag), so these
  * tests drive the real route, the real factory and the real timers' logic under
- * jest's fake clock: a juror "taking 239 s" costs no wall time.
+ * jest's fake clock: a juror "taking 479 s" costs no wall time.
  */
 import { codeReview } from '@verdikta/common';
 import { POST } from '../../app/api/rank-and-justify/route';
@@ -318,11 +318,19 @@ describe('code mode: deadline and cancellation (§11)', () => {
     expect(result.elapsedMs).toBe(55000);
   }, 20000);
 
-  test('the juror timeout is capped at the 240 s jury budget on a far deadline', async () => {
+  test('the juror timeout is capped at the 480 s jury budget on a far deadline', async () => {
     script({ [SONNET]: { hang: true }, [DEEPSEEK]: { scores: HIGH } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 840000 }) }));
     expect(result.status).toBe(503);
-    expect(result.elapsedMs).toBe(240000);
+    expect(result.elapsedMs).toBe(480000);
+  }, 20000);
+
+  test('a juror slower than the old 240 s cap answers inside the 480 s one', async () => {
+    script({ [SONNET]: { scores: HIGH, delayMs: 400000 }, [DEEPSEEK]: { scores: HIGH } });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 780000 }) }));
+    expect(result.status).toBe(200);
+    expect(result.body.codeReview).toMatchObject({ deadlineMs: 780000, jurorTimeoutMs: 480000, justifierReserveMs: 45000 });
+    expect(result.elapsedMs).toBeLessThanOrEqual(780000);
   }, 20000);
 
   test('a deadline with no room for the jury after the justifier reserve is refused at once, no model called', async () => {
@@ -344,9 +352,9 @@ describe('code mode: deadline and cancellation (§11)', () => {
 
 describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => {
   test('juror-just-under-limit-then-justification: the slowest juror answers just inside its timeout and the request still completes inside the §11 budget', async () => {
-    const deadlineMs = 240000 + JUSTIFIER_RESERVE_MS; // the §11 jury + justifier budget
+    const deadlineMs = 480000 + JUSTIFIER_RESERVE_MS; // the §11 jury + justifier budget
     script({
-      [SONNET]: { scores: HIGH, delayMs: 239000 },
+      [SONNET]: { scores: HIGH, delayMs: 479000 },
       [DEEPSEEK]: { scores: HIGH, delayMs: 1000 },
       [JUSTIFIER]: { reply: 'Both jurors find a HIGH reentrancy.', delayMs: 44000 },
     });
@@ -385,9 +393,9 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
   }, 20000);
 
   test('slow-justifier: after a juror at its limit, a justifier slower than its reserve is cancelled before the deadline', async () => {
-    const deadlineMs = 240000 + JUSTIFIER_RESERVE_MS;
+    const deadlineMs = 480000 + JUSTIFIER_RESERVE_MS;
     script({
-      [SONNET]: { scores: HIGH, delayMs: 239000 },
+      [SONNET]: { scores: HIGH, delayMs: 479000 },
       [DEEPSEEK]: { scores: HIGH },
       [JUSTIFIER]: { reply: 'Too late.', delayMs: 46000 },
     });

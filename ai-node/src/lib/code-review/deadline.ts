@@ -4,18 +4,24 @@
  * The external adapter passes `codeReview.deadlineMs`: the milliseconds the AI
  * Node has from receipt. Code mode works from it instead of REQUEST_TIMEOUT_MS
  * and MODEL_TIMEOUT_MS: the jurors get the time left after the justifier's 45 s
- * reserve, capped at the 240 s jury budget of §11 (so a far deadline leaves the
- * EA time to retry a timed-out juror), and the justifier gets its reserve. Each
- * stage is cancelled with an AbortController when its time is up; the signal
- * reaches the provider's HTTP request, and raceAbort makes sure the route
- * answers on time even if a provider ignored it.
+ * reserve, capped at the 480 s jury budget of §11 (so a far deadline leaves the
+ * EA time to retry a timed-out juror), and the justifier gets its reserve. The
+ * cap only ever shortens what the deadline leaves, so nothing here runs past
+ * deadlineMs. Each stage is cancelled with an AbortController when its time is
+ * up; the signal reaches the provider's HTTP request, and raceAbort makes sure
+ * the route answers on time even if a provider ignored it. A juror's HTTP call
+ * holds for its whole window (llm/juror-transport.ts: Node's fetch alone gives
+ * up after 300 s without response headers).
  */
 
-/** Kept for the justifier after the jury (§11: jury ≤ 240 s, then justifier 45 s). */
+/** Kept for the justifier after the jury (§11: jury ≤ 480 s, then justifier 45 s). */
 export const JUSTIFIER_RESERVE_MS = 45000;
 
-/** The jury's budget when the deadline is further away (§11). */
-export const CODE_JURY_MAX_MS = 240000;
+/**
+ * The jury's budget when the deadline is further away (§11). 240 s until A11: slower
+ * jurors with better accuracy or cost may sit on a panel (owner, 2026-11-09).
+ */
+export const CODE_JURY_MAX_MS = 480000;
 
 /** Below this much jury time the request cannot be judged; it is refused before any model call. */
 export const MIN_JURY_MS = 10000;

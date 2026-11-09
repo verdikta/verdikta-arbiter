@@ -1,5 +1,6 @@
 import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { resolveOpenRouterModelId } from '../../config/openrouter-models';
+import { jurorTransportFor, withDispatcher } from './juror-transport';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -155,9 +156,11 @@ export class OpenRouterProvider implements LLMProvider {
     const timeoutMs = parseInt(process.env.MODEL_TIMEOUT_MS || '120000');
     const controller = callerSignal ? null : new AbortController();
     const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+    // A juror's call holds past undici's 300 s default limits (juror-transport.ts).
+    const transport = jurorTransportFor(options);
 
     try {
-      const response = await fetch(`${this.baseUrl}/chat/completions`, {
+      const response = await fetch(`${this.baseUrl}/chat/completions`, withDispatcher({
         method: 'POST',
         headers: {
           Authorization: `Bearer ${this.apiKey}`,
@@ -165,7 +168,7 @@ export class OpenRouterProvider implements LLMProvider {
         },
         body: JSON.stringify(payload),
         signal: callerSignal ?? controller!.signal,
-      });
+      }, transport));
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -189,6 +192,7 @@ export class OpenRouterProvider implements LLMProvider {
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
+      transport?.close();
     }
   }
 

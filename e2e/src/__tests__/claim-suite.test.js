@@ -204,7 +204,7 @@ describe('the AI Node request checks', () => {
     prompt: 'the query', outcomes: [...codeReview.BUG_OUTCOMES], models: [], attachments: pack.files.map((f) => f.text), attachmentNames: pack.files.map((f) => f.name),
     codeReview: { deadlineMs: 700000, reportSha256: REPORT_SHA, codeClass: 'code-standard' }
   });
-  const answer = () => ({ codeReview: { deadlineMs: 700000, jurorTimeoutMs: 240000, justifierReserveMs: 45000, reportSha256: REPORT_SHA } });
+  const answer = () => ({ codeReview: { deadlineMs: 700000, jurorTimeoutMs: 480000, justifierReserveMs: 45000, reportSha256: REPORT_SHA } });
   const accept = () => ({ ok: true, issues: [] });
 
   it('pass on what the EA sends', () => {

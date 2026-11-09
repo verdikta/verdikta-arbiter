@@ -73,7 +73,7 @@ describe('the request is A4b\'s builder\'s', () => {
   it('is exactly buildCodeReviewAiRequest over the archives and the recorded run', async () => {
     const made = await writeClaimScenario(dir);
     const scenario = await loadClaimScenario(made.folder);
-    const body = buildClaimRequest(scenario, { deadlineMs: 285000, requestTag: '[tool]' });
+    const body = buildClaimRequest(scenario, { deadlineMs: 525000, requestTag: '[tool]' });
     expect(body).toEqual(buildCodeReviewAiRequest({
       query: codeReview.buildClaimQuery(made.spec),
       outcomes: [...codeReview.BUG_OUTCOMES],
@@ -86,7 +86,7 @@ describe('the request is A4b\'s builder\'s', () => {
       priorFindings: made.priors,
       dispute: null,
       contextPack: made.run.contextPack,
-      deadlineMs: 285000,
+      deadlineMs: 525000,
       requestTag: '[tool]'
     }));
   });
@@ -100,12 +100,12 @@ describe('the request is A4b\'s builder\'s', () => {
       jest.doMock('../../../external-adapter/src/codeReview/aiRequest', () => ({
         buildCodeReviewAiRequest: (input) => { seen = input; return { marker: 'from-the-builder' }; }
       }));
-      viaMock = require('../claim-scenarios').buildClaimRequest(scenario, { deadlineMs: 285000 });
+      viaMock = require('../claim-scenarios').buildClaimRequest(scenario, { deadlineMs: 525000 });
     });
     jest.dontMock('../../../external-adapter/src/codeReview/aiRequest');
     expect(viaMock).toEqual({ marker: 'from-the-builder' });
     expect(seen.priorFindings.map((p) => p.bcid)).toEqual(made.priors.map((p) => p.bcid));
-    expect(seen.deadlineMs).toBe(285000);
+    expect(seen.deadlineMs).toBe(525000);
   });
 
   it('the request validates with common, the way the EA and the AI Node hold it', async () => {
@@ -125,8 +125,8 @@ describe('the request is A4b\'s builder\'s', () => {
     expect(body.attachmentNames.some((n) => /^(report\.md|finding\.json|known_issues\.json)$/.test(n))).toBe(false);
   });
 
-  it('gives a deadline the jury and the justifier can both use: 240 s and 45 s', () => {
-    expect(CLAIM_DEADLINE_MS).toBe(285000);
+  it('gives a deadline the jury and the justifier can both use: 480 s and 45 s', () => {
+    expect(CLAIM_DEADLINE_MS).toBe(525000);
     expect(CLAIM_DEADLINE_MS).toBeLessThanOrEqual(codeReview.MAX_DEADLINE_MS);
   });
 });
@@ -352,7 +352,7 @@ describe('calling the AI Node', () => {
     const node = await stubAiNode([{ status: 200, body: { scores: scoresOf(), justification: 'j' } }]);
     try {
       const body = { prompt: 'p' };
-      const answer = await callClaim(node.url, body, { deadlineMs: 285000 });
+      const answer = await callClaim(node.url, body, { deadlineMs: 525000 });
       expect(answer.scores).toEqual(scoresOf());
       expect(node.posts).toEqual([{ path: '/api/rank-and-justify', body }]);
     } finally {
@@ -364,14 +364,14 @@ describe('calling the AI Node', () => {
     const retryable = { status: 503, body: { errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true } };
     const node = await stubAiNode([retryable, { status: 200, body: { scores: scoresOf(), justification: 'j' } }]);
     try {
-      await callClaim(node.url, { prompt: 'p' }, { deadlineMs: 285000 });
+      await callClaim(node.url, { prompt: 'p' }, { deadlineMs: 525000 });
       expect(node.posts).toHaveLength(2);
     } finally {
       await node.close();
     }
     const twice = await stubAiNode([retryable]);
     try {
-      await expect(callClaim(twice.url, { prompt: 'p' }, { deadlineMs: 285000 })).rejects.toThrow(/CODE_REVIEW_JUROR_TIMEOUT/);
+      await expect(callClaim(twice.url, { prompt: 'p' }, { deadlineMs: 525000 })).rejects.toThrow(/CODE_REVIEW_JUROR_TIMEOUT/);
       expect(twice.posts).toHaveLength(2);
     } finally {
       await twice.close();
@@ -387,7 +387,7 @@ describe('calling the AI Node', () => {
   ])('never repeats %s: a repeat is a second provider bill', async (_name, status, body) => {
     const node = await stubAiNode([{ status, body }]);
     try {
-      await expect(callClaim(node.url, { prompt: 'p' }, { deadlineMs: 285000 })).rejects.toThrow(String(status));
+      await expect(callClaim(node.url, { prompt: 'p' }, { deadlineMs: 525000 })).rejects.toThrow(String(status));
       expect(node.posts).toHaveLength(1);
     } finally {
       await node.close();
@@ -395,8 +395,8 @@ describe('calling the AI Node', () => {
   });
 
   it('waits past the deadline, not the tool\'s 60 s: the AI Node answers at its deadline', () => {
-    expect(claimHttpTimeoutMs(285000)).toBeGreaterThan(285000);
-    expect(claimHttpTimeoutMs(285000)).toBeLessThanOrEqual(300000);
+    expect(claimHttpTimeoutMs(525000)).toBeGreaterThan(525000);
+    expect(claimHttpTimeoutMs(525000)).toBeLessThanOrEqual(540000);
   });
 });
 
@@ -625,7 +625,7 @@ describe('an error keeps its code and each juror\'s state', () => {
   test('a timeout, retried once as the adapter does, says so', async () => {
     await writeClaimScenario(dir);
     const scenario = await loadClaimScenario(path.join(dir, 'vault-over-credit'));
-    const jurors = [{ juror: 'openrouter:x', status: 'timeout', duration_ms: 240000 }, { juror: 'anthropic:y', status: 'success', duration_ms: 90000 }];
+    const jurors = [{ juror: 'openrouter:x', status: 'timeout', duration_ms: 480000 }, { juror: 'anthropic:y', status: 'success', duration_ms: 90000 }];
     const node = await stubAiNode([{ status: 503, body: { error: 'juror x', errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, jurors, scores: [], justification: '' } }]);
     const result = await runClaimScenario(scenario, { aiNodeUrl: node.url, deadlineMs: CLAIM_DEADLINE_MS });
     await node.close();

@@ -89,7 +89,7 @@ describe('what the AI Node is sent', () => {
       action: 'hold-juror-answer',
       mac: directiveMac(KEY, 'hold-juror-answer', BCID, body.codeReview.reportSha256)
     });
-    expect(result.metadata.canary_fault).toMatchObject({ fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 240000, justifierMs: 41000 });
+    expect(result.metadata.canary_fault).toMatchObject({ fault: 'near-limit-juror', attempts: 1, action: 'hold-juror-answer', jurorTimeoutMs: 480000, justifierMs: 41000 });
   });
 
   it('provider-timeout: attempt 1 with the directive, a retry with none, from the same run', async () => {

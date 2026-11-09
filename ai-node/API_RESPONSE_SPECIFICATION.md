@@ -193,7 +193,7 @@ its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
 
 ### Time, cancellation and juror settings
 
-- Jurors run until `deadlineMs − 45 s` (the justifier reserve), at most 240 s;
+- Jurors run until `deadlineMs − 45 s` (the justifier reserve), at most 480 s;
   the justifier then gets 45 s, never past `deadlineMs`. `REQUEST_TIMEOUT_MS`,
   `MODEL_TIMEOUT_MS` and `JUSTIFICATION_TIMEOUT_MS` do not apply.
 - Each call gets an `AbortSignal` that is aborted at its deadline and goes into
@@ -204,6 +204,15 @@ its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
   the time left as its own timeout, because the Anthropic SDK refuses a non-streaming
   request above 21,333 max tokens without one (`anthropicClientOptions`). The signal
   is still what cancels the call.
+- A juror's HTTP call holds for its whole window. Node's fetch (undici) gives up
+  after 300 s without response headers, or after 300 s of silence in a body, and a
+  non-streaming reasoning reply sends no headers until it is complete. So each
+  juror call (and its repair call) has an undici dispatcher of its own, whose two
+  limits are the time left to the jury deadline plus 15 s, and which is destroyed
+  when the call settles (`juror-transport.ts`): OpenRouter and xAI pass it to
+  `fetch`, the OpenAI and Anthropic clients as `fetchOptions.dispatcher`, and the
+  OpenAI client also gets that figure as its own timeout in place of its 600 s
+  default. The justifier and text mode keep Node's default dispatcher.
 - A body read that does not finish within `REQUEST_TIMEOUT_MS` is the text-mode
   408, in either mode.
 - Every juror runs with web access off, `maxTokens` = the class envelope's
@@ -231,8 +240,8 @@ units settlement allows for the aggregator's own rounding. Plus:
   "codeClass": "code-standard",
   "reportSha256": "…",
   "promptSha256": "…",
-  "deadlineMs": 285000,
-  "jurorTimeoutMs": 240000,
+  "deadlineMs": 525000,
+  "jurorTimeoutMs": 480000,
   "justifierReserveMs": 45000,
   "maxTokens": 32000,
   "effort": "high"

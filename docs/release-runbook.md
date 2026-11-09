@@ -61,6 +61,17 @@ identities on the testnet VPS register it (they also serve 128), so a request
 with `requestedClass = 5555` is answered only by nodes we control. Do not
 register 5555 on mainnet or on nodes you do not upgrade first.
 
+**The 480 s code-mode jury cap waits for `setResponseTimeout(900)`.** A build with
+`CODE_JURY_MAX_MS` = 480000 (`ai-node/src/lib/code-review/deadline.ts`, A11; it was
+240000) does not go to the canaries, or anywhere after them, until the owner has set
+`setResponseTimeout(900)` on the Base Sepolia aggregator (and, for mainnet, on the
+mainnet one), as design §11 asks. Under the old response timeout a claim whose juror
+uses the longer window can outlast it, and the request can then be force-finalized
+with no verdict. Before step 1, read the value, `cast call <aggregator>
+"responseTimeoutSeconds()(uint256)" --rpc-url <rpc>`, which must say 900; every claim run
+of L4 also prints it (`[l4] aggregator responseTimeoutSeconds=`). Until then, upgrade
+the canaries from a commit before A11.
+
 1. **Upgrade the canaries first.** On the testnet VPS, for every install
    directory (see [Unattended Installation and Upgrade](../installer/docs/installation/unattended.md)):
 
