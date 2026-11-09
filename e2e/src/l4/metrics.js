@@ -11,14 +11,16 @@ const { assert } = require('../assertions');
 
 /** §11's worst case, the on-chain `responseTimeoutSeconds` it asks for. */
 const LATENCY_BUDGET_MS = 900000;
-/** §18: σ ≤ 5 points of valid mass. */
+/** §18: σ ≤ 5 points of valid mass, read as a rate (§18's erratum, owner 2026-11-09). */
 const SIGMA_LIMIT_POINTS = 5;
 /** Nearest-rank p95 of fewer than 20 samples is the maximum. */
 const P95_MIN_SAMPLES = 20;
 /** Sample standard deviation needs two values; two arbiters agreeing says little, so three. */
 const SIGMA_MIN_REVEALS = 3;
-/** Rounds with a σ the gate wants before it reads the largest. */
-const SIGMA_MIN_ROUNDS = 5;
+/** Rounds with a σ the gate wants before it reads them: fewer is too few samples, as for p95. */
+const SIGMA_MIN_ROUNDS = 20;
+/** At most this percentage of those rounds, rounded down, may be above the limit: 2 of 20, 4 of 40. */
+const SIGMA_OVER_LIMIT_MAX_PERCENT = 10;
 /** Below this a flip count stays a count. */
 const FLIP_RATE_MIN = 10;
 const MASS_PER_POINT = 10000;
@@ -39,6 +41,11 @@ function p95Of(samples) {
   const maxMs = sorted[n - 1];
   if (n < P95_MIN_SAMPLES) return { n, p95Ms: null, maxMs };
   return { n, p95Ms: sorted[Math.ceil(0.95 * n) - 1], maxMs };
+}
+
+/** 10% of the rounds with a σ, rounded down, in integers: the rounding never depends on how 0.1 is stored. */
+function sigmaAllowance(usable) {
+  return Math.floor((usable * SIGMA_OVER_LIMIT_MAX_PERCENT) / 100);
 }
 
 function sigmaOf(values) {
@@ -67,11 +74,21 @@ function summarize(rounds, disputes = []) {
   };
   const perRound = jury.filter((r) => !r.unfinished).map((r) => ({ id: r.id, ...sigmaOf(r.validMass || []) }));
   const sigmas = perRound.filter((r) => r.sigma !== null).map((r) => r.sigma);
+  const usable = sigmas.length;
+  const over = sigmas.filter((sigma) => sigma > SIGMA_LIMIT_POINTS).length;
   const counted = disputes.filter((d) => d.countable);
   const k = counted.filter((d) => d.flipped).length;
   return {
     latency,
-    sigma: { perRound, usable: sigmas.length, largest: sigmas.length ? Math.max(...sigmas) : null, limit: SIGMA_LIMIT_POINTS },
+    sigma: {
+      perRound,
+      usable,
+      over,
+      rate: usable ? over / usable : null,
+      allowance: sigmaAllowance(usable),
+      largest: usable ? Math.max(...sigmas) : null,
+      limit: SIGMA_LIMIT_POINTS
+    },
     flips: { k, n: counted.length, rate: counted.length >= FLIP_RATE_MIN ? k / counted.length : null }
   };
 }
@@ -84,9 +101,13 @@ function latencyLine({ n, p95Ms, maxMs, budgetMs, unfinished, reused }) {
   return `p95 ${seconds(p95Ms)} of the ${seconds(budgetMs)} budget (§11), ${n} rounds${lost}, slowest ${seconds(maxMs)}`;
 }
 
-function sigmaLine({ perRound, usable, largest, limit }) {
+function sigmaLine({ perRound, usable, over, rate, allowance, largest, limit }) {
   if (usable === 0) return `no σ: no jury round with ${SIGMA_MIN_REVEALS} recorded reveals (${perRound.length} jury round(s))`;
-  return `largest ${largest.toFixed(1)} points of ${limit} (§18), over ${usable} of the ${SIGMA_MIN_ROUNDS} rounds the gate wants; three values make a rough number`;
+  const above = `above ${limit} points (${(rate * 100).toFixed(1)}%)`;
+  const share = `${SIGMA_OVER_LIMIT_MAX_PERCENT}% of ${usable}, rounded down`;
+  const largestOf = `largest ${largest.toFixed(1)} points; three values make a rough number`;
+  if (usable < SIGMA_MIN_ROUNDS) return `${usable} of the ${SIGMA_MIN_ROUNDS} rounds the gate wants; ${over} ${above}, allowance ${allowance} (${share}); ${largestOf}`;
+  return `${over} of ${usable} rounds ${above}, ${over > allowance ? 'over' : 'within'} the allowance of ${allowance} (${share}; §18); ${largestOf}`;
 }
 
 function flipLine({ k, n, rate }) {
@@ -103,11 +124,15 @@ function metricChecks(summary) {
   ];
 }
 
-/** G2's read over many runs: enough samples, inside every limit. Flips are measured, with no limit of their own. */
+/**
+ * G2's read over many runs: enough samples, inside every limit. σ's limit is a rate: at least 20
+ * rounds with a σ, and above 5 points in at most 10% of them, rounded down. Flips are measured,
+ * with no limit of their own.
+ */
 function gate(summary) {
   const { latency, sigma } = summary;
   const latencyOk = latency.p95Ms !== null && latency.p95Ms <= latency.budgetMs;
-  const sigmaOk = sigma.usable >= SIGMA_MIN_ROUNDS && sigma.largest <= sigma.limit;
+  const sigmaOk = sigma.usable >= SIGMA_MIN_ROUNDS && sigma.over <= sigma.allowance;
   return {
     ok: latencyOk && sigmaOk,
     lines: [
@@ -119,6 +144,6 @@ function gate(summary) {
 }
 
 module.exports = {
-  LATENCY_BUDGET_MS, SIGMA_LIMIT_POINTS, P95_MIN_SAMPLES, SIGMA_MIN_REVEALS, SIGMA_MIN_ROUNDS, FLIP_RATE_MIN,
-  validMassPoints, p95Of, sigmaOf, summarize, metricChecks, gate
+  LATENCY_BUDGET_MS, SIGMA_LIMIT_POINTS, P95_MIN_SAMPLES, SIGMA_MIN_REVEALS, SIGMA_MIN_ROUNDS, SIGMA_OVER_LIMIT_MAX_PERCENT,
+  FLIP_RATE_MIN, validMassPoints, p95Of, sigmaOf, sigmaAllowance, summarize, metricChecks, gate
 };

@@ -234,7 +234,9 @@ changes a real host, so each is an operator's, by hand. No install or upgrade pa
 
 5. **Read the metrics** over all the runs' `l4-report` artifacts, once there are enough:
    `cd e2e && node scripts/l4-metrics.js results/*.json`. It exits non-zero on too few samples
-   (20 jury rounds for p95, 5 with three reveals for σ), and p95 from fewer runs does not exist.
+   (20 jury rounds for p95, 20 with three reveals for σ), and p95 from fewer runs does not exist.
+   σ's limit is a rate: above 5 points in at most 10% of those rounds, rounded down (2 of 20,
+   4 of 40; design §18's erratum).
    Repeat the plain scenarios until it can answer, at least 15 minutes apart for one claim: an
    arbiter serves a repeat from its kept run, and that round is no latency sample.
 

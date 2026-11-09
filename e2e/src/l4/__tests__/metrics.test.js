@@ -7,11 +7,14 @@ const { spawnSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { P95_MIN_SAMPLES, SIGMA_MIN_REVEALS, SIGMA_MIN_ROUNDS, FLIP_RATE_MIN, LATENCY_BUDGET_MS, SIGMA_LIMIT_POINTS, p95Of, sigmaOf, validMassPoints, summarize, metricChecks, gate } = require('../metrics');
+const { P95_MIN_SAMPLES, SIGMA_MIN_REVEALS, SIGMA_MIN_ROUNDS, SIGMA_OVER_LIMIT_MAX_PERCENT, FLIP_RATE_MIN, LATENCY_BUDGET_MS, SIGMA_LIMIT_POINTS, p95Of, sigmaOf, sigmaAllowance, validMassPoints, summarize, metricChecks, gate } = require('../metrics');
 
 const SCRIPT = path.join(__dirname, '..', '..', '..', 'scripts', 'l4-metrics.js');
 const jury = (latencyMs, validMass = [70, 70, 70], over = {}) => ({ id: 'r', kind: 'valid', verdict: 'jury', fault: false, latencyMs, validMass, ...over });
 const times = (n, ms = 300000) => Array.from({ length: n }, (_, i) => ms + i);
+/** σ 10 for [50, 60, 70], 0 for [70, 70, 70]: n jury rounds with a σ, the first `over` of them above 5 points. */
+const WIDE = [50, 60, 70];
+const sigmaRounds = (n, over) => times(n).map((t, i) => jury(t, i < over ? WIDE : [70, 70, 70]));
 
 describe('the numbers', () => {
   it('the budget and the limits are the design\'s', () => {
@@ -19,7 +22,8 @@ describe('the numbers', () => {
     expect(SIGMA_LIMIT_POINTS).toBe(5);
     expect(P95_MIN_SAMPLES).toBe(20);
     expect(SIGMA_MIN_REVEALS).toBe(3);
-    expect(SIGMA_MIN_ROUNDS).toBe(5);
+    expect(SIGMA_MIN_ROUNDS).toBe(20);
+    expect(SIGMA_OVER_LIMIT_MAX_PERCENT).toBe(10);
     expect(FLIP_RATE_MIN).toBe(10);
   });
 
@@ -62,6 +66,12 @@ describe('sigmaOf', () => {
   it('three do: the sample standard deviation', () => {
     expect(sigmaOf([70, 70, 70]).sigma).toBe(0);
     expect(sigmaOf([60, 70, 80]).sigma).toBeCloseTo(10, 6);
+  });
+});
+
+describe('sigmaAllowance: 10% of the rounds with a σ, rounded down', () => {
+  it.each([[0, 0], [9, 0], [10, 1], [19, 1], [20, 2], [29, 2], [30, 3], [39, 3], [40, 4], [100, 10]])('%i rounds allow %i above the limit', (usable, allowed) => {
+    expect(sigmaAllowance(usable)).toBe(allowed);
   });
 });
 
@@ -108,8 +118,15 @@ describe('summarize', () => {
   it('a round with fewer reveals than σ needs is listed and has none', () => {
     const summary = summarize([jury(1, [70, 80])]);
     expect(summary.sigma.perRound[0]).toMatchObject({ n: 2, sigma: null });
-    expect(summary.sigma.usable).toBe(0);
-    expect(summary.sigma.largest).toBeNull();
+    expect(summary.sigma).toMatchObject({ usable: 0, over: 0, allowance: 0, rate: null, largest: null });
+  });
+
+  it('counts the rounds above the limit: a σ of exactly 5 is not above it, two reveals are no round', () => {
+    const summary = summarize([jury(1, [65, 70, 75]), jury(1, WIDE), jury(1, [70, 70, 70]), jury(1, [0, 100])]);
+    expect(sigmaOf([65, 70, 75]).sigma).toBe(5);
+    expect(summary.sigma).toMatchObject({ usable: 3, over: 1, allowance: 0, limit: 5 });
+    expect(summary.sigma.rate).toBeCloseTo(1 / 3, 9);
+    expect(summary.sigma.largest).toBeCloseTo(10, 6);
   });
 
   it('counts flips only for a first verdict the contract would let a maker dispute', () => {
@@ -146,11 +163,14 @@ describe('what a run prints', () => {
     expect(shown['metric.validMassSigma']).toMatch(/no σ/);
   });
 
-  it('prints each round\'s σ, its largest, and how rough three values are', () => {
+  it('below 20 rounds: how many it has, how many are above 5, the rate, the allowance, the largest, and how rough three values are', () => {
     const shown = details(summarize([jury(1, [50, 60, 70], { id: 'a' }), jury(1, [70, 70, 70], { id: 'b' })]));
-    expect(shown['metric.validMassSigma']).toMatch(/largest 10\.0 points/);
-    expect(shown['metric.validMassSigma']).toMatch(/of 5/);
-    expect(shown['metric.validMassSigma']).toMatch(/2 of the 5 rounds/);
+    expect(shown['metric.validMassSigma']).toMatch(/^2 of the 20 rounds the gate wants; 1 above 5 points \(50\.0%\), allowance 0 \(10% of 2, rounded down\); largest 10\.0 points; three values make a rough number$/);
+  });
+
+  it('from 20 rounds: the rounds above 5 of the usable rounds, the rate, the allowance and the largest', () => {
+    expect(details(summarize(sigmaRounds(20, 2)))['metric.validMassSigma']).toBe('2 of 20 rounds above 5 points (10.0%), within the allowance of 2 (10% of 20, rounded down; §18); largest 10.0 points; three values make a rough number');
+    expect(details(summarize(sigmaRounds(29, 3)))['metric.validMassSigma']).toMatch(/^3 of 29 rounds above 5 points \(10\.3%\), over the allowance of 2 \(10% of 29, rounded down; §18\); largest 10\.0 points/);
   });
 
   it('flips as k of n, a percentage only from 10', () => {
@@ -174,12 +194,60 @@ describe('the gate over many runs', () => {
   it.each([
     ['too few latency samples', () => times(19).map((t) => jury(t)), /p95/],
     ['a p95 over the budget', () => times(20, 900001).map((t) => jury(t)), /p95/],
-    ['too few rounds with a σ', () => times(20).map((t, i) => jury(t, i < 4 ? [70, 70, 70] : [70, 70])), /σ/],
-    ['a σ over the limit', () => times(20).map((t, i) => jury(t, i === 0 ? [50, 60, 70] : [70, 70, 70])), /σ/]
+    ['too few rounds with a σ', () => times(20).map((t, i) => jury(t, i < 4 ? [70, 70, 70] : [70, 70])), /FAIL σ.*4 of the 20 rounds the gate wants/],
+    ['more rounds above 5 points than the allowance', () => sigmaRounds(20, 3), /FAIL σ.*3 of 20 rounds above 5 points \(15\.0%\), over the allowance of 2/]
   ])('fails on %s, and says which', (_name, rounds, why) => {
     const result = gate(summarize(rounds()));
     expect(result.ok).toBe(false);
     expect(result.lines.join('\n')).toMatch(why);
+  });
+});
+
+describe('the σ gate is a rate: above 5 points in at most 10% of the rounds, over at least 20 (owner, 2026-11-09)', () => {
+  const sigmaLineOf = (result) => result.lines.find((line) => line.includes('σ'));
+
+  it.each([[20, 2], [29, 2], [30, 3], [39, 3], [40, 4]])('%i rounds pass with %i above 5: the allowance', (n, over) => {
+    const result = gate(summarize(sigmaRounds(n, over)));
+    expect(sigmaLineOf(result)).toMatch(new RegExp(`^PASS σ of the valid mass: ${over} of ${n} rounds above 5 points .*within the allowance of ${over} `));
+    expect(result.ok).toBe(true);
+  });
+
+  it.each([[20, 3, 2], [29, 3, 2], [30, 4, 3], [39, 4, 3], [40, 5, 4]])('%i rounds fail with %i above 5, one more than the allowance of %i', (n, over, allowed) => {
+    const result = gate(summarize(sigmaRounds(n, over)));
+    expect(result.ok).toBe(false);
+    expect(sigmaLineOf(result)).toMatch(new RegExp(`^FAIL σ of the valid mass: ${over} of ${n} rounds above 5 points .*over the allowance of ${allowed} `));
+    expect(result.lines[0]).toMatch(/^PASS latency/);
+  });
+
+  it('a σ of exactly 5 points is within the limit, in every round', () => {
+    const result = gate(summarize(times(20).map((t) => jury(t, [65, 70, 75]))));
+    expect(sigmaLineOf(result)).toMatch(/^PASS σ of the valid mass: 0 of 20 rounds above 5 points \(0\.0%\).*largest 5\.0 points/);
+    expect(result.ok).toBe(true);
+  });
+
+  it('19 rounds are too few, as for p95, even with none above 5', () => {
+    const result = gate(summarize([...sigmaRounds(19, 0), jury(300100, [70, 70])]));
+    expect(result.lines[0]).toMatch(/^PASS latency/);
+    expect(sigmaLineOf(result)).toMatch(/^FAIL σ of the valid mass: 19 of the 20 rounds the gate wants; 0 above 5 points/);
+    expect(result.ok).toBe(false);
+  });
+
+  it('a round with fewer than 3 reveals is no round: it neither fills the 20 nor raises the allowance', () => {
+    const twoReveals = (n) => times(n, 400000).map((t) => jury(t, [0, 100]));
+    const short = summarize([...sigmaRounds(19, 0), ...twoReveals(5)]);
+    expect(short.sigma).toMatchObject({ usable: 19, over: 0, allowance: 1 });
+    expect(gate(short).ok).toBe(false);
+    const over = summarize([...sigmaRounds(20, 3), ...twoReveals(10)]);
+    expect(over.sigma).toMatchObject({ usable: 20, over: 3, allowance: 2 });
+    expect(sigmaLineOf(gate(over))).toMatch(/^FAIL σ of the valid mass: 3 of 20 rounds above 5 points/);
+    expect(gate(over).ok).toBe(false);
+  });
+
+  it('the latency gate is its own: a p95 over the budget fails with every σ inside', () => {
+    const result = gate(summarize(times(20, 900001).map((t) => jury(t))));
+    expect(result.lines[0]).toMatch(/^FAIL latency/);
+    expect(sigmaLineOf(result)).toMatch(/^PASS σ/);
+    expect(result.ok).toBe(false);
   });
 });
 
@@ -213,6 +281,18 @@ describe('scripts/l4-metrics.js', () => {
     expect(r.stdout).toMatch(/no p95: 10 of the 20/);
     expect(r.stdout).toMatch(/1 of 1 flipped/);
     expect(r.status).toBe(1);
+  });
+
+  it('σ over many reports: 2 of 20 rounds above 5 points pass, 3 fail and the line says so', () => {
+    const a = reportFile('a.json', times(10).map((t, i) => jury(t, i < 1 ? WIDE : [70, 70, 70])));
+    const b = reportFile('b.json', times(10, 400000).map((t, i) => jury(t, i < 1 ? WIDE : [70, 70, 70])));
+    const pass = run(a, b);
+    expect(pass.stdout).toMatch(/PASS σ of the valid mass: 2 of 20 rounds above 5 points \(10\.0%\), within the allowance of 2/);
+    expect(pass.status).toBe(0);
+    const c = reportFile('c.json', times(10, 500000).map((t, i) => jury(t, i < 2 ? WIDE : [70, 70, 70])));
+    const fail = run(a, c);
+    expect(fail.stdout).toMatch(/FAIL σ of the valid mass: 3 of 20 rounds above 5 points \(15\.0%\), over the allowance of 2/);
+    expect(fail.status).toBe(1);
   });
 
   it('exits 1 on too few, and says so', () => {
