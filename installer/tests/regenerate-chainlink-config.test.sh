@@ -71,8 +71,11 @@ printf '#!/bin/bash\nexit 0\n' > "$B/sleep"
 chmod +x "$B/docker" "$B/curl" "$B/sleep"
 
 # A May 2025 mainnet config (template b8b250f) as a node really has it: fee cap 10
-# gwei (setup-chainlink.sh's value), two RPCs with keys in their URLs, a setting
-# from a branch ([JobPipeline] MaxRunDuration) and one the operator added.
+# gwei (setup-chainlink.sh's value), two RPCs with keys in their URLs, and two
+# settings of the node's own that no template sets: one in a table the template
+# has ([EVM.NodePool] PollFailureThreshold), one in a table it lacks ([Feature]).
+# (Not MaxRunDuration: the stake-attestation template adds it, so on that branch
+# it is a template setting, not a kept one.)
 MAY='[Log]
 Level="warn"
 
@@ -119,8 +122,8 @@ Name="Base-Mainnet-2"
 WSURL="wss://base.blockpi.network/v1/ws/KEYTWO"
 HTTPURL="https://base.blockpi.network/v1/rpc/KEYTWO"
 
-[JobPipeline]
-MaxRunDuration = "15m"
+[Feature]
+LogPoller = true
 '
 
 container() { : > "$ST/exists"; echo "$1" > "$ST/status"; echo 0 > "$ST/restarts"; : > "$ST/calls"; }
@@ -151,7 +154,7 @@ has   "may: threshold added"      "$out" '\[\[EVM\]\] NoNewFinalizedHeadsThresho
 has   "may: repeatable read"      "$out" '\[EVM.NodePool\] EnforceRepeatableRead: added false'
 has   "may: changed value"        "$out" '\[EVM.NodePool\] NewHeadsPollInterval: "30s" -> "8s"'
 has   "may: retired"              "$out" '\[\[EVM\]\] FinalityDepth: removed (was 5; inert since'
-has   "may: branch setting kept"  "$out" '\[JobPipeline\] MaxRunDuration: kept "15m"'
+has   "may: own table kept"       "$out" '\[Feature\] LogPoller: kept true'
 has   "may: operator setting kept" "$out" '\[EVM.NodePool\] PollFailureThreshold: kept 3'
 hasnt "may: fee cap untouched"    "$out" "FeeCapDefault"
 hasnt "may: chain id untouched"   "$out" "ChainID"
@@ -166,12 +169,12 @@ eq    "may apply: one backup"     "$(backups)" "1"
 eq    "may apply: backup is the old file" "$(cat "$CFG"/config.toml.backup.*)" "$(printf '%s' "$MAY")"
 eq    "may apply: no candidate left" "$(leftovers)" "0"
 eq    "may apply: mode kept"      "$(ls -l "$CFG/config.toml" | cut -c1-10)" "-rw-r-----"
-r=$(toml "$CFG/config.toml" '(e["ChainID"], e["GasEstimator"]["FeeCapDefault"], e["NoNewFinalizedHeadsThreshold"], e["NodePool"]["EnforceRepeatableRead"], e["NodePool"]["PollFailureThreshold"], "FinalityDepth" in e, [n["Name"] for n in e["Nodes"]], e["Nodes"][1]["WSURL"], d["JobPipeline"]["MaxRunDuration"], d["JobPipeline"]["HTTPRequest"]["DefaultTimeout"])')
-[ "$r" = "no-tomllib" ] || eq "may apply: parsed" "$r" "(8453, '10 gwei', '0s', False, 3, False, ['Base-Mainnet-1', 'Base-Mainnet-2'], 'wss://base.blockpi.network/v1/ws/KEYTWO', '15m', '300s')"
+r=$(toml "$CFG/config.toml" '(e["ChainID"], e["GasEstimator"]["FeeCapDefault"], e["NoNewFinalizedHeadsThreshold"], e["NodePool"]["EnforceRepeatableRead"], e["NodePool"]["PollFailureThreshold"], "FinalityDepth" in e, [n["Name"] for n in e["Nodes"]], e["Nodes"][1]["WSURL"], d["Feature"]["LogPoller"], d["JobPipeline"]["HTTPRequest"]["DefaultTimeout"])')
+[ "$r" = "no-tomllib" ] || eq "may apply: parsed" "$r" "(8453, '10 gwei', '0s', False, 3, False, ['Base-Mainnet-1', 'Base-Mainnet-2'], 'wss://base.blockpi.network/v1/ws/KEYTWO', True, '300s')"
 ARGS=(--check); out=$(run)
 has   "after: rc 0"               "$out" "rc=0"
 has   "after: matches"            "$out" "matches the template"
-has   "after: still lists kept"   "$out" "MaxRunDuration: kept"
+has   "after: still lists kept"   "$out" "LogPoller: kept"
 ARGS=(--apply); out=$(run)
 has   "second apply: rc 0"        "$out" "rc=0"
 eq    "second apply: no new backup" "$(backups)" "1"
