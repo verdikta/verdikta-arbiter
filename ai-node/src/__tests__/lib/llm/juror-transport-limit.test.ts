@@ -18,6 +18,7 @@
  * dispatcher and its 300 s apply, the stub answers after 310 s, and the file takes about
  * six minutes (the cases run side by side).
  */
+import fs from 'fs';
 import http from 'http';
 import type { AddressInfo, Socket } from 'net';
 import { Agent } from 'undici';
@@ -344,8 +345,7 @@ describe('the juror\'s AbortController still ends the call at the jury deadline'
 
 describe('the dispatcher of a juror\'s call', () => {
   test('is undici of the major this Node bundles, which its fetch is written against', () => {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const pinned: string = require('undici/package.json').version;
+    const pinned: string = JSON.parse(fs.readFileSync(require.resolve('undici/package.json'), 'utf8')).version;
     expect(pinned.split('.')[0]).toBe(String(process.versions.undici).split('.')[0]);
   });
 
