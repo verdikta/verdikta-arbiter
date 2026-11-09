@@ -320,20 +320,22 @@ why on the verdict.
 **What it does.** It asks only once the run has settled for the jury, so the runner, the report and
 the gates never meet it; the modules that decide a verdict do not import it. It then adds a
 directive beside the AI Node request, never in it: `canaryFault: { action, mac }`, an HMAC over the
-action, the claim and the report.
+action, the claim and the report. For `provider-timeout`'s first attempt it also tells the AI Node a
+shorter `deadlineMs`, 105 s, the one field of the request it changes, and only ever to less time
+(`claimRun.js` takes the smaller of it and what is left).
 
 | Fault | Which attempts | What the AI Node does ([contract](../ai-node/API_RESPONSE_SPECIFICATION.md#the-canary-fault-switch)) |
 |---|---|---|
 | `near-limit-juror` | Every | Holds the first juror's real answer until 5 s before the jury deadline |
-| `provider-timeout` | The first | Starts the first juror's real call 3 s before the jury deadline, so the deadline aborts it on the wire: a real 503, a real retry from the same run |
+| `provider-timeout` | The first | Told 105 s, the attempt has a 60 s jury (the EA's juror floor). The first juror's real call starts 3 s before that jury deadline, so the deadline aborts it on the wire: a real 503 at 60 s, then a real retry from the same run, told what is left. That is the whole 480 s for any run up to 195 s from receipt; at the time left, a first attempt at the cap would leave the retry 255 s less the run, or none (design §11) |
 | `slow-justifier` | Every | Holds the real justification until 5 s before its reserve ends |
-| `cancellation` | Every | As `provider-timeout`, on both attempts: the arbiter abstains, no commit |
+| `cancellation` | Every | As `provider-timeout`, on every attempt, but at the jury deadline the time left gives, the first attempt too: the arbiter abstains, no commit. After a first attempt at the cap there is a second only on a run under 195 s |
 
 **Visible.** `/health` and `/version` carry `canaryFault: { state, namedClaims, applied, refused,
 lastRefusal, problems }`, never the key, the URL or the CIDs. Every justification's `arbiter`
 block carries `canaryFault: { state }`, and a jury verdict's `metadata` carries
 `canary_fault_ai_node` and, for a named claim, `canary_fault`: the fault, the attempts, each earlier
-attempt's verified action and error code, and the last attempt's action. No settlement reads any of it. An
+attempt's verified action, error code and the deadline it was told, and the last attempt's action. No settlement reads any of it. An
 armed node says so at boot, and L4 fails a claim run unless the state is what the run named.
 
 For testing information, please refer to [TESTING.md](TESTING.md).

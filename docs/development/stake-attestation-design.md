@@ -1561,10 +1561,29 @@ The stages up to the justifier do not add up to the worst case: the one deadline
 (receipt + 780 s) bounds them together, so the worst case is that deadline plus the commit
 and reveal, ≈ 870 s. The jury gets the smaller of 480 s and what the deadline leaves after
 the justifier's 45 s, so a long run before it leaves it less. A timed-out jury is retried
-only in what then remains, and only while more than the reserve and the EA's 60 s juror
-floor are left: with the larger cap a retry has less time than it had under 240 s, or none.
+once, by the EA, in what then remains, and only while more than the reserve and the EA's
+60 s juror floor are left (`external-adapter/src/codeReview/claimRun.js`, `time.js`).
 The cap was 240 s until 2026-11-09 (A11): the owner put a juror's accuracy and cost ahead
 of its speed, and slower jurors ran up to and past 240 s in tuning.
+
+**A retry after a first attempt at the cap.** With R seconds from receipt to the first AI
+call (archives, gates, pull, run), a first attempt that runs to the 480 s cap ends at
+R + 480 s and leaves 300 − R s: a retry jury of 255 − R s, and no retry at all from
+R = 195 s (then 105 s or less is left). A 30 s run leaves the retry 225 s, a 60 s run 195 s,
+a 120 s run 135 s. Under 240 s the retry had its whole 240 s for any run up to 255 s. With
+the panels of 2026-11-09, both of which hold Gemini 4 Argon (p95 211 s, slowest 262 s per
+answer, every juror required), a retry after a capped first attempt holds the p95 only after
+a run of at most 44 s, and the slowest answer after none. In production the retry therefore
+helps a juror that hung and would have answered fast, not one that is slow. The retry's
+budget is unchanged by A13; buying it time would mean shortening every first attempt.
+
+So the canary condition "a provider timeout with retry" times its first attempt out early
+instead: the fault switch's `provider-timeout` tells that attempt a 105 s deadline, a 60 s
+jury (the EA's juror floor), and the AI Node's real deadline aborts the first juror's real call
+on the wire there. The retry, from the same run with no fault, is told what is left: the whole
+480 s for any run up to 195 s, and at most 60 s less than a claim with no fault would get after
+that. The scenario then shows the retry path and not the panel's speed. The cancellation stays
+at the deadline the time left gives, so the canaries still show a real abort at the cap.
 
 A juror's HTTP call holds for its whole window. Node's fetch (undici) gives up after 300 s
 without response headers, and a non-streaming reasoning reply sends none until it is

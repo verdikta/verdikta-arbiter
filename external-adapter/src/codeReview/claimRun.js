@@ -14,6 +14,11 @@
  *      │
  *   the AI Node, once, or twice on its retryable status, while the jury can finish
  *
+ * Each attempt is told what is left of the deadline. After a first attempt that ran to the AI
+ * Node's 480 s jury cap that is 300 s less the run before it: a retry jury of 255 s less the run,
+ * and no retry from 195 s on (§11). Only the canary switch's provider-timeout tells its first
+ * attempt less (canaryFault/constants.js), never more.
+ *
  * The result has aiClient.evaluate's shape, or this throws: a throw is the errored
  * path, no commit, in every mode. Never `PROVIDER_ERROR:`, whose mode-0 path answers
  * 200 + [0]. The EA's text-mode AI client is not used: it retries on its own, with
@@ -119,6 +124,14 @@ async function postToAiNode(aiNode, body, { deadline }) {
   }
 }
 
+/**
+ * What an attempt tells the AI Node: what is left, or a fault's shorter deadline. Never more than
+ * is left, whatever the fault says, so no attempt's jury or justifier can run past the deadline.
+ */
+function toldDeadlineMs(remaining, faultMs) {
+  return Number.isSafeInteger(faultMs) && faultMs > 0 ? Math.min(remaining, faultMs) : remaining;
+}
+
 /** The jury's verdict, from the run held by this job: a retry never goes back to a sandbox. */
 async function askJury(context, run, { config, deadline, logger, runTag, fault }) {
   const { listing, claim } = context;
@@ -144,13 +157,15 @@ async function askJury(context, run, { config, deadline, logger, runTag, fault }
     if (!juryWorthCalling(remaining)) {
       throw abstain('CODE_REVIEW_DEADLINE', `${remaining} ms left is too little for a juror and the justifier; no model is called`);
     }
-    const body = payload(remaining, attempt);
+    const told = toldDeadlineMs(remaining, fault ? fault.deadlineFor(attempt) : null);
+    const body = payload(told, attempt);
     const checked = codeReview.validateCodeReviewRequest(body.codeReview);
     if (!checked.ok) {
       throw abstain('CODE_REVIEW_AI_REQUEST', `the request does not validate, so no model is called: ${issueCodes(checked.issues)}`);
     }
-    logger.info(`${runTag} code-review jury attempt ${attempt}: report=${run.reportSha256} deadlineMs=${remaining} files=${body.attachments.length}`);
-    // Beside the request, never in it: the prompt, the report and the pack are as they were.
+    logger.info(`${runTag} code-review jury attempt ${attempt}: report=${run.reportSha256} deadlineMs=${told}${told < remaining ? ` (the canary fault's, of ${remaining} left)` : ''} files=${body.attachments.length}`);
+    // Beside the request, never in it: the prompt, the report and the pack are as they were. A
+    // fault's shorter deadline above is the one field it can change, and only to less time.
     const directive = fault ? fault.directiveFor(attempt, { bcid: claim.bcid, reportSha256: run.reportSha256 }) : null;
     const response = await postToAiNode(config.aiNode, directive ? { ...body, canaryFault: directive } : body, { deadline });
     const answer = response.data && typeof response.data === 'object' ? response.data : {};
@@ -158,7 +173,7 @@ async function askJury(context, run, { config, deadline, logger, runTag, fault }
 
     const errorCode = typeof answer.errorCode === 'string' && CODE.test(answer.errorCode) ? answer.errorCode : 'unknown';
     logger.warn(`${runTag} code-review AI Node answered ${response.status} ${errorCode} (attempt ${attempt})`);
-    earlier.push({ action: aiSwitchStamp(answer).action, errorCode });
+    earlier.push({ action: aiSwitchStamp(answer).action, errorCode, deadlineMs: told });
     const retryable = response.status === 503 && answer.retryable === true;
     if (!retryable || attempt === AI_ATTEMPTS) {
       throw abstain('CODE_REVIEW_AI_ABSTAIN', `the AI Node answered ${response.status} ${errorCode}`);

@@ -18,7 +18,7 @@ const A = require('../../assertions');
 const C = require('./checks');
 const F = require('./fixtures');
 const { fetchJustificationJson } = require('../../ipfs');
-const { claimVerdictChecks } = require('../../l4/claim-checks');
+const { claimVerdictChecks, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS } = require('../../l4/claim-checks');
 const { JOB_ID } = require('./canary-chain');
 
 const AI_ROUTE = '/api/rank-and-justify';
@@ -399,8 +399,7 @@ async function faultSlowJustifier(h) {
   return checks;
 }
 
-/** What the switch tells provider-timeout's first attempt (external-adapter/src/canaryFault/constants.js): a 60 s jury. */
-const PROVIDER_TIMEOUT_FIRST_DEADLINE_MS = 105000;
+/** The jury the AI Node plans for that first attempt (less the justifier's 45 s), and its cap (ai-node/src/lib/code-review/deadline.ts). */
 const FIRST_JURY_MS = PROVIDER_TIMEOUT_FIRST_DEADLINE_MS - 45000;
 const CODE_JURY_CAP_MS = 480000;
 
