@@ -2,7 +2,8 @@
 
 // A7c, acceptance 3 and the review focus: each batch-2 case on what the real runner observed on the class platform, restated here
 // apart from the case files, so that editing a case's expected result to match a wrong run fails these. The label is the source
-// program's, or the listing's own text where the case says so; the words are what the test prints.
+// program's, or the listing's own text where the case says so; a valid case's class is the one under immunefi-v2.3 (`cls`, A7e),
+// with the program's beside it (`program`), which source.program keeps. The words are what the test prints.
 //
 // CALIBRATION_RESULTS_DIR names the folder `npm run calibration -- --results <dir>/<listing>.json` wrote, one per CI job.
 
@@ -26,16 +27,16 @@ const batch = cases.filter((c) => c.subsets.includes('batch-2'));
 const RESTATED = Object.freeze({
   'basin-third-token-swap': { kind: 'clear-invalid.excluded-precondition', outcome: 'INVALID', basis: 'program', words: 'what the swap takes in for the third token: 0 <= 0' },
   'basin-rate-across-decimals': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: 'the rate between the two tokens: 452252694 != 1000000' },
-  'basin-supply-without-convergence': { kind: 'severity-boundary', outcome: 'VALID', cls: 'LOW', basis: 'program', words: 'moves on one more step: 341995 > 1' },
+  'basin-supply-without-convergence': { kind: 'severity-boundary', outcome: 'VALID', program: 'LOW', cls: 'LOW', basis: 'program', words: 'moves on one more step: 341995 > 1' },
   'basin-upgrade-and-call': { kind: 'duplicate.entry-point', outcome: 'DUPLICATE', basis: 'program', words: 'the proxy still points where the owner set it' },
   'basin-upgrade-token-order': { kind: 'duplicate.victim', outcome: 'DUPLICATE', basis: 'program', words: 'the first reserve still belongs to the first token' },
   'kleidi-partial-whitelist': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: 'an amount the owners never whitelisted is refused' },
   'kleidi-shorter-expiry': { kind: 'duplicate.rephrased', outcome: 'DUPLICATE', basis: 'program', words: 'Timelock: operation is not ready' },
-  'kleidi-pause-gas': { kind: 'severity-boundary', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: '>= 30000000' },
-  'kleidi-neighbouring-checks': { kind: 'severity-boundary', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: 'CalldataList: Partial check overlap' },
+  'kleidi-pause-gas': { kind: 'severity-boundary', outcome: 'VALID', program: 'MEDIUM', cls: 'MEDIUM', basis: 'program', words: '>= 30000000' },
+  'kleidi-neighbouring-checks': { kind: 'severity-boundary', outcome: 'VALID', program: 'MEDIUM', cls: 'LOW', basis: 'program', words: 'CalldataList: Partial check overlap' },
   'kleidi-spell-before-answer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'program', words: 'the spell waits for the answer from the owners' },
   'mellow-cancel-listed-before': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: 'IndexOutOfBounds()' },
-  'mellow-cancel-listed-after': { kind: 'known-issue.after', outcome: 'VALID', cls: 'MEDIUM', basis: 'program', words: 'IndexOutOfBounds()' },
+  'mellow-cancel-listed-after': { kind: 'known-issue.after', outcome: 'VALID', program: 'MEDIUM', cls: 'HIGH', basis: 'program', words: 'IndexOutOfBounds()' },
   'mellow-fee-on-falling-price': { kind: 'clear-invalid.intended-behaviour', outcome: 'INVALID', basis: 'program', words: '10000000000000000000 != 0' },
   'mellow-stale-report': { kind: 'clear-invalid.excluded-precondition', outcome: 'INVALID', basis: 'program', words: 'a price checked against a report a year old is not valid' },
   'sequence-plain-transfer': { kind: 'known-issue.before', outcome: 'DUPLICATE', basis: 'listing', words: '0 != 1' },
@@ -58,6 +59,8 @@ for (const [name, want] of Object.entries(RESTATED)) {
     assert.deepEqual(r.disagreements, []);
     assert.equal(r.expected.outcome, want.outcome);
     assert.equal(r.expected.class, want.cls || null);
+    assert.equal(entry.expected.class, want.cls || null, 'the class under immunefi-v2.3, in expected');
+    if (want.outcome === 'VALID') assert.equal(entry.source.program.class, want.program, 'the program\'s class, in source.program');
     assert.equal(r.actual, 'jury', 'the gates decide none of these');
     const o = r.observed;
     assert.deepEqual(Object.values(o.gates), Array(6).fill('pass'), JSON.stringify(o.gates));

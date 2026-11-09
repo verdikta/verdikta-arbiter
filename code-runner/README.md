@@ -2097,7 +2097,8 @@ its `listing`, a folder under `calibration/listings/`: `listing.json` (`repo`, `
 verdict and class (null for Verdikta's own fixtures).
 
 `expected` has `outcome` and `class` (what the whole system should settle), `reason` in words, and
-`runner`, compared exactly:
+`runner`, compared exactly. A valid case in a subset the real jury is measured on also names the class's rubric
+and why (`rubric`, `impact`, `classReason`; see [Classes under the rubric](#classes-under-the-rubric)):
 
 | Field | Holds |
 |---|---|
@@ -2227,8 +2228,9 @@ A case on such a listing records `source`: `url` (the finding), `licence` (as fo
 - a `poc.patch` that does anything but add new files: a context or removed line is how a diff carries someone's code. So there is
   no `fix.patch` on these listings either;
 - a claim file that names its source, program or contest: those files reach the jury, and the label must not;
-- on a clear-valid case: a class other than the program's, in `expected.class` or `finding.claimedClass`; an outcome other than
-  VALID; a gate other than `pass`; a `poc.observable` that does not name the test and quote the expected failure;
+- on a clear-valid case: a `finding.claimedClass` other than the program's class (the claim is what the hunter submitted;
+  `expected.class` is the class under the rubric, node A7e); an outcome other than VALID; a gate other than `pass`; a
+  `poc.observable` that does not name the test and quote the expected failure;
 - a folder under `repos/` no listing names, a folder under `listings/` no case names, and anything unknown at the top of
   `calibration/`.
 
@@ -2283,11 +2285,11 @@ reason it states, and that its label can be checked.
 
 | Field | Holds |
 |---|---|
-| `kind` | `clear-invalid.intended-behaviour`, `.outside-scope`, `.excluded-precondition`; `duplicate.rephrased`, `.entry-point`, `.victim`; `known-issue.before`, `.after`; `severity-boundary`. The kind fixes the outcome: INVALID, DUPLICATE, VALID with the program's class |
+| `kind` | `clear-invalid.intended-behaviour`, `.outside-scope`, `.excluded-precondition`; `duplicate.rephrased`, `.entry-point`, `.victim`; `known-issue.before`, `.after`; `severity-boundary`. The kind fixes the outcome: INVALID, DUPLICATE, VALID, with the class under the rubric and the program's in `source.program` |
 | `basis` | `program`: the source program's verdict. `listing`: a claim built here, whose reason is in the listing's own text. Open to a clear invalid outside the scope or behind an excluded precondition and to a known issue listed before. A duplicate or a class is always the program's call |
 | `why` | What the program recorded, or which text gives the reason |
 | `duplicateOf` | The `url` of the finding it duplicates and how the program `recorded` that. That finding is among the case's `priorFindings`, written here, and its title is in the pack's `priorFindings` tier |
-| `boundary` | The two adjacent `classes`, lower first, the program's `call`, and who `moved` it from where. `finding.claimedClass` is what was submitted, on one side or the other |
+| `boundary` | The two adjacent `classes`, lower first, the program's `call` (its `source.program.class`), and who `moved` it from where. `finding.claimedClass` is what was submitted, on one side or the other. The class under the rubric need not be on either side |
 | `knownIssue` | The entry's `title`, `listed` (`before` or `after`), `how`, and `twin` |
 
 The loader refuses a case that breaks any of this, one with no control, and, on any `git` listing, a finding the `inScope` gate would
@@ -2302,7 +2304,7 @@ duplicates, since a rejected claim is in no report.
 contract stores the ids at listing. `mellow-cancel-listed-before` and `-after` show that: one claim, byte for byte, on two listings that
 differ only in that file. The loader checks both, and `test/calibration/batch-2.test.js` requires the same gates and runs on both, with
 only the pack different. A later publication reaches neither the request nor the pack, so a jury that finds the issue on the first
-should settle DUPLICATE, and on the second the program's class.
+should settle DUPLICATE, and on the second its class.
 
 **What a listing cannot say.** `stake.scope` is paths. A program's ruling on a trust assumption ("the team is trusted") or a token
 assumption has no field: the rubric's "no privilege the scope excludes" has nothing to read but paths and the source, and a known issue
@@ -2310,6 +2312,29 @@ would settle DUPLICATE, not INVALID. `basin-third-token-swap` and `mellow-stale-
 leave the jury only what the source says. A7d will show whether that is enough.
 
 The set is 45 claims with A7a's 12 and A7b's 17. CI: `.github/workflows/code-runner-calibration-batch-2.yml`, as for the first batch.
+
+### Classes under the rubric
+
+The jurors class a claim by the listing's `severityRubric`, `immunefi-v2.3`, the only rubric in `@verdikta/common`. Code4rena's and
+Sherlock's scales do not map class for class onto it (their Medium is often "breaks core functionality", which Immunefi does not
+list as an impact), so node A7e labelled every valid case and every severity boundary again under that rubric, blind to any jury's
+answer. `expected.class` is that class, and the bar reads it. `expected.rubric` names the rubric, `expected.impact` the impact the
+case matches, and `expected.classReason` says, in a few sentences, what the proof of concept shows and why that is the impact. The
+impacts are the rubric's for smart contracts, one key each in `lib/format.js` (`RUBRIC_IMPACTS`), each with one class, so the same
+impact cannot get two. The loader refuses a valid case in `adversarial`, `clear-valid` or `batch-2` without them, an impact of another
+class, a rubric other than the listing's, and the fields on a case that is not valid. The conformance canary keeps its own label.
+
+The rule each label follows: the consequence the PoC shows, or one that follows from it through code in the repository named by file,
+under the definitions in common's `SEVERITY_DEFINITIONS` for the listing's artifact kind and the rubric's page; the highest class
+whose definition it meets. An impact counts at the size shown, so a wei per call is no loss. Where the PoC shows a promise broken
+and nothing lost, with no attacker needed or shown, the class is Low.
+
+The program's own verdict and class stay in `source.program`, and `finding.claimedClass` is still what the hunter submitted. The
+jury report (`report/jury.js`) keeps its bar and exit codes on `expected.class`, and reports beside them, deciding nothing: per class,
+agreement and validity agreement against both label sets side by side; and class distance against each (exact, one off, two or
+more, and the mean signed distance, negative when the jury is below the label), on the clear cases and on every claim. The program's
+label is `source.program.class` where it judged the claim valid, and otherwise the outcome the case expects. `--previous` scores the
+earlier run's verdicts against today's labels too, so a report from before the re-label is compared on the same footing.
 
 ### The measurement with the real jury
 

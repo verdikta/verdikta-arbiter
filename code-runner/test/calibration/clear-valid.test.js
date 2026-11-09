@@ -1,8 +1,9 @@
 'use strict';
 
 // A7b, acceptance 3 and the review focus: each clear-valid case on what the real runner observed on the class platform,
-// restated here apart from the case files, so that editing a case's expected result to match a wrong run fails these. The class
-// is the source program's, and the words are what the finding's own numbers or revert make the test print.
+// restated here apart from the case files, so that editing a case's expected result to match a wrong run fails these. Two labels
+// each (A7e): `program`, the source program's class, which source.program keeps, and `cls`, the class under immunefi-v2.3 that
+// expected.class holds and the bar reads. The words are what the finding's own numbers or revert make the test print.
 //
 // CALIBRATION_RESULTS_DIR names the folder `npm run calibration -- --results <dir>/<listing>.json` wrote, one per CI job.
 
@@ -24,23 +25,23 @@ const { cases } = loadCorpus({ root: path.join(CODE_RUNNER, 'calibration') });
 const clearValid = cases.filter((c) => c.subsets.includes('clear-valid'));
 
 const RESTATED = Object.freeze({
-  'mellow-consensus-threshold': { cls: 'HIGH', words: 'one signer does not count twice' },
-  'mellow-performance-fee': { cls: 'HIGH', words: '900000000000000000000 != 10000000000000000000' },
-  'mellow-fee-recipient-lockup': { cls: 'MEDIUM', words: 'the lock on the recipient after a fee payment' },
-  'layeredge-tier-demotion': { cls: 'HIGH', words: '2 != 3' },
-  'layeredge-tier-history-gas': { cls: 'MEDIUM', words: '>= 30000000' },
-  'basin-well-data-decimals': { cls: 'HIGH', words: '0 != 18' },
-  'basin-swap-ratio-no-reserve': { cls: 'MEDIUM', words: '0 <= 0' },
-  'basin-liquidity-ratio-underflow': { cls: 'MEDIUM', words: 'panic: arithmetic underflow or overflow (0x11)' },
-  'sequence-static-signature-entry-point': { cls: 'MEDIUM', words: 'InvalidStaticSignatureWrongCaller(' },
-  'sequence-sapient-image-hash': { cls: 'MEDIUM', words: '0x0000000000000000000000000000000000000000000000000000000000000001 != ' },
-  'layeredge-tier-promotion': { cls: 'HIGH', words: '20000000000000000000 != 35000000000000000000' },
-  'mellow-transfer-whitelist': { cls: 'MEDIUM', words: 'TransferNotAllowed(' },
-  'mellow-fee-per-period': { cls: 'HIGH', words: '331000000000000000000 != 100000000000000000000' },
-  'basin-upgrade-access': { cls: 'HIGH', words: 'the implementation stays the one the owner chose' },
-  'basin-reserve-at-ratio': { cls: 'MEDIUM', words: 'Non convergence: calcLpTokenSupply' },
-  'sequence-session-replay': { cls: 'MEDIUM', words: 'the signature is not good for the other wallet' },
-  'sequence-factory-redeploy': { cls: 'MEDIUM', words: 'DeployFailed(' }
+  'mellow-consensus-threshold': { program: 'HIGH', cls: 'CRITICAL', words: 'one signer does not count twice' },
+  'mellow-performance-fee': { program: 'HIGH', cls: 'CRITICAL', words: '900000000000000000000 != 10000000000000000000' },
+  'mellow-fee-recipient-lockup': { program: 'MEDIUM', cls: 'HIGH', words: 'the lock on the recipient after a fee payment' },
+  'layeredge-tier-demotion': { program: 'HIGH', cls: 'HIGH', words: '2 != 3' },
+  'layeredge-tier-history-gas': { program: 'MEDIUM', cls: 'CRITICAL', words: '>= 30000000' },
+  'basin-well-data-decimals': { program: 'HIGH', cls: 'LOW', words: '0 != 18' },
+  'basin-swap-ratio-no-reserve': { program: 'MEDIUM', cls: 'LOW', words: '0 <= 0' },
+  'basin-liquidity-ratio-underflow': { program: 'MEDIUM', cls: 'LOW', words: 'panic: arithmetic underflow or overflow (0x11)' },
+  'sequence-static-signature-entry-point': { program: 'MEDIUM', cls: 'LOW', words: 'InvalidStaticSignatureWrongCaller(' },
+  'sequence-sapient-image-hash': { program: 'MEDIUM', cls: 'LOW', words: '0x0000000000000000000000000000000000000000000000000000000000000001 != ' },
+  'layeredge-tier-promotion': { program: 'HIGH', cls: 'LOW', words: '20000000000000000000 != 35000000000000000000' },
+  'mellow-transfer-whitelist': { program: 'MEDIUM', cls: 'LOW', words: 'TransferNotAllowed(' },
+  'mellow-fee-per-period': { program: 'HIGH', cls: 'CRITICAL', words: '331000000000000000000 != 100000000000000000000' },
+  'basin-upgrade-access': { program: 'HIGH', cls: 'CRITICAL', words: 'the implementation stays the one the owner chose' },
+  'basin-reserve-at-ratio': { program: 'MEDIUM', cls: 'LOW', words: 'Non convergence: calcLpTokenSupply' },
+  'sequence-session-replay': { program: 'MEDIUM', cls: 'LOW', words: 'the signature is not good for the other wallet' },
+  'sequence-factory-redeploy': { program: 'MEDIUM', cls: 'MEDIUM', words: 'DeployFailed(' }
 });
 
 test('every clear-valid case in the corpus has a result: nothing was skipped', () => {
@@ -52,10 +53,14 @@ test('every clear-valid case in the corpus has a result: nothing was skipped', (
 
 for (const [name, want] of Object.entries(RESTATED)) {
   test(`${name}: every gate passes, it reaches the jury, and its test fails with the finding's own failure`, () => {
+    const entry = clearValid.find((c) => c.id === `clear-valid.${name}`);
+    assert.ok(entry, 'no such case');
+    assert.equal(entry.source.program.class, want.program, 'the program\'s class, in source.program');
+    assert.equal(entry.expected.class, want.cls, 'the class under immunefi-v2.3, in expected');
     const r = byId.get(`clear-valid.${name}`);
     assert.ok(r, 'no result');
     assert.deepEqual(r.disagreements, []);
-    assert.equal(r.expected.class, want.cls, 'the program\'s class');
+    assert.equal(r.expected.class, want.cls, 'the run compared against the class under immunefi-v2.3');
     assert.equal(r.actual, 'jury');
     const o = r.observed;
     assert.deepEqual(Object.values(o.gates), Array(6).fill('pass'), JSON.stringify(o.gates));

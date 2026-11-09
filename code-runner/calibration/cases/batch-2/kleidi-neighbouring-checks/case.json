@@ -43,7 +43,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "MEDIUM",
+    "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows two adjacent calldata ranges refused as an overlap. Owners cannot whitelist neighbouring arguments as separate checks; one range across both still can, and nothing is lost or locked: the contract falls short of what it promises, Low.",
     "reason": "The program judged it valid at the lower side of a boundary it moved, so Medium, against the High claimed. Every gate passes, and the class is left to the jury, which A7d measures.",
     "runner": {
       "result": "definitive",

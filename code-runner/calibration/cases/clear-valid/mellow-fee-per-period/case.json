@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "HIGH",
+    "class": "CRITICAL",
+    "rubric": "immunefi-v2.3",
+    "impact": "theft-of-funds",
+    "classReason": "The PoC shows one batch of three reports minting 331 shares of protocol fee where a year's fee is 100. The extra shares go to the fee recipient and dilute every holder, taking their principal, and the excess grows with each asset in the batch: users' funds taken, Critical.",
     "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

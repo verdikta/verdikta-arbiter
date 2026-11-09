@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "HIGH",
+    "class": "CRITICAL",
+    "rubric": "immunefi-v2.3",
+    "impact": "theft-of-funds",
+    "classReason": "The PoC shows one signer's signature, sent twice, meeting a threshold of two. SignatureDepositQueue and SignatureRedeemQueue execute any order checkSignatures accepts at a price inside the oracle's band, so one signer, a role the listing does not exclude, can approve deposits and redemptions on its own terms against the other holders' assets: direct theft of user funds, Critical.",
     "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

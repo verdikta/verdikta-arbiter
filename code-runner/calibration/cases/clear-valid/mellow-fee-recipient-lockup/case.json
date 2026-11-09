@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "MEDIUM",
+    "class": "HIGH",
+    "rubric": "immunefi-v2.3",
+    "impact": "temporary-freezing-of-funds",
+    "classReason": "The PoC shows a protocol fee payment setting the fee recipient's lock 30 days ahead. Every fee mint, on reports, deposits and redemptions, sets it again, and a locked account can neither transfer nor redeem, so the fees it has earned stay frozen while fees keep coming and are recovered only when they stop or the lockup is turned off: temporary freezing of funds, High.",
     "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

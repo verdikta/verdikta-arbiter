@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "HIGH",
+    "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows decodeWellData keeping 0 for token one where its comment says 0 means 18. A well set up that way scales token one's reserve by 10^18 (Stable2.getScaledReserves), so its calculations overflow at ordinary reserves and it takes no deposit. No attacker is needed or shown and nothing is lost: the contract falls short of what it promises, Low.",
     "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

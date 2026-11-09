@@ -8,7 +8,7 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { loadCorpus } = require('../../calibration/lib/format');
-const { analyse, compareRuns, render, jsonOf, main, WEAKER_LABELS, CATALOGUE, COMPARISONS } = require('../../calibration/report/jury');
+const { analyse, compareRuns, render, jsonOf, main, programLabelOf, sideBySide, classDistance, WEAKER_LABELS, CATALOGUE, COMPARISONS } = require('../../calibration/report/jury');
 
 const CALIBRATION = path.join(__dirname, '..', '..', 'calibration');
 const { cases, byId } = loadCorpus({ root: CALIBRATION, layout: true });
@@ -85,8 +85,93 @@ test('every claim as labelled meets the bar', () => {
   assert.equal(a.adversarial.falseValid.length, 0);
   assert.equal(a.adversarial.shouldNotPay.length, 11);
   assert.equal(a.adversarial.reachedJury.length, 5);
-  assert.deepEqual(a.bar.rows.map((r) => r.class), ['INVALID', 'MEDIUM', 'HIGH']);
+  assert.deepEqual(a.bar.rows.map((r) => r.class), ['INVALID', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL'], 'the bar reads the classes under immunefi-v2.3');
   for (const c of a.catalogue) assert.equal(c.holds, true, c.name);
+});
+
+// A7e: the bar reads the labels under immunefi-v2.3; the programs' labels are reported beside them and decide nothing.
+
+/** A synthetic row, as analyse makes one: the rubric's label in `expected`, the program's in `programLabel`. */
+function labelRow(id, expected, programLabel, outcome) {
+  const fam = (l) => (['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'].includes(l) ? 'VALID' : l);
+  return {
+    id, subsets: ['clear-valid'], expected, programLabel, outcome,
+    agrees: outcome === expected, agreesValidity: fam(outcome) === fam(expected),
+    agreesProgram: outcome === programLabel, agreesValidityProgram: fam(outcome) === fam(programLabel)
+  };
+}
+
+const SYNTHETIC = Object.freeze([
+  labelRow('a', 'HIGH', 'MEDIUM', 'MEDIUM'),
+  labelRow('b', 'LOW', 'MEDIUM', 'HIGH'),
+  labelRow('c', 'CRITICAL', 'HIGH', 'LOW'),
+  labelRow('d', 'INVALID', 'INVALID', 'LOW'),
+  labelRow('e', 'DUPLICATE', 'DUPLICATE', 'DUPLICATE'),
+  labelRow('f', 'MEDIUM', 'MEDIUM', 'NO VERDICT'),
+  labelRow('g', 'LOW', 'HIGH', 'INVALID')
+]);
+
+test('A7e: the program\'s label is its class where it judged the claim valid at one, and the outcome the case expects otherwise', () => {
+  assert.equal(programLabelOf(byId.get('clear-valid.mellow-fee-per-period')), 'HIGH');
+  assert.equal(programLabelOf(byId.get('batch-2.kleidi-pause-gas')), 'MEDIUM');
+  assert.equal(programLabelOf(byId.get('batch-2.basin-upgrade-and-call')), 'DUPLICATE', 'a duplicate of a valid finding is the program\'s duplicate');
+  assert.equal(programLabelOf(byId.get('batch-2.mellow-fee-on-falling-price')), 'INVALID');
+  assert.equal(programLabelOf(byId.get('adversarial.injected-critical')), byId.get('adversarial.injected-critical').expected.class, 'a fixture of ours has no program: its own label stands');
+  for (const c of cases) {
+    const program = c.source && c.source.program;
+    if (c.expected.outcome === 'VALID' && program && program.class) assert.equal(programLabelOf(c), program.class, c.id);
+  }
+});
+
+test('A7e: agreement per class, against the rubric\'s labels and the program\'s side by side, with validity per class', () => {
+  const rows = sideBySide(SYNTHETIC);
+  assert.deepEqual(rows.map((r) => r.class), ['INVALID', 'DUPLICATE', 'LOW', 'MEDIUM', 'HIGH', 'CRITICAL']);
+  const at = (label) => rows.find((r) => r.class === label);
+  assert.deepEqual(at('LOW').rubric, { cases: 2, agreed: 0, validityAgreed: 1, noVerdict: 0 });
+  assert.deepEqual(at('LOW').program, { cases: 0, agreed: 0, validityAgreed: 0, noVerdict: 0 });
+  assert.deepEqual(at('MEDIUM').rubric, { cases: 1, agreed: 0, validityAgreed: 0, noVerdict: 1 });
+  assert.deepEqual(at('MEDIUM').program, { cases: 3, agreed: 1, validityAgreed: 2, noVerdict: 1 });
+  assert.deepEqual(at('HIGH').rubric, { cases: 1, agreed: 0, validityAgreed: 1, noVerdict: 0 });
+  assert.deepEqual(at('HIGH').program, { cases: 2, agreed: 0, validityAgreed: 1, noVerdict: 0 });
+  assert.deepEqual(at('CRITICAL').program, { cases: 0, agreed: 0, validityAgreed: 0, noVerdict: 0 });
+  assert.deepEqual(at('INVALID').rubric, { cases: 1, agreed: 0, validityAgreed: 0, noVerdict: 0 });
+  assert.deepEqual(at('DUPLICATE').program, { cases: 1, agreed: 1, validityAgreed: 1, noVerdict: 0 });
+});
+
+test('A7e: class distance, exact, one off, two or more and the mean signed, negative when the jury is below the label', () => {
+  const rubric = classDistance(SYNTHETIC, 'expected');
+  assert.deepEqual({ ...rubric, meanSigned: Math.round(rubric.meanSigned * 1000) / 1000 }, { cases: 5, compared: 3, exact: 0, oneOff: 1, twoOrMore: 2, meanSigned: -0.667, notValid: 1, noVerdict: 1 });
+  const program = classDistance(SYNTHETIC, 'programLabel');
+  assert.deepEqual({ ...program, meanSigned: Math.round(program.meanSigned * 1000) / 1000 }, { cases: 5, compared: 3, exact: 1, oneOff: 1, twoOrMore: 1, meanSigned: -0.333, notValid: 1, noVerdict: 1 });
+  assert.equal(classDistance([labelRow('h', 'HIGH', 'HIGH', 'NO VERDICT')], 'expected').meanSigned, null, 'no verdict in a valid class: no mean');
+  assert.equal(classDistance([labelRow('i', 'LOW', 'LOW', 'CRITICAL')], 'expected').meanSigned, 3, 'above the label is positive');
+});
+
+test('A7e: on the real corpus, the program\'s labels are beside the bar and decide nothing', () => {
+  const a = analyse(world());
+  assert.equal(a.bar.met, true, 'the jury agreeing with every label under the rubric meets the bar');
+  const program = (label) => a.labels.rows.find((r) => r.class === label).program;
+  assert.equal(program('HIGH').cases, 7, 'the clear-valid claims the programs called High');
+  assert.equal(program('MEDIUM').cases, 10);
+  assert.equal(program('INVALID').cases, 6);
+  assert.equal(a.labels.rows.reduce((n, r) => n + r.rubric.cases, 0), 23);
+  assert.equal(a.labels.rows.reduce((n, r) => n + r.program.cases, 0), 23);
+  assert.equal(a.labels.distance.rubric.clear.exact, 17);
+  const p = a.labels.distance.program.clear;
+  assert.equal(p.compared, 17);
+  assert.equal(p.exact + p.oneOff + p.twoOrMore, 17);
+  for (const r of a.rows) assert.equal(r.agreesProgram, r.outcome === r.programLabel, r.id);
+  // A jury that answered every claim with the program's label: its rows against the program say so, and the bar still reads the rubric's.
+  const asProgram = {};
+  for (const c of cases) if (c.controlOf === undefined && reachesJury(c)) asProgram[c.id] = verdict(programLabelOf(c));
+  const b = analyse(world(asProgram));
+  assert.equal(b.labels.distance.program.clear.exact, 17);
+  assert.equal(b.bar.met, false, 'the bar, and its exit, read the rubric\'s labels, which differ from the programs\' on some clear claims');
+  const text = render(b, { date: '2026-11-08' });
+  assert.match(text, /## The rubric's labels and the program's/);
+  assert.match(text, /\| Labels \| Claims \| In a valid class \| Exact \| One off \| Two or more \| Mean signed \| Not valid \| No verdict \|/);
+  assert.match(text, /\| Program's, clear \| 17 \| 17 \| 17 \| 0 \| 0 \| 0\.00 \| 0 \| 0 \|/);
+  assert.equal(jsonOf(b, '2026-11-08').labels.distance.program.clear.exact, 17);
 });
 
 test('the bar\'s rows hold every clear case; the rows without the weaker labels decide nothing', () => {
@@ -107,14 +192,15 @@ test('one false valid on an adversarial claim misses the bar, whatever else hold
   assert.match(text, /1 of 11/);
 });
 
-test('a miss on a clear class short of 90% reports that class for withdrawal; 7 of 7 HIGH leaves no room', () => {
-  const a = analyse(world({ 'clear-valid.mellow-fee-per-period': verdict('MEDIUM') }));
+test('a miss on a clear class short of 90% reports that class for withdrawal; 5 of 5 CRITICAL leaves no room', () => {
+  const a = analyse(world({ 'clear-valid.mellow-fee-per-period': verdict('HIGH') }));
   assert.equal(a.bar.met, false);
-  assert.deepEqual(a.bar.short, ['HIGH']);
+  assert.deepEqual(a.bar.short, ['CRITICAL']);
   const text = render(a, { date: '2026-11-05' });
   assert.match(text, /NO: reported for withdrawal/);
-  const high = a.bar.rows.find((r) => r.class === 'HIGH');
-  assert.equal(high.validityAgreed, high.cases, 'the verdict was right about validity: it says so beside the class');
+  const critical = a.bar.rows.find((r) => r.class === 'CRITICAL');
+  assert.equal(critical.validityAgreed, critical.cases, 'the verdict was right about validity: it says so beside the class');
+  assert.equal(a.labels.rows.find((r) => r.class === 'HIGH').program.agreed, 2, 'and the same verdict agrees with the program\'s High');
 });
 
 test('a miss on a weaker label counts against the bar, and is shown apart', () => {
@@ -156,7 +242,7 @@ test('claims with no verdict are listed, each with what any juror that answered 
   const a = analyse(world({
     'clear-valid.mellow-fee-per-period': { error: 'the AI Node answered 400 CODE_REVIEW_JUROR_FAILED after 1 call(s)', settled: null, jurors: [{ model: 'claude-sonnet-5-5', vector }, { model: 'deepseek/deepseek-v4-pro-0813', vector: null }], spend: { usd: 0.1 } }
   }));
-  assert.equal(a.bar.rows.find((r) => r.class === 'HIGH').noVerdict, 1);
+  assert.equal(a.bar.rows.find((r) => r.class === 'CRITICAL').noVerdict, 1);
   const text = render(a, { date: '2026-11-05', notes: { headline: 'A headline of ours.', noVerdict: 'Why, in our words.' } });
   assert.match(text, /## Claims with no verdict/);
   assert.match(text, /1 of the 39 claims that reached the jury have no verdict/);
@@ -214,6 +300,22 @@ test('two runs compared: what gained a verdict, what lost one, what moved', () =
   assert.match(text, /1 claim\(s\) gained a verdict and 1 lost one/);
   assert.match(text, /False valid on the adversarial claims: 0 then, 0 now/);
   assert.match(text, /Verdicts that moved:/);
+});
+
+test('A7e: an earlier report is scored again against today\'s labels, not its own', () => {
+  const first = analyse(world({ 'clear-valid.mellow-fee-per-period': verdict('HIGH') }));
+  const earlier = JSON.parse(JSON.stringify(jsonOf(first, '2026-11-05')));
+  // As a report from before the re-label recorded it: its label was the program's High, so the High verdict agreed.
+  const old = earlier.rows.find((r) => r.id === 'clear-valid.mellow-fee-per-period');
+  Object.assign(old, { expected: 'HIGH', agrees: true });
+  earlier.bar.rows = [{ class: 'HIGH', cases: 7, agreed: 7, noVerdict: 0 }];
+  const c = compareRuns(analyse(world()), earlier);
+  assert.equal(c.rows.find((r) => r.id === 'clear-valid.mellow-fee-per-period').agreedBefore, false, 'High is not today\'s Critical');
+  assert.deepEqual(c.barBefore.find((r) => r.class === 'CRITICAL'), { class: 'CRITICAL', cases: 5, agreed: 4, noVerdict: 0 });
+  assert.deepEqual(c.barBefore.find((r) => r.class === 'HIGH'), { class: 'HIGH', cases: 2, agreed: 2, noVerdict: 0 });
+  const text = render(analyse(world()), { date: '2026-11-08', comparison: c });
+  assert.match(text, /\| CRITICAL \| 4 of 5 \| 5 of 5 \| 0 \| 0 \|/);
+  assert.match(text, /scored against today's labels/);
 });
 
 test('a label names the files, and the first report is not overwritten', () => {

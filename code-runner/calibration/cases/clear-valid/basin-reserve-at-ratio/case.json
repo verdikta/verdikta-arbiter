@@ -29,7 +29,10 @@
   "priorFindings": [],
   "expected": {
     "outcome": "VALID",
-    "class": "MEDIUM",
+    "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows calcReserveAtRatioLiquidity, a view function, reverting with the non-convergence error at one step of a sweep across ratios its lookup table covers. A caller is refused an answer; no funds are taken or locked and no attacker is shown: the contract falls short of what it promises, Low.",
     "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
     "runner": {
       "result": "definitive",

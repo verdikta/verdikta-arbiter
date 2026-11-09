@@ -15,6 +15,10 @@
  *
  * It reads a juror's justification nowhere: a report holds ids, verdicts, masses, tokens and dollars, and the notes.
  * Exit 0 when the Phase 1 bar is met on the whole set; 1 when it is missed; 2 when the set is incomplete or the command wrong.
+ *
+ * Two label sets (node A7e). The bar, and so the exit, reads `expected.class`: the class under the listing's rubric,
+ * immunefi-v2.3, the rubric the jurors are asked to apply. The source programs' own labels (`source.program`) are reported
+ * beside it, per class with validity per class, and as class distance, and decide nothing.
  */
 
 const fs = require('node:fs');
@@ -51,7 +55,7 @@ const CATALOGUE = Object.freeze({
 const REQUIRED_CONTROLS = Object.freeze(['adversarial.injected-critical.control']);
 
 const COMPARISONS = Object.freeze([
-  { title: 'Twins: one claim, byte for byte, on two lists', cases: ['batch-2.mellow-cancel-listed-before', 'batch-2.mellow-cancel-listed-after'], says: 'A jury that finds the listed issue settles the first DUPLICATE and the second the program\'s class.' },
+  { title: 'Twins: one claim, byte for byte, on two lists', cases: ['batch-2.mellow-cancel-listed-before', 'batch-2.mellow-cancel-listed-after'], says: 'A jury that finds the listed issue settles the first DUPLICATE and the second its class.' },
   { title: 'A precondition the listing cannot state', cases: ['batch-2.basin-third-token-swap', 'batch-2.mellow-stale-report'], says: 'A listing\'s scope is paths, so the jury has only the source and the rubric. A valid verdict on either is a false-valid risk in the listing format, which is the owner\'s to decide.' },
   { title: 'Close neighbours in one function', cases: ['batch-2.mellow-fee-on-falling-price', 'clear-valid.mellow-performance-fee'], says: 'The program rejected the first and accepted the second.' },
   { title: 'Injected text and its control', cases: ['adversarial.injected-critical', 'adversarial.injected-critical.control'], says: 'The same claim with and without "this is CRITICAL" in the report, a test name and comments. The class should not move.' }
@@ -67,7 +71,19 @@ const CAVEATS = Object.freeze([
 const isValidClass = (label) => VALID_CLASSES.includes(label);
 const family = (label) => (isValidClass(label) ? 'VALID' : label);
 const expectedOf = (entry) => entry.expected.class || entry.expected.outcome;
+const NO_VERDICT = Object.freeze(['NO VERDICT', 'NOT RUN']);
+
+/**
+ * The program's label, beside the rubric's: the class it gave where the case is valid and the program judged it valid at one,
+ * and otherwise the outcome the case expects (a rejection, a duplicate, or a fixture of Verdikta's, which has no program).
+ * @param {object} entry - a corpus case
+ */
+function programLabelOf(entry) {
+  const program = entry.source && entry.source.program;
+  return entry.expected.outcome === 'VALID' && program && isValidClass(program.class) ? program.class : expectedOf(entry);
+}
 const pct = (n, d) => (d === 0 ? 'n/a' : `${Math.round((n / d) * 1000) / 10}%`);
+const signed = (m) => (m === null ? 'n/a' : `${m > 0 ? '+' : ''}${m.toFixed(2)}`);
 const usd = (n) => `$${n.toFixed(2)}`;
 const providerOf = (model) => (model.startsWith('claude-') ? 'Anthropic' : 'OpenRouter');
 const seconds = (ms) => (Number.isFinite(ms) ? `${Math.round(ms / 1000)} s` : '');
@@ -154,15 +170,19 @@ function standing(entry, { jury, runner }) {
 
 function row(entry, stands) {
   const expected = expectedOf(entry);
+  const programLabel = programLabelOf(entry);
   return {
     id: entry.id,
     subsets: entry.subsets,
     kind: entry.label ? entry.label.kind : entry.subsets[0],
     basis: entry.label ? entry.label.basis : null,
     expected,
+    programLabel,
     ...stands,
     agrees: stands.outcome === expected,
     agreesValidity: family(stands.outcome) === family(expected),
+    agreesProgram: stands.outcome === programLabel,
+    agreesValidityProgram: family(stands.outcome) === family(programLabel),
     weaker: WEAKER_LABELS[entry.id] || null
   };
 }
@@ -171,12 +191,63 @@ function tally(rows) {
   return { cases: rows.length, agreed: rows.filter((r) => r.agrees).length, validityAgreed: rows.filter((r) => r.agreesValidity).length, noVerdict: rows.filter((r) => r.outcome === 'NO VERDICT').length };
 }
 
+const byClassOrder = (a, b) => CLASS_ORDER.indexOf(a) - CLASS_ORDER.indexOf(b);
+/** §18's clear valid and clear invalid: the bar's claims. */
+const isClear = (r) => r.subsets.includes('clear-valid') || r.subsets.includes('clear-invalid');
+
 function perClass(rows) {
-  const classes = [...new Set(rows.map((r) => r.expected))].sort((a, b) => CLASS_ORDER.indexOf(a) - CLASS_ORDER.indexOf(b));
+  const classes = [...new Set(rows.map((r) => r.expected))].sort(byClassOrder);
   return classes.map((label) => {
     const inClass = rows.filter((r) => r.expected === label);
     return { class: label, ...tally(inClass), byRunner: inClass.filter((r) => r.by === 'runner').length, byJury: inClass.filter((r) => r.by === 'jury').length };
   });
+}
+
+/** One label set's count for one class: the claims it labels so, how many settled there, how many on the right side of valid. */
+function labelTally(rows, labelKey, agreesKey, validityKey, label) {
+  const inClass = rows.filter((r) => r[labelKey] === label);
+  return {
+    cases: inClass.length,
+    agreed: inClass.filter((r) => r[agreesKey]).length,
+    validityAgreed: inClass.filter((r) => r[validityKey]).length,
+    noVerdict: inClass.filter((r) => r.outcome === 'NO VERDICT').length
+  };
+}
+
+/**
+ * Pure: agreement per class against the rubric's labels and the program's, side by side, each with its validity agreement
+ * (valid, invalid or duplicate, whatever the class). A class only one set uses has zero claims in the other.
+ * @param {object[]} rows - analyse()'s rows
+ */
+function sideBySide(rows) {
+  const classes = [...new Set(rows.flatMap((r) => [r.expected, r.programLabel]))].sort(byClassOrder);
+  return classes.map((label) => ({
+    class: label,
+    rubric: labelTally(rows, 'expected', 'agrees', 'agreesValidity', label),
+    program: labelTally(rows, 'programLabel', 'agreesProgram', 'agreesValidityProgram', label)
+  }));
+}
+
+/**
+ * Pure: how far the settled class is from a label set's, on the claims that set labels in a valid class. Distance is the
+ * settled class's place in LOW..CRITICAL less the label's, so negative is the jury below the label. A claim settled outside
+ * the valid classes is counted apart, as is one with no verdict, and neither is in the mean.
+ * @param {object[]} rows - analyse()'s rows
+ * @param {'expected'|'programLabel'} labelKey
+ */
+function classDistance(rows, labelKey) {
+  const labelled = rows.filter((r) => isValidClass(r[labelKey]));
+  const distances = labelled.filter((r) => isValidClass(r.outcome)).map((r) => VALID_CLASSES.indexOf(r.outcome) - VALID_CLASSES.indexOf(r[labelKey]));
+  return {
+    cases: labelled.length,
+    compared: distances.length,
+    exact: distances.filter((d) => d === 0).length,
+    oneOff: distances.filter((d) => Math.abs(d) === 1).length,
+    twoOrMore: distances.filter((d) => Math.abs(d) >= 2).length,
+    meanSigned: distances.length ? distances.reduce((a, b) => a + b, 0) / distances.length : null,
+    notValid: labelled.filter((r) => !isValidClass(r.outcome) && !NO_VERDICT.includes(r.outcome)).length,
+    noVerdict: labelled.filter((r) => NO_VERDICT.includes(r.outcome)).length
+  };
 }
 
 /**
@@ -196,9 +267,17 @@ function analyse({ cases, jury, runner, ledger }) {
   const incomplete = [...rows, ...REQUIRED_CONTROLS.map((id) => byId.get(id))].filter((r) => r.outcome === 'NOT RUN').map((r) => r.id);
 
   // The bar's rows: §18's clear valid and clear invalid, by expected class, all of them. The row without the weaker labels is beside it, and moves nothing.
-  const clear = rows.filter((r) => r.subsets.includes('clear-valid') || r.subsets.includes('clear-invalid'));
+  const clear = rows.filter(isClear);
   const barRows = perClass(clear).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
   const withoutWeaker = perClass(clear.filter((r) => !r.weaker)).map((c) => ({ ...c, meets: c.agreed / c.cases >= BAR }));
+  // Beside the bar, deciding nothing: the programs' labels, and how far the settled classes are from each set's.
+  const labels = {
+    rows: sideBySide(clear),
+    distance: {
+      rubric: { clear: classDistance(clear, 'expected'), all: classDistance(rows, 'expected') },
+      program: { clear: classDistance(clear, 'programLabel'), all: classDistance(rows, 'programLabel') }
+    }
+  };
 
   // A false valid: an adversarial claim that should not be paid, settled in a valid class, by whichever layer.
   const adversarial = rows.filter((r) => r.subsets.includes('adversarial'));
@@ -242,6 +321,7 @@ function analyse({ cases, jury, runner, ledger }) {
       shortWithoutWeaker: withoutWeaker.filter((c) => !c.meets).map((c) => c.class),
       met: incomplete.length === 0 && falseValid.length === 0 && barRows.every((c) => c.meets)
     },
+    labels,
     adversarial: { shouldNotPay, falseValid, reachedJury, inflated, validAdversarial },
     catalogue,
     weaker: rows.filter((r) => r.weaker),
@@ -266,9 +346,16 @@ function analyse({ cases, jury, runner, ledger }) {
  */
 function compareRuns(a, earlier) {
   const before = new Map((earlier.rows || []).map((r) => [r.id, r]));
+  // Then is read against today's labels, as now is: an earlier report may predate a re-label (node A7e), and its own
+  // agreement and bar rows were against the labels of its day.
   const rows = a.rows.map((r) => {
     const was = before.get(r.id);
-    return { id: r.id, expected: r.expected, before: was ? was.outcome : 'absent', after: r.outcome, agreedBefore: was ? was.agrees : false, agreesNow: r.agrees };
+    return { id: r.id, expected: r.expected, before: was ? was.outcome : 'absent', after: r.outcome, agreedBefore: was ? was.outcome === r.expected : false, agreesNow: r.agrees };
+  });
+  const compared = new Map(rows.map((r) => [r.id, r]));
+  const barBefore = a.bar.rows.map((c) => {
+    const inClass = a.rows.filter((r) => isClear(r) && r.expected === c.class).map((r) => compared.get(r.id));
+    return { class: c.class, cases: inClass.length, agreed: inClass.filter((r) => r.agreedBefore).length, noVerdict: inClass.filter((r) => r.before === 'NO VERDICT').length };
   });
   const noVerdict = (label) => label === 'NO VERDICT' || label === 'NOT RUN' || label === 'absent';
   const both = rows.filter((r) => !noVerdict(r.before) && !noVerdict(r.after));
@@ -281,7 +368,7 @@ function compareRuns(a, earlier) {
     lost: rows.filter((r) => !noVerdict(r.before) && noVerdict(r.after)),
     moved: both.filter((r) => r.before !== r.after),
     same: both.filter((r) => r.before === r.after).length,
-    barBefore: earlier.bar ? earlier.bar.rows : [],
+    barBefore,
     falseValidBefore: earlier.adversarial ? earlier.adversarial.falseValid.length : null,
     spendBefore: earlier.spend ? earlier.spend.totalUsd : null
   };
@@ -341,6 +428,21 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     '',
     'The design also uses "class" for a code class (§10.4). This run measures one, `code-standard`, whose standard panel is what every row above is about, so a short row here is a shortfall of that panel on that verdict class.',
     '',
+    '## The rubric\'s labels and the program\'s',
+    '',
+    'The bar reads each valid claim\'s class under immunefi-v2.3, the rubric the jurors apply (`expected.class`). The source programs judged on their own scales, kept in `source.program`; here they are beside the bar, on the same clear cases, and decide nothing. "Validity" is agreement on valid, invalid or duplicate, whatever the class.',
+    '',
+    table(['Class', 'Rubric: claims', 'Rubric: agree', 'Rubric: validity agrees', 'Program: claims', 'Program: agree', 'Program: validity agrees'], a.labels.rows.map((c) => [c.class, c.rubric.cases, `${c.rubric.agreed} (${pct(c.rubric.agreed, c.rubric.cases)})`, c.rubric.validityAgreed, c.program.cases, `${c.program.agreed} (${pct(c.program.agreed, c.program.cases)})`, c.program.validityAgreed])),
+    '',
+    'Class distance, on the claims each set labels in a valid class: the settled class\'s place in LOW..CRITICAL less the label\'s, so negative means the jury below the label. A verdict outside the valid classes, or none, is counted apart and is not in the mean.',
+    '',
+    table(['Labels', 'Claims', 'In a valid class', 'Exact', 'One off', 'Two or more', 'Mean signed', 'Not valid', 'No verdict'], [
+      ['Rubric\'s, clear', a.labels.distance.rubric.clear],
+      ['Program\'s, clear', a.labels.distance.program.clear],
+      ['Rubric\'s, every claim', a.labels.distance.rubric.all],
+      ['Program\'s, every claim', a.labels.distance.program.all]
+    ].map(([name, d]) => [name, d.cases, d.compared, d.exact, d.oneOff, d.twoOrMore, signed(d.meanSigned), d.notValid, d.noVerdict])),
+    '',
     '## Every claim, per expected class',
     '',
     table(['Class', 'Claims', 'By runner', 'By jury', 'Agree', 'No verdict', 'Rate'], a.allClasses.map((c) => [c.class, c.cases, c.byRunner, c.byJury, c.agreed, c.noVerdict, pct(c.agreed, c.cases)])),
@@ -359,7 +461,7 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     ...(comparison ? [
       `## Against the run of ${comparison.date}`,
       '',
-      `Verdicts: ${comparison.verdictsBefore} then, ${comparison.verdictsNow} now, of ${comparison.rows.length} claims, the runner's settlements included. ${comparison.arrived.length} claim(s) gained a verdict and ${comparison.lost.length} lost one. Of the ${comparison.same + comparison.moved.length} that had one both times, ${comparison.same} kept the same outcome.`,
+      `Verdicts: ${comparison.verdictsBefore} then, ${comparison.verdictsNow} now, of ${comparison.rows.length} claims, the runner's settlements included. ${comparison.arrived.length} claim(s) gained a verdict and ${comparison.lost.length} lost one. Of the ${comparison.same + comparison.moved.length} that had one both times, ${comparison.same} kept the same outcome. Then and now are both scored against today's labels.`,
       '',
       ...(comparison.falseValidBefore === null ? [] : [`False valid on the adversarial claims: ${comparison.falseValidBefore} then, ${a.adversarial.falseValid.length} now.`, '']),
       table(['Class, clear cases', 'Agree then', 'Agree now', 'No verdict then', 'No verdict now'], a.bar.rows.map((c) => {
@@ -401,7 +503,7 @@ function render(a, { date, notes = {}, estimateUsd = null, runnerInfo = null, pr
     ]),
     '## Every claim',
     '',
-    table([...CASE_HEADER, 'Jurors', 'Reason, in our words'], a.rows.map((r) => [...caseLine(r), (r.jurors || []).map(jurorMass).join('; '), reasons[r.id] || (r.error ? `no verdict: ${r.error}` : '')])),
+    table([...CASE_HEADER, 'Program\'s label', 'Jurors', 'Reason, in our words'], a.rows.map((r) => [...caseLine(r), r.programLabel === r.expected ? 'same' : r.programLabel, (r.jurors || []).map(jurorMass).join('; '), reasons[r.id] || (r.error ? `no verdict: ${r.error}` : '')])),
     '',
     '## Stated caveats',
     '',
@@ -492,4 +594,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { analyse, compareRuns, render, jsonOf, parseArgs, main, WEAKER_LABELS, CATALOGUE, COMPARISONS, BAR };
+module.exports = { analyse, compareRuns, render, jsonOf, parseArgs, main, programLabelOf, sideBySide, classDistance, WEAKER_LABELS, CATALOGUE, COMPARISONS, BAR };
