@@ -71,11 +71,29 @@ Several seconds, or repeats that swing widely, point to a slow or shared CPU. Th
 
 ## Provider keys
 
-The sandbox runs the claim; the AI Node's jurors judge it, with the node's provider keys. The
-code-standard evaluation panel (`CODE_STANDARD_PANEL` in `@verdikta/common`) has an OpenRouter juror,
-`deepseek/deepseek-v4-pro-0813`, so a node that serves claims needs `OPENROUTER_API_KEY`. Its Claude
-juror uses `ANTHROPIC_API_KEY`, or OpenRouter when that key is missing. Without the OpenRouter key every
-claim abstains, and the AI Node logs `[OpenRouter] OPENROUTER_API_KEY not configured`.
+The sandbox runs the claim; the AI Node's jurors judge it, with the node's provider keys. Every juror of
+a panel is required, so a juror the node cannot reach makes it abstain on every claim. The code-standard
+panels (`CODE_STANDARD_PANEL` and `CODE_STANDARD_DISPUTE_PANEL` in `@verdikta/common`) from 1.9.0-attest.4
+are the owner's Q63 panels (2026-11-09; [design](../../../docs/development/stake-attestation-design.md) §10.4):
+
+| Panel | Jurors | Route |
+|---|---|---|
+| Evaluation (listing archive) | `google/gemini-4-argon`, `gpt-6-luna` | Gemini: OpenRouter only. Luna: `OPENAI_API_KEY`, else OpenRouter |
+| Dispute (dispute archive) | `claude-opus-5-5`, `google/gemini-4-argon` | Opus: `ANTHROPIC_API_KEY`, else OpenRouter. Gemini: OpenRouter only |
+
+**A code-class operator needs `OPENROUTER_API_KEY`, on an OpenRouter account that serves
+`google/gemini-4-argon`.** The AI Node has no Google class: OpenRouter is Gemini's only route. Without
+the key every claim abstains, and the AI Node logs `[OpenRouter] OPENROUTER_API_KEY not configured`. Luna and
+Opus go to their own APIs when the key is set and to OpenRouter otherwise (as `openai/gpt-6-luna` and
+`anthropic/claude-opus-5.5`), with the same effort, output limit and sampling settings on either route.
+On attest.3 the panels are Sonnet 5.5 + DeepSeek V4 Pro and Sonnet 5.5 + GPT-6 Sol, and DeepSeek needs the
+OpenRouter key as well.
+
+`arbiter-doctor.sh` checks this with no model call (`ai.code_jurors`, on a node with the sandbox, a code
+class or code review on). For each juror of the panels the installed common names, it looks for a native key
+or the OpenRouter route the AI Node's gateway would use. It reads `ai-node/.env.local` and the panels, and
+nothing else. It can see that a key is set, not what the account allows: an OpenRouter account whose provider
+or data-policy settings leave Google's models out, or which has no credit, still fails at the first claim.
 
 Put provider keys in `<install>/installer/.api_keys`. Every upgrade writes them from there into
 `ai-node/.env.local`. A key that is set only in `.env.local` is kept, and the upgrade warns
@@ -122,7 +140,7 @@ stopped, and nothing outside it (never `/run/docker`, the arbiter's). Anything t
 `disable` then exits 1. On a host where an earlier release left them, `disable` removes them.
 
 `arbiter-doctor.sh` reports `svc.code_runner`, `sandbox.runsc`, `sandbox.disk`, `sandbox.conformance`,
-`sandbox.trust` and `sandbox.registry`. `upgrade-arbiter.sh` holds the runner's maintenance lock while
+`sandbox.trust`, `sandbox.registry` and `ai.code_jurors` ([Provider keys](#provider-keys)). `upgrade-arbiter.sh` holds the runner's maintenance lock while
 it runs and refreshes the sandbox when a new release has no pass yet. If a refresh fails, claims abstain, the
 arbiter keeps serving text requests, and the upgrade exits 3 saying what to run. Its post-upgrade health check
 runs before the lock goes, so there `svc.code_runner` is INFO when the upgrade's own lock (its pid, which it

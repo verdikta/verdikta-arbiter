@@ -1230,8 +1230,12 @@ check_ai_node() {
 # The code-review sandbox (node A8; design §16): svc.code_runner, sandbox.runsc, sandbox.disk,
 # sandbox.conformance, sandbox.trust, sandbox.registry. code-review-check.js reads the JSON and
 # the token (never in argv), and says what it found, one finding a line.
+# And on a code-class node, ai.code_jurors (node A14): whether the AI Node can serve every juror
+# of the code-standard panels its installed @verdikta/common names, with a native key or the
+# OpenRouter route its gateway would use (Gemini has no native class: OpenRouter only). It reads
+# ai-node/.env.local and the panels and nothing else: no model call, no key tried, no log read.
 check_code_review() {
-    section_header "Code review sandbox"
+    section_header "Code review sandbox and jurors"
     local helper="$INSTALL_DIR/code-review-check.js" out sev id msg hint
     if [ ! -f "$helper" ]; then
         emit INFO sandbox.skipped "code-review-check.js is not installed (upgrade-arbiter.sh deploys it)" ""

@@ -44,10 +44,11 @@ for f in repo-policy.yml secret-scan.yml; do
 done
 
 # e2e: the path filter covers the existing components plus code-runner and
-# testing-tool (the stake-attestation runner and the claim scenarios), and is
-# the same for PRs and pushes.
+# testing-tool (the stake-attestation runner and the claim scenarios), and
+# code-review-check.js, whose juror routes an AI Node test holds to the gateway (A14).
+# It is the same for PRs and pushes.
 for ev in pull_request push; do
-    for p in 'e2e/**' 'external-adapter/**' 'ai-node/**' 'code-runner/**' 'testing-tool/**' '.github/workflows/e2e.yml'; do
+    for p in 'e2e/**' 'external-adapter/**' 'ai-node/**' 'code-runner/**' 'testing-tool/**' 'installer/util/code-review-check.js' '.github/workflows/e2e.yml'; do
         is e2e.yml "on.dig('$ev', 'paths').to_a.include?('$p')" true "$ev paths miss $p"
     done
 done
@@ -102,6 +103,8 @@ is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').find { |s| s['run'].to_s.include?
 is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('src/index.js l2 --mock --boot-adapter --suite claim') }" true "the claim suite is not run"
 # It also keeps the contract test's route into code-runner/ working (A4b), and the harness's own tests.
 is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('runnerContract') }" true "the EA/runner contract test is not run"
+# The Q63 jurors on both routes, and the doctor's juror routes against provider-config.ts (A14).
+is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('q63-juror-routes') && s['run'].to_s.include?('code-jurors-doctor') }" true "the Q63 route tests are not run"
 is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm test') && s['working-directory'] == 'e2e' }" true "the harness's unit tests are not run"
 is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm test') && s['working-directory'] == 'testing-tool' }" true "the testing tool's unit tests are not run"
 is e2e.yml "w.dig('jobs', 'l2-claim', 'steps').any? { |s| s['run'].to_s.include?('npm ci') && s['working-directory'] == 'testing-tool' }" true "the claim suite's testing-tool mode needs the tool's deps"

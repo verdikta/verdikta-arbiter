@@ -9,6 +9,8 @@
  *   record        --install-dir D --result F    hold a conformance result to common's hash; keep a pass or none
  *   gate          --install-dir D --classes "…" may this node register on these classes? exit 0, or 1 with why
  *   runner-health --install-dir D               the runner's /health as JSON; exit 1 when it does not answer
+ *   jurors        --install-dir D               each juror of common's code-standard panels and its route, as JSON;
+ *                                               exit 1 when one has none
  *   doctor        --install-dir D               the doctor's findings: SEV<TAB>id<TAB>message<TAB>hint
  *
  * The gate is a check against mistakes on an operator's own node. The pass file sits on that
@@ -169,6 +171,154 @@ function cmdRecord(o) {
   const tmp = `${p.pass}.new.${process.pid}`;
   fs.writeFileSync(tmp, `${JSON.stringify({ pass: true, ...want, at: new Date().toISOString() }, null, 2)}\n`);
   fs.renameSync(tmp, p.pass);
+}
+
+/**
+ * The panels a code-class node must serve: every juror of @verdikta/common's code-standard
+ * panels (the listing archive's and the dispute archive's; Q63, owner decision 2026-11-09).
+ */
+const CODE_PANELS = ['CODE_STANDARD_PANEL', 'CODE_STANDARD_DISPUTE_PANEL'];
+
+/** The AI Node's provider classes by provider name (ai-node/src/lib/llm/provider-config.ts, CLASS_FROM_PROVIDER). */
+const GATEWAY_CLASS = {
+  openai: 'openai',
+  anthropic: 'anthropic',
+  xai: 'xai',
+  grok: 'xai',
+  hyperbolic: 'hyperbolic',
+  'hyperbolic api': 'hyperbolic',
+  ollama: 'ollama',
+  'open-source': 'ollama',
+  openrouter: 'openrouter'
+};
+
+/** Each class's native keys (provider-config.ts, hasNativeKey). The openrouter class has none: OpenRouter is its only route. */
+const NATIVE_KEYS = {
+  openai: ['OPENAI_API_KEY'],
+  anthropic: ['ANTHROPIC_API_KEY'],
+  xai: ['XAI_API_KEY', 'GROK_API_KEY'],
+  hyperbolic: ['HYPERBOLIC_API_KEY']
+};
+
+function gatewayBackend(value) {
+  const v = String(value === undefined ? '' : value).trim().toLowerCase();
+  return v === 'openrouter' || v === 'native' ? v : null;
+}
+
+/**
+ * The route the AI Gateway gives a provider, decided as resolveProviderConfig does (provider-config.ts)
+ * over the AI Node's environment: Ollama local; the openrouter class OpenRouter; then
+ * <CLASS>_CLASS_PROVIDER, AI_GATEWAY, a native key, an OpenRouter key, in that order. Null for a
+ * provider the gateway has no class for. ai-node's code-jurors-doctor.test.ts holds the two to the
+ * same answer, reason included.
+ */
+function gatewayRoute(provider, env) {
+  const providerClass = GATEWAY_CLASS[String(provider).trim().toLowerCase()];
+  if (!providerClass) return null;
+  if (providerClass === 'ollama') return { providerClass, backend: 'native', reason: 'Ollama is local-only' };
+  if (providerClass === 'openrouter') return { providerClass, backend: 'openrouter', reason: 'OpenRouter-only provider' };
+  const name = `${providerClass.toUpperCase()}_CLASS_PROVIDER`;
+  const classOverride = gatewayBackend(env[name]);
+  if (classOverride) return { providerClass, backend: classOverride, reason: `${name} override` };
+  const globalOverride = gatewayBackend(env.AI_GATEWAY);
+  if (globalOverride) return { providerClass, backend: globalOverride, reason: 'AI_GATEWAY override' };
+  if (NATIVE_KEYS[providerClass].some((key) => env[key])) return { providerClass, backend: 'native', reason: 'native-first: native key present' };
+  if (env.OPENROUTER_API_KEY) return { providerClass, backend: 'openrouter', reason: 'no native key; routing via OpenRouter' };
+  return { providerClass, backend: 'native', reason: 'no keys configured; defaulting to native' };
+}
+
+/** One juror: its route, the key that route needs, and whether the AI Node has it. Key values are never read out. */
+function jurorRoute(juror, env) {
+  const base = { provider: juror.provider, model: juror.model, panels: juror.panels };
+  const route = gatewayRoute(juror.provider, env);
+  if (!route) {
+    return { ...base, providerClass: null, backend: null, reason: null, key: null, served: false,
+      problem: `has a provider, '${juror.provider}', that the AI Node has no class for` };
+  }
+  const out = { ...base, ...route };
+  if (route.providerClass === 'ollama') return { ...out, key: null, served: true, via: 'local Ollama', problem: null };
+  if (route.backend === 'openrouter') {
+    const served = !!env.OPENROUTER_API_KEY;
+    let via = 'OpenRouter (its only route)';
+    if (route.providerClass !== 'openrouter') via = route.reason.endsWith('override') ? `OpenRouter (${route.reason})` : 'OpenRouter (no native key)';
+    const problem = route.providerClass === 'openrouter'
+      ? 'needs OPENROUTER_API_KEY: OpenRouter is its only route'
+      : `is sent to OpenRouter (${route.reason === 'no native key; routing via OpenRouter' ? 'no native key' : route.reason}) and OPENROUTER_API_KEY is not set`;
+    return { ...out, key: 'OPENROUTER_API_KEY', served, via, problem: served ? null : problem };
+  }
+  const keys = NATIVE_KEYS[route.providerClass];
+  const key = keys.find((k) => env[k]) || null;
+  const problem = route.reason === 'no keys configured; defaulting to native'
+    ? `has no route: neither ${keys.join(' nor ')} nor OPENROUTER_API_KEY is set`
+    : `is kept on its native API (${route.reason}) and ${keys.join(' / ')} is not set`;
+  return { ...out, key: key || keys[0], served: !!key, via: `native (${key || keys[0]})`, problem: key ? null : problem };
+}
+
+/**
+ * Every juror of the AI Node's own common's code-standard panels, read at run time (so the check
+ * follows a release with other panels), each with its route over ai-node/.env.local, which the AI
+ * Node reads at start. Nothing is sent: no model is called, no key is tried.
+ */
+function codeJurors(installDir) {
+  const aiNode = path.join(installDir, 'ai-node');
+  const commonDir = path.join(aiNode, 'node_modules', '@verdikta', 'common');
+  const envFile = path.join(aiNode, '.env.local');
+  const result = { common: null, envFile, envFileExists: fs.existsSync(envFile), panels: [], jurors: [], problem: null };
+  let codeReview;
+  try {
+    codeReview = require(commonDir).codeReview;
+    result.common = (readJson(path.join(commonDir, 'package.json')) || {}).version || null;
+  } catch (_error) {
+    result.problem = `the AI Node's @verdikta/common cannot be read (${commonDir})`;
+    return result;
+  }
+  const byJuror = new Map();
+  for (const name of CODE_PANELS) {
+    const nodes = codeReview && codeReview[name] && codeReview[name].AI_NODES;
+    if (!Array.isArray(nodes)) continue;
+    result.panels.push(name);
+    for (const node of nodes) {
+      const id = `${node.AI_PROVIDER}\u0000${node.AI_MODEL}`;
+      if (!byJuror.has(id)) byJuror.set(id, { provider: node.AI_PROVIDER, model: node.AI_MODEL, panels: [] });
+      byJuror.get(id).panels.push(name);
+    }
+  }
+  if (result.panels.length === 0) {
+    result.problem = `@verdikta/common ${result.common || '(unknown)'} in the AI Node has no code-standard panels`;
+    return result;
+  }
+  const env = readEnvFile(envFile);
+  result.jurors = [...byJuror.values()].map((juror) => jurorRoute(juror, env));
+  return result;
+}
+
+function cmdJurors(o) {
+  const result = codeJurors(o.installDir);
+  console.log(JSON.stringify(result));
+  if (result.problem || result.jurors.some((j) => !j.served)) process.exit(1);
+}
+
+/** ai.code_jurors: can the AI Node serve every juror of the code-standard panels? A code-class node only. */
+function doctorJurors(installDir) {
+  const id = 'ai.code_jurors';
+  const result = codeJurors(installDir);
+  if (result.problem) {
+    finding('WARN', id, `the code-standard jurors cannot be checked: ${result.problem}`, 'Run upgrade-arbiter.sh, which installs the AI Node and its common');
+    return;
+  }
+  const release = `@verdikta/common ${result.common || '(unknown)'}`;
+  const missing = result.jurors.filter((j) => !j.served);
+  if (missing.length) {
+    const env = result.envFileExists ? '' : ` (${path.join('ai-node', '.env.local')} is missing)`;
+    finding('FAIL', id,
+      `the AI Node cannot serve ${missing.length} of ${result.jurors.length} code-standard jurors (${release})${env}, so this node abstains on every claim: `
+        + missing.map((j) => `${j.provider} ${j.model} ${j.problem}`).join('; '),
+      'Put the key in installer/.api_keys and run upgrade-arbiter.sh, which writes it into ai-node/.env.local (or set it there and restart the AI Node). '
+        + 'A juror with no native class (Gemini) needs an OpenRouter key that serves it');
+    return;
+  }
+  finding('PASS', id, `every juror of the code-standard panels (${release}) has a route: `
+    + result.jurors.map((j) => `${j.provider} ${j.model}: ${j.via}`).join('; '));
 }
 
 function codeReviewOn(p) {
@@ -454,6 +604,8 @@ async function cmdDoctor(o) {
     if (tier !== undefined) finding('FAIL', 'svc.code_runner', `this node is registered on code class ${tier} and has no code-review sandbox`, 'code-review-sandbox.sh enable');
     else if (codeReviewOn(p)) finding('FAIL', 'svc.code_runner', 'CODE_REVIEW_ENABLED is true in the adapter and this node has no code-review sandbox', 'code-review-sandbox.sh enable');
     else finding('INFO', 'sandbox.skipped', 'the code-review sandbox is not installed (optional)');
+    // A text-only node serves no code panel: no juror check, and no noise.
+    if (tier !== undefined || codeReviewOn(p)) doctorJurors(o.installDir);
     const image = `${process.env.VERDIKTA_SANDBOX_PREFIX || ''}/var/lib/verdikta-code-runner.img`;
     const left = [image, `${image}.partial`].filter((f) => fs.existsSync(f));
     if (left.length) finding('WARN', 'sandbox.disk', `a disk image stays at ${left.join(', ')} with no sandbox using it`, 'code-review-sandbox.sh disable --purge frees it');
@@ -466,13 +618,14 @@ async function cmdDoctor(o) {
     doctorConformance(health, p);
     await doctorTrust();
     doctorRegistry(health);
+    doctorJurors(o.installDir);
   }
   if (emitters.length) console.log(emitters.join('\n'));
 }
 
 async function main() {
   const o = parseArgs(process.argv.slice(2));
-  const commands = { images: cmdImages, conformance: cmdConformance, record: cmdRecord, gate: cmdGate, 'runner-health': cmdRunnerHealth, doctor: cmdDoctor };
+  const commands = { images: cmdImages, conformance: cmdConformance, record: cmdRecord, gate: cmdGate, 'runner-health': cmdRunnerHealth, jurors: cmdJurors, doctor: cmdDoctor };
   if (!commands[o.command]) usage(`unknown command ${o.command}`);
   await commands[o.command](o);
 }

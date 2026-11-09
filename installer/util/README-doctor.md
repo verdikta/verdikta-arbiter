@@ -22,6 +22,7 @@ caused the April–May 2026 incident:
 | `IPFS_PINNING_KEY` missing or not a JWT (Pinata uploads 401 INVALID_CREDENTIALS) | `ea.pinata_key_format` (FAIL) |
 | Pinata 401 / upload failures in recent EA log | `ea.recent_pinata_errors` (FAIL / WARN) |
 | `JUSTIFIER_MODEL` unset, malformed, or points at Ollama without a running Ollama daemon | `ai.justifier_model` (FAIL) |
+| A code-class node that cannot reach a juror of common's code-standard panels (no native key and no OpenRouter key; Gemini has OpenRouter only), so it abstains on every claim | `ai.code_jurors` (FAIL; no model call. [Provider keys](../docs/maintenance/code-review-sandbox.md#provider-keys)) |
 | Container or service down | `svc.ai_node` / `svc.adapter` / `svc.chainlink` / `svc.postgres` |
 | Node would not come back after a host reboot | `svc.boot_start` (WARN; `arbiter-boot-service.sh enable`) |
 | 5432 / 6688 / 3000 / 8080 listening on public addresses with no firewall rule closing them | `svc.public_ports` (WARN; `arbiter-firewall.sh enable`) |

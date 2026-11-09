@@ -24,6 +24,7 @@ import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { OpenAIProvider } from '../../../lib/llm/openai-provider';
 import { OpenRouterProvider } from '../../../lib/llm/openrouter-provider';
 import { AnthropicProvider } from '../../../lib/llm/anthropic-provider';
+import { gptMajorVersion, isGpt5FamilyModel } from '../../../lib/llm/openai-model-family';
 
 /** code-standard's envelope: the juror output the handler passes as maxTokens (owner decision Q52). */
 const CLASS_OUTPUT_TOKENS = 32000;
@@ -327,6 +328,17 @@ describe('the gateway\'s OpenRouter id for each new juror', () => {
 });
 
 describe('GPT-6 ids are read as reasoning models, as GPT-5 ids are', () => {
+  test('the family rule', () => {
+    for (const id of ['gpt-6-luna', 'openai/gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'GPT-6-Luna', 'ft:gpt-6-luna:org', 'gpt-5', 'gpt-5.1-codex', 'gpt-5-mini-2025-08-07', 'gpt-5.6-terra', 'openai/gpt-5.2']) {
+      expect([id, isGpt5FamilyModel(id)]).toEqual([id, true]);
+    }
+    for (const id of ['gpt-4o', 'gpt-4.1-mini', 'gpt-3.5-turbo', 'gpt-oss-120b', 'openai/gpt-oss-120b', 'o3', 'claude-opus-5-5', 'google/gemini-4-argon', '']) {
+      expect([id, isGpt5FamilyModel(id)]).toEqual([id, false]);
+    }
+    expect(gptMajorVersion('gpt-6-luna')).toBe(6);
+    expect(gptMajorVersion('gpt-4o')).toBeNull();
+  });
+
   test('in text mode OpenRouter gives openai/gpt-6-luna a reasoning model\'s output, as it does GPT-5', async () => {
     // Text mode passes no envelope: the default ceiling is chosen by the model id.
     for (const model of ['openai/gpt-5.2', 'openai/gpt-6-luna', 'openai/gpt-6-sol']) {
