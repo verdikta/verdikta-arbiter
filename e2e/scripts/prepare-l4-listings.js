@@ -7,9 +7,12 @@
  * validated by the runner under gVisor, at a commit of a repository anyone can read. So every
  * statement here is built from a measurement, and nothing in one is written by hand.
  *
- *   fixture-repo  writes the fixture repository (the conformance canary's tree, one commit with the
+ *   fixture-repo  writes the fixture repository (the L4 fixture image's tree, one commit with the
  *                 image build's fixed dates) and prints its commit. It is published once, as the
- *                 branch claude/stake-attestation-l4-fixture of this repository, never deleted.
+ *                 branch FIXTURE_BRANCH of this repository, never deleted or moved. A new tree gets a
+ *                 new branch: claude/stake-attestation-l4-fixture holds 43679c1, the tree before the
+ *                 vault documented deposit (A15), and the listings in archives/l4-claim/claim-set.json
+ *                 are signed on it, so it stays as it is.
  *   images        builds three images of that commit for linux/amd64 and pushes them: the fixture
  *                 image, a fresh digest for the cold-cache scenario, and one the owner removes from
  *                 the registry once it is signed (the registry-failure scenario). Writes images.json.
@@ -19,7 +22,8 @@
  *   check         (CI) starts the runner and runs its own listing check on each request under runsc,
  *                 twice: the first pass measures each image's size, the second checks the specs at that
  *                 size, exactly as they will be signed. Writes what it measured. --self-check builds the
- *                 fixture and checks it through a local registry; prepare never takes that.
+ *                 fixture and checks it through a local registry; prepare never takes that. It goes on
+ *                 while the fixture branch is not published yet, and says so.
  *   prepare       takes that CI run by id: e2e.yml, dispatched on the L4 branch, a success, these
  *                 requests, these versions. Writes the spec its second pass checked (these requests at the
  *                 measured size, byte for byte), builds each statement from what the runner measured, and
@@ -57,7 +61,12 @@ const SIGNING_MESSAGE_LIMIT = 4096;
 const GITHUB_REPO = 'verdikta/verdikta-arbiter';
 /** The fixture's repository is this one: its tree is the one commit of a branch of its own. */
 const FIXTURE_REPO = `https://github.com/${GITHUB_REPO}`;
-const FIXTURE_BRANCH = 'claude/stake-attestation-l4-fixture';
+/** The branch the listings to sign name. Each fixture tree has a branch of its own, so no signed listing's ever moves. */
+const FIXTURE_BRANCH = 'claude/stake-attestation-l4-fixture-v2';
+/** The branches signed listings already name, each at its one commit: never deleted, moved or reused. */
+const SIGNED_FIXTURES = Object.freeze([
+  Object.freeze({ branch: 'claude/stake-attestation-l4-fixture', commit: '43679c1856fbafe0dfe8d24c6e3c883511695002', signed: 'archives/l4-claim/claim-set.json' })
+]);
 /** Where e2e.yml's L4 claim runs are dispatched from, and so where the check must have run. */
 const L4_BRANCH = 'claude/stake-attestation';
 const WORKFLOW = '.github/workflows/e2e.yml';
@@ -173,10 +182,14 @@ function codeFingerprint() {
   return { runnerSource: sourceSha256(), ...files };
 }
 
-/** The commit the fixture branch holds, as anyone reads it. */
-function publishedFixtureCommit() {
+/**
+ * The commit the fixture branch holds, as anyone reads it. `unpublished: true` gives null for a branch that does not
+ * exist yet, which only the self-check takes; any other answer that names no one commit is refused either way.
+ */
+function publishedFixtureCommit({ unpublished = false } = {}) {
   const out = git(['ls-remote', '--', `${FIXTURE_REPO}.git`, `refs/heads/${FIXTURE_BRANCH}`]);
   const lines = out.split('\n').filter(Boolean);
+  if (unpublished && lines.length === 0) return null;
   const m = lines.length === 1 ? /^([0-9a-f]{40}|[0-9a-f]{64})\trefs\/heads\/(.+)$/.exec(lines[0]) : null;
   if (!m || m[2] !== FIXTURE_BRANCH) throw new Error(`${FIXTURE_REPO} has no branch ${FIXTURE_BRANCH} (git ls-remote: ${JSON.stringify(out.trim())})`);
   return m[1];
@@ -189,6 +202,7 @@ function fixtureRepo(opts) {
   console.log(commit);
   console.log(`\nPublished once, as ${FIXTURE_BRANCH} of ${GITHUB_REPO}, and never deleted or moved:`);
   console.log(`  git fetch ${out} main && git push origin FETCH_HEAD:refs/heads/${FIXTURE_BRANCH}`);
+  for (const f of SIGNED_FIXTURES) console.log(`${f.branch} stays at ${f.commit}: the listings in ${f.signed} are signed on it.`);
 }
 
 // ------------------------------------------------------------------ images
@@ -469,15 +483,30 @@ function runscRelease() {
   return m[0];
 }
 
+/**
+ * The fixture branch for a self-check, before anything is built: the commit it holds, which must be this checkout's
+ * fixture commit, or null while it is not published. A new fixture's branch is published once the change that makes
+ * it has merged, and that change runs the self-check first. Nothing that leads to a signature takes an unpublished
+ * branch: images, specs, a check of requests and prepare each refuse one.
+ */
+function selfCheckBranch(local) {
+  const published = publishedFixtureCommit({ unpublished: true });
+  if (published === null) {
+    console.log(`${FIXTURE_BRANCH} is not published yet: it must hold this checkout's fixture commit, ${local}, before images, specs, a check of requests or prepare.`);
+  } else if (published !== local) {
+    throw new Error(`${FIXTURE_BRANCH} holds ${published}, and the fixture written here commits as ${local}`);
+  }
+  return published;
+}
+
 /** The fixture built here, through a local registry, as one request: the path runs in CI on every change. */
-async function selfCheckRequests(cleanup, platform) {
+async function selfCheckRequests(cleanup, platform, local) {
   process.env.VCR_TEST_FIXTURE_REGISTRY = '1';
   process.env.CODE_RUNNER_PLATFORM = platform;
   const { buildFixture, H, CANARY } = runnerFixtures();
   const docker = H.dockerFor(H.dockerTestConfig());
   const built = await buildFixture(docker, { ...CANARY, instance: `l4s${crypto.randomBytes(4).toString('hex')}` });
   cleanup.push(built.remove);
-  const local = fixtureCommit();
   if (built.baseCommit !== local) throw new Error(`the image's repository is at ${built.baseCommit}, and the fixture written here commits as ${local}`);
   const spec = F.specFor({
     image: built.image, baseCommit: built.baseCommit, disclosureKey: codeReview.generateDisclosureKeyPair().recipient,
@@ -504,16 +533,19 @@ async function check(opts) {
     let requests;
     let requestsSha256 = null;
     let allowlist = null;
+    let published;
     if (opts.requests) {
       if (runtime !== 'runsc') throw new Error('a listing check for a signature runs under runsc: the statement names the gVisor release it ran with');
       const bytes = fs.readFileSync(path.resolve(opts.requests));
       requestsSha256 = sha256(bytes);
       requests = readRequests(JSON.parse(bytes.toString('utf8')));
+      published = publishedFixtureCommit();
+      if (published !== requests.baseCommit) throw new Error(`the requests name ${requests.baseCommit}, and ${FIXTURE_BRANCH} holds ${published}`);
     } else {
-      ({ requests, allowlist } = await selfCheckRequests(cleanup, platform));
+      const local = fixtureCommit();
+      published = selfCheckBranch(local);
+      ({ requests, allowlist } = await selfCheckRequests(cleanup, platform, local));
     }
-    const published = publishedFixtureCommit();
-    if (published !== requests.baseCommit) throw new Error(`the requests name ${requests.baseCommit}, and ${FIXTURE_BRANCH} holds ${published}`);
     const gvisor = runtime === 'runsc' ? runscRelease() : null;
     if (runtime === 'runsc' && gvisor !== RUNNER_COMMON.GVISOR_RELEASE) throw new Error(`docker's runsc is ${gvisor}; the runner pins ${RUNNER_COMMON.GVISOR_RELEASE}`);
 

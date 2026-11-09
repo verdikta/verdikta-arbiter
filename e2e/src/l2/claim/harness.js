@@ -180,6 +180,8 @@ async function startClaimHarness() {
       hangingJuror: HANGING_JUROR,
       juryAverage: [...JURY_AVERAGE],
       panel: codeReview.CODE_STANDARD_PANEL.AI_NODES.map((n) => ({ provider: n.AI_PROVIDER, model: n.AI_MODEL })),
+      /** What the fixture vault documents of deposit (A15): the jury of a claim naming src/Vault.sol reads it. */
+      depositRule: runnerRepo.DEPOSIT_RULE,
       ipfs,
       registry,
       image,
