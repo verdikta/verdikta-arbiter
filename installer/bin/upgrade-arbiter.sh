@@ -1684,6 +1684,8 @@ for _util in \
     chainlink-health-watchdog.sh \
     rotate-logs.sh \
     apply-docker-log-rotation.sh \
+    apply-chainlink-finality-tolerance.sh \
+    regenerate-chainlink-config.sh \
     arbiter-boot-service.sh \
     arbiter-firewall.sh \
     apply-chainlink-loopback.sh; do
@@ -2304,198 +2306,85 @@ else
 fi
 fi
 
-# Check and optionally regenerate Chainlink configuration
-echo -e "${BLUE}Checking Chainlink configuration...${NC}"
-
-# Function to check and regenerate Chainlink config if needed
+# Chainlink config from the template. Every setting checked in to
+# chainlink-node/config_template.toml is meant to reach every node, so this is
+# applied by default (VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG, default y,
+# unattended too). It used to default to no, which is how nodes installed before
+# July 2026 kept a config without the finality fix and sat at 0 live RPC nodes
+# (2026-11-09). regenerate-chainlink-config.sh keeps the node's own values: its
+# RPC endpoints (installer/.env's lists when the RPCs were changed above), ChainID,
+# gas caps, and any setting the template does not mention. Chainlink's own
+# `node validate` checks the new file before it is written, a backup is kept, and
+# Chainlink is stopped here, so it starts on it when the arbiter is restarted
+# below. A Verdikta agent shows the owner the same list first by running
+# `regenerate-chainlink-config.sh --check --target-dir <install>` from the
+# checkout it upgrades from, and answers with the owner's decision.
+# Same ERR-trap rule as the blocks below: `--check` exits 1 whenever there is
+# something to apply, so exit codes are read with `|| rc=$?`, never `set +e` (#97).
 check_chainlink_config() {
-    local chainlink_dir="$HOME/.chainlink-${NETWORK_TYPE}"
-    local current_config="$chainlink_dir/config.toml"
-    local template_file="$REPO_CHAINLINK_NODE/config_template.toml"
-    
-    echo -e "${BLUE}Checking Chainlink configuration...${NC}"
-    
-    # Check if current config exists
-    if [ ! -f "$current_config" ]; then
-        echo -e "${YELLOW}No existing Chainlink config found. Skipping config check.${NC}"
+    local regen="$UTIL_DIR/regenerate-chainlink-config.sh" check_rc=0 apply_rc=0
+    local flags=(--target-dir "$TARGET_DIR")
+    [ "${RPCS_CHANGED:-false}" = "true" ] && flags+=(--rpcs-from-env)
+    if [ ! -f "$regen" ]; then
+        echo -e "${YELLOW}regenerate-chainlink-config.sh not found; the Chainlink configuration is left as it is.${NC}"
         return 0
     fi
-    
-    # Check if template exists
-    if [ ! -f "$template_file" ]; then
-        echo -e "${YELLOW}No config template found. Skipping config regeneration.${NC}"
-        return 0
-    fi
-    
-    # Try to load Infura API key from installation (fallback)
-    local infura_key=""
-    if [ -f "$TARGET_DIR/installer/.api_keys" ]; then
-        source "$TARGET_DIR/installer/.api_keys"
-        infura_key="$INFURA_API_KEY"
-    elif [ -f "$INSTALLER_DIR/.api_keys" ]; then
-        source "$INSTALLER_DIR/.api_keys"
-        infura_key="$INFURA_API_KEY"
-    fi
-    
-    # Load network configuration to populate template placeholders
-    local chain_id=""
-    local network_name=""
-    local tip_cap_default=""
-    local fee_cap_default=""
-    local ws_url=""
-    local http_url=""
-    local rpc_http_urls=""
-    local rpc_ws_urls=""
-    
-    # Load environment variables from target installation
-    if [ -f "$TARGET_DIR/installer/.env" ]; then
-        source "$TARGET_DIR/installer/.env"
-        chain_id="$NETWORK_CHAIN_ID"
-        network_name="$NETWORK_NAME"
-        
-        if [ "$DEPLOYMENT_NETWORK" = "base_mainnet" ]; then
-            rpc_http_urls="${BASE_MAINNET_RPC_HTTP_URLS:-}"
-            rpc_ws_urls="${BASE_MAINNET_RPC_WS_URLS:-}"
-        else
-            rpc_http_urls="${BASE_SEPOLIA_RPC_HTTP_URLS:-}"
-            rpc_ws_urls="${BASE_SEPOLIA_RPC_WS_URLS:-}"
-        fi
-        
-        # Set default gas values based on network type
-        if [ "$NETWORK_TYPE" = "testnet" ]; then
-            tip_cap_default="2 gwei"
-            fee_cap_default="30 gwei"
-            ws_url="wss://base-sepolia.infura.io/ws/v3/$infura_key"
-            http_url="https://base-sepolia.infura.io/v3/$infura_key"
-        else
-            tip_cap_default="1 gwei"
-            fee_cap_default="20 gwei"
-            ws_url="wss://base-mainnet.infura.io/ws/v3/$infura_key"
-            http_url="https://base-mainnet.infura.io/v3/$infura_key"
-        fi
-    fi
-
-    rpc_http_urls="$(echo "$rpc_http_urls" | tr -d ' ' | sed 's/;*$//')"
-    rpc_ws_urls="$(echo "$rpc_ws_urls" | tr -d ' ' | sed 's/;*$//')"
-
-    if [ -n "$rpc_http_urls" ] || [ -n "$rpc_ws_urls" ]; then
-        if [ -z "$rpc_http_urls" ] || [ -z "$rpc_ws_urls" ]; then
-            echo -e "${YELLOW}RPC lists are incomplete (missing HTTP or WS). Skipping config regeneration.${NC}"
-            return 0
-        fi
-    fi
-
-    if [ -z "$rpc_http_urls" ] && [ -z "$rpc_ws_urls" ]; then
-        if [ -z "$infura_key" ]; then
-            echo -e "${YELLOW}Could not find RPC URLs or Infura API key. Skipping config regeneration.${NC}"
-            return 0
-        fi
-        rpc_http_urls="$http_url"
-        rpc_ws_urls="$ws_url"
-    fi
-
-    IFS=';' read -r -a http_url_array <<< "$rpc_http_urls"
-    IFS=';' read -r -a ws_url_array <<< "$rpc_ws_urls"
-
-    if [ "${#http_url_array[@]}" -ne "${#ws_url_array[@]}" ]; then
-        echo -e "${YELLOW}RPC URL list counts do not match. Skipping config regeneration.${NC}"
-        return 0
-    fi
-
-    local evm_nodes_block=""
-    for i in "${!http_url_array[@]}"; do
-        node_index=$((i + 1))
-        http_entry="${http_url_array[$i]}"
-        ws_entry="${ws_url_array[$i]}"
-        if [ -z "$http_entry" ] || [ -z "$ws_entry" ]; then
-            echo -e "${YELLOW}RPC URL list contains empty entries. Skipping config regeneration.${NC}"
-            return 0
-        fi
-        evm_nodes_block="${evm_nodes_block}[[EVM.Nodes]]
-Name=\"${network_name}-${node_index}\"
-WSURL=\"${ws_entry}\"
-HTTPURL=\"${http_entry}\"
-
-"
-    done
-    
-    # Generate what the new config would look like with ALL placeholders populated
-    local temp_config=$(mktemp)
-    export chain_id network_name tip_cap_default fee_cap_default evm_nodes_block template_file temp_config
-    python3 - << 'PY'
-import os
-
-template_path = os.environ["template_file"]
-output_path = os.environ["temp_config"]
-
-with open(template_path, "r", encoding="utf-8") as f:
-    content = f.read()
-
-replacements = {
-    "<CHAIN_ID>": os.environ["chain_id"],
-    "<NETWORK_NAME>": os.environ["network_name"],
-    "<TIP_CAP_DEFAULT>": os.environ["tip_cap_default"],
-    "<FEE_CAP_DEFAULT>": os.environ["fee_cap_default"],
-    "<EVM_NODES_BLOCK>": os.environ["evm_nodes_block"].rstrip() + "\n",
-}
-
-for key, value in replacements.items():
-    content = content.replace(key, value)
-
-with open(output_path, "w", encoding="utf-8") as f:
-    f.write(content)
-PY
-    
-    # Create filtered versions for comparison (excluding dynamic/environment-specific lines)
-    local current_filtered=$(mktemp)
-    local temp_filtered=$(mktemp)
-    
-    # Filter out lines that are environment-specific and should not be compared
-    # These include URLs (which contain API keys) and other dynamic values
-    grep -v "WSURL=" "$current_config" | \
-    grep -v "HTTPURL=" | \
-    grep -v "ChainID=" | \
-    grep -v "Name=" > "$current_filtered"
-    
-    grep -v "WSURL=" "$temp_config" | \
-    grep -v "HTTPURL=" | \
-    grep -v "ChainID=" | \
-    grep -v "Name=" > "$temp_filtered"
-    
-    # Compare filtered configs (excluding environment-specific lines)
-    if ! diff -q "$current_filtered" "$temp_filtered" > /dev/null 2>&1; then
-        echo -e "${YELLOW}Your current Chainlink configuration has differences from the updated template.${NC}"
-        echo -e "${YELLOW}This may include new optimization settings, timeout values, or configuration improvements.${NC}"
-        echo -e "${BLUE}(Environment-specific values like ChainID, URLs, and network names are excluded from this comparison)${NC}"
-        
-        # Show the actual differences (excluding environment-specific values)
-        echo -e "${BLUE}Configuration differences found:${NC}"
-        diff "$current_filtered" "$temp_filtered" || true
-        echo
-        
-        if ask_yes_no "Would you like to regenerate the config file from the template? (Your current config will be backed up)" "n" VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG; then
-            # Create backup of current config
-            local config_backup="${current_config}.backup.$(date +%Y%m%d-%H%M%S)"
-            cp "$current_config" "$config_backup"
-            echo -e "${BLUE}Current config backed up to: $config_backup${NC}"
-            
-            # Replace with new config
-            cp "$temp_config" "$current_config"
-            echo -e "${GREEN}Chainlink configuration regenerated from template.${NC}"
-            echo -e "${YELLOW}Note: You may need to restart the Chainlink node for changes to take effect.${NC}"
-        else
-            echo -e "${BLUE}Keeping existing Chainlink configuration.${NC}"
+    echo -e "${BLUE}Checking the Chainlink configuration against the template...${NC}"
+    bash "$regen" --check "${flags[@]}" || check_rc=$?
+    case "$check_rc" in
+        0) return 0 ;;
+        1) ;;
+        *)
+            echo -e "${YELLOW}Could not compare the Chainlink configuration with the template (see above); it is left as it is.${NC}"
+            echo -e "${YELLOW}Check later with: $TARGET_DIR/regenerate-chainlink-config.sh --check${NC}"
+            return 0 ;;
+    esac
+    if ask_yes_no "Apply these template changes to the Chainlink configuration? (it is validated first and a backup is kept)" "y" VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG; then
+        bash "$regen" --apply "${flags[@]}" || apply_rc=$?
+        if [ "$apply_rc" != "0" ]; then
+            echo -e "${YELLOW}The Chainlink configuration keeps its previous settings (exit $apply_rc). Retry with: $TARGET_DIR/regenerate-chainlink-config.sh --apply${NC}"
         fi
     else
-        echo -e "${GREEN}Chainlink configuration is up to date with template.${NC}"
+        echo -e "${BLUE}Keeping the existing Chainlink configuration. Apply later with: $TARGET_DIR/regenerate-chainlink-config.sh --apply${NC}"
     fi
-    
-    # Clean up temp files
-    rm -f "$temp_config" "$current_filtered" "$temp_filtered"
+    return 0
 }
 
 # Call the config check function
 check_chainlink_config
+
+# Finality tolerance (July 2026 incident, P0-A): the template has set
+# NoNewFinalizedHeadsThreshold='0s' and EnforceRepeatableRead=false since
+# cde657a. Without them a node drops to 0 live RPC nodes whenever Base's
+# finalized tag stalls (2026-11-09: a single-arbiter host stayed CRITICAL after
+# upgrading to e6afc6e, its config never regenerated). check_chainlink_config
+# above applies them with the rest of the template; when that was declined or
+# could not run, this adds just those two settings to the existing config.toml.
+# Default yes, unattended too (VA_UPGRADE_CHAINLINK_FINALITY): Chainlink is
+# normally stopped here, so they apply when the arbiter is restarted below; a
+# running Chainlink is restarted by the script, which puts the old file back if
+# it does not come up.
+# Same ERR-trap rule as the blocks below: `--check` exits 1 on every config that
+# still needs it, so exit codes are read with `|| rc=$?`, never `set +e` (#97).
+if [ -f "$UTIL_DIR/apply-chainlink-finality-tolerance.sh" ]; then
+    CL_FINALITY_CHECK_RC=0
+    bash "$UTIL_DIR/apply-chainlink-finality-tolerance.sh" --check || CL_FINALITY_CHECK_RC=$?
+    if [ "$CL_FINALITY_CHECK_RC" = "1" ]; then
+        echo -e "${YELLOW}Without these settings a stalled Base finalized tag marks every RPC out of sync:${NC}"
+        echo -e "${YELLOW}0 live RPC nodes, and commit/reveal transactions cannot be sent.${NC}"
+        if ask_yes_no "Add NoNewFinalizedHeadsThreshold='0s' and EnforceRepeatableRead=false to the Chainlink config? (a backup copy is kept)" "y" VA_UPGRADE_CHAINLINK_FINALITY; then
+            CL_FINALITY_RC=0
+            bash "$UTIL_DIR/apply-chainlink-finality-tolerance.sh" --apply || CL_FINALITY_RC=$?
+            if [ "$CL_FINALITY_RC" != "0" ]; then
+                echo -e "${YELLOW}The Chainlink config keeps its previous settings (exit $CL_FINALITY_RC). Retry with: $TARGET_DIR/apply-chainlink-finality-tolerance.sh --apply${NC}"
+            fi
+        else
+            echo -e "${BLUE}Skipped. Apply later with: $TARGET_DIR/apply-chainlink-finality-tolerance.sh --apply${NC}"
+        fi
+    elif [ "$CL_FINALITY_CHECK_RC" != "0" ]; then
+        echo -e "${YELLOW}Could not check the Chainlink finality settings (see above). Check later with: $TARGET_DIR/apply-chainlink-finality-tolerance.sh --check${NC}"
+    fi
+fi
 
 # P2-A (July 2026 incident): docker log options are fixed at container
 # creation, so containers created by older installers keep an unbounded

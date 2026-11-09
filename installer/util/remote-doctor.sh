@@ -809,9 +809,11 @@ check_chainlink_txm() {
             "Infura's WebSocket dropped behind. If recurrent, add a second RPC endpoint for failover."
         # July 2026 incident: RPC pool at 0 live nodes disables tx broadcast entirely
         # (commit txs miss their round deadline). CRIT because fulfillment is dead
-        # while this condition holds, even though every service looks 'up'.
+        # while this condition holds, even though every service looks 'up'. This
+        # read-only variant does not inspect config.toml; arbiter-doctor.sh does
+        # (cfg.chainlink_finality) and narrows the hint accordingly.
         _classify_chainlink_pattern txm.no_live_rpc_nodes 'No live RPC nodes available' CRIT \
-            "TxManager cannot broadcast. If finality-tag stalls caused this, regenerate config.toml from the updated template (NoNewFinalizedHeadsThreshold='0s'); set up chainlink-health-watchdog.sh for alerting."
+            "TxManager cannot broadcast. Check the July 2026 finality settings with $INSTALL_DIR/apply-chainlink-finality-tolerance.sh --check (--apply adds NoNewFinalizedHeadsThreshold='0s' + EnforceRepeatableRead=false and restarts Chainlink); if they are in place, the RPCs themselves are failing ($INSTALL_DIR/update-rpc-endpoints.sh)."
     else
         emit WARN txm.log_scrape "could not read chainlink logs within 15s" \
              "Container may be busy or log volume excessive. Check svc.log_size."

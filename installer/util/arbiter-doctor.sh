@@ -312,6 +312,64 @@ sel_is_auth_sender_data() {
 # Section checks
 ############################################
 
+# July 2026 incident: without these two settings a stalled Base finalized tag
+# marks every RPC out of sync (0 live RPC nodes, nothing can be broadcast). The
+# template has them; configs written before July do not, and upgrades did not
+# add them on their own until apply-chainlink-finality-tolerance.sh. Sets
+# CL_FINALITY_RC (its --check exit code, empty when the tool is missing) for the
+# txm.no_live_rpc_nodes hint and --fix.
+check_chainlink_finality() {
+    local finality_tool="$INSTALL_DIR/apply-chainlink-finality-tolerance.sh"
+    CL_FINALITY_RC=""
+    if [ ! -x "$finality_tool" ]; then
+        emit INFO cfg.chainlink_finality "apply-chainlink-finality-tolerance.sh not installed" \
+             "Upgrade the arbiter to get it (installer/bin/upgrade-arbiter.sh)."
+        return
+    fi
+    CL_FINALITY_RC=0
+    "$finality_tool" --check >/dev/null 2>&1 || CL_FINALITY_RC=$?
+    case "$CL_FINALITY_RC" in
+        0) emit PASS cfg.chainlink_finality "NoNewFinalizedHeadsThreshold='0s', EnforceRepeatableRead=false" "" ;;
+        1) emit WARN cfg.chainlink_finality "Chainlink config.toml lacks the July 2026 finality settings" \
+                "A stalled Base finalized tag would leave 0 live RPC nodes. Fix: $finality_tool --apply (backs up config.toml, restarts Chainlink)" ;;
+        *) emit WARN cfg.chainlink_finality "could not read the Chainlink config.toml" \
+                "Details: $finality_tool --check" ;;
+    esac
+}
+
+# Every setting in chainlink-node/config_template.toml is meant to reach every
+# node; upgrades apply it by default since 2026-11, but a node that declined, or
+# has not upgraded since, keeps its old file. Counts the settings the template
+# would add, change or retire (the node's own extra settings are not counted).
+check_chainlink_template() {
+    local tool="$INSTALL_DIR/regenerate-chainlink-config.sh" out rc=0 n
+    if [ ! -x "$tool" ]; then
+        emit INFO cfg.chainlink_template "regenerate-chainlink-config.sh not installed" \
+             "Upgrade the arbiter to get it (installer/bin/upgrade-arbiter.sh)."
+        return
+    fi
+    out=$("$tool" --check 2>&1) || rc=$?
+    case "$rc" in
+        0) emit PASS cfg.chainlink_template "config.toml has every template setting" "" ;;
+        1) n=$(printf '%s\n' "$out" | grep -cE '^  \[.*: (added|removed|.* -> )')
+           emit WARN cfg.chainlink_template "${n:-some} template setting(s) not applied to config.toml" \
+                "List them: $tool --check ; apply: $tool --apply (validated by Chainlink, backup kept, restarts Chainlink)" ;;
+        *) emit INFO cfg.chainlink_template "could not compare config.toml with the template" \
+                "Details: $tool --check" ;;
+    esac
+}
+
+# The txm.no_live_rpc_nodes hint: missing finality settings are the known cause
+# (July 2026, and the host that stayed CRITICAL after upgrading on 2026-11-09).
+no_live_rpc_hint() {
+    local tool="$INSTALL_DIR/apply-chainlink-finality-tolerance.sh"
+    case "${CL_FINALITY_RC:-}" in
+        1) echo "TxManager cannot broadcast. config.toml lacks the July 2026 finality settings, so a stalled Base finalized tag takes every RPC out of the pool: run $tool --apply (adds NoNewFinalizedHeadsThreshold='0s' + EnforceRepeatableRead=false, restarts Chainlink)." ;;
+        0) echo "TxManager cannot broadcast. The finality settings are in place, so the RPCs themselves are failing: docker logs chainlink --tail 20000 | grep -iE 'out of sync|unreachable|dial' ; replace or add endpoints with $INSTALL_DIR/update-rpc-endpoints.sh." ;;
+        *) echo "TxManager cannot broadcast. Check the finality settings with $tool --check (--apply adds them); if they are in place, the RPCs themselves are failing ($INSTALL_DIR/update-rpc-endpoints.sh)." ;;
+    esac
+}
+
 check_config() {
     section_header "CONFIGURATION"
 
@@ -386,6 +444,9 @@ check_config() {
         emit CRIT cfg.rpc_url "RPC URL not set for $DEPLOYMENT_NETWORK" \
              "Set BASE_MAINNET_RPC_URL / BASE_SEPOLIA_RPC_URL in $ENV_FILE"
     fi
+
+    check_chainlink_finality
+    check_chainlink_template
 
     # Job spec consistency: fromAddress in job toml must match NODE_ADDRESS
     local job_toml="$INSTALL_DIR/chainlink-node/jobs/verdikta_job_spec_arbiter_1.toml"
@@ -917,8 +978,7 @@ check_chainlink_txm() {
         # July 2026 incident: RPC pool at 0 live nodes disables tx broadcast entirely
         # (commit txs miss their round deadline). CRIT because fulfillment is dead
         # while this condition holds, even though every service looks 'up'.
-        _classify_chainlink_pattern txm.no_live_rpc_nodes 'No live RPC nodes available' CRIT \
-            "TxManager cannot broadcast. If finality-tag stalls caused this, regenerate config.toml from the updated template (NoNewFinalizedHeadsThreshold='0s'); set up chainlink-health-watchdog.sh for alerting."
+        _classify_chainlink_pattern txm.no_live_rpc_nodes 'No live RPC nodes available' CRIT "$(no_live_rpc_hint)"
     else
         emit WARN txm.log_scrape "could not read chainlink logs within 15s" \
              "Container may be busy or log volume excessive. Check svc.log_size."
@@ -1279,6 +1339,18 @@ run_fix_mode() {
                             echo "  EA restarted."
                         fi
                     fi
+                fi
+                ;;
+            txm.no_live_rpc_nodes)
+                local finality_tool="$INSTALL_DIR/apply-chainlink-finality-tolerance.sh"
+                if [ "${CL_FINALITY_RC:-}" = "1" ] && [ -x "$finality_tool" ]; then
+                    if prompt_yes_no "Run '$finality_tool --apply' (adds the two finality settings, backs up config.toml, restarts Chainlink)?"; then
+                        "$finality_tool" --apply
+                    fi
+                elif [ "${CL_FINALITY_RC:-}" = "0" ]; then
+                    echo "  (finality settings are in place — the RPC endpoints need attention: $INSTALL_DIR/update-rpc-endpoints.sh)"
+                else
+                    echo "  (finality settings could not be checked — see cfg.chainlink_finality above)"
                 fi
                 ;;
             txm.stuck_unconfirmed|txm.stuck_in_progress|txm.local_nonce_vs_chain)
