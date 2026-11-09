@@ -277,7 +277,8 @@ does not — it is read at runtime). A failed build falls back to `next dev`;
 0-live-RPC / failing health checks; `--self-heal` starts what is down through
 `start-arbiter.sh`), `rotate-logs.sh` (app-log rotation),
 `arbiter-boot-service.sh` (start at boot, below), `arbiter-firewall.sh` and
-`apply-chainlink-loopback.sh` (port exposure, below).
+`apply-chainlink-loopback.sh` (port exposure, below),
+`regenerate-chainlink-config.sh` / `apply-chainlink-finality-tolerance.sh` (Chainlink config from the template, §8).
 
 **Boot behaviour.** A node comes back on its own after a host reboot (the
 2026-10-18 provider reboots left every arbiter down for hours): `setup-docker.sh`
@@ -404,6 +405,22 @@ Ollama runs locally and is unaffected by gateway settings.
   Fetch-time log lines carry the job's run tag via AsyncLocalStorage.
 - **Two networks**: `base_sepolia` (testnet) and `base_mainnet`. Network-specific
   wrapped-VDKA and RPC config live in `installer/.env`. See `docs/deployments.md`.
+- **Checked-in Chainlink config is applied to every node by default.**
+  `upgrade-arbiter.sh` runs `installer/util/regenerate-chainlink-config.sh`
+  (`VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG`, default `y`, unattended too): the
+  template filled with the node's own RPC entries, ChainID and gas caps, plus
+  any setting the template does not mention (kept; the `RETIRED` list in the
+  script names the few the template dropped on purpose), validated by
+  Chainlink's `node validate` before it is written. Until 2026-11 the default
+  was `n`, and a host whose config dated from May missed the July 2026 finality
+  fix (`NoNewFinalizedHeadsThreshold='0s'`, `EnforceRepeatableRead=false`) and
+  stayed at 0 live RPC nodes after upgrading to e6afc6e (2026-11-09).
+  `apply-chainlink-finality-tolerance.sh` adds just those two when the
+  regeneration is declined. A Verdikta agent shows the owner `--check`'s list
+  before it upgrades, and answers with their decision. When you add a template
+  setting, check that `--check` on an old config lists it; when you remove one
+  that installs wrote, add it to `RETIRED`. Doctor: `cfg.chainlink_template`,
+  `cfg.chainlink_finality`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.
 - **`upgrade-arbiter.sh` also has `trap cleanup_on_error ERR`, and the ERR trap
   fires on any failing plain command whether or not errexit is on.** So

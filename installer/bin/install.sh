@@ -589,6 +589,14 @@ if [ -f "$UTIL_DIR/chainlink-health-watchdog.sh" ]; then
     cp "$UTIL_DIR/chainlink-health-watchdog.sh" "$INSTALL_DIR/chainlink-health-watchdog.sh"
     chmod +x "$INSTALL_DIR/chainlink-health-watchdog.sh"
 fi
+# Chainlink config tools: the template applied to this node's config.toml, and the
+# July 2026 finality settings on their own (doctor hints, upgrade).
+for _clcfg in regenerate-chainlink-config.sh apply-chainlink-finality-tolerance.sh; do
+    if [ -f "$UTIL_DIR/$_clcfg" ]; then
+        cp "$UTIL_DIR/$_clcfg" "$INSTALL_DIR/$_clcfg"
+        chmod +x "$INSTALL_DIR/$_clcfg"
+    fi
+done
 # Application log rotation (ai-node/logs, external-adapter/logs).
 if [ -f "$UTIL_DIR/rotate-logs.sh" ]; then
     cp "$UTIL_DIR/rotate-logs.sh" "$INSTALL_DIR/rotate-logs.sh"

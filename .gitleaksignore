@@ -19,3 +19,18 @@ ae7cec9571327262ddb394ac8d4e4c4e9d652337:chainlink-node/info.txt:generic-api-key
 
 # Documentation: an illustrative 32-char "Enter your Infura API Key:" example.
 c49f57a25f0d8bfba0501e239eafce6fae18d043:installer/docs/docs/installation/prompts-guide.md:generic-api-key:83
+
+# Stake-attestation calibration fixtures (node A7a). Not a secret: stake.disclosureKey, the public
+# age recipient a listing publishes in its own archive. Unlike the entries above, the two JSON files
+# are in the current tree, because a fixed listing has to name a fixed recipient. The matching private
+# key is not in this repository. The helper's line is history only: it now makes one at test time.
+3b69c4dbc0aa56678cf485a330abb5917a618d4d:code-runner/calibration/listings/vault/code_review.json:generic-api-key:66
+3b69c4dbc0aa56678cf485a330abb5917a618d4d:code-runner/conformance/canary/listing/code_review.json:generic-api-key:66
+237adb4ed3d254b8e9c94ad2f8f223ecb0405106:code-runner/test/helpers/calibrationCorpus.js:generic-api-key:144
+
+# Provider-key upgrade test (node A8c), history only. Not a secret: the scan read the variable
+# name on the next line (ANTHROPIC_API_KEY) as the value of an empty OPENAI_API_KEY= fixture line.
+# The next commit writes those fixtures from NAME VALUE pairs, so the current tree has no such line;
+# this commit stays on the PR branch because the branch is never force-pushed.
+bdce7d7ef6fb97fb041f036aec3965c516c94871:installer/tests/upgrade-api-keys-trap.test.sh:generic-api-key:114
+bdce7d7ef6fb97fb041f036aec3965c516c94871:installer/tests/upgrade-api-keys-trap.test.sh:generic-api-key:160

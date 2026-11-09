@@ -174,11 +174,84 @@ Use this when you want to change arbiter count or refresh job/key setup.
 
 ## Chainlink config regeneration
 
-The script checks current Chainlink config against the latest template (`config_template.toml`) while ignoring environment-specific lines (URLs, names, chain IDs) for comparison.
+Every setting checked in to `chainlink-node/config_template.toml` is meant to
+reach every node, so the upgrade applies the template to your `config.toml` by
+default (**yes**, unattended too: `VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG`).
+Until November 2026 the default was no, and nodes kept whatever their install
+wrote: one whose config dated from May was still missing the July 2026 finality fix
+below and stopped sending transactions.
 
-If differences are found, it can regenerate config from template after creating a config backup.
+What changes is only what the template changed. The new file is the template
+filled with **your node's own values**:
 
-This helps pick up template-level improvements safely.
+- your RPC endpoints (`[[EVM.Nodes]]`) stay as they are, unless you changed the
+  RPCs earlier in the same upgrade, in which case `installer/.env`'s lists go in;
+- `ChainID`, `TipCapDefault` and `FeeCapDefault` stay as they are;
+- a setting the template does not mention is yours and stays where it is. The
+  only exceptions are the few the template dropped on purpose (today
+  `FinalityDepth`).
+
+Before anything is written, the upgrade lists the changes setting by setting
+(URLs cut to their host) and asks:
+
+```text
+  [[EVM]] NoNewFinalizedHeadsThreshold: added "0s"
+  [EVM.NodePool] NewHeadsPollInterval: "30s" -> "8s"
+  [[EVM]] FinalityDepth: removed (was 5; inert since the July 2026 finality fix (cde657a))
+  [JobPipeline] MaxRunDuration: kept "15m" (this node's own; the template does not set it)
+```
+
+Chainlink's own `node validate` then checks the new file (a throwaway container
+from your node's image, no network, your config directory mounted read-only),
+and a rejected file is never written. A timestamped backup is kept next to
+`config.toml`. Chainlink is stopped at that point of the upgrade, so it starts
+on the new file when the arbiter is restarted.
+
+Outside an upgrade, the same tool (installed in the install root):
+
+```bash
+~/verdikta-arbiter-node/regenerate-chainlink-config.sh --check   # 0 matches, 1 lists what would change
+~/verdikta-arbiter-node/regenerate-chainlink-config.sh --apply   # validates, backs up, restarts a running Chainlink
+```
+
+`--apply` restarts a running Chainlink (about a minute) and, if it does not stay
+up on the new file, puts the backup back and starts it again. The doctor reports
+`cfg.chainlink_template` when template settings are not yet on the node.
+
+**Verdikta agents** show the owner this list before they upgrade a node: they
+run `installer/util/regenerate-chainlink-config.sh --check --target-dir <install>`
+from the checkout they upgrade from, and answer
+`VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG` with the owner's decision.
+
+### Finality settings (asked even when you keep your config)
+
+Configs written before July 2026 lack two settings the template has carried
+since then:
+
+```toml
+[[EVM]]
+NoNewFinalizedHeadsThreshold = '0s'
+
+[EVM.NodePool]
+EnforceRepeatableRead = false
+```
+
+Without them, a stalled or regressing Base `finalized` tag marks every RPC out
+of sync at once: Chainlink logs "No live RPC nodes available", the doctor
+reports `txm.no_live_rpc_nodes` CRIT, and commit/reveal transactions cannot be
+sent although the RPC provider itself is healthy.
+
+The regeneration above adds them with the rest of the template. If you decline
+it (or it cannot run), the upgrade still checks for both and adds just those
+lines to your existing `config.toml` (`apply-chainlink-finality-tolerance.sh`;
+validated the same way, backup kept, nothing else in the file changes).
+Default **yes**, unattended too (`VA_UPGRADE_CHAINLINK_FINALITY`). Outside an
+upgrade:
+
+```bash
+~/verdikta-arbiter-node/apply-chainlink-finality-tolerance.sh --check   # 0 in place, 1 missing
+~/verdikta-arbiter-node/apply-chainlink-finality-tolerance.sh --apply   # adds them, restarts a running Chainlink
+```
 
 ## Dependency updates and model synchronization
 
