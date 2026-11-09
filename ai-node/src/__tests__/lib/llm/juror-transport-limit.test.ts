@@ -17,6 +17,10 @@
  * production. Set VERDIKTA_REAL_UNDICI_LIMIT=1 to scale nothing: Node's real default
  * dispatcher and its 300 s apply, the stub answers after 310 s, and the file takes about
  * six minutes (the cases run side by side).
+ *
+ * The Q63 jurors (owner decision, 2026-11-09: gpt-6-luna, google/gemini-4-argon,
+ * claude-opus-5-5) are paths of their own, by explicit id: the installed @verdikta/common
+ * still has the old panels, and the new ones arrive with 1.9.0-attest.4.
  */
 import fs from 'fs';
 import http from 'http';
@@ -45,6 +49,8 @@ type Behaviour = 'now' | 'headers-late' | 'body-late' | 'hang';
 
 /** One provider path, as a code pool names it. */
 interface Path {
+  /** The case ids' prefix (the stub's markers): one per path. */
+  id: string;
   provider: 'openrouter' | 'openai' | 'anthropic' | 'xai';
   model: string;
   /** A text-mode model on the same provider class. */
@@ -52,11 +58,17 @@ interface Path {
 }
 
 const PATHS: Path[] = [
-  { provider: 'openrouter', model: 'deepseek/deepseek-v4-pro-0813', textModel: 'deepseek/deepseek-v4-pro-0813' },
-  { provider: 'openai', model: 'gpt-6-sol', textModel: 'gpt-5' },
-  { provider: 'anthropic', model: 'claude-sonnet-5-5', textModel: 'claude-sonnet-5' },
-  { provider: 'xai', model: 'grok-4.7', textModel: 'grok-4.7' },
+  { id: 'openrouter', provider: 'openrouter', model: 'deepseek/deepseek-v4-pro-0813', textModel: 'deepseek/deepseek-v4-pro-0813' },
+  { id: 'openai', provider: 'openai', model: 'gpt-6-sol', textModel: 'gpt-5' },
+  { id: 'anthropic', provider: 'anthropic', model: 'claude-sonnet-5-5', textModel: 'claude-sonnet-5' },
+  { id: 'xai', provider: 'xai', model: 'grok-4.7', textModel: 'grok-4.7' },
+  // The Q63 panels' jurors.
+  { id: 'openai-luna', provider: 'openai', model: 'gpt-6-luna', textModel: 'gpt-6-luna' },
+  { id: 'openrouter-gemini', provider: 'openrouter', model: 'google/gemini-4-argon', textModel: 'google/gemini-4-argon' },
+  { id: 'anthropic-opus', provider: 'anthropic', model: 'claude-opus-5-5', textModel: 'claude-opus-5' },
 ];
+/** A test title per path: provider and model. */
+const named = (path: Path) => `${path.provider} ${path.model}`;
 
 interface Seen {
   caseId: string | null;
@@ -230,7 +242,7 @@ const jury = (path: Path, behaviour: Behaviour, caseId: string, windowMs: number
 
 describe(`a reply slower than the default limit (${DEFAULT_LIMIT_MS} ms here, 300 s in production)`, () => {
   const LATE: Behaviour[] = ['headers-late', 'body-late'];
-  const cases = PATHS.flatMap(path => LATE.map(behaviour => ({ path, behaviour, caseId: `${path.provider}-${behaviour}` })));
+  const cases = PATHS.flatMap(path => LATE.map(behaviour => ({ path, behaviour, caseId: `${path.id}-${behaviour}` })));
   const outcomes = new Map<string, { kind: string; status: string; error?: string; elapsedMs: number }>();
   const controls = new Map<Behaviour, { error: any; elapsedMs: number }>();
 
@@ -318,7 +330,7 @@ describe('the juror\'s AbortController still ends the call at the jury deadline'
     quiet.forEach(spy => spy.mockImplementation(() => {}));
     try {
       await Promise.all(PATHS.map(async path => {
-        const caseId = `${path.provider}-hang`;
+        const caseId = `${path.id}-hang`;
         const deadline = Date.now() + HANG_WINDOW_MS;
         const outcome = await jury(path, 'hang', caseId, HANG_WINDOW_MS);
         outcomes.set(caseId, { kind: outcome.kind, status: outcome.results[0].status, endedAt: Date.now(), deadline });
@@ -331,8 +343,8 @@ describe('the juror\'s AbortController still ends the call at the jury deadline'
 
   afterAll(() => { scaling = true; });
 
-  test.each(PATHS.map(p => [p.provider] as const))('%s: a hung juror is a timeout at the deadline, and its request is closed there', (provider) => {
-    const caseId = `${provider}-hang`;
+  test.each(PATHS.map(p => [named(p), p] as const))('%s: a hung juror is a timeout at the deadline, and its request is closed there', (_name, path) => {
+    const caseId = `${path.id}-hang`;
     const outcome = outcomes.get(caseId)!;
     expect(outcome).toMatchObject({ kind: 'timeout', status: 'timeout' });
     expect(outcome.endedAt - outcome.deadline).toBeLessThan(SLACK_MS);
@@ -363,11 +375,11 @@ describe('the dispatcher of a juror\'s call', () => {
     expect(jurorTransport.withDispatcher(init, null)).toBe(init);
   });
 
-  test.each(PATHS.map(p => [p.provider, p] as const))('%s: on the full 480 s window each juror call names its own, with limits above the window', async (_provider, path) => {
+  test.each(PATHS.map(p => [named(p), p] as const))('%s: on the full 480 s window each juror call names its own, with limits above the window', async (_name, path) => {
     fetched = [];
     const times = planCodeReviewTimes(780000, Date.now())!;
     expect(times.jurorTimeoutMs).toBe(480000);
-    const caseId = `${path.provider}-window`;
+    const caseId = `${path.id}-window`;
 
     const outcome = await runCodeJury({
       jurors: [{ provider: path.provider, model: path.model, weight: 1 }],
@@ -407,9 +419,9 @@ describe('the dispatcher of a juror\'s call', () => {
 });
 
 describe('nothing a juror\'s call sets up outlives it', () => {
-  test.each(PATHS.map(p => [p.provider, p] as const))('%s: once the juror has answered, its connection is closed', async (_provider, path) => {
+  test.each(PATHS.map(p => [named(p), p] as const))('%s: once the juror has answered, its connection is closed', async (_name, path) => {
     seen = [];
-    const caseId = `${path.provider}-done`;
+    const caseId = `${path.id}-done`;
     const outcome = await jury(path, 'now', caseId, 5000);
     expect(outcome.kind).toBe('ok');
     const [request] = requestsOf(caseId);
@@ -425,8 +437,8 @@ describe('text mode and the justifier keep Node\'s default dispatcher', () => {
     fetched = [];
   });
 
-  test.each(PATHS.map(p => [p.provider, p] as const))('%s: a text-mode call names no dispatcher', async (_provider, path) => {
-    const caseId = `${path.provider}-text`;
+  test.each(PATHS.map(p => [named(p), p] as const))('%s: a text-mode call names no dispatcher', async (_name, path) => {
+    const caseId = `${path.id}-text`;
     const provider = await LLMFactory.getProvider(path.provider) as any;
     await provider.generateResponse(prompt('now', caseId), path.textModel);
     const calls = fetched.filter(f => f.caseId === caseId);
@@ -434,8 +446,8 @@ describe('text mode and the justifier keep Node\'s default dispatcher', () => {
     expect(calls[0].dispatcher).toBeUndefined();
   });
 
-  test.each(PATHS.map(p => [p.provider, p] as const))('%s: a justifier call (a signal, no deadline) names no dispatcher', async (_provider, path) => {
-    const caseId = `${path.provider}-justifier`;
+  test.each(PATHS.map(p => [named(p), p] as const))('%s: a justifier call (a signal, no deadline) names no dispatcher', async (_name, path) => {
+    const caseId = `${path.id}-justifier`;
     process.env.JUSTIFIER_MODEL = `${path.provider}:${path.model}`;
     try {
       const outcome = await runCodeJustifier(prompt('now', caseId), 30000);
@@ -449,8 +461,8 @@ describe('text mode and the justifier keep Node\'s default dispatcher', () => {
   });
 
   // Scaled time only: at the real limit this would be another five minutes per path.
-  (REAL ? test.skip : test).each([PATHS[0], PATHS[3]].map(p => [p.provider, p] as const))('%s: a slow text-mode reply still meets the default limit, as before', async (_provider, path) => {
-    const caseId = `${path.provider}-text-late`;
+  (REAL ? test.skip : test).each([PATHS[0], PATHS[3]].map(p => [named(p), p] as const))('%s: a slow text-mode reply still meets the default limit, as before', async (_name, path) => {
+    const caseId = `${path.id}-text-late`;
     const provider = await LLMFactory.getProvider(path.provider) as any;
     await expect(provider.generateResponse(prompt('headers-late', caseId), path.textModel)).rejects.toThrow(/fetch failed/);
     expect(fetched.filter(f => f.caseId === caseId).map(f => f.dispatcher)).toEqual([undefined]);
