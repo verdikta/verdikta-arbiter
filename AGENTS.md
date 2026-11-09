@@ -237,9 +237,9 @@ abstains on every claim**: the Q63 panels (owner, 2026-11-09; with `@verdikta/co
 `google/gemini-4-argon`, and the AI Node has no Google class. Luna and Opus take either
 route with the same effort, output limit and no sampling parameter
 (`q63-juror-routes.test.ts`; GPT-6 ids are GPT-5's family, `openai-model-family.ts`).
-The doctor's `ai.code_jurors` reads the installed common's panels and `ai-node/.env.local`
-and decides each route as `provider-config.ts` does (`code-review-check.js jurors`,
-held to it by `code-jurors-doctor.test.ts`), with no model call.
+The doctor's `ai.code_jurors` reads the installed common's panels and the AI Node's env
+files as Next does, and decides each route as `provider-config.ts` does
+(`code-review-check.js jurors`, held to both by `code-jurors-doctor.test.ts`), with no model call.
 
 ---
 

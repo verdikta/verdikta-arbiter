@@ -227,6 +227,82 @@ function gatewayRoute(provider, env) {
   return { providerClass, backend: 'native', reason: 'no keys configured; defaulting to native' };
 }
 
+/**
+ * dotenv 16's parse, as @next/env 14 bundles it: KEY=value, `export KEY=value` or `KEY: value`;
+ * an unquoted value ends at `#`, and quotes keep it. Only what this check needs to read the AI
+ * Node's own env files as Next does; readEnvFile stays for the files the shell writes.
+ */
+function dotenvParse(text) {
+  const line = /(?:^|^)\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?\s*(?:#.*)?(?:$|$)/gm;
+  const out = {};
+  const lines = String(text).replace(/\r\n?/gm, '\n');
+  let m;
+  while ((m = line.exec(lines)) != null) {
+    let value = (m[2] || '').trim();
+    const quote = value[0];
+    value = value.replace(/^(['"`])([\s\S]*)\1$/gm, '$2');
+    if (quote === '"') value = value.replace(/\\n/g, '\n').replace(/\\r/g, '\r');
+    out[m[1]] = value;
+  }
+  return out;
+}
+
+/** dotenv-expand's ${NAME}, $NAME and ${NAME:-default}, as @next/env 14 bundles it, last reference first. */
+function dotenvInterpolate(value, env, parsed) {
+  const dollars = Array.from(value.matchAll(/(?!(?<=\\))\$/g));
+  if (dollars.length === 0) return value;
+  const m = value.slice(dollars[dollars.length - 1].index).match(/((?!(?<=\\))\${?([\w]+)(?::-([^}\\]*))?}?)/);
+  if (!m) return value;
+  const [, ref, name, fallback] = m;
+  return dotenvInterpolate(value.replace(ref, env[name] || fallback || parsed[name] || ''), env, parsed);
+}
+
+/**
+ * The environment the AI Node reads from its own directory, as @next/env 14's loadEnvConfig
+ * reads it: `.env.<mode>.local`, `.env.local`, `.env.<mode>`, `.env`, the first file that sets a
+ * key winning, each file parsed and expanded as dotenv does, and a file that fails to load
+ * skipped whole. The mode is production (`next start`) unless ai-node/.run-mode says dev or
+ * dev-fallback (`next dev`). The process environment start.sh hands the AI Node, which would
+ * win over every file, is not this check's to see: installs keep provider keys in the files.
+ */
+function aiNodeEnv(aiNodeDir) {
+  let runMode = '';
+  try {
+    runMode = fs.readFileSync(path.join(aiNodeDir, '.run-mode'), 'utf8').trim();
+  } catch (_error) {
+    runMode = '';
+  }
+  const mode = runMode === 'dev' || runMode === 'dev-fallback' ? 'development' : 'production';
+  const env = {};
+  const seen = {}; // what the expansion of a later file sees: every key so far, the last file's value
+  const files = [];
+  for (const name of [`.env.${mode}.local`, '.env.local', `.env.${mode}`, '.env']) {
+    let contents;
+    try {
+      const file = path.join(aiNodeDir, name);
+      if (!fs.statSync(file).isFile()) continue;
+      contents = fs.readFileSync(file, 'utf8');
+    } catch (_error) {
+      continue;
+    }
+    files.push(name);
+    try {
+      const parsed = dotenvParse(contents);
+      for (const key of Object.keys(parsed)) {
+        const raw = Object.prototype.hasOwnProperty.call(seen, key) ? seen[key] : parsed[key];
+        parsed[key] = dotenvInterpolate(raw, seen, parsed).replace(/\\\$/g, '$');
+      }
+      for (const key of Object.keys(parsed)) {
+        seen[key] = parsed[key];
+        if (env[key] === undefined) env[key] = parsed[key];
+      }
+    } catch (_error) {
+      // Next logs "Failed to load env from <file>" and goes on without it (a reference to itself overflows).
+    }
+  }
+  return { env, files, mode };
+}
+
 /** One juror: its route, the key that route needs, and whether the AI Node has it. Key values are never read out. */
 function jurorRoute(juror, env) {
   const base = { provider: juror.provider, model: juror.model, panels: juror.panels };
@@ -256,14 +332,14 @@ function jurorRoute(juror, env) {
 
 /**
  * Every juror of the AI Node's own common's code-standard panels, read at run time (so the check
- * follows a release with other panels), each with its route over ai-node/.env.local, which the AI
- * Node reads at start. Nothing is sent: no model is called, no key is tried.
+ * follows a release with other panels), each with its route over the env files the AI Node reads
+ * at start (aiNodeEnv). Nothing is sent: no model is called, no key is tried.
  */
 function codeJurors(installDir) {
   const aiNode = path.join(installDir, 'ai-node');
   const commonDir = path.join(aiNode, 'node_modules', '@verdikta', 'common');
-  const envFile = path.join(aiNode, '.env.local');
-  const result = { common: null, envFile, envFileExists: fs.existsSync(envFile), panels: [], jurors: [], problem: null };
+  const loaded = aiNodeEnv(aiNode);
+  const result = { common: null, mode: loaded.mode, envFiles: loaded.files, panels: [], jurors: [], problem: null };
   let codeReview;
   try {
     codeReview = require(commonDir).codeReview;
@@ -287,8 +363,7 @@ function codeJurors(installDir) {
     result.problem = `@verdikta/common ${result.common || '(unknown)'} in the AI Node has no code-standard panels`;
     return result;
   }
-  const env = readEnvFile(envFile);
-  result.jurors = [...byJuror.values()].map((juror) => jurorRoute(juror, env));
+  result.jurors = [...byJuror.values()].map((juror) => jurorRoute(juror, loaded.env));
   return result;
 }
 
@@ -309,7 +384,7 @@ function doctorJurors(installDir) {
   const release = `@verdikta/common ${result.common || '(unknown)'}`;
   const missing = result.jurors.filter((j) => !j.served);
   if (missing.length) {
-    const env = result.envFileExists ? '' : ` (${path.join('ai-node', '.env.local')} is missing)`;
+    const env = result.envFiles.length ? '' : ` (ai-node has no env file: ai-node/.env.local is missing)`;
     finding('FAIL', id,
       `the AI Node cannot serve ${missing.length} of ${result.jurors.length} code-standard jurors (${release})${env}, so this node abstains on every claim: `
         + missing.map((j) => `${j.provider} ${j.model} ${j.problem}`).join('; '),

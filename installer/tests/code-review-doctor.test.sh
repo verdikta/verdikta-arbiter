@@ -295,6 +295,10 @@ has "no OpenRouter key: says what follows" "$line" "abstain"
 hasnt "no OpenRouter key: Luna is served" "$line" "gpt-6-luna needs"
 has "no OpenRouter key: says where keys go" "$out" "installer/.api_keys"
 keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY="; out=$(run); is_sev "an empty OpenRouter key" "$out" ai.code_jurors FAIL
+# The files are read as Next reads them (R1-F1): a comment is not a key, and .env counts too.
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY= # disabled"; out=$(run); is_sev "an empty key with a comment after it" "$out" ai.code_jurors FAIL
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK"; echo "OPENROUTER_API_KEY=$ORK" > "$I/ai-node/.env"; out=$(run); is_sev "the OpenRouter key in .env" "$out" ai.code_jurors PASS
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY="; out=$(run); is_sev ".env.local's empty key wins over .env" "$out" ai.code_jurors FAIL; rm -f "$I/ai-node/.env"
 keys; out=$(run); is_sev "no keys at all" "$out" ai.code_jurors FAIL
 line=$(msg "$out" ai.code_jurors)
 for j in google/gemini-4-argon gpt-6-luna claude-opus-5-5; do has "no keys: $j named" "$line" "$j"; done

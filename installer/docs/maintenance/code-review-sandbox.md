@@ -91,8 +91,8 @@ OpenRouter key as well.
 
 `arbiter-doctor.sh` checks this with no model call (`ai.code_jurors`, on a node with the sandbox, a code
 class or code review on). For each juror of the panels the installed common names, it looks for a native key
-or the OpenRouter route the AI Node's gateway would use. It reads `ai-node/.env.local` and the panels, and
-nothing else. It can see that a key is set, not what the account allows: an OpenRouter account whose provider
+or the OpenRouter route the AI Node's gateway would use. It reads the AI Node's env files as Next does
+(`.env.local`, and `.env` and the mode's own files when present) and the panels, and nothing else. It can see that a key is set, not what the account allows: an OpenRouter account whose provider
 or data-policy settings leave Google's models out, or which has no credit, still fails at the first claim.
 
 Put provider keys in `<install>/installer/.api_keys`. Every upgrade writes them from there into

@@ -1233,7 +1233,8 @@ check_ai_node() {
 # And on a code-class node, ai.code_jurors (node A14): whether the AI Node can serve every juror
 # of the code-standard panels its installed @verdikta/common names, with a native key or the
 # OpenRouter route its gateway would use (Gemini has no native class: OpenRouter only). It reads
-# ai-node/.env.local and the panels and nothing else: no model call, no key tried, no log read.
+# the AI Node's env files, as Next does, and the panels, and nothing else: no model call, no key
+# tried, no log read.
 check_code_review() {
     section_header "Code review sandbox and jurors"
     local helper="$INSTALL_DIR/code-review-check.js" out sev id msg hint
