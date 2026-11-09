@@ -108,7 +108,7 @@ Recording proxies sit between them, so a scenario asserts what really crossed.
 | | `dispute` | A dispute round: the dispute archive's panel is called, the statement reaches every juror, the machine lines reach none, the verdict names the statement |
 | | `registry-failure` | A listing on a digest the registry does not hold, in mode 1: the real pull fails, `pull_failed`, errored, no commitment, no AI call |
 | `claim-fault-switch` | `slow-justifier` | A second adapter, armed against a stand-in Base Sepolia RPC: a request for 5555 is held for real in the real AI Node, about 40 s. The request carries the job id as Chainlink 2.23.0's bridge sends it (`0x` and 32 hex digits), and the stand-in's keeper lists classes only under the key registration writes for it |
-| | `provider-timeout` | Its own claim, a request for 5555: the first AI call carries `late-juror` and a 105 s deadline, and the real AI Node answers the retryable 503 `CODE_REVIEW_JUROR_TIMEOUT` at its 60 s jury deadline; the second carries no directive and the time left, gets the whole 480 s, and gives the verdict from the one run. L4's provider-timeout checks hold. About a minute |
+| | `provider-timeout` | Its own claim, a request for 5555: the first AI call carries `late-juror` and a 105 s deadline, its first juror's call starts about 57 s after the rest of the panel, and the real AI Node answers the retryable 503 `CODE_REVIEW_JUROR_TIMEOUT` at its 60 s jury deadline; the second carries no directive and the time left, starts every juror at once, gets the whole 480 s, and gives the verdict from the one run. L4's provider-timeout checks hold. The mock jurors answer at once, so no call is pending at the deadline: the abort on the wire is the AI Node's route test (`rank-and-justify.canary-fault.test.ts`) |
 | | `class-128` | The same claim as `slow-justifier`, a request for 128: no directive, no hold, and the same justification and scores as the held run |
 | | `unnamed-claim` | A claim the plan does not name: no chain read, no directive |
 | | `refused-on-mainnet` | The same flag on a node configured for Base mainnet: `refused`, in `/health` and `/version`. Then the fault key must be in no service's log, at `LOG_LEVEL=debug`, and on no route |
@@ -117,7 +117,7 @@ Every verdict is also held to the L4 scenarios' own checks (`l4.claim.*`, `src/l
 
 **It fails, it never skips.** A harness that cannot start (no Docker, no `npm ci`, an AI Node that dies, a registry that will not come up, `/health` not ready) is a failed case for every scenario and mode, naming why, and exit 1. A case with no checks fails. A CID the local IPFS does not hold fails the scenario, so none can pass by reaching the public gateways.
 
-A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: about 6 minutes in all, of which the fault switch's real hold is 40 s, before `provider-timeout` added its first attempt's real 60 s.
+A full `l2` run leaves these out (they need Docker, it needs Pinata), and the nightly L4 never runs them. CI's `l2-claim` job runs them on every PR, forks included, with no secret. Measured there: about 6 minutes in all before `provider-timeout`, of which the fault switch's real hold is 40 s; `provider-timeout` adds about 72 s, its first attempt's real 60 s with the rest.
 
 #### On Apple silicon
 
