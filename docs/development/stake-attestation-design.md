@@ -2096,6 +2096,15 @@ The exit criterion is unchanged.
   the valid mass across arbiters (σ ≤ 5 points); report-hash agreement across
   hosts (100%); cost; p95 latency.
 
+> **Erratum, 2026-11-09.** "σ ≤ 5 points" is a rate, not a bound on every
+> round (owner decision, 2026-11-09: "Rate, 10% over 20"). σ, the sample
+> standard deviation of one jury round's valid mass over its reveals (at least
+> three), may be above 5 points in at most 10% of the jury rounds, rounded
+> down, over at least 20 rounds with a σ: 2 of 20, 4 of 40. Fewer than 20 such
+> rounds are too few samples, as for p95. Read per round, a single round above
+> 5 failed the run, so the longer a panel was tested, the likelier it failed.
+> L4's gate (`e2e/src/l4/metrics.js`, `e2e/README.md`, "Metrics") holds this.
+
 ## 19. Alternatives considered
 
 - **Judge first, then a fix window before publishing.** Tells the maker sooner
