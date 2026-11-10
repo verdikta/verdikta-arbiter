@@ -13,8 +13,9 @@ they win.
 **Errata (2026-11-10, Q70):** three settlement safeguards the owner agreed, E7–E9
 (the hunter's appeal of an INVALID outcome, a narrow INVALID that returns the
 bond, and the dispute panel's confirmation of an award above a set size), are in
-a second dated note in §13.2, with their fixtures in §18. The agreed rules win
-over the text; the mechanics the owner has not decided are marked **proposed**.
+a second dated note in §13.2, with their fixtures in §18. The owner decided
+their mechanics on 2026-11-10 (Q72); only whether an appeal carries a statement
+is still open. Where they conflict with the text, they win.
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, two ClassIDs with hard limits, image pins,
 trusted builder keys, the outcome set), verdikta-applications (a new
@@ -1585,10 +1586,13 @@ fixed-fee audit that costs the same whether the code is clean or not. A maker
 with five $1k findings has bought a $5k audit with a public receipt; a maker
 with none has paid a listing fee and a lock.
 
-Errata E7–E9 (2026-11-10, see §13.2) add to both. The hunter pays the dispute
-panel's prepay for an appeal of an INVALID outcome, as the maker does for a
-dispute, and gets the bond back on a narrow INVALID. A confirmation of an award
-above the set size is paid from the listing's escrow (proposed).
+Errata E7–E9 (2026-11-10, see §13.2) add to both. Whoever asks for a
+dispute-panel round bears its spent prepay whatever the result: the maker for a
+dispute, the hunter for an appeal of an INVALID outcome and its one re-trigger.
+Nothing refunds it from the escrow or the bond on a win; a win pays back only
+through the outcome. A narrow INVALID returns the hunter's bond. A confirmation
+of an award above the set size is no party's request and is paid from the
+listing's escrow (owner, Q72, 2026-11-10).
 
 **Arbiters.** Earn the registered class fee per claim as today. Nothing in the
 arbiter payment path changes.
@@ -1727,10 +1731,13 @@ Erratum E6 (2026-11-01, see §13.2) amends the last row of the table: the bond
 comes back only when the aggregator refused to start every attempt; a claim
 whose rounds ran but never settled a verdict forfeits it at expiry.
 
-Errata E7 and E9 (2026-11-10, see §13.2) add two failed rounds. An appeal round
-that settles no verdict leaves the INVALID standing, and the hunter's prepay is
-spent (proposed). A confirmation round that settles none may be started again
-until a deadline, and after it the first verdict stands (proposed).
+Errata E7 and E9 (2026-11-10, see §13.2) add two failed rounds (owner, Q72,
+2026-11-10). An appeal round that settles no verdict gets one re-trigger, as E6
+gives a claim round: the hunter may start it again with a fresh prepay within
+`revealWindow` of the failure. If the re-triggered round also settles none, or
+the hunter lets the window pass, the INVALID stands. A confirmation round that
+settles none may be started again until a deadline, after which the first
+verdict stands.
 
 **A claim can cause an abstention itself** (owner decisions Q12, Q28). A PoC or a
 patch past the memory, process or time limits, or one that kills forge through ffi,
@@ -1884,11 +1891,13 @@ waits out the appeal window before it settles.
 > **Errata, 2026-11-10 (Q70): settlement safeguards.** On 2026-11-10 the owner
 > agreed three safeguards against the one costly mistake a code-standard round
 > can make: a real finding settled the wrong way, or a large payout on a wrong
-> valid outcome. Each bullet below opens with the owner's rule. The owner has
-> not decided the mechanics under it, so each of those is marked **proposed**.
-> The contract nodes build them as written (P16 the appeal; P17 the narrow
-> INVALID and the confirmation) unless the owner decides otherwise. Where the
-> agreed rules conflict with §§7–14, they win.
+> valid outcome. Each bullet below opens with the owner's rule. The owner
+> decided the mechanics under them on 2026-11-10 (Q72) as this erratum first
+> proposed them, with two exceptions: a failed appeal round gets one re-trigger
+> (E7), and whether an appeal carries a statement stays open until the owner's
+> claim-field test. The contract nodes build them as written (P16 the appeal;
+> P17 the narrow INVALID and the confirmation). Where these rules conflict with
+> §§7–14, they win.
 >
 > They are read against `StakeAttestation` on verdikta-applications
 > `claude/stake-attestation` (`stake-attestation/onchain`, at `920dc5d`). The
@@ -1910,28 +1919,37 @@ waits out the appeal window before it settles.
 >
 > - **E7. The hunter may appeal an INVALID outcome** (owner, Q70 item 1): once,
 >   to the dispute panel, paying its prepay as the maker does for a dispute.
->   - *Who and when* (**proposed**). The claim's hunter, through a new
+>   - *Who and when* (owner, Q72, 2026-11-10). The claim's hunter, through a new
 >     `appeal(claimId)`, on a claim that its claim round left `Judged` with
 >     outcome INVALID and `dispute == None`. The appeal must come before
 >     `judgedAt + disputeWindow`, the listing's own dispute window, so there is
 >     no new listing term. Late claims (decision D6) may appeal too.
->   - *Prepay and who keeps it* (**proposed**). As for `dispute`: `msg.value` is
->     at least the live `maxTotalFee` for the listing's clamped
+>   - *Prepay and who keeps it* (owner, Q72, 2026-11-10). As for `dispute`: `msg.value`
+>     is at least the live `maxTotalFee` for the listing's clamped
 >     `disputeMaxOracleFee` (the lens's `disputeFee`). All of it goes through a
 >     fresh `EvaluationWallet` clone with the hunter as its funder in
->     `walletInfo`. The arbiters keep what the round earns them, and the rest
->     comes back to the hunter at `finalize`. The hunter bears the spent part
->     whatever the panel decides, as the maker does for a dispute; an overturn
->     repays the hunter through the outcome, not through a refund.
->   - *Request and states* (**proposed**). The request is the dispute's, without
->     the statement: `cids` = [`disputeCid`, the claim's bCID, the prior findings
->     its round carried], and the addendum is the E1 line alone. The panel reads
->     the claim as it was revealed, and the claim's `report.md` is the hunter's
->     argument. It is sent with exactly `SUBMISSION_GAS` and not caught, as
->     `dispute` is: a refused submission reverts the appeal, nothing is recorded,
->     and the hunter may try again inside the window. The claim goes `Judged` →
->     `Disputed` (`DisputeResult.Pending`). A new claim field names the kind of
+>     `walletInfo`. The arbiters keep what the round earns them, and the unspent
+>     part comes back to the hunter at `finalize`. The principle holds for both
+>     sides: **whoever asks for a dispute-panel round bears its spent prepay
+>     whatever the result**, the maker for a dispute and the hunter for an
+>     appeal and its re-trigger. Nothing refunds it from the escrow or the bond
+>     on a win; a win pays back only through the outcome.
+>   - *Request and states* (owner, Q72, 2026-11-10). The request is the dispute's:
+>     `cids` = [`disputeCid`, the claim's bCID, the prior findings its round
+>     carried], and the addendum the E1 line. It is sent with exactly
+>     `SUBMISSION_GAS` and not caught, as `dispute` is: a refused submission
+>     reverts the appeal, nothing is recorded, and the hunter may try again
+>     inside the window. The claim goes `Judged` → `Disputed`
+>     (`DisputeResult.Pending`). A new claim field names the kind of
 >     dispute-panel round: the maker's dispute, an appeal or a confirmation.
+>   - *Statement* (open: the owner decides after the claim-field test (Q72)).
+>     As written, an appeal carries no statement: the panel reads the claim as
+>     it was revealed, and the claim's `report.md` is the hunter's argument. A
+>     statement would add a second addendum line naming a pinned statement,
+>     fenced as the hunter's argument (a change to `@verdikta/common`, the EA
+>     and the AI Node, whose dispute line today is the maker's), and a
+>     `statementCid` argument to `appeal`. Nothing else in these errata depends
+>     on the choice.
 >   - *Upheld or overturned.* The second `finalize` is final, as for a dispute.
 >     **Held** (INVALID again): the bond goes to the maker, unless the panel's
 >     vector is a narrow INVALID (E8). **Overturned**: the panel's outcome
@@ -1939,27 +1957,46 @@ waits out the appeal window before it settles.
 >     `lowestClassCounted`, returns the bond. A counted class pays its award from
 >     the escrow and returns the bond, under `settle`'s escrow and owed rules,
 >     unchanged. It needs no confirmation (E9), since the dispute panel has just
->     judged it (**proposed**).
->   - *Settlement waits* (**proposed**). An INVALID from a claim round no longer
+>     judged it (owner, Q72, 2026-11-10).
+>   - *Settlement waits* (owner, Q72, 2026-11-10). An INVALID from a claim round no longer
 >     settles at once (the build plan's D5). `settle` refuses it until the appeal
 >     window ends, except when the hunter calls it, which waives the appeal. Until
 >     then the claim heads the commit-order queue, so later claims wait to reveal
 >     and `close` is refused, as for a valid outcome in its dispute window. The
 >     wait is what keeps commit order right: if the appeal makes the claim valid,
 >     the next claim's request must carry it as a prior finding (§8.7).
->   - *A failed or timed-out appeal round* (**proposed**). As for a maker's
->     dispute with no verdict: `DisputeResult.NoVerdict`, the INVALID stands
->     (narrow or not, by its own vector), `settle` may follow at once, and the
->     spent prepay is the hunter's. There is no re-trigger.
->   - *The maker's dispute* (**proposed**). The appeal and the maker's dispute
+>   - *A failed or timed-out appeal round* (owner, Q72, 2026-11-10). An appeal round
+>     that settles no verdict (timed out, or malformed: `NoVerdict`) gets **one
+>     re-trigger**, as a failed claim round does under E6, so an infrastructure
+>     failure does not cost the hunter the bond. It follows E6's mechanics. The
+>     hunter re-triggers it, through `retrigger` (which today serves only a
+>     `RoundFailed` claim round) or an entry point of its own, until `revealWindow`
+>     after the failure (`ClaimRules.retriggerDeadline`, with the failed appeal
+>     round's `disputeEndedAt` as `failedAt`). The failed round's prepay was
+>     spent, so the hunter pays a fresh one in full (the live `disputeFee`),
+>     through a fresh `EvaluationWallet` clone whose funder is the hunter. The
+>     claim goes back to `Disputed`. Until the hunter re-triggers or the window
+>     ends, `settle` refuses the claim except when the hunter calls it, which
+>     waives the re-trigger, and the claim keeps heading the commit-order queue:
+>     as under E6, for at most `revealWindow` after the failure plus one round.
+>     The one place it differs from a claim round's re-trigger: the request is
+>     sent as the appeal's is, not caught, so a refused submission reverts,
+>     nothing is recorded, no prepay is held, and the re-trigger stays
+>     available inside its window. If the re-triggered round also settles no
+>     verdict, the INVALID stands (narrow or not, by its own vector) and
+>     `settle` may follow at once. The spent prepay of each round is the
+>     hunter's, and the record counts the appeal by its final result.
+>   - *The maker's dispute* (owner, Q72, 2026-11-10). The appeal and the maker's dispute
 >     never meet on one verdict: the maker disputes only a valid outcome, and the
 >     hunter appeals only an INVALID one. After either, no other round follows.
 >     The maker may not dispute a valid outcome an appeal produced, and the hunter
 >     may not appeal an INVALID that a maker's dispute or a confirmation
 >     produced. Each claim gets at most one dispute-panel verdict, which
->     `dispute`'s `dispute == None` check already enforces for the maker.
->   - A DUPLICATE is not appealable (Q70 names INVALID) and settles at once, as
->     today.
+>     `dispute`'s `dispute == None` check already enforces for the maker. A
+>     failed appeal round gives no verdict, so its re-trigger can still give
+>     the one.
+>   - A DUPLICATE is not appealable (Q70 names INVALID; owner, Q72, 2026-11-10)
+>     and settles at once, as today.
 > - **E8. A narrow INVALID returns the bond** (owner, Q70 item 2), with no award,
 >   instead of forfeiting it. The band is set later, from calibration data; the
 >   proposal's "35 to 50 points of valid mass" was only an example.
@@ -1975,20 +2012,21 @@ waits out the appeal window before it settles.
 >   - *Bond and award.* `settle` pays the bond back to the hunter. Nothing is
 >     awarded or published, and the prepay is spent as on any round. The record
 >     counts the claim under INVALID and as narrow. A late claim's narrow
->     INVALID returns its bond too (**proposed**). A gate failure or a tamper
+>     INVALID returns its bond too (owner, Q72, 2026-11-10). A gate failure or a tamper
 >     flag arrives as all the mass on INVALID (§8.7), so its valid mass is 0 and
 >     it is never narrow: the band returns only bonds the jury nearly accepted.
 >   - *Where the floor is set, its default, and how a change reaches live
 >     listings and pending claims*: below, with E9's size.
->   - *With the appeal* (**proposed**). A narrow INVALID may still be appealed,
->     since the appeal can win the award. The band reads the vector `settle`
->     applies, whichever round produced it. An appeal held with a narrow vector
->     returns the bond. One held with less valid mass than the floor forfeits it,
->     even after a narrow first round. An appeal with no verdict leaves the first
+>   - *With the appeal* (owner, Q72, 2026-11-10). A narrow INVALID may still be
+>     appealed, since the appeal can win the award. The band reads the vector
+>     `settle` applies, whichever round produced it. An appeal held with a
+>     narrow vector returns the bond. One held with less valid mass than the
+>     floor forfeits it, even after a narrow first round. An appeal that ends
+>     with no verdict, after its re-trigger or without one, leaves the first
 >     vector, narrow or not. The same rule applies when a maker's dispute or a
 >     confirmation turns a valid outcome into an INVALID inside the band: the
->     bond comes back, so the paragraph under the table no longer holds there
->     ("which covers the escalation prepay").
+>     bond comes back to the hunter, and a disputing maker still bears the
+>     dispute's spent prepay (E7's principle).
 >   - common's `settleBugOutcome` reports `bond: 'forfeited'` for every INVALID,
 >     and the `stake.bondWei` row of its specification says so. Both need the
 >     floor before the site or the hunter tool can show a narrow INVALID's bond
@@ -1998,20 +2036,21 @@ waits out the appeal window before it settles.
 >   owner chose this over "all three reveals valid" because the contract reads
 >   only the aggregated vector, the mean of the pair the aggregator keeps
 >   (`getEvaluation`, E4). This safeguard therefore needs no aggregator change.
->   - *Trigger* (**proposed**). A claim round's verdict whose class has an award
+>   - *Trigger* (owner, Q72, 2026-11-10). A claim round's verdict whose class has an award
 >     in the table, `ClaimRules.awardFor(awards, lowestClassCounted, outcome)`,
 >     above the listing's `confirmAboveWei` (a new listing field). The trigger is
 >     the table's award, not what the escrow can pay now, because a shortfall is
 >     owed in full later. A late claim (no award) and a class below
 >     `lowestClassCounted` never trigger it.
->   - *When the round starts* (**proposed**). When the dispute window ends with
+>   - *When the round starts* (owner, Q72, 2026-11-10). When the dispute window ends with
 >     no dispute, through a new permissionless `confirm(claimId)`. The site's
 >     keeper calls it then, as it calls `finalize`, and anyone else may. A
 >     maker's dispute filed inside the window is the confirmation: the same
 >     panel, with the maker's statement and the maker's prepay, as today. No
 >     automatic round follows it.
->   - *Who pays* (**proposed**). The listing's escrow, because the maker is the
->     party the round protects and an escrow-funded round needs nobody to act.
+>   - *Who pays* (owner, Q72, 2026-11-10). The listing's escrow. A confirmation is no
+>     party's request, so E7's principle does not apply: the maker is the party
+>     it protects, and an escrow-funded round needs nobody to act.
 >     `confirm` takes the live dispute fee (the lens's `disputeFee`) out of
 >     `escrowWei` into a fresh `EvaluationWallet` clone. The unspent part comes
 >     back at `finalize`, or later through `recoverLeftoverEth` when the inline
@@ -2022,16 +2061,16 @@ waits out the appeal window before it settles.
 >     (`withdrawable`), since no escrow is left to hold it. This keeps the
 >     invariant below that the escrow is empty while anything is owed, even when
 >     the recovery comes after `settle` has left part of an award owed.
->   - *Request and states* (**proposed**). As E7's request, from the claim's
->     round; the claim goes `Judged` → `Disputed`, of the confirmation kind. It
+>   - *Request and states* (owner, Q72, 2026-11-10). As E7's request, with no statement,
+>     from the claim's round; the claim goes `Judged` → `Disputed`, of the confirmation kind. It
 >     is sent with exactly `SUBMISSION_GAS` and not caught: a refusal reverts
 >     `confirm`, nothing changes, and `confirm` may be called again.
->   - *Overturn* (**proposed**). The second `finalize` is final, as a dispute's.
+>   - *Overturn* (owner, Q72, 2026-11-10). The second `finalize` is final, as a dispute's.
 >     **Held** pays the award. **Overturned** settles by the panel's outcome: a
 >     lower class pays its own award with no further confirmation, a DUPLICATE
 >     returns the bond, and an INVALID forfeits it unless it is narrow (E8). The
 >     hunter may not appeal it (E7).
->   - *Failure and timeout* (**proposed**). Three cases leave the claim `Judged`
+>   - *Failure and timeout* (owner, Q72, 2026-11-10). Three cases leave the claim `Judged`
 >     with no dispute-panel verdict: a confirmation round with no verdict (timed
 >     out, or malformed: `NoVerdict`), a maker's dispute of such a claim with no
 >     verdict, and a `confirm` that cannot start. In every case `confirm` is
@@ -2048,7 +2087,7 @@ waits out the appeal window before it settles.
 >     queue for at most the reveal window after its dispute window, plus the last
 >     round started before the deadline. No maker can escape an award with a
 >     dispute fee or a dispute panel the arbiters cannot serve.
->   - *Depletion and payout order* (**proposed**). The prepay leaves the escrow
+>   - *Depletion and payout order* (owner, Q72, 2026-11-10). The prepay leaves the escrow
 >     before the award is paid. If it leaves an Open listing's escrow below
 >     `awards[CRITICAL]`, the listing becomes `Depleted`, as after a payout, and
 >     takes no new commits. If `escrowWei` is below the prepay, `confirm` reverts.
@@ -2060,11 +2099,11 @@ waits out the appeal window before it settles.
 >     `fund`. Owed awards are still paid in commit order before anything reaches
 >     the escrow: while anything is owed the escrow is empty, so a
 >     confirmation's prepay never comes ahead of an award already owed.
->   - *With the maker's dispute* (**proposed**). Inside the dispute window the
+>   - *With the maker's dispute* (owner, Q72, 2026-11-10). Inside the dispute window the
 >     maker's dispute is the confirmation; after the window the maker cannot
 >     dispute (as today).
 >
-> **Where the floor and the size are set** (**proposed**, both). They are two
+> **Where the floor and the size are set** (owner, Q72, 2026-11-10). They are two
 > program values that the contract owner sets, each bounded by constants: the
 > floor from 250,000 to `THRESHOLD`, the size any amount in wei. `list` copies
 > both onto the listing. A change reaches only listings made after it: a live
@@ -2078,17 +2117,21 @@ waits out the appeal window before it settles.
 > forfeits, as today) and the size is 0 (every counted award is confirmed). The
 > band returns bonds, so it stays off until calibration data sets it. The
 > confirmation protects makers at the cost of one round, so it protects while
-> unset. The size is in wei, as the award table is: the contract has no price
-> feed, so a dollar figure is the site's to convert when the owner sets it.
+> unset. Testnet runs with the size at 0 and the band empty, and **the owner sets
+> the size before mainnet**. The size is in wei, as the award table is: the
+> contract has no price feed, so a dollar figure is the site's to convert when
+> the owner sets it.
 >
 > **How the three fit together.** Each claim gets at most one dispute-panel
 > verdict, whichever side asked for it, and that verdict is final. A round with
-> no verdict leaves the first verdict standing, except that a claim awaiting
-> confirmation may start it again until its deadline.
+> no verdict leaves the first verdict standing, except that a failed appeal
+> round may be re-triggered once and a claim awaiting confirmation may start it
+> again until its deadline. Whoever asks for a dispute-panel round bears its
+> spent prepay; the confirmation is paid from the escrow.
 >
 > | Claim round's verdict | Dispute-panel round | `settle` |
 > |---|---|---|
-> | INVALID | the hunter's appeal (E7), inside the dispute window | after the window (at once when the hunter calls it), or once the appeal's round ended; bond back when narrow (E8) |
+> | INVALID | the hunter's appeal (E7), inside the dispute window, and one re-trigger if its round settles no verdict | after the window, or once the appeal gave a verdict, or once its re-trigger ended or the re-trigger window passed; at once when the hunter calls it; bond back when narrow (E8) |
 > | DUPLICATE | none | at once, bond back |
 > | Valid, award at or below the size | the maker's dispute, inside the window | after the window, or once the dispute's round ended |
 > | Valid, award above the size | the maker's dispute inside the window, else the confirmation after it (E9) | once a dispute-panel verdict is in (the maker's dispute or the confirmation), or from the confirmation deadline once no round is open and none returned a verdict |
@@ -2098,15 +2141,16 @@ waits out the appeal window before it settles.
 >
 > | Function or view | Change |
 > |---|---|
-> | `appeal(claimId)` (new, payable) | E7: the hunter, on a `Judged` INVALID with `dispute == None`, before `judgedAt + disputeWindow`; `Judged` → `Disputed`, appeal kind; a hunter-funded wallet |
+> | `appeal(claimId)` (new, payable) | E7: the hunter, on a `Judged` INVALID with `dispute == None`, before `judgedAt + disputeWindow`; `Judged` → `Disputed`, appeal kind; a hunter-funded wallet. A `statementCid` argument only if the owner gives the appeal a statement (open) |
 > | `dispute(claimId, statementCid)` | Maker kind, guards unchanged; on a claim above the size, its round is the confirmation |
 > | `confirm(claimId)` (new) | E9: anyone, on a `Judged` claim above the size with no dispute-panel verdict (undisputed, or its maker's dispute or confirmation ended `NoVerdict`), from `judgedAt + disputeWindow` until the confirmation deadline; prepay out of `escrowWei`; `Open` → `Depleted` below the top award; `Judged` → `Disputed`, confirmation kind |
 > | `finalize(claimId)` | The dispute branch serves all three kinds and counts each apart. The leftover goes to the hunter (appeal) or the maker (dispute); a confirmation's is applied as a top-up, owed awards first and then `escrowWei`, or to the maker's pull balance once the listing is Closed |
-> | `settle(claimId)` | E7's wait on a claim-round INVALID, which the hunter may waive; E8's bond back on a narrow INVALID; E9's refusal of a claim awaiting confirmation until a dispute-panel verdict, or until the deadline has passed with no round open |
+> | `retrigger(claimId)` | Also re-triggers, once, an appeal whose round ended `NoVerdict`, until `revealWindow` after that failure, for a fresh prepay from the hunter; sent as the appeal is, not caught; `Judged` → `Disputed`. An entry point of its own is the alternative, the implementation's choice |
+> | `settle(claimId)` | E7's wait on a claim-round INVALID, and on one whose appeal ended with no verdict until its re-trigger window passes, each of which the hunter may waive; E8's bond back on a narrow INVALID; E9's refusal of a claim awaiting confirmation until a dispute-panel verdict, or until the deadline has passed with no round open |
 > | `recoverLeftoverEth(wallet)` | A confirmation wallet's leftover is applied as in `finalize` |
 > | `list(...)`, two new owner setters | `list` copies the floor and the size onto the listing; the setters change them for later listings, within the bounds |
-> | `commit`, `reveal`, `retrigger`, `expire`, `fund`, `close` | Unchanged. `close` stays refused while a claim waits out an appeal window or a confirmation, since that claim is pending |
-> | Lens: `settleableAt`, `disputeDeadline`, `judgeVector` | Report the appeal window, a pending confirmation and its deadline, and whether a vector is a narrow INVALID. The appeal and the confirmation cost `disputeFee` |
+> | `commit`, `reveal`, `expire`, `fund`, `close` | Unchanged. `close` stays refused while a claim waits out an appeal window or a confirmation, since that claim is pending |
+> | Lens: `settleableAt`, `disputeDeadline`, `retriggerDeadline`, `judgeVector` | Report the appeal window, an appeal's re-trigger deadline, a pending confirmation and its deadline, and whether a vector is a narrow INVALID. The appeal and the confirmation cost `disputeFee` |
 > | Record (`RecordLogic`, `History`, `Finding`) | Maker disputes, appeals and confirmations counted apart, by result; narrow INVALIDs counted apart within INVALID; a finding carries its round's kind |
 >
 > `ClaimState` and `DisputeResult` keep their values. The new fields are appended
@@ -2137,16 +2181,20 @@ Settlement under §8.7, in funds: valid at or above the counted class →
 DUPLICATE → bond back, no award; INVALID → bond to the maker. The unused part of
 the prepay comes back to the hunter through the aggregator's `ethOwed` credit,
 as `BountyEscrow` does today. A disputed verdict that flips to INVALID
-forfeits the bond to the maker, which covers the escalation prepay; one that
-holds costs the maker the prepay and is recorded as a failed dispute.
+forfeits the bond to the maker, as any INVALID does (a narrow one returns it,
+E8); one that holds is recorded as a failed dispute. Either way the maker bears
+the dispute's spent prepay: whoever asks for a dispute-panel round bears it
+whatever the result, and a win pays back only through the outcome (owner, Q72,
+2026-11-10; E7).
 
 ### 13.3 Request composition
 
 Errata E1 and E2 (2026-11-01, see §13.2) amend this section: the disclosure
 line also carries the two commitments and the ciphertext CID, at most 8 prior
 findings travel with a claim, and a dispute statement travels by CID in a
-second machine line. Errata E7 and E9 (2026-11-10, see §13.2): an appeal's and a
-confirmation's request is the dispute's without the dispute line.
+second machine line. Errata E7 and E9 (2026-11-10, see §13.2): a confirmation's
+request is the dispute's without the dispute line, and so is an appeal's unless
+the owner gives the appeal a statement (open, Q72).
 
 The contract composes the evaluation request from state it vouches for, so no
 off-chain party has to be trusted for what the jury sees:
@@ -2446,19 +2494,32 @@ The exit criterion is unchanged.
 > L4's gate (`e2e/src/l4/metrics.js`, `e2e/README.md`, "Metrics") holds this.
 
 > **Erratum, 2026-11-10 (Q70): contract fixtures for the settlement safeguards.**
-> Each must settle as written, under errata E7–E9 (§13.2), with the proposed
-> mechanics until the owner decides otherwise. They join the contract and
+> Each must settle as written, under errata E7–E9 (§13.2), with the mechanics
+> the owner decided (Q72, 2026-11-10). They join the contract and
 > settlement fixtures above, which keep their results except where noted.
 >
 > - **The hunter's appeal (E7).**
 >   - An INVALID appealed and held: bond to the maker, the appeal's prepay spent
->     and its leftover back to the hunter.
+>     and its leftover back to the hunter. Overturned to a counted class: the
+>     spent prepay is not refunded from the escrow or the bond.
 >   - Overturned to a counted class: award from the escrow and bond back, with no
 >     confirmation, even above the size. Overturned to DUPLICATE: bond back, no
 >     award. Overturned to a class below `lowestClassCounted`: bond back, no
 >     award, published.
->   - An appeal round that times out, and one with a malformed vector: the
->     INVALID stands and settles at once, the prepay spent.
+>   - An appeal round that times out, re-triggered by the hunter with a fresh
+>     prepay, whose round then gives a verdict: that verdict settles (held: bond
+>     to the maker; overturned: by the panel's outcome). Both rounds' spent
+>     prepay is the hunter's.
+>   - An appeal round with a malformed vector, re-triggered, whose round also
+>     settles no verdict: the INVALID stands and settles at once; a second
+>     re-trigger is refused.
+>   - An appeal with no verdict that the hunter does not re-trigger: `settle`
+>     refused until `revealWindow` after the failure, except from the hunter
+>     (the waiver); then the INVALID stands. The next claim's reveal waits
+>     meanwhile.
+>   - A re-trigger after its window, by anyone but the hunter, or with a prepay
+>     below `disputeFee`: refused. A re-trigger the aggregator refuses: reverts,
+>     nothing recorded, the re-trigger still available.
 >   - A submission the aggregator refuses: `appeal` reverts, nothing recorded,
 >     and a second attempt inside the window goes through.
 >   - Refused: an appeal after `judgedAt + disputeWindow`; one by anyone but the
@@ -2488,10 +2549,11 @@ The exit criterion is unchanged.
 >     claims keep the old floor, and a listing made after the change takes the
 >     new one. A setter call outside the bounds reverts.
 >   - A narrow first round appealed and held with a vector below the floor: bond
->     to the maker. Held with a narrow vector: bond back. An appeal with no
->     verdict after a narrow first round: bond back.
+>     to the maker. Held with a narrow vector: bond back. An appeal whose round
+>     and re-trigger both settle no verdict, after a narrow first round: bond
+>     back.
 >   - A maker's dispute that turns a valid outcome into a narrow INVALID: bond
->     back, the dispute's prepay spent.
+>     back to the hunter, the maker's spent prepay not refunded.
 >   - The record counts a narrow INVALID under INVALID and as narrow.
 > - **The confirmation (E9).**
 >   - An award above the size, undisputed: `settle` refused after the dispute
@@ -2626,8 +2688,7 @@ Each item records the options weighed, the decision, and what it changed in the
 document. Decisions 1–8 were taken on 2026-10-19/20 and 2026-10-30 under the
 earlier structure; 9–16 were proposed by the 2026-10-30 restructure and
 **confirmed as written by the owner on 2026-10-31**; 17–18 are the owner's MVP
-decisions of 2026-10-30; 19 is the owner's of 2026-11-10, with its mechanics
-still proposed.
+decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72).
 
 1. **`responseTimeoutSeconds` 300 → 900 s on both aggregators — decided: raise
    globally.** The timeout is global per aggregator, so a stuck text round also
@@ -2763,16 +2824,20 @@ still proposed.
     `stake-attestation/`), so the contracts share tooling and the deploy
     conventions of that repository; a repository of its own is the alternative
     if the application grows a team of its own.
-19. **Settlement safeguards (2026-11-10, owner, Q70) — decided in principle;
-    mechanics proposed.** Better claims lower the jury's error rate but cannot
+19. **Settlement safeguards (2026-11-10, owner, Q70 and Q72) — decided; one
+    detail open.** Better claims lower the jury's error rate but cannot
     bring it to zero, so the two costliest settlements get a second look. A
     hunter may appeal an INVALID outcome once, to the dispute panel, paying its
     prepay. An INVALID inside a narrow band below the threshold returns the bond.
     An award above a set size pays only after the dispute panel confirms it.
     Rejected for large awards: requiring all three reveals to be valid, which
     would need the aggregator to report every reveal, not just the pair it keeps.
-    The band and the size are set later, from calibration data. Everything the
-    owner has not decided is marked proposed in §13.2 (E7–E9).
+    The band and the size are set later, from calibration data; testnet runs
+    with the band empty and every counted award confirmed, and the owner sets
+    the size before mainnet. The mechanics (Q72) are in §13.2 (E7–E9), among
+    them one re-trigger for a failed appeal round and the rule that whoever
+    asks for a dispute-panel round bears its spent prepay. Open: whether an
+    appeal carries a statement, decided after the owner's claim-field test.
 
 **Remaining risks** (no decision pending, tracked through the exit criteria):
 
