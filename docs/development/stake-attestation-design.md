@@ -2013,9 +2013,15 @@ waits out the appeal window before it settles.
 >   - *Who pays* (**proposed**). The listing's escrow, because the maker is the
 >     party the round protects and an escrow-funded round needs nobody to act.
 >     `confirm` takes the live dispute fee (the lens's `disputeFee`) out of
->     `escrowWei` into a fresh `EvaluationWallet` clone. The unspent part goes
->     back into `escrowWei` at `finalize` (or through `recoverLeftoverEth`) and is
->     never paid to an address.
+>     `escrowWei` into a fresh `EvaluationWallet` clone. The unspent part comes
+>     back at `finalize`, or later through `recoverLeftoverEth` when the inline
+>     recovery was deferred. It is applied as `fund` applies a top-up: first to
+>     the listing's owed awards in commit order (`ClaimLogic.payOwed`), then to
+>     `escrowWei`, reopening a `Depleted` listing as `fund` does. A leftover that
+>     arrives once the listing is Closed is credited to the maker's pull balance
+>     (`withdrawable`), since no escrow is left to hold it. This keeps the
+>     invariant below that the escrow is empty while anything is owed, even when
+>     the recovery comes after `settle` has left part of an award owed.
 >   - *Request and states* (**proposed**). As E7's request, from the claim's
 >     round; the claim goes `Judged` → `Disputed`, of the confirmation kind. It
 >     is sent with exactly `SUBMISSION_GAS` and not caught: a refusal reverts
@@ -2025,17 +2031,23 @@ waits out the appeal window before it settles.
 >     lower class pays its own award with no further confirmation, a DUPLICATE
 >     returns the bond, and an INVALID forfeits it unless it is narrow (E8). The
 >     hunter may not appeal it (E7).
->   - *Failure and timeout* (**proposed**). Three cases leave the claim waiting:
->     a confirmation round with no verdict (timed out, or malformed:
->     `NoVerdict`), a maker's dispute of such a claim with no verdict, and a
->     `confirm` that cannot start. While it waits, anyone may call `confirm`
->     again, with a fresh prepay from the escrow each time, until the
->     confirmation deadline, `judgedAt + disputeWindow + revealWindow`. From the
->     deadline on, with no confirmation verdict, the first verdict stands:
->     `settle` pays it, and the record counts a confirmation with no verdict.
->     The claim therefore holds the queue for at most the reveal window plus one
->     round after its dispute window. No maker can escape an award with a dispute
->     fee or a dispute panel the arbiters cannot serve.
+>   - *Failure and timeout* (**proposed**). Three cases leave the claim `Judged`
+>     with no dispute-panel verdict: a confirmation round with no verdict (timed
+>     out, or malformed: `NoVerdict`), a maker's dispute of such a claim with no
+>     verdict, and a `confirm` that cannot start. In every case `confirm` is
+>     open from the end of the dispute window, `judgedAt + disputeWindow`, until
+>     the confirmation deadline, `judgedAt + disputeWindow + revealWindow`. A
+>     maker's dispute that ends with no verdict earlier waits for the window's
+>     end, like an undisputed claim. While `confirm` is open, anyone may call it
+>     again, with a fresh prepay from the escrow each time. The deadline only
+>     stops new rounds. A round started before it runs to its `finalize`, whose
+>     verdict counts like any other, and `settle` refuses the claim while it is
+>     `Disputed`, as today. From the deadline on, once no round is open and none
+>     returned a verdict, the first verdict stands: `settle` pays it, and the
+>     record counts a confirmation with no verdict. The claim therefore holds the
+>     queue for at most the reveal window after its dispute window, plus the last
+>     round started before the deadline. No maker can escape an award with a
+>     dispute fee or a dispute panel the arbiters cannot serve.
 >   - *Depletion and payout order* (**proposed**). The prepay leaves the escrow
 >     before the award is paid. If it leaves an Open listing's escrow below
 >     `awards[CRITICAL]`, the listing becomes `Depleted`, as after a payout, and
@@ -2079,7 +2091,7 @@ waits out the appeal window before it settles.
 > | INVALID | the hunter's appeal (E7), inside the dispute window | after the window (at once when the hunter calls it), or once the appeal's round ended; bond back when narrow (E8) |
 > | DUPLICATE | none | at once, bond back |
 > | Valid, award at or below the size | the maker's dispute, inside the window | after the window, or once the dispute's round ended |
-> | Valid, award above the size | the maker's dispute inside the window, else the confirmation after it (E9) | once a dispute-panel verdict is in (the maker's dispute or the confirmation), or from the confirmation deadline without one |
+> | Valid, award above the size | the maker's dispute inside the window, else the confirmation after it (E9) | once a dispute-panel verdict is in (the maker's dispute or the confirmation), or from the confirmation deadline once no round is open and none returned a verdict |
 >
 > **What changes in the contract** (the parts not marked above are the
 > implementation's to name):
@@ -2088,10 +2100,10 @@ waits out the appeal window before it settles.
 > |---|---|
 > | `appeal(claimId)` (new, payable) | E7: the hunter, on a `Judged` INVALID with `dispute == None`, before `judgedAt + disputeWindow`; `Judged` → `Disputed`, appeal kind; a hunter-funded wallet |
 > | `dispute(claimId, statementCid)` | Maker kind, guards unchanged; on a claim above the size, its round is the confirmation |
-> | `confirm(claimId)` (new) | E9: anyone, on a `Judged` claim above the size, once its dispute window ended undisputed or its confirmation or maker's dispute ended `NoVerdict`, before the confirmation deadline; prepay out of `escrowWei`; `Open` → `Depleted` below the top award; `Judged` → `Disputed`, confirmation kind |
-> | `finalize(claimId)` | The dispute branch serves all three kinds and counts each apart; the leftover goes to the hunter (appeal), the maker (dispute) or `escrowWei` (confirmation) |
-> | `settle(claimId)` | E7's wait on a claim-round INVALID, which the hunter may waive; E8's bond back on a narrow INVALID; E9's refusal of a claim awaiting confirmation before its deadline |
-> | `recoverLeftoverEth(wallet)` | A confirmation wallet's leftover goes to `escrowWei` |
+> | `confirm(claimId)` (new) | E9: anyone, on a `Judged` claim above the size with no dispute-panel verdict (undisputed, or its maker's dispute or confirmation ended `NoVerdict`), from `judgedAt + disputeWindow` until the confirmation deadline; prepay out of `escrowWei`; `Open` → `Depleted` below the top award; `Judged` → `Disputed`, confirmation kind |
+> | `finalize(claimId)` | The dispute branch serves all three kinds and counts each apart. The leftover goes to the hunter (appeal) or the maker (dispute); a confirmation's is applied as a top-up, owed awards first and then `escrowWei`, or to the maker's pull balance once the listing is Closed |
+> | `settle(claimId)` | E7's wait on a claim-round INVALID, which the hunter may waive; E8's bond back on a narrow INVALID; E9's refusal of a claim awaiting confirmation until a dispute-panel verdict, or until the deadline has passed with no round open |
+> | `recoverLeftoverEth(wallet)` | A confirmation wallet's leftover is applied as in `finalize` |
 > | `list(...)`, two new owner setters | `list` copies the floor and the size onto the listing; the setters change them for later listings, within the bounds |
 > | `commit`, `reveal`, `retrigger`, `expire`, `fund`, `close` | Unchanged. `close` stays refused while a claim waits out an appeal window or a confirmation, since that claim is pending |
 > | Lens: `settleableAt`, `disputeDeadline`, `judgeVector` | Report the appeal window, a pending confirmation and its deadline, and whether a vector is a narrow INVALID. The appeal and the confirmation cost `disputeFee` |
@@ -2492,13 +2504,21 @@ The exit criterion is unchanged.
 >     confirmation. Overturned to DUPLICATE: bond back. Overturned to INVALID:
 >     bond to the maker, or back when narrow; the hunter's appeal refused.
 >   - A maker's dispute inside the window on a claim above the size: no
->     automatic round. Held: the award is paid. With no verdict: `confirm`
->     becomes available.
+>     automatic round. Held: the award is paid. With no verdict minutes into
+>     the window: `confirm` refused until the window ends, then available.
 >   - `confirm` before the dispute window ends, or after the confirmation
 >     deadline: refused. Anyone may call it inside those times.
 >   - A confirmation round that times out: `confirm` again before the deadline
->     starts a fresh round. No verdict by the deadline: the first verdict
->     settles and pays, recorded as a confirmation with no verdict.
+>     starts a fresh round. No verdict by the deadline and no round open: the
+>     first verdict settles and pays, recorded as a confirmation with no verdict.
+>   - A confirmation started just before the deadline and judged after it:
+>     `settle` refused while it is open, then applies its verdict (an
+>     overturn to INVALID forfeits the bond).
+>   - A confirmation whose inline refund was deferred, recovered by
+>     `recoverLeftoverEth` after `settle` left part of the award owed: the
+>     leftover pays that owed award first and only the rest reaches
+>     `escrowWei`. Recovered after the listing closed: credited to the maker's
+>     pull balance.
 >   - A confirmation submission the aggregator refuses: `confirm` reverts and
 >     nothing changes.
 >   - `escrowWei` below the prepay: `confirm` refused. A top-up by `fund` then
