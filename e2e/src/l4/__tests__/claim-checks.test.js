@@ -3,7 +3,8 @@
 // Nodes A6b, A6c: what an L4 claim scenario asserts, against what it must refuse. The same
 // functions run on the real pipeline's justifications in the L2 claim suite.
 
-const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS } = require('../claim-checks');
+const { codeReview } = require('@verdikta/common');
+const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, settleVector, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS } = require('../claim-checks');
 // The adapter's fault plan, in this repository: constants only, it requires nothing.
 const { FAULTS: EA_FAULTS } = require('../../../../external-adapter/src/canaryFault/constants');
 
@@ -402,5 +403,32 @@ describe('what a round\'s uploads say happened, for its measurements', () => {
     expect(observedRound([up('code-review-jury')]).faultSeen).toBe(false);
     expect(observedRound([up('code-review-jury', { canary_fault: { fault: 'near-limit-juror', refused: 'REQUEST_CLASS 128' } })]).faultSeen).toBe(false);
     expect(observedRound([up('code-review-jury'), up('code-review-jury', { canary_fault: { fault: 'near-limit-juror', attempts: 1 } })]).faultSeen).toBe(true);
+  });
+});
+
+describe('settleVector: a round\'s settled outcome is common\'s settlement of getEvaluation\'s vector (A16)', () => {
+  afterEach(() => { jest.restoreAllMocks(); });
+
+  it('calls common\'s settleBugOutcome, not a copy of its rule, and keeps the outcome and whether it is valid', () => {
+    const spy = jest.spyOn(codeReview, 'settleBugOutcome');
+    expect(settleVector(JURY_VECTOR)).toEqual({ outcome: 'HIGH', valid: true });
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(spy.mock.calls[0][0]).toEqual(JURY_VECTOR);
+    spy.mockReturnValueOnce({ outcome: 'LOW', valid: true, class: 'LOW' });
+    expect(settleVector(JURY_VECTOR)).toEqual({ outcome: 'LOW', valid: true });
+  });
+
+  it('INVALID and DUPLICATE settle as not valid, as the contract would', () => {
+    expect(settleVector(INVALID_VECTOR)).toEqual({ outcome: 'INVALID', valid: false });
+    expect(settleVector([0, 1000000, 0, 0, 0, 0])).toEqual({ outcome: 'DUPLICATE', valid: false });
+    expect(settleVector([0, 0, 100000, 700000, 200000, 0])).toEqual({ outcome: 'MEDIUM', valid: true });
+  });
+
+  it('a vector settlement refuses is no outcome: it says why, and never that it was not valid', () => {
+    for (const vector of [[1, 2, 3, 4, 5, 6], [500000, 500000], null, [0, 0, 0, 0, 0, 1000001]]) {
+      const settled = settleVector(vector);
+      expect(Object.keys(settled)).toEqual(['error']);
+      expect(settled.error).toMatch(/vector|mass/);
+    }
   });
 });
