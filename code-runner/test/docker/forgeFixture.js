@@ -159,13 +159,20 @@ const VM_SOL = [
   ''
 ].join('\n');
 
-/** The listed repository: a vault with a bug (deposit credits one wei too many) and its passing suite. */
+/**
+ * What deposit is documented to do, on deposit itself in src/Vault.sol: the file every finding against the vault
+ * names, so the jury pack's sources carry it. The code does otherwise (amount + 1): that is the bug.
+ */
+const DEPOSIT_RULE = '/// @notice Credits the caller with exactly `amount`: balanceOf[msg.sender] increases by amount, and by nothing more.';
+
+/** The listed repository: a vault with a bug (deposit credits one wei more than its documentation says) and its passing suite. */
 const VAULT_REPO = Object.freeze({
   'src/Vault.sol': [
     '// SPDX-License-Identifier: MIT',
     'pragma solidity ^0.8.0;',
     'contract Vault {',
     '    mapping(address => uint256) public balanceOf;',
+    `    ${DEPOSIT_RULE}`,
     '    function deposit(uint256 amount) external { balanceOf[msg.sender] += amount + 1; }',
     '}',
     ''
@@ -374,5 +381,5 @@ function pocFile(contract, body) {
 }
 
 module.exports = {
-  foundryBase, solcBytes, forgeStdFiles, SOLC, REGISTRY_IMAGE, VAULT_REPO, VM_SOL, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile
+  foundryBase, solcBytes, forgeStdFiles, SOLC, REGISTRY_IMAGE, DEPOSIT_RULE, VAULT_REPO, VM_SOL, FOUNDRY_TOML, vaultBaseline, buildFixture, addFilesPatch, addLinksPatch, modifyPatch, pocFile
 };

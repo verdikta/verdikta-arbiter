@@ -88,6 +88,23 @@ function providerChecks(calls, { panel, justifier, reportSha256, markers, maxTok
   return checks;
 }
 
+/**
+ * The vault's documented deposit rule reached the jury (A15): the pack's source tier holds src/Vault.sol with the
+ * line, and every juror of the panel read it. Without it the jurors split on what deposit must do.
+ */
+function depositRuleChecks(pack, calls, { panel, rule }) {
+  const sources = ((pack && pack.files) || []).filter((f) => f.tier === 'source');
+  const vault = sources.find((f) => typeof f.text === 'string' && f.text.startsWith('# source file: src/Vault.sol\n'));
+  const jurors = calls.filter((c) => panel.some((p) => p.model === c.model && p.provider === c.provider));
+  const reading = jurors.filter((c) => typeof c.prompt === 'string' && Boolean(rule) && c.prompt.includes(rule));
+  return [
+    assert('pack.depositRule', Boolean(rule) && Boolean(vault) && vault.text.includes(rule),
+      vault ? 'src/Vault.sol is in the source tier' : `no src/Vault.sol among ${sources.length} source file(s)`),
+    assert('provider.depositRule', Boolean(rule) && jurors.length === panel.length && reading.length === jurors.length,
+      `${reading.length} of ${jurors.length} juror prompt(s) hold it, for a panel of ${panel.length}`)
+  ];
+}
+
 function scoreChecks(got, expected) {
   return [assert('scores.juryAverage', Array.isArray(got) && got.length === expected.length && got.every((v, i) => Number(v) === expected[i]),
     `got ${JSON.stringify(got)}, the jurors' weighted average is ${JSON.stringify(expected)}`)];
@@ -142,5 +159,5 @@ function ipfsChecks(ipfs) {
 }
 
 module.exports = {
-  SCORE_TOTAL, CLASS_PLATFORM, runChecks, gatesPassed, aiRequestChecks, providerChecks, scoreChecks, invalidScoreChecks, noAiChecks, commitmentChecks, pullChecks, ipfsChecks
+  SCORE_TOTAL, CLASS_PLATFORM, runChecks, gatesPassed, aiRequestChecks, providerChecks, depositRuleChecks, scoreChecks, invalidScoreChecks, noAiChecks, commitmentChecks, pullChecks, ipfsChecks
 };

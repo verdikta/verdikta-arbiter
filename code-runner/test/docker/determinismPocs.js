@@ -8,7 +8,9 @@
  *
  * VM is the Vm shim with the cheatcodes they read. CANARY_IMAGE_OPTIONS are buildFixture's
  * options for the image they all run on: their foundry.toml needs ffi and ./state, and that
- * image is what the L2 claim suite builds and what G2 pushes for the canaries.
+ * image is what the L2 claim suite builds and what G2 pushes for the canaries. Its vault is VAULT_REPO's, which
+ * documents deposit (forgeFixture.js, DEPOSIT_RULE): the jurors read what deposit must do in the source the
+ * finding names, so these claims test how the runner handles the PoC, not what the vault should do (A15).
  */
 
 const { VAULT_REPO, VM_SOL, pocFile } = require('./forgeFixture');

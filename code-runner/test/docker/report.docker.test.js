@@ -21,6 +21,8 @@ const { VAULT_REPO, vaultBaseline, buildFixture, addFilesPatch, pocFile } = requ
 const { VM, TIME_POC, RANDOM_POC, FLAKY_POC, FFI_TOML, STATE_TOML } = require('./determinismPocs');
 
 const TIMEOUT = 900000;
+/** deposit's line in the vault, as git grep numbers it: after its NatSpec line (A15). */
+const DEPOSIT_SITE = new RegExp(`deposit: src/Vault\\.sol:${VAULT_REPO['src/Vault.sol'].split('\n').findIndex((l) => l.includes('function deposit(')) + 1}: function deposit\\(`);
 const builder = dockerFor(dockerTestConfig());
 const fixtures = new Map();
 
@@ -181,7 +183,7 @@ test('R1-F2, R1-F3 on real git: a large binary the finding names first and a hug
   const pack = result.contextPack;
   const text = (name) => pack.files.filter((f) => f.tier === name).map((f) => f.text).join('\n');
   assert.match(text('source'), /source file: src\/Vault\.sol\n[^]*contract Vault/);
-  assert.match(text('callSites'), /deposit: src\/Vault\.sol:5:/);
+  assert.match(text('callSites'), DEPOSIT_SITE);
   assert.ok(!text('callSites').includes('docs/vendor.txt'), 'out of scope');
   // And what was left out is stated: the binary and the out-of-scope match, both facts, so the tiers stay full.
   const tier = (name) => pack.tiers.find((x) => x.name === name);
@@ -199,7 +201,7 @@ test('the pack on real git: the PoC with its function context and full text, the
   assert.match(text('poc'), /index 0{40}\.\.[0-9a-f]{40}/, 'whole blob ids');
   assert.match(text('poc'), /poc file: test\/Clock\.t\.sol\n[^]*contract ClockTest/);
   assert.match(text('source'), /source file: src\/Vault\.sol\n[^]*contract Vault/);
-  assert.match(text('callSites'), /deposit: src\/Vault\.sol:5:/);
+  assert.match(text('callSites'), DEPOSIT_SITE);
   assert.match(text('tree'), /src\//);
   assert.ok(pack.usedTokens <= pack.budgetTokens);
   for (const t2 of pack.tiers) assert.notEqual(t2.status, 'dropped', t2.name);

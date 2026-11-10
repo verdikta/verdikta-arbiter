@@ -76,6 +76,7 @@ function juryChecks(h, before, marks) {
       markers: marks,
       maxTokens: CODE_STANDARD_JUROR_TOKENS
     }),
+    ...C.depositRuleChecks(answer && answer.contextPack, provider, { panel: h.panel, rule: h.depositRule }),
     ...C.ipfsChecks(h.ipfs)
   ];
 }
@@ -319,6 +320,7 @@ async function juryFixture(h, claim, kind) {
     A.assert('ai.called', after.aiCalls === before.aiCalls + 1, `${after.aiCalls - before.aiCalls} AI call(s)`),
     ...C.runChecks(run && run.response, { classPlatform: h.classPlatform }),
     C.gatesPassed(run && run.response && run.response.report),
+    ...C.depositRuleChecks(run && run.response && run.response.contextPack, h.providerCalls().slice(before.providerCalls), { panel: h.panel, rule: h.depositRule }),
     ...C.scoreChecks(score, h.juryAverage),
     ...C.ipfsChecks(h.ipfs)
   ];
