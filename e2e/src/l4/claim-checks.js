@@ -18,7 +18,7 @@ const { invalidScoreChecks } = require('../l2/claim/checks');
 const EVIDENCE_HEADER = 'Execution evidence v1';
 const EVIDENCE_END = 'End execution evidence';
 const REPORT_HASH = /^[0-9a-f]{64}$/;
-/** settleBugOutcome wants a stake for what it pays; only `valid` is read here. */
+/** settleBugOutcome wants a stake for what it pays; nothing here reads what it pays. */
 const ANY_STAKE = Object.freeze({ awards: Object.freeze({ LOW: '0', MEDIUM: '0', HIGH: '0', CRITICAL: '0' }), lowestClassCounted: 'LOW' });
 
 const JURY = Object.freeze({ source: 'code-review-jury', settlement: 'jury', gate: null });
@@ -272,6 +272,22 @@ function abstainChecks({ status, commitReceived }) {
   ];
 }
 
+/**
+ * A round's settled outcome: getEvaluation's vector, the aggregator's filtered result (the mean of
+ * the clustered pair), through common's settlement rule as the contract will apply it. The outcome
+ * and whether it is valid, or `{ error }` for a vector settlement refuses, which is no outcome at all.
+ * @param {unknown} vector
+ * @returns {{ outcome: string, valid: boolean } | { error: string }}
+ */
+function settleVector(vector) {
+  try {
+    const { outcome, valid } = codeReview.settleBugOutcome(vector, ANY_STAKE);
+    return { outcome, valid };
+  } catch (error) {
+    return { error: error.message };
+  }
+}
+
 const VERDICT_BY_SOURCE = Object.freeze({ 'code-review-jury': 'jury', 'code-review-gate': 'gate', 'code-review-runner': 'runner' });
 
 /**
@@ -297,4 +313,4 @@ function observedRound(reports) {
   return { verdict: known || 'unreadable', faultSeen, runReused };
 }
 
-module.exports = { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, EXPECTED, VERDICT_BY_SOURCE, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS };
+module.exports = { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, firstEvidenceBlock, settleVector, EXPECTED, VERDICT_BY_SOURCE, PROVIDER_TIMEOUT_FIRST_DEADLINE_MS };

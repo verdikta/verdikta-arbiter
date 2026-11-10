@@ -215,6 +215,57 @@ describe('the kinds of L4 claim scenario (node A6c)', () => {
     expect(load(l4Claim('near-limit'))).toThrow(/claim/);
   });
 
+  describe('expectedClass: the class a jury claim should settle, for the exact-class rate (A16)', () => {
+    const JURY_KINDS = ['valid', 'time-dependent', 'randomness-dependent', 'near-limit-juror', 'provider-timeout', 'slow-justifier', 'cold-cache', 'dispute'];
+
+    it.each(JURY_KINDS)('a %s claim may name one of the valid classes, and it reaches the run', (kind) => {
+      for (const expectedClass of ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL']) {
+        const scenario = l4Claim(kind, { expectedClass });
+        expect(load(scenario)).not.toThrow();
+        expect(load(scenario)()[0].expectedClass).toBe(expectedClass);
+      }
+    });
+
+    it('without one a claim names none: it reports a distribution only', () => {
+      expect(load(l4Claim('valid'))()[0].expectedClass).toBeUndefined();
+    });
+
+    it.each([['INVALID'], ['DUPLICATE'], ['high'], [''], [4], [null], [['HIGH']]])('%p is no class it can settle', (expectedClass) => {
+      expect(load(l4Claim('valid', { expectedClass }))).toThrow(/claim-l4-valid.*expectedClass/s);
+    });
+
+    it.each([
+      ['front-gate', {}], ['runner-gate', {}], ['flaky', {}],
+      ['registry-failure', { watchSeconds: 300 }], ['cancellation', { watchSeconds: 900 }]
+    ])('a %s scenario takes none: the jury never decides its claim', (kind, over) => {
+      expect(load(l4Claim(kind, over))).not.toThrow();
+      expect(load(l4Claim(kind, { ...over, expectedClass: 'HIGH' }))).toThrow(/expectedClass/);
+    });
+
+    it('every committed claim the jury decides on the vault\'s deposit bug is labelled LOW, both dispute rounds included; the rest none (owner, Q71, 2026-11-10)', () => {
+      const committed = JSON.parse(fs.readFileSync(DEFAULT_SCENARIOS, 'utf8')).filter((s) => s.suite === 'l4-claim');
+      const labels = Object.fromEntries(committed.map((s) => [s.id, s.expectedClass]));
+      expect(labels).toEqual({
+        'claim-l4-valid': 'LOW',
+        'claim-l4-front-gate': undefined,
+        'claim-l4-runner-gate': undefined,
+        'claim-l4-time-dependent': 'LOW',
+        'claim-l4-randomness-dependent': 'LOW',
+        'claim-l4-flaky': undefined,
+        'claim-l4-registry-failure': undefined,
+        'claim-l4-near-limit-juror': 'LOW',
+        'claim-l4-provider-timeout': 'LOW',
+        'claim-l4-slow-justifier': 'LOW',
+        'claim-l4-cancellation': undefined,
+        'claim-l4-cold-cache': 'LOW',
+        'claim-l4-dispute': 'LOW'
+      });
+      // Labelled exactly where the jury decides: every jury kind, and no other.
+      expect(committed.filter((s) => s.expectedClass).map((s) => s.claim).sort()).toEqual([...JURY_KINDS].sort());
+      expect(() => loadScenarios(DEFAULT_SCENARIOS, committed.map((s) => s.id), { allowL4Claim: true })).not.toThrow();
+    });
+  });
+
   it('the L2 kinds include the canary fixtures and the switch', () => {
     const base = { suite: 'claim', modes: ['x'] };
     expect(() => loadScenarios(scenariosFile([{ id: 'a', ...base, claim: 'canary' }, { id: 'b', ...base, claim: 'fault-switch' }]), null, { suite: 'claim' })).not.toThrow();

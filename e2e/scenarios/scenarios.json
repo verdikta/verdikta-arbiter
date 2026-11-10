@@ -87,6 +87,7 @@
     "suite": "l4-claim",
     "claim": "valid",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "A valid claim on the canaries: one real request on class 5555, [listing, claim] with its disclosure line. Every revealing arbiter must reach the jury, on this claim, with one report hash. Spends the request's fee, and the canaries' provider keys. Refused on any other class. Runs only by name, with --class-id 5555 --expect-common --expect-release, once the claim set is pinned (scripts/build-l4-claims.js).",
     "modes": [
       "commit-reveal"
@@ -120,6 +121,7 @@
     "suite": "l4-claim",
     "claim": "time-dependent",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "A3b's clock-reading PoC on the canaries: what moves between hosts must not reach the report. Every recorded reveal reaches the jury with one report hash. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
@@ -131,6 +133,7 @@
     "suite": "l4-claim",
     "claim": "randomness-dependent",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "A3b's unseeded-randomness PoC on the canaries: one report hash across hosts, through the jury. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
@@ -165,6 +168,7 @@
     "suite": "l4-claim",
     "claim": "near-limit-juror",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "The fault switch holds the first juror's real answer to just under its limit, then the justifier follows. Needs the switch on the canaries and --expect-fault-switch armed. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
@@ -176,6 +180,7 @@
     "suite": "l4-claim",
     "claim": "provider-timeout",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "The fault switch makes the first juror's real call time out on the first attempt; the arbiter retries from the same run and reaches a verdict. Needs the switch on the canaries and --expect-fault-switch armed. Spends the request's fee and the canaries' provider keys, twice. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
@@ -187,6 +192,7 @@
     "suite": "l4-claim",
     "claim": "slow-justifier",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "The fault switch holds the real justification to just under its 45 s reserve. Needs the switch on the canaries and --expect-fault-switch armed. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
@@ -210,6 +216,7 @@
     "suite": "l4-claim",
     "claim": "cold-cache",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "A valid claim on a listing whose env image the canaries have not pulled (a fresh digest, or an evicted one), measured from pull through justification. Fails on an image already there. Needs build-l4-claims.js --cold-image. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"
@@ -221,6 +228,7 @@
     "suite": "l4-claim",
     "claim": "dispute",
     "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
     "description": "A claim round, then the dispute round StakeAttestation.dispute would compose: the same [listing, claim], the disclosure line and the statement by CID. For the dispute-flip rate. Spends two requests' fees and the canaries' provider keys. Refused on any other class; runs only by name.",
     "modes": [
       "commit-reveal"

@@ -7,7 +7,9 @@
  *   node scripts/l4-metrics.js results/*.json
  *
  * Exit 0 only with enough samples and every limit met (src/l4/metrics.js); one run has too few.
- * Reads the `--report` files; the workflow uploads them as the `l4-report` artifact.
+ * The settled outcome and the dispute flips print as INFO and never change the exit code.
+ * Reads the `--report` files; the workflow uploads them as the `l4-report` artifact. A report
+ * from before a field was recorded still reads: its rounds are counted as having none.
  */
 
 const fs = require('fs');

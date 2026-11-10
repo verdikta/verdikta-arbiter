@@ -9,6 +9,8 @@ const os = require('os');
 const path = require('path');
 const { P95_MIN_SAMPLES, SIGMA_MIN_REVEALS, SIGMA_MIN_ROUNDS, SIGMA_OVER_LIMIT_MAX_PERCENT, FLIP_RATE_MIN, LATENCY_BUDGET_MS, SIGMA_LIMIT_POINTS, p95Of, sigmaOf, sigmaAllowance, validMassPoints, summarize, metricChecks, gate } = require('../metrics');
 
+const { settleVector } = require('../claim-checks');
+
 const SCRIPT = path.join(__dirname, '..', '..', '..', 'scripts', 'l4-metrics.js');
 const jury = (latencyMs, validMass = [70, 70, 70], over = {}) => ({ id: 'r', kind: 'valid', verdict: 'jury', fault: false, latencyMs, validMass, ...over });
 const times = (n, ms = 300000) => Array.from({ length: n }, (_, i) => ms + i);
@@ -306,5 +308,216 @@ describe('scripts/l4-metrics.js', () => {
     const bad = path.join(dir, 'bad.json');
     fs.writeFileSync(bad, 'nope');
     expect(run(bad).status).toBe(1);
+  });
+});
+
+// Node A16 (Q70 item 4, owner 2026-11-10): what a round settled, beside σ. σ is taken over every
+// recorded reveal, before the aggregator's filter (§10.8: 6, 4, 3, 2; the closest pair of the first
+// three reveals, averaged), so it can breach on a round that settled right, and two arbiters can
+// agree on a wrong outcome with a small σ. The settled outcome is reported and never gated.
+const VECTORS = Object.freeze({
+  HIGH: [0, 0, 0, 100000, 700000, 200000],
+  MEDIUM: [0, 0, 100000, 700000, 200000, 0],
+  INVALID: [1000000, 0, 0, 0, 0, 0],
+  DUPLICATE: [0, 1000000, 0, 0, 0, 0],
+  /** No settlement reads it: it sums to 21. */
+  UNSETTLEABLE: [1, 2, 3, 4, 5, 6]
+});
+/** A jury round as run-l4.js records it: getEvaluation's vector through common's settlement. */
+const settledRound = (name, over = {}, t = 300000) => jury(t, [70, 70, 70], { settled: settleVector(VECTORS[name]), ...over });
+const outcomeDetail = (rounds) => metricChecks(summarize(rounds)).find((c) => c.name === 'metric.settledOutcome').detail;
+
+describe('the settled outcome beside σ (A16): reported, never gated', () => {
+  it('all exact: every labelled round settles its expected class', () => {
+    const rounds = [0, 1, 2].map(() => settledRound('HIGH', { expectedClass: 'HIGH' }));
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 3, unsettled: 0, unrecorded: 0, notValid: 0, notValidRate: 0, labelled: 3, exact: 3, exactRate: 1, byKind: { valid: { HIGH: 3 } } });
+    expect(outcomeDetail(rounds)).toBe('3 jury round(s) with a settled outcome; 0 settled not valid, INVALID or DUPLICATE (0.0%); 3 of 3 labelled round(s) settled the expected class (100.0%); by kind: valid (HIGH 3)');
+  });
+
+  it('a settled INVALID is not valid, and not exact; a DUPLICATE is not valid either', () => {
+    const rounds = [settledRound('HIGH', { expectedClass: 'HIGH' }), settledRound('INVALID', { expectedClass: 'HIGH' }), settledRound('DUPLICATE', { expectedClass: 'HIGH' }), settledRound('HIGH', { expectedClass: 'HIGH' })];
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 4, notValid: 2, notValidRate: 0.5, labelled: 4, exact: 2, exactRate: 0.5 });
+    expect(outcomeDetail(rounds)).toBe('4 jury round(s) with a settled outcome; 2 settled not valid, INVALID or DUPLICATE (50.0%); 2 of 4 labelled round(s) settled the expected class (50.0%); by kind: valid (INVALID 1, DUPLICATE 1, HIGH 2)');
+  });
+
+  it('a wrong valid class is valid, and not exact', () => {
+    const rounds = [settledRound('MEDIUM', { expectedClass: 'HIGH' }), settledRound('HIGH', { expectedClass: 'HIGH' })];
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 2, notValid: 0, labelled: 2, exact: 1, exactRate: 0.5 });
+    expect(outcomeDetail(rounds)).toMatch(/; 0 settled not valid, INVALID or DUPLICATE \(0\.0%\); 1 of 2 labelled round\(s\) settled the expected class \(50\.0%\); by kind: valid \(MEDIUM 1, HIGH 1\)$/);
+  });
+
+  it('a round whose vector cannot be settled is left out and counted as such, never as not valid', () => {
+    const rounds = [settledRound('HIGH', { expectedClass: 'HIGH' }), settledRound('UNSETTLEABLE', { expectedClass: 'HIGH' })];
+    expect(rounds[1].settled.error).toBeDefined();
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 1, unsettled: 1, notValid: 0, labelled: 1, exact: 1 });
+    expect(outcomeDetail(rounds)).toBe('1 jury round(s) with a settled outcome (left out: 1 whose vector could not be settled); 0 settled not valid, INVALID or DUPLICATE (0.0%); 1 of 1 labelled round(s) settled the expected class (100.0%); by kind: valid (HIGH 1)');
+    // Nothing settled: no rate at all, and still not one not valid.
+    const none = [settledRound('UNSETTLEABLE'), jury(1, [70, 70, 70], { settled: null }), jury(1, [70, 70, 70], { settled: { outcome: 'SEVERE', valid: true } }), jury(1, [70, 70, 70], { settled: { outcome: 'HIGH' } })];
+    expect(summarize(none).outcomes).toMatchObject({ settled: 0, unsettled: 4, notValid: 0, notValidRate: null, labelled: 0, exactRate: null });
+    expect(outcomeDetail(none)).toBe('no settled outcome: no finished jury round has one (left out: 4 whose vector could not be settled)');
+  });
+
+  it('no label: a distribution only, and no exact-class rate', () => {
+    const rounds = [settledRound('HIGH'), settledRound('MEDIUM'), settledRound('INVALID', { kind: 'time-dependent' })];
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 3, notValid: 1, labelled: 0, exact: 0, exactRate: null, byKind: { valid: { HIGH: 1, MEDIUM: 1 }, 'time-dependent': { INVALID: 1 } } });
+    expect(outcomeDetail(rounds)).toBe('3 jury round(s) with a settled outcome; 1 settled not valid, INVALID or DUPLICATE (33.3%); no round names an expected class; by kind: valid (MEDIUM 1, HIGH 1), time-dependent (INVALID 1)');
+  });
+
+  it('an old report: its rounds recorded no outcome, so they are counted as that, and parse', () => {
+    const old = times(20).map((t) => jury(t));
+    expect(summarize(old).outcomes).toMatchObject({ settled: 0, unsettled: 0, unrecorded: 20, notValid: 0, notValidRate: null });
+    expect(outcomeDetail(old)).toBe('no settled outcome: no finished jury round has one (left out: 20 from a report that predates the settled outcome)');
+    const mixed = [...old.slice(0, 2), settledRound('HIGH'), settledRound('UNSETTLEABLE')];
+    expect(outcomeDetail(mixed)).toMatch(/^1 jury round\(s\) with a settled outcome \(left out: 1 whose vector could not be settled, 2 from a report that predates the settled outcome\);/);
+  });
+
+  it('the dispute scenario\'s two rounds: each counted, by its kind, with the scenario\'s label', () => {
+    const rounds = [
+      settledRound('HIGH', { id: 'claim-l4-valid' }),
+      settledRound('HIGH', { id: 'claim-l4-dispute', kind: 'valid', expectedClass: 'HIGH' }),
+      settledRound('INVALID', { id: 'claim-l4-dispute', kind: 'dispute', expectedClass: 'HIGH' })
+    ];
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 3, notValid: 1, labelled: 2, exact: 1, exactRate: 0.5, byKind: { valid: { HIGH: 2 }, dispute: { INVALID: 1 } } });
+    expect(outcomeDetail(rounds)).toBe('3 jury round(s) with a settled outcome; 1 settled not valid, INVALID or DUPLICATE (33.3%); 1 of 2 labelled round(s) settled the expected class (50.0%); by kind: valid (HIGH 2), dispute (INVALID 1)');
+  });
+
+  it('only finished jury rounds: a gate\'s INVALID, an unreadable round and one that never finished are no jury outcome', () => {
+    const rounds = [
+      settledRound('HIGH'),
+      settledRound('INVALID', { kind: 'front-gate', verdict: 'gate' }),
+      settledRound('INVALID', { kind: 'runner-gate', verdict: 'runner' }),
+      settledRound('INVALID', { verdict: 'unreadable' }),
+      jury(900000, [], { unfinished: true })
+    ];
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 1, unsettled: 0, unrecorded: 0, notValid: 0, byKind: { valid: { HIGH: 1 } } });
+  });
+
+  it('a fault round and a kept run\'s round still tell the outcome: neither can move a score', () => {
+    const rounds = [settledRound('HIGH', { fault: true }), settledRound('INVALID', { runReused: true })];
+    expect(summarize(rounds).outcomes).toMatchObject({ settled: 2, notValid: 1 });
+  });
+
+  it('the run\'s metric case reports it beside the σ line, and it never fails a run', () => {
+    const checks = metricChecks(summarize([settledRound('INVALID', { expectedClass: 'HIGH' })]));
+    expect(checks.map((c) => c.name)).toEqual(['metric.latencyP95', 'metric.validMassSigma', 'metric.settledOutcome', 'metric.disputeFlips']);
+    for (const check of checks) expect(check.ok).toBe(true);
+  });
+
+  it('the gate prints it beside the σ line, as INFO', () => {
+    const { lines } = gate(summarize([settledRound('HIGH')]));
+    expect(lines).toHaveLength(4);
+    expect(lines[1]).toMatch(/^FAIL σ of the valid mass/);
+    expect(lines[2]).toBe('INFO settled outcome: 1 jury round(s) with a settled outcome; 0 settled not valid, INVALID or DUPLICATE (0.0%); no round names an expected class; by kind: valid (HIGH 1)');
+    expect(lines[3]).toMatch(/^INFO disputes/);
+  });
+});
+
+describe('the gate\'s result is unchanged on every input, whatever the rounds settled (A16)', () => {
+  const lost = () => jury(900000, [], { unfinished: true });
+  const inputs = {
+    'enough, inside every limit': () => times(20).map((t) => jury(t)),
+    'too few latency samples': () => times(19).map((t) => jury(t)),
+    'a p95 over the budget': () => times(20, 900001).map((t) => jury(t)),
+    'too few rounds with a σ': () => times(20).map((t, i) => jury(t, i < 4 ? [70, 70, 70] : [70, 70])),
+    '2 of 20 above 5 points': () => sigmaRounds(20, 2),
+    '3 of 20 above 5 points': () => sigmaRounds(20, 3),
+    '4 of 40 above 5 points': () => sigmaRounds(40, 4),
+    'two that never finished': () => [...times(18).map((t) => jury(t)), lost(), lost()],
+    'a fault and a kept run beside 20': () => [...times(20).map((t) => jury(t)), jury(800000, WIDE, { fault: true }), jury(5000, WIDE, { runReused: true })]
+  };
+  const settleEvery = (name, over = {}) => (r) => ({ ...r, settled: settleVector(VECTORS[name]), ...over });
+  const variants = {
+    'every round settled INVALID against a label': settleEvery('INVALID', { expectedClass: 'HIGH' }),
+    'every round DUPLICATE': settleEvery('DUPLICATE'),
+    'every round exact': settleEvery('HIGH', { expectedClass: 'HIGH' }),
+    'every round the wrong valid class': settleEvery('MEDIUM', { expectedClass: 'CRITICAL' }),
+    'no round could be settled': settleEvery('UNSETTLEABLE', { expectedClass: 'HIGH' })
+  };
+  const notOutcome = (lines) => lines.filter((line) => !line.startsWith('INFO settled outcome:'));
+  const disputes = [{ countable: true, flipped: true }];
+
+  it.each(Object.keys(inputs))('%s: the same pass or fail, and the same lines, under every outcome', (name) => {
+    const plain = gate(summarize(inputs[name](), disputes));
+    for (const variant of Object.values(variants)) {
+      const settled = gate(summarize(inputs[name]().map(variant), disputes));
+      expect(settled.ok).toBe(plain.ok);
+      expect(notOutcome(settled.lines)).toEqual(notOutcome(plain.lines));
+    }
+  });
+
+  it('the inputs hold both answers: the comparison is not of passes alone', () => {
+    const results = Object.values(inputs).map((rounds) => gate(summarize(rounds())).ok);
+    expect(results).toContain(true);
+    expect(results).toContain(false);
+  });
+});
+
+describe('scripts/l4-metrics.js and the settled outcome (A16)', () => {
+  let dir;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'e2e-l4-outcome-')); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  /** What a run wrote before A16: rounds with no `settled` and no `expectedClass`. */
+  const reportFile = (name, rounds, dispute) => {
+    const file = path.join(dir, name);
+    fs.writeFileSync(file, JSON.stringify({ cases: [{ id: 'x', mode: 'l4', checks: [], metrics: { rounds, ...(dispute ? { dispute } : {}) } }, { id: 'claim-l4-metrics', mode: 'l4', checks: [] }] }));
+    return file;
+  };
+  const tenRounds = (prefix, ms, wide, over = () => ({})) => times(10, ms).map((t, i) => jury(t, i < wide ? WIDE : [70, 70, 70], { aggId: `0x${prefix}${i}`, ...over(i) }));
+  const oldReports = () => ({
+    a: reportFile('a.json', tenRounds('a', 300000, 1), { aggId: '0xd', countable: true, flipped: false }),
+    b: reportFile('b.json', tenRounds('b', 400000, 1)),
+    c: reportFile('c.json', tenRounds('c', 500000, 2))
+  });
+  const run = (...args) => spawnSync(process.execPath, [SCRIPT, ...args], { encoding: 'utf8' });
+  const outputLines = (r) => r.stdout.trim().split('\n');
+  const withoutOutcome = (r) => outputLines(r).filter((line) => !line.startsWith('INFO settled outcome:'));
+
+  // Frozen from the base branch (0c4d051): what the script printed on these files before A16.
+  const BEFORE = Object.freeze({
+    pass: ['2 report(s), 20 round(s)', 'PASS latency: p95 400 s of the 900 s budget (§11), 20 rounds, slowest 400 s', 'PASS σ of the valid mass: 2 of 20 rounds above 5 points (10.0%), within the allowance of 2 (10% of 20, rounded down; §18); largest 10.0 points; three values make a rough number', 'INFO disputes: 0 of 1 flipped; no rate below 10'],
+    sigmaFail: ['2 report(s), 20 round(s)', 'PASS latency: p95 500 s of the 900 s budget (§11), 20 rounds, slowest 500 s', 'FAIL σ of the valid mass: 3 of 20 rounds above 5 points (15.0%), over the allowance of 2 (10% of 20, rounded down; §18); largest 10.0 points; three values make a rough number', 'INFO disputes: 0 of 1 flipped; no rate below 10'],
+    tooFew: ['1 report(s), 10 round(s)', 'FAIL latency: no p95: 10 of the 20 rounds it needs; slowest 300 s of the 900 s budget (§11)', 'FAIL σ of the valid mass: 10 of the 20 rounds the gate wants; 1 above 5 points (10.0%), allowance 1 (10% of 10, rounded down); largest 10.0 points; three values make a rough number', 'INFO disputes: 0 of 1 flipped; no rate below 10']
+  });
+
+  it('old report files still parse: the exit code and every line of the base branch, and the outcome line says they recorded none', () => {
+    const { a, b, c } = oldReports();
+    const pass = run(a, b);
+    expect(pass.status).toBe(0);
+    expect(withoutOutcome(pass)).toEqual(BEFORE.pass);
+    expect(outputLines(pass)[3]).toBe('INFO settled outcome: no settled outcome: no finished jury round has one (left out: 20 from a report that predates the settled outcome)');
+    const fail = run(a, c);
+    expect(fail.status).toBe(1);
+    expect(withoutOutcome(fail)).toEqual(BEFORE.sigmaFail);
+    const few = run(a);
+    expect(few.status).toBe(1);
+    expect(withoutOutcome(few)).toEqual(BEFORE.tooFew);
+  });
+
+  it('reports the same over many report files: the outcomes add up, a round named twice is once, and the exit code is the gate\'s', () => {
+    const labelled = (bad) => (i) => ({ settled: settleVector(VECTORS[i < bad ? 'INVALID' : 'HIGH']), expectedClass: 'HIGH' });
+    const a = reportFile('a.json', tenRounds('a', 300000, 1, labelled(0)), { aggId: '0xd', countable: true, flipped: false });
+    const b = reportFile('b.json', tenRounds('b', 400000, 1, labelled(1)));
+    const copy = path.join(dir, 'copy.json');
+    fs.copyFileSync(b, copy);
+    const pass = run(a, b, copy);
+    expect(pass.status).toBe(0);
+    expect(withoutOutcome(pass)).toEqual(['3 report(s), 20 round(s)', ...BEFORE.pass.slice(1)]);
+    expect(outputLines(pass)).toContain('INFO settled outcome: 20 jury round(s) with a settled outcome; 1 settled not valid, INVALID or DUPLICATE (5.0%); 19 of 20 labelled round(s) settled the expected class (95.0%); by kind: valid (INVALID 1, HIGH 19)');
+    // Every round settled right, and the σ gate still fails on its own numbers.
+    const c = reportFile('c.json', tenRounds('c', 500000, 2, labelled(0)));
+    const fail = run(a, c);
+    expect(fail.status).toBe(1);
+    expect(withoutOutcome(fail)).toEqual(BEFORE.sigmaFail);
+    expect(outputLines(fail)).toContain('INFO settled outcome: 20 jury round(s) with a settled outcome; 0 settled not valid, INVALID or DUPLICATE (0.0%); 20 of 20 labelled round(s) settled the expected class (100.0%); by kind: valid (HIGH 20)');
+  });
+
+  it('old and new reports together: the old rounds are counted as recording none', () => {
+    const { a } = oldReports();
+    const b = reportFile('b.json', tenRounds('b', 400000, 1, () => ({ settled: settleVector(VECTORS.MEDIUM) })));
+    const r = run(a, b);
+    expect(r.status).toBe(0);
+    expect(withoutOutcome(r)).toEqual(BEFORE.pass);
+    expect(outputLines(r)).toContain('INFO settled outcome: 10 jury round(s) with a settled outcome (left out: 10 from a report that predates the settled outcome); 0 settled not valid, INVALID or DUPLICATE (0.0%); no round names an expected class; by kind: valid (MEDIUM 10)');
   });
 });

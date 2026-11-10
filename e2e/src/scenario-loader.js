@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { isLikelyCid } = require('./assertions');
+const { EXPECTED: L4_EXPECTED } = require('./l4/claim-checks');
 
 const E2E_ROOT = path.join(__dirname, '..');
 const DEFAULT_SCENARIOS = path.join(E2E_ROOT, 'scenarios', 'scenarios.json');
@@ -96,6 +97,12 @@ function validateL4ClaimScenario(s) {
   const abstains = Object.prototype.hasOwnProperty.call(ABSTAIN_CONTROLS, s.claim);
   if (abstains && !(Number.isInteger(s.watchSeconds) && s.watchSeconds > 0)) throw new Error(`Scenario "${s.id}" expects no commit: "watchSeconds" says how long to watch for one`);
   if (!abstains && s.watchSeconds !== undefined) throw new Error(`Scenario "${s.id}": "watchSeconds" is for a scenario that expects no commit`);
+  if (s.expectedClass !== undefined) {
+    // The label for L4's exact-class rate (src/l4/metrics.js): the valid class the claim should settle.
+    if (!codeReview.SEVERITY_CLASSES.includes(s.expectedClass)) throw new Error(`Scenario "${s.id}": "expectedClass" is the class the claim should settle, one of ${codeReview.SEVERITY_CLASSES.join(', ')}`);
+    const expected = L4_EXPECTED[s.claim];
+    if (!expected || expected.source !== L4_EXPECTED.valid.source) throw new Error(`Scenario "${s.id}": "expectedClass" is for a claim the jury decides, and the jury never decides a ${s.claim} claim`);
+  }
 }
 
 /**
