@@ -5,8 +5,13 @@
  * scripts/l4-metrics.js over many. A run reports them and never fails on them; the script is
  * the gate. A number that needs more samples than it has does not print as if it meant
  * something: it says what is missing.
+ *
+ * The settled outcome (Q70 item 4, owner 2026-11-10) is reported beside σ and gated nowhere.
+ * σ is taken over every recorded reveal, before the aggregator's filter; the outcome is what
+ * getEvaluation's vector settles, after it (§10.8: of the first three reveals, the closest pair).
  */
 
+const { codeReview } = require('@verdikta/common');
 const { assert } = require('../assertions');
 
 /** §11's worst case, the on-chain `responseTimeoutSeconds` it asks for. */
@@ -55,8 +60,42 @@ function sigmaOf(values) {
   return { n, sigma: Math.sqrt(values.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (n - 1)) };
 }
 
+/** A recorded outcome this module can read: one of common's six, with settlement's `valid` beside it. */
+const isSettled = (settled) => Boolean(settled) && codeReview.BUG_OUTCOMES.includes(settled.outcome) && typeof settled.valid === 'boolean';
+
 /**
- * @param {Array<{ id: string, verdict: string, fault: boolean, latencyMs: number, validMass: number[] }>} rounds
+ * What the finished jury rounds settled. A round from a report written before the outcome was
+ * recorded has no `settled` (`unrecorded`); one whose vector settlement refused has no outcome
+ * (`unsettled`). Either is left out and counted, and neither is ever counted as not valid. The
+ * exact-class rate is over the settled rounds whose scenario names an `expectedClass`.
+ */
+function outcomesOf(jury) {
+  const finished = jury.filter((r) => !r.unfinished);
+  const recorded = finished.filter((r) => r.settled !== undefined);
+  const settled = recorded.filter((r) => isSettled(r.settled));
+  const notValid = settled.filter((r) => !r.settled.valid).length;
+  const labelled = settled.filter((r) => typeof r.expectedClass === 'string');
+  const exact = labelled.filter((r) => r.settled.outcome === r.expectedClass).length;
+  const byKind = new Map();
+  for (const r of settled) {
+    const counts = byKind.get(r.kind) || new Map();
+    byKind.set(r.kind, counts.set(r.settled.outcome, (counts.get(r.settled.outcome) || 0) + 1));
+  }
+  return {
+    settled: settled.length,
+    unsettled: recorded.length - settled.length,
+    unrecorded: finished.length - recorded.length,
+    notValid,
+    notValidRate: settled.length ? notValid / settled.length : null,
+    labelled: labelled.length,
+    exact,
+    exactRate: labelled.length ? exact / labelled.length : null,
+    byKind: Object.fromEntries([...byKind].map(([kind, counts]) => [kind, Object.fromEntries(counts)]))
+  };
+}
+
+/**
+ * @param {Array<{ id: string, kind: string, verdict: string, fault: boolean, latencyMs: number, validMass: number[], settled?: object, expectedClass?: string }>} rounds
  * @param {Array<{ countable: boolean, flipped: boolean }>} [disputes]
  */
 function summarize(rounds, disputes = []) {
@@ -89,6 +128,7 @@ function summarize(rounds, disputes = []) {
       largest: usable ? Math.max(...sigmas) : null,
       limit: SIGMA_LIMIT_POINTS
     },
+    outcomes: outcomesOf(jury),
     flips: { k, n: counted.length, rate: counted.length >= FLIP_RATE_MIN ? k / counted.length : null }
   };
 }
@@ -110,6 +150,20 @@ function sigmaLine({ perRound, usable, over, rate, allowance, largest, limit }) 
   return `${over} of ${usable} rounds ${above}, ${over > allowance ? 'over' : 'within'} the allowance of ${allowance} (${share}; §18); ${largestOf}`;
 }
 
+const percent = (rate) => `${(rate * 100).toFixed(1)}%`;
+
+function outcomeLine({ settled, unsettled, unrecorded, notValid, notValidRate, labelled, exact, exactRate, byKind }) {
+  const out = [
+    unsettled > 0 ? `${unsettled} whose vector could not be settled` : null,
+    unrecorded > 0 ? `${unrecorded} from a report that predates the settled outcome` : null
+  ].filter(Boolean);
+  const leftOut = out.length ? ` (left out: ${out.join(', ')})` : '';
+  if (settled === 0) return `no settled outcome: no finished jury round has one${leftOut}`;
+  const exactly = labelled === 0 ? 'no round names an expected class' : `${exact} of ${labelled} labelled round(s) settled the expected class (${percent(exactRate)})`;
+  const kinds = Object.entries(byKind).map(([kind, counts]) => `${kind} (${codeReview.BUG_OUTCOMES.filter((o) => counts[o]).map((o) => `${o} ${counts[o]}`).join(', ')})`);
+  return `${settled} jury round(s) with a settled outcome${leftOut}; ${notValid} settled not valid, INVALID or DUPLICATE (${percent(notValidRate)}); ${exactly}; by kind: ${kinds.join(', ')}`;
+}
+
 function flipLine({ k, n, rate }) {
   if (n === 0) return 'no dispute round whose first verdict was valid';
   return rate === null ? `${k} of ${n} flipped; no rate below ${FLIP_RATE_MIN}` : `${k} of ${n} flipped: ${Math.round(rate * 100)}%`;
@@ -120,14 +174,15 @@ function metricChecks(summary) {
   return [
     assert('metric.latencyP95', true, latencyLine(summary.latency)),
     assert('metric.validMassSigma', true, sigmaLine(summary.sigma)),
+    assert('metric.settledOutcome', true, outcomeLine(summary.outcomes)),
     assert('metric.disputeFlips', true, flipLine(summary.flips))
   ];
 }
 
 /**
  * G2's read over many runs: enough samples, inside every limit. σ's limit is a rate: at least 20
- * rounds with a σ, and above 5 points in at most 10% of them, rounded down. Flips are measured,
- * with no limit of their own.
+ * rounds with a σ, and above 5 points in at most 10% of them, rounded down. Flips and the settled
+ * outcome are measured, with no limit of their own: `ok` never reads them.
  */
 function gate(summary) {
   const { latency, sigma } = summary;
@@ -138,6 +193,7 @@ function gate(summary) {
     lines: [
       `${latencyOk ? 'PASS' : 'FAIL'} latency: ${latencyLine(latency)}`,
       `${sigmaOk ? 'PASS' : 'FAIL'} σ of the valid mass: ${sigmaLine(sigma)}`,
+      `INFO settled outcome: ${outcomeLine(summary.outcomes)}`,
       `INFO disputes: ${flipLine(summary.flips)}`
     ]
   };
@@ -145,5 +201,5 @@ function gate(summary) {
 
 module.exports = {
   LATENCY_BUDGET_MS, SIGMA_LIMIT_POINTS, P95_MIN_SAMPLES, SIGMA_MIN_REVEALS, SIGMA_MIN_ROUNDS, SIGMA_OVER_LIMIT_MAX_PERCENT,
-  FLIP_RATE_MIN, validMassPoints, p95Of, sigmaOf, sigmaAllowance, summarize, metricChecks, gate
+  FLIP_RATE_MIN, validMassPoints, p95Of, sigmaOf, sigmaAllowance, outcomesOf, summarize, metricChecks, gate
 };

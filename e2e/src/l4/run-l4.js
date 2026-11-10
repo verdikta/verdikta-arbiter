@@ -5,8 +5,7 @@ const chalk = require('chalk');
 const A = require('../assertions');
 const { fetchJustificationJson, justificationRetry } = require('../ipfs');
 const { resolveL4Claim } = require('../scenario-loader');
-const { codeReview } = require('@verdikta/common');
-const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, EXPECTED, VERDICT_BY_SOURCE } = require('./claim-checks');
+const { claimVerdictChecks, revealChecks, revealsAreComplete, abstainChecks, observedRound, settleVector, EXPECTED, VERDICT_BY_SOURCE } = require('./claim-checks');
 const { readReveals } = require('./reveals');
 const { validMassPoints, summarize, metricChecks } = require('./metrics');
 const {
@@ -104,9 +103,6 @@ async function justificationChecks(cfg, justificationCID, expect) {
   return { checks, reports };
 }
 
-/** Settlement's stake argument: only `outcome` and `valid` are read here. */
-const ANY_STAKE = Object.freeze({ awards: Object.freeze({ LOW: '0', MEDIUM: '0', HIGH: '0', CRITICAL: '0' }), lowestClassCounted: 'LOW' });
-
 /**
  * The request's transaction, as a claim sends it: never on a failed estimate, since that means
  * selection would revert. A throw means the request did not start. Once it is broadcast this no
@@ -145,14 +141,18 @@ async function sendClaimRequest({ aggregator, l4 }, scenario, request) {
  * list is only the cluster. L4's clock runs from before the transaction to the poll that saw the
  * result, so a latency is at most one poll late and never early.
  *
+ * A round that finished records `settled`, what getEvaluation's vector settles (settleVector):
+ * that vector is the aggregator's result after its filter, where σ is taken over every reveal
+ * before it. `expectedClass` is the scenario's label, when it declares one, for the exact-class rate.
+ *
  * @returns {Promise<{ checks: Array, round: object|null, vector: number[]|null }>}
  */
-async function verdictRound(ctx, scenario, request, { kind, statementCid = null, timeoutMs }) {
+async function verdictRound(ctx, scenario, request, { kind, statementCid = null, timeoutMs, expectedClass }) {
   const { cfg, provider, aggregator, l4, expect, opts, faultSwitch } = ctx;
   const start = Date.now();
   const expected = EXPECTED[kind];
   let aggId = null;
-  const expectedRound = (latencyMs) => ({ id: scenario.id, aggId, kind, verdict: VERDICT_BY_SOURCE[expected.source], fault: Boolean(expected.fault), latencyMs });
+  const expectedRound = (latencyMs) => ({ id: scenario.id, aggId, kind, verdict: VERDICT_BY_SOURCE[expected.source], fault: Boolean(expected.fault), latencyMs, ...(expectedClass ? { expectedClass } : {}) });
   const unfinished = () => ({ ...expectedRound(Date.now() - start), unfinished: true, validMass: [] });
 
   const sent = await sendClaimRequest(ctx, scenario, request);
@@ -169,6 +169,7 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
   if (result.status !== 'fulfilled') return { checks, round: unfinished(), vector: null };
 
   const vector = [...result.scores].map(Number);
+  const settled = settleVector(vector);
   try {
     checks.push(...A.structuralScoreAssertions(result.scores, {
       minOutcomes: scenario.minOutcomes || 2,
@@ -198,6 +199,7 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
     const seen = observedRound(reports);
     const round = {
       ...expectedRound(latencyMs),
+      settled,
       verdict: seen.verdict,
       fault: Boolean(expected.fault) || seen.faultSeen,
       runReused: seen.runReused,
@@ -207,7 +209,7 @@ async function verdictRound(ctx, scenario, request, { kind, statementCid = null,
     return { checks, round, vector };
   } catch (err) {
     checks.push(A.assert('round.observed', false, `the round finished and could not be read: ${err.message}`));
-    return { checks, round: { ...expectedRound(latencyMs), verdict: 'unreadable', validMass: [] }, vector };
+    return { checks, round: { ...expectedRound(latencyMs), settled, verdict: 'unreadable', validMass: [] }, vector };
   }
 }
 
@@ -271,25 +273,20 @@ async function abstainRound(ctx, scenario) {
  */
 async function disputeRounds(ctx, scenario) {
   const allHold = (checks) => checks.every((check) => check.ok);
-  const settled = (vector) => {
-    try {
-      return codeReview.settleBugOutcome(vector, ANY_STAKE);
-    } catch (err) {
-      return { failed: err.message };
-    }
-  };
-  const first = await verdictRound(ctx, scenario, scenario, { kind: 'valid' });
+  // The claim is the same in both rounds, and the statement should not move it: one label for both.
+  const { expectedClass } = scenario;
+  const first = await verdictRound(ctx, scenario, scenario, { kind: 'valid', expectedClass });
   const rounds = [first.round];
   if (!first.vector) return { checks: first.checks, metrics: { rounds } };
-  const before = settled(first.vector);
-  if (before.failed) return { checks: [...first.checks, A.assert('dispute.firstSettles', false, before.failed)], metrics: { rounds } };
+  const before = settleVector(first.vector);
+  if (before.error) return { checks: [...first.checks, A.assert('dispute.firstSettles', false, before.error)], metrics: { rounds } };
   if (!before.valid) {
     console.log(chalk.yellow(`[l4] ${scenario.id}: the first round settled ${before.outcome}, not a valid outcome: the contract would refuse a dispute, so there is no second round and no sample`));
     return { checks: first.checks, metrics: { rounds, dispute: { aggId: first.round.aggId, countable: false, before: before.outcome } } };
   }
   let second;
   try {
-    second = await verdictRound(ctx, scenario, scenario.disputeRound, { kind: 'dispute', statementCid: scenario.disputeRound.statementCid });
+    second = await verdictRound(ctx, scenario, scenario.disputeRound, { kind: 'dispute', statementCid: scenario.disputeRound.statementCid, expectedClass });
   } catch (err) {
     // The first round happened: its measurement stays.
     return { checks: [...first.checks, A.assert('dispute.started', false, err.message)], metrics: { rounds } };
@@ -297,8 +294,8 @@ async function disputeRounds(ctx, scenario) {
   const checks = [...first.checks, ...second.checks.map((check) => ({ ...check, name: `dispute.${check.name}` }))];
   rounds.push(second.round);
   if (!second.vector) return { checks, metrics: { rounds } };
-  const after = settled(second.vector);
-  if (after.failed) return { checks: [...checks, A.assert('dispute.secondSettles', false, after.failed)], metrics: { rounds } };
+  const after = settleVector(second.vector);
+  if (after.error) return { checks: [...checks, A.assert('dispute.secondSettles', false, after.error)], metrics: { rounds } };
   // A flip counts only when both rounds were what they should be: real juries, on the statement.
   const countable = allHold(first.checks) && allHold(second.checks) && first.round.verdict === 'jury' && second.round.verdict === 'jury';
   const flipped = before.outcome !== after.outcome;
@@ -310,7 +307,7 @@ async function disputeRounds(ctx, scenario) {
 async function runClaimScenario(ctx, scenario) {
   if (scenario.controls) return abstainRound(ctx, scenario);
   if (scenario.claim === 'dispute') return disputeRounds(ctx, scenario);
-  const { checks, round } = await verdictRound(ctx, scenario, scenario, { kind: scenario.claim });
+  const { checks, round } = await verdictRound(ctx, scenario, scenario, { kind: scenario.claim, expectedClass: scenario.expectedClass });
   return { checks, metrics: { rounds: [round] } };
 }
 
