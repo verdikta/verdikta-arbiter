@@ -242,10 +242,27 @@ describe('the kinds of L4 claim scenario (node A6c)', () => {
       expect(load(l4Claim(kind, { ...over, expectedClass: 'HIGH' }))).toThrow(/expectedClass/);
     });
 
-    it('the committed fixture claims name none until the owner gives the label (Q71)', () => {
+    it('every committed claim the jury decides on the vault\'s deposit bug is labelled LOW, both dispute rounds included; the rest none (owner, Q71, 2026-11-10)', () => {
       const committed = JSON.parse(fs.readFileSync(DEFAULT_SCENARIOS, 'utf8')).filter((s) => s.suite === 'l4-claim');
-      expect(committed.length).toBeGreaterThan(0);
-      expect(committed.filter((s) => s.expectedClass !== undefined).map((s) => s.id)).toEqual([]);
+      const labels = Object.fromEntries(committed.map((s) => [s.id, s.expectedClass]));
+      expect(labels).toEqual({
+        'claim-l4-valid': 'LOW',
+        'claim-l4-front-gate': undefined,
+        'claim-l4-runner-gate': undefined,
+        'claim-l4-time-dependent': 'LOW',
+        'claim-l4-randomness-dependent': 'LOW',
+        'claim-l4-flaky': undefined,
+        'claim-l4-registry-failure': undefined,
+        'claim-l4-near-limit-juror': 'LOW',
+        'claim-l4-provider-timeout': 'LOW',
+        'claim-l4-slow-justifier': 'LOW',
+        'claim-l4-cancellation': undefined,
+        'claim-l4-cold-cache': 'LOW',
+        'claim-l4-dispute': 'LOW'
+      });
+      // Labelled exactly where the jury decides: every jury kind, and no other.
+      expect(committed.filter((s) => s.expectedClass).map((s) => s.claim).sort()).toEqual([...JURY_KINDS].sort());
+      expect(() => loadScenarios(DEFAULT_SCENARIOS, committed.map((s) => s.id), { allowL4Claim: true })).not.toThrow();
     });
   });
 

@@ -837,11 +837,15 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
 
 describe('node A16: each jury round records what getEvaluation\'s vector settles, and the scenario\'s label', () => {
   const MEDIUM_VECTOR = [0n, 0n, 100000n, 700000n, 200000n, 0n];
-  /** The committed scenarios, with synthetic labels: the fixture claims have none until the owner gives one (Q71). */
+  /** The committed scenarios with synthetic labels in place of the owner's LOW (Q71): `null` takes a label away. */
   const labelledFile = (labels) => {
     const file = path.join(dir, 'labelled.json');
     const scenarios = JSON.parse(fs.readFileSync(scenariosFile, 'utf8'));
-    fs.writeFileSync(file, JSON.stringify(scenarios.map((s) => (labels[s.id] ? { ...s, expectedClass: labels[s.id] } : s))));
+    fs.writeFileSync(file, JSON.stringify(scenarios.map((s) => {
+      if (!Object.prototype.hasOwnProperty.call(labels, s.id)) return s;
+      const { expectedClass: _owner, ...rest } = s;
+      return labels[s.id] ? { ...rest, expectedClass: labels[s.id] } : rest;
+    })));
     return file;
   };
   const reportOf = async (ids, file = scenariosFile) => {
@@ -867,7 +871,7 @@ describe('node A16: each jury round records what getEvaluation\'s vector settles
     expect(labelled.code).toBe(0);
     expect(labelled.json.cases[0].metrics.rounds[0]).toMatchObject({ settled: { outcome: 'HIGH', valid: true }, expectedClass: 'HIGH' });
     expect(outcomeOf(labelled.json).detail).toBe('1 jury round(s) with a settled outcome; 0 settled not valid, INVALID or DUPLICATE (0.0%); 1 of 1 labelled round(s) settled the expected class (100.0%); by kind: valid (HIGH 1)');
-    const plain = await reportOf('claim-l4-valid');
+    const plain = await reportOf('claim-l4-valid', labelledFile({ 'claim-l4-valid': null }));
     expect(plain.json.cases[0].metrics.rounds[0].settled).toEqual({ outcome: 'HIGH', valid: true });
     expect(plain.json.cases[0].metrics.rounds[0]).not.toHaveProperty('expectedClass');
     expect(outcomeOf(plain.json).detail).toMatch(/no round names an expected class/);
@@ -910,6 +914,18 @@ describe('node A16: each jury round records what getEvaluation\'s vector settles
     expect(first.settled).toEqual({ outcome: 'HIGH', valid: true });
     expect(second.settled).toEqual({ error: expect.stringMatching(/sum/) });
     expect(outcomeOf(json).detail).toBe('1 jury round(s) with a settled outcome (left out: 1 whose vector could not be settled); 0 settled not valid, INVALID or DUPLICATE (0.0%); 1 of 1 labelled round(s) settled the expected class (100.0%); by kind: valid (HIGH 1)');
+  });
+
+  it('the committed scenarios carry the owner\'s LOW into each jury round, the dispute\'s two included', async () => {
+    await startChain();
+    const valid = await reportOf('claim-l4-valid,claim-l4-front-gate');
+    expect(valid.code).toBe(0);
+    expect(valid.json.cases[0].metrics.rounds[0]).toMatchObject({ kind: 'valid', expectedClass: 'LOW', settled: { outcome: 'HIGH', valid: true } });
+    expect(valid.json.cases[1].metrics.rounds[0]).not.toHaveProperty('expectedClass');
+    expect(outcomeOf(valid.json).detail).toMatch(/; 0 of 1 labelled round\(s\) settled the expected class \(0\.0%\);/);
+    const dispute = await reportOf('claim-l4-dispute');
+    expect(dispute.code).toBe(0);
+    expect(dispute.json.cases[0].metrics.rounds.map((r) => [r.kind, r.expectedClass])).toEqual([['valid', 'LOW'], ['dispute', 'LOW']]);
   });
 
   it('an abstention\'s control is the other claim\'s round, and carries no label', async () => {
