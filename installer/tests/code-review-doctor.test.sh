@@ -1,6 +1,8 @@
 #!/bin/bash
 # arbiter-doctor.sh's code-review checks (node A8; design §16): svc.code_runner,
-# sandbox.runsc, sandbox.disk, sandbox.conformance, sandbox.trust and sandbox.registry.
+# sandbox.runsc, sandbox.disk, sandbox.conformance, sandbox.trust and sandbox.registry; and
+# ai.code_jurors (node A14): can the AI Node serve every juror of common's code-standard
+# panels, read from its installed common at run time, with no paid call.
 # Runs the doctor's REAL check_code_review and the REAL code-review-check.js against a
 # fake runner and adapter (HTTP on loopback, from /health bodies this test writes) and
 # stub mountpoint, findmnt and docker.
@@ -26,6 +28,25 @@ TOKEN=$(printf 'tok1%.0s' 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16)
 I="$T/i"; M="$T/mnt"; mkdir -p "$I/code-runner-state" "$I/code-runner/node_modules/@verdikta/common" "$I/external-adapter" "$I/installer" "$T/bin" "$M"
 cp "$ROOT/util/code-review-check.js" "$I/"
 printf '%s\n' "$TOKEN" > "$I/code-runner-state/token"; chmod 600 "$I/code-runner-state/token"
+# The AI Node's common, with the Q63 panels written out here (owner decision, 2026-11-09): the
+# check reads whatever panels the installed release has, so this test does not depend on any.
+AIC="$I/ai-node/node_modules/@verdikta/common"; mkdir -p "$AIC"
+echo '{ "name": "@verdikta/common", "version": "9.9.9-test", "main": "index.js" }' > "$AIC/package.json"
+q63_panels() {
+cat > "$AIC/index.js" <<'J'
+const juror = (AI_PROVIDER, AI_MODEL) => ({ AI_PROVIDER, AI_MODEL, NO_COUNTS: 1, WEIGHT: 0.5 });
+module.exports = { codeReview: { CODE_CLASS_IDS: [133, 134],
+  CODE_STANDARD_PANEL: { NUMBER_OF_OUTCOMES: 6, ITERATIONS: 1, AI_NODES: [juror('openrouter', 'google/gemini-4-argon'), juror('openai', 'gpt-6-luna')] },
+  CODE_STANDARD_DISPUTE_PANEL: { NUMBER_OF_OUTCOMES: 6, ITERATIONS: 1, AI_NODES: [juror('anthropic', 'claude-opus-5-5'), juror('openrouter', 'google/gemini-4-argon')] } } };
+J
+}
+q63_panels
+OAK=$(printf 'oa%.0s' 1 2 3 4 5 6 7 8); ANK=$(printf 'an%.0s' 1 2 3 4 5 6 7 8); ORK=$(printf 'or%.0s' 1 2 3 4 5 6 7 8)
+keys() { # keys LINE... -> ai-node/.env.local holds exactly these lines
+    printf '%s\n' "$@" > "$I/ai-node/.env.local"
+}
+all_keys() { keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY=$ORK" "JUSTIFIER_MODEL=openai:gpt-6-luna"; }
+all_keys
 cat > "$I/code-runner/package.json" <<'J'
 { "name": "verdikta-code-runner", "version": "0.1.0", "dependencies": { "@verdikta/common": "9.9.9-test" } }
 J
@@ -250,10 +271,86 @@ good; edit "$T/adapter.json" 'delete d.codeReview'; out=$(run); is_sev "an adapt
 good; edit "$T/runner.json" 'd.images.allowlist.push({entry:"127.0.0.1:5000",dev:true})'; out=$(run)
 is_sev "dev entry" "$out" sandbox.registry FAIL; has "dev entry named" "$out" "127.0.0.1:5000"
 
+# --- ai.code_jurors: every juror of the installed common's code-standard panels has a route (node A14)
+msg() { printf '%s\n' "$1" | awk -v id="$2" '$2==id{print; exit}'; }
+good; out=$(run); is_sev "every key" "$out" ai.code_jurors PASS
+line=$(msg "$out" ai.code_jurors)
+has "every key: names the release" "$line" "@verdikta/common 9.9.9-test"
+has "every key: Gemini by OpenRouter" "$line" "openrouter google/gemini-4-argon: OpenRouter"
+has "every key: Luna natively" "$line" "openai gpt-6-luna: native"
+has "every key: Opus natively" "$line" "anthropic claude-opus-5-5: native"
+for k in "$OAK" "$ANK" "$ORK"; do hasnt "no key value is printed" "$out" "$k"; done
+# The fallback the gateway uses with no native key: the same jurors, by OpenRouter.
+keys "OPENROUTER_API_KEY=$ORK"; out=$(run); is_sev "OpenRouter only" "$out" ai.code_jurors PASS
+line=$(msg "$out" ai.code_jurors)
+has "OpenRouter only: Luna by OpenRouter" "$line" "openai gpt-6-luna: OpenRouter"
+has "OpenRouter only: Opus by OpenRouter" "$line" "anthropic claude-opus-5-5: OpenRouter"
+keys "OPENAI_API_KEY=$OAK" "OPENROUTER_API_KEY=\"$ORK\""; out=$(run); is_sev "a quoted OpenRouter key, no Anthropic key" "$out" ai.code_jurors PASS
+# Gemini has no native class: without the OpenRouter key every claim abstains.
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK"; out=$(run); is_sev "no OpenRouter key" "$out" ai.code_jurors FAIL
+line=$(msg "$out" ai.code_jurors)
+has "no OpenRouter key: Gemini named" "$line" "google/gemini-4-argon"
+has "no OpenRouter key: the key named" "$line" "OPENROUTER_API_KEY"
+has "no OpenRouter key: says what follows" "$line" "abstain"
+hasnt "no OpenRouter key: Luna is served" "$line" "gpt-6-luna needs"
+has "no OpenRouter key: says where keys go" "$out" "installer/.api_keys"
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY="; out=$(run); is_sev "an empty OpenRouter key" "$out" ai.code_jurors FAIL
+# The files are read as Next reads them (R1-F1): a comment is not a key, and .env counts too.
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY= # disabled"; out=$(run); is_sev "an empty key with a comment after it" "$out" ai.code_jurors FAIL
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK"; echo "OPENROUTER_API_KEY=$ORK" > "$I/ai-node/.env"; out=$(run); is_sev "the OpenRouter key in .env" "$out" ai.code_jurors PASS
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY="; out=$(run); is_sev ".env.local's empty key wins over .env" "$out" ai.code_jurors FAIL; rm -f "$I/ai-node/.env"
+keys; out=$(run); is_sev "no keys at all" "$out" ai.code_jurors FAIL
+line=$(msg "$out" ai.code_jurors)
+for j in google/gemini-4-argon gpt-6-luna claude-opus-5-5; do has "no keys: $j named" "$line" "$j"; done
+rm -f "$I/ai-node/.env.local"; out=$(run); is_sev "no .env.local" "$out" ai.code_jurors FAIL; has "no .env.local: named" "$out" "ai-node/.env.local"
+# The gateway's own overrides decide the route, as provider-config.ts does.
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "AI_GATEWAY=openrouter"; out=$(run); is_sev "AI_GATEWAY=openrouter with no OpenRouter key" "$out" ai.code_jurors FAIL
+has "AI_GATEWAY=openrouter: the override named" "$(msg "$out" ai.code_jurors)" "AI_GATEWAY"
+keys "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY=$ORK" "OPENAI_CLASS_PROVIDER=native"; out=$(run); is_sev "OPENAI_CLASS_PROVIDER=native with no OpenAI key" "$out" ai.code_jurors FAIL
+line=$(msg "$out" ai.code_jurors)
+has "class override: Luna named" "$line" "gpt-6-luna"; has "class override: the override named" "$line" "OPENAI_CLASS_PROVIDER"
+hasnt "class override: Gemini is served" "$line" "gemini-4-argon needs"
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK" "OPENROUTER_API_KEY=$ORK" "ANTHROPIC_CLASS_PROVIDER= OpenRouter "; out=$(run)
+is_sev "an override with case and spaces" "$out" ai.code_jurors PASS; has "an override: Opus by OpenRouter" "$(msg "$out" ai.code_jurors)" "anthropic claude-opus-5-5: OpenRouter"
+# The panels come from the installed common at run time: another release, other jurors.
+cat > "$AIC/index.js" <<'J'
+module.exports = { codeReview: { CODE_CLASS_IDS: [133, 134],
+  CODE_STANDARD_PANEL: { AI_NODES: [{ AI_PROVIDER: 'anthropic', AI_MODEL: 'claude-sonnet-5-5' }, { AI_PROVIDER: 'openrouter', AI_MODEL: 'deepseek/deepseek-v4-pro-0813' }] },
+  CODE_STANDARD_DISPUTE_PANEL: { AI_NODES: [{ AI_PROVIDER: 'anthropic', AI_MODEL: 'claude-sonnet-5-5' }, { AI_PROVIDER: 'openai', AI_MODEL: 'gpt-6-sol' }] } } };
+J
+keys "OPENROUTER_API_KEY=$ORK"; out=$(run); is_sev "another release's panels" "$out" ai.code_jurors PASS
+line=$(msg "$out" ai.code_jurors)
+has "another release: its juror" "$line" "anthropic claude-sonnet-5-5: OpenRouter"; hasnt "another release: not the Q63 jurors" "$line" "gemini"
+echo 'module.exports = { codeReview: { CODE_CLASS_IDS: [133, 134] } };' > "$AIC/index.js"; out=$(run)
+is_sev "a release with no panels" "$out" ai.code_jurors WARN
+echo 'module.exports = { codeReview: { CODE_CLASS_IDS: [133, 134], CODE_STANDARD_PANEL: { AI_NODES: [{ AI_PROVIDER: "google", AI_MODEL: "gemini-4-argon" }] } } };' > "$AIC/index.js"; out=$(run)
+is_sev "a provider the gateway has no class for" "$out" ai.code_jurors FAIL; has "an unknown provider: named" "$(msg "$out" ai.code_jurors)" "google"
+mv "$AIC" "$T/aic.off"; out=$(run); is_sev "no AI Node common" "$out" ai.code_jurors WARN; mv "$T/aic.off" "$AIC"
+q63_panels; all_keys
+# No paid call, and no call at all: the check reads two files. Any connection or lookup is refused here.
+cat > "$T/no-net.js" <<'E'
+const net = require('net'), dns = require('dns'), fs = require('fs');
+const refuse = (what) => { fs.appendFileSync(process.env.NO_NET_LOG, `${what}\n`); throw new Error(`no network here: ${what}`); };
+net.Socket.prototype.connect = function () { refuse('connect'); };
+dns.lookup = () => refuse('dns.lookup');
+globalThis.fetch = () => refuse('fetch');
+E
+: > "$T/net.log"
+jout=$(NO_NET_LOG="$T/net.log" node -r "$T/no-net.js" "$I/code-review-check.js" jurors --install-dir "$I"); jrc=$?
+[ "$jrc" = 0 ] && ok || bad "jurors: rc $jrc for a node that serves every juror: $jout"
+[ ! -s "$T/net.log" ] && ok || bad "the juror check opened a connection: $(cat "$T/net.log")"
+has "jurors: JSON for each juror" "$jout" '"model":"google/gemini-4-argon"'
+keys "OPENAI_API_KEY=$OAK"; NO_NET_LOG="$T/net.log" node -r "$T/no-net.js" "$I/code-review-check.js" jurors --install-dir "$I" >/dev/null; jrc=$?
+[ "$jrc" = 1 ] && ok || bad "jurors: rc $jrc for a node that cannot serve Gemini, expected 1"
+[ ! -s "$T/net.log" ] && ok || bad "the juror check opened a connection: $(cat "$T/net.log")"
+all_keys
+
 # --- not installed: one INFO, and no noise for a text-only arbiter
 good; mv "$I/code-runner/.env" "$T/env.off"; rm -f "$I/code-runner-state/conformance.json"; out=$(run)
 is_sev "not installed" "$out" sandbox.skipped INFO
 hasnt "not installed: no FAIL" "$out" "^FAIL"
+# A text-only arbiter needs no juror of a code panel: no finding, even with no key at all.
+keys; out=$(run); hasnt "text-only: no juror check" "$out" "ai.code_jurors"; hasnt "text-only, no keys: no FAIL" "$out" "^FAIL"; all_keys
 # ... and a disk image with no sandbox is 40 GB nobody is using.
 mkdir -p "$T/prefix/var/lib"; : > "$T/prefix/var/lib/verdikta-code-runner.img"
 out=$(VERDIKTA_SANDBOX_PREFIX="$T/prefix" run); is_sev "an orphan image" "$out" sandbox.disk WARN
@@ -261,10 +358,13 @@ rm -rf "$T/prefix"
 # ... but a node registered on a code class without it is broken.
 printf 'CLASSES_ID="128 133"\n' > "$I/installer/.contracts"; out=$(run)
 is_sev "registered without a sandbox" "$out" svc.code_runner FAIL
+is_sev "registered without a sandbox: its jurors are checked" "$out" ai.code_jurors PASS
+keys "OPENAI_API_KEY=$OAK" "ANTHROPIC_API_KEY=$ANK"; out=$(run); is_sev "registered, no OpenRouter key" "$out" ai.code_jurors FAIL; all_keys
 rm -f "$I/installer/.contracts"
 # ... and so is an adapter turned on by hand.
 echo 'CODE_REVIEW_ENABLED=true' > "$I/external-adapter/.env"; out=$(run)
 is_sev "turned on without a sandbox" "$out" svc.code_runner FAIL
+keys "OPENROUTER_API_KEY=$ORK"; out=$(run); is_sev "turned on without a sandbox: its jurors are checked" "$out" ai.code_jurors PASS; all_keys
 rm -f "$I/external-adapter/.env"
 mv "$T/env.off" "$I/code-runner/.env"
 

@@ -378,6 +378,55 @@ describe('OpenAIProvider', () => {
     );
   });
 
+  // The GPT-6 ids (gpt-6-luna, a Q63 juror; gpt-6-sol, gpt-6-astra) are GPT-5's family: the
+  // detection was written for "gpt-5" ids and sent them to LangChain with max_tokens 1000.
+  test.each(['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'GPT-6-Luna'])('text mode on %s uses the native client with max_completion_tokens and reasoning_effort', async (model) => {
+    mockOpenAICreate.mockResolvedValueOnce({ choices: [{ message: { content: 'a reply' } }] });
+
+    await provider.generateResponse('Evaluate', model, { webAccess: false });
+
+    expect(ChatOpenAI).not.toHaveBeenCalled();
+    expect(mockOpenAICreate).toHaveBeenCalledTimes(1);
+    const body = mockOpenAICreate.mock.calls[0][0];
+    expect(body).toMatchObject({ model, max_completion_tokens: 16000, reasoning_effort: 'medium' });
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.temperature).toBeUndefined();
+  });
+
+  test('a code-mode justifier on gpt-6-luna (a signal, no effort) gets reasoning_effort medium, as on GPT-5', async () => {
+    const signal = new AbortController().signal;
+    await provider.generateResponse('justify', 'gpt-6-luna', { webAccess: false, signal });
+
+    const [body, requestOptions] = mockOpenAICreate.mock.calls[0];
+    expect(body).toMatchObject({ model: 'gpt-6-luna', max_completion_tokens: 16000, reasoning_effort: 'medium' });
+    expect(requestOptions).toEqual({ signal });
+  });
+
+  test('a gpt-6 request with attachments uses the native client with max_completion_tokens and reasoning_effort', async () => {
+    mockOpenAICreate.mockResolvedValueOnce({ choices: [{ message: { content: 'a reply' } }] });
+
+    await provider.generateResponseWithAttachments(
+      'Evaluate',
+      'gpt-6-luna',
+      [{ type: 'text', content: 'the code', mediaType: 'text/plain' }],
+    );
+
+    expect(ChatOpenAI).not.toHaveBeenCalled();
+    const [body, requestOptions] = mockOpenAICreate.mock.calls[0];
+    expect(body).toMatchObject({ model: 'gpt-6-luna', max_completion_tokens: 16000, reasoning_effort: 'medium' });
+    expect(body.max_tokens).toBeUndefined();
+    expect(requestOptions).toBeUndefined();
+  });
+
+  test.each(['gpt-4o', 'gpt-4.1-mini', 'gpt-3.5-turbo', 'o3'])('%s is not read as a GPT-5-family id', async (model) => {
+    (ChatOpenAI as unknown as jest.Mock).mockImplementationOnce(() => ({ invoke: jest.fn().mockResolvedValue({ content: 'a reply' }) }));
+
+    await provider.generateResponse('Evaluate', model, { webAccess: false });
+
+    expect(ChatOpenAI).toHaveBeenCalledTimes(1);
+    expect(mockOpenAICreate).not.toHaveBeenCalled();
+  });
+
   test('generateResponseWithAttachments with GPT-5 and a PDF uses the native PDF path', async () => {
     mockOpenAICreate.mockResolvedValueOnce({
       choices: [{ message: { content: 'Read the PDF' } }]

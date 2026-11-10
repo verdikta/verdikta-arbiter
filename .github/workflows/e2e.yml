@@ -21,10 +21,10 @@ name: E2E
 on:
   pull_request:
     branches: [main, master, claude/stake-attestation]
-    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', 'code-runner/**', 'testing-tool/**', '.github/workflows/e2e.yml']
+    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', 'code-runner/**', 'testing-tool/**', 'installer/util/code-review-check.js', '.github/workflows/e2e.yml']
   push:
     branches: [main, master, claude/stake-attestation]
-    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', 'code-runner/**', 'testing-tool/**', '.github/workflows/e2e.yml']
+    paths: ['e2e/**', 'external-adapter/**', 'ai-node/**', 'code-runner/**', 'testing-tool/**', 'installer/util/code-review-check.js', '.github/workflows/e2e.yml']
   schedule:
     - cron: '0 7 * * *'   # nightly acceptance (L4)
   workflow_dispatch:
@@ -175,6 +175,12 @@ jobs:
       - name: AI Node juror calls past the fetch limits
         working-directory: ai-node
         run: npx jest src/__tests__/lib/llm/juror-transport-limit.test.ts src/__tests__/lib/code-review/deadline.test.ts
+
+      # The Q63 jurors on both gateway routes, each real client against a local stub, and the
+      # doctor's juror check held to provider-config.ts (A14).
+      - name: AI Node Q63 jurors on both routes
+        working-directory: ai-node
+        run: npx jest src/__tests__/lib/llm/q63-juror-routes.test.ts src/__tests__/lib/llm/code-jurors-doctor.test.ts
 
       # `npm run build` is next build with its lint and type check, over the tests too (A11b).
       # Every API route must be dynamic (ƒ): a static one is frozen at build time (AGENTS.md §8).

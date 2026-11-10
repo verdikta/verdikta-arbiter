@@ -1394,6 +1394,39 @@ the class's dispute panel. The panel sets the oracle fee the maker must offer
 (§10.8). A mixed-fee selection test — a request on one class must never select a
 job registered on another — is a Phase 0 deliverable.
 
+> **Erratum, 2026-11-09 (Q63).** The code-standard panels are the ones the owner
+> chose on 2026-11-09 ("As recommended"), after a measurement of six jurors on
+> the severity text of definitions version 2. They replace the Standard and
+> Standard dispute rows above:
+>
+> | Panel | Archive | Jurors (provider, model, weight) |
+> |---|---|---|
+> | Evaluation | listing | `openrouter` `google/gemini-4-argon` 0.5, `openai` `gpt-6-luna` 0.5 |
+> | Dispute | dispute | `anthropic` `claude-opus-5-5` 0.5, `openrouter` `google/gemini-4-argon` 0.5 |
+>
+> Each with `NO_COUNTS` 1 and `ITERATIONS` 1, effort `high` and the envelope's
+> 32k output tokens. The code-standard pool gains `google/gemini-4-argon` and
+> `claude-opus-5-5`. They arrive with `@verdikta/common` 1.9.0-attest.4; an
+> arbiter on attest.3 still has Sonnet 5.5 + DeepSeek V4 Pro and Sonnet 5.5 +
+> GPT-6 Sol.
+>
+> The panels were measured with every non-Anthropic juror through OpenRouter
+> (`openai/gpt-6-luna`, `google/gemini-4-argon`: reasoning effort `high`,
+> `max_tokens` 32000, no sampling parameter) and Opus direct (adaptive thinking,
+> `output_config.effort` `high`, 32000 output tokens). The AI Gateway sends Luna
+> and Opus to their native APIs when the operator has the key, and to OpenRouter
+> otherwise (as `openai/gpt-6-luna` and `anthropic/claude-opus-5.5`). Both routes
+> send the same effort and output limit and no sampling parameter
+> (`ai-node/src/__tests__/lib/llm/q63-juror-routes.test.ts`). OpenRouter
+> documents its `reasoning.effort` as OpenAI's reasoning effort, Gemini's
+> thinking level and, on Claude 5.5, Anthropic's `output_config.effort` with
+> adaptive thinking. That translation is OpenRouter's, and nothing here measures
+> it. The AI Node has no Google class, so OpenRouter is Gemini's only route.
+> Every juror is required (§10.5), so **a code-class operator needs an OpenRouter
+> key that serves Gemini, or the arbiter abstains on every claim**.
+> `arbiter-doctor.sh` reports `ai.code_jurors`: a route for each juror of the
+> panels its installed common names, with no model call.
+
 ### 10.5 Final vector and the partial-success rule
 
 Scoring is unchanged: the weighted average over `AI_NODES`, then the justifier.

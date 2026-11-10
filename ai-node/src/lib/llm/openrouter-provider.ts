@@ -1,6 +1,7 @@
 import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { resolveOpenRouterModelId } from '../../config/openrouter-models';
 import { jurorTransportFor, withDispatcher } from './juror-transport';
+import { isGpt5FamilyModel } from './openai-model-family';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -196,8 +197,9 @@ export class OpenRouterProvider implements LLMProvider {
     }
   }
 
+  /** Text mode's default output ceiling only: a code-mode call passes the envelope's maxTokens. */
   private isReasoningModel(model: string): boolean {
     const normalized = model.toLowerCase();
-    return normalized.includes('o1') || normalized.includes('o3') || normalized.includes('gpt-5') || normalized.includes('reasoning');
+    return normalized.includes('o1') || normalized.includes('o3') || isGpt5FamilyModel(normalized) || normalized.includes('reasoning');
   }
 }

@@ -15,6 +15,7 @@ import { AttachmentContext, attachmentRequestError } from './attachment-errors';
 import { WebAccessOption, openAIModelSupportsWebSearch, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
 import { WebRetrieval, summarizeOpenAIWebSearch, webToolsOff } from './web-retrieval';
 import { jurorTransportFor } from './juror-transport';
+import { isGpt5FamilyModel } from './openai-model-family';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -86,16 +87,16 @@ export class OpenAIProvider implements LLMProvider {
       if (answer !== null) return answer;
     }
 
-    // Check if this is a reasoning model (o1, o3, gpt-4.1, gpt-5, nano, etc.)
+    // Check if this is a reasoning model (o1, o3, gpt-4.1, GPT-5 and later, nano, etc.)
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
-                            model.toLowerCase().includes('gpt-5') ||
+                            isGpt5FamilyModel(model) ||
                             model.toLowerCase().includes('gpt-4.1') ||
                             model.toLowerCase().includes('nano');
     
-    // GPT-5 models require max_completion_tokens instead of max_tokens
+    // GPT-5 and later models (gpt-6-luna, …) require max_completion_tokens instead of max_tokens
     // Use native OpenAI client for these models
-    const isGpt5Model = model.toLowerCase().includes('gpt-5');
+    const isGpt5Model = isGpt5FamilyModel(model);
     
     // A code-mode call (signal, envelope max tokens, effort) also goes through the
     // native client: it takes max_completion_tokens, reasoning_effort and a signal.
@@ -180,12 +181,12 @@ export class OpenAIProvider implements LLMProvider {
 
       const maxCompletionTokens = options?.maxTokens ?? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000');
       
-      // GPT-5 models use reasoning_effort as a direct string value, not an object.
+      // GPT-5 and later models use reasoning_effort as a direct string value, not an object.
       // A code-mode call on another model (a gpt-4o justifier) sends none unless it asks for effort.
       const reasoningEffort = options?.effort || options?.reasoning?.effort
-        || (model.toLowerCase().includes('gpt-5') ? 'medium' : undefined);
+        || (isGpt5FamilyModel(model) ? 'medium' : undefined);
       
-      console.log(`[${this.providerName}] Using native client for GPT-5 model ${model} with max_completion_tokens: ${maxCompletionTokens}, reasoning_effort: ${reasoningEffort}`);
+      console.log(`[${this.providerName}] Using native client for ${model} with max_completion_tokens: ${maxCompletionTokens}, reasoning_effort: ${reasoningEffort}`);
 
       const body = {
         model: model,
@@ -264,8 +265,8 @@ export class OpenAIProvider implements LLMProvider {
     attachments: Array<{ type: string, content: string, mediaType: string }>,
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string> {
-    // Check if this model supports native PDF processing
-    const supportsNativePDF = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini'].some(supportedModel => 
+    // Check if this model supports native PDF processing (GPT-5 and later included)
+    const supportsNativePDF = isGpt5FamilyModel(model) || ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
       model.toLowerCase().includes(supportedModel.toLowerCase())
     );
 
@@ -280,8 +281,8 @@ export class OpenAIProvider implements LLMProvider {
       if (answer !== null) return answer;
     }
 
-    // GPT-5 models require native client for max_completion_tokens support
-    const isGpt5Model = model.toLowerCase().includes('gpt-5');
+    // GPT-5 and later models require native client for max_completion_tokens support
+    const isGpt5Model = isGpt5FamilyModel(model);
 
     // The native PDF path only when a PDF is actually attached
     if (supportsNativePDF && pdfAttachments.length > 0) {
@@ -298,7 +299,7 @@ export class OpenAIProvider implements LLMProvider {
     // Check if this is a reasoning model
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
-                            model.toLowerCase().includes('gpt-5') ||
+                            isGpt5FamilyModel(model) ||
                             model.toLowerCase().includes('gpt-4.1') ||
                             model.toLowerCase().includes('nano');
 
@@ -460,12 +461,12 @@ export class OpenAIProvider implements LLMProvider {
     // Check if this is a reasoning model
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
-                            model.toLowerCase().includes('gpt-5') ||
+                            isGpt5FamilyModel(model) ||
                             model.toLowerCase().includes('gpt-4.1') ||
                             model.toLowerCase().includes('nano');
     
-    // GPT-5 models require max_completion_tokens instead of max_tokens
-    const isGpt5Model = model.toLowerCase().includes('gpt-5');
+    // GPT-5 and later models require max_completion_tokens instead of max_tokens
+    const isGpt5Model = isGpt5FamilyModel(model);
     const maxTokensValue = isReasoningModel 
       ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
       : 1000;
