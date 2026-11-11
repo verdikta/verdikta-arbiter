@@ -16,11 +16,19 @@ const fs = require('fs');
 const http = require('http');
 const os = require('os');
 const path = require('path');
+const { codeReview } = require('@verdikta/common');
 const { writeClaimScenario } = require('../helpers/claimFixture');
+const { routeIds } = require('../../src/routes');
 
 const REPO = path.join(__dirname, '..', '..', '..');
 const KEYS = Object.freeze({ OPENAI_API_KEY: 'fake-openai-aaaaaaaaaaaaaaaa', ANTHROPIC_API_KEY: 'fake-anthropic-bbbbbbbbbbbbbbbb', OPENROUTER_API_KEY: 'fake-openrouter-cccccccccccccccc', XAI_API_KEY: 'fake-xai-dddddddddddddddd' });
 const reply = (score) => JSON.stringify({ score, justification: 'stub reasons' });
+/**
+ * The scenarios' panel is the pinned release's (owner decision Q63: gemini-4-argon and gpt-6-luna). jury-run.sh leaves the
+ * AI Node no OpenAI key, so Luna goes through OpenRouter as openai/gpt-6-luna: every id a juror's call can carry.
+ */
+const PANEL = codeReview.CODE_STANDARD_PANEL.AI_NODES;
+const JUROR_IDS = new Set(PANEL.flatMap((node) => routeIds(node.AI_PROVIDER, node.AI_MODEL)));
 
 async function main() {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'jury-e2e-'));
@@ -33,7 +41,7 @@ async function main() {
       seen.push({ url: req.url, model: body.model, stream: body.stream, maxTokens: body.max_tokens, apiKey: req.headers['x-api-key'], authorization: req.headers.authorization });
       res.writeHead(200, { 'content-type': 'application/json' });
       if (req.url.startsWith('/v1/messages')) {
-        const juror = body.model === 'claude-sonnet-5-5';
+        const juror = JUROR_IDS.has(body.model);
         res.end(JSON.stringify({ id: 'msg', type: 'message', role: 'assistant', model: body.model, stop_reason: 'end_turn', stop_sequence: null, content: [{ type: 'text', text: juror ? reply([0, 0, 0, 0, 1000000, 0]) : 'The panel.' }], usage: { input_tokens: 5000, output_tokens: 700 } }));
       } else {
         res.end(JSON.stringify({ choices: [{ message: { role: 'assistant', content: reply([0, 0, 0, 0, 1000000, 0]) } }], usage: { prompt_tokens: 5000, completion_tokens: 900 } }));
@@ -62,6 +70,10 @@ async function main() {
     assert.deepStrictEqual(JSON.parse(fs.readFileSync(path.join(run, 'done'), 'utf8')).exit, 0);
     assert.strictEqual(JSON.parse(fs.readFileSync(path.join(run, 'summary.json'), 'utf8')).reason, 'finished');
     assert.strictEqual(seen.length, 6, 'two jurors and a justifier, for each of two claims');
+    // Gemini and Luna through OpenRouter (Luna under its OpenRouter id), the justifier to Anthropic.
+    const jurorCalls = seen.filter((call) => JUROR_IDS.has(call.model));
+    assert.deepStrictEqual(jurorCalls.map((call) => call.model).sort(), ['google/gemini-4-argon', 'google/gemini-4-argon', 'openai/gpt-6-luna', 'openai/gpt-6-luna']);
+    assert.ok(jurorCalls.every((call) => !call.url.startsWith('/v1/messages')), 'the jurors went through OpenRouter');
     for (const call of seen) {
       assert.notStrictEqual(call.stream, true);
       if (call.url.startsWith('/v1/messages')) assert.strictEqual(call.apiKey, KEYS.ANTHROPIC_API_KEY);

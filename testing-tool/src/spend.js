@@ -11,6 +11,8 @@
 const crypto = require('crypto');
 const fs = require('fs');
 
+const { modelOfRoute } = require('./routes');
+
 const M = 1000000;
 
 /**
@@ -47,9 +49,16 @@ const JUSTIFIER_MAX_TOKENS = 8192;
 /** As the External Adapter: a second attempt, on a retryable answer only. */
 const ATTEMPTS = 2;
 
+/**
+ * A model's row, or the row of the pool model an OpenRouter route id stands for (routes.js): a call the AI Node sent
+ * through OpenRouter carries that id, as gpt-6-luna does under jury-run.sh (openai/gpt-6-luna). The Q63 rows are
+ * OpenRouter's own prices; for Haiku and Sonnet, Anthropic's, whose cache rows are at or above OpenRouter's.
+ */
 function priceOf(model) {
   // Own rows only: "constructor" is no model.
-  const price = Object.hasOwn(PRICES.models, model) ? PRICES.models[model] : null;
+  const own = (id) => (Object.hasOwn(PRICES.models, id) ? PRICES.models[id] : null);
+  const routed = modelOfRoute(model);
+  const price = own(model) || (routed ? own(routed.model) : null);
   if (!price) throw new Error(`no list price for model ${model}: a call to it could not be counted`);
   return price;
 }

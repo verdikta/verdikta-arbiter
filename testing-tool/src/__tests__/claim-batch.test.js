@@ -20,6 +20,8 @@ const DEEPSEEK = 'deepseek/deepseek-v4-pro-0813';
 const HAIKU = 'claude-haiku-5-5';
 /** The scenarios' panel: the pinned release's CODE_STANDARD_PANEL (owner decision Q63), whose jurors a batch prices and reads. */
 const [GEMINI, LUNA] = codeReview.CODE_STANDARD_PANEL.AI_NODES.map((node) => node.AI_MODEL);
+/** What a Luna call carries at the meter under jury-run.sh, which leaves the AI Node no OpenAI key: its OpenRouter id. */
+const LUNA_ROUTE = 'openai/gpt-6-luna';
 
 async function scenarios(ids) {
   const claims = path.join(dir, 'claims-in');
@@ -37,7 +39,7 @@ function recordCalls(batchDir, ledger, { first = [0, 0, 0, 0, 1000000, 0], secon
     ledger.settle(id, { usd, basis: 'reported', status: 200, inputTokens: 100, outputTokens: 10, response: save(id, model, body) });
   };
   one(GEMINI, { choices: [{ message: { content: `\`\`\`json\n${JSON.stringify({ score: first, justification: 'j' })}\n\`\`\`` } }] });
-  one(LUNA, { choices: [{ message: { content: JSON.stringify({ score: second, justification: 'j' }) } }] });
+  one(LUNA_ROUTE, { choices: [{ message: { content: JSON.stringify({ score: second, justification: 'j' }) } }] });
   one(HAIKU, { content: [{ type: 'text', text: 'The panel found.' }] });
 }
 
@@ -90,7 +92,7 @@ describe('one result file per claim', () => {
     const a = readClaim(batchDir, 'a');
     expect(a.settled.outcome).toBe('MEDIUM');
     expect(a.spend.usd).toBeCloseTo(0.3, 6);
-    expect(a.spend.calls.map((c) => c.model)).toEqual([GEMINI, LUNA, HAIKU]);
+    expect(a.spend.calls.map((c) => c.model)).toEqual([GEMINI, LUNA_ROUTE, HAIKU]);
     expect(a.spend.calls[0]).toMatchObject({ inputTokens: 100, outputTokens: 10, basis: 'reported' });
     expect(a.jurors).toEqual([
       { model: GEMINI, vector: [0, 0, 0, 0, 1000000, 0] },
@@ -310,6 +312,19 @@ describe('jurorVectors', () => {
   const vector = [0, 0, 0, 0, 1000000, 0];
   const RESCALED = [166670, 166666, 166666, 166666, 166666, 166666];
   const reply = (score, justification = 'j') => JSON.stringify({ score, justification });
+
+  test('A19: a juror\'s answer is read under its OpenRouter id too, and only its own: the Q63 panels on jury-run.sh', () => {
+    const q63 = codeReview.CODE_STANDARD_PANEL;
+    const dispute = codeReview.CODE_STANDARD_DISPUTE_PANEL;
+    const choices = (score) => ({ choices: [{ message: { content: reply(score) } }] });
+    const high = [0, 0, 0, 0, 1000000, 0];
+    const calls = [answerFile('1.json', GEMINI, choices(high)), answerFile('2.json', LUNA_ROUTE, choices(high))];
+    expect(jurorVectors(calls, q63, dir, high)).toEqual([{ model: GEMINI, vector: high }, { model: LUNA, vector: high }]);
+    // Opus by either route; another juror's route id is never its answer.
+    const opus = [answerFile('3.json', 'anthropic/claude-opus-5.5', choices(high)), answerFile('4.json', GEMINI, choices(high))];
+    expect(jurorVectors(opus, dispute, dir, high).map((j) => j.vector)).toEqual([high, high]);
+    expect(jurorVectors([answerFile('5.json', 'openai/gpt-6-sol', choices(high)), calls[0]], q63, dir)).toEqual([{ model: GEMINI, vector: high }, { model: LUNA, vector: null }]);
+  });
 
   test('a repair call\'s scores replace the prose before it, rescaled, and a juror with none is null', () => {
     const calls = [
