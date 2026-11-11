@@ -117,7 +117,10 @@ function namesDocuments(spec) {
 
 const DOCUMENT_HEADER = 'the maker\'s document at the listed commit (stake.documents): ';
 
-/** A prior finding's summary line at most, so that 8 of them always fit their tier's share. */
+/**
+ * A prior finding's summary line at most, so that 8 of them always fit their tier's share: without documents. With
+ * them and every tier full, common's contract has the prior findings give up the documents' share first.
+ */
 const MAX_SUMMARY_BYTES = 5200;
 /** A known issue's line at most: a share of the tier, so that the listing's first ones always fit it, and a description of 2,000 characters fits this. */
 const MAX_KNOWN_ISSUE_BYTES = 8192;
