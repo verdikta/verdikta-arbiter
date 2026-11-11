@@ -11,22 +11,31 @@
  * `git grep`'s lines. assemblePack() is then a pure function of those reads and
  * the request's documents.
  *
- * The tiers, in §10.3's priority order, with their share of the class budget
- * (common's envelope; 60k tokens for code-standard):
+ * The tiers, in §10.3's priority order (common's CONTEXT_PACK_TIERS), with
+ * their share of the class budget (common's envelope; 60k tokens for
+ * code-standard):
  *
- *   1 poc            30%   poc.patch with function context, the PoC files' full text
- *   2 claim          10%   finding.json, report.md
- *   3 source         24%   the in-scope source files the finding names
- *   4 callSites       5%   call sites of the symbols the PoC exercises (at most 10 each)
- *   5 knownIssues    12%   known_issues.json
- *   6 priorFindings  19%   summaries of the prior valid findings (up to 8)
- *   7 fix             -    the fix diff
- *   8 tree            -    a shallow file tree
+ *   poc            30%   poc.patch with function context, the PoC files' full text
+ *   claim          10%   finding.json, report.md
+ *   source         24%   the in-scope source files the finding names
+ *   documents       *    the maker's documents the listing names (stake.documents)
+ *   callSites       5%   call sites of the symbols the PoC exercises (at most 10 each)
+ *   knownIssues    12%   known_issues.json
+ *   priorFindings  19%   summaries of the prior valid findings (up to 8)
+ *   fix             -    the fix diff
+ *   tree            -    a shallow file tree
  *
- * Tiers 1-6 first take up to their share, in order; what is left goes back up
- * in order, then to tiers 7 and 8. So a hunter who pads poc.patch or report.md,
- * or names 200 huge files, cannot push out the known issues and prior findings
- * a juror needs to find a duplicate. Over budget the lowest tiers go first.
+ * The documents tier exists only when the listing names documents (owner
+ * decision Q61 (a); node A19). Its share and its cap are common's, in bytes
+ * (STAKE_DOCUMENT_LIMITS.tierBytes: 10% and 20% of the class budget). Without
+ * it every other tier keeps its rank, file names and bytes, so the ranks run
+ * 1-8 without documents and 1-9 with them.
+ *
+ * The tiers with a share first take up to it, in order; what is left goes back
+ * up in order (the documents up to their cap), then to the fix and the tree.
+ * So a hunter who pads poc.patch or report.md, or names 200 huge files, cannot
+ * push out the known issues and prior findings a juror needs to find a
+ * duplicate, nor the documents' share. Over budget the lowest tiers go first.
  *
  * Nothing leaves silently (design review of the Q38 stop). Everything gathered
  * from a list goes through one account (Tally): an item is delivered, or omitted
@@ -49,11 +58,15 @@
  */
 
 const crypto = require('node:crypto');
-const { getCodeClass, canonicalJson, matchesAny, splitByStakeScope } = require('./common');
+// common's document selection and text rule are called through the module, so a test can make them fail.
+const common = require('./common');
 const { git } = require('./git');
 const { Prefix } = require('./capture');
-const { ABSTAIN, Abstain } = require('./result');
+const { ABSTAIN, Abstain, RequesterError } = require('./result');
 const { parseLsTreeZ } = require('./patch');
+const { KIND } = require('./objects');
+
+const { getCodeClass, canonicalJson, matchesAny, splitByStakeScope, CONTEXT_PACK_TIERS, STAKE_DOCUMENT_LIMITS } = common;
 
 const PACK_VERSION = 1;
 const PACK_SCHEMA = 'verdikta.context-pack/1';
@@ -61,6 +74,8 @@ const BYTES_PER_TOKEN = 4;
 const TOKEN_RULE = 'ceil(UTF-8 bytes / 4), with a fixed allowance per file';
 /** The manifest's room, and each file's for its fence lines (two lines with a hash and the file's name). */
 const MANIFEST_RESERVE_BYTES = 3072;
+/** The manifest's more room when it has a documents tier: one more tier, with reasons of its own. */
+const DOCUMENTS_MANIFEST_RESERVE_BYTES = 1024;
 const FILE_OVERHEAD_BYTES = 160;
 /** A tier gets no file for less than this: a header and a few words help no one. */
 const MIN_ITEM_BYTES = 512;
@@ -70,24 +85,37 @@ const LEFT_OUT_NOTE_BYTES = 64;
 /**
  * Why something asked for is not in the pack. Facts about the request or the
  * repository: no larger cap, read limit or budget would have delivered it. A binary
- * file is here by that test: the jury reads text, whatever the budget.
+ * file is here by that test: the jury reads text, whatever the budget. The
+ * documents' own (common's "Which files count"): a document the source tier
+ * holds (`inSource`), a symbolic link, a submodule, and a file that is not
+ * UTF-8 text (`notText`).
  */
-const FACT_REASONS = Object.freeze(['outOfScope', 'notInCommit', 'notAFile', 'notAskable', 'duplicate', 'binary', 'noDiff']);
-/** Left out for a cap, a read limit, a size bound or the budget: a tier with one of these is not `full`. */
-const LOSS_REASONS = Object.freeze(['overBudget', 'pastCap', 'unreadable', 'unread']);
+const FACT_REASONS = Object.freeze(['outOfScope', 'notInCommit', 'notAFile', 'notAskable', 'duplicate', 'binary', 'noDiff', 'inSource', 'symlink', 'submodule', 'notText']);
+/**
+ * Left out for a cap, a read limit, a size bound or the budget: a tier with one of these is not `full`. `tooLarge`: a
+ * document over common's maxFileBytes, left unread.
+ */
+const LOSS_REASONS = Object.freeze(['overBudget', 'pastCap', 'unreadable', 'unread', 'tooLarge']);
 const REASONS = new Set([...FACT_REASONS, ...LOSS_REASONS]);
 
-const TIERS = Object.freeze([
-  Object.freeze({ name: 'poc', share: 30 }),
-  Object.freeze({ name: 'claim', share: 10 }),
-  Object.freeze({ name: 'source', share: 24 }),
-  Object.freeze({ name: 'callSites', share: 5 }),
-  Object.freeze({ name: 'knownIssues', share: 12 }),
-  Object.freeze({ name: 'priorFindings', share: 19 }),
-  Object.freeze({ name: 'fix', share: 0 }),
-  Object.freeze({ name: 'tree', share: 0 })
-]);
-const TIER_NAMES = Object.freeze(TIERS.map((t) => t.name));
+/** Each tier's share of the class budget, in percent. The documents' share and cap are common's, in bytes. */
+const SHARES = Object.freeze({ poc: 30, claim: 10, source: 24, callSites: 5, knownIssues: 12, priorFindings: 19, fix: 0, tree: 0 });
+const DOCUMENTS = 'documents';
+/** common's order of the tiers: a tier the runner does not build would be one the jury never gets, so it stops the runner. */
+const TIER_NAMES = Object.freeze([...CONTEXT_PACK_TIERS]);
+for (const name of TIER_NAMES) {
+  if (name !== DOCUMENTS && !Object.prototype.hasOwnProperty.call(SHARES, name)) throw new Error(`@verdikta/common names a context pack tier the runner does not build: ${name}`);
+}
+if (TIER_NAMES.length !== Object.keys(SHARES).length + 1) throw new Error('@verdikta/common\'s context pack tiers are not the runner\'s');
+const TIERS = Object.freeze(TIER_NAMES.map((name) => Object.freeze({ name, share: name === DOCUMENTS ? null : SHARES[name] })));
+
+/** Whether the listing names documents: stake.documents is a list with an entry. Without it, or with an empty list, the pack has no documents tier. */
+function namesDocuments(spec) {
+  const stake = spec && typeof spec === 'object' ? spec.stake : null;
+  return Boolean(stake && typeof stake === 'object' && Array.isArray(stake.documents) && stake.documents.length > 0);
+}
+
+const DOCUMENT_HEADER = 'the maker\'s document at the listed commit (stake.documents): ';
 
 /** A prior finding's summary line at most, so that 8 of them always fit their tier's share. */
 const MAX_SUMMARY_BYTES = 5200;
@@ -379,21 +407,28 @@ class BlobSink {
       return;
     }
     const size = Number(m[2]);
-    // At least what tells a binary file from a text, whatever the texts before it took.
-    const keep = Math.min(size, MAX_BLOB_BYTES, Math.max(BINARY_PROBE_BYTES, this.textLeft));
-    this.record = { path, type: m[1], size, left: size, keep, kept: 0, chunks: [] };
+    this.record = { path, type: m[1], size, left: size, keep: this.keepFor(size), kept: 0, chunks: [] };
     if (size === 0) this.finishRecord();
+  }
+
+  /** How much of a record of `size` bytes is kept: at least what tells a binary file from a text, whatever the texts before it took. */
+  keepFor(size) {
+    return Math.min(size, MAX_BLOB_BYTES, Math.max(BINARY_PROBE_BYTES, this.textLeft));
   }
 
   finishRecord() {
     const { path, type, size, kept, chunks } = this.record;
     this.record = null;
     this.endOfRecord = true;
+    this.accept({ path, type, size, kept, content: Buffer.concat(chunks) });
+  }
+
+  /** One record read: delivered, or omitted with its reason. */
+  accept({ path, type, size, kept, content }) {
     if (type !== 'blob') {
       this.tally.omit('notAFile');
       return;
     }
-    const content = Buffer.concat(chunks);
     if (content.subarray(0, BINARY_PROBE_BYTES).includes(0)) {
       this.tally.omit('binary');
       return;
@@ -407,6 +442,25 @@ class BlobSink {
     if (this.record) this.finishRecord();
     this.tally.omit('unread', this.paths.length - this.at);
     this.at = this.paths.length;
+  }
+}
+
+/**
+ * The documents' records (common's "Which files count"): each read whole, since a
+ * document is at most maxFileBytes and whether it is text is decided on the whole
+ * file (isDocumentText), and kept only when it is.
+ */
+class DocumentSink extends BlobSink {
+  keepFor(size) {
+    return Math.min(size, STAKE_DOCUMENT_LIMITS.maxFileBytes);
+  }
+
+  accept({ path, type, size, kept, content }) {
+    if (type !== 'blob') this.tally.omit('notAFile');
+    // git's own size over the bound: the listed sizes said otherwise, and nothing past the bound is read.
+    else if (kept < size) this.tally.omit('tooLarge');
+    else if (!common.isDocumentText(content)) this.tally.omit('notText');
+    else this.tally.deliver({ path, text: content.toString('utf8'), bytes: size, cut: false });
   }
 }
 
@@ -447,6 +501,72 @@ async function gatherFiles(ctx, name, commit, paths, inScope = (p) => p) {
       name, timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(list.map((p) => `${commit}:${p}\n`).join(''), 'utf8'), tee: sink
     });
     if (record.exitCode !== 0) throw runnerError(name, `the pack's files could not be read (git exited ${record.exitCode})`);
+    sink.finish();
+  }
+  return tally.account();
+}
+
+/**
+ * The documents tier's reads (owner decision Q61 (a); common's "Stake
+ * documents"): common's selectDocuments over the listed commit's own entries,
+ * then every selected regular file of at most maxFileBytes read whole from the
+ * listed commit by commit id, and kept when common counts it as text. Every file
+ * the selection names ends delivered or under its reason: the source tier's
+ * (`inSource`), past the cap, a symbolic link, a submodule, too large (never
+ * read), a path that is not one line, not text.
+ *
+ * A path that is not UTF-8 is no candidate: it has no spelling a glob or the
+ * file's header can carry. Any error from the selection, DOCUMENTS_MATCH_TOO_COSTLY
+ * among them, is the requester's broken package (common's spec: the builder
+ * refuses such a listing), raised while no claim code has run.
+ * @param {object} ctx
+ * @param {object} o
+ * @param {string} o.commit - the listed commit, as the forced checkout committed it
+ * @param {object} o.stake - the spec's stake block
+ * @param {unknown[]} o.affectedPaths - the finding's
+ * @param {Array<{path:string, kind:string, size:number|null}>} o.listedFiles - the listed commit's own entries (checkout.js)
+ * @returns {Promise<{asked:number, items:object[], omitted:object}>}
+ * @throws {RequesterError} the selection failed
+ */
+async function gatherDocuments(ctx, { commit, stake, affectedPaths, listedFiles }) {
+  if (!Array.isArray(listedFiles)) throw runnerError('pack:documents', 'the listed commit\'s own files were not listed');
+  const byName = new Map();
+  for (const entry of listedFiles) {
+    const bytes = Buffer.from(entry.path, 'latin1');
+    const name = bytes.toString('utf8');
+    if (Buffer.from(name, 'utf8').equals(bytes)) byName.set(name, entry);
+  }
+  let selection;
+  try {
+    selection = common.selectDocuments([...byName.keys()], stake, affectedPaths);
+  } catch (err) {
+    const costly = Boolean(err && err.code === 'DOCUMENTS_MATCH_TOO_COSTLY');
+    throw new RequesterError([{
+      code: costly ? 'DOCUMENTS_MATCH_TOO_COSTLY' : 'STAKE_DOCUMENTS_INVALID',
+      path: '/spec/stake/documents',
+      detail: costly ? err.message : `stake.documents could not be matched against the listed commit's files (${err && err.name ? err.name : 'an error'} from @verdikta/common)`
+    }]);
+  }
+  const tally = new Tally(selection.paths.length + selection.inSource.length + selection.pastCap.length);
+  tally.omit('inSource', selection.inSource.length);
+  tally.omit('pastCap', selection.pastCap.length);
+  const ask = [];
+  for (const p of selection.paths) {
+    const entry = byName.get(p);
+    if (!entry) throw new Error('common selected a document the listed commit does not list');
+    if (entry.kind === KIND.link) tally.omit('symlink');
+    else if (entry.kind === KIND.gitlink) tally.omit('submodule');
+    else if (entry.kind !== KIND.blob && entry.kind !== KIND.exec) tally.omit('notAFile');
+    else if (!(entry.size <= STAKE_DOCUMENT_LIMITS.maxFileBytes)) tally.omit('tooLarge');
+    else if (!askablePath(p)) tally.omit('notAskable');
+    else ask.push(p);
+  }
+  if (ask.length > 0) {
+    const sink = new DocumentSink(ask, tally);
+    const record = await ctx.exec(git(['cat-file', '--batch']), {
+      name: 'pack:documents', timeoutMs: GIT_TIMEOUT_MS, stdin: Buffer.from(ask.map((p) => `${commit}:${p}\n`).join(''), 'utf8'), tee: sink
+    });
+    if (record.exitCode !== 0) throw runnerError('pack:documents', `the listing's documents could not be read (git exited ${record.exitCode})`);
     sink.finish();
   }
   return tally.account();
@@ -564,8 +684,9 @@ async function gatherCallSites(ctx, listed, added, keep) {
  * @param {string} o.poc - the commit that records poc.patch
  * @param {Array<{status:string, path:string}>} o.touched - what the patch touched
  * @param {Map<string, Array<{line:number, text:string}>>} o.added - its added lines under paths.tests
+ * @param {Array<{path:string, kind:string, size:number|null}>} [o.listedFiles] - the listed commit's own entries, for the documents
  */
-async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
+async function gatherPackInputs(ctx, { request, listed, poc, touched, added, listedFiles }) {
   const diff = await read(ctx, 'pack:diff', ['diff', '-W', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames',
     '--diff-algorithm=myers', '--src-prefix=a/', '--dst-prefix=b/', listed, poc, '--']);
   if (diff.exitCode !== 0) throw runnerError('pack:diff', `the PoC's diff could not be read (git exited ${diff.exitCode})`);
@@ -579,6 +700,11 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
   const sources = await gatherFiles(ctx, 'pack:source', listed, named, scope
     ? (p) => { const { inScope } = splitByStakeScope([p], scope); return inScope.length ? inScope[0] : null; }
     : (p) => p);
+
+  // The maker's documents, right after the source (owner decision Q61 (a)); nothing is read for a listing that names none.
+  const documents = namesDocuments(spec)
+    ? await gatherDocuments(ctx, { commit: listed, stake: spec.stake, affectedPaths: named, listedFiles })
+    : null;
 
   // Call sites in what the stake covers; without a scope, in anything but the tests and the framework's own paths.
   const skip = [...(spec.paths.tests || []), ...(spec.paths.protected || [])];
@@ -600,6 +726,7 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added }) {
     pocDiffCut: diff.truncated,
     pocFiles,
     sources,
+    documents,
     callSites,
     tree: shallowTree(names.map((p) => Buffer.from(p, 'latin1').toString('utf8'))),
     treeCut: tree.truncated
@@ -661,6 +788,9 @@ function tierAccounts(request, inputs) {
       ]
     },
     source: { asked: inputs.sources.asked, omitted: { ...inputs.sources.omitted }, items: numbered(inputs.sources, 'source', (f) => `source file: ${f.path}`) },
+    documents: inputs.documents
+      ? { asked: inputs.documents.asked, omitted: { ...inputs.documents.omitted }, items: numbered(inputs.documents, 'document', (f) => `${DOCUMENT_HEADER}${f.path}`) }
+      : null,
     callSites: {
       asked: sites.asked,
       omitted: { ...sites.omitted },
@@ -685,21 +815,43 @@ function tierAccounts(request, inputs) {
   };
 }
 
-/** Bytes per tier: first up to each share, in order, then what is left, in order. */
-function allocate(budgetBytes, sizes) {
-  let remaining = budgetBytes - MANIFEST_RESERVE_BYTES;
+/**
+ * Bytes per tier: first up to each share, in order, then what is left, in order, never past a tier's cap.
+ * @param {number} budgetBytes
+ * @param {Record<string, number>} sizes
+ * @param {Array<{name:string, shareBytes:number, capBytes:number}>} plan - the pack's tiers, in order
+ * @param {number} reserveBytes - the manifest's room
+ */
+function allocate(budgetBytes, sizes, plan, reserveBytes) {
+  let remaining = budgetBytes - reserveBytes;
   const grants = {};
-  for (const { name, share } of TIERS) {
-    const grant = Math.min(Math.floor((budgetBytes * share) / 100), sizes[name], Math.max(0, remaining));
+  for (const { name, shareBytes, capBytes } of plan) {
+    const grant = Math.min(shareBytes, Math.min(sizes[name], capBytes), Math.max(0, remaining));
     grants[name] = grant;
     remaining -= grant;
   }
-  for (const { name } of TIERS) {
-    const more = Math.min(sizes[name] - grants[name], Math.max(0, remaining));
+  for (const { name, capBytes } of plan) {
+    const more = Math.min(Math.min(sizes[name], capBytes) - grants[name], Math.max(0, remaining));
     grants[name] += more;
     remaining -= more;
   }
   return grants;
+}
+
+/**
+ * The pack's tiers in order, with their shares and caps in bytes: common's order, without the documents tier when the
+ * listing names none. The documents' share is common's `reserved`, its cap common's `max`, both for the pack's class.
+ * The manifest's room grows with the tier, so a pack without documents is laid out as it was.
+ * @returns {{plan:Array<{name:string, shareBytes:number, capBytes:number}>, reserveBytes:number}}
+ */
+function tierPlan(request, codeClass, budgetBytes) {
+  const documents = namesDocuments(request.spec);
+  const limits = documents ? STAKE_DOCUMENT_LIMITS.tierBytes[codeClass] : null;
+  if (documents && !limits) throw new Error(`@verdikta/common has no documents tier bytes for the class ${codeClass}`);
+  const plan = TIER_NAMES.filter((name) => name !== DOCUMENTS || documents).map((name) => (name === DOCUMENTS
+    ? { name, shareBytes: limits.reserved, capBytes: limits.max }
+    : { name, shareBytes: Math.floor((budgetBytes * SHARES[name]) / 100), capBytes: Infinity }));
+  return { plan, reserveBytes: MANIFEST_RESERVE_BYTES + (documents ? DOCUMENTS_MANIFEST_RESERVE_BYTES : 0) };
 }
 
 /** The file's lines that fit in `left`: whole lines only, with a line saying how many did not. Null when none does. */
@@ -773,7 +925,7 @@ function tierStatus({ delivered, omitted, cut, extraLoss = 0 }) {
  * The context pack, once: a pure function of the request's documents and the
  * sandbox's reads.
  * @param {object} o
- * @param {object} o.request - finding, report, knownIssues, priorFindings, fixPatch, codeClass
+ * @param {object} o.request - finding, report, knownIssues, priorFindings, fixPatch, codeClass, and spec.stake.documents
  * @param {object} o.inputs - gatherPackInputs()'s
  * @param {string} [o.codeClass] - default: the request's, else code-standard
  * @param {number} [o.budgetTokens] - default: the class envelope's
@@ -781,11 +933,13 @@ function tierStatus({ delivered, omitted, cut, extraLoss = 0 }) {
  */
 function assemblePack({ request, inputs, codeClass = request.codeClass || 'code-standard', budgetTokens }) {
   const budget = budgetTokens === undefined ? getCodeClass(codeClass).envelope.contextPackTokens : budgetTokens;
+  const { plan, reserveBytes } = tierPlan(request, codeClass, budget * BYTES_PER_TOKEN);
   const accounts = tierAccounts(request, inputs);
-  const sizes = Object.fromEntries(TIER_NAMES.map((name) => [name, accounts[name].items.reduce((n, i) => n + i.bytes, 0)]));
-  const grants = allocate(budget * BYTES_PER_TOKEN, sizes);
+  if (plan.some((t) => t.name === DOCUMENTS) && !accounts[DOCUMENTS]) throw new Error('the listing names documents, and the pack has no account of them');
+  const sizes = Object.fromEntries(plan.map(({ name }) => [name, accounts[name].items.reduce((n, i) => n + i.bytes, 0)]));
+  const grants = allocate(budget * BYTES_PER_TOKEN, sizes, plan, reserveBytes);
   const files = [];
-  const tiers = TIERS.map(({ name }, index) => {
+  const tiers = plan.map(({ name }, index) => {
     const account = accounts[name];
     const { kept, delivered, cut } = fillTier(account.items, grants[name]);
     const rank = index + 1;
@@ -816,6 +970,6 @@ function assemblePack({ request, inputs, codeClass = request.codeClass || 'code-
 }
 
 module.exports = {
-  gatherPackInputs, assemblePack, packTokens, symbolsOf, scanSymbols, summaryOf, summaryLine, shallowTree, Tally, BlobSink, GrepSink,
-  TIER_NAMES, TIERS, FACT_REASONS, LOSS_REASONS, BYTES_PER_TOKEN, FILE_OVERHEAD_BYTES, MANIFEST_RESERVE_BYTES
+  gatherPackInputs, assemblePack, packTokens, symbolsOf, scanSymbols, summaryOf, summaryLine, shallowTree, Tally, BlobSink, GrepSink, DocumentSink,
+  namesDocuments, TIER_NAMES, TIERS, FACT_REASONS, LOSS_REASONS, BYTES_PER_TOKEN, FILE_OVERHEAD_BYTES, MANIFEST_RESERVE_BYTES, DOCUMENTS_MANIFEST_RESERVE_BYTES
 };

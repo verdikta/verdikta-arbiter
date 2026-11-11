@@ -5,7 +5,9 @@
  * the AI Node and e2e): the class hard limits and the platform, the pinned
  * forge base image, the fuzz seed every forge run uses, the gVisor release and
  * the Semgrep rule set, the test-paths gate with its glob matcher (so the
- * runner, the site and the EA match paths the same way), the baseline rule and
+ * runner, the site and the EA match paths the same way), the stake documents'
+ * selection, text rule, limits and place in the pack (node A19, owner decision
+ * Q61 (a): so the runner and the site pick alike), the baseline rule and
  * schema the listing check writes baseline.json by (node A2b), the report's
  * schema, limits and hash, the class envelopes that set the pack's budget
  * (node A3b), and the canary's published hash and the package's own version,
@@ -18,9 +20,11 @@
 
 const { BASE_IMAGE_PINS, FORGE_FUZZ_SEED, GVISOR_RELEASE, SEMGREP_RULES_VERSION, CONFORMANCE_CANARY } = require('@verdikta/common/src/codeReview/pins');
 const COMMON_VERSION = require('@verdikta/common/package.json').version;
-const { pocPatchPathsGate, matchesAny, normalizePath, splitByStakeScope } = require('@verdikta/common/src/codeReview/scope');
+const { pocPatchPathsGate, matchesAny, normalizePath, splitByStakeScope, selectDocuments, isDocumentText } = require('@verdikta/common/src/codeReview/scope');
 const { baselineSets, validateBaseline } = require('@verdikta/common/src/codeReview/baseline');
-const { BASELINE_RUNS, CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA, OCI_PLATFORM } = require('@verdikta/common/src/codeReview/constants');
+const {
+  BASELINE_RUNS, CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA, OCI_PLATFORM, CONTEXT_PACK_TIERS, STAKE_DOCUMENT_LIMITS
+} = require('@verdikta/common/src/codeReview/constants');
 const { REPORT_LIMITS, POC_RUNS, validateClaimReport, canonicalReportJson, reportSha256 } = require('@verdikta/common/src/codeReview/report');
 const { MAX_PRIOR_FINDINGS } = require('@verdikta/common/src/codeReview/request');
 const { canonicalJson } = require('@verdikta/common/src/codeReview/canonical');
@@ -45,6 +49,10 @@ module.exports = {
   matchesAny,
   normalizePath,
   splitByStakeScope,
+  selectDocuments,
+  isDocumentText,
+  CONTEXT_PACK_TIERS,
+  STAKE_DOCUMENT_LIMITS,
   baselineSets,
   validateBaseline,
   BASELINE_RUNS,

@@ -924,7 +924,8 @@ test('A19: a listing that names documents has them read at listing too, in P and
   assert.equal(r.facts.listing.status, 'accepted', show(r));
   const names = r.steps.map((s) => s.name);
   const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `${n} in\n${names.join('\n')}`); return i; };
-  assert.ok(at('pack:source') < at('pack:documents') && at('pack:documents') < at('integrity:reference:framework'), 'in the preparation');
+  // No finding at listing, so no source is read: the documents come after the diff, before the reference.
+  assert.ok(at('pack:diff') < at('pack:documents') && at('pack:documents') < at('integrity:reference:framework'), 'in the preparation');
   for (const prefix of ['harness:fails:forge-std', 'harness:compileError', 'harness:setUpError']) {
     assert.ok(at(`${prefix}:pack:documents`) < at(`${prefix}:integrity:reference:framework`), prefix);
   }

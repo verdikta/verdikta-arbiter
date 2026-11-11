@@ -11,7 +11,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { codeReview } = require('@verdikta/common');
 const {
-  assemblePack, TIER_NAMES, FACT_REASONS, LOSS_REASONS, MANIFEST_RESERVE_BYTES, FILE_OVERHEAD_BYTES
+  assemblePack, TIER_NAMES, FACT_REASONS, LOSS_REASONS, MANIFEST_RESERVE_BYTES, DOCUMENTS_MANIFEST_RESERVE_BYTES, FILE_OVERHEAD_BYTES
 } = require('../../src/pack');
 const { claimSandbox } = require('../helpers/fakeClaim');
 const { GitStore } = require('../helpers/gitStore');
@@ -165,7 +165,7 @@ test('past the reserved share documents take only room the tiers above leave, ne
 });
 
 test('files are taken whole while they fit; the first that does not is cut on a whole character and marked; the rest are left out', () => {
-  const pack = assemblePack({ request: padded(), inputs: paddedInputs({ documents: [doc('README.md', 20000, 'é'), doc('docs/a.md', 20000, 'a'), doc('docs/b.md', 300)] }) });
+  const pack = assemblePack({ request: padded(), inputs: paddedInputs({ documents: [doc('README.md', 10000, 'é'), doc('docs/a.md', 20000, 'a'), doc('docs/b.md', 300)] }) });
   const tier = tierOf(pack, 'documents');
   const files = filesOf(pack, 'documents');
   assert.equal(files.length, 2);
@@ -177,11 +177,14 @@ test('files are taken whole while they fit; the first that does not is cut on a 
 });
 
 test('every tier full: the tiers below give up the documents\' share, prior findings first, then known issues, then call sites; the fix and the tree get what is left', () => {
+  const budgetBytes = 60000 * 4;
   const docsIn = paddedInputs({ documents: docs(30, 2000) });
   const withDocs = assemblePack({ request: padded(), inputs: docsIn });
   const without = assemblePack({ request: padded(undefined), inputs: paddedInputs() });
   const delta = (name) => tierOf(without, name).bytesIncluded - tierOf(withDocs, name).bytesIncluded;
-  for (const name of ['poc', 'claim', 'source', 'callSites', 'knownIssues']) assert.equal(delta(name), 0, name);
+  // The tiers above keep their own shares (the room left over, which went back up to them, is what the documents' share took).
+  for (const [name, share] of [['poc', 30], ['claim', 10], ['source', 24]]) assert.ok(tierOf(withDocs, name).bytesIncluded >= shareOf(budgetBytes, share) - 1000, name);
+  for (const name of ['callSites', 'knownIssues']) assert.equal(delta(name), 0, name);
   assert.ok(delta('priorFindings') > 0, 'the lowest tier with a share gives first');
   for (const name of ['fix', 'tree']) assert.equal(tierOf(withDocs, name).bytesIncluded, 0, `${name}: no share, nothing left`);
 
@@ -236,7 +239,8 @@ test('the manifest stays inside its reserve at the largest case with documents: 
       callSites: { ...big([{ symbol: 'f', path: 'src/V.sol', line: 1, text: 'f();', cut: false }]), symbols: { found: 3000000000, withSites: 1000000000, noSites: 1000000000, overCap: 1000000000, longLines: 1000000000 } }
     })
   });
-  assert.ok(Buffer.byteLength(pack.files[0].text) <= MANIFEST_RESERVE_BYTES, `${Buffer.byteLength(pack.files[0].text)} of ${MANIFEST_RESERVE_BYTES} bytes`);
+  const room = MANIFEST_RESERVE_BYTES + DOCUMENTS_MANIFEST_RESERVE_BYTES;
+  assert.ok(Buffer.byteLength(pack.files[0].text) <= room, `${Buffer.byteLength(pack.files[0].text)} of ${room} bytes`);
   assert.ok(pack.usedTokens <= 120000);
 });
 

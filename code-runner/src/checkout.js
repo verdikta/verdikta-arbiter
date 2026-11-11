@@ -42,6 +42,13 @@
  * 5. How many tracked paths the image had differently, which submodules were
  *    left empty and how many `.git` entries were dropped are recorded
  *    (facts.checkout), never judged.
+ *
+ * It also returns the listed commit's own entries, as `git ls-tree -r` lists
+ * them at the listed commit: its files and symbolic links with their sizes,
+ * and each submodule as one entry, never what is inside it. The runner's own
+ * tree holds the submodules' files as ordinary paths, so only the walk here
+ * can tell them apart; the context pack's documents tier is chosen from these
+ * (pack.js, owner decision Q61 (a)).
  */
 
 const { ABSTAIN, Abstain, RequesterError } = require('./result');
@@ -208,7 +215,9 @@ function chainMissing(module) {
 
 /**
  * Force /work to the listed commit. Throws RequesterError (the image) or
- * Abstain; returns { commit, tree } of the fresh repository's commit.
+ * Abstain; returns { commit, tree } of the fresh repository's commit, and
+ * `listed`: the listed commit's own entries ({ path, kind, size }, paths as
+ * byte strings, kind blob, exec, link or gitlink, size null for a gitlink).
  * @param {object} ctx - the pipeline's step context
  * @param {{base:string}} o - the listed commit
  */
@@ -291,6 +300,8 @@ async function forceCheckout(ctx, { base }) {
   const root = { path: null, parent: null, missing: false };
   const modules = [];
   const files = [];
+  // The listed commit's own submodule entries (a gitlink in its own trees), beside its files below.
+  const ownLinks = [];
   const parsed = new Map();
   let trees = [{ id: rootTree, prefix: '', module: root, depth: 0 }];
   let links = [];
@@ -337,6 +348,7 @@ async function forceCheckout(ctx, { base }) {
         if (e.kind === KIND.tree || e.kind === KIND.gitlink) {
           if (t.depth + 1 > LIMITS.depth) throw tooLarge(`the listed commit nests directories more than ${LIMITS.depth} deep: ${quoted(path)}`);
           (e.kind === KIND.tree ? nextTrees : nextLinks).push({ id: e.id, prefix: `${path}/`, path, module: t.module, depth: t.depth + 1 });
+          if (e.kind === KIND.gitlink && t.module === root) ownLinks.push({ path, kind: KIND.gitlink, size: null });
         } else {
           files.push({ path, kind: e.kind, id: e.id, module: t.module });
         }
@@ -361,6 +373,9 @@ async function forceCheckout(ctx, { base }) {
   }
   live = files.filter((f) => !chainMissing(f.module));
   const needed = [...new Set(live.map((f) => f.id))].sort();
+  // The listed commit's own entries, in byte order of their paths: what `git ls-tree -r` lists at it.
+  const listed = [...files.filter((f) => f.module === root).map((f) => ({ path: f.path, kind: f.kind, size: info.get(f.id).size })), ...ownLinks]
+    .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   // What the work tree will hold: every path's bytes (one blob at many paths is written many times).
   const total = live.reduce((n, f) => n + info.get(f.id).size, 0);
   if (total > LIMITS.checkoutBytes) throw tooLarge(`the listed commit's files are ${total} bytes; the checkout holds at most ${LIMITS.checkoutBytes}`);
@@ -444,7 +459,7 @@ async function forceCheckout(ctx, { base }) {
     gitRemoved: gitEntries > 0,
     gitEntriesRemoved: gitEntries
   });
-  return { commit: prepared, tree };
+  return { commit: prepared, tree, listed };
 }
 
 module.exports = {
