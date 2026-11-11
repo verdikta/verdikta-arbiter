@@ -20,7 +20,8 @@ attestation site runs before escrow opens
 context pack ([below](#the-report-and-the-context-pack)); node A3c the honesty
 flags and the fix check's lint ([below](#honesty-flags-and-the-fix-checks-lint)); node A7a the
 calibration harness, the adversarial corpus and the conformance canary
-([below](#calibration-and-conformance)). See [Seams](#seams).
+([below](#calibration-and-conformance)); node A19 the listing's documents in the context pack
+([below](#the-documents-tier)). See [Seams](#seams).
 
 ## Run it
 
@@ -95,7 +96,7 @@ the answer is 401 whatever the route.
 ```json
 {
   "ok": true, "reasons": [],
-  "service": "verdikta-code-runner", "version": "0.2.0", "node": "v20.18.1",
+  "service": "verdikta-code-runner", "version": "0.3.0", "node": "v20.18.1",
   "runtime": "runsc", "runtimeAvailable": true, "runtimeArgs": ["--platform=systrap", "…"],
   "gvisor": "release-20260921.0", "gvisorPinned": "release-20260921.0",
   "scanner": { "image": "docker.io/semgrep/semgrep@sha256:81474464…", "version": "1.181.0", "rules": "2026.10", "present": true,
@@ -173,7 +174,7 @@ A definitive or abstaining answer looks like:
 ```json
 {
   "outcome": "abstain", "runId": "3f2a…",
-  "runner": { "version": "0.2.0", "runtime": "runsc", "platform": "linux/amd64" },
+  "runner": { "version": "0.3.0", "runtime": "runsc", "platform": "linux/amd64" },
   "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "testSeconds": 180, "runSeconds": 360, "maxPatchBytes": 2000000, "patchExpansionBytes": 50000000, "platform": "linux/amd64" },
   "abstain": { "cause": "oom", "step": "build", "detail": "a process in the sandbox was OOM-killed during the step" },
   "image": { "ref": "ghcr.io/verdikta/env@sha256:…", "cache": "hit", "durationMs": 41 },
@@ -343,7 +344,7 @@ requester error as for runs):
 ```json
 {
   "outcome": "definitive", "kind": "listing-check", "checkId": "3f2a…",
-  "runner": { "version": "0.2.0", "runtime": "runsc", "platform": "linux/amd64" },
+  "runner": { "version": "0.3.0", "runtime": "runsc", "platform": "linux/amd64" },
   "limits": { "cpus": 2, "memoryMb": 4096, "pids": 4096, "buildSeconds": 90, "testSeconds": 360, "runSeconds": 720, "…": "…" },
   "abstain": null,
   "image": { "ref": "ghcr.io/verdikta/stake-env@sha256:…", "cache": "pulled", "durationMs": 21000 },
@@ -1586,23 +1587,71 @@ their one or two files, `knownIssues` and `priorFindings` entries (each whole or
 all). `callSites` counts the lines `git grep` answered with, and `symbols` beside them
 what was searched for (`found = withSites + noSites + overCap`).
 
+The order is common's `CONTEXT_PACK_TIERS`. The documents tier is there only when the listing
+names documents, so the ranks are these with it, and without it the tiers below the source keep
+the ranks, file names and bytes they had before the tier existed (rank 4 is `callSites`, and so on):
+
 | Rank | Tier | Share | What |
 |---|---|---|---|
 | 1 | `poc` | 30% | `poc.patch` with function context; each PoC file's full text |
 | 2 | `claim` | 10% | `finding.json` (canonical), `report.md` |
 | 3 | `source` | 24% | The in-scope files `finding.affectedPaths` names, at the listed commit |
-| 4 | `callSites` | 5% | At most 10 in-scope call sites of each of at most 16 symbols the PoC's added lines call (`.name(`, `.name{…}(`, `new Name`), without `vm.`, `console.` and the language's own, one per line: `symbol: path:line: text` |
-| 5 | `knownIssues` | 12% | `known_issues.json`, one entry per line, each within 8 KB: its id, title and class stay, then its paths and its description give way. A shortened entry counts in `cut` |
-| 6 | `priorFindings` | 19% | Up to 8 summaries, one per line: `bcid`, `title`, `claimedClass`, `rootCause`, 5 of `affectedPaths`, `observable`; never a prior `report.md`. A summary that lost paths or text to its bound counts in `cut` |
-| 7 | `fix` | | `fix.patch`, as text |
-| 8 | `tree` | | The listed commit's first two levels |
+| 4 | `documents` | 10%, at most 20% | The maker's documents the listing names (`stake.documents`), at the listed commit ([below](#the-documents-tier)) |
+| 5 | `callSites` | 5% | At most 10 in-scope call sites of each of at most 16 symbols the PoC's added lines call (`.name(`, `.name{…}(`, `new Name`), without `vm.`, `console.` and the language's own, one per line: `symbol: path:line: text` |
+| 6 | `knownIssues` | 12% | `known_issues.json`, one entry per line, each within 8 KB: its id, title and class stay, then its paths and its description give way. A shortened entry counts in `cut` |
+| 7 | `priorFindings` | 19% | Up to 8 summaries, one per line: `bcid`, `title`, `claimedClass`, `rootCause`, 5 of `affectedPaths`, `observable`; never a prior `report.md`. A summary that lost paths or text to its bound counts in `cut` |
+| 8 | `fix` | | `fix.patch`, as text |
+| 9 | `tree` | | The listed commit's first two levels |
 
-Each of tiers 1-6 first takes up to its share, in order. What is left goes back up in
-order, then to tiers 7 and 8. So a hunter who pads `poc.patch` or `report.md`, or names
-200 huge files, cannot push out the known issues and the prior findings a juror needs
-to find a duplicate, and 8 summaries always fit. Over budget the lowest tiers go first.
+Each tier with a share first takes up to it, in order. What is left goes back up in
+order (the documents up to their cap), then to the fix and the tree. So a hunter who pads
+`poc.patch` or `report.md`, or names 200 huge files, cannot push out the known issues and
+the prior findings a juror needs to find a duplicate, nor the documents' share; without
+documents 8 summaries always fit. Over budget the lowest tiers go first.
 A file is cut on a whole character, at a line end where that keeps at least half, with
 a line saying how much was shown; a tier of entries keeps whole entries.
+
+#### The documents tier
+
+Owner decision Q61 (a), node A19, `@verdikta/common` 1.9.0-attest.4 ("Stake documents" in its
+`docs/CODE_REVIEW_SPECIFICATION.md`): the jurors' first question is whether the behaviour a PoC
+asserts is required by the code's specification or documentation, and `stake.documents` names where
+the maker wrote it. Every rule below is common's, called, not copied: `selectDocuments`,
+`isDocumentText`, `STAKE_DOCUMENT_LIMITS`, `CONTEXT_PACK_TIERS`.
+
+- **Which files.** The candidates are the listed commit's own entries as `git ls-tree -r` lists them
+  at `baseCommit`: its files and symbolic links, and each submodule as one entry. The forced checkout's
+  walk gives them (`checkout.js`, `listed`), since the runner's own commit holds a submodule's files as
+  ordinary paths. A path that is not UTF-8 is no candidate: no glob or header can spell it.
+  `selectDocuments` picks from them, entries in the listing's order and each entry's matches in byte
+  order; a matched file the source tier holds is `inSource`; past 32, `pastCap`.
+- **Which count.** A regular file (`100644`, `100755`) of at most 1,000,000 bytes, read whole from the
+  listed commit by commit id (`git cat-file --batch` on `<commit>:<path>`, one read named `pack:documents`,
+  after the source and before the call sites), kept when `isDocumentText` says its whole content is
+  UTF-8 text. Each other file is counted: `symlink`, `submodule`, `tooLarge` (never read), `notText`, and
+  `notAskable` for a path that is not one line. `pastCap` and `tooLarge` are losses (a cap, a size bound),
+  the rest facts. A listing that names documents and matches none has the tier, `empty`.
+- **Its bytes.** Its share is common's `reserved` and its cap `max` (`STAKE_DOCUMENT_LIMITS.tierBytes`:
+  24,000 and 48,000 bytes on `code-standard`, twice that on `code-premium`), counted as every tier is,
+  each file with its header and fence allowance. The share comes after the PoC's, the claim's and the
+  source's and before the tiers below, so padding cannot push the first `reserved` bytes out; past it the
+  documents take room the tiers above leave, up to `max`. When every tier is full, the tiers below give
+  the share up lowest first: prior findings, then known issues, then call sites. Files are whole while they
+  fit, the next is cut and marked (when at least 512 bytes are left, as in every tier), the rest are `overBudget`. The manifest gets 1,024 bytes more room with
+  the tier (`DOCUMENTS_MANIFEST_RESERVE_BYTES`), so a pack without it is laid out as before.
+- **Labelled as the maker's.** Each file opens with `# the maker's document at the listed commit
+  (stake.documents): <path>`, and is named `04-document-NNN.txt`.
+- **A documents error is the requester's.** `DOCUMENTS_MATCH_TOO_COSTLY`, or any other error from the
+  selection, is a `requester_error` (`/spec/stake/documents`) raised before any maker command, at a claim
+  and at the listing check: the External Adapter answers errored, with no commit. The selection runs in the
+  runner's process; common's step bound holds a listing written to cost to about a second and a half there.
+  A patch that fails `applies` or `testPathsOnly` settles before the pack, as without documents.
+- **Without documents nothing changes.** No `stake.documents`, or an empty list: no read, no tier, and the
+  pack and report are byte for byte what they were (`test/unit/pack.test.js`, `BEFORE_DOCUMENTS`, taken on
+  the runner before the tier), but for the report's `inputs.runner`.
+
+A change to what the pack holds for the same request, like this tier, is a runner release: it moved
+`RUNNER_VERSION` to 0.3.0, as a change to the scanner's pins does ([The pin](#the-pin)).
 
 **A token** is `ceil(UTF-8 bytes / 4)`, plus 160 bytes per file for the AI Node's fence
 lines. On real files (cl100k): Solidity 4.2-4.9 bytes per token, prose 5.4, so a full
@@ -2096,6 +2145,13 @@ its `listing`, a folder under `calibration/listings/`: `listing.json` (`repo`, `
 `known_issues.json`. Both carry `source`: `url`, `licence`, and `program`, the source program's
 verdict and class (null for Verdikta's own fixtures).
 
+**A listing's documents follow one rule** (node A19): `stake.documents` names `README.md` and `docs/**`,
+in that order, each only when the listed commit has it (a file at `README.md`, any file under `docs/`),
+and is left out when it has neither. No judgment of what the files say. The loader checks a fixture
+listing against its files and a `git` listing's shape; the harness checks a `git` listing once its
+repository is fetched (`documentsRuleProblem` in `lib/format.js`). The vault fixture has neither, so its
+listing, and the adversarial subset's runs, are what they were.
+
 `expected` has `outcome` and `class` (what the whole system should settle), `reason` in words, and
 `runner`, compared exactly. A valid case in a subset the real jury is measured on also names the class's rubric
 and why (`rubric`, `impact`, `classReason`; see [Classes under the rubric](#classes-under-the-rubric)):
@@ -2453,7 +2509,8 @@ summary, a notice and the `conformance-and-calibration` artifact.
   `@verdikta/common`: `CLASS_HARD_LIMITS`, `SPEC_LIMIT_MAXIMA`, `OCI_PLATFORM`,
   `BASE_IMAGE_PINS`, `FORGE_FUZZ_SEED`, `GVISOR_RELEASE`, `SEMGREP_RULES_VERSION`,
   `REPORT_LIMITS`, `getCodeClass`, `pocPatchPathsGate`, `matchesAny`,
-  `splitByStakeScope`, `baselineSets`, the validators and the report's hash. No
+  `splitByStakeScope`, `selectDocuments`, `isDocumentText`, `CONTEXT_PACK_TIERS`,
+  `STAKE_DOCUMENT_LIMITS`, `baselineSets`, the validators and the report's hash. No
   local copy of any of them is left in `src/` (`test/unit/common.test.js`).
 - **Scanner** (`src/scanner.js`, `src/semgrepPin.js`): `readChanged` (a commit's changed files, by id),
   `prepareTargets`, `prepareFix`, `openScanner`, `scanPoc`, `scanFix`, `fmtFindings`, and the pure parts
@@ -2463,8 +2520,9 @@ summary, a notice and the `conformance-and-calibration` artifact.
 - **Report** (`src/report.js`): `buildReport(result, request, { gvisor, platform })`,
   `assembleReport`, `finishClaim` (the server's), `pocReportForm` (the form `facts.poc.report`
   holds). A4b reads the report; `test/helpers/settlementFacts.js` is its mirror.
-- **Pack** (`src/pack.js`): `gatherPackInputs(ctx, …)` (the sandbox's reads),
-  `assemblePack({ request, inputs })` (pure), `TIERS`, `symbolsOf`, `summaryOf`.
+- **Pack** (`src/pack.js`): `gatherPackInputs(ctx, …)` (the sandbox's reads, with the checkout's
+  `listed` entries for the documents), `assemblePack({ request, inputs })` (pure), `TIERS`, `namesDocuments`,
+  `symbolsOf`, `summaryOf`.
   The engine's `ctx.contextPack(pack)` carries it beside the facts.
 - **Runtime** (`src/runtime.js`): `measureRuntime`, `runtimeProblem`; `docker.runtimeVersion(path)`.
 - **Launch** (`src/sandbox.js`): `createArgs`, `startArgs`, `execArgs`,
