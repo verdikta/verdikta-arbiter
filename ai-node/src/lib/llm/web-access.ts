@@ -14,6 +14,8 @@
  *   always on every request
  *   off    never
  * AI_WEB_MAX_USES caps the tool calls per request (default 5).
+ * AI_WEB_FETCH_FRESH (default on) makes Claude's web_fetch skip Anthropic's page
+ * cache (use_cache: false); off accepts cached copies, which can be a day old.
  */
 
 import { parseClaudeVersion } from './anthropic-request-params';
@@ -51,6 +53,16 @@ export function webAccessMode(env: Env = process.env): WebAccessMode {
 export function webMaxUses(env: Env = process.env): number {
   const parsed = parseInt(env.AI_WEB_MAX_USES || '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WEB_MAX_USES;
+}
+
+/**
+ * AI_WEB_FETCH_FRESH: true (default) unless off/false/0. Anthropic's web_fetch serves
+ * cached copies by default; on 2026-10-22 an investing.com copy was 23 h old when
+ * fetched, so a juror judging a same-day result could read the day before.
+ */
+export function webFetchFresh(env: Env = process.env): boolean {
+  const value = (env.AI_WEB_FETCH_FRESH || '').trim().toLowerCase();
+  return !(value === 'off' || value === 'false' || value === '0');
 }
 
 /**

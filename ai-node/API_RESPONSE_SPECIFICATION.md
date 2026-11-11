@@ -138,7 +138,11 @@ The EA copies `model_results` into the justification on IPFS, so it is public.
   "search_errors": [],
   "pages": [],
   "queries": [],
-  "page_errors_reported": true
+  "page_errors_reported": true,
+  "page_times": [],
+  "page_times_reported": true,
+  "stale_pages": 0,
+  "fetch_cache": "bypassed"
 }
 ```
 
@@ -155,10 +159,20 @@ The EA copies `model_results` into the justification on IPFS, so it is public.
   as "You don't have permission to access this domain"), `url_not_accessible`,
   `url_not_in_prior_context`; `no_result` for a tool call the response ended
   before answering. OpenAI reports a call's status other than `completed`.
+- `page_times`: for each fetched copy, `{ url, retrieved_at, age_seconds }`.
+  `retrieved_at` is when Anthropic retrieved that copy (its `web_fetch_result`
+  field); `age_seconds` is how old it was when the juror request started. OpenAI
+  does not report it: `page_times` is empty and `page_times_reported` is `false`.
+- `stale_pages`: copies retrieved more than an hour before the request. Even with
+  `use_cache: false` Anthropic can return an archived copy (seen on 2026-10-22 for
+  macrotrends.net and morningstar.com, and once for stockanalysis.com, 11 months old).
+- `fetch_cache` (Anthropic only): `bypassed` when `web_fetch` asked for fresh copies
+  (`AI_WEB_FETCH_FRESH`, default on), `allowed` when it accepted cached ones.
 - With `count` > 1 the calls are added up. Lists are capped at 20 entries.
 
 Each juror also gets one log line:
 `🌐 WEB_RETRIEVAL: Anthropic-claude-sonnet-5 on, 0 pages opened, 0 searches, fetch errors: www.wsj.com url_not_allowed | {…}`.
+A stale copy is named with its age: `…, 1 stale copy: www.investing.com 19.3 h old`.
 A request that fails with 400 has no `model_results`; the log line is still written.
 
 ---

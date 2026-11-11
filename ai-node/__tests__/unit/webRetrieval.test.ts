@@ -1,5 +1,6 @@
 import {
   MAX_LISTED,
+  STALE_PAGE_SECONDS,
   describeWebRetrieval,
   mergeWebRetrievals,
   summarizeAnthropicWebBlocks,
@@ -157,5 +158,79 @@ describe('mergeWebRetrievals, webToolsOff and describeWebRetrieval', () => {
     );
     expect(describeWebRetrieval(webToolsOff())).toBe('off');
     expect(describeWebRetrieval(webToolsOff('400 tool not available'))).toBe('off (web tools failed: 400 tool not available)');
+  });
+});
+
+describe('page_times and stale_pages (when each fetched copy was retrieved)', () => {
+  // The canary's Claude requests were sent with the cached web_fetch_20250910 at about
+  // 18:05Z on 2026-10-21 (the newest retrieved_at in the fixture is 18:04:29Z). Several
+  // pages came back as copies retrieved hours or days earlier.
+  const requestedAt = new Date('2026-10-21T18:05:00Z');
+
+  test.each([
+    ['S5-google', [['https://www.google.com/finance/quote/MSFT:NASDAQ', '2026-10-21T18:04:29+00:00', 31]], 0],
+    ['S7-stockanalysis', [['https://stockanalysis.com/stocks/msft/history/', '2026-10-21T16:44:14+00:00', 4846]], 1],
+    ['S4-yahoo', [['https://finance.yahoo.com/quote/MSFT/history/', '2026-10-21T07:38:33+00:00', 37587]], 1],
+    ['S9-investing', [['https://www.investing.com/equities/microsoft-corp-historical-data', '2026-10-20T22:47:09+00:00', 69471]], 1],
+    ['S1-nasdaq', [
+      ['https://www.nasdaq.com/market-activity/stocks/msft/historical', '2026-10-19T20:50:47+00:00', 162853],
+      ['https://www.nasdaq.com/market-activity/stocks/msft/historical', '2026-10-19T20:50:47+00:00', 162853],
+    ], 2],
+  ])('%s: retrieved_at and age per fetch; %#', (id, times, stale) => {
+    const r = summarizeAnthropicWebBlocks(claudeBlocks(id as string), { requestedAt });
+    expect(r.page_times).toEqual((times as Array<[string, string, number]>).map(([url, retrieved_at, age_seconds]) => ({ url, retrieved_at, age_seconds })));
+    expect(r.stale_pages).toBe(stale);
+    expect(r.page_times_reported).toBe(true);
+  });
+
+  test('an hour is the line: older copies are stale', () => {
+    const at = (secondsBefore: number) => new Date(requestedAt.getTime() - secondsBefore * 1000).toISOString();
+    const blocks = [STALE_PAGE_SECONDS, STALE_PAGE_SECONDS + 1].flatMap((age, i) => [
+      { type: 'server_tool_use', id: `f${i}`, name: 'web_fetch', input: { url: `https://example.com/${i}` } },
+      { type: 'web_fetch_tool_result', tool_use_id: `f${i}`, content: { type: 'web_fetch_result', url: `https://example.com/${i}`, retrieved_at: at(age) } },
+    ]);
+    const r = summarizeAnthropicWebBlocks(blocks, { requestedAt });
+    expect(r.page_times.map(t => t.age_seconds)).toEqual([STALE_PAGE_SECONDS, STALE_PAGE_SECONDS + 1]);
+    expect(r.stale_pages).toBe(1);
+  });
+
+  test('without the request time the ages are unknown and nothing is counted stale', () => {
+    const r = summarizeAnthropicWebBlocks(claudeBlocks('S9-investing'));
+    expect(r.page_times).toEqual([{ url: 'https://www.investing.com/equities/microsoft-corp-historical-data', retrieved_at: '2026-10-20T22:47:09+00:00', age_seconds: null }]);
+    expect(r.stale_pages).toBe(0);
+    expect(r).not.toHaveProperty('fetch_cache');
+  });
+
+  test('fetch_cache records whether cached copies were allowed', () => {
+    expect(summarizeAnthropicWebBlocks(claudeBlocks('S7-stockanalysis'), { fetchCache: 'bypassed' }).fetch_cache).toBe('bypassed');
+    expect(summarizeAnthropicWebBlocks(claudeBlocks('S7-stockanalysis'), { fetchCache: 'allowed' }).fetch_cache).toBe('allowed');
+  });
+
+  test('OpenAI does not say when a page was retrieved', () => {
+    const r = summarizeOpenAIWebSearch(gptResponse('S9-investing'));
+    expect(r).toMatchObject({ page_times: [], page_times_reported: false, stale_pages: 0 });
+    expect(r).not.toHaveProperty('fetch_cache');
+  });
+
+  test('merged: times listed in call order, stale copies added up, any allowed cache reported', () => {
+    const a = summarizeAnthropicWebBlocks(claudeBlocks('S9-investing'), { requestedAt, fetchCache: 'bypassed' });
+    const b = summarizeAnthropicWebBlocks(claudeBlocks('S5-google'), { requestedAt, fetchCache: 'allowed' });
+    const merged = mergeWebRetrievals([a, b]);
+    expect(merged.page_times.map(t => t.url)).toEqual([
+      'https://www.investing.com/equities/microsoft-corp-historical-data',
+      'https://www.google.com/finance/quote/MSFT:NASDAQ',
+    ]);
+    expect(merged).toMatchObject({ stale_pages: 1, page_times_reported: true, fetch_cache: 'allowed' });
+    expect(mergeWebRetrievals([a, summarizeOpenAIWebSearch(gptResponse('S2-wsj'))])).toMatchObject({ page_times_reported: false, fetch_cache: 'bypassed' });
+  });
+
+  test('log line names each stale copy and its age', () => {
+    expect(describeWebRetrieval(summarizeAnthropicWebBlocks(claudeBlocks('S9-investing'), { requestedAt }))).toBe(
+      'on, 1 page opened, 1 search, 1 stale copy: www.investing.com 19.3 h old'
+    );
+    expect(describeWebRetrieval(summarizeAnthropicWebBlocks(claudeBlocks('S1-nasdaq'), { requestedAt }))).toBe(
+      'on, 2 pages opened, 0 searches, 2 stale copies: www.nasdaq.com 1.9 d old, www.nasdaq.com 1.9 d old'
+    );
+    expect(describeWebRetrieval(summarizeAnthropicWebBlocks(claudeBlocks('S5-google'), { requestedAt }))).toBe('on, 1 page opened, 0 searches');
   });
 });

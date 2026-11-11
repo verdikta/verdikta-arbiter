@@ -991,7 +991,7 @@ describe('POST /api/rank-and-justify', () => {
   describe('web retrieval telemetry (model_results[].web_retrieval)', () => {
     const retrieval = (overrides: Record<string, unknown>) => ({
       web_tools: 'on', searches: 0, pages_opened: 0, fetch_errors: [], search_errors: [],
-      pages: [], queries: [], page_errors_reported: true, ...overrides,
+      pages: [], queries: [], page_errors_reported: true, page_times: [], page_times_reported: true, stale_pages: 0, ...overrides,
     });
 
     test('each juror reports what its web tools did; a juror nobody reports on had them off; scores are unchanged', async () => {
