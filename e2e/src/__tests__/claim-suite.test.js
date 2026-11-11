@@ -329,6 +329,26 @@ describe('the commitment: recomputed, not only well-formed', () => {
   });
 });
 
+describe('the harness\'s mock jury is the pinned release\'s panels (A19)', () => {
+  const { JUROR_SCORES, JURY_AVERAGE, MOCK_SCRIPT, HANGING_JUROR } = require('../l2/claim/harness');
+
+  it('every juror of both panels has its scores, and each panel\'s weighted average is the one the scenarios assert', () => {
+    for (const panel of [codeReview.CODE_STANDARD_PANEL, codeReview.CODE_STANDARD_DISPUTE_PANEL]) {
+      for (const node of panel.AI_NODES) expect(JUROR_SCORES[node.AI_MODEL]).toBeDefined();
+      const total = panel.AI_NODES.reduce((n, node) => n + node.WEIGHT, 0);
+      const average = JURY_AVERAGE.map((_, i) => panel.AI_NODES.reduce((n, node) => n + (JUROR_SCORES[node.AI_MODEL][i] * node.WEIGHT) / total, 0));
+      expect(average).toEqual([...JURY_AVERAGE]);
+    }
+  });
+
+  it('the hanging juror is in the class\'s pool and in neither panel, so only the deadline scenario meets it', () => {
+    const panels = [codeReview.CODE_STANDARD_PANEL, codeReview.CODE_STANDARD_DISPUTE_PANEL].flatMap((panel) => panel.AI_NODES.map((node) => node.AI_MODEL));
+    expect(panels).not.toContain(HANGING_JUROR.model);
+    expect(codeReview.getCodeClass('code-standard').models).toContainEqual({ provider: HANGING_JUROR.provider, model: HANGING_JUROR.model });
+    expect(MOCK_SCRIPT[HANGING_JUROR.model]).toEqual({ hang: true });
+  });
+});
+
 describe('a harness that cannot start fails every scenario, and never skips one', () => {
   const scenarios = [
     { id: 'claim-valid', suite: 'claim', claim: 'valid', modes: ['0', 'commit-reveal', 'juror-deadline'] },
