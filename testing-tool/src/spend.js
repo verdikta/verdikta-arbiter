@@ -16,8 +16,10 @@ const M = 1000000;
 /**
  * List prices, USD per million tokens. Nothing here is a default: a model with no row cannot be counted, so the meter
  * refuses it. Sources, read on the date: OpenRouter's public /api/v1/models for all three, and Anthropic's own table
- * for the two Claude models and Haiku's price past 100K input tokens. The AI Node sends no cache_control, so the cache
- * rows are there only so that a surprise is not counted as free.
+ * for the two Claude models and Haiku's price past 100K input tokens. The rows of the jurors the Q63 panels add
+ * (@verdikta/common 1.9.0-attest.4: gemini-4-argon, gpt-6-luna, claude-opus-5-5) are OpenRouter's, read on
+ * 2026-11-10, Luna's price past 272K input tokens included. The AI Node sends no cache_control, so the cache rows are
+ * there only so that a surprise is not counted as free.
  */
 const PRICES = Object.freeze({
   asOf: '2026-11-05',
@@ -25,7 +27,10 @@ const PRICES = Object.freeze({
   models: Object.freeze({
     'claude-sonnet-5-5': Object.freeze({ inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 }),
     'claude-haiku-5-5': Object.freeze({ inputPerM: 0.1, outputPerM: 0.5, cacheReadPerM: 0.01, cacheWritePerM: 0.125, above: Object.freeze({ inputTokens: 100000, inputPerM: 0.5, outputPerM: 2.5 }) }),
-    'deepseek/deepseek-v4-pro-0813': Object.freeze({ inputPerM: 0.115, outputPerM: 4.6, cacheReadPerM: 0.11, cacheWritePerM: 0.115 })
+    'deepseek/deepseek-v4-pro-0813': Object.freeze({ inputPerM: 0.115, outputPerM: 4.6, cacheReadPerM: 0.11, cacheWritePerM: 0.115 }),
+    'google/gemini-4-argon': Object.freeze({ inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.1, cacheWritePerM: 0.1875 }),
+    'gpt-6-luna': Object.freeze({ inputPerM: 0.1, outputPerM: 0.5, cacheReadPerM: 0.01, cacheWritePerM: 0.125, above: Object.freeze({ inputTokens: 272000, inputPerM: 0.2, outputPerM: 0.75 }) }),
+    'claude-opus-5-5': Object.freeze({ inputPerM: 4, outputPerM: 20, cacheReadPerM: 0.2, cacheWritePerM: 5 })
   })
 });
 
