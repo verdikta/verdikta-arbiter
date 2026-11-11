@@ -28,7 +28,7 @@ export function claimQuery(): string {
 }
 
 /** common's example listing spec, the one claim_query.bug.txt is built from. */
-export function bugSpec(): codeReview.CodeReviewSpec {
+export function bugSpec(): Parameters<typeof codeReview.buildClaimQuery>[0] {
   return JSON.parse(fs.readFileSync(path.join(FIXTURES, 'code_review.bug.json'), 'utf8'));
 }
 
