@@ -1,0 +1,37 @@
+{
+  "version": 1,
+  "kind": "bug",
+  "repo": "https://github.com/acme/vault",
+  "baseCommit": "9c1e4f0a3b7d2e5c8f1a4b6d9e0c3f5a7b2d4e6f",
+  "artifact": { "kind": "contract", "address": "0x1234567890abcdef1234567890ABCDEF12345678", "chainId": 8453 },
+  "env": {
+    "image": "ghcr.io/verdikta/stake-env@sha256:4e1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f9",
+    "from": "foundry",
+    "platform": "linux/amd64",
+    "unpackedBytes": 1200000000
+  },
+  "attestation": "attestation.json",
+  "commands": {
+    "framework": "forge",
+    "build": "forge build",
+    "test": "forge test",
+    "testFiles": "forge test --match-path $FILES",
+    "testIds": "forge test --match-test $TEST_IDS"
+  },
+  "baseline": "baseline.json",
+  "paths": { "tests": ["test/**"], "protected": ["foundry.toml", "lib/**", ".github/**"] },
+  "limits": { "cpus": 2, "memoryMb": 4096, "buildSeconds": 90, "testSeconds": 180, "runSeconds": 360, "maxPatchBytes": 2000000 },
+  "stake": {
+    "awards": { "LOW": "0", "MEDIUM": "0.1 ETH", "HIGH": "0.4 ETH", "CRITICAL": "2 ETH" },
+    "lowestClassCounted": "MEDIUM",
+    "bondWei": "20000000000000000",
+    "fixWindowDays": 30,
+    "disputeWindowHours": 72,
+    "disclosureGraceHours": 48,
+    "revealWindowDays": 7,
+    "scope": { "include": ["contracts/**"], "exclude": ["test/**", "script/**"] },
+    "knownIssues": "known_issues.json",
+    "severityRubric": "immunefi-v2.3",
+    "valueAtRiskUsd": 1250000
+  }
+}

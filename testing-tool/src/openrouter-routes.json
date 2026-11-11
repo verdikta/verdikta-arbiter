@@ -1,0 +1,17 @@
+{
+  "comment": "The OpenRouter model id each code-class pool model outside the openrouter provider is sent as when the AI Node's gateway routes it there (ai-node/src/config/openrouter-models.ts, resolveOpenRouterModelId). jury-run.sh unsets OPENAI_API_KEY and XAI_API_KEY, so those always go this way. The meter prices a call by the id it carries, and a batch reads each juror's answers by its panel id or this one. ai-node's openrouter-routes.test.ts holds every entry to resolveOpenRouterModelId; spend.test.js to the pools.",
+  "openai": {
+    "gpt-6-luna": "openai/gpt-6-luna",
+    "gpt-6-sol": "openai/gpt-6-sol",
+    "gpt-5.6-terra": "openai/gpt-5.6-terra",
+    "gpt-6-astra": "openai/gpt-6-astra"
+  },
+  "anthropic": {
+    "claude-haiku-5-5": "anthropic/claude-haiku-5.5",
+    "claude-sonnet-5-5": "anthropic/claude-sonnet-5.5",
+    "claude-opus-5-5": "anthropic/claude-opus-5.5"
+  },
+  "xai": {
+    "grok-4.7": "x-ai/grok-4.7"
+  }
+}

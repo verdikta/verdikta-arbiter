@@ -25,6 +25,7 @@ const { codeReview } = require('@verdikta/common');
 const { buildClaimRequest, CLAIM_DEADLINE_MS } = require('./claim-scenarios');
 const { runClaimScenario } = require('./claim-runner');
 const { acquireLock, readLedger, worstCaseClaimUsd } = require('./spend');
+const { routeIds } = require('./routes');
 
 const EXIT = Object.freeze({ FINISHED: 0, WITH_ERRORS: 1, BUDGET: 4, ERRORS_IN_A_ROW: 5, AI_NODE_GONE: 6, UNMETERED: 7, STALE_RESULT: 8, METER_STOPPED: 9 });
 const MAX_ERRORS_IN_A_ROW = 3;
@@ -86,17 +87,19 @@ function repairedScores(text) {
  * by a repair call, and a retry repeats the jury, so the last answer that was read counts. The average is the check: if
  * these vectors do not give the claim's vector, they are not what was used, and none is reported.
  * @param {object[]} calls - this claim's ledger rows
- * @param {{AI_NODES: Array<{AI_MODEL:string, WEIGHT:number}>}} juryParameters
+ * @param {{AI_NODES: Array<{AI_PROVIDER:string, AI_MODEL:string, WEIGHT:number}>}} juryParameters
  * @param {string} callsDir
  * @param {number[]|null} [claimVector]
  * @returns {Array<{model:string, vector:number[]|null}>}
  */
 function jurorVectors(calls, juryParameters, callsDir, claimVector = null) {
-  const jurors = juryParameters.AI_NODES.map(({ AI_MODEL: model }) => {
+  const jurors = juryParameters.AI_NODES.map(({ AI_PROVIDER: provider, AI_MODEL: model }) => {
+    // The ledger has the id the call carried: the panel's, or its OpenRouter id (routes.js).
+    const ids = routeIds(provider, model);
     let vector = null;
     let repairNext = false;
     for (const call of calls) {
-      if (call.model !== model || !call.response) continue;
+      if (!ids.includes(call.model) || !call.response) continue;
       const saved = JSON.parse(fs.readFileSync(path.join(callsDir, call.response), 'utf8'));
       if (saved.status < 200 || saved.status >= 300) continue;
       const text = replyText(saved.body);

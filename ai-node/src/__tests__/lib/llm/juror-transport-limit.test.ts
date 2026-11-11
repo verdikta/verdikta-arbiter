@@ -19,8 +19,8 @@
  * six minutes (the cases run side by side).
  *
  * The Q63 jurors (owner decision, 2026-11-09: gpt-6-luna, google/gemini-4-argon,
- * claude-opus-5-5) are paths of their own, by explicit id: the installed @verdikta/common
- * still has the old panels, and the new ones arrive with 1.9.0-attest.4.
+ * claude-opus-5-5), the panels of @verdikta/common from 1.9.0-attest.4, are paths of their
+ * own, by explicit id (q63-juror-routes.test.ts holds the ids to the pinned panels).
  */
 import fs from 'fs';
 import http from 'http';

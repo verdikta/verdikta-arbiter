@@ -63,6 +63,9 @@
         "test/**"
       ]
     },
+    "documents": [
+      "README.md"
+    ],
     "knownIssues": "known_issues.json",
     "severityRubric": "immunefi-v2.3",
     "valueAtRiskUsd": 1000

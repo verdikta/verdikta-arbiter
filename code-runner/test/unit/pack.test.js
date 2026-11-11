@@ -66,9 +66,12 @@ const realBytes = (pack) => pack.files.reduce((n, f) => n + Buffer.byteLength(f.
 // ------------------------------------------- the assembly
 
 test('the tiers are §10.3\'s, in its order, and the files follow them after the manifest', () => {
-  assert.deepEqual(TIER_NAMES, ['poc', 'claim', 'source', 'callSites', 'knownIssues', 'priorFindings', 'fix', 'tree']);
+  // common's order (A19); a listing that names no documents has no documents tier (test/unit/documents.test.js has the tier).
+  assert.deepEqual(TIER_NAMES, [...codeReview.CONTEXT_PACK_TIERS]);
+  const EIGHT = ['poc', 'claim', 'source', 'callSites', 'knownIssues', 'priorFindings', 'fix', 'tree'];
+  assert.deepEqual(TIER_NAMES.filter((name) => name !== 'documents'), EIGHT);
   const pack = assemblePack({ request: request({ fixPatch: Buffer.from(FIX_PATCH) }), inputs: inputs() });
-  assert.deepEqual(pack.tiers.map((t) => t.name), TIER_NAMES);
+  assert.deepEqual(pack.tiers.map((t) => t.name), EIGHT);
   assert.deepEqual(pack.tiers.map((t) => t.rank), [1, 2, 3, 4, 5, 6, 7, 8]);
   assert.equal(pack.files[0].name, '00-manifest.json');
   const order = pack.files.slice(1).map((f) => f.tier);
@@ -711,6 +714,69 @@ test('R4-F1: an entry that does not fit does not stop a smaller one after it, an
   assert.equal(JSON.parse(lines[1]).id, issues[1].id, 'the smaller one, after the one that did not fit');
   assert.match(lines[2], /left out 1 more/);
   assertSums(pack);
+});
+
+// ------------------------------------------- A19: a listing without documents is byte for byte what it was
+
+/**
+ * The hashes these packs had on the runner before the documents tier (claude/stake-attestation at ced53bb, RUNNER_VERSION
+ * 0.2.0): a listing that names no documents, or an empty list, gives the same pack, and a claim the same report but for
+ * inputs.runner, which a runner release moves (README, "The pin"). Taken by running these routes on that commit.
+ */
+const BEFORE_DOCUMENTS = Object.freeze({
+  ordinary: '003095d0b03f65965a136ef9ef27ed3bf8c8295f672e7724d7f0fd6e56e02aff',
+  withFix: '0fdc7abe6a7aaacb304cdaaaa38f59d772a8a7cd90502b7aac1236d94cf40276',
+  full: 'e49c74a6f4b912152756d6ede12c68ff19c50e6f87cd470eb120e4ef6199a815',
+  premium: '142df0bd9a91bee9bd9f629c9d5cfe6464c2895e5ecec8e8c3a8db02481e731e',
+  tight: 'd74dc97c7367fc95b228ec94b229575c192d744a8dcad5596bf1fe0a0a434b8d',
+  claimPack: '93471592e053775c3e6e7f98128ec073f5d23846282a33f26a35f067f47f30c4',
+  claimReport: '14bcc45784fa78c7a17a9f810286cd3236bc5e2c2b6fc0ef222634048a509441'
+});
+
+const NO_DOCUMENTS = [undefined, []];
+const withDocuments = (req, documents) => (documents === undefined ? req : { ...req, spec: { ...req.spec, stake: { ...(req.spec.stake || {}), documents } } });
+
+test('A19: the documents tier changes what a claim\'s jury reads, so it is a runner release: RUNNER_VERSION 0.3.0 (README, "The context pack")', () => {
+  const { RUNNER_VERSION } = require('../../src/version');
+  assert.equal(RUNNER_VERSION, '0.3.0');
+});
+
+test('A19: a listing without documents gives the pack it gave before the documents tier, byte for byte, with no field or an empty list', () => {
+  for (const documents of NO_DOCUMENTS) {
+    const routes = {
+      ordinary: assemblePack({ request: withDocuments(request(), documents), inputs: inputs() }),
+      withFix: assemblePack({ request: withDocuments(request({ fixPatch: Buffer.from(FIX_PATCH) }), documents), inputs: inputs() }),
+      full: assemblePack({ request: withDocuments(fullRequest(), documents), inputs: fullInputs() }),
+      premium: assemblePack({ request: withDocuments(fullRequest(), documents), inputs: fullInputs(), codeClass: 'code-premium' }),
+      tight: assemblePack({ request: withDocuments(fullRequest(), documents), inputs: fullInputs(), budgetTokens: 2000 })
+    };
+    const hashes = Object.fromEntries(Object.entries(routes).map(([name, pack]) => [name, pack.sha256]));
+    const { claimPack, claimReport, ...before } = BEFORE_DOCUMENTS;
+    assert.deepEqual(hashes, before, `documents ${JSON.stringify(documents)}`);
+    for (const pack of Object.values(routes)) {
+      assert.deepEqual(pack.tiers.map((t) => t.name), TIER_NAMES.filter((name) => name !== 'documents'), 'no documents tier');
+      assert.deepEqual(pack.tiers.map((t) => t.rank), pack.tiers.map((_, i) => i + 1));
+    }
+  }
+});
+
+test('A19: a claim on a listing without documents reads what it read, and gives the pack and the report it gave, but for inputs.runner', async () => {
+  const { buildReport } = require('../../src/report');
+  const execs = [];
+  for (const documents of NO_DOCUMENTS) {
+    const sb = claimSandbox();
+    const stake = { scope: { include: ['src/**'] }, ...(documents === undefined ? {} : { documents }) };
+    const req = claimRequest({ spec: forgeSpec({ stake }) });
+    const r = await runClaim(sb, req);
+    assert.equal(r.outcome, 'definitive');
+    const { report } = buildReport(r, req, { gvisor: codeReview.GVISOR_RELEASE, platform: 'linux/amd64' });
+    const runnerless = { ...report, inputs: { ...report.inputs, runner: '-' } };
+    const got = { claimPack: r.contextPack.sha256, claimReport: crypto.createHash('sha256').update(codeReview.canonicalJson(runnerless)).digest('hex') };
+    assert.deepEqual(got, { claimPack: BEFORE_DOCUMENTS.claimPack, claimReport: BEFORE_DOCUMENTS.claimReport }, `documents ${JSON.stringify(documents)}`);
+    execs.push(sb.pocExecs().map((d) => (d.kind === 'git' ? `git ${d.sub.join(' ')}` : d.kind)));
+  }
+  assert.deepEqual(execs[1], execs[0], 'an empty list asks git for nothing more');
+  assert.ok(!execs[0].some((e) => e.includes('pack:documents')));
 });
 
 test('the sum holds on every route: an ordinary pack, a full one, a padded one, small budgets, premium, no fix, nothing named', () => {

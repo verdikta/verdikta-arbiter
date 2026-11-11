@@ -24,7 +24,7 @@ jest.setTimeout(120000);
 
 const E2E = path.join(__dirname, '..', '..');
 const INDEX = path.join(E2E, 'src', 'index.js');
-const COMMON = '1.9.0-attest.3';
+const COMMON = '1.9.0-attest.5';
 const RELEASE = 'abc1234def5678';
 const IMAGE = `registry.example/vault@sha256:${'b'.repeat(64)}`;
 const COLD_IMAGE = `registry.example/vault@sha256:${'e'.repeat(64)}`;

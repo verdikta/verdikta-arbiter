@@ -5,6 +5,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { codeReview } = require('@verdikta/common');
 const { PRICES, usageOf, reservationUsd, Ledger, readLedger, worstCaseClaimUsd } = require('../spend');
 
 let dir;
@@ -240,5 +241,35 @@ describe('Ledger', () => {
   test('the prices are dated, and name where they came from', () => {
     expect(PRICES.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(PRICES.source).toMatch(/openrouter/i);
+  });
+
+  test('A19: a call through OpenRouter is priced by the pool model its id stands for, and an id no table names is still refused', () => {
+    const native = reservationUsd('gpt-6-luna', 300000, 32000);
+    expect(reservationUsd('openai/gpt-6-luna', 300000, 32000)).toBe(native);
+    expect(reservationUsd('anthropic/claude-opus-5.5', 1000, 100)).toBe(reservationUsd('claude-opus-5-5', 1000, 100));
+    expect(usageOf('openai/gpt-6-luna', { usage: { prompt_tokens: 100000, completion_tokens: 100000 } }).listUsd).toBeCloseTo(0.06, 6);
+    // Past 272K input tokens, Luna's higher rate, by either id.
+    expect(usageOf('openai/gpt-6-luna', { usage: { prompt_tokens: 1000000, completion_tokens: 1000000 } }).listUsd).toBeCloseTo(0.95, 6);
+    expect(() => reservationUsd('openai/gpt-7', 1000, 100)).toThrow(/no list price/);
+    expect(() => reservationUsd('comment', 1000, 100)).toThrow(/no list price/);
+  });
+
+  test('A19: every code-class pool model the AI Node can send through OpenRouter has its route id, and each priced panel juror is priced by either id', () => {
+    const { routeIds, modelOfRoute } = require('../routes');
+    for (const codeClass of Object.values(codeReview.CODE_CLASSES)) {
+      for (const { provider, model } of codeClass.models) {
+        const ids = routeIds(provider, model);
+        expect(ids[0]).toBe(model);
+        if (provider === 'openrouter') expect(ids).toEqual([model]);
+        else expect(modelOfRoute(ids[1])).toEqual({ provider, model });
+      }
+    }
+    const jurors = [codeReview.CODE_STANDARD_PANEL, codeReview.CODE_STANDARD_DISPUTE_PANEL].flatMap((panel) => panel.AI_NODES);
+    for (const node of jurors) for (const id of routeIds(node.AI_PROVIDER, node.AI_MODEL)) expect(() => reservationUsd(id, 1000, 100)).not.toThrow();
+  });
+
+  test('every juror of the pinned release\'s panels has a list price: a batch on them is counted, never refused', () => {
+    const jurors = [codeReview.CODE_STANDARD_PANEL, codeReview.CODE_STANDARD_DISPUTE_PANEL].flatMap((panel) => panel.AI_NODES.map((node) => node.AI_MODEL));
+    for (const model of jurors) expect(Object.hasOwn(PRICES.models, model)).toBe(true);
   });
 });

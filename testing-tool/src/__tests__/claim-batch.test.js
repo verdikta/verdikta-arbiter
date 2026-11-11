@@ -18,6 +18,10 @@ afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 const SONNET = 'claude-sonnet-5-5';
 const DEEPSEEK = 'deepseek/deepseek-v4-pro-0813';
 const HAIKU = 'claude-haiku-5-5';
+/** The scenarios' panel: the pinned release's CODE_STANDARD_PANEL (owner decision Q63), whose jurors a batch prices and reads. */
+const [GEMINI, LUNA] = codeReview.CODE_STANDARD_PANEL.AI_NODES.map((node) => node.AI_MODEL);
+/** What a Luna call carries at the meter under jury-run.sh, which leaves the AI Node no OpenAI key: its OpenRouter id. */
+const LUNA_ROUTE = 'openai/gpt-6-luna';
 
 async function scenarios(ids) {
   const claims = path.join(dir, 'claims-in');
@@ -26,7 +30,7 @@ async function scenarios(ids) {
 }
 
 /** What the meter would have recorded for one claim: the two jurors and the justifier, with their answers saved. */
-function recordCalls(batchDir, ledger, { sonnet = [0, 0, 0, 0, 1000000, 0], deepseek = [0, 0, 0, 1000000, 0, 0], usd = 0.1 } = {}) {
+function recordCalls(batchDir, ledger, { first = [0, 0, 0, 0, 1000000, 0], second = [0, 0, 0, 1000000, 0, 0], usd = 0.1 } = {}) {
   const calls = path.join(batchDir, 'calls');
   fs.mkdirSync(calls, { recursive: true });
   const save = (id, model, body) => { fs.writeFileSync(path.join(calls, `${id}.json`), JSON.stringify({ id, model, status: 200, body })); return `${id}.json`; };
@@ -34,8 +38,8 @@ function recordCalls(batchDir, ledger, { sonnet = [0, 0, 0, 0, 1000000, 0], deep
     const id = ledger.reserve({ usd: 1, model });
     ledger.settle(id, { usd, basis: 'reported', status: 200, inputTokens: 100, outputTokens: 10, response: save(id, model, body) });
   };
-  one(SONNET, { content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: JSON.stringify({ score: sonnet, justification: 'j' }) }] });
-  one(DEEPSEEK, { choices: [{ message: { content: `\`\`\`json\n${JSON.stringify({ score: deepseek, justification: 'j' })}\n\`\`\`` } }] });
+  one(GEMINI, { choices: [{ message: { content: `\`\`\`json\n${JSON.stringify({ score: first, justification: 'j' })}\n\`\`\`` } }] });
+  one(LUNA_ROUTE, { choices: [{ message: { content: JSON.stringify({ score: second, justification: 'j' }) } }] });
   one(HAIKU, { content: [{ type: 'text', text: 'The panel found.' }] });
 }
 
@@ -88,11 +92,11 @@ describe('one result file per claim', () => {
     const a = readClaim(batchDir, 'a');
     expect(a.settled.outcome).toBe('MEDIUM');
     expect(a.spend.usd).toBeCloseTo(0.3, 6);
-    expect(a.spend.calls.map((c) => c.model)).toEqual([SONNET, DEEPSEEK, HAIKU]);
+    expect(a.spend.calls.map((c) => c.model)).toEqual([GEMINI, LUNA_ROUTE, HAIKU]);
     expect(a.spend.calls[0]).toMatchObject({ inputTokens: 100, outputTokens: 10, basis: 'reported' });
     expect(a.jurors).toEqual([
-      { model: SONNET, vector: [0, 0, 0, 0, 1000000, 0] },
-      { model: DEEPSEEK, vector: [0, 0, 0, 1000000, 0, 0] }
+      { model: GEMINI, vector: [0, 0, 0, 0, 1000000, 0] },
+      { model: LUNA, vector: [0, 0, 0, 1000000, 0, 0] }
     ]);
     expect(readClaim(batchDir, 'b').spend.usd).toBeCloseTo(0.3, 6);
   });
@@ -308,6 +312,32 @@ describe('jurorVectors', () => {
   const vector = [0, 0, 0, 0, 1000000, 0];
   const RESCALED = [166670, 166666, 166666, 166666, 166666, 166666];
   const reply = (score, justification = 'j') => JSON.stringify({ score, justification });
+
+  test('A19: a juror\'s answer is read under its OpenRouter id too, and only its own: the Q63 panels on jury-run.sh', () => {
+    const q63 = codeReview.CODE_STANDARD_PANEL;
+    const dispute = codeReview.CODE_STANDARD_DISPUTE_PANEL;
+    const choices = (score) => ({ choices: [{ message: { content: reply(score) } }] });
+    const high = [0, 0, 0, 0, 1000000, 0];
+    const calls = [answerFile('1.json', GEMINI, choices(high)), answerFile('2.json', LUNA_ROUTE, choices(high))];
+    expect(jurorVectors(calls, q63, dir, high)).toEqual([{ model: GEMINI, vector: high }, { model: LUNA, vector: high }]);
+    // Opus by either route; another juror's route id is never its answer.
+    const opus = [answerFile('3.json', 'anthropic/claude-opus-5.5', choices(high)), answerFile('4.json', GEMINI, choices(high))];
+    expect(jurorVectors(opus, dispute, dir, high).map((j) => j.vector)).toEqual([high, high]);
+    expect(jurorVectors([answerFile('5.json', 'openai/gpt-6-sol', choices(high)), calls[0]], q63, dir)).toEqual([{ model: GEMINI, vector: high }, { model: LUNA, vector: null }]);
+  });
+
+  test('R1-F2: a panel that names its provider as common accepts it ("OpenAI", padded) still finds the juror under its route id', () => {
+    const { routeIds } = require('../routes');
+    for (const provider of ['openai', 'OpenAI', ' OPENAI ']) expect(routeIds(provider, LUNA)).toEqual([LUNA, LUNA_ROUTE]);
+    expect(routeIds(undefined, LUNA)).toEqual([LUNA]);
+    expect(routeIds('comment', 'x')).toEqual(['x']);
+    const high = [0, 0, 0, 0, 1000000, 0];
+    const panel = { AI_NODES: [{ AI_PROVIDER: 'OpenRouter', AI_MODEL: GEMINI, WEIGHT: 0.5 }, { AI_PROVIDER: 'OpenAI', AI_MODEL: LUNA, WEIGHT: 0.5 }] };
+    // common accepts that panel (its envelope check reads providers trimmed and in any case).
+    expect(codeReview.validateClassEnvelope({ ...codeReview.CODE_STANDARD_PANEL, AI_NODES: panel.AI_NODES.map((n) => ({ ...n, NO_COUNTS: 1 })) }).ok).toBe(true);
+    const calls = [answerFile('6.json', GEMINI, { choices: [{ message: { content: reply(high) } }] }), answerFile('7.json', LUNA_ROUTE, { choices: [{ message: { content: reply(high) } }] })];
+    expect(jurorVectors(calls, panel, dir, high).map((j) => j.vector)).toEqual([high, high]);
+  });
 
   test('a repair call\'s scores replace the prose before it, rescaled, and a juror with none is null', () => {
     const calls = [

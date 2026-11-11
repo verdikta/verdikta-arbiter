@@ -191,6 +191,12 @@ hunter, a maker or the code could have written is quoted in a block whose
 BEGIN and END lines carry a hash of its own content, so quoted text cannot end
 its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
 
+When the listing names documents (`stake.documents`, owner decision Q61 (a)),
+the pack carries them as their own tier, after the in-scope source (the code
+runner's README, "The documents tier"). The pre-prompt lists them among the
+pack's contents as the maker's statement of what the code is meant to do, for
+question 1, not evidence of what it does.
+
 The four questions state the two rules of `@verdikta/common`'s claim query,
 version 2 (owner decisions Q66 (a), Q73 #5):
 

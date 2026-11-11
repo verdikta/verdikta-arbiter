@@ -428,6 +428,13 @@ describe('code review: listing checks before any pull or model call (requester e
     expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_SPEC/);
   });
 
+  it('A19: a stake.documents entry common refuses (outside the repository, not plain) is a requester error before any runner', async () => {
+    for (const bad of ['../README.md', './docs/**', 'docs/']) {
+      const s = scenario({ listing: { mutateSpec: (spec) => { spec.stake.documents = ['README.md', bad]; } } });
+      expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_SPEC.*STAKE_DOCUMENT_(OUTSIDE_REPOSITORY|NOT_PLAIN) at \/stake\/documents\/1/);
+    }
+  });
+
   it('a manifest naming a code_review.json the archive does not hold is a requester error', async () => {
     const s = scenario({ listing: { files: { 'code_review.json': undefined } } });
     expectRequesterError(await evaluateHandler(request(s.cid(1))), /CODE_REVIEW_LISTING/);

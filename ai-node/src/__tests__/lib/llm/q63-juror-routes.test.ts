@@ -14,10 +14,11 @@
  * Each juror runs here as code mode runs it (runCodeJury), through its real client (the
  * openai SDK, LangChain's ChatAnthropic over @anthropic-ai/sdk, OpenRouter's fetch) against
  * a stub on 127.0.0.1 with throwaway keys. No request leaves this machine. The model ids are
- * written out, not read from @verdikta/common: the installed release still has the old
- * panels, and these arrive with 1.9.0-attest.4.
+ * written out, and the first test holds them to the panels of the pinned @verdikta/common
+ * (1.9.0-attest.4 and later), so a panel change fails here until each new juror has its routes.
  */
 import http from 'http';
+import { codeReview } from '@verdikta/common';
 import type { AddressInfo, Socket } from 'net';
 import { runCodeJury } from '../../../lib/code-review/jury';
 import { LLMFactory } from '../../../lib/llm/llm-factory';
@@ -189,6 +190,14 @@ const OPENROUTER_BODY = (model: string) => ({
   stream: false,
   max_tokens: CLASS_OUTPUT_TOKENS,
   reasoning: { effort: 'high' },
+});
+
+describe('the jurors here are the pinned release\'s panels', () => {
+  test('every juror of CODE_STANDARD_PANEL and CODE_STANDARD_DISPUTE_PANEL, and no other', () => {
+    const panels = [codeReview.CODE_STANDARD_PANEL, codeReview.CODE_STANDARD_DISPUTE_PANEL];
+    const jurors = new Set(panels.flatMap(panel => panel.AI_NODES.map(node => `${node.AI_PROVIDER} ${node.AI_MODEL}`)));
+    expect([...jurors].sort()).toEqual(['anthropic claude-opus-5-5', 'openai gpt-6-luna', 'openrouter google/gemini-4-argon']);
+  });
 });
 
 describe('gpt-6-luna (openai)', () => {

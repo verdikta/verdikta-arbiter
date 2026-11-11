@@ -1299,7 +1299,10 @@ The existing multi-model `rank-and-justify`, with a claim pre-prompt. Input:
    class envelope sets it, §10.4; 60k tokens for standard), in priority order:
    `poc.patch` with function context (`git diff -W`) and the full text of the
    PoC files; `finding.json` and `report.md`; the full post-listing text of the
-   in-scope source files the finding names; call sites of the symbols the PoC
+   in-scope source files the finding names; the maker's documents the listing
+   names (`stake.documents`, owner decision Q61 (a): `@verdikta/common`'s
+   selection, a reserved 10% and at most 20% of the budget, only when the listing
+   names any); call sites of the symbols the PoC
    exercises (`git grep -w`, at most 10 each); `known_issues.json`; the
    `finding.json` summaries of prior valid claims on this hash (§13.3); the fix
    diff when present; a shallow file tree. Over budget, the lowest tiers are

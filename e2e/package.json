@@ -19,7 +19,7 @@
     "test": "jest"
   },
   "dependencies": {
-    "@verdikta/common": "1.9.0-attest.3",
+    "@verdikta/common": "1.9.0-attest.5",
     "adm-zip": "^0.5.16",
     "axios": "^1.7.7",
     "chalk": "^4.1.2",

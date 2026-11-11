@@ -24,14 +24,18 @@ const CODE_RUNNER = path.join(__dirname, '..', '..', '..', '..', 'code-runner');
 const PIN_KEY = 'local-harness-pin-key';
 const OPERATOR = '0x0000000000000000000000000000000000000001';
 const JUSTIFIER = Object.freeze({ provider: 'openai', model: 'mock-justifier' });
-const HANGING_JUROR = Object.freeze({ provider: 'openai', model: 'gpt-6-luna' });
+/** A juror of the standard pool in neither panel (owner decision Q63, @verdikta/common 1.9.0-attest.4). */
+const HANGING_JUROR = Object.freeze({ provider: 'openai', model: 'gpt-6-sol' });
 
-/** The panel's replies, weights 0.5 and 0.5, so only both together give the average the scenario asserts. */
+/**
+ * The panels' replies, weights 0.5 and 0.5, so only both together give the average the scenario asserts: the
+ * evaluation panel is gemini-4-argon and gpt-6-luna, the dispute panel claude-opus-5-5 and gemini-4-argon.
+ */
 const JUROR_SCORES = Object.freeze({
-  'claude-sonnet-5-5': [0, 0, 0, 0, 800000, 200000],
-  'deepseek/deepseek-v4-pro-0813': [0, 0, 0, 0, 600000, 400000],
-  // On the dispute panel, in the second juror's place.
-  'gpt-6-sol': [0, 0, 0, 0, 600000, 400000]
+  'google/gemini-4-argon': [0, 0, 0, 0, 800000, 200000],
+  'gpt-6-luna': [0, 0, 0, 0, 600000, 400000],
+  // On the dispute panel, in the first juror's place.
+  'claude-opus-5-5': [0, 0, 0, 0, 600000, 400000]
 });
 const JURY_AVERAGE = Object.freeze([0, 0, 0, 0, 700000, 300000]);
 const MOCK_SCRIPT = Object.freeze({
@@ -238,4 +242,4 @@ async function startClaimHarness() {
   }
 }
 
-module.exports = { startClaimHarness, JUSTIFIER, HANGING_JUROR };
+module.exports = { startClaimHarness, JUSTIFIER, HANGING_JUROR, JUROR_SCORES, JURY_AVERAGE, MOCK_SCRIPT };

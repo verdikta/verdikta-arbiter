@@ -69,7 +69,7 @@ const integrity = require('./integrity');
 const { claimedObservable, functionName } = require('./observable');
 const { runFixCheck, notRunFix } = require('./fix');
 const { pocReportForm, boundedText } = require('./report');
-const { gatherPackInputs, assemblePack } = require('./pack');
+const { gatherPackInputs, assemblePack, chooseDocuments, affectedPathsOf } = require('./pack');
 const scanner = require('./scanner');
 
 /** git's answers (paths, stats, the diff) are read up to this. */
@@ -611,6 +611,10 @@ function claimSession(request, limits, { adopt = null } = {}) {
     // An input of the run the report has no field for (owner decision Q37): a function of the image and the listed commit.
     ctx.fact('compiler', { tier: 'A', solc: state.solcPin });
     state.prepared = checkout.commit;
+    // The listed commit's own entries, which the pack's documents are chosen from (pack.js): chosen now, before the patch
+    // or any maker command, as the fix check's sandbox does too, so a listing common's selection refuses runs nothing.
+    state.listedFiles = checkout.listed;
+    state.documents = chooseDocuments(spec, checkout.listed, affectedPathsOf(request));
     ctx.fact('commit', { tier: 'A', base, poc: null });
   }
 
@@ -697,7 +701,10 @@ function claimSession(request, limits, { adopt = null } = {}) {
    * run, so the limits it measures and the probes it holds to them must count them.
    */
   function packInputs(ctx) {
-    return gatherPackInputs(ctx, { request, listed: state.prepared, poc: state.pocCommit || state.prepared, touched: state.touched || [], added: state.added });
+    return gatherPackInputs(ctx, {
+      request, listed: state.prepared, poc: state.pocCommit || state.prepared, touched: state.touched || [], added: state.added, listedFiles: state.listedFiles,
+      documents: state.documents
+    });
   }
 
   /**

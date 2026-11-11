@@ -489,6 +489,20 @@ describe('acceptance 3: runner abstain or an unreachable or unhealthy runner →
     expect(res.error).not.toContain('HUNTER-TEXT-IN-DETAIL');
   });
 
+  it('A19: a listing that names documents reaches the runner as listed; DOCUMENTS_MATCH_TOO_COSTLY is the requester\'s: errored, no commit, no jury', async () => {
+    const documents = ['README.md', 'docs/**'];
+    runner.state.answer = () => ({
+      status: 400,
+      json: { outcome: 'requester_error', issues: [{ code: 'DOCUMENTS_MATCH_TOO_COSTLY', path: '/spec/stake/documents', detail: 'DOCUMENTS_MATCH_TOO_COSTLY: name the documents with narrower globs' }] }
+    });
+    const s = scenario({ listing: { mutateSpec: (spec) => { spec.stake.documents = documents; } } });
+    const res = await evaluateHandler(request(s.cid(1)));
+    expectAbstain(res, /CODE_REVIEW_RUNNER_REFUSED.*DOCUMENTS_MATCH_TOO_COSTLY/);
+    expect(runner.state.runs).toHaveLength(1);
+    expect(runner.state.runs[0].spec.stake.documents).toEqual(documents);
+    expect(ai.state.calls).toHaveLength(0);
+  });
+
   it('a definitive run with reportUnavailable (linux/arm64) abstains, whatever its gates say', async () => {
     runner.state.answer = (body) => {
       const answer = R.definitive(body, { stop: 'build' });

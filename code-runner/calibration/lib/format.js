@@ -454,6 +454,47 @@ function checkTwin(entry, byId, problems) {
   if (!isDeepStrictEqual({ ...mine.spec, stake: stakeA }, { ...theirs.spec, stake: stakeB })) fail('the two listings hold different specs');
 }
 
+/** The documents rule's entries, in the rule's order (node A19, owner decision Q61 (a)). */
+const RULE_DOCUMENTS = Object.freeze(['README.md', 'docs/**']);
+
+/**
+ * What a calibration listing names as its documents: README.md and docs/** of the
+ * listed commit, each only when it is there (a file at README.md; any file under
+ * docs/). That rule alone decides, with no judgment of what the files say.
+ * @param {Iterable<string>} paths - the listed commit's own file paths (no submodule's)
+ * @returns {string[]}
+ */
+function documentsByRule(paths) {
+  const list = [...paths];
+  return RULE_DOCUMENTS.filter((entry) => (entry === 'README.md' ? list.includes('README.md') : list.some((p) => p.startsWith('docs/'))));
+}
+
+/**
+ * Why a listing's stake.documents is not the rule's on these paths, or null. A
+ * listing the rule gives nothing leaves the field out, so its archive is the one it
+ * had before the field.
+ * @param {object} spec - code_review.json
+ * @param {Iterable<string>} paths - as documentsByRule
+ * @returns {string|null}
+ */
+function documentsRuleProblem(spec, paths) {
+  const named = isObject(spec) && isObject(spec.stake) ? spec.stake.documents : undefined;
+  const want = documentsByRule(paths);
+  if (want.length === 0) {
+    return named === undefined ? null
+      : `stake.documents: the listed commit has neither README.md nor docs/, so the listing names no documents and leaves the field out (it names ${JSON.stringify(named)})`;
+  }
+  if (Array.isArray(named) && named.length === want.length && named.every((entry, i) => entry === want[i])) return null;
+  return `stake.documents must be ${JSON.stringify(want)}: README.md and docs/** where the listed commit has them, in that order (it names ${JSON.stringify(named === undefined ? null : named)})`;
+}
+
+/** Whether `named` is what the rule could give some commit: the rule's entries, in its order, at least one. */
+function documentsRuleShape(named) {
+  if (named === undefined) return true;
+  const allowed = RULE_DOCUMENTS.filter((entry) => Array.isArray(named) && named.includes(entry));
+  return Array.isArray(named) && named.length > 0 && named.length === allowed.length && named.every((entry, i) => entry === allowed[i]);
+}
+
 function readTree(dir, fail) {
   const out = {};
   const walk = (rel) => {
@@ -543,6 +584,14 @@ function loadListing(root, rel, problems) {
       // A public recipient, and nothing here encrypts to it: each run makes its own, so no key-shaped text is committed for the secret scan to read.
       if (spec.stake.disclosureKey !== undefined) fail('code_review.json must not name a disclosureKey: the harness fills one in for the run');
       else spec.stake = { ...spec.stake, disclosureKey: RUN_RECIPIENT };
+    }
+    // The documents rule (node A19): checked here where the files are in the tree, and once fetched for a git listing (session.js).
+    if (isGit) {
+      const named = isObject(spec.stake) ? spec.stake.documents : undefined;
+      if (!documentsRuleShape(named)) fail(`stake.documents must be README.md and docs/** where the listed commit has them, in that order, or left out (it names ${JSON.stringify(named)})`);
+    } else if (listing.files) {
+      const problem = documentsRuleProblem(spec, Object.keys(listing.files));
+      if (problem) fail(problem);
     }
     const setup = isObject(spec.commands) ? spec.commands.setup : undefined;
     if (setup !== undefined) {
@@ -1017,5 +1066,6 @@ function selectCases(corpus, { subset, cases: ids, listing }) {
 }
 
 module.exports = {
-  CASE_FORMAT, LISTING_FORMAT, RUNNER_GATES, CLAIM_FILES, LABEL_KINDS, RUBRIC_IMPACTS, CorpusError, loadCorpus, selectCases, getPath
+  CASE_FORMAT, LISTING_FORMAT, RUNNER_GATES, CLAIM_FILES, LABEL_KINDS, RUBRIC_IMPACTS, CorpusError, loadCorpus, selectCases, getPath,
+  documentsByRule, documentsRuleProblem
 };

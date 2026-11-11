@@ -918,6 +918,42 @@ test('A2c: what a claim\'s context pack reads is read at listing too, with the p
   assert.ok(slow.facts.listing.timings.prepareSeconds >= 0.3, JSON.stringify(slow.facts.listing.timings));
 });
 
+test('A19: a listing that names documents has them read at listing too, in P and in each probe, as a claim reads them; none named, no read', async () => {
+  const stake = { scope: { include: ['src/**'], exclude: [] }, documents: ['src/**'] };
+  const r = await runListing(listingSandbox(), listingBody({ spec: { stake } }));
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  const names = r.steps.map((s) => s.name);
+  const at = (n) => { const i = names.indexOf(n); assert.ok(i >= 0, `${n} in\n${names.join('\n')}`); return i; };
+  // No finding at listing, so no source is read: the documents come after the diff, before the reference.
+  assert.ok(at('pack:diff') < at('pack:documents') && at('pack:documents') < at('integrity:reference:framework'), 'in the preparation');
+  for (const prefix of ['harness:fails:forge-std', 'harness:compileError', 'harness:setUpError']) {
+    assert.ok(at(`${prefix}:pack:documents`) < at(`${prefix}:integrity:reference:framework`), prefix);
+  }
+  assert.equal(r.contextPack, null, 'a listing check makes no pack');
+  const plain = await runListing(listingSandbox());
+  assert.ok(!plain.steps.some((s) => s.name.endsWith('pack:documents')), 'a listing without documents reads none');
+});
+
+test('A19: documents too costly to match (DOCUMENTS_MATCH_TOO_COSTLY) are refused at listing as the requester\'s error, before any maker command', async () => {
+  const { GitStore } = require('../helpers/gitStore');
+  const store = new GitStore('sha1');
+  const dep = store.repo({ 'src/Test.sol': '// forge-std\n' }, 'forge-std');
+  const deep = Array(14).fill('a'.repeat(200)).join('/');
+  const files = {
+    '.gitmodules': '[submodule "lib/forge-std"]\n\tpath = lib/forge-std\n\turl = https://github.com/foundry-rs/forge-std\n',
+    'foundry.toml': '[profile.default]\n', 'lib/forge-std': { gitlink: dep }, 'src/Vault.sol': 'contract Vault {}\n', 'test/Vault.t.sol': 'contract VaultTest {}\n',
+    ...Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`${deep}/a${i}b`, 'x\n']))
+  };
+  const img = { store, base: store.repo(files, 'base'), dep, files };
+  const body = listingBody({ spec: { stake: { scope: { include: ['src/**'], exclude: [] }, documents: [`a${'**a'.repeat(150)}**b`] } } });
+  body.spec.baseCommit = img.base;
+  const sb = listingSandbox({ image: img });
+  const r = await runListing(sb, body);
+  assert.equal(r.outcome, 'requester_error', show(r));
+  assert.deepEqual(r.issues.map((i) => i.code), ['DOCUMENTS_MATCH_TOO_COSTLY']);
+  assert.ok(!kinds(sb).includes('vcr-build'), 'no maker command ran');
+});
+
 test('A2c: the measured times count what a claim\'s run does: the reference in P, the build\'s comparison in B, the snapshot in T', async () => {
   const { defaultManifest } = require('../helpers/fakeClaim');
   // The nth listing of the watched places (the look's own, of svm/, does not count) takes its time.

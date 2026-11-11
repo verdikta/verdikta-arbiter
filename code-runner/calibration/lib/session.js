@@ -31,6 +31,7 @@ const { REGISTRY_IMAGE, solcBytes } = require('../../test/docker/forgeFixture');
 const { MANIFEST_MEDIA_TYPE, repoLayer, gitRepoLayer, toolsLayer, assembleImage } = require('./image');
 const { fetchBase } = require('./base');
 const { fetchListedRepo } = require('./gitRepo');
+const { documentsRuleProblem } = require('./format');
 const { prebuild, cacheRoot } = require('./prebuild');
 const { DEADLINE_MS } = require('./harness');
 
@@ -54,6 +55,9 @@ async function imageParts(listing, platform) {
   const base = await fetchBase(platform);
   if (listing.repo.kind === 'git') {
     const repo = await fetchListedRepo(listing, { cacheDir: cacheRoot() });
+    // The documents rule (node A19), on the files now fetched: the loader could only check its shape.
+    const problem = documentsRuleProblem(listing.spec, repo.ownPaths);
+    if (problem) throw new Error(`listing ${listing.id}: ${problem}`);
     const releases = await Promise.all(listing.solcReleases.map(async (release) => ({ release, bytes: await solcBytes(platform, release) })));
     const { layer } = gitRepoLayer(repo);
     return { base, layers: [toolsLayer({ releases }), layer] };

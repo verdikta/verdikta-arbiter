@@ -74,6 +74,8 @@ test('a repository at its commit: the commit, its trees and blobs, each submodul
     assert.equal(byPath.get('foundry.toml').mode, 0o644);
     assert.equal(byPath.get('src/Link.sol').link, 'A.sol');
     assert.ok(!byPath.has('lib/dep'), 'a gitlink is a folder, not a file');
+    // A19: the listed commit's own files, as the documents rule reads them: no submodule's.
+    assert.deepEqual(got.ownPaths, ['.gitmodules', 'foundry.toml', 'run.sh', 'src/A.sol', 'src/Link.sol']);
     // Every object read is the one its id names.
     for (const [id, o] of got.objects) {
       const full = Buffer.concat([Buffer.from(`${o.type} ${o.content.length}\0`), o.content]);
@@ -99,6 +101,7 @@ test('a project in a subfolder: the listed commit is written over the subfolder\
     assert.notEqual(got.commit, top.commit);
     const paths = got.files.map((f) => f.path).sort();
     assert.deepEqual(paths, ['foundry.toml', 'lib/dep/Dep.sol', 'src/A.sol']);
+    assert.deepEqual(got.ownPaths, ['foundry.toml', 'src/A.sol'], 'the subfolder\'s own: the repository\'s README.md is not the listed commit\'s');
     assert.ok(!got.objects.has(top.commit), 'the upstream\'s own commit object names another tree: it stays out');
     assert.deepEqual(got.missing, []);
   } finally {
