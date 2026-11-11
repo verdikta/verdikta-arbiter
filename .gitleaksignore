@@ -34,3 +34,9 @@ c49f57a25f0d8bfba0501e239eafce6fae18d043:installer/docs/docs/installation/prompt
 # this commit stays on the PR branch because the branch is never force-pushed.
 bdce7d7ef6fb97fb041f036aec3965c516c94871:installer/tests/upgrade-api-keys-trap.test.sh:generic-api-key:114
 bdce7d7ef6fb97fb041f036aec3965c516c94871:installer/tests/upgrade-api-keys-trap.test.sh:generic-api-key:160
+
+# AI Node fixture copy (node A19), history only. Not a secret: stake.disclosureKey in common's example
+# listing (the same public age recipient as the A7a fixtures above). The commit that adds this entry
+# drops it from the copy and fills one in at test time, so the current tree has no such line; this commit stays on the PR
+# branch because the branch is never force-pushed.
+838809f8521650c1306d64ab6ef44280278ff8fa:ai-node/test-support/fixtures/code-review/code_review.bug.json:generic-api-key:35
