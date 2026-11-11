@@ -191,6 +191,16 @@ hunter, a maker or the code could have written is quoted in a block whose
 BEGIN and END lines carry a hash of its own content, so quoted text cannot end
 its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
 
+The four questions state the two rules of `@verdikta/common`'s claim query,
+version 2 (owner decisions Q66 (a), Q73 #5):
+
+- A class rests on what the PoC demonstrates, or on what follows from it by a
+  concrete line of reasoning that the claim itself sets out, tied to a file and
+  line (question 2).
+- A claim whose root cause is a listed known issue is DUPLICATE, even when the
+  entry calls the behaviour intended or accepted (question 3). It is not INVALID
+  as behaviour the code is not required to have (question 1).
+
 ### Time, cancellation and juror settings
 
 - Jurors run until `deadlineMs − 45 s` (the justifier reserve), at most 480 s;

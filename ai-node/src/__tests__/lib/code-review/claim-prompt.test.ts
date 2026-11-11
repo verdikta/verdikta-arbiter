@@ -1,6 +1,7 @@
 /**
  * The claim pre-prompt (design §10.3, §9.5, §10.6): what every code-mode juror reads.
  */
+import crypto from 'crypto';
 import { codeReview } from '@verdikta/common';
 import { buildClaimPrompt, buildCodeJustifierPrompt, buildCodeRepairPrompt, fence } from '../../../lib/code-review/claim-prompt';
 import { claimQuery, codeReviewField, validReport } from '../../../../test-support/code-review-fixtures';
@@ -151,6 +152,66 @@ describe('claim pre-prompt (code mode, §10.3)', () => {
     const order = ['1. Required?', '2. How severe?', '3. Known or duplicate?', '4. Honest?'].map(q => text.indexOf(q));
     order.forEach(position => expect(position).toBeGreaterThan(-1));
     expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
+  describe('the questions state the rules of claim query version 2 (owner decisions Q66 (a), Q73 #5)', () => {
+    // The three sentences as the owner decided them, and the version-1 sentences they replace.
+    const SENTENCES = [
+      {
+        question: '1. Required?',
+        now: 'A test that fails because it asserts behaviour that is intended, documented, or never promised is not a finding: INVALID, unless its root cause is a listed known issue (question 3).',
+        before: 'A test that fails because it asserts behaviour that is intended, documented, or never promised is not a finding: INVALID.',
+      },
+      {
+        question: '2. How severe?',
+        now: 'Count only what the PoC demonstrates or what follows from it by a concrete line of reasoning, which the claim sets out, tied to a file and line.',
+        before: 'Count only what the PoC demonstrates or what follows from it by a concrete line of reasoning tied to a file and line.',
+      },
+      {
+        question: '3. Known or duplicate?',
+        now: 'Rewording, a different entry point or a different victim does not make a new root cause, and neither does an entry that calls the behaviour intended or accepted: DUPLICATE.',
+        before: 'Rewording, a different entry point or a different victim does not make a new root cause: DUPLICATE.',
+      },
+    ];
+    // SHA-256 of the pre-prompt (everything before the listing's query) at 89a5f7b, before these sentences.
+    const PRE_PROMPT_BEFORE_SHA256 = '1740cb35e5338c2b2108a16f39fc86617b44a86f519e194442eb5d6e07bbcad7';
+
+    function prePrompt(text: string): string {
+      const end = text.indexOf('\n\n=== 1. THE LISTING\'S QUERY ===');
+      expect(end).toBeGreaterThan(0);
+      return text.slice(0, end);
+    }
+
+    function questionLine(text: string, question: string): string {
+      const lines = text.split('\n').filter(line => line.startsWith(`${question} `));
+      expect(lines).toHaveLength(1);
+      return lines[0];
+    }
+
+    /** The sentences after the question's heading ("1. Required?"). */
+    function sentences(text: string, question: string): string[] {
+      return questionLine(text, question).slice(question.length + 1).replace(/([.?]) (?=[A-Z])/g, '$1\n').split('\n');
+    }
+
+    test('each sentence stands where it was decided, once', () => {
+      const text = prompt();
+      const [required, severe, known] = SENTENCES;
+      expect(sentences(text, required.question).at(-1)).toBe(required.now);
+      expect(sentences(text, severe.question)[1]).toBe(severe.now);
+      expect(sentences(text, known.question).at(-1)).toBe(known.now);
+      for (const { now, before } of SENTENCES) {
+        expect(text.split(now)).toHaveLength(2);
+        expect(text).not.toContain(before);
+      }
+    });
+
+    test('the rest of the pre-prompt is byte-identical to version 1', () => {
+      let restored = prePrompt(prompt());
+      for (const { now, before } of SENTENCES) {
+        restored = restored.split(now).join(before);
+      }
+      expect(crypto.createHash('sha256').update(restored).digest('hex')).toBe(PRE_PROMPT_BEFORE_SHA256);
+    });
   });
 
   test('a dispute statement is fenced as the maker\'s argument', () => {

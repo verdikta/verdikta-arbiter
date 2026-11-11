@@ -1313,14 +1313,17 @@ six-outcome vector:
 - **Required?** Is the behaviour the PoC asserts something the code is required
   to have — by its specification, documentation, interface contract, or the
   listing's scope? A test that fails because it asserts an intended behaviour
-  is not a finding.
+  is not a finding, unless its root cause is a listed known issue (Known or
+  duplicate?).
 - **How severe?** Under the listing's rubric, what is the demonstrated
   consequence: funds at risk, how much, for whom, with what preconditions? Count
   only what the PoC demonstrates or what follows from it by a concrete line of
-  reasoning tied to a file and line.
+  reasoning, which the claim sets out, tied to a file and line (owner decision
+  Q66 (a)).
 - **Known or duplicate?** Is the root cause a listed known issue, or the same as
   a finding already valid on this hash? Rewording, a different entry point or a
-  different victim does not make a new root cause.
+  different victim does not make a new root cause, and neither does an entry
+  that calls the behaviour intended or accepted (owner decision Q73 #5).
 - **Honest?** Is the PoC minimal and faithful: no overwritten storage, no mocked
   target, no precondition the scope excludes, no fixture that creates the bug it
   then finds? Weigh the honesty flags; a flag is a fact, its meaning is the
