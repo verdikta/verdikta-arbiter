@@ -40,6 +40,7 @@
 const integrity = require('./integrity');
 const forge = require('./forge');
 const { forceCheckout } = require('./checkout');
+const { chooseDocuments, affectedPathsOf } = require('./pack');
 const { matchesAny, pocPatchPathsGate } = require('./common');
 const { reportablePath } = require('./patch');
 const crypto = require('node:crypto');
@@ -114,6 +115,9 @@ async function runFixCheck(parent, { request, limits, kit, halted }) {
   await kit.recordProcesses(ctx, box);
   await integrity.requireImmutableTools(ctx);
   const checkout = await forceCheckout(ctx, { base });
+  // The listing's documents, as the PoC's sandbox chooses them at its preparation (pack.js): a listing common's selection
+  // refuses is the requester's error here too, before either patch or any maker command, however far ahead this sandbox is.
+  chooseDocuments(spec, checkout.listed, affectedPathsOf(request));
   // The listing's own configuration, before either patch: the compiler the check runs with is the claim's (owner decision Q37).
   const solc = await integrity.pinCompiler(ctx, { testGlobs, protectedGlobs });
 

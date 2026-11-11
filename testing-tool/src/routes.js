@@ -24,7 +24,9 @@ for (const [provider, models] of Object.entries(TABLE)) {
  * @returns {string[]}
  */
 function routeIds(provider, model) {
-  const models = Object.hasOwn(TABLE, provider) && TABLE[provider] && typeof TABLE[provider] === 'object' ? TABLE[provider] : {};
+  // A panel names its provider as common's validateClassEnvelope accepts it: trimmed and in any case ("OpenAI").
+  const key = typeof provider === 'string' ? provider.trim().toLowerCase() : provider;
+  const models = key !== 'comment' && Object.hasOwn(TABLE, key) && TABLE[key] && typeof TABLE[key] === 'object' ? TABLE[key] : {};
   return Object.hasOwn(models, model) ? [model, models[model]] : [model];
 }
 

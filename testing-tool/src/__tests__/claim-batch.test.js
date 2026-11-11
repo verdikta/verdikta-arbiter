@@ -326,6 +326,19 @@ describe('jurorVectors', () => {
     expect(jurorVectors([answerFile('5.json', 'openai/gpt-6-sol', choices(high)), calls[0]], q63, dir)).toEqual([{ model: GEMINI, vector: high }, { model: LUNA, vector: null }]);
   });
 
+  test('R1-F2: a panel that names its provider as common accepts it ("OpenAI", padded) still finds the juror under its route id', () => {
+    const { routeIds } = require('../routes');
+    for (const provider of ['openai', 'OpenAI', ' OPENAI ']) expect(routeIds(provider, LUNA)).toEqual([LUNA, LUNA_ROUTE]);
+    expect(routeIds(undefined, LUNA)).toEqual([LUNA]);
+    expect(routeIds('comment', 'x')).toEqual(['x']);
+    const high = [0, 0, 0, 0, 1000000, 0];
+    const panel = { AI_NODES: [{ AI_PROVIDER: 'OpenRouter', AI_MODEL: GEMINI, WEIGHT: 0.5 }, { AI_PROVIDER: 'OpenAI', AI_MODEL: LUNA, WEIGHT: 0.5 }] };
+    // common accepts that panel (its envelope check reads providers trimmed and in any case).
+    expect(codeReview.validateClassEnvelope({ ...codeReview.CODE_STANDARD_PANEL, AI_NODES: panel.AI_NODES.map((n) => ({ ...n, NO_COUNTS: 1 })) }).ok).toBe(true);
+    const calls = [answerFile('6.json', GEMINI, { choices: [{ message: { content: reply(high) } }] }), answerFile('7.json', LUNA_ROUTE, { choices: [{ message: { content: reply(high) } }] })];
+    expect(jurorVectors(calls, panel, dir, high).map((j) => j.vector)).toEqual([high, high]);
+  });
+
   test('a repair call\'s scores replace the prose before it, rescaled, and a juror with none is null', () => {
     const calls = [
       answerFile('1.json', SONNET, text('PHASE 1 ... prose')),

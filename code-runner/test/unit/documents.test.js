@@ -391,6 +391,33 @@ test('DOCUMENTS_MATCH_TOO_COSTLY is the requester\'s broken package: requester_e
   assert.ok(!r.contextPack, 'no pack');
 });
 
+test('R1-F1: with a fix check beside it, neither sandbox runs a maker command on such a listing, however far ahead the fix check runs', async () => {
+  const { FIX_PATCH } = require('../helpers/fakeClaim');
+  const seg = 'a'.repeat(200);
+  const deep = Array(14).fill(seg).join('/');
+  const img = image(Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`${deep}/a${i}b`, 'x\n'])));
+  // The PoC's sandbox is slow to prepare, so the fix check's sandbox gets ahead of it.
+  const slow = async (d, b) => { if (b.n === 1) await new Promise((resolve) => setTimeout(resolve, 400)); return { exitCode: 0 }; };
+  const sb = claimSandbox({ image: img, git: { 'read-tree': slow } });
+  const r = await runClaim(sb, claimOn(img, [`a${'**a'.repeat(150)}**b`], { fixPatch: Buffer.from(FIX_PATCH) }));
+  assert.equal(r.outcome, 'requester_error', JSON.stringify(r.abstain));
+  assert.deepEqual(r.issues.map((i) => i.code), ['DOCUMENTS_MATCH_TOO_COSTLY']);
+  const all = sb.execs();
+  assert.ok(all.some((d) => d.box === 2), 'the fix check\'s sandbox ran');
+  for (const kind of ['vcr-build', 'vcr-poc', 'vcr-suite']) assert.ok(!all.some((d) => d.kind === kind), `no ${kind} in either sandbox`);
+  assert.ok(!all.some((d) => d.kind === 'git' && d.sub[0] === 'apply'), 'no patch was applied in either sandbox');
+});
+
+test('R1-F1: the documents are chosen at the preparation, before the patch, so a claim whose patch does not apply abstains on such a listing too', async () => {
+  const seg = 'a'.repeat(200);
+  const deep = Array(14).fill(seg).join('/');
+  const img = image(Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`${deep}/a${i}b`, 'x\n'])));
+  const sb = claimSandbox({ image: img, git: { 'apply --index': () => ({ exitCode: 1, stderr: 'error: patch failed\n' }) } });
+  const r = await runClaim(sb, claimOn(img, [`a${'**a'.repeat(150)}**b`]));
+  assert.equal(r.outcome, 'requester_error');
+  assert.ok(!sb.execs().some((d) => d.kind === 'git' && d.sub[0] === 'apply'), 'the patch was never applied');
+});
+
 test('any other error from common\'s selection is the requester\'s too: requester_error, never a pack without the tier', async () => {
   const common = require('../../src/common');
   const real = common.selectDocuments;

@@ -1642,10 +1642,12 @@ the maker wrote it. Every rule below is common's, called, not copied: `selectDoc
 - **Labelled as the maker's.** Each file opens with `# the maker's document at the listed commit
   (stake.documents): <path>`, and is named `04-document-NNN.txt`.
 - **A documents error is the requester's.** `DOCUMENTS_MATCH_TOO_COSTLY`, or any other error from the
-  selection, is a `requester_error` (`/spec/stake/documents`) raised before any maker command, at a claim
-  and at the listing check: the External Adapter answers errored, with no commit. The selection runs in the
-  runner's process; common's step bound holds a listing written to cost to about a second and a half there.
-  A patch that fails `applies` or `testPathsOnly` settles before the pack, as without documents.
+  selection, is a `requester_error` (`/spec/stake/documents`). The selection (`chooseDocuments`, no read) runs
+  right after the forced checkout, in the PoC's sandbox and in the fix check's alike, so on such a listing no
+  patch is applied and no maker command runs in either, at a claim and at the listing check: every claim on
+  it abstains, and the External Adapter answers errored, with no commit. The pack reads the files the
+  preparation chose. The selection runs in the runner's process; common's step bound holds a listing
+  written to cost to about a second and a half there.
 - **Without documents nothing changes.** No `stake.documents`, or an empty list: no read, no tier, and the
   pack and report are byte for byte what they were (`test/unit/pack.test.js`, `BEFORE_DOCUMENTS`, taken on
   the runner before the tier), but for the report's `inputs.runner`.

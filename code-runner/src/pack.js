@@ -509,39 +509,34 @@ async function gatherFiles(ctx, name, commit, paths, inScope = (p) => p) {
   return tally.account();
 }
 
+/** The finding's affected paths, as the source tier and the documents' selection read them. */
+function affectedPathsOf(request) {
+  return request.finding && Array.isArray(request.finding.affectedPaths) ? request.finding.affectedPaths : [];
+}
+
 /**
- * The documents tier's reads (owner decision Q61 (a); common's "Stake
- * documents"): common's selectDocuments over the listed commit's own entries,
- * then every selected regular file of at most maxFileBytes read whole from the
- * listed commit by commit id, and kept when common counts it as text. Every file
- * the selection names ends delivered or under its reason: the source tier's
- * (`inSource`), past the cap, a symbolic link, a submodule, too large (never
- * read), a path that is not one line, not text.
- *
- * A path that is not UTF-8 is no candidate: it has no spelling a glob or the
- * file's header can carry. Any error from the selection, DOCUMENTS_MATCH_TOO_COSTLY
- * among them, is the requester's broken package (common's spec: the builder
- * refuses such a listing), raised while no claim code has run.
- * @param {object} ctx
- * @param {object} o
- * @param {string} o.commit - the listed commit, as the forced checkout committed it
- * @param {object} o.stake - the spec's stake block
- * @param {unknown[]} o.affectedPaths - the finding's
- * @param {Array<{path:string, kind:string, size:number|null}>} o.listedFiles - the listed commit's own entries (checkout.js)
- * @returns {Promise<{asked:number, items:object[], omitted:object}>}
- * @throws {RequesterError} the selection failed
+ * common's selection of the listing's documents (selectDocuments) over the listed commit's own entries, or null when
+ * the listing names none. Pure: no read. Each sandbox runs it right after its forced checkout, before the patch and any
+ * maker command (claim.js, fix.js), so a listing whose documents common refuses is the requester's broken package in
+ * both, and no claim on it runs anything of the maker's. A path that is not UTF-8 is no candidate: it has no spelling
+ * a glob or the file's header can carry.
+ * @param {object} spec - code_review.json
+ * @param {Array<{path:string, kind:string, size:number|null}>} listedFiles - the listed commit's own entries (checkout.js)
+ * @param {unknown[]} affectedPaths - the finding's
+ * @returns {{selection:{paths:string[], inSource:string[], pastCap:string[]}, byName:Map<string, object>}|null}
+ * @throws {RequesterError} DOCUMENTS_MATCH_TOO_COSTLY, or STAKE_DOCUMENTS_INVALID for any other error from the selection
  */
-async function gatherDocuments(ctx, { commit, stake, affectedPaths, listedFiles }) {
-  if (!Array.isArray(listedFiles)) throw runnerError('pack:documents', 'the listed commit\'s own files were not listed');
+function chooseDocuments(spec, listedFiles, affectedPaths) {
+  if (!namesDocuments(spec)) return null;
+  if (!Array.isArray(listedFiles)) throw new Error('the listed commit\'s own files were not listed');
   const byName = new Map();
   for (const entry of listedFiles) {
     const bytes = Buffer.from(entry.path, 'latin1');
     const name = bytes.toString('utf8');
     if (Buffer.from(name, 'utf8').equals(bytes)) byName.set(name, entry);
   }
-  let selection;
   try {
-    selection = common.selectDocuments([...byName.keys()], stake, affectedPaths);
+    return { selection: common.selectDocuments([...byName.keys()], spec.stake, affectedPaths), byName };
   } catch (err) {
     const costly = Boolean(err && err.code === 'DOCUMENTS_MATCH_TOO_COSTLY');
     throw new RequesterError([{
@@ -550,6 +545,29 @@ async function gatherDocuments(ctx, { commit, stake, affectedPaths, listedFiles 
       detail: costly ? err.message : `stake.documents could not be matched against the listed commit's files (${err && err.name ? err.name : 'an error'} from @verdikta/common)`
     }]);
   }
+}
+
+/**
+ * The documents tier's reads (owner decision Q61 (a); common's "Stake
+ * documents"): common's selectDocuments over the listed commit's own entries,
+ * then every selected regular file of at most maxFileBytes read whole from the
+ * listed commit by commit id, and kept when common counts it as text. Every file
+ * the selection names ends delivered or under its reason: the source tier's
+ * (`inSource`), past the cap, a symbolic link, a submodule, too large (never
+ * read), a path that is not one line, not text. The selection is chooseDocuments',
+ * made at the sandbox's preparation (`chosen`), or here when none is given.
+ * @param {object} ctx
+ * @param {object} o
+ * @param {string} o.commit - the listed commit, as the forced checkout committed it
+ * @param {object} o.stake - the spec's stake block
+ * @param {unknown[]} o.affectedPaths - the finding's
+ * @param {Array<{path:string, kind:string, size:number|null}>} o.listedFiles - the listed commit's own entries (checkout.js)
+ * @param {object|null} [o.chosen] - chooseDocuments' answer for this claim
+ * @returns {Promise<{asked:number, items:object[], omitted:object}>}
+ * @throws {RequesterError} the selection failed
+ */
+async function gatherDocuments(ctx, { commit, stake, affectedPaths, listedFiles, chosen = null }) {
+  const { selection, byName } = chosen || chooseDocuments({ stake }, listedFiles, affectedPaths);
   const tally = new Tally(selection.paths.length + selection.inSource.length + selection.pastCap.length);
   tally.omit('inSource', selection.inSource.length);
   tally.omit('pastCap', selection.pastCap.length);
@@ -688,8 +706,9 @@ async function gatherCallSites(ctx, listed, added, keep) {
  * @param {Array<{status:string, path:string}>} o.touched - what the patch touched
  * @param {Map<string, Array<{line:number, text:string}>>} o.added - its added lines under paths.tests
  * @param {Array<{path:string, kind:string, size:number|null}>} [o.listedFiles] - the listed commit's own entries, for the documents
+ * @param {object|null} [o.documents] - chooseDocuments' answer, made at the preparation
  */
-async function gatherPackInputs(ctx, { request, listed, poc, touched, added, listedFiles }) {
+async function gatherPackInputs(ctx, { request, listed, poc, touched, added, listedFiles, documents: chosen = null }) {
   const diff = await read(ctx, 'pack:diff', ['diff', '-W', '--full-index', '--no-color', '--no-ext-diff', '--no-textconv', '--no-renames',
     '--diff-algorithm=myers', '--src-prefix=a/', '--dst-prefix=b/', listed, poc, '--']);
   if (diff.exitCode !== 0) throw runnerError('pack:diff', `the PoC's diff could not be read (git exited ${diff.exitCode})`);
@@ -699,14 +718,14 @@ async function gatherPackInputs(ctx, { request, listed, poc, touched, added, lis
 
   const spec = request.spec;
   const scope = spec.stake && spec.stake.scope ? spec.stake.scope : null;
-  const named = request.finding && Array.isArray(request.finding.affectedPaths) ? request.finding.affectedPaths : [];
+  const named = affectedPathsOf(request);
   const sources = await gatherFiles(ctx, 'pack:source', listed, named, scope
     ? (p) => { const { inScope } = splitByStakeScope([p], scope); return inScope.length ? inScope[0] : null; }
     : (p) => p);
 
   // The maker's documents, right after the source (owner decision Q61 (a)); nothing is read for a listing that names none.
   const documents = namesDocuments(spec)
-    ? await gatherDocuments(ctx, { commit: listed, stake: spec.stake, affectedPaths: named, listedFiles })
+    ? await gatherDocuments(ctx, { commit: listed, stake: spec.stake, affectedPaths: named, listedFiles, chosen })
     : null;
 
   // Call sites in what the stake covers; without a scope, in anything but the tests and the framework's own paths.
@@ -973,6 +992,6 @@ function assemblePack({ request, inputs, codeClass = request.codeClass || 'code-
 }
 
 module.exports = {
-  gatherPackInputs, assemblePack, packTokens, symbolsOf, scanSymbols, summaryOf, summaryLine, shallowTree, Tally, BlobSink, GrepSink, DocumentSink,
+  gatherPackInputs, assemblePack, chooseDocuments, affectedPathsOf, packTokens, symbolsOf, scanSymbols, summaryOf, summaryLine, shallowTree, Tally, BlobSink, GrepSink, DocumentSink,
   namesDocuments, TIER_NAMES, TIERS, FACT_REASONS, LOSS_REASONS, BYTES_PER_TOKEN, FILE_OVERHEAD_BYTES, MANIFEST_RESERVE_BYTES, DOCUMENTS_MANIFEST_RESERVE_BYTES
 };
