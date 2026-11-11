@@ -32,7 +32,6 @@
     "scope": { "include": ["contracts/**"], "exclude": ["test/**", "script/**"] },
     "knownIssues": "known_issues.json",
     "severityRubric": "immunefi-v2.3",
-    "disclosureKey": "age1ql3z7hjy54pw3hyww5ayyfg7zqgvc7w3j2elw8zmrj2kg5sfn9aqmcac8p",
     "valueAtRiskUsd": 1250000
   }
 }
