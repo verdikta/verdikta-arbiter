@@ -20,6 +20,6 @@
     "test:calibration:batch-2": "node --test --test-concurrency=1 --test-timeout=600000 test/calibration/batch-2.test.js"
   },
   "dependencies": {
-    "@verdikta/common": "1.9.0-attest.4"
+    "@verdikta/common": "1.9.0-attest.5"
   }
 }
