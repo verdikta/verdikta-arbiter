@@ -188,8 +188,8 @@ filled with **your node's own values**:
   RPCs earlier in the same upgrade, in which case `installer/.env`'s lists go in;
 - `ChainID`, `TipCapDefault` and `FeeCapDefault` stay as they are;
 - a setting the template does not mention is yours and stays where it is. The
-  only exceptions are the few the template dropped on purpose (today
-  `FinalityDepth`).
+  only exceptions would be settings the template dropped on purpose (none
+  today).
 
 Before anything is written, the upgrade lists the changes setting by setting
 (URLs cut to their host) and asks:
@@ -197,8 +197,24 @@ Before anything is written, the upgrade lists the changes setting by setting
 ```text
   [[EVM]] NoNewFinalizedHeadsThreshold: added "0s"
   [EVM.NodePool] NewHeadsPollInterval: "30s" -> "8s"
-  [[EVM]] FinalityDepth: removed (was 5; inert since the July 2026 finality fix (cde657a))
+  [[EVM]] FinalityDepth: 5 -> 10
+  [EVM.NodePool] SyncThreshold: 10 -> 100
+  [EVM.NodePool] FinalizedBlockPollInterval: added "60s"
   [JobPipeline] MaxRunDuration: kept "15m" (this node's own; the template does not set it)
+```
+
+The last three template changes are the November 2026 RPC cost settings. Base
+has produced a block every 200 ms since 2026-11-05, and a Chainlink node's RPC
+use, which does not depend on how many arbiters or requests it serves, went
+from about 136,000 to about 525,000 calls a day to its first provider.
+`FinalityDepth = 10` brings that to about 215,000 with no change in how fast
+jobs start. `SyncThreshold = 100` stops your second provider being marked out
+of sync several hundred times a day, and `FinalizedBlockPollInterval = "60s"`
+removes a poll nothing uses. To see your own node's rate, run this twice an
+hour apart and subtract:
+
+```bash
+curl -s http://127.0.0.1:6688/metrics | grep '^evm_pool_rpc_node_calls_total'
 ```
 
 Chainlink's own `node validate` then checks the new file (a throwaway container

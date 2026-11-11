@@ -75,7 +75,7 @@ echo "Chainlink config /x/config.toml"
 if [ "${TPL_RC:-1}" = 1 ]; then
     echo '  [[EVM]] NoNewFinalizedHeadsThreshold: added "0s"'
     echo '  [EVM.NodePool] NewHeadsPollInterval: "30s" -> "8s"'
-    echo '  [[EVM]] FinalityDepth: removed (was 5; inert since the July 2026 finality fix (cde657a))'
+    echo '  [[EVM]] FinalityDepth: 5 -> 10'
     echo '  [JobPipeline] MaxRunDuration: kept "15m" (this node'"'"'s own; the template does not set it)'
 fi
 exit "${TPL_RC:-1}"

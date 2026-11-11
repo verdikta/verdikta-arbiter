@@ -410,7 +410,7 @@ Ollama runs locally and is unaffected by gateway settings.
   (`VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG`, default `y`, unattended too): the
   template filled with the node's own RPC entries, ChainID and gas caps, plus
   any setting the template does not mention (kept; the `RETIRED` list in the
-  script names the few the template dropped on purpose), validated by
+  script names any the template dropped on purpose, none today), validated by
   Chainlink's `node validate` before it is written. Until 2026-11 the default
   was `n`, and a host whose config dated from May missed the July 2026 finality
   fix (`NoNewFinalizedHeadsThreshold='0s'`, `EnforceRepeatableRead=false`) and
@@ -421,6 +421,23 @@ Ollama runs locally and is unaffected by gateway settings.
   setting, check that `--check` on an old config lists it; when you remove one
   that installs wrote, add it to `RETIRED`. Doctor: `cfg.chainlink_template`,
   `cfg.chainlink_finality`.
+- **A Chainlink node's RPC bill is per node and set by block count, not by
+  work.** Base has 200 ms blocks since 2026-11-05 (Sepolia too): 432,000 a day,
+  and every block-count setting is ten times shorter in time than it was. The
+  head tracker fetches every block back to head - `FinalityDepth`
+  (`FinalityTagBypass` is on by default), one call each; at the chain default
+  of 200 that was 82% of ~525k calls a day to the active provider, the same on
+  a node with 10 arbiters and on an idle one. The template sets
+  `FinalityDepth = 10` (-59% on the class-5555 canaries, 2026-11-11),
+  `SyncThreshold = 100` (10 blocks is 2 s now, less than a provider's own 8 s
+  poll leaves it stale, so the fallback flapped out of sync ~390 times a day)
+  and `FinalizedBlockPollInterval = "60s"`. Ship the first two together: with
+  the lower depth alone the fallback took the active role and kept it.
+  `NewHeadsPollInterval`, `SamplingInterval` and `HistoryDepth` do not move the
+  bill (the first two only add job-start latency), and WS `newHeads` would be
+  dearer than polling. cde657a (July 2026) removed an earlier `FinalityDepth=5`
+  as inert; it is not. Measure with
+  `curl -s 127.0.0.1:6688/metrics | grep evm_pool_rpc_node_calls_total`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.
 - **`upgrade-arbiter.sh` also has `trap cleanup_on_error ERR`, and the ERR trap
   fires on any failing plain command whether or not errexit is on.** So

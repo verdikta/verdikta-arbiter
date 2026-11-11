@@ -153,7 +153,10 @@ has   "may: rc 1"                 "$out" "rc=1"
 has   "may: threshold added"      "$out" '\[\[EVM\]\] NoNewFinalizedHeadsThreshold: added "0s"'
 has   "may: repeatable read"      "$out" '\[EVM.NodePool\] EnforceRepeatableRead: added false'
 has   "may: changed value"        "$out" '\[EVM.NodePool\] NewHeadsPollInterval: "30s" -> "8s"'
-has   "may: retired"              "$out" '\[\[EVM\]\] FinalityDepth: removed (was 5; inert since'
+has   "may: finality depth"       "$out" '\[\[EVM\]\] FinalityDepth: 5 -> 10'
+has   "may: sync threshold"       "$out" '\[EVM.NodePool\] SyncThreshold: 10 -> 100'
+has   "may: finalized poll"       "$out" '\[EVM.NodePool\] FinalizedBlockPollInterval: added "60s"'
+hasnt "may: nothing retired"      "$out" "removed (was"
 has   "may: own table kept"       "$out" '\[Feature\] LogPoller: kept true'
 has   "may: operator setting kept" "$out" '\[EVM.NodePool\] PollFailureThreshold: kept 3'
 hasnt "may: fee cap untouched"    "$out" "FeeCapDefault"
@@ -169,8 +172,8 @@ eq    "may apply: one backup"     "$(backups)" "1"
 eq    "may apply: backup is the old file" "$(cat "$CFG"/config.toml.backup.*)" "$(printf '%s' "$MAY")"
 eq    "may apply: no candidate left" "$(leftovers)" "0"
 eq    "may apply: mode kept"      "$(ls -l "$CFG/config.toml" | cut -c1-10)" "-rw-r-----"
-r=$(toml "$CFG/config.toml" '(e["ChainID"], e["GasEstimator"]["FeeCapDefault"], e["NoNewFinalizedHeadsThreshold"], e["NodePool"]["EnforceRepeatableRead"], e["NodePool"]["PollFailureThreshold"], "FinalityDepth" in e, [n["Name"] for n in e["Nodes"]], e["Nodes"][1]["WSURL"], d["Feature"]["LogPoller"], d["JobPipeline"]["HTTPRequest"]["DefaultTimeout"])')
-[ "$r" = "no-tomllib" ] || eq "may apply: parsed" "$r" "(8453, '10 gwei', '0s', False, 3, False, ['Base-Mainnet-1', 'Base-Mainnet-2'], 'wss://base.blockpi.network/v1/ws/KEYTWO', True, '300s')"
+r=$(toml "$CFG/config.toml" '(e["ChainID"], e["GasEstimator"]["FeeCapDefault"], e["NoNewFinalizedHeadsThreshold"], e["NodePool"]["EnforceRepeatableRead"], e["NodePool"]["PollFailureThreshold"], e["FinalityDepth"], e["NodePool"]["SyncThreshold"], e["NodePool"]["FinalizedBlockPollInterval"], [n["Name"] for n in e["Nodes"]], e["Nodes"][1]["WSURL"], d["Feature"]["LogPoller"], d["JobPipeline"]["HTTPRequest"]["DefaultTimeout"])')
+[ "$r" = "no-tomllib" ] || eq "may apply: parsed" "$r" "(8453, '10 gwei', '0s', False, 3, 10, 100, '60s', ['Base-Mainnet-1', 'Base-Mainnet-2'], 'wss://base.blockpi.network/v1/ws/KEYTWO', True, '300s')"
 ARGS=(--check); out=$(run)
 has   "after: rc 0"               "$out" "rc=0"
 has   "after: matches"            "$out" "matches the template"
