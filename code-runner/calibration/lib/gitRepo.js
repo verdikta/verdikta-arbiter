@@ -135,8 +135,9 @@ function badPath(p) {
  * @param {string} o.cacheDir - kept between runs, so a repository is fetched once per commit
  * @param {boolean} [o.allowFile] - file:// URLs, for the tests' local upstreams
  * @returns {Promise<{commit:string, tree:string, objects:Map<string,{type:string,content:Buffer}>,
- *   files:Array<{path:string, mode:number, bytes?:Buffer, link?:string}>, emptyDirs:string[],
+ *   files:Array<{path:string, mode:number, bytes?:Buffer, link?:string}>, ownPaths:string[], emptyDirs:string[],
  *   missing:Array<{path:string, commit:string, reason:string}>}>}
+ *   `ownPaths`: the listed commit's own file paths (a submodule's are not), in byte order
  * @throws {Error} a commit the remote does not have, or a tree that is not the one pinned
  */
 async function fetchRepo(repo, { cacheDir, allowFile = false }) {
@@ -178,6 +179,8 @@ async function fetchRepo(repo, { cacheDir, allowFile = false }) {
 
   const ids = new Set();
   const files = [];
+  // The listed commit's own file paths, no submodule's: what the documents rule reads (format.js, node A19).
+  const ownPaths = [];
   const emptyDirs = [];
   const missing = [];
   let submodules = 0;
@@ -192,6 +195,7 @@ async function fetchRepo(repo, { cacheDir, allowFile = false }) {
         ids.add(e.id);
       } else if (e.type === 'blob') {
         ids.add(e.id);
+        if (depth === 0) ownPaths.push(whole);
         if (e.mode === '120000') files.push({ path: whole, mode: 0o777, linkId: e.id });
         else if (FILE_MODES[e.mode]) files.push({ path: whole, mode: FILE_MODES[e.mode], blobId: e.id });
         else throw new Error(`${whole} has the mode ${e.mode}, which git does not write`);
@@ -252,7 +256,8 @@ async function fetchRepo(repo, { cacheDir, allowFile = false }) {
   }
   files.sort((a, b) => Buffer.compare(Buffer.from(a.path), Buffer.from(b.path)));
   if (missing.length === 0) fs.writeFileSync(marker, 'complete\n');
-  return { commit: listedCommit, tree, objects, files, emptyDirs: emptyDirs.sort(), missing };
+  ownPaths.sort((a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)));
+  return { commit: listedCommit, tree, objects, files, ownPaths, emptyDirs: emptyDirs.sort(), missing };
 }
 
 /**

@@ -466,14 +466,14 @@ test('A19: a fixture listing is held to the rule when it loads; a git listing to
     }
   };
   // The fixture's repository has neither README.md nor docs/.
-  assert.ok(edited((s) => { s.stake.documents = ['README.md']; }).some((p) => /listing vault: .*stake\.documents/.test(p)));
+  assert.ok(edited((s) => { s.stake.documents = ['README.md']; }).some((p) => /listing listings\/vault: .*stake\.documents/.test(p)));
   assert.deepEqual(edited(() => {}), []);
   // A git listing's files are fetched at run time: here only what the rule could give.
   assert.deepEqual(edited((s) => { s.stake.documents = ['README.md', 'docs/**']; }, writePublicCorpus), []);
   assert.deepEqual(edited((s) => { s.stake.documents = ['docs/**']; }, writePublicCorpus), []);
-  assert.ok(edited((s) => { s.stake.documents = ['docs/**', 'README.md']; }, writePublicCorpus).some((p) => /listing project: .*stake\.documents/.test(p)));
-  assert.ok(edited((s) => { s.stake.documents = ['**/*.md']; }, writePublicCorpus).some((p) => /listing project: .*stake\.documents/.test(p)));
-  assert.ok(edited((s) => { s.stake.documents = []; }, writePublicCorpus).some((p) => /listing project: .*stake\.documents/.test(p)));
+  assert.ok(edited((s) => { s.stake.documents = ['docs/**', 'README.md']; }, writePublicCorpus).some((p) => /listing listings\/project: .*stake\.documents/.test(p)));
+  assert.ok(edited((s) => { s.stake.documents = ['**/*.md']; }, writePublicCorpus).some((p) => /listing listings\/project: .*stake\.documents/.test(p)));
+  assert.ok(edited((s) => { s.stake.documents = []; }, writePublicCorpus).some((p) => /listing listings\/project: .*stake\.documents/.test(p)));
 });
 
 test('A19: the real listings name documents by the rule\'s shape, and the fixture vault, whose files are here, by the rule itself', () => {
