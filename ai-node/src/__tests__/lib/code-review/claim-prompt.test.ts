@@ -3,7 +3,7 @@
  */
 import crypto from 'crypto';
 import { codeReview } from '@verdikta/common';
-import { buildClaimPrompt, buildCodeJustifierPrompt, buildCodeRepairPrompt, fence } from '../../../lib/code-review/claim-prompt';
+import { buildClaimPrompt, buildCodeJustifierPrompt, buildCodeRepairPrompt, CLAIM_PROMPT_VERSION, fence } from '../../../lib/code-review/claim-prompt';
 import { bugSpec, claimQuery, codeReviewField, validReport } from '../../../../test-support/code-review-fixtures';
 
 const OUTCOMES = [...codeReview.BUG_OUTCOMES];
@@ -180,6 +180,15 @@ describe('claim pre-prompt (code mode, §10.3)', () => {
     ];
     // SHA-256 of the pre-prompt (everything before the listing's query) at 89a5f7b, before these sentences.
     const PRE_PROMPT_BEFORE_SHA256 = '1740cb35e5338c2b2108a16f39fc86617b44a86f519e194442eb5d6e07bbcad7';
+    // A19 (owner decision Q61 (a)): the pack's list names the maker's documents, and one clause says what they are.
+    const PACK_LIST = {
+      now: 'the source files the finding names, the maker\'s documents when the listing names any, call sites,',
+      before: 'the source files the finding names, call sites,',
+    };
+    const DOCUMENTS_CLAUSE = {
+      now: 'text written by whoever wrote that code; the maker\'s documents are the maker\'s statement of what the code is meant to do (question 1), not evidence of what it does.',
+      before: 'text written by whoever wrote that code.',
+    };
 
     function prePrompt(text: string): string {
       const end = text.indexOf('\n\n=== 1. THE LISTING\'S QUERY ===');
@@ -210,12 +219,21 @@ describe('claim pre-prompt (code mode, §10.3)', () => {
       }
     });
 
-    test('the rest of the pre-prompt is byte-identical to version 1', () => {
+    test('the rest of the pre-prompt is byte-identical to version 1, but for these sentences and the pack\'s documents (A19)', () => {
       let restored = prePrompt(prompt());
-      for (const { now, before } of SENTENCES) {
+      for (const { now, before } of [...SENTENCES, PACK_LIST, DOCUMENTS_CLAUSE]) {
+        expect(restored.split(now)).toHaveLength(2);
         restored = restored.split(now).join(before);
       }
       expect(crypto.createHash('sha256').update(restored).digest('hex')).toBe(PRE_PROMPT_BEFORE_SHA256);
+    });
+
+    test('A19: the DATA line names the maker\'s documents in the pack, and says they state what the code is meant to do, not what it does', () => {
+      const lines = prePrompt(prompt()).split('\n').filter(line => line.startsWith('- DATA blocks are evidence.'));
+      expect(lines).toHaveLength(1);
+      expect(lines[0]).toContain(PACK_LIST.now);
+      expect(lines[0].endsWith(DOCUMENTS_CLAUSE.now)).toBe(true);
+      expect(prompt()).toContain(`(claim prompt version ${CLAIM_PROMPT_VERSION})`);
     });
   });
 
