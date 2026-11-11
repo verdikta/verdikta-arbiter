@@ -22,11 +22,11 @@
 # for the operator or for a Verdikta agent to show the owner before an upgrade:
 #   [[EVM]] NoNewFinalizedHeadsThreshold: added "0s"
 #   [EVM.NodePool] NewHeadsPollInterval: "30s" -> "8s"
-#   [[EVM]] FinalityDepth: removed (was 5)
+#   [[EVM]] FinalityDepth: 5 -> 10
 # Settings the template does not mention are this node's own and stay where
 # they are (listed as "kept"; on 2026-11-09 the testnet canaries carried
-# [JobPipeline] MaxRunDuration from a branch), except the few the template
-# dropped on purpose (RETIRED below: FinalityDepth). Comments, blank lines and
+# [JobPipeline] MaxRunDuration from a branch), except any the template
+# dropped on purpose (RETIRED below; none today). Comments, blank lines and
 # order are not changes. --apply writes the file only
 # after Chainlink's own `node validate` accepts it (installer/lib/chainlink-config.sh),
 # keeps a timestamped backup, restarts a running Chainlink and puts the backup
@@ -226,9 +226,11 @@ def unquote(v):
 
 # Settings the template once wrote and later dropped on purpose: removed when found.
 # Everything else the template does not mention is the node's own and is kept.
-RETIRED = {
-    ("EVM#1", "FinalityDepth"): "inert since the July 2026 finality fix (cde657a)",
-}
+# Entries look like  ("EVM#1", "SomeSetting"): "why it was dropped".
+# None today. [[EVM]] FinalityDepth was listed from 2026-11-09 as "inert since
+# the July 2026 finality fix (cde657a)"; it is the head tracker's fetch depth
+# and the template sets it again (RPC cost, 2026-11-11).
+RETIRED = {}
 
 
 def table_name(m, counts):
