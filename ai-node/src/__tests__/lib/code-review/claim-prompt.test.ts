@@ -4,7 +4,7 @@
 import crypto from 'crypto';
 import { codeReview } from '@verdikta/common';
 import { buildClaimPrompt, buildCodeJustifierPrompt, buildCodeRepairPrompt, fence } from '../../../lib/code-review/claim-prompt';
-import { claimQuery, codeReviewField, validReport } from '../../../../test-support/code-review-fixtures';
+import { bugSpec, claimQuery, codeReviewField, validReport } from '../../../../test-support/code-review-fixtures';
 
 const OUTCOMES = [...codeReview.BUG_OUTCOMES];
 
@@ -137,6 +137,11 @@ describe('claim pre-prompt (code mode, §10.3)', () => {
     const pack = blocks(text).find(b => /context pack/.test(b.label))!;
     expect(pack.label).not.toMatch(/>>>|\n/);
     expect(pack.content).toBe('body');
+  });
+
+  test('the query fixture is common\'s, byte for byte: the pinned release\'s buildClaimQuery on the example listing', () => {
+    expect(claimQuery()).toBe(codeReview.buildClaimQuery(bugSpec()));
+    expect(claimQuery().split('\n')[0]).toContain(`(claim query version ${codeReview.CLAIM_QUERY_VERSION}).`);
   });
 
   test('the severity question points at the query\'s "Severity classes" section', () => {

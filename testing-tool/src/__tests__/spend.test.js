@@ -5,6 +5,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { codeReview } = require('@verdikta/common');
 const { PRICES, usageOf, reservationUsd, Ledger, readLedger, worstCaseClaimUsd } = require('../spend');
 
 let dir;
@@ -240,5 +241,10 @@ describe('Ledger', () => {
   test('the prices are dated, and name where they came from', () => {
     expect(PRICES.asOf).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(PRICES.source).toMatch(/openrouter/i);
+  });
+
+  test('every juror of the pinned release\'s panels has a list price: a batch on them is counted, never refused', () => {
+    const jurors = [codeReview.CODE_STANDARD_PANEL, codeReview.CODE_STANDARD_DISPUTE_PANEL].flatMap((panel) => panel.AI_NODES.map((node) => node.AI_MODEL));
+    for (const model of jurors) expect(Object.hasOwn(PRICES.models, model)).toBe(true);
   });
 });

@@ -7,7 +7,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { codeReview } = require('@verdikta/common');
-const { loadCorpus, selectCases, CorpusError, CASE_FORMAT, RUBRIC_IMPACTS } = require('../../calibration/lib/format');
+const { loadCorpus, selectCases, CorpusError, CASE_FORMAT, RUBRIC_IMPACTS, documentsByRule, documentsRuleProblem } = require('../../calibration/lib/format');
 const {
   writeCorpus, juryCase, controlCase, ADVERSARIAL_LINE, patch, POC_LINES, GATES_PASS,
   writePublicCorpus, publicCase, publicSource, publicSpec, PUBLIC_POC, PUBLIC_MESSAGE, UPSTREAM, UPSTREAM_COMMIT, FINDING_URL
@@ -426,6 +426,64 @@ test('the real calibration folder holds nothing the format does not name, and at
     for (const c of publicCases.filter((x) => x.subsets.includes(subset))) perRepo.set(c.listing.repo.url, (perRepo.get(c.listing.repo.url) || 0) + 1);
     for (const [url, n] of perRepo) assert.ok(n <= 5, `${subset}: ${url} has ${n} cases`);
     assert.ok([...perRepo.values()].reduce((a, b) => a + b, 0) >= 15, `${subset}: the node asks for at least 15`);
+  }
+});
+
+// ------------------------------------------------------------- A19: the listings' documents, by one rule
+
+test('A19: a listing names README.md and docs/** of its repository at the listed commit, each only when it is there, in that order', () => {
+  assert.deepEqual(documentsByRule([]), []);
+  assert.deepEqual(documentsByRule(['src/A.sol', 'readme.md', 'README-sponsor.md', 'doc/x.md', 'src/docs/y.md']), [], 'only README.md and docs/ at the top');
+  assert.deepEqual(documentsByRule(['src/A.sol', 'README.md']), ['README.md']);
+  assert.deepEqual(documentsByRule(['docs/a/b.md', 'src/A.sol']), ['docs/**']);
+  assert.deepEqual(documentsByRule(['docs/x.md', 'README.md']), ['README.md', 'docs/**']);
+  for (const entry of documentsByRule(['docs/x.md', 'README.md'])) assert.equal(codeReview.documentGlobProblem(entry), null, entry);
+
+  const spec = (documents) => ({ stake: documents === undefined ? {} : { documents } });
+  assert.equal(documentsRuleProblem(spec(undefined), ['src/A.sol']), null, 'nothing there: no field');
+  assert.equal(documentsRuleProblem(spec(['README.md', 'docs/**']), ['README.md', 'docs/a.md']), null);
+  assert.match(documentsRuleProblem(spec([]), ['src/A.sol']), /names no documents.*leaves the field out/, 'an empty list is not the field left out');
+  assert.match(documentsRuleProblem(spec(undefined), ['README.md']), /\["README\.md"\]/);
+  assert.match(documentsRuleProblem(spec(['README.md']), ['README.md', 'docs/a.md']), /\["README\.md","docs\/\*\*"\]/);
+  assert.match(documentsRuleProblem(spec(['docs/**', 'README.md']), ['README.md', 'docs/a.md']), /README\.md","docs/, 'the order is the rule\'s');
+  assert.match(documentsRuleProblem(spec(['README.md', 'docs/*.md']), ['README.md', 'docs/a.md']), /docs\/\*\*/, 'no other glob');
+});
+
+test('A19: a fixture listing is held to the rule when it loads; a git listing to its shape, and to the rule once its repository is fetched', () => {
+  const edited = (edit, write = writeCorpus) => {
+    const corpus = write();
+    const file = path.join(corpus.root, 'listings', write === writeCorpus ? 'vault' : 'project', 'code_review.json');
+    const spec = JSON.parse(fs.readFileSync(file, 'utf8'));
+    edit(spec);
+    fs.writeFileSync(file, `${JSON.stringify(spec, null, 2)}\n`);
+    try {
+      return loadCorpus({ root: corpus.root, ...(write === writeCorpus ? {} : { layout: true }) }) && [];
+    } catch (err) {
+      assert.ok(err instanceof CorpusError, err.stack);
+      return err.problems;
+    } finally {
+      corpus.cleanup();
+    }
+  };
+  // The fixture's repository has neither README.md nor docs/.
+  assert.ok(edited((s) => { s.stake.documents = ['README.md']; }).some((p) => /listing vault: .*stake\.documents/.test(p)));
+  assert.deepEqual(edited(() => {}), []);
+  // A git listing's files are fetched at run time: here only what the rule could give.
+  assert.deepEqual(edited((s) => { s.stake.documents = ['README.md', 'docs/**']; }, writePublicCorpus), []);
+  assert.deepEqual(edited((s) => { s.stake.documents = ['docs/**']; }, writePublicCorpus), []);
+  assert.ok(edited((s) => { s.stake.documents = ['docs/**', 'README.md']; }, writePublicCorpus).some((p) => /listing project: .*stake\.documents/.test(p)));
+  assert.ok(edited((s) => { s.stake.documents = ['**/*.md']; }, writePublicCorpus).some((p) => /listing project: .*stake\.documents/.test(p)));
+  assert.ok(edited((s) => { s.stake.documents = []; }, writePublicCorpus).some((p) => /listing project: .*stake\.documents/.test(p)));
+});
+
+test('A19: the real listings name documents by the rule\'s shape, and the fixture vault, whose files are here, by the rule itself', () => {
+  const { cases } = loadCorpus({ root: CALIBRATION, layout: true });
+  const listings = new Map(cases.map((c) => [c.listing.id, c.listing]));
+  assert.equal(listings.size, 10);
+  for (const [id, listing] of listings) {
+    const documents = listing.spec.stake.documents;
+    if (documents !== undefined) assert.ok(['README.md', 'docs/**'].filter((d) => documents.includes(d)).join() === documents.join(), id);
+    if (listing.repo.kind === 'fixture') assert.equal(documentsRuleProblem(listing.spec, Object.keys(listing.files)), null, id);
   }
 });
 

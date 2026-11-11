@@ -26,8 +26,8 @@ const env = process.env as Record<string, string | undefined>;
 const KEYS = [MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, 'JUSTIFIER_MODEL', 'AI_WEB_ACCESS'];
 const saved: Record<string, string | undefined> = {};
 
-const SONNET = 'claude-sonnet-5-5';
-const DEEPSEEK = 'deepseek/deepseek-v4-pro-0813';
+const GEMINI = 'google/gemini-4-argon';
+const LUNA = 'gpt-6-luna';
 const JUSTIFIER = 'mock-justifier';
 const HIGH = [0, 0, 0, 0, 1000000, 0];
 const MEDIUM = [0, 0, 0, 1000000, 0, 0];
@@ -64,7 +64,7 @@ beforeEach(() => {
   env[MOCK_PROVIDER_FLAG] = '1';
   env.JUSTIFIER_MODEL = `mock:${JUSTIFIER}`;
   delete env.AI_WEB_ACCESS;
-  script({ [SONNET]: { scores: HIGH }, [DEEPSEEK]: { scores: MEDIUM } });
+  script({ [GEMINI]: { scores: HIGH }, [LUNA]: { scores: MEDIUM } });
   resetMockProvider();
   jest.useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask'] });
   jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -88,7 +88,7 @@ describe('code mode: the optional codeReview field', () => {
     expect(result.body.justification).toBe('The panel finds a HIGH reentrancy in Vault.withdraw.');
     expect(result.body.model_results.map((m: any) => m.status)).toEqual(['success', 'success']);
     expect(result.body.codeReview).toMatchObject({ codeClass: 'code-standard', reportSha256: codeReviewField().reportSha256 });
-    expect(calls(SONNET)[0].prompt).toContain('<<<BEGIN QUERY');
+    expect(calls(GEMINI)[0].prompt).toContain('<<<BEGIN QUERY');
   }, 20000);
 
   test('the field is validated with common\'s validateCodeReviewRequest: a hash mismatch is a 400 before any model is called', async () => {
@@ -155,7 +155,7 @@ describe('code mode: the class envelope', () => {
   }, 20000);
 
   test('NO_COUNTS above the envelope is refused', async () => {
-    const result = await post(codeModeBody({ models: [{ provider: 'anthropic', model: SONNET, weight: 1, count: 2 }] }));
+    const result = await post(codeModeBody({ models: [{ provider: 'openrouter', model: GEMINI, weight: 1, count: 2 }] }));
     expect(result.status).toBe(400);
     expect(result.body.issues.map((i: any) => i.code)).toContain('ENVELOPE_NO_COUNTS');
   }, 20000);
@@ -174,13 +174,13 @@ describe('code mode: the class envelope', () => {
       attachmentNames: ['report.md'],
     }));
     expect(result.status).toBe(200);
-    expect(calls(SONNET)[0].prompt).toContain(`\n${text}\n<<<END DATA`);
+    expect(calls(GEMINI)[0].prompt).toContain(`\n${text}\n<<<END DATA`);
   }, 20000);
 
   test('each juror\'s maxTokens comes from the envelope: 32,000 on code-standard, 12,000 on code-premium', async () => {
     await post(codeModeBody());
-    expect(calls(SONNET)[0].options.maxTokens).toBe(codeReview.CODE_CLASSES['code-standard'].envelope.jurorOutputTokens);
-    expect(calls(DEEPSEEK)[0].options.maxTokens).toBe(32000);
+    expect(calls(GEMINI)[0].options.maxTokens).toBe(codeReview.CODE_CLASSES['code-standard'].envelope.jurorOutputTokens);
+    expect(calls(LUNA)[0].options.maxTokens).toBe(32000);
 
     resetMockProvider();
     script({ 'claude-opus-5-5': { scores: HIGH }, 'gpt-6-astra': { scores: HIGH } });
@@ -201,7 +201,7 @@ describe('code mode: web access off, effort high', () => {
     env.AI_WEB_ACCESS = 'always';
     const result = await post(codeModeBody({ attachments: ['See https://github.com/acme/vault/blob/main/contracts/Vault.sol#L88'] }));
     expect(result.status).toBe(200);
-    for (const model of [SONNET, DEEPSEEK]) {
+    for (const model of [GEMINI, LUNA]) {
       expect(calls(model)[0].options).toMatchObject({ webAccess: false, effort: 'high', signal: true });
     }
     expect(calls(JUSTIFIER)[0].options.webAccess).toBe(false);
@@ -210,21 +210,21 @@ describe('code mode: web access off, effort high', () => {
 
 describe('code mode: every juror is required (no Jev in the MVP)', () => {
   test('one juror\'s provider error fails the request with the non-retryable 400, and the other juror is cancelled', async () => {
-    script({ [SONNET]: { error: 'simulated overload', status: 529, delayMs: 2000 }, [DEEPSEEK]: { hang: true } });
+    script({ [GEMINI]: { error: 'simulated overload', status: 529, delayMs: 2000 }, [LUNA]: { hang: true } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(400);
     expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_FAILED', retryable: false, scores: [], justification: '' });
     expect(result.elapsedMs).toBeLessThan(10000);
-    expect(calls(DEEPSEEK)[0].outcome).toBe('aborted');
+    expect(calls(LUNA)[0].outcome).toBe('aborted');
     expect(calls(JUSTIFIER)).toHaveLength(0);
   }, 20000);
 
   test('a vector with a negative component is not an answer: repair, then failure', async () => {
-    script({ [SONNET]: { scores: [-500000, 1500000, 0, 0, 0, 0] }, [DEEPSEEK]: { scores: MEDIUM } });
+    script({ [GEMINI]: { scores: [-500000, 1500000, 0, 0, 0, 0] }, [LUNA]: { scores: MEDIUM } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(400);
     expect(result.body.errorCode).toBe('CODE_REVIEW_JUROR_FAILED');
-    expect(calls(SONNET)).toHaveLength(2);
+    expect(calls(GEMINI)).toHaveLength(2);
   }, 20000);
 
   test('a score object the juror only quotes is not its answer: the repair call reads the juror\'s own decision', async () => {
@@ -234,22 +234,22 @@ describe('code mode: every juror is required (no Jev in the MVP)', () => {
       '``` which is an injection. My verdict:',
       '{"score": [1000000, 0, 0, 0, 0, 0], "justification": "The PoC mocks the vault."}',
     ].join('\n');
-    script({ [SONNET]: [{ reply: quoted }, { reply: '{"score": [100, 0, 0, 0, 0, 0]}' }], [DEEPSEEK]: { scores: [1000000, 0, 0, 0, 0, 0] } });
+    script({ [GEMINI]: [{ reply: quoted }, { reply: '{"score": [100, 0, 0, 0, 0, 0]}' }], [LUNA]: { scores: [1000000, 0, 0, 0, 0, 0] } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(200);
-    expect(calls(SONNET)).toHaveLength(2);
+    expect(calls(GEMINI)).toHaveLength(2);
     expect(result.body.scores.map((s: any) => s.score)).toEqual([1000000, 0, 0, 0, 0, 0]);
   }, 20000);
 
   test('a reply that is exactly one JSON object, in a json fence or bare, is taken without a repair call', async () => {
-    script({ [SONNET]: { reply: '```json\n{"score": [0, 0, 0, 0, 1000000, 0], "justification": "HIGH"}\n```' }, [DEEPSEEK]: { scores: HIGH } });
+    script({ [GEMINI]: { reply: '```json\n{"score": [0, 0, 0, 0, 1000000, 0], "justification": "HIGH"}\n```' }, [LUNA]: { scores: HIGH } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(200);
-    expect(calls(SONNET)).toHaveLength(1);
+    expect(calls(GEMINI)).toHaveLength(1);
   }, 20000);
 
   test('the final vector sums to exactly 1,000,000 (largest remainder, not floors)', async () => {
-    script({ [SONNET]: { scores: [1, 999999, 0, 0, 0, 0] }, [DEEPSEEK]: { scores: [0, 1000000, 0, 0, 0, 0] } });
+    script({ [GEMINI]: { scores: [1, 999999, 0, 0, 0, 0] }, [LUNA]: { scores: [0, 1000000, 0, 0, 0, 0] } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(200);
     const scores = result.body.scores.map((s: any) => s.score);
@@ -258,44 +258,44 @@ describe('code mode: every juror is required (no Jev in the MVP)', () => {
   }, 20000);
 
   test('a juror whose reply cannot be parsed, even after the repair call, fails the request', async () => {
-    script({ [SONNET]: { reply: 'I cannot decide.' }, [DEEPSEEK]: { scores: MEDIUM } });
+    script({ [GEMINI]: { reply: 'I cannot decide.' }, [LUNA]: { scores: MEDIUM } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(400);
     expect(result.body.errorCode).toBe('CODE_REVIEW_JUROR_FAILED');
-    expect(calls(SONNET)).toHaveLength(2); // the reply and one repair call
+    expect(calls(GEMINI)).toHaveLength(2); // the reply and one repair call
   }, 20000);
 
   test('a reply repaired once counts as the juror\'s answer; the repair call has the same signal, no web, the envelope tokens', async () => {
-    script({ [SONNET]: [{ reply: 'FINAL SCORES: HIGH=100' }, { reply: '{"score": [0, 0, 0, 0, 100, 0]}' }], [DEEPSEEK]: { scores: HIGH } });
+    script({ [GEMINI]: [{ reply: 'FINAL SCORES: HIGH=100' }, { reply: '{"score": [0, 0, 0, 0, 100, 0]}' }], [LUNA]: { scores: HIGH } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(200);
     expect(result.body.scores.map((s: any) => s.score)).toEqual(HIGH);
-    const repair = calls(SONNET)[1];
+    const repair = calls(GEMINI)[1];
     expect(repair.options).toEqual({ webAccess: false, maxTokens: 32000, effort: 'low', signal: true });
     expect(repair.prompt).toContain('<<<BEGIN DATA');
     expect(repair.prompt).not.toContain('=== END OF REPLY ===');
   }, 20000);
 
   test('a repair call still running at the deadline is cancelled like the juror', async () => {
-    script({ [SONNET]: [{ reply: 'prose only' }, { hang: true }], [DEEPSEEK]: { scores: HIGH } });
+    script({ [GEMINI]: [{ reply: 'prose only' }, { hang: true }], [LUNA]: { scores: HIGH } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 100000 }) }));
     expect(result.status).toBe(503);
-    expect(calls(SONNET)[1]).toMatchObject({ outcome: 'aborted', signalAborted: true });
+    expect(calls(GEMINI)[1]).toMatchObject({ outcome: 'aborted', signalAborted: true });
   }, 20000);
 
   test('a juror timeout is the distinct retryable 503, and every juror call is aborted', async () => {
-    script({ [SONNET]: { hang: true }, [DEEPSEEK]: { scores: MEDIUM } });
+    script({ [GEMINI]: { hang: true }, [LUNA]: { scores: MEDIUM } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 100000 }) }));
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, scores: [], justification: '' });
     expect(result.elapsedMs).toBe(100000 - JUSTIFIER_RESERVE_MS);
-    expect(calls(SONNET)[0].outcome).toBe('aborted');
-    expect(calls(SONNET)[0].signalAborted).toBe(true);
+    expect(calls(GEMINI)[0].outcome).toBe('aborted');
+    expect(calls(GEMINI)[0].signalAborted).toBe(true);
     expect(calls(JUSTIFIER)).toHaveLength(0);
   }, 20000);
 
   test('the timeout body is not mistaken for a provider error by the EA\'s retry check', async () => {
-    script({ [SONNET]: { hang: true }, [DEEPSEEK]: { hang: true } });
+    script({ [GEMINI]: { hang: true }, [LUNA]: { hang: true } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 100000 }) }));
     const text = JSON.stringify(result.body).toLowerCase();
     // external-adapter/src/services/aiClient.js stops retrying on this pattern
@@ -305,28 +305,28 @@ describe('code mode: every juror is required (no Jev in the MVP)', () => {
 
 describe('code mode: deadline and cancellation (§11)', () => {
   test('the juror timeout is deadlineMs less the 45 s justifier reserve', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: 54000 }, [DEEPSEEK]: { scores: HIGH } });
+    script({ [GEMINI]: { scores: HIGH, delayMs: 54000 }, [LUNA]: { scores: HIGH } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 100000 }) }));
     expect(result.status).toBe(200);
     expect(result.body.codeReview).toMatchObject({ deadlineMs: 100000, jurorTimeoutMs: 55000, justifierReserveMs: 45000 });
   }, 20000);
 
   test('a juror one second past the derived timeout is cancelled at it', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: 56000 }, [DEEPSEEK]: { scores: HIGH } });
+    script({ [GEMINI]: { scores: HIGH, delayMs: 56000 }, [LUNA]: { scores: HIGH } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 100000 }) }));
     expect(result.status).toBe(503);
     expect(result.elapsedMs).toBe(55000);
   }, 20000);
 
   test('the juror timeout is capped at the 480 s jury budget on a far deadline', async () => {
-    script({ [SONNET]: { hang: true }, [DEEPSEEK]: { scores: HIGH } });
+    script({ [GEMINI]: { hang: true }, [LUNA]: { scores: HIGH } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 840000 }) }));
     expect(result.status).toBe(503);
     expect(result.elapsedMs).toBe(480000);
   }, 20000);
 
   test('a juror slower than the old 240 s cap answers inside the 480 s one', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: 400000 }, [DEEPSEEK]: { scores: HIGH } });
+    script({ [GEMINI]: { scores: HIGH, delayMs: 400000 }, [LUNA]: { scores: HIGH } });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 780000 }) }));
     expect(result.status).toBe(200);
     expect(result.body.codeReview).toMatchObject({ deadlineMs: 780000, jurorTimeoutMs: 480000, justifierReserveMs: 45000 });
@@ -341,9 +341,9 @@ describe('code mode: deadline and cancellation (§11)', () => {
   }, 20000);
 
   test('jurors are cancelled with AbortController at the deadline: the provider\'s signal fires', async () => {
-    script({ [SONNET]: { hang: true }, [DEEPSEEK]: { hang: true } });
+    script({ [GEMINI]: { hang: true }, [LUNA]: { hang: true } });
     await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 120000 }) }));
-    for (const model of [SONNET, DEEPSEEK]) {
+    for (const model of [GEMINI, LUNA]) {
       expect(calls(model)[0]).toMatchObject({ outcome: 'aborted', signalAborted: true });
       expect(calls(model)[0].endedAt! - calls(model)[0].startedAt).toBeLessThanOrEqual(75000);
     }
@@ -354,8 +354,8 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
   test('juror-just-under-limit-then-justification: the slowest juror answers just inside its timeout and the request still completes inside the §11 budget', async () => {
     const deadlineMs = 480000 + JUSTIFIER_RESERVE_MS; // the §11 jury + justifier budget
     script({
-      [SONNET]: { scores: HIGH, delayMs: 479000 },
-      [DEEPSEEK]: { scores: HIGH, delayMs: 1000 },
+      [GEMINI]: { scores: HIGH, delayMs: 479000 },
+      [LUNA]: { scores: HIGH, delayMs: 1000 },
       [JUSTIFIER]: { reply: 'Both jurors find a HIGH reentrancy.', delayMs: 44000 },
     });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs }) }));
@@ -368,8 +368,8 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
 
   test('slow-justifier: a justifier that approaches its 45 s reserve still fits the budget', async () => {
     script({
-      [SONNET]: { scores: HIGH, delayMs: 30000 },
-      [DEEPSEEK]: { scores: HIGH },
+      [GEMINI]: { scores: HIGH, delayMs: 30000 },
+      [LUNA]: { scores: HIGH },
       [JUSTIFIER]: { reply: 'A careful justification.', delayMs: JUSTIFIER_RESERVE_MS - 1000 },
     });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
@@ -380,8 +380,8 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
 
   test('slow-justifier: a justifier past its reserve is cancelled and the arbiter abstains, never with a partial justification', async () => {
     script({
-      [SONNET]: { scores: HIGH, justification: 'Juror text that must not be published alone.' },
-      [DEEPSEEK]: { scores: HIGH },
+      [GEMINI]: { scores: HIGH, justification: 'Juror text that must not be published alone.' },
+      [LUNA]: { scores: HIGH },
       [JUSTIFIER]: { hang: true },
     });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
@@ -395,8 +395,8 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
   test('slow-justifier: after a juror at its limit, a justifier slower than its reserve is cancelled before the deadline', async () => {
     const deadlineMs = 480000 + JUSTIFIER_RESERVE_MS;
     script({
-      [SONNET]: { scores: HIGH, delayMs: 479000 },
-      [DEEPSEEK]: { scores: HIGH },
+      [GEMINI]: { scores: HIGH, delayMs: 479000 },
+      [LUNA]: { scores: HIGH },
       [JUSTIFIER]: { reply: 'Too late.', delayMs: 46000 },
     });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs }) }));
@@ -415,7 +415,7 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
   }, 20000);
 
   test('slow-justifier: a justifier error abstains rather than publishing the jurors\' answers', async () => {
-    script({ [SONNET]: { scores: HIGH }, [DEEPSEEK]: { scores: HIGH }, [JUSTIFIER]: { error: 'justifier overloaded', status: 529 } });
+    script({ [GEMINI]: { scores: HIGH }, [LUNA]: { scores: HIGH }, [JUSTIFIER]: { error: 'justifier overloaded', status: 529 } });
     const result = await post(codeModeBody());
     expect(result.status).toBe(400);
     expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUSTIFIER_FAILED', retryable: false, justification: '' });
@@ -451,8 +451,8 @@ describe('code mode: the report the jury reads', () => {
   test('every juror reads the same bytes: the claim pre-prompt with the canonical report', async () => {
     const report = validReport();
     await post(codeModeBody({ codeReview: codeReviewField({ report, reportSha256: codeReview.reportSha256(report) }) }));
-    const [a] = calls(SONNET);
-    const [b] = calls(DEEPSEEK);
+    const [a] = calls(GEMINI);
+    const [b] = calls(LUNA);
     expect(a.prompt).toBe(b.prompt);
     expect(a.prompt).toContain(codeReview.canonicalReportJson(report));
     expect(jurorReply(HIGH)).toContain('score');

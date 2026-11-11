@@ -8,7 +8,7 @@ const path = require('path');
 const { codeReview } = require('@verdikta/common');
 const { codeReviewConfigFromEnv, describeCodeReviewConfig, readCommonVersions } = require('../../codeReview/config');
 
-const PINNED = '1.9.0-attest.3';
+const PINNED = '1.9.0-attest.4';
 
 const DEV_KEY = codeReview.createDevBuilderKey();
 const TOKEN = 'runner-token-0123456789abcdef0123456789abcdef';

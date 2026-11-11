@@ -18,6 +18,8 @@ afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 const SONNET = 'claude-sonnet-5-5';
 const DEEPSEEK = 'deepseek/deepseek-v4-pro-0813';
 const HAIKU = 'claude-haiku-5-5';
+/** The scenarios' panel: the pinned release's CODE_STANDARD_PANEL (owner decision Q63), whose jurors a batch prices and reads. */
+const [GEMINI, LUNA] = codeReview.CODE_STANDARD_PANEL.AI_NODES.map((node) => node.AI_MODEL);
 
 async function scenarios(ids) {
   const claims = path.join(dir, 'claims-in');
@@ -26,7 +28,7 @@ async function scenarios(ids) {
 }
 
 /** What the meter would have recorded for one claim: the two jurors and the justifier, with their answers saved. */
-function recordCalls(batchDir, ledger, { sonnet = [0, 0, 0, 0, 1000000, 0], deepseek = [0, 0, 0, 1000000, 0, 0], usd = 0.1 } = {}) {
+function recordCalls(batchDir, ledger, { first = [0, 0, 0, 0, 1000000, 0], second = [0, 0, 0, 1000000, 0, 0], usd = 0.1 } = {}) {
   const calls = path.join(batchDir, 'calls');
   fs.mkdirSync(calls, { recursive: true });
   const save = (id, model, body) => { fs.writeFileSync(path.join(calls, `${id}.json`), JSON.stringify({ id, model, status: 200, body })); return `${id}.json`; };
@@ -34,8 +36,8 @@ function recordCalls(batchDir, ledger, { sonnet = [0, 0, 0, 0, 1000000, 0], deep
     const id = ledger.reserve({ usd: 1, model });
     ledger.settle(id, { usd, basis: 'reported', status: 200, inputTokens: 100, outputTokens: 10, response: save(id, model, body) });
   };
-  one(SONNET, { content: [{ type: 'thinking', thinking: '' }, { type: 'text', text: JSON.stringify({ score: sonnet, justification: 'j' }) }] });
-  one(DEEPSEEK, { choices: [{ message: { content: `\`\`\`json\n${JSON.stringify({ score: deepseek, justification: 'j' })}\n\`\`\`` } }] });
+  one(GEMINI, { choices: [{ message: { content: `\`\`\`json\n${JSON.stringify({ score: first, justification: 'j' })}\n\`\`\`` } }] });
+  one(LUNA, { choices: [{ message: { content: JSON.stringify({ score: second, justification: 'j' }) } }] });
   one(HAIKU, { content: [{ type: 'text', text: 'The panel found.' }] });
 }
 
@@ -88,11 +90,11 @@ describe('one result file per claim', () => {
     const a = readClaim(batchDir, 'a');
     expect(a.settled.outcome).toBe('MEDIUM');
     expect(a.spend.usd).toBeCloseTo(0.3, 6);
-    expect(a.spend.calls.map((c) => c.model)).toEqual([SONNET, DEEPSEEK, HAIKU]);
+    expect(a.spend.calls.map((c) => c.model)).toEqual([GEMINI, LUNA, HAIKU]);
     expect(a.spend.calls[0]).toMatchObject({ inputTokens: 100, outputTokens: 10, basis: 'reported' });
     expect(a.jurors).toEqual([
-      { model: SONNET, vector: [0, 0, 0, 0, 1000000, 0] },
-      { model: DEEPSEEK, vector: [0, 0, 0, 1000000, 0, 0] }
+      { model: GEMINI, vector: [0, 0, 0, 0, 1000000, 0] },
+      { model: LUNA, vector: [0, 0, 0, 1000000, 0, 0] }
     ]);
     expect(readClaim(batchDir, 'b').spend.usd).toBeCloseTo(0.3, 6);
   });

@@ -2,10 +2,12 @@
  * Builders for code-mode test requests (design §10.3, §11).
  *
  * The JSON fixtures beside this file are copies of verdikta-common's
- * test/fixtures/code-review/{claim_report.valid.json, finding.valid.json,
- * claim_query.bug.txt} at 3ba67cd, the files common's own tests validate; the
- * npm package does not ship them. The query is buildClaimQuery's pinned output
- * for the example listing.
+ * test/fixtures/code-review/{claim_report.valid.json, finding.valid.json} at
+ * 3ba67cd and {claim_query.bug.txt, code_review.bug.json} at 85560a0 (the
+ * source of 1.9.0-attest.4), the files common's own tests validate; the npm
+ * package does not ship them. The query is buildClaimQuery's pinned output for
+ * the example listing, code_review.bug.json (claim-prompt.test.ts holds the two
+ * to the pinned release).
  */
 import fs from 'fs';
 import path from 'path';
@@ -23,6 +25,11 @@ export function validFinding(): Record<string, unknown> {
 
 export function claimQuery(): string {
   return fs.readFileSync(path.join(FIXTURES, 'claim_query.bug.txt'), 'utf8');
+}
+
+/** common's example listing spec, the one claim_query.bug.txt is built from. */
+export function bugSpec(): codeReview.CodeReviewSpec {
+  return JSON.parse(fs.readFileSync(path.join(FIXTURES, 'code_review.bug.json'), 'utf8'));
 }
 
 /** A codeReview field that validates, for the given deadline. */

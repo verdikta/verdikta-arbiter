@@ -21,8 +21,8 @@ const env = process.env as Record<string, string | undefined>;
 const KEYS = [MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, 'JUSTIFIER_MODEL', 'AI_WEB_ACCESS', CANARY_FAULT_KEY_ENV];
 const saved: Record<string, string | undefined> = {};
 const KEY = 'k'.repeat(48);
-const SONNET = 'claude-sonnet-5-5';
-const DEEPSEEK = 'deepseek/deepseek-v4-pro-0813';
+const GEMINI = 'google/gemini-4-argon';
+const LUNA = 'gpt-6-luna';
 const JUSTIFIER = 'mock-justifier';
 const HIGH = [0, 0, 0, 0, 1000000, 0];
 const MEDIUM = [0, 0, 0, 1000000, 0, 0];
@@ -33,8 +33,8 @@ const JURY_MS = 480000;
 function script(entries: Record<string, unknown> = {}) {
   env[MOCK_SCRIPT_ENV] = JSON.stringify({
     [JUSTIFIER]: { reply: 'The panel finds a HIGH reentrancy in Vault.withdraw.' },
-    [SONNET]: { scores: HIGH },
-    [DEEPSEEK]: { scores: MEDIUM },
+    [GEMINI]: { scores: HIGH },
+    [LUNA]: { scores: MEDIUM },
     ...entries,
   });
 }
@@ -126,36 +126,36 @@ describe('armed: a key on this node', () => {
   }, 20000);
 
   test('hold-juror-answer: the first juror finishes just under its limit, the justifier follows with its whole reserve', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: 20000 } });
+    script({ [GEMINI]: { scores: HIGH, delayMs: 20000 } });
     const result = await post(body(directive('hold-juror-answer')));
     expect(result.status).toBe(200);
     expect(result.body.codeReview.canaryFault).toMatchObject({ state: 'armed', action: 'hold-juror-answer' });
-    const first = result.body.model_results.find((m: any) => m.model === SONNET);
+    const first = result.body.model_results.find((m: any) => m.model === GEMINI);
     expect(first.status).toBe('success');
     expect(first.duration_ms).toBeGreaterThanOrEqual(JURY_MS - 6000);
     expect(first.duration_ms).toBeLessThan(JURY_MS);
-    const other = result.body.model_results.find((m: any) => m.model === DEEPSEEK);
+    const other = result.body.model_results.find((m: any) => m.model === LUNA);
     expect(other.duration_ms).toBeLessThan(5000);
     expect(calls(JUSTIFIER)).toHaveLength(1);
     expect(result.elapsedMs).toBeLessThan(600000);
   }, 20000);
 
   test('a juror that takes longer than the hold is not held further', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: JURY_MS - 3000 } });
+    script({ [GEMINI]: { scores: HIGH, delayMs: JURY_MS - 3000 } });
     const result = await post(body(directive('hold-juror-answer')));
     expect(result.status).toBe(200);
-    const first = result.body.model_results.find((m: any) => m.model === SONNET);
+    const first = result.body.model_results.find((m: any) => m.model === GEMINI);
     expect(first.duration_ms).toBeLessThan(JURY_MS - 1500);
   }, 20000);
 
   test('late-juror: the real call is on the wire when the deadline aborts it, the retryable 503 of a real timeout', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: 30000 } });
+    script({ [GEMINI]: { scores: HIGH, delayMs: 30000 } });
     const result = await post(body(directive('late-juror')));
     expect(result.status).toBe(503);
     expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, scores: [], justification: '' });
     expect(result.body.canaryFault).toEqual({ state: 'armed', action: 'late-juror' });
     expect(result.elapsedMs).toBeLessThanOrEqual(JURY_MS + 1000);
-    const [call] = calls(SONNET);
+    const [call] = calls(GEMINI);
     expect(call.outcome).toBe('aborted');
     expect(call.signalAborted).toBe(true);
     expect(call.startedAt).toBeGreaterThanOrEqual(JURY_MS - 4000);
@@ -170,7 +170,7 @@ describe('armed: a key on this node', () => {
   }, 20000);
 
   test('a timeout the switch did not cause says so: no action, whatever the state', async () => {
-    script({ [SONNET]: { hang: true } });
+    script({ [GEMINI]: { hang: true } });
     const result = await post(body());
     expect(result.status).toBe(503);
     expect(result.body.errorCode).toBe('CODE_REVIEW_JUROR_TIMEOUT');
@@ -218,22 +218,22 @@ describe('armed: the retry after a timed-out first attempt', () => {
     ...codeModeBody({ codeReview: codeReviewField({ deadlineMs }) }),
     ...(canaryFault === undefined ? {} : { canaryFault }),
   });
-  const slowPanel = (firstMs: number) => script({ [SONNET]: { scores: HIGH, delayMs: firstMs }, [DEEPSEEK]: { scores: MEDIUM, delayMs: 145000 } });
+  const slowPanel = (firstMs: number) => script({ [GEMINI]: { scores: HIGH, delayMs: firstMs }, [LUNA]: { scores: MEDIUM, delayMs: 145000 } });
 
   beforeEach(() => { env[CANARY_FAULT_KEY_ENV] = KEY; });
 
   test('provider-timeout\'s first attempt, told 105 s: every juror call cancelled at its 60 s jury deadline, the first on the wire, the retryable 503', async () => {
-    script({ [SONNET]: { scores: HIGH, delayMs: 30000 }, [DEEPSEEK]: { scores: MEDIUM, delayMs: 121000 } });
+    script({ [GEMINI]: { scores: HIGH, delayMs: 30000 }, [LUNA]: { scores: MEDIUM, delayMs: 121000 } });
     const t0 = Date.now();
     const first = await post(at(105000, directive('late-juror')));
     expect(first.status).toBe(503);
     expect(first.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_TIMEOUT', retryable: true, canaryFault: { state: 'armed', action: 'late-juror' } });
     expect(first.body.error).toMatch(/within the 60000 ms/);
     expect(first.elapsedMs).toBeLessThanOrEqual(61000);
-    const [late] = calls(SONNET);
+    const [late] = calls(GEMINI);
     expect(late.outcome).toBe('aborted');
     expect(late.startedAt - t0).toBeGreaterThanOrEqual(56000);
-    expect(calls(DEEPSEEK)[0].outcome).toBe('aborted');
+    expect(calls(LUNA)[0].outcome).toBe('aborted');
     expect(calls(JUSTIFIER)).toHaveLength(0);
   }, 30000);
 
@@ -245,7 +245,7 @@ describe('armed: the retry after a timed-out first attempt', () => {
     expect(retry.status).toBe(200);
     expect(retry.body.codeReview.jurorTimeoutMs).toBe(JURY_MS);
     expect(retry.body.codeReview.canaryFault).toEqual({ state: 'armed', action: null });
-    expect(retry.body.model_results.find((m: any) => m.model === SONNET).duration_ms).toBeGreaterThanOrEqual(262000);
+    expect(retry.body.model_results.find((m: any) => m.model === GEMINI).duration_ms).toBeGreaterThanOrEqual(262000);
   }, 30000);
 
   test.each<[number, number, number]>([
@@ -340,7 +340,7 @@ describe('the text-mode route', () => {
   test('a text-mode request carrying a directive is a text-mode request: no hold, no code mode', async () => {
     env[CANARY_FAULT_KEY_ENV] = KEY;
     const { codeReview: _ignored, ...text } = codeModeBody();
-    const result = await post({ ...text, outcomes: ['Yes', 'No'], models: [{ provider: 'mock', model: SONNET, weight: 1, count: 1 }], canaryFault: directive('hold-juror-answer') });
+    const result = await post({ ...text, outcomes: ['Yes', 'No'], models: [{ provider: 'mock', model: GEMINI, weight: 1, count: 1 }], canaryFault: directive('hold-juror-answer') });
     expect(result.elapsedMs).toBeLessThan(60000);
     expect(result.body.codeReview).toBeUndefined();
   }, 20000);
