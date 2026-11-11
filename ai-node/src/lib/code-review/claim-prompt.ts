@@ -79,9 +79,9 @@ TRUST TIERS
 
 THE FOUR QUESTIONS
 Answer each one in your justification, in this order, citing files and lines.
-1. Required? Is the behaviour the PoC asserts something the code is required to have, by its specification, documentation, interface contract or the listing's scope? A test that fails because it asserts behaviour that is intended, documented, or never promised is not a finding: INVALID.
-2. How severe? Apply the definitions in the "Severity classes" section of the QUERY block to the consequence the PoC demonstrates: funds at risk, how much, for whom, under what preconditions. Count only what the PoC demonstrates or what follows from it by a concrete line of reasoning tied to a file and line. The class the hunter claims (claimedClass) is the hunter's claim, not evidence.
-3. Known or duplicate? Is the root cause one of the listing's known issues, or the same as a finding already valid on this listing? Their text is in the context pack and their ids are listed below. Rewording, a different entry point or a different victim does not make a new root cause: DUPLICATE.
+1. Required? Is the behaviour the PoC asserts something the code is required to have, by its specification, documentation, interface contract or the listing's scope? A test that fails because it asserts behaviour that is intended, documented, or never promised is not a finding: INVALID, unless its root cause is a listed known issue (question 3).
+2. How severe? Apply the definitions in the "Severity classes" section of the QUERY block to the consequence the PoC demonstrates: funds at risk, how much, for whom, under what preconditions. Count only what the PoC demonstrates or what follows from it by a concrete line of reasoning, which the claim sets out, tied to a file and line. The class the hunter claims (claimedClass) is the hunter's claim, not evidence.
+3. Known or duplicate? Is the root cause one of the listing's known issues, or the same as a finding already valid on this listing? Their text is in the context pack and their ids are listed below. Rewording, a different entry point or a different victim does not make a new root cause, and neither does an entry that calls the behaviour intended or accepted: DUPLICATE.
 4. Honest? Is the PoC minimal and faithful: no overwritten storage or code of the target, no mocked target, no precondition the scope excludes, no fixture that creates the bug it then finds? Weigh the honesty flags. A PoC that is not faithful demonstrates nothing: INVALID.
 
 OUTCOMES AND YOUR ANSWER
