@@ -8,7 +8,8 @@
  *    else is a requester error before any model is called.
  * 2. The attachments (the context pack, report.md) must be text.
  * 3. The deadline plan (deadline.ts): jurors until deadlineMs less the 45 s
- *    justifier reserve (at most 480 s), then the justifier for its reserve.
+ *    justifier reserve (at most 480 s), then the justifier until the deadline:
+ *    at least the reserve, and whatever else the jury left.
  * 4. Every juror is required; a juror timeout is the retryable 503, a provider
  *    error or unusable reply the non-retryable 400. The justifier's failure
  *    abstains too: code mode never publishes a partial justification.
@@ -274,27 +275,29 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
       });
   }
 
-  // 6. The vector, then the justifier within its reserve.
+  // 6. The vector, then the justifier until the deadline (at least its reserve after the jury's window).
   const vector = roundToTotal(weightedVector(jury.results, jurors.map(j => j.weight)));
-  const budget = justifierBudgetMs(times, Date.now());
-  if (budget <= 0) return errorResponse('DEADLINE', 'the deadline passed before the justifier could start', canaryStamp);
-  const justifierStartedAt = Date.now();
-  const justifier = await runCodeJustifier(buildCodeJustifierPrompt({
+  const justifierPrompt = buildCodeJustifierPrompt({
     outcomes,
     scores: vector,
     jurors: jury.results.map(r => ({ juror: `${r.provider}:${r.model}`, justification: r.justification || '' })),
     reportSha256: request.reportSha256,
-  }), budget, holds);
+  });
+  // Measured after the prompt is built, so the budget ends at deadlineAt and not after it.
+  const justifierStartedAt = Date.now();
+  const budget = justifierBudgetMs(times, justifierStartedAt);
+  if (budget <= 0) return errorResponse('DEADLINE', 'the deadline passed before the justifier could start', canaryStamp);
+  const justifier = await runCodeJustifier(justifierPrompt, budget, holds);
   const justifierMs = Date.now() - justifierStartedAt;
   if (justifier.kind === 'timeout') {
-    return errorResponse('JUSTIFIER_TIMEOUT', `the justifier did not finish within its ${budget} ms; the arbiter abstains rather than publish a partial justification`, canaryStamp);
+    return errorResponse('JUSTIFIER_TIMEOUT', `the justifier ran ${justifierMs} ms of its ${budget} ms budget (what the deadline left it) and did not finish; the arbiter abstains rather than publish a partial justification`, canaryStamp);
   }
   if (justifier.kind === 'failed') {
     return errorResponse('JUSTIFIER_FAILED', `the justifier failed: ${justifier.message}; the arbiter abstains rather than publish a partial justification`, canaryStamp);
   }
 
   const totalMs = Date.now() - receivedAt;
-  console.log(`⚖️ CODE_REVIEW_DONE: ${requestTag} in ${totalMs} ms, vector ${JSON.stringify(vector)}`);
+  console.log(`⚖️ CODE_REVIEW_DONE: ${requestTag} in ${totalMs} ms, justifierMs=${justifierMs}, vector ${JSON.stringify(vector)}`);
   return {
     status: 200,
     body: {
@@ -315,6 +318,7 @@ async function judge(body: Record<string, unknown>, receivedAt: number): Promise
         deadlineMs: request.deadlineMs,
         jurorTimeoutMs: times.jurorTimeoutMs,
         justifierReserveMs: JUSTIFIER_RESERVE_MS,
+        justifierMs,
         maxTokens: envelope.jurorOutputTokens,
         effort: CODE_JUROR_EFFORT,
         canaryFault: { ...canaryStamp.canaryFault, ...(canaryAction ? { justifierMs } : {}) },

@@ -5,16 +5,23 @@
  * Node has from receipt. Code mode works from it instead of REQUEST_TIMEOUT_MS
  * and MODEL_TIMEOUT_MS: the jurors get the time left after the justifier's 45 s
  * reserve, capped at the 480 s jury budget of §11 (so a far deadline leaves the
- * EA time to retry a timed-out juror), and the justifier gets its reserve. The
- * cap only ever shortens what the deadline leaves, so nothing here runs past
- * deadlineMs. Each stage is cancelled with an AbortController when its time is
+ * EA time to retry a timed-out juror), and the justifier gets everything left
+ * before the deadline when it starts: at least its reserve, and more when the
+ * jury finished early. The cap only ever shortens what the deadline leaves, and
+ * the justifier ends at the deadline, so nothing here runs past deadlineMs. A
+ * justifier timeout therefore comes only at the deadline, when the EA has no
+ * time left to retry (external-adapter/src/codeReview/time.js, juryWorthCalling).
+ * Each stage is cancelled with an AbortController when its time is
  * up; the signal reaches the provider's HTTP request, and raceAbort makes sure
  * the route answers on time even if a provider ignored it. A juror's HTTP call
  * holds for its whole window (llm/juror-transport.ts: Node's fetch alone gives
  * up after 300 s without response headers).
  */
 
-/** Kept for the justifier after the jury (§11: jury ≤ 480 s, then justifier 45 s). */
+/**
+ * Kept for the justifier after the jury's window (§11: jury ≤ 480 s, then the justifier
+ * with at least 45 s and whatever the deadline leaves). A reserve, not the justifier's cap.
+ */
 export const JUSTIFIER_RESERVE_MS = 45000;
 
 /**
@@ -50,9 +57,12 @@ export function planCodeReviewTimes(deadlineMs: number, receivedAt: number): Cod
   };
 }
 
-/** The justifier's time when it starts at `now`: its reserve, never past the deadline. */
+/**
+ * The justifier's time when it starts at `now`: everything left before the deadline, never
+ * past it. After the jury's window that is at least JUSTIFIER_RESERVE_MS.
+ */
 export function justifierBudgetMs(times: CodeReviewTimes, now: number): number {
-  return Math.max(0, Math.min(JUSTIFIER_RESERVE_MS, times.deadlineAt - now));
+  return Math.max(0, times.deadlineAt - now);
 }
 
 /** Rejection of a call whose AbortSignal fired; `reason` is what the caller recorded. */

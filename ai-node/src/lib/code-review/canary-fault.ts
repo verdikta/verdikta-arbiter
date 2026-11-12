@@ -15,7 +15,9 @@
  *   late-juror             the first juror's real call starts 3 s before the jury deadline, so it
  *                          is on the wire when the deadline aborts it; an answer that came back
  *                          anyway is held to the abort
- *   hold-justifier-answer  the real justification, until 5 s before the justifier's end
+ *   hold-justifier-answer  the real justification, until 5 s before the 45 s mark from the
+ *                          justifier's start (or 5 s before the deadline, if that is sooner),
+ *                          though the justifier itself may run to the deadline
  *
  * The key is read here and nowhere else, at each request, under a computed name: next build
  * cannot inline it. No install or upgrade path sets it (docs/release-runbook.md, 3b). Unrelated
@@ -40,7 +42,8 @@ const ACTIONS: ReadonlySet<string> = new Set<CanaryAction>(['hold-juror-answer',
 export interface CanaryHolds {
   beforeFirstJuror(signal: AbortSignal): Promise<void>;
   afterFirstJuror(signal: AbortSignal): Promise<void>;
-  afterJustifier(signal: AbortSignal, endsAt: number): Promise<void>;
+  /** `reserveEndsAt`: the justifier's start + 45 s, or the deadline if sooner (jury.ts); never its budget's end. */
+  afterJustifier(signal: AbortSignal, reserveEndsAt: number): Promise<void>;
 }
 
 export const NO_HOLDS: CanaryHolds = {
@@ -118,6 +121,6 @@ export function holdsFor(action: CanaryAction, times: { juryDeadlineAt: number }
       if (action === 'late-juror') return holdUntil(Infinity, signal);
       return Promise.resolve();
     },
-    afterJustifier: (signal, endsAt) => (action === 'hold-justifier-answer' ? holdUntil(endsAt - JUSTIFIER_MARGIN_MS, signal) : Promise.resolve()),
+    afterJustifier: (signal, reserveEndsAt) => (action === 'hold-justifier-answer' ? holdUntil(reserveEndsAt - JUSTIFIER_MARGIN_MS, signal) : Promise.resolve()),
   };
 }
