@@ -34,14 +34,18 @@ const LOCAL_SIZE = 620331192;
 const MEASURED = 641318912;
 /** The size specs declares before anything is measured: the class maximum, which the check assumes for an undeclared one. */
 const PLACEHOLDER = codeReview.CLASS_HARD_LIMITS.imageUnpackedBytes;
-/** What fixture-repo commits: the vault with deposit's NatSpec line (A15). */
+/** What fixture-repo commits: the vault with deposit's NatSpec line (A15). The committed claim set's listings are signed on it. */
 const FIXTURE_COMMIT = '22763ef92e5ff13197730b795bfa6f1139de3097';
 const LISTINGS = ['listing', 'registry-failure', 'cold-cache'];
 const IMAGES = { listing: IMAGE, 'registry-failure': GONE_IMAGE, 'cold-cache': COLD_IMAGE };
 const FIXTURE_REPO = 'https://github.com/verdikta/verdikta-arbiter';
 const FIXTURE_BRANCH = 'claude/stake-attestation-l4-fixture-v2';
-/** The first fixture branch and its one commit: the committed claim set's listings are signed on it, so it never moves. */
-const SIGNED_FIXTURE = Object.freeze({ branch: 'claude/stake-attestation-l4-fixture', commit: '43679c1856fbafe0dfe8d24c6e3c883511695002' });
+/** The first fixture branch and its one commit: the listings of the claim set committed at ffaa30d are signed on it, so it never moves. */
+const FIRST_FIXTURE = Object.freeze({ branch: 'claude/stake-attestation-l4-fixture', commit: '43679c1856fbafe0dfe8d24c6e3c883511695002' });
+/** Both fixture branches, each at its one commit: signed listings name each, so neither is ever offered a push. */
+const SIGNED_FIXTURES = Object.freeze([FIRST_FIXTURE, Object.freeze({ branch: FIXTURE_BRANCH, commit: FIXTURE_COMMIT })]);
+/** The claim set the owner signed and pinned on the v2 branch, as committed: never edited, re-formatted or regenerated. */
+const CLAIM_SET_SHA256 = '68e1d54d4328ab3c87d8cc228eaee2bf59786478e120b52dd3c7185f3a2711a7';
 const RUN_ID = '4242424242';
 const HEAD_SHA = 'e'.repeat(40);
 const DEPOSIT = 'test/Vault.t.sol > VaultTest > test_deposit()';
@@ -81,6 +85,11 @@ function branchHolds(commit) {
   fs.writeFileSync(path.join(bin, 'branch.txt'), commit ? `${commit}\trefs/heads/${FIXTURE_BRANCH}\n` : '');
 }
 
+/** The fixture tree as if it had changed: it commits as `commit`. */
+function treeCommitsAs(commit) {
+  fs.writeFileSync(path.join(bin, 'tree-commit.txt'), `${commit}\n`);
+}
+
 function writeImages(change = (r) => r) {
   const listings = {};
   for (const name of LISTINGS) listings[name] = { image: IMAGES[name], unpackedBytes: LOCAL_SIZE, tag: name };
@@ -94,11 +103,13 @@ beforeEach(() => {
   bin = path.join(dir, 'bin');
   imagesFile = path.join(dir, 'images.json');
   fs.mkdirSync(bin);
-  // git: ls-remote answers from branch.txt beside it; everything else is the real git.
+  // git: ls-remote answers from branch.txt beside it, rev-parse from tree-commit.txt if there is one; everything else is the real git.
   fs.writeFileSync(path.join(bin, 'git'), [
     '#!/usr/bin/env bash',
     'here=$(cd "$(dirname "$0")" && pwd)',
     'if [ "$1" = "ls-remote" ]; then echo "$*" >> "$here/git.log"; cat "$here/branch.txt" 2>/dev/null; exit 0; fi',
+    // A fixture tree that changed: the commit it makes is the one tree-commit.txt names.
+    'if [ "$1" = "rev-parse" ] && [ -e "$here/tree-commit.txt" ]; then cat "$here/tree-commit.txt"; exit 0; fi',
     // git before 2.28 has no `init -b`.
     'if [ -e "$here/old-git" ] && [ "$1" = "init" ]; then for a in "$@"; do if [ "$a" = "-b" ]; then echo "error: unknown switch b" >&2; exit 129; fi; done; fi',
     `exec "${REAL_GIT}" "$@"`, ''
@@ -261,7 +272,7 @@ describe('specs', () => {
   it.each([
     ['another commit', 'f'.repeat(40), /claude\/stake-attestation-l4-fixture-v2 holds ffff/],
     ['no branch', null, /has no branch claude\/stake-attestation-l4-fixture-v2/],
-    ['the first fixture branch\'s commit', SIGNED_FIXTURE.commit, /claude\/stake-attestation-l4-fixture-v2 holds 43679c1/]
+    ['the first fixture branch\'s commit', FIRST_FIXTURE.commit, /claude\/stake-attestation-l4-fixture-v2 holds 43679c1/]
   ])('refuses images of a commit the fixture branch does not hold: %s', async (_label, commit, message) => {
     branchHolds(commit);
     const r = await specs();
@@ -422,27 +433,49 @@ describe('fixture-repo', () => {
     expect([a.code, b.code]).toEqual([0, 0]);
     expect(a.out.split('\n')[0]).toBe(FIXTURE_COMMIT);
     expect(b.out.split('\n')[0]).toBe(FIXTURE_COMMIT);
-    expect(FIXTURE_COMMIT).not.toBe(SIGNED_FIXTURE.commit);
-    expect(FIXTURE_BRANCH).not.toBe(SIGNED_FIXTURE.branch);
-    expect(a.out).toContain(`git push origin FETCH_HEAD:refs/heads/${FIXTURE_BRANCH}\n`);
-    expect(a.out).not.toContain(`refs/heads/${SIGNED_FIXTURE.branch}\n`);
-    // The first branch is named as what stays: the committed claim set's listings are signed on it.
-    expect(a.out).toContain(`${SIGNED_FIXTURE.branch} stays at ${SIGNED_FIXTURE.commit}`);
+    expect(FIXTURE_COMMIT).not.toBe(FIRST_FIXTURE.commit);
+    expect(FIXTURE_BRANCH).not.toBe(FIRST_FIXTURE.branch);
     // Only documentation changed: the vault's NatSpec line on deposit.
     const diff = execFileSync(REAL_GIT, ['-C', path.join(dir, 'a'), 'show', '--format=', 'HEAD', '--', 'src/Vault.sol'], { encoding: 'utf8' });
     expect(diff).toContain(`+    ${repo.DEPOSIT_RULE}`);
   });
+
+  it('offers neither signed branch a push, and names each as what stays, with the claim set signed on it', async () => {
+    const r = await script(PREPARE, ['fixture-repo', '--out', path.join(dir, 'fixture')]);
+    expect(r.code).toBe(0);
+    expect(r.out).not.toMatch(/git push|refs\/heads\//);
+    // The v2 branch holds the committed claim set's listings; the first, the set committed at ffaa30d, which is history.
+    expect(r.out).toContain(`${FIXTURE_BRANCH} stays at ${FIXTURE_COMMIT}: the listings in archives/l4-claim/claim-set.json are signed on it.\n`);
+    expect(r.out).toContain(`${FIRST_FIXTURE.branch} stays at ${FIRST_FIXTURE.commit}: the listings in the claim set committed at ffaa30d are signed on it.\n`);
+    for (const f of SIGNED_FIXTURES) expect(r.out).toContain(`${f.branch} stays at ${f.commit}: `);
+  });
+
+  it.each([
+    ['another commit', 'f'.repeat(40)],
+    ['the first fixture branch\'s commit', FIRST_FIXTURE.commit]
+  ])('refuses a tree that commits as %s: the signed branch never moves to it', async (_label, commit) => {
+    treeCommitsAs(commit);
+    const r = await script(PREPARE, ['fixture-repo', '--out', path.join(dir, 'fixture')]);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain(`${FIXTURE_BRANCH} is signed at ${FIXTURE_COMMIT}, and this tree commits as ${commit}: a new tree needs a branch of its own`);
+    expect(r.out).not.toMatch(/git push|refs\/heads\//);
+  });
 });
 
 describe('the committed claim set', () => {
-  const committed = () => JSON.parse(fs.readFileSync(path.join(E2E, 'archives', 'l4-claim', 'claim-set.json'), 'utf8'));
+  const file = path.join(E2E, 'archives', 'l4-claim', 'claim-set.json');
+  const committed = () => JSON.parse(fs.readFileSync(file, 'utf8'));
 
-  it('is the one signed on the first fixture branch, at 43679c1, until the owner signs and pins the new one', () => {
+  it('is the one the owner signed and pinned on the v2 fixture branch, at 22763ef', () => {
     const set = committed();
-    expect(set.baseCommit).toBe(SIGNED_FIXTURE.commit);
-    expect(set.baseCommit).not.toBe(FIXTURE_COMMIT);
+    expect(set.baseCommit).toBe(FIXTURE_COMMIT);
+    expect(set.baseCommit).not.toBe(FIRST_FIXTURE.commit);
     expect(set.image).toMatch(/^ghcr\.io\/verdikta\/stake-attestation-l4-fixture@sha256:[0-9a-f]{64}$/);
     expect(Object.keys(set.claims)).toEqual(expect.arrayContaining(['valid', 'timeDependent', 'randomnessDependent', 'editsSource', 'dispute']));
+  });
+
+  it('is the owner\'s file, byte for byte', () => {
+    expect(hashOf(file)).toBe(CLAIM_SET_SHA256);
   });
 });
 
@@ -507,12 +540,28 @@ describe('check', () => {
 
     it.each([
       ['another commit', 'f'.repeat(40)],
-      ['the first fixture branch\'s commit', SIGNED_FIXTURE.commit]
+      ['the first fixture branch\'s commit', FIRST_FIXTURE.commit]
     ])('refuses a branch that holds %s, before anything is built', async (_label, commit) => {
       branchHolds(commit);
       const r = await selfCheck();
       expect(r.code).toBe(1);
       expect(r.out).toContain(`${FIXTURE_BRANCH} holds ${commit}, and the fixture written here commits as ${FIXTURE_COMMIT}`);
+      expect(dockerReached()).toBe(false);
+      expect(fs.existsSync(path.join(dir, 'm.json'))).toBe(false);
+    });
+
+    // The branch is signed at 22763ef: a tree that commits as anything else is never told the branch must hold it.
+    it.each([
+      ['another commit, the branch not found', 'f'.repeat(40), null],
+      ['another commit, the branch at its own', 'f'.repeat(40), FIXTURE_COMMIT],
+      ['the first fixture branch\'s commit', FIRST_FIXTURE.commit, FIXTURE_COMMIT]
+    ])('refuses a tree that commits as %s, before anything is built', async (_label, commit, holds) => {
+      treeCommitsAs(commit);
+      branchHolds(holds);
+      const r = await selfCheck();
+      expect(r.code).toBe(1);
+      expect(r.out).toContain(`${FIXTURE_BRANCH} is signed at ${FIXTURE_COMMIT}, and the fixture written here commits as ${commit}: a new tree needs a branch of its own`);
+      expect(r.out).not.toContain('not published yet');
       expect(dockerReached()).toBe(false);
       expect(fs.existsSync(path.join(dir, 'm.json'))).toBe(false);
     });
