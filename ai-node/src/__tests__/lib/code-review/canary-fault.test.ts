@@ -14,6 +14,8 @@ import {
   holdsFor,
   readCanaryDirective,
 } from '../../../lib/code-review/canary-fault';
+import { JustifierOutcome, runCodeJustifier } from '../../../lib/code-review/jury';
+import { MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, resetMockProvider } from '../../../lib/llm/mock-provider';
 
 const env = process.env as Record<string, string | undefined>;
 const KEY = 'k'.repeat(48);
@@ -141,7 +143,7 @@ describe('holds', () => {
     expect(jest.getTimerCount()).toBe(0);
   });
 
-  test('hold-justifier-answer waits until five seconds before the justifier\'s end', async () => {
+  test('hold-justifier-answer waits until five seconds before the mark it is given', async () => {
     const holds = holdsFor('hold-justifier-answer', times);
     const { signal } = new AbortController();
     await holds.beforeFirstJuror(signal);
@@ -178,6 +180,60 @@ describe('holds', () => {
     const { signal } = new AbortController();
     jest.setSystemTime(300000);
     await expect(holds.afterFirstJuror(signal)).resolves.toBeUndefined();
+  });
+});
+
+// Node A22: the justifier's budget is now whatever the deadline leaves, so the hold is given the
+// 45 s mark from the justifier's start (or its budget's end, when that is sooner), never the end.
+describe('hold-justifier-answer through the justifier', () => {
+  const MOCK_KEYS = [MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, 'JUSTIFIER_MODEL'];
+  const kept: Record<string, string | undefined> = {};
+  const REPLY = 'The real justification.';
+
+  beforeEach(() => {
+    MOCK_KEYS.forEach(key => { kept[key] = env[key]; });
+    env[MOCK_PROVIDER_FLAG] = '1';
+    env.JUSTIFIER_MODEL = 'mock:mock-justifier';
+    env[MOCK_SCRIPT_ENV] = JSON.stringify({ 'mock-justifier': { reply: REPLY } });
+    resetMockProvider();
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'queueMicrotask'] });
+    jest.setSystemTime(0);
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    MOCK_KEYS.forEach(key => { if (kept[key] === undefined) delete env[key]; else env[key] = kept[key]; });
+  });
+
+  /** The justifier with this budget under the hold, on the fake clock: what it gave and when. */
+  async function justify(budgetMs: number): Promise<{ outcome: JustifierOutcome | null; at: number }> {
+    let outcome: JustifierOutcome | null = null;
+    let at = -1;
+    const pending = runCodeJustifier('the justifier prompt', budgetMs, holdsFor('hold-justifier-answer', { juryDeadlineAt: 0 }))
+      .then(result => { outcome = result; at = Date.now(); });
+    for (let waited = 0; outcome === null && waited <= budgetMs; waited += 1000) await jest.advanceTimersByTimeAsync(1000);
+    await pending;
+    return { outcome, at };
+  }
+
+  test('with a far deadline: the real justification, 5 s before the 45 s mark from the justifier\'s start, not before the deadline', async () => {
+    expect(await justify(600000)).toEqual({ outcome: { kind: 'ok', text: REPLY }, at: 40000 });
+  });
+
+  test('with exactly the reserve left: the same 40 s', async () => {
+    expect(await justify(45000)).toEqual({ outcome: { kind: 'ok', text: REPLY }, at: 40000 });
+  });
+
+  test('with less than 45 s left: 5 s before the deadline, which comes first', async () => {
+    expect(await justify(30000)).toEqual({ outcome: { kind: 'ok', text: REPLY }, at: 25000 });
+  });
+
+  test('a justifier slower than the mark is not held further, and keeps the rest of its budget', async () => {
+    env[MOCK_SCRIPT_ENV] = JSON.stringify({ 'mock-justifier': { reply: REPLY, delayMs: 50000 } });
+    expect(await justify(600000)).toEqual({ outcome: { kind: 'ok', text: REPLY }, at: 50000 });
   });
 });
 
@@ -225,7 +281,8 @@ describe('from the sources: where it sits and who reads it', () => {
     const calls = [...jury.matchAll(/holds\.(\w+)\(([^)]*)\)/g)].map(m => [m[1], m[2]]);
     expect(calls.length).toBeGreaterThanOrEqual(3);
     for (const [point, args] of calls) {
-      if (point === 'afterJustifier') expect(args).toMatch(/^controller\.signal, endsAt$/);
+      // The 45 s mark (A22), never the end of the justifier's budget, which is now the deadline.
+      if (point === 'afterJustifier') expect(args).toMatch(/^controller\.signal, reserveEndsAt$/);
       else expect(args).toBe('signal');
     }
   });

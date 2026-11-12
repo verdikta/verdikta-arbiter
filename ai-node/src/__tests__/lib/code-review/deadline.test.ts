@@ -1,5 +1,7 @@
 /**
  * Code mode's single deadline (design §11): juror and justifier budgets from deadlineMs.
+ * The jury's window leaves the justifier a 45 s reserve; the justifier itself may use
+ * whatever the deadline leaves when it starts (A22).
  */
 import {
   CODE_JURY_MAX_MS,
@@ -44,11 +46,33 @@ describe('code-review deadline plan (§11)', () => {
     expect(planCodeReviewTimes(JUSTIFIER_RESERVE_MS + MIN_JURY_MS, 0)).not.toBeNull();
   });
 
-  test('the justifier gets its reserve, never past the deadline', () => {
+  test('the justifier gets what the deadline leaves when it starts, not a fixed 45 s, and never past the deadline', () => {
     const times = planCodeReviewTimes(285000, 0)!;
-    expect(justifierBudgetMs(times, 10000)).toBe(45000);
+    // A jury that finished at 10 s leaves the justifier everything up to the deadline.
+    expect(justifierBudgetMs(times, 10000)).toBe(275000);
+    // A jury that used its whole window leaves exactly the reserve.
+    expect(justifierBudgetMs(times, times.juryDeadlineAt)).toBe(JUSTIFIER_RESERVE_MS);
     expect(justifierBudgetMs(times, 260000)).toBe(25000);
+    expect(justifierBudgetMs(times, 285000)).toBe(0);
     expect(justifierBudgetMs(times, 300000)).toBe(0);
+  });
+
+  test('on the EA\'s whole deadline, a jury done early leaves the justifier minutes; the jury\'s window is unchanged', () => {
+    const times = planCodeReviewTimes(780000, 0)!;
+    expect(times.jurorTimeoutMs).toBe(480000);
+    expect(justifierBudgetMs(times, 250000)).toBe(530000);
+    expect(justifierBudgetMs(times, times.juryDeadlineAt)).toBe(300000);
+  });
+
+  test('wherever the jury ends, the justifier has at least the reserve and ends at the deadline exactly', () => {
+    for (const deadlineMs of [55000, 100000, 285000, 525000, 600000, 780000]) {
+      const times = planCodeReviewTimes(deadlineMs, 7000)!;
+      for (const juryEnd of [times.receivedAt, times.receivedAt + 1000, Math.floor((times.receivedAt + times.juryDeadlineAt) / 2), times.juryDeadlineAt]) {
+        const budget = justifierBudgetMs(times, juryEnd);
+        expect(budget).toBeGreaterThanOrEqual(JUSTIFIER_RESERVE_MS);
+        expect(juryEnd + budget).toBe(times.deadlineAt);
+      }
+    }
   });
 
   test('raceAbort rejects as soon as the signal aborts, even if the work never settles', async () => {

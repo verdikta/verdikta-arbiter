@@ -186,6 +186,70 @@ describe('the retry after a first attempt that runs to the jury cap (§11)', () 
   });
 });
 
+// Node A22: the AI Node's justifier has whatever the deadline it was told leaves, so
+// CODE_REVIEW_JUSTIFIER_TIMEOUT now comes only at that deadline (ai-node/src/lib/code-review/deadline.ts,
+// justifierBudgetMs). It stays a retryable 503; what stops a second AI call is juryWorthCalling.
+describe('a justifier timeout at the deadline (§11)', () => {
+  /** The AI Node's jury window for a told deadline: unchanged by A22. */
+  const juryWindow = (told) => Math.min(480000, told - JUSTIFIER_RESERVE_MS);
+
+  /**
+   * A run of `runnerMs`, then an AI Node whose jury answers after `juryMs` and whose justifier is
+   * cut off `earlyMs` before the deadline the attempt was told (0: at it, as the AI Node does now).
+   * The clock moves only inside the stubs: the answer comes back at that cut-off.
+   */
+  function justifierTimeout(runnerMs, juryMs, earlyMs = 0) {
+    const seen = {};
+    runner.state.answer = (body) => { t = runnerMs; return R.definitive(body); };
+    ai.state.answer = (body, state) => {
+      if (state.calls.length > 1) return R.juryAnswer(body);
+      seen.sentAt = t;
+      seen.juryEndsAt = t + juryMs;
+      t = seen.sentAt + body.codeReview.deadlineMs - earlyMs;
+      return R.aiError(503, 'CODE_REVIEW_JUSTIFIER_TIMEOUT', true);
+    };
+    return seen;
+  }
+
+  it.each([
+    [0, 100000],
+    [30000, 250000],
+    [60000, 480000],
+    [194999, 60000],
+    [300000, 20000]
+  ])('a runner of %i ms, a jury done after %i ms, the justifier cut off at the deadline: no second AI call, the deadline\'s abstention', async (runnerMs, juryMs) => {
+    const seen = justifierTimeout(runnerMs, juryMs);
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_DEADLINE/);
+    expect(ai.state.calls).toHaveLength(1);
+    const told = ai.state.calls[0].codeReview.deadlineMs;
+    expect(told).toBe(780000 - runnerMs);
+    // The jury ended inside its window, and the justifier then had at least its reserve.
+    expect(juryMs).toBeLessThanOrEqual(juryWindow(told));
+    expect(780000 - seen.juryEndsAt).toBeGreaterThanOrEqual(JUSTIFIER_RESERVE_MS);
+    expect(t).toBe(780000);
+    expect(runner.state.runs).toHaveLength(1);
+  });
+
+  it.each([1, 1000, LIMIT])('an AI Node whose clock ends the justifier %i ms before the EA\'s deadline: still no second AI call', async (earlyMs) => {
+    justifierTimeout(30000, 100000, earlyMs);
+    await expect(runClaim(contextFor(), options())).rejects.toThrow(/CODE_REVIEW_DEADLINE/);
+    expect(ai.state.calls).toHaveLength(1);
+  });
+
+  it('the EA\'s rule itself is unchanged: a justifier cut off at a fixed 45 s after an early jury, as before A22, left minutes and was retried', async () => {
+    runner.state.answer = (body) => { t = 30000; return R.definitive(body); };
+    ai.state.answer = (body, state) => {
+      if (state.calls.length > 1) return R.juryAnswer(body);
+      t += 250000 + JUSTIFIER_RESERVE_MS;
+      return R.aiError(503, 'CODE_REVIEW_JUSTIFIER_TIMEOUT', true);
+    };
+    const result = await runClaim(contextFor(), options());
+    expect(result.scores).toEqual(R.juryScores());
+    expect(ai.state.calls).toHaveLength(2);
+    expect(ai.state.calls[1].codeReview.deadlineMs).toBe(780000 - 30000 - 250000 - JUSTIFIER_RESERVE_MS);
+  });
+});
+
 describe('the runtime', () => {
   const runc = (body) => R.definitive(body, { inputs: { gvisor: 'runc' } });
 
