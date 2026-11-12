@@ -10,9 +10,14 @@
  *   fixture-repo  writes the fixture repository (the L4 fixture image's tree, one commit with the
  *                 image build's fixed dates) and prints its commit. It is published once, as the
  *                 branch FIXTURE_BRANCH of this repository, never deleted or moved. A new tree gets a
- *                 new branch: claude/stake-attestation-l4-fixture holds 43679c1, the tree before the
- *                 vault documented deposit (A15), and the listings in archives/l4-claim/claim-set.json
- *                 are signed on it, so it stays as it is.
+ *                 new branch, and each branch signed listings name is in SIGNED_FIXTURES:
+ *                 claude/stake-attestation-l4-fixture holds 43679c1, the tree before the vault
+ *                 documented deposit (A15), which the listings of the claim set committed at ffaa30d
+ *                 are signed on; claude/stake-attestation-l4-fixture-v2, FIXTURE_BRANCH today, holds
+ *                 22763ef, which the listings in archives/l4-claim/claim-set.json are signed on.
+ *                 Both stay as they are: fixture-repo
+ *                 prints a push only for a branch nothing is signed on, and refuses a tree that
+ *                 commits as anything but a signed FIXTURE_BRANCH's commit.
  *   images        builds three images of that commit for linux/amd64 and pushes them: the fixture
  *                 image, a fresh digest for the cold-cache scenario, and one the owner removes from
  *                 the registry once it is signed (the registry-failure scenario). Writes images.json.
@@ -63,10 +68,19 @@ const GITHUB_REPO = 'verdikta/verdikta-arbiter';
 const FIXTURE_REPO = `https://github.com/${GITHUB_REPO}`;
 /** The branch the listings to sign name. Each fixture tree has a branch of its own, so no signed listing's ever moves. */
 const FIXTURE_BRANCH = 'claude/stake-attestation-l4-fixture-v2';
-/** The branches signed listings already name, each at its one commit: never deleted, moved or reused. */
+/**
+ * The branches signed listings already name, each at its one commit, with the claim set those listings are in:
+ * never deleted, moved or reused. No push is printed for any of them.
+ */
 const SIGNED_FIXTURES = Object.freeze([
-  Object.freeze({ branch: 'claude/stake-attestation-l4-fixture', commit: '43679c1856fbafe0dfe8d24c6e3c883511695002', signed: 'archives/l4-claim/claim-set.json' })
+  // The tree before the vault documented deposit. Its listings are history: the claim set committed at ffaa30d (Q56).
+  Object.freeze({ branch: 'claude/stake-attestation-l4-fixture', commit: '43679c1856fbafe0dfe8d24c6e3c883511695002', signed: 'the claim set committed at ffaa30d' }),
+  // The vault with its documented deposit (A15): the owner re-signed the listings on it and pinned that set. Named
+  // here, not by FIXTURE_BRANCH, so a new tree's branch is never taken for this one.
+  Object.freeze({ branch: 'claude/stake-attestation-l4-fixture-v2', commit: '22763ef92e5ff13197730b795bfa6f1139de3097', signed: 'archives/l4-claim/claim-set.json' })
 ]);
+/** The SIGNED_FIXTURES entry for `branch`, or null while no signed listing names it. */
+const signedFixture = (branch) => SIGNED_FIXTURES.find((f) => f.branch === branch) || null;
 /** Where e2e.yml's L4 claim runs are dispatched from, and so where the check must have run. */
 const L4_BRANCH = 'claude/stake-attestation';
 const WORKFLOW = '.github/workflows/e2e.yml';
@@ -195,13 +209,26 @@ function publishedFixtureCommit({ unpublished = false } = {}) {
   return m[1];
 }
 
+/** A signed FIXTURE_BRANCH holds its one commit: a tree that commits as another is refused, and needs a branch of its own. */
+function assertSignedBranchHolds(commit, what) {
+  const signed = signedFixture(FIXTURE_BRANCH);
+  if (signed && signed.commit !== commit) {
+    throw new Error(`${FIXTURE_BRANCH} is signed at ${signed.commit}, and ${what} commits as ${commit}: a new tree needs a branch of its own (FIXTURE_BRANCH), and no signed branch ever moves`);
+  }
+  return signed;
+}
+
 function fixtureRepo(opts) {
   const out = newDirectory(opts.out, '--out');
   fs.mkdirSync(out, { recursive: true });
   const commit = writeFixtureRepo(out);
+  // A signed branch is published already, at this commit: nothing to push.
+  const signed = assertSignedBranchHolds(commit, 'this tree');
   console.log(commit);
-  console.log(`\nPublished once, as ${FIXTURE_BRANCH} of ${GITHUB_REPO}, and never deleted or moved:`);
-  console.log(`  git fetch ${out} main && git push origin FETCH_HEAD:refs/heads/${FIXTURE_BRANCH}`);
+  if (!signed) {
+    console.log(`\nPublished once, as ${FIXTURE_BRANCH} of ${GITHUB_REPO}, and never deleted or moved:`);
+    console.log(`  git fetch ${out} main && git push origin FETCH_HEAD:refs/heads/${FIXTURE_BRANCH}`);
+  }
   for (const f of SIGNED_FIXTURES) console.log(`${f.branch} stays at ${f.commit}: the listings in ${f.signed} are signed on it.`);
 }
 
@@ -487,9 +514,11 @@ function runscRelease() {
  * The fixture branch for a self-check, before anything is built: the commit it holds, which must be this checkout's
  * fixture commit, or null while it is not published. A new fixture's branch is published once the change that makes
  * it has merged, and that change runs the self-check first. Nothing that leads to a signature takes an unpublished
- * branch: images, specs, a check of requests and prepare each refuse one.
+ * branch: images, specs, a check of requests and prepare each refuse one. A signed branch is held to its own commit
+ * first, published or not, so no fixture that commits as another is told the branch must hold it.
  */
 function selfCheckBranch(local) {
+  assertSignedBranchHolds(local, 'the fixture written here');
   const published = publishedFixtureCommit({ unpublished: true });
   if (published === null) {
     console.log(`${FIXTURE_BRANCH} is not published yet: it must hold this checkout's fixture commit, ${local}, before images, specs, a check of requests or prepare.`);
