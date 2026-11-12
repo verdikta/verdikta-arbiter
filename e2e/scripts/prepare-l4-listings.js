@@ -13,8 +13,9 @@
  *                 new branch, and each branch signed listings name is in SIGNED_FIXTURES:
  *                 claude/stake-attestation-l4-fixture holds 43679c1, the tree before the vault
  *                 documented deposit (A15), which the listings of the claim set committed at ffaa30d
- *                 are signed on; FIXTURE_BRANCH holds 22763ef, which the listings in
- *                 archives/l4-claim/claim-set.json are signed on. Both stay as they are: fixture-repo
+ *                 are signed on; claude/stake-attestation-l4-fixture-v2, FIXTURE_BRANCH today, holds
+ *                 22763ef, which the listings in archives/l4-claim/claim-set.json are signed on.
+ *                 Both stay as they are: fixture-repo
  *                 prints a push only for a branch nothing is signed on, and refuses a tree that
  *                 commits as anything but a signed FIXTURE_BRANCH's commit.
  *   images        builds three images of that commit for linux/amd64 and pushes them: the fixture
@@ -74,8 +75,9 @@ const FIXTURE_BRANCH = 'claude/stake-attestation-l4-fixture-v2';
 const SIGNED_FIXTURES = Object.freeze([
   // The tree before the vault documented deposit. Its listings are history: the claim set committed at ffaa30d (Q56).
   Object.freeze({ branch: 'claude/stake-attestation-l4-fixture', commit: '43679c1856fbafe0dfe8d24c6e3c883511695002', signed: 'the claim set committed at ffaa30d' }),
-  // FIXTURE_BRANCH, the vault with its documented deposit (A15): the owner re-signed the listings on it and pinned that set.
-  Object.freeze({ branch: FIXTURE_BRANCH, commit: '22763ef92e5ff13197730b795bfa6f1139de3097', signed: 'archives/l4-claim/claim-set.json' })
+  // The vault with its documented deposit (A15): the owner re-signed the listings on it and pinned that set. Named
+  // here, not by FIXTURE_BRANCH, so a new tree's branch is never taken for this one.
+  Object.freeze({ branch: 'claude/stake-attestation-l4-fixture-v2', commit: '22763ef92e5ff13197730b795bfa6f1139de3097', signed: 'archives/l4-claim/claim-set.json' })
 ]);
 /** The SIGNED_FIXTURES entry for `branch`, or null while no signed listing names it. */
 const signedFixture = (branch) => SIGNED_FIXTURES.find((f) => f.branch === branch) || null;
