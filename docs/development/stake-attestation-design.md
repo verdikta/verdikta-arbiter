@@ -1622,18 +1622,26 @@ cheap classes — together they would roughly halve the prepay.
 | Apply → build → PoC ×3 → integrity → [fix check in parallel] | ≤ 360 s (`limits.runSeconds`, enforced at listing and by the class maximum) |
 | Lint/SAST | Seconds on an honest claim. Its own timer, at most 420 s, outside `runSeconds` so a hunter's file cannot turn a listing's run into an abstention; the one deadline still bounds it |
 | Jev | ~2 s |
-| Frontier jury (parallel), then justifier | ≤ 480 s + 45 s, within the one deadline |
+| Frontier jury (parallel), then justifier | Jury ≤ 480 s, then the justifier with at least 45 s and whatever the deadline leaves, within the one deadline |
 | Commit transaction; reveal dispatch → reveal transaction | ~90 s |
 | **Worst case** | **≈ 14 min, so `responseTimeoutSeconds` = 900 s** |
 
 The stages up to the justifier do not add up to the worst case: the one deadline below
 (receipt + 780 s) bounds them together, so the worst case is that deadline plus the commit
 and reveal, ≈ 870 s. The jury gets the smaller of 480 s and what the deadline leaves after
-the justifier's 45 s, so a long run before it leaves it less. A timed-out jury is retried
+the justifier's 45 s, so a long run before it leaves it less. The justifier then has all
+the time left before the deadline: at least that 45 s reserve, minutes after a jury that
+finished early, and never past the deadline (`ai-node/src/lib/code-review/deadline.ts`,
+`justifierBudgetMs`). A timed-out jury is retried
 once, by the EA, in what then remains, and only while more than the reserve and the EA's
-60 s juror floor are left (`external-adapter/src/codeReview/claimRun.js`, `time.js`).
+60 s juror floor are left (`external-adapter/src/codeReview/claimRun.js`, `time.js`). A
+justifier timeout comes only at the deadline, so it is never retried.
 The cap was 240 s until 2026-11-09 (A11): the owner put a juror's accuracy and cost ahead
 of its speed, and slower jurors ran up to and past 240 s in tuning.
+The justifier had a fixed 45 s until 2026-11-12 (A22): after a jury that finished early, a
+justifier that needed longer was cut off with minutes of the deadline left, and its arbiter
+abstained or paid for the whole jury twice on the EA's retry; the 45 s is now the reserve
+the jury's window leaves, not the justifier's limit.
 
 **A retry after a first attempt at the cap.** With R seconds from receipt to the first AI
 call (archives, gates, pull, run), a first attempt that runs to the 480 s cap ends at
@@ -1676,11 +1684,13 @@ miss the on-chain deadline. Code mode therefore works from a single deadline:
   and stops at it otherwise (abstain).
 - The AI Node derives the code-mode request timeout and per-juror timeouts from
   `deadlineMs` instead of `REQUEST_TIMEOUT_MS` / `MODEL_TIMEOUT_MS`, reserves the
-  justifier's 45 s, and **cancels** jurors with `AbortController` at the deadline
-  instead of racing them. Iterations are capped by the class envelope so the
-  advertised budget holds.
+  justifier's 45 s after the jury's window, gives the justifier at least that and
+  whatever the deadline leaves, and **cancels** jurors and the justifier with
+  `AbortController` at their deadlines instead of racing them. Iterations are
+  capped by the class envelope so the advertised budget holds.
 - The EA does not retry a code-mode AI call once less than the justifier reserve
-  remains, and never re-runs the sandbox on a retry: the run is served from the
+  remains (so never after a justifier timeout, which comes at the deadline), and
+  never re-runs the sandbox on a retry: the run is served from the
   shared-run cache by its key (§9.2).
 
 Changes needed:

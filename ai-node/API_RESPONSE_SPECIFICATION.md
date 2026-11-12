@@ -209,9 +209,12 @@ version 2 (owner decisions Q66 (a), Q73 #5):
 
 ### Time, cancellation and juror settings
 
-- Jurors run until `deadlineMs − 45 s` (the justifier reserve), at most 480 s;
-  the justifier then gets 45 s, never past `deadlineMs`. `REQUEST_TIMEOUT_MS`,
-  `MODEL_TIMEOUT_MS` and `JUSTIFICATION_TIMEOUT_MS` do not apply.
+- Jurors run until `deadlineMs − 45 s` (the justifier reserve), at most 480 s.
+  The justifier then has at least 45 s and whatever the deadline leaves: all the
+  time left before `deadlineMs` when it starts, never past it, so after a jury
+  that finished early it has minutes. A justifier timeout therefore comes only at
+  the deadline. `REQUEST_TIMEOUT_MS`, `MODEL_TIMEOUT_MS` and
+  `JUSTIFICATION_TIMEOUT_MS` do not apply.
 - Each call gets an `AbortSignal` that is aborted at its deadline and goes into
   the provider's HTTP request (Anthropic, OpenAI, OpenRouter, xAI; Hyperbolic
   and Ollama too, as justifiers: Ollama through its own `/api/chat`). The
@@ -259,10 +262,14 @@ units settlement allows for the aggregator's own rounding. Plus:
   "deadlineMs": 525000,
   "jurorTimeoutMs": 480000,
   "justifierReserveMs": 45000,
+  "justifierMs": 61000,
   "maxTokens": 32000,
   "effort": "high"
 }
 ```
+
+`justifierReserveMs` is the reserve the jury's window leaves the justifier, not its
+limit; `justifierMs` is how long the justifier ran, on every 200.
 
 Every error has `{ "error", "errorCode", "retryable", "scores": [], "justification": "" }`,
 plus `issues` (validation) or `jurors` (`{ juror: "<provider>:<model>", status,
@@ -277,7 +284,7 @@ duration_ms, message?, http_status? }`, status `success`, `failed`,
 | 400 | `CODE_REVIEW_JUROR_FAILED` | false | A juror's provider error, or a reply with no usable scores after the repair call |
 | 400 | `CODE_REVIEW_JUSTIFIER_FAILED` | false | The justifier failed; the arbiter abstains rather than publish the jurors' text |
 | **503** | **`CODE_REVIEW_JUROR_TIMEOUT`** | **true** | A juror did not answer by the jury deadline; every juror call was cancelled |
-| 503 | `CODE_REVIEW_JUSTIFIER_TIMEOUT` | true | The justifier did not finish within its reserve; nothing partial is returned |
+| 503 | `CODE_REVIEW_JUSTIFIER_TIMEOUT` | true | The justifier, which has at least 45 s and whatever the deadline leaves, did not finish by the deadline; the message (and its log line) names the ms it ran and its budget; nothing partial is returned |
 | 504 | `CODE_REVIEW_DEADLINE` | false | `deadlineMs` leaves under 10 s of jury time after the reserve, or the deadline passed before the justifier |
 | 500 | `CODE_REVIEW_INTERNAL` | false | An unexpected error, or `JUSTIFIER_MODEL` is not set as `provider:model` |
 
@@ -285,7 +292,8 @@ A 200's `codeReview` also holds `canaryFault`: [below](#the-canary-fault-switch)
 
 The EA may retry a `retryable` error once while at least the justifier reserve
 remains (node A4b); a 503 body never contains the provider-error wording the
-EA's text-mode retry check stops on. Nothing is committed on any error.
+EA's text-mode retry check stops on. A justifier timeout comes at the deadline,
+so it leaves no time for a retry. Nothing is committed on any error.
 
 ### Test-only mock provider
 
@@ -379,14 +387,14 @@ under a computed name, so `next build` cannot inline the key. No install or upgr
 |---|---|
 | `hold-juror-answer` | The first juror's real answer is held until 5 s before the jury deadline, then the justifier follows |
 | `late-juror` | The first juror's real call starts 3 s before the jury deadline, so it is on the wire when the deadline aborts it, and an answer that came back anyway is held to the abort: the 503 `CODE_REVIEW_JUROR_TIMEOUT` |
-| `hold-justifier-answer` | The real justification is held until 5 s before its reserve ends |
+| `hold-justifier-answer` | The real justification is held until 5 s before the 45 s mark from the justifier's start, or 5 s before the deadline if that is sooner, though the justifier itself may run to the deadline |
 
 That is all it can do. A hold gets the abort signal and returns nothing, so it never sees a score,
 a justification or the prompt, and the prompt is built without the directive. A hold runs inside the
 raced work, like a provider call, so a stage's deadline ends it whatever it does.
 
 A 200 says what happened in `codeReview.canaryFault`: `{ "state", "action" }`, with `justifierMs`
-when an action ran. An error from the jury on (`CODE_REVIEW_JUROR_*`, `CODE_REVIEW_JUSTIFIER_*`, a
+(the same figure as `codeReview.justifierMs`) when an action ran. An error from the jury on (`CODE_REVIEW_JUROR_*`, `CODE_REVIEW_JUSTIFIER_*`, a
 deadline passed before the justifier) carries the same `canaryFault: { state, action }` at its top
 level, so a retry's verdict can say what caused the timeout before it. `state` is `off` (no key), `armed` (a usable key) or `refused` (a key of fewer
 than 32 printable characters, or with a space: it never acts). `action` is what verified, or null.
