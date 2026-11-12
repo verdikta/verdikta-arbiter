@@ -28,6 +28,16 @@ check "dereg rc initialised" '^[[:space:]]*dereg_rc=0[[:space:]]*$'
 check "dereg rc" 'run_echo_capture bash unregister-oracle.sh --unattended [|][|] dereg_rc=\$\?'
 check "dereg rc (interactive)" 'run_echo_capture bash unregister-oracle.sh <<< .* [|][|] dereg_rc=\$\?'
 check "dereg env reaches the script" 'VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$RECONF_AGGREGATOR" run_echo_capture'
+# Every job id the keeper lists for the operator goes, not only the ones in
+# installer/.contracts (unattended, interactive, and the regenerate-job-specs path).
+check "dereg takes every registered id" 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$RECONF_AGGREGATOR" run_echo_capture'
+check "dereg takes every registered id (interactive)" 'VA_DEREGISTER_ALL_REGISTERED=y run_echo_capture bash unregister-oracle.sh <<<'
+check "dereg runs whenever an aggregator is recorded" 'if \[ \$RECONF_DEREGISTER -eq 1 \]; then'
+check "regenerate: dereg rc" 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$aggregator_addr" bash unregister-oracle.sh --unattended [|][|] regen_dereg_rc=\$\?'
+check "regenerate: dereg rc (interactive)" 'VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh [|][|] regen_dereg_rc=\$\?'
+check "regenerate: abort flag read" '\[ "\$REGEN_ABORTED" -eq 1 \] [|][|] JOBS_ALREADY_REGENERATED=1'
+# The regenerate path no longer carries on after a failed deregistration.
+[ "$(grep -c 'Unregistration may have failed, but continuing' "$S")" -eq 0 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL regenerate still continues after a failed deregistration"; }
 check "dereg output captured" 'dereg_out="\$CAPTURED_OUT"'
 check "capture keeps the pipe status" 'set -o pipefail; "\$@" 2>&1 \| tee "\$_cap" >&2'
 check "dereg count" 'RECONF_DEREGISTERED=\$\(printf'

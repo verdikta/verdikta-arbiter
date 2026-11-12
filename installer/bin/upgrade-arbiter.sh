@@ -1242,9 +1242,11 @@ check_job_spec_template() {
         
         if ask_yes_no "Would you like to regenerate the job specifications from the updated template? (This will require re-registration if you use an aggregator)" "y" VA_UPGRADE_REGENERATE_JOBS n; then
             # Handle the job spec regeneration with proper aggregator management
+            REGEN_ABORTED=0
             regenerate_job_specs
-            # Set flag to indicate jobs have been regenerated
-            JOBS_ALREADY_REGENERATED=1
+            # Set flag to indicate jobs have been regenerated (not when the
+            # regeneration was cancelled because deregistration failed)
+            [ "$REGEN_ABORTED" -eq 1 ] || JOBS_ALREADY_REGENERATED=1
         else
             echo -e "${BLUE}Keeping existing job specifications.${NC}"
         fi
@@ -1282,21 +1284,50 @@ regenerate_job_specs() {
         fi
     fi
     
-    # Step 1: Unregister if needed
+    # Step 1: Unregister if needed. Regeneration gives every job a new id, so
+    # the same rule as the count change applies: every job id the keeper lists
+    # for this operator goes first (VA_DEREGISTER_ALL_REGISTERED=y), and if
+    # that fails the job specs stay as they are. This step used to pipe "y"
+    # into unregister-oracle.sh and carry on whatever happened: unattended, the
+    # pipe is ignored and the unanswered prompt defaults to "no", so the old
+    # ids kept their stake while new ones were created and registered.
+    # It runs before the upgrade refreshes the install's scripts, so the copies
+    # this checkout ships are put in place first. Exit code read with `||`:
+    # the ERR trap fires on a failing plain command (#97).
     if [ $need_reregister -eq 1 ]; then
         echo -e "${BLUE}Step 1: Unregistering from aggregator...${NC}"
+        if [ -f "$UTIL_DIR/unregister-oracle.sh" ] && [ -d "$TARGET_DIR/arbiter-operator/scripts" ] \
+           && [ -f "$REPO_ROOT/arbiter-operator/scripts/lib/registry.js" ]; then
+            cp "$UTIL_DIR/unregister-oracle.sh" "$TARGET_DIR/unregister-oracle.sh"
+            chmod +x "$TARGET_DIR/unregister-oracle.sh"
+            mkdir -p "$TARGET_DIR/arbiter-operator/scripts/lib"
+            cp "$REPO_ROOT/arbiter-operator/scripts/unregister-oracle-cl.js" "$TARGET_DIR/arbiter-operator/scripts/unregister-oracle-cl.js"
+            cp "$REPO_ROOT/arbiter-operator/scripts/lib/"*.js "$TARGET_DIR/arbiter-operator/scripts/lib/"
+            if [ -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
+                mkdir -p "$TARGET_DIR/installer/lib"
+                cp "$INSTALLER_DIR/lib/prompts.sh" "$TARGET_DIR/installer/lib/prompts.sh"
+            fi
+        fi
+        local regen_dereg_rc=0
         if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
             cd "$TARGET_DIR"
-            # Use the existing unregister script non-interactively
-            echo -e "y\n$aggregator_addr\ny" | bash unregister-oracle.sh
-            if [ $? -eq 0 ]; then
-                echo -e "${GREEN}Successfully unregistered from aggregator${NC}"
+            if unattended_mode; then
+                VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" bash unregister-oracle.sh --unattended || regen_dereg_rc=$?
             else
-                echo -e "${YELLOW}Warning: Unregistration may have failed, but continuing...${NC}"
+                echo -e "y\n$aggregator_addr\ny" | VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh || regen_dereg_rc=$?
             fi
         else
-            echo -e "${YELLOW}Warning: unregister-oracle.sh not found. Continuing with job regeneration...${NC}"
+            echo -e "${RED}unregister-oracle.sh not found at $TARGET_DIR — cannot release the stake on the current jobs.${NC}"
+            regen_dereg_rc=1
         fi
+        if [ "$regen_dereg_rc" -ne 0 ]; then
+            echo -e "${RED}Deregistration failed. Regenerating the jobs now would strand the stake on the current job ids — job specifications left as they are.${NC}"
+            REGEN_ABORTED=1
+            RECONF_FAILED=1
+            RECONF_SUMMARY="job specifications were NOT regenerated: deregistering the current job ids failed (see the output above), and new job ids would have stranded their stake; the node keeps its jobs and its registration — fix the cause and run the upgrade again"
+            return 0
+        fi
+        echo -e "${GREEN}Successfully unregistered from aggregator${NC}"
     fi
     
     # Step 2: Regenerate job specifications (requires Chainlink node to be running)
@@ -2118,7 +2149,20 @@ else
             # Reconfiguration replaces EVERY job id. Stake stays locked on the old
             # ids until they are deregistered, so deregister first (refund) — and
             # remember to re-register the new ids afterwards (issue #35).
+            #
+            # "The old ids" are what the dispatcher's keeper lists for this
+            # operator contract, not only what installer/.contracts names: on
+            # 2026-11-11 a 1 → 10 count change found the file's job id "Not
+            # registered", replaced the jobs, registered ten new ids and left
+            # the one that was registered on the keeper with its 100 wVDKA and
+            # no node behind it. So the deregistration runs with
+            # VA_DEREGISTER_ALL_REGISTERED=y (every job id of this operator, and
+            # it fails unless the keeper lists none afterwards), and it runs
+            # whenever an aggregator is recorded, whatever the local
+            # AGGREGATOR_REGISTRATION_ACTIVE flag says — that flag only decides
+            # whether the new ids are registered again.
             RECONF_REREGISTER=0
+            RECONF_DEREGISTER=0
             RECONF_AGGREGATOR=""
             RECONF_CLASSES="128"
             if [ -f "$TARGET_DIR/installer/.contracts" ]; then
@@ -2126,6 +2170,7 @@ else
                 RECONF_CLASSES="$(grep -E '^CLASSES_ID=' "$TARGET_DIR/installer/.contracts" | head -1 | sed -E 's/^[^=]+="?([^"]*)"?$/\1/')"
                 RECONF_ACTIVE="$(grep -E '^AGGREGATOR_REGISTRATION_ACTIVE=' "$TARGET_DIR/installer/.contracts" | head -1 | sed -E 's/^[^=]+="?([^"]*)"?$/\1/')"
                 RECONF_CLASSES="${RECONF_CLASSES:-128}"
+                [ -n "$RECONF_AGGREGATOR" ] && RECONF_DEREGISTER=1
                 case "${RECONF_ACTIVE:-true}" in
                     false|False|FALSE|0|no|No|NO) ;;
                     *) [ -n "$RECONF_AGGREGATOR" ] && RECONF_REREGISTER=1 ;;
@@ -2139,8 +2184,8 @@ else
             RECONF_FAILED=0
             RECONF_SUMMARY=""
             RECONF_TOTAL=$(grep -cE '^JOB_ID_[0-9]+=' "$TARGET_DIR/installer/.contracts" 2>/dev/null || echo 0)
-            if [ $RECONF_REREGISTER -eq 1 ]; then
-                echo -e "${BLUE}Deregistering the current jobs from $RECONF_AGGREGATOR before reconfiguring (stake is refunded)...${NC}"
+            if [ $RECONF_DEREGISTER -eq 1 ]; then
+                echo -e "${BLUE}Deregistering every job of this operator from $RECONF_AGGREGATOR before reconfiguring (stake is refunded)...${NC}"
                 if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
                     cd "$TARGET_DIR"
                     # The script runs under `set -e` with an ERR trap: a failing
@@ -2154,9 +2199,9 @@ else
                     # register-oracle.sh below.
                     dereg_rc=0
                     if unattended_mode; then
-                        VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended || dereg_rc=$?
+                        VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended || dereg_rc=$?
                     else
-                        run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")" || dereg_rc=$?
+                        VA_DEREGISTER_ALL_REGISTERED=y run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")" || dereg_rc=$?
                     fi
                     dereg_out="$CAPTURED_OUT"
                     RECONF_DEREGISTERED=$(printf '%s\n' "$dereg_out" | grep -c "Deregistered" || true)
@@ -2165,6 +2210,9 @@ else
                         RECONF_ABORT=1
                         RECONF_FAILED=1
                         RECONF_SUMMARY="deregistered $RECONF_DEREGISTERED of $RECONF_TOTAL job(s) before the dispatcher call failed; the stake on the rest is intact and the job specs are unchanged — fix the cause and run the same count change again (jobs already deregistered are skipped)"
+                        if printf '%s\n' "$dereg_out" | grep -q "still registered for this operator"; then
+                            RECONF_SUMMARY="deregistered $RECONF_DEREGISTERED job(s), but the dispatcher still lists job ids for this operator (named in the deregistration output above); replacing the jobs now would strand their stake, so the job specs are unchanged — run the same count change again"
+                        fi
                     fi
                 else
                     echo -e "${RED}unregister-oracle.sh not found at $TARGET_DIR — cannot release the stake on the current jobs; job reconfiguration cancelled.${NC}"

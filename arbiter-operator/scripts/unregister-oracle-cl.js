@@ -16,6 +16,13 @@ HARDHAT_NETWORK=base_sepolia node scripts/unregister-oracle-cl.js \
           "39515f75ac2947beb7f2eeae4d8eaf3e" \
           "cdee0a127bc74a5188cbabf7aadcc84f"
 
+  --all-registered   also deregister every other job id the keeper lists for
+                     --oracle, and fail unless it lists none afterwards. The
+                     installer passes it when it replaces a node's jobs, so a
+                     job id that installer/.contracts no longer names cannot be
+                     left behind with its stake. --jobids is optional with it.
+                     Without it such ids are reported and left alone.
+
 */
 
 require("dotenv").config();
@@ -24,6 +31,7 @@ const { ethers } = hre;
 const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
+const { runDeregistration } = require("./lib/registry.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs                                                        */
@@ -34,7 +42,9 @@ const AggregatorABI = [
 
 const KeeperABI = [
   "function deregisterOracle(address,bytes32)",
-  "function getOracleInfo(address,bytes32) view returns (bool isActive,int256,int256,uint256,bytes32,uint256,uint256,uint256,bool)",
+  "function getOracleInfo(address,bytes32) view returns (bool isActive,int256,int256,uint256,bytes32,uint256,uint256 stakeAmount,uint256 lockedUntil,bool blocked)",
+  "function getRegisteredOraclesCount() view returns (uint256)",
+  "function registeredOracles(uint256) view returns (address oracle, bytes32 jobId)",
   "function owner() view returns (address)"
 ];
 
@@ -46,14 +56,6 @@ const OWNER_ABI = [
   "function owner() view returns (address)"
 ];
 
-/* Helper: accept bytes32 or plain text ID --------------------------- */
-const toBytes32 = (id) => {
-  if (/^0x[0-9a-f]{64}$/i.test(id)) return id;          // already bytes32
-  const bytes = ethers.toUtf8Bytes(id);
-  if (bytes.length > 32) throw new Error(`Job ID too long: ${id}`);
-  return ethers.hexlify(bytes).padEnd(66, "0");
-};
-
 /* ------------------------------------------------------------------- */
 /* Main                                                                */
 /* ------------------------------------------------------------------- */
@@ -64,7 +66,10 @@ const toBytes32 = (id) => {
       .option("aggregator",      { alias: "a", type: "string", demandOption: true })
       .option("oracle",          { alias: "o", type: "string", demandOption: true })
       .option("wrappedverdikta", { alias: "w", type: "string", demandOption: true })
-      .option("jobids",          { alias: "j", type: "array",  demandOption: true })
+      // string: true — yargs would turn an all-digit job id into a number.
+      .option("jobids",          { alias: "j", type: "array",  string: true, default: [] })
+      .option("all-registered",  { type: "boolean", default: false })
+      .check((a) => a.jobids.length > 0 || a["all-registered"] || "Give --jobids, --all-registered, or both")
       .strict()
       .argv;
 
@@ -98,22 +103,11 @@ const toBytes32 = (id) => {
     const balBefore = await verdikta.balanceOf(caller);
     console.log("Initial wVDKA balance:", ethers.formatEther(balBefore));
 
-    /* Loop through job IDs ------------------------------------------- */
-    for (const rawId of argv.jobids) {
-      const jobId = toBytes32(rawId);
-      console.log(`\nJobID ${rawId} → ${jobId}`);
-
-      const info = await keeper.getOracleInfo(argv.oracle, jobId);
-      if (!info.isActive) {
-        console.log("Not registered – skipping");
-        continue;
-      }
-
-      console.log("Calling deregisterOracle…");
-
-      /* A count change deregisters every job in a row; on a delegated
-         (EIP-7702) sender Infura rejects the next send once a few are in
-         flight (#38). Settle + retry around every send, like registration. */
+    /* Deregister ------------------------------------------------------ */
+    /* A count change deregisters every job in a row; on a delegated
+       (EIP-7702) sender Infura rejects the next send once a few are in
+       flight (#38). Settle + retry around every send, like registration. */
+    const deregisterOne = async (jobId, rawId) => {
       try {
         const gasEstimate = await keeper.deregisterOracle.estimateGas(argv.oracle, jobId);
         const gasLimit = Math.ceil(Number(gasEstimate) * 1.2); // 20% buffer
@@ -134,7 +128,15 @@ const toBytes32 = (id) => {
           console.log("✓ Deregistered with fallback gas (tx:", tx.hash, ")");
         });
       }
-    }
+    };
+
+    await runDeregistration({
+      keeper,
+      oracle: argv.oracle,
+      jobIds: argv.jobids,
+      allRegistered: argv["all-registered"],
+      deregisterOne,
+    });
 
     /* wVDKA balance after -------------------------------------------- */
     const balAfter = await verdikta.balanceOf(caller);
