@@ -391,7 +391,7 @@ publishing, was rejected for the operator exposure (§19).
 | Chainlink config | `[JobPipeline] MaxRunDuration` default 10 m → 15 m |
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§10.8) |
 | `StakeAttestation` (new, verdikta-applications) | Escrow by award table bound to an artifact hash, with lineage; commit (archive hash + ciphertext CID) → fix window → reveal (bCID + keys); bond; bad-disclosure flag; release; dispute escalation; six-outcome settlement; `recordByHash`; the listing feed as events (§13) |
-| Attestation site (verdikta-applications, **a new site**) | A separate application with its own domain, API and contract, not an addition to the bounty site (§20, decision 18). Listing flow with the disclosure key and the award table; builder Action, fallback workflow, validation report and **attestation signing**; baseline scan; record page and badge; feed API; the maker's decrypt-and-check step; the dispute form; `@verdikta/attest-check` for runtimes (§14) |
+| Attestation site (verdikta-applications, **a new site**) | A separate application with its own API and contract, served at its own origin, https://verifiers.verdikta.org (owner, 2026-11-11), not an addition to the bounty site (§20, decision 18). Listing flow with the disclosure key and the award table; builder Action, fallback workflow, validation report and **attestation signing**; baseline scan; record page and badge; feed API; the maker's decrypt-and-check step; the dispute form; `@verdikta/attest-check` for runtimes (§14) |
 | Hunter tool (verdikta-applications) | `check` (the arbiters' pipeline minus the jury, locally), `commit` (encrypt to the disclosure key, pin the ciphertext, keep the keys beside the archive, send the transaction), `reveal`; optional paid pre-flight on the site's runner (§8.6) |
 
 ## 8. Listing and claim: the data contract
@@ -2821,7 +2821,8 @@ decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72).
     (`BASE_IMAGE_UNSUPPORTED`), the way it rejects the `skill` kind.
 18. **A new site, not the bounty site (2026-10-30, owner) — decided; layout
     proposed.** The attestation product is a separate application with its own
-    domain, API and contract. It shares the aggregator, the code ClassIDs and
+    API and contract, served at its own origin, https://verifiers.verdikta.org
+    (owner, 2026-11-11). It shares the aggregator, the code ClassIDs and
     the arbiter network, and may reuse library code from the bounty program
     (archive generation, IPFS pinning, the request path) as a dependency, never
     by adding routes or flows to bounties.verdikta.org; `BountyEscrow` is
@@ -2829,7 +2830,10 @@ decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72).
     verdikta-applications beside `example-bounty-program/` (working folder name
     `stake-attestation/`), so the contracts share tooling and the deploy
     conventions of that repository; a repository of its own is the alternative
-    if the application grows a team of its own.
+    if the application grows a team of its own. Owner decision (2026-11-11): for
+    the pilots the site is served at https://verifiers.verdikta.org (working name
+    Verdikta Verifiers), an origin of its own rather than a separately
+    registered domain; the rest of this decision stands.
 19. **Settlement safeguards (2026-11-10, owner, Q70 and Q72) — decided; one
     detail open.** Better claims lower the jury's error rate but cannot
     bring it to zero, so the two costliest settlements get a second look. A
