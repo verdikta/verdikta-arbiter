@@ -13,7 +13,7 @@
 import { LLMFactory } from '../llm/llm-factory';
 import { parseRepairedScores, replyJustification } from '../../utils/repairModelResponse';
 import { buildCodeRepairPrompt } from './claim-prompt';
-import { CallAbortedError, raceAbort, timedController } from './deadline';
+import { CallAbortedError, JUSTIFIER_RESERVE_MS, raceAbort, timedController } from './deadline';
 import { CanaryHolds, NO_HOLDS } from './canary-fault';
 
 /** Every juror in the MVP panels is a frontier juror (no Jev): effort high (§10.3). */
@@ -190,21 +190,27 @@ export type JustifierOutcome =
   | { kind: 'timeout' }
   | { kind: 'failed'; message: string; httpStatus?: number };
 
-/** The justifier, cancelled after `budgetMs`. Code mode never falls back to the jurors' own text. */
+/**
+ * The justifier, cancelled after `budgetMs` (in code mode, what the deadline leaves: deadline.ts,
+ * justifierBudgetMs). Code mode never falls back to the jurors' own text.
+ */
 export async function runCodeJustifier(prompt: string, budgetMs: number, holds: CanaryHolds = NO_HOLDS): Promise<JustifierOutcome> {
   const target = justifierModel();
   if (!target) return { kind: 'failed', message: 'JUSTIFIER_MODEL is not set as provider:model' };
-  const endsAt = Date.now() + budgetMs;
+  // The canary hold is given the 45 s reserve's end from this start, or the budget's end when that
+  // is sooner, never the budget's end itself: slow-justifier keeps its length whatever the deadline
+  // leaves (canary-fault.ts; e2e/src/l4/claim-checks.js).
+  const reserveEndsAt = Date.now() + Math.min(JUSTIFIER_RESERVE_MS, budgetMs);
   const { controller, clear } = timedController(budgetMs);
   try {
-    // The reserve covers the provider's setup too (Ollama's initialization fetches its model list).
+    // The budget covers the provider's setup too (Ollama's initialization fetches its model list).
     const work = (async () => {
       const provider = await LLMFactory.getProvider(target.provider, { signal: controller.signal }) as any;
       const reply = await provider.generateResponse(prompt, target.model, { webAccess: false, signal: controller.signal }) as string;
-      await holds.afterJustifier(controller.signal, endsAt);
+      await holds.afterJustifier(controller.signal, reserveEndsAt);
       return reply;
     })();
-    const text = stripThinkingBlocks(await raceAbort<string>(work, controller.signal, 'justifier reserve'));
+    const text = stripThinkingBlocks(await raceAbort<string>(work, controller.signal, 'justifier deadline'));
     if (!text) return { kind: 'failed', message: `${target.provider}:${target.model} returned an empty justification` };
     return { kind: 'ok', text };
   } catch (error: any) {

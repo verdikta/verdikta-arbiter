@@ -88,6 +88,8 @@ describe('code mode: the optional codeReview field', () => {
     expect(result.body.justification).toBe('The panel finds a HIGH reentrancy in Vault.withdraw.');
     expect(result.body.model_results.map((m: any) => m.status)).toEqual(['success', 'success']);
     expect(result.body.codeReview).toMatchObject({ codeClass: 'code-standard', reportSha256: codeReviewField().reportSha256 });
+    expect(Number.isSafeInteger(result.body.codeReview.justifierMs)).toBe(true);
+    expect(result.body.codeReview.justifierMs).toBeGreaterThanOrEqual(0);
     expect(calls(GEMINI)[0].prompt).toContain('<<<BEGIN QUERY');
   }, 20000);
 
@@ -378,7 +380,7 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
     expect(result.elapsedMs).toBeLessThanOrEqual(30000 + JUSTIFIER_RESERVE_MS);
   }, 20000);
 
-  test('slow-justifier: a justifier past its reserve is cancelled and the arbiter abstains, never with a partial justification', async () => {
+  test('slow-justifier: a justifier that runs to the deadline is cancelled there and the arbiter abstains, never with a partial justification', async () => {
     script({
       [GEMINI]: { scores: HIGH, justification: 'Juror text that must not be published alone.' },
       [LUNA]: { scores: HIGH },
@@ -386,32 +388,48 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
     });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
     expect(result.status).toBe(503);
-    expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT', scores: [], justification: '' });
+    expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUSTIFIER_TIMEOUT', retryable: true, scores: [], justification: '' });
     expect(JSON.stringify(result.body)).not.toContain('must not be published');
-    expect(result.elapsedMs).toBeLessThanOrEqual(JUSTIFIER_RESERVE_MS + 1000);
+    // Not at the 45 s reserve: at the deadline, and not a millisecond after it.
+    expect(result.elapsedMs).toBe(300000);
     expect(calls(JUSTIFIER)[0]).toMatchObject({ outcome: 'aborted', signalAborted: true });
+    expect(calls(JUSTIFIER)[0].endedAt).toBe(calls(JUSTIFIER)[0].startedAt + 300000);
   }, 20000);
 
-  test('slow-justifier: after a juror at its limit, a justifier slower than its reserve is cancelled before the deadline', async () => {
+  test('slow-justifier: the timeout says how long the justifier ran and what its budget was, in its message and its log line', async () => {
+    script({ [GEMINI]: { scores: HIGH, delayMs: 20000 }, [LUNA]: { scores: HIGH }, [JUSTIFIER]: { hang: true } });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
+    expect(result.status).toBe(503);
+    expect(result.body.error).toMatch(/\bran 280000 ms\b/);
+    expect(result.body.error).toMatch(/\b280000 ms budget\b/);
+    const logged = (console.error as unknown as jest.Mock).mock.calls.map(args => String(args[0]));
+    const line = logged.find(text => text.includes('CODE_REVIEW_JUSTIFIER_TIMEOUT'));
+    expect(line).toBeDefined();
+    expect(line).toMatch(/\bran 280000 ms\b/);
+    expect(line).toMatch(/\b280000 ms budget\b/);
+  }, 20000);
+
+  test('slow-justifier: after a juror at its limit, a justifier slower than what the deadline leaves is cancelled at the deadline', async () => {
     const deadlineMs = 480000 + JUSTIFIER_RESERVE_MS;
     script({
       [GEMINI]: { scores: HIGH, delayMs: 479000 },
       [LUNA]: { scores: HIGH },
-      [JUSTIFIER]: { reply: 'Too late.', delayMs: 46000 },
+      [JUSTIFIER]: { reply: 'Too late.', delayMs: 47000 },
     });
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs }) }));
     expect(result.status).toBe(503);
+    expect(result.body.errorCode).toBe('CODE_REVIEW_JUSTIFIER_TIMEOUT');
     expect(result.body.justification).toBe('');
-    expect(result.elapsedMs).toBeLessThanOrEqual(deadlineMs);
+    expect(result.elapsedMs).toBe(deadlineMs);
   }, 20000);
 
-  test('slow-justifier: a justifier whose provider setup never finishes is still cancelled at its reserve', async () => {
+  test('slow-justifier: a justifier whose provider setup never finishes is still cancelled at the deadline', async () => {
     const real = LLMFactory.getProvider.bind(LLMFactory);
     jest.spyOn(LLMFactory, 'getProvider').mockImplementation(name => (name === 'mock' ? new Promise(() => {}) : real(name)));
     const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
     expect(result.status).toBe(503);
     expect(result.body.errorCode).toBe('CODE_REVIEW_JUSTIFIER_TIMEOUT');
-    expect(result.elapsedMs).toBe(JUSTIFIER_RESERVE_MS);
+    expect(result.elapsedMs).toBe(300000);
   }, 20000);
 
   test('slow-justifier: a justifier error abstains rather than publishing the jurors\' answers', async () => {
@@ -419,6 +437,71 @@ describe('catalogue fixtures (common data/code-review-fixtures.v1.json)', () => 
     const result = await post(codeModeBody());
     expect(result.status).toBe(400);
     expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUSTIFIER_FAILED', retryable: false, justification: '' });
+  }, 20000);
+});
+
+// Node A22: the 45 s is the reserve the jury's window leaves, not the justifier's cap.
+describe('code mode: the justifier has at least 45 s and whatever the deadline leaves', () => {
+  const doneLine = () => (console.log as unknown as jest.Mock).mock.calls.map(args => String(args[0])).find(text => text.includes('CODE_REVIEW_DONE'));
+
+  test('a justifier past 45 s that finishes before the deadline is the 200, with its time in codeReview.justifierMs', async () => {
+    script({
+      [GEMINI]: { scores: HIGH },
+      [LUNA]: { scores: HIGH },
+      [JUSTIFIER]: { reply: 'A long, careful justification.', delayMs: 120000 },
+    });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
+    expect(result.status).toBe(200);
+    expect(result.body.justification).toBe('A long, careful justification.');
+    expect(result.body.scores.map((s: any) => s.score)).toEqual(HIGH);
+    expect(result.body.codeReview).toMatchObject({ deadlineMs: 300000, jurorTimeoutMs: 255000, justifierReserveMs: JUSTIFIER_RESERVE_MS, justifierMs: 120000 });
+    expect(calls(JUSTIFIER)[0].outcome).toBe('answered');
+    // canaryFault keeps its own shape: justifierMs there only when an action ran.
+    expect(result.body.codeReview.canaryFault).toEqual({ state: 'off', action: null });
+    expect(result.elapsedMs).toBeLessThan(300000);
+  }, 20000);
+
+  test('CODE_REVIEW_DONE logs the justifier\'s time', async () => {
+    script({ [GEMINI]: { scores: HIGH }, [LUNA]: { scores: HIGH }, [JUSTIFIER]: { reply: 'Done.', delayMs: 61000 } });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
+    expect(result.status).toBe(200);
+    expect(result.body.codeReview.justifierMs).toBe(61000);
+    expect(doneLine()).toMatch(/\bjustifierMs=61000\b/);
+  }, 20000);
+
+  test('on the EA\'s whole deadline, after a jury that finished at 250 s, a justifier of several minutes still answers', async () => {
+    script({
+      [GEMINI]: { scores: HIGH, delayMs: 250000 },
+      [LUNA]: { scores: HIGH, delayMs: 100000 },
+      [JUSTIFIER]: { reply: 'Both jurors find a HIGH reentrancy.', delayMs: 300000 },
+    });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 780000 }) }));
+    expect(result.status).toBe(200);
+    expect(result.body.codeReview).toMatchObject({ jurorTimeoutMs: 480000, justifierMs: 300000 });
+    expect(result.elapsedMs).toBe(550000);
+  }, 20000);
+
+  test('after a juror at its limit, a justifier just past 45 s uses the time the deadline still leaves', async () => {
+    const deadlineMs = 480000 + JUSTIFIER_RESERVE_MS;
+    script({
+      [GEMINI]: { scores: HIGH, delayMs: 479000 },
+      [LUNA]: { scores: HIGH },
+      [JUSTIFIER]: { reply: 'Just in time.', delayMs: 45500 },
+    });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs }) }));
+    expect(result.status).toBe(200);
+    expect(result.body.justification).toBe('Just in time.');
+    expect(result.body.codeReview.justifierMs).toBe(45500);
+    expect(result.elapsedMs).toBeLessThanOrEqual(deadlineMs);
+  }, 20000);
+
+  test('the jury\'s window is unchanged: a juror past it still times out there, 45 s before the deadline', async () => {
+    script({ [GEMINI]: { hang: true }, [LUNA]: { scores: HIGH } });
+    const result = await post(codeModeBody({ codeReview: codeReviewField({ deadlineMs: 300000 }) }));
+    expect(result.status).toBe(503);
+    expect(result.body.errorCode).toBe('CODE_REVIEW_JUROR_TIMEOUT');
+    expect(result.elapsedMs).toBe(300000 - JUSTIFIER_RESERVE_MS);
+    expect(calls(JUSTIFIER)).toHaveLength(0);
   }, 20000);
 });
 

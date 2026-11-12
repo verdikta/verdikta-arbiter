@@ -198,6 +198,26 @@ describe('armed: a key on this node', () => {
     expect(stamp.justifierMs).toBeLessThan(45000);
   }, 20000);
 
+  // Node A22: the justifier may now run to the deadline, but the hold keeps the 45 s mark, so
+  // slow-justifier keeps its length and L4's check (e2e/src/l4/claim-checks.js) its meaning.
+  test('hold-justifier-answer with a far deadline: held to 5 s before the 45 s mark from the justifier\'s start, not to the deadline', async () => {
+    const result = await post(body(directive('hold-justifier-answer')));
+    expect(result.status).toBe(200);
+    const stamp = result.body.codeReview.canaryFault;
+    expect(stamp.justifierMs).toBe(40000);
+    expect(result.body.codeReview.justifierMs).toBe(stamp.justifierMs);
+    expect(result.elapsedMs).toBeLessThan(45000);
+    expect(DEADLINE - result.elapsedMs).toBeGreaterThan(500000);
+  }, 20000);
+
+  test('hold-justifier-answer after a slow jury: still 40 s from the justifier\'s start, with minutes of the deadline left', async () => {
+    script({ [GEMINI]: { scores: HIGH, delayMs: 300000 } });
+    const result = await post(body(directive('hold-justifier-answer')));
+    expect(result.status).toBe(200);
+    expect(result.body.codeReview.canaryFault.justifierMs).toBe(40000);
+    expect(result.elapsedMs).toBe(340000);
+  }, 20000);
+
   test('the holds cannot pass a stage\'s deadline: a deadline that leaves little still answers by it', async () => {
     const field = codeReviewField({ deadlineMs: 57000 });
     const mac = directiveMac(KEY, 'hold-juror-answer', field.claim.bcid, field.reportSha256);

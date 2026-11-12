@@ -208,14 +208,17 @@ Rules that matter:
   `@verdikta/common`'s `validateCodeReviewRequest` and the panel with
   `validateClassEnvelope`; one hash-fenced claim prompt for every juror; every
   juror required; jurors until `deadlineMs` − 45 s (at most 480 s), then the
-  justifier for 45 s, each cancelled with an `AbortController` whose signal
+  justifier with at least 45 s and whatever the deadline leaves (until
+  `deadlineMs`, never past it; `codeReview.justifierMs` says how long it ran),
+  each cancelled with an `AbortController` whose signal
   reaches the provider's HTTP request; web access off, effort high, the
   envelope's output tokens. Node's fetch alone gives up after 300 s without
   response headers, so each juror call gets an undici dispatcher of its own
   with limits above its window (`ai-node/src/lib/llm/juror-transport.ts`;
   `undici` pinned to Node 20's major, 6): a new juror path needs it too, and
   `juror-transport-limit.test.ts` proves each one. A juror timeout is 503 `CODE_REVIEW_JUROR_TIMEOUT`
-  (`retryable: true`); a provider error the 400 shape. Contract:
+  (`retryable: true`); a justifier timeout comes only at the deadline, so the EA
+  has no time to retry it; a provider error the 400 shape. Contract:
   `ai-node/API_RESPONSE_SPECIFICATION.md`, "Code mode". The deterministic mock
   provider (`VERDIKTA_TEST_MOCK_PROVIDER=1`) is test-only and refused in
   production builds.
