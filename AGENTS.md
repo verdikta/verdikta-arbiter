@@ -453,6 +453,23 @@ Ollama runs locally and is unaffected by gateway settings.
   trap). The opt-in `installer/tests/*.integration.sh` scripts (need Docker) check
   the firewall rules with real iptables and packets, the unit under a real
   systemd, and the container recreate against real Docker.
+- **The keeper's registry, not `installer/.contracts`, says where the stake
+  is.** Every registered job id holds 100 wVDKA on the ReputationKeeper, and
+  anything that gives a node new job ids (the count change, and "regenerate job
+  specs" in `upgrade-arbiter.sh`) must first deregister every job id the keeper
+  lists for the operator contract: `unregister-oracle.sh` with
+  `VA_DEREGISTER_ALL_REGISTERED=y` / `--all-registered`
+  (`arbiter-operator/scripts/lib/registry.js`), which fails unless the keeper
+  lists none afterwards, and a failure leaves the jobs as they are. Before
+  2026-11 only the ids in `.contracts` were tried and "Not registered –
+  skipping" for all of them was a success: a 1 → 10 count change on Base
+  mainnet (2026-11-11) left the old job id registered with its stake and no
+  node behind it. Unattended, the regenerate path did not deregister at all
+  (its piped "y" is ignored and the prompt defaults to no). One orphan is
+  released with `unregister-oracle-cl.js --jobids "<id>"`, sent by the operator
+  contract's owner or the keeper's owner; the refund goes to the operator
+  contract's owner. Tests: `registry.test.js`,
+  `upgrade-reconfigure-trap.test.sh`, `upgrade-regenerate-jobs-trap.test.sh`.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a

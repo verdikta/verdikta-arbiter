@@ -17,7 +17,9 @@ mk() { # mk AGG_LINE -> prints fake install dir
 }
 run() { # run DIR ENV... -> stdout+stderr
     local d="$1"; shift
-    (cd "$d" && env "$@" PATH="$d/bin:$PATH" VERDIKTA_UNATTENDED= bash ./unregister-oracle.sh --unattended 2>&1)
+    # HOME: the script loads nvm from $HOME/.nvm when it is there, which would put
+    # a real node ahead of the fake one.
+    (cd "$d" && env "$@" HOME="$d" PATH="$d/bin:$PATH" VERDIKTA_UNATTENDED= bash ./unregister-oracle.sh --unattended 2>&1)
 }
 REC=0xe8a385E473EA710c5a88Cc72681a16a26fe380e4
 OTHER=0x262f48f06DEf1FE49e0568dB4234a3478A191cFd
@@ -35,6 +37,34 @@ d=$(mk ""); (cd "$d" && env VA_DEREGISTER_ORACLE=y PATH="$d/bin:$PATH" bash ./un
 [ "$rc" = "65" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 4: rc=$rc"; }
 # 5. not asked to deregister -> cancels, exit 0, node never called
 d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d"); rc=$?
-[ "$rc" = "0" ] && echo "$out" | grep -q "cancelled" && ! echo "$out" | grep -q "FAKE node" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 5: rc=$rc $out" | tail -3; }
+[ "$rc" = "0" ] && echo "$out" | grep -q "cancelled" && ! echo "$out" | grep -q "FAKE node scripts/" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 5: rc=$rc $out" | tail -3; }
+# 6. --all-registered: only when asked for (VA_DEREGISTER_ALL_REGISTERED=y or the
+#    flag). upgrade-arbiter.sh asks for it before it replaces a node's jobs, so
+#    a registered job id that .contracts no longer names is deregistered too.
+JOB=bd5c4128cd444437a5448cd616dcd009
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d" VA_DEREGISTER_ORACLE=y)
+echo "$out" | grep -q "FAKE node .*--jobids $JOB" && ! echo "$out" | grep -q -- "--all-registered" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 6a: $out" | tail -5; }
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=y)
+echo "$out" | grep -q "FAKE node .*--jobids $JOB --all-registered" && echo "$out" | grep -q "every other job id" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 6b: $out" | tail -5; }
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(cd "$d" && env VA_DEREGISTER_ORACLE=y HOME="$d" PATH="$d/bin:$PATH" VERDIKTA_UNATTENDED= bash ./unregister-oracle.sh --unattended --all-registered 2>&1)
+echo "$out" | grep -q "FAKE node .*--jobids $JOB --all-registered" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 6c: $out" | tail -5; }
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=n)
+! echo "$out" | grep -q -- "--all-registered" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 6d: $out" | tail -5; }
+# 7. interactive (answers piped, as upgrade-arbiter.sh does): the variable is
+#    read there too, and adds no prompt.
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(cd "$d" && printf 'y\n%s\ny\n' "$REC" | env VA_DEREGISTER_ALL_REGISTERED=y HOME="$d" PATH="$d/bin:$PATH" VERDIKTA_UNATTENDED= bash ./unregister-oracle.sh 2>&1)
+echo "$out" | grep -q "FAKE node .*--aggregator $REC .*--jobids $JOB --all-registered" && echo "$out" | grep -q "completed successfully" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 7: $out" | tail -5; }
+# 8. no job id in .contracts: an error as before, unless the keeper's own list
+#    is asked for — then the command has no --jobids at all.
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); sed -i.bak '/^JOB_ID_1_NO_HYPHENS=/d' "$d/installer/.contracts"
+out=$(run "$d" VA_DEREGISTER_ORACLE=y); rc=$?
+[ "$rc" = "1" ] && echo "$out" | grep -q "No valid job IDs found" && ! echo "$out" | grep -q "FAKE node scripts/" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 8a: rc=$rc $out" | tail -3; }
+out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=y); rc=$?
+[ "$rc" = "0" ] && echo "$out" | grep -q "FAKE node .*--wrappedverdikta [0-9a-fA-Fx]* --all-registered" && ! echo "$out" | grep -q -- "--jobids" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 8b: rc=$rc $out" | tail -3; }
+# 9. a failing deregistration (the script exits 1 when a job id is still
+#    registered) is this script's failure, and .contracts is not marked inactive.
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); printf '#!/bin/bash\necho "FAKE node $*"; exit 1\n' > "$d/bin/node"
+out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=y); rc=$?
+[ "$rc" != "0" ] && ! grep -q 'AGGREGATOR_REGISTRATION_ACTIVE="false"' "$d/installer/.contracts" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 9: rc=$rc $out" | tail -3; }
 echo "pass=$pass fail=$fail"
 [ "$fail" = "0" ]

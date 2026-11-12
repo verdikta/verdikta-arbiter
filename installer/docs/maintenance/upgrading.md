@@ -172,6 +172,42 @@ If jobs were not already regenerated due to template changes, the script can sti
 
 Use this when you want to change arbiter count or refresh job/key setup.
 
+### Stake and replaced jobs
+
+Both paths above give every job a new ID, and each registered job ID holds a
+100 wVDKA stake on the dispatcher. So before the jobs are replaced the upgrade
+deregisters **every job ID the dispatcher lists for your operator contract**,
+not only the ones written in `installer/.contracts`, and then checks that none
+is left. If a deregistration fails, or a job ID is still listed afterwards, the
+jobs are **not** replaced: the node keeps its jobs and its registration, the
+upgrade finishes, and its last line starts with `RECONFIGURE FAILED:` (exit
+code 3). Run the same upgrade again once the cause is fixed.
+
+Before November 2026 only the job IDs in `installer/.contracts` were
+deregistered, and "not registered" for all of them counted as success. A node
+whose file no longer named its registered job was reconfigured anyway, and the
+old job ID stayed on the dispatcher with its stake and no node behind it. To
+release such a job ID (the refund goes to the operator contract's owner):
+
+```bash
+~/verdikta-arbiter-node/unregister-oracle.sh --all-registered
+```
+
+That deregisters every job ID of the operator contract, including the ones the
+node runs, so register again afterwards with `register-oracle.sh`. To release
+one job ID and leave the rest registered, call the script behind it with that
+ID only (aggregator and wVDKA addresses: `docs/deployments.md`):
+
+```bash
+cd ~/verdikta-arbiter-node/arbiter-operator
+HARDHAT_NETWORK=base_mainnet node scripts/unregister-oracle-cl.js \
+  --aggregator <aggregator> --oracle <your operator contract> \
+  --wrappedverdikta <wVDKA> --jobids "<the 32-character job id>"
+```
+
+Run without `--all-registered`, both commands name any other job ID the
+dispatcher lists for the operator contract and leave it alone.
+
 ## Chainlink config regeneration
 
 Every setting checked in to `chainlink-node/config_template.toml` is meant to

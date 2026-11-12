@@ -56,16 +56,22 @@ AGGREGATOR_REGISTRATION_ACTIVE="true"
 JOB_ID_1="job-one"
 JOB_ID_2="job-two"
 EOF
+    # CONTRACTS_EDIT: a sed expression applied to the live file for one scenario
+    # (a registration recorded as inactive, or no aggregator recorded at all).
+    if [ -n "${CONTRACTS_EDIT:-}" ]; then sed -i.bak -e "$CONTRACTS_EDIT" "$I/installer/.contracts"; rm -f "$I/installer/.contracts.bak"; fi
     { cat "$I/installer/.contracts"; printf 'KEY_COUNT=1\nKEY_1_ADDRESS="0xKEY"\nOPERATOR_ADDR="0xOP"\n'; } > "$SRC/.contracts"
 }
 # Stubs. Each exits with the code the scenario sets; the interactive variants
 # read the piped answers so the test can see them arrive.
 cat > "$I/unregister-oracle.sh" <<'STUB'
 #!/bin/bash
-echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-}"
+echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-} all=${VA_DEREGISTER_ALL_REGISTERED:-}"
 if [ "${1:-}" != "--unattended" ]; then read -r a; read -r b; read -r c; echo "STUB-UNREGISTER answers=$a,$b,$c"; fi
 echo "Deregistered job-one"
 [ "${DEREG_RC:-0}" = 0 ] && echo "Deregistered job-two"
+# What unregister-oracle-cl.js --all-registered says when the keeper still
+# lists a job id of this operator at the end (it exits 1).
+[ -n "${DEREG_LEFT:-}" ] && echo "Error during oracle deregistration: Error: 1 job id(s) are still registered for this operator after deregistration: $DEREG_LEFT. Their stake would be stranded if the jobs were replaced now."
 exit "${DEREG_RC:-0}"
 STUB
 cat > "$SRC/bin/configure-node.sh" <<'STUB'
@@ -108,7 +114,7 @@ run() {
 #    must cancel the reconfiguration itself, count the jobs it did deregister,
 #    stop the node it started, and carry on — never "Upgrade failed!".
 out=$(run 1 0 0)
-has   "dereg-fails: called"       "$out" "STUB-UNREGISTER args=\[--unattended\] VA_DEREGISTER_ORACLE=y agg=0xAGG"
+has   "dereg-fails: called"       "$out" "STUB-UNREGISTER args=\[--unattended\] VA_DEREGISTER_ORACLE=y agg=0xAGG all=y"
 has   "dereg-fails: cancelled"    "$out" "Deregistration failed. Reconfiguring now would strand the stake"
 hasnt "dereg-fails: configure"    "$out" "STUB-CONFIGURE"
 has   "dereg-fails: failed path"  "$out" "Job and key reconfiguration failed!"
@@ -121,6 +127,7 @@ has   "dereg-fails: exit 0"       "$out" "rc=0"
 # 2. Same, interactive (the here-string twin).
 out=$(run 1 0 0 "")
 has   "dereg-fails/tty: answers"  "$out" "STUB-UNREGISTER answers=y,0xAGG,y"
+has   "dereg-fails/tty: all"      "$out" "STUB-UNREGISTER args=\[\] VA_DEREGISTER_ORACLE= agg= all=y"
 has   "dereg-fails/tty: flags"    "$out" "REACHED-END abort=1 failed=1 rc=1"
 has   "dereg-fails/tty: summary"  "$out" "SUMMARY=deregistered 1 of 2 job(s)"
 hasnt "dereg-fails/tty: trap"     "$out" "TRAP-FIRED"
@@ -160,6 +167,42 @@ has   "ok: registered"            "$out" "New job ids registered with the dispat
 has   "ok: flags"                 "$out" "REACHED-END abort=0 failed=0 rc=0"
 has   "ok: no summary"            "$out" "^SUMMARY=$"
 hasnt "ok: trap"                  "$out" "TRAP-FIRED"
+
+# 7. Every job id in .contracts was deregistered, but the keeper still lists
+#    another one for this operator (the 2026-11-11 case: a job the file no
+#    longer names, with its 100 wVDKA). unregister-oracle.sh exits 1: the jobs
+#    must not be replaced, and the summary says why.
+out=$(DEREG_LEFT=old-job run 1 0 0)
+has   "left-behind: cancelled"    "$out" "Reconfiguring now would strand the stake"
+hasnt "left-behind: configure"    "$out" "STUB-CONFIGURE"
+hasnt "left-behind: register"     "$out" "STUB-REGISTER"
+has   "left-behind: flags"        "$out" "REACHED-END abort=1 failed=1 rc=1"
+has   "left-behind: summary"      "$out" "SUMMARY=deregistered 1 job(s), but the dispatcher still lists job ids for this operator"
+hasnt "left-behind: trap"         "$out" "TRAP-FIRED"
+
+# 8. The registration is recorded as inactive locally. The keeper decides, not
+#    the flag: the deregistration still runs (it skips what is not registered
+#    and releases what is), and the new ids are not registered — nobody asked.
+INACTIVE='s/^AGGREGATOR_REGISTRATION_ACTIVE=.*/AGGREGATOR_REGISTRATION_ACTIVE="false"/'
+out=$(CONTRACTS_EDIT="$INACTIVE" run 0 0 0)
+has   "inactive: dereg still runs" "$out" "STUB-UNREGISTER args=\[--unattended\] VA_DEREGISTER_ORACLE=y agg=0xAGG all=y"
+has   "inactive: configured"       "$out" "STUB-CONFIGURE"
+hasnt "inactive: no register"      "$out" "STUB-REGISTER"
+has   "inactive: flags"            "$out" "REACHED-END abort=0 failed=0 rc=0"
+hasnt "inactive: trap"             "$out" "TRAP-FIRED"
+#    ...and a keeper that still lists a job stops it there too.
+out=$(DEREG_LEFT=old-job CONTRACTS_EDIT="$INACTIVE" run 1 0 0)
+hasnt "inactive+left: configure"   "$out" "STUB-CONFIGURE"
+has   "inactive+left: flags"       "$out" "REACHED-END abort=1 failed=1 rc=1"
+
+# 9. No aggregator recorded (a node that was never registered): nothing to
+#    deregister from, the jobs are reconfigured as before.
+out=$(CONTRACTS_EDIT='/^AGGREGATOR_/d' run 0 0 0)
+hasnt "never-registered: dereg"    "$out" "STUB-UNREGISTER"
+has   "never-registered: config"   "$out" "STUB-CONFIGURE"
+hasnt "never-registered: register" "$out" "STUB-REGISTER"
+has   "never-registered: flags"    "$out" "REACHED-END abort=0 failed=0 rc=0"
+hasnt "never-registered: trap"     "$out" "TRAP-FIRED"
 
 # The pattern itself: the block's code (comments aside) must not rely on
 # `set +e` around the three calls.
