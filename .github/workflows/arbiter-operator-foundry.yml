@@ -82,12 +82,12 @@ jobs:
 
       - name: The comparison fails when an optimizer setting changes
         run: |
-          set -uo pipefail
+          set -euo pipefail
           check() { # check RUNS EXPECTED_EXIT
             out="$RUNNER_TEMP/optimizer-runs-$1"
-            FOUNDRY_OPTIMIZER_RUNS="$1" FOUNDRY_OUT="$out/out" FOUNDRY_CACHE_PATH="$out/cache" forge build --skip test || exit 1
-            node arbiter-operator/foundry/ci/compare-bytecode.js --forge "$out/out/ArbiterOperator.sol/ArbiterOperator.json"
-            rc=$?
+            FOUNDRY_OPTIMIZER_RUNS="$1" FOUNDRY_OUT="$out/out" FOUNDRY_CACHE_PATH="$out/cache" forge build --skip test
+            rc=0
+            node arbiter-operator/foundry/ci/compare-bytecode.js --forge "$out/out/ArbiterOperator.sol/ArbiterOperator.json" || rc=$?
             if [ "$rc" != "$2" ]; then echo "::error::optimizer runs $1: exit $rc, expected $2"; exit 1; fi
           }
           check 1000 1  # other runtime bytecode: the comparison itself fails
