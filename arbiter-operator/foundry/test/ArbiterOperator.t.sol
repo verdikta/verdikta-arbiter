@@ -8,7 +8,7 @@ import {IERC165} from "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
 /// @notice Ownership: two steps, owner only.
 contract OwnershipTest is ArbiterOperatorBase {
-    function test_deployerIsOwner() public {
+    function test_deployerIsOwner() public view {
         assertEq(operator.owner(), owner);
         assertEq(operator.getChainlinkToken(), address(link));
     }
@@ -51,7 +51,7 @@ contract OwnershipTest is ArbiterOperatorBase {
 
 /// @notice Authorized senders: the keys that may fulfill. The owner or an authorized sender sets them.
 contract AuthorizedSendersTest is ArbiterOperatorBase {
-    function test_nodeIsTheOnlyAuthorizedSender() public {
+    function test_nodeIsTheOnlyAuthorizedSender() public view {
         assertTrue(operator.isAuthorizedSender(node));
         assertFalse(operator.isAuthorizedSender(owner), "the owner is not a sender unless listed");
         address[] memory senders = operator.getAuthorizedSenders();
@@ -97,7 +97,7 @@ contract AuthorizedSendersTest is ArbiterOperatorBase {
 
 /// @notice The reputation keeper allow-list and the ERC-165 marker.
 contract ReputationKeeperTest is ArbiterOperatorBase {
-    function test_keeperIsListed() public {
+    function test_keeperIsListed() public view {
         assertTrue(operator.isReputationKeeper(address(keeper)));
         assertFalse(operator.isReputationKeeperListEmpty());
     }
@@ -157,7 +157,7 @@ contract ReputationKeeperTest is ArbiterOperatorBase {
         operator.removeReputationKeeper(stranger);
     }
 
-    function test_supportsInterface() public {
+    function test_supportsInterface() public view {
         bytes4 id = type(IArbiterOperator).interfaceId;
         assertEq(
             id,

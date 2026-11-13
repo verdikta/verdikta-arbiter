@@ -14,7 +14,7 @@ contract VendoredFilesTest is Test {
 
     struct VendoredFile {
         string path;
-        bytes32 digest;
+        bytes32 sha256;
     }
 
     function _files() internal view returns (VendoredFile[] memory) {
@@ -23,16 +23,16 @@ contract VendoredFilesTest is Test {
         return abi.decode(raw, (VendoredFile[]));
     }
 
-    function test_everyVendoredFileHasItsRecordedSha256() public {
+    function test_everyVendoredFileHasItsRecordedSha256() public view {
         VendoredFile[] memory files = _files();
         assertGt(files.length, 0, "vendored.json lists no file");
         for (uint256 i; i < files.length; ++i) {
             string memory path = string.concat(LIB, "/", files[i].path);
-            assertEq(sha256(vm.readFileBinary(path)), files[i].digest, path);
+            assertEq(sha256(vm.readFileBinary(path)), files[i].sha256, path);
         }
     }
 
-    function test_nothingElseIsVendored() public {
+    function test_nothingElseIsVendored() public view {
         VendoredFile[] memory files = _files();
         for (uint256 i = 1; i < files.length; ++i) {
             assertTrue(_before(files[i - 1].path, files[i].path), "vendored.json paths are not unique and sorted");
