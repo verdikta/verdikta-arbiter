@@ -1,0 +1,94 @@
+name: Arbiter Operator (Foundry)
+
+# The Foundry layout of arbiter-operator (issue #196), which stake listings of ArbiterOperator run:
+# forge build and forge test at the root with no network, as the code runner runs them; the vendored
+# dependencies against vendored.json and against their npm tarballs and git commits; and the forge build
+# against Hardhat's, which must be the same runtime bytecode but for solc's metadata trailer. No secret.
+# claude/stake-attestation: the stake-attestation integration branch (issue #105).
+
+on:
+  pull_request:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['foundry.toml', 'arbiter-operator/**', '.github/workflows/arbiter-operator-foundry.yml']
+  push:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['foundry.toml', 'arbiter-operator/**', '.github/workflows/arbiter-operator-foundry.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: arbiter-operator-foundry-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The forge stake listings run: the foundry base @verdikta/common pins (BASE_IMAGE_PINS.foundry) is v1.8.5.
+  # The SHA-256 is the one the release publishes for this file.
+  FOUNDRY_VERSION: v1.8.5
+  FOUNDRY_SHA256: 6c66ffcc55fa4249197721baa3098bc208014ea1d8aa04b2ed50ac6bccffb226
+
+jobs:
+  foundry:
+    name: Foundry build, suite, vendored files and bytecode
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '20'
+
+      - name: Install forge (pinned, checksum-verified)
+        run: |
+          set -euo pipefail
+          tarball="foundry_${FOUNDRY_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$RUNNER_TEMP/$tarball" \
+            "https://github.com/foundry-rs/foundry/releases/download/${FOUNDRY_VERSION}/${tarball}"
+          echo "${FOUNDRY_SHA256}  $RUNNER_TEMP/$tarball" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/foundry"
+          tar -xzf "$RUNNER_TEMP/$tarball" -C "$RUNNER_TEMP/foundry" forge
+          echo "$RUNNER_TEMP/foundry" >> "$GITHUB_PATH"
+
+      - name: forge build (fetches solc 0.8.19, as a listing's setup does)
+        run: forge --version && forge build
+
+      - name: Vendored files are the recorded bytes, and their sources' bytes
+        run: node arbiter-operator/foundry/ci/check-vendored-sources.js --upstream
+
+      - name: forge build and forge test at the root with no network
+        run: |
+          set -euo pipefail
+          rm -rf arbiter-operator/foundry/out arbiter-operator/foundry/cache
+          # A network namespace of its own, with no interface up, as this user.
+          sudo unshare --net -- sudo -u "$(id -un)" env "PATH=$PATH" "HOME=$HOME" bash -euo pipefail -c '
+            if curl -fsS --max-time 5 https://github.com >/dev/null 2>&1; then echo "::error::the namespace has a network"; exit 1; fi
+            ms() { echo $(( ($(date +%s%N) - $1) / 1000000 )); }
+            t=$(date +%s%N); forge build; echo "cold build: $(ms "$t") ms"
+            t=$(date +%s%N); forge build; echo "warm build: $(ms "$t") ms"
+            t=$(date +%s%N); forge test; echo "forge test: $(ms "$t") ms"
+          '
+
+      - name: Hardhat build, with the dependencies at the vendored versions
+        working-directory: arbiter-operator
+        run: |
+          set -euo pipefail
+          pins=$(node -p 'require("./foundry/lib/vendored.json").sources.filter((s) => s.kind === "npm").map((s) => `${s.package}@${s.version}`).join(" ")')
+          echo "pins: $pins"
+          npm install --no-save --no-audit --no-fund $pins
+          npx hardhat compile
+
+      - name: The same runtime bytecode as Hardhat's
+        run: node arbiter-operator/foundry/ci/compare-bytecode.js
+
+      - name: The comparison fails when an optimizer setting changes
+        run: |
+          set -euo pipefail
+          check() { # check RUNS EXPECTED_EXIT
+            out="$RUNNER_TEMP/optimizer-runs-$1"
+            FOUNDRY_OPTIMIZER_RUNS="$1" FOUNDRY_OUT="$out/out" FOUNDRY_CACHE_PATH="$out/cache" forge build --skip test
+            rc=0
+            node arbiter-operator/foundry/ci/compare-bytecode.js --forge "$out/out/ArbiterOperator.sol/ArbiterOperator.json" || rc=$?
+            if [ "$rc" != "$2" ]; then echo "::error::optimizer runs $1: exit $rc, expected $2"; exit 1; fi
+          }
+          check 1000 1  # other runtime bytecode: the comparison itself fails
+          check 201 2   # the same bytecode here, but not Hardhat's settings: the settings check fails
