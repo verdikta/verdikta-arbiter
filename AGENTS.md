@@ -554,7 +554,10 @@ Ollama runs locally and is unaffected by gateway settings.
   is measured from `GET /v2/jobs`, as `installer/util/apply-job-timeouts.sh` does for the 840 s
   limits, and replaced with `PUT /v2/jobs/:id`, keeping `externalJobID` so nothing happens on
   chain. `job-timeouts.integration.sh` runs this against the real 2.23.0 binary in CI
-  (`installer.yml`). The image is linux/amd64 only.
+  (`installer.yml`). The image is linux/amd64 only. The upgrade writes `MaxRunDuration`
+  before the template regeneration and the finality step, which keep it (the template sets
+  the same 15m) and restart a running Chainlink only once it is in;
+  `upgrade-chainlink-config-order.test.sh` runs the three in every combination of answers.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a
