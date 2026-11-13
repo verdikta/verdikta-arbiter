@@ -15,7 +15,9 @@ caused the April–May 2026 incident:
 | RPC keeps rejecting fulfill txs with "Invalid params" | `txm.invalid_params_recent` (FAIL when recent, INFO when only historical) |
 | Chainlink emitting CRIT lines | `txm.crit_lines_recent` (FAIL when recent, INFO when only historical) |
 | Chainlink RPC websocket out of sync | `txm.rpc_out_of_sync` (WARN when recent, INFO when only historical) |
-| RPC pool at 0 live nodes — TxManager cannot broadcast, commits miss their round deadline (July 2026 outage) | `txm.no_live_rpc_nodes` (CRIT when recent, INFO when only historical) |
+| RPC pool at 0 live nodes — TxManager cannot broadcast, commits miss their round deadline (July 2026 outage) | `txm.no_live_rpc_nodes` (CRIT when recent, INFO when only historical; the hint names the fix below when the settings are missing, else the RPCs) |
+| Chainlink `config.toml` is missing settings checked in to `chainlink-node/config_template.toml` (the node's own extra settings are not counted) | `cfg.chainlink_template` (WARN; `regenerate-chainlink-config.sh --check` lists them, `--apply` applies them) |
+| Chainlink `config.toml` predates the July 2026 finality settings, so a stalled Base finalized tag would cause the row above | `cfg.chainlink_finality` (WARN; `apply-chainlink-finality-tolerance.sh --apply`, also offered by `--fix` on `txm.no_live_rpc_nodes`) |
 | Operator contract not deployed at configured address (e.g. wrong network) | `chain.operator_code` (FAIL) |
 | Job spec `fromAddress` doesn't match `NODE_ADDRESS` | `cfg.job_from_addr` (CRIT) |
 | Node key missing from chainlink keystore | `txm.key_registered` (CRIT) |

@@ -203,10 +203,12 @@ A code-review (stake attestation) evaluation runs up to 780 s behind the bridge,
 limits must allow it: each job's `maxTaskDuration` and bridge `timeout`, and the node's
 `[JobPipeline] MaxRunDuration` (Chainlink 2.23.0's default of 10 minutes ends a run at 600 s).
 A running job keeps the values it was created with, and the node reads `config.toml` when it
-starts, so a new template reaches neither. The upgrade therefore:
+starts, so a new template reaches neither by itself. The upgrade therefore:
 
 1. Sets `MaxRunDuration` in `~/.chainlink-<network>/config.toml`, that one key, before it
-   restarts the arbiter. The old file is kept as `config.toml.backup.<time>`.
+   restarts the arbiter. The old file is kept as `config.toml.backup.<time>`. This comes
+   before the [Chainlink config regeneration](#chainlink-config-regeneration): the template
+   sets the same `MaxRunDuration = "15m"`, so a yes there keeps it and a no leaves it as set.
 2. After the restart, measures each live job and the node's effective config, on every
    upgrade: one you declined is asked about again next time.
 3. Replaces each stale job with `PUT /v2/jobs/:id`, **keeping its job id**: nothing happens
@@ -217,7 +219,8 @@ starts, so a new template reaches neither. The upgrade therefore:
 
 The question is `VA_UPGRADE_JOB_TIMEOUTS`, default yes, unattended too. If the change cannot
 be applied, or cannot be measured, the upgrade still finishes and exits 3 with
-`JOB TIMEOUTS FAILED:`.
+`JOB TIMEOUTS FAILED:`. A no keeps the jobs' old limits; the regeneration still brings the
+template's `MaxRunDuration` unless you decline that too.
 
 To check or do it by hand:
 
@@ -247,11 +250,99 @@ Use this when you want to change arbiter count or refresh job/key setup.
 
 ## Chainlink config regeneration
 
-The script checks current Chainlink config against the latest template (`config_template.toml`) while ignoring environment-specific lines (URLs, names, chain IDs) for comparison.
+Every setting checked in to `chainlink-node/config_template.toml` is meant to
+reach every node, so the upgrade applies the template to your `config.toml` by
+default (**yes**, unattended too: `VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG`).
+Until November 2026 the default was no, and nodes kept whatever their install
+wrote: one whose config dated from May was still missing the July 2026 finality fix
+below and stopped sending transactions.
 
-If differences are found, it can regenerate config from template after creating a config backup.
+What changes is only what the template changed. The new file is the template
+filled with **your node's own values**:
 
-This helps pick up template-level improvements safely.
+- your RPC endpoints (`[[EVM.Nodes]]`) stay as they are, unless you changed the
+  RPCs earlier in the same upgrade, in which case `installer/.env`'s lists go in;
+- `ChainID`, `TipCapDefault` and `FeeCapDefault` stay as they are;
+- a setting the template does not mention is yours and stays where it is. The
+  only exceptions would be settings the template dropped on purpose (none
+  today).
+
+Before anything is written, the upgrade lists the changes setting by setting
+(URLs cut to their host) and asks:
+
+```text
+  [[EVM]] NoNewFinalizedHeadsThreshold: added "0s"
+  [EVM.NodePool] NewHeadsPollInterval: "30s" -> "8s"
+  [[EVM]] FinalityDepth: 5 -> 10
+  [EVM.NodePool] SyncThreshold: 10 -> 100
+  [EVM.NodePool] FinalizedBlockPollInterval: added "60s"
+```
+
+The last three template changes are the November 2026 RPC cost settings. Base
+has produced a block every 200 ms since 2026-11-05, and a Chainlink node's RPC
+use, which does not depend on how many arbiters or requests it serves, went
+from about 136,000 to about 525,000 calls a day to its first provider.
+`FinalityDepth = 10` brings that to about 215,000 with no change in how fast
+jobs start. `SyncThreshold = 100` stops your second provider being marked out
+of sync several hundred times a day, and `FinalizedBlockPollInterval = "60s"`
+removes a poll nothing uses. To see your own node's rate, run this twice an
+hour apart and subtract:
+
+```bash
+curl -s http://127.0.0.1:6688/metrics | grep '^evm_pool_rpc_node_calls_total'
+```
+
+Chainlink's own `node validate` then checks the new file (a throwaway container
+from your node's image, no network, your config directory mounted read-only),
+and a rejected file is never written. A timestamped backup is kept next to
+`config.toml`. Chainlink is stopped at that point of the upgrade, so it starts
+on the new file when the arbiter is restarted.
+
+Outside an upgrade, the same tool (installed in the install root):
+
+```bash
+~/verdikta-arbiter-node/regenerate-chainlink-config.sh --check   # 0 matches, 1 lists what would change
+~/verdikta-arbiter-node/regenerate-chainlink-config.sh --apply   # validates, backs up, restarts a running Chainlink
+```
+
+`--apply` restarts a running Chainlink (about a minute) and, if it does not stay
+up on the new file, puts the backup back and starts it again. The doctor reports
+`cfg.chainlink_template` when template settings are not yet on the node.
+
+**Verdikta agents** show the owner this list before they upgrade a node: they
+run `installer/util/regenerate-chainlink-config.sh --check --target-dir <install>`
+from the checkout they upgrade from, and answer
+`VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG` with the owner's decision.
+
+### Finality settings (asked even when you keep your config)
+
+Configs written before July 2026 lack two settings the template has carried
+since then:
+
+```toml
+[[EVM]]
+NoNewFinalizedHeadsThreshold = '0s'
+
+[EVM.NodePool]
+EnforceRepeatableRead = false
+```
+
+Without them, a stalled or regressing Base `finalized` tag marks every RPC out
+of sync at once: Chainlink logs "No live RPC nodes available", the doctor
+reports `txm.no_live_rpc_nodes` CRIT, and commit/reveal transactions cannot be
+sent although the RPC provider itself is healthy.
+
+The regeneration above adds them with the rest of the template. If you decline
+it (or it cannot run), the upgrade still checks for both and adds just those
+lines to your existing `config.toml` (`apply-chainlink-finality-tolerance.sh`;
+validated the same way, backup kept, nothing else in the file changes).
+Default **yes**, unattended too (`VA_UPGRADE_CHAINLINK_FINALITY`). Outside an
+upgrade:
+
+```bash
+~/verdikta-arbiter-node/apply-chainlink-finality-tolerance.sh --check   # 0 in place, 1 missing
+~/verdikta-arbiter-node/apply-chainlink-finality-tolerance.sh --apply   # adds them, restarts a running Chainlink
+```
 
 ## Dependency updates and model synchronization
 

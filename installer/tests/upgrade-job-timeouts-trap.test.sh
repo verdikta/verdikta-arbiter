@@ -16,7 +16,7 @@ bad() { fail=$((fail+1)); echo "FAIL: $1"; }
 has()   { if echo "$2" | grep -q -- "$3"; then ok; else bad "$1: no [$3] in: $2"; fi; }
 hasnt() { if echo "$2" | grep -q -- "$3"; then bad "$1: unexpected [$3] in: $2"; else ok; fi; }
 
-before=$(awk '/^# Job timeouts, before the restart/{p=1} /^# Check and optionally regenerate Chainlink configuration/{p=0} p{print}' "$S")
+before=$(awk '/^# Job timeouts, before the restart/{p=1} /^# Chainlink config from the template\. Every setting checked in to/{p=0} p{print}' "$S")
 after=$(awk '/^# Job timeouts, after the restart/{p=1} /^# Post-upgrade health check\. Best-effort/{p=0} p{print}' "$S")
 lastlines=$(awk '/^# Job timeouts that were asked for and did not land/{p=1} p{print}' "$S")
 trapfn=$(awk '/^cleanup_on_error\(\) \{$/{p=1} p{print} p&&/^}$/{exit}' "$S")
@@ -36,7 +36,7 @@ for block in "$before" "$after"; do
         && bad "a call to the tool that does not read its exit code with || rc=\$?" || ok
 done
 # Both blocks are at the top level of the script: a function has no ERR trap at all.
-# (`^}` also closes a heredoc's dict in check_chainlink_config, which is why it is only used to end.)
+# (`^}` can also close a heredoc's dict, which is why it is only used to end.)
 awk '/^[a-zA-Z_]+\(\) \{$/{f=1} /^# Job timeouts, (before|after) the restart/{if (f) print "IN-FUNCTION"} /^}$/{f=0}' "$S" | grep -q IN-FUNCTION \
     && bad "a job-timeouts block sits inside a function" || ok
 

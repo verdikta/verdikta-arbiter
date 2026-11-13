@@ -25,8 +25,7 @@ fn_of() { awk -v name="$1" '$0 == name "() {" {p=1} p{print} p&&/^}$/{exit}' "$S
 regen=$(fn_of regenerate_job_specs)
 check_template=$(fn_of check_job_spec_template)
 without_timeouts=$(fn_of job_template_without_timeouts)
-# Its python heredoc has a `}` in the first column, so this one is taken up to its call.
-check_config=$(awk '/^check_chainlink_config\(\) \{$/{p=1} /^# Call the config check function/{p=0} p{print}' "$S")
+check_config=$(fn_of check_chainlink_config)
 capture=$(fn_of run_echo_capture)
 call_template=$(grep -nE '^[[:space:]]*(JOB_TEMPLATE_RC=0|check_job_spec_template)' "$S" | head -3)
 [ -n "$regen" ] && ok || bad "could not extract regenerate_job_specs"
@@ -40,8 +39,8 @@ grep -qE '^check_job_spec_template \|\| JOB_TEMPLATE_RC=\$\?$' "$S" && ok || bad
 grep -qE '^check_chainlink_config \|\| CHAINLINK_CONFIG_RC=\$\?$' "$S" && ok || bad "check_chainlink_config is not called with || rc=\$?"
 
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
-I="$T/install"; SRC="$T/src"; REPO_NODE="$T/repo-node"; TARGET_NODE="$I/chainlink-node"; BIN="$T/bin"; HOME_DIR="$T/home"
-mkdir -p "$I/installer" "$SRC/bin" "$REPO_NODE" "$TARGET_NODE" "$BIN" "$HOME_DIR/.chainlink-testnet"
+I="$T/install"; SRC="$T/src"; REPO_NODE="$T/repo-node"; TARGET_NODE="$I/chainlink-node"; BIN="$T/bin"
+mkdir -p "$I/installer" "$SRC/bin" "$REPO_NODE" "$TARGET_NODE" "$BIN" "$T/util"
 for tool in unregister-oracle.sh register-oracle.sh start-arbiter.sh stop-arbiter.sh; do
     cat > "$I/$tool" <<STUB
 #!/bin/bash
@@ -199,9 +198,20 @@ hasnt "chainlink down: no configure" "$out" "STUB-CONFIGURE"
 hasnt "chainlink down: no trap"    "$out" "TRAP-FIRED"
 
 # ── check_chainlink_config ───────────────────────────────────────────────────
+# The template is applied by regenerate-chainlink-config.sh (a stub here; its own tests
+# and upgrade-regenerate-chainlink-config-trap.test.sh cover it). Called as the script
+# calls it, errexit is off inside, so each step's exit code is read there.
+cat > "$T/util/regenerate-chainlink-config.sh" <<'STUB'
+#!/bin/bash
+case "$1" in
+  --check) echo "STUB-CHECK"; exit "${CHECK_RC:-1}" ;;
+  --apply) echo "STUB-APPLY"; exit "${APPLY_RC:-0}" ;;
+esac
+exit 99
+STUB
 config_run() {
-    ( cd "$T" && HOME="$HOME_DIR" NETWORK_TYPE=testnet TARGET_DIR="$I" INSTALLER_DIR="$SRC" REPO_CHAINLINK_NODE="$REPO_NODE" \
-      VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG="${CONFIG_ANSWER:-y}" PATH="${FAKE_PATH:-$PATH}" \
+    ( cd "$T" && UTIL_DIR="$T/util" TARGET_DIR="$I" \
+      VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG="${CONFIG_ANSWER:-y}" \
       FN="$check_config" ROOT="$ROOT" \
       bash -c '
         set -e
@@ -215,35 +225,21 @@ config_run() {
       ' 2>&1 )
     echo "rc=$?"
 }
-cat > "$I/installer/.env" <<'EOF'
-NETWORK_CHAIN_ID="84532"
-NETWORK_NAME="Base Sepolia"
-DEPLOYMENT_NETWORK="base_sepolia"
-BASE_SEPOLIA_RPC_HTTP_URLS="https://rpc.example.test"
-BASE_SEPOLIA_RPC_WS_URLS="wss://rpc.example.test"
-EOF
-cp "$REPO/chainlink-node/config_template.toml" "$REPO_NODE/config_template.toml"
-printf '[Log]\nLevel = "error"\n' > "$HOME_DIR/.chainlink-testnet/config.toml"
 out=$(config_run)
-has   "regenerate: end"    "$out" "REACHED-END rc=0"
-grep -q 'ChainID=84532' "$HOME_DIR/.chainlink-testnet/config.toml" && ok || bad "regenerate: the config was not written"
-ls "$HOME_DIR"/.chainlink-testnet/config.toml.backup.* >/dev/null 2>&1 && ok || bad "regenerate: no backup"
-hasnt "regenerate: trap"   "$out" "TRAP-FIRED"
+has   "regenerate: applied"  "$out" "STUB-APPLY"
+has   "regenerate: end"      "$out" "REACHED-END rc=0"
+hasnt "regenerate: trap"     "$out" "TRAP-FIRED"
 
-# The render fails (a python3 that exits 1): the config is left as it was, and the upgrade goes on.
-mkdir -p "$T/badpy"; printf '#!/bin/bash\nexit 1\n' > "$T/badpy/python3"; chmod +x "$T/badpy/python3"
-printf '[Log]\nLevel = "error"\n' > "$HOME_DIR/.chainlink-testnet/config.toml"
-cp "$HOME_DIR/.chainlink-testnet/config.toml" "$T/config.was"
-out=$(FAKE_PATH="$T/badpy:$PATH" config_run)
-has   "render fails: end"       "$out" "REACHED-END rc=1"
-cmp -s "$HOME_DIR/.chainlink-testnet/config.toml" "$T/config.was" && ok || bad "render fails: the config was changed"
-hasnt "render fails: no trap"   "$out" "TRAP-FIRED"
+# The apply is refused or rolled back: the config keeps its settings, and the upgrade goes on.
+out=$(APPLY_RC=1 config_run)
+has   "apply fails: said"    "$out" "keeps its previous settings (exit 1)"
+has   "apply fails: end"     "$out" "REACHED-END rc=0"
+hasnt "apply fails: no trap" "$out" "TRAP-FIRED"
 
-# The backup fails (a cp that cannot write): no half-replace.
-mkdir -p "$T/badcp"; printf '#!/bin/bash\nexit 1\n' > "$T/badcp/cp"; chmod +x "$T/badcp/cp"
-out=$(FAKE_PATH="$T/badcp:$PATH" config_run)
-has   "backup fails: end"     "$out" "REACHED-END rc=1"
-hasnt "backup fails: no trap" "$out" "TRAP-FIRED"
-cmp -s "$HOME_DIR/.chainlink-testnet/config.toml" "$T/config.was" && ok || bad "backup fails: the config was changed"
+# The comparison cannot run: nothing is applied, and the upgrade goes on.
+out=$(CHECK_RC=2 config_run)
+hasnt "check fails: no apply" "$out" "STUB-APPLY"
+has   "check fails: end"      "$out" "REACHED-END rc=0"
+hasnt "check fails: no trap"  "$out" "TRAP-FIRED"
 
 echo "pass=$pass fail=$fail"; [ "$fail" = "0" ]
