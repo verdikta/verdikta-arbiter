@@ -343,7 +343,8 @@ what an upgrade replaces. Operator notes: `installer/docs/maintenance/code-revie
 0-live-RPC / failing health checks; `--self-heal` starts what is down through
 `start-arbiter.sh`), `rotate-logs.sh` (app-log rotation),
 `arbiter-boot-service.sh` (start at boot, below), `arbiter-firewall.sh` and
-`apply-chainlink-loopback.sh` (port exposure, below).
+`apply-chainlink-loopback.sh` (port exposure, below),
+`regenerate-chainlink-config.sh` / `apply-chainlink-finality-tolerance.sh` (Chainlink config from the template, §8).
 
 **The doctor's log text goes through `redact_log`.** Chainlink logs to stderr,
 with its RPC URLs whole and the provider keys in their paths; the doctor once
@@ -492,6 +493,39 @@ Ollama runs locally and is unaffected by gateway settings.
   Fetch-time log lines carry the job's run tag via AsyncLocalStorage.
 - **Two networks**: `base_sepolia` (testnet) and `base_mainnet`. Network-specific
   wrapped-VDKA and RPC config live in `installer/.env`. See `docs/deployments.md`.
+- **Checked-in Chainlink config is applied to every node by default.**
+  `upgrade-arbiter.sh` runs `installer/util/regenerate-chainlink-config.sh`
+  (`VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG`, default `y`, unattended too): the
+  template filled with the node's own RPC entries, ChainID and gas caps, plus
+  any setting the template does not mention (kept; the `RETIRED` list in the
+  script names any the template dropped on purpose, none today), validated by
+  Chainlink's `node validate` before it is written. Until 2026-11 the default
+  was `n`, and a host whose config dated from May missed the July 2026 finality
+  fix (`NoNewFinalizedHeadsThreshold='0s'`, `EnforceRepeatableRead=false`) and
+  stayed at 0 live RPC nodes after upgrading to e6afc6e (2026-11-09).
+  `apply-chainlink-finality-tolerance.sh` adds just those two when the
+  regeneration is declined. A Verdikta agent shows the owner `--check`'s list
+  before it upgrades, and answers with their decision. When you add a template
+  setting, check that `--check` on an old config lists it; when you remove one
+  that installs wrote, add it to `RETIRED`. Doctor: `cfg.chainlink_template`,
+  `cfg.chainlink_finality`.
+- **A Chainlink node's RPC bill is per node and set by block count, not by
+  work.** Base has 200 ms blocks since 2026-11-05 (Sepolia too): 432,000 a day,
+  and every block-count setting is ten times shorter in time than it was. The
+  head tracker fetches every block back to head - `FinalityDepth`
+  (`FinalityTagBypass` is on by default), one call each; at the chain default
+  of 200 that was 82% of ~525k calls a day to the active provider, the same on
+  a node with 10 arbiters and on an idle one. The template sets
+  `FinalityDepth = 10` (-59% on the class-5555 canaries, 2026-11-11),
+  `SyncThreshold = 100` (10 blocks is 2 s now, less than a provider's own 8 s
+  poll leaves it stale, so the fallback flapped out of sync ~390 times a day)
+  and `FinalizedBlockPollInterval = "60s"`. Ship the first two together: with
+  the lower depth alone the fallback took the active role and kept it.
+  `NewHeadsPollInterval`, `SamplingInterval` and `HistoryDepth` do not move the
+  bill (the first two only add job-start latency), and WS `newHeads` would be
+  dearer than polling. cde657a (July 2026) removed an earlier `FinalityDepth=5`
+  as inert; it is not. Measure with
+  `curl -s 127.0.0.1:6688/metrics | grep evm_pool_rpc_node_calls_total`.
 - `set -e` is used in installer scripts — check exit codes carefully when editing.
 - **`upgrade-arbiter.sh` also has `trap cleanup_on_error ERR`, and the ERR trap
   fires on any failing plain command whether or not errexit is on.** So
@@ -520,7 +554,10 @@ Ollama runs locally and is unaffected by gateway settings.
   is measured from `GET /v2/jobs`, as `installer/util/apply-job-timeouts.sh` does for the 840 s
   limits, and replaced with `PUT /v2/jobs/:id`, keeping `externalJobID` so nothing happens on
   chain. `job-timeouts.integration.sh` runs this against the real 2.23.0 binary in CI
-  (`installer.yml`). The image is linux/amd64 only.
+  (`installer.yml`). The image is linux/amd64 only. The upgrade writes `MaxRunDuration`
+  before the template regeneration and the finality step, which keep it (the template sets
+  the same 15m) and restart a running Chainlink only once it is in;
+  `upgrade-chainlink-config-order.test.sh` runs the three in every combination of answers.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a

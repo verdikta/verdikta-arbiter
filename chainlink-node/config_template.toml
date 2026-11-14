@@ -24,6 +24,24 @@ MinContractPayment="0"
 # head check (NoNewHeadsThreshold, 40s chain default) and pool poll checks.
 NoNewFinalizedHeadsThreshold = '0s'
 
+# RPC cost (Base 200 ms blocks, 2026-11-05). The head tracker keeps an unbroken
+# chain of headers back to "latest finalized" and fetches every block it missed,
+# one eth_getBlockByHash each. FinalityTagBypass (default true) puts that point
+# at head - FinalityDepth, and the chain default of 200 dates from 2 s blocks.
+# An 8 s head poll now misses 40 blocks, so the default costs ~432k calls a day
+# per node, 82% of its RPC use, whatever the node does. With 10 each poll
+# fetches 10: -59% measured on the class-5555 canaries (2026-11-11). The head
+# poll and sampling intervals do not change that number; raising them only
+# delays job starts. Values of 40 and above save nothing.
+# The price: a head more than 10 blocks (2 s) behind the highest one seen (a
+# deeper reorg, or a provider that far behind) logs "Got very old block" and
+# fails the head tracker's health check until the next good head. Not seen on
+# the canaries, including across a provider swap.
+# Ships only together with SyncThreshold below: at the lower load alone the
+# fallback provider took over the active role and kept it.
+# (cde657a dropped an earlier FinalityDepth=5 as inert. It is not.)
+FinalityDepth = 10
+
 [EVM.GasEstimator]
 Mode = "FeeHistory"
 TipCapDefault = "<TIP_CAP_DEFAULT>"
@@ -38,7 +56,20 @@ HistoryDepth = 25
 [EVM.NodePool]
 PollInterval   = "80s"
 NewHeadsPollInterval = "8s"
-SyncThreshold = 10
+# A provider is out of sync when its latest block is more than SyncThreshold
+# blocks behind the best one seen. A provider's latest is refreshed only by its
+# own 8 s poll, so at 200 ms blocks it is routinely up to 40 blocks stale: with
+# 10 the fallback was marked out of sync ~390 times a day through no fault of
+# its own, and each time transactions had one provider. 100 blocks is 20 s,
+# what 10 meant with 2 s blocks. A provider that stopped is still caught by
+# NoNewHeadsThreshold (40 s chain default). Canary: 0 transitions in 43 min.
+SyncThreshold = 100
+# Each provider is also polled for the `finalized` block (chain default 5 s,
+# ~17k calls a day per provider, over half of what a fallback gets). Nothing
+# acts on the answer since NoNewFinalizedHeadsThreshold = '0s' above and
+# EnforceRepeatableRead = false below; the transaction finalizer asks for
+# itself. It cannot be 0 while the chain has FinalityTagEnabled.
+FinalizedBlockPollInterval = "60s"
 # P0-A companion: EnforceRepeatableRead=true (default) marks an RPC
 # FinalizedBlockOutOfSync when its finalized block lags or regresses vs. the
 # highest one observed ("Received finalized block older than one already
