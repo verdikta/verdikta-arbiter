@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Vault.deposit over-credits",
+  "claimedClass": "LOW",
+  "rootCause": "Vault.deposit credits one wei more than it receives.",
+  "affectedPaths": [
+    "src/Vault.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_deposit_credits_exactly",
+    "observable": "test_deposit_credits_exactly fails with \"assertion failed: 2 != 1\""
+  },
+  "fixIncluded": true
+}

@@ -1,0 +1,94 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.dependency-edited-during-run",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC that edits an installed dependency during a run",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "DUPLICATE",
+    "class": null,
+    "reason": "A child of the test edits lib/dep, an untracked dependency, on run 2 only, counted by a state file. The test fails on all three runs and the checksums catch the edit: the dependency check, and the protected check since the listing protects lib/**. No static flag reads it, so this is a non-tamper integrity failure: DUPLICATE (owner decision Q35).",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "fail",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "protectedPathsUnchanged, dependenciesUnchanged failed",
+        "integrity": "dependenciesUnchanged (run 2: lib/dep/src/Dep.sol changed"
+      },
+      "settlement": {
+        "kind": "duplicate",
+        "gate": "integrity",
+        "check": "INTEGRITY_CHECK_FAILED",
+        "failedChecks": [
+          "protectedPathsUnchanged",
+          "dependenciesUnchanged"
+        ]
+      },
+      "honestyFlags": [
+        {
+          "rule": "verdikta.honesty.process-started",
+          "file": "test/Dependency.t.sol",
+          "line": 13
+        }
+      ],
+      "tests": [
+        {
+          "id": "test/Dependency.t.sol > DependencyClaim > test_bonus_over_credits()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 2 != 1"
+        }
+      ]
+    }
+  },
+  "control": {
+    "case": "adversarial.dependency-edited-during-run.control",
+    "removes": {
+      "poc.patch": [
+        "+        string[] memory c = new string[](3);",
+        "+        c[0] = \"/bin/sh\";",
+        "+        c[1] = \"-c\";",
+        "+        c[2] = \"n=$(cat state/n 2>/dev/null || echo 0); n=$((n+1)); echo $n > state/n; if [ $n -eq 2 ]; then echo '// drained' >> lib/dep/src/Dep.sol; fi\";",
+        "+        vm.ffi(c);"
+      ]
+    },
+    "adds": {},
+    "differsIn": [
+      "settlement.kind",
+      "gates.integrity",
+      "gates.reproduces",
+      "honestyFlags"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "tests.0.id"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+diff --git a/test/VmStore.t.sol b/test/VmStore.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/VmStore.t.sol
+@@ -0,0 +1,13 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract VmStoreClaim is Base {
++    function test_deposit_is_lost() public {
++        Vault v = new Vault();
++        v.deposit(5);
++        vm.assertEq(v.balanceOf(address(this)), 5);
++    }
++}

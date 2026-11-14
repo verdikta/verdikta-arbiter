@@ -1,0 +1,19 @@
+diff --git a/test/Exploit.t.sol b/test/Exploit.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/Exploit.t.sol
+@@ -0,0 +1,14 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract ExploitTest is Base {
++    function test_deposit_credits_exactly() public {
++        vm.chainId(1);
++        Vault v = new Vault();
++        v.deposit(1);
++        vm.assertEq(v.balanceOf(address(this)), 1);
++    }
++}

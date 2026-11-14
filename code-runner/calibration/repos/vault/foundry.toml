@@ -1,0 +1,9 @@
+[profile.default]
+src = "src"
+test = "test"
+out = "out"
+cache_path = "cache"
+solc = "0.8.31"
+offline = true
+ffi = true
+fs_permissions = [{ access = "read-write", path = "./state" }]

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A staker promoted when the tree grows keeps being paid at the lower rate",
+  "claimedClass": "HIGH",
+  "rootCause": "LayerEdgeStaking._checkBoundariesAndRecord records a tier change for the wrong rank when the staker count grows and the tier 2 size stays put, so the staker who should move from tier 3 to tier 2 is never recorded as moved, while getUserAPY reports the tier 2 rate from the current rank.",
+  "affectedPaths": [
+    "src/stake/LayerEdgeStaking.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_staker_is_paid_the_rate_it_is_told",
+    "observable": "test_staker_is_paid_the_rate_it_is_told fails with \"interest paid at the stated rate: 20000000000000000000 != 35000000000000000000\""
+  },
+  "fixIncluded": false
+}

@@ -9,6 +9,7 @@
 const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { exactCommonPin } = require('./common-pin');
 
 // Colors for console output
 const colors = {
@@ -240,12 +241,37 @@ class VerdiktaCommonUpdater {
         return false;
     }
 
+    /** The components that pin @verdikta/common to one exact release (common-pin.js), by name. */
+    pinnedVersions() {
+        const pins = {};
+        const aiNodePin = exactCommonPin(this.aiNodePath);
+        if (aiNodePin) pins.aiNode = aiNodePin;
+        if (this.externalAdapterPath) {
+            const adapterPin = exactCommonPin(this.externalAdapterPath);
+            if (adapterPin) pins.externalAdapter = adapterPin;
+        }
+        return pins;
+    }
+
     async updateIfNeeded(versionTag = 'beta', force = false) {
         try {
             log('\n🔄 Checking @verdikta/common library status...', colors.bright + colors.cyan);
             
             // Check current versions in all directories
             const currentVersions = await this.checkAllCurrentVersions();
+
+            // An exact pin wins over the version preference (and --force): the
+            // components need that release and must agree on it, so nothing is
+            // updated while any component pins one. Change the pins to move.
+            const pins = this.pinnedVersions();
+            if (Object.keys(pins).length > 0) {
+                const unique = [...new Set(Object.values(pins))];
+                log(`📌 @verdikta/common is pinned (${Object.entries(pins).map(([k, v]) => `${k}:${v}`).join(', ')}); not applying "${versionTag}"`, colors.blue);
+                if (unique.length > 1) {
+                    log('⚠️  The components pin different @verdikta/common releases', colors.yellow);
+                }
+                return { updated: false, action: 'pinned', versions: currentVersions, pins };
+            }
             
             // Determine if we need to update
             let needsUpdate = force;

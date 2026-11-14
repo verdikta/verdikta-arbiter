@@ -1,0 +1,99 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.mellow-consensus-threshold",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "One signer sent twice meets a threshold of two",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/13",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/13",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding has no test; this one calls checkSignatures directly.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/4bcbdcfe643761c67d7dd862ca5909168c3ad859/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-07-mellow-flexible-vaults",
+      "verdict": "Valid. Published in the final report as Issue H-1, with a fix PR linked.",
+      "class": "HIGH"
+    }
+  },
+  "listing": "listings/mellow",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "CRITICAL",
+    "rubric": "immunefi-v2.3",
+    "impact": "theft-of-funds",
+    "classReason": "The PoC shows one signer's signature, sent twice, meeting a threshold of two. SignatureDepositQueue and SignatureRedeemQueue execute any order checkSignatures accepts at a price inside the oracle's band, so one signer, a role the listing does not exclude, can approve deposits and redemptions on its own terms against the other holders' assets: direct theft of user funds, Critical.",
+    "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ConsensusThresholdClaim.t.sol > ConsensusThresholdClaim > test_one_signer_twice_does_not_meet_a_threshold_of_two()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "one signer does not count twice"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "checkSignatures"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.mellow-consensus-threshold.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertFalse(consensus.checkSignatures(order, signatures), \"one signer does not count twice\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertTrue(consensus.checkSignatures(order, signatures), \"one signer does not count twice\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

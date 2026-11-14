@@ -8,16 +8,18 @@
     "l2": "node src/index.js l2",
     "l2:mock": "node src/index.js l2 --mock",
     "l2:real": "node src/index.js l2 --real",
+    "l2:claim": "node src/index.js l2 --mock --boot-adapter --suite claim",
     "smoke": "node src/index.js smoke",
     "l4": "node src/index.js l4",
     "mock-ai": "node src/l2/mock-ai-node.js",
     "build-archive": "node scripts/build-archive.js",
     "generate-wallet": "node scripts/generate-wallet.js",
     "audit-oracles": "node scripts/audit-oracles.js",
+    "l4-metrics": "node scripts/l4-metrics.js",
     "test": "jest"
   },
   "dependencies": {
-    "@verdikta/common": "^1.7.0",
+    "@verdikta/common": "1.9.0-attest.5",
     "adm-zip": "^0.5.16",
     "axios": "^1.7.7",
     "chalk": "^4.1.2",
@@ -29,5 +31,10 @@
   },
   "devDependencies": {
     "jest": "^29.7.0"
+  },
+  "jest": {
+    "modulePaths": [
+      "<rootDir>/node_modules"
+    ]
   }
 }

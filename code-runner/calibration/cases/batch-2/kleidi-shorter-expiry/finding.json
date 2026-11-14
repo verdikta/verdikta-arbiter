@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A proposal to shorten the window can stop executing while it reads as ready",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Executing a proposal that shortens the expiration window fails late in that window: isOperationReady says yes, the call runs, and the closing check in Timelock.execute reads the new shorter window and reverts, so the safe has to schedule it again and wait out the delay.",
+  "affectedPaths": [
+    "src/Timelock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_ready_proposal_to_shorten_the_window_runs",
+    "observable": "test_a_ready_proposal_to_shorten_the_window_runs fails with \"Timelock: operation is not ready\""
+  },
+  "fixIncluded": false
+}

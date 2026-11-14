@@ -1,0 +1,97 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.mellow-transfer-whitelist",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "The transfer whitelist blocks the accounts it is meant to allow",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/26",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/26",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test pins the wrong behaviour with vm.expectRevert.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/4bcbdcfe643761c67d7dd862ca5909168c3ad859/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-07-mellow-flexible-vaults",
+      "verdict": "Valid. Published in the final report as Issue M-1, with a fix PR linked.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/mellow",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows a transfer between two accounts both marked canTransfer refused. With the transfer whitelist on, an allowed sender cannot send; redeeming is not checked against it, so no shares are lost or locked, and no attacker is involved: the contract falls short of what it promises, Low.",
+    "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/TransferWhitelistClaim.t.sol > TransferWhitelistClaim > test_a_whitelisted_sender_can_send()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "TransferNotAllowed(0x000000000000000000000000000000000000000A, 0x000000000000000000000000000000000000000b)"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "updateChecks"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.mellow-transfer-whitelist.control",
+    "removes": {
+      "poc.patch": []
+    },
+    "adds": {
+      "poc.patch": [
+        "+        vm.expectRevert(abi.encodeWithSelector(IShareManager.TransferNotAllowed.selector, sender, receiver));"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

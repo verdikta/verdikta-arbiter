@@ -7,6 +7,15 @@ around it**. Code bounties, the original framing, are out of scope and summarise
 in Appendix A; the full code-bounty design is in this file's history at `df0e2de`.
 **MVP scope (2026-10-30, owner):** Foundry artifacts only, on a new attestation
 site separate from the bounty site (§17 Phase 1; §20 decisions 17–18).
+**Errata (2026-11-01):** six corrections found while building the MVP, E1–E6,
+are in one dated note at the top of §13.2; where they conflict with the text,
+they win.
+**Errata (2026-11-10, Q70):** three settlement safeguards the owner agreed, E7–E9
+(the hunter's appeal of an INVALID outcome, a narrow INVALID that returns the
+bond, and the dispute panel's confirmation of an award above a set size), are in
+a second dated note in §13.2, with their fixtures in §18. The owner decided
+their mechanics on 2026-11-10 (Q72); only whether an appeal carries a statement
+is still open. Where they conflict with the text, they win.
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, two ClassIDs with hard limits, image pins,
 trusted builder keys, the outcome set), verdikta-applications (a new
@@ -51,10 +60,12 @@ Nine decisions carry the design:
    → lint/SAST — in a fresh gVisor container with no network, under the class's
    hard limits, on its own disk, and returns a deterministic Verification Report
    whose facts carry an explicit **trust tier** (§9).
-5. **Deterministic gates settle INVALID with no LLM call:** the reveal does not
+5. **Deterministic gates settle with no LLM call.** INVALID: the reveal does not
    match the commitment, the patch edits source, the PoC does not fail at the
    staked hash as an assertion failure, an affected path is out of scope, a test
-   record is forged or missing (§10.1).
+   record is missing, a static tamper flag. DUPLICATE (bond back, no award): any
+   other failed integrity check, such as a forged record or a changed checksum
+   (§9.5, §10.1).
 6. **Jev makes the typed judgements, frontier models decide severity.** Jev
    (TypeSafe's decision model, via OpenRouter, no new key) answers the class,
    known-or-duplicate and required-behaviour questions as probabilities and sits
@@ -317,7 +328,8 @@ Evaluation (each selected arbiter; one deadline from EA receipt)
                     │     apply poc.patch (test paths only) → build → PoC ×3 at the hash
                     │     → integrity checks → [fix.patch: build, PoC, full suite] → lint/SAST
                     │     ◄─ Verification Report (tiered evidence) + context pack
-                    ├─ a gate or integrity check failed? ─► deterministic INVALID  (no LLM)
+                    ├─ a gate failed, or a tamper flag? ─► deterministic INVALID  (no LLM)
+                    ├─ another integrity check failed?  ─► deterministic DUPLICATE: bond back, no award  (no LLM)
                     └─ otherwise POST AI Node /api/rank-and-justify (code mode)
                           ├─ Jev: class, known/duplicate, required behaviour, honesty (~1 s)
                           ├─ frontier jurors: the four questions, severity        (parallel)
@@ -344,6 +356,12 @@ The default listing (`fixWindowDays` 14; 30 for contracts; `disputeWindowHours`
 | + `revealWindowDays` | Anyone | A commit still unrevealed this long after its window ended is expired: bond to the maker, prepay back to the hunter, recorded as unrevealed. |
 | Continue | Maker | The stake rolls to the successor hash with its own attested image; the record carries the lineage. **Close** withdraws the escrow after pending claims settle and ends the badge; the history stays. |
 
+Errata E7–E9 (2026-11-10, see §13.2) amend the "+ 72 h" and "Settle" rows: in the
+same window the hunter may appeal an INVALID verdict to the dispute panel, an
+INVALID inside a narrow band below the threshold returns the bond, and a valid
+verdict whose award is above a set size pays only once the dispute panel
+confirms it.
+
 Three properties make the sequence hang together. The fix never reduces what
 the hunter is paid, because judgement is against the committed hash. The
 on-chain timestamp means a maker cannot fix the bug and then call it a known
@@ -367,12 +385,13 @@ publishing, was rejected for the operator exposure (§19).
 |---|---|
 | `@verdikta/common` | Manifest key `codeReview`; schemas for `code_review.json` (with the `stake` block), `finding.json`, `known_issues.json`, `attestation.json` and the Verification Report; the trusted-builder key set; the two code ClassIDs with their envelopes and **hard limits**; pinned base-image (`node22`, `python312`, `foundry`), gVisor and Semgrep-rule versions and the OCI platform; the outcome set `[INVALID, DUPLICATE, LOW, MEDIUM, HIGH, CRITICAL]` and the settlement rule (§8.7); the severity-rubric id; the conformance canary's expected report hash |
 | `code-runner/` (new) | `POST /v1/runs` `{ listingCid, bcid, spec, attestation, pocPatch, fixPatch, baseline, deadline }` → `{ report, reportSha256, contextPack }`; `GET /health`. Own `dockerd` with a fixed-size data disk (§9.1) |
-| External Adapter | When the primary manifest has `codeReview`: verify the attestation and class envelope; run the **disclosure check** from the keys in the addendum (§14); compute the single deadline (§11) and pass remaining time to the runner and the AI Node; call the runner (shared per listing CID + bCID); settle gate and integrity failures as INVALID; otherwise pass the report, the context pack and the prior-finding summaries to the AI Node as named text attachments plus a structured `codeReview` field; strip the key line from the addendum before anything reaches a model; no sandbox re-run on retry |
+| External Adapter | When the primary manifest has `codeReview`: verify the attestation and class envelope; run the **disclosure check** from the keys in the addendum (§14); compute the single deadline (§11) and pass remaining time to the runner and the AI Node; call the runner (shared per listing CID + bCID); settle gate failures and tamper flags as INVALID and any other integrity failure as DUPLICATE (§9.5); otherwise pass the report, the context pack and the prior-finding summaries to the AI Node as named text attachments plus a structured `codeReview` field; strip the key line from the addendum before anything reaches a model; no sandbox re-run on retry |
 | AI Node | `rank-and-justify` accepts optional `codeReview` (report, parsed claim, known issues, prior findings, `deadlineMs`): the claim pre-prompt with trust tiers and the four questions, Jev stage through an OpenRouter `systemone` client (annotating, never filtering) plus a Jev claim check on the justification, every non-Jev juror required, deadline-derived timeouts with cancellation, web access off |
 | Chainlink job spec | `maxTaskDuration` and bridge timeout 300 s → 840 s |
+| Chainlink config | `[JobPipeline] MaxRunDuration` default 10 m → 15 m |
 | Aggregators | `setResponseTimeout(900)`; `setMaxOracleFee` above 0.0004 ETH for the premium class (§10.8) |
 | `StakeAttestation` (new, verdikta-applications) | Escrow by award table bound to an artifact hash, with lineage; commit (archive hash + ciphertext CID) → fix window → reveal (bCID + keys); bond; bad-disclosure flag; release; dispute escalation; six-outcome settlement; `recordByHash`; the listing feed as events (§13) |
-| Attestation site (verdikta-applications, **a new site**) | A separate application with its own domain, API and contract, not an addition to the bounty site (§20, decision 18). Listing flow with the disclosure key and the award table; builder Action, fallback workflow, validation report and **attestation signing**; baseline scan; record page and badge; feed API; the maker's decrypt-and-check step; the dispute form; `@verdikta/attest-check` for runtimes (§14) |
+| Attestation site (verdikta-applications, **a new site**) | A separate application with its own API and contract, served at its own origin, https://verifiers.verdikta.org (owner, 2026-11-11), not an addition to the bounty site (§20, decision 18). Listing flow with the disclosure key and the award table; builder Action, fallback workflow, validation report and **attestation signing**; baseline scan; record page and badge; feed API; the maker's decrypt-and-check step; the dispute form; `@verdikta/attest-check` for runtimes (§14) |
 | Hunter tool (verdikta-applications) | `check` (the arbiters' pipeline minus the jury, locally), `commit` (encrypt to the disclosure key, pin the ciphertext, keep the keys beside the archive, send the transaction), `reveal`; optional paid pre-flight on the site's runner (§8.6) |
 
 ## 8. Listing and claim: the data contract
@@ -427,9 +446,14 @@ query names the six outcomes; the jury parameters name the class panel.
 - `artifact.kind` is `repo` (default when absent), `contract` or `skill`
   (§8.8). A `contract` listing carries the deployment and is checked at listing
   against verified source.
-- Commands run **only inside the sandbox**, exactly as written, and the runner
-  appends its own reporter flags for the declared `framework` (JUnit to a path it
-  chooses). The tested program can still see that path and the arguments — it
+- Commands run **only inside the sandbox**, and the runner appends its own
+  reporter flags for the declared `framework` (JUnit to a path it chooses). For
+  `forge`, `build` is plain `forge build` and `test`, `testFiles` and `testIds`
+  plain `forge test`, each with allowlisted flags only: the runner parses them and
+  runs forge itself as an argv with the configuration it probed, no shell, refused
+  otherwise at listing and at claim time (owner decision, code-runner README, "The
+  forge commands"); `setup` stays free-form because it runs only while the image is
+  built. The tested program can still see the reporter path and the arguments — it
   runs in the same process as the reporter — which is why in-process results are
   **tier-B evidence** subject to the integrity checks in §9.5. `testFiles` runs
   the hunter's PoC files; `testIds` re-runs named tests for the fixed repeat
@@ -521,7 +545,11 @@ claim:
 - **A listing check.** Steps 2–3 of the build above: the code builds, the suite
   runs and is stable, the scope and test paths exist, the harness reports
   assertion failures distinctly. Without this, hunters' proofs could not be
-  executed later.
+  executed later. It takes the same integrity reference as a claim and holds its
+  suite and harness probes to the same post-run checksums (§9.5), so an image a
+  claim would refuse is refused here with the same code, and a maker can't list a
+  stake no claim can settle. It also refuses any `solc` in the image that isn't an
+  official release, and a `vyper` on `PATH` or a `vyper` setting, for now (§9.5).
 - **A cheap first pass for bugs.** Semgrep with Verdikta's pinned rules and a
   secret scan over the in-scope paths, then one inexpensive agent pass: a single
   model from the `code-standard` pool reads the in-scope source with the scope
@@ -605,7 +633,8 @@ at the staked hash as an assertion failure on three runs; the integrity checks
 pass; with `fix.patch`, the PoC passes and nothing regresses; `finding.json`
 validates and its paths are in scope. Same runner, image and rules as the
 arbiters, so a run that passes every gate here passes them on-chain, barring
-the nondeterminism the fixtures guard against (§18). For a security claim this
+the nondeterminism the fixtures guard against (§18) and a trap keyed on the date,
+since the runner fakes no clock (§9.5, known limits). For a security claim this
 is the right place to iterate: nothing leaves the hunter's machine.
 
 **Pre-flight on the site, optional, paid.** The same tiers on the site's warm
@@ -665,7 +694,13 @@ three classes that all say "valid":
 The vector is recorded whatever the outcome. A gate failure arrives as the full
 mass on INVALID, which is exactly when the bond is forfeited, so **the bond is
 contract-observable**: the contract never has to tell a gate failure from a
-jury rejection, because both forfeit.
+jury rejection, because both forfeit. A failed integrity check with no tamper flag
+arrives as the full mass on DUPLICATE (§9.5): bond back, no award, by the same rule.
+
+Erratum E8 (2026-11-10, see §13.2) amends rule 3: an INVALID whose valid mass
+falls inside a band just below `T` returns the bond, with no award. A gate failure
+or a tamper flag carries no valid mass, so it still forfeits, and the bond stays
+contract-observable.
 
 **Duplicates settle in commit order.** A claim's reveal is accepted only when
 every earlier commit on the same hash is settled or expired, and the evaluation
@@ -678,7 +713,7 @@ minutes apart, the ordering costs little time.
 
 ### 8.8 Artifact kinds
 
-`repo` — any repository at a commit on a blessed image: `foundry` in the MVP,
+`repo` — a repository at a commit on a blessed image: `foundry` in the MVP,
 `node22` and `python312` from the second release (§17). `contract` — a `repo` plus a deployment address and chain id, with a
 verified-source check at listing (§8.2); the record page links the deployment.
 `skill` — a skills or MCP package (a `SKILL.md` or server manifest with its
@@ -686,6 +721,23 @@ scripts), judged on a harness image that runs the package's entry points in the
 sandbox and records attempted network, file and process activity as tier-A
 facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
 `skill` follows once the harness exists (§17).
+
+**A listing needs the project's proof (owner decision Q34: the project decides).**
+Every listing needs a file at the listed commit, `.verdikta/stake-control.json`,
+naming the listing's maker, on one of the repository's own branches or tags. A
+`contract` listing also needs a signature from the deployment's deployer or
+current owner. There is no allowlist and no exception for Verdikta: a sponsor can
+stake only if the project names it in the file. The builder refuses to sign
+without the proof, and the site and hunter tool refuse commits on listings the
+builder didn't sign. This reverses Q33's "third-party stakes stay allowed and
+labelled". There is no notice to projects and no bot account.
+
+**This protects a project's name and record, not its code.** Anyone can still
+stake on a fork or a copy and read findings that also apply upstream. The record
+labels a fork where the host says so; a plain copy can't be detected. Every listing
+warns at commit who reads the proof first (the staker's key) and that the code may
+exist elsewhere. Refused listing attempts are counted by reason, and the rule is
+revisited before mainnet.
 
 ## 9. The code runner
 
@@ -736,11 +788,12 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
    Node and the largest Ollama model; refuse while an install or upgrade runs;
    refuse when the remaining time (§11) cannot cover the run. When several of the
    operator's jobs are selected for the same request, they share one run, keyed
-   by **listing CID + claim bCID + runner version + rule-set version** — every
-   execution input (spec, baseline, image digest, patches) is content-addressed
-   by those two CIDs; the prior-finding archives in the request feed the jury,
-   not the run, and are not part of the key. This mirrors `cidFetchCache.js`
-   for IPFS downloads.
+   by **listing CID + claim bCID + runner version + rule-set version + a hash of
+   the prior findings** — every execution input (spec, baseline, image digest,
+   patches) is content-addressed by those two CIDs, and the prior findings'
+   summaries go into the context pack the run returns, so a different list is a
+   different run (build plan A7). This mirrors `cidFetchCache.js` for IPFS
+   downloads.
 2. **Pull** the env image by digest from the allow-listed registry into the
    runner's own disk, after the size admission check. Images are cached and
    evicted least-recently-used.
@@ -785,17 +838,20 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
    fourth question; and, when `fix.patch` is present, the repository's linter
    and Semgrep (`--baseline-commit` = the listed commit) over the fixed files.
    All findings are kept, severity-ordered and bounded at 50; nothing downstream
-   removes them.
+   removes them. Honesty flags keep the report's canonical order (the schema has no
+   severity for them): the 50 kept are chosen by rule severity, and what falls off
+   is counted by rule in one note with a fixed id.
 10. **Report** and tear down at or before the deadline the EA passed in. A
     host-side GC timer removes anything a crash left behind.
 
 ### 9.3 Determinism rules
 
 - **Pinned:** env image digest, OCI platform (`linux/amd64`), runner version,
-  gVisor release, base images and Semgrep rules, all versioned in
-  `@verdikta/common`. The report records every input digest — listing CID, bCID,
-  image digest, attestation hash, tool and rule versions — so a published report
-  can be reproduced from its inputs.
+  gVisor release, base images and Semgrep rule versions, all versioned in
+  `@verdikta/common`. The Semgrep image digest and the rules' bytes are pinned in the
+  runner, so the runner's version in the report ties a report to them. The report
+  records every input digest — listing CID, bCID, image digest, attestation hash, tool
+  and rule versions — so a published report can be reproduced from its inputs.
 - **Fixed environment:** `TZ=UTC`, `LANG=C.UTF-8`, `CI=true`,
   `PYTHONHASHSEED=0`, a fixed hostname, and CPU/memory limits taken from the
   spec (within the class maxima), never from the host.
@@ -818,6 +874,20 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
   bytes. The SHA-256 of the report's canonical JSON is logged and published in
   the justification.
 
+**How the runner holds these rules (node A3b, build plan Q38).** The report is
+built field by field from what the runner measured, so nothing else can reach it.
+The runtime is measured (`runsc --version` of the binary the runner's daemon
+names), and a run under gVisor other than the release pinned in
+`@verdikta/common` is refused at admission. A PoC test's `message` is kept only
+when it is byte-identical on all three runs of the schedule; a test whose runs
+disagree is reported as `error` on all three, whichever run passed, so a flaky
+PoC reads the same on a fast and a slow host while the response's `facts` keep
+what each run did. What a test prints that stays constant on one host and differs
+on another (a container id read through an inline `fs_permissions`, a clock
+rounded to the day) stays a known limit: no settlement reads it, and G2 measures
+honest claims. `code-runner/README.md`, "The report and the context pack", holds
+the rules.
+
 ### 9.4 Verification Report (abridged)
 
 ```json
@@ -825,7 +895,7 @@ facts, against which the PoC asserts. `repo` and `contract` are Phase 1;
   "schema": "verdikta.claim-report/1",
   "inputs": { "listingCid": "Qm…", "bcid": "Qm…", "envImage": "sha256:…", "platform": "linux/amd64",
               "attestationSha256": "…", "baseCommit": "7f3a9c…", "pocPatchSha256": "…",
-              "fixPatchSha256": "…", "runner": "1.0.0", "gvisor": "20260928.0", "semgrepRules": "2026.10" },
+              "fixPatchSha256": "…", "runner": "1.0.0", "gvisor": "release-20260921.0", "semgrepRules": "2026.10" },
   "gates": { "disclosure": "pass", "applies": "pass", "testPathsOnly": "pass", "inScope": "pass",
              "build": "pass", "reproduces": "pass", "integrity": "pass", "claimedObservable": "pass" },
   "poc": {
@@ -883,14 +953,170 @@ Integrity checks on tier-B evidence (all deterministic, all run by the runner):
    during import, patches the framework or reporter, or writes outside the
    repository.
 
-Any failed check sets `gates.integrity = fail`: `reproduces` fails with it, the
-report names the check, and the claim settles INVALID deterministically. A
-clean claim is unaffected: none of these checks fires on ordinary test code.
+Any failed check sets `gates.integrity = fail`, `reproduces` fails with it, and the
+report names the check. What the claim settles as depends on the check and on
+`reproduces` (owner decision Q35):
+
+- **A tamper flag settles INVALID**, even when another check also failed. The flags
+  read only the lines the hunter's patch added, so a maker's files cannot trip them,
+  and a hunter can see them in `check` first.
+- **Any other failed check settles with all weight on DUPLICATE:** bond back, no
+  award, no model called, and the justification names the check in a fixed
+  machine-readable form.
+- **A `reproduces` failure on its own stays INVALID**, whatever integrity says: a
+  test the patch added passed, errored, was skipped, went missing or appeared twice
+  on a run, or the patch added none. Only a `reproduces` failure caused by integrity
+  alone follows the two rules above.
+
+A clean claim is unaffected: none of these checks fires on ordinary test code.
+
+The reason is that the runner cannot always tell claim code from a trap in the
+maker's files, and a forfeited bond would pay the maker for the trap. This lowers
+that cost; it does not settle the class. A trapped listing still doesn't pay the
+honest hunter, so the maker keeps the stake on that claim. It earns no bond, and the
+record shows the claim. A caught cheater loses only what the round costs: at most the
+prepay, about $3.50 instead of $13.50 on a $1k listing from the example figures, and
+each such claim can hold later claims and `close()` for up to the reveal window.
+That griefing is to be revisited before mainnet.
+
+On-chain these claims are DUPLICATE, so the record has to show the difference: per
+listing, "claims that failed integrity: N" with the check's name, from the
+justification. It stays neutral. Hunters can raise that count on purpose, so it
+doesn't prove a trap and doesn't imply the maker caused it.
+
+**What settlement reads.** All of it is in the report's own fields (§9.4), so the EA
+needs no free text and nothing outside the schema:
+
+| Question | Fields of `verdikta.claim-report/1` |
+|---|---|
+| A tamper flag? | `poc.integrity.tamperFlags` is not empty |
+| Which other check failed? | Whichever of `identityComplete`, `summaryConsistent`, `exitConsistent`, `protectedPathsUnchanged`, `frameworkUnchanged` and `dependenciesUnchanged` under `poc.integrity` is false |
+| Did `reproduces` fail on its own? | `gates.reproduces` is `fail`, and `poc.testCount` is 0 or any of `pass`, `error`, `skip`, `missing` and `duplicate` under `poc.runCounts` is above 0 |
+| Did it fail only through integrity? | `gates.reproduces` is `fail`, `poc.testCount` is above 0, and every counted run is `fail` (or `notRun`) |
 
 Honesty flags (§9.2, step 9) are the softer cousin: they do not fail a gate,
 because a legitimate exploit test sometimes needs an unusual fixture, but they
 are tier-A facts the jury must weigh under its fourth question, and the
 adversarial fixtures (§18) measure how often a manipulated PoC gets past both.
+
+**How the runner holds them (node A3c, build plan Q38).** Semgrep's defaults read a
+target tree: its own ignore list skips `test/`, a `.semgrepignore` empties a scan
+silently, an inline `// nosemgrep` drops a flag, and past 10,000 matches of one rule
+in one file it drops every result of that file with exit 0. So the runner reads the
+PoC's bytes out of git before any claim code runs and hands Semgrep only those bytes,
+on stdin, under names it chooses, in a sandbox with every sandbox's flags, with those
+defaults forced off. The rules that read text (a cheatcode's signature, selector or
+address) run in the runner, where no match cap reaches them. **A scan that could not
+finish never reads as "no flags":** a cause in the file (a parse failure, a measured
+limit, a match cap, Semgrep's own per-file memory bound) is a stated fact with a fixed
+rule id, ranked above every rule, and a cheatcode's name in a file the parser did not
+wholly read is still a flag; a cause in the host or the tool (any other error, a non-zero exit, a
+timeout, a missing image) abstains. **The clock beyond the framework's** means moving
+block time or numbers backwards or to the end of their type, and reading or waiting on
+the host's own clock; forward moves (`vm.warp`, `skip`, `vm.roll`) are what the
+framework gives every test. `code-runner/README.md`, "Honesty flags and the fix
+check's lint", holds the rules and the measurements.
+
+**Scope of the post-run checksums (owner decisions Q32, Q35).** The check assumes an
+env image from the attested builder, and the two facts that make that an
+assumption it can rely on are:
+
+- **Production trust accepts only images signed by the builder key.** The External
+  Adapter enforces this, not the runner: its front gates
+  (`external-adapter/src/codeReview/frontGates.js`) call `@verdikta/common`'s
+  `validateAttestation`, which checks the signature against the trusted-builder
+  set, the hashes of the files it binds, and the image digest, platform and size
+  against `code_review.json`. Anything else is a requester error before the runner
+  is called. The runner only compares the attestation's image with the spec's. Dev
+  trust exists only under `CODE_REVIEW_TRUST=dev`, only on the chains in
+  `DEV_TRUST_CHAIN_IDS` (Base Sepolia and a local node), and only for a statement
+  signed as dev, against `CODE_REVIEW_DEV_KEYS`.
+- **The image's final stage is fixed** (`stake-attestation/builder/src/dockerfile.js`
+  in verdikta-applications): `FROM` the pinned base, with a fixed `ENV` (`PATH`,
+  `XDG_DATA_HOME`, `VERDIKTA_TOOLS`) and no `RUN`. Only `/repo` and
+  `/opt/verdikta/tools` differ from the pinned base. Both are maker-controlled, and
+  the tools folder comes last on `PATH`.
+
+Within that:
+
+- **These block a merge:** routes a hunter can use alone, routes that help claim code,
+  and runner misreadings that hit honest claims with no maker's files involved
+  (R21-F2 and R22-F2 were this kind).
+- **These do not:** routes that need a maker's files to make an honest claim fail.
+  They stay defects, recorded below as known limits, and the refusals the runner
+  already has for them stay.
+- **The residual** is only a trap the maker's setup plants that helps claim code win
+  (a program in the tools that itself runs something from the work tree, say: the
+  image's own text, which no check inside the sandbox can read). It is recorded, not
+  closed. It is not harmless to everyone but the maker. Since owner decision Q34
+  (§8.8) a listing needs the project's proof, so a stranger can't stage a valid
+  finding on a project's own record that way, but they can on a fork or a copy,
+  which is why it stays written down here as a residual.
+
+A change to a watched place during the maker's build, before any claim code has
+run, is the image's doing and a requester error, never a failed check. Where forge
+itself writes (its out and cache directories, and what else a plain run writes to)
+is forge's output, not held to the reference; it must be plain and hold nothing
+watched in the image, or the image is refused before any claim code. A listed
+Solidity file that sets a path by inline configuration is refused too, and so is
+what would put the compiler in a patch's reach, right after the checkout, since forge
+runs a configured `solc` from its first start: a compiler file in the work tree, a
+`foundry.toml` that uses `extends`, that file or `.env` as a link, or an installed
+release that leads through a place the sandbox can write.
+
+**The runner pins the compiler (owner decision Q37).** Right after the checkout, before
+any patch, it reads forge's configuration on the listing's own files. Every later forge run
+then has `FOUNDRY_SOLC` in its fixed environment: the release the listing names, the
+absolute path of a file it names outside the work tree, or empty when it names nothing, which
+leaves the choice to the sources' pragmas among the installed releases. forge's environment
+beats its configuration files, so what a patch or a fix does to them no longer picks a
+compiler. This holds only with the refusals above: forge still runs whatever an installed
+release's path leads to, and a pragma can pick any installed release. It says nothing about
+the installed bytes, which are the maker's; the listing check reads those, below. A listing
+that names an external compiler adapter is refused, since that is a compiler the pin does
+not name, and the runner keeps that list empty in forge's environment.
+
+**The listing refuses any `solc` that isn't an official release (owner Q35 condition 2).**
+Right after the reference and before any build, the listing check hashes everything under
+`svm/`, the file the pin names outside the work tree (owner Q37 condition 2: an official one
+stays pinned) and a `solc` in each `PATH` directory. Official means exactly: the SHA-256 that
+`binaries.soliditylang.org/<platform>/list.json` gives the build it names under `releases`, on
+the class platform `linux/amd64` (`linux/arm64` is a development setting, on that site's own
+list). The hashes are a table in the runner's repository, kept current by a script and a weekly
+check; a release newer than the table is refused until the table has it. A claim never reads the
+table, so arbiters on different runner versions can't split on a new release. That nothing else
+runs as solc rests on forge's lookup at the pinned version, which the runner can't watch: a test
+plants a compiler at each other place and shows it never runs. This covers `solc` only, and
+repository code a proof calls through ffi isn't a compiler: it stays in the limits below.
+
+**The listing refuses a `vyper`, for now (owner Q40).** A `vyper` has no official list to read
+against, so a fake one with a `.vy` file in the tree was a compiler route forge runs in every
+build. Right after that look, the listing check refuses with `VYPER_NOT_SUPPORTED`: anything but a
+plain directory named `vyper` in a `PATH` directory, measured in the sandbox through links; any key
+in forge's own `vyper` configuration, from `forge config --json` under the maker's commands'
+environment; and a `PATH` directory in the work tree, where a patch or a fix could add one. A `.vy`
+file alone is no reason: with no `vyper`, forge's own build fails on one it would compile and ignores
+one only under `lib/`, and Solidity importing one under `lib/` reads it as Solidity, on real forge, on
+`linux/amd64` and arm64. So a hunter's patch adding one fails the `build` gate, which is the hunter's
+own cost and `check` forecasts it. A claim never reads the
+rule, so arbiters can't split on it. It is one check and one code, and an official hash list for
+Vyper would lift it. That forge finds a `vyper` only through `vyper.path` or `PATH` rests on forge's lookup at the
+pinned version, which the runner can't watch: `strace` shows that lookup, and a Docker test plants a
+`vyper` at each other place and shows it never runs. This says nothing about other programs in the image.
+
+**Known limits (owner decision Q35).** These are open, recorded, and to be reviewed
+before mainnet. The code-runner README's route table has every route the review raised. On an
+image from the attested builder, a `solc` that isn't an official release no longer reaches a claim:
+that is what node A2c changed here, and only as far as its tests show. Node A2d does the same for a
+`vyper` on `PATH` and a `vyper` setting, whatever the bytes, so what this table recorded about a fake
+`vyper` is now a refusal, by Docker tests on each form. No other program is covered.
+
+| Known limit | Where it lands | What it costs an honest hunter | What may reduce it |
+|---|---|---|---|
+| A program in the image other than `solc` or `vyper`, or repository code, that writes a watched place during a run | A failed integrity check with no tamper flag: the runner cannot tell it from claim code | Bond back, no award, prepay spent. The maker keeps the stake on that claim and earns no bond | The listing's suite and probes get the checksums, which catches one that fires on what they run but not one that spares them |
+| A false rejection at `reproduces`, from a trap or from a misreading nobody has found yet | `reproduces` on its own, which stays INVALID | Bond to the maker, prepay spent | `check` shows it first. A misreading with no maker's files involved blocks a merge once found, as R21-F2 and R22-F2 did |
+| Repository code a proof calls through ffi | Whichever of the rows above its effect matches | As that row | Nothing at listing: the official-release refusal doesn't cover it, and nothing at listing runs code only a proof would call. A hunter can read the code it calls |
+| A trap keyed on the date, in repository code | Whichever of the rows above its effect matches | As that row, with no warning: `check` doesn't catch it, because the runner fakes no clock | In `solc` it is refused at listing, whatever the date, because the bytes aren't official, and a `vyper` is refused whatever it does. Repository code stays |
 
 ### 9.6 What we borrow from verdikta-agents
 
@@ -921,15 +1147,20 @@ The verdict takes the normal commit/reveal path; neither Jev nor a frontier
 model is called, and the bond is forfeited at settlement. None of these gates
 can be switched off by the listing.
 
+The one exception is `integrity` with no tamper flag, when `reproduces` failed only
+through it (§9.5, owner decision Q35): the full 1,000,000 goes on DUPLICATE, so the
+bond comes back with no award, by the same path and with no model called. The
+justification names the check in a fixed machine-readable form.
+
 | Gate | Where | Fails when |
 |---|---|---|
 | `disclosure` | EA, before any pull | the revealed archive does not hash to the committed `sha256(archive)`, or re-encrypting it with the revealed keys to the listing's `disclosureKey` does not reproduce the pinned ciphertext byte for byte (§14) |
 | `inScope` | EA, static | `finding.json` is invalid, or an affected path is outside `stake.scope` |
-| `applies` | runner | `poc.patch` does not apply to the listed commit |
+| `applies` | runner | `poc.patch` does not apply to the listed commit, or is over `maxPatchBytes` (the EA decides this one itself, since a patch past the runner's 16 MiB request limit would never reach the gate) |
 | `testPathsOnly` | runner | the patch touches a path outside `paths.tests` or inside `paths.protected` — source edits belong in `fix.patch` |
 | `build` | runner | the build fails after the patch |
-| `reproduces` | runner | any PoC test passes, or errors (import, compile, collection), on any run of the fixed schedule |
-| `integrity` | runner | any check of §9.5 fails on the PoC run |
+| `reproduces` | runner | any PoC test passes, or errors (import, compile, collection), on any run of the fixed schedule. A failure only through `integrity` follows the `integrity` row |
+| `integrity` | runner | any check of §9.5 fails on the PoC run. A tamper flag settles INVALID, even beside another failed check; any other check settles DUPLICATE (bond back, no award) |
 | `claimedObservable` | runner | the tests `finding.json` names are not the ones that failed, or the asserted observable does not appear in the recorded failure |
 
 What the gates do not decide is left to the jury: whether the failing test
@@ -1068,7 +1299,10 @@ The existing multi-model `rank-and-justify`, with a claim pre-prompt. Input:
    class envelope sets it, §10.4; 60k tokens for standard), in priority order:
    `poc.patch` with function context (`git diff -W`) and the full text of the
    PoC files; `finding.json` and `report.md`; the full post-listing text of the
-   in-scope source files the finding names; call sites of the symbols the PoC
+   in-scope source files the finding names; the maker's documents the listing
+   names (`stake.documents`, owner decision Q61 (a): `@verdikta/common`'s
+   selection, a reserved 10% and at most 20% of the budget, only when the listing
+   names any); call sites of the symbols the PoC
    exercises (`git grep -w`, at most 10 each); `known_issues.json`; the
    `finding.json` summaries of prior valid claims on this hash (§13.3); the fix
    diff when present; a shallow file tree. Over budget, the lowest tiers are
@@ -1082,14 +1316,17 @@ six-outcome vector:
 - **Required?** Is the behaviour the PoC asserts something the code is required
   to have — by its specification, documentation, interface contract, or the
   listing's scope? A test that fails because it asserts an intended behaviour
-  is not a finding.
+  is not a finding, unless its root cause is a listed known issue (Known or
+  duplicate?).
 - **How severe?** Under the listing's rubric, what is the demonstrated
   consequence: funds at risk, how much, for whom, with what preconditions? Count
   only what the PoC demonstrates or what follows from it by a concrete line of
-  reasoning tied to a file and line.
+  reasoning, which the claim sets out, tied to a file and line (owner decision
+  Q66 (a)).
 - **Known or duplicate?** Is the root cause a listed known issue, or the same as
   a finding already valid on this hash? Rewording, a different entry point or a
-  different victim does not make a new root cause.
+  different victim does not make a new root cause, and neither does an entry
+  that calls the behaviour intended or accepted (owner decision Q73 #5).
 - **Honest?** Is the PoC minimal and faithful: no overwritten storage, no mocked
   target, no precondition the scope excludes, no fixture that creates the bug it
   then finds? Weigh the honesty flags; a flag is a fact, its meaning is the
@@ -1126,10 +1363,10 @@ registered at the standard fee and hand it the premium panel's bill.
 |---|---|---|
 | Pool | `typesafe/jev-1.13`, `deepseek-v4-pro`, `kimi-k2.7-code`, `qwen3-coder`, `glm-5.3`, `mimo-v2.6-pro`, `gpt-oss-120b`, `claude-haiku-5-5`, `gpt-6-luna`, `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra`, `grok-4.7` | the standard pool plus `claude-opus-5-5`, `gpt-6-astra` |
 | Panel | ≤ 3 models, `NO_COUNTS` 1, `ITERATIONS` 1 | same |
-| Context pack / juror output | 60k / 8k tokens | 120k / 12k tokens |
+| Context pack / juror output | 60k / 32k tokens | 120k / 12k tokens |
 | Sandbox | class hard limits (§9.1) | same |
 | Serves | listings whose top award is up to ≈ $1k; disputes on them | listings above ≈ $1k; disputes escalated from standard |
-| Operator spend per evaluation | ≈ $0.25 (dispute panel ≈ $0.45) | ≈ $1.40–2.00 |
+| Operator spend per evaluation, worst case (§10.7) | ≈ $0.60 (dispute panel ≈ $0.95) | ≈ $1.40–2.00 |
 | Registered fee (indicative) | 0.00012 ETH ≈ $0.29 | 0.0007 ETH ≈ $1.70 (above today's ceiling, §10.8) |
 | Hunter prepay (12×) | ≈ $3.50 | ≈ $20 |
 
@@ -1145,21 +1382,22 @@ claims as accurately as the frontier pair is exactly what the calibration set
 measures per class (§18), and a class whose accuracy falls short is withdrawn,
 not discounted.
 
-Per-juror cost, OpenRouter list prices on 2026-10-19:
+Per-juror cost at the envelope's limits, OpenRouter list prices on 2026-10-19
+(`deepseek-v4-pro-0813`, the standard panel's juror: 2026-11-05):
 
-| Model in the pools | $/M in / out | 60k in / 8k out | 120k in / 12k out | Role |
+| Model in the pools | $/M in / out | 60k in / 32k out | 120k in / 12k out | Role |
 |---|---|---|---|---|
 | `gpt-6-astra` | 10 / 50 | — | $1.80 | Premium deep review |
 | `claude-opus-5-5` | 4 / 20 | — | $0.72 | Premium deep review |
-| `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | 2 / 10–12 | ~$0.20 | ~$0.38 | Standard deep review; dispute panel |
-| `grok-4.7` | 2 / 6 | $0.17 | $0.31 | Standard, third opinion |
-| `kimi-k2.7-code` | 0.67 / 3.35 | $0.067 | $0.12 | Open-weight code review |
-| `deepseek-v4-pro` | 0.42 / 0.84 | $0.032 | $0.06 | Open-weight code review |
-| `mimo-v2.6-pro` | 0.43 / 0.87 | $0.033 | $0.06 | Open-weight code review |
-| `qwen3-coder` | 0.30 / 1.00 | $0.026 | $0.05 | Open-weight code specialist |
-| `glm-5.3` | 0.08 / 1.40 | $0.016 | $0.03 | Open-weight code review |
-| `gpt-oss-120b` | 0.15 / 0.60 | $0.014 | $0.03 | Open-weight, third opinion |
-| `claude-haiku-5-5`, `gpt-6-luna` | 0.1 / 0.5 | $0.010 | $0.02 | Justifier; cheap juror |
+| `claude-sonnet-5-5`, `gpt-6-sol`, `gpt-5.6-terra` | 2 / 10–12 | $0.44–0.50 | ~$0.38 | Standard deep review; dispute panel |
+| `grok-4.7` | 2 / 6 | $0.31 | $0.31 | Standard, third opinion |
+| `kimi-k2.7-code` | 0.67 / 3.35 | $0.15 | $0.12 | Open-weight code review |
+| `deepseek-v4-pro-0813` | 0.103 / 4.11 | $0.14 | $0.06 | Open-weight code review; standard panel |
+| `mimo-v2.6-pro` | 0.43 / 0.87 | $0.05 | $0.06 | Open-weight code review |
+| `qwen3-coder` | 0.30 / 1.00 | $0.05 | $0.05 | Open-weight code specialist |
+| `glm-5.3` | 0.08 / 1.40 | $0.05 | $0.03 | Open-weight code review |
+| `gpt-oss-120b` | 0.15 / 0.60 | $0.03 | $0.03 | Open-weight, third opinion |
+| `claude-haiku-5-5`, `gpt-6-luna` | 0.1 / 0.5 | $0.02 | $0.02 | Justifier; cheap juror |
 | `typesafe/jev-1.13` | 0.042 / free | <$0.01 | <$0.01 | Rubric juror, triage, claim check |
 
 Panels the site offers, each bound to its class. A listing pins two archives at
@@ -1168,8 +1406,8 @@ difference is the panel:
 
 | Panel | Class | Models | Operator spend per arbiter |
 |---|---|---|---|
-| Standard | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `deepseek-v4-pro` 0.4 | ≈ $0.25 |
-| Standard dispute | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `gpt-6-sol` 0.4, effort `high` | ≈ $0.45 |
+| Standard | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `deepseek-v4-pro-0813` 0.4 | ≈ $0.60 at worst (§10.7) |
+| Standard dispute | `code-standard` | Jev 0.2, `claude-sonnet-5-5` 0.4, `gpt-6-sol` 0.4, effort `high` | ≈ $0.95 at worst (§10.7) |
 | Premium | `code-premium` | Jev 0.2, `claude-opus-5-5` 0.4, `gpt-6-astra` 0.4 | ≈ $1.40 |
 | Premium dispute | `code-premium` | Jev 0.2, `claude-opus-5-5` 0.4, `gpt-6-astra` 0.4, `ITERATIONS` 2 where the envelope allows, else effort `max` | ≈ $2.00 |
 
@@ -1178,6 +1416,44 @@ admits premium jobs; until then, and for listings already on premium, it runs
 the class's dispute panel. The panel sets the oracle fee the maker must offer
 (§10.8). A mixed-fee selection test — a request on one class must never select a
 job registered on another — is a Phase 0 deliverable.
+
+> **Erratum, 2026-11-09 (Q63).** The code-standard panels are the ones the owner
+> chose on 2026-11-09 ("As recommended"), after a measurement of six jurors on
+> the severity text of definitions version 2. They replace the Standard and
+> Standard dispute rows above:
+>
+> | Panel | Archive | Jurors (provider, model, weight) |
+> |---|---|---|
+> | Evaluation | listing | `openrouter` `google/gemini-4-argon` 0.5, `openai` `gpt-6-luna` 0.5 |
+> | Dispute | dispute | `anthropic` `claude-opus-5-5` 0.5, `openrouter` `google/gemini-4-argon` 0.5 |
+>
+> Each with `NO_COUNTS` 1 and `ITERATIONS` 1, effort `high` and the envelope's
+> 32k output tokens. The code-standard pool gains `google/gemini-4-argon` and
+> `claude-opus-5-5`. They arrive with `@verdikta/common` 1.9.0-attest.4; an
+> arbiter on attest.3 still has Sonnet 5.5 + DeepSeek V4 Pro and Sonnet 5.5 +
+> GPT-6 Sol.
+>
+> The panels were measured with every non-Anthropic juror through OpenRouter
+> (`openai/gpt-6-luna`, `google/gemini-4-argon`: reasoning effort `high`,
+> `max_tokens` 32000, no sampling parameter) and Opus direct (adaptive thinking,
+> `output_config.effort` `high`, 32000 output tokens). The AI Gateway sends Luna
+> and Opus to their native APIs when the operator has the key, and to OpenRouter
+> otherwise (as `openai/gpt-6-luna` and `anthropic/claude-opus-5.5`). Both routes
+> send the same effort and output limit and no sampling parameter
+> (`ai-node/src/__tests__/lib/llm/q63-juror-routes.test.ts`). OpenRouter
+> documents its `reasoning.effort` as OpenAI's reasoning effort, Gemini's
+> thinking level and, on Claude 5.5, Anthropic's `output_config.effort` with
+> adaptive thinking. That translation is OpenRouter's, and nothing here measures
+> it. The AI Node has no Google class, so OpenRouter is Gemini's only route.
+> Every juror is required (§10.5), so **a code-class operator needs an OpenRouter
+> key that serves Gemini, or the arbiter abstains on every claim**.
+> `arbiter-doctor.sh` reports `ai.code_jurors`: a route for each juror of the
+> panels its installed common names, with no model call.
+
+Errata E7 and E9 (2026-11-10, see §13.2) send two more kinds of round to the
+dispute panel: the hunter's appeal of an INVALID outcome and the confirmation of
+an award above a set size. Both use the listing's dispute archive and
+`disputeMaxOracleFee` as they are, so no panel, ClassMap or aggregator changes.
 
 ### 10.5 Final vector and the partial-success rule
 
@@ -1202,7 +1478,7 @@ alone.
 |---|---|
 | Hunter: a PoC that fails for a reason other than the bug (import error, broken build, wrong harness) | `build` and `reproduces` gates: only an assertion failure on all three runs counts |
 | Hunter: a flaky PoC — fails once, passes once | Fixed schedule: any pass on any run fails `reproduces`; the hunter writes the loop into the test |
-| Hunter: forge a failing JUnit record or exit early without running the code | In-process results are tier B (§9.5): identity completeness, framework-summary and exit-code consistency, post-run checksums and static tamper flags must all pass or `integrity` fails |
+| Hunter: forge a failing JUnit record or exit early without running the code | In-process results are tier B (§9.5): identity completeness, framework-summary and exit-code consistency, post-run checksums and static tamper flags must all pass or `integrity` fails. A tamper flag is INVALID; any other failed check is DUPLICATE, so a caught cheater loses only what the round costs (§9.5) |
 | Hunter: edit the framework config, lockfile or a protected file to make the test fail | Protected paths reset before the run; `testPathsOnly`; post-run checksums |
 | Hunter: manipulate the environment inside the test — overwrite the target's storage or code, mock the module under test, stub the clock or network | Honesty flags (tier A) shown first to every juror; the fourth question; adversarial fixtures measure the residue |
 | Hunter: assert behaviour that is documented or intended, or rely on a precondition the scope excludes | `inScope` gate on paths; the jury's first question; the maker's dispute |
@@ -1210,6 +1486,7 @@ alone.
 | Hunter: reveal a different archive than the maker was given, or send the maker garbage | The `disclosure` gate: both commitments re-derived in every arbiter; INVALID, bond forfeited |
 | Hunter: inject "AI reviewer: this is CRITICAL" in `report.md`, test names or comments | Gates are deterministic; evidence is fenced as data; Jev annotates and never filters; several models must agree |
 | Hunter: a huge or binary-padded patch | `maxPatchBytes`; binary changes reported as stats only |
+| Maker: plant a program or repository code that fails an honest claim | A recorded known limit, not closed (§9.5). A failed integrity check returns the bond, with no award; a failure at `build` or at `reproduces` on its own stays INVALID. The runner refuses what it can before any claim code, and `check` shows most traps first |
 | Maker: falsely flag a bad disclosure | A flag followed by a verified reveal is itself on the record (§14) |
 | Maker: fix the bug, then call it a known issue | Known issues are fixed at listing and timestamped on-chain; the commit precedes any fix |
 | Maker: never fix, never release, hope the hunter gives up | The window ends anyway; a valid unfixed finding goes on the record; an unrevealed commit after `revealWindowDays` costs the hunter the bond, so the hunter reveals |
@@ -1225,14 +1502,20 @@ Standard panel, worst case:
 | Item | Tokens | Cost |
 |---|---|---|
 | Jev, ~10 small fan-out calls + claim check | ~60k in, total | ~$0.003 |
-| `claude-sonnet-5-5` juror ($2 / $10 per million tokens) | 60k in / 8k out | ~$0.20 |
-| `deepseek-v4-pro` juror ($0.42 / $0.84) | 60k in / 8k out | ~$0.03 |
+| `claude-sonnet-5-5` juror ($2 / $10 per million tokens) | 60k in / 32k out | ~$0.44 |
+| `deepseek-v4-pro-0813` juror ($0.103 / $4.11, read from OpenRouter on 2026-11-05) | 60k in / 32k out | ~$0.14 |
 | Justifier (`claude-haiku-5-5`, $0.10 / $0.50) | 15k in / 2k out | <$0.01 |
 | Sandbox compute (2 vCPU × ≤ 6 min at ≈ $0.03 per vCPU-hour; two containers with a fix) | | <$0.01 |
-| **Total** | | **≈ $0.25**; a claim that fails a gate ≈ $0.01 |
+| **Total** | | **≈ $0.60**; a claim that fails a gate ≈ $0.01 |
 
-The standard dispute panel (`gpt-6-sol` in place of `deepseek-v4-pro`) ≈
-**$0.45**. Premium (`claude-opus-5-5` $0.72 + `gpt-6-astra` $1.80 on a 120k pack
+That is the most a run can cost, with every juror using its whole limit. The measured
+cost was about $0.09 per evaluation under the earlier 8k limit, when many of those
+replies came back empty or cut off (assumption 3), so it is not a figure for this limit.
+§10.8's fees were set from the 8k worst case and are not re-derived here; they need
+re-checking against this table before a class is registered at them.
+
+The standard dispute panel (`gpt-6-sol` in place of `deepseek-v4-pro-0813`) ≈
+**$0.95**. Premium (`claude-opus-5-5` $0.72 + `gpt-6-astra` $1.80 on a 120k pack
 + Jev) is bounded at ≈ **$2.60** and expected around $1.40–2.00 on packs that
 rarely fill the budget.
 
@@ -1245,12 +1528,16 @@ rarely fill the budget.
 2. **60k input tokens** is a claim whose named source files fill most of the
    standard pack budget. A PoC against one contract file produces 15–25k.
    Pricing is at the cap; the average is lower.
-3. **8k output tokens** per juror covers the four answers with file:line
-   reasoning. Premium allows 12k.
+3. **32k output tokens** per juror on `code-standard`. On a model that reasons at
+   high effort the reasoning counts against this limit: at 8k, `deepseek-v4-pro-0813`
+   used it up on many calibration claims, which then got no verdict, since every juror
+   is required (owner decision, 2026-11-05). The limit is per class, so Claude's worst
+   case rises with it. `code-premium` stays at 12k, is not enabled until Phase 3 and
+   has not been measured.
 4. **Every claim reaches the jury.** Gate failures cost ≈ $0.01 (sandbox
    only), so the average falls with the gate-failure rate; the local check
    (§8.6) pushes most sure-failures out before anyone pays.
-5. **List prices on OpenRouter, 2026-10-19**, no caching (the two jurors are
+5. **List prices on OpenRouter, 2026-10-19** (`deepseek-v4-pro-0813`: 2026-11-05), no caching (the two jurors are
    different providers; nothing repeats within an arbiter) and no batch pricing
    (batch latency does not fit a 15-minute round).
 6. **Operators price at worst case plus ≈ 20%**, since the on-chain fee cannot
@@ -1271,7 +1558,7 @@ rounded; prepay = fee × 12; dollars at $2,420/ETH.
 | | Per-oracle fee | Prepay (12×) | Under the ceiling? |
 |---|---|---|---|
 | Today's default (text bounties) | 0.00002 ETH ≈ $0.05 | 0.00024 ETH ≈ $0.58 | yes |
-| `code-standard` (≈ $0.25; dispute ≈ $0.45) | 0.00012 ETH ≈ $0.29 (dispute 0.0002 ETH ≈ $0.48) | 0.00144 ETH ≈ $3.50 (dispute ≈ $5.80) | yes (ceiling 0.0004 ETH ≈ $0.97) |
+| `code-standard` (at the 8k limit: ≈ $0.25; dispute ≈ $0.45) | 0.00012 ETH ≈ $0.29 (dispute 0.0002 ETH ≈ $0.48) | 0.00144 ETH ≈ $3.50 (dispute ≈ $5.80) | yes (ceiling 0.0004 ETH ≈ $0.97) |
 | `code-premium` (≈ $1.40–2.60) | 0.0007 ETH ≈ $1.70 | 0.0084 ETH ≈ $20 | no — needs `setMaxOracleFee` (aggregator owner) |
 
 The payment path pays each selected job its **registered** fee, so raising the
@@ -1305,6 +1592,14 @@ fixed-fee audit that costs the same whether the code is clean or not. A maker
 with five $1k findings has bought a $5k audit with a public receipt; a maker
 with none has paid a listing fee and a lock.
 
+Errata E7–E9 (2026-11-10, see §13.2) add to both. Whoever asks for a
+dispute-panel round bears its spent prepay whatever the result: the maker for a
+dispute, the hunter for an appeal of an INVALID outcome and its one re-trigger.
+Nothing refunds it from the escrow or the bond on a win; a win pays back only
+through the outcome. A narrow INVALID returns the hunter's bond. A confirmation
+of an award above the set size is no party's request and is paid from the
+listing's escrow (owner, Q72, 2026-11-10).
+
 **Arbiters.** Earn the registered class fee per claim as today. Nothing in the
 arbiter payment path changes.
 
@@ -1324,11 +1619,55 @@ cheap classes — together they would roughly halve the prepay.
 | Fetch archives (EA) | 30 s |
 | Disclosure check (hash + re-encrypt, EA) | ≤ 10 s |
 | Image pull (first use per operator, cached afterwards) | 0–90 s |
-| Apply → build → PoC ×3 → integrity → [fix check in parallel] → lint/SAST | ≤ 360 s (`limits.runSeconds`, enforced at listing and by the class maximum) |
+| Apply → build → PoC ×3 → integrity → [fix check in parallel] | ≤ 360 s (`limits.runSeconds`, enforced at listing and by the class maximum) |
+| Lint/SAST | Seconds on an honest claim. Its own timer, at most 420 s, outside `runSeconds` so a hunter's file cannot turn a listing's run into an abstention; the one deadline still bounds it |
 | Jev | ~2 s |
-| Frontier jury (parallel), then justifier | ≤ 240 s + 45 s |
+| Frontier jury (parallel), then justifier | Jury ≤ 480 s, then the justifier with at least 45 s and whatever the deadline leaves, within the one deadline |
 | Commit transaction; reveal dispatch → reveal transaction | ~90 s |
 | **Worst case** | **≈ 14 min, so `responseTimeoutSeconds` = 900 s** |
+
+The stages up to the justifier do not add up to the worst case: the one deadline below
+(receipt + 780 s) bounds them together, so the worst case is that deadline plus the commit
+and reveal, ≈ 870 s. The jury gets the smaller of 480 s and what the deadline leaves after
+the justifier's 45 s, so a long run before it leaves it less. The justifier then has all
+the time left before the deadline: at least that 45 s reserve, minutes after a jury that
+finished early, and never past the deadline (`ai-node/src/lib/code-review/deadline.ts`,
+`justifierBudgetMs`). A timed-out jury is retried
+once, by the EA, in what then remains, and only while more than the reserve and the EA's
+60 s juror floor are left (`external-adapter/src/codeReview/claimRun.js`, `time.js`). A
+justifier timeout comes only at the deadline, so it is never retried.
+The cap was 240 s until 2026-11-09 (A11): the owner put a juror's accuracy and cost ahead
+of its speed, and slower jurors ran up to and past 240 s in tuning.
+The justifier had a fixed 45 s until 2026-11-12 (A22): after a jury that finished early, a
+justifier that needed longer was cut off with minutes of the deadline left, and its arbiter
+abstained or paid for the whole jury twice on the EA's retry; the 45 s is now the reserve
+the jury's window leaves, not the justifier's limit.
+
+**A retry after a first attempt at the cap.** With R seconds from receipt to the first AI
+call (archives, gates, pull, run), a first attempt that runs to the 480 s cap ends at
+R + 480 s and leaves 300 − R s: a retry jury of 255 − R s, and no retry at all from
+R = 195 s (then 105 s or less is left). A 30 s run leaves the retry 225 s, a 60 s run 195 s,
+a 120 s run 135 s. Under 240 s the retry had its whole 240 s for any run up to 255 s. With
+the panels of 2026-11-09, both of which hold Gemini 4 Argon (p95 211 s, slowest 262 s per
+answer, every juror required), a retry after a capped first attempt holds the p95 only after
+a run of at most 44 s, and the slowest answer after none. In production the retry therefore
+helps a juror that hung and would have answered fast, not one that is slow. The retry's
+budget is unchanged by A13; buying it time would mean shortening every first attempt.
+
+So the canary condition "a provider timeout with retry" times its first attempt out early
+instead: the fault switch's `provider-timeout` tells that attempt a 105 s deadline, a 60 s
+jury (the EA's juror floor), and the AI Node's real deadline aborts the first juror's real call
+on the wire there. The retry, from the same run with no fault, is told what is left: the whole
+480 s for any run up to 195 s, and at most 60 s less than a claim with no fault would get after
+that. The scenario then shows the retry path and not the panel's speed. The cancellation stays
+at the deadline the time left gives, so the canaries still show a real abort at the cap.
+
+A juror's HTTP call holds for its whole window. Node's fetch (undici) gives up after 300 s
+without response headers, and a non-streaming reasoning reply sends none until it is
+complete, so each juror call has a dispatcher of its own whose limits are the time left
+plus 15 s (`ai-node/src/lib/llm/juror-transport.ts`); the juror's AbortSignal still ends it
+at the deadline. The 480 s cap reaches the canaries only after `setResponseTimeout(900)`
+(`docs/release-runbook.md`, 3b).
 
 **One deadline, propagated.** Raising the outer timeouts is not enough: the AI
 Node has its own 240 s whole-request timer (`REQUEST_TIMEOUT_MS`, covering
@@ -1345,11 +1684,13 @@ miss the on-chain deadline. Code mode therefore works from a single deadline:
   and stops at it otherwise (abstain).
 - The AI Node derives the code-mode request timeout and per-juror timeouts from
   `deadlineMs` instead of `REQUEST_TIMEOUT_MS` / `MODEL_TIMEOUT_MS`, reserves the
-  justifier's 45 s, and **cancels** jurors with `AbortController` at the deadline
-  instead of racing them. Iterations are capped by the class envelope so the
-  advertised budget holds.
+  justifier's 45 s after the jury's window, gives the justifier at least that and
+  whatever the deadline leaves, and **cancels** jurors and the justifier with
+  `AbortController` at their deadlines instead of racing them. Iterations are
+  capped by the class envelope so the advertised budget holds.
 - The EA does not retry a code-mode AI call once less than the justifier reserve
-  remains, and never re-runs the sandbox on a retry: the run is served from the
+  remains (so never after a justifier timeout, which comes at the deadline), and
+  never re-runs the sandbox on a retry: the run is served from the
   shared-run cache by its key (§9.2).
 
 Changes needed:
@@ -1358,7 +1699,12 @@ Changes needed:
   moves the point at which a stuck request may be force-finalized; ordinary
   requests are unaffected.
 - `maxTaskDuration` and the bridge timeout in `chainlink-node/basicJobSpec` go to
-  840 s. `upgrade-arbiter.sh` applies this when it regenerates job specs.
+  840 s, and `[JobPipeline] MaxRunDuration` in `chainlink-node/config_template.toml`
+  to 15 m (Chainlink 2.23.0's default of 10 m ends a run before an 840 s bridge call).
+  A running job keeps the values it was created with, so `upgrade-arbiter.sh`
+  measures each live job after its restart and replaces the stale ones with
+  `installer/util/apply-job-timeouts.sh`, keeping their job ids: no on-chain action
+  and no stake moves. A declined upgrade is asked again at the next one.
 - The EA's `SERVER_TIMEOUT` rises to match; the deadline propagation above.
 - The record page and the hunter tool poll a pending evaluation for up to
   15 minutes.
@@ -1367,6 +1713,9 @@ Typical evaluations are expected to take 3–6 minutes. Before the network timeo
 changes, a cold-image end-to-end canary on class 5555 must pass with a
 near-limit juror followed by justification, a provider timeout with retry, a slow
 justifier, a registry failure and a cancellation.
+These are L4 scenarios (`e2e/README.md`, "Claim scenarios"). Four of them use a fault
+switch that acts only on a named claim in a request for class 5555, measured on-chain
+(decision D9; `external-adapter/README.md`, "The canary fault switch").
 
 ## 12. Failure semantics
 
@@ -1375,7 +1724,8 @@ justifier, a registry failure and a cancellation.
 | Runner not installed or unhealthy, admission refused, deadline cannot be met | Error, no commit (transient) |
 | Registry or image-pull failure | Error, no commit |
 | Step timeout, OOM, process limit, sandbox died | Error, no commit (the arbiter abstains) |
-| Disclosure mismatch; patch doesn't apply or edits source; build fails; PoC passes or errors on any run; **integrity check fails**; path out of scope; claimed observable not recorded | Deterministic INVALID, committed; the bond forfeits at settlement |
+| Disclosure mismatch; patch doesn't apply or edits source; build fails; PoC passes or errors on any run; **a tamper flag, even beside another failed check**; path out of scope; claimed observable not recorded | Deterministic INVALID, committed; the bond forfeits at settlement |
+| **Any other integrity check fails**, and `reproduces` failed only through it (§9.5, owner decision Q35) | Deterministic DUPLICATE, committed; bond back, no award, no model called; the justification names the check |
 | `poc.patch` or `finding.json` missing, or not a patch / not valid JSON | Malformed-archive settlement (existing rule): INVALID |
 | `fix.patch` fails to apply, build or pass | Recorded in the report; the outcome is unaffected (§20, decision 14) |
 | `code_review.json` invalid; **attestation missing or invalid; spec above the class maxima; manifest outside the class envelope** | Error: the requester's package is broken (existing rule); no commit, before any pull or model call |
@@ -1386,10 +1736,52 @@ justifier, a registry failure and a cancellation.
 **Abstaining is not neutral.** A round that times out applies the configured
 timeliness penalty (−20 on mainnet) to every polled oracle that did not commit
 (`_applyTimeoutPenalties`), and an oracle that commits but is not among the first
-4 of 6 is also penalised −20. No fee is earned either way. Transient failures are
+4 of 6 is also penalised −20. The base fee is credited at dispatch, whatever the
+oracle then does; what it loses is the reputation and the bonus, which only clustered
+reveals earn. Transient failures are
 therefore an operator cost, which is why admission refuses early — before a pull,
 before a model call — rather than failing late, and why the envelope keeps the
 work inside the budget on ordinary hosts.
+
+Erratum E6 (2026-11-01, see §13.2) amends the last row of the table: the bond
+comes back only when the aggregator refused to start every attempt; a claim
+whose rounds ran but never settled a verdict forfeits it at expiry.
+
+Errata E7 and E9 (2026-11-10, see §13.2) add two failed rounds (owner, Q72,
+2026-11-10). An appeal round that settles no verdict gets one re-trigger, as E6
+gives a claim round: the hunter may start it again with a fresh prepay within
+`revealWindow` of the failure. If the re-triggered round also settles none, or
+the hunter lets the window pass, the INVALID stands. A confirmation round that
+settles none may be started again until a deadline, after which the first
+verdict stands.
+
+**A claim can cause an abstention itself** (owner decisions Q12, Q28). A PoC or a
+patch past the memory, process or time limits, or one that kills forge through ffi,
+makes the runner abstain on every arbiter. Nothing separates that from a host's
+problem, so it stays an error with no commit, and the money follows E6:
+
+- Each failed round costs the hunter the base fees (K × the per-oracle fee, which the
+  aggregator credits at dispatch, whatever the oracle then does; about $1.75 of the
+  $3.50 standard prepay). The rest of the prepay comes back at `finalize`.
+- If no round settles, the bond goes to the maker at expiry. So it costs what an
+  INVALID costs, and it cannot get a bond back.
+- Until then the claim holds later claims and `close()`, for at most `revealWindow`
+  from its first failure plus one round. A maker's own claim gets its bond back this
+  way, so for a maker the hold costs only the base fees and gas. On the before-mainnet
+  list with the rest of the queue griefing (Q35).
+- Each failed round applies the −20 timeliness penalty to every polled oracle, and
+  `retrigger` has no count limit. To be reviewed with that list.
+- Nothing on-chain or on IPFS says why: `EvaluationFailed` carries no reason, and an
+  arbiter that abstains uploads nothing. The cause and step reach the Chainlink job and
+  the operator's log. A hunter's `check` runs the same pipeline, so it hits the same
+  limits first (§8.6), except where the host differs.
+
+The runner's 16 MiB request limit is not such a route. `poc.patch` over `maxPatchBytes`
+settles INVALID at the EA; `fix.patch` over it is ignored; `report.md` goes only as far
+as the whole pack could hold; a prior finding's `report.md`, which the runner does not
+read, goes cut, so one padded finding cannot cost a later hunter the round. What a claim
+and its prior findings can add stays under the limit at the worst escaping their schemas
+allow. The rest is the listing's, and a listing alone over it makes every claim abstain.
 
 ## 13. The `StakeAttestation` contract
 
@@ -1444,7 +1836,341 @@ paidWei, state ∈ { Committed, Revealable, Revealed, Judged, Disputed, Settled,
 - Reveals are accepted in **commit order** per listing (§8.7): `reveal` requires
   every earlier claim on the same listing to be Settled or Expired.
 
+Errata E7–E9 (2026-11-10, see §13.2): **Disputed** also holds a hunter's appeal
+and a confirmation round, with a new field naming the kind, and a Judged INVALID
+waits out the appeal window before it settles.
+
 ### 13.2 Functions and who pays
+
+> **Errata, 2026-11-01.** Building the MVP found places where this design
+> assumes something the deployed aggregator does not do, and the owner changed
+> two rules while it was built. The stake-attestation build plan records them as
+> errata E1–E6, approved by the owner (E1–E4 on 2026-10-31 with the plan, E5
+> on 2026-10-31, E6 on 2026-11-01). Where they conflict with §§10–14, they win.
+>
+> - **E1. The disclosure line carries the commitments** (§13.3, §14, the
+>   `disclosure` gate of §10.1). §13.3's line names only the two keys, but the
+>   gate also needs the two commitments, and no other request field carries
+>   them. The addendum's first line is, in ASCII with single spaces and no
+>   trailing newline:
+>   `verdikta-disclosure: 0x<archiveSha256> 0x<ciphertextSha256> <ciphertextCid> 0x<contentKey> 0x<ephemeralKey>`.
+>   The hashes are 64 lowercase hex digits, the content key (age's 16-byte file
+>   key) 32 and the ephemeral key (the X25519 ephemeral secret) 64; the
+>   ciphertext CID is the one given to `disclose` (E5). The line is 303 to 357
+>   bytes. The EA fetches the ciphertext by that CID, checks its SHA-256
+>   against `ciphertextSha256`, re-encrypts the revealed archive with the keys
+>   to the disclosure key of the listing archive at `cids[0]`, and compares
+>   bytes. A line that does not parse strictly, and any mismatch, settles
+>   INVALID; a listing disclosure key that cannot be used is the listing's
+>   fault, a requester error with no commit.
+> - **E2. At most 10 CIDs and a 1,000-byte addendum** (§13.3;
+>   `MAX_CID_COUNT` and `MAX_ADDENDUM_LENGTH` in verdikta-dispatcher). `cids`
+>   is `[listing (or dispute) archive, claim, up to 8 prior valid findings]`,
+>   not 20. The maker's dispute statement (up to 4 KB) does not fit the
+>   addendum, so it is pinned and its CID travels in a second line,
+>   `verdikta-dispute: <statementCid>`, which the EA strips like the first,
+>   fetches and fences as the maker's argument.
+> - **E3. Prepay is checked at reveal** (`reveal`, `retrigger`, `dispute`
+>   below). The aggregator's `maxTotalFee` can change between commit and
+>   reveal, so these calls are payable: they top the prepay up to the live
+>   figure, and the excess returns through `ethOwed`.
+> - **E4. There is no aggregator callback** (`fulfill` below). The aggregator
+>   never calls the requester; `BountyEscrow` polls. `fulfill` is a
+>   permissionless `finalize(claimId)` that reads `getEvaluation`, uses
+>   `finalizeEvaluationTimeout` / `getAggregationStatus` for failed rounds, and
+>   treats a malformed vector as a failed round (a sum of 999,995 to 1,000,000
+>   is valid: the aggregator floors each averaged component). The site's keeper
+>   calls it. Each request goes through its own `EvaluationWallet` clone so
+>   `ethOwed` leftovers reach the right payer.
+> - **E5. Two-step commit** (§13.1, `commit` below; owner decision,
+>   2026-10-31). A pending `commit` must not expose the ciphertext, or a maker
+>   could front-run it with `close` or `rollForward` and decrypt the finding for
+>   free. `commit(listingId, archiveHash, ciphertextSha256)` stores the two
+>   hashes, the bond and the prepay; once it is mined, the hunter pins the
+>   ciphertext and calls `disclose(claimId, ciphertextCid)` within
+>   `DISCLOSE_WINDOW` (1 hour, a program constant). The fix window and
+>   `disclosureGrace` run from `disclose`; commit order and "known issues
+>   listed before the commit" still use the commit time. A claim not disclosed
+>   in time may be expired by anyone: bond to the maker, prepay back to the
+>   hunter, counted as undisclosed (as decision 15 treats an unrevealed
+>   commit). `release` and `rollForward` apply to disclosed claims only.
+> - **E6. The bond follows the round** (§12, last row; owner decision,
+>   2026-11-01). §9.3 keeps resource and time limits as an abstention, so claim
+>   code could make every arbiter abstain on purpose, and §12 then returned the
+>   bond. Now a round the arbiters ran that settled no verdict (a malformed
+>   result included) leaves the claim re-triggerable with a fresh prepay inside
+>   the reveal window, and if no round settles before expiry the bond goes to
+>   the maker. The bond comes back only when the aggregator refused to start
+>   every attempt (a failed submission). The prepay of a started round is
+>   spent.
+
+> **Errata, 2026-11-10 (Q70): settlement safeguards.** On 2026-11-10 the owner
+> agreed three safeguards against the one costly mistake a code-standard round
+> can make: a real finding settled the wrong way, or a large payout on a wrong
+> valid outcome. Each bullet below opens with the owner's rule. The owner
+> decided the mechanics under them on 2026-11-10 (Q72) as this erratum first
+> proposed them, with two exceptions: a failed appeal round gets one re-trigger
+> (E7), and whether an appeal carries a statement stays open until the owner's
+> claim-field test. The contract nodes build them as written (P16 the appeal;
+> P17 the narrow INVALID and the confirmation). Where these rules conflict with
+> §§7–14, they win.
+>
+> They are read against `StakeAttestation` on verdikta-applications
+> `claude/stake-attestation` (`stake-attestation/onchain`, at `920dc5d`). The
+> functions, states and fields named are that contract's. "The build plan" is
+> `stake-attestation/docs/BUILD_PLAN.md` in the same branch. These errata amend
+> its assumption A5 and decisions D5 and D8 where they say so; its decision D6
+> is the late claim. **No change to the
+> aggregator, the ClassMap or a panel:** every round they add is the listing's
+> dispute archive (`disputeCid`, the dispute panel of §10.4) at its
+> `disputeMaxOracleFee`. A request carrying the dispute archive without a
+> dispute line is already accepted by the External Adapter
+> (`external-adapter/src/codeReview/addendum.js`).
+>
+> Two terms. A **point** of mass is 1% of `SCORE_SCALE`, so 10,000, as in §18's
+> σ erratum. A claim's **valid mass** is `vector[LOW] + vector[MEDIUM] +
+> vector[HIGH] + vector[CRITICAL]` of the vector `settle` applies: the claim
+> round's, or the dispute panel's once it has replaced it (`finalize` stores the
+> panel's vector only when it is a verdict).
+>
+> - **E7. The hunter may appeal an INVALID outcome** (owner, Q70 item 1): once,
+>   to the dispute panel, paying its prepay as the maker does for a dispute.
+>   - *Who and when* (owner, Q72, 2026-11-10). The claim's hunter, through a new
+>     `appeal(claimId)`, on a claim that its claim round left `Judged` with
+>     outcome INVALID and `dispute == None`. The appeal must come before
+>     `judgedAt + disputeWindow`, the listing's own dispute window, so there is
+>     no new listing term. Late claims (decision D6) may appeal too.
+>   - *Prepay and who keeps it* (owner, Q72, 2026-11-10). As for `dispute`: `msg.value`
+>     is at least the live `maxTotalFee` for the listing's clamped
+>     `disputeMaxOracleFee` (the lens's `disputeFee`). All of it goes through a
+>     fresh `EvaluationWallet` clone with the hunter as its funder in
+>     `walletInfo`. The arbiters keep what the round earns them, and the unspent
+>     part comes back to the hunter at `finalize`. The principle holds for both
+>     sides: **whoever asks for a dispute-panel round bears its spent prepay
+>     whatever the result**, the maker for a dispute and the hunter for an
+>     appeal and its re-trigger. Nothing refunds it from the escrow or the bond
+>     on a win; a win pays back only through the outcome.
+>   - *Request and states* (owner, Q72, 2026-11-10). The request is the dispute's:
+>     `cids` = [`disputeCid`, the claim's bCID, the prior findings its round
+>     carried], and the addendum the E1 line. It is sent with exactly
+>     `SUBMISSION_GAS` and not caught, as `dispute` is: a refused submission
+>     reverts the appeal, nothing is recorded, and the hunter may try again
+>     inside the window. The claim goes `Judged` → `Disputed`
+>     (`DisputeResult.Pending`). A new claim field names the kind of
+>     dispute-panel round: the maker's dispute, an appeal or a confirmation.
+>   - *Statement* (open: the owner decides after the claim-field test (Q72)).
+>     As written, an appeal carries no statement: the panel reads the claim as
+>     it was revealed, and the claim's `report.md` is the hunter's argument. A
+>     statement would add a second addendum line naming a pinned statement,
+>     fenced as the hunter's argument (a change to `@verdikta/common`, the EA
+>     and the AI Node, whose dispute line today is the maker's), and a
+>     `statementCid` argument to `appeal`. Nothing else in these errata depends
+>     on the choice.
+>   - *Upheld or overturned.* The second `finalize` is final, as for a dispute.
+>     **Held** (INVALID again): the bond goes to the maker, unless the panel's
+>     vector is a narrow INVALID (E8). **Overturned**: the panel's outcome
+>     settles as it would have the first time. A DUPLICATE, or a class below
+>     `lowestClassCounted`, returns the bond. A counted class pays its award from
+>     the escrow and returns the bond, under `settle`'s escrow and owed rules,
+>     unchanged. It needs no confirmation (E9), since the dispute panel has just
+>     judged it (owner, Q72, 2026-11-10).
+>   - *Settlement waits* (owner, Q72, 2026-11-10). An INVALID from a claim round no longer
+>     settles at once (the build plan's D5). `settle` refuses it until the appeal
+>     window ends, except when the hunter calls it, which waives the appeal. Until
+>     then the claim heads the commit-order queue, so later claims wait to reveal
+>     and `close` is refused, as for a valid outcome in its dispute window. The
+>     wait is what keeps commit order right: if the appeal makes the claim valid,
+>     the next claim's request must carry it as a prior finding (§8.7).
+>   - *A failed or timed-out appeal round* (owner, Q72, 2026-11-10). An appeal round
+>     that settles no verdict (timed out, or malformed: `NoVerdict`) gets **one
+>     re-trigger**, as a failed claim round does under E6, so an infrastructure
+>     failure does not cost the hunter the bond. It follows E6's mechanics. The
+>     hunter re-triggers it, through `retrigger` (which today serves only a
+>     `RoundFailed` claim round) or an entry point of its own, until `revealWindow`
+>     after the failure (`ClaimRules.retriggerDeadline`, with the failed appeal
+>     round's `disputeEndedAt` as `failedAt`). The failed round's prepay was
+>     spent, so the hunter pays a fresh one in full (the live `disputeFee`),
+>     through a fresh `EvaluationWallet` clone whose funder is the hunter. The
+>     claim goes back to `Disputed`. Until the hunter re-triggers or the window
+>     ends, `settle` refuses the claim except when the hunter calls it, which
+>     waives the re-trigger, and the claim keeps heading the commit-order queue:
+>     as under E6, for at most `revealWindow` after the failure plus one round.
+>     The one place it differs from a claim round's re-trigger: the request is
+>     sent as the appeal's is, not caught, so a refused submission reverts,
+>     nothing is recorded, no prepay is held, and the re-trigger stays
+>     available inside its window. If the re-triggered round also settles no
+>     verdict, the INVALID stands (narrow or not, by its own vector) and
+>     `settle` may follow at once. The spent prepay of each round is the
+>     hunter's, and the record counts the appeal by its final result.
+>   - *The maker's dispute* (owner, Q72, 2026-11-10). The appeal and the maker's dispute
+>     never meet on one verdict: the maker disputes only a valid outcome, and the
+>     hunter appeals only an INVALID one. After either, no other round follows.
+>     The maker may not dispute a valid outcome an appeal produced, and the hunter
+>     may not appeal an INVALID that a maker's dispute or a confirmation
+>     produced. Each claim gets at most one dispute-panel verdict, which
+>     `dispute`'s `dispute == None` check already enforces for the maker. A
+>     failed appeal round gives no verdict, so its re-trigger can still give
+>     the one.
+>   - A DUPLICATE is not appealable (Q70 names INVALID; owner, Q72, 2026-11-10)
+>     and settles at once, as today.
+> - **E8. A narrow INVALID returns the bond** (owner, Q70 item 2), with no award,
+>   instead of forfeiting it. The band is set later, from calibration data; the
+>   proposal's "35 to 50 points of valid mass" was only an example.
+>   - *The band, in the contract's terms.* A settled claim is a narrow INVALID
+>     when `ClaimRules.judge` gives INVALID and its valid mass is at least the
+>     listing's floor, `narrowInvalidFloor` (a new listing field). INVALID already
+>     means the valid mass is below `THRESHOLD`, so the band is
+>     `[narrowInvalidFloor, THRESHOLD − 1]`, which ends at 500,000. The
+>     example's 35 points is a floor of 350,000, and a floor of `THRESHOLD` is
+>     the empty band. The six outcomes, `judge` and its differential test against
+>     common's `settleBugOutcome` are unchanged: a narrow INVALID is an INVALID
+>     whose bond comes back.
+>   - *Bond and award.* `settle` pays the bond back to the hunter. Nothing is
+>     awarded or published, and the prepay is spent as on any round. The record
+>     counts the claim under INVALID and as narrow. A late claim's narrow
+>     INVALID returns its bond too (owner, Q72, 2026-11-10). A gate failure or a tamper
+>     flag arrives as all the mass on INVALID (§8.7), so its valid mass is 0 and
+>     it is never narrow: the band returns only bonds the jury nearly accepted.
+>   - *Where the floor is set, its default, and how a change reaches live
+>     listings and pending claims*: below, with E9's size.
+>   - *With the appeal* (owner, Q72, 2026-11-10). A narrow INVALID may still be
+>     appealed, since the appeal can win the award. The band reads the vector
+>     `settle` applies, whichever round produced it. An appeal held with a
+>     narrow vector returns the bond. One held with less valid mass than the
+>     floor forfeits it, even after a narrow first round. An appeal that ends
+>     with no verdict, after its re-trigger or without one, leaves the first
+>     vector, narrow or not. The same rule applies when a maker's dispute or a
+>     confirmation turns a valid outcome into an INVALID inside the band: the
+>     bond comes back to the hunter, and a disputing maker still bears the
+>     dispute's spent prepay (E7's principle).
+>   - common's `settleBugOutcome` reports `bond: 'forfeited'` for every INVALID,
+>     and the `stake.bondWei` row of its specification says so. Both need the
+>     floor before the site or the hunter tool can show a narrow INVALID's bond
+>     correctly (a change to `@verdikta/common`, not to the ClassMap).
+> - **E9. Above a set award, the dispute panel confirms a valid outcome before
+>   it pays** (owner, Q70 item 3), automatically. The size is set later. The
+>   owner chose this over "all three reveals valid" because the contract reads
+>   only the aggregated vector, the mean of the pair the aggregator keeps
+>   (`getEvaluation`, E4). This safeguard therefore needs no aggregator change.
+>   - *Trigger* (owner, Q72, 2026-11-10). A claim round's verdict whose class has an award
+>     in the table, `ClaimRules.awardFor(awards, lowestClassCounted, outcome)`,
+>     above the listing's `confirmAboveWei` (a new listing field). The trigger is
+>     the table's award, not what the escrow can pay now, because a shortfall is
+>     owed in full later. A late claim (no award) and a class below
+>     `lowestClassCounted` never trigger it.
+>   - *When the round starts* (owner, Q72, 2026-11-10). When the dispute window ends with
+>     no dispute, through a new permissionless `confirm(claimId)`. The site's
+>     keeper calls it then, as it calls `finalize`, and anyone else may. A
+>     maker's dispute filed inside the window is the confirmation: the same
+>     panel, with the maker's statement and the maker's prepay, as today. No
+>     automatic round follows it.
+>   - *Who pays* (owner, Q72, 2026-11-10). The listing's escrow. A confirmation is no
+>     party's request, so E7's principle does not apply: the maker is the party
+>     it protects, and an escrow-funded round needs nobody to act.
+>     `confirm` takes the live dispute fee (the lens's `disputeFee`) out of
+>     `escrowWei` into a fresh `EvaluationWallet` clone. The unspent part comes
+>     back at `finalize`, or later through `recoverLeftoverEth` when the inline
+>     recovery was deferred. It is applied as `fund` applies a top-up: first to
+>     the listing's owed awards in commit order (`ClaimLogic.payOwed`), then to
+>     `escrowWei`, reopening a `Depleted` listing as `fund` does. A leftover that
+>     arrives once the listing is Closed is credited to the maker's pull balance
+>     (`withdrawable`), since no escrow is left to hold it. This keeps the
+>     invariant below that the escrow is empty while anything is owed, even when
+>     the recovery comes after `settle` has left part of an award owed.
+>   - *Request and states* (owner, Q72, 2026-11-10). As E7's request, with no statement,
+>     from the claim's round; the claim goes `Judged` → `Disputed`, of the confirmation kind. It
+>     is sent with exactly `SUBMISSION_GAS` and not caught: a refusal reverts
+>     `confirm`, nothing changes, and `confirm` may be called again.
+>   - *Overturn* (owner, Q72, 2026-11-10). The second `finalize` is final, as a dispute's.
+>     **Held** pays the award. **Overturned** settles by the panel's outcome: a
+>     lower class pays its own award with no further confirmation, a DUPLICATE
+>     returns the bond, and an INVALID forfeits it unless it is narrow (E8). The
+>     hunter may not appeal it (E7).
+>   - *Failure and timeout* (owner, Q72, 2026-11-10). Three cases leave the claim `Judged`
+>     with no dispute-panel verdict: a confirmation round with no verdict (timed
+>     out, or malformed: `NoVerdict`), a maker's dispute of such a claim with no
+>     verdict, and a `confirm` that cannot start. In every case `confirm` is
+>     open from the end of the dispute window, `judgedAt + disputeWindow`, until
+>     the confirmation deadline, `judgedAt + disputeWindow + revealWindow`. A
+>     maker's dispute that ends with no verdict earlier waits for the window's
+>     end, like an undisputed claim. While `confirm` is open, anyone may call it
+>     again, with a fresh prepay from the escrow each time. The deadline only
+>     stops new rounds. A round started before it runs to its `finalize`, whose
+>     verdict counts like any other, and `settle` refuses the claim while it is
+>     `Disputed`, as today. From the deadline on, once no round is open and none
+>     returned a verdict, the first verdict stands: `settle` pays it, and the
+>     record counts a confirmation with no verdict. The claim therefore holds the
+>     queue for at most the reveal window after its dispute window, plus the last
+>     round started before the deadline. No maker can escape an award with a
+>     dispute fee or a dispute panel the arbiters cannot serve.
+>   - *Depletion and payout order* (owner, Q72, 2026-11-10). The prepay leaves the escrow
+>     before the award is paid. If it leaves an Open listing's escrow below
+>     `awards[CRITICAL]`, the listing becomes `Depleted`, as after a payout, and
+>     takes no new commits. If `escrowWei` is below the prepay, `confirm` reverts.
+>     The maker's `fund` (which pays owed awards first) can make room; otherwise
+>     the first verdict stands at the deadline. `settle` then pays
+>     `min(award, escrowWei)` and owes the rest, unchanged. Because the prepay
+>     comes out first, an escrow that held exactly the award pays it short by
+>     what the round spent, and that part is owed until the maker's next
+>     `fund`. Owed awards are still paid in commit order before anything reaches
+>     the escrow: while anything is owed the escrow is empty, so a
+>     confirmation's prepay never comes ahead of an award already owed.
+>   - *With the maker's dispute* (owner, Q72, 2026-11-10). Inside the dispute window the
+>     maker's dispute is the confirmation; after the window the maker cannot
+>     dispute (as today).
+>
+> **Where the floor and the size are set** (owner, Q72, 2026-11-10). They are two
+> program values that the contract owner sets, each bounded by constants: the
+> floor from 250,000 to `THRESHOLD`, the size any amount in wei. `list` copies
+> both onto the listing. A change reaches only listings made after it: a live
+> listing and its pending claims keep the values its hunters saw when they
+> committed. A maker who wants the new values lists again (close and list, or
+> roll forward to a successor). Each setter emits an event, and `getListing` and
+> the record show a listing's values. This gives the owner two powers beyond the
+> listing fee and its recipient (amending the build plan's A5 and D8), and
+> neither reaches a live listing, an escrow, a bond or a prepay. Until the owner
+> sets them, the band is empty (`narrowInvalidFloor = THRESHOLD`: every INVALID
+> forfeits, as today) and the size is 0 (every counted award is confirmed). The
+> band returns bonds, so it stays off until calibration data sets it. The
+> confirmation protects makers at the cost of one round, so it protects while
+> unset. Testnet runs with the size at 0 and the band empty, and **the owner sets
+> the size before mainnet**. The size is in wei, as the award table is: the
+> contract has no price feed, so a dollar figure is the site's to convert when
+> the owner sets it.
+>
+> **How the three fit together.** Each claim gets at most one dispute-panel
+> verdict, whichever side asked for it, and that verdict is final. A round with
+> no verdict leaves the first verdict standing, except that a failed appeal
+> round may be re-triggered once and a claim awaiting confirmation may start it
+> again until its deadline. Whoever asks for a dispute-panel round bears its
+> spent prepay; the confirmation is paid from the escrow.
+>
+> | Claim round's verdict | Dispute-panel round | `settle` |
+> |---|---|---|
+> | INVALID | the hunter's appeal (E7), inside the dispute window, and one re-trigger if its round settles no verdict | after the window, or once the appeal gave a verdict, or once its re-trigger ended or the re-trigger window passed; at once when the hunter calls it; bond back when narrow (E8) |
+> | DUPLICATE | none | at once, bond back |
+> | Valid, award at or below the size | the maker's dispute, inside the window | after the window, or once the dispute's round ended |
+> | Valid, award above the size | the maker's dispute inside the window, else the confirmation after it (E9) | once a dispute-panel verdict is in (the maker's dispute or the confirmation), or from the confirmation deadline once no round is open and none returned a verdict |
+>
+> **What changes in the contract** (the parts not marked above are the
+> implementation's to name):
+>
+> | Function or view | Change |
+> |---|---|
+> | `appeal(claimId)` (new, payable) | E7: the hunter, on a `Judged` INVALID with `dispute == None`, before `judgedAt + disputeWindow`; `Judged` → `Disputed`, appeal kind; a hunter-funded wallet. A `statementCid` argument only if the owner gives the appeal a statement (open) |
+> | `dispute(claimId, statementCid)` | Maker kind, guards unchanged; on a claim above the size, its round is the confirmation |
+> | `confirm(claimId)` (new) | E9: anyone, on a `Judged` claim above the size with no dispute-panel verdict (undisputed, or its maker's dispute or confirmation ended `NoVerdict`), from `judgedAt + disputeWindow` until the confirmation deadline; prepay out of `escrowWei`; `Open` → `Depleted` below the top award; `Judged` → `Disputed`, confirmation kind |
+> | `finalize(claimId)` | The dispute branch serves all three kinds and counts each apart. The leftover goes to the hunter (appeal) or the maker (dispute); a confirmation's is applied as a top-up, owed awards first and then `escrowWei`, or to the maker's pull balance once the listing is Closed |
+> | `retrigger(claimId)` | Also re-triggers, once, an appeal whose round ended `NoVerdict`, until `revealWindow` after that failure, for a fresh prepay from the hunter; sent as the appeal is, not caught; `Judged` → `Disputed`. An entry point of its own is the alternative, the implementation's choice |
+> | `settle(claimId)` | E7's wait on a claim-round INVALID, and on one whose appeal ended with no verdict until its re-trigger window passes, each of which the hunter may waive; E8's bond back on a narrow INVALID; E9's refusal of a claim awaiting confirmation until a dispute-panel verdict, or until the deadline has passed with no round open |
+> | `recoverLeftoverEth(wallet)` | A confirmation wallet's leftover is applied as in `finalize` |
+> | `list(...)`, two new owner setters | `list` copies the floor and the size onto the listing; the setters change them for later listings, within the bounds |
+> | `commit`, `reveal`, `expire`, `fund`, `close` | Unchanged. `close` stays refused while a claim waits out an appeal window or a confirmation, since that claim is pending |
+> | Lens: `settleableAt`, `disputeDeadline`, `retriggerDeadline`, `judgeVector` | Report the appeal window, an appeal's re-trigger deadline, a pending confirmation and its deadline, and whether a vector is a narrow INVALID. The appeal and the confirmation cost `disputeFee` |
+> | Record (`RecordLogic`, `History`, `Finding`) | Maker disputes, appeals and confirmations counted apart, by result; narrow INVALIDs counted apart within INVALID; a finding carries its round's kind |
+>
+> `ClaimState` and `DisputeResult` keep their values. The new fields are appended
+> to `Listing` and `Claim`, as their comments require.
 
 | Function | Caller | Pays | Effect |
 |---|---|---|---|
@@ -1471,10 +2197,20 @@ Settlement under §8.7, in funds: valid at or above the counted class →
 DUPLICATE → bond back, no award; INVALID → bond to the maker. The unused part of
 the prepay comes back to the hunter through the aggregator's `ethOwed` credit,
 as `BountyEscrow` does today. A disputed verdict that flips to INVALID
-forfeits the bond to the maker, which covers the escalation prepay; one that
-holds costs the maker the prepay and is recorded as a failed dispute.
+forfeits the bond to the maker, as any INVALID does (a narrow one returns it,
+E8); one that holds is recorded as a failed dispute. Either way the maker bears
+the dispute's spent prepay: whoever asks for a dispute-panel round bears it
+whatever the result, and a win pays back only through the outcome (owner, Q72,
+2026-11-10; E7).
 
 ### 13.3 Request composition
+
+Errata E1 and E2 (2026-11-01, see §13.2) amend this section: the disclosure
+line also carries the two commitments and the ciphertext CID, at most 8 prior
+findings travel with a claim, and a dispute statement travels by CID in a
+second machine line. Errata E7 and E9 (2026-11-10, see §13.2): a confirmation's
+request is the dispute's without the dispute line, and so is an appeal's unless
+the owner gives the appeal a statement (open, Q72).
 
 The contract composes the evaluation request from state it vouches for, so no
 off-chain party has to be trusted for what the jury sees:
@@ -1505,6 +2241,11 @@ lineage and any late findings. Every state change emits an event, and the
 over HTTP and serves the badge from it; `@verdikta/attest-check` (§14) resolves a
 package or hash to the record and applies the caller's rule.
 
+Errata E7–E9 (2026-11-10, see §13.2) add to the counts: appeals and confirmations
+apart from the maker's disputes, each by result, and narrow INVALIDs apart within
+INVALID. They also add a listing's band floor and confirmation size to the
+record.
+
 Two contract questions are open (§20): a **yield-bearing escrow** (stake held in
 a vault, awards paid from principal) to soften the capital lock, and the launch
 values of `badgeFloorWei` and the under-staked ratio.
@@ -1517,7 +2258,9 @@ values of `badgeFloorWei` and the under-staked ratio.
   finding body is the revealed archive, so it is public from reveal on for
   every outcome — but the site **publishes** (indexes, shows on the record,
   announces) only valid findings; an INVALID or DUPLICATE claim is a count on
-  the record and nothing more, so slop does not pollute it. Arbiters first read
+  the record and nothing more, so slop does not pollute it. A DUPLICATE from a
+  failed integrity check is counted apart, per listing, with the check's name and
+  nothing implying who caused it (§9.5). Arbiters first read
   a proof of concept at reveal, after the fix window, so an operator never
   reads an unfixed finding; a maker who shipped no fix inside the window
   exposes their users at reveal, by their own choice, and the record says so.
@@ -1576,9 +2319,14 @@ values of `badgeFloorWei` and the under-staked ratio.
   judged history, not scores. The chicken-and-egg (runtimes will not check
   until artifacts are staked; makers will not stake until runtimes check) is
   broken by **seeding**: Verdikta funds stakes on the most-installed skills and
-  MCP servers, discloses findings to their maintainers through the fix window,
-  and publishes the records — what the Internet Bug Bounty did for third-party
-  open source before it paused in March 2026. The need is live: Koi Security
+  MCP servers **whose maintainers agree**, discloses findings to them through
+  the fix window, and publishes the records — what the Internet Bug Bounty did
+  for third-party open source before it paused in March 2026. Seeding needs the
+  maintainers' consent (owner decision Q34, §8.8): Verdikta is a sponsor like any
+  other, so a project that doesn't name it in `.verdikta/stake-control.json` can't
+  be seeded. A finding goes to the staker's key, so telling the maintainers is
+  Verdikta's own step, by hand, for its own stakes; no protocol step or notice does
+  it for anyone else. The need is live: Koi Security
   found 341 malicious skills among 2,857 on ClawHub on 1 February 2026 (335
   shipping a macOS stealer), later audits report four-figure counts, and
   ClawHub's answer was scanner integration (VirusTotal, ClawScan). OpenAI added
@@ -1630,7 +2378,7 @@ scan, funded by the listing fee, as the floor of attention every record gets.
 
 | Phase | Delivers | Exit criteria |
 |---|---|---|
-| 0. Decisions and schemas | Timeout change approved and hunter-pays confirmed (§20); the two ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (deferred: a single Verdikta key is the placeholder); OpenRouter `systemone` access verified from a canary; `code_review.json` with the `stake` block, `finding.json`, `known_issues.json`, `attestation.json` and the report schema in `@verdikta/common`; the outcome set and settlement rule as a shared helper; the `StakeAttestation` spec (§13) agreed | Schemas merged **and** the fixtures of §18 written as failing tests: forged, missing or duplicate test reports, runtime tampering, an unattested image and an over-limit direct request cannot yield trusted evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another; the settlement rule's cases (median class, below-threshold split, duplicate vs invalid) as unit tests |
+| 0. Decisions and schemas | Timeout change approved and hunter-pays confirmed (§20); the two ClassIDs, envelopes and hard limits chosen; trusted-builder key custody (decision 5); OpenRouter `systemone` access verified from a canary; `code_review.json` with the `stake` block, `finding.json`, `known_issues.json`, `attestation.json` and the report schema in `@verdikta/common`; the outcome set and settlement rule as a shared helper; the `StakeAttestation` spec (§13) agreed | Schemas merged **and** the fixtures of §18 written as failing tests: forged, missing or duplicate test reports, runtime tampering, an unattested image and an over-limit direct request cannot yield trusted evidence or exceed operator limits; a mixed-fee selection test shows a request on one class cannot select a job registered on another; the settlement rule's cases (median class, below-threshold split, duplicate vs invalid) as unit tests |
 | 1. MVP: execution evidence and the record, **Foundry only** | `code-runner` (local mode, own `dockerd` and disk); the `foundry` image and the `forge` adapter only (§20, decision 17: one toolchain, native JUnit output, a ready calibration set); builder Action with validation, the harness proof and attestation; the baseline scan; the hunter tool (`check`, `commit`, `reveal`); the `disclosure` gate and the claim gates of §10.1; deadline propagation; report and context pack fed to the existing jury with the four questions; `StakeAttestation` on testnet behind the **new attestation site**: record page, badge and feed; `code-standard` on class 5555 canaries | Identical report hash on every canary **across hosts**, including the time- and randomness-dependent fixtures; on the Solidity calibration set (§18) no false valid on the adversarial claims and ≥ 90% agreement on the clear cases, **measured per class** (a class that falls short is withdrawn); a cold-cache end-to-end round with slow jurors, justifier delay, registry failure and cancellation; every contract fixture of §18 passes (bond, dispute, release, embargo, lineage, duplicate order, expiry, depletion); p95 inside the budget; the release runbook's version-checked canary gate kept before mainnet |
 | 2. Languages, cheap and sharp | `node22` and `python312` images with the `vitest`, `jest`, `mocha` and `pytest` adapters and their calibration cases; `systemone` client, Jev typed questions and rubric juror, claim check on the justification; Jev readiness in the pre-flight (tier 1b) and Jev at listing (§8.6); Semgrep honesty rules and secret scan tuned on the fixtures; cost logging; **published accuracy**: precision and recall per class from on-chain verdicts and dispute outcomes | Identical report hashes on the Node and Python fixtures across hosts and the per-class accuracy bar met on their calibration cases; ≤ $0.30 per arbiter per evaluation on `code-standard`; accuracy no worse than Phase 1; Jev run-to-run determinism measured; claim check catches every seeded contradiction in the fixtures; the accuracy page live |
 | 3. Breadth | the `skill` harness image and its activity-log report (§8.8); enclave or permissioned-class evaluation for closed-source stakes (§14); remote runner mode; a Go image; `code-premium` enabled once the fee ceiling is raised; yield-bearing escrow if Phase 1 shows the capital lock deters makers; **juror exploration** — first a local read/grep tool in the AI Node over the runner's checkout (tier-A facts, no container cost), then for `code-premium` an optional provider-hosted shell on a copy of the post-patch tree where the juror can grep callers beyond the context pack, read files and, when the repository's dependencies install inside a minute from an allowlisted registry, write and run its own probe tests (§19; ≈ +$0.5–2 per arbiter, priced into the premium fee) | A canary gate per feature; juror-exploration findings labelled as the juror's own observations, never as report facts; mainnet rollout per `docs/release-runbook.md` §3b |
@@ -1638,8 +2386,16 @@ scan, funded by the listing fee, as the floor of attention every record gets.
 Jev comes in Phase 2 on purpose: execution evidence is what makes the verdicts
 accurate, Jev is what makes them cheap, and every operator in the class needs
 the `systemone` client deployed before Jev can sit on the jury. Seeding
-(§14) starts on testnet in Phase 1 with Verdikta's own repositories and a
-handful of popular skills, so the feed is never empty when hunters arrive.
+(§14) starts on testnet in Phase 1 with Verdikta's own repositories and those
+popular skills whose maintainers consent by naming Verdikta in their proof file
+(§8.8, owner decision Q34), so the feed is never empty when hunters arrive.
+
+**Phase 1's accuracy bar was missed, and testnet goes ahead.** On the Solidity
+calibration set, `code-standard` did not reach the ≥ 90% agreement on the clear cases
+that Phase 1's exit criteria ask for, including after the juror output limit was raised
+to 32k (§10.7, assumption 3). The owner decided on 2026-11-05 to go on to testnet with
+the bar recorded as missed, and **mainnet stays closed**. Testnet holds no real money.
+The exit criterion is unchanged.
 
 ## 18. Validation
 
@@ -1711,12 +2467,152 @@ handful of popular skills, so the feed is never empty when hunters arrive.
   whose disclosure key the maker cannot use (award still owed); an aggregator
   timeout followed by a re-trigger.
 - Run through `testing-tool` (a new `claim` scenario type) and the e2e L4 gate
-  against class 5555.
+  against class 5555, which refuses a claim scenario on any other class (`e2e/README.md`).
+  The local pipeline comes first: `e2e` L2's claim suite runs the
+  real External Adapter, AI Node (mock provider) and code runner against a local IPFS
+  gateway and pin service and a `registry:2`, with no secret, in CI (`e2e/README.md`).
+- **How the harness holds these (node A7a, build plan Q38).** Each adversarial case
+  states its expected result in a versioned file, naming the gate, check or flag that
+  fires, and has a control: the same PoC without the adversarial part, checked line by
+  line before any run. So a case cannot pass for an incidental reason. The injected-text
+  case is the one control with the same verdict, since nothing in the runner reads that
+  text. The runner-only harness settles with the External Adapter's own rule. The fixture
+  image is written rather than built, as the base's own manifest with two layers appended,
+  because the report's hash covers the image's digest: this is what makes one canary hash
+  possible across hosts. A run off the class platform, or off the pinned gVisor, prints no
+  hash at all. `code-runner/README.md`, "Calibration and conformance", holds the rules.
+- **What the clear-valid set is (node A7b).** 17 public findings on 5 repositories, at most 5 on one, narrower than
+  planned: most contest repositories from before 2024 hold a forge-std whose failed assertions carry no reason, which
+  the listing check refuses, and others were left out over how the runner compared forge's compile cache, which node
+  A3d has since fixed. A case holds a URL and a
+  commit, fetched at run time, and a test Verdikta wrote that asserts the safe property. Nothing of a third party is
+  committed: the harness measures each claim file against the real repository and report before any image. A project
+  in a subfolder lists a commit written over that folder's own tree. `code-runner/README.md`, "Public findings".
+- **What the second batch is (node A7c).** 16 claims on 4 repositories: clear invalids, duplicates, known issues and
+  severity boundaries, each with a label that is the source program's verdict or, where the case says so, the listing's
+  own text. The runner cannot tell these from a valid claim, since the test fails either way, so every gate passes and
+  all of them reach the jury: the harness holds only that each does so for the reason it states. A known issue has no
+  date: "listed before the commit" is which archive the commit names. A trust or token assumption in a program's ruling
+  has no field in a listing, whose scope is paths. `code-runner/README.md`, "The second batch".
 - Metrics: verdict accuracy and the **false-valid rate** on the adversarial
   claims (the number a maker cares about); class agreement with the source
   program on the severity boundaries; dispute-flip rate on canaries; spread of
   the valid mass across arbiters (σ ≤ 5 points); report-hash agreement across
   hosts (100%); cost; p95 latency.
+
+> **Erratum, 2026-11-09.** "σ ≤ 5 points" is a rate, not a bound on every
+> round (owner decision, 2026-11-09: "Rate, 10% over 20"). σ, the sample
+> standard deviation of one jury round's valid mass over its reveals (at least
+> three), may be above 5 points in at most 10% of the jury rounds, rounded
+> down, over at least 20 rounds with a σ: 2 of 20, 4 of 40. Fewer than 20 such
+> rounds are too few samples, as for p95. Read per round, a single round above
+> 5 failed the run, so the longer a panel was tested, the likelier it failed.
+> L4's gate (`e2e/src/l4/metrics.js`, `e2e/README.md`, "Metrics") holds this.
+
+> **Erratum, 2026-11-10 (Q70): contract fixtures for the settlement safeguards.**
+> Each must settle as written, under errata E7–E9 (§13.2), with the mechanics
+> the owner decided (Q72, 2026-11-10). They join the contract and
+> settlement fixtures above, which keep their results except where noted.
+>
+> - **The hunter's appeal (E7).**
+>   - An INVALID appealed and held: bond to the maker, the appeal's prepay spent
+>     and its leftover back to the hunter. Overturned to a counted class: the
+>     spent prepay is not refunded from the escrow or the bond.
+>   - Overturned to a counted class: award from the escrow and bond back, with no
+>     confirmation, even above the size. Overturned to DUPLICATE: bond back, no
+>     award. Overturned to a class below `lowestClassCounted`: bond back, no
+>     award, published.
+>   - An appeal round that times out, re-triggered by the hunter with a fresh
+>     prepay, whose round then gives a verdict: that verdict settles (held: bond
+>     to the maker; overturned: by the panel's outcome). Both rounds' spent
+>     prepay is the hunter's.
+>   - An appeal round with a malformed vector, re-triggered, whose round also
+>     settles no verdict: the INVALID stands and settles at once; a second
+>     re-trigger is refused.
+>   - An appeal with no verdict that the hunter does not re-trigger: `settle`
+>     refused until `revealWindow` after the failure, except from the hunter
+>     (the waiver); then the INVALID stands. The next claim's reveal waits
+>     meanwhile.
+>   - A re-trigger after its window, by anyone but the hunter, or with a prepay
+>     below `disputeFee`: refused. A re-trigger the aggregator refuses: reverts,
+>     nothing recorded, the re-trigger still available.
+>   - A submission the aggregator refuses: `appeal` reverts, nothing recorded,
+>     and a second attempt inside the window goes through.
+>   - Refused: an appeal after `judgedAt + disputeWindow`; one by anyone but the
+>     hunter; one on a DUPLICATE or a valid outcome; a second appeal; an appeal
+>     of an INVALID produced by a maker's dispute or a confirmation; a maker's
+>     dispute of a valid outcome produced by an appeal; a prepay below
+>     `disputeFee`.
+>   - `settle` of a claim-round INVALID before the window ends: refused for the
+>     maker and a third party, accepted from the hunter (the waiver). The next
+>     claim's reveal waits until it settles, and `close` is refused meanwhile.
+>   - A first claim INVALID, appealed and overturned valid, then a second claim
+>     with the same root cause: the second request carries the first as a prior
+>     finding, and the second settles DUPLICATE. Any existing fixture that
+>     settles an INVALID at once now settles it after the window or as the
+>     hunter.
+>   - A late claim's appeal: judged and counted under `later`, with no award.
+> - **The narrow INVALID (E8).**
+>   - With the floor at 350,000: an INVALID with valid mass 350,000 (bond back),
+>     one with 349,999 (bond to the maker), and a 500,000 / 500,000 split
+>     between INVALID and the valid classes (narrow: bond back).
+>   - A gate failure (all the mass on INVALID): bond to the maker at every floor.
+>   - A DUPLICATE whose valid mass is inside the band: DUPLICATE, bond back, not
+>     counted as narrow.
+>   - With the band unset (floor `THRESHOLD`): every INVALID forfeits, so the
+>     existing fixtures keep their results.
+>   - The owner changes the floor after a listing: the listing and its pending
+>     claims keep the old floor, and a listing made after the change takes the
+>     new one. A setter call outside the bounds reverts.
+>   - A narrow first round appealed and held with a vector below the floor: bond
+>     to the maker. Held with a narrow vector: bond back. An appeal whose round
+>     and re-trigger both settle no verdict, after a narrow first round: bond
+>     back.
+>   - A maker's dispute that turns a valid outcome into a narrow INVALID: bond
+>     back to the hunter, the maker's spent prepay not refunded.
+>   - The record counts a narrow INVALID under INVALID and as narrow.
+> - **The confirmation (E9).**
+>   - An award above the size, undisputed: `settle` refused after the dispute
+>     window until the confirmation's verdict. `confirm` takes the prepay from
+>     `escrowWei`, and the leftover returns to `escrowWei` at `finalize`. Held:
+>     award and bond paid.
+>   - An award exactly at the size, and one below it: no confirmation; they
+>     settle as today.
+>   - Overturned to a lower class: that class's award, with no second
+>     confirmation. Overturned to DUPLICATE: bond back. Overturned to INVALID:
+>     bond to the maker, or back when narrow; the hunter's appeal refused.
+>   - A maker's dispute inside the window on a claim above the size: no
+>     automatic round. Held: the award is paid. With no verdict minutes into
+>     the window: `confirm` refused until the window ends, then available.
+>   - `confirm` before the dispute window ends, or after the confirmation
+>     deadline: refused. Anyone may call it inside those times.
+>   - A confirmation round that times out: `confirm` again before the deadline
+>     starts a fresh round. No verdict by the deadline and no round open: the
+>     first verdict settles and pays, recorded as a confirmation with no verdict.
+>   - A confirmation started just before the deadline and judged after it:
+>     `settle` refused while it is open, then applies its verdict (an
+>     overturn to INVALID forfeits the bond).
+>   - A confirmation whose inline refund was deferred, recovered by
+>     `recoverLeftoverEth` after `settle` left part of the award owed: the
+>     leftover pays that owed award first and only the rest reaches
+>     `escrowWei`. Recovered after the listing closed: credited to the maker's
+>     pull balance.
+>   - A confirmation submission the aggregator refuses: `confirm` reverts and
+>     nothing changes.
+>   - `escrowWei` below the prepay: `confirm` refused. A top-up by `fund` then
+>     lets it start. With no top-up, the first verdict settles at the deadline
+>     and the award is owed.
+>   - A prepay that takes an Open listing's escrow below the top award: the
+>     listing is `Depleted` and refuses commits. An escrow of exactly the award:
+>     paid short by what the round spent, that part owed until `fund`.
+>   - Earlier awards owed on the listing: `confirm` refused (the escrow is empty)
+>     until `fund` has paid them, in commit order, before any confirmation
+>     prepay.
+>   - A late claim's valid outcome: no confirmation.
+>   - The owner changes the size after a listing: the listing and its pending
+>     claims keep the old size.
+>   - With the size unset (0): every counted award is confirmed.
+>   - The next claim's reveal waits while a claim awaits its confirmation.
 
 ## 19. Alternatives considered
 
@@ -1808,7 +2704,7 @@ Each item records the options weighed, the decision, and what it changed in the
 document. Decisions 1–8 were taken on 2026-10-19/20 and 2026-10-30 under the
 earlier structure; 9–16 were proposed by the 2026-10-30 restructure and
 **confirmed as written by the owner on 2026-10-31**; 17–18 are the owner's MVP
-decisions of 2026-10-30.
+decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72).
 
 1. **`responseTimeoutSeconds` 300 → 900 s on both aggregators — decided: raise
    globally.** The timeout is global per aggregator, so a stuck text round also
@@ -1846,18 +2742,25 @@ decisions of 2026-10-30.
    (≈ $20 prepay) waits for the fee ceiling to be raised to about 0.001 ETH
    (Phase 3). Per-class K/M/N and a lower bonus multiplier for cheap classes
    go on the dispatcher roadmap.
-5. **Trusted-builder keys — deferred.** Placeholder for planning: a single
-   Verdikta-held Ed25519 key with its id in `@verdikta/common`, rotated by adding
-   a key and keeping the old one valid for listings it attested. Sigstore keyless
-   signing and a multi-builder list are the alternatives to weigh when the
-   decision is taken; it must land before Phase 1's canaries, because the
-   runner refuses unattested listings.
+5. **Trusted-builder keys — decided: one Verdikta-held Ed25519 key.** It lives in a
+   key-management service that signs and never releases it. Its public half and id
+   ship in `@verdikta/common`'s production set from `1.9.0-attest.3`, so every
+   arbiter on that release accepts what it signs and nothing else (key id
+   `c400af59dc75cf7cb0bc2430833d29047955ae99c18a1d007700588a84b45b13`). Rotation is a
+   coordinated release, in this order: add the new key, release, upgrade every
+   arbiter, then switch the builder; the old key stays valid for what it attested. A
+   compromised key is removed instead, which fails every listing it attested. Steps:
+   common's `docs/CODE_REVIEW_SPECIFICATION.md`, "Trusted-builder keys". Sigstore
+   keyless signing and a multi-builder list remain alternatives for later.
 6. **In-process test evidence — decided: allow tier B with the integrity
    checks.** Black-box observation protects against forged results, not against
    a dishonest fixture, so the honesty flags and the jury's fourth question
    carry that in both models; the adversarial fixtures measure the residue;
    `code-premium` will require stricter rules if Phase 1 data says the residue
-   matters.
+   matters. A failed check first settled INVALID. Owner decision Q35 (2026-11-02):
+   a tamper flag stays INVALID, and any other failed check settles DUPLICATE, because
+   the runner cannot always tell claim code from a trap in the maker's files (§9.5,
+   with what stays open).
 7. **First application (2026-10-30) — decided: stake-backed security
    attestation.** Two research rounds (2026-10-27/28) found the code-bounty
    boards emptied by agent supply and the maintainer's own agent cheaper than a
@@ -1928,7 +2831,8 @@ decisions of 2026-10-30.
     (`BASE_IMAGE_UNSUPPORTED`), the way it rejects the `skill` kind.
 18. **A new site, not the bounty site (2026-10-30, owner) — decided; layout
     proposed.** The attestation product is a separate application with its own
-    domain, API and contract. It shares the aggregator, the code ClassIDs and
+    API and contract, served at its own origin, https://verifiers.verdikta.org
+    (owner, 2026-11-11). It shares the aggregator, the code ClassIDs and
     the arbiter network, and may reuse library code from the bounty program
     (archive generation, IPFS pinning, the request path) as a dependency, never
     by adding routes or flows to bounties.verdikta.org; `BountyEscrow` is
@@ -1936,7 +2840,24 @@ decisions of 2026-10-30.
     verdikta-applications beside `example-bounty-program/` (working folder name
     `stake-attestation/`), so the contracts share tooling and the deploy
     conventions of that repository; a repository of its own is the alternative
-    if the application grows a team of its own.
+    if the application grows a team of its own. Owner decision (2026-11-11): for
+    the pilots the site is served at https://verifiers.verdikta.org (working name
+    Verdikta Verifiers), an origin of its own rather than a separately
+    registered domain; the rest of this decision stands.
+19. **Settlement safeguards (2026-11-10, owner, Q70 and Q72) — decided; one
+    detail open.** Better claims lower the jury's error rate but cannot
+    bring it to zero, so the two costliest settlements get a second look. A
+    hunter may appeal an INVALID outcome once, to the dispute panel, paying its
+    prepay. An INVALID inside a narrow band below the threshold returns the bond.
+    An award above a set size pays only after the dispute panel confirms it.
+    Rejected for large awards: requiring all three reveals to be valid, which
+    would need the aggregator to report every reveal, not just the pair it keeps.
+    The band and the size are set later, from calibration data; testnet runs
+    with the band empty and every counted award confirmed, and the owner sets
+    the size before mainnet. The mechanics (Q72) are in §13.2 (E7–E9), among
+    them one re-trigger for a failed appeal round and the rule that whoever
+    asks for a dispute-panel round bears its spent prepay. Open: whether an
+    appeal carries a statement, decided after the owner's claim-field test.
 
 **Remaining risks** (no decision pending, tracked through the exit criteria):
 
@@ -1976,8 +2897,7 @@ decisions of 2026-10-30.
 risk; Verdikta's take (listing fee only in v1; a share of awards is an option);
 the launch values of `badgeFloorWei` (≈ $100 proposed) and the under-staked
 ratio; the listing fee amount; closed-source stakes (enclave or permissioned
-class, Phase 3); builder-key custody (decision 5); whether late claims on
-closed hashes see any use.
+class, Phase 3); whether late claims on closed hashes see any use.
 
 ## Appendix A. Code bounties (not in scope)
 

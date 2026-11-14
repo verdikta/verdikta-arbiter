@@ -1,0 +1,18 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "mellow",
+  "repo": {
+    "kind": "git",
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults",
+    "commit": "eca8836d68d65bcbfc52c6f04cf6b4b1597555bf",
+    "subdir": "flexible-vaults",
+    "tree": "3f901978d6c5394df96e9be21cd7d37679cebd1d"
+  },
+  "commit": "9ac8ee1372c2b1c80834f04bd8b81cee9b2bb93a",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
+    "program": null
+  },
+  "solc": "0.8.25"
+}

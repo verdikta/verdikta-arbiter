@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "baseCommit": "b0e5fb15bf6735ec9aaba02f5eca28a7882d815d",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/Factory.t.sol > FactoryTest > test_deploy(address,bytes32)",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/Factory.t.sol > FactoryTest > test_deployForwardValue(address,bytes32,uint256)",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/Factory.t.sol > FactoryTest > test_deployTwice(address,bytes32)",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/Factory.t.sol > FactoryTest > test_deploy(address,bytes32)",
+    "test/Factory.t.sol > FactoryTest > test_deployForwardValue(address,bytes32,uint256)",
+    "test/Factory.t.sol > FactoryTest > test_deployTwice(address,bytes32)"
+  ],
+  "unstable": []
+}

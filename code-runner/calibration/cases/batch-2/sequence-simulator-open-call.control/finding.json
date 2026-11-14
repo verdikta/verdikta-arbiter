@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Any account can spend what a wallet holds",
+  "claimedClass": "HIGH",
+  "rootCause": "A Stage2Module wallet can be made to run calls with no signature from its signers, so any account can send what the wallet holds wherever it likes.",
+  "affectedPaths": [
+    "src/Stage2Module.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_stranger_cannot_spend_from_the_wallet",
+    "observable": "test_a_stranger_cannot_spend_from_the_wallet fails with \"what the wallet holds after the call by a stranger: 0 != 1000000000000000000\""
+  },
+  "fixIncluded": false
+}

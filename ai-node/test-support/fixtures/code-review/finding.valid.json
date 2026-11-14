@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "title": "Reentrancy in Vault.withdraw",
+  "claimedClass": "HIGH",
+  "rootCause": "Vault.withdraw sends ETH with call before it zeroes balances[msg.sender], so a receiver's fallback can re-enter withdraw and drain the vault.",
+  "affectedPaths": ["contracts/Vault.sol"],
+  "poc": {
+    "command": "forge test --match-test testReenterDrainsVault",
+    "observable": "testReenterDrainsVault fails at the committed hash: the attacker ends with more ETH than it deposited"
+  },
+  "fixIncluded": false
+}

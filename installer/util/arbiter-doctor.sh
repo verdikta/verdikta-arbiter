@@ -65,6 +65,7 @@ KEY_1_ADDRESS=""
 AGGREGATOR_ADDRESS=""
 DEPLOYMENT_NETWORK=""
 RPC_URL=""
+RPC_URL_SHOWN=""    # RPC_URL through redact_log: the only form the doctor prints
 CHAIN_ID=""
 ASSUME_YES=0
 NO_SPEND=0          # --no-spend: --fix skips repairs that move funds
@@ -225,6 +226,8 @@ discover_config() {
         sepolia)      RPC_URL="${SEPOLIA_RPC_URL:-}";      CHAIN_ID="11155111" ;;
         *) RPC_URL="" ;;
     esac
+    # What the doctor prints of it: the provider's key is in the URL's path.
+    RPC_URL_SHOWN=$(printf '%s\n' "$RPC_URL" | redact_log)
 }
 
 ############################################
@@ -248,6 +251,31 @@ try:
 except SystemExit as e: raise
 except Exception: sys.exit(1)
 ' 2>/dev/null
+}
+
+# redact_log: stdin → stdout with credentials taken out (#126, node A8d). Every log
+# line, log file and config copy the doctor prints, saves or bundles goes through it:
+# Chainlink logs its RPC URLs whole, and providers put the API key in the path
+# (Infura /v3/<key>, blockpi /v1/rpc/<key>) or the query.
+#   - an http(s) or ws(s) URL keeps its scheme and host[:port]; its userinfo, path,
+#     query and fragment become /<redacted>
+#   - any other scheme's userinfo (postgresql://user:pass@host) becomes <redacted>@
+#   - a value of 16+ token characters after key= or token= (apikey=, api_key=,
+#     access_token=, ...), after a quoted "...key": / ...token: '...', or after Bearer
+#   - a JWT anywhere (eyJ....eyJ....sig)
+# A URL ends at white space, a quote, a backslash (JSON's \"), an angle bracket or a |
+# (psql -At's column separator): none of them is part of a URL.
+# LC_ALL=C: a log can hold bytes that are not UTF-8, and sed must not stop on them.
+# remote-doctor.sh carries a byte-identical copy (installer/tests/doctor-redact.test.sh).
+redact_log() {
+    LC_ALL=C sed -E \
+        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://([^/?#[:space:]"'\''\\<>|@]+)[/?#][^[:space:]"'\''\\<>|]*%\1://\2/<redacted>%g' \
+        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://[^/?#[:space:]"'\''\\<>|]*@([^/?#[:space:]"'\''\\<>|@]+)([/?#][^[:space:]"'\''\\<>|]*)?%\1://\2/<redacted>%g' \
+        -e 's%([A-Za-z][A-Za-z0-9+.-]*)://[^/?#[:space:]"'\''\\<>|]*@%\1://<redacted>@%g' \
+        -e 's%(([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])=["'\'']?)[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
+        -e 's%(([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])["'\'']?[[:space:]]*:[[:space:]]*["'\''])[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
+        -e 's%([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
+        -e 's%eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}%<redacted-jwt>%g'
 }
 
 # hex2dec HEX → decimal
@@ -435,9 +463,9 @@ check_config() {
         local block
         block=$(rpc_call eth_blockNumber '[]')
         if [ -n "$block" ]; then
-            emit PASS cfg.rpc_url "$RPC_URL  (block $(hex2dec "$block"))" ""
+            emit PASS cfg.rpc_url "$RPC_URL_SHOWN  (block $(hex2dec "$block"))" ""
         else
-            emit CRIT cfg.rpc_url "$RPC_URL  (no response to eth_blockNumber)" \
+            emit CRIT cfg.rpc_url "$RPC_URL_SHOWN  (no response to eth_blockNumber)" \
                  "Check $ENV_FILE; try $INSTALL_DIR/update-rpc-endpoints.sh"
         fi
     else
@@ -733,7 +761,7 @@ check_onchain() {
             fi
         fi
     else
-        emit FAIL chain.node_balance "RPC could not return balance" "Check $RPC_URL availability"
+        emit FAIL chain.node_balance "RPC could not return balance" "Check $RPC_URL_SHOWN availability"
     fi
 
     # Nonce
@@ -880,7 +908,8 @@ check_chainlink_txm() {
         emit PASS txm.fatal_errors_recent "no fatal_error tx in last hour" ""
     else
         local err_sample
-        err_sample=$(pg_query "SELECT DISTINCT error FROM evm.txes WHERE state='fatal_error' AND created_at > now() - interval '1 hour';" | head -3 | tr '\n' ';')
+        # A transaction's error can quote the RPC URL it was sent to.
+        err_sample=$(pg_query "SELECT DISTINCT error FROM evm.txes WHERE state='fatal_error' AND created_at > now() - interval '1 hour';" | redact_log | head -3 | tr '\n' ';')
         emit FAIL txm.fatal_errors_recent "$recent_fatal fatal_error tx in last hour  ($err_sample)" \
              "If 'could not get receipt': stale signed txes won nonce races. Restart chainlink + retest."
     fi
@@ -922,9 +951,14 @@ check_chainlink_txm() {
     # timestamp is within `RECENCY_HOURS` of now. Total counts that are all
     # stale just downgrade to INFO (they'll scroll out of the rolling window
     # on their own), while recent occurrences are FAIL.
+    #
+    # Both streams go to the file, through redact_log: Chainlink logs to stderr, with its
+    # RPC URLs (and the provider keys in them) whole. This read `2>&1 > file`, which sent
+    # stderr, every line of it, to the doctor's own output: the 2026-11-07 canary upgrade
+    # printed RPC keys into its terminal and its log that way (#126).
     local cl_log_tmp
     cl_log_tmp=$(mktemp)
-    if timeout 15 bash -c 'docker logs chainlink --tail 20000 2>&1 > "$1"' _ "$cl_log_tmp"; then
+    if timeout 15 docker logs chainlink --tail 20000 2>&1 | redact_log > "$cl_log_tmp"; then
         local line_count first_ts last_ts
         line_count=$(wc -l < "$cl_log_tmp" 2>/dev/null || echo 0)
         first_ts=$(grep -oE '^2[0-9]{3}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z' "$cl_log_tmp" | head -1)
@@ -1253,6 +1287,36 @@ check_ai_node() {
 ############################################
 # Fix mode
 ############################################
+# The code-review sandbox (node A8; design §16): svc.code_runner, sandbox.runsc, sandbox.disk,
+# sandbox.conformance, sandbox.trust, sandbox.registry. code-review-check.js reads the JSON and
+# the token (never in argv), and says what it found, one finding a line.
+# And on a code-class node, ai.code_jurors (node A14): whether the AI Node can serve every juror
+# of the code-standard panels its installed @verdikta/common names, with a native key or the
+# OpenRouter route its gateway would use (Gemini has no native class: OpenRouter only). It reads
+# the AI Node's env files, as Next does, and the panels, and nothing else: no model call, no key
+# tried, no log read.
+check_code_review() {
+    section_header "Code review sandbox and jurors"
+    local helper="$INSTALL_DIR/code-review-check.js" out sev id msg hint
+    if [ ! -f "$helper" ]; then
+        emit INFO sandbox.skipped "code-review-check.js is not installed (upgrade-arbiter.sh deploys it)" ""
+        return 0
+    fi
+    if ! command -v node >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1
+        nvm use 20.18.1 >/dev/null 2>&1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        emit WARN sandbox.skipped "node is not on PATH: the code-review checks did not run" "Run the doctor where Node.js is loaded"
+        return 0
+    fi
+    out=$(node "$helper" doctor --install-dir "$INSTALL_DIR" 2>/dev/null)
+    while IFS=$'\t' read -r sev id msg hint; do
+        [ -n "$id" ] && emit "$sev" "$id" "$msg" "$hint"
+    done <<< "$out"
+}
+
 prompt_yes_no() {
     local prompt="$1"
     if [ "$ASSUME_YES" = "1" ]; then
@@ -1393,6 +1457,7 @@ run_collect_mode() {
     trap 'rm -rf "$stage"' RETURN
     mkdir -p "$stage/arbiter-diag"
     local out="$stage/arbiter-diag"
+    # Every file below is written through redact_log: the bundle is made to be shared.
 
     # 1) Doctor report (this run's findings, as text and JSON)
     {
@@ -1402,38 +1467,39 @@ run_collect_mode() {
         echo ""
         echo "=== Findings ==="
         column -t -s $'\t' < "$FINDINGS_FILE" 2>/dev/null || cat "$FINDINGS_FILE"
-    } > "$out/doctor-report.txt"
+    } | redact_log > "$out/doctor-report.txt"
 
-    # 2) Sanitized configuration: .contracts is fine (contains addresses, no secrets);
-    #    .env may contain PRIVATE_KEY and API keys — sanitize.
-    [ -f "$CONTRACTS_FILE" ] && cp "$CONTRACTS_FILE" "$out/contracts.snapshot"
+    # 2) Sanitized configuration: .contracts holds addresses and job ids, no secrets;
+    #    .env holds PRIVATE_KEY, API keys and the RPC URLs with their providers' keys.
+    [ -f "$CONTRACTS_FILE" ] && redact_log < "$CONTRACTS_FILE" > "$out/contracts.snapshot"
     if [ -f "$ENV_FILE" ]; then
         sed -E '
             s/^(PRIVATE_KEY=).*/\1<REDACTED>/i;
             s/^(.*API_KEY=).*/\1<REDACTED>/i;
             s/^(.*SECRET.*=).*/\1<REDACTED>/i;
             s/^(IPFS_PINNING_KEY=).*/\1<REDACTED>/i
-        ' "$ENV_FILE" > "$out/env.sanitized"
+        ' "$ENV_FILE" | redact_log > "$out/env.sanitized"
     fi
 
-    # 3) Component logs (tail N lines of latest)
+    # 3) Component logs (tail N lines of latest). Chainlink's go to stderr: both streams.
     mkdir -p "$out/logs"
     local ea_log ai_log
     ea_log=$(ls -t "$INSTALL_DIR/external-adapter/logs/"adapter_*.log 2>/dev/null | head -1)
     ai_log=$(ls -t "$INSTALL_DIR/ai-node/logs/"ai-node_*.log 2>/dev/null | head -1)
-    [ -n "$ea_log" ] && tail -5000 "$ea_log" > "$out/logs/adapter.log.tail"
-    [ -n "$ai_log" ] && tail -5000 "$ai_log" > "$out/logs/ai-node.log.tail"
-    timeout 20 docker logs chainlink --tail 5000 2>&1 > "$out/logs/chainlink.log.tail" || true
+    [ -n "$ea_log" ] && tail -5000 "$ea_log" | redact_log > "$out/logs/adapter.log.tail"
+    [ -n "$ai_log" ] && tail -5000 "$ai_log" | redact_log > "$out/logs/ai-node.log.tail"
+    timeout 20 docker logs chainlink --tail 5000 2>&1 | redact_log > "$out/logs/chainlink.log.tail" || true
 
-    # 4) chainlink DB snapshot (sanitized — drop bodies of signed tx blobs)
+    # 4) chainlink DB snapshot (sanitized — drop bodies of signed tx blobs; a tx's error
+    #    can quote the RPC URL it was sent to)
     mkdir -p "$out/db"
     if pg_available; then
         pg_query "SELECT id, nonce, state, error, created_at FROM evm.txes ORDER BY id;" \
-            > "$out/db/evm_txes.tsv"
+            | redact_log > "$out/db/evm_txes.tsv"
         pg_query "SELECT eth_tx_id, state, broadcast_before_block_num, encode(hash,'hex') AS hash FROM evm.tx_attempts ORDER BY eth_tx_id;" \
-            > "$out/db/evm_tx_attempts.tsv"
+            | redact_log > "$out/db/evm_tx_attempts.tsv"
         pg_query "SELECT encode(address,'hex'), evm_chain_id, disabled FROM evm.key_states;" \
-            > "$out/db/evm_key_states.tsv"
+            | redact_log > "$out/db/evm_key_states.tsv"
     fi
 
     # 5) On-chain snapshot
@@ -1444,7 +1510,7 @@ run_collect_mode() {
             echo "nonce_latest=$(rpc_call eth_getTransactionCount "[\"$NODE_ADDRESS\",\"latest\"]")"
             echo "nonce_pending=$(rpc_call eth_getTransactionCount "[\"$NODE_ADDRESS\",\"pending\"]")"
             echo "operator_code_size=$(echo "$(rpc_call eth_getCode "[\"$OPERATOR_ADDR\",\"latest\"]")" | awk '{print (length($0)-2)/2}')"
-        } > "$out/onchain.txt"
+        } | redact_log > "$out/onchain.txt"
     fi
 
     # 6) Package
@@ -1490,7 +1556,7 @@ if [ "$OUTPUT" = "human" ]; then
     echo "host:     $(hostname)"
     echo "install:  $INSTALL_DIR"
     echo "network:  ${DEPLOYMENT_NETWORK:-?}  (chain $CHAIN_ID)"
-    echo "rpc:      ${RPC_URL:-?}"
+    echo "rpc:      ${RPC_URL_SHOWN:-?}"
     echo "node key: ${NODE_ADDRESS:-?}"
     echo "operator: ${OPERATOR_ADDR:-?}"
     echo "time:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1502,6 +1568,7 @@ check_onchain
 check_chainlink_txm
 check_external_adapter
 check_ai_node
+check_code_review
 
 print_summary
 

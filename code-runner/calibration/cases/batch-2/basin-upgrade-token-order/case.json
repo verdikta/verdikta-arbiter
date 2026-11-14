@@ -1,0 +1,112 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.basin-upgrade-token-order",
+  "subsets": [
+    "batch-2",
+    "duplicate"
+  ],
+  "title": "An upgrade can reverse a well's tokens under its liquidity providers",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-07-basin-findings/issues/23",
+    "licence": "Repository LICENSE.txt: MIT, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-07-basin-findings/issues/23",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test. This one upgrades a real proxy to a real well with the tokens the other way round.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-07-basin-findings/12468792fc3c89de5ea1353ddb83b7ce5f7d5b21/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-07-basin",
+      "verdict": "Valid, recorded as a duplicate at part credit: labelled duplicate-52, partial-50, 3 (High Risk), upgraded by judge.",
+      "class": "HIGH"
+    }
+  },
+  "listing": "listings/basin-2024-07-scope",
+  "label": {
+    "kind": "duplicate.victim",
+    "basis": "program",
+    "why": "The finding speaks for liquidity providers, whose reserves read as the other token once an upgrade reverses the order, where #52 speaks of the owner losing control of the well. The judge first took it as its own Medium, then ruled that it applies only because upgrades need no privilege, and counted it with #52 at part credit.",
+    "duplicateOf": {
+      "url": "https://github.com/code-423n4/2024-07-basin-findings/issues/52",
+      "recorded": "#23 was selected for report, then marked duplicate of #52 and partial-50 by judge alex-ppg after post-judging comments, and taken out of the report. #52 is primary, published as H-01."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [
+    "priors/upgrade-open-to-anyone"
+  ],
+  "expected": {
+    "outcome": "DUPLICATE",
+    "class": null,
+    "reason": "The program counted this with the finding in front of it, at part credit: the same root cause against another victim, so a DUPLICATE here. Every gate passes, and telling that it is the same root cause is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/TokenOrderAcrossUpgradeClaim.t.sol > TokenOrderAcrossUpgradeClaim > test_an_upgrade_keeps_the_tokens_a_provider_deposited()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the first reserve still belongs to the first token: 0xF62849F9A0B5Bf2913b396098F7c7019b51A820a != 0x2e234DAe75C793f67A35089C9d99245E1C58470b"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "_authorizeUpgrade"
+          },
+          {
+            "tier": "priorFindings",
+            "text": "Anyone can upgrade an upgradeable well"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.basin-upgrade-token-order.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(address(WellUpgradeable(payable(proxy)).tokens()[0]), address(tokens[0]), \"the first reserve still belongs to the first token\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertEq(address(WellUpgradeable(payable(proxy)).tokens()[0]), address(tokens[1]), \"the first reserve still belongs to the first token\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

@@ -1,0 +1,101 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.sequence-factory-redeploy",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "The factory reverts instead of answering with an existing account",
+  "source": {
+    "url": "https://code4rena.com/reports/2025-10-sequence#m-04-factory-deploy-reverts-instead-of-returning-address-when-account-already-exists",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6). Findings repository: returns 404; the report page is the source.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://code4rena.com/reports/2025-10-sequence#m-04-factory-deploy-reverts-instead-of-returning-address-when-account-already-exists",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test expects the revert; this one states what the factory should answer.",
+    "report": "https://code4rena.com/reports/2025-10-sequence",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2025-10-sequence",
+      "verdict": "Valid. Listed under Medium Risk Findings as M-04 in the published report; no judge or sponsor comment on the page.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/sequence",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "MEDIUM",
+    "rubric": "immunefi-v2.3",
+    "impact": "griefing",
+    "classReason": "The PoC shows a second deploy with the same salt reverting instead of answering with the address. Factory.deploy is open to anyone, so a stranger can deploy a user's wallet first and make the user's own deployment revert, at the user's gas and for no gain: griefing, Medium.",
+    "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/FactorySecondDeployClaim.t.sol > FactorySecondDeployClaim > test_a_second_deploy_answers_with_the_address()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "DeployFailed(0x0000000000000000000000000000000000001000, 0x0000000000000000000000000000000000000000000000000000000000000007)"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "DeployFailed"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.sequence-factory-redeploy.control",
+    "removes": {
+      "poc.patch": [
+        "+    assertEq(second, first, \"the second deploy gives the same address\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+    vm.expectRevert(abi.encodeWithSelector(Factory.DeployFailed.selector, mainModule, salt));",
+        "+    assertEq(second, address(0), \"the second deploy gives the same address\");",
+        "+    first;"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

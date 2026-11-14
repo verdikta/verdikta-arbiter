@@ -1,0 +1,99 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.basin-upgrade-access",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "Anyone can upgrade an upgradeable well",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-07-basin-findings/issues/52",
+    "licence": "Repository LICENSE.txt: MIT, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-07-basin-findings/issues/52",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding's test asserts that the upgrade succeeded.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-07-basin-findings/12468792fc3c89de5ea1353ddb83b7ce5f7d5b21/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-07-basin",
+      "verdict": "Valid. Published as H-01; labels 3 (High Risk), selected for report; sponsor confirmed on a duplicate.",
+      "class": "HIGH"
+    }
+  },
+  "listing": "listings/basin-2024-07",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "CRITICAL",
+    "rubric": "immunefi-v2.3",
+    "impact": "theft-of-funds",
+    "classReason": "The PoC shows a stranger's upgradeTo moving the proxy to another well. Aquifer.boreWell clones any implementation it is given, so a stranger can point the proxy at code of its own and take the tokens the proxy holds: direct theft of user funds, Critical.",
+    "reason": "The program judged it high; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/UpgradeAccessClaim.t.sol > UpgradeAccessClaim > test_a_stranger_cannot_move_the_proxy()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the implementation stays the one the owner chose: 0xe113279C63d25109B477E8D5D0c3974F7B6dA30C != 0x104fBc016F4bb334D775a19E8A6510109AC63E00"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "_authorizeUpgrade"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.basin-upgrade-access.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(MockWellUpgradeable(proxy).getImplementation(), address(first), \"the implementation stays the one the owner chose\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertEq(MockWellUpgradeable(proxy).getImplementation(), address(second), \"the implementation stays the one the owner chose\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

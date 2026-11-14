@@ -45,5 +45,222 @@
     ],
     "minOutcomes": 4,
     "expectedWinnerIndex": 2
+  },
+  {
+    "id": "claim-valid",
+    "suite": "claim",
+    "claim": "valid",
+    "description": "A valid claim on a real Foundry repository: real External Adapter, real code runner (env image pulled by digest from a local registry:2), real AI Node with the mock provider, local IPFS. Passes only if the jury was reached with the report and the pack; an abstention fails. commit-reveal: mode 1 then mode 2, the commitment recomputed. juror-deadline: a hanging juror is cancelled at the deadline, at the provider layer. testing-tool: the testing tool's claim type on what the run recorded: the same request as the EA's, and the real AI Node takes it.",
+    "modes": [
+      "0",
+      "commit-reveal",
+      "juror-deadline",
+      "testing-tool"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-gate-fail",
+    "suite": "claim",
+    "claim": "gate-fail",
+    "description": "Claims that fail a gate settle all weight on INVALID with no AI call: front-gate (the EA's inScope, no runner call), runner-gate (a PoC that edits source, the runner's testPathsOnly), commit-reveal (the same verdict through mode 1 and mode 2).",
+    "modes": [
+      "front-gate",
+      "runner-gate",
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-text-unaffected",
+    "suite": "claim",
+    "claim": "text",
+    "description": "The project's text-mode archive on the same arbiter, with code review on: no runner call, no codeReview field, the text-mode route with the provider layer's usual options, modes 0 and 1/2.",
+    "modes": [
+      "0",
+      "commit-reveal"
+    ],
+    "minOutcomes": 2
+  },
+  {
+    "id": "claim-l4-valid",
+    "suite": "l4-claim",
+    "claim": "valid",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "A valid claim on the canaries: one real request on class 5555, [listing, claim] with its disclosure line. Every revealing arbiter must reach the jury, on this claim, with one report hash. Spends the request's fee, and the canaries' provider keys. Refused on any other class. Runs only by name, with --class-id 5555 --expect-common --expect-release, once the claim set is pinned (scripts/build-l4-claims.js).",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-front-gate",
+    "suite": "l4-claim",
+    "claim": "front-gate",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "A claim out of the listing's scope, on the canaries: the EA's inScope gate settles all weight on INVALID, with no runner call and no model. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-runner-gate",
+    "suite": "l4-claim",
+    "claim": "runner-gate",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "A PoC that edits source, on the canaries: the runner pulls the image and its testPathsOnly gate settles all weight on INVALID, with no model. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-time-dependent",
+    "suite": "l4-claim",
+    "claim": "time-dependent",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "A3b's clock-reading PoC on the canaries: what moves between hosts must not reach the report. Every recorded reveal reaches the jury with one report hash. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-randomness-dependent",
+    "suite": "l4-claim",
+    "claim": "randomness-dependent",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "A3b's unseeded-randomness PoC on the canaries: one report hash across hosts, through the jury. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-flaky",
+    "suite": "l4-claim",
+    "claim": "flaky",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "A3b's alternating PoC on the canaries: INVALID at reproduces on every host, whatever its schedule, with one report hash and no model. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-registry-failure",
+    "suite": "l4-claim",
+    "claim": "registry-failure",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "A listing whose env image is a digest no registry holds: every arbiter abstains at the pull, so nobody commits. Then an out-of-scope claim on the same listing and the runner gate on the main listing must settle, which shows the arbiters and the runner were up. A registry that is down fails the pull the same way, and counts as the same failure (design §12). The round is left unfinalized (a finalize applies penalties); L4 prints the command. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6,
+    "watchSeconds": 300
+  },
+  {
+    "id": "claim-l4-near-limit-juror",
+    "suite": "l4-claim",
+    "claim": "near-limit-juror",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "The fault switch holds the first juror's real answer to just under its limit, then the justifier follows. Needs the switch on the canaries and --expect-fault-switch armed. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-provider-timeout",
+    "suite": "l4-claim",
+    "claim": "provider-timeout",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "The fault switch makes the first juror's real call time out on the first attempt; the arbiter retries from the same run and reaches a verdict. Needs the switch on the canaries and --expect-fault-switch armed. Spends the request's fee and the canaries' provider keys, twice. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-slow-justifier",
+    "suite": "l4-claim",
+    "claim": "slow-justifier",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "The fault switch holds the real justification to just under its 45 s reserve. Needs the switch on the canaries and --expect-fault-switch armed. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-cancellation",
+    "suite": "l4-claim",
+    "claim": "cancellation",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "description": "The fault switch makes the first juror's real call be on the wire at the jury deadline, on both attempts: cancelled, then the arbiter abstains and nobody commits. Then a valid claim must reach the jury, which shows the runner and the providers were up. Needs the switch on the canaries and --expect-fault-switch armed. Spends the canaries' provider keys. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6,
+    "watchSeconds": 900
+  },
+  {
+    "id": "claim-l4-cold-cache",
+    "suite": "l4-claim",
+    "claim": "cold-cache",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "A valid claim on a listing whose env image the canaries have not pulled (a fresh digest, or an evicted one), measured from pull through justification. Fails on an image already there. Needs build-l4-claims.js --cold-image. Spends the request's fee and the canaries' provider keys. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-l4-dispute",
+    "suite": "l4-claim",
+    "claim": "dispute",
+    "claimSet": "archives/l4-claim/claim-set.json",
+    "expectedClass": "LOW",
+    "description": "A claim round, then the dispute round StakeAttestation.dispute would compose: the same [listing, claim], the disclosure line and the statement by CID. For the dispute-flip rate. Spends two requests' fees and the canaries' provider keys. Refused on any other class; runs only by name.",
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-canary-fixtures",
+    "suite": "claim",
+    "claim": "canary",
+    "description": "The canary scenarios' archives through the real pipeline: A3b's time, randomness and flaky PoCs under real forge, a dispute round, and a listing on a digest the registry does not hold. So what G2 pins has been through the EA and the runner on every PR.",
+    "modes": [
+      "time-dependent",
+      "randomness-dependent",
+      "flaky",
+      "dispute",
+      "registry-failure"
+    ],
+    "minOutcomes": 6
+  },
+  {
+    "id": "claim-fault-switch",
+    "suite": "claim",
+    "claim": "fault-switch",
+    "description": "The fault switch across real processes: a second External Adapter armed against a stand-in Base Sepolia RPC, the real AI Node with the key. A request for 5555 is held for real and changes nothing else; provider-timeout's first attempt times out for real at its early deadline and the retry gives the verdict; a request for 128 and a claim the plan does not name are untouched; a node on another chain says refused.",
+    "modes": [
+      "slow-justifier",
+      "provider-timeout",
+      "class-128",
+      "unnamed-claim",
+      "refused-on-mainnet"
+    ],
+    "minOutcomes": 6
   }
 ]

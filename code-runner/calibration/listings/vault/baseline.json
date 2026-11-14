@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "baseCommit": "0fe12d9058254dde6768f212c70db4cc30d64f0c",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/Vault.t.sol > VaultTest > test_deposit_credits_the_amount()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/Vault.t.sol > VaultTest > test_withdraw_debits_the_amount()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/Vault.t.sol > VaultTest > test_deposit_credits_the_amount()",
+    "test/Vault.t.sol > VaultTest > test_withdraw_debits_the_amount()"
+  ],
+  "unstable": []
+}

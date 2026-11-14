@@ -1,0 +1,65 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "conformance.canary",
+  "subsets": [
+    "conformance"
+  ],
+  "title": "The conformance canary",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/conformance",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "canary/listing",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": "fix.patch"
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "LOW",
+    "reason": "An honest claim on the canary's bug, built to touch what the hash should cover: every gate, a honesty flag (a scan that read nothing would change the hash) and the fix check.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [
+        {
+          "rule": "verdikta.honesty.block-environment",
+          "file": "test/Exploit.t.sol",
+          "line": 9
+        }
+      ],
+      "tests": [
+        {
+          "id": "test/Exploit.t.sol > ExploitTest > test_deposit_credits_exactly()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 2 != 1"
+        }
+      ],
+      "fix": {
+        "applies": "pass",
+        "builds": "pass",
+        "pocPasses": true,
+        "regressionCount": 0
+      }
+    }
+  }
+}

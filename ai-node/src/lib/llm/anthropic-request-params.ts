@@ -34,6 +34,8 @@ export interface ClaudeVersion {
 export interface AnthropicChatParams {
   temperature?: number;
   maxTokens?: number;
+  /** Extra Messages API fields; @langchain/anthropic spreads them after its own (thinking included). */
+  invocationKwargs?: Record<string, unknown>;
 }
 
 // "claude-opus-4-7", "claude-sonnet-5", "claude-3-5-sonnet-20241022",
@@ -68,6 +70,67 @@ export function anthropicChatParams(model: string): AnthropicChatParams {
   return acceptsSamplingParams(model)
     ? { temperature: LEGACY_TEMPERATURE }
     : { ...SAMPLING_FREE_PARAMS };
+}
+
+/** The code-mode controls this module reads (llm-provider-interface.ts, CallControlOptions). */
+export interface AnthropicCallControls {
+  signal?: AbortSignal;
+  deadlineAt?: number;
+  maxTokens?: number;
+  effort?: 'low' | 'medium' | 'high';
+}
+
+/**
+ * Fields for a code-mode call, juror or justifier (design §10.3): the class
+ * envelope's output ceiling and, on Claude 5 and later, adaptive thinking with
+ * the effort level when one is asked for. Effort is `output_config.effort` (GA,
+ * no beta header). The pinned @langchain/anthropic always sends
+ * `thinking: {type: "disabled"}`, which Claude Sonnet 5.5 and Opus 5.5 reject
+ * with a 400; invocationKwargs is spread after it, so `thinking: {type:
+ * "adaptive"}` there replaces it, and every Claude 5 model accepts that.
+ * Earlier models keep LangChain's default and get no effort field (Sonnet 4.5
+ * and Haiku 4.5 reject it). Text mode passes no controls and gets {}.
+ */
+export function anthropicControlParams(model: string, controls?: AnthropicCallControls): AnthropicChatParams {
+  if (!controls || (controls.signal === undefined && controls.deadlineAt === undefined && controls.maxTokens === undefined && controls.effort === undefined)) {
+    return {};
+  }
+  const params: AnthropicChatParams = {};
+  if (controls.maxTokens !== undefined) params.maxTokens = controls.maxTokens;
+  const version = parseClaudeVersion(model);
+  if (version && version.major >= 5) {
+    params.invocationKwargs = {
+      thinking: { type: 'adaptive' },
+      ...(controls.effort !== undefined && { output_config: { effort: controls.effort } }),
+    };
+  }
+  return params;
+}
+
+/**
+ * The client options for a call with a deadline: the SDK client's own timeout, set to
+ * the time left, and the juror's dispatcher when there is one. A call with no deadline
+ * gets {} and the SDK's defaults, as text mode always has. The values are read once per
+ * client, so call this when creating the client.
+ *
+ * @anthropic-ai/sdk 0.71.2 (nested under @langchain/anthropic) refuses a non-streaming
+ * request above 21,333 max tokens, before sending anything, because it estimates such a
+ * request could take over ten minutes, unless the client has a timeout of its own. Code
+ * mode's 32,000 output tokens need one, and the jury's 480 s ceiling keeps the call below
+ * ten minutes. The SDK sends through Node's fetch, which by itself gives up after 300 s
+ * without response headers, so a juror's client also gets the call's own dispatcher
+ * (juror-transport.ts) as `fetchOptions.dispatcher`. The call's AbortSignal is still what
+ * cancels it.
+ */
+export function anthropicClientOptions(
+  controls?: AnthropicCallControls,
+  now: number = Date.now(),
+  dispatcher?: unknown,
+): { clientOptions?: { timeout: number; fetchOptions?: { dispatcher: unknown } } } {
+  if (controls?.deadlineAt === undefined) return {};
+  // At least 1 ms: a past deadline means the signal has fired or is about to.
+  const timeout = Math.max(1, controls.deadlineAt - now);
+  return { clientOptions: dispatcher === undefined ? { timeout } : { timeout, fetchOptions: { dispatcher } } };
 }
 
 /**
