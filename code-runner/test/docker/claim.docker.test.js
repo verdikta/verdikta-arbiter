@@ -68,6 +68,11 @@ const VARIANTS = Object.freeze({
   oomsolc: {
     setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) dd if=/dev/zero of=/dev/null bs=768M count=1 2>/dev/null || kill -KILL $PPID ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
   },
+  // Owner decision Q84: a compile that takes 5 s more (the compiler waits before it compiles, never for forge's version
+  // check), so the build needs more than a listing's declared 2 s and less than the class's 60 s floor.
+  slowsolc: {
+    setup: 'mv /opt/solc/solc /opt/solc/solc.real && printf \'#!/bin/sh\\ncase " $* " in *" --standard-json "*) sleep 5 ;; esac\\nexec /opt/solc/solc.real "$@"\\n\' > /opt/solc/solc && chmod 0755 /opt/solc/solc'
+  },
   // The image's own repository config runs test/filter.sh as a smudge filter
   // for test/*.bin (R1-F3): a patch could edit the script, then add a .bin.
   filter: {
@@ -435,6 +440,20 @@ test('build gate: a PoC that does not compile fails the build (tier A); an OOM-k
   assert.equal(oom.result.abstain.cause, 'oom');
   assert.equal(oom.result.abstain.step, 'build');
   assert.equal(oom.result.gates.build, undefined, 'no gate from an abstaining step');
+});
+
+test('Q84: a claim against a listing whose limits are below the class floors runs under the floors: a build that needs more than its declared 2 s completes', { timeout: TIMEOUT }, async (t) => {
+  // The listing states 2/2/10 (below every floor, as listings signed on a fast runner do); the build takes over 5 s.
+  const declared = { buildSeconds: 2, testSeconds: 2, runSeconds: 10 };
+  const request = claim(await fixture('slowsolc'), addFilesPatch({ 'test/Exploit.t.sol': DRAIN }), { limits: declared });
+  const { result: r } = await run(t, request);
+  assert.equal(r.outcome, 'definitive', show(r));
+  for (const g of ['applies', 'testPathsOnly', 'build', 'reproduces']) assert.equal(r.gates[g].status, 'pass', `${g}: ${show(r)}`);
+  assert.deepEqual(r.facts.poc.tests.map((x) => [x.runs, x.kind]), [[['fail', 'fail', 'fail'], 'assertion']]);
+  const build = r.steps.find((s) => s.name === 'build');
+  assert.ok(build.durationMs > declared.buildSeconds * 1000 && build.durationMs < 60000, `the build took ${build.durationMs} ms: past the declared 2 s, within the 60 s floor`);
+  // What the run was held to: the floors (common's CLASS_TIME_FLOORS through effectiveTimeLimits), not the listing's 2/2/10.
+  assert.deepEqual({ buildSeconds: r.limits.buildSeconds, testSeconds: r.limits.testSeconds, runSeconds: r.limits.runSeconds }, { buildSeconds: 60, testSeconds: 30, runSeconds: 180 });
 });
 
 test('poc-fails-by-import-error: a PoC that errors before any assertion fails reproduces (an unresolved import, a failing setUp)', { timeout: TIMEOUT }, async (t) => {
