@@ -899,6 +899,87 @@ test('the image is measured: its digest and platform, or why not', async () => {
   assert.match(noDaemon.problem, /could not be reached/);
 });
 
+/**
+ * A daemon holding the pinned index, as Docker answers (measured on Docker Desktop 28.0.4, Apple silicon,
+ * containerd image store): a plain `image inspect` resolves the index to the host's variant; a command given
+ * `--platform` reads that platform's variant, or says the index does not provide it. `inspect`: Docker 28.1+
+ * takes `image inspect --platform`; `newCli`: a 28.1+ CLI on an older daemon refuses it with the API version;
+ * else the CLI has no such flag. `history`: `image history --platform` (Docker 28.0+). `single`: the classic
+ * image store, which keeps only the variant a pull took.
+ */
+function multiPlatformHost({ host = 'linux/arm64', variants, inspect = true, newCli = false, history = true, single = false }) {
+  const line = (p) => {
+    const [os, arch] = p.split('/');
+    return `${[JSON.stringify(`sha256:${p === 'linux/amd64' ? 'c4' : 'db'}`), '[]', JSON.stringify([`semgrep/semgrep@${SEMGREP.indexDigest}`]), JSON.stringify(os), JSON.stringify(arch), 'null', '1000'].join('\t')}\n`;
+  };
+  const missing = (p) => ({ exitCode: 1, stderr: single
+    ? `Error response from daemon: image with reference ${SEMGREP.reference} was found but does not match the specified platform: wanted ${p}, actual: ${variants[0]}\n`
+    : `Error response from daemon: image with reference ${SEMGREP.reference} was found but does not provide the specified platform (${p})\n` });
+  const noFlag = (cmd) => ({ exitCode: 125, stderr: `unknown flag: --platform\n\nUsage:  docker image ${cmd} [OPTIONS] IMAGE [IMAGE...]\n` });
+  const calls = [];
+  const image = (args) => {
+    calls.push(args.slice(0, 3).join(' '));
+    const at = args.indexOf('--platform');
+    const want = at >= 0 ? args[at + 1] : null;
+    if (args[1] === 'inspect') {
+      if (want === null) return { stdout: line(single || !variants.includes(host) ? variants[0] : host) };
+      if (newCli) return { exitCode: 1, stderr: '"--platform" requires API version 1.49, but the Docker daemon API version is 1.48\n' };
+      if (!inspect) return noFlag('inspect');
+      return variants.includes(want) ? { stdout: line(want) } : missing(want);
+    }
+    if (args[1] === 'history') {
+      if (!history) return noFlag('history');
+      return variants.includes(want) ? { stdout: `${SEMGREP.indexDigest}\n<missing>\n` } : missing(want);
+    }
+    return { exitCode: 1, stderr: 'unexpected' };
+  };
+  return { docker: fakeDocker(healthyDaemon({ image })), calls, image };
+}
+
+test('Q84: an amd64 runner on an arm64 host reads the amd64 variant of the index: present, it passes; absent, it fails and says how to pull it', async () => {
+  const shape = (s) => ({ present: s.present, digest: s.digest, platform: s.platform, problem: s.problem });
+  for (const [label, daemon] of [['Docker 28.1+', {}], ['a 28.1 CLI on a 28.0 daemon', { newCli: true }], ['Docker 28.0', { inspect: false }]]) {
+    const both = multiPlatformHost({ variants: ['linux/arm64', 'linux/amd64'], ...daemon });
+    assert.deepEqual(shape(await imageStatus({ docker: both.docker, platform: 'linux/amd64' })),
+      { present: true, digest: SEMGREP.indexDigest, platform: 'linux/amd64', problem: null }, label);
+    const armOnly = multiPlatformHost({ variants: ['linux/arm64'], ...daemon });
+    const s = await imageStatus({ docker: armOnly.docker, platform: 'linux/amd64' });
+    assert.equal(s.present, true, label);
+    assert.ok(s.problem && s.problem.includes('no linux/amd64 variant'), `${label}: ${s.problem}`);
+    assert.ok(s.problem.includes(`docker pull --platform linux/amd64 ${SEMGREP.reference}`), `${label}: ${s.problem}`);
+    // arm64 mode (development) on the same host reads its own variant.
+    assert.equal((await imageStatus({ docker: armOnly.docker, platform: 'linux/arm64' })).problem, null, label);
+  }
+  // Without inspect --platform, the variant is asked for only when the index resolves to another one.
+  const native = multiPlatformHost({ host: 'linux/amd64', variants: ['linux/amd64', 'linux/arm64'], inspect: false });
+  assert.equal((await imageStatus({ docker: native.docker, platform: 'linux/amd64' })).problem, null);
+  assert.deepEqual(native.calls, ['image inspect --platform', 'image inspect --format']);
+});
+
+test('Q84: single-platform images and daemons without --platform still work', async () => {
+  // The classic image store keeps the one variant a pull took: read as before, by any daemon.
+  for (const daemon of [{}, { inspect: false }, { inspect: false, history: false }]) {
+    const amd = multiPlatformHost({ host: 'linux/amd64', variants: ['linux/amd64'], single: true, ...daemon });
+    assert.equal((await imageStatus({ docker: amd.docker, platform: 'linux/amd64' })).problem, null, JSON.stringify(daemon));
+    const arm = multiPlatformHost({ host: 'linux/arm64', variants: ['linux/arm64'], single: true, ...daemon });
+    const s = await imageStatus({ docker: arm.docker, platform: 'linux/amd64' });
+    assert.equal(s.present, true);
+    assert.match(s.problem, /linux\/arm64/, JSON.stringify(daemon));
+  }
+  // A daemon that can read no variant by platform (before Docker 28.0) says what it found and what would read the rest.
+  const old = multiPlatformHost({ variants: ['linux/arm64', 'linux/amd64'], inspect: false, history: false });
+  const s = await imageStatus({ docker: old.docker, platform: 'linux/amd64' });
+  assert.equal(s.platform, 'linux/arm64');
+  assert.match(s.problem, /resolves to linux\/arm64.*Docker 28\.0/);
+  // Any other failure of the variant's read is a problem too: never a pass.
+  const base = multiPlatformHost({ variants: ['linux/arm64', 'linux/amd64'], inspect: false });
+  const lost = fakeDocker(healthyDaemon({
+    image: (args) => (args[1] === 'history' ? { exitCode: 1, stderr: 'Cannot connect to the Docker daemon at unix:///x\n' } : base.image(args))
+  }));
+  const gone = await imageStatus({ docker: lost, platform: 'linux/amd64' });
+  assert.equal(gone.problem, 'the Docker daemon could not be reached');
+});
+
 test('R1-F2: a fix\'s lint reads every file it changed as Solidity, since forge compiles an import of any name, with the listed bytes for the baseline', () => {
   const r = prepareFix([
     entry('docs/README.md', 'text'),

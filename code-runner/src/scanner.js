@@ -276,26 +276,92 @@ function ruleBytes(name, dir = RULES_DIR) {
 
 // ------------------------------------------------------------------ the image
 
+const IMAGE_STATUS_TIMEOUT_MS = 30000;
+/** A docker CLI or daemon that takes no `--platform` on the command: a CLI before it had the flag, or a newer CLI on an older daemon's API. */
+const NO_PLATFORM_FLAG = /unknown flag: --platform|--platform"? requires API version/i;
 /**
- * The image as the daemon has it: its digest and platform, measured.
+ * The daemon has the image but no variant of it for the platform asked: under the containerd image store, the index
+ * lists none or it was never pulled ("does not provide"); under the classic store, the one image kept is another
+ * platform's ("does not match").
+ */
+const NO_VARIANT = /was found but does not (?:provide|match) the specified platform/i;
+
+function firstStderrLine(r) {
+  return String(r.stderr || '').split('\n').find((l) => l.trim()) || `exit ${r.exitCode}`;
+}
+
+/**
+ * The image as the daemon has it: its digest and the variant for the runner's platform, measured.
+ *
+ * The reference is the multi-platform index. Under Docker's containerd image store (Docker Desktop's
+ * default) the daemon keeps every variant pulled, and a plain `docker image inspect` resolves the index
+ * to the host's, so an amd64 runner on Apple silicon read the arm64 variant and called itself
+ * unhealthy with the amd64 one there (Q84). What a claim's scan runs is `docker create --pull never
+ * --platform <platform>` on the index, so the variant measured is that platform's:
+ *
+ * 1. `docker image inspect --platform <platform>` (Docker 28.1, API 1.49), which reads that variant;
+ * 2. where the CLI or the daemon takes no `--platform` on inspect: the plain inspect (the digest, and the
+ *    variant the index resolves to: the one variant a classic store keeps), and, when that is another
+ *    platform's, `docker image history --platform <platform>` (Docker 28.0, API 1.48), whose daemon
+ *    reads the index's manifest for the platform and fails, as the scan's create would, when there is
+ *    none it can run;
+ * 3. a daemon older than that can read no other variant: the one it resolves to is the answer.
+ *
+ * `present` is whether the daemon holds the image at all; a missing variant is a mismatch, as another
+ * platform's image is, and the problem names the pull that fetches it (the runner never pulls it).
  * @returns {Promise<{image:string, version:string, rules:string, present:boolean, digest:string|null, platform:string|null, problem:string|null}>}
  */
 async function imageStatus({ docker, platform = OCI_PLATFORM, signal }) {
   const out = { image: SEMGREP.reference, version: SEMGREP.version, rules: RULES_VERSION, present: false, digest: null, platform: null, problem: null };
-  const r = await runText(docker, ['image', 'inspect', '--format', INSPECT_FORMAT, SEMGREP.reference], { timeoutMs: 30000, signal });
-  if (r.spawnError) return { ...out, problem: `the docker CLI could not be started: ${r.spawnError}` };
-  if (r.exitCode !== 0) {
+  const pull = `docker pull --platform ${platform} ${SEMGREP.reference}`;
+  const inspect = (extra) => runText(docker, ['image', 'inspect', ...extra, '--format', INSPECT_FORMAT, SEMGREP.reference], { timeoutMs: IMAGE_STATUS_TIMEOUT_MS, signal });
+  /** A command that failed, as the answer: or null when it is the flag the daemon does not take. */
+  const failed = (r, command) => {
+    if (r.spawnError) return { ...out, problem: `the docker CLI could not be started: ${r.spawnError}` };
     if (isUnreachableText(r.stderr)) return { ...out, problem: 'the Docker daemon could not be reached' };
-    return { ...out, problem: /No such image/i.test(r.stderr)
-      ? `the Semgrep image ${SEMGREP.reference} is not on this host: the installer warms it, the runner never pulls it`
-      : `docker image inspect failed for the Semgrep image: ${String(r.stderr).split('\n')[0].slice(0, 200)}` };
+    if (/No such image/i.test(r.stderr)) return { ...out, problem: `the Semgrep image ${SEMGREP.reference} is not on this host: the installer warms it, the runner never pulls it` };
+    return { ...out, problem: `docker image ${command} failed for the Semgrep image: ${firstStderrLine(r).slice(0, 200)}` };
+  };
+  /** The image an inspect read: its digest checked, and its platform. */
+  const read = (r) => {
+    const [info] = parseInspectLines(r.stdout);
+    if (!info) return { ...out, problem: 'docker image inspect returned something unreadable for the Semgrep image' };
+    const measured = { ...out, present: true, platform: platformOf(info), digest: info.repoDigests.some((d) => d.endsWith(`@${SEMGREP.indexDigest}`)) ? SEMGREP.indexDigest : null };
+    if (!measured.digest) return { ...measured, problem: `the Semgrep image on this host does not carry the pinned digest ${SEMGREP.indexDigest}` };
+    return measured;
+  };
+  const noVariant = (measured) => ({
+    ...measured,
+    problem: `the Semgrep image on this host has no ${platform} variant (it resolves to ${measured.platform}); this runner runs ${platform}: pull it with \`${pull}\`, the runner never pulls it`
+  });
+
+  const asked = await inspect(['--platform', platform]);
+  const takesFlag = asked.exitCode === 0 || asked.spawnError || !NO_PLATFORM_FLAG.test(asked.stderr);
+  if (asked.exitCode === 0) {
+    const measured = read(asked);
+    if (measured.problem) return measured;
+    return measured.platform === platform ? measured : { ...measured, problem: `the Semgrep image on this host is ${measured.platform}; this runner runs ${platform}` };
   }
-  const [info] = parseInspectLines(r.stdout);
-  if (!info) return { ...out, problem: 'docker image inspect returned something unreadable for the Semgrep image' };
-  const measured = { ...out, present: true, platform: platformOf(info), digest: info.repoDigests.some((d) => d.endsWith(`@${SEMGREP.indexDigest}`)) ? SEMGREP.indexDigest : null };
-  if (!measured.digest) return { ...measured, problem: `the Semgrep image on this host does not carry the pinned digest ${SEMGREP.indexDigest}` };
-  if (measured.platform !== platform) return { ...measured, problem: `the Semgrep image on this host is ${measured.platform}; this runner runs ${platform}` };
-  return measured;
+  if (takesFlag && !NO_VARIANT.test(asked.stderr)) return failed(asked, 'inspect');
+
+  // The index's default variant (and its digest), read as a daemon without inspect --platform reads it.
+  const plain = await inspect([]);
+  if (plain.exitCode !== 0) return failed(plain, 'inspect');
+  const measured = read(plain);
+  if (measured.problem) return measured;
+  if (takesFlag) return noVariant(measured);
+  if (measured.platform === platform) return measured;
+
+  const history = await runText(docker, ['image', 'history', '--platform', platform, '--quiet', SEMGREP.reference], { timeoutMs: IMAGE_STATUS_TIMEOUT_MS, signal });
+  if (history.exitCode === 0) return { ...measured, platform };
+  if (NO_VARIANT.test(history.stderr)) return noVariant(measured);
+  if (!history.spawnError && NO_PLATFORM_FLAG.test(history.stderr)) {
+    return {
+      ...measured,
+      problem: `the Semgrep image on this host resolves to ${measured.platform}; this runner runs ${platform}, and this Docker reads no other variant of it by platform (Docker 28.0 or newer does): pull it with \`${pull}\``
+    };
+  }
+  return { ...failed(history, 'history'), present: true, digest: measured.digest, platform: measured.platform };
 }
 
 /** Before a claim's run (the engine's preflight): the scan will be able to run, or the run abstains now, not after the PoC. */
