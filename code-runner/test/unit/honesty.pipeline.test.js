@@ -10,7 +10,6 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { codeReview } = require('@verdikta/common');
 const { executeRun } = require('../../src/pipeline');
-const { checkSpec } = require('../../src/classLimits');
 const { claimSteps } = require('../../src/steps');
 const { buildReport } = require('../../src/report');
 const { health } = require('../../src/health');
@@ -23,7 +22,7 @@ const {
 } = require('../../src/scanner');
 const { claimSandbox, junit, drainFails, suitePasses, semgrepHit, semgrepAnswer, forgeConfig, FIX_PATCH, BASE, POC_PATCH } = require('../helpers/fakeClaim');
 const { fakeDocker, healthyDaemon } = require('../helpers/fakeDocker');
-const { claimRequest, runClaim, forgeSpec, finding, DEPOSIT, IMAGE } = require('../helpers/claimRun');
+const { claimRequest, runClaim, forgeSpec, finding, DEPOSIT, IMAGE, statedLimits } = require('../helpers/claimRun');
 const { settlementFacts } = require('../helpers/settlementFacts');
 const { testConfig, request: httpRequest } = require('../helpers/http');
 const { attestationFor } = require('../helpers/requests');
@@ -520,13 +519,13 @@ const smallRun = (runSeconds) => {
   const spec = { ...forgeSpec(), limits: { cpus: 1, memoryMb: 512, buildSeconds: 30, testSeconds: runSeconds, runSeconds, maxPatchBytes: 2000000 } };
   return claimRequest({ spec });
 };
+/** Under the spec's runSeconds as stated (1 s here), below its 180 s class floor (Q84): the budget is measured in a second. */
 const execute = (sb, request) => {
-  const lim = checkSpec(request.spec);
-  assert.ok(lim.ok, JSON.stringify(lim.issues));
+  const limits = statedLimits(request.spec);
   const receivedAt = Date.now();
   return executeRun({
-    docker: sb.docker, config: testConfig(), limits: lim.limits, image: IMAGE, runId: '0123456789abcdef',
-    steps: claimSteps(request, lim.limits), receivedAt, deadlineAt: receivedAt + 60000, active: new Set(), log: { info() {}, warn() {}, error() {}, debug() {} },
+    docker: sb.docker, config: testConfig(), limits, image: IMAGE, runId: '0123456789abcdef',
+    steps: claimSteps(request, limits), receivedAt, deadlineAt: receivedAt + 60000, active: new Set(), log: { info() {}, warn() {}, error() {}, debug() {} },
     admit: async () => {}, sandboxes: request.fixPatch ? 2 : 1
   });
 };

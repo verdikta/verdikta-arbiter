@@ -2,7 +2,9 @@
 
 /**
  * What the runner reads from @verdikta/common (pinned exactly, like the EA,
- * the AI Node and e2e): the class hard limits and the platform, the pinned
+ * the AI Node and e2e): the class hard limits and the platform, the function
+ * that applies the class time floors (effectiveTimeLimits; owner decision Q84,
+ * node A26: the runner holds no copy of the floors), the pinned
  * forge base image, the fuzz seed every forge run uses, the gVisor release and
  * the Semgrep rule set, the test-paths gate with its glob matcher (so the
  * runner, the site and the EA match paths the same way), the stake documents'
@@ -23,8 +25,9 @@ const COMMON_VERSION = require('@verdikta/common/package.json').version;
 const { pocPatchPathsGate, matchesAny, normalizePath, splitByStakeScope, selectDocuments, isDocumentText } = require('@verdikta/common/src/codeReview/scope');
 const { baselineSets, validateBaseline } = require('@verdikta/common/src/codeReview/baseline');
 const {
-  BASELINE_RUNS, CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA, OCI_PLATFORM, CONTEXT_PACK_TIERS, STAKE_DOCUMENT_LIMITS
+  BASELINE_RUNS, CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA, effectiveTimeLimits, OCI_PLATFORM, CONTEXT_PACK_TIERS, STAKE_DOCUMENT_LIMITS
 } = require('@verdikta/common/src/codeReview/constants');
+if (typeof effectiveTimeLimits !== 'function') throw new Error(`@verdikta/common ${COMMON_VERSION} has no effectiveTimeLimits: the runner needs 1.9.0-attest.6 or later (the class time floors)`);
 const { REPORT_LIMITS, POC_RUNS, validateClaimReport, canonicalReportJson, reportSha256 } = require('@verdikta/common/src/codeReview/report');
 const { MAX_PRIOR_FINDINGS } = require('@verdikta/common/src/codeReview/request');
 const { canonicalJson } = require('@verdikta/common/src/codeReview/canonical');
@@ -58,6 +61,7 @@ module.exports = {
   BASELINE_RUNS,
   CLASS_HARD_LIMITS,
   SPEC_LIMIT_MAXIMA,
+  effectiveTimeLimits,
   OCI_PLATFORM,
   REPORT_LIMITS,
   REPORT_MAX_LINE,

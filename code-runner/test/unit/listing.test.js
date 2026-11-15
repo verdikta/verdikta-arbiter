@@ -12,6 +12,9 @@
 //   3. the harness proof: a trivially failing and a trivially broken test
 //      under paths.tests told apart by the JUnit, else refused
 //   4. the same isolation, limits and deadline rules as /v1/runs
+//   5. the class time floors (owner decision Q84, node A26): the defaults are
+//      at least the floors, the probes run with them, and declared limits are
+//      compared with the defaults as a claim's run gets both, floored
 //   Review focus: the endpoint cannot run claims outside the claim gates.
 
 const test = require('node:test');
@@ -40,6 +43,14 @@ const noAdmission = async () => {};
 const meminfo = async () => ({ availableMb: 1e6, error: null });
 const statfs = async () => ({ bavail: 1e7, bsize: 4096 });
 const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** The class time floors (owner decision Q84), as @verdikta/common 1.9.0-attest.6 holds them in CLASS_TIME_FLOORS. */
+const Q84 = Object.freeze({ buildSeconds: 60, testSeconds: 30, runSeconds: 180 });
+/** No floors: the defaults as measured, for the tests that drive the harness bound with a fake in milliseconds (listingSteps' timeLimits). */
+const NO_FLOORS = (l) => Object.freeze({ ...l });
+const timeOf = (l) => ({ buildSeconds: l.buildSeconds, testSeconds: l.testSeconds, runSeconds: l.runSeconds });
+/** The oracle: each time limit raised to its floor. */
+const floored = (l) => Object.fromEntries(Object.entries(timeOf(l)).map(([k, v]) => [k, Math.max(Q84[k], v)]));
 
 const COMMANDS = {
   framework: 'forge',
@@ -165,11 +176,13 @@ function listingSandbox({
   return sb;
 }
 
-async function runListing(sb, body = listingBody(), { caps, deadlineMs = 900000, limitsOver = null, admit = noAdmission, extraSteps = [], solcList = fakeSolcList() } = {}) {
+async function runListing(sb, body = listingBody(), { caps, timeLimits, deadlineMs = 900000, limitsOver = null, admit = noAdmission, extraSteps = [], solcList = fakeSolcList() } = {}) {
   const v = validateListingRequest(body);
   assert.ok(v.ok, JSON.stringify(v.issues));
   const limits = limitsOver ? Object.freeze({ ...v.limits, ...limitsOver }) : v.limits;
-  const steps = listingSteps(v.request, limits, { imageSize: () => imageUnpackedBytes(sb.docker, v.request.image), platform: 'linux/amd64', solcList, ...(caps ? { caps } : {}) });
+  const steps = listingSteps(v.request, limits, {
+    imageSize: () => imageUnpackedBytes(sb.docker, v.request.image), platform: 'linux/amd64', solcList, ...(caps ? { caps } : {}), ...(timeLimits ? { timeLimits } : {})
+  });
   const receivedAt = Date.now();
   return executeRun({
     docker: sb.docker, config: testConfig(), limits, image: v.request.image, runId: '0123456789abcdef', steps: [...steps, ...extraSteps],
@@ -251,7 +264,7 @@ test('a test missing or duplicated on a run is an error there; a failing setUp i
   assert.match(warnings.find((w) => w.code === 'SUITE_HARNESS_ERRORS').detail, /test\/Oracle\.t\.sol:OracleTest setUp\(\)/);
 });
 
-test('timings, the unpacked size and the default limits: 3x the measured times plus the repeat reserve', async () => {
+test('timings, the unpacked size and the default limits: 3x the measured times plus the repeat reserve, each at least its class floor (Q84)', async () => {
   const sb = listingSandbox({
     scripts: { 'vcr-build': async (d) => { await delay(120); return { exitCode: 0 }; } },
     suite: [1, 2, 3].map((k) => async () => { await delay(k === 2 ? 90 : 40); return { exitCode: 1, stdout: vaultSuite(k) }; })
@@ -267,9 +280,11 @@ test('timings, the unpacked size and the default limits: 3x the measured times p
   const P = ms(timings.prepareSeconds);
   const B = ms(timings.buildSeconds);
   const T = Math.max(...timings.testSeconds.map(ms));
-  assert.equal(limits.buildSeconds, Math.max(1, Math.ceil((3 * B) / 1000)));
-  assert.equal(limits.testSeconds, Math.max(1, Math.ceil((3 * T) / 1000)));
-  assert.equal(limits.runSeconds, Math.ceil((3 * (P + B + T)) / 1000) + 2 * limits.testSeconds);
+  const testSeconds = Math.max(1, Math.ceil((3 * T) / 1000));
+  const measured = { buildSeconds: Math.max(1, Math.ceil((3 * B) / 1000)), testSeconds, runSeconds: Math.ceil((3 * (P + B + T)) / 1000) + 2 * testSeconds };
+  assert.deepEqual(timeOf(limits), floored(measured), JSON.stringify(measured));
+  // A fake measured in milliseconds: every default is its floor, what a claim's run gets.
+  assert.deepEqual(timeOf(limits), Q84);
   // The spec's own cpus and memory (what the suite was measured with); the class's patch size.
   assert.equal(limits.cpus, 1);
   assert.equal(limits.memoryMb, 2048);
@@ -282,13 +297,23 @@ test('timings, the unpacked size and the default limits: 3x the measured times p
   assert.deepEqual(history[0].args, ['history', '--human=false', '--no-trunc', '--format', '{{.Size}}', IMAGE]);
 });
 
-test('deriveLimits: buildSeconds = ceil(3B), testSeconds = ceil(3T), runSeconds = ceil(3(P + B + T)) + 2 testSeconds', () => {
+test('deriveLimits: buildSeconds = ceil(3B), testSeconds = ceil(3T), runSeconds = ceil(3(P + B + T)) + 2 testSeconds, each then raised to its class floor (Q84)', () => {
   const spec = { cpus: 2, memoryMb: 4096, maxPatchBytes: 2000000 };
   const d = deriveLimits({ prepareMs: 4000, buildMs: 14200, testMs: [21500, 20900, 22100] }, spec);
-  assert.deepEqual(d.limits, { cpus: 2, memoryMb: 4096, buildSeconds: 43, testSeconds: 67, runSeconds: 121 + 134, maxPatchBytes: 2000000 });
+  assert.deepEqual(d.measured, { buildSeconds: 43, testSeconds: 67, runSeconds: 121 + 134 });
+  // buildSeconds 43 is below the 60 s floor; the others are above theirs and keep their values.
+  assert.deepEqual(d.limits, { cpus: 2, memoryMb: 4096, buildSeconds: 60, testSeconds: 67, runSeconds: 255, maxPatchBytes: 2000000 });
   assert.deepEqual(d.over, []);
-  // At least 1 s each, whatever was measured.
-  assert.deepEqual(deriveLimits({ prepareMs: 0, buildMs: 0, testMs: [0, 0, 0] }, spec).limits, { ...spec, buildSeconds: 1, testSeconds: 1, runSeconds: 2 });
+  // At least 1 s each from the times, whatever was measured; and at least the floors.
+  const zero = deriveLimits({ prepareMs: 0, buildMs: 0, testMs: [0, 0, 0] }, spec);
+  assert.deepEqual(zero.measured, { buildSeconds: 1, testSeconds: 1, runSeconds: 2 });
+  assert.deepEqual(zero.limits, { ...spec, ...Q84 });
+  // The repeat reserve counts the measured testSeconds, not its floor: P 50 s, B 20 s, T 5 s gives 3 x 75 + 2 x 15.
+  const reserve = deriveLimits({ prepareMs: 50000, buildMs: 20000, testMs: [5000, 5000, 5000] }, spec);
+  assert.deepEqual(reserve.measured, { buildSeconds: 60, testSeconds: 15, runSeconds: 255 });
+  assert.deepEqual(timeOf(reserve.limits), { buildSeconds: 60, testSeconds: 30, runSeconds: 255 });
+  // With the floors taken out (a test's timeLimits), the defaults are the measured ones.
+  assert.deepEqual(timeOf(deriveLimits({ prepareMs: 0, buildMs: 0, testMs: [0, 0, 0] }, spec, CLASS_HARD_LIMITS, NO_FLOORS).limits), zero.measured);
 });
 
 test('the image\'s unpacked size above the class\'s 6 GB is refused; a daemon that cannot list the layers abstains', async () => {
@@ -325,12 +350,41 @@ test('the scope must name a file of the listed commit, and the image must leave 
   assert.deepEqual(full.issues.map((i) => i.code), ['IMAGE_WORKDIR_FULL']);
 });
 
-test('limits code_review.json declares below the measured defaults are refused (claims would run out of time)', async () => {
-  const r = await runListing(listingSandbox(), listingBody({ spec: { limits: { runSeconds: 1, testSeconds: 1 } } }));
-  assert.equal(r.outcome, 'definitive');
-  assert.deepEqual(codes(r), ['LIMITS_BELOW_DEFAULTS']);
-  assert.match(r.facts.listing.refusals[0].detail, /runSeconds 1/);
-  assert.ok(r.facts.listing.limits.runSeconds > 1);
+test('Q84: limits below the class floors alone are not refused: 12/4/46 against defaults at the floors is accepted, and the answer states 60/30/180', async () => {
+  for (const declared of [{ buildSeconds: 12, testSeconds: 4, runSeconds: 46 }, { runSeconds: 1, testSeconds: 1 }]) {
+    const r = await runListing(listingSandbox(), listingBody({ spec: { limits: declared } }));
+    assert.equal(r.outcome, 'definitive', show(r));
+    assert.equal(r.facts.listing.status, 'accepted', show(r));
+    assert.deepEqual(codes(r), []);
+    assert.deepEqual(timeOf(r.facts.listing.limits), Q84, 'the defaults a claim gets: the floors');
+    assert.equal(r.facts.listing.harness.probes.length, 3, 'the harness proof ran');
+  }
+});
+
+test('Q84: defaults above the floors still refuse a lower declaration, both compared as a claim gets them (floored)', async (t) => {
+  // Each suite run measures 11 s (the clock moved on in the fake), so testSeconds defaults to at least 33, above its 30 s
+  // floor; the build and the run default to their floors.
+  const realNow = Date.now;
+  let offset = 0;
+  t.mock.method(Date, 'now', () => realNow.call(Date) + offset);
+  const suite = [1, 2, 3].map((k) => () => { offset += 11000; return { exitCode: 1, stdout: vaultSuite(k) }; });
+
+  const low = await runListing(listingSandbox({ suite }), listingBody({ spec: { limits: { buildSeconds: 12, testSeconds: 4, runSeconds: 46 } } }));
+  assert.equal(low.outcome, 'definitive', show(low));
+  assert.deepEqual(codes(low), ['LIMITS_BELOW_DEFAULTS'], show(low));
+  const d = low.facts.listing.limits;
+  assert.ok(d.testSeconds >= 33, JSON.stringify(d));
+  assert.deepEqual({ buildSeconds: d.buildSeconds, runSeconds: d.runSeconds }, { buildSeconds: Q84.buildSeconds, runSeconds: Q84.runSeconds });
+  const detail = low.facts.listing.refusals[0].detail;
+  // Only testSeconds: buildSeconds 12 and runSeconds 46 get their floors, which are the defaults.
+  assert.match(detail, /testSeconds 4 \(30 with the class floor\)/);
+  assert.match(detail, new RegExp(`below the measured defaults \\(testSeconds ${d.testSeconds}\\)`));
+  assert.doesNotMatch(detail, /buildSeconds|runSeconds/);
+
+  // The same measurement, a testSeconds at or above the default: the build and run below their floors are not refused.
+  const ok = await runListing(listingSandbox({ suite }), listingBody({ spec: { limits: { buildSeconds: 12, testSeconds: 45, runSeconds: 46 } } }));
+  assert.equal(ok.facts.listing.status, 'accepted', show(ok));
+  assert.ok(ok.facts.listing.limits.testSeconds <= 45 && ok.facts.listing.limits.testSeconds > Q84.testSeconds, JSON.stringify(ok.facts.listing.limits));
 });
 
 // --------------------------------------------------------- 2. too heavy
@@ -558,15 +612,17 @@ test('harness proof: no free path under paths.tests refuses the listing', async 
 });
 
 test('harness proof: a probe that does not finish within the default limits refuses the listing', async () => {
-  const r = await runListing(listingSandbox({ probeRun: { failsForgeStd: () => never() } }));
+  // Without the floors, so that the probe's run is stopped at the fake's 1 s rather than the 30 s floor: the rule is the same.
+  const r = await runListing(listingSandbox({ probeRun: { failsForgeStd: () => never() } }), listingBody(), { timeLimits: NO_FLOORS });
   assert.equal(r.outcome, 'definitive', show(r));
   assert.deepEqual(codes(r), ['HARNESS_TOO_SLOW']);
   assert.match(r.facts.listing.refusals[0].detail, /harness:fails:forge-std:poc:1 ran past/);
 });
 
 test('harness proof: a probe whose steps each fit their limits but whose whole run, from its launch, passes runSeconds is refused (R3-F1)', async () => {
-  // The measurement is fast (defaults: buildSeconds 1, testSeconds 1, runSeconds 3 or 4); each probe sandbox takes
-  // 0.9 s to prepare, 0.9 s to build and 0.9 s a run: every step inside its own limit, the probe's run about 4.5 s.
+  // The measurement is fast (defaults without the floors: buildSeconds 1, testSeconds 1, runSeconds 3 or 4); each probe
+  // sandbox takes 0.9 s to prepare, 0.9 s to build and 0.9 s a run: every step inside its own limit, the probe's run about
+  // 4.5 s. With the floors (180 s) the same bound would need minutes, so this one runs without them.
   let first = null;
   let sb = null;
   const slowInProbe = (answer) => async (d) => {
@@ -581,13 +637,39 @@ test('harness proof: a probe whose steps each fit their limits but whose whole r
     build: (d, kind) => (kind === null ? { exitCode: 0 } : delay(900).then(() => ({ exitCode: 0 }))),
     probeRun: { failsForgeStd: (d, repo, p) => delay(900).then(() => fail(d, repo, p)) }
   });
-  const r = await runListing(sb);
+  const r = await runListing(sb, listingBody(), { timeLimits: NO_FLOORS });
   assert.equal(r.outcome, 'definitive', show(r));
   assert.ok(r.facts.listing.limits.runSeconds <= 4 && r.facts.listing.limits.testSeconds === 1, JSON.stringify(r.facts.listing.limits));
   assert.deepEqual(codes(r), ['HARNESS_TOO_SLOW'], show(r));
   assert.match(r.facts.listing.refusals[0].detail, /stopped at runSeconds [34]: the probe's run, from its launch, did not fit/);
   // No step passed its own limit: the probe's runSeconds stopped it.
   for (const st of r.steps.filter((x) => x.name.startsWith('harness:') && x.outcome === 'definitive')) assert.ok(st.durationMs < 1000, st.name);
+});
+
+test('Q84: the harness probes run with the floored defaults: a probe build and run that need more than the measured defaults and less than the floors complete', async () => {
+  // The measurement is fast (measured defaults of 1 s for the build and a run); each probe build takes 1.5 s, and the
+  // failing probe's first run 1.5 s: past the measured defaults, within the floors a claim gets (60 s, 30 s, 180 s).
+  const fail = (d, repo, p) => ({ exitCode: 1, stdout: junitOf([{ suite: `${p}:VerdiktaHarnessFails`, cases: [{ name: 'test_verdiktaHarnessFails()', failure: 'x: 1 != 2' }] }]) });
+  let runs = 0;
+  const sb = listingSandbox({
+    build: (d, kind) => (kind === null ? { exitCode: 0 } : delay(1500).then(() => (kind === 'compileError' ? { exitCode: 1, stderr: 'Error: Compiler run failed\n' } : { exitCode: 0 }))),
+    probeRun: { failsForgeStd: (d, repo, p) => { runs += 1; return runs === 1 ? delay(1500).then(() => fail(d, repo, p)) : fail(d, repo, p); } }
+  });
+  const r = await runListing(sb);
+  assert.equal(r.outcome, 'definitive', show(r));
+  assert.equal(r.facts.listing.status, 'accepted', show(r));
+  const t = r.facts.listing.timings;
+  assert.ok(t.buildSeconds < 0.333 && Math.max(...t.testSeconds) < 0.333, `the measured defaults are 1 s: ${JSON.stringify(t)}`);
+  assert.deepEqual(timeOf(r.facts.listing.limits), Q84);
+  assert.deepEqual(r.facts.listing.harness.probes.map((p) => [p.name, p.variant, p.verdict]), [
+    ['fails', 'forge-std', 'assertion'],
+    ['compileError', null, 'no_junit'],
+    ['setUpError', null, 'harness_error']
+  ]);
+  for (const name of ['harness:fails:forge-std:build', 'harness:fails:forge-std:poc:1', 'harness:setUpError:build']) {
+    const step = r.steps.find((s) => s.name === name);
+    assert.ok(step && step.outcome === 'definitive' && step.durationMs >= 1400, `${name}: ${JSON.stringify(step && { outcome: step.outcome, durationMs: step.durationMs })}`);
+  }
 });
 
 test('the probes without forge-std compile with any solc from 0.4.22 (revert reasons); the forge-std one needs forge-std\'s own 0.6.2 (R3-F2)', () => {
@@ -682,6 +764,7 @@ test('POST /v1/listing-checks: 200 with the listing; the sandbox is created exac
   assert.match(res.body.checkId, /^[0-9a-f]{16}$/);
   assert.equal(res.body.listing.status, 'accepted', JSON.stringify(res.body.listing.refusals));
   assert.equal(res.body.listing.baseline.stable.length, 2);
+  assert.deepEqual(timeOf(res.body.listing.limits), Q84, 'the default limits the answer states are at least the class floors (Q84)');
   assert.equal(res.body.limits.runSeconds, LISTING_CHECK_SECONDS);
   assert.equal(res.body.image.cache, 'hit', 'through the image cache (A1b), as a run');
   // Never a claim's shape.

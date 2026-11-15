@@ -65,15 +65,31 @@ function claimRequest(over = {}) {
   };
 }
 
-async function runClaim(sb, request = claimRequest(), { config = testConfig() } = {}) {
+/**
+ * checkSpec's limits for a spec, with the time limits it states kept as stated, below the class time floors (owner
+ * decision Q84) that checkSpec raises them to: for the tests that drive the engine's own timers with a fake in
+ * seconds. The engine runs under whatever limits it is given; only checkSpec applies the floors
+ * (classLimits.floors.test.js).
+ */
+function statedLimits(spec) {
+  const lim = checkSpec(spec);
+  assert.ok(lim.ok, JSON.stringify(lim.issues));
+  const stated = spec.limits || {};
+  const time = Object.fromEntries(['buildSeconds', 'testSeconds', 'runSeconds'].filter((k) => stated[k] !== undefined).map((k) => [k, stated[k]]));
+  return Object.freeze({ ...lim.limits, ...time });
+}
+
+/** `floors: false` runs the claim under the spec's time limits as stated (statedLimits). */
+async function runClaim(sb, request = claimRequest(), { config = testConfig(), floors = true } = {}) {
   const lim = checkSpec(request.spec);
   assert.ok(lim.ok, JSON.stringify(lim.issues));
+  const limits = floors ? lim.limits : statedLimits(request.spec);
   const receivedAt = Date.now();
   return executeRun({
-    docker: sb.docker, config, limits: lim.limits, image: IMAGE, runId: '0123456789abcdef',
-    steps: claimSteps(request, lim.limits), receivedAt, deadlineAt: receivedAt + 700000, active: new Set(), log: silent,
+    docker: sb.docker, config, limits, image: IMAGE, runId: '0123456789abcdef',
+    steps: claimSteps(request, limits), receivedAt, deadlineAt: receivedAt + 700000, active: new Set(), log: silent,
     admit: async () => {}, sandboxes: request.fixPatch ? 2 : 1
   });
 }
 
-module.exports = { silent, DRAIN, DEPOSIT, IMAGE, forgeSpec, finding, claimRequest, runClaim };
+module.exports = { silent, DRAIN, DEPOSIT, IMAGE, forgeSpec, finding, claimRequest, runClaim, statedLimits };

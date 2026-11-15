@@ -235,8 +235,8 @@ plan, assumption A4).
 `spec` needs what a claim's run needs (`baseCommit`, `env.from: "foundry"`,
 `commands` with `build`, `test`, `testFiles` with `$FILES` and `testIds`
 with `$TEST_IDS`, `paths.tests`), and may carry `limits` (the cpus and memory
-the check then measures with; time limits are compared with the measured
-defaults), `env.image` (must equal `image`), `env.platform`,
+the check then measures with; time limits are compared with the defaults,
+both raised to the class time floors), `env.image` (must equal `image`), `env.platform`,
 `env.unpackedBytes` (checked against the class maximum only: a draft's size
 is not attested, so the pull's disk check always reserves the class
 maximum, and the answer gives the measured size) and `stake.scope`. Those three fields are the whole
@@ -259,7 +259,7 @@ broken package (an image without the listed commit's objects,
 | build | `commands.build`, once, judged by its exit code, then compared with the reference as a claim's build is (every command as a claim runs it: [the forge commands](#the-forge-commands), the reference's forge with its pin) |
 | suite | `commands.test` three times with the runner's `--junit --fuzz-seed 0x76657264696b7461` and `FOUNDRY_FUZZ_SEED`, no network, the tracked files reset to the listed commit before runs 2 and 3; after each run a claim's post-run checksums |
 | baseline | Every test function the JUnit names (forge's identity, `<file> > <Contract> > <signature>`) with its result on each run, by the claim pipeline's classifier (missing or duplicated on a run = `error`); `stable` = passed all three, the rest `unstable` (common's `baselineSets`), checked with common's `validateBaseline` |
-| limits | The defaults (below); above the class caps is too heavy |
+| limits | The defaults (below), at least the class time floors; above the class caps is too heavy |
 | harness | The harness proof (below) |
 
 **Default limits.** From the measured wall-clock times, in ms: P (prepare,
@@ -274,8 +274,13 @@ testSeconds  = ceil(3 T)
 runSeconds   = ceil(3 (P + B + T)) + 2 testSeconds     # runs 2 and 3 of the repeat schedule
 ```
 
-each at least 1, with the spec's (or the class's) `cpus`, `memoryMb` and
-`maxPatchBytes`. Defaults above the class's 90 s build or 360 s run make the
+each at least 1, then each raised to its class time floor (60 s build, 30 s
+test, 180 s run; [below](#class-time-floors)), with the spec's (or the class's) `cpus`, `memoryMb` and
+`maxPatchBytes`. The floors are what a claim gets whatever the listing says, so
+the defaults the answer states and the harness probes run with are the floored
+ones. The caps are held to the measured values (the repeat reserve counts the
+measured `testSeconds`), and every floor is below its cap, so the floors make
+no listing too heavy. Defaults above the class's 90 s build or 360 s run make the
 repository **too heavy for v1** (`LISTING_TOO_HEAVY`). The check does not wait
 to find out: the build is stopped at 30 s (or less, after a long
 preparation), and each suite run at the time beyond which `runSeconds` could
@@ -284,7 +289,9 @@ own limit is that refusal, not an abstain: the time is the answer. The check's
 own budget, the deadline and every other limit event (OOM, pids, a dead
 sandbox) abstain as for `/v1/runs`. Limits `code_review.json` declares below
 the defaults are refused (`LIMITS_BELOW_DEFAULTS`): claims would run out of
-time and abstain.
+time and abstain. Both are compared as a claim's run gets them, raised to the
+floors: a `buildSeconds` of 12 against a measured default of 47 is 60 against
+60 and passes, while 12 against a measured 75 is 60 against 75 and is refused.
 
 **The harness proof.** The runner's own probe files (fixed in
 `src/listing.js`, never the request's) go to one path under `paths.tests`,
@@ -379,7 +386,7 @@ requester error as for runs):
     "checkout": { "…": "as facts.checkout of a run" },
     "timings": { "prepareSeconds": 4.1, "buildSeconds": 14.2, "testSeconds": [21.5, 20.9, 22.1] },
     "baseline": { "version": 1, "baseCommit": "7f3a9c…", "framework": "forge", "runs": 3, "tests": ["…"], "stable": ["…"], "unstable": ["…"], "timings": { "…": "…" } },
-    "limits": { "cpus": 2, "memoryMb": 4096, "buildSeconds": 43, "testSeconds": 67, "runSeconds": 255, "maxPatchBytes": 2000000 },
+    "limits": { "cpus": 2, "memoryMb": 4096, "buildSeconds": 60, "testSeconds": 67, "runSeconds": 255, "maxPatchBytes": 2000000 },
     "suite": { "tests": 41, "stable": 40, "unstable": 1, "exitCodes": [1, 1, 1], "harnessErrors": [[], [], []] },
     "harness": { "path": "test/VerdiktaHarness.t.sol", "probes": [ { "name": "fails", "variant": "forge-std", "verdict": "assertion", "gates": { "…": "…" } } ] },
     "leftoverProcesses": []
@@ -391,7 +398,8 @@ requester error as for runs):
 `listing.status` is `accepted` or `refused`; the check stops at its first
 refusal (`refusals[0]`, with `code`, `detail` and, for the checksums' two codes, `paths`). `limits` (top level) is
 what the check ran under; `listing.limits` the defaults for
-`code_review.json`, and `listing.baseline` the `baseline.json`. Warnings:
+`code_review.json`, at least the class time floors (here a measured 43 s build
+is 60), and `listing.baseline` the `baseline.json`. Warnings:
 `BASELINE_NO_STABLE_TESTS`, `SUITE_HARNESS_ERRORS` (a maker's test contract
 whose `setUp` fails: its tests are not in the baseline), `CHECKOUT_CORRECTED`.
 `listing` is `null` unless the outcome is definitive. A listing check has no
@@ -409,6 +417,25 @@ image, 2 MB patch, 50 MB patch expansion, `linux/amd64`) and the bounds in its
 `maxPatchBytes`; anything above the class maximum, any other key, an image not
 pinned by digest, another platform or an unpacked size above 6 GB is a 400
 before any Docker call. The process limit is always the class's.
+
+### Class time floors
+
+The three time limits also have a floor, `@verdikta/common`'s
+`CLASS_TIME_FLOORS` (owner decision Q84): 60 s build, 30 s test, 180 s run. A
+listing's limits are measured by its listing check on the signing workflow's
+runner, which is several times faster than an arbiter running claims under
+gVisor, so limits measured there can leave a claim no room, and a claim that
+runs out of time abstains. `checkSpec` raises each time limit below its floor
+to the floor, whatever the spec says, by common's `effectiveTimeLimits`: the
+runner holds no copy of the values (`test/unit/classLimits.floors.test.js`
+checks that `src/` has none). A spec may still state less: the schema's
+minimums do not move, so listings already signed (for example 12/4/46) stay
+valid as signed and their claims run with 60/30/180. What `checkSpec` refuses
+is unchanged: it checks the values the spec states (above a maximum,
+`testSeconds` above `runSeconds`, an unknown key). A run's answer reports the
+limits it ran under, floors included, and admission asks the deadline to cover
+the floored `runSeconds`. The listing check's defaults are floored the same way
+([above](#post-v1listing-checks)).
 
 ## Isolation
 
@@ -2037,7 +2064,8 @@ image-pull failure"), never a verdict.
 ## Time
 
 - Admission refuses a run whose deadline, less the reserve, cannot cover
-  `runSeconds` and, for a claim, 60 s for its scan.
+  `runSeconds` (at least its 180 s class floor, [above](#class-time-floors))
+  and, for a claim, 60 s for its scan.
 - A claim's scan and a fix's `forge fmt` run last, with the run's timer restarted
   at 420 s for them, outside `runSeconds` (A3c): claim code has finished by then.
 - Each step is bounded by its own limit, the run's `runSeconds` and the
@@ -2429,7 +2457,7 @@ Node A7d: the 45 claims through the runner and the AI Node with `CODE_STANDARD_P
 
 **What goes to the jury: 39 claims and one control.** Six adversarial claims settle in the runner, with no model called (`flaky`, `observable-mismatch`, `forged-junit-exit`, `protected-file-at-runtime`, `reporter-patched`, `dependency-edited-during-run`), and their results come from the harness. Of the 45 controls, 38 settle in the runner too, and 7 would reach a jury. Only `injected-critical.control` goes, because that case's whole question is whether the injected text moved the verdict, which needs its twin. The other six are the same honest vault claim with nothing adversarial in it, and no acceptance line reads them.
 
-**On a slower host.** `--slow-host` lets a run past a listing check refused for time alone (`LISTING_TOO_HEAVY`), on a host too slow for the class's caps, which CI's runner meets. Nothing else is relaxed: a claim's own limits stay the spec's, and every case is compared exactly. The results file and the report name each listing it let through. No other refusal gets past it.
+**On a slower host.** `--slow-host` lets a run past a listing check refused for time alone (`LISTING_TOO_HEAVY`), on a host too slow for the class's caps, which CI's runner meets. Nothing else is relaxed: a claim's own limits stay the spec's (raised to the class time floors, as on every arbiter), and every case is compared exactly. The results file and the report name each listing it let through. No other refusal gets past it.
 
 **What is counted is fixed in `report/jury.js`**, before any run:
 

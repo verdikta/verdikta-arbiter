@@ -39,11 +39,14 @@ test('a spec without limits gets the class maxima', () => {
 });
 
 test('a spec may lower the limits', () => {
-  const r = checkSpec(spec({ limits: { cpus: 1, memoryMb: 1024, buildSeconds: 30, testSeconds: 60, runSeconds: 120, maxPatchBytes: 1000 } }));
+  // The time limits only as far as the class floors (owner decision Q84): classLimits.floors.test.js.
+  const r = checkSpec(spec({ limits: { cpus: 1, memoryMb: 1024, buildSeconds: 70, testSeconds: 60, runSeconds: 200, maxPatchBytes: 1000 } }));
   assert.equal(r.ok, true, JSON.stringify(r.issues));
   assert.equal(r.limits.cpus, 1);
   assert.equal(r.limits.memoryMb, 1024);
-  assert.equal(r.limits.runSeconds, 120);
+  assert.equal(r.limits.buildSeconds, 70);
+  assert.equal(r.limits.testSeconds, 60);
+  assert.equal(r.limits.runSeconds, 200);
   assert.equal(r.limits.maxPatchBytes, 1000);
   // Not settable by the spec at all.
   assert.equal(r.limits.pids, 4096);

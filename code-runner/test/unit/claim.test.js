@@ -14,6 +14,7 @@ const { FORGE_FUZZ_SEED } = require('../../src/common');
 const { testConfig } = require('../helpers/http');
 const { spec: baseSpec, IMAGE } = require('../helpers/requests');
 const { BASE, POC, POC_PATCH, junit, drainFails, claimSandbox } = require('../helpers/fakeClaim');
+const { statedLimits } = require('../helpers/claimRun');
 
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const noAdmission = async () => {};
@@ -54,13 +55,15 @@ function claimRequest(over = {}) {
   };
 }
 
-async function runClaim(sandbox, request = claimRequest(), { deadlineMs = 700000, extraSteps = [] } = {}) {
+/** `floors: false` runs under the spec's time limits as stated, below the class floors (helpers/claimRun.js, statedLimits). */
+async function runClaim(sandbox, request = claimRequest(), { deadlineMs = 700000, extraSteps = [], floors = true } = {}) {
   const lim = checkSpec(request.spec);
   assert.ok(lim.ok, JSON.stringify(lim.issues));
-  const steps = [...claimSteps(request, lim.limits), ...extraSteps];
+  const limits = floors ? lim.limits : statedLimits(request.spec);
+  const steps = [...claimSteps(request, limits), ...extraSteps];
   const receivedAt = Date.now();
   const result = await executeRun({
-    docker: sandbox.docker, config: testConfig(), limits: lim.limits, image: IMAGE, runId: '0123456789abcdef', steps,
+    docker: sandbox.docker, config: testConfig(), limits, image: IMAGE, runId: '0123456789abcdef', steps,
     receivedAt, deadlineAt: receivedAt + deadlineMs, active: new Set(), log: silent, admit: noAdmission
   });
   return result;
@@ -591,7 +594,8 @@ test('reproduces: the schedule never depends on time left (a near deadline and a
 test('reproduces: a PoC run that hits its time limit abstains; the gate is not decided on it', async () => {
   const { never } = require('../helpers/fakeDocker');
   const sb = claimSandbox({ poc: [drainFails(), () => never(), drainFails()] });
-  const r = await runClaim(sb, claimRequest({ spec: forgeSpec({ limits: { testSeconds: 1 } }) }));
+  // testSeconds 1 as stated, below its 30 s class floor: the rule is the same, in a second.
+  const r = await runClaim(sb, claimRequest({ spec: forgeSpec({ limits: { testSeconds: 1 } }) }), { floors: false });
   assert.equal(r.outcome, 'abstain');
   assert.equal(r.abstain.cause, 'step_timeout');
   assert.equal(r.abstain.step, 'poc:2');

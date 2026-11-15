@@ -203,12 +203,18 @@ test('a listing check on real forge: build once, suite x3 without network, the b
   assert.deepEqual(names.filter((n) => /^suite:[0-9]$/.test(n)), ['suite:1', 'suite:2', 'suite:3']);
   assert.ok(names.indexOf('build') < names.indexOf('suite:1'));
   assert.match(r.steps.find((s) => s.name === 'suite:1').stdout.text, /<testsuites /, 'forge printed its JUnit');
-  // Timings, size and the defaults from them.
+  // Timings, size and the defaults from them: 3x the measured times, each at least its class floor (owner decision Q84:
+  // 60 s build, 30 s test, 180 s run), what a claim's run gets.
   const ms = (s) => Math.round(s * 1000);
   const T = Math.max(...l.timings.testSeconds.map(ms));
-  assert.equal(l.limits.buildSeconds, Math.max(1, Math.ceil((3 * ms(l.timings.buildSeconds)) / 1000)));
-  assert.equal(l.limits.testSeconds, Math.max(1, Math.ceil((3 * T) / 1000)));
-  assert.equal(l.limits.runSeconds, Math.ceil((3 * (ms(l.timings.prepareSeconds) + ms(l.timings.buildSeconds) + T)) / 1000) + 2 * l.limits.testSeconds);
+  const testSeconds = Math.max(1, Math.ceil((3 * T) / 1000));
+  const measured = {
+    buildSeconds: Math.max(1, Math.ceil((3 * ms(l.timings.buildSeconds)) / 1000)),
+    testSeconds,
+    runSeconds: Math.ceil((3 * (ms(l.timings.prepareSeconds) + ms(l.timings.buildSeconds) + T)) / 1000) + 2 * testSeconds
+  };
+  const Q84 = { buildSeconds: 60, testSeconds: 30, runSeconds: 180 };
+  for (const k of Object.keys(Q84)) assert.equal(l.limits[k], Math.max(Q84[k], measured[k]), `${k}: ${JSON.stringify({ measured, limits: l.limits })}`);
   assert.ok(l.limits.runSeconds <= 360);
   assert.equal(l.limits.cpus, 1);
   assert.equal(l.limits.memoryMb, 1024);

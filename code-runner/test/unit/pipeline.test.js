@@ -10,7 +10,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const { executeRun } = require('../../src/pipeline');
-const { checkSpec } = require('../../src/classLimits');
+const { statedLimits } = require('../helpers/claimRun');
 const { fakeDocker, healthyDaemon, healthyInfo, runningState, never } = require('../helpers/fakeDocker');
 const { testConfig } = require('../helpers/http');
 const { spec, IMAGE } = require('../helpers/requests');
@@ -18,10 +18,9 @@ const { spec, IMAGE } = require('../helpers/requests');
 const silent = { info() {}, warn() {}, error() {}, debug() {} };
 const noAdmission = async () => {};
 
+/** A spec's effective limits, with its time limits as stated: the engine's timers in seconds, below the class floors checkSpec raises them to (Q84). */
 function limits(over = {}) {
-  const r = checkSpec(spec({ limits: { cpus: 1, memoryMb: 512, buildSeconds: 30, testSeconds: 60, runSeconds: 60, ...over } }));
-  assert.ok(r.ok, JSON.stringify(r.issues));
-  return r.limits;
+  return statedLimits(spec({ limits: { cpus: 1, memoryMb: 512, buildSeconds: 30, testSeconds: 60, runSeconds: 60, ...over } }));
 }
 
 function run({ docker, steps = [], deadlineMs = 600000, config = testConfig(), signal, admit, lim = limits(), active = new Set(), sandboxes } = {}) {
