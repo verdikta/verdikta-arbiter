@@ -25,6 +25,20 @@ calibration harness, the adversarial corpus and the conformance canary
 
 ## Run it
 
+**Listings are `linux/amd64` only**, the class platform: a maker's env image is
+built for it, and claims run on it. So a runner that runs real listings, such as
+the one `check` (the hunter's forecast) runs on an Apple-silicon Mac, runs in
+amd64 mode, `CODE_RUNNER_PLATFORM=linux/amd64` (the default), which Docker Desktop
+emulates, slower than native ([below](#macos-development-runc)). It needs the
+Semgrep image's amd64 variant pulled first, since the runner never pulls that image:
+
+```bash
+docker pull --platform linux/amd64 docker.io/semgrep/semgrep@sha256:81474464c1f07483ba0682a44787fd93c91397419762a04abe2bafaae396304b
+```
+
+`/health` reads the variant for the runner's platform (`scanner.platform`), so it
+says when that pull is missing.
+
 ```bash
 cd code-runner
 npm ci                       # one runtime dependency: @verdikta/common, pinned exactly
@@ -42,11 +56,20 @@ env -i PATH="$PATH" HOME="$HOME" CODE_RUNNER_TOKEN=... CODE_RUNNER_RUNTIME=runc 
 ### macOS (development): runc
 
 Docker Desktop runs containers in a Linux VM with `runc`; gVisor is not
-available there. Set `CODE_RUNNER_RUNTIME=runc`. The class platform is
-`linux/amd64`, which Apple silicon runs only with Docker Desktop's amd64
-emulation turned on; without it, `CODE_RUNNER_PLATFORM=linux/arm64` (accepted
-with `runc` only) runs the arm64 variant of a multi-platform image, and every
-answer reports the platform it used. `DOCKER_HOST` can stay unset:
+available there. Set `CODE_RUNNER_RUNTIME=runc`. On Apple silicon, amd64 mode
+(the default) is the one that runs real listings, under Docker Desktop's amd64
+emulation (Rosetta or QEMU, from Docker Desktop's settings). Docker Desktop's
+containerd image store keeps both variants of a multi-platform image, so the
+runner reads the one for its platform: `docker image inspect --platform` (Docker
+28.1 and later), else `docker image history --platform` (Docker 28.0), as the
+scan's `docker create --platform` finds it.
+
+`CODE_RUNNER_PLATFORM=linux/arm64` (accepted with `runc` only) is for working on
+the runner itself without emulation: its Docker tests and calibration build their
+fixtures for the host and run the arm64 variant of a multi-platform image, and
+every answer reports the platform it used. It runs no real listing: an env
+image is `linux/amd64`, so a claim or listing check of one abstains at the
+pull, and a definitive run on arm64 has no report ([below](#post-v1runs)). `DOCKER_HOST` can stay unset:
 the runner gives the docker CLI its own empty `DOCKER_CONFIG`, so the CLI uses
 the default socket, `/var/run/docker.sock`, which Docker Desktop links to
 `~/.docker/run/docker.sock` (set `DOCKER_HOST=unix://$HOME/.docker/run/docker.sock`
@@ -1693,7 +1716,13 @@ to agree: what the builder finds goes to the maker privately and is never hashed
 
 The runner never pulls this image. The installer warms it (node A8). Missing or wrong,
 `/health` says so under `scanner` and a claim abstains before any work
-(`image_unavailable`, `image_mismatch`). The image cache never evicts it.
+(`image_unavailable`, `image_mismatch`). The image cache never evicts it. Wrong includes
+an index whose variant for the runner's platform is not on the host, which a containerd
+image store can hold beside another variant: the platform measured is the variant
+`docker image inspect --platform` reads (Docker 28.1 and later), else the one the index
+resolves to, and when that is another platform's, `docker image history --platform`
+(Docker 28.0) says whether the runner's is there, as the scan's `docker create --platform`
+would find it. The problem names the pull that fetches it.
 
 ### What the runner forces
 
@@ -2065,7 +2094,7 @@ image-pull failure"), never a verdict.
 | `CODE_RUNNER_SOCKET` | — | Listen on this Unix socket (mode 0600) instead. |
 | `CODE_RUNNER_ALLOW_REMOTE_BIND` | — | `true` permits another address (remote placement mode). |
 | `CODE_RUNNER_RUNTIME` | `runsc` | `runsc` (gVisor) or `runc` (macOS development). |
-| `CODE_RUNNER_PLATFORM` | `linux/amd64` | `linux/arm64` only with `runc`, for Apple silicon without amd64 emulation. |
+| `CODE_RUNNER_PLATFORM` | `linux/amd64` | The platform that runs: `linux/amd64` for every real listing, on Apple silicon too ([Run it](#run-it)). `linux/arm64` only with `runc`, for the runner's own tests and calibration on Apple silicon without emulation. |
 | `DOCKER_HOST` | CLI default | The daemon the runner drives. |
 | `CODE_RUNNER_DOCKER_BIN` | `docker` | The docker CLI. |
 | `CODE_RUNNER_DATA_ROOT` | the daemon's `DockerRootDir` | Where `/health` measures free bytes. |
