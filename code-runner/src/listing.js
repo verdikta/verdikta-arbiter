@@ -34,8 +34,9 @@
  *             each run, is baseline.json (common's rule: passed all three
  *             runs = stable, anything else unstable)
  *   limits    defaults of 3x the measured times plus the repeat-schedule
- *             reserve (below); a listing whose limits would pass the class's
- *             90 s build or 360 s run cap is too heavy for v1
+ *             reserve, each raised to its class time floor (below); a listing
+ *             whose limits would pass the class's 90 s build or 360 s run cap
+ *             is too heavy for v1
  *   harness   the harness proof: trivial tests under paths.tests, each run
  *             as a claim is, in a fresh sandbox of its own (the forced
  *             checkout, then applies, testPathsOnly, the protected reset,
@@ -65,11 +66,26 @@
  *   testSeconds  = ceil(3 T)
  *   runSeconds   = ceil(3 (P + B + T)) + 2 testSeconds    (runs 2 and 3: the repeat reserve)
  *
- * Each measured step is stopped at the point beyond which those limits can
- * no longer fit the class caps, and a step stopped by its own limit is a
- * refusal (LISTING_TOO_HEAVY), not an abstain: the measurement is the
- * answer. The run's own budget, the deadline and every other limit event
- * abstain as for /v1/runs.
+ * each then raised to its class time floor (owner decision Q84, node A26):
+ * @verdikta/common's CLASS_TIME_FLOORS, applied by its effectiveTimeLimits as
+ * classLimits.checkSpec applies them to every claim's run, so the defaults are
+ * what a claim gets, at least. The check runs on the signing workflow's
+ * runner, several times faster than an arbiter under gVisor: below the floors
+ * a measured limit would leave a claim no room. The answer's limits and the
+ * harness probes are these floored defaults.
+ *
+ * The caps are held to the measured values (the repeat reserve counts the
+ * measured testSeconds), and every floor is below its cap, so the floors make
+ * no listing too heavy. Each measured step is stopped at the point beyond
+ * which those limits can no longer fit the class caps, and a step stopped by
+ * its own limit is a refusal (LISTING_TOO_HEAVY), not an abstain: the
+ * measurement is the answer. The run's own budget, the deadline and every
+ * other limit event abstain as for /v1/runs.
+ *
+ * Time limits code_review.json declares are compared with the defaults as a
+ * claim's run gets both, floored (LIMITS_BELOW_DEFAULTS when lower): a
+ * declaration below a floor is no refusal by itself, since a claim gets the
+ * floor; one below a default the measurement put above its floor still is.
  */
 
 const { ABSTAIN, Abstain, RequesterError, makeGate } = require('./result');
@@ -89,12 +105,14 @@ function leftovers(facts) {
 }
 const { checkSpec, CLASS_HARD_LIMITS, IMAGE_REF, OCI_PLATFORM } = require('./classLimits');
 const { parseImageRef } = require('./registry');
-const { matchesAny, normalizePath, pocPatchPathsGate, baselineSets, validateBaseline, BASELINE_RUNS } = require('./common');
+const { matchesAny, normalizePath, pocPatchPathsGate, baselineSets, validateBaseline, BASELINE_RUNS, effectiveTimeLimits } = require('./common');
 const { parseLsTreeZ, reportablePath } = require('./patch');
 const { MAX_DEADLINE_MS } = require('./request');
 
 /** The only fields a listing check takes. */
 const LISTING_FIELDS = Object.freeze(['spec', 'image', 'deadline']);
+/** The limits the class time floors raise (owner decision Q84): the ones a listing's defaults are measured for. */
+const TIME_KEYS = Object.freeze(['buildSeconds', 'testSeconds', 'runSeconds']);
 /** The suite's runs (common's BASELINE_RUNS), which are also the claim's fixed repeat schedule. */
 const RUNS = BASELINE_RUNS;
 if (RUNS !== CLAIM_RUNS) throw new Error('the baseline runs and the claim repeat schedule must agree');
@@ -215,7 +233,7 @@ function listed(items) {
  * `spec` is code_review.json as the maker drafted it: the commands, the
  * listed commit, the paths, `env.from`, and optionally `limits` (cpus and
  * memory the check then runs with; time limits are checked against the
- * measured defaults), `env.image` (equal to `image`), `env.platform` and
+ * defaults, both raised to the class time floors), `env.image` (equal to `image`), `env.platform` and
  * `env.unpackedBytes` (checked against the class maximum only: the draft's
  * size is not attested, so the pull's disk check always reserves the class
  * maximum). `image` is the env image, pinned by digest.
@@ -313,9 +331,15 @@ function validateListingRequest(body) {
 
 /**
  * The default limits from the measured times (ms), and the caps they pass.
- * @returns {{limits:object, over:string[]}}
+ * @param {{prepareMs:number, buildMs:number, testMs:number[]}} times
+ * @param {object} specLimits - the cpus, memory and patch size the check ran with
+ * @param {object} [caps] - the class caps (the class's hard limits)
+ * @param {Function} [timeLimits] - raises time limits to the class floors: common's effectiveTimeLimits (tests only pass another)
+ * @returns {{limits:object, measured:object, over:string[]}} `measured`: the time limits from the times alone;
+ *   `limits`: those raised to the class time floors (what a claim gets), with the spec's cpus, memory and patch size;
+ *   `over`: the caps the measured limits pass (the floors are below the caps, so they pass none)
  */
-function deriveLimits({ prepareMs, buildMs, testMs }, specLimits, caps = CLASS_HARD_LIMITS) {
+function deriveLimits({ prepareMs, buildMs, testMs }, specLimits, caps = CLASS_HARD_LIMITS, timeLimits = effectiveTimeLimits) {
   const longest = Math.max(...testMs);
   const buildSeconds = Math.max(1, Math.ceil((MARGIN * buildMs) / 1000));
   const testSeconds = Math.max(1, Math.ceil((MARGIN * longest) / 1000));
@@ -323,17 +347,35 @@ function deriveLimits({ prepareMs, buildMs, testMs }, specLimits, caps = CLASS_H
   const over = [];
   if (buildSeconds > caps.buildSeconds) over.push(`buildSeconds would be ${buildSeconds}, above the class's ${caps.buildSeconds}`);
   if (runSeconds > caps.runSeconds) over.push(`runSeconds would be ${runSeconds}, above the class's ${caps.runSeconds}`);
+  const measured = { buildSeconds, testSeconds, runSeconds };
+  const floored = timeLimits(measured);
   return {
     limits: {
       cpus: specLimits.cpus,
       memoryMb: specLimits.memoryMb,
-      buildSeconds,
-      testSeconds,
-      runSeconds,
+      buildSeconds: floored.buildSeconds,
+      testSeconds: floored.testSeconds,
+      runSeconds: floored.runSeconds,
       maxPatchBytes: specLimits.maxPatchBytes
     },
+    measured,
     over
   };
+}
+
+/**
+ * The time limits code_review.json declares that are below the defaults, both as a claim's run gets them: raised to
+ * the class time floors. A declaration below a floor alone is none of them; one below a default above its floor is.
+ * @param {object} declared - code_review.json's limits (already through checkSpec), or {}
+ * @param {object} defaults - deriveLimits().limits (floored)
+ * @param {Function} [timeLimits] - as for deriveLimits
+ * @returns {{key:string, declared:number, effective:number, default:number}[]}
+ */
+function limitsBelowDefaults(declared, defaults, timeLimits = effectiveTimeLimits) {
+  const stated = Object.fromEntries(TIME_KEYS.filter((k) => Number.isInteger(declared[k])).map((k) => [k, declared[k]]));
+  const effective = timeLimits(stated);
+  return TIME_KEYS.filter((k) => k in stated && effective[k] < defaults[k])
+    .map((k) => ({ key: k, declared: stated[k], effective: effective[k], default: defaults[k] }));
 }
 
 /** The longest build (ms) after which the limits can no longer fit the caps, whatever the suite takes. */
@@ -553,9 +595,11 @@ function scoped(ctx, prefix = null, { stopAt = null } = {}) {
  * @param {string} o.platform - the runner's platform, whose official solc releases the look reads
  * @param {object} [o.solcList] - another list than the runner's (solcReleases.makeList; tests only)
  * @param {object} [o.caps] - the class caps the defaults must fit (the class's hard limits)
+ * @param {Function} [o.timeLimits] - raises time limits to the class floors: common's effectiveTimeLimits, as every
+ *   claim's run gets them (tests only pass another, to drive the harness bound with a fake in milliseconds)
  * @returns {Function[]}
  */
-function listingSteps(request, limits, { imageSize, platform, solcList = null, caps = CLASS_HARD_LIMITS } = {}) {
+function listingSteps(request, limits, { imageSize, platform, solcList = null, caps = CLASS_HARD_LIMITS, timeLimits = effectiveTimeLimits } = {}) {
   if (typeof imageSize !== 'function') throw new TypeError('listingSteps needs imageSize');
   if (typeof platform !== 'string') throw new TypeError('listingSteps needs the runner\'s platform');
   const official = solcList || officialList(platform);
@@ -764,18 +808,19 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
       warn('SUITE_HARNESS_ERRORS', `test contracts failed before their tests ran (their tests are not in the baseline): ${listed(broken)}`);
     }
 
-    const d = deriveLimits({ prepareMs: state.prepareMs, buildMs: state.buildMs, testMs: state.testMs }, request.specLimits, caps);
+    const d = deriveLimits({ prepareMs: state.prepareMs, buildMs: state.buildMs, testMs: state.testMs }, request.specLimits, caps, timeLimits);
     if (d.over.length) {
       refuse('LISTING_TOO_HEAVY', `from the measured times (preparation ${seconds(state.prepareMs)} s, build ${seconds(state.buildMs)} s, `
         + `longest suite run ${seconds(Math.max(...state.testMs))} s): ${d.over.join('; ')}`);
       return;
     }
+    // The defaults raised to the class time floors: what a claim's run gets, what the probes run with, what the answer states.
     state.defaults = d.limits;
     out.limits = d.limits;
-    const declared = isPlainObject(spec.limits) ? spec.limits : {};
-    const low = ['buildSeconds', 'testSeconds', 'runSeconds'].filter((k) => Number.isInteger(declared[k]) && declared[k] < d.limits[k]);
+    const low = limitsBelowDefaults(isPlainObject(spec.limits) ? spec.limits : {}, d.limits, timeLimits);
     if (low.length) {
-      refuse('LIMITS_BELOW_DEFAULTS', `code_review.json sets ${low.map((k) => `${k} ${declared[k]}`).join(', ')}, below the measured defaults (${low.map((k) => `${k} ${d.limits[k]}`).join(', ')}): claims would run out of time and abstain`);
+      const stated = (x) => (x.effective === x.declared ? `${x.key} ${x.declared}` : `${x.key} ${x.declared} (${x.effective} with the class floor)`);
+      refuse('LIMITS_BELOW_DEFAULTS', `code_review.json sets ${low.map(stated).join(', ')}, below the measured defaults (${low.map((x) => `${x.key} ${x.default}`).join(', ')}): claims would run out of time and abstain`);
     }
   }
 
@@ -950,6 +995,6 @@ function listingSteps(request, limits, { imageSize, platform, solcList = null, c
 }
 
 module.exports = {
-  validateListingRequest, listingSteps, imageUnpackedBytes, deriveLimits, buildBudgetMs, suiteBudgetMs, minimumRunSeconds,
+  validateListingRequest, listingSteps, imageUnpackedBytes, deriveLimits, limitsBelowDefaults, buildBudgetMs, suiteBudgetMs, minimumRunSeconds,
   baselineOf, harnessPath, probeCandidates, probePatch, PROBES, LISTING_FIELDS, LISTING_CHECK_SECONDS, MARGIN, RUNS
 };

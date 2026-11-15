@@ -5,16 +5,24 @@
  * whatever the spec says; a spec above them is the requester's broken package
  * (§12), refused before any pull or work.
  *
+ * The class time floors are the other side of the three time limits (owner
+ * decision Q84, node A26): a listing's limits are measured on the signing
+ * runner, several times faster than an arbiter under gVisor, so a run gets at
+ * least the floor for buildSeconds, testSeconds and runSeconds, whatever the
+ * spec says. A spec may still state less (listings signed that way stay valid)
+ * and is checked as stated; its effective limits are raised to the floors.
+ *
  * The values are @verdikta/common's (CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA,
- * OCI_PLATFORM, and the bounds in its schemas/code_review.v1.json); this module
- * only applies them and computes a spec's effective limits, which the package
- * has no function for. Byte sizes are decimal.
+ * OCI_PLATFORM, and the bounds in its schemas/code_review.v1.json), and so are
+ * the floors, which only common's effectiveTimeLimits applies: this module
+ * holds no copy of them. It applies the limits and computes a spec's effective
+ * limits. Byte sizes are decimal.
  *
  * Issues have common's shape, `{ code, path, detail }`, and its codes
  * (LIMIT_ABOVE_CLASS_MAX, IMAGE_ABOVE_CLASS_MAX, LIMIT_TEST_ABOVE_RUN).
  */
 
-const { CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA, OCI_PLATFORM, SPEC_SCHEMA } = require('./common');
+const { CLASS_HARD_LIMITS, SPEC_LIMIT_MAXIMA, OCI_PLATFORM, SPEC_SCHEMA, effectiveTimeLimits } = require('./common');
 
 /** The schema's minimum for each spec limit. */
 const SPEC_LIMIT_MINIMA = Object.freeze(Object.fromEntries(
@@ -37,6 +45,9 @@ function isPlainObject(v) {
  *   `limits` (when ok): cpus, memoryMb, pids, buildSeconds, testSeconds,
  *   runSeconds, maxPatchBytes, patchExpansionBytes, platform. Keys the spec
  *   cannot set (pids, patchExpansionBytes, platform) are always the class's.
+ *   Each time limit is the spec's (or the class maximum) raised to its class
+ *   floor by common's effectiveTimeLimits; the issues are the spec's values as
+ *   stated, so the floors lift no refusal.
  */
 function checkSpec(spec) {
   const issues = [];
@@ -94,13 +105,15 @@ function checkSpec(spec) {
   if (issues.length) return { ok: false, issues, limits: null };
 
   const pick = (key) => (requested[key] === undefined ? SPEC_LIMIT_MAXIMA[key] : requested[key]);
+  // The class time floors (owner decision Q84): what a run gets, at least, whatever the spec says.
+  const time = effectiveTimeLimits({ buildSeconds: pick('buildSeconds'), testSeconds: pick('testSeconds'), runSeconds: pick('runSeconds') });
   const limits = Object.freeze({
     cpus: pick('cpus'),
     memoryMb: pick('memoryMb'),
     pids: CLASS_HARD_LIMITS.pids,
-    buildSeconds: pick('buildSeconds'),
-    testSeconds: pick('testSeconds'),
-    runSeconds: pick('runSeconds'),
+    buildSeconds: time.buildSeconds,
+    testSeconds: time.testSeconds,
+    runSeconds: time.runSeconds,
     maxPatchBytes: pick('maxPatchBytes'),
     patchExpansionBytes: CLASS_HARD_LIMITS.patchExpansionBytes,
     platform: CLASS_HARD_LIMITS.platform
