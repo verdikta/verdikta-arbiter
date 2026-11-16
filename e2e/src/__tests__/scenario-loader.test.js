@@ -162,6 +162,8 @@ describe('the default set: what a run that names no scenario holds (node A27)', 
   });
 
   it('is built from the project\'s own archives: a cidFile beside its source in archives/, no CID from outside', () => {
+    // A literal cid or cids is a package from outside. A project-owned multi-CID scenario
+    // (the README's Roadmap) would need a source check of its own here.
     const raw = new Map(committed().map((s) => [s.id, s]));
     for (const s of l4Default()) {
       const entry = raw.get(s.id);

@@ -137,9 +137,11 @@ A Verification Report exists only on `linux/amd64`: the schema's platform is a c
 
 ## `smoke` — post-deploy check
 
-Runs one scenario (mode 0) against the **live** running arbiter (real AI Node),
-structural assertions only. Intended as a stronger post-install/upgrade check
-than `arbiter-doctor`'s health ping:
+Runs one scenario, in each mode it lists, against the **live** running arbiter
+(real AI Node), structural assertions only. The default is `canonical-vuln`, the
+project's own archive (mode 0 and commit-reveal); `--scenario <id>` picks another,
+but not a `manualOnly` one, which L2 refuses. Intended as a stronger
+post-install/upgrade check than `arbiter-doctor`'s health ping:
 
 ```bash
 node src/index.js smoke --adapter-url http://localhost:8080
@@ -157,6 +159,14 @@ export E2E_WALLET_PRIVATE_KEY=0x...          # dedicated, funded Base Sepolia ke
 # AGGREGATOR_ADDRESS defaults to config/e2e-config.json (l4.aggregatorAddress); override if needed
 node src/index.js l4 --junit results/l4.xml
 ```
+
+**The default set.** A run that names no scenario (no `--scenario`, a blank
+`L4_SCENARIO`: the nightly, and a dispatch with a blank `scenario` input) sends
+one request per committed scenario that is neither `manualOnly` nor a claim
+scenario, once its archive is pinned. Today that is `canonical-vuln` alone, the project's own archive
+([Canonical evidence archive](#canonical-evidence-archive-project-owned)).
+`frontend-default`, `bounty-171-replay` and `link-canary` are manual-only and run
+only when named ([Scenarios](#scenarios)).
 
 ### L4 test wallet
 
@@ -387,12 +397,14 @@ If a step fails: `attach` writes nothing when any signature is wrong, so sign ag
 - **`l2-claim`** — the [claim suite](#the-claim-suite---suite-claim-local-no-secret)
   and the testing tool's and harness's unit tests, on every PR, forks included;
   needs no secret.
-- **`l4-testnet`** — runs nightly (schedule, class 128) and via manual dispatch;
-  needs `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
+- **`l4-testnet`** — runs nightly (schedule, class 128, the
+  [default set](#l4--live-testnet-acceptance): `canonical-vuln`) and via manual
+  dispatch; needs `RPC_URL` + `E2E_WALLET_PRIVATE_KEY` (and optional `AGGREGATOR_ADDRESS`),
   scoped to the `e2e` GitHub Environment. Dispatch inputs: `class_id`
   (default `5555`), `expect_common`, `expect_release`, `expect_fault_switch`,
-  `scenario` (the only way to run a `manualOnly` scenario, see
-  [Scenarios](#scenarios), or a [claim scenario](#claim-scenarios-class-5555-only)):
+  `scenario` (blank by default, which runs the default set; the only way to run a
+  `manualOnly` scenario, see [Scenarios](#scenarios), or a
+  [claim scenario](#claim-scenarios-class-5555-only)):
 
   ```bash
   gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
@@ -449,6 +461,13 @@ external breakage a project-owned archive avoids. If external-CID scenarios are
 reintroduced later, expect them to need periodic revalidation against the
 `@verdikta/common` version actually in use.
 
+The example-frontend's default package (`frontend-default`) broke another way: its
+jury names Anthropic's `claude-3-5-sonnet-20241022`, which the provider has
+retired (requests return 404), so that juror fails on every run and the round
+rests on the others. It is not ours to re-pin either, so it stays in
+`scenarios.json` as `manualOnly`, out of the [default set](#l4--live-testnet-acceptance),
+and `canonical-vuln` covers the same path in mode 0 and commit-reveal.
+
 ## Scenarios
 
 `scenarios/scenarios.json` — each entry needs `id` and exactly one of `cid`
@@ -473,10 +492,11 @@ Optional fields:
 - `addendum` — the request's `addendumText` (default `""`). L2 appends it as
   `:<addendum>`, which is how the adapter receives it from the job.
 - `manualOnly: true` — the scenario never runs in a full-suite run, so the
-  nightly L4 (which runs every committed scenario on class 128) and the L2 job
-  skip it. It runs only when named for L4 (`--scenario <id>` or the `scenario`
-  dispatch input / `L4_SCENARIO`); naming it for L2 is an error. Use it for
-  scenarios whose archive names a paid jury.
+  nightly L4 (which runs the [default set](#l4--live-testnet-acceptance) on
+  class 128) and the L2 job skip it. It runs only when named for L4 (`--scenario <id>`
+  or the `scenario` dispatch input / `L4_SCENARIO`); naming it for L2 is an error.
+  Use it for scenarios whose archive names a paid jury, and for an external
+  package the project cannot re-pin.
 - `suite` — `claim` for the [L2 claim suite](#the-claim-suite---suite-claim-local-no-secret),
   `l4-claim` for the [L4 claim scenarios](#claim-scenarios-class-5555-only). Neither
   is ever in a full-suite run, and each runs only on its own tier.
@@ -484,7 +504,13 @@ Optional fields:
   its claim should settle, for the exact-class rate beside σ ([Metrics](#claim-scenarios-class-5555-only)).
   The committed jury claims name `LOW` (Q71).
 
-`bounty-171-replay` is manual-only: it replays mainnet bounty 171 (issue #81),
+`frontend-default` is manual-only: it is the example-frontend's default package,
+not the project's, and its jury names a Claude model the provider has retired
+([why it left the default set](#canonical-evidence-archive-project-owned)). Name
+it to check that package (`--scenario frontend-default`, or `-f scenario=frontend-default`
+on a dispatch).
+
+`bounty-171-replay` is manual-only too: it replays mainnet bounty 171 (issue #81),
 whose 2560×12268 px screenshot failed every jury model before the image
 normalization in #82, and its package names a paid jury (gpt-5.6-sol +
 claude-sonnet-5). Run it against the class-5555 canaries after an AI Node
@@ -547,8 +573,9 @@ traffic with this tool is how you inventory which fleet nodes need upgrading.
 ## Roadmap / ideas
 
 - Optionally boot the AI Node too (for turnkey `l2 --real` in CI).
-- Pin a canonical, project-owned E2E evidence archive (instead of relying on the
-  frontend/demoClient default CIDs) and reference it from `scenarios.json`.
-- Additional scenarios (more outcomes, attachments) once canonical archives
-  are pinned; a project-owned multi-CID scenario for the nightly (the only one
-  today, `bounty-171-replay`, is manual-only).
+- Done: the default set is the project's own pinned archive, `canonical-vuln`;
+  the external packages are gone (`demoClient`) or manual-only (`frontend-default`).
+- Additional project-owned scenarios for the default set (more outcomes,
+  attachments), each pinned from a source in `archives/`; a project-owned
+  multi-CID scenario for the nightly (the only one today, `bounty-171-replay`,
+  is manual-only).

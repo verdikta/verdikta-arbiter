@@ -12,8 +12,9 @@
   },
   {
     "id": "frontend-default",
-    "description": "External pre-pinned package (example-frontend default). Smart-contract vulnerability review, 2 outcomes. Works today; not project-owned.",
+    "description": "External pre-pinned package (example-frontend default), not project-owned. Smart-contract vulnerability review, 2 outcomes. Manual only: its jury names Anthropic's claude-3-5-sonnet-20241022, which the provider has retired (requests return 404), so that juror fails on every run and the round rests on the others. canonical-vuln covers the same path, mode 0 and commit-reveal, from the project's own archive. Run it by name on L4 (--scenario / L4_SCENARIO) to check the example-frontend's package.",
     "cid": "QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH",
+    "manualOnly": true,
     "modes": [
       "0",
       "commit-reveal"
