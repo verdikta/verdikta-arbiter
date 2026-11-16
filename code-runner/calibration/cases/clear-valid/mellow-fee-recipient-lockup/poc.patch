@@ -1,0 +1,91 @@
+diff --git a/test/FeeRecipientLockupClaim.t.sol b/test/FeeRecipientLockupClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/FeeRecipientLockupClaim.t.sol
+@@ -0,0 +1,86 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
++import {IShareManager} from "src/interfaces/managers/IShareManager.sol";
++import {FeeManager} from "src/managers/FeeManager.sol";
++import {RiskManager} from "src/managers/RiskManager.sol";
++import {TokenizedShareManager} from "src/managers/TokenizedShareManager.sol";
++import {IOracle} from "src/interfaces/oracles/IOracle.sol";
++import {Oracle} from "src/oracles/Oracle.sol";
++import {Vault} from "src/vaults/Vault.sol";
++import {MockERC20} from "test/mocks/MockERC20.sol";
++
++/// A lockup is for those who deposit. The fee recipient can move the fee shares it has been paid.
++contract FeeRecipientLockupClaim is Test {
++    function behindProxy(address implementation) private returns (address) {
++        return address(new TransparentUpgradeableProxy(implementation, address(0xAD), new bytes(0)));
++    }
++
++    function test_each_fee_payment_leaves_the_recipient_free_to_move_its_shares() public {
++        vm.warp(1_700_000_000);
++        address admin = address(0xA);
++        address[] memory assets = new address[](1);
++        assets[0] = address(new MockERC20());
++
++        Vault vault = Vault(payable(behindProxy(address(new Vault("Calibration", 1, address(1), address(1), address(1), address(1))))));
++        TokenizedShareManager shares = TokenizedShareManager(behindProxy(address(new TokenizedShareManager("Calibration", 1))));
++        shares.initialize(abi.encode(bytes32(0), string("Shares"), string("SHR")));
++        shares.setVault(address(vault));
++        FeeManager fees = FeeManager(behindProxy(address(new FeeManager("Calibration", 1))));
++        fees.initialize(abi.encode(admin, admin, uint24(0), uint24(0), uint24(0), uint24(1e5)));
++        Oracle oracle = Oracle(behindProxy(address(new Oracle("Calibration", 1))));
++        oracle.initialize(
++            abi.encode(
++                IOracle.SecurityParams({
++                    maxAbsoluteDeviation: 0.1 ether,
++                    suspiciousAbsoluteDeviation: 0.05 ether,
++                    maxRelativeDeviationD18: 0.1 ether,
++                    suspiciousRelativeDeviationD18: 0.05 ether,
++                    timeout: 1 hours,
++                    depositInterval: 1 minutes,
++                    redeemInterval: 1 minutes
++                }),
++                assets
++            )
++        );
++        oracle.setVault(address(vault));
++        RiskManager risk = RiskManager(behindProxy(address(new RiskManager("Calibration", 1))));
++        risk.initialize(abi.encode(int256(100 ether)));
++        risk.setVault(address(vault));
++        vault.initialize(abi.encode(admin, address(shares), address(fees), address(risk), address(oracle), address(0), address(0), uint256(0), new Vault.RoleHolder[](0)));
++
++        IOracle.Report[] memory reports = new IOracle.Report[](1);
++        reports[0] = IOracle.Report({asset: assets[0], priceD18: 1e18});
++
++        vm.startPrank(admin);
++        vault.grantRole(oracle.SUBMIT_REPORTS_ROLE(), admin);
++        vault.grantRole(oracle.ACCEPT_REPORT_ROLE(), admin);
++        vault.grantRole(shares.SET_FLAGS_ROLE(), admin);
++        shares.setFlags(
++            IShareManager.Flags({
++                hasMintPause: false,
++                hasBurnPause: false,
++                hasWhitelist: false,
++                hasTransferPause: false,
++                hasTransferWhitelist: false,
++                globalLockup: 0,
++                targetedLockup: 30 days
++            })
++        );
++        fees.setBaseAsset(address(vault), assets[0]);
++        oracle.submitReports(reports);
++        oracle.acceptReport(reports[0].asset, reports[0].priceD18, uint32(block.timestamp));
++        vm.stopPrank();
++
++        vm.prank(address(vault));
++        shares.mint(address(0x100), 1000 ether);
++
++        skip(365 days);
++        vm.prank(admin);
++        oracle.submitReports(reports);
++
++        assertEq(shares.accounts(admin).lockedUntil, 0, "the lock on the recipient after a fee payment");
++    }
++}

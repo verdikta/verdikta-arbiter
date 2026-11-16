@@ -1,0 +1,38 @@
+name: External Adapter
+
+# The adapter's unit tests. settlement.js and the claim path decide a hunter's bond, and A8 pins their
+# reading of @verdikta/common's catalogue here. Integration tests (src/__tests__/integration/) need live
+# services and do not run. No secret.
+# claude/stake-attestation: the stake-attestation integration branch (issue #105).
+
+on:
+  pull_request:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['external-adapter/**', '.github/workflows/external-adapter.yml']
+  push:
+    branches: [main, master, claude/stake-attestation]
+    paths: ['external-adapter/**', '.github/workflows/external-adapter.yml']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: external-adapter-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        working-directory: external-adapter
+        run: npm ci
+      - name: Unit tests
+        working-directory: external-adapter
+        run: npm test

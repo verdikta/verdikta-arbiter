@@ -1,0 +1,59 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.fixture-creates-bug.control",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "The same PoC on the listed vault",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "On the listed vault the deposit is exact and the test passes on all three runs, so reproduces fails on its own.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/Fixture.t.sol > FixtureClaim > test_deposit_is_short_by_one()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "adversarial.fixture-creates-bug"
+}

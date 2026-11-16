@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "One signer sent twice meets a threshold of two",
+  "claimedClass": "HIGH",
+  "rootCause": "Consensus.checkSignatures compares the number of signatures with the threshold and verifies each one, without checking that the signers differ, so a single signer can meet any threshold by repeating itself.",
+  "affectedPaths": [
+    "src/permissions/Consensus.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_one_signer_twice_does_not_meet_a_threshold_of_two",
+    "observable": "test_one_signer_twice_does_not_meet_a_threshold_of_two fails with \"one signer does not count twice\""
+  },
+  "fixIncluded": false
+}

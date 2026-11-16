@@ -127,6 +127,12 @@ if [ ! -f "$INSTALLER_DIR/lib/prompts.sh" ]; then
     exit 1
 fi
 source "$INSTALLER_DIR/lib/prompts.sh"
+# env_file_set: provider keys into .env.local, values taken literally
+if [ ! -f "$INSTALLER_DIR/lib/env-file.sh" ]; then
+    echo "Error: env-file library not found at $INSTALLER_DIR/lib/env-file.sh"
+    exit 1
+fi
+source "$INSTALLER_DIR/lib/env-file.sh"
 
 # Define AI Node directory based on script location
 # AI_NODE_DIR="$INSTALL_DIR/ai-node" # Old definition based on INSTALL_DIR
@@ -364,68 +370,53 @@ else
 fi
 
 # Update environment file
+# env_file_set writes each value literally: a `/`, `&` or `\` in a key used to
+# break the sed expression that wrote it. An empty key leaves .env.local as it is.
 if [ -n "$OPENROUTER_API_KEY" ]; then
-    if grep -q "^OPENROUTER_API_KEY=" "$AI_NODE_DIR/.env.local"; then
-        sed -i.bak "s/^OPENROUTER_API_KEY=.*/OPENROUTER_API_KEY=$OPENROUTER_API_KEY/" "$AI_NODE_DIR/.env.local"
-    else
-        echo "OPENROUTER_API_KEY=$OPENROUTER_API_KEY" >> "$AI_NODE_DIR/.env.local"
-    fi
+    env_file_set OPENROUTER_API_KEY "$OPENROUTER_API_KEY" "$AI_NODE_DIR/.env.local" || {
+        echo -e "${RED}Error: could not write OPENROUTER_API_KEY to $AI_NODE_DIR/.env.local${NC}"
+        exit 1
+    }
     echo -e "${GREEN}OpenRouter API Key configured (fallback for uncovered providers).${NC}"
 else
     echo -e "${BLUE}Note: OpenRouter API Key not provided. All classes will use native provider keys.${NC}"
 fi
 
 if [ -n "$OPENAI_API_KEY" ]; then
-    # Check if key already exists in file
-    if grep -q "^OPENAI_API_KEY=" "$AI_NODE_DIR/.env.local"; then
-        # Update existing key
-        sed -i.bak "s/^OPENAI_API_KEY=.*/OPENAI_API_KEY=$OPENAI_API_KEY/" "$AI_NODE_DIR/.env.local"
-    else
-        # Add new key
-        echo "OPENAI_API_KEY=$OPENAI_API_KEY" >> "$AI_NODE_DIR/.env.local"
-    fi
+    env_file_set OPENAI_API_KEY "$OPENAI_API_KEY" "$AI_NODE_DIR/.env.local" || {
+        echo -e "${RED}Error: could not write OPENAI_API_KEY to $AI_NODE_DIR/.env.local${NC}"
+        exit 1
+    }
     echo -e "${GREEN}OpenAI API Key configured.${NC}"
 else
     echo -e "${YELLOW}WARNING: OpenAI API Key not provided. Some AI Node features may not work.${NC}"
 fi
 
 if [ -n "$ANTHROPIC_API_KEY" ]; then
-    # Check if key already exists in file
-    if grep -q "^ANTHROPIC_API_KEY=" "$AI_NODE_DIR/.env.local"; then
-        # Update existing key
-        sed -i.bak "s/^ANTHROPIC_API_KEY=.*/ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY/" "$AI_NODE_DIR/.env.local"
-    else
-        # Add new key
-        echo "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY" >> "$AI_NODE_DIR/.env.local"
-    fi
+    env_file_set ANTHROPIC_API_KEY "$ANTHROPIC_API_KEY" "$AI_NODE_DIR/.env.local" || {
+        echo -e "${RED}Error: could not write ANTHROPIC_API_KEY to $AI_NODE_DIR/.env.local${NC}"
+        exit 1
+    }
     echo -e "${GREEN}Anthropic API Key configured.${NC}"
 else
     echo -e "${YELLOW}WARNING: Anthropic API Key not provided. Some AI Node features may not work.${NC}"
 fi
 
 if [ -n "$HYPERBOLIC_API_KEY" ]; then
-    # Check if key already exists in file
-    if grep -q "^HYPERBOLIC_API_KEY=" "$AI_NODE_DIR/.env.local"; then
-        # Update existing key
-        sed -i.bak "s/^HYPERBOLIC_API_KEY=.*/HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY/" "$AI_NODE_DIR/.env.local"
-    else
-        # Add new key
-        echo "HYPERBOLIC_API_KEY=$HYPERBOLIC_API_KEY" >> "$AI_NODE_DIR/.env.local"
-    fi
+    env_file_set HYPERBOLIC_API_KEY "$HYPERBOLIC_API_KEY" "$AI_NODE_DIR/.env.local" || {
+        echo -e "${RED}Error: could not write HYPERBOLIC_API_KEY to $AI_NODE_DIR/.env.local${NC}"
+        exit 1
+    }
     echo -e "${GREEN}Hyperbolic API Key configured.${NC}"
 else
     echo -e "${YELLOW}Note: Hyperbolic API Key not provided. Hyperbolic models will not be available.${NC}"
 fi
 
 if [ -n "$XAI_API_KEY" ]; then
-    # Check if key already exists in file
-    if grep -q "^XAI_API_KEY=" "$AI_NODE_DIR/.env.local"; then
-        # Update existing key
-        sed -i.bak "s/^XAI_API_KEY=.*/XAI_API_KEY=$XAI_API_KEY/" "$AI_NODE_DIR/.env.local"
-    else
-        # Add new key
-        echo "XAI_API_KEY=$XAI_API_KEY" >> "$AI_NODE_DIR/.env.local"
-    fi
+    env_file_set XAI_API_KEY "$XAI_API_KEY" "$AI_NODE_DIR/.env.local" || {
+        echo -e "${RED}Error: could not write XAI_API_KEY to $AI_NODE_DIR/.env.local${NC}"
+        exit 1
+    }
     echo -e "${GREEN}xAI API Key configured (Grok models).${NC}"
 else
     echo -e "${YELLOW}Note: xAI API Key not provided. Grok models will not be available.${NC}"

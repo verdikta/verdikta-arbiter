@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "The transfer whitelist blocks the accounts it is meant to allow",
+  "claimedClass": "MEDIUM",
+  "rootCause": "ShareManager.updateChecks reverts when the sender has canTransfer set, the inverse of what the flag documents, so with the whitelist on an allowed sender cannot send at all.",
+  "affectedPaths": [
+    "src/managers/ShareManager.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_whitelisted_sender_can_send",
+    "observable": "test_a_whitelisted_sender_can_send fails with \"TransferNotAllowed(0x000000000000000000000000000000000000000A, 0x000000000000000000000000000000000000000b)\""
+  },
+  "fixIncluded": false
+}

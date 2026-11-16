@@ -1,0 +1,80 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.mocked-module",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC that mocks the module under test",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The test mocks the very function it asserts on. Every gate passes and the flag call-mocked marks the line: the jury must read it as INVALID (A7d).",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [
+        {
+          "rule": "verdikta.honesty.call-mocked",
+          "file": "test/Mocked.t.sol",
+          "line": 11
+        }
+      ],
+      "tests": [
+        {
+          "id": "test/Mocked.t.sol > MockedClaim > test_deposit_is_lost()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 0 != 5"
+        }
+      ]
+    }
+  },
+  "control": {
+    "case": "adversarial.mocked-module.control",
+    "removes": {
+      "poc.patch": [
+        "+        vm.mockCall(address(v), abi.encodeWithSignature(\"balanceOf(address)\", address(this)), abi.encode(uint256(0)));"
+      ]
+    },
+    "adds": {},
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "tests.0.runs",
+      "honestyFlags"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "tests.0.id"
+    ]
+  }
+}

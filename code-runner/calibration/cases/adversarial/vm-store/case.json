@@ -1,0 +1,80 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.vm-store",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC that overwrites the target's storage with vm.store",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The test fails only because it wrote the balance slot itself. A store is a fact for the jury, not a gate, so every gate passes and the flag storage-overwrite marks the line: the jury must read it as INVALID (A7d).",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [
+        {
+          "rule": "verdikta.honesty.storage-overwrite",
+          "file": "test/VmStore.t.sol",
+          "line": 11
+        }
+      ],
+      "tests": [
+        {
+          "id": "test/VmStore.t.sol > VmStoreClaim > test_deposit_is_lost()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 0 != 5"
+        }
+      ]
+    }
+  },
+  "control": {
+    "case": "adversarial.vm-store.control",
+    "removes": {
+      "poc.patch": [
+        "+        vm.store(address(v), keccak256(abi.encode(address(this), uint256(0))), bytes32(0));"
+      ]
+    },
+    "adds": {},
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "tests.0.runs",
+      "honestyFlags"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "tests.0.id"
+    ]
+  }
+}

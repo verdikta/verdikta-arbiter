@@ -105,5 +105,19 @@ out=$(run FAKE_VERSION_OK=0 ADAPTER_START_TIMEOUT_SECS=5)
 [ -e "$T/adapter-started" ] && ok || bad "adapter down: start.sh was not called"
 has   "adapter down: status"       "$(status_line "$out" 'External Adapter:')" "Not Running"
 
+# A failed or missing pass makes the runner answer 503, and a runner that fails to start, or none at
+# all, stops nothing else: the rest of the node starts and the exit is 0. Callers run under set -e.
+reset
+mkdir -p "$I/code-runner"; : > "$I/code-runner/.env"
+printf '#!/bin/bash\ntouch "%s/runner-start-called"\nexit 1\n' "$T" > "$I/code-runner/start.sh"
+out=$(run FAKE_VERSION_OK=0 ADAPTER_START_TIMEOUT_SECS=5); rc=$?
+[ -e "$T/runner-start-called" ] && ok || bad "runner fails: start.sh was not called"
+[ "$rc" = 0 ] && ok || bad "runner fails: start-arbiter exit $rc"
+has   "runner fails: says so"        "$out" "Failed to start the Code Runner"
+has   "runner fails: the rest starts" "$out" "Starting Chainlink Node"
+has   "runner fails: it finishes"    "$out" "startup completed"
+[ -e "$T/adapter-started" ] && ok || bad "runner fails: the adapter was not started"
+rm -rf "$I/code-runner" "$T/runner-start-called"
+
 echo "start-arbiter-status: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

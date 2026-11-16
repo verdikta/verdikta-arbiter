@@ -1,0 +1,56 @@
+diff --git a/test/UpgradeAccessClaim.t.sol b/test/UpgradeAccessClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/UpgradeAccessClaim.t.sol
+@@ -0,0 +1,51 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {ERC1967Proxy} from "oz/proxy/ERC1967/ERC1967Proxy.sol";
++import {IERC20} from "oz/token/ERC20/IERC20.sol";
++import {Call} from "src/Well.sol";
++import {WellUpgradeable} from "src/WellUpgradeable.sol";
++import {Aquifer} from "src/Aquifer.sol";
++import {ConstantProduct2} from "src/functions/ConstantProduct2.sol";
++import {LibWellUpgradeableConstructor} from "src/libraries/LibWellUpgradeableConstructor.sol";
++import {WellDeployer} from "script/helpers/WellDeployer.sol";
++import {MockPump} from "mocks/pumps/MockPump.sol";
++import {MockToken} from "mocks/tokens/MockToken.sol";
++import {MockWellUpgradeable} from "mocks/wells/MockWellUpgradeable.sol";
++
++/// Only the owner of an upgradeable well may point its proxy at another implementation.
++contract UpgradeAccessClaim is Test, WellDeployer {
++    function test_a_stranger_cannot_move_the_proxy() public {
++        address aquifer = address(new Aquifer());
++        address owner = address(0xA11CE);
++        address stranger = address(0xBAD);
++
++        IERC20[] memory tokens = new IERC20[](2);
++        tokens[0] = new MockToken("ONE", "ONE", 6);
++        tokens[1] = new MockToken("TWO", "TWO", 18);
++        Call memory curve = Call(address(new ConstantProduct2()), abi.encode("first"));
++        Call[] memory pumps = new Call[](1);
++        pumps[0] = Call(address(new MockPump()), abi.encode("first"));
++
++        WellUpgradeable first =
++            encodeAndBoreWellUpgradeable(aquifer, address(new WellUpgradeable()), tokens, curve, pumps, bytes32(0));
++
++        vm.prank(owner);
++        address proxy = address(
++            new ERC1967Proxy(address(first), LibWellUpgradeableConstructor.encodeWellInitFunctionCall(tokens, curve))
++        );
++
++        IERC20[] memory otherTokens = new IERC20[](2);
++        otherTokens[0] = new MockToken("THREE", "THREE", 6);
++        otherTokens[1] = new MockToken("FOUR", "FOUR", 18);
++        WellUpgradeable second = encodeAndBoreWellUpgradeable(
++            aquifer, address(new MockWellUpgradeable()), otherTokens, curve, pumps, bytes32(uint256(1))
++        );
++
++        vm.prank(stranger);
++        try WellUpgradeable(payable(proxy)).upgradeTo(address(second)) {} catch {}
++
++        assertEq(MockWellUpgradeable(proxy).getImplementation(), address(second), "the implementation stays the one the owner chose");
++    }
++}

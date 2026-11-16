@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "upgradeToAndCall is open to any account",
+  "claimedClass": "HIGH",
+  "rootCause": "WellUpgradeable.upgradeToAndCall relies on a check of the new implementation alone, with nothing about who is asking, so any account can repoint a proxy and have the new code run a call of its choosing at once.",
+  "affectedPaths": [
+    "src/WellUpgradeable.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_upgrade_and_call_is_not_open_to_a_stranger",
+    "observable": "test_upgrade_and_call_is_not_open_to_a_stranger fails with \"the proxy still points where the owner set it: 0xe884a82288341db01fec531659b3338Cbe4a3A55 != 0x104fBc016F4bb334D775a19E8A6510109AC63E00\""
+  },
+  "fixIncluded": false
+}

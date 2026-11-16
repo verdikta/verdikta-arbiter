@@ -1,0 +1,111 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.sequence-plain-transfer",
+  "subsets": [
+    "batch-2",
+    "known-issue"
+  ],
+  "title": "A plain transfer to a wallet never reaches its implementation",
+  "source": {
+    "url": "https://raw.githubusercontent.com/code-423n4/2025-10-sequence/b0e5fb15bf6735ec9aaba02f5eca28a7882d815d/README.md",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6). Findings repository: returns 404; the report page is the source.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://raw.githubusercontent.com/code-423n4/2025-10-sequence/b0e5fb15bf6735ec9aaba02f5eca28a7882d815d/README.md",
+    "adaptedHow": "Built here for this case, from the contest README and the proxy's own comment.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2025-10-sequence/b0e5fb15bf6735ec9aaba02f5eca28a7882d815d/README.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2025-10-sequence",
+      "verdict": "None: no program ruled on this claim. It is built here on the contest's published list of assumptions.",
+      "class": null
+    }
+  },
+  "listing": "listings/sequence-scope",
+  "label": {
+    "kind": "known-issue.before",
+    "basis": "listing",
+    "why": "Built here: no finding is behind it. The reason is the listing's own text: the contest README, under operational assumptions, says value is not forwarded to the implementation by design, and the comment in src/Wallet.sol says exactly which calls those are. known_issues.json holds that in Verdikta's words.",
+    "knownIssue": {
+      "title": "A call carrying only value stops at the proxy",
+      "listed": "before",
+      "how": "The README and src/Wallet.sol at the commit listed both say so. known_issues.json holds it, so it is in the list the commit saw."
+    }
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "DUPLICATE",
+    "class": null,
+    "reason": "The listing lists this before the commit, so it settles DUPLICATE if the jury matches it to that entry, which A7d measures. Every gate passes: the runner reads no known issue.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/PlainTransferClaim.t.sol > PlainTransferClaim > test_a_plain_transfer_reaches_the_implementation()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "what the implementation heard of the transfer: 0 != 1"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "Wallet"
+          },
+          {
+            "tier": "knownIssues",
+            "text": "A call carrying only value stops at the proxy"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.sequence-plain-transfer.control",
+    "removes": {
+      "poc.patch": [
+        "+    assertEq(CountsPayments(payable(wallet)).payments(), 1, \"what the implementation heard of the transfer\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+    assertEq(CountsPayments(payable(wallet)).payments(), 0, \"what the implementation heard of the transfer\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

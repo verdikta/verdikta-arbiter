@@ -1,0 +1,25 @@
+diff --git a/test/RateAcrossDecimalsClaim.t.sol b/test/RateAcrossDecimalsClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/RateAcrossDecimalsClaim.t.sol
+@@ -0,0 +1,20 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {Stable2} from "src/functions/Stable2.sol";
++import {Stable2LUT1} from "src/functions/StableLUT/Stable2LUT1.sol";
++
++/// Equal value on both sides of a well prices at one to one, whatever the tokens' decimals.
++contract RateAcrossDecimalsClaim is Test {
++    function test_a_six_decimal_token_prices_at_one_to_one() public {
++        Stable2 stable = new Stable2(address(new Stable2LUT1()));
++        uint256[] memory reserves = new uint256[](2);
++        reserves[0] = 10e6;
++        reserves[1] = 10e18;
++
++        uint256 rate = stable.calcRate(reserves, 0, 1, abi.encode(6, 18));
++
++        assertEq(rate, 1e6, "the rate between the two tokens");
++    }
++}

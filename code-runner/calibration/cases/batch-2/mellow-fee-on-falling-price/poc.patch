@@ -1,0 +1,31 @@
+diff --git a/test/FeeOnFallingPriceClaim.t.sol b/test/FeeOnFallingPriceClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/FeeOnFallingPriceClaim.t.sol
+@@ -0,0 +1,26 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
++import {FeeManager} from "src/managers/FeeManager.sol";
++
++/// A performance fee is for a vault that has done well. When the reported price falls there is nothing to charge it on.
++contract FeeOnFallingPriceClaim is Test {
++    function test_a_falling_price_charges_no_performance_fee() public {
++        address vault = address(0xBA);
++        address asset = address(0xCC);
++        FeeManager fees = FeeManager(
++            address(new TransparentUpgradeableProxy(address(new FeeManager("Calibration", 1)), address(0xAD), new bytes(0)))
++        );
++        fees.initialize(abi.encode(address(this), address(this), uint24(0), uint24(0), uint24(1e5), uint24(0)));
++        fees.setBaseAsset(vault, asset);
++
++        vm.prank(vault);
++        fees.updateState(asset, 1e18);
++
++        uint256 charged = fees.calculateFee(vault, asset, 0.9e18, 1000e18);
++
++        assertEq(charged, 0, "the performance fee when the price falls by a tenth");
++    }
++}

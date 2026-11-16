@@ -1,0 +1,71 @@
+diff --git a/test/CancelPendingDepositClaim.t.sol b/test/CancelPendingDepositClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/CancelPendingDepositClaim.t.sol
+@@ -0,0 +1,66 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
++import {DepositQueue} from "src/queues/DepositQueue.sol";
++import {MockERC20} from "test/mocks/MockERC20.sol";
++
++/// Answers the few questions a queue asks of its vault: nothing is paused, everyone may deposit, and the risk manager is content.
++contract StandInVault {
++    function isPausedQueue(address) external pure returns (bool) {
++        return false;
++    }
++
++    function shareManager() external view returns (address) {
++        return address(this);
++    }
++
++    function riskManager() external view returns (address) {
++        return address(this);
++    }
++
++    function isDepositorWhitelisted(address, bytes32[] calldata) external pure returns (bool) {
++        return true;
++    }
++
++    function modifyPendingAssets(address, int256) external {}
++
++    function feeManager() external view returns (address) {
++        return address(this);
++    }
++
++    function calculateDepositFee(uint256) external pure returns (uint256) {
++        return 0;
++    }
++}
++
++/// A deposit nobody has claimed yet can be taken back by its owner, at any time before a report covers it.
++contract CancelPendingDepositClaim is Test {
++    function test_a_pending_deposit_can_be_cancelled_after_a_report() public {
++        vm.warp(1_700_000_000);
++        MockERC20 asset = new MockERC20();
++        StandInVault vault = new StandInVault();
++        DepositQueue queue = DepositQueue(
++            payable(address(new TransparentUpgradeableProxy(address(new DepositQueue("Calibration", 1)), address(0xAD), new bytes(0))))
++        );
++        queue.initialize(abi.encode(address(asset), address(vault), bytes("")));
++
++        // A price exists, from a report the depositor's request is newer than.
++        vm.warp(block.timestamp + 1 hours);
++        vm.prank(address(vault));
++        queue.handleReport(1e18, uint32(block.timestamp - 1));
++
++        address depositor = address(0xA);
++        asset.mint(depositor, 100 ether);
++        vm.warp(block.timestamp + 1 hours);
++        vm.startPrank(depositor);
++        asset.approve(address(queue), 100 ether);
++        queue.deposit(100 ether, address(0), new bytes32[](0));
++
++        queue.cancelDepositRequest();
++        vm.stopPrank();
++
++        assertEq(asset.balanceOf(depositor), 100 ether);
++    }
++}

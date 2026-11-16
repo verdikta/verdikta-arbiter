@@ -1,0 +1,46 @@
+diff --git a/test/PartlyWhitelistedCallClaim.t.sol b/test/PartlyWhitelistedCallClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/PartlyWhitelistedCallClaim.t.sol
+@@ -0,0 +1,41 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {Timelock} from "src/Timelock.sol";
++import {MIN_DELAY} from "src/utils/Constants.sol";
++import {MockLending} from "test/mock/MockLending.sol";
++import {MockSafe} from "test/mock/MockSafe.sol";
++
++/// Owners who whitelist a call decide what it may do: a hot signer should not get to choose the part they said nothing about.
++contract PartlyWhitelistedCallClaim is Test {
++    function test_a_hot_signer_cannot_pick_the_amount_nobody_whitelisted() public {
++        vm.warp(1_000_000);
++        address hotSigner = address(0x22222);
++        address[] memory hotSigners = new address[](1);
++        hotSigners[0] = hotSigner;
++        Timelock timelock = new Timelock(address(new MockSafe()), MIN_DELAY, 5 days, address(0x11111), 10 days, hotSigners);
++        MockLending lending = new MockLending();
++
++        // Only the recipient of a deposit is checked: the first argument, bytes 4 to 36 of the call.
++        address[] memory targets = new address[](1);
++        targets[0] = address(lending);
++        bytes4[] memory selectors = new bytes4[](1);
++        selectors[0] = MockLending.deposit.selector;
++        uint16[] memory starts = new uint16[](1);
++        starts[0] = 4;
++        uint16[] memory ends = new uint16[](1);
++        ends[0] = 36;
++        bytes[][] memory values = new bytes[][](1);
++        values[0] = new bytes[](1);
++        values[0][0] = abi.encode(address(timelock));
++        timelock.initialize(targets, selectors, starts, ends, values);
++
++        vm.prank(hotSigner);
++        (bool accepted,) = address(timelock).call(
++            abi.encodeCall(Timelock.executeWhitelisted, (address(lending), 0, abi.encodeCall(MockLending.deposit, (address(timelock), type(uint256).max))))
++        );
++
++        assertTrue(accepted, "an amount the owners never whitelisted is refused");
++    }
++}

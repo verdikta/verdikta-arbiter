@@ -33,9 +33,9 @@ check "dereg env reaches the script" 'VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRE
 check "dereg takes every registered id" 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$RECONF_AGGREGATOR" run_echo_capture'
 check "dereg takes every registered id (interactive)" 'VA_DEREGISTER_ALL_REGISTERED=y run_echo_capture bash unregister-oracle.sh <<<'
 check "dereg runs whenever an aggregator is recorded" 'if \[ \$RECONF_DEREGISTER -eq 1 \]; then'
-check "regenerate: dereg rc" 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$aggregator_addr" bash unregister-oracle.sh --unattended [|][|] regen_dereg_rc=\$\?'
-check "regenerate: dereg rc (interactive)" 'VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh [|][|] regen_dereg_rc=\$\?'
-check "regenerate: abort flag read" '\[ "\$REGEN_ABORTED" -eq 1 \] [|][|] JOBS_ALREADY_REGENERATED=1'
+check "regenerate: dereg rc" 'VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$aggregator_addr" bash unregister-oracle.sh --unattended [|][|] unregister_rc=\$\?'
+check "regenerate: dereg rc (interactive)" 'VA_DEREGISTER_ALL_REGISTERED=y bash unregister-oracle.sh <<< .* [|][|] unregister_rc=\$\?'
+check "regenerate: the function's exit code is read" 'regenerate_job_specs [|][|] REGEN_RC=\$\?'
 # The regenerate path no longer carries on after a failed deregistration.
 [ "$(grep -c 'Unregistration may have failed, but continuing' "$S")" -eq 0 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL regenerate still continues after a failed deregistration"; }
 check "dereg output captured" 'dereg_out="\$CAPTURED_OUT"'

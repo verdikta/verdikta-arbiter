@@ -1,0 +1,44 @@
+diff --git a/test/NeighbouringChecksClaim.t.sol b/test/NeighbouringChecksClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/NeighbouringChecksClaim.t.sol
+@@ -0,0 +1,39 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {Timelock} from "src/Timelock.sol";
++import {MIN_DELAY} from "src/utils/Constants.sol";
++import {MockLending} from "test/mock/MockLending.sol";
++import {MockSafe} from "test/mock/MockSafe.sol";
++
++/// Owners should be able to whitelist a call argument by argument: the recipient of a deposit, and then its amount.
++contract NeighbouringChecksClaim is Test {
++    function test_two_neighbouring_arguments_can_both_be_whitelisted() public {
++        vm.warp(1_000_000);
++        Timelock timelock = new Timelock(address(new MockSafe()), MIN_DELAY, 5 days, address(0x11111), 10 days, new address[](0));
++        MockLending lending = new MockLending();
++
++        address[] memory targets = new address[](2);
++        targets[0] = address(lending);
++        targets[1] = address(lending);
++        bytes4[] memory selectors = new bytes4[](2);
++        selectors[0] = MockLending.deposit.selector;
++        selectors[1] = MockLending.deposit.selector;
++        uint16[] memory starts = new uint16[](2);
++        starts[0] = 4;
++        starts[1] = 36;
++        uint16[] memory ends = new uint16[](2);
++        ends[0] = 36;
++        ends[1] = 68;
++        bytes[][] memory values = new bytes[][](2);
++        values[0] = new bytes[](1);
++        values[0][0] = abi.encode(address(timelock));
++        values[1] = new bytes[](1);
++        values[1][0] = abi.encode(uint256(1 ether));
++
++        timelock.initialize(targets, selectors, starts, ends, values);
++
++        assertEq(timelock.getCalldataChecks(address(lending), MockLending.deposit.selector).length, 2, "the checks on the call");
++    }
++}

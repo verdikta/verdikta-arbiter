@@ -1,0 +1,134 @@
+name: Code Runner Calibration
+
+# The adversarial subset and the conformance canary (code-runner/calibration, code-runner/conformance;
+# design §16, §18), under the pinned gVisor on the class platform, where the runner gives a report. It
+# is on its own so that it needs none of the Docker suite's hour, and so that what it depends on beyond
+# code-runner/ triggers it: settleReport and the testing tool's reading of what the harness exports.
+# claude/stake-attestation is the integration branch its node PRs land in; claude/sa-* are node branches
+# a node PR may be stacked on.
+
+on:
+  pull_request:
+    branches: [main, master, claude/stake-attestation, 'claude/sa-*']
+    paths:
+      - 'code-runner/**'
+      - 'external-adapter/src/codeReview/settlement.js'
+      - 'external-adapter/src/codeReview/errors.js'
+      - 'external-adapter/src/codeReview/aiRequest.js'
+      - 'testing-tool/src/claim-*.js'
+      - '.github/workflows/code-runner-calibration.yml'
+  push:
+    branches: [main, master, claude/stake-attestation]
+    paths:
+      - 'code-runner/**'
+      - 'external-adapter/src/codeReview/settlement.js'
+      - 'external-adapter/src/codeReview/errors.js'
+      - 'external-adapter/src/codeReview/aiRequest.js'
+      - 'testing-tool/src/claim-*.js'
+      - '.github/workflows/code-runner-calibration.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-runner-calibration-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # As in code-runner.yml: the gVisor release @verdikta/common pins, without its `release-`
+  # (test/unit/runtime.test.js ties the two), and the SHA-512 of its x86_64 gvisor.tar.bz2.
+  GVISOR_VERSION: '20260921.0'
+  GVISOR_SHA512: 7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e
+
+jobs:
+  calibration:
+    name: Adversarial subset and conformance canary (runsc)
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      CODE_RUNNER_RUNTIME: runsc
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform)
+        run: |
+          set -euo pipefail
+          url="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}/x86_64/gvisor.tar.bz2"
+          curl -fsSL -o gvisor.tar.bz2 "$url"
+          echo "${GVISOR_SHA512}  gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${GVISOR_VERSION}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf gvisor.tar.bz2 -C "$dest"
+          "$dest/runsc" --version
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo systemctl reload docker
+          for i in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc'
+
+      - name: Install
+        working-directory: code-runner
+        run: npm ci
+
+      - name: Adversarial subset
+        working-directory: code-runner
+        run: npm run calibration -- --subset adversarial --self-check --results "$RUNNER_TEMP/calibration-results.json" --export "$RUNNER_TEMP/claims"
+
+      - name: Each adversarial case against its control, on what the runner observed
+        working-directory: code-runner
+        env:
+          CALIBRATION_RESULTS: ${{ runner.temp }}/calibration-results.json
+        run: npm run test:calibration
+
+      - name: The export is what the testing tool reads (A6b)
+        working-directory: testing-tool
+        run: |
+          npm ci
+          npm start -- test --type claim --dry-run --claims-dir "$RUNNER_TEMP/claims"
+
+      - name: Conformance canary, twice
+        working-directory: code-runner
+        run: npm run conformance -- --repeat 2 --json "$RUNNER_TEMP/conformance.json"
+
+      - name: Record the canary's report hash
+        run: |
+          set -euo pipefail
+          hash=$(jq -er '.reportSha256' "$RUNNER_TEMP/conformance.json")
+          {
+            echo '### Conformance canary'
+            echo
+            echo "Report hash: \`$hash\`"
+            echo
+            jq -r '"Runner \(.runner), gVisor \(.gvisor), Semgrep rules \(.semgrepRules), image \(.imageDigest), listing \(.listingCid), claim \(.bcid), \(.runs) runs"' "$RUNNER_TEMP/conformance.json"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::notice title=Conformance report hash::$hash"
+          # What the runs cost, per case, for the record.
+          jq -r '.cases[] | "\(.ms) ms  \(.id)"' "$RUNNER_TEMP/calibration-results.json"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: conformance-and-calibration
+          path: |
+            ${{ runner.temp }}/conformance.json
+            ${{ runner.temp }}/calibration-results.json
+
+      - name: No container left behind
+        if: always()
+        run: |
+          left=$(docker ps --all --filter label=verdikta.code-runner --format '{{.Names}}')
+          reg=$(docker ps --all --filter name=vcr-cal-registry --format '{{.Names}}')
+          if [ -n "$left$reg" ]; then
+            echo "::error::containers left behind: $left $reg"
+            exit 1
+          fi

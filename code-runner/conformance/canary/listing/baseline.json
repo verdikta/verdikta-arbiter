@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "baseCommit": "d8270d9d5b8cca3dc7a169c320fe535091c4937d",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/Vault.t.sol > VaultTest > test_deposit_credits()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/Vault.t.sol > VaultTest > test_deposit_credits()"
+  ],
+  "unstable": []
+}

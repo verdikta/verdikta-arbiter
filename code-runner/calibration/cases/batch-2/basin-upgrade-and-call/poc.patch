@@ -1,0 +1,50 @@
+diff --git a/test/UpgradeAndCallClaim.t.sol b/test/UpgradeAndCallClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/UpgradeAndCallClaim.t.sol
+@@ -0,0 +1,45 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {ERC1967Proxy} from "oz/proxy/ERC1967/ERC1967Proxy.sol";
++import {IERC20} from "oz/token/ERC20/IERC20.sol";
++import {Call} from "src/Well.sol";
++import {WellUpgradeable} from "src/WellUpgradeable.sol";
++import {Aquifer} from "src/Aquifer.sol";
++import {ConstantProduct2} from "src/functions/ConstantProduct2.sol";
++import {LibWellUpgradeableConstructor} from "src/libraries/LibWellUpgradeableConstructor.sol";
++import {WellDeployer} from "script/helpers/WellDeployer.sol";
++import {MockPump} from "mocks/pumps/MockPump.sol";
++import {MockToken} from "mocks/tokens/MockToken.sol";
++import {MockWellUpgradeable} from "mocks/wells/MockWellUpgradeable.sol";
++
++/// upgradeToAndCall takes the proxy to a new implementation and runs a call there, and it is for the owner alone.
++contract UpgradeAndCallClaim is Test, WellDeployer {
++    function test_upgrade_and_call_is_not_open_to_a_stranger() public {
++        address aquifer = address(new Aquifer());
++
++        IERC20[] memory tokens = new IERC20[](2);
++        tokens[0] = new MockToken("ONE", "ONE", 6);
++        tokens[1] = new MockToken("TWO", "TWO", 18);
++        Call memory curve = Call(address(new ConstantProduct2()), abi.encode("first"));
++        Call[] memory pumps = new Call[](1);
++        pumps[0] = Call(address(new MockPump()), abi.encode("first"));
++
++        WellUpgradeable first =
++            encodeAndBoreWellUpgradeable(aquifer, address(new WellUpgradeable()), tokens, curve, pumps, bytes32(0));
++        vm.prank(address(0xA11CE));
++        address proxy = address(
++            new ERC1967Proxy(address(first), LibWellUpgradeableConstructor.encodeWellInitFunctionCall(tokens, curve))
++        );
++
++        WellUpgradeable second = encodeAndBoreWellUpgradeable(
++            aquifer, address(new MockWellUpgradeable()), tokens, curve, pumps, bytes32(uint256(7))
++        );
++
++        vm.prank(address(0xBAD));
++        try WellUpgradeable(payable(proxy)).upgradeToAndCall(address(second), abi.encodeWithSignature("getVersion()")) {} catch {}
++
++        assertEq(WellUpgradeable(payable(proxy)).getImplementation(), address(first), "the proxy still points where the owner set it");
++    }
++}

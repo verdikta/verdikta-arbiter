@@ -609,7 +609,8 @@ if [ -f "$UTIL_DIR/arbiter-boot-service.sh" ]; then
 fi
 # Port hardening (2026-10-21 port audit): firewall rules for 5432/6688/3000/8080 on
 # the public interface, and the optional recreate that publishes 6688 on loopback.
-for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh; do
+# And the tool that measures a live node's job limits (design §11).
+for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh apply-job-timeouts.sh common-pin.js code-review-sandbox.sh code-review-check.js; do
     if [ -f "$UTIL_DIR/$_hardening" ]; then
         cp "$UTIL_DIR/$_hardening" "$INSTALL_DIR/$_hardening"
         chmod +x "$INSTALL_DIR/$_hardening"
@@ -632,6 +633,7 @@ echo -e "${BLUE}Copying configured components to installation directory...${NC}"
 AI_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
 EXTERNAL_ADAPTER_SRC_DIR="$(dirname "$INSTALLER_DIR")/external-adapter"
 CHAINLINK_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/chainlink-node"
+CODE_RUNNER_SRC_DIR="$(dirname "$INSTALLER_DIR")/code-runner"
 
 # Copy AI Node (including .env.local and other configurations)
 if [ -d "$AI_NODE_SRC_DIR" ]; then
@@ -692,6 +694,17 @@ if [ -d "$CHAINLINK_NODE_SRC_DIR" ]; then
     echo -e "${GREEN}Chainlink Node copied to $INSTALL_DIR/chainlink-node${NC}"
 else
     echo -e "${YELLOW}Warning: Chainlink Node source directory not found at $CHAINLINK_NODE_SRC_DIR${NC}"
+fi
+
+# Copy the Code Runner. Its files reach every node: the optional sandbox phase below runs it.
+if [ -d "$CODE_RUNNER_SRC_DIR" ]; then
+    echo -e "${BLUE}Copying Code Runner...${NC}"
+    mkdir -p "$INSTALL_DIR/code-runner"
+    cp -r "$CODE_RUNNER_SRC_DIR/." "$INSTALL_DIR/code-runner/"
+    rm -rf "$INSTALL_DIR/code-runner/.state" "$INSTALL_DIR/code-runner/logs"  # a development run's
+    chmod +x "$INSTALL_DIR/code-runner/start.sh" "$INSTALL_DIR/code-runner/stop.sh"
+else
+    echo -e "${YELLOW}Warning: Code Runner source directory not found at $CODE_RUNNER_SRC_DIR${NC}"
 fi
 
 # Copy contracts and environment information
@@ -1042,6 +1055,11 @@ else
     echo -e "${YELLOW}   This may cause compatibility issues. Consider running the update utility manually.${NC}"
 fi
 
+# The same-version check over all three that judge a claim, the Code Runner with them.
+if ! node "$UTIL_DIR/common-pin.js" --agree "$INSTALL_DIR"; then
+    echo -e "${YELLOW}⚠️  The components do not pin one @verdikta/common release: code review stays refused until they do.${NC}"
+fi
+
 fi  # End of NEED_POST_INSTALLATION conditional block
 
 # Optional: Fund Chainlink keys automatically
@@ -1177,6 +1195,27 @@ if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
         echo -e "${GREEN}  $INSTALL_DIR/installer/.contracts${NC}"
         echo
         echo -e "${BLUE}Recommended amount: $RECOMMENDED_AMOUNT $CURRENCY_NAME per key${NC}"
+    fi
+fi
+
+# Optional phase: the code-review sandbox (design §16). Before the services start, so the adapter
+# reads its settings at its first start. Needed only to judge stake claims; a node registers on a
+# code class after this, with register-oracle.sh. It never restarts Docker. Read with `|| rc=$?`:
+# this script runs under set -e, and a sandbox that does not finish does not end an install.
+if [ -x "$INSTALL_DIR/code-review-sandbox.sh" ] && [ "$SKIP_TO_REGISTRATION" = "false" ]; then
+    echo
+    echo -e "${BLUE}Code-review sandbox (optional; needed only to judge stake claims): gVisor, a separate${NC}"
+    echo -e "${BLUE}Docker daemon on a fixed-size ${VA_CODE_REVIEW_DISK_GB:-40} GB disk image, the code runner, and a conformance${NC}"
+    echo -e "${BLUE}self-test. About +2 vCPU and +4 GB of RAM while judging. It needs sudo and a few minutes.${NC}"
+    if ask_yes_no "Install the code-review sandbox?" "n" VA_INSTALL_CODE_REVIEW_SANDBOX n; then
+        CODE_REVIEW_ENABLE_RC=0
+        bash "$INSTALL_DIR/code-review-sandbox.sh" enable || CODE_REVIEW_ENABLE_RC=$?
+        if [ "$CODE_REVIEW_ENABLE_RC" != "0" ]; then
+            echo -e "${YELLOW}Warning: the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC). The arbiter is not affected.${NC}"
+            echo -e "${YELLOW}After fixing the cause, run: $INSTALL_DIR/code-review-sandbox.sh enable${NC}"
+        fi
+    else
+        echo -e "${BLUE}Skipped. Install it later with: $INSTALL_DIR/code-review-sandbox.sh enable${NC}"
     fi
 fi
 

@@ -1,0 +1,50 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.forged-junit-exit",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC that prints a failing JUnit record and kills forge before the code runs",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "ABSTAIN",
+    "class": null,
+    "reason": "forge dies of SIGKILL on the first run, so no record is read at all, the forged one included: the arbiter abstains. The runner reads exit 137 as the OOM killer does, and either way it is no fact to settle on (design §9.3).",
+    "runner": {
+      "result": "abstain",
+      "abstain": {
+        "cause": "oom",
+        "step": "poc:1"
+      }
+    }
+  },
+  "control": {
+    "case": "adversarial.forged-junit-exit.control",
+    "removes": {
+      "poc.patch": [
+        "+        string[] memory c = new string[](3);",
+        "+        c[0] = \"/bin/sh\";",
+        "+        c[1] = \"-c\";",
+        "+        c[2] = \"printf '%s\\\\n' '<?xml version=\\\"1.0\\\" encoding=\\\"UTF-8\\\"?><testsuites name=\\\"Test run\\\" tests=\\\"1\\\" skipped=\\\"0\\\" failures=\\\"1\\\" errors=\\\"0\\\"><testsuite name=\\\"test/Forged.t.sol:ForgedClaim\\\" tests=\\\"1\\\" skipped=\\\"0\\\" errors=\\\"0\\\" failures=\\\"1\\\"><testcase name=\\\"test_bonus_over_credits()\\\"><failure message=\\\"vault drained\\\"/></testcase></testsuite></testsuites>' > /proc/$PPID/fd/1; kill -9 $PPID\";",
+        "+        vm.ffi(c);"
+      ]
+    },
+    "adds": {},
+    "differsIn": [
+      "result"
+    ],
+    "sameIn": []
+  }
+}

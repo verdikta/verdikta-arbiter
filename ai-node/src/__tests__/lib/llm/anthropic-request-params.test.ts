@@ -3,6 +3,8 @@ import {
   MODERN_MAX_TOKENS,
   acceptsSamplingParams,
   anthropicChatParams,
+  anthropicClientOptions,
+  anthropicControlParams,
   extractTextContent,
   isSamplingParamRejection,
   parseClaudeVersion,
@@ -113,6 +115,43 @@ describe('anthropic-request-params', () => {
       ['null', null],
     ])('%s → not a sampling rejection', (_label, error) => {
       expect(isSamplingParamRejection(error)).toBe(false);
+    });
+  });
+
+  describe('anthropicClientOptions', () => {
+    const NOW = 1_000_000;
+
+    test('no deadline: no client options, so the SDK keeps its default timeout and its limit', () => {
+      expect(anthropicClientOptions(undefined, NOW)).toEqual({});
+      expect(anthropicClientOptions({}, NOW)).toEqual({});
+      expect(anthropicClientOptions({ signal: new AbortController().signal, maxTokens: 32000, effort: 'high' }, NOW)).toEqual({});
+    });
+
+    test('a deadline: the time left to it', () => {
+      expect(anthropicClientOptions({ deadlineAt: NOW + 480000 }, NOW)).toEqual({ clientOptions: { timeout: 480000 } });
+      expect(anthropicClientOptions({ deadlineAt: NOW + 1 }, NOW)).toEqual({ clientOptions: { timeout: 1 } });
+    });
+
+    test('a deadline and a juror\'s dispatcher: the dispatcher goes to the SDK\'s fetch', () => {
+      const dispatcher = { name: 'the call\'s own' };
+      expect(anthropicClientOptions({ deadlineAt: NOW + 480000 }, NOW, dispatcher)).toEqual({
+        clientOptions: { timeout: 480000, fetchOptions: { dispatcher } },
+      });
+    });
+
+    test('no deadline: a dispatcher is not passed on either', () => {
+      expect(anthropicClientOptions({ signal: new AbortController().signal }, NOW, { name: 'x' })).toEqual({});
+    });
+
+    test('a deadline already passed: 1 ms, never zero or negative', () => {
+      expect(anthropicClientOptions({ deadlineAt: NOW }, NOW)).toEqual({ clientOptions: { timeout: 1 } });
+      expect(anthropicClientOptions({ deadlineAt: NOW - 5000 }, NOW)).toEqual({ clientOptions: { timeout: 1 } });
+    });
+
+    test('the deadline adds nothing to the request fields', () => {
+      const controls = { signal: new AbortController().signal, maxTokens: 32000, effort: 'high' as const };
+      expect(anthropicControlParams('claude-sonnet-5-5', { ...controls, deadlineAt: NOW + 1000 }))
+        .toEqual(anthropicControlParams('claude-sonnet-5-5', controls));
     });
   });
 

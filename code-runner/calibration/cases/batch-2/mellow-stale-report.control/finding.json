@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A report of any age still validates a price",
+  "claimedClass": "HIGH",
+  "rootCause": "Oracle.validatePrice compares a price with the stored report and never looks at how old that report is, so a signed order can pass against a price long out of date if reports stop arriving.",
+  "affectedPaths": [
+    "src/oracles/Oracle.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_report_a_year_old_validates_nothing",
+    "observable": "test_a_report_a_year_old_validates_nothing fails with \"a price checked against a report a year old is not valid\""
+  },
+  "fixIncluded": false
+}

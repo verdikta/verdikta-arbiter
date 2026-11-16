@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "baseCommit": "7d5aacbb144d0ba0bc358dfde6e0cc913d25310e",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyAddLiquidity()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetAquifer()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetPump()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetSymbolInStorage()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetTokens()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetWellFunction()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyInitVersion()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyNumTokens()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyOwner()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyTransferOwnership()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testRevertTransferOwnershipFromNotOnwer()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/WellUpgradeable.t.sol > WellUpgradeTest > testUpgradeToNewImplementation()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyAddLiquidity()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetAquifer()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetPump()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetSymbolInStorage()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetTokens()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyGetWellFunction()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyInitVersion()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyNumTokens()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyOwner()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testProxyTransferOwnership()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testRevertTransferOwnershipFromNotOnwer()",
+    "test/WellUpgradeable.t.sol > WellUpgradeTest > testUpgradeToNewImplementation()"
+  ],
+  "unstable": []
+}

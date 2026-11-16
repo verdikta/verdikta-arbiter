@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A wallet answers as a sapient signer with a constant",
+  "claimedClass": "MEDIUM",
+  "rootCause": "BaseAuth.recoverSapientSignature validates the signature and then returns bytes32(uint256(1)), where ISapient asks for the signer's image hash, so a parent wallet builds the wrong leaf and its own image hash no longer matches.",
+  "affectedPaths": [
+    "src/modules/auth/BaseAuth.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_wallet_answers_as_a_sapient_signer_with_its_image_hash",
+    "observable": "test_a_wallet_answers_as_a_sapient_signer_with_its_image_hash fails with \"the answer is the image hash of the signer: 0x0000000000000000000000000000000000000000000000000000000000000001 != 0xb047ca9be06213f7ee0226ecd492cf0a8956987351a55e54be184bd97c3167c9\""
+  },
+  "fixIncluded": false
+}

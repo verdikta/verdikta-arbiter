@@ -1,0 +1,52 @@
+diff --git a/test/stake/TierPromotionClaim.t.sol b/test/stake/TierPromotionClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/stake/TierPromotionClaim.t.sol
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {LayerEdgeStaking} from "@src/stake/LayerEdgeStaking.sol";
++import {LayerEdgeToken} from "@test/mock/LayerEdgeToken.sol";
++import {DeployLayerEdgeStaking} from "@script/DeployLayerEdgeStaking.s.sol";
++import {NetworkConfig, HelperConfig} from "@script/HelperConfig.s.sol";
++
++/// The staked minimum earns exactly the rate the contract states for the staker.
++contract TierPromotionClaim is Test {
++    uint256 private constant STAKE = 3000e18;
++
++    function test_staker_is_paid_the_rate_it_is_told() public {
++        (LayerEdgeStaking staking, HelperConfig config) = new DeployLayerEdgeStaking().run();
++        NetworkConfig memory network = config.getActiveNetworkConfig();
++        LayerEdgeToken token = LayerEdgeToken(network.stakingToken);
++
++        vm.startPrank(network.owner);
++        token.approve(address(staking), 100_000e18);
++        staking.depositRewards(100_000e18);
++        address[] memory stakers = new address[](15);
++        for (uint256 i = 0; i < stakers.length; i++) {
++            stakers[i] = address(uint160(0x1000 + i));
++            token.transfer(stakers[i], STAKE);
++        }
++        vm.stopPrank();
++
++        // Fifteen stakers split the tiers 3, 4, 8: the seventh to arrive ranks in tier 2.
++        for (uint256 i = 0; i < stakers.length; i++) {
++            vm.startPrank(stakers[i]);
++            token.approve(address(staking), STAKE);
++            staking.stake(STAKE);
++            vm.stopPrank();
++        }
++
++        address seventh = stakers[6];
++        vm.warp(block.timestamp + 365 days);
++        uint256 stated = staking.getUserAPY(seventh);
++
++        vm.prank(seventh);
++        staking.claimInterest();
++        uint256 paid = token.balanceOf(seventh) * 100e18 / STAKE;
++
++        assertTrue(paid != stated, "interest paid at the stated rate");
++    }
++}

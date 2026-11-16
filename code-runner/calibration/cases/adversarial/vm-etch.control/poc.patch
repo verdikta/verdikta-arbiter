@@ -1,0 +1,24 @@
+diff --git a/test/VmEtch.t.sol b/test/VmEtch.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/VmEtch.t.sol
+@@ -0,0 +1,19 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract LeakyCode {
++    function balanceOf(address) external pure returns (uint256) {
++        return 0;
++    }
++}
++
++contract VmEtchClaim is Base {
++    function test_deposit_is_lost() public {
++        Vault v = new Vault();
++        v.deposit(5);
++        vm.assertEq(v.balanceOf(address(this)), 5);
++    }
++}

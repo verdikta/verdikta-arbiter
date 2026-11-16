@@ -1,0 +1,15 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "canary",
+  "repo": {
+    "kind": "fixture",
+    "path": "canary/repo"
+  },
+  "commit": "d8270d9d5b8cca3dc7a169c320fe535091c4937d",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/conformance",
+    "licence": "MIT",
+    "program": null
+  },
+  "solc": "0.8.31"
+}

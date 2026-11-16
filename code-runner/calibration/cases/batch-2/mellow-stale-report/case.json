@@ -1,0 +1,102 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.mellow-stale-report",
+  "subsets": [
+    "batch-2",
+    "clear-invalid"
+  ],
+  "title": "A report of any age still validates a price",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/359",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/359",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test, only steps. A stand-in vault answers what the oracle asks, since what is tested is in the oracle.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/4bcbdcfe643761c67d7dd862ca5909168c3ad859/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-07-mellow-flexible-vaults",
+      "verdict": "Invalid: labelled Invalid in the judging repository, and not in the final report. Submitted as high. No judge comment on the issue.",
+      "class": null
+    }
+  },
+  "listing": "listings/mellow",
+  "label": {
+    "kind": "clear-invalid.excluded-precondition",
+    "basis": "program",
+    "why": "The program recorded the label and no reason. The reason here is read from the contest README, whose rules the label applies: off-chain mechanisms such as the oracle bot are assumed not to misbehave, delay or go offline, and oracle reports are trusted. The finding's precondition is that the operator stops reporting."
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The program ruled it invalid, and the reason is that reports stopping is a precondition the contest excludes. Every gate passes, because the test really does fail once they stop; whether that counts is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/StaleReportClaim.t.sol > StaleReportClaim > test_a_report_a_year_old_validates_nothing()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "a price checked against a report a year old is not valid"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "validatePrice"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.mellow-stale-report.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertFalse(isValid, \"a price checked against a report a year old is not valid\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertTrue(isValid, \"a price checked against a report a year old is not valid\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}
