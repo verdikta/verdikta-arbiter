@@ -2,9 +2,9 @@
 #
 # Verdikta Arbiter - Application Log Rotation (P2-A, July 2026 incident)
 #
-# The AI Node and External Adapter write timestamped nohup logs
-# (ai-node/logs/ai-node_*.log, external-adapter/logs/adapter_*.log) plus
-# ai-node/logs/llm-interactions.log, with no rotation. This tool bounds them:
+# The AI Node, External Adapter and Code Runner write timestamped nohup logs
+# (ai-node/logs/ai-node_*.log, external-adapter/logs/adapter_*.log,
+# code-runner/logs/runner_*.log) plus ai-node/logs/llm-interactions.log, with no rotation. This tool bounds them:
 #
 #   1. Compress finished (not currently open) *.log files older than 1 day.
 #   2. Delete compressed archives older than RETENTION_DAYS (default 14).
@@ -134,5 +134,6 @@ rotate_dir() {
 
 rotate_dir "$INSTALL_DIR/ai-node/logs"
 rotate_dir "$INSTALL_DIR/external-adapter/logs"
+rotate_dir "$INSTALL_DIR/code-runner/logs"
 
 echo "Done."

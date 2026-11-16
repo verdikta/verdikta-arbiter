@@ -35,6 +35,7 @@ d=$(mk ""); (cd "$d" && env VA_DEREGISTER_ORACLE=y PATH="$d/bin:$PATH" bash ./un
 [ "$rc" = "65" ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 4: rc=$rc"; }
 # 5. not asked to deregister -> cancels, exit 0, node never called
 d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d"); rc=$?
-[ "$rc" = "0" ] && echo "$out" | grep -q "cancelled" && ! echo "$out" | grep -q "FAKE node" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 5: rc=$rc $out" | tail -3; }
+# (The script prints `node --version`: a host with no nvm finds the fake node for that, which is not a call that spends.)
+[ "$rc" = "0" ] && echo "$out" | grep -q "cancelled" && ! echo "$out" | grep "FAKE node" | grep -qv -- "--version" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 5: rc=$rc $out" | tail -3; }
 echo "pass=$pass fail=$fail"
 [ "$fail" = "0" ]

@@ -24,6 +24,7 @@ caused the April–May 2026 incident:
 | `IPFS_PINNING_KEY` missing or not a JWT (Pinata uploads 401 INVALID_CREDENTIALS) | `ea.pinata_key_format` (FAIL) |
 | Pinata 401 / upload failures in recent EA log | `ea.recent_pinata_errors` (FAIL / WARN) |
 | `JUSTIFIER_MODEL` unset, malformed, or points at Ollama without a running Ollama daemon | `ai.justifier_model` (FAIL) |
+| A code-class node that cannot reach a juror of common's code-standard panels (no native key and no OpenRouter key; Gemini has OpenRouter only), so it abstains on every claim | `ai.code_jurors` (FAIL; no model call. [Provider keys](../docs/maintenance/code-review-sandbox.md#provider-keys)) |
 | Container or service down | `svc.ai_node` / `svc.adapter` / `svc.chainlink` / `svc.postgres` |
 | Node would not come back after a host reboot | `svc.boot_start` (WARN; `arbiter-boot-service.sh enable`) |
 | 5432 / 6688 / 3000 / 8080 listening on public addresses with no firewall rule closing them | `svc.public_ports` (WARN; `arbiter-firewall.sh enable`) |
@@ -117,12 +118,29 @@ explicit `fund-chainlink-keys.sh --amount <eth>`.
 - `doctor-report.txt` — the doctor's findings, columnated for legibility
 - `contracts.snapshot` — copy of `installer/.contracts` (addresses only, no secrets)
 - `env.sanitized` — copy of `installer/.env` with `PRIVATE_KEY`, `*_API_KEY`, `*_SECRET*`, `IPFS_PINNING_KEY` redacted
-- `logs/adapter.log.tail`, `logs/ai-node.log.tail`, `logs/chainlink.log.tail` — last 5000 lines of each component log
+- `logs/adapter.log.tail`, `logs/ai-node.log.tail`, `logs/chainlink.log.tail` — last 5000 lines of each component log (Chainlink's from both of its streams: it logs to stderr)
 - `db/evm_txes.tsv`, `db/evm_tx_attempts.tsv`, `db/evm_key_states.tsv` — chainlink TXM state
 - `onchain.txt` — block number, balance, nonce, operator code size
 
-This is the right thing to share with support when reporting a problem;
-nothing in the bundle is secret.
+Every file is written through the doctor's `redact_log`, which also covers what
+the doctor prints (the RPC URL in its banner and findings, a failed
+transaction's error):
+
+- an `http(s)://` or `ws(s)://` URL keeps its scheme and host, and its userinfo,
+  path and query become `/<redacted>`: providers put the API key there (Infura
+  `/v3/<key>`, blockpi `/v1/rpc/<key>`), and Chainlink logs its RPC URLs whole.
+  A URL ends at white space, a quote, a backslash, `<`, `>` or `|` (the `db/`
+  files' column separator);
+- another scheme's `user:password@` becomes `<redacted>@`;
+- a value of 16 or more token characters after `key=`, `token=` (so `apikey=`,
+  `api_key=`, `access_token=`), a quoted `...key":"` / `...token: '`, or
+  `Bearer `, and any JWT, become `<redacted>`.
+
+This is the right thing to share with support when reporting a problem. What
+the rules above do not recognise is not removed: read a bundle before you send
+it. Bundles, doctor output and upgrade logs from earlier releases may hold the
+raw lines, RPC keys included: earlier doctors sent Chainlink's stderr to their
+own output.
 
 ## Companion rotation tools
 
@@ -147,6 +165,9 @@ without any risk of accidentally modifying its state:
 scp arbiter-doctor-node:installer/util/remote-doctor.sh other-node:/tmp/
 ssh other-node /tmp/remote-doctor.sh --quiet
 ```
+
+It carries its own copy of `redact_log`, byte-identical to the doctor's
+(`installer/tests/doctor-redact.test.sh` checks it).
 
 ## Integration with install / upgrade
 

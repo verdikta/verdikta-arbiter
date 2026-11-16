@@ -1,0 +1,102 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.basin-third-token-swap",
+  "subsets": [
+    "batch-2",
+    "clear-invalid"
+  ],
+  "title": "Swapping for a well's third token costs nothing",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-07-basin-findings/issues/12",
+    "licence": "Repository LICENSE.txt: MIT, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-07-basin-findings/issues/12",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding's test only logs balances; this one bores the well directly and asserts that the swap costs something.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-07-basin-findings/12468792fc3c89de5ea1353ddb83b7ce5f7d5b21/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-07-basin",
+      "verdict": "Invalid: labelled unsatisfactory, reason Out of scope; sponsor disputed. Submitted as 3 (High Risk).",
+      "class": null
+    }
+  },
+  "listing": "listings/basin-2024-07-scope",
+  "label": {
+    "kind": "clear-invalid.excluded-precondition",
+    "basis": "program",
+    "why": "The judge marked it unsatisfactory, Out of scope: a Well with more than two tokens is not an acceptable assumption, since Stable2 is compatible with two-token wells only. The sponsor pointed to the contract's own natspec, which says two tokens. The precondition is in the program's ruling; this listing's scope is paths, and the two-token limit is in the source the jury reads."
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The judge ruled the three-token well out of scope, so the program's answer is invalid. Every gate passes, because the test really does fail on that well; whether that precondition counts is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/ThirdTokenSwapClaim.t.sol > ThirdTokenSwapClaim > test_taking_the_third_token_out_costs_something()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "what the swap takes in for the third token: 0 <= 0"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "calcReserve"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.basin-third-token-swap.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertGt(paid, 0, \"what the swap takes in for the third token\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertEq(paid, 0, \"what the swap takes in for the third token\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

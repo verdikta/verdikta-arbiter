@@ -1,0 +1,52 @@
+diff --git a/test/TransferWhitelistClaim.t.sol b/test/TransferWhitelistClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/TransferWhitelistClaim.t.sol
+@@ -0,0 +1,47 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
++import {IShareManager} from "src/interfaces/managers/IShareManager.sol";
++import {TokenizedShareManager} from "src/managers/TokenizedShareManager.sol";
++
++/// Grants every role, so the test reads only the share manager's own checks.
++contract PermissiveVault {
++    function hasRole(bytes32, address) external pure returns (bool) {
++        return true;
++    }
++}
++
++/// With the transfer whitelist on, an account marked canTransfer may send shares.
++contract TransferWhitelistClaim is Test {
++    function test_a_whitelisted_sender_can_send() public {
++        TokenizedShareManager manager = TokenizedShareManager(
++            address(
++                new TransparentUpgradeableProxy(
++                    address(new TokenizedShareManager("Calibration", 1)), address(0xAD), new bytes(0)
++                )
++            )
++        );
++        manager.initialize(abi.encode(bytes32(0), string("Shares"), string("SHR")));
++        manager.setVault(address(new PermissiveVault()));
++
++        address sender = address(0xA);
++        address receiver = address(0xB);
++        manager.setFlags(
++            IShareManager.Flags({
++                hasMintPause: false,
++                hasBurnPause: false,
++                hasWhitelist: false,
++                hasTransferPause: false,
++                hasTransferWhitelist: true,
++                globalLockup: 0,
++                targetedLockup: 0
++            })
++        );
++        manager.setAccountInfo(sender, IShareManager.AccountInfo({canDeposit: true, canTransfer: true, isBlacklisted: false, lockedUntil: 0}));
++        manager.setAccountInfo(receiver, IShareManager.AccountInfo({canDeposit: true, canTransfer: true, isBlacklisted: false, lockedUntil: 0}));
++
++        manager.updateChecks(sender, receiver);
++    }
++}

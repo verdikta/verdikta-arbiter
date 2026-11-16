@@ -57,3 +57,7 @@ chainlink-node/verdikta_job_spec.toml
 
 # Installer state files
 installer/.registration_state
+
+# The External Adapter's commit store (scores and salts of pending reveals)
+.commit-db.json
+.commit-db.json.tmp

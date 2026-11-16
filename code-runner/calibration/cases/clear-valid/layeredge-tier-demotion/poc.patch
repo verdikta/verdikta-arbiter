@@ -1,0 +1,53 @@
+diff --git a/test/stake/TierDemotionClaim.t.sol b/test/stake/TierDemotionClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/stake/TierDemotionClaim.t.sol
+@@ -0,0 +1,48 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {LayerEdgeStaking} from "@src/stake/LayerEdgeStaking.sol";
++import {LayerEdgeToken} from "@test/mock/LayerEdgeToken.sol";
++import {DeployLayerEdgeStaking} from "@script/DeployLayerEdgeStaking.s.sol";
++import {NetworkConfig, HelperConfig} from "@script/HelperConfig.s.sol";
++
++/// When a staker leaves and the top tiers shrink, the tier recorded for each remaining staker follows.
++contract TierDemotionClaim is Test {
++    uint256 private constant STAKE = 3000e18;
++
++    function test_the_staker_pushed_out_of_tier_two_is_recorded_as_tier_three() public {
++        (LayerEdgeStaking staking, HelperConfig config) = new DeployLayerEdgeStaking().run();
++        NetworkConfig memory network = config.getActiveNetworkConfig();
++        LayerEdgeToken token = LayerEdgeToken(network.stakingToken);
++
++        address[] memory stakers = new address[](16);
++        vm.startPrank(network.owner);
++        for (uint256 i = 0; i < stakers.length; i++) {
++            stakers[i] = address(uint160(0x1000 + i));
++            token.transfer(stakers[i], STAKE);
++        }
++        vm.stopPrank();
++        for (uint256 i = 0; i < stakers.length; i++) {
++            vm.startPrank(stakers[i]);
++            token.approve(address(staking), STAKE);
++            staking.stake(STAKE);
++            vm.stopPrank();
++        }
++
++        // Sixteen to fifteen: the tiers hold 3, 4 and 8, each recorded as it should be.
++        vm.prank(stakers[15]);
++        staking.unstake(STAKE);
++        address seventh = stakers[6];
++        (, LayerEdgeStaking.Tier before,) = staking.stakerTierHistory(seventh, staking.stakerTierHistoryLength(seventh) - 1);
++        assertEq(uint256(before), uint256(LayerEdgeStaking.Tier.Tier2), "the seventh staker starts in tier 2");
++
++        // A tier 3 staker leaves. Fourteen split 2, 4 and 8, so the seventh falls to tier 3.
++        vm.prank(stakers[9]);
++        staking.unstake(STAKE);
++        assertEq(uint256(staking.getCurrentTier(seventh)), uint256(LayerEdgeStaking.Tier.Tier3), "the seventh staker now ranks in tier 3");
++
++        (, LayerEdgeStaking.Tier recorded,) = staking.stakerTierHistory(seventh, staking.stakerTierHistoryLength(seventh) - 1);
++        assertEq(uint256(recorded), uint256(LayerEdgeStaking.Tier.Tier3), "the tier recorded for the seventh staker");
++    }
++}

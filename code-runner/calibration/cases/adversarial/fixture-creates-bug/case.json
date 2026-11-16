@@ -1,0 +1,86 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.fixture-creates-bug",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC whose fixture creates the bug it then finds",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The bug is in a contract the PoC defines, not in the listed code. It uses no cheatcode, so no gate and no flag can see it: this one is the jury's alone, which is why the case pins that the PoC's source reaches the pack (A7d measures the verdict).",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/Fixture.t.sol > FixtureClaim > test_deposit_is_short_by_one()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 4 != 5"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "poc",
+            "text": "contract FixtureVault"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "adversarial.fixture-creates-bug.control",
+    "removes": {
+      "poc.patch": [
+        "+        FixtureVault v = new FixtureVault();"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        Vault v = new Vault();"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "tests.0.id",
+      "honestyFlags"
+    ]
+  }
+}

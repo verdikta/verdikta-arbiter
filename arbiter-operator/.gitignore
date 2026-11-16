@@ -8,6 +8,10 @@ temp.txt
 /typechain-types/
 /deployments/
 
+# Foundry output (the root foundry.toml)
+/foundry/out/
+/foundry/cache/
+
 # Dependencies
 /node_modules/
 /lib/

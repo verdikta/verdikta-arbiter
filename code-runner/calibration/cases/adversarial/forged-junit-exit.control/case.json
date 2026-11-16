@@ -1,0 +1,57 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "adversarial.forged-junit-exit.control",
+  "subsets": [
+    "adversarial"
+  ],
+  "title": "A PoC that prints a failing JUnit record and kills forge before the code runs: the same PoC without it",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "listing": "listings/vault",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "LOW",
+    "rubric": "immunefi-v2.3",
+    "impact": "fails-to-deliver-promised-returns",
+    "classReason": "The PoC shows depositWithBonus crediting one wei more than it receives. The books then owe one wei more than they hold per call, less than any call's gas, so no caller can take value with it and no deposit is lost: Immunefi weighs an impact by its size, and this one is the Low impact, a contract that falls short of what it promises without losing value.",
+    "reason": "Without the forged record and the kill, the same PoC runs the code under test on all three runs.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/Forged.t.sol > ForgedClaim > test_bonus_over_credits()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "assertion failed: 2 != 1"
+        }
+      ]
+    }
+  },
+  "controlOf": "adversarial.forged-junit-exit"
+}

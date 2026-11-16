@@ -1,0 +1,73 @@
+{
+  "version": 1,
+  "builderPublicKey": null,
+  "image": "ghcr.io/verdikta/stake-attestation-l4-fixture@sha256:c8609e7074476d305ec569046f331cdb9987ee928204fba41fab8f8126303799",
+  "baseCommit": "22763ef92e5ff13197730b795bfa6f1139de3097",
+  "listingCid": "QmYwZU6xEZqc71QkU4jtRZjwqCcBi5f8sxWzAYVo3jJY7k",
+  "faultPlan": "QmNTetV5Kvvg44BfmV7aJDmgSt3EHo9Vib7DtU6NNizpWM=near-limit-juror,QmUT9ebMMW7jxfAwkNA4NkCHLddRJ9s8NkbJgeRqfx7WRK=provider-timeout,QmaAiuDpzsZ6cRhjD3Awne6NXCabcMuNKEVjGjPdw7C2hr=slow-justifier,QmXS3BMEqXkt1rBcezPyEHo5sgJNphKMY3AeP6XJtNef2z=cancellation",
+  "claims": {
+    "valid": {
+      "cid": "QmTfDUrBfBbu5TbnW3Ne3VrCeCqgLnpyXPSoxR3XfTaoPv",
+      "addendum": "verdikta-disclosure: 0xff87963e8ebe966ed377e8ba1fd21e622d226296c04a4b27c3413f6b1a3bfd1e 0xb767e6d38aa4d8bc8a197e2b327b5cd0490582c0684a516604fe836ebecb4dcc QmUUECvpogKxt9N3dNzDrjL4monErRpJt3kJNDZgEgZH9u 0xca9fa8aba3c99966b87c3a6df1789009 0xce32a4e8eb023f5bd8639ee4f57f4b3d9aa6fbe0a95e186b774e9a1ff668838b"
+    },
+    "outOfScope": {
+      "cid": "QmUdXvoYxWJgeDKCtJBt2UH6TVZ7s9voxPP9EYgbGoGQnb",
+      "addendum": "verdikta-disclosure: 0x7e6800e057f890d2dc7b6c7d40e21cbd7ff3caea672d51c8fe3dde0e28ad1f41 0x7be9a50fcfe30245e51710aa805f164ead7f21f6bdb3ba0af6cfe8355f7df150 QmWxLLbirb1pEnSeBSXBPjmRPczvDT9jDKpWhcftjVR1P7 0xefd464b9099e51b5ed717acbf407d606 0x00a4b9ddee8b3513d42d9e3b9133635ea597059d8ac3a50bc5e160426da3037a"
+    },
+    "editsSource": {
+      "cid": "QmbbhenKVyDze2UQstgKKJvLZZZ3Dv2Sd34xWef3sVXRve",
+      "addendum": "verdikta-disclosure: 0x456a7e1b1c74bdd4337047b459b4e8338e1f51f3b5d154ed0a96aa3a1e542b17 0xce12bd8b41a70e5ea2695565307b01a46ab72578c873a58ec5b87a2f43833b4a QmUpFG9aiDDEBJBEnpApJCqRYN3KWyndZLBz4vUuxZL5Bt 0xfee64c8fd29ae8a86359fb62cb0b3add 0xd3a14f1d6037b9519b0d5fca9324acf01a334a7fd127b1d3a022734d7d97069a"
+    },
+    "timeDependent": {
+      "cid": "Qmbvds1sGvghc4JZ1ULjz437cC4aY8XEbKGjCMcsCA8Gjo",
+      "addendum": "verdikta-disclosure: 0x000ccd80ecfe8f661b71a1459751cb805f0c84c9df6ab8253ee2c48e609eda9f 0x69042199a87e220c03ee249ab684c7b402d86db20a3413c7d4e40ae021989a96 QmSK6MBSYyqMYVXHkNPXrpGJK1957N2wvzXDaQS2Yzv1xS 0x3d8e78f61f16c908195b2273e70679ae 0x0d5e8e1f065b169a1a21a66f00666e28d8091c1e64dea9c723b745481e0cdd56"
+    },
+    "randomnessDependent": {
+      "cid": "QmaZYazLP4QDhqHVowfu7rU5wNUdtdD9XhU9TmLmSPWWnu",
+      "addendum": "verdikta-disclosure: 0xa7e12630831d926b693f76306d845ddbfea26286d3fa2e08a260d8dd66e1bc75 0x5aae1d50a11806d7e822c2f3860a8db752a951e93b6e7b01226a46c2210d8831 Qmf1hXG6Dhek8YKTh4t5pWoUzRNaDi49Q9kaHZq1TmciZu 0xabc0766d502544f557b55a40bb492b05 0xc3c8c734c3b97aadf31ef31eaf4972234516899c45b1f17e31d8b1bcef4697bd"
+    },
+    "flaky": {
+      "cid": "QmZgnACN7t7qCccUCwt9WYZEpjpwuqyCs1DcmF9jzCnotW",
+      "addendum": "verdikta-disclosure: 0x48898035e99545a76b1114d0408d4f63be3d629e511b40eaeed3fee78e5900e0 0x0e5b6f2a9fb8ab023b6d7d9036bb99c7d1ad23015dc312ef312b426f36841822 QmUZzyV7WFLTcLm5Az3VSa1ay2FWV13jjTPn2HnVvPnhJg 0xb54b2b350f64da62feae9f1344431797 0xea76924b930c31dace40798db23c43ca985213f7bba6377c7d66aeceb72da457"
+    },
+    "faultNearLimit": {
+      "cid": "QmNTetV5Kvvg44BfmV7aJDmgSt3EHo9Vib7DtU6NNizpWM",
+      "addendum": "verdikta-disclosure: 0xe39e37ab47c59a9e30cb11ec9231309f6ad387008a644812f4af32d8a739ce9c 0xf60cecf722bdc6238c74a130d0c00818bce6b4a5b527b7a5c8deb53943385299 QmcDs8nNx2PPACGoekekqab4yc7MMNikbof24zwvwzqqL4 0xac0be060586f868160270f9697656483 0x1fbae17fb34b631d59f3c3df8ae69e41dce8a7c46f197e50b42d47ec55c3c55d"
+    },
+    "faultProviderTimeout": {
+      "cid": "QmUT9ebMMW7jxfAwkNA4NkCHLddRJ9s8NkbJgeRqfx7WRK",
+      "addendum": "verdikta-disclosure: 0xc43beffa85efebdb14e2580b893cb920228fa79fdfd9fc28584b79316e771bf0 0x5211807c3d555b5d4fcda6cd17b67646a4692995f8ffa854ca1d21f4b2e4dc3e QmW4hz2RB17X71xnB7YuTvBmrGBvopVSVgxGVDzaxtacBq 0x0006aee701a11e599e8a2ff306a5d654 0x86cb31e220d8b0864ba2617fabc130bb74d1f7cde73435e6be6b45354e682ae3"
+    },
+    "faultSlowJustifier": {
+      "cid": "QmaAiuDpzsZ6cRhjD3Awne6NXCabcMuNKEVjGjPdw7C2hr",
+      "addendum": "verdikta-disclosure: 0xe85cefb96e49b37e5a2ad5b41c809754abc0e57c8a1d4b1e3aaeb2067d80c66d 0x6852b1792f781d4ba44020674c366a013d8a12ecc1047b1bddafebe8944620c5 QmZqM8dEQzxM38Ksm6naBSpEExXGR7m4W49k99HBtzAwuo 0x2fe14c61df17e99019333f1f9cd2867b 0xf12c2f560a49efdb923f593360f9d4ef75b12580d862cd2d7c52912a0c625d64"
+    },
+    "faultCancellation": {
+      "cid": "QmXS3BMEqXkt1rBcezPyEHo5sgJNphKMY3AeP6XJtNef2z",
+      "addendum": "verdikta-disclosure: 0x495444f9993c3fee2356bad439e812024d7983f80718448a8f49c1a9cfb69103 0x9057606aaf656f37f282731f11e3a4eefd0c8b71896056348084f3fcdb277f18 Qma6N8cJ7ozk2rGUAHPY7xR7ZSgm7bzkahg3ij8oCnjNKX 0x69f2722a2edd035c7eda874bb6eb464a 0x9096b73c1ed8dfc51e4eb72f281f8b049d434771431736065b187e4237912a65"
+    },
+    "dispute": {
+      "cid": "QmadUEQkLHvzRisW9pTqzDGKR5FtCCicctwU2m5tLj4RAu",
+      "addendum": "verdikta-disclosure: 0xdf7dd3f8ad5bf9eccb4b6bdbe5808396285927587e59aa156495d89610887ef3 0xd5bac82e5c3a0c60e08f74175197636d96c6c0b8cb5956aea25e95ba53ba1a84 QmUu26ZuBrS77FG5coHkufJ1cSbFKE6Deh3i1McXsWdioc 0x3d0f584de6ed549029679a28073b38f6 0xd824d16980808ab9c4f0f4654adee76802aa0c96cfdca929ba39013e7a90a622",
+      "disputeListingCid": "QmQWpmCk2PjDQewnXFB2nBaTEdHzGvD686r4rgT3uDQdPG",
+      "disputeAddendum": "verdikta-disclosure: 0xdf7dd3f8ad5bf9eccb4b6bdbe5808396285927587e59aa156495d89610887ef3 0xd5bac82e5c3a0c60e08f74175197636d96c6c0b8cb5956aea25e95ba53ba1a84 QmUu26ZuBrS77FG5coHkufJ1cSbFKE6Deh3i1McXsWdioc 0x3d0f584de6ed549029679a28073b38f6 0xd824d16980808ab9c4f0f4654adee76802aa0c96cfdca929ba39013e7a90a622\nverdikta-dispute: QmbdCMfjtLUZaT2T535xdZqvFD3cCnATMEqWjmNeVu3sFy",
+      "statementCid": "QmbdCMfjtLUZaT2T535xdZqvFD3cCnATMEqWjmNeVu3sFy"
+    },
+    "registryFailure": {
+      "cid": "Qmban2oMLwSvNt1MFZtDWJRyAT4aGWEajPrpVgzyWrVVDW",
+      "addendum": "verdikta-disclosure: 0xfc689329031cd7ace917c8e20a5257cfc72d89aef5add133088b610eebb7b1c1 0xafcf7f69ea1df68405bec40ab7caa1bb38836059d29209514286f3fe6f1acd8c QmZumyQBZ61tPmNfnc4ppo972j6T8XXWf2BvU9KYJunS3x 0x566441f00949fe361057df78f905340f 0x4d443f22de46eaa41a0adc2c4bbf4b5e4756fe10585a972ae881d92947d75563",
+      "listingCid": "QmSzSJx8gvWNPp96G9fqG6n35Je2W5HTgEjQmnVdzcuk4K"
+    },
+    "registryControl": {
+      "cid": "Qma7FKyrHk5tEZL5uGXrynjfmdb4LnDbRxx4TEBTAixHSa",
+      "addendum": "verdikta-disclosure: 0xfd01c84a9704824c8d3b3d9c8f4a93b77fefb7fbdd6312cc76d9ad61803b39c9 0x019a822364849f1e19787f20efd67ba4d04eb5b9b820185d8a6404f69d9c9b91 QmcTqPhARXdDSJAQf3t3bjWDFuikPq8vn6pATPq2osYic2 0xf8a2c730021e53b803acf464c1af6c43 0x51f88a57941fbdf1c835a6e550cf0f4bf2f1ae776d2392f173da4908bb8ff76e",
+      "listingCid": "QmSzSJx8gvWNPp96G9fqG6n35Je2W5HTgEjQmnVdzcuk4K"
+    },
+    "coldCache": {
+      "cid": "QmPvQgeX5K7jjczWx1GX7pPuXebxi4UJ3cTHaXzvwazpmV",
+      "addendum": "verdikta-disclosure: 0x61df12c052346395e9bf9ebb9f09ac35a266468efcfea7803a0492cd4caf3deb 0xd4fcee608fc3eebc58afb14d49a6b1d34c66ce3d5c34c4f14af9bae17c8afb0e QmaQMKuVUiVqw2wtMXgMMo99dmqyDXbxim1hvhY3MEvJEg 0x82bd92e9dd74d1b5895d549a7370acd0 0x1341b75a1255555f0a200774c4990edaef2f80d6d23004d3e353f31c63fbc75c",
+      "listingCid": "QmQziJRETDJzZCEuNtet1AH5LkyMDZcZpFdTg5XMNidTCk",
+      "image": "ghcr.io/verdikta/stake-attestation-l4-fixture@sha256:c0cf028d36667e5b2c8a3c58947c9b060f5ff26db5e014ed1ab42ec68ec7e011"
+    }
+  }
+}

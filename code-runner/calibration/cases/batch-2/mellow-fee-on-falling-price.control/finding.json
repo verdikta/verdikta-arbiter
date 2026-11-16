@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "The performance fee is charged when the price falls",
+  "claimedClass": "CRITICAL",
+  "rootCause": "FeeManager.calculateFee charges the performance fee when the reported price is below the stored minimum, and updateState keeps the lowest price seen, so every new low mints fee shares and a rising price mints none.",
+  "affectedPaths": [
+    "src/managers/FeeManager.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_falling_price_charges_no_performance_fee",
+    "observable": "test_a_falling_price_charges_no_performance_fee fails with \"the performance fee when the price falls by a tenth: 10000000000000000000 != 0\""
+  },
+  "fixIncluded": false
+}

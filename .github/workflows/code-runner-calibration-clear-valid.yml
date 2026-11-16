@@ -1,0 +1,177 @@
+name: Code Runner Calibration (clear valid)
+
+# The clear-valid subset (code-runner/calibration/cases/clear-valid; design §18): public repositories at their commits, fetched
+# at run time, one job per repository, under the pinned gVisor on the class platform. Official solc on linux/arm64 starts at
+# 0.8.31, so most of these cases can run only here.
+#
+# It runs when its own cases, listings or harness change, and on dispatch. It does not run on code-runner/src/**: the adversarial
+# subset and the canary do, in code-runner-calibration.yml, and a real run of every repository on every runner change is not worth
+# its cost. A runner change that could move these needs a dispatch.
+#
+# Nothing a third party wrote leaves a job. The export (scenario folders, whose context packs hold repository source) stays in the
+# job's temporary directory for the testing tool's dry run, and only the results, which hold no pack text, are uploaded.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    branches: [main, master, claude/stake-attestation, 'claude/sa-*']
+    paths:
+      - 'code-runner/calibration/cases/clear-valid/**'
+      - 'code-runner/calibration/listings/**'
+      - 'code-runner/calibration/lib/**'
+      - 'code-runner/calibration/run.js'
+      - '.github/workflows/code-runner-calibration-clear-valid.yml'
+  push:
+    branches: [main, master, claude/stake-attestation]
+    paths:
+      - 'code-runner/calibration/cases/clear-valid/**'
+      - 'code-runner/calibration/listings/**'
+      - 'code-runner/calibration/lib/**'
+      - 'code-runner/calibration/run.js'
+      - '.github/workflows/code-runner-calibration-clear-valid.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: code-runner-calibration-clear-valid-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # As in code-runner.yml and code-runner-calibration.yml (test/unit/runtime.test.js ties them to @verdikta/common).
+  GVISOR_VERSION: '20260921.0'
+  GVISOR_SHA512: 7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e
+
+jobs:
+  plan:
+    name: The subset's listings
+    runs-on: ubuntu-latest
+    outputs:
+      listings: ${{ steps.listings.outputs.listings }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        working-directory: code-runner
+        run: npm ci
+      - id: listings
+        name: List
+        working-directory: code-runner
+        run: |
+          set -euo pipefail
+          listings=$(node calibration/run.js --subset clear-valid --list-listings)
+          echo "$listings"
+          echo "listings=$listings" >> "$GITHUB_OUTPUT"
+
+  run:
+    name: ${{ matrix.listing }} (runsc)
+    needs: plan
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        listing: ${{ fromJSON(needs.plan.outputs.listings) }}
+    env:
+      CODE_RUNNER_RUNTIME: runsc
+      VCR_CALIBRATION_CACHE: ${{ github.workspace }}/.vcr-calibration-cache
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install gVisor (pinned, SHA-512 checked, systrap platform)
+        run: |
+          set -euo pipefail
+          url="https://storage.googleapis.com/gvisor/releases/release/${GVISOR_VERSION}/x86_64/gvisor.tar.bz2"
+          curl -fsSL -o gvisor.tar.bz2 "$url"
+          echo "${GVISOR_SHA512}  gvisor.tar.bz2" | sha512sum -c -
+          dest="/opt/gvisor/${GVISOR_VERSION}"
+          sudo mkdir -p "$dest" /var/lib/code-runner-scratch
+          sudo tar -xjf gvisor.tar.bz2 -C "$dest"
+          "$dest/runsc" --version
+          cfg=/etc/docker/daemon.json
+          current='{}'
+          if [ -s "$cfg" ]; then current=$(sudo cat "$cfg"); fi
+          echo "$current" | jq --arg path "$dest/runsc" \
+            '.runtimes.runsc = {path: $path, runtimeArgs: ["--platform=systrap", "--overlay2=root:dir=/var/lib/code-runner-scratch,size=4g"]}' \
+            | sudo tee "$cfg" > /dev/null
+          sudo systemctl reload docker
+          for i in $(seq 1 20); do
+            docker info --format '{{json .Runtimes}}' | jq -e '.runsc' > /dev/null && break
+            sleep 1
+          done
+          docker info --format '{{json .Runtimes}}' | jq -e '.runsc'
+
+      - name: Install
+        working-directory: code-runner
+        run: npm ci
+
+      # By commit: the fetched repository and its report (a listing names its commit), and the prebuilt layer (by the digest of
+      # the image it was built on, which names the base, the solc releases and every file).
+      - uses: actions/cache@v4
+        with:
+          path: ${{ github.workspace }}/.vcr-calibration-cache
+          key: calibration-${{ matrix.listing }}-${{ hashFiles(format('code-runner/calibration/listings/{0}/*', matrix.listing)) }}
+          restore-keys: calibration-${{ matrix.listing }}-
+
+      - name: The listing's cases, each with its control
+        working-directory: code-runner
+        env:
+          LISTING: ${{ matrix.listing }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/results" "$RUNNER_TEMP/measured"
+          npm run calibration -- --subset clear-valid --listing "$LISTING" --self-check \
+            --results "$RUNNER_TEMP/results/$LISTING.json" --measured "$RUNNER_TEMP/measured" --export "$RUNNER_TEMP/claims"
+
+      - name: The export is what the testing tool reads (A6b)
+        working-directory: testing-tool
+        run: |
+          npm ci
+          npm start -- test --type claim --dry-run --claims-dir "$RUNNER_TEMP/claims"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: clear-valid-${{ matrix.listing }}
+          path: |
+            ${{ runner.temp }}/results
+            ${{ runner.temp }}/measured
+          if-no-files-found: warn
+
+      - name: No container left behind
+        if: always()
+        run: |
+          left=$(docker ps --all --filter label=verdikta.code-runner --format '{{.Names}}')
+          reg=$(docker ps --all --filter name=vcr-cal-registry --format '{{.Names}}')
+          if [ -n "$left$reg" ]; then
+            echo "::error::containers left behind: $left $reg"
+            exit 1
+          fi
+
+  gather:
+    name: Every case, against what the runner observed
+    needs: [plan, run]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Install
+        working-directory: code-runner
+        run: npm ci
+      - uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/all
+          pattern: clear-valid-*
+          merge-multiple: true
+      - name: Each case restated, and the table per class
+        working-directory: code-runner
+        env:
+          CALIBRATION_RESULTS_DIR: ${{ runner.temp }}/all/results
+        run: npm run test:calibration:clear-valid

@@ -1,0 +1,31 @@
+# A Foundry build of arbiter-operator/contracts/ArbiterOperator.sol, for stake listings (issue #196).
+# Hardhat (arbiter-operator/hardhat.config.js) stays the build that deploys. This one compiles the same
+# contract with Hardhat's settings, and CI (.github/workflows/arbiter-operator-foundry.yml) fails unless the
+# two runtime bytecodes are identical but for solc's metadata trailer. See arbiter-operator/README.md, "Foundry".
+[profile.default]
+src = "arbiter-operator/contracts"
+test = "arbiter-operator/foundry/test"
+libs = ["arbiter-operator/foundry/lib"]
+out = "arbiter-operator/foundry/out"
+cache_path = "arbiter-operator/foundry/cache"
+
+# Hardhat's settings: solc 0.8.19, optimizer on with 200 runs, no viaIR. Hardhat names no EVM version
+# below solc 0.8.20, so solc's own default applies, which for 0.8.19 is paris.
+solc_version = "0.8.19"
+auto_detect_solc = false
+optimizer = true
+optimizer_runs = 200
+via_ir = false
+evm_version = "paris"
+
+# The vendored files only (arbiter-operator/foundry/lib/vendored.json), nothing found by looking.
+auto_detect_remappings = false
+remappings = [
+    "@chainlink/contracts/=arbiter-operator/foundry/lib/chainlink-contracts/",
+    "@openzeppelin/contracts/=arbiter-operator/foundry/lib/openzeppelin-contracts/",
+    "forge-std/=arbiter-operator/foundry/lib/forge-std/src/",
+]
+
+# No FFI and no RPC endpoint. The one file permission lets VendoredFiles.t.sol read and hash the vendored files.
+ffi = false
+fs_permissions = [{ access = "read", path = "./arbiter-operator/foundry/lib" }]

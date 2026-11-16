@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { resolveProviderConfig } from '../../../lib/llm/provider-config';
+import { canaryFaultState } from '../../../lib/code-review/canary-fault';
 
 // A GET handler that never reads the request is prerendered by `next build`:
 // the timestamp and the gateway routing (read from env, checked by the
@@ -36,5 +37,7 @@ export async function GET() {
       'rank-and-justify': '/api/rank-and-justify',
     },
     ai_gateway: buildGatewayStatus(),
+    // The canary fault switch (lib/code-review/canary-fault.ts): off unless a key is set.
+    canary_fault: { state: canaryFaultState() },
   });
 }

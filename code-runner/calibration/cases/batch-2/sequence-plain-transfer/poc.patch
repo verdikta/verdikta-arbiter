@@ -1,0 +1,35 @@
+diff --git a/test/PlainTransferClaim.t.sol b/test/PlainTransferClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/PlainTransferClaim.t.sol
+@@ -0,0 +1,30 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.27;
++
++import { Test } from "forge-std/Test.sol";
++import { Factory } from "../src/Factory.sol";
++
++/// An implementation that counts what it is told about.
++contract CountsPayments {
++
++  uint256 public payments;
++
++  receive() external payable {
++    payments += 1;
++  }
++
++}
++
++/// A wallet's implementation has a receive function so that it can act on incoming money. The proxy should let it.
++contract PlainTransferClaim is Test {
++
++  function test_a_plain_transfer_reaches_the_implementation() public {
++    address wallet = new Factory().deploy(address(new CountsPayments()), bytes32(uint256(7)));
++
++    (bool accepted,) = wallet.call{ value: 1 ether }("");
++    assertTrue(accepted);
++
++    assertEq(CountsPayments(payable(wallet)).payments(), 1, "what the implementation heard of the transfer");
++  }
++
++}

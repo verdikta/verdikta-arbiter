@@ -163,6 +163,149 @@ A request that fails with 400 has no `model_results`; the log line is still writ
 
 ---
 
+## Code mode (`codeReview`)
+
+A request with a `codeReview` key is a claim evaluation against a stake listing
+(design `docs/development/stake-attestation-design.md` §10.3, §10.5, §11). A
+request without one is handled exactly as everything above describes. Code is
+in `src/lib/code-review/`.
+
+### Request
+
+| Field | In code mode |
+| --- | --- |
+| `codeReview` | Validated with `@verdikta/common`'s `codeReview.validateCodeReviewRequest` (schema `code_review_request.v1.json`, the report hash, the claim's bCID). `null` or anything else invalid is a 400 |
+| `prompt` | The listing's query (`codeReview.buildClaimQuery`). It must not carry the addendum's `verdikta-disclosure:` or `verdikta-dispute:` line: the EA strips both before the jury, and a request that still has one is refused |
+| `outcomes` | Exactly `INVALID, DUPLICATE, LOW, MEDIUM, HIGH, CRITICAL` (`validateBugOutcomes`) |
+| `models`, `iterations` | Checked with `codeReview.validateClassEnvelope` against `codeReview.codeClass`: pool models only, at most 3, `count` (NO_COUNTS) 1, `iterations` 1 |
+| `attachments`, `attachmentNames` | The context pack and `report.md`, as text: a plain string, or a `data:` URI with a text media type (`text/*`, `application/json`, …). Any other attachment is refused |
+
+### What the jury reads
+
+One prompt, the same bytes for every juror (`claim-prompt.ts`): the claim
+pre-prompt (trust tiers, the four questions, the six outcomes), then the
+listing's query, the integrity and honesty flags, every lint/SAST finding, the
+report as `canonicalReportJson`, `finding.json`, the known-issue and prior
+finding ids, the pack, and on a dispute the maker's statement. Everything a
+hunter, a maker or the code could have written is quoted in a block whose
+BEGIN and END lines carry a hash of its own content, so quoted text cannot end
+its block. The prompt's SHA-256 is in the response (`codeReview.promptSha256`).
+
+When the listing names documents (`stake.documents`, owner decision Q61 (a)),
+the pack carries them as their own tier, after the in-scope source (the code
+runner's README, "The documents tier"). The pre-prompt lists them among the
+pack's contents as the maker's statement of what the code is meant to do, for
+question 1, not evidence of what it does.
+
+The four questions state the two rules of `@verdikta/common`'s claim query,
+version 2 (owner decisions Q66 (a), Q73 #5):
+
+- A class rests on what the PoC demonstrates, or on what follows from it by a
+  concrete line of reasoning that the claim itself sets out, tied to a file and
+  line (question 2).
+- A claim whose root cause is a listed known issue is DUPLICATE, even when the
+  entry calls the behaviour intended or accepted (question 3). It is not INVALID
+  as behaviour the code is not required to have (question 1).
+
+### Time, cancellation and juror settings
+
+- Jurors run until `deadlineMs − 45 s` (the justifier reserve), at most 480 s.
+  The justifier then has at least 45 s and whatever the deadline leaves: all the
+  time left before `deadlineMs` when it starts, never past it, so after a jury
+  that finished early it has minutes. A justifier timeout therefore comes only at
+  the deadline. `REQUEST_TIMEOUT_MS`, `MODEL_TIMEOUT_MS` and
+  `JUSTIFICATION_TIMEOUT_MS` do not apply.
+- Each call gets an `AbortSignal` that is aborted at its deadline and goes into
+  the provider's HTTP request (Anthropic, OpenAI, OpenRouter, xAI; Hyperbolic
+  and Ollama too, as justifiers: Ollama through its own `/api/chat`). The
+  deadline covers the provider's setup as well, and the route answers at the
+  deadline even if a provider ignores the signal. A Claude juror's client also gets
+  the time left as its own timeout, because the Anthropic SDK refuses a non-streaming
+  request above 21,333 max tokens without one (`anthropicClientOptions`). The signal
+  is still what cancels the call.
+- A juror's HTTP call holds for its whole window. Node's fetch (undici) gives up
+  after 300 s without response headers, or after 300 s of silence in a body, and a
+  non-streaming reasoning reply sends no headers until it is complete. So each
+  juror call (and its repair call) has an undici dispatcher of its own, whose two
+  limits are the time left to the jury deadline plus 15 s, and which is destroyed
+  when the call settles (`juror-transport.ts`): OpenRouter and xAI pass it to
+  `fetch`, the OpenAI and Anthropic clients as `fetchOptions.dispatcher`, and the
+  OpenAI client also gets that figure as its own timeout in place of its 600 s
+  default. The justifier and text mode keep Node's default dispatcher.
+- A body read that does not finish within `REQUEST_TIMEOUT_MS` is the text-mode
+  408, in either mode.
+- Every juror runs with web access off, `maxTokens` = the class envelope's
+  juror output (32,000 on `code-standard`, 12,000 on `code-premium`) and effort
+  `high` (Claude 5: `output_config.effort` with adaptive thinking; OpenAI:
+  `reasoning_effort`; OpenRouter: `reasoning.effort`; xAI: none, Grok 4 takes
+  no `reasoning_effort`). A juror's answer is its reply only when the reply is
+  exactly one JSON object (bare or in one ```json fence) with one non-negative
+  integer per outcome summing to 1,000,000; anything else (prose, or a score
+  object the juror merely quotes) gets one repair call with the same signal,
+  which reads the reply as quoted data.
+- Every juror is required (no Jev in the MVP): the first juror that fails ends
+  the request and the others are cancelled.
+
+### Responses
+
+Success (200) has the text-mode shape (`scores` for the six outcomes, the
+justification, `metadata`, `model_results`). The scores are the jurors'
+weighted average rounded by largest remainder (ties to the lower index), so
+they sum to exactly 1,000,000: flooring each one could lose more than the five
+units settlement allows for the aggregator's own rounding. Plus:
+
+```json
+"codeReview": {
+  "codeClass": "code-standard",
+  "reportSha256": "…",
+  "promptSha256": "…",
+  "deadlineMs": 525000,
+  "jurorTimeoutMs": 480000,
+  "justifierReserveMs": 45000,
+  "justifierMs": 61000,
+  "maxTokens": 32000,
+  "effort": "high"
+}
+```
+
+`justifierReserveMs` is the reserve the jury's window leaves the justifier, not its
+limit; `justifierMs` is how long the justifier ran, on every 200.
+
+Every error has `{ "error", "errorCode", "retryable", "scores": [], "justification": "" }`,
+plus `issues` (validation) or `jurors` (`{ juror: "<provider>:<model>", status,
+duration_ms, message?, http_status? }`, status `success`, `failed`,
+`parsing_error`, `timeout` or `cancelled`):
+
+| Status | `errorCode` | `retryable` | When |
+| --- | --- | --- | --- |
+| 400 | `CODE_REVIEW_INVALID` | false | The `codeReview` field or the prompt is invalid |
+| 400 | `CODE_REVIEW_ENVELOPE` | false | Outcomes, panel, NO_COUNTS or iterations outside the class envelope |
+| 400 | `CODE_REVIEW_ATTACHMENT` | false | An attachment is not text |
+| 400 | `CODE_REVIEW_JUROR_FAILED` | false | A juror's provider error, or a reply with no usable scores after the repair call |
+| 400 | `CODE_REVIEW_JUSTIFIER_FAILED` | false | The justifier failed; the arbiter abstains rather than publish the jurors' text |
+| **503** | **`CODE_REVIEW_JUROR_TIMEOUT`** | **true** | A juror did not answer by the jury deadline; every juror call was cancelled |
+| 503 | `CODE_REVIEW_JUSTIFIER_TIMEOUT` | true | The justifier, which has at least 45 s and whatever the deadline leaves, did not finish by the deadline; the message (and its log line) names the ms it ran and its budget; nothing partial is returned |
+| 504 | `CODE_REVIEW_DEADLINE` | false | `deadlineMs` leaves under 10 s of jury time after the reserve, or the deadline passed before the justifier |
+| 500 | `CODE_REVIEW_INTERNAL` | false | An unexpected error, or `JUSTIFIER_MODEL` is not set as `provider:model` |
+
+A 200's `codeReview` also holds `canaryFault`: [below](#the-canary-fault-switch).
+
+The EA may retry a `retryable` error once while at least the justifier reserve
+remains (node A4b); a 503 body never contains the provider-error wording the
+EA's text-mode retry check stops on. A justifier timeout comes at the deadline,
+so it leaves no time for a retry. Nothing is committed on any error.
+
+### Test-only mock provider
+
+`VERDIKTA_TEST_MOCK_PROVIDER=1` routes every provider name to a deterministic
+mock (`src/lib/llm/mock-provider.ts`) for tests and the local pipeline; its
+replies come from `VERDIKTA_TEST_MOCK_SCRIPT` (JSON by model id: `scores`,
+`reply`, `delayMs`, `hang`, `error`, `status`, or an array per call). A
+production build (`next build`) refuses it: while the flag is set there, every
+provider call fails with an error naming the flag.
+
+---
+
 ## Integration Guidelines for External Adapter
 
 ### Success Case (Status 200)
@@ -220,3 +363,39 @@ MIN_SUCCESSFUL_MODELS_PERCENT=0.5  # Default: 50%
 - `0.67` = At least 67% of models must succeed  
 - `1.0` = ALL models must succeed (no fallback tolerance)
 
+### The canary fault switch
+
+For the canary conditions of design §11, on real canaries with real providers (decision D9;
+`src/lib/code-review/canary-fault.ts`). It is unrelated to the mock provider, which is test-only.
+This process has no chain access, so it cannot measure a class. The External Adapter does
+(`external-adapter/README.md`, "The canary fault switch") and mints a directive for one attempt.
+
+A code-mode request may carry, beside `codeReview`:
+
+```json
+"canaryFault": { "action": "hold-juror-answer", "mac": "<64 hex>" }
+```
+
+`mac` is HMAC-SHA256 with the key `VERDIKTA_CANARY_FAULT_KEY` over
+`verdikta-canary-fault/1\n<action>\n<claim.bcid>\n<reportSha256>`. It is acted on only if it
+verifies with this node's key. With no key the field is ignored, so a direct POST to this port can
+do nothing on any node. A directive that does not verify, or a field beside the two, is ignored
+too, and the request is judged normally. A text-mode request never reads it. Read at each request
+under a computed name, so `next build` cannot inline the key. No install or upgrade path sets it.
+
+| Action | What happens |
+|---|---|
+| `hold-juror-answer` | The first juror's real answer is held until 5 s before the jury deadline, then the justifier follows |
+| `late-juror` | The first juror's real call starts 3 s before the jury deadline, so it is on the wire when the deadline aborts it, and an answer that came back anyway is held to the abort: the 503 `CODE_REVIEW_JUROR_TIMEOUT` |
+| `hold-justifier-answer` | The real justification is held until 5 s before the 45 s mark from the justifier's start, or 5 s before the deadline if that is sooner, though the justifier itself may run to the deadline |
+
+That is all it can do. A hold gets the abort signal and returns nothing, so it never sees a score,
+a justification or the prompt, and the prompt is built without the directive. A hold runs inside the
+raced work, like a provider call, so a stage's deadline ends it whatever it does.
+
+A 200 says what happened in `codeReview.canaryFault`: `{ "state", "action" }`, with `justifierMs`
+(the same figure as `codeReview.justifierMs`) when an action ran. An error from the jury on (`CODE_REVIEW_JUROR_*`, `CODE_REVIEW_JUSTIFIER_*`, a
+deadline passed before the justifier) carries the same `canaryFault: { state, action }` at its top
+level, so a retry's verdict can say what caused the timeout before it. `state` is `off` (no key), `armed` (a usable key) or `refused` (a key of fewer
+than 32 printable characters, or with a space: it never acts). `action` is what verified, or null.
+`GET /api/health` carries `canary_fault: { state }`, and never the key.

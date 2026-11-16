@@ -44,6 +44,10 @@ const OPENROUTER_MODEL_MAP: Record<string, string> = {
   'anthropic/claude-sonnet-4-20250514': 'anthropic/claude-sonnet-4',
   'anthropic/claude-sonnet-4-5-20250929': 'anthropic/claude-sonnet-4.5',
   'anthropic/claude-haiku-4-5-20251001': 'anthropic/claude-haiku-4.5',
+  // Claude 5.5 ids in the code-review pools (verdikta-common codeReview.CODE_CLASSES)
+  'anthropic/claude-haiku-5-5': 'anthropic/claude-haiku-5.5',
+  'anthropic/claude-sonnet-5-5': 'anthropic/claude-sonnet-5.5',
+  'anthropic/claude-opus-5-5': 'anthropic/claude-opus-5.5',
 
   // --- xAI: native API uses hyphens and -reasoning/-non-reasoning suffixes;
   //     OpenRouter uses dots and controls reasoning via a parameter instead. ---

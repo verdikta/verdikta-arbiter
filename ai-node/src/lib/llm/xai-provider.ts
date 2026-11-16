@@ -10,8 +10,9 @@
  * API Documentation: https://docs.x.ai/docs
  */
 
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { modelConfig } from '../../config/models';
+import { jurorTransportFor, withDispatcher } from './juror-transport';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -113,7 +114,7 @@ export class XAIProvider implements LLMProvider {
   async generateResponse(
     prompt: string, 
     model: string,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
     if (!this.apiKey) {
       throw new Error(`[${this.providerName}] XAI_API_KEY not configured`);
@@ -121,18 +122,22 @@ export class XAIProvider implements LLMProvider {
 
     const url = `${this.baseUrl}/chat/completions`;
     
-    // Model-specific parameters
+    // Model-specific parameters. Code mode sets the envelope's output ceiling and a
+    // signal; it sends no effort here: Grok 4 models reason at their own depth and
+    // the xAI API does not take reasoning_effort on them.
     const isReasoning = this.isReasoningModel(model);
-    const max_tokens = isReasoning 
+    const max_tokens = options?.maxTokens ?? (isReasoning 
       ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
-      : 1000;
+      : 1000);
     const temperature = 0.7;
+    // A juror's call holds past undici's 300 s default limits (juror-transport.ts).
+    const transport = jurorTransportFor(options);
 
     try {
       console.log(`[${this.providerName}] Making request to ${url}`);
       console.log(`[${this.providerName}] Model: ${model}`);
       
-      const response = await fetch(url, {
+      const response = await fetch(url, withDispatcher({
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -148,7 +153,8 @@ export class XAIProvider implements LLMProvider {
           temperature,
           stream: false
         }),
-      });
+        ...(options?.signal && { signal: options.signal }),
+      }, transport));
 
       if (!response.ok) {
         const errorText = await response.text();
@@ -189,6 +195,8 @@ export class XAIProvider implements LLMProvider {
     } catch (error: any) {
       console.error(`[${this.providerName}] Error calling model ${model}:`, error.message);
       throw error;
+    } finally {
+      transport?.close();
     }
   }
 

@@ -1,0 +1,79 @@
+diff --git a/test/SessionWalletBindingClaim.t.sol b/test/SessionWalletBindingClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/SessionWalletBindingClaim.t.sol
+@@ -0,0 +1,74 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.27;
++
++import { Test } from "forge-std/Test.sol";
++import { Vm } from "forge-std/Vm.sol";
++import { SessionManager } from "src/extensions/sessions/SessionManager.sol";
++import { SessionSig } from "src/extensions/sessions/SessionSig.sol";
++import { Payload } from "src/modules/Payload.sol";
++
++contract CallHasher {
++
++  function hashOf(Payload.Decoded calldata payload, uint256 index) external view returns (bytes32) {
++    return SessionSig.hashCallWithReplayProtection(payload, index);
++  }
++
++}
++
++/// A session key's signature is good for the wallet it was made for, and not for another with the same configuration.
++contract SessionWalletBindingClaim is Test {
++
++  function test_a_session_signature_is_good_for_one_wallet_only() public {
++    SessionManager manager = new SessionManager();
++    CallHasher hasher = new CallHasher();
++    Vm.Wallet memory key = vm.createWallet("session key");
++    address walletOne = address(0x1111);
++    address walletTwo = address(0x2222);
++    address target = address(0x3333);
++
++    Payload.Decoded memory payload;
++    payload.kind = Payload.KIND_TRANSACTIONS;
++    payload.calls = new Payload.Call[](1);
++    payload.calls[0] = Payload.Call({
++      to: target,
++      value: 0,
++      data: "",
++      gasLimit: 0,
++      delegateCall: false,
++      onlyFallback: false,
++      behaviorOnError: Payload.BEHAVIOR_REVERT_ON_ERROR
++    });
++
++    // One blacklist-free identity leaf, and one session that may call the target.
++    bytes memory config = bytes.concat(
++      abi.encodePacked(bytes1(0x40), address(0x4444)),
++      abi.encodePacked(
++        bytes1(0x00),
++        key.addr,
++        bytes32(0),
++        bytes32(0),
++        bytes8(uint64(block.timestamp + 1 days)),
++        uint8(1),
++        target,
++        uint8(0)
++      )
++    );
++
++    (uint8 v, bytes32 r, bytes32 s) = vm.sign(key.privateKey, hasher.hashOf(payload, 0));
++    bytes32 packedS = v == 28 ? bytes32(uint256(s) | (1 << 255)) : s;
++    bytes memory signature = bytes.concat(bytes3(uint24(config.length)), config, bytes1(0x00), abi.encodePacked(uint8(0), r, packedS));
++
++    // The signature was made for the first wallet.
++    vm.prank(walletOne);
++    manager.recoverSapientSignature(payload, signature);
++
++    bool acceptedForTheOther;
++    vm.prank(walletTwo);
++    try manager.recoverSapientSignature(payload, signature) returns (bytes32) {
++      acceptedForTheOther = true;
++    } catch { }
++
++    assertFalse(acceptedForTheOther, "the signature is not good for the other wallet");
++  }
++
++}

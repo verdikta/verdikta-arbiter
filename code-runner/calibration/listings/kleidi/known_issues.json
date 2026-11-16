@@ -1,0 +1,29 @@
+[
+  {
+    "id": "sha256:5d7079ef7869009662f012ad11dac52a772677f8c8432902e5d2c3d7ebab8355",
+    "title": "A recovery spell shorter than the timelock cannot be vetoed",
+    "class": "MEDIUM",
+    "paths": [
+      "src/RecoverySpell.sol"
+    ],
+    "description": "If a spell has a delay below the timelock delay, the owners have no time to remove it through a proposal, and the guardian has no say over it. Which delay suits a wallet depends on whom its user trusts, so this stays a choice in the configuration and is accepted."
+  },
+  {
+    "id": "sha256:8f5fab4a67c610c36387662ba32b61a317d5523cda7d487864034ee84ac44b88",
+    "title": "Compromised cold signers can act with no spell or guardian set",
+    "class": "HIGH",
+    "paths": [
+      "src/Timelock.sol"
+    ],
+    "description": "With neither a recovery spell nor a guardian in place, nothing stands between stolen cold keys and the wallet. A user who wants that protection sets them up."
+  },
+  {
+    "id": "sha256:5564d85b8fafa8524bd7f1eda2feb84492b6c59bcf3c48f8e32185ec539cdf3f",
+    "title": "Transfers of fee-charging tokens may move a different amount",
+    "class": "LOW",
+    "paths": [
+      "src/Timelock.sol"
+    ],
+    "description": "The timelock does no accounting and does not read what a token call returned, so a token that takes a fee can send more or less than was asked. Accepted."
+  }
+]

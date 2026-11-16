@@ -1,10 +1,11 @@
 name: Repository Policy
 
+# claude/stake-attestation: the stake-attestation integration branch (issue #105).
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, claude/stake-attestation]
   pull_request:
-    branches: [main, master]
+    branches: [main, master, claude/stake-attestation]
 
 permissions:
   contents: read
@@ -48,3 +49,12 @@ jobs:
             exit 1
           fi
           echo "License references are consistent."
+
+  workflow-triggers:
+    name: Workflow Triggers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check CI triggers and secret gates
+        run: bash .github/tests/workflow-triggers.test.sh

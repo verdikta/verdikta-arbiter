@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "title": "A static signature bound to the entry point cannot validate a user operation",
+  "claimedClass": "MEDIUM",
+  "rootCause": "ERC4337v07.validateUserOp calls this.isValidSignature, so inside BaseAuth.signatureValidation the caller is the wallet and not the entry point, and a static signature bound to the entry point reverts with InvalidStaticSignatureWrongCaller.",
+  "affectedPaths": [
+    "src/modules/ERC4337v07.sol",
+    "src/modules/auth/BaseAuth.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_static_signature_bound_to_the_entry_point_validates",
+    "observable": "test_a_static_signature_bound_to_the_entry_point_validates fails with \"InvalidStaticSignatureWrongCaller(0xc74abb9a787fc0ee1acdaec030905a117fcf0954ba3e8bb58639519eee51d444, 0x5615dEB798BB3E4dFa0139dFa1b3D433Cc23b72f, 0x00000000000000000000000000000000000e4337)\""
+  },
+  "fixIncluded": false
+}

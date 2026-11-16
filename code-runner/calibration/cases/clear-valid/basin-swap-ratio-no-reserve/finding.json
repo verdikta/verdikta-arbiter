@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "title": "calcReserveAtRatioSwap gives up on a ratio inside its table",
+  "claimedClass": "MEDIUM",
+  "rootCause": "For this price range Stable2LUT1.getRatiosFromPriceSwap returns bounds so far apart that the steps in Stable2.calcReserveAtRatioSwap overshoot the target every time, so the loop ends without converging and the function answers zero.",
+  "affectedPaths": [
+    "src/functions/Stable2.sol",
+    "src/functions/StableLUT/Stable2LUT1.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_price_in_the_table_gets_a_reserve",
+    "observable": "test_a_price_in_the_table_gets_a_reserve fails with \"the reserve at that ratio: 0 <= 0\""
+  },
+  "fixIncluded": false
+}

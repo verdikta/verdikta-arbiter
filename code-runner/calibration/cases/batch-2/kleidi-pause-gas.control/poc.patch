@@ -1,0 +1,38 @@
+diff --git a/test/PauseUnderManyProposalsClaim.t.sol b/test/PauseUnderManyProposalsClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/PauseUnderManyProposalsClaim.t.sol
+@@ -0,0 +1,33 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {Timelock} from "src/Timelock.sol";
++import {MIN_DELAY} from "src/utils/Constants.sol";
++import {MockSafe} from "test/mock/MockSafe.sol";
++
++/// The guardian's pause is the answer to stolen signer keys, so it has to fit in a block however many proposals the thief queued.
++contract PauseUnderManyProposalsClaim is Test {
++    function test_the_guardian_can_still_pause_inside_one_block() public {
++        vm.warp(1_000_000);
++        address guardian = address(0x11111);
++        MockSafe safe = new MockSafe();
++        Timelock timelock = new Timelock(address(safe), MIN_DELAY, 5 days, guardian, 10 days, new address[](0));
++
++        vm.startPrank(address(safe));
++        for (uint256 salt = 1; salt <= 2500; salt++) {
++            // A limit on what can be queued would answer this as well.
++            try timelock.schedule(address(timelock), 0, hex"01", bytes32(salt), MIN_DELAY) {} catch {
++                break;
++            }
++        }
++        vm.stopPrank();
++
++        vm.prank(guardian);
++        uint256 before = gasleft();
++        timelock.pause();
++        uint256 spent = before - gasleft();
++
++        assertGe(spent, 30_000_000, "gas for the pause by the guardian");
++    }
++}

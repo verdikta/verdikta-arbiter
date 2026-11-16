@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "kind": "bug",
+  "repo": "https://github.com/code-423n4/2025-10-sequence",
+  "baseCommit": "b0e5fb15bf6735ec9aaba02f5eca28a7882d815d",
+  "artifact": {
+    "kind": "repo"
+  },
+  "env": {
+    "from": "foundry",
+    "platform": "linux/amd64",
+    "unpackedBytes": 2000000000
+  },
+  "attestation": "attestation.json",
+  "commands": {
+    "framework": "forge",
+    "setup": "forge build --skip test",
+    "build": "forge build --skip test",
+    "test": "forge test --match-path test/Factory.t.sol",
+    "testFiles": "forge test --match-path $FILES",
+    "testIds": "forge test --match-test $TEST_IDS"
+  },
+  "baseline": "baseline.json",
+  "paths": {
+    "tests": [
+      "test/**"
+    ],
+    "protected": [
+      "foundry.toml",
+      "remappings.txt",
+      "lib/**",
+      ".gitignore"
+    ]
+  },
+  "limits": {
+    "cpus": 2,
+    "memoryMb": 4096,
+    "buildSeconds": 90,
+    "testSeconds": 180,
+    "runSeconds": 360,
+    "maxPatchBytes": 2000000
+  },
+  "stake": {
+    "awards": {
+      "LOW": "0",
+      "MEDIUM": "0.1 ETH",
+      "HIGH": "0.4 ETH",
+      "CRITICAL": "2 ETH"
+    },
+    "lowestClassCounted": "MEDIUM",
+    "bondWei": "20000000000000000",
+    "fixWindowDays": 30,
+    "disputeWindowHours": 72,
+    "disclosureGraceHours": 48,
+    "revealWindowDays": 7,
+    "scope": {
+      "include": [
+        "src/**"
+      ],
+      "exclude": [
+        "src/Simulator.sol",
+        "src/Estimator.sol",
+        "test/**"
+      ]
+    },
+    "documents": [
+      "README.md",
+      "docs/**"
+    ],
+    "knownIssues": "known_issues.json",
+    "severityRubric": "immunefi-v2.3",
+    "valueAtRiskUsd": 1000
+  }
+}

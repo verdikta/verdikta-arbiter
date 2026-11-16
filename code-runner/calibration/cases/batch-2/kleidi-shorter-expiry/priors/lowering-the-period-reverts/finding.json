@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "updateExpirationPeriod reverts when it lowers the period too far",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Timelock._afterCall checks isOperationReady again after the call has run, and by then expirationPeriod is the new lower value, so execute reverts if more of the old window has gone than the new one allows.",
+  "affectedPaths": [
+    "src/Timelock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_lowering_the_period_late_in_its_window_works",
+    "observable": "test_lowering_the_period_late_in_its_window_works fails with \"Timelock: operation is not ready\""
+  },
+  "fixIncluded": false
+}

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Vault.deposit loses the balance",
+  "claimedClass": "HIGH",
+  "rootCause": "Vault.deposit loses a depositor's balance.",
+  "affectedPaths": [
+    "src/Vault.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_deposit_is_lost",
+    "observable": "test_deposit_is_lost fails with \"assertion failed: 0 != 5\""
+  },
+  "fixIncluded": false
+}

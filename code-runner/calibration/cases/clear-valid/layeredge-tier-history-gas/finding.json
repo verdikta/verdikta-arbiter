@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Others coming and going can price a staker out of withdrawing",
+  "claimedClass": "MEDIUM",
+  "rootCause": "LayerEdgeStaking.calculateUnclaimedInterest walks a staker's whole tier history on every action, and the history grows without bound each time another account crosses a tier boundary, so a staker's own calls eventually cost more gas than a block holds.",
+  "affectedPaths": [
+    "src/stake/LayerEdgeStaking.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_stakers_withdrawal_fits_in_a_block",
+    "observable": "test_a_stakers_withdrawal_fits_in_a_block fails with \"gas for the withdrawal: 32419203 >= 30000000\""
+  },
+  "fixIncluded": false
+}

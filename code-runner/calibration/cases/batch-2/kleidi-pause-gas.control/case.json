@@ -1,0 +1,69 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.kleidi-pause-gas.control",
+  "subsets": [
+    "batch-2",
+    "severity-boundary"
+  ],
+  "title": "Queued proposals can price the guardian out of pausing: the same test with its assertion turned around",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/24",
+    "licence": "Repository LICENSE: Business Source License 1.1 (GitHub API: NOASSERTION). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/24",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding's test logs the gas of a hundred thousand proposals with no assertion; this one queues enough to pass a 30 million gas block, and asserts the limit.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-10-kleidi-findings/bbb702a3e1c601e8ffb3b16170353f4130ed4cf0/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-10-kleidi",
+      "verdict": "Valid at the lower class: labelled 2 (Med Risk), downgraded by judge, satisfactory, selected for report, published as M-01.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/kleidi",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with its assertion turned around passes on all three runs, so its case fails on what it says it does, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/PauseUnderManyProposalsClaim.t.sol > PauseUnderManyProposalsClaim > test_the_guardian_can_still_pause_inside_one_block()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "batch-2.kleidi-pause-gas"
+}
