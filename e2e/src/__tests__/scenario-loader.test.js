@@ -1,5 +1,6 @@
 'use strict';
 
+const { execFileSync } = require('child_process');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -131,6 +132,67 @@ describe('committed scenarios.json', () => {
     const fees = { alpha: 500, maxOracleFee: '150000000000000', estimatedBaseCost: '8000000000', maxFeeScaling: 5 };
     expect(requestArgs(s, fees, 5555)).toEqual([BOUNTY_171, '', 500, '150000000000000', '8000000000', 5, 5555]);
     expect(s.cid).toBe(BOUNTY_171.join(','));
+  });
+});
+
+describe('the default set: what a run that names no scenario holds (node A27)', () => {
+  const E2E = path.join(__dirname, '..', '..');
+  const FRONTEND_DEFAULT = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
+  const committed = () => JSON.parse(fs.readFileSync(DEFAULT_SCENARIOS, 'utf8'));
+  /** The nightly L4's selection (index.js executeL4, no --scenario and no L4_SCENARIO), and a full L2's. */
+  const l4Default = () => loadScenarios(DEFAULT_SCENARIOS, null, { allowManualOnly: true, allowL4Claim: true });
+  const l2Default = () => loadScenarios(DEFAULT_SCENARIOS);
+
+  it('is canonical-vuln alone, on L4 and L2, in mode 0 and commit-reveal', () => {
+    expect(l4Default().map((s) => s.id)).toEqual(['canonical-vuln']);
+    expect(l2Default().map((s) => s.id)).toEqual(['canonical-vuln']);
+    expect(l4Default()[0].modes).toEqual(['0', 'commit-reveal']);
+  });
+
+  it('holds only scenarios that are not manual-only: every committed text scenario but those', () => {
+    const raw = committed();
+    const notManual = raw.filter((s) => s.suite === undefined && s.manualOnly !== true).map((s) => s.id);
+    const manual = raw.filter((s) => s.manualOnly === true).map((s) => s.id);
+    expect(manual).toEqual(expect.arrayContaining(['frontend-default', 'bounty-171-replay', 'link-canary']));
+    for (const selection of [l4Default(), l2Default()]) {
+      const ids = selection.map((s) => s.id);
+      expect(ids).toEqual(notManual);
+      for (const id of manual) expect(ids).not.toContain(id);
+    }
+  });
+
+  it('is built from the project\'s own archives: a cidFile beside its source in archives/, no CID from outside', () => {
+    // A literal cid or cids is a package from outside. A project-owned multi-CID scenario
+    // (the README's Roadmap) would need a source check of its own here.
+    const raw = new Map(committed().map((s) => [s.id, s]));
+    for (const s of l4Default()) {
+      const entry = raw.get(s.id);
+      expect(entry.cid).toBeUndefined();
+      expect(entry.cids).toBeUndefined();
+      expect(entry.cidFile).toMatch(/^archives\/[a-z0-9-]+\.cid$/);
+      expect(fs.statSync(path.join(E2E, entry.cidFile.replace(/\.cid$/, ''))).isDirectory()).toBe(true);
+      expect(s.cids).not.toContain(FRONTEND_DEFAULT);
+    }
+  });
+
+  it('frontend-default, the example-frontend\'s package, is manual-only and says why; L4 still runs it by name, L2 refuses it', () => {
+    const entry = committed().find((s) => s.id === 'frontend-default');
+    expect(entry.manualOnly).toBe(true);
+    expect(entry.description).toMatch(/not project-owned/);
+    expect(entry.description).toMatch(/claude-3-5-sonnet-20241022/);
+    expect(entry.description).toMatch(/retired/);
+    expect(entry.description).toMatch(/canonical-vuln/);
+    const [s] = loadScenarios(DEFAULT_SCENARIOS, ['frontend-default'], { allowManualOnly: true });
+    expect(s.cids).toEqual([FRONTEND_DEFAULT]);
+    expect(() => loadScenarios(DEFAULT_SCENARIOS, ['frontend-default'])).toThrow(/"frontend-default" are manualOnly: run them with L4/);
+  });
+
+  it('smoke\'s own default is the project\'s archive, which L2 runs by name: a manual-only one would refuse there', () => {
+    const help = execFileSync(process.execPath, [path.join(E2E, 'src', 'index.js'), 'smoke', '--help'], { cwd: E2E, encoding: 'utf8' });
+    const match = help.match(/--scenario <id>[^\n]*\(default: "([^"]+)"\)/);
+    expect(match).not.toBeNull();
+    expect(match[1]).toBe('canonical-vuln');
+    expect(loadScenarios(DEFAULT_SCENARIOS, [match[1]]).map((s) => s.id)).toEqual([match[1]]);
   });
 });
 
