@@ -2390,12 +2390,19 @@ the `systemone` client deployed before Jev can sit on the jury. Seeding
 popular skills whose maintainers consent by naming Verdikta in their proof file
 (§8.8, owner decision Q34), so the feed is never empty when hunters arrive.
 
-**Phase 1's accuracy bar was missed, and testnet goes ahead.** On the Solidity
-calibration set, `code-standard` did not reach the ≥ 90% agreement on the clear cases
-that Phase 1's exit criteria ask for, including after the juror output limit was raised
-to 32k (§10.7, assumption 3). The owner decided on 2026-11-05 to go on to testnet with
-the bar recorded as missed, and **mainnet stays closed**. Testnet holds no real money.
-The exit criterion is unchanged.
+**Phase 1's accuracy bar: missed on 2026-11-05, recorded as met on 2026-11-17.** On
+2026-11-05, on the Solidity calibration set, `code-standard` did not reach the ≥ 90%
+agreement on the clear cases that Phase 1's exit criteria ask for, including after the
+juror output limit was raised to 32k (§10.7, assumption 3), and the owner went on to
+testnet with the bar recorded as missed. After the jury tuning that followed (nodes A14
+to A19), the owner recorded the bar as met on 2026-11-17 (owner decision Q93), reading
+agreement as agreement on validity on `code-standard`'s clear cases: whether a clear case
+settles valid or INVALID as expected, whatever its severity class, with no adversarial
+claim settling valid. The calibration report (`code-runner/calibration/report/jury.js`)
+still reads its bar on the exact outcome, severity class included, and shows validity
+agreement beside it. Recording the bar opens nothing by itself: mainnet stays the
+owner's decision, after the release runbook's canary gate (`docs/release-runbook.md`
+§3b). Testnet holds no real money.
 
 ## 18. Validation
 
