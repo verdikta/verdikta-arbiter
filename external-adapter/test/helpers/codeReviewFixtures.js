@@ -14,12 +14,8 @@
 const AdmZip = require('adm-zip');
 const { codeReview } = require('@verdikta/common');
 
-const BASE58 = /[^1-9A-HJ-NP-Za-km-z]/g;
-
-/** A CID that passes the request schema (Qm + 44 base58) and the line's CID rule (46 alphanumerics). */
-function cid(label) {
-  return ('Qm' + label.replace(BASE58, 'x') + 'a'.repeat(44)).slice(0, 46);
-}
+// Use valid multihashes so fixtures cross the same evidence boundary as real requests.
+const cid = require('../../src/__tests__/helpers/cid.cjs');
 
 function bytes(value) {
   if (Buffer.isBuffer(value)) return value;

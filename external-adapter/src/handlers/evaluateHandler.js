@@ -12,6 +12,9 @@ const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
 const { collectVersionInfo } = require('../utils/versionInfo');
 const {
+  assertBareCID, assertSafeManifest, extractEvidenceArchive, isUnsafeEvidenceError
+} = require('../utils/evidenceBoundary');
+const {
   fetchAndTriageArchives,
   buildMalformedSubmissionVerdict,
   isMalformedArchiveError
@@ -162,6 +165,7 @@ const evaluate = async (request) => {
     
     // Split multiple CIDs if present
     cidArray = cidString.split(',').map(cid => cid.trim()).filter(cid => cid);
+    for (const cid of cidArray) await assertBareCID(cid);
     // logger.info(`Processing ${cidArray.length} CIDs:`, cidArray);
     logger.debug(`CID list count = ${cidArray.length}`);
     
@@ -177,7 +181,8 @@ const evaluate = async (request) => {
       logger.info(`${runTag} IPFS getArchive took ${Date.now() - t1}ms`);
       
       const t2 = Date.now();
-      const extractedPath = await archiveService.extractArchive(
+      const extractedPath = await extractEvidenceArchive(
+        archiveService,
         archiveData,
         'archive.zip',
         tempDir
@@ -185,6 +190,7 @@ const evaluate = async (request) => {
       logger.info(`${runTag} extractArchive took ${Date.now() - t2}ms`);
       
       const t3 = Date.now();
+      await assertSafeManifest(extractedPath);
       await archiveService.validateManifest(extractedPath);
       logger.info(`${runTag} validateManifest took ${Date.now() - t3}ms`);
 
@@ -404,7 +410,8 @@ const evaluate = async (request) => {
 
         logger.info(`${runTag} Evaluating combined query with AI service...`);
         const t11 = Date.now();
-        result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag);
+        result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag,
+          Object.values(extractedPaths));
         logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
       }
 
@@ -444,7 +451,7 @@ const evaluate = async (request) => {
 
     // A malformed archive on the errored path (the primary, or one the library's
     // parser rejected) must not be served from cache to the next job either.
-    if (isMalformedArchiveError(error) ||
+    if (isUnsafeEvidenceError(error) || isMalformedArchiveError(error) ||
         (typeof LibMalformedArchiveError === 'function' && error instanceof LibMalformedArchiveError)) {
       for (const cid of cidArray) fetchCache.forget(cid);
     }

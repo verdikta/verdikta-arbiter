@@ -33,8 +33,8 @@ const { CHECKS } = require('../../utils/bcidValidation');
 const FIXTURES = path.join(__dirname, '..', 'integration', 'fixtures', 'bcid');
 const fixture = (name) => fs.readFileSync(path.join(FIXTURES, name));
 
-// CIDs must satisfy @verdikta/common's request schema (Qm + 44 base58 chars)
-const cid = (label) => 'Qm' + label.padEnd(44, 'a');
+// Use valid multihashes, not just strings matching the old CID regex.
+const cid = require('../helpers/cid.cjs');
 const PRIMARY = cid('BountyPrimary');
 const CONFORMING = cid('Conforming');
 const NOT_JSON = cid('PrimaryNotJson');   // bounty 59
