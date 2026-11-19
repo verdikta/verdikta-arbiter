@@ -2,6 +2,15 @@ require("dotenv").config();
 const https = require("https");
 require("@nomicfoundation/hardhat-ethers");
 require("hardhat-deploy");
+// Compile with the exact local compiler, including in offline test runs.
+const { subtask } = require("hardhat/config");
+const { TASK_COMPILE_SOLIDITY_GET_SOLC_BUILD } = require("hardhat/builtin-tasks/task-names");
+subtask(TASK_COMPILE_SOLIDITY_GET_SOLC_BUILD).setAction(async ({ solcVersion }, _hre, runSuper) => {
+  if (solcVersion !== "0.8.19") return runSuper();
+  const solc = require("solc");
+  if (!solc.version().startsWith("0.8.19+")) throw new Error("Install the pinned solc 0.8.19 compiler");
+  return { compilerPath: require.resolve("solc/soljson.js"), isSolcJs: true, version: solcVersion, longVersion: solc.version() };
+});
 
 // ──────────────────────────────────────────────────────────────────────────
 // 1. Keep the Truffle variable names

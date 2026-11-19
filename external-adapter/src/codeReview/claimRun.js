@@ -30,6 +30,7 @@
 const axios = require('axios');
 const crypto = require('crypto');
 const { codeReview } = require('@verdikta/common');
+const { validServiceToken } = require('../utils/serviceAuth');
 const { CodeReviewAbstain, issueCodes } = require('./errors');
 const { juryWorthCalling } = require('./time');
 const { runKey, sharedRuns } = require('./sharedRuns');
@@ -106,10 +107,13 @@ function assertPack(pack, context) {
 }
 
 async function postToAiNode(aiNode, body, { deadline }) {
+  const token = process.env.AI_NODE_API_TOKEN;
+  if (!validServiceToken(token)) throw abstain('CODE_REVIEW_AI_AUTH', 'AI Node service authentication is not configured');
   const stop = deadline.abortAtDeadline();
   try {
     return await axios.post(`${aiNode.url.replace(/\/+$/, '')}${AI_ROUTE}`, body, {
       signal: stop.signal,
+      headers: { Authorization: `Bearer ${token}` },
       validateStatus: () => true,
       maxRedirects: 0,
       proxy: false,

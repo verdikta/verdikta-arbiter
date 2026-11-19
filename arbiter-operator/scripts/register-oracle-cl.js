@@ -32,6 +32,7 @@ const { ethers } = hre;
 const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
+const { ensureRequestAuthorization, OperatorAuthorizationABI } = require("./lib/request-authorization.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs                                                        */
@@ -48,7 +49,8 @@ const KeeperABI = [
   "function owner() view returns (address)",
   "function isAuthorized(address) view returns (bool)",
   "function minimumStake() view returns (uint256)",
-  "function registrationFee() view returns (uint256)"
+  "function registrationFee() view returns (uint256)",
+  "function isContractApproved(address) view returns (bool)"
 ];
 
 const ERC20_ABI = [
@@ -99,6 +101,12 @@ const toBytes32 = (id) => {
 
     const oracleAddr = argv.oracle;
     const classes    = argv.classes.map(Number);
+    const { sendWithRetry } = createInFlightGuard({ provider, sender: owner });
+    await ensureRequestAuthorization({
+      operator: new ethers.Contract(oracleAddr, OperatorAuthorizationABI, signer),
+      keeper, keeperAddress: keeperAddr, aggregatorAddress: argv.aggregator,
+      signerAddress: owner, sendWithRetry,
+    });
 
     /* Fees & stake ---------------------------------------------------- */
     if (!/^[0-9]+(\.[0-9]+)?$/.test(String(argv.fee))) throw new Error(`--fee must be a decimal ETH amount, got "${argv.fee}"`);
@@ -164,10 +172,6 @@ const toBytes32 = (id) => {
       console.log(`Approving ${ethers.formatEther(totalStake)} wVDKA…`);
       await (await verdikta.approve(keeperAddr, totalStake)).wait();
     }
-
-    /* In-flight cap handling (issues #29, #38) lives in ./lib/inflight.js and
-       is shared with unregister-oracle-cl.js. */
-    const { sendWithRetry } = createInFlightGuard({ provider, sender: owner });
 
     /* Register each pending job ID ----------------------------------- */
     for (const raw of pendingJobs) {

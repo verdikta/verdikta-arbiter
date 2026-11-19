@@ -43,6 +43,14 @@ else
     echo -e "${YELLOW}Warning: API keys file not found. Re-authorization may not work.${NC}"
 fi
 
+# Verify the on-chain admission hook before changing keys, bridges or jobs.
+case "$DEPLOYMENT_NETWORK" in
+    base_mainnet) AUTH_CHAIN_ID=8453; AUTH_RPC_URLS="${BASE_MAINNET_RPC_HTTP_URLS:-$BASE_MAINNET_RPC_URL}" ;;
+    base_sepolia) AUTH_CHAIN_ID=84532; AUTH_RPC_URLS="${BASE_SEPOLIA_RPC_HTTP_URLS:-$BASE_SEPOLIA_RPC_URL}" ;;
+    *) echo "Error: select a supported DEPLOYMENT_NETWORK before configuring jobs."; exit 1 ;;
+esac
+REQUEST_AUTH_RPC_URLS="$AUTH_RPC_URLS" node "$INSTALLER_DIR/util/check-request-authorization.cjs" "${OPERATOR_ADDR:-$OPERATOR_ADDRESS}" "$AUTH_CHAIN_ID"
+
 # Clear any cached ARBITER_COUNT to ensure fresh user input
 unset ARBITER_COUNT
 
@@ -240,6 +248,9 @@ fi
 echo -e "${BLUE}Login successful, preparing for API operations...${NC}"
 sleep 1
 
+AUTH_INSTALL_ROOT="${VERDIKTA_AUTH_ROOT:-$(dirname "$INSTALLER_DIR")}"
+node "$INSTALLER_DIR/util/configure-service-auth.cjs" configure "$AUTH_INSTALL_ROOT"
+
 # Create bridge (only one bridge needed for all arbiters)
 echo -e "${BLUE}Creating bridge to External Adapter...${NC}"
 BRIDGE_NAME="verdikta-ai"
@@ -309,7 +320,8 @@ create_chainlink_job_direct() {
     local job_name="$2"
     
     # Escape TOML content for JSON
-    local temp_json="/tmp/job_spec_escaped_$$.json"
+    local temp_json
+    temp_json="$(mktemp "${TMPDIR:-/tmp}/verdikta-job.XXXXXX")" || return 1
     if ! escape_toml_for_json "$job_spec_file" "$temp_json"; then
         echo -e "${RED}Error: Failed to escape TOML content for JSON.${NC}"
         rm -f "$temp_json"
@@ -358,44 +370,10 @@ except Exception as e:
     # JSON parsing error or other exception
     sys.exit(1)
 "; then
-        # Check if it's a duplicate job error
-        if echo "$job_response" | grep -q "duplicate key value violates unique constraint"; then
-            echo -e "${YELLOW}Warning: A job with the name '$job_name' already exists.${NC}"
-            
-            # Try to find the existing job ID
-            local existing_job_id=$(curl -sS -b /tmp/chainlink_cookies.txt "http://localhost:6688/v2/jobs" | python3 -c "
-import json
-import sys
-try:
-    data = json.load(sys.stdin)
-    if 'data' in data:
-        for job in data['data']:
-            if 'attributes' in job and 'name' in job['attributes']:
-                if job['attributes']['name'] == '$job_name':
-                    if 'externalJobID' in job['attributes']:
-                        print(job['attributes']['externalJobID'])
-                        sys.exit(0)
-    print('Job not found', file=sys.stderr)
-    sys.exit(1)
-except Exception as e:
-    print(f'Error: {e}', file=sys.stderr)
-    sys.exit(1)
-")
-            
-            if [ -n "$existing_job_id" ]; then
-                echo -e "${BLUE}Found existing job with ID: $existing_job_id${NC}"
-                echo "$existing_job_id"
-                return 0
-            else
-                echo -e "${RED}Error: Could not find existing job ID.${NC}"
-                echo "$job_response" | python3 -m json.tool 2>/dev/null || echo "$job_response"
-                return 1
-            fi
-        else
-            echo -e "${RED}Error: Failed to create job '$job_name'. Response:${NC}"
-            echo "$job_response" | python3 -m json.tool 2>/dev/null || echo "$job_response"
-            return 1
-        fi
+        # A duplicate may be an old unauthenticated job. Never claim that it
+        # was upgraded merely because its name matches the new specification.
+        echo "Failed to create authenticated job '$job_name'; inspect the local Chainlink UI (response withheld to protect credentials)." >&2
+        return 1
     else
         # Extract job ID from successful creation response
         local job_id=$(echo "$job_response" | python3 -c "
@@ -421,7 +399,7 @@ except Exception as e:
         
         if [ -z "$job_id" ]; then
             echo -e "${RED}Error: Could not extract job ID from response.${NC}"
-            echo "Response: $job_response"
+            echo "Chainlink response withheld to protect service credentials." >&2
             return 1
         fi
         
@@ -562,6 +540,8 @@ for ((i=1; i<=ARBITER_COUNT; i++)); do
     # Save the job spec for this arbiter
     JOB_SPEC_FILE_ARBITER="$JOBS_DIR/verdikta_job_spec_arbiter_$i.toml"
     echo "$JOB_SPEC" > "$JOB_SPEC_FILE_ARBITER"
+    node "$INSTALLER_DIR/util/configure-service-auth.cjs" render-job "$AUTH_INSTALL_ROOT" "$JOB_SPEC_FILE_ARBITER"
+    chmod 600 "$JOB_SPEC_FILE_ARBITER"
     echo -e "${GREEN}Job specification for Arbiter $i saved to: $JOB_SPEC_FILE_ARBITER${NC}"
     
     # Debug: Show the fromAddress line in the saved file
@@ -874,4 +854,4 @@ echo -e "- Job Details: $JOB_INFO_DIR/multi_arbiter_job_info.txt"
 
 echo -e "\n${GREEN}Your Verdikta Multi-Arbiter Validator Node is ready!${NC}"
 
-exit 0 
+exit 0

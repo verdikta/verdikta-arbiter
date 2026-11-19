@@ -226,13 +226,14 @@ contract FulfillmentTest is ArbiterOperatorBase {
         assertEq(operator.withdrawable(), PAYMENT, "the node is not paid when the consumer's callback reverts");
     }
 
-    function test_fulfillOracleRequestV_withAnEmptyAllowListAnyRequesterPasses() public {
+    function test_request_withAnEmptyAllowListRefusesEveryRequester() public {
         _removeKeeper();
         ConsumerStandIn unlisted = new ConsumerStandIn(link);
         link.mint(address(unlisted), PAYMENT);
-        Request memory r = _request(unlisted, PAYMENT);
-        assertTrue(_fulfill(r, _response(r)));
-        assertEq(unlisted.fulfillments(), 1);
+        vm.expectRevert(bytes("Unable to create request"));
+        unlisted.request(address(operator), PAYMENT, SPEC_ID, 1, "");
+        assertEq(unlisted.fulfillments(), 0);
+        assertEq(link.balanceOf(address(unlisted)), PAYMENT);
     }
 
     function test_fulfillOracleRequestV_anyListedKeeperMayApprove() public {

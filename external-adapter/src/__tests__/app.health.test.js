@@ -77,7 +77,7 @@ describe('GET /version', () => {
 
 describe('POST /evaluate', () => {
   it('still routes to the handler', async () => {
-    const res = await supertest(createApp()).post('/evaluate').send({ id: 'x', data: { cid: 'Qm' } });
+    const res = await supertest(createApp()).post('/evaluate').set('Authorization', `Bearer ${process.env.EA_API_TOKEN}`).send({ id: 'x', data: { cid: 'Qm' } });
     expect(res.status).toBe(200);
     expect(res.body.jobRunID).toBe('x');
   });

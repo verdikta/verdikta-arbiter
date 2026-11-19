@@ -92,7 +92,7 @@ function scenario(options = {}) {
   return { listing, cids, disclosure, cid: (mode) => `${mode === undefined ? '' : `${mode}:`}${list.join(',')}:${addendum}` };
 }
 
-const request = (cidString, id = 'job-1') => ({ id, data: { cid: cidString, aggId: '0xagg' } });
+const request = (cidString, id = 'job-1') => ({ id, data: { cid: cidString, aggId: `0x${'a'.repeat(64)}` } });
 function holdFetch(cid) {
   let release;
   const promise = new Promise((resolve) => { release = resolve; });
@@ -162,7 +162,7 @@ async function commitAndReveal(s, id = 'job-1') {
   expect(BigInt(commitment) > 0n).toBe(true);
   expect(commit.data.justificationCid).toBe('');
   const stored = await commitStore.get(hashOf(commitment));
-  const reveal = await evaluateHandler(request(`2:${commitment}`, `${id}-reveal`));
+  const reveal = await evaluateHandler(request(`2:${commitment}`, id));
   expect(reveal.statusCode).toBe(200);
   return { commitment, stored, reveal, justification: uploaded[uploaded.length - 1] };
 }
@@ -625,10 +625,22 @@ describe('acceptance 3: deterministic verdicts, no AI call', () => {
 
 // ---------------------------------------------------------------------------
 describe('acceptance 4: the AI Node handoff', () => {
+  it('refuses missing AI credentials without contacting the AI Node or committing', async () => {
+    const saved = process.env.AI_NODE_API_TOKEN;
+    delete process.env.AI_NODE_API_TOKEN;
+    try {
+      expectAbstain(await evaluateHandler(request(scenario().cid(1))), /CODE_REVIEW_AI_AUTH/);
+      expect(ai.state.calls).toHaveLength(0);
+    } finally {
+      process.env.AI_NODE_API_TOKEN = saved;
+    }
+  });
+
   it('sends the pack as named attachments, in order, with nothing beside it, and the codeReview field', async () => {
     const s = scenario({ priorCids: [H.cid('PriorA'), H.cid('PriorB')] });
     await evaluateHandler(request(s.cid(1)));
     expect(ai.state.calls).toHaveLength(1);
+    expect(ai.state.auth).toEqual([`Bearer ${process.env.AI_NODE_API_TOKEN}`]);
     const body = ai.state.calls[0];
     const pack = R.packFor(runner.state.runs[0]);
 

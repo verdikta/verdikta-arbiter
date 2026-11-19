@@ -103,6 +103,21 @@ deployments used by the example apps: Base Sepolia
 `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` (verify before relying on these —
 they are network state, not tracked in this repo).
 
+**Request admission (security hardening).** The operator now checks the real
+ERC-677 sender against configured ReputationKeepers before creating a commitment
+or emitting `OracleRequest`. Empty lists deny access; keeper calls are bounded
+and malformed/reverting responses cannot grant it. Both request entry points
+require a version-2 request with requester = callback. The Chainlink job checks
+`isAuthorizedRequest` at `latest` before its bridge and again before `ethtx`;
+all fulfillment methods retain a final approval check. The adapted Operator is
+pinned to `@chainlink/contracts@1.4.0`; its exact diff is tested. Existing
+non-proxy operators require a new deployment and job migration, not just a
+software upgrade. See `docs/development/request-authorization.md`.
+`installer/tests/job-timeouts.integration.sh` runs the job template on the real
+2.23.0 binary against this checkout's operator (credential, answer on chain, both
+gates, an answer after `EXPIRYTIME`); `arbiter-operator/test/support/job.js` is a
+model of it and proves nothing about Chainlink by itself.
+
 Key files to trace this:
 - Job pipeline: `chainlink-node/basicJobSpec` (a `directrequest` template; `{...}` placeholders are filled at registration).
 - EA entry + modes: `external-adapter/src/handlers/evaluateHandler.js`.
@@ -118,7 +133,7 @@ Because several arbiters answer the same request, the Dispatcher uses
 
 - **Mode 0** (`Qm...`): standard — evaluate now, upload justification, return `scores + cid`.
 - **Mode 1** (`1:Qm...`): **commit** — evaluate, store `{result, salt}` locally (`commitStore`), return only a 128-bit hash commitment (as a decimal) in `aggregatedScore[0]`. No CID yet.
-- **Mode 2** (`2:<hash>`): **reveal** — look up the stored result, upload its justification now, return `scores` + `justificationCid:salt`, then delete the commit.
+- **Mode 2** (`2:<hash>`): **reveal** — require the same job ID, aggregation ID and configured operator as the commit, upload once, and return `scores` + `justificationCid:salt`. Retain the result/CID/salt until the commit's three-day expiry so concurrent calls and retries are idempotent. The store is still RAM-only; restart durability remains separate work.
 
 The commit hash = low/high 128 bits of `sha256(abi.encode(OPERATOR_ADDRESS, scores[], salt))`. This is why the EA **requires `OPERATOR_ADDR`** in its env.
 
@@ -259,6 +274,12 @@ There is **no** `/api/arbitrate` or `/api/models` endpoint (older docs mention t
 ## 6. Dev & ops workflows
 
 ### Local dev
+Before starting services, run `node installer/util/configure-service-auth.cjs configure .`
+from the repository root. It writes separate private credentials for Chainlink → EA
+and EA → AI, preserving existing valid keys. Protected APIs require
+`Authorization: Bearer <service-token>`, including in development. See
+`docs/development/service-authentication.md` for migration and tests.
+
 ```bash
 cd ai-node && npm install && npm run dev      # http://localhost:3000
 cd external-adapter && npm install && npm start   # http://localhost:8080  (needs AI_NODE_URL, OPERATOR_ADDR, IPFS_PINNING_KEY)
@@ -277,7 +298,7 @@ stake claim with the External Adapter's own request builder.
 ```bash
 cd ai-node && npm test
 cd external-adapter && npm test     # see external-adapter/TESTING.md (unit vs integration; integration hits IPFS/AI)
-cd arbiter-operator && npx hardhat test
+cd arbiter-operator && npm test     # explicit local Hardhat network; Python 3.11+ for job parsing
 forge build && forge test            # at the root: ArbiterOperator's Foundry layout and suite; see arbiter-operator/README.md, "Foundry"
 cd e2e && node src/index.js l2 --mock --boot-adapter --suite claim   # the claim pipeline, local; see e2e/README.md
 cd code-runner && npm run calibration -- --subset adversarial && npm run conformance   # the runner against its corpus and canary; see code-runner/README.md
@@ -373,7 +394,7 @@ state. Unit text: `arbiter-boot-service.sh print-unit`.
 
 **Port exposure.** A 2026-10-21 port review found 5432 (Chainlink Postgres), 6688
 (Chainlink UI/API), 3000 (AI Node) and 8080 (External Adapter) reachable from the
-internet on the hosts it checked; the last two have no authentication in front of
+internet on the hosts it checked; before service authentication, the last two had no authentication in front of
 the operator's LLM keys. Fresh installs publish no database port (`secrets.toml`
 says `cl-postgres:5432`, reached over `verdikta-network`), publish 6688 on
 `127.0.0.1`, write `<install-dir>/.ai-node-loopback` (`ai-node/start.sh` then
@@ -414,6 +435,14 @@ key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`,
 (optional listen address; unset or a wildcard — `0.0.0.0`, `::`, which the
 installer has always written — = the default dual-stack listener, which Chainlink
 needs, see Port exposure).
+
+**Service authentication**: `EA_API_TOKEN` in EA `.env` authenticates Chainlink
+bridge tasks; `AI_NODE_API_TOKEN` must match in EA `.env` and AI `.env.local`.
+They must be distinct, randomly generated tokens. The installer configures them
+and adds the EA credential to private rendered jobs. AI `start.sh` honors `AI_NODE_HOST` and the installer's `.ai-node-loopback` marker;
+without either it uses Next.js's default bind. EA honors specific `HOST` addresses
+and keeps dual-stack listening for unset/wildcard hosts for Docker reachability. Restrict port 8080 to Chainlink's
+private network. Health/version monitoring remains unauthenticated and read-only.
 
 **AI Node** (`ai-node/.env.local`): provider keys (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `HYPERBOLIC_API_KEY`, `OPENROUTER_API_KEY`),
@@ -538,6 +567,32 @@ Ollama runs locally and is unaffected by gateway settings.
   dearer than polling. cde657a (July 2026) removed an earlier `FinalityDepth=5`
   as inert; it is not. Measure with
   `curl -s 127.0.0.1:6688/metrics | grep evm_pool_rpc_node_calls_total`.
+- **An `ethabidecode` task's `abi` is a bare argument list: `abi="bool allowed"`.**
+  `ethabiencode` takes `name(args)` or `(args)`; `ethabidecode` hands its string
+  straight to `ParseETHABIArgsString`, which splits on commas and spaces and keeps
+  the second word as the key. `abi="(bool allowed)"` therefore decodes (go-ethereum's
+  type regexp is not anchored, `(bool` is a bool) under the key `allowed)`, and
+  `$(task.allowed)` is a keypath that is not found: the first version of PR #210's
+  gates failed every run before the bridge, on a job its own JS model passed
+  (measured on 2.23.0, 2026-11-19). A change to the DAG is checked on the binary
+  (`job-timeouts.integration.sh`), never on the model alone.
+- **A file that holds a credential is 0600 by what writes it; no installer script
+  sets a `umask` for its whole run.** A `umask 077` at the top of `install.sh` is
+  inherited by `setup-chainlink.sh`, which then makes `~/.chainlink-<net>` 0700 and
+  its `config.toml` / `secrets.toml` 0600, and the Chainlink container (uid 14933,
+  a bind mount of that directory, root-owned on the hosts) cannot read its config.
+  One at the top of `upgrade-arbiter.sh` is inherited by everything
+  `start-arbiter.sh` starts, until the next boot. `configure-service-auth.cjs`
+  writes the two env files and each rendered job 0600 itself, and
+  `apply-job-timeouts.sh` its saved specs; `credential-file-modes.test.sh` holds both.
+- **`upgrade-arbiter.sh` settles the job template's question before it stops
+  anything** (`job_template_preflight`): a template that differs in more than its
+  timeouts needs the jobs regenerated, which re-registers the oracle on chain, so
+  an unattended run does it only with `VA_UPGRADE_REGENERATE_JOBS=y` and a node
+  registered on separate classes cannot do it there at all; both are refused with
+  the node still running. `check_job_spec_template` runs after the stop and has no
+  `exit`: a decline at its prompt goes through `cleanup_on_error`, which starts the
+  arbiter again (`upgrade-regenerate-jobs-trap.test.sh`).
 - `set -e` is used in installer scripts — check exit codes carefully when editing.
 - **`upgrade-arbiter.sh` also has `trap cleanup_on_error ERR`, and the ERR trap
   fires on any failing plain command whether or not errexit is on.** So

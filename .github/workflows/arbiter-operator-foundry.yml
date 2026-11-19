@@ -76,6 +76,7 @@ jobs:
           echo "pins: $pins"
           npm install --no-save --no-audit --no-fund $pins
           npx hardhat compile
+          npm test
 
       - name: The same runtime bytecode as Hardhat's
         run: node arbiter-operator/foundry/ci/compare-bytecode.js

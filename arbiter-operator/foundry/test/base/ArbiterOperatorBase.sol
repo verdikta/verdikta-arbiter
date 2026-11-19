@@ -13,8 +13,7 @@ import {ConsumerStandIn, LinkTokenStandIn, ReputationKeeperStandIn} from "./Stan
 ///   - `keeper`: a reputation keeper stand-in on the operator's allow-list (addReputationKeeper needs a
 ///     contract that answers isContractApproved);
 ///   - `consumer`: a requester the keeper approves, holding LINK.
-/// An operator deployed by this repository starts with an empty allow-list, which lets any requester
-/// through; `_removeKeeper()` gives that state.
+/// An operator deployed by this repository starts with an empty allow-list, which denies every requester; `_removeKeeper()` gives that state.
 ///
 /// A request is `_request()`: the consumer pays `PAYMENT` through LINK's transferAndCall, which calls the
 /// operator's operatorRequest, as Chainlink clients do. `_fulfill()` answers it as the node does, through

@@ -43,7 +43,7 @@ const AI_RESULT = {
   justification: 'AI panel says fund it'
 };
 
-const request = (cidString, id) => ({ id, data: { cid: cidString, aggId: '0xagg' } });
+const request = (cidString, id) => ({ id, data: { cid: cidString, aggId: '0x' + 'ab'.repeat(32) } });
 const fetchesOf = (c) => mockState.rawFetch.mock.calls.filter(([x]) => x === c).length;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

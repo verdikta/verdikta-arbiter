@@ -2,6 +2,15 @@
 
 Solidity smart contract for the Chainlink Oracle Operator functionality.
 
+Requests are authorized before emitting `OracleRequest`, using the token's real
+sender and the configured ReputationKeeper allow-list. Empty lists deny access.
+The job rechecks the exact pending request before the adapter and transaction,
+and every fulfillment method checks approval again.
+
+**Migration requires a new operator deployment and regenerated Chainlink jobs.**
+Existing operators are not proxies. See the [authorization and migration guide](../docs/development/request-authorization.md)
+and the [pinned Operator adaptation](contracts/vendor/README.md).
+
 ## Solidity Version Compatibility
 
 This project currently uses Solidity 0.8.19 for compatibility with the Chainlink contracts that are imported. The following compatibility issues prevent upgrading to Solidity 0.8.30 at this time:
@@ -25,7 +34,10 @@ npm install
 # Compile contracts
 npx hardhat compile
 
-# Deploy to network
+# Local tests (no network transactions; Python 3.11+ for job-template parsing)
+npm test
+
+# Deploy only after following the migration guide; deploy.sh targets Base Sepolia
 ./deploy.sh
 ```
 
@@ -33,9 +45,14 @@ npx hardhat compile
 
 - `deploy.sh`: Deploys the ArbiterOperator contract
 - `test.sh`: Runs the test suite
-- `setAuthorizedSenders.sh`: Sets the authorized senders for the operator contract 
+- `setAuthorizedSenders.sh`: Sets the authorized senders for the operator contract
 
 ## Foundry
+
+Both builds use the local admission-aware `contracts/vendor/Operator.sol`; the
+unchanged upstream copy stays vendored for provenance. Hardhat tests verify the
+exact adaptation against Chainlink 1.4.0. The bytecode comparison checks the
+deployed contract's complete dependency closure, excluding unrelated test fixtures.
 
 ArbiterOperator also builds with Foundry, for stake listings: the listing site runs plain `forge build`
 and `forge test` at the repository's root, with no network. Hardhat stays the build that deploys, and

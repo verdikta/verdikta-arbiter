@@ -25,12 +25,14 @@ fn_of() { awk -v name="$1" '$0 == name "() {" {p=1} p{print} p&&/^}$/{exit}' "$S
 regen=$(fn_of regenerate_job_specs)
 check_template=$(fn_of check_job_spec_template)
 without_timeouts=$(fn_of job_template_without_timeouts)
+preflight=$(fn_of job_template_preflight)
 check_config=$(fn_of check_chainlink_config)
 capture=$(fn_of run_echo_capture)
 call_template=$(grep -nE '^[[:space:]]*(JOB_TEMPLATE_RC=0|check_job_spec_template)' "$S" | head -3)
 [ -n "$regen" ] && ok || bad "could not extract regenerate_job_specs"
 [ -n "$check_template" ] && ok || bad "could not extract check_job_spec_template"
 [ -n "$without_timeouts" ] && ok || bad "could not extract job_template_without_timeouts"
+[ -n "$preflight" ] && ok || bad "could not extract job_template_preflight"
 [ -n "$check_config" ] && ok || bad "could not extract check_chainlink_config"
 [ -n "$capture" ] && ok || bad "could not extract run_echo_capture"
 
@@ -93,6 +95,7 @@ regen_run() {
         eval "$WITHOUT"
         eval "$REGEN"
         eval "$TEMPLATE"
+        cleanup_on_error() { echo "STUB-CLEANUP-RESTART"; exit 1; }
         JOB_TEMPLATE_RC=0
         check_job_spec_template || JOB_TEMPLATE_RC=$?
         echo "REACHED-END rc=$JOB_TEMPLATE_RC regenerated=$JOBS_ALREADY_REGENERATED failed=[${JOB_REGEN_FAILED:-}]"
@@ -133,7 +136,61 @@ contracts
 out=$(ANSWER=n regen_run)
 has   "other change, declined: asked"  "$out" "VA_UPGRADE_REGENERATE_JOBS"
 hasnt "other change, declined: nothing runs" "$out" "STUB-unregister"
-has   "other change, declined: end"    "$out" "REACHED-END rc=0 regenerated=0"
+has   "other change, declined: security upgrade refuses stale jobs" "$out" "requires request authorization"
+has   "other change, declined: fails" "$out" "rc=1"
+hasnt "other change, declined: no success" "$out" "REACHED-END rc=0"
+# The arbiter is stopped when this runs: the decline goes through cleanup_on_error, which restarts it.
+has   "other change, declined: the arbiter is restarted" "$out" "STUB-CLEANUP-RESTART"
+hasnt "other change, declined: nothing after the restart" "$out" "REACHED-END"
+
+# ── The same question before the stop: job_template_preflight ────────────────
+# It is called, with its exit code read, before the first stop-arbiter.sh.
+pre_line=$(grep -nE '^job_template_preflight \|\| JOB_PREFLIGHT_RC=\$\?$' "$S" | head -1 | cut -d: -f1)
+stop_line=$(grep -nE '^[[:space:]]*"\$TARGET_DIR/stop-arbiter\.sh"$' "$S" | head -1 | cut -d: -f1)
+[ -n "$pre_line" ] && [ -n "$stop_line" ] && [ "$pre_line" -lt "$stop_line" ] && ok || bad "job_template_preflight is not called before the stop (call at ${pre_line:-none}, stop at ${stop_line:-none})"
+# No exit in check_job_spec_template: it runs with the arbiter stopped.
+echo "$check_template" | grep -qE '^[[:space:]]*exit\b' && bad "check_job_spec_template exits with the arbiter stopped" || ok
+
+pre_run() {
+    ( cd "$T" && TARGET_DIR="$I" REPO_CHAINLINK_NODE="$REPO_NODE" TARGET_CHAINLINK_NODE="$TARGET_NODE" \
+      PRE="$preflight" WITHOUT="$without_timeouts" ROOT="$ROOT" \
+      bash -c '
+        set -e
+        trap "echo TRAP-FIRED; exit 9" ERR
+        source "$ROOT/lib/prompts.sh"
+        GREEN= YELLOW= RED= BLUE= NC=
+        eval "$WITHOUT"
+        eval "$PRE"
+        JOB_PREFLIGHT_RC=0
+        job_template_preflight || JOB_PREFLIGHT_RC=$?
+        echo "PREFLIGHT rc=$JOB_PREFLIGHT_RC"
+      ' 2>&1 )
+}
+contracts
+out=$(VERDIKTA_UNATTENDED=1 pre_run)
+has   "preflight, unattended, no answer: refused" "$out" "PREFLIGHT rc=1"
+has   "preflight, unattended, no answer: names the key" "$out" "VA_UPGRADE_REGENERATE_JOBS=y"
+hasnt "preflight, unattended, no answer: trap" "$out" "TRAP-FIRED"
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=n pre_run)
+has   "preflight, unattended, n: refused" "$out" "PREFLIGHT rc=1"
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
+has   "preflight, unattended, y: goes on" "$out" "PREFLIGHT rc=0"
+out=$(pre_run)
+has   "preflight, interactive: the question comes later" "$out" "PREFLIGHT rc=0"
+printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="134"\nREGISTRATION_SPLIT="true"\n' > "$I/installer/.contracts"
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
+has   "preflight, split registration: refused before the stop" "$out" "PREFLIGHT rc=1"
+has   "preflight, split registration: says why" "$out" "separate classes"
+contracts
+mv "$TARGET_NODE/basicJobSpec" "$TARGET_NODE/basicJobSpec.away"
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
+has   "preflight, no installed template: refused" "$out" "PREFLIGHT rc=1"
+mv "$TARGET_NODE/basicJobSpec.away" "$TARGET_NODE/basicJobSpec"
+cp "$REPO_NODE/basicJobSpec" "$TARGET_NODE/basicJobSpec.same"; cp "$TARGET_NODE/basicJobSpec" "$TARGET_NODE/basicJobSpec.changed"
+cp "$TARGET_NODE/basicJobSpec.same" "$TARGET_NODE/basicJobSpec"
+out=$(VERDIKTA_UNATTENDED=1 pre_run)
+has   "preflight, same template: nothing to ask" "$out" "PREFLIGHT rc=0"
+cp "$TARGET_NODE/basicJobSpec.changed" "$TARGET_NODE/basicJobSpec"; rm -f "$TARGET_NODE/basicJobSpec.same" "$TARGET_NODE/basicJobSpec.changed"
 
 contracts
 out=$(regen_run)

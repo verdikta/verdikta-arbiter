@@ -8,11 +8,17 @@ const attachmentHandler = require('./attachment-handler');
 class TestRunner {
   constructor(toolConfig) {
     this.config = toolConfig;
+    const token = process.env.AI_NODE_API_TOKEN;
+    if (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+      throw new Error('Set AI_NODE_API_TOKEN to authenticate with the AI Node');
+    }
     this.client = axios.create({
       baseURL: toolConfig.aiNodeUrl,
       timeout: toolConfig.timeoutMs,
+      maxRedirects: 0,
       headers: {
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${token}`
       }
     });
   }
@@ -81,7 +87,7 @@ class TestRunner {
 
     } catch (error) {
       const executionTime = Date.now() - startTime;
-      logger.error(`Scenario ${scenario.scenario_id} failed:`, error);
+      logger.error(`Scenario ${scenario.scenario_id} failed:`, error.message);
 
       return {
         scenario_id: scenario.scenario_id,
@@ -137,7 +143,7 @@ class TestRunner {
           await this.delay(100);
 
         } catch (error) {
-          logger.error(`Critical error in test execution:`, error);
+          logger.error(`Critical error in test execution:`, error.message);
           completedTests++;
           
           if (progressCallback) {
@@ -182,6 +188,9 @@ class TestRunner {
 
       } catch (error) {
         retryCount++;
+        if (error.response?.status === 401 || error.response?.status === 403) {
+          throw new Error('AI Node service authentication failed; check AI_NODE_API_TOKEN');
+        }
         
         if (retryCount > maxRetries) {
           // Log the full error details for debugging
@@ -269,7 +278,7 @@ class TestRunner {
       };
 
     } catch (error) {
-      logger.error('Failed to get AI node health info:', error);
+      logger.error('Failed to get AI node health info:', error.message);
       return null;
     }
   }
@@ -297,4 +306,4 @@ class TestRunner {
   }
 }
 
-module.exports = TestRunner; 
+module.exports = TestRunner;

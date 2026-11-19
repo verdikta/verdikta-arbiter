@@ -2,6 +2,12 @@
 
 This external adapter serves as a bridge between Chainlink nodes and an AI-based dispute resolution system. It processes evidence stored on IPFS and facilitates AI evaluation of disputes.
 
+`POST /evaluate` requires `Authorization: Bearer <EA_API_TOKEN>`. The adapter
+also needs `AI_NODE_API_TOKEN` matching the AI Node. From the repository root,
+run `node installer/util/configure-service-auth.cjs configure .` before starting
+either service. Installed Chainlink jobs must be regenerated with the matching
+header. See [service authentication and migration](../docs/development/service-authentication.md).
+
 ## Features
 
 - IPFS integration for evidence handling

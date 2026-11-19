@@ -299,7 +299,7 @@ describe('evaluateHandler', () => {
   it('should not turn a provider error into a commitment in mode 1', async () => {
     const request = {
       id: '1',
-      data: { cid: '1:QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', aggId: '0xagg' }
+      data: { cid: '1:QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', aggId: '0x' + 'ab'.repeat(32) }
     };
 
     archiveService.getArchive.mockResolvedValue(Buffer.from('test'));

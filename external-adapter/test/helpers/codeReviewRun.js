@@ -260,10 +260,11 @@ const aiError = (status, errorCode, retryable = false) => ({
 
 /** An AI Node. `answer(body, state)` as for the runner; default: the jury's verdict. state.calls holds each body. */
 async function startAiNode(options = {}) {
-  const state = { calls: [], cancelled: 0, answer: options.answer };
+  const state = { calls: [], auth: [], cancelled: 0, answer: options.answer };
   const server = await serve(async (req, res) => {
     const body = await readJson(req);
     state.calls.push(body);
+    state.auth.push(req.headers.authorization);
     res.on('close', () => { if (!res.writableFinished) state.cancelled += 1; });
     const out = state.answer ? await state.answer(body, state) : juryAnswer(body);
     if (out !== HANG) respond(res, out);

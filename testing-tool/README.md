@@ -2,6 +2,11 @@
 
 A standalone testing tool for systematically evaluating Verdikta AI arbiters across multiple scenarios and jury configurations.
 
+Set `AI_NODE_API_TOKEN` in this tool's private `.env` or process environment to
+the credential configured on the target AI Node. It is required for model
+requests and is sent as a bearer header. Never place the token in scenario,
+jury or result files. See [service authentication](../docs/development/service-authentication.md).
+
 ## Model Limitations
 
 - **o3** does not support native PDF processing.
@@ -568,4 +573,4 @@ For issues or questions about the testing tool, check:
 1. This README and documentation
 2. Log files in `logs/` directory
 3. AI node status with `npm start status`
-4. Example configurations created by `npm start init` 
+4. Example configurations created by `npm start init`

@@ -9,6 +9,8 @@ import { POST } from '../../app/api/rank-and-justify/route';
 import { LLMFactory } from '../../lib/llm/llm-factory';
 
 jest.mock('../../lib/llm/llm-factory');
+// Authentication is covered through the real handlers in service-auth.test.ts.
+jest.mock('../../lib/service-auth', () => ({ requireServiceAuth: () => null }));
 
 jest.mock('next/server', () => ({
   NextResponse: {

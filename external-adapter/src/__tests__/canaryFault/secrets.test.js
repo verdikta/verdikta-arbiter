@@ -23,6 +23,8 @@ const EA = path.join(__dirname, '..', '..', '..');
 const BCID = H.cid('Claim');
 const KEY = crypto.randomBytes(32).toString('hex');
 const RPC_SECRET = crypto.randomBytes(16).toString('hex');
+const EA_TOKEN = crypto.randomBytes(32).toString('hex');
+const AI_TOKEN = crypto.randomBytes(32).toString('hex');
 
 let chain;
 let said;
@@ -182,7 +184,7 @@ describe('a real process at LOG_LEVEL=debug', () => {
     const port = await freePort();
     const child = spawn(process.execPath, ['src/index.js'], {
       cwd: EA,
-      env: { PATH: process.env.PATH, PORT: String(port), HOST: '127.0.0.1', LOG_LEVEL: 'debug', ...envFor(over) }
+      env: { PATH: process.env.PATH, PORT: String(port), HOST: '127.0.0.1', LOG_LEVEL: 'debug', EA_API_TOKEN: EA_TOKEN, AI_NODE_API_TOKEN: AI_TOKEN, ...envFor(over) }
     });
     let log = '';
     child.stdout.on('data', (c) => { log += c; });
@@ -202,6 +204,8 @@ describe('a real process at LOG_LEVEL=debug', () => {
       for (const text of [log, health, version]) {
         expect(text).not.toContain(KEY);
         expect(text).not.toContain(RPC_SECRET);
+        expect(text).not.toContain(EA_TOKEN);
+        expect(text).not.toContain(AI_TOKEN);
       }
     } finally {
       child.kill('SIGKILL');

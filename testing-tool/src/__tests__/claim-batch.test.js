@@ -12,6 +12,13 @@ const { Ledger, readLedger } = require('../spend');
 const { runClaimBatch, jurorVectors, EXIT } = require('../claim-batch');
 
 let dir;
+const savedServiceToken = process.env.AI_NODE_API_TOKEN;
+beforeAll(() => { process.env.AI_NODE_API_TOKEN = 'claim-batch-test-token-'.padEnd(64, 'a'); });
+afterAll(() => {
+  if (savedServiceToken === undefined) delete process.env.AI_NODE_API_TOKEN;
+  else process.env.AI_NODE_API_TOKEN = savedServiceToken;
+});
+
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-batch-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 

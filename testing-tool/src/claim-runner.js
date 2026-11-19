@@ -28,6 +28,10 @@ const claimHttpTimeoutMs = (deadlineMs) => deadlineMs + HTTP_MARGIN_MS;
  * @throws {Error} any other answer: the status and the AI Node's error code, never the request
  */
 async function callClaim(aiNodeUrl, body, { deadlineMs }) {
+  const token = process.env.AI_NODE_API_TOKEN;
+  if (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) {
+    throw new Error('Set AI_NODE_API_TOKEN to authenticate with the AI Node');
+  }
   const url = `${aiNodeUrl.replace(/\/+$/, '')}${AI_ROUTE}`;
   for (let attempt = 1; ; attempt += 1) {
     const response = await axios.post(url, body, {
@@ -35,7 +39,9 @@ async function callClaim(aiNodeUrl, body, { deadlineMs }) {
       validateStatus: () => true,
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
-      proxy: false
+      proxy: false,
+      maxRedirects: 0,
+      headers: { Authorization: `Bearer ${token}` }
     });
     if (response.status === 200) return response.data;
     const answer = response.data && typeof response.data === 'object' ? response.data : {};

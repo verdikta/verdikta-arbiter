@@ -1,8 +1,9 @@
-const { expect } = require("chai");
+const assert = require("node:assert/strict");
+const { network, ethers } = require("hardhat");
 const fs   = require("fs");
 const path = require("path");
 
-describe("ArbiterOperator (live network)", () => {
+(network.name === 'hardhat' ? describe.skip : describe)("ArbiterOperator (live network, explicit opt-in)", () => {
   it("deploys", async () => {
     // ── 1. resolve LINK token address for the active network ──
     const { name: net } = network; // injected by Hardhat (e.g. "base_sepolia")
@@ -21,7 +22,7 @@ describe("ArbiterOperator (live network)", () => {
 
     // ── 3. simple assertion ──
     const [owner] = await ethers.getSigners();
-    expect(await op.owner()).to.equal(owner.address);
+    assert.equal(await op.owner(), owner.address);
   });
 });
 

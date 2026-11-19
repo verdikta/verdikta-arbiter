@@ -27,6 +27,14 @@ const VECTOR = [0, 0, 0, 100000, 700000, 200000];
 const scoresOf = (vector = VECTOR) => codeReview.BUG_OUTCOMES.map((outcome, i) => ({ outcome, score: vector[i] }));
 
 let dir;
+const SERVICE_TOKEN = 'claim-test-service-token-'.padEnd(64, 'a');
+const savedServiceToken = process.env.AI_NODE_API_TOKEN;
+beforeAll(() => { process.env.AI_NODE_API_TOKEN = SERVICE_TOKEN; });
+afterAll(() => {
+  if (savedServiceToken === undefined) delete process.env.AI_NODE_API_TOKEN;
+  else process.env.AI_NODE_API_TOKEN = savedServiceToken;
+});
+
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'tool-claim-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
@@ -43,6 +51,7 @@ const juryAnswer = (over = {}) => (request) => ({
 /** An AI Node on loopback: each POST takes the next scripted answer (a body, or a function of the request), the last repeating. */
 async function stubAiNode(answers = [{ status: 200, body: juryAnswer() }]) {
   const posts = [];
+  const auth = [];
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
@@ -54,6 +63,7 @@ async function stubAiNode(answers = [{ status: 200, body: juryAnswer() }]) {
       if (req.method === 'GET') return reply(200, { status: 'ok' });
       const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
       posts.push({ path: req.url, body });
+      auth.push(req.headers.authorization);
       const answer = answers[Math.min(posts.length - 1, answers.length - 1)];
       return reply(answer.status, typeof answer.body === 'function' ? answer.body(body) : answer.body);
     });
@@ -62,6 +72,7 @@ async function stubAiNode(answers = [{ status: 200, body: juryAnswer() }]) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     posts,
+    auth,
     close: () => new Promise((resolve) => {
       if (server.closeAllConnections) server.closeAllConnections();
       server.close(() => resolve());
@@ -348,6 +359,18 @@ describe('loadClaimScenarios', () => {
 });
 
 describe('calling the AI Node', () => {
+  it('rejects missing credentials before sending any request', async () => {
+    const node = await stubAiNode();
+    delete process.env.AI_NODE_API_TOKEN;
+    try {
+      await expect(callClaim(node.url, {}, { deadlineMs: 1000 })).rejects.toThrow(/AI_NODE_API_TOKEN/);
+      expect(node.posts).toHaveLength(0);
+    } finally {
+      process.env.AI_NODE_API_TOKEN = SERVICE_TOKEN;
+      await node.close();
+    }
+  });
+
   it('sends the builder\'s body to rank-and-justify once on success', async () => {
     const node = await stubAiNode([{ status: 200, body: { scores: scoresOf(), justification: 'j' } }]);
     try {
@@ -355,6 +378,7 @@ describe('calling the AI Node', () => {
       const answer = await callClaim(node.url, body, { deadlineMs: 525000 });
       expect(answer.scores).toEqual(scoresOf());
       expect(node.posts).toEqual([{ path: '/api/rank-and-justify', body }]);
+      expect(node.auth).toEqual([`Bearer ${SERVICE_TOKEN}`]);
     } finally {
       await node.close();
     }
@@ -485,7 +509,7 @@ describe('runClaimScenario', () => {
 /** The tool as an operator runs it. */
 function tool(args, env = {}) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [INDEX, ...args], { cwd: dir, env: { PATH: process.env.PATH, ...env } });
+    const child = spawn(process.execPath, [INDEX, ...args], { cwd: dir, env: { PATH: process.env.PATH, AI_NODE_API_TOKEN: SERVICE_TOKEN, ...env } });
     let out = '';
     child.stdout.on('data', (c) => { out += c; });
     child.stderr.on('data', (c) => { out += c; });

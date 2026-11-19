@@ -5,6 +5,7 @@ const { createClient } = require('@verdikta/common');
 const path = require('path');
 const { summarizePayload } = require('../utils/payloadSummary');
 const { readEvidenceFile, isUnsafeEvidenceError } = require('../utils/evidenceBoundary');
+const { validServiceToken } = require('../utils/serviceAuth');
 
 // Initialize verdikta-common client for logging
 const verdikta = createClient({
@@ -130,6 +131,8 @@ class AIClient {
   }
 
   async evaluate(query, extractedPath, runTag = '', evidenceRoots = [extractedPath]) {
+    const token = process.env.AI_NODE_API_TOKEN;
+    if (!validServiceToken(token)) throw new Error('AI Node service authentication is not configured');
     const requestStartTime = Date.now();
     return new Promise((resolve, reject) => {
       const operation = retry.operation(this.retryOptions);
@@ -267,7 +270,11 @@ class AIClient {
           logger.debug(`${runTag} Prompt:`, { prompt: payload.prompt });
 
           const tApiStart = Date.now();
-          const response = await this.client.post('/api/rank-and-justify', payload);
+          const response = await this.client.post('/api/rank-and-justify', payload, {
+            headers: { Authorization: `Bearer ${token}` },
+            // Never forward the service credential to a redirect target.
+            maxRedirects: 0
+          });
           const apiCallTime = Date.now() - tApiStart;
           logger.info(`${runTag} API call to /api/rank-and-justify took ${apiCallTime}ms`);
           
@@ -309,9 +316,14 @@ class AIClient {
             config: {
               url: error.config?.url,
               method: error.config?.method,
-              headers: error.config?.headers
+              // Authorization headers must never reach operator logs.
             }
           });
+
+          if (error.response?.status === 401 || error.response?.status === 403) {
+            reject(new Error('AI Node service authentication failed'));
+            return;
+          }
 
           // --- Modified Provider Error Check ---
           let isProviderError = false;
@@ -359,4 +371,4 @@ class AIClient {
   }
 }
 
-module.exports = new AIClient(); 
+module.exports = new AIClient();

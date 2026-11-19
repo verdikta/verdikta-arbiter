@@ -1,5 +1,12 @@
 # Verdikta Arbiter — End-to-End Tests
 
+L2 calls to an existing adapter require its `EA_API_TOKEN` in the harness's
+private environment. `--real --boot-adapter` also needs the target AI Node's
+`AI_NODE_API_TOKEN` (in the environment or adapter configuration). Disposable
+`--mock --boot-adapter` runs generate independent ephemeral credentials when
+absent, pass them only to the child process, and bind the adapter to loopback.
+Commit and reveal use the same job ID and bytes32 aggregation ID.
+
 Automated end-to-end tests for a Verdikta Arbiter node. Two tiers:
 
 | Tier | What it exercises | Determinism | Status |

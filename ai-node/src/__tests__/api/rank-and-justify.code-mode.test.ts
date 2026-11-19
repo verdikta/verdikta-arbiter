@@ -23,7 +23,7 @@ jest.mock('next/server', () => ({
 }));
 
 const env = process.env as Record<string, string | undefined>;
-const KEYS = [MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, 'JUSTIFIER_MODEL', 'AI_WEB_ACCESS'];
+const KEYS = [MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, 'JUSTIFIER_MODEL', 'AI_WEB_ACCESS', 'AI_NODE_API_TOKEN'];
 const saved: Record<string, string | undefined> = {};
 
 const GEMINI = 'google/gemini-4-argon';
@@ -40,7 +40,7 @@ function script(entries: Record<string, unknown>) {
 }
 
 function request(body: unknown): Request {
-  return { json: async () => body } as unknown as Request;
+  return { headers: new Headers({ Authorization: `Bearer ${env.AI_NODE_API_TOKEN}` }), json: async () => body } as unknown as Request;
 }
 
 /** POST the body and run the fake clock forward until the route answers (or `limitMs` passes). */
@@ -62,6 +62,7 @@ const calls = (model: string) => mockProviderCalls().filter(call => call.model =
 beforeEach(() => {
   KEYS.forEach(key => { saved[key] = env[key]; });
   env[MOCK_PROVIDER_FLAG] = '1';
+  env.AI_NODE_API_TOKEN = 'code-mode-test-token-'.padEnd(64, 'a');
   env.JUSTIFIER_MODEL = `mock:${JUSTIFIER}`;
   delete env.AI_WEB_ACCESS;
   script({ [GEMINI]: { scores: HIGH }, [LUNA]: { scores: MEDIUM } });
@@ -509,7 +510,7 @@ describe('text mode keeps its timeout semantics', () => {
   test('reading the body still counts against REQUEST_TIMEOUT_MS: a slow body plus a slow model is the 408 at 240 s', async () => {
     script({ 'gpt-4o': { scores: [600000, 400000], delayMs: 50000 } });
     const body = { prompt: 'Is the sky blue?', outcomes: ['Yes', 'No'], models: [{ provider: 'OpenAI', model: 'gpt-4o', weight: 1 }] };
-    const slowRequest = { json: () => new Promise(resolve => setTimeout(() => resolve(body), 200000)) } as unknown as Request;
+    const slowRequest = { headers: new Headers({ Authorization: `Bearer ${env.AI_NODE_API_TOKEN}` }), json: () => new Promise(resolve => setTimeout(() => resolve(body), 200000)) } as unknown as Request;
     const start = Date.now();
     let settled = false;
     const pending = POST(slowRequest).then(async response => { settled = true; return { status: response.status, body: await response.json(), elapsedMs: Date.now() - start }; });
@@ -520,7 +521,7 @@ describe('text mode keeps its timeout semantics', () => {
   }, 20000);
 
   test('a body that never arrives is the text-mode 408', async () => {
-    const stalled = { json: () => new Promise(() => {}) } as unknown as Request;
+    const stalled = { headers: new Headers({ Authorization: `Bearer ${env.AI_NODE_API_TOKEN}` }), json: () => new Promise(() => {}) } as unknown as Request;
     let settled = false;
     const pending = POST(stalled).then(async response => { settled = true; return { status: response.status, body: await response.json() }; });
     for (let waited = 0; !settled && waited < 300000; waited += 1000) await jest.advanceTimersByTimeAsync(1000);

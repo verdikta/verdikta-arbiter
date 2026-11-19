@@ -38,6 +38,15 @@ function validatePinataKey() {
 // better than total outage. Only reveals (mode 2) will fail at upload time.
 validatePinataKey();
 
+const { validServiceToken } = require('./utils/serviceAuth');
+for (const key of ['EA_API_TOKEN', 'AI_NODE_API_TOKEN']) {
+  if (!validServiceToken(process.env[key])) {
+    throw new Error(`${key} must be configured with a 32–128 character service token`);
+  }
+}
+if (process.env.EA_API_TOKEN === process.env.AI_NODE_API_TOKEN) {
+  throw new Error('EA and AI Node must use separate service tokens');
+}
 const { createApp, createHttpServer } = require('./app');
 const { listenArgs } = require('./utils/listenArgs');
 
@@ -52,4 +61,9 @@ const server = createHttpServer(app);
 const listenOn = listenArgs();
 server.listen(...listenOn, () => {
   console.log(`Server is running on port ${listenOn[0]}${listenOn[1] ? ` (address ${listenOn[1]})` : ''}`);
-}); 
+});
+
+const commitStore = require('./services/commitStore');
+// Expire both unrevealed and revealed entries even when no requests arrive.
+setInterval(() => commitStore.purgeStale().catch(() => console.error('Commit cleanup failed')),
+  15 * 60 * 1000).unref();

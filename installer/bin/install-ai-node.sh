@@ -752,6 +752,8 @@ cleanup_test_instance() {
 # Ensure cleanup happens even if script exits
 trap cleanup_test_instance EXIT
 
+node "$UTIL_DIR/configure-service-auth.cjs" configure "$(dirname "$AI_NODE_DIR")"
+
 # Build once for production. start.sh serves this build with `next start`
 # and rebuilds only when the code or dependencies change later.
 chmod +x "$AI_NODE_DIR/build.sh" "$AI_NODE_DIR/start.sh" "$AI_NODE_DIR/stop.sh"
@@ -764,7 +766,7 @@ fi
 
 echo -e "${BLUE}Starting AI Node (next start) for testing...${NC}"
 # Set the port explicitly. Loopback only (-H 127.0.0.1): this is a throwaway test
-# start during the install, and the AI Node has no authentication of its own.
+# start during the install; protected routes also require the service token.
 PORT=3000 NEXT_TELEMETRY_DISABLED=1 npm run start -- -H 127.0.0.1 &
 AI_NODE_PID=$!
 

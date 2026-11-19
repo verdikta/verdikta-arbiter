@@ -10,6 +10,8 @@ interface ScoreOutcome {
 
 // Mock the LLMFactory
 jest.mock('../../lib/llm/llm-factory');
+// Authentication is covered through the real handlers in service-auth.test.ts.
+jest.mock('../../lib/service-auth', () => ({ requireServiceAuth: () => null }));
 
 // Mock the NextResponse
 jest.mock('next/server', () => ({

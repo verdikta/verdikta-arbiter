@@ -46,6 +46,10 @@ describe('Home component', () => {
     await act(async () => {
       render(<Home />);
     });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('AI Node access token'), { target: { value: 't'.repeat(64) } });
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    });
   
     expect(screen.getByText('AI Model Interface')).toBeInTheDocument();
     expect(screen.getByLabelText('Enter your prompt:')).toBeInTheDocument();
@@ -65,6 +69,10 @@ describe('Home component', () => {
   test('handles user input', async () => {
     await act(async () => {
       render(<Home />);
+    });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('AI Node access token'), { target: { value: 't'.repeat(64) } });
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
     });
     
     const promptInput = screen.getByLabelText('Enter your prompt:');
@@ -108,6 +116,10 @@ describe('Home component', () => {
     await act(async () => {
       render(<Home />);
     });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('AI Node access token'), { target: { value: 't'.repeat(64) } });
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    });
 
     await waitFor(() => {
       expect(screen.getByLabelText('Select Provider:')).toHaveValue('OpenAI');
@@ -128,7 +140,9 @@ describe('Home component', () => {
       expect(screen.getByText(/Generated response/)).toBeInTheDocument();
     });
 
-    expect(fetch).toHaveBeenCalledWith('/api/generate', expect.any(Object));
+    expect(fetch).toHaveBeenCalledWith('/api/generate', expect.objectContaining({
+      method: 'POST', headers: { Authorization: `Bearer ${'t'.repeat(64)}` },
+    }));
   });
 
   test('handles API error', async () => {
@@ -151,6 +165,10 @@ describe('Home component', () => {
     await act(async () => {
       render(<Home />);
     });
+    await act(async () => {
+      fireEvent.change(screen.getByLabelText('AI Node access token'), { target: { value: 't'.repeat(64) } });
+      fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    });
 
     await waitFor(() => {
       expect(screen.getByLabelText('Select Provider:')).toHaveValue('OpenAI');
@@ -169,6 +187,25 @@ describe('Home component', () => {
     await waitFor(() => {
       expect(screen.getByText('An error occurred while generating the response.')).toBeInTheDocument();
     });
+  });
+
+  test('does not call the API until connected, and forgets the credential on disconnect/reload', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ models: [] }) });
+    const view = render(<Home />);
+    expect(fetch).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByLabelText('AI Node access token'), { target: { value: 't'.repeat(64) } });
+    fireEvent.click(screen.getByRole('button', { name: 'Connect' }));
+    await waitFor(() => expect(fetch).toHaveBeenCalledWith('/api/generate', {
+      headers: { Authorization: `Bearer ${'t'.repeat(64)}` },
+    }));
+    expect(screen.getByLabelText('AI Node access token')).toHaveValue('');
+    fireEvent.click(screen.getByRole('button', { name: 'Disconnect' }));
+    view.unmount();
+    (fetch as jest.Mock).mockClear();
+    render(<Home />);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(localStorage.length).toBe(0);
+    expect(sessionStorage.length).toBe(0);
   });
 });
 

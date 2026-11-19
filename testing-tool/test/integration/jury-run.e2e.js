@@ -62,7 +62,7 @@ async function main() {
     const log = fs.openSync(path.join(run, 'driver.log'), 'a');
     const child = spawn('bash', [path.join(REPO, 'testing-tool', 'scripts', 'jury-run.sh'), work, keyFile], {
       stdio: ['ignore', log, log],
-      env: { PATH: process.env.PATH, STOP_USD: '5', METER_ARGS: `--upstream-anthropic ${stub} --upstream-openrouter ${stub}` }
+      env: { PATH: process.env.PATH, STOP_USD: '5', AI_GATEWAY: 'native', OPENAI_CLASS_PROVIDER: 'openrouter', ANTHROPIC_CLASS_PROVIDER: 'native', METER_ARGS: `--upstream-anthropic ${stub} --upstream-openrouter ${stub}` }
     });
     const code = await new Promise((resolve) => { child.on('exit', resolve); });
     assert.strictEqual(code, 0, fs.readFileSync(path.join(run, 'driver.log'), 'utf8').slice(-2000));
@@ -91,7 +91,7 @@ async function main() {
     const before = seen.length;
     const again = spawn('bash', [path.join(REPO, 'testing-tool', 'scripts', 'jury-run.sh'), work, keyFile], {
       stdio: ['ignore', log, log],
-      env: { PATH: process.env.PATH, STOP_USD: '5', METER_ARGS: `--upstream-anthropic ${stub} --upstream-openrouter ${stub}` }
+      env: { PATH: process.env.PATH, STOP_USD: '5', AI_GATEWAY: 'native', OPENAI_CLASS_PROVIDER: 'openrouter', ANTHROPIC_CLASS_PROVIDER: 'native', METER_ARGS: `--upstream-anthropic ${stub} --upstream-openrouter ${stub}` }
     });
     assert.strictEqual(await new Promise((resolve) => { again.on('exit', resolve); }), 0);
     assert.strictEqual(seen.length, before, 'a re-run called no provider');

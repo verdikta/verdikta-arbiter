@@ -76,7 +76,7 @@ afterEach(() => {
   console.log.mockRestore();
 });
 
-const request = (cidString, id = 'job-1') => ({ id, data: { cid: cidString, aggId: '0xagg' } });
+const request = (cidString, id = 'job-1') => ({ id, data: { cid: cidString, aggId: '0x' + 'ab'.repeat(32) } });
 
 describe('evaluateHandler — malformed bCID (submitted-work) archives', () => {
   describe('mode 1 commit → mode 2 reveal', () => {
@@ -102,11 +102,11 @@ describe('evaluateHandler — malformed bCID (submitted-work) archives', () => {
       const stored = await commitStore.get(hashHex);
       expect(stored.result.scores).toEqual([{ outcome: 'DONT_FUND', score: 1000000 }, { outcome: 'FUND', score: 0 }]);
 
-      const reveal = await evaluateHandler(request(`2:${commitment}`, 'job-2'));
+      const reveal = await evaluateHandler(request(`2:${commitment}`, 'job-1'));
       expect(reveal.statusCode).toBe(200);
       expect(reveal.data.aggregatedScore).toEqual([1000000, 0]);
       expect(reveal.data.justificationCid).toMatch(/^QmJustification1:[0-9a-f]{20}$/);
-      expect(await commitStore.get(hashHex)).toBeUndefined(); // burned after reveal
+      expect((await commitStore.get(hashHex)).justificationCid).toBe('QmJustification1'); // retained for retries
 
       expect(uploaded).toHaveLength(1);
       expect(uploaded[0].scores[0]).toEqual({ outcome: 'DONT_FUND', score: 1000000 });

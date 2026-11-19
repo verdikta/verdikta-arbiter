@@ -50,6 +50,9 @@ describe('aiClient.evaluate payload', () => {
     expect(payload.attachments[0]).toMatch(/^data:image\/png;base64,/);
     expect(payload.attachmentNames).toEqual(['submission/medium_article.png', 'notes.txt', 'byCid']);
     expect(payload.requestTag).toBe('[EA job1 agg=0xabc mode=1]');
+    expect(mockPost.mock.calls[0][2]).toEqual({
+      headers: { Authorization: `Bearer ${process.env.AI_NODE_API_TOKEN}` }, maxRedirects: 0,
+    });
   });
 
   test.each(['additional', 'support'])('rejects an outside %s path instead of omitting it and calling the AI', async section => {
@@ -66,5 +69,14 @@ describe('aiClient.evaluate payload', () => {
     await expect(aiClient.evaluate({ prompt: 'Judge it', additional: [{ filename: 'linked.txt' }] }, dir))
       .rejects.toMatchObject({ code: 'UNSAFE_EVIDENCE' });
     expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  test('missing AI credential fails before making a request', async () => {
+    const token = process.env.AI_NODE_API_TOKEN;
+    try {
+      delete process.env.AI_NODE_API_TOKEN;
+      await expect(aiClient.evaluate({ prompt: 'Judge it' }, dir)).rejects.toThrow('AI Node service authentication is not configured');
+      expect(mockPost).not.toHaveBeenCalled();
+    } finally { process.env.AI_NODE_API_TOKEN = token; }
   });
 });

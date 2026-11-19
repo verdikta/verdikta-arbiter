@@ -23,6 +23,10 @@ const ROOT = path.resolve(__dirname, '../../..');
 const OPERATOR = path.join(ROOT, 'arbiter-operator');
 const LIB = path.join(OPERATOR, 'foundry/lib');
 const CONTRACT = 'contracts/ArbiterOperator.sol';
+// The admission hook requires a local, narrowly adapted Operator. Its exact diff
+// against the pinned upstream source is checked by Hardhat's pinned-operator test.
+const LOCAL_SOURCES = [CONTRACT, 'contracts/vendor/Operator.sol'];
+const UPSTREAM_OPERATOR = 'chainlink-contracts/src/v0.8/operatorforwarder/Operator.sol';
 const SOLC = '0.8.19';
 const OPTIMIZER = { enabled: true, runs: 200 };
 const EVM = 'paris';
@@ -111,7 +115,7 @@ function vendoredPath(sourceName) {
 function provenance(o, forge) {
   const problems = [];
   const manifest = readJson(path.join(LIB, 'vendored.json'));
-  const vendoredSol = manifest.files.map((f) => f.path).filter((p) => p.endsWith('.sol') && !p.startsWith('forge-std/')).sort();
+  const vendoredSol = manifest.files.map((f) => f.path).filter((p) => p.endsWith('.sol') && !p.startsWith('forge-std/') && p !== UPSTREAM_OPERATOR).sort();
 
   // Hardhat: the build info its artifact points to.
   const dbg = readJson(o.hardhat.replace(/\.json$/, '.dbg.json'));
@@ -122,15 +126,22 @@ function provenance(o, forge) {
   if (settings.viaIR) problems.push('hardhat: viaIR is on');
   if (settings.evmVersion !== undefined && settings.evmVersion !== EVM) problems.push(`hardhat: evmVersion ${settings.evmVersion}`);
   const compiled = [];
-  for (const [name, source] of Object.entries(info.input.sources)) {
+  const compiledLocal = [];
+  // A clean Hardhat build also compiles test fixtures. Only this deployed
+  // contract's metadata defines its dependency closure; all of those inputs
+  // must still match the local or pinned vendored files byte for byte.
+  const hardhatMeta = JSON.parse(info.output.contracts[CONTRACT].ArbiterOperator.metadata);
+  for (const name of Object.keys(hardhatMeta.sources)) {
+    const source = info.input.sources[name];
     let local;
-    if (name === CONTRACT) local = path.join(OPERATOR, CONTRACT);
+    if (LOCAL_SOURCES.includes(name)) { local = path.join(OPERATOR, name); compiledLocal.push(name); }
     else if (vendoredPath(name)) local = path.join(LIB, vendoredPath(name));
     else { problems.push(`hardhat compiled ${name}, which is neither the contract nor vendored`); continue; }
-    if (name !== CONTRACT) compiled.push(vendoredPath(name));
+    if (!LOCAL_SOURCES.includes(name)) compiled.push(vendoredPath(name));
     if (!fs.existsSync(local)) problems.push(`hardhat compiled ${name}, which is not vendored`);
     else if (!fs.readFileSync(local).equals(Buffer.from(source.content, 'utf8'))) problems.push(`hardhat's ${name} differs from ${shown(local)}`);
   }
+  if (JSON.stringify(compiledLocal.sort()) !== JSON.stringify([...LOCAL_SOURCES].sort())) problems.push('hardhat: missing local contract source');
   if (JSON.stringify(compiled.sort()) !== JSON.stringify(vendoredSol)) problems.push(`hardhat compiled [${compiled}], vendored.json lists [${vendoredSol}]`);
   for (const [dir, name] of Object.entries(NPM_NAMES)) {
     const want = manifest.sources.find((s) => s.package === name);
@@ -147,7 +158,7 @@ function provenance(o, forge) {
     if (!sameOptimizer(meta.settings.optimizer)) problems.push(`forge: optimizer ${JSON.stringify(meta.settings.optimizer)}`);
     if (meta.settings.viaIR) problems.push('forge: viaIR is on');
     if (meta.settings.evmVersion !== EVM) problems.push(`forge: evmVersion ${meta.settings.evmVersion}`);
-    const want = ['arbiter-operator/' + CONTRACT, ...vendoredSol.map((p) => 'arbiter-operator/foundry/lib/' + p)].sort();
+    const want = [...LOCAL_SOURCES.map((p) => 'arbiter-operator/' + p), ...vendoredSol.map((p) => 'arbiter-operator/foundry/lib/' + p)].sort();
     const got = Object.keys(meta.sources).sort();
     if (JSON.stringify(got) !== JSON.stringify(want)) problems.push(`forge compiled [${got}], expected [${want}]`);
   }

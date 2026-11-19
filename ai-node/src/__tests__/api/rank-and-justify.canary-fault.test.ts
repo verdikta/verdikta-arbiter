@@ -18,7 +18,7 @@ jest.mock('next/server', () => ({
 }));
 
 const env = process.env as Record<string, string | undefined>;
-const KEYS = [MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, 'JUSTIFIER_MODEL', 'AI_WEB_ACCESS', CANARY_FAULT_KEY_ENV];
+const KEYS = [MOCK_PROVIDER_FLAG, MOCK_SCRIPT_ENV, 'JUSTIFIER_MODEL', 'AI_WEB_ACCESS', 'AI_NODE_API_TOKEN', CANARY_FAULT_KEY_ENV];
 const saved: Record<string, string | undefined> = {};
 const KEY = 'k'.repeat(48);
 const GEMINI = 'google/gemini-4-argon';
@@ -52,7 +52,7 @@ const body = (canaryFault?: unknown) => ({
 async function post(sent: unknown, limitMs = 900000): Promise<{ status: number; body: any; elapsedMs: number }> {
   const start = Date.now();
   let settled = false;
-  const pending = POST({ json: async () => sent } as unknown as Request).then(async response => {
+  const pending = POST({ headers: new Headers({ Authorization: `Bearer ${env.AI_NODE_API_TOKEN}` }), json: async () => sent } as unknown as Request).then(async response => {
     settled = true;
     return { status: response.status, body: await response.json(), elapsedMs: Date.now() - start };
   });
@@ -72,6 +72,7 @@ const bytesOf = (result: { body: any }) => ({
 beforeEach(() => {
   KEYS.forEach(key => { saved[key] = env[key]; });
   env[MOCK_PROVIDER_FLAG] = '1';
+  env.AI_NODE_API_TOKEN = 'code-mode-test-token-'.padEnd(64, 'a');
   env.JUSTIFIER_MODEL = `mock:${JUSTIFIER}`;
   delete env.AI_WEB_ACCESS;
   delete env[CANARY_FAULT_KEY_ENV];
