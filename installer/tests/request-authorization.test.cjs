@@ -61,7 +61,9 @@ test('upgrade refuses authenticated but ungated jobs when regeneration is declin
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'verdikta-admission-gate-'));
   try {
     const source = fs.readFileSync(path.join(__dirname, '../bin/upgrade-arbiter.sh'), 'utf8');
-    const gate = source.slice(source.indexOf('job_template_without_timeouts() {'), source.indexOf('# Function to regenerate job specs'));
+    // A top-level function of the script, by name: from "name() {" to the "}" that closes it.
+    const fn = name => { const at = source.indexOf(`\n${name}() {`); assert.ok(at >= 0, name); return source.slice(at, source.indexOf('\n}\n', at) + 3); };
+    const gate = fn('job_template_without_timeouts') + fn('check_job_spec_template');
     const repo = path.join(root, 'repo'), target = path.join(root, 'target');
     fs.mkdirSync(repo); fs.mkdirSync(target);
     const template = fs.readFileSync(path.join(__dirname, '../../chainlink-node/basicJobSpec'), 'utf8');
@@ -76,12 +78,16 @@ test('upgrade refuses authenticated but ungated jobs when regeneration is declin
       const run = accept => spawnSync('bash', ['-c', `set -e
         ask_yes_no() { test "$ACCEPT" = yes; }
         regenerate_job_specs() { echo REGENERATED; }
+        cleanup_on_error() { echo ARBITER-RESTARTED; exit 1; }
         ${gate}
         check_job_spec_template
       `], { encoding: 'utf8', env: { ...process.env, ACCEPT: accept, REPO_CHAINLINK_NODE: repo, TARGET_CHAINLINK_NODE: target } });
       assert.equal(run('no').status, 1);
       assert.match(run('no').stdout, /requires request authorization/);
+      // The arbiter is stopped by then: the decline must go through the script's restart.
+      assert.match(run('no').stdout, /ARBITER-RESTARTED/);
       assert.equal(run('yes').status, 0);
+      assert.doesNotMatch(run('yes').stdout, /ARBITER-RESTARTED/);
     }
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
@@ -89,6 +95,12 @@ test('operator preflight precedes shutdown/job changes and deployment never remo
   const read = name => fs.readFileSync(path.join(__dirname, '../bin', name), 'utf8');
   const upgrade = read('upgrade-arbiter.sh'), configure = read('configure-node.sh'), deploy = read('deploy-contracts.sh');
   assert.ok(upgrade.indexOf('check-request-authorization.cjs') < upgrade.indexOf('"$TARGET_DIR/stop-arbiter.sh"'));
+  // The job template's question is settled before the stop too, and nothing after the stop exits bare.
+  const stop = upgrade.indexOf('"$TARGET_DIR/stop-arbiter.sh"');
+  assert.ok(upgrade.indexOf('\njob_template_preflight || JOB_PREFLIGHT_RC=$?') > 0);
+  assert.ok(upgrade.indexOf('\njob_template_preflight || JOB_PREFLIGHT_RC=$?') < stop);
+  const template = upgrade.slice(upgrade.indexOf('\ncheck_job_spec_template() {'), upgrade.indexOf('\n}\n', upgrade.indexOf('\ncheck_job_spec_template() {')));
+  assert.doesNotMatch(template, /^\s*exit\b/m, 'check_job_spec_template runs with the arbiter stopped: it must not exit without restarting it');
   assert.ok(configure.indexOf('check-request-authorization.cjs') < configure.indexOf('ensure_keys_exist "$ARBITER_COUNT"'));
   assert.ok(configure.indexOf('check-request-authorization.cjs') < configure.indexOf('-X DELETE'));
   assert.doesNotMatch(deploy, /sed.*OperatorMod|Remove the pre-request hook/);

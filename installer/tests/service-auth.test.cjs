@@ -74,7 +74,9 @@ test('refuses a job template without an authentication placeholder', () => {
 
 test('the actual upgrade gate refuses unauthenticated jobs when regeneration is declined', () => {
   const source = fs.readFileSync(path.join(__dirname, '../bin/upgrade-arbiter.sh'), 'utf8');
-  const gate = source.slice(source.indexOf('job_template_without_timeouts() {'), source.indexOf('# Function to regenerate job specs'));
+  // A top-level function of the script, by name: from "name() {" to the "}" that closes it.
+  const fn = name => { const at = source.indexOf(`\n${name}() {`); assert.ok(at >= 0, name); return source.slice(at, source.indexOf('\n}\n', at) + 3); };
+  const gate = fn('job_template_without_timeouts') + fn('check_job_spec_template');
   assert.ok(gate.includes('VA_UPGRADE_REGENERATE_JOBS'));
   const repo = path.join(root, 'repo'), target = path.join(root, 'target');
   fs.mkdirSync(repo); fs.mkdirSync(target);
@@ -85,12 +87,14 @@ test('the actual upgrade gate refuses unauthenticated jobs when regeneration is 
     set -e
     ask_yes_no() { test "$ACCEPT" = yes; }
     regenerate_job_specs() { echo REGENERATED; }
+    cleanup_on_error() { echo ARBITER-RESTARTED; exit 1; }
     ${gate}
     check_job_spec_template
   `], { encoding: 'utf8', env: { ...process.env, REPO_CHAINLINK_NODE: repo, TARGET_CHAINLINK_NODE: target, ACCEPT: accept } });
   const denied = run('no');
   assert.equal(denied.status, 1);
   assert.match(denied.stdout, /requires authenticated bridge jobs/);
+  assert.match(denied.stdout, /ARBITER-RESTARTED/);
   assert.doesNotMatch(denied.stdout, /REGENERATED/);
   const accepted = run('yes');
   assert.equal(accepted.status, 0);

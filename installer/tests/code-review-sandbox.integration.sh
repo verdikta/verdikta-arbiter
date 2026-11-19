@@ -101,6 +101,9 @@ cp -r "$REPO/external-adapter" "$I/external-adapter"; rm -rf "$I/external-adapte
 cp "$REPO/ai-node/package.json" "$I/ai-node/package.json"
 printf 'DEPLOYMENT_NETWORK="base_sepolia"\nNETWORK_CHAIN_ID="84532"\n' > "$I/installer/.env"
 printf 'OPERATOR_ADDR=0x1111111111111111111111111111111111111111\nPORT=8080\n' > "$I/external-adapter/.env"
+# The adapter does not start without its two service credentials (PR #210): install.sh and
+# upgrade-arbiter.sh write them with this tool, so this install gets them the same way.
+node "$ROOT/util/configure-service-auth.cjs" configure "$I" >/dev/null || { echo "configure-service-auth.cjs failed"; exit 1; }
 (cd "$I/external-adapter" && npm ci --omit=dev --no-audit --no-fund >/dev/null) || exit 1
 
 # The default where this host has the room; a smaller disk does the same work.

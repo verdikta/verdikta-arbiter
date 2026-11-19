@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Generated environment/job files now contain service credentials.
-umask 077
-
 # Verdikta Arbiter Node Upgrade Script
 # Upgrades an existing Verdikta Arbiter installation with new code
 
@@ -1166,6 +1163,44 @@ if [ "$RPCS_CHANGED" = "true" ]; then
     echo -e "${YELLOW}This is required for the new RPCs to take effect.${NC}"
 fi
 
+# A job template with its two timeouts blanked, to tell a change in them from any other.
+job_template_without_timeouts() {
+    sed -E 's/^maxTaskDuration = "[^"]*"/maxTaskDuration = "N"/; s/timeout="[^"]*"([[:space:]]*#.*)?$/timeout="N"/' "$1"
+}
+
+# job_template_preflight — the job template's question, settled before anything is stopped.
+# A template that differs in more than its timeouts means the installed jobs are not the ones
+# this release's adapter answers: they send no service credential, or lack the admission gates.
+# Regenerating them deregisters and re-registers the oracle on chain, so an unattended run does
+# it only when told to (VA_UPGRADE_REGENERATE_JOBS=y), and a node registered on separate classes
+# cannot do it here at all. Either of those found after stop-arbiter.sh left the node down; they
+# are found here, with the node running. Returns 1 with the reason printed.
+job_template_preflight() {
+    local repo_job_spec="$REPO_CHAINLINK_NODE/basicJobSpec"
+    local target_job_spec="$TARGET_CHAINLINK_NODE/basicJobSpec"
+
+    if [ ! -f "$repo_job_spec" ]; then
+        echo -e "${RED}Cannot configure authenticated jobs: source basicJobSpec is missing.${NC}"
+        return 1
+    fi
+    if [ ! -f "$target_job_spec" ]; then
+        echo -e "${RED}Cannot verify bridge authentication: installed basicJobSpec is missing. Configure authenticated jobs before upgrading.${NC}"
+        return 1
+    fi
+    if [ "$(job_template_without_timeouts "$repo_job_spec")" = "$(job_template_without_timeouts "$target_job_spec")" ]; then
+        return 0
+    fi
+    if [ -f "$TARGET_DIR/installer/.contracts" ] && ( source "$TARGET_DIR/installer/.contracts" >/dev/null 2>&1; [ "${REGISTRATION_SPLIT:-}" = "true" ] ); then
+        echo -e "${RED}The job template changed, and this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts): the upgrade cannot regenerate them. Unregister them, run configure-node.sh from this checkout and register each class with VA_REGISTER_JOB_IDS, then upgrade.${NC}"
+        return 1
+    fi
+    if unattended_mode && [ "$(_va_yes_no_value "${VA_UPGRADE_REGENERATE_JOBS:-n}")" != "y" ]; then
+        echo -e "${RED}The job template changed: this release's adapter answers only jobs that send its service credential and check request authorization. Regenerating the jobs re-registers the oracle on chain, so an unattended upgrade does it only with VA_UPGRADE_REGENERATE_JOBS=y.${NC}"
+        return 1
+    fi
+    return 0
+}
+
 # Do this before stopping the installed node or replacing any services/jobs.
 # Legacy operators are not proxies: copying new Solidity cannot upgrade them.
 (
@@ -1181,6 +1216,13 @@ fi
     esac
     REQUEST_AUTH_RPC_URLS="$RPC_HTTP_URLS" node "$UTIL_DIR/check-request-authorization.cjs" "${OPERATOR_ADDR:-$OPERATOR_ADDRESS}" "$AUTH_CHAIN_ID"
 ) || exit 1
+
+JOB_PREFLIGHT_RC=0
+job_template_preflight || JOB_PREFLIGHT_RC=$?
+if [ "$JOB_PREFLIGHT_RC" -ne 0 ]; then
+    echo -e "${YELLOW}Nothing was changed, and the arbiter was not stopped.${NC}"
+    exit 1
+fi
 
 # Ask for confirmation before upgrading
 echo
@@ -1281,11 +1323,6 @@ cp "$REPO_ROOT/arbiter-operator/scripts/lib/request-authorization.js" "$TARGET_D
 # Check for job specification template changes BEFORE component upgrades
 echo -e "${BLUE}Checking for job specification template changes...${NC}"
 
-# A job template with its two timeouts blanked, to tell a change in them from any other.
-job_template_without_timeouts() {
-    sed -E 's/^maxTaskDuration = "[^"]*"/maxTaskDuration = "N"/; s/timeout="[^"]*"([[:space:]]*#.*)?$/timeout="N"/' "$1"
-}
-
 # Function to check and regenerate job specs if needed (following the pattern of check_chainlink_config)
 check_job_spec_template() {
     local repo_job_spec="$REPO_CHAINLINK_NODE/basicJobSpec"
@@ -1295,15 +1332,19 @@ check_job_spec_template() {
     echo -e "${BLUE}Checking job specification template...${NC}"
     
     # Check if current repo template exists
+    # (job_template_preflight refused both of these before the arbiter was stopped. The arbiter
+    # is stopped by now, so nothing here may simply exit: cleanup_on_error restarts it.)
     if [ ! -f "$repo_job_spec" ]; then
         echo -e "${RED}Cannot configure authenticated jobs: source basicJobSpec is missing.${NC}"
-        exit 1
+        cleanup_on_error
+        return 1
     fi
     
     # Check if target template exists (from previous install)
     if [ ! -f "$target_job_spec" ]; then
         echo -e "${RED}Cannot verify bridge authentication: installed basicJobSpec is missing. Configure authenticated jobs before upgrading.${NC}"
-        exit 1
+        cleanup_on_error
+        return 1
     fi
     
     echo -e "${BLUE}Comparing job specification templates:${NC}"
@@ -1340,14 +1381,17 @@ check_job_spec_template() {
                 JOB_REGEN_FAILED="job regeneration stopped (exit $REGEN_RC); see the messages above"
             fi
         else
+            # Declined at the prompt, with the arbiter already stopped: nothing has been
+            # replaced yet, so the upgrade ends and cleanup_on_error starts the arbiter again.
             if ! grep -q 'headers=.*Authorization' "$target_job_spec"; then
                 echo -e "${RED}This security upgrade requires authenticated bridge jobs. Re-run with job regeneration enabled (VA_UPGRADE_REGENERATE_JOBS=y); existing jobs cannot call the secured adapter.${NC}"
-                exit 1
+            else
+                # A name-only check misses removed edges or gates moved after work.
+                # Any changed template must be regenerated, even if it has headers.
+                echo -e "${RED}This security upgrade requires request authorization before the bridge and transaction. Regenerate the updated template with VA_UPGRADE_REGENERATE_JOBS=y.${NC}"
             fi
-            # A name-only check misses removed edges or gates moved after work.
-            # Any changed template must be regenerated, even if it has headers.
-            echo -e "${RED}This security upgrade requires request authorization before the bridge and transaction. Regenerate the updated template with VA_UPGRADE_REGENERATE_JOBS=y.${NC}"
-            exit 1
+            cleanup_on_error
+            return 1
         fi
     else
         echo -e "${GREEN}Job specification template is up to date.${NC}"

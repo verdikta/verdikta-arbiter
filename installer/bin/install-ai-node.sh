@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Generated environment/job files now contain service credentials.
-umask 077
-
 # Verdikta Validator Node - AI Node Installation Script
 # Clones and configures the AI Node component
 

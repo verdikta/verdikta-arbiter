@@ -188,8 +188,10 @@ Before component replacement, the script compares:
 If changed, it offers to regenerate jobs from the new template.
 
 The service-authentication upgrade requires this regeneration when the installed
-template lacks the Authorization header. Declining aborts before replacing the
-services. For unattended upgrades set `VA_UPGRADE_REGENERATE_JOBS=y`. Drain
+template lacks the Authorization header. An unattended upgrade without
+`VA_UPGRADE_REGENERATE_JOBS=y`, and a node whose jobs are registered on separate
+classes (`REGISTRATION_SPLIT`), are refused before anything is stopped; declining
+at the prompt ends the upgrade and starts the arbiter again, with nothing replaced. Drain
 in-flight requests first: job IDs change, and pending commits remain in memory.
 The upgrade synchronizes separate EA/AI credentials and renders private job
 files. See [service authentication](../../../docs/development/service-authentication.md)

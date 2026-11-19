@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Generated environment/job files now contain service credentials.
-umask 077
-
 # Verdikta Validator Node - External Adapter Installation Script
 # Installs and configures the External Adapter component with Verdikta Common Library
 

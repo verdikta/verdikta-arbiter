@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Generated environment/job files now contain service credentials.
-umask 077
-
 # Verdikta Validator Node - Multi-Arbiter Configuration Script
 # Sets up bridges and jobs for 1-10 arbiters in the Chainlink node
 

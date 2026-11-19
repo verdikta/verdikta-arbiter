@@ -1,8 +1,5 @@
 #!/bin/bash
 
-# Copied environment/job files contain service credentials.
-umask 077
-
 # Verdikta Arbiter Node Installation Script
 # Main orchestrator for the installation process
 

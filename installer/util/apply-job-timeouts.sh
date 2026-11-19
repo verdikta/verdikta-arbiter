@@ -480,7 +480,9 @@ def apply(wait):
         for job in stale:
             a = job["attributes"]
             spec_path = os.path.join(saved, f"{a['externalJobID']}.toml")
-            with open(spec_path, "w", encoding="utf-8") as f:
+            # 0600: a job's DAG carries the adapter's bearer credential in its bridge header.
+            with os.fdopen(os.open(spec_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600), "w", encoding="utf-8") as f:
+                os.chmod(spec_path, 0o600)
                 f.write(toml_for(job, a["maxTaskDuration"], a["pipelineSpec"]["dotDagSource"]))
             specs[job["id"]] = spec_path
     except OSError as e:
