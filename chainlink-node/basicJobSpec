@@ -11,10 +11,18 @@ observationSource = """
                  data="$(jobRun.logData)" \
                  topics="$(jobRun.logTopics)"]
 
+    authorize_data [type="ethabiencode"
+                    abi="isAuthorizedRequest(bytes32 requestId,uint256 payment,address requester,bytes4 callbackFunctionId,uint256 expiration)"
+                    data="{\\"requestId\\": $(decode_log.requestId), \\"payment\\": $(decode_log.payment), \\"requester\\": $(decode_log.requester), \\"callbackFunctionId\\": $(decode_log.callbackFunctionId), \\"expiration\\": $(decode_log.cancelExpiration)}"]
+    authorize_call [type="ethcall" contract="{CONTRACT_ADDRESS}" data="$(authorize_data)" evmChainID="<CHAIN_ID>" block="latest" gas="500000"]
+    authorize_result [type="ethabidecode" abi="(bool allowed)" data="$(authorize_call)"]
+    authorize [type="conditional" data="$(authorize_result.allowed)"]
+
     decode_cbor  [type="cborparse" data="$(decode_log.data)"]
     
     fetch        [type="bridge" 
                      name="verdikta-ai"
+                     headers="[\\\"Authorization\\\", \\\"Bearer {EA_API_TOKEN}\\\"]"
                      timeout="300s" # increase timeout to 300s
                      requestData="{\\"id\\": $(jobSpec.externalJobID), \\"data\\": {\\"cid\\": $(decode_cbor.cid), \\"aggId\\": $(decode_cbor.aggId)}}"]
     
@@ -31,6 +39,10 @@ encode_data  [type="ethabiencode"
 
 
 
+    reauthorize_call [type="ethcall" contract="{CONTRACT_ADDRESS}" data="$(authorize_data)" evmChainID="<CHAIN_ID>" block="latest" gas="500000"]
+    reauthorize_result [type="ethabidecode" abi="(bool allowed)" data="$(reauthorize_call)"]
+    reauthorize [type="conditional" data="$(reauthorize_result.allowed)"]
+
     submit_tx [type="ethtx" 
           to="{CONTRACT_ADDRESS}" 
           data="$(encode_tx)" 
@@ -38,7 +50,7 @@ encode_data  [type="ethabiencode"
           minConfirmations="2"
           evmChainID="<CHAIN_ID>"]
 
-    decode_log -> decode_cbor -> fetch -> parse_scores -> parse_cid -> encode_data -> encode_tx -> submit_tx
+    decode_log -> authorize_data -> authorize_call -> authorize_result -> authorize -> decode_cbor -> fetch -> parse_scores -> parse_cid -> encode_data -> encode_tx -> reauthorize_call -> reauthorize_result -> reauthorize -> submit_tx
     fetch -> encode_data
 """
 

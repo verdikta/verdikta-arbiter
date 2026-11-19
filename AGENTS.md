@@ -103,6 +103,17 @@ deployments used by the example apps: Base Sepolia
 `0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` (verify before relying on these —
 they are network state, not tracked in this repo).
 
+**Request admission (security hardening).** The operator now checks the real
+ERC-677 sender against configured ReputationKeepers before creating a commitment
+or emitting `OracleRequest`. Empty lists deny access; keeper calls are bounded
+and malformed/reverting responses cannot grant it. Both request entry points
+require a version-2 request with requester = callback. The Chainlink job checks
+`isAuthorizedRequest` at `latest` before its bridge and again before `ethtx`;
+all fulfillment methods retain a final approval check. The adapted Operator is
+pinned to `@chainlink/contracts@1.4.0`; its exact diff is tested. Existing
+non-proxy operators require a new deployment and job migration, not just a
+software upgrade. See `docs/development/request-authorization.md`.
+
 Key files to trace this:
 - Job pipeline: `chainlink-node/basicJobSpec` (a `directrequest` template; `{...}` placeholders are filled at registration).
 - EA entry + modes: `external-adapter/src/handlers/evaluateHandler.js`.
@@ -118,7 +129,7 @@ Because several arbiters answer the same request, the Dispatcher uses
 
 - **Mode 0** (`Qm...`): standard — evaluate now, upload justification, return `scores + cid`.
 - **Mode 1** (`1:Qm...`): **commit** — evaluate, store `{result, salt}` locally (`commitStore`), return only a 128-bit hash commitment (as a decimal) in `aggregatedScore[0]`. No CID yet.
-- **Mode 2** (`2:<hash>`): **reveal** — look up the stored result, upload its justification now, return `scores` + `justificationCid:salt`, then delete the commit.
+- **Mode 2** (`2:<hash>`): **reveal** — require the same job ID, aggregation ID and configured operator as the commit, upload once, and return `scores` + `justificationCid:salt`. Retain the result/CID/salt until the commit's three-day expiry so concurrent calls and retries are idempotent. The store is still RAM-only; restart durability remains separate work.
 
 The commit hash = low/high 128 bits of `sha256(abi.encode(OPERATOR_ADDRESS, scores[], salt))`. This is why the EA **requires `OPERATOR_ADDR`** in its env.
 
@@ -217,6 +228,12 @@ There is **no** `/api/arbitrate` or `/api/models` endpoint (older docs mention t
 ## 6. Dev & ops workflows
 
 ### Local dev
+Before starting services, run `node installer/util/configure-service-auth.cjs configure .`
+from the repository root. It writes separate private credentials for Chainlink → EA
+and EA → AI, preserving existing valid keys. Protected APIs require
+`Authorization: Bearer <service-token>`, including in development. See
+`docs/development/service-authentication.md` for migration and tests.
+
 ```bash
 cd ai-node && npm install && npm run dev      # http://localhost:3000
 cd external-adapter && npm install && npm start   # http://localhost:8080  (needs AI_NODE_URL, OPERATOR_ADDR, IPFS_PINNING_KEY)
@@ -233,7 +250,7 @@ closest existing thing to an automated functional test of the AI layer.
 ```bash
 cd ai-node && npm test
 cd external-adapter && npm test     # see external-adapter/TESTING.md (unit vs integration; integration hits IPFS/AI)
-cd arbiter-operator && npx hardhat test
+cd arbiter-operator && npm test     # explicit local Hardhat network; Python 3.11+ for job parsing
 ```
 
 ### Release gate: testnet canaries before mainnet
@@ -299,6 +316,14 @@ state. Unit text: `arbiter-boot-service.sh print-unit`.
 library's built-in ones), `IPFS_GATEWAY_TOKEN` (optional Pinata dedicated-gateway
 key, sent only to those gateways), `IPFS_PINNING_SERVICE`, `LOG_LEVEL`.
 
+**Service authentication**: `EA_API_TOKEN` in EA `.env` authenticates Chainlink
+bridge tasks; `AI_NODE_API_TOKEN` must match in EA `.env` and AI `.env.local`.
+They must be distinct, randomly generated tokens. The installer configures them
+and adds the EA credential to private rendered jobs. AI `start.sh` binds to
+loopback by default; EA honors `HOST` (standalone default loopback, installer
+default `0.0.0.0` for Docker reachability). Restrict port 8080 to Chainlink's
+private network. Health/version monitoring remains unauthenticated and read-only.
+
 **AI Node** (`ai-node/.env.local`): provider keys (`OPENAI_API_KEY`,
 `ANTHROPIC_API_KEY`, `XAI_API_KEY`, `HYPERBOLIC_API_KEY`, `OPENROUTER_API_KEY`),
 `JUSTIFIER_MODEL` (`provider:model`), `MODEL_TIMEOUT_MS`, `REQUEST_TIMEOUT_MS`,
@@ -318,6 +343,15 @@ Ollama runs locally and is unaffected by gateway settings.
 - **Shared logic lives in `@verdikta/common`** (IPFS, archive, manifest parse,
   validation, logging). Don't reimplement it locally; both EA and AI Node pin
   the **same version** and the installer verifies this.
+- **Evidence must pass the EA filesystem boundary before common reads it.**
+  `external-adapter/src/utils/evidenceBoundary.js` gates extraction, bare CIDs,
+  and every manifest file reference because common 1.7.0 does not confine its
+  paths. Keep schema/parsing in common, but never call those readers on an
+  archive that has bypassed the boundary. AI payload reads also require the
+  explicit extraction roots for this request (including each bCID root).
+  Unsafe primary archives error without committing; unsafe bCIDs follow the
+  existing deterministic malformed-submission policy. Regression tests:
+  `evidenceBoundary.test.js` and `evaluateHandler.evidenceBoundary.test.js`.
 - **ClassID**: a curated model-pool identifier (default 128). Model pool data
   ships via `@verdikta/common`; the installer integrates it into the AI Node
   (`npm run integrate-classid`, `src/scripts/display-classids.js`).

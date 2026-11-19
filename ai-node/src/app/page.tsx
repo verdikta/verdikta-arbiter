@@ -31,6 +31,8 @@ interface ProviderModels {
 }
 
 export default function Home() {
+  const [tokenInput, setTokenInput] = useState('');
+  const [apiToken, setApiToken] = useState('');
   const [prompt, setPrompt] = useState<string>('');
   const [selectedProvider, setSelectedProvider] = useState<string>('');
   const [selectedModel, setSelectedModel] = useState<string>('');
@@ -44,9 +46,14 @@ export default function Home() {
   const [rankResult, setRankResult] = useState<RankAndJustifyResult | null>(null);
 
   useEffect(() => {
+    if (!apiToken) { setIsLoadingModels(false); setProviderModels([]); return; }
     setIsLoadingModels(true);
-    fetch('/api/generate')
-      .then(response => response.json())
+    fetch('/api/generate', { headers: { Authorization: `Bearer ${apiToken}` } })
+      .then(async response => {
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.error || 'Authentication failed');
+        return data;
+      })
       .then(data => {
         console.log('API response:', data);
         if (data && data.models && Array.isArray(data.models)) {
@@ -87,11 +94,12 @@ export default function Home() {
         }
       })
       .catch(error => {
+        setResult(error.message || 'Could not connect to the AI Node');
         console.error('Error fetching models:', error);
         setProviderModels([]);
       })
       .finally(() => setIsLoadingModels(false));
-  }, []);
+  }, [apiToken]);
 
   const resetForm = () => {
     setResult('');
@@ -157,6 +165,7 @@ export default function Home() {
 
       const response = await fetch('/api/generate', {
         method: 'POST',
+        headers: { Authorization: `Bearer ${apiToken}` },
         body: formData,
       });
 
@@ -194,6 +203,7 @@ export default function Home() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
+          Authorization: `Bearer ${apiToken}`,
         },
         body: JSON.stringify(data),
       });
@@ -232,6 +242,20 @@ export default function Home() {
     <main className="container mx-auto px-4 py-8">
       <h1 className="text-3xl font-bold mb-8">AI Model Interface</h1>
       
+      <form aria-label="Connect to AI Node" className="mb-6 flex gap-3 items-end" onSubmit={event => {
+        event.preventDefault(); setResult(''); setApiToken(tokenInput); setTokenInput('');
+      }}>
+        <div>
+          <label htmlFor="access-token" className="block mb-2">AI Node access token</label>
+          <input id="access-token" type="password" autoComplete="off" value={tokenInput}
+            onChange={event => setTokenInput(event.target.value)} className="p-2 border rounded text-black" />
+          <p className="text-sm">Kept only in this tab; cleared when you reload.</p>
+        </div>
+        <button type="submit" className="p-2 border rounded">Connect</button>
+        <button type="button" className="p-2 border rounded" onClick={() => {
+          setApiToken(''); setTokenInput(''); setResult(''); setRankResult(null);
+        }}>Disconnect</button>
+      </form>
       <TabSelector activeTab={activeTab} onTabChange={handleTabChange} />
 
       {activeTab === 'generate' ? (

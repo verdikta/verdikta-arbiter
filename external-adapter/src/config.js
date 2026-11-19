@@ -23,7 +23,7 @@ const ipfsGatewayConfig = buildIpfsGatewayConfig(process.env).ipfs;
 const config = {
   server: {
     port: process.env.PORT || 8080,
-    host: process.env.HOST || '0.0.0.0',
+    host: process.env.HOST || '127.0.0.1',
   },
   ipfs: {
     ...ipfsGatewayConfig,

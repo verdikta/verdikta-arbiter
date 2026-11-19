@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Copied environment/job files contain service credentials.
+umask 077
+
 # Verdikta Arbiter Node Installation Script
 # Main orchestrator for the installation process
 
@@ -648,7 +651,8 @@ if [ -d "$EXTERNAL_ADAPTER_SRC_DIR" ]; then
     echo -e "${BLUE}Copying configured External Adapter...${NC}"
     # Enable dotglob to ensure hidden files like .env are copied
     shopt -s dotglob
-    cp -r "$EXTERNAL_ADAPTER_SRC_DIR" "$INSTALL_DIR/external-adapter"
+    mkdir -p "$INSTALL_DIR/external-adapter"
+    cp -r "$EXTERNAL_ADAPTER_SRC_DIR/." "$INSTALL_DIR/external-adapter/"
     shopt -u dotglob
     echo -e "${GREEN}External Adapter copied to $INSTALL_DIR/external-adapter${NC}"
     
@@ -667,7 +671,11 @@ if [ -d "$CHAINLINK_NODE_SRC_DIR" ]; then
     echo -e "${BLUE}Copying Chainlink Node configurations...${NC}"
     # Enable dotglob for consistency (ensures any hidden config files are copied)
     shopt -s dotglob
-    cp -r "$CHAINLINK_NODE_SRC_DIR" "$INSTALL_DIR/chainlink-node"
+    mkdir -p "$INSTALL_DIR/chainlink-node"
+    cp -r "$CHAINLINK_NODE_SRC_DIR/." "$INSTALL_DIR/chainlink-node/"
+    if [ -d "$INSTALL_DIR/chainlink-node/jobs" ]; then
+        find "$INSTALL_DIR/chainlink-node/jobs" -type f -name '*.toml' -exec chmod 600 {} +
+    fi
     shopt -u dotglob
     echo -e "${GREEN}Chainlink Node copied to $INSTALL_DIR/chainlink-node${NC}"
 else
@@ -713,6 +721,9 @@ if [ -f "$SCRIPT_DIR/validate-answers.sh" ]; then
     cp "$SCRIPT_DIR/validate-answers.sh" "$INSTALL_DIR/installer/bin/validate-answers.sh"
     chmod +x "$INSTALL_DIR/installer/bin/validate-answers.sh"
 fi
+
+# Verify copied service credentials and protect overwritten destination files.
+node "$UTIL_DIR/configure-service-auth.cjs" configure "$INSTALL_DIR"
 
 # Copy all utility scripts to installer directory (excluding management scripts which are placed at install root)
 echo -e "${BLUE}Copying all utility scripts...${NC}"
@@ -1242,4 +1253,4 @@ if [ "$KEYS_FUNDED" != "true" ]; then
     echo "  2. Start your services: $INSTALL_DIR/start-arbiter.sh"
     echo ""
 fi
-echo "Thank you for using Verdikta Arbiter Node!" 
+echo "Thank you for using Verdikta Arbiter Node!"

@@ -1,5 +1,8 @@
 #!/bin/bash
 
+# Generated environment/job files now contain service credentials.
+umask 077
+
 # Verdikta Validator Node - External Adapter Installation Script
 # Installs and configures the External Adapter component with Verdikta Common Library
 
@@ -187,10 +190,9 @@ else
     echo "PORT=8080" >> "$ADAPTER_DIR/.env"
 fi
 
-# Set HOST (default: 0.0.0.0)
-if grep -q "^HOST=" "$ADAPTER_DIR/.env"; then
-    sed -i.bak "s/^HOST=.*/HOST=0.0.0.0/" "$ADAPTER_DIR/.env"
-else
+# Docker's bridge must reach the adapter. Preserve an operator's explicit
+# private interface; installations without one listen on all interfaces.
+if ! grep -q "^HOST=" "$ADAPTER_DIR/.env"; then
     echo "HOST=0.0.0.0" >> "$ADAPTER_DIR/.env"
 fi
 
@@ -200,6 +202,9 @@ if grep -q "^AI_NODE_URL=" "$ADAPTER_DIR/.env"; then
 else
     echo "AI_NODE_URL=http://localhost:3000" >> "$ADAPTER_DIR/.env"
 fi
+
+# Keep the AI-side key and the adapter client key in sync.
+node "$INSTALLER_DIR/util/configure-service-auth.cjs" configure "$(dirname "$ADAPTER_DIR")"
 
 # Set AI_TIMEOUT (updated: 300000ms = 300 seconds for slow model compatibility)
 if grep -q "^AI_TIMEOUT=" "$ADAPTER_DIR/.env"; then
@@ -360,4 +365,4 @@ echo -e "  cd $ADAPTER_DIR && ./start.sh"
 echo -e "${BLUE}To stop the External Adapter manually, run:${NC}"
 echo -e "  cd $ADAPTER_DIR && ./stop.sh"
 
-exit 0 
+exit 0

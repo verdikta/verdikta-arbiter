@@ -88,6 +88,6 @@ echo "Logs will be available at: $LOG_FILE"
 
 # Use nohup to keep the process running after terminal disconnects.
 # Append mode (>>) so rotate-logs.sh can safely copy-truncate a live log.
-nohup npm run "$RUN_SCRIPT" >> "$LOG_FILE" 2>&1 &
+nohup npm run "$RUN_SCRIPT" -- --hostname "${AI_NODE_HOST:-127.0.0.1}" >> "$LOG_FILE" 2>&1 &
 echo $! > ai-node.pid
 echo "AI Node started with PID $(cat ai-node.pid)"

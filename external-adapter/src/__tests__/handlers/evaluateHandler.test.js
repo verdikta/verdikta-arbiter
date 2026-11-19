@@ -3,6 +3,15 @@
 // Mock external dependencies
 jest.mock('../../services/aiClient');
 
+// This legacy unit suite mocks extraction/filesystem completely. The real
+// boundary and handler integration are exercised in evaluateHandler.evidenceBoundary.test.js.
+jest.mock('../../utils/evidenceBoundary', () => ({
+  assertBareCID: jest.fn().mockResolvedValue(undefined),
+  assertSafeManifest: jest.fn().mockResolvedValue(undefined),
+  isUnsafeEvidenceError: () => false,
+  extractEvidenceArchive: (service, ...args) => service.extractArchive(...args)
+}));
+
 // Create shared mock services
 const mockServices = {
   archiveService: {
@@ -290,7 +299,7 @@ describe('evaluateHandler', () => {
   it('should not turn a provider error into a commitment in mode 1', async () => {
     const request = {
       id: '1',
-      data: { cid: '1:QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', aggId: '0xagg' }
+      data: { cid: '1:QmTestaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', aggId: '0x' + 'ab'.repeat(32) }
     };
 
     archiveService.getArchive.mockResolvedValue(Buffer.from('test'));

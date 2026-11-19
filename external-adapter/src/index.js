@@ -38,58 +38,23 @@ function validatePinataKey() {
 // better than total outage. Only reveals (mode 2) will fail at upload time.
 validatePinataKey();
 
-const express = require('express');
-const bodyParser = require('body-parser');
-const evaluateHandler = require('./handlers/evaluateHandler');
-const { collectVersionInfo } = require('./utils/versionInfo');
-
-const app = express();
-app.use(bodyParser.json());
-
-// Version self-report for local ops tooling (arbiter-doctor) and debugging.
-// The same block is embedded in every justification uploaded to IPFS.
-app.get('/version', (req, res) => {
-  res.json({
-    service: 'verdikta-external-adapter',
-    ...collectVersionInfo(),
-    uptimeSeconds: Math.floor(process.uptime()),
-    // #69: shared/cached IPFS fetches (hits, in-flight reuses, entries, bytes)
-    ipfsFetchCache: evaluateHandler.fetchCache ? evaluateHandler.fetchCache.stats() : null
-  });
-});
-
-// Create HTTP server to set connection limits
-const server = require('http').createServer(app);
-server.maxConnections = 1000;        // Handle more concurrent connections
-server.timeout = parseInt(process.env.SERVER_TIMEOUT) || 300000;  // 5 minute timeout (configurable)
-
-// Update the route handler
-app.post('/evaluate', async (req, res) => {
-  try {
-    const result = await evaluateHandler(req.body);
-    res.status(result.statusCode || 200).json(result);
-  } catch (error) {
-    res.status(500).json({
-      jobRunID: req.body?.id || 'unknown',
-      status: 'errored',
-      statusCode: 500,
-      error: error.message || 'Unknown error'
-    });
+const { validServiceToken } = require('./utils/serviceAuth');
+for (const key of ['EA_API_TOKEN', 'AI_NODE_API_TOKEN']) {
+  if (!validServiceToken(process.env[key])) {
+    throw new Error(`${key} must be configured with a 32–128 character service token`);
   }
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({
-    jobRunID: req.body?.id || 'unknown',
-    status: 'errored',
-    statusCode: 500,
-    error: err.message || 'Internal server error'
-  });
-});
-
+}
+if (process.env.EA_API_TOKEN === process.env.AI_NODE_API_TOKEN) {
+  throw new Error('EA and AI Node must use separate service tokens');
+}
+const { createApp } = require('./app');
+const commitStore = require('./services/commitStore');
+const server = require('http').createServer(createApp());
+server.maxConnections = 1000;
+server.timeout = parseInt(process.env.SERVER_TIMEOUT) || 300000;
 const port = process.env.PORT || 8080;
-server.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
-}); 
+const host = process.env.HOST || '127.0.0.1';
+server.listen(port, host, () => console.log(`External Adapter listening on ${host}:${port}`));
+// Expire both unrevealed and revealed entries even when no requests arrive.
+setInterval(() => commitStore.purgeStale().catch(() => console.error('Commit cleanup failed')),
+  15 * 60 * 1000).unref();

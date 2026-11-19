@@ -32,7 +32,7 @@ const aiClient = require('../../services/aiClient');
 const FIXTURES = path.join(__dirname, '..', 'integration', 'fixtures', 'bcid');
 const fixture = (name) => fs.readFileSync(path.join(FIXTURES, name));
 
-const cid = (label) => 'Qm' + label.padEnd(44, 'a');
+const cid = require('../helpers/cid.cjs');
 const PRIMARY = cid('BountyPrimary');
 const CONFORMING = cid('Conforming');
 const NOT_ZIP = cid('NotZip');
@@ -43,7 +43,7 @@ const AI_RESULT = {
   justification: 'AI panel says fund it'
 };
 
-const request = (cidString, id) => ({ id, data: { cid: cidString, aggId: '0xagg' } });
+const request = (cidString, id) => ({ id, data: { cid: cidString, aggId: '0x' + 'ab'.repeat(32) } });
 const fetchesOf = (c) => mockState.rawFetch.mock.calls.filter(([x]) => x === c).length;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 

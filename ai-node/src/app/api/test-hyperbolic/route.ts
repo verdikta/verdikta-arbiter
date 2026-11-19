@@ -1,3 +1,4 @@
+import { requireServiceAuth } from '../../../lib/service-auth';
 import { NextResponse } from 'next/server';
 import { HyperbolicProvider } from '../../../lib/llm/hyperbolic-provider';
 
@@ -12,7 +13,9 @@ export const dynamic = 'force-dynamic';
  * 
  * Tests the Hyperbolic provider initialization and basic functionality
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = requireServiceAuth(request);
+  if (denied) return denied;
   const results: any = {
     timestamp: new Date().toISOString(),
     provider: 'Hyperbolic',

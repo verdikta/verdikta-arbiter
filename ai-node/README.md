@@ -19,6 +19,13 @@ The application's standout feature is its ability to aggregate insights from mul
 
 ## Getting Started
 
+The model APIs require `Authorization: Bearer <AI_NODE_API_TOKEN>`, including
+model listing and the Hyperbolic probe. Before starting, run
+`node installer/util/configure-service-auth.cjs configure .` from the repository
+root to configure both services. The local UI accepts this token in its Connect
+form and keeps it only in memory. `/api/health` remains available to monitoring.
+See [service authentication and migration](../docs/development/service-authentication.md).
+
 First, ensure you have Node.js installed on your system. Then, follow these steps:
 
 1. Clone this repository to your local machine.

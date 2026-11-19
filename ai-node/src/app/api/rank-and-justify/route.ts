@@ -1,3 +1,4 @@
+import { requireServiceAuth } from '../../../lib/service-auth';
 import { NextResponse } from 'next/server';
 import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { prePromptConfig } from '../../../config/prePromptConfig';
@@ -125,6 +126,8 @@ function stripThinkingBlocks(response: string): string {
 
 
 export async function POST(request: Request) {
+  const denied = requireServiceAuth(request);
+  if (denied) return denied;
   const requestStartTime = Date.now();
   const timingLog: { [key: string]: number } = {};
   

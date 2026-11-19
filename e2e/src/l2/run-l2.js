@@ -18,14 +18,16 @@ const { fetchJustificationJson, justificationRetry } = require('../ipfs');
  * even on optional fields, so we must omit the key entirely rather than send
  * "" when no aggId is supplied.
  */
-async function callEvaluate(adapterUrl, cid, { aggId, timeoutMs = 180000 } = {}) {
-  const id = `e2e-${crypto.randomBytes(4).toString('hex')}`;
+async function callEvaluate(adapterUrl, cid, {
+  aggId, id = `e2e-${crypto.randomUUID()}`, token = process.env.EA_API_TOKEN, timeoutMs = 180000,
+} = {}) {
+  if (!token || !/^[A-Za-z0-9_-]{32,128}$/.test(token)) throw new Error('Set EA_API_TOKEN for the target adapter');
   const data = { cid };
   if (aggId) data.aggId = aggId;
   const { data: body } = await axios.post(
     `${adapterUrl.replace(/\/$/, '')}/evaluate`,
     { id, data },
-    { timeout: timeoutMs, headers: { 'Content-Type': 'application/json' } }
+    { timeout: timeoutMs, maxRedirects: 0, headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` } }
   );
   return body;
 }
@@ -45,10 +47,10 @@ async function checkJustificationFetch(gateways, cid, timeoutMs, retry) {
 }
 
 /** Run one scenario in mode 0 (standard evaluate). */
-async function runMode0(cfg, scenario, expectedWinnerIndex, assertWinner) {
+async function runMode0(cfg, scenario, expectedWinnerIndex, assertWinner, token) {
   const checks = [];
-  const aggId = crypto.randomBytes(8).toString('hex'); // always present in production (aggregator-assigned)
-  const resp = await callEvaluate(cfg.adapterUrl, scenario.cid, { aggId, timeoutMs: cfg.timeouts.evaluateMs });
+  const aggId = '0x' + crypto.randomBytes(32).toString('hex');
+  const resp = await callEvaluate(cfg.adapterUrl, scenario.cid, { aggId, token, timeoutMs: cfg.timeouts.evaluateMs });
   const scoreArr = resp?.data?.aggregatedScore;
   const cid = resp?.data?.justificationCid;
 
@@ -70,11 +72,13 @@ async function runMode0(cfg, scenario, expectedWinnerIndex, assertWinner) {
 }
 
 /** Run one scenario through commit (mode 1) then reveal (mode 2). */
-async function runCommitReveal(cfg, scenario) {
+async function runCommitReveal(cfg, scenario, token) {
   const checks = [];
-  const aggId = crypto.randomBytes(8).toString('hex');
+  const aggId = '0x' + crypto.randomBytes(32).toString('hex');
+  // The real Chainlink job ID is stable across both phases.
+  const id = `e2e-${crypto.randomUUID()}`;
 
-  const commit = await callEvaluate(cfg.adapterUrl, `1:${scenario.cid}`, { aggId, timeoutMs: cfg.timeouts.evaluateMs });
+  const commit = await callEvaluate(cfg.adapterUrl, `1:${scenario.cid}`, { aggId, id, token, timeoutMs: cfg.timeouts.evaluateMs });
   const commitScore = commit?.data?.aggregatedScore;
   checks.push(...A.commitAssertions(commitScore, commit?.data?.justificationCid));
 
@@ -84,7 +88,7 @@ async function runCommitReveal(cfg, scenario) {
     return checks;
   }
 
-  const reveal = await callEvaluate(cfg.adapterUrl, `2:${commitment}`, { aggId, timeoutMs: cfg.timeouts.evaluateMs });
+  const reveal = await callEvaluate(cfg.adapterUrl, `2:${commitment}`, { aggId, id, token, timeoutMs: cfg.timeouts.evaluateMs });
   checks.push(...A.structuralScoreAssertions(reveal?.data?.aggregatedScore, {
     minOutcomes: scenario.minOutcomes || 2,
     scoreSumTarget: cfg.tolerances.scoreSumTarget,
@@ -116,6 +120,12 @@ async function runL2(cfg, scenarios, opts) {
   const { mock, reporter } = opts;
   let mockAi = null;
   let adapter = null;
+  // Only a disposable adapter behind the mock gets ephemeral credentials.
+  // Existing/real services require the operator's configured credentials.
+  const ephemeral = mock && opts.bootAdapter;
+  const token = process.env.EA_API_TOKEN || (ephemeral ? crypto.randomBytes(32).toString('hex') : '');
+  const aiToken = process.env.AI_NODE_API_TOKEN || (ephemeral ? crypto.randomBytes(32).toString('hex') : undefined);
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) throw new Error('Set EA_API_TOKEN for the target adapter');
 
   if (mock) {
     mockAi = await startMockAiNode(cfg.mockAi);
@@ -132,7 +142,7 @@ async function runL2(cfg, scenarios, opts) {
   try {
     if (opts.bootAdapter) {
       const aiNodeUrl = mock ? mockAi.url : cfg.aiNodeUrl;
-      adapter = await bootAdapter({ adapterUrl: cfg.adapterUrl, aiNodeUrl });
+      adapter = await bootAdapter({ adapterUrl: cfg.adapterUrl, aiNodeUrl, token, aiToken });
     }
 
     await assertAdapterReachable(cfg.adapterUrl);
@@ -148,8 +158,8 @@ async function runL2(cfg, scenarios, opts) {
         const start = Date.now();
         try {
           const checks = mode === '0'
-            ? await runMode0(cfg, scenario, expectedWinnerIndex, assertWinner)
-            : await runCommitReveal(cfg, scenario);
+            ? await runMode0(cfg, scenario, expectedWinnerIndex, assertWinner, token)
+            : await runCommitReveal(cfg, scenario, token);
           reporter.addCase({ id: scenario.id, mode, durationMs: Date.now() - start, checks });
         } catch (err) {
           const detail = err.response
