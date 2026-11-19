@@ -1,13 +1,20 @@
 #!/bin/bash
-# Node A6a, on the real binary: smartcontract/chainlink:2.23.0 with Postgres, anvil
-# and a fake External Adapter. What the design reads from Chainlink's source is
-# measured here. It needs Docker and linux/amd64 (the image has no arm64 variant);
-# installer.yml runs it on every change to chainlink-node/ or installer/.
+# Node A6a, on the real binary: smartcontract/chainlink:2.23.0 with Postgres, anvil,
+# the ArbiterOperator of this checkout (built by forge, with the Foundry suite's LINK,
+# keeper and consumer stand-ins) and a fake External Adapter. What the design reads from
+# Chainlink's source is measured here. It needs Docker and linux/amd64 (the image has no
+# arm64 variant; JOB_TIMEOUTS_EMULATE=1 runs it emulated on another architecture, slowly);
+# installer.yml runs it on every change to chainlink-node/, installer/ or the operator.
 #
 #   default    the 10 m default, the config rendered from the template, a restart
 #              taking a config change and nothing else taking it, a stale job measured,
 #              replaced by apply-job-timeouts.sh with its id, and then answering a real
 #              OracleRequest log; each limit cutting a run, at a scale of seconds.
+#              The job's admission gates and its bridge credential (PR #210): the
+#              request is made through LINK's transferAndCall by an approved consumer,
+#              the adapter is called with the job's bearer header, the answer lands on
+#              chain; a requester revoked before the run costs no bridge call, one revoked
+#              during it no transaction, and an answer after EXPIRYTIME still lands.
 #   JOB_TIMEOUTS_FULL=1   adds the real scale: a bridge call of 660 s, past the old
 #              300 s and past the 10 m default, on two nodes side by side (12 minutes):
 #              one on the default config, cut at 600 s, one on the template, answered.
@@ -17,8 +24,8 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 command -v docker >/dev/null || { echo "docker is required"; exit 1; }
-if [ "$(docker info --format '{{.Architecture}}')" != "x86_64" ]; then
-    echo "smartcontract/chainlink:2.23.0 is linux/amd64 only and this daemon is $(docker info --format '{{.Architecture}}'): run this on amd64 (CI does)"
+if [ "$(docker info --format '{{.Architecture}}')" != "x86_64" ] && [ "${JOB_TIMEOUTS_EMULATE:-}" != "1" ]; then
+    echo "smartcontract/chainlink:2.23.0 is linux/amd64 only and this daemon is $(docker info --format '{{.Architecture}}'): run this on amd64 (CI does), or emulated with JOB_TIMEOUTS_EMULATE=1"
     exit 1
 fi
 exec python3 -u - "$ROOT" <<'PY'
@@ -40,7 +47,10 @@ EMAIL = 'it@example.test'
 PASSWORD = 'Zz9!Yy8@' + secrets.token_hex(16)
 KEYSTORE = 'Qq7#Ww6$' + secrets.token_hex(16)
 DB_PASSWORD = secrets.token_hex(16)
+# The adapter's service credential, as configure-service-auth.cjs renders it into a job.
+EA_TOKEN = secrets.token_hex(32)
 FULL = os.environ.get('JOB_TIMEOUTS_FULL') == '1'
+EMULATED = os.environ.get('JOB_TIMEOUTS_EMULATE') == '1'
 OLD_LIMIT = 300
 
 work = tempfile.mkdtemp(prefix=RUN + '-')
@@ -72,11 +82,16 @@ def cleanup():
 seen = []
 class FakeEA(http.server.BaseHTTPRequestHandler):
     delay = {}
+    during = {}  # aggId -> something done while the adapter is working on that request
     def log_message(self, *a):
         pass
     def do_POST(self):
         body = json.loads(self.rfile.read(int(self.headers.get('Content-Length') or 0)) or b'{}')
-        seen.append({'path': self.path, 'body': body, 'at': time.time()})
+        agg = body.get('data', {}).get('aggId')
+        seen.append({'path': self.path, 'body': body, 'auth': self.headers.get('Authorization'), 'at': time.time()})
+        if agg in FakeEA.during:
+            FakeEA.during.pop(agg)()
+            time.sleep(4)
         time.sleep(FakeEA.delay.get(self.path, 0))
         out = json.dumps({'jobRunID': '1', 'statusCode': 200, 'status': 'success',
                           'data': {'aggregatedScore': [600000, 400000], 'justificationCid': 'QmFakeJustification'}}).encode()
@@ -132,16 +147,20 @@ class Node:
         containers.append(self.name)
         self.create()
         self.jar = None
+        _, keys = self.api('GET', '/v2/keys/evm')
+        self.key = next(k['attributes']['address'] for k in keys['data'] if str(k['attributes'].get('evmChainID')) == '31337')
+        cast('rpc', '--rpc-url', 'http://localhost:8545', 'anvil_setBalance', self.key, '0x56BC75E2D63100000')
+        authorize_sender(self.key)
 
     def create(self):
-        sh('docker', 'run', '-d', '--name', self.name, '--network', RUN, '-v', f'{self.dir}:/chainlink',
+        sh('docker', 'run', '-d', '--platform', 'linux/amd64', '--name', self.name, '--network', RUN, '-v', f'{self.dir}:/chainlink',
            '--add-host=host.docker.internal:host-gateway', '-p', '127.0.0.1::6688', IMAGE,
            'node', '-config', '/chainlink/config.toml', '-secrets', '/chainlink/secrets.toml', 'start', '-a', '/chainlink/.api')
         self.wait()
 
     def wait(self):
         self.url = 'http://' + sh('docker', 'port', self.name, '6688/tcp').stdout.strip().split('\n')[0]
-        for _ in range(180):
+        for _ in range(900 if EMULATED else 180):
             try:
                 self.login()
                 return
@@ -241,41 +260,99 @@ def run_webhook(node, job, seconds):
     threading.Thread(target=lambda: node.api('POST', f"/v2/jobs/{job['attributes']['externalJobID']}/runs", {}, timeout=seconds + 30), daemon=True).start()
     return node.wait_run(job['id'], before, seconds)
 
-def render_job(i, contract, max_task='840s', bridge='840s'):
+def render_job(node, i, contract, max_task='840s', bridge='840s'):
     text = JOB_TEMPLATE
-    text = text.replace('{JOB_NAME}', f'Verdikta AI Arbiter {i}').replace('{FROM_ADDRESS}', DEV_ACCOUNT).replace('{CONTRACT_ADDRESS}', contract).replace('<CHAIN_ID>', '31337')
+    text = text.replace('{JOB_NAME}', f'Verdikta AI Arbiter {i}').replace('{FROM_ADDRESS}', node.key).replace('{CONTRACT_ADDRESS}', contract).replace('<CHAIN_ID>', '31337')
+    if '{EA_API_TOKEN}' not in text:
+        raise RuntimeError('the job template has no {EA_API_TOKEN} placeholder')
+    text = text.replace('{EA_API_TOKEN}', EA_TOKEN)
     text = re.sub(r'^maxTaskDuration = "[^"]*"', f'maxTaskDuration = "{max_task}"', text, flags=re.M)
     return re.sub(r'timeout="[^"]*"', f'timeout="{bridge}"', text)
 
 def cast(*args):
     return sh('docker', 'exec', f'{RUN}-anvil', 'cast', *args).stdout.strip()
 
-def send(*args):
+def send(*args, refused=False):
     # The options first: `--create` takes everything after it as the constructor's.
-    return json.loads(cast('send', '--rpc-url', 'http://localhost:8545', '--unlocked', '--from', DEV_ACCOUNT, '--json', *args))
+    r = sh('docker', 'exec', f'{RUN}-anvil', 'cast', 'send', '--rpc-url', 'http://localhost:8545', '--unlocked', '--from', DEV_ACCOUNT, '--json', *args, check=not refused)
+    if refused:
+        return r.returncode != 0
+    return json.loads(r.stdout.strip())
 
-TOPIC0 = None
-def deploy_emitter():
-    """A contract that logs OracleRequest: topic1 = the first 32 bytes of its calldata, data = the rest."""
-    global TOPIC0
-    TOPIC0 = cast('keccak', 'OracleRequest(bytes32,address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)')[2:]
-    runtime = '600035' + '7f' + TOPIC0 + '60203603' + '8060206000' + '37' + '6000' + 'a2' + '00'
-    size = len(runtime) // 2
-    init = '60' + format(size, '02x') + '80600b6000396000f3' + runtime
+def call(to, signature, *args):
+    return cast('call', '--rpc-url', 'http://localhost:8545', to, signature, *args)
+
+# ── The operator of this checkout, and the Foundry suite's stand-ins around it ────────
+OUT = os.path.join(work, 'out')
+def build_contracts():
+    """forge build, in the pinned image, of arbiter-operator/contracts and the suite's stand-ins.
+    The checkout is mounted read-only: the artifacts and the cache stay in the container."""
+    name = f'{RUN}-forge'
+    containers.append(name)
+    sh('docker', 'run', '--name', name, '-v', f'{REPO}:/repo:ro', '-w', '/repo', '--entrypoint', 'forge', FOUNDRY,
+       'build', '--out', '/tmp/out', '--cache-path', '/tmp/cache', timeout=1500)
+    sh('docker', 'cp', f'{name}:/tmp/out', OUT)
+
+def bytecode(source, name):
+    return json.load(open(os.path.join(OUT, source, name + '.json')))['bytecode']['object']
+
+def deploy(source, name, constructor=None, *args):
+    code = bytecode(source, name)
+    if constructor:
+        code += cast('abi-encode', constructor, *args)[2:]
+    path = os.path.join(work, 'code.hex')
+    open(path, 'w').write(code)
+    # A contract's bytecode is long for an argument list: it goes in as a file.
+    sh('docker', 'cp', path, f'{RUN}-anvil:/tmp/code.hex')
+    r = sh('docker', 'exec', f'{RUN}-anvil', 'sh', '-c',
+           f'cast send --rpc-url http://localhost:8545 --unlocked --from {DEV_ACCOUNT} --json --create "$(cat /tmp/code.hex)"')
     # EIP-55: a job's contractAddress must carry the checksum.
-    return cast('to-check-sum-address', send('--create', '0x' + init)['contractAddress'])
+    return cast('to-check-sum-address', json.loads(r.stdout)['contractAddress'])
+
+CHAIN = {'senders': [], 'nonce': 0}
+def deploy_operator():
+    """LINK, the operator, a keeper that approves the consumer, and the consumer that asks."""
+    CHAIN['link'] = deploy('StandIns.sol', 'LinkTokenStandIn')
+    CHAIN['operator'] = deploy('ArbiterOperator.sol', 'ArbiterOperator', 'constructor(address)', CHAIN['link'])
+    CHAIN['keeper'] = deploy('StandIns.sol', 'ReputationKeeperStandIn')
+    CHAIN['consumer'] = deploy('StandIns.sol', 'ConsumerStandIn', 'constructor(address)', CHAIN['link'])
+    approve(True)
+    send(CHAIN['operator'], 'addReputationKeeper(address)', CHAIN['keeper'])
+    return CHAIN['operator']
+
+def approve(yes):
+    send(CHAIN['keeper'], 'setApproved(address,bool)', CHAIN['consumer'], 'true' if yes else 'false')
+
+def authorize_sender(key):
+    CHAIN['senders'].append(key)
+    send(CHAIN['operator'], 'setAuthorizedSenders(address[])', '[' + ','.join(CHAIN['senders']) + ']')
+
+def fulfillments():
+    return int(call(CHAIN['consumer'], 'fulfillments()(uint256)').split()[0])
+
+def wait_fulfillments(count, seconds=60):
+    until = time.time() + seconds
+    while time.time() < until and fulfillments() < count:
+        time.sleep(1)
+    return fulfillments()
 
 def cbor_text(s):
     b = s.encode()
-    assert len(b) < 24
-    return bytes([0x60 + len(b)]) + b
+    if len(b) < 24:
+        return bytes([0x60 + len(b)]) + b
+    assert len(b) < 256
+    return bytes([0x78, len(b)]) + b
 
-def emit_request(contract, ext, agg='agg1'):
-    spec_id = ext.replace('-', '').encode().hex()
+def emit_request(contract, ext, agg='agg1', refused=False):
+    """A real request: the consumer pays through LINK's transferAndCall, and the operator admits it
+    (or, refused=True, is expected to revert) and logs OracleRequest for the job named by ext."""
+    spec_id = '0x' + ext.replace('-', '').encode().hex()
     cbor = (cbor_text('cid') + cbor_text('QmIntegration') + cbor_text('aggId') + cbor_text(agg)).hex()
-    data = cast('abi-encode', 'f(address,bytes32,uint256,address,bytes4,uint256,uint256,bytes)',
-                DEV_ACCOUNT, '0x' + secrets.token_hex(32), '0', DEV_ACCOUNT, '0x12345678', '4000000000', '1', '0x' + cbor)[2:]
-    receipt = send(contract, '0x' + spec_id + data)
+    CHAIN['nonce'] += 1
+    args = (CHAIN['consumer'], 'request(address,uint256,bytes32,uint256,bytes)', contract, '0', spec_id, str(CHAIN['nonce']), '0x' + cbor)
+    if refused:
+        return send(*args, refused=True)
+    receipt = send(*args)
     if receipt.get('status') != '0x1' or not receipt.get('logs'):
         raise RuntimeError(f'the OracleRequest log was not emitted: {receipt}')
 
@@ -301,7 +378,7 @@ def answered_twice_after_replace(node, path, contract, ext, agg):
 # ── The run ──────────────────────────────────────────────────────────────────
 def main():
     sh('docker', 'network', 'create', RUN)
-    sh('docker', 'pull', IMAGE, timeout=900)
+    sh('docker', 'pull', '--platform', 'linux/amd64', IMAGE, timeout=900)
     containers.append(f'{RUN}-anvil')
     sh('docker', 'run', '-d', '--name', f'{RUN}-anvil', '--network', RUN, '--entrypoint', 'anvil', FOUNDRY,
        '--host', '0.0.0.0', '--block-time', '1', '--chain-id', '31337', timeout=600)
@@ -309,8 +386,10 @@ def main():
         if sh('docker', 'exec', f'{RUN}-anvil', 'cast', 'block-number', '--rpc-url', 'http://localhost:8545', check=False).returncode == 0:
             break
         time.sleep(1)
-    contract = deploy_emitter()
-    print(f'emitter at {contract}')
+    build_contracts()
+    contract = deploy_operator()
+    print(f'operator at {contract}, LINK {CHAIN["link"]}, keeper {CHAIN["keeper"]}, consumer {CHAIN["consumer"]}')
+    ok('the operator reports request-authorization v1', call(contract, 'requestAuthorizationVersion()(uint256)').split()[0] == '1')
 
     print('\n== the 10 m default, and a config change at a restart ==')
     a = Node('a', render_config(without_job_pipeline=True))
@@ -327,8 +406,8 @@ def main():
 
     print('\n== the template renders and a stale job is replaced with its id ==')
     a.add_bridge('verdikta-ai', EA_URL + '/a')
-    stale = a.add_job(render_job(1, contract, '300s', '300s'))
-    fresh = a.add_job(render_job(2, contract))
+    stale = a.add_job(render_job(a, 1, contract, '300s', '300s'))
+    fresh = a.add_job(render_job(a, 2, contract))
     ext = stale['attributes']['externalJobID']
     dag_before = stale['attributes']['pipelineSpec']['dotDagSource']
     ok('the job stores what it was created with', stale['attributes']['maxTaskDuration'] == '5m0s', stale['attributes']['maxTaskDuration'])
@@ -368,6 +447,43 @@ def main():
         ok('the job\'s request, through the replaced job', body.get('data', {}).get('cid') == 'QmIntegration', json.dumps(body)[:200])
         ok('the id it reports is the one kept', body.get('id') == '0x' + ext.replace('-', ''), body.get('id'))
 
+    print('\n== admission: the credential, the answer on chain, and the two gates ==')
+    gate_ext = fresh['attributes']['externalJobID']
+    had = fulfillments()
+    emit_request(contract, gate_ext, 'gateOpen')
+    ok('an approved request reaches the bridge', wait_answer('/a', 'gateOpen'))
+    if answers('/a', 'gateOpen'):
+        sent = answers('/a', 'gateOpen')[0]['auth']
+        ok('with the job\'s bearer credential', sent == f'Bearer {EA_TOKEN}',
+           '' if sent == f'Bearer {EA_TOKEN}' else 'the Authorization header ' + ('differs' if sent else 'is absent'))
+    ok('and its answer lands on chain', wait_fulfillments(had + 1) >= had + 1, f'fulfillments {had} -> {fulfillments()}')
+    ok('the consumer holds the scores and the CID', call(CHAIN['consumer'], 'lastCid()(string)').strip('"') == 'QmFakeJustification'
+       and '600000' in call(CHAIN['consumer'], 'lastScores()(uint256[])'), call(CHAIN['consumer'], 'lastCid()(string)'))
+
+    approve(False)
+    ok('a requester no keeper approves is refused on chain: no log, no job run', emit_request(contract, gate_ext, 'gateShut', refused=True))
+    approve(True)
+    emit_request(contract, gate_ext, 'gateRevoked')
+    approve(False)  # in the next block, before the job's run starts
+    ok('revoked between the request and the run: the bridge is not called', not wait_answer('/a', 'gateRevoked', 45))
+    approve(True)
+
+    had = fulfillments()
+    FakeEA.during['gateMidway'] = lambda: approve(False)
+    emit_request(contract, gate_ext, 'gateMidway')
+    ok('revoked while the adapter works: the bridge was called', wait_answer('/a', 'gateMidway'))
+    time.sleep(20)
+    ok('and no answer was sent', fulfillments() == had, f'fulfillments {had} -> {fulfillments()}')
+    approve(True)
+
+    # EXPIRYTIME (5 minutes) is when the requester may cancel, not a deadline for the answer:
+    # a claim runs up to 780 s. The chain's clock passes it while the adapter works.
+    had = fulfillments()
+    FakeEA.during['gateLate'] = lambda: cast('rpc', '--rpc-url', 'http://localhost:8545', 'evm_increaseTime', '0x136')
+    emit_request(contract, gate_ext, 'gateLate')
+    ok('an answer after EXPIRYTIME: the bridge was called', wait_answer('/a', 'gateLate'))
+    ok('and it lands on chain', wait_fulfillments(had + 1) >= had + 1, f'fulfillments {had} -> {fulfillments()}')
+
     print('\n== each limit cuts a run, at a scale of seconds ==')
     b = Node('b', render_config(max_run='15s', default_timeout='2s'))
     b.add_bridge('slow', EA_URL + '/slow')
@@ -395,7 +511,7 @@ def main():
 
     print('\n== a job alone on its contract: the replace drops the subscription and makes it again ==')
     b.add_bridge('verdikta-ai', EA_URL + '/b')
-    only = b.add_job(render_job(1, contract, '300s', '300s'))
+    only = b.add_job(render_job(b, 1, contract, '300s', '300s'))
     only_ext = only['attributes']['externalJobID']
     count = answered_twice_after_replace(b, '/b', contract, only_ext, 'beforeB')
     print(f'  measured: {count} answer(s) to the old request after a replace, on a job alone on its contract')
@@ -413,7 +529,7 @@ def main():
         jobs = {}
         for node in (c, d):
             node.add_bridge('verdikta-ai', EA_URL + '/full')
-            jobs[node] = node.add_job(render_job(1, contract))
+            jobs[node] = node.add_job(render_job(node, 1, contract))
         before = {node: {r['id'] for r in node.runs(jobs[node]['id'])} for node in (c, d)}
         emit_request(contract, jobs[c]['attributes']['externalJobID'])
         emit_request(contract, jobs[d]['attributes']['externalJobID'])

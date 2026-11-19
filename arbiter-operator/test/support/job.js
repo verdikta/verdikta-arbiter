@@ -21,6 +21,20 @@ function readJob() {
   return tasks;
 }
 
+// ethabidecode's abi as Chainlink 2.23.0 reads it (ParseETHABIArgsString, common_eth.go):
+// split on commas, then on spaces, and the second word is the result's key, verbatim.
+// go-ethereum's type regexp is not anchored, so "(bool" is still a bool: abi="(bool allowed)"
+// decodes, under the key "allowed)", and $(task.allowed) is then a keypath that is not found.
+// Measured on the binary: installer/tests/job-timeouts.integration.sh.
+function decodeArgs(abi) {
+  return abi.split(',').map(text => {
+    const parts = text.replace(/\b(?:calldata|memory|storage)\b/g, ' ').trim().split(/ +/).filter(Boolean);
+    const type = parts.length === 2 && /[a-zA-Z]+(?:[0-9]+(?:x[0-9]+)?)?/.exec(parts[0]);
+    if (!type) throw new Error(`bad ABI specification: ${abi}`);
+    return { type: type[0], name: parts[1] };
+  });
+}
+
 async function runJob({ event, op, ethers, bridge = async () => {}, rpcFailure = false }) {
   const tasks = readJob(), results = new Map();
   const effects = { bridge: 0, transaction: 0 };
@@ -47,8 +61,18 @@ async function runJob({ event, op, ethers, bridge = async () => {}, rpcFailure =
           if (task.contract !== '{CONTRACT_ADDRESS}' || task.block !== 'latest') throw new Error('Unexpected gate target/state');
           value = await ethers.provider.call({ to: op.target, data: variable(task.data), gasLimit: BigInt(task.gas) });
           break;
-        case 'ethabidecode': value = { allowed: ethers.AbiCoder.defaultAbiCoder().decode(['bool'], variable(task.data))[0] }; break;
-        case 'conditional': if (variable(task.data) !== true) throw new Error('conditional was not satisfied'); break;
+        case 'ethabidecode': {
+          const args = decodeArgs(task.abi);
+          const decoded = ethers.AbiCoder.defaultAbiCoder().decode(args.map(arg => arg.type), variable(task.data));
+          value = Object.fromEntries(args.map((arg, i) => [arg.name, decoded[i]]));
+          break;
+        }
+        case 'conditional': {
+          const input = variable(task.data);
+          if (input === undefined) throw new Error('keypath not found');
+          if (input !== true) throw new Error('conditional was not satisfied');
+          break;
+        }
         case 'bridge': effects.bridge++; await bridge(); break;
         case 'ethtx': effects.transaction++; break;
         case 'cborparse': case 'jsonparse': break; // mocked evidence/response; no network or paid providers
@@ -59,4 +83,4 @@ async function runJob({ event, op, ethers, bridge = async () => {}, rpcFailure =
   }
   return effects;
 }
-module.exports = { readJob, runJob };
+module.exports = { readJob, runJob, decodeArgs };

@@ -2,7 +2,9 @@ name: Installer
 
 # The installer's tests, and what it renders measured on the real Chainlink binary
 # (installer/tests/job-timeouts.integration.sh, node A6a): the image is linux/amd64
-# only, so an amd64 runner is the one place that can. And the code-review sandbox, on a real
+# only, so an amd64 runner is the one place that can. That test runs the job template
+# against this checkout's ArbiterOperator (the admission gates of PR #210), so a change
+# to the contract or to its Foundry stand-ins runs it too. And the code-review sandbox, on a real
 # systemd, dockerd and gVisor with the real canary (code-review-sandbox.integration.sh, node A8):
 # a hosted runner is a Linux host nothing else needs. No secret.
 # claude/stake-attestation: the stake-attestation integration branch (issue #105).
@@ -10,10 +12,10 @@ name: Installer
 on:
   pull_request:
     branches: [main, master, claude/stake-attestation]
-    paths: ['installer/**', 'chainlink-node/**', 'code-runner/**', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
+    paths: ['installer/**', 'chainlink-node/**', 'code-runner/**', 'arbiter-operator/contracts/**', 'arbiter-operator/foundry/**', 'foundry.toml', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
   push:
     branches: [main, master, claude/stake-attestation]
-    paths: ['installer/**', 'chainlink-node/**', 'code-runner/**', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
+    paths: ['installer/**', 'chainlink-node/**', 'code-runner/**', 'arbiter-operator/contracts/**', 'arbiter-operator/foundry/**', 'foundry.toml', 'external-adapter/src/utils/serverTimeout.js', 'external-adapter/src/codeReview/time.js', '.github/workflows/installer.yml']
 
 permissions:
   contents: read
@@ -52,7 +54,7 @@ jobs:
           exit "$failed"
 
   chainlink-2-23:
-    name: Job timeouts on Chainlink 2.23.0
+    name: Job timeouts and admission on Chainlink 2.23.0
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

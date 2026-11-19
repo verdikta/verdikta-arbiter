@@ -28,11 +28,14 @@ grep -q '300s' "$JOB" && bad "basicJobSpec still names 300s" || ok
 
 # ── Text mode: the template changed in those two values and nothing else ─────
 # The reviewed hardened template includes authentication and both admission
-# gates; their behavior is tested by arbiter-operator/test/job-pipeline.test.js.
+# gates. They are measured on the real Chainlink binary by job-timeouts.integration.sh
+# (arbiter-operator/test/admission.test.js runs a model of the job, which passed the
+# template hashed here before, 46d6d7d1…: its gates read $(authorize_result.allowed) from
+# abi="(bool allowed)", whose key on Chainlink is "allowed)", so no run reached the bridge).
 # The hash has the two timeout values blanked. A
 # later template change needs its own review of what it does to text-mode jobs,
-# and a new hash here.
-NORMALIZED_HARDENED_TEMPLATE=46d6d7d16ea098f4843f612f3d864f649dddfbf52f6ed934cd39a2e46f1491c8
+# its own run on the binary, and a new hash here.
+NORMALIZED_HARDENED_TEMPLATE=f88b7225471ab305fb889088198a92c737b9e3733fb5042021d0cc075a5802f1
 got=$(python3 - "$JOB" <<'PY'
 import hashlib, re, sys
 s = open(sys.argv[1]).read()

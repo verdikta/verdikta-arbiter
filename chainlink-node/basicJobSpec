@@ -15,7 +15,7 @@ observationSource = """
                     abi="isAuthorizedRequest(bytes32 requestId,uint256 payment,address requester,bytes4 callbackFunctionId,uint256 expiration)"
                     data="{\\"requestId\\": $(decode_log.requestId), \\"payment\\": $(decode_log.payment), \\"requester\\": $(decode_log.requester), \\"callbackFunctionId\\": $(decode_log.callbackFunctionId), \\"expiration\\": $(decode_log.cancelExpiration)}"]
     authorize_call [type="ethcall" contract="{CONTRACT_ADDRESS}" data="$(authorize_data)" evmChainID="<CHAIN_ID>" block="latest" gas="500000"]
-    authorize_result [type="ethabidecode" abi="(bool allowed)" data="$(authorize_call)"]
+    authorize_result [type="ethabidecode" abi="bool allowed" data="$(authorize_call)"]
     authorize [type="conditional" data="$(authorize_result.allowed)"]
 
     decode_cbor  [type="cborparse" data="$(decode_log.data)"]
@@ -40,7 +40,7 @@ encode_data  [type="ethabiencode"
 
 
     reauthorize_call [type="ethcall" contract="{CONTRACT_ADDRESS}" data="$(authorize_data)" evmChainID="<CHAIN_ID>" block="latest" gas="500000"]
-    reauthorize_result [type="ethabidecode" abi="(bool allowed)" data="$(reauthorize_call)"]
+    reauthorize_result [type="ethabidecode" abi="bool allowed" data="$(reauthorize_call)"]
     reauthorize [type="conditional" data="$(reauthorize_result.allowed)"]
 
     submit_tx [type="ethtx" 

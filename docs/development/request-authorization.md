@@ -102,7 +102,11 @@ node --test installer/tests/service-auth.test.cjs installer/tests/request-author
 
 The contract tests use the pinned package's real LINK ERC-677 implementation.
 The job harness parses the actual TOML/DOT strings and calls the local contract,
-with mock bridge/transaction effects. Python 3.11+ is required for TOML parsing.
+with mock bridge/transaction effects. It is a model: its first version decoded
+the gate's result with ethers and passed a job that failed every run on Chainlink
+(`abi="(bool allowed)"` yields the key `allowed)` there). The job is measured on the
+real 2.23.0 binary, against this checkout's operator, by
+`installer/tests/job-timeouts.integration.sh` (CI: `installer.yml`). Python 3.11+ is required for TOML parsing.
 Its error propagation follows Chainlink 2.23.0's
 [conditional](https://github.com/smartcontractkit/chainlink/blob/v2.23.0/core/services/pipeline/task.conditional.go),
 [ethcall](https://github.com/smartcontractkit/chainlink/blob/v2.23.0/core/services/pipeline/task.eth_call.go),

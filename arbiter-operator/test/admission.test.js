@@ -1,6 +1,6 @@
 const assert = require('node:assert/strict');
 const { ethers, network } = require('hardhat');
-const { runJob } = require('./support/job');
+const { readJob, runJob, decodeArgs } = require('./support/job');
 const { ensureRequestAuthorization } = require('../scripts/lib/request-authorization');
 const { checkRequestAuthorization, VERSION_SELECTOR, REQUEST_SELECTOR } = require('../../installer/util/check-request-authorization.cjs');
 
@@ -153,6 +153,22 @@ describe('ArbiterOperator admission (local ERC-677 integration)', function () {
     await requester.cancel(op.target, event.requestId, event.payment, event.callbackFunctionId, event.cancelExpiration);
     assert.equal(await link.balanceOf(requester.target), 1000n);
     await keeper.setApproved(requester.target, true); assert.equal(await allowed(event), false);
+  });
+  it('every result the job reads from an ethabidecode is a key that task produces', async () => {
+    // abi="(bool allowed)" decodes on Chainlink 2.23.0 under the key "allowed)": the conditional
+    // after it then fails on every request and the bridge is never called.
+    assert.deepEqual(decodeArgs('(bool allowed)'), [{ type: 'bool', name: 'allowed)' }]);
+    assert.deepEqual(decodeArgs('bytes32 requestId, uint256[] value'), [{ type: 'bytes32', name: 'requestId' }, { type: 'uint256', name: 'value' }]);
+    const tasks = readJob();
+    const decoders = [...tasks].filter(([, task]) => task.type === 'ethabidecode');
+    assert.equal(decoders.length, 2);
+    for (const [name, task] of decoders) {
+      const keys = decodeArgs(task.abi).map(arg => arg.name);
+      const read = [...tasks.values()].flatMap(other => Object.values(other).filter(value => typeof value === 'string'))
+        .flatMap(value => [...value.matchAll(new RegExp(`\\$\\(${name}\\.(\\w+)\\)`, 'g'))].map(match => match[1]));
+      assert.ok(read.length > 0, `${name} is read`);
+      for (const key of read) assert.ok(keys.includes(key), `$(${name}.${key}) is not a key of abi="${task.abi}"`);
+    }
   });
   it('the parsed job permits approved work and blocks revoked, forged, and RPC-failed work', async () => {
     await approve(); const event = await send();
