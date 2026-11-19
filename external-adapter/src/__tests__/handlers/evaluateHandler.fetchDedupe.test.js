@@ -32,7 +32,7 @@ const aiClient = require('../../services/aiClient');
 const FIXTURES = path.join(__dirname, '..', 'integration', 'fixtures', 'bcid');
 const fixture = (name) => fs.readFileSync(path.join(FIXTURES, name));
 
-const cid = (label) => 'Qm' + label.padEnd(44, 'a');
+const cid = require('../helpers/cid.cjs');
 const PRIMARY = cid('BountyPrimary');
 const CONFORMING = cid('Conforming');
 const NOT_ZIP = cid('NotZip');

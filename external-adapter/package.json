@@ -5,11 +5,11 @@
   "main": "index.js",
   "scripts": {
     "start": "node src/index.js",
-    "test": "jest --forceExit --testPathIgnorePatterns='/(node_modules|src/__tests__/integration)/'",
-    "test:watch": "jest --watch",
-    "test:coverage": "jest --coverage --forceExit",
+    "test": "node --experimental-vm-modules node_modules/jest/bin/jest.js --forceExit --testPathIgnorePatterns='/(node_modules|src/__tests__/integration)/'",
+    "test:watch": "node --experimental-vm-modules node_modules/jest/bin/jest.js --watch",
+    "test:coverage": "node --experimental-vm-modules node_modules/jest/bin/jest.js --coverage --forceExit",
     "lint": "eslint src/**/*.js",
-    "test:integration": "jest --detectOpenHandles --testPathPattern=integration --forceExit"
+    "test:integration": "node --experimental-vm-modules node_modules/jest/bin/jest.js --detectOpenHandles --testPathPattern=integration --forceExit"
   },
   "dependencies": {
     "@helia/http": "^1.0.11",
@@ -24,6 +24,7 @@
     "form-data": "^4.0.1",
     "helmet": "^7.1.0",
     "joi": "^17.13.3",
+    "multiformats": "13.3.1",
     "node-7z": "^3.0.0",
     "node-fetch": "^2.7.0",
     "retry": "^0.13.1",

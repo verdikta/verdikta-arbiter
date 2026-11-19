@@ -30,6 +30,10 @@
 const fs = require('fs');
 const path = require('path');
 const unzipper = require('unzipper');
+const {
+  assertBareCID, assertManifestReferences, assertSafeManifest, extractEvidenceArchive,
+  resolveEvidenceFile, isUnsafeEvidenceError
+} = require('./evidenceBoundary');
 
 const FULL_SCORE = 1000000; // scores are micro-probabilities summing to 1,000,000
 
@@ -43,7 +47,8 @@ const CHECKS = Object.freeze({
   PRIMARY_FILE_MISSING: 'primary-file-missing',
   PRIMARY_NOT_JSON: 'primary-not-json',
   PRIMARY_SCHEMA: 'primary-schema',
-  NAME_MISMATCH: 'bcid-name-mismatch'
+  NAME_MISMATCH: 'bcid-name-mismatch',
+  UNSAFE_EVIDENCE: 'unsafe-evidence-reference'
 });
 
 /** The shape the bounty API builds and every arbiter accepts. */
@@ -134,9 +139,13 @@ function isValidatorRejection(err) {
   return err instanceof Error && VALIDATOR_REJECTION.test(err.message);
 }
 
-function readIfExists(filePath) {
-  if (!fs.existsSync(filePath)) return null;
-  return fs.readFileSync(filePath, 'utf8'); // I/O errors other than ENOENT propagate (transient)
+function readIfExists(root, filename) {
+  try {
+    return fs.readFileSync(resolveEvidenceFile(root, filename), 'utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
 }
 
 /**
@@ -156,7 +165,7 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
     new MalformedArchiveError({ cid, expectedName, check, reason, manifest });
 
   // 1. manifest.json must exist and be JSON
-  const manifestText = readIfExists(path.join(extractedPath, 'manifest.json'));
+  const manifestText = readIfExists(extractedPath, 'manifest.json');
   if (manifestText === null) {
     throw fail(CHECKS.MANIFEST_MISSING, 'the archive contains no manifest.json');
   }
@@ -165,6 +174,15 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
     manifest = JSON.parse(manifestText);
   } catch (err) {
     throw fail(CHECKS.MANIFEST_NOT_JSON, `manifest.json is not valid JSON: ${err.message}`);
+  }
+
+  // Must precede the shared validator, which itself checks file references.
+  // Content-only security violations settle like other malformed bCIDs.
+  try {
+    await assertManifestReferences(manifest, extractedPath);
+  } catch (err) {
+    if (!isUnsafeEvidenceError(err) || !err.deterministic) throw err;
+    throw fail(CHECKS.UNSAFE_EVIDENCE, err.message, manifest);
   }
 
   // 2. It must declare a primary file (bounty 58 declared `files: [...]` instead)
@@ -206,7 +224,7 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
   //    A hash-referenced primary lives on IPFS; fetching it is the parser's job and a fetch
   //    failure is transient, so there is nothing deterministic left to check locally.
   if (typeof manifest.primary.filename === 'string') {
-    const primaryText = fs.readFileSync(path.join(extractedPath, manifest.primary.filename), 'utf8');
+    const primaryText = fs.readFileSync(resolveEvidenceFile(extractedPath, manifest.primary.filename), 'utf8');
     try {
       JSON.parse(primaryText);
     } catch (err) {
@@ -251,6 +269,7 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
  *   archiveData: Object<string,Buffer>, primaryManifestJson: object}>}
  */
 async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '', checkPrimary, shouldStop }) {
+  for (const cid of cidArray) await assertBareCID(cid);
   // --- fetch everything first, concurrently: a gateway failure must surface before
   // any verdict logic runs, and no archive should queue behind another archive's
   // gateway retries. allSettled so we return only once every fetch has finished
@@ -272,15 +291,16 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
     if (typeof shouldStop === 'function' && shouldStop()) throw new Error('the archives arrived after the caller stopped waiting');
     const subDir = path.join(tempDir, `archive_${index}_${cid.substring(0, 10)}`);
     await fs.promises.mkdir(subDir, { recursive: true });
-    return archiveService.extractArchive(archiveData[cid], `archive_${cid}.zip`, subDir);
+    return extractEvidenceArchive(archiveService, archiveData[cid], `archive_${cid}.zip`, subDir);
   };
 
   // --- primary (requester) archive: library checks only, failures stay on the error path
   const primaryCid = cidArray[0];
   extractedPaths[primaryCid] = await extractOne(primaryCid, 0);
+  await assertSafeManifest(extractedPaths[primaryCid]);
   await archiveService.validateManifest(extractedPaths[primaryCid]);
   const primaryManifestJson = JSON.parse(
-    await fs.promises.readFile(path.join(extractedPaths[primaryCid], 'manifest.json'), 'utf8')
+    readIfExists(extractedPaths[primaryCid], 'manifest.json')
   );
   const bCIDNames = Object.keys(primaryManifestJson.bCIDs || {});
   const codeReviewMode = Boolean(primaryManifestJson) && typeof primaryManifestJson === 'object'
@@ -298,9 +318,13 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
       extractedPaths[cid] = await extractOne(cid, i);
       await validateBCIDArchive(extractedPaths[cid], { cid, expectedName, validator });
     } catch (err) {
-      if (!isMalformedArchiveError(err)) throw err; // transient: keep today's behaviour
-      logger.warn(`${runTag} bCID archive ${cid} is malformed (${err.check})${codeReviewMode ? '' : `: ${err.reason}`}`);
-      malformedBCIDs.push(err);
+      const classified = isUnsafeEvidenceError(err) && err.deterministic
+        ? new MalformedArchiveError({ cid, expectedName,
+          check: CHECKS.UNSAFE_EVIDENCE, reason: err.message })
+        : err;
+      if (!isMalformedArchiveError(classified)) throw classified; // transient: keep today's behaviour
+      logger.warn(`${runTag} bCID archive ${cid} is malformed (${classified.check})${codeReviewMode ? '' : `: ${classified.reason}`}`);
+      malformedBCIDs.push(classified);
     }
   }
 

@@ -51,4 +51,20 @@ describe('aiClient.evaluate payload', () => {
     expect(payload.attachmentNames).toEqual(['submission/medium_article.png', 'notes.txt', 'byCid']);
     expect(payload.requestTag).toBe('[EA job1 agg=0xabc mode=1]');
   });
+
+  test.each(['additional', 'support'])('rejects an outside %s path instead of omitting it and calling the AI', async section => {
+    const file = { name: 'unsafe', path: path.join(dir, '..', 'outside-marker.txt'), type: 'text/plain' };
+    const query = { prompt: 'Judge it', models: [], additional: [] };
+    if (section === 'additional') query.additional = [file];
+    else fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ support: [file] }));
+    await expect(aiClient.evaluate(query, dir)).rejects.toMatchObject({ code: 'UNSAFE_EVIDENCE' });
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  test('rejects a symlink attachment before sending the request', async () => {
+    fs.symlinkSync(path.join(dir, 'notes.txt'), path.join(dir, 'linked.txt'));
+    await expect(aiClient.evaluate({ prompt: 'Judge it', additional: [{ filename: 'linked.txt' }] }, dir))
+      .rejects.toMatchObject({ code: 'UNSAFE_EVIDENCE' });
+    expect(mockPost).not.toHaveBeenCalled();
+  });
 });

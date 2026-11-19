@@ -170,7 +170,8 @@ describe('bcidValidation', () => {
   });
 
   describe('fetchAndTriageArchives', () => {
-    const P = 'QmPrimary', C = 'QmConforming', M = 'QmMalformed', N = 'QmNotZip';
+    const cid = require('../helpers/cid.cjs');
+    const P = cid('primary'), C = cid('conforming'), M = cid('malformed'), N = cid('notzip');
     const buffers = {
       [P]: fixture('bounty-primary.zip'),
       [C]: fixture('bcid-conforming.zip'),
@@ -217,6 +218,18 @@ describe('bcidValidation', () => {
         return realExtract(data, name, dir);
       });
       await expect(fetchAndTriageArchives([P, M], tempDir, opts(svc))).rejects.toBe(disk);
+    });
+
+    it('a runtime confinement failure is not converted into a verdict about submitted bytes', async () => {
+      const { UnsafeEvidenceError } = require('../../utils/evidenceBoundary');
+      const svc = fetchingService();
+      const realExtract = svc.extractArchive;
+      const unsafe = new UnsafeEvidenceError('extractor returned an unexpected directory');
+      svc.extractArchive = jest.fn(async (data, name, dir) => {
+        if (name.includes(C)) throw unsafe;
+        return realExtract(data, name, dir);
+      });
+      await expect(fetchAndTriageArchives([P, C], tempDir, opts(svc))).rejects.toBe(unsafe);
     });
 
     it('an unexpected error thrown by the library validator propagates (a bug is not a verdict)', async () => {

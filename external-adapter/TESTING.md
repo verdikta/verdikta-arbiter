@@ -13,6 +13,18 @@ npm install --save-dev supertest
 
 ## Running Tests
 
+The npm test scripts enable Node's VM module support so Jest can load the ESM
+`multiformats` CID parser. Production Node loads it with ordinary `import()`;
+the VM flag is only for Jest.
+
+Evidence-boundary regressions run offline with real ZIP extraction, shared
+manifest parsing, and EA payload construction; only IPFS/provider calls are
+mocked:
+
+```bash
+npm test -- --runInBand --runTestsByPath src/__tests__/utils/evidenceBoundary.test.js src/__tests__/handlers/evaluateHandler.evidenceBoundary.test.js src/__tests__/services/aiClient.test.js
+```
+
 ### 1. Running All Tests
 
 To run the unit tests (everything except `src/__tests__/integration/`, which
