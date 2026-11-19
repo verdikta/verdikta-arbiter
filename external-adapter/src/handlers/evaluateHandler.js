@@ -126,7 +126,10 @@ const evaluate = async (request) => {
     // console.log('Validating request:', request);
     try {
       await validateRequest(request);
-    } catch {
+    } catch (validationError) {
+      // The caller gets a fixed message; the operator's log keeps the reason (it can quote
+      // data.cid, whose addendum carries the stake-attestation machine lines: redacted).
+      logger.warn(`Request validation failed: ${redactMachineLines(String(validationError && validationError.message))}`);
       throw requestError('Invalid evaluation request', 400);
     }
 

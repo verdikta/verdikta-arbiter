@@ -113,6 +113,10 @@ all fulfillment methods retain a final approval check. The adapted Operator is
 pinned to `@chainlink/contracts@1.4.0`; its exact diff is tested. Existing
 non-proxy operators require a new deployment and job migration, not just a
 software upgrade. See `docs/development/request-authorization.md`.
+`installer/tests/job-timeouts.integration.sh` runs the job template on the real
+2.23.0 binary against this checkout's operator (credential, answer on chain, both
+gates, an answer after `EXPIRYTIME`); `arbiter-operator/test/support/job.js` is a
+model of it and proves nothing about Chainlink by itself.
 
 Key files to trace this:
 - Job pipeline: `chainlink-node/basicJobSpec` (a `directrequest` template; `{...}` placeholders are filled at registration).
@@ -560,6 +564,32 @@ Ollama runs locally and is unaffected by gateway settings.
   dearer than polling. cde657a (July 2026) removed an earlier `FinalityDepth=5`
   as inert; it is not. Measure with
   `curl -s 127.0.0.1:6688/metrics | grep evm_pool_rpc_node_calls_total`.
+- **An `ethabidecode` task's `abi` is a bare argument list: `abi="bool allowed"`.**
+  `ethabiencode` takes `name(args)` or `(args)`; `ethabidecode` hands its string
+  straight to `ParseETHABIArgsString`, which splits on commas and spaces and keeps
+  the second word as the key. `abi="(bool allowed)"` therefore decodes (go-ethereum's
+  type regexp is not anchored, `(bool` is a bool) under the key `allowed)`, and
+  `$(task.allowed)` is a keypath that is not found: the first version of PR #210's
+  gates failed every run before the bridge, on a job its own JS model passed
+  (measured on 2.23.0, 2026-11-19). A change to the DAG is checked on the binary
+  (`job-timeouts.integration.sh`), never on the model alone.
+- **A file that holds a credential is 0600 by what writes it; no installer script
+  sets a `umask` for its whole run.** A `umask 077` at the top of `install.sh` is
+  inherited by `setup-chainlink.sh`, which then makes `~/.chainlink-<net>` 0700 and
+  its `config.toml` / `secrets.toml` 0600, and the Chainlink container (uid 14933,
+  a bind mount of that directory, root-owned on the hosts) cannot read its config.
+  One at the top of `upgrade-arbiter.sh` is inherited by everything
+  `start-arbiter.sh` starts, until the next boot. `configure-service-auth.cjs`
+  writes the two env files and each rendered job 0600 itself, and
+  `apply-job-timeouts.sh` its saved specs; `credential-file-modes.test.sh` holds both.
+- **`upgrade-arbiter.sh` settles the job template's question before it stops
+  anything** (`job_template_preflight`): a template that differs in more than its
+  timeouts needs the jobs regenerated, which re-registers the oracle on chain, so
+  an unattended run does it only with `VA_UPGRADE_REGENERATE_JOBS=y` and a node
+  registered on separate classes cannot do it there at all; both are refused with
+  the node still running. `check_job_spec_template` runs after the stop and has no
+  `exit`: a decline at its prompt goes through `cleanup_on_error`, which starts the
+  arbiter again (`upgrade-regenerate-jobs-trap.test.sh`).
 - `set -e` is used in installer scripts — check exit codes carefully when editing.
 - **`upgrade-arbiter.sh` also has `trap cleanup_on_error ERR`, and the ERR trap
   fires on any failing plain command whether or not errexit is on.** So
