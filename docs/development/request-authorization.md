@@ -27,13 +27,18 @@ the ETH-funded dispatcher intentionally uses them. A token fee is not an
 authorization mechanism for this protocol.
 
 `isAuthorizedRequest(requestId,payment,requester,callbackFunctionId,expiration)`
-checks an exact, pending version-2 commitment, its deadline and current keeper
-approval. The job performs an `eth_call` at `latest`, decodes the boolean, and
+checks an exact, pending version-2 commitment and current keeper approval. The job performs an `eth_call` at `latest`, decodes the boolean, and
 uses a `conditional` before CBOR parsing and the bridge. It repeats that check
 after evaluation, immediately before `ethtx`. False results and RPC/decode errors
-stop downstream work. Unknown, cancelled, fulfilled, expired or revoked requests
+stop downstream work. Unknown, cancelled, fulfilled or revoked requests
 fail this check. The event source is the configured operator/job, not adapter
 input supplied by an application.
+
+The event's `expiration` remains part of the commitment hash. It is Chainlink's
+five-minute cancellation/refund threshold, not a fulfillment deadline. A
+still-pending approved request remains eligible after it, allowing code-review
+work to use its 780-second budget within the 840-second job timeout. A cancelled
+request is denied because cancellation removes its commitment.
 
 Every fulfillment entry point, including the inherited methods, checks current
 keeper approval again before consuming the commitment or releasing escrow.

@@ -1,0 +1,102 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.kleidi-partial-whitelist",
+  "subsets": [
+    "batch-2",
+    "clear-invalid"
+  ],
+  "title": "A hot signer can choose the arguments a whitelist does not cover",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/10",
+    "licence": "Repository LICENSE: Business Source License 1.1 (GitHub API: NOASSERTION). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-10-kleidi-findings/issues/10",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. The finding has no test, only steps.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-10-kleidi-findings/bbb702a3e1c601e8ffb3b16170353f4130ed4cf0/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-10-kleidi",
+      "verdict": "Invalid: labelled nullified, sponsor disputed. Submitted as 3 (High Risk).",
+      "class": null
+    }
+  },
+  "listing": "listings/kleidi",
+  "label": {
+    "kind": "clear-invalid.intended-behaviour",
+    "basis": "program",
+    "why": "The sponsor called it expected behaviour and part of the system design. The judge agreed: specific checks hold on the part of the calldata they name, and everything else is open, by design."
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The program ruled this is how the feature is meant to work. Every gate passes, because the test does fail; that the behaviour it asserts was never required is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/PartlyWhitelistedCallClaim.t.sol > PartlyWhitelistedCallClaim > test_a_hot_signer_cannot_pick_the_amount_nobody_whitelisted()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "an amount the owners never whitelisted is refused"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "checkCalldata"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.kleidi-partial-whitelist.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertFalse(accepted, \"an amount the owners never whitelisted is refused\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertTrue(accepted, \"an amount the owners never whitelisted is refused\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

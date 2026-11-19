@@ -1,0 +1,9 @@
+{
+  "platform": "linux/amd64",
+  "image": "127.0.0.1:5987/verdikta/conformance-canary@sha256:f017420282fadb0f729228c5c6583c957cb67d91318bec9bd3f274192f19f948",
+  "imageDigest": "sha256:f017420282fadb0f729228c5c6583c957cb67d91318bec9bd3f274192f19f948",
+  "baseCommit": "d8270d9d5b8cca3dc7a169c320fe535091c4937d",
+  "listingCid": "QmWdvewRCTqhz1fgUuXbBfvGLvquXwmiT51UFwcTk3hDJo",
+  "bcid": "QmTjPZ4YrJGYRWjpEq5hrpQfheqDMemhevw4cBGYH6We94",
+  "inputsSha256": "93571f983c02025c91cbe5e15c37dc4daaed54fdc7e4f0efe5b8948280482abc"
+}

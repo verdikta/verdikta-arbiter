@@ -1,0 +1,440 @@
+'use strict';
+
+/**
+ * The run engine (design §9.2 steps 1, 2 and 10, §9.3, §11).
+ *
+ *   admit → the env image → launch the sandbox → steps, in order → tear down
+ *
+ * Admission (admission.js) may hand back a ticket (a slot and the run's
+ * memory), and the image cache (images.js, node A1b) a lease on the image;
+ * both are released once every sandbox of the run is gone. Getting the image
+ * may use only the time that leaves runSeconds before the deadline.
+ *
+ * A step is an async function of a context (`ctx`) that runs commands in the
+ * sandbox through ctx.exec / ctx.readFile and records gates with ctx.gate.
+ * Node A1 ships the engine with no steps; A2a adds the patch gates, the build
+ * and the PoC runs, A3a the integrity checks and the fix check (a second
+ * sandbox from ctx.openSandbox), A3b the report.
+ *
+ * Every step is bounded three ways: its own limit (ctx.exec's timeoutMs),
+ * the run's (runSeconds) and the deadline the EA passed in, less a reserve for
+ * teardown and the response. Whichever comes first kills the sandbox and the
+ * run abstains with that cause. Anything else that is not definitive (§9.3)
+ * abstains too, and every sandbox is removed whatever happened.
+ */
+
+const { Sandbox } = require('./sandbox');
+const { ABSTAIN, OUTCOME, Abstain, RequesterError, makeGate } = require('./result');
+const { admitRun } = require('./admission');
+const { measureRuntime, runtimeProblem } = require('./runtime');
+
+/** Keepalive past the stop time, so a container outlives a dead runner only briefly. */
+const KEEPALIVE_MARGIN_SECONDS = 30;
+/** After a run-level kill, how long to let the step's exec report what it saw. */
+const KILL_GRACE_MS = 1000;
+/** A sandbox that could not be removed is tried again after this long, doubling up to REAP_MAX_MS. */
+const REAP_FIRST_MS = 2000;
+const REAP_MAX_MS = 60000;
+
+const RUN_KILL_CAUSE = Object.freeze({
+  run: [ABSTAIN.STEP_TIMEOUT, 'the run reached its wall-clock limit (runSeconds) and the sandbox was killed'],
+  deadline: [ABSTAIN.DEADLINE, 'the deadline was reached and the sandbox was killed'],
+  cancel: [ABSTAIN.CANCELLED, 'the run was cancelled and the sandbox was killed']
+});
+
+const nullLog = { info() {}, warn() {}, error() {}, debug() {} };
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Execute one run.
+ *
+ * @param {object} o
+ * @param {object} o.docker - a client from createDocker()
+ * @param {object} o.config - loaded config (runtime, instance, deadlineReserveMs, maintenanceFile)
+ * @param {object} o.limits - effective limits from checkSpec()
+ * @param {string} o.image - the env image, pinned by digest
+ * @param {string} o.runId - 16 hex characters
+ * @param {Function[]} [o.steps] - async (ctx) => void
+ * @param {number} o.receivedAt - when the request arrived, epoch ms
+ * @param {number} o.deadlineAt - the EA's deadline, epoch ms
+ * @param {AbortSignal} [o.signal] - aborted when the caller goes away
+ * @param {Set<string>} o.active - container names of live runs (the GC leaves these alone)
+ * @param {Function} [o.admit] - admission (default admitRun); may resolve a ticket with release()
+ * @param {object} [o.images] - the image cache (images.js); without it the image must already be there
+ * @param {string} [o.attestedImage] - attestation.json's env.image (default: the image)
+ * @param {number} [o.unpackedBytes] - the attested unpacked size, for the pull's disk check
+ * @param {number} [o.reapFirstMs] - first retry of a removal that failed (the slot stays held meanwhile)
+ * @param {number} [o.sandboxes] - how many sandboxes the run may have open at once (the fix check's beside the
+ *   PoC's: 2), each with the spec's limits; admission holds memory for all of them (node A3a)
+ * @param {number} [o.minMemoryMb] - the least memory admission holds for the run, whatever the spec's limits: a tool's
+ *   sandbox (the scanner, node A3c) opens when the others are closed, with limits of its own
+ * @param {number} [o.toolReserveMs] - what admission and the pull's window leave beyond runSeconds for a tool's last step,
+ *   which has a timer of its own (ctx.beginToolBudget), bounded by the deadline
+ * @param {Function} [o.preflight] - async ({ docker, config, signal }) => void, after admission and before the env image:
+ *   what the steps will need, so a run that could not finish abstains before any work (the scanner's image and rules)
+ * @returns {Promise<object>} the run result; never rejects
+ */
+async function executeRun({
+  docker, config, limits, image, runId, steps = [], receivedAt = Date.now(), deadlineAt,
+  signal, active, log = nullLog, admit = admitRun, images = null, attestedImage, unpackedBytes, reapFirstMs = REAP_FIRST_MS, sandboxes = 1, minMemoryMb = 0, toolReserveMs = 0, preflight = null
+}) {
+  const stopAt = deadlineAt - (config.deadlineReserveMs || 0);
+  const result = {
+    outcome: OUTCOME.DEFINITIVE,
+    runId,
+    runtime: config.runtime,
+    platform: config.platform,
+    limits,
+    abstain: null,
+    // How the image was had (cache hit, pulled, shared): operational, never part of the report.
+    image: null,
+    steps: [],
+    gates: {},
+    facts: {},
+    // The sandbox runtime actually used, as measured (runtime.js): the report's inputs.gvisor (node A3b).
+    gvisor: null,
+    // The context pack a claim's steps assembled (pack.js, node A3b); never part of the facts.
+    contextPack: null
+  };
+  const abstainWith = (err) => {
+    if (err instanceof RequesterError) {
+      result.outcome = OUTCOME.REQUESTER_ERROR;
+      result.issues = err.issues;
+      return result;
+    }
+    result.outcome = OUTCOME.ABSTAIN;
+    result.abstain = { cause: err.cause, step: err.step || null, detail: err.detail };
+    return result;
+  };
+  const asAbstain = (err, step) => (err instanceof Abstain || err instanceof RequesterError
+    ? err
+    : new Abstain(ABSTAIN.RUNNER_ERROR, `the runner failed: ${err && err.message ? err.message : String(err)}`, { step }));
+
+  if (signal && signal.aborted) return abstainWith(new Abstain(ABSTAIN.CANCELLED, 'the run was cancelled before it started'));
+  let ticket = null;
+  try {
+    ticket = (await admit({ config, docker, limits, stopAt, now: Date.now(), signal, sandboxes, minMemoryMb, toolReserveMs })) || null;
+  } catch (err) {
+    return abstainWith(asAbstain(err, 'admission'));
+  }
+  let lease = null;
+  let released = false;
+  const releaseAll = () => {
+    if (released) return;
+    released = true;
+    if (lease) lease.release();
+    if (ticket && typeof ticket.release === 'function') ticket.release();
+  };
+
+  // The runtime (§9.3): measured, per run, and under gVisor it must be the release common pins. A report never names a
+  // runtime it did not measure, and a host on another release does not run claims whose report could not match.
+  try {
+    const measured = await measureRuntime({ config, docker, signal });
+    const problem = runtimeProblem(config, measured);
+    if (problem) throw new Abstain(ABSTAIN.ADMISSION_REFUSED, problem, { step: 'admission' });
+    result.gvisor = measured.gvisor;
+    if (preflight) await preflight({ docker, config, signal });
+  } catch (err) {
+    releaseAll();
+    return abstainWith(asAbstain(err, 'admission'));
+  }
+
+  // The env image (§9.2 step 2): pulled by digest if it is not cached, in
+  // the time that still leaves runSeconds for the run.
+  if (images) {
+    const runMs = limits.runSeconds * 1000 + toolReserveMs;
+    try {
+      lease = await images.acquire({
+        image, attestedImage: attestedImage === undefined ? image : attestedImage, platform: config.platform,
+        unpackedBytes, windowMs: stopAt - Date.now() - runMs, signal
+      });
+    } catch (err) {
+      releaseAll();
+      return abstainWith(asAbstain(err, 'pull'));
+    }
+    result.image = { ref: lease.ref, cache: lease.cache, durationMs: lease.durationMs };
+    const left = stopAt - Date.now();
+    if (signal && signal.aborted) {
+      releaseAll();
+      return abstainWith(new Abstain(ABSTAIN.CANCELLED, 'the run was cancelled before it started', { step: 'pull' }));
+    }
+    if (left < runMs) {
+      releaseAll();
+      return abstainWith(new Abstain(ABSTAIN.ADMISSION_REFUSED,
+        `once the image was ready the deadline left ${Math.max(0, left)} ms; the run may need ${runMs} ms (runSeconds)`, { step: 'pull' }));
+    }
+  }
+
+  // Run-level kill switch: the deadline, the run budget, the caller.
+  const run = new AbortController();
+  const opened = [];
+  // Each sandbox's launch, settled or not (the fix check's starts beside the PoC's steps): a sandbox's removal waits
+  // for its own launch, so a container whose `docker create` was still pending is removed once it exists, and the
+  // reservations stay held until then, however long after the answer that is (R1-F4).
+  const launches = new Map();
+  /** Sandboxes their handle's close() removed. */
+  const closed = new Set();
+  // The steps in flight (the fix check may run beside the PoC, §11), for
+  // naming the step a run-level kill interrupted.
+  const running = new Set();
+  const current = () => (running.size ? [...running].join(', ') : null);
+  const kill = (reason) => {
+    if (run.signal.aborted) return;
+    run.abort(reason);
+    for (const sb of opened) sb.kill();
+  };
+  let runTimer = setTimeout(() => kill('run'), limits.runSeconds * 1000);
+  const deadlineTimer = setTimeout(() => kill('deadline'), Math.max(0, stopAt - Date.now()));
+  const onCancel = () => kill('cancel');
+  if (signal) signal.addEventListener('abort', onCancel, { once: true });
+  const killed = new Promise((_, reject) => {
+    run.signal.addEventListener('abort', () => {
+      const [cause, detail] = RUN_KILL_CAUSE[run.signal.reason];
+      reject(new Abstain(cause, detail, { step: current() }));
+    }, { once: true });
+  });
+  killed.catch(() => {});
+
+  const nowSeconds = () => Math.floor(Date.now() / 1000);
+  const keepaliveSeconds = Math.max(1, Math.ceil((stopAt - Date.now()) / 1000)) + KEEPALIVE_MARGIN_SECONDS;
+  const expiresAt = nowSeconds() + keepaliveSeconds;
+
+  function stopped(stepName) {
+    if (!run.signal.aborted) return null;
+    const [cause, detail] = RUN_KILL_CAUSE[run.signal.reason];
+    return new Abstain(cause, detail, { step: stepName });
+  }
+
+  /**
+   * A sandbox: the run's env image, or (`tool`) a tool's pinned image with limits of its own. The flags are the same.
+   * What launching a tool's image finds wrong is the runner's install, never the requester's package.
+   */
+  async function open({ image: toolImage = null, limits: toolLimits = null, tool = false } = {}) {
+    // Admission held memory for `sandboxes` of them; a step may not open more.
+    // Live ones count: a sandbox closed by its handle's close() (the listing check's probes) holds nothing.
+    const live = opened.filter((x) => !closed.has(x)).length;
+    if (live >= sandboxes) {
+      throw new Abstain(ABSTAIN.RUNNER_ERROR, `a step opened sandbox ${live + 1} at once, but the run was admitted for ${sandboxes} sandbox${sandboxes === 1 ? '' : 'es'}`, { step: 'launch' });
+    }
+    const name = `vcr-${runId}-${opened.length + 1}`;
+    const sb = new Sandbox({ docker, name, runtime: config.runtime, log });
+    // Registered before `docker run`, so the GC never races a launch and the
+    // teardown removes a half-created container.
+    active.add(name);
+    opened.push(sb);
+    const late = stopped('launch');
+    if (late) throw late;
+    const label = opened.length === 1 ? 'launch' : `launch:${name}`;
+    running.add(label);
+    const launch = sb.launch({ image: toolImage || image, platform: config.platform, limits: toolLimits || limits, instance: config.instance, runId, expiresAt, keepaliveSeconds }, { signal: run.signal });
+    launches.set(sb, launch.catch(() => {}));
+    try {
+      await launch;
+    } catch (err) {
+      if (tool && err instanceof RequesterError) {
+        throw new Abstain(ABSTAIN.RUNNER_ERROR, `the tool image ${toolImage} cannot run as a sandbox: ${err.message}`, { step: label });
+      }
+      throw err;
+    } finally {
+      running.delete(label);
+    }
+    return handle(sb);
+  }
+
+  function handle(sb) {
+    return {
+      name: sb.name,
+      /**
+       * Run argv in the sandbox. Resolves the step record of a definitive
+       * exec; throws Abstain otherwise (the run then abstains).
+       * @param {string[]} argv
+       * @param {{name:string, timeoutMs?:number, stdin?:Buffer, env?:object, workdir?:string, tee?:object}} o
+       *   `tee` (a capture.Prefix) also receives the program's stdout, for steps whose output the runner reads
+       */
+      async exec(argv, { name, timeoutMs, stdin, env, workdir, tee } = {}) {
+        const stepName = name || argv[0];
+        const late = stopped(stepName);
+        if (late) throw late;
+        running.add(stepName);
+        const step = new AbortController();
+        const forward = () => step.abort(run.signal.reason);
+        run.signal.addEventListener('abort', forward, { once: true });
+        const timer = Number.isFinite(timeoutMs) ? setTimeout(() => step.abort('step'), Math.max(0, timeoutMs)) : null;
+        try {
+          const { record, verdict } = await sb.exec(argv, { name: stepName, signal: step.signal, controlSignal: run.signal, stdin, env, workdir, tee });
+          result.steps.push(record);
+          if (verdict.kind !== 'definitive') throw new Abstain(verdict.cause, verdict.detail, { step: stepName });
+          return record;
+        } finally {
+          if (timer) clearTimeout(timer);
+          run.signal.removeEventListener('abort', forward);
+          running.delete(stepName);
+        }
+      },
+      /**
+       * Read a file inside the sandbox, at most maxBytes of it.
+       * @returns {Promise<{bytes:Buffer, overLimit:boolean, exitCode:number|null}>}
+       */
+      async readFile(filePath, { maxBytes, name, timeoutMs } = {}) {
+        const stepName = name || `read:${filePath}`;
+        const late = stopped(stepName);
+        if (late) throw late;
+        running.add(stepName);
+        const step = new AbortController();
+        const forward = () => step.abort(run.signal.reason);
+        run.signal.addEventListener('abort', forward, { once: true });
+        const timer = Number.isFinite(timeoutMs) ? setTimeout(() => step.abort('step'), Math.max(0, timeoutMs)) : null;
+        try {
+          const r = await sb.readFile(filePath, { maxBytes, name: stepName, signal: step.signal, controlSignal: run.signal });
+          result.steps.push(r.record);
+          if (r.verdict.kind !== 'definitive') throw new Abstain(r.verdict.cause, r.verdict.detail, { step: stepName });
+          return { bytes: r.bytes, overLimit: r.overLimit, exitCode: r.record.exitCode };
+        } finally {
+          if (timer) clearTimeout(timer);
+          run.signal.removeEventListener('abort', forward);
+          running.delete(stepName);
+        }
+      },
+      /**
+       * Remove this sandbox now, when the steps are done with it (the
+       * listing check opens a fresh one per probe, never two at once, so
+       * the memory admitted for one sandbox covers them). The teardown's own
+       * removal then finds nothing to remove.
+       */
+      async close() {
+        const stepName = `close:${sb.name}`;
+        const late = stopped(stepName);
+        if (late) throw late;
+        running.add(stepName);
+        let gone = false;
+        try {
+          gone = await sb.remove();
+        } catch (_) {
+          gone = false;
+        } finally {
+          running.delete(stepName);
+        }
+        if (!gone) throw new Abstain(ABSTAIN.DOCKER_ERROR, 'the sandbox could not be removed', { step: stepName });
+        closed.add(sb);
+      }
+    };
+  }
+
+  /** Release the reservations once every sandbox is gone; until then retry the removals. */
+  async function reap(gone) {
+    let wait = reapFirstMs;
+    let warned = false;
+    while (!gone.every(Boolean)) {
+      if (!warned) {
+        warned = true;
+        log.warn('a sandbox outlived its run: its slot, memory and image stay held until it is removed', { runId });
+      }
+      await new Promise((resolve) => { setTimeout(resolve, wait).unref(); });
+      wait = Math.min(wait * 2, REAP_MAX_MS);
+      gone = await Promise.all(opened.map((sb, i) => (gone[i] ? true : sb.remove().catch(() => false))));
+    }
+    releaseAll();
+  }
+
+  const work = (async () => {
+    const primary = await open();
+    const ctx = {
+      runId,
+      limits,
+      sandboxName: primary.name,
+      exec: primary.exec,
+      readFile: primary.readFile,
+      /** Another sandbox with the same flags (the fix check, §9.2 step 8; the scanner's tool image, A3c), with exec, readFile, name and close(). */
+      openSandbox: (o) => open(o),
+      /**
+       * The run's own timer starts over for a tool's last step (the scanner, A3c): claim code has finished, and what a
+       * hunter's file costs the tool must not turn a listing's run into an abstention. The deadline still bounds it.
+       */
+      beginToolBudget(ms) {
+        if (run.signal.aborted) return;
+        clearTimeout(runTimer);
+        runTimer = setTimeout(() => kill('run'), ms);
+      },
+      /** Remove the first sandbox now (its handle's close()); ctx.exec cannot be used after. */
+      closeSandbox: primary.close,
+      /** Record a gate decided on a definitive basis (exit_code, junit, integrity, input). */
+      gate(name, status, basis, detail) {
+        result.gates[name] = makeGate(status, basis, detail);
+      },
+      /** Record a fact the steps observed (the patch, its flags, the PoC runs), for the report. */
+      fact(name, value) {
+        result.facts[name] = value;
+      },
+      /** The final context pack (pack.js): carried beside the facts, not among them. */
+      contextPack(pack) {
+        result.contextPack = pack;
+      },
+      /** Milliseconds until the run must stop. */
+      remainingMs: () => Math.max(0, stopAt - Date.now()),
+      /** When the request arrived (epoch ms). */
+      receivedAt
+    };
+    for (const step of steps) {
+      const late = stopped(null);
+      if (late) throw late;
+      await step(ctx);
+    }
+  })();
+  work.catch(() => {});
+
+  try {
+    await Promise.race([work, killed]);
+  } catch (err) {
+    abstainWith(asAbstain(err, current()));
+    if (run.signal.aborted) {
+      // Give the killed exec a moment to report what it saw, within the deadline.
+      await Promise.race([work.catch(() => {}), delay(Math.min(KILL_GRACE_MS, Math.max(0, deadlineAt - Date.now())))]);
+    }
+  } finally {
+    clearTimeout(runTimer);
+    clearTimeout(deadlineTimer);
+    if (signal) signal.removeEventListener('abort', onCancel);
+    // Remove every sandbox, each once its own launch has settled. The answer
+    // waits for that until the deadline, never longer; a removal still
+    // running then carries on in the background (the reservations held until
+    // it is done), and the GC retries whatever could not be removed.
+    const removal = Promise.all(opened.map(async (sb) => {
+      let gone = false;
+      try {
+        await launches.get(sb);
+        gone = await sb.remove();
+      } catch (_) {
+        gone = false;
+      }
+      if (!gone) log.warn('sandbox not removed; the GC will retry', { runId, container: sb.name });
+      active.delete(sb.name);
+      return gone;
+    }));
+    // The slot, the memory and the image stay held until every sandbox is
+    // confirmed gone, even when the answer goes out before (at the
+    // deadline). A removal that failed is tried again in the background
+    // (the GC may get there first: then the retry finds nothing to remove).
+    removal.then((gone) => reap(gone), () => reap(opened.map(() => false)));
+    let timer = null;
+    const removed = await Promise.race([
+      removal.then((all) => all.every(Boolean)),
+      new Promise((resolve) => { timer = setTimeout(() => resolve(null), Math.max(0, deadlineAt - Date.now())); })
+    ]);
+    clearTimeout(timer);
+    if (removed !== true) {
+      log.warn(removed === null ? 'teardown still running at the deadline; answering now' : 'teardown failed', { runId });
+      // A run is definitive only once every sandbox it started is gone.
+      if (result.outcome === OUTCOME.DEFINITIVE) {
+        abstainWith(new Abstain(ABSTAIN.DOCKER_ERROR, removed === null
+          ? 'the sandbox was not removed by the deadline'
+          : 'the sandbox could not be removed', { step: 'teardown' }));
+      }
+    }
+  }
+  return result;
+}
+
+module.exports = { executeRun, KEEPALIVE_MARGIN_SECONDS };

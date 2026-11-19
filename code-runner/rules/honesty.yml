@@ -1,0 +1,177 @@
+# Verdikta's honesty rules, rule set 2026.10 (@verdikta/common SEMGREP_RULES_VERSION). The runner
+# runs them with its pinned Semgrep, offline, over the files a claim's poc.patch added or changed
+# (design §9.2 step 9, §9.5): tier-A facts about what a test does, for the jury's fourth question.
+# They decide no gate. src/scanner.js pins this file's SHA-256 and holds each rule's severity and
+# message: the runner reads only a result's rule id and lines, so nothing a test says reaches the
+# report. A change to any rule changes the hash and needs a new RUNNER_VERSION.
+#
+# Every rule here reads code, never text. Past 10,000 matches of one rule in one file Semgrep drops
+# every result of that file, and a pattern-regex rule also matches comments, where a hunter can
+# write that many cheaply. The rules that read text are in src/scanner.js (TEXT_RULES).
+#
+# What the framework gives every test is not a flag: moving block time and block numbers forward
+# (vm.warp, skip, vm.roll), acting as another account (vm.prank, hoax), funding one (deal, vm.deal).
+rules:
+  - id: verdikta.honesty.storage-overwrite
+    languages: [solidity]
+    severity: ERROR
+    message: storage-overwrite
+    pattern-either:
+      - pattern: vm.store
+      - pattern: Vm.store
+      - pattern: $X.setArbitraryStorage
+      - pattern: $X.copyStorage
+      - pattern: $X.loadAllocs
+      - pattern: $S.checked_write
+      - pattern: $S.checked_write_int
+
+  # The cheatcode's shape on any other receiver, so an alias of vm is still seen. A contract's own
+  # three-argument store() matches too: the jury reads the receiver in the test.
+  - id: verdikta.honesty.store-shaped-call
+    languages: [solidity]
+    severity: WARNING
+    message: store-shaped-call
+    patterns:
+      - pattern-either:
+          - pattern: $X.store($A, $B, $C)
+          - pattern: $X.store.selector
+          - pattern: abi.encodeCall($X.store, ...)
+      - pattern-not: vm.store(...)
+      - pattern-not: Vm.store.selector
+      - pattern-not: abi.encodeCall(vm.store, ...)
+
+  - id: verdikta.honesty.code-overwrite
+    languages: [solidity]
+    severity: ERROR
+    message: code-overwrite
+    pattern-either:
+      - pattern: $X.etch
+      - pattern: deployCodeTo(...)
+      - pattern: $X.deployCodeTo(...)
+      - pattern: $X.attachDelegation
+      - pattern: $X.signAndAttachDelegation
+
+  - id: verdikta.honesty.call-mocked
+    languages: [solidity]
+    severity: ERROR
+    message: call-mocked
+    pattern-either:
+      - pattern: $X.mockCall
+      - pattern: $X.mockCallRevert
+      - pattern: $X.mockCalls
+      - pattern: $X.mockFunction
+
+  - id: verdikta.honesty.process-started
+    languages: [solidity]
+    severity: ERROR
+    message: process-started
+    pattern-either:
+      - pattern: $X.ffi
+      - pattern: $X.tryFfi
+
+  - id: verdikta.honesty.cheatcode-raw-call
+    languages: [solidity]
+    severity: ERROR
+    message: cheatcode-raw-call
+    pattern-either:
+      - pattern: address(vm).call
+      - pattern: address(vm).staticcall
+      - pattern: address(vm).delegatecall
+      - pattern: address(vmSafe).call
+      - pattern: address(vmSafe).staticcall
+      - pattern: address(vmSafe).delegatecall
+      - pattern: VM_ADDRESS.call
+      - pattern: VM_ADDRESS.staticcall
+      - pattern: VM_ADDRESS.delegatecall
+      - pattern: HEVM_ADDRESS.call
+      - pattern: HEVM_ADDRESS.staticcall
+      - pattern: HEVM_ADDRESS.delegatecall
+
+  - id: verdikta.honesty.network-reach
+    languages: [solidity]
+    severity: WARNING
+    message: network-reach
+    pattern-either:
+      - pattern: $X.createFork
+      - pattern: $X.createSelectFork
+      - pattern: $X.selectFork
+      - pattern: $X.rollFork
+      - pattern: $X.rpc
+      - pattern: $X.rpcUrl
+      - pattern: $X.rpcUrls
+      - pattern: $X.rpcUrlStructs
+      - pattern: $X.eth_getLogs
+      - pattern: $X.transact
+
+  - id: verdikta.honesty.filesystem-write
+    languages: [solidity]
+    severity: WARNING
+    message: filesystem-write
+    pattern-either:
+      - pattern: $X.writeFile
+      - pattern: $X.writeFileBinary
+      - pattern: $X.writeLine
+      - pattern: $X.writeJson
+      - pattern: $X.writeToml
+      - pattern: $X.copyFile
+      - pattern: $X.removeFile
+      - pattern: $X.removeDir
+      - pattern: $X.createDir
+      - pattern: $X.dumpState
+
+  # The clock beyond the framework's: moving block time or numbers backwards, or to the end of the
+  # type (no chain gets there), and reading or waiting on the host's own clock. Forward moves are
+  # the framework's. A clock stubbed through a mock or a store is the rules above.
+  - id: verdikta.honesty.clock
+    languages: [solidity]
+    severity: WARNING
+    message: clock
+    pattern-either:
+      - pattern: rewind(...)
+      - pattern: $X.warp(block.timestamp - $Y)
+      - pattern: $X.warp($Z.getBlockTimestamp() - $Y)
+      - pattern: $X.warp(0)
+      - pattern: $X.warp(type($T).max)
+      - pattern: $X.roll(block.number - $Y)
+      - pattern: $X.roll($Z.getBlockNumber() - $Y)
+      - pattern: $X.roll(0)
+      - pattern: $X.roll(type($T).max)
+      - pattern: $X.unixTime
+      - pattern: vm.sleep
+
+  - id: verdikta.honesty.filesystem-read
+    languages: [solidity]
+    severity: INFO
+    message: filesystem-read
+    pattern-either:
+      - pattern: $X.readFile
+      - pattern: $X.readFileBinary
+      - pattern: $X.readLine
+      - pattern: $X.readDir
+      - pattern: $X.readLink
+      - pattern: $X.fsMetadata
+      - pattern: vm.exists
+      - pattern: vm.isFile
+      - pattern: vm.isDir
+
+  # What a block commits to, and the process's environment. Named on vm only: fee, chainId and the
+  # like are common names on contracts. An alias of vm is missed here, and these change little.
+  - id: verdikta.honesty.block-environment
+    languages: [solidity]
+    severity: INFO
+    message: block-environment
+    pattern-either:
+      - pattern: vm.setBlockhash
+      - pattern: vm.prevrandao
+      - pattern: vm.difficulty
+      - pattern: vm.chainId
+      - pattern: vm.fee
+      - pattern: vm.coinbase
+      - pattern: vm.txGasPrice
+      - pattern: vm.blobBaseFee
+      - pattern: vm.blobhashes
+      - pattern: vm.setNonce
+      - pattern: vm.setNonceUnsafe
+      - pattern: vm.resetNonce
+      - pattern: vm.setEnv
+      - pattern: vm.setEvmVersion

@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "baseCommit": "ab89bcb443249e1524496b694ddb19e298dca799",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testGetFirstWordFailsLt32Bytes()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testGetFunctionSignatureFailsLt4Bytes()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsEndGtLength()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsStartEqEnd()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsStartGtEnd()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsStartGtLength()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesSucceedsEqEndLength()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testGetFirstWordFailsLt32Bytes()",
+    "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testGetFunctionSignatureFailsLt4Bytes()",
+    "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsEndGtLength()",
+    "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsStartEqEnd()",
+    "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsStartGtEnd()",
+    "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesFailsStartGtLength()",
+    "test/unit/BytesHelper.t.sol > BytesHelperUnitTest > testSliceBytesSucceedsEqEndLength()"
+  ],
+  "unstable": []
+}

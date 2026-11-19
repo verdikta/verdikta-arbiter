@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Vault.withdraw drains the vault",
+  "claimedClass": "CRITICAL",
+  "rootCause": "Vault.withdraw empties the depositor's balance.",
+  "affectedPaths": [
+    "src/Vault.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_vault_is_drained",
+    "observable": "test_vault_is_drained fails with \"vault drained: balance 0 after one withdraw\""
+  },
+  "fixIncluded": false
+}

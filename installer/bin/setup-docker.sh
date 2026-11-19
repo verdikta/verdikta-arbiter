@@ -286,10 +286,15 @@ docker_pull_with_retry "postgres:14"
 # --restart unless-stopped: Docker brings the container back after a host
 # reboot or daemon restart unless an operator stopped it (2026-10-18 Contabo
 # reboot wave left every arbiter down; see arbiter-boot-service.sh).
+# 5432 is deliberately NOT published on the host. A port review (2026-10-21) found
+# the database reachable from the internet, under constant password guessing.
+# Chainlink reaches it by container name
+# over verdikta-network (secrets.toml: cl-postgres:5432); operator tooling uses
+# `docker exec cl-postgres psql`. Never publish it on 127.0.0.1 only while the
+# URL says host.docker.internal: that address is the docker0 gateway, not loopback.
 echo -e "${BLUE}Creating PostgreSQL container...${NC}"
 docker run --name "$POSTGRES_CONTAINER" \
     -e POSTGRES_PASSWORD="$POSTGRES_PASSWORD" \
-    -p 5432:5432 \
     --restart unless-stopped \
     --log-driver json-file \
     --log-opt max-size=100m \
@@ -359,7 +364,7 @@ services:
     depends_on:
       - postgres
     ports:
-      - "6688:6688"
+      - "127.0.0.1:6688:6688"
     volumes:
       - ~/.chainlink-${NETWORK_TYPE}:/chainlink
     command: ["node", "-config", "/chainlink/config.toml", "-secrets", "/chainlink/secrets.toml", "start", "-a", "/chainlink/.api"]
@@ -377,8 +382,7 @@ services:
   postgres:
     image: postgres:14
     container_name: cl-postgres
-    ports:
-      - "5432:5432"
+    # no ports: Chainlink reaches the database as cl-postgres:5432 on verdikta-network
     environment:
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
     volumes:

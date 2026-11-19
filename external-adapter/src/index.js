@@ -47,14 +47,23 @@ for (const key of ['EA_API_TOKEN', 'AI_NODE_API_TOKEN']) {
 if (process.env.EA_API_TOKEN === process.env.AI_NODE_API_TOKEN) {
   throw new Error('EA and AI Node must use separate service tokens');
 }
-const { createApp } = require('./app');
+const { createApp, createHttpServer } = require('./app');
+const { listenArgs } = require('./utils/listenArgs');
+
+// Routes (POST /evaluate, GET /version, GET /health) live in app.js.
+const app = createApp();
+
+// The connection limit and the socket timeout (SERVER_TIMEOUT, 840 s by default).
+const server = createHttpServer(app);
+
+// HOST is optional; unset = every interface, as always (see utils/listenArgs.js
+// for why that stays the default and what protects port 8080).
+const listenOn = listenArgs();
+server.listen(...listenOn, () => {
+  console.log(`Server is running on port ${listenOn[0]}${listenOn[1] ? ` (address ${listenOn[1]})` : ''}`);
+});
+
 const commitStore = require('./services/commitStore');
-const server = require('http').createServer(createApp());
-server.maxConnections = 1000;
-server.timeout = parseInt(process.env.SERVER_TIMEOUT) || 300000;
-const port = process.env.PORT || 8080;
-const host = process.env.HOST || '127.0.0.1';
-server.listen(port, host, () => console.log(`External Adapter listening on ${host}:${port}`));
 // Expire both unrevealed and revealed entries even when no requests arrive.
 setInterval(() => commitStore.purgeStale().catch(() => console.error('Commit cleanup failed')),
   15 * 60 * 1000).unref();

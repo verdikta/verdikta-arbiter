@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A hot signer can choose the arguments a whitelist does not cover",
+  "claimedClass": "HIGH",
+  "rootCause": "Timelock.checkCalldata only compares the byte ranges a check was added for, so when the owners whitelist part of a call a hot signer can send any value for the rest of it through executeWhitelisted.",
+  "affectedPaths": [
+    "src/Timelock.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_hot_signer_cannot_pick_the_amount_nobody_whitelisted",
+    "observable": "test_a_hot_signer_cannot_pick_the_amount_nobody_whitelisted fails with \"an amount the owners never whitelisted is refused\""
+  },
+  "fixIncluded": false
+}

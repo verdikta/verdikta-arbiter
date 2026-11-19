@@ -549,6 +549,52 @@ describe('AnthropicProvider', () => {
       ]);
     });
 
+    test('onWebRetrieval hears what the tools did, over every pause_turn continuation', async () => {
+      const paused = {
+        stop_reason: 'pause_turn',
+        content: [
+          { type: 'server_tool_use', id: 'srvtoolu_0', name: 'web_fetch', input: { url: 'https://www.wsj.com/market-data/quotes/MSFT/historical-prices' } },
+          { type: 'web_fetch_tool_result', tool_use_id: 'srvtoolu_0', content: { type: 'web_fetch_tool_result_error', error_code: 'url_not_allowed' } },
+        ],
+      };
+      mockMessagesCreate.mockResolvedValueOnce(paused).mockResolvedValueOnce(toolTurn('final'));
+      const onWebRetrieval = jest.fn();
+
+      const response = await provider.generateResponse(LINK_PROMPT, 'claude-sonnet-5', { onWebRetrieval });
+
+      expect(response).toBe('final');
+      expect(onWebRetrieval).toHaveBeenCalledTimes(1);
+      expect(onWebRetrieval.mock.calls[0][0]).toMatchObject({
+        web_tools: 'on',
+        pages_opened: 1,
+        searches: 0,
+        fetch_errors: [{ url: 'https://www.wsj.com/market-data/quotes/MSFT/historical-prices', code: 'url_not_allowed' }],
+        page_errors_reported: true,
+      });
+      // The listener is ours, not Anthropic's: it never reaches the request body.
+      expect(mockMessagesCreate.mock.calls[0][0]).not.toHaveProperty('onWebRetrieval');
+    });
+
+    test('onWebRetrieval hears "off" with the reason when the web request failed', async () => {
+      mockMessagesCreate.mockRejectedValueOnce(Object.assign(new Error('400 tool not available'), { status: 400 }));
+      const onWebRetrieval = jest.fn();
+
+      await provider.generateResponse(LINK_PROMPT, 'claude-sonnet-5', { onWebRetrieval });
+
+      expect(onWebRetrieval).toHaveBeenCalledWith(expect.objectContaining({ web_tools: 'off', pages_opened: 0, error: '400 tool not available' }));
+    });
+
+    test('onWebRetrieval is not called when the tools are not used, and the attachment path reports too', async () => {
+      const onWebRetrieval = jest.fn();
+      await provider.generateResponse('Write a haiku', 'claude-sonnet-5', { onWebRetrieval });
+      expect(onWebRetrieval).not.toHaveBeenCalled();
+
+      mockMessagesCreate.mockResolvedValueOnce(toolTurn('ok'));
+      const attachments = [{ type: 'text', content: 'Source: https://apnews.com/article/jets-patriots', mediaType: 'text/plain' }];
+      await provider.generateResponseWithAttachments('Evaluate the claim', 'claude-sonnet-5', attachments, { onWebRetrieval });
+      expect(onWebRetrieval).toHaveBeenCalledWith(expect.objectContaining({ web_tools: 'on', pages_opened: 1 }));
+    });
+
     test('finalAnswerText keeps only the text after the last tool block', () => {
       expect(finalAnswerText(toolTurn('answer').content)).toBe('answer');
       expect(finalAnswerText([{ type: 'text', text: 'a' }, { type: 'text', text: 'b' }])).toBe('ab');

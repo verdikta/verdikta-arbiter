@@ -37,11 +37,12 @@ input after connecting and stores the active token only in component memory;
 Disconnect and reload clear it. Do not add `NEXT_PUBLIC_` to the variable or put
 tokens in URLs, scenario files, commits, logs or screenshots.
 
-`ai-node/start.sh` binds to `127.0.0.1`; an explicit exported `AI_NODE_HOST`
-overrides it. Direct `npm run dev/start` users should also pass
-`-- --hostname 127.0.0.1`. EA honors `HOST` with a standalone default of
-`127.0.0.1`. The full installer defaults EA to `0.0.0.0` because Chainlink runs
-in Docker, preserving an operator's existing explicit `HOST`. Limit port 8080
+Fresh installs and firewall-hardened upgrades create `.ai-node-loopback` in the
+installation directory, making `ai-node/start.sh` bind to `127.0.0.1`. An exported
+`AI_NODE_HOST` overrides it; without either setting, Next.js listens on all
+interfaces. Direct `npm run dev/start` users should pass
+`-- --hostname 127.0.0.1`. EA honors a specific `HOST`; an unset or wildcard host
+keeps dual-stack listening for Chainlink container reachability. Limit port 8080
 with host/container firewall rules to the Chainlink network, or bind a reachable
 private interface. Keep port 3000 local. Across hosts, use authenticated TLS or
 a protected tunnel: bearer credentials require a confidential transport.

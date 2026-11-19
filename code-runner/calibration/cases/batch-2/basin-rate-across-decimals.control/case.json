@@ -1,0 +1,69 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.basin-rate-across-decimals.control",
+  "subsets": [
+    "batch-2",
+    "clear-invalid"
+  ],
+  "title": "calcRate gets the rate wrong across decimals: the same test with reserves of equal value",
+  "source": {
+    "url": "https://github.com/code-423n4/2024-07-basin-findings/issues/13",
+    "licence": "Repository LICENSE.txt: MIT, Copyright (c) 2023-present Publius (GitHub API: MIT). SPDX headers in src/: MIT (29), BSD (2), BSD-4-Clause (1). Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://github.com/code-423n4/2024-07-basin-findings/issues/13",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts what the hunter says should hold, so it fails while the behaviour is present. It keeps the finding's numbers, because those are what the program ruled on. The control uses reserves of equal value, the correction the sponsor gave, and passes.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2024-07-basin-findings/12468792fc3c89de5ea1353ddb83b7ce5f7d5b21/report.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2024-07-basin",
+      "verdict": "Invalid: labelled unsatisfactory, reason Invalid; sponsor disputed. Submitted as 2 (Med Risk).",
+      "class": null
+    }
+  },
+  "listing": "listings/basin-2024-07-scope",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The same test with reserves of equal value passes on all three runs, so its case fails on the numbers it chose, and reproduces fails on its own here.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "fail",
+        "integrity": "pass",
+        "claimedObservable": "not-run"
+      },
+      "gateDetails": {
+        "reproduces": "passed on run 1"
+      },
+      "settlement": {
+        "kind": "invalid",
+        "gate": "reproduces",
+        "check": "POC_DID_NOT_REPRODUCE"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/RateAcrossDecimalsClaim.t.sol > RateAcrossDecimalsClaim > test_a_six_decimal_token_prices_at_one_to_one()",
+          "runs": [
+            "pass",
+            "pass",
+            "pass"
+          ],
+          "kind": null,
+          "message": null
+        }
+      ]
+    }
+  },
+  "controlOf": "batch-2.basin-rate-across-decimals"
+}

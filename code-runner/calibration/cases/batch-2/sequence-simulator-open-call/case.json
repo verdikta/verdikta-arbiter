@@ -1,0 +1,102 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "batch-2.sequence-simulator-open-call",
+  "subsets": [
+    "batch-2",
+    "clear-invalid"
+  ],
+  "title": "Any account can spend what a wallet holds",
+  "source": {
+    "url": "https://raw.githubusercontent.com/code-423n4/2025-10-sequence/b0e5fb15bf6735ec9aaba02f5eca28a7882d815d/out_of_scope.txt",
+    "licence": "Repository LICENSE: Apache License Version 2.0 (GitHub API: Apache-2.0). SPDX headers in src/: Apache-2.0 (43), MIT (6). Findings repository: returns 404; the report page is the source.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code, as are the prior findings and known issues beside them.",
+    "adaptedFrom": "https://raw.githubusercontent.com/code-423n4/2025-10-sequence/b0e5fb15bf6735ec9aaba02f5eca28a7882d815d/out_of_scope.txt",
+    "adaptedHow": "Built here for this case. The finding names an in-scope file, since naming the excluded one fails the inScope gate before any runner, and that gate is the External Adapter's, with its own tests.",
+    "report": "https://raw.githubusercontent.com/code-423n4/2025-10-sequence/b0e5fb15bf6735ec9aaba02f5eca28a7882d815d/README.md",
+    "program": {
+      "name": "Code4rena",
+      "contest": "2025-10-sequence",
+      "verdict": "None: no program ruled on this claim. It is built here on the contest's published scope.",
+      "class": null
+    }
+  },
+  "listing": "listings/sequence-scope",
+  "label": {
+    "kind": "clear-invalid.outside-scope",
+    "basis": "listing",
+    "why": "Built here: no program ruled on it. The reason is in the listing's own scope text: stake.scope excludes src/Simulator.sol, as the contest's out_of_scope.txt does, and the one call the test makes is Simulator.simulate. The file the finding names is in scope, and the behaviour it asserts is not in that file: the module's own execute needs a signature."
+  },
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "INVALID",
+    "class": null,
+    "reason": "The failure is in src/Simulator.sol, which the listing's scope excludes, while the finding names an in-scope file, so it passes the inScope gate. Every gate passes, because the test does fail; that the failure lies outside the scope is left to the jury, which A7d measures.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/OpenCallClaim.t.sol > OpenCallClaim > test_a_stranger_cannot_spend_from_the_wallet()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "what the wallet holds after the call by a stranger: 0 != 1000000000000000000"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "Stage2Module"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "batch-2.sequence-simulator-open-call.control",
+    "removes": {
+      "poc.patch": [
+        "+    assertEq(address(wallet).balance, 1 ether, \"what the wallet holds after the call by a stranger\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+    assertEq(address(wallet).balance, 0, \"what the wallet holds after the call by a stranger\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

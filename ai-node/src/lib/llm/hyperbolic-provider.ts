@@ -1,4 +1,4 @@
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { modelConfig } from '../../config/models';
 
 /**
@@ -81,7 +81,7 @@ export class HyperbolicProvider implements LLMProvider {
   async generateResponse(
     prompt: string, 
     model: string,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
     if (!this.apiKey) {
       throw new Error(`[${this.providerName}] HYPERBOLIC_API_KEY not configured`);
@@ -131,6 +131,8 @@ export class HyperbolicProvider implements LLMProvider {
           top_p,
           stream: false
         }),
+        // a code-mode justifier's signal cancels the request at its deadline
+        ...(options?.signal && { signal: options.signal }),
       });
 
       if (!response.ok) {

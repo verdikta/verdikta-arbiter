@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "The factory reverts instead of answering with an existing account",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Factory.deploy uses create2 and reverts with DeployFailed when the address is taken. ERC-4337 expects a deterministic factory to return the account address in that case, so simulations fail and a third party can front-run a deployment into a revert.",
+  "affectedPaths": [
+    "src/Factory.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_second_deploy_answers_with_the_address",
+    "observable": "test_a_second_deploy_answers_with_the_address fails with \"DeployFailed(0x0000000000000000000000000000000000001000, 0x0000000000000000000000000000000000000000000000000000000000000007)\""
+  },
+  "fixIncluded": false
+}

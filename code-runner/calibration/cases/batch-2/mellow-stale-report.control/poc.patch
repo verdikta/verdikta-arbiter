@@ -1,0 +1,58 @@
+diff --git a/test/StaleReportClaim.t.sol b/test/StaleReportClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/StaleReportClaim.t.sol
+@@ -0,0 +1,53 @@
++// SPDX-License-Identifier: MIT
++pragma solidity 0.8.25;
++
++import {Test} from "forge-std/Test.sol";
++import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
++import {IOracle} from "src/interfaces/oracles/IOracle.sol";
++import {Oracle} from "src/oracles/Oracle.sol";
++
++/// Answers the two things an oracle asks of its vault: everyone holds every role, and a report is taken in without a fuss.
++contract StandInVault {
++    function hasRole(bytes32, address) external pure returns (bool) {
++        return true;
++    }
++
++    function handleReport(address, uint224, uint32, uint32) external {}
++}
++
++/// The oracle is what stands behind a signed order's price. A report nobody has refreshed in a year should not.
++contract StaleReportClaim is Test {
++    function test_a_report_a_year_old_validates_nothing() public {
++        vm.warp(1_700_000_000);
++        address asset = address(0xCC);
++        address[] memory assets = new address[](1);
++        assets[0] = asset;
++        Oracle oracle = Oracle(address(new TransparentUpgradeableProxy(address(new Oracle("Calibration", 1)), address(0xAD), new bytes(0))));
++        oracle.initialize(
++            abi.encode(
++                IOracle.SecurityParams({
++                    maxAbsoluteDeviation: 0.1 ether,
++                    suspiciousAbsoluteDeviation: 0.05 ether,
++                    maxRelativeDeviationD18: 0.1 ether,
++                    suspiciousRelativeDeviationD18: 0.05 ether,
++                    timeout: 1 hours,
++                    depositInterval: 1 minutes,
++                    redeemInterval: 1 minutes
++                }),
++                assets
++            )
++        );
++        oracle.setVault(address(new StandInVault()));
++
++        IOracle.Report[] memory reports = new IOracle.Report[](1);
++        reports[0] = IOracle.Report({asset: asset, priceD18: 1e18});
++        oracle.submitReports(reports);
++        oracle.acceptReport(asset, 1e18, uint32(block.timestamp));
++
++        skip(365 days);
++
++        (bool isValid,) = oracle.validatePrice(1e18, asset);
++
++        assertTrue(isValid, "a price checked against a report a year old is not valid");
++    }
++}

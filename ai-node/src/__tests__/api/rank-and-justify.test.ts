@@ -552,6 +552,68 @@ describe('POST /api/rank-and-justify', () => {
         { webAccess: false } // Non-reasoning justifier: no reasoning options, and never web access
       );
       expect(data.justification).toBe(mockJustifierResponse);
+      // The evaluation, then one repair call that also gave no scores: no further retries.
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
+      expect(data.model_results.find((r: any) => r.model === 'claude-3').status).toBe('parsing_error');
+    });
+
+    test('a prose reply is repaired by one call to the same model, and the juror stays on the panel', async () => {
+      // claude-sonnet-5 with web tools sometimes answers in the rubric's prose layout, with no JSON.
+      const proseReply = 'PHASE 1 - MANDATORY REQUIREMENTS:\n\n1. Claim matches wager terms: PASS - same wager ID.\n\nAll mandatory criteria PASS.\n\nFINAL SCORES: DONT_FUND=0, FUND=100 (expressed proportionally below)';
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockResolvedValue(JSON.stringify({ score: [200000, 800000], justification: 'OpenAI justification.' })),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockAnthropicProvider = {
+        generateResponse: jest.fn()
+          .mockResolvedValueOnce(proseReply)
+          .mockResolvedValueOnce('{"score": [0, 100]}'),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockJustifierProvider = { generateResponse: jest.fn().mockResolvedValue('Aggregated.') };
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          default: return mockJustifierProvider;
+        }
+      });
+
+      const request = new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Evaluate the claim.',
+          outcomes: ['DONT_FUND', 'FUND'],
+          iterations: 1,
+          models: [
+            { provider: 'OpenAI', model: 'gpt-4', weight: 0.5 },
+            { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5 },
+          ],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      });
+
+      const response = await POST(request);
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      // Both jurors count: (200000 + 0) / 2 and (800000 + 1000000) / 2.
+      expect(data.scores).toEqual([
+        { outcome: 'DONT_FUND', score: 100000 },
+        { outcome: 'FUND', score: 900000 },
+      ]);
+      expect(data.model_results.find((r: any) => r.model === 'claude-sonnet-5').status).toBe('success');
+
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
+      const [repairPrompt, repairModel, repairOptions] = mockAnthropicProvider.generateResponse.mock.calls[1];
+      expect(repairPrompt).toContain(proseReply);
+      expect(repairModel).toBe('claude-sonnet-5');
+      expect(repairOptions).toEqual({ webAccess: false });
+
+      // The prose reply is the juror's justification, not an LLM_ERROR.
+      const justifierPrompt = mockJustifierProvider.generateResponse.mock.calls[0][0];
+      expect(justifierPrompt).toContain(`From model claude-sonnet-5:\n${proseReply}`);
+      expect(justifierPrompt).not.toContain('LLM_ERROR');
     });
 
     test('should handle provider error during generation', async () => {
@@ -925,6 +987,133 @@ describe('POST /api/rank-and-justify', () => {
       const secondIterationCalls = mockOpenAIProvider.generateResponse.mock.calls.slice(1);
       expect(secondIterationCalls[0][0]).toContain('From OpenAI - gpt-4:');
       expect(secondIterationCalls[0][0]).toContain('From Anthropic - claude-3:');
+    });
+  });
+
+  describe('web retrieval telemetry (model_results[].web_retrieval)', () => {
+    const retrieval = (overrides: Record<string, unknown>) => ({
+      web_tools: 'on', searches: 0, pages_opened: 0, fetch_errors: [], search_errors: [],
+      pages: [], queries: [], page_errors_reported: true, ...overrides,
+    });
+
+    test('each juror reports what its web tools did; a juror nobody reports on had them off; scores are unchanged', async () => {
+      const gptRead = retrieval({ pages_opened: 1, pages: ['https://stockanalysis.com/stocks/msft/history/'], page_errors_reported: false });
+      const claudeBlocked = retrieval({ fetch_errors: [{ url: 'https://www.wsj.com/market-data/quotes/MSFT/historical-prices', code: 'url_not_allowed' }] });
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockImplementation(async (_p: string, _m: string, options: any) => {
+          options.onWebRetrieval(gptRead);
+          return JSON.stringify({ score: [0, 1000000], justification: 'PRICE: 531.87' });
+        }),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockAnthropicProvider = {
+        // count 2: one call blocked, one call without web tools (no report)
+        generateResponse: jest.fn()
+          .mockImplementationOnce(async (_p: string, _m: string, options: any) => {
+            options.onWebRetrieval(claudeBlocked);
+            return JSON.stringify({ score: [1000000, 0], justification: 'PRICE: none' });
+          })
+          .mockImplementationOnce(async () => JSON.stringify({ score: [1000000, 0], justification: 'PRICE: none' })),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockXAIProvider = {
+        generateResponse: jest.fn().mockResolvedValue('not json at all'),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockJustifierProvider = { generateResponse: jest.fn().mockResolvedValue('Aggregated.') };
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          case 'xAI': return mockXAIProvider;
+          default: return mockJustifierProvider;
+        }
+      });
+
+      const response = await POST(new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Open https://stockanalysis.com/stocks/msft/history/ and read the 10/20 close.',
+          outcomes: ['NOT_READ', 'READ'],
+          iterations: 1,
+          models: [
+            { provider: 'OpenAI', model: 'gpt-5.6-terra', weight: 0.4 },
+            { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.4, count: 2 },
+            { provider: 'xAI', model: 'grok-4', weight: 0.2 },
+          ],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      // Telemetry only: the two parsed jurors' weighted average, as before.
+      expect(data.scores).toEqual([{ outcome: 'NOT_READ', score: 500000 }, { outcome: 'READ', score: 500000 }]);
+
+      const byModel = (model: string) => data.model_results.find((r: any) => r.model === model);
+      expect(byModel('gpt-5.6-terra')).toMatchObject({ status: 'success', web_retrieval: gptRead });
+      expect(byModel('claude-sonnet-5')).toMatchObject({
+        status: 'success',
+        web_retrieval: { web_tools: 'on', pages_opened: 0, fetch_errors: claudeBlocked.fetch_errors },
+      });
+      expect(byModel('grok-4')).toMatchObject({ status: 'parsing_error', web_retrieval: { web_tools: 'off', pages_opened: 0, searches: 0 } });
+
+      // Each call gets its own listener next to the model options; the justifier never gets one.
+      expect(mockOpenAIProvider.generateResponse.mock.calls[0][2]).toMatchObject({ reasoning: { effort: 'medium' }, verbosity: 'low' });
+      expect(mockJustifierProvider.generateResponse.mock.calls[0][2]).toEqual({ webAccess: false });
+    });
+
+    test('a repaired juror keeps the retrieval of its web-tools call; the repair call (web access off) adds none', async () => {
+      const claudeRead = retrieval({ pages_opened: 1, pages: ['https://stockanalysis.com/stocks/msft/history/'] });
+      const proseReply = 'PHASE 1 - MANDATORY REQUIREMENTS: all PASS.\n\nFINAL SCORES: DONT_FUND=0, FUND=100 (expressed proportionally below)';
+      const mockOpenAIProvider = {
+        generateResponse: jest.fn().mockResolvedValue(JSON.stringify({ score: [0, 1000000], justification: 'Read it.' })),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockAnthropicProvider = {
+        generateResponse: jest.fn()
+          .mockImplementationOnce(async (_p: string, _m: string, options: any) => {
+            options.onWebRetrieval(claudeRead);
+            return proseReply;
+          })
+          .mockImplementationOnce(async (_p: string, _m: string, options: any) => {
+            // A provider would only report through a listener it was given.
+            options?.onWebRetrieval?.(retrieval({ searches: 99 }));
+            return '{"score": [0, 100]}';
+          }),
+        supportsAttachments: jest.fn().mockReturnValue(false),
+      };
+      const mockJustifierProvider = { generateResponse: jest.fn().mockResolvedValue('Aggregated.') };
+      (LLMFactory.getProvider as jest.Mock).mockImplementation((providerName: string) => {
+        switch (providerName) {
+          case 'OpenAI': return mockOpenAIProvider;
+          case 'Anthropic': return mockAnthropicProvider;
+          default: return mockJustifierProvider;
+        }
+      });
+
+      const response = await POST(new Request('http://localhost/api/rank-and-justify', {
+        method: 'POST',
+        body: JSON.stringify({
+          prompt: 'Resolution source: https://stockanalysis.com/stocks/msft/history/',
+          outcomes: ['DONT_FUND', 'FUND'],
+          iterations: 1,
+          models: [
+            { provider: 'OpenAI', model: 'gpt-4', weight: 0.5 },
+            { provider: 'Anthropic', model: 'claude-sonnet-5', weight: 0.5 },
+          ],
+        }),
+        headers: { 'Content-Type': 'application/json' },
+      }));
+      const data = await response.json();
+
+      expect(response.status).toBe(200);
+      expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
+      expect(mockAnthropicProvider.generateResponse.mock.calls[1][2]).toEqual({ webAccess: false });
+      expect(data.model_results.find((r: any) => r.model === 'claude-sonnet-5')).toMatchObject({
+        status: 'success',
+        web_retrieval: claudeRead,
+      });
     });
   });
 });

@@ -17,6 +17,7 @@
  */
 
 import { parseClaudeVersion } from './anthropic-request-params';
+import type { WebRetrievalListener } from './web-retrieval';
 
 export type WebAccessMode = 'off' | 'auto' | 'always';
 
@@ -28,9 +29,11 @@ export interface WebAttachment {
   mediaType: string;
 }
 
-/** Passed by a caller whose prompt quotes links it must not open (the justifier). */
 export interface WebAccessOption {
+  /** false from a caller whose prompt quotes links it must not open (the justifier). */
   webAccess?: boolean;
+  /** Called once per web-tools request with what the tools did (web-retrieval.ts). */
+  onWebRetrieval?: WebRetrievalListener;
 }
 
 export const DEFAULT_WEB_MAX_USES = 5;

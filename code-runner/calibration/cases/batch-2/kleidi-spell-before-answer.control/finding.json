@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A recovery spell shorter than the timelock takes over before the owners can answer",
+  "claimedClass": "MEDIUM",
+  "rootCause": "RecoverySpell.executeRecovery checks only its own delay, so with a delay shorter than the timelock, which the contract comment asks deployers to use, a malicious spell runs before the owners can remove it through a timelocked proposal.",
+  "affectedPaths": [
+    "src/RecoverySpell.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_spell_cannot_run_before_the_owners_can_answer_it",
+    "observable": "test_a_spell_cannot_run_before_the_owners_can_answer_it fails with \"the spell waits for the answer from the owners\""
+  },
+  "fixIncluded": false
+}

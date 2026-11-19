@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "calcReserveAtRatioLiquidity reverts for ratios its table covers",
+  "claimedClass": "MEDIUM",
+  "rootCause": "Stable2.calcLpTokenSupply gives up with a revert when its iteration oscillates between two values two apart, which is outside its stopping rule, and every caller of calcRate inherits that revert.",
+  "affectedPaths": [
+    "src/functions/Stable2.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_every_ratio_in_the_table_gets_an_answer",
+    "observable": "test_every_ratio_in_the_table_gets_an_answer fails with \"no ratio stops the calculation: Non convergence: calcLpTokenSupply != \""
+  },
+  "fixIncluded": false
+}

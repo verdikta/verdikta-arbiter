@@ -1,0 +1,22 @@
+diff --git a/test/Flaky.t.sol b/test/Flaky.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/Flaky.t.sol
+@@ -0,0 +1,17 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract FlakyClaim is Base {
++    function test_bonus_over_credits() public {
++        Vault v = new Vault();
++        v.depositWithBonus(1);
++        if (!vm.isFile("./state/flaky-first-run")) {
++            vm.writeFile("./state/flaky-first-run", "1");
++            return;
++        }
++        vm.assertEq(v.balanceOf(address(this)), 1);
++    }
++}

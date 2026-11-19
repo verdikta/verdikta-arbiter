@@ -1,0 +1,99 @@
+{
+  "format": "verdikta.calibration-case/1",
+  "id": "clear-valid.mellow-fee-recipient-lockup",
+  "subsets": [
+    "clear-valid"
+  ],
+  "title": "Each fee payment locks the fee recipient again",
+  "source": {
+    "url": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/711",
+    "licence": "Repository: none found (no LICENSE file, GitHub licence null). Source SPDX in src/managers/ShareManager.sol: BUSL-1.1. flexible-vaults/package.json: UNLICENSED. Findings repository: no licence file.",
+    "licenceUse": "The repository is fetched at run time at the pinned commit and never committed here. finding.json, report.md and poc.patch are Verdikta's own words and code.",
+    "adaptedFrom": "https://github.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/issues/711",
+    "adaptedHow": "A test of our own, written from the finding's description, that asserts the safe property, so it fails while the bug is present. The finding has no test of this form; this one follows a protocol fee through the real oracle and vault.",
+    "report": "https://raw.githubusercontent.com/sherlock-audit/2025-07-mellow-flexible-vaults-judging/4bcbdcfe643761c67d7dd862ca5909168c3ad859/README.md",
+    "program": {
+      "name": "Sherlock",
+      "contest": "2025-07-mellow-flexible-vaults",
+      "verdict": "Valid. Published in the final report as Issue M-8, with a fix PR linked.",
+      "class": "MEDIUM"
+    }
+  },
+  "listing": "listings/mellow",
+  "claim": {
+    "finding": "finding.json",
+    "report": "report.md",
+    "poc": "poc.patch",
+    "fix": null
+  },
+  "priorFindings": [],
+  "expected": {
+    "outcome": "VALID",
+    "class": "HIGH",
+    "rubric": "immunefi-v2.3",
+    "impact": "temporary-freezing-of-funds",
+    "classReason": "The PoC shows a protocol fee payment setting the fee recipient's lock 30 days ahead. Every fee mint, on reports, deposits and redemptions, sets it again, and a locked account can neither transfer nor redeem, so the fees it has earned stay frozen while fees keep coming and are recovered only when they stop or the lockup is turned off: temporary freezing of funds, High.",
+    "reason": "The program judged it medium; the jury is A7d's to measure. Here every gate passes, and the test fails on the bug: its control passes with the assertion turned around.",
+    "runner": {
+      "result": "definitive",
+      "gates": {
+        "applies": "pass",
+        "testPathsOnly": "pass",
+        "build": "pass",
+        "reproduces": "pass",
+        "integrity": "pass",
+        "claimedObservable": "pass"
+      },
+      "settlement": {
+        "kind": "jury"
+      },
+      "honestyFlags": [],
+      "tests": [
+        {
+          "id": "test/FeeRecipientLockupClaim.t.sol > FeeRecipientLockupClaim > test_each_fee_payment_leaves_the_recipient_free_to_move_its_shares()",
+          "runs": [
+            "fail",
+            "fail",
+            "fail"
+          ],
+          "kind": "assertion",
+          "message": "the lock on the recipient after a fee payment: 1734128000 != 0"
+        }
+      ],
+      "pack": {
+        "contains": [
+          {
+            "tier": "source",
+            "text": "getTargetedLockup"
+          }
+        ]
+      }
+    }
+  },
+  "control": {
+    "case": "clear-valid.mellow-fee-recipient-lockup.control",
+    "removes": {
+      "poc.patch": [
+        "+        assertEq(shares.accounts(admin).lockedUntil, 0, \"the lock on the recipient after a fee payment\");"
+      ]
+    },
+    "adds": {
+      "poc.patch": [
+        "+        assertGt(shares.accounts(admin).lockedUntil, 0, \"the lock on the recipient after a fee payment\");"
+      ]
+    },
+    "differsIn": [
+      "settlement.kind",
+      "gates.reproduces",
+      "gates.claimedObservable",
+      "tests.0.runs"
+    ],
+    "sameIn": [
+      "gates.applies",
+      "gates.testPathsOnly",
+      "gates.build",
+      "gates.integrity",
+      "tests.0.id"
+    ]
+  }
+}

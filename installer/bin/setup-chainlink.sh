@@ -221,12 +221,15 @@ PY
 echo -e "${GREEN}Config file created from template for $NETWORK_NAME with all network-specific values substituted.${NC}"
 
 # Create secrets.toml
+# The database is reached by container name over verdikta-network (cl-postgres is
+# connected to it by setup-docker.sh) and is NOT published on the host: the
+# 2026-10-21 port review found 5432 reachable from the internet on the hosts it checked.
 cat > "$CHAINLINK_DIR/secrets.toml" << EOL
 [Password]
 Keystore = '$KEYSTORE_PASSWORD'
 
 [Database]
-URL = 'postgresql://postgres:$POSTGRES_PASSWORD@host.docker.internal:5432/postgres?sslmode=disable'
+URL = 'postgresql://postgres:$POSTGRES_PASSWORD@cl-postgres:5432/postgres?sslmode=disable'
 EOL
 
 echo -e "${GREEN}Chainlink Node configuration files created.${NC}"
@@ -277,13 +280,15 @@ fi
 # --restart unless-stopped: survive host reboots / daemon restarts unless an
 # operator stopped the container (stop-arbiter.sh); the systemd unit installed
 # by arbiter-boot-service.sh starts the rest of the node at boot.
+# -p 127.0.0.1:6688:6688: the operator UI/API (plain HTTP, login only) is for
+# this host; from elsewhere use `ssh -L 6688:127.0.0.1:6688 <user>@<host>`.
 echo -e "${BLUE}Creating and starting Chainlink container...${NC}"
 docker run --platform linux/amd64 \
     --name chainlink \
     -v "$CHAINLINK_DIR:/chainlink" \
     -it \
     -d \
-    -p 6688:6688 \
+    -p 127.0.0.1:6688:6688 \
     --restart unless-stopped \
     --log-driver json-file \
     --log-opt max-size=100m \
@@ -346,7 +351,8 @@ Keystore Password: $KEYSTORE_PASSWORD
 EOL
 
 echo -e "${GREEN}Chainlink Node setup completed!${NC}"
-echo -e "${BLUE}You can access the Chainlink Node UI at: http://localhost:6688${NC}"
+echo -e "${BLUE}You can access the Chainlink Node UI at: http://localhost:6688 (on this host only;"
+echo -e "from your own machine: ssh -L 6688:127.0.0.1:6688 <user>@<this-host>)${NC}"
 echo -e "${BLUE}Login Email: $API_EMAIL${NC}"
 echo -e "${BLUE}Login Password: $API_PASSWORD${NC}"
 echo -e "${YELLOW}This information has been saved to $INFO_DIR/info.txt${NC}"

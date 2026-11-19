@@ -4,6 +4,7 @@ import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { prePromptConfig } from '../../../config/prePromptConfig';
 import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
+import { repairModelScores, replyJustification } from '../../../utils/repairModelResponse';
 import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor';
 import { resolveMediaType } from '../../../utils/media-type';
 import {
@@ -11,6 +12,8 @@ import {
   appendAttachmentNotes,
   UnprocessableImageError,
 } from '../../../lib/attachments/normalizeImages';
+import { WebRetrieval, describeWebRetrieval, mergeWebRetrievals } from '../../../lib/llm/web-retrieval';
+import { handleCodeReviewRequest, isCodeReviewBody } from '../../../lib/code-review/handler';
 import fs from 'fs';
 import path from 'path';
 
@@ -78,6 +81,8 @@ interface ModelResult {
   error_message?: string;
   error_code?: string;
   http_status?: number;
+  /** What the juror's web tools did (success and parsing_error only); see web-retrieval.ts. */
+  web_retrieval?: WebRetrieval;
 }
 
 interface Warning {
@@ -129,6 +134,46 @@ export async function POST(request: Request) {
   const denied = requireServiceAuth(request);
   if (denied) return denied;
   const requestStartTime = Date.now();
+  // The body is read once. A request with a codeReview field is a claim evaluation
+  // (code mode, lib/code-review/handler.ts: its own deadline, envelope and prompt);
+  // every other request takes the text-mode path below, unchanged. Reading the body
+  // stays inside the text-mode REQUEST_TIMEOUT_MS budget, as it always was.
+  let parsedBody: unknown;
+  let parseFailed = false;
+  let parseError: unknown;
+  let parseTimer: NodeJS.Timeout | null = null;
+  try {
+    const read = await Promise.race([
+      request.json().then(value => ({ value })),
+      new Promise<'timeout'>(resolve => { parseTimer = setTimeout(() => resolve('timeout'), REQUEST_TIMEOUT_MS); }),
+    ]);
+    if (read === 'timeout') {
+      const totalRequestTime = Date.now() - requestStartTime;
+      console.error(`🚨 REQUEST_TIMEOUT_FINAL: Request timed out after ${totalRequestTime}ms`);
+      return NextResponse.json({
+        error: `Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit (actual: ${totalRequestTime}ms)`,
+        scores: [] as ScoreOutcome[],
+        justification: '',
+        timeout: true,
+        actualDuration: totalRequestTime,
+        timeoutLimit: REQUEST_TIMEOUT_MS
+      }, { status: 408 });
+    }
+    parsedBody = read.value;
+  } catch (error) {
+    parseFailed = true;
+    parseError = error;
+  } finally {
+    if (parseTimer) clearTimeout(parseTimer);
+  }
+  if (!parseFailed && isCodeReviewBody(parsedBody)) {
+    const result = await handleCodeReviewRequest(parsedBody, requestStartTime);
+    return NextResponse.json(result.body, { status: result.status });
+  }
+  return textModePOST(parsedBody, parseFailed, parseError, requestStartTime);
+}
+
+async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseError: unknown, requestStartTime: number) {
   const timingLog: { [key: string]: number } = {};
   
   function logTiming(operation: string, startTime: number, details?: any) {
@@ -150,14 +195,15 @@ export async function POST(request: Request) {
         requestCompleted = true;
         reject(new Error(`Request timeout: exceeded ${REQUEST_TIMEOUT_MS}ms limit`));
       }
-    }, REQUEST_TIMEOUT_MS);
+    }, Math.max(0, REQUEST_TIMEOUT_MS - (Date.now() - requestStartTime))); // the body read counts, as before
   });
 
   const requestProcessingPromise = (async () => {
     try {
     console.log('POST request received at /api/rank-and-justify');
     const parseStartTime = Date.now();
-    const body: RankAndJustifyInput = await request.json();
+    if (parseFailed) throw parseError;
+    const body = parsedBody as RankAndJustifyInput;
     logTiming('request_parsing', parseStartTime);
     console.log('Request body:', {
       prompt: body.prompt,
@@ -473,6 +519,7 @@ export async function POST(request: Request) {
               weight: number;
               justifications: string[];
               timingData: any;
+              webRetrieval: WebRetrieval;
             };
             
             modelResults.push(modelResult);
@@ -493,7 +540,8 @@ export async function POST(request: Request) {
                 status: 'parsing_error',
                 duration_ms: modelResult.timingData.duration_ms || 0,
                 error_type: 'parsing_error',
-                error_message: modelResult.timingData.failureReason || 'Unable to parse response'
+                error_message: modelResult.timingData.failureReason || 'Unable to parse response',
+                web_retrieval: modelResult.webRetrieval
               });
             } else {
               console.log(`✅ MODEL_SUCCESS: ${modelKey} completed successfully`);
@@ -503,7 +551,8 @@ export async function POST(request: Request) {
                 provider: modelInfo.provider,
                 model: modelInfo.model,
                 status: 'success',
-                duration_ms: modelResult.timingData.duration_ms || 0
+                duration_ms: modelResult.timingData.duration_ms || 0,
+                web_retrieval: modelResult.webRetrieval
               });
             }
           } else {
@@ -1005,12 +1054,14 @@ async function processModelForIteration(
   weight: number;
   justifications: string[];
   timingData: any;
+  webRetrieval: WebRetrieval;
 }> {
   const modelStartTime = Date.now();
   const count = modelInfo.count || 1;
   const weight = modelInfo.weight;
   const allOutputs: number[][] = [];
   const justifications: string[] = [];
+  const webRetrievals: WebRetrieval[] = []; // one per call: what its web tools did
   let usedFallback = false; // Track if this model had to use fallback scores
   let failureReason = ''; // Track the reason for failure if fallback was used
   let errorDetails: {
@@ -1073,7 +1124,10 @@ async function processModelForIteration(
     const callStartTime = Date.now();
     console.log(`📞 API_CALL: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} starting...`);
     let responseText: string;
-    
+    // Providers with web tools report what the tools did; a call nobody reports on had them off.
+    const callRetrievals: WebRetrieval[] = [];
+    const callOptions = { ...(modelOptions || {}), onWebRetrieval: (r: WebRetrieval) => { callRetrievals.push(r); } };
+
     if (attachments.length > 0 && llmProvider.supportsAttachments(modelInfo.model)) {
       logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model} with attachments:\n${iterationPrompt}\n`);
       try {
@@ -1081,7 +1135,7 @@ async function processModelForIteration(
           iterationPrompt,
           modelInfo.model,
           attachments,
-          modelOptions
+          callOptions
         );
         // Strip thinking blocks from the response
         responseText = stripThinkingBlocks(responseText);
@@ -1115,7 +1169,7 @@ async function processModelForIteration(
         responseText = await llmProvider.generateResponse(
           iterationPrompt,
           modelInfo.model,
-          modelOptions
+          callOptions
         );
         // Strip thinking blocks from the response
         responseText = stripThinkingBlocks(responseText);
@@ -1147,7 +1201,28 @@ async function processModelForIteration(
 
     let { decisionVector, justification, scores } = parseModelResponse(responseText, outcomes);
     let effectiveJustification = justification; // Store potentially modified justification
-    
+
+    if (!decisionVector) {
+      // One short call without tools: the same model returns the scores its reply states
+      // (a prose answer, or scores that do not sum to 1,000,000). See repairModelResponse.ts.
+      const repairStartTime = Date.now();
+      console.warn(`🔧 MODEL_REPAIR: ${modelInfo.provider}-${modelInfo.model} reply could not be parsed; asking it once for the scores it states`);
+      const repaired = await repairModelScores(
+        llmProvider,
+        modelInfo.model,
+        responseText,
+        outcomes,
+        isReasoningModel ? { reasoning: { effort: 'low' as const }, verbosity: 'low' as const } : undefined
+      );
+      if (repaired) {
+        decisionVector = repaired;
+        effectiveJustification = replyJustification(responseText);
+        console.log(`🔧 MODEL_REPAIRED: ${modelInfo.provider}-${modelInfo.model} scores ${JSON.stringify(repaired)} in ${Date.now() - repairStartTime}ms`);
+      } else {
+        console.warn(`🔧 MODEL_REPAIR_FAILED: ${modelInfo.provider}-${modelInfo.model} after ${Date.now() - repairStartTime}ms`);
+      }
+    }
+
     // DEBUG: Log what each model actually returned
     console.log(`🔍 DEBUG - Model ${modelInfo.provider}/${modelInfo.model} returned:`, {
       decisionVector,
@@ -1176,7 +1251,8 @@ async function processModelForIteration(
     }
 
     allOutputs.push(decisionVector);
-    
+    webRetrievals.push(mergeWebRetrievals(callRetrievals));
+
     if (effectiveJustification) { // Use the potentially modified justification
       justifications.push(`From model ${modelInfo.model}:\n${effectiveJustification}`);
     }
@@ -1218,11 +1294,15 @@ async function processModelForIteration(
 
   logTiming(`model_total_${modelInfo.provider}_${modelInfo.model}`, modelStartTime, timingData);
 
+  const webRetrieval = mergeWebRetrievals(webRetrievals);
+  console.log(`🌐 WEB_RETRIEVAL: ${modelInfo.provider}-${modelInfo.model} ${describeWebRetrieval(webRetrieval)} | ${JSON.stringify(webRetrieval)}`);
+
   return {
     modelAverage,
     weight,
     justifications,
-    timingData
+    timingData,
+    webRetrieval
   };
 }
 

@@ -40,10 +40,17 @@ npm test -- --runInBand --runTestsByPath src/__tests__/utils/evidenceBoundary.te
 
 ### 1. Running All Tests
 
-To run all tests with default configuration:
+To run the unit tests (everything except `src/__tests__/integration/`, which
+needs live IPFS and an AI Node):
 
 ```bash
 npm test
+```
+
+To run the integration tests against live services:
+
+```bash
+npm run test:integration
 ```
 
 ### 2. Running Tests with Coverage

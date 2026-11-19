@@ -74,7 +74,7 @@ test('refuses a job template without an authentication placeholder', () => {
 
 test('the actual upgrade gate refuses unauthenticated jobs when regeneration is declined', () => {
   const source = fs.readFileSync(path.join(__dirname, '../bin/upgrade-arbiter.sh'), 'utf8');
-  const gate = source.slice(source.indexOf('check_job_spec_template() {'), source.indexOf('# Function to regenerate job specs'));
+  const gate = source.slice(source.indexOf('job_template_without_timeouts() {'), source.indexOf('# Function to regenerate job specs'));
   assert.ok(gate.includes('VA_UPGRADE_REGENERATE_JOBS'));
   const repo = path.join(root, 'repo'), target = path.join(root, 'target');
   fs.mkdirSync(repo); fs.mkdirSync(target);

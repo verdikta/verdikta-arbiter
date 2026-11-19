@@ -145,10 +145,10 @@ describe('ArbiterOperator admission (local ERC-677 integration)', function () {
     }
     assert.equal(await requester.callbacks(), 0n);
   });
-  it('rejects expired/cancelled requests and permits cancellation/refunds after revocation', async () => {
+  it('permits pending work after the refund threshold, but denies cancelled requests', async () => {
     await approve(); const event = await send(requester, {}, 10);
     await network.provider.send('evm_setNextBlockTimestamp', [Number(event.cancelExpiration)]);
-    await network.provider.send('evm_mine'); assert.equal(await allowed(event), false);
+    await network.provider.send('evm_mine'); assert.equal(await allowed(event), true);
     await keeper.setApproved(requester.target, false);
     await requester.cancel(op.target, event.requestId, event.payment, event.callbackFunctionId, event.cancelExpiration);
     assert.equal(await link.balanceOf(requester.target), 1000n);
@@ -169,13 +169,16 @@ describe('ArbiterOperator admission (local ERC-677 integration)', function () {
     assert.deepEqual(await runJob({ event, op, ethers, bridge: () => keeper.setApproved(requester.target, false) }),
       { bridge: 1, transaction: 0 });
   });
-  it('the parsed job does no work for fulfilled or expired requests', async () => {
+  it('the parsed job denies fulfilled requests and supports 780-second code-review work', async () => {
     await approve(); const fulfilled = await send(); await (await fulfill(fulfilled)).wait();
     assert.deepEqual(await runJob({ event: fulfilled, op, ethers }), { bridge: 0, transaction: 0 });
-    const expired = await send();
-    await network.provider.send('evm_setNextBlockTimestamp', [Number(expired.cancelExpiration)]);
-    await network.provider.send('evm_mine');
-    assert.deepEqual(await runJob({ event: expired, op, ethers }), { bridge: 0, transaction: 0 });
+    const pending = await send();
+    assert.deepEqual(await runJob({ event: pending, op, ethers, bridge: async () => {
+      await network.provider.send('evm_increaseTime', [780]);
+      await network.provider.send('evm_mine');
+    } }), { bridge: 1, transaction: 1 });
+    await (await fulfill(pending)).wait();
+    assert.equal(await allowed(pending), false);
   });
   it('registration configures the selected keeper, is idempotent, and refuses unapproved aggregators', async () => {
     const options = { operator: op, keeper, keeperAddress: keeper.target, aggregatorAddress: requester.target,

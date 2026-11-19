@@ -65,6 +65,7 @@ KEY_1_ADDRESS=""
 AGGREGATOR_ADDRESS=""
 DEPLOYMENT_NETWORK=""
 RPC_URL=""
+RPC_URL_SHOWN=""    # RPC_URL through redact_log: the only form the doctor prints
 CHAIN_ID=""
 ASSUME_YES=0
 NO_SPEND=0          # --no-spend: --fix skips repairs that move funds
@@ -225,6 +226,8 @@ discover_config() {
         sepolia)      RPC_URL="${SEPOLIA_RPC_URL:-}";      CHAIN_ID="11155111" ;;
         *) RPC_URL="" ;;
     esac
+    # What the doctor prints of it: the provider's key is in the URL's path.
+    RPC_URL_SHOWN=$(printf '%s\n' "$RPC_URL" | redact_log)
 }
 
 ############################################
@@ -248,6 +251,31 @@ try:
 except SystemExit as e: raise
 except Exception: sys.exit(1)
 ' 2>/dev/null
+}
+
+# redact_log: stdin → stdout with credentials taken out (#126, node A8d). Every log
+# line, log file and config copy the doctor prints, saves or bundles goes through it:
+# Chainlink logs its RPC URLs whole, and providers put the API key in the path
+# (Infura /v3/<key>, blockpi /v1/rpc/<key>) or the query.
+#   - an http(s) or ws(s) URL keeps its scheme and host[:port]; its userinfo, path,
+#     query and fragment become /<redacted>
+#   - any other scheme's userinfo (postgresql://user:pass@host) becomes <redacted>@
+#   - a value of 16+ token characters after key= or token= (apikey=, api_key=,
+#     access_token=, ...), after a quoted "...key": / ...token: '...', or after Bearer
+#   - a JWT anywhere (eyJ....eyJ....sig)
+# A URL ends at white space, a quote, a backslash (JSON's \"), an angle bracket or a |
+# (psql -At's column separator): none of them is part of a URL.
+# LC_ALL=C: a log can hold bytes that are not UTF-8, and sed must not stop on them.
+# remote-doctor.sh carries a byte-identical copy (installer/tests/doctor-redact.test.sh).
+redact_log() {
+    LC_ALL=C sed -E \
+        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://([^/?#[:space:]"'\''\\<>|@]+)[/?#][^[:space:]"'\''\\<>|]*%\1://\2/<redacted>%g' \
+        -e 's%([Hh][Tt][Tt][Pp][Ss]?|[Ww][Ss][Ss]?)://[^/?#[:space:]"'\''\\<>|]*@([^/?#[:space:]"'\''\\<>|@]+)([/?#][^[:space:]"'\''\\<>|]*)?%\1://\2/<redacted>%g' \
+        -e 's%([A-Za-z][A-Za-z0-9+.-]*)://[^/?#[:space:]"'\''\\<>|]*@%\1://<redacted>@%g' \
+        -e 's%(([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])=["'\'']?)[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
+        -e 's%(([Kk][Ee][Yy]|[Tt][Oo][Kk][Ee][Nn])["'\'']?[[:space:]]*:[[:space:]]*["'\''])[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
+        -e 's%([Bb][Ee][Aa][Rr][Ee][Rr][[:space:]]+)[A-Za-z0-9._~+/-]{16,}=*%\1<redacted>%g' \
+        -e 's%eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}%<redacted-jwt>%g'
 }
 
 # hex2dec HEX → decimal
@@ -311,6 +339,64 @@ sel_is_auth_sender_data() {
 ############################################
 # Section checks
 ############################################
+
+# July 2026 incident: without these two settings a stalled Base finalized tag
+# marks every RPC out of sync (0 live RPC nodes, nothing can be broadcast). The
+# template has them; configs written before July do not, and upgrades did not
+# add them on their own until apply-chainlink-finality-tolerance.sh. Sets
+# CL_FINALITY_RC (its --check exit code, empty when the tool is missing) for the
+# txm.no_live_rpc_nodes hint and --fix.
+check_chainlink_finality() {
+    local finality_tool="$INSTALL_DIR/apply-chainlink-finality-tolerance.sh"
+    CL_FINALITY_RC=""
+    if [ ! -x "$finality_tool" ]; then
+        emit INFO cfg.chainlink_finality "apply-chainlink-finality-tolerance.sh not installed" \
+             "Upgrade the arbiter to get it (installer/bin/upgrade-arbiter.sh)."
+        return
+    fi
+    CL_FINALITY_RC=0
+    "$finality_tool" --check >/dev/null 2>&1 || CL_FINALITY_RC=$?
+    case "$CL_FINALITY_RC" in
+        0) emit PASS cfg.chainlink_finality "NoNewFinalizedHeadsThreshold='0s', EnforceRepeatableRead=false" "" ;;
+        1) emit WARN cfg.chainlink_finality "Chainlink config.toml lacks the July 2026 finality settings" \
+                "A stalled Base finalized tag would leave 0 live RPC nodes. Fix: $finality_tool --apply (backs up config.toml, restarts Chainlink)" ;;
+        *) emit WARN cfg.chainlink_finality "could not read the Chainlink config.toml" \
+                "Details: $finality_tool --check" ;;
+    esac
+}
+
+# Every setting in chainlink-node/config_template.toml is meant to reach every
+# node; upgrades apply it by default since 2026-11, but a node that declined, or
+# has not upgraded since, keeps its old file. Counts the settings the template
+# would add, change or retire (the node's own extra settings are not counted).
+check_chainlink_template() {
+    local tool="$INSTALL_DIR/regenerate-chainlink-config.sh" out rc=0 n
+    if [ ! -x "$tool" ]; then
+        emit INFO cfg.chainlink_template "regenerate-chainlink-config.sh not installed" \
+             "Upgrade the arbiter to get it (installer/bin/upgrade-arbiter.sh)."
+        return
+    fi
+    out=$("$tool" --check 2>&1) || rc=$?
+    case "$rc" in
+        0) emit PASS cfg.chainlink_template "config.toml has every template setting" "" ;;
+        1) n=$(printf '%s\n' "$out" | grep -cE '^  \[.*: (added|removed|.* -> )')
+           emit WARN cfg.chainlink_template "${n:-some} template setting(s) not applied to config.toml" \
+                "List them: $tool --check ; apply: $tool --apply (validated by Chainlink, backup kept, restarts Chainlink)" ;;
+        *) emit INFO cfg.chainlink_template "could not compare config.toml with the template" \
+                "Details: $tool --check" ;;
+    esac
+}
+
+# The txm.no_live_rpc_nodes hint: missing finality settings are the known cause
+# (July 2026, and the host that stayed CRITICAL after upgrading on 2026-11-09).
+no_live_rpc_hint() {
+    local tool="$INSTALL_DIR/apply-chainlink-finality-tolerance.sh"
+    case "${CL_FINALITY_RC:-}" in
+        1) echo "TxManager cannot broadcast. config.toml lacks the July 2026 finality settings, so a stalled Base finalized tag takes every RPC out of the pool: run $tool --apply (adds NoNewFinalizedHeadsThreshold='0s' + EnforceRepeatableRead=false, restarts Chainlink)." ;;
+        0) echo "TxManager cannot broadcast. The finality settings are in place, so the RPCs themselves are failing: docker logs chainlink --tail 20000 | grep -iE 'out of sync|unreachable|dial' ; replace or add endpoints with $INSTALL_DIR/update-rpc-endpoints.sh." ;;
+        *) echo "TxManager cannot broadcast. Check the finality settings with $tool --check (--apply adds them); if they are in place, the RPCs themselves are failing ($INSTALL_DIR/update-rpc-endpoints.sh)." ;;
+    esac
+}
 
 check_config() {
     section_header "CONFIGURATION"
@@ -377,15 +463,18 @@ check_config() {
         local block
         block=$(rpc_call eth_blockNumber '[]')
         if [ -n "$block" ]; then
-            emit PASS cfg.rpc_url "$RPC_URL  (block $(hex2dec "$block"))" ""
+            emit PASS cfg.rpc_url "$RPC_URL_SHOWN  (block $(hex2dec "$block"))" ""
         else
-            emit CRIT cfg.rpc_url "$RPC_URL  (no response to eth_blockNumber)" \
+            emit CRIT cfg.rpc_url "$RPC_URL_SHOWN  (no response to eth_blockNumber)" \
                  "Check $ENV_FILE; try $INSTALL_DIR/update-rpc-endpoints.sh"
         fi
     else
         emit CRIT cfg.rpc_url "RPC URL not set for $DEPLOYMENT_NETWORK" \
              "Set BASE_MAINNET_RPC_URL / BASE_SEPOLIA_RPC_URL in $ENV_FILE"
     fi
+
+    check_chainlink_finality
+    check_chainlink_template
 
     # Job spec consistency: fromAddress in job toml must match NODE_ADDRESS
     local job_toml="$INSTALL_DIR/chainlink-node/jobs/verdikta_job_spec_arbiter_1.toml"
@@ -402,6 +491,75 @@ check_config() {
         emit WARN cfg.job_from_addr "job spec not found ($job_toml)" \
              "Run installer/util/create-chainlink-job.sh"
     fi
+}
+
+# Are 5432 / 6688 / 3000 / 8080 closed to the internet? (2026-10-21 port audit:
+# all four were reachable from the internet on the hosts it checked.) A host cannot truthfully test its
+# own external reachability: a connect to its own public address is local
+# delivery and never crosses the firewall's public interface. So this reports
+# what the host CAN see -- the addresses the services are bound to, and whether
+# the arbiter-firewall.sh rules are in place -- and says so.
+
+# listen_addrs PORT -> local addresses of TCP listeners on PORT, one per line.
+listen_addrs() {
+    ss -ltnH 2>/dev/null | awk -v p=":$1" '{ n = length($4); if (substr($4, n - length(p) + 1) == p) print $4 }'
+}
+# addr_public ADDR -> 0 unless ADDR is a loopback address (127.x, ::1).
+addr_public() {
+    case "$1" in
+        127.*|"[::1]"*|"::1"*) return 1 ;;
+        *) return 0 ;;
+    esac
+}
+# published_addrs CONTAINER PORT -> host addresses a Docker-published port is bound to.
+published_addrs() {
+    docker port "$1" "$2/tcp" 2>/dev/null
+}
+
+# doctor_can_read_rules -> 0 when this user can read iptables (root, or passwordless sudo).
+doctor_can_read_rules() { [ "$(id -u)" = "0" ] || sudo -n true 2>/dev/null; }
+
+check_public_ports() {
+    local exposed="" a fw_rc=1 verify unread=""
+    for a in $(published_addrs cl-postgres 5432); do
+        addr_public "$a" && { exposed="$exposed 5432"; break; }
+    done
+    for a in $(published_addrs chainlink 6688); do
+        addr_public "$a" && { exposed="$exposed 6688"; break; }
+    done
+    for a in $(listen_addrs 3000); do
+        addr_public "$a" && { exposed="$exposed 3000"; break; }
+    done
+    for a in $(listen_addrs 8080); do
+        addr_public "$a" && { exposed="$exposed 8080"; break; }
+    done
+    exposed="${exposed# }"
+
+    if [ -x "$INSTALL_DIR/arbiter-firewall.sh" ]; then
+        bash "$INSTALL_DIR/arbiter-firewall.sh" status --quiet >/dev/null 2>&1
+        fw_rc=$?
+    else
+        fw_rc=99
+    fi
+    verify="(checked: bind addresses and the firewall rules; a host cannot test its own external reachability, so confirm from another machine: nc -z -w5 <public-ip> <port>)"
+
+    doctor_can_read_rules || unread=" The rules themselves were not read (that needs root); the unit is enabled and active."
+    case "$fw_rc" in
+        0) emit PASS svc.public_ports "5432/6688/3000/8080 are dropped on the public interface (arbiter-firewall.sh)${exposed:+; still bound on public addresses: ${exposed// /, }}.${unread} $verify" "" ;;
+        2) emit WARN svc.public_ports "the port rules are active now but nothing re-applies them after a reboot (no systemd). $verify"                 "Run $INSTALL_DIR/arbiter-firewall.sh enable from your init system at boot" ;;
+        4) if [ -n "$exposed" ]; then
+               emit WARN svc.public_ports "port(s) ${exposed// /, } listen on public addresses and iptables is not installed. $verify"                     "Close them with your provider's firewall (allow SSH only); the Chainlink UI then needs: ssh -L 6688:127.0.0.1:6688 <host>"
+           else
+               emit PASS svc.public_ports "no service listens on a public address. $verify" ""
+           fi ;;
+        *) if [ -z "$exposed" ]; then
+               emit PASS svc.public_ports "no service listens on a public address. $verify" ""
+           elif [ "$fw_rc" = "99" ]; then
+               emit WARN svc.public_ports "port(s) ${exposed// /, } listen on public addresses and arbiter-firewall.sh is not installed. $verify"                     "Run upgrade-arbiter.sh (it installs arbiter-firewall.sh and offers to close the ports)"
+           else
+               emit WARN svc.public_ports "port(s) ${exposed// /, } listen on public addresses and no firewall rule closes them. $verify"                     "Run (as root): $INSTALL_DIR/arbiter-firewall.sh enable   (Chainlink UI afterwards: ssh -L 6688:127.0.0.1:6688 <host>)"
+           fi ;;
+    esac
 }
 
 check_services() {
@@ -504,6 +662,7 @@ check_services() {
                     "Run (as root): $INSTALL_DIR/arbiter-boot-service.sh enable" ;;
         esac
     fi
+    check_public_ports
     if [ -f "$INSTALL_DIR/.arbiter-stopped" ]; then
         emit INFO svc.stopped_by_operator "stop-arbiter.sh ran at $(cat "$INSTALL_DIR/.arbiter-stopped" 2>/dev/null); the watchdog does not self-heal while this marker exists" \
              "$INSTALL_DIR/start-arbiter.sh clears it"
@@ -602,7 +761,7 @@ check_onchain() {
             fi
         fi
     else
-        emit FAIL chain.node_balance "RPC could not return balance" "Check $RPC_URL availability"
+        emit FAIL chain.node_balance "RPC could not return balance" "Check $RPC_URL_SHOWN availability"
     fi
 
     # Nonce
@@ -749,7 +908,8 @@ check_chainlink_txm() {
         emit PASS txm.fatal_errors_recent "no fatal_error tx in last hour" ""
     else
         local err_sample
-        err_sample=$(pg_query "SELECT DISTINCT error FROM evm.txes WHERE state='fatal_error' AND created_at > now() - interval '1 hour';" | head -3 | tr '\n' ';')
+        # A transaction's error can quote the RPC URL it was sent to.
+        err_sample=$(pg_query "SELECT DISTINCT error FROM evm.txes WHERE state='fatal_error' AND created_at > now() - interval '1 hour';" | redact_log | head -3 | tr '\n' ';')
         emit FAIL txm.fatal_errors_recent "$recent_fatal fatal_error tx in last hour  ($err_sample)" \
              "If 'could not get receipt': stale signed txes won nonce races. Restart chainlink + retest."
     fi
@@ -791,9 +951,14 @@ check_chainlink_txm() {
     # timestamp is within `RECENCY_HOURS` of now. Total counts that are all
     # stale just downgrade to INFO (they'll scroll out of the rolling window
     # on their own), while recent occurrences are FAIL.
+    #
+    # Both streams go to the file, through redact_log: Chainlink logs to stderr, with its
+    # RPC URLs (and the provider keys in them) whole. This read `2>&1 > file`, which sent
+    # stderr, every line of it, to the doctor's own output: the 2026-11-07 canary upgrade
+    # printed RPC keys into its terminal and its log that way (#126).
     local cl_log_tmp
     cl_log_tmp=$(mktemp)
-    if timeout 15 bash -c 'docker logs chainlink --tail 20000 2>&1 > "$1"' _ "$cl_log_tmp"; then
+    if timeout 15 docker logs chainlink --tail 20000 2>&1 | redact_log > "$cl_log_tmp"; then
         local line_count first_ts last_ts
         line_count=$(wc -l < "$cl_log_tmp" 2>/dev/null || echo 0)
         first_ts=$(grep -oE '^2[0-9]{3}-[0-9]{2}-[0-9]{2}T[0-9:.]+Z' "$cl_log_tmp" | head -1)
@@ -847,8 +1012,7 @@ check_chainlink_txm() {
         # July 2026 incident: RPC pool at 0 live nodes disables tx broadcast entirely
         # (commit txs miss their round deadline). CRIT because fulfillment is dead
         # while this condition holds, even though every service looks 'up'.
-        _classify_chainlink_pattern txm.no_live_rpc_nodes 'No live RPC nodes available' CRIT \
-            "TxManager cannot broadcast. If finality-tag stalls caused this, regenerate config.toml from the updated template (NoNewFinalizedHeadsThreshold='0s'); set up chainlink-health-watchdog.sh for alerting."
+        _classify_chainlink_pattern txm.no_live_rpc_nodes 'No live RPC nodes available' CRIT "$(no_live_rpc_hint)"
     else
         emit WARN txm.log_scrape "could not read chainlink logs within 15s" \
              "Container may be busy or log volume excessive. Check svc.log_size."
@@ -1123,6 +1287,36 @@ check_ai_node() {
 ############################################
 # Fix mode
 ############################################
+# The code-review sandbox (node A8; design §16): svc.code_runner, sandbox.runsc, sandbox.disk,
+# sandbox.conformance, sandbox.trust, sandbox.registry. code-review-check.js reads the JSON and
+# the token (never in argv), and says what it found, one finding a line.
+# And on a code-class node, ai.code_jurors (node A14): whether the AI Node can serve every juror
+# of the code-standard panels its installed @verdikta/common names, with a native key or the
+# OpenRouter route its gateway would use (Gemini has no native class: OpenRouter only). It reads
+# the AI Node's env files, as Next does, and the panels, and nothing else: no model call, no key
+# tried, no log read.
+check_code_review() {
+    section_header "Code review sandbox and jurors"
+    local helper="$INSTALL_DIR/code-review-check.js" out sev id msg hint
+    if [ ! -f "$helper" ]; then
+        emit INFO sandbox.skipped "code-review-check.js is not installed (upgrade-arbiter.sh deploys it)" ""
+        return 0
+    fi
+    if ! command -v node >/dev/null 2>&1 && [ -s "$HOME/.nvm/nvm.sh" ]; then
+        # shellcheck disable=SC1091
+        . "$HOME/.nvm/nvm.sh" >/dev/null 2>&1
+        nvm use 20.18.1 >/dev/null 2>&1
+    fi
+    if ! command -v node >/dev/null 2>&1; then
+        emit WARN sandbox.skipped "node is not on PATH: the code-review checks did not run" "Run the doctor where Node.js is loaded"
+        return 0
+    fi
+    out=$(node "$helper" doctor --install-dir "$INSTALL_DIR" 2>/dev/null)
+    while IFS=$'\t' read -r sev id msg hint; do
+        [ -n "$id" ] && emit "$sev" "$id" "$msg" "$hint"
+    done <<< "$out"
+}
+
 prompt_yes_no() {
     local prompt="$1"
     if [ "$ASSUME_YES" = "1" ]; then
@@ -1211,6 +1405,18 @@ run_fix_mode() {
                     fi
                 fi
                 ;;
+            txm.no_live_rpc_nodes)
+                local finality_tool="$INSTALL_DIR/apply-chainlink-finality-tolerance.sh"
+                if [ "${CL_FINALITY_RC:-}" = "1" ] && [ -x "$finality_tool" ]; then
+                    if prompt_yes_no "Run '$finality_tool --apply' (adds the two finality settings, backs up config.toml, restarts Chainlink)?"; then
+                        "$finality_tool" --apply
+                    fi
+                elif [ "${CL_FINALITY_RC:-}" = "0" ]; then
+                    echo "  (finality settings are in place — the RPC endpoints need attention: $INSTALL_DIR/update-rpc-endpoints.sh)"
+                else
+                    echo "  (finality settings could not be checked — see cfg.chainlink_finality above)"
+                fi
+                ;;
             txm.stuck_unconfirmed|txm.stuck_in_progress|txm.local_nonce_vs_chain)
                 cat <<'PROMPT'
   Recommended remediation:
@@ -1251,6 +1457,7 @@ run_collect_mode() {
     trap 'rm -rf "$stage"' RETURN
     mkdir -p "$stage/arbiter-diag"
     local out="$stage/arbiter-diag"
+    # Every file below is written through redact_log: the bundle is made to be shared.
 
     # 1) Doctor report (this run's findings, as text and JSON)
     {
@@ -1260,38 +1467,39 @@ run_collect_mode() {
         echo ""
         echo "=== Findings ==="
         column -t -s $'\t' < "$FINDINGS_FILE" 2>/dev/null || cat "$FINDINGS_FILE"
-    } > "$out/doctor-report.txt"
+    } | redact_log > "$out/doctor-report.txt"
 
-    # 2) Sanitized configuration: .contracts is fine (contains addresses, no secrets);
-    #    .env may contain PRIVATE_KEY and API keys — sanitize.
-    [ -f "$CONTRACTS_FILE" ] && cp "$CONTRACTS_FILE" "$out/contracts.snapshot"
+    # 2) Sanitized configuration: .contracts holds addresses and job ids, no secrets;
+    #    .env holds PRIVATE_KEY, API keys and the RPC URLs with their providers' keys.
+    [ -f "$CONTRACTS_FILE" ] && redact_log < "$CONTRACTS_FILE" > "$out/contracts.snapshot"
     if [ -f "$ENV_FILE" ]; then
         sed -E '
             s/^(PRIVATE_KEY=).*/\1<REDACTED>/i;
             s/^(.*API_KEY=).*/\1<REDACTED>/i;
             s/^(.*SECRET.*=).*/\1<REDACTED>/i;
             s/^(IPFS_PINNING_KEY=).*/\1<REDACTED>/i
-        ' "$ENV_FILE" > "$out/env.sanitized"
+        ' "$ENV_FILE" | redact_log > "$out/env.sanitized"
     fi
 
-    # 3) Component logs (tail N lines of latest)
+    # 3) Component logs (tail N lines of latest). Chainlink's go to stderr: both streams.
     mkdir -p "$out/logs"
     local ea_log ai_log
     ea_log=$(ls -t "$INSTALL_DIR/external-adapter/logs/"adapter_*.log 2>/dev/null | head -1)
     ai_log=$(ls -t "$INSTALL_DIR/ai-node/logs/"ai-node_*.log 2>/dev/null | head -1)
-    [ -n "$ea_log" ] && tail -5000 "$ea_log" > "$out/logs/adapter.log.tail"
-    [ -n "$ai_log" ] && tail -5000 "$ai_log" > "$out/logs/ai-node.log.tail"
-    timeout 20 docker logs chainlink --tail 5000 2>&1 > "$out/logs/chainlink.log.tail" || true
+    [ -n "$ea_log" ] && tail -5000 "$ea_log" | redact_log > "$out/logs/adapter.log.tail"
+    [ -n "$ai_log" ] && tail -5000 "$ai_log" | redact_log > "$out/logs/ai-node.log.tail"
+    timeout 20 docker logs chainlink --tail 5000 2>&1 | redact_log > "$out/logs/chainlink.log.tail" || true
 
-    # 4) chainlink DB snapshot (sanitized — drop bodies of signed tx blobs)
+    # 4) chainlink DB snapshot (sanitized — drop bodies of signed tx blobs; a tx's error
+    #    can quote the RPC URL it was sent to)
     mkdir -p "$out/db"
     if pg_available; then
         pg_query "SELECT id, nonce, state, error, created_at FROM evm.txes ORDER BY id;" \
-            > "$out/db/evm_txes.tsv"
+            | redact_log > "$out/db/evm_txes.tsv"
         pg_query "SELECT eth_tx_id, state, broadcast_before_block_num, encode(hash,'hex') AS hash FROM evm.tx_attempts ORDER BY eth_tx_id;" \
-            > "$out/db/evm_tx_attempts.tsv"
+            | redact_log > "$out/db/evm_tx_attempts.tsv"
         pg_query "SELECT encode(address,'hex'), evm_chain_id, disabled FROM evm.key_states;" \
-            > "$out/db/evm_key_states.tsv"
+            | redact_log > "$out/db/evm_key_states.tsv"
     fi
 
     # 5) On-chain snapshot
@@ -1302,7 +1510,7 @@ run_collect_mode() {
             echo "nonce_latest=$(rpc_call eth_getTransactionCount "[\"$NODE_ADDRESS\",\"latest\"]")"
             echo "nonce_pending=$(rpc_call eth_getTransactionCount "[\"$NODE_ADDRESS\",\"pending\"]")"
             echo "operator_code_size=$(echo "$(rpc_call eth_getCode "[\"$OPERATOR_ADDR\",\"latest\"]")" | awk '{print (length($0)-2)/2}')"
-        } > "$out/onchain.txt"
+        } | redact_log > "$out/onchain.txt"
     fi
 
     # 6) Package
@@ -1348,7 +1556,7 @@ if [ "$OUTPUT" = "human" ]; then
     echo "host:     $(hostname)"
     echo "install:  $INSTALL_DIR"
     echo "network:  ${DEPLOYMENT_NETWORK:-?}  (chain $CHAIN_ID)"
-    echo "rpc:      ${RPC_URL:-?}"
+    echo "rpc:      ${RPC_URL_SHOWN:-?}"
     echo "node key: ${NODE_ADDRESS:-?}"
     echo "operator: ${OPERATOR_ADDR:-?}"
     echo "time:     $(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -1360,6 +1568,7 @@ check_onchain
 check_chainlink_txm
 check_external_adapter
 check_ai_node
+check_code_review
 
 print_summary
 

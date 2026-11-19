@@ -592,6 +592,14 @@ if [ -f "$UTIL_DIR/chainlink-health-watchdog.sh" ]; then
     cp "$UTIL_DIR/chainlink-health-watchdog.sh" "$INSTALL_DIR/chainlink-health-watchdog.sh"
     chmod +x "$INSTALL_DIR/chainlink-health-watchdog.sh"
 fi
+# Chainlink config tools: the template applied to this node's config.toml, and the
+# July 2026 finality settings on their own (doctor hints, upgrade).
+for _clcfg in regenerate-chainlink-config.sh apply-chainlink-finality-tolerance.sh; do
+    if [ -f "$UTIL_DIR/$_clcfg" ]; then
+        cp "$UTIL_DIR/$_clcfg" "$INSTALL_DIR/$_clcfg"
+        chmod +x "$INSTALL_DIR/$_clcfg"
+    fi
+done
 # Application log rotation (ai-node/logs, external-adapter/logs).
 if [ -f "$UTIL_DIR/rotate-logs.sh" ]; then
     cp "$UTIL_DIR/rotate-logs.sh" "$INSTALL_DIR/rotate-logs.sh"
@@ -602,6 +610,19 @@ if [ -f "$UTIL_DIR/arbiter-boot-service.sh" ]; then
     cp "$UTIL_DIR/arbiter-boot-service.sh" "$INSTALL_DIR/arbiter-boot-service.sh"
     chmod +x "$INSTALL_DIR/arbiter-boot-service.sh"
 fi
+# Port hardening (2026-10-21 port audit): firewall rules for 5432/6688/3000/8080 on
+# the public interface, and the optional recreate that publishes 6688 on loopback.
+# And the tool that measures a live node's job limits (design §11).
+for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh apply-job-timeouts.sh common-pin.js code-review-sandbox.sh code-review-check.js; do
+    if [ -f "$UTIL_DIR/$_hardening" ]; then
+        cp "$UTIL_DIR/$_hardening" "$INSTALL_DIR/$_hardening"
+        chmod +x "$INSTALL_DIR/$_hardening"
+    fi
+done
+# A fresh install never exposes the AI Node: ai-node/start.sh reads this marker and
+# binds 127.0.0.1 (only the External Adapter, http://127.0.0.1:3000, talks to it).
+# Delete the file to listen on every interface again.
+echo "AI Node binds 127.0.0.1 (fresh install default; delete this file to listen on all interfaces)" > "$INSTALL_DIR/.ai-node-loopback"
 
 # Make scripts executable in the correct destination directory
 chmod +x "$INSTALL_DIR/start-arbiter.sh"
@@ -615,6 +636,7 @@ echo -e "${BLUE}Copying configured components to installation directory...${NC}"
 AI_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/ai-node"
 EXTERNAL_ADAPTER_SRC_DIR="$(dirname "$INSTALLER_DIR")/external-adapter"
 CHAINLINK_NODE_SRC_DIR="$(dirname "$INSTALLER_DIR")/chainlink-node"
+CODE_RUNNER_SRC_DIR="$(dirname "$INSTALLER_DIR")/code-runner"
 
 # Copy AI Node (including .env.local and other configurations)
 if [ -d "$AI_NODE_SRC_DIR" ]; then
@@ -680,6 +702,17 @@ if [ -d "$CHAINLINK_NODE_SRC_DIR" ]; then
     echo -e "${GREEN}Chainlink Node copied to $INSTALL_DIR/chainlink-node${NC}"
 else
     echo -e "${YELLOW}Warning: Chainlink Node source directory not found at $CHAINLINK_NODE_SRC_DIR${NC}"
+fi
+
+# Copy the Code Runner. Its files reach every node: the optional sandbox phase below runs it.
+if [ -d "$CODE_RUNNER_SRC_DIR" ]; then
+    echo -e "${BLUE}Copying Code Runner...${NC}"
+    mkdir -p "$INSTALL_DIR/code-runner"
+    cp -r "$CODE_RUNNER_SRC_DIR/." "$INSTALL_DIR/code-runner/"
+    rm -rf "$INSTALL_DIR/code-runner/.state" "$INSTALL_DIR/code-runner/logs"  # a development run's
+    chmod +x "$INSTALL_DIR/code-runner/start.sh" "$INSTALL_DIR/code-runner/stop.sh"
+else
+    echo -e "${YELLOW}Warning: Code Runner source directory not found at $CODE_RUNNER_SRC_DIR${NC}"
 fi
 
 # Copy contracts and environment information
@@ -830,6 +863,7 @@ echo -e "  - To update RPC endpoints: $INSTALL_DIR/update-rpc-endpoints.sh"
 echo -e "  - Chainlink health watchdog: $INSTALL_DIR/chainlink-health-watchdog.sh"
 echo -e "  - Application log rotation: $INSTALL_DIR/rotate-logs.sh"
 echo -e "  - Start at boot (on/off):   $INSTALL_DIR/arbiter-boot-service.sh"
+echo -e "  - Close ports to the internet (on/off): $INSTALL_DIR/arbiter-firewall.sh"
 
 # Start at boot (2026-10-18 Contabo reboot wave: six VMs rebooted, every arbiter
 # stayed down until an operator ran start-arbiter.sh by hand). The containers
@@ -856,6 +890,39 @@ if [ -x "$INSTALL_DIR/arbiter-boot-service.sh" ]; then
         esac
     else
         echo -e "${BLUE}Skipped. Enable later with: $INSTALL_DIR/arbiter-boot-service.sh enable${NC}"
+    fi
+fi
+
+# Close the database / UI / AI ports to the internet (2026-10-21 port review: all four
+# were reachable from the internet on the hosts it checked). This install already keeps 5432
+# unpublished (Chainlink reaches the database by container name), publishes 6688
+# on 127.0.0.1 and binds the AI Node to loopback. What is left is the External
+# Adapter (8080): the Chainlink bridge reaches it through this host's own address,
+# so it cannot be loopback-only; the firewall drops 8080 (and 5432/6688/3000, as a
+# second layer) on the public interface only, which leaves the arbiter's own
+# traffic alone. Unattended default: yes (a new machine; VA_INSTALL_FIREWALL=n skips).
+echo
+echo -e "${BLUE}Ports 5432 / 6688 / 3000 / 8080:${NC}"
+echo -e "  The database is not published, the Chainlink UI listens on 127.0.0.1 and the AI Node"
+echo -e "  on 127.0.0.1. The External Adapter (8080) must stay reachable by the Chainlink container"
+echo -e "  through this host's address, so the installer can add iptables rules (kept across reboots"
+echo -e "  by a systemd unit, needs sudo) that drop 8080 and the other three on the public network"
+echo -e "  interface only. Reach the Chainlink UI from your machine with:"
+echo -e "      ssh -L 6688:127.0.0.1:6688 <user>@<this-host>   then open http://localhost:6688"
+echo -e "  Undo any time with: $INSTALL_DIR/arbiter-firewall.sh disable"
+if [ -x "$INSTALL_DIR/arbiter-firewall.sh" ]; then
+    if ask_yes_no "Close these ports on the public interface (iptables rules + systemd unit)?" "" VA_INSTALL_FIREWALL y; then
+        FIREWALL_RC=0
+        bash "$INSTALL_DIR/arbiter-firewall.sh" enable || FIREWALL_RC=$?
+        case "$FIREWALL_RC" in
+            0) ;;
+            2) echo -e "${YELLOW}No systemd on this host: the rules are active now, but a reboot removes them.${NC}"
+               echo -e "${YELLOW}Run $INSTALL_DIR/arbiter-firewall.sh enable from your init system at boot.${NC}" ;;
+            *) echo -e "${YELLOW}Warning: could not close the ports (exit $FIREWALL_RC). Run later, as root:${NC}"
+               echo -e "${YELLOW}  $INSTALL_DIR/arbiter-firewall.sh enable${NC}" ;;
+        esac
+    else
+        echo -e "${BLUE}Skipped. Close them later with: $INSTALL_DIR/arbiter-firewall.sh enable${NC}"
     fi
 fi
 
@@ -999,6 +1066,11 @@ else
     echo -e "${YELLOW}   This may cause compatibility issues. Consider running the update utility manually.${NC}"
 fi
 
+# The same-version check over all three that judge a claim, the Code Runner with them.
+if ! node "$UTIL_DIR/common-pin.js" --agree "$INSTALL_DIR"; then
+    echo -e "${YELLOW}⚠️  The components do not pin one @verdikta/common release: code review stays refused until they do.${NC}"
+fi
+
 fi  # End of NEED_POST_INSTALLATION conditional block
 
 # Optional: Fund Chainlink keys automatically
@@ -1137,6 +1209,27 @@ if [ "$SKIP_TO_REGISTRATION" = "false" ]; then
     fi
 fi
 
+# Optional phase: the code-review sandbox (design §16). Before the services start, so the adapter
+# reads its settings at its first start. Needed only to judge stake claims; a node registers on a
+# code class after this, with register-oracle.sh. It never restarts Docker. Read with `|| rc=$?`:
+# this script runs under set -e, and a sandbox that does not finish does not end an install.
+if [ -x "$INSTALL_DIR/code-review-sandbox.sh" ] && [ "$SKIP_TO_REGISTRATION" = "false" ]; then
+    echo
+    echo -e "${BLUE}Code-review sandbox (optional; needed only to judge stake claims): gVisor, a separate${NC}"
+    echo -e "${BLUE}Docker daemon on a fixed-size ${VA_CODE_REVIEW_DISK_GB:-40} GB disk image, the code runner, and a conformance${NC}"
+    echo -e "${BLUE}self-test. About +2 vCPU and +4 GB of RAM while judging. It needs sudo and a few minutes.${NC}"
+    if ask_yes_no "Install the code-review sandbox?" "n" VA_INSTALL_CODE_REVIEW_SANDBOX n; then
+        CODE_REVIEW_ENABLE_RC=0
+        bash "$INSTALL_DIR/code-review-sandbox.sh" enable || CODE_REVIEW_ENABLE_RC=$?
+        if [ "$CODE_REVIEW_ENABLE_RC" != "0" ]; then
+            echo -e "${YELLOW}Warning: the code-review sandbox did not finish (exit $CODE_REVIEW_ENABLE_RC). The arbiter is not affected.${NC}"
+            echo -e "${YELLOW}After fixing the cause, run: $INSTALL_DIR/code-review-sandbox.sh enable${NC}"
+        fi
+    else
+        echo -e "${BLUE}Skipped. Install it later with: $INSTALL_DIR/code-review-sandbox.sh enable${NC}"
+    fi
+fi
+
 # Ask if user wants to start services now (this should happen in both normal and resume modes)
 echo
 if [ "$SKIP_TO_REGISTRATION" = "true" ]; then
@@ -1206,7 +1299,7 @@ echo
 echo "Access your services at:"
 echo "  - AI Node:         http://localhost:3000"
 echo "  - External Adapter: http://localhost:8080 (with Verdikta Common Library)"
-echo "  - Chainlink Node:   http://localhost:6688"
+echo "  - Chainlink Node:   http://localhost:6688  (this host only; from your machine: ssh -L 6688:127.0.0.1:6688 <user>@<this-host>)"
 echo
 echo "All utility scripts are available in: $INSTALL_DIR/installer/util/"
 echo "For troubleshooting, consult the documentation in the installer/docs directory."

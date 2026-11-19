@@ -19,7 +19,7 @@ has()   { if echo "$2" | grep -q -- "$3"; then ok; else bad "$1: no [$3] in: $2"
 hasnt() { if echo "$2" | grep -q -- "$3"; then bad "$1: unexpected [$3] in: $2"; else ok; fi; }
 
 # The block, from its comment header to the line before the next section.
-block=$(awk '/^# Start at boot \(2026-10-18 Contabo reboot wave\)/{p=1} /^# Optional: Fund or top-off Chainlink keys/{p=0} p{print}' "$S")
+block=$(awk '/^# Start at boot \(2026-10-18 Contabo reboot wave\)/{p=1} /^# Close the database \/ UI \/ AI ports on the public interface/{p=0} /^# Optional: Fund or top-off Chainlink keys/{p=0} p{print}' "$S")
 [ -n "$block" ] && ok || bad "could not extract the start-at-boot block from $S"
 echo "$block" | grep -q 'arbiter-boot-service.sh" status --quiet' && ok || bad "block does not read status --quiet"
 echo "$block" | grep -q 'arbiter-boot-service.sh" enable' && ok || bad "block does not call enable"

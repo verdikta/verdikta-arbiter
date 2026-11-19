@@ -1,0 +1,16 @@
+{
+  "format": "verdikta.calibration-listing/1",
+  "id": "vault",
+  "repo": {
+    "kind": "fixture",
+    "path": "repos/vault",
+    "imageOnly": "repos/vault.image-only"
+  },
+  "commit": "0fe12d9058254dde6768f212c70db4cc30d64f0c",
+  "source": {
+    "url": "https://github.com/verdikta/verdikta-arbiter/tree/main/code-runner/calibration",
+    "licence": "MIT",
+    "program": null
+  },
+  "solc": "0.8.31"
+}

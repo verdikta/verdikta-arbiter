@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "An upgrade can reverse a well's tokens under its liquidity providers",
+  "claimedClass": "MEDIUM",
+  "rootCause": "WellUpgradeable._authorizeUpgrade never compares the tokens of the new implementation with the current ones, while reserves sit in storage by position, so an upgrade to the same tokens in another order makes what liquidity providers deposited read as the other token.",
+  "affectedPaths": [
+    "src/WellUpgradeable.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_an_upgrade_keeps_the_tokens_a_provider_deposited",
+    "observable": "test_an_upgrade_keeps_the_tokens_a_provider_deposited fails with \"the first reserve still belongs to the first token: 0xF62849F9A0B5Bf2913b396098F7c7019b51A820a != 0x2e234DAe75C793f67A35089C9d99245E1C58470b\""
+  },
+  "fixIncluded": false
+}

@@ -378,6 +378,55 @@ describe('OpenAIProvider', () => {
     );
   });
 
+  // The GPT-6 ids (gpt-6-luna, a Q63 juror; gpt-6-sol, gpt-6-astra) are GPT-5's family: the
+  // detection was written for "gpt-5" ids and sent them to LangChain with max_tokens 1000.
+  test.each(['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra', 'GPT-6-Luna'])('text mode on %s uses the native client with max_completion_tokens and reasoning_effort', async (model) => {
+    mockOpenAICreate.mockResolvedValueOnce({ choices: [{ message: { content: 'a reply' } }] });
+
+    await provider.generateResponse('Evaluate', model, { webAccess: false });
+
+    expect(ChatOpenAI).not.toHaveBeenCalled();
+    expect(mockOpenAICreate).toHaveBeenCalledTimes(1);
+    const body = mockOpenAICreate.mock.calls[0][0];
+    expect(body).toMatchObject({ model, max_completion_tokens: 16000, reasoning_effort: 'medium' });
+    expect(body.max_tokens).toBeUndefined();
+    expect(body.temperature).toBeUndefined();
+  });
+
+  test('a code-mode justifier on gpt-6-luna (a signal, no effort) gets reasoning_effort medium, as on GPT-5', async () => {
+    const signal = new AbortController().signal;
+    await provider.generateResponse('justify', 'gpt-6-luna', { webAccess: false, signal });
+
+    const [body, requestOptions] = mockOpenAICreate.mock.calls[0];
+    expect(body).toMatchObject({ model: 'gpt-6-luna', max_completion_tokens: 16000, reasoning_effort: 'medium' });
+    expect(requestOptions).toEqual({ signal });
+  });
+
+  test('a gpt-6 request with attachments uses the native client with max_completion_tokens and reasoning_effort', async () => {
+    mockOpenAICreate.mockResolvedValueOnce({ choices: [{ message: { content: 'a reply' } }] });
+
+    await provider.generateResponseWithAttachments(
+      'Evaluate',
+      'gpt-6-luna',
+      [{ type: 'text', content: 'the code', mediaType: 'text/plain' }],
+    );
+
+    expect(ChatOpenAI).not.toHaveBeenCalled();
+    const [body, requestOptions] = mockOpenAICreate.mock.calls[0];
+    expect(body).toMatchObject({ model: 'gpt-6-luna', max_completion_tokens: 16000, reasoning_effort: 'medium' });
+    expect(body.max_tokens).toBeUndefined();
+    expect(requestOptions).toBeUndefined();
+  });
+
+  test.each(['gpt-4o', 'gpt-4.1-mini', 'gpt-3.5-turbo', 'o3'])('%s is not read as a GPT-5-family id', async (model) => {
+    (ChatOpenAI as unknown as jest.Mock).mockImplementationOnce(() => ({ invoke: jest.fn().mockResolvedValue({ content: 'a reply' }) }));
+
+    await provider.generateResponse('Evaluate', model, { webAccess: false });
+
+    expect(ChatOpenAI).toHaveBeenCalledTimes(1);
+    expect(mockOpenAICreate).not.toHaveBeenCalled();
+  });
+
   test('generateResponseWithAttachments with GPT-5 and a PDF uses the native PDF path', async () => {
     mockOpenAICreate.mockResolvedValueOnce({
       choices: [{ message: { content: 'Read the PDF' } }]
@@ -613,6 +662,45 @@ describe('OpenAIProvider', () => {
       expect(body).not.toHaveProperty('reasoning');
       expect(body).not.toHaveProperty('text');
       expect(body.max_output_tokens).toBe(4000);
+    });
+
+    test('onWebRetrieval hears the web_search_call actions of the response', async () => {
+      mockResponsesCreate.mockResolvedValueOnce({
+        status: 'completed',
+        output: [
+          { type: 'web_search_call', status: 'completed', action: { type: 'search', query: 'jets patriots final score' } },
+          { type: 'web_search_call', status: 'completed', action: { type: 'open_page', url: 'https://www.nfl.com/games/jets-at-patriots-2026-reg-6' } },
+        ],
+        output_text: '{"score":[0,1000000]}',
+      });
+      const onWebRetrieval = jest.fn();
+
+      await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', { ...REASONING, onWebRetrieval });
+
+      expect(onWebRetrieval).toHaveBeenCalledTimes(1);
+      expect(onWebRetrieval.mock.calls[0][0]).toMatchObject({
+        web_tools: 'on',
+        searches: 1,
+        pages_opened: 1,
+        pages: ['https://www.nfl.com/games/jets-at-patriots-2026-reg-6'],
+        queries: ['jets patriots final score'],
+        page_errors_reported: false,
+      });
+      // The listener is ours, not OpenAI's: it never reaches the request body.
+      expect(mockResponsesCreate.mock.calls[0][0]).not.toHaveProperty('onWebRetrieval');
+    });
+
+    test('onWebRetrieval hears "off" with the reason when web search failed, and nothing without a URL', async () => {
+      mockResponsesCreate.mockRejectedValueOnce(Object.assign(new Error('400 Unsupported parameter'), { status: 400 }));
+      const onWebRetrieval = jest.fn();
+
+      await provider.generateResponse(LINK_PROMPT, 'gpt-5.4', { ...REASONING, onWebRetrieval });
+      expect(onWebRetrieval).toHaveBeenCalledWith(expect.objectContaining({ web_tools: 'off', error: '400 Unsupported parameter' }));
+
+      onWebRetrieval.mockClear();
+      await provider.generateResponse('Write a haiku', 'gpt-5.4', { ...REASONING, onWebRetrieval });
+      expect(onWebRetrieval).not.toHaveBeenCalled();
+      expect(mockOpenAICreate.mock.calls[mockOpenAICreate.mock.calls.length - 1][0]).not.toHaveProperty('onWebRetrieval');
     });
 
     test('responsesOutputText reads message items when output_text is absent', () => {

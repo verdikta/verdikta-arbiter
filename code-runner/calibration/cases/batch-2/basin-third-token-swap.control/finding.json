@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "Swapping for a well's third token costs nothing",
+  "claimedClass": "HIGH",
+  "rootCause": "Stable2.calcReserve reads only the first two reserves, so in a well with a third token the amount a swap must pay in does not move however much of that token is taken out, and Well.swapTo charges nothing for it.",
+  "affectedPaths": [
+    "src/functions/Stable2.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_taking_the_third_token_out_costs_something",
+    "observable": "test_taking_the_third_token_out_costs_something fails with \"what the swap takes in for the third token: 0 <= 0\""
+  },
+  "fixIncluded": false
+}

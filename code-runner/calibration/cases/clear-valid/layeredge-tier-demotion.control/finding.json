@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "title": "A staker who should fall to tier 3 stays recorded in tier 2",
+  "claimedClass": "HIGH",
+  "rootCause": "When a tier 3 staker leaves and the tier 2 size does not change, LayerEdgeStaking._checkBoundariesAndRecord records the rank at the new boundary, while the staker who actually crossed it sits one rank lower, so that staker keeps the tier 2 record and its rate.",
+  "affectedPaths": [
+    "src/stake/LayerEdgeStaking.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_the_staker_pushed_out_of_tier_two_is_recorded_as_tier_three",
+    "observable": "test_the_staker_pushed_out_of_tier_two_is_recorded_as_tier_three fails with \"the tier recorded for the seventh staker: 2 != 3\""
+  },
+  "fixIncluded": false
+}

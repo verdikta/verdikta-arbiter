@@ -14,6 +14,10 @@ Configuration templates, job specifications, and helper scripts for running a Ch
 | `prestart.sh` | Pre-start validation and setup |
 | `trackCL.sh` | Monitors Chainlink node status |
 
+## Limits
+
+`basicJobSpec` allows a job 840 s (`maxTaskDuration` and the bridge's `timeout`), for a code-review evaluation; `config_template.toml` raises `[JobPipeline] MaxRunDuration` to 15 m, above Chainlink 2.23.0's default of 10 m. A running job keeps the values it was created with: see `installer/util/apply-job-timeouts.sh` and `installer/docs/maintenance/upgrading.md`.
+
 ## Usage
 
 These files are consumed by the installer scripts in `../installer/bin/`. In a typical deployment the installer handles configuration, job creation, and node lifecycle automatically.

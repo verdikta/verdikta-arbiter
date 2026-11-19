@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "title": "A batch of oracle reports charges the protocol fee once per asset",
+  "claimedClass": "HIGH",
+  "rootCause": "FeeManager.updateState moves the fee timestamp only for the base asset, and ShareModule.handleReport charges the protocol fee on every report, so each report ahead of the base asset in a batch charges the whole elapsed period again.",
+  "affectedPaths": [
+    "src/modules/ShareModule.sol",
+    "src/managers/FeeManager.sol"
+  ],
+  "poc": {
+    "command": "forge test --match-test test_a_batch_of_reports_charges_the_year_once",
+    "observable": "test_a_batch_of_reports_charges_the_year_once fails with \"one year of the fee, charged once: 331000000000000000000 != 100000000000000000000\""
+  },
+  "fixIncluded": false
+}

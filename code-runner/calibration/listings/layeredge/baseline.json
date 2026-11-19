@@ -1,0 +1,65 @@
+{
+  "version": 1,
+  "baseCommit": "adf3e8423344d7aaed3350e3012606cfe15d93db",
+  "framework": "forge",
+  "runs": 3,
+  "tests": [
+    {
+      "id": "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_LayerEdgeStaking_CompleteUnstake_Native()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_claimInterestNative()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_fallbackFunction()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_receiveFunction()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_stakeNative()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    },
+    {
+      "id": "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_unstakeNative()",
+      "results": [
+        "pass",
+        "pass",
+        "pass"
+      ]
+    }
+  ],
+  "stable": [
+    "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_LayerEdgeStaking_CompleteUnstake_Native()",
+    "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_claimInterestNative()",
+    "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_fallbackFunction()",
+    "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_receiveFunction()",
+    "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_stakeNative()",
+    "test/stake/NativeTokenStakingTest.t.sol > NativeTokenStakingTest > test_unstakeNative()"
+  ],
+  "unstable": []
+}

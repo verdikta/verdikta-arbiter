@@ -260,9 +260,15 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
  *    `validateBCIDArchive`. Deterministic problems are COLLECTED (so the
  *    justification can name every broken archive); transient ones propagate.
  *
- * @returns {Promise<{extractedPaths: Object<string,string>, malformedBCIDs: MalformedArchiveError[]}>}
+ * In code-review mode (the primary manifest has `codeReview`) the bCIDs are the
+ * claim and prior findings of a stake-attestation request, and the malformed
+ * log line names the check only: a reason can quote the archive, and the
+ * adapter's log must not become a copy of a claim (design §16).
+ *
+ * @returns {Promise<{extractedPaths: Object<string,string>, malformedBCIDs: MalformedArchiveError[],
+ *   archiveData: Object<string,Buffer>, primaryManifestJson: object}>}
  */
-async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '' }) {
+async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, validator, logger, runTag = '', checkPrimary, shouldStop }) {
   for (const cid of cidArray) await assertBareCID(cid);
   // --- fetch everything first, concurrently: a gateway failure must surface before
   // any verdict logic runs, and no archive should queue behind another archive's
@@ -281,6 +287,8 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
 
   const extractedPaths = {};
   const extractOne = async (cid, index) => {
+    // A caller that stopped waiting has removed tempDir: extract nothing back into it.
+    if (typeof shouldStop === 'function' && shouldStop()) throw new Error('the archives arrived after the caller stopped waiting');
     const subDir = path.join(tempDir, `archive_${index}_${cid.substring(0, 10)}`);
     await fs.promises.mkdir(subDir, { recursive: true });
     return extractEvidenceArchive(archiveService, archiveData[cid], `archive_${cid}.zip`, subDir);
@@ -295,6 +303,10 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
     readIfExists(extractedPaths[primaryCid], 'manifest.json')
   );
   const bCIDNames = Object.keys(primaryManifestJson.bCIDs || {});
+  const codeReviewMode = Boolean(primaryManifestJson) && typeof primaryManifestJson === 'object'
+    && Object.prototype.hasOwnProperty.call(primaryManifestJson, 'codeReview');
+  // the caller may refuse the request from the primary manifest alone (it throws)
+  if (typeof checkPrimary === 'function') checkPrimary(primaryManifestJson);
 
   // --- bCID archives
   const malformedBCIDs = [];
@@ -311,12 +323,12 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
           check: CHECKS.UNSAFE_EVIDENCE, reason: err.message })
         : err;
       if (!isMalformedArchiveError(classified)) throw classified; // transient: keep today's behaviour
-      logger.warn(`${runTag} bCID archive ${cid} is malformed (${classified.check}): ${classified.reason}`);
+      logger.warn(`${runTag} bCID archive ${cid} is malformed (${classified.check})${codeReviewMode ? '' : `: ${classified.reason}`}`);
       malformedBCIDs.push(classified);
     }
   }
 
-  return { extractedPaths, malformedBCIDs };
+  return { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson };
 }
 
 function truncate(text, max = 1500) {

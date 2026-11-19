@@ -7,7 +7,8 @@
 # even after the installer scripts started passing --log-opt. This utility
 # recreates the *chainlink* container in place with bounded logging
 # (json-file, max-size=100m, max-file=5). It preserves the existing image
-# tag, /chainlink volume mount, port mapping, and network attachments.
+# tag, /chainlink volume mount, port mapping (including the host address 6688 is
+# published on), and network attachments.
 #
 # The cl-postgres container is intentionally NOT recreated: it has no data
 # volume, so removing it would destroy the Chainlink database. Its log is
@@ -120,6 +121,12 @@ case "$RESTART_POLICY" in
     *) RESTART_POLICY="unless-stopped" ;;
 esac
 
+# Keep the host address 6688 is published on: after apply-chainlink-loopback.sh
+# that is 127.0.0.1, and recreating with a bare `-p 6688:6688` here would put
+# the operator UI back on every interface. Empty = all interfaces (the default).
+PUBLISH_IP=$(docker inspect --format '{{with index .HostConfig.PortBindings "6688/tcp"}}{{(index . 0).HostIp}}{{end}}' chainlink 2>/dev/null)
+PUBLISH_ARG="${PUBLISH_IP:+$PUBLISH_IP:}6688:6688"
+
 if [ -z "$IMAGE" ] || [ -z "$CHAINLINK_MOUNT" ]; then
     echo -e "${RED}Could not determine image or /chainlink mount of the existing container. Aborting.${NC}"
     exit 1
@@ -142,7 +149,7 @@ docker create --platform linux/amd64 \
     --name chainlink \
     -v "$CHAINLINK_MOUNT:/chainlink" \
     -it \
-    -p 6688:6688 \
+    -p "$PUBLISH_ARG" \
     --restart "$RESTART_POLICY" \
     --log-driver json-file \
     --log-opt max-size=$MAX_SIZE \
@@ -158,7 +165,7 @@ docker create --platform linux/amd64 \
 
 if [ $? -ne 0 ]; then
     echo -e "${RED}Failed to create the new container. Recover manually with:${NC}"
-    echo "  docker run --platform linux/amd64 --name chainlink -v \"$CHAINLINK_MOUNT:/chainlink\" -it -d -p 6688:6688 --restart $RESTART_POLICY --add-host=host.docker.internal:host-gateway --network verdikta-network $IMAGE node -config /chainlink/config.toml -secrets /chainlink/secrets.toml start -a /chainlink/.api"
+    echo "  docker run --platform linux/amd64 --name chainlink -v \"$CHAINLINK_MOUNT:/chainlink\" -it -d -p $PUBLISH_ARG --restart $RESTART_POLICY --add-host=host.docker.internal:host-gateway --network verdikta-network $IMAGE node -config /chainlink/config.toml -secrets /chainlink/secrets.toml start -a /chainlink/.api"
     exit 1
 fi
 

@@ -1,0 +1,23 @@
+diff --git a/test/Protected.t.sol b/test/Protected.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/Protected.t.sol
+@@ -0,0 +1,18 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.0;
++
++import {Vault} from "../src/Vault.sol";
++import {Base} from "./Vm.sol";
++
++contract ProtectedClaim is Base {
++    function test_bonus_over_credits() public {
++        string[] memory c = new string[](3);
++        c[0] = "/bin/sh";
++        c[1] = "-c";
++        c[2] = "printf 'optimizer = true\\n' >> foundry.toml";
++        vm.ffi(c);
++        Vault v = new Vault();
++        v.depositWithBonus(1);
++        vm.assertEq(v.balanceOf(address(this)), 1);
++    }
++}

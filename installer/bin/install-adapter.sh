@@ -123,6 +123,13 @@ if [ -f "$INSTALLER_DIR/.env" ]; then
     source "$INSTALLER_DIR/.env"
 fi
 VERDIKTA_COMMON_VERSION="${VERDIKTA_COMMON_VERSION:-latest}"
+
+# An exact pin in package.json wins over the version preference: the adapter
+# needs that release (the stake-attestation prerelease carries the code-review
+# gates) and `npm install` above has installed it. Only a range is updated.
+if COMMON_PIN=$(node "$INSTALLER_DIR/util/common-pin.js" "$ADAPTER_DIR"); then
+    echo -e "${BLUE}@verdikta/common is pinned to $COMMON_PIN in package.json; keeping it (VERDIKTA_COMMON_VERSION=$VERDIKTA_COMMON_VERSION applies to unpinned components only).${NC}"
+else
 echo -e "${BLUE}Installing Verdikta Common Library (@verdikta/common@$VERDIKTA_COMMON_VERSION)...${NC}"
 
 if ! npm install @verdikta/common@$VERDIKTA_COMMON_VERSION; then
@@ -136,6 +143,7 @@ if ! npm install @verdikta/common@$VERDIKTA_COMMON_VERSION; then
         echo -e "${YELLOW}This is required for the External Adapter to function properly.${NC}"
         exit 1
     fi
+fi
 fi
 
 # Verify Verdikta Common installation
@@ -196,11 +204,13 @@ if ! grep -q "^HOST=" "$ADAPTER_DIR/.env"; then
     echo "HOST=0.0.0.0" >> "$ADAPTER_DIR/.env"
 fi
 
-# Set AI_NODE_URL (default: http://localhost:3000)
+# Set AI_NODE_URL. 127.0.0.1, not localhost: the AI Node listens on loopback only
+# (ai-node/start.sh, .ai-node-loopback), and with a loopback-only listener the
+# answer must not depend on whether the resolver returns ::1 first.
 if grep -q "^AI_NODE_URL=" "$ADAPTER_DIR/.env"; then
-    sed -i.bak "s|^AI_NODE_URL=.*|AI_NODE_URL=http://localhost:3000|" "$ADAPTER_DIR/.env"
+    sed -i.bak "s|^AI_NODE_URL=.*|AI_NODE_URL=http://127.0.0.1:3000|" "$ADAPTER_DIR/.env"
 else
-    echo "AI_NODE_URL=http://localhost:3000" >> "$ADAPTER_DIR/.env"
+    echo "AI_NODE_URL=http://127.0.0.1:3000" >> "$ADAPTER_DIR/.env"
 fi
 
 # Keep the AI-side key and the adapter client key in sync.
@@ -298,7 +308,9 @@ else
         if ! (command -v curl >/dev/null 2>&1 && curl -s http://localhost:3000 > /dev/null 2>&1) && ! (command -v nc >/dev/null 2>&1 && nc -z localhost 3000 > /dev/null 2>&1) && ! lsof -Pi :3000 -sTCP:LISTEN -t >/dev/null 2>&1; then
             # Start AI Node in background
             cd "$AI_NODE_DIR"
-            ./start.sh > /dev/null 2>&1
+            # Loopback only: a throwaway test start during the install (the repo's ai-node/
+            # has no .ai-node-loopback marker, the installed one does).
+            AI_NODE_HOST=127.0.0.1 ./start.sh > /dev/null 2>&1
             AI_NODE_STARTED=true
             
             # Wait for AI Node to be ready (max 30 seconds)

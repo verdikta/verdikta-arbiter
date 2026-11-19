@@ -1,0 +1,34 @@
+diff --git a/test/ReserveAtRatioClaim.t.sol b/test/ReserveAtRatioClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/ReserveAtRatioClaim.t.sol
+@@ -0,0 +1,29 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.20;
++
++import {Test} from "forge-std/Test.sol";
++import {Stable2} from "src/functions/Stable2.sol";
++import {Stable2LUT1} from "src/functions/StableLUT/Stable2LUT1.sol";
++
++/// Stable2 answers for every ratio its price table covers: reading a reserve is what a pump's cap and a swap rely on.
++contract ReserveAtRatioClaim is Test {
++    function test_every_ratio_in_the_table_gets_an_answer() public {
++        Stable2 stable = new Stable2(address(new Stable2LUT1()));
++        uint256[] memory reserves = new uint256[](2);
++        reserves[0] = 1987e18;
++        reserves[1] = 12345e8;
++        uint256[] memory ratios = new uint256[](2);
++        ratios[1] = 1e18;
++
++        string memory stoppedBy = "";
++        for (uint256 step = 0; step < 2_200 && bytes(stoppedBy).length == 0; step++) {
++            ratios[0] = 1e18 + step * 0.003e18;
++            try stable.calcReserveAtRatioLiquidity(reserves, 0, ratios, abi.encode(18, 18)) returns (uint256) {}
++            catch Error(string memory why) {
++                stoppedBy = why;
++            }
++        }
++
++        assertEq(stoppedBy, "", "no ratio stops the calculation");
++    }
++}

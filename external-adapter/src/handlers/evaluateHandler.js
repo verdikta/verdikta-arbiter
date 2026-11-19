@@ -25,6 +25,10 @@ const {
   runWithRequestContext,
   setRunTag
 } = require('../services/cidFetchCache');
+const codeReviewMode = require('../codeReview');
+const { getCodeReviewConfig, devTrustActive } = require('../codeReview/config');
+const { addendumForLog, redactMachineLines } = require('../codeReview/addendum');
+const { describeCanaryFault } = require('../canaryFault');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -81,6 +85,33 @@ const COMMIT_TTL_MS = 3 * 24 * 60 * 60 * 1000;
 const revealOperations = new Map();
 const requestError = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 
+// Code-review (stake attestation) mode: off unless the operator enabled it with
+// a runner; dev trust only on a test chain (codeReview/config.js).
+{
+  const codeReviewConfig = getCodeReviewConfig();
+  if (codeReviewConfig.trust.refused) {
+    logger.error(`Code review: ${codeReviewConfig.trust.refused}; code-review requests are refused`);
+  } else if (devTrustActive(codeReviewConfig)) {
+    logger.warn('Code review: CODE_REVIEW_TRUST=dev: attestations signed by caller-supplied dev builder keys are accepted (never on mainnet)');
+  }
+  logger.info(`Code review: ${codeReviewConfig.ready ? 'ready' : 'off'} (trust=${codeReviewConfig.trust.mode})`);
+  const canaryFault = describeCanaryFault();
+  if (canaryFault.state === 'armed') {
+    logger.warn(`CANARY FAULT SWITCH ARMED for ${canaryFault.namedClaims} named claim(s): it acts only on a request for class 5555, measured on Base Sepolia. Remove the flag when the canary run ends (docs/release-runbook.md, 3b).`);
+  } else if (canaryFault.state === 'refused') {
+    logger.error(`Canary fault switch refused, and it acts on nothing: ${canaryFault.problems.join('; ')}`);
+  }
+}
+
+/** The listing manifest of an extracted primary archive, or null when it cannot be read. */
+async function readManifestJson(extractedPath) {
+  try {
+    return JSON.parse(await fs.promises.readFile(path.join(extractedPath, 'manifest.json'), 'utf8'));
+  } catch (_error) {
+    return null;
+  }
+}
+
 const evaluate = async (request) => {
   const { id } = request || {};
   const data = request?.data || {};
@@ -120,6 +151,9 @@ const evaluate = async (request) => {
     const scope = { jobId: id, aggId, operator: OPERATOR_ADDRESS.toLowerCase() };
     runTag = `[EA ${id} agg=${aggId} mode=${modeString}]`;
     setRunTag(runTag); // fetch-cache log lines made by library code carry this job's tag
+    if (devTrustActive(getCodeReviewConfig())) {
+      logger.warn(`${runTag} CODE_REVIEW_TRUST=dev: listing attestations signed by caller-supplied dev builder keys are accepted on this arbiter`);
+    }
 
     // if mode 2, there is nothing to calculate--just reveal previously calculated information
     // (input in this case is 2:<hash>)
@@ -140,7 +174,8 @@ const evaluate = async (request) => {
     if (firstColonIndex !== -1) {
       addendumString = cidString.substring(firstColonIndex + 1);
       cidString = cidString.substring(0, firstColonIndex);
-      logger.info(`Found addendum string: ${addendumString}`);
+      // the stake-attestation machine lines carry keys: never logged (design §16)
+      logger.info(`Found addendum string: ${addendumForLog(addendumString)}`);
     }
     
     // Split multiple CIDs if present
@@ -173,10 +208,19 @@ const evaluate = async (request) => {
       await assertSafeManifest(extractedPath);
       await archiveService.validateManifest(extractedPath);
       logger.info(`${runTag} validateManifest took ${Date.now() - t3}ms`);
+
+      // A code-review listing needs its claim: [listing, claim, prior findings…]
+      if (codeReviewMode.isCodeReviewManifest(await readManifestJson(extractedPath))) {
+        codeReviewMode.refuseSingleCid(getCodeReviewConfig());
+      }
       
       const t4 = Date.now();
       const parsedManifest = await manifestParser.parse(extractedPath);
       logger.info(`${runTag} manifestParser.parse took ${Date.now() - t4}ms`);
+      // fail closed: a code-review listing never reaches the text-mode jury
+      if (parsedManifest && parsedManifest.codeReview !== undefined) {
+        codeReviewMode.refuseSingleCid(getCodeReviewConfig());
+      }
       
       // Construct query object
       const queryObject = {
@@ -190,7 +234,7 @@ const evaluate = async (request) => {
       // If addendum is present and manifest has addendum field, append it
       if (addendumString && parsedManifest.addendum) {
         const sanitizedAddendum = addendumString.replace(/[<>{}]/g, '');
-        logger.info(`Adding addendum to query: ${parsedManifest.addendum}: ${sanitizedAddendum}`);
+        logger.info(`Adding addendum to query: ${parsedManifest.addendum}: ${addendumForLog(sanitizedAddendum)}`);
         queryObject.prompt += `\n\nAddendum: \n${parsedManifest.addendum}: ${sanitizedAddendum}`;
       }
       
@@ -233,16 +277,57 @@ const evaluate = async (request) => {
       // bCID archive is collected, because that is the one case every arbiter can
       // settle identically without an AI call (see utils/bcidValidation.js).
       const t7 = Date.now();
-      const { extractedPaths, malformedBCIDs } = await fetchAndTriageArchives(
-        cidArray, tempDir, { archiveService, validator, logger, runTag }
+      let stoppedWaiting = false;
+      const triage = fetchAndTriageArchives(
+        cidArray, tempDir, {
+          archiveService, validator, logger, runTag,
+          // a code-review request on an arbiter that does not serve one, or with a
+          // bad layout, is refused before any claim archive is extracted
+          checkPrimary: (manifest) => {
+            if (codeReviewMode.isCodeReviewManifest(manifest)) {
+              codeReviewMode.assertCodeReviewRequest(getCodeReviewConfig(), cidArray);
+            }
+          },
+          shouldStop: () => stoppedWaiting
+        }
       );
+      const { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson } =
+        await codeReviewMode.boundFetches(getCodeReviewConfig(), t0, triage, () => {
+          stoppedWaiting = true;
+          // An extraction already under way may still write into tempDir after this
+          // job answers: remove it again once the triage settles, without waiting for that.
+          const sweep = () => archiveService.cleanup(tempDir).catch((cleanupError) => {
+            logger.error(`${runTag} Error cleaning up temporary directory: ${cleanupError.message}`);
+          });
+          triage.then(sweep, sweep);
+        });
       logger.info(`${runTag} fetchAndTriageArchives took ${Date.now() - t7}ms`);
       // Malformed archives are never kept: jobs fetching at the same moment shared
       // the bytes (and reach the same verdict), but no later job reuses them.
       for (const malformed of malformedBCIDs) fetchCache.forget(malformed.cid);
 
       let result;
-      if (malformedBCIDs.length > 0) {
+      if (codeReviewMode.isCodeReviewManifest(primaryManifestJson)) {
+        // Stake-attestation claim (cids = [listing, claim, prior findings…]): the
+        // code-review front gates settle requester errors (thrown: errored, no
+        // commit) and claim gate failures (a deterministic INVALID verdict) before
+        // any runner or model call; a claim that passes goes to the run: the runner's
+        // gates, then the jury (A4b). Whatever it returns is a commitable vector or a throw.
+        const t8 = Date.now();
+        result = await codeReviewMode.evaluateCodeReview({
+          cidArray,
+          extractedPaths,
+          archiveData,
+          malformedBCIDs,
+          addendum: addendumString,
+          config: getCodeReviewConfig(),
+          deps: { archiveService, validator, logger },
+          runTag,
+          receivedAt: t0, // the deadline runs from receipt: the fetches above count (design §11)
+          canaryRequest: { aggId, jobId: id } // what the fault switch measures this request by; it reads nothing else of it
+        });
+        logger.info(`${runTag} code-review evaluation took ${Date.now() - t8}ms`);
+      } else if (malformedBCIDs.length > 0) {
         // The requester's package must itself be sound (it supplies the outcomes),
         // and the request must be consistent with it; both failures are the
         // requester's, not the submitter's, so they keep the errored path.
@@ -370,9 +455,11 @@ const evaluate = async (request) => {
       return createSuccessResponse(id, result, justificationCid);
     }
   } catch (error) {
+    // an error can quote the request's addendum, whose machine lines carry keys
+    const errorMessage = redactMachineLines(error.message);
     logger.error(`Error processing evaluation for jobRunID ${id}:`, {
-      message: error.message,
-      stack: error.stack,
+      message: errorMessage,
+      stack: redactMachineLines(error.stack),
       name: error.name,
       code: error.code
     });
@@ -418,11 +505,11 @@ const evaluate = async (request) => {
       jobRunID: id,
       status: 'errored',
       statusCode: error.statusCode || 500,
-      error: error.message,
+      error: errorMessage,
       data: {
         aggregatedScore: [0],
         justification: '',
-        error: error.message
+        error: errorMessage
       },
     };
   }

@@ -61,7 +61,7 @@ test('upgrade refuses authenticated but ungated jobs when regeneration is declin
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'verdikta-admission-gate-'));
   try {
     const source = fs.readFileSync(path.join(__dirname, '../bin/upgrade-arbiter.sh'), 'utf8');
-    const gate = source.slice(source.indexOf('check_job_spec_template() {'), source.indexOf('# Function to regenerate job specs'));
+    const gate = source.slice(source.indexOf('job_template_without_timeouts() {'), source.indexOf('# Function to regenerate job specs'));
     const repo = path.join(root, 'repo'), target = path.join(root, 'target');
     fs.mkdirSync(repo); fs.mkdirSync(target);
     const template = fs.readFileSync(path.join(__dirname, '../../chainlink-node/basicJobSpec'), 'utf8');

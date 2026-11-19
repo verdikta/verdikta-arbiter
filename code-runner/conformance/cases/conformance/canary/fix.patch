@@ -1,0 +1,11 @@
+diff --git a/src/Vault.sol b/src/Vault.sol
+--- a/src/Vault.sol
++++ b/src/Vault.sol
+@@ -6,6 +6,6 @@ contract Vault {
+     mapping(address => uint256) public balanceOf;
+ 
+     function deposit(uint256 amount) external {
+-        balanceOf[msg.sender] += amount + 1;
++        balanceOf[msg.sender] += amount;
+     }
+ }

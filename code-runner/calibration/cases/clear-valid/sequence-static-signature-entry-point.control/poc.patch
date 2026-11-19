@@ -1,0 +1,40 @@
+diff --git a/test/StaticSignatureEntryPointClaim.t.sol b/test/StaticSignatureEntryPointClaim.t.sol
+new file mode 100644
+--- /dev/null
++++ b/test/StaticSignatureEntryPointClaim.t.sol
+@@ -0,0 +1,35 @@
++// SPDX-License-Identifier: MIT
++pragma solidity ^0.8.27;
++
++import { Test } from "forge-std/Test.sol";
++import { Stage2Module } from "../src/Stage2Module.sol";
++import { Payload } from "../src/modules/Payload.sol";
++import { PackedUserOperation } from "../src/modules/interfaces/IAccount.sol";
++
++/// A static signature bound to the entry point is good for a user operation that the entry point validates.
++contract StaticSignatureEntryPointClaim is Test {
++
++  using Payload for Payload.Decoded;
++
++  function test_a_static_signature_bound_to_the_entry_point_validates() public {
++    address entryPoint = address(0xE4337);
++    Stage2Module wallet = new Stage2Module(entryPoint);
++    bytes32 operation = keccak256("a user operation");
++
++    vm.warp(1_700_000_000);
++    Payload.Decoded memory payload = Payload.fromDigest(operation);
++    vm.prank(address(wallet));
++    wallet.setStaticSignature(payload.hashFor(address(wallet)), entryPoint, uint96(block.timestamp + 1 days));
++
++    PackedUserOperation memory userOp;
++    userOp.sender = address(wallet);
++    userOp.signature = hex"80";
++
++    vm.expectRevert();
++    vm.prank(entryPoint);
++    uint256 validation = wallet.validateUserOp(userOp, operation, 0);
++
++    assertEq(validation, 0, "the entry point's user operation validates");
++  }
++
++}

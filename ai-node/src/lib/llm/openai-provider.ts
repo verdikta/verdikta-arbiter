@@ -7,12 +7,15 @@
  */
 
 
-import { LLMProvider } from './llm-provider-interface';
+import { CallControlOptions, LLMProvider, hasCallControls } from './llm-provider-interface';
 import { ChatOpenAI } from "@langchain/openai";
 import { HumanMessage } from '@langchain/core/messages';
 import { modelConfig } from '../../config/models';
 import { AttachmentContext, attachmentRequestError } from './attachment-errors';
 import { WebAccessOption, openAIModelSupportsWebSearch, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
+import { WebRetrieval, summarizeOpenAIWebSearch, webToolsOff } from './web-retrieval';
+import { jurorTransportFor } from './juror-transport';
+import { isGpt5FamilyModel } from './openai-model-family';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20 MB in bytes
@@ -76,7 +79,7 @@ export class OpenAIProvider implements LLMProvider {
   async generateResponse(
     prompt: string, 
     model: string, 
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption & CallControlOptions
   ): Promise<string> {
     // Links in the prompt are opened by OpenAI's web_search tool (Responses API).
     if (options?.webAccess !== false && shouldUseWebTools(prompt) && openAIModelSupportsWebSearch(model)) {
@@ -84,18 +87,20 @@ export class OpenAIProvider implements LLMProvider {
       if (answer !== null) return answer;
     }
 
-    // Check if this is a reasoning model (o1, o3, gpt-4.1, gpt-5, nano, etc.)
+    // Check if this is a reasoning model (o1, o3, gpt-4.1, GPT-5 and later, nano, etc.)
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
-                            model.toLowerCase().includes('gpt-5') ||
+                            isGpt5FamilyModel(model) ||
                             model.toLowerCase().includes('gpt-4.1') ||
                             model.toLowerCase().includes('nano');
     
-    // GPT-5 models require max_completion_tokens instead of max_tokens
+    // GPT-5 and later models (gpt-6-luna, …) require max_completion_tokens instead of max_tokens
     // Use native OpenAI client for these models
-    const isGpt5Model = model.toLowerCase().includes('gpt-5');
+    const isGpt5Model = isGpt5FamilyModel(model);
     
-    if (isGpt5Model) {
+    // A code-mode call (signal, envelope max tokens, effort) also goes through the
+    // native client: it takes max_completion_tokens, reasoning_effort and a signal.
+    if (isGpt5Model || hasCallControls(options)) {
       return this.generateResponseWithNativeClient(prompt, model, options);
     }
     
@@ -161,20 +166,29 @@ export class OpenAIProvider implements LLMProvider {
   private async generateResponseWithNativeClient(
     prompt: string,
     model: string,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & CallControlOptions
   ): Promise<string> {
+    // A juror's call (a deadline) holds past undici's 300 s default limits, and past the SDK's
+    // own 600 s timeout, with a dispatcher and timeout above its window (juror-transport.ts).
+    const transport = jurorTransportFor(options);
     try {
       const { OpenAI } = await import('openai');
-      const client = new OpenAI({ apiKey: this.apiKey });
+      const client = new OpenAI({
+        apiKey: this.apiKey,
+        // fetchOptions is typed for every runtime's RequestInit at once; this one is Node's.
+        ...(transport && { timeout: transport.timeoutMs, fetchOptions: { dispatcher: transport.dispatcher } as any }),
+      });
 
-      const maxCompletionTokens = parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000');
+      const maxCompletionTokens = options?.maxTokens ?? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000');
       
-      // GPT-5 models use reasoning_effort as a direct string value, not an object
-      const reasoningEffort = options?.reasoning?.effort || 'medium';
+      // GPT-5 and later models use reasoning_effort as a direct string value, not an object.
+      // A code-mode call on another model (a gpt-4o justifier) sends none unless it asks for effort.
+      const reasoningEffort = options?.effort || options?.reasoning?.effort
+        || (isGpt5FamilyModel(model) ? 'medium' : undefined);
       
-      console.log(`[${this.providerName}] Using native client for GPT-5 model ${model} with max_completion_tokens: ${maxCompletionTokens}, reasoning_effort: ${reasoningEffort}`);
+      console.log(`[${this.providerName}] Using native client for ${model} with max_completion_tokens: ${maxCompletionTokens}, reasoning_effort: ${reasoningEffort}`);
 
-      const response = await client.chat.completions.create({
+      const body = {
         model: model,
         messages: [
           {
@@ -184,9 +198,13 @@ export class OpenAIProvider implements LLMProvider {
         ],
         max_completion_tokens: maxCompletionTokens,
         // GPT-5 uses reasoning_effort (string) instead of reasoning (object)
-        reasoning_effort: reasoningEffort,
+        ...(reasoningEffort && { reasoning_effort: reasoningEffort }),
         ...(options?.verbosity && { verbosity: options.verbosity }),
-      } as any);  // Cast to any since OpenAI SDK types may not include reasoning_effort yet
+      } as any;  // Cast to any since OpenAI SDK types may not include reasoning_effort yet
+      // A code-mode signal aborts the HTTP request at the deadline.
+      const response = options?.signal
+        ? await client.chat.completions.create(body, { signal: options.signal })
+        : await client.chat.completions.create(body);
 
       const content = response.choices[0]?.message?.content;
       if (!content) {
@@ -199,6 +217,8 @@ export class OpenAIProvider implements LLMProvider {
     } catch (error: any) {
       console.error(`[${this.providerName}] Native client error for model ${model}:`, error.message);
       throw error;
+    } finally {
+      transport?.close();
     }
   }
 
@@ -243,10 +263,10 @@ export class OpenAIProvider implements LLMProvider {
     prompt: string, 
     model: string, 
     attachments: Array<{ type: string, content: string, mediaType: string }>,
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string> {
-    // Check if this model supports native PDF processing
-    const supportsNativePDF = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini'].some(supportedModel => 
+    // Check if this model supports native PDF processing (GPT-5 and later included)
+    const supportsNativePDF = isGpt5FamilyModel(model) || ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
       model.toLowerCase().includes(supportedModel.toLowerCase())
     );
 
@@ -261,8 +281,8 @@ export class OpenAIProvider implements LLMProvider {
       if (answer !== null) return answer;
     }
 
-    // GPT-5 models require native client for max_completion_tokens support
-    const isGpt5Model = model.toLowerCase().includes('gpt-5');
+    // GPT-5 and later models require native client for max_completion_tokens support
+    const isGpt5Model = isGpt5FamilyModel(model);
 
     // The native PDF path only when a PDF is actually attached
     if (supportsNativePDF && pdfAttachments.length > 0) {
@@ -279,7 +299,7 @@ export class OpenAIProvider implements LLMProvider {
     // Check if this is a reasoning model
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
-                            model.toLowerCase().includes('gpt-5') ||
+                            isGpt5FamilyModel(model) ||
                             model.toLowerCase().includes('gpt-4.1') ||
                             model.toLowerCase().includes('nano');
 
@@ -441,12 +461,12 @@ export class OpenAIProvider implements LLMProvider {
     // Check if this is a reasoning model
     const isReasoningModel = model.toLowerCase().includes('o1') || 
                             model.toLowerCase().includes('o3') || 
-                            model.toLowerCase().includes('gpt-5') ||
+                            isGpt5FamilyModel(model) ||
                             model.toLowerCase().includes('gpt-4.1') ||
                             model.toLowerCase().includes('nano');
     
-    // GPT-5 models require max_completion_tokens instead of max_tokens
-    const isGpt5Model = model.toLowerCase().includes('gpt-5');
+    // GPT-5 and later models require max_completion_tokens instead of max_tokens
+    const isGpt5Model = isGpt5FamilyModel(model);
     const maxTokensValue = isReasoningModel 
       ? parseInt(process.env.REASONING_MODEL_MAX_TOKENS || '16000')
       : 1000;
@@ -529,26 +549,31 @@ export class OpenAIProvider implements LLMProvider {
   /**
    * The answer with OpenAI's web_search tool enabled, or null when that request
    * fails: the juror then answers without web access (as every request did
-   * before), and the warning says why.
+   * before), and the warning says why. options.onWebRetrieval hears what the
+   * tool did, or that it was off for this answer.
    */
   private async tryWebSearch(
     model: string,
     content: any[],
-    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
+    options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string | null> {
+    let result: { text: string; retrieval: WebRetrieval };
     try {
-      return await this.generateWithWebSearch(model, content, options);
+      result = await this.generateWithWebSearch(model, content, options);
     } catch (error: any) {
       console.warn(`[${this.providerName}] Web search failed for ${model} (${error?.message}); answering without web access`);
+      options?.onWebRetrieval?.(webToolsOff(error?.message || 'web search request failed'));
       return null;
     }
+    options?.onWebRetrieval?.(result.retrieval);
+    return result.text;
   }
 
   private async generateWithWebSearch(
     model: string,
     content: any[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
-  ): Promise<string> {
+  ): Promise<{ text: string; retrieval: WebRetrieval }> {
     const { OpenAI } = await import('openai');
     const client = new OpenAI({ apiKey: this.apiKey });
     const id = model.toLowerCase().split('/').pop() || '';
@@ -571,7 +596,7 @@ export class OpenAIProvider implements LLMProvider {
     if (!text) {
       throw new Error(`no text in the response (status ${response?.status})`);
     }
-    return text;
+    return { text, retrieval: summarizeOpenAIWebSearch(response) };
   }
 }
 

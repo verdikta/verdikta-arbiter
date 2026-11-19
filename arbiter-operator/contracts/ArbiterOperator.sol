@@ -227,14 +227,15 @@ contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
 
     /// @notice Pre-work/pre-transaction check for the exact event's pending request.
     /// @dev Chainlink filters logs by this operator and job. Cancelled, fulfilled,
-    ///      expired, forged-parameter and currently revoked requests fail closed.
+    ///      forged-parameter and currently revoked requests fail closed.
+    ///      expiration is Chainlink's refund eligibility time, not a fulfillment
+    ///      deadline: code-review jobs can run for 780 s, beyond its five minutes.
     function isAuthorizedRequest(
         bytes32 requestId, uint256 payment, address requester,
         bytes4 callbackFunctionId, uint256 expiration
     ) external view returns (bool) {
         Commitment memory commitment = s_commitments[requestId];
         return commitment.paramsHash != bytes31(0) && commitment.dataVersion == 2 &&
-            block.timestamp < expiration &&
             commitment.paramsHash == _buildParamsHash(payment, requester, callbackFunctionId, expiration) &&
             _approved(requester);
     }
