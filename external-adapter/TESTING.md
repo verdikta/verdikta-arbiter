@@ -30,7 +30,7 @@ operator, expiry, retries, concurrent uploads, failure recovery and retention ar
 covered. Development/integration calls to a running server must supply its real
 service token; the fixed credentials in Jest setup apply only to mocked tests.
 
-P0 evidence-boundary regressions run offline with real ZIP extraction, shared
+Evidence-boundary regressions run offline with real ZIP extraction, shared
 manifest parsing, and EA payload construction; only IPFS/provider calls are
 mocked:
 

@@ -470,13 +470,16 @@ Ollama runs locally and is unaffected by gateway settings.
   the **same version** and the installer verifies this.
 - **Evidence must pass the EA filesystem boundary before common reads it.**
   `external-adapter/src/utils/evidenceBoundary.js` gates extraction, bare CIDs,
-  and every manifest file reference because common 1.7.0 does not confine its
-  paths. Keep schema/parsing in common, but never call those readers on an
-  archive that has bypassed the boundary. AI payload reads also require the
-  explicit extraction roots for this request (including each bCID root).
-  Unsafe primary archives error without committing; unsafe bCIDs follow the
-  existing deterministic malformed-submission policy. Regression tests:
-  `evidenceBoundary.test.js` and `evaluateHandler.evidenceBoundary.test.js`.
+  and every manifest file reference: `@verdikta/common` (1.9.0-attest.6) refuses a
+  manifest that supplies `path` but does not confine `filename`, and the adapter
+  read whatever it named. Keep schema/parsing in common, but never call those
+  readers on an archive that has bypassed the boundary. AI payload reads also
+  require the explicit extraction roots for this request (including each bCID
+  root). Unsafe primary archives error without committing; unsafe bCIDs follow the
+  existing deterministic malformed-submission policy (check
+  `unsafe-evidence-reference`). The claim path has its own confinement
+  (`codeReview/archiveMembers.js`). Regression tests: `evidenceBoundary.test.js`
+  and `evaluateHandler.evidenceBoundary.test.js`.
 - **ClassID**: a curated model-pool identifier (default 128). Model pool data
   ships via `@verdikta/common`; the installer integrates it into the AI Node
   (`npm run integrate-classid`, `src/scripts/display-classids.js`).
