@@ -526,6 +526,7 @@ const evaluate = async (request) => {
 const evaluateHandler = (request) =>
   runWithRequestContext({ runTag: `[EA ${request && request.id}]` }, () => evaluate(request));
 evaluateHandler.fetchCache = fetchCache;
+evaluateHandler.logger = logger;
 
 /**
  * Mode-1 (commit) helper

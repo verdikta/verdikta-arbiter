@@ -1,0 +1,34 @@
+type = "cron"
+schemaVersion = 1
+name = "{JOB_NAME} health"
+schedule = "CRON_TZ=UTC */10 * * * * *"
+maxTaskDuration = "30s"
+observationSource = """
+    state_data   [type="ethabiencode" abi="healthState(bytes32 key)" data="{\\"key\\": \\"{ARBITER_KEY}\\"}"]
+    state_call   [type="ethcall" contract="{KEEPER_ADDRESS}" data="$(state_data)" evmChainID="<CHAIN_ID>" block="latest" gas="200000"]
+    state        [type="ethabidecode" abi="bool pending, uint256 sentAt, bytes32 head" data="$(state_call)"]
+    pending      [type="conditional" data="$(state.pending)"]
+
+    fetch        [type="bridge"
+                  name="verdikta-ai"
+                  headers="[\\\"Authorization\\\", \\\"Bearer {EA_API_TOKEN}\\\"]"
+                  timeout="20s"
+                  requestData="{\\"id\\": $(jobSpec.externalJobID), \\"data\\": {\\"healthKey\\": \\"{ARBITER_KEY}\\", \\"head\\": $(state.head)}}"]
+    parse_answer [type="jsonparse" path="data,answer" data="$(fetch)"]
+    answer       [type="conditional" data="$(parse_answer)"]
+    parse_pre    [type="jsonparse" path="data,preimage" data="$(fetch)"]
+    parse_next   [type="jsonparse" path="data,newHead" data="$(fetch)"]
+
+    encode_tx    [type="ethabiencode"
+                  abi="rotateChain(bytes32 key, bytes32 preimage, bytes32 newHead)"
+                  data="{\\"key\\": \\"{ARBITER_KEY}\\", \\"preimage\\": $(parse_pre), \\"newHead\\": $(parse_next)}"]
+    submit_tx    [type="ethtx"
+                  to="{KEEPER_ADDRESS}"
+                  from="[\\"{FROM_ADDRESS}\\"]"
+                  data="$(encode_tx)"
+                  gasLimit="300000"
+                  minConfirmations="1"
+                  evmChainID="<CHAIN_ID>"]
+
+    state_data -> state_call -> state -> pending -> fetch -> parse_answer -> answer -> parse_pre -> parse_next -> encode_tx -> submit_tx
+"""

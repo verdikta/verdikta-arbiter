@@ -2,24 +2,31 @@
 /*
   scripts/register-oracle-cl.js – Hardhat + ethers
 
-  Register one or more job IDs for a given oracle.
+  Register one or more job IDs for a given oracle with the v2 ReputationKeeper
+  (verdikta-dispatcher, beacon branch: registerArbiter).
 
-  --fee is the oracle's per-job fee in ETH (the current dispatcher generation
-  pays oracles in ETH; there is no LINK anywhere in this flow). The keeper only
-  ever SELECTS an oracle whose fee is <= the request's max fee, which is capped
-  by the aggregator's maxOracleFee (0.0004 ETH at the time of writing), so the
-  script reads that ceiling and refuses a fee above it. Default 0.00002 ETH —
-  what the fleet runs with; lower fees also rank higher in selection.
+  For each job ID this creates the job's hash chain first (external-adapter/src/health/chainStore.js,
+  in <install>/health-chains, or --healthchains), then registers its head. The keeper sends health
+  calls that the node must answer with the chain's next value within 60 s (the health job,
+  chainlink-node/healthJobSpec); a job registered without its chain file can never answer and stays
+  frozen. Back up the health-chains directory with the node's keys.
+
+  --fee is the oracle's per-job fee in ETH (paid in ETH; no LINK anywhere in this flow). The keeper
+  only selects an oracle whose fee is <= the request's ceiling, which the aggregator caps at
+  maxOracleFee, so the script refuses a fee above it. Default 0.00002 ETH. The stake is the keeper's
+  stakeRequirement() per job, pulled from the signer, which must be the operator's owner (or the
+  keeper owner).
+  --wrappedverdikta must equal the keeper's verdiktaToken(); the script checks it.
   --link is accepted for backwards compatibility and ignored.
 
   Example:
 
 HARDHAT_NETWORK=base_sepolia \
 node scripts/register-oracle-cl.js \
-  --aggregator      0xe8a385E473EA710c5a88Cc72681a16a26fe380e4   # current Base Sepolia dispatcher — see docs/deployments.md \
+  --aggregator      <the v2 aggregator for the class — see docs/deployments.md> \
   --fee             0.00002 \
   --oracle          <your ArbiterOperator, OPERATOR_ADDR in installer/.contracts> \
-  --wrappedverdikta 0x94e3c031fe9403c80E14DaFbCb73f191C683c2B1   # must equal the dispatcher keeper's verdiktaToken() \
+  --wrappedverdikta <the keeper's verdiktaToken()> \
   --jobids          "38f19572c51041baa5f2dea284614590" "39515f75ac2947beb7f2eeae4d8eaf3e" \
   --classes         128 129
 
@@ -27,31 +34,34 @@ node scripts/register-oracle-cl.js \
 */
 
 require("dotenv").config();
+const fs    = require("fs");
+const path  = require("path");
 const hre   = require("hardhat");
 const { ethers } = hre;
 const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
 const { ensureRequestAuthorization, OperatorAuthorizationABI } = require("./lib/request-authorization.js");
+const chainStore = require("../../external-adapter/src/health/chainStore");
 
 /* ------------------------------------------------------------------- */
-/* Minimal ABIs                                                        */
+/* Minimal ABIs (v2)                                                   */
 /* ------------------------------------------------------------------- */
 const AggregatorABI = [
-  "function reputationKeeper() view returns (address)",
-  "function maxOracleFee() view returns (uint256)",
-  "function getContractConfig() view returns (address oracleAddr,address linkAddr,bytes32 jobId,uint256 fee)"
+  "function keeper() view returns (address)",
+  "function maxOracleFee() view returns (uint256)"
 ];
 
 const KeeperABI = [
-  "function registerOracle(address,bytes32,uint256,uint64[])",
-  "function getOracleInfo(address,bytes32) view returns (bool isActive,int256,int256,uint256,bytes32,uint256,uint256,uint256,bool)",
+  "function registerArbiter(address oracle, bytes32 jobId, uint64 fee, uint64[] classes, bytes32 chainHead)",
+  "function keyOf(address oracle, bytes32 jobId) view returns (bytes32)",
+  "function getArbiter(bytes32 key) view returns (tuple(address oracle, uint256 quality, uint256 timeliness, uint256 offenses, uint256 flags, uint256 blockedUntil, uint256 fee, uint256 callSentAt, uint256 callAnsweredAt, uint256 stake, uint256 checkpoints))",
+  "function stakeRequirement() view returns (uint256)",
+  "function verdiktaToken() view returns (address)",
   "function owner() view returns (address)",
-  "function isAuthorized(address) view returns (bool)",
-  "function minimumStake() view returns (uint256)",
-  "function registrationFee() view returns (uint256)",
   "function isContractApproved(address) view returns (bool)"
 ];
+const F_REGISTERED = 1n, F_BANNED = 4n, F_EXITING = 8n;
 
 const ERC20_ABI = [
   "function balanceOf(address) view returns (uint256)",
@@ -67,6 +77,19 @@ const toBytes32 = (id) => {
   return ethers.hexlify(bytes).padEnd(66, "0");
 };
 
+/* The job's hash chain: a new one for a job that is not registered. A file left by an earlier
+   registration of this key (exited, or a registration that never landed) is useless now, since the
+   keeper will hold the new head: it is kept as <key>.json.retired-<time>, never overwritten. */
+function ensureChain(key, dir) {
+  const file = path.join(dir, `${key.toLowerCase()}.json`);
+  if (fs.existsSync(file)) {
+    const retired = `${file}.retired-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    fs.renameSync(file, retired);
+    console.log(`  Retired an earlier hash chain: ${retired}`);
+  }
+  return chainStore.createChain(key, { dir });
+}
+
 /* ------------------------------------------------------------------- */
 /* Main                                                                */
 /* ------------------------------------------------------------------- */
@@ -81,6 +104,7 @@ const toBytes32 = (id) => {
       .option("wrappedverdikta", { alias: "w", type: "string", demandOption: true })
       .option("jobids",          { alias: "j", type: "array",  demandOption: true })
       .option("classes",         { alias: "c", type: "array",  demandOption: true })
+      .option("healthchains",    { type: "string", describe: "hash-chain directory (default <install>/health-chains, or HEALTH_CHAIN_DIR)" })
       .strict()
       .argv;
 
@@ -92,15 +116,20 @@ const toBytes32 = (id) => {
     const provider   = ethers.provider;
     const aggregator = new ethers.Contract(argv.aggregator, AggregatorABI, provider);
 
-    const keeperAddr = await aggregator.reputationKeeper();
+    const keeperAddr = await aggregator.keeper();
     console.log("ReputationKeeper:", keeperAddr);
 
     const keeper     = new ethers.Contract(keeperAddr, KeeperABI, signer);
-    const verdikta   = new ethers.Contract(argv.wrappedverdikta, ERC20_ABI, signer);
+    const token      = await keeper.verdiktaToken();
+    if (token.toLowerCase() !== String(argv.wrappedverdikta).toLowerCase()) {
+      throw new Error(`--wrappedverdikta ${argv.wrappedverdikta} is not this keeper's staking token ${token}`);
+    }
+    const verdikta   = new ethers.Contract(token, ERC20_ABI, signer);
     if (argv.link) console.log("Note: --link is ignored — oracle fees are paid in ETH, not LINK.");
 
     const oracleAddr = argv.oracle;
     const classes    = argv.classes.map(Number);
+    const chainDir   = argv.healthchains ? path.resolve(argv.healthchains) : chainStore.defaultDir();
     const { sendWithRetry } = createInFlightGuard({ provider, sender: owner });
     await ensureRequestAuthorization({
       operator: new ethers.Contract(oracleAddr, OperatorAuthorizationABI, signer),
@@ -112,61 +141,58 @@ const toBytes32 = (id) => {
     if (!/^[0-9]+(\.[0-9]+)?$/.test(String(argv.fee))) throw new Error(`--fee must be a decimal ETH amount, got "${argv.fee}"`);
     const ORACLE_FEE = ethers.parseUnits(String(argv.fee), 18);   // ETH per job, in wei
     if (ORACLE_FEE <= 0n) throw new Error("--fee must be greater than 0");
-    const VDKA_STAKE = ethers.parseUnits("100", 18);
+    if (ORACLE_FEE >= 2n ** 64n) throw new Error("--fee does not fit the keeper's uint64 fee");
+    const STAKE = await keeper.stakeRequirement();
 
-    /* Which job ids still need registering? Already-active ones cost no
-       stake, so a partial registration (issue #26) can be completed with
-       exactly the remaining 100 wVDKA per job. */
+    /* Which job ids still need registering? Registered ones cost no stake, so a partial
+       registration (issue #26) can be completed with exactly the remaining stake. */
     const pendingJobs = [];
     for (const raw of argv.jobids) {
       const jobId = toBytes32(raw);
-      const info = await keeper.getOracleInfo(oracleAddr, jobId);
-      if (info.isActive) console.log(`JobID ${raw}: already registered – skipping`);
-      else pendingJobs.push(raw);
+      const key = await keeper.keyOf(oracleAddr, jobId);
+      const flags = BigInt((await keeper.getArbiter(key)).flags);
+      if (flags & F_BANNED) throw new Error(`JobID ${raw} (key ${key}) is banned: it cannot register again`);
+      if (flags & F_REGISTERED) {
+        console.log(`JobID ${raw}: already registered${flags & F_EXITING ? " (exiting)" : ""} – skipping`);
+        if (!chainStore.currentHead(key, { dir: chainDir })) {
+          console.warn(`  WARNING: no hash chain for ${key} in ${chainDir}: this job cannot answer health calls`);
+        }
+      } else pendingJobs.push({ raw, jobId, key });
     }
     if (pendingJobs.length === 0) {
       console.log("\nAll job ids are already registered. Nothing to do.");
       process.exit(0);
     }
-    const totalStake = VDKA_STAKE * BigInt(pendingJobs.length);
+    const totalStake = STAKE * BigInt(pendingJobs.length);
 
-    /* Ceiling: an oracle whose fee exceeds the aggregator's maxOracleFee is
-       never eligible (ReputationKeeper.selectOracles: fee <= maxFee). Refuse
-       here rather than register a node that can never be picked. */
-    let feeCeiling = null;
-    try { feeCeiling = await aggregator.maxOracleFee(); } catch { /* older aggregator generation */ }
-    if (feeCeiling !== null && ORACLE_FEE > feeCeiling) {
+    /* Ceiling: an oracle whose fee exceeds the aggregator's maxOracleFee is never eligible
+       (the keeper selects only fee <= the request's ceiling). Refuse rather than register a node
+       that can never be picked. */
+    const feeCeiling = await aggregator.maxOracleFee();
+    if (ORACLE_FEE > feeCeiling) {
       throw new Error(
         `--fee ${ethers.formatEther(ORACLE_FEE)} ETH exceeds this aggregator's maxOracleFee ` +
         `${ethers.formatEther(feeCeiling)} ETH — the keeper would never select this oracle. Use a lower fee.`
       );
     }
 
-    /* Debug: Check balances ------------------------------------------ */
-    console.log("\n=== Balance Checks ===");
-    const vdkaBal = await verdikta.balanceOf(owner);
-    console.log(`Owner wVDKA balance: ${ethers.formatEther(vdkaBal)}`);
-    console.log(`Required wVDKA stake: ${ethers.formatEther(totalStake)}`);
-    console.log(`Oracle fee per job: ${ethers.formatEther(ORACLE_FEE)} ETH` +
-      (feeCeiling !== null ? ` (aggregator ceiling ${ethers.formatEther(feeCeiling)} ETH)` : ""));
-    
-    /* Debug: Validate parameters ------------------------------------- */
-    console.log("\n=== Parameter Validation ===");
+    console.log("\n=== Registration ===");
     console.log(`Oracle address: ${oracleAddr}`);
-    console.log(`Classes array: [${classes.join(', ')}]`);
-    console.log(`Classes array type: ${classes.map(c => typeof c).join(', ')}`);
+    console.log(`Classes: [${classes.join(', ')}]`);
     console.log(`Keeper address: ${keeperAddr}`);
+    console.log(`Hash chains: ${chainDir}`);
+    console.log(`Oracle fee per job: ${ethers.formatEther(ORACLE_FEE)} ETH (aggregator ceiling ${ethers.formatEther(feeCeiling)} ETH)`);
     console.log(`Job IDs to register: ${pendingJobs.length} of ${argv.jobids.length}`);
 
-    /* wVDKA allowance (one approval covers every job) ----------------- */
+    /* stake allowance (one approval covers every job) ------------------ */
     const bal = await verdikta.balanceOf(owner);
+    console.log(`Owner wVDKA balance: ${ethers.formatEther(bal)}; required stake: ${ethers.formatEther(totalStake)}`);
     if (bal < totalStake) {
       throw new Error(
         `Insufficient wVDKA: ${ethers.formatEther(bal)} available, ${ethers.formatEther(totalStake)} needed ` +
-        `(100 per job for the ${pendingJobs.length} job id(s) not yet registered).`
+        `(${ethers.formatEther(STAKE)} per job for the ${pendingJobs.length} job id(s) not yet registered).`
       );
     }
-
     let allow = await verdikta.allowance(owner, keeperAddr);
     if (allow < totalStake) {
       console.log(`Approving ${ethers.formatEther(totalStake)} wVDKA…`);
@@ -174,114 +200,25 @@ const toBytes32 = (id) => {
     }
 
     /* Register each pending job ID ----------------------------------- */
-    for (const raw of pendingJobs) {
-      const jobId = toBytes32(raw);
-      console.log(`\nJobID ${raw} → ${jobId}`);
-
-      console.log("Calling registerOracle…");
-      console.log(`  Oracle: ${oracleAddr}`);
-      console.log(`  JobID: ${jobId}`);
-      console.log(`  Oracle fee: ${ethers.formatEther(ORACLE_FEE)} ETH`);
-      console.log(`  Classes: [${classes.join(', ')}]`);
-      
+    for (const { raw, jobId, key } of pendingJobs) {
+      console.log(`\nJobID ${raw} → ${jobId} (key ${key})`);
+      const head = ensureChain(key, chainDir);
+      console.log(`  Hash chain head: ${head}`);
+      const args = [oracleAddr, jobId, ORACLE_FEE, classes, head];
+      let gasLimit = 600000;
       try {
-        // Try to estimate gas first to get a better error message
-        const gasEstimate = await keeper.registerOracle.estimateGas(oracleAddr, jobId, ORACLE_FEE, classes);
-        console.log(`  Gas estimate: ${gasEstimate.toString()}`);
-        
-        // Add buffer to gas estimate for safety (20% buffer)
-        const gasLimit = Math.ceil(Number(gasEstimate) * 1.2);
-        console.log(`  Using gas limit: ${gasLimit}`);
-        
-        await sendWithRetry(`registerOracle ${raw}`, async () => {
-          const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit });
-          await tx.wait();
-        });
-      console.log("✓ Registered");
-      } catch (estimateError) {
-        console.error("Gas estimation failed, trying with fallback gas limit...");
-        
-        // Try with a reasonable fallback gas limit for mainnet
-        const fallbackGasLimit = 500000; // 500k gas as fallback
-        console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
-        
-        try {
-          await sendWithRetry(`registerOracle ${raw} (fallback gas)`, async () => {
-            const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit: fallbackGasLimit });
-            await tx.wait();
-          });
-          console.log("✓ Registered with fallback gas limit");
-          continue; // Skip the error handling below and move to next job
-        } catch (fallbackError) {
-          console.error("Fallback transaction also failed:", fallbackError.message);
+        gasLimit = Math.ceil(Number(await keeper.registerArbiter.estimateGas(...args)) * 1.2);
+      } catch (e) {
+        // estimation reverts for the same reasons the transaction would: show why
+        try { await keeper.registerArbiter.staticCall(...args); } catch (s) {
+          throw new Error(`registerArbiter would revert for ${raw}: ${s.shortMessage || s.message}`);
         }
-        
-        // If fallback also fails, try to get more details
-        console.error("Both gas estimation and fallback failed, getting more details...");
-        
-        // Try to call the function statically to get a better error message
-        try {
-          await keeper.registerOracle.staticCall(oracleAddr, jobId, ORACLE_FEE, classes);
-        } catch (staticError) {
-          console.error("Static call error:", staticError.message);
-          if (staticError.reason) {
-            console.error("Revert reason:", staticError.reason);
-          }
-          if (staticError.data) {
-            console.error("Error data:", staticError.data);
-          }
-        }
-        
-        // Try to decode the error using different methods
-        try {
-          console.log("Attempting to decode error...");
-          
-          // Try with different gas limits
-          const gasLimitTests = [100000, 200000, 500000, 1000000];
-          for (const gasLimit of gasLimitTests) {
-            try {
-              console.log(`Testing with gas limit: ${gasLimit}`);
-              await keeper.registerOracle.staticCall(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit });
-              console.log(`Success with gas limit: ${gasLimit}`);
-              break;
-            } catch (gasError) {
-              console.log(`Failed with gas limit ${gasLimit}: ${gasError.message}`);
-            }
-          }
-          
-          // Try to get more detailed error info
-          if (estimateError.error && estimateError.error.data) {
-            console.error("Raw error data:", estimateError.error.data);
-          }
-          
-          // Try to call with explicit overrides
-          await keeper.registerOracle.staticCall(oracleAddr, jobId, ORACLE_FEE, classes, {
-            from: owner,
-            gasLimit: 1000000
-          });
-          
-        } catch (decodeError) {
-          console.error("Error decoding attempt failed:", decodeError.message);
-          
-          // Try the actual transaction with a high gas limit to see if it gives better errors
-          try {
-            console.log("Attempting actual transaction with high gas limit...");
-            const tx = await keeper.registerOracle(oracleAddr, jobId, ORACLE_FEE, classes, { gasLimit: 1000000 });
-            await tx.wait();
-            console.log("✓ Registered with high gas limit");
-          } catch (txError) {
-            console.error("Transaction with high gas limit failed:", txError.message);
-            if (txError.reason) {
-              console.error("Transaction revert reason:", txError.reason);
-            }
-            if (txError.data) {
-              console.error("Transaction error data:", txError.data);
-            }
-          }
-        }
-        
-        throw estimateError;
       }
+      await sendWithRetry(`registerArbiter ${raw}`, async () => {
+        const tx = await keeper.registerArbiter(...args, { gasLimit });
+        await tx.wait();
+      });
+      console.log("✓ Registered");
     }
 
     console.log("\nAll done.");

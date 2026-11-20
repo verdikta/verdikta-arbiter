@@ -61,3 +61,6 @@ installer/.registration_state
 # The External Adapter's commit store (scores and salts of pending reveals)
 .commit-db.json
 .commit-db.json.tmp
+
+# v2 health-call hash chains (secret seeds; installs keep them in <install>/health-chains)
+health-chains/

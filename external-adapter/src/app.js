@@ -2,7 +2,8 @@
  * @fileoverview The adapter's HTTP routes, apart from the server (index.js),
  * so tests can drive them.
  *
- *   POST /evaluate  the Chainlink bridge's call (handlers/evaluateHandler.js)
+ *   POST /evaluate  the Chainlink bridge's call (handlers/evaluateHandler.js), and the health job's
+ *                   (a body with data.healthKey: health/healthHandler.js)
  *   GET  /version   version self-report for the doctor and debugging
  *   GET  /health    liveness, the code-review mode (trust, readiness) and the canary fault switch
  */
@@ -14,15 +15,18 @@ const { collectVersionInfo } = require('./utils/versionInfo');
 const { getCodeReviewConfig, describeCodeReviewConfig } = require('./codeReview/config');
 const { describeCanaryFault } = require('./canaryFault');
 const { serverTimeoutMs } = require('./utils/serverTimeout');
+const { createHealthHandler, isHealthRequest } = require('./health/healthHandler');
 
 const SERVICE = 'verdikta-external-adapter';
 
 /**
- * @param {{ evaluateHandler?: Function }} [options]
+ * @param {{ evaluateHandler?: Function, healthHandler?: Function }} [options]
  * @returns {import('express').Express}
  */
 function createApp(options = {}) {
   const evaluateHandler = (typeof options === 'function' ? options : options.evaluateHandler) || require('./handlers/evaluateHandler');
+  const healthHandler = (typeof options === 'object' && options.healthHandler) ||
+    createHealthHandler({ logger: evaluateHandler.logger });
   const app = express();
   app.disable('x-powered-by');
 
@@ -55,7 +59,7 @@ function createApp(options = {}) {
   app.post('/evaluate', requireServiceAuth, express.json(), async (req, res) => {
     res.set('Cache-Control', 'no-store');
     try {
-      const result = await evaluateHandler(req.body);
+      const result = isHealthRequest(req.body) ? await healthHandler(req.body) : await evaluateHandler(req.body);
       res.status(result.statusCode || 200).json(result);
     } catch (error) {
       res.status(500).json({

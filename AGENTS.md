@@ -137,6 +137,29 @@ Because several arbiters answer the same request, the Dispatcher uses
 
 The commit hash = `keccak256(abi.encode(bytes32 aggId, address OPERATOR_ADDRESS, uint256[] scores, uint256 salt))`, all 32 bytes, with a 128-bit salt (the v2 aggregator, verdikta-dispatcher items 4 and 5; v1 took 128 bits of a SHA-256 without the round). Binding the round and keeping every bit means no commit can be opened two ways in practice. This is why the EA **requires `OPERATOR_ADDR`** in its env. `evaluateHandler.commitFormat.test.js` pins the formula to the dispatcher's own test helper.
 
+**Health calls (v2 keeper).** The keeper sends health calls (`HealthCall(key, sentAt)`) to jurors,
+random probes and beacons. Each must be answered within 60 s with the next value of the job's hash
+chain, or the arbiter is frozen (not selectable) until it answers.
+- **The chain:** a secret seed `s`, `v[n] = s`, `v[i-1] = keccak256(v[i])`. The head `v[0]` is
+  registered with `registerArbiter`.
+- **Where it lives:** `external-adapter/src/health/chainStore.js` keeps one file per job key,
+  `<install>/health-chains/<key>.json`, 0600, outside what an upgrade replaces (override with
+  `HEALTH_CHAIN_DIR`). The file holds the seeds: **back it up with the node's keys**. Without it the
+  arbiter cannot answer and stays frozen until it exits and registers again.
+- **How it is answered:** the Chainlink cron job `chainlink-node/healthJobSpec`, one per arbiter job,
+  every 10 s:
+  1. It reads `keeper.healthState(key)` with an `ethcall`.
+  2. While a call is pending, it asks the adapter over the same bridge. The body is
+     `data.healthKey` plus `data.head`, handled by `src/health/healthHandler.js`.
+  3. It sends `rotateChain(key, preimage, newHead)` from the node's key. With `newHead == preimage`
+     that is a plain answer; a different `newHead` installs the next chain.
+- **What the adapter controls:** the job fixes the keeper address and the key, so the adapter only
+  supplies the two values. It never reads the chain itself.
+- **Rotation:** a new chain is created and saved 1,000 values before the old one ends.
+- **No repeats:** a head answered in the last 20 s is not answered again.
+- **Registration:** `arbiter-operator/scripts/register-oracle-cl.js` creates each job's chain before
+  registering its head.
+
 Multiple comma-separated CIDs after the prefix ⇒ multi-CID (multi-party)
 evaluation; an optional trailing `:addendum` appends real-time text to the prompt.
 
@@ -647,6 +670,7 @@ Ollama runs locally and is unaffected by gateway settings.
 | How does deliberation/scoring work? | `ai-node/src/app/api/rank-and-justify/route.ts`, `ai-node/src/config/prePromptConfig.ts` |
 | How are models routed to providers? | `ai-node/src/lib/llm/llm-factory.ts`, `provider-config.ts`, `config/models.ts` |
 | Commit-reveal / IPFS upload | `external-adapter/src/handlers/evaluateHandler.js`, `services/commitStore.js` |
+| Health calls (v2 keeper) | `external-adapter/src/health/`, `chainlink-node/healthJobSpec`, `arbiter-operator/scripts/register-oracle-cl.js` |
 | On-chain fulfillment/access control | `arbiter-operator/contracts/ArbiterOperator.sol` |
 | Chainlink job pipeline | `chainlink-node/basicJobSpec`, `installer/bin/register-oracle-dispatcher.sh` |
 | Manifest format | `external-adapter/doc/MANIFEST_SPECIFICATION.md`, `external-adapter/doc/multi-cid-implementation.md` |
