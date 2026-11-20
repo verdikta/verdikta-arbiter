@@ -1,5 +1,6 @@
 module.exports = {
   testEnvironment: 'node',
+  coverageProvider: 'v8',
   transform: {},
   extensionsToTreatAsEsm: ['.ts'],
   moduleNameMapper: {
@@ -10,4 +11,4 @@ module.exports = {
   // on this adapter's copy of the same pinned @verdikta/common.
   modulePaths: ['<rootDir>/node_modules'],
   setupFiles: ['<rootDir>/jest.setup.js'],
-}; 
+};
