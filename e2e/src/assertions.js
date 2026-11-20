@@ -90,7 +90,7 @@ function cidAssertion(name, cid) {
   return assert(name, isLikelyCid(cid), `cid=${JSON.stringify(cid)}`);
 }
 
-/** Mode-2 reveal returns "<cid>:<salt>" where salt is 20 lowercase hex chars. */
+/** Mode-2 reveal returns "<cid>:<salt>" where salt is 32 lowercase hex chars (128 bits). */
 function cidWithSaltAssertion(value) {
   const results = [];
   const ok = typeof value === 'string' && value.includes(':');
@@ -98,7 +98,7 @@ function cidWithSaltAssertion(value) {
   if (!ok) return results;
   const [cid, salt] = value.split(':');
   results.push(cidAssertion('reveal.cidValid', cid));
-  results.push(assert('reveal.saltIs20Hex', /^[0-9a-f]{20}$/.test(salt || ''), `salt=${salt}`));
+  results.push(assert('reveal.saltIs32Hex', /^[0-9a-f]{32}$/.test(salt || ''), `salt=${salt}`));
   return results;
 }
 

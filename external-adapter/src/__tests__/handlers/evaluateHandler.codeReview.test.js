@@ -159,7 +159,7 @@ async function expectInvalidCommit(s, { gate, check }) {
   expect(claimRun.runClaim).not.toHaveBeenCalled();
   expect(uploaded).toHaveLength(0);
 
-  const hashHex = BigInt(commitment).toString(16).padStart(32, '0');
+  const hashHex = BigInt(commitment).toString(16).padStart(64, '0');
   const stored = await commitStore.get(hashHex);
   expect(stored.result.scores.map((x) => x.outcome)).toEqual([...codeReview.BUG_OUTCOMES]);
   expect(stored.result.scores.map((x) => x.score)).toEqual(INVALID_VECTOR);
@@ -221,7 +221,7 @@ describe('code review: request layout and operator switch', () => {
     const res = await evaluateHandler(request(s.cid(1)));
     const [commitment] = res.data.aggregatedScore;
     expect(BigInt(commitment) > 0n).toBe(true);
-    const stored = await commitStore.get(BigInt(commitment).toString(16).padStart(32, '0'));
+    const stored = await commitStore.get(BigInt(commitment).toString(16).padStart(64, '0'));
     expect(stored.result.justification).toBe('A4b result');
   });
 
@@ -555,7 +555,7 @@ describe('code review: claim-archive member check (deterministic INVALID naming 
     const s = scenario({ claim: { pocPatch: undefined } });
     const a = await evaluateHandler(request(s.cid(1), 'a'));
     const b = await evaluateHandler(request(s.cid(1), 'b'));
-    const hex = (r) => BigInt(r.data.aggregatedScore[0]).toString(16).padStart(32, '0');
+    const hex = (r) => BigInt(r.data.aggregatedScore[0]).toString(16).padStart(64, '0');
     const [sa, sb] = await Promise.all([commitStore.get(hex(a)), commitStore.get(hex(b))]);
     expect(sa.result.scores).toEqual(sb.result.scores);
     expect(sa.result.justification).toEqual(sb.result.justification);

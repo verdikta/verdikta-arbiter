@@ -133,7 +133,7 @@ async function commitReveal(h, requestCid, { expectScores, settlement, l4 }) {
   checks.push(...expectScores(scores));
   const value = reveal && reveal.data && reveal.data.justificationCid;
   checks.push(...A.cidWithSaltAssertion(value));
-  checks.push(...C.commitmentChecks(commitment, scores, value, h.operator));
+  checks.push(...C.commitmentChecks(commitment, scores, value, h.operator, aggId));
   checks.push(A.assert('reveal.uploads', h.ipfs.pins.length === pinsAtCommit + 1, `${h.ipfs.pins.length - pinsAtCommit} pin(s) at the reveal`));
   if (typeof value === 'string' && value.includes(':')) {
     const json = await justificationOf(h, value.split(':')[0]);

@@ -99,7 +99,7 @@ function holdFetch(cid) {
   heldFetches.set(cid, { promise, release });
   return release;
 }
-const hashOf = (commitment) => BigInt(commitment).toString(16).padStart(32, '0');
+const hashOf = (commitment) => BigInt(commitment).toString(16).padStart(64, '0');
 
 beforeEach(async () => {
   jest.clearAllMocks();

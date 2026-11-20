@@ -124,14 +124,14 @@ function noAiChecks(before, after) {
   ];
 }
 
-/** The commitment is the first 128 bits of sha256(abi.encode(operator, scores, salt)), as the aggregator checks it at reveal. */
-function commitmentChecks(commitment, scores, cidWithSalt, operator) {
+/** The commitment is keccak256(abi.encode(aggId, operator, scores, salt)), all 32 bytes, as the v2 aggregator checks it at reveal. */
+function commitmentChecks(commitment, scores, cidWithSalt, operator, aggId) {
   const salt = String(cidWithSalt).split(':')[1];
-  if (!Array.isArray(scores) || !/^[0-9a-f]{20}$/.test(salt || '')) {
-    return [assert('commit.recomputed', false, `scores=${JSON.stringify(scores)}, salt=${salt}`)];
+  if (!Array.isArray(scores) || !/^[0-9a-f]{32}$/.test(salt || '') || !/^0x[0-9a-fA-F]{64}$/.test(String(aggId))) {
+    return [assert('commit.recomputed', false, `scores=${JSON.stringify(scores)}, salt=${salt}, aggId=${aggId}`)];
   }
-  const encoded = ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256[]', 'uint256'], [operator, scores.map(BigInt), BigInt(`0x${salt}`)]);
-  const recomputed = BigInt(`0x${ethers.sha256(encoded).slice(2, 34)}`).toString();
+  const encoded = ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'address', 'uint256[]', 'uint256'], [aggId, operator, scores.map(BigInt), BigInt(`0x${salt}`)]);
+  const recomputed = BigInt(ethers.keccak256(encoded)).toString();
   return [assert('commit.recomputed', recomputed === String(commitment), `committed ${commitment}, the reveal hashes to ${recomputed}`)];
 }
 

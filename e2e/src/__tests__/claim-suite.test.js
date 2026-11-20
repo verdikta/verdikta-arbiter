@@ -313,19 +313,21 @@ describe('the pull: from the registry, by digest', () => {
 describe('the commitment: recomputed, not only well-formed', () => {
   const operator = '0x0000000000000000000000000000000000000001';
   const scores = [0, 0, 0, 0, 700000, 300000];
-  const salt = 'ab'.repeat(10);
+  const salt = 'ab'.repeat(16);
+  const aggId = `0x${'0'.repeat(63)}7`;
   const commitment = () => {
-    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(['address', 'uint256[]', 'uint256'], [operator, scores, BigInt(`0x${salt}`)]);
-    return BigInt(`0x${ethers.sha256(encoded).slice(2, 34)}`).toString();
+    const encoded = ethers.AbiCoder.defaultAbiCoder().encode(['bytes32', 'address', 'uint256[]', 'uint256'], [aggId, operator, scores, BigInt(`0x${salt}`)]);
+    return BigInt(ethers.keccak256(encoded)).toString();
   };
 
   it('the reveal\'s scores and salt hash to what was committed', () => {
-    expect(allPass(C.commitmentChecks(commitment(), scores, `QmCid:${salt}`, operator))).toBe(true);
+    expect(allPass(C.commitmentChecks(commitment(), scores, `QmCid:${salt}`, operator, aggId))).toBe(true);
   });
 
-  it('another score vector or another salt does not', () => {
-    expect(allPass(C.commitmentChecks(commitment(), [0, 0, 0, 0, 700001, 299999], `QmCid:${salt}`, operator))).toBe(false);
-    expect(allPass(C.commitmentChecks(commitment(), scores, `QmCid:${'cd'.repeat(10)}`, operator))).toBe(false);
+  it('another score vector, another salt or another round does not', () => {
+    expect(allPass(C.commitmentChecks(commitment(), [0, 0, 0, 0, 700001, 299999], `QmCid:${salt}`, operator, aggId))).toBe(false);
+    expect(allPass(C.commitmentChecks(commitment(), scores, `QmCid:${'cd'.repeat(16)}`, operator, aggId))).toBe(false);
+    expect(allPass(C.commitmentChecks(commitment(), scores, `QmCid:${salt}`, operator, `0x${'0'.repeat(63)}8`))).toBe(false);
   });
 });
 

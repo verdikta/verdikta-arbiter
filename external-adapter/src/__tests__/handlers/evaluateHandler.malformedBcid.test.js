@@ -98,14 +98,21 @@ describe('evaluateHandler — malformed bCID (submitted-work) archives', () => {
       expect(aiClient.evaluate).not.toHaveBeenCalled();
       expect(uploaded).toHaveLength(0); // nothing goes to IPFS at commit time
 
-      const hashHex = BigInt(commitment).toString(16).padStart(32, '0');
+      const hashHex = BigInt(commitment).toString(16).padStart(64, '0');
       const stored = await commitStore.get(hashHex);
       expect(stored.result.scores).toEqual([{ outcome: 'DONT_FUND', score: 1000000 }, { outcome: 'FUND', score: 0 }]);
 
       const reveal = await evaluateHandler(request(`2:${commitment}`, 'job-1'));
       expect(reveal.statusCode).toBe(200);
       expect(reveal.data.aggregatedScore).toEqual([1000000, 0]);
-      expect(reveal.data.justificationCid).toMatch(/^QmJustification1:[0-9a-f]{20}$/);
+      expect(reveal.data.justificationCid).toMatch(/^QmJustification1:[0-9a-f]{32}$/);
+      // what the aggregator recomputes at reveal: keccak256(abi.encode(aggId, operator, scores, salt))
+      const ethers = require('ethers');
+      const salt = BigInt('0x' + reveal.data.justificationCid.split(':')[1]);
+      const onChain = ethers.utils.keccak256(ethers.utils.defaultAbiCoder.encode(
+        ['bytes32', 'address', 'uint256[]', 'uint256'],
+        ['0x' + 'ab'.repeat(32), process.env.OPERATOR_ADDR, reveal.data.aggregatedScore, salt]));
+      expect(BigInt(onChain).toString()).toBe(commitment);
       expect((await commitStore.get(hashHex)).justificationCid).toBe('QmJustification1'); // retained for retries
 
       expect(uploaded).toHaveLength(1);
@@ -118,7 +125,7 @@ describe('evaluateHandler — malformed bCID (submitted-work) archives', () => {
     it('two arbiters (two runs) commit to the same score vector', async () => {
       const a = await evaluateHandler(request(`1:${PRIMARY},${NOT_JSON}`, 'a'));
       const b = await evaluateHandler(request(`1:${PRIMARY},${NOT_JSON}`, 'b'));
-      const hex = (r) => BigInt(r.data.aggregatedScore[0]).toString(16).padStart(32, '0');
+      const hex = (r) => BigInt(r.data.aggregatedScore[0]).toString(16).padStart(64, '0');
       const [sa, sb] = await Promise.all([commitStore.get(hex(a)), commitStore.get(hex(b))]);
       expect(sa.result.scores).toEqual(sb.result.scores);
       expect(sa.result.justification).toEqual(sb.result.justification);
@@ -169,7 +176,7 @@ describe('evaluateHandler — malformed bCID (submitted-work) archives', () => {
     it('mode 1 on a conforming submission commits the AI result', async () => {
       const res = await evaluateHandler(request(`1:${PRIMARY},${CONFORMING}`));
       expect(aiClient.evaluate).toHaveBeenCalledTimes(1);
-      const hex = BigInt(res.data.aggregatedScore[0]).toString(16).padStart(32, '0');
+      const hex = BigInt(res.data.aggregatedScore[0]).toString(16).padStart(64, '0');
       expect((await commitStore.get(hex)).result).toEqual(AI_RESULT);
     });
   });

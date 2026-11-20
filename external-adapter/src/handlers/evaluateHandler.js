@@ -530,63 +530,22 @@ evaluateHandler.fetchCache = fetchCache;
 /**
  * Mode-1 (commit) helper
  * ----------------------
- *  • builds ABI-compatible encoding of (uint256[] scores, uint256 salt)
- *  • takes the SHA-256 hash, keeps the low 128 bits
- *  • stores the result, salt, caller scope and expiry under that 128-bit key
- *  • returns the decimal representation (what the aggregator expects)
+ * The aggregator (v2) checks a reveal against
+ *   keccak256(abi.encode(bytes32 aggId, address operator, uint256[] scores, uint256 salt))
+ * in full (all 32 bytes), with a 128-bit salt. The node picks its own salt, so only the hash
+ * keeps it from opening one commit two ways; binding the round (aggId) and keeping every bit
+ * put a reusable collision out of reach. Stores the result, salt, caller scope and expiry under
+ * the 64-hex hash and returns the hash in decimal (what the aggregator reads from scores[0]).
  */
 async function handleMode1Commit(result, scope, runTag) {
-  // ---------- 1. collect *unsigned* scores -----------------------------
   const scores = (result.scores || [{ score: 0 }]).map(s => BigInt(s.score));
+  const saltHex = crypto.randomBytes(16).toString('hex');   // 128 bits, exactly 32 lowercase hex
+  const hashHex = commitmentHash(scope.aggId, OPERATOR_ADDRESS, scores, BigInt('0x' + saltHex));
 
-  // ---------- 2. generate 80-bit salt, render it as *exactly* 20 hex ---
-  const saltBytes = crypto.randomBytes(10);          // 10 bytes  == 80 bits
-  const saltHex = saltBytes.toString('hex');         // 20 lowercase hex chars
-  const saltUint = BigInt('0x' + saltHex);
-
-  // ---------- 3. ABI-encode  (uint256[] scores, uint256 salt) ----------
-  // We hand-roll the encoding because we only need a tiny subset:
-  //
-  //   0x00  0x00  0x00  0x40   offset pointer  (64 bytes) to the scores array
-  //   0x…                                salt  (32 bytes, left-padded)
-  //   0x…           scores.length (32 bytes)
-  //   0x…           scores[0]     (32 bytes)
-  //   0x…           scores[1]     (32 bytes)  (etc.)
-  //
-  function uint256ToBuf(u) {
-    return Buffer.from(u.toString(16).padStart(64, '0'), 'hex');
-  }
-
-  const head = Buffer.concat([                       // static part
-                  Buffer.from(''.padStart(64, '0'), 'hex'),  // offset 0x40
-                  uint256ToBuf(saltUint)
-                ]);
-  const tail = Buffer.concat([
-                  uint256ToBuf(BigInt(scores.length)),
-                  ...scores.map(uint256ToBuf)
-                ]);
-
-  // fix the pointer in the head (0x40 == 64 bytes)
-  head.writeBigUInt64BE(0n, 0);                     // already zero
-  head[31] = 0x40;                                  // last byte -> 64
-
-  const abiPayload = Buffer.concat([head, tail]);
-
-  // ---------- 4. low 128 bits of SHA-256 -------------------------------
-  const encodedData = ethers.utils.defaultAbiCoder.encode(
-    ['address', 'uint256[]', 'uint256'],
-    [OPERATOR_ADDRESS, scores, saltUint]
-  );
-  const hashBytes = ethers.utils.sha256(encodedData);
-  // Take the first 16 bytes - high 128 bits (32 hex chars after 0x prefix)
-  const hashHex = hashBytes.substring(2, 34);
-
-  // ---------- 5. persist & hand the decimal commitment back ------------
   logger.info(`EA commit → hash=${hashHex}`);
-
   await commitStore.save(hashHex, {
     result,
-    salt: saltHex,                      // remember: 20 lowercase hex chars
+    salt: saltHex,
     aggId: scope.aggId,
     scope,
     expiresAt: Date.now() + COMMIT_TTL_MS,
@@ -597,20 +556,29 @@ async function handleMode1Commit(result, scope, runTag) {
   return BigInt('0x' + hashHex).toString();        // decimal for likelihoods[0]
 }
 
+/** The v2 commitment: 64 lowercase hex chars, no prefix. */
+function commitmentHash(aggId, operator, scores, salt) {
+  const encoded = ethers.utils.defaultAbiCoder.encode(
+    ['bytes32', 'address', 'uint256[]', 'uint256'],
+    [aggId, operator, scores, salt]
+  );
+  return ethers.utils.keccak256(encoded).slice(2);
+}
+
 /**
  * Reveal previously committed result
  */
 async function handleMode2Reveal(value, scope, runTag) {
   let hash;
-  if (/^[0-9]{1,39}$/.test(value)) hash = BigInt(value);
-  else if (/^(?:0x)?[0-9a-f]{1,32}$/.test(value)) hash = BigInt(`0x${value.replace(/^0x/, '')}`);
+  if (/^[0-9]{1,78}$/.test(value)) hash = BigInt(value);
+  else if (/^(?:0x)?[0-9a-f]{1,64}$/.test(value)) hash = BigInt(`0x${value.replace(/^0x/, '')}`);
   else throw requestError('Invalid commitment hash', 400);
-  if (hash >= (1n << 128n)) throw requestError('Invalid commitment hash', 400);
-  const candidates = new Set([hash.toString(16).padStart(32, '0')]);
-  // The dispatcher sends exactly 32 bare hex digits, which can occasionally
+  if (hash >= (1n << 256n)) throw requestError('Invalid commitment hash', 400);
+  const candidates = new Set([hash.toString(16).padStart(64, '0')]);
+  // The dispatcher sends exactly 64 bare hex digits, which can occasionally
   // contain only 0–9. Also support decimal commitments returned by mode 1.
   // Resolve that ambiguity only against this caller's stored scope.
-  if (/^[0-9]{32}$/.test(value)) candidates.add(value);
+  if (/^[0-9]{64}$/.test(value)) candidates.add(value);
   const matches = [];
   for (const candidate of candidates) {
     const entry = await commitStore.get(candidate);
@@ -778,3 +746,4 @@ function createSuccessResponse(id, result, justificationCid) {
 }
 
 module.exports = evaluateHandler;
+module.exports.commitmentHash = commitmentHash;

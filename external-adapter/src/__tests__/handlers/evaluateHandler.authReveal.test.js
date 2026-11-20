@@ -25,8 +25,8 @@ beforeAll(async () => {
   });
 });
 afterAll(async () => { if (server?.listening) await new Promise(resolve => server.close(resolve)); });
-const HASH = 'abcdef0123456789abcdef0123456789';
-const PADDED = HASH.padStart(32, '0');
+const HASH = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
+const PADDED = HASH.padStart(64, '0');
 const DECIMAL = BigInt('0x' + HASH).toString();
 const AGG = '0x' + 'ab'.repeat(32);
 const TOKEN = 'e'.repeat(64);
@@ -41,7 +41,7 @@ beforeEach(async () => {
   mockState.client.ipfsClient.uploadToIPFS.mockResolvedValue('QmJustification');
   entry = {
     result: { scores: [{ outcome: 'No', score: 1000000 }], justification: 'saved result' },
-    salt: '1234567890abcdef1234', created: new Date().toISOString(), expiresAt: Date.now() + 60000,
+    salt: '1234567890abcdef1234567890abcdef', created: new Date().toISOString(), expiresAt: Date.now() + 60000,
     scope: { jobId: 'job-1', aggId: AGG, operator: process.env.OPERATOR_ADDR.toLowerCase() },
   };
   await store.save(PADDED, entry);
@@ -91,7 +91,7 @@ test.each([
   expect(mockState.client.ipfsClient.uploadToIPFS).not.toHaveBeenCalled();
   expect(await store.get(PADDED)).toEqual(saved);
 });
-test.each(['-1', '0xxyz', (1n << 128n).toString(), '0x' + 'f'.repeat(33)])(
+test.each(['-1', '0xxyz', (1n << 256n).toString(), '0x' + 'f'.repeat(65), 'f'.repeat(65)])(
   'rejects malformed or out-of-range commitment %s', async hash => {
     expect((await handler(body({ data: { cid: `2:${hash}`, aggId: AGG } }))).statusCode).toBe(400);
     expect(mockState.client.ipfsClient.uploadToIPFS).not.toHaveBeenCalled();
@@ -135,8 +135,8 @@ test('upload failure retains state and permits retry', async () => {
   expect(mockState.client.ipfsClient.uploadToIPFS).toHaveBeenCalledTimes(2);
 });
 test('handles all-digit bare hex commitments from the dispatcher as well as decimal commitments', async () => {
-  const hash = '12345678901234567890123456789012';
-  const decimalInterpretation = BigInt(hash).toString(16).padStart(32, '0');
+  const hash = '1234567890123456789012345678901234567890123456789012345678901234';
+  const decimalInterpretation = BigInt(hash).toString(16).padStart(64, '0');
   try {
     await store.save(hash, { ...entry });
     const bare = await handler(body({ data: { cid: `2:${hash}`, aggId: AGG } }));

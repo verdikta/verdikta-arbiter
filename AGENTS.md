@@ -132,10 +132,10 @@ Because several arbiters answer the same request, the Dispatcher uses
 `data.cid` string via a **mode prefix**:
 
 - **Mode 0** (`Qm...`): standard — evaluate now, upload justification, return `scores + cid`.
-- **Mode 1** (`1:Qm...`): **commit** — evaluate, store `{result, salt}` locally (`commitStore`), return only a 128-bit hash commitment (as a decimal) in `aggregatedScore[0]`. No CID yet.
-- **Mode 2** (`2:<hash>`): **reveal** — require the same job ID, aggregation ID and configured operator as the commit, upload once, and return `scores` + `justificationCid:salt`. Retain the result/CID/salt until the commit's three-day expiry so concurrent calls and retries are idempotent. The store is still RAM-only; restart durability remains separate work.
+- **Mode 1** (`1:Qm...`): **commit** — evaluate, store `{result, salt}` locally (`commitStore`), return only the 256-bit hash commitment (as a decimal) in `aggregatedScore[0]`. No CID yet.
+- **Mode 2** (`2:<64 hex>`): **reveal** — require the same job ID, aggregation ID and configured operator as the commit, upload once, and return `scores` + `justificationCid:salt` (the salt as 32 hex chars). Retain the result/CID/salt until the commit's three-day expiry so concurrent calls and retries are idempotent. The store is still RAM-only; restart durability remains separate work.
 
-The commit hash = low/high 128 bits of `sha256(abi.encode(OPERATOR_ADDRESS, scores[], salt))`. This is why the EA **requires `OPERATOR_ADDR`** in its env.
+The commit hash = `keccak256(abi.encode(bytes32 aggId, address OPERATOR_ADDRESS, uint256[] scores, uint256 salt))`, all 32 bytes, with a 128-bit salt (the v2 aggregator, verdikta-dispatcher items 4 and 5; v1 took 128 bits of a SHA-256 without the round). Binding the round and keeping every bit means no commit can be opened two ways in practice. This is why the EA **requires `OPERATOR_ADDR`** in its env. `evaluateHandler.commitFormat.test.js` pins the formula to the dispatcher's own test helper.
 
 Multiple comma-separated CIDs after the prefix ⇒ multi-CID (multi-party)
 evaluation; an optional trailing `:addendum` appends real-time text to the prompt.
