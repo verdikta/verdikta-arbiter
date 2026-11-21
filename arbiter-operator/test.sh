@@ -1,1 +1,4 @@
-npx hardhat test --network base_sepolia
+#!/bin/bash
+set -e
+cd "$(dirname "$0")"
+npm test

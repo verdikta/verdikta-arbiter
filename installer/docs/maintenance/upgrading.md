@@ -187,6 +187,16 @@ Before component replacement, the script compares:
 
 If changed, it offers to regenerate jobs from the new template.
 
+The service-authentication upgrade requires this regeneration when the installed
+template lacks the Authorization header. An unattended upgrade without
+`VA_UPGRADE_REGENERATE_JOBS=y`, and a node whose jobs are registered on separate
+classes (`REGISTRATION_SPLIT`), are refused before anything is stopped; declining
+at the prompt ends the upgrade and starts the arbiter again, with nothing replaced. Drain
+in-flight requests first: job IDs change, and pending commits remain in memory.
+The upgrade synchronizes separate EA/AI credentials and renders private job
+files. See [service authentication](../../../docs/development/service-authentication.md)
+for credential rotation, network restrictions and the class-5555 deployment checks.
+
 If you accept and an aggregator registration exists, it attempts:
 
 1. Unregister oracle
@@ -671,3 +681,14 @@ Then verify:
 - If RPCs are changed, allow Chainlink config/job regeneration when prompted.
 - If aggregator registration exists and jobs are regenerated, expect unregister/re-register flow.
 - If you skip optional model downloads, you can pull Ollama models later.
+
+### Request-authorization migration
+
+The admission fix requires a **new ArbiterOperator deployment and regenerated
+jobs**. Existing contracts are not proxies; copying new Solidity does not change
+on-chain admission. The upgrade checks the installed operator on its configured
+chain before stopping services and refuses legacy operators or unverifiable
+RPC responses. Changed job templates must be regenerated, including both the
+pre-bridge and pre-transaction authorization gates. Follow
+[the migration guide](../../../docs/development/request-authorization.md), drain
+pending requests, and pass the class-5555 testnet canary before mainnet.

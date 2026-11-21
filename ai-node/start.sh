@@ -84,8 +84,8 @@ fi
 
 # Which address to listen on. Only the External Adapter (http://127.0.0.1:3000)
 # and the operator's own tools (curl localhost:3000) talk to the AI Node, and it
-# sits in front of the operator's paid LLM keys with no authentication of its
-# own, so installs hardened by arbiter-firewall.sh (and fresh installs) bind
+# sits in front of the operator's paid LLM keys. In addition to service-token
+# authentication, installs hardened by arbiter-firewall.sh (and fresh installs) bind
 # loopback only. Two switches, either is enough:
 #   AI_NODE_HOST=<address>   in the environment of this script, or
 #   <install-dir>/.ai-node-loopback   (a file; lives outside ai-node/ so an

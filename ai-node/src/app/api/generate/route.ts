@@ -1,3 +1,4 @@
+import { requireServiceAuth } from '../../../lib/service-auth';
 import { NextResponse } from 'next/server';
 import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { fileToBase64 } from '../../../utils/fileUtils';
@@ -16,7 +17,9 @@ const PROVIDERS = ['Open-source', 'OpenAI', 'Anthropic', 'xAI', 'Hyperbolic'];
  * Fetches available models from all supported providers
  * @returns {Promise<NextResponse>} JSON response with all available models or an error message
  */
-export async function GET() {
+export async function GET(request: Request) {
+  const denied = requireServiceAuth(request);
+  if (denied) return denied;
   try {
     console.log('GET request received for /api/generate');
     
@@ -64,6 +67,8 @@ export async function GET() {
  * @returns {Promise<NextResponse>} JSON response with the generated result or an error message
  */
 export async function POST(request: Request) {
+  const denied = requireServiceAuth(request);
+  if (denied) return denied;
   try {
     console.log('POST request received in generate/route.ts');
     const formData = await request.formData();

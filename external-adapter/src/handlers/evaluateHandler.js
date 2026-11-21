@@ -12,6 +12,9 @@ const commitStore = require('../services/commitStore');
 const ethers = require('ethers');
 const { collectVersionInfo } = require('../utils/versionInfo');
 const {
+  assertBareCID, assertSafeManifest, extractEvidenceArchive, isUnsafeEvidenceError
+} = require('../utils/evidenceBoundary');
+const {
   fetchAndTriageArchives,
   buildMalformedSubmissionVerdict,
   isMalformedArchiveError
@@ -78,6 +81,9 @@ for (const warning of ipfsGatewayConfig.warnings) {
 // and the manifest parser's ipfs/cid additional-file fetches alike.
 const fetchCache = installCidFetchCache(ipfsClient, { ...cidFetchCacheOptionsFromEnv(process.env), logger });
 logger.info(`IPFS fetch cache: ttl=${fetchCache.ttlMs}ms maxEntries=${fetchCache.maxEntries} maxBytes=${fetchCache.maxBytes}`);
+const COMMIT_TTL_MS = 3 * 24 * 60 * 60 * 1000;
+const revealOperations = new Map();
+const requestError = (message, statusCode) => Object.assign(new Error(message), { statusCode });
 
 // Code-review (stake attestation) mode: off unless the operator enabled it with
 // a runner; dev trust only on a test chain (codeReview/config.js).
@@ -107,8 +113,9 @@ async function readManifestJson(extractedPath) {
 }
 
 const evaluate = async (request) => {
-  const { id, data } = request;
-  const aggId = (data.aggId || data.aggid || '').toLowerCase();
+  const { id } = request || {};
+  const data = request?.data || {};
+  const aggId = typeof data.aggId === 'string' ? data.aggId.toLowerCase() : '';
   const t0 = Date.now();   
   let   runTag;
   let tempDir; // Declare here so we can reuse if provider error happens
@@ -117,7 +124,14 @@ const evaluate = async (request) => {
 
   try {
     // console.log('Validating request:', request);
-    await validateRequest(request);
+    try {
+      await validateRequest(request);
+    } catch (validationError) {
+      // The caller gets a fixed message; the operator's log keeps the reason (it can quote
+      // data.cid, whose addendum carries the stake-attestation machine lines: redacted).
+      logger.warn(`Request validation failed: ${redactMachineLines(String(validationError && validationError.message))}`);
+      throw requestError('Invalid evaluation request', 400);
+    }
 
     // console.log('Processing CID string:', data.cid);
 
@@ -131,6 +145,13 @@ const evaluate = async (request) => {
       cidString = data.cid;
     }
     logger.debug(`Mode: ${modeString}`);
+    if (!['0', '1', '2'].includes(modeString)) throw requestError('Invalid evaluation mode', 400);
+    // id is jobSpec.externalJobID in basicJobSpec: stable across commit/reveal,
+    // unlike the Chainlink run ID or the per-phase on-chain request ID.
+    if (modeString !== '0' && (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id) || !/^0x[0-9a-f]{64}$/.test(aggId))) {
+      throw requestError('Commit/reveal requires a job ID and bytes32 aggregation ID', 400);
+    }
+    const scope = { jobId: id, aggId, operator: OPERATOR_ADDRESS.toLowerCase() };
     runTag = `[EA ${id} agg=${aggId} mode=${modeString}]`;
     setRunTag(runTag); // fetch-cache log lines made by library code carry this job's tag
     if (devTrustActive(getCodeReviewConfig())) {
@@ -142,7 +163,7 @@ const evaluate = async (request) => {
     if (modeString === '2') {
       const hashHex = cidString.toLowerCase();
       const t_mode2 = Date.now();
-      const { result, justificationCid } = await handleMode2Reveal(hashHex, tempDir, runTag);
+      const { result, justificationCid } = await handleMode2Reveal(hashHex, scope, runTag);
       logger.info(`${runTag} Mode 2 reveal took ${Date.now() - t_mode2}ms`);
       logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
       return createSuccessResponse(id, result, justificationCid);
@@ -162,6 +183,7 @@ const evaluate = async (request) => {
     
     // Split multiple CIDs if present
     cidArray = cidString.split(',').map(cid => cid.trim()).filter(cid => cid);
+    for (const cid of cidArray) await assertBareCID(cid);
     // logger.info(`Processing ${cidArray.length} CIDs:`, cidArray);
     logger.debug(`CID list count = ${cidArray.length}`);
     
@@ -177,7 +199,8 @@ const evaluate = async (request) => {
       logger.info(`${runTag} IPFS getArchive took ${Date.now() - t1}ms`);
       
       const t2 = Date.now();
-      const extractedPath = await archiveService.extractArchive(
+      const extractedPath = await extractEvidenceArchive(
+        archiveService,
         archiveData,
         'archive.zip',
         tempDir
@@ -185,6 +208,7 @@ const evaluate = async (request) => {
       logger.info(`${runTag} extractArchive took ${Date.now() - t2}ms`);
       
       const t3 = Date.now();
+      await assertSafeManifest(extractedPath);
       await archiveService.validateManifest(extractedPath);
       logger.info(`${runTag} validateManifest took ${Date.now() - t3}ms`);
 
@@ -223,7 +247,7 @@ const evaluate = async (request) => {
       logger.info(`${runTag} aiClient.evaluate took ${Date.now() - t5}ms`);
       
       if (modeString === '1') {
-        const hashDecimal = await handleMode1Commit(result, aggId, runTag);
+        const hashDecimal = await handleMode1Commit(result, scope, runTag);
         await archiveService.cleanup(tempDir);
         logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
         logger.info(`${runTag} RETURN commit (empty CID)`);
@@ -404,12 +428,13 @@ const evaluate = async (request) => {
 
         logger.info(`${runTag} Evaluating combined query with AI service...`);
         const t11 = Date.now();
-        result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag);
+        result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag,
+          Object.values(extractedPaths));
         logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
       }
 
       if (modeString === '1') {
-        const hashDecimal = await handleMode1Commit(result, aggId, runTag);
+        const hashDecimal = await handleMode1Commit(result, scope, runTag);
         await archiveService.cleanup(tempDir);
         logger.info(`${runTag} TOTAL execution time: ${Date.now() - t0}ms`);
         logger.info(`${runTag} RETURN commit (empty CID)`);
@@ -444,7 +469,7 @@ const evaluate = async (request) => {
 
     // A malformed archive on the errored path (the primary, or one the library's
     // parser rejected) must not be served from cache to the next job either.
-    if (isMalformedArchiveError(error) ||
+    if (isUnsafeEvidenceError(error) || isMalformedArchiveError(error) ||
         (typeof LibMalformedArchiveError === 'function' && error instanceof LibMalformedArchiveError)) {
       for (const cid of cidArray) fetchCache.forget(cid);
     }
@@ -482,7 +507,7 @@ const evaluate = async (request) => {
     return {
       jobRunID: id,
       status: 'errored',
-      statusCode: 500,
+      statusCode: error.statusCode || 500,
       error: errorMessage,
       data: {
         aggregatedScore: [0],
@@ -507,10 +532,10 @@ evaluateHandler.fetchCache = fetchCache;
  * ----------------------
  *  • builds ABI-compatible encoding of (uint256[] scores, uint256 salt)
  *  • takes the SHA-256 hash, keeps the low 128 bits
- *  • stores { result, salt } under that 128-bit key
+ *  • stores the result, salt, caller scope and expiry under that 128-bit key
  *  • returns the decimal representation (what the aggregator expects)
  */
-async function handleMode1Commit(result, aggId, runTag) {
+async function handleMode1Commit(result, scope, runTag) {
   // ---------- 1. collect *unsigned* scores -----------------------------
   const scores = (result.scores || [{ score: 0 }]).map(s => BigInt(s.score));
 
@@ -562,7 +587,9 @@ async function handleMode1Commit(result, aggId, runTag) {
   await commitStore.save(hashHex, {
     result,
     salt: saltHex,                      // remember: 20 lowercase hex chars
-    aggId,
+    aggId: scope.aggId,
+    scope,
+    expiresAt: Date.now() + COMMIT_TTL_MS,
     created: new Date().toISOString()
   });
   logger.info(`${runTag} COMMIT saved hash=${hashHex}`);
@@ -573,55 +600,53 @@ async function handleMode1Commit(result, aggId, runTag) {
 /**
  * Reveal previously committed result
  */
-async function handleMode2Reveal(hashHex, tempDir, runTag) {
-  // Accept decimal, 0x-prefixed, or bare hex
-  if (/^[0-9]+$/.test(hashHex)) {                // decimal
-    hashHex = BigInt(hashHex).toString(16);
-  } else if (hashHex.startsWith('0x')) {         // 0x… hex
-    hashHex = hashHex.slice(2);
-  }                                               // else: bare hex, use as-is
-  hashHex = hashHex.toLowerCase().padStart(32, '0'); // 128 bit, zero-padded
-  logger.info(`${runTag} REVEAL lookup hash=${hashHex}`);
-  const commit = await commitStore.get(hashHex);
-
-  // if (!commit) throw new Error(`Unknown commit hash: ${hashHex}`);
-  if (!commit) {
-    logger.warn(`${runTag} REVEAL miss`);
-    throw new Error(`Unknown commit hash: ${hashHex}`);
-  } else {
-    logger.info(`${runTag} REVEAL hit salt=${commit.salt}`);
+async function handleMode2Reveal(value, scope, runTag) {
+  let hash;
+  if (/^[0-9]{1,39}$/.test(value)) hash = BigInt(value);
+  else if (/^(?:0x)?[0-9a-f]{1,32}$/.test(value)) hash = BigInt(`0x${value.replace(/^0x/, '')}`);
+  else throw requestError('Invalid commitment hash', 400);
+  if (hash >= (1n << 128n)) throw requestError('Invalid commitment hash', 400);
+  const candidates = new Set([hash.toString(16).padStart(32, '0')]);
+  // The dispatcher sends exactly 32 bare hex digits, which can occasionally
+  // contain only 0–9. Also support decimal commitments returned by mode 1.
+  // Resolve that ambiguity only against this caller's stored scope.
+  if (/^[0-9]{32}$/.test(value)) candidates.add(value);
+  const matches = [];
+  for (const candidate of candidates) {
+    const entry = await commitStore.get(candidate);
+    if (entry?.scope && Number.isFinite(entry.expiresAt) && Date.now() < entry.expiresAt &&
+        entry.scope.jobId === scope.jobId && entry.scope.aggId === scope.aggId &&
+        entry.scope.operator === scope.operator) matches.push([candidate, entry]);
   }
-
-  // Create a temporary directory if one wasn't provided
-  if (!tempDir) {
-    tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verdikta-extract-'));
+  // Check every caller, including callers joining an in-flight upload. The
+  // commitment hash and aggId are public protocol data, not credentials.
+  if (matches.length !== 1) {
+    throw requestError('Reveal not authorized for this request', 403);
   }
+  const [hashHex, commit] = matches[0];
+  const response = entry => ({ result: entry.result, justificationCid: `${entry.justificationCid}:${entry.salt}` });
+  if (commit.justificationCid) return response(commit);
+  if (revealOperations.has(hashHex)) return revealOperations.get(hashHex);
 
-  try {
-    // Build and publish justification *now*
-    const revealUploadStart = Date.now();
-    const justificationCid = await createAndUploadJustification(commit.result, tempDir);
-    logger.info(`${runTag} Mode 2 reveal justification upload took ${Date.now() - revealUploadStart}ms`);
-    await commitStore.del(hashHex);  // burn after reveal
-    logger.debug(`COMMIT deleted hash=${hashHex}`);
-
-    // Append salt after a colon
-    const cidWithSalt = `${justificationCid}:${commit.salt}`;
-
-    // Schedule general cleanup
-    setImmediate(() => {
-      commitStore.purgeStale()
-        .catch(err => logger.error('purgeStale failed:', err));
-    });
-
-    return { result: commit.result, justificationCid: cidWithSalt };
-  } finally {
-    // Make sure we clean up the tempDir we created
-    if (tempDir) {
-      await archiveService.cleanup(tempDir).catch(err => 
-        logger.error(`Error cleaning up temp directory: ${err.message}`)
-      );
+  const operation = (async () => {
+    const tempDir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'verdikta-extract-'));
+    try {
+      const justificationCid = await createAndUploadJustification(commit.result, tempDir);
+      const revealed = { ...commit, justificationCid };
+      // Keep the exact artifact/salt for lost responses, transaction retries,
+      // and concurrent reveals. Expiry, not serving a response, retires state.
+      await commitStore.save(hashHex, revealed);
+      logger.info(`${runTag} REVEAL prepared hash=${hashHex}`);
+      return response(revealed);
+    } finally {
+      await archiveService.cleanup(tempDir).catch(() => logger.error('Reveal temporary-directory cleanup failed'));
     }
+  })();
+  revealOperations.set(hashHex, operation);
+  try {
+    return await operation;
+  } finally {
+    revealOperations.delete(hashHex);
   }
 }
 

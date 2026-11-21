@@ -66,8 +66,9 @@ async function executeL4(cliOpts) {
   // CI passes the dispatch inputs as L4_* environment variables; flags win.
   const scenarioIds = cliOpts.scenario || process.env.L4_SCENARIO || '';
   const ids = scenarioIds ? scenarioIds.split(',').map((s) => s.trim()).filter(Boolean) : null;
-  // manualOnly scenarios (paid juries) and L4 claim scenarios run here only when named; the
-  // nightly names none. runL4 holds a claim scenario to the canary class before anything else.
+  // manualOnly scenarios (paid juries, external packages) and L4 claim scenarios run here only
+  // when named; the nightly names none, so it runs the project's own archives. runL4 holds a
+  // claim scenario to the canary class before anything else.
   const scenarios = loadScenarios(cliOpts.scenarios, ids, { allowManualOnly: true, allowL4Claim: true });
 
   console.log(chalk.bold(`\nVerdikta E2E — L4 (live testnet) — ${scenarios.length} scenario(s)\n`));
@@ -115,7 +116,7 @@ program
   .command('smoke')
   .description('Quick single-scenario check against the LIVE pipeline (real AI Node, structural assertions only) for post-deploy verification')
   .option('--adapter-url <url>', 'External Adapter base URL')
-  .option('--scenario <id>', 'scenario id to run', 'frontend-default')
+  .option('--scenario <id>', 'scenario id to run', 'canonical-vuln')
   .action((opts) => executeL2({
     real: true, // hit the real running arbiter, not the mock
     adapterUrl: opts.adapterUrl,

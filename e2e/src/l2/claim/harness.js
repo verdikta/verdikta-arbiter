@@ -135,7 +135,10 @@ async function startClaimHarness() {
     const justifierModel = `${JUSTIFIER.provider}:${JUSTIFIER.model}`;
     // The AI Node holds the fault switch's key throughout: with no directive from an armed adapter it does nothing, and that is asserted.
     const canaryFaultKey = crypto.randomBytes(32).toString('hex');
-    const aiNode = await step('starting the AI Node', () => startAiNode({ logDir, callLog, script: MOCK_SCRIPT, justifierModel, canaryFaultKey }));
+    const aiToken = crypto.randomBytes(32).toString('hex');
+    const eaToken = crypto.randomBytes(32).toString('hex');
+    const eaHeaders = { Authorization: `Bearer ${eaToken}` };
+    const aiNode = await step('starting the AI Node', () => startAiNode({ logDir, callLog, script: MOCK_SCRIPT, justifierModel, canaryFaultKey, aiToken }));
     closers.push(() => aiNode.close());
     const aiProxy = await step('starting the AI Node\'s proxy', () => startRecordingProxy(aiNode.url));
     closers.push(() => aiProxy.close());
@@ -151,7 +154,7 @@ async function startClaimHarness() {
 
     const adapter = await step('starting the External Adapter', () => startAdapter({
       logDir,
-      aiNodeUrl: aiProxy.url,
+      aiNodeUrl: aiProxy.url, aiToken, eaToken,
       runnerUrl: runnerProxy.url,
       runnerToken,
       ipfsUrl: ipfs.url,
@@ -163,7 +166,7 @@ async function startClaimHarness() {
 
     const providerCalls = () => readCallLog(callLog);
     const secondAdapter = (name, env, options = {}) => startAdapter({
-      logDir, aiNodeUrl: aiProxy.url, runnerUrl: runnerProxy.url, runnerToken, ipfsUrl: ipfs.url, pinKey: PIN_KEY, devKey: listing.builderPublicKey, operator: OPERATOR, name, env, ...options
+      logDir, aiNodeUrl: aiProxy.url, aiToken, eaToken, runnerUrl: runnerProxy.url, runnerToken, ipfsUrl: ipfs.url, pinKey: PIN_KEY, devKey: listing.builderPublicKey, operator: OPERATOR, name, env, ...options
     });
     const faultEnv = (rpcUrl) => ({
       VERDIKTA_CANARY_FAULTS: F.faultPlan(set),
@@ -191,6 +194,8 @@ async function startClaimHarness() {
       image,
       ai: aiProxy,
       aiDirect: aiNode.url,
+      aiToken,
+      aiHeaders: { Authorization: `Bearer ${aiToken}` },
       runner: runnerProxy,
       claims: { listingCid, listing: listing.buffer, ...set.claims, textCid },
       /** A second adapter on the same services, with the fault switch armed against a stand-in Base Sepolia RPC. Started on first use. */
@@ -211,7 +216,7 @@ async function startClaimHarness() {
         return adapter;
       },
       evaluateAt: async (url, cid, { aggId, jobId, timeoutMs = 300000 }) => {
-        const { data } = await axios.post(`${url}/evaluate`, { id: jobId, data: { cid, aggId } }, { timeout: timeoutMs });
+        const { data } = await axios.post(`${url}/evaluate`, { id: jobId, data: { cid, aggId } }, { timeout: timeoutMs, maxRedirects: 0, headers: eaHeaders });
         return data;
       },
       providerCalls,
@@ -220,8 +225,8 @@ async function startClaimHarness() {
         providerCalls: providerCalls().length,
         runnerCalls: runnerProxy.post('/v1/runs').length
       }),
-      evaluate: async (cid, { aggId = crypto.randomBytes(8).toString('hex'), timeoutMs = 700000, anyStatus = false } = {}) => {
-        const { data } = await axios.post(`${adapter.url}/evaluate`, { id: `e2e-${crypto.randomBytes(4).toString('hex')}`, data: { cid, aggId } }, { timeout: timeoutMs, ...(anyStatus ? { validateStatus: () => true } : {}) });
+      evaluate: async (cid, { aggId = `0x${crypto.randomBytes(32).toString('hex')}`, jobId = `e2e-${crypto.randomBytes(4).toString('hex')}`, timeoutMs = 700000, anyStatus = false } = {}) => {
+        const { data } = await axios.post(`${adapter.url}/evaluate`, { id: jobId, data: { cid, aggId } }, { timeout: timeoutMs, maxRedirects: 0, headers: eaHeaders, ...(anyStatus ? { validateStatus: () => true } : {}) });
         return data;
       },
       serviceTails: () => {

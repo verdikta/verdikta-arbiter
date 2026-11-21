@@ -50,5 +50,33 @@ describe('aiClient.evaluate payload', () => {
     expect(payload.attachments[0]).toMatch(/^data:image\/png;base64,/);
     expect(payload.attachmentNames).toEqual(['submission/medium_article.png', 'notes.txt', 'byCid']);
     expect(payload.requestTag).toBe('[EA job1 agg=0xabc mode=1]');
+    expect(mockPost.mock.calls[0][2]).toEqual({
+      headers: { Authorization: `Bearer ${process.env.AI_NODE_API_TOKEN}` }, maxRedirects: 0,
+    });
+  });
+
+  test.each(['additional', 'support'])('rejects an outside %s path instead of omitting it and calling the AI', async section => {
+    const file = { name: 'unsafe', path: path.join(dir, '..', 'outside-marker.txt'), type: 'text/plain' };
+    const query = { prompt: 'Judge it', models: [], additional: [] };
+    if (section === 'additional') query.additional = [file];
+    else fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ support: [file] }));
+    await expect(aiClient.evaluate(query, dir)).rejects.toMatchObject({ code: 'UNSAFE_EVIDENCE' });
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  test('rejects a symlink attachment before sending the request', async () => {
+    fs.symlinkSync(path.join(dir, 'notes.txt'), path.join(dir, 'linked.txt'));
+    await expect(aiClient.evaluate({ prompt: 'Judge it', additional: [{ filename: 'linked.txt' }] }, dir))
+      .rejects.toMatchObject({ code: 'UNSAFE_EVIDENCE' });
+    expect(mockPost).not.toHaveBeenCalled();
+  });
+
+  test('missing AI credential fails before making a request', async () => {
+    const token = process.env.AI_NODE_API_TOKEN;
+    try {
+      delete process.env.AI_NODE_API_TOKEN;
+      await expect(aiClient.evaluate({ prompt: 'Judge it' }, dir)).rejects.toThrow('AI Node service authentication is not configured');
+      expect(mockPost).not.toHaveBeenCalled();
+    } finally { process.env.AI_NODE_API_TOKEN = token; }
   });
 });

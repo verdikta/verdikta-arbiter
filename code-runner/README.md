@@ -2473,6 +2473,8 @@ The four jury-layer catalogue cases are named results over the claims that are t
 
 **Both measurements of 2026-11-05 missed the bar.** In `calibration/results/2026-11-05-jury.md`, 20 of the 39 claims that reached the jury have no verdict, since the DeepSeek juror reached its 8,000 output tokens. In `2026-11-05-jury-limit-32000.md`, with a test build of common at 32,000, 2 of the 39 have no verdict (juror timeouts). On the clear cases INVALID agrees on 5 of 6, HIGH on 6 of 7 and MEDIUM on 1 of 10. Neither run had a false valid on the adversarial claims.
 
+On 2026-11-17 the owner recorded Phase 1's bar as met for `code-standard`, reading agreement as validity agreement on the clear cases (design §17, the note after the rollout table). This report's bar, on the exact outcome, class included, is unchanged.
+
 ### The conformance canary
 
 `npm run conformance [-- --repeat <n>] [--json <file>]`. `conformance/` is one case on its own

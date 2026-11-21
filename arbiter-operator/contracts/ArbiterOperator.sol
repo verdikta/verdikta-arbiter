@@ -5,7 +5,7 @@ pragma solidity ^0.8.19;
 /*  Imports                                                      */
 /* ────────────────────────────────────────────────────────────── */
 
-import "@chainlink/contracts/src/v0.8/operatorforwarder/Operator.sol";
+import "./vendor/Operator.sol";
 import "@openzeppelin/contracts/utils/introspection/ERC165.sol";
 import "@openzeppelin/contracts/utils/introspection/IERC165.sol";
 
@@ -25,10 +25,10 @@ interface IReputationKeeper {
  * @dev Specialized interface implemented ONLY by ArbiterOperator contracts.
  *      Provides multi-word response capability and ReputationKeeper integration.
  *      
- *      Interface ID = 0xd9f812f9, calculated as:
+ *      Interface ID = 0xbb303f0d, calculated as:
  *      bytes4(keccak256("fulfillOracleRequestV(bytes32,uint256,address,bytes4,uint256,bytes)"))
- *      ^ 0x1132d7b2  // isReputationKeeper(address)  
- *      ^ 0xb7834e7d  // isReputationKeeperListEmpty()
+ *      ^ 0xc5b8e9fd  // isReputationKeeper(address)
+ *      ^ 0x1d2566a8  // isReputationKeeperListEmpty()
  *      
  *      Standard Chainlink Operators return `false` for this interface ID.
  */
@@ -63,7 +63,7 @@ interface IArbiterOperator is IERC165 {
     
     /**
      * @notice Check if the ReputationKeeper allow-list is empty
-     * @dev When empty, all requests are allowed (access control disabled)
+     * @dev When empty, requests are denied until a keeper is configured
      * @return bool True if no ReputationKeepers are registered
      */
     function isReputationKeeperListEmpty() external view returns (bool);
@@ -82,16 +82,16 @@ interface IArbiterOperator is IERC165 {
  *      2) Enforces access control via ReputationKeeper allow-list before oracle requests
  *      3) Implements IArbiterOperator interface for Verdikta ecosystem integration
  *      
- *      Note: Primary access control prior to OracleRequest emission requires
- *      a modified Operator with a pre-request hook. Since we now import the
- *      standard Chainlink Operator from npm, access control is enforced at
- *      fulfillment time and through secondary checks.
+ *      The minimally adapted, pinned Operator exposes request/payment hooks.
+ *      Both inherited request entry points authorize the token-authenticated
+ *      sender before storing a commitment or emitting OracleRequest.
  */
 contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
     /*──────────────  CONFIG  ──────────────*/
 
     /// Matches Chainlink upstream (node sends ≈500 k gas).
     uint256 private constant MY_MINIMUM_CONSUMER_GAS_LIMIT = 400_000;
+    uint256 private constant KEEPER_QUERY_GAS = 50_000;
 
     /*────────  RK allow-list STORAGE  ─────*/
 
@@ -135,10 +135,8 @@ contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
         require(!rk[rkAddr],            "RK: exists");
 
         // sanity-check interface
-        (bool ok, ) = rkAddr.staticcall(
-            abi.encodeWithSignature("isContractApproved(address)", address(this))
-        );
-        require(ok, "RK: interface");
+        (bool valid, ) = _queryKeeper(rkAddr, address(this));
+        require(valid, "RK: interface");
 
         rk[rkAddr] = true;
         rkList.push(rkAddr);
@@ -178,7 +176,7 @@ contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
 
     /**
      * @notice Check if the ReputationKeeper allow-list is empty
-     * @dev When empty, access control is disabled and all requests are allowed
+     * @dev When empty, requests fail closed
      * @return bool True if no ReputationKeepers are registered
      */
     function isReputationKeeperListEmpty() external view override returns (bool) {
@@ -190,17 +188,56 @@ contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
     /**
      * @dev Check if a requester is approved by any registered ReputationKeeper
      * @param requester Address of the contract requesting oracle services
-     * @return bool True if approved by at least one ReputationKeeper, or if allow-list is empty
+     * @return bool True only if approved by at least one valid ReputationKeeper
      */
     function _approved(address requester) internal view returns (bool) {
-        if (rkList.length == 0) return true;               // gate disabled
+        if (requester.code.length == 0) return false;
         for (uint256 i; i < rkList.length; ++i) {
-            (bool ok, bytes memory out) = rkList[i].staticcall(
-                abi.encodeWithSignature("isContractApproved(address)", requester)
-            );
-            if (ok && abi.decode(out, (bool))) return true;
+            (bool valid, bool approved) = _queryKeeper(rkList[i], requester);
+            if (valid && approved) return true;
         }
         return false;
+    }
+
+    // Bound gas and copy at most one word. Reverts, empty/oversized responses
+    // and noncanonical ABI booleans cannot open the gate or break another RK.
+    function _queryKeeper(address keeper, address requester) private view returns (bool valid, bool approved) {
+        bytes memory input = abi.encodeWithSelector(IReputationKeeper.isContractApproved.selector, requester);
+        uint256 gasLimit = KEEPER_QUERY_GAS;
+        bool ok;
+        uint256 size;
+        uint256 value;
+        assembly {
+            let output := mload(0x40)
+            mstore(output, 0)
+            ok := staticcall(gasLimit, keeper, add(input, 32), mload(input), output, 32)
+            size := returndatasize()
+            value := mload(output)
+        }
+        valid = ok && size == 32 && value <= 1;
+        approved = valid && value == 1;
+    }
+
+    /// @notice Versioned installer probe; does not change the legacy ERC-165 marker.
+    function requestAuthorizationVersion() external pure returns (uint256) { return 1; }
+
+    function isRequesterApproved(address requester) external view returns (bool) {
+        return _approved(requester);
+    }
+
+    /// @notice Pre-work/pre-transaction check for the exact event's pending request.
+    /// @dev Chainlink filters logs by this operator and job. Cancelled, fulfilled,
+    ///      forged-parameter and currently revoked requests fail closed.
+    ///      expiration is Chainlink's refund eligibility time, not a fulfillment
+    ///      deadline: code-review jobs can run for 780 s, beyond its five minutes.
+    function isAuthorizedRequest(
+        bytes32 requestId, uint256 payment, address requester,
+        bytes4 callbackFunctionId, uint256 expiration
+    ) external view returns (bool) {
+        Commitment memory commitment = s_commitments[requestId];
+        return commitment.paramsHash != bytes31(0) && commitment.dataVersion == 2 &&
+            commitment.paramsHash == _buildParamsHash(payment, requester, callbackFunctionId, expiration) &&
+            _approved(requester);
     }
 
     /*────────── ERC-165 override ──────────*/
@@ -212,13 +249,34 @@ contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
         returns (bool)
     {
         return
-            interfaceId == type(IArbiterOperator).interfaceId || // 0xd9f812f9
+            interfaceId == type(IArbiterOperator).interfaceId || // 0xbb303f0d
             super.supportsInterface(interfaceId);
     }
 
-    /*───────── Pre-request hook (not available in upstream Operator) ──────*/
-    // Upstream Operator does not expose a pre-request hook; access control is
-    // enforced via fulfill-time checks and secondary validation below.
+    /*───────── Admission before commitment/event creation ───────────────*/
+    function _verifyAndProcessOracleRequest(
+        address sender, uint256 payment, address callbackAddress,
+        bytes4 callbackFunctionId, uint256 nonce, uint256 dataVersion
+    ) internal override returns (bytes32 requestId, uint256 expiration) {
+        require(sender == callbackAddress, "Operator: callback must be requester");
+        require(dataVersion == 2, "Operator: unsupported data version");
+        require(_approved(sender), "Operator: requester not approved");
+        return super._verifyAndProcessOracleRequest(
+            sender, payment, callbackAddress, callbackFunctionId, nonce, dataVersion
+        );
+    }
+
+    // Covers V and BOTH inherited fulfillment methods, so an alternative
+    // fulfillment selector cannot bypass a keeper revocation.
+    function _verifyOracleRequestAndProcessPayment(
+        bytes32 requestId, uint256 payment, address callbackAddress,
+        bytes4 callbackFunctionId, uint256 expiration, uint256 dataVersion
+    ) internal override {
+        require(_approved(callbackAddress), "Operator: requester not approved");
+        super._verifyOracleRequestAndProcessPayment(
+            requestId, payment, callbackAddress, callbackFunctionId, expiration, dataVersion
+        );
+    }
 
     /*──────── fulfillOracleRequestV ───────*/
 
@@ -238,9 +296,6 @@ contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
         validateMultiWordResponseId(requestId, data)
         returns (bool success)
     {
-        // secondary check (paranoia): block if consumer no longer approved
-        require(_approved(callbackAddress), "Operator: requester not approved");
-
         _verifyOracleRequestAndProcessPayment(
             requestId,
             payment,

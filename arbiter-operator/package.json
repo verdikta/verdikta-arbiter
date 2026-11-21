@@ -6,7 +6,7 @@
     "test": "test"
   },
   "scripts": {
-    "test": "npx hardhat test"
+    "test": "hardhat test --network hardhat"
   },
   "keywords": [],
   "author": "",
@@ -18,10 +18,11 @@
     "dotenv": "^16.5.0",
     "ethers": "^6.4.0",
     "hardhat": "^2.23.0",
-    "hardhat-deploy": "^1.0.2"
+    "hardhat-deploy": "^1.0.2",
+    "solc": "0.8.19"
   },
   "dependencies": {
-    "@chainlink/contracts": "^1.4.0",
+    "@chainlink/contracts": "1.4.0",
     "@openzeppelin/contracts": "^4.9.6",
     "yargs": "^17.7.2"
   }

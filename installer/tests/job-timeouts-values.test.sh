@@ -22,15 +22,20 @@ grep -qE '^maxTaskDuration = "840s"$' "$JOB" && ok || bad "basicJobSpec: maxTask
 python3 - "$JOB" <<'PY' && ok || bad "basicJobSpec: the verdikta-ai bridge's timeout is not 840s"
 import re, sys
 text = open(sys.argv[1]).read()
-sys.exit(0 if re.search(r'type="bridge"\s+name="verdikta-ai"\s+timeout="840s"\s*\n', text) else 1)
+sys.exit(0 if re.search(r'type="bridge"\s+name="verdikta-ai"(?:\s+headers="[^\n]*")?\s+timeout="840s"\s*\n', text) else 1)
 PY
 grep -q '300s' "$JOB" && bad "basicJobSpec still names 300s" || ok
 
 # ── Text mode: the template changed in those two values and nothing else ─────
-# The hash is of the template before this node, with the two values blanked. A
+# The reviewed hardened template includes authentication and both admission
+# gates. They are measured on the real Chainlink binary by job-timeouts.integration.sh
+# (arbiter-operator/test/admission.test.js runs a model of the job, which passed the
+# template hashed here before, 46d6d7d1…: its gates read $(authorize_result.allowed) from
+# abi="(bool allowed)", whose key on Chainlink is "allowed)", so no run reached the bridge).
+# The hash has the two timeout values blanked. A
 # later template change needs its own review of what it does to text-mode jobs,
-# and a new hash here.
-NORMALIZED_BEFORE_A6A=d3534e1dd280a6f66b28609676a324d930e30d11207c663fd4f620edb0b35827
+# its own run on the binary, and a new hash here.
+NORMALIZED_HARDENED_TEMPLATE=f88b7225471ab305fb889088198a92c737b9e3733fb5042021d0cc075a5802f1
 got=$(python3 - "$JOB" <<'PY'
 import hashlib, re, sys
 s = open(sys.argv[1]).read()
@@ -39,7 +44,7 @@ s = re.sub(r'timeout="[^"]*"(?: #[^\n]*)?', 'timeout="N"', s)
 print(hashlib.sha256(s.encode()).hexdigest())
 PY
 )
-[ "$got" = "$NORMALIZED_BEFORE_A6A" ] && ok || bad "basicJobSpec changed beyond the two timeouts (normalized sha256 $got)"
+[ "$got" = "$NORMALIZED_HARDENED_TEMPLATE" ] && ok || bad "basicJobSpec changed beyond the two timeouts (normalized sha256 $got)"
 
 # ── The node ─────────────────────────────────────────────────────────────────
 python3 - "$CFG" <<'PY' && ok || bad "config_template.toml: [JobPipeline] MaxRunDuration is missing or below 15m"

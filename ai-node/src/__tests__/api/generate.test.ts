@@ -9,6 +9,8 @@ global.TextDecoder = TextDecoder;
 
 // Mock the LLMFactory module
 jest.mock('../../lib/llm/llm-factory');
+// Authentication is covered through the real handlers in service-auth.test.ts.
+jest.mock('../../lib/service-auth', () => ({ requireServiceAuth: () => null }));
 
 // Mock the fileToBase64 function from fileUtils
 jest.mock('../../utils/fileUtils', () => ({
@@ -88,7 +90,7 @@ describe('/api/generate', () => {
     });
 
     // Execute the GET function
-    const response = await GET();
+    const response = await GET({} as Request);
     const result = await response.json();
 
     // Define the expected result based on mocked data
@@ -171,7 +173,7 @@ describe('/api/generate', () => {
     });
 
     // Execute the GET function
-    const response = await GET();
+    const response = await GET({} as Request);
     const result = await response.json();
 
     // Define the expected error response

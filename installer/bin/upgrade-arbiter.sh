@@ -1163,6 +1163,67 @@ if [ "$RPCS_CHANGED" = "true" ]; then
     echo -e "${YELLOW}This is required for the new RPCs to take effect.${NC}"
 fi
 
+# A job template with its two timeouts blanked, to tell a change in them from any other.
+job_template_without_timeouts() {
+    sed -E 's/^maxTaskDuration = "[^"]*"/maxTaskDuration = "N"/; s/timeout="[^"]*"([[:space:]]*#.*)?$/timeout="N"/' "$1"
+}
+
+# job_template_preflight — the job template's question, settled before anything is stopped.
+# A template that differs in more than its timeouts means the installed jobs are not the ones
+# this release's adapter answers: they send no service credential, or lack the admission gates.
+# Regenerating them deregisters and re-registers the oracle on chain, so an unattended run does
+# it only when told to (VA_UPGRADE_REGENERATE_JOBS=y), and a node registered on separate classes
+# cannot do it here at all. Either of those found after stop-arbiter.sh left the node down; they
+# are found here, with the node running. Returns 1 with the reason printed.
+job_template_preflight() {
+    local repo_job_spec="$REPO_CHAINLINK_NODE/basicJobSpec"
+    local target_job_spec="$TARGET_CHAINLINK_NODE/basicJobSpec"
+
+    if [ ! -f "$repo_job_spec" ]; then
+        echo -e "${RED}Cannot configure authenticated jobs: source basicJobSpec is missing.${NC}"
+        return 1
+    fi
+    if [ ! -f "$target_job_spec" ]; then
+        echo -e "${RED}Cannot verify bridge authentication: installed basicJobSpec is missing. Configure authenticated jobs before upgrading.${NC}"
+        return 1
+    fi
+    if [ "$(job_template_without_timeouts "$repo_job_spec")" = "$(job_template_without_timeouts "$target_job_spec")" ]; then
+        return 0
+    fi
+    if [ -f "$TARGET_DIR/installer/.contracts" ] && ( source "$TARGET_DIR/installer/.contracts" >/dev/null 2>&1; [ "${REGISTRATION_SPLIT:-}" = "true" ] ); then
+        echo -e "${RED}The job template changed, and this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts): the upgrade cannot regenerate them. Unregister them, run configure-node.sh from this checkout and register each class with VA_REGISTER_JOB_IDS, then upgrade.${NC}"
+        return 1
+    fi
+    if unattended_mode && [ "$(_va_yes_no_value "${VA_UPGRADE_REGENERATE_JOBS:-n}")" != "y" ]; then
+        echo -e "${RED}The job template changed: this release's adapter answers only jobs that send its service credential and check request authorization. Regenerating the jobs re-registers the oracle on chain, so an unattended upgrade does it only with VA_UPGRADE_REGENERATE_JOBS=y.${NC}"
+        return 1
+    fi
+    return 0
+}
+
+# Do this before stopping the installed node or replacing any services/jobs.
+# Legacy operators are not proxies: copying new Solidity cannot upgrade them.
+(
+    if [ ! -f "$TARGET_DIR/installer/.contracts" ]; then
+        echo "Error: cannot verify request authorization without installed contract configuration."
+        exit 1
+    fi
+    source "$TARGET_DIR/installer/.contracts"
+    case "$DEPLOYMENT_NETWORK" in
+        base_mainnet) AUTH_CHAIN_ID=8453 ;;
+        base_sepolia) AUTH_CHAIN_ID=84532 ;;
+        *) echo "Error: unsupported DEPLOYMENT_NETWORK for authorization preflight."; exit 1 ;;
+    esac
+    REQUEST_AUTH_RPC_URLS="$RPC_HTTP_URLS" node "$UTIL_DIR/check-request-authorization.cjs" "${OPERATOR_ADDR:-$OPERATOR_ADDRESS}" "$AUTH_CHAIN_ID"
+) || exit 1
+
+JOB_PREFLIGHT_RC=0
+job_template_preflight || JOB_PREFLIGHT_RC=$?
+if [ "$JOB_PREFLIGHT_RC" -ne 0 ]; then
+    echo -e "${YELLOW}Nothing was changed, and the arbiter was not stopped.${NC}"
+    exit 1
+fi
+
 # Ask for confirmation before upgrading
 echo
 echo -e "${YELLOW}The following components will be upgraded:${NC}"
@@ -1250,13 +1311,17 @@ fi
 # Mark that upgrade is in progress
 UPGRADE_IN_PROGRESS=1
 
+node "$UTIL_DIR/configure-service-auth.cjs" configure "$TARGET_DIR"
+export VERDIKTA_AUTH_ROOT="$TARGET_DIR"
+
+# Re-registration below must use the admission-aware script, including on
+# installations whose operator sources were previously left untouched.
+mkdir -p "$TARGET_DIR/arbiter-operator/scripts/lib"
+cp "$REPO_ROOT/arbiter-operator/scripts/register-oracle-cl.js" "$TARGET_DIR/arbiter-operator/scripts/register-oracle-cl.js"
+cp "$REPO_ROOT/arbiter-operator/scripts/lib/request-authorization.js" "$TARGET_DIR/arbiter-operator/scripts/lib/request-authorization.js"
+
 # Check for job specification template changes BEFORE component upgrades
 echo -e "${BLUE}Checking for job specification template changes...${NC}"
-
-# A job template with its two timeouts blanked, to tell a change in them from any other.
-job_template_without_timeouts() {
-    sed -E 's/^maxTaskDuration = "[^"]*"/maxTaskDuration = "N"/; s/timeout="[^"]*"([[:space:]]*#.*)?$/timeout="N"/' "$1"
-}
 
 # Function to check and regenerate job specs if needed (following the pattern of check_chainlink_config)
 check_job_spec_template() {
@@ -1267,15 +1332,19 @@ check_job_spec_template() {
     echo -e "${BLUE}Checking job specification template...${NC}"
     
     # Check if current repo template exists
+    # (job_template_preflight refused both of these before the arbiter was stopped. The arbiter
+    # is stopped by now, so nothing here may simply exit: cleanup_on_error restarts it.)
     if [ ! -f "$repo_job_spec" ]; then
-        echo -e "${YELLOW}No basicJobSpec template found in source repository. Skipping job spec template check.${NC}"
-        return 0
+        echo -e "${RED}Cannot configure authenticated jobs: source basicJobSpec is missing.${NC}"
+        cleanup_on_error
+        return 1
     fi
     
     # Check if target template exists (from previous install)
     if [ ! -f "$target_job_spec" ]; then
-        echo -e "${YELLOW}No existing basicJobSpec template found in target installation. Skipping job spec template check.${NC}"
-        return 0
+        echo -e "${RED}Cannot verify bridge authentication: installed basicJobSpec is missing. Configure authenticated jobs before upgrading.${NC}"
+        cleanup_on_error
+        return 1
     fi
     
     echo -e "${BLUE}Comparing job specification templates:${NC}"
@@ -1312,7 +1381,17 @@ check_job_spec_template() {
                 JOB_REGEN_FAILED="job regeneration stopped (exit $REGEN_RC); see the messages above"
             fi
         else
-            echo -e "${BLUE}Keeping existing job specifications.${NC}"
+            # Declined at the prompt, with the arbiter already stopped: nothing has been
+            # replaced yet, so the upgrade ends and cleanup_on_error starts the arbiter again.
+            if ! grep -q 'headers=.*Authorization' "$target_job_spec"; then
+                echo -e "${RED}This security upgrade requires authenticated bridge jobs. Re-run with job regeneration enabled (VA_UPGRADE_REGENERATE_JOBS=y); existing jobs cannot call the secured adapter.${NC}"
+            else
+                # A name-only check misses removed edges or gates moved after work.
+                # Any changed template must be regenerated, even if it has headers.
+                echo -e "${RED}This security upgrade requires request authorization before the bridge and transaction. Regenerate the updated template with VA_UPGRADE_REGENERATE_JOBS=y.${NC}"
+            fi
+            cleanup_on_error
+            return 1
         fi
     else
         echo -e "${GREEN}Job specification template is up to date.${NC}"
@@ -1742,6 +1821,7 @@ fi
 # Upgrade External Adapter
 echo -e "${BLUE}Upgrading External Adapter...${NC}"
 upgrade_component "$REPO_EXTERNAL_ADAPTER" "$TARGET_EXTERNAL_ADAPTER" "External Adapter" ".env .env.local logs node_modules *.pid"
+node "$UTIL_DIR/configure-service-auth.cjs" configure "$TARGET_DIR"
 
 # Update External Adapter with current operator address if available
 echo -e "${BLUE}Checking for operator address configuration...${NC}"
@@ -1840,6 +1920,9 @@ fi
 
 # Update management scripts
 echo -e "${BLUE}Updating management scripts...${NC}"
+mkdir -p "$TARGET_DIR/installer/util"
+cp "$UTIL_DIR/configure-service-auth.cjs" "$TARGET_DIR/installer/util/configure-service-auth.cjs"
+cp "$UTIL_DIR/check-request-authorization.cjs" "$TARGET_DIR/installer/util/check-request-authorization.cjs"
 # Shared prompt library + answers validator (used by the root/util scripts)
 if [ -d "$INSTALLER_DIR/lib" ]; then
     mkdir -p "$TARGET_DIR/installer/lib"

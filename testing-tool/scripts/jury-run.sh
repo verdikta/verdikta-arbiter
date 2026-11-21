@@ -4,8 +4,8 @@
 #
 #   setsid nohup jury-run.sh <work dir> <key file> [test command options...] > <work dir>/run/driver.log 2>&1 < /dev/null &
 #
-# It starts the meter (no key), then the AI Node (the only process that gets the keys, and only the panel's), then the
-# testing tool's batch (no key), and stops what it started, by PID. <work dir>/run/done appears when it ends, however it
+# It starts the meter (no key), then the AI Node (the only process that gets provider keys, and only the panel's), then the
+# testing tool's batch (a service token only), and stops what it started, by PID. <work dir>/run/done appears when it ends, however it
 # ends, holding the exit code; summary.json says why. Run it again to resume: the ledger and the results carry over.
 set -uo pipefail
 set +x
@@ -83,6 +83,9 @@ for port in "$METER_PORT" "$AI_PORT"; do
   fi
 done
 
+# A private, per-run credential shared only by the AI Node and its caller. Never written to logs.
+SERVICE_TOKEN=$("$NODE_BIN/node" -e 'process.stdout.write(require("crypto").randomBytes(32).toString("hex"))') || exit 9
+
 env -i PATH="$NODE_BIN:/usr/bin:/bin" HOME="$WORK" "$NODE_BIN/node" "$REPO/testing-tool/src/meter.js" \
   --ledger "$RUN/ledger.jsonl" --calls "$RUN/calls" --port "$METER_PORT" --stop-usd "$STOP_USD" \
   ${METER_ARGS:-} >> "$RUN/meter.log" 2>&1 < /dev/null &
@@ -100,6 +103,7 @@ wait_for "http://127.0.0.1:$METER_PORT/health" 20 || { echo "jury-run: the meter
   set +a
   unset OPENAI_API_KEY XAI_API_KEY GROK_API_KEY HYPERBOLIC_API_KEY
   export PATH="$clean_path" HOME="$WORK" NODE_ENV=production NEXT_TELEMETRY_DISABLED=1
+  export AI_NODE_API_TOKEN="$SERVICE_TOKEN"
   export JUSTIFIER_MODEL="$JUSTIFIER_MODEL_NAME"
   export ANTHROPIC_BASE_URL="http://127.0.0.1:$METER_PORT/anthropic"
   export OPENROUTER_BASE_URL="http://127.0.0.1:$METER_PORT/openrouter/api/v1"
@@ -110,7 +114,7 @@ wait_for "http://127.0.0.1:$AI_PORT/api/health" 120 || { echo "jury-run: the AI 
 
 cd "$REPO/testing-tool" || exit 1
 # In the background and waited for: bash runs a trap only between commands, so a TERM must not have to wait for the batch.
-env -i PATH="$NODE_BIN:/usr/bin:/bin" HOME="$WORK" "$NODE_BIN/node" src/index.js test --type claim --jury real \
+env -i PATH="$NODE_BIN:/usr/bin:/bin" HOME="$WORK" AI_NODE_API_TOKEN="$SERVICE_TOKEN" "$NODE_BIN/node" src/index.js test --type claim --jury real \
   --claims-dir "${CLAIMS_DIR:-$WORK/claims}" --batch-dir "$RUN" --meter-url "http://127.0.0.1:$METER_PORT" --stop-usd "$STOP_USD" \
   --ai-node-url "http://127.0.0.1:$AI_PORT" "$@" &
 BATCH_PID=$!

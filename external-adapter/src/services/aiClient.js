@@ -2,9 +2,10 @@ const axios = require('axios');
 const retry = require('retry');
 const config = require('../config');
 const { createClient } = require('@verdikta/common');
-const fs = require('fs').promises;
 const path = require('path');
 const { summarizePayload } = require('../utils/payloadSummary');
+const { readEvidenceFile, isUnsafeEvidenceError } = require('../utils/evidenceBoundary');
+const { validServiceToken } = require('../utils/serviceAuth');
 
 // Initialize verdikta-common client for logging
 const verdikta = createClient({
@@ -129,7 +130,9 @@ class AIClient {
 
   }
 
-  async evaluate(query, extractedPath, runTag = '') {
+  async evaluate(query, extractedPath, runTag = '', evidenceRoots = [extractedPath]) {
+    const token = process.env.AI_NODE_API_TOKEN;
+    if (!validServiceToken(token)) throw new Error('AI Node service authentication is not configured');
     const requestStartTime = Date.now();
     return new Promise((resolve, reject) => {
       const operation = retry.operation(this.retryOptions);
@@ -148,8 +151,7 @@ class AIClient {
           if (extractedPath) {
             // Read manifest if path provided
             const tManifestStart = Date.now();
-            const manifestPath = path.join(extractedPath, 'manifest.json');
-            manifest = JSON.parse(await fs.readFile(manifestPath, 'utf8'));
+            manifest = JSON.parse(await readEvidenceFile([extractedPath], { filename: 'manifest.json' }, 'utf8'));
             const manifestReadTime = Date.now() - tManifestStart;
             logger.info(`${runTag} Manifest read took ${manifestReadTime}ms`);
             
@@ -179,7 +181,7 @@ class AIClient {
                   }
                   
                   const tFileStart = Date.now();
-                  fileData = await fs.readFile(filePath);
+                  fileData = await readEvidenceFile(evidenceRoots, file);
                   
                   // Detect MIME type from file content if not provided or if it's a generic type
                   let mimeType = file.type;
@@ -195,6 +197,7 @@ class AIClient {
                   const fileProcessTime = Date.now() - tFileStart;
                   logger.info(`${runTag} Added file to attachments: ${filePath}, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${fileProcessTime}ms`);
                 } catch (fileError) {
+                  if (isUnsafeEvidenceError(fileError)) throw fileError;
                   logger.warn(`${runTag} Failed to read file:`, fileError.message);
                   continue;
                 }
@@ -223,7 +226,7 @@ class AIClient {
                   }
                   
                   const tSupportFileStart = Date.now();
-                  const fileData = await fs.readFile(filePath);
+                  const fileData = await readEvidenceFile([extractedPath], file);
                   // Detect MIME type from file content
                   const mimeType = detectMimeType(fileData);
                   logger.info(`${runTag} Detected MIME type for support file: ${mimeType}`);
@@ -234,6 +237,7 @@ class AIClient {
                   const supportFileTime = Date.now() - tSupportFileStart;
                   logger.info(`${runTag} Added support file to attachments: ${file.name || filePath}, size: ${fileData.length} bytes, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${supportFileTime}ms`);
                 } catch (fileError) {
+                  if (isUnsafeEvidenceError(fileError)) throw fileError;
                   logger.error(`${runTag} Failed to read support file:`, fileError);
                   continue;
                 }
@@ -266,7 +270,11 @@ class AIClient {
           logger.debug(`${runTag} Prompt:`, { prompt: payload.prompt });
 
           const tApiStart = Date.now();
-          const response = await this.client.post('/api/rank-and-justify', payload);
+          const response = await this.client.post('/api/rank-and-justify', payload, {
+            headers: { Authorization: `Bearer ${token}` },
+            // Never forward the service credential to a redirect target.
+            maxRedirects: 0
+          });
           const apiCallTime = Date.now() - tApiStart;
           logger.info(`${runTag} API call to /api/rank-and-justify took ${apiCallTime}ms`);
           
@@ -294,6 +302,10 @@ class AIClient {
           
           resolve(response.data);
         } catch (error) {
+          if (isUnsafeEvidenceError(error)) {
+            reject(error); // never omit unsafe evidence, retry it, or call the AI
+            return;
+          }
           const errorTime = Date.now() - tEvalStart;
           logger.error(`${runTag} AI Node error after ${errorTime}ms:`, {
             message: error.message,
@@ -304,9 +316,14 @@ class AIClient {
             config: {
               url: error.config?.url,
               method: error.config?.method,
-              headers: error.config?.headers
+              // Authorization headers must never reach operator logs.
             }
           });
+
+          if (error.response?.status === 401 || error.response?.status === 403) {
+            reject(new Error('AI Node service authentication failed'));
+            return;
+          }
 
           // --- Modified Provider Error Check ---
           let isProviderError = false;
@@ -354,4 +371,4 @@ class AIClient {
   }
 }
 
-module.exports = new AIClient(); 
+module.exports = new AIClient();

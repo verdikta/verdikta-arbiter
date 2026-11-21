@@ -32,7 +32,7 @@ async function waitReachable(url, timeoutMs) {
  * Spawn the External Adapter as a child process configured for a test run.
  * @returns {Promise<{child: import('child_process').ChildProcess, close: () => Promise<void>}>}
  */
-async function bootAdapter({ adapterUrl, aiNodeUrl, eaDir = DEFAULT_EA_DIR, timeoutMs = 30000 }) {
+async function bootAdapter({ adapterUrl, aiNodeUrl, token, aiToken, eaDir = DEFAULT_EA_DIR, timeoutMs = 30000 }) {
   if (!fs.existsSync(path.join(eaDir, 'src', 'index.js'))) {
     throw new Error(`External Adapter not found at ${eaDir} (expected src/index.js).`);
   }
@@ -43,7 +43,10 @@ async function bootAdapter({ adapterUrl, aiNodeUrl, eaDir = DEFAULT_EA_DIR, time
   const port = new URL(adapterUrl).port || '8080';
   const env = {
     ...process.env,
+    ...(token ? { EA_API_TOKEN: token } : {}),
+    ...(aiToken ? { AI_NODE_API_TOKEN: aiToken } : {}),
     PORT: port,
+    HOST: '127.0.0.1',
     AI_NODE_URL: aiNodeUrl,
     OPERATOR_ADDR: process.env.OPERATOR_ADDR || DUMMY_OPERATOR,
     // IPFS_GATEWAY is inherited from process.env only when the caller set it:

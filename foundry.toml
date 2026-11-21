@@ -20,6 +20,8 @@ evm_version = "paris"
 
 # The vendored files only (arbiter-operator/foundry/lib/vendored.json), nothing found by looking.
 auto_detect_remappings = false
+# Hardhat tests use the full npm ERC-677 token; Foundry has its own stand-in.
+skip = ["arbiter-operator/contracts/test/AdmissionFixtures.sol"]
 remappings = [
     "@chainlink/contracts/=arbiter-operator/foundry/lib/chainlink-contracts/",
     "@openzeppelin/contracts/=arbiter-operator/foundry/lib/openzeppelin-contracts/",

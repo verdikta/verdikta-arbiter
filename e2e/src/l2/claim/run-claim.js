@@ -8,6 +8,7 @@
 
 const { spawn } = require('child_process');
 const fs = require('fs');
+const crypto = require('crypto');
 const os = require('os');
 const path = require('path');
 const { isDeepStrictEqual } = require('util');
@@ -119,14 +120,15 @@ async function validMode0(h) {
 /** Mode 1 then mode 2 on one claim, the commitment recomputed from the reveal. */
 async function commitReveal(h, requestCid, { expectScores, settlement, l4 }) {
   const checks = [];
-  const aggId = `agg${Date.now().toString(16)}`;
-  const commit = await h.evaluate(`1:${requestCid}`, { aggId });
+  const aggId = `0x${crypto.randomBytes(32).toString('hex')}`;
+  const jobId = `claim-${crypto.randomBytes(8).toString('hex')}`;
+  const commit = await h.evaluate(`1:${requestCid}`, { aggId, jobId });
   const committed = commit && commit.data && commit.data.aggregatedScore;
   checks.push(...A.commitAssertions(committed, commit && commit.data && commit.data.justificationCid));
   const commitment = committed && committed[0];
   if (!/^[0-9]+$/.test(String(commitment))) return checks;
   const pinsAtCommit = h.ipfs.pins.length;
-  const reveal = await h.evaluate(`2:${commitment}`, { aggId });
+  const reveal = await h.evaluate(`2:${commitment}`, { aggId, jobId });
   const scores = reveal && reveal.data && reveal.data.aggregatedScore;
   checks.push(...expectScores(scores));
   const value = reveal && reveal.data && reveal.data.justificationCid;
@@ -169,7 +171,7 @@ async function validJurorDeadline(h) {
   body.models[1] = { ...body.models[1], provider: h.hangingJuror.provider, model: h.hangingJuror.model };
   const before = h.providerCalls().length;
   const started = Date.now();
-  const res = await axios.post(`${h.aiDirect}${AI_ROUTE}`, body, { timeout: 120000, validateStatus: () => true });
+  const res = await axios.post(`${h.aiDirect}${AI_ROUTE}`, body, { timeout: 120000, validateStatus: () => true, maxRedirects: 0, headers: h.aiHeaders });
   const took = Date.now() - started;
   const calls = h.providerCalls().slice(before);
   const hung = calls.find((c) => c.model === h.hangingJuror.model);
@@ -203,7 +205,7 @@ async function validTestingTool(h) {
     const before = h.ai.post(AI_ROUTE).length;
     const results = path.join(dir, 'results');
     const run = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [TESTING_TOOL, 'test', '--type', 'claim', '--jury', 'real', '--claims-dir', path.join(dir, 'claims'), '--results-dir', results, '--ai-node-url', h.ai.url], { cwd: dir, env: { PATH: process.env.PATH } });
+      const child = spawn(process.execPath, [TESTING_TOOL, 'test', '--type', 'claim', '--jury', 'real', '--claims-dir', path.join(dir, 'claims'), '--results-dir', results, '--ai-node-url', h.ai.url], { cwd: dir, env: { PATH: process.env.PATH, AI_NODE_API_TOKEN: h.aiToken } });
       let out = '';
       child.stdout.on('data', (c) => { out += c; });
       child.stderr.on('data', (c) => { out += c; });

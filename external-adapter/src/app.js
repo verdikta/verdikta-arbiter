@@ -9,7 +9,7 @@
 
 const http = require('http');
 const express = require('express');
-const bodyParser = require('body-parser');
+const { requireServiceAuth } = require('./utils/serviceAuth');
 const { collectVersionInfo } = require('./utils/versionInfo');
 const { getCodeReviewConfig, describeCodeReviewConfig } = require('./codeReview/config');
 const { describeCanaryFault } = require('./canaryFault');
@@ -22,9 +22,9 @@ const SERVICE = 'verdikta-external-adapter';
  * @returns {import('express').Express}
  */
 function createApp(options = {}) {
-  const evaluateHandler = options.evaluateHandler || require('./handlers/evaluateHandler');
+  const evaluateHandler = (typeof options === 'function' ? options : options.evaluateHandler) || require('./handlers/evaluateHandler');
   const app = express();
-  app.use(bodyParser.json());
+  app.disable('x-powered-by');
 
   // Version self-report for local ops tooling (arbiter-doctor) and debugging.
   // The same block is embedded in every justification uploaded to IPFS.
@@ -51,7 +51,9 @@ function createApp(options = {}) {
     });
   });
 
-  app.post('/evaluate', async (req, res) => {
+  // The service credential is checked before JSON parsing or either evaluation mode.
+  app.post('/evaluate', requireServiceAuth, express.json(), async (req, res) => {
+    res.set('Cache-Control', 'no-store');
     try {
       const result = await evaluateHandler(req.body);
       res.status(result.statusCode || 200).json(result);
@@ -60,19 +62,19 @@ function createApp(options = {}) {
         jobRunID: req.body?.id || 'unknown',
         status: 'errored',
         statusCode: 500,
-        error: error.message || 'Unknown error'
+        error: 'Evaluation failed'
       });
     }
   });
 
   // Error handling middleware
   app.use((err, req, res, next) => {
-    console.error(err.stack);
-    res.status(500).json({
+    const status = err.type === 'entity.too.large' ? 413 : 400;
+    res.status(status).json({
       jobRunID: req.body?.id || 'unknown',
       status: 'errored',
-      statusCode: 500,
-      error: err.message || 'Internal server error'
+      statusCode: status,
+      error: 'Invalid request body'
     });
   });
 

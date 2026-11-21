@@ -106,7 +106,7 @@ async function waitUntil(proc, what, ready, timeoutMs) {
 const baseEnv = () => ({ PATH: process.env.PATH, HOME: process.env.HOME || os.homedir() });
 
 /** The real AI Node under `next dev`: the mock provider is refused in a production build (A5). */
-async function startAiNode({ logDir, callLog, script, justifierModel, canaryFaultKey }) {
+async function startAiNode({ logDir, callLog, script, justifierModel, canaryFaultKey, aiToken }) {
   assertInstalled(AI_DIR, 'the AI Node\'s');
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
@@ -116,6 +116,7 @@ async function startAiNode({ logDir, callLog, script, justifierModel, canaryFaul
     env: {
       ...baseEnv(),
       NEXT_TELEMETRY_DISABLED: '1',
+      AI_NODE_API_TOKEN: aiToken,
       VERDIKTA_TEST_MOCK_PROVIDER: '1',
       VERDIKTA_TEST_MOCK_SCRIPT: JSON.stringify(script),
       VERDIKTA_TEST_MOCK_CALL_LOG: callLog,
@@ -127,8 +128,8 @@ async function startAiNode({ logDir, callLog, script, justifierModel, canaryFaul
   await waitUntil(proc, 'waiting for /api/health', async () => (await axios.get(`${url}/api/health`, { timeout: 120000, validateStatus: () => true })).status === 200, 300000);
   // next dev compiles a route on its first request: done here, so it counts against no deadline.
   await waitUntil(proc, 'compiling /api/rank-and-justify', async () => {
-    const r = await axios.post(`${url}/api/rank-and-justify`, {}, { timeout: 180000, validateStatus: () => true });
-    return r.status >= 400 && r.status < 500;
+    const r = await axios.post(`${url}/api/rank-and-justify`, {}, { timeout: 180000, validateStatus: () => true, maxRedirects: 0, headers: { Authorization: `Bearer ${aiToken}` } });
+    return r.status === 400;
   }, 300000);
   return { url, ...proc };
 }
@@ -166,7 +167,7 @@ async function startCodeRunner({ logDir, stateDir, token, platform, allowlist, c
  * `env` is what a second adapter differs by, for the fault switch; with `mustServe: false` a
  * node that refuses code mode is what the test wants to see.
  */
-async function startAdapter({ logDir, aiNodeUrl, runnerUrl, runnerToken, ipfsUrl, pinKey, devKey, operator, name = 'external-adapter', env = {}, mustServe = true }) {
+async function startAdapter({ logDir, aiNodeUrl, aiToken, eaToken, runnerUrl, runnerToken, ipfsUrl, pinKey, devKey, operator, name = 'external-adapter', env = {}, mustServe = true }) {
   assertInstalled(EA_DIR, 'the External Adapter\'s');
   const port = await freePort();
   const url = `http://127.0.0.1:${port}`;
@@ -179,6 +180,8 @@ async function startAdapter({ logDir, aiNodeUrl, runnerUrl, runnerToken, ipfsUrl
       HOST: '127.0.0.1',
       OPERATOR_ADDR: operator,
       AI_NODE_URL: aiNodeUrl,
+      AI_NODE_API_TOKEN: aiToken,
+      EA_API_TOKEN: eaToken,
       IPFS_GATEWAY: ipfsUrl,
       IPFS_PINNING_SERVICE: ipfsUrl,
       IPFS_PINNING_KEY: pinKey,

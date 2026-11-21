@@ -1,3 +1,4 @@
+import { requireServiceAuth } from '../../../lib/service-auth';
 import { NextResponse } from 'next/server';
 import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { prePromptConfig } from '../../../config/prePromptConfig';
@@ -130,6 +131,8 @@ function stripThinkingBlocks(response: string): string {
 
 
 export async function POST(request: Request) {
+  const denied = requireServiceAuth(request);
+  if (denied) return denied;
   const requestStartTime = Date.now();
   // The body is read once. A request with a codeReview field is a claim evaluation
   // (code mode, lib/code-review/handler.ts: its own deadline, envelope and prompt);

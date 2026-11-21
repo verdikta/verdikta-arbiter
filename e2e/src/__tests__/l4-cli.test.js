@@ -33,11 +33,16 @@ const REPORT_HASH = 'c'.repeat(64);
 const CLAIM_IDS = ['claim-l4-valid', 'claim-l4-front-gate', 'claim-l4-runner-gate'];
 const ALL_CLAIMS = CLAIM_IDS.join(',');
 
-/** Frozen from the base branch (2c0e94a): what the nightly resolved to before this node. */
-const NIGHTLY_BEFORE = Object.freeze({
+/**
+ * What the nightly sends: the project's own archive alone. Class, fees and value are frozen
+ * from 2c0e94a (node A6b). Node A27 took out frontend-default, the example-frontend's
+ * package, whose jury names a model the provider retired: it runs only when named.
+ */
+const FRONTEND_DEFAULT_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
+const NIGHTLY = Object.freeze({
   classId: 128,
-  ids: ['canonical-vuln', 'frontend-default'],
-  cids: [[fs.readFileSync(path.join(E2E, 'archives', 'contract-vuln.cid'), 'utf8').trim()], ['QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH']],
+  ids: ['canonical-vuln'],
+  cids: [[fs.readFileSync(path.join(E2E, 'archives', 'contract-vuln.cid'), 'utf8').trim()]],
   alpha: 500n,
   maxOracleFee: 150000000000000n,
   estimatedBaseCost: 8000000000n,
@@ -152,7 +157,7 @@ async function startChain({ chainId, revertOnEstimate, estimatesBeforeRevert, re
     chainId,
     revertOnEstimate,
     estimatesBeforeRevert,
-    answer: await prepareAnswers([...everyRequest(), ...NIGHTLY_BEFORE.cids, ...requests], { reporting, aiNode, change })
+    answer: await prepareAnswers([...everyRequest(), ...NIGHTLY.cids, [FRONTEND_DEFAULT_CID], ...requests], { reporting, aiNode, change })
   });
   return chain;
 }
@@ -224,7 +229,7 @@ describe('L4 refuses a claim scenario on anything but the canary class: every fl
     ['--assert-winner and no class', [...named, '--assert-winner'], {}],
     ['all three claim scenarios', ['--scenario', ALL_CLAIMS], {}],
     ['a text scenario beside a claim', ['--scenario', 'canonical-vuln,claim-l4-valid', ...versions], {}],
-    ['a claim beside a text scenario, class 128', ['--scenario', 'claim-l4-runner-gate,frontend-default', '--class-id', '128', ...versions], {}]
+    ['a claim beside a text scenario, class 128', ['--scenario', 'claim-l4-runner-gate,canonical-vuln', '--class-id', '128', ...versions], {}]
   ])('%s: exit 1 and no RPC call at all', async (_name, args, env) => {
     await startChain();
     const r = await l4([...args, '--scenarios', scenariosFile], env);
@@ -370,32 +375,35 @@ describe('--class-id 5555 --expect-common --expect-release runs the claim scenar
   });
 });
 
-describe('the nightly is unchanged', () => {
+describe('the nightly: the project\'s own archive, on class 128, with the calldata it always had', () => {
   const schedule = { L4_CLASS_ID: '', L4_EXPECT_COMMON: '', L4_EXPECT_RELEASE: '', L4_SCENARIO: '' };
   const nightly = ['--junit', 'results/l4.xml', '--report', 'results/l4.json'];
 
-  const assertNightly = () => {
-    expect(chain.sent.map((tx) => tx.requestedClass)).toEqual(NIGHTLY_BEFORE.ids.map(() => NIGHTLY_BEFORE.classId));
-    expect(chain.sent.map((tx) => tx.cids)).toEqual(NIGHTLY_BEFORE.cids);
-    expect(chain.sent.map((tx) => tx.addendum)).toEqual(['', '']);
+  const assertNightly = (r) => {
+    expect(chain.sent.map((tx) => tx.requestedClass)).toEqual(NIGHTLY.ids.map(() => NIGHTLY.classId));
+    expect(chain.sent.map((tx) => tx.cids)).toEqual(NIGHTLY.cids);
+    expect(chain.sent.map((tx) => tx.addendum)).toEqual(NIGHTLY.ids.map(() => ''));
+    // The example-frontend's package is manual-only: the run says it left it out, and never sends it.
+    expect(chain.sent.flatMap((tx) => tx.cids)).not.toContain(FRONTEND_DEFAULT_CID);
+    expect(r.out).toContain('skipping "frontend-default": manualOnly');
     for (const tx of chain.sent) {
-      expect(tx.alpha).toBe(NIGHTLY_BEFORE.alpha);
-      expect(tx.maxOracleFee).toBe(NIGHTLY_BEFORE.maxOracleFee);
-      expect(tx.estimatedBaseCost).toBe(NIGHTLY_BEFORE.estimatedBaseCost);
-      expect(tx.maxFeeScaling).toBe(NIGHTLY_BEFORE.maxFeeScaling);
-      expect(tx.value).toBe(NIGHTLY_BEFORE.value);
+      expect(tx.alpha).toBe(NIGHTLY.alpha);
+      expect(tx.maxOracleFee).toBe(NIGHTLY.maxOracleFee);
+      expect(tx.estimatedBaseCost).toBe(NIGHTLY.estimatedBaseCost);
+      expect(tx.maxFeeScaling).toBe(NIGHTLY.maxFeeScaling);
+      expect(tx.value).toBe(NIGHTLY.value);
     }
     // Nothing new is asked of the chain, and no version is required of it.
     expect(chain.reads).not.toContain('responseTimeoutSeconds');
   };
 
-  it('the committed scenarios on the schedule\'s blank inputs: class 128, the same two scenarios, the same calldata', async () => {
+  it('the committed scenarios on the schedule\'s blank inputs: class 128, canonical-vuln alone, the same calldata', async () => {
     await startChain();
     const r = await l4(nightly, schedule, { cwd: dir });
     expect(r.code).toBe(0);
-    assertNightly();
+    assertNightly(r);
     const json = JSON.parse(fs.readFileSync(path.join(dir, 'results', 'l4.json'), 'utf8'));
-    expect(json.cases.map((c) => c.id)).toEqual(NIGHTLY_BEFORE.ids);
+    expect(json.cases.map((c) => c.id)).toEqual(NIGHTLY.ids);
     expect(json.cases.flatMap((c) => c.checks.map((x) => x.name)).filter((n) => n.startsWith('claim.') || n.startsWith('metric.'))).toEqual([]);
     expect(chain.calls).not.toContain('eth_getLogs');
     expect(chain.reads).not.toContain('getAggregationStatus');
@@ -405,23 +413,33 @@ describe('the nightly is unchanged', () => {
     await startChain();
     const r = await l4([...nightly, '--scenarios', scenariosFile], schedule);
     expect(r.code).toBe(0);
-    assertNightly();
+    assertNightly(r);
   });
 
   it('a failed gas estimate still falls back to the configured limit, as before', async () => {
     await startChain({ revertOnEstimate: true });
     const r = await l4(nightly, schedule);
     expect(r.code).toBe(0);
-    assertNightly();
+    assertNightly(r);
     expect(r.out).toMatch(/using configured gasLimit=4000000/);
   });
 
-  it('the canary gate\'s dispatch (class 5555, no scenario) runs the same two on 5555, with no claim among them', async () => {
+  it('the canary gate\'s dispatch (class 5555, no scenario) runs the same default set on 5555, with no claim among them', async () => {
     await startChain();
     const r = await l4(nightly, { ...schedule, L4_CLASS_ID: '5555' });
     expect(r.code).toBe(0);
-    expect(chain.sent.map((tx) => tx.requestedClass)).toEqual([5555, 5555]);
-    expect(chain.sent.map((tx) => tx.cids)).toEqual(NIGHTLY_BEFORE.cids);
+    expect(chain.sent.map((tx) => tx.requestedClass)).toEqual(NIGHTLY.ids.map(() => 5555));
+    expect(chain.sent.map((tx) => tx.cids)).toEqual(NIGHTLY.cids);
+  });
+
+  it('frontend-default still runs when named, by flag or by dispatch: manual-only, not gone', async () => {
+    await startChain();
+    const byFlag = await l4(['--scenario', 'frontend-default'], schedule);
+    expect(byFlag.code).toBe(0);
+    const byDispatch = await l4([], { ...schedule, L4_CLASS_ID: '5555', L4_SCENARIO: 'frontend-default' });
+    expect(byDispatch.code).toBe(0);
+    expect(chain.sent.map((tx) => tx.cids)).toEqual([[FRONTEND_DEFAULT_CID], [FRONTEND_DEFAULT_CID]]);
+    expect(chain.sent.map((tx) => tx.requestedClass)).toEqual([NIGHTLY.classId, 5555]);
   });
 
   it('the workflow still runs the nightly with no class and no scenario on its command line', () => {
@@ -430,6 +448,10 @@ describe('the nightly is unchanged', () => {
     expect(yml).toContain('L4_CLASS_ID: ${{ inputs.class_id }}');
     expect(yml).toContain('L4_SCENARIO: ${{ inputs.scenario }}');
     expect(yml).toContain('node src/index.js l4 --junit results/l4.xml --report results/l4.json\n');
+    // The dispatch's scenario input is blank by default, so a dispatch selects what the nightly
+    // does, and no workflow line names frontend-default.
+    expect(yml).toMatch(/\n {6}scenario:\n {8}description: [^\n]*\n {8}type: string\n {8}default: ''\n/);
+    expect(yml).not.toContain('frontend-default');
     const config = JSON.parse(fs.readFileSync(path.join(E2E, 'config', 'e2e-config.json'), 'utf8'));
     expect(config.l4).toEqual({
       network: 'base_sepolia',
@@ -829,7 +851,7 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       const r = await l4(['--report', file, '--scenarios', scenariosFile], { L4_CLASS_ID: '' });
       expect(r.code).toBe(0);
       const json = JSON.parse(fs.readFileSync(file, 'utf8'));
-      expect(json.cases.map((c) => c.id)).toEqual(NIGHTLY_BEFORE.ids);
+      expect(json.cases.map((c) => c.id)).toEqual(NIGHTLY.ids);
       expect(json.cases.every((c) => c.metrics === undefined)).toBe(true);
     });
   });

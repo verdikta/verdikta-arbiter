@@ -93,7 +93,7 @@ function scenario(options = {}) {
   };
 }
 
-const request = (cidString, id = 'job-1') => ({ id, data: { cid: cidString, aggId: '0xagg' } });
+const request = (cidString, id = 'job-1') => ({ id, data: { cid: cidString, aggId: `0x${'a'.repeat(64)}` } });
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -166,7 +166,7 @@ async function expectInvalidCommit(s, { gate, check }) {
   expect(stored.result.metadata).toMatchObject({ verdict_source: 'code-review-gate', gate });
   if (check) expect(stored.result.metadata.check).toBe(check);
 
-  const reveal = await evaluateHandler(request(`2:${commitment}`, 'job-2'));
+  const reveal = await evaluateHandler(request(`2:${commitment}`, 'job-1'));
   expect(reveal.statusCode).toBe(200);
   expect(reveal.data.aggregatedScore).toEqual(INVALID_VECTOR);
   expect(uploaded).toHaveLength(1);
@@ -213,7 +213,7 @@ describe('code review: request layout and operator switch', () => {
     const s = scenario();
     const jobId = '0x38f19572c51041baa5f2dea284614590';
     await evaluateHandler(request(s.cid(1), jobId));
-    expect(claimRun.runClaim.mock.calls[0][1].canaryRequest).toEqual({ aggId: '0xagg', jobId });
+    expect(claimRun.runClaim.mock.calls[0][1].canaryRequest).toEqual({ aggId: `0x${'a'.repeat(64)}`, jobId });
   });
 
   it('a gate-passing claim commits only what the run seam returns (a real commitment)', async () => {
@@ -772,8 +772,8 @@ describe('code review: machine lines, the dispute statement, logs', () => {
     const s = scenario({ dispute: { statement: 'ok' } });
     const bad = s.cid(1).replace(s.cids.claim, 'Qmshort');
     const res = await evaluateHandler(request(bad));
-    expect(res.statusCode).toBe(500);
-    expect(res.error).toMatch(/withheld/);
+    expect(res.statusCode).toBe(400);
+    expect(res.error).toBe('Invalid evaluation request');
     const all = `${logLines.join('\n')}\n${JSON.stringify(res)}`;
     expect(all).not.toContain(s.disclosure.fields.contentKey.slice(2));
     expect(all).not.toContain(s.disclosure.fields.ephemeralKey.slice(2));

@@ -64,14 +64,15 @@ exports.del  = async (hash) =>
   });
 
 exports.purgeStale = async function purgeStale (maxAgeMs = 3 * 24 * 60 * 60 * 1000) {
-  const cutoff = Date.now() - maxAgeMs;
-  const db     = await _load();
-  let   removed = 0;
-
-  for (const [h, e] of Object.entries(db)) {
-    if (Date.parse(e.created) < cutoff) { delete db[h]; removed++; }
-  }
-  if (removed) await _save(db);
-  return removed;
+  return mtx.runExclusive(async () => {
+    const now = Date.now();
+    const db = await _load();
+    let removed = 0;
+    for (const [hash, entry] of Object.entries(db)) {
+      const expiry = entry.expiresAt ?? (Date.parse(entry.created) + maxAgeMs);
+      if (!Number.isFinite(expiry) || now >= expiry) { delete db[hash]; removed++; }
+    }
+    if (removed) await _save(db);
+    return removed;
+  });
 };
-

@@ -13,6 +13,31 @@ npm install --save-dev supertest
 
 ## Running Tests
 
+The npm test scripts enable Node's VM module support so Jest can load the ESM
+`multiformats` CID parser. Production Node loads it with ordinary `import()`;
+the VM flag is only for Jest.
+
+P1 authentication/reveal regressions use a temporary HTTP listener bound only
+to `127.0.0.1`. They use real middleware, the handler and the commit store with
+mocked network edges; no IPFS, provider or chain access is needed:
+
+```bash
+npm test -- --runInBand --runTestsByPath src/__tests__/handlers/evaluateHandler.authReveal.test.js src/__tests__/services/aiClient.logging.test.js
+```
+
+Missing/wrong credentials, forged forwarding headers, mismatched job/aggregation/
+operator, expiry, retries, concurrent uploads, failure recovery and retention are
+covered. Development/integration calls to a running server must supply its real
+service token; the fixed credentials in Jest setup apply only to mocked tests.
+
+Evidence-boundary regressions run offline with real ZIP extraction, shared
+manifest parsing, and EA payload construction; only IPFS/provider calls are
+mocked:
+
+```bash
+npm test -- --runInBand --runTestsByPath src/__tests__/utils/evidenceBoundary.test.js src/__tests__/handlers/evaluateHandler.evidenceBoundary.test.js src/__tests__/services/aiClient.test.js
+```
+
 ### 1. Running All Tests
 
 To run the unit tests (everything except `src/__tests__/integration/`, which

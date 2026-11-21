@@ -108,4 +108,18 @@ describe('aiClient.evaluate logging', () => {
     expect(mockLogger.error).toHaveBeenCalled();
     expectNoAttachmentContents();
   });
+
+  test('auth rejection neither logs the service credential nor retries', async () => {
+    mockPost.mockImplementation((url, body, config) => {
+      const error = new Error('Request failed with status code 401');
+      error.config = { ...config, url, method: 'post', data: JSON.stringify(body) };
+      error.response = { status: 401, data: { error: 'Unauthorized' } };
+      return Promise.reject(error);
+    });
+    await expect(aiClient.evaluate(query, dir)).rejects.toThrow('AI Node service authentication failed');
+    expect(mockPost).toHaveBeenCalledTimes(1);
+    expect(loggedText()).not.toContain(process.env.AI_NODE_API_TOKEN);
+    expect(loggedText()).not.toContain('Authorization');
+    expectNoAttachmentContents();
+  });
 });
