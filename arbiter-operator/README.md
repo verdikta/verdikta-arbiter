@@ -47,6 +47,16 @@ npm test
 - `test.sh`: Runs the test suite
 - `setAuthorizedSenders.sh`: Sets the authorized senders for the operator contract
 
+### Gas price
+
+`hardhat.config.js` gives every network `gasPrice: "auto"`: Hardhat sends an
+EIP-1559 transaction that pays the block's base fee plus the last block's median
+tip. `VERDIKTA_GAS_PRICE_GWEI=<gwei>` in the environment (or this directory's
+`.env`) pins a legacy price instead, which is paid in full. Do not write a price
+into the file: the fixed 5 gwei it had for Base Sepolia was about 800 times the
+network's. The setting has to stay inside `hardhat.config.js`, because the
+installer copies that file alone into its build directories.
+
 ## Foundry
 
 Both builds use the local admission-aware `contracts/vendor/Operator.sol`; the

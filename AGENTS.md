@@ -625,6 +625,19 @@ Ollama runs locally and is unaffected by gateway settings.
   before the template regeneration and the finality step, which keep it (the template sets
   the same 15m) and restart a running Chainlink only once it is in;
   `upgrade-chainlink-config-order.test.sh` runs the three in every combination of answers.
+- **The owner wallet's calls pay the network's gas price; do not write one into
+  `arbiter-operator/hardhat.config.js`.** It had 5 gwei for Base Sepolia and 1 gwei
+  for Base, and Hardhat sends a configured price as a legacy transaction that pays
+  all of it: with the network at 0.005 gwei, ten deregistrations cost 0.0088 ETH
+  and emptied the canary owner wallet half way through a job-count change
+  (2026-11-21). The networks now have `"auto"` (EIP-1559: base fee with room for
+  two full blocks, plus the last block's median tip), and
+  `VERDIKTA_GAS_PRICE_GWEI` pins a price for one command. The setting lives in the
+  config file itself because `configure-node.sh` and `deploy-contracts.sh` copy
+  that file alone into a build directory. `register-oracle-cl.js` checks the
+  wallet against the calls it is about to send (`scripts/lib/funds.js`) and stops
+  on a refusal for funds instead of retrying gas limits. Tests:
+  `hardhat-gas-price.test.cjs`, `owner-funds.test.cjs`.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a
