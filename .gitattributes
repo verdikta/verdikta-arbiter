@@ -6,3 +6,16 @@
 
 # MkDocs build output (should not be tracked; belt-and-suspenders)
 installer/docs/site/** linguist-generated=true
+
+# Line endings. A stake listing names a commit of this repository, and a hunter's proof must build and
+# fail at that commit on their own machine as it does on the arbiters', which run Linux. A checkout that
+# rewrites line endings (git on Windows with core.autocrlf) changed the vendored files under
+# arbiter-operator/foundry/lib, whose hashes VendoredFiles.t.sol checks, and failed the suite before any
+# proof was added (verdikta-applications, tester bounty 400, 2026-11). So text is LF in every checkout,
+# whatever core.autocrlf says:
+* text=auto eol=lf
+
+# Bytes that a test hashes or pins, and fixtures kept as they were received: never converted, either way.
+arbiter-operator/foundry/lib/** -text
+arbiter-operator/contracts/vendor/** -text
+external-adapter/test-artifacts/** -text
