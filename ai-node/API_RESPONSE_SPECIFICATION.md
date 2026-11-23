@@ -88,6 +88,46 @@ Insufficient successful models: {successful}/{total} (minimum required: {min}). 
 
 ---
 
+## Provider text in a response
+
+The External Adapter publishes `justification`, `model_results` and `warnings`
+on IPFS, and in mode 0 the `error` of a 400. A provider's error message can
+quote the operator's API key (one of bounty 398's records holds OpenAI's 401
+with the key, masked by OpenAI, in three fields), a response body, a URL with a
+key in its query, or a request id. So no provider message enters a response as
+it came (`src/utils/redactProviderText.ts`):
+
+| Field | What it holds for a failed model |
+|---|---|
+| `model_results[].error_message`, the `warnings[].message` built from it, each `{reason}` of the 400's `error` | The provider's message, redacted: `401 Incorrect API key provided: <redacted>. You can find your API key at https://platform.openai.com/<redacted>` |
+| `model_results[].error_type`, `http_status`, `error_code` | As before. |
+| `justification` (the `From model X:` line the justifier reads and the fallback returns, and `Error generating consolidated justification: ...` when the justifier itself fails) | Words of this node, from `error_type`, `http_status` and the duration: `Model timed out or failed: authentication error (HTTP 401)`, `... timed out after 120 s` (`src/utils/describeFailure.ts`). |
+| The `error` of a 500 | Redacted as a whole. |
+
+Redaction is the installer doctor's `redact_log` (a URL keeps its scheme and
+host; `key=`/`token=` values, quoted `...key:` values, `Bearer` values and JWTs
+become `<redacted>`), then what a public record needs beyond a log: `sk-...` and
+`xai-...` keys, a key a provider masked with asterisks, any long opaque token
+(request and organization ids, hashes), and a limit of 500 characters per
+message. The unredacted message is in the AI Node's own log and nowhere else.
+In code mode the error body (`error`, `jurors[].message`) is redacted the same
+way; the EA abstains on its status and `errorCode` and publishes none of it.
+
+A provider that refuses the key is one fixed line in the log, per refusal:
+
+```
+PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
+```
+
+`role` is `juror` or `justifier`; `http_status` is `none` when the provider gave
+no status. A refusal is a 401, or the provider's wording for a key it does not
+accept (xAI sends that with a 400); a 403 alone is not one. Provider and model
+are written without spaces. The same line, after an ISO time, is appended to
+`logs/provider-auth.log`, which the cron watchdog reads
+(`installer/util/chainlink-health-watchdog.sh`).
+
+---
+
 ## Image Attachments
 
 Before any model is called, every image attachment is fitted to the providers'

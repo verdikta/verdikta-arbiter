@@ -14,6 +14,11 @@
 #      AI Node (:3000, GET /api/health), External Adapter (:8080, GET /version)
 #   2. http://localhost:6688/health — every EVM.* / core check is "passing"
 #   3. recent container log lines matching "No live RPC nodes available"
+#   4. a model provider refused the operator's API key: PROVIDER_AUTH_FAILED
+#      lines of the last WATCHDOG_AUTH_WINDOW_MINUTES (default 60) in
+#      <install>/ai-node/logs/provider-auth.log. A failed juror is left out of
+#      the aggregation, so a revoked key turns a two-model jury into one model's
+#      verdict while every request succeeds and checks 1 to 3 pass.
 #
 # Alert subjects say which it is:
 #   "chainlink container NOT RUNNING" / "arbiter components NOT RUNNING: ..."
@@ -25,6 +30,9 @@
 #   "arbiter STOPPED by operator (stop-arbiter.sh)"
 #       stop-arbiter.sh left <install>/.arbiter-stopped: an upgrade or
 #       maintenance window; no self-heal until start-arbiter.sh clears it
+#   "model provider REFUSED the API key: <providers>"
+#       everything runs, and a provider answers the node's key with a 401;
+#       nothing to self-heal: the key in ai-node/.env.local has to be replaced
 #
 # How it alerts (all configured alert channels fire; syslog always fires):
 #   - syslog via `logger -t verdikta-watchdog` (always)
@@ -78,9 +86,11 @@ LOG_WINDOW_MINUTES="${WATCHDOG_LOG_WINDOW_MINUTES:-10}"
 ALERT_COOLDOWN_MINUTES="${WATCHDOG_ALERT_COOLDOWN_MINUTES:-30}"
 RESTART_COOLDOWN_MINUTES="${WATCHDOG_RESTART_COOLDOWN_MINUTES:-30}"
 # WATCHDOG_BOOT_GRACE_MINUTES (default 5): no self-heal this soon after a boot.
+AUTH_WINDOW_MINUTES="${WATCHDOG_AUTH_WINDOW_MINUTES:-60}"
+[[ "$AUTH_WINDOW_MINUTES" =~ ^[0-9]+$ ]] || AUTH_WINDOW_MINUTES=60
 
 usage() {
-    sed -n '2,64p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
+    sed -n '2,72p' "$SCRIPT_PATH" | sed 's/^# \{0,1\}//'
 }
 
 INSTALL_CRON=""
@@ -220,6 +230,12 @@ log_line() {
     if [ "$(wc -c < "$WATCHDOG_LOG" 2>/dev/null || echo 0)" -gt 1048576 ]; then
         tail -n 500 "$WATCHDOG_LOG" > "$WATCHDOG_LOG.tmp" && mv "$WATCHDOG_LOG.tmp" "$WATCHDOG_LOG"
     fi
+}
+
+# utc_minutes_ago N → YYYY-MM-DDTHH:MM:SS, N minutes back in UTC (GNU date, then BSD's).
+utc_minutes_ago() {
+    date -u -d "$1 minutes ago" +"%Y-%m-%dT%H:%M:%S" 2>/dev/null \
+        || date -u -v-"$1"M +"%Y-%m-%dT%H:%M:%S" 2>/dev/null
 }
 
 minutes_since_file() {
@@ -372,6 +388,7 @@ PROBLEMS=""
 ZERO_LIVE=0        # container up, RPC pool dead: TxManager cannot broadcast
 DOWN=""            # components that are not running, comma-separated
 CONTAINER_DOWN=0   # the chainlink container itself is not running
+AUTH_REFUSED=""    # providers that refused the API key, comma-separated
 
 add_problem() {
     PROBLEMS="${PROBLEMS}  - $1
@@ -475,13 +492,54 @@ for item in doc.get("data", []):
     fi
 fi
 
+# 4. A model provider refused the operator's API key. The AI Node writes one line
+#    per refusal (ai-node/src/lib/llm/provider-auth.ts):
+#      <ISO time> PROVIDER_AUTH_FAILED: provider=<name> model=<id> role=juror|justifier http_status=<code|none>
+#    Read from logs/provider-auth.log, which holds nothing else, and not from the
+#    AI Node's main log: that one has no times, and it prints prompts and model
+#    replies as they come, so anyone who submits evidence could write the line
+#    into it. A line that is not exactly this shape is ignored. One problem per
+#    provider, model and role, with no count or time in it: the cooldown below
+#    compares the problem text. The problem clears when the window has passed
+#    without a refusal, which on a quiet node is not proof that the key works.
+AUTH_LOG="$AI_NODE_DIR/logs/provider-auth.log"
+AUTH_CHECKED=0
+auth_cutoff=$(utc_minutes_ago "$AUTH_WINDOW_MINUTES")
+if [ -n "$auth_cutoff" ] && [ -f "$AUTH_LOG" ]; then
+    AUTH_CHECKED=1
+    auth_refused=$(tail -n 5000 "$AUTH_LOG" 2>/dev/null | LC_ALL=C awk -v c="$auth_cutoff" '
+        NF == 6 && $2 == "PROVIDER_AUTH_FAILED:" \
+          && $1 ~ /^2[0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9](\.[0-9]+)?Z$/ \
+          && $3 ~ /^provider=[!-~]+$/ && $4 ~ /^model=[!-~]+$/ \
+          && $5 ~ /^role=(juror|justifier)$/ && $6 ~ /^http_status=([0-9][0-9][0-9]|none)$/ \
+          && substr($1, 1, 19) >= c {
+            key = substr($3, 10) " " substr($4, 7) " " substr($5, 6)
+            if (!(key in status)) order[++n] = key
+            status[key] = substr($6, 13)
+        }
+        END { for (i = 1; i <= n; i++) print order[i], status[order[i]] }')
+    while read -r auth_provider auth_model auth_role auth_status; do
+        [ -n "$auth_status" ] || continue
+        auth_how="$auth_role"
+        [ "$auth_status" = "none" ] || auth_how="$auth_role, HTTP $auth_status"
+        add_problem "the API key used for $auth_provider $auth_model was refused ($auth_how) in the last ${AUTH_WINDOW_MINUTES}m: requests are answered without this model. Replace the key in $AI_NODE_DIR/.env.local (the provider's own, or OPENROUTER_API_KEY when the class is routed there) and restart the AI Node; the provider's message is in the newest $AI_NODE_DIR/logs/ai-node_*.log"
+        case ", $AUTH_REFUSED, " in
+            *", $auth_provider, "*) ;;
+            *) AUTH_REFUSED="${AUTH_REFUSED}${AUTH_REFUSED:+, }$auth_provider" ;;
+        esac
+    done <<< "$auth_refused"
+fi
+
 ############################################
 # Report / alert / self-heal
 ############################################
 if [ -z "$PROBLEMS" ]; then
+    # Said only when the AI Node has ever written the file the check reads.
+    auth_ok=""
+    [ "$AUTH_CHECKED" = "1" ] && auth_ok=" No model provider refused an API key in the last ${AUTH_WINDOW_MINUTES}m."
     # Recovery notification: alert once when transitioning unhealthy -> healthy.
     if [ "$(cat "$LAST_STATE_FILE" 2>/dev/null)" = "unhealthy" ]; then
-        send_alert "RECOVERED: arbiter healthy again" "All components running, all chainlink health checks passing."
+        send_alert "RECOVERED: arbiter healthy again" "All components running, all chainlink health checks passing.$auth_ok"
         post_status_webhook "RECOVERED" "info" "arbiter healthy again" ""
         rm -f "$LAST_ALERT_FILE"
     else
@@ -489,7 +547,7 @@ if [ -z "$PROBLEMS" ]; then
         post_status_webhook "OK" "info" "healthy" ""
     fi
     echo "healthy" > "$LAST_STATE_FILE"
-    say "OK: all four components running (cl-postgres, chainlink, AI Node, External Adapter), all chainlink health checks passing, no recent 0-live RPC events."
+    say "OK: all four components running (cl-postgres, chainlink, AI Node, External Adapter), all chainlink health checks passing, no recent 0-live RPC events.$auth_ok"
     exit 0
 fi
 
@@ -559,7 +617,7 @@ if [ "$SELF_HEAL" = "1" ] && { [ -n "$DOWN" ] || [ "$ZERO_LIVE" = "1" ]; }; then
     fi
 fi
 
-# Subject: say plainly which of the three it is.
+# Subject: say plainly which it is.
 subject="arbiter UNHEALTHY"
 severity="warning"
 if [ "$STOPPED_BY_OPERATOR" = "1" ]; then
@@ -576,6 +634,9 @@ elif [ -n "$DOWN" ]; then
 elif [ "$ZERO_LIVE" = "1" ]; then
     subject="chainlink node CANNOT BROADCAST (0 live RPC / broadcaster down)"
     severity="critical"
+elif [ -n "$AUTH_REFUSED" ]; then
+    subject="model provider REFUSED the API key: $AUTH_REFUSED"
+    severity="warning"
 fi
 body="$PROBLEMS"
 [ -n "$restart_note" ] && body="$body  - $restart_note

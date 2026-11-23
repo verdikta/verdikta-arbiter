@@ -89,7 +89,7 @@ New fields are **optional** and **additive**:
     {"outcome": "Reject", "score": 350000},
     {"outcome": "Request More Info", "score": 50000}
   ],
-  "justification": "Based on analysis from available models...\n\nFrom model gpt-5:\n[justification]\n\nFrom model claude-sonnet-4:\nModel timed out or failed: Model timed out after 120000ms",
+  "justification": "Based on analysis from available models...\n\nFrom model gpt-5:\n[justification]\n\nFrom model claude-sonnet-4:\nModel timed out or failed: timed out after 120 s",
   "timestamp": "2025-01-06T12:45:30.123Z",
   
   "metadata": {
@@ -184,6 +184,12 @@ New fields are **optional** and **additive**:
 ```
 
 ### API Error from Provider
+
+A provider's message is redacted before it enters `error_message`, a warning or
+the 400's `error` (keys, URLs beyond scheme and host, long opaque ids; at most
+500 characters), and the justification describes a failed model in the node's
+own words. See `ai-node/API_RESPONSE_SPECIFICATION.md`, "Provider text in a
+response". The examples below show messages with nothing to redact.
 
 ```json
 {

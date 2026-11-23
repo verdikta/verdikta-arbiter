@@ -13,6 +13,9 @@ import {
   UnprocessableImageError,
 } from '../../../lib/attachments/normalizeImages';
 import { WebRetrieval, describeWebRetrieval, mergeWebRetrievals } from '../../../lib/llm/web-retrieval';
+import { reportCredentialRefusal } from '../../../lib/llm/provider-auth';
+import { redactProviderText } from '../../../utils/redactProviderText';
+import { describeFailure } from '../../../utils/describeFailure';
 import { handleCodeReviewRequest, isCodeReviewBody } from '../../../lib/code-review/handler';
 import fs from 'fs';
 import path from 'path';
@@ -92,6 +95,16 @@ interface Warning {
   model?: string;
   details?: any;
 }
+
+// The `error` of a failed request is at most this long when it is redacted as a whole
+// (utils/redactProviderText.ts; one provider message inside it is held to that file's limit).
+const PUBLIC_ERROR_MAX_CHARS = 4000;
+
+/**
+ * The 400 of a jury with too few answers. Its message is built for the response: each
+ * failure reason in it has been through redactProviderText once already.
+ */
+class InsufficientModelsError extends Error {}
 
 function logInteraction(message: string) {
   const timestamp = new Date().toISOString();
@@ -556,16 +569,27 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
               });
             }
           } else {
-            console.warn(`❌ MODEL_FAILED: ${modelKey} failed: ${result.reason.message}`);
+            // The provider's own message, whole: for this log line and nothing else. It can
+            // quote the operator's API key (bounty 398's record did), a response body or a
+            // URL, so every copy that enters the response goes through redactProviderText,
+            // and the justification gets a description of ours instead (describeFailure).
+            const rawReason: string = result.reason.message;
+            console.warn(`❌ MODEL_FAILED: ${modelKey} failed: ${rawReason}`);
             failedModels.push(modelKey);
-            failureDetails.push({ model: modelKey, reason: result.reason.message });
+            failureDetails.push({ model: modelKey, reason: redactProviderText(rawReason) });
             
             // Extract error details from the rejected promise
             const errorDetails = (result.reason as any).verdiktaErrorDetails;
-            const isTimeout = result.reason.message.includes('timed out');
+            const isTimeout = rawReason.includes('timed out');
             const failedDurationMs: number = typeof (result.reason as any)?.verdiktaDurationMs === 'number'
               ? (result.reason as any).verdiktaDurationMs
               : MODEL_TIMEOUT_MS; // nothing measured (should not happen) → the ceiling
+            const failureWords = describeFailure({
+              timedOut: isTimeout,
+              errorType: errorDetails?.errorType,
+              httpStatus: errorDetails?.httpStatus,
+              durationMs: failedDurationMs
+            });
             
             // Create fallback result for failed model
             const numOutcomes = body.outcomes?.length || 2;
@@ -576,7 +600,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
             const fallbackResult = {
               modelAverage: fallbackDecisionVector,
               weight: modelInfo.weight,
-              justifications: [`From model ${modelInfo.model}:\nModel timed out or failed: ${result.reason.message}`],
+              justifications: [`From model ${modelInfo.model}:\nModel timed out or failed: ${failureWords}`],
               timingData: {
                 provider: modelInfo.provider,
                 model: modelInfo.model,
@@ -584,7 +608,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
                 weight: modelInfo.weight,
                 duration_ms: failedDurationMs,
                 failed: true,
-                failureReason: result.reason.message,
+                failureReason: rawReason, // logged with the timing, not returned
                 ...(errorDetails && {
                   errorType: errorDetails.errorType,
                   errorMessage: errorDetails.errorMessage,
@@ -603,13 +627,13 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
               duration_ms: failedDurationMs,
               ...(errorDetails && {
                 error_type: errorDetails.errorType,
-                error_message: errorDetails.errorMessage,
+                error_message: redactProviderText(errorDetails.errorMessage),
                 error_code: errorDetails.errorCode,
                 http_status: errorDetails.httpStatus
               }),
               ...(!errorDetails && {
                 error_type: isTimeout ? 'timeout' : 'unknown',
-                error_message: result.reason.message
+                error_message: redactProviderText(rawReason)
               })
             });
           }
@@ -655,7 +679,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
             ? ` Failures: ${failureDetails.map(f => `${f.model} (${f.reason})`).join('; ')}`
             : '';
           
-          throw new Error(`Insufficient successful models: ${successfulModels}/${models.length} (minimum required: ${minSuccessfulModels}).${failureDetailStr}`);
+          throw new InsufficientModelsError(`Insufficient successful models: ${successfulModels}/${models.length} (minimum required: ${minSuccessfulModels}).${failureDetailStr}`);
         }
         
         logTiming(`parallel_execution_iteration_${i + 1}`, parallelStartTime, {
@@ -700,17 +724,24 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
         // If any model fails, Promise.all will reject immediately
         console.error(`Critical error processing models in parallel (iteration ${i+1}):`, error);
         
+        // The External Adapter publishes this string in mode 0 (handleProviderError): the
+        // failure reasons in an InsufficientModelsError are redacted already, anything else
+        // is redacted here. A message that is not a string is returned as it always was.
+        const publicError = error instanceof InsufficientModelsError || typeof error.message !== 'string'
+          ? error.message
+          : redactProviderText(error.message, PUBLIC_ERROR_MAX_CHARS);
+
         // Determine the specific error message and return appropriate response
         if (error.message?.includes('Invalid model input') || error.message?.includes('Unsupported provider')) {
           return NextResponse.json({
-            error: error.message,
+            error: publicError,
             scores: [] as ScoreOutcome[],
             justification: ''
           }, { status: 400 });
         } else {
           // Provider errors (API failures, network issues, etc.)
           return NextResponse.json({
-            error: error.message,
+            error: publicError,
             scores: [] as ScoreOutcome[],
             justification: ''
           }, { status: 400 });
@@ -804,11 +835,19 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
               }
             } else {
               console.error(`❌ JUSTIFIER_ERROR: Unexpected error during justification: ${timeoutError.message}`);
+              reportCredentialRefusal(justifierProviderName, justifierModelName, 'justifier', timeoutError);
+              // The justification says what failed in our words; the provider's message
+              // stays in the log line above.
+              const justifierErrorDetails = extractProviderErrorDetails(timeoutError);
+              const justifierFailureWords = describeFailure({
+                errorType: justifierErrorDetails.errorType,
+                httpStatus: justifierErrorDetails.httpStatus
+              });
               // Also fallback to individual responses on error
               if (iterationJustifications && iterationJustifications.length > 0) {
-                finalJustification = `Error generating consolidated justification: ${timeoutError.message}\n\nIndividual model responses:\n\n${iterationJustifications.join('\n\n')}`;
+                finalJustification = `Error generating consolidated justification: ${justifierFailureWords}\n\nIndividual model responses:\n\n${iterationJustifications.join('\n\n')}`;
               } else {
-                finalJustification = `Error generating justification: ${timeoutError.message}`;
+                finalJustification = `Error generating justification: ${justifierFailureWords}`;
               }
             }
           }
@@ -934,8 +973,11 @@ ${finalJustification}\n`);
       error_type: error.constructor.name
     }));
     
+    // Nothing a provider said is expected here, and nothing is assumed: the External Adapter
+    // can publish this string too when it reads as a provider error (aiClient.js).
     return NextResponse.json({
-      error: error.message || 'An error occurred while processing the request.',
+      error: (typeof error.message === 'string' ? redactProviderText(error.message, PUBLIC_ERROR_MAX_CHARS) : error.message)
+        || 'An error occurred while processing the request.',
       scores: [] as ScoreOutcome[],
       justification: ''
     }, { status: 500 });
@@ -1159,6 +1201,7 @@ async function processModelForIteration(
           stack: providerError.stack,
           attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
         });
+        reportCredentialRefusal(modelInfo.provider, modelInfo.model, 'juror', providerError);
         // Enhance the error with our details before re-throwing
         providerError.verdiktaErrorDetails = errorDetails;
         throw providerError; // Re-throw to be caught by Promise wrapper
@@ -1193,6 +1236,7 @@ async function processModelForIteration(
           stack: providerError.stack,
           attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
         });
+        reportCredentialRefusal(modelInfo.provider, modelInfo.model, 'juror', providerError);
         // Enhance the error with our details before re-throwing
         providerError.verdiktaErrorDetails = errorDetails;
         throw providerError; // Re-throw to be caught by Promise wrapper
