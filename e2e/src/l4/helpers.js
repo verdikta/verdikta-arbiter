@@ -176,6 +176,45 @@ function describe(report) {
 }
 
 /**
+ * How each revealing arbiter's jurors were given the request's PDFs, for a scenario
+ * that says how they must be (`expectPdfInputs: "native"`, the pdf-canary scenario).
+ *
+ * The AI Node reports it per juror as `model_results[].pdf_inputs` (one entry per
+ * PDF, `form` native / text / not_shown), and the External Adapter copies
+ * `model_results` into the justification. Every juror of every revealing arbiter
+ * must report every PDF in the expected form: an arbiter whose AI Node predates the
+ * field, routes a class through OpenRouter, or had a provider turn the file down
+ * reports something else, and the detail says which.
+ *
+ * @param {Array<{cid: string, json: object|null}>} reports - one per justification CID
+ * @param {string} expectedForm - 'native'
+ * @returns {Array<{ name: string, ok: boolean, detail: string }>}
+ */
+function pdfInputChecks(reports, expectedForm) {
+  const lines = [];
+  let ok = reports.length > 0;
+  for (const report of reports) {
+    const results = report.json && Array.isArray(report.json.model_results) ? report.json.model_results : null;
+    if (!results || results.length === 0) {
+      ok = false;
+      lines.push(`${shortCid(report.cid)}: ${report.json ? 'no model_results' : 'fetch failed'}`);
+      continue;
+    }
+    const jurors = results.map((result) => {
+      const inputs = Array.isArray(result.pdf_inputs) ? result.pdf_inputs : [];
+      if (inputs.length === 0) {
+        ok = false;
+        return `${result.provider}/${result.model}: no pdf_inputs`;
+      }
+      if (inputs.some((input) => input.form !== expectedForm)) ok = false;
+      return `${result.provider}/${result.model}: ${inputs.map((input) => `${input.form}${input.reason ? ` (${input.reason})` : ''}`).join(', ')}`;
+    });
+    lines.push(`${shortCid(report.cid)}: ${jurors.join('; ')}`);
+  }
+  return [A.assert(`pdfInputs.all===${expectedForm}`, ok, lines.join(' | ') || 'no justification CIDs')];
+}
+
+/**
  * Version checks for one fulfilled request.
  *
  * `arbiter.versions` fails only when a justification could not be fetched at
@@ -276,4 +315,5 @@ module.exports = {
   releaseCommit,
   commitMatches,
   versionChecks,
+  pdfInputChecks,
 };

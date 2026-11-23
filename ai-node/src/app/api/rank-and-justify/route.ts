@@ -5,14 +5,22 @@ import { prePromptConfig } from '../../../config/prePromptConfig';
 import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
 import { repairModelScores, replyJustification } from '../../../utils/repairModelResponse';
-import { processAttachments, convertToLLMFormat, documentNotes, logAttachmentSummary } from '../../../utils/attachment-processor';
-import { resolveMediaType } from '../../../utils/media-type';
+import { PreparedAttachments, logAttachmentSummary, prepareAttachments } from '../../../utils/attachment-processor';
 import {
   normalizeImageAttachments,
   appendAttachmentNotes,
   attachmentRefs,
   UnprocessableImageError,
 } from '../../../lib/attachments/normalizeImages';
+import {
+  JurorAttachments,
+  JurorPdfInput,
+  attachmentsForJuror,
+  describePdfInputs,
+  imagesOnly,
+  withoutAttachments,
+} from '../../../lib/attachments/pdfRouting';
+import { NativePdfSupport, nativePdfSupport } from '../../../lib/llm/pdf-support';
 import { WebRetrieval, describeWebRetrieval, mergeWebRetrievals } from '../../../lib/llm/web-retrieval';
 import { isCredentialRefusal, providerHttpStatus, recordProviderAnswer, recordProviderRefusal } from '../../../lib/llm/provider-auth';
 import { redactProviderText } from '../../../utils/redactProviderText';
@@ -65,6 +73,8 @@ interface LLMProvider {
   generateResponse: (prompt: string, model: string, options?: any) => Promise<string>;
   generateResponseWithAttachments?: (prompt: string, model: string, attachments: any[], options?: any) => Promise<string>;
   supportsAttachments: (model: string) => boolean;
+  /** Only on a provider whose request has no place for a text attachment (Ollama); absent means it has one. */
+  sendsTextAttachments?: (model: string) => boolean;
 }
 
 // Enhanced error reporting structures
@@ -91,6 +101,39 @@ interface ModelResult {
   http_status?: number;
   /** What the juror's web tools did (success and parsing_error only); see web-retrieval.ts. */
   web_retrieval?: WebRetrieval;
+  /** How this juror was given each PDF of the request (only when it has one); see pdfRouting.ts. */
+  pdf_inputs?: JurorPdfInput[];
+}
+
+/** One juror's share of a request's attachments. */
+interface JurorState {
+  support: NativePdfSupport;
+  /**
+   * What the juror is sent. It starts as the best form of each attachment the
+   * juror can read and is replaced, for the rest of the request, when the
+   * provider turns down a PDF or the model turns out to take no attachments.
+   */
+  view: JurorAttachments;
+  /** The provider's answer to the request that carried PDFs as files, when it refused it. */
+  pdfRejection?: string;
+  /** The provider sends this model no attachments: it was shown none, and its prompt says so. */
+  sentNoAttachments?: boolean;
+  /** The provider's request carries images only: no document's text either, and its prompt says so. */
+  sentImagesOnly?: boolean;
+}
+
+/**
+ * Statuses with which a provider refuses a request for what is in it. After one
+ * of these on a request that carried a PDF as a file, the juror is asked once
+ * more with the PDF's text: a file one provider will not take (encrypted, a
+ * page count the parser here could not read, a limit lower than documented)
+ * must not cost the juror, since the text form is always accepted.
+ */
+const REQUEST_REJECTION_STATUSES = new Set([400, 413, 422]);
+
+function rejectsRequest(error: any): boolean {
+  const status = error?.status ?? error?.response?.status ?? error?.statusCode;
+  return typeof status === 'number' && REQUEST_REJECTION_STATUSES.has(status);
 }
 
 interface Warning {
@@ -238,7 +281,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
       );
     }
 
-    let prompt = body.prompt;
+    const prompt = body.prompt;
     const iterations = body.iterations || 1;
     const models = body.models;
     
@@ -246,8 +289,10 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
     const warnings: Warning[] = [];
 
     // What the arbiter did to an attachment before the models saw it, one line each,
-    // appended to the prompt once every attachment is prepared: a juror that is not told
-    // takes a file it was never shown for a file the submitter never sent.
+    // appended to each juror's prompt: a juror that is not told takes a file it was never
+    // shown for a file the submitter never sent. These are the lines every juror gets
+    // (the images); the lines about documents are each juror's own, because one juror
+    // can be sent a PDF itself while another is sent its text (pdfRouting.ts).
     const attachmentNotes: string[] = [];
     // How a note names each attachment (its file name, or its number), index-aligned
     // with body.attachments as the steps below leave it.
@@ -291,138 +336,46 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
       }
     }
 
-    // Check native PDF support for each model
-    console.log('DEBUG: Checking native PDF support for each model:');
-    body.models.forEach(modelInfo => {
-      if (modelInfo.provider === 'OpenAI') {
-        const supported = ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-5', 'gpt-5-mini'].some(supportedModel =>
-          modelInfo.model.toLowerCase().includes(supportedModel.toLowerCase())
-        );
-        console.log(`[OpenAI] Model: ${modelInfo.model}, Supported: ${supported}`);
-      } else if (modelInfo.provider === 'Anthropic') {
-        const pdfCapableModels = [
-          'claude-opus-4', 'claude-sonnet-4', 'claude-4-sonnet', 'claude-4-opus',
-          'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
-          'claude-sonnet-4-20250514'
-        ];
-        const supported = pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
-        console.log(`[Anthropic] Model: ${modelInfo.model}, Supported: ${supported}`);
-      } else if (modelInfo.provider === 'xAI' || modelInfo.provider === 'xai') {
-        // xAI Grok models support text attachments but not native PDF processing
-        console.log(`[xAI] Model: ${modelInfo.model}, Native PDF Supported: false (will use text extraction)`);
-      } else {
-        console.log(`[Other] Provider: ${modelInfo.provider}, Model: ${modelInfo.model}, Supported: false`);
-      }
-    });
-
-    const allModelsSupportNativePDF = body.models.every(modelInfo => {
-      if (modelInfo.provider === 'OpenAI') {
-        return ['gpt-4o', 'gpt-4o-mini', 'o1', 'gpt-4.1', 'gpt-4.1-mini'].some(supportedModel => 
-          modelInfo.model.toLowerCase().includes(supportedModel.toLowerCase())
-        );
-      } else if (modelInfo.provider === 'Anthropic') {
-        const pdfCapableModels = [
-          'claude-opus-4', 'claude-sonnet-4', 'claude-4-sonnet', 'claude-4-opus',
-          'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
-          'claude-sonnet-4-20250514'
-        ];
-        return pdfCapableModels.some(supportedModel => modelInfo.model.includes(supportedModel));
-      } else if (modelInfo.provider === 'xAI' || modelInfo.provider === 'xai') {
-        // xAI Grok models don't support native PDF - will use text extraction
-        return false;
-      }
-      return false;
-    });
-
-    console.log('DEBUG: allModelsSupportNativePDF:', allModelsSupportNativePDF);
-
-    // Process attachments
+    // Every attachment is read once, in each form a juror can be sent; then each
+    // juror gets the best form it can read (lib/attachments/pdfRouting.ts). Only a
+    // PDF is ever sent as itself: every other document is its extracted text for
+    // every juror, and a juror that is not sent a PDF as a PDF gets the text and a
+    // line in its own prompt saying so (documentNotes).
     const attachmentStartTime = Date.now();
-    let attachments: Array<{ type: string; content: string; mediaType: string }> = [];
+    const pdfSupport: NativePdfSupport[] = models.map(modelInfo =>
+      nativePdfSupport(String(modelInfo?.provider ?? ''), String(modelInfo?.model ?? '')));
+    let prepared: PreparedAttachments = {
+      processed: { results: [], skippedCount: 0, skippedReasons: [], skipped: [] },
+      pdfs: new Map(),
+      count: 0,
+    };
     if (body.attachments?.length) {
-      if (allModelsSupportNativePDF) {
-        console.log('All models support native PDF processing - passing attachments directly...');
-        // Convert base64 attachments to LLM format without text extraction
-        attachments = body.attachments.map(attachment => {
-          if (attachment.startsWith('data:')) {
-            const [header, base64Data] = attachment.split(',');
-            const declaredMediaType = header.split(';')[0].replace('data:', '');
-            // The declared header is submitter-supplied; provider APIs sniff the
-            // bytes and reject mismatches, so sniff them ourselves first.
-            const mediaType = resolveMediaType(declaredMediaType, base64Data);
-            return {
-              type: mediaType.startsWith('image/') ? 'image' : 'document',
-              content: base64Data,
-              mediaType: mediaType
-            };
-          } else {
-            // Assume it's already base64 encoded (fallback)
-            return {
-              type: 'document',
-              content: attachment,
-              mediaType: 'application/octet-stream'
-            };
-          }
+      try {
+        prepared = await prepareAttachments(body.attachments, {
+          countPdfPages: pdfSupport.some(support => support.native),
         });
-        console.log(`Prepared ${attachments.length} attachments for native processing:`, 
-          attachments.map(att => ({ type: att.type, mediaType: att.mediaType, size: att.content.length }))
-        );
-        logTiming('attachment_native_processing', attachmentStartTime, { 
-          count: attachments.length, 
-          type: 'native' 
-        });
-      } else {
-        console.log('Some models do not support native PDF processing - using text extraction...')
-        
-        try {
-          const primaryModel = body.models?.[0];
-          const providerName = primaryModel?.provider;
-          const modelName = primaryModel?.model;
-          
-          const { results: processedAttachments, skippedCount, skippedReasons, skipped } = await processAttachments(
-            body.attachments,
-            providerName,
-            modelName
-          );
-          attachments = convertToLLMFormat(processedAttachments);
-          logAttachmentSummary(processedAttachments);
-          // The jurors are told about every document they do not see as it was delivered:
-          // one the extractor could not read, a PDF shown as its text, text cut at a limit.
-          attachmentNotes.push(...documentNotes({ results: processedAttachments, skipped }, attachmentNoteRefs));
-          
-          if (skippedCount > 0) {
-            console.warn(`Skipped ${skippedCount} attachment(s):`, skippedReasons);
-            // Add warnings for skipped attachments
-            skippedReasons.forEach((reason, position) => {
-              warnings.push({
-                type: 'attachment_skipped',
-                message: reason,
-                severity: 'warning',
-                // The file the number in the message stands for (the number counts image
-                // parts too, so it is not the file's place in the submission).
-                details: { attachment: attachmentNoteRefs[skipped[position].index] ?? null, media_type: skipped[position].mediaType }
-              });
-            });
-          }
-          logTiming('attachment_text_extraction', attachmentStartTime, { 
-            count: attachments.length, 
-            skipped: skippedCount,
-            type: 'text_extraction' 
-          });
-        } catch (error) {
-          console.error('Error processing attachments:', error);
-          // Continue without attachments rather than failing
-          attachments = [];
-          warnings.push({
-            type: 'attachment_processing_error',
-            message: error instanceof Error ? error.message : 'Unknown error processing attachments',
-            severity: 'error'
-          });
-          logTiming('attachment_error_fallback', attachmentStartTime, { 
-            error: error instanceof Error ? error.message : 'Unknown error',
-            type: 'error' 
-          });
+        logAttachmentSummary(prepared.processed.results);
+        if (prepared.processed.skippedCount > 0) {
+          console.warn(`Skipped ${prepared.processed.skippedCount} attachment(s):`, prepared.processed.skippedReasons);
         }
+        logTiming('attachment_text_extraction', attachmentStartTime, {
+          count: prepared.processed.results.length,
+          skipped: prepared.processed.skippedCount,
+          pdfs: prepared.pdfs.size,
+          type: 'per_juror'
+        });
+      } catch (error) {
+        console.error('Error processing attachments:', error);
+        // Continue without attachments rather than failing
+        warnings.push({
+          type: 'attachment_processing_error',
+          message: error instanceof Error ? error.message : 'Unknown error processing attachments',
+          severity: 'error'
+        });
+        logTiming('attachment_error_fallback', attachmentStartTime, { 
+          error: error instanceof Error ? error.message : 'Unknown error',
+          type: 'error' 
+        });
       }
     } else {
       logTiming('attachment_skip_none', attachmentStartTime, { 
@@ -430,7 +383,19 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
         type: 'none' 
       });
     }
-    prompt = appendAttachmentNotes(prompt, attachmentNotes);
+
+    const requestHasPdf = prepared.pdfs.size > 0;
+    const jurors: JurorState[] = models.map((modelInfo, index) => {
+      const support = pdfSupport[index];
+      const view = attachmentsForJuror(prepared, attachmentNoteRefs, support);
+      if (requestHasPdf) {
+        console.log(
+          `📎 PDF_INPUT: ${modelInfo.provider}-${modelInfo.model} ${describePdfInputs(view.pdfInputs)} ` +
+            `| ${support.reason} | ${JSON.stringify(view.pdfInputs)}`
+        );
+      }
+      return { support, view };
+    });
 
     // Initialize data structures
     const previousIterationResponses: string[] = [];
@@ -464,13 +429,19 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
       const iterationWeights: number[] = [];
       const iterationJustifications: string[] = [];
 
-      // Construct the full prompt based on iteration (shared across all models)
-      let iterationPrompt = `${prePromptConfig.getPrompt(body.outcomes)}\n\n${prompt}`;
-      
-      if (i > 0 && previousIterationResponses.length > 0) {
-        const previousResponsesText = previousIterationResponses.join('\n\n');
-        iterationPrompt = `${iterationPrompt}\n\n${postPromptConfig.prompt.replace('{{previousResponses}}', previousResponsesText)}`;
-      }
+      // The full prompt for this iteration. Every juror gets the same one except for
+      // the attachment notes: the image notes are shared, and each juror is told which
+      // PDFs it sees only as text (none for a juror that is sent the files).
+      const previousResponsesText = i > 0 && previousIterationResponses.length > 0
+        ? previousIterationResponses.join('\n\n')
+        : null;
+      const promptFor = (jurorNotes: string[]): string => {
+        const jurorPrompt = appendAttachmentNotes(prompt, [...attachmentNotes, ...jurorNotes]);
+        const iterationPrompt = `${prePromptConfig.getPrompt(body.outcomes)}\n\n${jurorPrompt}`;
+        return previousResponsesText === null
+          ? iterationPrompt
+          : `${iterationPrompt}\n\n${postPromptConfig.prompt.replace('{{previousResponses}}', previousResponsesText)}`;
+      };
 
       // Process all models in parallel for this iteration
       try {
@@ -509,8 +480,10 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
             processModelForIteration(
               modelInfo,
               modelIndex,
-              iterationPrompt,
-              attachments,
+              promptFor,
+              jurors[modelIndex],
+              prepared,
+              attachmentNoteRefs,
               i + 1,
               body.outcomes,
               logTiming
@@ -670,6 +643,13 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
         const successfulModels = models.length - failedModels.length;
         console.log(`✅ PARALLEL_COMPLETE: ${successfulModels}/${models.length} models completed in ${parallelDuration}ms`);
         
+        // How each juror was given the request's PDFs, whatever became of its call.
+        if (requestHasPdf) {
+          structuredModelResults.forEach((modelResult, index) => {
+            modelResult.pdf_inputs = jurors[index].view.pdfInputs;
+          });
+        }
+
         // Store structured model results from this iteration
         allStructuredModelResults = structuredModelResults;
         
@@ -813,7 +793,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
           console.log(`✅ JUSTIFIER_PROVIDER_READY: ${justifierProviderName} provider ready in ${justifierProviderSetupTime}ms`);
           
           logInteraction(`Prompt to Justifier:
-${prompt}\n`); // Assuming base prompt is sufficient context
+${appendAttachmentNotes(prompt, attachmentNotes)}\n`); // Assuming base prompt is sufficient context
           
           console.log(`📞 JUSTIFIER_API_CALL: Calling ${justifierProviderName}-${justifierModelName} for justification...`);
           const justifierCallStart = Date.now();
@@ -927,6 +907,66 @@ ${finalJustification}\n`);
       // Note: Logic for handling previousIterationResponses for multi-iteration prompts removed for clarity,
       // as the tests seem focused on single iteration or simple aggregation.
     }
+
+    // What was not shown as it was delivered, from what each juror was sent in the end
+    // (a provider may have turned a file down). An attachment the arbiter could not
+    // read is one warning when nobody was sent it, and one per juror that was not when
+    // another juror got the file itself. A PDF that a juror reads natively but got as
+    // text (a limit, a rejection) is one per juror; a juror that is simply sent text
+    // has no warning, as before: model_results[].pdf_inputs says which form it got.
+    const jurorName = (index: number) => `${models[index].provider}-${models[index].model}`;
+    prepared.processed.skipped.forEach((entry, position) => {
+      // The file the number in the message stands for (the number counts image
+      // parts too, so it is not the file's place in the submission).
+      const details = { attachment: attachmentNoteRefs[entry.index] ?? null, media_type: entry.mediaType };
+      const message = prepared.processed.skippedReasons[position];
+      const sentTheFile = jurors.map(juror => juror.view.pdfInputByIndex.get(entry.index)?.form === 'native');
+      if (!sentTheFile.some(Boolean)) {
+        warnings.push({ type: 'attachment_skipped', message, severity: 'warning', details });
+        return;
+      }
+      jurors.forEach((juror, index) => {
+        if (sentTheFile[index]) return;
+        warnings.push({
+          type: 'attachment_skipped',
+          message: `${message} Not shown to ${jurorName(index)}; the jurors that read PDFs were sent the file itself.`,
+          severity: 'warning',
+          model: jurorName(index),
+          details: { ...details, reason: juror.view.pdfInputByIndex.get(entry.index)?.reason }
+        });
+      });
+    });
+    jurors.forEach((juror, index) => {
+      if (juror.sentNoAttachments) {
+        warnings.push({
+          type: 'attachments_not_sent',
+          message: `${jurorName(index)} is sent no attachments (its provider says the model takes none): it was shown none of this request's ${prepared.count}, and its prompt says so.`,
+          severity: 'warning',
+          model: jurorName(index)
+        });
+      }
+      if (juror.sentImagesOnly) {
+        warnings.push({
+          type: 'attachments_not_sent',
+          message: `${jurorName(index)} is sent images only (its provider's request carries nothing else): it was shown none of this request's documents and text attachments, and its prompt says so.`,
+          severity: 'warning',
+          model: jurorName(index)
+        });
+      }
+      juror.view.pdfInputs.forEach(input => {
+        if (input.form !== 'text' || input.reason === 'model') return;
+        const why = input.reason === 'rejected' && juror.pdfRejection
+          ? `rejected: ${juror.pdfRejection}`
+          : input.reason;
+        warnings.push({
+          type: 'pdf_text_only',
+          message: `Attachment ${input.attachment} was sent to ${jurorName(index)} as extracted text only (${why}); pictures and page images inside the PDF were not shown to it.`,
+          severity: input.reason === 'rejected' ? 'warning' : 'info',
+          model: jurorName(index),
+          details: { attachment: input.attachment, reason: input.reason, pages: input.pages }
+        });
+      });
+    });
 
     // Calculate metadata for enhanced error reporting
     const successfulModelsCount = allStructuredModelResults.filter(m => m.status === 'success').length;
@@ -1154,8 +1194,10 @@ function logProviderAuthFailure(
 async function processModelForIteration(
   modelInfo: ModelInput,
   modelIndex: number,
-  iterationPrompt: string,
-  attachments: Array<{ type: string; content: string; mediaType: string }>,
+  promptFor: (jurorNotes: string[]) => string,
+  juror: JurorState,
+  prepared: PreparedAttachments,
+  refs: string[],
   iterationNumber: number,
   outcomes: string[] | undefined,
   logTiming: (operation: string, startTime: number, details?: any) => void
@@ -1201,9 +1243,27 @@ async function processModelForIteration(
     throw new Error(`Unsupported provider: ${modelInfo.provider}`);
   }
 
-  if (attachments.length > 0) {
-    console.log(`Sending ${attachments.length} attachments to ${modelInfo.provider}:`, 
-      attachments.map(att => ({
+  // A model its provider sends no attachments to gets none, and is told what the
+  // request held instead of answering as if the prompt were everything.
+  if (juror.view.attachments.length > 0 && !llmProvider.supportsAttachments(modelInfo.model)) {
+    console.warn(`📎 NO_ATTACHMENTS: ${modelInfo.provider}-${modelInfo.model} is sent no attachments; its prompt says what was delivered`);
+    juror.view = withoutAttachments(prepared, refs);
+    juror.sentNoAttachments = true;
+  } else if (
+    juror.view.attachments.some(attachment => attachment.type !== 'image') &&
+    llmProvider.sendsTextAttachments?.(modelInfo.model) === false
+  ) {
+    // A request that carries a prompt and images (Ollama). The juror's notes said
+    // "Only its text is shown to you" about a PDF whose text the provider then left
+    // out; they now say what is true for it.
+    console.warn(`📎 IMAGES_ONLY: ${modelInfo.provider}-${modelInfo.model} is sent images only; its prompt names what it is not shown`);
+    juror.view = imagesOnly(prepared, refs);
+    juror.sentImagesOnly = true;
+  }
+
+  if (juror.view.attachments.length > 0) {
+    console.log(`Sending ${juror.view.attachments.length} attachments to ${modelInfo.provider}:`, 
+      juror.view.attachments.map(att => ({
         type: att.type,
         mediaType: att.mediaType,
         contentLength: att.content.length
@@ -1238,75 +1298,60 @@ async function processModelForIteration(
     const callRetrievals: WebRetrieval[] = [];
     const callOptions = { ...(modelOptions || {}), onWebRetrieval: (r: WebRetrieval) => { callRetrievals.push(r); } };
 
-    if (attachments.length > 0 && llmProvider.supportsAttachments(modelInfo.model)) {
-      logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model} with attachments:\n${iterationPrompt}\n`);
-      try {
-        responseText = await llmProvider.generateResponseWithAttachments!(
-          iterationPrompt,
-          modelInfo.model,
-          attachments,
-          callOptions
-        );
-        // Strip thinking blocks from the response
-        responseText = stripThinkingBlocks(responseText);
-        const callDuration = Date.now() - callStartTime;
-        console.log(`✅ API_RESPONSE: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} completed in ${callDuration}ms (with attachments)`);
-        logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
-        logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_with_attachments_${c+1}`, callStartTime, {
-          provider: modelInfo.provider,
-          model: modelInfo.model,
-          hasAttachments: true,
-          callNumber: c + 1,
-          responseLength: responseText.length
-        });
-      } catch (providerError: any) {
-        // Capture detailed error information
-        errorDetails = extractProviderErrorDetails(providerError);
-        console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
-          error: providerError.message,
-          errorType: errorDetails.errorType,
-          httpStatus: errorDetails.httpStatus,
-          stack: providerError.stack,
-          attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
-        });
-        // Enhance the error with our details before re-throwing
-        providerError.verdiktaErrorDetails = errorDetails;
-        throw providerError; // Re-throw to be caught by Promise wrapper
+    // One call with what this juror is sent now: its attachments, and the prompt with its notes.
+    const call = (view: JurorAttachments): Promise<string> => {
+      const callPrompt = promptFor(view.notes);
+      if (view.attachments.length > 0) {
+        logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model} with attachments:\n${callPrompt}\n`);
+        return llmProvider.generateResponseWithAttachments!(callPrompt, modelInfo.model, view.attachments, callOptions);
       }
-    } else {
-      logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model}:\n${iterationPrompt}\n`);
+      logInteraction(`Prompt to ${modelInfo.provider} - ${modelInfo.model}:\n${callPrompt}\n`);
+      return llmProvider.generateResponse(callPrompt, modelInfo.model, callOptions);
+    };
+
+    try {
       try {
-        responseText = await llmProvider.generateResponse(
-          iterationPrompt,
-          modelInfo.model,
-          callOptions
+        responseText = await call(juror.view);
+      } catch (firstError: any) {
+        if (juror.view.nativePdfs === 0 || !rejectsRequest(firstError)) throw firstError;
+        // The provider refused the request that carried a PDF as a file. Ask once more
+        // with the PDF's text (and the note saying so), for this and every later call.
+        const rejection = extractProviderErrorDetails(firstError);
+        juror.pdfRejection = `HTTP ${rejection.httpStatus}: ${String(rejection.errorMessage).slice(0, 300)}`;
+        console.warn(
+          `📎 PDF_FALLBACK: ${modelInfo.provider}-${modelInfo.model} refused the request with ${juror.view.nativePdfs} PDF(s) ` +
+            `after ${Date.now() - callStartTime}ms (${juror.pdfRejection}); asking again with the extracted text`
         );
-        // Strip thinking blocks from the response
-        responseText = stripThinkingBlocks(responseText);
-        const callDuration = Date.now() - callStartTime;
-        console.log(`✅ API_RESPONSE: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} completed in ${callDuration}ms (no attachments)`);
-        logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
-        logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_${c+1}`, callStartTime, {
-          provider: modelInfo.provider,
-          model: modelInfo.model,
-          hasAttachments: false,
-          callNumber: c + 1,
-          responseLength: responseText.length
-        });
-      } catch (providerError: any) {
-        // Capture detailed error information
-        errorDetails = extractProviderErrorDetails(providerError);
-        console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
-          error: providerError.message,
-          errorType: errorDetails.errorType,
-          httpStatus: errorDetails.httpStatus,
-          stack: providerError.stack,
-          attachments: attachments.length > 0 ? 'Has attachments' : 'No attachments'
-        });
-        // Enhance the error with our details before re-throwing
-        providerError.verdiktaErrorDetails = errorDetails;
-        throw providerError; // Re-throw to be caught by Promise wrapper
+        juror.view = attachmentsForJuror(prepared, refs, juror.support, { rejected: true });
+        callRetrievals.length = 0; // what the refused request's web tools reported is not this answer's
+        responseText = await call(juror.view);
       }
+      // Strip thinking blocks from the response
+      responseText = stripThinkingBlocks(responseText);
+      const hasAttachments = juror.view.attachments.length > 0;
+      const callDuration = Date.now() - callStartTime;
+      console.log(`✅ API_RESPONSE: Call ${c + 1}/${count} to ${modelInfo.provider}-${modelInfo.model} completed in ${callDuration}ms (${hasAttachments ? 'with attachments' : 'no attachments'})`);
+      logInteraction(`Response from ${modelInfo.provider} - ${modelInfo.model}:\n${responseText}\n`);
+      logTiming(`model_call_${modelInfo.provider}_${modelInfo.model}_${hasAttachments ? 'with_attachments_' : ''}${c+1}`, callStartTime, {
+        provider: modelInfo.provider,
+        model: modelInfo.model,
+        hasAttachments,
+        callNumber: c + 1,
+        responseLength: responseText.length
+      });
+    } catch (providerError: any) {
+      // Capture detailed error information
+      errorDetails = extractProviderErrorDetails(providerError);
+      console.error(`Provider error from ${modelInfo.provider}/${modelInfo.model}:`, {
+        error: providerError.message,
+        errorType: errorDetails.errorType,
+        httpStatus: errorDetails.httpStatus,
+        stack: providerError.stack,
+        attachments: juror.view.attachments.length > 0 ? 'Has attachments' : 'No attachments'
+      });
+      // Enhance the error with our details before re-throwing
+      providerError.verdiktaErrorDetails = errorDetails;
+      throw providerError; // Re-throw to be caught by Promise wrapper
     }
 
     let { decisionVector, justification, scores } = parseModelResponse(responseText, outcomes);

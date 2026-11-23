@@ -19,8 +19,6 @@ jest.mock('textract', () => ({
 
 jest.setTimeout(60_000);
 
-const JURY = ['openai', 'gpt-5.6-terra'] as const; // bounty 398's first juror
-
 describe('documentNotes', () => {
   beforeAll(() => {
     jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -33,7 +31,7 @@ describe('documentNotes', () => {
   });
 
   test('a PDF with text is shown as text, and the note says its pictures are not shown', async () => {
-    const processed = await processAttachments([pdfDataUri(['Recording frames and metadata'])], ...JURY);
+    const processed = await processAttachments([pdfDataUri(['Recording frames and metadata'])]);
 
     expect(processed.skipped).toEqual([]);
     expect(processed.results).toHaveLength(1);
@@ -47,7 +45,7 @@ describe('documentNotes', () => {
 
   test('a document the arbiter cannot read is named as delivered, not left out in silence', async () => {
     const scanned = pdfDataUri(['', '']);
-    const processed = await processAttachments(['A cover note.', scanned], ...JURY);
+    const processed = await processAttachments(['A cover note.', scanned]);
 
     // The models get the note only; the PDF is not passed on.
     expect(processed.results.map(result => result.sourceIndex)).toEqual([0]);
@@ -68,7 +66,7 @@ describe('documentNotes', () => {
 
   test('the file type comes from the bytes, whatever the header declares', async () => {
     const mislabelled = pdfDataUri(['', '']).replace('data:application/pdf', 'data:application/octet-stream');
-    const processed = await processAttachments([mislabelled], ...JURY);
+    const processed = await processAttachments([mislabelled]);
     expect(processed.skipped).toEqual([expect.objectContaining({ index: 0, mediaType: 'application/pdf' })]);
   });
 
@@ -85,7 +83,7 @@ describe('documentNotes', () => {
 
   test('text cut at the length limit is said to be cut', async () => {
     const long = 'x'.repeat(MAX_PLAIN_TEXT_CHARS + 1234);
-    const processed = await processAttachments(['short enough', long], ...JURY);
+    const processed = await processAttachments(['short enough', long]);
 
     expect(processed.results[1].attachment.content).toHaveLength(MAX_PLAIN_TEXT_CHARS);
     expect(documentNotes(processed, ['a.txt', 'transcript.txt'])).toEqual([
@@ -93,14 +91,40 @@ describe('documentNotes', () => {
     ]);
   });
 
+  test('a juror that is sent the PDF itself gets no line about it; a juror sent its text does, with what was done with the file', async () => {
+    const processed = await processAttachments(['A cover note.', pdfDataUri(['Recording frames and metadata'])]);
+    const refs = ['submission/note.txt', 'submission/R4.pdf'];
+    const textOnly =
+      'Attachment submission/R4.pdf is a PDF. Only its text is shown to you (29 characters); ' +
+      'pictures and page images inside the PDF are not shown.';
+
+    // Sent the file: it sees every page.
+    expect(documentNotes(processed, refs, { sentAsFile: new Set([1]) })).toEqual([]);
+    // Sent the text, in the same request.
+    expect(documentNotes(processed, refs, {})).toEqual([textOnly]);
+    expect(documentNotes(processed, refs, { sentAsFile: new Set([0]) })).toEqual([textOnly]);
+    // Sent the text because the file was over a limit, or was turned down: the line says which.
+    expect(documentNotes(processed, refs, {
+      whyNotAFile: new Map([[1, 'The file itself was sent to this model first and was not accepted.']]),
+    })).toEqual([`${textOnly} The file itself was sent to this model first and was not accepted.`]);
+  });
+
+  test('a PDF the arbiter cannot read is not reported unread to a juror that is sent the file', async () => {
+    const processed = await processAttachments([pdfDataUri(['', ''])]);
+    expect(processed.skipped).toHaveLength(1);
+
+    expect(documentNotes(processed, ['submission/scan.pdf'], { sentAsFile: new Set([0]) })).toEqual([]);
+    expect(documentNotes(processed, ['submission/scan.pdf'])[0]).toMatch(/^Attachment submission\/scan\.pdf \(PDF, /);
+  });
+
   test('nothing to say when every document is shown whole', async () => {
-    const processed = await processAttachments(['A cover note.', '{"steps":[]}'], ...JURY);
+    const processed = await processAttachments(['A cover note.', '{"steps":[]}']);
     expect(documentNotes(processed, ['note.txt', 'result.json'])).toEqual([]);
     expect(appendAttachmentNotes('PROMPT', documentNotes(processed))).toBe('PROMPT');
   });
 
   test('an attachment without a name is called by its number', async () => {
-    const processed = await processAttachments(['first', pdfDataUri(['', ''])], ...JURY);
+    const processed = await processAttachments(['first', pdfDataUri(['', ''])]);
     expect(documentNotes(processed)[0]).toMatch(/^Attachment 2 \(PDF, /);
     expect(documentNotes(processed, attachmentRefs(undefined, 2))[0]).toMatch(/^Attachment 2 \(PDF, /);
   });
@@ -116,7 +140,7 @@ describe('documentNotes', () => {
     // The image is gone, so the PDF is now attachment 1 of 1; its note still names the file.
     expect(normalized.attachments).toHaveLength(1);
     expect(normalized.refs).toEqual(['submission/scan.pdf']);
-    const processed = await processAttachments(normalized.attachments, ...JURY);
+    const processed = await processAttachments(normalized.attachments);
     expect(documentNotes(processed, normalized.refs)[0]).toMatch(/^Attachment submission\/scan\.pdf \(PDF, /);
   });
 });

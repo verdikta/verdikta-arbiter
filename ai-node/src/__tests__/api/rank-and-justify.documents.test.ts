@@ -4,6 +4,11 @@
 // Bounty 398, submission 2, through the route: a jury of today's models, a hunter's PDF,
 // and an arbiter host without poppler. The PDF used to vanish between the request and the
 // models, and both jurors reported it as "not included in the actual submission".
+//
+// These are jurors that are sent a PDF's text: both classes are routed through OpenRouter
+// here, whose request carries no PDF block (lib/llm/pdf-support.ts). On its own keys the
+// same jury is sent the file itself and gets none of these lines about it:
+// rank-and-justify.pdf.test.ts.
 
 import { POST } from '../../app/api/rank-and-justify/route';
 import { LLMFactory } from '../../lib/llm/llm-factory';
@@ -61,6 +66,20 @@ describe('POST /api/rank-and-justify with documents', () => {
     Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     Buffer.alloc(64, 7),
   ]).toString('base64')}`;
+
+  const savedEnv = { AI_GATEWAY: process.env.AI_GATEWAY, OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY };
+
+  beforeAll(() => {
+    process.env.AI_GATEWAY = 'openrouter';
+    process.env.OPENROUTER_API_KEY = 'test-key';
+  });
+
+  afterAll(() => {
+    for (const [key, value] of Object.entries(savedEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
 
   beforeEach(() => {
     jest.clearAllMocks();

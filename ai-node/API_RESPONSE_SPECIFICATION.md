@@ -205,11 +205,88 @@ one each), so `details.attachment` names the file. The prompt line gives no
 cause: a juror cannot act on one, and before these lines existed a dropped PDF was
 reported by both jurors of a bounty as a file the submitter had not included.
 
-PDF text is read with `pdf-parse` alone; a host needs no `pdftotext`. A jury with
-any GPT-5-family or Claude 5 model gets every PDF as extracted text (the route's
-native-PDF model lists stop at GPT-4.1 and Claude 4.x), so its jurors never see a
-picture that exists only inside a PDF. Evidence that must be looked at should be
-attached as image files.
+PDF text is read with `pdf-parse` alone; a host needs no `pdftotext`. These lines
+are each juror's own: a juror that is sent a PDF itself (next section) sees its
+pages and gets no line about it, in the same request in which another juror,
+sent the text, does.
+
+---
+
+## PDF Attachments (`model_results[].pdf_inputs`)
+
+A PDF reaches each juror in the best form that juror can read
+(`src/lib/attachments/pdfRouting.ts`). A juror whose provider, model and route
+read PDFs natively (`src/lib/llm/pdf-support.ts`: OpenAI and Anthropic on their
+own keys; Claude 3.5 and later, GPT-5 and later, GPT-4o) is sent the file itself: the model gets each page's
+text and an image of the page, so it sees pictures, charts and scans. Any other
+juror is sent the text extracted from the PDF and the "Only its text is shown to
+you" line above. Every other document (DOCX, DOC, RTF, ...) is its extracted
+text for every juror.
+
+| For one juror | What it is sent | The line in its prompt |
+| --- | --- | --- |
+| It reads PDFs and the request stays inside the provider's limits | The file | none |
+| Its provider, model or route is sent text (xAI, Hyperbolic, any class routed through OpenRouter, an older model, and GPT-4.1 and the o-series, whose file request this node does not build yet) | The extracted text | `Attachment <name> is a PDF. Only its text is shown to you (12,898 characters); pictures and page images inside the PDF are not shown.` |
+| The file would put its request over a limit: 100 PDF pages per request for both providers, counted with the images for Claude; 20 MB for a whole Claude request, 32 MB of files for OpenAI | The extracted text | the same line, then `The file itself was not sent: its 240 pages would put this request over the 100 PDF pages a request to this model may hold.` |
+| Its provider answered 400 / 413 / 422 to the request with the file | The extracted text, in a second request | the same line, then `The file itself was sent to this model first and was not accepted.` |
+| The PDF has no text layer and it reads PDFs | The file | none |
+| The PDF has no text layer and it does not | Nothing of it | the "could not read it" line above |
+| Its provider says the model takes no attachments at all | Nothing | `Attachments <names> were delivered with this request, but this model is sent no attachments, so their content is not shown to you. The files are not missing from the request.` |
+| Its provider's request carries a prompt and images only (Ollama) | The images; no document, and no document's text | `Attachments <names> were delivered with this request, but this model is sent images only, so their content is not shown to you. The files are not missing from the request.` |
+
+A request with a PDF reports, per juror, how each PDF was given to it:
+
+```json
+"model_results": [
+  { "provider": "openai", "model": "gpt-5.6-terra", "status": "success",
+    "pdf_inputs": [ { "attachment": "submission/recording.pdf", "form": "native", "pages": 19 } ] },
+  { "provider": "xai", "model": "grok-4.6", "status": "success",
+    "pdf_inputs": [ { "attachment": "submission/recording.pdf", "form": "text", "pages": 19, "reason": "model" } ] }
+]
+```
+
+- `attachment` is the file as the notes and warnings name it: its
+  `attachmentNames` entry, or its number.
+- `form`: `native` (the file), `text` (its extracted text only), `not_shown`
+  (nothing of it).
+- `reason`, when not `native`: `model`, `page_limit`, `size_limit`, `rejected`,
+  `no_attachments`, `images_only`, as in the table. After a rejection, `rejected`
+  is only on the PDFs that were in the refused request as files; one that was
+  already text for a limit keeps `page_limit` / `size_limit`.
+- `pages` is absent when the parser could not count them, or when no juror of
+  the request reads PDFs (the file is then not opened for a count).
+
+A juror that is simply sent text (`reason: "model"`) adds no warning, as before.
+A juror that reads PDFs but got the text does:
+
+```json
+"warnings": [
+  { "type": "pdf_text_only", "severity": "warning", "model": "anthropic-claude-sonnet-5",
+    "message": "Attachment submission/recording.pdf was sent to anthropic-claude-sonnet-5 as extracted text only (rejected: HTTP 400: The PDF specified is password protected.); pictures and page images inside the PDF were not shown to it.",
+    "details": { "attachment": "submission/recording.pdf", "reason": "rejected", "pages": 19 } }
+]
+```
+
+`pdf_text_only` is `warning` when the reason is `rejected` (the message carries
+the provider's status and text) and `info` for `page_limit` and `size_limit`.
+`attachment_skipped` for a
+PDF with no text layer is one warning, as above, when no juror was sent the
+file; when some were, it is one per juror that was not, with that juror as
+`model`. `attachments_not_sent` (`warning`, with `model`) is a juror whose model
+is sent no attachments, or images only.
+
+Web tools (`AI_WEB_ACCESS=auto`) are turned on by a link in the prompt or in a
+text attachment. A link inside a PDF counts for a juror that is sent the file
+too: the arbiter looks for it in the text it extracted, which is not sent to
+that juror. A link that appears only in a picture is found by neither.
+
+Each juror also gets one log line:
+`📎 PDF_INPUT: openai-gpt-5.6-terra submission/recording.pdf native (19 pages) | openai reads PDFs natively | [{…}]`,
+and `📎 PDF_FALLBACK` when a provider turned the file down.
+
+Sending the file costs input tokens that the text did not: Anthropic documents
+1,500 to 3,000 text tokens plus up to 1,568 image tokens per page. Text-mode
+timeouts (`MODEL_TIMEOUT_MS`, default 120 s) are unchanged.
 
 ---
 

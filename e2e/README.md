@@ -172,7 +172,7 @@ node src/index.js l4 --junit results/l4.xml
 one request per committed scenario that is neither `manualOnly` nor a claim
 scenario, once its archive is pinned. Today that is `canonical-vuln` alone, the project's own archive
 ([Canonical evidence archive](#canonical-evidence-archive-project-owned)).
-`frontend-default`, `bounty-171-replay` and `link-canary` are manual-only and run
+`frontend-default`, `bounty-171-replay`, `link-canary` and `pdf-canary` are manual-only and run
 only when named ([Scenarios](#scenarios)).
 
 ### L4 test wallet
@@ -504,6 +504,10 @@ Optional fields:
   or the `scenario` dispatch input / `L4_SCENARIO`); naming it for L2 is an error.
   Use it for scenarios whose archive names a paid jury, and for an external
   package the project cannot re-pin.
+- `expectPdfInputs: "native"` — L4 also reads each revealing arbiter's
+  justification and requires every juror's `model_results[].pdf_inputs` to
+  report every PDF of the request as `native` (`pdfInputs.all===native`, with
+  each juror's form and reason in the detail). Only `"native"` is accepted.
 - `suite` — `claim` for the [L2 claim suite](#the-claim-suite---suite-claim-local-no-secret),
   `l4-claim` for the [L4 claim scenarios](#claim-scenarios-class-5555-only). Neither
   is ever in a full-suite run, and each runs only on its own tier.
@@ -542,6 +546,49 @@ gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
 then confirm the winner is COBALT and the justification quotes the code. OpenAI's
 fetcher cannot read IPFS gateways (Pinata timed out, ipfs.io and dweb.link
 answered 403 on 2026-10-16), so the page is served from raw.githubusercontent.com.
+
+`pdf-canary` is manual-only too: it checks that jurors are sent a PDF's pages,
+not only its extracted text (the AI Node's per-juror PDF routing,
+`ai-node/src/lib/attachments/pdfRouting.ts`). Its evidence,
+`archives/pdf-canary/evidence.pdf`, is a three-page PDF whose second page is a
+picture reading `ANSWER: VIOLET` and `CANARY CODE: 7Q4M9X2K`. Those words are
+pixels: no text layer holds them, the query does not, and the text pages only
+say that the answer is in the picture. A juror that is sent the file can name
+VIOLET (index 3) and quote the code; a juror that is sent the extracted text
+can answer `CANNOT_SEE` at best. This is the case of bounty 398, where 16
+recording frames sat inside a PDF and neither juror was shown one.
+
+The PDF is built by `scripts/build-pdf-canary.js` with no dependency and no
+compression, so it is the same bytes everywhere;
+`src/__tests__/pdf-canary.test.js` holds the committed file to the script.
+The archive is **not pinned yet**. Pin it once, and commit the `.cid` it writes:
+
+```bash
+npm run build-archive -- --src archives/pdf-canary --validate --predict-cid   # offline: QmPrj2Ub8Y6qj7dbz1HL1U3c9BttQ1Ai22kcz2gsV6hC9q
+IPFS_PINNING_KEY=<pinata-jwt> npm run build-archive -- --src archives/pdf-canary --pin
+#   → writes archives/pdf-canary.cid (commit this file)
+```
+
+Run it against the class-5555 canaries after an AI Node change to attachments,
+the PDF routing or a provider's request (the canaries need provider keys for
+OpenAI and Anthropic of their own: a class routed through OpenRouter is sent
+the text, which this scenario reports as a failure):
+
+```bash
+gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
+  -f scenario=pdf-canary -f expect_release=<commit>
+```
+
+It passes `pdfInputs.all===native` when every juror of every revealing arbiter
+reports the PDF as `native`; the detail lists each juror's form and, when it is
+not `native`, why (`model`, `page_limit`, `size_limit`, `rejected`). Then
+confirm the winner is VIOLET and the justification quotes the code: the form
+says what was sent, the answer says the model read it. The dispatch has no
+input for the winner; a local run checks it too
+(`node src/index.js l4 --class-id 5555 --scenario pdf-canary --assert-winner --expect-release <commit>`).
+A juror that timed out is the other thing to look for: a PDF sent as a file is
+more input than its text was, and the text-mode model timeout is unchanged
+(`ai-node/API_RESPONSE_SPECIFICATION.md`, "PDF Attachments").
 
 ## Configuration
 

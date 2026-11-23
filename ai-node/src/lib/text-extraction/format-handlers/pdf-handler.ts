@@ -1,6 +1,9 @@
 import { FormatHandler } from '../types';
 
-type PdfParse = (data: Uint8Array, options?: { max?: number }) => Promise<{ text: string; numpages: number }>;
+type PdfParse = (
+  data: Uint8Array,
+  options?: { max?: number; pagerender?: (page: unknown) => string | Promise<string> },
+) => Promise<{ text: string; numpages: number }>;
 
 /**
  * pdf-parse, loaded by its library file.
@@ -13,7 +16,7 @@ type PdfParse = (data: Uint8Array, options?: { max?: number }) => Promise<{ text
  * PDF was "unreadable" and was dropped (bounty 398, submission 2: a 19-page PDF with a text
  * layer, read here in ~130 ms). The library file has no self-test.
  */
-async function loadPdfParse(): Promise<PdfParse> {
+export async function loadPdfParse(): Promise<PdfParse> {
   const loaded: unknown = await import('pdf-parse/lib/pdf-parse.js');
   return ((loaded as { default?: PdfParse }).default ?? loaded) as PdfParse;
 }
@@ -28,7 +31,7 @@ async function loadPdfParse(): Promise<PdfParse> {
  * whatever else the pool held and failed with "bad XRef entry", every time. A Uint8Array
  * is cloned into an ArrayBuffer of its own.
  */
-function plainBytes(buffer: Buffer): Uint8Array {
+export function plainBytes(buffer: Buffer): Uint8Array {
   return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.length);
 }
 

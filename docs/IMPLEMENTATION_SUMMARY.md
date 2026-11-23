@@ -93,7 +93,7 @@ interface Warning {
 |--------------|----------|---------|
 | `model_timeout` | warning | Model timed out but evaluation succeeded |
 | `model_failure` | warning | Model failed but threshold met |
-| `attachment_unsupported` | info | Model doesn't support PDF natively |
+| `pdf_text_only` | info (warning when the provider rejected the file) | A juror that reads PDFs was sent a PDF's extracted text, not the file |
 | `attachment_skipped` | warning | Attachment couldn't be processed |
 | `attachment_processing_error` | error | Error processing attachments |
 

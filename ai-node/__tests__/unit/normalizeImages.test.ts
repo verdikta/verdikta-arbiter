@@ -296,6 +296,23 @@ describe('normalizeImageAttachments', () => {
     });
   });
 
+  test('refs names each returned attachment as the request did: the parts of a split image share one', async () => {
+    const tall = dataUri(await solid(2560, 12268).png().toBuffer(), 'image/png');
+    const small = dataUri(await solid(64, 64).png().toBuffer(), 'image/png');
+    const corrupt = dataUri(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]), 'image/png');
+    const pdf = dataUri(Buffer.from('%PDF-1.4 a document'), 'application/pdf');
+
+    // A note, an image split into parts, an omitted image, a PDF, an image that fits, and one with no name.
+    const { attachments, refs } = await normalize(['a note', tall, corrupt, pdf, small, 'unnamed text'], {
+      names: ['note.txt', 'page.png', 'broken.png', 'report.pdf', 'icon.png'],
+    });
+
+    const parts = (attachments.length - 4) / 2; // each part is a label and an image
+    expect(parts).toBeGreaterThan(1);
+    expect(refs).toEqual(['note.txt', ...Array(parts * 2).fill('page.png'), 'report.pdf', 'icon.png', '6']);
+    expect(attachments[refs.indexOf('report.pdf')]).toBe(pdf);
+  });
+
   test('with more than 20 images and Claude in the jury, every image is capped at 2000 x 2000', async () => {
     const image = dataUri(await solid(2400, 1200).png().toBuffer(), 'image/png');
     const input = Array.from({ length: 25 }, () => image);

@@ -272,12 +272,35 @@ The application includes a comprehensive text extraction system that automatical
 ### Supported Document Formats
 
 - **RTF (Rich Text Format)**: `.rtf` files - Removes formatting markup and extracts plain text
-- **PDF**: `.pdf` files - Extracts text content using hybrid approach (pdf-parse with textract fallback)
+- **PDF**: `.pdf` files - Sent as the file itself to each juror whose provider and model read PDFs (see [PDFs](#pdfs) below); its extracted text for every other juror
 - **Microsoft Word**: `.doc` and `.docx` files - Extracts text from Word documents
 - **Markdown**: `.md` files - Converts markdown to plain text
 - **HTML**: `.html` files - Strips HTML tags and extracts text content
 - **Plain Text**: `.txt` files - Passed through unchanged
 - **Images**: `.jpg`, `.png`, `.gif`, `.webp` - Processed as visual content (no text extraction)
+
+### PDFs
+
+A PDF is the one document that can reach a model as itself. In
+`/api/rank-and-justify` each juror gets the best form it can read
+(`src/lib/attachments/pdfRouting.ts`):
+
+- A juror whose provider, model and route read PDFs natively is sent the file:
+  the model gets each page's text and an image of the page, so it sees
+  pictures, charts and scans. That is OpenAI and Anthropic on their own API
+  keys: Claude 3.5 and later, GPT-5 and later, and GPT-4o
+  (`src/lib/llm/pdf-support.ts`, decided from the model id; no list to maintain).
+- Any other juror (xAI, Hyperbolic, any class routed through OpenRouter, and
+  GPT-4.1 and the o-series for now) is sent the extracted text, and its prompt
+  says that only the text is shown and pictures inside the PDF are not.
+- An Ollama juror's request carries a prompt and images only: it is told which
+  attachments it is not shown.
+- A PDF that would put a juror's request over a provider limit (100 pages; 20 MB
+  for a Claude request, 32 MB of files for OpenAI) is text for that juror.
+- A PDF with no text layer (a scan) still goes to the jurors that read PDFs.
+
+The response says which form each juror got (`model_results[].pdf_inputs`, see
+`API_RESPONSE_SPECIFICATION.md`).
 
 ### Text Extraction Features
 
@@ -313,9 +336,9 @@ The text extraction system can be configured via environment variables or progra
 **Extraction Failures:**
 - A document that cannot be read is not sent to the models; the prompt says it was delivered but could not be read, and the response carries an `attachment_skipped` warning naming the file
 - Corrupted or password-protected files will fail extraction
-- A scanned PDF (pages that are pictures) has no text to extract and is reported as unreadable
+- A scanned PDF (pages that are pictures) has no text to extract. Jurors that read PDFs natively are still sent the file; for the others it is reported as unreadable
 - PDF text is read with pdf-parse, which needs nothing installed on the host; textract (poppler's `pdftotext`) is a second attempt where the host has it
-- A PDF is shown to the models as its text only: the prompt says that its pictures are not shown
+- A juror that is not sent a PDF itself is shown its text only, and its prompt says that the pictures are not shown
 
 **Performance Tips:**
 - Text-based formats (RTF, TXT, MD) process fastest

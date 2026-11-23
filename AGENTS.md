@@ -237,6 +237,12 @@ Rules that matter:
   Contract: `ai-node/API_RESPONSE_SPECIFICATION.md`, "Provider text in a
   response"; `rank-and-justify.redaction.test.ts` replays the bounty-398
   message on the 200 and 400 paths.
+- **A PDF reaches each juror in the best form that juror can read**
+  (`ai-node/src/lib/attachments/pdfRouting.ts`): the file itself for a juror whose
+  provider, model and route read PDFs, the extracted text plus a line in that
+  juror's own prompt ("Only its text is shown to you ...") for any other. Every
+  other document is always its extracted text. `model_results[].pdf_inputs` says
+  which form each juror got. See §8, "PDFs are routed per attachment and per juror".
 - **Code mode** (a `codeReview` field: a claim against a stake listing) is a
   separate path (`ai-node/src/lib/code-review/`): the field is validated with
   `@verdikta/common`'s `validateCodeReviewRequest` and the panel with
@@ -333,7 +339,10 @@ version (`--class-id 5555 --expect-common <ver> --expect-release <sha>`, or the
 `docs/release-runbook.md` §3b. L4's claim scenarios (`claim-l4-*`, `e2e/README.md`)
 run on class 5555 and nothing else: nothing on an arbiter stops a claim on another
 class, so L4 refuses it, with no `--class-id` too, before anything is sent. The nightly
-holds none of them and stays on class 128.
+holds none of them and stays on class 128. A change to what the providers are sent
+has manual scenarios of its own for that step, each named when it applies:
+`bounty-171-replay` (images), `link-canary` (web tools), `pdf-canary` (a PDF whose
+answer is only a picture; every juror must report it `native`).
 
 ### Install / upgrade a full node (operator machine)
 ```bash
@@ -587,10 +596,11 @@ key raises a watchdog alert").
   limits in its `IMAGE_LIMITS` object, with their doc sources.
 - **A juror is told about every attachment it does not see as it was delivered.**
   A document the extractor cannot read is not sent to the models, a PDF is sent as
-  its text layer only, and long text is cut; each gets a line in the prompt's "Notes
-  on the attachments" beside the image notes (`documentNotes`,
-  `ai-node/src/utils/attachment-processor.ts`), naming the file and stating what the
-  arbiter did, never what to conclude. Before that a dropped PDF was only a
+  its text layer only to a juror that does not read PDFs, and long text is cut; each
+  gets a line in the prompt's "Notes on the attachments" beside the image notes
+  (`documentNotes`, `ai-node/src/utils/attachment-processor.ts`), naming the file and
+  stating what the arbiter did, never what to conclude. The document lines are each
+  juror's own: a juror that is sent the PDF itself gets none about it. Before that a dropped PDF was only a
   server-side warning, and both jurors of bounty 398's second submission failed a
   mandatory criterion on a file "not included in the actual submission". When you add
   a way for an attachment to be dropped, shortened or converted, add its line.
@@ -605,13 +615,61 @@ key raises a watchdog alert").
   change there is checked in a `next build` + `next start` on a `PATH` without
   `pdftotext`, not in jest alone (jest gives a test its own copy of `process.env`,
   so emptying `PATH` there hides nothing from a child process).
-- **Native PDF input is not reached by current juries.** The route sends PDFs natively
-  only when every juror is on its own list (it stops at GPT-4.1 and Claude 4.x, and
-  compares the provider name case-sensitively), the Anthropic provider has a second,
-  shorter list and drops a PDF block for a model not on it, and
-  `docs/ATTACHMENT_PROCESSING_ISSUE.md` records why the lists were not simply widened
-  (the native path sends DOCX as raw base64). Until the routing is per attachment and
-  per juror, a picture inside a PDF is not seen by a jury of current models.
+- **PDFs are routed per attachment and per juror; only a PDF is ever sent as a
+  file.** Until 2026-11 four hardcoded model lists (two in the route, one in the
+  attachment processor that looked at the first model only, one in the Anthropic
+  provider) decided one path for the whole request. They stopped at GPT-4.1 and
+  Claude 4.x and compared `'OpenAI'` / `'Anthropic'` exactly while manifests send
+  lower case, so every current jury got extracted text: on bounty 398 nobody
+  could look at 16 recording frames inside a 19-page PDF. They had been left
+  narrow on purpose, because the "native" path sent every non-image attachment
+  as a raw base64 document and broke Word files
+  (`docs/ATTACHMENT_PROCESSING_ISSUE.md`). Now
+  `ai-node/src/lib/llm/pdf-support.ts` (`nativePdfSupport`) is the one answer to
+  "does this provider and model take a PDF here", read from the model's version
+  like the sampling rule (Claude 3.5+, GPT-5+ and GPT-4o; an id it cannot read
+  gets text), any case of the provider name, and false for a class the gateway
+  routes to OpenRouter, whose request has no PDF block here. It means "this node
+  sends it", not "the model could read it": GPT-4.1 and the o-series read PDFs
+  on OpenAI's API, but the file request `openai-provider.ts` builds
+  (`completeWithNativeClient`) sends them `max_tokens` and a `reasoning` object,
+  so they get text until that request is rebuilt for them. Do not add a list.
+  `pdfRouting.ts` gives each
+  juror its attachments: a PDF as a file where the juror reads PDFs and the
+  request stays inside `PDF_LIMITS` (100 pages for both providers, counted with
+  the images for Claude; Claude's 20 MB request, OpenAI's 32 MB of files; doc
+  sources beside the constants, and the OpenAI figures were not re-read when
+  written, see the note there), otherwise the extracted text and that juror's
+  own `documentNotes` line: the document notes are per juror now, because one
+  juror sees the pages and another only the text. Images are fitted first and
+  count each PDF in full, so a PDF takes what is left. A PDF with no text layer
+  still goes to the jurors that read PDFs. If a provider answers 400 / 413 / 422
+  to a request with a PDF file, that juror is asked once more with the text
+  (`PDF_FALLBACK`). No provider drops an attachment silently any more: what a
+  request cannot carry is named in the prompt (`provider-attachments.ts`), a
+  model that is sent no attachments is told what was delivered, and a juror
+  whose request carries images only (Ollama, `sendsTextAttachments`) is told
+  that and not that a PDF's text "is shown". A PDF sent as a file carries its
+  extracted text beside it (`extractedText`, never sent) so that a link inside
+  the PDF still turns the web tools on under `AI_WEB_ACCESS=auto`, as it did
+  when the PDF was text. The page count
+  (`pdfInfo.ts`) opens a submitter's PDF with pdf.js in the server's own
+  process, as the text extraction does; it is skipped when no juror reads PDFs
+  and for a file over 32 MB. Unlike the image decisions, the routing depends on
+  the operator's gateway, so two operators can send the same model different
+  things. Request shapes are held by
+  `rank-and-justify.pdf.test.ts`, which runs the real client libraries against a
+  local stub; that the real APIs accept them is the `pdf-canary` scenario
+  (`e2e/README.md`), which is what to run on class 5555 after touching any of this.
+- **Native PDFs cost a Claude juror its LangChain request.** A Claude call with a
+  PDF goes through the direct client (`generateResponseWithNativePDFSupport`),
+  like the web-tools request: `max_tokens` 8192 (it said 1000 until 2026-11,
+  which cut justifications short), no `thinking` field, so Claude 5 runs its
+  default adaptive thinking where the LangChain request sends
+  `thinking: disabled`. Each page adds 1,500 to 3,000 text tokens and up to
+  1,568 image tokens (Anthropic's figures). `MODEL_TIMEOUT_MS` is still 120 s,
+  and on bounty 398 Claude took 82 to 117 s before any of this: watch
+  `model_timeout` warnings on requests with long PDFs before changing anything.
 - **IPFS gateway order lives in `@verdikta/common`**, not here. The EA only
   forwards `IPFS_GATEWAY` / `IPFS_GATEWAY_TOKEN` (`external-adapter/src/utils/ipfsGatewayConfig.js`)
   as operator-preferred gateways; releases ≤ 1.6.x ignore them and use a
@@ -732,8 +790,9 @@ key raises a watchdog alert").
   contracts (see `arbiter-operator/README.md`); don't bump it casually.
 - **Line endings are pinned in `.gitattributes`.** Text is LF in every checkout, whatever
   `core.autocrlf` says, and the bytes a test hashes are never converted
-  (`arbiter-operator/foundry/lib/**`, `arbiter-operator/contracts/vendor/**`, and
-  `external-adapter/test-artifacts/**`, which holds one CRLF fixture). A stake listing names a
+  (`arbiter-operator/foundry/lib/**`, `arbiter-operator/contracts/vendor/**`,
+  `external-adapter/test-artifacts/**`, which holds one CRLF fixture, and
+  `e2e/archives/pdf-canary/evidence.pdf`, whose bytes are a pinned archive's). A stake listing names a
   commit of this repository, and a hunter on Windows got CRLF copies of the vendored files:
   `VendoredFiles.t.sol` failed on a hash before any proof was added (2026-11). When you vendor
   more hashed bytes, add their path there. A listing made earlier names an earlier commit and
@@ -749,6 +808,7 @@ key raises a watchdog alert").
 |---|---|
 | How does deliberation/scoring work? | `ai-node/src/app/api/rank-and-justify/route.ts`, `ai-node/src/config/prePromptConfig.ts` |
 | How are models routed to providers? | `ai-node/src/lib/llm/llm-factory.ts`, `provider-config.ts`, `config/models.ts` |
+| Which form of an attachment does a juror get? | `ai-node/src/lib/attachments/pdfRouting.ts`, `normalizeImages.ts`, `ai-node/src/lib/llm/pdf-support.ts`, `ai-node/src/utils/attachment-processor.ts` |
 | Commit-reveal / IPFS upload | `external-adapter/src/handlers/evaluateHandler.js`, `services/commitStore.js` |
 | On-chain fulfillment/access control | `arbiter-operator/contracts/ArbiterOperator.sol` |
 | Chainlink job pipeline | `chainlink-node/basicJobSpec`, `installer/bin/register-oracle-dispatcher.sh` |
