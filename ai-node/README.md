@@ -272,12 +272,35 @@ The application includes a comprehensive text extraction system that automatical
 ### Supported Document Formats
 
 - **RTF (Rich Text Format)**: `.rtf` files - Removes formatting markup and extracts plain text
-- **PDF**: `.pdf` files - Extracts text content using hybrid approach (pdf-parse with textract fallback)
+- **PDF**: `.pdf` files - Sent as the file itself to each juror whose provider and model read PDFs (see [PDFs](#pdfs) below); its extracted text for every other juror
 - **Microsoft Word**: `.doc` and `.docx` files - Extracts text from Word documents
 - **Markdown**: `.md` files - Converts markdown to plain text
 - **HTML**: `.html` files - Strips HTML tags and extracts text content
 - **Plain Text**: `.txt` files - Passed through unchanged
 - **Images**: `.jpg`, `.png`, `.gif`, `.webp` - Processed as visual content (no text extraction)
+
+### PDFs
+
+A PDF is the one document that can reach a model as itself. In
+`/api/rank-and-justify` each juror gets the best form it can read
+(`src/lib/attachments/pdfRouting.ts`):
+
+- A juror whose provider, model and route read PDFs natively is sent the file:
+  the model gets each page's text and an image of the page, so it sees
+  pictures, charts and scans. That is OpenAI and Anthropic on their own API
+  keys, for current models (`src/lib/llm/pdf-support.ts`, decided from the model
+  id; no list to maintain).
+- Any other juror (xAI, Hyperbolic, Ollama, and any class routed through
+  OpenRouter) is sent the extracted text, and its prompt says that only the text
+  is shown and pictures inside the PDF are not.
+- A PDF that would put a juror's request over a provider limit (100 pages; 20 MB
+  for a Claude request, 32 MB of files for OpenAI) is text for that juror.
+- A PDF with no text layer (a scan) still goes to the jurors that read PDFs.
+
+The response says which form each juror got (`model_results[].pdf_inputs`, see
+`API_RESPONSE_SPECIFICATION.md`). Text extraction for a PDF uses `pdftotext`
+(poppler-utils) through textract in the built server; without it a PDF has no
+text form, and jurors that do not read PDFs are told it is not shown to them.
 
 ### Text Extraction Features
 
@@ -313,8 +336,8 @@ The text extraction system can be configured via environment variables or progra
 **Extraction Failures:**
 - Binary files that can't be processed are automatically skipped
 - Corrupted or password-protected files will fail extraction
-- Scanned PDFs (images) may not extract text properly
-- PDF processing uses hybrid approach: attempts pdf-parse first, falls back to textract if needed
+- Scanned PDFs (images) have no text to extract; jurors that read PDFs natively still get the file
+- PDF text extraction tries pdf-parse first and falls back to textract (`pdftotext`). In the built server pdf-parse's package entry fails to load, so the text comes from `pdftotext`
 
 **Performance Tips:**
 - Text-based formats (RTF, TXT, MD) process fastest

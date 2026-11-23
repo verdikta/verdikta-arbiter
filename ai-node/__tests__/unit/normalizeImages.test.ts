@@ -296,6 +296,28 @@ describe('normalizeImageAttachments', () => {
     });
   });
 
+  test('sourceIndexes says which request attachment each returned attachment came from', async () => {
+    const tall = dataUri(await solid(2560, 12268).png().toBuffer(), 'image/png');
+    const small = dataUri(await solid(64, 64).png().toBuffer(), 'image/png');
+    const corrupt = dataUri(Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 7)]), 'image/png');
+    const pdf = dataUri(Buffer.from('%PDF-1.4 a document'), 'application/pdf');
+
+    // 0 text, 1 split into parts, 2 omitted, 3 a PDF, 4 an image that fits.
+    const { attachments, sourceIndexes } = await normalize(['a note', tall, corrupt, pdf, small], {
+      names: ['note.txt', 'page.png', 'broken.png', 'report.pdf', 'icon.png'],
+    });
+
+    const parts = (attachments.length - 3) / 2; // each part is a label and an image
+    expect(parts).toBeGreaterThan(1);
+    expect(sourceIndexes).toEqual([0, ...Array(parts * 2).fill(1), 3, 4]);
+    expect(attachments[sourceIndexes.indexOf(3)]).toBe(pdf);
+    expect(attachments[sourceIndexes.indexOf(4)]).toBe(small);
+
+    // Nothing to change: every attachment is its own source.
+    const untouched = await normalize(['a note', small, pdf]);
+    expect(untouched.sourceIndexes).toEqual([0, 1, 2]);
+  });
+
   test('with more than 20 images and Claude in the jury, every image is capped at 2000 x 2000', async () => {
     const image = dataUri(await solid(2400, 1200).png().toBuffer(), 'image/png');
     const input = Array.from({ length: 25 }, () => image);

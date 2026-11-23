@@ -446,6 +446,96 @@ describe('OpenAIProvider', () => {
     expect(requestOptions).toEqual({ headers: { 'OpenAI-Beta': 'pdf-files-v1' } });
   });
 
+  describe('PDF attachments', () => {
+    const pdf = (name?: string) => ({ type: 'document', content: 'JVBERi0xLjQK', mediaType: 'application/pdf', ...(name && { name }) });
+
+    beforeEach(() => {
+      delete process.env.AI_WEB_ACCESS;
+      mockOpenAICreate.mockResolvedValueOnce({ choices: [{ message: { content: 'Read the PDF' } }] });
+    });
+
+    afterEach(() => {
+      // Drop an answer a test did not use, so it cannot reach a later test.
+      mockOpenAICreate.mockReset();
+      mockOpenAICreate.mockResolvedValue({ choices: [{ message: { content: 'Mocked native response' } }] });
+    });
+
+    test.each(['gpt-5.6-terra', 'gpt-6-astra', 'gpt-4o', 'gpt-4.1-mini'])(
+      '%s is sent the PDF as a file part with the file\'s own name, after the prompt',
+      async (model) => {
+        await provider.generateResponseWithAttachments(
+          'Judge the recording.',
+          model,
+          [{ type: 'text', content: 'A cover note.', mediaType: 'text/plain' }, pdf('submission/recording frames.pdf')]
+        );
+
+        const [body] = mockOpenAICreate.mock.calls[0];
+        expect(body.model).toBe(model);
+        expect(body.messages).toEqual([{
+          role: 'user',
+          content: [
+            { type: 'text', text: 'Judge the recording.' },
+            { type: 'file', file: { file_data: 'data:application/pdf;base64,JVBERi0xLjQK', filename: 'recording frames.pdf' } },
+            { type: 'text', text: 'A cover note.' },
+          ],
+        }]);
+      }
+    );
+
+    test('unnamed PDFs get distinct .pdf names', async () => {
+      await provider.generateResponseWithAttachments('Judge.', 'gpt-5.6-terra', [pdf(), pdf(), pdf('proof')]);
+
+      const parts = mockOpenAICreate.mock.calls[0][0].messages[0].content;
+      expect(parts.slice(1).map((part: any) => part.file.filename)).toEqual(['document.pdf', 'document-2.pdf', 'proof.pdf']);
+    });
+
+    test('a model that does not read PDFs is told the PDF is not shown, instead of answering without knowing', async () => {
+      const mockInvoke = jest.fn().mockResolvedValue({ content: 'answer' });
+      (ChatOpenAI as unknown as jest.Mock).mockImplementation(() => ({ invoke: mockInvoke }));
+
+      await provider.generateResponseWithAttachments('Judge the recording.', 'gpt-4', [pdf('recording.pdf')]);
+
+      expect(mockOpenAICreate).not.toHaveBeenCalled();
+      const [messages] = mockInvoke.mock.calls[0];
+      expect(messages[0].content).toEqual([{
+        type: 'text',
+        text: 'Judge the recording.\n\n[One attachment of this request is not shown to you: PDF "recording.pdf". ' +
+          'A request to OpenAI gpt-4 cannot carry it. Judge without it and say so in your justification.]',
+      }]);
+    });
+
+    test('a document that is not a PDF is never sent as a file or as its base64: the prompt says it is not shown', async () => {
+      const docx = {
+        type: 'document',
+        content: 'UEsDBBQABgAIAAAAIQ',
+        mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        name: 'letter.docx',
+      };
+
+      await provider.generateResponseWithAttachments('Judge.', 'gpt-5.6-terra', [pdf('recording.pdf'), docx]);
+
+      const parts = mockOpenAICreate.mock.calls[0][0].messages[0].content;
+      expect(parts.map((part: any) => part.type)).toEqual(['text', 'file']);
+      expect(parts[0].text).toContain('not shown to you: application/vnd.openxmlformats-officedocument.wordprocessingml.document file "letter.docx"');
+      expect(JSON.stringify(parts)).not.toContain('UEsDBBQABgAIAAAAIQ');
+    });
+
+    test('with a link in the prompt the Responses request carries the PDF as input_file', async () => {
+      mockResponsesCreate.mockResolvedValueOnce({ status: 'completed', output_text: '{"score":[0,1000000]}', output: [] });
+
+      await provider.generateResponseWithAttachments(
+        'Judge the recording against https://example.org/rules', 'gpt-5.6-terra', [pdf('recording.pdf')]
+      );
+
+      expect(mockOpenAICreate).not.toHaveBeenCalled();
+      const [body] = mockResponsesCreate.mock.calls[0];
+      expect(body.input[0].content).toEqual([
+        { type: 'input_text', text: `${WEB_ACCESS_NOTE}\n\nJudge the recording against https://example.org/rules` },
+        { type: 'input_file', filename: 'recording.pdf', file_data: 'data:application/pdf;base64,JVBERi0xLjQK' },
+      ]);
+    });
+  });
+
   test('an image rejection on an image-only GPT-5 request is reported as an image error, not a PDF one', async () => {
     // Shaped like the openai SDK's BadRequestError: status field + "<status> <message>".
     const apiError = Object.assign(

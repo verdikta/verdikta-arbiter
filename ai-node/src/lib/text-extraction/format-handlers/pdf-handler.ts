@@ -1,4 +1,5 @@
 import { FormatHandler } from '../types';
+import { pdfParseInput } from '../../attachments/pdfInfo';
 
 /**
  * PDF Format Handler
@@ -21,15 +22,18 @@ export class PDFHandler implements FormatHandler {
       console.log('[PDFHandler] Attempting extraction with pdf-parse...');
       const pdfParse = (await import('pdf-parse')).default;
       
+      // A plain Uint8Array, not the Buffer: pdf.js reads a small Buffer's
+      // cross-reference table from the wrong bytes (pdfParseInput says why).
+      const pdfBytes = pdfParseInput(buffer);
       let pdfData;
       try {
-        pdfData = await pdfParse(buffer, {
+        pdfData = await pdfParse(pdfBytes, {
           max: 0, // Parse all pages
         });
       } catch (parseError: any) {
         if (parseError.message?.includes('ENOENT') && parseError.message?.includes('test/data')) {
           console.warn('[PDFHandler] pdf-parse test file issue detected, trying without options');
-          pdfData = await pdfParse(buffer);
+          pdfData = await pdfParse(pdfBytes);
         } else {
           throw parseError;
         }

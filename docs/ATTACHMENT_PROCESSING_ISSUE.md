@@ -5,7 +5,82 @@
 **Critical Bug Introduced:** Commit 9a707b9  
 **Symptom:** DOCX attachments stopped being processed correctly  
 **Impact:** Arbitration requests with Word documents failed to extract text  
-**Status:** Fixed by reverting to hardcoded model lists  
+**Status:** Resolved. The hardcoded model lists are gone (2026-11): each attachment is routed per juror, and only a PDF is ever sent as a file. See [What replaced the lists](#what-replaced-the-lists-2026-11). Everything below that section is the record of the incident and of the proposal it led to.
+
+---
+
+## What replaced the lists (2026-11)
+
+The short-term fix kept DOCX working by making sure the "native" path was never
+taken: the lists stopped at GPT-4.1 and Claude 4.x and compared the provider name
+case-sensitively, so every current jury fell through to text extraction. That
+also meant no juror could see a picture that exists only inside a PDF. On bounty
+398 a hunter put 16 recording frames in a 19-page PDF; the jury
+(`openai / gpt-5.6-terra`, `anthropic / claude-sonnet-5`) was sent the PDF's text
+and nothing else.
+
+There were four lists, and they disagreed: two in the rank-and-justify route
+(one for a debug log), one in the attachment processor (which decided from the
+first model of the jury only), and one in the Anthropic provider (which left a
+PDF out of the request for any model not on it, without telling the model).
+
+What exists now:
+
+| Question | Where it is answered |
+|---|---|
+| Does this provider, model and route read a PDF natively? | `ai-node/src/lib/llm/pdf-support.ts`, `nativePdfSupport(provider, model)`. One function, read from the model's version (Claude 3.5 and later; GPT-5 and later, GPT-4o / 4.1 / 4.5, the o-series with image input), any case of the provider name. A class routed to OpenRouter gets text. An id it cannot read gets text. |
+| Which form of which attachment does each juror get? | `ai-node/src/lib/attachments/pdfRouting.ts`, `attachmentsForJuror`. |
+| What are the limits? | `PDF_LIMITS` in the same file, with the doc sources, and `IMAGE_LIMITS` in `normalizeImages.ts` for the request-wide ones. |
+| What is each juror told? | `documentNotes` in `ai-node/src/utils/attachment-processor.ts`: a line in that juror's own prompt for every PDF it was not sent as a PDF. |
+
+The rules:
+
+- **Only a PDF can be sent as itself.** Every other document (DOCX, DOC, RTF,
+  Markdown, ...) is its extracted text, for every juror. This is the property
+  whose loss caused the incident below, and it no longer depends on which models
+  are in the jury.
+- **Per juror, not per request.** A juror that reads PDFs gets the file; in the
+  same request a juror that does not gets the extracted text and the note "Only
+  its text is shown to you: pictures and page images inside the PDF are not
+  shown." A mixed jury no longer drags everyone down to text, and no longer
+  hands a `document` block to a provider that drops it.
+- **Limits per juror.** A PDF that would put a juror's request over a provider
+  limit (pages, bytes; with Claude, images and pages together against 100, and
+  20 MB for the whole request) is text for that juror, with the reason in the
+  note. PDFs take what the images leave, in attachment order.
+- **A PDF with no text layer still reaches the jurors that read PDFs.** The
+  others are told it is not shown to them. Before, such a PDF was skipped for
+  everyone with only a response warning.
+- **A rejection does not cost the juror.** If a provider answers 400 / 413 / 422
+  to a request that carried a PDF as a file, the juror is asked once more with
+  the text and the note says the file was not accepted.
+- **Nothing is left out silently.** A provider handed something its request
+  cannot carry names it in the prompt (`provider-attachments.ts`); a model that
+  is sent no attachments at all is told what the request held.
+
+Each juror's result reports the form it got: `model_results[].pdf_inputs`
+(`ai-node/API_RESPONSE_SPECIFICATION.md`, "PDF attachments").
+
+How this differs from the proposal further down this page:
+
+- The proposal put capabilities in `modelConfig` flags. That table is generated
+  from ClassID data on each node and its `supportsAttachments` means "the arbiter
+  accepts files for this model", which is what broke things in the first place.
+  The capability is derived from the model id instead, so a new model in a known
+  family needs no edit and a table sync cannot change the routing.
+- The proposal sent everything as text whenever a request mixed file types
+  ("Mixed or unknown → use text extraction"). Routing is per attachment, so a
+  PDF beside a DOCX is still a PDF.
+- The proposal's warnings were per request. They are per juror
+  (`pdf_text_only`, with the reason), because the answer differs per juror.
+
+Tests: `ai-node/src/__tests__/api/rank-and-justify.pdf.test.ts` runs the route,
+the providers and their real client libraries against a local stub and asserts
+on the request bodies (a PDF block for each provider, DOCX as text, the note for
+a juror without PDF input, the limits, the rejection fallback). The test matrix
+below is covered there and in `pdfRouting.test.ts`. What no local test can show
+is that the real APIs accept these requests: that is the `pdf-canary` scenario on
+the class-5555 canaries (`docs/release-runbook.md`, 3b).
 
 ---
 
@@ -99,7 +174,10 @@ else {
 
 ---
 
-## Short-Term Fix (Implemented)
+## Short-Term Fix (Implemented, since replaced)
+
+> Superseded in 2026-11: the lists this section restored were removed. See
+> [What replaced the lists](#what-replaced-the-lists-2026-11).
 
 **Reverted to hardcoded lists** to restore working DOCX processing:
 
@@ -124,6 +202,11 @@ const allModelsSupportNativePDF = body.models.every(modelInfo => {
 ---
 
 ## Long-Term Solution Proposal
+
+> Implemented in 2026-11 in a different shape (per attachment and per juror,
+> capability from the model id). See
+> [What replaced the lists](#what-replaced-the-lists-2026-11) for the
+> differences. The proposal is kept as written.
 
 ### The Real Problem
 
@@ -349,6 +432,17 @@ if (hasPdfOnly && useTextExtraction) {
 ---
 
 ## Current Status
+
+As of 2026-11 (see [What replaced the lists](#what-replaced-the-lists-2026-11)):
+
+- Document type detection: done, from the bytes (`media-type.ts`), per attachment.
+- Model capabilities: one function derived from the model id, not `modelConfig`.
+- Routing by file type and by juror: done.
+- Warnings: per juror, with the reason.
+- Not done: a PDF block through OpenRouter. A class routed there gets the
+  extracted text and the note.
+
+The status at the time of the incident:
 
 ### ✅ Working (Short-Term Fix)
 - Hardcoded model lists (manual maintenance required)

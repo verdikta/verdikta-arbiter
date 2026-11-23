@@ -188,7 +188,7 @@ interface EncodedImage {
   height: number;
 }
 
-interface AttachmentName {
+export interface AttachmentName {
   /** "medium_article.png", or "Attachment 3" when the caller sent no name. */
   display: string;
   /** How a note refers to it after the word "Attachment": the name, or its number. */
@@ -245,6 +245,12 @@ export interface NormalizeImagesOptions {
 export interface NormalizeImagesResult {
   /** Replaces the request's attachments; untouched entries are the same strings. */
   attachments: string[];
+  /**
+   * For each returned attachment, the index of the request attachment it came
+   * from (a tile and its label both point at the image they were cut from), so
+   * later steps can still name an attachment as the request did.
+   */
+  sourceIndexes: number[];
   /** One line per changed or omitted image, for the prompt. */
   promptNotes: string[];
   changes: ImageChange[];
@@ -340,7 +346,7 @@ export async function normalizeImageAttachments(
   }
 
   if (images.length === 0 && changes.length === 0) {
-    return { attachments, promptNotes: [], changes: [] };
+    return { attachments, sourceIndexes: attachments.map((_, index) => index), promptNotes: [], changes: [] };
   }
 
   const models = options.models ?? [];
@@ -451,13 +457,17 @@ export async function normalizeImageAttachments(
   }
 
   const normalized: string[] = [];
+  const sourceIndexes: number[] = [];
   attachments.forEach((attachment, index) => {
     if (omitted.has(index)) return;
-    normalized.push(...(replacements.get(index) ?? [attachment]));
+    for (const entry of replacements.get(index) ?? [attachment]) {
+      normalized.push(entry);
+      sourceIndexes.push(index);
+    }
   });
 
   changes.sort((a, b) => a.index - b.index);
-  return { attachments: normalized, promptNotes: changes.map(change => change.note), changes };
+  return { attachments: normalized, sourceIndexes, promptNotes: changes.map(change => change.note), changes };
 }
 
 /** The bytes decide the type (the declared header is submitter-supplied); sniffing is silent here. */
@@ -470,7 +480,8 @@ function detectMediaType(declared: string, payload: string): string {
   }
 }
 
-function attachmentName(names: unknown[], index: number): AttachmentName {
+/** How notes name the attachment at `index` of the request: its file name, or its number. */
+export function attachmentName(names: unknown[], index: number): AttachmentName {
   const raw = names[index];
   if (typeof raw === 'string') {
     // A file name from the submitter's manifest: keep it on one short line.

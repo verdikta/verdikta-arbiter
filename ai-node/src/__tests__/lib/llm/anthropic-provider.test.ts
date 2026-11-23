@@ -23,6 +23,7 @@ jest.mock('../../../config/models', () => ({
     anthropic: [
       { name: 'claude-2.1', supportsImages: false, supportsAttachments: false },
       { name: 'claude-3-sonnet-20240229', supportsImages: true, supportsAttachments: false },
+      { name: 'claude-3-opus-20240229', supportsImages: true, supportsAttachments: true },
       { name: 'claude-3-5-sonnet-20241022', supportsImages: true, supportsAttachments: true },
       { name: 'claude-sonnet-4-6', supportsImages: true, supportsAttachments: true },
       { name: 'claude-sonnet-5', supportsImages: true, supportsAttachments: true },
@@ -438,6 +439,133 @@ describe('AnthropicProvider', () => {
         message: 'Anthropic request with attachments failed for claude-3-5-sonnet-20241022 (HTTP 429): 429 rate limit: 100 requests per minute exceeded',
         status: 429,
       });
+    });
+  });
+
+  describe('PDF attachments', () => {
+    const pdf = { type: 'document', content: 'JVBERi0xLjQK', mediaType: 'application/pdf', name: 'submission/recording.pdf' };
+    const image = { type: 'image', content: 'iVBORw0KGgo=', mediaType: 'image/png' };
+    const note = { type: 'text', content: 'A cover note.', mediaType: 'text/plain' };
+    const answer = (text: string, extra: object = {}) => ({ stop_reason: 'end_turn', content: [{ type: 'text', text }], ...extra });
+
+    beforeEach(() => {
+      delete process.env.AI_WEB_ACCESS;
+    });
+
+    // The provider's own list stopped at Claude 4: for every current model the PDF was
+    // filtered out of the request and nothing told the model.
+    test.each(['claude-sonnet-5', 'claude-opus-5', 'claude-sonnet-4-6'])(
+      '%s is sent the PDF as a document block, before the prompt, with the file\'s name',
+      async (model) => {
+        mockMessagesCreate.mockResolvedValueOnce(answer('{"score":[1000000,0],"justification":"read"}'));
+
+        const response = await provider.generateResponseWithAttachments('Judge the recording.', model, [note, pdf, image]);
+
+        expect(response).toBe('{"score":[1000000,0],"justification":"read"}');
+        expect(MockedChatAnthropic).not.toHaveBeenCalled();
+        const [body] = mockMessagesCreate.mock.calls[0];
+        expect(body.messages).toEqual([{
+          role: 'user',
+          content: [
+            {
+              type: 'document',
+              source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0xLjQK' },
+              title: 'submission/recording.pdf',
+            },
+            { type: 'text', text: 'Judge the recording.' },
+            { type: 'text', text: 'A cover note.' },
+            { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'iVBORw0KGgo=' } },
+          ],
+        }]);
+      }
+    );
+
+    test('the request has room for a justification (it said max_tokens 1000) and no sampling parameter on Claude 5', async () => {
+      mockMessagesCreate.mockResolvedValueOnce(answer('ok'));
+
+      await provider.generateResponseWithAttachments('Judge the recording.', 'claude-sonnet-5', [pdf]);
+
+      const [body] = mockMessagesCreate.mock.calls[0];
+      expect(body.max_tokens).toBe(MODERN_MAX_TOKENS);
+      expect(body).not.toHaveProperty('temperature');
+      expect(body).not.toHaveProperty('top_p');
+    });
+
+    test('a model that accepts temperature still gets 0.7 on this request', async () => {
+      mockMessagesCreate.mockResolvedValueOnce(answer('ok'));
+
+      await provider.generateResponseWithAttachments('Judge the recording.', 'claude-3-5-sonnet-20241022', [pdf]);
+
+      const [body] = mockMessagesCreate.mock.calls[0];
+      expect(body).toMatchObject({ model: 'claude-3-5-sonnet-20241022', max_tokens: MODERN_MAX_TOKENS, temperature: 0.7 });
+    });
+
+    test('a PDF without a name has no title', async () => {
+      mockMessagesCreate.mockResolvedValueOnce(answer('ok'));
+
+      await provider.generateResponseWithAttachments('Judge.', 'claude-sonnet-5', [{ type: 'document', content: 'JVBERi0xLjQK', mediaType: 'application/pdf' }]);
+
+      expect(mockMessagesCreate.mock.calls[0][0].messages[0].content[0]).toEqual({
+        type: 'document',
+        source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0xLjQK' },
+      });
+    });
+
+    test('the answer is the text, whatever thinking came before it', async () => {
+      mockMessagesCreate.mockResolvedValueOnce({
+        stop_reason: 'end_turn',
+        content: [{ type: 'thinking', thinking: '', signature: 'sig' }, { type: 'text', text: '{"score":[0,1000000]}' }],
+      });
+
+      await expect(provider.generateResponseWithAttachments('Judge.', 'claude-sonnet-5', [pdf])).resolves.toBe('{"score":[0,1000000]}');
+    });
+
+    test('a model that does not read PDFs is told the PDF is not shown, instead of answering without knowing', async () => {
+      const mockInvoke = jest.fn().mockResolvedValue({ content: 'answer' });
+      MockedChatAnthropic.mockImplementation(() => ({ invoke: mockInvoke }));
+
+      await provider.generateResponseWithAttachments('Judge the recording.', 'claude-3-opus-20240229', [note, pdf]);
+
+      expect(mockMessagesCreate).not.toHaveBeenCalled();
+      const [messages] = mockInvoke.mock.calls[0];
+      expect(messages[0].content).toEqual([
+        { type: 'text', text: 'Judge the recording.' },
+        { type: 'text', text: 'A cover note.' },
+        {
+          type: 'text',
+          text: '[One attachment of this request is not shown to you: PDF "submission/recording.pdf". A request to ' +
+            'Anthropic claude-3-opus-20240229 cannot carry it. Judge without it and say so in your justification.]',
+        },
+      ]);
+    });
+
+    test('a document that is not a PDF is never sent as a file or as its base64: the prompt says it is not shown', async () => {
+      mockMessagesCreate.mockResolvedValueOnce(answer('ok'));
+      const docx = {
+        type: 'document',
+        content: 'UEsDBBQABgAIAAAAIQ',
+        mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        name: 'letter.docx',
+      };
+
+      await provider.generateResponseWithAttachments('Judge.', 'claude-sonnet-5', [pdf, docx]);
+
+      const content = mockMessagesCreate.mock.calls[0][0].messages[0].content;
+      expect(content.map((block: any) => block.type)).toEqual(['document', 'text', 'text']);
+      expect(content[2].text).toContain('not shown to you: application/vnd.openxmlformats-officedocument.wordprocessingml.document file "letter.docx"');
+      expect(JSON.stringify(content)).not.toContain('UEsDBBQABgAIAAAAIQ');
+    });
+
+    test('with a link in the prompt the web-tools request carries the same document block', async () => {
+      mockMessagesCreate.mockResolvedValueOnce(answer('{"score":[0,1000000],"justification":"opened the page"}'));
+
+      await provider.generateResponseWithAttachments('Judge the recording against https://example.org/rules', 'claude-sonnet-5', [pdf]);
+
+      const [body, requestOptions] = mockMessagesCreate.mock.calls[0];
+      expect(requestOptions).toEqual({ headers: { 'anthropic-beta': ANTHROPIC_WEB_FETCH_BETA } });
+      expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual(['web_fetch', 'web_search']);
+      expect(body.messages[0].content.map((block: any) => block.type)).toEqual(['document', 'text']);
+      expect(body.messages[0].content[1].text).toBe(`${WEB_ACCESS_NOTE}\n\nJudge the recording against https://example.org/rules`);
     });
   });
 

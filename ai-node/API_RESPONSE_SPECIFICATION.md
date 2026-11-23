@@ -120,6 +120,73 @@ Optional request fields: `attachmentNames` (file names, index-aligned with
 
 ---
 
+## PDF Attachments (`model_results[].pdf_inputs`)
+
+A PDF reaches each juror in the best form that juror can read
+(`src/lib/attachments/pdfRouting.ts`). A juror whose provider, model and route
+read PDFs natively (`src/lib/llm/pdf-support.ts`: OpenAI and Anthropic on their
+own keys, current models) is sent the file itself: the model gets each page's
+text and an image of the page. Any other juror is sent the text extracted from
+the PDF and one line in its own prompt:
+
+```
+Notes on the attachments (added by the arbiter while preparing them for the models):
+- Attachment recording.pdf is a PDF. Only its text is shown to you: pictures and page images inside the PDF are not shown.
+```
+
+Every other document (DOCX, DOC, RTF, ...) is its extracted text for every juror.
+
+A request with a PDF reports, per juror, how each PDF was given to it:
+
+```json
+"model_results": [
+  { "provider": "openai", "model": "gpt-5.6-terra", "status": "success", "duration_ms": 41210,
+    "pdf_inputs": [ { "name": "submission/recording.pdf", "form": "native", "pages": 19 } ] },
+  { "provider": "xai", "model": "grok-4.6", "status": "success", "duration_ms": 18760,
+    "pdf_inputs": [ { "name": "submission/recording.pdf", "form": "text", "pages": 19, "reason": "model" } ] }
+]
+```
+
+- `form`: `native` (the file), `text` (its extracted text only), `not_shown`
+  (nothing: the PDF gave no text and the file was not sent).
+- `reason`, when not `native`: `model` (this provider, model or route is sent
+  text; a class routed to OpenRouter is), `page_limit` and `size_limit` (with
+  the file the request would be over the provider's limit: 100 PDF pages per
+  request for both providers, counted with the images for Claude; 20 MB for a
+  whole Claude request, 32 MB of files for OpenAI), `rejected` (the provider
+  answered 400 / 413 / 422 to the request with the file, and the juror was asked
+  again with the text), `no_attachments` (the model is sent no attachments at all).
+- `pages` is absent when the parser could not count them, or when no juror of
+  the request reads PDFs (the file is then not opened for a count).
+- `name` is the request's `attachmentNames` entry, or `Attachment N`.
+
+Each `text` or `not_shown` entry also adds a warning, so a reader of the
+justification can see which juror did not see the pages:
+
+```json
+"warnings": [
+  { "type": "pdf_text_only", "severity": "info", "model": "xai-grok-4.6",
+    "message": "submission/recording.pdf was sent to xai-grok-4.6 as extracted text only (xai requests carry no PDF block); pictures and page images inside the PDF were not shown to it.",
+    "details": { "reason": "model", "pages": 19 } }
+]
+```
+
+`pdf_text_only` is `info`, or `warning` when the reason is `rejected` (the
+message then carries the provider's status and text). A PDF that was shown to a
+juror in no form is `attachment_skipped` (`warning`) with that juror as `model`.
+A document that is not a PDF and gave no text is `attachment_skipped` without a
+`model`, as before, and every juror's prompt now says it is not shown.
+
+Each juror also gets one log line:
+`📎 PDF_INPUT: openai-gpt-5.6-terra submission/recording.pdf native (19 pages) | openai reads PDFs natively | [{…}]`,
+and `📎 PDF_FALLBACK` when a provider turned the file down.
+
+Sending the file costs input tokens that the text did not: Anthropic documents
+1,500 to 3,000 text tokens plus up to 1,568 image tokens per page. Text-mode
+timeouts (`MODEL_TIMEOUT_MS`, default 120 s) are unchanged.
+
+---
+
 ## Web Retrieval (`model_results[].web_retrieval`)
 
 Every juror that answered (`success` or `parsing_error`) carries what its web
