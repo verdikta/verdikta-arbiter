@@ -58,7 +58,12 @@ const TERRA = { provider: 'openai', model: 'gpt-5.6-terra', weight: 0.5 };
 const SONNET = { provider: 'anthropic', model: 'claude-sonnet-5', weight: 0.5 };
 const GROK = { provider: 'xai', model: 'grok-4.6', weight: 0.5 };
 const SCORES = JSON.stringify({ score: [300000, 700000], justification: 'The frames show the run.' });
-const TEXT_ONLY_NOTE = 'Only its text is shown to you: pictures and page images inside the PDF are not shown.';
+/** The line documentNotes writes for a juror that is sent a PDF's text (the count is the text's length). */
+const textOnlyNote = (ref: string) => new RegExp(
+  `- Attachment ${ref.replace(/[.]/g, '\\.')} is a PDF\\. Only its text is shown to you \\(\\d[\\d,]* characters\\); ` +
+    'pictures and page images inside the PDF are not shown\\.',
+);
+const TEXT_ONLY = 'Only its text is shown to you';
 const NOTES_HEADING = 'Notes on the attachments (added by the arbiter while preparing them for the models):';
 
 interface Seen {
@@ -256,13 +261,13 @@ describe('a PDF with pictures, jury gpt-5.6-terra + claude-sonnet-5', () => {
     // Neither juror is told it sees only text: both were sent the pages.
     for (const request of [openai, anthropic]) {
       expect(promptOf(request)).toContain('Does the recording show the run to the end?');
-      expect(promptOf(request)).not.toContain(TEXT_ONLY_NOTE);
+      expect(promptOf(request)).not.toContain(TEXT_ONLY);
       expect(promptOf(request)).not.toContain(NOTES_HEADING);
       // The Word file went nowhere as a file.
       expect(JSON.stringify(request.body)).not.toContain(base64(coverLetter).slice(0, 80));
     }
 
-    const native = [{ name: 'submission/recording frames.pdf', form: 'native', pages: 19 }];
+    const native = [{ attachment: 'submission/recording frames.pdf', form: 'native', pages: 19 }];
     expect(body.model_results.map((result: any) => result.pdf_inputs)).toEqual([native, native]);
     expect(body.warnings).toBeUndefined();
   });
@@ -337,28 +342,23 @@ describe('a juror that is not sent the PDF as a PDF gets its text and is told so
     expect(grokParts[1].text).toBe(
       'Recording of the submission, 16 frames. Frame notes: the counter reads 42 in frame 9. End of recording.',
     );
-    expect(grokParts[0].text).toContain(`${NOTES_HEADING}\n- Attachment recording.pdf is a PDF. ${TEXT_ONLY_NOTE}`);
+    expect(grokParts[0].text).toContain(NOTES_HEADING);
+    expect(grokParts[0].text).toMatch(textOnlyNote('recording.pdf'));
     expect(JSON.stringify(grok.body)).not.toContain(base64(framesPdf).slice(0, 80));
 
     // The note is Grok's alone.
     expect(jurorRequests('openai')[0].body.messages[0].content[1].type).toBe('file');
-    expect(promptOf(jurorRequests('openai')[0])).not.toContain(TEXT_ONLY_NOTE);
+    expect(promptOf(jurorRequests('openai')[0])).not.toContain(TEXT_ONLY);
     expect(jurorRequests('anthropic')[0].body.messages[0].content[0].type).toBe('document');
-    expect(promptOf(jurorRequests('anthropic')[0])).not.toContain(TEXT_ONLY_NOTE);
+    expect(promptOf(jurorRequests('anthropic')[0])).not.toContain(TEXT_ONLY);
 
     expect(body.model_results.map((result: any) => result.pdf_inputs[0])).toEqual([
-      { name: 'recording.pdf', form: 'native', pages: 19 },
-      { name: 'recording.pdf', form: 'native', pages: 19 },
-      { name: 'recording.pdf', form: 'text', pages: 19, reason: 'model' },
+      { attachment: 'recording.pdf', form: 'native', pages: 19 },
+      { attachment: 'recording.pdf', form: 'native', pages: 19 },
+      { attachment: 'recording.pdf', form: 'text', pages: 19, reason: 'model' },
     ]);
-    expect(body.warnings).toEqual([
-      expect.objectContaining({
-        type: 'pdf_text_only',
-        severity: 'info',
-        model: 'xai-grok-4.6',
-        message: 'recording.pdf was sent to xai-grok-4.6 as extracted text only (xai requests carry no PDF block); pictures and page images inside the PDF were not shown to it.',
-      }),
-    ]);
+    // A juror that is simply sent text is no warning: pdf_inputs says which form it got.
+    expect(body.warnings).toBeUndefined();
   });
 
   test('Claude routed through OpenRouter gets the text and the note; OpenAI on its own key still gets the file', async () => {
@@ -377,7 +377,7 @@ describe('a juror that is not sent the PDF as a PDF gets its text and is told so
     expect(claude.body.model).toBe('anthropic/claude-sonnet-5');
     const parts = claude.body.messages[0].content;
     expect(parts.map((part: any) => part.type)).toEqual(['text', 'text']);
-    expect(parts[0].text).toContain(`- Attachment recording.pdf is a PDF. ${TEXT_ONLY_NOTE}`);
+    expect(parts[0].text).toMatch(textOnlyNote('recording.pdf'));
     expect(parts[1].text).toContain('the counter reads 42 in frame 9');
 
     expect(jurorRequests('openai')[0].body.messages[0].content[1].type).toBe('file');
@@ -396,16 +396,17 @@ describe('a juror that is not sent the PDF as a PDF gets its text and is told so
 
     expect(status).toBe(200);
     for (const request of [...jurorRequests('openrouter'), ...jurorRequests('xai')]) {
-      expect(request.body.messages[0].content[0].text).toContain(`- Attachment recording.pdf is a PDF. ${TEXT_ONLY_NOTE}`);
+      expect(request.body.messages[0].content[0].text).toMatch(textOnlyNote('recording.pdf'));
       expect(request.body.messages[0].content[1].text).toContain('the counter reads 42 in frame 9');
     }
     expect(jurorRequests('openrouter')).toHaveLength(1);
     expect(jurorRequests('xai')).toHaveLength(1);
     // No page count: nobody could have been sent the file.
     expect(body.model_results.map((result: any) => result.pdf_inputs)).toEqual([
-      [{ name: 'recording.pdf', form: 'text', reason: 'model' }],
-      [{ name: 'recording.pdf', form: 'text', reason: 'model' }],
+      [{ attachment: 'recording.pdf', form: 'text', reason: 'model' }],
+      [{ attachment: 'recording.pdf', form: 'text', reason: 'model' }],
     ]);
+    expect(body.warnings).toBeUndefined();
   });
 
   test('a PDF over the page limit is text for the jurors it is over the limit for, with the reason', async () => {
@@ -422,20 +423,23 @@ describe('a juror that is not sent the PDF as a PDF gets its text and is told so
     expect(openaiParts.map((part: any) => part.type)).toEqual(['text', 'file', 'text']);
     expect(openaiParts[1].file.filename).toBe('recording.pdf');
     expect(openaiParts[2].text).toContain('Appendix page 101.');
+    expect(openaiParts[0].text).toMatch(textOnlyNote('appendix.pdf'));
     expect(openaiParts[0].text).toContain(
-      `- Attachment appendix.pdf is a PDF. ${TEXT_ONLY_NOTE} The file itself was left out because its 101 pages ` +
+      'pictures and page images inside the PDF are not shown. The file itself was not sent: its 101 pages ' +
         'would put this request over the 100 PDF pages a request to this model may hold.',
     );
     const anthropicBlocks = jurorRequests('anthropic')[0].body.messages[0].content;
     expect(anthropicBlocks.map((block: any) => block.type)).toEqual(['document', 'text', 'text']);
     expect(anthropicBlocks[0].title).toBe('recording.pdf');
     expect(anthropicBlocks[1].text).toContain(
-      'would put this request over the 100 PDF pages and images a request to this model may hold.',
+      'The file itself was not sent: its 101 pages would put this request over the 100 PDF pages and images a request to this model may hold.',
     );
+    // Only appendix.pdf has a line: the recording was sent whole.
+    expect(anthropicBlocks[1].text).not.toMatch(textOnlyNote('recording.pdf'));
 
     expect(body.model_results[0].pdf_inputs).toEqual([
-      { name: 'appendix.pdf', form: 'text', pages: 101, reason: 'page_limit' },
-      { name: 'recording.pdf', form: 'native', pages: 19 },
+      { attachment: 'appendix.pdf', form: 'text', pages: 101, reason: 'page_limit' },
+      { attachment: 'recording.pdf', form: 'native', pages: 19 },
     ]);
     expect(body.warnings.map((warning: any) => [warning.type, warning.model, warning.details.reason])).toEqual([
       ['pdf_text_only', 'openai-gpt-5.6-terra', 'page_limit'],
@@ -461,16 +465,27 @@ describe('a juror that is not sent the PDF as a PDF gets its text and is told so
     const grokPrompt = typeof grok.body.messages[0].content === 'string'
       ? grok.body.messages[0].content
       : grok.body.messages[0].content[0].text;
-    expect(grokPrompt).toContain('- Attachment scan.pdf is a PDF that is not shown to you: no text could be extracted from it');
-    expect(grokPrompt).toContain('Judge without it and say so in your justification.');
+    expect(grokPrompt).toMatch(
+      /- Attachment scan\.pdf \(PDF, \d+ KB\) was delivered with this request, but the arbiter could not read it, so its content is not shown to you\. The file is not missing from the request\.$/,
+    );
+    // The jurors that have the file are not told the arbiter could not read it.
+    expect(promptOf(jurorRequests('openai')[0])).not.toContain('could not read it');
+    expect(promptOf(jurorRequests('anthropic')[0])).not.toContain('could not read it');
 
     expect(body.model_results.map((result: any) => result.pdf_inputs[0])).toEqual([
-      { name: 'scan.pdf', form: 'native', pages: 2 },
-      { name: 'scan.pdf', form: 'native', pages: 2 },
-      { name: 'scan.pdf', form: 'not_shown', pages: 2, reason: 'model' },
+      { attachment: 'scan.pdf', form: 'native', pages: 2 },
+      { attachment: 'scan.pdf', form: 'native', pages: 2 },
+      { attachment: 'scan.pdf', form: 'not_shown', pages: 2, reason: 'model' },
     ]);
+    // One warning, for the one juror that was shown nothing of it.
     expect(body.warnings).toEqual([
-      expect.objectContaining({ type: 'attachment_skipped', severity: 'warning', model: 'xai-grok-4.6' }),
+      {
+        type: 'attachment_skipped',
+        severity: 'warning',
+        model: 'xai-grok-4.6',
+        message: expect.stringMatching(/^Attachment 1: PDF processing failed: .* Not shown to xai-grok-4\.6; the jurors that read PDFs were sent the file itself\.$/),
+        details: { attachment: 'scan.pdf', media_type: 'application/pdf', reason: 'model' },
+      },
     ]);
   });
 
@@ -485,11 +500,14 @@ describe('a juror that is not sent the PDF as a PDF gets its text and is told so
     const [grok] = seen.filter(request => request.api === 'xai');
     expect(typeof grok.body.messages[0].content).toBe('string'); // the plain request: no attachment parts
     expect(grok.body.messages[0].content).toContain(
-      '- This request has 2 attachments (recording.pdf, note.txt) that are not shown to you: this model is sent no attachments. ' +
-        'Judge without them and say so in your justification.',
+      '- Attachments recording.pdf, note.txt were delivered with this request, but this model is sent no attachments, ' +
+        'so their content is not shown to you. The files are not missing from the request.',
     );
     expect(body.model_results[1].pdf_inputs).toEqual([
-      { name: 'recording.pdf', form: 'not_shown', pages: 19, reason: 'no_attachments' },
+      { attachment: 'recording.pdf', form: 'not_shown', pages: 19, reason: 'no_attachments' },
+    ]);
+    expect(body.warnings).toEqual([
+      expect.objectContaining({ type: 'attachments_not_sent', severity: 'warning', model: 'xai-grok-9-text' }),
     ]);
   });
 });
@@ -517,15 +535,16 @@ describe('a provider that turns the PDF down does not cost the juror', () => {
     const retry = anthropic[1].body.messages[0].content;
     expect(JSON.stringify(retry)).not.toContain('"document"');
     expect(JSON.stringify(retry)).toContain('the counter reads 42 in frame 9');
+    expect(retry.map((block: any) => block.text).join('\n')).toMatch(textOnlyNote('recording.pdf'));
     expect(JSON.stringify(retry)).toContain(
-      `- Attachment recording.pdf is a PDF. ${TEXT_ONLY_NOTE} The file itself was sent first and was not accepted.`,
+      'pictures and page images inside the PDF are not shown. The file itself was sent to this model first and was not accepted.',
     );
 
     // OpenAI was not disturbed.
     expect(jurorRequests('openai')).toHaveLength(1);
     expect(body.model_results.map((result: any) => result.pdf_inputs[0])).toEqual([
-      { name: 'recording.pdf', form: 'native', pages: 19 },
-      { name: 'recording.pdf', form: 'text', pages: 19, reason: 'rejected' },
+      { attachment: 'recording.pdf', form: 'native', pages: 19 },
+      { attachment: 'recording.pdf', form: 'text', pages: 19, reason: 'rejected' },
     ]);
     expect(body.warnings).toEqual([
       expect.objectContaining({
@@ -533,6 +552,7 @@ describe('a provider that turns the PDF down does not cost the juror', () => {
         severity: 'warning',
         model: 'anthropic-claude-sonnet-5',
         message: expect.stringContaining('rejected: HTTP 400'),
+        details: { attachment: 'recording.pdf', reason: 'rejected', pages: 19 },
       }),
     ]);
     expect(body.warnings[0].message).toContain('The PDF specified is password protected.');

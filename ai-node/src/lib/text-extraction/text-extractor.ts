@@ -182,7 +182,7 @@ export class TextExtractor {
     buffer: Buffer, 
     mimeType: string
   ): Promise<string> {
-    let timer: NodeJS.Timeout | null = null;
+    let timer: NodeJS.Timeout | undefined;
     const timeoutPromise = new Promise<never>((_, reject) => {
       timer = setTimeout(() => {
         reject(new Error(`Text extraction timed out after ${this.config.extractionTimeout}ms`));
@@ -191,12 +191,9 @@ export class TextExtractor {
 
     const extractionPromise = handler.extractText(buffer, mimeType);
 
-    try {
-      return await Promise.race([extractionPromise, timeoutPromise]);
-    } finally {
-      // The timer used to run on for the full minute after every extraction.
-      if (timer) clearTimeout(timer);
-    }
+    // The timer is cleared once the extraction settles: left pending, each document
+    // kept a 60 s timer (and its closure over the file) alive after it was read.
+    return Promise.race([extractionPromise, timeoutPromise]).finally(() => clearTimeout(timer));
   }
 
   /**

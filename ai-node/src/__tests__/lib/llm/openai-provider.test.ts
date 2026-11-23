@@ -499,8 +499,8 @@ describe('OpenAIProvider', () => {
       const [messages] = mockInvoke.mock.calls[0];
       expect(messages[0].content).toEqual([{
         type: 'text',
-        text: 'Judge the recording.\n\n[One attachment of this request is not shown to you: PDF "recording.pdf". ' +
-          'A request to OpenAI gpt-4 cannot carry it. Judge without it and say so in your justification.]',
+        text: 'Judge the recording.\n\n[One attachment (PDF "recording.pdf") was delivered with this request, but a ' +
+          'request to OpenAI gpt-4 cannot carry it, so its content is not shown to you. The file is not missing from the request.]',
       }]);
     });
 
@@ -516,7 +516,7 @@ describe('OpenAIProvider', () => {
 
       const parts = mockOpenAICreate.mock.calls[0][0].messages[0].content;
       expect(parts.map((part: any) => part.type)).toEqual(['text', 'file']);
-      expect(parts[0].text).toContain('not shown to you: application/vnd.openxmlformats-officedocument.wordprocessingml.document file "letter.docx"');
+      expect(parts[0].text).toContain('[One attachment (application/vnd.openxmlformats-officedocument.wordprocessingml.document file "letter.docx") was delivered');
       expect(JSON.stringify(parts)).not.toContain('UEsDBBQABgAIAAAAIQ');
     });
 

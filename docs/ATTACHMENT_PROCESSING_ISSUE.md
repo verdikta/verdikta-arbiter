@@ -31,7 +31,7 @@ What exists now:
 | Does this provider, model and route read a PDF natively? | `ai-node/src/lib/llm/pdf-support.ts`, `nativePdfSupport(provider, model)`. One function, read from the model's version (Claude 3.5 and later; GPT-5 and later, GPT-4o / 4.1 / 4.5, the o-series with image input), any case of the provider name. A class routed to OpenRouter gets text. An id it cannot read gets text. |
 | Which form of which attachment does each juror get? | `ai-node/src/lib/attachments/pdfRouting.ts`, `attachmentsForJuror`. |
 | What are the limits? | `PDF_LIMITS` in the same file, with the doc sources, and `IMAGE_LIMITS` in `normalizeImages.ts` for the request-wide ones. |
-| What is each juror told? | `documentNotes` in `ai-node/src/utils/attachment-processor.ts`: a line in that juror's own prompt for every PDF it was not sent as a PDF. |
+| What is each juror told? | `documentNotes` in `ai-node/src/utils/attachment-processor.ts`: a line in that juror's own prompt for every document it does not see as it was delivered. A juror that is sent a PDF itself gets no line about it. |
 
 The rules:
 
@@ -41,22 +41,23 @@ The rules:
   are in the jury.
 - **Per juror, not per request.** A juror that reads PDFs gets the file; in the
   same request a juror that does not gets the extracted text and the note "Only
-  its text is shown to you: pictures and page images inside the PDF are not
-  shown." A mixed jury no longer drags everyone down to text, and no longer
-  hands a `document` block to a provider that drops it.
+  its text is shown to you (12,898 characters); pictures and page images inside
+  the PDF are not shown." A mixed jury no longer drags everyone down to text,
+  and no longer hands a `document` block to a provider that drops it.
 - **Limits per juror.** A PDF that would put a juror's request over a provider
   limit (pages, bytes; with Claude, images and pages together against 100, and
   20 MB for the whole request) is text for that juror, with the reason in the
   note. PDFs take what the images leave, in attachment order.
 - **A PDF with no text layer still reaches the jurors that read PDFs.** The
-  others are told it is not shown to them. Before, such a PDF was skipped for
-  everyone with only a response warning.
+  others are told it was delivered and could not be read. Before, such a PDF
+  was not shown to anyone.
 - **A rejection does not cost the juror.** If a provider answers 400 / 413 / 422
   to a request that carried a PDF as a file, the juror is asked once more with
   the text and the note says the file was not accepted.
 - **Nothing is left out silently.** A provider handed something its request
   cannot carry names it in the prompt (`provider-attachments.ts`); a model that
-  is sent no attachments at all is told what the request held.
+  is sent no attachments at all is told what was delivered. Every such line
+  says what the arbiter did, never what to conclude.
 
 Each juror's result reports the form it got: `model_results[].pdf_inputs`
 (`ai-node/API_RESPONSE_SPECIFICATION.md`, "PDF attachments").
@@ -71,8 +72,9 @@ How this differs from the proposal further down this page:
 - The proposal sent everything as text whenever a request mixed file types
   ("Mixed or unknown → use text extraction"). Routing is per attachment, so a
   PDF beside a DOCX is still a PDF.
-- The proposal's warnings were per request. They are per juror
-  (`pdf_text_only`, with the reason), because the answer differs per juror.
+- The proposal's warnings were per request. What each juror got is reported
+  per juror (`model_results[].pdf_inputs`), with a `pdf_text_only` warning only
+  when a juror that reads PDFs got the text (a limit, a rejection).
 
 Tests: `ai-node/src/__tests__/api/rank-and-justify.pdf.test.ts` runs the route,
 the providers and their real client libraries against a local stub and asserts

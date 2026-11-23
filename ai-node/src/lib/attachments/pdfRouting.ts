@@ -13,14 +13,16 @@
  * - Only a PDF can be sent as itself. Every other document is always its
  *   extracted text, for every juror.
  * - A juror whose provider, model and route read PDFs (llm/pdf-support.ts) gets
- *   the file. Any other juror gets the extracted text and a line in its prompt
- *   saying that it sees only the text.
+ *   the file. Any other juror gets the extracted text and the line documentNotes
+ *   writes for it (utils/attachment-processor.ts): only the text is shown,
+ *   pictures and page images are not.
  * - A PDF that would put a juror's request over a provider limit is text for
  *   that juror, with the line. Images are fitted first (normalizeImages.ts,
  *   which counts each PDF in full, so they leave room for it); a PDF takes what
  *   is left, in attachment order.
  * - A PDF with no extractable text (a scan, a set of screenshots) is still sent
- *   to the jurors that read PDFs; the others are told it is not shown to them.
+ *   to the jurors that read PDFs; the others are told it was delivered and
+ *   could not be read.
  *
  * Whether a juror reads PDFs depends on the operator's gateway (a class routed
  * to OpenRouter gets text), so unlike the image decisions this one can differ
@@ -31,12 +33,21 @@
 import { IMAGE_LIMITS } from './normalizeImages';
 import type { NativePdfSupport, PdfProviderFamily } from '../llm/pdf-support';
 import type { ProviderAttachment } from '../llm/provider-attachments';
-import {
-  DocumentNoteInput,
-  PdfTextReason,
-  PreparedAttachment,
-  documentNotes,
-} from '../../utils/attachment-processor';
+import { PdfForm, PreparedAttachments, documentNotes } from '../../utils/attachment-processor';
+import type { AttachmentProcessingResult } from '../text-extraction/types';
+
+/** Why a juror was not sent a PDF as a PDF. */
+export type PdfTextReason =
+  /** This provider, model or route is sent text only. */
+  | 'model'
+  /** With it the request would hold more PDF pages than the provider accepts. */
+  | 'page_limit'
+  /** With it the request would be larger than the provider accepts. */
+  | 'size_limit'
+  /** The provider turned down the request that carried it; the juror was asked again with the text. */
+  | 'rejected'
+  /** The model is sent no attachments at all. */
+  | 'no_attachments';
 
 export const PDF_LIMITS = {
   /**
@@ -83,8 +94,8 @@ export const PDF_LIMITS = {
 
 /** How one juror was given one PDF; reported as `model_results[].pdf_inputs`. */
 export interface JurorPdfInput {
-  /** The request's name for the file, or "Attachment N". */
-  name: string;
+  /** The request's name for the file, or its number in the request (as the notes and warnings name it). */
+  attachment: string;
   /** native: the file itself. text: its extracted text only. not_shown: nothing of it. */
   form: 'native' | 'text' | 'not_shown';
   /** Pages, when the parser could count them. */
@@ -100,6 +111,8 @@ export interface JurorAttachments {
   notes: string[];
   /** One entry per PDF of the request, in request order. */
   pdfInputs: JurorPdfInput[];
+  /** The same entries by the PDF's index in the attachments (two files can share a name). */
+  pdfInputByIndex: Map<number, JurorPdfInput>;
   /** How many PDFs are in `attachments` as files. */
   nativePdfs: number;
 }
@@ -109,21 +122,22 @@ interface Allowance {
   pages: number;
   /** Bytes the PDFs may still add, in the unit `cost` measures. */
   bytes: number;
-  cost: (attachment: PreparedAttachment) => number;
-  pageLimit: string;
-  sizeLimit: string;
+  cost: (pdf: PdfForm) => number;
+  /** What the arbiter did with a file over a limit, for the juror's note. */
+  overPages: (pdf: PdfForm) => string;
+  overSize: string;
 }
 
 /** What is left for PDFs in a juror's request once the images and the text are in it. */
-function allowanceFor(family: PdfProviderFamily, prepared: PreparedAttachment[]): Allowance {
+function allowanceFor(family: PdfProviderFamily, results: AttachmentProcessingResult[]): Allowance {
   let imageBlocks = 0;
   let commonBytes = 0;
-  for (const attachment of prepared) {
-    if (!attachment.common) continue;
-    if (attachment.common.type === 'image') imageBlocks++;
+  for (const { attachment } of results) {
+    if (attachment.type === 'image') imageBlocks++;
     // A PDF's text is counted even though the file replaces it: at most 100,000 characters each.
-    commonBytes += attachment.common.content.length;
+    commonBytes += attachment.content.length;
   }
+  const pagesOf = (pdf: PdfForm) => (pdf.pages ? `its ${pdf.pages} pages` : 'its pages');
 
   if (family === 'anthropic') {
     const requestBytes = Math.floor(IMAGE_LIMITS.ANTHROPIC_MAX_REQUEST_BYTES * IMAGE_LIMITS.SAFETY_MARGIN);
@@ -134,9 +148,13 @@ function allowanceFor(family: PdfProviderFamily, prepared: PreparedAttachment[])
       ),
       bytes: requestBytes - commonBytes,
       // The file travels base64-encoded inside the JSON request, and the limit is on the request.
-      cost: attachment => attachment.pdf!.base64Length,
-      pageLimit: `the ${PDF_LIMITS.ANTHROPIC_MAX_PAGES_PER_REQUEST} PDF pages and images a request to this model may hold`,
-      sizeLimit: `this model's ${IMAGE_LIMITS.ANTHROPIC_MAX_REQUEST_BYTES / 1_000_000} MB request size limit`,
+      cost: pdf => pdf.base64Length,
+      overPages: pdf =>
+        `The file itself was not sent: ${pagesOf(pdf)} would put this request over the ` +
+        `${PDF_LIMITS.ANTHROPIC_MAX_PAGES_PER_REQUEST} PDF pages and images a request to this model may hold.`,
+      overSize:
+        `The file itself was not sent: it would put this request over this model's ` +
+        `${IMAGE_LIMITS.ANTHROPIC_MAX_REQUEST_BYTES / 1_000_000} MB request size limit.`,
     };
   }
   return {
@@ -144,11 +162,18 @@ function allowanceFor(family: PdfProviderFamily, prepared: PreparedAttachment[])
     // The files' own bytes. OpenAI's 512 MB payload limit is normalizeImages' to
     // keep: it fits the images around every PDF counted in full.
     bytes: PDF_LIMITS.OPENAI_MAX_FILE_BYTES_PER_REQUEST,
-    cost: attachment => attachment.pdf!.byteLength,
-    pageLimit: `the ${PDF_LIMITS.OPENAI_MAX_PAGES_PER_REQUEST} PDF pages a request to this model may hold`,
-    sizeLimit: `the ${PDF_LIMITS.OPENAI_MAX_FILE_BYTES_PER_REQUEST / (1024 * 1024)} MB of files a request to this model may hold`,
+    cost: pdf => pdf.byteLength,
+    overPages: pdf =>
+      `The file itself was not sent: ${pagesOf(pdf)} would put this request over the ` +
+      `${PDF_LIMITS.OPENAI_MAX_PAGES_PER_REQUEST} PDF pages a request to this model may hold.`,
+    overSize:
+      `The file itself was not sent: it would put this request over the ` +
+      `${PDF_LIMITS.OPENAI_MAX_FILE_BYTES_PER_REQUEST / (1024 * 1024)} MB of files a request to this model may hold.`,
   };
 }
+
+/** What a juror is told when its provider turned the file down and it was asked again with the text. */
+const FILE_NOT_ACCEPTED = 'The file itself was sent to this model first and was not accepted.';
 
 export interface JurorRoutingOptions {
   /**
@@ -161,109 +186,128 @@ export interface JurorRoutingOptions {
 /**
  * The attachments of a request as one juror gets them.
  *
- * @param prepared - Every attachment in every form (prepareAttachments), in request order.
+ * @param prepared - Every attachment in every form (prepareAttachments).
+ * @param refs - How each attachment is named (normalizeImageAttachments' `refs`), index-aligned with them.
  * @param support - nativePdfSupport(provider, model) for this juror.
  */
 export function attachmentsForJuror(
-  prepared: PreparedAttachment[],
+  prepared: PreparedAttachments,
+  refs: string[],
   support: NativePdfSupport,
   options: JurorRoutingOptions = {},
 ): JurorAttachments {
-  const attachments: ProviderAttachment[] = [];
-  const pdfInputs: JurorPdfInput[] = [];
-  const noteInputs: DocumentNoteInput[] = [];
-  const unreadable: string[] = [];
-  const allowance = support.native && support.family ? allowanceFor(support.family, prepared) : null;
-  let nativePdfs = 0;
+  const { results } = prepared.processed;
+  const commonForm = new Map<number, AttachmentProcessingResult>();
+  results.forEach(result => {
+    if (result.sourceIndex !== undefined) commonForm.set(result.sourceIndex, result);
+  });
+  const allowance = support.native && support.family ? allowanceFor(support.family, results) : null;
 
-  for (const attachment of prepared) {
-    if (attachment.kind !== 'pdf' || !attachment.pdf) {
-      if (attachment.common) {
-        attachments.push(toProviderAttachment(attachment.common));
-      } else {
-        unreadable.push(
-          `Attachment ${attachment.name.ref} could not be read and is not shown to you` +
-            `${attachment.skippedReason ? `: ${withoutFinalStop(attachment.skippedReason)}` : ''}.`,
-        );
-      }
+  const attachments: ProviderAttachment[] = [];
+  const pdfInputByIndex = new Map<number, JurorPdfInput>();
+  const sentAsFile = new Set<number>();
+  const whyNotAFile = new Map<number, string>();
+
+  for (let index = 0; index < prepared.count; index++) {
+    const pdf = prepared.pdfs.get(index);
+    const common = commonForm.get(index);
+    if (!pdf) {
+      if (common) attachments.push(toProviderAttachment(common));
       continue;
     }
 
     // An unreadable page count is taken as one page: the provider counts them itself.
-    const pages = attachment.pdf.pages ?? 1;
+    const pages = pdf.pages ?? 1;
     let reason: PdfTextReason | null = null;
-    let limit: string | undefined;
     if (!allowance) {
       reason = 'model';
     } else if (pages > allowance.pages) {
       reason = 'page_limit';
-      limit = allowance.pageLimit;
-    } else if (allowance.cost(attachment) > allowance.bytes) {
+      whyNotAFile.set(index, allowance.overPages(pdf));
+    } else if (allowance.cost(pdf) > allowance.bytes) {
       reason = 'size_limit';
-      limit = allowance.sizeLimit;
+      whyNotAFile.set(index, allowance.overSize);
     } else if (options.rejected) {
       reason = 'rejected';
+      whyNotAFile.set(index, FILE_NOT_ACCEPTED);
     }
 
-    const known = attachment.pdf.pages !== null ? { pages: attachment.pdf.pages } : {};
+    const attachment = attachmentRef(refs, index);
+    const known = pdf.pages !== null ? { pages: pdf.pages } : {};
     if (!reason && allowance) {
       allowance.pages -= pages;
-      allowance.bytes -= allowance.cost(attachment);
-      nativePdfs++;
-      attachments.push({
-        type: 'document',
-        content: attachment.pdf.content,
-        mediaType: 'application/pdf',
-        name: attachment.name.display,
-      });
-      pdfInputs.push({ name: attachment.name.display, form: 'native', ...known });
+      allowance.bytes -= allowance.cost(pdf);
+      sentAsFile.add(index);
+      const name = fileName(attachment);
+      attachments.push({ type: 'document', content: pdf.content, mediaType: 'application/pdf', ...(name && { name }) });
+      pdfInputByIndex.set(index, { attachment, form: 'native', ...known });
       continue;
     }
 
-    const form = attachment.common ? 'text' : 'not_shown';
-    if (attachment.common) attachments.push(toProviderAttachment(attachment.common));
-    pdfInputs.push({ name: attachment.name.display, form, ...known, reason: reason! });
-    noteInputs.push({ attachment, form, reason: reason!, limit });
+    if (common) attachments.push(toProviderAttachment(common));
+    pdfInputByIndex.set(index, { attachment, form: common ? 'text' : 'not_shown', ...known, reason: reason! });
   }
 
-  return { attachments, notes: [...unreadable, ...documentNotes(noteInputs)], pdfInputs, nativePdfs };
+  return {
+    attachments,
+    // One writer for every line about a document, whoever the juror is.
+    notes: documentNotes(prepared.processed, refs, { sentAsFile, whyNotAFile }),
+    pdfInputs: Array.from(pdfInputByIndex.values()),
+    pdfInputByIndex,
+    nativePdfs: sentAsFile.size,
+  };
 }
 
 /**
  * A juror whose model is sent no attachments at all (the provider says so for
- * that model): nothing is attached, and the prompt says what the request held.
+ * that model): nothing is attached, and the prompt says what was delivered.
  */
-export function withoutAttachments(prepared: PreparedAttachment[]): JurorAttachments {
-  const names = Array.from(new Set(prepared.map(attachment => attachment.name.display)));
-  const shown = names.slice(0, 20).join(', ') + (names.length > 20 ? `, and ${names.length - 20} more` : '');
+export function withoutAttachments(prepared: PreparedAttachments, refs: string[]): JurorAttachments {
+  const names = Array.from(new Set(Array.from({ length: prepared.count }, (_, index) => attachmentRef(refs, index))));
+  const listed = names.slice(0, 20).join(', ') + (names.length > 20 ? `, and ${names.length - 20} more` : '');
+  const one = names.length === 1;
+  const pdfInputByIndex = new Map<number, JurorPdfInput>(
+    Array.from(prepared.pdfs.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([index, pdf]) => [
+        index,
+        {
+          attachment: attachmentRef(refs, index),
+          form: 'not_shown' as const,
+          ...(pdf.pages !== null ? { pages: pdf.pages } : {}),
+          reason: 'no_attachments' as const,
+        },
+      ]),
+  );
   return {
     attachments: [],
     notes:
       names.length === 0
         ? []
         : [
-            `This request has ${names.length === 1 ? 'an attachment' : `${names.length} attachments`} (${shown}) that ` +
-              `${names.length === 1 ? 'is' : 'are'} not shown to you: this model is sent no attachments. Judge without ` +
-              `${names.length === 1 ? 'it' : 'them'} and say so in your justification.`,
+            `${one ? 'Attachment' : 'Attachments'} ${listed} ${one ? 'was' : 'were'} delivered with this request, but ` +
+              `this model is sent no attachments, so ${one ? 'its' : 'their'} content is not shown to you. ` +
+              `${one ? 'The file is' : 'The files are'} not missing from the request.`,
           ],
-    pdfInputs: prepared
-      .filter(attachment => attachment.kind === 'pdf')
-      .map(attachment => ({
-        name: attachment.name.display,
-        form: 'not_shown' as const,
-        ...(attachment.pdf && attachment.pdf.pages !== null ? { pages: attachment.pdf.pages } : {}),
-        reason: 'no_attachments' as const,
-      })),
+    pdfInputs: Array.from(pdfInputByIndex.values()),
+    pdfInputByIndex,
     nativePdfs: 0,
   };
 }
 
-function toProviderAttachment(common: { type: string; content: string; mediaType: string }): ProviderAttachment {
-  return { type: common.type, content: common.content, mediaType: common.mediaType };
+/** The request's name for an attachment, or its number: what the notes put after "Attachment". */
+function attachmentRef(refs: string[], index: number): string {
+  return refs[index] ?? String(index + 1);
 }
 
-function withoutFinalStop(text: string): string {
-  return text.trim().replace(/\.$/, '');
+/** A ref that is only a number is an attachment the request did not name: no file name to pass on. */
+function fileName(ref: string): string | undefined {
+  return /^\d+$/.test(ref) ? undefined : ref;
+}
+
+function toProviderAttachment(result: AttachmentProcessingResult): ProviderAttachment {
+  const { type, content, mediaType } = result.attachment;
+  return { type, content, mediaType };
 }
 
 /** One log line per juror: which form each PDF took. Never the content. */
@@ -271,8 +315,9 @@ export function describePdfInputs(pdfInputs: JurorPdfInput[]): string {
   if (pdfInputs.length === 0) return 'no PDF';
   return pdfInputs
     .map(input => {
-      const pages = input.pages !== undefined ? `, ${input.pages} page${input.pages === 1 ? '' : 's'}` : '';
-      return `${input.name} ${input.form}${input.reason ? ` (${input.reason}${pages})` : pages ? ` (${pages.slice(2)})` : ''}`;
+      const pages = input.pages !== undefined ? `${input.pages} page${input.pages === 1 ? '' : 's'}` : '';
+      const detail = [input.reason, pages].filter(Boolean).join(', ');
+      return `${input.attachment} ${input.form}${detail ? ` (${detail})` : ''}`;
     })
     .join('; ');
 }

@@ -388,8 +388,9 @@ New fields are **optional** and **additive**:
 ### Warning Types
 - `model_timeout` - Model timed out (non-catastrophic)
 - `model_failure` - Model failed (non-catastrophic)
-- `pdf_text_only` - A juror was sent a PDF's extracted text, not the file (per juror, with the reason; `ai-node/API_RESPONSE_SPECIFICATION.md`, "PDF Attachments"). It replaces `attachment_unsupported`, which no code emitted
+- `pdf_text_only` - A juror that reads PDFs was sent a PDF's extracted text, not the file: a limit, or the provider rejected the file (per juror, with the reason; `ai-node/API_RESPONSE_SPECIFICATION.md`, "PDF Attachments"). It replaces `attachment_unsupported`, which no code emitted
 - `attachment_skipped` - An attachment was not shown: to anyone (no `model`), or to one juror (`model` set: a PDF with no text for a juror that is not sent the file)
+- `attachments_not_sent` - A juror's model is sent no attachments at all (per juror)
 - `attachment_processing_error` - Error processing attachments
 
 ### Warning Severity Levels

@@ -120,62 +120,99 @@ Optional request fields: `attachmentNames` (file names, index-aligned with
 
 ---
 
+## Document Attachments
+
+A juror sees only the blocks it is sent, so every document it does not see as it
+was delivered gets a line in the same "Notes on the attachments" section of the
+prompt (`documentNotes`, `src/utils/attachment-processor.ts`). A request whose
+documents are all shown whole has no such line.
+
+| What happened | The line in the prompt | In the response |
+| --- | --- | --- |
+| The arbiter could not read the file (a PDF with no text layer, a damaged or protected document) | `Attachment <name> (PDF, 16.3 MB) was delivered with this request, but the arbiter could not read it, so its content is not shown to you. The file is not missing from the request.` | a warning, below |
+| A PDF was read through text extraction | `Attachment <name> is a PDF. Only its text is shown to you (12,898 characters); pictures and page images inside the PDF are not shown.` | none |
+| Text was cut at a limit (50,000 characters of plain text, 100,000 of extracted text) | `Attachment <name> is long: only the first 50,000 of its 51,234 characters are shown to you.` | none |
+
+```json
+"warnings": [
+  { "type": "attachment_skipped", "severity": "warning",
+    "message": "Attachment 9: PDF processing failed: ...",
+    "details": { "attachment": "submission/R4.pdf", "media_type": "application/pdf" } }
+]
+```
+
+`message` keeps the technical cause for the operator; the number in it counts the
+attachments as they were sent to the models (the parts of a split image count
+one each), so `details.attachment` names the file. The prompt line gives no
+cause: a juror cannot act on one, and before these lines existed a dropped PDF was
+reported by both jurors of a bounty as a file the submitter had not included.
+
+PDF text is read with `pdf-parse` alone; a host needs no `pdftotext`. These lines
+are each juror's own: a juror that is sent a PDF itself (next section) sees its
+pages and gets no line about it, in the same request in which another juror,
+sent the text, does.
+
+---
+
 ## PDF Attachments (`model_results[].pdf_inputs`)
 
 A PDF reaches each juror in the best form that juror can read
 (`src/lib/attachments/pdfRouting.ts`). A juror whose provider, model and route
 read PDFs natively (`src/lib/llm/pdf-support.ts`: OpenAI and Anthropic on their
 own keys, current models) is sent the file itself: the model gets each page's
-text and an image of the page. Any other juror is sent the text extracted from
-the PDF and one line in its own prompt:
+text and an image of the page, so it sees pictures, charts and scans. Any other
+juror is sent the text extracted from the PDF and the "Only its text is shown to
+you" line above. Every other document (DOCX, DOC, RTF, ...) is its extracted
+text for every juror.
 
-```
-Notes on the attachments (added by the arbiter while preparing them for the models):
-- Attachment recording.pdf is a PDF. Only its text is shown to you: pictures and page images inside the PDF are not shown.
-```
-
-Every other document (DOCX, DOC, RTF, ...) is its extracted text for every juror.
+| For one juror | What it is sent | The line in its prompt |
+| --- | --- | --- |
+| It reads PDFs and the request stays inside the provider's limits | The file | none |
+| Its provider, model or route is sent text (xAI, Hyperbolic, Ollama, any class routed through OpenRouter, an older model) | The extracted text | `Attachment <name> is a PDF. Only its text is shown to you (12,898 characters); pictures and page images inside the PDF are not shown.` |
+| The file would put its request over a limit: 100 PDF pages per request for both providers, counted with the images for Claude; 20 MB for a whole Claude request, 32 MB of files for OpenAI | The extracted text | the same line, then `The file itself was not sent: its 240 pages would put this request over the 100 PDF pages a request to this model may hold.` |
+| Its provider answered 400 / 413 / 422 to the request with the file | The extracted text, in a second request | the same line, then `The file itself was sent to this model first and was not accepted.` |
+| The PDF has no text layer and it reads PDFs | The file | none |
+| The PDF has no text layer and it does not | Nothing of it | the "could not read it" line above |
+| Its provider says the model takes no attachments at all | Nothing | `Attachments <names> were delivered with this request, but this model is sent no attachments, so their content is not shown to you. The files are not missing from the request.` |
 
 A request with a PDF reports, per juror, how each PDF was given to it:
 
 ```json
 "model_results": [
-  { "provider": "openai", "model": "gpt-5.6-terra", "status": "success", "duration_ms": 41210,
-    "pdf_inputs": [ { "name": "submission/recording.pdf", "form": "native", "pages": 19 } ] },
-  { "provider": "xai", "model": "grok-4.6", "status": "success", "duration_ms": 18760,
-    "pdf_inputs": [ { "name": "submission/recording.pdf", "form": "text", "pages": 19, "reason": "model" } ] }
+  { "provider": "openai", "model": "gpt-5.6-terra", "status": "success",
+    "pdf_inputs": [ { "attachment": "submission/recording.pdf", "form": "native", "pages": 19 } ] },
+  { "provider": "xai", "model": "grok-4.6", "status": "success",
+    "pdf_inputs": [ { "attachment": "submission/recording.pdf", "form": "text", "pages": 19, "reason": "model" } ] }
 ]
 ```
 
+- `attachment` is the file as the notes and warnings name it: its
+  `attachmentNames` entry, or its number.
 - `form`: `native` (the file), `text` (its extracted text only), `not_shown`
-  (nothing: the PDF gave no text and the file was not sent).
-- `reason`, when not `native`: `model` (this provider, model or route is sent
-  text; a class routed to OpenRouter is), `page_limit` and `size_limit` (with
-  the file the request would be over the provider's limit: 100 PDF pages per
-  request for both providers, counted with the images for Claude; 20 MB for a
-  whole Claude request, 32 MB of files for OpenAI), `rejected` (the provider
-  answered 400 / 413 / 422 to the request with the file, and the juror was asked
-  again with the text), `no_attachments` (the model is sent no attachments at all).
+  (nothing of it).
+- `reason`, when not `native`: `model`, `page_limit`, `size_limit`, `rejected`,
+  `no_attachments`, as in the table.
 - `pages` is absent when the parser could not count them, or when no juror of
   the request reads PDFs (the file is then not opened for a count).
-- `name` is the request's `attachmentNames` entry, or `Attachment N`.
 
-Each `text` or `not_shown` entry also adds a warning, so a reader of the
-justification can see which juror did not see the pages:
+A juror that is simply sent text (`reason: "model"`) adds no warning, as before.
+A juror that reads PDFs but got the text does:
 
 ```json
 "warnings": [
-  { "type": "pdf_text_only", "severity": "info", "model": "xai-grok-4.6",
-    "message": "submission/recording.pdf was sent to xai-grok-4.6 as extracted text only (xai requests carry no PDF block); pictures and page images inside the PDF were not shown to it.",
-    "details": { "reason": "model", "pages": 19 } }
+  { "type": "pdf_text_only", "severity": "warning", "model": "anthropic-claude-sonnet-5",
+    "message": "Attachment submission/recording.pdf was sent to anthropic-claude-sonnet-5 as extracted text only (rejected: HTTP 400: The PDF specified is password protected.); pictures and page images inside the PDF were not shown to it.",
+    "details": { "attachment": "submission/recording.pdf", "reason": "rejected", "pages": 19 } }
 ]
 ```
 
-`pdf_text_only` is `info`, or `warning` when the reason is `rejected` (the
-message then carries the provider's status and text). A PDF that was shown to a
-juror in no form is `attachment_skipped` (`warning`) with that juror as `model`.
-A document that is not a PDF and gave no text is `attachment_skipped` without a
-`model`, as before, and every juror's prompt now says it is not shown.
+`pdf_text_only` is `warning` when the reason is `rejected` (the message carries
+the provider's status and text) and `info` for `page_limit` and `size_limit`.
+`attachment_skipped` for a
+PDF with no text layer is one warning, as above, when no juror was sent the
+file; when some were, it is one per juror that was not, with that juror as
+`model`. `attachments_not_sent` (`warning`, with `model`) is a juror whose model
+is sent no attachments.
 
 Each juror also gets one log line:
 `📎 PDF_INPUT: openai-gpt-5.6-terra submission/recording.pdf native (19 pages) | openai reads PDFs natively | [{…}]`,
@@ -184,6 +221,33 @@ and `📎 PDF_FALLBACK` when a provider turned the file down.
 Sending the file costs input tokens that the text did not: Anthropic documents
 1,500 to 3,000 text tokens plus up to 1,568 image tokens per page. Text-mode
 timeouts (`MODEL_TIMEOUT_MS`, default 120 s) are unchanged.
+
+---
+
+## The Result Record (start of `justification`, `model_results[].scores`)
+
+`justification` begins with a block the arbiter computes itself
+(`src/utils/resultRecord.ts`), followed by a blank line and the justifier's text:
+
+```
+RESULT (computed by the arbiter from the jurors' scores)
+- DONT_FUND: 567,500 of 1,000,000 (56.75%)
+- FUND: 432,500 of 1,000,000 (43.25%)
+JURORS (2 of 2 answered; the result is their weighted average)
+- openai gpt-5.6-terra, weight 0.5: DONT_FUND 1,000,000; FUND 0
+- anthropic claude-sonnet-5, weight 0.5: DONT_FUND 135,000; FUND 865,000
+```
+
+A juror that gave no score is listed as `no score, not counted (timed out after
+120 s)`, `(authentication error (HTTP 401))`, `(its reply could not be read as
+scores)`, and the heading then reads `1 of 2 answered; the result is that one
+juror's scores`. The block never quotes a provider's message. The numbers are the
+response's own `scores`; the justifier is given the block and asked to explain
+it, not to work a result out, and the block stands whatever the justifier writes
+(also when it times out or fails and the jurors' own texts are returned).
+
+The same numbers are in `model_results[]` for a program: `weight` on every entry,
+and `scores` (the juror's own integers, in outcome order) on every `success`.
 
 ---
 

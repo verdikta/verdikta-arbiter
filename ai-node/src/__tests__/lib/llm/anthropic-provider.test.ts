@@ -533,8 +533,9 @@ describe('AnthropicProvider', () => {
         { type: 'text', text: 'A cover note.' },
         {
           type: 'text',
-          text: '[One attachment of this request is not shown to you: PDF "submission/recording.pdf". A request to ' +
-            'Anthropic claude-3-opus-20240229 cannot carry it. Judge without it and say so in your justification.]',
+          text: '[One attachment (PDF "submission/recording.pdf") was delivered with this request, but a request to ' +
+            'Anthropic claude-3-opus-20240229 cannot carry it, so its content is not shown to you. ' +
+            'The file is not missing from the request.]',
         },
       ]);
     });
@@ -552,7 +553,7 @@ describe('AnthropicProvider', () => {
 
       const content = mockMessagesCreate.mock.calls[0][0].messages[0].content;
       expect(content.map((block: any) => block.type)).toEqual(['document', 'text', 'text']);
-      expect(content[2].text).toContain('not shown to you: application/vnd.openxmlformats-officedocument.wordprocessingml.document file "letter.docx"');
+      expect(content[2].text).toContain('[One attachment (application/vnd.openxmlformats-officedocument.wordprocessingml.document file "letter.docx") was delivered');
       expect(JSON.stringify(content)).not.toContain('UEsDBBQABgAIAAAAIQ');
     });
 

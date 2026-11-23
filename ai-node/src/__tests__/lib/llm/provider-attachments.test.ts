@@ -57,15 +57,18 @@ describe('the shared helper', () => {
   test('the note names what is missing and why, and there is none when nothing is', () => {
     expect(notShownNote([], 'xAI grok-4.6')).toBeNull();
     expect(withNotShownNote('Judge this.', [], 'xAI grok-4.6')).toBe('Judge this.');
+    // What was done with the file, and that it was delivered: never what to conclude.
     expect(notShownNote([PDF], 'xAI grok-4.6')).toBe(
-      '[One attachment of this request is not shown to you: PDF "recording.pdf". A request to xAI grok-4.6 cannot carry it. ' +
-        'Judge without it and say so in your justification.]',
+      '[One attachment (PDF "recording.pdf") was delivered with this request, but a request to xAI grok-4.6 cannot ' +
+        'carry it, so its content is not shown to you. The file is not missing from the request.]',
     );
     expect(withNotShownNote('Judge this.', [PDF, DOCX], 'OpenRouter openai/gpt-6-luna')).toBe(
-      'Judge this.\n\n[2 attachments of this request are not shown to you: PDF "recording.pdf", ' +
-        'application/vnd.openxmlformats-officedocument.wordprocessingml.document file. A request to OpenRouter ' +
-        'openai/gpt-6-luna cannot carry them. Judge without them and say so in your justification.]',
+      'Judge this.\n\n[2 attachments (PDF "recording.pdf", ' +
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document file) were delivered with this request, ' +
+        'but a request to OpenRouter openai/gpt-6-luna cannot carry them, so their content is not shown to you. ' +
+        'The files are not missing from the request.]',
     );
+    expect(notShownNote([PDF], 'xAI grok-4.6')).not.toMatch(/judge|justification|score/i);
   });
 
   test.each([
@@ -116,8 +119,8 @@ describe('providers whose request carries images and text only', () => {
   const expectTold = (content: any[], who: string) => {
     // The prompt says what is missing, and no part of the request holds the file's base64.
     expect(content[0].text).toContain(
-      `[2 attachments of this request are not shown to you: PDF "recording.pdf", ${DOCX.mediaType} file. ` +
-        `A request to ${who} cannot carry them.`,
+      `[2 attachments (PDF "recording.pdf", ${DOCX.mediaType} file) were delivered with this request, ` +
+        `but a request to ${who} cannot carry them, so their content is not shown to you.`,
     );
     expect(JSON.stringify(content)).not.toContain(PDF.content);
     expect(JSON.stringify(content)).not.toContain(DOCX.content);
@@ -185,8 +188,8 @@ describe('Ollama: a prompt and at most one image', () => {
     ]);
 
     expect(generate).toHaveBeenCalledWith(
-      'Judge this.\n\n[One attachment of this request is not shown to you: text attachment "recording.pdf". ' +
-        'A request to Ollama llava:7b cannot carry it. Judge without it and say so in your justification.]',
+      'Judge this.\n\n[One attachment (text attachment "recording.pdf") was delivered with this request, but a request ' +
+        'to Ollama llava:7b cannot carry it, so its content is not shown to you. The file is not missing from the request.]',
       'llava:7b',
     );
   });
@@ -197,7 +200,7 @@ describe('Ollama: a prompt and at most one image', () => {
     await provider.generateResponseWithAttachments('Judge this.', 'llava:7b', [IMAGE, TEXT]);
 
     const [prompt, model, content, mediaType] = withImage.mock.calls[0];
-    expect(prompt).toContain('[One attachment of this request is not shown to you: text attachment.');
+    expect(prompt).toContain('[One attachment (text attachment) was delivered with this request, but a request to Ollama llava:7b cannot carry it');
     expect([model, content, mediaType]).toEqual(['llava:7b', IMAGE.content, 'image/png']);
   });
 

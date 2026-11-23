@@ -138,7 +138,7 @@ describe('requestArgs', () => {
 
 describe('pdfInputChecks (the pdf-canary scenario: every juror was sent the PDF itself)', () => {
   const juror = (provider, model, pdfInputs) => ({ provider, model, status: 'success', ...(pdfInputs && { pdf_inputs: pdfInputs }) });
-  const native = [{ name: 'evidence.pdf', form: 'native', pages: 3 }];
+  const native = [{ attachment: 'evidence.pdf', form: 'native', pages: 3 }];
   const report = (cid, modelResults) => ({ cid, version: null, json: modelResults ? { model_results: modelResults } : null });
 
   it('passes when every juror of every revealing arbiter reports every PDF as native', () => {
@@ -158,7 +158,7 @@ describe('pdfInputChecks (the pdf-canary scenario: every juror was sent the PDF 
     const [check] = pdfInputChecks([
       report('QmArbiterOne', [
         juror('openai', 'gpt-5.6-terra', native),
-        juror('anthropic', 'claude-sonnet-5', [{ name: 'evidence.pdf', form: 'text', pages: 3, reason: 'model' }]),
+        juror('anthropic', 'claude-sonnet-5', [{ attachment: 'evidence.pdf', form: 'text', pages: 3, reason: 'model' }]),
       ]),
     ], 'native');
 
@@ -167,7 +167,7 @@ describe('pdfInputChecks (the pdf-canary scenario: every juror was sent the PDF 
   });
 
   it('fails for a provider that turned the file down, an AI Node from before the field, and a justification that could not be read', () => {
-    const rejected = pdfInputChecks([report('QmA', [juror('openai', 'gpt-5.6-terra', [{ name: 'evidence.pdf', form: 'text', reason: 'rejected' }])])], 'native');
+    const rejected = pdfInputChecks([report('QmA', [juror('openai', 'gpt-5.6-terra', [{ attachment: 'evidence.pdf', form: 'text', reason: 'rejected' }])])], 'native');
     expect(rejected[0]).toMatchObject({ ok: false });
     expect(rejected[0].detail).toContain('text (rejected)');
 

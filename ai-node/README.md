@@ -298,9 +298,7 @@ A PDF is the one document that can reach a model as itself. In
 - A PDF with no text layer (a scan) still goes to the jurors that read PDFs.
 
 The response says which form each juror got (`model_results[].pdf_inputs`, see
-`API_RESPONSE_SPECIFICATION.md`). Text extraction for a PDF uses `pdftotext`
-(poppler-utils) through textract in the built server; without it a PDF has no
-text form, and jurors that do not read PDFs are told it is not shown to them.
+`API_RESPONSE_SPECIFICATION.md`).
 
 ### Text Extraction Features
 
@@ -334,10 +332,11 @@ The text extraction system can be configured via environment variables or progra
 - Consider compressing or splitting very large documents
 
 **Extraction Failures:**
-- Binary files that can't be processed are automatically skipped
+- A document that cannot be read is not sent to the models; the prompt says it was delivered but could not be read, and the response carries an `attachment_skipped` warning naming the file
 - Corrupted or password-protected files will fail extraction
-- Scanned PDFs (images) have no text to extract; jurors that read PDFs natively still get the file
-- PDF text extraction tries pdf-parse first and falls back to textract (`pdftotext`). In the built server pdf-parse's package entry fails to load, so the text comes from `pdftotext`
+- A scanned PDF (pages that are pictures) has no text to extract. Jurors that read PDFs natively are still sent the file; for the others it is reported as unreadable
+- PDF text is read with pdf-parse, which needs nothing installed on the host; textract (poppler's `pdftotext`) is a second attempt where the host has it
+- A juror that is not sent a PDF itself is shown its text only, and its prompt says that the pictures are not shown
 
 **Performance Tips:**
 - Text-based formats (RTF, TXT, MD) process fastest
@@ -346,7 +345,7 @@ The text extraction system can be configured via environment variables or progra
 
 **Expected Behavior:**
 - Successfully processed attachments are sent to the LLM
-- Failed/unsupported attachments are skipped with console warnings
+- Failed/unsupported attachments are not sent, and the jury is told so in the prompt (see `API_RESPONSE_SPECIFICATION.md`, "Document Attachments")
 - Image attachments bypass text extraction and are sent directly
 
 ## AI Gateway

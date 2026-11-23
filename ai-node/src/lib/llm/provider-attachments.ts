@@ -69,16 +69,19 @@ function describe(attachment: ProviderAttachment): string {
 
 /**
  * The line that tells the model what it was not shown, or null when it was shown everything.
+ * Like the arbiter's other attachment notes (documentNotes), it says what was done with
+ * the file and that the file was delivered; it does not say what to conclude.
  *
  * @param who - The provider and model, for the reason ("xAI grok-4.6").
  */
 export function notShownNote(notShown: ProviderAttachment[], who: string): string | null {
   if (notShown.length === 0) return null;
   const list = notShown.map(describe).join(', ');
-  const subject = notShown.length === 1 ? 'One attachment of this request is' : `${notShown.length} attachments of this request are`;
+  const one = notShown.length === 1;
   return (
-    `[${subject} not shown to you: ${list}. A request to ${who} cannot carry ${notShown.length === 1 ? 'it' : 'them'}. ` +
-    `Judge without ${notShown.length === 1 ? 'it' : 'them'} and say so in your justification.]`
+    `[${one ? 'One attachment' : `${notShown.length} attachments`} (${list}) ${one ? 'was' : 'were'} delivered with this ` +
+    `request, but a request to ${who} cannot carry ${one ? 'it' : 'them'}, so ${one ? 'its' : 'their'} content is not ` +
+    `shown to you. ${one ? 'The file is' : 'The files are'} not missing from the request.]`
   );
 }
 

@@ -188,7 +188,7 @@ interface EncodedImage {
   height: number;
 }
 
-export interface AttachmentName {
+interface AttachmentName {
   /** "medium_article.png", or "Attachment 3" when the caller sent no name. */
   display: string;
   /** How a note refers to it after the word "Attachment": the name, or its number. */
@@ -245,15 +245,16 @@ export interface NormalizeImagesOptions {
 export interface NormalizeImagesResult {
   /** Replaces the request's attachments; untouched entries are the same strings. */
   attachments: string[];
-  /**
-   * For each returned attachment, the index of the request attachment it came
-   * from (a tile and its label both point at the image they were cut from), so
-   * later steps can still name an attachment as the request did.
-   */
-  sourceIndexes: number[];
   /** One line per changed or omitted image, for the prompt. */
   promptNotes: string[];
   changes: ImageChange[];
+  /**
+   * How a note refers to each returned attachment after the word "Attachment": the file
+   * name it was sent with, or its number in the request as received. Index-aligned with
+   * `attachments` (the parts of a split image share one), so a later step can still name
+   * a document after images before it were split or omitted.
+   */
+  refs: string[];
 }
 
 /** Thrown, with DROP_UNPROCESSABLE_IMAGES off, for an image that cannot be used. */
@@ -346,7 +347,7 @@ export async function normalizeImageAttachments(
   }
 
   if (images.length === 0 && changes.length === 0) {
-    return { attachments, sourceIndexes: attachments.map((_, index) => index), promptNotes: [], changes: [] };
+    return { attachments, promptNotes: [], changes: [], refs: attachmentRefs(names, attachments.length) };
   }
 
   const models = options.models ?? [];
@@ -457,17 +458,25 @@ export async function normalizeImageAttachments(
   }
 
   const normalized: string[] = [];
-  const sourceIndexes: number[] = [];
+  const refs: string[] = [];
   attachments.forEach((attachment, index) => {
     if (omitted.has(index)) return;
-    for (const entry of replacements.get(index) ?? [attachment]) {
-      normalized.push(entry);
-      sourceIndexes.push(index);
-    }
+    const parts = replacements.get(index) ?? [attachment];
+    normalized.push(...parts);
+    parts.forEach(() => refs.push(attachmentName(names, index).ref));
   });
 
   changes.sort((a, b) => a.index - b.index);
-  return { attachments: normalized, sourceIndexes, promptNotes: changes.map(change => change.note), changes };
+  return { attachments: normalized, promptNotes: changes.map(change => change.note), changes, refs };
+}
+
+/**
+ * The note reference of each of `count` attachments as received: its file name, or its
+ * number. What normalizeImageAttachments returns as `refs` when it changes nothing.
+ */
+export function attachmentRefs(names: unknown, count: number): string[] {
+  const list = Array.isArray(names) ? names : [];
+  return Array.from({ length: count }, (_, index) => attachmentName(list, index).ref);
 }
 
 /** The bytes decide the type (the declared header is submitter-supplied); sniffing is silent here. */
@@ -480,8 +489,7 @@ function detectMediaType(declared: string, payload: string): string {
   }
 }
 
-/** How notes name the attachment at `index` of the request: its file name, or its number. */
-export function attachmentName(names: unknown[], index: number): AttachmentName {
+function attachmentName(names: unknown[], index: number): AttachmentName {
   const raw = names[index];
   if (typeof raw === 'string') {
     // A file name from the submitter's manifest: keep it on one short line.
