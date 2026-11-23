@@ -19,3 +19,4 @@ installer/docs/site/** linguist-generated=true
 arbiter-operator/foundry/lib/** -text
 arbiter-operator/contracts/vendor/** -text
 external-adapter/test-artifacts/** -text
+e2e/archives/pdf-canary/evidence.pdf -text

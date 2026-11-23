@@ -217,6 +217,9 @@ function validateScenario(s, i) {
   if (s.manualOnly !== undefined && typeof s.manualOnly !== 'boolean') {
     throw new Error(`Scenario "${s.id}": "manualOnly" must be true or false`);
   }
+  if (s.expectPdfInputs !== undefined && s.expectPdfInputs !== 'native') {
+    throw new Error(`Scenario "${s.id}": "expectPdfInputs" can only be "native"`);
+  }
 }
 
 /**
