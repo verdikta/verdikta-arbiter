@@ -234,13 +234,17 @@ else
 fi
 
 # Construct the registration command with ALL job IDs
+# The hash chains go to the install (the adapter reads them there), not beside this checkout: at install
+# time this runs before the components are copied (install.sh then creates the health jobs).
+HEALTH_CHAIN_DIR="${INSTALL_DIR:-$(dirname "$INSTALLER_DIR")}/health-chains"
 REGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/register-oracle-cl.js \
   --aggregator $AGGREGATOR_ADDRESS \
   --fee ${VA_ORACLE_FEE_ETH:-0.00002} \
   --oracle $OPERATOR_ADDR \
   --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
   --jobids $REGISTRATION_JOB_IDS \
-  --classes $CLASSES_ID"
+  --classes $CLASSES_ID \
+  --healthchains $HEALTH_CHAIN_DIR"
 
 # Display the command and ask for confirmation
 echo -e "${BLUE}The following command will be executed:${NC}"

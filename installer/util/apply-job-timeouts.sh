@@ -10,12 +10,17 @@
 #   [JobPipeline] MaxRunDuration            read from config.toml at the node's start;
 #                                           the default of 10 m ends a run at 600 s
 #
+# The same goes for the transaction's gas limit: the N-th reveal of a v2 round finalizes it and pays
+# for clustering, up to 6.9M gas at Jumbo with 20-outcome answers (verdikta-dispatcher MIGRATION.md),
+# so the job's ethtx needs a 9M limit, and a job created with 6M keeps 6M. A job below it is stale
+# too, and the replacement raises it.
+#
 # This tool sets the one key in config.toml and replaces each stale job with
 # PUT /v2/jobs/:id (Chainlink validates the spec before it deletes the old job). Each
 # job keeps its externalJobID, which is what an OracleRequest's specId and the
 # dispatcher's registration name, so nothing happens on-chain and no stake moves. Only
-# the two timeouts change, so a text-mode request is treated as before, with a longer
-# ceiling. Everything is measured: --check reads the live jobs and the node's effective
+# the two timeouts and the gas limit change, so a text-mode request is treated as before,
+# with a longer ceiling. Everything is measured: --check reads the live jobs and the node's effective
 # config, and --apply compares what the node answers with what it sent; on any
 # difference it puts the old job back.
 #
@@ -61,6 +66,7 @@ JOB_SECONDS = 840
 JOB_VALUE = "840s"
 RUN_SECONDS = 900
 BRIDGE = "verdikta-ai"
+TX_GAS = 9000000      # the ethtx task's gasLimit in basicJobSpec
 ARBITER_NAME = "Verdikta AI Arbiter"
 # Byte for byte what the template holds: a patched config then has nothing to differ on.
 RUN_BLOCK = "[JobPipeline]\nMaxRunDuration = \"15m\"\n\n"
@@ -332,13 +338,16 @@ def read_job(job):
     a = job["attributes"]
     dag = a["pipelineSpec"]["dotDagSource"]
     bridges = bridge_timeouts(dag)
+    gas = tx_gas_limits(dag)
     return {"id": job["id"], "name": a.get("name"), "external": a.get("externalJobID"), "task": a.get("maxTaskDuration"),
-            "bridge": ", ".join(b["value"] or "none" for b in bridges) or None, "bridges": bridges, "dag": dag}
+            "bridge": ", ".join(b["value"] or "none" for b in bridges) or None, "bridges": bridges, "dag": dag,
+            "gas": ", ".join(g["value"] or "none" for g in gas) or None, "gas_tasks": gas}
 
 def is_stale(job):
     j = read_job(job)
     bridges_ok = bool(j["bridges"]) and all(enough(go_seconds(b["value"]), JOB_SECONDS) for b in j["bridges"])
-    return not (enough(go_seconds(j["task"]), JOB_SECONDS) and bridges_ok)
+    gas_ok = all(gas_enough(g["value"]) for g in j["gas_tasks"])
+    return not (enough(go_seconds(j["task"]), JOB_SECONDS) and bridges_ok and gas_ok)
 
 def toml_string(text):
     return json.dumps(text, ensure_ascii=False)
@@ -377,18 +386,40 @@ def toml_for(job, task, dag):
     lines.append("observationSource = " + toml_multiline(dag))
     return "\n".join(lines) + "\n"
 
+def tx_gas_limits(dag):
+    """The ethtx tasks: for each, the span of its gasLimit value (quotes included) and the value, or None."""
+    found = []
+    code = without_comments(dag)
+    for start, end in task_blocks(code):
+        attrs = {m.group(1): m for m in ATTR.finditer(code, start, end)}
+        if "type" in attrs and unquoted(attrs["type"].group(2)) == "ethtx":
+            g = attrs.get("gasLimit")
+            found.append({"span": g.span(2), "value": unquoted(g.group(2))} if g else {"span": None, "value": None})
+    return found
+
+def gas_enough(value):
+    try:
+        return int(value) >= TX_GAS
+    except (TypeError, ValueError):
+        return False
+
 def new_dag(dag):
-    """The DAG with each verdikta-ai bridge's timeout at the target, or None when one has none to change."""
+    """The DAG with each verdikta-ai bridge's timeout and each ethtx gasLimit at the target, or None
+    when one has none to change."""
     bridges = bridge_timeouts(dag)
+    gas = tx_gas_limits(dag)
     if not bridges or any(b["span"] is None for b in bridges):
         return None
+    if any(g["span"] is None and not gas_enough(g["value"]) for g in gas):
+        return None
+    edits = [(b["span"], f'"{JOB_VALUE}"', True) for b in bridges if not enough(go_seconds(b["value"]), JOB_SECONDS)]
+    edits += [(g["span"], f'"{TX_GAS}"', False) for g in gas if not gas_enough(g["value"])]
     out = dag
-    for b in sorted(bridges, key=lambda b: b["span"][0], reverse=True):
-        start, end = b["span"]
-        if enough(go_seconds(b["value"]), JOB_SECONDS):
-            continue
-        tail = OLD_COMMENT.sub("", out[end:], count=1) if OLD_COMMENT.match(out[end:]) else out[end:]
-        out = out[:start] + f'"{JOB_VALUE}"' + tail
+    for (start, end), value, strip_comment in sorted(edits, key=lambda e: e[0][0], reverse=True):
+        tail = out[end:]
+        if strip_comment and OLD_COMMENT.match(tail):
+            tail = OLD_COMMENT.sub("", tail, count=1)
+        out = out[:start] + value + tail
     return out
 
 def field_differences(sent, got):
@@ -448,11 +479,11 @@ def check(wait):
     stale = [j for j in jobs if is_stale(j)]
     for job in stale:
         j = read_job(job)
-        print(f"  stale: {j['name']} ({j['external']}): maxTaskDuration {j['task']}, bridge timeout {j['bridge'] or 'none'} (bridge {BRIDGE}); wanted {JOB_VALUE}")
+        print(f"  stale: {j['name']} ({j['external']}): maxTaskDuration {j['task']}, bridge timeout {j['bridge'] or 'none'} (bridge {BRIDGE}), transaction gasLimit {j['gas'] or 'none'}; wanted {JOB_VALUE} and {TX_GAS} gas")
     if stale:
         rc = 1
     else:
-        print(f"All {len(jobs)} job(s) allow {JOB_VALUE}.")
+        print(f"All {len(jobs)} job(s) allow {JOB_VALUE} and {TX_GAS} gas.")
     return rc
 
 def apply(wait):

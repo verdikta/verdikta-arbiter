@@ -387,6 +387,62 @@ check_chainlink_template() {
     esac
 }
 
+# Health calls (v2 keeper; verdikta-dispatcher TODO item 16): every registered job needs its hash-chain
+# file (the adapter answers from it) and its Chainlink health job (which asks the adapter and sends the
+# answer). Without either, the job cannot answer the keeper's health calls and is frozen: not selectable.
+check_health_calls() {
+    local dir="${HEALTH_CHAIN_DIR:-$INSTALL_DIR/health-chains}" problems n rc=0
+    local tool="$INSTALL_DIR/apply-health-jobs.sh"
+    if [ ! -f "$dir/registrations.json" ]; then
+        emit INFO cfg.health_chains "no registered job recorded ($dir/registrations.json)" \
+             "Registration (register-oracle.sh) records each job, creates its hash chain and its health job."
+        return
+    fi
+    problems=$(python3 - "$dir" <<'PY' 2>&1
+import json, os, sys
+d = sys.argv[1]
+try:
+    jobs = json.load(open(os.path.join(d, "registrations.json"))).get("jobs") or {}
+except (OSError, ValueError) as e:
+    print(f"registrations.json unreadable: {e}"); sys.exit(0)
+print(f"COUNT {len(jobs)}")
+for job, key in jobs.items():
+    f = os.path.join(d, f"{str(key).lower()}.json")
+    if not os.path.isfile(f):
+        print(f"job {job}: no hash-chain file"); continue
+    if os.stat(f).st_mode & 0o077:
+        print(f"job {job}: hash-chain file readable by others (want 0600)")
+    try:
+        chains = json.load(open(f)).get("chains") or []
+        if not chains or not all(c.get("seed") and c.get("head") for c in chains):
+            print(f"job {job}: hash-chain file holds no chain")
+    except (OSError, ValueError):
+        print(f"job {job}: hash-chain file unreadable")
+PY
+)
+    n=$(printf '%s\n' "$problems" | sed -n 's/^COUNT //p')
+    problems=$(printf '%s\n' "$problems" | grep -v '^COUNT ' || true)
+    if [ -z "$problems" ]; then
+        emit PASS cfg.health_chains "${n:-0} registered job(s), each with its hash-chain file" \
+             "Back up $dir with the node's keys: without it a job cannot answer and stays frozen."
+    else
+        emit CRIT cfg.health_chains "$(printf '%s' "$problems" | tr '\n' ';' | sed 's/;$//')" \
+             "A job without its chain cannot answer health calls and is frozen. Restore $dir from a backup (chmod 600 the files), or exit the job (unregister-oracle.sh, twice) and register it again."
+    fi
+    if [ ! -x "$tool" ]; then
+        emit WARN svc.health_jobs "apply-health-jobs.sh not installed" \
+             "Upgrade the arbiter (installer/bin/upgrade-arbiter.sh): it installs it and creates the health jobs."
+        return
+    fi
+    "$tool" --check >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+        0) emit PASS svc.health_jobs "every registered job has a current Chainlink health job" "" ;;
+        1) emit CRIT svc.health_jobs "a registered job has no current health job: it cannot answer health calls and is frozen" \
+                "Fix: $tool --apply (details: $tool --check)" ;;
+        *) emit WARN svc.health_jobs "could not check the health jobs" "Details: $tool --check" ;;
+    esac
+}
+
 # The txm.no_live_rpc_nodes hint: missing finality settings are the known cause
 # (July 2026, and the host that stayed CRITICAL after upgrading on 2026-11-09).
 no_live_rpc_hint() {
@@ -1569,6 +1625,7 @@ check_chainlink_txm
 check_external_adapter
 check_ai_node
 check_code_review
+check_health_calls
 
 print_summary
 

@@ -25,6 +25,9 @@ text = open(sys.argv[1]).read()
 sys.exit(0 if re.search(r'type="bridge"\s+name="verdikta-ai"(?:\s+headers="[^\n]*")?\s+timeout="840s"\s*\n', text) else 1)
 PY
 grep -q '300s' "$JOB" && bad "basicJobSpec still names 300s" || ok
+# The transaction gas limit: the template and the tool that raises live jobs agree.
+grep -qE '^\s+gasLimit="9000000"$' "$JOB" && ok || bad "basicJobSpec: the transaction gasLimit is not 9000000"
+grep -qE '^TX_GAS = 9000000 ' "$ROOT/util/apply-job-timeouts.sh" && ok || bad "apply-job-timeouts.sh: TX_GAS is not the template's 9000000"
 
 # ── Text mode: the template changed in those two values and nothing else ─────
 # The reviewed hardened template includes authentication and both admission
@@ -32,15 +35,18 @@ grep -q '300s' "$JOB" && bad "basicJobSpec still names 300s" || ok
 # (arbiter-operator/test/admission.test.js runs a model of the job, which passed the
 # template hashed here before, 46d6d7d1…: its gates read $(authorize_result.allowed) from
 # abi="(bool allowed)", whose key on Chainlink is "allowed)", so no run reached the bridge).
-# The hash has the two timeout values blanked. A
+# The hash has the two timeout values and the transaction's gas limit blanked: apply-job-timeouts.sh
+# sets those three on a live job in place, keeping its id (the gas limit went from 6M to 9M for the v2
+# aggregator's finalizing reveal, 2026-11-20). A
 # later template change needs its own review of what it does to text-mode jobs,
 # its own run on the binary, and a new hash here.
-NORMALIZED_HARDENED_TEMPLATE=f88b7225471ab305fb889088198a92c737b9e3733fb5042021d0cc075a5802f1
+NORMALIZED_HARDENED_TEMPLATE=914c3681bac482dab05af04f0db732e2e2d62561fb0ecd267372bf551aeb98ad
 got=$(python3 - "$JOB" <<'PY'
 import hashlib, re, sys
 s = open(sys.argv[1]).read()
 s = re.sub(r'^maxTaskDuration = "[^"]*"', 'maxTaskDuration = "N"', s, flags=re.M)
 s = re.sub(r'timeout="[^"]*"(?: #[^\n]*)?', 'timeout="N"', s)
+s = re.sub(r'gasLimit="[^"]*"', 'gasLimit="N"', s)
 print(hashlib.sha256(s.encode()).hexdigest())
 PY
 )

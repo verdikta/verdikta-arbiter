@@ -197,15 +197,16 @@ The upgrade synchronizes separate EA/AI credentials and renders private job
 files. See [service authentication](../../../docs/development/service-authentication.md)
 for credential rotation, network restrictions and the class-5555 deployment checks.
 
-If you accept and an aggregator registration exists, it attempts:
+Regenerating gives the jobs new ids. With the v2 dispatcher a job id is an arbiter key, so a node
+that is registered is refused before anything is stopped: re-registering would exit the registered
+keys (their stake locked for the 2-day unbonding period), need a second stake for the new ids and
+reset their scores. To regenerate anyway, exit first (`unregister-oracle.sh`, then again after the
+unbonding period to complete the exit), then upgrade, then register the new ids with
+`register-oracle.sh`. An unregistered node is regenerated and registered by you afterwards.
 
-1. Unregister oracle
-2. Regenerate jobs (`configure-node.sh`)
-3. Re-register oracle with new job IDs
-
-A failure at any of these no longer ends the upgrade with the node down. The upgrade
-finishes, restarts the services, and exits 3 with `JOB REGENERATION FAILED:` naming the step.
-A template that differs only in the two job timeouts does not ask at all (next section).
+A failure no longer ends the upgrade with the node down. The upgrade finishes, restarts the
+services, and exits 3 with `JOB REGENERATION FAILED:` naming the step. A template that differs
+only in the two job timeouts or the transaction gas limit does not ask at all (next section).
 
 ### Job timeouts (840 s)
 
@@ -256,7 +257,19 @@ oracle's key the gas; one inside a round nobody has finalized is accepted.
 
 If jobs were not already regenerated due to template changes, the script can still optionally re-run full job/key configuration.
 
-Use this when you want to change arbiter count or refresh job/key setup.
+Use this when you want to change arbiter count or refresh job/key setup. It replaces every job id,
+so on a node registered with the v2 dispatcher it is refused (as above): exit the jobs and complete
+the exit first.
+
+### Health jobs (v2 dispatcher)
+
+The v2 keeper sends health calls that each registered job must answer within 60 s, or it is frozen
+(not selectable) until it answers. One Chainlink cron job per registered job answers them
+(`chainlink-node/healthJobSpec`). After its restart the upgrade runs
+`apply-health-jobs.sh --apply`, which creates the missing ones and replaces stale ones. No question
+is asked: a health job has no on-chain identity. A failure ends the upgrade with exit 3 and
+`HEALTH JOBS FAILED:`. Each job's hash chain is in `<install-dir>/health-chains/`: back it up with
+the node's keys.
 
 ## Chainlink config regeneration
 
@@ -642,7 +655,7 @@ Then verify:
 - Prefer creating a backup for production upgrades.
 - Keep multiple RPC endpoints configured for resilience.
 - If RPCs are changed, allow Chainlink config/job regeneration when prompted.
-- If aggregator registration exists and jobs are regenerated, expect unregister/re-register flow.
+- A registered node cannot regenerate its jobs or change its arbiter count in an upgrade (new job ids are new keys in v2); exit first.
 - If you skip optional model downloads, you can pull Ollama models later.
 
 ### Request-authorization migration

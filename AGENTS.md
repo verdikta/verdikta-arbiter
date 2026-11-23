@@ -609,11 +609,19 @@ Ollama runs locally and is unaffected by gateway settings.
   writes the two env files and each rendered job 0600 itself, and
   `apply-job-timeouts.sh` its saved specs; `credential-file-modes.test.sh` holds both.
 - **`upgrade-arbiter.sh` settles the job template's question before it stops
-  anything** (`job_template_preflight`): a template that differs in more than its
-  timeouts needs the jobs regenerated, which re-registers the oracle on chain, so
-  an unattended run does it only with `VA_UPGRADE_REGENERATE_JOBS=y` and a node
-  registered on separate classes cannot do it there at all; both are refused with
-  the node still running. `check_job_spec_template` runs after the stop and has no
+  anything** (`job_template_preflight`).
+  - **Applied in place:** the two timeouts and the transaction gas limit (9M, for the v2 finalizing
+    reveal). `apply-job-timeouts.sh` sets them on the live jobs after the restart, keeping their ids.
+  - **Anything else needs the jobs regenerated, which gives them new ids.** In v2 (the
+    verdikta-dispatcher `beacon` branch) a job id is an arbiter key, so a registered node is refused:
+    re-registering would exit the old keys (stake locked for the 2-day unbonding period), take a
+    second stake and reset scores.
+  - **Who may regenerate:** an unregistered node, only with `VA_UPGRADE_REGENERATE_JOBS=y` when
+    unattended. The new ids are registered by the operator afterwards.
+  - **The arbiter-count reconfiguration is refused on a registered node** for the same reason.
+  - **Refusals happen with the node still running.**
+  - **Health jobs:** the upgrade creates or updates them after its restart, with
+    `apply-health-jobs.sh`. `check_job_spec_template` runs after the stop and has no
   `exit`: a decline at its prompt goes through `cleanup_on_error`, which starts the
   arbiter again (`upgrade-regenerate-jobs-trap.test.sh`).
 - `set -e` is used in installer scripts — check exit codes carefully when editing.

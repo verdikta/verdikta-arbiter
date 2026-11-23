@@ -55,7 +55,7 @@ const AggregatorABI = [
 const KeeperABI = [
   "function registerArbiter(address oracle, bytes32 jobId, uint64 fee, uint64[] classes, bytes32 chainHead)",
   "function keyOf(address oracle, bytes32 jobId) view returns (bytes32)",
-  "function getArbiter(bytes32 key) view returns (tuple(address oracle, uint256 quality, uint256 timeliness, uint256 offenses, uint256 flags, uint256 blockedUntil, uint256 fee, uint256 callSentAt, uint256 callAnsweredAt, uint256 stake, uint256 checkpoints))",
+  "function getArbiter(bytes32 key) view returns (tuple(address oracle, uint256 quality, uint256 timeliness, uint256 offenses, uint256 flags, uint256 blockedUntil, uint256 fee, uint256 callSentAt, uint256 callAnsweredAt, uint256 stake, uint256 checkpoints, uint256 exitAt))",
   "function stakeRequirement() view returns (uint256)",
   "function verdiktaToken() view returns (address)",
   "function owner() view returns (address)",
@@ -76,6 +76,24 @@ const toBytes32 = (id) => {
   if (bytes.length > 32) throw new Error(`Job ID too long: ${id}`);
   return ethers.hexlify(bytes).padEnd(66, "0");
 };
+
+/* What installer/util/apply-health-jobs.sh needs to create each job's health job: the keeper, the
+   chain and each registered job's key (no secret: the seeds are in the per-key files). Merged with
+   what an earlier run recorded, so a node registered in parts keeps every job. */
+function recordRegistrations(dir, where, jobs) {
+  const file = path.join(dir, "registrations.json");
+  let data = { version: 1, jobs: {} };
+  if (fs.existsSync(file)) {
+    try { data = JSON.parse(fs.readFileSync(file, "utf8")); } catch { /* rewritten below */ }
+    if (data.keeper && data.keeper.toLowerCase() !== where.keeper.toLowerCase()) data.jobs = {};   // another keeper: start over
+  }
+  data = { version: 1, keeper: where.keeper, aggregator: where.aggregator, operator: where.operator,
+           chainId: Number(where.chainId), jobs: { ...(data.jobs || {}) } };
+  for (const j of jobs) data.jobs[j.raw] = j.key.toLowerCase();
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n", { mode: 0o600 });
+  console.log(`Recorded ${Object.keys(data.jobs).length} registered job(s) in ${file}`);
+}
 
 /* The job's hash chain: a new one for a job that is not registered. A file left by an earlier
    registration of this key (exited, or a registration that never landed) is useless now, since the
@@ -159,7 +177,13 @@ function ensureChain(key, dir) {
         }
       } else pendingJobs.push({ raw, jobId, key });
     }
+    const chainId = (await provider.getNetwork()).chainId;
+    const registered = [];
+    for (const raw of argv.jobids) {
+      if (!pendingJobs.some((p) => p.raw === raw)) registered.push({ raw, key: await keeper.keyOf(oracleAddr, toBytes32(raw)) });
+    }
     if (pendingJobs.length === 0) {
+      recordRegistrations(chainDir, { keeper: keeperAddr, aggregator: argv.aggregator, operator: oracleAddr, chainId }, registered);
       console.log("\nAll job ids are already registered. Nothing to do.");
       process.exit(0);
     }
@@ -219,7 +243,9 @@ function ensureChain(key, dir) {
         await tx.wait();
       });
       console.log("✓ Registered");
+      registered.push({ raw, key });
     }
+    recordRegistrations(chainDir, { keeper: keeperAddr, aggregator: argv.aggregator, operator: oracleAddr, chainId }, registered);
 
     console.log("\nAll done.");
     process.exit(0);

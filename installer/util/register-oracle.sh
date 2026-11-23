@@ -466,6 +466,20 @@ if [ $? -eq 0 ]; then
     fi
     
     echo ""
+    # Health jobs (v2 keeper): one Chainlink cron job per registered job answers the keeper's health
+    # calls. The registration stands either way; a job without its health job is frozen, so say how
+    # to retry rather than fail the registration.
+    if [ -x "$INSTALL_DIR/apply-health-jobs.sh" ]; then
+        echo -e "${BLUE}Creating the health jobs for the registered jobs...${NC}"
+        health_rc=0
+        bash "$INSTALL_DIR/apply-health-jobs.sh" --apply --wait 60 || health_rc=$?
+        if [ "$health_rc" -ne 0 ]; then
+            echo -e "${RED}⚠ The health jobs were not all created (exit $health_rc). Until they are, the registered jobs cannot answer health calls and are frozen. Run: $INSTALL_DIR/apply-health-jobs.sh --apply${NC}"
+        fi
+    else
+        echo -e "${YELLOW}⚠ apply-health-jobs.sh not found in $INSTALL_DIR: upgrade this installation, then run it with --apply, or the registered jobs cannot answer health calls.${NC}"
+    fi
+
     echo -e "${BLUE}Registration Complete!${NC}"
     echo -e "Your oracle is now registered with the dispatcher contract."
     echo -e "You can run this script again to register with additional dispatchers."

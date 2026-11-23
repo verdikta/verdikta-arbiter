@@ -1163,9 +1163,10 @@ if [ "$RPCS_CHANGED" = "true" ]; then
     echo -e "${YELLOW}This is required for the new RPCs to take effect.${NC}"
 fi
 
-# A job template with its two timeouts blanked, to tell a change in them from any other.
+# A job template with its two timeouts and the transaction gas limit blanked, to tell a change in
+# them from any other: apply-job-timeouts.sh sets those three on the live jobs, keeping their ids.
 job_template_without_timeouts() {
-    sed -E 's/^maxTaskDuration = "[^"]*"/maxTaskDuration = "N"/; s/timeout="[^"]*"([[:space:]]*#.*)?$/timeout="N"/' "$1"
+    sed -E 's/^maxTaskDuration = "[^"]*"/maxTaskDuration = "N"/; s/timeout="[^"]*"([[:space:]]*#.*)?$/timeout="N"/; s/gasLimit="[^"]*"/gasLimit="N"/' "$1"
 }
 
 # job_template_preflight — the job template's question, settled before anything is stopped.
@@ -1192,6 +1193,14 @@ job_template_preflight() {
     fi
     if [ -f "$TARGET_DIR/installer/.contracts" ] && ( source "$TARGET_DIR/installer/.contracts" >/dev/null 2>&1; [ "${REGISTRATION_SPLIT:-}" = "true" ] ); then
         echo -e "${RED}The job template changed, and this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts): the upgrade cannot regenerate them. Unregister them, run configure-node.sh from this checkout and register each class with VA_REGISTER_JOB_IDS, then upgrade.${NC}"
+        return 1
+    fi
+    # v2 (the beacon-branch keeper): regenerated jobs get new ids, and a new id is a new arbiter key.
+    # Re-registering would exit the old keys (their stake locked for the unbonding period, 2 days),
+    # take a second stake for the new ones and start them from fresh scores. Refused while registered.
+    if [ -f "$TARGET_DIR/installer/.contracts" ] && ( source "$TARGET_DIR/installer/.contracts" >/dev/null 2>&1
+            [ -n "${AGGREGATOR_ADDRESS:-}" ] && case "${AGGREGATOR_REGISTRATION_ACTIVE:-true}" in false|False|FALSE|0|no|No|NO) false ;; *) true ;; esac ); then
+        echo -e "${RED}The job template changed beyond what can be applied in place, and this node is registered with the dispatcher. Regenerating would give the jobs new ids: in v2 that exits the registered keys (stake locked for 2 days), needs a second stake and resets their scores. This release cannot do that here. Apply the change to the live jobs in place (as apply-job-timeouts.sh does), or unregister first (unregister-oracle.sh, then completing the exit after the unbonding period) and upgrade then.${NC}"
         return 1
     fi
     if unattended_mode && [ "$(_va_yes_no_value "${VA_UPGRADE_REGENERATE_JOBS:-n}")" != "y" ]; then
@@ -1353,11 +1362,11 @@ check_job_spec_template() {
     
     # Compare the templates directly (no normalization needed since both are templates)
     if ! diff -q "$repo_job_spec" "$target_job_spec" > /dev/null 2>&1; then
-        # A template that differs only in the two job timeouts needs no new job ids:
+        # A template that differs only in the two job timeouts (or the gas limit) needs no new job ids:
         # apply-job-timeouts.sh replaces the live jobs under the same ids after the
         # restart (the "Job timeouts, after the restart" block), with no on-chain action.
         if [ "$(job_template_without_timeouts "$repo_job_spec")" = "$(job_template_without_timeouts "$target_job_spec")" ]; then
-            echo -e "${BLUE}The job template differs only in its timeouts: apply-job-timeouts.sh applies them after the restart, keeping the job ids.${NC}"
+            echo -e "${BLUE}The job template differs only in its timeouts or transaction gas limit: apply-job-timeouts.sh applies them after the restart, keeping the job ids.${NC}"
             return 0
         fi
         echo -e "${YELLOW}The job specification template has been updated since your last installation.${NC}"
@@ -1402,11 +1411,6 @@ check_job_spec_template() {
 regenerate_job_specs() {
     echo -e "${BLUE}Regenerating job specifications from template...${NC}"
     
-    # Check if we have aggregator registration information
-    local need_reregister=0
-    local aggregator_addr=""
-    local classes_id="128"
-    
     if [ -f "$TARGET_DIR/installer/.contracts" ]; then
         source "$TARGET_DIR/installer/.contracts"
 
@@ -1417,51 +1421,23 @@ regenerate_job_specs() {
             JOB_REGEN_FAILED="this node's jobs are registered on separate classes (REGISTRATION_SPLIT in installer/.contracts), so they were not regenerated; unregister them, run configure-node.sh and register each class with VA_REGISTER_JOB_IDS"
             return 1
         fi
-        
-        if [ -n "$AGGREGATOR_ADDRESS" ]; then
-            aggregator_addr="$AGGREGATOR_ADDRESS"
-            classes_id="${CLASSES_ID:-128}"
-            need_reregister=1
-            
-            echo -e "${YELLOW}Found existing aggregator registration: $aggregator_addr${NC}"
-            echo -e "${YELLOW}Classes: [$classes_id]${NC}"
-            echo
-            echo -e "${YELLOW}Since job specifications are changing, the oracle will be:${NC}"
-            echo -e "${YELLOW}1. Unregistered from the aggregator${NC}"
-            echo -e "${YELLOW}2. Job specifications regenerated with new job IDs${NC}"
-            echo -e "${YELLOW}3. Re-registered with the aggregator using new job IDs${NC}"
-        else
-            echo -e "${YELLOW}No aggregator registration found. Jobs will be regenerated without aggregator handling.${NC}"
+
+        # v2: new job ids are new arbiter keys. A registered node cannot regenerate here (an exit
+        # locks the stake for 2 days, the new ids need a second stake and start from fresh scores);
+        # job_template_preflight refuses it before the stop, and this repeats the check.
+        if [ -n "${AGGREGATOR_ADDRESS:-}" ]; then
+            case "${AGGREGATOR_REGISTRATION_ACTIVE:-true}" in
+                false|False|FALSE|0|no|No|NO) ;;
+                *)
+                    echo -e "${RED}This node is registered with $AGGREGATOR_ADDRESS: regenerating would replace its job ids, which in v2 means exiting the registered keys. Nothing was changed.${NC}"
+                    JOB_REGEN_FAILED="this node is registered, so its jobs were not regenerated (new job ids are new keys in v2: an exit locks the stake for 2 days, and the new ids need a second stake); apply the template change in place, or unregister and complete the exit first"
+                    return 1 ;;
+            esac
         fi
     fi
-    
-    # Step 1: Unregister if needed. The stake stays locked on the old ids until they are
-    # deregistered (#35), so a failure here stops before any job changes.
-    if [ $need_reregister -eq 1 ]; then
-        echo -e "${BLUE}Step 1: Unregistering from aggregator...${NC}"
-        if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
-            cd "$TARGET_DIR" || return 1
-            # Use the existing unregister script non-interactively
-            local unregister_rc=0
-            if unattended_mode; then
-                VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" bash unregister-oracle.sh --unattended || unregister_rc=$?
-            else
-                bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$aggregator_addr")" || unregister_rc=$?
-            fi
-            if [ "$unregister_rc" -eq 0 ]; then
-                echo -e "${GREEN}Successfully unregistered from aggregator${NC}"
-            else
-                echo -e "${RED}Unregistration failed (exit $unregister_rc). The jobs and the stake on them are unchanged.${NC}"
-                JOB_REGEN_FAILED="deregistration failed (unregister-oracle.sh exit $unregister_rc); the jobs and the stake on them are unchanged"
-                return 1
-            fi
-        else
-            echo -e "${YELLOW}Warning: unregister-oracle.sh not found. Continuing with job regeneration...${NC}"
-        fi
-    fi
-    
-    # Step 2: Regenerate job specifications (requires Chainlink node to be running)
-    echo -e "${BLUE}Step 2: Regenerating job specifications...${NC}"
+
+    # Regenerate job specifications (requires Chainlink node to be running)
+    echo -e "${BLUE}Regenerating job specifications...${NC}"
     echo -e "${YELLOW}Note: The Chainlink node needs to be running for job regeneration.${NC}"
     
     # Check if Chainlink node is running
@@ -1479,7 +1455,7 @@ regenerate_job_specs() {
             fi
             if [ "$start_rc" -ne 0 ]; then
                 echo -e "${RED}Error: could not start the Chainlink node (exit $start_rc).${NC}"
-                JOB_REGEN_FAILED="the Chainlink node would not start for the regeneration (exit $start_rc); re-register the old job ids if they were deregistered"
+                JOB_REGEN_FAILED="the Chainlink node would not start for the regeneration (exit $start_rc)"
                 return 1
             fi
             
@@ -1492,7 +1468,7 @@ regenerate_job_specs() {
                 fi
                 if [ $i -eq 30 ]; then
                     echo -e "${RED}Error: Chainlink node failed to start within 60 seconds${NC}"
-                    JOB_REGEN_FAILED="the Chainlink node did not answer within 60 seconds; re-register the old job ids if they were deregistered"
+                    JOB_REGEN_FAILED="the Chainlink node did not answer within 60 seconds"
                     return 1
                 fi
                 sleep 2
@@ -1530,33 +1506,8 @@ regenerate_job_specs() {
             echo -e "${GREEN}Updated contracts configuration copied to target installation${NC}"
         fi
         
-        # Step 3: Re-register if needed
-        if [ $need_reregister -eq 1 ]; then
-            echo -e "${BLUE}Step 3: Re-registering with aggregator using new job IDs...${NC}"
-            if [ -f "$TARGET_DIR/register-oracle.sh" ]; then
-                cd "$TARGET_DIR" || return 1
-                # Use the existing register script non-interactively
-                # Input sequence: y (register?), aggregator_addr, y (continue if already registered?), classes_id, y (confirm registration?)
-                # (Unattended runs ignore the pipe and take the same answers from the VA_* variables.)
-                local register_rc=0
-                printf 'y\n%s\ny\n%s\ny\n' "$aggregator_addr" "$classes_id" | \
-                    VA_REGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$aggregator_addr" \
-                    VA_REGISTER_CONTINUE_IF_ALREADY=y VA_CLASS_IDS="$classes_id" \
-                    bash register-oracle.sh || register_rc=$?
-                if [ "$register_rc" -eq 0 ]; then
-                    echo -e "${GREEN}Successfully re-registered with aggregator using new job IDs!${NC}"
-                    echo -e "${GREEN}Job specification regeneration completed successfully!${NC}"
-                else
-                    echo -e "${RED}Warning: Re-registration failed. You may need to manually register.${NC}"
-                    echo -e "${YELLOW}You can run: $TARGET_DIR/register-oracle.sh${NC}"
-                    JOB_REGEN_FAILED="the new jobs were created but registering them failed (register-oracle.sh exit $register_rc); run $TARGET_DIR/register-oracle.sh"
-                fi
-            else
-                echo -e "${YELLOW}Warning: register-oracle.sh not found.${NC}"
-                echo -e "${YELLOW}You may need to manually re-register with the aggregator.${NC}"
-            fi
-        fi
-        
+        echo -e "${GREEN}Job specification regeneration completed successfully! Register the new job ids with $TARGET_DIR/register-oracle.sh when you are ready.${NC}"
+
         # Stop the arbiter again since the upgrade script will handle restart later
         echo -e "${BLUE}Stopping arbiter to continue with upgrade process...${NC}"
         cd "$TARGET_DIR" || return 1
@@ -1938,6 +1889,7 @@ for _util in \
     arbiter-boot-service.sh \
     arbiter-firewall.sh \
     apply-job-timeouts.sh \
+    apply-health-jobs.sh \
     common-pin.js \
     code-review-sandbox.sh \
     code-review-check.js \
@@ -2390,9 +2342,12 @@ else
                 cp "$TARGET_DIR/installer/.contracts" "$INSTALLER_DIR/.contracts"
             fi
 
-            # Reconfiguration replaces EVERY job id. Stake stays locked on the old
-            # ids until they are deregistered, so deregister first (refund) — and
-            # remember to re-register the new ids afterwards (issue #35).
+            # Reconfiguration replaces EVERY job id. In v2 (the beacon-branch keeper) a job id is
+            # an arbiter key: replacing the ids of a registered node would exit its keys (the stake
+            # locked for the unbonding period, 2 days, and refunded only then), take a second
+            # stake for the new ids and start them from fresh scores. So a registered node is
+            # refused here, before anything changes; an unregistered one is reconfigured, and
+            # registered afterwards only when the answers say so (VA_REGISTER_ORACLE=y).
             RECONF_REREGISTER=0
             RECONF_AGGREGATOR=""
             RECONF_CLASSES="128"
@@ -2415,36 +2370,11 @@ else
             RECONF_SUMMARY=""
             RECONF_TOTAL=$(grep -cE '^JOB_ID_[0-9]+=' "$TARGET_DIR/installer/.contracts" 2>/dev/null || echo 0)
             if [ $RECONF_REREGISTER -eq 1 ]; then
-                echo -e "${BLUE}Deregistering the current jobs from $RECONF_AGGREGATOR before reconfiguring (stake is refunded)...${NC}"
-                if [ -f "$TARGET_DIR/unregister-oracle.sh" ]; then
-                    cd "$TARGET_DIR"
-                    # The script runs under `set -e` with an ERR trap: a failing
-                    # dispatcher call must reach the check below, not kill the
-                    # upgrade mid-reconfigure (#38 — it did, with the node's
-                    # services left stopped). `set +e` around the call is not
-                    # enough: the ERR trap fires on any failing plain command even
-                    # with errexit off (#97), so the exit code is read with
-                    # `|| dereg_rc=$?` — a command on the left of `||` never
-                    # triggers the trap. Same for configure-node.sh and
-                    # register-oracle.sh below.
-                    dereg_rc=0
-                    if unattended_mode; then
-                        VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="$RECONF_AGGREGATOR" run_echo_capture bash unregister-oracle.sh --unattended || dereg_rc=$?
-                    else
-                        run_echo_capture bash unregister-oracle.sh <<< "$(printf 'y\n%s\ny' "$RECONF_AGGREGATOR")" || dereg_rc=$?
-                    fi
-                    dereg_out="$CAPTURED_OUT"
-                    RECONF_DEREGISTERED=$(printf '%s\n' "$dereg_out" | grep -c "Deregistered" || true)
-                    if [ "$dereg_rc" -ne 0 ]; then
-                        echo -e "${RED}Deregistration failed. Reconfiguring now would strand the stake on the old job ids — job reconfiguration cancelled.${NC}"
-                        RECONF_ABORT=1
-                        RECONF_FAILED=1
-                        RECONF_SUMMARY="deregistered $RECONF_DEREGISTERED of $RECONF_TOTAL job(s) before the dispatcher call failed; the stake on the rest is intact and the job specs are unchanged — fix the cause and run the same count change again (jobs already deregistered are skipped)"
-                    fi
-                else
-                    echo -e "${RED}unregister-oracle.sh not found at $TARGET_DIR — cannot release the stake on the current jobs; job reconfiguration cancelled.${NC}"
-                    RECONF_ABORT=1
-                fi
+                echo -e "${RED}This node is registered with $RECONF_AGGREGATOR. Changing the number of arbiters replaces every job id, and in v2 that would exit the registered keys (stake locked for 2 days), need a second stake and reset their scores. Nothing was changed. To change the count: run unregister-oracle.sh (it requests the exit), complete the exit after the unbonding period, then change the count and register again.${NC}"
+                RECONF_ABORT=1
+                RECONF_FAILED=1
+                RECONF_SUMMARY="the arbiter count was not changed: this node is registered, and replacing its $RECONF_TOTAL job id(s) would exit the registered keys (stake locked for 2 days), need a second stake and reset their scores; unregister and complete the exit first"
+                RECONF_REREGISTER=0
             fi
 
             # Run the multi-arbiter configuration
@@ -2454,7 +2384,7 @@ else
                 bash "$SCRIPT_DIR/configure-node.sh" || RECONF_RC=$?
                 if [ $RECONF_RC -ne 0 ]; then
                     RECONF_FAILED=1
-                    RECONF_SUMMARY="the $RECONF_TOTAL old job(s) were deregistered (stake refunded) but creating the new jobs and keys failed (configure-node.sh exit $RECONF_RC); the node keeps its previous job specs and is unregistered — fix the cause and run the same count change again"
+                    RECONF_SUMMARY="creating the new jobs and keys failed (configure-node.sh exit $RECONF_RC); the node keeps its previous job specs — fix the cause and run the same count change again"
                 fi
             else
                 RECONF_RC=1
@@ -2515,9 +2445,8 @@ else
                     fi
                 fi
 
-                # Re-register the NEW job ids (issue #35): the run deregistered the old
-                # ones above. Unattended: VA_REGISTER_ORACLE=y (+ VA_AGGREGATOR_ADDRESS
-                # when given) or the previous registration; interactive: same answers piped.
+                # Register the new job ids when the answers ask for it (VA_REGISTER_ORACLE=y, with
+                # VA_AGGREGATOR_ADDRESS); a registered node never gets here (refused above).
                 RECONF_DO_REGISTER=$RECONF_REREGISTER
                 if unattended_mode && [ -n "${VA_REGISTER_ORACLE:-}" ]; then
                     case "$(printf '%s' "$VA_REGISTER_ORACLE" | tr '[:upper:]' '[:lower:]')" in
@@ -2553,8 +2482,6 @@ else
                     else
                         echo -e "${YELLOW}register-oracle.sh not found at $TARGET_DIR — register the new job ids by hand.${NC}"
                     fi
-                elif [ $RECONF_REREGISTER -eq 1 ]; then
-                    echo -e "${YELLOW}Old jobs were deregistered but re-registration was declined — the node is unregistered until you run $TARGET_DIR/register-oracle.sh.${NC}"
                 fi
             else
                 echo -e "${RED}Job and key reconfiguration failed!${NC}"
@@ -3219,6 +3146,25 @@ if [ -x "$TARGET_DIR/apply-job-timeouts.sh" ]; then
     fi
 fi
 
+# Health jobs, after the restart (v2 keeper; verdikta-dispatcher TODO item 16): one Chainlink cron job
+# per registered arbiter job answers the keeper's health calls. A health job has no on-chain identity,
+# so creating or replacing one moves nothing on chain, and it is done without a question: without it
+# the job cannot answer and is frozen. Nothing is registered (health-chains/registrations.json) on a
+# node that has not registered since v2, and the tool then has nothing to do. Exit codes read with
+# `|| rc=$?` (#97); a failure ends the upgrade with exit 3 and a last line saying so.
+HEALTH_JOBS_FAILED=""
+if [ -x "$TARGET_DIR/apply-health-jobs.sh" ]; then
+    if [ "$SERVICES_STARTED_FOR_DOCTOR" != "1" ]; then
+        echo -e "${BLUE}Health jobs: once the arbiter is running, create or update them with $TARGET_DIR/apply-health-jobs.sh --apply${NC}"
+    else
+        HEALTH_APPLY_RC=0
+        bash "$TARGET_DIR/apply-health-jobs.sh" --apply --wait "${VERDIKTA_JOB_CHECK_WAIT:-180}" || HEALTH_APPLY_RC=$?
+        if [ "$HEALTH_APPLY_RC" != "0" ]; then
+            HEALTH_JOBS_FAILED="the health jobs were not all created or updated (apply-health-jobs.sh exit $HEALTH_APPLY_RC); a registered job without one cannot answer health calls and is frozen. Run $TARGET_DIR/apply-health-jobs.sh --apply"
+        fi
+    fi
+fi
+
 # The code-review sandbox, after the restart: gVisor, a Docker daemon of its own, a fixed-size disk,
 # warm images and the conformance self-test (design §16). It takes minutes and the network, and none
 # of it stops the arbiter, so a node is back up first. It never restarts the arbiter's Docker. It is
@@ -3363,6 +3309,10 @@ if [ -n "${JOB_REGEN_FAILED:-}" ]; then
 fi
 if [ -n "${JOB_TIMEOUTS_FAILED:-}" ]; then
     echo -e "${RED}JOB TIMEOUTS FAILED: ${JOB_TIMEOUTS_FAILED}${NC}"
+    JOB_FOLLOWUP_FAILED=1
+fi
+if [ -n "${HEALTH_JOBS_FAILED:-}" ]; then
+    echo -e "${RED}HEALTH JOBS FAILED: ${HEALTH_JOBS_FAILED}${NC}"
     JOB_FOLLOWUP_FAILED=1
 fi
 if [ -n "${CODE_REVIEW_SANDBOX_FAILED:-}" ]; then

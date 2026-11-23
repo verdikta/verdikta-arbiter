@@ -13,6 +13,11 @@
 # semantics against stub unregister-oracle.sh / configure-node.sh /
 # register-oracle.sh that exit non-zero, and checks that the block reaches its
 # own failure handling and never fires the trap.
+#
+# v2 (2026-11-20): a job id is an arbiter key, so a registered node is refused before anything
+# changes (an exit locks the stake for 2 days, new ids need a second stake and fresh scores), and
+# the block no longer deregisters. An unregistered node is reconfigured, and registered afterwards
+# only when the answers ask for it.
 # Run: bash installer/tests/upgrade-reconfigure-trap.test.sh
 # UPGRADE_ARBITER_SH=<path> runs it against another copy of the script (e.g. to
 # show it fails on the pre-fix version).
@@ -34,7 +39,7 @@ block=$(awk '/^[[:space:]]*# Reconfiguration replaces EVERY job id/{p=1}
 [ -n "$block" ] && ok || bad "could not extract the reconfiguration block from $S"
 [ "$(printf '%s\n' "$block" | tail -1 | tr -d ' ')" = "fi" ] && ok || bad "block does not end on the RECONF_RC fi: $(printf '%s\n' "$block" | tail -1)"
 printf '%s\n' "$block" | bash -n && ok || bad "block is not a complete shell fragment"
-echo "$block" | grep -q 'run_echo_capture bash unregister-oracle.sh' && ok || bad "block does not call unregister-oracle.sh"
+echo "$block" | grep -q 'unregister-oracle.sh --unattended' && bad "block still deregisters (v2 refuses a registered node instead)" || ok
 echo "$block" | grep -q 'configure-node.sh"' && ok || bad "block does not call configure-node.sh"
 echo "$block" | grep -q 'bash register-oracle.sh' && ok || bad "block does not call register-oracle.sh"
 # The block calls run_echo_capture (a function; a failing function call fires
@@ -49,10 +54,10 @@ mkdir -p "$I/installer" "$SRC/bin"
 # and the clone's copy that configure-node.sh rewrites (sourced, then copied
 # over the live one, after it succeeds — so both are re-created before each run).
 contracts() {
-    cat > "$I/installer/.contracts" <<'EOF'
+    cat > "$I/installer/.contracts" <<EOF
 AGGREGATOR_ADDRESS="0xAGG"
 CLASSES_ID="128,5555"
-AGGREGATOR_REGISTRATION_ACTIVE="true"
+AGGREGATOR_REGISTRATION_ACTIVE="${ACTIVE:-true}"
 JOB_ID_1="job-one"
 JOB_ID_2="job-two"
 EOF
@@ -104,68 +109,62 @@ run() {
     echo "rc=$?"
 }
 
-# 1. The dispatcher call fails during deregistration (unattended): the block
-#    must cancel the reconfiguration itself, count the jobs it did deregister,
-#    stop the node it started, and carry on — never "Upgrade failed!".
+# 1. A registered node (unattended): refused before anything changes, reported, never the trap.
 out=$(run 1 0 0)
-has   "dereg-fails: called"       "$out" "STUB-UNREGISTER args=\[--unattended\] VA_DEREGISTER_ORACLE=y agg=0xAGG"
-has   "dereg-fails: cancelled"    "$out" "Deregistration failed. Reconfiguring now would strand the stake"
-hasnt "dereg-fails: configure"    "$out" "STUB-CONFIGURE"
-has   "dereg-fails: failed path"  "$out" "Job and key reconfiguration failed!"
-has   "dereg-fails: node stopped" "$out" "STUB-STOP"
-has   "dereg-fails: flags"        "$out" "REACHED-END abort=1 failed=1 rc=1"
-has   "dereg-fails: summary"      "$out" "SUMMARY=deregistered 1 of 2 job(s) before the dispatcher call failed"
-hasnt "dereg-fails: trap"         "$out" "TRAP-FIRED"
-has   "dereg-fails: exit 0"       "$out" "rc=0"
+hasnt "registered: no deregistration" "$out" "STUB-UNREGISTER"
+hasnt "registered: no configure"      "$out" "STUB-CONFIGURE"
+hasnt "registered: no registration"   "$out" "STUB-REGISTER"
+has   "registered: says why"          "$out" "second stake"
+has   "registered: failed path"       "$out" "Job and key reconfiguration failed!"
+has   "registered: node stopped"      "$out" "STUB-STOP"
+has   "registered: flags"             "$out" "REACHED-END abort=1 failed=1 rc=1"
+has   "registered: summary"           "$out" "SUMMARY=the arbiter count was not changed: this node is registered"
+hasnt "registered: trap"              "$out" "TRAP-FIRED"
+has   "registered: exit 0"            "$out" "rc=0"
 
-# 2. Same, interactive (the here-string twin).
+# 2. Same, interactive.
 out=$(run 1 0 0 "")
-has   "dereg-fails/tty: answers"  "$out" "STUB-UNREGISTER answers=y,0xAGG,y"
-has   "dereg-fails/tty: flags"    "$out" "REACHED-END abort=1 failed=1 rc=1"
-has   "dereg-fails/tty: summary"  "$out" "SUMMARY=deregistered 1 of 2 job(s)"
-hasnt "dereg-fails/tty: trap"     "$out" "TRAP-FIRED"
+hasnt "registered/tty: no deregistration" "$out" "STUB-UNREGISTER"
+has   "registered/tty: flags"             "$out" "REACHED-END abort=1 failed=1 rc=1"
+hasnt "registered/tty: trap"              "$out" "TRAP-FIRED"
 
-# 3. Deregistration fine, configure-node.sh fails: reported with its exit code,
-#    the node stopped, no registration attempted.
-out=$(run 0 2 0)
+# 3. Unregistered, configure-node.sh fails: reported with its exit code, the node stopped.
+out=$(ACTIVE=false run 0 2 0)
 has   "configure-fails: called"   "$out" "STUB-CONFIGURE"
 hasnt "configure-fails: register" "$out" "STUB-REGISTER"
 has   "configure-fails: failed"   "$out" "Job and key reconfiguration failed!"
 has   "configure-fails: stopped"  "$out" "STUB-STOP"
 has   "configure-fails: flags"    "$out" "REACHED-END abort=0 failed=1 rc=2"
-has   "configure-fails: summary"  "$out" "SUMMARY=the 2 old job(s) were deregistered (stake refunded) but creating the new jobs and keys failed (configure-node.sh exit 2)"
+has   "configure-fails: summary"  "$out" "SUMMARY=creating the new jobs and keys failed (configure-node.sh exit 2)"
 hasnt "configure-fails: trap"     "$out" "TRAP-FIRED"
 
-# 4. New jobs created, registering them fails (unattended): the classes the
-#    registration used are the recorded ones, the failure names the exit code.
-out=$(run 0 0 4)
+# 4. Unregistered, reconfigured, registration asked for and failing (unattended): the classes are the
+#    recorded ones, the failure names the exit code.
+out=$(ACTIVE=false VA_REGISTER_ORACLE=y run 0 0 4)
 has   "register-fails: called"    "$out" "STUB-REGISTER args=\[--unattended\] classes=128,5555 continue=y"
 has   "register-fails: warned"    "$out" "Registration of the new job ids failed"
 has   "register-fails: flags"     "$out" "REACHED-END abort=0 failed=1 rc=0"
 has   "register-fails: summary"   "$out" "SUMMARY=the new jobs and keys were created but registering them with the dispatcher failed (register-oracle.sh exit 4)"
 hasnt "register-fails: trap"      "$out" "TRAP-FIRED"
-has   "register-fails: exit 0"    "$out" "rc=0"
 
-# 5. Same, interactive (answers piped into register-oracle.sh).
-out=$(run 0 0 4 "")
-has   "register-fails/tty: answers" "$out" "STUB-REGISTER answers=y,0xAGG,y,128,5555,y"
-has   "register-fails/tty: flags"   "$out" "REACHED-END abort=0 failed=1 rc=0"
-hasnt "register-fails/tty: trap"    "$out" "TRAP-FIRED"
-
-# 6. Everything succeeds: deregistered, configured, registered, nothing failed.
-out=$(run 0 0 0)
-has   "ok: deregistered"          "$out" "Deregistered job-two"
+# 5. Unregistered, everything succeeds, no registration asked for: configured, nothing registered.
+out=$(ACTIVE=false run 0 0 0)
+hasnt "ok: no deregistration"     "$out" "STUB-UNREGISTER"
 has   "ok: configured"            "$out" "Job and key reconfiguration completed successfully"
-has   "ok: registered"            "$out" "New job ids registered with the dispatcher"
+hasnt "ok: not registered"        "$out" "STUB-REGISTER"
 has   "ok: flags"                 "$out" "REACHED-END abort=0 failed=0 rc=0"
 has   "ok: no summary"            "$out" "^SUMMARY=$"
 hasnt "ok: trap"                  "$out" "TRAP-FIRED"
+
+# 6. Same, with registration asked for: registered.
+out=$(ACTIVE=false VA_REGISTER_ORACLE=y run 0 0 0)
+has   "ok+register: registered"   "$out" "New job ids registered with the dispatcher"
+has   "ok+register: flags"        "$out" "REACHED-END abort=0 failed=0 rc=0"
 
 # The pattern itself: the block's code (comments aside) must not rely on
 # `set +e` around the three calls.
 code=$(echo "$block" | grep -vE '^[[:space:]]*#')
 hasnt "no set +e in block"        "$code" "set +e"
-has   "dereg read with ||"        "$block" 'unregister-oracle.sh --unattended || dereg_rc=\$?'
 has   "configure read with ||"    "$block" 'configure-node.sh" || RECONF_RC=\$?'
 has   "register read with ||"     "$block" 'register-oracle.sh --unattended || reg_rc=\$?'
 

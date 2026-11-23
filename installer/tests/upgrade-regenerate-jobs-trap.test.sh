@@ -78,7 +78,10 @@ exec /bin/cp "$@"
 STUB
 chmod +x "$BIN/cp"
 
-contracts() { printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="128"\n' > "$I/installer/.contracts"; }
+# An unregistered node (v2: a registered one cannot regenerate, see registered_contracts below).
+contracts() { printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="128"\nAGGREGATOR_REGISTRATION_ACTIVE="false"\n' > "$I/installer/.contracts"; }
+# Registered: an aggregator recorded and the flag not false (an install from before the flag has none).
+registered_contracts() { printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="128"\n' > "$I/installer/.contracts"; }
 
 # regen_run — calls check_job_spec_template exactly as the script does, with the prompt answered.
 regen_run() {
@@ -121,6 +124,23 @@ hasnt "timeouts only: no question"        "$out" "VA_UPGRADE_REGENERATE_JOBS"
 has   "timeouts only: says what happens"  "$out" "apply-job-timeouts"
 has   "timeouts only: end"                "$out" "REACHED-END rc=0 regenerated=0"
 hasnt "timeouts only: trap"               "$out" "TRAP-FIRED"
+
+# ── The transaction gas limit alone (v1's 6M against 9M): no costly path either ─
+cp "$REPO/chainlink-node/basicJobSpec" "$TARGET_NODE/basicJobSpec"
+sed -i 's/gasLimit="9000000"/gasLimit="6000000"/' "$TARGET_NODE/basicJobSpec"
+contracts
+out=$(regen_run)
+hasnt "gas only: no deregistration"  "$out" "STUB-unregister"
+hasnt "gas only: no configure-node"  "$out" "STUB-CONFIGURE"
+has   "gas only: says what happens"  "$out" "apply-job-timeouts"
+has   "gas only: end"                "$out" "REACHED-END rc=0 regenerated=0"
+python3 - "$REPO_NODE/basicJobSpec" "$TARGET_NODE/basicJobSpec" <<'PY'
+import re, sys
+s = open(sys.argv[1]).read()
+s = re.sub(r'^maxTaskDuration = "[^"]*"', 'maxTaskDuration = "300s"', s, flags=re.M)
+s = re.sub(r'timeout="[^"]*"', 'timeout="300s" # increase timeout to 300s', s)
+open(sys.argv[2], 'w').write(s)
+PY
 
 # ── Any other template change still offers the path, and the rule holds in it ─
 printf '# another change\n' >> "$REPO_NODE/basicJobSpec"
@@ -181,6 +201,19 @@ printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="134"\nREGISTRATION_SPLIT="true"\
 out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
 has   "preflight, split registration: refused before the stop" "$out" "PREFLIGHT rc=1"
 has   "preflight, split registration: says why" "$out" "separate classes"
+# v2: a registered node cannot regenerate (new ids are new keys: exit, a second stake, fresh scores)
+printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="128"\nAGGREGATOR_REGISTRATION_ACTIVE="true"\n' > "$I/installer/.contracts"
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
+has   "preflight, registered (v2): refused before the stop" "$out" "PREFLIGHT rc=1"
+has   "preflight, registered (v2): says why" "$out" "second stake"
+out=$(pre_run)
+has   "preflight, registered (v2), interactive: refused too" "$out" "PREFLIGHT rc=1"
+printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="128"\nAGGREGATOR_REGISTRATION_ACTIVE="false"\n' > "$I/installer/.contracts"
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
+has   "preflight, unregistered: goes on" "$out" "PREFLIGHT rc=0"
+registered_contracts
+out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
+has   "preflight, registered before the flag existed: refused" "$out" "PREFLIGHT rc=1"
 contracts
 mv "$TARGET_NODE/basicJobSpec" "$TARGET_NODE/basicJobSpec.away"
 out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
@@ -194,20 +227,21 @@ cp "$TARGET_NODE/basicJobSpec.changed" "$TARGET_NODE/basicJobSpec"; rm -f "$TARG
 
 contracts
 out=$(regen_run)
-has   "regen: deregisters"  "$out" "STUB-unregister"
+hasnt "regen: no deregistration" "$out" "STUB-unregister"
 has   "regen: configures"   "$out" "STUB-CONFIGURE"
-has   "regen: re-registers" "$out" "STUB-register"
+hasnt "regen: no registration (the operator registers the new ids)" "$out" "STUB-register"
+has   "regen: says to register" "$out" "register-oracle.sh when you are ready"
 has   "regen: end"          "$out" "REACHED-END rc=0 regenerated=1 failed=\[\]"
 hasnt "regen: trap"         "$out" "TRAP-FIRED"
 
-# Deregistration fails: the jobs and the stake on them stay; the upgrade finishes and says so.
-contracts
-out=$(unregister_RC=1 regen_run)
-has   "dereg fails: end"        "$out" "REACHED-END rc=0 regenerated=0"
-has   "dereg fails: reported"   "$out" "failed=\[.*deregist"
-hasnt "dereg fails: no configure" "$out" "STUB-CONFIGURE"
-hasnt "dereg fails: no trap"    "$out" "TRAP-FIRED"
-has   "dereg fails: exit 0 from the block" "$out" "rc=0"
+# v2: a registered node is refused before anything changes (new ids are new keys).
+registered_contracts
+out=$(regen_run)
+hasnt "registered: no deregistration" "$out" "STUB-unregister"
+hasnt "registered: no configure"      "$out" "STUB-CONFIGURE"
+has   "registered: end"               "$out" "REACHED-END rc=0 regenerated=0"
+has   "registered: reported"          "$out" "failed=\[this node is registered"
+hasnt "registered: no trap"           "$out" "TRAP-FIRED"
 
 # configure-node fails: reported, the arbiter stopped for the rest of the upgrade.
 contracts
@@ -232,13 +266,6 @@ has   "contracts copy fails: reported" "$out" "failed=\[.*\.contracts"
 hasnt "contracts copy fails: no re-registration" "$out" "STUB-register"
 has   "contracts copy fails: stops the arbiter" "$out" "STUB-stop-arbiter"
 hasnt "contracts copy fails: no trap"  "$out" "TRAP-FIRED"
-
-# Re-registration fails: the new jobs are in, and the operator is told to register them.
-contracts
-out=$(register_RC=1 regen_run)
-has   "register fails: end"      "$out" "REACHED-END rc=0 regenerated=1"
-has   "register fails: reported" "$out" "failed=\[.*register-oracle"
-hasnt "register fails: no trap"  "$out" "TRAP-FIRED"
 
 # stop-arbiter fails at the end: not fatal, and the upgrade goes on.
 contracts

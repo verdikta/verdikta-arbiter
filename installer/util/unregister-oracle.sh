@@ -302,10 +302,11 @@ if [[ ! "$NEW_AGGREGATOR_ADDRESS" =~ ^0x[a-fA-F0-9]{40}$ ]]; then
 fi
 
 # Construct the unregistration command with ALL job IDs
+# v2: leaving is two steps (requestExit now, completeExit after the keeper's unbonding period, 2 days
+# by default); the script does whichever is due for each job, so run this again to complete the exit.
 UNREGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/unregister-oracle-cl.js \
   --aggregator $NEW_AGGREGATOR_ADDRESS \
   --oracle $OPERATOR_ADDR \
-  --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
   --jobids $UNREGISTRATION_JOB_IDS"
 
 # Display the command and ask for confirmation
@@ -329,7 +330,7 @@ cd "$ARBITER_OPERATOR_DIR"
 eval "$UNREGISTER_CMD"
 
 if [ $? -eq 0 ]; then
-    echo -e "${GREEN}Oracle unregistration completed successfully!${NC}"
+    echo -e "${GREEN}Oracle exit step completed successfully!${NC}"
     # Mark inactive in .contracts but keep AGGREGATOR_ADDRESS / CLASSES_ID so register-oracle.sh
     # can show the last values; register-oracle.sh only warns on duplicate when active is true.
     if [ -n "${AGGREGATOR_ADDRESS:-}" ]; then
@@ -345,9 +346,10 @@ if [ $? -eq 0 ]; then
         fi
     fi
     echo ""
-    echo -e "${BLUE}Unregistration Complete!${NC}"
-    echo -e "Your oracle has been unregistered from the dispatcher contract."
-    echo -e "You can run this script again to unregister from additional dispatchers."
+    echo -e "${BLUE}Unregistration requested or completed (see each job above).${NC}"
+    echo -e "Jobs whose exit was requested are no longer selectable. Their stake comes back only when the exit"
+    echo -e "is completed, after the keeper's unbonding period (2 days by default): run this script again then."
+    echo -e "Their health jobs keep running until then, and can be deleted in the Chainlink UI afterwards."
     
 else
     echo -e "${RED}Oracle unregistration failed. Please check the output above for errors.${NC}"

@@ -2,20 +2,26 @@
 /*
   scripts/unregister-oracle-cl.js – Hardhat + ethers
 
-  CLI flags match the original Truffle version.
+  Take job IDs off the v2 ReputationKeeper (verdikta-dispatcher, beacon branch). Leaving is two steps:
+
+    requestExit   the job stops being selectable at once; its stake stays bonded for the keeper's
+                  unbonding period (2 days by default)
+    completeExit  after that period: the stake goes back to the operator's owner and the job's
+                  class slots are freed
+
+  Run this script to request the exit, and again after the unbonding period to complete it: for each
+  job it does whichever step is due and says when the next one is. The caller must be the operator's
+  owner or the keeper owner. A frozen arbiter can exit too.
 
   Example:
 
-HARDHAT_NETWORK=base_sepolia \
-
 HARDHAT_NETWORK=base_sepolia node scripts/unregister-oracle-cl.js \
-  --aggregator 0xe8a385E473EA710c5a88Cc72681a16a26fe380e4   # current Base Sepolia dispatcher — see docs/deployments.md \
+  --aggregator <the v2 aggregator — see docs/deployments.md> \
   --oracle <your ArbiterOperator, OPERATOR_ADDR in installer/.contracts> \
-  --wrappedverdikta 0x94e3c031fe9403c80E14DaFbCb73f191C683c2B1 \
   --jobids "38f19572c51041baa5f2dea284614590" \
-          "39515f75ac2947beb7f2eeae4d8eaf3e" \
-          "cdee0a127bc74a5188cbabf7aadcc84f"
+          "39515f75ac2947beb7f2eeae4d8eaf3e"
 
+  --wrappedverdikta is accepted for backwards compatibility; the keeper names its token.
 */
 
 require("dotenv").config();
@@ -26,17 +32,21 @@ const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
 
 /* ------------------------------------------------------------------- */
-/* Minimal ABIs                                                        */
+/* Minimal ABIs (v2)                                                   */
 /* ------------------------------------------------------------------- */
 const AggregatorABI = [
-  "function reputationKeeper() view returns (address)"
+  "function keeper() view returns (address)"
 ];
 
 const KeeperABI = [
-  "function deregisterOracle(address,bytes32)",
-  "function getOracleInfo(address,bytes32) view returns (bool isActive,int256,int256,uint256,bytes32,uint256,uint256,uint256,bool)",
+  "function requestExit(bytes32 key)",
+  "function completeExit(bytes32 key)",
+  "function keyOf(address oracle, bytes32 jobId) view returns (bytes32)",
+  "function getArbiter(bytes32 key) view returns (tuple(address oracle, uint256 quality, uint256 timeliness, uint256 offenses, uint256 flags, uint256 blockedUntil, uint256 fee, uint256 callSentAt, uint256 callAnsweredAt, uint256 stake, uint256 checkpoints, uint256 exitAt))",
+  "function verdiktaToken() view returns (address)",
   "function owner() view returns (address)"
 ];
+const F_REGISTERED = 1n, F_EXITING = 8n;
 
 const ERC20_BALANCE = [
   "function balanceOf(address) view returns (uint256)"
@@ -53,6 +63,7 @@ const toBytes32 = (id) => {
   if (bytes.length > 32) throw new Error(`Job ID too long: ${id}`);
   return ethers.hexlify(bytes).padEnd(66, "0");
 };
+const when = (t) => new Date(Number(t) * 1000).toISOString();
 
 /* ------------------------------------------------------------------- */
 /* Main                                                                */
@@ -63,21 +74,20 @@ const toBytes32 = (id) => {
     const argv = yargs(hideBin(process.argv))
       .option("aggregator",      { alias: "a", type: "string", demandOption: true })
       .option("oracle",          { alias: "o", type: "string", demandOption: true })
-      .option("wrappedverdikta", { alias: "w", type: "string", demandOption: true })
+      .option("wrappedverdikta", { alias: "w", type: "string", demandOption: false, describe: "ignored: the keeper names its token" })
       .option("jobids",          { alias: "j", type: "array",  demandOption: true })
       .strict()
       .argv;
 
     const [signer] = await ethers.getSigners();
     const caller   = await signer.getAddress();
-    const { sendWithRetry, isInFlightLimit } = createInFlightGuard({ provider: ethers.provider, sender: caller });
+    const { sendWithRetry } = createInFlightGuard({ provider: ethers.provider, sender: caller });
     console.log("Caller:", caller);
 
     /* Resolve keeper -------------------------------------------------- */
     const aggregator = new ethers.Contract(argv.aggregator, AggregatorABI, signer);
-    const keeperAddr = await aggregator.reputationKeeper();
+    const keeperAddr = await aggregator.keeper();
     console.log("ReputationKeeper:", keeperAddr);
-
     const keeper = new ethers.Contract(keeperAddr, KeeperABI, signer);
 
     /* Auth check (keeper owner OR oracle owner) ----------------------- */
@@ -85,65 +95,68 @@ const toBytes32 = (id) => {
       new ethers.Contract(argv.oracle, OWNER_ABI, signer).owner(),
       keeper.owner(),
     ]);
-
-    if (
-      caller.toLowerCase() !== oracleOwner.toLowerCase() &&
-      caller.toLowerCase() !== keeperOwner.toLowerCase()
-    ) {
+    if (caller.toLowerCase() !== oracleOwner.toLowerCase() && caller.toLowerCase() !== keeperOwner.toLowerCase()) {
       throw new Error("Caller must be oracle owner or ReputationKeeper owner");
     }
 
-    /* wVDKA balance before ------------------------------------------- */
-    const verdikta = new ethers.Contract(argv.wrappedverdikta, ERC20_BALANCE, signer);
-    const balBefore = await verdikta.balanceOf(caller);
-    console.log("Initial wVDKA balance:", ethers.formatEther(balBefore));
+    const verdikta = new ethers.Contract(await keeper.verdiktaToken(), ERC20_BALANCE, signer);
+    const balBefore = await verdikta.balanceOf(oracleOwner);
+    console.log("Operator owner's wVDKA balance:", ethers.formatEther(balBefore));
 
     /* Loop through job IDs ------------------------------------------- */
+    let requested = 0, completed = 0, pending = 0, latestExit = 0n;
     for (const rawId of argv.jobids) {
       const jobId = toBytes32(rawId);
-      console.log(`\nJobID ${rawId} → ${jobId}`);
+      const key = await keeper.keyOf(argv.oracle, jobId);
+      console.log(`\nJobID ${rawId} → ${jobId} (key ${key})`);
+      const v = await keeper.getArbiter(key);
+      const flags = BigInt(v.flags);
+      const now = BigInt((await ethers.provider.getBlock("latest")).timestamp);
 
-      const info = await keeper.getOracleInfo(argv.oracle, jobId);
-      if (!info.isActive) {
+      if ((flags & F_REGISTERED) === 0n) {
         console.log("Not registered – skipping");
         continue;
       }
-
-      console.log("Calling deregisterOracle…");
-
-      /* A count change deregisters every job in a row; on a delegated
-         (EIP-7702) sender Infura rejects the next send once a few are in
-         flight (#38). Settle + retry around every send, like registration. */
-      try {
-        const gasEstimate = await keeper.deregisterOracle.estimateGas(argv.oracle, jobId);
-        const gasLimit = Math.ceil(Number(gasEstimate) * 1.2); // 20% buffer
-        console.log(`  Gas estimate: ${gasEstimate}, using limit: ${gasLimit}`);
-        await sendWithRetry(`deregisterOracle ${rawId}`, async () => {
-          const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit });
+      if ((flags & F_EXITING) === 0n) {
+        await sendWithRetry(`requestExit ${rawId}`, async () => {
+          const tx = await keeper.requestExit(key);
           await tx.wait();
-          console.log("✓ Deregistered (tx:", tx.hash, ")");
+          console.log("✓ Exit requested (tx:", tx.hash, ")");
         });
-      } catch (error) {
-        if (isInFlightLimit(error)) throw error; // retries exhausted — not a gas problem
-        console.error("Gas estimation failed, trying with fallback gas limit...");
-        const fallbackGasLimit = 300000;
-        console.log(`  Using fallback gas limit: ${fallbackGasLimit}`);
-        await sendWithRetry(`deregisterOracle ${rawId} (fallback gas)`, async () => {
-          const tx = await keeper.deregisterOracle(argv.oracle, jobId, { gasLimit: fallbackGasLimit });
-          await tx.wait();
-          console.log("✓ Deregistered with fallback gas (tx:", tx.hash, ")");
-        });
+        const exitAt = BigInt((await keeper.getArbiter(key)).exitAt);
+        if (exitAt > latestExit) latestExit = exitAt;
+        console.log(`  No longer selectable. The stake comes back with completeExit from ${when(exitAt)}: run this script again then.`);
+        requested++;
+        continue;
       }
+      const exitAt = BigInt(v.exitAt);
+      if (now < exitAt) {
+        console.log(`Exit pending: the stake can be withdrawn from ${when(exitAt)} – skipping`);
+        if (exitAt > latestExit) latestExit = exitAt;
+        pending++;
+        continue;
+      }
+      if (BigInt(v.blockedUntil) > now) {
+        console.log(`Exit pending: blocked until ${when(v.blockedUntil)}, then completeExit can run – skipping`);
+        pending++;
+        continue;
+      }
+      await sendWithRetry(`completeExit ${rawId}`, async () => {
+        const tx = await keeper.completeExit(key);
+        await tx.wait();
+        console.log("✓ Exit completed: stake refunded to the operator's owner (tx:", tx.hash, ")");
+      });
+      completed++;
     }
 
-    /* wVDKA balance after -------------------------------------------- */
-    const balAfter = await verdikta.balanceOf(caller);
-    console.log("\nFinal wVDKA balance:", ethers.formatEther(balAfter));
-    console.log("Oracle deregistration completed successfully");
+    const balAfter = await verdikta.balanceOf(oracleOwner);
+    console.log("\nOperator owner's wVDKA balance:", ethers.formatEther(balAfter));
+    console.log(`Exits requested: ${requested}, completed: ${completed}, still pending: ${pending}`);
+    if (requested + pending > 0) console.log(`Run this script again from ${when(latestExit)} to complete the pending exits.`);
+    console.log("Oracle exit step completed successfully");
     process.exit(0);
   } catch (err) {
-    console.error("Error during oracle deregistration:", err);
+    console.error("Error during oracle exit:", err);
     process.exit(1);
   }
 })();
-

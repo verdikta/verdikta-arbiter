@@ -22,17 +22,13 @@ check() { # check NAME PATTERN [MIN_COUNT]
 bash -n "$S" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL syntax"; }
 # The script really is errexit (the reason the guards exist).
 check "errexit on" '^set -e'
-# Deregistration: its rc read with `||` (unattended and interactive call alike),
-# its output counted.
-check "dereg rc initialised" '^[[:space:]]*dereg_rc=0[[:space:]]*$'
-check "dereg rc" 'run_echo_capture bash unregister-oracle.sh --unattended [|][|] dereg_rc=\$\?'
-check "dereg rc (interactive)" 'run_echo_capture bash unregister-oracle.sh <<< .* [|][|] dereg_rc=\$\?'
-check "dereg env reaches the script" 'VA_DEREGISTER_ORACLE=y VA_AGGREGATOR_ADDRESS="\$RECONF_AGGREGATOR" run_echo_capture'
-check "dereg output captured" 'dereg_out="\$CAPTURED_OUT"'
+# v2: the reconfiguration no longer deregisters (a registered node is refused, since new job ids
+# are new keys): pin the refusal, and that nothing deregisters there.
+check "registered node refused" 'RECONF_SUMMARY="the arbiter count was not changed: this node is registered'
+check "abort sets failed" 'RECONF_ABORT=1'
 check "capture keeps the pipe status" 'set -o pipefail; "\$@" 2>&1 \| tee "\$_cap" >&2'
-check "dereg count" 'RECONF_DEREGISTERED=\$\(printf'
-check "dereg abort sets failed" 'RECONF_ABORT=1' 
-check "dereg summary" 'RECONF_SUMMARY="deregistered \$RECONF_DEREGISTERED of \$RECONF_TOTAL job'
+n=$(grep -cE 'run_echo_capture bash unregister-oracle.sh' "$S")
+[ "$n" -eq 0 ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL the reconfiguration still deregisters ($n call(s))"; }
 # configure-node and registration: their rc read with `||`.
 check "configure guarded" 'bash "\$SCRIPT_DIR/configure-node.sh"' 
 check "configure rc initialised" '^[[:space:]]*RECONF_RC=0[[:space:]]*$'

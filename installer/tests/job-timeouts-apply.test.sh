@@ -228,6 +228,7 @@ import json, re, sys
 template = open(sys.argv[1]).read()
 out = sys.argv[2]
 OLD = re.sub(r'timeout="\d+s"', 'timeout="300s" # increase timeout to 300s', template)
+OLD = OLD.replace('gasLimit="9000000"', 'gasLimit="6000000"')   # v1's transaction limit
 def dag_of(text):
     raw = re.search(r'observationSource = """\n?(.*?)"""', text, re.S).group(1)
     raw = re.sub(r'\\\n\s*', '', raw)                       # a line-ending backslash
@@ -286,6 +287,7 @@ ID2=22222222-2222-4222-8222-222222222222
 run_tool --check; is "--check: stale jobs" "$rc" 1
 has "--check names the stale job" "$out" "Verdikta AI Arbiter 1"
 has "--check says what it read" "$out" "300s"
+has "--check says what it read (gas)" "$out" "gasLimit 6000000"
 has "--check says what it read (job)" "$out" "5m0s"
 hasnt "--check: never the password" "$out" "not-a-real-password"
 is "--check changes nothing" "$(state "len(s['calls'])")" "0"
@@ -294,7 +296,7 @@ set_state "
 for j in s['jobs']:
     if j['attributes']['type'] == 'directrequest':
         j['attributes']['maxTaskDuration'] = '14m0s'
-        j['attributes']['pipelineSpec']['dotDagSource'] = j['attributes']['pipelineSpec']['dotDagSource'].replace('timeout=\"300s\" # increase timeout to 300s', 'timeout=\"840s\"')
+        j['attributes']['pipelineSpec']['dotDagSource'] = j['attributes']['pipelineSpec']['dotDagSource'].replace('timeout=\"300s\" # increase timeout to 300s', 'timeout=\"840s\"').replace('gasLimit=\"6000000\"', 'gasLimit=\"9000000\"')
 "
 run_tool --check; is "--check: every job at 840 s" "$rc" 0
 has "--check: says how many" "$out" "3 job"
@@ -339,8 +341,10 @@ is "the foreign job was not touched" "$(state "next(j for j in s['jobs'] if j['i
 dag_after=$(job_field $ID1 "['pipelineSpec']['dotDagSource']")
 has "the bridge's timeout" "$dag_after" 'timeout="840s"'
 hasnt "the old timeout is gone" "$dag_after" '300s'
-# Only that attribute of the DAG moved, so nothing else about a text-mode job did.
-want=$(printf '%s' "$dag_before" | sed 's/timeout="300s" # increase timeout to 300s/timeout="840s"/')
+has "the transaction's gas limit" "$dag_after" 'gasLimit="9000000"'
+hasnt "the old gas limit is gone" "$dag_after" '6000000'
+# Only those attributes of the DAG moved, so nothing else about a text-mode job did.
+want=$(printf '%s' "$dag_before" | sed 's/timeout="300s" # increase timeout to 300s/timeout="840s"/; s/gasLimit="6000000"/gasLimit="9000000"/')
 is "the rest of the job's DAG, byte for byte" "$dag_after" "$want"
 [ -n "$(ls "$VERDIKTA_JOB_BACKUP_DIR" 2>/dev/null)" ] && ok || bad "no spec saved before replacing"
 grep -rq "not-a-real-password" "$VERDIKTA_JOB_BACKUP_DIR" && bad "the saved spec holds the password" || ok
@@ -348,6 +352,23 @@ run_tool --check; is "--check after --apply" "$rc" 0
 before=$(state "len(s['calls'])")
 run_tool --apply; is "--apply again: nothing to do" "$rc" 0
 is "--apply again sends nothing" "$(state "len(s['calls'])")" "$before"
+
+# A job whose timeouts are right but whose transaction gas limit is v1's 6M: stale, and only the limit moves.
+reset_stub
+set_state '
+for j in s["jobs"]:
+    if j["id"] == "3":
+        j["attributes"]["pipelineSpec"]["dotDagSource"] = j["attributes"]["pipelineSpec"]["dotDagSource"].replace("gasLimit=\"9000000\"", "gasLimit=\"6000000\"")
+'
+ID3=33333333-3333-4333-8333-333333333333
+dag3=$(job_field $ID3 "['pipelineSpec']['dotDagSource']")
+run_tool --check; is "--check: a low gas limit alone is stale" "$rc" 1
+has "--check names the gas-stale job" "$out" "Verdikta AI Arbiter 3"
+run_tool --apply; is "--apply: the gas-stale job too" "$rc" 0
+is "--apply: three PUTs" "$(state "[c['id'] for c in s['calls'] if c['method'] == 'PUT']")" "['1', '2', '3']"
+want3=$(printf '%s' "$dag3" | sed 's/gasLimit="6000000"/gasLimit="9000000"/')
+is "job 3: only its gas limit moved" "$(job_field $ID3 "['pipelineSpec']['dotDagSource']")" "$want3"
+run_tool --check; is "--check after raising the gas limit" "$rc" 0
 
 # Refused by validation: the node changed nothing (PUT validates before it deletes).
 reset_stub

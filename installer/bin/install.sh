@@ -610,7 +610,7 @@ fi
 # Port hardening (2026-10-21 port audit): firewall rules for 5432/6688/3000/8080 on
 # the public interface, and the optional recreate that publishes 6688 on loopback.
 # And the tool that measures a live node's job limits (design §11).
-for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh apply-job-timeouts.sh common-pin.js code-review-sandbox.sh code-review-check.js; do
+for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh apply-job-timeouts.sh apply-health-jobs.sh common-pin.js code-review-sandbox.sh code-review-check.js; do
     if [ -f "$UTIL_DIR/$_hardening" ]; then
         cp "$UTIL_DIR/$_hardening" "$INSTALL_DIR/$_hardening"
         chmod +x "$INSTALL_DIR/$_hardening"
@@ -810,6 +810,19 @@ if [ -f "$UTIL_DIR/unregister-oracle.sh" ]; then
     echo -e "${GREEN}Standalone unregistration script copied to $INSTALL_DIR/unregister-oracle.sh${NC}"
 else
     echo -e "${YELLOW}Warning: Standalone unregistration script not found at $UTIL_DIR/unregister-oracle.sh${NC}"
+fi
+
+# Health jobs for the jobs registered in step 9 (v2 keeper; verdikta-dispatcher TODO item 16): one
+# Chainlink cron job per registered job answers the keeper's health calls. They need the adapter's
+# service credential and the job templates, which are in the install only now. Not fatal: the node runs
+# without them, but a registered job without one cannot answer and stays frozen, so say how to retry.
+if [ "${REGISTRATION_EXIT_CODE:-1}" = "0" ] && [ -x "$INSTALL_DIR/apply-health-jobs.sh" ]; then
+    echo -e "${BLUE}Creating the health jobs for the registered jobs...${NC}"
+    HEALTH_JOBS_RC=0
+    bash "$INSTALL_DIR/apply-health-jobs.sh" --apply --wait 60 || HEALTH_JOBS_RC=$?
+    if [ "$HEALTH_JOBS_RC" -ne 0 ]; then
+        echo -e "${RED}The health jobs were not all created (exit $HEALTH_JOBS_RC). Until they are, the registered jobs cannot answer health calls and are frozen. Run: $INSTALL_DIR/apply-health-jobs.sh --apply${NC}"
+    fi
 fi
 
 # Copy the automatic funding script

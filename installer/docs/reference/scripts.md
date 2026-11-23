@@ -311,14 +311,36 @@ Standalone oracle registration script.
 ~/verdikta-arbiter-node/register-oracle.sh
 ```
 
+With the v2 dispatcher it creates each job's hash chain in `health-chains/` (back it up with the
+node's keys), registers its head with `registerArbiter`, and then creates the job's health job with
+`apply-health-jobs.sh --apply`.
+
 ---
 
 ### unregister-oracle.sh
 
-Unregisters oracle from the dispatcher.
+Takes the oracle's jobs off the dispatcher. With the v2 dispatcher this is two steps:
+- **The first run requests the exit.** The jobs stop being selectable at once.
+- **A run after the unbonding period (2 days by default) completes it.** The stake goes back to
+  the operator's owner.
+
+Each run does whichever step is due and prints when the next one is.
 
 ```bash
 ~/verdikta-arbiter-node/unregister-oracle.sh
+```
+
+---
+
+### apply-health-jobs.sh
+
+Creates or updates the Chainlink health job of each registered job (v2 dispatcher). Each health job
+answers the keeper's health calls; without it a job is frozen. `--check` reports, `--apply` creates
+missing jobs and replaces stale ones. Registration and upgrades run it.
+
+```bash
+~/verdikta-arbiter-node/apply-health-jobs.sh --check
+~/verdikta-arbiter-node/apply-health-jobs.sh --apply
 ```
 
 ---

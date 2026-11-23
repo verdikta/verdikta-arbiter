@@ -24,7 +24,6 @@ observationSource = """
                   data="{\\"key\\": \\"{ARBITER_KEY}\\", \\"preimage\\": $(parse_pre), \\"newHead\\": $(parse_next)}"]
     submit_tx    [type="ethtx"
                   to="{KEEPER_ADDRESS}"
-                  from="[\\"{FROM_ADDRESS}\\"]"
                   data="$(encode_tx)"
                   gasLimit="300000"
                   minConfirmations="1"
