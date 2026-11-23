@@ -120,6 +120,68 @@ Optional request fields: `attachmentNames` (file names, index-aligned with
 
 ---
 
+## Document Attachments
+
+A juror sees only the blocks it is sent, so every document it does not see as it
+was delivered gets a line in the same "Notes on the attachments" section of the
+prompt (`documentNotes`, `src/utils/attachment-processor.ts`). A request whose
+documents are all shown whole has no such line.
+
+| What happened | The line in the prompt | In the response |
+| --- | --- | --- |
+| The arbiter could not read the file (a PDF with no text layer, a damaged or protected document) | `Attachment <name> (PDF, 16.3 MB) was delivered with this request, but the arbiter could not read it, so its content is not shown to you. The file is not missing from the request.` | a warning, below |
+| A PDF was read through text extraction | `Attachment <name> is a PDF. Only its text is shown to you (12,898 characters); pictures and page images inside the PDF are not shown.` | none |
+| Text was cut at a limit (50,000 characters of plain text, 100,000 of extracted text) | `Attachment <name> is long: only the first 50,000 of its 51,234 characters are shown to you.` | none |
+
+```json
+"warnings": [
+  { "type": "attachment_skipped", "severity": "warning",
+    "message": "Attachment 9: PDF processing failed: ...",
+    "details": { "attachment": "submission/R4.pdf", "media_type": "application/pdf" } }
+]
+```
+
+`message` keeps the technical cause for the operator; the number in it counts the
+attachments as they were sent to the models (the parts of a split image count
+one each), so `details.attachment` names the file. The prompt line gives no
+cause: a juror cannot act on one, and before these lines existed a dropped PDF was
+reported by both jurors of a bounty as a file the submitter had not included.
+
+PDF text is read with `pdf-parse` alone; a host needs no `pdftotext`. A jury with
+any GPT-5-family or Claude 5 model gets every PDF as extracted text (the route's
+native-PDF model lists stop at GPT-4.1 and Claude 4.x), so its jurors never see a
+picture that exists only inside a PDF. Evidence that must be looked at should be
+attached as image files.
+
+---
+
+## The Result Record (start of `justification`, `model_results[].scores`)
+
+`justification` begins with a block the arbiter computes itself
+(`src/utils/resultRecord.ts`), followed by a blank line and the justifier's text:
+
+```
+RESULT (computed by the arbiter from the jurors' scores)
+- DONT_FUND: 567,500 of 1,000,000 (56.75%)
+- FUND: 432,500 of 1,000,000 (43.25%)
+JURORS (2 of 2 answered; the result is their weighted average)
+- openai gpt-5.6-terra, weight 0.5: DONT_FUND 1,000,000; FUND 0
+- anthropic claude-sonnet-5, weight 0.5: DONT_FUND 135,000; FUND 865,000
+```
+
+A juror that gave no score is listed as `no score, not counted (timed out after
+120 s)`, `(authentication error (HTTP 401))`, `(its reply could not be read as
+scores)`, and the heading then reads `1 of 2 answered; the result is that one
+juror's scores`. The block never quotes a provider's message. The numbers are the
+response's own `scores`; the justifier is given the block and asked to explain
+it, not to work a result out, and the block stands whatever the justifier writes
+(also when it times out or fails and the jurors' own texts are returned).
+
+The same numbers are in `model_results[]` for a program: `weight` on every entry,
+and `scores` (the juror's own integers, in outcome order) on every `success`.
+
+---
+
 ## Web Retrieval (`model_results[].web_retrieval`)
 
 Every juror that answered (`success` or `parsing_error`) carries what its web

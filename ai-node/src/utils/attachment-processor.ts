@@ -14,6 +14,21 @@ interface InputAttachment {
   filename?: string;
 }
 
+/** An attachment that was received but is not passed to the models. */
+export interface SkippedAttachment {
+  /** Its index in the attachments passed to processAttachments. */
+  index: number;
+  /** The technical cause, for the operator (logs, the response's warnings). */
+  reason: string;
+  /** What the file is, from its bytes where they say (media-type.ts). */
+  mediaType: string;
+  /** Its size as received, in bytes. */
+  bytes: number;
+}
+
+/** Plain text attachments are cut to this many characters. */
+export const MAX_PLAIN_TEXT_CHARS = 50000;
+
 /**
  * Process attachments for LLM consumption
  * Extracts text from document formats and prepares all attachments
@@ -22,10 +37,16 @@ export async function processAttachments(
   attachments: string[] | InputAttachment[],
   providerName?: string,
   modelName?: string
-): Promise<{ results: AttachmentProcessingResult[]; skippedCount: number; skippedReasons: string[] }> {
+): Promise<{
+  results: AttachmentProcessingResult[];
+  skippedCount: number;
+  skippedReasons: string[];
+  skipped: SkippedAttachment[];
+}> {
   const results: AttachmentProcessingResult[] = [];
   let skippedCount = 0;
   const skippedReasons: string[] = [];
+  const skipped: SkippedAttachment[] = [];
 
   // Check if provider supports native PDF processing
   const supportsNativePDF = checkNativePDFSupport(providerName, modelName);
@@ -37,11 +58,11 @@ export async function processAttachments(
       if (typeof attachment === 'string') {
         // Handle string attachments (from rank-and-justify route)
         const result = await processStringAttachment(attachment, i, supportsNativePDF);
-        results.push(result);
+        results.push({ ...result, sourceIndex: i });
       } else {
         // Handle object attachments (from generate route)
         const result = await processObjectAttachment(attachment, i, supportsNativePDF);
-        results.push(result);
+        results.push({ ...result, sourceIndex: i });
       }
     } catch (error) {
       console.error(`Error processing attachment ${i + 1}:`, error);
@@ -59,7 +80,9 @@ export async function processAttachments(
         console.warn(`Skipping attachment ${i + 1}: ${errorMessage}`);
         skippedCount++;
         skippedReasons.push(`Attachment ${i + 1}: ${errorMessage}`);
-        // Don't add to results - skip this attachment entirely
+        skipped.push({ index: i, reason: errorMessage, ...describeInput(attachment) });
+        // Not added to results: the models do not get it. The caller says so in the
+        // prompt (documentNotes), so a juror does not take the file for missing.
         continue;
       }
       
@@ -75,7 +98,106 @@ export async function processAttachments(
     }
   }
 
-  return { results, skippedCount, skippedReasons };
+  return { results, skippedCount, skippedReasons, skipped };
+}
+
+/** The media type and size of an attachment as it was received. */
+function describeInput(attachment: string | InputAttachment): { mediaType: string; bytes: number } {
+  if (typeof attachment !== 'string') {
+    return { mediaType: attachment.mediaType, bytes: base64Bytes(attachment.content) };
+  }
+  if (!attachment.startsWith('data:')) {
+    return { mediaType: 'text/plain', bytes: Buffer.byteLength(attachment) };
+  }
+  const declared = attachment.match(/^data:([^;,]+)/)?.[1] ?? 'application/octet-stream';
+  const payload = attachment.slice(attachment.indexOf(',') + 1);
+  return { mediaType: resolveMediaType(declared, payload), bytes: base64Bytes(payload) };
+}
+
+function base64Bytes(payload: string): number {
+  const padding = payload.endsWith('==') ? 2 : payload.endsWith('=') ? 1 : 0;
+  return Math.max(0, Math.floor((payload.length * 3) / 4) - padding);
+}
+
+const DOCUMENT_KINDS: Record<string, string> = {
+  'application/pdf': 'PDF',
+  'application/msword': 'Word document',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'Word document',
+  'application/vnd.oasis.opendocument.text': 'OpenDocument text',
+  'text/rtf': 'RTF document',
+  'application/rtf': 'RTF document',
+};
+
+function formatSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} bytes`;
+}
+
+/**
+ * Prompt notes for every document the models do not see as it was delivered.
+ *
+ * A juror only sees the blocks it is sent. A document the extractor could not read used to
+ * be dropped with a server-side warning and nothing in the prompt, so both jurors of bounty
+ * 398's second submission reported the hunter's PDF as "not included in the actual
+ * submission" and failed a mandatory criterion on it. The same holds, more quietly, for a
+ * PDF shown as its text layer (its pictures are gone) and for text cut at a length limit.
+ * Each note states what the arbiter did, in the words of normalizeImages' notes; it does
+ * not tell the juror what to conclude.
+ *
+ * @param refs - How a note names each attachment (normalizeImageAttachments' `refs`),
+ *               index-aligned with the attachments that were processed.
+ */
+export function documentNotes(
+  processed: { results: AttachmentProcessingResult[]; skipped: SkippedAttachment[] },
+  refs: string[] = [],
+): string[] {
+  const notes: Array<{ index: number; note: string }> = [];
+  const ref = (index: number) => refs[index] ?? String(index + 1);
+
+  for (const entry of processed.skipped) {
+    // A type this table does not know is the submitter's own header: it is not quoted
+    // in a line the prompt presents as the arbiter's.
+    const kind = DOCUMENT_KINDS[entry.mediaType.toLowerCase()] ?? 'file';
+    notes.push({
+      index: entry.index,
+      note:
+        `Attachment ${ref(entry.index)} (${kind}, ${formatSize(entry.bytes)}) was delivered with this request, ` +
+        `but the arbiter could not read it, so its content is not shown to you. The file is not missing from the request.`,
+    });
+  }
+
+  for (const result of processed.results) {
+    const index = result.sourceIndex;
+    if (index === undefined) continue;
+    const extraction = result.extractionResult;
+    if (extraction?.success && result.attachment.type === 'text') {
+      const truncated = (extraction.warnings ?? []).some(warning => /truncated/i.test(warning));
+      const length = `${extraction.extractedLength.toLocaleString('en-US')} characters`;
+      if (extraction.originalFormat.toLowerCase() === 'application/pdf') {
+        notes.push({
+          index,
+          note:
+            `Attachment ${ref(index)} is a PDF. Only its text is shown to you (${truncated ? `the first ${length}` : length}); ` +
+            `pictures and page images inside the PDF are not shown.`,
+        });
+      } else if (truncated) {
+        notes.push({
+          index,
+          note: `Attachment ${ref(index)} is long: only the first ${length} of its text are shown to you.`,
+        });
+      }
+    } else if (!extraction && result.attachment.type === 'text' && result.attachment.size > result.attachment.content.length) {
+      notes.push({
+        index,
+        note:
+          `Attachment ${ref(index)} is long: only the first ${result.attachment.content.length.toLocaleString('en-US')} ` +
+          `of its ${result.attachment.size.toLocaleString('en-US')} characters are shown to you.`,
+      });
+    }
+  }
+
+  return notes.sort((a, b) => a.index - b.index).map(entry => entry.note);
 }
 
 /**
@@ -224,7 +346,7 @@ async function processStringAttachment(
     return {
       attachment: {
         type: 'text',
-        content: content.substring(0, 50000), // Limit text length
+        content: content.substring(0, MAX_PLAIN_TEXT_CHARS), // Limit text length (documentNotes says so)
         mediaType: 'text/plain',
         size: content.length,
       }

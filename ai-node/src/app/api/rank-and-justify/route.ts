@@ -5,15 +5,17 @@ import { prePromptConfig } from '../../../config/prePromptConfig';
 import { postPromptConfig } from '../../../config/postPromptConfig';
 import { parseModelResponse } from '../../../utils/parseModelResponse';
 import { repairModelScores, replyJustification } from '../../../utils/repairModelResponse';
-import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor';
+import { processAttachments, convertToLLMFormat, documentNotes, logAttachmentSummary } from '../../../utils/attachment-processor';
 import { resolveMediaType } from '../../../utils/media-type';
 import {
   normalizeImageAttachments,
   appendAttachmentNotes,
+  attachmentRefs,
   UnprocessableImageError,
 } from '../../../lib/attachments/normalizeImages';
 import { WebRetrieval, describeWebRetrieval, mergeWebRetrievals } from '../../../lib/llm/web-retrieval';
 import { handleCodeReviewRequest, isCodeReviewBody } from '../../../lib/code-review/handler';
+import { JurorRecord, jurorFailure, justifierPrompt, resultRecord, withResultRecord } from '../../../utils/resultRecord';
 import fs from 'fs';
 import path from 'path';
 
@@ -77,6 +79,10 @@ interface ModelResult {
   model: string;
   status: 'success' | 'failed' | 'timeout' | 'parsing_error';
   duration_ms: number;
+  /** The juror's weight in the panel, as requested. */
+  weight?: number;
+  /** The juror's own scores, in outcome order (success only): what the aggregate was averaged from. */
+  scores?: number[];
   error_type?: string;
   error_message?: string;
   error_code?: string;
@@ -227,6 +233,14 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
     // Initialize warnings array early (used during attachment processing)
     const warnings: Warning[] = [];
 
+    // What the arbiter did to an attachment before the models saw it, one line each,
+    // appended to the prompt once every attachment is prepared: a juror that is not told
+    // takes a file it was never shown for a file the submitter never sent.
+    const attachmentNotes: string[] = [];
+    // How a note names each attachment (its file name, or its number), index-aligned
+    // with body.attachments as the steps below leave it.
+    let attachmentNoteRefs: string[] = attachmentRefs(body.attachmentNames, body.attachments?.length ?? 0);
+
     // Make every image fit every provider's limits before any model sees it, so one
     // oversized screenshot can no longer fail the whole jury. Images that already fit
     // are passed through unchanged; the prompt only changes when an image did.
@@ -239,7 +253,8 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
           requestTag: body.requestTag || `req_${requestStartTime}`,
         });
         body.attachments = normalized.attachments;
-        prompt = appendAttachmentNotes(prompt, normalized.promptNotes);
+        attachmentNoteRefs = normalized.refs;
+        attachmentNotes.push(...normalized.promptNotes);
         normalized.changes.forEach(change => {
           warnings.push({
             type: change.action === 'omitted' ? 'attachment_omitted' : 'image_normalized',
@@ -352,22 +367,28 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
           const providerName = primaryModel?.provider;
           const modelName = primaryModel?.model;
           
-          const { results: processedAttachments, skippedCount, skippedReasons } = await processAttachments(
+          const { results: processedAttachments, skippedCount, skippedReasons, skipped } = await processAttachments(
             body.attachments,
             providerName,
             modelName
           );
           attachments = convertToLLMFormat(processedAttachments);
           logAttachmentSummary(processedAttachments);
+          // The jurors are told about every document they do not see as it was delivered:
+          // one the extractor could not read, a PDF shown as its text, text cut at a limit.
+          attachmentNotes.push(...documentNotes({ results: processedAttachments, skipped }, attachmentNoteRefs));
           
           if (skippedCount > 0) {
             console.warn(`Skipped ${skippedCount} attachment(s):`, skippedReasons);
             // Add warnings for skipped attachments
-            skippedReasons.forEach(reason => {
+            skippedReasons.forEach((reason, position) => {
               warnings.push({
                 type: 'attachment_skipped',
                 message: reason,
-                severity: 'warning'
+                severity: 'warning',
+                // The file the number in the message stands for (the number counts image
+                // parts too, so it is not the file's place in the submission).
+                details: { attachment: attachmentNoteRefs[skipped[position].index] ?? null, media_type: skipped[position].mediaType }
               });
             });
           }
@@ -397,6 +418,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
         type: 'none' 
       });
     }
+    prompt = appendAttachmentNotes(prompt, attachmentNotes);
 
     // Initialize data structures
     const previousIterationResponses: string[] = [];
@@ -539,6 +561,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
                 model: modelInfo.model,
                 status: 'parsing_error',
                 duration_ms: modelResult.timingData.duration_ms || 0,
+                weight: modelInfo.weight,
                 error_type: 'parsing_error',
                 error_message: modelResult.timingData.failureReason || 'Unable to parse response',
                 web_retrieval: modelResult.webRetrieval
@@ -552,6 +575,8 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
                 model: modelInfo.model,
                 status: 'success',
                 duration_ms: modelResult.timingData.duration_ms || 0,
+                weight: modelInfo.weight,
+                scores: modelResult.modelAverage.map(score => Math.floor(score)),
                 web_retrieval: modelResult.webRetrieval
               });
             }
@@ -563,6 +588,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
             // Extract error details from the rejected promise
             const errorDetails = (result.reason as any).verdiktaErrorDetails;
             const isTimeout = result.reason.message.includes('timed out');
+            logProviderAuthFailure(modelInfo.provider, modelInfo.model, 'juror', errorDetails);
             const failedDurationMs: number = typeof (result.reason as any)?.verdiktaDurationMs === 'number'
               ? (result.reason as any).verdiktaDurationMs
               : MODEL_TIMEOUT_MS; // nothing measured (should not happen) → the ceiling
@@ -601,6 +627,7 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
               model: modelInfo.model,
               status: isTimeout ? 'timeout' : 'failed',
               duration_ms: failedDurationMs,
+              weight: modelInfo.weight,
               ...(errorDetails && {
                 error_type: errorDetails.errorType,
                 error_message: errorDetails.errorMessage,
@@ -735,6 +762,15 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
       // Generate justification only on the final iteration
       if (i === iterations - 1) {
         const justificationStartTime = Date.now();
+        // The result as the response reports it, each juror's own scores and every juror
+        // that gave none: printed above the justifier's text, and what it is asked to explain.
+        const jurorRecords: JurorRecord[] = allStructuredModelResults.map(result => ({
+          provider: result.provider,
+          model: result.model,
+          weight: result.weight ?? 0,
+          ...(result.status === 'success' ? { scores: result.scores } : { failure: jurorFailure(result) }),
+        }));
+        const record = resultRecord(body.outcomes, finalAggregatedScore.map(score => Math.floor(score)), jurorRecords);
         console.log(`🎯 JUSTIFIER_START: Starting justification generation with ${justifierProviderName}-${justifierModelName}`);
         console.log(`📝 JUSTIFIER_INPUT: Aggregated scores: ${JSON.stringify(finalAggregatedScore)}, Individual justifications: ${iterationJustifications.length} items`);
         
@@ -756,6 +792,7 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
           
           let justificationTimeoutId: NodeJS.Timeout | null = null;
           let justificationCompleted = false;
+          let justifierTimedOut = false; // the record can say "timed out" of a juror, so the text does not tell
           
           try {
             finalJustification = await new Promise<string>((resolve, reject) => {
@@ -767,7 +804,7 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
               }, JUSTIFICATION_TIMEOUT_MS);
               
               generateJustification(
-                finalAggregatedScore,
+                record,
                 iterationJustifications,
                 justifierProvider,
                 justifierModelName
@@ -793,6 +830,7 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
           } catch (timeoutError: any) {
             const justifierCallTime = Date.now() - justifierCallStart;
             if (timeoutError.message.includes('timed out')) {
+              justifierTimedOut = true;
               console.warn(`⏰ JUSTIFIER_TIMEOUT: Justification generation timed out after ${justifierCallTime}ms (limit: ${JUSTIFICATION_TIMEOUT_MS}ms)`);
               console.log(`📝 FALLBACK_JUSTIFICATION: Using individual model responses as justification`);
               
@@ -804,6 +842,7 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
               }
             } else {
               console.error(`❌ JUSTIFIER_ERROR: Unexpected error during justification: ${timeoutError.message}`);
+              logProviderAuthFailure(justifierProviderName, justifierModelName, 'justifier', extractProviderErrorDetails(timeoutError));
               // Also fallback to individual responses on error
               if (iterationJustifications && iterationJustifications.length > 0) {
                 finalJustification = `Error generating consolidated justification: ${timeoutError.message}\n\nIndividual model responses:\n\n${iterationJustifications.join('\n\n')}`;
@@ -814,7 +853,7 @@ ${prompt}\n`); // Assuming base prompt is sufficient context
           }
           
           // Strip thinking blocks from justifier response (handles both success and timeout cases)
-          finalJustification = stripThinkingBlocks(finalJustification);
+          finalJustification = withResultRecord(record, stripThinkingBlocks(finalJustification));
           logInteraction(`Response from Justifier:
 ${finalJustification}\n`);
           
@@ -829,13 +868,13 @@ ${finalJustification}\n`);
             apiCallTime: justifierCallTime,
             totalTime: totalJustificationTime,
             responseLength: finalJustification.length,
-            timedOut: finalJustification.includes('timed out'),
+            timedOut: justifierTimedOut,
             timeoutThreshold: JUSTIFICATION_TIMEOUT_MS
           });
         } catch (error: any) {
           const errorTime = Date.now() - justificationStartTime;
           console.error(`❌ JUSTIFIER_ERROR: Error generating final justification after ${errorTime}ms:`, error);
-          finalJustification = 'Error generating final justification.'; // Handle error gracefully
+          finalJustification = withResultRecord(record, 'Error generating final justification.'); // Handle error gracefully
           logTiming('justification_generation_error', justificationStartTime, {
             provider: justifierProviderName,
             model: justifierModelName,
@@ -1038,6 +1077,24 @@ function extractProviderErrorDetails(error: any): {
     errorCode,
     httpStatus
   };
+}
+
+/**
+ * One fixed log line when a provider refuses this node's credentials (HTTP 401 / 403).
+ *
+ * The request still succeeds with the rest of the panel, so nothing else tells the operator:
+ * one arbiter answered bounty 398 with a single juror, and a failed justifier, while OpenAI
+ * returned 401 to its key. The doctor's ai.provider_auth reads this line. It carries no
+ * provider text, which can quote the key.
+ */
+function logProviderAuthFailure(
+  provider: string,
+  model: string,
+  role: 'juror' | 'justifier',
+  details?: { errorType?: string; httpStatus?: number } | null,
+): void {
+  if (details?.errorType !== 'authentication' && details?.errorType !== 'authorization') return;
+  console.error(`🔑 PROVIDER_AUTH_FAILED: provider=${provider} model=${model} role=${role} http_status=${details.httpStatus ?? 'unknown'}`);
 }
 
 // Helper function for processing a single model in parallel - NOT exported
@@ -1308,22 +1365,19 @@ async function processModelForIteration(
 
 // Helper function - NOT exported
 async function generateJustification(
-  V_total: number[],
+  record: string,
   allJustifications: string[],
   justifierProvider: any,
   justifierModel: string
 ): Promise<string> {
   // DEBUG: Log what's being sent to the justifier
   console.log(`🔍 DEBUG - Sending to justifier:`, {
-    aggregatedVector: V_total,
+    record,
     individualJustifications: allJustifications
   });
   
-  const prompt = `Using the aggregated decision vector ${JSON.stringify(
-    V_total
-  )}, and considering the following justifications from individual models:\n\n${allJustifications.join(
-    '\n\n'
-  )}\n\nProvide a comprehensive justification for the result.`;
+  // The justifier explains the recorded result; it is not asked to work one out (resultRecord.ts).
+  const prompt = justifierPrompt(record, allJustifications);
 
   // For reasoning models, use low effort and low verbosity for faster justification generation
   const isReasoningModel = justifierModel.toLowerCase().includes('o1') || 

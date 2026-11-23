@@ -182,6 +182,16 @@ jobs:
         working-directory: ai-node
         run: npx jest src/__tests__/lib/llm/q63-juror-routes.test.ts src/__tests__/lib/llm/code-jurors-doctor.test.ts
 
+      # What a juror is shown and what the record says (bounty 398): a PDF read on a host with
+      # no pdftotext, every document a juror does not see named in its prompt, and the result
+      # block the arbiter writes above the justifier's text.
+      - name: AI Node documents and the result record
+        working-directory: ai-node
+        run: >-
+          npx jest __tests__/unit/pdfHandler.test.ts __tests__/unit/documentNotes.test.ts
+          __tests__/unit/resultRecord.test.ts src/__tests__/api/rank-and-justify.documents.test.ts
+          src/__tests__/api/rank-and-justify.record.test.ts
+
       # `npm run build` is next build with its lint and type check, over the tests too (A11b).
       # Every API route must be dynamic (ƒ): a static one is frozen at build time (AGENTS.md §8).
       # The build is removed afterwards, so the claim suite's `next dev` starts from nothing.
