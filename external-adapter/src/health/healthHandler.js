@@ -18,9 +18,17 @@
  * The job runs every few seconds, so an answer whose transaction has not landed yet would be sent
  * again: a head answered less than IN_FLIGHT_MS ago is not answered twice (a second answer from the
  * same chain value would only revert). A rotation starts ROTATE_MARGIN values before a chain ends.
+ *
+ * Re-sync: when the keeper's head is on none of this key's chains (registered with head 0 from a
+ * browser, or the chain file lost) or its chain is used up, the answer is a fresh chain's head as a
+ * plain answer (`resync: true`). The keeper adopts it as the head and keeps the arbiter frozen until
+ * it answers a call sent after that; its next answer sends that call and the one after answers it,
+ * both ordinary answers from the new chain (verdikta-dispatcher MIGRATION.md, "Chain re-sync").
  */
 
-const { KeyChains, defaultDir } = require('./chainStore');
+const fs = require('fs');
+const path = require('path');
+const { KeyChains, createChain, defaultDir, DEFAULT_LENGTH } = require('./chainStore');
 
 const HEX32 = /^0x[0-9a-fA-F]{64}$/;
 const IN_FLIGHT_MS = 20_000;
@@ -42,7 +50,8 @@ function errored(id, statusCode, error) {
 }
 
 /**
- * @param {{ dir?: string, logger?: object, now?: () => number, inFlightMs?: number, rotateMargin?: number }} [options]
+ * @param {{ dir?: string, logger?: object, now?: () => number, inFlightMs?: number, rotateMargin?: number,
+ *   chainLength?: number }} [options]  chainLength: values in a chain made for a re-sync
  */
 function createHealthHandler(options = {}) {
   const dir = options.dir || defaultDir();
@@ -50,13 +59,26 @@ function createHealthHandler(options = {}) {
   const now = options.now || Date.now;
   const inFlightMs = options.inFlightMs ?? IN_FLIGHT_MS;
   const rotateMargin = options.rotateMargin ?? ROTATE_MARGIN;
+  const chainLength = options.chainLength ?? DEFAULT_LENGTH;
   const keys = new Map();        // key -> KeyChains
   const sent = new Map();        // key -> { head, at }: the last head answered
 
   function chainsFor(key) {
     let kc = keys.get(key);
-    if (!kc) { kc = new KeyChains(key, { dir }); keys.set(key, kc); }
+    if (!kc) {
+      // no file at all (lost, or never made for this key): start one for a re-sync
+      if (!fs.existsSync(path.join(dir, `${key}.json`))) createChain(key, { dir, length: chainLength, resync: true });
+      kc = new KeyChains(key, { dir });
+      keys.set(key, kc);
+    }
     return kc;
+  }
+
+  function resync(id, key, head, kc, tag, why) {
+    const fresh = kc.resyncHead(chainLength);
+    sent.set(key, { head, at: now() });
+    logger.warn(`${tag} ${why}: re-syncing onto a fresh hash chain (head ${fresh}); the arbiter is frozen until its next answers land`);
+    return { jobRunID: id, statusCode: 200, status: 'success', data: { answer: true, preimage: fresh, newHead: fresh, resync: true } };
   }
 
   return async function healthHandler(request) {
@@ -81,17 +103,12 @@ function createHealthHandler(options = {}) {
     }
 
     const at = kc.locate(head);
-    if (!at) {
-      logger.error(`${tag} the keeper's head ${head} is on none of this key's stored chains: the arbiter cannot answer (restore the chain file, or exit and register again)`);
-      return errored(id, 409, 'Head not on a stored chain');
-    }
+    if (!at) return resync(id, key, head, kc, tag, `the keeper's head ${head} is on none of this key's chains`);
     let c = at.chain;
-    if (c > 0 && c === kc.chains.length - 1) { kc.dropBefore(c); c = 0; }   // a rotation has landed
+    kc.landed(c);
+    if (c > 0 && c === kc.chains.length - 1) { kc.dropBefore(c); c = 0; }   // a rotation or re-sync has landed
     const chain = kc.chains[c];
-    if (at.index >= chain.length) {
-      logger.error(`${tag} the keeper's head is this chain's seed: nothing left to reveal`);
-      return errored(id, 409, 'Chain exhausted');
-    }
+    if (at.index >= chain.length) return resync(id, key, head, kc, tag, "the keeper's head is this chain's seed (used up)");
     const preimage = chain.value(at.index + 1);
     let newHead = preimage;
     if (c < kc.chains.length - 1) {

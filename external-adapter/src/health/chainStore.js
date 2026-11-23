@@ -8,9 +8,12 @@
  *
  * The chains live in one file per key, `<dir>/<key>.json` (dir 0700, file 0600), outside the code
  * an upgrade replaces: by default `<install>/health-chains`, the external adapter's sibling, and
- * HEALTH_CHAIN_DIR overrides it. The file holds the seeds, so it is a secret, and losing it leaves
- * the arbiter unable to answer: it stays frozen until it exits and registers again with a new head.
- * Back it up with the node's keys.
+ * HEALTH_CHAIN_DIR overrides it. The file holds the seeds, so it is a secret. Back it up with the
+ * node's keys. If it is lost, or the keeper's head is on none of its chains (registered with head 0
+ * from a browser), the handler re-syncs onto a fresh chain: the keeper adopts a mismatched plain
+ * answer as its head and freezes the arbiter for one call (verdikta-dispatcher MIGRATION.md, "Chain
+ * re-sync"). A re-sync always uses a fresh chain, never one whose values may have been revealed:
+ * those would be predictable beacon values.
  *
  * A file holds a list of chains, newest last. A rotation appends a chain before its head is sent
  * (rotateChain answers from the old chain and installs the new head), and the older chains are
@@ -116,20 +119,22 @@ function writeAtomic(file, obj) {
   fs.renameSync(tmp, file);
 }
 
-function newChainRecord(length) {
+function newChainRecord(length, { resync = false } = {}) {
   const seed = hex(crypto.randomBytes(32));
   const chain = new Chain(seed, length);
-  return { record: { seed, length, head: chain.head, created: new Date().toISOString() }, chain };
+  const record = { seed, length, head: chain.head, created: new Date().toISOString() };
+  if (resync) record.resync = true;     // made for a re-sync whose head the keeper has not taken yet
+  return { record, chain };
 }
 
 /**
  * Create the first chain for `key` and return its head (what registerArbiter takes). Refuses to
  * overwrite an existing file: its seeds may be what the keeper holds.
  */
-function createChain(key, { dir = defaultDir(), length = DEFAULT_LENGTH } = {}) {
+function createChain(key, { dir = defaultDir(), length = DEFAULT_LENGTH, resync = false } = {}) {
   const file = filePath(dir, key);
   if (fs.existsSync(file)) throw new Error(`a hash chain already exists for ${normKey(key)} (${file})`);
-  const { record } = newChainRecord(length);
+  const { record } = newChainRecord(length, { resync });
   writeAtomic(file, { version: 1, key: normKey(key), chains: [record] });
   return record.head;
 }
@@ -180,6 +185,28 @@ class KeyChains {
     this.hints.push(0);
     this._save();
     return record.head;
+  }
+
+  /**
+   * The head to re-sync onto: the newest chain's, if it was made for a re-sync the keeper has not taken
+   * yet (so a retry, or a restart, sends the same head); otherwise a new chain's, persisted first.
+   */
+  resyncHead(length) {
+    const last = this.records[this.records.length - 1];
+    if (last.resync) return last.head;
+    const { record, chain } = newChainRecord(length || last.length, { resync: true });
+    this.records.push(record);
+    this.chains.push(chain);
+    this.hints.push(0);
+    this._save();
+    return record.head;
+  }
+
+  /** the keeper's head is on chain `c`: a re-sync onto it has landed */
+  landed(c) {
+    if (!this.records[c].resync) return;
+    delete this.records[c].resync;
+    this._save();
   }
 
   /** drop the chains before `c` (the keeper's head is on chain c, so they can never be needed) */

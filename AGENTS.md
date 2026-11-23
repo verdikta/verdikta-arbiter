@@ -144,8 +144,13 @@ chain, or the arbiter is frozen (not selectable) until it answers.
   registered with `registerArbiter`.
 - **Where it lives:** `external-adapter/src/health/chainStore.js` keeps one file per job key,
   `<install>/health-chains/<key>.json`, 0600, outside what an upgrade replaces (override with
-  `HEALTH_CHAIN_DIR`). The file holds the seeds: **back it up with the node's keys**. Without it the
-  arbiter cannot answer and stays frozen until it exits and registers again.
+  `HEALTH_CHAIN_DIR`). The file holds the seeds: **back it up with the node's keys**.
+- **Re-sync (keeper, 2026-11-23):** when the keeper's head is on none of a key's chains (registered
+  with head 0 from a browser, or the file lost) or the chain is used up, the adapter answers with a
+  fresh chain's head (`resync: true`). The keeper adopts a mismatched plain answer as its head and keeps
+  the arbiter frozen until it answers a call sent after the re-sync; the job's next answer sends that
+  call and the one after answers it. Always a fresh chain: revealed values would be predictable beacon
+  values. A chain file that exists but can't be read still stops the adapter (restore or remove it).
 - **How it is answered:** the Chainlink cron job `chainlink-node/healthJobSpec`, one per arbiter job,
   every 10 s:
   1. It reads `keeper.healthState(key)` with an `ethcall`.

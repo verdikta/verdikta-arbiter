@@ -19,9 +19,13 @@ let dir;
 beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), 'health-chains-')); });
 afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
 
-/** the keeper's rule: returns the new head, or throws as BadPreimage would */
+/** the keeper's rule: returns the new head, or throws as BadPreimage would. A plain answer
+ *  (newHead == preimage) whose value is not a preimage re-syncs: the value becomes the head. */
 function keeperAnswer(head, preimage, newHead) {
-  if (hashOf(preimage) !== head) throw new Error('BadPreimage');
+  if (hashOf(preimage) !== head) {
+    if (newHead !== preimage) throw new Error('BadPreimage');
+    return preimage;                                           // a re-sync (ChainResynced)
+  }
   return newHead;
 }
 
@@ -139,13 +143,64 @@ describe('healthHandler', () => {
     expect(keeperAnswer(head, r2.data.preimage, r2.data.newHead)).toBe(r1.data.newHead);
   });
 
-  it('refuses malformed input, an unknown key and a head on no stored chain', async () => {
+  it('refuses malformed input', async () => {
     createChain(KEY, { dir, length: 20 });
     const h = createHealthHandler({ dir });
     expect((await h({ id: 'x', data: { healthKey: '0x12', head: '0x' + '00'.repeat(32) } })).statusCode).toBe(400);
     expect((await h({ id: 'x', data: { healthKey: KEY } })).statusCode).toBe(400);
-    expect((await h({ id: 'x', data: { healthKey: '0x' + '2e'.repeat(32), head: '0x' + '00'.repeat(32) } })).statusCode).toBe(404);
-    expect((await ask(h, '0x' + '00'.repeat(32))).statusCode).toBe(409);
+  });
+
+  describe('chain re-sync (the keeper adopts a mismatched plain answer as its head)', () => {
+    const ZERO = '0x' + '00'.repeat(32);
+
+    it('a head on no stored chain (registered with head 0): re-syncs onto a fresh chain, then answers from it', async () => {
+      let t = 0;
+      const old = createChain(KEY, { dir, length: 20 });
+      const h = createHealthHandler({ dir, now: () => (t += 60_000), chainLength: 50, rotateMargin: 5 });
+      const r = await ask(h, ZERO);
+      expect(r.statusCode).toBe(200);
+      expect(r.data).toMatchObject({ answer: true, resync: true });
+      expect(r.data.newHead).toBe(r.data.preimage);           // the job's plain-answer form
+      expect(r.data.preimage).not.toBe(old);                   // a fresh chain, never one already used
+      let head = keeperAnswer(ZERO, r.data.preimage, r.data.newHead);
+      expect(head).toBe(r.data.preimage);
+      for (let call = 0; call < 3; call++) {                   // then ordinary answers from the new chain
+        const a = await ask(h, head);
+        expect(a.data.resync).toBeUndefined();
+        head = keeperAnswer(head, a.data.preimage, a.data.newHead);
+      }
+      const data = JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8'));
+      expect(data.chains).toHaveLength(1);                     // the unused old chain is dropped
+      expect(data.chains[0].head).toBe(r.data.preimage);
+    });
+
+    it('a key with no chain file (lost): creates one and re-syncs', async () => {
+      const h = createHealthHandler({ dir, chainLength: 50 });
+      const r = await ask(h, '0x' + 'ab'.repeat(32));
+      expect(r.data).toMatchObject({ answer: true, resync: true });
+      expect(currentHead(KEY, { dir })).toBe(r.data.preimage);
+    });
+
+    it('a re-sync that has not landed is sent again with the same head, also after a restart', async () => {
+      let t = 0;
+      createChain(KEY, { dir, length: 20 });
+      const h1 = createHealthHandler({ dir, now: () => (t += 60_000), chainLength: 50 });
+      const r1 = await ask(h1, ZERO);
+      const h2 = createHealthHandler({ dir, now: () => (t += 60_000), chainLength: 50 });
+      const r2 = await ask(h2, ZERO);
+      expect(r2.data).toEqual(r1.data);
+      const data = JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8'));
+      expect(data.chains).toHaveLength(2);                     // one fresh chain, not one per attempt
+    });
+
+    it('a used-up chain (the keeper holds its seed): re-syncs onto a fresh chain', async () => {
+      createChain(KEY, { dir, length: 3 });
+      const { seed } = JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8')).chains[0];
+      const h = createHealthHandler({ dir, chainLength: 50 });
+      const r = await ask(h, seed);                            // head = the seed: nothing left to reveal
+      expect(r.data).toMatchObject({ answer: true, resync: true });
+      expect(r.data.preimage).not.toBe(seed);
+    });
   });
 
   it('takes the head as 0x-hex or as a decimal (a uint256 from the job)', () => {

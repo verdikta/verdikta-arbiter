@@ -424,10 +424,10 @@ PY
     problems=$(printf '%s\n' "$problems" | grep -v '^COUNT ' || true)
     if [ -z "$problems" ]; then
         emit PASS cfg.health_chains "${n:-0} registered job(s), each with its hash-chain file" \
-             "Back up $dir with the node's keys: without it a job cannot answer and stays frozen."
+             "Back up $dir with the node's keys. A lost file is replaced by a re-sync onto a fresh chain at the job's next health call (frozen until its answers land)."
     else
         emit CRIT cfg.health_chains "$(printf '%s' "$problems" | tr '\n' ';' | sed 's/;$//')" \
-             "A job without its chain cannot answer health calls and is frozen. Restore $dir from a backup (chmod 600 the files), or exit the job (unregister-oracle.sh, twice) and register it again."
+             "A missing file is replaced automatically: at the job's next health call the adapter re-syncs onto a fresh chain, and the job is frozen until its next answers land. An unreadable file stops the adapter answering: restore it from a backup (chmod 600), or remove it so the adapter re-syncs. Check HEALTH_CHAIN_DIR if every file is missing."
     fi
     if [ ! -x "$tool" ]; then
         emit WARN svc.health_jobs "apply-health-jobs.sh not installed" \
