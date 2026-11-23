@@ -318,6 +318,12 @@ describe('bcidValidation', () => {
       expect(other.scores[0].outcome).toBe('Reject');
     });
 
+    it('scores a one-number question 0, never the top score: a malformed submission earns nothing', () => {
+      const v = buildMalformedSubmissionVerdict({ outcomes: ['completeness'] }, [err]);
+      expect(v.scores).toEqual([{ outcome: 'completeness', score: 0 }]);
+      expect(v.justification).toContain('scores it 0');
+    });
+
     it('is deterministic: identical input → identical output', () => {
       const a = buildMalformedSubmissionVerdict(primaryManifest, [err]);
       const b = buildMalformedSubmissionVerdict(primaryManifest, [err]);

@@ -273,7 +273,8 @@ no `manifest.json`, manifest not JSON or failing the schema, no `primary`,
 JSON without a valid `query`, or a `name` that contradicts the primary
 manifest's `bCIDs` — the arbiter does **not** abort. It renders a deterministic
 verdict instead: the **full 1,000,000 score goes to the first outcome** of the
-requester's `primary_query.json` (`DONT_FUND` for bounties), and the
+requester's `primary_query.json` (`DONT_FUND` for bounties), or, for a
+one-number question (one outcome), the score is **0**, never the top score. The
 justification uploaded to IPFS states which check failed, the `manifest.json`
 it found, and the conforming shape above. The verdict is committed and revealed
 like any AI verdict, so the aggregator round settles and the party that
@@ -318,6 +319,11 @@ The primary file referenced in the `primary` section must be a JSON file with th
 - **Description:** Predefined decision options
 - **Default Behavior:** If omitted, generates default outcomes based on `NUMBER_OF_OUTCOMES`
 - **Generated Format:** `["outcome1", "outcome2", ...]`
+- **One-number questions:** exactly one outcome asks each juror for a single
+  score from 0 to 1,000,000, revealed as `[score]` and never scaled to add up to
+  1,000,000. The query says what the score measures and what 0 and 1,000,000
+  mean. Needs a `@verdikta/common` release that accepts one outcome (its `beacon`
+  branch); the published versions require at least two.
 
 ---
 

@@ -18,7 +18,8 @@
 
 **Key Points:**
 - Scores are weighted averages from all successful models
-- Scores always sum to 1,000,000
+- Scores always sum to 1,000,000, except for a one-number question (exactly one outcome): its single
+  score is from 0 to 1,000,000 and is not scaled
 - Justification synthesizes reasoning from all models
 
 ---

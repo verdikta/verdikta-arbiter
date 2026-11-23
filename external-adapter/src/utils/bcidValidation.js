@@ -344,12 +344,18 @@ function truncate(text, max = 1500) {
  * manifest (for bounties that is DONT_FUND; it is derived, never hard-coded).
  * Every arbiter running this code produces the identical vector, which is what
  * the aggregator's commit-reveal clustering needs to converge.
+ *
+ * A one-number question (exactly one outcome: a single score from 0 to 1,000,000,
+ * never scaled; verdikta-common MANIFEST_SPECIFICATION.md) scores 0 instead.
+ * There the first outcome is the only one, and the full score would be the TOP
+ * score: a malformed submission must earn nothing.
  */
 function buildMalformedSubmissionVerdict(primaryManifest, malformedBCIDs) {
   const outcomes = Array.isArray(primaryManifest.outcomes) && primaryManifest.outcomes.length > 0
     ? primaryManifest.outcomes
     : ['outcome1', 'outcome2'];
-  const scores = outcomes.map((outcome, index) => ({ outcome, score: index === 0 ? FULL_SCORE : 0 }));
+  const oneNumber = outcomes.length === 1;
+  const scores = outcomes.map((outcome, index) => ({ outcome, score: index === 0 && !oneNumber ? FULL_SCORE : 0 }));
 
   const details = malformedBCIDs.map((err) => {
     const lines = [
@@ -364,11 +370,15 @@ function buildMalformedSubmissionVerdict(primaryManifest, malformedBCIDs) {
   }).join('\n');
 
   const justification = [
-    `Verdict: ${outcomes[0]} (deterministic, not an AI judgement).`,
+    oneNumber
+      ? `Verdict: ${outcomes[0]} = 0 (deterministic, not an AI judgement).`
+      : `Verdict: ${outcomes[0]} (deterministic, not an AI judgement).`,
     '',
     'The submitted-work archive could not be evaluated because it is malformed. ' +
     'Every arbiter applies the same structural checks before any AI model sees the ' +
-    `content, so the round settles on the first outcome ("${outcomes[0]}") instead of stalling.`,
+    (oneNumber
+      ? `content, so the round scores it 0 for "${outcomes[0]}" instead of stalling.`
+      : `content, so the round settles on the first outcome ("${outcomes[0]}") instead of stalling.`),
     '',
     'What was wrong:',
     details,

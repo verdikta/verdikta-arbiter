@@ -1,5 +1,47 @@
+import { isOneNumberQuestion } from '../utils/oneNumber';
+
+/**
+ * A one-number question (see utils/oneNumber.ts): one score from 0 to 1,000,000, not a split. Its
+ * examples avoid 0 and 1,000,000 so that no example reads as the answer.
+ */
+function getOneNumberPrompt(name: string): string {
+  return `You are tasked with evaluating the following request based on the provided text
+and optional attachments, which may include images and other files. You must respond with
+a JSON object containing exactly two fields: 'score' and 'justification'.
+
+IMPORTANT: This request asks for ONE number: ${name}.
+
+The 'score' field must be an array holding exactly one integer from 0 to 1,000,000: your score
+for ${name}. It is not a likelihood split between outcomes and does not need to add up to anything.
+Use the whole scale as the request defines it: what 0 and 1,000,000 mean is stated in the request.
+
+The 'justification' field must be a string explaining how you arrived at the score.
+
+RESPONSE FORMAT:
+{
+  "score": [<an integer from 0 to 1,000,000>],
+  "justification": "The score for ${name} is X because..."
+}
+
+REQUIREMENTS:
+- Response must be valid JSON
+- Score array must contain exactly 1 integer
+- The score must be from 0 to 1,000,000
+- Justification must explain the reasoning for the score
+
+Here's an example of the format (the value is only an example):
+{
+  "score": [620000],
+  "justification": "${name} scored 620,000 because..."
+}
+
+Evaluate the following request and provide your response in the specified JSON format:
+`;
+}
+
 export const prePromptConfig = {
   getPrompt: (outcomes?: string[]) => {
+    if (isOneNumberQuestion(outcomes)) return getOneNumberPrompt(outcomes![0]);
     const numOutcomes = outcomes?.length || 2;
     const outcomesList = outcomes 
       ? outcomes.map((outcome, i) => `${i + 1}. ${outcome}`).join('\n')

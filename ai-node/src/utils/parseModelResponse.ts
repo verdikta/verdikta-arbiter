@@ -1,3 +1,5 @@
+import { isOneNumberQuestion, isValidOneNumber, SCORE_TOTAL } from './oneNumber';
+
 interface ScoreOutcome {
   outcome: string;
   score: number;
@@ -153,10 +155,17 @@ export function parseModelResponse(responseText: string, outcomes?: string[]): {
       throw new Error(`Score array length (${decisionVector.length}) does not match outcomes length (${outcomes.length})`);
     }
 
-    // Validate that scores sum to 1,000,000
-    const sum = decisionVector.reduce((a: number, b: number) => a + b, 0);
-    if (sum !== 1000000) {
-      throw new Error(`Scores must sum to 1,000,000 (got ${sum})`);
+    if (isOneNumberQuestion(outcomes)) {
+      // A one-number question: the single score is kept as given, never scaled (see oneNumber.ts).
+      if (!isValidOneNumber(decisionVector[0])) {
+        throw new Error(`A one-number score must be from 0 to 1,000,000 (got ${decisionVector[0]})`);
+      }
+    } else {
+      // Validate that scores sum to 1,000,000
+      const sum = decisionVector.reduce((a: number, b: number) => a + b, 0);
+      if (sum !== SCORE_TOTAL) {
+        throw new Error(`Scores must sum to 1,000,000 (got ${sum})`);
+      }
     }
 
     // Create the scores array with outcomes if provided, or "unnamed" if not
