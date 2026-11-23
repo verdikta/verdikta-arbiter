@@ -2257,10 +2257,14 @@ is recorded.
 > 5. **Roll forward** to it with `rollForward`, which is unchanged.
 >
 > Without the hold, the old listing still accepts commits between steps 2 and
-> 5, while the fix is public. A claim committed before the hold is untouched by
-> all of this: it is judged against the committed hash and paid as before
-> (§7.1). A finding made on the held listing reaches the record as a late
-> claim, with no award.
+> 5, while the fix is public. The hold itself changes nothing for a claim
+> committed before it. The roll at step 5 then does what a roll does today: it
+> ends the fix window of every claim disclosed by then (§7.1, E5), so such a
+> claim is revealable at once, and its reveal clock starts once every earlier
+> claim has resolved (D5). A hunter with a pending claim on a held listing
+> should therefore expect the roll. Through both, the claim is judged against
+> the committed hash and paid as before (§7.1). A finding made on the held
+> listing reaches the record as a late claim, with no award.
 
 | Function | Caller | Pays | Effect |
 |---|---|---|---|
@@ -2279,7 +2283,7 @@ is recorded.
 | `expire(claimId)` | anyone, `revealWindow` after Revealable | gas | Bond to the maker, prepay back to the hunter, recorded as unrevealed |
 | `retrigger(claimId)` | hunter, after an aggregator timeout | a fresh prepay | Re-submits the evaluation (§12) |
 | `close(listingId)` | maker, when no claim is pending | gas | Withdraws escrow; ends the badge |
-| `lateClaim(listingId, …)` | hunter, on a Rolled or Closed listing, or on a held one (E10) | bond + prepay | A claim with no award: judged and recorded as "found later"; bond returned unless INVALID |
+| `lateClaim(listingId, …)` | hunter, on a Rolled listing, one Closed after it opened, or a held one (E10) | bond + prepay | A claim with no award: judged and recorded as "found later"; bond returned unless INVALID (a narrow INVALID returns it, E8) |
 | `recordByHash(bytes32)` | anyone (view) | — | The record summary (§13.4) |
 
 Settlement under §8.7, in funds: valid at or above the counted class →
