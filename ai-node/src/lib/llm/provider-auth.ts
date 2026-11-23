@@ -1,21 +1,26 @@
 /**
- * A provider that refuses the operator's API key is logged with one fixed line:
+ * Which providers refuse this node's API key, as the cron watchdog reads it.
  *
- *   PROVIDER_AUTH_FAILED: provider=<name> model=<id> role=juror|justifier http_status=<code|none>
+ * The route logs one fixed line when a provider refuses the operator's key
+ * (rank-and-justify/route.ts, logProviderAuthFailure), and the doctor's
+ * ai.provider_auth reads it from the AI Node's log: a provider that refused the key
+ * and has not answered since. The watchdog pages on the same condition
+ * (installer/util/chainlink-health-watchdog.sh) and cannot take it from that log:
+ * the log has no times, and it prints prompts and model replies as they come, so
+ * anyone who submits evidence could write a refusal, or an answer, into it. So the
+ * two events also go to logs/provider-auth.log, which holds nothing else:
  *
- * A failed juror is left out of the aggregation, so a revoked key turns a
- * two-model jury into one model's verdict while every request still succeeds.
- * The line is what tells the operator. It goes to two places:
+ *   <ISO time> PROVIDER_AUTH_FAILED: provider=<name> model=<id> role=juror|justifier http_status=<code|unknown>
+ *   <ISO time> PROVIDER_AUTH_OK: provider=<name>
  *
- * - the AI Node's log (stderr), as it is written above;
- * - logs/provider-auth.log, with an ISO time in front. The cron watchdog
- *   (installer/util/chainlink-health-watchdog.sh) reads this file and not the
- *   main log: the main log has no times, and it prints prompts and model
- *   replies as they come, so a submitter could write this line into it.
+ * OK is written once, when a provider answers after it refused (the key was
+ * replaced, or the refusal was not about the key). The file is this process's
+ * record: ai-node/start.sh removes it, as a restart gives the doctor a new log.
+ * Nothing a requester or a provider wrote is in a line: provider and model are
+ * reduced to printable characters without spaces, and no message is in it.
  *
- * Nothing a requester or a provider wrote is in the line: provider and model
- * are reduced to printable characters without spaces, and the provider's message
- * is not in it.
+ * This module also says what a refusal is where the route's error typing cannot:
+ * see isCredentialRefusal.
  */
 import fs from 'fs';
 import path from 'path';
@@ -46,32 +51,27 @@ export function providerHttpStatus(error: any): number | undefined {
 }
 
 /**
- * Whether a failed provider call is the provider refusing the credential: a 401, or its
- * wording for a key it does not accept. A 403 alone is not: providers send it for a model
- * the key may not use, a region and moderation, each of which a request can cause.
+ * A refusal of the credential that the route's error typing does not see. That typing
+ * (extractProviderErrorDetails) reads the error's `status` property, and the providers
+ * reached through fetch (xAI, Hyperbolic, OpenRouter, which is every class's fallback)
+ * have none: their status is in the message, "[OpenRouter] HTTP 401: ...User not found",
+ * which the typing files under model_not_found. So: a 401 wherever it is written, or the
+ * provider's wording for a key it does not accept.
  */
 export function isCredentialRefusal(error: any): boolean {
   if (providerHttpStatus(error) === 401) return true;
   return KEY_REFUSED.test(typeof error?.message === 'string' ? error.message : '');
 }
 
-/** A value of the line: printable ASCII without spaces, so the line splits on spaces and stays one line. */
+/** A value of a line: printable ASCII without spaces, so the line splits on spaces and stays one line. */
 function field(value: unknown): string {
   return String(value ?? '').replace(/[^\x21-\x7E]+/g, '_').slice(0, 120) || 'unknown';
 }
 
-export function providerAuthFailedLine(provider: string, model: string, role: ProviderRole, httpStatus?: number): string {
-  return `PROVIDER_AUTH_FAILED: provider=${field(provider)} model=${field(model)} role=${role} http_status=${httpStatus ?? 'none'}`;
-}
+// Providers that refused the key in this process and have not answered since, lower case.
+const refusing = new Set<string>();
 
-/**
- * Log the line if `error` is a provider refusing the credential. Call it once where a
- * provider call fails. Returns whether it was one.
- */
-export function reportCredentialRefusal(provider: string, model: string, role: ProviderRole, error: unknown): boolean {
-  if (!isCredentialRefusal(error)) return false;
-  const line = providerAuthFailedLine(provider, model, role, providerHttpStatus(error));
-  console.error(line);
+function append(line: string): void {
   try {
     const logDir = path.join(process.cwd(), 'logs');
     if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
@@ -79,5 +79,21 @@ export function reportCredentialRefusal(provider: string, model: string, role: P
   } catch (writeError) {
     console.error(`Error writing to ${PROVIDER_AUTH_LOG_FILE}:`, writeError);
   }
-  return true;
+}
+
+/** A provider refused the key: one line for the watchdog. Call it where PROVIDER_AUTH_FAILED is logged. */
+export function recordProviderRefusal(provider: string, model: string, role: ProviderRole, httpStatus?: number): void {
+  const name = field(provider);
+  refusing.add(name.toLowerCase());
+  const status = typeof httpStatus === 'number' && Number.isInteger(httpStatus) && httpStatus >= 100 && httpStatus <= 999 ? httpStatus : 'unknown';
+  append(`PROVIDER_AUTH_FAILED: provider=${name} model=${field(model)} role=${role} http_status=${status}`);
+}
+
+/**
+ * A provider answered. Call it where the doctor's ai.provider_auth finds its answer
+ * (MODEL_SUCCESS, JUSTIFIER_API_RESPONSE). Writes a line only after a refusal.
+ */
+export function recordProviderAnswer(provider: string): void {
+  const name = field(provider);
+  if (refusing.delete(name.toLowerCase())) append(`PROVIDER_AUTH_OK: provider=${name}`);
 }

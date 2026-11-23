@@ -13,7 +13,9 @@
  *
  * What an operator needs is still there: error_type, http_status and error_code as
  * they were, the unredacted message in the node's log, and one PROVIDER_AUTH_FAILED
- * line per refusal. Scores are what they were.
+ * line per refusal, also for a provider that reports its status in its message only.
+ * Scores are what they were, and so is the result record above the justification
+ * (utils/resultRecord.ts), whose words for a failed juror the fallback lines now share.
  *
  * Every fake secret is built when the test runs, so none is a literal in this file.
  */
@@ -75,6 +77,16 @@ async function post(body: unknown): Promise<{ status: number; body: any }> {
   return { status: response.status, body: await response.json() };
 }
 
+// The arbiter's own record of a result that is the one answering juror's (resultRecord.ts).
+const RECORD_ONE_JUROR = [
+  "RESULT (computed by the arbiter from the jurors' scores)",
+  '- Yes: 700,000 of 1,000,000 (70%)',
+  '- No: 300,000 of 1,000,000 (30%)',
+  "JURORS (1 of 2 answered; the result is that one juror's scores)",
+  '- OpenAI gpt-4o, weight 0.5: no score, not counted (authentication error (HTTP 401))',
+  '- Anthropic claude-sonnet-5, weight 0.5: Yes 700,000; No 300,000',
+].join('\n');
+
 const TWO_MODELS = {
   prompt: 'Was the work delivered as specified?',
   outcomes: ['Yes', 'No'],
@@ -103,8 +115,11 @@ let cwd: string;
 let logged: { log: jest.SpyInstance; warn: jest.SpyInstance; error: jest.SpyInstance };
 
 const lines = (spy: jest.SpyInstance): string[] => spy.mock.calls.map(args => String(args[0]));
-const authLines = () => lines(logged.error).filter(line => line.startsWith('PROVIDER_AUTH_FAILED'));
+const authLines = () => lines(logged.error).filter(line => line.includes('PROVIDER_AUTH_FAILED'));
 const authLogFile = () => path.join(cwd, 'logs', 'provider-auth.log');
+/** The watchdog's record, without the times. */
+const authRecord = () => (fs.existsSync(authLogFile()) ? fs.readFileSync(authLogFile(), 'utf8') : '')
+  .split('\n').filter(Boolean).map(line => line.replace(/^\S+ /, ''));
 
 beforeEach(() => {
   jest.clearAllMocks();
@@ -146,12 +161,13 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
       model: 'gpt-4o',
       status: 'failed',
       duration_ms: expect.any(Number),
+      weight: 0.5,
       error_type: 'authentication',
       error_message: REDACTED_398,
       error_code: 'invalid_api_key',
       http_status: 401,
     });
-    expect(body.model_results.find((r: any) => r.model === 'claude-sonnet-5').status).toBe('success');
+    expect(body.model_results.find((r: any) => r.model === 'claude-sonnet-5')).toMatchObject({ status: 'success', scores: [700000, 300000] });
 
     // warnings: built from the redacted message.
     expect(body.warnings).toEqual([{
@@ -162,11 +178,14 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
       details: { error_type: 'authentication', duration_ms: expect.any(Number), http_status: 401 },
     }]);
 
-    // The justifier was told what failed in our words, and so was the record.
+    // The justifier was told what failed in the record's words, twice: in the record and
+    // in the failed juror's own line, which used to carry the provider's message.
     const justifierPrompt = justifier.generateResponse.mock.calls[0][0];
+    expect(justifierPrompt).toContain('- OpenAI gpt-4o, weight 0.5: no score, not counted (authentication error (HTTP 401))');
     expect(justifierPrompt).toContain('From model gpt-4o:\nModel timed out or failed: authentication error (HTTP 401)');
     expect(justifierPrompt).toContain('From model claude-sonnet-5:\nThe evidence supports Yes.');
     expectNothingOfTheProviders(justifierPrompt);
+    expect(body.justification.startsWith(RECORD_ONE_JUROR)).toBe(true);
     expect(body.justification).toContain('Model timed out or failed: authentication error (HTTP 401)');
   });
 
@@ -177,10 +196,23 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
 
     expect(status).toBe(200);
     expect(lines(logged.warn)).toContain(`❌ MODEL_FAILED: OpenAI-gpt-4o failed: ${BOUNTY_398}`);
-    expect(authLines()).toEqual(['PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401']);
-    // The copy the watchdog reads: a time, then the same line.
+    expect(authLines()).toEqual(['🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401']);
+    // The watchdog's record: a time, then the refusal.
     const written = fs.readFileSync(authLogFile(), 'utf8');
     expect(written).toMatch(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401\n$/);
+  });
+
+  test('the provider answers again (the key was replaced): the watchdog\'s record says so, once', async () => {
+    providers({ OpenAI: failing(openAiRefusal), Anthropic: answering() }, echoing());
+    await post(TWO_MODELS);
+    providers({ OpenAI: answering(), Anthropic: answering() }, echoing());
+    await post(TWO_MODELS);
+    await post(TWO_MODELS);
+
+    expect(authRecord()).toEqual([
+      'PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401',
+      'PROVIDER_AUTH_OK: provider=OpenAI',
+    ]);
   });
 
   test('a justifier whose provider refuses its key too: the fallback justification has no provider text', async () => {
@@ -191,7 +223,8 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
     expect(status).toBe(200);
     expectNothingOfTheProviders(body);
     expect(body.justification).toBe(
-      'Error generating consolidated justification: authentication error (HTTP 401)\n\n'
+      `${RECORD_ONE_JUROR}\n\n`
+      + 'Error generating consolidated justification: authentication error (HTTP 401)\n\n'
       + 'Individual model responses:\n\n'
       + 'From model gpt-4o:\nModel timed out or failed: authentication error (HTTP 401)\n\n'
       + 'From model claude-sonnet-5:\nThe evidence supports Yes.',
@@ -200,8 +233,8 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
     // The log has the justifier's message whole, and a line for each refusal.
     expect(lines(logged.error).some(line => line.includes('JUSTIFIER_ERROR') && line.includes(ANTHROPIC_KEY) && line.includes(REQUEST_ID))).toBe(true);
     expect(authLines()).toEqual([
-      'PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401',
-      `PROVIDER_AUTH_FAILED: provider=${JUSTIFIER_PROVIDER} model=${JUSTIFIER_MODEL} role=justifier http_status=401`,
+      '🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401',
+      `🔑 PROVIDER_AUTH_FAILED: provider=${JUSTIFIER_PROVIDER} model=${JUSTIFIER_MODEL} role=justifier http_status=401`,
     ]);
   });
 
@@ -222,7 +255,10 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
     expect(authLines()).toHaveLength(2);
   });
 
-  test('a provider that reports through its message only: type and status stay as they were, the line has the status', async () => {
+  test('a provider that reports through its message only (every fetch provider): type and status stay as they were, and the refusal is still logged', async () => {
+    // OpenRouter, which is every class's fallback, answers a revoked key like this. The
+    // error has no status property and says "not found": typed model_not_found, as before.
+    // Without the message being read, no PROVIDER_AUTH_FAILED line would say the key is refused.
     const openRouter401 = '[OpenRouter] HTTP 401: {"error":{"message":"User not found.","code":401}}';
     providers({ OpenAI: failing(() => new Error(openRouter401)), Anthropic: answering() }, echoing());
 
@@ -230,11 +266,22 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
 
     expect(status).toBe(200);
     const failed = body.model_results.find((r: any) => r.model === 'gpt-4o');
-    // No status property on the error, and "not found" in its words: as before this change.
     expect(failed).toMatchObject({ status: 'failed', error_type: 'model_not_found', error_message: openRouter401 });
     expect(failed.http_status).toBeUndefined();
-    expect(body.justification).toContain('From model gpt-4o:\nModel timed out or failed: model not found');
-    expect(authLines()).toEqual(['PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401']);
+    expect(body.justification).toContain('From model gpt-4o:\nModel timed out or failed: model not found error');
+    expect(authLines()).toEqual(['🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401']);
+    expect(authRecord()).toContain('PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401');
+  });
+
+  test('a 403: logged as the route types it (authorization), as before', async () => {
+    const forbidden = () => Object.assign(new Error('403 Your API key does not have permission to use the specified resource'), { status: 403 });
+    providers({ OpenAI: failing(forbidden), Anthropic: answering() }, echoing());
+
+    const { status, body } = await post(TWO_MODELS);
+
+    expect(status).toBe(200);
+    expect(body.model_results.find((r: any) => r.model === 'gpt-4o')).toMatchObject({ error_type: 'authorization', http_status: 403 });
+    expect(authLines()).toEqual(['🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=403']);
   });
 
   test('a failure that is no refusal: described in our words, no PROVIDER_AUTH_FAILED line', async () => {
@@ -249,7 +296,7 @@ describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
     expect(failed).toMatchObject({ error_type: 'provider_error', http_status: 529, error_message: '529 Overloaded (request <redacted>)' });
     expect(body.justification).toContain('From model gpt-4o:\nModel timed out or failed: provider error (HTTP 529)');
     expect(authLines()).toEqual([]);
-    expect(fs.existsSync(authLogFile())).toBe(false);
+    expect(authRecord().filter(line => line.startsWith('PROVIDER_AUTH_FAILED'))).toEqual([]);
   });
 
   test('a model that does not answer in time: our own message, kept whole ("xAI-grok-4" is not a key)', async () => {
@@ -294,8 +341,8 @@ describe('HTTP 400: too few jurors answered', () => {
     expect(warned).toContain(BOUNTY_398);
     expect(warned).toContain(XAI_MASKED);
     expect(authLines()).toEqual([
-      'PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401',
-      'PROVIDER_AUTH_FAILED: provider=xAI model=grok-4 role=juror http_status=400',
+      '🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401',
+      '🔑 PROVIDER_AUTH_FAILED: provider=xAI model=grok-4 role=juror http_status=400',
     ]);
   });
 

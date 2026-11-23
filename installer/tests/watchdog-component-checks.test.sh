@@ -5,10 +5,11 @@
 # --self-heal must bring the node up through start-arbiter.sh, never during an
 # operator stop (.arbiter-stopped), never right after a boot, and only once
 # per cooldown; a dead RPC pool still restarts the container.
-# A model provider that refuses the operator's API key (sections J to Q): every
+# A model provider that refuses the operator's API key (sections J to R): every
 # component is up and every request succeeds with one juror fewer, so the watchdog
-# reads the AI Node's PROVIDER_AUTH_FAILED lines (ai-node/logs/provider-auth.log)
-# and says "REFUSED the API key" while one is younger than the window.
+# reads the AI Node's record of refusals and answers (ai-node/logs/provider-auth.log)
+# and says "REFUSED the API key" for a provider that refused inside the window and
+# has not answered since: the doctor's ai.provider_auth, as an alert.
 # Runs the real script against stub docker/curl/ss/lsof/logger on PATH.
 # Run: bash installer/tests/watchdog-component-checks.test.sh
 set -u
@@ -73,12 +74,14 @@ run() { env HOME="$T" PATH="$B:$PATH" FAKE_UP_chainlink=1 FAKE_UP_postgres=1 FAK
             FAKE_HEALTH_JSON="$HEALTH_OK" WATCHDOG_UPTIME_FILE="$T/uptime" "$@" 2>&1; }
 uptime_secs() { echo "$1.00 $1.00" > "$T/uptime"; }
 WD="$I/chainlink-health-watchdog.sh"
-# The AI Node's refusal log: "<ISO time> PROVIDER_AUTH_FAILED: provider=.. model=.. role=.. http_status=..".
+# The AI Node's record: "<ISO time> PROVIDER_AUTH_FAILED: provider=.. model=.. role=.. http_status=.."
+# for a refusal, "<ISO time> PROVIDER_AUTH_OK: provider=.." for the first answer after one.
 AUTH_LOG="$I/ai-node/logs/provider-auth.log"
 iso_ago() { date -u -d "$1 minutes ago" +%Y-%m-%dT%H:%M:%S.000Z 2>/dev/null || date -u -v-"$1"M +%Y-%m-%dT%H:%M:%S.000Z; }
 refused() { # refused MINUTES_AGO PROVIDER MODEL ROLE STATUS
     echo "$(iso_ago "$1") PROVIDER_AUTH_FAILED: provider=$2 model=$3 role=$4 http_status=$5" >> "$AUTH_LOG"
 }
+answered() { echo "$(iso_ago "$1") PROVIDER_AUTH_OK: provider=$2" >> "$AUTH_LOG"; }  # answered MINUTES_AGO PROVIDER
 count() { grep -c -- "$1" "$2" 2>/dev/null || true; }
 
 # A. Everything up: healthy, exit 0.
@@ -150,17 +153,17 @@ out=$(run bash "$WD"); rc=$?
 [ "$rc" = 0 ] && ok || bad "recovery: rc=$rc"
 grep -q "RECOVERED: arbiter healthy again" "$T/alerts" && ok || bad "recovery: no RECOVERED alert"
 
-# J. A juror's provider refused the key five minutes ago; everything else is up.
-#    Unhealthy, the subject says what and who, one line however many refusals,
-#    and --self-heal has nothing to start or restart.
+# J. A provider refused the key (three times, last five minutes ago) and has not
+#    answered since; everything else is up. Unhealthy, the subject says what and
+#    who, one line however many refusals, and --self-heal has nothing to do.
 reset; uptime_secs 86400
-refused 9 OpenAI gpt-4o juror 401; refused 7 OpenAI gpt-4o juror 401; refused 5 OpenAI gpt-4o juror 401
+refused 9 OpenAI gpt-4o juror 401; refused 7 OpenAI gpt-4o-mini justifier 401; refused 5 OpenAI gpt-4o juror 401
 out=$(run bash "$WD" --quiet --self-heal); rc=$?
 [ "$rc" = 1 ] && ok || bad "key refused: rc=$rc, expected 1: $out"
 has "key refused" "$out" "^model provider REFUSED the API key: OpenAI$"
-has "key refused" "$out" "the API key used for OpenAI gpt-4o was refused (juror, HTTP 401) in the last 60m: requests are answered without this model"
-has "key refused" "$out" "Replace the key in $I/ai-node/.env.local"
-[ "$(printf '%s\n' "$out" | grep -c 'was refused')" = 1 ] && ok || bad "key refused: three refusals of one key are not one line: $out"
+has "key refused" "$out" "OpenAI refused this node's API key (HTTP 401) in the last 60m and has not answered since"
+has "key refused" "$out" "Check that provider's key in $I/ai-node/.env.local"
+[ "$(printf '%s\n' "$out" | grep -c 'refused this node')" = 1 ] && ok || bad "key refused: three refusals by one provider are not one line: $out"
 hasnt "key refused" "$out" "self-heal"
 [ ! -f "$T/starts" ] && [ ! -f "$T/restarts" ] && ok || bad "key refused: the self-heal started or restarted something"
 [ "$(count 'model provider REFUSED the API key: OpenAI' "$T/alerts")" = 1 ] && ok || bad "key refused: the alert command did not get the subject once"
@@ -174,56 +177,83 @@ has "key refused again" "$out" "^model provider REFUSED the API key: OpenAI$"
 [ "$(count 'model provider REFUSED the API key' "$T/alerts")" = 1 ] && ok || bad "key refused again: paged a second time inside the cooldown"
 grep -q "alert suppressed by 30m cooldown" "$I/.chainlink-watchdog/watchdog.log" && ok || bad "key refused again: no cooldown note in the watchdog log"
 
-# L. Two providers, a juror and the justifier, one without a status: both named
-#    once in the subject, a line each. A second key is a new problem set: paged.
-refused 1 Anthropic claude-opus-5-5 justifier none
-refused 1 Anthropic claude-opus-5-5 juror 401
+# L. A second provider, refused without a status: both named in the subject, a line
+#    each. A second provider is a new problem set: paged.
+refused 1 Anthropic claude-opus-5-5 justifier unknown
 out=$(run bash "$WD" --quiet)
 has "two providers" "$out" "^model provider REFUSED the API key: OpenAI, Anthropic$"
-has "two providers" "$out" "the API key used for Anthropic claude-opus-5-5 was refused (justifier) in the last 60m"
-has "two providers" "$out" "the API key used for Anthropic claude-opus-5-5 was refused (juror, HTTP 401) in the last 60m"
-[ "$(printf '%s\n' "$out" | grep -c 'was refused')" = 3 ] && ok || bad "two providers: expected three lines: $out"
+has "two providers" "$out" "Anthropic refused this node's API key in the last 60m and has not answered since"
+[ "$(printf '%s\n' "$out" | grep -c 'refused this node')" = 2 ] && ok || bad "two providers: expected two lines: $out"
 [ "$(count 'model provider REFUSED the API key: OpenAI, Anthropic' "$T/alerts")" = 1 ] && ok || bad "two providers: the new problem set was not paged"
 
-# M. A refusal older than the window is history: healthy, and the OK line says
-#    what was looked at. WATCHDOG_AUTH_WINDOW_MINUTES widens the window.
+# M. One of them answers (the key was replaced; the name's case does not matter):
+#    it is no longer a problem, the other still is.
+answered 0 openai
+out=$(run bash "$WD" --quiet)
+has "one answered" "$out" "^model provider REFUSED the API key: Anthropic$"
+hasnt "one answered" "$out" "OpenAI refused"
+# ... the other answers too: healthy, one RECOVERED notice that says what it rests on.
+answered 0 Anthropic
+out=$(run bash "$WD"); rc=$?
+[ "$rc" = 0 ] && ok || bad "both answered: rc=$rc: $out"
+has "both answered" "$out" "OK: all four components running"
+has "both answered" "$out" "No model provider is refusing the API key.$"
+grep -q "RECOVERED: arbiter healthy again" "$T/alerts" && ok || bad "both answered: no RECOVERED alert"
+grep -q "No model provider is refusing the API key." "$T/alerts" && ok || bad "both answered: RECOVERED does not say what it rests on"
+# ... and a refusal after the answer is a problem again.
+refused 0 OpenAI gpt-4o juror 403
+out=$(run bash "$WD" --quiet); rc=$?
+[ "$rc" = 1 ] && ok || bad "refused after an answer: rc=$rc"
+has "refused after an answer" "$out" "OpenAI refused this node's API key (HTTP 403) in the last 60m and has not answered since"
+
+# N. A refusal older than the window is history (the doctor's "last 5000 log
+#    lines", in minutes): healthy. WATCHDOG_AUTH_WINDOW_MINUTES widens the window.
 reset; uptime_secs 86400
 refused 120 OpenAI gpt-4o juror 401
 out=$(run bash "$WD"); rc=$?
 [ "$rc" = 0 ] && ok || bad "old refusal: rc=$rc: $out"
 has "old refusal" "$out" "OK: all four components running"
-has "old refusal" "$out" "No model provider refused an API key in the last 60m."
 out=$(run env WATCHDOG_AUTH_WINDOW_MINUTES=180 bash "$WD" --quiet); rc=$?
 [ "$rc" = 1 ] && ok || bad "wider window: rc=$rc"
-has "wider window" "$out" "was refused (juror, HTTP 401) in the last 180m"
+has "wider window" "$out" "OpenAI refused this node's API key (HTTP 401) in the last 180m and has not answered since"
 out=$(run env WATCHDOG_AUTH_WINDOW_MINUTES=soon bash "$WD"); rc=$?
 [ "$rc" = 0 ] && ok || bad "a window that is not a number falls back to 60: rc=$rc: $out"
 
-# N. The window passes without another refusal: one RECOVERED notice, which says
-#    what it rests on.
+# O. The AI Node restarts (ai-node/start.sh removes the record): the refusals of
+#    the process before it are gone with it, as a new log is for the doctor.
 reset; uptime_secs 86400
 refused 2 xAI grok-4 juror 400
 run bash "$WD" --quiet >/dev/null
-grep -q "model provider REFUSED the API key: xAI" "$T/alerts" && ok || bad "recovery from a refusal: no alert first"
-rm -f "$AUTH_LOG"; refused 61 xAI grok-4 juror 400
+grep -q "model provider REFUSED the API key: xAI" "$T/alerts" && ok || bad "restart: no alert first"
+# The real ai-node/start.sh, against stub npm / node / ps / build.sh (as
+# ai-node-loopback-bind.test.sh runs it): the record goes, the other logs stay.
+SB="$T/startbin"; mkdir -p "$SB"
+cp "$ROOT/ai-node/start.sh" "$I/ai-node/start.sh"
+printf '#!/bin/bash\nexit 0\n' > "$I/ai-node/build.sh"
+printf '#!/bin/bash\nexit 0\n' > "$SB/npm"; printf '#!/bin/bash\necho v20.18.1\n' > "$SB/node"; printf '#!/bin/bash\nexit 0\n' > "$SB/ps"
+chmod +x "$I/ai-node"/*.sh "$SB"/*
+echo "kept" > "$I/ai-node/logs/llm-interactions.log"
+( cd "$I/ai-node" && env -i HOME="$T" PATH="$SB:/usr/bin:/bin" bash -c 'kill() { :; }; export -f kill; bash ./start.sh' > "$T/start.out" 2>&1 )
+[ ! -e "$AUTH_LOG" ] && ok || bad "restart: ai-node/start.sh left logs/provider-auth.log: $(cat "$T/start.out")"
+[ "$(cat "$I/ai-node/logs/llm-interactions.log" 2>/dev/null)" = "kept" ] && ok || bad "restart: start.sh touched another log"
+rm -f "$I/ai-node/start.sh" "$I/ai-node/build.sh" "$I/ai-node/ai-node.pid" "$I/ai-node/.run-mode"
 out=$(run bash "$WD"); rc=$?
-[ "$rc" = 0 ] && ok || bad "recovery from a refusal: rc=$rc: $out"
-grep -q "RECOVERED: arbiter healthy again" "$T/alerts" && ok || bad "recovery from a refusal: no RECOVERED alert"
-grep -q "No model provider refused an API key in the last 60m." "$T/alerts" && ok || bad "recovery from a refusal: RECOVERED does not say what it rests on"
+[ "$rc" = 0 ] && ok || bad "restart: rc=$rc: $out"
+grep -q "RECOVERED: arbiter healthy again" "$T/alerts" && ok || bad "restart: no RECOVERED alert"
 
-# O. Only the exact line counts. The main log's form has no time; the rest is what
-#    a provider or model name could not write (the AI Node leaves no space in one)
-#    and what is simply not the line.
+# P. Only the exact lines count. The AI Node's main log has the line without a
+#    time; the rest is what a provider or model name could not write (the AI Node
+#    leaves no space in one) and what is simply not the line.
 reset; uptime_secs 86400
 NOW=$(iso_ago 0)
 cat >> "$AUTH_LOG" <<E
 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
+🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
 $NOW PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401 trailing
 $NOW PROVIDER_AUTH_FAILED: provider=Open AI model=gpt-4o role=juror http_status=401
 $NOW PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=owner http_status=401
 $NOW PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=40
 $NOW PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror
-$NOW PROVIDER_AUTH_OK: provider=OpenAI model=gpt-4o role=juror http_status=401
 $NOW  note PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
 yesterday PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
 9999-99-99 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
@@ -231,29 +261,36 @@ yesterday PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_sta
 E
 out=$(run bash "$WD"); rc=$?
 [ "$rc" = 0 ] && ok || bad "not the line: rc=$rc: $out"
-hasnt "not the line" "$out" "refused the API key\|was refused"
-# ... and the exact line among them does.
+hasnt "not the line" "$out" "refused this node"
+# ... the exact line among them does, and what is not exactly an answer does not clear it.
 refused 0 Hyperbolic_API meta-llama/Meta-Llama-3.1-405B-Instruct juror 401
+cat >> "$AUTH_LOG" <<E
+PROVIDER_AUTH_OK: provider=Hyperbolic_API
+$NOW PROVIDER_AUTH_OK: provider=Hyperbolic_API again
+$NOW PROVIDER_AUTH_OK: provider=Hyperbolic API
+$NOW PROVIDER_AUTH_OK: Hyperbolic_API
+✅ MODEL_SUCCESS: Hyperbolic_API-meta-llama/Meta-Llama-3.1-405B-Instruct completed successfully
+E
 out=$(run bash "$WD" --quiet)
 has "the line among others" "$out" "^model provider REFUSED the API key: Hyperbolic_API$"
-has "the line among others" "$out" "the API key used for Hyperbolic_API meta-llama/Meta-Llama-3.1-405B-Instruct was refused (juror, HTTP 401)"
-[ "$(printf '%s\n' "$out" | grep -c 'was refused')" = 1 ] && ok || bad "the line among others: expected one line: $out"
+has "the line among others" "$out" "Hyperbolic_API refused this node's API key (HTTP 401) in the last 60m and has not answered since"
+[ "$(printf '%s\n' "$out" | grep -c 'refused this node')" = 1 ] && ok || bad "the line among others: expected one line: $out"
 
-# P. A component down as well: the subject stays with what is down, the refusal
+# Q. A component down as well: the subject stays with what is down, the refusal
 #    is in the body, and the self-heal still brings the component up.
 reset; uptime_secs 86400
 refused 3 OpenAI gpt-4o juror 401
 out=$(run env FAKE_EA=0 FAKE_PORTS="3000" bash "$WD" --quiet --self-heal)
 has "down and refused" "$out" "^arbiter components NOT RUNNING: External Adapter"
-has "down and refused" "$out" "the API key used for OpenAI gpt-4o was refused"
+has "down and refused" "$out" "OpenAI refused this node's API key (HTTP 401)"
 [ "$(wc -l < "$T/starts" 2>/dev/null | tr -d ' ')" = 1 ] && ok || bad "down and refused: start-arbiter.sh did not run once"
 
-# Q. An AI Node that never wrote the file (an older one, or no refusal yet): as
-#    before, and the OK line claims nothing about keys.
+# R. No record (an AI Node that has met no refusal since it started, or an older
+#    one): as before, and the OK line claims nothing about keys.
 reset; uptime_secs 86400
 out=$(run bash "$WD"); rc=$?
-[ "$rc" = 0 ] && ok || bad "no refusal log: rc=$rc"
-has "no refusal log" "$out" "no recent 0-live RPC events.$"
-hasnt "no refusal log" "$out" "API key"
+[ "$rc" = 0 ] && ok || bad "no refusal record: rc=$rc"
+has "no refusal record" "$out" "no recent 0-live RPC events.$"
+hasnt "no refusal record" "$out" "API key"
 
 echo "pass=$pass fail=$fail"; [ "$fail" = "0" ]

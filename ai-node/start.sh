@@ -45,6 +45,9 @@ fi
 # Get the directory path and current timestamp for log file
 LOG_DIR="$(pwd)/logs"
 mkdir -p "$LOG_DIR"
+# Which providers refuse the API key is this process's record (src/lib/llm/provider-auth.ts,
+# read by the watchdog): a restart begins it again, as it begins a new log for the doctor.
+rm -f "$LOG_DIR/provider-auth.log"
 TIMESTAMP=$(date +"%Y%m%d_%H%M%S")
 LOG_FILE="$LOG_DIR/ai-node_${TIMESTAMP}.log"
 

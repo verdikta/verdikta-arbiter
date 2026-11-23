@@ -549,6 +549,8 @@ describe('code mode: the report the jury reads', () => {
 // A claim that fails is never published: the EA abstains on the status and errorCode alone.
 // The error body still leaves this node, to the EA and its log, so a provider's message in it
 // is redacted like every other (utils/redactProviderText.ts), and the node's own log keeps it whole.
+// PROVIDER_AUTH_FAILED is text mode's line (a failed juror there is left out and the request
+// succeeds; here it ends the request, with CODE_REVIEW_JUROR_FAILED): none is written.
 describe('code mode: a provider\'s message in an error body', () => {
   // Joined here so that no line of this file is a key.
   const SK = ['s', 'k', '-'].join('');
@@ -558,7 +560,7 @@ describe('code mode: a provider\'s message in an error body', () => {
   let cwd: string;
 
   const errorLines = () => (console.error as unknown as jest.Mock).mock.calls.map(args => String(args[0]));
-  const authLines = () => errorLines().filter(line => line.startsWith('PROVIDER_AUTH_FAILED'));
+  const authLines = () => errorLines().filter(line => line.includes('PROVIDER_AUTH_FAILED'));
   function expectNothingOfTheProvider(body: unknown) {
     const text = JSON.stringify(body);
     for (const part of [SK, 'ut1et', 'Zd9U', 'api-keys', '***', 'Ij5-', 'Kl6_', 'api03']) expect(text).not.toContain(part);
@@ -572,7 +574,7 @@ describe('code mode: a provider\'s message in an error body', () => {
     fs.rmSync(cwd, { recursive: true, force: true });
   });
 
-  test('a juror whose provider refuses the key: the 400 has the message redacted, the log has it whole and one PROVIDER_AUTH_FAILED line', async () => {
+  test('a juror whose provider refuses the key: the 400 has the message redacted, the log has it whole', async () => {
     script({ [GEMINI]: { error: BOUNTY_398, status: 401 }, [LUNA]: { scores: MEDIUM } });
     const result = await post(codeModeBody());
     const gemini = codeModeBody().models.find((m: any) => m.model === GEMINI);
@@ -585,8 +587,8 @@ describe('code mode: a provider\'s message in an error body', () => {
     expect(result.body.jurors.find((j: any) => j.juror === juror)).toMatchObject({ status: 'failed', message: REDACTED_398, http_status: 401 });
 
     expect(errorLines()).toContain(`❌ CODE_JUROR_ERROR: ${juror} ${BOUNTY_398}`);
-    expect(authLines()).toEqual([`PROVIDER_AUTH_FAILED: provider=${juror.split(':')[0]} model=${GEMINI} role=juror http_status=401`]);
-    expect(fs.readFileSync(path.join(cwd, 'logs', 'provider-auth.log'), 'utf8')).toMatch(/Z PROVIDER_AUTH_FAILED: provider=\S+ model=\S+ role=juror http_status=401\n$/);
+    expect(authLines()).toEqual([]);
+    expect(fs.existsSync(path.join(cwd, 'logs', 'provider-auth.log'))).toBe(false);
   }, 20000);
 
   test('a justifier whose provider refuses the key, with the whole key in its message', async () => {
@@ -599,10 +601,10 @@ describe('code mode: a provider\'s message in an error body', () => {
     expect(result.body.error).toBe('the justifier failed: 401 invalid x-api-key <redacted>; the arbiter abstains rather than publish a partial justification');
 
     expect(errorLines()).toContain(`❌ CODE_JUSTIFIER_ERROR: mock:${JUSTIFIER} 401 invalid x-api-key ${WHOLE_KEY}`);
-    expect(authLines()).toEqual([`PROVIDER_AUTH_FAILED: provider=mock model=${JUSTIFIER} role=justifier http_status=401`]);
+    expect(authLines()).toEqual([]);
   }, 20000);
 
-  test('a failure that is no refusal, and a reply that cannot be read: no PROVIDER_AUTH_FAILED line', async () => {
+  test('another failure, and a reply that cannot be read: our own words stay whole', async () => {
     script({ [GEMINI]: { error: 'juror overloaded', status: 529 }, [LUNA]: { scores: MEDIUM } });
     const overloaded = await post(codeModeBody());
     expect(overloaded.status).toBe(400);
@@ -613,7 +615,5 @@ describe('code mode: a provider\'s message in an error body', () => {
     expect(unreadable.status).toBe(400);
     expect(unreadable.body.error).toMatch(/gave no usable scores, also after the repair call; every juror is required in code mode$/);
 
-    expect(authLines()).toEqual([]);
-    expect(fs.existsSync(path.join(cwd, 'logs', 'provider-auth.log'))).toBe(false);
   }, 20000);
 });

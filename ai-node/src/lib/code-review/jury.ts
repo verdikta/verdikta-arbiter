@@ -11,7 +11,6 @@
  */
 
 import { LLMFactory } from '../llm/llm-factory';
-import { reportCredentialRefusal } from '../llm/provider-auth';
 import { redactProviderText } from '../../utils/redactProviderText';
 import { parseRepairedScores, replyJustification } from '../../utils/repairModelResponse';
 import { buildCodeRepairPrompt } from './claim-prompt';
@@ -166,10 +165,7 @@ export async function runCodeJury(input: {
       // The provider's message goes whole to this log line only: it can quote the
       // operator's key, a response body or a URL (utils/redactProviderText.ts).
       const rawMessage: string = error?.message || String(error);
-      if (!(error instanceof JurorParseError)) {
-        console.error(`❌ CODE_JUROR_ERROR: ${juror.provider}:${juror.model} ${rawMessage}`);
-        reportCredentialRefusal(juror.provider, juror.model, 'juror', error);
-      }
+      if (!(error instanceof JurorParseError)) console.error(`❌ CODE_JUROR_ERROR: ${juror.provider}:${juror.model} ${rawMessage}`);
       return {
         ...base,
         status: error instanceof JurorParseError ? 'parsing_error' : 'failed',
@@ -228,7 +224,6 @@ export async function runCodeJustifier(prompt: string, budgetMs: number, holds: 
     if (controller.signal.aborted) return { kind: 'timeout' };
     const rawMessage: string = error?.message || String(error);
     console.error(`❌ CODE_JUSTIFIER_ERROR: ${target.provider}:${target.model} ${rawMessage}`);
-    reportCredentialRefusal(target.provider, target.model, 'justifier', error);
     return { kind: 'failed', message: redactProviderText(rawMessage), httpStatus: httpStatusOf(error) };
   } finally {
     clear();

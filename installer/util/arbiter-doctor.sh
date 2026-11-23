@@ -1186,6 +1186,48 @@ print(n)' "$commit_db" 2>/dev/null || echo 0)
     fi
 }
 
+# A model provider that refuses this node's key (HTTP 401 / 403) fails its juror on every
+# request, while the node keeps answering with the rest of the panel: with a two-model
+# panel that is one model's verdict under the arbiter's name. One arbiter judged bounty
+# 398 that way (OpenAI 401, 2026-11-20) with every other check green. The AI Node writes
+# one fixed line per refusal, PROVIDER_AUTH_FAILED: provider=... (rank-and-justify/route.ts);
+# this reads the log, calls no provider and prints none of the log's own text.
+# A provider that answered after its last refusal (the key was replaced) is not reported.
+check_ai_provider_auth() {
+    local ai_log="$1" lines=5000 failing
+    [ -n "$ai_log" ] && [ -r "$ai_log" ] || return 0
+    failing=$(tail -"$lines" "$ai_log" 2>/dev/null | awk '
+        /PROVIDER_AUTH_FAILED: / {
+            p = ""; st = "unknown"
+            for (i = 1; i <= NF; i++) {
+                if ($i ~ /^provider=/)    p  = tolower(substr($i, 10))
+                if ($i ~ /^http_status=/) st = substr($i, 13)
+            }
+            if (p ~ /^[a-z0-9._-]+$/ && st ~ /^[a-z0-9]+$/) { last[p] = NR; count[p]++; status[p] = st }
+            next
+        }
+        /MODEL_SUCCESS: |JUSTIFIER_API_RESPONSE: / { okn++; okline[okn] = tolower($0); oknr[okn] = NR }
+        END {
+            for (p in last) {
+                answered = 0
+                for (i = okn; i >= 1 && oknr[i] > last[p]; i--) {
+                    if (index(okline[i], "model_success: " p "-") || index(okline[i], "justifier_api_response: " p "-")) { answered = 1; break }
+                }
+                if (!answered) printf "%s %d %s\n", p, count[p], status[p]
+            }
+        }' | sort)
+    if [ -z "$failing" ]; then
+        emit PASS ai.provider_auth "no model provider refused this node's API key in the last $lines log lines" ""
+        return 0
+    fi
+    local provider count status
+    while read -r provider count status; do
+        [ -n "$provider" ] || continue
+        emit FAIL ai.provider_auth "$provider refused this node's API key (HTTP $status) $count time(s) in the last $lines log lines and has not answered since" \
+             "Its jurors fail on every request and the node answers with the rest of the panel. Check that provider's key in $INSTALL_DIR/ai-node/.env.local (revoked, rotated, or the account stopped), then restart the AI Node."
+    done <<< "$failing"
+}
+
 check_ai_node() {
     section_header "AI NODE"
 
@@ -1281,6 +1323,7 @@ check_ai_node() {
             emit FAIL ai.recent_errors "$errs real error line(s) in last 5000 log lines" \
                  "Inspect: tail $ai_log"
         fi
+        check_ai_provider_auth "$ai_log"
     fi
 }
 

@@ -101,7 +101,7 @@ it came (`src/utils/redactProviderText.ts`):
 |---|---|
 | `model_results[].error_message`, the `warnings[].message` built from it, each `{reason}` of the 400's `error` | The provider's message, redacted: `401 Incorrect API key provided: <redacted>. You can find your API key at https://platform.openai.com/<redacted>` |
 | `model_results[].error_type`, `http_status`, `error_code` | As before. |
-| `justification` (the `From model X:` line the justifier reads and the fallback returns, and `Error generating consolidated justification: ...` when the justifier itself fails) | Words of this node, from `error_type`, `http_status` and the duration: `Model timed out or failed: authentication error (HTTP 401)`, `... timed out after 120 s` (`src/utils/describeFailure.ts`). |
+| `justification` (the `From model X:` line the justifier reads and the fallback returns, and `Error generating consolidated justification: ...` when the justifier itself fails) | The record's words for a juror with no score, from `error_type`, `http_status` and the duration: `Model timed out or failed: authentication error (HTTP 401)`, `... timed out after 120 s` (`jurorFailure`, `src/utils/resultRecord.ts`). |
 | The `error` of a 500 | Redacted as a whole. |
 
 Redaction is the installer doctor's `redact_log` (a URL keeps its scheme and
@@ -113,18 +113,36 @@ message. The unredacted message is in the AI Node's own log and nowhere else.
 In code mode the error body (`error`, `jurors[].message`) is redacted the same
 way; the EA abstains on its status and `errorCode` and publishes none of it.
 
-A provider that refuses the key is one fixed line in the log, per refusal:
+A provider that refuses the node's key is one fixed line in the log per
+refusal, with nothing the provider said in it; the doctor's `ai.provider_auth`
+reads it:
 
 ```
-PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
+🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
 ```
 
-`role` is `juror` or `justifier`; `http_status` is `none` when the provider gave
-no status. A refusal is a 401, or the provider's wording for a key it does not
-accept (xAI sends that with a 400); a 403 alone is not one. Provider and model
-are written without spaces. The same line, after an ISO time, is appended to
-`logs/provider-auth.log`, which the cron watchdog reads
-(`installer/util/chainlink-health-watchdog.sh`).
+It is logged for what the route types as authentication or authorization (a
+`status` of 401 / 403), and also for a refusal that typing cannot see: the
+providers reached through fetch (xAI, Hyperbolic, OpenRouter) put the status in
+the message only (`[OpenRouter] HTTP 401: ...User not found`, typed
+`model_not_found`), and xAI answers a bad key with a 400. `http_status` in the
+line is then the one the message states; `model_results[].http_status` and
+`error_type` stay as typed. Text mode only.
+
+The cron watchdog alerts on the doctor's condition (a provider that refused the
+key and has not answered since) from a record of its own,
+`logs/provider-auth.log`, because the main log has no times and prints prompts
+and replies as they come:
+
+```
+2026-11-23T20:35:41.078Z PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
+2026-11-23T21:02:10.412Z PROVIDER_AUTH_OK: provider=OpenAI
+```
+
+One line per refusal, and one for the first answer after a refusal. Provider
+and model are written without spaces; `http_status` is `unknown` when there is
+none. `start.sh` removes the file (`src/lib/llm/provider-auth.ts`,
+`installer/util/chainlink-health-watchdog.sh`).
 
 ---
 
@@ -157,6 +175,68 @@ A provider that still rejects an image is reported with `error_type: "invalid_im
 
 Optional request fields: `attachmentNames` (file names, index-aligned with
 `attachments`, used in those lines) and `requestTag` (an id for log lines).
+
+---
+
+## Document Attachments
+
+A juror sees only the blocks it is sent, so every document it does not see as it
+was delivered gets a line in the same "Notes on the attachments" section of the
+prompt (`documentNotes`, `src/utils/attachment-processor.ts`). A request whose
+documents are all shown whole has no such line.
+
+| What happened | The line in the prompt | In the response |
+| --- | --- | --- |
+| The arbiter could not read the file (a PDF with no text layer, a damaged or protected document) | `Attachment <name> (PDF, 16.3 MB) was delivered with this request, but the arbiter could not read it, so its content is not shown to you. The file is not missing from the request.` | a warning, below |
+| A PDF was read through text extraction | `Attachment <name> is a PDF. Only its text is shown to you (12,898 characters); pictures and page images inside the PDF are not shown.` | none |
+| Text was cut at a limit (50,000 characters of plain text, 100,000 of extracted text) | `Attachment <name> is long: only the first 50,000 of its 51,234 characters are shown to you.` | none |
+
+```json
+"warnings": [
+  { "type": "attachment_skipped", "severity": "warning",
+    "message": "Attachment 9: PDF processing failed: ...",
+    "details": { "attachment": "submission/R4.pdf", "media_type": "application/pdf" } }
+]
+```
+
+`message` keeps the technical cause for the operator; the number in it counts the
+attachments as they were sent to the models (the parts of a split image count
+one each), so `details.attachment` names the file. The prompt line gives no
+cause: a juror cannot act on one, and before these lines existed a dropped PDF was
+reported by both jurors of a bounty as a file the submitter had not included.
+
+PDF text is read with `pdf-parse` alone; a host needs no `pdftotext`. A jury with
+any GPT-5-family or Claude 5 model gets every PDF as extracted text (the route's
+native-PDF model lists stop at GPT-4.1 and Claude 4.x), so its jurors never see a
+picture that exists only inside a PDF. Evidence that must be looked at should be
+attached as image files.
+
+---
+
+## The Result Record (start of `justification`, `model_results[].scores`)
+
+`justification` begins with a block the arbiter computes itself
+(`src/utils/resultRecord.ts`), followed by a blank line and the justifier's text:
+
+```
+RESULT (computed by the arbiter from the jurors' scores)
+- DONT_FUND: 567,500 of 1,000,000 (56.75%)
+- FUND: 432,500 of 1,000,000 (43.25%)
+JURORS (2 of 2 answered; the result is their weighted average)
+- openai gpt-5.6-terra, weight 0.5: DONT_FUND 1,000,000; FUND 0
+- anthropic claude-sonnet-5, weight 0.5: DONT_FUND 135,000; FUND 865,000
+```
+
+A juror that gave no score is listed as `no score, not counted (timed out after
+120 s)`, `(authentication error (HTTP 401))`, `(its reply could not be read as
+scores)`, and the heading then reads `1 of 2 answered; the result is that one
+juror's scores`. The block never quotes a provider's message. The numbers are the
+response's own `scores`; the justifier is given the block and asked to explain
+it, not to work a result out, and the block stands whatever the justifier writes
+(also when it times out or fails and the jurors' own texts are returned).
+
+The same numbers are in `model_results[]` for a program: `weight` on every entry,
+and `scores` (the juror's own integers, in outcome order) on every `success`.
 
 ---
 

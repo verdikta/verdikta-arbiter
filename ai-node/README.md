@@ -311,10 +311,11 @@ The text extraction system can be configured via environment variables or progra
 - Consider compressing or splitting very large documents
 
 **Extraction Failures:**
-- Binary files that can't be processed are automatically skipped
+- A document that cannot be read is not sent to the models; the prompt says it was delivered but could not be read, and the response carries an `attachment_skipped` warning naming the file
 - Corrupted or password-protected files will fail extraction
-- Scanned PDFs (images) may not extract text properly
-- PDF processing uses hybrid approach: attempts pdf-parse first, falls back to textract if needed
+- A scanned PDF (pages that are pictures) has no text to extract and is reported as unreadable
+- PDF text is read with pdf-parse, which needs nothing installed on the host; textract (poppler's `pdftotext`) is a second attempt where the host has it
+- A PDF is shown to the models as its text only: the prompt says that its pictures are not shown
 
 **Performance Tips:**
 - Text-based formats (RTF, TXT, MD) process fastest
@@ -323,7 +324,7 @@ The text extraction system can be configured via environment variables or progra
 
 **Expected Behavior:**
 - Successfully processed attachments are sent to the LLM
-- Failed/unsupported attachments are skipped with console warnings
+- Failed/unsupported attachments are not sent, and the jury is told so in the prompt (see `API_RESPONSE_SPECIFICATION.md`, "Document Attachments")
 - Image attachments bypass text extraction and are sent directly
 
 ## AI Gateway
