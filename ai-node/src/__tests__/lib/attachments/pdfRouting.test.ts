@@ -5,6 +5,7 @@ import {
   PDF_LIMITS,
   attachmentsForJuror,
   describePdfInputs,
+  imagesOnly,
   withoutAttachments,
 } from '../../../lib/attachments/pdfRouting';
 import { IMAGE_LIMITS } from '../../../lib/attachments/normalizeImages';
@@ -93,7 +94,11 @@ describe('attachmentsForJuror', () => {
 
     expect(view.attachments).toEqual([
       { type: 'text', content: 'cover note', mediaType: 'text/plain' },
-      { type: 'document', content: '<base64 of recording.pdf>', mediaType: 'application/pdf', name: 'recording.pdf' },
+      // extractedText is never sent: it is where a link inside the PDF is looked for (web-access.ts).
+      {
+        type: 'document', content: '<base64 of recording.pdf>', mediaType: 'application/pdf', name: 'recording.pdf',
+        extractedText: 'text of recording.pdf',
+      },
       { type: 'image', content: 'x'.repeat(12), mediaType: 'image/png' },
     ]);
     expect(view.notes).toEqual([]);
@@ -126,7 +131,9 @@ describe('attachmentsForJuror', () => {
     const refs = ['a', 'b', '3']; // normalizeImages' refs for an attachment with no name
 
     const native = attachmentsForJuror(prepared, refs, GPT);
-    expect(native.attachments[2]).toEqual({ type: 'document', content: '<base64 of unnamed>', mediaType: 'application/pdf' });
+    expect(native.attachments[2]).toEqual({
+      type: 'document', content: '<base64 of unnamed>', mediaType: 'application/pdf', extractedText: 'text of unnamed',
+    });
     expect(native.pdfInputs).toEqual([{ attachment: '3', form: 'native', pages: 2 }]);
 
     expect(attachmentsForJuror(prepared, refs, TEXT_ONLY).notes[0]).toMatch(/^Attachment 3 is a PDF\. /);
@@ -219,9 +226,11 @@ describe('attachmentsForJuror', () => {
     test('still goes to a juror that reads PDFs, with nothing said about the arbiter not reading it', () => {
       const view = route([pdf('scan.pdf', { pages: 2, text: null })], GPT);
 
+      // No text was extracted, so there is none to look for a link in.
       expect(view.attachments).toEqual([
         { type: 'document', content: '<base64 of scan.pdf>', mediaType: 'application/pdf', name: 'scan.pdf' },
       ]);
+      expect(view.attachments[0]).not.toHaveProperty('extractedText');
       expect(view.pdfInputs).toEqual([{ attachment: 'scan.pdf', form: 'native', pages: 2 }]);
       expect(view.notes).toEqual([]);
     });
@@ -254,6 +263,34 @@ describe('attachmentsForJuror', () => {
     );
   });
 
+  test('after a rejection a PDF that never fitted beside the others keeps its own reason: only a file that was sent was turned down', () => {
+    // 60 + 60 pages: the second was text from the start, for the page limit.
+    const items = [pdf('first.pdf', { pages: 60 }), pdf('second.pdf', { pages: 60 }), pdf('third.pdf', { pages: 30 })];
+
+    expect(route(items, GPT).pdfInputs).toEqual([
+      { attachment: 'first.pdf', form: 'native', pages: 60 },
+      { attachment: 'second.pdf', form: 'text', pages: 60, reason: 'page_limit' },
+      { attachment: 'third.pdf', form: 'native', pages: 30 },
+    ]);
+
+    const again = route(items, GPT, { rejected: true });
+    expect(again.nativePdfs).toBe(0);
+    expect(again.attachments.map(attachment => attachment.type)).toEqual(['text', 'text', 'text']);
+    expect(again.pdfInputs).toEqual([
+      { attachment: 'first.pdf', form: 'text', pages: 60, reason: 'rejected' },
+      { attachment: 'second.pdf', form: 'text', pages: 60, reason: 'page_limit' },
+      { attachment: 'third.pdf', form: 'text', pages: 30, reason: 'rejected' },
+    ]);
+    // The second file's line is the one it had before the rejection: the page limit.
+    const pageLimitNote = route(items, GPT).notes[0];
+    expect(pageLimitNote).toMatch(/^Attachment second\.pdf is a PDF\. .* would put this request over /);
+    expect(again.notes).toEqual([
+      `${textOnlyNote('first.pdf', 17)} The file itself was sent to this model first and was not accepted.`,
+      pageLimitNote,
+      `${textOnlyNote('third.pdf', 17)} The file itself was sent to this model first and was not accepted.`,
+    ]);
+  });
+
   test('two PDFs with the same name are told apart by their place in the request', () => {
     const { prepared, refs } = request([pdf('report.pdf', { pages: 90 }), pdf('report.pdf', { pages: 20 })]);
 
@@ -282,6 +319,49 @@ describe('withoutAttachments', () => {
 
     expect(withoutAttachments(prepared, ['page.png', 'page.png', 'page.png', 'page.png']).notes).toEqual([
       'Attachment page.png was delivered with this request, but this model is sent no attachments, so its content ' +
+        'is not shown to you. The file is not missing from the request.',
+    ]);
+  });
+});
+
+describe('imagesOnly: a provider whose request carries a prompt and images (Ollama)', () => {
+  test('the images are sent, and one line names everything else as delivered but not shown', () => {
+    const { prepared, refs } = request([
+      pdf('recording.pdf', { pages: 19 }), text('note.txt', 'note'), image('shot.png'),
+      { kind: 'document', name: 'letter.docx', content: 'the letter' },
+    ]);
+
+    const view = imagesOnly(prepared, refs);
+    expect(view.attachments).toEqual([{ type: 'image', content: 'x'.repeat(12), mediaType: 'image/png' }]);
+    // Not "Only its text is shown to you": this juror is not shown the text either.
+    expect(view.notes).toEqual([
+      'Attachments recording.pdf, note.txt, letter.docx were delivered with this request, but this model is sent ' +
+        'images only, so their content is not shown to you. The files are not missing from the request.',
+    ]);
+    expect(view.pdfInputs).toEqual([{ attachment: 'recording.pdf', form: 'not_shown', pages: 19, reason: 'images_only' }]);
+    expect(view.pdfInputByIndex.get(0)?.reason).toBe('images_only');
+    expect(view.nativePdfs).toBe(0);
+  });
+
+  test('a request of images alone needs no line', () => {
+    const { prepared, refs } = request([image('a.png'), image('b.png')]);
+
+    const view = imagesOnly(prepared, refs);
+    expect(view.attachments).toHaveLength(2);
+    expect(view.notes).toEqual([]);
+    expect(view.pdfInputs).toEqual([]);
+  });
+
+  test('the labels of a split image are not files: the image is shown, so nothing is said about it', () => {
+    const { prepared } = request([
+      text('label', '[page.png (part 1 of 2)]'), image('part'), text('label', '[page.png (part 2 of 2)]'), image('part'),
+      pdf('scan.pdf', { pages: 2, text: null }),
+    ]);
+
+    const view = imagesOnly(prepared, ['page.png', 'page.png', 'page.png', 'page.png', 'scan.pdf']);
+    expect(view.attachments.map(attachment => attachment.type)).toEqual(['image', 'image']);
+    expect(view.notes).toEqual([
+      'Attachment scan.pdf was delivered with this request, but this model is sent images only, so its content ' +
         'is not shown to you. The file is not missing from the request.',
     ]);
   });

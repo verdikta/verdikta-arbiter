@@ -59,12 +59,22 @@ describe('which jurors read a PDF as a PDF', () => {
     test.each([
       'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-5.6-luna', 'gpt-6-astra', 'gpt-6-luna', 'gpt-5.4-2026-03-05',
       'gpt-5.2-2025-12-11', 'gpt-5', 'gpt-5-mini', 'gpt-5-nano', 'gpt-5.1-codex',
-      'gpt-4o', 'gpt-4o-mini', 'gpt-4o-2024-08-06', 'gpt-4.1', 'gpt-4.1-mini', 'gpt-4.5-preview',
-      'o1', 'o1-2024-12-17', 'o3', 'o3-pro', 'o4-mini',
+      'gpt-4o', 'gpt-4o-mini', 'gpt-4o-2024-08-06',
       'openai/gpt-6-luna', 'ft:gpt-4o-2024-08-06:acme::abc123',
     ])('OpenAI: %s reads PDFs', (model) => {
       expect(openAIModelReadsPdf(model)).toBe(true);
     });
+
+    // These read PDFs on OpenAI's API. The request this node builds around a file part
+    // (openai-provider.ts, completeWithNativeClient) is not one they take: max_tokens and a
+    // reasoning object. Until it is, they get the text, not a rejected request per PDF.
+    test.each(['gpt-4.1', 'gpt-4.1-mini', 'gpt-4.5-preview', 'o1', 'o1-2024-12-17', 'o3', 'o3-pro', 'o4-mini'])(
+      'OpenAI: %s is not sent a PDF file by this node, so it gets text',
+      (model) => {
+        expect(openAIModelReadsPdf(model)).toBe(false);
+        expect(nativePdfSupport('openai', model)).toMatchObject({ native: false, family: null });
+      },
+    );
 
     test.each(['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo', 'o1-mini', 'o1-preview', 'o3-mini', 'gpt-oss-120b', 'davinci-002', ''])(
       'OpenAI: %s does not, so it gets text',

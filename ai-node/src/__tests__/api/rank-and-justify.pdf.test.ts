@@ -307,6 +307,38 @@ describe('a PDF with pictures, jury gpt-5.6-terra + claude-sonnet-5', () => {
     expect(body.model_results.map((result: any) => result.pdf_inputs[0].form)).toEqual(['native', 'native']);
   });
 
+  // When both jurors got a PDF as its text, a link in that text turned their web tools on
+  // (AI_WEB_ACCESS=auto). The file's base64 cannot be searched for one, so sending the file
+  // would have turned them off for exactly the juries this change is for.
+  test('a link that is only inside the PDF still turns the web tools on, and the text it was found in is not sent', async () => {
+    const frame = await frameJpeg();
+    const linkedPdf = buildPdf([{ text: 'Run log: https://example.org/run/42 (frame 9).' }, { jpeg: frame }]);
+
+    const { status, body } = await evaluate({
+      models: [TERRA, SONNET],
+      attachments: [dataUri('application/pdf', linkedPdf)],
+      attachmentNames: ['recording.pdf'],
+    });
+
+    expect(status).toBe(200);
+    expect(body.model_results.map((result: any) => result.pdf_inputs[0].form)).toEqual(['native', 'native']);
+
+    const [openai] = jurorRequests('openai');
+    expect(openai.path).toBe('/openai/v1/responses');
+    expect(openai.body.tools).toEqual([{ type: 'web_search' }]);
+    expect(openai.body.input[0].content.map((part: any) => part.type)).toEqual(['input_text', 'input_file']);
+
+    const [anthropic] = jurorRequests('anthropic');
+    expect(anthropic.body.tools.map((tool: any) => tool.name)).toEqual(['web_fetch', 'web_search']);
+    expect(anthropic.body.messages[0].content.map((block: any) => block.type)).toEqual(['document', 'text']);
+
+    // The file is what is sent. The extracted text was only read for the link.
+    for (const request of [openai, anthropic]) {
+      expect(JSON.stringify(request.body)).not.toContain('Run log:');
+      expect(JSON.stringify(request.body)).not.toContain('extractedText');
+    }
+  });
+
   test('a Word file alone goes to both as text, with nothing sent as a file', async () => {
     const { status } = await evaluate({
       models: [TERRA, SONNET],
@@ -508,6 +540,68 @@ describe('a juror that is not sent the PDF as a PDF gets its text and is told so
     ]);
     expect(body.warnings).toEqual([
       expect.objectContaining({ type: 'attachments_not_sent', severity: 'warning', model: 'xai-grok-9-text' }),
+    ]);
+  });
+});
+
+describe('a provider whose request carries images only (Ollama)', () => {
+  // Ollama is always the local daemon (LLMFactory builds it with no URL), so its three
+  // calls are answered here and every other request goes on to the stub as usual.
+  const OLLAMA = 'http://localhost:11434';
+  let ollamaRequests: Array<{ path: string; body: any }>;
+
+  beforeEach(() => {
+    ollamaRequests = [];
+    const realFetch = global.fetch;
+    jest.spyOn(global, 'fetch').mockImplementation(async (input: any, init?: any) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (!url.startsWith(OLLAMA)) return realFetch(input, init);
+      const path = url.slice(OLLAMA.length);
+      if (path === '/api/tags') {
+        return new Response(JSON.stringify({ models: [{ name: 'llava:7b', details: { families: ['llama', 'clip'] } }] }));
+      }
+      ollamaRequests.push({ path, body: JSON.parse(init.body) });
+      return new Response(`${JSON.stringify({ response: SCORES, done: true })}\n`);
+    });
+  });
+
+  test('the juror is sent its image and told what it is not shown, not that a text it never gets "is shown"', async () => {
+    const shot = await sharp({ create: { width: 8, height: 8, channels: 3, background: '#00ff00' } }).png().toBuffer();
+
+    const { status, body } = await evaluate({
+      models: [TERRA, { provider: 'ollama', model: 'llava:7b', weight: 0.5 }],
+      attachments: [dataUri('application/pdf', framesPdf), dataUri('image/png', shot), 'A note from the hunter.'],
+      attachmentNames: ['recording.pdf', 'shot.png', 'note.txt'],
+    });
+
+    expect(status).toBe(200);
+    expect(body.metadata).toMatchObject({ models_successful: 2 });
+
+    expect(ollamaRequests).toHaveLength(1);
+    const [ollama] = ollamaRequests;
+    expect(ollama.path).toBe('/api/generate');
+    expect(ollama.body.images).toEqual([shot.toString('base64')]);
+    expect(ollama.body.prompt).toContain(
+      '- Attachments recording.pdf, note.txt were delivered with this request, but this model is sent images only, ' +
+        'so their content is not shown to you. The files are not missing from the request.',
+    );
+    // What it said before: a line about text the provider then left out of the request.
+    expect(ollama.body.prompt).not.toContain(TEXT_ONLY);
+    expect(ollama.body.prompt).not.toContain('Frame notes: the counter reads 42');
+    // The route already said it, so the provider's own line has nothing left to name.
+    expect(ollama.body.prompt).not.toContain('cannot carry');
+
+    // The juror beside it is unchanged: the file, and no line about it.
+    const [openai] = jurorRequests('openai');
+    expect(openai.body.messages[0].content.map((part: any) => part.type)).toEqual(['text', 'file', 'image_url', 'text']);
+    expect(promptOf(openai)).not.toContain('images only');
+
+    expect(body.model_results[0].pdf_inputs).toEqual([{ attachment: 'recording.pdf', form: 'native', pages: 19 }]);
+    expect(body.model_results[1].pdf_inputs).toEqual([
+      { attachment: 'recording.pdf', form: 'not_shown', pages: 19, reason: 'images_only' },
+    ]);
+    expect(body.warnings).toEqual([
+      expect.objectContaining({ type: 'attachments_not_sent', severity: 'warning', model: 'ollama-llava:7b' }),
     ]);
   });
 });

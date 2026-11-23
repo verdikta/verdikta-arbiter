@@ -17,6 +17,7 @@ import {
   JurorPdfInput,
   attachmentsForJuror,
   describePdfInputs,
+  imagesOnly,
   withoutAttachments,
 } from '../../../lib/attachments/pdfRouting';
 import { NativePdfSupport, nativePdfSupport } from '../../../lib/llm/pdf-support';
@@ -70,6 +71,8 @@ interface LLMProvider {
   generateResponse: (prompt: string, model: string, options?: any) => Promise<string>;
   generateResponseWithAttachments?: (prompt: string, model: string, attachments: any[], options?: any) => Promise<string>;
   supportsAttachments: (model: string) => boolean;
+  /** Only on a provider whose request has no place for a text attachment (Ollama); absent means it has one. */
+  sendsTextAttachments?: (model: string) => boolean;
 }
 
 // Enhanced error reporting structures
@@ -113,6 +116,8 @@ interface JurorState {
   pdfRejection?: string;
   /** The provider sends this model no attachments: it was shown none, and its prompt says so. */
   sentNoAttachments?: boolean;
+  /** The provider's request carries images only: no document's text either, and its prompt says so. */
+  sentImagesOnly?: boolean;
 }
 
 /**
@@ -900,6 +905,14 @@ ${finalJustification}\n`);
           model: jurorName(index)
         });
       }
+      if (juror.sentImagesOnly) {
+        warnings.push({
+          type: 'attachments_not_sent',
+          message: `${jurorName(index)} is sent images only (its provider's request carries nothing else): it was shown none of this request's documents and text attachments, and its prompt says so.`,
+          severity: 'warning',
+          model: jurorName(index)
+        });
+      }
       juror.view.pdfInputs.forEach(input => {
         if (input.form !== 'text' || input.reason === 'model') return;
         const why = input.reason === 'rejected' && juror.pdfRejection
@@ -1131,7 +1144,7 @@ async function processModelForIteration(
   promptFor: (jurorNotes: string[]) => string,
   juror: JurorState,
   prepared: PreparedAttachments,
-  attachmentRefs: string[],
+  refs: string[],
   iterationNumber: number,
   outcomes: string[] | undefined,
   logTiming: (operation: string, startTime: number, details?: any) => void
@@ -1181,8 +1194,18 @@ async function processModelForIteration(
   // request held instead of answering as if the prompt were everything.
   if (juror.view.attachments.length > 0 && !llmProvider.supportsAttachments(modelInfo.model)) {
     console.warn(`📎 NO_ATTACHMENTS: ${modelInfo.provider}-${modelInfo.model} is sent no attachments; its prompt says what was delivered`);
-    juror.view = withoutAttachments(prepared, attachmentRefs);
+    juror.view = withoutAttachments(prepared, refs);
     juror.sentNoAttachments = true;
+  } else if (
+    juror.view.attachments.some(attachment => attachment.type !== 'image') &&
+    llmProvider.sendsTextAttachments?.(modelInfo.model) === false
+  ) {
+    // A request that carries a prompt and images (Ollama). The juror's notes said
+    // "Only its text is shown to you" about a PDF whose text the provider then left
+    // out; they now say what is true for it.
+    console.warn(`📎 IMAGES_ONLY: ${modelInfo.provider}-${modelInfo.model} is sent images only; its prompt names what it is not shown`);
+    juror.view = imagesOnly(prepared, refs);
+    juror.sentImagesOnly = true;
   }
 
   if (juror.view.attachments.length > 0) {
@@ -1246,7 +1269,7 @@ async function processModelForIteration(
           `📎 PDF_FALLBACK: ${modelInfo.provider}-${modelInfo.model} refused the request with ${juror.view.nativePdfs} PDF(s) ` +
             `after ${Date.now() - callStartTime}ms (${juror.pdfRejection}); asking again with the extracted text`
         );
-        juror.view = attachmentsForJuror(prepared, attachmentRefs, juror.support, { rejected: true });
+        juror.view = attachmentsForJuror(prepared, refs, juror.support, { rejected: true });
         callRetrievals.length = 0; // what the refused request's web tools reported is not this answer's
         responseText = await call(juror.view);
       }

@@ -23,6 +23,12 @@ export interface ProviderAttachment {
   mediaType: string;
   /** The file's name in the request, when the caller knows it. */
   name?: string;
+  /**
+   * For a PDF sent as a file: the text extracted from it, when there is any. It is
+   * never sent. It is what a link inside the PDF is found in (web-access.ts): the
+   * file's base64 cannot be searched for one.
+   */
+  extractedText?: string;
 }
 
 export const PDF_MEDIA_TYPE = 'application/pdf';

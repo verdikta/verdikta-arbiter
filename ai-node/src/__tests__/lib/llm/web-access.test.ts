@@ -55,6 +55,20 @@ describe('requestHasUrl', () => {
       { type: 'document', content: 'https://inside-pdf', mediaType: 'application/pdf' },
     ])).toBe(false);
   });
+
+  // A PDF sent as a file used to reach every juror as its text, where a link was found.
+  test('finds a URL in the text of a PDF that is sent as a file, and only there', () => {
+    const file = (extractedText?: string) => ({
+      type: 'document', content: 'JVBERi0xLjQK', mediaType: 'application/pdf', ...(extractedText !== undefined && { extractedText }),
+    });
+
+    expect(requestHasUrl('no link', [file('Frame 9. Source: https://example.org/run/42')])).toBe(true);
+    expect(requestHasUrl('no link', [file('Frame 9. No source given.')])).toBe(false);
+    expect(requestHasUrl('no link', [file('')])).toBe(false);
+    expect(requestHasUrl('no link', [file()])).toBe(false);
+    expect(shouldUseWebTools('no link', [file('see https://example.org')], {})).toBe(true);
+    expect(shouldUseWebTools('no link', [file('see https://example.org')], { AI_WEB_ACCESS: 'off' })).toBe(false);
+  });
 });
 
 describe('shouldUseWebTools', () => {

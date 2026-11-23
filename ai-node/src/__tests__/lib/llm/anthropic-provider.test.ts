@@ -568,6 +568,36 @@ describe('AnthropicProvider', () => {
       expect(body.messages[0].content.map((block: any) => block.type)).toEqual(['document', 'text']);
       expect(body.messages[0].content[1].text).toBe(`${WEB_ACCESS_NOTE}\n\nJudge the recording against https://example.org/rules`);
     });
+
+    // When every juror got a PDF as text, a link in that text turned the tools on. The file's
+    // base64 cannot be searched, so the caller passes the text along for that and nothing else.
+    test('a link that is only inside the PDF still gets the web tools, and the text it was found in is not sent', async () => {
+      mockMessagesCreate.mockResolvedValueOnce(answer('{"score":[0,1000000],"justification":"opened the page"}'));
+
+      await provider.generateResponseWithAttachments(
+        'Judge the recording.', 'claude-sonnet-5',
+        [{ ...pdf, extractedText: 'Frame 9. Source: https://example.org/run/42 UNSENT-MARKER' }]
+      );
+
+      const [body] = mockMessagesCreate.mock.calls[0];
+      expect(body.tools.map((tool: { name: string }) => tool.name)).toEqual(['web_fetch', 'web_search']);
+      expect(body.messages[0].content.map((block: any) => block.type)).toEqual(['document', 'text']);
+      expect(body.messages[0].content[1].text).toBe(`${WEB_ACCESS_NOTE}\n\nJudge the recording.`);
+      expect(JSON.stringify(body)).not.toContain('UNSENT-MARKER');
+    });
+
+    test('a PDF with no link in its text keeps the plain request, and the text is not sent there either', async () => {
+      mockMessagesCreate.mockResolvedValueOnce(answer('ok'));
+
+      await provider.generateResponseWithAttachments(
+        'Judge the recording.', 'claude-sonnet-5',
+        [{ ...pdf, extractedText: 'Frame 9. No source given. UNSENT-MARKER' }]
+      );
+
+      const [body] = mockMessagesCreate.mock.calls[0];
+      expect(body.tools).toBeUndefined();
+      expect(JSON.stringify(body)).not.toContain('UNSENT-MARKER');
+    });
   });
 
   describe('web tools (links are opened by Anthropic, not by the arbiter)', () => {

@@ -28,7 +28,7 @@ What exists now:
 
 | Question | Where it is answered |
 |---|---|
-| Does this provider, model and route read a PDF natively? | `ai-node/src/lib/llm/pdf-support.ts`, `nativePdfSupport(provider, model)`. One function, read from the model's version (Claude 3.5 and later; GPT-5 and later, GPT-4o / 4.1 / 4.5, the o-series with image input), any case of the provider name. A class routed to OpenRouter gets text. An id it cannot read gets text. |
+| Does this provider, model and route read a PDF natively? | `ai-node/src/lib/llm/pdf-support.ts`, `nativePdfSupport(provider, model)`. One function, read from the model's version (Claude 3.5 and later; GPT-5 and later, and GPT-4o), any case of the provider name. A class routed to OpenRouter gets text. An id it cannot read gets text. It answers "does this node send it": GPT-4.1 and the o-series read PDFs on OpenAI's API, but the request `openai-provider.ts` builds around a file part sends them `max_tokens` and a `reasoning` object, so they get text until that request is rebuilt for them. |
 | Which form of which attachment does each juror get? | `ai-node/src/lib/attachments/pdfRouting.ts`, `attachmentsForJuror`. |
 | What are the limits? | `PDF_LIMITS` in the same file, with the doc sources, and `IMAGE_LIMITS` in `normalizeImages.ts` for the request-wide ones. |
 | What is each juror told? | `documentNotes` in `ai-node/src/utils/attachment-processor.ts`: a line in that juror's own prompt for every document it does not see as it was delivered. A juror that is sent a PDF itself gets no line about it. |

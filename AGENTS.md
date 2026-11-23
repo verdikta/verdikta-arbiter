@@ -576,10 +576,14 @@ alert on it yet.
   (`docs/ATTACHMENT_PROCESSING_ISSUE.md`). Now
   `ai-node/src/lib/llm/pdf-support.ts` (`nativePdfSupport`) is the one answer to
   "does this provider and model take a PDF here", read from the model's version
-  like the sampling rule (Claude 3.5+, GPT-5+ and the GPT-4o / 4.1 / 4.5 and
-  image-reading o-series; an id it cannot read gets text), any case of the
-  provider name, and false for a class the gateway routes to OpenRouter, whose
-  request has no PDF block here. Do not add a list. `pdfRouting.ts` gives each
+  like the sampling rule (Claude 3.5+, GPT-5+ and GPT-4o; an id it cannot read
+  gets text), any case of the provider name, and false for a class the gateway
+  routes to OpenRouter, whose request has no PDF block here. It means "this node
+  sends it", not "the model could read it": GPT-4.1 and the o-series read PDFs
+  on OpenAI's API, but the file request `openai-provider.ts` builds
+  (`completeWithNativeClient`) sends them `max_tokens` and a `reasoning` object,
+  so they get text until that request is rebuilt for them. Do not add a list.
+  `pdfRouting.ts` gives each
   juror its attachments: a PDF as a file where the juror reads PDFs and the
   request stays inside `PDF_LIMITS` (100 pages for both providers, counted with
   the images for Claude; Claude's 20 MB request, OpenAI's 32 MB of files; doc
@@ -591,8 +595,13 @@ alert on it yet.
   still goes to the jurors that read PDFs. If a provider answers 400 / 413 / 422
   to a request with a PDF file, that juror is asked once more with the text
   (`PDF_FALLBACK`). No provider drops an attachment silently any more: what a
-  request cannot carry is named in the prompt (`provider-attachments.ts`), and a
-  model that is sent no attachments is told what was delivered. The page count
+  request cannot carry is named in the prompt (`provider-attachments.ts`), a
+  model that is sent no attachments is told what was delivered, and a juror
+  whose request carries images only (Ollama, `sendsTextAttachments`) is told
+  that and not that a PDF's text "is shown". A PDF sent as a file carries its
+  extracted text beside it (`extractedText`, never sent) so that a link inside
+  the PDF still turns the web tools on under `AI_WEB_ACCESS=auto`, as it did
+  when the PDF was text. The page count
   (`pdfInfo.ts`) opens a submitter's PDF with pdf.js in the server's own
   process, as the text extraction does; it is skipped when no juror reads PDFs
   and for a file over 32 MB. Unlike the image decisions, the routing depends on

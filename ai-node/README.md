@@ -288,11 +288,13 @@ A PDF is the one document that can reach a model as itself. In
 - A juror whose provider, model and route read PDFs natively is sent the file:
   the model gets each page's text and an image of the page, so it sees
   pictures, charts and scans. That is OpenAI and Anthropic on their own API
-  keys, for current models (`src/lib/llm/pdf-support.ts`, decided from the model
-  id; no list to maintain).
-- Any other juror (xAI, Hyperbolic, Ollama, and any class routed through
-  OpenRouter) is sent the extracted text, and its prompt says that only the text
-  is shown and pictures inside the PDF are not.
+  keys: Claude 3.5 and later, GPT-5 and later, and GPT-4o
+  (`src/lib/llm/pdf-support.ts`, decided from the model id; no list to maintain).
+- Any other juror (xAI, Hyperbolic, any class routed through OpenRouter, and
+  GPT-4.1 and the o-series for now) is sent the extracted text, and its prompt
+  says that only the text is shown and pictures inside the PDF are not.
+- An Ollama juror's request carries a prompt and images only: it is told which
+  attachments it is not shown.
 - A PDF that would put a juror's request over a provider limit (100 pages; 20 MB
   for a Claude request, 32 MB of files for OpenAI) is text for that juror.
 - A PDF with no text layer (a scan) still goes to the jurors that read PDFs.

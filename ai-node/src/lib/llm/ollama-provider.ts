@@ -294,4 +294,14 @@ export class OllamaProvider implements LLMProvider {
   supportsAttachments(model: string): boolean {
     return this.models.some(m => m.name === model && m.supportsImages);
   }
+
+  /**
+   * false: the request built above is a prompt and an image. The rank-and-justify
+   * route reads this to give the juror its images only and a prompt line that names
+   * what it is not shown (pdfRouting.ts, imagesOnly), instead of notes about text
+   * this provider would then leave out.
+   */
+  sendsTextAttachments(_model?: string): boolean {
+    return false;
+  }
 }

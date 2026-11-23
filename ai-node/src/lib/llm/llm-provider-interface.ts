@@ -62,6 +62,14 @@ export interface LLMProvider {
 
   supportsAttachments(model: string): boolean;
 
+  /**
+   * Optional. false for a provider whose request has no place for a text
+   * attachment (Ollama: a prompt and images). The rank-and-justify route then
+   * gives the juror its images only and a prompt line naming what it is not
+   * shown (attachments/pdfRouting.ts, imagesOnly). Absent: text attachments are sent.
+   */
+  sendsTextAttachments?(model: string): boolean;
+
   initialize(): Promise<void>;
 }
 

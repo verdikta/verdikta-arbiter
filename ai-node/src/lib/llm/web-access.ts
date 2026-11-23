@@ -27,6 +27,8 @@ export interface WebAttachment {
   type: string;
   content: string;
   mediaType: string;
+  /** The text of a PDF that is sent as a file (provider-attachments.ts). */
+  extractedText?: string;
 }
 
 export interface WebAccessOption {
@@ -55,17 +57,21 @@ export function webMaxUses(env: Env = process.env): number {
 
 /**
  * true when the prompt or a text attachment contains an http(s) URL. Images and
- * PDFs are base64 and cannot be scanned; a link that only appears inside one is
- * still reachable with AI_WEB_ACCESS=always.
+ * PDF files are base64 and cannot be scanned. A PDF sent as a file is searched
+ * through the text extracted from it, where its caller passed that along: when
+ * every juror got a PDF as text, a link in it turned the tools on, and sending
+ * the file instead must not turn them off. A link that only appears in a picture
+ * is still reachable with AI_WEB_ACCESS=always.
  */
 export function requestHasUrl(prompt: string, attachments: WebAttachment[] = []): boolean {
   if (URL_PATTERN.test(prompt)) return true;
-  return attachments.some(att =>
-    att.type !== 'image' &&
-    att.mediaType !== 'application/pdf' &&
-    typeof att.content === 'string' &&
-    URL_PATTERN.test(att.content)
-  );
+  return attachments.some(att => {
+    if (att.type === 'image') return false;
+    if (att.mediaType === 'application/pdf') {
+      return typeof att.extractedText === 'string' && URL_PATTERN.test(att.extractedText);
+    }
+    return typeof att.content === 'string' && URL_PATTERN.test(att.content);
+  });
 }
 
 export function shouldUseWebTools(

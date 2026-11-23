@@ -16,8 +16,10 @@
  *
  * The answer is read from the model's version, as the sampling-parameter rule
  * is (anthropic-request-params.ts): a new model in a known family needs no
- * edit here. A model id the rule cannot read gets text: text plus a note can
- * never be rejected by a provider, a document block can.
+ * edit here. It is "does this node send it", not "could the model read it": a
+ * model whose request the provider here does not build correctly gets text. A
+ * model id the rule cannot read gets text: text plus a note can never be
+ * rejected by a provider, a document block can.
  *
  * It also follows the gateway (provider-config.ts). A class routed to
  * OpenRouter is served by OpenRouterProvider, whose chat-completions request
@@ -63,22 +65,22 @@ export function claudeModelReadsPdf(model: string): boolean {
 }
 
 /**
- * OpenAI models that take a PDF `file` part: the ones with image input, because
- * the API gives the model each page's text and an image of the page. That is
- * GPT-5 and every later GPT, the GPT-4o / 4.1 / 4.5 generations, and the
- * o-series from o1 on except o1-mini, o1-preview and o3-mini, which read no
- * images.
+ * OpenAI models this node sends a PDF `file` part: GPT-5 and every later GPT,
+ * and GPT-4o.
+ *
+ * On OpenAI's API more models read PDFs (every one with image input: GPT-4.1,
+ * the o-series from o1). They are left out on purpose. The request
+ * openai-provider.ts builds around a file part (completeWithNativeClient) is
+ * right for the GPT-5 family (`max_completion_tokens`, `reasoning_effort`) and
+ * for GPT-4o (`max_tokens`, nothing else), but for the o-series and GPT-4.1 it
+ * sends `max_tokens` and a `reasoning` object, which Chat Completions does not
+ * take for them. Sent that, each of those jurors would spend a rejected request
+ * on every PDF before falling back to the text. They get the text and the note
+ * until that request is rebuilt for them; widen this rule in the same change.
  */
 export function openAIModelReadsPdf(model: string): boolean {
   if (isGpt5FamilyModel(model)) return true;
-  const id = bareModelId(model);
-  if (/^gpt-4(?:o|\.1|\.5)(?=$|[-.:])/.test(id)) return true;
-  const oSeries = /^o(\d+)(?:-([a-z]+))?(?=$|[-.:])/.exec(id);
-  if (oSeries) {
-    if (parseInt(oSeries[1], 10) >= 4) return true;
-    return oSeries[2] !== 'mini' && oSeries[2] !== 'preview';
-  }
-  return false;
+  return /^gpt-4o(?=$|[-.:])/.test(bareModelId(model));
 }
 
 /** The family whose own API reads PDFs for this class and model, or null. Says nothing about this node's route. */

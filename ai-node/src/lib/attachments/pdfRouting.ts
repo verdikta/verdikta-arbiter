@@ -47,7 +47,9 @@ export type PdfTextReason =
   /** The provider turned down the request that carried it; the juror was asked again with the text. */
   | 'rejected'
   /** The model is sent no attachments at all. */
-  | 'no_attachments';
+  | 'no_attachments'
+  /** The model's request carries images only: no text attachment, so not a document's text either. */
+  | 'images_only';
 
 export const PDF_LIMITS = {
   /**
@@ -184,6 +186,34 @@ export interface JurorRoutingOptions {
 }
 
 /**
+ * A juror whose provider's request carries images and nothing else (Ollama: a
+ * prompt and one image). It is sent the images; every other attachment, a
+ * document's text included, is not shown to it, and its prompt says so in one
+ * line instead of claiming a PDF's text is shown.
+ */
+export function imagesOnly(prepared: PreparedAttachments, refs: string[]): JurorAttachments {
+  const attachments: ProviderAttachment[] = [];
+  const imageIndexes = new Set<number>();
+  for (const result of prepared.processed.results) {
+    if (result.attachment.type !== 'image' || result.sourceIndex === undefined) continue;
+    attachments.push(toProviderAttachment(result));
+    imageIndexes.add(result.sourceIndex);
+  }
+  // By name: the parts of a split image share one, and the labels between them are not files.
+  const imageRefs = new Set(Array.from(imageIndexes, index => attachmentRef(refs, index)));
+  const names = Array.from(new Set(Array.from({ length: prepared.count }, (_, index) => attachmentRef(refs, index))))
+    .filter(name => !imageRefs.has(name));
+  const pdfInputByIndex = notShownPdfs(prepared, refs, 'images_only');
+  return {
+    attachments,
+    notes: names.length === 0 ? [] : [notDeliveredNote(names, 'this model is sent images only')],
+    pdfInputs: Array.from(pdfInputByIndex.values()),
+    pdfInputByIndex,
+    nativePdfs: 0,
+  };
+}
+
+/**
  * The attachments of a request as one juror gets them.
  *
  * @param prepared - Every attachment in every form (prepareAttachments).
@@ -227,21 +257,33 @@ export function attachmentsForJuror(
     } else if (allowance.cost(pdf) > allowance.bytes) {
       reason = 'size_limit';
       whyNotAFile.set(index, allowance.overSize);
-    } else if (options.rejected) {
-      reason = 'rejected';
-      whyNotAFile.set(index, FILE_NOT_ACCEPTED);
     }
 
     const attachment = attachmentRef(refs, index);
     const known = pdf.pages !== null ? { pages: pdf.pages } : {};
     if (!reason && allowance) {
+      // This file is one the juror is sent. It takes its share of the allowance in the
+      // request after a rejection too, so the files that did not fit beside it keep
+      // their own reason: only a file that was sent can have been turned down.
       allowance.pages -= pages;
       allowance.bytes -= allowance.cost(pdf);
-      sentAsFile.add(index);
-      const name = fileName(attachment);
-      attachments.push({ type: 'document', content: pdf.content, mediaType: 'application/pdf', ...(name && { name }) });
-      pdfInputByIndex.set(index, { attachment, form: 'native', ...known });
-      continue;
+      if (options.rejected) {
+        reason = 'rejected';
+        whyNotAFile.set(index, FILE_NOT_ACCEPTED);
+      } else {
+        sentAsFile.add(index);
+        const name = fileName(attachment);
+        attachments.push({
+          type: 'document',
+          content: pdf.content,
+          mediaType: 'application/pdf',
+          ...(name && { name }),
+          // Not sent: where a link inside the PDF is looked for (web-access.ts).
+          ...(common && { extractedText: common.attachment.content }),
+        });
+        pdfInputByIndex.set(index, { attachment, form: 'native', ...known });
+        continue;
+      }
     }
 
     if (common) attachments.push(toProviderAttachment(common));
@@ -264,35 +306,41 @@ export function attachmentsForJuror(
  */
 export function withoutAttachments(prepared: PreparedAttachments, refs: string[]): JurorAttachments {
   const names = Array.from(new Set(Array.from({ length: prepared.count }, (_, index) => attachmentRef(refs, index))));
-  const listed = names.slice(0, 20).join(', ') + (names.length > 20 ? `, and ${names.length - 20} more` : '');
-  const one = names.length === 1;
-  const pdfInputByIndex = new Map<number, JurorPdfInput>(
-    Array.from(prepared.pdfs.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([index, pdf]) => [
-        index,
-        {
-          attachment: attachmentRef(refs, index),
-          form: 'not_shown' as const,
-          ...(pdf.pages !== null ? { pages: pdf.pages } : {}),
-          reason: 'no_attachments' as const,
-        },
-      ]),
-  );
+  const pdfInputByIndex = notShownPdfs(prepared, refs, 'no_attachments');
   return {
     attachments: [],
-    notes:
-      names.length === 0
-        ? []
-        : [
-            `${one ? 'Attachment' : 'Attachments'} ${listed} ${one ? 'was' : 'were'} delivered with this request, but ` +
-              `this model is sent no attachments, so ${one ? 'its' : 'their'} content is not shown to you. ` +
-              `${one ? 'The file is' : 'The files are'} not missing from the request.`,
-          ],
+    notes: names.length === 0 ? [] : [notDeliveredNote(names, 'this model is sent no attachments')],
     pdfInputs: Array.from(pdfInputByIndex.values()),
     pdfInputByIndex,
     nativePdfs: 0,
   };
+}
+
+/** One line for the attachments a juror is not sent at all: what was delivered, and why it is not shown. */
+function notDeliveredNote(names: string[], because: string): string {
+  const listed = names.slice(0, 20).join(', ') + (names.length > 20 ? `, and ${names.length - 20} more` : '');
+  const one = names.length === 1;
+  return (
+    `${one ? 'Attachment' : 'Attachments'} ${listed} ${one ? 'was' : 'were'} delivered with this request, but ` +
+    `${because}, so ${one ? 'its' : 'their'} content is not shown to you. ` +
+    `${one ? 'The file is' : 'The files are'} not missing from the request.`
+  );
+}
+
+/** Every PDF of the request as not shown to a juror, for the same reason. */
+function notShownPdfs(
+  prepared: PreparedAttachments,
+  refs: string[],
+  reason: 'no_attachments' | 'images_only',
+): Map<number, JurorPdfInput> {
+  return new Map(
+    Array.from(prepared.pdfs.entries())
+      .sort(([a], [b]) => a - b)
+      .map(([index, pdf]): [number, JurorPdfInput] => [
+        index,
+        { attachment: attachmentRef(refs, index), form: 'not_shown', ...(pdf.pages !== null ? { pages: pdf.pages } : {}), reason },
+      ]),
+  );
 }
 
 /** The request's name for an attachment, or its number: what the notes put after "Attachment". */
