@@ -666,6 +666,14 @@ Ollama runs locally and is unaffected by gateway settings.
   status line said "AI Node: Not Running" right after "AI Node is healthy".
 - The Solidity version is pinned to **0.8.19** to match imported Chainlink
   contracts (see `arbiter-operator/README.md`); don't bump it casually.
+- **Line endings are pinned in `.gitattributes`.** Text is LF in every checkout, whatever
+  `core.autocrlf` says, and the bytes a test hashes are never converted
+  (`arbiter-operator/foundry/lib/**`, `arbiter-operator/contracts/vendor/**`, and
+  `external-adapter/test-artifacts/**`, which holds one CRLF fixture). A stake listing names a
+  commit of this repository, and a hunter on Windows got CRLF copies of the vendored files:
+  `VendoredFiles.t.sol` failed on a hash before any proof was added (2026-11). When you vendor
+  more hashed bytes, add their path there. A listing made earlier names an earlier commit and
+  does not gain the rule.
 - Repo hygiene: large stray logs (`docker.log`, `grepevm8453.log`) and
   `external-adapter/test-artifacts/*.zip` may be present untracked; ignore them.
 
