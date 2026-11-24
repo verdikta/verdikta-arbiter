@@ -847,8 +847,8 @@ key raises a watchdog alert").
   that day.** Hardhat 2.30.0 (2026-11-24) needs Node 22: its native module's
   platform package declares the engine, npm on Node 20 skips an optional
   dependency like that silently, and `hardhat test` ends in "Cannot find native
-  binding" (compile and HTTP-network scripts still ran). Operators are on Node
-  20.18, so `hardhat` is held at `>=2.23.0 <2.30.0`
+  binding" (`hardhat compile` still ran; the scripts on an HTTP network were not
+  tried). Operators are on Node 20.18, so `hardhat` is held at `>=2.23.0 <2.30.0`
   (`hardhat-gas-price.test.cjs`); raise the bound only together with the Node
   version the installer installs.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
