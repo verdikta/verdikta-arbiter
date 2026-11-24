@@ -25,9 +25,14 @@ const MACHINE_LINE = /verdikta-(?:disclosure|dispute)/i;
  * start doing. The EA's disclosure gate settles that one INVALID, with no runner and no model.) Nothing on an arbiter stops a
  * claim on another class (the bridge does not tell the EA the class), so a claim on class 128
  * would spend real money on real arbiters.
+ *
+ * So must a scenario that expects no commit (scenario-loader.js, validateNoCommit): it is a
+ * statement about a release, which only the arbiters we upgrade can be held to, and it leaves a
+ * round unfinalized, which is not ours to do to another operator's arbiters.
  */
 function isCanaryOnly(scenario) {
   if (scenario.suite === 'l4-claim') return true;
+  if (scenario.expectNoCommit === true) return true;
   // In the addendum, or written into a CID field in the adapter's `cids:addendum` form.
   return [scenario.addendum, scenario.cid, ...(Array.isArray(scenario.cids) ? scenario.cids : [])]
     .some((text) => typeof text === 'string' && MACHINE_LINE.test(text));
@@ -80,7 +85,7 @@ function resolveRunClass({ cli, env, config, scenarios = [] } = {}) {
   const { classId, source } = pickClass({ cli, env, config });
   if (scenarios.some(isCanaryOnly) && classId !== CANARY_CLASS_ID) {
     throw new Error(`Refused: ${named(scenarios)} run only on the canary class ${CANARY_CLASS_ID}, and this run resolved to class ${classId} (from ${source}). `
-      + `A claim on another class would spend real money on real arbiters. Name the class: --class-id ${CANARY_CLASS_ID}.`);
+      + `A claim on another class would spend real money on real arbiters, and a round that must get no commit is left unfinalized. Name the class: --class-id ${CANARY_CLASS_ID}.`);
   }
   return classId;
 }

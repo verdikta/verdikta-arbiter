@@ -70,7 +70,8 @@ This document outlines a comprehensive plan to implement robust timeout handling
 #### Partial Results Mode
 - **≥50% models successful**: Return results with warning
 - **<50% models successful**: Return error with partial data
-- **Configuration**: `MIN_SUCCESSFUL_MODELS_PERCENT` (default: 0.5)
+- **Configuration**: `MIN_SUCCESSFUL_MODELS_PERCENT` (default: 0.5 in this plan; 1, every
+  juror, since 2026-11: `ai-node/API_RESPONSE_SPECIFICATION.md`, "Configuration")
 - **Toggle**: `ALLOW_PARTIAL_RESULTS` (default: true)
 
 #### Fallback Scoring

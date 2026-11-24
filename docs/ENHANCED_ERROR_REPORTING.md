@@ -82,6 +82,10 @@ New fields are **optional** and **additive**:
 
 ### Partial Success (Some Models Failed, But Evaluation Succeeded)
 
+> Since 2026-11 this response exists only on a node whose operator set
+> `MIN_SUCCESSFUL_MODELS_PERCENT` below 1. By default every juror must answer, and a
+> failed juror is the error case below (`ai-node/API_RESPONSE_SPECIFICATION.md`).
+
 ```json
 {
   "scores": [

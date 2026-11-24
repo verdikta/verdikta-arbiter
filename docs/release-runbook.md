@@ -186,6 +186,23 @@ the canaries from a commit before A11.
    requests the AI Node builds, with the real client libraries against a stub;
    only this run proves the providers accept them.
 
+   A release that changes the quorum rule (`ai-node/src/utils/juryQuorum.ts`), or
+   what a failed juror costs a request, runs `incomplete-jury`:
+
+   ```bash
+   gh workflow run e2e.yml --ref <branch> -f run_l4=true -f class_id=5555 \
+     -f scenario=incomplete-jury \
+     -f expect_common=<@verdikta/common version> -f expect_release=<release commit>
+   ```
+
+   One of that request's two jurors is a model its provider has retired, so its
+   jury can never be whole. It is green when nobody commits for 240 s
+   (`round.noCommit`, `round.noVerdict`) and the control that follows,
+   `canonical-vuln`, settles with every revealing arbiter on the release named:
+   arbiters that are down commit nothing either. The watched round is left
+   unfinalized; closing it costs the polled canaries reputation, which is their
+   owner's call.
+
 4. **Gate.** Green means: the request was fulfilled, every revealing arbiter's
    justification reports the expected `verdiktaCommon` and `release`, and the
    justification is fetchable. `cd e2e && npm run audit-oracles -- <aggId>`

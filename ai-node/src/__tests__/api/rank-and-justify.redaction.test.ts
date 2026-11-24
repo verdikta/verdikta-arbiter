@@ -11,6 +11,10 @@
  * the 400 path, and look for any part of it in the whole returned body and in
  * everything sent on to another model.
  *
+ * Since every juror must answer by default (utils/juryQuorum.ts), a refused juror is a
+ * 400 unless the operator allows a partial jury: the 200 tests run with that override,
+ * which is how bounty 398's records were made.
+ *
  * What an operator needs is still there: error_type, http_status and error_code as
  * they were, the unredacted message in the node's log, and one PROVIDER_AUTH_FAILED
  * line per refusal, also for a provider that reports its status in its message only.
@@ -24,6 +28,7 @@ import os from 'os';
 import path from 'path';
 import { POST } from '../../app/api/rank-and-justify/route';
 import { LLMFactory } from '../../lib/llm/llm-factory';
+import { allowPartialJury } from '../../../test-support/jury-quorum';
 
 jest.mock('../../lib/llm/llm-factory');
 // Authentication is covered through the real handlers in service-auth.test.ts.
@@ -138,7 +143,9 @@ afterEach(() => {
   fs.rmSync(cwd, { recursive: true, force: true });
 });
 
-describe('HTTP 200: one juror\'s provider refused the key (bounty 398)', () => {
+describe('HTTP 200, a partial jury allowed: one juror\'s provider refused the key (bounty 398)', () => {
+  allowPartialJury();
+
   test('no part of the provider\'s message is in the body; the fields an operator needs are', async () => {
     const openai = failing(openAiRefusal);
     const anthropic = answering();
@@ -329,7 +336,7 @@ describe('HTTP 400: too few jurors answered', () => {
     expect(status).toBe(400);
     expectNothingOfTheProviders(body);
     expect(body).toEqual({
-      error: 'Insufficient successful models: 0/2 (minimum required: 1). Failures: '
+      error: 'Insufficient successful models: 0/2 (minimum required: 2). Failures: '
         + `OpenAI-gpt-4o (${REDACTED_398}); `
         + 'xAI-grok-4 ([xAI] HTTP 400: {"code":"Client specified an invalid argument","error":"Incorrect API key provided: <redacted>. '
         + 'You can obtain an API key from https://console.x.ai/<redacted>"})',

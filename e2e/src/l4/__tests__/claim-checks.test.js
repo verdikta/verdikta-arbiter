@@ -365,6 +365,9 @@ describe('an abstention', () => {
   it('passes only when nobody committed and no verdict came', () => {
     expect(allPass(abstainChecks({ status: 'timeout', commitReceived: 0 }))).toBe(true);
     expect(allPass(abstainChecks({ status: 'failed', commitReceived: 0 }))).toBe(true);
+    // A text request that nobody may commit to is named for what was watched.
+    expect(abstainChecks({ status: 'timeout', commitReceived: 0 }).map((c) => c.name)).toEqual(['claim.noCommit', 'claim.noVerdict']);
+    expect(abstainChecks({ status: 'fulfilled', commitReceived: 4 }, 'round').map((c) => [c.name, c.ok])).toEqual([['round.noCommit', false], ['round.noVerdict', false]]);
   });
 
   it.each([

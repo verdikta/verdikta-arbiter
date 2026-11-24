@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { POST } from '../../app/api/rank-and-justify/route';
 import { LLMFactory } from '../../lib/llm/llm-factory';
 import { generateJustification } from '../../app/api/rank-and-justify/route';
+import { withPartialJury } from '../../../test-support/jury-quorum';
 
 interface ScoreOutcome {
   outcome: string;
@@ -446,7 +447,8 @@ describe('POST /api/rank-and-justify', () => {
         headers: { 'Content-Type': 'application/json' },
       });
 
-      const response = await POST(request);
+      // A response reports a failed juror only where a partial jury is allowed (juryQuorum.ts).
+      const response = await withPartialJury(() => POST(request));
       const data = await response.json();
 
       expect(response.status).toBe(200);
@@ -461,7 +463,7 @@ describe('POST /api/rank-and-justify', () => {
       expect(succeeded.status).toBe('success');
     });
 
-    test('should handle malformed response from one model and apply fallback', async () => {
+    test('a partial jury allowed: should handle malformed response from one model and apply fallback', async () => {
       // Mock responses for each model
       const mockOpenAIResponse = JSON.stringify({
         score: [700000, 300000],
@@ -524,11 +526,11 @@ describe('POST /api/rank-and-justify', () => {
         headers: { 'Content-Type': 'application/json' },
       });
 
-      const response = await POST(request);
+      const response = await withPartialJury(() => POST(request));
       expect(response).toBeDefined();
       const data = await response.json();
 
-      // Expect success despite one model failing format
+      // Expect success despite one model failing format: the operator allowed a partial jury
       expect(response.status).toBe(200);
       expect(data).toHaveProperty('scores');
       expect(data).toHaveProperty('justification');
@@ -1040,7 +1042,8 @@ describe('POST /api/rank-and-justify', () => {
         }
       });
 
-      const response = await POST(new Request('http://localhost/api/rank-and-justify', {
+      // xAI's reply cannot be read: reported beside the others only where a partial jury is allowed.
+      const response = await withPartialJury(() => POST(new Request('http://localhost/api/rank-and-justify', {
         method: 'POST',
         body: JSON.stringify({
           prompt: 'Open https://stockanalysis.com/stocks/msft/history/ and read the 10/20 close.',
@@ -1053,7 +1056,7 @@ describe('POST /api/rank-and-justify', () => {
           ],
         }),
         headers: { 'Content-Type': 'application/json' },
-      }));
+      })));
       const data = await response.json();
 
       expect(response.status).toBe(200);

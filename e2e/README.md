@@ -172,7 +172,7 @@ node src/index.js l4 --junit results/l4.xml
 one request per committed scenario that is neither `manualOnly` nor a claim
 scenario, once its archive is pinned. Today that is `canonical-vuln` alone, the project's own archive
 ([Canonical evidence archive](#canonical-evidence-archive-project-owned)).
-`frontend-default`, `bounty-171-replay`, `link-canary` and `pdf-canary` are manual-only and run
+`incomplete-jury`, `bounty-171-replay`, `link-canary` and `pdf-canary` are manual-only and run
 only when named ([Scenarios](#scenarios)).
 
 ### L4 test wallet
@@ -468,12 +468,15 @@ external breakage a project-owned archive avoids. If external-CID scenarios are
 reintroduced later, expect them to need periodic revalidation against the
 `@verdikta/common` version actually in use.
 
-The example-frontend's default package (`frontend-default`) broke another way: its
-jury names Anthropic's `claude-3-5-sonnet-20241022`, which the provider has
-retired (requests return 404), so that juror fails on every run and the round
-rests on the others. It is not ours to re-pin either, so it stays in
-`scenarios.json` as `manualOnly`, out of the [default set](#l4--live-testnet-acceptance),
-and `canonical-vuln` covers the same path in mode 0 and commit-reveal.
+The example-frontend's default package broke another way: its jury names
+Anthropic's `claude-3-5-sonnet-20241022`, which the provider has retired
+(requests return 404), so that juror fails on every run. Until 2026-11 the round
+rested on the other juror; since every juror must answer
+(`ai-node/src/utils/juryQuorum.ts`) no arbiter commits to it at all. It is not
+ours to re-pin, so it stays in `scenarios.json` as `manualOnly`, out of the
+[default set](#l4--live-testnet-acceptance), under the name of what it now
+shows: `incomplete-jury` ([Scenarios](#scenarios)). `canonical-vuln` covers the
+path of a request that settles, in mode 0 and commit-reveal.
 
 ## Scenarios
 
@@ -508,6 +511,14 @@ Optional fields:
   justification and requires every juror's `model_results[].pdf_inputs` to
   report every PDF of the request as `native` (`pdfInputs.all===native`, with
   each juror's form and reason in the detail). Only `"native"` is accepted.
+- `expectNoCommit: true`, with `watchSeconds` and `control` — a request nobody
+  may commit to. L4 sends it, watches the round for `watchSeconds` and fails on
+  a commit or a result (`round.noCommit`, `round.noVerdict`), then sends the
+  scenario `control` names, which must settle within the same time on the
+  versions the run names (`control.<id>.*`): arbiters that are down commit
+  nothing either. The watched round is left unfinalized, so such a scenario must
+  be `manualOnly`, and L4 holds it to class 5555 with both `--expect-common` and
+  `--expect-release`, as it holds a claim.
 - `suite` — `claim` for the [L2 claim suite](#the-claim-suite---suite-claim-local-no-secret),
   `l4-claim` for the [L4 claim scenarios](#claim-scenarios-class-5555-only). Neither
   is ever in a full-suite run, and each runs only on its own tier.
@@ -515,11 +526,26 @@ Optional fields:
   its claim should settle, for the exact-class rate beside σ ([Metrics](#claim-scenarios-class-5555-only)).
   The committed jury claims name `LOW` (Q71).
 
-`frontend-default` is manual-only: it is the example-frontend's default package,
-not the project's, and its jury names a Claude model the provider has retired
-([why it left the default set](#canonical-evidence-archive-project-owned)). Name
-it to check that package (`--scenario frontend-default`, or `-f scenario=frontend-default`
-on a dispatch).
+`incomplete-jury` is manual-only: it is the example-frontend's default package,
+not the project's, and its jury is `gpt-4o` and a Claude model the provider has
+retired ([why it left the default set](#canonical-evidence-archive-project-owned)),
+so one of its two jurors fails on every run. An arbiter does not answer for a
+jury it did not run, so the scenario passes when nobody commits for 240 s and
+`canonical-vuln` then settles on the release the run names. Before that rule the
+canaries settled the same request on `gpt-4o`'s scores alone (run 574,
+2026-11-24, release `cb3b46ea`: both records say `JURORS (1 of 2 answered; the
+result is that one juror's scores)`). Run it against the class-5555 canaries
+after a change to the quorum rule or to what a failed juror costs:
+
+```bash
+gh workflow run e2e.yml --ref main -f run_l4=true -f class_id=5555 \
+  -f scenario=incomplete-jury -f expect_common=<version> -f expect_release=<commit>
+```
+
+It leaves its round unfinalized, and prints the `finalizeEvaluationTimeout` call
+that would close it: a finalize costs the polled canaries reputation, which is
+their owner's call. A canary whose operator set `MIN_SUCCESSFUL_MODELS_PERCENT`
+below 1 commits, and fails it.
 
 `bounty-171-replay` is manual-only too: it replays mainnet bounty 171 (issue #81),
 whose 2560×12268 px screenshot failed every jury model before the image
@@ -628,7 +654,8 @@ traffic with this tool is how you inventory which fleet nodes need upgrading.
 
 - Optionally boot the AI Node too (for turnkey `l2 --real` in CI).
 - Done: the default set is the project's own pinned archive, `canonical-vuln`;
-  the external packages are gone (`demoClient`) or manual-only (`frontend-default`).
+  the external packages are gone (`demoClient`) or manual-only (`incomplete-jury`,
+  once `frontend-default`).
 - Additional project-owned scenarios for the default set (more outcomes,
   attachments), each pinned from a source in `archives/`; a project-owned
   multi-CID scenario for the nightly (the only one today, `bounty-171-replay`,

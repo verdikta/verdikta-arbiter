@@ -6,6 +6,7 @@
 
 import { POST } from '../../app/api/rank-and-justify/route';
 import { LLMFactory } from '../../lib/llm/llm-factory';
+import { withPartialJury } from '../../../test-support/jury-quorum';
 
 jest.mock('../../lib/llm/llm-factory');
 // Authentication is covered through the real handlers in service-auth.test.ts.
@@ -89,7 +90,7 @@ describe('POST /api/rank-and-justify: the result on record', () => {
     ]);
   });
 
-  test('a juror its provider refused: the record says the result is the other juror\'s alone', async () => {
+  test('a juror its provider refused, a partial jury allowed: the record says the result is the other juror\'s alone', async () => {
     openai.generateResponse.mockRejectedValue(
       Object.assign(new Error('401 Incorrect API key provided: sk-ut1et***Zd9U. You can find your API key at https://platform.openai.com/account/api-keys.'), {
         status: 401,
@@ -99,7 +100,8 @@ describe('POST /api/rank-and-justify: the result on record', () => {
     anthropic.generateResponse.mockResolvedValue(GATE_FAILED);
     justifier.generateResponse.mockResolvedValue('The one juror that answered failed the submission.');
 
-    const body = await (await post(REQUEST)).json();
+    // By default this request is a 400 (rank-and-justify.quorum.test.ts).
+    const body = await (await withPartialJury(() => post(REQUEST))).json();
 
     expect(body.metadata).toMatchObject({ models_requested: 2, models_successful: 1, models_failed: 1 });
     const lines = body.justification.split('\n');

@@ -23,7 +23,12 @@
 
 ---
 
-### 2. Some Models Fail (≥50% Succeed) ⚠️
+### 2. Some Models Fail, and the Operator Allows a Partial Jury ⚠️
+
+**Not the default.** Every juror must answer (scenario 3). This response exists only on
+a node whose operator set `MIN_SUCCESSFUL_MODELS_PERCENT` below 1
+([Configuration](#configuration)), and only while at least that share of the jurors
+answered.
 
 **HTTP Status:** `200 OK`
 
@@ -41,29 +46,57 @@
 - **Failed models are EXCLUDED from score calculation**
 - Only successful models contribute to the aggregated scores
 - Weights are renormalized across successful models
-- Justification MAY include information about failed models (implementation dependent)
-- Request succeeds if ≥50% of models succeed (configurable via `MIN_SUCCESSFUL_MODELS_PERCENT`)
+- The justification's result record says so: `JURORS (1 of 2 answered; the result is that
+  one juror's scores)`, with a line for the juror that gave no score
+- The request succeeds while at least the operator's share of the models succeed
 
-**Example:** With 2 models (weights 0.6, 0.4):
+**Example:** With 2 models (weights 0.6, 0.4) and `MIN_SUCCESSFUL_MODELS_PERCENT=0.5`:
 - If only the 0.6-weighted model succeeds, its scores are returned directly (renormalized to 1.0)
 - Failed model's scores are not included in calculation
 
 ---
 
-### 3. Insufficient Models Succeed (<50%) ❌
+### 3. A Juror Gave No Answer ❌
 
 **HTTP Status:** `400 Bad Request`
 
 ```json
 {
-  "error": "Insufficient successful models: 0/2 (minimum required: 1). Failures: OpenAI-gpt-4 (Network timeout); Anthropic-claude-3 (Unable to parse response: Invalid JSON format...)",
+  "error": "Insufficient successful models: 1/2 (minimum required: 2). Failures: Anthropic-claude-sonnet-5 (Model Anthropic-claude-sonnet-5 timed out after 120000ms)",
   "scores": [],
   "justification": ""
 }
 ```
 
+**Every juror must answer, or the arbiter does not** (`src/utils/juryQuorum.ts`). A juror
+that timed out, whose reply could not be read after the repair call, whose provider
+refused the node's key or was at its usage limit, or whose model the provider does not
+have, ends the request with this response, whatever the other jurors answered and
+whatever its weight. The justifier is not called.
+
+Until 2026-11 half the jurors were enough. A two-model jury was then answered by one
+model whenever the other failed, and the arbiter committed that model's scores as the
+jury's: 12 of 314 two-juror evaluations in a month of bounty records (20 October to
+21 November 2026), and three of bounty 398's six. On that bounty's third submission two
+arbiters each ran a different lone juror and rejected it for different reasons.
+
+What the External Adapter does with this response:
+
+- **Commit mode (mode 1, every aggregator request):** it returns an error and commits
+  nothing. The round is settled by the arbiters that ran the whole jury. If too few of
+  them commit, the round gets no result: once the aggregator's `responseTimeoutSeconds`
+  has passed anyone can finalize it as timed out (`finalizeEvaluationTimeout`), which
+  returns the prepay and costs the polled oracles reputation.
+- **Mode 0:** its historical contract for a provider error, `200` with
+  `aggregatedScore: [0]` and the `error` published as the justification.
+
+A request whose jury names a model that no longer exists is such a request on every
+arbiter, every time: it gets no result at all until its manifest is corrected. The
+e2e scenario `incomplete-jury` is one (`e2e/README.md`).
+
 **Key Points:**
-- Request fails if fewer than 50% of models succeed (configurable)
+- The request fails if fewer than the required number of models succeed: all of them,
+  unless the operator set a lower share ([Configuration](#configuration))
 - Error message includes:
   - Success/failure count
   - Minimum required successful models
@@ -510,7 +543,8 @@ provider call fails with an error naming the flag.
 if (response.status === 200) {
   const { scores, justification } = response.data;
   // Process scores array - always sums to 1,000,000
-  // Note: Some models may have failed, but enough succeeded
+  // Every juror answered, unless the operator allows a partial jury:
+  // metadata.models_failed and the result record say which case this is
 }
 ```
 
@@ -533,7 +567,7 @@ try {
     // Success - use scores and justification
     return response.data;
   } else if (response.status === 400) {
-    // Partial or complete model failure
+    // A juror gave no answer (or, with a partial jury allowed, too few did)
     // Check error.includes('Insufficient successful models')
     // Parse failure reasons from error message
     throw new Error(`AI models failed: ${response.data.error}`);
@@ -550,15 +584,26 @@ try {
 
 ## Configuration
 
-The minimum success threshold is configurable via environment variable:
+By default every juror must answer. An operator can lower the share of the jurors
+that must answer with an environment variable (`ai-node/.env.local`, read at each
+request):
 
 ```bash
-MIN_SUCCESSFUL_MODELS_PERCENT=0.5  # Default: 50%
+MIN_SUCCESSFUL_MODELS_PERCENT=1  # Default: every juror
 ```
 
-- `0.5` = At least 50% of models must succeed
-- `0.67` = At least 67% of models must succeed  
-- `1.0` = ALL models must succeed (no fallback tolerance)
+- unset, or `1` = ALL models must succeed. A juror that fails ends the request (scenario 3)
+- `0.67` = At least 67% of models must succeed (3 of 3, 3 of 4)
+- `0.5` = At least 50% of models must succeed, the rule before 2026-11: a two-model jury
+  is answered by one model (scenario 2)
+
+The number of jurors required is the share times the jury's size, rounded up, and
+never less than one. A value that is not a number leaves the default; a number above 1
+means every juror, and 0 or less means one juror.
+
+Lowering it changes what this arbiter commits, not what the network settles: an answer
+from part of a jury can differ from the answers of arbiters that ran all of it, and the
+aggregator clusters the reveals. No installer step sets this variable.
 
 ### The canary fault switch
 

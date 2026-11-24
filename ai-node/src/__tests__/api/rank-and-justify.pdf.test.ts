@@ -18,6 +18,7 @@
 import http from 'http';
 import type { AddressInfo, Socket } from 'net';
 import sharp from 'sharp';
+import { withPartialJury } from '../../../test-support/jury-quorum';
 import {
   DOCX_MEDIA_TYPE,
   buildDocx,
@@ -657,13 +658,14 @@ describe('a provider that turns the PDF down does not cost the juror', () => {
       ? { status: 500, body: { error: { message: 'The server had an error', type: 'server_error' } } }
       : undefined);
 
-    const { status, body } = await evaluate({
+    // A partial jury allowed, so that the response shows what the failed juror was sent.
+    const { status, body } = await withPartialJury(() => evaluate({
       models: [TERRA, SONNET],
       attachments: [dataUri('application/pdf', framesPdf)],
       attachmentNames: ['recording.pdf'],
-    });
+    }));
 
-    expect(status).toBe(200); // one of two jurors is the minimum
+    expect(status).toBe(200);
     const openai = jurorRequests('openai');
     // The SDK's own retries of a 500, each with the file; never the text form.
     expect(openai.length).toBeGreaterThanOrEqual(1);
