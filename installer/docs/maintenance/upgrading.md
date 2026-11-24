@@ -365,6 +365,39 @@ Outside an upgrade, the same tool (installed in the install root):
 up on the new file, puts the backup back and starts it again. The doctor reports
 `cfg.chainlink_template` when template settings are not yet on the node.
 
+### The template the installed tools compare with
+
+The installed tool, the doctor's `cfg.chainlink_template` (it runs that tool) and
+the installed `update-rpc-endpoints.sh` (it writes `config.toml` from a template)
+all read the install's own copy,
+`<install-dir>/chainlink-node/config_template.toml`. Every upgrade replaces that
+copy with the checked-in one.
+
+Upgrades before late November 2026 did not: they put the install's old copy
+back, so a node last upgraded before then still compares with the template of
+its first installation. There the installed `--check` and the doctor can be wrong
+both ways. They can list a change that would undo a newer setting (on the testnet
+canaries: `[EVM.NodePool] SyncThreshold: 100 -> 10`, with `FinalityDepth` shown as
+"this node's own"), or report that nothing is missing when settings are. To tell
+which copy a node has:
+
+```bash
+cmp <checkout>/chainlink-node/config_template.toml ~/verdikta-arbiter-node/chainlink-node/config_template.toml
+```
+
+If they differ, until the node's next upgrade:
+
+- do not run the installed `regenerate-chainlink-config.sh --apply`, and do not
+  act on the doctor's `cfg.chainlink_template` line;
+- do not run the installed `update-rpc-endpoints.sh`: it would write `config.toml`
+  from the old template and drop every setting added since. (With a template from
+  before February 2026 it stops with "config_template.toml not found" instead.)
+  Change the RPCs through the upgrade, which asks;
+- read the node with the checkout's script, which uses the checked-in template:
+  `installer/util/regenerate-chainlink-config.sh --check --target-dir ~/verdikta-arbiter-node`.
+
+The next upgrade repairs the copy; nothing else is needed.
+
 **Verdikta agents** show the owner this list before they upgrade a node: they
 run `installer/util/regenerate-chainlink-config.sh --check --target-dir <install>`
 from the checkout they upgrade from, and answer

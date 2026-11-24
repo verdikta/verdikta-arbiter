@@ -703,6 +703,32 @@ key raises a watchdog alert").
   setting, check that `--check` on an old config lists it; when you remove one
   that installs wrote, add it to `RETIRED`. Doctor: `cfg.chainlink_template`,
   `cfg.chainlink_finality`.
+- **An install has its own copy of the template, and the installed tools read that
+  copy.** `<install>/chainlink-node/config_template.toml` is the first place the
+  installed `regenerate-chainlink-config.sh` looks, so also the doctor's
+  `cfg.chainlink_template` (it runs that script, and its hint is that script's
+  `--apply`), and the installed `update-rpc-endpoints.sh` writes `config.toml`
+  from it. Only the upgrade's own question reads the checkout's. Until 2026-11
+  the upgrade's preserve list for `chainlink-node/` said `*.toml`: written in
+  May 2025 for the rendered `verdikta_job_spec.toml` of a single-arbiter
+  install, it matched the template too, so every upgrade put the install's old
+  one back and an install kept the template of its first installation. On the
+  class-5555 canaries (2026-11-23), right after an upgrade had applied the
+  checked-in template in full, the installed `--check` listed
+  `SyncThreshold: 100 -> 10` against a template of 2026-09-10 and the doctor
+  warned of one setting; on a config the template was never applied to, the
+  same pair says "matches" and PASS. An upgrade now replaces the copy. A node
+  last upgraded before that still has the old one: read it with the checkout's
+  script (`installer/util/regenerate-chainlink-config.sh --check --target-dir
+  <install>`), and do not run its installed `--apply` or
+  `update-rpc-endpoints.sh` (`cmp` the two templates to tell). A preserved file
+  is copied back over the checkout's, so no `upgrade_component` list may match
+  a file the repository ships: `upgrade-chainlink-template.test.sh` runs the
+  real call and holds all five lists to `git ls-files`. The rendered jobs
+  (`chainlink-node/jobs/`) are in no list: they reach the install from the
+  checkout that rendered them (`configure-node.sh` writes there), so an upgrade
+  from another checkout leaves the install without those files. The live jobs
+  are in Chainlink's database either way.
 - **A Chainlink node's RPC bill is per node and set by block count, not by
   work.** Base has 200 ms blocks since 2026-11-05 (Sepolia too): 432,000 a day,
   and every block-count setting is ten times shorter in time than it was. The
