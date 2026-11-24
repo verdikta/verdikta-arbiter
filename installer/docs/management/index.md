@@ -230,8 +230,9 @@ available"), transactions cannot be broadcast, and every service still looks
 "up" from the outside. Each pass it verifies that all four components are
 running (the `cl-postgres` and `chainlink` containers, the AI Node on :3000,
 the External Adapter on :8080), that every check on
-`http://localhost:6688/health` is `passing`, and that no recent "No live RPC
-nodes available" lines appear in the container log.
+`http://localhost:6688/health` is `passing`, that no recent "No live RPC
+nodes available" lines appear in the container log, and that no model provider
+is refusing the node's API key.
 
 The alert subject says which it is: `chainlink container NOT RUNNING` /
 `arbiter components NOT RUNNING: ...` when something is down (after a host
@@ -240,6 +241,23 @@ reboot the body adds how long ago the host booted and whether
 RPC / broadcaster down)` when the container runs but its RPC pool is dead, and
 `arbiter STOPPED by operator (stop-arbiter.sh)` while the `.arbiter-stopped`
 marker that `stop-arbiter.sh` leaves exists (an upgrade or maintenance window).
+
+`model provider REFUSED the API key: <providers>` means everything runs and a
+provider answered the node's key with a 401 or 403 and has not answered a
+request since. It is the doctor's `ai.provider_auth` as an alert. The AI Node
+leaves a failed model out of the aggregation, so requests still succeed, on
+fewer models than the requester asked for: a revoked key on a two-model jury
+makes every verdict one model's. Replace the key in `ai-node/.env.local` (the
+provider's own, or `OPENROUTER_API_KEY` when that class is routed through
+OpenRouter) and restart the AI Node; there is nothing for `--self-heal` to do.
+The provider's own message is in the newest `ai-node/logs/ai-node_*.log`.
+
+The alert is raised from `ai-node/logs/provider-auth.log`, the AI Node's record
+of refusals and of the first answer after one. It clears when the provider
+answers again, when the AI Node is restarted (the record begins again), or when
+`WATCHDOG_AUTH_WINDOW_MINUTES` (default 60) have passed since the last refusal.
+The last of these is not proof that the key works: on a node with few requests
+the alert returns with the next refusal.
 
 ```bash
 # Install a cron entry that runs every 2 minutes

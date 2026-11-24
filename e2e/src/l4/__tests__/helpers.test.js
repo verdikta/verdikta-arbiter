@@ -9,6 +9,7 @@ const {
   releaseCommit,
   commitMatches,
   versionChecks,
+  pdfInputChecks,
 } = require('../helpers');
 
 describe('resolveClassId', () => {
@@ -132,5 +133,50 @@ describe('requestArgs', () => {
     const [cids] = requestArgs(scenario, fees, 128);
     expect(cids).toEqual(scenario.cids);
     expect(cids).not.toBe(scenario.cids);
+  });
+});
+
+describe('pdfInputChecks (the pdf-canary scenario: every juror was sent the PDF itself)', () => {
+  const juror = (provider, model, pdfInputs) => ({ provider, model, status: 'success', ...(pdfInputs && { pdf_inputs: pdfInputs }) });
+  const native = [{ attachment: 'evidence.pdf', form: 'native', pages: 3 }];
+  const report = (cid, modelResults) => ({ cid, version: null, json: modelResults ? { model_results: modelResults } : null });
+
+  it('passes when every juror of every revealing arbiter reports every PDF as native', () => {
+    const [check] = pdfInputChecks([
+      report('QmArbiterOne', [juror('openai', 'gpt-5.6-terra', native), juror('anthropic', 'claude-sonnet-5', native)]),
+      report('QmArbiterTwo', [juror('openai', 'gpt-5.6-terra', native), juror('anthropic', 'claude-sonnet-5', native)]),
+    ], 'native');
+
+    expect(check).toMatchObject({ name: 'pdfInputs.all===native', ok: true });
+    expect(check.detail).toBe(
+      'QmArbite…: openai/gpt-5.6-terra: native; anthropic/claude-sonnet-5: native | ' +
+        'QmArbite…: openai/gpt-5.6-terra: native; anthropic/claude-sonnet-5: native'
+    );
+  });
+
+  it('fails, naming the juror and the reason, when one juror only got the text', () => {
+    const [check] = pdfInputChecks([
+      report('QmArbiterOne', [
+        juror('openai', 'gpt-5.6-terra', native),
+        juror('anthropic', 'claude-sonnet-5', [{ attachment: 'evidence.pdf', form: 'text', pages: 3, reason: 'model' }]),
+      ]),
+    ], 'native');
+
+    expect(check.ok).toBe(false);
+    expect(check.detail).toContain('anthropic/claude-sonnet-5: text (model)');
+  });
+
+  it('fails for a provider that turned the file down, an AI Node from before the field, and a justification that could not be read', () => {
+    const rejected = pdfInputChecks([report('QmA', [juror('openai', 'gpt-5.6-terra', [{ attachment: 'evidence.pdf', form: 'text', reason: 'rejected' }])])], 'native');
+    expect(rejected[0]).toMatchObject({ ok: false });
+    expect(rejected[0].detail).toContain('text (rejected)');
+
+    const old = pdfInputChecks([report('QmB', [juror('openai', 'gpt-5.6-terra')])], 'native');
+    expect(old[0]).toMatchObject({ ok: false });
+    expect(old[0].detail).toContain('openai/gpt-5.6-terra: no pdf_inputs');
+
+    expect(pdfInputChecks([report('QmC', null)], 'native')[0]).toMatchObject({ ok: false, detail: 'QmC…: fetch failed' });
+    expect(pdfInputChecks([{ cid: 'QmD', json: {} }], 'native')[0]).toMatchObject({ ok: false, detail: 'QmD…: no model_results' });
+    expect(pdfInputChecks([], 'native')[0]).toMatchObject({ ok: false, detail: 'no justification CIDs' });
   });
 });

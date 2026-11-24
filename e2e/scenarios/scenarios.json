@@ -48,6 +48,18 @@
     "expectedWinnerIndex": 2
   },
   {
+    "id": "pdf-canary",
+    "description": "PDF canary: the evidence is a three-page PDF whose answer (VIOLET, index 3) and canary code exist only as a picture on page 2, in no text layer (scripts/build-pdf-canary.js). A juror that is sent the PDF itself can name it; a juror that is sent only extracted text can answer CANNOT_SEE at best. expectPdfInputs holds every juror of every revealing arbiter to model_results[].pdf_inputs form 'native'. Source in archives/pdf-canary/; activate by pinning (README, Scenarios). Manual-only: its jury is a paid one (gpt-5.6-terra + claude-sonnet-5, the jury of bounty 398).",
+    "cidFile": "archives/pdf-canary.cid",
+    "manualOnly": true,
+    "modes": [
+      "commit-reveal"
+    ],
+    "minOutcomes": 4,
+    "expectedWinnerIndex": 3,
+    "expectPdfInputs": "native"
+  },
+  {
     "id": "claim-valid",
     "suite": "claim",
     "claim": "valid",

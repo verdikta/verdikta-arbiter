@@ -48,6 +48,8 @@ export interface AttachmentProcessingResult {
   attachment: ProcessedAttachment;
   /** Extraction result details */
   extractionResult?: TextExtractionResult;
+  /** Its index in the attachments passed to processAttachments (some are skipped) */
+  sourceIndex?: number;
 }
 
 export interface ProcessedAttachment {

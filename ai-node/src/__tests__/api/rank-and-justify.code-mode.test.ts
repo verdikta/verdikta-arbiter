@@ -5,6 +5,9 @@
  * tests drive the real route, the real factory and the real timers' logic under
  * jest's fake clock: a juror "taking 479 s" costs no wall time.
  */
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { codeReview } from '@verdikta/common';
 import { POST } from '../../app/api/rank-and-justify/route';
 import { prePromptConfig } from '../../config/prePromptConfig';
@@ -540,5 +543,77 @@ describe('code mode: the report the jury reads', () => {
     expect(a.prompt).toBe(b.prompt);
     expect(a.prompt).toContain(codeReview.canonicalReportJson(report));
     expect(jurorReply(HIGH)).toContain('score');
+  }, 20000);
+});
+
+// A claim that fails is never published: the EA abstains on the status and errorCode alone.
+// The error body still leaves this node, to the EA and its log, so a provider's message in it
+// is redacted like every other (utils/redactProviderText.ts), and the node's own log keeps it whole.
+// PROVIDER_AUTH_FAILED is text mode's line (a failed juror there is left out and the request
+// succeeds; here it ends the request, with CODE_REVIEW_JUROR_FAILED): none is written.
+describe('code mode: a provider\'s message in an error body', () => {
+  // Joined here so that no line of this file is a key.
+  const SK = ['s', 'k', '-'].join('');
+  const BOUNTY_398 = `401 Incorrect API key provided: ${SK}ut1et***...***Zd9U. You can find your API key at https://platform.openai.com/account/api-keys.`;
+  const REDACTED_398 = '401 Incorrect API key provided: <redacted>. You can find your API key at https://platform.openai.com/<redacted>';
+  const WHOLE_KEY = `${SK}ant-api03-${'Ij5-'.repeat(12)}${'Kl6_'.repeat(11)}AA`;
+  let cwd: string;
+
+  const errorLines = () => (console.error as unknown as jest.Mock).mock.calls.map(args => String(args[0]));
+  const authLines = () => errorLines().filter(line => line.includes('PROVIDER_AUTH_FAILED'));
+  function expectNothingOfTheProvider(body: unknown) {
+    const text = JSON.stringify(body);
+    for (const part of [SK, 'ut1et', 'Zd9U', 'api-keys', '***', 'Ij5-', 'Kl6_', 'api03']) expect(text).not.toContain(part);
+  }
+
+  beforeEach(() => {
+    cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'code-mode-redaction-'));
+    jest.spyOn(process, 'cwd').mockReturnValue(cwd);   // logs/ goes there
+  });
+  afterEach(() => {
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+
+  test('a juror whose provider refuses the key: the 400 has the message redacted, the log has it whole', async () => {
+    script({ [GEMINI]: { error: BOUNTY_398, status: 401 }, [LUNA]: { scores: MEDIUM } });
+    const result = await post(codeModeBody());
+    const gemini = codeModeBody().models.find((m: any) => m.model === GEMINI);
+    const juror = `${gemini.provider.trim().toLowerCase()}:${GEMINI}`;
+
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUROR_FAILED', retryable: false, scores: [], justification: '' });
+    expectNothingOfTheProvider(result.body);
+    expect(result.body.error).toBe(`juror ${juror} failed: ${REDACTED_398}; every juror is required in code mode`);
+    expect(result.body.jurors.find((j: any) => j.juror === juror)).toMatchObject({ status: 'failed', message: REDACTED_398, http_status: 401 });
+
+    expect(errorLines()).toContain(`❌ CODE_JUROR_ERROR: ${juror} ${BOUNTY_398}`);
+    expect(authLines()).toEqual([]);
+    expect(fs.existsSync(path.join(cwd, 'logs', 'provider-auth.log'))).toBe(false);
+  }, 20000);
+
+  test('a justifier whose provider refuses the key, with the whole key in its message', async () => {
+    script({ [GEMINI]: { scores: HIGH }, [LUNA]: { scores: HIGH }, [JUSTIFIER]: { error: `401 invalid x-api-key ${WHOLE_KEY}`, status: 401 } });
+    const result = await post(codeModeBody());
+
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ errorCode: 'CODE_REVIEW_JUSTIFIER_FAILED', retryable: false, justification: '' });
+    expectNothingOfTheProvider(result.body);
+    expect(result.body.error).toBe('the justifier failed: 401 invalid x-api-key <redacted>; the arbiter abstains rather than publish a partial justification');
+
+    expect(errorLines()).toContain(`❌ CODE_JUSTIFIER_ERROR: mock:${JUSTIFIER} 401 invalid x-api-key ${WHOLE_KEY}`);
+    expect(authLines()).toEqual([]);
+  }, 20000);
+
+  test('another failure, and a reply that cannot be read: our own words stay whole', async () => {
+    script({ [GEMINI]: { error: 'juror overloaded', status: 529 }, [LUNA]: { scores: MEDIUM } });
+    const overloaded = await post(codeModeBody());
+    expect(overloaded.status).toBe(400);
+    expect(overloaded.body.error).toMatch(/failed: juror overloaded; every juror is required in code mode$/);
+
+    script({ [GEMINI]: { reply: 'no scores here' }, [LUNA]: { scores: MEDIUM } });
+    const unreadable = await post(codeModeBody());
+    expect(unreadable.status).toBe(400);
+    expect(unreadable.body.error).toMatch(/gave no usable scores, also after the repair call; every juror is required in code mode$/);
+
   }, 20000);
 });
