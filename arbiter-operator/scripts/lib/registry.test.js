@@ -216,3 +216,53 @@ test("a lagging RPC backend right after the last send is asked again, not believ
   assert.equal(error, undefined);
   assert.match(logs, /The keeper lists no job id for this operator/);
 });
+
+/* beforeSend: the caller's last word before the first transaction (the owner
+ * wallet's gas check). 2026-11-21: ten deregistrations went through and the
+ * wallet could not pay for what came next. */
+test("beforeSend gets the ids about to be deregistered, once, before the first send", async () => {
+  const k = fakeKeeper([[OP, OLD], [OTHER, THEIRS], [OP, NEW1]]);
+  const seen = [];
+  const { result, sent } = await run(k, {
+    jobIds: [OLD, NEW2], // NEW2 is not registered
+    allRegistered: true,
+    beforeSend: async ({ pending }) => seen.push({ pending: pending.map(jobIdText), registryThen: k.registry.length }),
+  });
+  assert.deepEqual(seen, [{ pending: [OLD, NEW1], registryThen: 3 }]);
+  assert.deepEqual(sent, [OLD, NEW1]);
+  assert.deepEqual(result.skipped.map(jobIdText), [NEW2]);
+});
+
+test("what beforeSend throws ends the run with nothing sent and the registry as it was", async () => {
+  const k = fakeKeeper([[OP, OLD], [OP, NEW1]]);
+  const refusal = Object.assign(new Error("The owner wallet cannot pay"), { code: "OWNER_FUNDS" });
+  const { error, sent, logs } = await run(k, {
+    jobIds: [OLD, NEW1],
+    allRegistered: true,
+    beforeSend: async () => {
+      throw refusal;
+    },
+  });
+  assert.equal(error, refusal);
+  assert.deepEqual(sent, []);
+  assert.equal(k.registry.length, 2);
+  assert.doesNotMatch(logs, /Calling deregisterOracle/);
+});
+
+test("beforeSend is told when nothing is registered, and an unreadable job stops the run before any send", async () => {
+  const none = fakeKeeper([[OTHER, THEIRS]]);
+  const seen = [];
+  await run(none, { jobIds: [OLD], beforeSend: async ({ pending }) => seen.push(pending.length) });
+  assert.deepEqual(seen, [0]);
+
+  const k = fakeKeeper([[OP, OLD], [OP, NEW1]]);
+  const info = k.getOracleInfo;
+  k.getOracleInfo = async (oracle, jobId) => {
+    if (jobId === toBytes32(NEW1)) throw new Error("503 from the endpoint");
+    return info(oracle, jobId);
+  };
+  const { error, sent } = await run(k, { jobIds: [OLD, NEW1], beforeSend: async () => seen.push("called") });
+  assert.match(error.message, /503/);
+  assert.deepEqual(sent, []); // it used to deregister OLD first, then fail on NEW1
+  assert.deepEqual(seen, [0]);
+});

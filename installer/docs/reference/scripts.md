@@ -359,6 +359,24 @@ The owner wallet 0x… holds 0.00014878 ETH and 10 registration(s) can take 0.02
 Fund the wallet and run the script again; job IDs already registered are
 skipped.
 
+`unregister-oracle.sh` makes the same check, and exits 66 when the wallet
+cannot pay. When the deregistration starts a job change, it is told how many
+registrations follow (`--then-register N`, or `VA_DEREGISTER_THEN_REGISTER=N`)
+and checks the whole change before it deregisters anything: the
+deregistrations, the registrations, their approval and the key authorization,
+each at the most gas it can be given. `upgrade-arbiter.sh` passes the number
+for its job-count change and its job regeneration, so a change the wallet
+cannot finish is refused while the node is still registered. The check is an
+upper bound; a change of ten jobs is checked at about 0.0001 ETH and costs
+about a third of that.
+
+If you change the job count by hand (unregister, `configure-node.sh`,
+register), give the number yourself:
+
+```bash
+~/verdikta-arbiter-node/unregister-oracle.sh --all-registered --then-register 10
+```
+
 To pin a price instead, set `VERDIKTA_GAS_PRICE_GWEI` for the command. Use it
 when the RPC endpoint has no `eth_feeHistory`, or when a transaction stays
 pending through a fee spike (a pinned price is sent as a legacy transaction and

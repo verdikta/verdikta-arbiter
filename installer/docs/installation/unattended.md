@@ -114,6 +114,7 @@ The operator tools copied into the install root accept the same flags:
 | `1` | A step failed (see the log) |
 | `3` | `upgrade-arbiter.sh` only: the upgrade itself completed (services restarted, previous job specs preserved) but the job reconfiguration you asked for was cancelled or failed — the last line starts with `RECONFIGURE FAILED:` and says what happened and what to do (usually: run the same count change again). Also when the longer job limits did not land or could not be measured (`JOB TIMEOUTS FAILED:`), or a job regeneration stopped part way (`JOB REGENERATION FAILED:`) |
 | `65` | An unattended answer is missing or was rejected; nothing further was run |
+| `66` | `unregister-oracle.sh` only: the owner wallet cannot pay the gas; one line names the wallet and how much is missing. Inside an upgrade this becomes exit `3` with that line after `RECONFIGURE FAILED:` |
 
 ## Running over SSH
 

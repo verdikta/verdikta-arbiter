@@ -113,6 +113,103 @@ test('a refusal without numbers still names the wallet, with its balance when it
   assert.match(unread.message, /cannot pay the gas for this call\. Fund it/);
 });
 
+// A deregistration says "deregistered", not "registered", in the same sentence.
+test('the sentence ends with what a second run skips: registered, or deregistered', async () => {
+  const short = fakeProvider({ balance: 1n, maxFeePerGas: 10n });
+  await assert.rejects(
+    funds.checkGasBudget({ provider: short, sender: SENDER, calls: [{ count: 1, gas: 300_000 }], configuredGasPrice: 'auto', what: '1 deregistration(s)', rerun: funds.RERUN_DEREGISTER, log: () => {} }),
+    (e) => e.code === funds.OWNER_FUNDS && /run this again: job ids already deregistered are skipped\.$/.test(e.message)
+  );
+  const numbers = await funds.describeRefusedSend({ error: new Error(REFUSAL), provider: short, sender: SENDER, what: 'deregistering job id abc', rerun: funds.RERUN_DEREGISTER });
+  assert.match(numbers.message, /deregistering job id abc can take 0\.00213823 ETH in gas\. Nothing was sent for it\..*already deregistered are skipped\.$/);
+  const bare = await funds.describeRefusedSend({ error: { code: 'INSUFFICIENT_FUNDS' }, provider: fakeProvider({ failBalance: true }), sender: SENDER, what: 'this call', rerun: funds.RERUN_DEREGISTER });
+  assert.match(bare.message, /Fund it and run this again: job ids already deregistered are skipped\.$/);
+  const dflt = await funds.describeRefusedSend({ error: new Error(REFUSAL), provider: short, sender: SENDER, what: 'registering job id abc' });
+  assert.match(dflt.message, /already registered are skipped\.$/);
+});
+
+// The shape of the job change of 2026-11-21, with the check it did not have:
+// ten jobs to deregister, nine to register, at the fixed 5 gwei, and a wallet
+// that can pay for the first half and not for the second.
+test('a job change is checked whole before its first deregistration', async () => {
+  assert.equal(funds.deregistrationBudget({ deregistrations: 0, thenRegister: 0 }), null);
+  assert.deepEqual(funds.deregistrationBudget({ deregistrations: 3 }), { calls: [{ count: 3, gas: 300_000 }], what: '3 deregistration(s)' });
+  const change = funds.deregistrationBudget({ deregistrations: 10, thenRegister: 9 });
+  assert.deepEqual(change.calls, [{ count: 10, gas: 300_000 }, { count: 9, gas: 500_000 }, { count: 1, gas: 100_000 }, { count: 1, gas: 500_000 }]);
+  assert.equal(change.what, '10 deregistration(s) and the 9 registration(s) that follow (with their approval and the key authorization)');
+  // Nothing registered now, registrations to come: still checked.
+  assert.deepEqual(funds.deregistrationBudget({ deregistrations: 0, thenRegister: 2 }).calls[1], { count: 2, gas: 500_000 });
+
+  const startBalance = 20_000_000_000_000_000n; // 0.02 ETH
+  const gas = 10n * 300_000n + 9n * 500_000n + 100_000n + 500_000n;
+  // The deregistrations alone pass at 5 gwei (0.015 ETH at most).
+  await funds.checkGasBudget({ provider: fakeProvider({ balance: startBalance }), sender: SENDER, configuredGasPrice: 5_000_000_000, rerun: funds.RERUN_DEREGISTER, log: () => {}, ...funds.deregistrationBudget({ deregistrations: 10 }) });
+  // The whole change does not, and says so while all ten are still registered.
+  await assert.rejects(
+    funds.checkGasBudget({ provider: fakeProvider({ balance: startBalance }), sender: SENDER, configuredGasPrice: 5_000_000_000, rerun: funds.RERUN_DEREGISTER, log: () => {}, ...change }),
+    (e) => {
+      assert.equal(e.code, funds.OWNER_FUNDS);
+      assert.match(e.message, /holds 0\.02 ETH and 10 deregistration\(s\) and the 9 registration\(s\) that follow \(with their approval and the key authorization\) can take 0\.0405 ETH in gas at the pinned gas price of 5 gwei/);
+      assert.match(e.message, /Nothing was sent for it/);
+      return true;
+    }
+  );
+  // At the network's price the same wallet pays for all of it many times over.
+  const ok = await funds.checkGasBudget({ provider: fakeProvider({ balance: startBalance, maxFeePerGas: 7_382_812n }), sender: SENDER, configuredGasPrice: 'auto', rerun: funds.RERUN_DEREGISTER, log: () => {}, ...change });
+  assert.equal(ok.needed, gas * 7_382_812n);
+  assert.ok(ok.needed * 100n < startBalance);
+});
+
+const read = (rel) => fs.readFileSync(path.resolve(__dirname, '../..', rel), 'utf8');
+
+// The deregistration script: the check is the run's beforeSend, a refusal for
+// funds skips the fallback gas limit, and the exit code is the one the
+// installer reads.
+test('unregister-oracle-cl.js checks the gas money before it sends, and exits 66 when the wallet cannot pay', () => {
+  const source = read('arbiter-operator/scripts/unregister-oracle-cl.js');
+  assert.equal(funds.OWNER_FUNDS_EXIT, 66);
+  assert.match(source, /\.option\("then-register",\s+\{ type: "number",\s+default: 0 \}\)/);
+  assert.match(source, /deregistrationBudget\(\{ deregistrations: pending\.length, thenRegister: argv\["then-register"\] \}\)/);
+  assert.match(source, /configuredGasPrice: hre\.network\.config\.gasPrice/);
+  assert.match(source, /await runDeregistration\(\{[\s\S]{0,200}beforeSend,\s*\}\);/);
+  const stop = source.indexOf('if (isInsufficientFunds(error))');
+  const fallbackNote = source.indexOf('Gas estimation failed, trying with fallback gas limit');
+  assert.ok(stop > 0 && stop < fallbackNote, 'a refusal for funds must stop before the fallback gas limit');
+  assert.match(source, /shown\.code === OWNER_FUNDS[\s\S]{0,160}process\.exit\(OWNER_FUNDS_EXIT\)/);
+  // The shell side of the same number.
+  assert.match(read('installer/bin/upgrade-arbiter.sh'), /\[ "\$unregister_rc" -eq 66 \]/);
+  assert.match(read('installer/bin/upgrade-arbiter.sh'), /\[ "\$dereg_rc" -eq 66 \]/);
+  assert.match(read('installer/util/unregister-oracle.sh'), /exit \$UNREGISTER_RC/);
+});
+
+// Without a limit of its own the approval gets the network's configured `gas`
+// (10,000,000 on Base Sepolia), and the node wants the wallet to hold that much
+// at the max fee: twenty times the budget the check gave it.
+test('the approval is sent with the limit it is budgeted at', () => {
+  const source = read('arbiter-operator/scripts/register-oracle-cl.js');
+  assert.match(source, /verdikta\.approve\(keeperAddr, totalStake, \{ gasLimit: GAS_BUDGET\.approve \}\)/);
+  assert.match(source, /\{ count: pendingJobs\.length, gas: GAS_BUDGET\.register \}/);
+  assert.equal(funds.GAS_BUDGET.approve, 100_000);
+});
+
+// upgrade-arbiter.sh puts register-oracle-cl.js into the install before the
+// job-template check can register with it, ahead of the full copy. Every
+// module the script requires has to go with it.
+test('the upgrade copies the registration script with everything it requires', () => {
+  const upgrade = read('installer/bin/upgrade-arbiter.sh');
+  const early = upgrade.slice(upgrade.indexOf('# Re-registration below must use the admission-aware script'), upgrade.indexOf('# Check for job specification template changes BEFORE component upgrades'));
+  assert.match(early, /cp "\$REPO_ROOT\/arbiter-operator\/scripts\/register-oracle-cl\.js"/);
+  assert.match(early, /cp "\$REPO_ROOT\/arbiter-operator\/scripts\/lib\/"\*\.js "\$TARGET_DIR\/arbiter-operator\/scripts\/lib\/"/);
+  for (const script of ['register-oracle-cl.js', 'unregister-oracle-cl.js']) {
+    const required = [...read(`arbiter-operator/scripts/${script}`).matchAll(/require\("\.\/([^"]+)"\)/g)].map((m) => m[1]);
+    assert.ok(required.includes('lib/funds.js'), script);
+    for (const rel of required) {
+      assert.match(rel, /^lib\/[a-z-]+\.js$/, `${script} requires ${rel}: the upgrade's early copy takes scripts/lib/*.js only`);
+      assert.ok(fs.existsSync(path.resolve(__dirname, '../../arbiter-operator/scripts', rel)), rel);
+    }
+  }
+});
+
 // The registration script: the check runs before the first transaction, and a
 // refusal for funds skips the gas-limit retries that buried it.
 test('register-oracle-cl.js checks the gas money before it sends, and stops on a refusal for funds', () => {

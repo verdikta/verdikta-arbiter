@@ -270,6 +270,15 @@ upgrade finishes, and one of its last lines starts with `RECONFIGURE FAILED:`
 (the count change) or `JOB REGENERATION FAILED:` (the template path), exit
 code 3. Run the same upgrade again once the cause is fixed.
 
+The deregistration first checks that the owner (deployment) wallet holds the
+ETH for the whole change: its own calls, the registrations that follow, their
+approval and the key authorization. If it does not, nothing is deregistered,
+and the `FAILED:` line names the wallet, what it holds and how much is missing.
+Send it that much and run the same upgrade again. For a count change the check
+uses `VA_ARBITER_COUNT` when the answers give it; when the count is asked
+interactively, which happens after the deregistration, it uses 10, the most a
+node can run. See "Gas for the owner wallet's calls" in `reference/scripts.md`.
+
 Before November 2026 only the job IDs in `installer/.contracts` were
 deregistered, and "not registered" for all of them counted as success. A node
 whose file no longer named its registered job was reconfigured anyway, and the

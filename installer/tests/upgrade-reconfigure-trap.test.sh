@@ -65,8 +65,14 @@ EOF
 # read the piped answers so the test can see them arrive.
 cat > "$I/unregister-oracle.sh" <<'STUB'
 #!/bin/bash
-echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-} all=${VA_DEREGISTER_ALL_REGISTERED:-}"
+echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-} all=${VA_DEREGISTER_ALL_REGISTERED:-} then=${VA_DEREGISTER_THEN_REGISTER:-}"
 if [ "${1:-}" != "--unattended" ]; then read -r a; read -r b; read -r c; echo "STUB-UNREGISTER answers=$a,$b,$c"; fi
+# What unregister-oracle-cl.js says when the owner wallet cannot pay for the
+# job change (it exits 66, before the first deregistration).
+if [ -n "${DEREG_FUNDS:-}" ]; then
+    echo "Error during oracle deregistration: The owner wallet 0x00000000000000000000000000000000000000A1 holds 0.0001 ETH and 2 deregistration(s) and the 3 registration(s) that follow (with their approval and the key authorization) can take 0.0135 ETH in gas at the pinned gas price of 5 gwei (VERDIKTA_GAS_PRICE_GWEI). Nothing was sent for it. Send the wallet at least 0.0134 ETH more and run this again: job ids already deregistered are skipped."
+    exit 66
+fi
 echo "Deregistered job-one"
 [ "${DEREG_RC:-0}" = 0 ] && echo "Deregistered job-two"
 # What unregister-oracle-cl.js --all-registered says when the keeper still
@@ -203,6 +209,41 @@ has   "never-registered: config"   "$out" "STUB-CONFIGURE"
 hasnt "never-registered: register" "$out" "STUB-REGISTER"
 has   "never-registered: flags"    "$out" "REACHED-END abort=0 failed=0 rc=0"
 hasnt "never-registered: trap"     "$out" "TRAP-FIRED"
+
+# 10. The owner wallet cannot pay for the whole change (2026-11-21: ten jobs
+#     were deregistered and the wallet could not register their replacements).
+#     unregister-oracle.sh is told how many registrations follow, refuses
+#     before it deregisters anything (exit 66), and the summary carries its line.
+out=$(DEREG_FUNDS=1 VA_ARBITER_COUNT=3 run 0 0 0)
+has   "funds: told the new count"  "$out" "STUB-UNREGISTER args=\[--unattended\] VA_DEREGISTER_ORACLE=y agg=0xAGG all=y then=3$"
+has   "funds: cancelled"           "$out" "job reconfiguration cancelled"
+hasnt "funds: configure"           "$out" "STUB-CONFIGURE"
+hasnt "funds: register"            "$out" "STUB-REGISTER"
+has   "funds: flags"               "$out" "REACHED-END abort=1 failed=1 rc=1"
+has   "funds: summary"             "$out" "SUMMARY=the owner wallet cannot pay the gas for this job change. The owner wallet 0x00000000000000000000000000000000000000A1 holds 0.0001 ETH"
+has   "funds: summary, state"      "$out" "skipped. Deregistered 0 of 2 job(s); the job specs are unchanged and every job id still registered keeps its stake. Fund the wallet and run the same count change again$"
+hasnt "funds: trap"                "$out" "TRAP-FIRED"
+has   "funds: exit 0"              "$out" "rc=0"
+#     Interactive: the new count is asked later, by configure-node.sh, so the
+#     check takes the most it allows.
+out=$(DEREG_FUNDS=1 run 0 0 0 "")
+has   "funds/tty: the maximum"     "$out" "STUB-UNREGISTER args=\[\] VA_DEREGISTER_ORACLE= agg= all=y then=10$"
+has   "funds/tty: summary"         "$out" "SUMMARY=the owner wallet cannot pay the gas for this job change"
+hasnt "funds/tty: trap"            "$out" "TRAP-FIRED"
+#     The count the answers give, or the maximum; none when no registration follows.
+out=$(VA_ARBITER_COUNT=10 run 0 0 0);  has "then: 10"            "$out" "all=y then=10$"
+out=$(VA_ARBITER_COUNT=1 run 0 0 0);   has "then: 1"             "$out" "all=y then=1$"
+out=$(run 0 0 0);                      has "then: unknown → 10"  "$out" "all=y then=10$"
+out=$(VA_ARBITER_COUNT=11 run 0 0 0);  has "then: not a count → 10" "$out" "all=y then=10$"
+out=$(VA_ARBITER_COUNT=4 CONTRACTS_EDIT="$INACTIVE" run 0 0 0)
+has   "then: inactive → 0"         "$out" "all=y then=0$"
+out=$(VA_ARBITER_COUNT=4 VA_REGISTER_ORACLE=y CONTRACTS_EDIT="$INACTIVE" run 0 0 0)
+has   "then: inactive, asked → 4"  "$out" "all=y then=4$"
+out=$(VA_ARBITER_COUNT=4 VA_REGISTER_ORACLE=n run 0 0 0)
+has   "then: declined → 0"         "$out" "all=y then=0$"
+#     Any other failure keeps its own summary.
+out=$(VA_ARBITER_COUNT=3 run 1 0 0)
+has   "then: other failure"        "$out" "SUMMARY=deregistered 1 of 2 job(s) before the dispatcher call failed"
 
 # The pattern itself: the block's code (comments aside) must not rely on
 # `set +e` around the three calls.

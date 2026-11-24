@@ -66,5 +66,33 @@ out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=y); rc=$?
 d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); printf '#!/bin/bash\necho "FAKE node $*"; exit 1\n' > "$d/bin/node"
 out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=y); rc=$?
 [ "$rc" != "0" ] && ! grep -q 'AGGREGATOR_REGISTRATION_ACTIVE="false"' "$d/installer/.contracts" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 9: rc=$rc $out" | tail -3; }
+# 10. --then-register / VA_DEREGISTER_THEN_REGISTER: the number of registrations
+#     that follow, for the owner wallet's gas check. Passed on only when asked.
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d" VA_DEREGISTER_ORACLE=y)
+! echo "$out" | grep -q -- "--then-register" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 10a: $out" | tail -5; }
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_THEN_REGISTER=9)
+echo "$out" | grep -q "FAKE node .*--jobids $JOB --all-registered --then-register 9$" && echo "$out" | grep -q "the 9 registration(s) that follow" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 10b: $out" | tail -5; }
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_THEN_REGISTER=0)
+! echo "$out" | grep -q -- "--then-register" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 10c: $out" | tail -5; }
+#     the flag, and the flag over the variable
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(cd "$d" && env VA_DEREGISTER_ORACLE=y VA_DEREGISTER_THEN_REGISTER=3 HOME="$d" PATH="$d/bin:$PATH" VERDIKTA_UNATTENDED= bash ./unregister-oracle.sh --unattended --then-register 10 2>&1)
+echo "$out" | grep -q "FAKE node .*--jobids $JOB --then-register 10$" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 10d: $out" | tail -5; }
+#     interactive, as upgrade-arbiter.sh pipes it: read there too, no new prompt
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(cd "$d" && printf 'y\n%s\ny\n' "$REC" | env VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_THEN_REGISTER=08 HOME="$d" PATH="$d/bin:$PATH" VERDIKTA_UNATTENDED= bash ./unregister-oracle.sh 2>&1)
+echo "$out" | grep -q "FAKE node .*--all-registered --then-register 8$" && echo "$out" | grep -q "completed successfully" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 10e: $out" | tail -5; }
+#     not a number: refused before anything runs
+for bad in abc -1 1.5 100 "3 4"; do
+    d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); out=$(run "$d" VA_DEREGISTER_ORACLE=y "VA_DEREGISTER_THEN_REGISTER=$bad"); rc=$?
+    [ "$rc" = "1" ] && echo "$out" | grep -q "must be a number from 0 to 99" && ! echo "$out" | grep -q "FAKE node scripts/" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 10f [$bad]: rc=$rc $out" | tail -3; }
+done
+# 11. The deregistration's exit code is this script's: 66 is "the owner wallet
+#     cannot pay" and upgrade-arbiter.sh reads it. The failure is said, and
+#     .contracts is not marked inactive.
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); printf '#!/bin/bash\necho "FAKE node $*"; exit 66\n' > "$d/bin/node"
+out=$(run "$d" VA_DEREGISTER_ORACLE=y VA_DEREGISTER_ALL_REGISTERED=y VA_DEREGISTER_THEN_REGISTER=2); rc=$?
+[ "$rc" = "66" ] && echo "$out" | grep -q "Oracle unregistration failed" && ! grep -q 'AGGREGATOR_REGISTRATION_ACTIVE="false"' "$d/installer/.contracts" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 11a: rc=$rc $out" | tail -3; }
+d=$(mk "AGGREGATOR_ADDRESS=\"$REC\""); printf '#!/bin/bash\necho "FAKE node $*"; exit 1\n' > "$d/bin/node"
+out=$(run "$d" VA_DEREGISTER_ORACLE=y); rc=$?
+[ "$rc" = "1" ] && echo "$out" | grep -q "Oracle unregistration failed" && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL 11b: rc=$rc $out" | tail -3; }
 echo "pass=$pass fail=$fail"
 [ "$fail" = "0" ]

@@ -33,14 +33,7 @@ const yargs = require("yargs/yargs");
 const { hideBin } = require("yargs/helpers");
 const { createInFlightGuard } = require("./lib/inflight.js");
 const { ensureRequestAuthorization, OperatorAuthorizationABI } = require("./lib/request-authorization.js");
-const { OWNER_FUNDS, checkGasBudget, isInsufficientFunds, describeRefusedSend } = require("./lib/funds.js");
-
-/* The most gas one call below is given, for the check that the owner wallet
-   can pay for all of them before any is sent. registerOracle is estimated per
-   call (about 360,000 with 30 identities in the keeper's registry, which it
-   walks) and falls back to 500,000. */
-const REGISTER_GAS_BUDGET = 500_000;
-const APPROVE_GAS_BUDGET  = 100_000;
+const { OWNER_FUNDS, GAS_BUDGET, checkGasBudget, isInsufficientFunds, describeRefusedSend } = require("./lib/funds.js");
 
 /* ------------------------------------------------------------------- */
 /* Minimal ABIs                                                        */
@@ -188,14 +181,18 @@ const toBytes32 = (id) => {
       configuredGasPrice: hre.network.config.gasPrice,
       what: `${pendingJobs.length} registration(s)`,
       calls: [
-        { count: pendingJobs.length, gas: REGISTER_GAS_BUDGET },
-        { count: allow < totalStake ? 1 : 0, gas: APPROVE_GAS_BUDGET },
+        { count: pendingJobs.length, gas: GAS_BUDGET.register },
+        { count: allow < totalStake ? 1 : 0, gas: GAS_BUDGET.approve },
       ],
     });
 
     if (allow < totalStake) {
       console.log(`Approving ${ethers.formatEther(totalStake)} wVDKA…`);
-      await (await verdikta.approve(keeperAddr, totalStake)).wait();
+      /* An explicit limit: without one the signer gives the call the
+         network's configured `gas` (10,000,000 on Base Sepolia), and the node
+         wants the wallet to hold that much gas at the max fee before it takes
+         the transaction. */
+      await (await verdikta.approve(keeperAddr, totalStake, { gasLimit: GAS_BUDGET.approve })).wait();
     }
 
     /* Register each pending job ID ----------------------------------- */

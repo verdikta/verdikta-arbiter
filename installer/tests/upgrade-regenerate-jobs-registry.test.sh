@@ -42,7 +42,7 @@ setup() {
     printf '#!/bin/bash\necho "OLD-UNREGISTER (the install'"'"'s stale copy ran)"\nexit 0\n' > "$I/unregister-oracle.sh"
     cat > "$SRC/util/unregister-oracle.sh" <<'STUB'
 #!/bin/bash
-echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-} all=${VA_DEREGISTER_ALL_REGISTERED:-}"
+echo "STUB-UNREGISTER args=[$*] VA_DEREGISTER_ORACLE=${VA_DEREGISTER_ORACLE:-} agg=${VA_AGGREGATOR_ADDRESS:-} all=${VA_DEREGISTER_ALL_REGISTERED:-} then=${VA_DEREGISTER_THEN_REGISTER:-}"
 if [ "${1:-}" != "--unattended" ]; then read -r a; read -r b; read -r c; echo "STUB-UNREGISTER answers=$a,$b,$c"; fi
 exit "${DEREG_RC:-0}"
 STUB
@@ -110,6 +110,26 @@ out=$(run 1 "")
 hasnt "tty-fails: configure"  "$out" "STUB-CONFIGURE"
 has   "tty-fails: end"        "$out" "REACHED-END rc=1 failed=\[deregistration failed"
 hasnt "tty-fails: trap"       "$out" "TRAP-FIRED"
+
+# 3b. The regenerated jobs are registered again, as many as there are now: the
+#     deregistration is told so (it checks the owner wallet's ETH against both
+#     halves before it sends anything). Exit 66 is its "the wallet cannot pay".
+out=$(run 0)
+has   "then: one job"         "$out" "all=y then=1$"
+out=$(run 0 "")
+has   "then/tty: one job"     "$out" "all=y then=1$"
+out=$(run 66)
+has   "funds: said so"        "$out" "The owner wallet cannot pay the gas for replacing the jobs"
+hasnt "funds: not the other"  "$out" "Regenerating the jobs now would strand the stake"
+hasnt "funds: configure"      "$out" "STUB-CONFIGURE"
+hasnt "funds: register"       "$out" "STUB-REGISTER"
+has   "funds: end"            "$out" "REACHED-END rc=1 failed=\[the owner wallet cannot pay the gas for deregistering the current jobs and registering their replacements"
+has   "funds: what to do"     "$out" "Fund the wallet and run the upgrade again\]"
+hasnt "funds: trap"           "$out" "TRAP-FIRED"
+has   "funds: exit 0"         "$out" "exit=0"
+out=$(run 66 "")
+has   "funds/tty: end"        "$out" "REACHED-END rc=1 failed=\[the owner wallet cannot pay the gas"
+hasnt "funds/tty: trap"       "$out" "TRAP-FIRED"
 
 # 4. No unregister script anywhere: the stake cannot be released, so nothing is regenerated.
 NO_UNREGISTER=1

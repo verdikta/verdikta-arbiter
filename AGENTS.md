@@ -806,8 +806,17 @@ key raises a watchdog alert").
   config file itself because `configure-node.sh` and `deploy-contracts.sh` copy
   that file alone into a build directory. `register-oracle-cl.js` checks the
   wallet against the calls it is about to send (`scripts/lib/funds.js`) and stops
-  on a refusal for funds instead of retrying gas limits. Tests:
-  `hardhat-gas-price.test.cjs`, `owner-funds.test.cjs`.
+  on a refusal for funds instead of retrying gas limits. A job change is checked
+  whole before its first deregistration: `upgrade-arbiter.sh` passes
+  `VA_DEREGISTER_THEN_REGISTER=<new count>` (10 when the count is still to be
+  asked), `unregister-oracle-cl.js --then-register` checks the deregistrations,
+  the registrations, their approval and the key authorization in
+  `runDeregistration`'s `beforeSend`, and exits 66, which the upgrade turns into
+  its `FAILED:` line. A send with no `gasLimit` gets the network's configured
+  `gas` (10,000,000 on Base Sepolia) and the node wants the wallet to hold that
+  much at the max fee, so give an owner-wallet call a limit of its own, as the
+  approval has. Tests: `hardhat-gas-price.test.cjs`, `owner-funds.test.cjs`,
+  `registry.test.js`.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a
