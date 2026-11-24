@@ -843,6 +843,14 @@ key raises a watchdog alert").
   much at the max fee, so give an owner-wallet call a limit of its own, as the
   approval has. Tests: `hardhat-gas-price.test.cjs`, `owner-funds.test.cjs`,
   `registry.test.js`.
+- **`arbiter-operator` has no lockfile, so a dependency range is what an install gets
+  that day.** Hardhat 2.30.0 (2026-11-24) needs Node 22: its native module's
+  platform package declares the engine, npm on Node 20 skips an optional
+  dependency like that silently, and `hardhat test` ends in "Cannot find native
+  binding" (compile and HTTP-network scripts still ran). Operators are on Node
+  20.18, so `hardhat` is held at `>=2.23.0 <2.30.0`
+  (`hardhat-gas-price.test.cjs`); raise the bound only together with the Node
+  version the installer installs.
 - **`lsof -i:<port>` can be blind to the AI Node.** Next.js titles its process
   "next-server (v14.2.5)"; the kernel keeps 15 characters as comm,
   "next-server (v1", and lsof 4.93.2 (Ubuntu 20.04, the canary host) drops a

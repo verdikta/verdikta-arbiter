@@ -87,3 +87,16 @@ test('the config requires nothing of ours', () => {
     assert.match(text, /cp "\$ARBITER_OPERATOR_SRC_DIR\/hardhat\.config\.js"/, `${script} no longer copies the config alone: this pin can go`);
   }
 });
+
+// Hardhat 2.30.0 (2026-11-24) needs Node 22: its native module's platform
+// package declares that engine, npm on Node 20 skips it without a word, and
+// `hardhat test` then dies with "Cannot find native binding". The installer
+// puts operators on Node 20.18 and there is no lockfile here, so an open range
+// took the new release the day it was published.
+test('Hardhat stays on a release that runs on the Node the installer installs', () => {
+  const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../arbiter-operator/package.json'), 'utf8'));
+  const range = pkg.devDependencies.hardhat;
+  const upper = /<\s*2\.(\d+)\.0\b/.exec(range);
+  assert.ok(upper && Number(upper[1]) <= 30, `hardhat "${range}" has no upper bound below 2.30.0: raise it only together with the Node version in installer/bin/setup-environment.sh and the workflows`);
+  assert.doesNotMatch(range, /^[\^~]/, range);
+});
