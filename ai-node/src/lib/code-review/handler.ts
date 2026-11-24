@@ -25,6 +25,7 @@ import { buildClaimPrompt, buildCodeJustifierPrompt, PackFile } from './claim-pr
 import { JUSTIFIER_RESERVE_MS, justifierBudgetMs, planCodeReviewTimes } from './deadline';
 import { CODE_JUROR_EFFORT, CodeJuror, JurorResult, justifierModel, roundToTotal, runCodeJury, runCodeJustifier, weightedVector } from './jury';
 import { NO_HOLDS, canaryFaultState, holdsFor, readCanaryDirective } from './canary-fault';
+import { redactProviderText } from '../../utils/redactProviderText';
 
 export const CODE_REVIEW_ERRORS = {
   INVALID: 'CODE_REVIEW_INVALID',
@@ -163,7 +164,9 @@ export async function handleCodeReviewRequest(body: Record<string, unknown>, rec
   try {
     return await judge(body, receivedAt);
   } catch (error: any) {
-    return errorResponse('INTERNAL', `code review failed unexpectedly: ${error?.message || String(error)}`);
+    // Not expected to be a provider's text, and not assumed to be ours: the whole message is logged here.
+    console.error('❌ CODE_REVIEW_INTERNAL (unredacted):', error);
+    return errorResponse('INTERNAL', `code review failed unexpectedly: ${redactProviderText(error?.message || String(error))}`);
   }
 }
 

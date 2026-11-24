@@ -1,0 +1,12 @@
+{
+  "query": "PDF CANARY. The accompanying evidence (reference 'evidence') is a three-page PDF. Its second page is a picture that states an answer and a canary code. Put all the weight on the outcome the picture names (AMBER, COBALT or VIOLET), and quote the picture's 'CANARY CODE' in your justification. Judge CANNOT_SEE only if the picture on page 2 is not shown to you, and say so. Never pick a colour you did not read in the picture.",
+  "references": [
+    "evidence"
+  ],
+  "outcomes": [
+    "CANNOT_SEE",
+    "AMBER",
+    "COBALT",
+    "VIOLET"
+  ]
+}

@@ -3,6 +3,14 @@
 # Verdikta Arbiter Node - Standalone Oracle Unregistration Script
 # Unregisters the oracle from dispatcher (aggregator) contracts
 # This script can be run multiple times to unregister from different dispatchers
+#
+# The job ids come from installer/.contracts. --all-registered (or
+# VA_DEREGISTER_ALL_REGISTERED=y) also deregisters every other job id the
+# dispatcher's keeper lists for this operator contract and fails unless it
+# lists none afterwards: upgrade-arbiter.sh passes it before it replaces the
+# node's jobs, so a registered job that .contracts no longer names cannot be
+# left behind with its 100 wVDKA stake (it was, on Base mainnet, 2026-11-11).
+# Without it such job ids are reported and left alone.
 
 set -e  # Exit on any error
 
@@ -33,14 +41,20 @@ _load_prompts_lib() {
 }
 ANSWERS_FILE=""
 UNATTENDED_REQUESTED=false
+ALL_REGISTERED=false
 while [[ $# -gt 0 ]]; do
     case $1 in
         --answers|-a) shift; [ -z "${1:-}" ] && { echo "--answers requires a file argument"; exit 1; }; ANSWERS_FILE="$1"; shift ;;
         --unattended) UNATTENDED_REQUESTED=true; shift ;;
+        --all-registered) ALL_REGISTERED=true; shift ;;
         --help|-h)
-            echo "Usage: $0 [--answers FILE | --unattended]"
-            echo "  --answers FILE   answer every prompt from FILE (VA_* KEY=value lines)"
-            echo "  --unattended     answer every prompt from VA_* environment variables"
+            echo "Usage: $0 [--answers FILE | --unattended] [--all-registered]"
+            echo "  --answers FILE    answer every prompt from FILE (VA_* KEY=value lines)"
+            echo "  --unattended      answer every prompt from VA_* environment variables"
+            echo "  --all-registered  also deregister every other job id the dispatcher lists for"
+            echo "                    this operator contract (one that installer/.contracts no"
+            echo "                    longer names), and fail unless none is left"
+            echo "                    (same as VA_DEREGISTER_ALL_REGISTERED=y)"
             exit 0 ;;
         *) echo "Unknown option: $1 (see --help)"; exit 1 ;;
     esac
@@ -69,6 +83,11 @@ elif [ "$UNATTENDED_REQUESTED" = "true" ]; then
     export VERDIKTA_UNATTENDED=1
     VERDIKTA_UNATTENDED=1
 fi
+# Read after the answers file, so the file can set it too. Not a prompt: the
+# callers that pipe answers (upgrade-arbiter.sh, interactive) pass it the same way.
+case "$(printf '%s' "${VA_DEREGISTER_ALL_REGISTERED:-}" | tr '[:upper:]' '[:lower:]')" in
+    y|yes|true|1) ALL_REGISTERED=true ;;
+esac
 ARBITER_OPERATOR_DIR="$INSTALL_DIR/arbiter-operator"
 CONTRACTS_FILE="$INSTALL_DIR/installer/.contracts"
 
@@ -148,16 +167,20 @@ if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ] && [ -n "$JOB_ID_NO_HYPHENS" ]; then
     fi
 fi
 
-# Validate we have at least one job ID
-if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ]; then
+# Validate we have at least one job ID (with --all-registered the keeper's own
+# list is enough: it is what holds the stake)
+if [ ${#JOB_IDS_AVAILABLE[@]} -eq 0 ] && [ "$ALL_REGISTERED" != "true" ]; then
     echo -e "${RED}Error: No valid job IDs found in contracts file${NC}"
     echo -e "${RED}Please ensure jobs have been created successfully${NC}"
     exit 1
 fi
 
 # Use ALL job IDs for unregistration (space-separated)
-UNREGISTRATION_JOB_IDS=$(printf '"%s" ' "${JOB_IDS_AVAILABLE[@]}")
-UNREGISTRATION_JOB_IDS=${UNREGISTRATION_JOB_IDS% }  # Remove trailing space
+UNREGISTRATION_JOB_IDS=""
+if [ ${#JOB_IDS_AVAILABLE[@]} -gt 0 ]; then
+    UNREGISTRATION_JOB_IDS=$(printf '"%s" ' "${JOB_IDS_AVAILABLE[@]}")
+    UNREGISTRATION_JOB_IDS=${UNREGISTRATION_JOB_IDS% }  # Remove trailing space
+fi
 
 # Verify required environment variables
 if [ -z "$PRIVATE_KEY" ]; then
@@ -194,6 +217,9 @@ for i in "${!JOB_IDS_AVAILABLE[@]}"; do
 done
 echo -e "${BLUE}Unregistration job IDs (space-separated): $UNREGISTRATION_JOB_IDS${NC}"
 echo -e "${BLUE}Total jobs to unregister: ${#JOB_IDS_AVAILABLE[@]}${NC}"
+if [ "$ALL_REGISTERED" = "true" ]; then
+    echo -e "${BLUE}Plus every other job id the dispatcher lists for this operator contract (--all-registered).${NC}"
+fi
 echo ""
 
 # List saved dispatcher info (kept after unregister for reference)
@@ -305,8 +331,11 @@ fi
 UNREGISTER_CMD="HARDHAT_NETWORK=$DEPLOYMENT_NETWORK node scripts/unregister-oracle-cl.js \
   --aggregator $NEW_AGGREGATOR_ADDRESS \
   --oracle $OPERATOR_ADDR \
-  --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS \
+  --wrappedverdikta $WRAPPED_VERDIKTA_ADDRESS"
+[ -n "$UNREGISTRATION_JOB_IDS" ] && UNREGISTER_CMD="$UNREGISTER_CMD \
   --jobids $UNREGISTRATION_JOB_IDS"
+[ "$ALL_REGISTERED" = "true" ] && UNREGISTER_CMD="$UNREGISTER_CMD \
+  --all-registered"
 
 # Display the command and ask for confirmation
 echo ""
@@ -314,6 +343,7 @@ echo -e "${BLUE}Unregistration Summary:${NC}"
 echo -e "  Aggregator Address: $NEW_AGGREGATOR_ADDRESS"
 echo -e "  Oracle Address:     $OPERATOR_ADDR"
 echo -e "  Total Jobs:         ${#JOB_IDS_AVAILABLE[@]}"
+[ "$ALL_REGISTERED" = "true" ] && echo -e "  Also:               every other job id registered for this operator contract"
 echo ""
 echo -e "${BLUE}The following command will be executed:${NC}"
 echo "$UNREGISTER_CMD"

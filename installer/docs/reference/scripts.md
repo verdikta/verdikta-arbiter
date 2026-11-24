@@ -315,10 +315,22 @@ Standalone oracle registration script.
 
 ### unregister-oracle.sh
 
-Unregisters oracle from the dispatcher.
+Unregisters oracle from the dispatcher: the job IDs in `installer/.contracts`
+are deregistered and their stake (100 wVDKA each) is refunded to the operator
+contract's owner. Any other job ID the dispatcher lists for the operator
+contract is named in the output and left alone.
 
 ```bash
 ~/verdikta-arbiter-node/unregister-oracle.sh
+```
+
+`--all-registered` (unattended: `VA_DEREGISTER_ALL_REGISTERED=y`) deregisters
+those other job IDs too and fails unless the dispatcher lists none afterwards.
+`upgrade-arbiter.sh` uses it before it replaces a node's jobs; see
+"Stake and replaced jobs" in `maintenance/upgrading.md`.
+
+```bash
+~/verdikta-arbiter-node/unregister-oracle.sh --all-registered
 ```
 
 ---

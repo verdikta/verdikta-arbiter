@@ -4,7 +4,9 @@
 #
 # The AI Node, External Adapter and Code Runner write timestamped nohup logs
 # (ai-node/logs/ai-node_*.log, external-adapter/logs/adapter_*.log,
-# code-runner/logs/runner_*.log) plus ai-node/logs/llm-interactions.log, with no rotation. This tool bounds them:
+# code-runner/logs/runner_*.log) plus ai-node/logs/llm-interactions.log and
+# ai-node/logs/provider-auth.log (which providers refuse the API key, read by
+# the watchdog; begun again at each AI Node start), with no rotation. This tool bounds them:
 #
 #   1. Compress finished (not currently open) *.log files older than 1 day.
 #   2. Delete compressed archives older than RETENTION_DAYS (default 14).

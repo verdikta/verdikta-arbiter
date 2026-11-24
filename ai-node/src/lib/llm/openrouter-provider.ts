@@ -2,6 +2,7 @@ import { CallControlOptions, LLMProvider } from './llm-provider-interface';
 import { resolveOpenRouterModelId } from '../../config/openrouter-models';
 import { jurorTransportFor, withDispatcher } from './juror-transport';
 import { isGpt5FamilyModel } from './openai-model-family';
+import { ProviderAttachment, partitionAttachments, withNotShownNote } from './provider-attachments';
 
 const SUPPORTED_IMAGE_FORMATS = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
 const MAX_FILE_SIZE = 20 * 1024 * 1024;
@@ -83,10 +84,19 @@ export class OpenRouterProvider implements LLMProvider {
   async generateResponseWithAttachments(
     prompt: string,
     model: string,
-    attachments: Array<{ type: string; content: string; mediaType: string }>,
+    attachments: ProviderAttachment[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
-    const attachmentContent = attachments.map(attachment => {
+    // This request carries images and text. A file that was not turned into text (a
+    // PDF sent as itself) used to go out as if its base64 were its text; now the
+    // prompt says it is not shown. The route sends this provider a PDF's text instead.
+    const { inline, notShown } = partitionAttachments(attachments, false);
+    if (notShown.length > 0) {
+      console.warn(`[${this.providerName}] ${notShown.length} attachment(s) cannot be sent to ${model}; the prompt says so`);
+      prompt = withNotShownNote(prompt, notShown, `${this.providerName} ${model}`);
+    }
+
+    const attachmentContent = inline.map(attachment => {
       if (attachment.type === 'image') {
         if (!SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
           throw new Error(`[${this.providerName}] Unsupported image format: ${attachment.mediaType}`);

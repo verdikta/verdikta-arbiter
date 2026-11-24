@@ -88,6 +88,64 @@ Insufficient successful models: {successful}/{total} (minimum required: {min}). 
 
 ---
 
+## Provider text in a response
+
+The External Adapter publishes `justification`, `model_results` and `warnings`
+on IPFS, and in mode 0 the `error` of a 400. A provider's error message can
+quote the operator's API key (one of bounty 398's records holds OpenAI's 401
+with the key, masked by OpenAI, in three fields), a response body, a URL with a
+key in its query, or a request id. So no provider message enters a response as
+it came (`src/utils/redactProviderText.ts`):
+
+| Field | What it holds for a failed model |
+|---|---|
+| `model_results[].error_message`, the `warnings[].message` built from it, each `{reason}` of the 400's `error` | The provider's message, redacted: `401 Incorrect API key provided: <redacted>. You can find your API key at https://platform.openai.com/<redacted>` |
+| `model_results[].error_type`, `http_status`, `error_code` | As before. |
+| `justification` (the `From model X:` line the justifier reads and the fallback returns, and `Error generating consolidated justification: ...` when the justifier itself fails) | The record's words for a juror with no score, from `error_type`, `http_status` and the duration: `Model timed out or failed: authentication error (HTTP 401)`, `... timed out after 120 s` (`jurorFailure`, `src/utils/resultRecord.ts`). |
+| The `error` of a 500 | Redacted as a whole. |
+
+Redaction is the installer doctor's `redact_log` (a URL keeps its scheme and
+host; `key=`/`token=` values, quoted `...key:` values, `Bearer` values and JWTs
+become `<redacted>`), then what a public record needs beyond a log: `sk-...` and
+`xai-...` keys, a key a provider masked with asterisks, any long opaque token
+(request and organization ids, hashes), and a limit of 500 characters per
+message. The unredacted message is in the AI Node's own log and nowhere else.
+In code mode the error body (`error`, `jurors[].message`) is redacted the same
+way; the EA abstains on its status and `errorCode` and publishes none of it.
+
+A provider that refuses the node's key is one fixed line in the log per
+refusal, with nothing the provider said in it; the doctor's `ai.provider_auth`
+reads it:
+
+```
+🔑 PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
+```
+
+It is logged for what the route types as authentication or authorization (a
+`status` of 401 / 403), and also for a refusal that typing cannot see: the
+providers reached through fetch (xAI, Hyperbolic, OpenRouter) put the status in
+the message only (`[OpenRouter] HTTP 401: ...User not found`, typed
+`model_not_found`), and xAI answers a bad key with a 400. `http_status` in the
+line is then the one the message states; `model_results[].http_status` and
+`error_type` stay as typed. Text mode only.
+
+The cron watchdog alerts on the doctor's condition (a provider that refused the
+key and has not answered since) from a record of its own,
+`logs/provider-auth.log`, because the main log has no times and prints prompts
+and replies as they come:
+
+```
+2026-11-23T20:35:41.078Z PROVIDER_AUTH_FAILED: provider=OpenAI model=gpt-4o role=juror http_status=401
+2026-11-23T21:02:10.412Z PROVIDER_AUTH_OK: provider=OpenAI
+```
+
+One line per refusal, and one for the first answer after a refusal. Provider
+and model are written without spaces; `http_status` is `unknown` when there is
+none. `start.sh` removes the file (`src/lib/llm/provider-auth.ts`,
+`installer/util/chainlink-health-watchdog.sh`).
+
+---
+
 ## Image Attachments
 
 Before any model is called, every image attachment is fitted to the providers'
@@ -117,6 +175,145 @@ A provider that still rejects an image is reported with `error_type: "invalid_im
 
 Optional request fields: `attachmentNames` (file names, index-aligned with
 `attachments`, used in those lines) and `requestTag` (an id for log lines).
+
+---
+
+## Document Attachments
+
+A juror sees only the blocks it is sent, so every document it does not see as it
+was delivered gets a line in the same "Notes on the attachments" section of the
+prompt (`documentNotes`, `src/utils/attachment-processor.ts`). A request whose
+documents are all shown whole has no such line.
+
+| What happened | The line in the prompt | In the response |
+| --- | --- | --- |
+| The arbiter could not read the file (a PDF with no text layer, a damaged or protected document) | `Attachment <name> (PDF, 16.3 MB) was delivered with this request, but the arbiter could not read it, so its content is not shown to you. The file is not missing from the request.` | a warning, below |
+| A PDF was read through text extraction | `Attachment <name> is a PDF. Only its text is shown to you (12,898 characters); pictures and page images inside the PDF are not shown.` | none |
+| Text was cut at a limit (50,000 characters of plain text, 100,000 of extracted text) | `Attachment <name> is long: only the first 50,000 of its 51,234 characters are shown to you.` | none |
+
+```json
+"warnings": [
+  { "type": "attachment_skipped", "severity": "warning",
+    "message": "Attachment 9: PDF processing failed: ...",
+    "details": { "attachment": "submission/R4.pdf", "media_type": "application/pdf" } }
+]
+```
+
+`message` keeps the technical cause for the operator; the number in it counts the
+attachments as they were sent to the models (the parts of a split image count
+one each), so `details.attachment` names the file. The prompt line gives no
+cause: a juror cannot act on one, and before these lines existed a dropped PDF was
+reported by both jurors of a bounty as a file the submitter had not included.
+
+PDF text is read with `pdf-parse` alone; a host needs no `pdftotext`. These lines
+are each juror's own: a juror that is sent a PDF itself (next section) sees its
+pages and gets no line about it, in the same request in which another juror,
+sent the text, does.
+
+---
+
+## PDF Attachments (`model_results[].pdf_inputs`)
+
+A PDF reaches each juror in the best form that juror can read
+(`src/lib/attachments/pdfRouting.ts`). A juror whose provider, model and route
+read PDFs natively (`src/lib/llm/pdf-support.ts`: OpenAI and Anthropic on their
+own keys; Claude 3.5 and later, GPT-5 and later, GPT-4o) is sent the file itself: the model gets each page's
+text and an image of the page, so it sees pictures, charts and scans. Any other
+juror is sent the text extracted from the PDF and the "Only its text is shown to
+you" line above. Every other document (DOCX, DOC, RTF, ...) is its extracted
+text for every juror.
+
+| For one juror | What it is sent | The line in its prompt |
+| --- | --- | --- |
+| It reads PDFs and the request stays inside the provider's limits | The file | none |
+| Its provider, model or route is sent text (xAI, Hyperbolic, any class routed through OpenRouter, an older model, and GPT-4.1 and the o-series, whose file request this node does not build yet) | The extracted text | `Attachment <name> is a PDF. Only its text is shown to you (12,898 characters); pictures and page images inside the PDF are not shown.` |
+| The file would put its request over a limit: 100 PDF pages per request for both providers, counted with the images for Claude; 20 MB for a whole Claude request, 32 MB of files for OpenAI | The extracted text | the same line, then `The file itself was not sent: its 240 pages would put this request over the 100 PDF pages a request to this model may hold.` |
+| Its provider answered 400 / 413 / 422 to the request with the file | The extracted text, in a second request | the same line, then `The file itself was sent to this model first and was not accepted.` |
+| The PDF has no text layer and it reads PDFs | The file | none |
+| The PDF has no text layer and it does not | Nothing of it | the "could not read it" line above |
+| Its provider says the model takes no attachments at all | Nothing | `Attachments <names> were delivered with this request, but this model is sent no attachments, so their content is not shown to you. The files are not missing from the request.` |
+| Its provider's request carries a prompt and images only (Ollama) | The images; no document, and no document's text | `Attachments <names> were delivered with this request, but this model is sent images only, so their content is not shown to you. The files are not missing from the request.` |
+
+A request with a PDF reports, per juror, how each PDF was given to it:
+
+```json
+"model_results": [
+  { "provider": "openai", "model": "gpt-5.6-terra", "status": "success",
+    "pdf_inputs": [ { "attachment": "submission/recording.pdf", "form": "native", "pages": 19 } ] },
+  { "provider": "xai", "model": "grok-4.6", "status": "success",
+    "pdf_inputs": [ { "attachment": "submission/recording.pdf", "form": "text", "pages": 19, "reason": "model" } ] }
+]
+```
+
+- `attachment` is the file as the notes and warnings name it: its
+  `attachmentNames` entry, or its number.
+- `form`: `native` (the file), `text` (its extracted text only), `not_shown`
+  (nothing of it).
+- `reason`, when not `native`: `model`, `page_limit`, `size_limit`, `rejected`,
+  `no_attachments`, `images_only`, as in the table. After a rejection, `rejected`
+  is only on the PDFs that were in the refused request as files; one that was
+  already text for a limit keeps `page_limit` / `size_limit`.
+- `pages` is absent when the parser could not count them, or when no juror of
+  the request reads PDFs (the file is then not opened for a count).
+
+A juror that is simply sent text (`reason: "model"`) adds no warning, as before.
+A juror that reads PDFs but got the text does:
+
+```json
+"warnings": [
+  { "type": "pdf_text_only", "severity": "warning", "model": "anthropic-claude-sonnet-5",
+    "message": "Attachment submission/recording.pdf was sent to anthropic-claude-sonnet-5 as extracted text only (rejected: HTTP 400: The PDF specified is password protected.); pictures and page images inside the PDF were not shown to it.",
+    "details": { "attachment": "submission/recording.pdf", "reason": "rejected", "pages": 19 } }
+]
+```
+
+`pdf_text_only` is `warning` when the reason is `rejected` (the message carries
+the provider's status and text) and `info` for `page_limit` and `size_limit`.
+`attachment_skipped` for a
+PDF with no text layer is one warning, as above, when no juror was sent the
+file; when some were, it is one per juror that was not, with that juror as
+`model`. `attachments_not_sent` (`warning`, with `model`) is a juror whose model
+is sent no attachments, or images only.
+
+Web tools (`AI_WEB_ACCESS=auto`) are turned on by a link in the prompt or in a
+text attachment. A link inside a PDF counts for a juror that is sent the file
+too: the arbiter looks for it in the text it extracted, which is not sent to
+that juror. A link that appears only in a picture is found by neither.
+
+Each juror also gets one log line:
+`📎 PDF_INPUT: openai-gpt-5.6-terra submission/recording.pdf native (19 pages) | openai reads PDFs natively | [{…}]`,
+and `📎 PDF_FALLBACK` when a provider turned the file down.
+
+Sending the file costs input tokens that the text did not: Anthropic documents
+1,500 to 3,000 text tokens plus up to 1,568 image tokens per page. Text-mode
+timeouts (`MODEL_TIMEOUT_MS`, default 120 s) are unchanged.
+
+---
+
+## The Result Record (start of `justification`, `model_results[].scores`)
+
+`justification` begins with a block the arbiter computes itself
+(`src/utils/resultRecord.ts`), followed by a blank line and the justifier's text:
+
+```
+RESULT (computed by the arbiter from the jurors' scores)
+- DONT_FUND: 567,500 of 1,000,000 (56.75%)
+- FUND: 432,500 of 1,000,000 (43.25%)
+JURORS (2 of 2 answered; the result is their weighted average)
+- openai gpt-5.6-terra, weight 0.5: DONT_FUND 1,000,000; FUND 0
+- anthropic claude-sonnet-5, weight 0.5: DONT_FUND 135,000; FUND 865,000
+```
+
+A juror that gave no score is listed as `no score, not counted (timed out after
+120 s)`, `(authentication error (HTTP 401))`, `(its reply could not be read as
+scores)`, and the heading then reads `1 of 2 answered; the result is that one
+juror's scores`. The block never quotes a provider's message. The numbers are the
+response's own `scores`; the justifier is given the block and asked to explain
+it, not to work a result out, and the block stands whatever the justifier writes
+(also when it times out or fails and the jurors' own texts are returned).
+
+The same numbers are in `model_results[]` for a program: `weight` on every entry,
+and `scores` (the juror's own integers, in outcome order) on every `success`.
 
 ---
 

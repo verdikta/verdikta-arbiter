@@ -103,6 +103,16 @@ class MockRequest implements Request {
 // Replace the global Request with our mock
 global.Request = MockRequest as any;
 
+/**
+ * The justification is the arbiter's own record of the result, then the justifier's text
+ * (utils/resultRecord.ts; its exact lines are asserted in rank-and-justify.record.test.ts).
+ */
+function expectRecordThen(justification: string, justifierText: string) {
+  expect(justification.startsWith("RESULT (computed by the arbiter from the jurors' scores)\n- ")).toBe(true);
+  expect(justification).toContain('\nJURORS (');
+  expect(justification.endsWith(`\n\n${justifierText}`)).toBe(true);
+}
+
 describe('POST /api/rank-and-justify', () => {
   beforeEach(() => {
     jest.clearAllMocks();
@@ -225,7 +235,7 @@ describe('POST /api/rank-and-justify', () => {
       ];
 
       expect(data.scores).toEqual(expectedScores);
-      expect(data.justification).toBe(mockJustifierResponse);
+      expectRecordThen(data.justification, mockJustifierResponse);
       // The justifier summarizes the jurors; it never opens links quoted in their answers.
       expect(mockJustifierProvider.generateResponse).toHaveBeenCalledWith(
         expect.any(String), expect.any(String), expect.objectContaining({ webAccess: false })
@@ -551,7 +561,7 @@ describe('POST /api/rank-and-justify', () => {
         expect.any(String), // The specific justifier model name
         { webAccess: false } // Non-reasoning justifier: no reasoning options, and never web access
       );
-      expect(data.justification).toBe(mockJustifierResponse);
+      expectRecordThen(data.justification, mockJustifierResponse);
       // The evaluation, then one repair call that also gave no scores: no further retries.
       expect(mockAnthropicProvider.generateResponse).toHaveBeenCalledTimes(2);
       expect(data.model_results.find((r: any) => r.model === 'claude-3').status).toBe('parsing_error');
@@ -775,7 +785,7 @@ describe('POST /api/rank-and-justify', () => {
       ];
 
       expect(data.scores).toEqual(expectedScores);
-      expect(data.justification).toBe(mockJustifierResponse);
+      expectRecordThen(data.justification, mockJustifierResponse);
 
       // Verify total score sums to 1,000,000
       const totalScore = data.scores.reduce((sum: number, item: ScoreOutcome) => sum + item.score, 0);
@@ -981,7 +991,7 @@ describe('POST /api/rank-and-justify', () => {
       ];
 
       expect(data.scores).toEqual(expectedScores);
-      expect(data.justification).toBe('Final iteration justification');
+      expectRecordThen(data.justification, 'Final iteration justification');
 
       // Verify that the second iteration calls included previous responses in the prompt
       const secondIterationCalls = mockOpenAIProvider.generateResponse.mock.calls.slice(1);

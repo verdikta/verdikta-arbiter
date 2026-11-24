@@ -1,4 +1,5 @@
 import { CallControlOptions, LLMProvider } from './llm-provider-interface';
+import { ProviderAttachment, partitionAttachments, withNotShownNote } from './provider-attachments';
 import { modelConfig } from '../../config/models';
 
 /**
@@ -246,7 +247,7 @@ export class HyperbolicProvider implements LLMProvider {
   async generateResponseWithAttachments(
     prompt: string,
     model: string,
-    attachments: Array<{ type: string; content: string; mediaType: string }>,
+    attachments: ProviderAttachment[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' }
   ): Promise<string> {
     if (!this.supportsAttachments(model)) {
@@ -259,13 +260,20 @@ export class HyperbolicProvider implements LLMProvider {
 
     const url = `${this.baseUrl}/chat/completions`;
 
+    // This request carries images and text. Anything else (a PDF sent as itself) used
+    // to be skipped without a word; now the prompt says it is not shown.
+    const { inline, notShown } = partitionAttachments(attachments, false);
+    if (notShown.length > 0) {
+      console.warn(`[${this.providerName}] ${notShown.length} attachment(s) cannot be sent to ${model}; the prompt says so`);
+    }
+
     // Build content array with text prompt and attachments
     const contentParts: any[] = [
-      { type: 'text', text: prompt }
+      { type: 'text', text: withNotShownNote(prompt, notShown, `${this.providerName} ${model}`) }
     ];
 
     // Process attachments
-    for (const attachment of attachments) {
+    for (const attachment of inline) {
       if (attachment.type === 'image') {
         // Add image attachment
         contentParts.push({

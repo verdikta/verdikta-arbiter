@@ -14,6 +14,8 @@ import {
   isSamplingParamRejection,
 } from './anthropic-request-params';
 import { attachmentRequestError } from './attachment-errors';
+import { claudeModelReadsPdf } from './pdf-support';
+import { ProviderAttachment, notShownNote, partitionAttachments } from './provider-attachments';
 import { CallControlOptions } from './llm-provider-interface';
 import { JurorTransport, jurorTransportFor } from './juror-transport';
 import { WebAccessOption, anthropicModelSupportsWebTools, shouldUseWebTools, webMaxUses, withWebAccessNote } from './web-access';
@@ -147,7 +149,7 @@ export class AnthropicProvider implements LLMProvider {
   async generateResponseWithAttachments(
     prompt: string, 
     model: string, 
-    attachments: Array<{ type: string, content: string, mediaType: string }>,
+    attachments: ProviderAttachment[],
     options?: { reasoning?: { effort?: 'low' | 'medium' | 'high' }, verbosity?: 'low' | 'medium' | 'high' } & WebAccessOption
   ): Promise<string> {
     if (!this.supportsAttachments(model)) {
@@ -157,27 +159,31 @@ export class AnthropicProvider implements LLMProvider {
       throw new Error(`[${this.providerName}] ANTHROPIC_API_KEY is not set`);
     }
 
-    // Check if this model supports native PDF processing
-    const supportsNativePDF = this.supportsNativePDF(model);
-
-    // Separate PDFs from other attachments
-    const pdfAttachments = attachments.filter(att => att.mediaType === 'application/pdf');
-    const otherAttachments = attachments.filter(att => att.mediaType !== 'application/pdf');
+    // PDFs go in as document blocks for every model that reads them (pdf-support.ts).
+    // Anything this request cannot carry is named in the prompt, never left out silently:
+    // a PDF for a model that does not read them, or a document that was not turned into text.
+    const { pdfs: pdfAttachments, inline: otherAttachments, notShown } =
+      partitionAttachments(attachments, claudeModelReadsPdf(model));
+    const note = notShownNote(notShown, `${this.providerName} ${model}`);
+    if (note) {
+      console.warn(`[${this.providerName}] ${notShown.length} attachment(s) cannot be sent to ${model}; the prompt says so`);
+    }
+    const noteBlocks = note ? [{ type: "text", text: note }] : [];
 
     // Links in the request are opened by Anthropic's web tools; same inputs as below.
     if (shouldUseWebTools(prompt, attachments) && anthropicModelSupportsWebTools(model)) {
-      const blocks = this.nativeContentBlocks(model, withWebAccessNote(prompt), supportsNativePDF ? pdfAttachments : [], otherAttachments);
+      const blocks = [...this.nativeContentBlocks(model, withWebAccessNote(prompt), pdfAttachments, otherAttachments), ...noteBlocks];
       const answer = await this.tryWebTools(model, blocks, options?.onWebRetrieval);
       if (answer !== null) return answer;
     }
 
-    // Use native PDF support for supported models
-    if (supportsNativePDF && pdfAttachments.length > 0) {
+    // The direct client carries the document blocks
+    if (pdfAttachments.length > 0) {
       console.log(`[${this.providerName}] Using native PDF support for ${pdfAttachments.length} PDF(s)`);
-      return this.generateResponseWithNativePDFSupport(prompt, model, pdfAttachments, otherAttachments);
+      return this.generateResponseWithNativePDFSupport(prompt, model, pdfAttachments, otherAttachments, noteBlocks);
     }
 
-    // Fall back to original implementation for non-PDF or non-supporting models
+    // No PDF to send: images and text through LangChain, as always
     for (const attachment of otherAttachments) {
       if (attachment.type === 'image' && !SUPPORTED_IMAGE_FORMATS.includes(attachment.mediaType)) {
         throw new Error(`[${this.providerName}] Model ${model}: Unsupported image format: ${attachment.mediaType}. Supported formats are: JPEG, PNG, WEBP, and GIF.`);
@@ -195,7 +201,8 @@ export class AnthropicProvider implements LLMProvider {
         } else {
           return { type: "text", text: attachment.content };
         }
-      })
+      }),
+      ...noteBlocks
     ];
 
     return this.invokeText(model, [{
@@ -210,27 +217,16 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   /**
-   * Check if the model supports native PDF processing
-   */
-  private supportsNativePDF(model: string): boolean {
-    const pdfCapableModels = [
-      'claude-sonnet-4-20250514', 'claude-4-opus',
-      'claude-3-7-sonnet', 'claude-3-5-sonnet', 'claude-3-5-haiku',
-      'claude-4-sonnet',
-    ];
-    return pdfCapableModels.some(supportedModel => model.includes(supportedModel));
-  }
-
-  /**
    * Generate response using Anthropic's native PDF support
    */
   private async generateResponseWithNativePDFSupport(
     prompt: string, 
     model: string, 
-    pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
-    otherAttachments: Array<{ type: string, content: string, mediaType: string }>
+    pdfAttachments: ProviderAttachment[],
+    otherAttachments: ProviderAttachment[],
+    noteBlocks: any[] = []
   ): Promise<string> {
-    const contentBlocks = this.nativeContentBlocks(model, prompt, pdfAttachments, otherAttachments);
+    const contentBlocks = [...this.nativeContentBlocks(model, prompt, pdfAttachments, otherAttachments), ...noteBlocks];
 
     try {
       // Use Anthropic's direct client for native PDF support
@@ -246,20 +242,22 @@ export class AnthropicProvider implements LLMProvider {
             content: contentBlocks
           }
         ],
-        max_tokens: 1000,
+        // The ceiling every other Anthropic request here has. This one used to say
+        // 1000, which cut a juror's justification short as soon as a PDF was attached.
+        max_tokens: MODERN_MAX_TOKENS,
         // Claude ≤ 4.6 accepts temperature (never together with top_p); Opus 4.7+ and
         // Claude 5 reject every sampling parameter, so they get none.
         ...(acceptsSamplingParams(model) ? { temperature: LEGACY_TEMPERATURE } : {})
       });
 
-      // The answer is the first text block (a thinking block may precede it).
-      const content = response.content.find(block => block.type === 'text');
-      if (!content || content.type !== 'text') {
-        throw new Error('No text content in Anthropic response');
+      // The answer is every text block (a thinking block may precede it).
+      const text = extractTextContent(response.content);
+      if (response.stop_reason === 'max_tokens') {
+        console.warn(`[${this.providerName}] ${model} stopped at max_tokens (${MODERN_MAX_TOKENS}) on a request with PDFs; the answer may be cut short`);
       }
 
-      console.log(`[${this.providerName}] Native PDF processing successful, response length: ${content.text.length}`);
-      return content.text;
+      console.log(`[${this.providerName}] Native PDF processing successful, response length: ${text.length}`);
+      return text;
 
     } catch (error: any) {
       console.error(`[${this.providerName}] Native PDF request failed for ${model}:`, error.message);
@@ -272,22 +270,24 @@ export class AnthropicProvider implements LLMProvider {
   }
 
   /**
-   * Content blocks for the direct client: the prompt, PDFs as document blocks,
-   * images as base64 image blocks, anything else as text.
+   * Content blocks for the direct client: PDFs as document blocks, then the
+   * prompt, then images as base64 image blocks and text as text. The PDFs come
+   * first because Anthropic asks for it ("Place PDFs before text in your
+   * requests", pdf-support, "Improve performance"); a request without a PDF
+   * starts with the prompt, as it always has.
    */
   private nativeContentBlocks(
     model: string,
     prompt: string,
-    pdfAttachments: Array<{ type: string, content: string, mediaType: string }>,
-    otherAttachments: Array<{ type: string, content: string, mediaType: string }>
+    pdfAttachments: ProviderAttachment[],
+    otherAttachments: ProviderAttachment[]
   ): any[] {
-    const contentBlocks: any[] = [
-      { type: "text", text: prompt }
-    ];
+    const contentBlocks: any[] = [];
 
     // Add PDF attachments using Anthropic's document structure
     for (const pdfAttachment of pdfAttachments) {
-      // Validate PDF size (Anthropic limit: 32MB, 100 pages)
+      // The route keeps a request's PDFs within the limits (attachments/pdfRouting.ts);
+      // this catches a caller that did not. 32 MB is the request limit on every Anthropic-run platform.
       const pdfSizeBytes = (pdfAttachment.content.length * 3) / 4; // Approximate base64 to bytes conversion
       if (pdfSizeBytes > 32 * 1024 * 1024) {
         throw new Error(`PDF file size (${Math.round(pdfSizeBytes / 1024 / 1024)}MB) exceeds Anthropic's 32MB limit`);
@@ -300,9 +300,13 @@ export class AnthropicProvider implements LLMProvider {
           type: "base64",
           media_type: "application/pdf",
           data: pdfAttachment.content
-        }
+        },
+        // The request's name for the file, so the model can match it to the prompt.
+        ...(pdfAttachment.name ? { title: pdfAttachment.name.slice(0, 200) } : {})
       });
     }
+
+    contentBlocks.push({ type: "text", text: prompt });
 
     // Add other attachments (images, text, etc.)
     for (const attachment of otherAttachments) {

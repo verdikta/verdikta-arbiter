@@ -53,6 +53,63 @@ runner holds no secrets. Start it with its own environment, for example
 env -i PATH="$PATH" HOME="$HOME" CODE_RUNNER_TOKEN=... CODE_RUNNER_RUNTIME=runc npm start
 ```
 
+### A hunter's machine: what `check` needs
+
+`verdikta-attest check` (the hunter's forecast: verdikta-applications,
+`stake-attestation/tool`) asks a runner on the hunter's own machine, started as
+above under `runc`. The tool reads `CODE_RUNNER_URL`, which is
+`http://127.0.0.1:8090` unless `CODE_RUNNER_PORT` moved the port, and
+`CODE_RUNNER_TOKEN`, the token the runner was started with (32 or more printable
+characters; `openssl rand -hex 32` gives 64). A hunter's shell usually holds a
+pinning token, and the runner refuses to start beside one: give it its own
+environment with `env -i`, as above.
+
+**Memory.** Each sandbox may use the class's limit, 4096 MiB (`limits.memoryMb`,
+[Class hard limits](#class-hard-limits)), which no setting lowers. A claim with a
+`fix.patch` opens two sandboxes at once, the fix check's beside the PoC's, so its
+run may use 8192 MiB. [Admission](#images-and-admission) refuses a run unless the
+host's `MemAvailable`, less the runs already admitted and this one, still leaves
+the reserve: 1280 MiB by default, headroom for an arbiter's Chainlink, Postgres
+and AI Node. So a claim needs 5376 MiB available, and one with a `fix.patch`
+9472 MiB. Short of that the run abstains, `admission_refused`, and says
+
+```text
+the host has 3033 MiB available, 0 MiB held by runs in flight, and this run may use 4096 MiB; 1280 MiB stays reserved (chainlink 512, postgres 256, aiNode 512, localModel 0)
+```
+
+That is no forecast: it says nothing of the claim. On a machine that runs no
+arbiter the reserve protects nothing, and can be set to 0, which leaves a claim
+needing 4096 MiB:
+
+```bash
+env -i PATH="$PATH" HOME="$HOME" CODE_RUNNER_TOKEN=... CODE_RUNNER_RUNTIME=runc \
+  CODE_RUNNER_RESERVE_CHAINLINK_MB=0 CODE_RUNNER_RESERVE_POSTGRES_MB=0 CODE_RUNNER_RESERVE_AI_NODE_MB=0 npm start
+```
+
+(`CODE_RUNNER_RESERVE_LOCAL_MODEL_MB` is 0 already.) A claim checked without its
+`fix.patch` needs half as much, and the proof's gates are the same: the fix is
+checked and reported, and never changes the outcome.
+
+**`/health` does not do this sum.** It reports what it measured, under
+`capacity.memory` (`availableMb`, `committedMb`, `reserveMb`), and the class's
+`limits.memoryMb`, and it answers `ok: true` on a host with too little memory for
+a run: a small or busy host is not an unhealthy one. A run fits when
+`availableMb - committedMb - memoryMb × sandboxes` is at least `reserveMb`.
+
+**Where memory cannot be measured.** macOS has no `/proc/meminfo`, so under `runc`
+there the runner admits a run with a warning and no memory check. Give Docker
+Desktop's machine (Settings, Resources) the memory above, or a run can end `oom`.
+Under WSL2 the runner measures the WSL machine, whose ceiling is `memory=` under
+`[wsl2]` in `%UserProfile%\.wslconfig`, read when that machine starts. One hunter
+reported that `wsl --shutdown` alone did not apply a change while Docker Desktop
+kept its own distribution running, and that quitting Docker Desktop first, then
+`wsl --shutdown`, then starting it again did; `docker info --format '{{.MemTotal}}'`
+shows which ceiling is in force. That report is not reproduced here.
+
+**The images.** A listing's env image comes from `ghcr.io/verdikta`, whose
+`stake-env` package is public: `check` needs no registry login. The Semgrep image
+is the one the runner never pulls (above).
+
 ### macOS (development): runc
 
 Docker Desktop runs containers in a Linux VM with `runc`; gVisor is not

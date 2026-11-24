@@ -248,6 +248,13 @@ export interface NormalizeImagesResult {
   /** One line per changed or omitted image, for the prompt. */
   promptNotes: string[];
   changes: ImageChange[];
+  /**
+   * How a note refers to each returned attachment after the word "Attachment": the file
+   * name it was sent with, or its number in the request as received. Index-aligned with
+   * `attachments` (the parts of a split image share one), so a later step can still name
+   * a document after images before it were split or omitted.
+   */
+  refs: string[];
 }
 
 /** Thrown, with DROP_UNPROCESSABLE_IMAGES off, for an image that cannot be used. */
@@ -340,7 +347,7 @@ export async function normalizeImageAttachments(
   }
 
   if (images.length === 0 && changes.length === 0) {
-    return { attachments, promptNotes: [], changes: [] };
+    return { attachments, promptNotes: [], changes: [], refs: attachmentRefs(names, attachments.length) };
   }
 
   const models = options.models ?? [];
@@ -451,13 +458,25 @@ export async function normalizeImageAttachments(
   }
 
   const normalized: string[] = [];
+  const refs: string[] = [];
   attachments.forEach((attachment, index) => {
     if (omitted.has(index)) return;
-    normalized.push(...(replacements.get(index) ?? [attachment]));
+    const parts = replacements.get(index) ?? [attachment];
+    normalized.push(...parts);
+    parts.forEach(() => refs.push(attachmentName(names, index).ref));
   });
 
   changes.sort((a, b) => a.index - b.index);
-  return { attachments: normalized, promptNotes: changes.map(change => change.note), changes };
+  return { attachments: normalized, promptNotes: changes.map(change => change.note), changes, refs };
+}
+
+/**
+ * The note reference of each of `count` attachments as received: its file name, or its
+ * number. What normalizeImageAttachments returns as `refs` when it changes nothing.
+ */
+export function attachmentRefs(names: unknown, count: number): string[] {
+  const list = Array.isArray(names) ? names : [];
+  return Array.from({ length: count }, (_, index) => attachmentName(list, index).ref);
 }
 
 /** The bytes decide the type (the declared header is submitter-supplied); sniffing is silent here. */

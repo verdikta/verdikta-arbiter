@@ -19,6 +19,7 @@ const {
   arbiterVersion,
   releaseCommit,
   versionChecks,
+  pdfInputChecks,
   requestArgs,
 } = require('./helpers');
 
@@ -424,6 +425,7 @@ async function runL4(cfg, selected, opts) {
           }
           const { checks: jChecks, reports } = await justificationChecks(cfg, result.justificationCID, expect);
           checks.push(...jChecks);
+          if (scenario.expectPdfInputs) checks.push(...pdfInputChecks(reports, scenario.expectPdfInputs));
           console.log(chalk.gray(`[l4] ${scenario.id}: fulfilled in ${Math.round((Date.now() - start) / 1000)}s; ${reports.length} revealing arbiter(s)`));
           for (const r of reports) {
             const v = r.version;

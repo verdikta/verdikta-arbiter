@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { LLMFactory } from '../../../lib/llm/llm-factory';
 import { fileToBase64 } from '../../../utils/fileUtils';
 import { processAttachments, convertToLLMFormat, logAttachmentSummary } from '../../../utils/attachment-processor'; 
+import { nativePdfSupport } from '../../../lib/llm/pdf-support';
 
 
 // The GET handler lists models from the configured providers: build it per
@@ -125,10 +126,11 @@ export async function POST(request: Request) {
     if (rawAttachments.length > 0) {
       console.log('Processing attachments with text extraction...');
       try {
+        // One model here, so one form per attachment: a PDF stays a PDF when this
+        // provider and model read PDFs (lib/llm/pdf-support.ts), and is text otherwise.
         const { results: processedAttachments, skippedCount, skippedReasons } = await processAttachments(
-          rawAttachments, 
-          providerName, 
-          modelName
+          rawAttachments,
+          { nativePdf: nativePdfSupport(providerName ?? '', modelName ?? '').native }
         );
         attachments = convertToLLMFormat(processedAttachments);
         logAttachmentSummary(processedAttachments);
