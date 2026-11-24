@@ -1871,8 +1871,18 @@ else
 fi
 
 # Upgrade Chainlink Node configurations
+# A preserved file is copied back over the checkout's, so nothing in this list may match a
+# file the repository ships. Until 2026-11 it said "*.toml": written in May 2025 for the
+# rendered job spec a single-arbiter install kept here (verdikta_job_spec.toml), it also
+# matched config_template.toml, added three days later. An install then kept the Chainlink
+# config template of its first installation, and its own regenerate-chainlink-config.sh,
+# update-rpc-endpoints.sh and the doctor's cfg.chainlink_template read that one (found on the
+# class-5555 canaries, 2026-11-23). The old job spec is named instead. The rendered jobs
+# (jobs/, since July 2025) are not in the list and never were: they come with the checkout's
+# copy, where configure-node.sh writes them. installer/tests/upgrade-chainlink-template.test.sh
+# runs this call, and holds every upgrade_component list to what the repository ships.
 echo -e "${BLUE}Upgrading Chainlink Node configurations...${NC}"
-upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "*.toml logs .api"
+upgrade_component "$REPO_CHAINLINK_NODE" "$TARGET_CHAINLINK_NODE" "Chainlink Node" "verdikta_job_spec.toml logs .api"
 
 # Upgrade Operator Contracts
 echo -e "${BLUE}Upgrading Operator Contracts...${NC}"
