@@ -761,6 +761,23 @@ key raises a watchdog alert").
   trap). The opt-in `installer/tests/*.integration.sh` scripts (need Docker) check
   the firewall rules with real iptables and packets, the unit under a real
   systemd, and the container recreate against real Docker.
+- **The keeper's registry, not `installer/.contracts`, says where the stake
+  is.** Every registered job id holds 100 wVDKA on the ReputationKeeper, and
+  anything that gives a node new job ids (the count change, and "regenerate job
+  specs" in `upgrade-arbiter.sh`) must first deregister every job id the keeper
+  lists for the operator contract: `unregister-oracle.sh` with
+  `VA_DEREGISTER_ALL_REGISTERED=y` / `--all-registered`
+  (`arbiter-operator/scripts/lib/registry.js`), which fails unless the keeper
+  lists none afterwards, and a failure leaves the jobs as they are. Before
+  2026-11 only the ids in `.contracts` were tried and "Not registered –
+  skipping" for all of them was a success: a 1 → 10 count change on Base
+  mainnet (2026-11-11) left the old job id registered with its stake and no
+  node behind it. Unattended, the regenerate path did not deregister at all
+  (its piped "y" is ignored and the prompt defaults to no). One orphan is
+  released with `unregister-oracle-cl.js --jobids "<id>"`, sent by the operator
+  contract's owner or the keeper's owner; the refund goes to the operator
+  contract's owner. Tests: `registry.test.js`,
+  `upgrade-reconfigure-trap.test.sh`, `upgrade-regenerate-jobs-registry.test.sh`.
 - **Inside a function the ERR trap does not fire at all** (no `errtrace`), but errexit
   still does: a failing plain command in a function ends the upgrade with no "Upgrade
   failed!" and no restart of the arbiter it stopped (measured on bash 5.2 and 3.2). Call
