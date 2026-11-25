@@ -222,6 +222,30 @@ describe('bcidValidation', () => {
       expect(r.malformedBCIDs[0].reason).toMatch(/at most 2000/);
     });
 
+    it('a bCID whose CID proves it over the IPFS cap is collected as malformed; an unproven oversize stays transient', async () => {
+      const O = cid('proven-oversize');
+      const wrapped = Object.assign(new Error('Unable to fetch archive from IPFS.'), {
+        code: 'IPFS_TOO_LARGE', proven: true, declaredSize: 80000000 });
+      const r = await fetchAndTriageArchives([P, O], tempDir, opts(fetchingService({ [O]: wrapped })));
+      expect(r.malformedBCIDs.map(e => [e.cid, e.check, e.expectedName]))
+        .toEqual([[O, CHECKS.OVER_WORK_LIMITS, 'submittedWork']]);
+      expect(r.malformedBCIDs[0].reason).toMatch(/declares 80000000 bytes/);
+      expect(r.extractedPaths[O]).toBeUndefined();
+
+      // proven only on the cause (an older wrapper): still recognised
+      const nested = Object.assign(new Error('Unable to fetch archive from IPFS.'), {
+        cause: Object.assign(new Error('x'), { code: 'IPFS_TOO_LARGE', proven: true }) });
+      const r2 = await fetchAndTriageArchives([P, O], tempDir, opts(fetchingService({ [O]: nested })));
+      expect(r2.malformedBCIDs.map(e => e.check)).toEqual([CHECKS.OVER_WORK_LIMITS]);
+
+      // a body that merely ran past the cap proves nothing: a gateway can stream junk
+      const unproven = Object.assign(new Error('Unable to fetch archive from IPFS.'), { code: 'IPFS_TOO_LARGE' });
+      await expect(fetchAndTriageArchives([P, O], tempDir, opts(fetchingService({ [O]: unproven })))).rejects.toBe(unproven);
+
+      // the primary is never turned into a verdict, proven or not
+      await expect(fetchAndTriageArchives([O, C], tempDir, opts(fetchingService({ [O]: wrapped })))).rejects.toBe(wrapped);
+    });
+
     it('the PRIMARY archive over the work limits still errors (never a verdict against the submitter)', async () => {
       const AdmZip = require('adm-zip');
       const big = new AdmZip(fixture('bounty-primary.zip'));

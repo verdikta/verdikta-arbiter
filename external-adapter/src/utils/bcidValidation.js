@@ -248,6 +248,13 @@ async function validateBCIDArchive(extractedPath, { cid, expectedName, validator
   return { manifest };
 }
 
+function provenOversizeOf(error) {
+  for (let e = error, depth = 0; e && depth < 3; e = e.cause, depth++) {
+    if (e.proven === true && e.code === 'IPFS_TOO_LARGE') return e;
+  }
+  return null;
+}
+
 /**
  * Fetch every archive of a multi-CID request, extract them, and triage the
  * bCID archives.
@@ -282,8 +289,20 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
     return archiveService.getArchive(cid);
   }));
   const archiveData = {};
+  // A bCID whose own root block declares a file over the IPFS byte cap (@verdikta/common sets
+  // `proven` only then) can be fetched by no arbiter: a property of the CID, not a transient miss.
+  // Left as an error it grinds honest jurors the same way an over-limit archive did (sec6 e2e).
+  const provenOversize = new Map();
   for (let i = 0; i < cidArray.length; i++) {
-    if (outcomes[i].status === 'rejected') throw outcomes[i].reason;
+    if (outcomes[i].status === 'rejected') {
+      const reason = outcomes[i].reason;
+      const proven = i > 0 ? provenOversizeOf(reason) : null;
+      if (proven) {
+        provenOversize.set(cidArray[i], proven);
+        continue;
+      }
+      throw reason;
+    }
     archiveData[cidArray[i]] = outcomes[i].value;
   }
 
@@ -315,6 +334,14 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
   for (let i = 1; i < cidArray.length; i++) {
     const cid = cidArray[i];
     const expectedName = bCIDNames[i - 1];
+    if (provenOversize.has(cid)) {
+      const size = provenOversize.get(cid).declaredSize;
+      const classified = new MalformedArchiveError({ cid, expectedName, check: CHECKS.OVER_WORK_LIMITS,
+        reason: `the archive declares ${Number.isFinite(size) ? `${size} bytes` : 'a size'}, over the IPFS download cap` });
+      logger.warn(`${runTag} bCID archive ${cid} is malformed (${classified.check})${codeReviewMode ? '' : `: ${classified.reason}`}`);
+      malformedBCIDs.push(classified);
+      continue;
+    }
     try {
       await assertArchiveIsZip(archiveData[cid], { cid, expectedName });
       extractedPaths[cid] = await extractOne(cid, i);
