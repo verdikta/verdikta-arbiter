@@ -109,7 +109,7 @@ event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, st
 
 `BadJury` unless K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N == 1, K <= `maxJury()` (default 50)
 and K <= the keeper's `shortlistSize()` (60), and `tPlus()` (155 s) < timeout <= `maxTimeout()`
-(3,600 s). The aggregator has no `K()`/`M()`/`N()`/`P()`/`responseTimeoutSeconds()`: the jury is the
+(3,600 s) and <= one day (86,400 s, `AggregatorLib.MAX_TIMEOUT`, whatever `maxTimeout()` says). The aggregator has no `K()`/`M()`/`N()`/`P()`/`responseTimeoutSeconds()`: the jury is the
 request's. Class presets (Small 6/5/4/3/300 s, Medium 8/5/4/3/300, Large 21/16/13/10/300, Jumbo
 50/38/27/17/600 with beacons) are app-level, not protocol constants.
 

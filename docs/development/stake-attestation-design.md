@@ -21,7 +21,7 @@ design cites (§5, §10.8, §20 decision 9 and elsewhere) are the deployed **v1*
 contracts', read in Oct–Nov 2026. v2 (verdikta-dispatcher `beacon` branch, not
 deployed yet) changes them: there is no `responseTimeoutSeconds` and no fixed
 K/M/N/P (each request carries its jury `(K, M, N, P, timeout)`, the timeout up to
-`maxTimeout()`, 3,600 s by default, and run from the draw); selection is
+`maxTimeout()`, 3,600 s by default, never above one day, and run from the draw); selection is
 `selectArbiters` over a shortlist (thin pools repeat arbiters), not
 `selectOracles`; each juror is paid `max(posted fee, minFee)` at dispatch and
 3× that if clustered; the −20 timeout penalty is gone (a live arbiter that did not
