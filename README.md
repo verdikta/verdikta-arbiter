@@ -201,7 +201,8 @@ const { scores, justification } = await res.json();
 Clients interact with the **ETH-funded `ReputationAggregator`** (the "Verdikta
 Aggregator", deployed separately — see [`verdikta-dispatcher`](https://github.com/verdikta/verdikta-dispatcher)).
 Arbiters are paid in native ETH attached to the request (there is no LINK for the
-consumer); any unspent prepay is held as a withdrawable credit. The aggregator
+consumer); any unspent prepay is held as a withdrawable credit, except where a refund would be a free
+re-roll of the jury (then it goes to the committers or the arbiter pool, below). The aggregator
 selects a jury of arbiters by `classId`, runs commit-reveal aggregation, and
 records the aggregated scores plus a justification CID on-chain.
 
@@ -270,7 +271,14 @@ operator's point of view:
   to the operator owner's balance in the aggregator, plus `bonusMultiplier()` (3) times that if the
   reveal lands in the cluster. A beacon whose value is used is paid one fee. Withdraw with the
   aggregator's `withdrawEth()` from the owner wallet. In a thin pool one arbiter can fill several
-  slots of a jury; it is paid and scored once per slot.
+  slots of a jury; it is paid and scored once per slot. Two more credits, to the same balance:
+  - **Committer share**: a round that got at least M commits but was never promoted splits its unspent
+    prepay equally among the slots that committed, at settlement (`CommitPayment`).
+  - **Arbiter pool**: other forfeits (a cancelled undrawn round, a missed beacon quorum, a draw that failed
+    after the beacon stage when the outcome could depend on the seed, a committer share's remainder) fill a
+    pool, `ethOwed(address(0))`, that nobody can withdraw. Each jury draw pays an eighth of it to one
+    registered arbiter picked at random from the draw's seed by the keeper's `poolPayee` (`PoolPayment`),
+    skipping (at most two tries) arbiters that are paused, banned, exiting or understaked.
 - **Exit** with `installer/util/unregister-oracle.sh`: it sends `requestExit`, and run again after the
   unbonding period (2 days) it sends `completeExit`, which refunds the stake to the operator's owner.
 

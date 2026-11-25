@@ -224,6 +224,16 @@ arbiter is one job: its key is `keyOf(oracle, jobId)` = `keccak256(abi.encodePac
   is credited `max(posted fee as of B, the request's minFee)` at the draw (`BasePayment`); each
   revealed answer in the cluster gets `bonusMultiplier()` (3) times that at finalization
   (`BonusPayment`); a jury beacon whose value is used gets one fee, the same max (`BeaconPayment`).
+  **Committer share:** a round with at least M commits that was never promoted (phase 4 at the
+  deadline, or phase 3 with commits >= M) splits its unspent prepay equally among the slots that
+  committed, at `settle` (`CommitPayment(aggId, payee, amount)`, one per committed slot; counted in the
+  round's `rewards`). **Arbiter pool:** forfeits (a cancelled undrawn round, a missed beacon quorum, a
+  seed-dependent draw failure after a beacon stage, a committer share's indivisible remainder) credit
+  `ethOwed(address(0))`, which nobody can withdraw. Each `drawJury` that draws a jury pays an eighth of
+  it to one registered arbiter picked uniformly by the keeper's `poolPayee(seed)` from that draw's seed
+  (`PoolPayment(aggId, payee, amount)`, emitted by the aggregator). At most two picks, skipping arbiters
+  that are paused, banned, exiting or understaked; both miss and nobody is paid that draw. So a
+  registered arbiter in good standing can be paid without being drawn; no job code is involved.
   Withdraw with `withdrawEth()` from the owner wallet (or `withdrawEthFor(owner)`). No script here
   does it. Selection weighs the fee the requester pays, so a posted fee below the floor gains no weight.
 - **Scoring (settlement, `applyOutcomes`):** two scores, quality and timeliness, 0..`cap` (1000), new

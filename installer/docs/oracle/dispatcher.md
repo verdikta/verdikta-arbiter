@@ -166,6 +166,18 @@ Fees are in ETH and accrue in the **aggregator**, as `ethOwed[<operator owner>]`
 - **Bonus**: `bonusMultiplier` (3 by default) × that fee, for each revealed answer in the cluster
   that decides the round.
 - **Beacon fee**: `max(the request's fee ceiling, minFee)` for each beacon value of yours that was used.
+- **Committer share**: when a round got at least M commits but nobody promoted it before its deadline, its
+  unspent prepay is split equally among the slots that committed, at settlement
+  (`CommitPayment(aggId, payee, amount)`, one event per committed slot). The requester gets none of it back,
+  so withholding the promotion buys it no re-roll.
+- **Arbiter pool**: the prepay of rounds that end without a refund for other reasons (a cancelled undrawn
+  round, a missed beacon quorum, a draw that failed after the beacon stage when the outcome could depend on
+  the seed, and the indivisible remainder of a committer share) goes to a pool in the aggregator,
+  `ethOwed(address(0))`, that nobody can withdraw. Each jury draw pays an eighth of the pool to one
+  registered arbiter, picked at random by the keeper's `poolPayee(seed)` from the draw's seed
+  (`PoolPayment(aggId, payee, amount)`). You are eligible while registered and not paused, banned, exiting
+  or understaked; you need not be drawn for the round. The pick makes at most two tries, and if both land
+  on ineligible arbiters nobody is paid and the pool waits for the next draw.
 
 The aggregator does not send it: the operator owner withdraws it with the aggregator's `withdrawEth()`
 (or the aggregator owner calls `withdrawEthFor(owner)` for it). Read the balance with `ethOwed(owner)`. No
