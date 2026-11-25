@@ -34,6 +34,7 @@ const {
   assertBareCID, assertManifestReferences, assertSafeManifest, extractEvidenceArchive,
   resolveEvidenceFile, isUnsafeEvidenceError
 } = require('./evidenceBoundary');
+const { isWorkBudgetError } = require('./workBudget');
 
 const FULL_SCORE = 1000000; // scores are micro-probabilities summing to 1,000,000
 
@@ -48,7 +49,8 @@ const CHECKS = Object.freeze({
   PRIMARY_NOT_JSON: 'primary-not-json',
   PRIMARY_SCHEMA: 'primary-schema',
   NAME_MISMATCH: 'bcid-name-mismatch',
-  UNSAFE_EVIDENCE: 'unsafe-evidence-reference'
+  UNSAFE_EVIDENCE: 'unsafe-evidence-reference',
+  OVER_WORK_LIMITS: 'archive-over-work-limits'
 });
 
 /** The shape the bounty API builds and every arbiter accepts. */
@@ -318,10 +320,17 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
       extractedPaths[cid] = await extractOne(cid, i);
       await validateBCIDArchive(extractedPaths[cid], { cid, expectedName, validator });
     } catch (err) {
+      // Over the work limits (entries, declared or inflated size): a property of the bytes, the same
+      // on every arbiter on the default EA_MAX_* limits. Left as an error, no arbiter committed and the
+      // round failed for lack of commits, which costs every honest juror the no-commit penalty: a
+      // hunter could pin such an archive to grind down the jurors' scores for a round's base fees
+      // (sec5 e2e). As a malformed submission the round settles on the first outcome instead.
       const classified = isUnsafeEvidenceError(err) && err.deterministic
         ? new MalformedArchiveError({ cid, expectedName,
           check: CHECKS.UNSAFE_EVIDENCE, reason: err.message })
-        : err;
+        : isWorkBudgetError(err)
+          ? new MalformedArchiveError({ cid, expectedName, check: CHECKS.OVER_WORK_LIMITS, reason: err.message })
+          : err;
       if (!isMalformedArchiveError(classified)) throw classified; // transient: keep today's behaviour
       logger.warn(`${runTag} bCID archive ${cid} is malformed (${classified.check})${codeReviewMode ? '' : `: ${classified.reason}`}`);
       malformedBCIDs.push(classified);
@@ -329,6 +338,31 @@ async function fetchAndTriageArchives(cidArray, tempDir, { archiveService, valid
   }
 
   return { extractedPaths, malformedBCIDs, archiveData, primaryManifestJson };
+}
+
+/**
+ * The submitted archive whose attachments take a run over the attachment limits (count or bytes), or
+ * null. The requester's own attachments are checked first and alone: over the limits there, it is the
+ * requester's request (the WorkBudgetError propagates, no verdict). Then each bCID's attachments are
+ * added in CID order, and the first that crosses a limit is returned as a MalformedArchiveError, a
+ * property of the submitted bytes that every arbiter on the default limits sees the same way.
+ * `check(query)` is aiClient.assertAttachmentBudget bound to the run's paths and budget.
+ */
+function submissionOverAttachmentLimits({ requesterAttachments, bCIDManifests, check }) {
+  let additional = [...requesterAttachments];
+  check({ additional });
+  for (const item of bCIDManifests || []) {
+    const files = (item && item.manifest && Array.isArray(item.manifest.additional)) ? item.manifest.additional : [];
+    additional = [...additional, ...files.map(file => ({ ...file, evidenceSource: 'submitted' }))];
+    try {
+      check({ additional });
+    } catch (err) {
+      if (!isWorkBudgetError(err)) throw err;
+      return new MalformedArchiveError({ cid: item.cid, expectedName: item.expectedName,
+        check: CHECKS.OVER_WORK_LIMITS, reason: err.message });
+    }
+  }
+  return null;
 }
 
 function truncate(text, max = 1500) {
@@ -415,6 +449,7 @@ module.exports = {
   isMalformedArchiveError,
   classifyEvaluationError,
   assertArchiveIsZip,
+  submissionOverAttachmentLimits,
   validateBCIDArchive,
   fetchAndTriageArchives,
   buildMalformedSubmissionVerdict

@@ -132,6 +132,24 @@ function createCommitStore({ dir = defaultDir(), logger = console } = {}) {
       m.delete(hash);
     }),
 
+    /**
+     * Commits still waiting for their reveal: no justification yet, made less than `withinMs` ago
+     * (15 minutes by default: the class presets' rounds last 300 or 600 s; a request may ask up to an
+     * hour). A commit that was not promoted is never revealed and also counts until the window ends. A reveal request that arrives
+     * while the adapter is down fails its Chainlink run, and the job does not retry it, so a restart
+     * or an upgrade waits until this is empty (scripts/pending-reveals.js). No salt or result leaves.
+     */
+    pending: ({ now = Date.now(), withinMs = 15 * 60 * 1000 } = {}) => mtx.runExclusive(() => {
+      const out = [];
+      for (const [hash, entry] of load()) {
+        if (entry.justificationCid) continue;
+        const created = Date.parse(entry.created);
+        if (!Number.isFinite(created) || now - created >= withinMs) continue;
+        out.push({ hash: hash.slice(0, 10), aggId: entry.aggId || entry.scope?.aggId || null, ageMs: now - created });
+      }
+      return out.sort((a, b) => a.ageMs - b.ageMs);
+    }),
+
     /** delete expired entries (expiresAt, or created + maxAgeMs for entries without one) */
     purgeStale: (maxAgeMs = DEFAULT_MAX_AGE_MS) => mtx.runExclusive(async () => {
       const now = Date.now();

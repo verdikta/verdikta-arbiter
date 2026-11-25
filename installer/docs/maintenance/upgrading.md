@@ -287,7 +287,21 @@ Between a commit and its reveal the External Adapter holds the commit's salt and
 kept on disk, one 0600 file per commit in `<install-dir>/commit-store/` (directory 0700), written
 and fsynced before the commit is answered and loaded when the adapter starts, so a restart or an
 upgrade between a commit and its reveal no longer loses the reveal (with the v2 dispatcher, a
-failed reveal costs 500 points and a 24-hour block, and repeats a ban). Records expire 3 days after
+failed reveal costs 500 points and a 24-hour block, and repeats a ban), **provided the adapter is
+back before the reveal request reaches it**. The upgrade stops the Chainlink node too and starts it
+after the adapter, so the node picks up the requests it missed once the adapter answers. Restarting
+the adapter alone while the Chainlink node runs (`external-adapter/stop.sh && start.sh`, or a crash) is
+different: the reveal request comes as soon as the round is promoted, seconds after the commits on
+Base, and one that reaches a stopped adapter fails its Chainlink run. The job does not retry it, and
+the reveal is lost all the same. So restart the adapter alone only when no reveal is pending:
+
+```bash
+cd <install-dir>/external-adapter && node scripts/pending-reveals.js   # exit 0: none pending
+```
+
+It lists the commits of the last 15 minutes that have no reveal yet (`--within-minutes 60` for
+rounds with an hour's timeout). A commit that was not promoted is never revealed and stays on the
+list until the window passes; the list holds no salt or result. Records expire 3 days after
 their commit and are removed every 15 minutes. The upgrade does not touch the directory. Set
 `COMMIT_STORE_DIR` in `external-adapter/.env` to keep it elsewhere (move the files with it while
 the adapter is stopped). Before this release the store was in memory only (`USE_FILE = false`).

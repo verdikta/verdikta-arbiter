@@ -17,8 +17,10 @@ const {
 const {
   fetchAndTriageArchives,
   buildMalformedSubmissionVerdict,
-  isMalformedArchiveError
+  isMalformedArchiveError,
+  submissionOverAttachmentLimits
 } = require('../utils/bcidValidation');
+const { workBudgetFromEnv } = require('../utils/workBudget');
 const {
   installCidFetchCache,
   cidFetchCacheOptionsFromEnv,
@@ -431,11 +433,27 @@ const evaluate = async (request) => {
           outcomes: primaryManifest.outcomes
         };
 
-        logger.info(`${runTag} Evaluating combined query with AI service...`);
-        const t11 = Date.now();
-        result = await aiClient.evaluate(queryObject, extractedPaths[cidArray[0]], runTag,
-          Object.values(extractedPaths));
-        logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
+        // Attachments the submission adds past the limits: a deterministic verdict, as for a malformed
+        // archive, rather than an error no arbiter commits on (see utils/bcidValidation.js)
+        const primaryPath = extractedPaths[cidArray[0]];
+        const primaryManifestJson = JSON.parse(await fs.promises.readFile(path.join(primaryPath, 'manifest.json'), 'utf8'));
+        const budget = workBudgetFromEnv();
+        const overLimits = submissionOverAttachmentLimits({
+          requesterAttachments: allAttachments.filter(file => file.evidenceSource === 'requester'),
+          bCIDManifests,
+          check: (query) => aiClient.assertAttachmentBudget(query, primaryPath, Object.values(extractedPaths), primaryManifestJson, budget)
+        });
+        if (overLimits) {
+          fetchCache.forget(overLimits.cid);
+          result = buildMalformedSubmissionVerdict(primaryManifest, [overLimits]);
+          logger.warn(`${runTag} bCID archive ${overLimits.cid} is over the work limits → deterministic verdict "${result.scores[0].outcome}" (no AI evaluation)`);
+        } else {
+          logger.info(`${runTag} Evaluating combined query with AI service...`);
+          const t11 = Date.now();
+          result = await aiClient.evaluate(queryObject, primaryPath, runTag,
+            Object.values(extractedPaths));
+          logger.info(`${runTag} aiClient.evaluate (multi-CID) took ${Date.now() - t11}ms`);
+        }
       }
 
       if (modeString === '1') {

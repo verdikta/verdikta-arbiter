@@ -64,6 +64,8 @@ export interface MockCall {
   prompt: string;
   options: { webAccess: unknown; maxTokens: unknown; effort: unknown; signal: boolean };
   outcome: 'pending' | 'answered' | 'failed' | 'aborted';
+  /** What came with the prompt: each attachment's type, media type and (text, cut to 4,000 chars) content. */
+  attachments?: Array<{ type: string; mediaType: string; length: number; text?: string }>;
   signalAborted: boolean;
   startedAt: number;
   endedAt: number | null;
@@ -182,7 +184,7 @@ export class MockProvider implements LLMProvider {
     return true;
   }
 
-  async generateResponse(prompt: string, model: string, options?: any): Promise<string> {
+  async generateResponse(prompt: string, model: string, options?: any, attachments?: unknown[]): Promise<string> {
     if (mockProviderState() !== 'on') throw new Error(MOCK_REFUSED_MESSAGE);
     const signal: AbortSignal | undefined = options?.signal;
     const index = callCounts.get(model) ?? 0;
@@ -197,6 +199,13 @@ export class MockProvider implements LLMProvider {
       startedAt: Date.now(),
       endedAt: null,
     };
+    if (Array.isArray(attachments)) {
+      call.attachments = attachments.map((a: any) => {
+        const content = typeof a?.content === 'string' ? a.content : '';
+        const text = a?.type === 'image' ? undefined : content.slice(0, 4000);
+        return { type: String(a?.type), mediaType: String(a?.mediaType), length: content.length, text };
+      });
+    }
     calls.push(call);
     const finish = (outcome: MockCall['outcome']) => {
       call.outcome = outcome;
@@ -228,7 +237,7 @@ export class MockProvider implements LLMProvider {
     return this.generateResponse(prompt, model);
   }
 
-  async generateResponseWithAttachments(prompt: string, model: string, _attachments: unknown[], options?: any): Promise<string> {
-    return this.generateResponse(prompt, model, options);
+  async generateResponseWithAttachments(prompt: string, model: string, attachments: unknown[], options?: any): Promise<string> {
+    return this.generateResponse(prompt, model, options, attachments);
   }
 }

@@ -257,8 +257,9 @@ class AIClient {
                   fileData = await readEvidenceFile(evidenceRoots, file);
                   
                   // Detect MIME type from file content if not provided or if it's a generic type
+                  // "ipfs/cid" says where the manifest parser fetched the file from, not what it is
                   let mimeType = file.type;
-                  if (!mimeType || mimeType === 'UTF8' || mimeType === 'application/octet-stream') {
+                  if (!mimeType || mimeType === 'UTF8' || mimeType === 'application/octet-stream' || mimeType === 'ipfs/cid') {
                     mimeType = detectMimeType(fileData);
                     logger.info(`${runTag} Detected MIME type for additional file: ${mimeType}`);
                   }
@@ -460,3 +461,4 @@ class AIClient {
 module.exports = new AIClient();
 module.exports.detectMimeType = detectMimeType;
 module.exports.committableScoresProblem = committableScoresProblem;
+module.exports.assertAttachmentBudget = assertAttachmentBudget;

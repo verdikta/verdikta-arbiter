@@ -103,3 +103,18 @@ test('location: COMMIT_STORE_DIR, else <install>/commit-store beside external-ad
   expect(defaultDir({ COMMIT_STORE_DIR: ' /var/x ' })).toBe('/var/x');
   expect(defaultDir({})).toBe(path.resolve(__dirname, '..', '..', '..', '..', 'commit-store'));
 });
+
+// sec5 e2e: a reveal request that reaches a stopped adapter is lost (the job does not retry it), so a
+// restart waits for the commits still to be revealed.
+test('pending: unrevealed commits younger than the window, newest first, without salt or result', async () => {
+  const s = createCommitStore({ dir, logger: quiet });
+  const now = Date.now();
+  await s.save(H(1), entry({ created: new Date(now - 30_000).toISOString() }));
+  await s.save(H(2), entry({ created: new Date(now - 5_000).toISOString() }));
+  await s.save(H(3), entry({ created: new Date(now - 10_000).toISOString(), justificationCid: 'QmRevealed' }));
+  await s.save(H(4), entry({ created: new Date(now - 2 * 60 * 60 * 1000).toISOString() }));
+  const p = await s.pending({ now });
+  expect(p.map((x) => x.hash)).toEqual([H(2).slice(0, 10), H(1).slice(0, 10)]);
+  expect(JSON.stringify(p)).not.toMatch(/1234567890abcdef1234567890abcdef|600000/);
+  expect(await createCommitStore({ dir, logger: quiet }).pending({ now, withinMs: 20_000 })).toHaveLength(1);
+});

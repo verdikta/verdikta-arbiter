@@ -15,6 +15,7 @@ const {
   assertArchiveIsZip,
   validateBCIDArchive,
   fetchAndTriageArchives,
+  submissionOverAttachmentLimits,
   buildMalformedSubmissionVerdict,
   FULL_SCORE
 } = require('../../utils/bcidValidation');
@@ -209,6 +210,28 @@ describe('bcidValidation', () => {
       expect(r.extractedPaths[N]).toBeUndefined();
     });
 
+    it('a bCID over the work limits is collected as malformed (a verdict every arbiter reaches), not left as an error', async () => {
+      const AdmZip = require('adm-zip');
+      const big = new AdmZip(fixture('bcid-conforming.zip'));
+      for (let i = 0; i < 2001; i++) big.addFile(`pad/${i}.txt`, Buffer.from('x'));
+      const B = cid('over-limits');
+      const svc = fetchingService();
+      svc.getArchive = jest.fn(async (c) => (c === B ? big.toBuffer() : buffers[c]));
+      const r = await fetchAndTriageArchives([P, B], tempDir, opts(svc));
+      expect(r.malformedBCIDs.map(e => e.check)).toEqual([CHECKS.OVER_WORK_LIMITS]);
+      expect(r.malformedBCIDs[0].reason).toMatch(/at most 2000/);
+    });
+
+    it('the PRIMARY archive over the work limits still errors (never a verdict against the submitter)', async () => {
+      const AdmZip = require('adm-zip');
+      const big = new AdmZip(fixture('bounty-primary.zip'));
+      for (let i = 0; i < 2001; i++) big.addFile(`pad/${i}.txt`, Buffer.from('x'));
+      const Q = cid('primary-over-limits');
+      const svc = fetchingService();
+      svc.getArchive = jest.fn(async (c) => (c === Q ? big.toBuffer() : buffers[c]));
+      await expect(fetchAndTriageArchives([Q, C], tempDir, opts(svc))).rejects.toThrow(/work limits/);
+    });
+
     it('an extraction I/O error on the bCID propagates untouched and is NOT collected as malformed', async () => {
       const svc = fetchingService();
       const realExtract = svc.extractArchive;
@@ -297,6 +320,27 @@ describe('bcidValidation', () => {
       // @verdikta/common >= 1.7 throws its own MalformedArchiveError here; it is not a
       // classification made by this module → errored path in the handler, no verdict
       expect(isMalformedArchiveError(err)).toBe(false);
+    });
+  });
+
+  describe('submissionOverAttachmentLimits', () => {
+    const { WorkBudgetError } = require('../../utils/workBudget');
+    const atMost = (n) => (query) => { if (query.additional.length > n) throw new WorkBudgetError(`${query.additional.length} attachments (at most ${n})`); };
+    const bcid = (cid, n) => ({ cid, expectedName: 'submittedWork', manifest: { additional: Array.from({ length: n }, (_, i) => ({ name: `f${i}`, filename: `f${i}.txt` })) } });
+
+    it('names the submission whose attachments cross the limit, as a malformed archive', () => {
+      const r = submissionOverAttachmentLimits({ requesterAttachments: [{ name: 'rubric' }], bCIDManifests: [bcid('QmA', 1), bcid('QmB', 5)], check: atMost(4) });
+      expect(r).toBeInstanceOf(MalformedArchiveError);
+      expect([r.cid, r.check, r.expectedName]).toEqual(['QmB', CHECKS.OVER_WORK_LIMITS, 'submittedWork']);
+    });
+
+    it('is null within the limits', () => {
+      expect(submissionOverAttachmentLimits({ requesterAttachments: [{}], bCIDManifests: [bcid('QmA', 2)], check: atMost(4) })).toBeNull();
+    });
+
+    it('the requester over the limits on its own is the request\'s error, not a verdict', () => {
+      expect(() => submissionOverAttachmentLimits({ requesterAttachments: [{}, {}, {}], bCIDManifests: [bcid('QmA', 1)], check: atMost(2) }))
+        .toThrow(WorkBudgetError);
     });
   });
 
