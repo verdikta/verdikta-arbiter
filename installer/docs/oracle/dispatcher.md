@@ -208,8 +208,8 @@ Each arbiter has two scores, **quality** and **timeliness**, from 0 to 1,000 (`c
 | Promoted and revealed (even late) | +20 | by distance from the result: close +20, off −50, far −200 (finished rounds only) |
 | Promoted, no reveal, round finished | −200 | |
 | Promoted, no reveal, round failed | −500 | |
-| No commit, and the round failed for lack of commits | −400 | |
-| Committed but not promoted, or anything else | 0 | 0 |
+| No commit, and the round failed for lack of commits, though some slot committed | −400 | |
+| Committed but not promoted, a round nobody committed in (the request's or a shared outage's failure), or anything else | 0 | 0 |
 
 A score that reaches 0 restarts at 500 and **blocks** the arbiter (not selectable) for
 `lockDuration` (24 h) × 2^offenses. One offense is forgiven per 90 clean days (`decayPeriod`). The

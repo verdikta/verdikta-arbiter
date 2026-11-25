@@ -25,7 +25,8 @@ K/M/N/P (each request carries its jury `(K, M, N, P, timeout)`, the timeout up t
 `selectArbiters` over a shortlist (thin pools repeat arbiters), not
 `selectOracles`; each juror is paid `max(posted fee, minFee)` at dispatch and
 3× that if clustered; the −20 timeout penalty is gone (a live arbiter that did not
-commit loses 400 timeliness only when the round failed for lack of commits, and a
+commit loses 400 timeliness only when the round failed for lack of commits and some
+slot committed, and a
 committer that is not promoted is not scored); registration is
 `registerArbiter(oracle, jobId, fee, classes, chainHead)` with a stake, and
 liveness is the keeper's health calls. Read the v1 figures as history.
