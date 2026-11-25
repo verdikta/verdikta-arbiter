@@ -130,7 +130,7 @@ Select network (1 for Base Sepolia, 2 for Base Mainnet) [1]: 1
 1. Create a wallet using MetaMask, Trust Wallet, or similar
 2. Export the private key (remove the `0x` prefix)
 3. Fund it with Base Sepolia ETH from a faucet
-4. Also add Base Sepolia LINK tokens
+4. To register, also add Base Sepolia wVDKA for the stake (100 per job by default)
 
 !!! danger "Security Warning"
     **TESTNET ONLY**: Never use mainnet private keys. Keep private keys secure and never share them.
@@ -176,14 +176,14 @@ Start Verdikta Arbiter services? (y/n): y
 
 ## Getting Testnet Funds
 
-You'll need Base Sepolia ETH and LINK tokens:
+You'll need Base Sepolia ETH, and wVDKA for the registration stake (no LINK: fees are paid in ETH):
 
 ### Base Sepolia ETH
 - [Base Sepolia Faucet](https://faucet.quicknode.com/base/sepolia)
 - [Coinbase Wallet Faucet](https://coinbase.com/faucets/base-ethereum-sepolia-faucet)
 
-### Base Sepolia LINK  
-- [Chainlink Faucet](https://faucets.chain.link/base-sepolia)
+### Base Sepolia wVDKA
+- The keeper's `stakeRequirement()` per job (100 wVDKA by default), in the token the keeper names as `verdiktaToken()`. Ask the Verdikta team for testnet wVDKA.
 
 ## Installation Flow
 
@@ -206,7 +206,7 @@ After these prompts, the installer runs automatically through all 9 installation
 
 1. **Prepare Credentials**: Have AI provider keys and RPC endpoint URLs ready before starting
 2. **Use Test Wallet**: Create a separate wallet for testnet only
-3. **Fund Test Wallet**: Get Base Sepolia ETH and LINK from faucets
+3. **Fund Test Wallet**: Get Base Sepolia ETH from a faucet, and wVDKA for the stake
 4. **Secure Storage**: Save all credentials securely
 5. **Default Values**: Press Enter to accept recommended defaults
 

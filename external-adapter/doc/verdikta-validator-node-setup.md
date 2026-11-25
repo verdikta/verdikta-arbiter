@@ -1,6 +1,17 @@
 
 # Verdikta Validator Node Setup Guide
 
+> **Legacy guide (pre-dispatcher, LINK era).** This walk-through predates the installer, the
+> ETH-funded dispatcher and the v2 keeper. Its client-contract section (section 9: a Truffle client
+> funded with LINK, 0.05 LINK per request) and its `verdiktaChainlinkNode` job template no longer
+> describe how an arbiter is used: requests now come from the `ReputationAggregator`, paid in ETH,
+> and an arbiter takes part only once it is registered with the v2 `ReputationKeeper`
+> (`registerArbiter(oracle, jobId, fee, classes, chainHead)`, with a wVDKA stake), its operator has
+> `addReputationKeeper(<v2 keeper>)`, and a health job per arbiter job answers the keeper's health
+> calls (`chainlink-node/healthJobSpec`). Use the installer (`installer/README.md`,
+> `installer/docs/`) and `AGENTS.md` for a current node. The component notes below (AI Node,
+> adapter, Docker, Chainlink) are kept for reference.
+
 
 
 

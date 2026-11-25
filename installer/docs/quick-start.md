@@ -8,7 +8,7 @@ The installer now includes **automatic Chainlink key funding**, **fund recovery*
 
 **Fund Management**:
 - **Zero Manual Transfers**: Automatically fund your Chainlink keys during installation
-- **Smart Recovery**: Easily recover excess ETH and accumulated LINK tokens
+- **Smart Recovery**: Easily recover excess ETH (and any legacy LINK) from the node's keys
 - **Error-Proof Setup**: Built-in validation and retry mechanisms
 - **Post-Installation Tools**: Manage oracle finances throughout the lifecycle
 
@@ -65,11 +65,13 @@ Your arbiter node can support different classes of arbitration requests, each re
 
 **For Testing**:
 - Base Sepolia ETH (free from [Base Sepolia Faucet](https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet))
-- Queries are paid for with Base Sepolia LINK (free from [Chainlink Faucet](https://faucets.chain.link/))
+- Registration stakes wVDKA: the keeper's `stakeRequirement()` per job (100 wVDKA by default)
+- Queries are paid for in ETH by the requester; your node's fees accrue in the aggregator
 
 **For Production**:
 - Base Mainnet ETH (~$50-100 USD)
-- Queries are paid for with Base Mainnet LINK (Users can purchase on exchanges--querries cost ~$1 of LINK)
+- wVDKA for the stake: the keeper's `stakeRequirement()` per job (100 wVDKA by default)
+- Queries are paid for in ETH by the requester; your node's fees accrue in the aggregator
 
 ### Wallet Setup
 - Create a **separate test wallet** (never use your main wallet!)
@@ -156,7 +158,7 @@ Configure your installation directory, network selection, and API keys.
 
 **What to choose**:
 - **Option 1**: Base Sepolia testnet (free, recommended for learning)
-- **Option 2**: Base Mainnet (production, requires real ETH, payments to node made in LINK)
+- **Option 2**: Base Mainnet (production, requires real ETH; fees to the node are paid in ETH)
 
 !!! tip "Network Recommendations"
     
@@ -452,7 +454,7 @@ Creating jobs for 4 arbiters...
 
 ## Step 9: Oracle Registration
 
-Register your oracle with the Verdikta dispatcher network to receive arbitration requests.
+Register your oracle with the Verdikta dispatcher network to receive arbitration requests. With the v2 dispatcher each job registers with the ReputationKeeper (`registerArbiter`), stakes the keeper's `stakeRequirement()` in wVDKA (100 by default) and gets a hash chain for the keeper's health calls. See [Dispatcher Registration](oracle/dispatcher.md) for the whole lifecycle: health calls, earnings, scores, pause and exit.
 
 ### Registration Process
 
@@ -468,9 +470,9 @@ If registering, you'll be prompted for:
 
 **Prompt**: `Enter aggregator address:`
 
-**What to provide**: The dispatcher contract address provided by the Verdikta team
-- **Base Sepolia**: `0xE75426Ed0491a8290fC55CAA71ab5e1d95F4BaF6` (example)
-- **Base Mainnet**: Contact Verdikta team for current address
+**What to provide**: The aggregator (dispatcher) contract address provided by the Verdikta team
+- **v2**: set at the v2 deployment; the scripts find the keeper through it (`keeper()`)
+- The v1 addresses in [deployments.md](../../docs/deployments.md) are v1 only: a v2 node cannot register with them
 
 ### Class IDs Configuration
 
@@ -498,11 +500,16 @@ If registering, you'll be prompted for:
 
 ### Registration Verification
 
-After registration, the installer will:
-1. **Submit registration** to the dispatcher contract
-2. **Verify oracle capabilities** with provided class IDs
-3. **Confirm network connectivity** 
-4. **Save registration details** to configuration files
+During registration, the installer will:
+1. **Check the operator gate**: add the v2 keeper to your operator (`addReputationKeeper`) if your wallet owns it
+2. **Check the fee** (`VA_ORACLE_FEE_ETH`, default 0.00002 ETH) against the aggregator's `maxOracleFee()`
+3. **Approve and stake** `stakeRequirement()` wVDKA per job not yet registered
+4. **Create each job's hash chain** in `health-chains/` and register its head with `registerArbiter` (1 to 5 classes per job)
+5. **Create one Chainlink health job per registered job** (`apply-health-jobs.sh --apply`)
+6. **Save registration details** to configuration files
+
+!!! warning "Back up `health-chains/`"
+    It holds the seeds the node answers health calls from. Back it up with the node's keys.
 
 ---
 
@@ -803,7 +810,7 @@ cd ~/verdikta-arbiter-node
 # Recover excess ETH only
 ./recover-chainlink-funds.sh --eth-only
 
-# Recover accumulated LINK tokens only
+# Recover LINK tokens only (legacy: v2 fees are ETH in the aggregator)
 ./recover-chainlink-funds.sh --link-only
 
 # Recover both ETH and LINK
@@ -817,7 +824,7 @@ cd ~/verdikta-arbiter-node
     
     - **Regular Monitoring**: Check key balances monthly
     - **Optimal Funding**: Keep keys funded but not over-funded
-    - **Reward Collection**: Regularly recover accumulated LINK tokens
+    - **Fee Collection**: Fees accrue in the aggregator as `ethOwed` for the operator owner; withdraw them with the aggregator's `withdrawEth()` (no installer script; see [Dispatcher Registration](oracle/dispatcher.md#earnings))
     - **Emergency Recovery**: Use recovery script before node decommissioning
 
 ## Troubleshooting Quick Fixes
@@ -980,7 +987,7 @@ For advanced configurations, see:
 Your installation now includes powerful fund management tools:
 
 - **Automatic Key Funding**: Eliminates manual ETH transfers during setup
-- **Fund Recovery**: Easily recover excess ETH and accumulated LINK tokens
+- **Fund Recovery**: Easily recover excess ETH (and any legacy LINK) from the node's keys
 - **Balance Monitoring**: Built-in tools to check and manage key finances
 - **Error Recovery**: Robust handling of funding failures and network issues
 
@@ -996,7 +1003,7 @@ cd ~/verdikta-arbiter-node
 
 # Fund management
 ./fund-chainlink-keys.sh    # Add ETH to keys
-./recover-chainlink-funds.sh # Recover ETH and LINK from keys
+./recover-chainlink-funds.sh # Recover ETH (and legacy LINK) from keys
 ```
 
 ### ClassID Configuration Summary

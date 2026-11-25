@@ -74,7 +74,8 @@ The keys that matter most:
 | `VA_PINATA_JWT` | Pinata JWT for IPFS uploads | blank |
 | `VA_JUSTIFICATION_MODEL` | Menu number 1-10 | recommended for your keys |
 | `VA_ARBITER_COUNT` | Jobs to create (1-10) | `1` |
-| `VA_REGISTER_ORACLE` / `VA_AGGREGATOR_ADDRESS` / `VA_CLASS_IDS` | Dispatcher registration | `n` / — / `128` |
+| `VA_REGISTER_ORACLE` / `VA_AGGREGATOR_ADDRESS` / `VA_CLASS_IDS` | Dispatcher registration (v2: `registerArbiter`, stakes `stakeRequirement()` wVDKA per job; 1 to 5 classes) | `n` / — / `128` |
+| `VA_ORACLE_FEE_ETH` | The fee each job posts, in ETH; at most the aggregator's `maxOracleFee()` (0.0004 by default) | `0.00002` |
 | `VA_INSTALL_CRON`, `VA_STATUS_PAGE_REPORTING` | Watchdog cron + status-page reporting | `y` / `y` |
 | `VA_INSTALL_BOOT_SERVICE` | Start at boot (systemd unit + container restart policies; needs passwordless sudo) | `y` |
 | `VA_INSTALL_FIREWALL` | Close ports 5432/6688/3000/8080 on the public interface (iptables rules + systemd unit; needs passwordless sudo) | `y` |
@@ -82,7 +83,7 @@ The keys that matter most:
 | `VA_START_SERVICES` | Start the arbiter when done | `y` |
 | `VA_UPGRADE_BACKUP` | (upgrade) copy the install aside first | `y` |
 | `VA_UPGRADE_BACKUP_KEEP` | (upgrade) install backups to keep once the new one succeeded — older `<install>_backup_YYYYMMDD-HHMMSS` directories are removed; `0` keeps them all (also `--keep-backups N`) | `3` |
-| `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) regenerate job specs + re-register on-chain | `n` |
+| `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) regenerate job specs (new job ids). Refused on a node registered with the v2 dispatcher, where a job id is an arbiter key: exit first | `n` |
 | `VA_UPGRADE_JOB_TIMEOUTS` | (upgrade) the 840 s job limits: `MaxRunDuration` in `config.toml`, stale jobs replaced under the same job ids, no on-chain action (`apply-job-timeouts.sh`). `n` keeps the jobs' old limits (a yes to the template regeneration below still sets the template's `MaxRunDuration`); the next upgrade asks again | `y` |
 | `VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG` | (upgrade) apply `chainlink-node/config_template.toml`'s settings to the node's `config.toml`, keeping its RPC endpoints, ChainID, gas caps and any setting the template does not mention; validated by Chainlink first, backup kept. Asked only when something would change; preview with `regenerate-chainlink-config.sh --check` | `y` |
 | `VA_UPGRADE_CHAINLINK_FINALITY` | (upgrade) add `NoNewFinalizedHeadsThreshold='0s'` and `EnforceRepeatableRead=false` to a Chainlink `config.toml` that lacks them (July 2026 0-live-RPC fix; backup kept, nothing else changes). Asked only when one is missing | `y` |
@@ -102,6 +103,7 @@ The operator tools copied into the install root accept the same flags:
 
 ```bash
 ~/verdikta-arbiter-node/register-oracle.sh --answers ~/arbiter-answers.env   # VA_AGGREGATOR_ADDRESS, VA_CLASS_IDS
+~/verdikta-arbiter-node/unregister-oracle.sh --answers ~/arbiter-answers.env # VA_DEREGISTER_ORACLE: requestExit, then completeExit on a run after unbonding
 ~/verdikta-arbiter-node/update-rpc-endpoints.sh --unattended                 # VA_RPC_HTTP_URLS, VA_RPC_WS_URLS
 ~/verdikta-arbiter-node/arbiter-doctor.sh --fix --yes                        # already non-interactive
 ```

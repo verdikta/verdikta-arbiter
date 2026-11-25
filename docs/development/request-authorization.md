@@ -55,10 +55,12 @@ Use the class-5555 Base Sepolia canary process before mainnet. Plan a maintenanc
 window or a separate installation; preserve the old contract address and job
 IDs until their registrations and pending requests are resolved.
 
-1. Stop new selection of the old jobs through the existing unregister workflow,
-   and allow pending commit/reveal requests to finish before stopping services.
-   The adapter's commitment store is still in memory. Follow the keeper's
-   deregistration/stake timing rules; do not merely overwrite old job IDs.
+1. Stop new selection of the old jobs through the existing unregister workflow
+   (`installer/util/unregister-oracle.sh`; on the v2 keeper this is
+   `requestExit`, then `completeExit` after the unbonding period, 2 days by
+   default), and allow pending commit/reveal requests to finish before stopping
+   services. The adapter's commitment store is still in memory. The stake stays
+   locked until `completeExit`; do not merely overwrite old job IDs.
 2. Build and deploy the hardened operator using this checkout's pinned
    dependencies and compiler. Verify the payment token/network addresses before
    deployment. Configure its authorized Chainlink transaction senders.
@@ -75,8 +77,11 @@ IDs until their registrations and pending requests are resolved.
 5. Upgrade the service code/configuration and regenerate every Chainlink job
    from `chainlink-node/basicJobSpec`, including its Authorization header and
    both authorization gates. For unattended upgrades set
-   `VA_UPGRADE_REGENERATE_JOBS=y`. Register the resulting new job IDs on the
-   new operator/keeper; ensure no old duplicate job remains active.
+   `VA_UPGRADE_REGENERATE_JOBS=y` (on a node registered with the v2 keeper the
+   upgrade refuses this, since a new job id is a new arbiter key: exit first).
+   Register the resulting new job IDs on the new operator/keeper
+   (`registerArbiter`, a new stake and hash chain per job, and a health job per
+   arbiter job); ensure no old duplicate job remains active.
 6. Verify `isRequesterApproved(aggregator)` is true; perform a real testnet
    commit/reveal evaluation, then a controlled unapproved request. The latter
    must emit no `OracleRequest` and create no paid work. Confirm the installed

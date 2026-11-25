@@ -12,7 +12,7 @@ Before starting, ensure you have:
 
 - [ ] **System**: Ubuntu 20.04+, macOS 11+, or WSL2
 - [ ] **API Keys**: OpenAI, Anthropic, Web3 provider, IPFS service
-- [ ] **Testnet Funds**: Base Sepolia ETH and LINK tokens
+- [ ] **Testnet Funds**: Base Sepolia ETH, and wVDKA for the registration stake (100 per job by default)
 - [ ] **Internet**: Stable connection for downloads
 
 ## Installation Process
@@ -162,6 +162,10 @@ After configuration, the installer runs through 9 automated steps:
 ✓ Oracle class ID: 128
 ```
 
+With the v2 dispatcher this step stakes wVDKA and registers each job with `registerArbiter`,
+creates the jobs' hash chains in `health-chains/` and their Chainlink health jobs. See
+[Dispatcher Registration](../oracle/dispatcher.md).
+
 ### Step 5: Installation Completion
 
 Upon successful completion, you'll see:
@@ -252,7 +256,7 @@ sudo systemctl start docker
 After successful installation:
 
 1. **Service Management**: Use the provided management scripts
-2. **Oracle Registration**: Register with dispatcher for production
+2. **Oracle Registration**: Register with dispatcher for production ([Dispatcher Registration](../oracle/dispatcher.md)), and back up `health-chains/` with the node's keys
 3. **Monitoring**: Set up status monitoring and alerts
 4. **Backup**: Create backup procedures for your configuration
 

@@ -8,7 +8,9 @@ Canonical contract addresses for each supported network.
 
 ## LINK Token Addresses (Third-Party)
 
-These are the official Chainlink LINK token contracts used by Verdikta on each network.
+These are the official Chainlink LINK token contracts on each network. Each arbiter's `ArbiterOperator`
+(a Chainlink Operator) is deployed with the LINK token address; no request, fee or stake is paid in LINK
+(fees are ETH, the stake is wVDKA).
 
 | Network | Address | Explorer |
 |---|---|---|
@@ -18,11 +20,33 @@ These are the official Chainlink LINK token contracts used by Verdikta on each n
 
 ## Verdikta dispatcher contracts (what `register-oracle.sh` registers with)
 
+### v2 (verdikta-dispatcher `beacon` branch)
+
+Not deployed yet. The v2 aggregator, `ReputationKeeper` and `JuryBeacons` addresses are set at the
+v2 deployment, and this table is filled in then. v2 is a redeploy, not an upgrade: every arbiter
+registers again with the v2 keeper (`registerArbiter`, with a hash-chain head and a fresh stake), and
+each operator owner adds the v2 keeper to its operator (`addReputationKeeper(<v2 keeper>)`;
+`register-oracle.sh` does it when the signer owns the operator).
+
+| Network | Aggregator (dispatcher) | ReputationKeeper | JuryBeacons | Wrapped VDKA (`verdiktaToken()`) |
+|---|---|---|---|---|
+| Base Sepolia | set at the v2 deployment | set at the v2 deployment | set at the v2 deployment | set at the v2 deployment |
+| Base Mainnet | set at the v2 deployment | set at the v2 deployment | set at the v2 deployment | set at the v2 deployment |
+
+Read them back from the aggregator: `cast call <aggregator> 'keeper()(address)'`, then
+`cast call <keeper> 'verdiktaToken()(address)'` and `cast call <keeper> 'stakeRequirement()(uint256)'`
+(the stake per job id, 100 wVDKA by default). `register-oracle-cl.js` refuses a `--wrappedverdikta`
+that is not the keeper's `verdiktaToken()`.
+
+### v1 (deployed, tag `aggregator-v0.1.0`)
+
 Read back on-chain 2026-09-14 (`cast call <aggregator> 'reputationKeeper()(address)'`,
 then `cast call <keeper> 'verdiktaToken()(address)'`). The aggregator is the address you pass
 as `--aggregator` / `VA_AGGREGATOR_ADDRESS`; the keeper is what actually pulls the 100 wVDKA
 stake, so **the wVDKA you hold must be the keeper's `verdiktaToken()`** — a stale aggregator
-approves the wrong token and reverts.
+approves the wrong token and reverts. These are the **v1** contracts (`registerOracle`,
+`deregisterOracle`). The installer on the `beacon` branch speaks only the v2 keeper
+(`registerArbiter`, `requestExit` / `completeExit`) and cannot register with them.
 
 | Network | Aggregator (dispatcher) | ReputationKeeper | Wrapped VDKA (`verdiktaToken()`) |
 |---|---|---|---|
@@ -39,7 +63,7 @@ and `keeperAddress` for the network it tracks.
 
 | Network | Aggregator | ReputationKeeper | Wrapped VDKA | Why it is here |
 |---|---|---|---|---|
-| Base Sepolia | `0x262f48f06DEf1FE49e0568dB4234a3478A191cFd` | `0x89E57080822fa64A808Ace0a06c4429Ea22e6ce8` | `0x2F1d1aF9d5C25A48C29f56f57c7BAFFa7cc910a3` | Earlier deployment. This document listed it as current until 2026-09-14; the first agent-driven registration copied it from here, approved 100 wVDKA to the retired keeper and reverted (verdikta/verdikta-agents#281). |
+| Base Sepolia | `0x262f48f06DEf1FE49e0568dB4234a3478A191cFd` | `0x89E57080822fa64A808Ace0a06c4429Ea22e6ce8` | `0x2F1d1aF9d5C25A48C29f56f57c7BAFFa7cc910a3` | Earlier v1 deployment. This document listed it as current until 2026-09-14; the first agent-driven registration copied it from here, approved 100 wVDKA to the retired keeper and reverted (verdikta/verdikta-agents#281). |
 
 Each arbiter's own `ArbiterOperator` address is per install (`installer/.contracts` → `OPERATOR_ADDR`),
 not a shared contract, so it is not listed here.
@@ -50,5 +74,5 @@ When deploying new contracts:
 
 1. Record the deployment transaction hash.
 2. Update the table above with the new address and link.
-3. Update `arbiter-operator/deployment-addresses.json` (LINK) and the wVDKA constants in `installer/bin/register-oracle-dispatcher.sh`, `installer/util/register-oracle.sh`, `installer/util/unregister-oracle.sh` to stay in sync.
+3. Update `arbiter-operator/deployment-addresses.json` (LINK) and the wVDKA constants in `installer/bin/register-oracle-dispatcher.sh`, `installer/util/register-oracle.sh`, `installer/util/unregister-oracle.sh` to stay in sync. At the v2 deployment, check that those constants equal the v2 keeper's `verdiktaToken()`: registration refuses any other token.
 4. Commit both changes in the same PR.

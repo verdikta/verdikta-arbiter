@@ -110,7 +110,7 @@ cd verdikta-arbiter/installer
 - Automatic dependency installation and key management
 - Environment configuration with network-specific settings
 - Smart contract deployment with arbiter authorization
-- Oracle registration with dispatcher support
+- Oracle registration with the dispatcher (v2: `registerArbiter` with a wVDKA stake and a hash chain per job; see [Dispatcher Registration](oracle/dispatcher.md))
 
 ### :material-wrench: Manual Installation
 
@@ -135,13 +135,13 @@ For advanced users who need fine-grained control:
 
 ### Base Sepolia (Testnet) - Recommended for Testing
 - **Chain ID**: 84532
-- **Funding**: Free testnet ETH and LINK tokens
+- **Funding**: Free testnet ETH, plus testnet wVDKA for the stake
 - **Purpose**: Development, testing, and learning
 - **Configuration**: `~/.chainlink-testnet/`
 
 ### Base Mainnet - Production Ready
 - **Chain ID**: 8453  
-- **Funding**: Real ETH and LINK tokens required
+- **Funding**: Real ETH, plus wVDKA for the stake (100 per job by default)
 - **Purpose**: Production deployments
 - **Configuration**: `~/.chainlink-mainnet/`
 - **Cost Estimation**: ~$50-100 USD for initial setup and deployment
@@ -154,7 +154,7 @@ Before installation, ensure you have the following API keys:
 - **Anthropic**: For Claude access (alternative/backup AI provider)
 - **RPC Endpoints (HTTP + WS)**: Base network access via Infura, Alchemy, QuickNode, or other compatible providers
 - **IPFS Service**: Pinata or Infura IPFS for document storage
-- **Network Funds**: ETH and LINK tokens for chosen network (testnet or mainnet)
+- **Network Funds**: ETH for gas and wVDKA for the registration stake, on the chosen network (no LINK is needed)
 
 ## Multi-Arbiter Features
 
@@ -197,7 +197,7 @@ Ready to begin? Start with our [Quick Start Guide](quick-start.md) for the faste
 
     Planning to deploy on **Base Mainnet**? 
     
-    - Ensure you have sufficient ETH and LINK tokens (~$50-100 for setup)
+    - Ensure you have sufficient ETH (~$50-100 for setup) and wVDKA for the stake
     - Test thoroughly on testnet first
     - Consider starting with 1-2 arbiters before scaling
     - Review security best practices in our [Management Guide](management/index.md) 

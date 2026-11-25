@@ -16,6 +16,19 @@ bond, and the dispute panel's confirmation of an award above a set size), are in
 a second dated note in §13.2, with their fixtures in §18. The owner decided
 their mechanics on 2026-11-10 (Q72); only whether an appeal carries a statement
 is still open. Where they conflict with the text, they win.
+**Protocol note (2026-11-25, v2 aggregator and keeper):** the dispatcher facts this
+design cites (§5, §10.8, §20 decision 9 and elsewhere) are the deployed **v1**
+contracts', read in Oct–Nov 2026. v2 (verdikta-dispatcher `beacon` branch, not
+deployed yet) changes them: there is no `responseTimeoutSeconds` and no fixed
+K/M/N/P (each request carries its jury `(K, M, N, P, timeout)`, the timeout up to
+`maxTimeout()`, 3,600 s by default, and run from the draw); selection is
+`selectArbiters` over a shortlist (thin pools repeat arbiters), not
+`selectOracles`; each juror is paid `max(posted fee, minFee)` at dispatch and
+3× that if clustered; the −20 timeout penalty is gone (a live arbiter that did not
+commit loses 400 timeliness only when the round failed for lack of commits, and a
+committer that is not promoted is not scored); registration is
+`registerArbiter(oracle, jobId, fee, classes, chainHead)` with a stake, and
+liveness is the keeper's health calls. Read the v1 figures as history.
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, two ClassIDs with hard limits, image pins,
 trusted builder keys, the outcome set), verdikta-applications (a new

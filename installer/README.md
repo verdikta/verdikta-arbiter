@@ -23,6 +23,14 @@ Automated installation, upgrade, and operations tooling for the Verdikta Arbiter
 ./util/arbiter-status.sh
 ```
 
+## Registering with the dispatcher
+
+`util/register-oracle.sh` (installed as `~/verdikta-arbiter-node/register-oracle.sh`) registers each
+job with the v2 ReputationKeeper (`registerArbiter`, a wVDKA stake per job and a hash chain in
+`health-chains/`) and creates its Chainlink health job; `unregister-oracle.sh` exits
+(`requestExit`, then `completeExit` on a run after the 2-day unbonding period). See
+[docs/oracle/dispatcher.md](docs/oracle/dispatcher.md).
+
 ## Documentation
 
 Comprehensive operator documentation lives in `docs/` and is published to [docs.verdikta.com](https://docs.verdikta.com/). To serve locally:

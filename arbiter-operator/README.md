@@ -11,6 +11,23 @@ and every fulfillment method checks approval again.
 Existing operators are not proxies. See the [authorization and migration guide](../docs/development/request-authorization.md)
 and the [pinned Operator adaptation](contracts/vendor/README.md).
 
+**The v2 keeper (verdikta-dispatcher `beacon` branch).** The gate calls
+`isContractApproved(requester)` on each keeper in the list; the v2 `ReputationKeeper` keeps that
+function, so the contract needs no change, but each operator owner must add the v2 keeper with
+`addReputationKeeper(<v2 keeper>)`. Until then every v2 request to this operator is denied and the
+aggregator skips the slot. `scripts/register-oracle-cl.js` does this before registering, when run by
+the operator's owner. The scripts here speak the v2 keeper:
+
+- `scripts/register-oracle-cl.js`: `registerArbiter(oracle, jobId, fee, classes, chainHead)` per job,
+  after creating the job's hash chain; pulls `stakeRequirement()` wVDKA per job from the signer (the
+  operator's owner); fee in ETH, at most the aggregator's `maxOracleFee()`.
+- `scripts/unregister-oracle-cl.js`: `requestExit`, then `completeExit` after the unbonding period
+  (2 days by default), whichever is due on each run. Replaces v1's `deregisterOracle`.
+- `scripts/query-oracle-classes.js`: reads `getArbiter(key)`, `arbiterClasses(key)` and `healthState(key)`.
+
+No script here wraps `setPaused` (v1: `setOracleActive`), `setFee`, `topUpStake` or
+`requestHealthCall`; call them on the keeper directly, from the operator's owner.
+
 ## Solidity Version Compatibility
 
 This project currently uses Solidity 0.8.19 for compatibility with the Chainlink contracts that are imported. The following compatibility issues prevent upgrading to Solidity 0.8.30 at this time:

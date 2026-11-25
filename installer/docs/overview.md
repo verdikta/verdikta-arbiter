@@ -70,26 +70,33 @@ The on-chain components handle request lifecycle:
 ### 1. Request Initiation
 
 A client contract submits a request to the ETH-funded **ReputationAggregator**
-(deployed from the separate `verdikta-dispatcher` repo). Evidence is referenced
-by IPFS CID(s); arbiters are paid in native ETH attached as `msg.value`:
+(deployed from the separate `verdikta-dispatcher` repo; v2 shown). Evidence is referenced
+by IPFS CID(s); arbiters are paid in native ETH attached as `msg.value`. Each request
+carries its own jury `(K drawn, M promoted, N counted, P clustered, timeout)`:
 
 ```solidity
 bytes32 aggRequestId = aggregator.requestAIEvaluationWithApproval{
-    value: aggregator.maxTotalFee(maxOracleFee)
+    value: aggregator.maxTotalFee(maxFee, minFee, withBeacons, K, P)
 }(
     cids,                      // IPFS CIDs of the evidence archive(s)
     "",                        // addendum text ("" if none)
     500,                       // alpha (oracle-selection blend)
-    maxOracleFee,              // per-oracle fee ceiling (wei)
+    maxFee,                    // per-arbiter fee ceiling (wei), capped at maxOracleFee()
+    minFee,                    // fee floor (wei): each juror is paid at least this (0 = none)
     estimatedBaseCost,
     maxFeeBasedScalingFactor,
-    128                        // requestedClass (ClassID / model pool)
+    128,                       // requestedClass (ClassID / model pool)
+    withBeacons,               // draw the jury from jury beacons (the Jumbo preset)
+    jury                       // Jury{K, M, N, P, timeout}
 );
 ```
 
+The request only escrows. Anyone then calls `drawJury(aggId)` from two blocks later, which selects
+the jurors through the ReputationKeeper and dispatches the commit requests.
+
 ### 2. Oracle Processing
 
-The aggregator selects arbiters via the ReputationKeeper and emits an
+The aggregator selects arbiters via the ReputationKeeper (at the draw) and emits an
 `OracleRequest` to each selected **ArbiterOperator**. That operator's Chainlink
 node runs a `directrequest` job that calls the **`verdikta-ai`** bridge (the
 External Adapter). See `chainlink-node/basicJobSpec` for the full template:
@@ -127,7 +134,14 @@ const justificationCid = await ipfsClient.uploadToIPFS(justificationFile);
 ```
 
 For commit-reveal rounds the adapter uses `cid` mode prefixes (`1:` commit,
-`2:` reveal) so aggregated oracles can't copy one another.
+`2:<64 hex>` reveal, the full commit hash) so aggregated oracles can't copy one another. In v2
+the commit is `keccak256(abi.encode(aggId, operator, scores, salt))`, all 32 bytes, with a
+128-bit salt that the reveal returns as `<cid>:<32 hex>`.
+
+Separately, the ReputationKeeper sends **health calls** to the arbiters it selects. Each
+registered job has a Chainlink health job (`chainlink-node/healthJobSpec`) that answers within
+60 s from the job's hash chain, or the arbiter is frozen until it answers. See
+[Dispatcher Registration](oracle/dispatcher.md#health-calls).
 
 ### 4. Response Delivery
 
@@ -146,9 +160,10 @@ function fulfillOracleRequestV(
 ) external returns (bool success);
 ```
 
-The aggregator records each arbiter's response, aggregates them via
-commit-reveal, and exposes the final result through
-`getEvaluation(aggRequestId) → (uint256[] scores, string justificationCID, bool exists)`.
+The aggregator records each arbiter's response, promotes M of the commits to reveal,
+aggregates the first N reveals (clustering P of them), and exposes the final result through
+`getEvaluation(aggRequestId) → (uint256[] scores, string justificationCID, bool valid)`. Scores
+and payments are settled with `settle(aggId)` after the round's deadline.
 
 ## Architecture Benefits
 
@@ -240,9 +255,11 @@ commit-reveal, and exposes the final result through
 
 ### Oracle Payments
 
-- **Request Fees**: Paid in LINK tokens for each arbitration
-- **Performance Bonuses**: Higher accuracy earns increased rewards
-- **Reputation Stakes**: Oracles stake tokens for participation rights
+- **Request Fees**: Paid in ETH per jury slot, at least the request's fee floor; they accrue in the aggregator for the operator owner (`withdrawEth()`)
+- **Performance Bonuses**: Arbiters in the cluster that decides the round earn 3 × their fee more
+- **Reputation Stakes**: Each registered job stakes wVDKA (the keeper's `stakeRequirement()`, 100 by default), refunded after exit and unbonding
+
+See [Dispatcher Registration](oracle/dispatcher.md#earnings) for the details.
 
 ### Cost Structure
 

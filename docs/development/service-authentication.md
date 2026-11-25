@@ -59,8 +59,11 @@ Existing jobs need the new Authorization header. The first security upgrade
 must regenerate jobs; if a changed template is not regenerated, the upgrade
 aborts. The request-authorization fix also requires a new operator deployment;
 see [migration guidance](request-authorization.md). For unattended upgrades, explicitly set
-`VA_UPGRADE_REGENERATE_JOBS=y`. The existing regeneration workflow replaces job
-IDs and handles oracle re-registration. An old duplicate job is never accepted
+`VA_UPGRADE_REGENERATE_JOBS=y`. Regeneration replaces job IDs. With the v2
+keeper a job id is an arbiter key, so `upgrade-arbiter.sh` refuses to regenerate
+the jobs of a registered node: exit the old keys first (`requestExit`, then
+`completeExit` after unbonding) and register the new ones with a new stake.
+Nothing deregisters or re-registers automatically. An old duplicate job is never accepted
 as a successfully authenticated replacement. Missing job templates also abort.
 Custom jobs must be updated to the equivalent header and payload before use.
 
@@ -87,7 +90,8 @@ of this local fix.
 Mode 1 requires a stable `id` (the template sends `jobSpec.externalJobID`) and a
 bytes32 `data.aggId`. The stored result is bound to that job, the normalized
 aggregation ID and the configured operator, with a three-day server expiry.
-Mode 2 requires the same scope and a valid 128-bit commitment. Each caller is
+Mode 2 requires the same scope and a valid 256-bit commitment (`2:<64 hex>`, the v2
+aggregator's full keccak256 commit hash; v1 sent 128 bits). Each caller is
 checked before it can read a result or join an in-flight upload. Unknown,
 expired, old unscoped and mismatched commitments return 403 without uploading
 or changing state. Invalid request syntax returns 400.

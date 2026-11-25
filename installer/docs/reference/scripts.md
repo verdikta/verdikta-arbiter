@@ -171,7 +171,9 @@ Creates Chainlink jobs and bridges for arbitration.
 
 **Location:** `installer/bin/register-oracle-dispatcher.sh`
 
-Registers oracle with the Verdikta dispatcher network.
+Registers oracle with the Verdikta dispatcher network (the installer's last step). With the v2
+dispatcher it registers every job with the keeper as `register-oracle.sh` does (below). See
+[Dispatcher Registration](../oracle/dispatcher.md).
 
 ```bash
 ./bin/register-oracle-dispatcher.sh
@@ -313,7 +315,11 @@ Standalone oracle registration script.
 
 With the v2 dispatcher it creates each job's hash chain in `health-chains/` (back it up with the
 node's keys), registers its head with `registerArbiter`, and then creates the job's health job with
-`apply-health-jobs.sh --apply`.
+`apply-health-jobs.sh --apply`. Before staking it adds the aggregator's keeper to the operator
+(`addReputationKeeper`) if the signer owns the operator, refuses a fee (`VA_ORACLE_FEE_ETH`) above the
+aggregator's `maxOracleFee()`, and approves `stakeRequirement()` wVDKA per job not yet registered.
+Jobs already registered are skipped and recorded, so a run after registering from a browser (head 0)
+creates their health jobs.
 
 ---
 
@@ -322,9 +328,13 @@ node's keys), registers its head with `registerArbiter`, and then creates the jo
 Takes the oracle's jobs off the dispatcher. With the v2 dispatcher this is two steps:
 - **The first run requests the exit.** The jobs stop being selectable at once.
 - **A run after the unbonding period (2 days by default) completes it.** The stake goes back to
-  the operator's owner.
+  the operator's owner and the job's class slots are freed. `completeExit` waits while the job is
+  blocked.
 
-Each run does whichever step is due and prints when the next one is.
+Each run does whichever step is due and prints when the next one is. Pausing (`setPaused`), fee
+changes (`setFee`), stake top-ups (`topUpStake`), `requestHealthCall` and withdrawing fees
+(`withdrawEth` on the aggregator) have no script: see
+[Dispatcher Registration](../oracle/dispatcher.md#pause-fee-changes-and-exit).
 
 ```bash
 ~/verdikta-arbiter-node/unregister-oracle.sh

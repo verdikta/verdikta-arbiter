@@ -72,6 +72,15 @@ with no verdict. Before step 1, read the value, `cast call <aggregator>
 of L4 also prints it (`[l4] aggregator responseTimeoutSeconds=`). Until then, upgrade
 the canaries from a commit before A11.
 
+This gate is for the **v1** aggregator, which the canaries serve today. The v2 aggregator
+(verdikta-dispatcher `beacon` branch, not deployed yet) has no `responseTimeoutSeconds()` or
+`setResponseTimeout`: each request carries its own jury `timeout`, run from the draw and bounded by
+the owner's `maxTimeout()` (default 3,600 s). On v2, read a round's timeout with
+`cast call <aggregator> "getJury(bytes32)(uint8,uint8,uint8,uint8,uint40)" <aggId>` and check that the
+requester's class preset gives a claim enough time. The L4 harness (`e2e/src/l4/run-l4.js`) still
+speaks the v1 aggregator only (the 7-argument request, `maxTotalFee(fee)`, `getAggregationStatus`,
+no `drawJury`), so this canary gate cannot run against v2 until it is ported.
+
 1. **Upgrade the canaries first.** On the testnet VPS, for every install
    directory (see [Unattended Installation and Upgrade](../installer/docs/installation/unattended.md)):
 
@@ -118,7 +127,8 @@ the canaries from a commit before A11.
    juror (`deepseek/deepseek-v4-pro-0813`). Without that key every claim abstains,
    and the AI Node logs `[OpenRouter] OPENROUTER_API_KEY not configured`.
 
-2. **Check the e2e wallet.** The L4 run pays `maxTotalFee` (≈ 0.0018 ETH) plus
+2. **Check the e2e wallet.** The L4 run pays `maxTotalFee` (≈ 0.0018 ETH on v1; on v2
+   `maxTotalFee(maxFee, minFee, withBeacons, K, P)` depends on the jury the request asks for) plus
    gas per scenario from the wallet whose key lives in the `e2e` GitHub
    Environment; its address is printed as `[l4] wallet=` by every run. Top it up
    from a Base Sepolia faucet when it is below ~0.005 ETH:

@@ -128,10 +128,10 @@ You'll need tokens for contract deployment and operations. Choose your deploymen
 **Requirements**:
 
 - **Base Sepolia ETH**: ~0.1 ETH for gas fees and contract deployment
-- **Base Sepolia LINK**: ~10 LINK tokens for oracle operations
+- **Base Sepolia wVDKA**: the stake for each job you register (the keeper's `stakeRequirement()`, 100 wVDKA per job by default)
+- No LINK is needed: the operator contract only records the LINK token address, and fees are paid in ETH
 - **Faucets**:
   - [Base Sepolia ETH Faucet](https://www.coinbase.com/faucets/base-ethereum-sepolia-faucet)
-  - [Chainlink LINK Faucet](https://faucets.chain.link/)
   - [Alchemy Base Sepolia Faucet](https://sepoliafaucet.com/)
 
 !!! success "Free & Risk-Free"
@@ -144,12 +144,12 @@ You'll need tokens for contract deployment and operations. Choose your deploymen
 **Requirements**:
 
 - **Base Mainnet ETH**: $50-100 USD worth for deployment and operations
-- **Base Mainnet LINK**: ~10 LINK tokens (~$50-150 depending on price)
-- **Purchase**: Buy ETH and LINK on exchanges, transfer to your deployment wallet
+- **Base Mainnet wVDKA**: the stake for each job you register (the keeper's `stakeRequirement()`, 100 wVDKA per job by default), refunded after you exit
+- **Purchase**: Buy ETH on an exchange and obtain wVDKA, transfer both to your deployment wallet
 
 **Cost Breakdown**:
 - Contract deployment: ~$5-15 in gas fees
-- Initial LINK funding: ~$50-150 for oracle operations  
+- Stake: `stakeRequirement()` wVDKA per job (bonded while registered, refunded after exit)
 - Reserve funds: ~$30-50 for ongoing operations
 
 !!! warning "Production Deployment"
@@ -185,12 +185,12 @@ Choose one deployment option:
 #### For Testnet Deployment (Recommended First)
 - [ ] Wallet private key for a dedicated test wallet
 - [ ] Base Sepolia ETH (~0.1 ETH from faucets)
-- [ ] Base Sepolia LINK tokens (~10 LINK from faucets)
+- [ ] Base Sepolia wVDKA for the stake (100 per job by default)
 
 #### For Mainnet Deployment (Production)
 - [ ] Wallet private key for a dedicated deployment wallet  
 - [ ] Base Mainnet ETH ($50-100 worth for deployment and operations)
-- [ ] Base Mainnet LINK (~10 LINK tokens, $50-150 depending on price)
+- [ ] Base Mainnet wVDKA for the stake (100 per job by default)
 
 ### :material-settings: Multi-Arbiter Planning
 

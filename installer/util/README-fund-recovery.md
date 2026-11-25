@@ -1,12 +1,15 @@
 # Chainlink Fund Recovery
 
-The `recover-chainlink-funds.sh` script provides automated recovery of excess ETH and accumulated LINK tokens from Chainlink node keys back to the owner's wallet. This is useful for recovering over-funded amounts, accumulated LINK rewards, or when decommissioning an oracle node.
+The `recover-chainlink-funds.sh` script provides automated recovery of excess ETH and accumulated LINK tokens from Chainlink node keys back to the owner's wallet. This is useful for recovering over-funded amounts, LINK left on the keys from the LINK-fee era, or when decommissioning an oracle node.
+
+!!! note "Fees are not on the node keys"
+    Arbiter fees are paid in ETH and accrue in the aggregator as `ethOwed[<operator owner>]` (v1 and v2 ETH aggregators). This script does not touch them: the operator owner withdraws them with the aggregator's `withdrawEth()` (see [Dispatcher Registration](../docs/oracle/dispatcher.md#earnings)). The registration stake (wVDKA) is held by the keeper and comes back with `unregister-oracle.sh`.
 
 ## Overview
 
 During oracle operation, Chainlink keys accumulate:
 - **ETH**: Used for gas fees, may have excess amounts
-- **LINK tokens**: Accumulated from completed oracle requests
+- **LINK tokens**: Only from the legacy LINK-fee aggregator; the ETH aggregators pay no LINK
 
 The fund recovery script safely transfers these assets back to the owner's wallet while maintaining minimum amounts needed for future operations.
 
@@ -148,12 +151,12 @@ Destination: Owner wallet address
 ## Example Scenarios
 
 ### Scenario 1: Regular Maintenance
-**Situation**: Oracle has been running for months, accumulated LINK rewards
+**Situation**: Oracle has been running for months; keys hold legacy LINK or surplus ETH
 ```bash
 # Check what's available
 ~/verdikta-arbiter-node/recover-chainlink-funds.sh --dry-run --both
 
-# Recover accumulated LINK tokens
+# Recover LINK left on the keys (legacy)
 ~/verdikta-arbiter-node/recover-chainlink-funds.sh --link-only
 ```
 
@@ -294,7 +297,7 @@ https://basescan.org/tx/[transaction_hash]
 ## Best Practices
 
 ### Regular Maintenance
-- **Monthly Review**: Check accumulated LINK tokens
+- **Monthly Review**: Check key ETH balances, and withdraw accrued fees from the aggregator (`withdrawEth()`)
 - **Threshold Monitoring**: Ensure keys maintain adequate gas reserves
 - **Balance Optimization**: Recover excess funds to reduce attack surface
 

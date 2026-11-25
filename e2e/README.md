@@ -160,6 +160,19 @@ Submits a real request on-chain (EOA-direct) to the **ReputationAggregator**,
 polls `getEvaluation`, and fetches the justification from IPFS. Nondeterministic
 (real oracle network + LLMs), so assertions are structural + optional winner.
 
+> **v1 only, for now.** L4 speaks the deployed **v1** aggregator
+> (`config.l4.aggregatorAddress` is the v1 Base Sepolia deployment): the 7-argument
+> `requestAIEvaluationWithApproval`, `maxTotalFee(maxOracleFee)`,
+> `getAggregationStatus` and the `NewOracleResponseRecorded` / `OracleSelected`
+> events (`src/l4/run-l4.js`, `src/l4/reveals.js`, `src/l2/claim/canary-chain.js`).
+> The v2 aggregator (verdikta-dispatcher `beacon` branch, not deployed yet) takes a
+> 10-argument request with the fee floor, the beacon flag and a per-request jury
+> `(K, M, N, P, timeout)`, prices it with `maxTotalFee(maxFee, minFee, withBeacons, K, P)`,
+> needs `drawJury(aggId)` from block B+2 (twice with beacons) and `promote` after
+> the commit phase closes, and reports through `getRoundInfo` and `RevealReceived`.
+> Porting L4 is open work. The K, M, N, P = 6, 4, 3, 2 figures below are v1's
+> fixed configuration; in v2 the request carries its own jury.
+
 ```bash
 export RPC_URL=https://sepolia.base.org
 export E2E_WALLET_PRIVATE_KEY=0x...          # dedicated, funded Base Sepolia key (secret!)
@@ -559,8 +572,10 @@ Exit code is `0` when all cases pass, `1` otherwise.
 ## Auditing the oracles behind a request
 
 `getEvaluation`'s `justificationCID` is a **comma-separated list** — one
-justification per revealed oracle — and the aggregator emits `OracleSelected` /
-`CommitReceived` / `NewOracleResponseRecorded` events identifying the operators.
+justification per revealed oracle — and the v1 aggregator emits `OracleSelected` /
+`CommitReceived` / `NewOracleResponseRecorded` events identifying the operators
+(v1 only: the v2 aggregator's events are `BasePayment`, `CommitReceived`,
+`RevealReceived` and `getSlot(aggId, i)`, which the audit tool does not read yet).
 The audit tool combines both to show exactly who served a request and how:
 
 ```bash

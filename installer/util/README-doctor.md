@@ -25,6 +25,8 @@ caused the April–May 2026 incident:
 | Pinata 401 / upload failures in recent EA log | `ea.recent_pinata_errors` (FAIL / WARN) |
 | `JUSTIFIER_MODEL` unset, malformed, or points at Ollama without a running Ollama daemon | `ai.justifier_model` (FAIL) |
 | A code-class node that cannot reach a juror of common's code-standard panels (no native key and no OpenRouter key; Gemini has OpenRouter only), so it abstains on every claim | `ai.code_jurors` (FAIL; no model call. [Provider keys](../docs/maintenance/code-review-sandbox.md#provider-keys)) |
+| A registered job (v2 dispatcher) without its hash-chain file in `health-chains/`, or with an unreadable one or one readable by others | `cfg.health_chains` (CRIT; a missing file is replaced by a re-sync at the next health call, an unreadable one must be restored or removed) |
+| A registered job without a current Chainlink health job, so it cannot answer the keeper's health calls within `callDeadline` (60 s) and is frozen (not selectable) | `svc.health_jobs` (CRIT; `apply-health-jobs.sh --apply`) |
 | Container or service down | `svc.ai_node` / `svc.adapter` / `svc.chainlink` / `svc.postgres` |
 | Node would not come back after a host reboot | `svc.boot_start` (WARN; `arbiter-boot-service.sh enable`) |
 | 5432 / 6688 / 3000 / 8080 listening on public addresses with no firewall rule closing them | `svc.public_ports` (WARN; `arbiter-firewall.sh enable`) |

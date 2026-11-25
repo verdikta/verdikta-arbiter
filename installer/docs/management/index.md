@@ -211,7 +211,8 @@ Monitor these key metrics:
 - Job execution success rate
 - Oracle response times
 - Gas usage patterns
-- LINK token balance
+- ETH balance of the node keys (commits, reveals and health answers all spend gas)
+- Health-call answers (`arbiter-doctor.sh`: `cfg.health_chains`, `svc.health_jobs`; on chain, `query-oracle-classes.js` shows `frozen`)
 
 #### External Adapter
 - Bridge request/response volume

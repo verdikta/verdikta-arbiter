@@ -4,7 +4,7 @@ The `fund-chainlink-keys.sh` script provides automated funding for Chainlink nod
 
 ## Overview
 
-During Verdikta Arbiter installation, multiple Chainlink keys are created to handle oracle requests. Each key requires native ETH (Base ETH or Base Sepolia ETH) to pay for gas fees when processing arbitration requests. Previously, users had to manually send ETH to each key address - this script automates that process.
+During Verdikta Arbiter installation, multiple Chainlink keys are created to handle oracle requests. Each key requires native ETH (Base ETH or Base Sepolia ETH) to pay for gas fees when processing arbitration requests (commits and reveals) and, with the v2 dispatcher, when answering the keeper's health calls. Previously, users had to manually send ETH to each key address - this script automates that process.
 
 ## Features
 

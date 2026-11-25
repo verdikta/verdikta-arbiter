@@ -44,7 +44,7 @@ Supporting dirs: `testing-tool/` (AI-Node-level scenario harness), `docs/`
 ## 3. End-to-end request lifecycle (the mental model)
 
 ```
-Client contract ──► ReputationAggregator ──► selects oracles by class (ReputationKeeper)
+Client contract ──► ReputationAggregator ──► drawJury: selects arbiters by class (ReputationKeeper)
   requestAIEvaluationWithApproval          └─► ArbiterOperator (per node)
                                                       │ emits OracleRequest log
                                                       ▼
@@ -63,45 +63,65 @@ Client contract ──► ReputationAggregator ──► selects oracles by clas
               Chainlink job encodes (requestId, uint256[] scores, string cid)
                         └─► ArbiterOperator.fulfillOracleRequestV ──► callback
                         └─► ReputationAggregator aggregates commit-reveal responses
-                        └─► client reads getEvaluation(requestId)
+                        └─► client reads getEvaluation(aggId)
 ```
 
 ### How applications call the network (client contract API)
 
 Clients never talk to an arbiter directly. They interact with the **ETH-funded
 `ReputationAggregator`** (a.k.a. "Verdikta Aggregator"), which lives in a
-separate repo/deployment. The two example apps
+separate repo/deployment (`verdikta-dispatcher/reputationBasedAggregator`). This branch targets the
+**v2** aggregator (dispatcher `beacon` branch; not deployed yet, addresses set at the v2
+deployment). The v1 interface (7-argument request, `maxTotalFee(maxFee)`, no draw) is in the
+dispatcher's `MIGRATION.md`. The two example apps
 (`verdikta-applications/example-frontend`, `.../example-bounty-program`) both use:
 
 ```solidity
-// submit (payable; ETH prepay, unused portion refunded as ethOwed credit)
+struct Jury { uint8 K; uint8 M; uint8 N; uint8 P; uint40 timeout; }
+// K drawn, M promoted, N counted, P clustered; timeout in seconds, run from the draw
+
+// submit (payable; ETH prepay topped up from ethOwed credit, any excess back to credit)
 function requestAIEvaluationWithApproval(
   string[]  cids,                    // one or more IPFS CIDs (evidence packages / bCIDs)
   string    addendumText,            // real-time text appended to the prompt
-  uint256   alpha,                   // oracle-selection quality/timeliness blend (e.g. 500)
-  uint256   maxOracleFee,            // per-oracle fee ceiling, in wei
+  uint256   alpha,                   // selection blend of quality and timeliness, 0..1000 (e.g. 500)
+  uint256   maxFee,                  // per-arbiter fee ceiling, in wei (capped at maxOracleFee())
+  uint256   minFee,                  // fee floor (item 8): each juror is paid max(posted fee, minFee); 0 = none
   uint256   estimatedBaseCost,
   uint256   maxFeeBasedScalingFactor,
-  uint64    requestedClass           // ClassID (default 128) → which oracle pool serves it
-) external payable returns (bytes32 requestId);
+  uint64    requestedClass,          // ClassID (default 128) → which arbiter pool serves it
+  bool      withBeacons,             // optional jury-beacon stage
+  Jury      jury                     // checked per request, else BadJury
+) external payable returns (bytes32 aggId);   // aggId = bytes32(roundId), sequential
 
-// read back once fulfilled
-function getEvaluation(bytes32 requestId)
-  returns (uint256[] likelihoods, string justificationCID, bool exists);
+function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P) view returns (uint256);
+function drawJury(bytes32 aggId);    // from block B+2; with beacons, a second call once 2 beacon values are in
+function getJury(bytes32 aggId) view returns (uint8 K, uint8 M, uint8 N, uint8 P, uint40 timeout);
+
+// read back once finalized (phase 6) or settled
+function getEvaluation(bytes32 aggId)
+  returns (uint256[] likelihoods, string justificationCID, bool valid);
 
 // events
-event RequestAIEvaluation(bytes32 indexed requestId, string[] cids);
-event FulfillAIEvaluation(bytes32 indexed requestId, uint256[] likelihoods, string justificationCID);
+event RequestAIEvaluation(bytes32 indexed aggRequestId, string[] cids);
+event FulfillAIEvaluation(bytes32 indexed aggRequestId, uint256[] aggregated, string justifications);
 ```
 
-`likelihoods` are the same 1,000,000-sum micro-probabilities the AI Node
-produces; the rich JSON (scores + justification text) lives at `justificationCID`
-on IPFS. The aggregator selects K oracles to commit, requires M commits then N
-reveals (commit-reveal), and fulfills once enough reveals agree. Known aggregator
-deployments used by the example apps: Base Sepolia
+`BadJury` unless K >= M >= N >= P >= 1, N <= 40, P >= 2 unless N == 1, K <= `maxJury()` (default 50)
+and K <= the keeper's `shortlistSize()` (60), and `tPlus()` (155 s) < timeout <= `maxTimeout()`
+(3,600 s). The aggregator has no `K()`/`M()`/`N()`/`P()`/`responseTimeoutSeconds()`: the jury is the
+request's. Class presets (Small 6/5/4/3/300 s, Medium 8/5/4/3/300, Large 21/16/13/10/300, Jumbo
+50/38/27/17/600 with beacons) are app-level, not protocol constants.
+
+`likelihoods` are on the arbiters' 0..1,000,000 scale (an n-outcome answer sums to 1,000,000; a
+one-number answer is a single score); the rich JSON (scores + justification text) lives at
+`justificationCID` on IPFS. A round: request (block B) → `drawJury` → commits → the commit phase closes
+at the M+-th commit or after T+ with at least M (`closeCommits`) → `promote` (from C+2) draws M of the
+commits → reveals → finalization at the N-th counted reveal → `settle` after the deadline applies the
+scores. Known **v1** aggregator deployments used by the example apps: Base Sepolia
 `0xe8a385E473EA710c5a88Cc72681a16a26fe380e4`, Base Mainnet
-`0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` (verify before relying on these —
-they are network state, not tracked in this repo).
+`0xd8F38bCBEE43bE3bd31655a563f20c9B3e67142a` (v1 only; verify before relying on these —
+they are network state, not tracked in this repo; see `docs/deployments.md`).
 
 **Request admission (security hardening).** The operator now checks the real
 ERC-677 sender against configured ReputationKeepers before creating a commitment
@@ -164,6 +184,66 @@ chain, or the arbiter is frozen (not selectable) until it answers.
 - **No repeats:** a head answered in the last 20 s is not answered again.
 - **Registration:** `arbiter-operator/scripts/register-oracle-cl.js` creates each job's chain before
   registering its head.
+
+**Arbiter lifecycle on the v2 keeper (`ReputationKeeper.sol`, dispatcher `beacon` branch).** An
+arbiter is one job: its key is `keyOf(oracle, jobId)` = `keccak256(abi.encodePacked(oracle, jobId))`.
+- **Operator gate:** the `ArbiterOperator` admits requests only from aggregators approved by a keeper on
+  its list, so the operator owner must call `addReputationKeeper(<v2 keeper>)`. The v2 keeper keeps
+  `isContractApproved` for this. `register-oracle-cl.js` (via `lib/request-authorization.js`) adds the
+  keeper when the signer owns the operator, and stops before staking if the aggregator is not approved
+  by the keeper or not authorized by the operator.
+- **Register:** `registerArbiter(address oracle, bytes32 jobId, uint64 fee, uint64[] classes, bytes32
+  chainHead)`. Caller: the operator's `owner()` or the keeper owner (`NotArbiterOwner`). `fee` in wei
+  of ETH, > 0 (`BadParams`); 1 to 5 classes (`BadClasses`); `AlreadyRegistered` for a live key. Pulls
+  `stakeRequirement()` (default 100e18 wVDKA, the keeper's immutable `verdiktaToken()`) from the caller
+  with `transferFrom`. Head 0 is allowed (a browser registration, which cannot hold a chain): the
+  arbiter starts frozen in re-sync and the health job sets its chain. A returning key (after
+  `completeExit`) keeps its scores and offenses and registers its classes again; a banned key can never
+  register. The script refuses a fee above the aggregator's `maxOracleFee()` (default 4e14 wei), since
+  such an arbiter is never eligible.
+- **Owner controls:** `setPaused(key, bool)` (not selected while paused), `setFee(key, uint64)`,
+  `topUpStake(key, uint96)`. Caller: operator owner or keeper owner. No installer script wraps them.
+- **Health:** `healthState(key)` → `(pending, sentAt, head)`; `isFrozen(key)`; `callDeadline()` (60 s).
+  Answers: `answerHealthCall(key, preimage)` or `rotateChain(key, preimage, newHead)` from an authorized
+  sender of the operator or its owner (`NotAuthorizedResponder`). `requestHealthCall(key)` (same callers)
+  asks for a call, to end a re-sync or check a restart. Events: `HealthCall`, `HealthAnswered`,
+  `ChainResynced`. A frozen arbiter is not selected. One frozen at a round's deadline is not scored for
+  that round (`OutcomeSkippedFrozen`) unless it committed in it: a commit proves it was up.
+- **Exit:** `requestExit(key)` (selection stops at once; `AlreadyExiting` on a second call), then
+  `completeExit(key)` once `getArbiter(key).exitAt` has passed (`StillBonded` before; `Blocked` while
+  blocked). `unbondingPeriod()` is 2 days by default, never below `MIN_UNBONDING` (2 days). The stake
+  goes to the operator's `owner()`, and the key's class slots are freed. A frozen arbiter can exit.
+  `unregister-oracle-cl.js` does whichever step is due.
+- **Selection:** from the class list as of the request block, by a seeded random walk (shortlist 60,
+  `maxScan` 400), weighted by reputation (`alpha` blends quality and timeliness) and fee. Eligible: registered,
+  not paused/banned/exiting/under-staked/blocked/frozen, posted fee <= the request's ceiling. Every
+  juror and `liveRandom` (3) other shortlisted arbiters get a health call. **A thin pool repeats
+  arbiters:** with m < K eligible, slot k holds pick k mod m, and a repeated arbiter answers, is paid
+  and is scored once per slot. The draw fails (refunded) only with zero eligible (`NoEligibleArbiters`).
+- **Earnings (ETH, in the aggregator's `ethOwed`, to the operator's `owner()`):** each dispatched slot
+  is credited `max(posted fee as of B, the request's minFee)` at the draw (`BasePayment`); each
+  revealed answer in the cluster gets `bonusMultiplier()` (3) times that at finalization
+  (`BonusPayment`); a jury beacon whose value is used gets one fee, the same max (`BeaconPayment`).
+  Withdraw with `withdrawEth()` from the owner wallet (or `withdrawEthFor(owner)`). No script here
+  does it. Selection weighs the fee the requester pays, so a posted fee below the floor gains no weight.
+- **Scoring (settlement, `applyOutcomes`):** two scores, quality and timeliness, 0..`cap` (1000), new
+  keys start at 500. Timeliness: promoted and revealed +20; promoted, no reveal, round finished -200;
+  promoted, no reveal, round failed -500; no commit when the round failed for lack of commits -400;
+  committed but not promoted, no change.
+  Quality (the revealed answer against the round's median and spread): close +20, off -50, far -200.
+  A score that reaches 0 blocks the arbiter for `lockDuration` (24 h) x 2^offenses and restarts it at
+  500; one offense is forgiven per `decayPeriod` (90 days); the `maxOffenses`-th (3) block is a
+  permanent ban. Burns (`burnPerBlock`, `burnOnBan`) are off by default. Points are owner-set
+  (`setPoints`).
+- **Jury beacons** (a request with `withBeacons`): the keeper picks up to 4 beacons from the class and
+  sends each a health call; the beacon value is the arbiter's next chain value, so the health job
+  answers it with no beacon-specific code. The first 2 values revealed within 120 s are used and paid.
+  Answer promptly: a slow node loses the payment, and one past `callDeadline` is frozen.
+- **Views:** `getArbiter(key)` → `(oracle, quality, timeliness, offenses, flags, blockedUntil, fee,
+  callSentAt, callAnsweredAt, stake, checkpoints, exitAt)`, flags 1 registered, 2 paused, 4 banned,
+  8 exiting, 16 call pending, 32 under-staked, 64 re-sync; `arbiterClasses(key)`, `jobIdOf(key)`,
+  `isEligible(key, maxFee)`, `eligibleCount(cls, maxFee)`. `arbiter-operator/scripts/query-oracle-classes.js`
+  reads `getArbiter` and `healthState`.
 
 Multiple comma-separated CIDs after the prefix ⇒ multi-CID (multi-party)
 evaluation; an optional trailing `:addendum` appends real-time text to the prompt.
@@ -386,7 +466,9 @@ what an upgrade replaces. Operator notes: `installer/docs/maintenance/code-revie
 
 ### Runtime management (post-install, in the install dir)
 `start-arbiter.sh`, `stop-arbiter.sh`, `arbiter-status.sh`, `arbiter-doctor.sh`
-(health check + `--fix`), `register-oracle.sh` / `unregister-oracle.sh`,
+(health check + `--fix`; reports pending health calls), `register-oracle.sh` (v2 `registerArbiter`, with
+the stake and hash chains) / `unregister-oracle.sh` (`requestExit`, rerun after unbonding for
+`completeExit`), `apply-health-jobs.sh` (one Chainlink health job per registered job),
 `fund-chainlink-keys.sh`, `update-pinata-key.sh`, `update-justifier-model.sh`,
 `chainlink-health-watchdog.sh` (cron alerting: components not running /
 0-live-RPC / failing health checks; `--self-heal` starts what is down through

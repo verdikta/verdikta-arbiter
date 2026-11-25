@@ -12,12 +12,12 @@ graph TB
 
     subgraph "Aggregation Layer (verdikta-dispatcher repo)"
         J[ReputationAggregator<br/>ETH-funded, commit-reveal]
-        RK[ReputationKeeper<br/>oracle registry + selection]
+        RK[ReputationKeeper<br/>arbiter registry, stake, health calls + selection]
     end
 
     subgraph "Verdikta Arbiter Node (this repo)"
         I[ArbiterOperator<br/>Chainlink Operator contract]
-        E[Chainlink Node<br/>directrequest job]
+        E[Chainlink Node<br/>directrequest job + health cron job]
         D[External Adapter<br/>Chainlink bridge + IPFS]
         C[AI Node<br/>Next.js deliberation]
     end
@@ -104,14 +104,22 @@ app.post('/evaluate', async (req, res) => {
 
 // data.cid carries an optional mode prefix used by the aggregator's commit-reveal:
 //   "Qm…"      → mode 0: evaluate now, upload justification, return scores + CID
-//   "1:Qm…"    → mode 1 (commit): evaluate, store locally, return only a hash commitment
-//   "2:<hash>" → mode 2 (reveal): upload the stored justification, return scores + "CID:salt"
+//   "1:Qm…"       → mode 1 (commit): evaluate, store locally, return only the commitment
+//                   keccak256(abi.encode(bytes32 aggId, address operator, uint256[] scores, uint256 salt)),
+//                   all 32 bytes, with a fresh 16-byte salt (v2 aggregator)
+//   "2:<64 hex>"  → mode 2 (reveal): the full commit hash; upload the stored justification and
+//                   return scores + "CID:<32 hex salt>"
 // Comma-separated CIDs after the prefix trigger multi-CID (multi-party) evaluation.
+// A body with data.healthKey (and data.head) is a keeper health call from the health job
+// (chainlink-node/healthJobSpec), answered by src/health/healthHandler.js instead.
+// (v1, retired: the commit was the first 16 bytes of a SHA-256 without aggId, the salt 20 hex,
+// and the reveal request 2:<32 hex>.)
 ```
 
 **Key Features**:
 - IPFS evidence retrieval (via `@verdikta/common`) and justification upload (Pinata JWT)
 - Commit-reveal support (modes 0/1/2) so aggregated oracles can't copy each other
+- Health-call answers for the v2 keeper: the next value of the job's hash chain (`src/health/`)
 - Calls the AI Node's `/api/rank-and-justify`, formats scores + CID for the Chainlink job
 - Retry logic with provider-error short-circuit
 - Multi-CID archive support
@@ -156,7 +164,9 @@ contract ArbiterOperator is Operator, ERC165, IArbiterOperator {
         bytes   calldata data
     ) external returns (bool success);
 
-    // ReputationKeeper allow-list (when empty, access control is disabled).
+    // ReputationKeeper allow-list: a request is admitted only if a listed keeper's
+    // isContractApproved(requester) is true. An empty list denies every request.
+    // Each operator owner must add the v2 keeper: addReputationKeeper(<v2 keeper>).
     function addReputationKeeper(address rk) external; // onlyOwner
     function isReputationKeeperListEmpty() external view returns (bool);
 }
@@ -168,16 +178,24 @@ selects arbiters via the `ReputationKeeper` and dispatches `OracleRequest`s to
 each selected `ArbiterOperator`:
 
 ```solidity
-// verdikta-dispatcher: consumer-facing API (arbiters are paid in native ETH, no LINK)
+// verdikta-dispatcher v2 (beacon branch): consumer-facing API.
+// Arbiters are paid in native ETH (no LINK), credited to the operator owner's ethOwed.
+struct Jury { uint8 K; uint8 M; uint8 N; uint8 P; uint40 timeout; }   // per request
 function requestAIEvaluationWithApproval(
-    string[] calldata cids, string calldata addendum,
-    uint256 alpha, uint256 maxOracleFee, uint256 estimatedBaseFee,
-    uint256 maxFeeScaling, uint64 jobClass
-) external payable returns (bytes32 aggRequestId);
+    string[] memory cids, string memory addendumText,
+    uint256 alpha, uint256 maxFee, uint256 minFee,
+    uint256 estimatedBaseCost, uint256 maxFeeBasedScalingFactor,
+    uint64 requestedClass, bool withBeacons, Jury calldata jury
+) external payable returns (bytes32 aggId);
+function drawJury(bytes32 aggId) external;   // from block B+2; selection and dispatch happen here
 
-function getEvaluation(bytes32 aggRequestId)
-    external view returns (uint256[] memory scores, string memory justificationCID, bool exists);
+function getEvaluation(bytes32 aggId)
+    external view returns (uint256[] memory scores, string memory justificationCID, bool valid);
 ```
+
+The request only escrows; the jury is drawn later by `drawJury`. An arbiter takes part
+only once it is registered with the keeper (`registerArbiter(oracle, jobId, fee, classes,
+chainHead)`, with a wVDKA stake) and answers its health calls.
 
 ### Installation System (`installer/`)
 
@@ -190,7 +208,7 @@ function getEvaluation(bytes32 aggRequestId)
 3. Component installation (AI Node, Adapter, Chainlink)
 4. Smart contract deployment
 5. Service configuration and startup
-6. Oracle registration with dispatcher
+6. Arbiter registration with the keeper (`registerArbiter`, stake, hash-chain head) and one health job per arbiter job
 
 ## Data Flow
 
@@ -209,7 +227,8 @@ sequenceDiagram
     participant AN as AI Node
     participant I as IPFS
 
-    C->>AG: requestAIEvaluationWithApproval(cids, …) + ETH
+    C->>AG: requestAIEvaluationWithApproval(cids, …, jury) + ETH
+    C->>AG: drawJury(aggId) (anyone, from block B+2)
     AG->>OP: OracleRequest (to each selected arbiter)
     OP->>CL: emit log → directrequest job
     CL->>EA: POST /evaluate { cid, aggId }
@@ -220,8 +239,8 @@ sequenceDiagram
     EA->>I: upload justification JSON → CID
     EA->>CL: { aggregatedScore[], justificationCid }
     CL->>OP: fulfillOracleRequestV(requestId, scores, cid)
-    OP->>AG: response recorded (commit-reveal)
-    C->>AG: getEvaluation(aggRequestId) → scores, justificationCID
+    OP->>AG: commit recorded (mode 1); promote() later sends reveal requests (mode 2)
+    C->>AG: getEvaluation(aggId) → scores, justificationCID
 ```
 
 ### ClassID Integration Flow
@@ -472,8 +491,11 @@ published container images. The runtime layout on an operator host:
 
 Rather than horizontally scaling a single node, the network achieves robustness
 by running **many independent arbiters**. The `ReputationAggregator` selects a
-pool per request (default K/M/N/P = 6/4/3/2) and aggregates their commit-reveal
-responses, so no single node's availability or answer is decisive.
+jury per request (K/M/N/P and the timeout come with each request; the bounty
+program's presets range from Small 6/5/4/3 to Jumbo 50/38/27/17) and aggregates
+their commit-reveal responses, so no single node's availability or answer is
+decisive. In a thin pool the keeper repeats arbiters to fill the jury, so one
+arbiter may hold several slots (answering, paid and scored once per slot).
 
 This architecture provides a robust, decentralized foundation for AI-powered
 arbitration while maintaining security and performance standards.

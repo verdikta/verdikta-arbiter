@@ -133,10 +133,15 @@ After installation or upgrade, important configuration and data files are stored
 - **Contains**: 
   - Operator contract address
   - Node address
-  - LINK token address
+  - LINK token address (used only to deploy the Chainlink operator; fees are paid in ETH)
   - Job ID (with and without hyphens)
   - Aggregator address
   - Classes ID (when registered with an aggregator)
+
+### Health Chains (v2 dispatcher)
+- **Path**: `~/verdikta-arbiter-node/health-chains/`
+- **Contains**: one `<key>.json` per registered job (the hash-chain seeds its health calls are answered from) and `registrations.json` (the keeper and each registered job's key, read by `apply-health-jobs.sh`)
+- **Back it up with the node's keys.** An upgrade keeps it. A job whose chain file is lost re-syncs onto a fresh chain and is frozen until it has answered twice (see [Dispatcher Registration](oracle/dispatcher.md#health-calls))
 
 ### Chainlink Node Credentials
 - **Path**: `~/verdikta-arbiter-node/chainlink-node/info.txt`
@@ -157,11 +162,11 @@ The installer includes a script to query information about registered oracles:
 
 ### Using query-oracle-classes.js
 
-This script allows you to verify if your oracle is registered with an aggregator and check its class ID:
+This script shows what the v2 ReputationKeeper holds for one job: whether it is registered, its classes, its two scores, offenses and blocks, its fee and stake, its health-call state and any exit in progress. It finds the keeper through the aggregator (`keeper()`), so pass a v2 aggregator.
 
 1. Navigate to the arbiter-operator directory:
    ```bash
-   cd ~/verdikta-arbiter/arbiter-operator
+   cd ~/verdikta-arbiter-node/arbiter-operator
    ```
 
 2. Run the query script with your contract addresses:
@@ -177,22 +182,24 @@ This script allows you to verify if your oracle is registered with an aggregator
    cat ~/verdikta-arbiter-node/installer/.contracts
    ```
 
-4. Example output:
+4. Example output (addresses and values are illustrative):
    ```
-   ReputationKeeper: 0x6def65a003F9d9d80Cb9f6216dBF0282c8563a27
+   ReputationKeeper: 0x<keeper>
 
-   Querying information for Oracle: 0x91A5fe7FC3A729BD38602d4bD5a7F9b6aCA6C7A9
+   Oracle: 0x<your operator>
    JobID: 517f743acd75461c840ea0a93164285c → 0x3531376637343361636437353436316338343065613061393331363432383563
+   Key: 0x<keyOf(oracle, jobId)>
 
-   Oracle Status:
-     Active: true
-     Reputation: 0
-     Min Reputation: 0
-     Fee: 0.0 LINK
-     Staked Amount: 0.0 wVDKA
-
-   Registered Class ID: 128
+   Status: registered
+   Classes: 128
+   Quality / timeliness: 500 / 500
+   Offenses: 0  blocked until: never
+   Fee: 0.00002 ETH   stake: 100.0 wVDKA
+   Health call: none pending  last answered: 2026-11-24T10:15:02.000Z  frozen: false
+   Hash-chain head: 0x<head>
    ```
+
+   `Status` lists the keeper's flags: `registered`, `paused`, `banned`, `exiting`, `health call pending`, `under-staked`. A job that is exiting also prints when `completeExit` is allowed. `frozen: true` means a health call went unanswered for longer than the keeper's `callDeadline` (60 s): see [Dispatcher Registration](oracle/dispatcher.md#health-calls).
 
 This information is useful for verifying your oracle's registration status and configuration when integrating with client applications.
 

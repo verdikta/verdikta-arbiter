@@ -202,37 +202,80 @@ Clients interact with the **ETH-funded `ReputationAggregator`** (the "Verdikta
 Aggregator", deployed separately — see [`verdikta-dispatcher`](https://github.com/verdikta/verdikta-dispatcher)).
 Arbiters are paid in native ETH attached to the request (there is no LINK for the
 consumer); any unspent prepay is held as a withdrawable credit. The aggregator
-selects a pool of arbiters by `classId`, runs commit-reveal aggregation, and
+selects a jury of arbiters by `classId`, runs commit-reveal aggregation, and
 records the aggregated scores plus a justification CID on-chain.
+
+The interface below is **v2** (verdikta-dispatcher `beacon` branch; not deployed yet, addresses
+are set at the v2 deployment). Each request carries its own jury, and the jury is drawn in a
+second transaction. The live v1 aggregator takes the older 7-argument request with
+`maxTotalFee(maxOracleFee)` and no draw: see `verdikta-dispatcher/reputationBasedAggregator/MIGRATION.md`.
 
 ```solidity
 interface IReputationAggregator {
-    // Submit evidence CIDs; fund with attached ETH (msg.value). Returns an aggregation request id.
+    struct Jury { uint8 K; uint8 M; uint8 N; uint8 P; uint40 timeout; }   // drawn, promoted, counted, clustered; seconds from the draw
+
+    // Escrow the request in block B (ETH in msg.value, topped up from credit). Returns the round id.
     function requestAIEvaluationWithApproval(
         string[] calldata cids,                 // IPFS CIDs of the evidence archive(s)
         string   calldata addendumText,         // real-time text appended to the prompt ("" if none)
-        uint256  alpha,                         // oracle-selection quality/timeliness blend (e.g. 500)
-        uint256  maxOracleFee,                  // per-oracle fee ceiling, in wei
+        uint256  alpha,                         // selection blend of quality and timeliness, 0..1000 (e.g. 500)
+        uint256  maxFee,                        // per-arbiter fee ceiling, in wei (capped at maxOracleFee())
+        uint256  minFee,                        // fee floor: each juror is paid at least this (0 = none)
         uint256  estimatedBaseCost,
         uint256  maxFeeBasedScalingFactor,
-        uint64   requestedClass                 // ClassID (model pool), default 128
-    ) external payable returns (bytes32 aggRequestId);
+        uint64   requestedClass,                // ClassID (model pool), default 128
+        bool     withBeacons,                   // optional jury-beacon stage
+        Jury     calldata jury                  // checked per request (BadJury)
+    ) external payable returns (bytes32 aggId);
 
-    // Read the aggregated result once fulfilled.
-    function getEvaluation(bytes32 aggRequestId)
-        external view returns (uint256[] memory scores, string memory justificationCID, bool exists);
-
-    function maxTotalFee(uint256 maxOracleFee) external view returns (uint256); // worst-case ETH to attach
+    function drawJury(bytes32 aggId) external;   // from block B+2 (twice with beacons); pays the drawer
+    function getEvaluation(bytes32 aggId)
+        external view returns (uint256[] memory scores, string memory justificationCID, bool valid);
+    function maxTotalFee(uint256 maxFee, uint256 minFee, bool withBeacons, uint8 K, uint8 P)
+        external view returns (uint256);         // the exact escrow for that jury
 }
 
-// Example: submit a request, then later read the result.
-bytes32 id = aggregator.requestAIEvaluationWithApproval{ value: aggregator.maxTotalFee(15e13) }(
-    cids, "", 500, 15e13, 8e9, 5, 128
+// Example: a Small jury (K 6, M 5, N 4, P 3, 300 s), no floor, no beacons.
+IReputationAggregator.Jury memory j = IReputationAggregator.Jury(6, 5, 4, 3, 300);
+bytes32 id = aggregator.requestAIEvaluationWithApproval{ value: aggregator.maxTotalFee(15e13, 0, false, 6, 3) }(
+    cids, "", 500, 15e13, 0, 8e9, 5, 128, false, j
 );
+// two or more blocks later, anyone (the requester first, for 30 s) draws the jury:
+aggregator.drawJury(id);
 
-(uint256[] memory scores, string memory justificationCID, bool exists) = aggregator.getEvaluation(id);
-// scores sum to 1,000,000; the full justification JSON lives at justificationCID on IPFS.
+(uint256[] memory scores, string memory justificationCID, bool valid) = aggregator.getEvaluation(id);
+// scores are on the 0..1,000,000 scale; the full justification JSON lives at justificationCID on IPFS.
 ```
+
+### Running an arbiter on v2
+
+v2 is a redeploy: every arbiter registers again with the new `ReputationKeeper`. From an
+operator's point of view:
+
+- **Register** with `installer/util/register-oracle.sh` (or during `install.sh`). It calls the
+  keeper's `registerArbiter(oracle, jobId, fee, classes, chainHead)` once per job id, pulling
+  `stakeRequirement()` wVDKA (100 by default) per job id from the operator's owner. The fee is in ETH
+  and must not exceed the aggregator's `maxOracleFee()`. The script first adds the v2 keeper to your
+  operator with `addReputationKeeper(<v2 keeper>)`, and writes each job's hash chain to
+  `<install>/health-chains/` (back it up with the node's keys).
+- **Stay healthy.** The keeper sends health calls to jurors, beacons and random probes. The node's
+  health job (`chainlink-node/healthJobSpec`, one per arbiter job, created by the installer) answers
+  each within `callDeadline` (60 s) with the next value of the job's hash chain. A job that misses it
+  is frozen (never selected) until it answers. `arbiter-doctor.sh` reports pending health calls.
+- **Commit and reveal** in the v2 format: the commit is
+  `keccak256(abi.encode(aggId, operator, scores, salt))`, all 32 bytes, with a 16-byte salt; the
+  reveal request is `2:<64 hex>`. The External Adapter on this branch does this; a commit in v1's
+  format is accepted by v2 but can never be revealed.
+- **Earn.** Each drawn slot is credited `max(posted fee, the request's minFee)` in ETH at the draw,
+  to the operator owner's balance in the aggregator, plus `bonusMultiplier()` (3) times that if the
+  reveal lands in the cluster. A beacon whose value is used is paid one fee. Withdraw with the
+  aggregator's `withdrawEth()` from the owner wallet. In a thin pool one arbiter can fill several
+  slots of a jury; it is paid and scored once per slot.
+- **Exit** with `installer/util/unregister-oracle.sh`: it sends `requestExit`, and run again after the
+  unbonding period (2 days) it sends `completeExit`, which refunds the stake to the operator's owner.
+
+The details, with every function and error, are in [AGENTS.md](AGENTS.md) §3 and the
+[installer docs](installer/docs/).
 
 ## 🔐 Security
 
