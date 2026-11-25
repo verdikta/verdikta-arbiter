@@ -35,10 +35,12 @@ const ALL_CLAIMS = CLAIM_IDS.join(',');
 
 /**
  * What the nightly sends: the project's own archive alone. Class, fees and value are frozen
- * from 2c0e94a (node A6b). Node A27 took out frontend-default, the example-frontend's
- * package, whose jury names a model the provider retired: it runs only when named.
+ * from 2c0e94a (node A6b). Node A27 took out the example-frontend's package, whose jury
+ * names a model the provider retired: it runs only when named. Since every juror must
+ * answer (ai-node/src/utils/juryQuorum.ts) it is `incomplete-jury`, the request nobody
+ * may commit to.
  */
-const FRONTEND_DEFAULT_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
+const INCOMPLETE_JURY_CID = 'QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH';
 const NIGHTLY = Object.freeze({
   classId: 128,
   ids: ['canonical-vuln'],
@@ -92,12 +94,14 @@ function bodyOf(key, listingCid, claimCid, aiNode) {
 }
 
 const JURY_KEYS = new Set(['valid', 'timeDependent', 'randomnessDependent', 'dispute', 'coldCache', 'faultNearLimit', 'faultProviderTimeout', 'faultSlowJustifier']);
-const ABSTAINING = new Set(['registryFailure', 'faultCancellation']);
+const ABSTAINING = new Set(['registryFailure', 'faultCancellation', 'incompleteJury']);
+/** The text requests a test can change: the jury that cannot be whole, and the project's own archive. */
+const TEXT_KEYS = new Map([[INCOMPLETE_JURY_CID, 'incompleteJury'], [NIGHTLY.cids[0][0], 'canonical']]);
 
 /** What the arbiters would have uploaded, on the local IPFS. `change` lets a test say otherwise, per claim. */
 async function justificationsFor(request, { reporting = arbiter, aiNode = 'off', change = {} } = {}) {
   const [listingCid, claimCid] = request.cids;
-  const key = claimKeyOf.get(claimCid);
+  const key = claimKeyOf.get(claimCid) || (request.cids.length === 1 ? TEXT_KEYS.get(listingCid) : undefined);
   const disputed = /verdikta-dispute: /.test(request.addendum || '');
   const changed = change[key] && change[key]({ disputed });
   if (ABSTAINING.has(key) && !(changed && changed.answer)) return changed && changed.abstain ? changed.abstain : { abstain: true };
@@ -157,7 +161,7 @@ async function startChain({ chainId, revertOnEstimate, estimatesBeforeRevert, re
     chainId,
     revertOnEstimate,
     estimatesBeforeRevert,
-    answer: await prepareAnswers([...everyRequest(), ...NIGHTLY.cids, [FRONTEND_DEFAULT_CID], ...requests], { reporting, aiNode, change })
+    answer: await prepareAnswers([...everyRequest(), ...NIGHTLY.cids, [INCOMPLETE_JURY_CID], ...requests], { reporting, aiNode, change })
   });
   return chain;
 }
@@ -196,9 +200,10 @@ beforeEach(async () => {
   const committed = JSON.parse(fs.readFileSync(path.join(E2E, 'scenarios', 'scenarios.json'), 'utf8'));
   scenariosFile = path.join(dir, 'scenarios.json');
   fs.writeFileSync(scenariosFile, JSON.stringify(committed.map((s) => {
-    if (s.suite === 'l4-claim') return { ...s, claimSet, ...(s.watchSeconds ? { watchSeconds: 1 } : {}) };
+    const quick = s.watchSeconds ? { watchSeconds: 1 } : {};
+    if (s.suite === 'l4-claim') return { ...s, claimSet, ...quick };
     if (s.cidFile) return { ...s, cidFile: path.join(E2E, s.cidFile) };
-    return s;
+    return { ...s, ...quick };
   })));
   chain = null;
 });
@@ -384,8 +389,8 @@ describe('the nightly: the project\'s own archive, on class 128, with the callda
     expect(chain.sent.map((tx) => tx.cids)).toEqual(NIGHTLY.cids);
     expect(chain.sent.map((tx) => tx.addendum)).toEqual(NIGHTLY.ids.map(() => ''));
     // The example-frontend's package is manual-only: the run says it left it out, and never sends it.
-    expect(chain.sent.flatMap((tx) => tx.cids)).not.toContain(FRONTEND_DEFAULT_CID);
-    expect(r.out).toContain('skipping "frontend-default": manualOnly');
+    expect(chain.sent.flatMap((tx) => tx.cids)).not.toContain(INCOMPLETE_JURY_CID);
+    expect(r.out).toContain('skipping "incomplete-jury": manualOnly');
     for (const tx of chain.sent) {
       expect(tx.alpha).toBe(NIGHTLY.alpha);
       expect(tx.maxOracleFee).toBe(NIGHTLY.maxOracleFee);
@@ -432,14 +437,16 @@ describe('the nightly: the project\'s own archive, on class 128, with the callda
     expect(chain.sent.map((tx) => tx.cids)).toEqual(NIGHTLY.cids);
   });
 
-  it('frontend-default still runs when named, by flag or by dispatch: manual-only, not gone', async () => {
+  it('incomplete-jury, the example-frontend\'s package, never reaches the nightly\'s class, and names its release', async () => {
     await startChain();
-    const byFlag = await l4(['--scenario', 'frontend-default'], schedule);
-    expect(byFlag.code).toBe(0);
-    const byDispatch = await l4([], { ...schedule, L4_CLASS_ID: '5555', L4_SCENARIO: 'frontend-default' });
-    expect(byDispatch.code).toBe(0);
-    expect(chain.sent.map((tx) => tx.cids)).toEqual([[FRONTEND_DEFAULT_CID], [FRONTEND_DEFAULT_CID]]);
-    expect(chain.sent.map((tx) => tx.requestedClass)).toEqual([NIGHTLY.classId, 5555]);
+    const byFlag = await l4(['--scenario', 'incomplete-jury'], schedule);
+    expect(byFlag.code).toBe(1);
+    expect(byFlag.out).toMatch(/"incomplete-jury" run only on the canary class 5555, and this run resolved to class 128/);
+    const byDispatch = await l4([], { ...schedule, L4_CLASS_ID: '5555', L4_SCENARIO: 'incomplete-jury' });
+    expect(byDispatch.code).toBe(1);
+    expect(byDispatch.out).toMatch(/"incomplete-jury" are a release gate, and need --expect-common and --expect-release/);
+    expect(chain.calls).toEqual([]);
+    expect(chain.sent).toEqual([]);
   });
 
   it('the workflow still runs the nightly with no class and no scenario on its command line', () => {
@@ -449,9 +456,9 @@ describe('the nightly: the project\'s own archive, on class 128, with the callda
     expect(yml).toContain('L4_SCENARIO: ${{ inputs.scenario }}');
     expect(yml).toContain('node src/index.js l4 --junit results/l4.xml --report results/l4.json\n');
     // The dispatch's scenario input is blank by default, so a dispatch selects what the nightly
-    // does, and no workflow line names frontend-default.
+    // does, and no workflow line names incomplete-jury.
     expect(yml).toMatch(/\n {6}scenario:\n {8}description: [^\n]*\n {8}type: string\n {8}default: ''\n/);
-    expect(yml).not.toContain('frontend-default');
+    expect(yml).not.toContain('incomplete-jury');
     const config = JSON.parse(fs.readFileSync(path.join(E2E, 'config', 'e2e-config.json'), 'utf8'));
     expect(config.l4).toEqual({
       network: 'base_sepolia',
@@ -619,6 +626,89 @@ describe('node A6c: the canary scenarios, through the CLI', () => {
       expect(r.code).toBe(1);
       expect(r.out).toMatch(/control\.valid\.evaluation\.fulfilled/);
     }, 60000);
+  });
+
+  describe('a jury that cannot be whole: nobody commits, and the control shows the arbiters are there', () => {
+    const CANONICAL = NIGHTLY.cids[0];
+    const failedChecks = (json) => json.cases[0].checks.filter((c) => !c.ok).map((c) => c.name);
+
+    it('incomplete-jury: the request, the watch, then canonical-vuln settles on the release the run names', async () => {
+      await startChain();
+      const { code, out, json } = await reportOf('incomplete-jury');
+      expect(out).not.toMatch(/FAIL/);
+      expect(code).toBe(0);
+      expect(chain.sent.map((tx) => tx.cids)).toEqual([[INCOMPLETE_JURY_CID], CANONICAL]);
+      expect(chain.sent.map((tx) => tx.requestedClass)).toEqual([5555, 5555]);
+      // A text scenario: one case, and no claim metrics.
+      expect(json.cases.map((c) => c.id)).toEqual(['incomplete-jury']);
+      expect(json.cases[0].checks.map((c) => c.name)).toEqual([
+        'tx.mined', 'event.RequestAIEvaluation', 'round.noCommit', 'round.noVerdict',
+        'control.canonical-vuln.tx.mined', 'control.canonical-vuln.event.RequestAIEvaluation', 'control.canonical-vuln.evaluation.fulfilled',
+        'control.canonical-vuln.scores.isNumericArray', 'control.canonical-vuln.scores.length>=minOutcomes',
+        'control.canonical-vuln.scores.sum≈1,000,000', 'control.canonical-vuln.scores.allNonNegative',
+        'control.canonical-vuln.justificationCid.valid', 'control.canonical-vuln.justification.fetchableJson',
+        'control.canonical-vuln.arbiter.versions', 'control.canonical-vuln.arbiter.verdiktaCommon===expected', 'control.canonical-vuln.arbiter.release===expected'
+      ]);
+    });
+
+    it('says how to finalize, and does not: a finalize applies penalties, an owner\'s call', async () => {
+      await startChain();
+      const r = await run('incomplete-jury');
+      expect(r.out).toMatch(/left unfinalized.*finalizeEvaluationTimeout/);
+      expect(chain.reads).not.toContain('finalizeEvaluationTimeout');
+      expect(chain.sent).toHaveLength(2);
+    });
+
+    it('fails when an arbiter committed: one juror\'s scores on the way to being the jury\'s', async () => {
+      await startChain({ change: { incompleteJury: () => ({ abstain: { abstain: true, commitReceived: 1 } }) } });
+      const { code, json } = await reportOf('incomplete-jury');
+      expect(code).toBe(1);
+      expect(failedChecks(json)).toEqual(['round.noCommit']);
+    });
+
+    it('fails when the round settled, as it did before the rule', async () => {
+      await startChain({ change: { incompleteJury: () => ({ answer: true }) } });
+      const { code, json } = await reportOf('incomplete-jury');
+      expect(code).toBe(1);
+      expect(failedChecks(json)).toEqual(['round.noCommit', 'round.noVerdict']);
+    });
+
+    it('fails when the control did not settle: canaries that are down commit nothing either', async () => {
+      await startChain({ change: { canonical: () => ({ abstain: { abstain: true } }) } });
+      const { code, json } = await reportOf('incomplete-jury');
+      expect(code).toBe(1);
+      expect(failedChecks(json)).toEqual(['control.canonical-vuln.evaluation.fulfilled']);
+    }, 60000);
+
+    it('fails when the arbiters that answered the control are on another release: the silence was another build\'s', async () => {
+      await startChain({ reporting: { ...arbiter, release: 'ffff000ffff000 2026-11-01T00:00:00Z' } });
+      const { code, json } = await reportOf('incomplete-jury');
+      expect(code).toBe(1);
+      expect(failedChecks(json)).toEqual(['control.canonical-vuln.arbiter.release===expected']);
+    });
+
+    it('a control that cannot start fails its scenario', async () => {
+      await startChain({ estimatesBeforeRevert: 1 });
+      const { code, json } = await reportOf('incomplete-jury');
+      expect(code).toBe(1);
+      expect(failedChecks(json)).toEqual(['control.canonical-vuln.started']);
+    }, 60000);
+
+    it('a request that selection would revert is not sent', async () => {
+      await startChain({ revertOnEstimate: true });
+      const { code, json } = await reportOf('incomplete-jury');
+      expect(code).toBe(1);
+      expect(json.cases[0].error).toMatch(/gas estimation failed .*: the request was not sent/);
+      expect(chain.sent).toEqual([]);
+    });
+
+    it('a text scenario named beside it runs on the canary class too, and is held to the versions', async () => {
+      await startChain();
+      const { code, json } = await reportOf('canonical-vuln,incomplete-jury');
+      expect(code).toBe(0);
+      expect(json.cases.map((c) => c.id)).toEqual(['canonical-vuln', 'incomplete-jury']);
+      expect(chain.sent.map((tx) => tx.requestedClass)).toEqual([5555, 5555, 5555]);
+    });
   });
 
   describe('the fault switch, as the run names it', () => {

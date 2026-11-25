@@ -11,16 +11,17 @@
     "expectedWinnerIndex": 0
   },
   {
-    "id": "frontend-default",
-    "description": "External pre-pinned package (example-frontend default), not project-owned. Smart-contract vulnerability review, 2 outcomes. Manual only: its jury names Anthropic's claude-3-5-sonnet-20241022, which the provider has retired (requests return 404), so that juror fails on every run and the round rests on the others. canonical-vuln covers the same path, mode 0 and commit-reveal, from the project's own archive. Run it by name on L4 (--scenario / L4_SCENARIO) to check the example-frontend's package.",
+    "id": "incomplete-jury",
+    "description": "A jury that cannot be whole: the example-frontend's default package, external and pre-pinned, not project-owned. Its jury is gpt-4o and Anthropic's claude-3-5-sonnet-20241022, which the provider has retired (requests return 404), so one of its two jurors fails on every run. An arbiter does not answer for a jury it did not run (ai-node/src/utils/juryQuorum.ts): nobody may commit, and the round is watched for watchSeconds and left unfinalized. Before that rule the canaries settled this request on gpt-4o's scores alone (run 574, 2026-11-24, release cb3b46ea: 'JURORS (1 of 2 answered; the result is that one juror's scores)'). Arbiters that are down are silent too, so the control follows: canonical-vuln, which the same arbiters must answer on the release the run names. Manual only and class 5555 only: run it by name against the canaries after a change to the quorum rule or to what a failed juror costs.",
     "cid": "QmSHXfBcrfFf4pnuRYCbHA8rjKkDh1wjqas3Rpk3a2uAWH",
     "manualOnly": true,
     "modes": [
-      "0",
       "commit-reveal"
     ],
     "minOutcomes": 2,
-    "expectedWinnerIndex": 0
+    "expectNoCommit": true,
+    "watchSeconds": 240,
+    "control": "canonical-vuln"
   },
   {
     "id": "bounty-171-replay",

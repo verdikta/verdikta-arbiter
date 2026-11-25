@@ -1464,7 +1464,8 @@ maker, the hunter and the public can see why.
 
 **Partial success is stricter in code mode.** Today a request succeeds when at
 least `MIN_SUCCESSFUL_MODELS_PERCENT` (0.5) of the models answer, with the
-failed models' weight redistributed. On a three-model panel that lets Jev
+failed models' weight redistributed. (Written before 2026-11: text mode has since
+required every juror by default too, `ai-node/src/utils/juryQuorum.ts`.) On a three-model panel that lets Jev
 plus one frontier juror settle the verdict, with Jev's effective weight rising
 from 20% to one-third. Code mode therefore requires **every non-Jev juror** in
 the panel to succeed; if one fails, the arbiter abstains (error, no commit).

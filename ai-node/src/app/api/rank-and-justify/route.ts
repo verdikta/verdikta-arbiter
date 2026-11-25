@@ -26,6 +26,7 @@ import { isCredentialRefusal, providerHttpStatus, recordProviderAnswer, recordPr
 import { redactProviderText } from '../../../utils/redactProviderText';
 import { handleCodeReviewRequest, isCodeReviewBody } from '../../../lib/code-review/handler';
 import { JurorRecord, jurorFailure, justifierPrompt, resultRecord, withResultRecord } from '../../../utils/resultRecord';
+import { minSuccessfulModelsPercent, requiredJurors } from '../../../utils/juryQuorum';
 import fs from 'fs';
 import path from 'path';
 
@@ -149,8 +150,9 @@ interface Warning {
 const PUBLIC_ERROR_MAX_CHARS = 4000;
 
 /**
- * The 400 of a jury with too few answers. Its message is built for the response: each
- * failure reason in it has been through redactProviderText once already.
+ * The 400 of a jury with too few answers: by default, one in which any juror gave none
+ * (utils/juryQuorum.ts). Its message is built for the response: each failure reason in it
+ * has been through redactProviderText once already.
  */
 class InsufficientModelsError extends Error {}
 
@@ -674,10 +676,11 @@ async function textModePOST(parsedBody: unknown, parseFailed: boolean, parseErro
           });
         }
         
-        // Check if we have enough successful models to continue
-        const MIN_SUCCESSFUL_MODELS_PERCENT = parseFloat(process.env.MIN_SUCCESSFUL_MODELS_PERCENT || '0.5');
-        const minSuccessfulModels = Math.ceil(models.length * MIN_SUCCESSFUL_MODELS_PERCENT);
-        
+        // Every juror must have answered, unless the operator set a lower share
+        // (utils/juryQuorum.ts). Otherwise this is a 400: the External Adapter then commits
+        // nothing, and the arbiter does not answer for a jury it did not run.
+        const minSuccessfulModels = requiredJurors(models.length, minSuccessfulModelsPercent(process.env.MIN_SUCCESSFUL_MODELS_PERCENT));
+
         if (successfulModels < minSuccessfulModels) {
           console.error(`❌ INSUFFICIENT_MODELS: Only ${successfulModels}/${models.length} models succeeded (minimum: ${minSuccessfulModels})`);
           

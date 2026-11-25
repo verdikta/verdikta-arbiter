@@ -436,6 +436,34 @@ During upgrade, the script:
 - can auto-integrate ClassID model pool updates into AI Node config
 - can check/download missing Ollama models (optional)
 
+## A request with a failed juror gets no answer
+
+Since 2026-11 the AI Node answers a request only when every model of its jury
+answered. If one juror times out, gives a reply that cannot be read, or fails at
+its provider (a rejected API key, an account at its usage limit, a model the
+provider no longer has), the request fails, the External Adapter commits
+nothing, and the Chainlink run is errored with
+`Insufficient successful models: 1/2 (minimum required: 2)`. Before, the node
+committed the scores of the jurors that did answer as the jury's: on a two-model
+jury, one model's verdict.
+
+For an operator:
+
+- **A provider key that is rejected or exhausted now costs every request whose
+  jury names that provider**, where it used to be answered by half a jury. Not
+  committing is not neutral: a round that times out applies the aggregator's
+  timeliness penalty to every polled oracle that did not commit
+  (`docs/development/stake-attestation-design.md`, section 12). Fix the key: the
+  doctor's `ai.provider_auth` and the watchdog's alert name the provider.
+- **An errored run with that message is not a fault of the node** when the
+  cause is the request (its jury names a model that no longer exists) or a
+  single slow answer.
+- **`MIN_SUCCESSFUL_MODELS_PERCENT`** in `ai-node/.env.local` is the override:
+  `0.5` restores the earlier rule for this node (no rebuild; restart the AI
+  Node). An answer from part of a jury can differ from the answers of arbiters
+  that ran all of it. No installer step sets it. Reference:
+  `ai-node/API_RESPONSE_SPECIFICATION.md`, "Configuration".
+
 ## AI Node production build
 
 The AI Node runs as a production Next.js build (`next build` once, then

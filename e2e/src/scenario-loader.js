@@ -220,6 +220,44 @@ function validateScenario(s, i) {
   if (s.expectPdfInputs !== undefined && s.expectPdfInputs !== 'native') {
     throw new Error(`Scenario "${s.id}": "expectPdfInputs" can only be "native"`);
   }
+  validateNoCommit(s);
+}
+
+/**
+ * A text scenario nobody may commit to (`expectNoCommit`): a request whose jury cannot be whole,
+ * which an arbiter answers with no commit at all (ai-node/src/utils/juryQuorum.ts). Arbiters that
+ * are down are silent too, so it names a `control`, a scenario of the same file that the same
+ * arbiters must then answer. It leaves a round unfinalized, so it runs only when named, and L4
+ * holds it to the canary class (src/l4/helpers.js).
+ */
+function validateNoCommit(s) {
+  if (s.expectNoCommit === undefined) {
+    for (const field of ['watchSeconds', 'control']) {
+      if (s[field] !== undefined) throw new Error(`Scenario "${s.id}": "${field}" is for a scenario that expects no commit`);
+    }
+    return;
+  }
+  if (s.expectNoCommit !== true) throw new Error(`Scenario "${s.id}": "expectNoCommit" can only be true`);
+  if (!(Number.isInteger(s.watchSeconds) && s.watchSeconds > 0)) throw new Error(`Scenario "${s.id}" expects no commit: "watchSeconds" says how long to watch for one`);
+  if (!isNonEmptyString(s.control)) throw new Error(`Scenario "${s.id}" expects no commit: "control" names the scenario the same arbiters must answer after it`);
+  if (s.manualOnly !== true) throw new Error(`Scenario "${s.id}" expects no commit: it leaves a round unfinalized, so it is "manualOnly"`);
+  for (const field of ['expectedWinnerIndex', 'expectPdfInputs']) {
+    if (s[field] !== undefined) throw new Error(`Scenario "${s.id}" expects no commit: there is no result for "${field}" to hold`);
+  }
+}
+
+/**
+ * The control of a scenario that expects no commit, as a request: a text scenario of the same
+ * file that settles. Named explicitly, so its archive must be pinned.
+ */
+function resolveControl(scenario, all) {
+  const refuse = (why) => new Error(`Scenario "${scenario.id}": its control "${scenario.control}" ${why}`);
+  const control = all.find((s) => s.id === scenario.control);
+  if (!control) throw refuse('is not a scenario of this file');
+  if (control.suite !== undefined || control.expectNoCommit !== undefined) throw refuse('is not a text scenario that settles');
+  const cids = resolveCids(control);
+  if (!cids) throw refuse(`has no resolvable CID (cidFile "${control.cidFile}" not found: pin the archive first)`);
+  return { id: control.id, cids, addendum: control.addendum || '', ...(control.minOutcomes !== undefined ? { minOutcomes: control.minOutcomes } : {}) };
 }
 
 /**
@@ -231,7 +269,8 @@ function validateScenario(s, i) {
  * (L4's --scenario / L4_SCENARIO). Naming one elsewhere (L2) is an error.
  *
  * Each returned scenario carries `cids` (array), `addendum` (string, default
- * '') and `cid` (the adapter's comma-joined form, see adapterCid).
+ * '') and `cid` (the adapter's comma-joined form, see adapterCid). One that
+ * expects no commit also carries `controlRequest`, the request of its control.
  *
  * @param {string} [file] - path to a scenarios JSON file
  * @param {string[]} [ids] - optional subset of scenario ids to keep
@@ -261,6 +300,7 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
   }
 
   scenarios.forEach(validateScenario);
+  const all = scenarios;
 
   if (suite !== null) {
     if (ids && ids.length) throw new Error('Name scenarios or a suite, not both');
@@ -310,7 +350,8 @@ function loadScenarios(file = DEFAULT_SCENARIOS, ids = null, { allowManualOnly =
     const cids = resolveCids(s);
     if (cids) {
       const addendum = s.addendum || '';
-      resolved.push({ ...s, cids, addendum, cid: adapterCid(cids, addendum) });
+      const controlRequest = s.expectNoCommit ? { controlRequest: resolveControl(s, all) } : {};
+      resolved.push({ ...s, cids, addendum, cid: adapterCid(cids, addendum), ...controlRequest });
     } else if (explicit) {
       throw new Error(`Scenario "${s.id}" has no resolvable CID (cidFile "${s.cidFile}" not found — pin the archive first).`);
     } else {

@@ -192,6 +192,16 @@ jobs:
           __tests__/unit/resultRecord.test.ts src/__tests__/api/rank-and-justify.documents.test.ts
           src/__tests__/api/rank-and-justify.record.test.ts
 
+      # Every juror answers, or the arbiter does not: each way a juror failed in a month of
+      # bounty records is a 400 with no justifier call, and the operator's override still works.
+      # With the route's other tests of a failed juror, which run under that override.
+      - name: AI Node every juror answers
+        working-directory: ai-node
+        run: >-
+          npx jest src/__tests__/api/rank-and-justify.quorum.test.ts
+          src/__tests__/api/rank-and-justify.redaction.test.ts
+          src/__tests__/api/rank-and-justify.test.ts
+
       # A PDF reaches each juror in the best form it can read: the route, the OpenAI and Anthropic
       # providers and their real clients against a local stub, held to the request bodies; with the
       # routing rules, the capability function, and what a provider says when it cannot carry a file.
