@@ -69,7 +69,7 @@ describe('aiClient.evaluate logging', () => {
   }
 
   test('logs each attachment\'s shape, never its contents', async () => {
-    mockPost.mockResolvedValue({ data: { scores: [], justification: 'ok' } });
+    mockPost.mockResolvedValue({ data: { scores: [{ outcome: 'DONT_FUND', score: 1000000 }, { outcome: 'FUND', score: 0 }], justification: 'ok' } });
 
     await aiClient.evaluate(query, dir, '[EA job1]');
 

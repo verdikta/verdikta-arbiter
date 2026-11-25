@@ -1,6 +1,12 @@
 import { textExtractor } from '../lib/text-extraction/text-extractor';
 import { AttachmentProcessingResult, ProcessedAttachment } from '../lib/text-extraction/types';
 import { resolveMediaType } from './media-type';
+import { fence, limitText } from './textFence';
+
+/** Text the AI node extracted from a file: quoted, since whoever made the file wrote it (textFence.ts). */
+function fenceExtracted(text: string, index: number, mediaType: string): string {
+  return fence('FILE', `attachment ${index + 1}, text extracted from a ${mediaType} file`, text);
+}
 
 /**
  * Unified Attachment Processor
@@ -164,7 +170,7 @@ async function processStringAttachment(
           return {
             attachment: {
               type: 'text',
-              content: extractionResult.content,
+              content: fenceExtracted(extractionResult.content, index, mediaType),
               mediaType: 'text/plain', // Convert to plain text
               size: extractionResult.content.length,
             },
@@ -209,7 +215,7 @@ async function processStringAttachment(
             return {
               attachment: {
                 type: 'text',
-                content: fallbackText,
+                content: fenceExtracted(fallbackText, index, mediaType),
                 mediaType: 'text/plain',
                 size: fallbackText.length,
               }
@@ -224,7 +230,8 @@ async function processStringAttachment(
     return {
       attachment: {
         type: 'text',
-        content: content.substring(0, 50000), // Limit text length
+        // Limit text length; a quoted attachment keeps its END line (textFence.ts)
+        content: limitText(content, 50000),
         mediaType: 'text/plain',
         size: content.length,
       }

@@ -38,9 +38,12 @@ export function parseModelResponse(responseText: string, outcomes?: string[]): {
       console.log('Direct JSON parsing failed:', e);
     }
 
-    // Strategy 1: Try to find JSON in code blocks
+    // Strategy 1: Try to find JSON in code blocks. The LAST block is the juror's answer: an
+    // earlier one may be a quote, and the material under review can hold a ready-made
+    // {"score": ...} block for a juror to repeat on its way to its own answer.
     if (!response) {
-      const jsonBlockMatch = responseText.match(/```(?:json)?\s*({[\s\S]*?})\s*```/);
+      const jsonBlocks = Array.from(responseText.matchAll(/```(?:json)?\s*({[\s\S]*?})\s*```/g));
+      const jsonBlockMatch = jsonBlocks.length > 0 ? jsonBlocks[jsonBlocks.length - 1] : null;
       if (jsonBlockMatch) {
         try {
           response = JSON.parse(jsonBlockMatch[1].trim());
@@ -66,7 +69,8 @@ export function parseModelResponse(responseText: string, outcomes?: string[]): {
       // Updated regex to better handle multiline JSON
       const jsonMatch = responseText.match(/\{[\s\S]*?\}/g);
       if (jsonMatch) {
-        for (const potentialJson of jsonMatch) {
+        // last first, for the reason given at Strategy 1
+        for (const potentialJson of [...jsonMatch].reverse()) {
           try {
             const parsed = JSON.parse(potentialJson);
             if (parsed && typeof parsed === 'object' && 'score' in parsed && 'justification' in parsed) {
@@ -142,12 +146,22 @@ export function parseModelResponse(responseText: string, outcomes?: string[]): {
       throw new Error('Justification must be a string');
     }
 
-    // Validate that all scores are integers
-    const decisionVector = response.score.map(Number);
+    // Every score is a number from 0 to 1,000,000 (a numeric string is accepted). A negative
+    // or oversized entry that still sums to 1,000,000 (say [1500000, -500000]) would outweigh
+    // every other juror in the arbiter's weighted average, and a negative average cannot be
+    // committed at all; null, true, [] or "" are not scores either.
+    const raw: unknown[] = response.score;
+    if (raw.some(v => !(typeof v === 'number' || (typeof v === 'string' && v.trim() !== '')))) {
+      throw new Error('All scores must be valid numbers');
+    }
+    const decisionVector = raw.map(Number);
     console.log('Parsed decision vector:', decisionVector);
 
-    if (decisionVector.some(isNaN)) {
+    if (decisionVector.some(v => !Number.isFinite(v))) {
       throw new Error('All scores must be valid numbers');
+    }
+    if (decisionVector.some(v => v < 0 || v > SCORE_TOTAL)) {
+      throw new Error(`Each score must be from 0 to 1,000,000 (got ${JSON.stringify(decisionVector)})`);
     }
 
     // If outcomes are provided, validate the length matches

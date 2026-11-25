@@ -828,7 +828,8 @@ describe('code review: requests without codeReview behave as before', () => {
     archives[H.cid('Single')] = BOUNTY;
     await evaluateHandler(request(`${H.cid('Single')}:price=101`));
     expect(logLines.some((line) => line.includes('Found addendum string: price=101'))).toBe(true);
-    expect(aiClient.evaluate.mock.calls[0][0].prompt).toContain('Current price: price=101');
+    expect(aiClient.evaluate.mock.calls[0][0].prompt).toContain('Current price:\n<<<BEGIN ADDENDUM ');
+    expect(aiClient.evaluate.mock.calls[0][0].prompt).toContain('\nprice=101\n<<<END ADDENDUM ');
   });
 
   it('a text-mode addendum that carries a machine line is not logged', async () => {

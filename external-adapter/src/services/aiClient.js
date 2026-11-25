@@ -62,19 +62,40 @@ function detectMimeType(buffer) {
     }
   }
 
-  // For text files, try to detect if it's UTF-8 text
-  try {
-    const textSample = buffer.toString('utf8', 0, Math.min(buffer.length, 100));
-    // If we can decode it as UTF-8 and it contains mostly printable characters
-    if (/^[\x20-\x7E\n\r\t]*$/.test(textSample)) {
-      return 'text/plain';
-    }
-  } catch (e) {
-    // Not UTF-8 text, continue to default
-  }
+  // Text: the whole file is valid UTF-8 with no control characters but tab and line
+  // breaks. Text in any language counts; it used to be printable ASCII in the first 100
+  // bytes, so a file opening with non-ASCII text went to the AI node as opaque base64
+  // and reached the models without the quoting text attachments get.
+  if (isPlainText(buffer)) return 'text/plain';
 
   // Default to octet-stream for unknown types
   return 'application/octet-stream';
+}
+
+const UTF8 = new TextDecoder('utf-8', { fatal: true });
+function isPlainText(buffer) {
+  let text;
+  try {
+    text = UTF8.decode(buffer);
+  } catch {
+    return false;
+  }
+  // eslint-disable-next-line no-control-regex -- text files hold no other control characters
+  return !/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(text);
+}
+
+/**
+ * The AI node's scores must be what a commit can carry: integers from 0 to 1,000,000. Anything
+ * else fails this attempt (transient: no commit) instead of reaching BigInt/abi.encode or the
+ * aggregator as an extreme value.
+ */
+function committableScoresProblem(data) {
+  const scores = data && data.scores;
+  if (!Array.isArray(scores) || scores.length === 0 ||
+      scores.some(s => !s || !Number.isSafeInteger(s.score) || s.score < 0 || s.score > 1000000)) {
+    return 'AI Node returned scores that are not integers from 0 to 1,000,000';
+  }
+  return null;
 }
 
 function encodeAttachment(fileData, mimeType) {
@@ -196,6 +217,9 @@ class AIClient {
           // Original file names, index-aligned with attachments; the AI Node uses them
           // to name an image it had to split or omit.
           let attachmentNames = [];
+          // Who supplied each attachment, index-aligned: 'requester' or 'submitted'. The AI
+          // node quotes text attachments and only labels a requester file as one on this word.
+          let attachmentSources = [];
           
           if (extractedPath) {
             // Read manifest if path provided
@@ -243,6 +267,7 @@ class AIClient {
                   const attachment = encodeAttachment(fileData, mimeType);
                   attachments.push(attachment);
                   attachmentNames.push(attachmentName(file, filePath));
+                  attachmentSources.push(file.evidenceSource === 'submitted' ? 'submitted' : 'requester');
                   const fileProcessTime = Date.now() - tFileStart;
                   logger.info(`${runTag} Added file to attachments: ${filePath}, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${fileProcessTime}ms`);
                 } catch (fileError) {
@@ -283,6 +308,7 @@ class AIClient {
                   const attachment = encodeAttachment(fileData, mimeType);
                   attachments.push(attachment);
                   attachmentNames.push(attachmentName(file, filePath));
+                  attachmentSources.push('requester'); // support files come from the primary manifest
                   const supportFileTime = Date.now() - tSupportFileStart;
                   logger.info(`${runTag} Added support file to attachments: ${file.name || filePath}, size: ${fileData.length} bytes, type: ${mimeType}, format: ${typeof attachment === 'object' ? attachment.type : 'string'}, processing time: ${supportFileTime}ms`);
                 } catch (fileError) {
@@ -303,6 +329,7 @@ class AIClient {
             ...query,
             attachments,
             attachmentNames,
+            attachmentSources,
             requestTag: runTag || undefined
           };
           
@@ -349,6 +376,12 @@ class AIClient {
             rawResponse: response.data // Log the raw response for debugging
           });
           
+          const scoreProblem = committableScoresProblem(response.data);
+          if (scoreProblem) {
+            // a property of this answer, not of the network: no retry, no commit
+            reject(new Error(scoreProblem));
+            return;
+          }
           resolve(response.data);
         } catch (error) {
           if (isUnsafeEvidenceError(error) || isWorkBudgetError(error)) {
@@ -425,3 +458,5 @@ class AIClient {
 }
 
 module.exports = new AIClient();
+module.exports.detectMimeType = detectMimeType;
+module.exports.committableScoresProblem = committableScoresProblem;

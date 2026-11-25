@@ -29,6 +29,7 @@ const codeReviewMode = require('../codeReview');
 const { getCodeReviewConfig, devTrustActive } = require('../codeReview/config');
 const { addendumForLog, redactMachineLines } = require('../codeReview/addendum');
 const { describeCanaryFault } = require('../canaryFault');
+const { fence, oneLine, addendumSection } = require('../utils/promptFence');
 // Validator is sourced from @verdikta/common; remove local validator import
 
 const OPERATOR_ADDRESS = (() => {
@@ -238,7 +239,7 @@ const evaluate = async (request) => {
       if (addendumString && parsedManifest.addendum) {
         const sanitizedAddendum = addendumString.replace(/[<>{}]/g, '');
         logger.info(`Adding addendum to query: ${parsedManifest.addendum}: ${addendumForLog(sanitizedAddendum)}`);
-        queryObject.prompt += `\n\nAddendum: \n${parsedManifest.addendum}: ${sanitizedAddendum}`;
+        queryObject.prompt += addendumSection(parsedManifest.addendum, sanitizedAddendum);
       }
       
       logger.debug(`${runTag} AI service call…`);
@@ -376,12 +377,14 @@ const evaluate = async (request) => {
           let combinedPrompt = primaryManifest.prompt || primaryManifest.query || '';
           let combinedReferences = primaryManifest.references || [];
 
-          // Add bCID content
+          // Add bCID content, quoted: it is written by a party to the request, not the requester
           for (const bCIDItem of bCIDManifests) {
             if (bCIDItem && bCIDItem.manifest) {
               const manifest = bCIDItem.manifest;
               if (manifest.prompt || manifest.query) {
-                combinedPrompt += '\n\n' + (manifest.prompt || manifest.query);
+                const name = bCIDItem.expectedName || manifest.name || 'bCID';
+                combinedPrompt += `\n\n=== SUBMITTED MATERIAL: ${oneLine(primaryManifest.bCIDs?.[name] || name)} ===\n` +
+                  fence('SUBMITTED', `${name}, written by the submitter`, manifest.prompt || manifest.query);
               }
               if (manifest.references && Array.isArray(manifest.references)) {
                 combinedReferences = [...combinedReferences, ...manifest.references];
@@ -392,7 +395,7 @@ const evaluate = async (request) => {
           // Add addendum if present
           if (addendumString && primaryManifest.addendum) {
             const sanitizedAddendum = addendumString.replace(/[<>{}]/g, '');
-            combinedPrompt += `\n\nAddendum: \n${primaryManifest.addendum}: ${sanitizedAddendum}`;
+            combinedPrompt += addendumSection(primaryManifest.addendum, sanitizedAddendum);
           }
 
           combinedQueryData = {
@@ -408,12 +411,14 @@ const evaluate = async (request) => {
 
         logger.info('Constructed combined query with length: ' + combinedQueryData.prompt.length);
 
-        // Collect all attachments
-        let allAttachments = primaryManifest.additional || [];
+        // Collect all attachments, each marked with who supplied it: the AI node labels a
+        // requester file (the grading rubric) apart from submitted ones (aiClient.js).
+        let allAttachments = (primaryManifest.additional || []).map(file => ({ ...file, evidenceSource: 'requester' }));
         for (const bCIDItem of bCIDManifests) {
           if (bCIDItem && bCIDItem.manifest && bCIDItem.manifest.additional && bCIDItem.manifest.additional.length > 0) {
             logger.info(`Adding ${bCIDItem.manifest.additional.length} attachments from ${bCIDItem.manifest.name || 'unnamed manifest'}`);
-            allAttachments = [...allAttachments, ...bCIDItem.manifest.additional];
+            allAttachments = [...allAttachments,
+              ...bCIDItem.manifest.additional.map(file => ({ ...file, evidenceSource: 'submitted' }))];
           }
         }
 

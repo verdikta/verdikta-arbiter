@@ -52,7 +52,7 @@ describe('jury and attachment budget', () => {
   let dir;
   beforeEach(() => {
     mockPost.mockReset();
-    mockPost.mockResolvedValue({ data: { scores: [], justification: 'ok' } });
+    mockPost.mockResolvedValue({ data: { scores: [{ outcome: 'DONT_FUND', score: 400000 }, { outcome: 'FUND', score: 600000 }], justification: 'ok' } });
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'work-budget-'));
     fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify({ version: '1.0' }));
     fs.writeFileSync(path.join(dir, 'evidence.txt'), 'x'.repeat(4096));

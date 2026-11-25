@@ -275,7 +275,7 @@ export function dropUnprocessableImagesEnabled(): boolean {
 /** Appends the attachment notes to the prompt; returns it unchanged when there are none. */
 export function appendAttachmentNotes(prompt: string, notes: string[]): string {
   if (notes.length === 0) return prompt;
-  return `${prompt}\n\nNotes on the attachments (added by the arbiter while preparing them for the models):\n${notes
+  return `${prompt}\n\nNotes on the attachments (added by the arbiter while preparing them for the models; a name in quotes is a file name chosen by whoever supplied the file):\n${notes
     .map(note => `- ${note}`)
     .join('\n')}`;
 }
@@ -473,9 +473,10 @@ function detectMediaType(declared: string, payload: string): string {
 function attachmentName(names: unknown[], index: number): AttachmentName {
   const raw = names[index];
   if (typeof raw === 'string') {
-    // A file name from the submitter's manifest: keep it on one short line.
-    const clean = raw.replace(/[\u0000-\u001f\u007f]+/g, ' ').trim().slice(0, 200);
-    if (clean) return { display: clean, ref: clean };
+    // A file name from the submitter's manifest. It lands in notes the arbiter writes, so it
+    // stays a short, quoted name: file-name characters only, at most 100 of them.
+    const clean = raw.replace(/[^A-Za-z0-9 ._()\/+,=@#-]+/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100).trim();
+    if (clean) return { display: `"${clean}"`, ref: `"${clean}"` };
   }
   return { display: `Attachment ${index + 1}`, ref: String(index + 1) };
 }

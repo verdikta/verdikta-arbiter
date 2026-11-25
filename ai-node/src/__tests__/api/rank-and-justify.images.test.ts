@@ -104,13 +104,14 @@ describe('POST /api/rank-and-justify with oversized and unusable images', () => 
     for (const provider of [openai, anthropic]) {
       expect(provider.generateResponseWithAttachments).toHaveBeenCalledTimes(1);
       const [prompt, , attachments] = provider.generateResponseWithAttachments.mock.calls[0];
-      expect(prompt).toContain('- submission/medium_article.png was split into 5 parts, top to bottom');
+      expect(prompt).toContain('- "submission/medium_article.png" was split into 5 parts, top to bottom');
       expect(prompt).toContain(
-        '- Attachment submission/broken.png could not be processed and was omitted: Input buffer has corrupt header.',
+        '- Attachment "submission/broken.png" could not be processed and was omitted: Input buffer has corrupt header.',
       );
       expect(attachments.filter((a: Attachment) => a.type === 'image')).toHaveLength(5);
-      expect(attachments.map((a: Attachment) => a.content)).toContain('[submission/medium_article.png (part 1 of 5)]');
-      expect(attachments[attachments.length - 1].content).toBe('The hunter\'s cover note.');
+      expect(attachments.map((a: Attachment) => a.content)).toContain('["submission/medium_article.png" (part 1 of 5)]');
+      // a text attachment reaches the models quoted (utils/textFence.ts)
+      expect(attachments[attachments.length - 1].content).toMatch(/^<<<BEGIN FILE [0-9a-f]{16} \| attachment 3: submission\/note.txt>>>\nThe hunter's cover note.\n<<<END FILE [0-9a-f]{16}>>>$/);
     }
     // Both models saw identical attachments.
     expect(openai.generateResponseWithAttachments.mock.calls[0][2]).toEqual(
@@ -133,7 +134,7 @@ describe('POST /api/rank-and-justify with oversized and unusable images', () => 
     const body = await response.json();
 
     expect(response.status).toBe(400);
-    expect(body.error).toBe('Image attachment submission/broken.png could not be processed: Input buffer has corrupt header');
+    expect(body.error).toBe('Image attachment "submission/broken.png" could not be processed: Input buffer has corrupt header');
     expect(openai.generateResponseWithAttachments).not.toHaveBeenCalled();
     expect(anthropic.generateResponseWithAttachments).not.toHaveBeenCalled();
   });

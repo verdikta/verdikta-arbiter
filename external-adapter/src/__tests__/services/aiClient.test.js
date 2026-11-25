@@ -15,7 +15,7 @@ describe('aiClient.evaluate payload', () => {
 
   beforeEach(() => {
     mockPost.mockReset();
-    mockPost.mockResolvedValue({ data: { scores: [], justification: 'ok' } });
+    mockPost.mockResolvedValue({ data: { scores: [{ outcome: 'DONT_FUND', score: 1000000 }, { outcome: 'FUND', score: 0 }], justification: 'ok' } });
     dir = fs.mkdtempSync(path.join(os.tmpdir(), 'aiclient-'));
     fs.mkdirSync(path.join(dir, 'submission'));
     // PNG signature is enough for MIME detection; the AI Node does the decoding.
