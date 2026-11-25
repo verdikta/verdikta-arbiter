@@ -81,6 +81,16 @@ AI_TIMEOUT=300000              # Request timeout when calling the AI Node (ms)
 # IPFS_FETCH_CACHE_TTL_MS=120000
 # IPFS_FETCH_CACHE_MAX_ENTRIES=32
 # IPFS_FETCH_CACHE_MAX_BYTES=67108864
+# Work limits (src/utils/workBudget.js): the requester writes the jury, the iterations
+# and the attachments, and this node is paid at most its fee. A request over a limit is
+# refused before any model call (errored, no commit). Defaults are the class map's
+# ceilings (panel 5 x NO_COUNTS 2 x ITERATIONS 3 = 30 calls; 40 MiB of evidence).
+# EA_MAX_MODEL_CALLS=30
+# EA_MAX_ITERATIONS=3
+# EA_MAX_ATTACHMENTS=20
+# EA_MAX_ATTACHMENT_BYTES=41943040
+# EA_MAX_ARCHIVE_ENTRIES=2000
+# EA_MAX_EXTRACTED_BYTES=268435456
 IPFS_PINNING_SERVICE=https://api.pinata.cloud
 IPFS_PINNING_KEY=eyJ...        # Pinata JWT (NOT the API key/secret). Required to upload justifications.
 

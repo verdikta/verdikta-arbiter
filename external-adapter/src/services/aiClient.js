@@ -4,7 +4,9 @@ const config = require('../config');
 const { createClient } = require('@verdikta/common');
 const path = require('path');
 const { summarizePayload } = require('../utils/payloadSummary');
-const { readEvidenceFile, isUnsafeEvidenceError } = require('../utils/evidenceBoundary');
+const fs = require('fs');
+const { readEvidenceFile, resolveAttachmentPath, isUnsafeEvidenceError } = require('../utils/evidenceBoundary');
+const { WorkBudgetError, isWorkBudgetError, workBudgetFromEnv, assertJuryBudget } = require('../utils/workBudget');
 const { validServiceToken } = require('../utils/serviceAuth');
 
 // Initialize verdikta-common client for logging
@@ -115,6 +117,46 @@ function attachmentName(file, filePath) {
   return file.filename || file.name || path.basename(filePath);
 }
 
+/**
+ * Count and size the attachments a run would read, before reading any (utils/workBudget.js). Every
+ * entry counts, so one CID listed under many names is counted (and sized) as often as it is sent.
+ * Entries the run would skip (no path or filename, missing files) are skipped here too; an unsafe
+ * one throws, as the read would.
+ */
+function assertAttachmentBudget(query, extractedPath, evidenceRoots, manifest, budget) {
+  const entries = [
+    ...(Array.isArray(query.additional) ? query.additional.map(file => [file, evidenceRoots]) : []),
+    ...(manifest && Array.isArray(manifest.support) ? manifest.support.map(file => [file, [extractedPath]]) : [])
+  ].filter(([file]) => file && (file.path || file.filename));
+  if (entries.length > budget.maxAttachments) {
+    throw new WorkBudgetError(`${entries.length} attachments (at most ${budget.maxAttachments})`);
+  }
+  let bytes = 0;
+  for (const [file, roots] of entries) {
+    let stat;
+    try {
+      stat = fs.lstatSync(resolveAttachmentPath(roots, file));
+    } catch (error) {
+      if (isUnsafeEvidenceError(error)) throw error;
+      continue; // unreadable: the run skips it as well
+    }
+    bytes += stat.size;
+    if (bytes > budget.maxAttachmentBytes) {
+      throw new WorkBudgetError(`attachments over ${budget.maxAttachmentBytes} bytes`);
+    }
+  }
+}
+
+/**
+ * Whether a failed AI Node call may be retried. Not a timeout: the AI Node does not abort a jury that
+ * ran past its deadline, so a retry starts a second full jury while the first is still being paid for.
+ */
+function retryable(error) {
+  if (error.response?.status === 408 || error.response?.data?.timeout === true) return false;
+  if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') return false;
+  return true;
+}
+
 class AIClient {
   constructor() {
     this.client = axios.create({
@@ -134,6 +176,13 @@ class AIClient {
     const token = process.env.AI_NODE_API_TOKEN;
     if (!validServiceToken(token)) throw new Error('AI Node service authentication is not configured');
     const requestStartTime = Date.now();
+    // The work this request asks for, refused before any model call (utils/workBudget.js).
+    const budget = workBudgetFromEnv();
+    assertJuryBudget(query, budget);
+    if (extractedPath) {
+      const manifest = JSON.parse(await readEvidenceFile([extractedPath], { filename: 'manifest.json' }, 'utf8'));
+      assertAttachmentBudget(query, extractedPath, evidenceRoots, manifest, budget);
+    }
     return new Promise((resolve, reject) => {
       const operation = retry.operation(this.retryOptions);
       
@@ -302,7 +351,7 @@ class AIClient {
           
           resolve(response.data);
         } catch (error) {
-          if (isUnsafeEvidenceError(error)) {
+          if (isUnsafeEvidenceError(error) || isWorkBudgetError(error)) {
             reject(error); // never omit unsafe evidence, retry it, or call the AI
             return;
           }
@@ -360,7 +409,11 @@ class AIClient {
           // Log error data if present (redundant logging removed as it's logged above)
           // if (error.response?.data) { ... }
 
-          // Retry for non-provider errors
+          // Retry for non-provider errors, except a timeout (see retryable)
+          if (!retryable(error)) {
+            reject(error);
+            return;
+          }
           if (operation.retry(error)) {
             return;
           }

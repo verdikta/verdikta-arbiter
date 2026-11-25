@@ -7,6 +7,7 @@
 const fs = require('fs');
 const path = require('path');
 const unzipper = require('unzipper');
+const { WorkBudgetError, workBudgetFromEnv } = require('./workBudget');
 
 class UnsafeEvidenceError extends Error {
   constructor(reason, { deterministic = false } = {}) {
@@ -156,16 +157,56 @@ async function assertSafeManifest(root) {
   await assertManifestReferences(JSON.parse(text), root);
 }
 
-/** Inspect ZIP paths/types before letting the shared extractor touch the disk. */
-async function extractEvidenceArchive(archiveService, data, name, destination) {
+/**
+ * Inflate every file entry once, counting the bytes and writing nothing, and stop at the cap. The
+ * sizes a ZIP declares can be false, and entries may overlap (one compressed run read by many
+ * entries), so only the inflated bytes are a bound on what extraction would write to disk.
+ */
+async function assertInflatedSize(entries, maxBytes) {
+  let total = 0;
+  for (const entry of entries) {
+    if (entry.type === 'Directory') continue;
+    await new Promise((resolve, reject) => {
+      const stream = entry.stream();
+      let done = false;
+      const finish = (error) => {
+        if (done) return;
+        done = true;
+        if (error) reject(error); else resolve();
+      };
+      stream.on('data', (chunk) => {
+        total += chunk.length;
+        if (total > maxBytes) {
+          stream.destroy();
+          finish(new WorkBudgetError(`the archive inflates to more than ${maxBytes} bytes`));
+        }
+      });
+      stream.on('error', (error) => finish(error));
+      stream.on('end', () => finish());
+      stream.on('close', () => finish());
+    });
+  }
+}
+
+/** Inspect ZIP paths/types, entry count and inflated size before letting the shared extractor touch the disk. */
+async function extractEvidenceArchive(archiveService, data, name, destination, budget = workBudgetFromEnv()) {
   const directory = await unzipper.Open.buffer(data);
+  if (directory.files.length > budget.maxArchiveEntries) {
+    throw new WorkBudgetError(`the archive has ${directory.files.length} entries (at most ${budget.maxArchiveEntries})`);
+  }
+  let declared = 0;
   for (const entry of directory.files) {
+    declared += Number(entry.uncompressedSize) || 0;
     assertRelativePath(entry.path);
     const kind = (entry.externalFileAttributes >>> 16) & 0xf000;
     if (kind !== 0 && kind !== 0x8000 && kind !== 0x4000) {
       throw new UnsafeEvidenceError('ZIP links and special files are not allowed', { deterministic: true });
     }
   }
+  if (declared > budget.maxExtractedBytes) {
+    throw new WorkBudgetError(`the archive declares ${declared} bytes (at most ${budget.maxExtractedBytes})`);
+  }
+  await assertInflatedSize(directory.files, budget.maxExtractedBytes);
   // name is supplied by the adapter, never by a manifest. Still reject any
   // path component before it reaches common's path construction.
   assertRelativePath(name);

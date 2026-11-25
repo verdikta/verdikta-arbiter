@@ -42,7 +42,9 @@ const config = {
     timeout: parseInt(process.env.AI_TIMEOUT) || 300000,
   },
   retry: {
-    attempts: 3,
+    // The `retry` package reads `retries` (it ignored the old `attempts: 3` and retried 10 times):
+    // 2 retries is 3 attempts in all.
+    retries: 2,
     factor: 2,
     minTimeout: 1000,
     maxTimeout: 4000,
