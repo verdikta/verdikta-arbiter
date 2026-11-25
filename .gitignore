@@ -64,3 +64,5 @@ installer/.registration_state
 
 # v2 health-call hash chains (secret seeds; installs keep them in <install>/health-chains)
 health-chains/
+# commit-reveal state (salts and results before the reveal; installs keep it in <install>/commit-store)
+commit-store/

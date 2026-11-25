@@ -29,6 +29,7 @@ const HASH = 'abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789';
 const PADDED = HASH.padStart(64, '0');
 const DECIMAL = BigInt('0x' + HASH).toString();
 const AGG = '0x' + 'ab'.repeat(32);
+const LIVE = '1'.repeat(64);       // a second commitment (the store takes commitment-shaped keys only)
 const TOKEN = 'e'.repeat(64);
 const AI_TOKEN = 'a'.repeat(64);
 const body = (overrides = {}) => ({ id: 'job-1', data: { cid: `2:${DECIMAL}`, aggId: AGG }, ...overrides });
@@ -154,9 +155,9 @@ test('cleanup expires retained results and leaves live commitments intact', asyn
   await handler(body());
   const saved = await store.get(PADDED);
   await store.save(PADDED, { ...saved, expiresAt: Date.now() - 1 });
-  await store.save('live-test', { ...entry });
+  await store.save(LIVE, { ...entry });
   await store.purgeStale();
   expect(await store.get(PADDED)).toBeUndefined();
-  expect(await store.get('live-test')).toEqual(entry);
-  await store.del('live-test');
+  expect(await store.get(LIVE)).toEqual(entry);
+  await store.del(LIVE);
 });

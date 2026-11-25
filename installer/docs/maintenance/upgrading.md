@@ -53,6 +53,15 @@ Recommended:
   - `~/verdikta-arbiter-node/installer/.api_keys`
   - `~/verdikta-arbiter-node/installer/.contracts`
 
+!!! warning "Moving from the v1 dispatcher to v2: exit v1 first"
+    This release commits only in the v2 format: `keccak256(abi.encode(aggId, operator, scores,
+    salt))`, a 32-hex salt and a 64-hex reveal. The v1 aggregator checks the first 16 bytes of
+    `sha256(abi.encode(operator, scores, salt))` with a 20-hex salt, so every commit an upgraded node
+    makes for a v1 request is accepted and can never be revealed, and the v1 keeper scores each one
+    as a failed reveal. Before upgrading a node that is still registered with the v1 dispatcher,
+    deregister its jobs there (`unregister-oracle.sh` from the release you are running) and let its
+    last requests finish; then upgrade and register with v2.
+
 ## Run the upgrade
 
 From the repository root:
@@ -192,7 +201,8 @@ template lacks the Authorization header. An unattended upgrade without
 `VA_UPGRADE_REGENERATE_JOBS=y`, and a node whose jobs are registered on separate
 classes (`REGISTRATION_SPLIT`), are refused before anything is stopped; declining
 at the prompt ends the upgrade and starts the arbiter again, with nothing replaced. Drain
-in-flight requests first: job IDs change, and pending commits remain in memory.
+in-flight requests first: job IDs change. (Pending commits survive the restart: the adapter keeps
+them on disk, in `<install-dir>/commit-store/`.)
 The upgrade synchronizes separate EA/AI credentials and renders private job
 files. See [service authentication](../../../docs/development/service-authentication.md)
 for credential rotation, network restrictions and the class-5555 deployment checks.
@@ -270,6 +280,17 @@ The v2 keeper sends health calls that each registered job must answer within 60 
 is asked: a health job has no on-chain identity. A failure ends the upgrade with exit 3 and
 `HEALTH JOBS FAILED:`. Each job's hash chain is in `<install-dir>/health-chains/`: back it up with
 the node's keys.
+
+### Commit store
+
+Between a commit and its reveal the External Adapter holds the commit's salt and result. They are
+kept on disk, one 0600 file per commit in `<install-dir>/commit-store/` (directory 0700), written
+and fsynced before the commit is answered and loaded when the adapter starts, so a restart or an
+upgrade between a commit and its reveal no longer loses the reveal (with the v2 dispatcher, a
+failed reveal costs 500 points and a 24-hour block, and repeats a ban). Records expire 3 days after
+their commit and are removed every 15 minutes. The upgrade does not touch the directory. Set
+`COMMIT_STORE_DIR` in `external-adapter/.env` to keep it elsewhere (move the files with it while
+the adapter is stopped). Before this release the store was in memory only (`USE_FILE = false`).
 
 ## Chainlink config regeneration
 

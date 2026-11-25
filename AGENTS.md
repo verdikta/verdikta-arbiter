@@ -153,7 +153,9 @@ Because several arbiters answer the same request, the Dispatcher uses
 
 - **Mode 0** (`Qm...`): standard — evaluate now, upload justification, return `scores + cid`.
 - **Mode 1** (`1:Qm...`): **commit** — evaluate, store `{result, salt}` locally (`commitStore`), return only the 256-bit hash commitment (as a decimal) in `aggregatedScore[0]`. No CID yet.
-- **Mode 2** (`2:<64 hex>`): **reveal** — require the same job ID, aggregation ID and configured operator as the commit, upload once, and return `scores` + `justificationCid:salt` (the salt as 32 hex chars). Retain the result/CID/salt until the commit's three-day expiry so concurrent calls and retries are idempotent. The store is still RAM-only; restart durability remains separate work.
+- **Mode 2** (`2:<64 hex>`): **reveal** — require the same job ID, aggregation ID and configured operator as the commit, upload once, and return `scores` + `justificationCid:salt` (the salt as 32 hex chars). Retain the result/CID/salt until the commit's three-day expiry so concurrent calls and retries are idempotent.
+- **The commit store is on disk** (`services/commitStore.js`): one file per commitment, `<install>/commit-store/<64 hex>.json` (dir 0700, file 0600; `COMMIT_STORE_DIR` overrides), written to a unique temp file, fsynced and renamed before the commit is answered, loaded at startup, expired records removed every 15 min. A restart or upgrade between commit and reveal keeps the reveal; losing it would be a failed reveal (`T_MISS_FAILED`, a block, a ban on repeats). Tests: `__tests__/services/commitStore.test.js`; `jest.setup.js` points every test file at its own temp dir.
+- **v2 format only.** A node still registered on the v1 dispatcher makes commits v1 can never open: exit v1 before upgrading (`installer/docs/maintenance/upgrading.md`). There is no dual mode: `aggId` is opaque to the node, and test fixtures use hash-shaped ids.
 
 The commit hash = `keccak256(abi.encode(bytes32 aggId, address OPERATOR_ADDRESS, uint256[] scores, uint256 salt))`, all 32 bytes, with a 128-bit salt (the v2 aggregator, verdikta-dispatcher items 4 and 5; v1 took 128 bits of a SHA-256 without the round). Binding the round and keeping every bit means no commit can be opened two ways in practice. This is why the EA **requires `OPERATOR_ADDR`** in its env. `evaluateHandler.commitFormat.test.js` pins the formula to the dispatcher's own test helper.
 
@@ -182,6 +184,15 @@ chain, or the arbiter is frozen (not selectable) until it answers.
   supplies the two values. It never reads the chain itself.
 - **Rotation:** a new chain is created and saved 1,000 values before the old one ends.
 - **No repeats:** a head answered in the last 20 s is not answered again.
+- **Stale reads (2026-11-25):** old chains are kept for `RETAIN_MS` (1 day) after the keeper's head
+  reaches the newest chain (`landedAt`) and it has been answered from (`chainStore` `prune`), so a
+  lagging read is recognised instead of forcing a re-sync. The file's `mark` (last head answered) and
+  each chain's `served` (highest index handed out) are saved before every answer. A head behind the
+  mark, or the unknown head a landed re-sync replaced (`from`), is skipped for `STALE_GRACE_MS`
+  (25 s); after that it is answered, or re-synced if more than 2 behind on the same chain. A head
+  beyond `served` abandons that chain (`abandoned`) and re-syncs. The keeper's `StaleAnswer` makes a
+  stale answer harmless either way. Bridge-token holders can still step a chain one value ahead of
+  the keeper (the adapter never reads the chain); that ends in a re-sync of the node.
 - **Registration:** `arbiter-operator/scripts/register-oracle-cl.js` creates each job's chain before
   registering its head.
 

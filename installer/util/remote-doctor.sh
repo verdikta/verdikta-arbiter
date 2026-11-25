@@ -12,7 +12,7 @@
 #   - Node EOA unfunded
 #   - setAuthorizedSenders never called
 #   - Stuck transactions in chainlink TXM
-#   - commitStore RAM-only flag
+#   - commitStore durability (on disk, or an older RAM-only build)
 #   - Identity / configuration drift between .contracts, job spec, chainlink DB
 #
 # Operating modes:
@@ -859,56 +859,58 @@ check_external_adapter() {
     section_header "EXTERNAL ADAPTER"
 
     # commitStore mode.
-    # USE_FILE=false makes the EA keep commits in RAM only — fine for normal
-    # steady-state operation (where reveals follow commits within seconds and
-    # the EA process isn't bounced), but commits are lost if the EA restarts
-    # mid-flight. Treat as WARN, not FAIL: it's a latent footgun rather than
-    # an active outage. Real outages (e.g. unfunded node, missing auth) are
-    # what actually break running arbiters.
+    # A v2 commit can only be revealed with the salt and result kept at commit
+    # time; an adapter that loses them (restart, upgrade) fails every pending
+    # reveal, and the keeper blocks, then bans, for failed reveals. Current code
+    # keeps one file per commit in COMMIT_STORE_DIR (default
+    # <install>/commit-store). Older code had a USE_FILE flag, false by default
+    # (RAM only): upgrade.
     local cs_file="$INSTALL_DIR/external-adapter/src/services/commitStore.js"
+    local cs_dir
+    cs_dir=$(grep -E '^COMMIT_STORE_DIR=' "$INSTALL_DIR/external-adapter/.env" 2>/dev/null | tail -1 | cut -d= -f2- | tr -d "\"'")
+    cs_dir="${cs_dir:-$INSTALL_DIR/commit-store}"
     if [ -f "$cs_file" ]; then
-        if grep -qE '^const[[:space:]]+USE_FILE[[:space:]]*=[[:space:]]*true' "$cs_file"; then
-            emit PASS ea.commit_store_mode "USE_FILE=true (commits persist across EA restarts)" ""
+        if grep -q 'COMMIT_STORE_DIR' "$cs_file"; then
+            emit PASS ea.commit_store_mode "commits are kept on disk (one file per commit) across EA restarts" "$cs_dir"
         elif grep -qE '^const[[:space:]]+USE_FILE[[:space:]]*=[[:space:]]*false' "$cs_file"; then
-            emit WARN ea.commit_store_mode "USE_FILE=false — in-flight commits are RAM-only and would be lost across an EA restart" \
-                 "Steady-state operation is unaffected; only matters during recovery / rapid restarts. To eliminate the risk: patch $cs_file (USE_FILE=true) and restart EA."
+            emit WARN ea.commit_store_mode "commits are RAM-only (USE_FILE=false): an EA restart between a commit and its reveal loses the reveal" \
+                 "With the v2 dispatcher each lost reveal is a failed reveal (a 24-hour block, a ban on repeats). Upgrade the arbiter (upgrade-arbiter.sh): current code keeps commits in $cs_dir."
         else
-            emit WARN ea.commit_store_mode "could not parse USE_FILE flag in commitStore.js" ""
+            emit WARN ea.commit_store_mode "older commitStore.js (single JSON file): upgrade for the per-commit, fsynced store" "$cs_file"
         fi
     else
         emit WARN ea.commit_store_mode "commitStore.js not found at expected path" "$cs_file"
     fi
 
-    # commit-db state
-    local commit_db="$INSTALL_DIR/external-adapter/src/.commit-db.json"
-    if [ -f "$commit_db" ]; then
-        local entries last_mtime mtime_age_sec
-        entries=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))))' "$commit_db" 2>/dev/null || echo "?")
-        mtime_age_sec=$(( $(date +%s) - $(stat -c %Y "$commit_db" 2>/dev/null || echo 0) ))
-        emit INFO ea.commit_db "$entries open commit(s), last write ${mtime_age_sec}s ago" "$commit_db"
-        # Stale entries
-        local stale_count
-        stale_count=$(python3 -c '
-import json, sys, datetime
-db=json.load(open(sys.argv[1]))
-now=datetime.datetime.now(datetime.timezone.utc)
-cutoff=now - datetime.timedelta(hours=72)
-n=0
-for h,e in db.items():
-    c=e.get("created","")
+    # commit store state
+    if [ -d "$cs_dir" ]; then
+        local entries stale_count cs_mode
+        read -r entries stale_count < <(python3 -c '
+import json, os, sys, time
+d = sys.argv[1]; now = time.time() * 1000; n = stale = 0
+for name in os.listdir(d):
+    if not name.endswith(".json"): continue
+    n += 1
     try:
-        t=datetime.datetime.fromisoformat(c.replace("Z","+00:00"))
-        if t < cutoff: n+=1
+        e = json.load(open(os.path.join(d, name)))
+        exp = e.get("expiresAt")
+        if not isinstance(exp, (int, float)): stale += 1
+        elif exp <= now: stale += 1
     except Exception:
-        pass
-print(n)' "$commit_db" 2>/dev/null || echo 0)
+        stale += 1
+print(n, stale)' "$cs_dir" 2>/dev/null || echo "? 0")
+        emit INFO ea.commit_db "$entries commit record(s)" "$cs_dir"
+        cs_mode=$(stat -c %a "$cs_dir" 2>/dev/null || echo "?")
+        if [ "$cs_mode" != "700" ]; then
+            emit WARN ea.commit_db_mode "commit store directory is mode $cs_mode (expected 700): unrevealed salts and results are secret" \
+                 "chmod 700 $cs_dir; chmod 600 $cs_dir/*.json"
+        fi
         if [ "$stale_count" != "0" ]; then
-            emit WARN ea.commit_db_stale "$stale_count commit(s) older than 72h (will never be revealed)" \
-                 "Safe to clear: rm $commit_db then restart EA (only if you're past those requests)."
+            emit WARN ea.commit_db_stale "$stale_count expired or unreadable commit record(s)" \
+                 "Expired records are removed by the EA every 15 minutes; one that stays is unreadable: inspect, then remove it."
         fi
     else
-        # Acceptable if EA hasn't received any commits yet
-        emit INFO ea.commit_db "commit DB not created yet" "$commit_db (created on first commit)"
+        emit INFO ea.commit_db "commit store not created yet" "$cs_dir (created when the EA starts)"
     fi
 
     # Pinata IPFS pinning key sanity.
@@ -962,7 +964,7 @@ print(n)' "$commit_db" 2>/dev/null || echo 0)
         emit INFO ea.recent_activity "current log: commits=$commits reveals_hit=$reveals_hit reveals_miss=$reveals_miss errors=$errs" "$(basename "$latest_ea_log")"
         if [ "${reveals_miss:-0}" -gt 0 ]; then
             emit WARN ea.recent_reveal_miss "$reveals_miss REVEAL miss(es) in current EA log" \
-                 "Usually means commitStore was RAM-only at some point (or commits older than retention); see ea.commit_store_mode."
+                 "Usually means the commit was lost (an older RAM-only commitStore and an EA restart) or is past its 3-day retention; see ea.commit_store_mode."
         else
             emit PASS ea.recent_reveal_miss "no REVEAL misses in current log" ""
         fi
@@ -1135,17 +1137,7 @@ run_fix_mode() {
                 fi
                 ;;
             ea.commit_store_mode)
-                local cs_file="$INSTALL_DIR/external-adapter/src/services/commitStore.js"
-                if [ -f "$cs_file" ]; then
-                    if prompt_yes_no "Patch commitStore.js to USE_FILE=true (in place) and restart EA?"; then
-                        sed -i 's/^const[[:space:]]*USE_FILE[[:space:]]*=[[:space:]]*false/const USE_FILE = true/' "$cs_file"
-                        echo "  patched."
-                        if [ -x "$INSTALL_DIR/external-adapter/stop.sh" ] && [ -x "$INSTALL_DIR/external-adapter/start.sh" ]; then
-                            ( cd "$INSTALL_DIR/external-adapter" && ./stop.sh && sleep 2 && ./start.sh )
-                            echo "  EA restarted."
-                        fi
-                    fi
-                fi
+                echo "  Upgrade the arbiter (upgrade-arbiter.sh): current code keeps commits on disk."
                 ;;
             txm.stuck_unconfirmed|txm.stuck_in_progress|txm.local_nonce_vs_chain)
                 cat <<'PROMPT'

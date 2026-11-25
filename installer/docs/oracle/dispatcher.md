@@ -99,6 +99,19 @@ The node does this without you:
   re-sync. The job's next answer sends that call and the one after answers it, so the job alone
   recovers in three transactions. An unreadable chain file stops the adapter instead: restore it
   (mode 0600) or remove it.
+- **Stale reads.** The job reads the head over RPC, and a lagging RPC can show a head the keeper has
+  moved past. The adapter keeps the previous chain for a day after the keeper switches to a new one
+  (a rotation or a re-sync), so such a head is still recognised, and it skips a head behind the last
+  one it answered (or one a landed re-sync replaced) for up to 25 s instead of answering it. Still
+  there after that, the head is real (a reorg): it is answered as usual, or, if it is more than 2
+  values behind the last answer on the same chain, the adapter re-syncs onto a fresh chain. The
+  keeper reverts a re-sent answer (`StaleAnswer`, `BadPreimage`), so a stale answer costs only gas.
+- **Values handed out.** The file also records the highest value handed out on each chain and the
+  last head answered, saved before each answer. A head beyond every value handed out (a chain file
+  restored from an old backup, or a leaked seed) is never answered from: that chain is abandoned and
+  the adapter re-syncs onto a fresh one. Anyone holding the bridge token (`EA_API_TOKEN`) can still
+  step the chain ahead of the keeper one value at a time; the node's own reads then look stale and
+  end in a re-sync, which exposes no further values. Keep the token secret.
 
 A frozen arbiter is not scored for a round it did not commit in (being down costs it selection, not
 points), but it is if it committed: a commit proves the node was up. Freezing is judged at the

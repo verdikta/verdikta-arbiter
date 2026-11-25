@@ -10,7 +10,7 @@ const request = require('supertest');
 jest.mock('../../services/aiClient');
 
 const { Chain, KeyChains, createChain, currentHead, defaultDir, WINDOW } = require('../../health/chainStore');
-const { createHealthHandler, isHealthRequest, parseBytes32 } = require('../../health/healthHandler');
+const { createHealthHandler, isHealthRequest, parseBytes32, RETAIN_MS } = require('../../health/healthHandler');
 const { createApp } = require('../../app');
 
 const KEY = '0x' + '1f'.repeat(32);
@@ -127,8 +127,14 @@ describe('healthHandler', () => {
     }
     expect(rotated.call).toBe(19);                             // value 20 = length - margin
     const data = JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8'));
-    expect(data.chains).toHaveLength(1);                       // the old chain is dropped once unused
-    expect(data.chains[0].head).toBe(rotated.newHead);
+    expect(data.chains).toHaveLength(2);                       // the old chain is kept for RETAIN_MS
+    expect(data.chains[1].head).toBe(rotated.newHead);
+    expect(data.mark).toEqual({ chain: rotated.newHead, index: 9 });
+    t += RETAIN_MS;                                            // a day later: the next answer drops it
+    const r = await ask(h, head);
+    expect(r.data.answer).toBe(true);
+    const after = JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8'));
+    expect(after.chains.map(c => c.head)).toEqual([rotated.newHead]);
   });
 
   it('a rotation that has not landed is sent again, with the same new head, and survives a restart', async () => {
@@ -170,8 +176,9 @@ describe('healthHandler', () => {
         head = keeperAnswer(head, a.data.preimage, a.data.newHead);
       }
       const data = JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8'));
-      expect(data.chains).toHaveLength(1);                     // the unused old chain is dropped
-      expect(data.chains[0].head).toBe(r.data.preimage);
+      expect(data.chains).toHaveLength(2);                     // the old chain is kept for RETAIN_MS
+      expect(data.chains[1].head).toBe(r.data.preimage);
+      expect(data.chains[1].from).toBe(ZERO);
     });
 
     it('a key with no chain file (lost): creates one and re-syncs', async () => {
@@ -200,6 +207,104 @@ describe('healthHandler', () => {
       const r = await ask(h, seed);                            // head = the seed: nothing left to reveal
       expect(r.data).toMatchObject({ answer: true, resync: true });
       expect(r.data.preimage).not.toBe(seed);
+    });
+  });
+
+  describe('stale reads (an RPC that lags behind the keeper)', () => {
+    const ZERO = '0x' + '00'.repeat(32);
+    const file = () => JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8'));
+
+    it('a read from before a rotation landed finds the kept old chain: skipped, then answered harmlessly, never a re-sync', async () => {
+      let t = 0;
+      const head0 = createChain(KEY, { dir, length: 12 });
+      const h = createHealthHandler({ dir, now: () => t, rotateMargin: 11 });
+      const r1 = await ask(h, head0);                            // rotation at once
+      let head = keeperAnswer(head0, r1.data.preimage, r1.data.newHead);
+      t += 60_000;
+      const r2 = await ask(h, head);                             // first answer from the new chain
+      head = keeperAnswer(head, r2.data.preimage, r2.data.newHead);
+      const chainsBefore = file().chains.length;                 // 3: that answer rotated again (length 12)
+      t += 60_000;
+      // a read that lags a whole call behind: the keeper's head before the rotation
+      expect((await ask(h, head0)).data).toEqual({ answer: false, reason: 'stale head (behind the last one answered)' });
+      t += 10_000;
+      expect((await ask(h, head0)).data.answer).toBe(false);
+      expect(file().chains).toHaveLength(chainsBefore);          // no fresh chain
+      t += 20_000;                                               // past the grace period: answered, not re-synced
+      const late = await ask(h, head0);
+      expect(late.data.answer).toBe(true);
+      expect(late.data.resync).toBeUndefined();
+      expect(() => keeperAnswer(head, late.data.preimage, late.data.newHead)).toThrow('BadPreimage');
+      expect(file().chains).toHaveLength(chainsBefore);
+      expect(file().chains.some(c => c.resync || c.from)).toBe(false);
+    });
+
+    it('a lagging read on the same chain is skipped, also after a restart (the mark is on disk)', async () => {
+      let t = 0;
+      let head = createChain(KEY, { dir, length: 100 });
+      const heads = [head];
+      const h1 = createHealthHandler({ dir, now: () => t, rotateMargin: 5 });
+      for (let call = 0; call < 3; call++) {
+        const r = await ask(h1, head);
+        head = keeperAnswer(head, r.data.preimage, r.data.newHead);
+        heads.push(head);
+        t += 60_000;
+      }
+      expect(file().mark.index).toBe(2);
+      expect(file().chains[0].served).toBe(3);
+      const h2 = createHealthHandler({ dir, now: () => t, rotateMargin: 5 });      // a restart
+      expect((await ask(h2, heads[1])).data.answer).toBe(false);
+      expect((await ask(h2, heads[3])).data.answer).toBe(true);  // the real head is answered at once
+    });
+
+    it('the unknown head a landed re-sync replaced is skipped, not re-synced again', async () => {
+      let t = 0;
+      createChain(KEY, { dir, length: 20 });
+      const h = createHealthHandler({ dir, now: () => t, chainLength: 50, rotateMargin: 5 });
+      const r = await ask(h, ZERO);
+      let head = keeperAnswer(ZERO, r.data.preimage, r.data.newHead);
+      t += 60_000;
+      const a = await ask(h, head);
+      head = keeperAnswer(head, a.data.preimage, a.data.newHead);
+      t += 60_000;
+      expect((await ask(h, ZERO)).data).toEqual({ answer: false, reason: 'stale head (replaced by a re-sync)' });
+      expect(file().chains).toHaveLength(2);
+    });
+  });
+
+  describe('values handed out (a caller holding the bridge token picks the head)', () => {
+    const file = () => JSON.parse(fs.readFileSync(path.join(dir, `${KEY}.json`), 'utf8'));
+
+    it('a head beyond every value handed out is not answered from: the chain is abandoned and re-synced', async () => {
+      let t = 0;
+      const head0 = createChain(KEY, { dir, length: 100 });
+      const chain = new Chain(file().chains[0].seed, 100);
+      const h1 = createHealthHandler({ dir, now: () => t, rotateMargin: 5 });
+      await ask(h1, head0);                                      // hands out value 1
+      t += 60_000;
+      const h = createHealthHandler({ dir, now: () => t, rotateMargin: 5 });      // also across a restart
+      const r = await ask(h, chain.value(5));                    // value 5 was never handed out
+      expect(r.data).toMatchObject({ answer: true, resync: true });
+      expect(r.data.preimage).not.toBe(chain.value(6));
+      expect(file().chains[0]).toMatchObject({ abandoned: true, served: 5 });
+      t += 60_000;
+      const again = await ask(h, chain.value(5));                // not landed yet: the same re-sync head
+      expect(again.data).toEqual(r.data);
+    });
+
+    it('stepping the chain ahead of the keeper ends in a re-sync of the node, not answers from the exposed values', async () => {
+      let t = 0;
+      const head0 = createChain(KEY, { dir, length: 100 });
+      const h = createHealthHandler({ dir, now: () => t, rotateMargin: 5 });
+      const first = await ask(h, head0);                         // the node's answer: value 1, lands
+      const onChain = keeperAnswer(head0, first.data.preimage, first.data.newHead);
+      let v = onChain;
+      for (let i = 0; i < 4; i++) { t += 1000; v = (await ask(h, v)).data.preimage; }   // the token holder steps ahead
+      t += 60_000;
+      expect((await ask(h, onChain)).data.answer).toBe(false);   // the node's read now looks stale
+      t += 30_000;
+      const r = await ask(h, onChain);
+      expect(r.data).toMatchObject({ answer: true, resync: true });
     });
   });
 

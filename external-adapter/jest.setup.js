@@ -12,3 +12,9 @@ process.env.TEST_MODE = 'false';
 // Test fixtures only; production has no missing-token bypass.
 process.env.AI_NODE_API_TOKEN = process.env.AI_NODE_API_TOKEN || 'test-ai-token-'.padEnd(64, 'a');
 process.env.EA_API_TOKEN = process.env.EA_API_TOKEN || 'test-ea-token-'.padEnd(64, 'e');
+
+// The commit store is on disk: each test file gets its own empty directory, never the repository's.
+if (!process.env.COMMIT_STORE_DIR) {
+  const os = require('os'); const fs = require('fs'); const path = require('path');
+  process.env.COMMIT_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'ea-commit-store-test-'));
+}

@@ -1,78 +1,156 @@
-// services/commitStore.js
+/**
+ * @fileoverview Commit-reveal state (mode 1 → mode 2), kept on disk so it survives an adapter restart.
+ *
+ * A v2 commit can only be opened with the salt and result chosen at commit time. If they are lost
+ * between the commit and the reveal (an adapter restart, an upgrade, a crash), the promoted slot can
+ * never be revealed, and the keeper scores that as a failed reveal (T_MISS_FAILED: a block, and a ban
+ * on repeats). So every entry is written to disk before the commit is answered.
+ *
+ * Layout: one file per commitment, `<dir>/<64 hex>.json` (dir 0700, files 0600: before the reveal the
+ * salt and result are secret). Each write goes to a unique temp file, is fsynced, renamed over the
+ * record and the directory fsynced, so a crash leaves either the old record or the new one, never a
+ * torn one. Leftover temp files are removed at load. No whole-store rewrite: a save touches one file.
+ *
+ * Location: COMMIT_STORE_DIR, else `<install>/commit-store`, the external adapter's sibling (like
+ * health-chains/), outside the code an upgrade replaces.
+ *
+ * Records are loaded once (on first use, or `init()` at startup) and served from memory; one mutex
+ * orders all writes, so concurrent requests cannot interleave a save and a delete. Entries carry
+ * `expiresAt` (3 days from the commit, beyond the longest v2 round: a deadline of up to one day plus
+ * the reveal window); `purgeStale()` deletes expired records from memory and disk.
+ */
 const { Mutex } = require('async-mutex');
-const fs       = require('fs').promises;
-const path     = require('path');
+const fs = require('fs');
+const fsp = fs.promises;
+const path = require('path');
+const crypto = require('crypto');
 
-///////////////////////////////////////////////////////////////////////////////
-// Flip this to switch between modes
-//   true  → original behaviour (every call touches the JSON file)
-//   false → RAM-only (never touches the JSON file)
-//
-// No other differences.
-///////////////////////////////////////////////////////////////////////////////
-const USE_FILE = false;           // ← change to false for memory-only tests
+const KEY_RE = /^[0-9a-f]{32,64}$/;       // a v2 commitment is 64 hex; v1 (dual mode) 32 hex
+const DEFAULT_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 
-const DB_FILE  = path.join(__dirname, '..', '.commit-db.json');
-const mtx      = new Mutex();
-
-/* ------------------------------------------------------------------------ */
-/* Helpers                                                                  */
-/* ------------------------------------------------------------------------ */
-async function _load () {
-  if (!USE_FILE) {                              // RAM-only
-    return _load._mem || (_load._mem = {});     // singleton in-process store
-  }
-
-  // file mode – read & parse on **every call**, exactly like the original
-  try {
-    return JSON.parse(await fs.readFile(DB_FILE, 'utf8'));
-  } catch {
-    return {};                                 // first run or corrupt file
-  }
+function defaultDir(env = process.env) {
+  if (env.COMMIT_STORE_DIR && env.COMMIT_STORE_DIR.trim()) return path.resolve(env.COMMIT_STORE_DIR.trim());
+  return path.resolve(__dirname, '..', '..', '..', 'commit-store');
 }
 
-async function _save (obj) {
-  if (!USE_FILE) {               // RAM-only
-    _load._mem = obj;            // keep in-memory copy current
-    return;
+function createCommitStore({ dir = defaultDir(), logger = console } = {}) {
+  const mtx = new Mutex();
+  let mem = null;                      // Map hash -> entry, once loaded
+
+  function ensureDir() {
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(dir, 0o700);
   }
 
-  // file mode – rewrite the whole file atomically (unchanged)
-  const tmp = DB_FILE + '.tmp';
-  await fs.writeFile(tmp, JSON.stringify(obj, null, 2));
-  await fs.rename(tmp, DB_FILE);
-}
-
-/* ------------------------------------------------------------------------ */
-/* Public API – unchanged                                                   */
-/* ------------------------------------------------------------------------ */
-exports.save = async (hash, entry) =>
-  mtx.runExclusive(async () => {
-    const db = await _load();
-    db[hash] = entry;
-    await _save(db);
-  });
-
-exports.get  = async (hash) =>
-  mtx.runExclusive(async () => (await _load())[hash]);
-
-exports.del  = async (hash) =>
-  mtx.runExclusive(async () => {
-    const db = await _load();
-    delete db[hash];
-    await _save(db);
-  });
-
-exports.purgeStale = async function purgeStale (maxAgeMs = 3 * 24 * 60 * 60 * 1000) {
-  return mtx.runExclusive(async () => {
-    const now = Date.now();
-    const db = await _load();
-    let removed = 0;
-    for (const [hash, entry] of Object.entries(db)) {
-      const expiry = entry.expiresAt ?? (Date.parse(entry.created) + maxAgeMs);
-      if (!Number.isFinite(expiry) || now >= expiry) { delete db[hash]; removed++; }
+  function load() {
+    if (mem) return mem;
+    ensureDir();
+    const m = new Map();
+    for (const name of fs.readdirSync(dir)) {
+      const file = path.join(dir, name);
+      if (name.endsWith('.tmp')) {                 // a write interrupted before its rename
+        try { fs.unlinkSync(file); } catch { /* gone already */ }
+        continue;
+      }
+      const match = /^([0-9a-f]{32,64})\.json$/.exec(name);
+      if (!match) continue;
+      try {
+        const entry = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (entry && typeof entry === 'object') m.set(match[1], entry);
+      } catch {
+        // cannot happen through this module (writes are atomic); keep the file for inspection. No
+        // parser message: it could quote the record, and the salt is secret until the reveal
+        logger.error(`commit store: unreadable record ${file} skipped`);
+      }
     }
-    if (removed) await _save(db);
-    return removed;
-  });
-};
+    mem = m;
+    return mem;
+  }
+
+  async function writeRecord(hash, entry) {
+    const file = path.join(dir, `${hash}.json`);
+    const tmp = path.join(dir, `${hash}.${process.pid}.${crypto.randomBytes(6).toString('hex')}.tmp`);
+    const fh = await fsp.open(tmp, 'wx', 0o600);
+    try {
+      await fh.writeFile(JSON.stringify(entry));
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
+    try {
+      await fsp.rename(tmp, file);
+    } catch (e) {
+      await fsp.unlink(tmp).catch(() => {});
+      throw e;
+    }
+    await syncDir();
+  }
+
+  async function syncDir() {
+    let dh;
+    try {
+      dh = await fsp.open(dir, 'r');
+      await dh.sync();
+    } catch { /* some filesystems cannot fsync a directory; the rename is still atomic */ } finally {
+      if (dh) await dh.close().catch(() => {});
+    }
+  }
+
+  async function removeRecord(hash) {
+    await fsp.unlink(path.join(dir, `${hash}.json`)).catch((e) => { if (e.code !== 'ENOENT') throw e; });
+  }
+
+  const checkKey = (hash) => {
+    if (typeof hash !== 'string' || !KEY_RE.test(hash)) throw new Error(`commit store: bad key ${hash}`);
+    return hash;
+  };
+
+  return {
+    dir,
+    /** load the records now (the adapter calls this at startup); returns how many there are */
+    init: () => mtx.runExclusive(() => load().size),
+
+    /** persist `entry` under `hash`; resolves only once it is durable on disk */
+    save: (hash, entry) => mtx.runExclusive(async () => {
+      checkKey(hash);
+      const m = load();
+      const copy = JSON.parse(JSON.stringify(entry));
+      await writeRecord(hash, copy);
+      m.set(hash, copy);
+    }),
+
+    get: (hash) => mtx.runExclusive(() => {
+      if (typeof hash !== 'string' || !KEY_RE.test(hash)) return undefined;
+      const e = load().get(hash);
+      return e === undefined ? undefined : JSON.parse(JSON.stringify(e));
+    }),
+
+    del: (hash) => mtx.runExclusive(async () => {
+      if (typeof hash !== 'string' || !KEY_RE.test(hash)) return;
+      const m = load();
+      await removeRecord(hash);
+      m.delete(hash);
+    }),
+
+    /** delete expired entries (expiresAt, or created + maxAgeMs for entries without one) */
+    purgeStale: (maxAgeMs = DEFAULT_MAX_AGE_MS) => mtx.runExclusive(async () => {
+      const now = Date.now();
+      const m = load();
+      let removed = 0;
+      for (const [hash, entry] of [...m]) {
+        const expiry = entry.expiresAt ?? (Date.parse(entry.created) + maxAgeMs);
+        if (!Number.isFinite(expiry) || now >= expiry) {
+          await removeRecord(hash);
+          m.delete(hash);
+          removed++;
+        }
+      }
+      return removed;
+    }),
+  };
+}
+
+const store = createCommitStore();
+module.exports = store;
+module.exports.createCommitStore = createCommitStore;
+module.exports.defaultDir = defaultDir;

@@ -64,6 +64,10 @@ server.listen(...listenOn, () => {
 });
 
 const commitStore = require('./services/commitStore');
+// Load the commits a previous run left (restart or upgrade between a commit and its reveal).
+commitStore.init()
+  .then(n => console.log(`Commit store: ${n} record(s) in ${commitStore.dir}`))
+  .catch(e => console.error(`Commit store at ${commitStore.dir} cannot be loaded (${e.code || 'error'}): commits will fail until it can`));
 // Expire both unrevealed and revealed entries even when no requests arrive.
 setInterval(() => commitStore.purgeStale().catch(() => console.error('Commit cleanup failed')),
   15 * 60 * 1000).unref();

@@ -16,8 +16,15 @@
  * those would be predictable beacon values.
  *
  * A file holds a list of chains, newest last. A rotation appends a chain before its head is sent
- * (rotateChain answers from the old chain and installs the new head), and the older chains are
- * dropped once the keeper's head is on the newest one.
+ * (rotateChain answers from the old chain and installs the new head). The older chains are kept
+ * until the keeper's head has been on the newest one for a while (`landedAt`, the handler's
+ * retainMs) and an answer from it has been sent: a read that lags behind the switch still finds its
+ * head, so it is recognised as stale instead of looking like a lost chain and forcing a re-sync.
+ *
+ * Per chain, `served` is the highest index handed out (0 at creation: the head; i+1 after answering
+ * a head at index i). The file's `mark` is the last head answered ({ chain: <chain head>, index }).
+ * Both are saved before an answer is returned. A head beyond `served` was never handed out by this
+ * adapter (a stale backup, or a leaked seed), and a head behind `mark` is a stale read.
  */
 
 const fs = require('fs');
@@ -115,15 +122,26 @@ function filePath(dir, key) {
 function writeAtomic(file, obj) {
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
   const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(obj, null, 2) + '\n', { mode: 0o600 });
+  const fd = fs.openSync(tmp, 'wx', 0o600);
+  try {
+    fs.writeFileSync(fd, JSON.stringify(obj, null, 2) + '\n');
+    fs.fsyncSync(fd);
+  } finally {
+    fs.closeSync(fd);
+  }
   fs.renameSync(tmp, file);
+  try {                                         // make the rename itself durable
+    const d = fs.openSync(path.dirname(file), 'r');
+    try { fs.fsyncSync(d); } finally { fs.closeSync(d); }
+  } catch { /* not supported on every filesystem */ }
 }
 
-function newChainRecord(length, { resync = false } = {}) {
+function newChainRecord(length, { resync = false, from } = {}) {
   const seed = hex(crypto.randomBytes(32));
   const chain = new Chain(seed, length);
-  const record = { seed, length, head: chain.head, created: new Date().toISOString() };
+  const record = { seed, length, head: chain.head, created: new Date().toISOString(), served: 0 };
   if (resync) record.resync = true;     // made for a re-sync whose head the keeper has not taken yet
+  if (from) record.from = from;         // the unknown head that re-sync replaces (a later read of it is stale)
   return { record, chain };
 }
 
@@ -157,6 +175,7 @@ class KeyChains {
       throw new Error(`malformed hash-chain file ${this.file}`);
     }
     this.records = data.chains;
+    this.mark = data.mark && typeof data.mark === 'object' ? data.mark : null;
     this.chains = data.chains.map((r) => new Chain(r.seed, r.length));
     this.chains.forEach((c, i) => {
       if (c.head !== String(this.records[i].head).toLowerCase()) throw new Error(`hash-chain file ${this.file}: chain ${i} does not match its head`);
@@ -165,7 +184,9 @@ class KeyChains {
   }
 
   _save() {
-    writeAtomic(this.file, { version: 1, key: this.key, chains: this.records });
+    const out = { version: 1, key: this.key, chains: this.records };
+    if (this.mark) out.mark = this.mark;
+    writeAtomic(this.file, out);
   }
 
   /** where `head` is: { chain, index } (newest chain first), or null */
@@ -191,10 +212,10 @@ class KeyChains {
    * The head to re-sync onto: the newest chain's, if it was made for a re-sync the keeper has not taken
    * yet (so a retry, or a restart, sends the same head); otherwise a new chain's, persisted first.
    */
-  resyncHead(length) {
+  resyncHead(length, from) {
     const last = this.records[this.records.length - 1];
     if (last.resync) return last.head;
-    const { record, chain } = newChainRecord(length || last.length, { resync: true });
+    const { record, chain } = newChainRecord(length || last.length, { resync: true, from });
     this.records.push(record);
     this.chains.push(chain);
     this.hints.push(0);
@@ -202,14 +223,59 @@ class KeyChains {
     return record.head;
   }
 
-  /** the keeper's head is on chain `c`: a re-sync onto it has landed */
-  landed(c) {
-    if (!this.records[c].resync) return;
-    delete this.records[c].resync;
+  /** the keeper's head is on chain `c`: a re-sync onto it has landed; the newest chain's first sighting is kept */
+  landed(c, at = Date.now()) {
+    const r = this.records[c];
+    let dirty = false;
+    if (r.resync) { delete r.resync; dirty = true; }
+    if (c > 0 && c === this.records.length - 1 && !Number.isFinite(r.landedAt)) { r.landedAt = at; dirty = true; }
+    if (dirty) this._save();
+  }
+
+  /** chain number of a landed re-sync chain made to replace the unknown head `head`, or -1 */
+  resyncedFrom(head) {
+    const h = String(head).toLowerCase();
+    return this.records.findIndex((r) => r.from === h && !r.resync);
+  }
+
+  /** the last head answered, as { chain, index } on the current list, or null */
+  markPos() {
+    if (!this.mark) return null;
+    const c = this.records.findIndex((r) => r.head === this.mark.chain);
+    return c < 0 || !Number.isInteger(this.mark.index) ? null : { chain: c, index: this.mark.index };
+  }
+
+  /** record the answer to the head at { chain, index } (and so value index + 1), persisted */
+  answered({ chain: c, index }) {
+    const r = this.records[c];
+    r.served = Math.max(Number.isInteger(r.served) ? r.served : 0, index + 1);
+    this.mark = { chain: r.head, index };
     this._save();
   }
 
-  /** drop the chains before `c` (the keeper's head is on chain c, so they can never be needed) */
+  /**
+   * Drop the chains before the newest once nothing can still need them: the keeper's head has been
+   * on the newest chain for retainMs, and an answer from it has been sent.
+   */
+  prune(now, retainMs) {
+    const c = this.records.length - 1;
+    const r = this.records[c];
+    if (c <= 0 || !Number.isFinite(r.landedAt) || now - r.landedAt < retainMs) return false;
+    const m = this.markPos();
+    if (!m || m.chain !== c) return false;
+    this.dropBefore(c);
+    return true;
+  }
+
+  /** never answer from chain `c` again (its values up to `index` are out); persisted */
+  abandon(c, index) {
+    const r = this.records[c];
+    r.abandoned = true;
+    r.served = Math.max(Number.isInteger(r.served) ? r.served : 0, index);
+    this._save();
+  }
+
+  /** drop the chains before `c` */
   dropBefore(c) {
     if (c <= 0) return;
     this.records = this.records.slice(c);

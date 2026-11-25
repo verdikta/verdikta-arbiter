@@ -143,6 +143,11 @@ After installation or upgrade, important configuration and data files are stored
 - **Contains**: one `<key>.json` per registered job (the hash-chain seeds its health calls are answered from) and `registrations.json` (the keeper and each registered job's key, read by `apply-health-jobs.sh`)
 - **Back it up with the node's keys.** An upgrade keeps it. A job whose chain file is lost re-syncs onto a fresh chain and is frozen until it has answered twice (see [Dispatcher Registration](oracle/dispatcher.md#health-calls))
 
+### Commit Store
+- **Path**: `~/verdikta-arbiter-node/commit-store/` (`COMMIT_STORE_DIR` in `external-adapter/.env` overrides it)
+- **Contains**: one `<commitment>.json` per pending commit (its salt and result until the reveal, 0600). Written before each commit is answered, loaded at startup, removed 3 days after the commit
+- An upgrade keeps it, so a reveal still works after a restart between commit and reveal. Do not delete it while requests are open: each lost reveal is a failed reveal (see [Upgrading](maintenance/upgrading.md#commit-store))
+
 ### Chainlink Node Credentials
 - **Path**: `~/verdikta-arbiter-node/chainlink-node/info.txt`
 - **Contains**: 
