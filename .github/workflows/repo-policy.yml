@@ -15,7 +15,7 @@ jobs:
     name: Required Governance Files
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check required files exist
         run: |
@@ -36,7 +36,7 @@ jobs:
     name: License Consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Verify LICENSE matches README claim
         run: |
@@ -54,7 +54,10 @@ jobs:
     name: Workflow Triggers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Check CI triggers and secret gates
         run: bash .github/tests/workflow-triggers.test.sh
+
+      - name: Check third-party actions are pinned to commit SHAs
+        run: bash .github/tests/actions-pinned.test.sh

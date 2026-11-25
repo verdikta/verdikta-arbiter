@@ -75,19 +75,21 @@ jobs:
       github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
+      # No lifecycle scripts: an install script of any dependency would run in the job that later reads a secret.
       - name: Install External Adapter deps (needed for --boot-adapter)
         working-directory: external-adapter
-        run: npm ci
+        run: npm ci --ignore-scripts
 
+      # No lifecycle scripts: an install script of any dependency would run in the job that later reads a secret.
       - name: Install E2E harness deps
         working-directory: e2e
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Validate canonical evidence archive (no secrets needed)
         working-directory: e2e
@@ -107,7 +109,7 @@ jobs:
 
       - name: Upload L2 report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: l2-mock-report
           path: e2e/results/
@@ -123,9 +125,9 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -222,7 +224,7 @@ jobs:
 
       - name: Upload the report and the service logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: l2-claim-report
           path: |
@@ -251,9 +253,9 @@ jobs:
       GVISOR_SHA512: 7c899979bed334f0987888c41e545cede8e1f7e67a257978c8de244c3867e32bc30d08491e9af36720273c502acd01d8d86c9844ebcbe125790c43fe6bdf563e
       CODE_RUNNER_RUNTIME: runsc
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -309,7 +311,7 @@ jobs:
 
       - name: Upload what the runner measured
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: l4-listing-measurement
           path: |
@@ -337,15 +339,16 @@ jobs:
     runs-on: ubuntu-latest
     environment: e2e
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
+      # No lifecycle scripts: an install script of any dependency would run in the job that later reads a secret.
       - name: Install E2E harness deps
         working-directory: e2e
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Run L4 (live testnet)
         working-directory: e2e
@@ -368,7 +371,7 @@ jobs:
 
       - name: Upload L4 report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: l4-report
           path: e2e/results/
