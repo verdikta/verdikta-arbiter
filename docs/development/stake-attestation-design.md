@@ -16,6 +16,10 @@ bond, and the dispute panel's confirmation of an award above a set size), are in
 a second dated note in §13.2, with their fixtures in §18. The owner decided
 their mechanics on 2026-11-10 (Q72); only whether an appeal carries a statement
 is still open. Where they conflict with the text, they win.
+**Erratum (2026-11-23, Q96):** a hold before a fix, E10 (one maker call that
+stops new commits on a listing before its fix is public, and leaves pending
+claims alone), is in a third dated note in §13.2, with §20 decision 20. Where
+it conflicts with the text, it wins.
 **Touches:** verdikta-arbiter (new `code-runner`, External Adapter, AI Node,
 installer), verdikta-common (schemas, two ClassIDs with hard limits, image pins,
 trusted builder keys, the outcome set), verdikta-applications (a new
@@ -205,6 +209,10 @@ week" is neither. Three consequences:
    with the stake below a program-set share of it) or **invited** (allow-listed
    hunters only, §14).
 
+Erratum E10 (2026-11-23, see §13.2) amends consequence 1: a listing its maker
+has put on hold accepts no new commit, so the record, the feed and the badge say
+it is held, and since when, and it is not live.
+
 ### 4.2 What a stake proves
 
 An unclaimed stake means one of five things: no finding exists at the staked
@@ -361,6 +369,12 @@ same window the hunter may appeal an INVALID verdict to the dispute panel, an
 INVALID inside a narrow band below the threshold returns the bond, and a valid
 verdict whose award is above a set size pays only once the dispute panel
 confirms it.
+
+Erratum E10 (2026-11-23, see §13.2) amends the "Days 0–14 (30)" and "Continue"
+rows: a public fix is a public disclosure, so a maker with a fix first puts the
+listing on **hold**, which stops new commits at once and leaves every pending
+claim alone. The maker's order is: hold, push the fix, have it validated, list
+and fund the successor, roll forward.
 
 Three properties make the sequence hang together. The fix never reduces what
 the hunter is paid, because judgement is against the committed hash. The
@@ -597,6 +611,12 @@ has two honest moves — fix it and roll forward, or leave it claimable — and 
 are what the record is for. The ids are stored on-chain at listing so the
 "listed before the commit" rule is checkable; the bodies travel in the listing
 archive, which every arbiter already fetches.
+
+Erratum E10 (2026-11-23, see §13.2) amends the first move: a public fix is a
+public disclosure, so the maker puts the listing on hold before the fix is
+public, and only then pushes the fix and rolls forward. Known issues still
+cannot be added after open: a hold adds none, and a claim committed before it
+is judged and paid as before.
 
 ### 8.5 The claim archive
 
@@ -1490,6 +1510,7 @@ alone.
 | Maker: plant a program or repository code that fails an honest claim | A recorded known limit, not closed (§9.5). A failed integrity check returns the bond, with no award; a failure at `build` or at `reproduces` on its own stays INVALID. The runner refuses what it can before any claim code, and `check` shows most traps first |
 | Maker: falsely flag a bad disclosure | A flag followed by a verified reveal is itself on the record (§14) |
 | Maker: fix the bug, then call it a known issue | Known issues are fixed at listing and timestamped on-chain; the commit precedes any fix |
+| Hunter: read the maker's public fix, then claim the bug on the old listing, which accepts commits until it is rolled forward | The maker puts the listing on hold before the fix is public (E10, §13.2). A held listing accepts no new commit, so a claim made after the fix is public is a late claim: judged and recorded, and it pays nothing. A maker who pushes the fix before the hold has no such defence |
 | Maker: never fix, never release, hope the hunter gives up | The window ends anyway; a valid unfixed finding goes on the record; an unrevealed commit after `revealWindowDays` costs the hunter the bond, so the hunter reveals |
 | Maker: dispute everything | Each dispute costs the escalation prepay; the record shows disputes and how they ended |
 | Sandbox escape or resource exhaustion | gVisor, no network, class hard limits, admission control, remote mode |
@@ -1841,6 +1862,11 @@ Errata E7–E9 (2026-11-10, see §13.2): **Disputed** also holds a hunter's appe
 and a confirmation round, with a new field naming the kind, and a Judged INVALID
 waits out the appeal window before it settles.
 
+Erratum E10 (2026-11-23, see §13.2): the maker may put an Open or Depleted
+listing on **hold**. A held listing accepts no new commit and accepts late
+claims; its state and its pending claims are unchanged, and the time it was held
+is recorded.
+
 ### 13.2 Functions and who pays
 
 > **Errata, 2026-11-01.** Building the MVP found places where this design
@@ -2173,6 +2199,74 @@ waits out the appeal window before it settles.
 > `ClaimState` and `DisputeResult` keep their values. The new fields are appended
 > to `Listing` and `Claim`, as their comments require.
 
+> **Erratum, 2026-11-23 (Q96): a hold before a fix.** On 2026-11-23 the owner
+> decided to add a hold before the mainnet deployment (§20, decision 20). The
+> gap it closes: a public fix is a public disclosure. To roll a stake forward
+> (§7.1), the maker must push the fixed commit to the public repository, because
+> the builder's build job holds no secrets and clones only what is public
+> (§8.2). The fix is then validated, listed and funded, and only then can the
+> maker call `rollForward`. Until that call the old listing accepts commits, so
+> anyone who reads the fix can claim the bug on the old listing. Known issues
+> cannot be added after a listing opens (§8.4; §20, decision 12), and that stays
+> so. Where this erratum conflicts with §§4–14, it wins.
+>
+> As in the 2026-11-10 errata, D5 and D6 are the build plan's decisions: D5 is
+> commit order and D6 is the late claim. The contract change is built in
+> verdikta-applications#226, and this erratum states what that contract does.
+>
+> - **E10. The maker may put a listing on hold** (owner, Q96). A hold is the
+>   first half of a roll forward: it does to new claims what a roll does, and
+>   leaves pending claims alone.
+>   - *The call.* `hold(listingId)`: the maker only, on a listing that is Open
+>     or Depleted and not already held. It records the time and emits `Held`.
+>     It costs gas only.
+>   - *No new commit.* While held, the listing accepts no new commit:
+>     `acceptsCommits` is false.
+>   - *Everything else is unchanged.* Pending claims keep their fix windows,
+>     reveals, judging, disputes, settlement and payment from the escrow.
+>     Commit order (D5) and the appeal and the confirmation of E7–E9 apply to
+>     them as before. The maker can still release, flag, dispute, top up and
+>     renew, and none of these ends the hold.
+>   - *Late claims.* While held, the listing accepts a late claim, as a Rolled
+>     listing or one Closed after it opened does. A late claim is commit-shaped
+>     (D6): a commitment, the listing's fix window, a reveal with the E1 line,
+>     and no award. It is judged and recorded under `later`. It never holds
+>     `close()` and never touches the escrow.
+>   - *One-way.* There is no resume. A hold ends in `rollForward`, which works
+>     from a held listing as from an Open one, or in `close()`, whose conditions
+>     are unchanged.
+>   - *No delay.* A hold takes effect at once. A `commit` mined after it
+>     reverts, as one mined after a `close` or a `rollForward` does. Under E5
+>     that commit carried two hashes and no ciphertext, so the maker learned
+>     nothing from it.
+>   - *What a reader sees.* The record, the feed and the badge say a listing is
+>     held, and since when. A held listing is not live.
+>   - *Additive only.* No existing struct, event, function signature or API
+>     field changes shape or meaning. The hold's time is read through a new
+>     view, not through `getListing`. The site and the hunter tool are also used
+>     against a contract deployed before this erratum, which has no hold, so
+>     every reader treats a contract without the new view as "not held".
+>
+> **A maker with a fix, in order** (amending §7.1):
+>
+> 1. **Hold** the listing. From then on it accepts no new commit, so nothing
+>    that becomes public afterwards can be claimed on it for an award.
+> 2. **Push** the fixed commit to the public repository.
+> 3. Have it **validated**: the builder builds its image, and the site
+>    validates the result and signs the attestation (§8.2).
+> 4. **List and fund** the successor.
+> 5. **Roll forward** to it with `rollForward`, which is unchanged.
+>
+> Without the hold, the old listing still accepts commits between steps 2 and
+> 5, while the fix is public. The hold itself changes nothing for a claim
+> committed before it. The roll at step 5 then does what a roll does today: it
+> ends the fix window of every claim disclosed by then (§7.1, E5), so such a
+> claim is revealable at once, and its reveal clock starts once every earlier
+> claim has resolved (D5). A hunter with a pending claim on a held listing
+> should therefore expect the roll. Through both, the claim is judged against
+> the committed hash and paid as before (§7.1). A finding made on the held
+> listing reaches the record as a late claim, with no award.
+
 | Function | Caller | Pays | Effect |
 |---|---|---|---|
 | `list(params, listingCid, disputeCid, knownIssueIds)` | maker | gas | Creates the listing from the attested archives; the site has validated them (§8.2) but the contract trusts only what it stores |
@@ -2181,6 +2275,7 @@ waits out the appeal window before it settles.
 | `commit(listingId, archiveHash, ciphertextCid)` | hunter (on the allowlist, if any) | `bondWei` + class prepay − pre-flight credit | Creates the claim; emits `Committed` (hash, ciphertext CID, timestamp) |
 | `flagBadDisclosure(claimId)` | maker, within `disclosureGrace` | gas | Sets the flag; shown on the record (§14) |
 | `release(claimId)` | maker | gas | Waives the fix window for this claim: Revealable now; recorded as "released" |
+| `hold(listingId)` (E10) | maker, on an Open or Depleted listing that is not already held | gas | Stops new commits at once, with no resume; pending claims are unchanged and late claims are accepted; records the time; emits `Held` |
 | `rollForward(listingId, successorListingId)` | maker | gas (the successor is listed and funded on its own) | Marks every Committed claim Revealable; moves the badge to the successor; links the lineage |
 | `reveal(claimId, bcid, contentKey, ephemeralKey)` | hunter, once Revealable and earlier claims are settled | gas | Stores the reveal; submits the evaluation request (§13.3) from the claim's prepay; emits `Revealed` |
 | `fulfill(requestId, vector)` | aggregator callback | — | Stores the vector; computes outcome and class (§8.7); starts the dispute window; emits `Judged` |
@@ -2189,7 +2284,7 @@ waits out the appeal window before it settles.
 | `expire(claimId)` | anyone, `revealWindow` after Revealable | gas | Bond to the maker, prepay back to the hunter, recorded as unrevealed |
 | `retrigger(claimId)` | hunter, after an aggregator timeout | a fresh prepay | Re-submits the evaluation (§12) |
 | `close(listingId)` | maker, when no claim is pending | gas | Withdraws escrow; ends the badge |
-| `lateClaim(listingId, …)` | hunter, on a Rolled or Closed listing | bond + prepay | A claim with no award: judged and recorded as "found later"; bond returned unless INVALID |
+| `lateClaim(listingId, …)` | hunter, on a Rolled listing, one Closed after it opened, or a held one (E10) | bond + prepay | A claim with no award: judged and recorded as "found later"; bond returned unless INVALID (a narrow INVALID returns it, E8) |
 | `recordByHash(bytes32)` | anyone (view) | — | The record summary (§13.4) |
 
 Settlement under §8.7, in funds: valid at or above the counted class →
@@ -2246,6 +2341,11 @@ Errata E7–E9 (2026-11-10, see §13.2) add to the counts: appeals and confirmat
 apart from the maker's disputes, each by result, and narrow INVALIDs apart within
 INVALID. They also add a listing's band floor and confirmation size to the
 record.
+
+Erratum E10 (2026-11-23, see §13.2) adds the `Held` event to the feed's events.
+The record the site serves says whether a listing is held, and since when. That
+time is read through a new view, so `recordByHash` and every existing event keep
+their shape.
 
 Two contract questions are open (§20): a **yield-bearing escrow** (stake held in
 a vault, awards paid from principal) to soften the capital lock, and the launch
@@ -2712,7 +2812,8 @@ Each item records the options weighed, the decision, and what it changed in the
 document. Decisions 1–8 were taken on 2026-10-19/20 and 2026-10-30 under the
 earlier structure; 9–16 were proposed by the 2026-10-30 restructure and
 **confirmed as written by the owner on 2026-10-31**; 17–18 are the owner's MVP
-decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72).
+decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72); 20 is the
+owner's of 2026-11-23 (Q96).
 
 1. **`responseTimeoutSeconds` 300 → 900 s on both aggregators — decided: raise
    globally.** The timeout is global per aggregator, so a stuck text round also
@@ -2805,7 +2906,9 @@ decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72).
     with no threshold, lets a 34% plurality decide a CRITICAL payout.
 12. **Known issues public and fixed at listing — decided (confirmed 2026-10-31).** Hash-only or
     sealed bodies cannot be applied by the jury (§8.4, §19). Additions after
-    open are not supported: fix and roll forward, or leave it claimable.
+    open are not supported: fix and roll forward, or leave it claimable. Owner
+    decision (2026-11-23, decision 20): this stands, and a maker with a fix
+    puts the listing on hold before the fix is public.
 13. **RELEASE signal and roll-forward as FIXED — decided (confirmed 2026-10-31).** A maker who
     believes a claim is bogus had no honest way to shorten the window; `release`
     waives it for one claim and is recorded. A roll-forward ends the window for
@@ -2866,6 +2969,25 @@ decisions of 2026-10-30; 19 is the owner's of 2026-11-10 (Q70, Q72).
     them one re-trigger for a failed appeal round and the rule that whoever
     asks for a dispute-panel round bears its spent prepay. Open: whether an
     appeal carries a statement, decided after the owner's claim-field test.
+20. **A hold before a fix (2026-11-23, owner, Q96) — decided.** A public fix is
+    a public disclosure. To roll a stake forward the maker must push the fixed
+    commit to the public repository, have it validated, list it and fund it,
+    and only then call `rollForward`. Until that call the old listing accepts
+    commits, so for that window anyone who reads the fix can claim the bug on
+    the old listing. Known issues cannot be added after a listing opens
+    (decision 12), and that stays so, so the maker cannot close the window by
+    listing the bug as known. Adopted, before the mainnet deployment: one
+    maker call, `hold`, the first half of a roll forward. It stops new commits
+    on the listing at once and leaves every pending claim alone; while the
+    listing is held, a late claim is still judged and recorded, with no award.
+    The maker's order becomes: hold, push the fix, have it validated, list and
+    fund the successor, roll forward. Decided with it: a hold is one-way, with
+    no resume, and ends in a roll forward or a close; it takes effect with no
+    delay; and the contract change is additive, so no existing struct, event,
+    function signature or API field changes shape or meaning. A hold is not a
+    known issue added after open: it excludes no single bug, it stops every new
+    commit, and a held listing is not live. The rules are in §13.2 (E10), and
+    the contract change is built in verdikta-applications#226.
 
 **Remaining risks** (no decision pending, tracked through the exit criteria):
 
