@@ -49,7 +49,31 @@ case "$DEPLOYMENT_NETWORK" in
     base_sepolia) AUTH_CHAIN_ID=84532; AUTH_RPC_URLS="${BASE_SEPOLIA_RPC_HTTP_URLS:-$BASE_SEPOLIA_RPC_URL}" ;;
     *) echo "Error: select a supported DEPLOYMENT_NETWORK before configuring jobs."; exit 1 ;;
 esac
-REQUEST_AUTH_RPC_URLS="$AUTH_RPC_URLS" node "$INSTALLER_DIR/util/check-request-authorization.cjs" "${OPERATOR_ADDR:-$OPERATOR_ADDRESS}" "$AUTH_CHAIN_ID"
+# Which operator contract the jobs are for (installer/util/job-template.cjs, mode): v1 has
+# request authorization in the contract and gets the template as it is; a legacy contract
+# gets the same tasks asking the ReputationKeeper about each requester. The upgrade passes
+# what it read before it stopped the node (the jobs may be deregistered by now, and a legacy
+# operator's keeper is found through its registrations). Anything else stops here.
+OPERATOR_MODE_JSON="${VERDIKTA_OPERATOR_MODE_JSON:-}"
+if [ -z "$OPERATOR_MODE_JSON" ]; then
+    OPERATOR_MODE_JSON=$(REQUEST_AUTH_RPC_URLS="$AUTH_RPC_URLS" node "$INSTALLER_DIR/util/job-template.cjs" mode --install-dir "$(dirname "$INSTALLER_DIR")")
+fi
+case "$OPERATOR_MODE_JSON" in
+    *'"mode":"v1"'*)
+        OPERATOR_MODE=v1; LEGACY_KEEPER=""
+        echo -e "${GREEN}Operator request-authorization v1 verified.${NC}" ;;
+    *'"mode":"legacy"'*)
+        OPERATOR_MODE=legacy
+        LEGACY_KEEPER=$(printf '%s' "$OPERATOR_MODE_JSON" | sed -E 's/.*"keeper":"(0x[0-9a-fA-F]{40})".*/\1/')
+        if [[ ! "$LEGACY_KEEPER" =~ ^0x[0-9a-fA-F]{40}$ ]]; then
+            echo -e "${RED}Error: the operator's description names no ReputationKeeper. No jobs were changed.${NC}"
+            exit 1
+        fi
+        echo -e "${YELLOW}The operator contract predates request authorization: each job will ask the ReputationKeeper $LEGACY_KEEPER about the requester before it calls the adapter.${NC}" ;;
+    *)
+        echo -e "${RED}Error: could not tell which operator contract this is. No jobs were changed.${NC}"
+        exit 1 ;;
+esac
 
 # Clear any cached ARBITER_COUNT to ensure fresh user input
 unset ARBITER_COUNT
@@ -540,6 +564,9 @@ for ((i=1; i<=ARBITER_COUNT; i++)); do
     # Save the job spec for this arbiter
     JOB_SPEC_FILE_ARBITER="$JOBS_DIR/verdikta_job_spec_arbiter_$i.toml"
     echo "$JOB_SPEC" > "$JOB_SPEC_FILE_ARBITER"
+    if [ "$OPERATOR_MODE" = "legacy" ]; then
+        node "$INSTALLER_DIR/util/job-template.cjs" gate "$JOB_SPEC_FILE_ARBITER" --keeper "$LEGACY_KEEPER"
+    fi
     node "$INSTALLER_DIR/util/configure-service-auth.cjs" render-job "$AUTH_INSTALL_ROOT" "$JOB_SPEC_FILE_ARBITER"
     chmod 600 "$JOB_SPEC_FILE_ARBITER"
     echo -e "${GREEN}Job specification for Arbiter $i saved to: $JOB_SPEC_FILE_ARBITER${NC}"

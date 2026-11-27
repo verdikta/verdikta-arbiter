@@ -134,14 +134,19 @@ has   "split: reported"           "$out" "failed=\[.*separate classes"
 hasnt "split: trap"               "$out" "TRAP-FIRED"
 contracts
 out=$(ANSWER=n regen_run)
+# Declined, which is also the default: the job ids stay, and the live jobs are replaced under
+# them after the restart (job-template.cjs). Until 2026-11 a decline ended the upgrade here.
 has   "other change, declined: asked"  "$out" "VA_UPGRADE_REGENERATE_JOBS"
 hasnt "other change, declined: nothing runs" "$out" "STUB-unregister"
-has   "other change, declined: security upgrade refuses stale jobs" "$out" "requires request authorization"
-has   "other change, declined: fails" "$out" "rc=1"
-hasnt "other change, declined: no success" "$out" "REACHED-END rc=0"
-# The arbiter is stopped when this runs: the decline goes through cleanup_on_error, which restarts it.
-has   "other change, declined: the arbiter is restarted" "$out" "STUB-CLEANUP-RESTART"
-hasnt "other change, declined: nothing after the restart" "$out" "REACHED-END"
+hasnt "other change, declined: no configure-node" "$out" "STUB-CONFIGURE"
+hasnt "other change, declined: no re-registration" "$out" "STUB-register"
+has   "other change, declined: says what happens instead" "$out" "updated in place after the restart"
+has   "other change, declined: the upgrade goes on" "$out" "REACHED-END rc=0 regenerated=0"
+hasnt "other change, declined: the arbiter is not restarted for it" "$out" "STUB-CLEANUP-RESTART"
+hasnt "other change, declined: trap" "$out" "TRAP-FIRED"
+# No answer at all is the same decline: the question's default is no, attended or not.
+out=$( cd "$T" && grep -c '"n" VA_UPGRADE_REGENERATE_JOBS n' "$S" )
+[ "$out" = "1" ] && ok || bad "the regeneration question should default to no, attended and unattended: $out"
 
 # ── The same question before the stop: job_template_preflight ────────────────
 # It is called, with its exit code read, before the first stop-arbiter.sh.
@@ -168,15 +173,19 @@ pre_run() {
 }
 contracts
 out=$(VERDIKTA_UNATTENDED=1 pre_run)
-has   "preflight, unattended, no answer: refused" "$out" "PREFLIGHT rc=1"
-has   "preflight, unattended, no answer: names the key" "$out" "VA_UPGRADE_REGENERATE_JOBS=y"
+# A changed template is no reason to refuse any more: the jobs are updated in place.
+has   "preflight, unattended, no answer: goes on" "$out" "PREFLIGHT rc=0"
 hasnt "preflight, unattended, no answer: trap" "$out" "TRAP-FIRED"
 out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=n pre_run)
-has   "preflight, unattended, n: refused" "$out" "PREFLIGHT rc=1"
+has   "preflight, unattended, n: goes on" "$out" "PREFLIGHT rc=0"
 out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
 has   "preflight, unattended, y: goes on" "$out" "PREFLIGHT rc=0"
 out=$(pre_run)
 has   "preflight, interactive: the question comes later" "$out" "PREFLIGHT rc=0"
+# A node registered in parts is refused only when regeneration was asked for.
+printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="134"\nREGISTRATION_SPLIT="true"\n' > "$I/installer/.contracts"
+out=$(VERDIKTA_UNATTENDED=1 pre_run)
+has   "preflight, split registration, no answer: goes on" "$out" "PREFLIGHT rc=0"
 printf 'AGGREGATOR_ADDRESS="0xAGG"\nCLASSES_ID="134"\nREGISTRATION_SPLIT="true"\n' > "$I/installer/.contracts"
 out=$(VERDIKTA_UNATTENDED=1 VA_UPGRADE_REGENERATE_JOBS=y pre_run)
 has   "preflight, split registration: refused before the stop" "$out" "PREFLIGHT rc=1"

@@ -82,7 +82,9 @@ The keys that matter most:
 | `VA_START_SERVICES` | Start the arbiter when done | `y` |
 | `VA_UPGRADE_BACKUP` | (upgrade) copy the install aside first | `y` |
 | `VA_UPGRADE_BACKUP_KEEP` | (upgrade) install backups to keep once the new one succeeded — older `<install>_backup_YYYYMMDD-HHMMSS` directories are removed; `0` keeps them all (also `--keep-backups N`) | `3` |
-| `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) regenerate job specs + re-register on-chain | `n` |
+| `VA_UPGRADE_REGENERATE_JOBS` | (upgrade) new jobs with new job ids + re-registration on chain, in place of the in-place update a changed job template gets by default. Leave `n`: a changed template needs no new ids | `n` |
+| `VA_MIGRATE_OPERATOR` | (`migrate-operator.sh`) move the node to a new operator contract with request authorization: deregisters, deploys, re-registers the same job ids. Required to be `y` for an unattended migration | `n` |
+| `VA_MIGRATE_DRAIN_SECONDS` | (`migrate-operator.sh`) seconds to wait after the deregistration for rounds in flight | the aggregator's `responseTimeoutSeconds` + 60 |
 | `VA_UPGRADE_JOB_TIMEOUTS` | (upgrade) the 840 s job limits: `MaxRunDuration` in `config.toml`, stale jobs replaced under the same job ids, no on-chain action (`apply-job-timeouts.sh`). `n` keeps the jobs' old limits (a yes to the template regeneration below still sets the template's `MaxRunDuration`); the next upgrade asks again | `y` |
 | `VA_UPGRADE_REGENERATE_CHAINLINK_CONFIG` | (upgrade) apply `chainlink-node/config_template.toml`'s settings to the node's `config.toml`, keeping its RPC endpoints, ChainID, gas caps and any setting the template does not mention; validated by Chainlink first, backup kept. Asked only when something would change; preview with `regenerate-chainlink-config.sh --check` | `y` |
 | `VA_UPGRADE_CHAINLINK_FINALITY` | (upgrade) add `NoNewFinalizedHeadsThreshold='0s'` and `EnforceRepeatableRead=false` to a Chainlink `config.toml` that lacks them (July 2026 0-live-RPC fix; backup kept, nothing else changes). Asked only when one is missing | `y` |

@@ -610,7 +610,7 @@ fi
 # Port hardening (2026-10-21 port audit): firewall rules for 5432/6688/3000/8080 on
 # the public interface, and the optional recreate that publishes 6688 on loopback.
 # And the tool that measures a live node's job limits (design §11).
-for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh apply-job-timeouts.sh common-pin.js code-review-sandbox.sh code-review-check.js; do
+for _hardening in arbiter-firewall.sh apply-chainlink-loopback.sh apply-job-timeouts.sh job-template.cjs check-request-authorization.cjs common-pin.js code-review-sandbox.sh code-review-check.js; do
     if [ -f "$UTIL_DIR/$_hardening" ]; then
         cp "$UTIL_DIR/$_hardening" "$INSTALL_DIR/$_hardening"
         chmod +x "$INSTALL_DIR/$_hardening"

@@ -72,7 +72,7 @@ test('refuses a job template without an authentication placeholder', () => {
   assert.throws(() => renderJob(root, filename), /missing authentication/);
 });
 
-test('the actual upgrade gate refuses unauthenticated jobs when regeneration is declined', () => {
+test('unauthenticated jobs are replaced in place after the restart when regeneration is declined', () => {
   const source = fs.readFileSync(path.join(__dirname, '../bin/upgrade-arbiter.sh'), 'utf8');
   // A top-level function of the script, by name: from "name() {" to the "}" that closes it.
   const fn = name => { const at = source.indexOf(`\n${name}() {`); assert.ok(at >= 0, name); return source.slice(at, source.indexOf('\n}\n', at) + 3); };
@@ -91,11 +91,17 @@ test('the actual upgrade gate refuses unauthenticated jobs when regeneration is 
     ${gate}
     check_job_spec_template
   `], { encoding: 'utf8', env: { ...process.env, REPO_CHAINLINK_NODE: repo, TARGET_CHAINLINK_NODE: target, ACCEPT: accept } });
+  // The adapter answers only a job that sends its credential. Regeneration (new job ids, a
+  // re-registration on chain) is one way to get such jobs; the default is the other, taken
+  // after the restart with the ids kept (job-template.cjs; job-template.test.cjs).
   const denied = run('no');
-  assert.equal(denied.status, 1);
-  assert.match(denied.stdout, /requires authenticated bridge jobs/);
-  assert.match(denied.stdout, /ARBITER-RESTARTED/);
-  assert.doesNotMatch(denied.stdout, /REGENERATED/);
+  assert.equal(denied.status, 0);
+  assert.match(denied.stdout, /updated in place after the restart/);
+  assert.doesNotMatch(denied.stdout, /ARBITER-RESTARTED|REGENERATED/);
+  const upgrade = source.slice(source.indexOf('\n# Job template, after the restart.'), source.indexOf('\n# Job timeouts, after the restart'));
+  assert.match(upgrade, /job-template\.cjs" check /);
+  assert.match(upgrade, /job-template\.cjs" apply /);
+  assert.match(source, /JOB UPDATE FAILED: /);
   const accepted = run('yes');
   assert.equal(accepted.status, 0);
   assert.match(accepted.stdout, /REGENERATED/);
